@@ -211,6 +211,69 @@ chromem-go is pure Go with no dependencies of its own and requires no
 separate server or CGO; its license (Mozilla Public License 2.0) is recorded
 in [`THIRD_PARTY_LICENSES.txt`](THIRD_PARTY_LICENSES.txt).
 
+## Embedding helper process
+
+The real embedding model (`BAAI/bge-small-en-v1.5`, int8-quantized ONNX,
+384 dims) will run via ONNX Runtime, which requires CGO — and the daemon
+must stay pure Go. So it runs in a separate binary,
+[`helper/`](helper/codeterminal-embedder-helper) (module
+`codeterminal/helper`, command `codeterminal-embedder-helper`), which the
+daemon spawns as a child process and talks to over a Unix domain socket
+(loopback-only; no TCP, no network surface). `CGO_ENABLED=0 go build` on
+both `daemon` and `helper` succeeds today — confirming CGO hasn't leaked
+into either — since **this step builds only the helper's lifecycle, not
+real inference**: its embed handler
+([`helper/embed_stub.go`](helper/embed_stub.go)) is a stub returning
+correctly-shaped, deterministic 384-dim vectors, with no ONNX Runtime, no
+tokenizer, and no model file involved yet. `PlaceholderEmbedder` remains the
+only active `Embedder` — this helper isn't wired into index/retrieve.
+
+[`daemon/helperproc.go`](daemon/helperproc.go)'s `HelperProcess` owns the
+whole lifecycle:
+
+- **Spawn + readiness**: starts the helper with `--socket <path>` (scoped by
+  the daemon's own PID, under the same runtime dir as its client-facing
+  socket) and blocks until a real Health RPC succeeds — not until the
+  helper's logs say so.
+- **Health + restart**: if the helper dies unexpectedly, a monitor goroutine
+  detects it and respawns it, bounded to a fixed number of attempts with a
+  delay between each — so a helper that can never come back up causes a
+  clear failure instead of a hot loop.
+- **Clean shutdown**: `Stop` sends `SIGTERM`, escalates to `SIGKILL` if the
+  helper hasn't exited within a grace period, and doesn't return until the
+  process has actually been reaped — no orphaned child, no zombie.
+
+Try it end to end (build both binaries first):
+
+```bash
+(cd helper && go build -o codeterminal-embedder-helper .)
+(cd daemon && go build -o codeterminal-daemon .)
+./daemon/codeterminal-daemon helper-smoketest "some test string"
+```
+
+This starts the helper, waits for it healthy, sends one embedding request,
+prints the returned vector's length (384) and first few values, and shuts
+the helper down cleanly. See
+[`daemon/helperproc_test.go`](daemon/helperproc_test.go) for the lifecycle
+tests (spawn/ready/call, kill-and-restart, bounded restart policy, and
+zero-orphan shutdown), all run against a test-only fixture helper under
+[`daemon/testdata/fakehelper/`](daemon/testdata/fakehelper) rather than the
+real binary.
+
+## Model acquisition
+
+`codeterminal-daemon download-model` fetches the pinned BGE model and
+tokenizer files (see `bgeModelAssets` in
+[`daemon/modelfetch.go`](daemon/modelfetch.go)) into
+`~/.codeterminal/models/bge-small-en-v1.5-int8/`, verifying each file's size
+and sha256 before treating it as usable. Every URL and checksum is pinned
+against a real, verified download — not a placeholder — so the check is
+meaningful. A cache hit (everything already present and valid) makes no
+network requests at all; a checksum or size mismatch removes the bad file
+and fails loudly rather than silently using it. This is independent of the
+helper process above — nothing downloads or uses the model yet, since the
+helper's embed handler is still a stub.
+
 ## Run it
 
 Requires Go 1.23+.
@@ -261,3 +324,12 @@ meaningful), no injecting retrieved chunks into a model prompt, no
 auto-indexing on daemon start or per-request, no file-watching, and no
 incremental re-index (re-running `index` rebuilds chunk-by-chunk, keyed by
 a deterministic ID, rather than diffing what changed).
+
+The embedder helper process exists too, but only as isolated lifecycle
+plumbing: its embed handler is a stub (no ONNX Runtime, no CGO, no real
+model loaded anywhere yet), it is never spawned automatically (only via the
+explicit `helper-smoketest` command), and `PlaceholderEmbedder` — not the
+helper — remains the only `Embedder` anything else in the daemon actually
+uses. Model acquisition can fetch the real model files, but nothing loads
+or runs them yet. Wiring a real ONNX-backed `Embedder` through this helper,
+and wiring retrieval into the daemon's serve path, are later steps.

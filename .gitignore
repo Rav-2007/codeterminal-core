@@ -4,3 +4,4 @@ daemon/codeterminal-daemon
 clients/tui/codeterminal-tui
 daemon/daemon
 clients/tui/tui
+helper/codeterminal-embedder-helper
