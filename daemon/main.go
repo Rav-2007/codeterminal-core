@@ -86,7 +86,7 @@ func main() {
 	logger.Printf("tier=%s slug=%s", cfg.DefaultTier, model)
 	logger.Printf("listening on %s (base=%s)", socketPath, apiBase)
 
-	srv := &Server{apiBase: apiBase, apiKey: apiKey, model: model, systemPrompt: systemPrompt, logger: logger}
+	srv := &Server{apiBase: apiBase, apiKey: apiKey, cfg: cfg, modelOverride: *modelOverride, systemPrompt: systemPrompt, logger: logger}
 	go srv.Serve(ln)
 
 	// Block here so cleanup runs exactly once, in this goroutine, instead of

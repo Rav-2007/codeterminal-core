@@ -137,6 +137,21 @@ response with no edit blocks (a plain answer) parses to an empty list, not
 an error. **Nothing is applied to disk yet** — this step only produces and
 parses the format; applying edits and validating them are later phases.
 
+## Tier router
+
+[`daemon/router.go`](daemon/router.go) decides which `models.json` tier
+handles each request and resolves its slug. It ships **primary-only**:
+every normal request logs `route tier=primary slug=... reason=default` and
+is unaffected by the router's existence. The `reasoning` tier is wired but
+gated — `Route` only selects it when a request carries a genuine non-zero
+exit signal *and* `reasoning` is `active` in config, and today's request
+path never sets that signal (capturing a real exit code is a later,
+client-side phase). If the escalation target is inactive or missing, the
+router falls back to the default tier rather than erroring or silently
+calling something inactive. Ghost-text is untouched and not selectable
+here. See [`daemon/router_test.go`](daemon/router_test.go) for the cases
+this guarantees.
+
 ## Run it
 
 Requires Go 1.23+.

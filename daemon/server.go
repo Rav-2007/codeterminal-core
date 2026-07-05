@@ -18,11 +18,23 @@ const daemonVersion = "0.1.0-skeleton"
 // Server accepts client connections on the UDS listener, performs the
 // version handshake, and proxies one prompt per connection to the model API.
 type Server struct {
-	apiBase      string
-	apiKey       string
-	model        string
-	systemPrompt string
-	logger       *log.Logger
+	apiBase       string
+	apiKey        string
+	cfg           *Config
+	modelOverride string // optional testing override; bypasses the router when set
+	systemPrompt  string
+	logger        *log.Logger
+}
+
+// route decides which tier handles the next request. Today's request path
+// never carries a real exit signal (capturing one is a later, client/UX-side
+// phase), so this always resolves to the config's default tier — the
+// reasoning escalation in Route is wired but stays gated off in practice.
+func (s *Server) route() RouteDecision {
+	if s.modelOverride != "" {
+		return RouteDecision{Tier: "override", Slug: s.modelOverride, Reason: "manual override via --model flag"}
+	}
+	return Route(s.cfg, RouteInput{HasExitSignal: false})
 }
 
 // Serve accepts connections until the listener is closed. Each connection is
@@ -82,8 +94,11 @@ func (s *Server) handleConn(conn net.Conn) {
 	}
 	s.logger.Printf("received prompt (%d bytes), calling model API", len(promptReq.Prompt))
 
+	decision := s.route()
+	s.logger.Printf("route tier=%s slug=%s reason=%s", decision.Tier, decision.Slug, decision.Reason)
+
 	var full strings.Builder
-	err := streamCompletion(context.Background(), s.apiBase, s.apiKey, s.model, s.systemPrompt, promptReq.Prompt, func(token string) error {
+	err := streamCompletion(context.Background(), s.apiBase, s.apiKey, decision.Slug, s.systemPrompt, promptReq.Prompt, func(token string) error {
 		full.WriteString(token)
 		return enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Token: token})
 	})
