@@ -24,6 +24,25 @@ const staleSocketProbeTimeout = 500 * time.Millisecond
 func main() {
 	logger := log.New(os.Stderr, "codeterminal-daemon: ", log.LstdFlags)
 
+	// "index" and "retrieve" are one-shot subcommands, not flags: they run
+	// and exit, deliberately separate from the long-running serve path below
+	// (which they leave entirely untouched). Checked before flag.Parse()
+	// because the daemon's own flags (e.g. --config) don't apply to them.
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "index":
+			if err := runIndexCommand(os.Args[2:], logger); err != nil {
+				logger.Fatal(err)
+			}
+			return
+		case "retrieve":
+			if err := runRetrieveCommand(os.Args[2:], logger); err != nil {
+				logger.Fatal(err)
+			}
+			return
+		}
+	}
+
 	configPath := flag.String("config", "./models.json", "path to models.json")
 	modelOverride := flag.String("model", "", "override the resolved model slug (testing only; config is the source of truth)")
 	systemPromptPath := flag.String("system-prompt", "daemon/prompts/system.txt", "path to the system prompt file")

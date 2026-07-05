@@ -152,6 +152,65 @@ calling something inactive. Ghost-text is untouched and not selectable
 here. See [`daemon/router_test.go`](daemon/router_test.go) for the cases
 this guarantees.
 
+## Workspace indexing (RAG plumbing)
+
+The daemon binary doubles as a one-shot CLI for building and querying a
+local, per-workspace vector index — separate from, and never triggered by,
+the long-running serve path above:
+
+```bash
+./daemon/codeterminal-daemon index /path/to/workspace
+./daemon/codeterminal-daemon retrieve --workspace /path/to/workspace --k 5 how does routing work
+```
+
+`index` walks the workspace confined to its root — it never follows
+symlinks (regardless of whether their target is absolute or a relative
+`../escape`) and never reads anything outside the resolved root — chunks
+eligible files into overlapping ~40-line windows (10-line overlap), embeds
+each chunk, and upserts them into a [chromem-go](https://github.com/philippgille/chromem-go)
+collection persisted at `<workspaceRoot>/.codeterminal/index/`. It logs how
+many files were scanned, how many were skipped and why, and how many chunks
+were produced. The first `index` run on a workspace also appends
+`.codeterminal/` to that workspace's `.gitignore` if it isn't already
+there (idempotent — re-running never duplicates the line), and
+`.codeterminal/` is itself pruned from every walk so the index never indexes
+its own previous output.
+
+Indexing hard-skips anything that could carry a secret — `.env`/`.env.*`,
+`*.pem`, `*.key`, `id_rsa*`, `*.p12`, `.aws/`, `.ssh/`, and any filename
+containing "secret" or "credential" — along with `.git/`, `node_modules/`,
+`vendor/`, common build output directories, anything matched by a (simple,
+root-level-only) subset of the workspace's `.gitignore`, binaries, and files
+over 1MB. That exclusion is enforced by a single gate
+(`shouldSkipFile` in `daemon/chunker.go`) called immediately before a file's
+content is read, so there's no separate walk-time-only prune that could
+diverge from what actually gets read.
+
+`retrieve` embeds the query text with the same embedder used at index time
+and logs the top-k hits (file path, line range, similarity score) — see
+[`daemon/index_cmd.go`](daemon/index_cmd.go). It does not feed those chunks
+into a model prompt; wiring retrieved context into the LLM call is a later
+step.
+
+Embedding goes through the `Embedder` interface
+([`daemon/embedder.go`](daemon/embedder.go)); nothing outside that file
+depends on a concrete implementation. The only implementation today is
+`PlaceholderEmbedder`, a local, deterministic hash-based bag-of-tokens
+vectorizer — explicitly **not semantically meaningful**, and it needs no
+model file or network access. It exists to prove the indexing and retrieval
+plumbing end to end before a real local embedding model
+(`BAAI/bge-small-en-v1.5`, documented in a comment above the interface)
+replaces it as a one-line swap. Nothing in this path ever makes a network
+call, in either the placeholder or the storage layer: chromem-go's
+collection is created with an embedding function that refuses to run
+(`refuseEmbeddingFunc` in `daemon/vectorstore.go`), so even a future bug that
+left a chunk unembedded would fail loudly instead of silently calling
+chromem-go's default OpenAI embedder.
+
+chromem-go is pure Go with no dependencies of its own and requires no
+separate server or CGO; its license (Mozilla Public License 2.0) is recorded
+in [`THIRD_PARTY_LICENSES.txt`](THIRD_PARTY_LICENSES.txt).
+
 ## Run it
 
 Requires Go 1.23+.
@@ -187,11 +246,18 @@ a fresh one automatically.
 
 ## Explicitly out of scope
 
-No RAG, no vector DB, no skills DB, no guardrails, no billing, no VS Code
-extension code, no MCP servers, no TCP, no auth tokens (Unix socket
-permissions are the security boundary for now). `models.json` defines
-`ghost_text` and `reasoning` tiers, but they are inert (`active: false`) —
-there is no tier-selection or routing logic; every request uses the
-`default_tier` only. Edit blocks are parsed and logged only — no writing to
-disk, no diff UI, no syntax validation/gate, and no mid-stream parsing
-(parsing happens once the full response has streamed back).
+No skills DB, no guardrails, no billing, no VS Code extension code, no MCP
+servers, no TCP, no auth tokens (Unix socket permissions are the security
+boundary for now). `models.json` defines `ghost_text` and `reasoning`
+tiers, but they are inert (`active: false`) — there is no tier-selection or
+routing logic; every request uses the `default_tier` only. Edit blocks are
+parsed and logged only — no writing to disk, no diff UI, no syntax
+validation/gate, and no mid-stream parsing (parsing happens once the full
+response has streamed back).
+
+Workspace indexing exists (see above), but only as isolated plumbing: no
+real embedding model yet (the placeholder is deliberately not semantically
+meaningful), no injecting retrieved chunks into a model prompt, no
+auto-indexing on daemon start or per-request, no file-watching, and no
+incremental re-index (re-running `index` rebuilds chunk-by-chunk, keyed by
+a deterministic ID, rather than diffing what changed).
