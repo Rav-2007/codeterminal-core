@@ -8,8 +8,22 @@ terms.
 --------------------------------------------------------------------------
 
 Name:    chromem-go
+Version: v0.7.0 (as pinned in daemon/go.mod and daemon/go.sum)
 License: Mozilla Public License 2.0 (MPL-2.0)
 Source:  https://github.com/philippgille/chromem-go
+
+The license text below is reproduced verbatim from this module's own
+LICENSE file (github.com/philippgille/chromem-go@v0.7.0/LICENSE, as
+vendored via the Go module cache), so compliance does not depend on
+reaching that URL. It has been diffed against the vendored copy and is
+byte-for-byte identical.
+
+Note on copyright/NOTICE: chromem-go@v0.7.0 ships no copyright or NOTICE
+line of its own beyond this license text — no per-file MPL header, no
+top-of-file "Copyright (c) ..." line, and no separate NOTICE file exist
+anywhere in the module (checked its LICENSE file, its .go source headers,
+and its README). The text below is therefore the complete, unaltered
+attribution as distributed.
 
 Mozilla Public License Version 2.0
 ==================================
