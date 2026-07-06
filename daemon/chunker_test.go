@@ -143,14 +143,18 @@ func TestScanWorkspace_GitignoreLite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// main.go and .gitignore itself: .gitignore is ordinary, non-secret
-	// text and is legitimately indexed. ignored_file.txt and ignored_dir/
-	// are the two paths this test is actually about excluding.
-	if res.FilesScanned != 2 {
-		t.Fatalf("FilesScanned = %d, want 2 (main.go + .gitignore)", res.FilesScanned)
+	// main.go only: .gitignore itself is hard-excluded as noise (it can
+	// never usefully answer a code question), and ignored_file.txt /
+	// ignored_dir/ are the two paths this test is actually about excluding
+	// via .gitignore's own rules.
+	if res.FilesScanned != 1 {
+		t.Fatalf("FilesScanned = %d, want 1 (main.go only)", res.FilesScanned)
 	}
 	if res.Skipped[SkipGitignore] != 2 {
 		t.Errorf("SkipGitignore count = %d, want 2 (ignored_file.txt + ignored_dir)", res.Skipped[SkipGitignore])
+	}
+	if res.Skipped[SkipNoise] != 1 {
+		t.Errorf("SkipNoise count = %d, want 1 (.gitignore itself)", res.Skipped[SkipNoise])
 	}
 	for _, c := range res.Chunks {
 		if strings.Contains(c.Content, "SHOULD_NOT_BE_INDEXED") {

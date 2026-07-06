@@ -136,7 +136,7 @@ func TestEvalRetrievalQuality(t *testing.T) {
 
 	var top1Hits, top3Hits int
 	for _, q := range queries {
-		hits, err := retrieveTopK(ctx, q.Query, 3, embedder, store)
+		hits, err := retrieveTopK(ctx, q.Query, 3, embedder, store, true)
 		if err != nil {
 			t.Fatalf("retrieveTopK(%q): %v", q.Query, err)
 		}

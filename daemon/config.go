@@ -31,6 +31,11 @@ type Config struct {
 // config without requiring a migration.
 type RetrievalConfig struct {
 	Disabled bool `json:"disabled,omitempty"`
+	// RerankDisabled bypasses file-class re-ranking (rerank.go), falling
+	// back to raw vector-similarity order — the same Disabled-bool-defaults-
+	// enabled pattern as Disabled above, so an existing models.json decodes
+	// to false (re-ranking on) without needing a migration.
+	RerankDisabled bool `json:"rerank_disabled,omitempty"`
 	// TopK is how many chunks to retrieve per prompt. 0 (or absent) falls
 	// back to defaultK, the same default the CLI `retrieve` command uses.
 	TopK int `json:"top_k,omitempty"`

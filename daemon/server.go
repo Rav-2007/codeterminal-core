@@ -33,6 +33,7 @@ type Server struct {
 	retrievalTopK      int
 	contextBudgetChars int
 	debugContext       bool // --debug-context: log full retrieved chunk content
+	rerankDisabled     bool // --no-rerank / retrieval.rerank_disabled: raw similarity order, no class weighting
 }
 
 // route decides which tier handles the next request. Today's request path

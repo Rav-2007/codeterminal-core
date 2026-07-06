@@ -66,6 +66,7 @@ func main() {
 	workspace := flag.String("workspace", ".", "workspace root containing an existing .codeterminal/index for retrieval-augmented context")
 	noContext := flag.Bool("no-context", false, "disable automatic retrieval-augmented context injection (default: enabled)")
 	debugContext := flag.Bool("debug-context", false, "additionally log the full content of every retrieved chunk (verbose)")
+	noRerank := flag.Bool("no-rerank", false, "bypass file-class re-ranking; use raw vector-similarity order (A/B comparison, default: re-ranking enabled)")
 	flag.Parse()
 
 	apiBase := os.Getenv("CODETERMINAL_API_BASE")
@@ -141,6 +142,7 @@ func main() {
 		retrievalTopK:      retrievalTopK,
 		contextBudgetChars: contextBudgetChars,
 		debugContext:       *debugContext,
+		rerankDisabled:     *noRerank || cfg.Retrieval.RerankDisabled,
 	}
 	go srv.Serve(ln)
 

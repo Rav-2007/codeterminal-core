@@ -201,7 +201,7 @@ func TestRetrieveTopK_AcceptsInjectedEmbedder(t *testing.T) {
 		t.Fatalf("Upsert: %v", err)
 	}
 
-	results, err := retrieveTopK(context.Background(), "anything", 5, fake, store)
+	results, err := retrieveTopK(context.Background(), "anything", 5, fake, store, true)
 	if err != nil {
 		t.Fatalf("retrieveTopK: %v", err)
 	}

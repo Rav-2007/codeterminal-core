@@ -55,12 +55,37 @@ func buildIndex(ctx context.Context, root string, embedder Embedder, store Vecto
 // from store. Like buildIndex, both dependencies are interfaces so tests can
 // inject fakes. It calls EmbedQuery, not Embed — this is the one line where
 // the query/document asymmetry actually gets applied (see BgeEmbedder).
-func retrieveTopK(ctx context.Context, query string, k int, embedder Embedder, store VectorStore) ([]Chunk, error) {
+//
+// When rerank is true, it fetches a wider raw candidate pool
+// (rerankPoolSize, rerank.go) than k, reweights it by file-class (a code
+// chunk ranked just outside the raw top-k gets a chance to win after its
+// class boost), and truncates the reweighted result to k. When rerank is
+// false, it fetches exactly k and returns the store's raw ranking unchanged
+// — the A/B path for comparing against re-ranking.
+func retrieveTopK(ctx context.Context, query string, k int, embedder Embedder, store VectorStore, rerank bool) ([]Chunk, error) {
 	vecs, err := embedder.EmbedQuery(ctx, []string{query})
 	if err != nil {
 		return nil, fmt.Errorf("embedding query: %w", err)
 	}
-	return store.Query(ctx, vecs[0], k)
+
+	if !rerank {
+		hits, err := store.Query(ctx, vecs[0], k)
+		if err != nil {
+			return nil, err
+		}
+		// RawScore mirrors Score here (no reweighting happened) so logging
+		// can treat RawScore/Score identically regardless of which path ran.
+		for i := range hits {
+			hits[i].RawScore = hits[i].Score
+		}
+		return hits, nil
+	}
+
+	candidates, err := store.Query(ctx, vecs[0], rerankPoolSize(k))
+	if err != nil {
+		return nil, err
+	}
+	return rerankChunks(candidates, k), nil
 }
 
 // runIndexCommand implements `codeterminal-daemon index [path]`. It builds
@@ -121,6 +146,7 @@ func runRetrieveCommand(args []string, logger *log.Logger) error {
 	fset := flag.NewFlagSet("retrieve", flag.ExitOnError)
 	workspace := fset.String("workspace", ".", "workspace root containing an existing .codeterminal/index")
 	k := fset.Int("k", defaultK, "number of results to return")
+	raw := fset.Bool("raw", false, "bypass file-class re-ranking and show raw vector-similarity order (A/B comparison)")
 	fset.Parse(args)
 
 	if fset.NArg() < 1 {
@@ -153,14 +179,14 @@ func runRetrieveCommand(args []string, logger *log.Logger) error {
 		return err
 	}
 
-	results, err := retrieveTopK(context.Background(), query, *k, embedder, store)
+	results, err := retrieveTopK(context.Background(), query, *k, embedder, store, !*raw)
 	if err != nil {
 		return err
 	}
 
-	logger.Printf("retrieve: query=%q k=%d results=%d", query, *k, len(results))
+	logger.Printf("retrieve: query=%q k=%d rerank=%t results=%d", query, *k, !*raw, len(results))
 	for i, r := range results {
-		logger.Printf("  %d. %s:%d-%d score=%.4f", i+1, r.FilePath, r.StartLine, r.EndLine, r.Score)
+		logger.Printf("  %d. %s:%d-%d class=%s score=%.4f weighted=%.4f", i+1, r.FilePath, r.StartLine, r.EndLine, r.Class, r.RawScore, r.Score)
 	}
 	return nil
 }
@@ -168,7 +194,7 @@ func runRetrieveCommand(args []string, logger *log.Logger) error {
 // formatSkipCounts renders skip counts in a fixed, readable order so log
 // output doesn't jitter between runs (map iteration order is random).
 func formatSkipCounts(skipped map[SkipReason]int) string {
-	order := []SkipReason{SkipSecret, SkipBinary, SkipTooLarge, SkipSymlink, SkipIgnoredDir, SkipGitignore}
+	order := []SkipReason{SkipSecret, SkipNoise, SkipBinary, SkipTooLarge, SkipSymlink, SkipIgnoredDir, SkipGitignore}
 
 	var parts []string
 	for _, reason := range order {

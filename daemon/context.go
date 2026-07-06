@@ -96,7 +96,7 @@ func (s *Server) gatherContext(ctx context.Context, prompt string) retrievalOutc
 		return retrievalOutcome{Skipped: true, Reason: "retrieval disabled (no embedder/index configured for this daemon)"}
 	}
 
-	chunks, err := retrieveTopK(ctx, prompt, s.retrievalTopK, s.embedder, s.store)
+	chunks, err := retrieveTopK(ctx, prompt, s.retrievalTopK, s.embedder, s.store, !s.rerankDisabled)
 	if err != nil {
 		return retrievalOutcome{Skipped: true, Reason: fmt.Sprintf("retrieval error: %v", err)}
 	}
@@ -173,13 +173,14 @@ func (s *Server) logRetrieval(o retrievalOutcome) {
 
 	refs := make([]string, len(o.Chunks))
 	for i, c := range o.Chunks {
-		refs[i] = fmt.Sprintf("%s:%d-%d", c.FilePath, c.StartLine, c.EndLine)
+		refs[i] = fmt.Sprintf("%s:%d-%d(%s)", c.FilePath, c.StartLine, c.EndLine, c.Class)
 	}
-	s.logger.Printf("retrieval: chunks=%d truncated=%t sources=[%s]", len(o.Chunks), o.Truncated, strings.Join(refs, ", "))
+	s.logger.Printf("retrieval: chunks=%d truncated=%t rerank=%t sources=[%s]", len(o.Chunks), o.Truncated, !s.rerankDisabled, strings.Join(refs, ", "))
 
 	if s.debugContext {
 		for i, c := range o.Chunks {
-			s.logger.Printf("retrieval debug: chunk %d (%s:%d-%d):\n%s", i+1, c.FilePath, c.StartLine, c.EndLine, neutralizeDelimiters(c.Content))
+			s.logger.Printf("retrieval debug: chunk %d (%s:%d-%d) class=%s score=%.4f weighted=%.4f:\n%s",
+				i+1, c.FilePath, c.StartLine, c.EndLine, c.Class, c.RawScore, c.Score, neutralizeDelimiters(c.Content))
 		}
 	}
 }

@@ -16,6 +16,12 @@ const collectionName = "codeterminal-chunks"
 // Chunk is one indexed slice of a source file: the text itself, where it
 // came from, and (once embedded) its vector. Score is populated only on
 // results returned from VectorStore.Query; it is zero on every other path.
+// Class is set at index time (see classifyFile in fileclass.go) and
+// persisted in the store's metadata. RawScore is populated only by
+// retrieveTopK's re-rank step (rerank.go): it holds the original
+// vector-similarity score before class weighting, kept alongside Score (the
+// effective, weighted score that determines final ranking) purely for
+// logging/observability — it is never itself persisted.
 type Chunk struct {
 	ID        string
 	FilePath  string
@@ -24,6 +30,8 @@ type Chunk struct {
 	Content   string
 	Vector    []float32
 	Score     float32
+	Class     FileClass
+	RawScore  float32
 }
 
 // VectorStore persists chunks and finds the ones nearest a query vector.
@@ -83,6 +91,7 @@ func (s *ChromemStore) Upsert(ctx context.Context, chunks []Chunk) error {
 				"file_path":  c.FilePath,
 				"start_line": strconv.Itoa(c.StartLine),
 				"end_line":   strconv.Itoa(c.EndLine),
+				"class":      string(c.Class),
 			},
 			Embedding: c.Vector,
 			Content:   c.Content,
@@ -126,6 +135,7 @@ func (s *ChromemStore) Query(ctx context.Context, queryVec []float32, k int) ([]
 			Content:   r.Content,
 			Vector:    r.Embedding,
 			Score:     r.Similarity,
+			Class:     FileClass(r.Metadata["class"]),
 		})
 	}
 	return chunks, nil

@@ -185,10 +185,18 @@ Indexing hard-skips anything that could carry a secret — `.env`/`.env.*`,
 containing "secret" or "credential" — along with `.git/`, `node_modules/`,
 `vendor/`, common build output directories, anything matched by a (simple,
 root-level-only) subset of the workspace's `.gitignore`, binaries, and files
-over 1MB. That exclusion is enforced by a single gate
-(`shouldSkipFile` in `daemon/chunker.go`) called immediately before a file's
-content is read, so there's no separate walk-time-only prune that could
-diverge from what actually gets read.
+over 1MB. It also hard-excludes a narrow, exact-basename noise list that can
+never usefully answer a code question — `.gitignore` itself and dependency
+lockfiles (`go.sum`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`,
+`Cargo.lock`, `Gemfile.lock`, `composer.lock`, `poetry.lock`,
+`Pipfile.lock`) — see `noiseBasenames`/`isNoiseFile` in
+[`daemon/fileclass.go`](daemon/fileclass.go). This is the only category
+that's excluded outright; every other file, including every doc, stays
+indexed and is only down-weighted (see "Retrieval ranking" below). All of
+this exclusion is enforced by a single gate (`shouldSkipFile` in
+`daemon/chunker.go`) called immediately before a file's content is read, so
+there's no separate walk-time-only prune that could diverge from what
+actually gets read.
 
 `retrieve` embeds the query text and logs the top-k hits (file path, line
 range, similarity score) — see [`daemon/index_cmd.go`](daemon/index_cmd.go).
@@ -218,12 +226,16 @@ guard below. Two implementations exist:
 **Stale-index guard**: since both embedders report the same `Dim()` (384),
 dimension alone can't tell a placeholder-built index apart from a real one.
 `index` stamps `<indexDir>/embedder_stamp.json` with the active embedder's
-`ID()` after every successful build
+`ID()` and the current `IndexSchemaVersion` after every successful build
 ([`daemon/embedderstamp.go`](daemon/embedderstamp.go)); `retrieve` checks it
 first and refuses — with a `"re-index required"` message, not silently
 comparing incompatible vectors — on any mismatch, including a stamp that's
 missing entirely (exactly what every index built before this guard existed
-looks like).
+looks like). `IndexSchemaVersion` exists for the same reason as the embedder
+ID check: it was bumped when chunks started carrying file-class metadata
+(below), so an index built before that change — which has no `class` key in
+its stored metadata at all — is caught and forced to re-index rather than
+silently reading back every chunk as unclassified.
 
 Nothing in the indexing/retrieval path ever makes a network call outside of
 what the embedder helper itself does (see below): chromem-go's collection is
@@ -235,6 +247,43 @@ chromem-go's default OpenAI embedder.
 chromem-go is pure Go with no dependencies of its own and requires no
 separate server or CGO; its license (Mozilla Public License 2.0) is recorded
 in [`THIRD_PARTY_LICENSES.txt`](THIRD_PARTY_LICENSES.txt).
+
+## Retrieval ranking (code vs. prose)
+
+A real-repo stress test found that raw vector similarity alone systematically
+let prose *about* code (READMEs, `daemon/prompts/system.txt`) outrank the
+code that actually answers a code question — including one query where the
+correct file didn't even make the raw top 5. The embedder itself was fine;
+this is a ranking problem, fixed by tilting (not banning) results toward
+code.
+
+**Classification.** Every chunk is tagged at index time with a `FileClass` —
+`code`, `doc`, `config`, or `other` — by extension/basename
+(`classifyFile` in [`daemon/fileclass.go`](daemon/fileclass.go)), stored in
+the chunk's metadata alongside its file path and line range.
+
+**Re-ranking.** `retrieveTopK` fetches a wider raw candidate pool than `k`
+(`max(k*6, 20)`, [`daemon/rerank.go`](daemon/rerank.go)) — reweighting only
+the raw top-`k` could never recover a chunk ranked just outside it — then
+combines each hit's raw similarity with a named class weight
+(`weighted = raw * classWeight(class)`: code `1.15`, other `1.00`, config
+`0.90`, doc `0.75`), re-sorts by that weighted score, and truncates to `k`.
+A doc with high enough raw similarity can still win outright — this is a
+tilt, not a hard exclusion (see "Workspace indexing" above for the one
+category that *is* hard-excluded: `.gitignore` and lockfiles). A chunk
+missing its stored class (e.g. one built by hand in a test) falls back to
+recomputing it from the file path rather than being silently treated as
+neutral by accident.
+
+**Observability and A/B.** Every logged hit shows its class alongside both
+scores (`class=code score=0.77 weighted=0.88`) — in the CLI `retrieve`
+command's per-line output and the live path's per-request summary and
+`--debug-context` dump. `retrieve --raw` and the daemon's `--no-rerank` flag
+(or `retrieval.rerank_disabled: true` in `models.json`, same
+defaults-enabled pattern as the other retrieval toggles) bypass re-ranking
+entirely, returning raw similarity order, for direct comparison. Both
+`retrieve` and the live prompt path share the exact same `retrieveTopK` —
+there is no separate/duplicated ranking logic between them.
 
 ## Live retrieval-augmented generation
 
@@ -510,14 +559,15 @@ sync/cloud — all later phases.
 
 Workspace indexing and retrieval use the real `BgeEmbedder`, and retrieved
 chunks are now wired into the live LLM prompt (see "Live
-retrieval-augmented generation" above) — but there is still no auto-indexing
-on daemon start or per-request (a missing index degrades gracefully rather
-than triggering a build), no file-watching, no incremental re-index
-(re-running `index` rebuilds chunk-by-chunk, keyed by a deterministic ID,
-rather than diffing what changed), no re-ranking, no query rewriting, and no
-multi-hop retrieval (a single retrieve feeds a single generate). Applying
-edits to disk, a diff/confirm UI, and a syntax gate remain entirely
-separate, later milestones — this step only augments generation.
+retrieval-augmented generation" above), with file-class re-ranking (see
+"Retrieval ranking" below) — but there is still no auto-indexing on daemon
+start or per-request (a missing index degrades gracefully rather than
+triggering a build), no file-watching, no incremental re-index (re-running
+`index` rebuilds chunk-by-chunk, keyed by a deterministic ID, rather than
+diffing what changed), no query rewriting, and no multi-hop retrieval (a
+single retrieve feeds a single generate). Applying edits to disk, a
+diff/confirm UI, and a syntax gate remain entirely separate, later
+milestones — this step only augments generation.
 
 The embedder helper is spawned only by explicit commands
 (`index`/`retrieve`/`helper-smoketest`), never automatically on daemon

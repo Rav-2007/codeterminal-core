@@ -34,6 +34,7 @@ const (
 	SkipSymlink    SkipReason = "symlink"
 	SkipIgnoredDir SkipReason = "ignored_dir"
 	SkipGitignore  SkipReason = "gitignored"
+	SkipNoise      SkipReason = "noise"
 )
 
 // ignoredDirNames are pruned outright during the walk: a matching directory
@@ -182,6 +183,9 @@ func shouldSkipFile(path, relPath string, ignore *gitignoreRules) (SkipReason, b
 	if matchesSecretName(base) {
 		return SkipSecret, true, nil
 	}
+	if isNoiseFile(relPath) {
+		return SkipNoise, true, nil
+	}
 	if ignore.matchFile(relPath) {
 		return SkipGitignore, true, nil
 	}
@@ -262,6 +266,8 @@ func chunkContent(content []byte, relPath string) []Chunk {
 		return nil
 	}
 
+	class := classifyFile(relPath)
+
 	stride := chunkLines - overlapLines
 	var chunks []Chunk
 	for start := 0; start < len(lines); start += stride {
@@ -278,6 +284,7 @@ func chunkContent(content []byte, relPath string) []Chunk {
 			StartLine: startLine,
 			EndLine:   endLine,
 			Content:   strings.Join(lines[start:end], "\n"),
+			Class:     class,
 		})
 
 		if end == len(lines) {
