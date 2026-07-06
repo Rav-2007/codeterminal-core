@@ -304,6 +304,36 @@ retrieved chunk. Every request logs a one-line summary
 (`retrieval: chunks=N truncated=bool sources=[file:line-range, ...]`) or a
 skip reason, e.g. `retrieval skipped: no index found at ...`.
 
+## Skills database
+
+A local, per-user SQLite database (`~/.codeterminal/skills.db`, not
+per-workspace — skills are cross-project, unlike the RAG index) that
+records "skills": successful solution steps, for later phases to build
+reuse on. This is storage plumbing only — a `Skill` record
+(`daemon/skills.go`) is `{ID, CreatedAt, Title, Steps, Tags, SourcePrompt}`,
+with `AddSkill` / `ListSkills` / `GetSkill` / `DeleteSkill` on `SkillStore`.
+It does **not** auto-capture skills from conversations and does **not**
+inject them into prompts yet — both are later phases.
+
+The driver is `modernc.org/sqlite`, a pure-Go, CGO-free SQLite
+implementation (pinned to v1.39.0, the newest release that still only
+requires `go 1.23.0` — newer releases bump that to `go 1.24`/`1.25` and
+would force a toolchain upgrade). One connection is held open for the
+store's lifetime (`SetMaxOpenConns(1)`, plus `PRAGMA journal_mode=WAL` and
+`busy_timeout=5000` as a second line of defense) rather than reopening the
+file per call. Schema is tracked via a `schema_meta.version` row, checked
+and created on open (`ensureSchema`); no migrations exist yet since there's
+only ever been one version.
+
+```
+codeterminal-daemon skills list [--limit N] [--json] [--db path]
+codeterminal-daemon skills delete <id> [--db path]
+```
+
+`list` prints a table (or `--json`) newest-first; `--db` overrides the
+default path. There is deliberately no `skills add` — skills get captured
+by the agent loop in a later phase, not typed in by hand.
+
 ## Embedding helper process
 
 The real embedding model (`BAAI/bge-small-en-v1.5`, int8-quantized ONNX,
@@ -463,14 +493,20 @@ a fresh one automatically.
 
 ## Explicitly out of scope
 
-No skills DB, no guardrails, no billing, no VS Code extension code, no MCP
-servers, no TCP, no auth tokens (Unix socket permissions are the security
-boundary for now). `models.json` defines `ghost_text` and `reasoning`
-tiers, but they are inert (`active: false`) — there is no tier-selection or
-routing logic; every request uses the `default_tier` only. Edit blocks are
-parsed and logged only — no writing to disk, no diff UI, no syntax
-validation/gate, and no mid-stream parsing (parsing happens once the full
-response has streamed back).
+No guardrails, no billing, no VS Code extension code, no MCP servers, no
+TCP, no auth tokens (Unix socket permissions are the security boundary for
+now). `models.json` defines `ghost_text` and `reasoning` tiers, but they
+are inert (`active: false`) — there is no tier-selection or routing logic;
+every request uses the `default_tier` only. Edit blocks are parsed and
+logged only — no writing to disk, no diff UI, no syntax validation/gate,
+and no mid-stream parsing (parsing happens once the full response has
+streamed back).
+
+There is now a skills database (see "Skills database" above), but it is
+storage plumbing only: no auto-capture of skills from conversations or
+agent runs, no injecting skills into prompts or generation, no
+embedding/vector search over skills, no dedup/ranking intelligence, and no
+sync/cloud — all later phases.
 
 Workspace indexing and retrieval use the real `BgeEmbedder`, and retrieved
 chunks are now wired into the live LLM prompt (see "Live

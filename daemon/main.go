@@ -52,6 +52,11 @@ func main() {
 				logger.Fatal(err)
 			}
 			return
+		case "skills":
+			if err := runSkillsCommand(os.Args[2:], logger); err != nil {
+				logger.Fatal(err)
+			}
+			return
 		}
 	}
 
