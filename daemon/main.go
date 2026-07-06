@@ -24,12 +24,12 @@ const staleSocketProbeTimeout = 500 * time.Millisecond
 func main() {
 	logger := log.New(os.Stderr, "codeterminal-daemon: ", log.LstdFlags)
 
-	// "index", "retrieve", "download-model", and "helper-smoketest" are
-	// one-shot subcommands, not flags: they run and exit, deliberately
-	// separate from the long-running serve path below (which they leave
-	// entirely untouched — none of them is invoked automatically on daemon
-	// start or per-prompt). Checked before flag.Parse() because the
-	// daemon's own flags (e.g. --config) don't apply to them.
+	// "index", "retrieve", "download-model", "helper-smoketest", "skills",
+	// and "edits" are one-shot subcommands, not flags: they run and exit,
+	// deliberately separate from the long-running serve path below (which
+	// they leave entirely untouched — none of them is invoked automatically
+	// on daemon start or per-prompt). Checked before flag.Parse() because
+	// the daemon's own flags (e.g. --config) don't apply to them.
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "index":
@@ -54,6 +54,11 @@ func main() {
 			return
 		case "skills":
 			if err := runSkillsCommand(os.Args[2:], logger); err != nil {
+				logger.Fatal(err)
+			}
+			return
+		case "edits":
+			if err := runEditsCommand(os.Args[2:], logger); err != nil {
 				logger.Fatal(err)
 			}
 			return

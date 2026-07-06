@@ -138,8 +138,64 @@ After a response finishes streaming, the daemon parses it with
 [`daemon/editblock.go`](daemon/editblock.go) and logs a summary — e.g.
 `parsed 1 edit block(s)` plus each block's target path and line counts. A
 response with no edit blocks (a plain answer) parses to an empty list, not
-an error. **Nothing is applied to disk yet** — this step only produces and
-parses the format; applying edits and validating them are later phases.
+an error. Parsing itself never writes to disk; the live chat path still
+only parses-and-logs. Actually writing parsed edit blocks to disk is a
+separate, deliberate command — see "Applying edits to disk" below.
+
+## Applying edits to disk
+
+`codeterminal-daemon edits apply [--workspace path] [<response-file>|-]`
+takes a completed model response (from a file, or stdin if omitted/`-`),
+parses it with the same unmodified `ParseEditBlocks`, and runs every block
+through a safety tripod before anything touches disk — see
+[`daemon/apply.go`](daemon/apply.go) and
+[`daemon/apply_cmd.go`](daemon/apply_cmd.go). This is a deliberate, explicit
+command; the live chat path never auto-applies edits.
+
+For each block, in order:
+
+1. **Path safety** — the target must resolve (through any symlinks) to
+   inside the workspace root; absolute paths, `..` escapes, and files the
+   indexer would secret-skip (`.env`, `*.pem`, etc. — the same
+   `matchesSecretName` check `chunker.go` uses for indexing) are refused.
+2. **Exact-match verification** — the block's `SEARCH` text must appear in
+   the target file exactly once (literal substring match). Not found, or
+   found more than once (ambiguous), and the edit is refused rather than
+   guessed at.
+3. **Syntax gate** — for `.go` files, the post-edit content is parsed with
+   the stdlib `go/parser`; an edit that would make the file unparseable is
+   refused. Other languages skip this check (logged as such); it's a guard
+   against obviously-broken writes, not a type-checker.
+4. **Diff + confirm** — the whole `SEARCH` block is shown as removed lines
+   and the whole `REPLACE` block as added lines (file path + line range;
+   no word-level diffing), then `Apply this edit? [y/N]:` is prompted.
+   Only a literal `y`/`Y` applies; anything else (including empty input)
+   skips that edit. Edits are independent — accept some, decline others in
+   one run.
+5. **Backup, then write** — the first time a file is written in a run, its
+   pre-edit content is saved to
+   `<workspace>/.codeterminal/backups/<timestamp>/before/<relpath>`
+   (already covered by the existing `.codeterminal/` git-ignore and
+   indexer-ignore rules, so backups are never indexed or committed). The
+   file's content immediately after each write is also recorded, to
+   `.../<timestamp>/after/<relpath>` — this is what makes `edits undo`'s
+   safety check possible (below). Only after backing up does the real file
+   get written.
+
+A run ends with a summary line: `N applied, M skipped, K refused`.
+
+**Restoring**: `codeterminal-daemon edits undo [--workspace path] [--session
+ts] [--force]` restores a backup session (the most recent one, by default).
+For each backed-up file, it compares the file's *current* on-disk content
+against the `after/` snapshot recorded right after the apply run. Unchanged
+files are restored silently. A file that has been modified since (hand-
+edited further, or deleted) is never silently clobbered — it's listed as
+guarded, and only restored if `--force` is passed or you confirm at an
+interactive prompt naming exactly which files are affected.
+
+New-file creation is out of scope: `ParseEditBlocks` already rejects an
+empty `SEARCH`, so every block necessarily targets an existing file
+containing that exact text.
 
 ## Tier router
 
@@ -547,9 +603,13 @@ TCP, no auth tokens (Unix socket permissions are the security boundary for
 now). `models.json` defines `ghost_text` and `reasoning` tiers, but they
 are inert (`active: false`) — there is no tier-selection or routing logic;
 every request uses the `default_tier` only. Edit blocks are parsed and
-logged only — no writing to disk, no diff UI, no syntax validation/gate,
-and no mid-stream parsing (parsing happens once the full response has
-streamed back).
+logged only on the live chat path — no mid-stream parsing (parsing happens
+once the full response has streamed back). Writing them to disk is now
+possible, but only via the deliberate `edits apply`/`edits undo` commands
+(see "Applying edits to disk" above): no auto-apply from the live chat
+path, no fuzzy/approximate `SEARCH` matching, no multi-occurrence
+disambiguation (ambiguous is always a refusal), and no TUI/VS Code UI for
+reviewing diffs.
 
 There is now a skills database (see "Skills database" above), but it is
 storage plumbing only: no auto-capture of skills from conversations or
