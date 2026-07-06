@@ -12,3 +12,9 @@ repo (~334 chunks); blocking for real users.
 Top-3 recall is 5/5, but top-1 is 3/5: for some queries a *_test.go file or an adjacent code
 file edges out the canonical implementation at rank #1. Not the prose-vs-code bug (that's
 fixed). Could down-weight _test.go files for retrieval. Purely a nicety; may never be needed.
+
+### (c) Auto-apply-with-undo mode — PRODUCTION ENHANCEMENT
+V1 of apply-edits uses confirm-every-edit (explicit [y/N] per edit, safest). For a lower-
+friction production feel, add an opt-in auto-apply mode: applies behind the syntax gate +
+backup without per-edit confirmation, relying on undo/restore for recovery. Deferred until
+apply-edits v1 is proven. Keep confirm-every-edit as the default even after adding it.
