@@ -58,6 +58,9 @@ func main() {
 	configPath := flag.String("config", "./models.json", "path to models.json")
 	modelOverride := flag.String("model", "", "override the resolved model slug (testing only; config is the source of truth)")
 	systemPromptPath := flag.String("system-prompt", "daemon/prompts/system.txt", "path to the system prompt file")
+	workspace := flag.String("workspace", ".", "workspace root containing an existing .codeterminal/index for retrieval-augmented context")
+	noContext := flag.Bool("no-context", false, "disable automatic retrieval-augmented context injection (default: enabled)")
+	debugContext := flag.Bool("debug-context", false, "additionally log the full content of every retrieved chunk (verbose)")
 	flag.Parse()
 
 	apiBase := os.Getenv("CODETERMINAL_API_BASE")
@@ -83,6 +86,10 @@ func main() {
 		logger.Fatalf("reading system prompt %s: %v", *systemPromptPath, err)
 	}
 	systemPrompt := string(systemPromptBytes)
+
+	embedder, store, stopEmbedder, retrievalTopK, contextBudgetChars := setupRetrieval(
+		cfg, *workspace, *noContext, logger, newActiveEmbedder)
+	defer stopEmbedder()
 
 	if _, err := protocol.SocketDir(); err != nil {
 		logger.Fatalf("creating runtime dir: %v", err)
@@ -117,7 +124,19 @@ func main() {
 	logger.Printf("tier=%s slug=%s", cfg.DefaultTier, model)
 	logger.Printf("listening on %s (base=%s)", socketPath, apiBase)
 
-	srv := &Server{apiBase: apiBase, apiKey: apiKey, cfg: cfg, modelOverride: *modelOverride, systemPrompt: systemPrompt, logger: logger}
+	srv := &Server{
+		apiBase:            apiBase,
+		apiKey:             apiKey,
+		cfg:                cfg,
+		modelOverride:      *modelOverride,
+		systemPrompt:       systemPrompt,
+		logger:             logger,
+		embedder:           embedder,
+		store:              store,
+		retrievalTopK:      retrievalTopK,
+		contextBudgetChars: contextBudgetChars,
+		debugContext:       *debugContext,
+	}
 	go srv.Serve(ln)
 
 	// Block here so cleanup runs exactly once, in this goroutine, instead of

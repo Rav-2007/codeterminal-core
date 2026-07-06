@@ -24,6 +24,15 @@ type Server struct {
 	modelOverride string // optional testing override; bypasses the router when set
 	systemPrompt  string
 	logger        *log.Logger
+
+	// embedder and store are both nil when retrieval is disabled or
+	// unavailable (see setupRetrieval in retrieval_setup.go) — every use
+	// of them (gatherContext, in context.go) must handle that.
+	embedder           Embedder
+	store              VectorStore
+	retrievalTopK      int
+	contextBudgetChars int
+	debugContext       bool // --debug-context: log full retrieved chunk content
 }
 
 // route decides which tier handles the next request. Today's request path
@@ -97,8 +106,15 @@ func (s *Server) handleConn(conn net.Conn) {
 	decision := s.route()
 	s.logger.Printf("route tier=%s slug=%s reason=%s", decision.Tier, decision.Slug, decision.Reason)
 
+	outcome := s.gatherContext(context.Background(), promptReq.Prompt)
+	s.logRetrieval(outcome)
+	augmentedPrompt := promptReq.Prompt
+	if !outcome.Skipped {
+		augmentedPrompt = buildAugmentedUserMessage(promptReq.Prompt, outcome.Chunks)
+	}
+
 	var full strings.Builder
-	err := streamCompletion(context.Background(), s.apiBase, s.apiKey, decision.Slug, s.systemPrompt, promptReq.Prompt, func(token string) error {
+	err := streamCompletion(context.Background(), s.apiBase, s.apiKey, decision.Slug, s.systemPrompt, augmentedPrompt, func(token string) error {
 		full.WriteString(token)
 		return enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Token: token})
 	})

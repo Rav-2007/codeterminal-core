@@ -4,8 +4,10 @@ This is the walking skeleton for CodeTerminal. It proves that one token can
 travel the full path: **CLI client → local daemon → model API → stream back**,
 over a Unix domain socket, with a versioned handshake on the wire.
 
-It is deliberately minimal. There is no RAG, no vector DB, no model routing,
-no guardrails, no billing, no auth beyond socket file permissions, and no
+It is deliberately minimal. Local workspace indexing and retrieval-augmented
+generation are now wired into the live prompt path (see "Workspace indexing"
+and "Live retrieval-augmented generation" below), but there is still no
+guardrails, no billing, no auth beyond socket file permissions, and no
 network listener anywhere. Those are out of scope until this path is proven
 and reviewed.
 
@@ -190,8 +192,9 @@ diverge from what actually gets read.
 
 `retrieve` embeds the query text and logs the top-k hits (file path, line
 range, similarity score) — see [`daemon/index_cmd.go`](daemon/index_cmd.go).
-It does not feed those chunks into a model prompt; wiring retrieved context
-into the LLM call is a later step.
+The live prompt path reuses this exact function (`retrieveTopK`) to feed
+retrieved chunks into the model automatically — see "Live
+retrieval-augmented generation" below.
 
 Embedding goes through the `Embedder` interface
 ([`daemon/embedder.go`](daemon/embedder.go)); nothing outside that file
@@ -232,6 +235,74 @@ chromem-go's default OpenAI embedder.
 chromem-go is pure Go with no dependencies of its own and requires no
 separate server or CGO; its license (Mozilla Public License 2.0) is recorded
 in [`THIRD_PARTY_LICENSES.txt`](THIRD_PARTY_LICENSES.txt).
+
+## Live retrieval-augmented generation
+
+Every prompt sent through the normal serve path (`handleConn` in
+[`daemon/server.go`](daemon/server.go)) is automatically augmented with
+relevant local code context before it reaches the model, reusing the exact
+same `retrieveTopK` the CLI `retrieve` command calls — there is no
+duplicated retrieval path. The daemon opens the embedder/index once at
+startup (not per-request) via `setupRetrieval`
+([`daemon/retrieval_setup.go`](daemon/retrieval_setup.go)), for the
+workspace given by `--workspace` (default `.`).
+
+**Request structure.** Retrieved chunks are never placed in the system
+role. The system prompt (`daemon/prompts/system.txt`) stays static and
+authoritative, loaded once at startup; only the `user` message changes,
+wrapped in explicit, labeled delimiters
+([`daemon/context.go`](daemon/context.go)):
+
+```
+<retrieved_context>
+[1] path/to/file.go:10-25
+... chunk content ...
+</retrieved_context>
+
+<user_request>
+... the user's raw prompt, unmodified ...
+</user_request>
+```
+
+A short paragraph appended to `system.txt` tells the model to treat
+everything inside `<retrieved_context>` strictly as reference data, never
+as instructions — retrieved code is untrusted (it's whatever text happens
+to live in the user's workspace) and must never be able to redirect the
+model's behavior.
+
+**Delimiter injection.** Since chunk content is untrusted, a file could
+contain a comment engineered to look like `</retrieved_context>`, trying to
+forge an early close followed by a fake `<user_request>` of its own.
+`neutralizeDelimiters` defuses this: it matches tag-like text tolerant of
+case, whitespace (including newlines), and underscore/space variants inside
+retrieved content, and replaces its angle brackets with visually similar
+lookalike characters (`‹`/`›`) so the exact tag substring can never survive
+into the rendered message — while leaving real code (`<-`, generics,
+comparisons) completely untouched, since a match requires spelling out one
+of the two exact tag names, however sloppily.
+
+**Budget and degradation.** Injected context is capped by a character
+budget (`retrieval.context_budget_chars` in `models.json`, default 8000 —
+roughly 2000-2600 tokens for code, a small, conservative slice of any
+modern context window; a character cap rather than a real token count, to
+avoid pulling a tokenizer into the otherwise CGO-free, dependency-light
+daemon module for what is only a soft safety cap). Chunks are ranked
+best-first by the vector store; if they don't all fit, only the
+lowest-ranked overflow is dropped — the top hit is never sacrificed to make
+room for a lower-ranked one. Retrieval never blocks or fails a request: no
+index yet, a stale/mismatched index, an embedder that failed to start, or a
+transient store error all degrade to answering from the bare prompt, with a
+clear one-line reason logged (`Server.gatherContext` in
+`daemon/context.go`).
+
+**Controls.** `--no-context` disables retrieval outright for the daemon's
+lifetime; `retrieval.disabled: true` in `models.json` does the same from
+config. Default is enabled either way — a `models.json` predating this
+feature decodes to `disabled: false` automatically, so nothing needs
+migrating. `--debug-context` additionally logs the full content of every
+retrieved chunk. Every request logs a one-line summary
+(`retrieval: chunks=N truncated=bool sources=[file:line-range, ...]`) or a
+skip reason, e.g. `retrieval skipped: no index found at ...`.
 
 ## Embedding helper process
 
@@ -401,12 +472,16 @@ parsed and logged only — no writing to disk, no diff UI, no syntax
 validation/gate, and no mid-stream parsing (parsing happens once the full
 response has streamed back).
 
-Workspace indexing and retrieval now use the real `BgeEmbedder`, but
-wiring retrieved chunks into the live LLM prompt is still a later step —
-`retrieve` only logs hits today. No auto-indexing on daemon start or
-per-request, no file-watching, and no incremental re-index (re-running
-`index` rebuilds chunk-by-chunk, keyed by a deterministic ID, rather than
-diffing what changed).
+Workspace indexing and retrieval use the real `BgeEmbedder`, and retrieved
+chunks are now wired into the live LLM prompt (see "Live
+retrieval-augmented generation" above) — but there is still no auto-indexing
+on daemon start or per-request (a missing index degrades gracefully rather
+than triggering a build), no file-watching, no incremental re-index
+(re-running `index` rebuilds chunk-by-chunk, keyed by a deterministic ID,
+rather than diffing what changed), no re-ranking, no query rewriting, and no
+multi-hop retrieval (a single retrieve feeds a single generate). Applying
+edits to disk, a diff/confirm UI, and a syntax gate remain entirely
+separate, later milestones — this step only augments generation.
 
 The embedder helper is spawned only by explicit commands
 (`index`/`retrieve`/`helper-smoketest`), never automatically on daemon

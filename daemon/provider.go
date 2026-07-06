@@ -46,6 +46,21 @@ type chatCompletionChunk struct {
 	} `json:"choices"`
 }
 
+// buildChatMessages assembles the message list sent to the model: an
+// optional leading "system" message, then exactly one "user" message. It is
+// extracted from streamCompletion so tests can assert directly on the
+// constructed request structure — in particular, that retrieved context
+// (folded into prompt by the caller, see buildAugmentedUserMessage) always
+// lands in the "user" message and never in "system".
+func buildChatMessages(systemPrompt, prompt string) []chatMessage {
+	var messages []chatMessage
+	if systemPrompt != "" {
+		messages = append(messages, chatMessage{Role: "system", Content: systemPrompt})
+	}
+	messages = append(messages, chatMessage{Role: "user", Content: prompt})
+	return messages
+}
+
 // streamCompletion calls an OpenAI-compatible POST {apiBase}/chat/completions
 // endpoint with stream=true and invokes onToken for each content fragment as
 // it arrives over the SSE response. It never buffers the full reply.
@@ -54,11 +69,7 @@ func streamCompletion(ctx context.Context, apiBase, apiKey, model, systemPrompt,
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 
-	var messages []chatMessage
-	if systemPrompt != "" {
-		messages = append(messages, chatMessage{Role: "system", Content: systemPrompt})
-	}
-	messages = append(messages, chatMessage{Role: "user", Content: prompt})
+	messages := buildChatMessages(systemPrompt, prompt)
 
 	reqBody, err := json.Marshal(chatCompletionRequest{
 		Model:    model,
