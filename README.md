@@ -611,13 +611,16 @@ exit) — that path is what scripts and tests still use.
 
 **Splash → chat.** On launch, a pink ASCII lotus + the "Mochiii" wordmark +
 a tagline fill the screen; any keypress dismisses it into the chat view,
-which keeps only a small `🪷 Mochiii` glyph in a one-line header (the full
-logo would waste vertical space during a conversation). The header also
-shows connection/streaming state (teal) — `idle`, a spinner + `sending…`,
-a spinner + `streaming…`, or `error: ...` in red — and a hint line under
-the input: `enter to send · ctrl+c to quit · no chat memory yet (each
-message is independent)`. That memory disclaimer is deliberate, not
-decoration — see below.
+which keeps only a small `✿ Mochiii` glyph in a one-line header (the full
+logo would waste vertical space during a conversation). `✿` is the default
+header glyph rather than the LOTUS emoji — emoji render inconsistently
+across terminals/fonts and often ignore foreground color; `lotusGlyphEmoji`
+in `clients/tui/logo.go` is kept as a one-line swap if you'd rather use it.
+The header also shows connection/streaming state (teal) — `idle`, a
+spinner + `sending…`, a spinner + `streaming…`, or `error: ...` in red —
+and a hint line under the input: `enter to send · ctrl+c to quit · no chat
+memory yet (each message is independent)`. That memory disclaimer is
+deliberate, not decoration — see below.
 
 **Palette** (`clients/tui/styles.go`): pink (`lipgloss.Color("205")`) for
 the logo, brand name, and the user's own prompts; teal (`"44"`, pink's

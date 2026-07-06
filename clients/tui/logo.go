@@ -19,9 +19,16 @@ const lotusLogo = `        .::::::.  .::::::.  .::::::.
 
 // lotusGlyph is the small single-glyph lotus shown inline in the chat
 // header (the full lotusLogo is splash-only — keeping it on screen during
-// chat would waste vertical space). Swap to "✿" if your terminal font
-// doesn't render the Unicode LOTUS emoji cleanly.
-const lotusGlyph = "🪷"
+// chat would waste vertical space). Defaults to the plain Unicode flower
+// "✿" rather than the LOTUS emoji (lotusGlyphEmoji below): emoji render
+// inconsistently across terminals/fonts and often force their own color
+// instead of taking the pink foreground, whereas "✿" is a stable
+// single-width glyph that always inherits brandStyle's color.
+const lotusGlyph = "✿"
+
+// lotusGlyphEmoji is the alternative emoji glyph. Swap lotusGlyph's value
+// to this if your terminal renders it cleanly and in the pink foreground.
+const lotusGlyphEmoji = "🪷"
 
 // brandName is Mochiii's display name, used on the splash and in the chat
 // header.
