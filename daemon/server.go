@@ -9,6 +9,7 @@ import (
 	"net"
 	"strings"
 
+	"codeterminal/editapply"
 	"codeterminal/protocol"
 )
 
@@ -154,7 +155,7 @@ func (s *Server) handleConn(conn net.Conn) {
 // blocks and logs a structured summary. Nothing is applied to disk here —
 // this is parse-and-log only.
 func (s *Server) logEditBlocks(response string) {
-	blocks, err := ParseEditBlocks(response)
+	blocks, err := editapply.ParseEditBlocks(response)
 	if err != nil {
 		s.logger.Printf("edit block parse error: %v", err)
 		return

@@ -1,4 +1,4 @@
-package main
+package editapply
 
 import (
 	"fmt"
@@ -9,28 +9,29 @@ import (
 	"strings"
 )
 
-// preparedEdit is one EditBlock after it has passed path-safety, exact-match,
+// PreparedEdit is one EditBlock after it has passed path-safety, exact-match,
 // and (where applicable) syntax verification — everything needed to show a
 // diff, ask for confirmation, and write it, with no further checks required.
-type preparedEdit struct {
-	block      EditBlock
-	targetPath string // absolute, confinement-checked, resolved through symlinks
-	original   string // full pre-edit file content
-	newContent string // full post-edit file content
-	startLine  int    // 1-indexed line where SEARCH begins in original
-	endLine    int    // 1-indexed line where SEARCH ends in original
-	fileMode   os.FileMode
-	syntaxNote string // human-readable note on what syntax check ran (or didn't)
+type PreparedEdit struct {
+	Block      EditBlock
+	TargetPath string // absolute, confinement-checked, resolved through symlinks
+	Original   string // full pre-edit file content
+	NewContent string // full post-edit file content
+	StartLine  int    // 1-indexed line where SEARCH begins in original
+	EndLine    int    // 1-indexed line where SEARCH ends in original
+	FileMode   os.FileMode
+	SyntaxNote string // human-readable note on what syntax check ran (or didn't)
 }
 
-// prepareEdit runs the safety tripod's path-safety and exact-match legs,
+// PrepareEdit runs the safety tripod's path-safety and exact-match legs,
 // plus the best-effort syntax gate, for one block. It performs no I/O beyond
 // reading the target file — no prompting, no backup, no write. A non-nil
 // error is always a refusal reason meant to be shown to the user verbatim,
 // matching the parser's existing descriptive-error convention (never a bare
-// system fault).
-func prepareEdit(realWorkspaceRoot string, block EditBlock) (*preparedEdit, error) {
-	targetPath, err := resolveSafeTargetPath(realWorkspaceRoot, block.FilePath)
+// system fault). This is the single core both the CLI (daemon/apply_cmd.go)
+// and the Mochiii TUI (clients/tui) call — neither keeps its own copy.
+func PrepareEdit(realWorkspaceRoot string, block EditBlock) (*PreparedEdit, error) {
+	targetPath, err := ResolveSafeTargetPath(realWorkspaceRoot, block.FilePath)
 	if err != nil {
 		return nil, err
 	}
@@ -67,15 +68,15 @@ func prepareEdit(realWorkspaceRoot string, block EditBlock) (*preparedEdit, erro
 		return nil, fmt.Errorf("stat %s: %w", block.FilePath, err)
 	}
 
-	return &preparedEdit{
-		block:      block,
-		targetPath: targetPath,
-		original:   original,
-		newContent: newContent,
-		startLine:  startLine,
-		endLine:    endLine,
-		fileMode:   info.Mode(),
-		syntaxNote: syntaxNote,
+	return &PreparedEdit{
+		Block:      block,
+		TargetPath: targetPath,
+		Original:   original,
+		NewContent: newContent,
+		StartLine:  startLine,
+		EndLine:    endLine,
+		FileMode:   info.Mode(),
+		SyntaxNote: syntaxNote,
 	}, nil
 }
 
@@ -86,15 +87,15 @@ func describeExt(relPath string) string {
 	return "files with no extension"
 }
 
-// resolveSafeTargetPath resolves relPath against realWorkspaceRoot (already
+// ResolveSafeTargetPath resolves relPath against realWorkspaceRoot (already
 // itself resolved through symlinks) and refuses anything not confined to the
-// workspace, mirroring ScanWorkspace's confinement approach in chunker.go:
+// workspace, mirroring the indexer's ScanWorkspace confinement approach:
 // absolute paths and ".." components are rejected outright, and the fully
 // resolved (symlinks-followed) path must still land inside
 // realWorkspaceRoot. Files the indexer would secret-skip are refused too —
 // an edit block is untrusted model output and must never rewrite
 // credentials.
-func resolveSafeTargetPath(realWorkspaceRoot, relPath string) (string, error) {
+func ResolveSafeTargetPath(realWorkspaceRoot, relPath string) (string, error) {
 	if filepath.IsAbs(relPath) {
 		return "", fmt.Errorf("path %q is absolute; edits must target workspace-relative paths", relPath)
 	}
@@ -115,7 +116,7 @@ func resolveSafeTargetPath(realWorkspaceRoot, relPath string) (string, error) {
 		return "", fmt.Errorf("path %q resolves outside the workspace root", relPath)
 	}
 
-	if matchesSecretName(filepath.Base(realFull)) {
+	if MatchesSecretName(filepath.Base(realFull)) {
 		return "", fmt.Errorf("path %q matches the indexer's secret-file rules; refusing to edit it", relPath)
 	}
 

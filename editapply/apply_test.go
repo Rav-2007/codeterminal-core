@@ -1,4 +1,4 @@
-package main
+package editapply
 
 import (
 	"os"
@@ -34,16 +34,16 @@ func TestPrepareEdit_UniqueSearchApplies(t *testing.T) {
 	writeTempFile(t, root, "foo.go", "package main\n\nfunc old() {}\n")
 
 	block := EditBlock{FilePath: "foo.go", Search: "func old() {}", Replace: "func new_() {}"}
-	prepared, err := prepareEdit(root, block)
+	prepared, err := PrepareEdit(root, block)
 	if err != nil {
-		t.Fatalf("prepareEdit: %v", err)
+		t.Fatalf("PrepareEdit: %v", err)
 	}
 	want := "package main\n\nfunc new_() {}\n"
-	if prepared.newContent != want {
-		t.Errorf("newContent = %q, want %q", prepared.newContent, want)
+	if prepared.NewContent != want {
+		t.Errorf("NewContent = %q, want %q", prepared.NewContent, want)
 	}
-	if prepared.startLine != 3 || prepared.endLine != 3 {
-		t.Errorf("lines = %d-%d, want 3-3", prepared.startLine, prepared.endLine)
+	if prepared.StartLine != 3 || prepared.EndLine != 3 {
+		t.Errorf("lines = %d-%d, want 3-3", prepared.StartLine, prepared.EndLine)
 	}
 }
 
@@ -52,7 +52,7 @@ func TestPrepareEdit_MissingSearchRefused(t *testing.T) {
 	writeTempFile(t, root, "foo.go", "package main\n")
 
 	block := EditBlock{FilePath: "foo.go", Search: "func nonexistent() {}", Replace: "x"}
-	_, err := prepareEdit(root, block)
+	_, err := PrepareEdit(root, block)
 	if err == nil {
 		t.Fatal("expected an error for absent search text, got nil")
 	}
@@ -66,7 +66,7 @@ func TestPrepareEdit_AmbiguousSearchRefused(t *testing.T) {
 	writeTempFile(t, root, "foo.go", "x := 1\nx := 1\n")
 
 	block := EditBlock{FilePath: "foo.go", Search: "x := 1", Replace: "x := 2"}
-	_, err := prepareEdit(root, block)
+	_, err := PrepareEdit(root, block)
 	if err == nil {
 		t.Fatal("expected an error for ambiguous (2x) search text, got nil")
 	}
@@ -80,7 +80,7 @@ func TestPrepareEdit_InvalidGoSyntaxRefused(t *testing.T) {
 	writeTempFile(t, root, "foo.go", "package main\n\nfunc old() {}\n")
 
 	block := EditBlock{FilePath: "foo.go", Search: "func old() {}", Replace: "func broken( {"}
-	_, err := prepareEdit(root, block)
+	_, err := PrepareEdit(root, block)
 	if err == nil {
 		t.Fatal("expected an error for an edit that produces unparseable Go, got nil")
 	}
@@ -94,12 +94,12 @@ func TestPrepareEdit_ValidGoSyntaxApplies(t *testing.T) {
 	writeTempFile(t, root, "foo.go", "package main\n\nfunc old() {}\n")
 
 	block := EditBlock{FilePath: "foo.go", Search: "func old() {}", Replace: "func fixed() {\n\treturn\n}"}
-	prepared, err := prepareEdit(root, block)
+	prepared, err := PrepareEdit(root, block)
 	if err != nil {
-		t.Fatalf("prepareEdit: %v", err)
+		t.Fatalf("PrepareEdit: %v", err)
 	}
-	if prepared.syntaxNote != "go/parser OK" {
-		t.Errorf("syntaxNote = %q, want %q", prepared.syntaxNote, "go/parser OK")
+	if prepared.SyntaxNote != "go/parser OK" {
+		t.Errorf("SyntaxNote = %q, want %q", prepared.SyntaxNote, "go/parser OK")
 	}
 }
 
@@ -108,25 +108,25 @@ func TestPrepareEdit_NonGoFileSkipsSyntaxGateWithNote(t *testing.T) {
 	writeTempFile(t, root, "notes.txt", "hello world\n")
 
 	block := EditBlock{FilePath: "notes.txt", Search: "hello world", Replace: "goodbye world"}
-	prepared, err := prepareEdit(root, block)
+	prepared, err := PrepareEdit(root, block)
 	if err != nil {
-		t.Fatalf("prepareEdit: %v", err)
+		t.Fatalf("PrepareEdit: %v", err)
 	}
-	if !strings.Contains(prepared.syntaxNote, "no syntax check applied") {
-		t.Errorf("syntaxNote = %q, want it to note no check was applied", prepared.syntaxNote)
+	if !strings.Contains(prepared.SyntaxNote, "no syntax check applied") {
+		t.Errorf("SyntaxNote = %q, want it to note no check was applied", prepared.SyntaxNote)
 	}
 }
 
 func TestResolveSafeTargetPath_AbsolutePathRefused(t *testing.T) {
 	root := realTempDir(t)
-	if _, err := resolveSafeTargetPath(root, "/etc/passwd"); err == nil {
+	if _, err := ResolveSafeTargetPath(root, "/etc/passwd"); err == nil {
 		t.Fatal("expected an error for an absolute path, got nil")
 	}
 }
 
 func TestResolveSafeTargetPath_DotDotEscapeRefused(t *testing.T) {
 	root := realTempDir(t)
-	if _, err := resolveSafeTargetPath(root, "../outside.txt"); err == nil {
+	if _, err := ResolveSafeTargetPath(root, "../outside.txt"); err == nil {
 		t.Fatal("expected an error for a \"..\" escape, got nil")
 	}
 }
@@ -140,7 +140,7 @@ func TestResolveSafeTargetPath_SymlinkEscapeRefused(t *testing.T) {
 		t.Fatalf("Symlink: %v", err)
 	}
 
-	if _, err := resolveSafeTargetPath(root, "link.txt"); err == nil {
+	if _, err := ResolveSafeTargetPath(root, "link.txt"); err == nil {
 		t.Fatal("expected an error for a symlink escaping the workspace root, got nil")
 	}
 }
@@ -149,7 +149,7 @@ func TestResolveSafeTargetPath_SecretFileRefused(t *testing.T) {
 	root := realTempDir(t)
 	writeTempFile(t, root, ".env", "SECRET=1\n")
 
-	if _, err := resolveSafeTargetPath(root, ".env"); err == nil {
+	if _, err := ResolveSafeTargetPath(root, ".env"); err == nil {
 		t.Fatal("expected an error for a secret-named file (.env), got nil")
 	}
 }
@@ -158,9 +158,9 @@ func TestResolveSafeTargetPath_OrdinaryFileAllowed(t *testing.T) {
 	root := realTempDir(t)
 	writeTempFile(t, root, "src/foo.go", "package main\n")
 
-	got, err := resolveSafeTargetPath(root, "src/foo.go")
+	got, err := ResolveSafeTargetPath(root, "src/foo.go")
 	if err != nil {
-		t.Fatalf("resolveSafeTargetPath: %v", err)
+		t.Fatalf("ResolveSafeTargetPath: %v", err)
 	}
 	want := filepath.Join(root, "src/foo.go")
 	if got != want {

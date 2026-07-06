@@ -7,6 +7,7 @@ toolchain go1.23.4
 require codeterminal/protocol v0.0.0
 
 require (
+	codeterminal/editapply v0.0.0
 	codeterminal/helper v0.0.0
 	github.com/philippgille/chromem-go v0.7.0
 	modernc.org/sqlite v1.39.0
@@ -28,3 +29,5 @@ require (
 replace codeterminal/protocol => ../protocol
 
 replace codeterminal/helper => ../helper
+
+replace codeterminal/editapply => ../editapply

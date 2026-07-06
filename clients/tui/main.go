@@ -17,6 +17,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/mattn/go-isatty"
 
+	"codeterminal/editapply"
 	"codeterminal/protocol"
 )
 
@@ -82,12 +83,16 @@ func runOneShot(prompt string) {
 // runChat launches Mochiii's interactive chat UI. Before ever drawing the
 // alt-screen, it preflights the daemon connection so a down daemon produces
 // one clean stderr message and a non-zero exit, not a TUI the user has to
-// type into first just to discover it can't reach anything.
+// type into first just to discover it can't reach anything. It also
+// resolves the real (symlink-resolved) workspace root up front, the same
+// way the CLI's `edits apply` does (editapply.ResolveRealWorkspaceRoot) —
+// applying an edit approved during review confines to this root, so a bad
+// --workspace value fails fast here rather than mid-review.
 //
-// workspace is resolved to an absolute path (best-effort) before being sent
-// with every prompt, so the daemon's own absolute grounding workspace (see
-// daemon/main.go) can be compared against it meaningfully — see
-// protocol.GroundingInfo.WorkspaceMismatch.
+// workspace is separately resolved to a plain absolute path (no symlink
+// resolution) for display/grounding purposes, so the daemon's own absolute
+// grounding workspace (see daemon/main.go) can be compared against it
+// meaningfully — see protocol.GroundingInfo.WorkspaceMismatch.
 func runChat(workspace string) {
 	preflight, err := connectToDaemon("codeterminal-tui")
 	if err != nil {
@@ -101,7 +106,13 @@ func runChat(workspace string) {
 		absWorkspace = workspace // best-effort label; still sent as-is
 	}
 
-	p := tea.NewProgram(newChatModel("codeterminal-tui", absWorkspace), tea.WithAltScreen(), tea.WithMouseCellMotion())
+	workspaceRoot, err := editapply.ResolveRealWorkspaceRoot(workspace)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+
+	p := tea.NewProgram(newChatModel("codeterminal-tui", absWorkspace, workspaceRoot), tea.WithAltScreen(), tea.WithMouseCellMotion())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)

@@ -27,6 +27,7 @@ and reviewed.
 
 ```
 protocol/        shared Go package: wire message types + version handshake
+editapply/       shared Go module: the SEARCH/REPLACE apply-edits engine (parse, path-safety, exact-match, syntax gate, backup) — used by both the daemon CLI and Mochiii, see "Applying edits to disk"
 daemon/          Go module: long-running background process (the "server")
 helper/          Go module: embedder helper subprocess (CGO confined here — see "Embedding helper process")
 clients/tui/     Go module: Mochiii, the interactive chat TUI (plus the original one-shot CLI path, kept for scripts)
@@ -35,8 +36,8 @@ mcp-servers/     stub — implemented in a later phase
 testdata/        committed retrieval-quality eval set (sample code + queries) — see "Retrieval-quality eval set"
 ```
 
-`go.work` at the repo root ties the `protocol`, `daemon`, `helper`, and
-`clients/tui` modules together for local development.
+`go.work` at the repo root ties the `protocol`, `editapply`, `daemon`,
+`helper`, and `clients/tui` modules together for local development.
 
 ## Transport
 
@@ -135,29 +136,42 @@ path: relative/path/to/file.go
 ```
 
 After a response finishes streaming, the daemon parses it with
-[`daemon/editblock.go`](daemon/editblock.go) and logs a summary — e.g.
-`parsed 1 edit block(s)` plus each block's target path and line counts. A
-response with no edit blocks (a plain answer) parses to an empty list, not
-an error. Parsing itself never writes to disk; the live chat path still
-only parses-and-logs. Actually writing parsed edit blocks to disk is a
-separate, deliberate command — see "Applying edits to disk" below.
+[`editapply.ParseEditBlocks`](editapply/editblock.go) and logs a summary —
+e.g. `parsed 1 edit block(s)` plus each block's target path and line
+counts. A response with no edit blocks (a plain answer) parses to an empty
+list, not an error. Parsing itself never writes to disk on the daemon's own
+side; the daemon's live chat path only parses-and-logs. Actually writing
+parsed edit blocks to disk happens client-side, through the deliberate
+`edits apply`/`edits undo` commands or Mochiii's in-chat review — see
+"Applying edits to disk" and "Mochiii (interactive chat TUI)" below.
 
 ## Applying edits to disk
 
+The apply-edits engine — parsing, path-safety, exact-match verification, the
+syntax gate, and backup — lives in its own shared Go module,
+[`editapply/`](editapply/), so it has exactly one implementation shared by
+both the daemon's `edits` CLI command and Mochiii's in-chat edit review (see
+"Mochiii (interactive chat TUI)" below). Neither surface keeps its own copy
+or a weaker check; both call `editapply.PrepareEdit`,
+`editapply.ResolveSafeTargetPath`, and the same backup helpers.
+
 `codeterminal-daemon edits apply [--workspace path] [<response-file>|-]`
 takes a completed model response (from a file, or stdin if omitted/`-`),
-parses it with the same unmodified `ParseEditBlocks`, and runs every block
-through a safety tripod before anything touches disk — see
-[`daemon/apply.go`](daemon/apply.go) and
-[`daemon/apply_cmd.go`](daemon/apply_cmd.go). This is a deliberate, explicit
-command; the live chat path never auto-applies edits.
+parses it with `editapply.ParseEditBlocks`, and runs every block through a
+safety tripod before anything touches disk — see
+[`editapply/apply.go`](editapply/apply.go) and
+[`daemon/apply_cmd.go`](daemon/apply_cmd.go) (the CLI's confirm loop). This
+is a deliberate, explicit command; the live chat path never auto-applies
+edits on its own — Mochiii's edit review (below) still requires an explicit
+per-edit `y`.
 
 For each block, in order:
 
 1. **Path safety** — the target must resolve (through any symlinks) to
    inside the workspace root; absolute paths, `..` escapes, and files the
    indexer would secret-skip (`.env`, `*.pem`, etc. — the same
-   `matchesSecretName` check `chunker.go` uses for indexing) are refused.
+   `editapply.MatchesSecretName` check `daemon/chunker.go` calls for
+   indexing, a single shared secret-file policy) are refused.
 2. **Exact-match verification** — the block's `SEARCH` text must appear in
    the target file exactly once (literal substring match). Not found, or
    found more than once (ambiguous), and the edit is refused rather than
@@ -604,9 +618,10 @@ export CODETERMINAL_API_KEY="sk-..."
 # 4. In another terminal, launch Mochiii — the interactive chat TUI
 ./clients/tui/codeterminal-tui
 
-# ...or point it at a specific repo for grounding (default: current dir) —
-# this only affects what Mochiii tells the daemon to cross-check against;
-# the daemon's own --workspace at startup is what actually decides grounding
+# ...or point it at a specific repo (default: current dir) — this is what
+# Mochiii tells the daemon to cross-check grounding against, AND what any
+# applied edit is confined to (the daemon's own --workspace at startup is
+# what actually decides grounding)
 ./clients/tui/codeterminal-tui --workspace ~/some/indexed/repo
 
 # ...or keep using the original one-shot path (unchanged, for scripts/tests):
@@ -688,6 +703,31 @@ differs from what Mochiii expected, `⚠ grounded against <path>, not
 before any tokens), not just after the answer finishes, and is cleared at
 the start of each new turn rather than carried over from the last one.
 
+**Applying edits from chat.** When a completed answer contains SEARCH/REPLACE
+edit blocks, Mochiii no longer dumps the raw markup into the transcript.
+Instead it parses the finished answer with the same
+`editapply.ParseEditBlocks` the daemon already used to log them, and enters
+a modal edit-review state: one block at a time, shown as a diff (removed
+`SEARCH` lines styled in red, added `REPLACE` lines in teal, plus the
+syntax-check note) with `y apply · n skip · q cancel remaining` underneath.
+This reuses the exact same `editapply.PrepareEdit` core the CLI's `edits
+apply` calls — see "Applying edits to disk" above — so every safety gate
+(exact-match/ambiguous-refuse, workspace confinement, secret-file refusal,
+the `.go` syntax gate) fires identically; a block that fails to prepare is
+refused with its reason shown, automatically, with no confirm prompt (the
+CLI never prompts for a refused block either). Only a literal `y` applies —
+same strict default-skip as the CLI's `[y/N]`. Preparing a block is a
+bounded local file-read-plus-parse, not a network call, so it runs directly
+inside Bubble Tea's `Update` without violating the never-block-`Update`
+rule the streaming design follows. An applied edit is backed up through the
+same `editapply` backup helpers, into the same
+`.codeterminal/backups/<session>/{before,after}/` layout the CLI writes —
+restorable with the CLI's `edits undo` regardless of which surface applied
+it. A review ends with a summary line: `N applied, M skipped, K refused`.
+Mochiii resolves its `--workspace` to a real (symlink-resolved) root up
+front — the same way `edits apply`/`edits undo` do — so a bad workspace
+value fails fast at startup rather than mid-review.
+
 **No conversational memory yet.** Each turn sends only its own prompt — the
 wire protocol is one prompt per connection with no history field (see
 "Transport" above), and this step doesn't change that. Mochiii doesn't
@@ -705,21 +745,22 @@ No guardrails, no billing, no VS Code extension code, no MCP servers, no
 TCP, no auth tokens (Unix socket permissions are the security boundary for
 now). `models.json` defines `ghost_text` and `reasoning` tiers, but they
 are inert (`active: false`) — there is no tier-selection or routing logic;
-every request uses the `default_tier` only. Edit blocks are parsed and
-logged only on the live chat path — no mid-stream parsing (parsing happens
-once the full response has streamed back). Writing them to disk is now
-possible, but only via the deliberate `edits apply`/`edits undo` commands
-(see "Applying edits to disk" above): no auto-apply from the live chat
-path, no fuzzy/approximate `SEARCH` matching, no multi-occurrence
-disambiguation (ambiguous is always a refusal), and no TUI/VS Code UI for
-reviewing diffs.
+every request uses the `default_tier` only. Edit blocks are parsed only
+once a full response has streamed back — no mid-stream parsing. Writing
+them to disk is possible via the CLI's `edits apply`/`edits undo` commands
+and via Mochiii's in-chat edit review (see "Applying edits to disk" and
+"Mochiii (interactive chat TUI)" above), both calling the same shared
+`editapply` engine: no auto-apply anywhere (every edit needs an explicit
+`y`), no fuzzy/approximate `SEARCH` matching, no multi-occurrence
+disambiguation (ambiguous is always a refusal), and no VS Code UI for
+reviewing diffs (`clients/vscode` is still a stub).
 
 Mochiii (see "Mochiii (interactive chat TUI)" above) is a chat-only thin
-slice: no retrieval-grounding controls in the UI (the daemon may still
-retrieve under the hood — this step adds no UI for it), no apply-edits/
-diff/`[y/N]` UI, no slash-commands, no conversation memory (each turn is
-independent — the UI says so), no cross-session history, and no config or
-theme screens.
+slice: no retrieval-grounding controls in the UI beyond the grounding label
+itself (the daemon decides grounding; this step only surfaces it and now
+also lets edits be applied), no slash-commands, no conversation memory
+(each turn is independent — the UI says so), no cross-session history, and
+no config or theme screens.
 
 There is now a skills database (see "Skills database" above), but it is
 storage plumbing only: no auto-capture of skills from conversations or

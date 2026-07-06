@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"codeterminal/editapply"
 )
 
 // Chunking parameters. Kept as simple line-based windows — no language-aware
@@ -56,23 +58,6 @@ var ignoredDirNames = map[string]bool{
 	".aws":          true,
 	".ssh":          true,
 }
-
-// secretFileGlobs match basenames (via filepath.Match) that must never be
-// read into the index.
-var secretFileGlobs = []string{
-	".env",
-	".env.*",
-	"*.pem",
-	"*.key",
-	"id_rsa*",
-	"*.p12",
-}
-
-// secretSubstrings is a defense-in-depth net beyond the glob list: any
-// basename containing one of these (case-insensitive) is skipped too.
-// Over-skipping is a safe failure mode for a security boundary; under-
-// skipping isn't.
-var secretSubstrings = []string{"secret", "credential"}
 
 // ScanResult is the outcome of walking a workspace: every chunk produced
 // (without vectors yet) plus counters for what was scanned and skipped.
@@ -180,7 +165,7 @@ func ScanWorkspace(root string) (*ScanResult, error) {
 func shouldSkipFile(path, relPath string, ignore *gitignoreRules) (SkipReason, bool, error) {
 	base := filepath.Base(relPath)
 
-	if matchesSecretName(base) {
+	if editapply.MatchesSecretName(base) {
 		return SkipSecret, true, nil
 	}
 	if isNoiseFile(relPath) {
@@ -226,21 +211,6 @@ func readEligibleFile(path, relPath string, ignore *gitignoreRules) ([]byte, Ski
 		return nil, "", false, err
 	}
 	return content, "", false, nil
-}
-
-func matchesSecretName(base string) bool {
-	lower := strings.ToLower(base)
-	for _, sub := range secretSubstrings {
-		if strings.Contains(lower, sub) {
-			return true
-		}
-	}
-	for _, glob := range secretFileGlobs {
-		if ok, _ := filepath.Match(glob, base); ok {
-			return true
-		}
-	}
-	return false
 }
 
 func sniffBinary(path string) (bool, error) {

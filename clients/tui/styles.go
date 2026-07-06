@@ -22,4 +22,9 @@ var (
 	accentStyle    = lipgloss.NewStyle().Foreground(colorTeal)
 	errorStyle     = lipgloss.NewStyle().Foreground(colorRed)
 	helpStyle      = lipgloss.NewStyle().Foreground(colorGray).Faint(true)
+
+	// diffRemovedStyle/diffAddedStyle render an edit-review diff's SEARCH
+	// (removed) and REPLACE (added) lines respectively.
+	diffRemovedStyle = lipgloss.NewStyle().Foreground(colorRed)
+	diffAddedStyle   = lipgloss.NewStyle().Foreground(colorTeal)
 )

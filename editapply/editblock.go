@@ -1,4 +1,4 @@
-package main
+package editapply
 
 import (
 	"fmt"

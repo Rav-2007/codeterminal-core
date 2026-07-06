@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"codeterminal/editapply"
 )
 
 func readFileString(t *testing.T, path string) string {
@@ -17,10 +19,32 @@ func readFileString(t *testing.T, path string) string {
 	return string(data)
 }
 
+func writeTempFile(t *testing.T, dir, rel, content string) string {
+	t.Helper()
+	full := filepath.Join(dir, rel)
+	if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(full, []byte(content), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	return full
+}
+
+func realTempDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	real, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
+	}
+	return real
+}
+
 func TestApplyEditBlocks_ConfirmYesApplies(t *testing.T) {
 	root := realTempDir(t)
 	writeTempFile(t, root, "foo.go", "package main\n\nfunc old() {}\n")
-	blocks := []EditBlock{{FilePath: "foo.go", Search: "func old() {}", Replace: "func new_() {}"}}
+	blocks := []editapply.EditBlock{{FilePath: "foo.go", Search: "func old() {}", Replace: "func new_() {}"}}
 
 	var out bytes.Buffer
 	if err := applyEditBlocks(root, blocks, strings.NewReader("y\n"), &out, discardLogger()); err != nil {
@@ -42,7 +66,7 @@ func TestApplyEditBlocks_ConfirmDeclineDoesNotApply(t *testing.T) {
 			root := realTempDir(t)
 			original := "package main\n\nfunc old() {}\n"
 			writeTempFile(t, root, "foo.go", original)
-			blocks := []EditBlock{{FilePath: "foo.go", Search: "func old() {}", Replace: "func new_() {}"}}
+			blocks := []editapply.EditBlock{{FilePath: "foo.go", Search: "func old() {}", Replace: "func new_() {}"}}
 
 			var out bytes.Buffer
 			if err := applyEditBlocks(root, blocks, strings.NewReader(answer), &out, discardLogger()); err != nil {
@@ -65,7 +89,7 @@ func TestApplyEditBlocks_RefusedEditsNeverWrite(t *testing.T) {
 	writeTempFile(t, root, "foo.go", "package main\n")
 	writeTempFile(t, root, ".env", "SECRET=1\n")
 
-	blocks := []EditBlock{
+	blocks := []editapply.EditBlock{
 		{FilePath: "foo.go", Search: "func nonexistent() {}", Replace: "x"}, // not found
 		{FilePath: "../outside.txt", Search: "a", Replace: "b"},             // path escape
 		{FilePath: ".env", Search: "SECRET=1", Replace: "SECRET=2"},         // secret file
@@ -96,7 +120,7 @@ func TestApplyEditBlocks_MultiEditMixedOutcomes(t *testing.T) {
 	writeTempFile(t, root, "a.go", "package main\n\nfunc a() {}\n")
 	writeTempFile(t, root, "b.go", "package main\n\nfunc b() {}\n")
 
-	blocks := []EditBlock{
+	blocks := []editapply.EditBlock{
 		{FilePath: "a.go", Search: "func a() {}", Replace: "func a2() {}"}, // will accept
 		{FilePath: "b.go", Search: "func b() {}", Replace: "func b2() {}"}, // will decline
 		{FilePath: "a.go", Search: "func missing() {}", Replace: "x"},      // will refuse
@@ -122,7 +146,7 @@ func TestApplyEditBlocks_BackupRecoverable(t *testing.T) {
 	root := realTempDir(t)
 	original := "package main\n\nfunc old() {}\n"
 	writeTempFile(t, root, "foo.go", original)
-	blocks := []EditBlock{{FilePath: "foo.go", Search: "func old() {}", Replace: "func new_() {}"}}
+	blocks := []editapply.EditBlock{{FilePath: "foo.go", Search: "func old() {}", Replace: "func new_() {}"}}
 
 	var out bytes.Buffer
 	if err := applyEditBlocks(root, blocks, strings.NewReader("y\n"), &out, discardLogger()); err != nil {
@@ -148,7 +172,7 @@ func TestEditsUndo_UnchangedFileRestoresCleanly(t *testing.T) {
 	root := realTempDir(t)
 	original := "package main\n\nfunc old() {}\n"
 	writeTempFile(t, root, "foo.go", original)
-	blocks := []EditBlock{{FilePath: "foo.go", Search: "func old() {}", Replace: "func new_() {}"}}
+	blocks := []editapply.EditBlock{{FilePath: "foo.go", Search: "func old() {}", Replace: "func new_() {}"}}
 
 	var applyOut bytes.Buffer
 	if err := applyEditBlocks(root, blocks, strings.NewReader("y\n"), &applyOut, discardLogger()); err != nil {
@@ -180,7 +204,7 @@ func TestEditsUndo_ModifiedFileIsGuardedNotClobbered(t *testing.T) {
 	writeTempFile(t, root, "changed.go", "package main\n\nfunc old() {}\n")
 	writeTempFile(t, root, "untouched.go", "package main\n\nfunc keep() {}\n")
 
-	blocks := []EditBlock{
+	blocks := []editapply.EditBlock{
 		{FilePath: "changed.go", Search: "func old() {}", Replace: "func new_() {}"},
 		{FilePath: "untouched.go", Search: "func keep() {}", Replace: "func kept() {}"},
 	}

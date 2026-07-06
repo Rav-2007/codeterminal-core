@@ -5,6 +5,7 @@ go 1.23.0
 toolchain go1.23.4
 
 require (
+	codeterminal/editapply v0.0.0
 	codeterminal/protocol v0.0.0
 	github.com/charmbracelet/bubbles v0.21.0
 	github.com/charmbracelet/bubbletea v1.3.4
@@ -34,3 +35,5 @@ require (
 )
 
 replace codeterminal/protocol => ../../protocol
+
+replace codeterminal/editapply => ../../editapply
