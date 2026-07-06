@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -9,6 +10,8 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"codeterminal/protocol"
 )
 
 // chatState is where the chat model is in one request/response cycle.
@@ -56,13 +59,20 @@ type chatModel struct {
 	streamCh     chan tea.Msg       // the active stream's channel; nil when idle
 	streamCancel context.CancelFunc // cancels the in-flight request; nil when idle
 
+	// lastGrounding is the most recent GroundingInfo reported by the
+	// daemon, shown in the header. Cleared at the start of each new turn
+	// (set startTurn) so a stale result from a previous turn is never
+	// shown as if it described the in-flight one.
+	lastGrounding *protocol.GroundingInfo
+
 	clientName string
+	workspace  string // sent to the daemon so it can flag a workspace mismatch
 	width      int
 	height     int
 	ready      bool // true once the first WindowSizeMsg has sized the viewport
 }
 
-func newChatModel(clientName string) chatModel {
+func newChatModel(clientName, workspace string) chatModel {
 	ti := textinput.New()
 	ti.Placeholder = "ask something…"
 	ti.Prompt = "> "
@@ -83,6 +93,7 @@ func newChatModel(clientName string) chatModel {
 		spinner:    sp,
 		viewport:   vp,
 		clientName: clientName,
+		workspace:  workspace,
 	}
 }
 
@@ -136,6 +147,13 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.viewport, cmd = m.viewport.Update(msg)
 		return m, cmd
 
+	case groundingMsg:
+		if m.streamCh == nil {
+			return m, nil // a stray message from an already-abandoned stream
+		}
+		m.lastGrounding = msg.info
+		return m, waitForNext(m.streamCh)
+
 	case tokenMsg:
 		return m.handleToken(msg)
 
@@ -181,6 +199,7 @@ func (m chatModel) startTurn() (tea.Model, tea.Cmd) {
 	m.input.Blur()
 	m.state = stateSending
 	m.statusErr = ""
+	m.lastGrounding = nil
 	m.refreshViewport()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -188,7 +207,7 @@ func (m chatModel) startTurn() (tea.Model, tea.Cmd) {
 	ch := make(chan tea.Msg)
 	m.streamCh = ch
 
-	return m, tea.Batch(m.spinner.Tick, startStream(ctx, m.clientName, prompt, ch))
+	return m, tea.Batch(m.spinner.Tick, startStream(ctx, m.clientName, m.workspace, prompt, ch))
 }
 
 // handleToken appends msg to the in-progress assistant turn (starting one
@@ -249,7 +268,27 @@ func (m chatModel) View() string {
 
 func (m chatModel) renderHeader() string {
 	brand := brandStyle.Render(lotusGlyph + " " + brandName)
-	return brand + "  " + m.stateLabel()
+	parts := []string{brand, m.stateLabel()}
+	if grounding := m.groundingLabel(); grounding != "" {
+		parts = append(parts, grounding)
+	}
+	return strings.Join(parts, "  ")
+}
+
+// groundingLabel renders the most recently reported GroundingInfo, or ""
+// before the first one has arrived (nothing is shown rather than guessing).
+func (m chatModel) groundingLabel() string {
+	g := m.lastGrounding
+	if g == nil {
+		return ""
+	}
+	if g.WorkspaceMismatch {
+		return errorStyle.Render(fmt.Sprintf("⚠ grounded against %s, not %s", g.Workspace, m.workspace))
+	}
+	if g.Grounded {
+		return accentStyle.Render(fmt.Sprintf("grounded ✓ %d chunk(s)", g.Chunks))
+	}
+	return helpStyle.Render(fmt.Sprintf("ungrounded (%s)", g.Reason))
 }
 
 func (m chatModel) stateLabel() string {

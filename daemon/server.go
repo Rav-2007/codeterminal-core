@@ -34,6 +34,12 @@ type Server struct {
 	contextBudgetChars int
 	debugContext       bool // --debug-context: log full retrieved chunk content
 	rerankDisabled     bool // --no-rerank / retrieval.rerank_disabled: raw similarity order, no class weighting
+
+	// workspace is this daemon's own resolved (absolute) grounding
+	// workspace — set once at startup regardless of whether retrieval is
+	// actually enabled, purely so it can be reported back to clients via
+	// GroundingInfo (see buildGroundingInfo in context.go).
+	workspace string
 }
 
 // route decides which tier handles the next request. Today's request path
@@ -109,6 +115,19 @@ func (s *Server) handleConn(conn net.Conn) {
 
 	outcome := s.gatherContext(context.Background(), promptReq.Prompt)
 	s.logRetrieval(outcome)
+
+	grounding := buildGroundingInfo(outcome, s.workspace, promptReq.Workspace)
+	if grounding.WorkspaceMismatch {
+		s.logger.Printf("workspace mismatch: client expected %s, this daemon is grounding against %s", promptReq.Workspace, s.workspace)
+	}
+	// Sent before any tokens, as its own message, so a client can show
+	// grounding status as soon as the turn starts rather than waiting for
+	// the whole answer to finish streaming.
+	if err := enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Grounding: grounding}); err != nil {
+		s.logger.Printf("grounding info write error: %v", err)
+		return
+	}
+
 	augmentedPrompt := promptReq.Prompt
 	if !outcome.Skipped {
 		augmentedPrompt = buildAugmentedUserMessage(promptReq.Prompt, outcome.Chunks)

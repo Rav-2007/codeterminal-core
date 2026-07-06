@@ -13,6 +13,11 @@ import (
 // tokenMsg is one streamed token from the model.
 type tokenMsg string
 
+// groundingMsg carries the daemon's report of whether/how this turn was
+// grounded in local retrieved context (see protocol.GroundingInfo). It
+// arrives before any tokens, as its own message — see streamPrompt.
+type groundingMsg struct{ info *protocol.GroundingInfo }
+
 // streamDoneMsg signals the stream finished successfully.
 type streamDoneMsg struct{}
 
@@ -28,9 +33,9 @@ type streamErrMsg struct{ err error }
 // those values. Bubble Tea's Update loop never blocks on the network: this
 // Cmd runs in its own goroutine managed by the Bubble Tea runtime, and
 // Update only ever sees a message once one is ready.
-func startStream(ctx context.Context, clientName, prompt string, ch chan tea.Msg) tea.Cmd {
+func startStream(ctx context.Context, clientName, workspace, prompt string, ch chan tea.Msg) tea.Cmd {
 	return func() tea.Msg {
-		go streamPrompt(ctx, clientName, prompt, ch)
+		go streamPrompt(ctx, clientName, workspace, prompt, ch)
 		return <-ch
 	}
 }
@@ -44,8 +49,10 @@ func waitForNext(ch chan tea.Msg) tea.Cmd {
 }
 
 // streamPrompt opens a fresh connection (the wire protocol is one prompt
-// per connection — see daemonconn.go), sends prompt, and pushes every
-// token/done/error onto ch.
+// per connection — see daemonconn.go), sends prompt (plus workspace, so the
+// daemon can flag a mismatch against its own actual grounding workspace —
+// see protocol.GroundingInfo.WorkspaceMismatch), and pushes every
+// grounding/token/done/error onto ch.
 //
 // ctx has no direct way to interrupt an in-flight, blocked net.Conn read, so
 // a small watcher goroutine closes the connection when ctx is cancelled —
@@ -53,7 +60,7 @@ func waitForNext(ch chan tea.Msg) tea.Cmd {
 // cancellation is recognized via ctx.Err() and this function returns
 // quietly (no streamErrMsg): the user chose to quit, that's not a failure,
 // and it leaves nothing behind reading a dead socket.
-func streamPrompt(ctx context.Context, clientName, prompt string, ch chan tea.Msg) {
+func streamPrompt(ctx context.Context, clientName, workspace, prompt string, ch chan tea.Msg) {
 	sess, err := connectToDaemon(clientName)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -77,6 +84,7 @@ func streamPrompt(ctx context.Context, clientName, prompt string, ch chan tea.Ms
 	if err := sess.enc.Encode(protocol.PromptRequest{
 		ProtocolVersion: protocol.ProtocolVersion,
 		Prompt:          prompt,
+		Workspace:       workspace,
 	}); err != nil {
 		if ctx.Err() != nil {
 			return
@@ -101,6 +109,9 @@ func streamPrompt(ctx context.Context, clientName, prompt string, ch chan tea.Ms
 		if tok.Error != "" {
 			ch <- streamErrMsg{errors.New(tok.Error)}
 			return
+		}
+		if tok.Grounding != nil {
+			ch <- groundingMsg{tok.Grounding}
 		}
 		if tok.Token != "" {
 			ch <- tokenMsg(tok.Token)

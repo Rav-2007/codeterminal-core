@@ -409,6 +409,24 @@ retrieved chunk. Every request logs a one-line summary
 (`retrieval: chunks=N truncated=bool sources=[file:line-range, ...]`) or a
 skip reason, e.g. `retrieval skipped: no index found at ...`.
 
+**Grounding visibility on the wire.** Every client that completes the
+handshake and sends a `PromptRequest` — Mochiii, the one-shot CLI path, or
+any future client — goes through this exact same `handleConn`; there is no
+separate ungrounded path to opt into or out of. What used to be invisible
+outside the daemon's own log is now also reported to the client itself:
+before any tokens, `handleConn` sends one message carrying a
+`protocol.GroundingInfo` (`Grounded`, the daemon's actual `Workspace`, a
+`Reason` when ungrounded, `Chunks`, `Truncated`) built directly from the
+same `retrievalOutcome` `gatherContext` already computes — no retrieval
+logic is duplicated to produce it. `PromptRequest` also gained an optional
+`Workspace` field: a client's own expectation of which repo it's grounding
+against, purely so the daemon can flag `WorkspaceMismatch` when a client
+expects a different workspace than this daemon instance actually has open
+(grounding itself is still decided once, at daemon startup, by the
+daemon's own `--workspace` — a client's `Workspace` never changes what's
+retrieved). Both fields are additive and `omitempty`; older clients and
+daemons that don't know them keep working unmodified.
+
 ## Skills database
 
 A local, per-user SQLite database (`~/.codeterminal/skills.db`, not
@@ -586,6 +604,11 @@ export CODETERMINAL_API_KEY="sk-..."
 # 4. In another terminal, launch Mochiii — the interactive chat TUI
 ./clients/tui/codeterminal-tui
 
+# ...or point it at a specific repo for grounding (default: current dir) —
+# this only affects what Mochiii tells the daemon to cross-check against;
+# the daemon's own --workspace at startup is what actually decides grounding
+./clients/tui/codeterminal-tui --workspace ~/some/indexed/repo
+
 # ...or keep using the original one-shot path (unchanged, for scripts/tests):
 ./clients/tui/codeterminal-tui --prompt "Say hello in five words."
 echo "Say hello in five words." | ./clients/tui/codeterminal-tui
@@ -649,6 +672,21 @@ unblocks the pending read, so nothing is left behind reading a dead socket.
 See `TestStreamPrompt_ContextCancelUnblocksBlockedRead`
 (`clients/tui/stream_test.go`) for an end-to-end proof against a real
 (fake) daemon that hangs mid-response.
+
+**Retrieval grounding.** Mochiii's prompts already go through the daemon's
+normal serve path — the same one described in "Live retrieval-augmented
+generation" above — so an answer is grounded whenever the daemon it's
+talking to was started with `--workspace` pointing at a built index; there
+was never a separate ungrounded path to route around. What Mochiii adds is
+visibility and a cross-check: a `--workspace` flag (default `.`, resolved
+to an absolute path) sent with every prompt, purely so the daemon can
+confirm it matches its own actual grounding workspace. The header shows
+whichever the daemon reports for the current turn — `grounded ✓ N
+chunk(s)`, `ungrounded (reason)`, or, if the daemon's real workspace
+differs from what Mochiii expected, `⚠ grounded against <path>, not
+<expected>`. This shows up as soon as the turn starts (the daemon sends it
+before any tokens), not just after the answer finishes, and is cleared at
+the start of each new turn rather than carried over from the last one.
 
 **No conversational memory yet.** Each turn sends only its own prompt — the
 wire protocol is one prompt per connection with no history field (see

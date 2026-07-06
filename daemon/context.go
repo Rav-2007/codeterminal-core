@@ -3,8 +3,11 @@ package main
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"strings"
+
+	"codeterminal/protocol"
 )
 
 // Delimiter tags wrapping retrieved context and the user's own request in
@@ -159,6 +162,24 @@ func buildAugmentedUserMessage(prompt string, chunks []Chunk) string {
 	b.WriteString("\n")
 	b.WriteString(userRequestCloseTag)
 	return b.String()
+}
+
+// buildGroundingInfo translates outcome (already computed by gatherContext)
+// plus this daemon's actual workspace and the client's stated expectation
+// into the wire-level report sent back to the client. It only formats
+// already-decided data — no retrieval decision is made here.
+func buildGroundingInfo(o retrievalOutcome, daemonWorkspace, clientWorkspace string) *protocol.GroundingInfo {
+	info := &protocol.GroundingInfo{
+		Grounded:  !o.Skipped,
+		Workspace: daemonWorkspace,
+		Reason:    o.Reason,
+		Chunks:    len(o.Chunks),
+		Truncated: o.Truncated,
+	}
+	if clientWorkspace != "" && filepath.Clean(clientWorkspace) != filepath.Clean(daemonWorkspace) {
+		info.WorkspaceMismatch = true
+	}
+	return info
 }
 
 // logRetrieval writes one summary line per request describing what

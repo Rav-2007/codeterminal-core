@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -102,6 +103,14 @@ func main() {
 		cfg, *workspace, *noContext, logger, newActiveEmbedder)
 	defer stopEmbedder()
 
+	// Resolved independently of setupRetrieval (which does the same Abs
+	// call internally but doesn't expose it) purely so it can be reported
+	// to clients via GroundingInfo even when retrieval itself is disabled.
+	absWorkspace, err := filepath.Abs(*workspace)
+	if err != nil {
+		absWorkspace = *workspace // best-effort label; setupRetrieval already disabled retrieval in this case
+	}
+
 	if _, err := protocol.SocketDir(); err != nil {
 		logger.Fatalf("creating runtime dir: %v", err)
 	}
@@ -148,6 +157,7 @@ func main() {
 		contextBudgetChars: contextBudgetChars,
 		debugContext:       *debugContext,
 		rerankDisabled:     *noRerank || cfg.Retrieval.RerankDisabled,
+		workspace:          absWorkspace,
 	}
 	go srv.Serve(ln)
 

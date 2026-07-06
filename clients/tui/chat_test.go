@@ -3,13 +3,16 @@ package main
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"codeterminal/protocol"
 )
 
 func newTestModel() chatModel {
-	m := newChatModel("test-client")
+	m := newChatModel("test-client", "/workspace")
 	// Drive past the splash and give the model a size, exactly as the real
 	// runtime would via its initial WindowSizeMsg, so viewport/input are
 	// usable in assertions below.
@@ -34,7 +37,7 @@ func pressEnter(m chatModel) (chatModel, tea.Cmd) {
 }
 
 func TestChat_SplashDismissedByAnyKey(t *testing.T) {
-	m := newChatModel("test-client")
+	m := newChatModel("test-client", "/workspace")
 	if m.state != stateSplash {
 		t.Fatalf("state = %v, want stateSplash before any key", m.state)
 	}
@@ -106,6 +109,82 @@ func TestChat_TokenMsgAppendsToTranscriptAndStartsStreaming(t *testing.T) {
 	m = updated.(chatModel)
 	if m.turns[1].text != "Hello" {
 		t.Errorf("assistant turn text = %q, want accumulated %q", m.turns[1].text, "Hello")
+	}
+}
+
+func TestChat_GroundingMsgSetsLastGroundingAndKeepsWaiting(t *testing.T) {
+	m := newTestModel()
+	m = typeText(m, "hi")
+	m, _ = pressEnter(m)
+
+	info := &protocol.GroundingInfo{Grounded: true, Chunks: 3, Workspace: "/workspace"}
+	updated, cmd := m.Update(groundingMsg{info})
+	m = updated.(chatModel)
+
+	if m.lastGrounding != info {
+		t.Errorf("lastGrounding = %+v, want %+v", m.lastGrounding, info)
+	}
+	if cmd == nil {
+		t.Error("expected waitForNext to be re-issued after a groundingMsg (it's not terminal)")
+	}
+	if m.state != stateSending {
+		t.Errorf("state = %v, want unchanged (groundingMsg arrives before any token)", m.state)
+	}
+}
+
+func TestChat_GroundingLabelReflectsUngroundedReason(t *testing.T) {
+	m := newTestModel()
+	m = typeText(m, "hi")
+	m, _ = pressEnter(m)
+
+	updated, _ := m.Update(groundingMsg{&protocol.GroundingInfo{Grounded: false, Reason: "no index found"}})
+	m = updated.(chatModel)
+
+	label := m.groundingLabel()
+	if !strings.Contains(label, "ungrounded") || !strings.Contains(label, "no index found") {
+		t.Errorf("groundingLabel = %q, want it to mention ungrounded and the reason", label)
+	}
+}
+
+func TestChat_GroundingLabelFlagsWorkspaceMismatch(t *testing.T) {
+	m := newTestModel()
+	m = typeText(m, "hi")
+	m, _ = pressEnter(m)
+
+	updated, _ := m.Update(groundingMsg{&protocol.GroundingInfo{Grounded: true, WorkspaceMismatch: true, Workspace: "/other/repo"}})
+	m = updated.(chatModel)
+
+	label := m.groundingLabel()
+	if !strings.Contains(label, "/other/repo") {
+		t.Errorf("groundingLabel = %q, want it to name the daemon's actual workspace on a mismatch", label)
+	}
+}
+
+func TestChat_GroundingClearsOnNewTurn(t *testing.T) {
+	m := newTestModel()
+	m = typeText(m, "first")
+	m, _ = pressEnter(m)
+	updated, _ := m.Update(groundingMsg{&protocol.GroundingInfo{Grounded: true, Chunks: 2}})
+	m = updated.(chatModel)
+	updated, _ = m.Update(streamDoneMsg{})
+	m = updated.(chatModel)
+
+	if m.lastGrounding == nil {
+		t.Fatal("precondition failed: expected lastGrounding to be set after the first turn")
+	}
+
+	m = typeText(m, "second")
+	m, _ = pressEnter(m)
+
+	if m.lastGrounding != nil {
+		t.Error("lastGrounding should be cleared at the start of a new turn, not carried over from the previous one")
+	}
+}
+
+func TestChat_NoGroundingLabelBeforeFirstReport(t *testing.T) {
+	m := newTestModel()
+	if label := m.groundingLabel(); label != "" {
+		t.Errorf("groundingLabel = %q, want empty before any grounding info has arrived", label)
 	}
 }
 

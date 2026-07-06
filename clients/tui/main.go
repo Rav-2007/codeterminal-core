@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -21,10 +22,11 @@ import (
 
 func main() {
 	promptFlag := flag.String("prompt", "", "prompt text to send (reads stdin if omitted); with this flag (or piped stdin), runs one-shot instead of launching the chat UI")
+	workspaceFlag := flag.String("workspace", ".", "workspace to ground chat against; sent to the daemon so it can confirm this matches its own configured grounding workspace (one-shot mode ignores this — it predates grounding and stays unchanged)")
 	flag.Parse()
 
 	if *promptFlag == "" && isatty.IsTerminal(os.Stdin.Fd()) {
-		runChat()
+		runChat(*workspaceFlag)
 		return
 	}
 
@@ -81,7 +83,12 @@ func runOneShot(prompt string) {
 // alt-screen, it preflights the daemon connection so a down daemon produces
 // one clean stderr message and a non-zero exit, not a TUI the user has to
 // type into first just to discover it can't reach anything.
-func runChat() {
+//
+// workspace is resolved to an absolute path (best-effort) before being sent
+// with every prompt, so the daemon's own absolute grounding workspace (see
+// daemon/main.go) can be compared against it meaningfully — see
+// protocol.GroundingInfo.WorkspaceMismatch.
+func runChat(workspace string) {
 	preflight, err := connectToDaemon("codeterminal-tui")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -89,7 +96,12 @@ func runChat() {
 	}
 	preflight.Close()
 
-	p := tea.NewProgram(newChatModel("codeterminal-tui"), tea.WithAltScreen(), tea.WithMouseCellMotion())
+	absWorkspace, err := filepath.Abs(workspace)
+	if err != nil {
+		absWorkspace = workspace // best-effort label; still sent as-is
+	}
+
+	p := tea.NewProgram(newChatModel("codeterminal-tui", absWorkspace), tea.WithAltScreen(), tea.WithMouseCellMotion())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)

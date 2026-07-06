@@ -269,3 +269,64 @@ func TestGatherContext_SkipsWhenNoHits(t *testing.T) {
 		t.Fatal("expected Skipped=true when the store returns zero hits")
 	}
 }
+
+// --- buildGroundingInfo ------------------------------------------------------
+
+func TestBuildGroundingInfo_GroundedReflectsOutcome(t *testing.T) {
+	outcome := retrievalOutcome{Chunks: []Chunk{{}, {}}, Truncated: true}
+	info := buildGroundingInfo(outcome, "/repo", "")
+
+	if !info.Grounded {
+		t.Error("Grounded = false, want true for a non-skipped outcome")
+	}
+	if info.Workspace != "/repo" {
+		t.Errorf("Workspace = %q, want %q", info.Workspace, "/repo")
+	}
+	if info.Chunks != 2 {
+		t.Errorf("Chunks = %d, want 2", info.Chunks)
+	}
+	if !info.Truncated {
+		t.Error("Truncated = false, want true")
+	}
+	if info.WorkspaceMismatch {
+		t.Error("WorkspaceMismatch = true, want false when the client sent no workspace")
+	}
+}
+
+func TestBuildGroundingInfo_SkippedReflectsReason(t *testing.T) {
+	outcome := retrievalOutcome{Skipped: true, Reason: "no index found"}
+	info := buildGroundingInfo(outcome, "/repo", "")
+
+	if info.Grounded {
+		t.Error("Grounded = true, want false for a skipped outcome")
+	}
+	if info.Reason != "no index found" {
+		t.Errorf("Reason = %q, want %q", info.Reason, "no index found")
+	}
+	if info.Chunks != 0 {
+		t.Errorf("Chunks = %d, want 0", info.Chunks)
+	}
+}
+
+func TestBuildGroundingInfo_MatchingWorkspaceNoMismatch(t *testing.T) {
+	info := buildGroundingInfo(retrievalOutcome{}, "/repo", "/repo")
+	if info.WorkspaceMismatch {
+		t.Error("WorkspaceMismatch = true, want false when client and daemon workspaces match")
+	}
+}
+
+func TestBuildGroundingInfo_DifferingWorkspaceIsMismatch(t *testing.T) {
+	info := buildGroundingInfo(retrievalOutcome{}, "/repo/a", "/repo/b")
+	if !info.WorkspaceMismatch {
+		t.Error("WorkspaceMismatch = false, want true when client and daemon workspaces differ")
+	}
+}
+
+func TestBuildGroundingInfo_TrailingSlashIsNotAMismatch(t *testing.T) {
+	// filepath.Clean should treat "/repo" and "/repo/" as identical, so a
+	// client that sent a trailing slash isn't falsely flagged.
+	info := buildGroundingInfo(retrievalOutcome{}, "/repo", "/repo/")
+	if info.WorkspaceMismatch {
+		t.Error("WorkspaceMismatch = true, want false — differs only by a trailing slash")
+	}
+}

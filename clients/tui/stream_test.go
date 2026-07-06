@@ -107,7 +107,7 @@ func TestStreamPrompt_ContextCancelUnblocksBlockedRead(t *testing.T) {
 
 	streamReturned := make(chan struct{})
 	go func() {
-		streamPrompt(ctx, "test-client", "hello", ch)
+		streamPrompt(ctx, "test-client", "", "hello", ch)
 		close(streamReturned)
 	}()
 
