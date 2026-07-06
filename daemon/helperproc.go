@@ -36,10 +36,13 @@ const (
 //
 // It never embeds anything itself — Embed only speaks the wire protocol in
 // helperproto and forwards texts to whatever the helper process does with
-// them, which in this step is a stub (see helper/embed_stub.go).
+// them (real ONNX inference — see helper/onnxembedder.go). BgeEmbedder is
+// the layer that turns this into an Embedder.
 type HelperProcess struct {
-	binPath string
-	logger  *log.Logger
+	binPath        string
+	modelDir       string // passed to the helper as --model-dir; empty means omit the flag
+	onnxRuntimeLib string // passed to the helper as --onnxruntime-lib; empty means omit the flag
+	logger         *log.Logger
 
 	maxRestarts   int
 	restartDelay  time.Duration
@@ -64,19 +67,24 @@ type HelperProcess struct {
 }
 
 // NewHelperProcess returns a HelperProcess that will spawn binPath, passing
-// it a socket path to listen on. It does not start anything yet — call
-// Start.
-func NewHelperProcess(binPath string, logger *log.Logger) *HelperProcess {
+// it a socket path to listen on plus modelDir/onnxRuntimeLib (only if
+// non-empty — tests exercising lifecycle behavior against a fake helper
+// that doesn't load a real model pass "" for both, so those flags are
+// simply omitted rather than passed empty). It does not start anything
+// yet — call Start.
+func NewHelperProcess(binPath, modelDir, onnxRuntimeLib string, logger *log.Logger) *HelperProcess {
 	return &HelperProcess{
-		binPath:       binPath,
-		logger:        logger,
-		maxRestarts:   defaultHelperMaxRestarts,
-		restartDelay:  defaultHelperRestartDelay,
-		readyTimeout:  defaultHelperReadyTimeout,
-		readyPollStep: defaultHelperReadyPollStep,
-		stopGrace:     defaultHelperStopGrace,
-		callTimeout:   defaultHelperCallTimeout,
-		stopSignal:    make(chan struct{}),
+		binPath:        binPath,
+		modelDir:       modelDir,
+		onnxRuntimeLib: onnxRuntimeLib,
+		logger:         logger,
+		maxRestarts:    defaultHelperMaxRestarts,
+		restartDelay:   defaultHelperRestartDelay,
+		readyTimeout:   defaultHelperReadyTimeout,
+		readyPollStep:  defaultHelperReadyPollStep,
+		stopGrace:      defaultHelperStopGrace,
+		callTimeout:    defaultHelperCallTimeout,
+		stopSignal:     make(chan struct{}),
 	}
 }
 
@@ -124,7 +132,15 @@ func (h *HelperProcess) Start() error {
 // h.mu and must arrange for the resulting h.cmd's Wait() to be read exactly
 // once (by the caller for the first spawn, by monitor for every restart).
 func (h *HelperProcess) spawnLocked() error {
-	cmd := exec.Command(h.binPath, "--socket", h.socketPath)
+	args := []string{"--socket", h.socketPath}
+	if h.modelDir != "" {
+		args = append(args, "--model-dir", h.modelDir)
+	}
+	if h.onnxRuntimeLib != "" {
+		args = append(args, "--onnxruntime-lib", h.onnxRuntimeLib)
+	}
+
+	cmd := exec.Command(h.binPath, args...)
 	cmd.Stdout = &prefixedWriter{prefix: "[embedder-helper] ", out: os.Stderr}
 	cmd.Stderr = &prefixedWriter{prefix: "[embedder-helper] ", out: os.Stderr}
 	if err := cmd.Start(); err != nil {

@@ -32,6 +32,7 @@ type Chunk struct {
 type VectorStore interface {
 	Upsert(ctx context.Context, chunks []Chunk) error
 	Query(ctx context.Context, queryVec []float32, k int) ([]Chunk, error)
+	Count() int
 }
 
 // ChromemStore is a VectorStore backed by a local, on-disk chromem-go
@@ -128,4 +129,9 @@ func (s *ChromemStore) Query(ctx context.Context, queryVec []float32, k int) ([]
 		})
 	}
 	return chunks, nil
+}
+
+// Count returns the number of chunks currently stored.
+func (s *ChromemStore) Count() int {
+	return s.collection.Count()
 }

@@ -14,12 +14,11 @@ import (
 const defaultHelperBinPath = "helper/codeterminal-embedder-helper"
 
 // runHelperSmoketestCommand implements
-// `codeterminal-daemon helper-smoketest [--helper-bin path] [text...]`: the
-// one-shot path required by this step. It starts the helper, waits for it
-// to become healthy, sends exactly one embedding request, prints the
-// resulting vector's length and first few values, and shuts the helper
-// down cleanly — proving the whole lifecycle in isolation. It does not
-// wire the helper into index/retrieve or replace PlaceholderEmbedder.
+// `codeterminal-daemon helper-smoketest [--helper-bin path] [text...]`: a
+// one-shot manual check. It starts the helper (requires `download-model` to
+// have already fetched the model + onnxruntime lib), waits for it to become
+// healthy, sends exactly one real embedding request, prints the resulting
+// vector's length and first few values, and shuts the helper down cleanly.
 func runHelperSmoketestCommand(args []string, logger *log.Logger) error {
 	fset := flag.NewFlagSet("helper-smoketest", flag.ExitOnError)
 	helperBin := fset.String("helper-bin", defaultHelperBinPath, "path to the codeterminal-embedder-helper binary")
@@ -30,7 +29,12 @@ func runHelperSmoketestCommand(args []string, logger *log.Logger) error {
 		text = strings.Join(fset.Args(), " ")
 	}
 
-	h := NewHelperProcess(*helperBin, logger)
+	modelDir, onnxRuntimeLib, err := resolveModelPaths()
+	if err != nil {
+		return err
+	}
+
+	h := NewHelperProcess(*helperBin, modelDir, onnxRuntimeLib, logger)
 	logger.Printf("helper-smoketest: starting helper %s", *helperBin)
 	if err := h.Start(); err != nil {
 		return fmt.Errorf("starting embedder helper (build it first with: cd helper && go build -o codeterminal-embedder-helper .): %w", err)

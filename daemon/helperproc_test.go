@@ -38,7 +38,7 @@ func TestMain(m *testing.M) {
 // run quickly instead of waiting on production-sized delays.
 func fastHelperProcess(t *testing.T) *HelperProcess {
 	t.Helper()
-	h := NewHelperProcess(fakeHelperBinPath, discardLogger())
+	h := NewHelperProcess(fakeHelperBinPath, "", "", discardLogger())
 	h.maxRestarts = 2
 	h.restartDelay = 20 * time.Millisecond
 	h.readyTimeout = 500 * time.Millisecond

@@ -26,13 +26,15 @@ and reviewed.
 ```
 protocol/        shared Go package: wire message types + version handshake
 daemon/          Go module: long-running background process (the "server")
+helper/          Go module: embedder helper subprocess (CGO confined here — see "Embedding helper process")
 clients/tui/     Go module: thin CLI client (stands in for the future TUI)
 clients/vscode/  stub — implemented in a later phase
 mcp-servers/     stub — implemented in a later phase
+testdata/        committed retrieval-quality eval set (sample code + queries) — see "Retrieval-quality eval set"
 ```
 
-`go.work` at the repo root ties the `protocol`, `daemon`, and `clients/tui`
-modules together for local development.
+`go.work` at the repo root ties the `protocol`, `daemon`, `helper`, and
+`clients/tui` modules together for local development.
 
 ## Transport
 
@@ -186,23 +188,43 @@ over 1MB. That exclusion is enforced by a single gate
 content is read, so there's no separate walk-time-only prune that could
 diverge from what actually gets read.
 
-`retrieve` embeds the query text with the same embedder used at index time
-and logs the top-k hits (file path, line range, similarity score) — see
-[`daemon/index_cmd.go`](daemon/index_cmd.go). It does not feed those chunks
-into a model prompt; wiring retrieved context into the LLM call is a later
-step.
+`retrieve` embeds the query text and logs the top-k hits (file path, line
+range, similarity score) — see [`daemon/index_cmd.go`](daemon/index_cmd.go).
+It does not feed those chunks into a model prompt; wiring retrieved context
+into the LLM call is a later step.
 
 Embedding goes through the `Embedder` interface
 ([`daemon/embedder.go`](daemon/embedder.go)); nothing outside that file
-depends on a concrete implementation. The only implementation today is
-`PlaceholderEmbedder`, a local, deterministic hash-based bag-of-tokens
-vectorizer — explicitly **not semantically meaningful**, and it needs no
-model file or network access. It exists to prove the indexing and retrieval
-plumbing end to end before a real local embedding model
-(`BAAI/bge-small-en-v1.5`, documented in a comment above the interface)
-replaces it as a one-line swap. Nothing in this path ever makes a network
-call, in either the placeholder or the storage layer: chromem-go's
-collection is created with an embedding function that refuses to run
+depends on a concrete implementation. `Embedder` has two embedding methods,
+not one, because BGE is asymmetric — `Embed` (documents, no prefix) and
+`EmbedQuery` (queries, prefix applied) — plus `ID()`, used by the stale-index
+guard below. Two implementations exist:
+
+- **`BgeEmbedder`** ([`daemon/bge_embedder.go`](daemon/bge_embedder.go)) —
+  the active one. It delegates to a running embedder helper subprocess (see
+  "Embedding helper process" below); `Embed` sends chunk text unmodified,
+  `EmbedQuery` prepends BAAI's documented instruction prefix
+  (`"Represent this sentence for searching relevant passages: "`) first.
+  The helper itself has no notion of this distinction — it's a dumb
+  text-to-vector service; the asymmetry is applied entirely at this layer,
+  right before the text leaves the daemon.
+- **`PlaceholderEmbedder`** — the original local, deterministic hash-based
+  vectorizer from the previous step. Still in the tree and still injectable
+  in tests, but no longer the default for `index`/`retrieve`.
+
+**Stale-index guard**: since both embedders report the same `Dim()` (384),
+dimension alone can't tell a placeholder-built index apart from a real one.
+`index` stamps `<indexDir>/embedder_stamp.json` with the active embedder's
+`ID()` after every successful build
+([`daemon/embedderstamp.go`](daemon/embedderstamp.go)); `retrieve` checks it
+first and refuses — with a `"re-index required"` message, not silently
+comparing incompatible vectors — on any mismatch, including a stamp that's
+missing entirely (exactly what every index built before this guard existed
+looks like).
+
+Nothing in the indexing/retrieval path ever makes a network call outside of
+what the embedder helper itself does (see below): chromem-go's collection is
+created with an embedding function that refuses to run
 (`refuseEmbeddingFunc` in `daemon/vectorstore.go`), so even a future bug that
 left a chunk unembedded would fail loudly instead of silently calling
 chromem-go's default OpenAI embedder.
@@ -214,27 +236,58 @@ in [`THIRD_PARTY_LICENSES.txt`](THIRD_PARTY_LICENSES.txt).
 ## Embedding helper process
 
 The real embedding model (`BAAI/bge-small-en-v1.5`, int8-quantized ONNX,
-384 dims) will run via ONNX Runtime, which requires CGO — and the daemon
-must stay pure Go. So it runs in a separate binary,
-[`helper/`](helper/codeterminal-embedder-helper) (module
+384 dims) runs via [ONNX Runtime](https://github.com/microsoft/onnxruntime)
+through the [`onnxruntime_go`](https://github.com/yalue/onnxruntime_go)
+binding, which needs CGO — and the daemon must stay pure Go. So it runs in a
+separate binary, [`helper/`](helper/codeterminal-embedder-helper) (module
 `codeterminal/helper`, command `codeterminal-embedder-helper`), which the
 daemon spawns as a child process and talks to over a Unix domain socket
-(loopback-only; no TCP, no network surface). `CGO_ENABLED=0 go build` on
-both `daemon` and `helper` succeeds today — confirming CGO hasn't leaked
-into either — since **this step builds only the helper's lifecycle, not
-real inference**: its embed handler
-([`helper/embed_stub.go`](helper/embed_stub.go)) is a stub returning
-correctly-shaped, deterministic 384-dim vectors, with no ONNX Runtime, no
-tokenizer, and no model file involved yet. `PlaceholderEmbedder` remains the
-only active `Embedder` — this helper isn't wired into index/retrieve.
+(loopback-only; no TCP, no network surface). `CGO_ENABLED=0 go build`
+still succeeds on `daemon` — CGO is confined entirely to `helper` (`grep -r
+'import "C"'` finds nothing outside it; the only CGO is inside
+`onnxruntime_go` itself, which `helper` depends on).
+
+`onnxruntime_go` loads the onnxruntime shared library with `dlopen` at
+**runtime** rather than linking it at compile time (that's how it supports
+Windows without MinGW) — so `go build` on `helper` succeeds regardless of
+whether that library is present on the build machine. The failure
+necessarily happens at helper **startup** instead, and
+[`helper/main.go`](helper/main.go)'s `loadEmbedder` is written to make that
+failure actionable (naming the missing path and the fix) rather than a raw
+`dlopen` error.
+
+Inference ([`helper/onnxembedder.go`](helper/onnxembedder.go)): tokenize
+with [`sugarme/tokenizer`](https://github.com/sugarme/tokenizer) (pure Go,
+loads `tokenizer.json` directly — **`addSpecialTokens` must be passed as
+`true` explicitly**; `EncodeSingle` defaults it to `false` and silently
+drops `[CLS]`/`[SEP]` otherwise, which would corrupt CLS pooling without
+erroring), run the batch through `onnxruntime_go`, take position 0
+(`[CLS]`) of the `last_hidden_state` output for each item, and L2-normalize
+it. The helper has no concept of "query" vs "document" — it just embeds
+whatever text it's given; see the `Embedder` section above for where that
+distinction actually gets applied.
+
+**Known platform gaps**: onnxruntime shared libraries are pinned (URL, size,
+sha256, all verified against a real download — see `onnxRuntimePlatforms`
+in [`daemon/onnxruntimefetch.go`](daemon/onnxruntimefetch.go)) for
+`linux/amd64`, `darwin/arm64`, and `windows/amd64`. **Intel Mac
+(`darwin/amd64`) is not supported** — upstream onnxruntime v1.26.0 ships no
+prebuilt binary for that platform at all. This is a deliberate, open gap,
+not an oversight: both `download-model` and the helper itself refuse with an
+explicit "Intel Mac is not supported" error rather than a generic failure.
+Since Intel Mac is a committed Phase 4 platform target, closing this gap
+(most likely by building onnxruntime from source for `darwin/amd64`) is an
+open decision for that phase. `linux/arm64` is also unpinned but not
+committed anywhere yet; adding it follows the exact same pattern as the
+three platforms already there.
 
 [`daemon/helperproc.go`](daemon/helperproc.go)'s `HelperProcess` owns the
 whole lifecycle:
 
-- **Spawn + readiness**: starts the helper with `--socket <path>` (scoped by
-  the daemon's own PID, under the same runtime dir as its client-facing
-  socket) and blocks until a real Health RPC succeeds — not until the
-  helper's logs say so.
+- **Spawn + readiness**: starts the helper with `--socket`, `--model-dir`,
+  and `--onnxruntime-lib` (scoped by the daemon's own PID, under the same
+  runtime dir as its client-facing socket) and blocks until a real Health
+  RPC succeeds — not until the helper's logs say so.
 - **Health + restart**: if the helper dies unexpectedly, a monitor goroutine
   detects it and respawns it, bounded to a fixed number of attempts with a
   delay between each — so a helper that can never come back up causes a
@@ -243,36 +296,66 @@ whole lifecycle:
   helper hasn't exited within a grace period, and doesn't return until the
   process has actually been reaped — no orphaned child, no zombie.
 
-Try it end to end (build both binaries first):
+Try it end to end (build both binaries and fetch the model first):
 
 ```bash
 (cd helper && go build -o codeterminal-embedder-helper .)
 (cd daemon && go build -o codeterminal-daemon .)
+./daemon/codeterminal-daemon download-model
 ./daemon/codeterminal-daemon helper-smoketest "some test string"
 ```
 
-This starts the helper, waits for it healthy, sends one embedding request,
-prints the returned vector's length (384) and first few values, and shuts
-the helper down cleanly. See
+This starts the helper, waits for it healthy, sends one real embedding
+request, prints the returned vector's length (384) and first few values,
+and shuts the helper down cleanly. See
 [`daemon/helperproc_test.go`](daemon/helperproc_test.go) for the lifecycle
 tests (spawn/ready/call, kill-and-restart, bounded restart policy, and
 zero-orphan shutdown), all run against a test-only fixture helper under
 [`daemon/testdata/fakehelper/`](daemon/testdata/fakehelper) rather than the
-real binary.
+real binary — the fast unit-test path never needs the real model or CGO.
 
 ## Model acquisition
 
 `codeterminal-daemon download-model` fetches the pinned BGE model and
 tokenizer files (see `bgeModelAssets` in
 [`daemon/modelfetch.go`](daemon/modelfetch.go)) into
-`~/.codeterminal/models/bge-small-en-v1.5-int8/`, verifying each file's size
-and sha256 before treating it as usable. Every URL and checksum is pinned
-against a real, verified download — not a placeholder — so the check is
-meaningful. A cache hit (everything already present and valid) makes no
-network requests at all; a checksum or size mismatch removes the bad file
-and fails loudly rather than silently using it. This is independent of the
-helper process above — nothing downloads or uses the model yet, since the
-helper's embed handler is still a stub.
+`~/.codeterminal/models/bge-small-en-v1.5-int8/`, plus the onnxruntime
+shared library for the current platform (see "Known platform gaps" above)
+into `~/.codeterminal/models/onnxruntime-1.26.0/`, verifying every file's
+size and sha256 before treating it as usable. Every URL and checksum is
+pinned against a real, verified download — not a placeholder — so the
+check is meaningful. A cache hit (everything already present and valid)
+makes no network requests at all; a checksum or size mismatch removes the
+bad file and fails loudly rather than silently using it.
+
+## Retrieval-quality eval set
+
+[`testdata/evalset/`](testdata/evalset) is a small, fixed sample codebase (8
+single-responsibility Go files: config parsing, an HTTP handler, math
+stats, an auth/token check, retry-with-backoff, an LRU cache, structured
+logging, input validation) plus
+[`testdata/queries.json`](testdata/queries.json) — 15 natural-language
+queries phrased as intent, not keyword copies of the code, each mapped to
+the file (and approximate function/line range) that should be the top hit.
+`testdata/queries.json` deliberately lives *outside* `testdata/evalset/`:
+indexing the eval set must not also index the query file itself, or a
+query's own verbatim text becomes an unbeatable match against itself (a
+contamination bug caught and fixed while building this eval set — moving
+the file out of the indexed root was the fix).
+
+[`daemon/eval_test.go`](daemon/eval_test.go) indexes `testdata/evalset/`
+with the real `BgeEmbedder`, runs every query, and computes top-1 accuracy
+and top-3 recall, printing the full per-query table (query, expected file,
+top-1 hit, whether the expected file appeared in the top 3, score) so
+quality is readable, not just pass/fail. It asserts
+`top3Recall >= evalTop3RecallThreshold`, a single named, commented constant
+(currently `0.80`) — tune it there, not by hand-picking queries. This test
+needs the real model and CGO, so it's gated behind the `eval` build tag and
+skipped in `-short` mode; `go test ./...` never compiles or runs it:
+
+```bash
+go test -tags eval -run TestEvalRetrievalQuality -v ./...
+```
 
 ## Run it
 
@@ -318,18 +401,16 @@ parsed and logged only — no writing to disk, no diff UI, no syntax
 validation/gate, and no mid-stream parsing (parsing happens once the full
 response has streamed back).
 
-Workspace indexing exists (see above), but only as isolated plumbing: no
-real embedding model yet (the placeholder is deliberately not semantically
-meaningful), no injecting retrieved chunks into a model prompt, no
-auto-indexing on daemon start or per-request, no file-watching, and no
-incremental re-index (re-running `index` rebuilds chunk-by-chunk, keyed by
-a deterministic ID, rather than diffing what changed).
+Workspace indexing and retrieval now use the real `BgeEmbedder`, but
+wiring retrieved chunks into the live LLM prompt is still a later step —
+`retrieve` only logs hits today. No auto-indexing on daemon start or
+per-request, no file-watching, and no incremental re-index (re-running
+`index` rebuilds chunk-by-chunk, keyed by a deterministic ID, rather than
+diffing what changed).
 
-The embedder helper process exists too, but only as isolated lifecycle
-plumbing: its embed handler is a stub (no ONNX Runtime, no CGO, no real
-model loaded anywhere yet), it is never spawned automatically (only via the
-explicit `helper-smoketest` command), and `PlaceholderEmbedder` — not the
-helper — remains the only `Embedder` anything else in the daemon actually
-uses. Model acquisition can fetch the real model files, but nothing loads
-or runs them yet. Wiring a real ONNX-backed `Embedder` through this helper,
-and wiring retrieval into the daemon's serve path, are later steps.
+The embedder helper is spawned only by explicit commands
+(`index`/`retrieve`/`helper-smoketest`), never automatically on daemon
+start or per-prompt. Intel Mac (`darwin/amd64`) has no pinned onnxruntime
+library and is refused with an explicit error — see "Known platform gaps"
+above; that's a real, open gap against the Phase 4 platform commitment, not
+a nicety left for later.

@@ -24,7 +24,7 @@ func TestIndexing_SecretsNeverStored(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewChromemStore: %v", err)
 	}
-	embedder := NewPlaceholderEmbedder(placeholderDim)
+	embedder := NewPlaceholderEmbedder(embedDim)
 	ctx := context.Background()
 
 	scan, err := buildIndex(ctx, dir, embedder, store)
@@ -78,7 +78,7 @@ func TestIndexing_CodeterminalPrunedAndGitignoreAppendedIdempotently(t *testing.
 		if err != nil {
 			t.Fatalf("NewChromemStore: %v", err)
 		}
-		scan, err := buildIndex(context.Background(), dir, NewPlaceholderEmbedder(placeholderDim), store)
+		scan, err := buildIndex(context.Background(), dir, NewPlaceholderEmbedder(embedDim), store)
 		if err != nil {
 			t.Fatalf("buildIndex: %v", err)
 		}

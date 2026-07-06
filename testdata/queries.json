@@ -1,0 +1,107 @@
+[
+  {
+    "query": "where is retry logic for failed requests",
+    "file": "retry/retry.go",
+    "start_line": 33,
+    "end_line": 60,
+    "function": "Do"
+  },
+  {
+    "query": "what code exponentially backs off between retry attempts, waiting longer each time",
+    "file": "retry/retry.go",
+    "start_line": 33,
+    "end_line": 70,
+    "function": "Do / addJitter"
+  },
+  {
+    "query": "how do we validate an email address",
+    "file": "validate/validate.go",
+    "start_line": 16,
+    "end_line": 22,
+    "function": "Email"
+  },
+  {
+    "query": "where do we reject a malformed or too-short phone number",
+    "file": "validate/validate.go",
+    "start_line": 32,
+    "end_line": 45,
+    "function": "Phone"
+  },
+  {
+    "query": "where do we check if a user's role is allowed to perform an action",
+    "file": "auth/authcheck.go",
+    "start_line": 64,
+    "end_line": 71,
+    "function": "RequireRole"
+  },
+  {
+    "query": "how do we pull the bearer token out of a request's authorization header",
+    "file": "auth/authcheck.go",
+    "start_line": 34,
+    "end_line": 42,
+    "function": "ExtractBearerToken"
+  },
+  {
+    "query": "how is the application configuration loaded from a file on disk",
+    "file": "config/config.go",
+    "start_line": 21,
+    "end_line": 38,
+    "function": "Load"
+  },
+  {
+    "query": "where do default values get filled in when a config setting is left unset",
+    "file": "config/config.go",
+    "start_line": 43,
+    "end_line": 53,
+    "function": "applyDefaults"
+  },
+  {
+    "query": "what handles creating a new resource from a POST request",
+    "file": "httpapi/handler.go",
+    "start_line": 39,
+    "end_line": 62,
+    "function": "Handler.CreateWidget"
+  },
+  {
+    "query": "where do we send back a JSON error response with a status code",
+    "file": "httpapi/handler.go",
+    "start_line": 72,
+    "end_line": 76,
+    "function": "writeError"
+  },
+  {
+    "query": "where is the least-recently-used entry removed from a cache that's full",
+    "file": "cache/lru.go",
+    "start_line": 59,
+    "end_line": 67,
+    "function": "LRU.evictOldest"
+  },
+  {
+    "query": "how do we look up a cached value and mark it as recently used",
+    "file": "cache/lru.go",
+    "start_line": 32,
+    "end_line": 40,
+    "function": "LRU.Get"
+  },
+  {
+    "query": "how do we compute the average and spread of a list of numbers",
+    "file": "mathutil/stats.go",
+    "start_line": 12,
+    "end_line": 33,
+    "function": "Mean / StdDev"
+  },
+  {
+    "query": "how is the middle value of a dataset calculated",
+    "file": "mathutil/stats.go",
+    "start_line": 40,
+    "end_line": 55,
+    "function": "Median"
+  },
+  {
+    "query": "how do we configure whether logs are written as JSON and at what verbosity",
+    "file": "logging/logger.go",
+    "start_line": 25,
+    "end_line": 58,
+    "function": "New / parseLevel"
+  }
+]

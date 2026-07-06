@@ -97,6 +97,8 @@ type fakeEmbedder struct {
 
 func (f *fakeEmbedder) Dim() int { return f.dim }
 
+func (f *fakeEmbedder) ID() string { return "fake-test-embedder-v1" }
+
 func (f *fakeEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
 	vecs := make([][]float32, len(texts))
 	for i := range texts {
@@ -105,4 +107,8 @@ func (f *fakeEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, 
 		vecs[i] = v
 	}
 	return vecs, nil
+}
+
+func (f *fakeEmbedder) EmbedQuery(ctx context.Context, texts []string) ([][]float32, error) {
+	return f.Embed(ctx, texts)
 }

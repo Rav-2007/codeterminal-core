@@ -53,9 +53,10 @@ func buildIndex(ctx context.Context, root string, embedder Embedder, store Vecto
 
 // retrieveTopK embeds query via embedder and returns the k nearest chunks
 // from store. Like buildIndex, both dependencies are interfaces so tests can
-// inject fakes.
+// inject fakes. It calls EmbedQuery, not Embed — this is the one line where
+// the query/document asymmetry actually gets applied (see BgeEmbedder).
 func retrieveTopK(ctx context.Context, query string, k int, embedder Embedder, store VectorStore) ([]Chunk, error) {
-	vecs, err := embedder.Embed(ctx, []string{query})
+	vecs, err := embedder.EmbedQuery(ctx, []string{query})
 	if err != nil {
 		return nil, fmt.Errorf("embedding query: %w", err)
 	}
@@ -86,10 +87,19 @@ func runIndexCommand(args []string, logger *log.Logger) error {
 		return fmt.Errorf("opening vector store: %w", err)
 	}
 
-	embedder := NewPlaceholderEmbedder(placeholderDim)
+	embedder, stopEmbedder, err := newActiveEmbedder(logger)
+	if err != nil {
+		return err
+	}
+	defer stopEmbedder()
+
 	scan, err := buildIndex(context.Background(), absRoot, embedder, store)
 	if err != nil {
 		return err
+	}
+
+	if err := writeEmbedderStamp(indexDir, embedder); err != nil {
+		return fmt.Errorf("writing embedder stamp: %w", err)
 	}
 
 	if err := ensureGitignoreEntry(absRoot, gitignoreEntry); err != nil {
@@ -104,9 +114,9 @@ func runIndexCommand(args []string, logger *log.Logger) error {
 
 // runRetrieveCommand implements
 // `codeterminal-daemon retrieve [--workspace path] [--k n] <query...>`. It
-// embeds query with the same (placeholder) embedder used at index time and
-// logs the top-k hits. It does not feed results into any model prompt —
-// that wire-in is a later step.
+// embeds query with the active embedder (see newActiveEmbedder) and logs
+// the top-k hits. It does not feed results into any model prompt — that
+// wire-in is a later step.
 func runRetrieveCommand(args []string, logger *log.Logger) error {
 	fset := flag.NewFlagSet("retrieve", flag.ExitOnError)
 	workspace := fset.String("workspace", ".", "workspace root containing an existing .codeterminal/index")
@@ -133,7 +143,16 @@ func runRetrieveCommand(args []string, logger *log.Logger) error {
 		return fmt.Errorf("opening vector store: %w", err)
 	}
 
-	embedder := NewPlaceholderEmbedder(placeholderDim)
+	embedder, stopEmbedder, err := newActiveEmbedder(logger)
+	if err != nil {
+		return err
+	}
+	defer stopEmbedder()
+
+	if err := checkEmbedderStamp(indexDir, embedder, store.Count() == 0); err != nil {
+		return err
+	}
+
 	results, err := retrieveTopK(context.Background(), query, *k, embedder, store)
 	if err != nil {
 		return err

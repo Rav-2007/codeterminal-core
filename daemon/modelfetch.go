@@ -218,18 +218,27 @@ func sha256File(path string) (string, error) {
 
 // runDownloadModelCommand implements `codeterminal-daemon download-model`:
 // an explicit, manual trigger for EnsureModelFiles against the real pinned
-// bgeModelAssets. It is never invoked automatically.
+// bgeModelAssets, plus the onnxruntime shared library the helper needs to
+// run them. It is never invoked automatically.
 func runDownloadModelCommand(args []string, logger *log.Logger) error {
 	cacheDir, err := defaultModelCacheDir()
 	if err != nil {
 		return err
 	}
-
-	dir, err := EnsureModelFiles(context.Background(), cacheDir, bgeModelAssets, logger)
+	modelDir, err := EnsureModelFiles(context.Background(), cacheDir, bgeModelAssets, logger)
 	if err != nil {
 		return err
 	}
+	logger.Printf("model cache: ready at %s", modelDir)
 
-	logger.Printf("model cache: ready at %s", dir)
+	ortCacheDir, err := defaultONNXRuntimeCacheDir()
+	if err != nil {
+		return err
+	}
+	ortLibPath, err := EnsureONNXRuntimeLib(context.Background(), ortCacheDir, logger)
+	if err != nil {
+		return err
+	}
+	logger.Printf("onnxruntime: ready at %s", ortLibPath)
 	return nil
 }
