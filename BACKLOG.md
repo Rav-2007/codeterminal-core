@@ -18,3 +18,10 @@ V1 of apply-edits uses confirm-every-edit (explicit [y/N] per edit, safest). For
 friction production feel, add an opt-in auto-apply mode: applies behind the syntax gate +
 backup without per-edit confirmation, relying on undo/restore for recovery. Deferred until
 apply-edits v1 is proven. Keep confirm-every-edit as the default even after adding it.
+
+### (d) Conversational memory — DEFERRED (needs daemon + protocol change)
+The TUI is "multi-turn" in UI only: each turn opens a fresh connection and sends ONLY the
+latest prompt. PromptRequest has no history field and handleConn is one-prompt-per-connection,
+so the model has no memory of prior turns. Real conversation memory requires adding a history
+field to the protocol and threading it through the daemon. Deferred intentionally; the thin-
+slice TUI ships without it.
