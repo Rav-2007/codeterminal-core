@@ -1,71 +1,52 @@
-// Command codeterminal-tui is a thin CLI client that stands in for the
-// future TUI. It finds the daemon via its lockfile, connects over the Unix
-// domain socket, does the version handshake, sends one prompt, and prints
-// tokens to stdout as they stream back.
+// Command codeterminal-tui is CodeTerminal's terminal client, branded
+// "Mochiii". Run with no arguments (and no piped stdin) from an actual
+// terminal to launch the interactive chat UI. Pass --prompt, or pipe text
+// on stdin, to keep the original one-shot behavior instead: connect, send
+// one prompt, print the streamed answer, exit — the same behavior this
+// client has always had, unchanged, for scripting and tests.
 package main
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"strings"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/mattn/go-isatty"
 
 	"codeterminal/protocol"
 )
 
 func main() {
-	promptFlag := flag.String("prompt", "", "prompt text to send (reads stdin if omitted)")
+	promptFlag := flag.String("prompt", "", "prompt text to send (reads stdin if omitted); with this flag (or piped stdin), runs one-shot instead of launching the chat UI")
 	flag.Parse()
+
+	if *promptFlag == "" && isatty.IsTerminal(os.Stdin.Fd()) {
+		runChat()
+		return
+	}
 
 	prompt := readPrompt(*promptFlag)
 	if prompt == "" {
 		fmt.Fprintln(os.Stderr, "error: no prompt given (use --prompt \"...\" or pipe text on stdin)")
 		os.Exit(1)
 	}
+	runOneShot(prompt)
+}
 
-	lockPath := protocol.LockPath()
-	lock, err := readLockFile(lockPath)
+// runOneShot is the original non-interactive path: connect, send one
+// prompt, print the streamed answer token-by-token, exit.
+func runOneShot(prompt string) {
+	sess, err := connectToDaemon("codeterminal-tui")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: daemon not found: %v\n", err)
-		fmt.Fprintf(os.Stderr, "  expected a lockfile at %s\n", lockPath)
-		fmt.Fprintln(os.Stderr, "  start it with: (cd daemon && go run .)")
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
+	defer sess.Close()
 
-	conn, err := net.Dial("unix", lock.SocketPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: could not connect to daemon at %s: %v\n", lock.SocketPath, err)
-		fmt.Fprintln(os.Stderr, "  the daemon may have crashed or been stopped; restart it and try again")
-		os.Exit(1)
-	}
-	defer conn.Close()
-
-	enc := json.NewEncoder(conn)
-	dec := json.NewDecoder(conn)
-
-	if err := enc.Encode(protocol.HandshakeRequest{
-		ProtocolVersion: protocol.ProtocolVersion,
-		ClientName:      "codeterminal-tui",
-	}); err != nil {
-		fmt.Fprintf(os.Stderr, "error: sending handshake: %v\n", err)
-		os.Exit(1)
-	}
-
-	var hsResp protocol.HandshakeResponse
-	if err := dec.Decode(&hsResp); err != nil {
-		fmt.Fprintf(os.Stderr, "error: reading handshake response: %v\n", err)
-		os.Exit(1)
-	}
-	if !hsResp.Ok {
-		fmt.Fprintf(os.Stderr, "error: daemon rejected handshake: %s\n", hsResp.Error)
-		fmt.Fprintf(os.Stderr, "  this client speaks protocol v%d; make sure client and daemon are the same build\n", protocol.ProtocolVersion)
-		os.Exit(1)
-	}
-
-	if err := enc.Encode(protocol.PromptRequest{
+	if err := sess.enc.Encode(protocol.PromptRequest{
 		ProtocolVersion: protocol.ProtocolVersion,
 		Prompt:          prompt,
 	}); err != nil {
@@ -75,7 +56,7 @@ func main() {
 
 	for {
 		var tok protocol.TokenResponse
-		if err := dec.Decode(&tok); err != nil {
+		if err := sess.dec.Decode(&tok); err != nil {
 			if err == io.EOF {
 				break
 			}
@@ -96,6 +77,25 @@ func main() {
 	os.Stdout.WriteString("\n")
 }
 
+// runChat launches Mochiii's interactive chat UI. Before ever drawing the
+// alt-screen, it preflights the daemon connection so a down daemon produces
+// one clean stderr message and a non-zero exit, not a TUI the user has to
+// type into first just to discover it can't reach anything.
+func runChat() {
+	preflight, err := connectToDaemon("codeterminal-tui")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	preflight.Close()
+
+	p := tea.NewProgram(newChatModel("codeterminal-tui"), tea.WithAltScreen(), tea.WithMouseCellMotion())
+	if _, err := p.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
 func readPrompt(flagValue string) string {
 	if flagValue != "" {
 		return flagValue
@@ -107,16 +107,4 @@ func readPrompt(flagValue string) string {
 		os.Exit(1)
 	}
 	return strings.TrimSpace(string(data))
-}
-
-func readLockFile(path string) (protocol.LockFile, error) {
-	var lock protocol.LockFile
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return lock, err
-	}
-	if err := json.Unmarshal(data, &lock); err != nil {
-		return lock, fmt.Errorf("corrupt lockfile: %w", err)
-	}
-	return lock, nil
 }

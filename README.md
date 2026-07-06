@@ -29,7 +29,7 @@ and reviewed.
 protocol/        shared Go package: wire message types + version handshake
 daemon/          Go module: long-running background process (the "server")
 helper/          Go module: embedder helper subprocess (CGO confined here — see "Embedding helper process")
-clients/tui/     Go module: thin CLI client (stands in for the future TUI)
+clients/tui/     Go module: Mochiii, the interactive chat TUI (plus the original one-shot CLI path, kept for scripts)
 clients/vscode/  stub — implemented in a later phase
 mcp-servers/     stub — implemented in a later phase
 testdata/        committed retrieval-quality eval set (sample code + queries) — see "Retrieval-quality eval set"
@@ -583,10 +583,11 @@ export CODETERMINAL_API_KEY="sk-..."
 # 3. Start the daemon in one terminal (it runs in the foreground; logs go to stderr)
 ./daemon/codeterminal-daemon
 
-# 4. In another terminal, send a prompt and watch tokens stream back
-./clients/tui/codeterminal-tui --prompt "Say hello in five words."
+# 4. In another terminal, launch Mochiii — the interactive chat TUI
+./clients/tui/codeterminal-tui
 
-# ...or pipe a prompt in on stdin:
+# ...or keep using the original one-shot path (unchanged, for scripts/tests):
+./clients/tui/codeterminal-tui --prompt "Say hello in five words."
 echo "Say hello in five words." | ./clients/tui/codeterminal-tui
 ```
 
@@ -595,6 +596,67 @@ and lockfile before exiting. If it's ever killed without a chance to clean
 up (e.g. `SIGKILL`, a crash), the next `codeterminal-daemon` start detects
 that nothing is listening on the leftover socket file, removes it, and binds
 a fresh one automatically.
+
+## Mochiii (interactive chat TUI)
+
+`clients/tui/codeterminal-tui`, run with no `--prompt` flag from an actual
+terminal (no piped stdin), launches **Mochiii**: an interactive, streaming
+chat UI built on [Bubble Tea](https://github.com/charmbracelet/bubbletea)
+(plus [bubbles](https://github.com/charmbracelet/bubbles) for the
+textinput/viewport/spinner components and
+[lipgloss](https://github.com/charmbracelet/lipgloss) for styling). Passing
+`--prompt`, or piping text on stdin, keeps the original one-shot behavior
+completely unchanged (connect, send one prompt, print the streamed answer,
+exit) — that path is what scripts and tests still use.
+
+**Splash → chat.** On launch, a pink ASCII lotus + the "Mochiii" wordmark +
+a tagline fill the screen; any keypress dismisses it into the chat view,
+which keeps only a small `🪷 Mochiii` glyph in a one-line header (the full
+logo would waste vertical space during a conversation). The header also
+shows connection/streaming state (teal) — `idle`, a spinner + `sending…`,
+a spinner + `streaming…`, or `error: ...` in red — and a hint line under
+the input: `enter to send · ctrl+c to quit · no chat memory yet (each
+message is independent)`. That memory disclaimer is deliberate, not
+decoration — see below.
+
+**Palette** (`clients/tui/styles.go`): pink (`lipgloss.Color("205")`) for
+the logo, brand name, and the user's own prompts; teal (`"44"`, pink's
+complement) for accents and the streaming indicator; soft gray (`"252"`)
+for assistant answers; red (`"203"`) for errors. All in named `lipgloss.Style`
+variables in one file, so the look is a one-file edit. The lotus itself
+(`clients/tui/logo.go`) is a single raw-string constant — hand-edit it
+freely; `TestLotusLogo_RowsAreSymmetric` (`clients/tui/logo_test.go`) checks
+that every row still mirrors correctly around its own center after a change.
+
+**Streaming without blocking the UI.** Bubble Tea's `Update` function never
+touches the network directly. Sending a prompt starts a goroutine
+(`clients/tui/stream.go`) that opens a connection (reusing the exact same
+`connectToDaemon` handshake/transport as the one-shot path — see
+`clients/tui/daemonconn.go`), and pushes a message onto a channel for every
+token, plus one final done-or-error message. A Bubble Tea `Cmd` waits on
+that channel and is re-issued after every token, so `Update` only ever
+handles one already-arrived message at a time and the UI (scrolling,
+quitting, the spinner) never freezes while a response is streaming in.
+
+**Cancellation.** Quitting (`ctrl+c` / `esc`) mid-stream cancels a
+`context.Context` tied to that turn. A `context.Context` can't by itself
+interrupt an in-flight, blocked socket read, so a small watcher goroutine
+closes the connection when the context is done — that's what actually
+unblocks the pending read, so nothing is left behind reading a dead socket.
+See `TestStreamPrompt_ContextCancelUnblocksBlockedRead`
+(`clients/tui/stream_test.go`) for an end-to-end proof against a real
+(fake) daemon that hangs mid-response.
+
+**No conversational memory yet.** Each turn sends only its own prompt — the
+wire protocol is one prompt per connection with no history field (see
+"Transport" above), and this step doesn't change that. Mochiii doesn't
+pretend otherwise: the help line says so, and nothing in the UI implies
+context the model doesn't actually have.
+
+**Daemon-down handling.** Before ever drawing the splash, `codeterminal-tui`
+preflights the daemon connection; if the daemon isn't running or the
+handshake fails, it prints one clear message to stderr and exits non-zero
+instead of entering the alt-screen.
 
 ## Explicitly out of scope
 
@@ -610,6 +672,13 @@ possible, but only via the deliberate `edits apply`/`edits undo` commands
 path, no fuzzy/approximate `SEARCH` matching, no multi-occurrence
 disambiguation (ambiguous is always a refusal), and no TUI/VS Code UI for
 reviewing diffs.
+
+Mochiii (see "Mochiii (interactive chat TUI)" above) is a chat-only thin
+slice: no retrieval-grounding controls in the UI (the daemon may still
+retrieve under the hood — this step adds no UI for it), no apply-edits/
+diff/`[y/N]` UI, no slash-commands, no conversation memory (each turn is
+independent — the UI says so), no cross-session history, and no config or
+theme screens.
 
 There is now a skills database (see "Skills database" above), but it is
 storage plumbing only: no auto-capture of skills from conversations or
