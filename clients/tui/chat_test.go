@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -663,5 +664,161 @@ func TestChat_ReviewRefusesSyntaxBreakingGoEditIdenticallyToCLI(t *testing.T) {
 	}
 	if got := readFileString(t, filepath.Join(root, "foo.go")); !strings.Contains(got, "func old() {}") {
 		t.Errorf("foo.go was modified despite the syntax-breaking refusal: %q", got)
+	}
+}
+
+// --- buildHistory ------------------------------------------------------
+
+func TestBuildHistory_EmptyTranscriptIsEmpty(t *testing.T) {
+	if h := buildHistory(nil); len(h) != 0 {
+		t.Errorf("buildHistory(nil) = %+v, want empty", h)
+	}
+	if h := buildHistory([]turn{}); len(h) != 0 {
+		t.Errorf("buildHistory([]turn{}) = %+v, want empty", h)
+	}
+}
+
+func TestBuildHistory_OrdersUserAndAssistantOldestFirst(t *testing.T) {
+	turns := []turn{
+		{role: roleUser, text: "q1"},
+		{role: roleAssistant, text: "a1"},
+		{role: roleUser, text: "q2"},
+		{role: roleAssistant, text: "a2"},
+	}
+	got := buildHistory(turns)
+	want := []protocol.Turn{
+		{Role: "user", Content: "q1"},
+		{Role: "assistant", Content: "a1"},
+		{Role: "user", Content: "q2"},
+		{Role: "assistant", Content: "a2"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d turns, want %d: %+v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("turn %d = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
+// TestBuildHistory_SkipsSystemTurns proves edit-review summaries and parse-
+// error notices (roleSystem) are TUI-only chrome, not sent as conversation
+// history — the protocol only has "user"/"assistant" roles, and the daemon
+// would drop anything else anyway (daemon/history.go).
+func TestBuildHistory_SkipsSystemTurns(t *testing.T) {
+	turns := []turn{
+		{role: roleUser, text: "q1"},
+		{role: roleAssistant, text: "a1"},
+		{role: roleSystem, text: "edits: 1 applied, 0 skipped, 0 refused"},
+		{role: roleUser, text: "q2"},
+	}
+	got := buildHistory(turns)
+	if len(got) != 3 {
+		t.Fatalf("got %d turns, want 3 (system turn dropped): %+v", len(got), got)
+	}
+	for _, h := range got {
+		if h.Role != "user" && h.Role != "assistant" {
+			t.Errorf("unexpected role in history: %+v", h)
+		}
+	}
+}
+
+// TestBuildHistory_ExcludesNotYetAppendedCurrentPrompt mirrors exactly how
+// startTurn calls buildHistory: on the transcript as it stands BEFORE the
+// new prompt is appended. This is what guarantees a not-yet-answered prompt
+// never ends up inside its own History.
+func TestBuildHistory_ExcludesNotYetAppendedCurrentPrompt(t *testing.T) {
+	priorTurns := []turn{
+		{role: roleUser, text: "first question"},
+		{role: roleAssistant, text: "first answer"},
+	}
+	got := buildHistory(priorTurns)
+	if len(got) != 2 {
+		t.Fatalf("got %d turns, want 2: %+v", len(got), got)
+	}
+	for _, h := range got {
+		if h.Content == "second question" {
+			t.Fatal("the not-yet-appended current prompt must never appear in History")
+		}
+	}
+}
+
+// TestBuildHistory_LongTranscriptIsNotCappedClientSide proves the TUI does
+// no capping of its own: Layer 1 (daemon/history.go's maxHistoryTurns)
+// already owns that policy server-side, so a long session just sends its
+// whole transcript.
+func TestBuildHistory_LongTranscriptIsNotCappedClientSide(t *testing.T) {
+	const n = 50
+	turns := make([]turn, n)
+	for i := range turns {
+		role := roleUser
+		if i%2 == 1 {
+			role = roleAssistant
+		}
+		turns[i] = turn{role: role, text: fmt.Sprintf("turn-%d", i)}
+	}
+	got := buildHistory(turns)
+	if len(got) != n {
+		t.Errorf("got %d turns, want all %d (no client-side cap)", len(got), n)
+	}
+}
+
+// --- ctrl+n: clear conversation -----------------------------------------
+
+func TestChat_CtrlNClearsTranscript(t *testing.T) {
+	m := newTestModel()
+	m = typeText(m, "hello")
+	m, _ = pressEnter(m)
+	updated, _ := m.Update(tokenMsg("hi there"))
+	m = updated.(chatModel)
+	updated, _ = m.Update(streamDoneMsg{})
+	m = updated.(chatModel)
+
+	if len(m.turns) == 0 {
+		t.Fatal("expected turns to be populated after a completed exchange")
+	}
+	m.lastGrounding = &protocol.GroundingInfo{Grounded: true, Chunks: 3}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlN})
+	m = updated.(chatModel)
+
+	if len(m.turns) != 0 {
+		t.Errorf("turns = %+v, want empty after ctrl+n", m.turns)
+	}
+	if m.lastGrounding != nil {
+		t.Error("lastGrounding should be cleared after ctrl+n")
+	}
+	if m.state != stateIdle {
+		t.Errorf("state = %v, want stateIdle after ctrl+n", m.state)
+	}
+	if len(buildHistory(m.turns)) != 0 {
+		t.Error("buildHistory(m.turns) should be empty right after clearing — next prompt sends no History")
+	}
+}
+
+func TestChat_CtrlNIsNoOpWhileSendingOrStreaming(t *testing.T) {
+	m := newTestModel()
+	m = typeText(m, "hello")
+	m, _ = pressEnter(m) // state = stateSending
+	before := len(m.turns)
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlN})
+	m = updated.(chatModel)
+	if len(m.turns) != before {
+		t.Errorf("turns = %+v, want unchanged (ctrl+n is a no-op while sending)", m.turns)
+	}
+	if m.state != stateSending {
+		t.Errorf("state = %v, want stateSending unchanged", m.state)
+	}
+
+	updated, _ = m.Update(tokenMsg("partial")) // now stateStreaming
+	m = updated.(chatModel)
+	before = len(m.turns)
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlN})
+	m = updated.(chatModel)
+	if len(m.turns) != before {
+		t.Errorf("turns = %+v, want unchanged (ctrl+n is a no-op while streaming)", m.turns)
 	}
 }

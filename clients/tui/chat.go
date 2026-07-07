@@ -42,12 +42,12 @@ type turn struct {
 	text string
 }
 
-// helpText is the persistent hint shown under the input. It deliberately
-// says there's no memory yet: each turn sends only its own prompt (the
-// daemon's wire protocol is one prompt per connection, with no history
-// field — see daemonconn.go/stream.go), and the UI must not imply
-// continuity it doesn't have.
-const helpText = "enter to send · ctrl+c to quit · no chat memory yet (each message is independent)"
+// helpText is the persistent hint shown under the input. Conversational
+// memory is on: every prompt after the first sends the transcript so far as
+// PromptRequest.History (see buildHistory), so follow-ups can build on
+// earlier turns. ctrl+n clears the transcript to start a fresh conversation
+// with no carried-over history.
+const helpText = "enter to send · ctrl+n new conversation · ctrl+c to quit"
 
 // reviewHelpText is shown instead of helpText while reviewing edit blocks.
 const reviewHelpText = "y apply · n skip · q cancel remaining"
@@ -159,6 +159,8 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "enter":
 			return m.startTurn()
+		case "ctrl+n":
+			return m.clearConversation()
 		case "pgup":
 			m.viewport.PageUp()
 			return m, nil
@@ -221,6 +223,10 @@ func (m chatModel) startTurn() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Built from the transcript BEFORE the current prompt is appended below,
+	// so the not-yet-answered prompt can never end up in its own History.
+	history := buildHistory(m.turns)
+
 	m.turns = append(m.turns, turn{role: roleUser, text: prompt})
 	m.input.SetValue("")
 	m.input.Blur()
@@ -234,7 +240,47 @@ func (m chatModel) startTurn() (tea.Model, tea.Cmd) {
 	ch := make(chan tea.Msg)
 	m.streamCh = ch
 
-	return m, tea.Batch(m.spinner.Tick, startStream(ctx, m.clientName, m.workspace, prompt, ch))
+	return m, tea.Batch(m.spinner.Tick, startStream(ctx, m.clientName, m.workspace, prompt, history, ch))
+}
+
+// buildHistory converts the transcript so far into the PromptRequest.History
+// the next prompt will carry, oldest first. roleSystem turns (edit-review
+// summaries, parse-error notices) are TUI-only chrome, not conversation
+// content, so they're dropped here rather than sent — the daemon only
+// accepts "user"/"assistant" roles anyway (daemon/history.go) and would
+// drop anything else itself.
+//
+// This does no capping of its own: Layer 1 already caps and logs truncation
+// server-side (maxHistoryTurns in daemon/history.go), so a long session just
+// sends its whole transcript and lets the daemon decide what fits.
+func buildHistory(turns []turn) []protocol.Turn {
+	var history []protocol.Turn
+	for _, t := range turns {
+		switch t.role {
+		case roleUser:
+			history = append(history, protocol.Turn{Role: "user", Content: t.text})
+		case roleAssistant:
+			history = append(history, protocol.Turn{Role: "assistant", Content: t.text})
+		}
+	}
+	return history
+}
+
+// clearConversation handles ctrl+n: it starts a fresh conversation with no
+// carried-over history. A no-op while a request/stream is in flight (mid-
+// stream review is unreachable here — stateEditReview routes to
+// handleReviewKey instead, which doesn't bind ctrl+n), matching the same
+// ignore-while-busy rule Enter follows.
+func (m chatModel) clearConversation() (tea.Model, tea.Cmd) {
+	if m.state == stateSending || m.state == stateStreaming {
+		return m, nil
+	}
+	m.turns = nil
+	m.lastGrounding = nil
+	m.statusErr = ""
+	m.state = stateIdle
+	m.refreshViewport()
+	return m, nil
 }
 
 // handleToken appends msg to the in-progress assistant turn (starting one
@@ -481,7 +527,22 @@ func (m chatModel) renderHeader() string {
 	if grounding := m.groundingLabel(); grounding != "" {
 		parts = append(parts, grounding)
 	}
+	if history := m.historyLabel(); history != "" {
+		parts = append(parts, history)
+	}
 	return strings.Join(parts, "  ")
+}
+
+// historyLabel is a subtle indicator of how much conversation memory is
+// active — how many turns the NEXT prompt will carry as History. Empty
+// right after startup or a ctrl+n clear, so nothing is shown until there's
+// actually something to carry.
+func (m chatModel) historyLabel() string {
+	n := len(buildHistory(m.turns))
+	if n == 0 {
+		return ""
+	}
+	return helpStyle.Render(fmt.Sprintf("mem: %d turn(s)", n))
 }
 
 // groundingLabel renders the most recently reported GroundingInfo, or ""

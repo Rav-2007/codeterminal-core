@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -89,6 +90,138 @@ func fakeDaemonHandshakeThenHang(t *testing.T) (lockPath string, cleanup func())
 	return lockPath, cleanup
 }
 
+// fakeDaemonCapturingRequests starts a real Unix-socket listener that
+// handles any number of sequential connections (the wire protocol is one
+// prompt per connection): it completes the handshake, decodes the
+// PromptRequest and pushes it onto requests, then answers with one token
+// and Done. This lets a test drive several successive turns through the
+// real streamPrompt and inspect exactly what each turn sent — including
+// History — over the wire.
+func fakeDaemonCapturingRequests(t *testing.T, requests chan<- protocol.PromptRequest) (lockPath string, cleanup func()) {
+	t.Helper()
+	dir := t.TempDir()
+	sockPath := filepath.Join(dir, "daemon.sock")
+	lockPath = filepath.Join(dir, "daemon.lock")
+
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listening on fake daemon socket: %v", err)
+	}
+
+	lock := protocol.LockFile{SocketPath: sockPath, PID: os.Getpid()}
+	data, err := json.Marshal(lock)
+	if err != nil {
+		t.Fatalf("marshal lockfile: %v", err)
+	}
+	if err := os.WriteFile(lockPath, data, 0644); err != nil {
+		t.Fatalf("writing lockfile: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(conn net.Conn) {
+				defer conn.Close()
+				dec := json.NewDecoder(conn)
+				enc := json.NewEncoder(conn)
+
+				var hsReq protocol.HandshakeRequest
+				if err := dec.Decode(&hsReq); err != nil {
+					return
+				}
+				enc.Encode(protocol.HandshakeResponse{ProtocolVersion: protocol.ProtocolVersion, Ok: true}) //nolint:errcheck
+
+				var promptReq protocol.PromptRequest
+				if err := dec.Decode(&promptReq); err != nil {
+					return
+				}
+				requests <- promptReq
+
+				enc.Encode(protocol.TokenResponse{Token: "ok"}) //nolint:errcheck
+				enc.Encode(protocol.TokenResponse{Done: true})  //nolint:errcheck
+			}(conn)
+		}
+	}()
+
+	cleanup = func() {
+		ln.Close()
+		<-done
+	}
+	return lockPath, cleanup
+}
+
+// TestStreamPrompt_HistorySentOnThirdTurnContainsPriorTwoInOrder is the
+// update-loop test this task requires: it drives three sequential turns
+// through the real streamPrompt/wire path and proves the third turn's
+// PromptRequest.History contains exactly the first two turns, oldest first,
+// and never the third turn's own (current, not-yet-answered) prompt.
+func TestStreamPrompt_HistorySentOnThirdTurnContainsPriorTwoInOrder(t *testing.T) {
+	requests := make(chan protocol.PromptRequest, 8)
+	lockPath, cleanup := fakeDaemonCapturingRequests(t, requests)
+	defer cleanup()
+
+	restoreLockPath := setLockPathForTest(t, lockPath)
+	defer restoreLockPath()
+
+	runTurn := func(prompt string, history []protocol.Turn) protocol.PromptRequest {
+		t.Helper()
+		ch := make(chan tea.Msg, 8)
+		streamPrompt(context.Background(), "test-client", "", prompt, history, ch)
+		for {
+			msg := <-ch
+			if errMsg, ok := msg.(streamErrMsg); ok {
+				t.Fatalf("unexpected stream error: %v", errMsg.err)
+			}
+			if _, ok := msg.(streamDoneMsg); ok {
+				break
+			}
+		}
+		select {
+		case req := <-requests:
+			return req
+		case <-time.After(2 * time.Second):
+			t.Fatal("fake daemon never received a PromptRequest")
+			return protocol.PromptRequest{}
+		}
+	}
+
+	req1 := runTurn("first question", nil)
+	if len(req1.History) != 0 {
+		t.Errorf("turn 1 History = %+v, want empty (no prior turns)", req1.History)
+	}
+
+	history2 := []protocol.Turn{
+		{Role: "user", Content: "first question"},
+		{Role: "assistant", Content: "first answer"},
+	}
+	req2 := runTurn("second question", history2)
+	if !reflect.DeepEqual(req2.History, history2) {
+		t.Errorf("turn 2 History = %+v, want %+v", req2.History, history2)
+	}
+
+	history3 := append(append([]protocol.Turn{}, history2...),
+		protocol.Turn{Role: "user", Content: "second question"},
+		protocol.Turn{Role: "assistant", Content: "second answer"},
+	)
+	req3 := runTurn("third question", history3)
+	if !reflect.DeepEqual(req3.History, history3) {
+		t.Errorf("turn 3 History = %+v, want %+v", req3.History, history3)
+	}
+	for _, h := range req3.History {
+		if h.Content == "third question" {
+			t.Fatal("turn 3's own (current) prompt must not appear inside its own History")
+		}
+	}
+	if req3.Prompt != "third question" {
+		t.Errorf("turn 3 Prompt = %q, want %q", req3.Prompt, "third question")
+	}
+}
+
 // TestStreamPrompt_ContextCancelUnblocksBlockedRead is the mid-stream-quit
 // safety net this task calls out explicitly: cancelling the context while
 // streamPrompt is blocked inside dec.Decode (waiting on a daemon that's mid-
@@ -107,7 +240,7 @@ func TestStreamPrompt_ContextCancelUnblocksBlockedRead(t *testing.T) {
 
 	streamReturned := make(chan struct{})
 	go func() {
-		streamPrompt(ctx, "test-client", "", "hello", ch)
+		streamPrompt(ctx, "test-client", "", "hello", nil, ch)
 		close(streamReturned)
 	}()
 

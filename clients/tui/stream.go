@@ -33,9 +33,14 @@ type streamErrMsg struct{ err error }
 // those values. Bubble Tea's Update loop never blocks on the network: this
 // Cmd runs in its own goroutine managed by the Bubble Tea runtime, and
 // Update only ever sees a message once one is ready.
-func startStream(ctx context.Context, clientName, workspace, prompt string, ch chan tea.Msg) tea.Cmd {
+//
+// history is the prior conversation (oldest first, built by buildHistory in
+// chat.go), sent alongside prompt so the daemon/model can see it — see
+// protocol.PromptRequest.History. A nil/empty history is exactly today's
+// behavior.
+func startStream(ctx context.Context, clientName, workspace, prompt string, history []protocol.Turn, ch chan tea.Msg) tea.Cmd {
 	return func() tea.Msg {
-		go streamPrompt(ctx, clientName, workspace, prompt, ch)
+		go streamPrompt(ctx, clientName, workspace, prompt, history, ch)
 		return <-ch
 	}
 }
@@ -60,7 +65,7 @@ func waitForNext(ch chan tea.Msg) tea.Cmd {
 // cancellation is recognized via ctx.Err() and this function returns
 // quietly (no streamErrMsg): the user chose to quit, that's not a failure,
 // and it leaves nothing behind reading a dead socket.
-func streamPrompt(ctx context.Context, clientName, workspace, prompt string, ch chan tea.Msg) {
+func streamPrompt(ctx context.Context, clientName, workspace, prompt string, history []protocol.Turn, ch chan tea.Msg) {
 	sess, err := connectToDaemon(clientName)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -85,6 +90,7 @@ func streamPrompt(ctx context.Context, clientName, workspace, prompt string, ch 
 		ProtocolVersion: protocol.ProtocolVersion,
 		Prompt:          prompt,
 		Workspace:       workspace,
+		History:         history,
 	}); err != nil {
 		if ctx.Err() != nil {
 			return
