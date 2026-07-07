@@ -33,3 +33,21 @@ slice TUI ships without it.
 Validated live: no think-blocks, grounds on real code, emits clean SEARCH/REPLACE,
 writes idiomatic Go, passes syntax gate. Cheaper ($0.09/$0.18) + 1M context. Config-only
 change (models.json). NOTE: fix the stale price comment in models.json note field.
+
+### (f) Retrieval: implementation chunks can rank below setup chunks — REFINEMENT
+Observed during the full-repo (81-file) stress test. For "where does retrieval inject
+context into the prompt?", retrieval surfaced the SETUP files (retrieval_setup.go, main.go,
+context.go with the delimiter constants) correctly, but did NOT pinpoint the precise
+implementation/injection line — the setup chunks out-ranked the actual injection-point chunk.
+
+- Severity: MINOR. Answer was still correct and useful; grounded ✓, no hallucination. 3/3
+  stress-test questions found the right files. This is sharpening, not a bug.
+- Hypothesis: for some queries, chunks that DESCRIBE/CONFIGURE a feature (setup, constants,
+  naming) embed closer to the question than the chunk that IMPLEMENTS it. The code-vs-doc
+  re-rank fixed prose-vs-code; this is a finer code-vs-code ranking nuance it doesn't address.
+- Possible future tuning (measure first, don't guess): revisit chunk size/overlap so a whole
+  function stays in one chunk; consider a light signal that favors implementation over
+  config/setup for "where/how is X done" queries; or evaluate a larger/fp32 embedder.
+- Do this as a MEASURED step (like the last re-rank fix): build a small eval of "where is X
+  IMPLEMENTED" queries with known-correct implementation files, then tune against the number.
+- When: at shipping / retrieval-quality hardening. Not blocking.
