@@ -51,3 +51,9 @@ implementation/injection line — the setup chunks out-ranked the actual injecti
 - Do this as a MEASURED step (like the last re-rank fix): build a small eval of "where is X
   IMPLEMENTED" queries with known-correct implementation files, then tune against the number.
 - When: at shipping / retrieval-quality hardening. Not blocking.
+
+### (g) Cross-session memory persistence — FUTURE
+Conversational memory (committed 760bd8c) is SESSION-ONLY: closing Mochiii forgets the
+conversation. Persisting conversations to disk (so you can resume) is a future enhancement.
+Also: smarter memory (summarize/compress old turns instead of just capping at 12) — see the
+history cap in daemon/history.go. Not blocking; nice-to-have.
