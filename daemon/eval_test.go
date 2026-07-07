@@ -115,7 +115,7 @@ func TestEvalRetrievalQuality(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	scan, err := buildIndex(ctx, evalRoot, embedder, store)
+	scan, err := buildIndex(ctx, evalRoot, embedder, store, logger)
 	if err != nil {
 		t.Fatalf("indexing eval set: %v", err)
 	}

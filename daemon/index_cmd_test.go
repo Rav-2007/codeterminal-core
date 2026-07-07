@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,7 +28,7 @@ func TestIndexing_SecretsNeverStored(t *testing.T) {
 	embedder := NewPlaceholderEmbedder(embedDim)
 	ctx := context.Background()
 
-	scan, err := buildIndex(ctx, dir, embedder, store)
+	scan, err := buildIndex(ctx, dir, embedder, store, discardLogger())
 	if err != nil {
 		t.Fatalf("buildIndex: %v", err)
 	}
@@ -78,7 +79,7 @@ func TestIndexing_CodeterminalPrunedAndGitignoreAppendedIdempotently(t *testing.
 		if err != nil {
 			t.Fatalf("NewChromemStore: %v", err)
 		}
-		scan, err := buildIndex(context.Background(), dir, NewPlaceholderEmbedder(embedDim), store)
+		scan, err := buildIndex(context.Background(), dir, NewPlaceholderEmbedder(embedDim), store, discardLogger())
 		if err != nil {
 			t.Fatalf("buildIndex: %v", err)
 		}
@@ -170,7 +171,7 @@ func TestBuildIndex_AcceptsInjectedEmbedder(t *testing.T) {
 	}
 
 	fake := &fakeEmbedder{dim: 8}
-	scan, err := buildIndex(context.Background(), dir, fake, store)
+	scan, err := buildIndex(context.Background(), dir, fake, store, discardLogger())
 	if err != nil {
 		t.Fatalf("buildIndex: %v", err)
 	}
@@ -207,5 +208,156 @@ func TestRetrieveTopK_AcceptsInjectedEmbedder(t *testing.T) {
 	}
 	if len(results) != 1 {
 		t.Fatalf("got %d results, want 1", len(results))
+	}
+}
+
+// callCountingEmbedder wraps an Embedder and records how many texts each
+// Embed call received, so a test can prove buildIndex actually split a large
+// chunk set into multiple bounded calls instead of one big one.
+type callCountingEmbedder struct {
+	Embedder
+	callSizes []int
+}
+
+func (c *callCountingEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	c.callSizes = append(c.callSizes, len(texts))
+	return c.Embedder.Embed(ctx, texts)
+}
+
+// writeManyTinyFiles writes n distinct single-chunk Go files (well under
+// chunker.go's 40-line window) into dir, named file000.go, file001.go, ...
+// so ScanWorkspace(dir) produces exactly n chunks.
+func writeManyTinyFiles(t *testing.T, dir string, n int) {
+	t.Helper()
+	for i := 0; i < n; i++ {
+		writeFile(t, filepath.Join(dir, fmt.Sprintf("file%03d.go", i)), fmt.Sprintf("package p\n\nfunc F%d() {}\n", i))
+	}
+}
+
+// TestBuildIndex_EmbedsInBatchesNotOneCall proves the actual fix: a chunk
+// count above indexEmbedBatchSize is split across multiple Embed calls, each
+// no larger than the batch size, rather than one call carrying every chunk
+// (which is what exceeded the helper's fixed per-call timeout on the real
+// repo).
+func TestBuildIndex_EmbedsInBatchesNotOneCall(t *testing.T) {
+	dir := t.TempDir()
+	const numFiles = indexEmbedBatchSize + 5 // forces exactly 2 batches
+	writeManyTinyFiles(t, dir, numFiles)
+
+	store, err := NewChromemStore(filepath.Join(dir, indexDirName))
+	if err != nil {
+		t.Fatalf("NewChromemStore: %v", err)
+	}
+	counting := &callCountingEmbedder{Embedder: NewPlaceholderEmbedder(embedDim)}
+
+	scan, err := buildIndex(context.Background(), dir, counting, store, discardLogger())
+	if err != nil {
+		t.Fatalf("buildIndex: %v", err)
+	}
+	if len(scan.Chunks) != numFiles {
+		t.Fatalf("got %d chunks, want %d", len(scan.Chunks), numFiles)
+	}
+
+	if len(counting.callSizes) != 2 {
+		t.Fatalf("Embed was called %d time(s), want exactly 2 (a %d-chunk set batched at %d/call)", len(counting.callSizes), numFiles, indexEmbedBatchSize)
+	}
+	for i, size := range counting.callSizes {
+		if size > indexEmbedBatchSize {
+			t.Errorf("call %d embedded %d texts, want at most %d", i, size, indexEmbedBatchSize)
+		}
+	}
+	total := 0
+	for _, size := range counting.callSizes {
+		total += size
+	}
+	if total != numFiles {
+		t.Fatalf("Embed calls covered %d texts total, want %d", total, numFiles)
+	}
+
+	if store.Count() != numFiles {
+		t.Fatalf("store.Count() = %d, want %d (every batch's chunks must still be persisted)", store.Count(), numFiles)
+	}
+}
+
+// failingAfterNEmbedder wraps an Embedder and fails starting on its (n+1)th
+// Embed call, simulating a batch failing partway through a multi-batch
+// index run.
+type failingAfterNEmbedder struct {
+	Embedder
+	callsBeforeFailure int
+	calls              int
+}
+
+func (f *failingAfterNEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	f.calls++
+	if f.calls > f.callsBeforeFailure {
+		return nil, fmt.Errorf("simulated embedding failure on call %d", f.calls)
+	}
+	return f.Embedder.Embed(ctx, texts)
+}
+
+// TestIndexWorkspace_BatchFailureLeavesNoValidStampedIndex is the KEY safety
+// test: a batch failing partway through indexWorkspace must not leave behind
+// anything that later passes as a valid, complete index. It proves both
+// halves of that guarantee — the error names the failing batch, and a fresh
+// checkEmbedderStamp call against the same indexDir (exactly what a real
+// `retrieve` or daemon startup would do) refuses it — even though the first
+// batch's chunks are already durably persisted in the store.
+func TestIndexWorkspace_BatchFailureLeavesNoValidStampedIndex(t *testing.T) {
+	dir := t.TempDir()
+	const numFiles = indexEmbedBatchSize + 5 // forces exactly 2 batches
+	writeManyTinyFiles(t, dir, numFiles)
+
+	indexDir := filepath.Join(dir, indexDirName)
+	store, err := NewChromemStore(indexDir)
+	if err != nil {
+		t.Fatalf("NewChromemStore: %v", err)
+	}
+
+	base := NewPlaceholderEmbedder(embedDim)
+	failing := &failingAfterNEmbedder{Embedder: base, callsBeforeFailure: 1} // batch 1 succeeds, batch 2 fails
+
+	_, err = indexWorkspace(context.Background(), indexDir, dir, failing, store, discardLogger())
+	if err == nil {
+		t.Fatal("expected an error from a mid-index batch failure, got nil")
+	}
+	if !strings.Contains(err.Error(), "batch 2/2") {
+		t.Fatalf("error = %q, want it to identify the failing batch (batch 2/2)", err.Error())
+	}
+
+	if store.Count() != indexEmbedBatchSize {
+		t.Fatalf("store.Count() = %d, want %d (only the first, successful batch should be persisted)", store.Count(), indexEmbedBatchSize)
+	}
+
+	if err := checkEmbedderStamp(indexDir, base, store.Count() == 0); err == nil {
+		t.Fatal("expected checkEmbedderStamp to refuse a store left stamp-less by a mid-index failure, but it passed")
+	}
+}
+
+// TestIndexWorkspace_SuccessfulRunLeavesValidStamp is the success-path
+// counterpart: proves indexWorkspace's stamp handling doesn't just refuse
+// failures, it also correctly accepts a fully-completed multi-batch index.
+func TestIndexWorkspace_SuccessfulRunLeavesValidStamp(t *testing.T) {
+	dir := t.TempDir()
+	const numFiles = indexEmbedBatchSize + 5
+	writeManyTinyFiles(t, dir, numFiles)
+
+	indexDir := filepath.Join(dir, indexDirName)
+	store, err := NewChromemStore(indexDir)
+	if err != nil {
+		t.Fatalf("NewChromemStore: %v", err)
+	}
+
+	embedder := NewPlaceholderEmbedder(embedDim)
+	scan, err := indexWorkspace(context.Background(), indexDir, dir, embedder, store, discardLogger())
+	if err != nil {
+		t.Fatalf("indexWorkspace: %v", err)
+	}
+	if len(scan.Chunks) != numFiles {
+		t.Fatalf("got %d chunks, want %d", len(scan.Chunks), numFiles)
+	}
+
+	if err := checkEmbedderStamp(indexDir, embedder, store.Count() == 0); err != nil {
+		t.Fatalf("checkEmbedderStamp rejected a fully-completed index: %v", err)
 	}
 }

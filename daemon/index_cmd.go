@@ -20,11 +20,30 @@ const gitignoreEntry = ".codeterminal/"
 // defaultK is how many chunks "retrieve" returns when --k isn't given.
 const defaultK = 5
 
+// indexEmbedBatchSize caps how many chunks go into a single Embed() RPC call
+// to the embedder helper. The full CodeTerminal repo is ~334 chunks;
+// embedding them all in one call exceeds the helper's fixed
+// defaultHelperCallTimeout (helperproc.go) — a batch of 40 was proven safe
+// against the real repo and the real helper by the rerank eval test before
+// this constant existed in production code. Batching, not raising the
+// timeout, is the fix: each batch gets its own fresh defaultHelperCallTimeout
+// window (see HelperProcess.call in helperproc.go), so this stays comfortably
+// under it regardless of overall repo size.
+const indexEmbedBatchSize = 40
+
 // buildIndex scans root, embeds every chunk found via embedder, and upserts
-// them into store. It takes both dependencies as interfaces so a test can
-// inject a fake Embedder and/or VectorStore without touching a real model or
-// disk-backed store.
-func buildIndex(ctx context.Context, root string, embedder Embedder, store VectorStore) (*ScanResult, error) {
+// them into store, in batches of indexEmbedBatchSize so a large workspace's
+// chunk set never exceeds a single embedding call's timeout. It takes both
+// dependencies as interfaces so a test can inject a fake Embedder and/or
+// VectorStore without touching a real model or disk-backed store.
+//
+// If a batch fails, buildIndex returns immediately with an error identifying
+// which batch failed; chunks from batches that already succeeded remain
+// durably upserted in store. That partial state is intentionally not treated
+// as a valid index by the rest of the system — see indexWorkspace, which
+// wraps this with embedder-stamp handling so a partial store is always
+// refused by checkEmbedderStamp rather than silently trusted.
+func buildIndex(ctx context.Context, root string, embedder Embedder, store VectorStore, logger *log.Logger) (*ScanResult, error) {
 	scan, err := ScanWorkspace(root)
 	if err != nil {
 		return nil, fmt.Errorf("scanning workspace: %w", err)
@@ -33,20 +52,50 @@ func buildIndex(ctx context.Context, root string, embedder Embedder, store Vecto
 		return scan, nil
 	}
 
-	texts := make([]string, len(scan.Chunks))
-	for i, c := range scan.Chunks {
-		texts[i] = c.Content
+	totalBatches := (len(scan.Chunks) + indexEmbedBatchSize - 1) / indexEmbedBatchSize
+	for start := 0; start < len(scan.Chunks); start += indexEmbedBatchSize {
+		end := min(start+indexEmbedBatchSize, len(scan.Chunks))
+		batch := scan.Chunks[start:end]
+		batchNum := start/indexEmbedBatchSize + 1
+
+		logger.Printf("index: embedding batch %d/%d (chunks %d-%d)", batchNum, totalBatches, start, end-1)
+
+		texts := make([]string, len(batch))
+		for i, c := range batch {
+			texts[i] = c.Content
+		}
+		vecs, err := embedder.Embed(ctx, texts)
+		if err != nil {
+			return nil, fmt.Errorf("embedding batch %d/%d (chunks [%d:%d]): %w", batchNum, totalBatches, start, end, err)
+		}
+		for i := range batch {
+			batch[i].Vector = vecs[i]
+		}
+
+		if err := store.Upsert(ctx, batch); err != nil {
+			return nil, fmt.Errorf("upserting batch %d/%d (chunks [%d:%d]): %w", batchNum, totalBatches, start, end, err)
+		}
 	}
-	vecs, err := embedder.Embed(ctx, texts)
+	return scan, nil
+}
+
+// indexWorkspace builds a fresh index for root into indexDir, wrapping
+// buildIndex with the embedder-stamp lifecycle. It removes any existing
+// stamp before indexing starts and only (re)writes one after every batch has
+// embedded and upserted successfully — so a batch failure partway through,
+// whether on a first index or a re-index, always leaves indexDir stamp-less
+// and therefore refused by checkEmbedderStamp, instead of quietly passing
+// under a stamp left over from an earlier, unrelated successful run.
+func indexWorkspace(ctx context.Context, indexDir, root string, embedder Embedder, store VectorStore, logger *log.Logger) (*ScanResult, error) {
+	_ = os.Remove(filepath.Join(indexDir, embedderStampFileName))
+
+	scan, err := buildIndex(ctx, root, embedder, store, logger)
 	if err != nil {
-		return nil, fmt.Errorf("embedding chunks: %w", err)
-	}
-	for i := range scan.Chunks {
-		scan.Chunks[i].Vector = vecs[i]
+		return nil, err
 	}
 
-	if err := store.Upsert(ctx, scan.Chunks); err != nil {
-		return nil, fmt.Errorf("writing to vector store: %w", err)
+	if err := writeEmbedderStamp(indexDir, embedder); err != nil {
+		return nil, fmt.Errorf("writing embedder stamp: %w", err)
 	}
 	return scan, nil
 }
@@ -118,13 +167,9 @@ func runIndexCommand(args []string, logger *log.Logger) error {
 	}
 	defer stopEmbedder()
 
-	scan, err := buildIndex(context.Background(), absRoot, embedder, store)
+	scan, err := indexWorkspace(context.Background(), indexDir, absRoot, embedder, store, logger)
 	if err != nil {
 		return err
-	}
-
-	if err := writeEmbedderStamp(indexDir, embedder); err != nil {
-		return fmt.Errorf("writing embedder stamp: %w", err)
 	}
 
 	if err := ensureGitignoreEntry(absRoot, gitignoreEntry); err != nil {

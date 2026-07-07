@@ -50,39 +50,6 @@ func matchesAny(path string, candidates []string) bool {
 	return false
 }
 
-// evalEmbedBatchSize caps how many chunks go into a single Embed() RPC call
-// to the real helper subprocess. The whole repo is ~330+ chunks; embedding
-// them all in one call (as buildIndex does, fine for smaller workspaces)
-// exceeds the helper's fixed defaultHelperCallTimeout (helperproc.go,
-// unchanged and out of scope for this step). Batching here is test-only
-// scaffolding — it still calls the same unmodified Embed/Upsert, just
-// across several smaller RPCs instead of one large one — so the real repo
-// can be indexed in full without touching the helper or its timeout.
-const evalEmbedBatchSize = 40
-
-func embedAndUpsertInBatches(ctx context.Context, chunks []Chunk, embedder Embedder, store VectorStore, batchSize int) error {
-	for start := 0; start < len(chunks); start += batchSize {
-		end := min(start+batchSize, len(chunks))
-		batch := chunks[start:end]
-
-		texts := make([]string, len(batch))
-		for i, c := range batch {
-			texts[i] = c.Content
-		}
-		vecs, err := embedder.Embed(ctx, texts)
-		if err != nil {
-			return fmt.Errorf("embedding batch [%d:%d]: %w", start, end, err)
-		}
-		for i := range batch {
-			batch[i].Vector = vecs[i]
-		}
-		if err := store.Upsert(ctx, batch); err != nil {
-			return fmt.Errorf("upserting batch [%d:%d]: %w", start, end, err)
-		}
-	}
-	return nil
-}
-
 func TestRerankEvalRetrievalRanking(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping eval test in -short mode")
@@ -131,11 +98,8 @@ func TestRerankEvalRetrievalRanking(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	scan, err := ScanWorkspace(repoRoot)
+	scan, err := buildIndex(ctx, repoRoot, embedder, store, logger)
 	if err != nil {
-		t.Fatalf("scanning repo: %v", err)
-	}
-	if err := embedAndUpsertInBatches(ctx, scan.Chunks, embedder, store, evalEmbedBatchSize); err != nil {
 		t.Fatalf("indexing repo: %v", err)
 	}
 	t.Logf("indexed repo root %s: scanned=%d chunks=%d", repoRoot, scan.FilesScanned, len(scan.Chunks))

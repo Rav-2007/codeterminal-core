@@ -1,12 +1,15 @@
 
 ## Known deferred debts
 
-### (a) Helper embedding timeout on large repos — MUST FIX BEFORE SHIPPING
-The embedding helper has a fixed per-call timeout. Indexing a large repo (e.g. thousands of
-chunks) in one RPC exceeds it. The rerank eval already had to batch embedding calls in
-test-only scaffolding to work around this. The REAL index path needs the same batching
-before CodeTerminal is pointed at any large/production codebase. Not urgent for dev on this
-repo (~334 chunks); blocking for real users.
+### (a) DONE: helper embedding timeout on large repos
+Fixed: buildIndex (daemon/index_cmd.go) now embeds/upserts in batches of indexEmbedBatchSize
+(40), mirroring the pattern the rerank eval test proved safe, instead of one RPC carrying
+every chunk. Each batch gets its own fresh defaultHelperCallTimeout (10s) window, so repo size
+no longer matters. Also closed a related gap: indexWorkspace deletes the embedder stamp
+before indexing starts and only rewrites it after every batch succeeds, so a batch failure
+(first index or re-index) always leaves the store correctly refused by checkEmbedderStamp
+instead of silently passing under a stale stamp. Verified against the real repo (81 files,
+466 chunks, 12 batches, ~14s, no timeout) and with tests simulating a mid-batch failure.
 
 ### (b) Top-1 ranking: down-weight test files — OPTIONAL POLISH
 Top-3 recall is 5/5, but top-1 is 3/5: for some queries a *_test.go file or an adjacent code
@@ -30,8 +33,3 @@ slice TUI ships without it.
 Validated live: no think-blocks, grounds on real code, emits clean SEARCH/REPLACE,
 writes idiomatic Go, passes syntax gate. Cheaper ($0.09/$0.18) + 1M context. Config-only
 change (models.json). NOTE: fix the stale price comment in models.json note field.
-
-### (a) UPGRADED TO NEXT-UP: helper embedding timeout blocks full-repo indexing
-Hit live twice — full repo (334 chunks) times out; only subdirectories index today.
-Fix: batch embedding calls in the real index path (helper has a fixed per-call timeout).
-This is now the blocker for real full-codebase use. Do next.
