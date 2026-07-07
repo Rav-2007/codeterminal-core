@@ -190,6 +190,16 @@ func (s *SkillStore) ListSkills(ctx context.Context, limit, offset int) ([]Skill
 	return skills, nil
 }
 
+// CountSkills returns the total number of skills in the store.
+func (s *SkillStore) CountSkills(ctx context.Context) (int, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM skills`).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("counting skills: %w", err)
+	}
+	return count, nil
+}
+
 // GetSkill returns the skill with the given id, or a clear error if it
 // doesn't exist.
 func (s *SkillStore) GetSkill(ctx context.Context, id string) (Skill, error) {
