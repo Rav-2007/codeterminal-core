@@ -27,6 +27,71 @@ type streamDoneMsg struct{}
 // streamPrompt.
 type streamErrMsg struct{ err error }
 
+// resetErrMsg signals that clearing conversation memory on the daemon (the
+// network half of ctrl+n — see clearConversation in chat.go) failed. There
+// is no corresponding "ok" message: the live transcript is already cleared
+// synchronously before this Cmd is even fired, so success has nothing left
+// to report.
+type resetErrMsg struct{ err error }
+
+// resetOkMsg is sent on a successful daemon-side reset. Update has no case
+// for it (a successful reset needs no visible reaction — the transcript was
+// already cleared) — it exists purely so startReset's blocking receive on
+// ch always has something to unblock on.
+type resetOkMsg struct{}
+
+// startReset fires PromptRequest{Reset: true} at the daemon over a fresh
+// connection (the wire protocol is one prompt per connection, same as
+// startStream), in its own goroutine, returning a Cmd that reports only
+// failure via resetErrMsg.
+func startReset(ctx context.Context, clientName string, ch chan tea.Msg) tea.Cmd {
+	return func() tea.Msg {
+		go resetHistoryOnDaemon(ctx, clientName, ch)
+		return <-ch
+	}
+}
+
+// resetHistoryOnDaemon sends a Reset request and waits for the daemon's
+// single TokenResponse. Mirrors streamPrompt's connect/encode/decode
+// pattern but without a streaming loop, since a reset gets exactly one
+// reply.
+func resetHistoryOnDaemon(ctx context.Context, clientName string, ch chan tea.Msg) {
+	sess, err := connectToDaemon(clientName)
+	if err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		ch <- resetErrMsg{err}
+		return
+	}
+	defer sess.Close()
+
+	if err := sess.enc.Encode(protocol.PromptRequest{
+		ProtocolVersion: protocol.ProtocolVersion,
+		Reset:           true,
+	}); err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		ch <- resetErrMsg{err}
+		return
+	}
+
+	var tok protocol.TokenResponse
+	if err := sess.dec.Decode(&tok); err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		ch <- resetErrMsg{err}
+		return
+	}
+	if tok.Error != "" {
+		ch <- resetErrMsg{errors.New(tok.Error)}
+		return
+	}
+	ch <- resetOkMsg{}
+}
+
 // startStream launches the daemon round-trip for prompt in its own
 // goroutine (which pushes tokenMsg/streamDoneMsg/streamErrMsg values into ch
 // as the response streams in) and returns a Cmd that waits for the first of

@@ -58,11 +58,25 @@ type HandshakeRequest struct {
 // HandshakeResponse is the daemon's reply to a HandshakeRequest. If Ok is
 // false, the daemon closes the connection immediately after sending this;
 // the client must not send further messages.
+//
+// PersistedHistory is the daemon's cross-session conversation memory for
+// its own configured workspace (most recent turns, oldest first, already
+// re-validated server-side) -- see daemon/memory.go. It is populated on
+// EVERY handshake, since the wire protocol is one prompt per connection and
+// the daemon has no way to distinguish "this is a fresh client session" at
+// handshake time from "this is just the next prompt in an ongoing one".
+// That distinction is the CLIENT's responsibility: only a client's own
+// startup/preflight connection should hydrate its in-memory transcript from
+// this field. A client that re-applied it on every connection (e.g. after
+// every prompt during one running session) would duplicate turns it
+// already has -- see clients/tui/main.go's runChat, which is the only
+// caller that reads this field.
 type HandshakeResponse struct {
-	ProtocolVersion int    `json:"protocol_version"`
-	Ok              bool   `json:"ok"`
-	Error           string `json:"error,omitempty"`
-	DaemonVersion   string `json:"daemon_version,omitempty"`
+	ProtocolVersion  int    `json:"protocol_version"`
+	Ok               bool   `json:"ok"`
+	Error            string `json:"error,omitempty"`
+	DaemonVersion    string `json:"daemon_version,omitempty"`
+	PersistedHistory []Turn `json:"persisted_history,omitempty"`
 }
 
 // PromptRequest carries a single user prompt. Sent by the client only after
@@ -80,11 +94,23 @@ type HandshakeResponse struct {
 // current Prompt. Older daemons that don't know this field simply ignore
 // it (identical, one-shot behavior); older clients that don't send it get
 // identical behavior to today since a nil/empty History is a no-op.
+//
+// Reset is optional and additive: when true, Prompt and History are
+// ignored entirely -- the daemon clears its persisted cross-session memory
+// (see daemon/memory.go) for its own workspace and replies with a single
+// TokenResponse{Done: true}, without calling the model at all. A daemon
+// built before this field existed doesn't recognize it and will decode
+// Reset as its zero value, processing the request as an ordinary (wasted,
+// empty-prompt) one-shot call instead of a reset -- harmless (no crash, no
+// data corruption), just a discarded round-trip. Daemon and client
+// binaries are expected to be rebuilt together, so this mismatch is a
+// documented edge case rather than a version-gated one.
 type PromptRequest struct {
 	ProtocolVersion int    `json:"protocol_version"`
 	Prompt          string `json:"prompt"`
 	Workspace       string `json:"workspace,omitempty"`
 	History         []Turn `json:"history,omitempty"`
+	Reset           bool   `json:"reset,omitempty"`
 }
 
 // Turn is one prior message in a conversation, supplied by the client so

@@ -41,6 +41,13 @@ type Server struct {
 	// actually enabled, purely so it can be reported back to clients via
 	// GroundingInfo (see buildGroundingInfo in context.go).
 	workspace string
+
+	// memory is the cross-session conversation-memory store, keyed by
+	// workspace (see daemon/memory.go). nil when unavailable (missing
+	// state dir, unwritable, or corrupt DB) — every use must handle that,
+	// degrading to "no cross-session memory" rather than failing the
+	// request, exactly like embedder/store above.
+	memory *MemoryStore
 }
 
 // route decides which tier handles the next request. Today's request path
@@ -95,9 +102,10 @@ func (s *Server) handleConn(conn net.Conn) {
 	}
 
 	if err := enc.Encode(protocol.HandshakeResponse{
-		ProtocolVersion: protocol.ProtocolVersion,
-		Ok:              true,
-		DaemonVersion:   daemonVersion,
+		ProtocolVersion:  protocol.ProtocolVersion,
+		Ok:               true,
+		DaemonVersion:    daemonVersion,
+		PersistedHistory: s.loadPersistedHistory(),
 	}); err != nil {
 		s.logger.Printf("handshake write error: %v", err)
 		return
@@ -109,6 +117,13 @@ func (s *Server) handleConn(conn net.Conn) {
 		s.logger.Printf("prompt read error: %v", err)
 		return
 	}
+
+	if promptReq.Reset {
+		s.resetPersistedHistory()
+		enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Done: true})
+		return
+	}
+
 	s.logger.Printf("received prompt (%d bytes), calling model API", len(promptReq.Prompt))
 
 	decision := s.route()
@@ -137,6 +152,13 @@ func (s *Server) handleConn(conn net.Conn) {
 		augmentedPrompt = buildAugmentedUserMessage(promptReq.Prompt, outcome.Chunks)
 	}
 
+	// history/completion note: historyOutcome.Messages (built above from
+	// the CLIENT-sent promptReq.History) is the ONLY history fed to the
+	// model call. s.memory is a separate write-path-plus-hydration store —
+	// it is never merged into this live context, only appended to below
+	// (on success) and read back at the next connection's handshake (see
+	// loadPersistedHistory). Merging it in here too would double the
+	// conversation the model sees.
 	var full strings.Builder
 	err := streamCompletion(context.Background(), s.apiBase, s.apiKey, decision.Slug, s.systemPrompt, historyOutcome.Messages, augmentedPrompt, func(token string) error {
 		full.WriteString(token)
@@ -151,7 +173,60 @@ func (s *Server) handleConn(conn net.Conn) {
 	enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Done: true})
 	s.logger.Print("stream complete")
 
+	s.persistTurn(promptReq.Prompt, full.String())
 	s.logEditBlocks(full.String())
+}
+
+// loadPersistedHistory returns this daemon's cross-session conversation
+// memory for its own workspace (most recent maxHistoryTurns, oldest
+// first), or nil if memory is unavailable or empty. Included in every
+// HandshakeResponse — see the doc comment on
+// protocol.HandshakeResponse.PersistedHistory for who's actually meant to
+// consume it (only a client's own startup/preflight connection).
+func (s *Server) loadPersistedHistory() []protocol.Turn {
+	if s.memory == nil {
+		return nil
+	}
+	turns, err := s.memory.LoadRecentTurns(context.Background(), s.workspace, maxHistoryTurns)
+	if err != nil {
+		s.logger.Printf("loading persisted history: %v", err)
+		return nil
+	}
+	return turns
+}
+
+// persistTurn appends the just-completed exchange (the user's raw prompt —
+// never the grounding-augmented version, since retrieved context is
+// re-derived fresh every turn, not something to remember — and the
+// assistant's full answer) to cross-session memory, write-through. Called
+// only after streamCompletion has already returned successfully, so a
+// mid-stream failure (including a client disconnecting before the answer
+// finished) never persists a truncated answer as if it were complete.
+func (s *Server) persistTurn(prompt, answer string) {
+	if s.memory == nil {
+		return
+	}
+	ctx := context.Background()
+	if err := s.memory.AppendTurn(ctx, s.workspace, "user", prompt); err != nil {
+		s.logger.Printf("persisting user turn: %v", err)
+		return
+	}
+	if err := s.memory.AppendTurn(ctx, s.workspace, "assistant", answer); err != nil {
+		s.logger.Printf("persisting assistant turn: %v", err)
+	}
+}
+
+// resetPersistedHistory clears this daemon's cross-session memory for its
+// own workspace — the server-side half of ctrl+n (see PromptRequest.Reset).
+func (s *Server) resetPersistedHistory() {
+	if s.memory == nil {
+		return
+	}
+	if err := s.memory.ClearWorkspace(context.Background(), s.workspace); err != nil {
+		s.logger.Printf("clearing persisted history: %v", err)
+		return
+	}
+	s.logger.Print("persisted history cleared")
 }
 
 // logEditBlocks parses the just-completed response for SEARCH/REPLACE edit

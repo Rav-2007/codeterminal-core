@@ -99,6 +99,12 @@ func runChat(workspace string) {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
+	// Cross-session conversation memory (see protocol.HandshakeResponse.
+	// PersistedHistory and daemon/memory.go) hydrates here and ONLY here:
+	// this one-time preflight connection, before the chat UI even starts.
+	// The streaming path (stream.go) never reads this field, so a later
+	// per-prompt connection can't re-hydrate turns the TUI already has.
+	persistedHistory := preflight.handshake.PersistedHistory
 	preflight.Close()
 
 	absWorkspace, err := filepath.Abs(workspace)
@@ -112,7 +118,7 @@ func runChat(workspace string) {
 		os.Exit(1)
 	}
 
-	p := tea.NewProgram(newChatModel("codeterminal-tui", absWorkspace, workspaceRoot), tea.WithAltScreen(), tea.WithMouseCellMotion())
+	p := tea.NewProgram(newChatModel("codeterminal-tui", absWorkspace, workspaceRoot, persistedHistory), tea.WithAltScreen(), tea.WithMouseCellMotion())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -262,5 +263,123 @@ func TestStreamPrompt_ContextCancelUnblocksBlockedRead(t *testing.T) {
 		t.Errorf("expected no message after a deliberate cancellation, got %#v", msg)
 	default:
 		// good: cancellation is quiet, not reported as streamErrMsg
+	}
+}
+
+// fakeDaemonForReset starts a real Unix-socket listener that handles the
+// handshake then replies to the client's single PromptRequest with exactly
+// one TokenResponse (Error set to failReason if non-empty) — mirroring the
+// real daemon's Reset path (server.go's handleConn): a bare Done, no token
+// first. Captures the received PromptRequest for assertions.
+func fakeDaemonForReset(t *testing.T, failReason string, requests chan<- protocol.PromptRequest) (lockPath string, cleanup func()) {
+	t.Helper()
+	dir := t.TempDir()
+	sockPath := filepath.Join(dir, "daemon.sock")
+	lockPath = filepath.Join(dir, "daemon.lock")
+
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listening on fake daemon socket: %v", err)
+	}
+
+	lock := protocol.LockFile{SocketPath: sockPath, PID: os.Getpid()}
+	data, err := json.Marshal(lock)
+	if err != nil {
+		t.Fatalf("marshal lockfile: %v", err)
+	}
+	if err := os.WriteFile(lockPath, data, 0644); err != nil {
+		t.Fatalf("writing lockfile: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		dec := json.NewDecoder(conn)
+		enc := json.NewEncoder(conn)
+
+		var hsReq protocol.HandshakeRequest
+		if err := dec.Decode(&hsReq); err != nil {
+			return
+		}
+		enc.Encode(protocol.HandshakeResponse{ProtocolVersion: protocol.ProtocolVersion, Ok: true}) //nolint:errcheck
+
+		var promptReq protocol.PromptRequest
+		if err := dec.Decode(&promptReq); err != nil {
+			return
+		}
+		requests <- promptReq
+
+		enc.Encode(protocol.TokenResponse{Done: true, Error: failReason}) //nolint:errcheck
+	}()
+
+	cleanup = func() {
+		ln.Close()
+		<-done
+	}
+	return lockPath, cleanup
+}
+
+// TestResetHistoryOnDaemon_SendsResetTrueWithEmptyPromptAndHistory proves
+// ctrl+n's network half sends exactly PromptRequest{Reset: true} with no
+// Prompt/History, and reports success (resetOkMsg) when the daemon replies
+// with a bare Done.
+func TestResetHistoryOnDaemon_SendsResetTrueWithEmptyPromptAndHistory(t *testing.T) {
+	requests := make(chan protocol.PromptRequest, 1)
+	lockPath, cleanup := fakeDaemonForReset(t, "", requests)
+	defer cleanup()
+
+	restoreLockPath := setLockPathForTest(t, lockPath)
+	defer restoreLockPath()
+
+	ch := make(chan tea.Msg, 1)
+	resetHistoryOnDaemon(context.Background(), "test-client", ch)
+
+	msg := <-ch
+	if _, ok := msg.(resetOkMsg); !ok {
+		t.Fatalf("got %#v, want resetOkMsg on success", msg)
+	}
+
+	select {
+	case req := <-requests:
+		if !req.Reset {
+			t.Error("Reset = false, want true")
+		}
+		if req.Prompt != "" {
+			t.Errorf("Prompt = %q, want empty", req.Prompt)
+		}
+		if len(req.History) != 0 {
+			t.Errorf("History = %+v, want empty", req.History)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("fake daemon never received a PromptRequest")
+	}
+}
+
+// TestResetHistoryOnDaemon_SurfacesDaemonSideError proves a daemon-side
+// failure (TokenResponse.Error set) surfaces as resetErrMsg rather than
+// being swallowed or misreported as success.
+func TestResetHistoryOnDaemon_SurfacesDaemonSideError(t *testing.T) {
+	requests := make(chan protocol.PromptRequest, 1)
+	lockPath, cleanup := fakeDaemonForReset(t, "clearing failed", requests)
+	defer cleanup()
+
+	restoreLockPath := setLockPathForTest(t, lockPath)
+	defer restoreLockPath()
+
+	ch := make(chan tea.Msg, 1)
+	resetHistoryOnDaemon(context.Background(), "test-client", ch)
+
+	msg := <-ch
+	errMsg, ok := msg.(resetErrMsg)
+	if !ok {
+		t.Fatalf("got %#v, want resetErrMsg on daemon-side failure", msg)
+	}
+	if !strings.Contains(errMsg.err.Error(), "clearing failed") {
+		t.Errorf("err = %v, want it to mention the daemon's failure reason", errMsg.err)
 	}
 }

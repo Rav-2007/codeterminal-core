@@ -103,6 +103,11 @@ func main() {
 		cfg, *workspace, *noContext, logger, newActiveEmbedder)
 	defer stopEmbedder()
 
+	memoryStore := setupMemoryStore(logger)
+	if memoryStore != nil {
+		defer memoryStore.Close()
+	}
+
 	// Resolved independently of setupRetrieval (which does the same Abs
 	// call internally but doesn't expose it) purely so it can be reported
 	// to clients via GroundingInfo even when retrieval itself is disabled.
@@ -158,6 +163,7 @@ func main() {
 		debugContext:       *debugContext,
 		rerankDisabled:     *noRerank || cfg.Retrieval.RerankDisabled,
 		workspace:          absWorkspace,
+		memory:             memoryStore,
 	}
 	go srv.Serve(ln)
 

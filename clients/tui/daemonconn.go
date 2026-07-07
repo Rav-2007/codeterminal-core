@@ -12,10 +12,18 @@ import (
 // daemonSession is an established, handshake-verified connection to the
 // daemon, ready for exactly one PromptRequest — the wire protocol is one
 // prompt per connection (see daemon/server.go's handleConn).
+//
+// handshake is the daemon's HandshakeResponse, retained so a caller can read
+// HandshakeResponse.PersistedHistory. It is populated on every connection —
+// only runChat's one-time preflight connection (main.go) is meant to
+// actually use it; the streaming path (stream.go) never reads this field,
+// so a per-prompt connection can never re-hydrate turns the TUI already
+// has.
 type daemonSession struct {
-	conn net.Conn
-	enc  *json.Encoder
-	dec  *json.Decoder
+	conn      net.Conn
+	enc       *json.Encoder
+	dec       *json.Decoder
+	handshake protocol.HandshakeResponse
 }
 
 func (s *daemonSession) Close() error {
@@ -66,7 +74,7 @@ func connectToDaemon(clientName string) (*daemonSession, error) {
 		return nil, fmt.Errorf("daemon rejected handshake: %s (this client speaks protocol v%d; make sure client and daemon are the same build)", hsResp.Error, protocol.ProtocolVersion)
 	}
 
-	return &daemonSession{conn: conn, enc: enc, dec: dec}, nil
+	return &daemonSession{conn: conn, enc: enc, dec: dec, handshake: hsResp}, nil
 }
 
 func readLockFile(path string) (protocol.LockFile, error) {

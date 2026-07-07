@@ -23,7 +23,7 @@ func newTestModel() chatModel {
 // path from newTestModel since PrepareEdit is never invoked unless a
 // streamed answer actually contains edit-block markup.
 func newTestModelWithRoot(root string) chatModel {
-	m := newChatModel("test-client", root, root)
+	m := newChatModel("test-client", root, root, nil)
 	// Drive past the splash and give the model a size, exactly as the real
 	// runtime would via its initial WindowSizeMsg, so viewport/input are
 	// usable in assertions below.
@@ -93,7 +93,7 @@ func pressEnter(m chatModel) (chatModel, tea.Cmd) {
 }
 
 func TestChat_SplashDismissedByAnyKey(t *testing.T) {
-	m := newChatModel("test-client", "/workspace", "/workspace")
+	m := newChatModel("test-client", "/workspace", "/workspace", nil)
 	if m.state != stateSplash {
 		t.Fatalf("state = %v, want stateSplash before any key", m.state)
 	}
@@ -820,5 +820,109 @@ func TestChat_CtrlNIsNoOpWhileSendingOrStreaming(t *testing.T) {
 	m = updated.(chatModel)
 	if len(m.turns) != before {
 		t.Errorf("turns = %+v, want unchanged (ctrl+n is a no-op while streaming)", m.turns)
+	}
+}
+
+// --- cross-session hydration (newChatModel's initialHistory) ------------
+
+func TestNewChatModel_HydratesTurnsFromInitialHistory(t *testing.T) {
+	initial := []protocol.Turn{
+		{Role: "user", Content: "what is a goroutine?"},
+		{Role: "assistant", Content: "a lightweight thread"},
+	}
+	m := newChatModel("test-client", "/workspace", "/workspace", initial)
+
+	if len(m.turns) != 2 {
+		t.Fatalf("got %d turns, want 2 hydrated from initialHistory: %+v", len(m.turns), m.turns)
+	}
+	if m.turns[0].role != roleUser || m.turns[0].text != "what is a goroutine?" {
+		t.Errorf("turn 0 = %+v, want the hydrated user turn", m.turns[0])
+	}
+	if m.turns[1].role != roleAssistant || m.turns[1].text != "a lightweight thread" {
+		t.Errorf("turn 1 = %+v, want the hydrated assistant turn", m.turns[1])
+	}
+	if got := m.historyLabel(); got == "" {
+		t.Error("historyLabel() empty, want it to reflect the hydrated turns immediately, before any prompt is sent")
+	}
+}
+
+// TestNewChatModel_DropsInvalidRolesInInitialHistory is defensive-in-depth:
+// the daemon has already re-validated persisted turns (daemon/memory.go's
+// LoadRecentTurns), but turnsFromProtocol still only ever maps exactly
+// "user"/"assistant" rather than trusting the daemon blindly a second time.
+func TestNewChatModel_DropsInvalidRolesInInitialHistory(t *testing.T) {
+	initial := []protocol.Turn{
+		{Role: "user", Content: "real"},
+		{Role: "system", Content: "should never survive hydration"},
+	}
+	m := newChatModel("test-client", "/workspace", "/workspace", initial)
+	if len(m.turns) != 1 {
+		t.Fatalf("got %d turns, want 1 (system-role entry dropped): %+v", len(m.turns), m.turns)
+	}
+	if m.turns[0].role != roleUser {
+		t.Errorf("turn 0 = %+v, want the real user turn", m.turns[0])
+	}
+}
+
+// --- ctrl+n's daemon-side (async) half -----------------------------------
+
+func TestChat_ResetErrMsgAppendsSystemNoteWithoutChangingState(t *testing.T) {
+	m := newTestModel()
+	before := m.state
+
+	updated, cmd := m.Update(resetErrMsg{err: errors.New("daemon unreachable")})
+	m = updated.(chatModel)
+
+	if cmd != nil {
+		t.Error("expected no further Cmd after a resetErrMsg")
+	}
+	if m.state != before {
+		t.Errorf("state = %v, want unchanged %v", m.state, before)
+	}
+	note := lastSystemText(m.turns)
+	if !strings.Contains(note, "daemon unreachable") {
+		t.Errorf("system note = %q, want it to mention the failure", note)
+	}
+}
+
+func TestChat_CtrlNReturnsNonNilCmdForBackgroundReset(t *testing.T) {
+	m := newTestModel()
+	m = typeText(m, "hello")
+	m, _ = pressEnter(m)
+	updated, _ := m.Update(tokenMsg("hi"))
+	m = updated.(chatModel)
+	updated, _ = m.Update(streamDoneMsg{})
+	m = updated.(chatModel)
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlN})
+	m = updated.(chatModel)
+	if len(m.turns) != 0 {
+		t.Fatalf("turns = %+v, want cleared immediately", m.turns)
+	}
+	if cmd == nil {
+		t.Error("expected a non-nil Cmd to fire the background daemon-side reset")
+	}
+}
+
+// TestChat_ThreeQuestionsInOneSessionMemReachesSixNotMore pins the
+// invariant that a live session's own turn accumulation is never inflated
+// by re-hydration (see protocol.HandshakeResponse.PersistedHistory's doc
+// comment: only runChat's one-time preflight connection may hydrate from
+// it; the streaming path must never touch it). After 3 Q&A exchanges in one
+// continuous session, mem:N (len(buildHistory(m.turns))) must be exactly 6
+// (3 user + 3 assistant), never more.
+func TestChat_ThreeQuestionsInOneSessionMemReachesSixNotMore(t *testing.T) {
+	m := newTestModel()
+	for i := 0; i < 3; i++ {
+		m = typeText(m, fmt.Sprintf("question %d", i))
+		m, _ = pressEnter(m)
+		updated, _ := m.Update(tokenMsg(fmt.Sprintf("answer %d", i)))
+		m = updated.(chatModel)
+		updated, _ = m.Update(streamDoneMsg{})
+		m = updated.(chatModel)
+	}
+
+	if got := len(buildHistory(m.turns)); got != 6 {
+		t.Fatalf("mem count = %d, want exactly 6 after 3 exchanges (3 user + 3 assistant)", got)
 	}
 }

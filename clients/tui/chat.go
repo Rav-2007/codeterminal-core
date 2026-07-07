@@ -96,7 +96,7 @@ type chatModel struct {
 	ready         bool // true once the first WindowSizeMsg has sized the viewport
 }
 
-func newChatModel(clientName, workspace, workspaceRoot string) chatModel {
+func newChatModel(clientName, workspace, workspaceRoot string, initialHistory []protocol.Turn) chatModel {
 	ti := textinput.New()
 	ti.Placeholder = "ask something…"
 	ti.Prompt = "> "
@@ -119,7 +119,28 @@ func newChatModel(clientName, workspace, workspaceRoot string) chatModel {
 		clientName:    clientName,
 		workspace:     workspace,
 		workspaceRoot: workspaceRoot,
+		turns:         turnsFromProtocol(initialHistory),
 	}
+}
+
+// turnsFromProtocol converts cross-session history hydrated at startup (see
+// protocol.HandshakeResponse.PersistedHistory and runChat in main.go) into
+// the TUI's own turn type, preserving order. The daemon has already
+// re-validated these roles (daemon/memory.go's LoadRecentTurns re-runs the
+// same injection defense prepareHistory applies on the wire), but this
+// conversion still only ever maps exactly "user"/"assistant" rather than
+// trusting the daemon blindly a second time.
+func turnsFromProtocol(protoTurns []protocol.Turn) []turn {
+	var turns []turn
+	for _, t := range protoTurns {
+		switch t.Role {
+		case "user":
+			turns = append(turns, turn{role: roleUser, text: t.Content})
+		case "assistant":
+			turns = append(turns, turn{role: roleAssistant, text: t.Content})
+		}
+	}
+	return turns
 }
 
 func (m chatModel) Init() tea.Cmd {
@@ -199,6 +220,16 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.streamCh = nil
 		return m, m.input.Focus()
 
+	case resetErrMsg:
+		// The live transcript was already cleared synchronously in
+		// clearConversation; only the daemon-side half failed. Reported as
+		// a transcript note rather than statusErr/stateError, since the
+		// user's chat is not actually in an error state — they can keep
+		// typing normally.
+		m.turns = append(m.turns, turn{role: roleSystem, text: fmt.Sprintf("(local chat cleared, but clearing it on the daemon failed: %v)", msg.err)})
+		m.refreshViewport()
+		return m, nil
+
 	case spinner.TickMsg:
 		if m.state != stateSending && m.state != stateStreaming {
 			return m, nil
@@ -271,6 +302,13 @@ func buildHistory(turns []turn) []protocol.Turn {
 // stream review is unreachable here — stateEditReview routes to
 // handleReviewKey instead, which doesn't bind ctrl+n), matching the same
 // ignore-while-busy rule Enter follows.
+//
+// The live transcript is cleared immediately, synchronously, for a snappy
+// UI. Clearing the daemon's cross-session store (see PromptRequest.Reset)
+// is a network round-trip, so it's fired as a background Cmd instead —
+// Update must never block. A failure there doesn't undo the local clear;
+// it's surfaced as a system-role note (see the resetErrMsg case in Update)
+// rather than silently swallowed.
 func (m chatModel) clearConversation() (tea.Model, tea.Cmd) {
 	if m.state == stateSending || m.state == stateStreaming {
 		return m, nil
@@ -280,7 +318,9 @@ func (m chatModel) clearConversation() (tea.Model, tea.Cmd) {
 	m.statusErr = ""
 	m.state = stateIdle
 	m.refreshViewport()
-	return m, nil
+
+	ch := make(chan tea.Msg, 1)
+	return m, startReset(context.Background(), m.clientName, ch)
 }
 
 // handleToken appends msg to the in-progress assistant turn (starting one
