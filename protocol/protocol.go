@@ -74,10 +74,27 @@ type HandshakeResponse struct {
 // actually retrieves from — that's fixed at daemon startup by the daemon's
 // own --workspace flag. Older daemons that don't know this field simply
 // ignore it.
+//
+// History is optional and additive: prior turns of this same conversation,
+// oldest first, for the daemon to include in the model call ahead of the
+// current Prompt. Older daemons that don't know this field simply ignore
+// it (identical, one-shot behavior); older clients that don't send it get
+// identical behavior to today since a nil/empty History is a no-op.
 type PromptRequest struct {
 	ProtocolVersion int    `json:"protocol_version"`
 	Prompt          string `json:"prompt"`
 	Workspace       string `json:"workspace,omitempty"`
+	History         []Turn `json:"history,omitempty"`
+}
+
+// Turn is one prior message in a conversation, supplied by the client so
+// the model can see conversation history. Role must be exactly "user" or
+// "assistant" — the daemon drops any turn with a different role rather
+// than passing it through, so a client can never use History to inject a
+// message claiming system-level authority (see daemon/history.go).
+type Turn struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
 }
 
 // TokenResponse is one message in a streamed reply. The daemon sends, in

@@ -47,16 +47,20 @@ type chatCompletionChunk struct {
 }
 
 // buildChatMessages assembles the message list sent to the model: an
-// optional leading "system" message, then exactly one "user" message. It is
-// extracted from streamCompletion so tests can assert directly on the
-// constructed request structure — in particular, that retrieved context
-// (folded into prompt by the caller, see buildAugmentedUserMessage) always
-// lands in the "user" message and never in "system".
-func buildChatMessages(systemPrompt, prompt string) []chatMessage {
+// optional leading "system" message, then history (already validated and
+// capped by prepareHistory, oldest first, roles "user"/"assistant" only),
+// then exactly one final "user" message. It is extracted from
+// streamCompletion so tests can assert directly on the constructed request
+// structure — in particular, that retrieved context (folded into prompt by
+// the caller, see buildAugmentedUserMessage) always lands in the final
+// "user" message and never in "system", and that history turns never land
+// in "system" either regardless of what a client sent.
+func buildChatMessages(systemPrompt string, history []chatMessage, prompt string) []chatMessage {
 	var messages []chatMessage
 	if systemPrompt != "" {
 		messages = append(messages, chatMessage{Role: "system", Content: systemPrompt})
 	}
+	messages = append(messages, history...)
 	messages = append(messages, chatMessage{Role: "user", Content: prompt})
 	return messages
 }
@@ -65,11 +69,14 @@ func buildChatMessages(systemPrompt, prompt string) []chatMessage {
 // endpoint with stream=true and invokes onToken for each content fragment as
 // it arrives over the SSE response. It never buffers the full reply.
 // systemPrompt, if non-empty, is sent as the leading "system" message.
-func streamCompletion(ctx context.Context, apiBase, apiKey, model, systemPrompt, prompt string, onToken func(string) error) error {
+// history carries prior conversation turns (already validated/capped by the
+// caller via prepareHistory), inserted between the system message and the
+// final prompt message.
+func streamCompletion(ctx context.Context, apiBase, apiKey, model, systemPrompt string, history []chatMessage, prompt string, onToken func(string) error) error {
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 
-	messages := buildChatMessages(systemPrompt, prompt)
+	messages := buildChatMessages(systemPrompt, history, prompt)
 
 	reqBody, err := json.Marshal(chatCompletionRequest{
 		Model:    model,

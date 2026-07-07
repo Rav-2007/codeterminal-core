@@ -114,6 +114,9 @@ func (s *Server) handleConn(conn net.Conn) {
 	decision := s.route()
 	s.logger.Printf("route tier=%s slug=%s reason=%s", decision.Tier, decision.Slug, decision.Reason)
 
+	historyOutcome := prepareHistory(promptReq.History)
+	s.logHistory(historyOutcome)
+
 	outcome := s.gatherContext(context.Background(), promptReq.Prompt)
 	s.logRetrieval(outcome)
 
@@ -135,7 +138,7 @@ func (s *Server) handleConn(conn net.Conn) {
 	}
 
 	var full strings.Builder
-	err := streamCompletion(context.Background(), s.apiBase, s.apiKey, decision.Slug, s.systemPrompt, augmentedPrompt, func(token string) error {
+	err := streamCompletion(context.Background(), s.apiBase, s.apiKey, decision.Slug, s.systemPrompt, historyOutcome.Messages, augmentedPrompt, func(token string) error {
 		full.WriteString(token)
 		return enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Token: token})
 	})

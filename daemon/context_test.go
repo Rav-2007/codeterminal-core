@@ -175,10 +175,10 @@ func TestInjectionSafety_RetrievedContentNeverTouchesSystemRole(t *testing.T) {
 	}
 
 	augmented := buildAugmentedUserMessage(userPrompt, chunks)
-	messages := buildChatMessages(systemPrompt, augmented)
+	messages := buildChatMessages(systemPrompt, nil, augmented)
 
 	if len(messages) != 2 {
-		t.Fatalf("got %d messages, want exactly 2 (system, user)", len(messages))
+		t.Fatalf("got %d messages, want exactly 2 (system, user) when no history is supplied", len(messages))
 	}
 	if messages[0].Role != "system" || messages[0].Content != systemPrompt {
 		t.Fatalf("system message = %+v, want unmodified %q", messages[0], systemPrompt)
