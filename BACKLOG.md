@@ -25,3 +25,13 @@ latest prompt. PromptRequest has no history field and handleConn is one-prompt-p
 so the model has no memory of prior turns. Real conversation memory requires adding a history
 field to the protocol and threading it through the daemon. Deferred intentionally; the thin-
 slice TUI ships without it.
+
+### (e) DONE-ish: primary model swapped to deepseek/deepseek-v4-flash
+Validated live: no think-blocks, grounds on real code, emits clean SEARCH/REPLACE,
+writes idiomatic Go, passes syntax gate. Cheaper ($0.09/$0.18) + 1M context. Config-only
+change (models.json). NOTE: fix the stale price comment in models.json note field.
+
+### (a) UPGRADED TO NEXT-UP: helper embedding timeout blocks full-repo indexing
+Hit live twice — full repo (334 chunks) times out; only subdirectories index today.
+Fix: batch embedding calls in the real index path (helper has a fixed per-call timeout).
+This is now the blocker for real full-codebase use. Do next.
