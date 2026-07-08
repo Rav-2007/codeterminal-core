@@ -403,6 +403,8 @@ export class ChatPanel {
   .edit-summary .summary-line { font-weight: 600; margin-bottom: 4px; }
   .edit-summary .summary-refusal { color: var(--vscode-errorForeground); margin-bottom: 2px; }
   .edit-summary .summary-backup { opacity: 0.7; font-style: italic; margin-top: 4px; }
+  .edit-summary .undo-btn { margin-top: 6px; }
+  .edit-summary .summary-undo-result { margin-top: 6px; font-style: italic; }
 </style>
 </head>
 <body>

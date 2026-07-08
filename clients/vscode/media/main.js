@@ -13,6 +13,7 @@
   let streaming = false;
   let currentAssistantBubble = null;
   let currentEditProposalEl = null;
+  let pendingUndoButton = null;
 
   function addBubble(role, text) {
     const div = document.createElement('div');
@@ -172,10 +173,56 @@
       b.className = 'summary-backup';
       b.textContent = `backups: ${summary.backupDir} (restore with: codeterminal-daemon edits undo)`;
       container.appendChild(b);
+
+      const undoBtn = document.createElement('button');
+      undoBtn.className = 'undo-btn';
+      undoBtn.textContent = 'Undo this apply';
+      undoBtn.addEventListener('click', () => {
+        if (pendingUndoButton) {
+          return; // another undo is already in flight; ignore extra clicks
+        }
+        pendingUndoButton = undoBtn;
+        undoBtn.disabled = true;
+        undoBtn.textContent = 'Undoing…';
+        vscode.postMessage({ type: 'undoEdit', backupDir: summary.backupDir });
+      });
+      container.appendChild(undoBtn);
     }
 
     transcriptEl.appendChild(container);
     transcriptEl.scrollTop = transcriptEl.scrollHeight;
+  }
+
+  // showUndoResult replaces the clicked Undo button with an honest outcome
+  // line -- "N file(s) restored" -- and, CRITICALLY, if any files were left
+  // guarded (changed since the apply run), an explicit note naming them.
+  // Never implies a full revert happened when some files were guarded, and
+  // never re-enables the button (a second undo of the same session would
+  // just report 0 restored -- see Phase 0 -- so there's nothing useful a
+  // second click could do).
+  function showUndoResult(button, result) {
+    const container = button.parentElement;
+    button.remove();
+
+    if (result.error) {
+      const el = document.createElement('div');
+      el.className = 'summary-refusal';
+      el.textContent = `undo failed: ${result.error}`;
+      container.appendChild(el);
+      return;
+    }
+
+    const el = document.createElement('div');
+    el.className = 'summary-undo-result';
+    el.textContent = `${result.restored} file(s) restored`;
+    container.appendChild(el);
+
+    if (result.guarded && result.guarded.length > 0) {
+      const g = document.createElement('div');
+      g.className = 'summary-refusal';
+      g.textContent = `${result.guarded.length} file(s) changed since this apply and were left as-is: ${result.guarded.join(', ')}`;
+      container.appendChild(g);
+    }
   }
 
   function send() {
@@ -243,6 +290,16 @@
         break;
       case 'editSummary':
         showEditSummary(msg);
+        break;
+      case 'undoResult':
+        if (pendingUndoButton) {
+          showUndoResult(pendingUndoButton, {
+            restored: msg.restored,
+            guarded: msg.guarded,
+            error: msg.error,
+          });
+          pendingUndoButton = null;
+        }
         break;
     }
   });
