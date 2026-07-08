@@ -21,13 +21,17 @@ V1 of apply-edits uses confirm-every-edit (explicit [y/N] per edit, safest). For
 friction production feel, add an opt-in auto-apply mode: applies behind the syntax gate +
 backup without per-edit confirmation, relying on undo/restore for recovery. Deferred until
 apply-edits v1 is proven. Keep confirm-every-edit as the default even after adding it.
+NOTE: apply-edits v1 is now proven in BOTH clients (TUI + VS Code diff-apply, verified live),
+so this enhancement is now unblocked whenever it's wanted.
 
-### (d) Conversational memory — DEFERRED (needs daemon + protocol change)
-The TUI is "multi-turn" in UI only: each turn opens a fresh connection and sends ONLY the
-latest prompt. PromptRequest has no history field and handleConn is one-prompt-per-connection,
-so the model has no memory of prior turns. Real conversation memory requires adding a history
-field to the protocol and threading it through the daemon. Deferred intentionally; the thin-
-slice TUI ships without it.
+### (d) DONE: Conversational memory (in-session + cross-session persistence)
+Both layers built and verified live. In-session: PromptRequest.History threads prior turns;
+the daemon carries a capped, injection-safe conversation buffer; mem:N indicator; ctrl+n
+reset. Cross-session: per-workspace SQLite store at ~/.local/state/mochiii/memory.db
+(persist-all, hydrate-last-12), write-through per turn, injection defense re-runs on load,
+graceful degradation on corrupt/missing store. Verified across daemon restarts (TUI and
+VS Code both hydrate the same shared daemon-side state). Committed. Superseded the original
+"deferred" note. Remaining follow-ups tracked in (g) and (h) below.
 
 ### (e) DONE-ish: primary model swapped to deepseek/deepseek-v4-flash
 Validated live: no think-blocks, grounds on real code, emits clean SEARCH/REPLACE,
@@ -69,3 +73,104 @@ Long-lived workspaces will accumulate indefinitely. Add a retention policy
 (age- or count-based prune, or per-workspace cap). Pairs with the Phase-4
 session-buffer-compression note.
 
+## Backlog — added 2026-07-08
+
+- **Daemon must run from repo root (config-path gotcha)** (low priority; docs/DX)
+  The daemon reads ./models.json relative to its working directory, not relative
+  to the binary. Running it from inside daemon/ fails with "reading config
+  ./models.json: no such file or directory" — models.json lives at the repo root.
+  Correct invocation: `cd ~/Desktop/Neww && ./daemon/codeterminal-daemon
+  --workspace .`. Either document this clearly in the run steps, or make the
+  daemon resolve models.json relative to --workspace / the binary path so it can
+  be launched from anywhere. Tripped me up during the VS Code slice.
+
+- **VS Code launch.json opens Host with "No Folder Opened"** (trivial; DX polish)
+  The Extension Development Host launches with no workspace folder because
+  launch.json only passes --extensionDevelopmentPath. Harmless (doesn't affect
+  activation) but confusing during testing. Optional fix: add a bare
+  "${workspaceFolder}" arg alongside --extensionDevelopmentPath so the Host opens
+  clients/vscode as its workspace. NOTE: this repeatedly caused F5 to try to
+  "debug" the focused file instead of launching the extension when the whole Neww
+  repo was the open root — opening clients/vscode as its own folder is the reliable
+  workaround. Worth fixing to save the confusion next time.
+
+- **VS Code extension: remote-host support** (backlog; scoped out of first slice)
+  Current client assumes daemon + VS Code on the same local machine (lockfile
+  discovery via $XDG_RUNTIME_DIR). Remote-SSH / WSL / devcontainer extension
+  hosts live on a different side of the gap and won't find the local lockfile.
+  Not needed for local dev; revisit if remote usage becomes a goal.
+
+## Backlog — added 2026-07-08 (diff-apply session)
+
+- **DONE: VS Code chat client (thinnest slice)** — webview chat panel over the
+  daemon socket; streams grounded answers; hydrates cross-session memory at preflight.
+  Verified live. Committed (3f36cc5).
+
+- **DONE: In-editor diff-apply (VS Code)** — panel renders a model-proposed edit as a
+  red/green diff with Apply/Skip; Apply sends the edit to the daemon, which runs the SAME
+  editapply engine (all 5 gates) and writes + backs up. Verified live end-to-end: a matching
+  edit applied and created a backup; a mismatched edit ("search text not found") and a bad
+  edit (.env / ambiguous) were correctly REFUSED with the file untouched, showing the exact
+  gate strings. Architecture: Option A (daemon applies, client only renders + confirms), so
+  no gate is reimplemented in TypeScript. Committed across 4 sub-slices (b885f50, 5db804a,
+  4d74f64, 0d6e80c).
+
+- **DONE (bonus): fixed 2 latent TUI backup bugs** — surfaced while extracting the shared
+  editapply.Apply() wrapper: (1) same-file multi-block runs could clobber the before-snapshot
+  (TUI lacked the CLI's dedup); fixed by making BackupOriginal idempotent per (backupDir,file).
+  (2) BackupAfter failures were silently swallowed by the TUI; now treated as a failure like
+  the CLI. Both covered by new regression tests. Both apply paths now route through Apply().
+
+- **VS Code diff-apply: multi-block edits** (next slice) — current slice acts on only the
+  FIRST proposed edit block and visibly notes "N more edits not shown yet". Extend to review
+  and apply multiple blocks (mirror the TUI's sequential N-block review).
+
+- **VS Code diff-apply: dispatch is presence-of-`edit`-key** (hygiene note) — the daemon
+  distinguishes an ApplyEditRequest from a PromptRequest by sniffing for the "edit" JSON key
+  rather than an explicit type discriminator (chosen to avoid touching the just-committed
+  protocol). Works and is verified, but it's an implicit contract — worth a code comment so a
+  future reader knows it's intentional, and worth considering an explicit type field if the
+  protocol is ever revised.
+
+- **VS Code extension: remaining capabilities** (future slices, rough order) — a grounding
+  indicator in the panel UI; a native VS Code diff view / inline decorations (nicer than the
+  current whole-block red/green); a native Undo button (undo currently only via
+  `codeterminal-daemon edits undo`, same as the TUI); then the larger fronts (ghost text,
+  terminal error interceptor).
+
+## Phase 4 — standalone / packaging / commercialization (decided direction: capable first, then shippable)
+
+Scoped and decided this session, not started. Goal: a user installs the VS Code extension from
+the marketplace and it works WITHOUT separately installing/running the daemon — the "like Claude
+Code" experience. This is the packaging phase, the single largest remaining body of work.
+
+- **Bundle + auto-manage the daemon** — the extension must ship the daemon binary and start it
+  as a background process on activation, shut it down on deactivate. (Today the daemon is
+  started by hand in a terminal.)
+- **Cross-platform binaries** — build/bundle the daemon (and embedder helper + model files) for
+  Windows, macOS (Apple Silicon + Intel), and Linux, and select the right one at runtime.
+  Known gap: Intel Mac (darwin-amd64) has no prebuilt onnxruntime for on-device embeddings.
+- **API key model — DECIDED: managed service.** Mochiii holds the key and ships "brain + agent"
+  (wired to deepseek-v4-flash); users do NOT bring their own key. IMPLICATION: every user's
+  token usage bills to the project's OpenRouter account — so this commits to billing users
+  (Stripe / usage metering) rather than personally absorbing everyone's usage. The billing +
+  metering build is part of this phase.
+- **On-device embeddings on user machines** — the local embedder helper + model files must ship
+  per-platform and start correctly on a stranger's machine.
+- **Packaging/publishing** — signed binaries, the .vsix, marketplace (or private-registry)
+  publishing.
+
+## Release gates (before anyone else uses it — still open)
+
+- **Security review** — the daemon opens a local socket and the edit engine writes to user
+  files; both must be reviewed before others run Mochiii. Blocking gate.
+- **ZDR confirmation** — verify zero-data-retention is enforced on the inference provider;
+  the whole privacy pitch depends on it. Currently unverified. (Folds in item (g) above.)
+- **Performance NFR** — TTFT < 400ms is a target, not yet measured.
+
+## Hygiene / recurring
+
+- **Never screenshot .env / keep the API key off-screen.** The key has been exposed in
+  screenshots multiple times; rotate as routine. (Rotated 2026-07-08.)
+- **Rebuild affected binaries after code changes** — daemon + TUI + extension; source and
+  binary drift, especially when a change spans modules.
