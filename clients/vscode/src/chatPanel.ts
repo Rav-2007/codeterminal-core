@@ -55,6 +55,18 @@ export class ChatPanel {
   // retroactively change a run already in flight (Phase 0 C).
   private currentRunAutoApply = false;
 
+  // autoApplyRunInFlight is true for exactly the duration of runAutoApply
+  // (see below) -- i.e. from right after edit proposals arrive until every
+  // block has been applied/refused and the summary posted. onEditProposals
+  // fires (and startEditReview kicks off the auto loop) BEFORE onDone clears
+  // this.inFlight, so without this separate flag a fast second prompt could
+  // slip in while the auto loop is still running and clobber pendingBlocks/
+  // currentIndex out from under it (clearPendingReview resets both). This
+  // flag closes that window: onPrompt refuses a new turn until the previous
+  // run's auto-apply loop has actually finished, not just until the model's
+  // response finished streaming.
+  private autoApplyRunInFlight = false;
+
   static createOrShow(extensionUri: vscode.Uri): void {
     if (ChatPanel.current) {
       ChatPanel.current.panel.reveal();
@@ -110,8 +122,8 @@ export class ChatPanel {
   }
 
   private onPrompt(text: string, autoApply: boolean): void {
-    if (this.inFlight) {
-      return; // a turn is already in flight; the webview disables input while streaming
+    if (this.inFlight || this.autoApplyRunInFlight) {
+      return; // a turn is already in flight, or a previous run's auto-apply loop hasn't finished yet
     }
 
     // Captured once, for this run only -- see the currentRunAutoApply field
@@ -177,11 +189,52 @@ export class ChatPanel {
   // no local pre-gating here: the daemon already sent the full, ungated
   // parse result (see editProposalsFromBlocks in daemon/server.go), and
   // each block is only ever validated when the user actually clicks Apply
-  // for it (see onApplyEdit).
+  // for it (see onApplyEdit) -- or, in an auto-apply run, when runAutoApply
+  // drives that same validation itself (see below).
+  //
+  // The initial postCurrentBlockOrSummary() call always posts block 0's
+  // editProposal first, whether or not this run is auto -- this keeps the
+  // message sequence identical in both modes (one editProposal per block,
+  // always immediately before that block's applyResult); auto mode differs
+  // only in WHO triggers the apply that follows it (runAutoApply calling
+  // onApplyEdit itself, instead of waiting for a webview 'applyEdit'
+  // message).
   private startEditReview(blocks: EditBlockWire[]): void {
     this.clearPendingReview();
     this.pendingBlocks = blocks;
     this.postCurrentBlockOrSummary();
+    if (this.currentRunAutoApply) {
+      void this.runAutoApply();
+    }
+  }
+
+  // runAutoApply self-drives the SAME per-block apply path a manual click
+  // would (onApplyEdit): apply the block at currentIndex, capture
+  // runBackupDir on first success, tally applied/refused, post applyResult,
+  // advance, post the next block's editProposal (or, once done, the
+  // editSummary) -- all of that already lives in onApplyEdit/
+  // postCurrentBlockOrSummary, so this loop reuses it completely rather
+  // than reimplementing any part of it. Each iteration is awaited before
+  // the next begins (no Promise.all/batching), which is what preserves
+  // stale-edit safety: block i+1 is only ever applied against whatever is
+  // actually on disk after block i's apply (or refusal) has already
+  // happened, identical to the manual one-click-at-a-time property. There
+  // is no artificial delay between iterations -- it fires as fast as each
+  // daemon round trip allows.
+  //
+  // A gate refusal requires no special handling here: onApplyEdit already
+  // records refused/refusalReasons and moves on regardless of who called
+  // it, so a refused block is simply skipped over and the loop continues
+  // to the next block -- fully auto, no fallback to a manual prompt.
+  private async runAutoApply(): Promise<void> {
+    this.autoApplyRunInFlight = true;
+    try {
+      while (this.currentIndex < this.pendingBlocks.length) {
+        await this.onApplyEdit();
+      }
+    } finally {
+      this.autoApplyRunInFlight = false;
+    }
   }
 
   // postCurrentBlockOrSummary sends the webview whatever comes next: the
