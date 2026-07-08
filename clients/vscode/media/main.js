@@ -49,14 +49,20 @@
   // entire search text red, the entire replace text green, no word/line-
   // level diffing -- matching the TUI's non-LCS rendering (renderReviewPanel
   // in clients/tui/chat.go) so both surfaces present the same information
-  // the same way. moreCount > 0 means the response had additional blocks
-  // this slice doesn't act on yet; that's stated explicitly so it reads as
-  // "not shown yet", not as a bug that silently dropped them.
-  function showEditProposal(edit, moreCount) {
+  // the same way. index/total place this block in the sequential review
+  // (e.g. "Edit 2 of 3") -- the host walks the full block list one at a
+  // time (see startEditReview/postCurrentBlockOrSummary in chatPanel.ts)
+  // and this function is called once per block as the host advances.
+  function showEditProposal(edit, index, total) {
     clearEditProposal();
 
     const container = document.createElement('div');
     container.className = 'edit-proposal';
+
+    const indexEl = document.createElement('div');
+    indexEl.className = 'edit-index';
+    indexEl.textContent = `Edit ${index + 1} of ${total}`;
+    container.appendChild(indexEl);
 
     const pathEl = document.createElement('div');
     pathEl.className = 'file-path';
@@ -77,13 +83,6 @@
       pre.appendChild(span);
     }
     container.appendChild(pre);
-
-    if (moreCount > 0) {
-      const note = document.createElement('div');
-      note.className = 'more-note';
-      note.textContent = `${moreCount} more edit${moreCount === 1 ? '' : 's'} not shown yet`;
-      container.appendChild(note);
-    }
 
     const actions = document.createElement('div');
     actions.className = 'actions';
@@ -148,6 +147,37 @@
     currentEditProposalEl = null;
   }
 
+  // showEditSummary renders the end-of-run outcome once every block in a
+  // sequential review has been applied, skipped, or refused -- mirroring
+  // finishReview's system-turn text in clients/tui/chat.go ("N applied, N
+  // skipped, N refused" + refusal reasons + a backup restore hint).
+  function showEditSummary(summary) {
+    const container = document.createElement('div');
+    container.className = 'edit-summary';
+
+    const line = document.createElement('div');
+    line.className = 'summary-line';
+    line.textContent = `${summary.total} processed: ${summary.applied} applied, ${summary.skipped} skipped, ${summary.refused} refused`;
+    container.appendChild(line);
+
+    for (const reason of summary.refusalReasons || []) {
+      const r = document.createElement('div');
+      r.className = 'summary-refusal';
+      r.textContent = `refused: ${reason}`;
+      container.appendChild(r);
+    }
+
+    if (summary.applied > 0 && summary.backupDir) {
+      const b = document.createElement('div');
+      b.className = 'summary-backup';
+      b.textContent = `backups: ${summary.backupDir} (restore with: codeterminal-daemon edits undo)`;
+      container.appendChild(b);
+    }
+
+    transcriptEl.appendChild(container);
+    transcriptEl.scrollTop = transcriptEl.scrollHeight;
+  }
+
   function send() {
     const text = inputEl.value.trim();
     if (!text || streaming) {
@@ -200,7 +230,7 @@
         setStreaming(false);
         break;
       case 'editProposal':
-        showEditProposal(msg.edit, msg.moreCount);
+        showEditProposal(msg.edit, msg.index, msg.total);
         break;
       case 'applyResult':
         if (currentEditProposalEl) {
@@ -210,6 +240,9 @@
             backupDir: msg.backupDir,
           });
         }
+        break;
+      case 'editSummary':
+        showEditSummary(msg);
         break;
     }
   });

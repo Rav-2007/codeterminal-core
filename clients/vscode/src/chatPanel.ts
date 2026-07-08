@@ -322,6 +322,11 @@ export class ChatPanel {
     border-radius: 4px;
     font-size: 12px;
   }
+  .edit-proposal .edit-index {
+    font-size: 11px;
+    opacity: 0.6;
+    margin-bottom: 2px;
+  }
   .edit-proposal .file-path {
     font-weight: 600;
     margin-bottom: 6px;
@@ -340,11 +345,6 @@ export class ChatPanel {
     color: var(--vscode-gitDecoration-addedResourceForeground, #2ea043);
     background: rgba(46, 160, 67, 0.08);
   }
-  .edit-proposal .more-note {
-    opacity: 0.7;
-    font-style: italic;
-    margin-bottom: 8px;
-  }
   .edit-proposal .actions { display: flex; gap: 6px; }
   .edit-proposal .result {
     margin-top: 6px;
@@ -352,6 +352,16 @@ export class ChatPanel {
   }
   .edit-proposal .result.ok { color: var(--vscode-gitDecoration-addedResourceForeground, #2ea043); }
   .edit-proposal .result.refused { color: var(--vscode-errorForeground); }
+  .edit-summary {
+    margin: 4px 12px 14px;
+    padding: 8px 10px;
+    border: 1px solid var(--vscode-panel-border, #444);
+    border-radius: 4px;
+    font-size: 12px;
+  }
+  .edit-summary .summary-line { font-weight: 600; margin-bottom: 4px; }
+  .edit-summary .summary-refusal { color: var(--vscode-errorForeground); margin-bottom: 2px; }
+  .edit-summary .summary-backup { opacity: 0.7; font-style: italic; margin-top: 4px; }
 </style>
 </head>
 <body>
