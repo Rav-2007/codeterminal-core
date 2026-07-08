@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -127,6 +128,16 @@ func (s *Server) handleConn(conn net.Conn) {
 			return
 		}
 		s.handleApplyEdit(enc, applyReq)
+		return
+	}
+
+	if isUndoRequest(raw) {
+		var undoReq protocol.UndoRequest
+		if err := json.Unmarshal(raw, &undoReq); err != nil {
+			s.logger.Printf("undo request decode error: %v", err)
+			return
+		}
+		s.handleUndo(enc, undoReq)
 		return
 	}
 
@@ -287,6 +298,88 @@ func isWorkspaceBackupSessionDir(realWorkspaceRoot, dir string) bool {
 	}
 	info, err := os.Stat(dir)
 	return err == nil && info.IsDir()
+}
+
+// isUndoRequest sniffs whether raw is an UndoRequest (identified by the
+// presence of its "undo" key, mirroring isApplyEditRequest's peek-for-"edit"
+// approach) rather than a PromptRequest. UndoRequest always serializes
+// "undo" (no omitempty, see its doc comment), so a real one is always
+// caught here; older clients that don't know this message only ever send
+// PromptRequest-shaped JSON, which has no "undo" key, so they always fall
+// through to the prompt path unaffected.
+func isUndoRequest(raw json.RawMessage) bool {
+	var peek struct {
+		Undo *bool `json:"undo"`
+	}
+	if err := json.Unmarshal(raw, &peek); err != nil {
+		return false
+	}
+	return peek.Undo != nil
+}
+
+// handleUndo runs an UndoRequest through the exact same runUndoSession the
+// CLI's `edits undo` already uses — no restore logic is reimplemented here.
+// Workspace resolution always uses this daemon's own configured s.workspace,
+// never req.Workspace, same convention as every other request type.
+//
+// When req.BackupSessionDir is supplied, it must be a directory this daemon
+// itself could have issued (confined to the workspace's backups tree, still
+// present on disk) — reusing isWorkspaceBackupSessionDir verbatim, the same
+// check ApplyEditRequest's BackupSessionDir goes through. Unlike the apply
+// path, a value that fails this check is a hard refusal, not a fallback: an
+// unrecognized session has no sensible "undo something else instead"
+// behavior. An empty BackupSessionDir instead resolves to the most recent
+// session, via the same resolveBackupSession the CLI uses.
+//
+// force is always false and in is always empty here: a socket client has no
+// controlling terminal to answer runUndoSession's "overwrite anyway? [y/N]"
+// prompt, so a file that changed since the apply run is always left guarded
+// rather than silently forced — the same safe default the CLI gets by just
+// pressing enter. Guarded files are returned to the caller, never hidden.
+func (s *Server) handleUndo(enc *json.Encoder, req protocol.UndoRequest) {
+	realRoot, err := editapply.ResolveRealWorkspaceRoot(s.workspace)
+	if err != nil {
+		s.logger.Printf("undo: resolving workspace root: %v", err)
+		enc.Encode(protocol.UndoResponse{ProtocolVersion: protocol.ProtocolVersion, Error: err.Error()})
+		return
+	}
+
+	backupsRoot := filepath.Join(realRoot, ".codeterminal", "backups")
+
+	var sessionDir string
+	if req.BackupSessionDir != "" {
+		if !isWorkspaceBackupSessionDir(realRoot, req.BackupSessionDir) {
+			s.logger.Printf("undo: refused unrecognized session dir %q", req.BackupSessionDir)
+			enc.Encode(protocol.UndoResponse{
+				ProtocolVersion: protocol.ProtocolVersion,
+				Error:           fmt.Sprintf("backup session %q not found under %s", req.BackupSessionDir, backupsRoot),
+			})
+			return
+		}
+		sessionDir = req.BackupSessionDir
+	} else {
+		sessionDir, err = resolveBackupSession(backupsRoot, "")
+		if err != nil {
+			s.logger.Printf("undo: resolving latest session: %v", err)
+			enc.Encode(protocol.UndoResponse{ProtocolVersion: protocol.ProtocolVersion, Error: err.Error()})
+			return
+		}
+	}
+
+	restored, guarded, err := runUndoSession(realRoot, sessionDir, false, strings.NewReader(""), io.Discard, s.logger)
+	if err != nil {
+		s.logger.Printf("undo: restoring %s: %v", sessionDir, err)
+		enc.Encode(protocol.UndoResponse{ProtocolVersion: protocol.ProtocolVersion, Error: err.Error()})
+		return
+	}
+
+	s.logger.Printf("undo: restored %d file(s) from %s (%d guarded)", restored, sessionDir, len(guarded))
+	enc.Encode(protocol.UndoResponse{
+		ProtocolVersion: protocol.ProtocolVersion,
+		Restored:        restored,
+		Guarded:         guarded,
+		SessionDir:      sessionDir,
+	})
 }
 
 // loadPersistedHistory returns this daemon's cross-session conversation

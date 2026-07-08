@@ -196,6 +196,57 @@ type ApplyEditResponse struct {
 	BackupDir       string `json:"backup_dir,omitempty"`
 }
 
+// UndoRequest asks the daemon to revert a backup session -- the same
+// restore the CLI's `codeterminal-daemon edits undo` already performs (see
+// daemon/apply_cmd.go's runUndoSession), reached over the socket instead of
+// a terminal. Sent on its own fresh connection (after a HandshakeRequest,
+// same as PromptRequest/ApplyEditRequest).
+//
+// Undo is the discriminator distinguishing this message from PromptRequest
+// and ApplyEditRequest on the wire -- always true, deliberately without
+// omitempty, so it's always present in the serialized JSON (mirroring how
+// ApplyEditRequest.Edit is always present and non-nil, which is what
+// isApplyEditRequest peeks for). Workspace is optional and additive, same
+// convention as the other request types: the daemon always resolves
+// against its own configured workspace root.
+//
+// BackupSessionDir is optional: a full path to a backup session directory
+// (typically one a prior ApplyEditResponse.BackupDir already returned to
+// this same client), confined to <workspace>/.codeterminal/backups and
+// still existing on disk. When empty, the daemon reverts the MOST RECENT
+// session instead (mirroring `edits undo`'s no --session default) -- but a
+// client that already knows its own session dir (like the VS Code panel,
+// which received it in a prior ApplyEditResponse) should always send it
+// explicitly rather than relying on "most recent", since another client
+// could have started a newer apply run against the same workspace in the
+// meantime.
+type UndoRequest struct {
+	ProtocolVersion  int    `json:"protocol_version"`
+	Undo             bool   `json:"undo"`
+	Workspace        string `json:"workspace,omitempty"`
+	BackupSessionDir string `json:"backup_session_dir,omitempty"`
+}
+
+// UndoResponse is the daemon's reply to an UndoRequest. Restored is the
+// number of files actually reverted. Guarded lists (workspace-relative)
+// paths that were left untouched because their on-disk content no longer
+// matched the apply run's post-apply snapshot (hand-edited, or otherwise
+// changed, since the apply) -- a client MUST surface this list rather than
+// imply every file reverted when some were guarded, since runUndoSession
+// deliberately never force-overwrites those without an explicit force flag,
+// which this request does not expose. SessionDir reports which session
+// directory was actually restored, useful when BackupSessionDir was empty
+// and the daemon picked "most recent". Error is set (Restored/Guarded left
+// at their zero values) when the session directory couldn't be resolved or
+// validated at all -- a hard refusal, not a partial-restore report.
+type UndoResponse struct {
+	ProtocolVersion int      `json:"protocol_version"`
+	Restored        int      `json:"restored"`
+	Guarded         []string `json:"guarded,omitempty"`
+	SessionDir      string   `json:"session_dir,omitempty"`
+	Error           string   `json:"error,omitempty"`
+}
+
 // GroundingInfo reports whether the daemon augmented THIS request with
 // retrieved local context, and from where. It's purely a report of a
 // decision already made server-side (see daemon/context.go's

@@ -116,7 +116,7 @@ func TestHandleApplyEdit_SharedBackupSessionDirReusesSameSessionAcrossBlocks(t *
 	// The whole point of a shared session: `edits undo` on this ONE dir
 	// reverts BOTH blocks in a single restore run.
 	var undoOut bytes.Buffer
-	if err := runUndoSession(root, sessionDir, false, strings.NewReader(""), &undoOut, discardLogger()); err != nil {
+	if _, _, err := runUndoSession(root, sessionDir, false, strings.NewReader(""), &undoOut, discardLogger()); err != nil {
 		t.Fatalf("runUndoSession: %v", err)
 	}
 	if got := readFileString(t, filepath.Join(root, "foo.go")); got != fooOriginal {

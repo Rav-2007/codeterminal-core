@@ -176,7 +176,8 @@ func runEditsUndoCommand(args []string, logger *log.Logger) error {
 		return err
 	}
 
-	return runUndoSession(realRoot, sessionDir, *force, os.Stdin, os.Stdout, logger)
+	_, _, err = runUndoSession(realRoot, sessionDir, *force, os.Stdin, os.Stdout, logger)
+	return err
 }
 
 // resolveBackupSession returns the backup session directory to restore:
@@ -216,11 +217,20 @@ func resolveBackupSession(backupsRoot, session string) (string, error) {
 // deleted, or otherwise no longer matching) is never silently overwritten:
 // it's listed as guarded and only restored if force is true or the user
 // confirms when prompted afterwards.
-func runUndoSession(realWorkspaceRoot, sessionDir string, force bool, in io.Reader, out io.Writer, logger *log.Logger) error {
+//
+// Returns the number of files actually restored and the relative paths left
+// guarded (still not restored once this call returns -- either left as-is
+// or, if the caller declined to force/confirm, never touched), alongside
+// the same prose written to out/logger this always wrote. This is the
+// single core both the CLI's `edits undo` and the daemon's UndoRequest
+// handler (see daemon/server.go) call -- neither reimplements the restore
+// logic; the handler only additionally needs the counts as return values
+// rather than parsed out of printed text.
+func runUndoSession(realWorkspaceRoot, sessionDir string, force bool, in io.Reader, out io.Writer, logger *log.Logger) (restored int, guarded []string, err error) {
 	beforeDir := filepath.Join(sessionDir, "before")
 
 	var relPaths []string
-	err := filepath.WalkDir(beforeDir, func(path string, d fs.DirEntry, err error) error {
+	err = filepath.WalkDir(beforeDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -235,14 +245,14 @@ func runUndoSession(realWorkspaceRoot, sessionDir string, force bool, in io.Read
 		return nil
 	})
 	if err != nil {
-		return fmt.Errorf("reading backup session %s: %w", sessionDir, err)
+		return 0, nil, fmt.Errorf("reading backup session %s: %w", sessionDir, err)
 	}
 	if len(relPaths) == 0 {
 		fmt.Fprintf(out, "no backed-up files in %s\n", sessionDir)
-		return nil
+		return 0, nil, nil
 	}
 
-	var safe, guarded []string
+	var safe []string
 	for _, rel := range relPaths {
 		afterContent, err := os.ReadFile(filepath.Join(sessionDir, "after", rel))
 		if err != nil {
@@ -258,10 +268,9 @@ func runUndoSession(realWorkspaceRoot, sessionDir string, force bool, in io.Read
 		safe = append(safe, rel)
 	}
 
-	var restored int
 	for _, rel := range safe {
 		if err := restoreOne(realWorkspaceRoot, beforeDir, rel); err != nil {
-			return fmt.Errorf("restoring %s: %w", rel, err)
+			return restored, guarded, fmt.Errorf("restoring %s: %w", rel, err)
 		}
 		fmt.Fprintf(out, "restored %s\n", rel)
 		restored++
@@ -282,13 +291,14 @@ func runUndoSession(realWorkspaceRoot, sessionDir string, force bool, in io.Read
 		}
 
 		if proceed {
-			for _, rel := range guarded {
+			for i, rel := range guarded {
 				if err := restoreOne(realWorkspaceRoot, beforeDir, rel); err != nil {
-					return fmt.Errorf("restoring %s: %w", rel, err)
+					return restored, guarded[i:], fmt.Errorf("restoring %s: %w", rel, err)
 				}
 				fmt.Fprintf(out, "restored %s (forced)\n", rel)
 				restored++
 			}
+			guarded = nil
 		} else {
 			fmt.Fprintln(out, "left as-is")
 		}
@@ -296,7 +306,7 @@ func runUndoSession(realWorkspaceRoot, sessionDir string, force bool, in io.Read
 
 	fmt.Fprintf(out, "\n%d file(s) restored from %s\n", restored, sessionDir)
 	logger.Printf("edits undo: restored %d file(s) from %s (%d guarded)", restored, sessionDir, len(guarded))
-	return nil
+	return restored, guarded, nil
 }
 
 func restoreOne(realWorkspaceRoot, beforeDir, rel string) error {
