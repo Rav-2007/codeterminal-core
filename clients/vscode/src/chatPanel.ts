@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 
-import { GroundingInfo, Turn, preflightHandshake, streamPrompt } from './daemonClient';
+import { EditBlockWire, GroundingInfo, Turn, applyEdit, preflightHandshake, streamPrompt } from './daemonClient';
 
 const CLIENT_NAME = 'codeterminal-vscode';
 const VIEW_TYPE = 'codeterminalChat';
@@ -26,6 +26,13 @@ export class ChatPanel {
   private readonly disposables: vscode.Disposable[] = [];
   private transcript: Turn[] = [];
   private inFlight: AbortController | undefined;
+
+  // pendingEdit is the FIRST edit block from the most recent response's
+  // edit_proposals, if any and if not yet applied/skipped -- this slice
+  // only ever acts on one block at a time (see MULTI-BLOCK note in
+  // onEditProposals below). Cleared on apply, skip, or a new prompt.
+  private pendingEdit: EditBlockWire | undefined;
+  private applyInFlight = false;
 
   static createOrShow(extensionUri: vscode.Uri): void {
     if (ChatPanel.current) {
@@ -72,6 +79,10 @@ export class ChatPanel {
   private handleMessage(msg: { type: string; text?: string }): void {
     if (msg.type === 'prompt' && typeof msg.text === 'string') {
       this.onPrompt(msg.text);
+    } else if (msg.type === 'applyEdit') {
+      this.onApplyEdit();
+    } else if (msg.type === 'skipEdit') {
+      this.pendingEdit = undefined;
     }
   }
 
@@ -79,6 +90,12 @@ export class ChatPanel {
     if (this.inFlight) {
       return; // a turn is already in flight; the webview disables input while streaming
     }
+
+    // A new turn makes any not-yet-actioned proposal from the PREVIOUS
+    // answer stale -- clear it so a lagging Apply click can never target
+    // the wrong block. The webview already hid its panel locally on send;
+    // this only guards the extension-host state applyEdit reads from.
+    this.pendingEdit = undefined;
 
     // Snapshot BEFORE appending this turn, so the not-yet-answered prompt
     // never ends up in its own History -- same ordering as chat.go's
@@ -98,6 +115,17 @@ export class ChatPanel {
         answer += token;
         this.panel.webview.postMessage({ type: 'token', text: token });
       },
+      onEditProposals: (proposals: EditBlockWire[]) => {
+        // OUT OF SCOPE for this slice: acting on more than the first block.
+        // Still show the count so extra proposals read as "not shown yet",
+        // not as a bug that silently dropped them.
+        this.pendingEdit = proposals[0];
+        this.panel.webview.postMessage({
+          type: 'editProposal',
+          edit: proposals[0],
+          moreCount: proposals.length - 1,
+        });
+      },
       onDone: () => {
         this.transcript.push({ role: 'assistant', content: answer });
         this.inFlight = undefined;
@@ -108,6 +136,37 @@ export class ChatPanel {
         this.panel.webview.postMessage({ type: 'error', message: err.message });
       },
     });
+  }
+
+  // onApplyEdit sends the pending block to the daemon exactly as received
+  // -- no re-parsing, no re-diffing. All safety gates (exact-match,
+  // ambiguity-refuse, workspace confinement, secret-file refusal, syntax
+  // gate) run daemon-side in editapply.PrepareEdit; this only relays the
+  // verbatim result, success or refusal, back to the webview.
+  private async onApplyEdit(): Promise<void> {
+    if (this.applyInFlight || !this.pendingEdit) {
+      return;
+    }
+    const edit = this.pendingEdit;
+    this.applyInFlight = true;
+    try {
+      const result = await applyEdit(CLIENT_NAME, workspacePath(), edit);
+      this.panel.webview.postMessage({
+        type: 'applyResult',
+        applied: result.applied,
+        error: result.error,
+        backupDir: result.backup_dir,
+      });
+    } catch (err) {
+      this.panel.webview.postMessage({
+        type: 'applyResult',
+        applied: false,
+        error: (err as Error).message,
+      });
+    } finally {
+      this.applyInFlight = false;
+      this.pendingEdit = undefined;
+    }
   }
 
   private dispose(): void {
@@ -166,6 +225,43 @@ export class ChatPanel {
     cursor: pointer;
   }
   button:disabled { opacity: 0.5; cursor: default; }
+  .edit-proposal {
+    margin: 4px 12px 14px;
+    padding: 8px 10px;
+    border: 1px solid var(--vscode-panel-border, #444);
+    border-radius: 4px;
+    font-size: 12px;
+  }
+  .edit-proposal .file-path {
+    font-weight: 600;
+    margin-bottom: 6px;
+  }
+  .edit-proposal pre {
+    margin: 0 0 8px;
+    white-space: pre-wrap;
+    font-family: var(--vscode-editor-font-family, monospace);
+  }
+  .edit-proposal .diff-line { display: block; padding: 0 4px; }
+  .edit-proposal .diff-line.removed {
+    color: var(--vscode-gitDecoration-deletedResourceForeground, #f14c4c);
+    background: rgba(241, 76, 76, 0.08);
+  }
+  .edit-proposal .diff-line.added {
+    color: var(--vscode-gitDecoration-addedResourceForeground, #2ea043);
+    background: rgba(46, 160, 67, 0.08);
+  }
+  .edit-proposal .more-note {
+    opacity: 0.7;
+    font-style: italic;
+    margin-bottom: 8px;
+  }
+  .edit-proposal .actions { display: flex; gap: 6px; }
+  .edit-proposal .result {
+    margin-top: 6px;
+    font-style: italic;
+  }
+  .edit-proposal .result.ok { color: var(--vscode-gitDecoration-addedResourceForeground, #2ea043); }
+  .edit-proposal .result.refused { color: var(--vscode-errorForeground); }
 </style>
 </head>
 <body>

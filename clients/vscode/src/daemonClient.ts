@@ -49,12 +49,32 @@ export interface GroundingInfo {
   workspace_mismatch?: boolean;
 }
 
+export interface EditBlockWire {
+  file_path: string;
+  search: string;
+  replace: string;
+}
+
 export interface TokenResponse {
   protocol_version: number;
   token?: string;
   done: boolean;
   error?: string;
   grounding?: GroundingInfo;
+  edit_proposals?: EditBlockWire[];
+}
+
+export interface ApplyEditRequest {
+  protocol_version: number;
+  workspace?: string;
+  edit: EditBlockWire;
+}
+
+export interface ApplyEditResponse {
+  protocol_version: number;
+  applied: boolean;
+  error?: string;
+  backup_dir?: string;
 }
 
 interface LockFile {
@@ -202,6 +222,7 @@ export function connectToDaemon(clientName: string, signal?: AbortSignal): Promi
 export interface StreamHandlers {
   onGrounding?: (info: GroundingInfo) => void;
   onToken?: (token: string) => void;
+  onEditProposals?: (proposals: EditBlockWire[]) => void;
   onDone?: () => void;
   onError?: (err: Error) => void;
 }
@@ -257,6 +278,9 @@ export async function streamPrompt(
     }
     if (tok.done) {
       finished = true;
+      if (tok.edit_proposals && tok.edit_proposals.length > 0) {
+        handlers.onEditProposals?.(tok.edit_proposals);
+      }
       handlers.onDone?.();
       socket.destroy();
     }
@@ -285,6 +309,29 @@ export async function streamPrompt(
 
   const req: PromptRequest = { protocol_version: PROTOCOL_VERSION, prompt, workspace, history };
   writeLine(socket, req);
+}
+
+// applyEdit opens a fresh connection, sends exactly one ApplyEditRequest
+// carrying the edit block content the panel already received via
+// TokenResponse.edit_proposals, and resolves with the daemon's single
+// ApplyEditResponse. All five safety gates (exact-match, ambiguity-refuse,
+// workspace confinement, secret-file refusal, syntax gate) run daemon-side
+// via editapply.PrepareEdit before anything is written -- this function
+// only renders whatever the daemon reports, it never re-implements or
+// bypasses a gate.
+export async function applyEdit(clientName: string, workspace: string, edit: EditBlockWire): Promise<ApplyEditResponse> {
+  const { socket } = await connectToDaemon(clientName);
+  return new Promise((resolve, reject) => {
+    const decoder = new LineDecoder((obj) => {
+      socket.destroy();
+      resolve(obj as ApplyEditResponse);
+    });
+    socket.on('data', (chunk: Buffer) => decoder.feed(chunk));
+    socket.once('error', (err) => reject(err));
+
+    const req: ApplyEditRequest = { protocol_version: PROTOCOL_VERSION, workspace, edit };
+    writeLine(socket, req);
+  });
 }
 
 // preflightHandshake opens a connection purely to read
