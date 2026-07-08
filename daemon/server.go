@@ -170,11 +170,11 @@ func (s *Server) handleConn(conn net.Conn) {
 		return
 	}
 
-	enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Done: true})
+	blocks := s.parseAndLogEditBlocks(full.String())
+	enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Done: true, EditProposals: editProposalsFromBlocks(blocks)})
 	s.logger.Print("stream complete")
 
 	s.persistTurn(promptReq.Prompt, full.String())
-	s.logEditBlocks(full.String())
 }
 
 // loadPersistedHistory returns this daemon's cross-session conversation
@@ -229,14 +229,17 @@ func (s *Server) resetPersistedHistory() {
 	s.logger.Print("persisted history cleared")
 }
 
-// logEditBlocks parses the just-completed response for SEARCH/REPLACE edit
-// blocks and logs a structured summary. Nothing is applied to disk here —
-// this is parse-and-log only.
-func (s *Server) logEditBlocks(response string) {
+// parseAndLogEditBlocks parses the just-completed response for SEARCH/REPLACE
+// edit blocks and logs a structured summary, returning whatever it found (nil
+// on a parse error or a response with no blocks). Nothing is applied to disk
+// here or by the caller sending EditProposals on — this is parse-only;
+// PrepareEdit's safety gates run only later, when a client actually sends an
+// ApplyEditRequest for one of these.
+func (s *Server) parseAndLogEditBlocks(response string) []editapply.EditBlock {
 	blocks, err := editapply.ParseEditBlocks(response)
 	if err != nil {
 		s.logger.Printf("edit block parse error: %v", err)
-		return
+		return nil
 	}
 
 	s.logger.Printf("parsed %d edit block(s)", len(blocks))
@@ -244,6 +247,21 @@ func (s *Server) logEditBlocks(response string) {
 		s.logger.Printf("  block %d: path=%s search_lines=%d replace_lines=%d",
 			i+1, b.FilePath, lineCount(b.Search), lineCount(b.Replace))
 	}
+	return blocks
+}
+
+// editProposalsFromBlocks converts parsed edit blocks to their wire form for
+// TokenResponse.EditProposals. A nil/empty input returns nil, so the
+// json:"...,omitempty" tag drops the field entirely for plain-text answers.
+func editProposalsFromBlocks(blocks []editapply.EditBlock) []protocol.EditBlockWire {
+	if len(blocks) == 0 {
+		return nil
+	}
+	wire := make([]protocol.EditBlockWire, len(blocks))
+	for i, b := range blocks {
+		wire[i] = protocol.EditBlockWire{FilePath: b.FilePath, Search: b.Search, Replace: b.Replace}
+	}
+	return wire
 }
 
 // lineCount returns the number of lines in s, treating an empty string as

@@ -129,12 +129,61 @@ type Turn struct {
 // with Token set, and exactly one final message with Done set to true
 // (Error set instead if the stream failed). Grounding is additive: older
 // clients that don't know this field simply ignore it.
+//
+// EditProposals is additive and carried only on the final (Done) message:
+// SEARCH/REPLACE edit blocks the daemon parsed out of the just-completed
+// response (see editapply.ParseEditBlocks), surfaced so a client can offer
+// to review/apply them without reimplementing the parser itself. It is not
+// an invitation to write anything — PrepareEdit's safety gates (exact-match,
+// ambiguity-refuse, workspace confinement, secret-file refusal, syntax
+// gate) still run only when the client actually sends an ApplyEditRequest
+// for one of these. Older clients that don't know this field simply ignore
+// it, exactly like Grounding.
 type TokenResponse struct {
-	ProtocolVersion int            `json:"protocol_version"`
-	Token           string         `json:"token,omitempty"`
-	Done            bool           `json:"done"`
-	Error           string         `json:"error,omitempty"`
-	Grounding       *GroundingInfo `json:"grounding,omitempty"`
+	ProtocolVersion int             `json:"protocol_version"`
+	Token           string          `json:"token,omitempty"`
+	Done            bool            `json:"done"`
+	Error           string          `json:"error,omitempty"`
+	Grounding       *GroundingInfo  `json:"grounding,omitempty"`
+	EditProposals   []EditBlockWire `json:"edit_proposals,omitempty"`
+}
+
+// EditBlockWire is the wire form of one parsed SEARCH/REPLACE edit block
+// (see editapply.EditBlock) — a plain data mirror with json tags, since the
+// daemon-only editapply package has no wire-format concerns of its own and
+// protocol must not import it.
+type EditBlockWire struct {
+	FilePath string `json:"file_path"`
+	Search   string `json:"search"`
+	Replace  string `json:"replace"`
+}
+
+// ApplyEditRequest asks the daemon to apply one edit block through the
+// existing editapply safety gates and write it to disk. Sent on its own
+// fresh connection (after a HandshakeRequest, same as PromptRequest) —
+// unlike PromptRequest, it carries the full edit block content rather than
+// an ID, since the daemon keeps no state across connections and a client's
+// only record of "which edit" is what it already received in a prior
+// TokenResponse.EditProposals. Workspace is optional and additive, same
+// convention as PromptRequest.Workspace: the daemon always resolves against
+// its own configured workspace root regardless of what's sent here.
+type ApplyEditRequest struct {
+	ProtocolVersion int           `json:"protocol_version"`
+	Workspace       string        `json:"workspace,omitempty"`
+	Edit            EditBlockWire `json:"edit"`
+}
+
+// ApplyEditResponse is the daemon's reply to an ApplyEditRequest. Applied is
+// false whenever any safety gate refuses the edit or the write itself
+// fails; Error then holds that gate's refusal string verbatim (the same
+// text editapply.PrepareEdit/Apply would produce for the CLI or TUI) so a
+// client can show the identical reason without reimplementing any gate.
+// BackupDir is set only when Applied is true.
+type ApplyEditResponse struct {
+	ProtocolVersion int    `json:"protocol_version"`
+	Applied         bool   `json:"applied"`
+	Error           string `json:"error,omitempty"`
+	BackupDir       string `json:"backup_dir,omitempty"`
 }
 
 // GroundingInfo reports whether the daemon augmented THIS request with

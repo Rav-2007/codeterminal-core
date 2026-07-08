@@ -342,8 +342,11 @@ func (m chatModel) handleToken(msg tokenMsg) (tea.Model, tea.Cmd) {
 
 // checkForEditBlocks runs once a stream finishes: it parses the just-
 // completed assistant turn for SEARCH/REPLACE edit blocks (the same
-// editapply.ParseEditBlocks the daemon already runs to log them — see
-// logEditBlocks in daemon/server.go). No blocks, or a parse error, means
+// editapply.ParseEditBlocks the daemon already runs to log and, as of the
+// EditProposals protocol field, surface to other clients — see
+// parseAndLogEditBlocks in daemon/server.go). The TUI ignores that new
+// field entirely and keeps parsing client-side, same as before. No blocks,
+// or a parse error, means
 // there's nothing to review: back to normal idle chat, unchanged from
 // before this feature existed. Blocks found means entering the modal
 // edit-review state instead.
