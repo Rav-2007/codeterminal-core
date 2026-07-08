@@ -121,9 +121,14 @@ session-buffer-compression note.
   (2) BackupAfter failures were silently swallowed by the TUI; now treated as a failure like
   the CLI. Both covered by new regression tests. Both apply paths now route through Apply().
 
-- **VS Code diff-apply: multi-block edits** (next slice) — current slice acts on only the
-  FIRST proposed edit block and visibly notes "N more edits not shown yet". Extend to review
-  and apply multiple blocks (mirror the TUI's sequential N-block review).
+- **DONE: VS Code diff-apply: multi-block edits** — extended the single-block slice to
+  sequential review of all proposed blocks (mirrors the TUI's N-block loop): each block
+  shows an Edit i/N indicator, all blocks in a response share one backup session dir, and
+  an Apply against a block whose source has drifted since the proposal was generated is
+  refused at apply-time (stale-edit check) rather than applied against the wrong text.
+  Verified live: sequential Edit i/N, shared backup dir across blocks, stale-edit refused
+  at apply-time, correct summary counts. Committed across 3 sub-slices (e60214b, c102678,
+  b24dc4a).
 
 - **VS Code diff-apply: dispatch is presence-of-`edit`-key** (hygiene note) — the daemon
   distinguishes an ApplyEditRequest from a PromptRequest by sniffing for the "edit" JSON key
