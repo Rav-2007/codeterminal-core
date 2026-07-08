@@ -112,8 +112,24 @@ func (s *Server) handleConn(conn net.Conn) {
 	}
 	s.logger.Printf("handshake ok with client %q", hsReq.ClientName)
 
+	var raw json.RawMessage
+	if err := dec.Decode(&raw); err != nil {
+		s.logger.Printf("request read error: %v", err)
+		return
+	}
+
+	if isApplyEditRequest(raw) {
+		var applyReq protocol.ApplyEditRequest
+		if err := json.Unmarshal(raw, &applyReq); err != nil {
+			s.logger.Printf("apply-edit request decode error: %v", err)
+			return
+		}
+		s.handleApplyEdit(enc, applyReq)
+		return
+	}
+
 	var promptReq protocol.PromptRequest
-	if err := dec.Decode(&promptReq); err != nil {
+	if err := json.Unmarshal(raw, &promptReq); err != nil {
 		s.logger.Printf("prompt read error: %v", err)
 		return
 	}
@@ -175,6 +191,67 @@ func (s *Server) handleConn(conn net.Conn) {
 	s.logger.Print("stream complete")
 
 	s.persistTurn(promptReq.Prompt, full.String())
+}
+
+// isApplyEditRequest sniffs whether raw is an ApplyEditRequest (identified
+// by the presence of its "edit" key) rather than a PromptRequest, so one
+// connection can carry either message right after a successful handshake
+// with no wire-level discriminator field or protocol version bump — older
+// clients only ever send PromptRequest-shaped JSON, which has no "edit"
+// key, so this always falls through to the existing prompt path for them.
+func isApplyEditRequest(raw json.RawMessage) bool {
+	var peek struct {
+		Edit *protocol.EditBlockWire `json:"edit"`
+	}
+	if err := json.Unmarshal(raw, &peek); err != nil {
+		return false
+	}
+	return peek.Edit != nil
+}
+
+// handleApplyEdit runs an ApplyEditRequest through the same editapply core
+// the CLI's `edits apply` and the TUI's edit-review flow use — PrepareEdit
+// (exact-match, ambiguity-refuse, workspace confinement, secret-file
+// refusal, syntax gate), then Apply (backup + write) only if PrepareEdit
+// succeeds. Workspace resolution always uses this daemon's own configured
+// s.workspace, never req.Workspace (same convention as PromptRequest —
+// see its doc comment), so a client can't redirect writes elsewhere by
+// lying about its workspace. Any failure at any stage is reported as
+// Applied: false with that stage's error verbatim — the identical string
+// PrepareEdit/Apply would produce for the CLI or TUI — and no file is
+// written, since Apply is only called after PrepareEdit has already
+// succeeded.
+func (s *Server) handleApplyEdit(enc *json.Encoder, req protocol.ApplyEditRequest) {
+	realRoot, err := editapply.ResolveRealWorkspaceRoot(s.workspace)
+	if err != nil {
+		s.logger.Printf("apply-edit: resolving workspace root: %v", err)
+		enc.Encode(protocol.ApplyEditResponse{ProtocolVersion: protocol.ProtocolVersion, Applied: false, Error: err.Error()})
+		return
+	}
+
+	block := editapply.EditBlock{FilePath: req.Edit.FilePath, Search: req.Edit.Search, Replace: req.Edit.Replace}
+	prepared, err := editapply.PrepareEdit(realRoot, block)
+	if err != nil {
+		s.logger.Printf("apply-edit: refused %s: %v", block.FilePath, err)
+		enc.Encode(protocol.ApplyEditResponse{ProtocolVersion: protocol.ProtocolVersion, Applied: false, Error: err.Error()})
+		return
+	}
+
+	backupDir, err := editapply.NewBackupSessionDir(realRoot)
+	if err != nil {
+		s.logger.Printf("apply-edit: creating backup dir: %v", err)
+		enc.Encode(protocol.ApplyEditResponse{ProtocolVersion: protocol.ProtocolVersion, Applied: false, Error: err.Error()})
+		return
+	}
+
+	if err := editapply.Apply(realRoot, prepared, backupDir); err != nil {
+		s.logger.Printf("apply-edit: failed %s: %v", block.FilePath, err)
+		enc.Encode(protocol.ApplyEditResponse{ProtocolVersion: protocol.ProtocolVersion, Applied: false, Error: err.Error()})
+		return
+	}
+
+	s.logger.Printf("apply-edit: applied %s (backup: %s)", block.FilePath, backupDir)
+	enc.Encode(protocol.ApplyEditResponse{ProtocolVersion: protocol.ProtocolVersion, Applied: true, BackupDir: backupDir})
 }
 
 // loadPersistedHistory returns this daemon's cross-session conversation
