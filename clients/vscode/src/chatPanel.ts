@@ -27,11 +27,23 @@ export class ChatPanel {
   private transcript: Turn[] = [];
   private inFlight: AbortController | undefined;
 
-  // pendingEdit is the FIRST edit block from the most recent response's
-  // edit_proposals, if any and if not yet applied/skipped -- this slice
-  // only ever acts on one block at a time (see MULTI-BLOCK note in
-  // onEditProposals below). Cleared on apply, skip, or a new prompt.
-  private pendingEdit: EditBlockWire | undefined;
+  // Sequential edit-review state: set from the most recent response's
+  // edit_proposals (the FULL list -- the daemon already sends all parsed
+  // blocks, see onEditProposals below), reviewed one block at a time,
+  // mirroring reviewBlocks/reviewIndex/reviewBackupDir in
+  // clients/tui/chat.go. currentIndex only ever advances forward; there is
+  // no pre-filtering of gate-refused blocks (unlike the TUI) -- a refusal
+  // is discovered when the user clicks Apply for that block (see
+  // onApplyEdit), not before it's shown. All of this resets on a new
+  // prompt, same lifecycle pendingEdit used to follow, so a lagging Apply/
+  // Skip click from a stale review can never act on the wrong block.
+  private pendingBlocks: EditBlockWire[] = [];
+  private currentIndex = 0;
+  private runBackupDir: string | undefined;
+  private applied = 0;
+  private skipped = 0;
+  private refused = 0;
+  private refusalReasons: string[] = [];
   private applyInFlight = false;
 
   static createOrShow(extensionUri: vscode.Uri): void {
@@ -82,7 +94,7 @@ export class ChatPanel {
     } else if (msg.type === 'applyEdit') {
       this.onApplyEdit();
     } else if (msg.type === 'skipEdit') {
-      this.pendingEdit = undefined;
+      this.onSkipEdit();
     }
   }
 
@@ -91,11 +103,11 @@ export class ChatPanel {
       return; // a turn is already in flight; the webview disables input while streaming
     }
 
-    // A new turn makes any not-yet-actioned proposal from the PREVIOUS
-    // answer stale -- clear it so a lagging Apply click can never target
-    // the wrong block. The webview already hid its panel locally on send;
-    // this only guards the extension-host state applyEdit reads from.
-    this.pendingEdit = undefined;
+    // A new turn makes any not-yet-finished review from the PREVIOUS answer
+    // stale -- clear it so a lagging Apply/Skip click can never target the
+    // wrong block. The webview already hid its panel locally on send; this
+    // only guards the extension-host state onApplyEdit/onSkipEdit read from.
+    this.clearPendingReview();
 
     // Snapshot BEFORE appending this turn, so the not-yet-answered prompt
     // never ends up in its own History -- same ordering as chat.go's
@@ -116,15 +128,7 @@ export class ChatPanel {
         this.panel.webview.postMessage({ type: 'token', text: token });
       },
       onEditProposals: (proposals: EditBlockWire[]) => {
-        // OUT OF SCOPE for this slice: acting on more than the first block.
-        // Still show the count so extra proposals read as "not shown yet",
-        // not as a bug that silently dropped them.
-        this.pendingEdit = proposals[0];
-        this.panel.webview.postMessage({
-          type: 'editProposal',
-          edit: proposals[0],
-          moreCount: proposals.length - 1,
-        });
+        this.startEditReview(proposals);
       },
       onDone: () => {
         this.transcript.push({ role: 'assistant', content: answer });
@@ -138,19 +142,89 @@ export class ChatPanel {
     });
   }
 
-  // onApplyEdit sends the pending block to the daemon exactly as received
+  // clearPendingReview resets all sequential edit-review state -- called on
+  // a new prompt (a safety net; the webview already hides a stale panel
+  // locally on send) and again once a review's final summary has been
+  // posted, so a lagging click after the review ended is a no-op.
+  private clearPendingReview(): void {
+    this.pendingBlocks = [];
+    this.currentIndex = 0;
+    this.runBackupDir = undefined;
+    this.applied = 0;
+    this.skipped = 0;
+    this.refused = 0;
+    this.refusalReasons = [];
+  }
+
+  // startEditReview begins reviewing every block the daemon parsed out of
+  // the just-completed response, one at a time -- mirroring
+  // checkForEditBlocks/advanceReview in clients/tui/chat.go, except there is
+  // no local pre-gating here: the daemon already sent the full, ungated
+  // parse result (see editProposalsFromBlocks in daemon/server.go), and
+  // each block is only ever validated when the user actually clicks Apply
+  // for it (see onApplyEdit).
+  private startEditReview(blocks: EditBlockWire[]): void {
+    this.clearPendingReview();
+    this.pendingBlocks = blocks;
+    this.postCurrentBlockOrSummary();
+  }
+
+  // postCurrentBlockOrSummary sends the webview whatever comes next: the
+  // not-yet-processed block at currentIndex, or, once every block has been
+  // applied/skipped/refused, a one-time end-of-run summary -- mirroring
+  // finishReview's system-turn text in clients/tui/chat.go.
+  private postCurrentBlockOrSummary(): void {
+    if (this.currentIndex < this.pendingBlocks.length) {
+      this.panel.webview.postMessage({
+        type: 'editProposal',
+        edit: this.pendingBlocks[this.currentIndex],
+        index: this.currentIndex,
+        total: this.pendingBlocks.length,
+      });
+      return;
+    }
+    this.panel.webview.postMessage({
+      type: 'editSummary',
+      total: this.pendingBlocks.length,
+      applied: this.applied,
+      skipped: this.skipped,
+      refused: this.refused,
+      refusalReasons: this.refusalReasons,
+      backupDir: this.runBackupDir,
+    });
+    this.clearPendingReview();
+  }
+
+  // onApplyEdit sends the current block to the daemon exactly as received
   // -- no re-parsing, no re-diffing. All safety gates (exact-match,
   // ambiguity-refuse, workspace confinement, secret-file refusal, syntax
   // gate) run daemon-side in editapply.PrepareEdit; this only relays the
-  // verbatim result, success or refusal, back to the webview.
+  // verbatim result, success or refusal, back to the webview and advances
+  // to the next block either way -- a gate refusal is discovered here, at
+  // apply-click time, not pre-filtered before display (see the class-level
+  // doc comment on pendingBlocks).
+  //
+  // runBackupDir is threaded through as ApplyEditRequest.BackupSessionDir
+  // once the FIRST block in this run applies successfully, so every
+  // subsequent block in the same run reuses that one backup session dir --
+  // this is what lets `edits undo` revert the whole batch together.
   private async onApplyEdit(): Promise<void> {
-    if (this.applyInFlight || !this.pendingEdit) {
+    if (this.applyInFlight || this.currentIndex >= this.pendingBlocks.length) {
       return;
     }
-    const edit = this.pendingEdit;
+    const edit = this.pendingBlocks[this.currentIndex];
     this.applyInFlight = true;
     try {
-      const result = await applyEdit(CLIENT_NAME, workspacePath(), edit);
+      const result = await applyEdit(CLIENT_NAME, workspacePath(), edit, this.runBackupDir);
+      if (result.applied) {
+        if (!this.runBackupDir) {
+          this.runBackupDir = result.backup_dir;
+        }
+        this.applied++;
+      } else {
+        this.refused++;
+        this.refusalReasons.push(`${edit.file_path}: ${result.error ?? 'refused'}`);
+      }
       this.panel.webview.postMessage({
         type: 'applyResult',
         applied: result.applied,
@@ -158,15 +232,31 @@ export class ChatPanel {
         backupDir: result.backup_dir,
       });
     } catch (err) {
+      const message = (err as Error).message;
+      this.refused++;
+      this.refusalReasons.push(`${edit.file_path}: ${message}`);
       this.panel.webview.postMessage({
         type: 'applyResult',
         applied: false,
-        error: (err as Error).message,
+        error: message,
       });
     } finally {
       this.applyInFlight = false;
-      this.pendingEdit = undefined;
+      this.currentIndex++;
+      this.postCurrentBlockOrSummary();
     }
+  }
+
+  // onSkipEdit skips the current block with no daemon call, then advances
+  // -- same "no confirm prompt needed, just move on" shape as Apply's
+  // advance, but nothing is sent over the wire.
+  private onSkipEdit(): void {
+    if (this.currentIndex >= this.pendingBlocks.length) {
+      return;
+    }
+    this.skipped++;
+    this.currentIndex++;
+    this.postCurrentBlockOrSummary();
   }
 
   private dispose(): void {

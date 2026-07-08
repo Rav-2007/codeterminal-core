@@ -68,6 +68,7 @@ export interface ApplyEditRequest {
   protocol_version: number;
   workspace?: string;
   edit: EditBlockWire;
+  backup_session_dir?: string;
 }
 
 export interface ApplyEditResponse {
@@ -319,7 +320,19 @@ export async function streamPrompt(
 // via editapply.PrepareEdit before anything is written -- this function
 // only renders whatever the daemon reports, it never re-implements or
 // bypasses a gate.
-export async function applyEdit(clientName: string, workspace: string, edit: EditBlockWire): Promise<ApplyEditResponse> {
+//
+// backupSessionDir is optional: when the caller is applying more than one
+// block from the same response (see ChatPanel's sequential edit review),
+// passing back the BackupDir an earlier ApplyEditResponse in the same run
+// returned makes the daemon reuse that session directory instead of
+// creating a fresh one, so the whole batch shares one backup session (see
+// protocol.ApplyEditRequest.BackupSessionDir's doc comment).
+export async function applyEdit(
+  clientName: string,
+  workspace: string,
+  edit: EditBlockWire,
+  backupSessionDir?: string
+): Promise<ApplyEditResponse> {
   const { socket } = await connectToDaemon(clientName);
   return new Promise((resolve, reject) => {
     const decoder = new LineDecoder((obj) => {
@@ -330,6 +343,9 @@ export async function applyEdit(clientName: string, workspace: string, edit: Edi
     socket.once('error', (err) => reject(err));
 
     const req: ApplyEditRequest = { protocol_version: PROTOCOL_VERSION, workspace, edit };
+    if (backupSessionDir) {
+      req.backup_session_dir = backupSessionDir;
+    }
     writeLine(socket, req);
   });
 }
