@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -450,20 +449,11 @@ func (m chatModel) applyCurrentReviewEdit() (tea.Model, tea.Cmd) {
 		m.reviewBackupDir = dir
 	}
 
-	if err := editapply.BackupOriginal(m.reviewBackupDir, m.workspaceRoot, p); err != nil {
+	if err := editapply.Apply(m.workspaceRoot, p, m.reviewBackupDir); err != nil {
 		m.reviewRefused++
-		m.reviewRefusals = append(m.reviewRefusals, fmt.Sprintf("%s: backing up: %v", p.Block.FilePath, err))
+		m.reviewRefusals = append(m.reviewRefusals, fmt.Sprintf("%v", err))
 		m.reviewIndex++
 		return m.advanceReview()
-	}
-	if err := os.WriteFile(p.TargetPath, []byte(p.NewContent), p.FileMode); err != nil {
-		m.reviewRefused++
-		m.reviewRefusals = append(m.reviewRefusals, fmt.Sprintf("%s: writing: %v", p.Block.FilePath, err))
-		m.reviewIndex++
-		return m.advanceReview()
-	}
-	if err := editapply.BackupAfter(m.reviewBackupDir, m.workspaceRoot, p); err != nil {
-		m.reviewRefusals = append(m.reviewRefusals, fmt.Sprintf("%s: post-apply backup snapshot failed: %v (edit still applied)", p.Block.FilePath, err))
 	}
 
 	m.reviewApplied++

@@ -29,9 +29,23 @@ func NewBackupSessionDir(realWorkspaceRoot string) (string, error) {
 }
 
 // BackupOriginal saves p's pre-edit content under backupDir/before/<relpath>
-// — the copy `edits undo` restores from. Called once per file per run, on
-// its first write.
+// — the copy `edits undo` restores from. It is idempotent per (backupDir,
+// file): if that file's original has already been captured in this backup
+// session (e.g. a second edit block in the same run touching the same
+// file), later calls are no-ops. This guarantees before/<relpath> always
+// holds the file's content from before ANY block in the run touched it,
+// never an intermediate state from a prior block in the same run.
 func BackupOriginal(backupDir, realWorkspaceRoot string, p *PreparedEdit) error {
+	rel, err := filepath.Rel(realWorkspaceRoot, p.TargetPath)
+	if err != nil {
+		return err
+	}
+	dest := filepath.Join(backupDir, "before", rel)
+	if _, err := os.Stat(dest); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return err
+	}
 	return writeBackupCopy(backupDir, "before", realWorkspaceRoot, p.TargetPath, []byte(p.Original), p.FileMode)
 }
 

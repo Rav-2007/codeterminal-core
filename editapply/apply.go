@@ -80,6 +80,30 @@ func PrepareEdit(realWorkspaceRoot string, block EditBlock) (*PreparedEdit, erro
 	}, nil
 }
 
+// Apply writes a prepared edit to disk and records its before/after backup
+// snapshots, in the fixed order both the CLI (daemon/apply_cmd.go) and the
+// Mochiii TUI (clients/tui/chat.go) already use: BackupOriginal, write,
+// BackupAfter. backupDir must already exist (see NewBackupSessionDir) --
+// Apply does not create it, since a caller applying multiple blocks in one
+// run creates it once and reuses it across calls. BackupOriginal is
+// idempotent per (backupDir, file), so calling Apply for two blocks that
+// target the same file within one backupDir still captures the true
+// pre-run original exactly once, regardless of how many blocks touch that
+// file. This is the single core both callers use; neither keeps its own
+// copy of the write+backup sequence.
+func Apply(realWorkspaceRoot string, prepared *PreparedEdit, backupDir string) error {
+	if err := BackupOriginal(backupDir, realWorkspaceRoot, prepared); err != nil {
+		return fmt.Errorf("backing up %s: %w", prepared.Block.FilePath, err)
+	}
+	if err := os.WriteFile(prepared.TargetPath, []byte(prepared.NewContent), prepared.FileMode); err != nil {
+		return fmt.Errorf("writing %s: %w", prepared.Block.FilePath, err)
+	}
+	if err := BackupAfter(backupDir, realWorkspaceRoot, prepared); err != nil {
+		return fmt.Errorf("recording post-apply snapshot for %s: %w", prepared.Block.FilePath, err)
+	}
+	return nil
+}
+
 func describeExt(relPath string) string {
 	if ext := filepath.Ext(relPath); ext != "" {
 		return ext

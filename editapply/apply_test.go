@@ -167,3 +167,99 @@ func TestResolveSafeTargetPath_OrdinaryFileAllowed(t *testing.T) {
 		t.Errorf("got %q, want %q", got, want)
 	}
 }
+
+func TestApply_WritesFileAndBackupsBeforeAndAfter(t *testing.T) {
+	root := realTempDir(t)
+	writeTempFile(t, root, "foo.go", "package main\n\nfunc old() {}\n")
+
+	block := EditBlock{FilePath: "foo.go", Search: "func old() {}", Replace: "func new_() {}"}
+	prepared, err := PrepareEdit(root, block)
+	if err != nil {
+		t.Fatalf("PrepareEdit: %v", err)
+	}
+
+	backupDir, err := NewBackupSessionDir(root)
+	if err != nil {
+		t.Fatalf("NewBackupSessionDir: %v", err)
+	}
+	if err := Apply(root, prepared, backupDir); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	gotFile, err := os.ReadFile(filepath.Join(root, "foo.go"))
+	if err != nil {
+		t.Fatalf("reading applied file: %v", err)
+	}
+	if string(gotFile) != prepared.NewContent {
+		t.Errorf("applied file = %q, want %q", gotFile, prepared.NewContent)
+	}
+
+	before, err := os.ReadFile(filepath.Join(backupDir, "before", "foo.go"))
+	if err != nil {
+		t.Fatalf("reading before-backup: %v", err)
+	}
+	if string(before) != "package main\n\nfunc old() {}\n" {
+		t.Errorf("before-backup = %q, want original content", before)
+	}
+
+	after, err := os.ReadFile(filepath.Join(backupDir, "after", "foo.go"))
+	if err != nil {
+		t.Fatalf("reading after-backup: %v", err)
+	}
+	if string(after) != prepared.NewContent {
+		t.Errorf("after-backup = %q, want new content", after)
+	}
+}
+
+// TestApply_SameFileTwiceInOneSessionKeepsTrueOriginalBackup guards the fix
+// made when Apply() was extracted: applying two blocks against the same
+// file in one backup session must keep before/<file> as the file's content
+// from before EITHER block ran, not get clobbered with the intermediate
+// state after the first block. This was a real divergence between the CLI
+// (which deduped via its own map) and the TUI (which didn't) before both
+// were routed through the shared Apply().
+func TestApply_SameFileTwiceInOneSessionKeepsTrueOriginalBackup(t *testing.T) {
+	root := realTempDir(t)
+	writeTempFile(t, root, "foo.go", "package main\n\nfunc a() {}\n\nfunc b() {}\n")
+
+	backupDir, err := NewBackupSessionDir(root)
+	if err != nil {
+		t.Fatalf("NewBackupSessionDir: %v", err)
+	}
+
+	block1 := EditBlock{FilePath: "foo.go", Search: "func a() {}", Replace: "func a2() {}"}
+	prepared1, err := PrepareEdit(root, block1)
+	if err != nil {
+		t.Fatalf("PrepareEdit (block1): %v", err)
+	}
+	if err := Apply(root, prepared1, backupDir); err != nil {
+		t.Fatalf("Apply (block1): %v", err)
+	}
+
+	block2 := EditBlock{FilePath: "foo.go", Search: "func b() {}", Replace: "func b2() {}"}
+	prepared2, err := PrepareEdit(root, block2) // reads the file as block1 left it
+	if err != nil {
+		t.Fatalf("PrepareEdit (block2): %v", err)
+	}
+	if err := Apply(root, prepared2, backupDir); err != nil {
+		t.Fatalf("Apply (block2): %v", err)
+	}
+
+	before, err := os.ReadFile(filepath.Join(backupDir, "before", "foo.go"))
+	if err != nil {
+		t.Fatalf("reading before-backup: %v", err)
+	}
+	wantBefore := "package main\n\nfunc a() {}\n\nfunc b() {}\n"
+	if string(before) != wantBefore {
+		t.Errorf("before-backup = %q, want true pre-run original %q", before, wantBefore)
+	}
+
+	final, err := os.ReadFile(filepath.Join(root, "foo.go"))
+	if err != nil {
+		t.Fatalf("reading final file: %v", err)
+	}
+	wantFinal := "package main\n\nfunc a2() {}\n\nfunc b2() {}\n"
+	if string(final) != wantFinal {
+		t.Errorf("final file = %q, want both edits applied %q", final, wantFinal)
+	}
+}

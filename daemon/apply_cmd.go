@@ -93,7 +93,6 @@ func applyEditBlocks(realWorkspaceRoot string, blocks []editapply.EditBlock, in 
 	reader := bufio.NewReader(in)
 
 	var backupDir string
-	backedUp := make(map[string]bool)
 
 	var applied, skipped, refused int
 	for i, block := range blocks {
@@ -124,18 +123,9 @@ func applyEditBlocks(realWorkspaceRoot string, blocks []editapply.EditBlock, in 
 			}
 			fmt.Fprintf(out, "backing up to %s\n", backupDir)
 		}
-		if !backedUp[prepared.TargetPath] {
-			if err := editapply.BackupOriginal(backupDir, realWorkspaceRoot, prepared); err != nil {
-				return fmt.Errorf("backing up %s: %w", block.FilePath, err)
-			}
-			backedUp[prepared.TargetPath] = true
-		}
 
-		if err := os.WriteFile(prepared.TargetPath, []byte(prepared.NewContent), prepared.FileMode); err != nil {
-			return fmt.Errorf("writing %s: %w", block.FilePath, err)
-		}
-		if err := editapply.BackupAfter(backupDir, realWorkspaceRoot, prepared); err != nil {
-			return fmt.Errorf("recording post-apply snapshot for %s: %w", block.FilePath, err)
+		if err := editapply.Apply(realWorkspaceRoot, prepared, backupDir); err != nil {
+			return err
 		}
 
 		fmt.Fprintln(out, "applied")
