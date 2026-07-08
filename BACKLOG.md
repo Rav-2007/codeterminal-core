@@ -52,8 +52,20 @@ implementation/injection line — the setup chunks out-ranked the actual injecti
   IMPLEMENTED" queries with known-correct implementation files, then tune against the number.
 - When: at shipping / retrieval-quality hardening. Not blocking.
 
-### (g) Cross-session memory persistence — FUTURE
-Conversational memory (committed 760bd8c) is SESSION-ONLY: closing Mochiii forgets the
-conversation. Persisting conversations to disk (so you can resume) is a future enhancement.
-Also: smarter memory (summarize/compress old turns instead of just capping at 12) — see the
-history cap in daemon/history.go. Not blocking; nice-to-have.
+### (g) WAL/shm sidecar permission hardening (low priority; ZDR/privacy-relevant)
+SQLite's `-wal` and `-shm` sidecar files inherit default 0644 perms — only the
+main `.db` file is explicitly chmod'd to 0600. The WAL can hold recently-written,
+un-checkpointed conversation turns in plaintext, so 0600 on the main file
+under-protects on a shared machine. Mitigated in practice by the 0700 state dir
+(`~/.local/state/mochiii/`), which blocks cross-user traversal — confirm that's
+sufficient, else chmod the sidecars on open. Same gap exists in `skills.go`; fix
+both together. Not a regression, surfaced during memory-persistence work. Fold
+into the eventual security/ZDR review.
+
+### (h) Memory store retention / pruning policy (grows unbounded by design)
+Persistence keeps full conversation history on disk forever (persist-all,
+hydrate-last-12) — correct default, but the `turns` table has no cap or prune.
+Long-lived workspaces will accumulate indefinitely. Add a retention policy
+(age- or count-based prune, or per-workspace cap). Pairs with the Phase-4
+session-buffer-compression note.
+
