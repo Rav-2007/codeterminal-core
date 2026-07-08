@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 
-import { EditBlockWire, GroundingInfo, Turn, applyEdit, preflightHandshake, streamPrompt } from './daemonClient';
+import { EditBlockWire, GroundingInfo, Turn, applyEdit, preflightHandshake, streamPrompt, undoEdits } from './daemonClient';
 
 const CLIENT_NAME = 'codeterminal-vscode';
 const VIEW_TYPE = 'codeterminalChat';
@@ -45,6 +45,7 @@ export class ChatPanel {
   private refused = 0;
   private refusalReasons: string[] = [];
   private applyInFlight = false;
+  private undoInFlight = false;
 
   static createOrShow(extensionUri: vscode.Uri): void {
     if (ChatPanel.current) {
@@ -88,13 +89,15 @@ export class ChatPanel {
     }
   }
 
-  private handleMessage(msg: { type: string; text?: string }): void {
+  private handleMessage(msg: { type: string; text?: string; backupDir?: string }): void {
     if (msg.type === 'prompt' && typeof msg.text === 'string') {
       this.onPrompt(msg.text);
     } else if (msg.type === 'applyEdit') {
       this.onApplyEdit();
     } else if (msg.type === 'skipEdit') {
       this.onSkipEdit();
+    } else if (msg.type === 'undoEdit' && typeof msg.backupDir === 'string') {
+      this.onUndoEdit(msg.backupDir);
     }
   }
 
@@ -257,6 +260,44 @@ export class ChatPanel {
     this.skipped++;
     this.currentIndex++;
     this.postCurrentBlockOrSummary();
+  }
+
+  // onUndoEdit reverts a completed run's shared backup session by ID
+  // (backupDir), triggering the exact same runUndoSession logic the CLI's
+  // `edits undo` uses -- no restore logic lives here or anywhere else in
+  // the extension. backupDir comes from the WEBVIEW, which already
+  // received and rendered it in the run's editSummary message -- not from
+  // this.runBackupDir, which postCurrentBlockOrSummary already clears via
+  // clearPendingReview() the moment that summary is posted (see Phase 0's
+  // finding on this). The webview is therefore the only reliable holder of
+  // "which session to undo" by the time a user actually clicks the button.
+  //
+  // guarded (paths left untouched because they changed since the apply
+  // run) is relayed to the webview verbatim -- this method never collapses
+  // it into a bare success/failure so the webview can render an honest
+  // partial-undo message rather than imply a full revert happened.
+  private async onUndoEdit(backupDir: string): Promise<void> {
+    if (this.undoInFlight) {
+      return;
+    }
+    this.undoInFlight = true;
+    try {
+      const result = await undoEdits(CLIENT_NAME, workspacePath(), backupDir);
+      this.panel.webview.postMessage({
+        type: 'undoResult',
+        restored: result.restored,
+        guarded: result.guarded,
+        error: result.error,
+      });
+    } catch (err) {
+      this.panel.webview.postMessage({
+        type: 'undoResult',
+        restored: 0,
+        error: (err as Error).message,
+      });
+    } finally {
+      this.undoInFlight = false;
+    }
   }
 
   private dispose(): void {

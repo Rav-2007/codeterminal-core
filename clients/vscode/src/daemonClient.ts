@@ -78,6 +78,21 @@ export interface ApplyEditResponse {
   backup_dir?: string;
 }
 
+export interface UndoRequest {
+  protocol_version: number;
+  undo: true;
+  workspace?: string;
+  backup_session_dir?: string;
+}
+
+export interface UndoResponse {
+  protocol_version: number;
+  restored: number;
+  guarded?: string[];
+  session_dir?: string;
+  error?: string;
+}
+
 interface LockFile {
   socket_path: string;
   pid: number;
@@ -343,6 +358,35 @@ export async function applyEdit(
     socket.once('error', (err) => reject(err));
 
     const req: ApplyEditRequest = { protocol_version: PROTOCOL_VERSION, workspace, edit };
+    if (backupSessionDir) {
+      req.backup_session_dir = backupSessionDir;
+    }
+    writeLine(socket, req);
+  });
+}
+
+// undoEdits opens a fresh connection and sends exactly one UndoRequest,
+// asking the daemon to revert a backup session via the exact same
+// runUndoSession the CLI's `edits undo` already uses -- no restore logic is
+// reimplemented here. backupSessionDir should be the dir a prior
+// ApplyEditResponse (or UndoResponse.session_dir) already returned to this
+// same client; when omitted, the daemon reverts its most recently created
+// session instead (see protocol.UndoRequest's doc comment on why a caller
+// that already knows its own dir should always pass it explicitly). The
+// daemon never force-overwrites a file that changed since the apply run --
+// UndoResponse.guarded lists exactly which paths were left alone, and a
+// caller must surface that honestly rather than imply a full revert.
+export async function undoEdits(clientName: string, workspace: string, backupSessionDir?: string): Promise<UndoResponse> {
+  const { socket } = await connectToDaemon(clientName);
+  return new Promise((resolve, reject) => {
+    const decoder = new LineDecoder((obj) => {
+      socket.destroy();
+      resolve(obj as UndoResponse);
+    });
+    socket.on('data', (chunk: Buffer) => decoder.feed(chunk));
+    socket.once('error', (err) => reject(err));
+
+    const req: UndoRequest = { protocol_version: PROTOCOL_VERSION, undo: true, workspace };
     if (backupSessionDir) {
       req.backup_session_dir = backupSessionDir;
     }
