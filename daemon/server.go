@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"codeterminal/editapply"
@@ -237,7 +239,7 @@ func (s *Server) handleApplyEdit(enc *json.Encoder, req protocol.ApplyEditReques
 		return
 	}
 
-	backupDir, err := editapply.NewBackupSessionDir(realRoot)
+	backupDir, err := resolveBackupSessionDir(realRoot, req.BackupSessionDir)
 	if err != nil {
 		s.logger.Printf("apply-edit: creating backup dir: %v", err)
 		enc.Encode(protocol.ApplyEditResponse{ProtocolVersion: protocol.ProtocolVersion, Applied: false, Error: err.Error()})
@@ -252,6 +254,39 @@ func (s *Server) handleApplyEdit(enc *json.Encoder, req protocol.ApplyEditReques
 
 	s.logger.Printf("apply-edit: applied %s (backup: %s)", block.FilePath, backupDir)
 	enc.Encode(protocol.ApplyEditResponse{ProtocolVersion: protocol.ProtocolVersion, Applied: true, BackupDir: backupDir})
+}
+
+// resolveBackupSessionDir returns the backup session directory Apply should
+// use for this request: existing, if it names a directory this daemon
+// already created for realWorkspaceRoot (i.e. a BackupDir a prior
+// ApplyEditResponse returned to the same client, echoed back via
+// ApplyEditRequest.BackupSessionDir) — this is how several blocks applied
+// over separate connections in one client-side review share a single
+// backup session, matching the CLI/TUI's in-process backupDir reuse (see
+// editapply.BackupOriginal's idempotency doc). Otherwise (empty, or a value
+// that doesn't check out) a fresh session directory is created, identical
+// to the pre-existing per-request behavior.
+func resolveBackupSessionDir(realWorkspaceRoot, existing string) (string, error) {
+	if existing != "" && isWorkspaceBackupSessionDir(realWorkspaceRoot, existing) {
+		return existing, nil
+	}
+	return editapply.NewBackupSessionDir(realWorkspaceRoot)
+}
+
+// isWorkspaceBackupSessionDir reports whether dir is an existing directory
+// confined to realWorkspaceRoot/.codeterminal/backups. A well-behaved
+// client only ever echoes back a path this daemon itself issued, but this
+// check is still applied so a stale, malformed, or crafted value can never
+// redirect backup writes outside the intended tree — the same confinement
+// discipline ResolveSafeTargetPath applies to edit targets.
+func isWorkspaceBackupSessionDir(realWorkspaceRoot, dir string) bool {
+	backupsRoot := filepath.Join(realWorkspaceRoot, ".codeterminal", "backups")
+	rel, err := filepath.Rel(backupsRoot, dir)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return false
+	}
+	info, err := os.Stat(dir)
+	return err == nil && info.IsDir()
 }
 
 // loadPersistedHistory returns this daemon's cross-session conversation

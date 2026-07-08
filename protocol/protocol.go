@@ -167,10 +167,20 @@ type EditBlockWire struct {
 // TokenResponse.EditProposals. Workspace is optional and additive, same
 // convention as PromptRequest.Workspace: the daemon always resolves against
 // its own configured workspace root regardless of what's sent here.
+//
+// BackupSessionDir is optional and additive: when set to a backup session
+// directory this same daemon already returned via a prior
+// ApplyEditResponse.BackupDir, the daemon reuses it instead of creating a
+// fresh one — this is how a client applying several blocks from one
+// response (see the VS Code extension's sequential edit review) shares a
+// single backup session across all of them, so `edits undo` reverts the
+// whole batch at once. Older clients that never send this field get today's
+// behavior unchanged: a fresh backup dir per ApplyEditRequest.
 type ApplyEditRequest struct {
-	ProtocolVersion int           `json:"protocol_version"`
-	Workspace       string        `json:"workspace,omitempty"`
-	Edit            EditBlockWire `json:"edit"`
+	ProtocolVersion  int           `json:"protocol_version"`
+	Workspace        string        `json:"workspace,omitempty"`
+	Edit             EditBlockWire `json:"edit"`
+	BackupSessionDir string        `json:"backup_session_dir,omitempty"`
 }
 
 // ApplyEditResponse is the daemon's reply to an ApplyEditRequest. Applied is
