@@ -16,13 +16,23 @@ Top-3 recall is 5/5, but top-1 is 3/5: for some queries a *_test.go file or an a
 file edges out the canonical implementation at rank #1. Not the prose-vs-code bug (that's
 fixed). Could down-weight _test.go files for retrieval. Purely a nicety; may never be needed.
 
-### (c) Auto-apply-with-undo mode — PRODUCTION ENHANCEMENT
-V1 of apply-edits uses confirm-every-edit (explicit [y/N] per edit, safest). For a lower-
-friction production feel, add an opt-in auto-apply mode: applies behind the syntax gate +
-backup without per-edit confirmation, relying on undo/restore for recovery. Deferred until
-apply-edits v1 is proven. Keep confirm-every-edit as the default even after adding it.
-NOTE: apply-edits v1 is now proven in BOTH clients (TUI + VS Code diff-apply, verified live),
-so this enhancement is now unblocked whenever it's wanted.
+### (c) DONE: Auto-apply-with-undo mode (VS Code)
+Opt-in, session-scoped auto-apply toggle in the VS Code panel, default OFF. Confirm-
+every-edit stays the default; auto-apply must be explicitly turned on and resets to OFF
+on reload (no VS Code setting, no disk persistence). Client-side only: no daemon or
+protocol changes -- auto mode self-drives the SAME ApplyEditRequest path (and therefore
+the same gates, shared backup session, summary, and Undo button) every manual click
+already uses, instead of reimplementing an apply path. Gates still fire in auto mode: a
+gate-refused edit is auto-skipped and reported in the summary, with no fallback to a
+manual prompt. Webview renders no clickable Apply/Skip buttons during an auto run (a
+non-interactive "auto-applying..." state instead), closing the click-vs-loop race that
+would otherwise be possible. Verified live end-to-end: toggle defaults OFF and is
+unmistakably yellow when ON; with it ON, a multi-block prompt auto-applied 2 edits
+across 2 files with zero clicks and no buttons rendered; a stale 3rd edit was
+auto-refused by the gate; the summary showed correct counts (2 applied, 1 refused); the
+Undo button reverted the whole auto-applied batch on disk (confirmed via cat); a window
+reload reset the toggle to OFF. Committed across 3 sub-slices (2342ebc, 1f1990e,
+0e5f8f2).
 
 ### (d) DONE: Conversational memory (in-session + cross-session persistence)
 Both layers built and verified live. In-session: PromptRequest.History threads prior turns;
