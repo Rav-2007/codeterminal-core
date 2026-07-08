@@ -15,6 +15,15 @@
   let currentEditProposalEl = null;
   let pendingUndoButton = null;
 
+  // currentRunAuto mirrors chatPanel.ts's currentRunAutoApply: captured from
+  // autoApplyEnabled exactly once, in send(), at the moment a prompt goes
+  // out -- never re-read from the live toggle afterward. This is what
+  // showEditProposal/showEditResult consult to decide whether to render
+  // clickable Apply/Skip buttons or a non-interactive auto-applied state for
+  // every block belonging to THIS run, so a toggle flip mid-run cannot
+  // retroactively change how an in-flight run is already being rendered.
+  let currentRunAuto = false;
+
   // autoApplyEnabled is session-scoped ONLY: a plain in-memory flag with no
   // persistence, so it naturally resets to OFF whenever this script is
   // re-run (panel reload, new extension host) -- there is deliberately no
@@ -109,41 +118,61 @@
     }
     container.appendChild(pre);
 
-    const actions = document.createElement('div');
-    actions.className = 'actions';
-    const applyBtn = document.createElement('button');
-    applyBtn.textContent = 'Apply';
-    const skipBtn = document.createElement('button');
-    skipBtn.textContent = 'Skip';
-    actions.appendChild(applyBtn);
-    actions.appendChild(skipBtn);
-    container.appendChild(actions);
+    // HARD SAFETY REQUIREMENT: during an auto-apply run, no clickable
+    // Apply/Skip buttons are rendered at all -- the host is already firing
+    // the same ApplyEditRequest for this block on its own (see runAutoApply
+    // in chatPanel.ts), and a stray click here could race it (e.g. applying
+    // the wrong index, or double-applying). A non-interactive placeholder
+    // communicates the same information without offering anything to click.
+    if (currentRunAuto) {
+      const pending = document.createElement('div');
+      pending.className = 'result auto-pending';
+      pending.textContent = 'auto-applying…';
+      container.appendChild(pending);
+    } else {
+      const actions = document.createElement('div');
+      actions.className = 'actions';
+      const applyBtn = document.createElement('button');
+      applyBtn.textContent = 'Apply';
+      const skipBtn = document.createElement('button');
+      skipBtn.textContent = 'Skip';
+      actions.appendChild(applyBtn);
+      actions.appendChild(skipBtn);
+      container.appendChild(actions);
 
-    applyBtn.addEventListener('click', () => {
-      applyBtn.disabled = true;
-      skipBtn.disabled = true;
-      applyBtn.textContent = 'Applying…';
-      vscode.postMessage({ type: 'applyEdit' });
-    });
-    skipBtn.addEventListener('click', () => {
-      vscode.postMessage({ type: 'skipEdit' });
-      showEditResult(container, { skipped: true });
-    });
+      applyBtn.addEventListener('click', () => {
+        applyBtn.disabled = true;
+        skipBtn.disabled = true;
+        applyBtn.textContent = 'Applying…';
+        vscode.postMessage({ type: 'applyEdit' });
+      });
+      skipBtn.addEventListener('click', () => {
+        vscode.postMessage({ type: 'skipEdit' });
+        showEditResult(container, { skipped: true });
+      });
+    }
 
     transcriptEl.appendChild(container);
     transcriptEl.scrollTop = transcriptEl.scrollHeight;
     currentEditProposalEl = container;
   }
 
-  // showEditResult replaces a proposal's Apply/Skip buttons with the
+  // showEditResult replaces a proposal's Apply/Skip buttons (or, in an auto
+  // run, the non-interactive "auto-applying…" placeholder) with the
   // outcome: the daemon's exact gate-refusal string on failure (the same
   // text the TUI would show for the same bad edit), or a success note with
   // the backup dir restore hint stays with `daemon edits undo`, matching
-  // the TUI -- this slice adds no native undo button.
+  // the TUI -- this slice adds no native undo button. The "auto-" prefix is
+  // added only for text shown for THIS run (currentRunAuto), never
+  // retroactively for a manual run.
   function showEditResult(container, result) {
     const actions = container.querySelector('.actions');
     if (actions) {
       actions.remove();
+    }
+    const pending = container.querySelector('.auto-pending');
+    if (pending) {
+      pending.remove();
     }
     const resultEl = document.createElement('div');
     if (result.skipped) {
@@ -151,10 +180,12 @@
       resultEl.textContent = 'skipped';
     } else if (result.applied) {
       resultEl.className = 'result ok';
-      resultEl.textContent = `applied — backup: ${result.backupDir} (restore with: codeterminal-daemon edits undo)`;
+      const prefix = currentRunAuto ? 'auto-applied' : 'applied';
+      resultEl.textContent = `${prefix} — backup: ${result.backupDir} (restore with: codeterminal-daemon edits undo)`;
     } else {
       resultEl.className = 'result refused';
-      resultEl.textContent = `refused: ${result.error}`;
+      const prefix = currentRunAuto ? 'auto-refused' : 'refused';
+      resultEl.textContent = `${prefix}: ${result.error}`;
     }
     container.appendChild(resultEl);
     if (currentEditProposalEl === container) {
@@ -260,6 +291,8 @@
     setGrounding(null);
     setStreaming(true);
     currentAssistantBubble = addBubble('assistant', '');
+    // Captured once, for this run only -- see currentRunAuto's doc comment.
+    currentRunAuto = autoApplyEnabled;
     vscode.postMessage({ type: 'prompt', text, autoApply: autoApplyEnabled });
   }
 

@@ -458,6 +458,7 @@ export class ChatPanel {
   }
   .edit-proposal .result.ok { color: var(--vscode-gitDecoration-addedResourceForeground, #2ea043); }
   .edit-proposal .result.refused { color: var(--vscode-errorForeground); }
+  .edit-proposal .result.auto-pending { opacity: 0.65; }
   .edit-summary {
     margin: 4px 12px 14px;
     padding: 8px 10px;
