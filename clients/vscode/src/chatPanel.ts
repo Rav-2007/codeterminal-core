@@ -47,6 +47,14 @@ export class ChatPanel {
   private applyInFlight = false;
   private undoInFlight = false;
 
+  // currentRunAutoApply is captured ONCE, from the 'prompt' message's
+  // autoApply field, at the moment a prompt is sent -- mirroring the
+  // webview's own autoApplyEnabled, which is read at that same instant (see
+  // send() in media/main.js). It is never re-read from the webview's live
+  // toggle state after that point, so flipping the toggle mid-run cannot
+  // retroactively change a run already in flight (Phase 0 C).
+  private currentRunAutoApply = false;
+
   static createOrShow(extensionUri: vscode.Uri): void {
     if (ChatPanel.current) {
       ChatPanel.current.panel.reveal();
@@ -89,9 +97,9 @@ export class ChatPanel {
     }
   }
 
-  private handleMessage(msg: { type: string; text?: string; backupDir?: string }): void {
+  private handleMessage(msg: { type: string; text?: string; backupDir?: string; autoApply?: boolean }): void {
     if (msg.type === 'prompt' && typeof msg.text === 'string') {
-      this.onPrompt(msg.text);
+      this.onPrompt(msg.text, msg.autoApply === true);
     } else if (msg.type === 'applyEdit') {
       this.onApplyEdit();
     } else if (msg.type === 'skipEdit') {
@@ -101,10 +109,14 @@ export class ChatPanel {
     }
   }
 
-  private onPrompt(text: string): void {
+  private onPrompt(text: string, autoApply: boolean): void {
     if (this.inFlight) {
       return; // a turn is already in flight; the webview disables input while streaming
     }
+
+    // Captured once, for this run only -- see the currentRunAutoApply field
+    // doc comment for why this must not be re-read later.
+    this.currentRunAutoApply = autoApply;
 
     // A new turn makes any not-yet-finished review from the PREVIOUS answer
     // stale -- clear it so a lagging Apply/Skip click can never target the
@@ -405,12 +417,28 @@ export class ChatPanel {
   .edit-summary .summary-backup { opacity: 0.7; font-style: italic; margin-top: 4px; }
   .edit-summary .undo-btn { margin-top: 6px; }
   .edit-summary .summary-undo-result { margin-top: 6px; font-style: italic; }
+  .auto-apply-toggle {
+    font-weight: 600;
+    border: 1px solid var(--vscode-panel-border, #444);
+  }
+  .auto-apply-toggle.off {
+    background: transparent;
+    color: var(--vscode-foreground);
+    opacity: 0.7;
+  }
+  .auto-apply-toggle.on {
+    background: var(--vscode-inputValidation-warningBackground, #7a5c00);
+    color: var(--vscode-inputValidation-warningForeground, #fff);
+    border-color: var(--vscode-inputValidation-warningBorder, #b89500);
+    opacity: 1;
+  }
 </style>
 </head>
 <body>
   <div id="transcript"></div>
   <div id="grounding"></div>
   <div id="inputRow">
+    <button id="autoApplyToggle" class="auto-apply-toggle off" title="When ON, proposed edits apply automatically without a per-edit confirmation"></button>
     <input id="promptInput" type="text" placeholder="Ask something…" autofocus />
     <button id="sendBtn">Send</button>
   </div>

@@ -15,6 +15,30 @@
   let currentEditProposalEl = null;
   let pendingUndoButton = null;
 
+  // autoApplyEnabled is session-scoped ONLY: a plain in-memory flag with no
+  // persistence, so it naturally resets to OFF whenever this script is
+  // re-run (panel reload, new extension host) -- there is deliberately no
+  // VS Code settings/disk write path for it. It is read once per prompt at
+  // send() time and threaded onto the outgoing 'prompt' message; the host
+  // captures that value per-run and never re-reads this variable mid-run
+  // (see currentRunAutoApply in chatPanel.ts), so flipping this toggle
+  // while a run is in flight has no effect until the next prompt.
+  let autoApplyEnabled = false;
+
+  const autoApplyToggle = document.getElementById('autoApplyToggle');
+
+  function renderAutoApplyToggle() {
+    autoApplyToggle.textContent = autoApplyEnabled ? 'Auto-apply: ON' : 'Auto-apply: OFF';
+    autoApplyToggle.className = autoApplyEnabled ? 'auto-apply-toggle on' : 'auto-apply-toggle off';
+  }
+
+  autoApplyToggle.addEventListener('click', () => {
+    autoApplyEnabled = !autoApplyEnabled;
+    renderAutoApplyToggle();
+  });
+
+  renderAutoApplyToggle();
+
   function addBubble(role, text) {
     const div = document.createElement('div');
     div.className = 'turn ' + role;
@@ -236,7 +260,7 @@
     setGrounding(null);
     setStreaming(true);
     currentAssistantBubble = addBubble('assistant', '');
-    vscode.postMessage({ type: 'prompt', text });
+    vscode.postMessage({ type: 'prompt', text, autoApply: autoApplyEnabled });
   }
 
   sendBtn.addEventListener('click', send);
