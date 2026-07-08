@@ -137,11 +137,22 @@ session-buffer-compression note.
   future reader knows it's intentional, and worth considering an explicit type field if the
   protocol is ever revised.
 
+- **DONE: VS Code extension: native Undo button** — the summary bubble (shown once a run
+  applies ≥1 edit) now has an "Undo this apply" button, reachable over a new additive
+  UndoRequest/UndoResponse socket message that triggers the EXISTING runUndoSession logic
+  (widened to return structured restored/guarded counts; no restore logic reimplemented).
+  Honest partial-undo: a file changed since the apply run is never silently overwritten —
+  it's reported by name as guarded rather than folded into a misleading success count.
+  Verified live: button rendered on the summary bubble; clicking it reverted both applied
+  files on disk (confirmed via cat); panel reported "2 file(s) restored"; the button removes
+  itself after use so it can't be double-clicked; a hand-edited file was correctly left
+  guarded while its sibling restored; a 0-applied run shows no Undo button. Committed across
+  3 sub-slices (e28d98d, c08585c, 77fed33).
+
 - **VS Code extension: remaining capabilities** (future slices, rough order) — a grounding
   indicator in the panel UI; a native VS Code diff view / inline decorations (nicer than the
-  current whole-block red/green); a native Undo button (undo currently only via
-  `codeterminal-daemon edits undo`, same as the TUI); then the larger fronts (ghost text,
-  terminal error interceptor).
+  current whole-block red/green); then the larger fronts (ghost text, terminal error
+  interceptor).
 
 ## Phase 4 — standalone / packaging / commercialization (decided direction: capable first, then shippable)
 
