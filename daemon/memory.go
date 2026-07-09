@@ -17,7 +17,11 @@ import (
 // memorySchemaVersion is the schema version this binary knows how to read
 // and write. Mirrors skills.go's ensureSchema pattern (schema_meta table,
 // single migration point for future version bumps).
-const memorySchemaVersion = 1
+//
+// v1 -> v2: added turns_fts (search.go) -- a lexical FTS5 search index over
+// turns.content, kept in sync by triggers, backfilled once from any turns
+// that already existed. The turns table itself is untouched by this bump.
+const memorySchemaVersion = 2
 
 // MemoryStore is a per-user, cross-session store of conversation turns, one
 // conversation per workspace (see AppendTurn/LoadRecentTurns/ClearWorkspace).
@@ -107,6 +111,15 @@ func (s *MemoryStore) Close() error {
 // at this path) surfaces its error here, in the PRAGMA/CREATE TABLE calls
 // above and below -- there's no separate corruption-detection step, it's
 // just the natural failure of these statements.
+//
+// A fresh database (sql.ErrNoRows) creates turns AND the search index
+// together at the current version in one shot -- there are no pre-existing
+// turns to backfill, so no migration step is needed. An existing database
+// still at v1 gets the search index added plus a one-time backfill from
+// every turns row already on disk (see search.go); the turns table itself
+// is never touched by that migration. Either way, this always leaves
+// turns_fts in place before returning, so every other method in this
+// package can assume it exists.
 func ensureMemorySchema(db *sql.DB) error {
 	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_meta (version INTEGER NOT NULL)`); err != nil {
 		return fmt.Errorf("creating schema_meta: %w", err)
@@ -119,6 +132,9 @@ func ensureMemorySchema(db *sql.DB) error {
 		if _, err := db.Exec(turnsTableDDL); err != nil {
 			return fmt.Errorf("creating turns table: %w", err)
 		}
+		if err := createSearchIndex(db); err != nil {
+			return err
+		}
 		if _, err := db.Exec(`INSERT INTO schema_meta (version) VALUES (?)`, memorySchemaVersion); err != nil {
 			return fmt.Errorf("recording schema version: %w", err)
 		}
@@ -127,6 +143,17 @@ func ensureMemorySchema(db *sql.DB) error {
 		return fmt.Errorf("reading schema version: %w", err)
 	case version > memorySchemaVersion:
 		return fmt.Errorf("memory db schema version %d is newer than this binary supports (%d); upgrade codeterminal-daemon", version, memorySchemaVersion)
+	case version < 2:
+		if err := createSearchIndex(db); err != nil {
+			return err
+		}
+		if err := backfillSearchIndex(db); err != nil {
+			return err
+		}
+		if _, err := db.Exec(`UPDATE schema_meta SET version = ?`, memorySchemaVersion); err != nil {
+			return fmt.Errorf("recording schema version: %w", err)
+		}
+		return nil
 	default:
 		return nil
 	}
