@@ -262,7 +262,21 @@
     if (result.error) {
       const el = document.createElement('div');
       el.className = 'summary-refusal';
-      el.textContent = `undo failed: ${result.error}`;
+      // The daemon hard-refuses undo for a backup dir that's been pruned
+      // (bounded backups keep only the last 5 runs) with an error containing
+      // the stable substring "not found under" -- see
+      // isWorkspaceBackupSessionDir/handleUndo in daemon/server.go. That
+      // substring is the only signal we have client-side that this is a
+      // pruned-away run rather than some other undo failure, so we match on
+      // it and show an honest, specific message instead of raw daemon
+      // wording. A typed UndoResponse.NotFound field would be a more robust
+      // way to distinguish this case, but a string match is enough for this
+      // slice -- revisit if it ever proves fragile.
+      if (result.error.includes('not found under')) {
+        el.textContent = 'no longer undoable (backup pruned)';
+      } else {
+        el.textContent = `undo failed: ${result.error}`;
+      }
       container.appendChild(el);
       return;
     }
