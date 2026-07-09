@@ -254,10 +254,10 @@ func TestStreamCompletion_OnProviderFiresWithObservedProviderName(t *testing.T) 
 
 // --- ZDR refusal detection --------------------------------------------------
 
-// TestIsZDRRoutingRefusal_MatchesKnownPhrasings covers both observed OpenRouter
+// TestIsZDRRoutingRefusal_MatchesKnownPhrasings covers the known OpenRouter
 // error-body phrasings for "no provider satisfies your routing constraints"
-// (see zdrRefusalSubstrings' doc comment for why there are two, and why this
-// is a best-effort match rather than a guaranteed-stable signal).
+// (see zdrRefusalSubstrings' doc comment for why there are three, and why
+// this is a best-effort match rather than a guaranteed-stable signal).
 func TestIsZDRRoutingRefusal_MatchesKnownPhrasings(t *testing.T) {
 	bodies := []string{
 		`{"error":{"code":404,"message":"No allowed providers are available for the selected model."}}`,
@@ -268,6 +268,27 @@ func TestIsZDRRoutingRefusal_MatchesKnownPhrasings(t *testing.T) {
 		if !isZDRRoutingRefusal(body) {
 			t.Errorf("isZDRRoutingRefusal(%q) = false, want true", body)
 		}
+	}
+}
+
+// realObservedZDRRefusalBody is the exact response body OpenRouter returned
+// on 2026-07-09 during a live-induced refusal test: this daemon's ZDR
+// enforcement (zdr=true, allow_fallbacks=false) routed a real request at
+// ibm-granite/granite-4.0-h-micro, a model with zero ZDR-compliant
+// providers, and OpenRouter refused with this body (HTTP 404) rather than
+// either of the two phrasings above — see zdrRefusalSubstrings' doc
+// comment. Used verbatim so this test documents an observed reality, not a
+// synthesized guess at OpenRouter's wording.
+const realObservedZDRRefusalBody = `{"error":{"message":"No endpoints found matching your data policy (Zero data retention). Configure: https://openrouter.ai/settings/privacy","code":404}}`
+
+// TestIsZDRRoutingRefusal_MatchesLiveObservedDataPolicyPhrasing proves the
+// "zero data retention" substring (added after the live test above) now
+// classifies OpenRouter's actual data-policy-refusal wording as a ZDR
+// refusal — before this fix, this exact body fell through to the generic
+// error path and the client saw raw JSON instead of the friendly message.
+func TestIsZDRRoutingRefusal_MatchesLiveObservedDataPolicyPhrasing(t *testing.T) {
+	if !isZDRRoutingRefusal(realObservedZDRRefusalBody) {
+		t.Errorf("isZDRRoutingRefusal(%q) = false, want true (this is the exact body OpenRouter returned live on 2026-07-09)", realObservedZDRRefusalBody)
 	}
 }
 
@@ -311,6 +332,33 @@ func TestStreamCompletion_ZDRRefusalIsDetectableViaErrorsIs(t *testing.T) {
 	}
 	if !errors.Is(err, ErrZDRRefused) {
 		t.Errorf("errors.Is(err, ErrZDRRefused) = false for err = %v, want true", err)
+	}
+}
+
+// TestStreamCompletion_LiveObservedDataPolicyRefusalIsDetectableViaErrorsIs
+// is the end-to-end counterpart of
+// TestIsZDRRoutingRefusal_MatchesLiveObservedDataPolicyPhrasing: it proves
+// that OpenRouter's actual 404 body from the 2026-07-09 live test now makes
+// streamCompletion return an error satisfying errors.Is(err, ErrZDRRefused).
+// server.go's handleConn maps that unconditionally to the constant string
+// "inference refused: no zero-data-retention endpoint available" — a
+// two-line mapping keyed only on errors.Is, not on which substring matched
+// — so proving errors.Is here is sufficient to guarantee that exact
+// user-facing message for this real, previously-unclassified refusal.
+func TestStreamCompletion_LiveObservedDataPolicyRefusalIsDetectableViaErrorsIs(t *testing.T) {
+	srv := errorServer(t, http.StatusNotFound, realObservedZDRRefusalBody)
+	defer srv.Close()
+
+	routing := ZDRConfig{}.resolvedProviderRouting()
+	err := streamCompletion(context.Background(), srv.URL, "test-key", "some/model", "sys", nil, "hello", routing,
+		func(tok string) error { return nil },
+		nil,
+	)
+	if err == nil {
+		t.Fatal("streamCompletion: got nil error, want a ZDR refusal error")
+	}
+	if !errors.Is(err, ErrZDRRefused) {
+		t.Errorf("errors.Is(err, ErrZDRRefused) = false for err = %v, want true (this is the exact body OpenRouter returned live on 2026-07-09)", err)
 	}
 }
 

@@ -270,24 +270,44 @@ Code" experience. This is the packaging phase, the single largest remaining body
 
 - **Security review** — the daemon opens a local socket and the edit engine writes to user
   files; both must be reviewed before others run Mochiii. Blocking gate.
-- **ZDR confirmation — code-complete, positive path live-verified (2026-07-09).**
+- **ZDR confirmation — code-complete, BOTH positive and negative paths live-verified
+  (2026-07-09).**
   Provider-routing (`provider.zdr=true`, `data_collection="deny"`, `allow_fallbacks=false`)
-  is now sent on every inference request, secure-by-default (an absent/legacy "zdr"
-  section in models.json resolves to the strictest enforcement, not the weakest), with
-  refusal detection (`ErrZDRRefused`) surfaced as a privacy-specific error rather than a
-  generic one. Code in `daemon/config.go`, `daemon/provider.go`, `daemon/server.go`,
+  is sent on every inference request, secure-by-default (an absent/legacy "zdr" section
+  in models.json resolves to the strictest enforcement, not the weakest), with refusal
+  detection (`ErrZDRRefused`) surfaced as a privacy-specific error rather than a generic
+  one. Code in `daemon/config.go`, `daemon/provider.go`, `daemon/server.go`,
   `models.json`; unit-tested in `daemon/config_test.go` and `daemon/provider_test.go`.
-  Live-verified on a real successful prompt against this account, daemon log:
+  **Positive path**: a real successful prompt against this account logged
   `model API served by provider="DeepInfra" (zdr=true data_collection=deny allow_fallbacks=false)`
   followed by `stream complete`. Confirms the ZDR flags go out on the wire, the request
   succeeds under full enforcement, the serving provider is observable (so a silent
   fallback would be detectable), and that deepseek-v4-flash is ZDR-servable on this
-  account via DeepInfra. Earlier 429s seen during testing were transient upstream
+  account via DeepInfra. (429s seen incidentally during testing were transient upstream
   rate-limiting, unrelated to enforcement, and correctly surfaced as rate-limit errors
-  rather than misclassified as ZDR refusals.
-  Still open: the negative path (a request that genuinely has no qualifying ZDR
-  provider) has not yet been observed live — only the refusal-detection *logic* is
-  unit-tested. (Folds in item (g) above.)
+  rather than misclassified as ZDR refusals — confirmed again during the negative-path
+  revert/recheck below.)
+  **Negative path**: temporarily routed a real request at `ibm-granite/granite-4.0-h-micro`
+  (a real, active OpenRouter model confirmed to have zero ZDR-compliant providers, via
+  OpenRouter's public `/api/v1/endpoints/zdr` listing) with enforcement still fully
+  strict. OpenRouter genuinely refused — daemon log:
+  `model API error: model API returned 404 Not Found: {"error":{"message":"No endpoints found matching your data policy (Zero data retention). Configure: https://openrouter.ai/settings/privacy","code":404}}`.
+  This proved enforcement really blocks non-compliant routing, but also caught a real gap:
+  that exact phrasing wasn't in `zdrRefusalSubstrings` (which only knew "no allowed
+  providers" / "no available model provider"), so the client saw the raw 404 JSON instead
+  of the friendly `inference refused: no zero-data-retention endpoint available` message.
+  Fixed same-day by adding `"zero data retention"` as a third substring (chosen over the
+  full sentence, too brittle against rewording, and over the shorter "data policy", too
+  generic) — verified against the exact live-observed body in
+  `daemon/provider_test.go` (`realObservedZDRRefusalBody`,
+  `TestIsZDRRoutingRefusal_MatchesLiveObservedDataPolicyPhrasing`,
+  `TestStreamCompletion_LiveObservedDataPolicyRefusalIsDetectableViaErrorsIs`), not a
+  synthetic guess. `models.json` was reverted to `deepseek/deepseek-v4-flash` immediately
+  after the negative-path observation, and the positive path was re-confirmed live
+  post-revert (same `provider="DeepInfra" ... stream complete` shape) before the fix was
+  written. Both `zdr=true` config-value changes were temporary and never committed —
+  `models.json` in git is unchanged by this work; only the matcher fix in
+  `daemon/provider.go`/`daemon/provider_test.go` was committed. (Folds in item (g) above.)
 - **Performance NFR** — TTFT < 400ms is a target, not yet measured.
 
 ## Hygiene / recurring

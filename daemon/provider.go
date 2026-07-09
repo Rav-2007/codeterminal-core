@@ -84,12 +84,26 @@ var ErrZDRRefused = errors.New("no provider satisfies the configured zero-data-r
 // errors), so this is deliberately a best-effort text match, not a
 // guaranteed-correct signal — reactive, not proactive, same as the
 // stable-substring match already used for pruned-backup detection in
-// runUndoSession. If neither phrase matches, the real upstream error still
-// reaches the caller unprefixed (see streamCompletion) — never swallowed,
-// just without the friendlier ErrZDRRefused label.
+// runUndoSession. If none of these phrases match, the real upstream error
+// still reaches the caller unprefixed (see streamCompletion) — never
+// swallowed, just without the friendlier ErrZDRRefused label.
+//
+// "zero data retention" was added after a live-induced refusal on
+// 2026-07-09 (routing a real request at a model with zero ZDR-compliant
+// providers) came back as `"No endpoints found matching your data policy
+// (Zero data retention). Configure: https://openrouter.ai/settings/privacy"`
+// — a third phrasing distinct from the two below, neither of which matched
+// it. Deliberately "zero data retention" rather than the full observed
+// sentence (too brittle against OpenRouter rewording the surrounding
+// prose) or the shorter "data policy" (a generic-enough phrase it could
+// plausibly appear in an unrelated policy/moderation message); "zero data
+// retention" is the feature's own name, essentially guaranteed to appear
+// verbatim in any refusal actually caused by this constraint and absent
+// from rate-limit/auth/outage error text.
 var zdrRefusalSubstrings = []string{
 	"no allowed providers",
 	"no available model provider",
+	"zero data retention",
 }
 
 // isZDRRoutingRefusal reports whether body (an error response body from the
