@@ -198,14 +198,24 @@ func (s *Server) handleConn(conn net.Conn) {
 	// (on success) and read back at the next connection's handshake (see
 	// loadPersistedHistory). Merging it in here too would double the
 	// conversation the model sees.
+	routing := s.cfg.ZDR.resolvedProviderRouting()
 	var full strings.Builder
-	err := streamCompletion(context.Background(), s.apiBase, s.apiKey, decision.Slug, s.systemPrompt, historyOutcome.Messages, augmentedPrompt, func(token string) error {
-		full.WriteString(token)
-		return enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Token: token})
-	})
+	err := streamCompletion(context.Background(), s.apiBase, s.apiKey, decision.Slug, s.systemPrompt, historyOutcome.Messages, augmentedPrompt, routing,
+		func(token string) error {
+			full.WriteString(token)
+			return enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Token: token})
+		},
+		func(provider string) {
+			s.logger.Printf("model API served by provider=%q (zdr=%t data_collection=%s allow_fallbacks=%t)", provider, routing.ZDR, routing.DataCollection, routing.AllowFallbacks)
+		},
+	)
 	if err != nil {
 		s.logger.Printf("model API error: %v", err)
-		enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Done: true, Error: err.Error()})
+		errMsg := err.Error()
+		if errors.Is(err, ErrZDRRefused) {
+			errMsg = "inference refused: no zero-data-retention endpoint available"
+		}
+		enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Done: true, Error: errMsg})
 		return
 	}
 

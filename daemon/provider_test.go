@@ -1,6 +1,15 @@
 package main
 
-import "testing"
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
 
 // --- buildChatMessages: ordering & backward compatibility -------------------
 
@@ -103,5 +112,229 @@ func TestBuildChatMessages_HistoryNeverBecomesSystemRegardlessOfContent(t *testi
 		if m.Role == "system" {
 			t.Errorf("message %d has role %q, want a history/user turn never promoted to system: %+v", i, m.Role, m)
 		}
+	}
+}
+
+// --- ZDR provider-routing enforcement --------------------------------------
+
+// sseServer stands in for OpenRouter: it records the last request body it
+// received (so a test can assert on exactly what streamCompletion sent) and
+// writes back a minimal valid SSE stream carrying providerName (if
+// non-empty) and one content token, ending with [DONE].
+func sseServer(t *testing.T, providerName, content string) (*httptest.Server, *[]byte) {
+	t.Helper()
+	var captured []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		captured = body
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		var chunk struct {
+			Provider string `json:"provider,omitempty"`
+			Choices  []struct {
+				Delta struct {
+					Content string `json:"content"`
+				} `json:"delta"`
+			} `json:"choices"`
+		}
+		chunk.Provider = providerName
+		chunk.Choices = []struct {
+			Delta struct {
+				Content string `json:"content"`
+			} `json:"delta"`
+		}{{Delta: struct {
+			Content string `json:"content"`
+		}{Content: content}}}
+		line, _ := json.Marshal(chunk)
+		w.Write([]byte("data: "))
+		w.Write(line)
+		w.Write([]byte("\n\n"))
+		w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	return srv, &captured
+}
+
+// errorServer stands in for OpenRouter refusing a request: it always
+// responds with statusCode and body, regardless of what was sent.
+func errorServer(t *testing.T, statusCode int, body string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(statusCode)
+		w.Write([]byte(body))
+	}))
+}
+
+// TestStreamCompletion_RequestBodyIncludesStrictProviderRoutingByDefault
+// proves the outbound request body actually carries provider.zdr=true,
+// provider.data_collection="deny", provider.allow_fallbacks=false when
+// called with the strict defaults ZDRConfig{}.resolvedProviderRouting()
+// produces — the code-level assertion this whole slice exists for. Without
+// this test, "we added a provider field" and "we send the right values on
+// the wire" are two different, unverified claims.
+func TestStreamCompletion_RequestBodyIncludesStrictProviderRoutingByDefault(t *testing.T) {
+	srv, captured := sseServer(t, "SomeProvider", "hi")
+	defer srv.Close()
+
+	routing := ZDRConfig{}.resolvedProviderRouting()
+	var tokens []string
+	err := streamCompletion(context.Background(), srv.URL, "test-key", "some/model", "sys", nil, "hello", routing,
+		func(tok string) error { tokens = append(tokens, tok); return nil },
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("streamCompletion: %v", err)
+	}
+
+	var sent chatCompletionRequest
+	if err := json.Unmarshal(*captured, &sent); err != nil {
+		t.Fatalf("decoding captured request body: %v\nbody: %s", err, *captured)
+	}
+	want := providerRouting{ZDR: true, DataCollection: "deny", AllowFallbacks: false}
+	if sent.Provider != want {
+		t.Errorf("outbound request provider object = %+v, want %+v (strict defaults)", sent.Provider, want)
+	}
+	if !sent.Stream {
+		t.Error("outbound request stream = false, want true (unrelated to this slice, but a break here means the capture itself is wrong)")
+	}
+}
+
+// TestStreamCompletion_RequestBodyReflectsConfigDrivenRouting proves the
+// provider object on the wire is NOT hardcoded inside streamCompletion — it
+// reflects whatever providerRouting the caller (server.go, driven by
+// ZDRConfig) passes in, including a deliberately weakened one. This is the
+// "config-driven" half of the requirement: the values must be able to
+// change via config, not just default correctly.
+func TestStreamCompletion_RequestBodyReflectsConfigDrivenRouting(t *testing.T) {
+	srv, captured := sseServer(t, "SomeProvider", "hi")
+	defer srv.Close()
+
+	routing := ZDRConfig{AllowNonZDR: true, AllowDataCollection: true, AllowFallbacks: true}.resolvedProviderRouting()
+	err := streamCompletion(context.Background(), srv.URL, "test-key", "some/model", "sys", nil, "hello", routing,
+		func(tok string) error { return nil },
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("streamCompletion: %v", err)
+	}
+
+	var sent chatCompletionRequest
+	if err := json.Unmarshal(*captured, &sent); err != nil {
+		t.Fatalf("decoding captured request body: %v", err)
+	}
+	want := providerRouting{ZDR: false, DataCollection: "allow", AllowFallbacks: true}
+	if sent.Provider != want {
+		t.Errorf("outbound request provider object = %+v, want %+v (the weakened config passed in)", sent.Provider, want)
+	}
+}
+
+// TestStreamCompletion_OnProviderFiresWithObservedProviderName proves the
+// observability half of item 3: whatever provider name OpenRouter reports
+// actually served the request is captured and handed to the caller exactly
+// once, so a silent fallback is at least visible (e.g. in daemon logs via
+// server.go's onProvider closure), even though it's never used to gate or
+// retry the request itself.
+func TestStreamCompletion_OnProviderFiresWithObservedProviderName(t *testing.T) {
+	srv, _ := sseServer(t, "DeepInfra", "hi")
+	defer srv.Close()
+
+	var seen []string
+	routing := ZDRConfig{}.resolvedProviderRouting()
+	err := streamCompletion(context.Background(), srv.URL, "test-key", "some/model", "sys", nil, "hello", routing,
+		func(tok string) error { return nil },
+		func(provider string) { seen = append(seen, provider) },
+	)
+	if err != nil {
+		t.Fatalf("streamCompletion: %v", err)
+	}
+	if len(seen) != 1 || seen[0] != "DeepInfra" {
+		t.Errorf("onProvider calls = %v, want exactly one call with %q", seen, "DeepInfra")
+	}
+}
+
+// --- ZDR refusal detection --------------------------------------------------
+
+// TestIsZDRRoutingRefusal_MatchesKnownPhrasings covers both observed OpenRouter
+// error-body phrasings for "no provider satisfies your routing constraints"
+// (see zdrRefusalSubstrings' doc comment for why there are two, and why this
+// is a best-effort match rather than a guaranteed-stable signal).
+func TestIsZDRRoutingRefusal_MatchesKnownPhrasings(t *testing.T) {
+	bodies := []string{
+		`{"error":{"code":404,"message":"No allowed providers are available for the selected model."}}`,
+		`{"error":{"code":503,"message":"There is no available model provider that meets your routing requirements","type":"provider_unavailable"}}`,
+		`{"error":{"message":"NO ALLOWED PROVIDERS are available"}}`, // case-insensitivity
+	}
+	for _, body := range bodies {
+		if !isZDRRoutingRefusal(body) {
+			t.Errorf("isZDRRoutingRefusal(%q) = false, want true", body)
+		}
+	}
+}
+
+// TestIsZDRRoutingRefusal_DoesNotMatchUnrelatedErrors proves the detection
+// doesn't over-match: an ordinary auth failure, rate limit, or generic
+// outage must NOT be misclassified as a ZDR routing refusal, or a user
+// would be told "inference refused: no zero-data-retention endpoint
+// available" for an unrelated problem (e.g. an expired API key) — worse
+// than the generic message it would replace.
+func TestIsZDRRoutingRefusal_DoesNotMatchUnrelatedErrors(t *testing.T) {
+	bodies := []string{
+		`{"error":{"code":401,"message":"Invalid API key"}}`,
+		`{"error":{"code":429,"message":"Rate limit exceeded"}}`,
+		`{"error":{"code":502,"message":"Bad gateway"}}`,
+		`{"error":{"code":400,"message":"Invalid request: messages must not be empty"}}`,
+		``,
+	}
+	for _, body := range bodies {
+		if isZDRRoutingRefusal(body) {
+			t.Errorf("isZDRRoutingRefusal(%q) = true, want false (unrelated error must not be misclassified)", body)
+		}
+	}
+}
+
+// TestStreamCompletion_ZDRRefusalIsDetectableViaErrorsIs proves the
+// end-to-end failure path: when the model API responds with a
+// ZDR-routing-refusal-shaped error, streamCompletion's returned error
+// satisfies errors.Is(err, ErrZDRRefused), so server.go can translate it
+// into the specific user-facing message rather than a generic one.
+func TestStreamCompletion_ZDRRefusalIsDetectableViaErrorsIs(t *testing.T) {
+	srv := errorServer(t, http.StatusServiceUnavailable, `{"error":{"code":503,"message":"There is no available model provider that meets your routing requirements"}}`)
+	defer srv.Close()
+
+	routing := ZDRConfig{}.resolvedProviderRouting()
+	err := streamCompletion(context.Background(), srv.URL, "test-key", "some/model", "sys", nil, "hello", routing,
+		func(tok string) error { return nil },
+		nil,
+	)
+	if err == nil {
+		t.Fatal("streamCompletion: got nil error, want a ZDR refusal error")
+	}
+	if !errors.Is(err, ErrZDRRefused) {
+		t.Errorf("errors.Is(err, ErrZDRRefused) = false for err = %v, want true", err)
+	}
+}
+
+// TestStreamCompletion_OrdinaryErrorIsNotWrappedAsZDRRefusal is the
+// counterpart proving an unrelated upstream error (rate limit) is NOT
+// misclassified — errors.Is(err, ErrZDRRefused) must be false, and the raw
+// OpenRouter error text must still reach the caller unprefixed.
+func TestStreamCompletion_OrdinaryErrorIsNotWrappedAsZDRRefusal(t *testing.T) {
+	const rawBody = `{"error":{"code":429,"message":"Rate limit exceeded"}}`
+	srv := errorServer(t, http.StatusTooManyRequests, rawBody)
+	defer srv.Close()
+
+	routing := ZDRConfig{}.resolvedProviderRouting()
+	err := streamCompletion(context.Background(), srv.URL, "test-key", "some/model", "sys", nil, "hello", routing,
+		func(tok string) error { return nil },
+		nil,
+	)
+	if err == nil {
+		t.Fatal("streamCompletion: got nil error, want a rate-limit error")
+	}
+	if errors.Is(err, ErrZDRRefused) {
+		t.Errorf("errors.Is(err, ErrZDRRefused) = true for an ordinary rate-limit error %v, want false", err)
+	}
+	if !strings.Contains(err.Error(), rawBody) {
+		t.Errorf("error %q does not contain the raw upstream body %q — the real error must never be swallowed", err.Error(), rawBody)
 	}
 }

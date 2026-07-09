@@ -270,8 +270,24 @@ Code" experience. This is the packaging phase, the single largest remaining body
 
 - **Security review** — the daemon opens a local socket and the edit engine writes to user
   files; both must be reviewed before others run Mochiii. Blocking gate.
-- **ZDR confirmation** — verify zero-data-retention is enforced on the inference provider;
-  the whole privacy pitch depends on it. Currently unverified. (Folds in item (g) above.)
+- **ZDR confirmation — code-complete, positive path live-verified (2026-07-09).**
+  Provider-routing (`provider.zdr=true`, `data_collection="deny"`, `allow_fallbacks=false`)
+  is now sent on every inference request, secure-by-default (an absent/legacy "zdr"
+  section in models.json resolves to the strictest enforcement, not the weakest), with
+  refusal detection (`ErrZDRRefused`) surfaced as a privacy-specific error rather than a
+  generic one. Code in `daemon/config.go`, `daemon/provider.go`, `daemon/server.go`,
+  `models.json`; unit-tested in `daemon/config_test.go` and `daemon/provider_test.go`.
+  Live-verified on a real successful prompt against this account, daemon log:
+  `model API served by provider="DeepInfra" (zdr=true data_collection=deny allow_fallbacks=false)`
+  followed by `stream complete`. Confirms the ZDR flags go out on the wire, the request
+  succeeds under full enforcement, the serving provider is observable (so a silent
+  fallback would be detectable), and that deepseek-v4-flash is ZDR-servable on this
+  account via DeepInfra. Earlier 429s seen during testing were transient upstream
+  rate-limiting, unrelated to enforcement, and correctly surfaced as rate-limit errors
+  rather than misclassified as ZDR refusals.
+  Still open: the negative path (a request that genuinely has no qualifying ZDR
+  provider) has not yet been observed live — only the refusal-detection *logic* is
+  unit-tested. (Folds in item (g) above.)
 - **Performance NFR** — TTFT < 400ms is a target, not yet measured.
 
 ## Hygiene / recurring

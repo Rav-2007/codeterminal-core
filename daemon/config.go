@@ -22,6 +22,46 @@ type Config struct {
 	DefaultTier   string               `json:"default_tier"`
 	Tiers         map[string]ModelTier `json:"tiers"`
 	Retrieval     RetrievalConfig      `json:"retrieval,omitempty"`
+	ZDR           ZDRConfig            `json:"zdr,omitempty"`
+}
+
+// ZDRConfig controls the OpenRouter provider-routing constraints sent with
+// every inference request (see providerRouting in provider.go). Every field
+// here is a WEAKEN-bool — the opposite polarity from what it controls —
+// deliberately, so the zero value (an absent "zdr" section, e.g. in a
+// models.json predating this field) resolves to the strictest possible
+// enforcement: zero-data-retention-only routing, no data-collecting
+// providers, no fallback to an unconstrained provider. This mirrors
+// RetrievalConfig's Disabled-bool-defaults-enabled pattern above, but here
+// the stakes are the whole privacy pitch, so "off" must never be reachable
+// by omission — only by an explicit, auditable "true" in models.json.
+type ZDRConfig struct {
+	// AllowNonZDR, if true, stops constraining routing to zero-data-retention
+	// endpoints (sends provider.zdr=false instead of true).
+	AllowNonZDR bool `json:"allow_non_zdr,omitempty"`
+	// AllowDataCollection, if true, permits providers that may store/train
+	// on request data (sends provider.data_collection="allow" instead of
+	// "deny").
+	AllowDataCollection bool `json:"allow_data_collection,omitempty"`
+	// AllowFallbacks, if true, permits OpenRouter to reroute to a provider
+	// outside the above constraints if none qualify, instead of the request
+	// failing loudly (sends provider.allow_fallbacks=true instead of false).
+	AllowFallbacks bool `json:"allow_fallbacks,omitempty"`
+}
+
+// resolvedProviderRouting returns the provider-routing object to send with
+// every inference request. Called fresh per-request (not cached) so a
+// config reload always takes effect immediately.
+func (c ZDRConfig) resolvedProviderRouting() providerRouting {
+	dataCollection := "deny"
+	if c.AllowDataCollection {
+		dataCollection = "allow"
+	}
+	return providerRouting{
+		ZDR:            !c.AllowNonZDR,
+		DataCollection: dataCollection,
+		AllowFallbacks: c.AllowFallbacks,
+	}
 }
 
 // RetrievalConfig controls retrieval-augmented context injection in the live

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -32,18 +33,77 @@ type chatMessage struct {
 	Content string `json:"content"`
 }
 
+// providerRouting is OpenRouter's "provider" request object, restricted to
+// the three fields this codebase enforces. See ZDRConfig.resolvedProviderRouting
+// in config.go for how these values are resolved (secure-by-default) and
+// ErrZDRRefused below for the failure mode when no provider qualifies. No
+// field here is omitempty: every request must state all three explicitly,
+// on purpose, so enforcement is never silently absent from the wire body.
+type providerRouting struct {
+	ZDR            bool   `json:"zdr"`
+	DataCollection string `json:"data_collection"`
+	AllowFallbacks bool   `json:"allow_fallbacks"`
+}
+
 type chatCompletionRequest struct {
-	Model    string        `json:"model"`
-	Messages []chatMessage `json:"messages"`
-	Stream   bool          `json:"stream"`
+	Model    string          `json:"model"`
+	Messages []chatMessage   `json:"messages"`
+	Stream   bool            `json:"stream"`
+	Provider providerRouting `json:"provider"`
 }
 
 type chatCompletionChunk struct {
-	Choices []struct {
+	// Provider names the upstream provider that actually served this chunk,
+	// when OpenRouter includes it (observed in practice, not formally
+	// guaranteed on every chunk by OpenRouter's docs) — captured purely for
+	// observability (see streamCompletion's onProvider callback). Never
+	// used to gate or retry a request: provider.zdr/data_collection above
+	// are what OpenRouter itself filters routing by, before this response
+	// ever exists.
+	Provider string `json:"provider,omitempty"`
+	Choices  []struct {
 		Delta struct {
 			Content string `json:"content"`
 		} `json:"delta"`
 	} `json:"choices"`
+}
+
+// ErrZDRRefused is the sentinel error streamCompletion returns when
+// OpenRouter refuses a request because no provider satisfies the
+// provider-routing constraints (e.g. zdr:true + data_collection:"deny" +
+// allow_fallbacks:false excludes every available endpoint). Callers can
+// distinguish this from an ordinary outage via errors.Is(err, ErrZDRRefused)
+// and surface a privacy-specific message instead of a generic failure (see
+// server.go's handlePrompt).
+var ErrZDRRefused = errors.New("no provider satisfies the configured zero-data-retention routing constraints")
+
+// zdrRefusalSubstrings are known (as of this writing) OpenRouter error-body
+// phrasings for "no provider matches your routing constraints". OpenRouter
+// does not document a single stable machine-readable code that's distinct
+// from an ordinary provider outage (both can surface under similar-shaped
+// errors), so this is deliberately a best-effort text match, not a
+// guaranteed-correct signal — reactive, not proactive, same as the
+// stable-substring match already used for pruned-backup detection in
+// runUndoSession. If neither phrase matches, the real upstream error still
+// reaches the caller unprefixed (see streamCompletion) — never swallowed,
+// just without the friendlier ErrZDRRefused label.
+var zdrRefusalSubstrings = []string{
+	"no allowed providers",
+	"no available model provider",
+}
+
+// isZDRRoutingRefusal reports whether body (an error response body from the
+// model API) looks like OpenRouter refusing a request for lack of a
+// qualifying provider, as opposed to an unrelated error (auth, rate limit,
+// bad request, generic outage).
+func isZDRRoutingRefusal(body string) bool {
+	lower := strings.ToLower(body)
+	for _, s := range zdrRefusalSubstrings {
+		if strings.Contains(lower, s) {
+			return true
+		}
+	}
+	return false
 }
 
 // buildChatMessages assembles the message list sent to the model: an
@@ -71,8 +131,12 @@ func buildChatMessages(systemPrompt string, history []chatMessage, prompt string
 // systemPrompt, if non-empty, is sent as the leading "system" message.
 // history carries prior conversation turns (already validated/capped by the
 // caller via prepareHistory), inserted between the system message and the
-// final prompt message.
-func streamCompletion(ctx context.Context, apiBase, apiKey, model, systemPrompt string, history []chatMessage, prompt string, onToken func(string) error) error {
+// final prompt message. routing is sent as the request's "provider" object
+// on every call, never optional (see providerRouting's doc comment).
+// onProvider, if non-nil, is invoked at most once with the upstream
+// provider name as soon as it's observed in the response stream (purely for
+// observability — see chatCompletionChunk.Provider's doc comment).
+func streamCompletion(ctx context.Context, apiBase, apiKey, model, systemPrompt string, history []chatMessage, prompt string, routing providerRouting, onToken func(string) error, onProvider func(string)) error {
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 
@@ -82,6 +146,7 @@ func streamCompletion(ctx context.Context, apiBase, apiKey, model, systemPrompt 
 		Model:    model,
 		Messages: messages,
 		Stream:   true,
+		Provider: routing,
 	})
 	if err != nil {
 		return fmt.Errorf("encoding request: %w", err)
@@ -106,12 +171,17 @@ func streamCompletion(ctx context.Context, apiBase, apiKey, model, systemPrompt 
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("model API returned %s: %s", resp.Status, strings.TrimSpace(string(body)))
+		bodyStr := strings.TrimSpace(string(body))
+		if isZDRRoutingRefusal(bodyStr) {
+			return fmt.Errorf("%w (model API returned %s: %s)", ErrZDRRefused, resp.Status, bodyStr)
+		}
+		return fmt.Errorf("model API returned %s: %s", resp.Status, bodyStr)
 	}
 
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, sseInitialBufferSize), sseMaxLineSize)
 
+	providerSeen := false
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || !strings.HasPrefix(line, "data:") {
@@ -125,6 +195,12 @@ func streamCompletion(ctx context.Context, apiBase, apiKey, model, systemPrompt 
 		var chunk chatCompletionChunk
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 			continue // skip malformed / keep-alive lines
+		}
+		if !providerSeen && chunk.Provider != "" {
+			providerSeen = true
+			if onProvider != nil {
+				onProvider(chunk.Provider)
+			}
 		}
 		if len(chunk.Choices) == 0 {
 			continue
