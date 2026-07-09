@@ -93,6 +93,35 @@ export interface UndoResponse {
   error?: string;
 }
 
+export interface SearchRequest {
+  protocol_version: number;
+  search: true;
+  workspace?: string;
+  query: string;
+  limit?: number;
+}
+
+// SearchResult mirrors protocol.SearchResult exactly (Role/Snippet/CreatedAt,
+// deliberately no turn ID -- see its doc comment in protocol/protocol.go).
+// Snippet already contains FTS5 snippet()'s literal '[' / ']' match markers
+// (see daemon/search.go); rendering them into visible highlighting is the
+// webview's job (see main.js's renderSnippet), not this client's.
+export interface SearchResult {
+  role: string;
+  snippet: string;
+  created_at: string;
+}
+
+// SearchResponse mirrors protocol.SearchResponse: Results is undefined
+// (never an empty array) when the search legitimately found nothing -- that
+// is NOT an error. Error is set only when the search couldn't run at all.
+// A caller must render these as two distinct states, never collapse them.
+export interface SearchResponse {
+  protocol_version: number;
+  results?: SearchResult[];
+  error?: string;
+}
+
 interface LockFile {
   socket_path: string;
   pid: number;
@@ -389,6 +418,37 @@ export async function undoEdits(clientName: string, workspace: string, backupSes
     const req: UndoRequest = { protocol_version: PROTOCOL_VERSION, undo: true, workspace };
     if (backupSessionDir) {
       req.backup_session_dir = backupSessionDir;
+    }
+    writeLine(socket, req);
+  });
+}
+
+// searchConversations opens a fresh connection and sends exactly one
+// SearchRequest, asking the daemon to run a lexical (FTS5) search over its
+// cross-session conversation memory -- the TS equivalent of undoEdits above,
+// same single-request/response shape. workspace is sent for convention only;
+// the daemon always resolves search against its own configured workspace
+// root (see protocol.SearchRequest's doc comment), never a client-supplied
+// path. limit is omitted when not given, letting the daemon apply its own
+// default cap.
+export async function searchConversations(
+  clientName: string,
+  workspace: string,
+  query: string,
+  limit?: number
+): Promise<SearchResponse> {
+  const { socket } = await connectToDaemon(clientName);
+  return new Promise((resolve, reject) => {
+    const decoder = new LineDecoder((obj) => {
+      socket.destroy();
+      resolve(obj as SearchResponse);
+    });
+    socket.on('data', (chunk: Buffer) => decoder.feed(chunk));
+    socket.once('error', (err) => reject(err));
+
+    const req: SearchRequest = { protocol_version: PROTOCOL_VERSION, search: true, workspace, query };
+    if (limit) {
+      req.limit = limit;
     }
     writeLine(socket, req);
   });

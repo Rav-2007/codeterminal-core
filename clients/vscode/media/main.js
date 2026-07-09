@@ -9,6 +9,9 @@
   const groundingEl = document.getElementById('grounding');
   const inputEl = document.getElementById('promptInput');
   const sendBtn = document.getElementById('sendBtn');
+  const searchInputEl = document.getElementById('searchInput');
+  const searchBtn = document.getElementById('searchBtn');
+  const searchResultsEl = document.getElementById('searchResults');
 
   let streaming = false;
   let currentAssistantBubble = null;
@@ -294,6 +297,99 @@
     }
   }
 
+  // renderSnippet turns a SearchResult.snippet's literal '[' / ']' match
+  // markers (inserted by the daemon's FTS5 snippet() call, see
+  // daemon/search.go) into visible highlighting -- built via createElement/
+  // textContent like every other renderer in this file, never innerHTML, so
+  // nothing in a search result (which is a user's own past conversation
+  // text, not vetted markup) can inject anything into the page.
+  function renderSnippet(container, text) {
+    const parts = text.split(/([[\]])/);
+    let highlighting = false;
+    for (const part of parts) {
+      if (part === '[') {
+        highlighting = true;
+        continue;
+      }
+      if (part === ']') {
+        highlighting = false;
+        continue;
+      }
+      if (part === '') {
+        continue;
+      }
+      if (highlighting) {
+        const mark = document.createElement('mark');
+        mark.textContent = part;
+        container.appendChild(mark);
+      } else {
+        container.appendChild(document.createTextNode(part));
+      }
+    }
+  }
+
+  // showSearchResults renders the outcome of one search: an error (search
+  // couldn't run at all), a clean "no results" empty state (found nothing --
+  // NOT an error, see protocol.SearchResponse's doc comment), or the ranked
+  // result list -- already bm25-ranked by the daemon, never re-sorted here.
+  function showSearchResults(msg) {
+    while (searchResultsEl.firstChild) {
+      searchResultsEl.removeChild(searchResultsEl.firstChild);
+    }
+
+    if (msg.error) {
+      const el = document.createElement('div');
+      el.className = 'search-error';
+      el.textContent = `search failed: ${msg.error}`;
+      searchResultsEl.appendChild(el);
+      return;
+    }
+
+    if (!msg.results || msg.results.length === 0) {
+      const el = document.createElement('div');
+      el.className = 'search-empty';
+      el.textContent = 'no results';
+      searchResultsEl.appendChild(el);
+      return;
+    }
+
+    for (const result of msg.results) {
+      const card = document.createElement('div');
+      card.className = 'search-result';
+
+      const meta = document.createElement('div');
+      meta.className = 'search-result-meta';
+      const role = result.role === 'user' ? 'you' : 'codeterminal';
+      const when = new Date(result.created_at).toLocaleString();
+      meta.textContent = `${role} · ${when}`;
+      card.appendChild(meta);
+
+      const snippet = document.createElement('div');
+      snippet.className = 'search-result-snippet';
+      renderSnippet(snippet, result.snippet);
+      card.appendChild(snippet);
+
+      searchResultsEl.appendChild(card);
+    }
+  }
+
+  function doSearch() {
+    const query = searchInputEl.value.trim();
+    if (!query) {
+      return;
+    }
+    searchBtn.disabled = true;
+    searchBtn.textContent = 'Searching…';
+    vscode.postMessage({ type: 'search', text: query });
+  }
+
+  searchBtn.addEventListener('click', doSearch);
+  searchInputEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      doSearch();
+    }
+  });
+
   function send() {
     const text = inputEl.value.trim();
     if (!text || streaming) {
@@ -371,6 +467,11 @@
           });
           pendingUndoButton = null;
         }
+        break;
+      case 'searchResults':
+        searchBtn.disabled = false;
+        searchBtn.textContent = 'Search';
+        showSearchResults(msg);
         break;
     }
   });

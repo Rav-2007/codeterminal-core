@@ -118,7 +118,11 @@ error. Committed across 2 sub-slices (49b1141, 4d7a0ea). Deliberately
 deferred next capability in this area: a model-callable
 `session_search`/FTS5 tool over backup/session history, once there's a
 concrete need for the model itself to query past runs rather than a human
-clicking Undo.
+clicking Undo. NOTE: a related but distinct FTS5 search capability was since
+built (see "FTS5 search session" below) -- human-facing lexical search over
+*conversation memory* (turns), driven from the VS Code panel, not a
+model-callable tool and not over backup/session history. This backup-history
+tool is still deferred.
 
 ## Backlog — added 2026-07-08
 
@@ -146,6 +150,45 @@ clicking Undo.
   discovery via $XDG_RUNTIME_DIR). Remote-SSH / WSL / devcontainer extension
   hosts live on a different side of the gap and won't find the local lockfile.
   Not needed for local dev; revisit if remote usage becomes a goal.
+
+## Backlog — added 2026-07-09 (FTS5 search session)
+
+- **DONE: FTS5 lexical search over cross-session conversation memory (daemon +
+  VS Code panel)** — the model-callable `session_search`/FTS5 tool deferred back
+  in the bounded-backups note above, built out fully to a live-verified VS Code
+  UI. Four sub-slices:
+  1. De-risking probe (a023966): standalone test proving the pinned
+     modernc.org/sqlite v1.39.0 dependency has FTS5 + the trigram tokenizer
+     available with no build tag/import/driver change, before building anything
+     real on that assumption.
+  2. Search index (cee571f): strictly-additive `turns_fts` virtual table
+     (trigram tokenizer) kept in sync with `turns` via INSERT/DELETE triggers
+     (no UPDATE trigger -- nothing ever updates a turns row); one-time
+     backfill on schema version 1->2; `MemoryStore.SearchTurns` (bm25-ranked,
+     workspace-isolated, query always wrapped as one quoted phrase so a
+     user's text can't be misread as FTS5 operators).
+  3. Wire protocol (db2ad83): `SearchRequest`/`SearchResponse` following the
+     existing UndoRequest presence-of-key dispatch convention; daemon always
+     resolves search against its OWN configured workspace, never a
+     client-supplied path; no-match is `Results` absent from the wire (not an
+     error, not an empty array).
+  4. VS Code panel UI (this commit): search box + results list in the webview,
+     wired through `daemonClient.searchConversations` -> `ChatPanel.onSearch` ->
+     `main.js` rendering. Results render via createElement/textContent (never
+     innerHTML) since a past conversation snippet is unvetted text, not markup;
+     FTS5's `[`/`]` snippet() match markers are turned into `<mark>` highlights
+     client-side. Search and chat are fully separate paths -- a search never
+     touches `this.transcript` and doesn't block or get blocked by an in-flight
+     prompt/apply/undo.
+
+  Verified live end-to-end across all four checks: keyword search returns
+  role/timestamp/highlighted-snippet result cards, bm25-ranked; a code-token
+  substring query (`fmt.Println`) matches inside a snippet via the trigram
+  tokenizer; a query with no matches shows a plain "no results" line, not an
+  error; both the Search button and Enter-in-the-input trigger a search; chat
+  streaming (grounded label) is unaffected by the new panel row. Sub-slices
+  1-3 committed a023966, cee571f, db2ad83; sub-slice 4 committed alongside
+  this entry. Slice complete, tagged `search-complete`.
 
 ## Backlog — added 2026-07-08 (diff-apply session)
 

@@ -1,6 +1,15 @@
 import * as vscode from 'vscode';
 
-import { EditBlockWire, GroundingInfo, Turn, applyEdit, preflightHandshake, streamPrompt, undoEdits } from './daemonClient';
+import {
+  EditBlockWire,
+  GroundingInfo,
+  Turn,
+  applyEdit,
+  preflightHandshake,
+  searchConversations,
+  streamPrompt,
+  undoEdits,
+} from './daemonClient';
 
 const CLIENT_NAME = 'codeterminal-vscode';
 const VIEW_TYPE = 'codeterminalChat';
@@ -46,6 +55,7 @@ export class ChatPanel {
   private refusalReasons: string[] = [];
   private applyInFlight = false;
   private undoInFlight = false;
+  private searchInFlight = false;
 
   // currentRunAutoApply is captured ONCE, from the 'prompt' message's
   // autoApply field, at the moment a prompt is sent -- mirroring the
@@ -118,6 +128,8 @@ export class ChatPanel {
       this.onSkipEdit();
     } else if (msg.type === 'undoEdit' && typeof msg.backupDir === 'string') {
       this.onUndoEdit(msg.backupDir);
+    } else if (msg.type === 'search' && typeof msg.text === 'string') {
+      this.onSearch(msg.text);
     }
   }
 
@@ -365,6 +377,31 @@ export class ChatPanel {
     }
   }
 
+  // onSearch runs a lexical (FTS5) search over cross-session conversation
+  // memory for the current workspace, entirely separate from the chat
+  // transcript above -- searching never touches this.transcript or
+  // interrupts an in-flight prompt/apply/undo, and a search in flight
+  // doesn't block those either; searchInFlight only guards against a second
+  // search racing the first. Results (or the empty-not-error / actual-error
+  // outcome) are relayed to the webview verbatim, exactly as they arrived
+  // over the wire -- no re-sorting (results already arrive bm25-ranked) and
+  // no collapsing "no results" and "search failed" into the same message,
+  // mirroring how onUndoEdit relays guarded/error without collapsing them.
+  private async onSearch(query: string): Promise<void> {
+    if (this.searchInFlight) {
+      return;
+    }
+    this.searchInFlight = true;
+    try {
+      const result = await searchConversations(CLIENT_NAME, workspacePath(), query);
+      this.panel.webview.postMessage({ type: 'searchResults', results: result.results, error: result.error });
+    } catch (err) {
+      this.panel.webview.postMessage({ type: 'searchResults', error: (err as Error).message });
+    } finally {
+      this.searchInFlight = false;
+    }
+  }
+
   private dispose(): void {
     // Aborting the panel aborts the in-flight connection -- no orphaned
     // sockets left reading a dead webview.
@@ -397,6 +434,32 @@ export class ChatPanel {
     flex-direction: column;
     height: 100vh;
   }
+  #searchRow { display: flex; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--vscode-panel-border, transparent); }
+  #searchInput {
+    flex: 1;
+    background: var(--vscode-input-background);
+    color: var(--vscode-input-foreground);
+    border: 1px solid var(--vscode-input-border, transparent);
+    padding: 6px 8px;
+    font-family: inherit;
+    font-size: inherit;
+  }
+  #searchResults { padding: 0 12px; }
+  .search-result {
+    margin-bottom: 10px;
+    padding: 8px 10px;
+    border: 1px solid var(--vscode-panel-border, #444);
+    border-radius: 4px;
+    font-size: 12px;
+  }
+  .search-result .search-result-meta { font-size: 11px; opacity: 0.6; margin-bottom: 4px; }
+  .search-result .search-result-snippet { white-space: pre-wrap; line-height: 1.4; }
+  .search-result mark {
+    background: var(--vscode-editor-findMatchHighlightBackground, #ffd33d55);
+    color: inherit;
+  }
+  .search-empty { padding: 4px 0 10px; font-size: 12px; opacity: 0.7; }
+  .search-error { padding: 4px 0 10px; font-size: 12px; color: var(--vscode-errorForeground); }
   #transcript { flex: 1; overflow-y: auto; padding: 8px 12px; }
   .turn { margin-bottom: 14px; white-space: pre-wrap; line-height: 1.4; }
   .turn .role { display: block; font-size: 11px; opacity: 0.6; margin-bottom: 2px; }
@@ -489,11 +552,16 @@ export class ChatPanel {
 </style>
 </head>
 <body>
+  <div id="searchRow">
+    <input id="searchInput" type="text" placeholder="Search past conversations…" />
+    <button id="searchBtn">Search</button>
+  </div>
+  <div id="searchResults"></div>
   <div id="transcript"></div>
   <div id="grounding"></div>
   <div id="inputRow">
     <button id="autoApplyToggle" class="auto-apply-toggle off" title="When ON, proposed edits apply automatically without a per-edit confirmation"></button>
-    <input id="promptInput" type="text" placeholder="Ask something…" autofocus />
+    <input id="promptInput" type="text" placeholder="Ask something…" />
     <button id="sendBtn">Send</button>
   </div>
   <script nonce="${nonce}" src="${scriptUri}"></script>
