@@ -141,6 +141,16 @@ func (s *Server) handleConn(conn net.Conn) {
 		return
 	}
 
+	if isSearchRequest(raw) {
+		var searchReq protocol.SearchRequest
+		if err := json.Unmarshal(raw, &searchReq); err != nil {
+			s.logger.Printf("search request decode error: %v", err)
+			return
+		}
+		s.handleSearch(enc, searchReq)
+		return
+	}
+
 	var promptReq protocol.PromptRequest
 	if err := json.Unmarshal(raw, &promptReq); err != nil {
 		s.logger.Printf("prompt read error: %v", err)
@@ -380,6 +390,74 @@ func (s *Server) handleUndo(enc *json.Encoder, req protocol.UndoRequest) {
 		Guarded:         guarded,
 		SessionDir:      sessionDir,
 	})
+}
+
+// isSearchRequest sniffs whether raw is a SearchRequest (identified by the
+// presence of its "search" key), mirroring isUndoRequest's peek-for-"undo"
+// approach. SearchRequest always serializes "search" (no omitempty, see its
+// doc comment), so a real one is always caught here; older clients that
+// don't know this message only ever send PromptRequest-shaped JSON, which
+// has no "search" key, so they always fall through to the prompt path
+// unaffected.
+func isSearchRequest(raw json.RawMessage) bool {
+	var peek struct {
+		Search *bool `json:"search"`
+	}
+	if err := json.Unmarshal(raw, &peek); err != nil {
+		return false
+	}
+	return peek.Search != nil
+}
+
+// defaultSearchLimit caps how many results a SearchRequest returns when the
+// client doesn't specify one (Limit <= 0) -- the same "client omits it,
+// daemon picks a sensible default" shape as maxHistoryTurns (history.go),
+// though kept as its own constant since the two aren't the same concept
+// (recent conversation turns to replay to the model vs. search hits to show
+// a human).
+const defaultSearchLimit = 20
+
+// handleSearch runs a SearchRequest through MemoryStore.SearchTurns — no
+// search logic lives here, this only resolves the workspace, applies the
+// default limit, and translates the result to wire types. Workspace
+// resolution always uses this daemon's own configured s.workspace, never
+// req.Workspace, same convention as every other request type: a client
+// can't search another workspace's history by lying about which one it's
+// asking for.
+//
+// s.memory == nil (cross-session memory unavailable — see setupMemoryStore)
+// is reported as an explicit Error, not a silent empty result set: an empty
+// Results slice must always mean "searched and found nothing" (SearchTurns's
+// own no-match-is-not-an-error contract), never "couldn't search at all" —
+// the same "never let two different outcomes look identical" instinct
+// UndoResponse.Guarded exists for.
+func (s *Server) handleSearch(enc *json.Encoder, req protocol.SearchRequest) {
+	if s.memory == nil {
+		enc.Encode(protocol.SearchResponse{
+			ProtocolVersion: protocol.ProtocolVersion,
+			Error:           "conversation memory is not available",
+		})
+		return
+	}
+
+	limit := req.Limit
+	if limit <= 0 {
+		limit = defaultSearchLimit
+	}
+
+	hits, err := s.memory.SearchTurns(context.Background(), s.workspace, req.Query, limit)
+	if err != nil {
+		s.logger.Printf("search: %v", err)
+		enc.Encode(protocol.SearchResponse{ProtocolVersion: protocol.ProtocolVersion, Error: err.Error()})
+		return
+	}
+
+	results := make([]protocol.SearchResult, len(hits))
+	for i, h := range hits {
+		results[i] = protocol.SearchResult{Role: h.Role, Snippet: h.Snippet, CreatedAt: h.CreatedAt}
+	}
+	s.logger.Printf("search: %d result(s) for query (%d bytes)", len(results), len(req.Query))
+	enc.Encode(protocol.SearchResponse{ProtocolVersion: protocol.ProtocolVersion, Results: results})
 }
 
 // loadPersistedHistory returns this daemon's cross-session conversation

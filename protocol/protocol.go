@@ -247,6 +247,69 @@ type UndoResponse struct {
 	Error           string   `json:"error,omitempty"`
 }
 
+// SearchRequest asks the daemon to run a lexical (FTS5, keyword/substring)
+// search over its cross-session conversation memory for its own configured
+// workspace — see daemon/search.go's MemoryStore.SearchTurns, the underlying
+// implementation this just calls into with no logic of its own. Sent on its
+// own fresh connection (after a HandshakeRequest, same as PromptRequest/
+// ApplyEditRequest/UndoRequest). This is a purely lexical complement to the
+// existing RAG/embedding retrieval — it searches what was actually said in
+// past turns, not workspace code, and never touches the vector store.
+//
+// Search is the discriminator distinguishing this message from the other
+// request types on the wire — always true, deliberately without omitempty,
+// mirroring UndoRequest.Undo (see its doc comment for why: a real
+// SearchRequest must always serialize this key so isSearchRequest's peek
+// always catches it, and an older client that doesn't know this message
+// only ever sends PromptRequest-shaped JSON with no "search" key, so it
+// always falls through to the prompt path unaffected).
+//
+// Workspace is optional and additive, same convention as every other
+// request type: the daemon always resolves against its own configured
+// workspace root, never a client-supplied path — a client can't search
+// another workspace's history by lying about which one it's asking for.
+//
+// Limit is optional: when omitted (zero or negative), the daemon applies
+// its own default cap (see defaultSearchLimit in server.go), the same
+// "client leaves it out, daemon picks a sensible default" shape
+// UndoRequest.BackupSessionDir uses for "most recent session".
+type SearchRequest struct {
+	ProtocolVersion int    `json:"protocol_version"`
+	Search          bool   `json:"search"`
+	Workspace       string `json:"workspace,omitempty"`
+	Query           string `json:"query"`
+	Limit           int    `json:"limit,omitempty"`
+}
+
+// SearchResult is one lexical match, ordered by relevance (FTS5's bm25
+// rank, most relevant first — see SearchTurns) and carrying enough for a
+// client to render an inline snippet: which turn said it (Role, "user" or
+// "assistant"), the matched text with surrounding context (Snippet, already
+// containing FTS5 snippet() markers a client can turn into highlighting),
+// and when (CreatedAt). Deliberately does not carry a turn ID — mirrors
+// daemon/search.go's SearchHit exactly (Role/Snippet/CreatedAt only), since
+// nothing in this slice's UI plan needs to reference a specific turn back
+// again after showing it.
+type SearchResult struct {
+	Role      string `json:"role"`
+	Snippet   string `json:"snippet"`
+	CreatedAt string `json:"created_at"`
+}
+
+// SearchResponse is the daemon's reply to a SearchRequest. Results is empty
+// (nil/omitted) when the search legitimately found nothing — that is NOT an
+// error, exactly like SearchTurns's own no-match contract. Error is set
+// only for an actual failure: the search couldn't run at all (e.g.
+// cross-session memory is disabled or unavailable for this daemon, or the
+// underlying query failed) — a client must not conflate "no results" with
+// "search failed" the way it must never conflate UndoResponse's guarded
+// files with a full revert.
+type SearchResponse struct {
+	ProtocolVersion int            `json:"protocol_version"`
+	Results         []SearchResult `json:"results,omitempty"`
+	Error           string         `json:"error,omitempty"`
+}
+
 // GroundingInfo reports whether the daemon augmented THIS request with
 // retrieved local context, and from where. It's purely a report of a
 // decision already made server-side (see daemon/context.go's
