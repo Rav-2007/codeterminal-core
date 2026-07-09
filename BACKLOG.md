@@ -83,6 +83,43 @@ Long-lived workspaces will accumulate indefinitely. Add a retention policy
 (age- or count-based prune, or per-workspace cap). Pairs with the Phase-4
 session-buffer-compression note.
 
+### (i) DONE: Bounded backups + multi-run undo
+Backup session dirs under `<workspace>/.codeterminal/backups/` are now
+self-pruning: each new apply run keeps only the newest 5 sessions (fixed
+default, not configurable this slice). Pruning lives in ONE place --
+`editapply.NewBackupSessionDir` calls `pruneBackupSessions` right after
+minting a new session dir -- so all 3 callers (CLI, TUI, daemon) get bounded
+retention for free with no per-call-site changes. Confinement is safe by
+construction (backupsRoot is always the locally-computed
+`<realWorkspaceRoot>/.codeterminal/backups`, and candidate names always come
+from `os.ReadDir`, which can never yield `.`/`..`/path-separator-bearing
+names) plus a defense-in-depth `filepath.Dir(candidate) == backupsRoot`
+assertion before every `RemoveAll`, deliberately NOT reusing the daemon's
+`isWorkspaceBackupSessionDir` (that validates externally-supplied,
+potentially adversarial paths -- a different threat model -- and editapply
+must not depend on daemon). Every prune failure is logged, never fatal:
+pruning must never block the apply run that triggered it. Multi-run undo
+needed no new code -- each run's summary bubble already carries its own
+run's `backupDir` in its own Undo button closure, so any of the last 5 runs
+stays independently undoable. The one gap this closed: undoing a run whose
+backup has since been pruned used to surface the daemon's raw
+`backup session "..." not found under ...` error; the panel now
+string-matches the daemon's stable `"not found under"` substring and shows
+an honest `"no longer undoable (backup pruned)"` instead (reactive, not
+proactive, since retention is workspace-global and prunable by any of the
+3 clients). Verified live end-to-end: 6 separate apply runs left exactly
+the newest 5 backup session dirs on disk (oldest pruned, confirmed via
+`ls`); a canary file placed outside `.codeterminal/backups` survived
+pruning untouched; undoing a past (not-latest) run correctly reverted the
+file on disk; undoing a run whose file had changed since correctly reported
+"0 restored, left as-is" instead of clobbering later edits; undoing a
+pruned-away run showed the honest "no longer undoable" message, not an
+error. Committed across 2 sub-slices (49b1141, 4d7a0ea). Deliberately
+deferred next capability in this area: a model-callable
+`session_search`/FTS5 tool over backup/session history, once there's a
+concrete need for the model itself to query past runs rather than a human
+clicking Undo.
+
 ## Backlog — added 2026-07-08
 
 - **Daemon must run from repo root (config-path gotcha)** (low priority; docs/DX)
