@@ -38,7 +38,7 @@ func TestRerankChunks_BoostsCodeOverDocAtComparableSimilarity(t *testing.T) {
 		{FilePath: "README.md", Score: 0.60, Class: FileClassDoc},
 		{FilePath: "daemon/editblock.go", Score: 0.55, Class: FileClassCode},
 	}
-	got := rerankChunks(candidates, 2)
+	got := rerankChunks(candidates, 2, "")
 	if len(got) != 2 {
 		t.Fatalf("got %d chunks, want 2", len(got))
 	}
@@ -62,7 +62,7 @@ func TestRerankChunks_DocCanStillWinAtHighEnoughSimilarity(t *testing.T) {
 		{FilePath: "README.md", Score: 0.95, Class: FileClassDoc},
 		{FilePath: "daemon/editblock.go", Score: 0.30, Class: FileClassCode},
 	}
-	got := rerankChunks(candidates, 2)
+	got := rerankChunks(candidates, 2, "")
 	if got[0].FilePath != "README.md" {
 		t.Errorf("top result = %q, want the doc to win when its raw similarity is overwhelmingly higher", got[0].FilePath)
 	}
@@ -74,12 +74,94 @@ func TestRerankChunks_TruncatesToK(t *testing.T) {
 		{FilePath: "b.go", Score: 0.8, Class: FileClassCode},
 		{FilePath: "c.go", Score: 0.7, Class: FileClassCode},
 	}
-	got := rerankChunks(candidates, 2)
+	got := rerankChunks(candidates, 2, "")
 	if len(got) != 2 {
 		t.Fatalf("got %d chunks, want 2 (truncated to k)", len(got))
 	}
 	if got[0].FilePath != "a.go" || got[1].FilePath != "b.go" {
 		t.Errorf("got %+v, want [a.go, b.go] (best two by weighted score)", got)
+	}
+}
+
+func TestClassWeight_TestGetsSameBaseWeightAsCode(t *testing.T) {
+	// classWeight itself is query-blind; the test down-weight is applied
+	// conditionally in rerankChunks, not baked into this class-only mapping.
+	if classWeight(FileClassTest) != classWeight(FileClassCode) {
+		t.Errorf("classWeight(FileClassTest) = %v, want equal to classWeight(FileClassCode) = %v", classWeight(FileClassTest), classWeight(FileClassCode))
+	}
+}
+
+func TestLooksTestSeeking(t *testing.T) {
+	// Deliberately reworded away from this repo's real rerank_eval_test.go
+	// query strings: this file is itself indexed by that real-repo eval
+	// harness, and a near-verbatim copy of an eval query embeds as a
+	// near-duplicate of it, artificially dominating that query's raw
+	// candidate pool and crowding out the chunk the eval is trying to rank.
+	seeking := []string{
+		"what does the test coverage look like for the router package",
+		"what does this test verify?",
+		"walk me through the test suite for this module",
+		"is there a spec describing this behavior",
+		"what does TestHandlerAcceptsValidInput check?",
+	}
+	for _, q := range seeking {
+		if !looksTestSeeking(q) {
+			t.Errorf("looksTestSeeking(%q) = false, want true", q)
+		}
+	}
+
+	notSeeking := []string{
+		"explain how requests get routed to a backend",
+		"summarize the retry backoff strategy",
+		"what is the newest model we route to",
+		"describe the daemon's startup sequence",
+	}
+	for _, q := range notSeeking {
+		if looksTestSeeking(q) {
+			t.Errorf("looksTestSeeking(%q) = true, want false", q)
+		}
+	}
+}
+
+func TestRerankChunks_DownWeightsTestFileForImplementationQuery(t *testing.T) {
+	// A _test.go chunk with a modest raw-score edge over the real
+	// implementation should lose once down-weighted, for a query that
+	// isn't itself asking about tests. Query text kept generic/unrelated to
+	// this repo's real eval corpus (see TestLooksTestSeeking comment).
+	candidates := []Chunk{
+		{FilePath: "daemon/widget_test.go", Score: 0.70, Class: FileClassTest},
+		{FilePath: "daemon/widget.go", Score: 0.66, Class: FileClassCode},
+	}
+	got := rerankChunks(candidates, 2, "explain how the widget subsystem processes a request")
+	if got[0].FilePath != "daemon/widget.go" {
+		t.Errorf("top result = %q, want the implementation to win once the test chunk is down-weighted", got[0].FilePath)
+	}
+}
+
+func TestRerankChunks_SkipsTestDownWeightForTestSeekingQuery(t *testing.T) {
+	// The same candidates, but a query that's genuinely about tests must
+	// not have its test chunk penalized — raw-score ordering should win
+	// unchanged (both get the same codeClassWeight).
+	candidates := []Chunk{
+		{FilePath: "daemon/widget_test.go", Score: 0.70, Class: FileClassTest},
+		{FilePath: "daemon/widget.go", Score: 0.66, Class: FileClassCode},
+	}
+	got := rerankChunks(candidates, 2, "how is the widget subsystem tested")
+	if got[0].FilePath != "daemon/widget_test.go" {
+		t.Errorf("top result = %q, want the test file to win for a test-seeking query (no down-weight applied)", got[0].FilePath)
+	}
+}
+
+func TestRerankChunks_TestCanStillWinAtHighEnoughSimilarity(t *testing.T) {
+	// Tilt, not ban: a test chunk with an overwhelmingly higher raw score
+	// must still be able to win even for an implementation-seeking query.
+	candidates := []Chunk{
+		{FilePath: "daemon/widget_test.go", Score: 0.95, Class: FileClassTest},
+		{FilePath: "daemon/widget.go", Score: 0.30, Class: FileClassCode},
+	}
+	got := rerankChunks(candidates, 2, "explain how the widget subsystem processes a request")
+	if got[0].FilePath != "daemon/widget_test.go" {
+		t.Errorf("top result = %q, want the test file to win when its raw similarity is overwhelmingly higher", got[0].FilePath)
 	}
 }
 

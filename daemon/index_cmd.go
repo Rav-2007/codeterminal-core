@@ -134,7 +134,7 @@ func retrieveTopK(ctx context.Context, query string, k int, embedder Embedder, s
 	if err != nil {
 		return nil, err
 	}
-	return rerankChunks(candidates, k), nil
+	return rerankChunks(candidates, k, query), nil
 }
 
 // runIndexCommand implements `codeterminal-daemon index [path]`. It builds

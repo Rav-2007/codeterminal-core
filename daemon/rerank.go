@@ -1,6 +1,9 @@
 package main
 
-import "sort"
+import (
+	"regexp"
+	"sort"
+)
 
 // Class weights used to tilt ranking toward code for code questions, without
 // hard-banning any class — a doc chunk with high enough raw similarity can
@@ -21,7 +24,41 @@ const (
 	// while still letting a doc win outright if its similarity is high
 	// enough (0.75 is a tilt, not a ban).
 	docClassWeight float32 = 0.75
+	// testClassWeight down-weights _test.go chunks relative to the
+	// codeClassWeight boost they'd otherwise get, so a test file's often-
+	// prose-like test names/section comments (which echo natural-language
+	// query vocabulary more closely than terse implementation) don't
+	// routinely bury the implementation for an implementation-seeking
+	// query. Only applied when looksTestSeeking(query) is false — see
+	// rerankChunks. Measured against the real repo (rerank_eval_test.go):
+	// a static, query-blind version of this weight was proven (by algebra
+	// on live scores) to be irreconcilable with also finding tests for a
+	// genuinely test-seeking query, which is why this is intent-gated
+	// rather than a flat constant.
+	testClassWeight float32 = 0.85
 )
+
+// testSeekingWords matches whole-word mentions of testing vocabulary in a
+// query. Word-boundaried deliberately — a bare "\btest\b" substring check
+// would still be fine, but this also catches the common inflections
+// ("tested", "testing") and "spec"/"specs" without matching unrelated words
+// that merely contain "test" as a substring (e.g. "latest", "contest").
+var testSeekingWords = regexp.MustCompile(`(?i)\b(tests?|tested|testing|specs?)\b`)
+
+// testFuncPattern matches a Go test-function identifier mentioned in the
+// query (e.g. "what does TestHandlerAcceptsValidInput check?") — a strong,
+// unambiguous signal the user is asking about a test, independent of
+// testSeekingWords.
+var testFuncPattern = regexp.MustCompile(`\bTest[A-Z]\w*`)
+
+// looksTestSeeking reports whether query appears to be asking about tests
+// themselves (as opposed to asking a question about implementation that
+// merely happens to retrieve test chunks). When true, rerankChunks skips
+// the testClassWeight down-weight entirely, so a genuinely test-seeking
+// query is never penalized for finding test files.
+func looksTestSeeking(query string) bool {
+	return testSeekingWords.MatchString(query) || testFuncPattern.MatchString(query)
+}
 
 // rerankOverfetchFactor and rerankOverfetchFloor size the raw candidate pool
 // fetched from the vector store BEFORE reweighting. This matters: reweighting
@@ -45,10 +82,13 @@ func rerankPoolSize(k int) int {
 }
 
 // classWeight returns the ranking weight for class, defaulting to the
-// neutral weight for an empty/unrecognized class.
+// neutral weight for an empty/unrecognized class. FileClassTest gets the
+// same boost as FileClassCode here — the down-weight is applied
+// conditionally in rerankChunks (only when the query isn't itself
+// test-seeking), not baked into this class-only mapping.
 func classWeight(class FileClass) float32 {
 	switch class {
-	case FileClassCode:
+	case FileClassCode, FileClassTest:
 		return codeClassWeight
 	case FileClassDoc:
 		return docClassWeight
@@ -77,15 +117,26 @@ func effectiveClass(c Chunk) FileClass {
 // descending, and truncates to k. RawScore is set to the original similarity
 // on every returned chunk (for logging/observability); Score becomes the
 // effective weighted score that determined the final order.
-func rerankChunks(candidates []Chunk, k int) []Chunk {
+//
+// query is the original user question, used only to gate the test-file
+// down-weight (looksTestSeeking): a _test.go chunk is down-weighted for an
+// implementation-seeking query, but competes at full codeClassWeight when
+// the query itself looks like it's asking about tests.
+func rerankChunks(candidates []Chunk, k int, query string) []Chunk {
 	weighted := make([]Chunk, len(candidates))
 	copy(weighted, candidates)
 
+	testSeeking := looksTestSeeking(query)
 	for i := range weighted {
 		raw := weighted[i].Score
 		weighted[i].RawScore = raw
 		weighted[i].Class = effectiveClass(weighted[i])
-		weighted[i].Score = raw * classWeight(weighted[i].Class)
+
+		w := classWeight(weighted[i].Class)
+		if weighted[i].Class == FileClassTest && !testSeeking {
+			w = testClassWeight
+		}
+		weighted[i].Score = raw * w
 	}
 
 	sort.SliceStable(weighted, func(i, j int) bool {

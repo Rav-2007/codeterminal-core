@@ -353,6 +353,45 @@ Deferred deliberately.
   you") is likely a stronger position than choice — reconsider that framing before building
   this, not just the mechanics of adding it.
 
+### 3. Hybrid lexical+semantic code retrieval — the real fix for lexical-miss defects
+Deferred deliberately — scoped here as a measure-first effort to schedule, NOT started ad hoc.
+
+- **Evidence** (from the 2026-07-10 test-file-ranking investigation): live-querying the real
+  repo for "where in the code is the ZDR refusal string matched, and what substring does it
+  match on?" showed the chunk that actually answers it (`daemon/provider.go`'s
+  `zdrRefusalSubstrings`/`isZDRRoutingRefusal`) ranked **#220 of 697** chunks by raw embedding
+  similarity — outside any pool size that's practical to overfetch. An adjacent-but-incomplete
+  chunk from the same file fared only slightly better (#18-22, on the edge of a 30-candidate
+  pool, and only reachable at all once test-file down-weighting stopped burying it — see item
+  (b) below).
+- **Root cause, distinct from the test-file-ranking bug**: pure-semantic (bi-encoder embedding)
+  retrieval is structurally biased against terse implementation code. A short var/func
+  definition embeds farther from a natural-language question than a verbose test name or an
+  explanatory comment that happens to echo the query's own vocabulary — even when the
+  definition is the literal, correct answer. This is a property of the embedding model and
+  chunk granularity, not of file classification.
+- **Why the intent-gated test down-weight (item (b)) does NOT fix this class of miss**: that
+  fix only reorders candidates already fetched into the rerank pool. If the correct chunk was
+  never fetched in the first place (as in the #220 case above), no amount of reweighting can
+  recover it. Confirmed live: after shipping the down-weight fix, the ZDR query's own
+  right-chunk-adjacent candidate still missed the top-5 by a hair (~0.1% weighted-score gap)
+  once test-file competition was removed — the residual bottleneck is raw similarity, not class
+  weight.
+- **Promising angle**: the FTS5 lexical search machinery already built for cross-session
+  conversation memory (`turns_fts`, bm25-ranked, see "FTS5 search session" above) is a proven,
+  low-risk pattern for a lexical index — trigram tokenizer, no new dependency, already
+  live-verified end-to-end. The natural next step is a *parallel* FTS5 index over code chunks
+  (not turns), whose bm25 hits get merged with the existing embedding-based candidate pool
+  before reranking — giving exact-token queries (identifier names, string literals like
+  `"zero data retention"`) a path to the correct chunk that pure embedding similarity can't
+  reliably provide.
+- **Scope this deliberately before starting**: needs its own measured eval (reuse
+  `rerank_eval_test.go`'s real-repo harness, add lexical-miss queries like the ZDR one where the
+  answer is a specific string/identifier), a decision on how lexical and semantic scores get
+  merged (simple score fusion vs. reciprocal rank fusion), and confirmation it doesn't regress
+  the 7 queries already gated there. Do not start until retrieval-quality hardening is the
+  actual priority.
+
 ### Carried forward from earlier notes (consolidated here; full detail at their original entries)
 - **Model-callable `session_search` tool over backup/session history** (referred to
   elsewhere as "Option 2") — full detail in item (i) above. Distinct from the FTS5 lexical
@@ -380,6 +419,9 @@ Deferred deliberately.
   (implementation chunks ranking below setup chunks) above. Both are measured, minor,
   non-blocking sharpening of a system that's already grounded and correct; do as a MEASURED
   step against an eval, not a guess, when retrieval-quality hardening becomes the priority.
+  Item (b)'s fix, once shipped, only closes the "test files dominate" failure mode — see North
+  Star item 3 (hybrid lexical+semantic retrieval) for the deeper, separate limitation it
+  can't reach (correct chunk too dissimilar in raw embedding space to be fetched at all).
 - **Turns retention / pruning policy** — item (h) above: cross-session memory grows
   unbounded by design (persist-all). Add an age- or count-based prune when a long-lived
   workspace actually needs it.

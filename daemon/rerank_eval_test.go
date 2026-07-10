@@ -35,10 +35,27 @@ type rerankEvalQuery struct {
 
 var rerankEvalQueries = []rerankEvalQuery{
 	{"where does the daemon open the unix socket", []string{"daemon/main.go"}},
-	{"how are edit blocks parsed from the model response", []string{"daemon/editblock.go"}},
+	// editblock.go moved from daemon/ to editapply/ in an earlier, unrelated
+	// refactor (c516479) — this expected path is corrected to match, since
+	// it's pre-existing drift, not something the test-file down-weight
+	// fixes or causes.
+	{"how are edit blocks parsed from the model response", []string{"editapply/editblock.go"}},
 	{"where is the model tier routing decided", []string{"daemon/router.go"}},
 	{"how does secret skipping work during indexing", []string{"daemon/chunker.go", "daemon/index_cmd.go"}},
 	{"where are skills stored in sqlite", []string{"daemon/skills.go"}},
+
+	// Added for the _test.go down-weight fix (FileClassTest, rerank.go):
+	// the measured live-repo failure this fix targets — provider.go never
+	// made the top-5 at all because provider_test.go/config_test.go
+	// out-ranked it despite identical class weight. Implementation-seeking,
+	// so the test down-weight must apply here.
+	{"where in the code is the ZDR refusal string matched, and what substring does it match on?", []string{"daemon/provider.go"}},
+
+	// The paired regression guard for the same fix: a genuinely
+	// test-seeking query must still find the test files. looksTestSeeking
+	// must recognize this and skip the down-weight, or this query would
+	// start failing the moment the down-weight above is added.
+	{"how is the ZDR refusal detection logic tested end to end", []string{"daemon/provider_test.go", "daemon/config_test.go"}},
 }
 
 func matchesAny(path string, candidates []string) bool {

@@ -13,6 +13,7 @@ type FileClass string
 
 const (
 	FileClassCode   FileClass = "code"
+	FileClassTest   FileClass = "test"
 	FileClassDoc    FileClass = "doc"
 	FileClassConfig FileClass = "config"
 	FileClassOther  FileClass = "other" // unrecognized extension/basename; treated as neutral
@@ -60,6 +61,8 @@ func classifyFile(relPath string) FileClass {
 	ext := strings.ToLower(filepath.Ext(base))
 
 	switch {
+	case isTestFile(base):
+		return FileClassTest
 	case codeExtensions[ext]:
 		return FileClassCode
 	case docExtensions[ext]:
@@ -69,6 +72,15 @@ func classifyFile(relPath string) FileClass {
 	default:
 		return FileClassOther
 	}
+}
+
+// isTestFile reports whether base (already lowercased) is a Go test file.
+// Scoped to the one convention actually present in this repo (verified: no
+// other test/spec naming pattern — e.g. *.spec.ts, *_test.py — appears
+// anywhere in the tree); broaden this only once a measured query against a
+// repo using another convention shows the same ranking failure.
+func isTestFile(base string) bool {
+	return strings.HasSuffix(base, "_test.go")
 }
 
 // noiseBasenames are hard-excluded from the retrieval index entirely (never

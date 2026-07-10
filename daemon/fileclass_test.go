@@ -26,6 +26,9 @@ func TestClassifyFile(t *testing.T) {
 		{"LICENSE", FileClassOther},
 		{"THIRD_PARTY_LICENSES.txt", FileClassDoc}, // .txt is prose, even for a licenses file
 		{"nested/dir/path/handler.go", FileClassCode},
+		{"daemon/provider_test.go", FileClassTest},
+		{"daemon/rerank_test.go", FileClassTest},
+		{"nested/dir/path/handler_test.go", FileClassTest},
 	}
 	for _, c := range cases {
 		if got := classifyFile(c.path); got != c.want {
