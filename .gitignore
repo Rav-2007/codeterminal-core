@@ -11,6 +11,7 @@ daemon/daemon
 clients/tui/tui
 helper/codeterminal-embedder-helper
 .codeterminal/
+/mochiii
 
 *.db
 *.db-shm
