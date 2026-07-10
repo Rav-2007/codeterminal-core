@@ -115,7 +115,7 @@ func TestEvalRetrievalQuality(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	scan, err := buildIndex(ctx, evalRoot, embedder, store, logger)
+	scan, err := buildIndex(ctx, evalRoot, embedder, store, nil, logger)
 	if err != nil {
 		t.Fatalf("indexing eval set: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestEvalRetrievalQuality(t *testing.T) {
 
 	var top1Hits, top3Hits int
 	for _, q := range queries {
-		hits, err := retrieveTopK(ctx, q.Query, 3, embedder, store, true)
+		hits, err := retrieveTopK(ctx, q.Query, 3, embedder, store, nil, true)
 		if err != nil {
 			t.Fatalf("retrieveTopK(%q): %v", q.Query, err)
 		}

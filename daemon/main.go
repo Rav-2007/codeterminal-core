@@ -99,9 +99,9 @@ func main() {
 	}
 	systemPrompt := string(systemPromptBytes)
 
-	embedder, store, stopEmbedder, retrievalTopK, contextBudgetChars := setupRetrieval(
+	embedder, store, lexicalStore, stopRetrieval, retrievalTopK, contextBudgetChars := setupRetrieval(
 		cfg, *workspace, *noContext, logger, newActiveEmbedder)
-	defer stopEmbedder()
+	defer stopRetrieval()
 
 	memoryStore := setupMemoryStore(logger)
 	if memoryStore != nil {
@@ -158,6 +158,7 @@ func main() {
 		logger:             logger,
 		embedder:           embedder,
 		store:              store,
+		lexicalStore:       lexicalStore,
 		retrievalTopK:      retrievalTopK,
 		contextBudgetChars: contextBudgetChars,
 		debugContext:       *debugContext,

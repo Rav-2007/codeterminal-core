@@ -32,8 +32,15 @@ type Server struct {
 	// embedder and store are both nil when retrieval is disabled or
 	// unavailable (see setupRetrieval in retrieval_setup.go) — every use
 	// of them (gatherContext, in context.go) must handle that.
-	embedder           Embedder
-	store              VectorStore
+	embedder Embedder
+	store    VectorStore
+	// lexicalStore is the keyword/FTS5 tier that complements store's
+	// semantic search (see rerank.go's fuseRRF). It degrades independently
+	// and more loosely than embedder/store: nil here means only the lexical
+	// half of retrieval is unavailable, not retrieval as a whole — every use
+	// of it (retrieveTopK, via gatherContext) must treat nil as "semantic
+	// only" rather than "retrieval disabled".
+	lexicalStore       LexicalStore
 	retrievalTopK      int
 	contextBudgetChars int
 	debugContext       bool // --debug-context: log full retrieved chunk content

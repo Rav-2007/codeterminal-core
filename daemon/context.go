@@ -99,7 +99,7 @@ func (s *Server) gatherContext(ctx context.Context, prompt string) retrievalOutc
 		return retrievalOutcome{Skipped: true, Reason: "retrieval disabled (no embedder/index configured for this daemon)"}
 	}
 
-	chunks, err := retrieveTopK(ctx, prompt, s.retrievalTopK, s.embedder, s.store, !s.rerankDisabled)
+	chunks, err := retrieveTopK(ctx, prompt, s.retrievalTopK, s.embedder, s.store, s.lexicalStore, !s.rerankDisabled)
 	if err != nil {
 		return retrievalOutcome{Skipped: true, Reason: fmt.Sprintf("retrieval error: %v", err)}
 	}

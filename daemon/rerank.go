@@ -81,6 +81,107 @@ func rerankPoolSize(k int) int {
 	return pool
 }
 
+// lexicalOverfetchFactor and lexicalOverfetchFloor size the lexical
+// candidate pool the same way rerankOverfetchFactor/Floor size the semantic
+// one: FTS5 is cheap enough (milliseconds even over a generous LIMIT) that
+// overfetching costs nothing, and fuseRRF benefits from a wider net before
+// rerankChunks's class-weight tilt gets the final say.
+const (
+	lexicalOverfetchFactor = 6
+	lexicalOverfetchFloor  = 20
+)
+
+// lexicalPoolSize returns how many raw candidates to fetch from the lexical
+// store before fusing with the semantic pool.
+func lexicalPoolSize(k int) int {
+	pool := k * lexicalOverfetchFactor
+	if pool < lexicalOverfetchFloor {
+		pool = lexicalOverfetchFloor
+	}
+	return pool
+}
+
+// rrfK dampens how much rank #1 dominates rank #2 in each tier's
+// contribution to fuseRRF -- a smoothing constant, not a correctness knob.
+// Grid-searched over {10, 60, 100} x lexical-pool-sizes {20, 30, 50} against
+// this repo's real-repo eval harness (the 9-query set in
+// rerank_eval_test.go): under the MAX-based fusion fuseRRF actually uses
+// (see its doc comment for why SUM was rejected), chunk-level hit rate was
+// IDENTICAL (8/9) at every single point in that 3x3 grid -- once fusion is
+// max-based rather than additive, the result is insensitive to k in the
+// tested range. With no combination measurably better than another, 60 (the
+// conventional RRF default from Cormack et al.) is kept rather than picked
+// arbitrarily from an otherwise-flat grid.
+const rrfK = 60.0
+
+// fuseRRF merges semantic and lexical candidate lists by taking, per chunk,
+// the BEST reciprocal-rank score it earns from either tier --
+// fused_score(chunk) = max(1/(k+rank_semantic), 1/(k+rank_lexical)) -- not
+// the textbook summed form (1/(k+rank_semantic) + 1/(k+rank_lexical)). This
+// is a deliberate, measured departure, not an arbitrary variant:
+//
+// Summed RRF rewards cross-modal CONSENSUS — a chunk ranked moderately by
+// BOTH tiers out-scores one ranked excellently by only one. That is exactly
+// backwards for the asymmetric case this feature exists to fix: the
+// measured failure (see rerank_eval_test.go query 8, "where is the ZDR
+// refusal string matched") has the correct chunk (provider.go:91-130)
+// findable ONLY lexically (terse, identifier-heavy code with no semantic
+// echo of the natural-language query) while provider_test.go's chunks —
+// whose doc comments and assertion messages restate "ZDR", "refusal", and
+// "matched" in prose that reads as a near-paraphrase of the query — rank
+// respectably on BOTH tiers simultaneously and, under summed RRF, edge out
+// the real answer even after class-weighting. Switching to max fixed this
+// (and the other motivating query, "what files does SearchRequest touch")
+// across every point in the rrfK/pool-size grid, with no regressions on the
+// 7 already-passing queries; summed RRF only fixed a minority of grid points
+// and regressed one existing query at the current default pool size. Max
+// fusion still requires no score-scale calibration between BM25 and cosine
+// similarity (still rank-based, still one constant) — it just changes how
+// "found by tier A but not B" is credited, which is the actual shape of the
+// bug being fixed.
+//
+// A chunk absent from one list simply never gets a candidate score from it
+// rather than being penalized for it. The returned chunks have RawScore and
+// Score both set to the fused score. rerankChunks (the caller, always run
+// immediately after this) reads that as its input "raw" similarity and
+// applies class weighting on top, exactly as it already does for a plain
+// semantic candidate list — fusion only changes what pool and base score
+// rerankChunks sees, not what it does with them.
+func fuseRRF(semantic, lexical []Chunk, k float64) []Chunk {
+	type entry struct {
+		chunk Chunk
+		score float32
+	}
+	byID := make(map[string]*entry, len(semantic)+len(lexical))
+	order := make([]string, 0, len(semantic)+len(lexical))
+
+	consider := func(list []Chunk) {
+		for rank, c := range list {
+			s := float32(1.0 / (k + float64(rank+1)))
+			e, ok := byID[c.ID]
+			if !ok {
+				e = &entry{chunk: c, score: s}
+				byID[c.ID] = e
+				order = append(order, c.ID)
+			} else if s > e.score {
+				e.score = s
+			}
+		}
+	}
+	consider(semantic)
+	consider(lexical)
+
+	fused := make([]Chunk, 0, len(order))
+	for _, id := range order {
+		e := byID[id]
+		e.chunk.RawScore = e.score
+		e.chunk.Score = e.score
+		fused = append(fused, e.chunk)
+	}
+	sort.SliceStable(fused, func(i, j int) bool { return fused[i].Score > fused[j].Score })
+	return fused
+}
+
 // classWeight returns the ranking weight for class, defaulting to the
 // neutral weight for an empty/unrecognized class. FileClassTest gets the
 // same boost as FileClassCode here — the down-weight is applied

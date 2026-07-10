@@ -28,7 +28,7 @@ func TestIndexing_SecretsNeverStored(t *testing.T) {
 	embedder := NewPlaceholderEmbedder(embedDim)
 	ctx := context.Background()
 
-	scan, err := buildIndex(ctx, dir, embedder, store, discardLogger())
+	scan, err := buildIndex(ctx, dir, embedder, store, nil, discardLogger())
 	if err != nil {
 		t.Fatalf("buildIndex: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestIndexing_CodeterminalPrunedAndGitignoreAppendedIdempotently(t *testing.
 		if err != nil {
 			t.Fatalf("NewChromemStore: %v", err)
 		}
-		scan, err := buildIndex(context.Background(), dir, NewPlaceholderEmbedder(embedDim), store, discardLogger())
+		scan, err := buildIndex(context.Background(), dir, NewPlaceholderEmbedder(embedDim), store, nil, discardLogger())
 		if err != nil {
 			t.Fatalf("buildIndex: %v", err)
 		}
@@ -171,7 +171,7 @@ func TestBuildIndex_AcceptsInjectedEmbedder(t *testing.T) {
 	}
 
 	fake := &fakeEmbedder{dim: 8}
-	scan, err := buildIndex(context.Background(), dir, fake, store, discardLogger())
+	scan, err := buildIndex(context.Background(), dir, fake, store, nil, discardLogger())
 	if err != nil {
 		t.Fatalf("buildIndex: %v", err)
 	}
@@ -202,7 +202,7 @@ func TestRetrieveTopK_AcceptsInjectedEmbedder(t *testing.T) {
 		t.Fatalf("Upsert: %v", err)
 	}
 
-	results, err := retrieveTopK(context.Background(), "anything", 5, fake, store, true)
+	results, err := retrieveTopK(context.Background(), "anything", 5, fake, store, nil, true)
 	if err != nil {
 		t.Fatalf("retrieveTopK: %v", err)
 	}
@@ -250,7 +250,7 @@ func TestBuildIndex_EmbedsInBatchesNotOneCall(t *testing.T) {
 	}
 	counting := &callCountingEmbedder{Embedder: NewPlaceholderEmbedder(embedDim)}
 
-	scan, err := buildIndex(context.Background(), dir, counting, store, discardLogger())
+	scan, err := buildIndex(context.Background(), dir, counting, store, nil, discardLogger())
 	if err != nil {
 		t.Fatalf("buildIndex: %v", err)
 	}
@@ -317,7 +317,7 @@ func TestIndexWorkspace_BatchFailureLeavesNoValidStampedIndex(t *testing.T) {
 	base := NewPlaceholderEmbedder(embedDim)
 	failing := &failingAfterNEmbedder{Embedder: base, callsBeforeFailure: 1} // batch 1 succeeds, batch 2 fails
 
-	_, err = indexWorkspace(context.Background(), indexDir, dir, failing, store, discardLogger())
+	_, err = indexWorkspace(context.Background(), indexDir, dir, failing, store, nil, discardLogger())
 	if err == nil {
 		t.Fatal("expected an error from a mid-index batch failure, got nil")
 	}
@@ -349,7 +349,7 @@ func TestIndexWorkspace_SuccessfulRunLeavesValidStamp(t *testing.T) {
 	}
 
 	embedder := NewPlaceholderEmbedder(embedDim)
-	scan, err := indexWorkspace(context.Background(), indexDir, dir, embedder, store, discardLogger())
+	scan, err := indexWorkspace(context.Background(), indexDir, dir, embedder, store, nil, discardLogger())
 	if err != nil {
 		t.Fatalf("indexWorkspace: %v", err)
 	}
@@ -359,5 +359,105 @@ func TestIndexWorkspace_SuccessfulRunLeavesValidStamp(t *testing.T) {
 
 	if err := checkEmbedderStamp(indexDir, embedder, store.Count() == 0); err != nil {
 		t.Fatalf("checkEmbedderStamp rejected a fully-completed index: %v", err)
+	}
+}
+
+// erroringLexicalStore simulates a lexical tier that opened successfully but
+// fails at query time (e.g. a corrupt/locked lexical.db) -- distinct from
+// setupRetrieval's "failed to open at all" degradation, this is the
+// runtime-error path retrieveTopK itself must swallow.
+type erroringLexicalStore struct{}
+
+func (erroringLexicalStore) Upsert(ctx context.Context, chunks []Chunk) error { return nil }
+func (erroringLexicalStore) Search(ctx context.Context, query string, k int) ([]Chunk, error) {
+	return nil, fmt.Errorf("simulated: lexical index unavailable")
+}
+func (erroringLexicalStore) Close() error { return nil }
+
+// TestRetrieveTopK_LexicalSearchErrorDegradesToSemanticOnly proves the
+// hybrid retrieval path's core resilience guarantee: a lexical tier that
+// errors at query time must never fail the whole retrieval, only silently
+// drop its contribution -- semantic results must still come back exactly as
+// if lexicalStore were nil, since retrieval must never block generation.
+func TestRetrieveTopK_LexicalSearchErrorDegradesToSemanticOnly(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewChromemStore(filepath.Join(dir, indexDirName))
+	if err != nil {
+		t.Fatalf("NewChromemStore: %v", err)
+	}
+
+	fake := &fakeEmbedder{dim: 8}
+	if err := store.Upsert(context.Background(), []Chunk{
+		{ID: "a.go:1-1", FilePath: "a.go", StartLine: 1, EndLine: 1, Content: "x", Vector: unitVec(8, 0)},
+	}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	results, err := retrieveTopK(context.Background(), "anything", 5, fake, store, erroringLexicalStore{}, true)
+	if err != nil {
+		t.Fatalf("retrieveTopK should degrade to semantic-only on a lexical search error, not fail outright: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1 (the semantic hit, lexical tier silently dropped)", len(results))
+	}
+	if results[0].FilePath != "a.go" {
+		t.Errorf("FilePath = %q, want %q", results[0].FilePath, "a.go")
+	}
+}
+
+// fakeLexicalStore is a minimal in-memory LexicalStore stub for tests that
+// need to prove a lexical hit actually changes retrieveTopK's output (as
+// opposed to erroringLexicalStore above, which proves the opposite: that a
+// failure doesn't).
+type fakeLexicalStore struct {
+	hits []Chunk
+}
+
+func (f *fakeLexicalStore) Upsert(ctx context.Context, chunks []Chunk) error { return nil }
+func (f *fakeLexicalStore) Search(ctx context.Context, query string, k int) ([]Chunk, error) {
+	if k < len(f.hits) {
+		return f.hits[:k], nil
+	}
+	return f.hits, nil
+}
+func (f *fakeLexicalStore) Close() error { return nil }
+
+// TestRetrieveTopK_LexicalHitOutsideSemanticPoolStillSurfaces is the
+// end-to-end version of TestFuseRRF_LexicalOnlyChunkStillSurfacesEvenWithNoSemanticRank:
+// a chunk the lexical tier finds, but that never appears in the semantic
+// store's results at all (simulating a chunk ranked far outside the
+// semantic overfetch pool, exactly the measured real-repo failure this
+// whole feature fixes), must still reach the final top-k.
+func TestRetrieveTopK_LexicalHitOutsideSemanticPoolStillSurfaces(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewChromemStore(filepath.Join(dir, indexDirName))
+	if err != nil {
+		t.Fatalf("NewChromemStore: %v", err)
+	}
+
+	fake := &fakeEmbedder{dim: 8}
+	if err := store.Upsert(context.Background(), []Chunk{
+		{ID: "unrelated.go:1-1", FilePath: "unrelated.go", StartLine: 1, EndLine: 1, Content: "x", Vector: unitVec(8, 0)},
+	}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	lex := &fakeLexicalStore{hits: []Chunk{
+		{ID: "exact-symbol.go:91-130", FilePath: "exact-symbol.go", StartLine: 91, EndLine: 130, Class: FileClassCode, Content: "func TargetSymbol() {}"},
+	}}
+
+	results, err := retrieveTopK(context.Background(), "TargetSymbol", 5, fake, store, lex, true)
+	if err != nil {
+		t.Fatalf("retrieveTopK: %v", err)
+	}
+
+	found := false
+	for _, r := range results {
+		if r.FilePath == "exact-symbol.go" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("lexical-only hit missing from final results: %+v", results)
 	}
 }

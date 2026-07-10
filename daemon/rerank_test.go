@@ -173,3 +173,106 @@ func TestRerankPoolSize_UsesOverfetchFactorWithFloor(t *testing.T) {
 		t.Errorf("rerankPoolSize(10) = %d, want %d", got, 10*rerankOverfetchFactor)
 	}
 }
+
+func TestLexicalPoolSize_UsesOverfetchFactorWithFloor(t *testing.T) {
+	if got := lexicalPoolSize(3); got != lexicalOverfetchFloor {
+		t.Errorf("lexicalPoolSize(3) = %d, want the floor %d (3*%d=%d is below it)", got, lexicalOverfetchFloor, lexicalOverfetchFactor, 3*lexicalOverfetchFactor)
+	}
+	if got := lexicalPoolSize(10); got != 10*lexicalOverfetchFactor {
+		t.Errorf("lexicalPoolSize(10) = %d, want %d", got, 10*lexicalOverfetchFactor)
+	}
+}
+
+func TestFuseRRF_TopRankInEitherTierWins(t *testing.T) {
+	semantic := []Chunk{
+		{ID: "both.go:1-10", FilePath: "both.go"},
+		{ID: "semantic-only.go:1-10", FilePath: "semantic-only.go"},
+	}
+	lexical := []Chunk{
+		{ID: "both.go:1-10", FilePath: "both.go"},
+		{ID: "lexical-only.go:1-10", FilePath: "lexical-only.go"},
+	}
+
+	got := fuseRRF(semantic, lexical, rrfK)
+	if len(got) != 3 {
+		t.Fatalf("got %d fused chunks, want 3 (deduped union)", len(got))
+	}
+	if got[0].FilePath != "both.go" {
+		t.Errorf("top result = %q, want the chunk ranked #1 in both tiers to win", got[0].FilePath)
+	}
+}
+
+// TestFuseRRF_SingleStrongTierBeatsTwoModerateTiers is the regression guard
+// for the actual measured design decision: fuseRRF uses MAX, not SUM, across
+// tiers (see its doc comment in rerank.go). Under summed RRF, a chunk ranked
+// moderately by BOTH tiers can out-score one ranked #1 by only one tier —
+// this is precisely the real-repo failure mode that motivated the switch
+// (provider_test.go's prose ranking respectably on both tiers simultaneously
+// out-scored provider.go's actual answer chunk, findable only lexically). If
+// fuseRRF ever regresses back to summed scoring, this test must catch it:
+// the chunk ranked #1 by lexical alone must beat one ranked #3 by BOTH.
+func TestFuseRRF_SingleStrongTierBeatsTwoModerateTiers(t *testing.T) {
+	semantic := []Chunk{
+		{ID: "filler1.go:1-10", FilePath: "filler1.go"},
+		{ID: "filler2.go:1-10", FilePath: "filler2.go"},
+		{ID: "moderate-both.go:1-10", FilePath: "moderate-both.go"},
+	}
+	lexical := []Chunk{
+		{ID: "strong-lexical-only.go:91-130", FilePath: "strong-lexical-only.go"},
+		{ID: "filler3.go:1-10", FilePath: "filler3.go"},
+		{ID: "moderate-both.go:1-10", FilePath: "moderate-both.go"},
+	}
+
+	got := fuseRRF(semantic, lexical, rrfK)
+	var strongScore, moderateScore float32
+	for _, c := range got {
+		switch c.ID {
+		case "strong-lexical-only.go:91-130":
+			strongScore = c.Score
+		case "moderate-both.go:1-10":
+			moderateScore = c.Score
+		}
+	}
+	if strongScore <= moderateScore {
+		t.Errorf("strong-lexical-only score=%v, moderate-both score=%v; want the chunk ranked #1 by lexical alone to outscore one ranked #3 by both tiers (max fusion, not summed — under summed RRF, rank-3-in-both's combined score would exceed rank-1-in-one's)", strongScore, moderateScore)
+	}
+}
+
+func TestFuseRRF_LexicalOnlyChunkStillSurfacesEvenWithNoSemanticRank(t *testing.T) {
+	// The core case this exists to fix: a chunk absent from the semantic
+	// pool entirely (ranked too far outside it to have been fetched) must
+	// still be findable if the lexical tier ranks it well.
+	semantic := []Chunk{
+		{ID: "unrelated1.go:1-10", FilePath: "unrelated1.go"},
+		{ID: "unrelated2.go:1-10", FilePath: "unrelated2.go"},
+	}
+	lexical := []Chunk{
+		{ID: "exact-symbol.go:91-130", FilePath: "exact-symbol.go"},
+	}
+
+	got := fuseRRF(semantic, lexical, rrfK)
+	found := false
+	for _, c := range got {
+		if c.ID == "exact-symbol.go:91-130" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("lexical-only chunk missing from fused result entirely: %+v", got)
+	}
+}
+
+func TestFuseRRF_EmptyLexicalDegradesToSemanticOrder(t *testing.T) {
+	semantic := []Chunk{
+		{ID: "a.go:1-10", FilePath: "a.go"},
+		{ID: "b.go:1-10", FilePath: "b.go"},
+	}
+
+	got := fuseRRF(semantic, nil, rrfK)
+	if len(got) != 2 {
+		t.Fatalf("got %d fused chunks, want 2", len(got))
+	}
+	if got[0].FilePath != "a.go" || got[1].FilePath != "b.go" {
+		t.Errorf("got %+v, want semantic order preserved when lexical is empty", got)
+	}
+}

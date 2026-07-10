@@ -32,18 +32,21 @@ const defaultK = 5
 const indexEmbedBatchSize = 40
 
 // buildIndex scans root, embeds every chunk found via embedder, and upserts
-// them into store, in batches of indexEmbedBatchSize so a large workspace's
-// chunk set never exceeds a single embedding call's timeout. It takes both
-// dependencies as interfaces so a test can inject a fake Embedder and/or
-// VectorStore without touching a real model or disk-backed store.
+// them into store (and, when non-nil, lexicalStore) in batches of
+// indexEmbedBatchSize so a large workspace's chunk set never exceeds a
+// single embedding call's timeout. It takes embedder/store as interfaces so
+// a test can inject a fake Embedder and/or VectorStore without touching a
+// real model or disk-backed store. lexicalStore may be nil (e.g. it failed
+// to open) — buildIndex then simply skips the lexical upsert, populating
+// only the vector store, exactly as it did before the lexical tier existed.
 //
-// If a batch fails, buildIndex returns immediately with an error identifying
-// which batch failed; chunks from batches that already succeeded remain
-// durably upserted in store. That partial state is intentionally not treated
-// as a valid index by the rest of the system — see indexWorkspace, which
-// wraps this with embedder-stamp handling so a partial store is always
+// If a batch fails (either store), buildIndex returns immediately with an
+// error identifying which batch failed; chunks from batches that already
+// succeeded remain durably upserted. That partial state is intentionally not
+// treated as a valid index by the rest of the system — see indexWorkspace,
+// which wraps this with embedder-stamp handling so a partial store is always
 // refused by checkEmbedderStamp rather than silently trusted.
-func buildIndex(ctx context.Context, root string, embedder Embedder, store VectorStore, logger *log.Logger) (*ScanResult, error) {
+func buildIndex(ctx context.Context, root string, embedder Embedder, store VectorStore, lexicalStore LexicalStore, logger *log.Logger) (*ScanResult, error) {
 	scan, err := ScanWorkspace(root)
 	if err != nil {
 		return nil, fmt.Errorf("scanning workspace: %w", err)
@@ -75,6 +78,12 @@ func buildIndex(ctx context.Context, root string, embedder Embedder, store Vecto
 		if err := store.Upsert(ctx, batch); err != nil {
 			return nil, fmt.Errorf("upserting batch %d/%d (chunks [%d:%d]): %w", batchNum, totalBatches, start, end, err)
 		}
+
+		if lexicalStore != nil {
+			if err := lexicalStore.Upsert(ctx, batch); err != nil {
+				return nil, fmt.Errorf("upserting lexical batch %d/%d (chunks [%d:%d]): %w", batchNum, totalBatches, start, end, err)
+			}
+		}
 	}
 	return scan, nil
 }
@@ -86,10 +95,10 @@ func buildIndex(ctx context.Context, root string, embedder Embedder, store Vecto
 // whether on a first index or a re-index, always leaves indexDir stamp-less
 // and therefore refused by checkEmbedderStamp, instead of quietly passing
 // under a stamp left over from an earlier, unrelated successful run.
-func indexWorkspace(ctx context.Context, indexDir, root string, embedder Embedder, store VectorStore, logger *log.Logger) (*ScanResult, error) {
+func indexWorkspace(ctx context.Context, indexDir, root string, embedder Embedder, store VectorStore, lexicalStore LexicalStore, logger *log.Logger) (*ScanResult, error) {
 	_ = os.Remove(filepath.Join(indexDir, embedderStampFileName))
 
-	scan, err := buildIndex(ctx, root, embedder, store, logger)
+	scan, err := buildIndex(ctx, root, embedder, store, lexicalStore, logger)
 	if err != nil {
 		return nil, err
 	}
@@ -101,17 +110,25 @@ func indexWorkspace(ctx context.Context, indexDir, root string, embedder Embedde
 }
 
 // retrieveTopK embeds query via embedder and returns the k nearest chunks
-// from store. Like buildIndex, both dependencies are interfaces so tests can
-// inject fakes. It calls EmbedQuery, not Embed — this is the one line where
-// the query/document asymmetry actually gets applied (see BgeEmbedder).
+// from store, optionally fused with lexicalStore's keyword/substring matches
+// for the same query. Dependencies are interfaces so tests can inject fakes.
+// It calls EmbedQuery, not Embed — this is the one line where the
+// query/document asymmetry actually gets applied (see BgeEmbedder).
 //
-// When rerank is true, it fetches a wider raw candidate pool
-// (rerankPoolSize, rerank.go) than k, reweights it by file-class (a code
-// chunk ranked just outside the raw top-k gets a chance to win after its
-// class boost), and truncates the reweighted result to k. When rerank is
-// false, it fetches exactly k and returns the store's raw ranking unchanged
-// — the A/B path for comparing against re-ranking.
-func retrieveTopK(ctx context.Context, query string, k int, embedder Embedder, store VectorStore, rerank bool) ([]Chunk, error) {
+// When rerank is true, it fetches a wider raw semantic candidate pool
+// (rerankPoolSize, rerank.go) than k, fuses it with lexicalStore's own
+// candidate pool via reciprocal rank fusion (fuseRRF, rerank.go — skipped
+// entirely when lexicalStore is nil, e.g. it failed to open, so retrieval
+// degrades to semantic-only rather than failing), reweights the fused pool
+// by file-class, and truncates to k. When rerank is false, it fetches
+// exactly k from the vector store alone and returns its raw ranking
+// unchanged — the A/B path for comparing against re-ranking, deliberately
+// untouched by the lexical tier.
+//
+// A lexical search error degrades this one call to semantic-only rather
+// than failing retrieval outright — the same "must never block generation"
+// contract gatherContext (context.go) already applies at a higher level.
+func retrieveTopK(ctx context.Context, query string, k int, embedder Embedder, store VectorStore, lexicalStore LexicalStore, rerank bool) ([]Chunk, error) {
 	vecs, err := embedder.EmbedQuery(ctx, []string{query})
 	if err != nil {
 		return nil, fmt.Errorf("embedding query: %w", err)
@@ -130,11 +147,20 @@ func retrieveTopK(ctx context.Context, query string, k int, embedder Embedder, s
 		return hits, nil
 	}
 
-	candidates, err := store.Query(ctx, vecs[0], rerankPoolSize(k))
+	semanticCandidates, err := store.Query(ctx, vecs[0], rerankPoolSize(k))
 	if err != nil {
 		return nil, err
 	}
-	return rerankChunks(candidates, k, query), nil
+
+	var lexicalCandidates []Chunk
+	if lexicalStore != nil {
+		if hits, lexErr := lexicalStore.Search(ctx, query, lexicalPoolSize(k)); lexErr == nil {
+			lexicalCandidates = hits
+		}
+	}
+
+	fused := fuseRRF(semanticCandidates, lexicalCandidates, rrfK)
+	return rerankChunks(fused, k, query), nil
 }
 
 // runIndexCommand implements `codeterminal-daemon index [path]`. It builds
@@ -161,13 +187,19 @@ func runIndexCommand(args []string, logger *log.Logger) error {
 		return fmt.Errorf("opening vector store: %w", err)
 	}
 
+	lexicalStore, err := NewFTSChunkStore(indexDir)
+	if err != nil {
+		return fmt.Errorf("opening lexical index: %w", err)
+	}
+	defer lexicalStore.Close()
+
 	embedder, stopEmbedder, err := newActiveEmbedder(logger)
 	if err != nil {
 		return err
 	}
 	defer stopEmbedder()
 
-	scan, err := indexWorkspace(context.Background(), indexDir, absRoot, embedder, store, logger)
+	scan, err := indexWorkspace(context.Background(), indexDir, absRoot, embedder, store, lexicalStore, logger)
 	if err != nil {
 		return err
 	}
@@ -214,6 +246,12 @@ func runRetrieveCommand(args []string, logger *log.Logger) error {
 		return fmt.Errorf("opening vector store: %w", err)
 	}
 
+	lexicalStore, err := NewFTSChunkStore(indexDir)
+	if err != nil {
+		return fmt.Errorf("opening lexical index: %w", err)
+	}
+	defer lexicalStore.Close()
+
 	embedder, stopEmbedder, err := newActiveEmbedder(logger)
 	if err != nil {
 		return err
@@ -224,7 +262,7 @@ func runRetrieveCommand(args []string, logger *log.Logger) error {
 		return err
 	}
 
-	results, err := retrieveTopK(context.Background(), query, *k, embedder, store, !*raw)
+	results, err := retrieveTopK(context.Background(), query, *k, embedder, store, lexicalStore, !*raw)
 	if err != nil {
 		return err
 	}
