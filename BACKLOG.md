@@ -378,8 +378,34 @@ Deferred deliberately.
   you") is likely a stronger position than choice — reconsider that framing before building
   this, not just the mechanics of adding it.
 
-### 3. Hybrid lexical+semantic code retrieval — the real fix for lexical-miss defects
-Deferred deliberately — scoped here as a measure-first effort to schedule, NOT started ad hoc.
+### 3. DONE — LIVE-VERIFIED: Hybrid lexical+semantic code retrieval — the real fix for lexical-miss defects
+**Shipped 2026-07-10, commit `ae3e7a4` ("Add lexical retrieval tier fused with semantic via
+max-based RRF"), tag `hybrid-retrieval-complete`.** Adds an FTS5/trigram lexical tier
+(`daemon/lexicalstore.go`) fused with the existing semantic tier via max-based Reciprocal Rank
+Fusion (K=60), threaded through `setupRetrieval` -> `Server` -> `retrieveTopK` so the lexical
+tier degrades independently of the semantic one.
+
+**Live-verified against the real daemon (not just the eval harness), same day:**
+- "Where is the ZDR refusal string matched" — correctly answers `daemon/provider.go` /
+  `isZDRRoutingRefusal`, with all three substrings named.
+- "What files does SearchRequest touch" — walks the full chain (`protocol.go`, `server.go`
+  `isSearchRequest`/`handleSearch`, `search.go`, both clients, test files) with a correct
+  summary.
+
+Both queries were confirmed misses this morning under semantic-only retrieval; both now pass.
+
+**Two honest caveats stay open — do not treat this as fully closed:**
+- **Eval set is saturated.** Chunk-level eval is 8/9 hits with scores bunched tightly
+  (~0.0122-0.0189 weighted). That resolution is too coarse to prove the RRF K=60 fusion
+  weighting is actually tuned well — it only proves it isn't broken. Grow the eval set
+  (harder/more adversarial lexical-miss queries) before treating this tuning as load-bearing.
+- **Token-cost/efficiency claim is UNMEASURED.** The "tightly packed context, fewer tokens"
+  half of the hybrid-retrieval pillar has no measurement behind it yet. Do not make that claim
+  externally (docs, marketing, customer-facing) until it's actually measured.
+
+One pre-existing, non-gated gap remains: "where does the daemon open the unix socket" still
+misses at chunk-level under both semantic-only and hybrid retrieval (see `rerank_eval_test.go`'s
+comment on this query for why it's out of scope here).
 
 - **Evidence** (from the 2026-07-10 test-file-ranking investigation): live-querying the real
   repo for "where in the code is the ZDR refusal string matched, and what substring does it
@@ -410,12 +436,12 @@ Deferred deliberately — scoped here as a measure-first effort to schedule, NOT
   before reranking — giving exact-token queries (identifier names, string literals like
   `"zero data retention"`) a path to the correct chunk that pure embedding similarity can't
   reliably provide.
-- **Scope this deliberately before starting**: needs its own measured eval (reuse
-  `rerank_eval_test.go`'s real-repo harness, add lexical-miss queries like the ZDR one where the
-  answer is a specific string/identifier), a decision on how lexical and semantic scores get
-  merged (simple score fusion vs. reciprocal rank fusion), and confirmation it doesn't regress
-  the 7 queries already gated there. Do not start until retrieval-quality hardening is the
-  actual priority.
+- **Shipped as scoped**: the measured eval was reused/extended (`rerank_eval_test.go`'s
+  real-repo harness now gates 9 chunk-level queries, up from 7, including the ZDR
+  string/identifier query above and the SearchRequest query), fusion was implemented as
+  max-based Reciprocal Rank Fusion (K=60), and none of the previously-gated queries regressed
+  (6/9 -> 8/9 chunk-level, no prior hit turned into a miss). See the DONE status block at the
+  top of this item for what's still open (eval saturation, unmeasured efficiency claim).
 
 ### Carried forward from earlier notes (consolidated here; full detail at their original entries)
 - **Model-callable `session_search` tool over backup/session history** (referred to
@@ -444,9 +470,10 @@ Deferred deliberately — scoped here as a measure-first effort to schedule, NOT
   (implementation chunks ranking below setup chunks) above. Both are measured, minor,
   non-blocking sharpening of a system that's already grounded and correct; do as a MEASURED
   step against an eval, not a guess, when retrieval-quality hardening becomes the priority.
-  Item (b)'s fix, once shipped, only closes the "test files dominate" failure mode — see North
-  Star item 3 (hybrid lexical+semantic retrieval) for the deeper, separate limitation it
-  can't reach (correct chunk too dissimilar in raw embedding space to be fetched at all).
+  Item (b)'s fix, once shipped, only closed the "test files dominate" failure mode — the
+  deeper, separate limitation it couldn't reach (correct chunk too dissimilar in raw embedding
+  space to be fetched at all) is what North Star item 3 (hybrid lexical+semantic retrieval)
+  fixed; see that item's DONE status block for what's shipped vs. still open.
 - **Turns retention / pruning policy** — item (h) above: cross-session memory grows
   unbounded by design (persist-all). Add an age- or count-based prune when a long-lived
   workspace actually needs it.
