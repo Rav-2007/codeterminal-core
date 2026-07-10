@@ -70,7 +70,8 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", handleHealth)
-	mux.HandleFunc("/v1/chat/completions", p.handleChatCompletions)
+	mux.HandleFunc(chatCompletionsPath, p.handleChatCompletions)       // "/chat/completions"
+	mux.HandleFunc("/v1"+chatCompletionsPath, p.handleChatCompletions) // "/v1/chat/completions" alias
 
 	srv := &http.Server{
 		Addr:              ":" + port,
