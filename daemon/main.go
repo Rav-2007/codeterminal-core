@@ -77,10 +77,24 @@ func main() {
 
 	apiBase := os.Getenv("CODETERMINAL_API_BASE")
 	apiKey := os.Getenv("CODETERMINAL_API_KEY")
+	// CODETERMINAL_USE_PROXY names the already-existing "point apiBase at a
+	// proxy and leave apiKey empty" mode explicitly (see streamCompletion in
+	// provider.go, which already omits the Authorization header whenever
+	// apiKey == "") -- it changes nothing about request behavior, only which
+	// startup log line is printed, so an operator can tell "intentionally
+	// proxied" apart from "forgot to set the key" at a glance. Unset (the
+	// default), it's a no-op: every existing direct-to-OpenRouter deployment
+	// keeps behaving exactly as before.
+	useProxy := os.Getenv("CODETERMINAL_USE_PROXY") == "true"
 	if apiBase == "" {
 		logger.Fatal("CODETERMINAL_API_BASE must be set")
 	}
-	if apiKey == "" {
+	switch {
+	case useProxy && apiKey != "":
+		logger.Print("warning: CODETERMINAL_USE_PROXY is set but CODETERMINAL_API_KEY is also set; the key will still be sent to the proxy needlessly -- the proxy holds its own OpenRouter key. Unset CODETERMINAL_API_KEY when using a proxy.")
+	case useProxy:
+		logger.Printf("proxy mode: forwarding inference through %s; this daemon holds no model API key", apiBase)
+	case apiKey == "":
 		logger.Print("warning: CODETERMINAL_API_KEY is not set; requests will be sent without an Authorization header")
 	}
 
