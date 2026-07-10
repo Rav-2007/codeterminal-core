@@ -1,3 +1,7 @@
+**Next action: security review of the daemon (adversarial, start with the secret-stripping
+function — `editapply.MatchesSecretName`, `editapply/secret.go`). Do not add capability
+before shipping — see [North-Star / Deferred Capabilities](#north-star--deferred-capabilities-post-launch-post-security-review)
+section for deferred items and why.**
 
 ## Known deferred debts
 
@@ -309,6 +313,76 @@ Code" experience. This is the packaging phase, the single largest remaining body
   `models.json` in git is unchanged by this work; only the matcher fix in
   `daemon/provider.go`/`daemon/provider_test.go` was committed. (Folds in item (g) above.)
 - **Performance NFR** — TTFT < 400ms is a target, not yet measured.
+
+## North-Star / Deferred Capabilities (post-launch, post-security-review)
+
+Capabilities considered and deliberately NOT being built yet, with the reasoning, so this
+doesn't get re-litigated. Nothing here is scheduled; each needs its own explicit decision to
+start, gated at minimum on the security review above, and, for the two big-ticket items,
+validated user demand.
+
+### 1. Autonomous multi-step agent loop (plan → edit → run → observe → fix)
+Deferred deliberately.
+- Removes the human-in-the-loop safety property the whole architecture rests on today (every
+  edit is proposed, reviewed, and explicitly applied/undone by a person).
+- Largest single body of work in the project — bigger than anything shipped so far.
+- Highest token-burn feature: a multi-step loop means multiple model calls per user action,
+  which threatens the thin managed-tier margins (see Phase 4's managed-key/billing model).
+- Must NOT precede the security review or validated user demand — it's new capability, not
+  a fix to something broken.
+- **When built:** lives in the DAEMON (per the locked "one brain, thin clients" decision),
+  NOT in the terminal client.
+
+### 2. Multi-model / user-selectable brains (e.g. DeepSeek V4 Flash, Qwen 2.5 Coder, DeepSeek
+R1 Distill Qwen 32B, etc.)
+Deferred deliberately.
+- (a) Contradicts the managed-key cost model — different models have different per-token
+  prices and would complicate metering and the fixed PPP token-cap math (see Phase 4's
+  billing/metering item).
+- (b) Reopens the just-closed ZDR gate above — ZDR availability is per-model. deepseek-v4-flash
+  is verified ZDR-servable (positive + negative path, 2026-07-09); Qwen 2.5 Coder and DeepSeek
+  R1 Distill Qwen 32B are NOT verified, and ~123 of the 343 currently-listed OpenRouter models
+  have zero ZDR-compliant providers at all (per OpenRouter's public `/api/v1/endpoints/zdr`
+  listing, checked live during that verification) — so every added model needs its own
+  from-scratch ZDR verification, not an assumption it inherits deepseek-v4-flash's.
+- (c) No user has requested it — it adds a new capability rather than improving the core
+  coding loop.
+- **Guardrail for when built:** every user-selectable model must pass the same ZDR
+  live-verification (positive + negative path) as deepseek-v4-flash before being offered. For
+  the cost-sensitive Indian market, curation ("we picked the best cheap private model for
+  you") is likely a stronger position than choice — reconsider that framing before building
+  this, not just the mechanics of adding it.
+
+### Carried forward from earlier notes (consolidated here; full detail at their original entries)
+- **Model-callable `session_search` tool over backup/session history** (referred to
+  elsewhere as "Option 2") — full detail in item (i) above. Distinct from the FTS5 lexical
+  search over *conversation memory* that DID ship (VS Code panel, 2026-07-09): this would be
+  the model itself querying past apply/backup runs, not a human clicking Undo. Deferred until
+  there's a concrete need for the model to query its own past runs.
+- **Self-learning loop (autonomous skill capture)** — the skill store itself is built
+  (`daemon/skills.go`: `AddSkill`/`GetSkill`/`ListSkills`/`DeleteSkill`, per-user SQLite at
+  `~/.codeterminal/skills.db`), but nothing yet decides *on its own*, after a successful
+  multi-step fix, to mine that session and call `AddSkill` without a human curating it. That
+  autonomous capture loop is what's deferred — same shape of risk as the autonomous agent
+  loop above (less human oversight of what gets written/remembered), so gate it behind the
+  same security review.
+- **TUI search UI** — the FTS5 lexical search feature (wire protocol + daemon dispatch + UI)
+  shipped end-to-end but only for the VS Code panel ("FTS5 search session", 2026-07-09). The
+  TUI client has no equivalent search box yet; adding one is mechanical (same
+  `SearchRequest`/`SearchResponse` the VS Code panel already uses) but deferred as a UI-only
+  gap, not a blocker.
+- **Ghost text** (fast keystroke completions) — `models.json`'s `ghost_text` tier already
+  names a candidate model (`qwen/qwen3-coder-30b-a3b-instruct`) but is `"active": false`; see
+  "VS Code extension: remaining capabilities" above. Deferred to Phase 3.5.
+- **Terminal error interceptor** — see "VS Code extension: remaining capabilities" above.
+  Not started.
+- **Retrieval refinements** — items (b) (down-weight test files in top-1 ranking) and (f)
+  (implementation chunks ranking below setup chunks) above. Both are measured, minor,
+  non-blocking sharpening of a system that's already grounded and correct; do as a MEASURED
+  step against an eval, not a guess, when retrieval-quality hardening becomes the priority.
+- **Turns retention / pruning policy** — item (h) above: cross-session memory grows
+  unbounded by design (persist-all). Add an age- or count-based prune when a long-lived
+  workspace actually needs it.
 
 ## Hygiene / recurring
 
