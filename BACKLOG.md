@@ -312,6 +312,31 @@ Code" experience. This is the packaging phase, the single largest remaining body
   written. Both `zdr=true` config-value changes were temporary and never committed —
   `models.json` in git is unchanged by this work; only the matcher fix in
   `daemon/provider.go`/`daemon/provider_test.go` was committed. (Folds in item (g) above.)
+  **2026-07-10 — provisioned inference route: single-provider congestion resolved,
+  ZDR-constrained fallback, live-verified.** `allow_fallbacks=false` pinned every request
+  to one provider (DeepInfra); DeepInfra was returning persistent 429s despite a funded
+  account — a throughput blocker, not a privacy one. Fix: `models.json`'s
+  `zdr.allow_fallbacks` flipped `false` → `true`; `zdr=true` and `data_collection="deny"`
+  are untouched, so the fallback pool stays filtered to zero-data-retention providers only
+  (OpenRouter's provider-routing docs describe `zdr`/`data_collection` with hard
+  pool-membership language — "excluding"/"only routes" — distinct from soft preferences
+  like `preferred_max_latency`, which the same docs explicitly call "deprioritized...
+  rather than excluded entirely"; `allow_fallbacks` only governs whether routing continues
+  *within* that already-filtered pool). Not trusted on doc-reading alone — re-verified live
+  with the same rigor as the 2026-07-09 gate above: **negative path** — pointed a request
+  at `nex-agi/nex-n2-mini`, freshly confirmed via `/api/v1/endpoints/zdr` (not the stale
+  2026-07-09 pick) to have zero ZDR-compliant providers, with `allow_fallbacks=true` live.
+  Still hard-refused: `model API returned 404 Not Found: {"error":{"message":"No endpoints
+  found matching your data policy (Zero data retention)..."`, proving fallback cannot
+  escape the ZDR filter even when the filtered pool is empty — no bypass. **Positive
+  path** — 8 real prompts against `deepseek/deepseek-v4-flash` all succeeded, served by 6
+  distinct ZDR-compliant providers (Novita ×2, SiliconFlow ×2, AtlasCloud, DigitalOcean,
+  Parasail, Morph) out of the 11 currently ZDR-compliant for this model — zero landed on
+  DeepInfra, confirming OpenRouter now actually routes around the congestion. Resolved
+  wire body: `{"zdr":true,"data_collection":"deny","allow_fallbacks":true}`. No code
+  changes, `models.json` only. **Separate, still-open item, not resolved by this change:**
+  the account still needs to be kept funded (API credits) for requests to succeed at all —
+  a billing precondition, unrelated to which provider serves the request.
 - **Performance NFR** — TTFT < 400ms is a target, not yet measured.
 
 ## North-Star / Deferred Capabilities (post-launch, post-security-review)
