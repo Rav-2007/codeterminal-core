@@ -2,18 +2,23 @@
 // front of OpenRouter. It exists to hold the OpenRouter API key server-side
 // so it never ships to end users. It is a dumb pipe: it adds the key and
 // forwards the request body exactly as received, then streams the response
-// back without buffering. It deliberately does nothing else yet -- no auth,
-// no metering, no persistence; those are later steps.
+// back without buffering. Every call is first gated on a caller-supplied
+// Mochiii key, validated against Supabase (see authorize) -- unauthorized
+// requests never reach OpenRouter. Metering and persistence beyond that
+// key lookup are deliberately not built yet; those are later steps.
 package main
 
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -29,11 +34,26 @@ const (
 	// sits directly in that same call path.
 	upstreamTimeout = 5 * time.Minute
 
+	// supabaseAuthTimeout bounds the key-lookup call separately from
+	// upstreamTimeout: a slow/down Supabase must fail the request closed
+	// in seconds, not eat minutes of the inference budget before OpenRouter
+	// is ever contacted.
+	supabaseAuthTimeout = 5 * time.Second
+
 	// maxRequestBodyBytes caps the incoming request body the proxy will
 	// read. Generous for a chat-completions payload (prompt + retrieved
 	// context + capped history), just enough to stop an unbounded body
 	// from exhausting memory.
 	maxRequestBodyBytes = 4 << 20 // 4MB
+
+	// maxAuthResponseBytes caps the Supabase lookup response. The query
+	// only ever selects `id` and is filtered to at most one active row, so
+	// this is generous headroom, not a real limit in practice.
+	maxAuthResponseBytes = 64 * 1024
+
+	// keyLogPrefixLen is the most of a caller-supplied key that is ever
+	// written to a log line -- never the full key.
+	keyLogPrefixLen = 8
 
 	sseInitialBufferSize = 64 * 1024
 	sseMaxLineSize       = 1024 * 1024
@@ -57,14 +77,24 @@ func main() {
 		port = "8080"
 	}
 
+	supabaseURL := os.Getenv("SUPABASE_URL")
+	supabaseServiceRoleKey := os.Getenv("SUPABASE_SERVICE_ROLE_KEY")
+	if supabaseURL == "" || supabaseServiceRoleKey == "" {
+		logger.Printf("WARNING: SUPABASE_URL and/or SUPABASE_SERVICE_ROLE_KEY not set -- every request will fail auth and be rejected with 401 (fail closed)")
+	}
+
 	p := &proxy{
-		apiKey:      apiKey,
-		upstreamURL: strings.TrimRight(upstreamBase, "/") + chatCompletionsPath,
-		logger:      logger,
+		apiKey:                 apiKey,
+		upstreamURL:            strings.TrimRight(upstreamBase, "/") + chatCompletionsPath,
+		logger:                 logger,
+		supabaseURL:            supabaseURL,
+		supabaseServiceRoleKey: supabaseServiceRoleKey,
 		// No blanket http.Client.Timeout: a streaming response can
 		// legitimately run for minutes. Each request's own context
 		// deadline (upstreamTimeout, applied per-call below) is what
-		// actually bounds it instead.
+		// actually bounds it instead. The Supabase auth lookup uses the
+		// same client but its own shorter per-call context deadline
+		// (supabaseAuthTimeout).
 		client: &http.Client{},
 	}
 
@@ -86,10 +116,12 @@ func main() {
 }
 
 type proxy struct {
-	apiKey      string
-	upstreamURL string
-	logger      *log.Logger
-	client      *http.Client
+	apiKey                 string
+	upstreamURL            string
+	logger                 *log.Logger
+	client                 *http.Client
+	supabaseURL            string
+	supabaseServiceRoleKey string
 }
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -114,6 +146,13 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	p.logger.Printf("request received: %s", r.URL.Path)
+
+	apiKeyID, ok := p.authorize(r)
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	_ = apiKeyID // reserved for per-key metering (Step 2c); not used yet
 
 	ctx, cancel := context.WithTimeout(r.Context(), upstreamTimeout)
 	defer cancel()
@@ -165,6 +204,92 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if _, err := io.Copy(w, resp.Body); err != nil {
 		p.logger.Printf("copying non-streamed response failed: %v", err)
 	}
+}
+
+// authorize validates the caller-supplied Mochiii key ("Authorization:
+// Bearer <mochi_key>") against Supabase and returns the matching
+// api_keys.id on success. It fails CLOSED: a missing/empty header, an
+// unconfigured Supabase, a lookup error/timeout, a non-200 response, or a
+// row count other than exactly one are all treated as unauthorized --
+// OpenRouter is never contacted in any of those cases. Only the auth
+// outcome and, at most, the key's first keyLogPrefixLen chars are ever
+// logged; the full mochi_key, the Supabase service-role key, and the
+// OpenRouter key are never logged.
+func (p *proxy) authorize(r *http.Request) (string, bool) {
+	const bearerPrefix = "Bearer "
+	authHeader := r.Header.Get("Authorization")
+	if !strings.HasPrefix(authHeader, bearerPrefix) {
+		p.logger.Printf("auth: rejected (no bearer token)")
+		return "", false
+	}
+	mochiKey := strings.TrimSpace(strings.TrimPrefix(authHeader, bearerPrefix))
+	if mochiKey == "" {
+		p.logger.Printf("auth: rejected (empty key)")
+		return "", false
+	}
+
+	if p.supabaseURL == "" || p.supabaseServiceRoleKey == "" {
+		p.logger.Printf("auth: rejected (supabase not configured, key prefix=%s)", keyPrefix(mochiKey))
+		return "", false
+	}
+
+	hash := sha256.Sum256([]byte(mochiKey))
+	hashHex := hex.EncodeToString(hash[:])
+
+	ctx, cancel := context.WithTimeout(r.Context(), supabaseAuthTimeout)
+	defer cancel()
+
+	q := url.Values{}
+	q.Set("key_hash", "eq."+hashHex)
+	q.Set("active", "eq.true")
+	q.Set("select", "id")
+	lookupURL := strings.TrimRight(p.supabaseURL, "/") + "/rest/v1/api_keys?" + q.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, lookupURL, nil)
+	if err != nil {
+		p.logger.Printf("auth: rejected (building supabase request failed, key prefix=%s)", keyPrefix(mochiKey))
+		return "", false
+	}
+	req.Header.Set("apikey", p.supabaseServiceRoleKey)
+	req.Header.Set("Authorization", "Bearer "+p.supabaseServiceRoleKey)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := p.client.Do(req)
+	if err != nil {
+		p.logger.Printf("auth: rejected (supabase lookup failed, key prefix=%s)", keyPrefix(mochiKey))
+		return "", false
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		p.logger.Printf("auth: rejected (supabase status=%d, key prefix=%s)", resp.StatusCode, keyPrefix(mochiKey))
+		return "", false
+	}
+
+	var rows []struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxAuthResponseBytes)).Decode(&rows); err != nil {
+		p.logger.Printf("auth: rejected (decoding supabase response failed, key prefix=%s)", keyPrefix(mochiKey))
+		return "", false
+	}
+
+	if len(rows) != 1 {
+		p.logger.Printf("auth: rejected (key prefix=%s, matches=%d)", keyPrefix(mochiKey), len(rows))
+		return "", false
+	}
+
+	p.logger.Printf("auth: ok (key prefix=%s)", keyPrefix(mochiKey))
+	return rows[0].ID, true
+}
+
+// keyPrefix returns at most the first keyLogPrefixLen characters of key, for
+// content-free log lines -- never the full key.
+func keyPrefix(key string) string {
+	if len(key) <= keyLogPrefixLen {
+		return key
+	}
+	return key[:keyLogPrefixLen]
 }
 
 // streamSSE copies body to w line by line, flushing after every line so the

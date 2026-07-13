@@ -248,6 +248,22 @@ tool is still deferred.
   current whole-block red/green); then the larger fronts (ghost text, terminal error
   interceptor).
 
+## Backlog — added 2026-07-10 (managed proxy)
+
+- **DONE: Managed proxy Step 1** (verified live 2026-07-10, tag `managed-proxy-step1-complete`,
+  fix `702101c`) — minimal pass-through proxy deployed on Railway
+  (`codeterminal-core-production.up.railway.app`), OpenRouter key held server-side only.
+  Verified live: daemon→proxy→OpenRouter→back streams real completions with the daemon's local
+  key stripped (`env -u CODETERMINAL_API_KEY`), proving inference runs off-machine; proxy logs
+  are content-free (path/status/provider only — retains nothing); ZDR held on the wire
+  (`data_collection:"deny"` + `allow_fallbacks:false` sent and unit-tested, request served by
+  Morph rather than refused → provider is ZDR-eligible by construction). Route fix `702101c`
+  (`chatCompletionsPath` as source-of-truth for the proxied path, `/v1` alias added), on top of
+  the initial proxy in `8b5aa11`.
+  Not built (later steps, deliberate): auth, token metering, hard-stop caps, per-user keys.
+  ⚠️ **Standing risk: proxy has NO auth yet — anyone with the URL can spend the key.** Do not
+  expose the URL publicly until Step 2 (auth/metering) lands.
+
 ## Phase 4 — standalone / packaging / commercialization (decided direction: capable first, then shippable)
 
 Scoped and decided this session, not started. Goal: a user installs the VS Code extension from
