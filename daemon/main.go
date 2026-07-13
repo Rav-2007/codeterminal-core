@@ -77,14 +77,15 @@ func main() {
 
 	apiBase := os.Getenv("CODETERMINAL_API_BASE")
 	apiKey := os.Getenv("CODETERMINAL_API_KEY")
-	// CODETERMINAL_USE_PROXY names the already-existing "point apiBase at a
-	// proxy and leave apiKey empty" mode explicitly (see streamCompletion in
-	// provider.go, which already omits the Authorization header whenever
-	// apiKey == "") -- it changes nothing about request behavior, only which
-	// startup log line is printed, so an operator can tell "intentionally
-	// proxied" apart from "forgot to set the key" at a glance. Unset (the
-	// default), it's a no-op: every existing direct-to-OpenRouter deployment
-	// keeps behaving exactly as before.
+	// CODETERMINAL_USE_PROXY names the "point apiBase at the managed proxy"
+	// mode explicitly. In this mode apiKey is populated from
+	// CODETERMINAL_MOCHIII_KEY (below) instead of CODETERMINAL_API_KEY, since
+	// the proxy authenticates callers by a per-user Mochiii key and holds its
+	// own OpenRouter key server-side. streamCompletion in provider.go is
+	// unchanged: it already sends whatever apiKey it's given as
+	// "Authorization: Bearer <apiKey>" and omits the header when apiKey == "".
+	// Unset (the default), CODETERMINAL_USE_PROXY is a no-op: every existing
+	// direct-to-OpenRouter deployment keeps behaving exactly as before.
 	useProxy := os.Getenv("CODETERMINAL_USE_PROXY") == "true"
 	if apiBase == "" {
 		logger.Fatal("CODETERMINAL_API_BASE must be set")
@@ -93,7 +94,11 @@ func main() {
 	case useProxy && apiKey != "":
 		logger.Print("warning: CODETERMINAL_USE_PROXY is set but CODETERMINAL_API_KEY is also set; the key will still be sent to the proxy needlessly -- the proxy holds its own OpenRouter key. Unset CODETERMINAL_API_KEY when using a proxy.")
 	case useProxy:
-		logger.Printf("proxy mode: forwarding inference through %s; this daemon holds no model API key", apiBase)
+		apiKey = os.Getenv("CODETERMINAL_MOCHIII_KEY")
+		if apiKey == "" {
+			logger.Fatal("CODETERMINAL_USE_PROXY is set but CODETERMINAL_MOCHIII_KEY is empty; the proxy requires a Mochiii key")
+		}
+		logger.Printf("proxy mode: forwarding inference through %s with a Mochiii key", apiBase)
 	case apiKey == "":
 		logger.Print("warning: CODETERMINAL_API_KEY is not set; requests will be sent without an Authorization header")
 	}
