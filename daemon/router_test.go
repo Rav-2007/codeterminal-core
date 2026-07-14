@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func testConfig(reasoningActive bool) *Config {
 	return &Config{
@@ -81,6 +84,104 @@ func TestRoute_MissingReasoningTier_FallsBackToPrimary(t *testing.T) {
 	}
 	if decision.Slug != "vendor/primary-model" {
 		t.Errorf("Slug = %q, want %q", decision.Slug, "vendor/primary-model")
+	}
+}
+
+func TestRoute_PromptKindSignals(t *testing.T) {
+	cases := []struct {
+		name            string
+		reasoningActive bool
+		input           RouteInput
+		wantTier        string
+		wantSlug        string
+		wantReasonHas   []string // substrings that must all appear in Reason
+	}{
+		{
+			name:            "reason kind escalates when tier active",
+			reasoningActive: true,
+			input:           RouteInput{PromptKind: PromptKindReason},
+			wantTier:        "reasoning",
+			wantSlug:        "vendor/reasoning-model",
+			wantReasonHas:   []string{`explicit prompt kind "reason"`},
+		},
+		{
+			name:            "refactor kind escalates when tier active",
+			reasoningActive: true,
+			input:           RouteInput{PromptKind: PromptKindRefactor},
+			wantTier:        "reasoning",
+			wantSlug:        "vendor/reasoning-model",
+			wantReasonHas:   []string{`explicit prompt kind "refactor"`},
+		},
+		{
+			name:            "unrecognized kind is inert, falls through to default",
+			reasoningActive: true,
+			input:           RouteInput{PromptKind: "explain"},
+			wantTier:        "primary",
+			wantSlug:        "vendor/primary-model",
+		},
+		{
+			name:            "empty kind (today's default) is inert",
+			reasoningActive: true,
+			input:           RouteInput{PromptKind: ""},
+			wantTier:        "primary",
+			wantSlug:        "vendor/primary-model",
+		},
+		{
+			name:            "reason kind present but reasoning tier inactive falls back",
+			reasoningActive: false,
+			input:           RouteInput{PromptKind: PromptKindReason},
+			wantTier:        "primary",
+			wantSlug:        "vendor/primary-model",
+			wantReasonHas:   []string{`explicit prompt kind "reason"`, "inactive or missing"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testConfig(tc.reasoningActive)
+			decision := Route(cfg, tc.input)
+
+			if decision.Tier != tc.wantTier {
+				t.Errorf("Tier = %q, want %q", decision.Tier, tc.wantTier)
+			}
+			if decision.Slug != tc.wantSlug {
+				t.Errorf("Slug = %q, want %q", decision.Slug, tc.wantSlug)
+			}
+			for _, substr := range tc.wantReasonHas {
+				if !strings.Contains(decision.Reason, substr) {
+					t.Errorf("Reason = %q, want it to contain %q", decision.Reason, substr)
+				}
+			}
+		})
+	}
+}
+
+// TestRoute_ExitSignalAndPromptKindBothTrue is the dual-condition case for
+// the new signal: a request can carry both a non-zero exit signal and an
+// explicit reasoning PromptKind at once. Unlike the P4 header-notice bug,
+// there is only one escalation target, so the decision (Tier/Slug) can
+// never be ambiguous -- this test proves that, and separately proves the
+// Reason log string reports BOTH true causes rather than silently keeping
+// only the first-checked one.
+func TestRoute_ExitSignalAndPromptKindBothTrue(t *testing.T) {
+	cfg := testConfig(true)
+	decision := Route(cfg, RouteInput{
+		HasExitSignal: true,
+		LastExitCode:  1,
+		PromptKind:    PromptKindReason,
+	})
+
+	if decision.Tier != "reasoning" {
+		t.Errorf("Tier = %q, want %q", decision.Tier, "reasoning")
+	}
+	if decision.Slug != "vendor/reasoning-model" {
+		t.Errorf("Slug = %q, want %q", decision.Slug, "vendor/reasoning-model")
+	}
+	if !strings.Contains(decision.Reason, "non-zero exit escalation") {
+		t.Errorf("Reason = %q, want it to mention the exit-code cause", decision.Reason)
+	}
+	if !strings.Contains(decision.Reason, `explicit prompt kind "reason"`) {
+		t.Errorf("Reason = %q, want it to mention the PromptKind cause too (not silently dropped)", decision.Reason)
 	}
 }
 
