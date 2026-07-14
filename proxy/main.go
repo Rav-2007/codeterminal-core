@@ -5,9 +5,10 @@
 // back without buffering. Every call is first gated on a caller-supplied
 // Mochiii key, validated against Supabase (see authorize) -- unauthorized
 // requests never reach OpenRouter. Token usage is recorded per key after a
-// successful response (see streamSSE/recordUsage) -- record only, never
-// enforced: an over-limit key still succeeds today. Refusal/capping on
-// recorded usage is a deliberately separate, later step.
+// successful response (see streamSSE/recordUsage), and checked BEFORE each
+// call is forwarded (see checkQuota): a key at or over its token_limit is
+// refused with 429 before OpenRouter is ever contacted -- fail-closed, same
+// as authorize, since this gate protects real spend.
 package main
 
 import (
@@ -192,6 +193,13 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !p.checkQuota(r.Context(), apiKeyID) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		w.Write([]byte(`{"error":"quota_exceeded"}`))
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), upstreamTimeout)
 	defer cancel()
 
@@ -319,6 +327,82 @@ func (p *proxy) authorize(r *http.Request) (string, bool) {
 
 	p.logger.Printf("auth: ok (key prefix=%s)", keyPrefix(mochiKey))
 	return rows[0].ID, true
+}
+
+// checkQuota reports whether apiKeyID (an already-authorized api_keys.id --
+// never the raw Mochiii key, see authorize) is still under its token quota.
+// Deliberately separate from authorize: authorize's contract is
+// identity-only and is already verified, so this is a second, independent
+// gate rather than folded into it. It fails CLOSED -- returns false (not
+// allowed) -- on a request-build error, a Supabase call error/timeout, a
+// non-200 response, a row count other than exactly one, or a null
+// token_limit (no limit configured is treated as "can't verify", not as
+// "unlimited"). It returns true only when exactly one row comes back with a
+// non-null token_limit and tokens_used strictly under it. Only the key id
+// and token counts are ever logged -- never the raw key, never request
+// content.
+func (p *proxy) checkQuota(ctx context.Context, apiKeyID string) bool {
+	if p.supabaseURL == "" || p.supabaseServiceRoleKey == "" {
+		p.logger.Printf("quota: refused (supabase not configured, key id=%s)", apiKeyID)
+		return false
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, supabaseAuthTimeout)
+	defer cancel()
+
+	q := url.Values{}
+	q.Set("key_id", "eq."+apiKeyID)
+	q.Set("select", "tokens_used,token_limit")
+	lookupURL := strings.TrimRight(p.supabaseURL, "/") + "/rest/v1/usage?" + q.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, lookupURL, nil)
+	if err != nil {
+		p.logger.Printf("quota: refused (building supabase request failed, key id=%s): %v", apiKeyID, err)
+		return false
+	}
+	req.Header.Set("apikey", p.supabaseServiceRoleKey)
+	req.Header.Set("Authorization", "Bearer "+p.supabaseServiceRoleKey)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := p.client.Do(req)
+	if err != nil {
+		p.logger.Printf("quota: refused (supabase lookup failed, key id=%s): %v", apiKeyID, err)
+		return false
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		p.logger.Printf("quota: refused (supabase status=%d, key id=%s)", resp.StatusCode, apiKeyID)
+		return false
+	}
+
+	var rows []struct {
+		TokensUsed int  `json:"tokens_used"`
+		TokenLimit *int `json:"token_limit"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxAuthResponseBytes)).Decode(&rows); err != nil {
+		p.logger.Printf("quota: refused (decoding supabase response failed, key id=%s): %v", apiKeyID, err)
+		return false
+	}
+
+	if len(rows) != 1 {
+		p.logger.Printf("quota: refused (key id=%s, matches=%d)", apiKeyID, len(rows))
+		return false
+	}
+
+	row := rows[0]
+	if row.TokenLimit == nil {
+		p.logger.Printf("quota: refused (key id=%s, used=%d, limit=null)", apiKeyID, row.TokensUsed)
+		return false
+	}
+
+	if row.TokensUsed >= *row.TokenLimit {
+		p.logger.Printf("quota: refused (key id=%s, used=%d, limit=%d)", apiKeyID, row.TokensUsed, *row.TokenLimit)
+		return false
+	}
+
+	p.logger.Printf("quota: ok (key id=%s, used=%d, limit=%d)", apiKeyID, row.TokensUsed, *row.TokenLimit)
+	return true
 }
 
 // keyPrefix returns at most the first keyLogPrefixLen characters of key, for
