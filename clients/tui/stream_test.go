@@ -172,7 +172,7 @@ func TestStreamPrompt_HistorySentOnThirdTurnContainsPriorTwoInOrder(t *testing.T
 	runTurn := func(prompt string, history []protocol.Turn) protocol.PromptRequest {
 		t.Helper()
 		ch := make(chan tea.Msg, 8)
-		streamPrompt(context.Background(), "test-client", "", prompt, history, ch)
+		streamPrompt(context.Background(), "test-client", "", prompt, "", history, ch)
 		for {
 			msg := <-ch
 			if errMsg, ok := msg.(streamErrMsg); ok {
@@ -223,6 +223,53 @@ func TestStreamPrompt_HistorySentOnThirdTurnContainsPriorTwoInOrder(t *testing.T
 	}
 }
 
+// TestStreamPrompt_PromptKindReachesWire proves streamPrompt actually puts
+// the promptKind argument onto PromptRequest.PromptKind -- not just that the
+// TUI-side parser (see TestParsePromptKind in chat_test.go) computes the
+// right value, but that it's carried all the way onto the wire the daemon
+// actually reads. An empty promptKind (today's default, and everything that
+// doesn't match a recognized command) must serialize as empty too.
+func TestStreamPrompt_PromptKindReachesWire(t *testing.T) {
+	requests := make(chan protocol.PromptRequest, 8)
+	lockPath, cleanup := fakeDaemonCapturingRequests(t, requests)
+	defer cleanup()
+
+	restoreLockPath := setLockPathForTest(t, lockPath)
+	defer restoreLockPath()
+
+	send := func(promptKind string) protocol.PromptRequest {
+		t.Helper()
+		ch := make(chan tea.Msg, 8)
+		streamPrompt(context.Background(), "test-client", "", "some question", promptKind, nil, ch)
+		for {
+			msg := <-ch
+			if errMsg, ok := msg.(streamErrMsg); ok {
+				t.Fatalf("unexpected stream error: %v", errMsg.err)
+			}
+			if _, ok := msg.(streamDoneMsg); ok {
+				break
+			}
+		}
+		select {
+		case req := <-requests:
+			return req
+		case <-time.After(2 * time.Second):
+			t.Fatal("fake daemon never received a PromptRequest")
+			return protocol.PromptRequest{}
+		}
+	}
+
+	if req := send("reason"); req.PromptKind != "reason" {
+		t.Errorf("PromptKind = %q, want %q", req.PromptKind, "reason")
+	}
+	if req := send("refactor"); req.PromptKind != "refactor" {
+		t.Errorf("PromptKind = %q, want %q", req.PromptKind, "refactor")
+	}
+	if req := send(""); req.PromptKind != "" {
+		t.Errorf("PromptKind = %q, want empty for an ordinary prompt", req.PromptKind)
+	}
+}
+
 // TestStreamPrompt_ContextCancelUnblocksBlockedRead is the mid-stream-quit
 // safety net this task calls out explicitly: cancelling the context while
 // streamPrompt is blocked inside dec.Decode (waiting on a daemon that's mid-
@@ -241,7 +288,7 @@ func TestStreamPrompt_ContextCancelUnblocksBlockedRead(t *testing.T) {
 
 	streamReturned := make(chan struct{})
 	go func() {
-		streamPrompt(ctx, "test-client", "", "hello", nil, ch)
+		streamPrompt(ctx, "test-client", "", "hello", "", nil, ch)
 		close(streamReturned)
 	}()
 

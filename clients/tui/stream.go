@@ -110,9 +110,12 @@ func resetHistoryOnDaemon(ctx context.Context, clientName string, ch chan tea.Ms
 // chat.go), sent alongside prompt so the daemon/model can see it — see
 // protocol.PromptRequest.History. A nil/empty history is exactly today's
 // behavior.
-func startStream(ctx context.Context, clientName, workspace, prompt string, history []protocol.Turn, ch chan tea.Msg) tea.Cmd {
+//
+// promptKind is the wire value parsePromptKind (chat.go) resolved from the
+// raw input, or "" for ordinary prompts — see protocol.PromptRequest.PromptKind.
+func startStream(ctx context.Context, clientName, workspace, prompt, promptKind string, history []protocol.Turn, ch chan tea.Msg) tea.Cmd {
 	return func() tea.Msg {
-		go streamPrompt(ctx, clientName, workspace, prompt, history, ch)
+		go streamPrompt(ctx, clientName, workspace, prompt, promptKind, history, ch)
 		return <-ch
 	}
 }
@@ -137,7 +140,7 @@ func waitForNext(ch chan tea.Msg) tea.Cmd {
 // cancellation is recognized via ctx.Err() and this function returns
 // quietly (no streamErrMsg): the user chose to quit, that's not a failure,
 // and it leaves nothing behind reading a dead socket.
-func streamPrompt(ctx context.Context, clientName, workspace, prompt string, history []protocol.Turn, ch chan tea.Msg) {
+func streamPrompt(ctx context.Context, clientName, workspace, prompt, promptKind string, history []protocol.Turn, ch chan tea.Msg) {
 	sess, err := connectToDaemon(clientName)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -163,6 +166,7 @@ func streamPrompt(ctx context.Context, clientName, workspace, prompt string, his
 		Prompt:          prompt,
 		Workspace:       workspace,
 		History:         history,
+		PromptKind:      promptKind,
 	}); err != nil {
 		if ctx.Err() != nil {
 			return

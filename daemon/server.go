@@ -60,15 +60,18 @@ type Server struct {
 	memory *MemoryStore
 }
 
-// route decides which tier handles the next request. Today's request path
+// route decides which tier handles the next request. The request path
 // never carries a real exit signal (capturing one is a later, client/UX-side
-// phase), so this always resolves to the config's default tier — the
-// reasoning escalation in Route is wired but stays gated off in practice.
-func (s *Server) route() RouteDecision {
+// phase), so escalation today comes only from promptKind — the client's
+// explicit, wire-level PromptKind (see protocol.PromptRequest.PromptKind and
+// the TUI's /reason and /refactor commands in chat.go). An empty or
+// unrecognized promptKind resolves to the default tier, same as before this
+// was wired up.
+func (s *Server) route(promptKind string) RouteDecision {
 	if s.modelOverride != "" {
 		return RouteDecision{Tier: "override", Slug: s.modelOverride, Reason: "manual override via --model flag"}
 	}
-	return Route(s.cfg, RouteInput{HasExitSignal: false})
+	return Route(s.cfg, RouteInput{HasExitSignal: false, PromptKind: promptKind})
 }
 
 // Serve accepts connections until the listener is closed. Each connection is
@@ -172,7 +175,7 @@ func (s *Server) handleConn(conn net.Conn) {
 
 	s.logger.Printf("received prompt (%d bytes), calling model API", len(promptReq.Prompt))
 
-	decision := s.route()
+	decision := s.route(promptReq.PromptKind)
 	s.logger.Printf("route tier=%s slug=%s reason=%s", decision.Tier, decision.Slug, decision.Reason)
 
 	historyOutcome := prepareHistory(promptReq.History)

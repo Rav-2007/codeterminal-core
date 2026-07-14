@@ -254,6 +254,52 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// commandReason and commandRefactor are the exact, case-sensitive slash-
+// command prefixes recognized in chat input -- deliberately including the
+// trailing space. That space is load-bearing, not cosmetic: startTurn
+// already runs strings.TrimSpace on the raw input before parsePromptKind
+// ever sees it, so a bare "/reason" (with or without trailing whitespace,
+// and nothing after it) can never retain a trailing space to match this
+// prefix -- it falls straight through as ordinary, un-escalated prompt
+// text. The same prefix check also means "/reasonfoo" (no space after the
+// command word) and a bare "/" never match either. No separate "empty
+// question" guard is needed; it falls out of prefix+trim for free.
+const (
+	commandReason   = "/reason "
+	commandRefactor = "/refactor "
+)
+
+// promptKindReason and promptKindRefactor are the wire values sent as
+// protocol.PromptRequest.PromptKind. They MUST match daemon/router.go's
+// PromptKindReason/PromptKindRefactor exactly -- the two packages are
+// separate Go modules with no shared importable constant for this, so the
+// contract is enforced by convention and this comment, the same way
+// protocol.Turn.Role's "user"/"assistant" contract is (see its doc
+// comment), not by the type system.
+const (
+	promptKindReason   = "reason"
+	promptKindRefactor = "refactor"
+)
+
+// parsePromptKind checks raw (already trimmed) for an exact recognized
+// slash-command prefix. On a match, it returns the wire PromptKind value
+// and the remainder with the command stripped and re-trimmed -- the user's
+// real question, not the literal command glued to the front of it. On no
+// match -- unrecognized "/word", a bare command with nothing after it, a
+// bare "/", or plain text -- it returns "" and raw completely unchanged,
+// so passthrough behavior is byte-identical to before this function
+// existed.
+func parsePromptKind(raw string) (kind, prompt string) {
+	switch {
+	case strings.HasPrefix(raw, commandReason):
+		return promptKindReason, strings.TrimSpace(strings.TrimPrefix(raw, commandReason))
+	case strings.HasPrefix(raw, commandRefactor):
+		return promptKindRefactor, strings.TrimSpace(strings.TrimPrefix(raw, commandRefactor))
+	default:
+		return "", raw
+	}
+}
+
 // startTurn handles Enter while idle or errored: it's a no-op while busy or
 // on empty input, otherwise it appends the user's turn and kicks off the
 // stream.
@@ -261,10 +307,11 @@ func (m chatModel) startTurn() (tea.Model, tea.Cmd) {
 	if m.state == stateSending || m.state == stateStreaming {
 		return m, nil
 	}
-	prompt := strings.TrimSpace(m.input.Value())
-	if prompt == "" {
+	raw := strings.TrimSpace(m.input.Value())
+	if raw == "" {
 		return m, nil
 	}
+	promptKind, prompt := parsePromptKind(raw)
 
 	// Built from the transcript BEFORE the current prompt is appended below,
 	// so the not-yet-answered prompt can never end up in its own History.
@@ -285,7 +332,7 @@ func (m chatModel) startTurn() (tea.Model, tea.Cmd) {
 	ch := make(chan tea.Msg)
 	m.streamCh = ch
 
-	return m, tea.Batch(m.spinner.Tick, startStream(ctx, m.clientName, m.workspace, prompt, history, ch))
+	return m, tea.Batch(m.spinner.Tick, startStream(ctx, m.clientName, m.workspace, prompt, promptKind, history, ch))
 }
 
 // buildHistory converts the transcript so far into the PromptRequest.History

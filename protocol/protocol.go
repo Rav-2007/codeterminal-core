@@ -105,12 +105,24 @@ type HandshakeResponse struct {
 // data corruption), just a discarded round-trip. Daemon and client
 // binaries are expected to be rebuilt together, so this mismatch is a
 // documented edge case rather than a version-gated one.
+//
+// PromptKind is optional and additive: an explicit, client-stated signal
+// (e.g. the TUI's "/reason "/"/refactor " commands -- see chat.go's
+// parsePromptKind) that requests reasoning-tier escalation, fed into
+// daemon/router.go's Route() as RouteInput.PromptKind. It is never
+// inferred from Prompt's content. The daemon only reacts to a closed,
+// exact set of values (see reasoningPromptKinds in daemon/router.go) --
+// any other value, including one an older or different client might send,
+// is inert and behaves identically to leaving it empty. A daemon built
+// before this field existed simply ignores it (routes as if it were
+// empty), exactly like Workspace/History above.
 type PromptRequest struct {
 	ProtocolVersion int    `json:"protocol_version"`
 	Prompt          string `json:"prompt"`
 	Workspace       string `json:"workspace,omitempty"`
 	History         []Turn `json:"history,omitempty"`
 	Reset           bool   `json:"reset,omitempty"`
+	PromptKind      string `json:"prompt_kind,omitempty"`
 }
 
 // Turn is one prior message in a conversation, supplied by the client so

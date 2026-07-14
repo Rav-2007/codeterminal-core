@@ -1104,3 +1104,190 @@ func TestChat_ThreeQuestionsInOneSessionMemReachesSixNotMore(t *testing.T) {
 		t.Fatalf("mem count = %d, want exactly 6 after 3 exchanges (3 user + 3 assistant)", got)
 	}
 }
+
+// TestParsePromptKind is the pure-function table test for the Phase 2
+// slash-command parser: /reason and /refactor recognized with the command
+// stripped, everything else -- including a bare command with nothing after
+// it, an unrecognized "/word", and a bare "/" -- passed through completely
+// unchanged. parsePromptKind's documented contract is that raw is already
+// trimmed (startTurn does that before calling it); leading/trailing
+// whitespace around the WHOLE input is covered separately below, at the
+// startTurn integration level, where that trimming actually happens.
+func TestParsePromptKind(t *testing.T) {
+	cases := []struct {
+		name       string
+		raw        string
+		wantKind   string
+		wantPrompt string
+	}{
+		{
+			name:       "reason command with a question",
+			raw:        "/reason what should I do",
+			wantKind:   "reason",
+			wantPrompt: "what should I do",
+		},
+		{
+			name:       "refactor command with a question",
+			raw:        "/refactor make this cleaner",
+			wantKind:   "refactor",
+			wantPrompt: "make this cleaner",
+		},
+		{
+			name:       "bare /reason with no trailing text is NOT a command match",
+			raw:        "/reason",
+			wantKind:   "",
+			wantPrompt: "/reason",
+		},
+		{
+			name:       "bare /refactor with no trailing text is NOT a command match",
+			raw:        "/refactor",
+			wantKind:   "",
+			wantPrompt: "/refactor",
+		},
+		{
+			name:       "/reasonfoo does not match (no space after the command word)",
+			raw:        "/reasonfoo bar",
+			wantKind:   "",
+			wantPrompt: "/reasonfoo bar",
+		},
+		{
+			name:       "/refactoring does not match",
+			raw:        "/refactoring the code",
+			wantKind:   "",
+			wantPrompt: "/refactoring the code",
+		},
+		{
+			name:       "bare slash is not a command",
+			raw:        "/",
+			wantKind:   "",
+			wantPrompt: "/",
+		},
+		{
+			name:       "ordinary prompt text is unchanged",
+			raw:        "what does this function do",
+			wantKind:   "",
+			wantPrompt: "what does this function do",
+		},
+		{
+			name:       "ordinary prompt that merely mentions reason is unaffected",
+			raw:        "give me a reason to use this",
+			wantKind:   "",
+			wantPrompt: "give me a reason to use this",
+		},
+		{
+			name:       "internal whitespace after the command is preserved, only outer-trimmed",
+			raw:        "/reason   extra  spaces   here",
+			wantKind:   "reason",
+			wantPrompt: "extra  spaces   here",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			kind, prompt := parsePromptKind(tc.raw)
+			if kind != tc.wantKind {
+				t.Errorf("kind = %q, want %q", kind, tc.wantKind)
+			}
+			if prompt != tc.wantPrompt {
+				t.Errorf("prompt = %q, want %q", prompt, tc.wantPrompt)
+			}
+		})
+	}
+}
+
+// TestChat_StartTurn_ReasonCommandStripsPrefixFromTranscript proves the
+// stripping happens end-to-end through the real Update/startTurn path, not
+// just in the pure parser: the transcript entry for the turn must show the
+// clean question, not "/reason " glued to the front of it.
+func TestChat_StartTurn_ReasonCommandStripsPrefixFromTranscript(t *testing.T) {
+	m := newTestModel()
+	m = typeText(m, "/reason what should I do")
+	m, _ = pressEnter(m)
+
+	if len(m.turns) != 1 {
+		t.Fatalf("turns = %+v, want exactly 1", m.turns)
+	}
+	if got := m.turns[0].text; got != "what should I do" {
+		t.Errorf("turn text = %q, want the command stripped: %q", got, "what should I do")
+	}
+}
+
+func TestChat_StartTurn_RefactorCommandStripsPrefixFromTranscript(t *testing.T) {
+	m := newTestModel()
+	m = typeText(m, "/refactor make this cleaner")
+	m, _ = pressEnter(m)
+
+	if len(m.turns) != 1 {
+		t.Fatalf("turns = %+v, want exactly 1", m.turns)
+	}
+	if got := m.turns[0].text; got != "make this cleaner" {
+		t.Errorf("turn text = %q, want the command stripped: %q", got, "make this cleaner")
+	}
+}
+
+// TestChat_StartTurn_UnrecognizedSlashPassesThroughUnchanged is the
+// fail-closed/additive check: an unrecognized "/word" must be sent and
+// shown exactly as typed, not partially parsed or stripped.
+func TestChat_StartTurn_UnrecognizedSlashPassesThroughUnchanged(t *testing.T) {
+	m := newTestModel()
+	m = typeText(m, "/explain what is X")
+	m, _ = pressEnter(m)
+
+	if len(m.turns) != 1 {
+		t.Fatalf("turns = %+v, want exactly 1", m.turns)
+	}
+	if got := m.turns[0].text; got != "/explain what is X" {
+		t.Errorf("turn text = %q, want unchanged: %q", got, "/explain what is X")
+	}
+}
+
+// TestChat_StartTurn_BareReasonWithNoQuestionPassesThroughUnchanged covers
+// the edge case explicitly: a lone "/reason" with nothing after it has no
+// real question to send, so it is not treated as a command at all -- it's
+// sent and shown as the literal text "/reason", same as any other prompt.
+func TestChat_StartTurn_BareReasonWithNoQuestionPassesThroughUnchanged(t *testing.T) {
+	m := newTestModel()
+	m = typeText(m, "/reason")
+	m, _ = pressEnter(m)
+
+	if len(m.turns) != 1 {
+		t.Fatalf("turns = %+v, want exactly 1", m.turns)
+	}
+	if got := m.turns[0].text; got != "/reason" {
+		t.Errorf("turn text = %q, want unchanged literal: %q", got, "/reason")
+	}
+}
+
+// TestChat_StartTurn_LeadingWhitespaceBeforeCommandStillRecognized proves
+// leading whitespace before the whole input doesn't prevent the command
+// from being recognized -- startTurn's existing strings.TrimSpace on the
+// raw input value handles this before parsePromptKind ever sees it.
+func TestChat_StartTurn_LeadingWhitespaceBeforeCommandStillRecognized(t *testing.T) {
+	m := newTestModel()
+	m = typeText(m, "  /reason what should I do")
+	m, _ = pressEnter(m)
+
+	if len(m.turns) != 1 {
+		t.Fatalf("turns = %+v, want exactly 1", m.turns)
+	}
+	if got := m.turns[0].text; got != "what should I do" {
+		t.Errorf("turn text = %q, want the command stripped: %q", got, "what should I do")
+	}
+}
+
+// TestChat_StartTurn_PlainPromptTranscriptUnaffected is the regression
+// check at the chat.go level: an ordinary prompt with no slash command
+// produces exactly the same transcript entry as before this feature
+// existed.
+func TestChat_StartTurn_PlainPromptTranscriptUnaffected(t *testing.T) {
+	m := newTestModel()
+	m = typeText(m, "what does this function do")
+	m, _ = pressEnter(m)
+
+	if len(m.turns) != 1 {
+		t.Fatalf("turns = %+v, want exactly 1", m.turns)
+	}
+	if got := m.turns[0].text; got != "what does this function do" {
+		t.Errorf("turn text = %q, want unchanged: %q", got, "what does this function do")
+	}
+}
