@@ -92,6 +92,15 @@ func main() {
 		logger.Printf("WARNING: SUPABASE_URL and/or SUPABASE_SERVICE_ROLE_KEY not set -- every request will fail auth and be rejected with 401 (fail closed)")
 	}
 
+	// RAILWAY_GIT_COMMIT_SHA is set automatically by Railway's build
+	// environment; empty in any local/non-Railway run, which is not fatal
+	// -- /health still serves, just with an "unknown" commit, so this can
+	// never block startup.
+	buildCommit := os.Getenv("RAILWAY_GIT_COMMIT_SHA")
+	if buildCommit == "" {
+		buildCommit = "unknown"
+	}
+
 	p := &proxy{
 		apiKey:                 apiKey,
 		upstreamURL:            strings.TrimRight(upstreamBase, "/") + chatCompletionsPath,
@@ -108,7 +117,7 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/health", handleHealth)
+	mux.HandleFunc("/health", makeHealthHandler(buildCommit))
 	mux.HandleFunc(chatCompletionsPath, p.handleChatCompletions)       // "/chat/completions"
 	mux.HandleFunc("/v1"+chatCompletionsPath, p.handleChatCompletions) // "/v1/chat/completions" alias
 
@@ -133,9 +142,30 @@ type proxy struct {
 	supabaseServiceRoleKey string
 }
 
-func handleHealth(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("ok"))
+// healthResponse is the /health body. commit lets a deploy-verify step
+// confirm which build Railway is actually running, since Railway's own
+// dashboard commit doesn't guarantee the running container matches it.
+type healthResponse struct {
+	Status string `json:"status"`
+	Commit string `json:"commit"`
+}
+
+// makeHealthHandler closes over the build's commit SHA (read once at
+// startup in main) so every /health response reports it without a global.
+func makeHealthHandler(commit string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		body, err := json.Marshal(healthResponse{Status: "ok", Commit: commit})
+		if err != nil {
+			// Unreachable in practice (healthResponse is two plain
+			// strings), but fail the same way a real health-check
+			// failure would rather than write a malformed body.
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write(body)
+	}
 }
 
 // handleChatCompletions forwards the request body AS-IS to OpenRouter --
