@@ -127,11 +127,14 @@ func TestHelperProcess_RestartPolicyIsBounded(t *testing.T) {
 
 	// From here on, every respawn attempt will exit immediately without
 	// becoming healthy: FAKEHELPER_FAIL only affects spawnLocked's *next*
-	// invocation via the process environment, which we can't mutate on an
-	// already-running exec.Cmd — so instead we set it in the test's own
-	// environment before killing the current instance, and every subsequent
-	// child inherits it.
-	t.Setenv("FAKEHELPER_FAIL", "1")
+	// invocation, which we can't mutate on an already-running exec.Cmd — so
+	// instead we set it via h.extraEnv (appended to the real helper's
+	// minimal env allowlist in spawnLocked; see HelperProcess.extraEnv)
+	// before killing the current instance, and every subsequent respawn
+	// picks it up.
+	h.mu.Lock()
+	h.extraEnv = []string{"FAKEHELPER_FAIL=1"}
+	h.mu.Unlock()
 
 	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
 		t.Fatalf("killing helper pid %d: %v", pid, err)

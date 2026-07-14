@@ -44,6 +44,13 @@ type HelperProcess struct {
 	onnxRuntimeLib string // passed to the helper as --onnxruntime-lib; empty means omit the flag
 	logger         *log.Logger
 
+	// extraEnv is appended to helperEnv()'s minimal allowlist when spawning
+	// the helper. Always nil in production (see NewHelperProcess) -- it
+	// exists solely so tests can hand the fake helper fixture a var like
+	// FAKEHELPER_FAIL without widening what the real helper receives (see
+	// helperproc_test.go).
+	extraEnv []string
+
 	maxRestarts   int
 	restartDelay  time.Duration
 	readyTimeout  time.Duration
@@ -141,6 +148,7 @@ func (h *HelperProcess) spawnLocked() error {
 	}
 
 	cmd := exec.Command(h.binPath, args...)
+	cmd.Env = append(helperEnv(), h.extraEnv...)
 	cmd.Stdout = &prefixedWriter{prefix: "[embedder-helper] ", out: os.Stderr}
 	cmd.Stderr = &prefixedWriter{prefix: "[embedder-helper] ", out: os.Stderr}
 	if err := cmd.Start(); err != nil {
@@ -148,6 +156,26 @@ func (h *HelperProcess) spawnLocked() error {
 	}
 	h.cmd = cmd
 	return nil
+}
+
+// helperEnv returns the minimal environment the embedder helper subprocess
+// needs. The helper takes every real input via flags and absolute paths
+// (--socket, --model-dir, --onnxruntime-lib -- see helper/main.go) and reads
+// no environment variables itself, so this deliberately does NOT inherit the
+// daemon's full environment (exec.Cmd's default when Env is left nil): that
+// would hand the helper OPENROUTER_API_KEY / CODETERMINAL_API_KEY /
+// CODETERMINAL_MOCHIII_KEY for no reason -- it never touches any of them.
+// Only PATH and HOME are passed through, and only if the daemon itself has
+// them set: standard baseline vars a Unix subprocess (and the Go runtime /
+// cgo / dynamic linker underneath it) can reasonably expect.
+func helperEnv() []string {
+	var env []string
+	for _, name := range []string{"PATH", "HOME"} {
+		if v := os.Getenv(name); v != "" {
+			env = append(env, name+"="+v)
+		}
+	}
+	return env
 }
 
 // monitor watches the currently-running helper for an unexpected exit. If
