@@ -4,12 +4,15 @@
 // forwards the request body exactly as received, then streams the response
 // back without buffering. Every call is first gated on a caller-supplied
 // Mochiii key, validated against Supabase (see authorize) -- unauthorized
-// requests never reach OpenRouter. Metering and persistence beyond that
-// key lookup are deliberately not built yet; those are later steps.
+// requests never reach OpenRouter. Token usage is recorded per key after a
+// successful response (see streamSSE/recordUsage) -- record only, never
+// enforced: an over-limit key still succeeds today. Refusal/capping on
+// recorded usage is a deliberately separate, later step.
 package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -50,6 +53,12 @@ const (
 	// only ever selects `id` and is filtered to at most one active row, so
 	// this is generous headroom, not a real limit in practice.
 	maxAuthResponseBytes = 64 * 1024
+
+	// usageUpdateTimeout bounds the fire-and-forget per-key usage RPC call,
+	// separate from the request the tokens were counted on: it runs after
+	// that response has already been fully relayed to the client, on its
+	// own context, so it must not hang indefinitely.
+	usageUpdateTimeout = 5 * time.Second
 
 	// keyLogPrefixLen is the most of a caller-supplied key that is ever
 	// written to a log line -- never the full key.
@@ -152,7 +161,6 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	_ = apiKeyID // reserved for per-key metering (Step 2c); not used yet
 
 	ctx, cancel := context.WithTimeout(r.Context(), upstreamTimeout)
 	defer cancel()
@@ -197,7 +205,7 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(resp.StatusCode)
 
 	if strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
-		p.streamSSE(w, resp.Body)
+		p.streamSSE(w, resp.Body, apiKeyID)
 		return
 	}
 
@@ -301,13 +309,23 @@ func keyPrefix(key string) string {
 // daemon's own onProvider callback in provider.go), without ever logging
 // chunk content: extractProvider's return type is a bare string containing
 // only the provider name, never the raw line.
-func (p *proxy) streamSSE(w http.ResponseWriter, body io.Reader) {
+//
+// keyID is the authorized caller's api_keys.id (from authorize; never the
+// raw Mochiii key -- that value is never seen this far into the call path).
+// If the upstream response includes a final usage chunk (see extractUsage;
+// requires the daemon to have set stream_options.include_usage, which it
+// always does -- see daemon/provider.go), streamSSE records it against keyID
+// AFTER the full response has already been relayed to the client: a
+// fire-and-forget call on its own detached context (see recordUsage) that
+// never delays, blocks, or fails the client's completion.
+func (p *proxy) streamSSE(w http.ResponseWriter, body io.Reader, keyID string) {
 	flusher, canFlush := w.(http.Flusher)
 
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, sseInitialBufferSize), sseMaxLineSize)
 
 	providerLogged := false
+	totalTokens := 0
 	for scanner.Scan() {
 		line := scanner.Text()
 		if _, err := io.WriteString(w, line+"\n"); err != nil {
@@ -323,9 +341,16 @@ func (p *proxy) streamSSE(w http.ResponseWriter, body io.Reader) {
 				providerLogged = true
 			}
 		}
+		if tokens, ok := extractUsage(line); ok {
+			totalTokens = tokens
+		}
 	}
 	if err := scanner.Err(); err != nil {
 		p.logger.Printf("streaming upstream response failed: %v", err)
+	}
+
+	if totalTokens > 0 {
+		go p.recordUsage(keyID, totalTokens)
 	}
 }
 
@@ -350,4 +375,86 @@ func extractProvider(line string) (string, bool) {
 		return "", false
 	}
 	return peek.Provider, true
+}
+
+// extractUsage looks at one SSE line and, if it's a "data: {...}" chunk
+// carrying OpenRouter's optional top-level "usage" field (present on the
+// final chunk of a stream when the request set stream_options.include_usage
+// -- see daemon/provider.go), returns the total token count. Mirrors
+// extractProvider deliberately: the decode target has ONLY a
+// Usage.TotalTokens field. Content/delta fields are not part of this struct,
+// so message text can never end up in a log or a DB write even by accident.
+func extractUsage(line string) (int, bool) {
+	trimmed := strings.TrimSpace(line)
+	if !strings.HasPrefix(trimmed, "data:") {
+		return 0, false
+	}
+	data := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
+	if data == "" || data == "[DONE]" {
+		return 0, false
+	}
+	var peek struct {
+		Usage struct {
+			TotalTokens int `json:"total_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal([]byte(data), &peek); err != nil || peek.Usage.TotalTokens == 0 {
+		return 0, false
+	}
+	return peek.Usage.TotalTokens, true
+}
+
+// recordUsage increments keyID's tokens_used by tokens via the
+// increment_usage Postgres RPC. An RPC (rather than a PostgREST PATCH) is
+// required here: PATCH can only set a column to a literal value, not express
+// "tokens_used = tokens_used + tokens", and a read-then-write from this
+// process would race concurrent requests against the same key and lose
+// updates. If the RPC is missing (404) or errors, that is logged (key id +
+// token count only -- never content, never any key material) and dropped;
+// it is never retried and never surfaced to the client, which already has
+// its complete response by the time this runs (see streamSSE). Runs on a
+// context detached from the original request, since that request's context
+// may already be canceled by the time streamSSE's scan loop finishes.
+func (p *proxy) recordUsage(keyID string, tokens int) {
+	if p.supabaseURL == "" || p.supabaseServiceRoleKey == "" {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), usageUpdateTimeout)
+	defer cancel()
+
+	payload, err := json.Marshal(struct {
+		KeyID  string `json:"p_key_id"`
+		Tokens int    `json:"p_tokens"`
+	}{KeyID: keyID, Tokens: tokens})
+	if err != nil {
+		p.logger.Printf("usage: encoding RPC body failed (key_id=%s): %v", keyID, err)
+		return
+	}
+
+	rpcURL := strings.TrimRight(p.supabaseURL, "/") + "/rest/v1/rpc/increment_usage"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, rpcURL, bytes.NewReader(payload))
+	if err != nil {
+		p.logger.Printf("usage: building RPC request failed (key_id=%s): %v", keyID, err)
+		return
+	}
+	req.Header.Set("apikey", p.supabaseServiceRoleKey)
+	req.Header.Set("Authorization", "Bearer "+p.supabaseServiceRoleKey)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Prefer", "return=minimal")
+
+	resp, err := p.client.Do(req)
+	if err != nil {
+		p.logger.Printf("usage: RPC call failed (key_id=%s, tokens=%d): %v", keyID, tokens, err)
+		return
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, io.LimitReader(resp.Body, maxAuthResponseBytes))
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		p.logger.Printf("usage: RPC returned status=%d (key_id=%s, tokens=%d)", resp.StatusCode, keyID, tokens)
+		return
+	}
+
+	p.logger.Printf("usage: recorded tokens=%d for key_id=%s", tokens, keyID)
 }

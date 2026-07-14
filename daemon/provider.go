@@ -45,11 +45,22 @@ type providerRouting struct {
 	AllowFallbacks bool   `json:"allow_fallbacks"`
 }
 
+// streamOptions is OpenRouter's "stream_options" request object. Setting
+// IncludeUsage is what makes OpenRouter emit a final SSE chunk carrying
+// token-usage counts; without it, streamed responses never include usage at
+// all. Consumed by the managed proxy for per-key metering (see
+// proxy/main.go's extractUsage) -- this daemon does not itself read the
+// usage chunk, it only requests it so the proxy sitting downstream can.
+type streamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
+}
+
 type chatCompletionRequest struct {
-	Model    string          `json:"model"`
-	Messages []chatMessage   `json:"messages"`
-	Stream   bool            `json:"stream"`
-	Provider providerRouting `json:"provider"`
+	Model         string          `json:"model"`
+	Messages      []chatMessage   `json:"messages"`
+	Stream        bool            `json:"stream"`
+	Provider      providerRouting `json:"provider"`
+	StreamOptions streamOptions   `json:"stream_options"`
 }
 
 type chatCompletionChunk struct {
@@ -157,10 +168,11 @@ func streamCompletion(ctx context.Context, apiBase, apiKey, model, systemPrompt 
 	messages := buildChatMessages(systemPrompt, history, prompt)
 
 	reqBody, err := json.Marshal(chatCompletionRequest{
-		Model:    model,
-		Messages: messages,
-		Stream:   true,
-		Provider: routing,
+		Model:         model,
+		Messages:      messages,
+		Stream:        true,
+		Provider:      routing,
+		StreamOptions: streamOptions{IncludeUsage: true},
 	})
 	if err != nil {
 		return fmt.Errorf("encoding request: %w", err)
