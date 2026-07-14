@@ -18,6 +18,13 @@ type tokenMsg string
 // arrives before any tokens, as its own message — see streamPrompt.
 type groundingMsg struct{ info *protocol.GroundingInfo }
 
+// redactionsMsg carries the kinds of secret-shaped text the daemon's
+// heuristic scrubber redacted from the prompt before sending it to the
+// model (see protocol.TokenResponse.Redactions, daemon/scrub.go). Like
+// groundingMsg, it arrives at most once, before any tokens — see
+// streamPrompt. Never carries a matched value, only kind labels.
+type redactionsMsg struct{ kinds []string }
+
 // streamDoneMsg signals the stream finished successfully.
 type streamDoneMsg struct{}
 
@@ -183,6 +190,9 @@ func streamPrompt(ctx context.Context, clientName, workspace, prompt string, his
 		}
 		if tok.Grounding != nil {
 			ch <- groundingMsg{tok.Grounding}
+		}
+		if len(tok.Redactions) > 0 {
+			ch <- redactionsMsg{tok.Redactions}
 		}
 		if tok.Token != "" {
 			ch <- tokenMsg(tok.Token)

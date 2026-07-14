@@ -7,6 +7,7 @@
 
   const transcriptEl = document.getElementById('transcript');
   const groundingEl = document.getElementById('grounding');
+  const redactionsEl = document.getElementById('redactions');
   const inputEl = document.getElementById('promptInput');
   const sendBtn = document.getElementById('sendBtn');
   const searchInputEl = document.getElementById('searchInput');
@@ -80,6 +81,20 @@
     groundingEl.textContent = info.grounded
       ? `grounded · ${info.chunks ?? 0} chunk(s)${info.truncated ? ' (truncated)' : ''}`
       : `not grounded${info.reason ? ' · ' + info.reason : ''}`;
+  }
+
+  // setRedactions renders the kinds of secret-shaped text the daemon's
+  // heuristic scrubber redacted from the prompt (see daemon/scrub.go),
+  // mirroring setGrounding's shape exactly: cleared at the start of every
+  // new turn (see send()) and set at most once per response, since
+  // 'redactions' arrives as its own pre-token message just like
+  // 'grounding'. Kinds only, never a matched value.
+  function setRedactions(kinds) {
+    if (!kinds || kinds.length === 0) {
+      redactionsEl.textContent = '';
+      return;
+    }
+    redactionsEl.textContent = `⚠ redacted ${kinds.length} suspected secret(s) before sending: ${kinds.join(', ')}`;
   }
 
   // showEditProposal renders ONE edit block as a whole-block diff -- the
@@ -399,6 +414,7 @@
     addBubble('user', text);
     inputEl.value = '';
     setGrounding(null);
+    setRedactions(null);
     setStreaming(true);
     currentAssistantBubble = addBubble('assistant', '');
     // Captured once, for this run only -- see currentRunAuto's doc comment.
@@ -423,6 +439,9 @@
         break;
       case 'grounding':
         setGrounding(msg.info);
+        break;
+      case 'redactions':
+        setRedactions(msg.kinds);
         break;
       case 'token':
         if (currentAssistantBubble) {

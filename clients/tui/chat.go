@@ -71,6 +71,14 @@ type chatModel struct {
 	// shown as if it described the in-flight one.
 	lastGrounding *protocol.GroundingInfo
 
+	// lastRedactions is the most recent set of secret-kind labels the
+	// daemon's heuristic scrubber redacted from the prompt (see
+	// redactionsMsg), shown in the header exactly like lastGrounding —
+	// same "arrives once, before any tokens" mechanism, same "cleared at
+	// the start of each new turn" lifetime (see startTurn). Never a secret
+	// value, only kind labels (e.g. "openai_key").
+	lastRedactions []string
+
 	// Edit-review state: set when the last completed answer contained
 	// SEARCH/REPLACE edit blocks (see editapply.ParseEditBlocks). Reviewed
 	// one block at a time — reviewIndex only ever points at a block that
@@ -204,6 +212,13 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.lastGrounding = msg.info
 		return m, waitForNext(m.streamCh)
 
+	case redactionsMsg:
+		if m.streamCh == nil {
+			return m, nil // a stray message from an already-abandoned stream
+		}
+		m.lastRedactions = msg.kinds
+		return m, waitForNext(m.streamCh)
+
 	case tokenMsg:
 		return m.handleToken(msg)
 
@@ -263,6 +278,7 @@ func (m chatModel) startTurn() (tea.Model, tea.Cmd) {
 	m.state = stateSending
 	m.statusErr = ""
 	m.lastGrounding = nil
+	m.lastRedactions = nil
 	m.refreshViewport()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -314,6 +330,7 @@ func (m chatModel) clearConversation() (tea.Model, tea.Cmd) {
 	}
 	m.turns = nil
 	m.lastGrounding = nil
+	m.lastRedactions = nil
 	m.statusErr = ""
 	m.state = stateIdle
 	m.refreshViewport()
@@ -560,6 +577,9 @@ func (m chatModel) renderHeader() string {
 	if grounding := m.groundingLabel(); grounding != "" {
 		parts = append(parts, grounding)
 	}
+	if redactions := m.redactionsLabel(); redactions != "" {
+		parts = append(parts, redactions)
+	}
 	if history := m.historyLabel(); history != "" {
 		parts = append(parts, history)
 	}
@@ -592,6 +612,20 @@ func (m chatModel) groundingLabel() string {
 		return accentStyle.Render(fmt.Sprintf("grounded ✓ %d chunk(s)", g.Chunks))
 	}
 	return helpStyle.Render(fmt.Sprintf("ungrounded (%s)", g.Reason))
+}
+
+// redactionsLabel renders the most recently reported redaction kinds, or ""
+// when nothing has been redacted this turn (the common case — nothing is
+// shown rather than a persistent, noisy indicator). Uses errorStyle, the
+// same "⚠ + red" treatment groundingLabel already uses for its own
+// non-fatal-but-worth-noticing case (WorkspaceMismatch above) — marked and
+// legible, not an alarm banner. Kinds only, never a matched value (see
+// protocol.TokenResponse.Redactions).
+func (m chatModel) redactionsLabel() string {
+	if len(m.lastRedactions) == 0 {
+		return ""
+	}
+	return errorStyle.Render(fmt.Sprintf("⚠ redacted %d suspected secret(s) before sending: %s", len(m.lastRedactions), strings.Join(m.lastRedactions, ", ")))
 }
 
 func (m chatModel) stateLabel() string {

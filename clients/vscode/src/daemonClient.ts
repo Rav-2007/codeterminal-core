@@ -62,6 +62,12 @@ export interface TokenResponse {
   error?: string;
   grounding?: GroundingInfo;
   edit_proposals?: EditBlockWire[];
+  // redactions mirrors protocol.TokenResponse.Redactions: the kinds of
+  // secret-shaped text the daemon's heuristic scrubber (daemon/scrub.go)
+  // redacted from the prompt before sending it to the model, e.g.
+  // ["openai_key"]. Arrives on its own message before any tokens, exactly
+  // like grounding. Never a matched value, only kind labels.
+  redactions?: string[];
 }
 
 export interface ApplyEditRequest {
@@ -266,6 +272,7 @@ export function connectToDaemon(clientName: string, signal?: AbortSignal): Promi
 
 export interface StreamHandlers {
   onGrounding?: (info: GroundingInfo) => void;
+  onRedactions?: (kinds: string[]) => void;
   onToken?: (token: string) => void;
   onEditProposals?: (proposals: EditBlockWire[]) => void;
   onDone?: () => void;
@@ -317,6 +324,9 @@ export async function streamPrompt(
     }
     if (tok.grounding) {
       handlers.onGrounding?.(tok.grounding);
+    }
+    if (tok.redactions && tok.redactions.length > 0) {
+      handlers.onRedactions?.(tok.redactions);
     }
     if (tok.token) {
       handlers.onToken?.(tok.token);
