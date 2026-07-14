@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"codeterminal/editapply"
 	"codeterminal/protocol"
@@ -159,15 +160,10 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		const headerLines, inputLines, helpLines = 1, 1, 1
-		vpHeight := m.height - headerLines - inputLines - helpLines
-		if vpHeight < 1 {
-			vpHeight = 1
-		}
-		m.viewport.Width = m.width
-		m.viewport.Height = vpHeight
-		m.input.Width = m.width - len(m.input.Prompt) - 2
 		m.ready = true
+		m.viewport.Width = m.width
+		m.resizeViewport()
+		m.input.Width = m.width - len(m.input.Prompt) - 2
 		m.refreshViewport()
 		return m, nil
 
@@ -210,6 +206,7 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil // a stray message from an already-abandoned stream
 		}
 		m.lastGrounding = msg.info
+		m.resizeViewport()
 		return m, waitForNext(m.streamCh)
 
 	case redactionsMsg:
@@ -217,6 +214,7 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil // a stray message from an already-abandoned stream
 		}
 		m.lastRedactions = msg.kinds
+		m.resizeViewport()
 		return m, waitForNext(m.streamCh)
 
 	case tokenMsg:
@@ -279,6 +277,7 @@ func (m chatModel) startTurn() (tea.Model, tea.Cmd) {
 	m.statusErr = ""
 	m.lastGrounding = nil
 	m.lastRedactions = nil
+	m.resizeViewport()
 	m.refreshViewport()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -333,6 +332,7 @@ func (m chatModel) clearConversation() (tea.Model, tea.Cmd) {
 	m.lastRedactions = nil
 	m.statusErr = ""
 	m.state = stateIdle
+	m.resizeViewport()
 	m.refreshViewport()
 
 	ch := make(chan tea.Msg, 1)
@@ -571,19 +571,87 @@ func (m chatModel) View() string {
 	return header + "\n" + m.viewport.View() + "\n" + bottomLine + "\n" + help
 }
 
+// renderHeader renders the brand/state/history line, followed by zero or
+// more notice lines (see noticeLines) -- one per line, never joined onto
+// the same line as each other or as the brand line. That separation is
+// deliberate: grounding and redactions used to be joined into ONE line via
+// strings.Join, which meant a sufficiently long combination (e.g. a
+// workspace-mismatch warning plus a redaction notice, both active on the
+// same turn) could exceed the terminal's width and soft-wrap -- silently
+// desyncing the fixed 1-row header assumption the viewport's height was
+// computed from, which pushed content off-screen and could hide a notice
+// entirely with no visible sign anything was wrong. See headerLineCount /
+// resizeViewport, which this must always stay consistent with: every line
+// this returns must be counted there, or the same class of bug recurs.
 func (m chatModel) renderHeader() string {
 	brand := brandStyle.Render(lotusGlyph + " " + brandName)
 	parts := []string{brand, m.stateLabel()}
-	if grounding := m.groundingLabel(); grounding != "" {
-		parts = append(parts, grounding)
-	}
-	if redactions := m.redactionsLabel(); redactions != "" {
-		parts = append(parts, redactions)
-	}
 	if history := m.historyLabel(); history != "" {
 		parts = append(parts, history)
 	}
-	return strings.Join(parts, "  ")
+	lines := append([]string{strings.Join(parts, "  ")}, m.noticeLines()...)
+	return strings.Join(lines, "\n")
+}
+
+// noticeLines returns grounding/redactions each on their own line, so two
+// concurrently active notices always get their own guaranteed row instead
+// of competing for space on one shared line (see renderHeader's doc
+// comment for the bug this fixes). Each line is truncated (ANSI- and
+// wide-rune-aware, via charmbracelet/x/ansi) to m.width with a trailing
+// "…" if it would otherwise overflow the terminal -- truncation, not
+// wrapping, so every notice always occupies EXACTLY one terminal row and
+// headerLineCount's arithmetic never has to guess how many rows a wrapped
+// line actually consumed.
+func (m chatModel) noticeLines() []string {
+	var lines []string
+	if grounding := m.groundingLabel(); grounding != "" {
+		lines = append(lines, truncateToWidth(grounding, m.width))
+	}
+	if redactions := m.redactionsLabel(); redactions != "" {
+		lines = append(lines, truncateToWidth(redactions, m.width))
+	}
+	return lines
+}
+
+// truncateToWidth truncates s (which may already carry ANSI styling, e.g.
+// from errorStyle.Render) to at most width terminal cells, adding a "…"
+// tail when it's cut. width <= 0 means the terminal size isn't known yet
+// (before the first WindowSizeMsg) -- returned unchanged rather than
+// truncated to nothing.
+func truncateToWidth(s string, width int) string {
+	if width <= 0 {
+		return s
+	}
+	return ansi.Truncate(s, width, "…")
+}
+
+// headerLineCount is exactly how many terminal rows renderHeader's output
+// occupies: the brand/state/history line, plus one more for each currently
+// active notice (see noticeLines). resizeViewport MUST use this, not a
+// hardcoded constant, so the viewport's height always accounts for
+// whatever the header is actually rendering right now.
+func (m chatModel) headerLineCount() int {
+	return 1 + len(m.noticeLines())
+}
+
+// resizeViewport recomputes the viewport's height from the current
+// terminal size and the header's CURRENT line count (see headerLineCount).
+// Called on every terminal resize and every event that can change which
+// notices are active (a new groundingMsg/redactionsMsg arriving, or either
+// being cleared at the start of a turn / on ctrl+n) -- unlike the header's
+// old single hardcoded headerLines=1, this stays correct no matter how many
+// notice lines are currently showing, which is what the multi-notice bug
+// above actually was: a stale row-count assumption, not a rendering typo.
+func (m *chatModel) resizeViewport() {
+	if !m.ready {
+		return // terminal size not known yet; the first WindowSizeMsg sizes everything
+	}
+	const inputLines, helpLines = 1, 1
+	vpHeight := m.height - m.headerLineCount() - inputLines - helpLines
+	if vpHeight < 1 {
+		vpHeight = 1
+	}
+	m.viewport.Height = vpHeight
 }
 
 // historyLabel is a subtle indicator of how much conversation memory is

@@ -244,6 +244,180 @@ func TestChat_NoGroundingLabelBeforeFirstReport(t *testing.T) {
 	}
 }
 
+func TestChat_RedactionsMsgSetsLastRedactionsAndKeepsWaiting(t *testing.T) {
+	m := newTestModel()
+	m = typeText(m, "hi")
+	m, _ = pressEnter(m)
+
+	kinds := []string{"openai_key"}
+	updated, cmd := m.Update(redactionsMsg{kinds})
+	m = updated.(chatModel)
+
+	if len(m.lastRedactions) != 1 || m.lastRedactions[0] != "openai_key" {
+		t.Errorf("lastRedactions = %v, want %v", m.lastRedactions, kinds)
+	}
+	if cmd == nil {
+		t.Error("expected waitForNext to be re-issued after a redactionsMsg (it's not terminal)")
+	}
+	if m.state != stateSending {
+		t.Errorf("state = %v, want unchanged (redactionsMsg arrives before any token)", m.state)
+	}
+}
+
+func TestChat_RedactionsLabelListsKinds(t *testing.T) {
+	m := newTestModel()
+	m = typeText(m, "hi")
+	m, _ = pressEnter(m)
+
+	updated, _ := m.Update(redactionsMsg{[]string{"openai_key", "aws_access_key"}})
+	m = updated.(chatModel)
+
+	label := m.redactionsLabel()
+	if !strings.Contains(label, "openai_key") || !strings.Contains(label, "aws_access_key") {
+		t.Errorf("redactionsLabel = %q, want it to mention both kinds", label)
+	}
+	if !strings.Contains(label, "2") {
+		t.Errorf("redactionsLabel = %q, want it to mention the count (2)", label)
+	}
+}
+
+func TestChat_RedactionsClearsOnNewTurn(t *testing.T) {
+	m := newTestModel()
+	m = typeText(m, "first")
+	m, _ = pressEnter(m)
+	updated, _ := m.Update(redactionsMsg{[]string{"openai_key"}})
+	m = updated.(chatModel)
+	updated, _ = m.Update(streamDoneMsg{})
+	m = updated.(chatModel)
+
+	if m.lastRedactions == nil {
+		t.Fatal("precondition failed: expected lastRedactions to be set after the first turn")
+	}
+
+	m = typeText(m, "second")
+	m, _ = pressEnter(m)
+
+	if m.lastRedactions != nil {
+		t.Error("lastRedactions should be cleared at the start of a new turn, not carried over from the previous one")
+	}
+}
+
+func TestChat_NoRedactionsLabelBeforeFirstReport(t *testing.T) {
+	m := newTestModel()
+	if label := m.redactionsLabel(); label != "" {
+		t.Errorf("redactionsLabel = %q, want empty before any redactions message has arrived", label)
+	}
+}
+
+// --- regression: grounding + redactions concurrently active (bug found in
+// live testing after commit 36e4c53 -- a workspace-mismatch warning and a
+// redaction notice used to be joined onto ONE header line via
+// strings.Join, silently overflowing the terminal width and desyncing the
+// hardcoded 1-row header assumption the viewport's height was computed
+// from. The redaction notice would disappear entirely with no visible
+// sign anything was wrong.) ---------------------------------------------
+
+func TestChat_HeaderShowsBothGroundingAndRedactionsOnSeparateLines(t *testing.T) {
+	m := newTestModel()
+	m = typeText(m, "here is my key: sk-FAKETESTKEY1234567890abcdef")
+	m, _ = pressEnter(m)
+
+	updated, _ := m.Update(groundingMsg{&protocol.GroundingInfo{Grounded: true, WorkspaceMismatch: true, Workspace: "/other/repo"}})
+	m = updated.(chatModel)
+	updated, _ = m.Update(redactionsMsg{[]string{"openai_key"}})
+	m = updated.(chatModel)
+
+	header := m.renderHeader()
+	lines := strings.Split(header, "\n")
+	if len(lines) != 3 {
+		t.Fatalf("renderHeader produced %d line(s): %q, want 3 (brand/state line + grounding + redactions, each on its own line)", len(lines), header)
+	}
+	if !strings.Contains(lines[1], "/other/repo") {
+		t.Errorf("line 1 = %q, want the grounding/workspace-mismatch notice", lines[1])
+	}
+	if !strings.Contains(lines[2], "openai_key") {
+		t.Errorf("line 2 = %q, want the redactions notice", lines[2])
+	}
+	// The actual bug: both notices must be genuinely present in the
+	// rendered output at once, not just structurally separate strings that
+	// never both get returned.
+	if !strings.Contains(header, "/other/repo") || !strings.Contains(header, "openai_key") {
+		t.Fatalf("renderHeader = %q, want BOTH the grounding and redactions notices present simultaneously", header)
+	}
+}
+
+func TestChat_HeaderLineCountTracksActiveNotices(t *testing.T) {
+	m := newTestModel()
+	m = typeText(m, "hi")
+	m, _ = pressEnter(m)
+
+	if got := m.headerLineCount(); got != 1 {
+		t.Errorf("headerLineCount = %d, want 1 with no notices active", got)
+	}
+
+	updated, _ := m.Update(groundingMsg{&protocol.GroundingInfo{Grounded: true, WorkspaceMismatch: true, Workspace: "/other/repo"}})
+	m = updated.(chatModel)
+	if got := m.headerLineCount(); got != 2 {
+		t.Errorf("headerLineCount = %d, want 2 with only grounding active", got)
+	}
+
+	updated, _ = m.Update(redactionsMsg{[]string{"openai_key"}})
+	m = updated.(chatModel)
+	if got := m.headerLineCount(); got != 3 {
+		t.Errorf("headerLineCount = %d, want 3 with both grounding and redactions active", got)
+	}
+}
+
+// TestChat_ViewportShrinksWhenNoticeLinesGrow is the other half of the
+// regression: headerLineCount growing is only useful if resizeViewport
+// actually consumes it. Before the fix, the viewport's height was computed
+// once from a hardcoded headerLines=1 and never revisited, so it never
+// shrank to make room for extra notice lines -- which is exactly what let
+// a second notice line silently overdraw/get overdrawn.
+func TestChat_ViewportShrinksWhenNoticeLinesGrow(t *testing.T) {
+	m := newTestModel()
+	m = typeText(m, "hi")
+	m, _ = pressEnter(m)
+
+	baseline := m.viewport.Height
+
+	updated, _ := m.Update(groundingMsg{&protocol.GroundingInfo{Grounded: true, WorkspaceMismatch: true, Workspace: "/other/repo"}})
+	m = updated.(chatModel)
+	updated, _ = m.Update(redactionsMsg{[]string{"openai_key"}})
+	m = updated.(chatModel)
+
+	if m.viewport.Height != baseline-2 {
+		t.Errorf("viewport.Height = %d, want %d (baseline %d minus 2 new notice lines)", m.viewport.Height, baseline-2, baseline)
+	}
+}
+
+// TestChat_NoticeLineTruncatesRatherThanDisappearing covers the case where
+// even a single notice line is too long for a narrow terminal: it must be
+// visibly truncated (with a "…" tail), never silently dropped, and must
+// never cause renderHeader to produce more lines than headerLineCount
+// expects (which would desync resizeViewport all over again).
+func TestChat_NoticeLineTruncatesRatherThanDisappearing(t *testing.T) {
+	m := newTestModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 20, Height: 24})
+	m = updated.(chatModel)
+	m = typeText(m, "hi")
+	m, _ = pressEnter(m)
+
+	updated, _ = m.Update(groundingMsg{&protocol.GroundingInfo{Grounded: true, WorkspaceMismatch: true, Workspace: "/a/very/long/workspace/path/that/will/not/fit"}})
+	m = updated.(chatModel)
+
+	lines := m.noticeLines()
+	if len(lines) != 1 {
+		t.Fatalf("noticeLines = %v, want exactly 1 line", lines)
+	}
+	if !strings.Contains(lines[0], "…") {
+		t.Errorf("noticeLines[0] = %q, want it truncated with a %q tail at width 20", lines[0], "…")
+	}
+	if lines[0] == "" {
+		t.Error("noticeLines[0] is empty, want the notice still visibly present (truncated), not silently dropped")
+	}
+}
+
 func TestChat_StreamDoneReenablesInput(t *testing.T) {
 	m := newTestModel()
 	m = typeText(m, "hi")
@@ -779,6 +953,7 @@ func TestChat_CtrlNClearsTranscript(t *testing.T) {
 		t.Fatal("expected turns to be populated after a completed exchange")
 	}
 	m.lastGrounding = &protocol.GroundingInfo{Grounded: true, Chunks: 3}
+	m.lastRedactions = []string{"openai_key"}
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlN})
 	m = updated.(chatModel)
@@ -788,6 +963,9 @@ func TestChat_CtrlNClearsTranscript(t *testing.T) {
 	}
 	if m.lastGrounding != nil {
 		t.Error("lastGrounding should be cleared after ctrl+n")
+	}
+	if m.lastRedactions != nil {
+		t.Error("lastRedactions should be cleared after ctrl+n")
 	}
 	if m.state != stateIdle {
 		t.Errorf("state = %v, want stateIdle after ctrl+n", m.state)
