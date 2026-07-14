@@ -23,6 +23,13 @@ type Config struct {
 	Tiers         map[string]ModelTier `json:"tiers"`
 	Retrieval     RetrievalConfig      `json:"retrieval,omitempty"`
 	ZDR           ZDRConfig            `json:"zdr,omitempty"`
+	// NoScrub disables heuristic secret scrubbing of the user's prompt (see
+	// daemon/scrub.go) when true. False (the zero value) is scrubbing ON,
+	// so an existing models.json predating this field keeps scrubbing
+	// enabled without needing a migration. Settable via models.json or
+	// overridden at startup by the daemon's own --no-scrub flag (see
+	// main.go) — either source setting it true disables scrubbing.
+	NoScrub bool `json:"no_scrub,omitempty"`
 }
 
 // ZDRConfig controls the OpenRouter provider-routing constraints sent with

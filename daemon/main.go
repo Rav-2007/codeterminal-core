@@ -73,6 +73,7 @@ func main() {
 	noContext := flag.Bool("no-context", false, "disable automatic retrieval-augmented context injection (default: enabled)")
 	debugContext := flag.Bool("debug-context", false, "additionally log the full content of every retrieved chunk (verbose)")
 	noRerank := flag.Bool("no-rerank", false, "bypass file-class re-ranking; use raw vector-similarity order (A/B comparison, default: re-ranking enabled)")
+	noScrub := flag.Bool("no-scrub", false, "disable heuristic scrubbing of secret-shaped text from the prompt before it's sent to the model API (default: scrubbing enabled)")
 	flag.Parse()
 
 	apiBase := os.Getenv("CODETERMINAL_API_BASE")
@@ -110,6 +111,16 @@ func main() {
 	model := cfg.ResolvedSlug()
 	if *modelOverride != "" {
 		model = *modelOverride
+	}
+
+	// --no-scrub OR's in on top of whatever models.json already says, same
+	// combining convention as --no-rerank above cfg.Retrieval.RerankDisabled:
+	// either source disabling scrubbing is enough to disable it.
+	if *noScrub {
+		cfg.NoScrub = true
+	}
+	if cfg.NoScrub {
+		logger.Print("secret scrubbing DISABLED (--no-scrub)")
 	}
 
 	systemPromptBytes, err := os.ReadFile(*systemPromptPath)

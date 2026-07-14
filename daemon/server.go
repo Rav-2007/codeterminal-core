@@ -193,9 +193,27 @@ func (s *Server) handleConn(conn net.Conn) {
 		return
 	}
 
-	augmentedPrompt := promptReq.Prompt
+	// cleanPrompt is scrubbed of high-confidence secret shapes (see
+	// daemon/scrub.go) before it's sent anywhere near the model API. This is
+	// the ONLY place scrubbing applies: outcome.Chunks (RAG-retrieved
+	// workspace content, gathered above from the RAW promptReq.Prompt, which
+	// is fine since retrieval never leaves this machine) is never scrubbed.
+	cleanPrompt, redactions := scrub(promptReq.Prompt, s.cfg.NoScrub)
+	augmentedPrompt := cleanPrompt
 	if !outcome.Skipped {
-		augmentedPrompt = buildAugmentedUserMessage(promptReq.Prompt, outcome.Chunks)
+		augmentedPrompt = buildAugmentedUserMessage(cleanPrompt, outcome.Chunks)
+	}
+	if len(redactions) > 0 {
+		kinds := redactionKinds(redactions)
+		s.logger.Printf("scrub: redacted %d suspected secret(s): %s", len(redactions), kinds)
+		// Sent before any tokens, as its own message -- same "notify the
+		// client immediately, don't wait for the stream to finish" pattern
+		// as the Grounding message just above. Kinds only, never the
+		// matched text (see protocol.TokenResponse.Redactions).
+		if err := enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Redactions: kinds}); err != nil {
+			s.logger.Printf("redaction notice write error: %v", err)
+			return
+		}
 	}
 
 	// history/completion note: historyOutcome.Messages (built above from

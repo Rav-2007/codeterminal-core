@@ -139,6 +139,14 @@ type Turn struct {
 // gate) still run only when the client actually sends an ApplyEditRequest
 // for one of these. Older clients that don't know this field simply ignore
 // it, exactly like Grounding.
+//
+// Redactions is additive and, like Grounding, carried on its own message
+// sent before any tokens: the kinds of secret-shaped text the daemon's
+// heuristic scrubber (see daemon/scrub.go) found and replaced in the user's
+// prompt before it was sent to the model API, e.g. ["openai_key"]. Never the
+// matched text itself. Empty/omitted means nothing was redacted (the common
+// case) — not that scrubbing didn't run. Older clients that don't know this
+// field simply ignore it.
 type TokenResponse struct {
 	ProtocolVersion int             `json:"protocol_version"`
 	Token           string          `json:"token,omitempty"`
@@ -146,6 +154,7 @@ type TokenResponse struct {
 	Error           string          `json:"error,omitempty"`
 	Grounding       *GroundingInfo  `json:"grounding,omitempty"`
 	EditProposals   []EditBlockWire `json:"edit_proposals,omitempty"`
+	Redactions      []string        `json:"redactions,omitempty"`
 }
 
 // EditBlockWire is the wire form of one parsed SEARCH/REPLACE edit block
