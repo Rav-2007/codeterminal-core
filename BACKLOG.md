@@ -415,9 +415,26 @@ Both queries were confirmed misses this morning under semantic-only retrieval; b
   (~0.0122-0.0189 weighted). That resolution is too coarse to prove the RRF K=60 fusion
   weighting is actually tuned well — it only proves it isn't broken. Grow the eval set
   (harder/more adversarial lexical-miss queries) before treating this tuning as load-bearing.
-- **Token-cost/efficiency claim is UNMEASURED.** The "tightly packed context, fewer tokens"
-  half of the hybrid-retrieval pillar has no measurement behind it yet. Do not make that claim
-  externally (docs, marketing, customer-facing) until it's actually measured.
+- **Token-cost/efficiency claim is MEASURED (2026-07-17): 67.4% average savings, but with a real
+  failure mode.** Measured by `daemon/token_efficiency_eval_test.go` (build-tagged `eval`, same
+  pattern as the other eval harnesses): the real retrieval path (`retrieveTopK` +
+  `truncateToBudget`, production defaults `topK=5`/`contextBudgetChars=8000`) vs. a naive
+  whole-file-inclusion baseline, over a 20-query set with pre-established ground truth against this
+  actual repo. Headline: **67.4% average token savings** over the 17/20 queries where retrieval
+  fully found its ground-truth file(s) (~34k vs. ~104k estimated tokens). This is NOT the ~95%
+  that was floated externally with no measurement behind it — that figure never appeared anywhere
+  in this repo and is not supported. **Failure mode, do not hide it:** ~15% of queries (3/20 —
+  parsing edit blocks, model-tier routing, secret scrubbing) had *negative* savings — retrieval
+  cost MORE tokens than just including the whole target file. Root cause is structural: injected
+  context size is roughly fixed (~6.5-8k chars; `topK=5` × ~40-line chunks nearly fills the 8k
+  budget regardless of query), while the naive baseline scales with the answer file's size. So the
+  system wins big when the answer lives in a large file or spans multiple files (77-89% savings on
+  `proxy/main.go`-touching and cross-file queries) and loses when the honest answer is one small,
+  tightly-scoped file (`router.go` at 44 lines, `scrub.go` at 79). The 67.4% number is therefore
+  file-size-distribution-dependent and would move on a differently-structured codebase — many
+  small atomic files would show more negative cases; more large files, fewer. See the benchmark
+  file's header for full methodology and caveats. A targeted fix for the negative-savings cases is
+  the P1 efficiency follow-up (adaptive budget / dynamic chunk cutoff).
 
 One pre-existing, non-gated gap remains: "where does the daemon open the unix socket" still
 misses at chunk-level under both semantic-only and hybrid retrieval (see `rerank_eval_test.go`'s
