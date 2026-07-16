@@ -296,8 +296,20 @@ func (p *proxy) authorize(r *http.Request) (string, bool) {
 		p.logger.Printf("auth: rejected (building supabase request failed, key prefix=%s)", keyPrefix(mochiKey))
 		return "", false
 	}
+	// apikey only -- deliberately no Authorization header. Supabase's new
+	// sb_secret_/sb_publishable_ API keys are not JWTs: sending one via
+	// Authorization: Bearer, even when it exactly matches apikey (a
+	// backward-compat exception that lets the request past the gateway
+	// instead of being blocked outright), still gets forwarded to the
+	// database's own JWT parser and rejected there for not being a JWT --
+	// see https://supabase.com/docs/guides/api/api-keys. This is a real,
+	// documented header-format bug and worth keeping fixed regardless --
+	// but note: removing it did NOT resolve a separate empty-row symptom
+	// under investigation (see project handoff doc, Phase 3 security
+	// review). A bare curl with only `apikey` set reproduces the same
+	// 200 + [] result, so that deeper cause is still open and unrelated
+	// to this specific header issue.
 	req.Header.Set("apikey", p.supabaseServiceRoleKey)
-	req.Header.Set("Authorization", "Bearer "+p.supabaseServiceRoleKey)
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := p.client.Do(req)
