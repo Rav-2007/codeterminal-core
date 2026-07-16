@@ -1,14 +1,22 @@
 // Command codeterminal-proxy is the smallest possible managed-tier proxy in
 // front of OpenRouter. It exists to hold the OpenRouter API key server-side
-// so it never ships to end users. It is a dumb pipe: it adds the key and
-// forwards the request body exactly as received, then streams the response
-// back without buffering. Every call is first gated on a caller-supplied
-// Mochiii key, validated against Supabase (see authorize) -- unauthorized
-// requests never reach OpenRouter. Token usage is recorded per key after a
-// successful response (see streamSSE/recordUsage), and checked BEFORE each
-// call is forwarded (see checkQuota): a key at or over its token_limit is
-// refused with 429 before OpenRouter is ever contacted -- fail-closed, same
-// as authorize, since this gate protects real spend.
+// so it never ships to end users. It adds the key and forwards the request
+// body byte-for-byte (buffered once, to allow the quota reservation below --
+// content is never parsed beyond a single-field max_tokens peek, see
+// peekMaxTokens), then streams the response back without buffering. Every
+// call is first gated on a caller-supplied Mochiii key, validated against
+// Supabase (see authorize) -- unauthorized requests never reach OpenRouter.
+//
+// Quota is enforced by an atomic reserve-then-true-up, not a check-then-act
+// read: reserveQuota atomically reserves an estimated token count BEFORE the
+// call is forwarded (a key that can't fit the reservation under its
+// token_limit is refused with 429, fail-closed, before OpenRouter is ever
+// contacted), and finalizeUsage/correctUsage reconcile that estimate against
+// real usage once the response completes. See QUOTA_RESERVATION_DESIGN.md
+// for the full design -- this replaces an earlier check-then-forward gate
+// (checkQuota/recordUsage) that had a confirmed TOCTOU race under
+// concurrent requests: reads and writes were separate round trips, so
+// concurrent requests could all observe the same stale "under limit" state.
 package main
 
 import (
@@ -67,7 +75,44 @@ const (
 
 	sseInitialBufferSize = 64 * 1024
 	sseMaxLineSize       = 1024 * 1024
+
+	// maxNonStreamResponseBytes caps the buffered upstream response on
+	// the non-SSE reply path (see handleChatCompletions), so a usage
+	// figure can be peeked out of it before it's written to the client.
+	// The daemon always sets stream:true (daemon/provider.go) so this
+	// path is not exercised by real traffic today; the cap is defensive
+	// generosity for whatever else calls this proxy, not a tuned limit.
+	maxNonStreamResponseBytes = 16 << 20 // 16MB
+
+	// defaultReservationTokens sizes a quota reservation when the
+	// incoming request doesn't declare max_tokens -- true for all of
+	// today's daemon traffic (it never sets the field). This is a
+	// typical-case admission-control size, not a worst-case bound: real
+	// per-provider ceilings for the active model (deepseek/deepseek-v4-flash)
+	// run up to 1,048,576 tokens (OpenRouter's own endpoint listing,
+	// checked directly -- see QUOTA_RESERVATION_DESIGN.md §3), and no
+	// fixed default can cover that without a single reservation consuming
+	// an entire default-quota key. finalizeUsage/correctUsage reconcile
+	// the difference after the fact.
+	defaultReservationTokens = 4096
+
+	// maxReservationTokens clamps a caller-declared max_tokens so one
+	// request can't claim an outsized reservation.
+	maxReservationTokens = 32768
+
+	// correctUsageMaxAttempts bounds correctUsage's retries against a
+	// transient Supabase failure. Not full durability against a sustained
+	// outage or a process crash mid-retry -- see
+	// QUOTA_RESERVATION_DESIGN.md §5(d)/(e) for why a lost correction
+	// isn't uniformly safe and what remains open after this.
+	correctUsageMaxAttempts = 3
 )
+
+// correctUsageRetryBackoff is the delay between correctUsage's retry
+// attempts -- short, since this only needs to ride out a transient blip,
+// not a sustained outage (a slice, not a const, since Go has no const
+// []time.Duration).
+var correctUsageRetryBackoff = []time.Duration{250 * time.Millisecond, 750 * time.Millisecond}
 
 func main() {
 	logger := log.New(os.Stderr, "codeterminal-proxy: ", log.LstdFlags)
@@ -169,16 +214,21 @@ func makeHealthHandler(commit string) http.HandlerFunc {
 	}
 }
 
-// handleChatCompletions forwards the request body AS-IS to OpenRouter --
-// never parsed, never modified, since the daemon already sets
-// model/messages/stream/provider exactly as it wants them (including the
-// ZDR provider-routing object) -- with a server-side Authorization header
-// added, and streams the response back without buffering. Request and
-// response BODIES are never logged, at any point below: only method,
-// status, and (if visible in-flight, from the response stream itself) the
-// serving provider name. That omission is deliberate and is what keeps this
-// proxy zero-data-retention-preserving rather than just a relay that
-// happens to also see everything.
+// handleChatCompletions forwards the request body to OpenRouter
+// byte-for-byte -- the daemon already sets model/messages/stream/provider
+// exactly as it wants them (including the ZDR provider-routing object) --
+// with a server-side Authorization header added, and streams the response
+// back without buffering. The body is read into memory once (bounded by
+// maxRequestBodyBytes, same cap as before) rather than streamed straight
+// through, so it can be peeked for max_tokens to size a quota reservation
+// (see peekMaxTokens/reserveQuota) before the call is forwarded; that peek
+// is the one narrow, deliberate exception to "never parsed" -- message
+// content itself is still never inspected anywhere in this function.
+// Request and response BODIES are never logged, at any point below: only
+// method, status, and (if visible in-flight, from the response stream
+// itself) the serving provider name. That omission is deliberate and is
+// what keeps this proxy zero-data-retention-preserving rather than just a
+// relay that happens to also see everything.
 func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -193,7 +243,23 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !p.checkQuota(r.Context(), apiKeyID) {
+	limitedBody := http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+	bodyBytes, err := io.ReadAll(limitedBody)
+	if err != nil {
+		p.logger.Printf("reading request body failed: %v", err)
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+
+	reserved := defaultReservationTokens
+	if declared, ok := peekMaxTokens(bodyBytes); ok {
+		reserved = declared
+		if reserved > maxReservationTokens {
+			reserved = maxReservationTokens
+		}
+	}
+
+	if !p.reserveQuota(r.Context(), apiKeyID, reserved) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusTooManyRequests)
 		w.Write([]byte(`{"error":"quota_exceeded"}`))
@@ -203,10 +269,10 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), upstreamTimeout)
 	defer cancel()
 
-	limitedBody := http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
-	upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.upstreamURL, limitedBody)
+	upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.upstreamURL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		p.logger.Printf("building upstream request failed: %v", err)
+		p.finalizeUsage(apiKeyID, reserved, 0)
 		http.Error(w, "bad gateway", http.StatusBadGateway)
 		return
 	}
@@ -214,7 +280,7 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// zero value, which net/http would otherwise send as
 	// Transfer-Encoding: chunked -- harmless, but needlessly different
 	// from what the daemon itself sent.
-	upstreamReq.ContentLength = r.ContentLength
+	upstreamReq.ContentLength = int64(len(bodyBytes))
 	upstreamReq.Header.Set("Content-Type", "application/json")
 	upstreamReq.Header.Set("Accept", "text/event-stream")
 	upstreamReq.Header.Set("Authorization", "Bearer "+p.apiKey)
@@ -222,6 +288,10 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	resp, err := p.client.Do(upstreamReq)
 	if err != nil {
 		p.logger.Printf("upstream call failed: %v", err)
+		// Reservation was made but OpenRouter was never reached -- none
+		// of it was used, so it's a full refund (see
+		// QUOTA_RESERVATION_DESIGN.md §5(b)).
+		p.finalizeUsage(apiKeyID, reserved, 0)
 		http.Error(w, "bad gateway", http.StatusBadGateway)
 		return
 	}
@@ -243,13 +313,25 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(resp.StatusCode)
 
 	if strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
-		p.streamSSE(w, resp.Body, apiKeyID)
+		p.streamSSE(w, resp.Body, apiKeyID, reserved)
 		return
 	}
 
-	if _, err := io.Copy(w, resp.Body); err != nil {
-		p.logger.Printf("copying non-streamed response failed: %v", err)
+	// Not exercised by the daemon today (it always sets stream:true), but
+	// handled the same way as the SSE path for whatever else calls this
+	// proxy: buffered (bounded, maxNonStreamResponseBytes) rather than
+	// streamed straight through via io.Copy, so a usage figure can be
+	// peeked out of it and the reservation trued up instead of stranded
+	// (see QUOTA_RESERVATION_DESIGN.md §5(c)).
+	respBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxNonStreamResponseBytes))
+	if err != nil {
+		p.logger.Printf("reading non-streamed response failed: %v", err)
 	}
+	if _, err := w.Write(respBytes); err != nil {
+		p.logger.Printf("writing non-streamed response failed: %v", err)
+	}
+	actual, _ := peekUsageTotal(respBytes)
+	p.finalizeUsage(apiKeyID, reserved, actual)
 }
 
 // authorize validates the caller-supplied Mochiii key ("Authorization:
@@ -341,19 +423,27 @@ func (p *proxy) authorize(r *http.Request) (string, bool) {
 	return rows[0].ID, true
 }
 
-// checkQuota reports whether apiKeyID (an already-authorized api_keys.id --
-// never the raw Mochiii key, see authorize) is still under its token quota.
+// reserveQuota atomically reserves `reserved` tokens against apiKeyID's
+// (an already-authorized api_keys.id -- never the raw Mochiii key, see
+// authorize) quota via the reserve_usage RPC (proxy/migrations/0001_reserve_usage.sql),
+// closing the TOCTOU race the old checkQuota+recordUsage split had: that
+// gate read tokens_used in one round trip and wrote it in a separate one
+// only after the response completed, so concurrent requests could all
+// observe the same stale "under limit" state before any of their siblings'
+// usage had landed (confirmed live -- see QUOTA_RESERVATION_DESIGN.md §0).
+// Here, the check and the write are the same atomic UPDATE statement.
+//
 // Deliberately separate from authorize: authorize's contract is
 // identity-only and is already verified, so this is a second, independent
-// gate rather than folded into it. It fails CLOSED -- returns false (not
+// gate rather than folded into it. Fails CLOSED -- returns false (not
 // allowed) -- on a request-build error, a Supabase call error/timeout, a
-// non-200 response, a row count other than exactly one, or a null
-// token_limit (no limit configured is treated as "can't verify", not as
-// "unlimited"). It returns true only when exactly one row comes back with a
-// non-null token_limit and tokens_used strictly under it. Only the key id
-// and token counts are ever logged -- never the raw key, never request
-// content.
-func (p *proxy) checkQuota(ctx context.Context, apiKeyID string) bool {
+// non-200 response, or a row count other than exactly one. A row count of
+// zero specifically means either the key has no usage row or the
+// reservation would exceed token_limit; both are indistinguishable here,
+// the same ambiguity checkQuota already had for "row not found". Only the
+// key id and token counts are ever logged -- never the raw key, never
+// request content.
+func (p *proxy) reserveQuota(ctx context.Context, apiKeyID string, reserved int) bool {
 	if p.supabaseURL == "" || p.supabaseServiceRoleKey == "" {
 		p.logger.Printf("quota: refused (supabase not configured, key id=%s)", apiKeyID)
 		return false
@@ -362,58 +452,56 @@ func (p *proxy) checkQuota(ctx context.Context, apiKeyID string) bool {
 	ctx, cancel := context.WithTimeout(ctx, supabaseAuthTimeout)
 	defer cancel()
 
-	q := url.Values{}
-	q.Set("key_id", "eq."+apiKeyID)
-	q.Set("select", "tokens_used,token_limit")
-	lookupURL := strings.TrimRight(p.supabaseURL, "/") + "/rest/v1/usage?" + q.Encode()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, lookupURL, nil)
+	payload, err := json.Marshal(struct {
+		KeyID    string `json:"p_key_id"`
+		Reserved int    `json:"p_reserved"`
+	}{KeyID: apiKeyID, Reserved: reserved})
 	if err != nil {
-		p.logger.Printf("quota: refused (building supabase request failed, key id=%s): %v", apiKeyID, err)
+		p.logger.Printf("quota: refused (encoding reserve_usage body failed, key id=%s): %v", apiKeyID, err)
 		return false
 	}
+
+	rpcURL := strings.TrimRight(p.supabaseURL, "/") + "/rest/v1/rpc/reserve_usage"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, rpcURL, bytes.NewReader(payload))
+	if err != nil {
+		p.logger.Printf("quota: refused (building reserve_usage request failed, key id=%s): %v", apiKeyID, err)
+		return false
+	}
+	// apikey only -- see authorize's comment on this same header-format
+	// bug (Supabase's sb_secret_ keys aren't JWTs; Authorization: Bearer
+	// gets forwarded to the DB's own JWT parser and rejected there).
 	req.Header.Set("apikey", p.supabaseServiceRoleKey)
-	req.Header.Set("Authorization", "Bearer "+p.supabaseServiceRoleKey)
+	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := p.client.Do(req)
 	if err != nil {
-		p.logger.Printf("quota: refused (supabase lookup failed, key id=%s): %v", apiKeyID, err)
+		p.logger.Printf("quota: refused (reserve_usage call failed, key id=%s): %v", apiKeyID, err)
 		return false
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		p.logger.Printf("quota: refused (supabase status=%d, key id=%s)", resp.StatusCode, apiKeyID)
+		io.Copy(io.Discard, io.LimitReader(resp.Body, maxAuthResponseBytes))
+		p.logger.Printf("quota: refused (reserve_usage status=%d, key id=%s)", resp.StatusCode, apiKeyID)
 		return false
 	}
 
 	var rows []struct {
-		TokensUsed int  `json:"tokens_used"`
-		TokenLimit *int `json:"token_limit"`
+		TokensUsed int64 `json:"tokens_used"`
+		TokenLimit int64 `json:"token_limit"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxAuthResponseBytes)).Decode(&rows); err != nil {
-		p.logger.Printf("quota: refused (decoding supabase response failed, key id=%s): %v", apiKeyID, err)
+		p.logger.Printf("quota: refused (decoding reserve_usage response failed, key id=%s): %v", apiKeyID, err)
 		return false
 	}
 
 	if len(rows) != 1 {
-		p.logger.Printf("quota: refused (key id=%s, matches=%d)", apiKeyID, len(rows))
+		p.logger.Printf("quota: refused (key id=%s, reserved=%d, matches=%d)", apiKeyID, reserved, len(rows))
 		return false
 	}
 
-	row := rows[0]
-	if row.TokenLimit == nil {
-		p.logger.Printf("quota: refused (key id=%s, used=%d, limit=null)", apiKeyID, row.TokensUsed)
-		return false
-	}
-
-	if row.TokensUsed >= *row.TokenLimit {
-		p.logger.Printf("quota: refused (key id=%s, used=%d, limit=%d)", apiKeyID, row.TokensUsed, *row.TokenLimit)
-		return false
-	}
-
-	p.logger.Printf("quota: ok (key id=%s, used=%d, limit=%d)", apiKeyID, row.TokensUsed, *row.TokenLimit)
+	p.logger.Printf("quota: reserved (key id=%s, reserved=%d, new_used=%d, limit=%d)", apiKeyID, reserved, rows[0].TokensUsed, rows[0].TokenLimit)
 	return true
 }
 
@@ -438,13 +526,19 @@ func keyPrefix(key string) string {
 //
 // keyID is the authorized caller's api_keys.id (from authorize; never the
 // raw Mochiii key -- that value is never seen this far into the call path).
-// If the upstream response includes a final usage chunk (see extractUsage;
+// reserved is the token count reserveQuota already atomically reserved
+// against keyID before this call was forwarded. Whatever usage figure this
+// function ends up with (from a final usage chunk -- see extractUsage;
 // requires the daemon to have set stream_options.include_usage, which it
-// always does -- see daemon/provider.go), streamSSE records it against keyID
-// AFTER the full response has already been relayed to the client: a
-// fire-and-forget call on its own detached context (see recordUsage) that
-// never delays, blocks, or fails the client's completion.
-func (p *proxy) streamSSE(w http.ResponseWriter, body io.Reader, keyID string) {
+// always does -- see daemon/provider.go -- or zero, if the stream never
+// produced one) is trued up against that reservation via finalizeUsage
+// (deferred, so it runs on every exit path -- see QUOTA_RESERVATION_DESIGN.md
+// §5(c) for why the zero case must not be silently skipped, unlike the
+// pre-reservation code this replaced) AFTER the full response has already
+// been relayed to the client: a fire-and-forget call on its own detached
+// context (see correctUsage) that never delays, blocks, or fails the
+// client's completion.
+func (p *proxy) streamSSE(w http.ResponseWriter, body io.Reader, keyID string, reserved int) {
 	flusher, canFlush := w.(http.Flusher)
 
 	scanner := bufio.NewScanner(body)
@@ -452,6 +546,10 @@ func (p *proxy) streamSSE(w http.ResponseWriter, body io.Reader, keyID string) {
 
 	providerLogged := false
 	totalTokens := 0
+	defer func() {
+		p.finalizeUsage(keyID, reserved, totalTokens)
+	}()
+
 	for scanner.Scan() {
 		line := scanner.Text()
 		if _, err := io.WriteString(w, line+"\n"); err != nil {
@@ -473,10 +571,6 @@ func (p *proxy) streamSSE(w http.ResponseWriter, body io.Reader, keyID string) {
 	}
 	if err := scanner.Err(); err != nil {
 		p.logger.Printf("streaming upstream response failed: %v", err)
-	}
-
-	if totalTokens > 0 {
-		go p.recordUsage(keyID, totalTokens)
 	}
 }
 
@@ -530,57 +624,156 @@ func extractUsage(line string) (int, bool) {
 	return peek.Usage.TotalTokens, true
 }
 
-// recordUsage increments keyID's tokens_used by tokens via the
-// increment_usage Postgres RPC. An RPC (rather than a PostgREST PATCH) is
-// required here: PATCH can only set a column to a literal value, not express
-// "tokens_used = tokens_used + tokens", and a read-then-write from this
-// process would race concurrent requests against the same key and lose
-// updates. If the RPC is missing (404) or errors, that is logged (key id +
-// token count only -- never content, never any key material) and dropped;
-// it is never retried and never surfaced to the client, which already has
-// its complete response by the time this runs (see streamSSE). Runs on a
-// context detached from the original request, since that request's context
-// may already be canceled by the time streamSSE's scan loop finishes.
-func (p *proxy) recordUsage(keyID string, tokens int) {
+// peekMaxTokens looks at the incoming request body and, if it declares a
+// positive integer max_tokens, returns it -- used to size a quota
+// reservation (see reserveQuota) before the call is forwarded. Mirrors
+// extractUsage's one-field-only decode discipline: the target struct has
+// only a MaxTokens field, so message content is never touched here either.
+// This is a narrow, deliberate exception to this proxy's usual "never
+// parse the body" posture -- see QUOTA_RESERVATION_DESIGN.md §3 for why.
+// In practice this rarely returns true: the daemon's own request struct
+// never sets max_tokens (daemon/provider.go), so reservation sizing falls
+// through to defaultReservationTokens for essentially all real traffic
+// today.
+func peekMaxTokens(body []byte) (int, bool) {
+	var peek struct {
+		MaxTokens int `json:"max_tokens"`
+	}
+	if err := json.Unmarshal(body, &peek); err != nil || peek.MaxTokens <= 0 {
+		return 0, false
+	}
+	return peek.MaxTokens, true
+}
+
+// peekUsageTotal looks at a non-streamed chat-completion response body and,
+// if it carries a top-level "usage.total_tokens" field, returns it. Same
+// one-field-only decode discipline as extractUsage, just applied to a whole
+// buffered response instead of one SSE line -- used by the non-SSE branch
+// of handleChatCompletions so it can true up a reservation instead of
+// leaving it stranded (see QUOTA_RESERVATION_DESIGN.md §5(c)).
+func peekUsageTotal(body []byte) (int, bool) {
+	var peek struct {
+		Usage struct {
+			TotalTokens int `json:"total_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(body, &peek); err != nil || peek.Usage.TotalTokens == 0 {
+		return 0, false
+	}
+	return peek.Usage.TotalTokens, true
+}
+
+// finalizeUsage computes the signed correction delta between what was
+// reserved (reserveQuota, before the call was forwarded) and what the
+// request actually used, and fires it off via correctUsage. actual == 0
+// means no usable usage figure was ever obtained (no usage chunk arrived,
+// the stream was cut short, or the response body didn't carry one) -- in
+// that case the whole reservation is refunded, since none of it is known
+// to have been genuinely used. Unlike the check-then-record gate this
+// replaced, this must run on every exit path, including actual == 0: an
+// unrefunded reservation would otherwise strand real quota forever (see
+// QUOTA_RESERVATION_DESIGN.md §5).
+func (p *proxy) finalizeUsage(keyID string, reserved, actual int) {
+	delta := -reserved
+	if actual > 0 {
+		delta = actual - reserved
+	}
+	go p.correctUsage(keyID, delta)
+}
+
+// correctUsage adjusts keyID's tokens_used by the signed delta between what
+// was reserved (reserveQuota) and what the request actually used, via the
+// increment_usage Postgres RPC (unchanged from the pre-reservation code --
+// see proxy/migrations/0001_reserve_usage.sql). delta may be negative (a
+// refund: actual usage was less than reserved, or there was no usable
+// response at all) or positive (a top-up: actual usage exceeded the
+// reservation -- see QUOTA_RESERVATION_DESIGN.md §3, this is a common case
+// for this product's active model, not a tail case). Runs on a context
+// detached from the original request, same as before: the client already
+// has its complete response by the time this runs (see finalizeUsage), so
+// it must not be tied to a context that may already be canceled.
+//
+// Retries up to correctUsageMaxAttempts times on a network error or a 5xx
+// response (not on 4xx -- that indicates a real request-shape problem a
+// retry can't fix). This exists because a lost correction here is NOT
+// uniformly safe: a lost refund leaves tokens_used too high (safe -- a
+// later request is throttled slightly early), but a lost top-up leaves it
+// too low (unsafe -- a later request can be admitted against quota that
+// was already really spent). See QUOTA_RESERVATION_DESIGN.md §5 for the
+// full direction analysis. This narrows the single-attempt failure window;
+// it is not durable against a sustained outage or a process crash
+// mid-retry -- if every attempt is exhausted, that is logged distinctly
+// (CORRECTION LOST, below) rather than silently dropped the way the
+// pre-reservation recordUsage's single failed attempt was, so it is at
+// least visible rather than silent.
+func (p *proxy) correctUsage(keyID string, delta int) {
 	if p.supabaseURL == "" || p.supabaseServiceRoleKey == "" {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), usageUpdateTimeout)
-	defer cancel()
-
 	payload, err := json.Marshal(struct {
 		KeyID  string `json:"p_key_id"`
 		Tokens int    `json:"p_tokens"`
-	}{KeyID: keyID, Tokens: tokens})
+	}{KeyID: keyID, Tokens: delta})
 	if err != nil {
-		p.logger.Printf("usage: encoding RPC body failed (key_id=%s): %v", keyID, err)
+		p.logger.Printf("usage: encoding correction body failed (key_id=%s): %v", keyID, err)
 		return
 	}
 
 	rpcURL := strings.TrimRight(p.supabaseURL, "/") + "/rest/v1/rpc/increment_usage"
+
+	for attempt := 1; attempt <= correctUsageMaxAttempts; attempt++ {
+		ok, retryable := p.tryCorrectUsage(rpcURL, payload, keyID, delta, attempt)
+		if ok {
+			p.logger.Printf("usage: corrected delta=%d for key_id=%s (attempt %d)", delta, keyID, attempt)
+			return
+		}
+		if !retryable || attempt == correctUsageMaxAttempts {
+			break
+		}
+		time.Sleep(correctUsageRetryBackoff[attempt-1])
+	}
+
+	p.logger.Printf("usage: CORRECTION LOST after %d attempts (key_id=%s, delta=%d) -- tokens_used may be inaccurate", correctUsageMaxAttempts, keyID, delta)
+}
+
+// tryCorrectUsage makes a single attempt at the increment_usage RPC call
+// and reports whether it succeeded and, if not, whether the failure is
+// worth retrying: a network error or a 5xx is treated as transient
+// (retryable), a 4xx is treated as a request-shape problem that will fail
+// identically on every retry (not retryable).
+func (p *proxy) tryCorrectUsage(rpcURL string, payload []byte, keyID string, delta int, attempt int) (ok bool, retryable bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), usageUpdateTimeout)
+	defer cancel()
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, rpcURL, bytes.NewReader(payload))
 	if err != nil {
-		p.logger.Printf("usage: building RPC request failed (key_id=%s): %v", keyID, err)
-		return
+		p.logger.Printf("usage: building correction request failed (key_id=%s, attempt=%d): %v", keyID, attempt, err)
+		return false, false
 	}
+	// apikey only -- see authorize's comment on this same header-format
+	// bug (Supabase's sb_secret_ keys aren't JWTs; Authorization: Bearer
+	// gets forwarded to the DB's own JWT parser and rejected there).
 	req.Header.Set("apikey", p.supabaseServiceRoleKey)
-	req.Header.Set("Authorization", "Bearer "+p.supabaseServiceRoleKey)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Prefer", "return=minimal")
 
 	resp, err := p.client.Do(req)
 	if err != nil {
-		p.logger.Printf("usage: RPC call failed (key_id=%s, tokens=%d): %v", keyID, tokens, err)
-		return
+		p.logger.Printf("usage: correction call failed (key_id=%s, delta=%d, attempt=%d): %v", keyID, delta, attempt, err)
+		return false, true
 	}
 	defer resp.Body.Close()
 	io.Copy(io.Discard, io.LimitReader(resp.Body, maxAuthResponseBytes))
 
+	if resp.StatusCode >= 500 {
+		p.logger.Printf("usage: correction RPC returned status=%d (key_id=%s, delta=%d, attempt=%d)", resp.StatusCode, keyID, delta, attempt)
+		return false, true
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		p.logger.Printf("usage: RPC returned status=%d (key_id=%s, tokens=%d)", resp.StatusCode, keyID, tokens)
-		return
+		p.logger.Printf("usage: correction RPC returned status=%d (key_id=%s, delta=%d, attempt=%d)", resp.StatusCode, keyID, delta, attempt)
+		return false, false
 	}
 
-	p.logger.Printf("usage: recorded tokens=%d for key_id=%s", tokens, keyID)
+	return true, false
 }
