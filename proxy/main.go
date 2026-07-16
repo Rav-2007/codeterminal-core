@@ -69,6 +69,28 @@ const (
 	// own context, so it must not hang indefinitely.
 	usageUpdateTimeout = 5 * time.Second
 
+	// serverReadTimeout bounds the total time to read one request
+	// (headers + body), separate from and looser than ReadHeaderTimeout
+	// below. There's no legitimate reason for a client to trickle a
+	// request body slowly -- bodies are capped at maxRequestBodyBytes and
+	// contain no streaming input, only the outbound response streams --
+	// so this closes the slow-body-drip gap ReadHeaderTimeout alone
+	// doesn't cover (Phase 3 security review, area 6).
+	serverReadTimeout = 30 * time.Second
+
+	// serverWriteTimeout bounds one request's total response-write time.
+	// Must exceed upstreamTimeout (the outbound call to OpenRouter can
+	// legitimately run up to 5 minutes for a long streamed completion) or
+	// this would truncate real in-progress streams -- set with headroom
+	// above it rather than equal to it.
+	serverWriteTimeout = 6 * time.Minute
+
+	// serverIdleTimeout bounds how long a keep-alive connection may sit
+	// idle between requests. Doesn't affect an active request (that's
+	// serverReadTimeout/serverWriteTimeout's job) -- just reclaims
+	// connections nothing is using.
+	serverIdleTimeout = 120 * time.Second
+
 	// keyLogPrefixLen is the most of a caller-supplied key that is ever
 	// written to a log line -- never the full key.
 	keyLogPrefixLen = 8
@@ -113,6 +135,58 @@ const (
 // not a sustained outage (a slice, not a const, since Go has no const
 // []time.Duration).
 var correctUsageRetryBackoff = []time.Duration{250 * time.Millisecond, 750 * time.Millisecond}
+
+// allowedResponseHeaders is the sole set of headers relayed from
+// OpenRouter's response to the caller. Verified against the daemon (this
+// proxy's actual caller, daemon/provider.go streamCompletion): it reads
+// no response headers at all, only the status code and the SSE body
+// content, so this list is deliberately minimal rather than tuned to any
+// specific requirement -- Content-Type is kept only because a client has
+// a reasonable general expectation of it, not because anything here
+// depends on it. Previously every OpenRouter response header was
+// forwarded verbatim except three hop-by-hop ones, which leaked
+// OpenRouter's own CORS policy, Set-Cookie (Cloudflare bot-management
+// cookie scoped to openrouter.ai), Permissions-Policy, and cf-ray to
+// every caller of this proxy (Phase 3 security review, areas 3/5).
+var allowedResponseHeaders = []string{"Content-Type"}
+
+// accountMetadataFields lists top-level JSON fields observed on
+// OpenRouter's non-streaming response bodies that identify our own
+// account rather than the request/response itself. Every error body
+// probed during the Phase 3 security review (invalid model, invalid
+// role, missing content, excessive max_tokens, empty messages -- five
+// distinct OpenRouter-side validation failures) carried exactly one such
+// field: "user_id", set to an OpenRouter account identifier, forwarded
+// verbatim to the caller before this fix. Stripped from every
+// non-streaming response, not just errors, in case a future response
+// shape carries the same field on success.
+var accountMetadataFields = []string{"user_id"}
+
+// stripAccountMetadata removes accountMetadataFields from a JSON object
+// body, returning it unchanged if it isn't a JSON object (never errors
+// the caller over a body this proxy doesn't otherwise parse or validate)
+// or doesn't carry any of those fields.
+func stripAccountMetadata(body []byte) []byte {
+	var parsed map[string]json.RawMessage
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return body
+	}
+	stripped := false
+	for _, field := range accountMetadataFields {
+		if _, ok := parsed[field]; ok {
+			delete(parsed, field)
+			stripped = true
+		}
+	}
+	if !stripped {
+		return body
+	}
+	out, err := json.Marshal(parsed)
+	if err != nil {
+		return body
+	}
+	return out
+}
 
 func main() {
 	logger := log.New(os.Stderr, "codeterminal-proxy: ", log.LstdFlags)
@@ -171,6 +245,9 @@ func main() {
 		Addr:              ":" + port,
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       serverReadTimeout,
+		WriteTimeout:      serverWriteTimeout,
+		IdleTimeout:       serverIdleTimeout,
 	}
 
 	logger.Printf("listening on :%s -> upstream %s", port, p.upstreamURL)
@@ -299,15 +376,9 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	p.logger.Printf("upstream responded: status=%d", resp.StatusCode)
 
-	for k, values := range resp.Header {
-		// Hop-by-hop / framing headers that must not survive a
-		// streamed, re-chunked passthrough verbatim -- Go's server
-		// manages these itself for whatever we actually write below.
-		if strings.EqualFold(k, "Content-Length") || strings.EqualFold(k, "Connection") || strings.EqualFold(k, "Transfer-Encoding") {
-			continue
-		}
-		for _, v := range values {
-			w.Header().Add(k, v)
+	for _, h := range allowedResponseHeaders {
+		if v := resp.Header.Get(h); v != "" {
+			w.Header().Set(h, v)
 		}
 	}
 	w.WriteHeader(resp.StatusCode)
@@ -327,6 +398,7 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		p.logger.Printf("reading non-streamed response failed: %v", err)
 	}
+	respBytes = stripAccountMetadata(respBytes)
 	if _, err := w.Write(respBytes); err != nil {
 		p.logger.Printf("writing non-streamed response failed: %v", err)
 	}
