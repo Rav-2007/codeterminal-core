@@ -433,8 +433,19 @@ Both queries were confirmed misses this morning under semantic-only retrieval; b
   tightly-scoped file (`router.go` at 44 lines, `scrub.go` at 79). The 67.4% number is therefore
   file-size-distribution-dependent and would move on a differently-structured codebase — many
   small atomic files would show more negative cases; more large files, fewer. See the benchmark
-  file's header for full methodology and caveats. A targeted fix for the negative-savings cases is
-  the P1 efficiency follow-up (adaptive budget / dynamic chunk cutoff).
+  file's header for full methodology and caveats. **The negative-savings cases were investigated
+  and deliberately NOT fixed** (closed, not pending — see `RETRIEVAL_BUDGET_DESIGN.md`): they're
+  structural (fixed injected-context size vs. a baseline that scales with the answer file), and
+  every mechanism that would flip them either can't work on this rank-fused architecture or
+  provably regresses a cross-file winner (the poison-pill: "why does the proxy reserve tokens" has
+  its top-1 chunk in the small `reserve_usage.sql` but its answer in the large `proxy/main.go`, so
+  any size-cap keyed on the top file drops main.go and turns a +78% win into a MISS). The one
+  provably-safe mechanism (same-file chunk consolidation) was built and measured — it fires on
+  1/20 queries, saves ~600 chars, and flips none of the three cases — so it doesn't earn the
+  permanent complexity it adds to the retrieval hot path. Mitigating context that makes this an
+  easy call: the queries where retrieval loses are the *small single-file* answers — the ones that
+  were never hard in the first place — while the big wins (77-89%) are on large and cross-file
+  queries, exactly where they matter.
 
 One pre-existing, non-gated gap remains: "where does the daemon open the unix socket" still
 misses at chunk-level under both semantic-only and hybrid retrieval (see `rerank_eval_test.go`'s
