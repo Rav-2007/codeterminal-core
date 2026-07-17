@@ -352,6 +352,13 @@ Code" experience. This is the packaging phase, the single largest remaining body
   files; both must be reviewed before others run Mochiii. Blocking gate.
 - **ZDR confirmation — code-complete, BOTH positive and negative paths live-verified
   (2026-07-09).**
+  ⚠️ **Enforcement is verified; the guarantee it is meant to deliver is not.** A ZDR-labelled
+  provider was measured retaining our prompt content across requests (2026-07-17): 98% of provably
+  novel content served from cache, corroborated by a 78.6% billing discount. Everything below is
+  accurate — the flags are sent and honoured exactly as described — but **do not read
+  "live-verified" as "prompts are not retained."** Open question with OpenRouter; evidence and
+  scope limits in
+  [SECURITY_MODEL.md](SECURITY_MODEL.md#the-inference-hop--zdr-retention-finding).
   Provider-routing (`provider.zdr=true`, `data_collection="deny"`, `allow_fallbacks=false`)
   is sent on every inference request, secure-by-default (an absent/legacy "zdr" section
   in models.json resolves to the strictest enforcement, not the weakest), with refusal
