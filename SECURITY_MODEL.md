@@ -1,10 +1,20 @@
-# Security model — auth, RLS, and grants
+# Security model — auth, RLS, grants, and the inference hop
 
-Covers the Supabase posture for `api_keys`, `usage`, the `api_keys_public` view, and the two
-usage RPCs. Everything here was verified live against the production project
-(`eshpqodurxubjigndiev`) on **2026-07-17** using an anon key plus a real user JWT — not with
-`service_role`, which holds BYPASSRLS and passes every test regardless of whether RLS works.
-That distinction is the whole point of this document: **a `service_role` check proves nothing.**
+Two halves, and they fail in different ways.
+
+**The database** — everything from here down to
+[Notes for whoever touches the database next](#notes-for-whoever-touches-the-database-next).
+Covers the Supabase posture for `api_keys`, `usage`, the `api_keys_public` view, and the two usage
+RPCs. Everything in it was verified live against the production project (`eshpqodurxubjigndiev`) on
+**2026-07-17** using an anon key plus a real user JWT — not with `service_role`, which holds
+BYPASSRLS and passes every test regardless of whether RLS works. That distinction is the whole
+point of this half: **a `service_role` check proves nothing.**
+
+**[The inference hop](#the-inference-hop--zdr-retention-finding)** — the last section. What happens
+to a user's prompt after it leaves the proxy. The database half protects key material and row
+ownership; **the product's actual privacy promise lives in the inference half**, and it currently
+carries an open, corroborated finding: a ZDR-labeled provider retained our prompt content across
+requests.
 
 ## The model in one paragraph
 
@@ -472,7 +482,7 @@ can't coincide.
   FUNCTIONS FROM PUBLIC` removes the catalog entry without changing the behavior, contrary to
   PostgreSQL's documented example. Logged as unresolved rather than explained.
 
-## Notes for whoever touches this next
+## Notes for whoever touches the database next
 
 The project is on **PostgreSQL 17** (confirmed by the presence of the `MAINTAIN` privilege, added
 in 17). `REVOKE ALL PRIVILEGES` covers `MAINTAIN` implicitly — `ALL PRIVILEGES` resolves against
@@ -514,3 +524,208 @@ where conrelid = 'public.api_keys'::regclass and contype = 'f';
 These require the Supabase SQL editor — the repo has no DB connection string, and PostgREST
 exposes only `public`, so `pg_catalog` is unreachable from any tooling checked into this
 repository. Same constraint as `proxy/migrations/0001_reserve_usage.sql`.
+
+---
+
+# The inference hop — ZDR retention finding
+
+**Status: OPEN. Corroborated. Escalate to OpenRouter. Established 2026-07-17.**
+
+Everything above is the database. This is the other half: what happens to a user's prompt once it
+leaves the proxy.
+
+## Enforcement and the guarantee are different things
+
+Two claims. One is verified and settled. The other is in doubt. **This section exists partly to
+stop them being blurred**, because "ZDR is verified" is true of the first and false of the second.
+
+**The flags are enforced. This is not what's in question.** Every inference request carries
+`{"zdr":true,"data_collection":"deny"}`; `daemon/config.go` resolves an absent or legacy config to
+the *strictest* setting rather than the weakest; `proxy/main.go` forwards the request body
+byte-for-byte, so the daemon's provider-routing object reaches OpenRouter intact; and OpenRouter
+genuinely hard-refuses with a 404 (`No endpoints found matching your data policy (Zero data
+retention)`) when no ZDR-compliant endpoint exists. Proven live on both a positive and a negative
+path, and re-proven after `allow_fallbacks` was flipped to `true` — see BACKLOG's ZDR gate entry.
+
+**The guarantee those flags are meant to deliver is in question.** A provider on OpenRouter's
+ZDR-eligible list, serving a request that carried both flags, retained our prompt content between
+requests.
+
+Our code asks for the right thing and refuses correctly when it cannot get it. Whether the label it
+asks against means anything is a separate question, and no change to our code can answer it.
+
+## The finding
+
+> Under `{"zdr":true,"data_collection":"deny"}`, DeepInfra served **11,776 of 11,970 tokens (98%)**
+> of provably novel, CSPRNG-generated, never-before-sent content from cache, seconds after the
+> byte-identical body was sent.
+
+Established by re-running experiment E1 against a fresh novel prefix, through the deployed proxy,
+provider pinned. Four sends — one cold, three warm, ~2s apart.
+
+| send | `cached_tokens` | `native_tokens_cached` | prompt cost | `cache_discount` |
+|---|---|---|---|---|
+| #0 cold | 64 | 64 | 0.001072692 | 4.608e-06 |
+| #1 warm | 64 (**miss**) | 64 | 0.001072692 | 4.608e-06 |
+| #2 warm | **11,776** | **11,776** | **0.000229428** | **0.000847872** |
+| #3 warm | **11,776** | **11,776** | **0.000229428** | **0.000847872** |
+
+`prompt_tokens` = 11,970 and `cache_write_tokens` = 0 on all four. All four served by DeepInfra,
+`endpoint_id` `934a69f9-bd54-474b-beca-24560f721e12`. Request body sha256
+`a49145af971f3a7d2e49b80911932796745a63f6d62afb996ad96fdfa38910f8`, hash-verified identical on
+every send.
+
+## Three corroborations — and which one actually carries it
+
+**Cite the billing. Do not cite the endpoint agreement.** A reader reaching for the strongest
+evidence here will reach for the wrong one if this is not spelled out.
+
+### 1. Billing — this is the one that carries it
+
+Prompt cost fell **78.6%** on a byte-identical body: `0.001072692` → `0.000229428`, with an explicit
+`cache_discount` of `0.000847872`. That is `11,776 × 7.2e-08` **exactly**, and it was **predicted to
+six significant figures before the run**, from a rate derived from an earlier 64-token sample. The
+pricing reconciles end to end: gross `11,970 × 9.0e-08 = 0.0010773`, minus the discount, equals the
+charged prompt cost.
+
+Why this and not the rest: **a provider does not forgo four-fifths of the revenue on a request it
+actually computed.** Every other signal in this section is DeepInfra describing its own behavior,
+and a self-report can be wrong in any direction. Billing can only be wrong in the direction that
+costs them money. The money moved.
+
+### 2. `/api/v1/generation` agreement — WEAK. Do not lean on it.
+
+`native_tokens_cached` matched the inline `cached_tokens` at magnitude on every send
+(64/64/11776/11776). This is near-certainly **the same upstream number surfaced through two
+endpoints**, not an independent measurement. It rules out OpenRouter mangling the field in transit.
+It does not test DeepInfra's honesty, which is the thing that matters. This caveat was stated
+*before* the run; the result did not change it.
+
+### 3. Reproduction
+
+The 11,776-token hit landed on a fresh CSPRNG prefix distinct from the original E1's, then again on
+the next send. Not a one-off.
+
+## H4 is dead, and why it mattered
+
+**H4** was the hypothesis that `cached_tokens` was an OpenRouter-side artifact — a mangled,
+misattributed, or stale field reflecting nothing DeepInfra actually did. **It was the hypothesis
+that would have collapsed the finding**, turning "a ZDR provider retains prompts" into "an
+OpenRouter field is buggy." It was live because the original E1 rested on a single inline field with
+nothing behind it.
+
+It is dead: the independent endpoint agrees at magnitude, and — decisively — the billing moved by
+exactly the amount the field predicts. A mangled field does not produce a correct discount.
+
+Note which evidence killed it: **the billing, not the endpoint agreement.** Per the caveat above,
+agreement between the two endpoints was always compatible with H4 in a different shape — one wrong
+number surfaced twice.
+
+## Scope limit — read before citing this
+
+**Established:** content derived from a user's prompt persists between requests on a ZDR-labeled
+route, long enough to be matched and reused seconds later, and the provider bills accordingly.
+
+**Not established. Do not imply any of it:**
+
+- **What is retained.** KV tensors, raw token text, a content hash plus a handle to precomputed
+  state — unknown, and not measurable from outside.
+- **Where it lives.** GPU memory, host RAM, disk, a shared multi-tenant store — unknown.
+- **How long it survives.** **TTL was never measured.** See below.
+- **Whether anyone else can reach it.** No cross-account or cross-key test was ever run. Every send
+  in every experiment used our own account and our own key.
+- **Whether this constitutes "retention" under OpenRouter's ZDR contract.** A policy question about
+  what the label promises, not a technical one. It cannot be settled from this side, and no reading
+  of it should be asserted here. **It is the question to put to OpenRouter.**
+
+One inference, flagged as inference rather than measurement: a hit requires the system to have
+retained enough state to *recognize* our prefix and to *skip recomputing* it. The second half
+implies retained computation derived from user content, not merely a fingerprint of it. That follows
+from how prefix caching is generally understood to work. It was not observed.
+
+### What measuring TTL would take
+
+Not done. The blocker is not cost — the inference is ~$0.03.
+
+Design: a cold send, then a warm repeat at each of a series of delays (30s, 2m, 5m, 15m, 1h, …),
+provider pinned, looking for the delay at which the hit stops landing.
+
+**The confound that makes the naive version worthless:** misses are stochastic. Send #1 above missed
+at +2s with the cache demonstrably warm — #2 and #3 hit moments later on the same `endpoint_id`.
+**A single miss at delay T proves nothing about expiry at T.** Separating "expired" from "missed
+anyway" needs enough replicates per delay point to distinguish the two rates, and **the stochastic
+miss rate has never been characterized**: the only samples behind it are 2 misses in 5 warm sends in
+one experiment, and 1 miss in 3 warm sends in this one. That is not a rate.
+
+Compounding it: a hit plausibly refreshes the entry, so replicates cannot share a prefix — each
+(delay, replicate) needs its own CSPRNG-novel prefix. Feasible, but not a small experiment, and it
+should not start until the miss rate is characterized first.
+
+## Two loose observations from the generation records
+
+Recorded because they were seen, not because they are understood. Neither is a finding, and neither
+is guessed at.
+
+- **`"data_region": "global"`** appears in the `/api/v1/generation` record for a request that
+  carried `zdr:true, data_collection:deny`. Its semantics were not established and no meaning is
+  asserted here. **Worth putting to OpenRouter alongside the cache question.**
+  `response_cache_source_id` was present and `null` on all four sends; also unexplained.
+- **`endpoint_id` was identical across every send — the hits and the miss alike.** Whatever drives
+  hit/miss variance sits *below* the endpoint OpenRouter routes to. Data, not an explanation.
+
+Separately, OpenRouter's own `latency` field corroborates the independently measured conclusion that
+caching buys no latency here: 958ms cold, 3879ms on the miss, **1068ms on the 11,776-token hit**,
+1654ms on the second hit — the hit was *slower* than the cold send. `provider_responses[].latency`
+was 260/254/259/262ms, flat across cold and cached.
+
+## Still open — do not cite either as settled
+
+- **The 256 plateau.** A plateau at 256 cached tokens, observed during the cache-mechanism
+  investigation, was never explained. No mechanism, no account of the conditions that produce it.
+  Not resolved by this run, and deliberately not re-litigated by it.
+- **The per-worker-cache hypothesis.** The leading explanation for stochastic misses — that the
+  cache is per-worker and routing within an endpoint is non-deterministic — is **the leading
+  explanation and nothing more. It has never been tested as a mechanism.** Worker identity is not
+  exposed in any field OpenRouter returns, which is exactly why it was never tested. Do not present
+  it as the reason for the misses.
+
+## Reproduction
+
+The point of this section: re-run it without rebuilding the reasoning.
+
+**Design constraints. Each is load-bearing:**
+
+1. **CSPRNG-novel prefix.** Content that provably has never been sent to any provider by anyone.
+   Generate it fresh per run — reusing this document's prefix proves nothing. Construction used:
+   `random.Random(secrets.randbits(64))`, 3,400 × 6-char lowercase words → 23,799 chars → 11,970
+   `prompt_tokens`. Record its sha256.
+2. **Pin the provider, kill fallbacks.**
+   `{"zdr":true,"data_collection":"deny","allow_fallbacks":false,"order":["DeepInfra"]}`. Without
+   the pin, a miss is indistinguishable from having been routed elsewhere. **Keep both ZDR flags
+   set** — the entire claim is that this happens *under* ZDR. Confirm the serving provider from the
+   response rather than assuming the pin held.
+3. **Byte-identical body, hash-verified.** sha256 the serialized body; assert it is identical across
+   every send. A prefix-cache claim on a body you did not verify is worthless.
+4. **Through the deployed proxy.** No bypass needed and none is acceptable: `proxy/main.go` forwards
+   the body byte-for-byte, so the pin survives the hop. Bypassing would change what the test proves.
+   `user_agent: "Go-http-client/2.0"` in the generation record confirms the proxy path was used.
+5. **Cold + warm repeats**, ~2s apart, n ≥ 4. **Expect misses.** One warm miss does not falsify the
+   finding — send #1 missed. It is the stochastic behavior above.
+6. **Fixed trivial user turn** (`"Say OK and nothing else."`) so completion cost stays negligible
+   and only the prompt side varies.
+7. **Disposable key, deactivated in a `finally` block, targeted by `id` — never `key_prefix`.** See
+   BACKLOG's Hygiene note: `key_prefix` is not unique and this has bitten twice.
+
+**The three checks:**
+
+| check | question | 2026-07-17 result |
+|---|---|---|
+| 1 | Does `/api/v1/generation`'s `native_tokens_cached` agree with the inline `cached_tokens` **at magnitude**? | Agrees (11,776 = 11,776). **Weak** — same number, two endpoints. |
+| 2 | **Does the money move?** Does `cache_discount` / prompt cost drop by the amount the hit implies? | Yes — 78.6% drop; discount `0.000847872` = 11,776 × 7.2e-08, predicted in advance. **This is the check that decides it.** |
+| 3 | Does it reproduce on a fresh novel prefix? | Yes, twice — with one miss (send #1). |
+
+**Predict the numbers before running.** Check 2 is only strong evidence if the discount is derived
+from a pricing model *first* and then confirmed. A discount observed and rationalized afterward
+proves far less.
+
+Full run cost: 4 inference sends + 4 generation lookups, ~$0.0026.
