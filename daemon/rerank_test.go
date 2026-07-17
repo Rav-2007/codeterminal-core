@@ -123,6 +123,54 @@ func TestLooksTestSeeking(t *testing.T) {
 	}
 }
 
+// TestLooksTestSeeking_IgnoresGoToolFailureNoise is the regression guard for
+// the measured false positive (see edit_eval_test.go and BACKLOG.md item
+// (b)): a raw captured `go test`/`go vet` failure is an edit-shaped query
+// about IMPLEMENTATION ("fix the code so this compiles/passes"), not a
+// question about test files -- but it contains a word-bounded "test" via
+// Go's own toolchain output shapes (the ".test" compiled-test-binary
+// suffix, and the bare "go test" command name), which used to invert
+// testClassWeight's down-weight and let _test.go chunks bury the
+// implementation chunk the query is actually asking to fix. Deliberately
+// reworded/generic rather than copied verbatim from edit_eval_test.go's
+// case queries -- see TestLooksTestSeeking's own comment above on why a
+// near-duplicate of real eval query text is a self-reference risk once
+// this file is indexed by that eval harness.
+func TestLooksTestSeeking_IgnoresGoToolFailureNoise(t *testing.T) {
+	notSeeking := []string{
+		"# codeterminal/daemon [codeterminal/daemon.test]\n./foo_test.go:12:4: x undefined\nFAIL\tcodeterminal/daemon [build failed]",
+		"FAIL\tcodeterminal/widget [build failed]\n# codeterminal/widget [codeterminal/widget.test]\n./bar_test.go:9:2: undefined: Baz",
+		"$ go test ./daemon/...\nfoo.go:20:4: undefined: Bar",
+	}
+	for _, q := range notSeeking {
+		if looksTestSeeking(q) {
+			t.Errorf("looksTestSeeking(%q) = true, want false (go-tool-output noise, not a question about tests)", q)
+		}
+	}
+}
+
+// TestLooksTestSeeking_StillFiresOnTestFuncNameInsideToolOutput documents a
+// KNOWN, DELIBERATELY UNFIXED gap in the same family as the one the test
+// above guards: testFuncPattern (unlike testSeekingWords) is left untouched
+// by this fix, so a genuine test-FAILURE's own output -- which necessarily
+// names the failing TestXxx function -- still suppresses the down-weight,
+// same as a real query about that test would. Measured in
+// edit_eval_test.go's zdr-refusal-phrasing case: harmless there (the target
+// chunk still won at rank #2 despite the suppressed down-weight), but this
+// is the honest boundary of this fix, not swept under the rug. A clean
+// rule distinguishing "the query is ABOUT this test" from "this test's own
+// name appears in pasted failure output" needs a different signal (e.g.
+// whether the TestXxx name is the query's subject vs. buried in a
+// multi-line log) than a regex over raw text can give without becoming
+// exactly the "fragile pile of special cases" this fix is deliberately
+// avoiding.
+func TestLooksTestSeeking_StillFiresOnTestFuncNameInsideToolOutput(t *testing.T) {
+	q := "--- FAIL: TestSomethingUnrelated (0.00s)\n    foo_test.go:20: got 1, want 2\nFAIL\tcodeterminal/daemon\t0.10s"
+	if !looksTestSeeking(q) {
+		t.Errorf("looksTestSeeking(%q) = false, want true (testFuncPattern still fires on a TestXxx name embedded in tool output -- known gap, see comment)", q)
+	}
+}
+
 func TestRerankChunks_DownWeightsTestFileForImplementationQuery(t *testing.T) {
 	// A _test.go chunk with a modest raw-score edge over the real
 	// implementation should lose once down-weighted, for a query that

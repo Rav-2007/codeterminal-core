@@ -51,13 +51,32 @@ var testSeekingWords = regexp.MustCompile(`(?i)\b(tests?|tested|testing|specs?)\
 // testSeekingWords.
 var testFuncPattern = regexp.MustCompile(`\bTest[A-Z]\w*`)
 
+// goToolFailureNoise matches the two shapes Go's own toolchain uses that
+// contain a word-bounded "test" but say nothing about the user wanting a
+// test file: the "go test" command name (e.g. in a failure the user pasted
+// alongside its output) and the ".test" suffix `go test`/`go vet` print for
+// a package's compiled test binary in a build failure (e.g.
+// "codeterminal/daemon [codeterminal/daemon.test]", "FAIL codeterminal/
+// editapply [build failed]"). Measured live: an edit-shaped prompt built
+// from a real captured build/test failure hits this on nearly every case
+// (see edit_eval_test.go), inverting testClassWeight's down-weight for a
+// query that is asking to fix IMPLEMENTATION, not find a test. Stripped out
+// before testSeekingWords is applied; testFuncPattern is deliberately left
+// alone (a query naming a specific TestXxx function, even inside pasted
+// tool output, is a much stronger and rarer signal — see
+// edit_eval_test.go's zdr-refusal-phrasing case for the one known instance
+// where that still fires on tool output, tracked as a separate, narrower
+// gap rather than folded into this fix).
+var goToolFailureNoise = regexp.MustCompile(`(?i)\bgo\s+test\b|\.test\b`)
+
 // looksTestSeeking reports whether query appears to be asking about tests
 // themselves (as opposed to asking a question about implementation that
 // merely happens to retrieve test chunks). When true, rerankChunks skips
 // the testClassWeight down-weight entirely, so a genuinely test-seeking
 // query is never penalized for finding test files.
 func looksTestSeeking(query string) bool {
-	return testSeekingWords.MatchString(query) || testFuncPattern.MatchString(query)
+	stripped := goToolFailureNoise.ReplaceAllString(query, " ")
+	return testSeekingWords.MatchString(stripped) || testFuncPattern.MatchString(query)
 }
 
 // rerankOverfetchFactor and rerankOverfetchFloor size the raw candidate pool

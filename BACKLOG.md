@@ -15,10 +15,44 @@ before indexing starts and only rewrites it after every batch succeeds, so a bat
 instead of silently passing under a stale stamp. Verified against the real repo (81 files,
 466 chunks, 12 batches, ~14s, no timeout) and with tests simulating a mid-batch failure.
 
-### (b) Top-1 ranking: down-weight test files — OPTIONAL POLISH
-Top-3 recall is 5/5, but top-1 is 3/5: for some queries a *_test.go file or an adjacent code
-file edges out the canonical implementation at rank #1. Not the prose-vs-code bug (that's
-fixed). Could down-weight _test.go files for retrieval. Purely a nicety; may never be needed.
+### (b) DONE: Top-1 ranking: down-weight test files — intent-gated on query text
+Shipped `d07bef6` ("Down-weight _test.go in retrieval ranking, intent-gated on query text"):
+`_test.go` chunks are down-weighted (`testClassWeight`, `daemon/rerank.go`) relative to
+implementation for an implementation-seeking query, skipped entirely for a genuinely
+test-seeking one (`looksTestSeeking`). This entry was previously never updated to DONE after
+shipping — wrong by omission — and stayed that way through the discovery below.
+
+⚠️ **Regression found and fixed 2026-07-17: `looksTestSeeking` was INVERTING this down-weight
+on edit-shaped prompts, the product's core query class.** `testSeekingWords`
+(`\b(tests?|tested|testing|specs?)\b`) matches the word-bounded "test" inside Go's own
+`go test`/`go vet` tool-output noise — most reliably the `.test` compiled-test-binary suffix
+these tools print in a build failure (`codeterminal/daemon [codeterminal/daemon.test]`,
+`FAIL codeterminal/editapply [build failed]`) — not just a literal "go test" command
+substring. A query built from a real captured build/test failure (exactly what a
+fix-this-failure prompt looks like) was therefore misread as "the user is asking about test
+files," which disabled the down-weight and let `_test.go` chunks bury the implementation
+chunk the query was actually asking to fix. Measured on 4 real git-derived edit-shaped cases
+(`daemon/edit_eval_test.go`, build-tagged `eval`; see its header for the n=4 resolution-limit
+caveat): baseline 1/4 chunk-level hit@5, one case sitting at rank #6 — one slot outside top-5,
+directly explained by two down-weight-suppressed test chunks occupying #3/#4.
+
+**Fix:** strip the `go test`/`.test` tool-output shapes out of the query before matching
+`testSeekingWords` (new `goToolFailureNoise` regexp in `rerank.go`), leaving
+`testFuncPattern` (a literal `TestXxx` name) untouched. Post-fix: 2/4, with the flipped case's
+rank verified via a stash-revert (reverting the fix reproduces the exact original rank #6 and
+top-5, bit for bit — the fix, not something ambient, moved the number). The other two misses
+are unaffected (H6 — raw similarity too low, target outside the ~30-candidate overfetch pool
+regardless of class weight; see North Star item 3's DONE block) and were pre-registered as
+expected non-fixes before the fix was written, not discovered after the fact.
+
+**Known, deliberately unfixed, distinct gap:** `testFuncPattern` still fires when a genuine
+test failure's own output names its failing `TestXxx` function (e.g. `--- FAIL:
+TestIsZDRRoutingRefusal_...`), suppressing the down-weight the same way. Left alone — folding
+it into this fix would require guessing whether a `TestXxx` mention is the query's *subject*
+or just *narration*, which a regex over raw text can't do without becoming a fragile pile of
+special cases (see `TestLooksTestSeeking_StillFiresOnTestFuncNameInsideToolOutput`,
+`daemon/rerank_test.go`). Measured harmless in the one case that hit it (target still ranked
+#2 with or without the suppression) but not proven harmless in general.
 
 ### (c) DONE: Auto-apply-with-undo mode (VS Code)
 Opt-in, session-scoped auto-apply toggle in the VS Code panel, default OFF. Confirm-
