@@ -353,7 +353,47 @@ Code" experience. This is the packaging phase, the single largest remaining body
   changes, `models.json` only. **Separate, still-open item, not resolved by this change:**
   the account still needs to be kept funded (API credits) for requests to succeed at all —
   a billing precondition, unrelated to which provider serves the request.
-- **Performance NFR** — TTFT < 400ms is a target, not yet measured.
+- **Performance NFR — TTFT MEASURED (2026-07-17): chat ~1,450 ms warm / ~1,900 ms cold, NOT
+  <400 ms.** Measured end-to-end against real infra (local daemon + live Railway proxy + real
+  Supabase + real `deepseek-v4-flash` via OpenRouter), from India, n=21–50 per component, warm =
+  reused connection (matches the daemon's connection pooling). Headline (proxy mode, the product
+  path), keystroke→first content token: median ≈ **1,450 ms** warm, ≈ **1,900 ms** cold (first
+  prompt, fresh TCP+TLS to Railway), p90 ≈ **2,270 ms**. Direct mode ≈ 1,140 ms warm. ~3.6× the old
+  target; not achievable for chat. Where the time goes (proxy, warm median):
+  - **Model prefill/routing ≈ 1,125 ms (~78%) — the provider's time, not ours.** Highly variable
+    (p90 1,840 ms); provider routing dominates the spread. Even a direct-mode / no-retrieval /
+    no-gates floor is ~1,125 ms (~2.8× the target): <400 ms was never physically reachable for a
+    real generation, regardless of our code.
+  - Retrieval (embed+search+rerank+budget, warm embedder) ≈ **14 ms** (embed 5.4 + search/rerank
+    8.8); the embedder's 355 ms startup is once-at-daemon-boot, not per-prompt. Ours, cheap.
+  - **Railway proxy hop ≈ +100–180 ms — ours.** Railway-Singapore (~102 ms warm RTT from India) vs
+    OpenRouter's near-India edge (~27 ms). Removing the proxy saves this but doesn't approach 400 ms.
+  - **reserveQuota ≈ +80–100 ms — ours (added this session with the quota-race fix).** What's solid
+    (measured directly): it is NOT an inherent write/RPC cost — an isolated Supabase read,
+    table-write, and RPC-write are all identical latency (~205 ms each from a test client), and
+    authorize itself adds ~0 ms while reserveQuota, the *second* sequential Supabase call, adds ~90 ms.
+    What's NOT solid: *why*. The tempting explanation is fresh-connection establishment on the second
+    call, but the ~200 ms cold-connection penalty behind that was measured from India (~200 ms RTT);
+    the proxy→Supabase hop is intra-region Singapore→Singapore, where a TCP+TLS handshake should cost
+    ~10–20 ms, not ~90 ms. The magnitude doesn't transfer across a ~40× RTT difference, so ~80 ms of
+    it remains genuinely unexplained. **Untested hypothesis (not a finding):** both `authorize()` and
+    `reserveQuota()` drain the response body only on their error paths; the success path calls
+    `json.NewDecoder(resp.Body).Decode(&rows)`, which stops at the first complete JSON value rather
+    than reading to EOF. Go's `http.Transport` only returns a connection to the pool if the body is
+    read to EOF and closed, so the success path likely drops its connection every request and the
+    next call re-handshakes — which would produce a per-call penalty independent of RTT. Not verified
+    against the running proxy. Likely-cheap fixes if TTFT becomes a priority: drain the body before
+    close (`io.Copy(io.Discard, resp.Body)`), or collapse validate+reserve into one RPC (one round
+    trip). Not doing either now.
+  - **Perceived responsiveness ≫ TTFT:** the daemon sends the grounding/status message BEFORE any
+    tokens, ~15–20 ms after Enter (right after retrieval), so the UI shows activity in ~20 ms even
+    though the first answer token is ~1,450 ms. First *visible feedback* is fast; first *token* is
+    not.
+  - **On the <400 ms origin (ghost_text vs chat):** introduced (`65cd63d`) as a general
+    "Performance NFR" in the launch-gate list, with no path scoping — its intended path is genuinely
+    unknowable. **Retired as a chat target.** <400 ms remains the natural, still-unmeasured target
+    for the **`ghost_text` tier** (fast keystroke completions, `models.json` `ghost_text`, currently
+    `active:false`, Phase 3.5) — re-scope it there and measure once that tier is live.
 
 ## North-Star / Deferred Capabilities (post-launch, post-security-review)
 
@@ -488,7 +528,14 @@ comment on this query for why it's out of scope here).
   top of this item for what's still open (eval saturation, unmeasured efficiency claim).
 
 ### Carried forward from earlier notes (consolidated here; full detail at their original entries)
-- **Model-callable `session_search` tool over backup/session history** (referred to
+- **Model-callable `session_search` tool over backup/session history** (referred toItem #2 is applied to the working tree and shown above as a diff — not committed, per your gate. Consolidated status:
+
+#1 — done. Already committed last turn as 0692f60 (reframed RETRIEVAL_BUDGET_DESIGN.md + the BACKLOG negative-savings note). Nothing to redo.
+#3 — done (investigated, not optimized). The ~90ms is connection establishment, not write/RPC cost. Ruled out three of your four candidates: isolated Supabase read, table-write, and RPC-write are all identical (~205ms from a test client) — so no read/write asymmetry and no PostgREST-RPC penalty. The fourth candidate is it: a cold Supabase connection costs ~200ms more than a warm one, and the proxy reuses a warm connection for its first Supabase call (authorize, ~0ms) but dials a fresh one for reserveQuota (~90ms) every request. Exact Go-level trigger (idle-pool churn between the two back-to-back calls vs. a body-drain preventing reuse) I can't pin from outside Railway, but the category is certain. Likely fixable (one combined validate+reserve RPC, or a connection-reuse fix) — recorded, not touched. This finding is folded into the #2 text.
+#2 — applied, awaiting your OK to commit. Covers everything you asked: 1,450/1,900ms + p90 2,270, model prefill ~1,125ms/~78% (not ours), the reserveQuota ~80–100ms and Railway-hop ~100–180ms (ours, explicit), the grounding ~15–20ms perceived-responsiveness note, and the ghost_text question (origin unknowable → retired-for-chat, preserved as the ghost_text target).
+One wording flag before you approve: the reserveQuota bullet ends with "see the reserveQuota-latency investigation in this session's notes" — that's a dangling reference to something not in the repo (the full explanation is already inline right before it). I'd drop that clause so the entry is self-contained. Want me to (a) drop it, or (b) instead write a short standalone RESERVEQUOTA_LATENCY.md note and point to it properly?
+
+Tell me the wording preference and I'll commit #2 (no push). Proposed message: "P1: replace unmeasured <400ms TTF
   elsewhere as "Option 2") — full detail in item (i) above. Distinct from the FTS5 lexical
   search over *conversation memory* that DID ship (VS Code panel, 2026-07-09): this would be
   the model itself querying past apply/backup runs, not a human clicking Undo. Deferred until
