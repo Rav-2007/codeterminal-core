@@ -288,6 +288,26 @@ Code" experience. This is the packaging phase, the single largest remaining body
 
 ## Release gates (before anyone else uses it — still open)
 
+- **DONE: Supabase auth/RLS/grants posture — see [SECURITY_MODEL.md](SECURITY_MODEL.md).**
+  Closed 2026-07-17. `api_keys.user_id` (nullable, FK -> `auth.users(id)` ON DELETE RESTRICT),
+  SELECT-only RLS policies on `api_keys` and `usage`, per-column grants to `authenticated`,
+  `anon` revoked to zero on both tables and both RPCs, EXECUTE revoked from PUBLIC on
+  `reserve_usage`/`increment_usage` (Postgres's implicit default is EXECUTE-to-PUBLIC — `anon`
+  could have called `increment_usage(key, -999999)`), and an `api_keys_public` view with
+  `security_invoker = true` that excludes `key_hash`. Verified live end-to-end with an anon key
+  + a real user JWT — **not** with `service_role`, which holds BYPASSRLS and passes every check
+  regardless of whether RLS works at all. The proxy is unaffected throughout (it is
+  `service_role`); re-verified live against the deployed proxy after the RPC revokes.
+  SECURITY_MODEL.md carries the full re-runnable verification matrix and four non-obvious traps
+  — read it before touching any of this. The two most likely to bite: PostgREST's 42501 hint
+  literally instructs you to re-expose `key_hash` (point the frontend at `api_keys_public`
+  instead), and `grant select (user_id)` looks like dead surface but is required by
+  `usage_select_own`'s subquery — revoking it silently breaks every usage read.
+  **Still open, highest-value:** Supabase's default privileges re-grant full `anon` CRUD on
+  every new table *or view* created in `public` — this already fired once, auto-granting
+  `api_keys_public` to `anon` at creation. Until fixed, every new relation in `public` needs an
+  explicit `revoke all ... from anon, authenticated` immediately after creation.
+
 - **Security review** — the daemon opens a local socket and the edit engine writes to user
   files; both must be reviewed before others run Mochiii. Blocking gate.
 - **ZDR confirmation — code-complete, BOTH positive and negative paths live-verified
@@ -566,5 +586,11 @@ comment on this query for why it's out of scope here).
 
 - **Never screenshot .env / keep the API key off-screen.** The key has been exposed in
   screenshots multiple times; rotate as routine. (Rotated 2026-07-08.)
+
+- **`api_keys.key_prefix` is NOT unique — always target rows by `id`.** It's the first 8 chars
+  of the raw key, so any script deriving it from a fixed literal collides across runs. Has bitten
+  twice: a `mochi_te*` filter matched two rows during a deactivation (a prefix-scoped PATCH would
+  have silently written both), and the quota test script has left two identical `mochi_qt` rows.
+  Use `id=eq.<uuid>`, never `key_prefix=like.<prefix>*`.
 - **Rebuild affected binaries after code changes** — daemon + TUI + extension; source and
   binary drift, especially when a change spans modules.
