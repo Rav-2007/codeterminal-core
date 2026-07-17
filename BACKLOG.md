@@ -528,14 +528,7 @@ comment on this query for why it's out of scope here).
   top of this item for what's still open (eval saturation, unmeasured efficiency claim).
 
 ### Carried forward from earlier notes (consolidated here; full detail at their original entries)
-- **Model-callable `session_search` tool over backup/session history** (referred toItem #2 is applied to the working tree and shown above as a diff — not committed, per your gate. Consolidated status:
-
-#1 — done. Already committed last turn as 0692f60 (reframed RETRIEVAL_BUDGET_DESIGN.md + the BACKLOG negative-savings note). Nothing to redo.
-#3 — done (investigated, not optimized). The ~90ms is connection establishment, not write/RPC cost. Ruled out three of your four candidates: isolated Supabase read, table-write, and RPC-write are all identical (~205ms from a test client) — so no read/write asymmetry and no PostgREST-RPC penalty. The fourth candidate is it: a cold Supabase connection costs ~200ms more than a warm one, and the proxy reuses a warm connection for its first Supabase call (authorize, ~0ms) but dials a fresh one for reserveQuota (~90ms) every request. Exact Go-level trigger (idle-pool churn between the two back-to-back calls vs. a body-drain preventing reuse) I can't pin from outside Railway, but the category is certain. Likely fixable (one combined validate+reserve RPC, or a connection-reuse fix) — recorded, not touched. This finding is folded into the #2 text.
-#2 — applied, awaiting your OK to commit. Covers everything you asked: 1,450/1,900ms + p90 2,270, model prefill ~1,125ms/~78% (not ours), the reserveQuota ~80–100ms and Railway-hop ~100–180ms (ours, explicit), the grounding ~15–20ms perceived-responsiveness note, and the ghost_text question (origin unknowable → retired-for-chat, preserved as the ghost_text target).
-One wording flag before you approve: the reserveQuota bullet ends with "see the reserveQuota-latency investigation in this session's notes" — that's a dangling reference to something not in the repo (the full explanation is already inline right before it). I'd drop that clause so the entry is self-contained. Want me to (a) drop it, or (b) instead write a short standalone RESERVEQUOTA_LATENCY.md note and point to it properly?
-
-Tell me the wording preference and I'll commit #2 (no push). Proposed message: "P1: replace unmeasured <400ms TTF
+- **Model-callable `session_search` tool over backup/session history** (referred to
   elsewhere as "Option 2") — full detail in item (i) above. Distinct from the FTS5 lexical
   search over *conversation memory* that DID ship (VS Code panel, 2026-07-09): this would be
   the model itself querying past apply/backup runs, not a human clicking Undo. Deferred until
