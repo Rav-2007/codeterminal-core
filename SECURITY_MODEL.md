@@ -161,32 +161,177 @@ owner and decouples from the caller's grants. Not done: it trades an invisible c
 another SECURITY DEFINER function to get right, and the grant is harmless — a user can only ever
 see rows where `user_id` equals their own uid, so it exposes a value they already hold.
 
-### 3. Default privileges auto-grant `anon` on every new relation in `public`
+### 3. Default privileges — half-fixed, and the catalog lies about the other half
 
-Supabase ships with:
+**Status (2026-07-17): tables, views, and sequences are fixed. Functions are not, and cannot be
+fixed this way.**
 
-```sql
-alter default privileges in schema public grant all on tables to anon, authenticated, service_role;
-```
-
-Every new table **or view** created in `public` arrives pre-granted with full CRUD to `anon`.
-This is not hypothetical. It demonstrated itself: `api_keys_public` was auto-granted SELECT to
-`anon` at creation, and the only reason that wasn't a live hole is that `security_invoker` (set
-after the fact) blocked it one layer down.
-
-**Revoking on a table fixes that table only.** The default persists. This is unfixed and is the
-highest-value remaining item.
-
-Until it's fixed, the rule is: **any new relation in `public` needs an explicit
-`revoke all ... from anon, authenticated` immediately after creation**, before it is considered
-done.
-
-To inspect:
+Supabase's stock bootstrap runs, for each of `postgres` and `supabase_admin`:
 
 ```sql
-select pg_get_userbyid(d.defaclrole) as set_by, n.nspname, d.defaclobjtype, d.defaclacl
-from pg_default_acl d left join pg_namespace n on n.oid = d.defaclnamespace;
+alter default privileges in schema public grant all on tables    to anon, authenticated, service_role;
+alter default privileges in schema public grant all on functions to anon, authenticated, service_role;
+alter default privileges in schema public grant all on sequences to anon, authenticated, service_role;
 ```
+
+`TABLES` covers views. This is not hypothetical: `api_keys_public` arrived pre-granted SELECT to
+`anon` that nobody wrote, and the only reason that wasn't a live hole is that `security_invoker`
+(set after the fact) blocked it one layer down.
+
+#### Fixed: tables, views, sequences
+
+```sql
+alter default privileges for role postgres in schema public revoke all on tables    from anon, authenticated;
+alter default privileges for role postgres in schema public revoke all on sequences from anon, authenticated;
+alter default privileges for role postgres in schema public revoke all on functions from anon, authenticated;
+```
+
+`for role postgres` is deliberate and is the most misread part of this statement: **the `FOR ROLE`
+clause names the role that will *create* the object, not the role running the statement.**
+Omitting it silently means `current_user`.
+
+Verified by probe — a table created afterward came back with
+`relacl = {postgres=arwdDxtm/postgres,service_role=arwdDxtm/postgres}`. No `anon`, no
+`authenticated`, no PUBLIC. `service_role` keeps its own explicit entry in each default ACL, so
+the proxy is structurally unaffected by any of this.
+
+#### NOT fixed: functions. And `pg_default_acl` will tell you otherwise.
+
+A fourth statement was applied:
+
+```sql
+alter default privileges for role postgres in schema public revoke execute on functions from public;
+```
+
+It **did** take. `pg_default_acl` shows no `PUBLIC` grantee under `postgres`/`functions`. The
+catalog reads clean.
+
+A function created afterward still arrives with EXECUTE to PUBLIC:
+
+```
+proacl = {=X/postgres,postgres=X/postgres,service_role=X/postgres}
+          ^^^ bare/empty grantee = PUBLIC
+```
+
+Postgres's built-in EXECUTE-to-PUBLIC baseline for functions **is not a row in `pg_default_acl`**.
+Removing the explicit entry just falls back to that baseline. The revoke removed the visible
+symptom and left the behavior.
+
+> **Do not trust a clean `pg_default_acl` as evidence the function path is closed.** This is a
+> nastier trap than the original, because the catalog actively misleads: it shows exactly what a
+> correct fix would show, while every new function remains callable by `anon`.
+
+**MECHANISM: UNRESOLVED — do not treat the explanation above as complete.** It contradicts
+PostgreSQL's own documentation, which presents
+`ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC` as working.
+The merge semantics of `get_user_default_acl` were not established, and reconstructing them from
+memory was deliberately declined rather than guessed at. One alternative explanation *was* ruled
+out: a global (non-schema-scoped) default-ACL entry re-adding PUBLIC — an unfiltered
+`pg_default_acl` scan returns zero rows for `defaclnamespace = 0 AND defaclobjtype = 'f'`.
+**The probe below is the arbiter — not the catalog, not the docs, not this paragraph.** If a
+future session resolves the mechanism, update this section.
+
+##### The probe — the only proof
+
+```sql
+create function public.zz_acl_probe_fn() returns int language sql as $$ select 1 $$;
+```
+
+```sql
+select p.proname, p.proacl
+from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+where n.nspname = 'public' and p.proname = 'zz_acl_probe_fn';
+```
+
+```sql
+drop function public.zz_acl_probe_fn();
+```
+
+Read `proacl` for a **bare `=X/`**. An ACL entry with an empty grantee is PUBLIC. If it is there,
+new functions in `public` are callable by `anon`, whatever `pg_default_acl` says.
+
+#### The rule that replaces the fix
+
+> **Every `SECURITY DEFINER` function in `public` must `REVOKE EXECUTE ... FROM PUBLIC` in the
+> same migration that creates it.**
+
+This is a process control, not a database control. There is no known way to make the database
+enforce it. It is narrow enough to actually hold, because the severity is **not** uniform across
+functions:
+
+- **`SECURITY INVOKER` + EXECUTE-to-PUBLIC is a missing layer, not an open door.** The body runs
+  as the *caller*, so the caller's own grants and RLS still apply. This is precisely why the
+  pre-revoke `increment_usage` hole was **latent rather than live**: `anon` could call
+  `increment_usage(key, -999999)`, and the inner `UPDATE` hit zero rows because RLS was
+  default-deny. Worth closing for defense in depth; not an emergency.
+- **`SECURITY DEFINER` + EXECUTE-to-PUBLIC is the only control.** The body runs as its *owner*,
+  bypassing both the caller's grants and RLS. EXECUTE is the entire perimeter, and it defaults to
+  everyone.
+
+Both existing RPCs (`reserve_usage`, `increment_usage`) are `SECURITY INVOKER` and have had
+EXECUTE explicitly revoked from PUBLIC — verified live from the browser side (403,
+`permission denied for function increment_usage`).
+
+**First place this bites: the deferred self-service key-revocation function** (see Deferred). It
+is `SECURITY DEFINER` by necessity, which makes it the first function where forgetting this rule
+produces a real hole rather than a missing layer.
+
+#### The `supabase_admin` rows stay, and are correct
+
+`pg_default_acl` still shows three rows set by `supabase_admin` (tables, functions, sequences)
+granting to `anon` and `authenticated`. **This is not a half-applied fix.** `defaclrole` names the
+role that *creates* the object, and `supabase_admin` does not create objects in `public`.
+
+Evidence — ownership records who created an object:
+
+```sql
+select pg_get_userbyid(c.relowner) as owner, c.relkind, count(*) as n
+from pg_class c join pg_namespace n on n.oid = c.relnamespace
+where n.nspname = 'public' and c.relkind in ('r','v','m','p','f','S')
+group by 1, 2 order by 1, 2;
+```
+
+```sql
+select pg_get_userbyid(p.proowner) as owner, count(*) as n
+from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+where n.nspname = 'public'
+group by 1 order by 1;
+```
+
+Everything in `public` is owned by `postgres`, so those entries have never fired. Moot in any
+case: `pg_has_role(current_user, 'supabase_admin', 'member')` is **false** — they cannot be
+altered from the SQL editor, and shouldn't be even if they could, since that changes the behavior
+of a platform role with an unbounded blast radius.
+
+Residual: if Supabase ever ships a platform feature that creates a relation in `public` as
+`supabase_admin`, it arrives pre-granted to `anon` and nothing here stops it. Re-run the ownership
+query periodically rather than assuming.
+
+#### Inspecting default privileges — use the unfiltered query
+
+```sql
+select coalesce(pg_get_userbyid(d.defaclrole), '?') as creating_role,
+       coalesce(n.nspname, '<GLOBAL - all schemas>') as scope,
+       case d.defaclobjtype when 'r' then 'tables/views' when 'f' then 'functions'
+            when 'S' then 'sequences' when 'T' then 'types' when 'n' then 'schemas' end as objtype,
+       case when a.grantee = 0 then 'PUBLIC' else pg_get_userbyid(a.grantee) end as grantee,
+       string_agg(a.privilege_type, ',' order by a.privilege_type) as privs
+from pg_default_acl d
+left join pg_namespace n on n.oid = d.defaclnamespace
+cross join lateral aclexplode(d.defaclacl) a
+group by 1, 2, 3, 4
+order by 1, 2, 3, 4;
+```
+
+**Do not add `where n.nspname = 'public'`** — that is a trap in its own right. Default-ACL entries
+come in two kinds: schema-scoped (`defaclnamespace` = the schema's oid) and **global**
+(`defaclnamespace` = 0, from an `ALTER DEFAULT PRIVILEGES` with no `IN SCHEMA`). A global entry
+left-joins to a NULL `pg_namespace` row, so an `nspname` filter silently discards exactly the rows
+most likely to explain a surprise. `get_user_default_acl` consults both kinds. When that filter
+was first used here it hid 51 of 69 rows.
+
+Use `aclexplode` rather than reading raw `defaclacl` — eyeballing
+`{postgres=arwdDxtm/postgres,anon=...}` strings is how a missing bare `=X/` slips through.
 
 ### 4. Account deletion does not work out of the box
 
@@ -304,15 +449,28 @@ can't coincide.
 
 ## Deferred
 
-- **Fix the default privileges (trap 3).** Highest value. Until then, every new relation in
-  `public` needs a manual revoke.
 - **Self-service key revocation** — a `SECURITY DEFINER` function flipping `active = false` on
-  the caller's own rows only, never an UPDATE grant. Two requirements learned the hard way:
-  revoke EXECUTE from `PUBLIC` at creation (the implicit default is EXECUTE-to-PUBLIC — exactly
-  what was cleaned off `increment_usage`), and pin `set search_path = ''` with fully-qualified
-  names, because a SECURITY DEFINER function with a mutable search_path is hijackable.
+  the caller's own rows only, never an UPDATE grant. Three requirements, all learned the hard way:
+  **revoke EXECUTE from `PUBLIC` in the same migration** (trap 3 — this is now a hard rule, not a
+  suggestion, and this function is the first place it bites for real rather than in depth); pin
+  `set search_path = ''` with fully-qualified names, because a SECURITY DEFINER function with a
+  mutable search_path is hijackable; and run the trap 3 probe afterward rather than trusting
+  `pg_default_acl`.
+- **PROPOSED, NOT APPLIED — `revoke usage on schema public from anon`.** A role without `USAGE` on
+  the schema cannot reach anything inside it — table, view, or function — regardless of what
+  default privileges hand out at creation. That would neutralize trap 3 entirely for the untrusted
+  role, including the function half that `ALTER DEFAULT PRIVILEGES` can't fix. It does nothing for
+  `authenticated`, so it is a partial control, not a replacement for the SECURITY DEFINER rule.
+  **Unknowns, unprobed:** whether PostgREST needs `anon` to hold schema `USAGE` for schema-cache
+  introspection or for its root/OpenAPI endpoint to respond sanely, and whether it degrades the
+  denial from a clean 42501 into something less legible. `anon` already has zero grants on every
+  object in `public`, so it *should* be a no-op that adds a blanket layer — but "should be" is not
+  the standard used elsewhere in this document. Probe it against the anon key before applying.
 - **Assign `mochi_ad…` an owner** once a real user exists.
 - **Verify GoTrue's failed-delete transactionality** (trap 4).
+- **Resolve the trap 3 function mechanism** — why `ALTER DEFAULT PRIVILEGES ... REVOKE EXECUTE ON
+  FUNCTIONS FROM PUBLIC` removes the catalog entry without changing the behavior, contrary to
+  PostgreSQL's documented example. Logged as unresolved rather than explained.
 
 ## Notes for whoever touches this next
 

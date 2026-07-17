@@ -303,10 +303,20 @@ Code" experience. This is the packaging phase, the single largest remaining body
   literally instructs you to re-expose `key_hash` (point the frontend at `api_keys_public`
   instead), and `grant select (user_id)` looks like dead surface but is required by
   `usage_select_own`'s subquery — revoking it silently breaks every usage read.
-  **Still open, highest-value:** Supabase's default privileges re-grant full `anon` CRUD on
-  every new table *or view* created in `public` — this already fired once, auto-granting
-  `api_keys_public` to `anon` at creation. Until fixed, every new relation in `public` needs an
-  explicit `revoke all ... from anon, authenticated` immediately after creation.
+  **Default privileges (trap 3) — half-fixed 2026-07-17.** Supabase's bootstrap auto-granted full
+  `anon` CRUD on every new relation in `public` (it fired for real: `api_keys_public` arrived
+  pre-granted SELECT to `anon` that nobody wrote). `ALTER DEFAULT PRIVILEGES ... REVOKE` fixed
+  **tables, views, and sequences** — verified by probe. It did **not** fix **functions**, and
+  can't: Postgres's built-in EXECUTE-to-PUBLIC baseline isn't a row in `pg_default_acl`, so
+  revoking the explicit entry removes the catalog row and falls back to the baseline. **The
+  catalog reads clean while the hole is open** — worse than the original trap. Mechanism is
+  logged UNRESOLVED (it contradicts PostgreSQL's own documented example; not guessed at). What
+  replaces it is a process control: **every `SECURITY DEFINER` function in `public` must revoke
+  EXECUTE from PUBLIC in the same migration.** Narrow enough to hold — on `SECURITY INVOKER`
+  functions EXECUTE-to-PUBLIC is only a missing layer (the caller's own grants and RLS still
+  apply, which is why the pre-revoke `increment_usage` hole was latent, not live), but on
+  `SECURITY DEFINER` it's the entire perimeter. First place it bites: the deferred self-service
+  revocation function.
 
 - **Security review** — the daemon opens a local socket and the edit engine writes to user
   files; both must be reviewed before others run Mochiii. Blocking gate.
