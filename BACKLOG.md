@@ -264,6 +264,36 @@ tool is still deferred.
   ⚠️ **Standing risk: proxy has NO auth yet — anyone with the URL can spend the key.** Do not
   expose the URL publicly until Step 2 (auth/metering) lands.
 
+## Backlog — added 2026-07-17 (P2 caching investigation)
+
+The privacy half of this investigation is written up in
+[SECURITY_MODEL.md](SECURITY_MODEL.md#the-inference-hop--zdr-retention-finding) — a ZDR-labeled
+provider retained our prompt content across requests, corroborated by billing. Open, escalate to
+OpenRouter. What follows is the cost half.
+
+- **Provider cost variance is the real cost lever — an order of magnitude more than caching ever
+  offered.** An identical 492-token request cost **3.1× more on Io Net (1.23e-04) than on DeepInfra
+  (3.97e-05)**, and **2.2× more than on DigitalOcean**. Against `models.json`'s note field
+  ("~$0.11/$0.80 per 1M"): DigitalOcean matches it (1.12e-07/tok); **Io Net charged 2.5e-07/tok,
+  2.3× the noted price.** Live today — `zdr.allow_fallbacks: true` means any of the ~11
+  ZDR-compliant providers for this model can serve any request at whatever it charges, and 6
+  distinct providers were observed serving 8 prompts during the 2026-07-10 verification.
+  **This is a routing decision, not a caching one**, and it is where the cost leverage actually
+  sits. Not scoped here: whether to constrain `provider.order` / `provider.sort` toward the cheap
+  end of the ZDR-compliant pool, and what that would cost in the congestion the fallback pool
+  exists to escape. **Corroborates item (e)'s open note** ("fix the stale price comment in
+  models.json note field") — the note is not merely stale, it is 2.3× off for a provider that is
+  live on the route today.
+
+- **Known tension — NOT a to-do: `allow_fallbacks` is both the congestion fix and the caching
+  blocker.** `zdr.allow_fallbacks` was flipped `false` → `true` on **2026-07-10** specifically to
+  escape persistent DeepInfra 429s (see the ZDR gate entry — a throughput fix, not a privacy
+  change; the ZDR filter still constrains the pool). That same flag is exactly what defeats prompt
+  caching, which requires **sticky routing** to whichever provider holds the cache. **The fix for
+  congestion is the blocker for caching.** Recorded so nobody reopens caching-for-cost without
+  knowing they would be proposing to re-break the congestion fix — and per the item above, the cost
+  win is in provider choice anyway, which the same flag governs. No action; this is context.
+
 ## Phase 4 — standalone / packaging / commercialization (decided direction: capable first, then shippable)
 
 Scoped and decided this session, not started. Goal: a user installs the VS Code extension from
