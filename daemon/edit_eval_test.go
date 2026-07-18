@@ -154,7 +154,7 @@ var editEvalCases = []editEvalCase{
 		exactChunks: []string{
 			"daemon/provider.go:91-130", // zdrRefusalSubstrings + isZDRRoutingRefusal
 		},
-		note: "pre-fix zdrRefusalSubstrings is missing the live-observed \"zero data retention\" phrasing OpenRouter actually returns, so a real ZDR refusal surfaced as a raw error instead of the friendly message -- this case is a TEST-assertion failure, not a build failure, and its query text contains a real TestXxx function name (testFuncPattern's own trigger), giving this eval a second, distinct false-positive shape beyond the go-test/.test one",
+		note: "pre-fix zdrRefusalSubstrings is missing the live-observed \"zero data retention\" phrasing OpenRouter actually returns, so a real ZDR refusal surfaced as a raw error instead of the friendly message -- this case is a TEST-assertion failure, not a build failure: its captured query OPENS with \"--- FAIL: TestXxx\" (a real TestXxx name, testFuncPattern's own trigger), a second false-positive shape distinct from the go-test/.test build-failure one and now gated by capturedFailurePrefix so the test-file down-weight applies here too",
 	},
 }
 

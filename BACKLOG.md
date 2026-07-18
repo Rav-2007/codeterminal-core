@@ -45,14 +45,22 @@ are unaffected (H6 — raw similarity too low, target outside the ~30-candidate 
 regardless of class weight; see North Star item 3's DONE block) and were pre-registered as
 expected non-fixes before the fix was written, not discovered after the fact.
 
-**Known, deliberately unfixed, distinct gap:** `testFuncPattern` still fires when a genuine
-test failure's own output names its failing `TestXxx` function (e.g. `--- FAIL:
-TestIsZDRRoutingRefusal_...`), suppressing the down-weight the same way. Left alone — folding
-it into this fix would require guessing whether a `TestXxx` mention is the query's *subject*
-or just *narration*, which a regex over raw text can't do without becoming a fragile pile of
-special cases (see `TestLooksTestSeeking_StillFiresOnTestFuncNameInsideToolOutput`,
-`daemon/rerank_test.go`). Measured harmless in the one case that hit it (target still ranked
-#2 with or without the suppression) but not proven harmless in general.
+**Follow-up 2026-07-18: the distinct `testFuncPattern` gap is now closed.** A genuine test-
+ASSERTION failure or panic names its failing `TestXxx` function (e.g. `--- FAIL:
+TestIsZDRRoutingRefusal_...`), tripping `testFuncPattern` rather than `testSeekingWords` and so
+slipping past `goToolFailureNoise`. It is now recognized structurally rather than per-case:
+captured tool output OPENS with `--- FAIL`/`panic:`, which a genuine "what does `TestFoo`
+check?" question never does. New `capturedFailurePrefix` regexp (`rerank.go`) short-circuits
+`looksTestSeeking` to false for those, so the down-weight applies — one leading-marker signal,
+not the "fragile pile of special cases" this was originally deferred over. Measured on the same
+n=4 eval (real re-run, not the old numbers): `zdr-refusal-phrasing` (the one assertion-failure
+shape) went from hit #3 — implementation answer buried under four un-down-weighted
+`provider_test.go` chunks at #1/#2/#4/#5 — to hit #1, with all four of those test chunks
+dropped out of the top-5. The three build-failure cases are unchanged (they open with `# pkg`,
+untouched by the prefix gate): editapply hit #3, helperproc miss #67, tui miss #271. Chunk-
+level recall stays 2/4 — zdr was already a hit; this corrects its rank, not the count. Guard:
+`TestLooksTestSeeking_IgnoresCapturedAssertionFailureAndPanic`, `daemon/rerank_test.go`. (H6 —
+the two misses — remains unresolved and out of scope, per North Star item 3.)
 
 ### (c) DONE: Auto-apply-with-undo mode (VS Code)
 Opt-in, session-scoped auto-apply toggle in the VS Code panel, default OFF. Confirm-

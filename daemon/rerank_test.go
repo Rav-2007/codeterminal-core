@@ -149,25 +149,31 @@ func TestLooksTestSeeking_IgnoresGoToolFailureNoise(t *testing.T) {
 	}
 }
 
-// TestLooksTestSeeking_StillFiresOnTestFuncNameInsideToolOutput documents a
-// KNOWN, DELIBERATELY UNFIXED gap in the same family as the one the test
-// above guards: testFuncPattern (unlike testSeekingWords) is left untouched
-// by this fix, so a genuine test-FAILURE's own output -- which necessarily
-// names the failing TestXxx function -- still suppresses the down-weight,
-// same as a real query about that test would. Measured in
-// edit_eval_test.go's zdr-refusal-phrasing case: harmless there (the target
-// chunk still won at rank #2 despite the suppressed down-weight), but this
-// is the honest boundary of this fix, not swept under the rug. A clean
-// rule distinguishing "the query is ABOUT this test" from "this test's own
-// name appears in pasted failure output" needs a different signal (e.g.
-// whether the TestXxx name is the query's subject vs. buried in a
-// multi-line log) than a regex over raw text can give without becoming
-// exactly the "fragile pile of special cases" this fix is deliberately
-// avoiding.
-func TestLooksTestSeeking_StillFiresOnTestFuncNameInsideToolOutput(t *testing.T) {
-	q := "--- FAIL: TestSomethingUnrelated (0.00s)\n    foo_test.go:20: got 1, want 2\nFAIL\tcodeterminal/daemon\t0.10s"
-	if !looksTestSeeking(q) {
-		t.Errorf("looksTestSeeking(%q) = false, want true (testFuncPattern still fires on a TestXxx name embedded in tool output -- known gap, see comment)", q)
+// TestLooksTestSeeking_IgnoresCapturedAssertionFailureAndPanic is the
+// assertion-failure sibling of TestLooksTestSeeking_IgnoresGoToolFailureNoise
+// above. A pasted test-ASSERTION failure ("--- FAIL: TestXxx ...") or a panic
+// stack trace both NAME a TestXxx identifier -- the failing test, or a TestXxx
+// frame in the trace -- which trips testFuncPattern (not testSeekingWords) and
+// so slips past goToolFailureNoise's `go test`/`.test` strip. Both are
+// captured tool output a user pastes to FIX implementation, not a question
+// about test files; capturedFailurePrefix recognizes them by their leading
+// signature so the test-file down-weight still applies. This was previously a
+// deliberately-unfixed gap (measured in edit_eval_test.go's
+// zdr-refusal-phrasing case, where the implementation answer sat buried under
+// un-down-weighted _test.go chunks, surviving only by rank); it is now closed.
+// The distinguishing signal is structural -- the query OPENS with
+// "--- FAIL"/"panic:", which a genuine "what does TestFoo check?" never does,
+// so testFuncPattern's legitimate case (guarded in TestLooksTestSeeking) stays
+// intact.
+func TestLooksTestSeeking_IgnoresCapturedAssertionFailureAndPanic(t *testing.T) {
+	notSeeking := []string{
+		"--- FAIL: TestSomethingUnrelated (0.00s)\n    foo_test.go:20: got 1, want 2\nFAIL\tcodeterminal/daemon\t0.10s",
+		"panic: runtime error: invalid memory address or nil pointer dereference\n\ngoroutine 19 [running]:\ncodeterminal/daemon.TestWidgetSpawn(0x0)\n\t/src/widget_test.go:42 +0x1a4",
+	}
+	for _, q := range notSeeking {
+		if looksTestSeeking(q) {
+			t.Errorf("looksTestSeeking(%q) = true, want false (captured assertion-failure/panic output naming a TestXxx, not a question about tests)", q)
+		}
 	}
 }
 

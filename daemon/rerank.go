@@ -61,13 +61,28 @@ var testFuncPattern = regexp.MustCompile(`\bTest[A-Z]\w*`)
 // from a real captured build/test failure hits this on nearly every case
 // (see edit_eval_test.go), inverting testClassWeight's down-weight for a
 // query that is asking to fix IMPLEMENTATION, not find a test. Stripped out
-// before testSeekingWords is applied; testFuncPattern is deliberately left
-// alone (a query naming a specific TestXxx function, even inside pasted
-// tool output, is a much stronger and rarer signal — see
-// edit_eval_test.go's zdr-refusal-phrasing case for the one known instance
-// where that still fires on tool output, tracked as a separate, narrower
-// gap rather than folded into this fix).
+// before testSeekingWords is applied. This handles the BUILD-failure shape
+// (`go test`/`.test`); its sibling — a test-ASSERTION failure or panic, which
+// names a TestXxx function and so trips testFuncPattern rather than
+// testSeekingWords — is gated separately by capturedFailurePrefix below.
 var goToolFailureNoise = regexp.MustCompile(`(?i)\bgo\s+test\b|\.test\b`)
+
+// capturedFailurePrefix matches the leading signature of raw tool output a
+// user pastes when asking to FIX code: a test-assertion failure ("--- FAIL:
+// TestXxx ...") or a runtime panic ("panic: ..."). Both necessarily name a
+// TestXxx identifier — the failing test itself, or a TestXxx frame in the
+// panic's stack trace — which would otherwise trip testFuncPattern and
+// suppress the test-file down-weight for a query that is about
+// IMPLEMENTATION, not tests. Anchored to the START of the query on purpose:
+// no human question about a test opens with "--- FAIL"/"panic:", so a genuine
+// "what does TestFoo check?" (testFuncPattern's legitimate case) is left
+// untouched, while a pasted failure is recognized as the implementation-fix
+// query it is. This is the assertion-failure sibling of goToolFailureNoise's
+// build-failure shape. Measured: edit_eval_test.go's zdr-refusal-phrasing
+// case (a real "--- FAIL: TestXxx" assertion failure) had its implementation
+// answer buried under four un-down-weighted _test.go chunks with the
+// down-weight suppressed; gating it here lets the down-weight demote them.
+var capturedFailurePrefix = regexp.MustCompile(`^\s*(---\s+FAIL|panic:)`)
 
 // looksTestSeeking reports whether query appears to be asking about tests
 // themselves (as opposed to asking a question about implementation that
@@ -75,6 +90,12 @@ var goToolFailureNoise = regexp.MustCompile(`(?i)\bgo\s+test\b|\.test\b`)
 // the testClassWeight down-weight entirely, so a genuinely test-seeking
 // query is never penalized for finding test files.
 func looksTestSeeking(query string) bool {
+	// A pasted test-runner failure or panic is an implementation-fix query,
+	// never a question about test files — even though it names TestXxx
+	// functions. Recognize it before any test-vocabulary matching runs.
+	if capturedFailurePrefix.MatchString(query) {
+		return false
+	}
 	stripped := goToolFailureNoise.ReplaceAllString(query, " ")
 	return testSeekingWords.MatchString(stripped) || testFuncPattern.MatchString(query)
 }
