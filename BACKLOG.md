@@ -1,6 +1,8 @@
-**Next action: security review of the daemon (adversarial, start with the secret-stripping
-function — `editapply.MatchesSecretName`, `editapply/secret.go`). Do not add capability
-before shipping — see [North-Star / Deferred Capabilities](#north-star--deferred-capabilities-post-launch-post-security-review)
+**Next action: address the 2 P3 security-review FAILs (2026-07-18) before any P3 capability work —
+(1) `MatchesSecretName` case/key-coverage gap [High], (2) unconfined undo writer `restoreOne`
+[Moderate]. Full write-up + scoped fix tasks in the "P3 daemon security review" section below. The
+editapply-write-path review is done; the socket-review axis of the release gate is not. Do not add
+capability before shipping — see [North-Star / Deferred Capabilities](#north-star--deferred-capabilities-post-launch-post-security-review)
 section for deferred items and why.**
 
 ## Known deferred debts
@@ -363,6 +365,105 @@ OpenRouter. What follows is the cost half.
     are the North Star item 3 direction (chunking / query expansion / a stronger embedder), not
     pool width.
 
+## Backlog — added 2026-07-18 (P3 daemon security review — editapply write path)
+
+**Adversarial review of the editapply write path ran at HEAD (`be7c24d`). Result: NOT closed —
+the five structural gates hold, but TWO findings FAIL. The P3 capability-work gate (orchestration
+loop, editapply CREATE, any new write capability) is NOT clear until both are addressed.** Every
+claim below was exercised against the real functions via live Go probes, not read-and-approved.
+
+**PASS (mechanism that makes each hold):**
+- **Gate 1 — string-form confinement (PASS).** `filepath.IsAbs` rejects absolute paths; the check
+  runs on `filepath.Clean(relPath)` so `..`/`foo/../../etc` collapse and are rejected by the
+  `..`-prefix test *before* any join (`editapply/apply.go:123-130`). Independent of the filesystem.
+- **Gate 2 — symlink-resolved confinement (PASS).** `EvalSymlinks` canonicalizes the target, then
+  `filepath.Rel(root, resolved)` must not escape (`apply.go:132-141`); PrepareEdit/Apply then read
+  and write the *resolved* path (no symlink components), defusing the check-then-swap-a-dir TOCTOU.
+  Live-tested dir-symlink and file-symlink escapes — both rejected. Side effect: `EvalSymlinks`
+  requires existence, so this path *cannot create files* — consistent with "no CREATE yet."
+- **Gate 3 — exact-match / ambiguity (PASS).** 0 matches → "not found"; >1 → "ambiguous, refusing";
+  exactly 1 → applied at the unique index (`apply.go:45-54`). Empty/whitespace SEARCH rejected
+  upstream (`editblock.go:60`). No silent best-guess.
+- **Gate 4 — syntax gate (PASS *as scoped*, must not be over-claimed).** Runs `go/parser` for `.go`
+  only and checks *parseability* only; all other extensions get "no syntax check applied"
+  (`apply.go:58-64`). It prevents corrupting a Go file into non-compiling garbage. It is NOT a
+  malicious-content control (valid-but-hostile Go passes) and is a no-op for non-Go. The real
+  defense against malicious *content* is the human diff + `[y/N]` confirmation, not this gate.
+- **Gate 5 — backup → write (PASS on durability; one low-sev caveat).** Order is
+  `BackupOriginal → write → BackupAfter` (`apply.go:94-104`); a backup failure returns before the
+  write. `os.WriteFile` isn't atomic, but the pre-write backup makes the original *recoverable*:
+  die mid-write → `before/` exists, `after/` missing → undo *guards* (won't auto-restore) instead
+  of losing data. **Caveat (low, correctness):** `BackupOriginal` snapshots `p.Original` captured
+  at *prepare* time, not re-read at *apply* time — if the file changes between prepare and apply,
+  the `before/` copy is stale and the concurrent modification is clobbered with no backup of the
+  actual overwritten bytes. Narrow (prepare→confirm→apply is fast, human-gated) but real.
+
+### P3-FAIL-1 (High): `MatchesSecretName` — case-fold bug CONTAINED (partial); policy breadth + chunk exit STILL OPEN
+**Status: PARTIALLY CONTAINED, NOT closed.** The case-fold bug is fixed; the two structural
+gaps behind the same leak remain open. Do not record FAIL-1 as resolved.
+
+- **Case-fold bug — FIXED** (commit on 2026-07-18): `MatchesSecretName` (`editapply/secret.go:29`)
+  lowercased the basename for the *substring* check but passed the **original-case** basename to
+  `filepath.Match` for the *glob* check. `filepath.Match` has no case-fold mode, so every extension
+  glob was case-sensitive. Fix: match the (already-lowercase) globs against the lowercased base.
+  Verified live before/after against the real function — now refused: `.ENV`, `.Env`, `server.PEM`,
+  `cert.Pem`, `private.KEY`, `cert.P12`, `ID_RSA`, `.ENV.local`. No regression: lowercase secrets
+  (`.env`, `server.pem`, `id_rsa`, `cert.p12`, `mysecret.txt`, `credentials.json`) still refuse;
+  normal files (`main.go`, `server.py`, `README.md`, `chunker.go`) still allowed.
+- **Secret-name policy breadth — STILL OPEN** (scoped, reviewed follow-up): the case fix does NOT
+  broaden the list. Never covered at all: `id_ed25519`/`id_ecdsa`/`id_dsa` (any non-RSA SSH key —
+  `id_rsa*` doesn't match them), `.npmrc`, `.netrc`, `.pgpass`, `kubeconfig`, `.htpasswd`, `*.pfx`,
+  `*.tfstate`, service-account JSON. These walk straight through today.
+- **Unscrubbed chunk content POSTed to hosted provider — STILL OPEN, HIGHEST-VALUE ITEM.** The name
+  gate is only a blocklist over *filenames*; the actual exfiltration mechanism is that indexed chunk
+  *content* is retrieved and POSTed unscrubbed to the hosted RAG completion endpoint (see
+  chunk-text-network-exit finding). Content scrubbing is what closes the class — the name gate can
+  never be complete. This is the structural fix, not a follow-on nicety.
+- **`server.go:203` false "retrieval never leaves this machine" comment — STILL OPEN.**
+- **Why High, not cosmetic:** `MatchesSecretName` is the shared single source of truth — the
+  **indexer** calls it too (`daemon/chunker.go:168`) to skip secrets from the RAG index. So the
+  gap isn't only "an edit block could rewrite `.ENV`"; it's that `.ENV`/`id_ed25519`/`.npmrc` get
+  read into the index, embedded, retrieved as context, and **sent to the LLM/provider** — a live
+  credential-exfiltration path. This is exactly the "assumed-true, never-verified security claim"
+  shape this gate exists to catch: the secret gate was believed to cover secrets; it doesn't cover
+  case variants or any non-RSA SSH key.
+- **Remaining scoped fix task:** broaden the policy (non-RSA SSH keys, `.pfx`, `.npmrc`, `.netrc`,
+  `.pgpass`, `kubeconfig`, `*.tfstate`, service-account JSON) — reviewed as one unit, and understood
+  as still only a blocklist. The class is not closed until chunk-content scrubbing lands (above).
+
+### P3-FAIL-2 (Moderate): the "all writes route through `editapply.Apply()`" claim is false — undo is a 4th, unconfined workspace writer
+Enumerated every workspace-source write at HEAD (not carried forward as assumed). The 3 `Apply`
+callers are still exactly 3 and all routed (`daemon/server.go:308`, `clients/tui/chat.go:519`,
+`daemon/apply_cmd.go:127`); the TUI's only workspace write is via `Apply`; `writeBackupCopy`
+writes only into `backupDir`. **But `restoreOne` (`daemon/apply_cmd.go:312-327`) is a fourth
+workspace-file writer that bypasses `Apply` entirely** — reachable via the CLI `edits undo` *and*
+the daemon's `UndoRequest` handler (`server.go:417` → `runUndoSession` → `restoreOne`). It does
+`os.WriteFile(filepath.Join(root, rel), …)` with **no `ResolveSafeTargetPath`, no `EvalSymlinks`,
+no secret recheck.** `rel` comes from walking the backup tree (can't contain `..`) and the content
+is the user's own trusted backup — so this does NOT widen the untrusted-edit-block surface. But the
+destination is not symlink-resolved: proved live that a plain `os.WriteFile` to a path that is a
+symlink follows it and writes outside the root (probe wrote through a symlink to a victim file
+outside the temp root). So: plant a symlink at `root/config.go` (or a parent dir) after an apply
+created its backup, trigger undo, and the restore writes backup content through the symlink to an
+arbitrary location; `MkdirAll` can also materialize dirs.
+- **Severity Moderate:** requires local workspace write access *plus* an undo trigger, and the
+  attacker controls the destination, not the payload (it's the user's own backup). But it flatly
+  falsifies the load-bearing single-write-path claim, and the undo writer has *none* of the
+  confinement discipline the apply writer has.
+- **Scoped fix task:** route `restoreOne` through the same confinement the apply writer uses
+  (`EvalSymlinks` + `Rel`-inside-root check, ideally `O_NOFOLLOW` on the write) so undo inherits
+  apply's discipline and "all workspace writes are confined" becomes literally true.
+
+**Lower-severity items to log, not gate on:** Gate 5's stale-`before`-snapshot caveat (above); and
+an inherent leaf-swap TOCTOU on both apply and undo (swapping the final file for a symlink between
+resolve and `os.WriteFile`, which lacks `O_NOFOLLOW`) — requires local workspace write access, so
+an attacker already inside the trust boundary; note as hardening.
+
+**Standing caveat for when the FAILs are fixed:** this reviewed the *current* write path. CREATE
+support removes the `EvalSymlinks`-requires-existence property that currently anchors Gate 2 —
+writing to non-existent paths and parent-dir symlinks is new confinement surface that needs its
+own review even after both findings above are closed.
+
 ## Phase 4 — standalone / packaging / commercialization (decided direction: capable first, then shippable)
 
 Scoped and decided this session, not started. Goal: a user installs the VS Code extension from
@@ -419,6 +520,11 @@ Code" experience. This is the packaging phase, the single largest remaining body
 
 - **Security review** — the daemon opens a local socket and the edit engine writes to user
   files; both must be reviewed before others run Mochiii. Blocking gate.
+  **P3 editapply-write-path review ran 2026-07-18 — NOT closed (2 FAILs).** The 5 structural gates
+  hold; `MatchesSecretName` case/key-coverage gap (High) and an unconfined undo writer `restoreOne`
+  (Moderate) fail. Full write-up + scoped fix tasks: see "P3 daemon security review" section above.
+  P3 capability work (orchestration loop, editapply CREATE, any new write capability) stays blocked
+  until both are addressed. Socket-review axis not covered by this pass.
 - **ZDR confirmation — code-complete, BOTH positive and negative paths live-verified
   (2026-07-09).**
   ⚠️ **Enforcement is verified; the guarantee it is meant to deliver is not.** A ZDR-labelled

@@ -33,8 +33,12 @@ func MatchesSecretName(base string) bool {
 			return true
 		}
 	}
+	// Match the globs against the lowercased basename. filepath.Match has no
+	// case-fold mode, so matching against the original-case base let case
+	// variants (.ENV, *.PEM, *.KEY, *.P12, ID_RSA) slip through. The globs in
+	// SecretFileGlobs are all lowercase, so comparing against lower is symmetric.
 	for _, glob := range SecretFileGlobs {
-		if ok, _ := filepath.Match(glob, base); ok {
+		if ok, _ := filepath.Match(glob, lower); ok {
 			return true
 		}
 	}
