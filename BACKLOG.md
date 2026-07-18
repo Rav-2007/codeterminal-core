@@ -1,8 +1,13 @@
-**Next action: address the 2 P3 security-review FAILs (2026-07-18) before any P3 capability work —
-(1) `MatchesSecretName` case/key-coverage gap [High], (2) unconfined undo writer `restoreOne`
-[Moderate]. Full write-up + scoped fix tasks in the "P3 daemon security review" section below. The
-editapply-write-path review is done; the socket-review axis of the release gate is not. Do not add
-capability before shipping — see [North-Star / Deferred Capabilities](#north-star--deferred-capabilities-post-launch-post-security-review)
+**Next action: address the open P3 security-review FAILs before any P3 capability work. From the
+editapply-write-path review (2026-07-18): (1) `MatchesSecretName` case/key-coverage gap [High],
+(2) unconfined undo writer `restoreOne` [Moderate]. From the socket-axis review (2026-07-19):
+(3) the socket has no authentication and no resource limits — any same-uid process can drive the
+daemon's full write/undo/inference surface with zero credentials [Moderate on a pristine single-user
+box, High under supply-chain/shared-machine threat models], gated on an undecided auth-model call.
+Full write-ups + scoped fix tasks in the two "P3 daemon security review" sections below. The
+editapply-write-path review is done; the socket-review axis was reviewed 2026-07-19 and also FAILs —
+the release gate is clear on neither axis. Do not add capability before shipping — see
+[North-Star / Deferred Capabilities](#north-star--deferred-capabilities-post-launch-post-security-review)
 section for deferred items and why.**
 
 ## Known deferred debts
@@ -496,6 +501,93 @@ support removes the `EvalSymlinks`-requires-existence property that currently an
 writing to non-existent paths and parent-dir symlinks is new confinement surface that needs its
 own review even after both findings above are closed.
 
+## Backlog — added 2026-07-19 (P3 daemon security review — socket axis)
+
+**Adversarial review of the daemon's Unix-socket axis ran against a live, isolated daemon instance
+(its own workspace, its own socket). Result: NOT closed — the socket is the second axis of the
+release-gate security review (the first being the editapply write path above), and it FAILS: two
+hard FAILs and two PARTIALs. The P3 capability-work gate cannot be called clear on this axis until
+the auth-model question below is decided.** Every claim was exercised against a running daemon over
+the real socket, not read-and-approved: unauthenticated requests were sent and their on-disk /
+in-memory effects observed.
+
+**Headline finding — lead with this, do not bury it.** The daemon is an unauthenticated *confused
+deputy* for the user's inference credential. The socket has no authentication of any kind, so any
+same-uid process — a compromised dependency, an IDE extension, an `npm`/`pip` postinstall script, a
+language server — can connect and send prompts that are **billed to the user** and that **exfiltrate
+arbitrary data to the hosted provider, with zero credentials and no sight of the key.** The attacker
+never needs the key: the daemon already holds the authenticated inference path, and a same-uid
+process just drives it. **Severity: Moderate on a pristine single-user box, High under
+supply-chain / shared-machine threat models** — stated exactly as the review framed it, not
+simplified to one label.
+
+**Status: OPEN, blocking the P3 gate. Not closed, not scheduled, not assigned a fix owner.** The
+gate stays un-clear on the socket axis until the auth-model decision (below) is made.
+
+### P3-FAIL-3: the socket has no authentication and no resource limits — any same-uid process can drive the daemon's full write/undo/inference surface with zero credentials
+
+**The two hard FAILs:**
+- **Gate 3 — no authentication on any request type (FAIL).** The handshake (`handleConn`,
+  `daemon/server.go:99`) checks only `ProtocolVersion` — no credential, no peer check, no token.
+  Proven live: an unauthenticated client completed the handshake and sent an `ApplyEditRequest` that
+  wrote `PWNED_BY_UNAUTH_SOCKET` to a file on disk. The full write / undo / inference surface is
+  reachable by anyone who can `connect()` the socket.
+- **Gate 5 — no size, time, or connection limits (FAIL).** `Serve` (`server.go:86`) accepts in an
+  unbounded loop, one goroutine per connection, with no ceiling; `handleConn` sets no read/idle
+  deadline and `json.NewDecoder(conn)` (`server.go:103`) has no message-size cap. Proven live:
+  (a) 100 pinned half-open connections each hold a goroutine indefinitely — nothing reaps them;
+  (b) a single ~200 MB request drove daemon RSS to ~896 MB — an unauthenticated same-uid process
+  can OOM or wedge the daemon at will.
+
+**The two PARTIAL findings (logged at the review's stated severity — not rounded up):**
+- **Gate 6 — no cross-request lock on the Apply/Undo filesystem path (PARTIAL).** Each connection is
+  handled on its own goroutine and the Apply / Undo write path takes no cross-request lock, so two
+  concurrent requests can interleave on the same files. Flagged as a TOCTOU *amplifier* (see Gate 8),
+  not a standalone break.
+- **Gate 7 — error responses leak absolute paths / internal resolution details (PARTIAL,
+  low-impact-today-but-conditional).** Error strings returned over the socket include absolute
+  filesystem paths and internal path-resolution detail. Low impact on a single-user box; conditional
+  value to an attacker who does not already know the layout (e.g. a sandboxed dependency), so noted
+  rather than dismissed.
+
+**Gate 8 — synthesis against the FAIL-2 fix.** This finding does **not** break the FAIL-2 fix: the
+undo writer's `EvalSymlinks`+`Rel` confinement and `O_NOFOLLOW` leaf guard still hold exactly as
+reviewed. What it changes is *what FAIL-2 was defending*. An attacker who can reach the socket does
+not need the undo TOCTOU at all — they can send an `ApplyEditRequest` directly and write wherever the
+(confined) apply path allows, with no symlink race required. Consequently the still-open
+mid-ancestor-directory-swap TOCTOU item's **practical urgency is modestly raised** — the socket gives
+an attacker unlimited free retries to win the race — even though its **impact ceiling is unchanged**
+(it was always local-write-access-gated, and the socket is exactly a same-uid local reach).
+
+**Source / method:** this audit, 2026-07-19 — a live daemon on its own isolated workspace and
+socket, driven gate-by-gate by unauthenticated client connections. PID / session specifics are not
+preserved here (they don't matter months from now); the gate-by-gate findings above are the record.
+
+**Scoped follow-ups (seeds for future master prompts, not full task write-ups):**
+- **Auth-model decision — founder-level; THIS is the item that blocks the gate.** Is
+  *same-uid-implies-trusted* the accepted trust model for the socket, or does the daemon need to
+  verify its peer — e.g. `SO_PEERCRED` on the Unix socket, or a per-session token minted into the
+  0600 lockfile that clients must echo? Everything else in FAIL-3 is secondary until this is decided:
+  the DoS and locking work all assume a trust boundary this decision defines. Left open as a founder
+  call — no preference stated here.
+- **DoS hardening** — a message-size cap on the JSON decoder, a read/idle deadline per connection,
+  and a connection / in-flight-request ceiling. Each is small, self-contained, and independently
+  fixable; none depends on the auth decision.
+- **Concurrent Apply/Undo serialization** — no cross-request lock guards the filesystem write path
+  today (Gate 6). Flagged as a TOCTOU amplifier; deserves the same repro-driven depth the `restoreOne`
+  undo-writer audit (FAIL-2) got, not a guessed lock.
+- **`recover()` backstop for `handleConn`** — defense-in-depth so a future handler panic can't take
+  the whole daemon down with it (a panic in a per-connection goroutine currently crashes the
+  process). Not triggered by anything today; still worth closing.
+
+**Minor, non-gating (Gate 2 hardening notes — do not weight these with the four items above):**
+(1) a brief permission window between `net.Listen("unix", …)` (`daemon/main.go:159`) and the
+`os.Chmod(socketPath, 0600)` that follows it (`main.go:163`) — the socket exists at default perms
+for that window. (2) When `XDG_RUNTIME_DIR` is unset, `RuntimeDir()` falls back to the shared OS
+temp dir (`protocol/protocol.go:29-34`); the socket dir is still `MkdirAll`'d 0700, but then lives
+under a world-writable parent rather than a per-user runtime dir. Both minor; note as hardening,
+not gate-blockers.
+
 ## Phase 4 — standalone / packaging / commercialization (decided direction: capable first, then shippable)
 
 Scoped and decided this session, not started. Goal: a user installs the VS Code extension from
@@ -554,9 +646,15 @@ Code" experience. This is the packaging phase, the single largest remaining body
   files; both must be reviewed before others run Mochiii. Blocking gate.
   **P3 editapply-write-path review ran 2026-07-18 — NOT closed (2 FAILs).** The 5 structural gates
   hold; `MatchesSecretName` case/key-coverage gap (High) and an unconfined undo writer `restoreOne`
-  (Moderate) fail. Full write-up + scoped fix tasks: see "P3 daemon security review" section above.
-  P3 capability work (orchestration loop, editapply CREATE, any new write capability) stays blocked
-  until both are addressed. Socket-review axis not covered by this pass.
+  (Moderate) fail. Full write-up + scoped fix tasks: see "P3 daemon security review — editapply write
+  path" section above. P3 capability work (orchestration loop, editapply CREATE, any new write
+  capability) stays blocked until both are addressed.
+  **P3 socket-axis review ran 2026-07-19 — NOT closed (2 hard FAILs + 2 PARTIALs).** The socket has
+  no authentication (any same-uid process drives the full write/undo/inference surface with zero
+  credentials) and no resource limits. Severity: Moderate on a pristine single-user box, High under
+  supply-chain/shared-machine threat models. Full write-up + scoped fix tasks: see "P3 daemon
+  security review — socket axis" section (FAIL-3) above. This axis also blocks the P3 gate; the
+  undecided auth-model call is the item gating it.
 - **ZDR confirmation — code-complete, BOTH positive and negative paths live-verified
   (2026-07-09).**
   ⚠️ **Enforcement is verified; the guarantee it is meant to deliver is not.** A ZDR-labelled
