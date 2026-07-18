@@ -199,8 +199,13 @@ func (s *Server) handleConn(conn net.Conn) {
 	// cleanPrompt is scrubbed of high-confidence secret shapes (see
 	// daemon/scrub.go) before it's sent anywhere near the model API. This is
 	// the ONLY place scrubbing applies: outcome.Chunks (RAG-retrieved
-	// workspace content, gathered above from the RAW promptReq.Prompt, which
-	// is fine since retrieval never leaves this machine) is never scrubbed.
+	// workspace content, gathered above from the RAW promptReq.Prompt) is
+	// never scrubbed. Note this is NOT because chunk content stays local: the
+	// query embedding is computed locally (ONNX) and never leaves the machine,
+	// but the retrieved chunk content itself IS folded into augmentedPrompt
+	// below and POSTed to the hosted completion provider on every grounded
+	// turn. So chunk content is NOT exempt from scrubbing consideration —
+	// scrubbing it is a known open item (see daemon/CHUNK_SCRUB_DESIGN.md).
 	cleanPrompt, redactions := scrub(promptReq.Prompt, s.cfg.NoScrub)
 	augmentedPrompt := cleanPrompt
 	if !outcome.Skipped {

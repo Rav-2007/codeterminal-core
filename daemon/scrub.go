@@ -45,10 +45,14 @@ var scrubPatterns = []struct {
 // scrub replaces every high-confidence secret-shaped match in text with a
 // labeled placeholder ([REDACTED:<kind>]) and reports what it found. If
 // disabled is true, it's a pure no-op — returns text unchanged and a nil
-// redactions slice — used by the --no-scrub escape hatch. Only ever scrub
-// the user's own typed prompt; never RAG-retrieved chunk content, which is
-// local workspace text, not user-pasted secret material, and must reach the
-// model unmodified.
+// redactions slice — used by the --no-scrub escape hatch. Today this is only
+// called on the user's own typed prompt, not on RAG-retrieved chunk content.
+// That is NOT because chunk content stays local: the query embedding is
+// computed locally (ONNX) and never leaves the machine, but the retrieved
+// chunk content itself IS POSTed to the hosted completion provider on every
+// grounded turn (see buildAugmentedUserMessage and its call site in
+// server.go). Scrubbing chunk content is a known open item, not a settled
+// "never" — see daemon/CHUNK_SCRUB_DESIGN.md for the scoping.
 func scrub(text string, disabled bool) (cleaned string, redactions []Redaction) {
 	if disabled {
 		return text, nil
