@@ -26,11 +26,12 @@ import (
 )
 
 // warnDetection is one LOG-ONLY signal from a deferred detector. It is
-// deliberately free of raw secret material — Detector and Note are fixed/
-// computed labels, Indicator is a one-way hash prefix, never the value.
+// deliberately free of raw secret material — Detector, Note and Shape are
+// fixed/computed labels, Indicator is a one-way hash prefix, never the value.
 type warnDetection struct {
 	Detector  string // "entropy" | "keyword"
 	Note      string // secret-free, e.g. "len=44 bits_per_char=4.72" or "keyword=password value_len=18"
+	Shape     string // fixed-label token shape for FP triage: hex|base64|uuid-like|mixed|unknown
 	Indicator string // "sha256:xxxxxxxx" over the suspected value; never the value itself
 }
 
@@ -68,6 +69,7 @@ func detectHighEntropy(text string) []warnDetection {
 		out = append(out, warnDetection{
 			Detector:  "entropy",
 			Note:      fmt.Sprintf("len=%d bits_per_char=%.2f", len(tok), bits),
+			Shape:     classifyTokenShape(tok),
 			Indicator: valueIndicator(tok),
 		})
 	}
@@ -116,6 +118,7 @@ func detectKeywordSecrets(text string) []warnDetection {
 		out = append(out, warnDetection{
 			Detector:  "keyword",
 			Note:      fmt.Sprintf("keyword=%s value_len=%d", keyword, len(value)),
+			Shape:     classifyTokenShape(value),
 			Indicator: valueIndicator(value),
 		})
 	}
@@ -150,4 +153,36 @@ func isNonSecretValue(v string) bool {
 func valueIndicator(v string) string {
 	sum := sha256.Sum256([]byte(v))
 	return "sha256:" + hex.EncodeToString(sum[:])[:8]
+}
+
+var (
+	uuidLikePattern  = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+	allHexPattern    = regexp.MustCompile(`^[0-9a-fA-F]+$`)
+	base64ishPattern = regexp.MustCompile(`^[A-Za-z0-9+/=_\-]+$`)
+)
+
+// classifyTokenShape returns a COARSE, FIXED-LABEL description of a suspected
+// value's character shape — a triage aid so a later human review can separate
+// true secrets from the dominant false positives (git SHAs, content hashes,
+// UUIDs, base64 assets/lockfile integrity strings; see CHUNK_SCRUB_DESIGN §2b)
+// without re-opening every source file.
+//
+// It is NOT a detector and makes NO secret/not-secret decision — it never
+// feeds redaction. Non-negotiable (preserves Gate 3): it returns ONLY one of a
+// fixed set of labels and NEVER any substring of tok, so no raw value material
+// can ride out on the shape field. Order matters: uuid (most specific) before
+// hex before base64 (hex's alphabet is a subset of base64's).
+func classifyTokenShape(tok string) string {
+	switch {
+	case tok == "":
+		return "unknown"
+	case uuidLikePattern.MatchString(tok):
+		return "uuid-like"
+	case allHexPattern.MatchString(tok):
+		return "hex"
+	case base64ishPattern.MatchString(tok):
+		return "base64"
+	default:
+		return "mixed"
+	}
 }

@@ -23,13 +23,15 @@ import (
 // one-way indicator hash (see chunkscrub.go). Adding a field here that could
 // reconstruct the value would reintroduce the exact leak Gate 3 verified absent.
 type warnEvent struct {
-	Ts        string `json:"ts"`         // RFC3339 UTC, so a rate over time is computable
-	Detector  string `json:"detector"`   // "entropy" | "keyword"
-	File      string `json:"file"`       // source path of the chunk the fire came from
-	StartLine int    `json:"start_line"` // chunk span, to relocate the fire in-source
-	EndLine   int    `json:"end_line"`
-	Note      string `json:"note"`      // secret-free stats, e.g. "len=41 bits_per_char=5.11"
-	Indicator string `json:"indicator"` // "sha256:xxxxxxxx" over the value; never the value
+	Ts        string    `json:"ts"`         // RFC3339 UTC, so a rate over time is computable
+	Detector  string    `json:"detector"`   // "entropy" | "keyword"
+	File      string    `json:"file"`       // source path of the chunk the fire came from
+	StartLine int       `json:"start_line"` // chunk span, to relocate the fire in-source
+	EndLine   int       `json:"end_line"`
+	Class     FileClass `json:"class"`     // chunk's file class (code/test/doc/config/other), threaded from retrieval
+	Shape     string    `json:"shape"`     // fixed-label token shape (hex/base64/uuid-like/mixed/unknown)
+	Note      string    `json:"note"`      // secret-free stats, e.g. "len=41 bits_per_char=5.11"
+	Indicator string    `json:"indicator"` // "sha256:xxxxxxxx" over the value; never the value
 }
 
 // warnSinkMaxBytes bounds the active file before rotation. One rotation keeps a
