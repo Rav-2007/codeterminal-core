@@ -58,6 +58,12 @@ type Server struct {
 	// degrading to "no cross-session memory" rather than failing the
 	// request, exactly like embedder/store above.
 	memory *MemoryStore
+
+	// warnSink is the durable, local, append-only home for warn-mode
+	// (log-only) chunk-secret fire events (see warnsink.go / logChunkScrub).
+	// nil is a valid no-op sink — a failing or unconfigured sink must never
+	// affect a request, so every use goes through its nil-safe write method.
+	warnSink *warnSink
 }
 
 // route decides which tier handles the next request. The request path

@@ -195,6 +195,11 @@ func main() {
 		rerankDisabled:     *noRerank || cfg.Retrieval.RerankDisabled,
 		workspace:          absWorkspace,
 		memory:             memoryStore,
+		// Durable warn-mode sink under the workspace's already-gitignored
+		// .codeterminal state dir (same convention as index/ and backups/), so
+		// the log-only fire-rate data survives daemon restarts instead of
+		// vanishing with stderr. Local file only — no network egress.
+		warnSink: newWarnSink(filepath.Join(absWorkspace, ".codeterminal", "logs", "warnmode.jsonl")),
 	}
 	go srv.Serve(ln)
 

@@ -214,6 +214,17 @@ func (s *Server) logChunkScrub(chunks []Chunk) {
 		for _, d := range warns {
 			s.logger.Printf("chunk-scrub warn-mode (LOG ONLY, not redacted, not sent to model): detector=%s file=%s %s indicator=%s",
 				d.Detector, ref, d.Note, d.Indicator)
+			// Durable twin of the stderr line above, so the fire-rate data
+			// actually accumulates across restarts (warnsink.go). Same
+			// secret-free fields; nil-safe and failure-safe.
+			s.warnSink.write(warnEvent{
+				Detector:  d.Detector,
+				File:      c.FilePath,
+				StartLine: c.StartLine,
+				EndLine:   c.EndLine,
+				Note:      d.Note,
+				Indicator: d.Indicator,
+			})
 		}
 		warnHits += len(warns)
 	}
