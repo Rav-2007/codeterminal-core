@@ -265,8 +265,24 @@ func rankOfChunk(hits []Chunk, exactChunks []string) int {
 type editEvalResult struct {
 	name  string
 	query string
-	rank  int  // 0 = not found even in the full ranked list
-	hit   bool // rank != 0 && rank <= displayK
+	rank  int  // 0 = not found even in the full ranked list (k=all, fused+reranked)
+	hit   bool // rank != 0 && rank <= displayK -- top-5 of the FULL ordering (POOL-INSENSITIVE)
+
+	// prodRank/prodHit are the POOL-SENSITIVE verdict: does an exactChunk land
+	// in the real top-5 when retrieveTopK is called the way production calls it
+	// (k = displayK, so rerankPoolSize(k) imposes the same overfetch cutoff)?
+	// This is the ONLY field a pool-width constant can move -- the k=all `rank`
+	// above always fetches the whole corpus (rerankPoolSize(len(chunks)) far
+	// exceeds it), so widening the pool provably cannot change it.
+	prodRank int  // 1-based position within the production-shaped top-5; 0 if absent
+	prodHit  bool // prodRank != 0
+
+	// semRank is the raw SEMANTIC rank (rerank=false, k=all == pure store.Query;
+	// no lexical tier, no class reweighting) -- the rank the semantic pool must
+	// reach to fetch this chunk at all. Diagnostic: lets a prodHit MISS be read
+	// as "outside the pool" (semRank > semantic pool) vs "in the pool but
+	// reranked out of the top-5".
+	semRank int // 0 = not found
 }
 
 // runEditEvalPass runs every case in editEvalCases against a fresh git-
@@ -313,25 +329,55 @@ func runEditEvalPass(ctx context.Context, t *testing.T, repoRoot string, embedde
 
 			rank := rankOfChunk(hits, c.exactChunks)
 			hit := rank != 0 && rank <= displayK
-			results[i] = editEvalResult{name: c.name, query: query, rank: rank, hit: hit}
 
-			mark := "MISS"
-			if hit {
-				mark = "hit"
+			// Production-shaped retrieval: k = displayK, so rerankPoolSize(k)
+			// (rerank.go) imposes the SAME overfetch cutoff production uses
+			// (context.go; defaultK == displayK). This is the ONLY measurement
+			// in this eval a pool-width constant can move -- the full-corpus
+			// call above passes k = len(scan.Chunks), so rerankPoolSize far
+			// exceeds the corpus and everything is fetched regardless of the
+			// constant. The pool-width experiment lives or dies on prodHit.
+			prodHits, err := retrieveTopK(ctx, query, displayK, embedder, store, lexicalStore, true)
+			if err != nil {
+				t.Fatalf("retrieveTopK(prod k=%d, %q): %v", displayK, query, err)
 			}
-			rankStr := "not found"
+			prodRank := rankOfChunk(prodHits, c.exactChunks)
+			prodHit := prodRank != 0
+
+			// Raw semantic ordering (rerank=false, k=all: pure store.Query --
+			// no lexical tier, no class reweighting): the rank the semantic
+			// pool must reach to fetch this chunk at all. Lets a prodHit MISS
+			// be read as "outside the pool" (semRank > semantic pool) vs
+			// "fetched into the pool but reranked out of the top-5".
+			semHits, err := retrieveTopK(ctx, query, len(scan.Chunks), embedder, store, nil, false)
+			if err != nil {
+				t.Fatalf("retrieveTopK(semantic k=all, %q): %v", query, err)
+			}
+			semRank := rankOfChunk(semHits, c.exactChunks)
+
+			results[i] = editEvalResult{name: c.name, query: query, rank: rank, hit: hit, prodRank: prodRank, prodHit: prodHit, semRank: semRank}
+
+			fullStr := "not found"
 			if rank != 0 {
-				rankStr = fmt.Sprintf("#%d of %d", rank, len(scan.Chunks))
+				fullStr = fmt.Sprintf("#%d of %d", rank, len(scan.Chunks))
 			}
-			t.Logf("\n=== %s ===\nquery (%d bytes, raw captured):\n%s\n\nexpected chunks: %v\nrank: %s -> %s\n", c.name, len(query), query, c.exactChunks, rankStr, mark)
-			if hit {
-				for j, h := range hits[:displayK] {
-					t.Logf("  top-5 #%d: %-40s class=%-6s raw=%.4f weighted=%.4f", j+1, chunkID(h), h.Class, h.RawScore, h.Score)
-				}
-			} else {
-				for j, h := range hits[:min(displayK, len(hits))] {
-					t.Logf("  top-5 #%d: %-40s class=%-6s raw=%.4f weighted=%.4f", j+1, chunkID(h), h.Class, h.RawScore, h.Score)
-				}
+			semStr := "not found"
+			if semRank != 0 {
+				semStr = fmt.Sprintf("#%d of %d", semRank, len(scan.Chunks))
+			}
+			prodStr := fmt.Sprintf("not in top-%d", displayK)
+			prodMark := "MISS"
+			if prodHit {
+				prodStr = fmt.Sprintf("#%d", prodRank)
+				prodMark = "hit"
+			}
+			t.Logf("\n=== %s ===\nquery (%d bytes, raw captured):\n%s\n\nexpected chunks: %v\n"+
+				"full-ordering rank (k=all, POOL-INSENSITIVE diagnostic): %s\n"+
+				"raw semantic rank (rerank=false):                      %s\n"+
+				"PRODUCTION-SHAPED verdict (k=%d, pool-gated):           %s -> %s\n",
+				c.name, len(query), query, c.exactChunks, fullStr, semStr, displayK, prodStr, prodMark)
+			for j, h := range prodHits[:min(displayK, len(prodHits))] {
+				t.Logf("  prod top-%d #%d: %-40s class=%-6s raw=%.4f weighted=%.4f", displayK, j+1, chunkID(h), h.Class, h.RawScore, h.Score)
 			}
 		})
 	}
@@ -383,23 +429,36 @@ func TestEditShapedRetrievalEval(t *testing.T) {
 	var buf bytes.Buffer
 	fmt.Fprintln(&buf)
 	fmt.Fprintln(&buf, "=== Edit-shaped retrieval eval: summary (n=4, see file header for the resolution-limit caveat) ===")
-	fmt.Fprintf(&buf, "%-32s %-8s %-14s\n", "case", "hit", "rank")
+	fmt.Fprintf(&buf, "%-28s %-11s %-12s %-12s %-14s\n", "case", "prod(k=5)", "full-rank", "sem-rank", "prod-pos")
 	hitCount := 0
+	prodHitCount := 0
 	sorted := make([]editEvalResult, len(results))
 	copy(sorted, results)
 	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].name < sorted[j].name })
 	for _, r := range sorted {
-		mark := "MISS"
 		if r.hit {
-			mark = "hit"
 			hitCount++
 		}
-		rankStr := "not found"
-		if r.rank != 0 {
-			rankStr = fmt.Sprintf("#%d", r.rank)
+		prodMark := "MISS"
+		if r.prodHit {
+			prodMark = "hit"
+			prodHitCount++
 		}
-		fmt.Fprintf(&buf, "%-32s %-8s %-14s\n", r.name, mark, rankStr)
+		fullStr := "not found"
+		if r.rank != 0 {
+			fullStr = fmt.Sprintf("#%d", r.rank)
+		}
+		semStr := "not found"
+		if r.semRank != 0 {
+			semStr = fmt.Sprintf("#%d", r.semRank)
+		}
+		prodPos := "not in top-5"
+		if r.prodRank != 0 {
+			prodPos = fmt.Sprintf("#%d", r.prodRank)
+		}
+		fmt.Fprintf(&buf, "%-28s %-11s %-12s %-12s %-14s\n", r.name, prodMark, fullStr, semStr, prodPos)
 	}
-	fmt.Fprintf(&buf, "\nchunk-level recall: %d/%d\n", hitCount, len(results))
+	fmt.Fprintf(&buf, "\nPRODUCTION-SHAPED recall (k=5, pool-gated -- the pool-SENSITIVE number): %d/%d\n", prodHitCount, len(results))
+	fmt.Fprintf(&buf, "full-ordering recall (k=all, pool-INSENSITIVE, legacy metric): %d/%d\n", hitCount, len(results))
 	t.Log(buf.String())
 }
