@@ -261,6 +261,12 @@ func runUndoSession(realWorkspaceRoot, sessionDir string, force bool, in io.Read
 			guarded = append(guarded, rel)
 			continue
 		}
+		// This "unchanged since apply" guard read follows symlinks and is NOT
+		// itself confinement-checked. It is safe only because the write path
+		// (restoreOne -> confinedRestorePath/openNoFollow, 4de7bd4) independently
+		// refuses to write through a symlink, so redirecting this read cannot be
+		// leveraged into a write. If that write-path confinement is ever relaxed,
+		// weakened, or refactored, re-evaluate this read's symlink-following here.
 		currentContent, err := os.ReadFile(filepath.Join(realWorkspaceRoot, rel))
 		if err != nil || string(currentContent) != string(afterContent) {
 			guarded = append(guarded, rel)

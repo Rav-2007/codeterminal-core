@@ -478,6 +478,19 @@ an inherent leaf-swap TOCTOU on both apply and undo (swapping the final file for
 resolve and `os.WriteFile`, which lacks `O_NOFOLLOW`) — requires local workspace write access, so
 an attacker already inside the trust boundary; note as hardening.
 
+- **Mid-ancestor-directory-swap TOCTOU in `confinedRestorePath` — open, unscoped, no task written
+  yet** (lower severity than FAIL-2 itself). `confinedRestorePath` (`daemon/apply_cmd.go`, introduced
+  in `4de7bd4`) confines the undo write by resolving the deepest *existing* ancestor directory,
+  checking it stays inside root, then letting `MkdirAll` + `O_NOFOLLOW` create/open the leaf.
+  `O_NOFOLLOW` blocks a symlink swapped into the *leaf* between check and open. It does NOT block a
+  symlink swapped into a *mid-ancestor* directory in that same window — a narrow race, not a
+  currently-closed hole. Closing it fully needs `openat2(RESOLVE_BENEATH)` (Linux-specific, kernel
+  5.6+) or an equivalent platform-dependent confined-open primitive — a bigger, cross-platform-
+  sensitive change than the FAIL-2 fix scope covered. Severity is lower than FAIL-2: it requires the
+  attacker to win a race during an already-narrow window (symlink foothold + undo trigger + timing),
+  not a reliable one-shot exploit like Repro A/B were. Logged so it doesn't disappear; a fix is not
+  implied to be imminent.
+
 **Standing caveat for when the FAILs are fixed:** this reviewed the *current* write path. CREATE
 support removes the `EvalSymlinks`-requires-existence property that currently anchors Gate 2 —
 writing to non-existent paths and parent-dir symlinks is new confinement surface that needs its
