@@ -297,6 +297,20 @@ func formatSkipCounts(skipped map[SkipReason]int) string {
 func ensureGitignoreEntry(root, entry string) error {
 	path := filepath.Join(root, ".gitignore")
 
+	// Refuse to follow a symlinked .gitignore: appending through it would write
+	// the ignore entry to a file outside the workspace root (a confirmed
+	// unconfined-writer escape). A single fixed relative path with no
+	// client-supplied component, so a leaf-only symlink check is sufficient
+	// here — no intermediate-directory attack surface as in restoreOne. The
+	// early lstat gives a consistent refusal (independent of the target's
+	// contents) before the dedup read even runs; O_NOFOLLOW on the open below
+	// closes the same-name check-to-write window.
+	if sym, err := leafIsSymlink(path); err != nil {
+		return err
+	} else if sym {
+		return fmt.Errorf("%s is a symlink; refusing to write the ignore entry through it", path)
+	}
+
 	data, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return err
@@ -307,7 +321,7 @@ func ensureGitignoreEntry(root, entry string) error {
 		}
 	}
 
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	f, err := openNoFollow(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return err
 	}
