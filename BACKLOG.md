@@ -336,6 +336,33 @@ OpenRouter. What follows is the cost half.
   knowing they would be proposing to re-break the congestion fix — and per the item above, the cost
   win is in provider choice anyway, which the same flag governs. No action; this is context.
 
+## Backlog — added 2026-07-18 (wider-pool experiment: H6 helperproc)
+
+- **Wider-pool experiment — NEGATIVE RESULT: pool width is NOT helperproc's bottleneck; do not
+  retry pool widening for it.** Pre-registered, run against real instrumented evals, reverted.
+  Two findings:
+  1. **The edit eval was pool-INSENSITIVE.** `daemon/edit_eval_test.go` called
+     `retrieveTopK(k=len(scan.Chunks))`, so `rerankPoolSize(k)` (rerank.go) far exceeds the
+     corpus and the whole thing is always fetched — a pool-width constant provably cannot move
+     its result. Its "helperproc MISS #67" is a full-corpus RERANK position, not a pool
+     exclusion. Fixed by adding a production-shaped k=5 (pool-gated) verdict + a raw-semantic-
+     rank diagnostic (measurement only, no retrieval logic changed); the eval now reports BOTH a
+     production-shaped recall (the pool-SENSITIVE number) and the legacy full-ordering recall.
+  2. **Bumping `rerankOverfetchFactor` 6→16 (production pool 30→80 at k=5) did NOT flip
+     helperproc.** helperproc's raw semantic rank is #59 (re-confirmed, 869-chunk corpus), so at
+     pool=80 it IS fetched (59<80) — yet it still misses the production top-5, reranking out
+     (full-ordering rank #67, identical across both runs). Fetching is necessary but not
+     sufficient; helperproc's real bottleneck is rerank/embedding position — the SAME structural
+     class as tui, not a separate "just widen the net" case. Clean FAIL by the pre-registered bar
+     (helperproc did not flip; locate eval held 8/9; editapply/zdr prod-HITs held at both pool
+     sizes) → `rerankOverfetchFactor` reverted to 6. **No pool size rescues helperproc** — the
+     full corpus (a maximally wide pool) already reranks it to #67, so don't reattempt widening.
+  - **Still open, NOT resolved by this task:** the locate-eval saturation flag (whether the
+    9-query set must grow before finer retrieval tuning is trustworthy) — sidestepped here via a
+    binary pass/fail bar, not answered. helperproc AND tui both remain H6 MISSes; the real levers
+    are the North Star item 3 direction (chunking / query expansion / a stronger embedder), not
+    pool width.
+
 ## Phase 4 — standalone / packaging / commercialization (decided direction: capable first, then shippable)
 
 Scoped and decided this session, not started. Goal: a user installs the VS Code extension from
