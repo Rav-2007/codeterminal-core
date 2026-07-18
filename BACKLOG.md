@@ -683,3 +683,11 @@ comment on this query for why it's out of scope here).
   Use `id=eq.<uuid>`, never `key_prefix=like.<prefix>*`.
 - **Rebuild affected binaries after code changes** — daemon + TUI + extension; source and
   binary drift, especially when a change spans modules.
+- **`daemon/models.json` is untracked** (not gitignored, not committed; model-tier config, no
+  secrets) — decide whenever next in that area: gitignore it or commit it.
+- **Stale scratch git worktree from a prior P3-experiment session lingers on disk** (outside the
+  repo, harmless) — clean up (`git worktree prune`/`remove`) or explicitly note as intentionally kept.
+- **`daemon/edit_eval_test.go` is n=4, one short of its n=5 target** — case 2ee3545 ("Fix
+  embedding timeout: batch buildIndex") is excluded because it doesn't revert cleanly against
+  current HEAD (conflicts with later `index_cmd.go` rewrites); close by resolving that revert
+  conflict or mining a clean 5th defect-fix commit.
