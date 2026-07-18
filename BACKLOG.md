@@ -434,13 +434,25 @@ gaps behind the same leak remain open. Do not record FAIL-1 as resolved.
   scrubbing cannot move them: locate hybrid 8/9, edit prod-k=5 1/4, both unchanged).
   **STILL OPEN — opaque/novel secrets** (bare random values with no recognizable prefix): Option A
   is structural signatures only and does NOT catch these. They await the entropy/keyword decision
-  (Designs B/C), which awaits real fire-rate data. That data is now being gathered: **warn-mode**
-  (log-only, no redaction) for the entropy + keyword heuristics also landed in the same commit
-  (`daemon/chunkscrub.go`, `logChunkScrub` in `context.go`) — it logs how often each heuristic would
-  fire on real repos, with hashed indicators only (never raw suspected-secret content), so the
-  founder can later decide whether B/C redaction is worth its false-positive cost. Do NOT flip
-  entropy/keyword to redacting without that decision. Class is not closed until opaque-secret
-  coverage is decided and (if chosen) shipped.
+  (Designs B/C), which awaits real fire-rate data. **warn-mode** (log-only, no redaction) for the
+  entropy + keyword heuristics also landed in the same commit (`daemon/chunkscrub.go`, `logChunkScrub`
+  in `context.go`), flagging how often each heuristic would fire on real repos with hashed indicators
+  only (never raw suspected-secret content).
+  - **Correction (security beta-test, 2026-07-18):** as shipped in d8fb8d5, warn-mode wrote ONLY to
+    the daemon's stderr, which nothing persists — so despite the "data is now being gathered" claim it
+    accumulated NOTHING (audit Gate 8), and its lines lacked the context to separate true fires from
+    false positives like SHAs/UUIDs/lockfile hashes (audit Gate 5). Both now fixed:
+    - **Follow-up A** (commit 064a00a, `daemon/warnsink.go`): a durable, append-only, size-rotated,
+      local-only JSON-lines sink at `<workspace>/.codeterminal/logs/warnmode.jsonl` that survives
+      daemon restarts, is failure-safe on the request path (a sink error never fails/delays a request),
+      and adds no network egress (verified — Gates 3 & 7 re-checked against the new path).
+    - **Follow-up B** (commit 6028d96): each fire now records the chunk's `FileClass` (threaded from
+      the same value `logRetrieval` reports) plus a fixed-label token-shape tag
+      (hex/base64/uuid-like/mixed/unknown), for true-vs-false-positive triage without re-opening source.
+  - **Status: fire-rate data now durably accumulating as of 2026-07-18 (commits 064a00a, 6028d96);
+    still LOG-ONLY, item NOT closed.** The B-vs-C redaction decision remains the founder's and remains
+    unmade. Do NOT flip entropy/keyword to redacting without that decision. Class is not closed until
+    opaque-secret coverage is decided and (if chosen) shipped.
 - **`server.go:203` / `scrub.go` false "retrieval never leaves this machine" comments — CORRECTED**
   (same commit): both now state chunk content is scrubbed at `renderChunk` (structural only, partial)
   and is POSTed to the provider on every grounded turn.
@@ -615,7 +627,7 @@ Code" experience. This is the packaging phase, the single largest remaining body
 - **DONE: Supabase auth/RLS/grants posture — see [SECURITY_MODEL.md](SECURITY_MODEL.md).**
   Closed 2026-07-17. `api_keys.user_id` (nullable, FK -> `auth.users(id)` ON DELETE RESTRICT),
   SELECT-only RLS policies on `api_keys` and `usage`, per-column grants to `authenticated`,
-  `anon` revoked to zero on both tables and both RPCs, EXECUTE revoked from PUBLIC on
+  `anon` revoked to zero on both tables and both RPCs, EXECUTE revoked from PUBLIC on 
   `reserve_usage`/`increment_usage` (Postgres's implicit default is EXECUTE-to-PUBLIC — `anon`
   could have called `increment_usage(key, -999999)`), and an `api_keys_public` view with
   `security_invoker = true` that excludes `key_hash`. Verified live end-to-end with an anon key
