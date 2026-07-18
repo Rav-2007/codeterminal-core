@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 
 	"codeterminal/editapply"
 )
@@ -309,8 +310,36 @@ func runUndoSession(realWorkspaceRoot, sessionDir string, force bool, in io.Read
 	return restored, guarded, nil
 }
 
+// restoreOne writes the pre-apply snapshot at beforeDir/rel back to
+// realWorkspaceRoot/rel. Undo is a write path over model-adjacent, locally
+// attacker-influenceable layout (a symlink checked out with a repo, or a
+// fabricated backup session), so it must enforce the same confinement the
+// forward edit path (editapply.Apply via ResolveSafeTargetPath) does and that
+// this function historically skipped (FAIL-2). Three gates, mirroring Apply():
+//
+//  1. Never restore a secret-named file — parity with Apply(), which refuses
+//     to write such files in the first place, so there is no legitimate
+//     backup of one to restore.
+//  2. Never let the destination escape the workspace root via a symlinked
+//     ANCESTOR directory (confinedRestorePath resolves the deepest existing
+//     ancestor and requires it to stay inside root).
+//  3. Never write THROUGH a symlinked leaf (open with O_NOFOLLOW). This also
+//     guards the leaf against a symlink swapped in after the ancestor check.
+//
+// The source read is guarded too: a symlink under beforeDir is anomalous
+// (editapply writes backup snapshots as regular files) and following it would
+// read bytes from outside the backup tree.
 func restoreOne(realWorkspaceRoot, beforeDir, rel string) error {
+	if editapply.MatchesSecretName(filepath.Base(rel)) {
+		return fmt.Errorf("path %q matches the indexer's secret-file rules; refusing to restore it", rel)
+	}
+
 	src := filepath.Join(beforeDir, rel)
+	if sym, err := leafIsSymlink(src); err != nil {
+		return err
+	} else if sym {
+		return fmt.Errorf("backup entry %q is a symlink; refusing to restore from it", rel)
+	}
 	data, err := os.ReadFile(src)
 	if err != nil {
 		return err
@@ -319,9 +348,88 @@ func restoreOne(realWorkspaceRoot, beforeDir, rel string) error {
 	if err != nil {
 		return err
 	}
-	dest := filepath.Join(realWorkspaceRoot, rel)
+
+	dest, err := confinedRestorePath(realWorkspaceRoot, rel)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
 		return err
 	}
-	return os.WriteFile(dest, data, info.Mode())
+	f, err := openNoFollow(dest, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, info.Mode())
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+// confinedRestorePath resolves realWorkspaceRoot/rel to an absolute path that
+// is proven to stay inside realWorkspaceRoot (which is itself already
+// symlink-resolved, see ResolveRealWorkspaceRoot). Rather than EvalSymlinks
+// the full path — which requires the leaf to exist and so would reject the
+// legitimate restore of a deleted-then-undone file — it resolves the deepest
+// existing ANCESTOR directory and requires that to land inside root. The
+// remaining components do not exist yet (so cannot be pre-planted symlinks)
+// and are created as real directories by the caller's MkdirAll. This closes
+// the intermediate-directory-symlink escape (Repro B) while preserving
+// deleted-file restore.
+func confinedRestorePath(realWorkspaceRoot, rel string) (string, error) {
+	cleaned := filepath.Clean(rel)
+	if filepath.IsAbs(cleaned) || cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("path %q escapes the workspace root", rel)
+	}
+
+	full := filepath.Join(realWorkspaceRoot, cleaned)
+	ancestor := full
+	var suffix []string
+	for {
+		if _, err := os.Lstat(ancestor); err == nil {
+			break // deepest existing ancestor (an existing leaf counts, and is
+			// then EvalSymlinks-resolved below, so a symlinked leaf is caught too)
+		}
+		parent := filepath.Dir(ancestor)
+		if parent == ancestor {
+			return "", fmt.Errorf("path %q has no existing ancestor within the workspace root", rel)
+		}
+		suffix = append([]string{filepath.Base(ancestor)}, suffix...)
+		ancestor = parent
+	}
+
+	realAncestor, err := filepath.EvalSymlinks(ancestor)
+	if err != nil {
+		return "", fmt.Errorf("resolving %s: %w", rel, err)
+	}
+	relToRoot, err := filepath.Rel(realWorkspaceRoot, realAncestor)
+	if err != nil || relToRoot == ".." || strings.HasPrefix(relToRoot, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("path %q resolves outside the workspace root", rel)
+	}
+
+	return filepath.Join(append([]string{realAncestor}, suffix...)...), nil
+}
+
+// openNoFollow opens path with O_NOFOLLOW ORed into flag, so a symlink at the
+// final path component is refused (ELOOP) rather than followed. It only guards
+// the leaf — ancestor directories must be confined separately (see
+// confinedRestorePath). Shared by the two workspace write paths that take an
+// attacker-influenceable destination (restoreOne, ensureGitignoreEntry).
+func openNoFollow(path string, flag int, perm os.FileMode) (*os.File, error) {
+	return os.OpenFile(path, flag|syscall.O_NOFOLLOW, perm)
+}
+
+// leafIsSymlink reports whether path itself (not its target) is a symlink. A
+// non-existent path is reported as not-a-symlink so callers can handle absence
+// with their own error path.
+func leafIsSymlink(path string) (bool, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return info.Mode()&os.ModeSymlink != 0, nil
 }
