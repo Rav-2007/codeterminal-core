@@ -107,7 +107,7 @@ func (s *Server) gatherContext(ctx context.Context, prompt string) retrievalOutc
 		return retrievalOutcome{Skipped: true, Reason: "no relevant chunks found in index"}
 	}
 
-	kept, truncated := truncateToBudget(chunks, s.contextBudgetChars)
+	kept, truncated := truncateToBudget(chunks, s.contextBudgetChars, s.cfg.NoScrub)
 	return retrievalOutcome{Chunks: kept, Truncated: truncated}
 }
 
@@ -115,11 +115,11 @@ func (s *Server) gatherContext(ctx context.Context, prompt string) retrievalOutc
 // store) in order while their rendered size stays within budget chars,
 // dropping only lowest-ranked overflow — the top hit is never sacrificed to
 // make room for a lower-ranked one. Reports whether anything was dropped.
-func truncateToBudget(chunks []Chunk, budget int) ([]Chunk, bool) {
+func truncateToBudget(chunks []Chunk, budget int, scrubDisabled bool) ([]Chunk, bool) {
 	var kept []Chunk
 	used := 0
 	for _, c := range chunks {
-		size := len(renderChunk(len(kept)+1, c))
+		size := len(renderChunk(len(kept)+1, c, scrubDisabled))
 		if len(kept) > 0 && used+size > budget {
 			return kept, true
 		}
@@ -130,10 +130,29 @@ func truncateToBudget(chunks []Chunk, budget int) ([]Chunk, bool) {
 }
 
 // renderChunk formats one chunk as it will appear inside the
-// <retrieved_context> block: an index, its source label, and its (safety-
-// neutralized) content.
-func renderChunk(index int, c Chunk) string {
-	return fmt.Sprintf("[%d] %s:%d-%d\n%s\n", index, c.FilePath, c.StartLine, c.EndLine, neutralizeDelimiters(c.Content))
+// <retrieved_context> block: an index, its source label, and its content,
+// which is first secret-scrubbed and then delimiter-neutralized.
+//
+// This is the single retrieval-time choke point for chunk secret scrubbing
+// (Option A, CHUNK_SCRUB_DESIGN.md §4): every chunk that reaches the prompt
+// is rendered here, and truncateToBudget sizes chunks through this same
+// function, so redacting here keeps the outbound bytes and the budget
+// accounting self-consistent. scrub() is the existing precision-first,
+// structural-signature span-redactor already run on the user's typed prompt
+// (scrub.go); reusing it on chunk Content adds no new false-positive surface.
+// It is span-level: only the matched secret substring becomes
+// [REDACTED:<kind>], the surrounding code is preserved. scrubDisabled honors
+// the same --no-scrub escape hatch that governs prompt scrubbing.
+//
+// Structural signatures only. Opaque/novel secrets with no recognizable
+// prefix are NOT closed here — those await the entropy decision, which awaits
+// the warn-mode fire-rate data (see logChunkScrub / chunkscrub.go). scrub is
+// applied before neutralizeDelimiters so secret detection sees the original
+// bytes (PEM/AKIA/etc. carry no angle brackets, so order is immaterial for
+// them, but detecting on raw content is the safe order).
+func renderChunk(index int, c Chunk, scrubDisabled bool) string {
+	cleaned, _ := scrub(c.Content, scrubDisabled)
+	return fmt.Sprintf("[%d] %s:%d-%d\n%s\n", index, c.FilePath, c.StartLine, c.EndLine, neutralizeDelimiters(cleaned))
 }
 
 // buildAugmentedUserMessage renders retrieved chunks and the raw user
@@ -143,7 +162,7 @@ func renderChunk(index int, c Chunk) string {
 // buildChatMessages in provider.go, which places this string as-is into the
 // "user" message). If there are no chunks, the prompt passes through
 // unchanged — identical to today's behavior with retrieval off.
-func buildAugmentedUserMessage(prompt string, chunks []Chunk) string {
+func buildAugmentedUserMessage(prompt string, chunks []Chunk, scrubDisabled bool) string {
 	if len(chunks) == 0 {
 		return prompt
 	}
@@ -152,7 +171,7 @@ func buildAugmentedUserMessage(prompt string, chunks []Chunk) string {
 	b.WriteString(retrievedContextOpenTag)
 	b.WriteString("\n")
 	for i, c := range chunks {
-		b.WriteString(renderChunk(i+1, c))
+		b.WriteString(renderChunk(i+1, c, scrubDisabled))
 	}
 	b.WriteString(retrievedContextCloseTag)
 	b.WriteString("\n\n")
@@ -162,6 +181,51 @@ func buildAugmentedUserMessage(prompt string, chunks []Chunk) string {
 	b.WriteString("\n")
 	b.WriteString(userRequestCloseTag)
 	return b.String()
+}
+
+// logChunkScrub measures and logs secret-scrubbing activity over exactly the
+// chunks that will be folded into the outbound prompt (the budget-kept set),
+// so the fire-rate numbers describe what is actually sent, not chunks that
+// were dropped or sized-and-discarded. It logs; it never changes the model
+// input — the live redaction that reaches the model happens independently in
+// renderChunk (Option A). Two separate things are reported:
+//
+//  1. Option A (structural, LIVE): re-derive the kinds scrub() redacts on each
+//     chunk and emit one aggregate notice. Kinds only, never matched text —
+//     same discipline as the typed-prompt redaction notice (server.go).
+//
+//  2. Warn-mode (entropy + keyword, LOG ONLY): run the deferred detectors on
+//     the POST-scrub content, i.e. on what Option A does NOT already cover, to
+//     measure how often they would fire on opaque/config-shaped secrets on real
+//     repos. These do NOT redact and do NOT affect what is sent; they exist so
+//     the founder can later decide, on evidence, whether entropy/keyword
+//     redaction (Designs B/C) is worth its false-positive cost. They never log
+//     raw suspected-secret content — only a fixed detector label, a secret-free
+//     note, and a truncated SHA-256 indicator (see chunkscrub.go).
+func (s *Server) logChunkScrub(chunks []Chunk) {
+	var structuralKinds []string
+	warnHits := 0
+	for _, c := range chunks {
+		cleaned, reds := scrub(c.Content, s.cfg.NoScrub)
+		structuralKinds = append(structuralKinds, redactionKinds(reds)...)
+
+		ref := fmt.Sprintf("%s:%d-%d", c.FilePath, c.StartLine, c.EndLine)
+		warns := detectWarnModeSecrets(cleaned)
+		for _, d := range warns {
+			s.logger.Printf("chunk-scrub warn-mode (LOG ONLY, not redacted, not sent to model): detector=%s file=%s %s indicator=%s",
+				d.Detector, ref, d.Note, d.Indicator)
+		}
+		warnHits += len(warns)
+	}
+
+	if len(structuralKinds) > 0 {
+		s.logger.Printf("chunk-scrub: redacted %d structural secret(s) in retrieved chunk content before send: %v",
+			len(structuralKinds), structuralKinds)
+	}
+	if warnHits > 0 || len(chunks) > 0 {
+		s.logger.Printf("chunk-scrub warn-mode summary: chunks=%d warn_hits=%d (entropy/keyword, log-only fire-rate measurement, no redaction)",
+			len(chunks), warnHits)
+	}
 }
 
 // buildGroundingInfo translates outcome (already computed by gatherContext)

@@ -231,13 +231,13 @@ func TestTokenEfficiencyEval(t *testing.T) {
 		if err != nil {
 			t.Fatalf("retrieveTopK(%q): %v", q.query, err)
 		}
-		kept, truncated := truncateToBudget(hits, budget)
+		kept, truncated := truncateToBudget(hits, budget, false)
 
 		actualChars := 0
 		retrievedFileSet := map[string]bool{}
 		var retrievedFiles []string
 		for i, c := range kept {
-			actualChars += len(renderChunk(i+1, c))
+			actualChars += len(renderChunk(i+1, c, false))
 			if !retrievedFileSet[c.FilePath] {
 				retrievedFileSet[c.FilePath] = true
 				retrievedFiles = append(retrievedFiles, c.FilePath)

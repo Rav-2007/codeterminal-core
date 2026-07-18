@@ -197,19 +197,26 @@ func (s *Server) handleConn(conn net.Conn) {
 	}
 
 	// cleanPrompt is scrubbed of high-confidence secret shapes (see
-	// daemon/scrub.go) before it's sent anywhere near the model API. This is
-	// the ONLY place scrubbing applies: outcome.Chunks (RAG-retrieved
-	// workspace content, gathered above from the RAW promptReq.Prompt) is
-	// never scrubbed. Note this is NOT because chunk content stays local: the
-	// query embedding is computed locally (ONNX) and never leaves the machine,
-	// but the retrieved chunk content itself IS folded into augmentedPrompt
-	// below and POSTed to the hosted completion provider on every grounded
-	// turn. So chunk content is NOT exempt from scrubbing consideration —
-	// scrubbing it is a known open item (see daemon/CHUNK_SCRUB_DESIGN.md).
+	// daemon/scrub.go) before it's sent anywhere near the model API. Retrieved
+	// chunk content (outcome.Chunks) is ALSO scrubbed now, but at a different
+	// choke point: the same structural scrub() runs inside renderChunk when the
+	// chunks are folded into augmentedPrompt below (Option A,
+	// daemon/CHUNK_SCRUB_DESIGN.md §4). That matters because chunk content is
+	// NOT local-only — the query embedding is computed locally (ONNX), but the
+	// retrieved chunk text itself is POSTed to the hosted completion provider on
+	// every grounded turn, so it needs the same protection the typed prompt
+	// gets. Chunk scrubbing is PARTIAL: structural signatures only; opaque/novel
+	// secrets are not yet closed (they await the warn-mode measurement below —
+	// see logChunkScrub).
 	cleanPrompt, redactions := scrub(promptReq.Prompt, s.cfg.NoScrub)
 	augmentedPrompt := cleanPrompt
 	if !outcome.Skipped {
-		augmentedPrompt = buildAugmentedUserMessage(cleanPrompt, outcome.Chunks)
+		augmentedPrompt = buildAugmentedUserMessage(cleanPrompt, outcome.Chunks, s.cfg.NoScrub)
+		// Measurement/notice pass over the exact chunks folded in above:
+		// logs the structural redactions that renderChunk applied (kinds
+		// only) and runs the deferred entropy/keyword detectors in log-only
+		// warn-mode. This never changes augmentedPrompt.
+		s.logChunkScrub(outcome.Chunks)
 	}
 	if len(redactions) > 0 {
 		kinds := redactionKinds(redactions)

@@ -1,0 +1,153 @@
+// This file implements the WARN-MODE (log-only, never-redact) deferred secret
+// detectors for retrieved chunk content: high-entropy strings (§2b) and
+// assignment/keyword heuristics (§2c) from CHUNK_SCRUB_DESIGN.md.
+//
+// They exist ONLY to measure how often each heuristic would fire on real
+// repos, so the founder can later decide — on evidence, not guesswork —
+// whether entropy/keyword *redaction* (Designs B/C) is worth its
+// false-positive cost. Nothing here alters what is sent to the model: the only
+// live redactor in this task is the structural scrub() run inside renderChunk
+// (Option A). If you find yourself wiring these into the outbound prompt, stop
+// — that is a future founder decision pending the data this mode gathers.
+//
+// Non-negotiable: never log raw suspected-secret content. Every detection
+// carries a fixed detector label, a secret-free note, and a truncated SHA-256
+// indicator of the suspected value — enough to recognize the same value across
+// log lines and to measure fire rate, never enough to recover the value.
+package main
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"math"
+	"regexp"
+	"strings"
+)
+
+// warnDetection is one LOG-ONLY signal from a deferred detector. It is
+// deliberately free of raw secret material — Detector and Note are fixed/
+// computed labels, Indicator is a one-way hash prefix, never the value.
+type warnDetection struct {
+	Detector  string // "entropy" | "keyword"
+	Note      string // secret-free, e.g. "len=44 bits_per_char=4.72" or "keyword=password value_len=18"
+	Indicator string // "sha256:xxxxxxxx" over the suspected value; never the value itself
+}
+
+// detectWarnModeSecrets runs every deferred (log-only) detector over already
+// structurally-scrubbed content and returns their detections. Callers must
+// treat the result as measurement only.
+func detectWarnModeSecrets(text string) []warnDetection {
+	var out []warnDetection
+	out = append(out, detectHighEntropy(text)...)
+	out = append(out, detectKeywordSecrets(text)...)
+	return out
+}
+
+// entropyTokenPattern isolates the kind of long, unbroken token that an opaque
+// secret would appear as (base64/hex/url-safe alphabets). Short tokens can't
+// carry enough bits to be a credential and are skipped by the length floor.
+var entropyTokenPattern = regexp.MustCompile(`[A-Za-z0-9+/=_\-]{20,}`)
+
+// entropyWarnThresholdBitsPerChar is a deliberately provisional starting
+// threshold. It is NOT tuned — the whole point of warn-mode is to gather the
+// data needed to tune (or reject) it. bits_per_char is logged on every hit so
+// the distribution on real repos can be inspected. Source code is full of
+// legitimately high-entropy strings (SHAs, UUIDs, base64 assets, minified JS),
+// so a real redacting threshold must be chosen from this data, not here.
+const entropyWarnThresholdBitsPerChar = 4.0
+
+// detectHighEntropy flags long, high-Shannon-entropy tokens. Log-only.
+func detectHighEntropy(text string) []warnDetection {
+	var out []warnDetection
+	for _, tok := range entropyTokenPattern.FindAllString(text, -1) {
+		bits := shannonEntropy(tok)
+		if bits < entropyWarnThresholdBitsPerChar {
+			continue
+		}
+		out = append(out, warnDetection{
+			Detector:  "entropy",
+			Note:      fmt.Sprintf("len=%d bits_per_char=%.2f", len(tok), bits),
+			Indicator: valueIndicator(tok),
+		})
+	}
+	return out
+}
+
+// shannonEntropy returns the per-character Shannon entropy (bits/char) of s
+// over its raw byte distribution. Range 0 (all one byte) to 8 (uniform).
+func shannonEntropy(s string) float64 {
+	if s == "" {
+		return 0
+	}
+	var freq [256]float64
+	for i := 0; i < len(s); i++ {
+		freq[s[i]]++
+	}
+	n := float64(len(s))
+	var h float64
+	for _, count := range freq {
+		if count == 0 {
+			continue
+		}
+		p := count / n
+		h -= p * math.Log2(p)
+	}
+	return h
+}
+
+// keywordAssignmentPattern matches an assignment/mapping whose KEY names a
+// credential (password/secret/api_key/token/...) and captures the VALUE token
+// only (group 2), so span-scoped measurement is possible without ever touching
+// the surrounding line. Log-only; it never redacts.
+var keywordAssignmentPattern = regexp.MustCompile(
+	`(?i)\b(passwords?|passwd|pwd|secrets?|api[_-]?keys?|apikey|access[_-]?tokens?|auth[_-]?tokens?|tokens?|client[_-]?secret|private[_-]?keys?)\b\s*[:=]\s*["']?([^\s"',;)]+)`)
+
+// detectKeywordSecrets flags credential-named assignments with a plausible
+// literal value. Log-only.
+func detectKeywordSecrets(text string) []warnDetection {
+	var out []warnDetection
+	for _, m := range keywordAssignmentPattern.FindAllStringSubmatch(text, -1) {
+		keyword := strings.ToLower(m[1])
+		value := m[2]
+		if isNonSecretValue(value) {
+			continue
+		}
+		out = append(out, warnDetection{
+			Detector:  "keyword",
+			Note:      fmt.Sprintf("keyword=%s value_len=%d", keyword, len(value)),
+			Indicator: valueIndicator(value),
+		})
+	}
+	return out
+}
+
+// isNonSecretValue filters the obvious non-secrets a bare keyword match would
+// otherwise flag: too-short values, and indirections (env-var / config
+// references) that are not themselves a secret. It is intentionally lenient —
+// warn-mode is meant to over-report and be measured, but these are so clearly
+// not literal credentials that counting them would only add noise to the
+// fire-rate signal.
+func isNonSecretValue(v string) bool {
+	if len(v) < 6 {
+		return true
+	}
+	switch {
+	case strings.HasPrefix(v, "${"), strings.HasPrefix(v, "$("), strings.HasPrefix(v, "$"):
+		return true // shell / template env reference
+	case strings.HasPrefix(v, "os.environ"), strings.HasPrefix(v, "process.env"), strings.HasPrefix(v, "os.Getenv"):
+		return true // programmatic env lookup
+	case strings.HasPrefix(v, "[REDACTED:"):
+		return true // already redacted by Option A upstream
+	}
+	return false
+}
+
+// valueIndicator returns a short, one-way indicator for a suspected value: a
+// truncated SHA-256, prefixed so it is unmistakably a hash and never the value.
+// Same value -> same indicator (recognizable across log lines); the value is
+// not recoverable from it.
+func valueIndicator(v string) string {
+	sum := sha256.Sum256([]byte(v))
+	return "sha256:" + hex.EncodeToString(sum[:])[:8]
+}

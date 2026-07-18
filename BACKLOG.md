@@ -414,12 +414,31 @@ gaps behind the same leak remain open. Do not record FAIL-1 as resolved.
   broaden the list. Never covered at all: `id_ed25519`/`id_ecdsa`/`id_dsa` (any non-RSA SSH key —
   `id_rsa*` doesn't match them), `.npmrc`, `.netrc`, `.pgpass`, `kubeconfig`, `.htpasswd`, `*.pfx`,
   `*.tfstate`, service-account JSON. These walk straight through today.
-- **Unscrubbed chunk content POSTed to hosted provider — STILL OPEN, HIGHEST-VALUE ITEM.** The name
-  gate is only a blocklist over *filenames*; the actual exfiltration mechanism is that indexed chunk
-  *content* is retrieved and POSTed unscrubbed to the hosted RAG completion endpoint (see
-  chunk-text-network-exit finding). Content scrubbing is what closes the class — the name gate can
-  never be complete. This is the structural fix, not a follow-on nicety.
-- **`server.go:203` false "retrieval never leaves this machine" comment — STILL OPEN.**
+- **Unscrubbed chunk content POSTed to hosted provider — PARTIAL (structural signatures closed;
+  opaque secrets still open).** The name gate is only a blocklist over *filenames*; the actual
+  exfiltration mechanism is that indexed chunk *content* is retrieved and POSTed unscrubbed to the
+  hosted RAG completion endpoint (see chunk-text-network-exit finding). **Option A landed** (commit
+  on 2026-07-18, see CHUNK_SCRUB_DESIGN.md §4-A): the existing precision-first `scrub()` now runs on
+  chunk `Content` at the retrieval-time choke point `renderChunk` (`daemon/context.go`), span-
+  redacting structural-signature secrets (PEM private-key blocks, `AKIA…`, `sk-…`, `ghp_…`, Slack/
+  Google/Supabase/Mochiii keys) out of every grounded completion before it leaves the machine.
+  Retrieval-time only — the index/embeddings are untouched (no re-index; a bad rule degrades one
+  send, not the corpus). Honors `--no-scrub`. Verified live before/after (secret spans redacted, no
+  leak; normal code untouched — no false positives) and against both retrieval evals (no movement —
+  structurally, both evals measure `retrieveTopK` ranking, which is upstream of `renderChunk`, so
+  scrubbing cannot move them: locate hybrid 8/9, edit prod-k=5 1/4, both unchanged).
+  **STILL OPEN — opaque/novel secrets** (bare random values with no recognizable prefix): Option A
+  is structural signatures only and does NOT catch these. They await the entropy/keyword decision
+  (Designs B/C), which awaits real fire-rate data. That data is now being gathered: **warn-mode**
+  (log-only, no redaction) for the entropy + keyword heuristics also landed in the same commit
+  (`daemon/chunkscrub.go`, `logChunkScrub` in `context.go`) — it logs how often each heuristic would
+  fire on real repos, with hashed indicators only (never raw suspected-secret content), so the
+  founder can later decide whether B/C redaction is worth its false-positive cost. Do NOT flip
+  entropy/keyword to redacting without that decision. Class is not closed until opaque-secret
+  coverage is decided and (if chosen) shipped.
+- **`server.go:203` / `scrub.go` false "retrieval never leaves this machine" comments — CORRECTED**
+  (same commit): both now state chunk content is scrubbed at `renderChunk` (structural only, partial)
+  and is POSTed to the provider on every grounded turn.
 - **Why High, not cosmetic:** `MatchesSecretName` is the shared single source of truth — the
   **indexer** calls it too (`daemon/chunker.go:168`) to skip secrets from the RAG index. So the
   gap isn't only "an edit block could rewrite `.ENV`"; it's that `.ENV`/`id_ed25519`/`.npmrc` get

@@ -62,7 +62,7 @@ func TestTruncateToBudget_KeepsAllWhenUnderBudget(t *testing.T) {
 		{FilePath: "a.go", StartLine: 1, EndLine: 2, Content: "short"},
 		{FilePath: "b.go", StartLine: 1, EndLine: 2, Content: "also short"},
 	}
-	kept, truncated := truncateToBudget(chunks, 10_000)
+	kept, truncated := truncateToBudget(chunks, 10_000, false)
 	if truncated {
 		t.Error("truncated = true, want false when everything fits")
 	}
@@ -81,9 +81,9 @@ func TestTruncateToBudget_DropsLowestRankedOverflowOnly(t *testing.T) {
 		{FilePath: "second.go", StartLine: 1, EndLine: 5, Content: big},
 		{FilePath: "third.go", StartLine: 1, EndLine: 5, Content: big},
 	}
-	budget := len(renderChunk(1, chunks[0])) + 10 // room for exactly one rendered chunk
+	budget := len(renderChunk(1, chunks[0], false)) + 10 // room for exactly one rendered chunk
 
-	kept, truncated := truncateToBudget(chunks, budget)
+	kept, truncated := truncateToBudget(chunks, budget, false)
 	if !truncated {
 		t.Fatal("truncated = false, want true when input exceeds budget")
 	}
@@ -99,7 +99,7 @@ func TestTruncateToBudget_AlwaysKeepsTopHitEvenIfOverBudgetAlone(t *testing.T) {
 	chunks := []Chunk{
 		{FilePath: "only.go", StartLine: 1, EndLine: 100, Content: strings.Repeat("y", 5000)},
 	}
-	kept, truncated := truncateToBudget(chunks, 10) // budget far smaller than the one chunk
+	kept, truncated := truncateToBudget(chunks, 10, false) // budget far smaller than the one chunk
 	if truncated {
 		t.Error("truncated = true, want false: a single chunk is never dropped for being too big alone")
 	}
@@ -112,7 +112,7 @@ func TestTruncateToBudget_AlwaysKeepsTopHitEvenIfOverBudgetAlone(t *testing.T) {
 
 func TestBuildAugmentedUserMessage_NoChunksPassesThroughUnchanged(t *testing.T) {
 	prompt := "how does auth work here?"
-	got := buildAugmentedUserMessage(prompt, nil)
+	got := buildAugmentedUserMessage(prompt, nil, false)
 	if got != prompt {
 		t.Errorf("buildAugmentedUserMessage with no chunks = %q, want the prompt unchanged: %q", got, prompt)
 	}
@@ -123,7 +123,7 @@ func TestBuildAugmentedUserMessage_LabelsAndDelimitsChunks(t *testing.T) {
 	chunks := []Chunk{
 		{FilePath: "config/config.go", StartLine: 10, EndLine: 20, Content: "type Config struct{}"},
 	}
-	got := buildAugmentedUserMessage(prompt, chunks)
+	got := buildAugmentedUserMessage(prompt, chunks, false)
 
 	for _, want := range []string{
 		retrievedContextOpenTag, retrievedContextCloseTag,
@@ -174,7 +174,7 @@ func TestInjectionSafety_RetrievedContentNeverTouchesSystemRole(t *testing.T) {
 		},
 	}
 
-	augmented := buildAugmentedUserMessage(userPrompt, chunks)
+	augmented := buildAugmentedUserMessage(userPrompt, chunks, false)
 	messages := buildChatMessages(systemPrompt, nil, augmented)
 
 	if len(messages) != 2 {
