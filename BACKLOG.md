@@ -615,10 +615,62 @@ preserved here (they don't matter months from now); the gate-by-gate findings ab
   fixable; none depends on the auth decision.
 - **Concurrent Apply/Undo serialization** — no cross-request lock guards the filesystem write path
   today (Gate 6). Flagged as a TOCTOU amplifier; deserves the same repro-driven depth the `restoreOne`
-  undo-writer audit (FAIL-2) got, not a guessed lock.
+  undo-writer audit (FAIL-2) got, not a guessed lock. **DEEP AUDIT DONE 2026-07-19 — see the dated
+  sub-section immediately below; the "TOCTOU amplifier" framing was REFUTED and refined.**
 - **`recover()` backstop for `handleConn`** — defense-in-depth so a future handler panic can't take
   the whole daemon down with it (a panic in a per-connection goroutine currently crashes the
   process). Not triggered by anything today; still worth closing.
+
+### Gate 6 deep audit — 2026-07-19 (results; audit-only, nothing fixed, does NOT close Gate 6)
+
+Ran after Gate 3 peer-auth (`517c069`) landed. Live repros against a real `Server` over a real unix
+socket (and the real `handleApplyEdit`/editapply core for the tight-barrier variants), looping to
+measure reproducibility rates. Harness was intentionally NOT committed (it demonstrates losing
+outcomes); method + numbers are the record here.
+
+- **Concurrency model (Gate 1) — no serialization, confirmed.** goroutine-per-connection
+  (`server.go` `Serve` → `handleConn` → `serveConn`); **zero** mutex/atomic anywhere on the Apply/Undo
+  path (the only locks in the tree are `helperproc.go`/`warnsink.go`, unrelated). `authorizePeer` runs
+  *inside* the per-connection goroutine, so Gate 3 gates *who* connects, not *how many run at once* —
+  the concurrency shape is unchanged post-`517c069`.
+- **The reliably-reproducible findings are DISTINCT data races, not symlink-TOCTOU amplification:**
+  - **Apply/Apply lost update — 100% (60/60), and 40/40 on a ~hundreds-of-KB file.** `PrepareEdit`
+    reads the whole file, `Apply` writes the whole file, no lock between → two concurrent same-file
+    edits each write the original-minus-their-own-span; last writer wins, the other edit silently
+    vanishes. Large-file result is a **clean lost update, 0 corruption/torn writes observed** (full-
+    buffer `os.WriteFile` overwrites wholesale) — reported as lost-update, not corruption.
+  - **Backup-session collapse — ~68% (41/60).** Same-second concurrent applies both derive the same
+    timestamp dir, both stat-absent, both `MkdirAll` → they SHARE one backup session dir (distinct
+    `NewBackupSessionDir` collision bug). Also surfaces `pruneBackupSessions` "directory not empty"
+    errors under the race.
+  - **Apply/Undo — undo guard defeated ~98% (59/60).** Undo's "current == after?" check passes, a
+    concurrent apply then lands `v=two`; undo reports `Restored=1` while on-disk reality is the apply's
+    content. Undo's success report and the actual bytes disagree.
+  - **Undo/Undo — double-restore ~88% (53/60).** Two concurrent undos of the same session both pass
+    the guard and both report restoring; no consumed-marker / idempotency on a session.
+  - **Prune vs. Undo — reproduced.** A burst of applies (each prunes to keep=5) racing concurrent
+    undos made **legitimate undos fail `backup session "…" not found`** — the prune `RemoveAll`'d the
+    session out from under the undo.
+- **Gate 5 causal claim — REFUTED as stated.** Concurrency does **not widen** the mid-ancestor symlink
+  TOCTOU window (it's fixed by the code between `confinedRestorePath`'s ancestor check and
+  `MkdirAll`+`openNoFollow` in one `restoreOne`; no lock makes it wait mid-window). It only lets a
+  symlink attacker open *more windows per second* — more shots on goal, same-size goal — and the
+  dominant amplifier there is the attacker's own swap-loop, not daemon request concurrency. The precise
+  multiplicative effect on symlink-win-rate was **not cleanly measured** (a reliable mid-ancestor
+  swap-winner is a separate effort) — reasoned, not measured; the distinct non-symlink races above ARE
+  measured at the rates shown.
+- **Severity, plainly.** As a **security** finding: **Moderate and largely subsumed** — reaching it
+  needs an authenticated same-uid peer (Gate 3 + 0600 socket), and a same-uid attacker can already
+  write the user's files directly, so the marginal gain is small; Gate 3 narrowed *who* only modestly
+  (the set was ~same-uid via socket perms even pre-Gate-3). As a **correctness/data-integrity**
+  finding: **the sharper problem, and Gate 3 does nothing for it** — 100% lost-update and ~98% undo-
+  guard defeat reproduce with two entirely **legitimate** clients (CLI + IDE), i.e. silent user data
+  loss + an undo that reports success while leaving the wrong bytes. **Both**, predominantly correctness.
+- **New follow-ups spun out (flag-only):** (1) `NewBackupSessionDir` same-second collision
+  (`editapply/backup.go`); (2) `pruneBackupSessions` `RemoveAll` racing a live undo →
+  spurious "session not found" (`editapply/backup.go` + `apply_cmd.go runUndoSession` WalkDir).
+- **Not fixed. Gate 6 stays open.** Fix direction (single apply/undo mutex vs. per-workspace lockfile
+  vs. `O_EXCL`/rename atomic writes) is the founder's call.
 
 **Minor, non-gating (Gate 2 hardening notes — do not weight these with the four items above):**
 (1) a brief permission window between `net.Listen("unix", …)` (`daemon/main.go:159`) and the
