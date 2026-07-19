@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"codeterminal/editapply"
@@ -21,48 +20,6 @@ import (
 
 // daemonVersion is reported to clients in the handshake response.
 const daemonVersion = "0.1.0-skeleton"
-
-// Connection resource limits (FAIL-3, Gate 5 — DoS hardening). These bound
-// what any single socket client, or many at once, can make the daemon spend
-// on memory and goroutines. They are deliberately AUTH-INDEPENDENT: nothing
-// here inspects who is connecting (no peer credential, token, or handshake
-// verification) — they cap resource use regardless of whether the peer is a
-// trusted same-uid client or not. Each Server field below overrides the
-// matching default when non-zero (same "0 => default" convention as
-// RetrievalConfig.resolvedTopK); production leaves them zero and gets these
-// defaults, tests inject smaller values to exercise the limits quickly.
-const (
-	// defaultMaxRequestBytes caps the total bytes one connection may make the
-	// daemon buffer while decoding its handshake + single request, before the
-	// JSON is even parsed. The socket-axis audit drove RSS to ~896 MB with a
-	// single ~200 MB request against an unbounded json.NewDecoder(conn); this
-	// bounds that to tens of MiB. 16 MiB is ~16x the indexer's own per-file
-	// ceiling (maxFileSize, chunker.go) and leaves generous room for the
-	// largest legitimate message — an ApplyEditRequest carrying a whole file's
-	// Search+Replace, or a prompt with large pasted content plus history —
-	// while sitting ~12x below the 200 MB exploit.
-	defaultMaxRequestBytes = 16 << 20 // 16 MiB
-
-	// defaultConnIdleTimeout bounds how long a single read or write on a client
-	// connection may block with no progress. It is an IDLE deadline, re-armed
-	// around every Read and Write (see limitedConn), not a whole-request
-	// budget: a legitimately slow client that keeps sending or draining bytes
-	// is never punished, but a half-open connection that opens and then never
-	// completes its request — the audit's 100-pinned-connection repro — has its
-	// blocked read time out and is reaped instead of pinning a goroutine
-	// forever. Idle gaps between writes (e.g. model time-to-first-token) never
-	// trip it: only a genuinely blocked read or write can exceed the deadline.
-	defaultConnIdleTimeout = 60 * time.Second
-
-	// defaultMaxConns caps concurrent client connections. Serve otherwise
-	// accepts in an unbounded loop, one goroutine per connection, with no
-	// ceiling (the audit's third finding). 128 is far above any legitimate
-	// concurrency — a single CLI/TUI/VS Code client uses one short-lived
-	// connection per request — so normal use never approaches it, while it
-	// bounds worst-case goroutine growth and, together with
-	// defaultMaxRequestBytes, worst-case simultaneously-buffered memory.
-	defaultMaxConns = 128
-)
 
 // Server accepts client connections on the UDS listener, performs the
 // version handshake, and proxies one prompt per connection to the model API.
@@ -145,75 +102,6 @@ func (s *Server) route(promptKind string) RouteDecision {
 	return Route(s.cfg, RouteInput{HasExitSignal: false, PromptKind: promptKind})
 }
 
-func (s *Server) resolvedMaxRequestBytes() int64 {
-	if s.maxRequestBytes > 0 {
-		return s.maxRequestBytes
-	}
-	return defaultMaxRequestBytes
-}
-
-func (s *Server) resolvedConnIdleTimeout() time.Duration {
-	if s.connIdleTimeout > 0 {
-		return s.connIdleTimeout
-	}
-	return defaultConnIdleTimeout
-}
-
-func (s *Server) resolvedMaxConns() int {
-	if s.maxConns > 0 {
-		return s.maxConns
-	}
-	return defaultMaxConns
-}
-
-// errRequestTooLarge is returned by limitedConn.Read once a connection has
-// tried to make the daemon buffer more than its byte budget, so handleConn can
-// tell an oversized request apart from an ordinary read error in the logs.
-var errRequestTooLarge = errors.New("request exceeds maximum size")
-
-// limitedConn wraps a client connection with two auth-independent resource
-// bounds used by handleConn (FAIL-3, Gate 5): a cumulative cap on bytes read
-// before the request is decoded, and an idle deadline re-armed around every
-// read and write. It is deliberately NOT an authentication or authorization
-// layer — it never inspects who is connecting, only how much they consume.
-type limitedConn struct {
-	net.Conn
-	remaining   int64         // read-byte budget left before errRequestTooLarge
-	idleTimeout time.Duration // re-armed around each Read and Write
-}
-
-// Read enforces the byte budget and re-arms the read deadline before each
-// underlying read. Because json.Decoder reads incrementally, a request larger
-// than the budget drives remaining to zero and the next read (the one that
-// would push past the cap) fails with errRequestTooLarge — a request of exactly
-// the budget still decodes, one of budget+1 bytes does not.
-func (c *limitedConn) Read(p []byte) (int, error) {
-	if c.remaining <= 0 {
-		return 0, errRequestTooLarge
-	}
-	if int64(len(p)) > c.remaining {
-		p = p[:c.remaining]
-	}
-	if err := c.Conn.SetReadDeadline(time.Now().Add(c.idleTimeout)); err != nil {
-		return 0, err
-	}
-	n, err := c.Conn.Read(p)
-	c.remaining -= int64(n)
-	return n, err
-}
-
-// Write re-arms the write deadline before each underlying write, so a client
-// that stops draining the response stream (filling the socket buffer until a
-// write blocks) is reaped instead of pinning the handler goroutine. Idle gaps
-// between writes — e.g. model time-to-first-token — are not affected, since
-// only a genuinely blocked write can exceed the deadline.
-func (c *limitedConn) Write(p []byte) (int, error) {
-	if err := c.Conn.SetWriteDeadline(time.Now().Add(c.idleTimeout)); err != nil {
-		return 0, err
-	}
-	return c.Conn.Write(p)
-}
-
 // Serve accepts connections until the listener is closed. Each connection is
 // handled in its own goroutine so slow or streaming clients never block
 // others.
@@ -248,57 +136,6 @@ func (s *Server) Serve(ln net.Listener) {
 			conn.Close()
 		}
 	}
-}
-
-// authorizePeer verifies, via the OS, that the process on the other end of an
-// accepted connection runs as the same UID as this daemon, and returns an
-// error (which the caller turns into an immediate refusal) otherwise (FAIL-3,
-// Gate 3 — peer authentication). This is the daemon's actual access control.
-// The Unix socket is created 0600 under a per-user runtime dir, but file
-// permissions don't identify the caller, and the Gate 5 resource limits above
-// deliberately don't either — any process able to connect was, until this
-// check, treated as fully trusted. Every legitimate client (CLI, TUI, IDE
-// integration) runs as the same user that started the daemon, so a same-UID
-// peer is exactly the trusted set, verified with zero client-side config.
-//
-// PEERCRED: the credentials come from the kernel (SO_PEERCRED on Linux), fixed
-// at connect() time — not from anything the client sends — so a peer cannot
-// forge a different UID on the wire. This FAILS CLOSED: any error retrieving or
-// comparing the credential (unsupported platform — see peercred_other.go — a
-// conn that exposes no peer credentials, or a syscall failure) is returned as a
-// refusal, never a silent pass. The returned error is for the daemon's own log
-// only; the caller never sends it back to the rejected peer, so this adds no
-// new information-leakage surface.
-func (s *Server) authorizePeer(conn net.Conn) error {
-	sc, ok := conn.(syscall.Conn)
-	if !ok {
-		return fmt.Errorf("connection type %T exposes no peer credentials", conn)
-	}
-	cred, err := readPeerCred(sc)
-	if err != nil {
-		return err
-	}
-	if err := checkPeerUID(cred.uid, os.Getuid()); err != nil {
-		return fmt.Errorf("%w (peer pid=%d)", err, cred.pid)
-	}
-	return nil
-}
-
-// checkPeerUID compares a connecting peer's OS-reported UID against the
-// daemon's own. It is split out as a pure function so the security-critical
-// match/mismatch decision is unit-testable without constructing a real
-// cross-UID socket, which an unprivileged test process cannot do. selfUID is
-// os.Getuid()'s int; a negative selfUID (Getuid reports -1 on platforms
-// without the concept) is itself treated as a failure, so the daemon never
-// trusts a peer it cannot meaningfully compare against.
-func checkPeerUID(peerUID uint32, selfUID int) error {
-	if selfUID < 0 {
-		return fmt.Errorf("daemon uid unavailable (%d); cannot verify peer uid=%d", selfUID, peerUID)
-	}
-	if peerUID != uint32(selfUID) {
-		return fmt.Errorf("peer uid=%d does not match daemon uid=%d", peerUID, selfUID)
-	}
-	return nil
 }
 
 // handleConn is the entry point for every accepted connection: it
@@ -532,72 +369,6 @@ func isApplyEditRequest(raw json.RawMessage) bool {
 		return false
 	}
 	return peek.Edit != nil
-}
-
-// lockWorkspace acquires the per-workspace serialization lock for root and
-// returns the release function, meant to be invoked with defer at the start of
-// a critical section (defer s.lockWorkspace(root)()). It is the daemon's
-// data-integrity guard for the filesystem-mutating request paths (FAIL-3,
-// Gate 6): Apply, Undo, and the backup prune that runs inside Apply all take
-// this lock for the whole span from their first read to their last write, so
-// two such operations on the SAME workspace can never interleave — closing the
-// read-modify-write lost update, the shared-backup-session collapse, the
-// undo-guard defeat, the double-restore, and the prune-vs-undo race the Gate 6
-// audit reproduced.
-//
-// It is keyed by resolved workspace ROOT — not per-file (too fine: misses the
-// cross-file backup-session bookkeeping) and not global (too coarse: would
-// serialize unrelated workspaces), so two operations on genuinely different
-// workspaces get different mutexes and never block each other. All three
-// operations mutate the filesystem — none is a pure reader — so an exclusive
-// sync.Mutex is exactly right; an RWMutex would buy nothing. It is in-process
-// only: there is exactly one daemon process behind the socket, so an in-memory
-// lock fully covers the concurrency without a cross-process file lock. Each
-// caller takes exactly this one lock and never nests another, so no acquisition
-// ordering exists to deadlock on.
-func (s *Server) lockWorkspace(root string) func() {
-	m, _ := s.applyLocks.LoadOrStore(root, &sync.Mutex{})
-	mu := m.(*sync.Mutex)
-	mu.Lock()
-	return mu.Unlock
-}
-
-// workspacePathToken is what socketSafeError substitutes for a daemon-side
-// absolute workspace path in an error message bound for a socket client
-// (FAIL-3, Gate 7 — response hygiene). It is deliberately human-readable and
-// stable so a scrubbed message stays debuggable.
-const workspacePathToken = "<workspace>"
-
-// scrubPaths replaces every occurrence of a known daemon-side workspace root in
-// msg with workspacePathToken (FAIL-3, Gate 7 — response hygiene). It strips
-// the caller-supplied roots (typically the resolved, symlink-followed root) and
-// always also strips s.workspace (the configured root, used for the paths in
-// errors that fire BEFORE resolution succeeds). The workspace-RELATIVE tail is
-// preserved — "<workspace>/sub/x.go: no such file or directory" stays as
-// diagnostic as the absolute form was, minus the leaky host prefix (home-dir
-// layout, username, machine structure) that could ride along in a response
-// later saved to a transcript, pasted into a bug report, or shipped as
-// telemetry. This scrubs only what crosses the socket: the editapply core, the
-// CLI/TUI, and the daemon's own local log (every caller logs the raw error
-// first) all keep the full absolute path, and the confinement/resolution logic
-// that produces these errors is untouched.
-func (s *Server) scrubPaths(msg string, roots ...string) string {
-	for _, root := range roots {
-		if root != "" {
-			msg = strings.ReplaceAll(msg, root, workspacePathToken)
-		}
-	}
-	if s.workspace != "" {
-		msg = strings.ReplaceAll(msg, s.workspace, workspacePathToken)
-	}
-	return msg
-}
-
-// socketSafeError is scrubPaths over err.Error() — the form used at every error
-// encode in the Apply/Undo handlers, mirroring how the prompt path already
-// rewrites ErrZDRRefused to a generic string before sending it over the socket.
-func (s *Server) socketSafeError(err error, roots ...string) string {
-	return s.scrubPaths(err.Error(), roots...)
 }
 
 // handleApplyEdit runs an ApplyEditRequest through the same editapply core

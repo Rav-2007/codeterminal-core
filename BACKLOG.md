@@ -760,6 +760,29 @@ reading error-construction code alone.
   lower-priority, more invasive change (unify error responses) not undertaken here. Gate 7 overall
   status and FAIL-3 closure remain the founder's call.
 
+### Daemon socket-server file layout (post-reorg 2026-07-19)
+
+Gates 3/5/6/7 all landed in `daemon/server.go` across four sequential fixes, on top of the original
+dispatch logic. That monolith was split — pure reorganization, zero behavior change, same `package
+main`, full suite race-clean before and after — so each concern has one home (older audit write-ups
+above still cite `server.go:<line>` at their historical positions; the current homes are):
+- **`server.go`** — connection lifecycle / main flow: `Serve` (accept loop + the Gate-5 conn-ceiling
+  semaphore, which is inline here), `handleConn` (calls `authorizePeer` then hands off), `serveConn`
+  (handshake + request-type dispatch + prompt path, incl. the inline model-error rewrite), the
+  per-request handlers (`handleApplyEdit`/`handleUndo`/`handleSearch`), the `is*Request` sniffers,
+  backup-session helpers, history/persist glue, and the `Server` struct itself (all fields, including
+  `applyLocks`, `maxRequestBytes`/`connIdleTimeout`/`maxConns`).
+- **`server_auth.go`** — Gate 3: `authorizePeer`, `checkPeerUID` (readers in `peercred_linux.go` /
+  `peercred_other.go`, unchanged).
+- **`server_limits.go`** — Gate 5: `limitedConn` + methods, the `defaultMax*`/`defaultConnIdleTimeout`
+  constants, `errRequestTooLarge`, the `resolved*` accessors.
+- **`server_workspace_lock.go`** — Gate 6: `lockWorkspace` (the `Server.applyLocks` field stays with
+  the struct in `server.go`).
+- **`server_errors.go`** — Gate 7: `workspacePathToken`, `scrubPaths`, `socketSafeError`.
+
+Test files were already concern-scoped by name (`peercred*_test.go`, `server_limits_test.go`,
+`gate6_serialization_test.go`, `gate7_scrub_test.go`) and were left as-is.
+
 **Minor, non-gating (Gate 2 hardening notes — do not weight these with the four items above):**
 (1) a brief permission window between `net.Listen("unix", …)` (`daemon/main.go:159`) and the
 `os.Chmod(socketPath, 0600)` that follows it (`main.go:163`) — the socket exists at default perms
