@@ -495,7 +495,15 @@ func (s *Server) serveConn(conn net.Conn) {
 	)
 	if err != nil {
 		s.logger.Printf("model API error: %v", err)
-		errMsg := err.Error()
+		// Generalize ErrZDRRefused's rewrite-before-send treatment to every
+		// model-API failure (FAIL-3, Gate 7). The full upstream error — provider
+		// base URL, HTTP status, response body, raw transport error — is logged
+		// locally just above for the operator; the socket caller gets only a
+		// stable, generic message, so upstream infrastructure detail never rides
+		// along in a response that could travel off-box later. ErrZDRRefused keeps
+		// its existing specific message; only the previously-verbatim default
+		// (which leaked the apiBase URL and raw connection text) changes.
+		errMsg := "calling model API failed"
 		if errors.Is(err, ErrZDRRefused) {
 			errMsg = "inference refused: no zero-data-retention endpoint available"
 		}
@@ -554,6 +562,44 @@ func (s *Server) lockWorkspace(root string) func() {
 	return mu.Unlock
 }
 
+// workspacePathToken is what socketSafeError substitutes for a daemon-side
+// absolute workspace path in an error message bound for a socket client
+// (FAIL-3, Gate 7 — response hygiene). It is deliberately human-readable and
+// stable so a scrubbed message stays debuggable.
+const workspacePathToken = "<workspace>"
+
+// scrubPaths replaces every occurrence of a known daemon-side workspace root in
+// msg with workspacePathToken (FAIL-3, Gate 7 — response hygiene). It strips
+// the caller-supplied roots (typically the resolved, symlink-followed root) and
+// always also strips s.workspace (the configured root, used for the paths in
+// errors that fire BEFORE resolution succeeds). The workspace-RELATIVE tail is
+// preserved — "<workspace>/sub/x.go: no such file or directory" stays as
+// diagnostic as the absolute form was, minus the leaky host prefix (home-dir
+// layout, username, machine structure) that could ride along in a response
+// later saved to a transcript, pasted into a bug report, or shipped as
+// telemetry. This scrubs only what crosses the socket: the editapply core, the
+// CLI/TUI, and the daemon's own local log (every caller logs the raw error
+// first) all keep the full absolute path, and the confinement/resolution logic
+// that produces these errors is untouched.
+func (s *Server) scrubPaths(msg string, roots ...string) string {
+	for _, root := range roots {
+		if root != "" {
+			msg = strings.ReplaceAll(msg, root, workspacePathToken)
+		}
+	}
+	if s.workspace != "" {
+		msg = strings.ReplaceAll(msg, s.workspace, workspacePathToken)
+	}
+	return msg
+}
+
+// socketSafeError is scrubPaths over err.Error() — the form used at every error
+// encode in the Apply/Undo handlers, mirroring how the prompt path already
+// rewrites ErrZDRRefused to a generic string before sending it over the socket.
+func (s *Server) socketSafeError(err error, roots ...string) string {
+	return s.scrubPaths(err.Error(), roots...)
+}
+
 // handleApplyEdit runs an ApplyEditRequest through the same editapply core
 // the CLI's `edits apply` and the TUI's edit-review flow use — PrepareEdit
 // (exact-match, ambiguity-refuse, workspace confinement, secret-file
@@ -570,7 +616,7 @@ func (s *Server) handleApplyEdit(enc *json.Encoder, req protocol.ApplyEditReques
 	realRoot, err := editapply.ResolveRealWorkspaceRoot(s.workspace)
 	if err != nil {
 		s.logger.Printf("apply-edit: resolving workspace root: %v", err)
-		enc.Encode(protocol.ApplyEditResponse{ProtocolVersion: protocol.ProtocolVersion, Applied: false, Error: err.Error()})
+		enc.Encode(protocol.ApplyEditResponse{ProtocolVersion: protocol.ProtocolVersion, Applied: false, Error: s.socketSafeError(err)})
 		return
 	}
 
@@ -586,20 +632,20 @@ func (s *Server) handleApplyEdit(enc *json.Encoder, req protocol.ApplyEditReques
 	prepared, err := editapply.PrepareEdit(realRoot, block)
 	if err != nil {
 		s.logger.Printf("apply-edit: refused %s: %v", block.FilePath, err)
-		enc.Encode(protocol.ApplyEditResponse{ProtocolVersion: protocol.ProtocolVersion, Applied: false, Error: err.Error()})
+		enc.Encode(protocol.ApplyEditResponse{ProtocolVersion: protocol.ProtocolVersion, Applied: false, Error: s.socketSafeError(err, realRoot)})
 		return
 	}
 
 	backupDir, err := resolveBackupSessionDir(realRoot, req.BackupSessionDir)
 	if err != nil {
 		s.logger.Printf("apply-edit: creating backup dir: %v", err)
-		enc.Encode(protocol.ApplyEditResponse{ProtocolVersion: protocol.ProtocolVersion, Applied: false, Error: err.Error()})
+		enc.Encode(protocol.ApplyEditResponse{ProtocolVersion: protocol.ProtocolVersion, Applied: false, Error: s.socketSafeError(err, realRoot)})
 		return
 	}
 
 	if err := editapply.Apply(realRoot, prepared, backupDir); err != nil {
 		s.logger.Printf("apply-edit: failed %s: %v", block.FilePath, err)
-		enc.Encode(protocol.ApplyEditResponse{ProtocolVersion: protocol.ProtocolVersion, Applied: false, Error: err.Error()})
+		enc.Encode(protocol.ApplyEditResponse{ProtocolVersion: protocol.ProtocolVersion, Applied: false, Error: s.socketSafeError(err, realRoot)})
 		return
 	}
 
@@ -680,7 +726,7 @@ func (s *Server) handleUndo(enc *json.Encoder, req protocol.UndoRequest) {
 	realRoot, err := editapply.ResolveRealWorkspaceRoot(s.workspace)
 	if err != nil {
 		s.logger.Printf("undo: resolving workspace root: %v", err)
-		enc.Encode(protocol.UndoResponse{ProtocolVersion: protocol.ProtocolVersion, Error: err.Error()})
+		enc.Encode(protocol.UndoResponse{ProtocolVersion: protocol.ProtocolVersion, Error: s.socketSafeError(err)})
 		return
 	}
 
@@ -696,10 +742,10 @@ func (s *Server) handleUndo(enc *json.Encoder, req protocol.UndoRequest) {
 	var sessionDir string
 	if req.BackupSessionDir != "" {
 		if !isWorkspaceBackupSessionDir(realRoot, req.BackupSessionDir) {
-			s.logger.Printf("undo: refused unrecognized session dir %q", req.BackupSessionDir)
+			s.logger.Printf("undo: refused unrecognized session dir %q (under %s)", req.BackupSessionDir, backupsRoot)
 			enc.Encode(protocol.UndoResponse{
 				ProtocolVersion: protocol.ProtocolVersion,
-				Error:           fmt.Sprintf("backup session %q not found under %s", req.BackupSessionDir, backupsRoot),
+				Error:           s.scrubPaths(fmt.Sprintf("backup session %q not found under %s", req.BackupSessionDir, backupsRoot), realRoot),
 			})
 			return
 		}
@@ -708,7 +754,7 @@ func (s *Server) handleUndo(enc *json.Encoder, req protocol.UndoRequest) {
 		sessionDir, err = resolveBackupSession(backupsRoot, "")
 		if err != nil {
 			s.logger.Printf("undo: resolving latest session: %v", err)
-			enc.Encode(protocol.UndoResponse{ProtocolVersion: protocol.ProtocolVersion, Error: err.Error()})
+			enc.Encode(protocol.UndoResponse{ProtocolVersion: protocol.ProtocolVersion, Error: s.socketSafeError(err, realRoot)})
 			return
 		}
 	}
@@ -716,7 +762,7 @@ func (s *Server) handleUndo(enc *json.Encoder, req protocol.UndoRequest) {
 	restored, guarded, err := runUndoSession(realRoot, sessionDir, false, strings.NewReader(""), io.Discard, s.logger)
 	if err != nil {
 		s.logger.Printf("undo: restoring %s: %v", sessionDir, err)
-		enc.Encode(protocol.UndoResponse{ProtocolVersion: protocol.ProtocolVersion, Error: err.Error()})
+		enc.Encode(protocol.UndoResponse{ProtocolVersion: protocol.ProtocolVersion, Error: s.socketSafeError(err, realRoot)})
 		return
 	}
 
