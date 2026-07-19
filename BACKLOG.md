@@ -580,10 +580,12 @@ gate stays un-clear on the socket axis until the auth-model decision (below) is 
   can OOM or wedge the daemon at will.
 
 **The two PARTIAL findings (logged at the review's stated severity — not rounded up):**
-- **Gate 6 — no cross-request lock on the Apply/Undo filesystem path (PARTIAL).** Each connection is
-  handled on its own goroutine and the Apply / Undo write path takes no cross-request lock, so two
-  concurrent requests can interleave on the same files. Flagged as a TOCTOU *amplifier* (see Gate 8),
-  not a standalone break.
+- **Gate 6 — no cross-request lock on the Apply/Undo filesystem path (PARTIAL → deep-audited f97dc09 →
+  FIXED `442d018`).** Each connection is handled on its own goroutine and the Apply / Undo write path
+  takes no cross-request lock, so two concurrent requests can interleave on the same files. Originally
+  flagged as a TOCTOU *amplifier* (see Gate 8); the deep audit REFUTED that framing (distinct data
+  races, not symlink amplification) and the fix serializes the paths per workspace root — see the dated
+  sub-sections below.
 - **Gate 7 — error responses leak absolute paths / internal resolution details (PARTIAL,
   low-impact-today-but-conditional).** Error strings returned over the socket include absolute
   filesystem paths and internal path-resolution detail. Low impact on a single-user box; conditional
@@ -669,7 +671,26 @@ outcomes); method + numbers are the record here.
 - **New follow-ups spun out (flag-only):** (1) `NewBackupSessionDir` same-second collision
   (`editapply/backup.go`); (2) `pruneBackupSessions` `RemoveAll` racing a live undo →
   spurious "session not found" (`editapply/backup.go` + `apply_cmd.go runUndoSession` WalkDir).
-- **Not fixed. Gate 6 stays open.** Fix direction (single apply/undo mutex vs. per-workspace lockfile
+- **FIXED 2026-07-19 (commit `442d018`) — Gate 6 now closed.** In-process per-workspace-root lock
+  (`Server.applyLocks`, a `sync.Map` of `*sync.Mutex`; `lockWorkspace` get-or-creates it). `handleApplyEdit`
+  and `handleUndo` take it right after resolving the root and hold it via `defer` across the whole
+  critical section (apply: PrepareEdit read → backup-dir prune → Apply write+copies; undo: session
+  validation → restore writes). Same workspace serializes; different workspaces never block (keyed by
+  root, not per-file, not global). Exclusive Mutex (all three ops mutate; RWMutex would buy nothing);
+  in-process only (one daemon per socket); each caller takes exactly one lock and never nests, so no
+  deadlock ordering; daemon undo never prompts, so the lock is never held across a blocking read.
+  Regression cover in `daemon/gate6_serialization_test.go` (real Serve/handleApplyEdit/handleUndo over
+  real unix sockets, audit loop counts): the five repros now measure **0%** (Apply/Apply lost-update
+  60/60→0; backup-session collapse ~68%→0; undo-guard defeat ~98%→0; double-restore ~88%→0;
+  prune-vs-undo now always atomic) — verified the tests still FAIL at the audit's rates when the lock
+  is neutered — plus cross-workspace non-interference, a two-workspace end-to-end concurrency proof,
+  and a timeout-guarded overlapping Apply/Undo/prune stress test. Full daemon suite race-clean. **Both
+  flagged follow-ups fixed as a side effect, with proof:** `NewBackupSessionDir` same-second collision
+  (serialized applies get distinct dirs) and `pruneBackupSessions` vs. a live undo (now mutually
+  exclusive; undo atomic). Residual, correctly UNCHANGED: an old session beyond keep=5 can still be
+  legitimately pruned before an undo reaches it (correct retention policy, not a race). Gate 7 remains
+  open; the mid-ancestor symlink TOCTOU (`07c59a4`) is a different bug class, untouched by this fix.
+- **(historical) Not fixed. Gate 6 stays open.** Fix direction (single apply/undo mutex vs. per-workspace lockfile
   vs. `O_EXCL`/rename atomic writes) is the founder's call.
 
 **Minor, non-gating (Gate 2 hardening notes — do not weight these with the four items above):**

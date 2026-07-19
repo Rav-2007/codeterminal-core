@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -118,6 +119,16 @@ type Server struct {
 	maxRequestBytes int64
 	connIdleTimeout time.Duration
 	maxConns        int
+
+	// applyLocks serializes the filesystem-mutating request paths per workspace
+	// root (FAIL-3, Gate 6 — data-integrity). It maps a resolved workspace root
+	// to the *sync.Mutex guarding it; lockWorkspace get-or-creates and holds it
+	// across an Apply's read-modify-write + backup/prune, or an Undo's validate
+	// + restore, so two such operations on the SAME workspace can't interleave
+	// while different workspaces never block each other. sync.Map's zero value
+	// is ready to use, so no constructor is needed and every existing Server
+	// literal gets correct serialization for free. See lockWorkspace.
+	applyLocks sync.Map
 }
 
 // route decides which tier handles the next request. The request path
@@ -515,6 +526,34 @@ func isApplyEditRequest(raw json.RawMessage) bool {
 	return peek.Edit != nil
 }
 
+// lockWorkspace acquires the per-workspace serialization lock for root and
+// returns the release function, meant to be invoked with defer at the start of
+// a critical section (defer s.lockWorkspace(root)()). It is the daemon's
+// data-integrity guard for the filesystem-mutating request paths (FAIL-3,
+// Gate 6): Apply, Undo, and the backup prune that runs inside Apply all take
+// this lock for the whole span from their first read to their last write, so
+// two such operations on the SAME workspace can never interleave — closing the
+// read-modify-write lost update, the shared-backup-session collapse, the
+// undo-guard defeat, the double-restore, and the prune-vs-undo race the Gate 6
+// audit reproduced.
+//
+// It is keyed by resolved workspace ROOT — not per-file (too fine: misses the
+// cross-file backup-session bookkeeping) and not global (too coarse: would
+// serialize unrelated workspaces), so two operations on genuinely different
+// workspaces get different mutexes and never block each other. All three
+// operations mutate the filesystem — none is a pure reader — so an exclusive
+// sync.Mutex is exactly right; an RWMutex would buy nothing. It is in-process
+// only: there is exactly one daemon process behind the socket, so an in-memory
+// lock fully covers the concurrency without a cross-process file lock. Each
+// caller takes exactly this one lock and never nests another, so no acquisition
+// ordering exists to deadlock on.
+func (s *Server) lockWorkspace(root string) func() {
+	m, _ := s.applyLocks.LoadOrStore(root, &sync.Mutex{})
+	mu := m.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}
+
 // handleApplyEdit runs an ApplyEditRequest through the same editapply core
 // the CLI's `edits apply` and the TUI's edit-review flow use — PrepareEdit
 // (exact-match, ambiguity-refuse, workspace confinement, secret-file
@@ -534,6 +573,14 @@ func (s *Server) handleApplyEdit(enc *json.Encoder, req protocol.ApplyEditReques
 		enc.Encode(protocol.ApplyEditResponse{ProtocolVersion: protocol.ProtocolVersion, Applied: false, Error: err.Error()})
 		return
 	}
+
+	// Serialize the entire read-modify-write + backup/prune span per workspace
+	// (FAIL-3, Gate 6). Acquired here, after the root is resolved (a read-only
+	// resolve that needs no lock and supplies the key), and held across
+	// PrepareEdit's read, backup-dir resolution's prune, and Apply's write +
+	// backup copies — so a concurrent Apply or Undo on this workspace cannot
+	// interleave. Released on every return path via defer.
+	defer s.lockWorkspace(realRoot)()
 
 	block := editapply.EditBlock{FilePath: req.Edit.FilePath, Search: req.Edit.Search, Replace: req.Edit.Replace}
 	prepared, err := editapply.PrepareEdit(realRoot, block)
@@ -636,6 +683,13 @@ func (s *Server) handleUndo(enc *json.Encoder, req protocol.UndoRequest) {
 		enc.Encode(protocol.UndoResponse{ProtocolVersion: protocol.ProtocolVersion, Error: err.Error()})
 		return
 	}
+
+	// Serialize per workspace (FAIL-3, Gate 6): held across session validation
+	// and every restore write, and mutually exclusive with a concurrent Apply on
+	// the same workspace — whose prune would otherwise delete this session out
+	// from under the walk, and whose write would otherwise defeat the
+	// "unchanged since apply" guard. Released on every return path via defer.
+	defer s.lockWorkspace(realRoot)()
 
 	backupsRoot := filepath.Join(realRoot, ".codeterminal", "backups")
 
