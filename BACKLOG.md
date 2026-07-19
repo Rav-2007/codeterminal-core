@@ -600,6 +600,55 @@ temp dir (`protocol/protocol.go:29-34`); the socket dir is still `MkdirAll`'d 07
 under a world-writable parent rather than a per-user runtime dir. Both minor; note as hardening,
 not gate-blockers.
 
+## Backlog — added 2026-07-19 (confined-writer abstraction — open design question)
+
+**Flagging only — no code, no recommendation.** Surfaced across two prior audits (the FAIL-2
+undo-writer fix and the Gate-5 writer sweep): the daemon now carries three separate, independently
+written confinement implementations guarding workspace/file writes. This note records what each one
+is and the tradeoffs of consolidating them, and leaves the call open. It is deliberately not an
+implementation plan.
+
+**The three implementations as they stand today:**
+1. **`ResolveSafeTargetPath` (`editapply/apply.go:122`)** — the apply writer's guard. String-form
+   checks (reject absolute paths, `filepath.Clean` + reject a `..`-prefix) then **full-path**
+   symlink resolution: `EvalSymlinks` on the joined path and a `filepath.Rel(root, resolved)`
+   inside-root check, returning the fully-resolved path so the later read/write touches no symlink
+   components. Also re-applies `MatchesSecretName`. Because `EvalSymlinks` requires existence, it
+   structurally **cannot create new files** — it only resolves targets that already exist.
+2. **`confinedRestorePath` (`daemon/apply_cmd.go:386`)** — the undo writer's guard. Resolves the
+   **deepest existing ancestor** directory and checks that stays inside root, then leaves
+   `MkdirAll` + a leaf-only `openNoFollow` (`O_NOFOLLOW`) to create/open the leaf. It uses
+   parent-prefix rather than full-path resolution precisely because undo may need to **recreate a
+   non-existent leaf** (a deleted file being restored) — the one property `ResolveSafeTargetPath`
+   cannot offer.
+3. **`ensureGitignoreEntry`'s inline lstat guard (`daemon/index_cmd.go:297`)** — a single fixed
+   relative path (`.gitignore`, no client-supplied component). A leaf-only `leafIsSymlink` refusal
+   plus `openNoFollow` on the append open. It has no intermediate-directory attack surface, so it
+   needs neither the full-path resolution of (1) nor the ancestor walk of (2).
+
+(The shared leaf primitives `openNoFollow` / `leafIsSymlink` in `apply_cmd.go` are already partly
+factored out and reused by (2) and (3); the divergence that would have to be reconciled is in the
+*path-resolution strategy* above them, not the leaf open itself.)
+
+**Case for consolidation:** one audited confinement primitive instead of three parallel ones — a
+single place to reason about, test, and extend when the next writer appears (e.g. a future editapply
+CREATE path, which the standing FAIL-2 caveat already flags as new confinement surface). Three
+parallel implementations are three things to keep correct as the threat model evolves.
+
+**Case against:** each writer has genuinely different constraints — full-path vs. deepest-existing-
+ancestor vs. fixed-single-path resolution; leaf-must-exist vs. leaf-may-be-created; secret-recheck
+vs. none. A shared abstraction covering all three tends to become either too rigid (forcing one
+resolution strategy onto a writer that needs another — e.g. making the create-capable undo path
+inherit `EvalSymlinks`-requires-existence, which would break it) or too configurable (enough
+flags/options that reasoning about any single call site is no easier than reading three focused
+functions). The current split keeps each guard small and locally obvious.
+
+**Status: open design question, no recommendation forced.** A founder-level "worth doing at some
+point" call, not a fix and not urgent: there is no correctness gap here — all three guards hold as
+reviewed, so this is about the maintainability of parallel implementations, not a vulnerability.
+Recorded so the tradeoff is on paper the next time a writer is added; deliberately left un-nudged in
+either direction.
+
 ## Phase 4 — standalone / packaging / commercialization (decided direction: capable first, then shippable)
 
 Scoped and decided this session, not started. Goal: a user installs the VS Code extension from
