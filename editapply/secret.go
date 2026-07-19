@@ -22,8 +22,10 @@ var SecretFileGlobs = []string{
 
 	// SSH private keys other than RSA. Exact names (no trailing "*") so the
 	// matching ".pub" PUBLIC keys — which are not secrets — are NOT flagged.
-	// (Note: the older id_rsa* above does still flag id_rsa.pub; that is
-	// pre-existing, harmless over-refusal, and left unchanged by this task.)
+	// (The broader id_rsa* above is a wildcard so it keeps catching private-key
+	// copies like id_rsa.old / id_rsa_backup; its id_rsa.pub PUBLIC-key sibling
+	// is carved back out via SecretNameAllowlist below, giving it the same
+	// .pub precision these exact-match patterns already have.)
 	"id_ed25519",
 	"id_ecdsa",
 	"id_dsa",
@@ -31,7 +33,9 @@ var SecretFileGlobs = []string{
 	// Credential-bearing dotfiles (auth tokens / passwords in the file itself).
 	".npmrc",
 	".netrc",
+	"_netrc", // Windows/legacy variant of .netrc — same credential contents.
 	".pgpass",
+	".htpasswd", // Apache HTTP basic-auth file: username:password-hash pairs.
 
 	// Kubernetes configs carry embedded client certs/tokens. Basename-only, so
 	// a bare file literally named "config" (the .kube/config case) is NOT
@@ -62,6 +66,21 @@ var SecretFileGlobs = []string{
 // refusing isn't.
 var SecretSubstrings = []string{"secret", "credential"}
 
+// SecretNameAllowlist carves specific PUBLIC-key names back out of the broader
+// private-key globs above. The exact-match SSH patterns (id_ed25519, id_ecdsa,
+// id_dsa) never match their ".pub" siblings, so they need no carve-out — but
+// id_rsa* is intentionally a WILDCARD (to keep catching private-key copies such
+// as id_rsa.old and id_rsa_backup), which also swept up id_rsa.pub, a PUBLIC key
+// that is not a secret. This restores the same .pub precision the exact-match
+// patterns already have, without narrowing id_rsa*'s reach over genuine
+// private-key variants. It is applied AFTER the substring net (so a name that
+// literally contains "secret"/"credential" still over-refuses) and BEFORE the
+// glob list (so it overrides id_rsa*). Excluding a public key opens no writer
+// path — it only stops an over-broad refusal on a file that was never a secret.
+var SecretNameAllowlist = []string{
+	"id_rsa*.pub",
+}
+
 // MatchesSecretName reports whether base (a file's basename) matches the
 // indexer's and edit-applier's shared secret-file policy. This is the single
 // source of truth for that policy — daemon's chunker.go and this package's
@@ -71,6 +90,14 @@ func MatchesSecretName(base string) bool {
 	for _, sub := range SecretSubstrings {
 		if strings.Contains(lower, sub) {
 			return true
+		}
+	}
+	// Public-key carve-outs: names a broader private-key glob would catch but
+	// that are not secrets (SSH .pub public keys). Checked before the glob list
+	// so the id_rsa* wildcard can stay broad while its .pub sibling is allowed.
+	for _, allow := range SecretNameAllowlist {
+		if ok, _ := filepath.Match(allow, lower); ok {
+			return false
 		}
 	}
 	// Match the globs against the lowercased basename. filepath.Match has no

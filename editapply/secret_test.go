@@ -23,7 +23,6 @@ func TestMatchesSecretName(t *testing.T) {
 		{"existing/pem", "server.pem", true},
 		{"existing/key", "private.key", true},
 		{"existing/id_rsa", "id_rsa", true},
-		{"existing/id_rsa_pub_still_flagged", "id_rsa.pub", true}, // existing id_rsa* flags .pub too; unchanged
 		{"existing/p12", "cert.p12", true},
 		{"existing/substr_secret", "mysecret.txt", true},
 		{"existing/substr_credential", "my_credentials.yaml", true},
@@ -69,6 +68,22 @@ func TestMatchesSecretName(t *testing.T) {
 		{"neg/state_go", "state.go", false}, // not *.tfstate
 		{"neg/terraform_tf", "terraform.tf", false},
 		{"neg/account_js", "account.js", false},
+
+		// ---- Item 1 — id_rsa.pub glob asymmetry (FAIL-1 follow-up) ----
+		// The id_rsa* wildcard must keep catching the private key and its
+		// copies, but its .pub PUBLIC-key sibling is NOT a secret and is now
+		// carved back out (SecretNameAllowlist).
+		{"item1/id_rsa_pub_now_allowed", "id_rsa.pub", false},           // baseline: FAIL (id_rsa* flagged it)
+		{"item1/id_rsa_still_flagged", "id_rsa", true},                  // private key — still flagged
+		{"item1/id_rsa_old_still_flagged", "id_rsa.old", true},          // private-key copy — must stay flagged
+		{"item1/id_rsa_backup_still_flagged", "id_rsa_backup", true},    // private-key copy — must stay flagged
+		{"item1/id_rsa_pub_case", "ID_RSA.PUB", false},                  // carve-out is case-insensitive: baseline FAIL
+		{"item1/id_rsa_backup_pub_allowed", "id_rsa_backup.pub", false}, // .pub of a copy is still public
+
+		// ---- Item 2 — .htpasswd / _netrc inclusion (FAIL-1 follow-up) ----
+		{"item2/htpasswd", ".htpasswd", true},      // baseline: FAIL
+		{"item2/netrc_windows", "_netrc", true},    // Windows/legacy .netrc variant; baseline: FAIL
+		{"item2/htpasswd_case", ".HTPASSWD", true}, // case-fold extends to the new patterns; baseline: FAIL
 	}
 
 	for _, c := range cases {
