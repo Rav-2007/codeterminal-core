@@ -220,7 +220,13 @@ func TestHandleConn_SearchRequestRoutesThroughRealDispatchNotPromptPath(t *testi
 	clientConn, serverConn := net.Pipe()
 	done := make(chan struct{})
 	go func() {
-		srv.handleConn(serverConn)
+		// serveConn is handleConn's post-authentication half. These tests drive
+		// it directly because a net.Pipe conn carries no kernel peer credentials
+		// for handleConn's authorizePeer gate (proven separately in
+		// peercred_test.go); the dispatch behavior under test is what runs once
+		// a peer is authorized.
+		srv.serveConn(serverConn)
+		serverConn.Close()
 		close(done)
 	}()
 
@@ -257,7 +263,7 @@ func TestHandleConn_SearchRequestRoutesThroughRealDispatchNotPromptPath(t *testi
 }
 
 // TestHandleConn_PlainPromptRequestStillRoutesNormally is the old-client
-// safety check at the full handleConn level: a real PromptRequest (which
+// safety check at the serveConn dispatch level: a real PromptRequest (which
 // never serializes a "search" key) must still reach the ordinary prompt
 // path unaffected by the new isSearchRequest check being consulted first.
 // apiBase deliberately points nowhere, so reaching the model-calling path
@@ -275,7 +281,13 @@ func TestHandleConn_PlainPromptRequestStillRoutesNormally(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	done := make(chan struct{})
 	go func() {
-		srv.handleConn(serverConn)
+		// serveConn is handleConn's post-authentication half. These tests drive
+		// it directly because a net.Pipe conn carries no kernel peer credentials
+		// for handleConn's authorizePeer gate (proven separately in
+		// peercred_test.go); the dispatch behavior under test is what runs once
+		// a peer is authorized.
+		srv.serveConn(serverConn)
+		serverConn.Close()
 		close(done)
 	}()
 

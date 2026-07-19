@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"codeterminal/editapply"
@@ -238,8 +239,84 @@ func (s *Server) Serve(ln net.Listener) {
 	}
 }
 
+// authorizePeer verifies, via the OS, that the process on the other end of an
+// accepted connection runs as the same UID as this daemon, and returns an
+// error (which the caller turns into an immediate refusal) otherwise (FAIL-3,
+// Gate 3 — peer authentication). This is the daemon's actual access control.
+// The Unix socket is created 0600 under a per-user runtime dir, but file
+// permissions don't identify the caller, and the Gate 5 resource limits above
+// deliberately don't either — any process able to connect was, until this
+// check, treated as fully trusted. Every legitimate client (CLI, TUI, IDE
+// integration) runs as the same user that started the daemon, so a same-UID
+// peer is exactly the trusted set, verified with zero client-side config.
+//
+// PEERCRED: the credentials come from the kernel (SO_PEERCRED on Linux), fixed
+// at connect() time — not from anything the client sends — so a peer cannot
+// forge a different UID on the wire. This FAILS CLOSED: any error retrieving or
+// comparing the credential (unsupported platform — see peercred_other.go — a
+// conn that exposes no peer credentials, or a syscall failure) is returned as a
+// refusal, never a silent pass. The returned error is for the daemon's own log
+// only; the caller never sends it back to the rejected peer, so this adds no
+// new information-leakage surface.
+func (s *Server) authorizePeer(conn net.Conn) error {
+	sc, ok := conn.(syscall.Conn)
+	if !ok {
+		return fmt.Errorf("connection type %T exposes no peer credentials", conn)
+	}
+	cred, err := readPeerCred(sc)
+	if err != nil {
+		return err
+	}
+	if err := checkPeerUID(cred.uid, os.Getuid()); err != nil {
+		return fmt.Errorf("%w (peer pid=%d)", err, cred.pid)
+	}
+	return nil
+}
+
+// checkPeerUID compares a connecting peer's OS-reported UID against the
+// daemon's own. It is split out as a pure function so the security-critical
+// match/mismatch decision is unit-testable without constructing a real
+// cross-UID socket, which an unprivileged test process cannot do. selfUID is
+// os.Getuid()'s int; a negative selfUID (Getuid reports -1 on platforms
+// without the concept) is itself treated as a failure, so the daemon never
+// trusts a peer it cannot meaningfully compare against.
+func checkPeerUID(peerUID uint32, selfUID int) error {
+	if selfUID < 0 {
+		return fmt.Errorf("daemon uid unavailable (%d); cannot verify peer uid=%d", selfUID, peerUID)
+	}
+	if peerUID != uint32(selfUID) {
+		return fmt.Errorf("peer uid=%d does not match daemon uid=%d", peerUID, selfUID)
+	}
+	return nil
+}
+
+// handleConn is the entry point for every accepted connection: it
+// authenticates the peer and, only if that passes, hands off to serveConn for
+// the handshake and request dispatch.
+//
+// Authentication happens before touching the connection for anything else
+// (FAIL-3, Gate 3). Until this check, any process that could open the socket
+// was treated as fully trusted; instead we confirm via the OS that the peer
+// runs as this daemon's own UID, and refuse — before the handshake is read,
+// before any request is decoded or dispatched — if it doesn't, or if the check
+// itself fails. Fails closed. See authorizePeer.
 func (s *Server) handleConn(conn net.Conn) {
 	defer conn.Close()
+
+	if err := s.authorizePeer(conn); err != nil {
+		s.logger.Printf("connection refused: %v", err)
+		return
+	}
+
+	s.serveConn(conn)
+}
+
+// serveConn runs the version handshake and dispatches the single request a
+// connection carries. It is reached only after handleConn has authenticated
+// the peer, so everything here may assume a same-UID, authorized caller — the
+// dispatch logic is deliberately unchanged from before Gate 3. It does not
+// close conn; handleConn owns the connection's lifecycle (see its defer).
+func (s *Server) serveConn(conn net.Conn) {
 	s.logger.Print("client connected")
 
 	// Bound how much this connection can make the daemon buffer, and how long

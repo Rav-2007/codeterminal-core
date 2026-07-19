@@ -94,9 +94,9 @@ func TestServer_ResetPersistedHistoryClearsOnlyThisWorkspace(t *testing.T) {
 
 // --- handleConn integration: the safety-critical control-flow guarantees ---
 
-// TestHandleConn_ResetNeverCallsModelAndClearsPersistedHistory drives the
-// real handleConn over an in-memory net.Pipe with apiBase pointing at a
-// port nothing listens on. If Reset ever fell through to the normal
+// TestHandleConn_ResetNeverCallsModelAndClearsPersistedHistory drives
+// handleConn's post-auth half (serveConn) over an in-memory net.Pipe with
+// apiBase pointing at a port nothing listens on. If Reset ever fell through to the normal
 // model-calling path, streamCompletion's dial would fail and the response
 // would be a Done:true WITH a non-empty Error — not the bare Done:true this
 // test requires. This is the regression test for the "stale daemon /
@@ -125,7 +125,12 @@ func TestHandleConn_ResetNeverCallsModelAndClearsPersistedHistory(t *testing.T) 
 	clientConn, serverConn := net.Pipe()
 	done := make(chan struct{})
 	go func() {
-		srv.handleConn(serverConn)
+		// serveConn is handleConn's post-authentication half. A net.Pipe conn
+		// carries no kernel peer credentials for handleConn's authorizePeer gate
+		// (covered in peercred_test.go), so these control-flow tests drive the
+		// post-auth path directly — which is what executes for an authorized peer.
+		srv.serveConn(serverConn)
+		serverConn.Close()
 		close(done)
 	}()
 
