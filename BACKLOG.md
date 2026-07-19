@@ -590,7 +590,14 @@ gate stays un-clear on the socket axis until the auth-model decision (below) is 
   low-impact-today-but-conditional).** Error strings returned over the socket include absolute
   filesystem paths and internal path-resolution detail. Low impact on a single-user box; conditional
   value to an attacker who does not already know the layout (e.g. a sandboxed dependency), so noted
-  rather than dismissed.
+  rather than dismissed. **DEEP AUDIT DONE 2026-07-19, and the path-scrub / upstream-passthrough
+  residual is now FIXED (`3aeb8b6`) — see the dated Gate 7 sub-section below.** The audit refined the
+  "conditional value to an attacker who doesn't know the layout" framing: post-Gate-3 the only
+  reachable audience is an authenticated same-uid peer who already has equivalent visibility via
+  `/proc` + direct syscalls (verified), so the real residual is *hygiene* (paths riding along in a
+  response that later travels off-box), which the fix closes. The existence-oracle distinguishability
+  itself remains open by design (lower-priority, more invasive). Gate 7 overall status / FAIL-3
+  closure remains the founder's call.
 
 **Gate 8 — synthesis against the FAIL-2 fix.** This finding does **not** break the FAIL-2 fix: the
 undo writer's `EvalSymlinks`+`Rel` confinement and `O_NOFOLLOW` leaf guard still hold exactly as
@@ -692,6 +699,66 @@ outcomes); method + numbers are the record here.
   open; the mid-ancestor symlink TOCTOU (`07c59a4`) is a different bug class, untouched by this fix.
 - **(historical) Not fixed. Gate 6 stays open.** Fix direction (single apply/undo mutex vs. per-workspace lockfile
   vs. `O_EXCL`/rename atomic writes) is the founder's call.
+
+### Gate 7 deep audit — 2026-07-19 (results + path-scrub / upstream-passthrough FIX; does NOT close Gate 7)
+
+Ran after Gate 3 peer-auth (`517c069`) and Gate 6 concurrency (`d96794e`) both landed. Method was the
+audit's own: the real daemon binary on an isolated workspace + socket, driven by a raw-socket client
+one request per connection, capturing the actual response bytes for every error condition of every
+request type (Handshake / Prompt / ApplyEdit / Undo / Search) — leakage was never inferred from
+reading error-construction code alone.
+
+- **Leakage catalog (Gates 1–2).** Three response classes leaked a daemon-side ABSOLUTE host path; the
+  rest only echoed the caller's own input (no fix needed):
+  - **Apply** — nonexistent file / nested-nonexistent path (`resolving X: lstat <WS>/…: no such file`),
+    unreadable file (`reading X: open <WS>/…: permission denied`), and stat/backup/write I/O-fault
+    paths. The nested case additionally disclosed the *deepest existing ancestor*, a directory-depth
+    oracle.
+  - **Undo** — unknown session dir (`backup session "…" not found under <BK>`), empty-session
+    "no backups found at <BK>", restore-time I/O — all disclosing `<BK>` = `<WS>/.codeterminal/backups`.
+  - **Gate 5 (out-of-original-scope find)** — the model-API failure path returned `err.Error()`
+    verbatim, leaking the upstream provider **base URL** + raw transport text. `ErrZDRRefused` was
+    already rewritten to a generic string; every *other* model error passed through raw. No credential
+    leak (the API key is a header, not in the URL — verified). No stack traces anywhere (all errors are
+    single-line `fmt.Errorf` wraps).
+- **Existence-oracle finding (Gate 3) — CONFIRMED real.** The same probe path yields *distinguishable*
+  responses by filesystem state (absent / readable-no-match / unreadable / secret-named / symlink-
+  outside / editable), so *which* generic error fires is itself an oracle even where no path string
+  prints. Called out explicitly rather than buried — but its severity is set by Gate 4, and fixing it
+  means unifying error responses (a bigger behavioral change), so it is **flagged, not fixed**.
+- **Severity re-assessment (Gate 4) — Informational/Low, verified not asserted.** Post-Gate-3 the only
+  party that can reach this surface is an authenticated same-uid peer, and such a peer already holds
+  every disclosed fact independently: the daemon PID is in the 0600 lockfile, `/proc/<pid>/cmdline`
+  shows `--workspace <WS>` verbatim, `/proc/<pid>/environ` carries `CODETERMINAL_API_BASE`, the prompt
+  *success* path returns `grounding.workspace = <WS>` by design, and every existence/permission/symlink
+  answer is one `lstat` away. All confirmed live on the box. So the "compromised dependency that
+  doesn't know the layout" scenario does **not** survive Gate 3 (a dependency running as you *is* you to
+  the kernel). The real residual is **hygiene**: absolute host paths + the upstream URL ride along in a
+  response that could travel off-box later (saved transcript, pasted bug report, telemetry, or a future
+  change widening socket access).
+- **FIXED 2026-07-19 (commit `3aeb8b6`) — the path-scrub / upstream-passthrough residual is closed.**
+  Scrub at the **socket boundary only**, mirroring `ErrZDRRefused`'s existing rewrite-before-`Encode`:
+  `Server.scrubPaths`/`socketSafeError` replace every workspace-root occurrence (resolved `realRoot`,
+  plus `s.workspace` for pre-resolution errors) with a stable `<workspace>` token, preserving the
+  workspace-relative tail so messages stay debuggable (`<workspace>/sub/x.go: no such file`, not a
+  blank "an error occurred"); applied to all Apply/Undo error encodes. The model-API failure default
+  changes from `err.Error()` to a generic `"calling model API failed"`, with `ErrZDRRefused`'s specific
+  message unchanged. The **full unscrubbed error is still logged locally** in every case (each handler
+  logs it before encoding), so operator/CLI/TUI debuggability is unchanged. Confinement/resolution
+  logic and the `editapply` core are **untouched** — only the response *string* changes; the success-
+  path `grounding.workspace` field is deliberately left as-is. Regression cover in
+  `daemon/gate7_scrub_test.go`: the audit's own probe set driven through the real Apply/Undo handlers
+  and `serveConn` over a `net.Pipe` (model error) — asserts no absolute root appears, the `<workspace>`
+  token does, messages stay informative, the model error is generic while the upstream URL is still in
+  the *local log*, `ErrZDRRefused` is unchanged, and `grounding.workspace` is untouched. **Verified
+  fail-when-neutered** (all fail with the exact leaked strings when the scrub is reverted). Re-ran the
+  audit's real-socket probe set against the fixed daemon: every `<WS>`/`<BK>` prefix gone, replaced by
+  `<workspace>`; model error now `"calling model API failed"` on the wire while the daemon log still
+  carries `Post "http://…/v1/chat/completions": dial tcp …: connection refused`. Full daemon suite
+  race-clean; `go vet` clean.
+- **Still open, by design.** The existence-oracle distinguishability (above) is NOT fixed — a
+  lower-priority, more invasive change (unify error responses) not undertaken here. Gate 7 overall
+  status and FAIL-3 closure remain the founder's call.
 
 **Minor, non-gating (Gate 2 hardening notes — do not weight these with the four items above):**
 (1) a brief permission window between `net.Listen("unix", …)` (`daemon/main.go:159`) and the
