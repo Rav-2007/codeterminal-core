@@ -169,7 +169,10 @@ func main() {
 	if err != nil {
 		logger.Fatalf("encoding lockfile: %v", err)
 	}
-	if err := os.WriteFile(lockPath, lockBytes, 0600); err != nil {
+	// O_NOFOLLOW: lockPath is a fixed runtime path, but refuse to write the
+	// lockfile (which carries the socket path clients trust) through a symlink
+	// pre-planted at that name. Truncates a stale regular lockfile as before.
+	if err := writeFileNoFollow(lockPath, lockBytes, 0600); err != nil {
 		logger.Fatalf("writing lockfile %s: %v", lockPath, err)
 	}
 

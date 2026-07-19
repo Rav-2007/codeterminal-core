@@ -59,6 +59,20 @@ func OpenSkillStore(path string) (*SkillStore, error) {
 		return nil, fmt.Errorf("creating skills db directory: %w", err)
 	}
 
+	// Refuse a symlinked db FILE: path is a fixed per-user location (not client
+	// input), but the driver would follow a symlink planted at skills.db and
+	// write SQLite pages through it to an outside file. A leaf lstat is the
+	// feasible equivalent of the O_NOFOLLOW the direct-file writers use — the
+	// driver owns the actual open, so this does not cover its -wal/-shm sidecar
+	// opens (residual noted in the (b)-bucket hardening). A symlinked PARENT dir
+	// (a cache deliberately relocated to another disk) is unaffected: lstat only
+	// refuses a symlink at the final component.
+	if sym, err := leafIsSymlink(path); err != nil {
+		return nil, fmt.Errorf("checking skills db path: %w", err)
+	} else if sym {
+		return nil, fmt.Errorf("skills db %s is a symlink; refusing to open it", path)
+	}
+
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, fmt.Errorf("opening skills db %s: %w", path, err)

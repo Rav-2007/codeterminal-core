@@ -45,8 +45,8 @@ const warnSinkMaxBytes = 5 << 20 // 5 MiB
 // it complements (it does not replace stderr — both are written):
 //
 //   - LOCAL FILESYSTEM ONLY. There is deliberately no io.Writer/network seam
-//     here: the only output is os.OpenFile on a local path. Warn events sit
-//     next to suspected secrets and must never gain a network egress.
+//     here: the only output is an openNoFollow write on a local path. Warn
+//     events sit next to suspected secrets and must never gain a network egress.
 //   - FAILURE-SAFE ON THE REQUEST PATH. Every error (full disk, read-only dir,
 //     path-is-a-directory, marshal failure) is swallowed. A sink failure must
 //     never fail or delay a retrieval request. A nil *warnSink is a valid
@@ -88,9 +88,13 @@ func (w *warnSink) write(ev warnEvent) {
 	defer w.mu.Unlock()
 
 	w.rotateIfNeededLocked(int64(len(line)))
-	f, err := os.OpenFile(w.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	// O_NOFOLLOW: w.path is a fixed workspace log path, not client input, but
+	// this sink sits next to suspected secrets — refuse to append through a
+	// symlink planted at the log name (ELOOP joins the other swallowed errors,
+	// keeping the sink failure-safe on the request path).
+	f, err := openNoFollow(w.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
-		return // swallow: disk full, read-only dir, path is a directory, ...
+		return // swallow: disk full, read-only dir, path is a directory, symlink, ...
 	}
 	defer f.Close()
 	_, _ = f.Write(line) // swallow a short/failed write too

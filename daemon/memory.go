@@ -68,6 +68,17 @@ func OpenMemoryStore(path string) (*MemoryStore, error) {
 		return nil, fmt.Errorf("creating memory db directory: %w", err)
 	}
 
+	// Refuse a symlinked db FILE (same rationale as OpenSkillStore): the driver
+	// would otherwise follow a symlink planted at memory.db and write the
+	// conversation transcript — and the os.Chmod(path, 0600) below would chmod —
+	// through it to an outside file. Leaf-only, so a relocated parent dir is
+	// unaffected; the driver's -wal/-shm sidecar opens remain uncovered.
+	if sym, err := leafIsSymlink(path); err != nil {
+		return nil, fmt.Errorf("checking memory db path: %w", err)
+	} else if sym {
+		return nil, fmt.Errorf("memory db %s is a symlink; refusing to open it", path)
+	}
+
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, fmt.Errorf("opening memory db %s: %w", path, err)

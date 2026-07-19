@@ -205,7 +205,11 @@ func extractFromZip(archivePath, memberPath, destPath string) error {
 // destination for a later cache-hit check to (mis)judge as present.
 func writeExtractedFile(destPath string, r io.Reader) error {
 	tmpPath := destPath + ".part"
-	out, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
+	// O_NOFOLLOW: destPath comes from cache config, not client input, but refuse
+	// to write the extracted library through a symlink planted at the .part name
+	// rather than following it out of the cache dir. 0755 preserved — the
+	// extracted artifact is a shared library that may need the exec bit.
+	out, err := openNoFollow(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
 	if err != nil {
 		return err
 	}

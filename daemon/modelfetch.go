@@ -151,7 +151,10 @@ func downloadAsset(ctx context.Context, destPath string, asset modelAsset, logge
 	}
 
 	tmpPath := destPath + ".part"
-	f, err := os.Create(tmpPath)
+	// O_NOFOLLOW (os.Create equivalent): destPath comes from cache config, not
+	// client input, but refuse to write the download through a symlink planted
+	// at the .part name rather than following it out of the cache dir.
+	f, err := openNoFollow(tmpPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
 	if err != nil {
 		return fmt.Errorf("creating %s: %w", tmpPath, err)
 	}

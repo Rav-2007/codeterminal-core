@@ -41,7 +41,10 @@ func writeEmbedderStamp(indexDir string, embedder Embedder) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(indexDir, embedderStampFileName), data, 0644)
+	// O_NOFOLLOW: the stamp path is derived from indexDir (config, not client
+	// input), but refuse to write through a symlink pre-planted at the stamp
+	// name rather than following it out of the index dir.
+	return writeFileNoFollow(filepath.Join(indexDir, embedderStampFileName), data, 0644)
 }
 
 // checkEmbedderStamp refuses to proceed if indexDir's stamp doesn't match

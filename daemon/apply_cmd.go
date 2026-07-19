@@ -439,3 +439,24 @@ func leafIsSymlink(path string) (bool, error) {
 	}
 	return info.Mode()&os.ModeSymlink != 0, nil
 }
+
+// writeFileNoFollow is os.WriteFile with O_NOFOLLOW: it refuses to write
+// through a symlink at the final path component (creating path with perm if
+// absent, truncating an existing regular file). Used by the daemon-owned
+// writers whose paths come from constants/config rather than client input
+// (the FAIL-2 Gate-5 "(b)" bucket) — defense-in-depth against a symlink
+// pre-planted at a fixed name, matching the leaf guard the apply/undo writers
+// already use. Not confinement (these paths are not attacker-steerable); it
+// only closes the follow-a-symlink write.
+func writeFileNoFollow(path string, data []byte, perm os.FileMode) error {
+	f, err := openNoFollow(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+	if err != nil {
+		return err
+	}
+	_, werr := f.Write(data)
+	cerr := f.Close()
+	if werr != nil {
+		return werr
+	}
+	return cerr
+}

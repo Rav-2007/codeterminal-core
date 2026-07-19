@@ -67,6 +67,16 @@ func NewFTSChunkStore(indexDir string) (*FTSChunkStore, error) {
 	}
 
 	path := filepath.Join(indexDir, lexicalDBFileName)
+	// Refuse a symlinked db FILE (same rationale as OpenSkillStore/OpenMemoryStore):
+	// path is derived from indexDir (config, not client input), but the driver
+	// would otherwise follow a symlink planted at lexical.db and write through it.
+	// Leaf-only; a relocated parent dir is unaffected, sidecars remain uncovered.
+	if sym, err := leafIsSymlink(path); err != nil {
+		return nil, fmt.Errorf("checking lexical db path: %w", err)
+	} else if sym {
+		return nil, fmt.Errorf("lexical db %s is a symlink; refusing to open it", path)
+	}
+
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, fmt.Errorf("opening lexical index %s: %w", path, err)
