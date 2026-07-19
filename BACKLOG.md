@@ -466,6 +466,20 @@ gaps behind the same leak remain open. Do not record FAIL-1 as resolved.
 - **Remaining scoped fix task:** broaden the policy (non-RSA SSH keys, `.pfx`, `.npmrc`, `.netrc`,
   `.pgpass`, `kubeconfig`, `*.tfstate`, service-account JSON) — reviewed as one unit, and understood
   as still only a blocklist. The class is not closed until chunk-content scrubbing lands (above).
+- **`id_rsa_secret.pub`-style narrow over-refusal in `MatchesSecretName` — open, unscoped, no task
+  written yet** (low; surfaced with the `.pub` carve-out added in `ade065a`). The `SecretNameAllowlist`
+  carve-out (`id_rsa*.pub`, `editapply/secret.go`) is applied *after* the `secret`/`credential`
+  substring net, so a public-key name that *also* contains a matched substring — e.g.
+  `id_rsa_secret.pub` — is still flagged: the substring match fires before the carve-out is reached.
+  The carve-out reliably exempts only plain `id_rsa*.pub`-shaped names, not ones that also trip
+  another matched substring. This is not a broken fix — the carve-out does exactly what it was scoped
+  to do (exempt the common `id_rsa*.pub` case) and the substring net still does its job everywhere
+  else; untangling substring-net-vs-carve-out ordering for every possible combination is the same
+  blocklist/allowlist stacking residual as FAIL-1 itself, more scope than the triage item called for.
+  Severity low: the practical effect is *occasionally over-refusing* a legitimate public key with an
+  unusual name, not *under*-refusing a secret — the safe-failure direction, the same reasoning the
+  audit chain applied to `id_rsa.pub` itself before this fix. Logged so it doesn't disappear; a fix
+  is not implied.
 
 ### P3-FAIL-2 (Moderate): the "all writes route through `editapply.Apply()`" claim is false — undo is a 4th, unconfined workspace writer
 Enumerated every workspace-source write at HEAD (not carried forward as assumed). The 3 `Apply`
@@ -507,6 +521,20 @@ an attacker already inside the trust boundary; note as hardening.
   attacker to win a race during an already-narrow window (symlink foothold + undo trigger + timing),
   not a reliable one-shot exploit like Repro A/B were. Logged so it doesn't disappear; a fix is not
   implied to be imminent.
+
+- **SQLite `-wal`/`-shm` sidecar opens unhardened by the `147a7b3` leaf-lstat guard — open, unscoped,
+  no task written yet** (low, lower than the FAIL-2/FAIL-3 findings). The leaf-lstat symlink guard
+  added to the SQLite stores in `147a7b3` (`daemon/skills.go`, `daemon/memory.go`,
+  `daemon/lexicalstore.go`) covers the main `.db` file only. The `modernc.org/sqlite` driver opens its
+  own `-wal` and `-shm` sidecar files internally, outside the guarded call site, so those sidecar
+  opens remain unhardened against a symlink swap. Closing it fully would require a custom VFS layer for
+  the sqlite driver (per the commit's own note) — a materially bigger change than a leaf guard, and out
+  of scope for a hardening pass on daemon-owned, non-attacker-steerable paths. Severity low: these
+  writers were already bucketed as not attacker-steerable (constant/config-derived paths, not
+  client-supplied), so this is defense-in-depth hardening with a known incomplete edge, not a confirmed
+  exploit path. (Distinct from the sidecar *permission* gap in "(g) WAL/shm sidecar permission
+  hardening" above — that is about 0644-vs-0600 file modes; this is the symlink-swap open surface.)
+  Logged so it doesn't disappear; a fix is not implied.
 
 **Standing caveat for when the FAILs are fixed:** this reviewed the *current* write path. CREATE
 support removes the `EvalSymlinks`-requires-existence property that currently anchors Gate 2 —
