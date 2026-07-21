@@ -86,6 +86,14 @@ type retrievalOutcome struct {
 	Reason    string // set only when Skipped
 	Chunks    []Chunk
 	Truncated bool
+
+	// MergedFrom and MergeSavedBytes describe what mergeAdjacentChunks
+	// (chunkmerge.go) did to the retrieved set before it was budgeted:
+	// how many chunks came out of retrieval, and how many rendered bytes
+	// folding their duplicated overlaps away reclaimed. Both are zero when
+	// nothing merged. Reported in the log line, not on the wire.
+	MergedFrom      int
+	MergeSavedBytes int
 }
 
 // gatherContext retrieves context for prompt using the exact same
@@ -114,8 +122,25 @@ func (s *Server) gatherContext(ctx context.Context, prompt string) retrievalOutc
 		return retrievalOutcome{Skipped: true, Reason: "no relevant chunks found in index"}
 	}
 
-	kept, truncated := truncateToBudget(chunks, s.contextBudgetChars, s.cfg.NoScrub)
-	return retrievalOutcome{Chunks: kept, Truncated: truncated}
+	// Fold same-file chunks whose ranges touch or overlap into contiguous
+	// spans BEFORE budgeting, so the budget is spent on distinct code rather
+	// than on the indexer's deliberate window overlap repeated verbatim
+	// (Fix 11, chunkmerge.go). Sizing after merging is what lets the reclaimed
+	// bytes actually be used: a lower-ranked chunk that used to be dropped can
+	// now fit.
+	merged := mergeAdjacentChunks(chunks)
+	saved := 0
+	if len(merged) != len(chunks) {
+		saved = mergeSavings(chunks, merged, s.cfg.NoScrub)
+	}
+
+	kept, truncated := truncateToBudget(merged, s.contextBudgetChars, s.cfg.NoScrub)
+	return retrievalOutcome{
+		Chunks:          kept,
+		Truncated:       truncated,
+		MergedFrom:      len(chunks),
+		MergeSavedBytes: saved,
+	}
 }
 
 // truncateToBudget keeps chunks (already ranked best-first by the vector
@@ -283,6 +308,10 @@ func (s *Server) logRetrieval(o retrievalOutcome) {
 		refs[i] = fmt.Sprintf("%s:%d-%d(%s)", c.FilePath, c.StartLine, c.EndLine, c.Class)
 	}
 	s.logger.Printf("retrieval: chunks=%d truncated=%t rerank=%t sources=[%s]", len(o.Chunks), o.Truncated, !s.rerankDisabled, strings.Join(refs, ", "))
+	if o.MergeSavedBytes > 0 {
+		s.logger.Printf("retrieval: merged %d retrieved chunk(s) into contiguous span(s), reclaiming %d rendered byte(s) of duplicated overlap",
+			o.MergedFrom, o.MergeSavedBytes)
+	}
 
 	if s.debugContext {
 		for i, c := range o.Chunks {
