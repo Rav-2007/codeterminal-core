@@ -263,7 +263,12 @@ type UndoRequest struct {
 }
 
 // UndoResponse is the daemon's reply to an UndoRequest. Restored is the
-// number of files actually reverted. Guarded lists (workspace-relative)
+// number of files actually reverted -- which includes files the apply run had
+// CREATED and undo therefore DELETED (see runUndoSession: reverting a create
+// means removing the file, not restoring an empty one). The wire field does not
+// distinguish the two, since both answer the question a client asks it, "did
+// anything change on disk"; a client that wants to say which files were deleted
+// needs a field that does not exist yet. Guarded lists (workspace-relative)
 // paths that were left untouched because their on-disk content no longer
 // matched the apply run's post-apply snapshot (hand-edited, or otherwise
 // changed, since the apply) -- a client MUST surface this list rather than

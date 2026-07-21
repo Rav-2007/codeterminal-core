@@ -570,7 +570,10 @@ func (s *Server) handleUndo(enc *json.Encoder, req protocol.UndoRequest) {
 		return
 	}
 
-	s.logger.Printf("undo: restored %d file(s) from %s (%d guarded)", restored, sessionDir, len(guarded))
+	// "reverted", not "restored": a session that created files reverts them by
+	// deleting them, and runUndoSession has already logged the per-shape
+	// breakdown (Fix C).
+	s.logger.Printf("undo: reverted %d file(s) from %s (%d guarded)", restored, sessionDir, len(guarded))
 	enc.Encode(protocol.UndoResponse{
 		ProtocolVersion: protocol.ProtocolVersion,
 		Restored:        restored,

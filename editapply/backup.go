@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -163,6 +164,90 @@ func backupAfterReversible(backupDir, realWorkspaceRoot string, p *PreparedEdit)
 		return nil, err
 	}
 	return rollback, nil
+}
+
+// createdManifestName is the session-level record of which files the apply run
+// brought into existence, as opposed to which it merely changed. It lives
+// beside before/ and after/ rather than inside them, so it is never mistaken
+// for a backed-up file by undo's walk of before/.
+//
+// The distinction cannot be recovered from the snapshots themselves, and that
+// was the bug (Fix C). A created file's before/ snapshot is a 0-byte file,
+// which is indistinguishable from the snapshot of a file that existed and was
+// empty -- so undo restored the empty snapshot, reported "1 file restored", and
+// left a 0-byte file standing where the correct answer was no file at all. The
+// report disagreed with disk, which is the exact failure class Tier 1 set out
+// to kill.
+//
+// Format is one workspace-relative path per line. Deliberately dumb: it is
+// written by this package and consumed as a SET MEMBERSHIP TEST ONLY -- undo
+// derives every path it acts on from its own walk of before/ and its own
+// confinement check, and never from a line in this file. A corrupted or
+// hand-edited manifest can therefore only cause a created file to be restored
+// as an empty file (the old behaviour) and can never direct a delete at a path
+// undo would not otherwise have been reverting.
+const createdManifestName = "created-files"
+
+// recordCreatedReversible notes that p's target did not exist before this run,
+// and returns an undo of that note.
+//
+// It is reversible for the same reason backupAfterReversible is: it runs BEFORE
+// the write it describes (Fix 1 ordering -- every fallible bookkeeping step
+// happens while the workspace is still untouched), so a write that then fails
+// must be able to take the claim back. A stale "this run created it" entry for
+// a file the run never wrote would tell undo to delete a file this run is not
+// responsible for.
+func recordCreatedReversible(backupDir, realWorkspaceRoot string, p *PreparedEdit) (rollback func(), err error) {
+	rel, err := filepath.Rel(realWorkspaceRoot, p.TargetPath)
+	if err != nil {
+		return nil, err
+	}
+	manifest := filepath.Join(backupDir, createdManifestName)
+
+	previous, readErr := os.ReadFile(manifest)
+	switch {
+	case readErr == nil:
+		rollback = func() { os.WriteFile(manifest, previous, 0644) }
+	case os.IsNotExist(readErr):
+		rollback = func() { os.Remove(manifest) }
+	default:
+		return nil, readErr
+	}
+
+	for _, line := range strings.Split(string(previous), "\n") {
+		if line == rel {
+			return func() {}, nil // already recorded by an earlier block in this run
+		}
+	}
+	if err := os.WriteFile(manifest, append(previous, []byte(rel+"\n")...), 0644); err != nil {
+		return nil, err
+	}
+	return rollback, nil
+}
+
+// CreatedInSession reports which workspace-relative paths the apply run that
+// wrote sessionDir brought into existence. Undoing those means REMOVING them,
+// not restoring their (empty) before/ snapshot.
+//
+// A session with no manifest -- one written before this record existed, or one
+// in which nothing was created -- yields an empty set and no error, so undo
+// falls back to restore-everything, which is exactly right for a run that
+// created nothing.
+func CreatedInSession(sessionDir string) (map[string]bool, error) {
+	data, err := os.ReadFile(filepath.Join(sessionDir, createdManifestName))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return map[string]bool{}, nil
+		}
+		return nil, err
+	}
+	created := make(map[string]bool)
+	for _, line := range strings.Split(string(data), "\n") {
+		if line != "" {
+			created[line] = true
+		}
+	}
+	return created, nil
 }
 
 func writeBackupCopy(backupDir, subdir, realWorkspaceRoot, targetPath string, content []byte, mode os.FileMode) error {

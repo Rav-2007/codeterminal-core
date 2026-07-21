@@ -234,22 +234,33 @@ func resolveBackupSession(backupsRoot, session string) (string, error) {
 	return filepath.Join(backupsRoot, names[len(names)-1]), nil
 }
 
-// runUndoSession restores every file backed up under sessionDir/before/ back
-// to realWorkspaceRoot. A file is restored silently only if its current
+// runUndoSession reverts every file backed up under sessionDir/before/ back
+// to realWorkspaceRoot. A file is reverted silently only if its current
 // on-disk content still matches sessionDir/after/<relpath> — the state the
 // apply run left it in. A file that has since changed (hand-edited,
 // deleted, or otherwise no longer matching) is never silently overwritten:
-// it's listed as guarded and only restored if force is true or the user
+// it's listed as guarded and only reverted if force is true or the user
 // confirms when prompted afterwards.
 //
-// Returns the number of files actually restored and the relative paths left
-// guarded (still not restored once this call returns -- either left as-is
-// or, if the caller declined to force/confirm, never touched), alongside
-// the same prose written to out/logger this always wrote. This is the
-// single core both the CLI's `edits undo` and the daemon's UndoRequest
-// handler (see daemon/server.go) call -- neither reimplements the restore
-// logic; the handler only additionally needs the counts as return values
-// rather than parsed out of printed text.
+// Reverting is one of two things, decided per file by whether the apply run
+// created it (Fix C). A file the run CHANGED is restored from its before/
+// snapshot. A file the run CREATED is REMOVED, because "before" for that file
+// is not an empty file, it is no file — undo used to restore the 0-byte
+// snapshot, report "1 file restored", and leave a 0-byte file standing where
+// nothing should be. The guard above is unchanged by this and applies to both
+// shapes: a created file the user has since hand-edited is guarded, not
+// silently deleted.
+//
+// Returns the number of files actually reverted (restored + removed) and the
+// relative paths left guarded (still not reverted once this call returns --
+// either left as-is or, if the caller declined to force/confirm, never
+// touched), alongside the same prose written to out/logger this always wrote.
+// The prose distinguishes a removal from a restore per file; the count does
+// not, because both are "this file was reverted" for a caller deciding whether
+// anything happened. This is the single core both the CLI's `edits undo` and
+// the daemon's UndoRequest handler (see daemon/server.go) call -- neither
+// reimplements the restore logic; the handler only additionally needs the
+// counts as return values rather than parsed out of printed text.
 func runUndoSession(realWorkspaceRoot, sessionDir string, force bool, in io.Reader, out io.Writer, logger *log.Logger) (restored int, guarded []string, err error) {
 	beforeDir := filepath.Join(sessionDir, "before")
 
@@ -274,6 +285,15 @@ func runUndoSession(realWorkspaceRoot, sessionDir string, force bool, in io.Read
 	if len(relPaths) == 0 {
 		fmt.Fprintf(out, "no backed-up files in %s\n", sessionDir)
 		return 0, nil, nil
+	}
+
+	// Which of these files did the apply run bring into existence? Reverting
+	// one of those means removing it, not restoring its 0-byte before/ snapshot
+	// (Fix C). A session with no manifest created nothing, and every path here
+	// takes the restore shape exactly as it always did.
+	created, err := editapply.CreatedInSession(sessionDir)
+	if err != nil {
+		return 0, nil, fmt.Errorf("reading created-file record for %s: %w", sessionDir, err)
 	}
 
 	var batch []string
@@ -327,18 +347,34 @@ func runUndoSession(realWorkspaceRoot, sessionDir string, force bool, in io.Read
 		}
 	}
 
-	restoredPaths, err := restoreBatch(realWorkspaceRoot, beforeDir, batch)
-	for _, rel := range restoredPaths {
-		fmt.Fprintf(out, "restored %s\n", rel)
+	revertedFiles, err := restoreBatch(realWorkspaceRoot, beforeDir, batch, created)
+	// Say what actually happened to each file. A created file that undo deleted
+	// is reported as removed, never as "restored" — the honesty invariant is
+	// that this report and the state of the disk agree (Fix C).
+	var removedCount int
+	for _, f := range revertedFiles {
+		if f.removed {
+			removedCount++
+			fmt.Fprintf(out, "removed %s (created by this apply run)\n", f.rel)
+		} else {
+			fmt.Fprintf(out, "restored %s\n", f.rel)
+		}
 	}
-	restored = len(restoredPaths)
+	restored = len(revertedFiles)
 	if err != nil {
-		logger.Printf("edits undo: FAILED on %s: %v (restored %d file(s), %d guarded)", sessionDir, err, restored, len(guarded))
+		logger.Printf("edits undo: FAILED on %s: %v (reverted %d file(s): %d restored, %d removed; %d guarded)",
+			sessionDir, err, restored, restored-removedCount, removedCount, len(guarded))
 		return restored, guarded, err
 	}
 
-	fmt.Fprintf(out, "\n%d file(s) restored from %s\n", restored, sessionDir)
-	logger.Printf("edits undo: restored %d file(s) from %s (%d guarded)", restored, sessionDir, len(guarded))
+	if removedCount > 0 {
+		fmt.Fprintf(out, "\n%d file(s) reverted from %s (%d restored, %d removed)\n",
+			restored, sessionDir, restored-removedCount, removedCount)
+	} else {
+		fmt.Fprintf(out, "\n%d file(s) restored from %s\n", restored, sessionDir)
+	}
+	logger.Printf("edits undo: reverted %d file(s) from %s (%d restored, %d removed, %d guarded)",
+		restored, sessionDir, restored-removedCount, removedCount, len(guarded))
 	return restored, guarded, nil
 }
 
@@ -347,13 +383,20 @@ func runUndoSession(realWorkspaceRoot, sessionDir string, force bool, in io.Read
 // product name so a file left behind by a crashed run is identifiable.
 const undoStagingPrefix = ".codeterminal-undo-"
 
-// stagedRestore is one file's restore after it has passed every check and had
+// stagedRestore is one file's revert after it has passed every check and had
 // its content written to a temp file beside its destination — everything done,
 // with nothing yet visible at the destination path.
+//
+// A revert is one of two shapes. Most are restores: put the before/ snapshot
+// back. A file the apply run CREATED is a removal instead (Fix C), because the
+// state to revert to is "not there" — see editapply.CreatedInSession. A removal
+// stages no temp file and reads no snapshot; it only validates, and its commit
+// is the unlink.
 type stagedRestore struct {
 	rel         string
 	dest        string
-	tmp         string
+	tmp         string   // empty for a removal
+	remove      bool     // revert by deleting the file, not by restoring content
 	createdDirs []string // dirs this staging brought into existence, shallowest first
 }
 
@@ -375,6 +418,12 @@ type stagedRestore struct {
 //	        atomic and needs no space, so this phase has essentially nothing
 //	        left to fail on.
 //
+// A file the apply run CREATED is reverted by removal instead (Fix C), and
+// takes the same two phases: staging validates it through every gate a restore
+// passes, and the commit is the unlink. Both shapes therefore land in the same
+// all-or-nothing batch — a mixed session that reverts an edit and deletes a
+// created file either does both or does neither.
+//
 // The residual is honest rather than silent: if a commit rename does fail, the
 // files already renamed stay reverted and their exact count is returned
 // alongside the error, so the caller reports what is actually on disk. That is
@@ -385,10 +434,10 @@ type stagedRestore struct {
 // os.Rename replaces a symlink standing at the destination instead of writing
 // through it, so even a symlink swapped in after staging validated the path
 // cannot redirect the write.
-func restoreBatch(realWorkspaceRoot, beforeDir string, rels []string) (restored []string, err error) {
+func restoreBatch(realWorkspaceRoot, beforeDir string, rels []string, created map[string]bool) (reverted []revertedFile, err error) {
 	staged := make([]*stagedRestore, 0, len(rels))
 	for _, rel := range rels {
-		s, err := stageRestore(realWorkspaceRoot, beforeDir, rel)
+		s, err := stageRestore(realWorkspaceRoot, beforeDir, rel, created[rel])
 		if err != nil {
 			discardStaged(staged)
 			return nil, fmt.Errorf("restoring %s: %w", rel, err)
@@ -397,18 +446,54 @@ func restoreBatch(realWorkspaceRoot, beforeDir string, rels []string) (restored 
 	}
 
 	for _, s := range staged {
-		if err := os.Rename(s.tmp, s.dest); err != nil {
-			discardStaged(staged[len(restored):])
-			return restored, fmt.Errorf("committing restore of %s: %w (%d of %d file(s) had already been reverted and were left reverted)",
-				s.rel, err, len(restored), len(staged))
+		if err := s.commit(); err != nil {
+			discardStaged(staged[len(reverted):])
+			return reverted, fmt.Errorf("committing %s of %s: %w (%d of %d file(s) had already been reverted and were left reverted)",
+				s.verb(), s.rel, err, len(reverted), len(staged))
 		}
-		restored = append(restored, s.rel)
+		reverted = append(reverted, revertedFile{rel: s.rel, removed: s.remove})
 	}
-	return restored, nil
+	return reverted, nil
+}
+
+// revertedFile is one file this undo actually changed on disk, and how. The
+// caller reports removals and restores in their own words: telling a user a
+// file was "restored" when it was in fact deleted is the same class of untruth
+// as the 0-byte file this distinction exists to prevent.
+type revertedFile struct {
+	rel     string
+	removed bool
+}
+
+// commit makes one staged revert visible. Both shapes are single syscalls with
+// essentially nothing left to fail on, which is what the staging phase bought:
+// a same-directory rename needs no space, and an unlink of a validated regular
+// file needs none either.
+//
+// Neither can be redirected by a symlink swapped in after validation: rename
+// REPLACES a symlink standing at the destination rather than writing through
+// it, and Remove unlinks the symlink itself rather than its target.
+func (s *stagedRestore) commit() error {
+	if s.remove {
+		if err := os.Remove(s.dest); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		// Already gone counts as done: the state being reverted to is "no file
+		// here", and that is the state on disk.
+		return nil
+	}
+	return os.Rename(s.tmp, s.dest)
+}
+
+func (s *stagedRestore) verb() string {
+	if s.remove {
+		return "removal"
+	}
+	return "restore"
 }
 
 // stageRestore runs every check and every fallible write for one file's
-// restore, stopping just short of making it visible. It carries forward the
+// revert, stopping just short of making it visible. It carries forward the
 // three gates restoreOne enforced (FAIL-2) — never restore a secret-named file,
 // never let the destination escape the root via a symlinked ancestor, never
 // write through a symlinked leaf — and adds the staging write, so that all of
@@ -417,7 +502,17 @@ func restoreBatch(realWorkspaceRoot, beforeDir string, rels []string) (restored 
 // The source read is guarded too: a symlink under beforeDir is anomalous
 // (editapply writes backup snapshots as regular files) and following it would
 // read bytes from outside the backup tree.
-func stageRestore(realWorkspaceRoot, beforeDir, rel string) (*stagedRestore, error) {
+//
+// remove selects the other revert shape: the apply run created this file, so
+// reverting it is a delete (Fix C). EVERY gate above applies unchanged to a
+// removal — a delete is a write to the tree in the sense that matters here, and
+// the ability to unlink an arbitrary path via a fabricated backup session would
+// be a worse capability than the ability to overwrite one. What a removal skips
+// is only the parts that exist to produce content: the snapshot read and the
+// temp file. Note that rel reaches here from undo's own walk of before/ and is
+// then independently confinement-checked; the created-file manifest is consulted
+// as a membership test on that path and is never itself a source of paths.
+func stageRestore(realWorkspaceRoot, beforeDir, rel string, remove bool) (*stagedRestore, error) {
 	if editapply.MatchesSecretName(filepath.Base(rel)) {
 		return nil, fmt.Errorf("path %q matches the indexer's secret-file rules; refusing to restore it", rel)
 	}
@@ -430,19 +525,22 @@ func stageRestore(realWorkspaceRoot, beforeDir, rel string) (*stagedRestore, err
 		return nil, fmt.Errorf("path %q is inside %s/, which holds version-control, credential, or undo state; refusing to restore it", rel, component)
 	}
 
-	src := filepath.Join(beforeDir, rel)
-	if sym, err := leafIsSymlink(src); err != nil {
-		return nil, err
-	} else if sym {
-		return nil, fmt.Errorf("backup entry %q is a symlink; refusing to restore from it", rel)
-	}
-	data, err := os.ReadFile(src)
-	if err != nil {
-		return nil, err
-	}
-	info, err := os.Stat(src)
-	if err != nil {
-		return nil, err
+	var data []byte
+	var info os.FileInfo
+	if !remove {
+		src := filepath.Join(beforeDir, rel)
+		if sym, err := leafIsSymlink(src); err != nil {
+			return nil, err
+		} else if sym {
+			return nil, fmt.Errorf("backup entry %q is a symlink; refusing to restore from it", rel)
+		}
+		var err error
+		if data, err = os.ReadFile(src); err != nil {
+			return nil, err
+		}
+		if info, err = os.Stat(src); err != nil {
+			return nil, err
+		}
 	}
 
 	dest, err := confinedRestorePath(realWorkspaceRoot, rel)
@@ -462,6 +560,13 @@ func stageRestore(realWorkspaceRoot, beforeDir, rel string) (*stagedRestore, err
 		}
 	} else if !os.IsNotExist(err) {
 		return nil, err
+	}
+
+	// A removal has nothing to stage: no content to write, and no directories
+	// to bring into existence for a file that is about to stop existing. Every
+	// gate above has already run.
+	if remove {
+		return &stagedRestore{rel: rel, dest: dest, remove: true}, nil
 	}
 
 	createdDirs, err := mkdirAllTracked(filepath.Dir(dest))
@@ -499,7 +604,9 @@ func stageRestore(realWorkspaceRoot, beforeDir, rel string) (*stagedRestore, err
 // directory that turns out to hold anything else is simply left alone.
 func discardStaged(staged []*stagedRestore) {
 	for _, s := range staged {
-		os.Remove(s.tmp)
+		if s.tmp != "" { // a staged removal has no temp file and left no residue
+			os.Remove(s.tmp)
+		}
 	}
 	for i := len(staged) - 1; i >= 0; i-- {
 		removeCreatedDirs(staged[i].createdDirs)

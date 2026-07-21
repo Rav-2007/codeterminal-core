@@ -171,7 +171,7 @@ func VerifyUnchanged(prepared *PreparedEdit) error {
 // ORDERING IS LOAD-BEARING (Fix 1). Every fallible bookkeeping step runs while
 // the workspace is still untouched, and the file write is the single, last act:
 //
-//	BackupOriginal -> BackupAfter -> write
+//	BackupOriginal -> BackupAfter -> [record created] -> write
 //
 // The order used to be BackupOriginal -> write -> BackupAfter, which meant a
 // failure recording the post-apply snapshot (a full disk, a permission
@@ -201,17 +201,32 @@ func Apply(realWorkspaceRoot string, prepared *PreparedEdit, backupDir string) e
 	if err != nil {
 		return fmt.Errorf("recording post-apply snapshot for %s: %w", prepared.Block.FilePath, err)
 	}
+	// Record that this file did not exist before the run, so undo removes it
+	// rather than restoring its 0-byte before/ snapshot (Fix C). Reversible and
+	// pre-write for the same reason the after/ snapshot is: bookkeeping that
+	// outlives a failed write would have undo delete a file this run never
+	// wrote.
+	rollbackCreated := func() {}
+	if prepared.Creates {
+		rollbackCreated, err = recordCreatedReversible(backupDir, realWorkspaceRoot, prepared)
+		if err != nil {
+			rollbackAfter()
+			return fmt.Errorf("recording %s as newly created: %w", prepared.Block.FilePath, err)
+		}
+	}
 	// A creating edit may name a directory that does not exist yet. This is the
 	// one mutation that precedes the write, and deliberately the last thing
 	// before it: an empty directory is not file content, and leaving one behind
 	// if the write then fails costs nothing and loses nothing.
 	if prepared.Creates {
 		if err := os.MkdirAll(filepath.Dir(prepared.TargetPath), 0755); err != nil {
+			rollbackCreated()
 			rollbackAfter()
 			return fmt.Errorf("creating parent directories for %s: %w", prepared.Block.FilePath, err)
 		}
 	}
 	if err := os.WriteFile(prepared.TargetPath, []byte(prepared.NewContent), prepared.FileMode); err != nil {
+		rollbackCreated()
 		rollbackAfter()
 		return fmt.Errorf("writing %s: %w", prepared.Block.FilePath, err)
 	}

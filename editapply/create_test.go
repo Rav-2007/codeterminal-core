@@ -205,7 +205,20 @@ func TestCreate_ExistingFileEditsUnaffected(t *testing.T) {
 }
 
 // TestCreate_CreatedFileIsUndoable confirms a created file still lands in the
-// backup session, so `edits undo` has something to act on.
+// backup session, so `edits undo` has something to act on -- and, as of Fix C,
+// that the session records the one fact the snapshots cannot express: the file
+// did not exist before.
+//
+// This test used to stop at the snapshots, and that is exactly how the 0-byte
+// lie shipped. A created file's before/ snapshot is a 0-byte file, which is
+// byte-for-byte identical to the snapshot of a file that existed and was empty
+// -- so asserting "before/ is empty" passed while undo went on to restore an
+// empty file where the correct answer was no file.
+//
+// The other half of the invariant -- that undo actually REMOVES it and says so
+// -- is asserted in daemon/undo_create_test.go, because the undo core lives in
+// daemon and editapply cannot import it without an import cycle. Both halves
+// are required; neither alone would have caught this.
 func TestCreate_CreatedFileIsUndoable(t *testing.T) {
 	root := realTempDir(t)
 
@@ -221,6 +234,70 @@ func TestCreate_CreatedFileIsUndoable(t *testing.T) {
 	}
 	if got := readFile(t, filepath.Join(backupDir, "after", "new.txt")); got != "hello\n" {
 		t.Errorf("after-snapshot = %q, want the created content", got)
+	}
+
+	created, err := CreatedInSession(backupDir)
+	if err != nil {
+		t.Fatalf("CreatedInSession: %v", err)
+	}
+	if !created["new.txt"] {
+		t.Errorf("created set = %v, want new.txt recorded as brought into existence; "+
+			"without this undo cannot tell it from a file that existed and was empty", created)
+	}
+}
+
+// TestCreate_FillingAnEmptyFileIsNotRecordedAsCreated is the other side of the
+// distinction, and the case that must not be conflated with it: the file was
+// already there. Undoing that is a restore back to empty, never a delete of a
+// file this run did not bring into existence.
+func TestCreate_FillingAnEmptyFileIsNotRecordedAsCreated(t *testing.T) {
+	root := realTempDir(t)
+	writeTempFile(t, root, "empty.txt", "")
+
+	prepared, err := PrepareEdit(root, EditBlock{FilePath: "empty.txt", Search: "", Replace: "filled\n"})
+	if err != nil {
+		t.Fatalf("PrepareEdit: %v", err)
+	}
+	backupDir, _ := NewBackupSessionDir(root)
+	if err := Apply(root, prepared, backupDir); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	created, err := CreatedInSession(backupDir)
+	if err != nil {
+		t.Fatalf("CreatedInSession: %v", err)
+	}
+	if created["empty.txt"] {
+		t.Error("empty.txt recorded as created; it already existed, and undoing this must restore it, not delete it")
+	}
+}
+
+// TestCreate_SessionWithNoCreationsHasNoManifest keeps ordinary edits exactly
+// as they were: nothing extra written, and an older backup session (from before
+// this record existed) reads back as "created nothing", which is the right
+// answer for it.
+func TestCreate_SessionWithNoCreationsHasNoManifest(t *testing.T) {
+	root := realTempDir(t)
+	writeTempFile(t, root, "foo.go", "package main\n\nfunc old() {}\n")
+
+	prepared, err := PrepareEdit(root, EditBlock{FilePath: "foo.go", Search: "func old() {}", Replace: "func new_() {}"})
+	if err != nil {
+		t.Fatalf("PrepareEdit: %v", err)
+	}
+	backupDir, _ := NewBackupSessionDir(root)
+	if err := Apply(root, prepared, backupDir); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(backupDir, createdManifestName)); !os.IsNotExist(err) {
+		t.Errorf("an edit-only run wrote a created-file record (stat err = %v)", err)
+	}
+	created, err := CreatedInSession(backupDir)
+	if err != nil {
+		t.Fatalf("CreatedInSession on a session with no record: %v", err)
+	}
+	if len(created) != 0 {
+		t.Errorf("created = %v, want empty", created)
 	}
 }
 
