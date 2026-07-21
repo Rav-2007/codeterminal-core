@@ -96,7 +96,14 @@ type retrievalOutcome struct {
 // human-readable Reason, because retrieval must never prevent generation.
 func (s *Server) gatherContext(ctx context.Context, prompt string) retrievalOutcome {
 	if s.embedder == nil || s.store == nil {
-		return retrievalOutcome{Skipped: true, Reason: "retrieval disabled (no embedder/index configured for this daemon)"}
+		// Report the cause setupRetrieval actually recorded, not a guess at it
+		// (Fix 8). The fallback only covers a Server built without going through
+		// setupRetrieval at all, which in practice means a test.
+		reason := s.retrievalDisabledReason
+		if reason == "" {
+			reason = "retrieval unavailable for this daemon"
+		}
+		return retrievalOutcome{Skipped: true, Reason: reason}
 	}
 
 	chunks, err := retrieveTopK(ctx, prompt, s.retrievalTopK, s.embedder, s.store, s.lexicalStore, !s.rerankDisabled)

@@ -74,9 +74,17 @@ func newActiveEmbedder(logger *log.Logger) (Embedder, func(), error) {
 		return nil, nil, err
 	}
 
-	helper := NewHelperProcess(defaultHelperBinPath, modelDir, onnxRuntimeLib, logger)
+	// Resolved against the daemon's own binary, not the working directory
+	// (Fix 8): a bare relative path meant retrieval silently switched itself off
+	// for every launch that was not from the repo root.
+	helperBin, err := resolveHelperBinPath()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	helper := NewHelperProcess(helperBin, modelDir, onnxRuntimeLib, logger)
 	if err := helper.Start(); err != nil {
-		return nil, nil, fmt.Errorf("starting embedder helper (build it first with: cd helper && go build -o codeterminal-embedder-helper .): %w", err)
+		return nil, nil, fmt.Errorf("starting embedder helper (build it first with: cd helper && go build -o %s .): %w", helperBinName, err)
 	}
 
 	stop := func() {

@@ -6,6 +6,48 @@ import (
 	"path/filepath"
 )
 
+// Client-facing reasons retrieval is unavailable (Fix 8). Every one of these
+// used to collapse into a single "retrieval disabled (no embedder/index
+// configured for this daemon)" on the wire, which was actively misleading: the
+// most common cause by far was the helper binary not being found because the
+// daemon had been launched from somewhere other than the repo root, and the
+// message blamed the index, which was fine.
+//
+// These strings travel to clients, so they carry NO paths, hosts, or internal
+// detail — that stays in the daemon log, which keeps the full diagnostic
+// including the absolute index directory. Same split as the Gate-7 scrub: the
+// client learns WHAT is wrong and what to do, never WHERE anything lives.
+const (
+	reasonNoContextFlag         = "retrieval disabled for this daemon (--no-context)"
+	reasonDisabledInConfig      = "retrieval disabled for this daemon (retrieval.disabled in config)"
+	reasonWorkspaceUnresolvable = "retrieval unavailable: this daemon's workspace path could not be resolved"
+	reasonNoIndex               = "retrieval unavailable: no index has been built for this workspace yet (run `index` to enable grounded answers)"
+	reasonIndexUnreadable       = "retrieval unavailable: the workspace index exists but could not be opened"
+	reasonEmbedderUnavailable   = "retrieval unavailable: the embedding helper could not be started (check that `download-model` has been run and the helper binary is built)"
+	reasonIndexModelMismatch    = "retrieval unavailable: the index was built with a different embedding model and needs rebuilding (run `index`)"
+)
+
+// retrievalSetup is everything the live prompt path needs for retrieval, plus
+// an honest account of what is missing when it is unavailable. It replaced a
+// six-value positional return specifically so DisabledReason could not be the
+// thing a caller forgets to thread through.
+type retrievalSetup struct {
+	Embedder           Embedder
+	Store              VectorStore
+	LexicalStore       LexicalStore
+	Stop               func()
+	TopK               int
+	ContextBudgetChars int
+	// DisabledReason is the specific, client-safe explanation of why the
+	// semantic tier is unavailable, and "" when retrieval is working.
+	DisabledReason string
+}
+
+// disabledRetrieval builds the "no retrieval, and here is exactly why" result.
+func disabledRetrieval(reason string) retrievalSetup {
+	return retrievalSetup{Stop: func() {}, DisabledReason: reason}
+}
+
 // setupRetrieval resolves and starts everything the live prompt path needs
 // for retrieval-augmented context — reusing the exact same primitives the
 // CLI `index`/`retrieve` commands use (NewChromemStore, checkEmbedderStamp,
@@ -20,6 +62,10 @@ import (
 // cases. newEmbedder is a parameter (normally newActiveEmbedder) so tests
 // can inject a fake without needing the real model or a helper subprocess.
 //
+// Each of those cases also sets a SPECIFIC DisabledReason (Fix 8) rather than
+// leaving the caller to invent one; see the reason constants above for why
+// that mattered.
+//
 // The lexical (keyword/FTS5) tier degrades independently and more loosely
 // than the semantic tier: if the lexical index fails to open, that alone
 // never disables retrieval — it only disables the lexical half of it,
@@ -32,46 +78,44 @@ func setupRetrieval(
 	disabled bool,
 	logger *log.Logger,
 	newEmbedder func(*log.Logger) (Embedder, func(), error),
-) (embedder Embedder, store VectorStore, lexicalStore LexicalStore, stop func(), topK int, contextBudgetChars int) {
-	noop := func() {}
-
+) retrievalSetup {
 	if disabled {
 		logger.Print("retrieval disabled via --no-context")
-		return nil, nil, nil, noop, 0, 0
+		return disabledRetrieval(reasonNoContextFlag)
 	}
 	if cfg.Retrieval.Disabled {
 		logger.Print("retrieval disabled via config (retrieval.disabled=true in models.json)")
-		return nil, nil, nil, noop, 0, 0
+		return disabledRetrieval(reasonDisabledInConfig)
 	}
 
 	absWorkspace, err := filepath.Abs(workspace)
 	if err != nil {
 		logger.Printf("retrieval disabled: resolving workspace %s: %v", workspace, err)
-		return nil, nil, nil, noop, 0, 0
+		return disabledRetrieval(reasonWorkspaceUnresolvable)
 	}
 
 	indexDir := filepath.Join(absWorkspace, indexDirName)
 	if _, err := os.Stat(indexDir); err != nil {
 		logger.Printf("retrieval disabled: no index found at %s (run `index %s` to enable retrieval-augmented answers)", indexDir, workspace)
-		return nil, nil, nil, noop, 0, 0
+		return disabledRetrieval(reasonNoIndex)
 	}
 
 	vs, err := NewChromemStore(indexDir)
 	if err != nil {
 		logger.Printf("retrieval disabled: opening vector store: %v", err)
-		return nil, nil, nil, noop, 0, 0
+		return disabledRetrieval(reasonIndexUnreadable)
 	}
 
 	e, stopEmbedder, err := newEmbedder(logger)
 	if err != nil {
 		logger.Printf("retrieval disabled: starting embedder: %v", err)
-		return nil, nil, nil, noop, 0, 0
+		return disabledRetrieval(reasonEmbedderUnavailable)
 	}
 
 	if err := checkEmbedderStamp(indexDir, e, vs.Count() == 0); err != nil {
 		logger.Printf("retrieval disabled: %v", err)
 		stopEmbedder()
-		return nil, nil, nil, noop, 0, 0
+		return disabledRetrieval(reasonIndexModelMismatch)
 	}
 
 	// Opened last and independently: a lexical-index failure here must never
@@ -83,7 +127,7 @@ func setupRetrieval(
 		ls = fts
 	}
 
-	stop = func() {
+	stop := func() {
 		stopEmbedder()
 		if ls != nil {
 			if err := ls.Close(); err != nil {
@@ -95,5 +139,12 @@ func setupRetrieval(
 	logger.Printf("retrieval enabled: workspace=%s top_k=%d context_budget_chars=%d lexical=%t",
 		absWorkspace, cfg.Retrieval.resolvedTopK(), cfg.Retrieval.resolvedContextBudgetChars(), ls != nil)
 
-	return e, vs, ls, stop, cfg.Retrieval.resolvedTopK(), cfg.Retrieval.resolvedContextBudgetChars()
+	return retrievalSetup{
+		Embedder:           e,
+		Store:              vs,
+		LexicalStore:       ls,
+		Stop:               stop,
+		TopK:               cfg.Retrieval.resolvedTopK(),
+		ContextBudgetChars: cfg.Retrieval.resolvedContextBudgetChars(),
+	}
 }

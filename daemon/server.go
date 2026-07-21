@@ -45,8 +45,14 @@ type Server struct {
 	lexicalStore       LexicalStore
 	retrievalTopK      int
 	contextBudgetChars int
-	debugContext       bool // --debug-context: log full retrieved chunk content
-	rerankDisabled     bool // --no-rerank / retrieval.rerank_disabled: raw similarity order, no class weighting
+	// retrievalDisabledReason is the specific, client-safe explanation of why
+	// embedder/store are nil, set once at startup by setupRetrieval (Fix 8).
+	// Without it every cause reported the same misleading "no embedder/index
+	// configured" string, which blamed the index for what was usually a
+	// helper-binary-not-found. Empty when retrieval is working.
+	retrievalDisabledReason string
+	debugContext            bool // --debug-context: log full retrieved chunk content
+	rerankDisabled          bool // --no-rerank / retrieval.rerank_disabled: raw similarity order, no class weighting
 
 	// workspace is this daemon's own resolved (absolute) grounding
 	// workspace — set once at startup regardless of whether retrieval is

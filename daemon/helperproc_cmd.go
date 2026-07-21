@@ -8,10 +8,15 @@ import (
 	"strings"
 )
 
-// defaultHelperBinPath mirrors the --system-prompt flag's convention
-// elsewhere in this file: a path relative to the repo root, since that's
-// where this binary is normally run from during development.
-const defaultHelperBinPath = "helper/codeterminal-embedder-helper"
+// defaultHelperBinPath is what --helper-bin defaults to: whatever
+// resolveHelperBinPath finds relative to this binary. A resolution failure is
+// deliberately not fatal here — the smoketest's whole job is to report what
+// happens when the helper is started, so it proceeds with the fallback path and
+// lets Start() produce the real, specific error.
+func defaultHelperBinPath() string {
+	path, _ := resolveHelperBinPath()
+	return path
+}
 
 // runHelperSmoketestCommand implements
 // `codeterminal-daemon helper-smoketest [--helper-bin path] [text...]`: a
@@ -21,7 +26,7 @@ const defaultHelperBinPath = "helper/codeterminal-embedder-helper"
 // vector's length and first few values, and shuts the helper down cleanly.
 func runHelperSmoketestCommand(args []string, logger *log.Logger) error {
 	fset := flag.NewFlagSet("helper-smoketest", flag.ExitOnError)
-	helperBin := fset.String("helper-bin", defaultHelperBinPath, "path to the codeterminal-embedder-helper binary")
+	helperBin := fset.String("helper-bin", defaultHelperBinPath(), "path to the codeterminal-embedder-helper binary")
 	fset.Parse(args)
 
 	text := "hello from the codeterminal daemon"

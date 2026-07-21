@@ -129,9 +129,8 @@ func main() {
 	}
 	systemPrompt := string(systemPromptBytes)
 
-	embedder, store, lexicalStore, stopRetrieval, retrievalTopK, contextBudgetChars := setupRetrieval(
-		cfg, *workspace, *noContext, logger, newActiveEmbedder)
-	defer stopRetrieval()
+	retrieval := setupRetrieval(cfg, *workspace, *noContext, logger, newActiveEmbedder)
+	defer retrieval.Stop()
 
 	memoryStore := setupMemoryStore(logger)
 	if memoryStore != nil {
@@ -183,21 +182,22 @@ func main() {
 	logger.Printf("listening on %s (base=%s)", socketPath, apiBase)
 
 	srv := &Server{
-		apiBase:            apiBase,
-		apiKey:             apiKey,
-		cfg:                cfg,
-		modelOverride:      *modelOverride,
-		systemPrompt:       systemPrompt,
-		logger:             logger,
-		embedder:           embedder,
-		store:              store,
-		lexicalStore:       lexicalStore,
-		retrievalTopK:      retrievalTopK,
-		contextBudgetChars: contextBudgetChars,
-		debugContext:       *debugContext,
-		rerankDisabled:     *noRerank || cfg.Retrieval.RerankDisabled,
-		workspace:          absWorkspace,
-		memory:             memoryStore,
+		apiBase:                 apiBase,
+		apiKey:                  apiKey,
+		cfg:                     cfg,
+		modelOverride:           *modelOverride,
+		systemPrompt:            systemPrompt,
+		logger:                  logger,
+		embedder:                retrieval.Embedder,
+		store:                   retrieval.Store,
+		lexicalStore:            retrieval.LexicalStore,
+		retrievalTopK:           retrieval.TopK,
+		contextBudgetChars:      retrieval.ContextBudgetChars,
+		retrievalDisabledReason: retrieval.DisabledReason,
+		debugContext:            *debugContext,
+		rerankDisabled:          *noRerank || cfg.Retrieval.RerankDisabled,
+		workspace:               absWorkspace,
+		memory:                  memoryStore,
 		// Durable warn-mode sink under the workspace's already-gitignored
 		// .codeterminal state dir (same convention as index/ and backups/), so
 		// the log-only fire-rate data survives daemon restarts instead of

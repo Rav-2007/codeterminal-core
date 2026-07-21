@@ -35,7 +35,8 @@ func TestSetupRetrieval_DisabledFlagShortCircuits(t *testing.T) {
 	var stopped bool
 	cfg := baseTestConfig()
 
-	embedder, store, _, stop, _, _ := setupRetrieval(cfg, t.TempDir(), true, discardLogger(), fakeEmbedderFactory(&stopped))
+	rs := setupRetrieval(cfg, t.TempDir(), true, discardLogger(), fakeEmbedderFactory(&stopped))
+	embedder, store, stop := rs.Embedder, rs.Store, rs.Stop
 	stop()
 
 	if embedder != nil || store != nil {
@@ -51,7 +52,8 @@ func TestSetupRetrieval_ConfigDisabledShortCircuits(t *testing.T) {
 	cfg := baseTestConfig()
 	cfg.Retrieval.Disabled = true
 
-	embedder, store, _, stop, _, _ := setupRetrieval(cfg, t.TempDir(), false, discardLogger(), fakeEmbedderFactory(&stopped))
+	rs := setupRetrieval(cfg, t.TempDir(), false, discardLogger(), fakeEmbedderFactory(&stopped))
+	embedder, store, stop := rs.Embedder, rs.Store, rs.Stop
 	stop()
 
 	if embedder != nil || store != nil {
@@ -64,7 +66,8 @@ func TestSetupRetrieval_NoIndexDegradesGracefully(t *testing.T) {
 	cfg := baseTestConfig()
 	workspace := t.TempDir() // no .codeterminal/index here at all
 
-	embedder, store, _, stop, _, _ := setupRetrieval(cfg, workspace, false, discardLogger(), fakeEmbedderFactory(&stopped))
+	rs := setupRetrieval(cfg, workspace, false, discardLogger(), fakeEmbedderFactory(&stopped))
+	embedder, store, stop := rs.Embedder, rs.Store, rs.Stop
 	stop()
 
 	if embedder != nil || store != nil {
@@ -82,8 +85,9 @@ func TestSetupRetrieval_EmbedderStartFailureDegradesGracefully(t *testing.T) {
 	}
 	cfg := baseTestConfig()
 
-	embedder, store, _, stop, _, _ := setupRetrieval(cfg, workspace, false, discardLogger(),
+	rs := setupRetrieval(cfg, workspace, false, discardLogger(),
 		erroringEmbedderFactory(errors.New("simulated: embedder helper failed to start")))
+	embedder, store, stop := rs.Embedder, rs.Store, rs.Stop
 	stop() // must not panic even though setup never got an embedder
 
 	if embedder != nil || store != nil {
@@ -113,7 +117,8 @@ func TestSetupRetrieval_StaleIndexDegradesGracefully(t *testing.T) {
 	cfg := baseTestConfig()
 	// fakeEmbedder's ID ("fake-test-embedder-v1") deliberately differs from
 	// builtWith's ("placeholder-hash-v1") despite matching Dim.
-	embedder, store, _, stop, _, _ := setupRetrieval(cfg, workspace, false, discardLogger(), fakeEmbedderFactory(&stopped))
+	rs := setupRetrieval(cfg, workspace, false, discardLogger(), fakeEmbedderFactory(&stopped))
+	embedder, store, stop := rs.Embedder, rs.Store, rs.Stop
 	stop()
 
 	if embedder != nil || store != nil {
@@ -146,7 +151,8 @@ func TestSetupRetrieval_SuccessReturnsUsableEmbedderAndStore(t *testing.T) {
 	cfg.Retrieval.TopK = 3
 	cfg.Retrieval.ContextBudgetChars = 1234
 
-	embedder, store, lexicalStore, stop, topK, budget := setupRetrieval(cfg, workspace, false, discardLogger(), fakeEmbedderFactory(&stopped))
+	rs := setupRetrieval(cfg, workspace, false, discardLogger(), fakeEmbedderFactory(&stopped))
+	embedder, store, lexicalStore, stop, topK, budget := rs.Embedder, rs.Store, rs.LexicalStore, rs.Stop, rs.TopK, rs.ContextBudgetChars
 	defer stop()
 
 	if embedder == nil || store == nil {
@@ -195,7 +201,8 @@ func TestSetupRetrieval_LexicalIndexFailureDegradesGracefully(t *testing.T) {
 
 	var stopped bool
 	cfg := baseTestConfig()
-	embedder, store, lexicalStore, stop, _, _ := setupRetrieval(cfg, workspace, false, discardLogger(), fakeEmbedderFactory(&stopped))
+	rs := setupRetrieval(cfg, workspace, false, discardLogger(), fakeEmbedderFactory(&stopped))
+	embedder, store, lexicalStore, stop := rs.Embedder, rs.Store, rs.LexicalStore, rs.Stop
 	defer stop()
 
 	if embedder == nil || store == nil {
