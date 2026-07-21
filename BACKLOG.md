@@ -799,7 +799,20 @@ written confinement implementations guarding workspace/file writes. This note re
 is and the tradeoffs of consolidating them, and leaves the call open. It is deliberately not an
 implementation plan.
 
-**The three implementations as they stand today:**
+**Update 2026-07-21 (Tier 2 merge): there are now FOUR, and the standing FAIL-2 caveat has
+materialized.** Fix 7 (`1066d91`) added editapply CREATE, which is exactly the "future editapply
+CREATE path" this entry's case-for-consolidation anticipated. It could not reuse (1) —
+`EvalSymlinks` requires existence, the very property that made creation impossible — so it
+re-implements (2)'s deepest-existing-ancestor walk as `resolveSafeNewPath`
+(`editapply/create.go:47`), listed as (4) below. The duplication is **not** carelessness: `editapply`
+must not depend on `daemon` (the same module-boundary rule that kept `pruneBackupSessions` from
+reusing `isWorkspaceBackupSessionDir`, see item (i)), so sharing the walk would require hoisting it
+into a package both can import. That constraint is a **new input to the tradeoff** this entry did not
+have when it was written: consolidation here is not "extract a helper," it is "introduce a shared
+confinement package," which is a materially larger call. Stance unchanged — still no recommendation
+forced, still a founder call.
+
+**The four implementations as they stand today:**
 1. **`ResolveSafeTargetPath` (`editapply/apply.go:122`)** — the apply writer's guard. String-form
    checks (reject absolute paths, `filepath.Clean` + reject a `..`-prefix) then **full-path**
    symlink resolution: `EvalSymlinks` on the joined path and a `filepath.Rel(root, resolved)`
@@ -816,6 +829,13 @@ implementation plan.
    relative path (`.gitignore`, no client-supplied component). A leaf-only `leafIsSymlink` refusal
    plus `openNoFollow` on the append open. It has no intermediate-directory attack surface, so it
    needs neither the full-path resolution of (1) nor the ancestor walk of (2).
+4. **`resolveSafeNewPath` (`editapply/create.go:47`)** — the apply writer's *create* guard, added by
+   Fix 7. Same shape as (2): walk up to the deepest EXISTING ancestor, `EvalSymlinks` it, require it
+   inside root, re-join the not-yet-existing remainder. Differs from (2) in that it also re-checks
+   the resolved ancestor against the protected-dir set (`ProtectedDirComponent`), so a symlinked
+   directory cannot become a way to *create* a git hook any more than to overwrite one (Fix 3).
+   Lives in `editapply`, not `daemon`, purely because of the module boundary — the logic is
+   otherwise (2)'s.
 
 (The shared leaf primitives `openNoFollow` / `leafIsSymlink` in `apply_cmd.go` are already partly
 factored out and reused by (2) and (3); the divergence that would have to be reconciled is in the
@@ -1185,6 +1205,99 @@ comment on this query for why it's out of scope here).
 - **Turns retention / pruning policy** — item (h) above: cross-session memory grows
   unbounded by design (persist-all). Add an age- or count-based prune when a long-lived
   workspace actually needs it.
+
+## Backlog — added 2026-07-21 (Tier 1 + Tier 2 correctness-and-recovery merge)
+
+**Both tiers merged to `main` 2026-07-21, fast-forward, no merge commits.** `main` was at `14502e5`;
+it is now at `10ba174`. Nothing pushed — `origin/main` remains 27 commits behind by choice.
+
+**Tier 1 — critical (`tier1-critical-fixes`, 3 commits):**
+- **Fix 1+2 (`16e84a1`)** — apply and undo report what is actually on disk. Apply's ordering is now
+  `BackupOriginal → BackupAfter → write`, so every fallible bookkeeping step runs while the
+  workspace is still untouched and the write is the single last act; a failed write rolls the
+  after-snapshot back. Closes the unreported-unrevertable-mutation window (a snapshot failure used
+  to return an error to a caller whose file had already changed, with no `after/` for undo to match).
+- **Fix 3 (`83244ec`)** — edits into VCS, credential and undo-state dirs are refused
+  (`editapply/protected.go`). `.git/hooks` in particular: an applied edit must not be able to
+  install code that later executes.
+- **Fix 4 (`3f9352f`)** — the `=======` scan is bounded by the block's own `>>>>>>> REPLACE` marker
+  instead of taking the first separator anywhere in the response. The old order cut a block at a
+  separator line that was part of the content being searched for, producing a well-formed-looking
+  block carrying the wrong SEARCH and wrong REPLACE that applied cleanly — silent corruption.
+  Genuinely ambiguous blocks (multiple bare separators inside one block) are now refused by name.
+
+**Tier 2 — correctness (`tier2-correctness-fixes`, 5 commits, stacked on Tier 1):**
+- **Fix 6 (`07e97d1`)** — tiered SEARCH matching (`editapply/match.go`), with change detection split
+  out; an edit no longer dies on invisible whitespace differences.
+- **Fix 7 (`1066d91`)** — file creation as a real capability (`editapply/create.go`). **See the
+  reachability finding below before treating this as shipped.**
+- **Fix 5 (`a02485c`)** — an edited file is re-indexed after a successful apply (`daemon/reindex.go`),
+  so retrieval stops reasoning about stale code.
+- **Fix 8 (`0cf13cc`)** — the embedder helper resolves against the daemon's own binary
+  (`daemon/helperpath.go`) rather than the CWD, and degraded retrieval says *why* it is off.
+- **Fix 9 (`46d9e1c`)** — model-API failures are classified over the socket (`daemon/modelerror.go`).
+- **Fix 10 (`10ba174`)** — bounded, class-aware retry with jittered backoff (`daemon/retry.go`), so a
+  transient upstream error no longer dead-ends the turn.
+
+**Validation on merged `main` (2026-07-21, real runs, not asserted):** `go build` and `go vet` clean
+across all six workspace modules; `go test` green (`daemon` 11.9s, `editapply`, `clients/tui`,
+`proxy`; `protocol`/`helper` have no tests); `go test -race -count=1 ./daemon/... ./editapply/...`
+green (17.8s / 1.1s). Note `./...` does not work from the repo root — the root is not itself a
+module, so the six `go.work` paths must be named explicitly.
+
+### OPEN (found by live spot-check at merge time, NOT fixed): Fix 7's CREATE path is unreachable from every shipped client
+**This is the finding that matters most in this section.** `editapply.PrepareEdit`/`Apply` genuinely
+support creation — `IsEmptySearch` → `prepareCreate` → `Creates: true` — and `editapply/create_test.go`
+covers it. But **every production path that turns a model response into edit blocks goes through
+`editapply.ParseEditBlocks`, which still rejects an empty SEARCH section at `editblock.go:88`**
+(`SEARCH block is empty`), a check Fix 7 did not touch. So the capability is real in the core and
+unreachable in practice:
+- `daemon/apply_cmd.go:68` — CLI `edits apply`. **Reproduced live:** a `path:`-prefixed block with an
+  empty SEARCH fails with `parsing edit blocks: line 2: SEARCH block is empty`; no file created.
+- `daemon/server.go:709` — `parseAndLogEditBlocks`, which produces the `EditProposals` the VS Code
+  panel renders. Same parser, so the panel is never offered a creating edit to Apply.
+- `clients/tui/chat.go:424` — same parser, same outcome.
+- The *only* reachable entry is `daemon/server.go:414`, which builds an `EditBlock` straight from
+  `ApplyEditRequest` fields and so bypasses the parser — but no shipped client ever originates such a
+  request, because the proposals clients act on all came from the parser in the first place.
+
+**Second-order harm, also reproduced live:** `ParseEditBlocks` fails the *whole response*
+(`return nil, err`), not the offending block. A two-block response — one ordinary edit plus one
+creating edit — applied **nothing**: the ordinary `existing.go` edit was silently dropped along with
+the create. So a model that (correctly, per Fix 7's own doc comment) emits an empty SEARCH to create
+a file also loses every other edit in that turn. That makes this a *regression risk on working
+behavior*, not merely a missing capability.
+
+Fix direction is a parser change, not a core change: `ParseEditBlocks` must let an empty SEARCH
+through as the create marker, and the "empty" rejection must be re-expressed so it still catches the
+malformed shapes it was written for. Deliberately **not** done at merge time — the merge was scoped
+to landing verified branches, and this touches the one file Fix 4 just hardened. Needs its own slice
+with its own tests.
+
+### OPEN (deferred by design): undo of a created file leaves a 0-byte file and reports success
+`prepareCreate` sets `Original: ""` (`editapply/create.go:99`), so `BackupOriginal`
+(`editapply/backup.go:105`) writes a **0-byte** file to `before/<rel>`. Undo restores that snapshot
+faithfully — which leaves an empty file where the correct outcome is *no file at all*.
+**Reproduced live** (driving the create path directly, since the parser blocks it — see above):
+`edits undo --force` printed `restored newfile.go` / `1 file(s) restored` / `0 guarded`, and left
+`newfile.go` on disk at 0 bytes. The report claims the workspace was restored; it was not.
+
+The backup format has no way to encode "this path was absent before the run", so undo cannot
+distinguish *was empty* from *did not exist*. A real fix needs a backup-format absent-marker plus a
+delete branch in the restore path (`restoreOne`, `daemon/apply_cmd.go`) — a format change with its
+own confinement questions (deleting is a new operation for a writer that has only ever written), not
+a one-liner, which is why it was deliberately left out of Fix 7 rather than rushed into it.
+Severity: low on data safety (an empty file is left behind, nothing is destroyed), moderate on
+honesty — undo's success report and on-disk reality disagree, which is precisely the class of defect
+Fix 1+2 existed to eliminate everywhere else. `TestCreate_CreatedFileIsUndoable`
+(`editapply/create_test.go:209`) asserts the 0-byte `before/` snapshot exists but never runs an undo,
+so nothing currently fails because of this.
+
+### Also open: ancestor-confinement logic is now duplicated across modules
+Fix 7's `resolveSafeNewPath` re-implements `confinedRestorePath`'s ancestor walk because `editapply`
+cannot import `daemon`. Folded into the existing
+[confined-writer abstraction](#backlog--added-2026-07-19-confined-writer-abstraction--open-design-question)
+entry as implementation (4) rather than duplicated here — see the 2026-07-21 update in that section.
 
 ## Hygiene / recurring
 
