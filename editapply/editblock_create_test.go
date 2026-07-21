@@ -99,15 +99,15 @@ func TestParseCreate_AmbiguousCreateStillRefused(t *testing.T) {
 		replaceMarker,
 	}, "\n")
 
-	blocks, err := ParseEditBlocks(response)
-	if err == nil {
+	blocks, rejected := ParseEditBlocks(response)
+	if len(rejected) == 0 {
 		t.Fatalf("GUESSED: parser returned %+v for a block with two readings; want a refusal", blocks)
 	}
 	if len(blocks) != 0 {
 		t.Errorf("got %d blocks alongside the refusal, want none", len(blocks))
 	}
-	if !strings.Contains(err.Error(), "ambiguous") {
-		t.Errorf("error = %v, want it to name the ambiguity", err)
+	if !strings.Contains(rejected[0].Reason, "ambiguous") {
+		t.Errorf("refusal = %v, want it to name the ambiguity", rejected[0])
 	}
 }
 

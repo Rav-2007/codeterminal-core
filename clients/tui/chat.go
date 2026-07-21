@@ -421,14 +421,22 @@ func (m chatModel) checkForEditBlocks() (tea.Model, tea.Cmd) {
 		return m, m.input.Focus()
 	}
 
-	blocks, err := editapply.ParseEditBlocks(text)
-	if err != nil {
-		m.turns = append(m.turns, turn{role: roleSystem, text: fmt.Sprintf("(could not parse edit blocks: %v)", err)})
-		m.refreshViewport()
-		return m, m.input.Focus()
+	blocks, rejected := editapply.ParseEditBlocks(text)
+	// A refused block is shown as its own system turn and costs only itself
+	// (Fix B): the readable blocks in the same response still go to review,
+	// where before a single bad block sent the whole reply to this message and
+	// nothing was offered.
+	for _, bad := range rejected {
+		m.turns = append(m.turns, turn{role: roleSystem, text: fmt.Sprintf("(edit block at line %d refused: %v)", bad.Line, bad.Reason)})
 	}
 	if len(blocks) == 0 {
+		if len(rejected) > 0 {
+			m.refreshViewport()
+		}
 		return m, m.input.Focus()
+	}
+	if len(rejected) > 0 {
+		m.refreshViewport()
 	}
 
 	m.reviewBlocks = blocks

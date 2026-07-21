@@ -47,7 +47,7 @@ func TestApplyEditBlocks_ConfirmYesApplies(t *testing.T) {
 	blocks := []editapply.EditBlock{{FilePath: "foo.go", Search: "func old() {}", Replace: "func new_() {}"}}
 
 	var out bytes.Buffer
-	if err := applyEditBlocks(root, blocks, strings.NewReader("y\n"), &out, discardLogger()); err != nil {
+	if err := applyEditBlocks(root, blocks, nil, strings.NewReader("y\n"), &out, discardLogger()); err != nil {
 		t.Fatalf("applyEditBlocks: %v", err)
 	}
 
@@ -69,7 +69,7 @@ func TestApplyEditBlocks_ConfirmDeclineDoesNotApply(t *testing.T) {
 			blocks := []editapply.EditBlock{{FilePath: "foo.go", Search: "func old() {}", Replace: "func new_() {}"}}
 
 			var out bytes.Buffer
-			if err := applyEditBlocks(root, blocks, strings.NewReader(answer), &out, discardLogger()); err != nil {
+			if err := applyEditBlocks(root, blocks, nil, strings.NewReader(answer), &out, discardLogger()); err != nil {
 				t.Fatalf("applyEditBlocks: %v", err)
 			}
 
@@ -97,7 +97,7 @@ func TestApplyEditBlocks_RefusedEditsNeverWrite(t *testing.T) {
 
 	var out bytes.Buffer
 	// No 'y' needed: all three should be refused before any confirmation prompt.
-	if err := applyEditBlocks(root, blocks, strings.NewReader(""), &out, discardLogger()); err != nil {
+	if err := applyEditBlocks(root, blocks, nil, strings.NewReader(""), &out, discardLogger()); err != nil {
 		t.Fatalf("applyEditBlocks: %v", err)
 	}
 
@@ -127,7 +127,7 @@ func TestApplyEditBlocks_MultiEditMixedOutcomes(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	if err := applyEditBlocks(root, blocks, strings.NewReader("y\nn\n"), &out, discardLogger()); err != nil {
+	if err := applyEditBlocks(root, blocks, nil, strings.NewReader("y\nn\n"), &out, discardLogger()); err != nil {
 		t.Fatalf("applyEditBlocks: %v", err)
 	}
 
@@ -149,7 +149,7 @@ func TestApplyEditBlocks_BackupRecoverable(t *testing.T) {
 	blocks := []editapply.EditBlock{{FilePath: "foo.go", Search: "func old() {}", Replace: "func new_() {}"}}
 
 	var out bytes.Buffer
-	if err := applyEditBlocks(root, blocks, strings.NewReader("y\n"), &out, discardLogger()); err != nil {
+	if err := applyEditBlocks(root, blocks, nil, strings.NewReader("y\n"), &out, discardLogger()); err != nil {
 		t.Fatalf("applyEditBlocks: %v", err)
 	}
 
@@ -175,7 +175,7 @@ func TestEditsUndo_UnchangedFileRestoresCleanly(t *testing.T) {
 	blocks := []editapply.EditBlock{{FilePath: "foo.go", Search: "func old() {}", Replace: "func new_() {}"}}
 
 	var applyOut bytes.Buffer
-	if err := applyEditBlocks(root, blocks, strings.NewReader("y\n"), &applyOut, discardLogger()); err != nil {
+	if err := applyEditBlocks(root, blocks, nil, strings.NewReader("y\n"), &applyOut, discardLogger()); err != nil {
 		t.Fatalf("applyEditBlocks: %v", err)
 	}
 
@@ -210,7 +210,7 @@ func TestEditsUndo_ModifiedFileIsGuardedNotClobbered(t *testing.T) {
 	}
 
 	var applyOut bytes.Buffer
-	if err := applyEditBlocks(root, blocks, strings.NewReader("y\ny\n"), &applyOut, discardLogger()); err != nil {
+	if err := applyEditBlocks(root, blocks, nil, strings.NewReader("y\ny\n"), &applyOut, discardLogger()); err != nil {
 		t.Fatalf("applyEditBlocks: %v", err)
 	}
 

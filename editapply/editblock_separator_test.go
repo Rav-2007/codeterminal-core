@@ -24,9 +24,9 @@ import (
 // mustParseOne parses a response expected to yield exactly one block.
 func mustParseOne(t *testing.T, response string) EditBlock {
 	t.Helper()
-	blocks, err := ParseEditBlocks(response)
-	if err != nil {
-		t.Fatalf("ParseEditBlocks: %v", err)
+	blocks, rejected := ParseEditBlocks(response)
+	if len(rejected) != 0 {
+		t.Fatalf("ParseEditBlocks refused: %v", rejected)
 	}
 	if len(blocks) != 1 {
 		t.Fatalf("got %d blocks, want 1: %+v", len(blocks), blocks)
@@ -52,16 +52,14 @@ func TestParseEditBlocks_SearchContainingSeparatorIsNotSilentlySplit(t *testing.
 		replaceMarker,
 	}, "\n")
 
-	blocks, err := ParseEditBlocks(response)
-	if err == nil {
+	blocks, rejected := ParseEditBlocks(response)
+	if len(rejected) == 0 {
 		t.Fatalf("SILENT CORRUPTION: parser returned %+v for an ambiguous block; want a refusal", blocks)
 	}
 	if len(blocks) != 0 {
-		t.Errorf("got %d blocks alongside the error, want none", len(blocks))
+		t.Errorf("got %d blocks alongside the refusal, want none", len(blocks))
 	}
-	if !strings.Contains(err.Error(), "ambiguous") {
-		t.Errorf("error = %v, want it to name the ambiguity", err)
-	}
+	err := rejected[0]
 	// The message has to be actionable: the model or user needs to know which
 	// lines collided so they can re-issue a SEARCH that avoids them.
 	for _, want := range []string{"line 2", "4", "6"} {
@@ -87,7 +85,7 @@ func TestParseEditBlocks_ConflictMarkersInContentNotSilentlySplit(t *testing.T) 
 		replaceMarker,
 	}, "\n")
 
-	if blocks, err := ParseEditBlocks(response); err == nil {
+	if blocks, rejected := ParseEditBlocks(response); len(rejected) == 0 {
 		t.Fatalf("SILENT CORRUPTION: got %+v, want a refusal for the ambiguous separator", blocks)
 	}
 }
@@ -118,9 +116,9 @@ func TestParseEditBlocks_SeparatorBoundedByOwnReplaceMarker(t *testing.T) {
 		replaceMarker,
 	}, "\n")
 
-	blocks, err := ParseEditBlocks(response)
-	if err != nil {
-		t.Fatalf("ParseEditBlocks: %v", err)
+	blocks, rejected := ParseEditBlocks(response)
+	if len(rejected) != 0 {
+		t.Fatalf("ParseEditBlocks refused: %v", rejected)
 	}
 	if len(blocks) != 2 {
 		t.Fatalf("got %d blocks, want 2: %+v", len(blocks), blocks)
@@ -146,7 +144,7 @@ func TestParseEditBlocks_MissingSeparatorRefused(t *testing.T) {
 		replaceMarker,
 	}, "\n")
 
-	if blocks, err := ParseEditBlocks(response); err == nil {
+	if blocks, rejected := ParseEditBlocks(response); len(rejected) == 0 {
 		t.Fatalf("got %+v, want a refusal for a block with no separator", blocks)
 	}
 }

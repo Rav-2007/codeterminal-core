@@ -65,11 +65,8 @@ func runEditsApplyCommand(args []string, logger *log.Logger) error {
 		}
 	}
 
-	blocks, err := editapply.ParseEditBlocks(string(input))
-	if err != nil {
-		return fmt.Errorf("parsing edit blocks: %w", err)
-	}
-	if len(blocks) == 0 {
+	blocks, rejected := editapply.ParseEditBlocks(string(input))
+	if len(blocks) == 0 && len(rejected) == 0 {
 		fmt.Println("no edit blocks found in input")
 		return nil
 	}
@@ -79,7 +76,7 @@ func runEditsApplyCommand(args []string, logger *log.Logger) error {
 		return err
 	}
 
-	return applyEditBlocks(realRoot, blocks, confirmIn, os.Stdout, logger)
+	return applyEditBlocks(realRoot, blocks, rejected, confirmIn, os.Stdout, logger)
 }
 
 // applyEditBlocks runs the safety tripod (via editapply.PrepareEdit) over
@@ -90,12 +87,32 @@ func runEditsApplyCommand(args []string, logger *log.Logger) error {
 // backup calls through its own Bubble Tea state machine (see
 // clients/tui/editreview.go) instead of a blocking stdin read, but both
 // call the identical editapply core.
-func applyEditBlocks(realWorkspaceRoot string, blocks []editapply.EditBlock, in io.Reader, out io.Writer, logger *log.Logger) error {
+//
+// rejected carries the blocks the parser refused (Fix B). They are reported
+// first, before anything is applied, so the user sees what will not be
+// attempted before deciding on what will be — and they are counted as refusals
+// in the tally, exactly like a block PrepareEdit turns down, since from the
+// user's side both are "you asked for this and are not getting it". A parser
+// rejection is not fatal on its own: the valid blocks in the same response
+// still get their turn, which is the whole point of the change. It IS fatal
+// when nothing was parseable at all, since then the run accomplished nothing
+// and a zero exit status would say otherwise.
+func applyEditBlocks(realWorkspaceRoot string, blocks []editapply.EditBlock, rejected []editapply.BlockError, in io.Reader, out io.Writer, logger *log.Logger) error {
 	reader := bufio.NewReader(in)
 
 	var backupDir string
 
 	var applied, skipped, refused int
+
+	for _, bad := range rejected {
+		fmt.Fprintf(out, "\n--- unparseable block at line %d ---\nREFUSED: %v\n", bad.Line, bad.Reason)
+		logger.Printf("edits apply: refused unparseable block at line %d: %v", bad.Line, bad.Reason)
+		refused++
+	}
+	if len(blocks) == 0 && len(rejected) > 0 {
+		fmt.Fprintf(out, "\n0 applied, 0 skipped, %d refused\n", refused)
+		return fmt.Errorf("no usable edit blocks: all %d block(s) in the response were refused by the parser", len(rejected))
+	}
 	for i, block := range blocks {
 		fmt.Fprintf(out, "\n--- edit %d/%d: %s ---\n", i+1, len(blocks), block.FilePath)
 

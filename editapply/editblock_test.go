@@ -6,9 +6,9 @@ import (
 )
 
 func TestParseEditBlocks_NoBlocks(t *testing.T) {
-	blocks, err := ParseEditBlocks("A goroutine is a lightweight thread managed by the Go runtime.")
-	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
+	blocks, rejected := ParseEditBlocks("A goroutine is a lightweight thread managed by the Go runtime.")
+	if len(rejected) != 0 {
+		t.Fatalf("expected no refusals, got %v", rejected)
 	}
 	if len(blocks) != 0 {
 		t.Fatalf("expected 0 blocks, got %d", len(blocks))
@@ -31,9 +31,9 @@ func TestParseEditBlocks_SingleBlock(t *testing.T) {
 		"That adds a hello function.",
 	}, "\n")
 
-	blocks, err := ParseEditBlocks(resp)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	blocks, rejected := ParseEditBlocks(resp)
+	if len(rejected) != 0 {
+		t.Fatalf("unexpected refusals: %v", rejected)
 	}
 	if len(blocks) != 1 {
 		t.Fatalf("expected 1 block, got %d", len(blocks))
@@ -67,9 +67,9 @@ func TestParseEditBlocks_MultipleBlocksInOrder(t *testing.T) {
 		">>>>>>> REPLACE",
 	}, "\n")
 
-	blocks, err := ParseEditBlocks(resp)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	blocks, rejected := ParseEditBlocks(resp)
+	if len(rejected) != 0 {
+		t.Fatalf("unexpected refusals: %v", rejected)
 	}
 	if len(blocks) != 2 {
 		t.Fatalf("expected 2 blocks, got %d", len(blocks))
@@ -88,8 +88,8 @@ func TestParseEditBlocks_MissingPathLine(t *testing.T) {
 		">>>>>>> REPLACE",
 	}, "\n")
 
-	_, err := ParseEditBlocks(resp)
-	if err == nil {
+	_, rejected := ParseEditBlocks(resp)
+	if len(rejected) == 0 {
 		t.Fatal("expected an error for missing path line, got nil")
 	}
 }
@@ -102,8 +102,8 @@ func TestParseEditBlocks_UnterminatedNoSeparator(t *testing.T) {
 		"bar",
 	}, "\n")
 
-	_, err := ParseEditBlocks(resp)
-	if err == nil {
+	_, rejected := ParseEditBlocks(resp)
+	if len(rejected) == 0 {
 		t.Fatal("expected an error for unterminated SEARCH block, got nil")
 	}
 }
@@ -117,8 +117,8 @@ func TestParseEditBlocks_UnterminatedNoReplaceMarker(t *testing.T) {
 		"bar",
 	}, "\n")
 
-	_, err := ParseEditBlocks(resp)
-	if err == nil {
+	_, rejected := ParseEditBlocks(resp)
+	if len(rejected) == 0 {
 		t.Fatal("expected an error for missing REPLACE marker, got nil")
 	}
 }
@@ -136,8 +136,8 @@ func TestParseEditBlocks_UnterminatedBeforeNextBlock(t *testing.T) {
 		">>>>>>> REPLACE",
 	}, "\n")
 
-	_, err := ParseEditBlocks(resp)
-	if err == nil {
+	_, rejected := ParseEditBlocks(resp)
+	if len(rejected) == 0 {
 		t.Fatal("expected an error when a new block starts before the current one terminates, got nil")
 	}
 }
@@ -156,9 +156,9 @@ func TestParseEditBlocks_EmptySearchIsACreateBlock(t *testing.T) {
 		">>>>>>> REPLACE",
 	}, "\n")
 
-	blocks, err := ParseEditBlocks(resp)
-	if err != nil {
-		t.Fatalf("unexpected error for a create block: %v", err)
+	blocks, rejected := ParseEditBlocks(resp)
+	if len(rejected) != 0 {
+		t.Fatalf("unexpected refusal for a create block: %v", rejected)
 	}
 	want := EditBlock{FilePath: "a.go", Search: "", Replace: "bar"}
 	if len(blocks) != 1 || blocks[0] != want {
@@ -180,9 +180,9 @@ func TestParseEditBlocks_EmptyReplaceIsValid(t *testing.T) {
 		">>>>>>> REPLACE",
 	}, "\n")
 
-	blocks, err := ParseEditBlocks(resp)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	blocks, rejected := ParseEditBlocks(resp)
+	if len(rejected) != 0 {
+		t.Fatalf("unexpected refusals: %v", rejected)
 	}
 	if len(blocks) != 1 || blocks[0].Replace != "" {
 		t.Fatalf("expected 1 block with empty Replace, got %+v", blocks)
@@ -200,8 +200,8 @@ func TestParseEditBlocks_BlankLineBetweenPathAndSearchIsMissingPath(t *testing.T
 		">>>>>>> REPLACE",
 	}, "\n")
 
-	_, err := ParseEditBlocks(resp)
-	if err == nil {
+	_, rejected := ParseEditBlocks(resp)
+	if len(rejected) == 0 {
 		t.Fatal("expected an error when a blank line separates path and SEARCH, got nil")
 	}
 }
