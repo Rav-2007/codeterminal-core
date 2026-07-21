@@ -382,7 +382,19 @@ func TestStreamCompletion_OrdinaryErrorIsNotWrappedAsZDRRefusal(t *testing.T) {
 	if errors.Is(err, ErrZDRRefused) {
 		t.Errorf("errors.Is(err, ErrZDRRefused) = true for an ordinary rate-limit error %v, want false", err)
 	}
-	if !strings.Contains(err.Error(), rawBody) {
-		t.Errorf("error %q does not contain the raw upstream body %q — the real error must never be swallowed", err.Error(), rawBody)
+	// The real upstream error must never be swallowed -- but as of Fix 9 it
+	// lives on Detail(), not Error(). ModelError.Error() is the client-safe form
+	// by construction, precisely so a stray %v cannot put a provider's response
+	// body on the socket; the diagnostic detail has to be asked for by name, and
+	// is what the daemon logs.
+	me := asModelError(err)
+	if !strings.Contains(me.Detail(), rawBody) {
+		t.Errorf("Detail() %q does not contain the raw upstream body %q — the real error must never be swallowed", me.Detail(), rawBody)
+	}
+	if strings.Contains(err.Error(), rawBody) {
+		t.Errorf("Error() %q carries the raw upstream body; the client-facing form must not", err.Error())
+	}
+	if me.Class != ClassRateLimited {
+		t.Errorf("Class = %q, want %q", me.Class, ClassRateLimited)
 	}
 }

@@ -337,20 +337,22 @@ func (s *Server) serveConn(conn net.Conn) {
 		},
 	)
 	if err != nil {
-		s.logger.Printf("model API error: %v", err)
-		// Generalize ErrZDRRefused's rewrite-before-send treatment to every
-		// model-API failure (FAIL-3, Gate 7). The full upstream error — provider
-		// base URL, HTTP status, response body, raw transport error — is logged
-		// locally just above for the operator; the socket caller gets only a
-		// stable, generic message, so upstream infrastructure detail never rides
-		// along in a response that could travel off-box later. ErrZDRRefused keeps
-		// its existing specific message; only the previously-verbatim default
-		// (which leaked the apiBase URL and raw connection text) changes.
-		errMsg := "calling model API failed"
-		if errors.Is(err, ErrZDRRefused) {
-			errMsg = "inference refused: no zero-data-retention endpoint available"
-		}
-		enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Done: true, Error: errMsg})
+		// The Gate-7 split, now with a class attached (Fix 9). The full upstream
+		// error — provider base URL, HTTP status, response body, raw transport
+		// text — goes to the local log for the operator via Detail(); the socket
+		// caller gets ModelError's client-safe message plus a stable class it can
+		// branch on. Being specific about the KIND of failure is not a licence to
+		// disclose its shape: the class is derived from upstream detail and never
+		// carries it. ModelError.Error() is the safe form precisely so a future
+		// %v here cannot leak by accident.
+		modelErr := asModelError(err)
+		s.logger.Printf("model API error: %s", modelErr.Detail())
+		enc.Encode(protocol.TokenResponse{
+			ProtocolVersion: protocol.ProtocolVersion,
+			Done:            true,
+			Error:           modelErr.Error(),
+			ErrorClass:      string(modelErr.Class),
+		})
 		return
 	}
 

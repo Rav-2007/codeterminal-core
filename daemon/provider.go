@@ -191,17 +191,20 @@ func streamCompletion(ctx context.Context, apiBase, apiKey, model, systemPrompt 
 
 	resp, err := http.DefaultClient.Do(httpReq)
 	if err != nil {
-		return fmt.Errorf("calling model API: %w", err)
+		return classifyTransportError(err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		bodyStr := strings.TrimSpace(string(body))
-		if isZDRRoutingRefusal(bodyStr) {
-			return fmt.Errorf("%w (model API returned %s: %s)", ErrZDRRefused, resp.Status, bodyStr)
-		}
-		return fmt.Errorf("model API returned %s: %s", resp.Status, bodyStr)
+		// Classified here, at the only place that can see the status, the body
+		// and the headers together (Fix 9). The ZDR refusal keeps its identity:
+		// ModelError.Unwrap returns ErrZDRRefused for that class, so existing
+		// errors.Is checks are unaffected.
+		modelErr := classifyHTTPError(resp.StatusCode, resp.Status, bodyStr)
+		modelErr.RetryAfter = parseRetryAfter(resp.Header)
+		return modelErr
 	}
 
 	scanner := bufio.NewScanner(resp.Body)
@@ -240,7 +243,7 @@ func streamCompletion(ctx context.Context, apiBase, apiKey, model, systemPrompt 
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("reading stream: %w", err)
+		return &ModelError{Class: ClassUpstreamUnavailable, detail: "reading model API stream: " + err.Error()}
 	}
 	return nil
 }

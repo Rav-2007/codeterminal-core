@@ -159,11 +159,25 @@ type Turn struct {
 // matched text itself. Empty/omitted means nothing was redacted (the common
 // case) — not that scrubbing didn't run. Older clients that don't know this
 // field simply ignore it.
+// ErrorClass, when set alongside Error, names the KIND of failure in a stable
+// machine-readable form, so a client can react rather than only display: one of
+// "rate_limited", "quota_exceeded", "context_too_large", "auth",
+// "upstream_unavailable", "privacy_refused", "unknown". Every upstream failure
+// used to arrive as the same opaque "calling model API failed", which left a
+// client unable to tell a transient blip from an exhausted quota from a
+// conversation too long to ever send.
+//
+// It classifies without disclosing: the class is DERIVED from upstream detail
+// (HTTP status, response body) and never carries it, so no host, URL, provider
+// name, status line or raw error text rides along. Older clients that don't
+// know this field simply ignore it and keep showing Error, exactly like
+// Grounding.
 type TokenResponse struct {
 	ProtocolVersion int             `json:"protocol_version"`
 	Token           string          `json:"token,omitempty"`
 	Done            bool            `json:"done"`
 	Error           string          `json:"error,omitempty"`
+	ErrorClass      string          `json:"error_class,omitempty"`
 	Grounding       *GroundingInfo  `json:"grounding,omitempty"`
 	EditProposals   []EditBlockWire `json:"edit_proposals,omitempty"`
 	Redactions      []string        `json:"redactions,omitempty"`

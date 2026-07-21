@@ -184,7 +184,7 @@ func TestServeConn_ModelAPIErrorIsGenericAndLogsUpstreamLocally(t *testing.T) {
 	// Read streamed messages until the terminal Done. Capture the grounding
 	// message (sent first) and the final Done+Error.
 	var groundingWorkspace string
-	var doneErr string
+	var doneErr, doneClass string
 	for {
 		var tok protocol.TokenResponse
 		if err := dec.Decode(&tok); err != nil {
@@ -195,17 +195,28 @@ func TestServeConn_ModelAPIErrorIsGenericAndLogsUpstreamLocally(t *testing.T) {
 		}
 		if tok.Done {
 			doneErr = tok.Error
+			doneClass = tok.ErrorClass
 			break
 		}
 	}
 	<-done
 
-	// Socket response: generic, no upstream URL or raw transport text.
-	if doneErr != "calling model API failed" {
-		t.Errorf("Done.Error = %q, want the generic \"calling model API failed\"", doneErr)
+	// Socket response: no upstream URL or raw transport text. Fix 9 replaced the
+	// single generic string with a classified, client-safe message -- an
+	// unreachable base is now reported as "upstream_unavailable" rather than a
+	// shrug -- so what is pinned here is the Gate-7 property itself (nothing
+	// about the deployment leaks), not the specific wording it used to have.
+	if doneErr == "" {
+		t.Error("Done.Error is empty; a failed request must still say something")
 	}
 	if strings.Contains(doneErr, deadBase) || strings.Contains(doneErr, "127.0.0.1") || strings.Contains(doneErr, "dial tcp") {
 		t.Errorf("Done.Error = %q, leaks upstream URL / transport detail to the socket caller", doneErr)
+	}
+	if doneClass != string(ClassUpstreamUnavailable) {
+		t.Errorf("Done.ErrorClass = %q, want %q", doneClass, ClassUpstreamUnavailable)
+	}
+	if strings.Contains(doneClass, deadBase) || strings.Contains(doneClass, "127.0.0.1") {
+		t.Errorf("Done.ErrorClass = %q leaks infrastructure detail", doneClass)
 	}
 
 	// Local log: full upstream detail retained for the operator.
@@ -252,7 +263,7 @@ func TestServeConn_ZDRRefusalMessageUnchanged(t *testing.T) {
 	_ = dec.Decode(&hs)
 	_ = enc.Encode(protocol.PromptRequest{ProtocolVersion: protocol.ProtocolVersion, Prompt: "hello"})
 
-	var doneErr string
+	var doneErr, doneClass string
 	for {
 		var tok protocol.TokenResponse
 		if err := dec.Decode(&tok); err != nil {
@@ -260,6 +271,7 @@ func TestServeConn_ZDRRefusalMessageUnchanged(t *testing.T) {
 		}
 		if tok.Done {
 			doneErr = tok.Error
+			doneClass = tok.ErrorClass
 			break
 		}
 	}
@@ -267,5 +279,10 @@ func TestServeConn_ZDRRefusalMessageUnchanged(t *testing.T) {
 
 	if doneErr != "inference refused: no zero-data-retention endpoint available" {
 		t.Errorf("Done.Error = %q, want ErrZDRRefused's specific message unchanged", doneErr)
+	}
+	// The privacy refusal kept its identity through Fix 9's reclassification: it
+	// is a class of its own, with the same wording it always had.
+	if doneClass != string(ClassPrivacyRefused) {
+		t.Errorf("Done.ErrorClass = %q, want %q", doneClass, ClassPrivacyRefused)
 	}
 }
