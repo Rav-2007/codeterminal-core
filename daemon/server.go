@@ -327,7 +327,10 @@ func (s *Server) serveConn(conn net.Conn) {
 	// conversation the model sees.
 	routing := s.cfg.ZDR.resolvedProviderRouting()
 	var full strings.Builder
-	err := streamCompletion(context.Background(), s.apiBase, s.apiKey, decision.Slug, s.systemPrompt, historyOutcome.Messages, augmentedPrompt, routing,
+	// streamWithRetry, not streamCompletion (Fix 10): transient failures are
+	// retried with jittered backoff, and only while nothing has streamed yet --
+	// see its doc comment for the two rules that decide.
+	err := streamWithRetry(context.Background(), s.apiBase, s.apiKey, decision.Slug, s.systemPrompt, historyOutcome.Messages, augmentedPrompt, routing,
 		func(token string) error {
 			full.WriteString(token)
 			return enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Token: token})
@@ -335,6 +338,7 @@ func (s *Server) serveConn(conn net.Conn) {
 		func(provider string) {
 			s.logger.Printf("model API served by provider=%q (zdr=%t data_collection=%s allow_fallbacks=%t)", provider, routing.ZDR, routing.DataCollection, routing.AllowFallbacks)
 		},
+		s.logger,
 	)
 	if err != nil {
 		// The Gate-7 split, now with a class attached (Fix 9). The full upstream
