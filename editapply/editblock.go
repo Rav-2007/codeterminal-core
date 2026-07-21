@@ -51,20 +51,44 @@ func ParseEditBlocks(response string) ([]EditBlock, error) {
 			return nil, fmt.Errorf("line %d: %q line has an empty path", lineNum, pathPrefix)
 		}
 
-		sepIdx, hitNextBlock := scanUntil(lines, i+1, separatorMarker)
-		if sepIdx == -1 || hitNextBlock {
-			return nil, fmt.Errorf("line %d: unterminated SEARCH block (no %q found before end of response)", lineNum, separatorMarker)
+		// Find this block's OWN terminator first, then look for the divider
+		// strictly inside it (Fix 4). The scan used to run the other way round —
+		// take the first "=======" anywhere after the SEARCH marker, then find a
+		// REPLACE marker after that — which cut the block at the first separator
+		// line even when that line was part of the content being searched for.
+		// The result was a block that looked perfectly well-formed while
+		// carrying the wrong SEARCH and the wrong REPLACE, and it applied
+		// cleanly: silent file corruption, the one failure this parser must
+		// never produce.
+		replEndIdx, hitNextBlock := scanUntil(lines, i+1, replaceMarker)
+		if replEndIdx == -1 || hitNextBlock {
+			return nil, fmt.Errorf("line %d: unterminated block (no %q found before end of response)", lineNum, replaceMarker)
 		}
+
+		seps := findSeparators(lines, i+1, replEndIdx)
+		switch len(seps) {
+		case 0:
+			return nil, fmt.Errorf("line %d: unterminated SEARCH block (no %q found before %q)", lineNum, separatorMarker, replaceMarker)
+		case 1:
+			// Unambiguous: exactly one divider between the markers.
+		default:
+			// Genuinely undecidable HERE. Whether a given "=======" is the
+			// divider or content depends on the file the block targets, and
+			// this parser deliberately does no I/O — it is called on a raw
+			// model response, before any path has been resolved. Guessing is
+			// what produced the corruption, so refuse, and name the colliding
+			// lines so the caller can re-issue a SEARCH that avoids them.
+			return nil, fmt.Errorf(
+				"line %d: ambiguous block — %d %q lines before %q (lines %s); cannot tell the divider from content, so refusing rather than guessing. Re-issue with a SEARCH section that does not contain a bare %q line",
+				lineNum, len(seps), separatorMarker, replaceMarker, formatLineNumbers(seps), separatorMarker)
+		}
+		sepIdx := seps[0]
 
 		search := strings.Join(lines[i+1:sepIdx], "\n")
 		if strings.TrimSpace(search) == "" {
 			return nil, fmt.Errorf("line %d: SEARCH block is empty", lineNum)
 		}
 
-		replEndIdx, hitNextBlock := scanUntil(lines, sepIdx+1, replaceMarker)
-		if replEndIdx == -1 || hitNextBlock {
-			return nil, fmt.Errorf("line %d: unterminated block (no %q found before end of response)", lineNum, replaceMarker)
-		}
 		replace := strings.Join(lines[sepIdx+1:replEndIdx], "\n")
 
 		blocks = append(blocks, EditBlock{FilePath: path, Search: search, Replace: replace})
@@ -81,6 +105,31 @@ func parsePathLine(line string) (string, bool) {
 		return "", false
 	}
 	return strings.TrimSpace(strings.TrimPrefix(trimmed, pathPrefix)), true
+}
+
+// findSeparators returns the indexes of every separator line in [start, end).
+// The comparison is exact against a trimmed line, so only a bare "=======" of
+// exactly seven characters counts — the setext underlines, rule lines and
+// changelog dividers that occur in real documentation are other lengths and
+// remain ordinary content.
+func findSeparators(lines []string, start, end int) []int {
+	var found []int
+	for j := start; j < end; j++ {
+		if strings.TrimSpace(lines[j]) == separatorMarker {
+			found = append(found, j)
+		}
+	}
+	return found
+}
+
+// formatLineNumbers renders 0-indexed line positions as the 1-indexed numbers
+// the rest of this parser's errors use.
+func formatLineNumbers(idxs []int) string {
+	parts := make([]string, len(idxs))
+	for i, idx := range idxs {
+		parts[i] = fmt.Sprintf("%d", idx+1)
+	}
+	return strings.Join(parts, ", ")
 }
 
 // scanUntil returns the index of the first line at or after start that
