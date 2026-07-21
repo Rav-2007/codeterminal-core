@@ -398,6 +398,14 @@ func stageRestore(realWorkspaceRoot, beforeDir, rel string) (*stagedRestore, err
 	if editapply.MatchesSecretName(filepath.Base(rel)) {
 		return nil, fmt.Errorf("path %q matches the indexer's secret-file rules; refusing to restore it", rel)
 	}
+	// Parity with the forward path's protected-directory refusal (Fix 3): undo
+	// is a write path too, and a fabricated backup session listing
+	// before/.git/hooks/pre-commit would otherwise plant an executable hook
+	// through the restore. Apply now refuses to create such a backup in the
+	// first place, so no legitimate session can contain one.
+	if component := editapply.ProtectedDirComponent(rel); component != "" {
+		return nil, fmt.Errorf("path %q is inside %s/, which holds version-control, credential, or undo state; refusing to restore it", rel, component)
+	}
 
 	src := filepath.Join(beforeDir, rel)
 	if sym, err := leafIsSymlink(src); err != nil {

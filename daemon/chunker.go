@@ -42,21 +42,38 @@ const (
 // ignoredDirNames are pruned outright during the walk: a matching directory
 // is never descended into, so nothing beneath it is ever scanned, read, or
 // counted individually — it's one skip per pruned subtree, not one per file.
-var ignoredDirNames = map[string]bool{
-	".git":          true,
-	".codeterminal": true,
-	"node_modules":  true,
-	"vendor":        true,
-	"dist":          true,
-	"build":         true,
-	"target":        true,
-	"out":           true,
-	".next":         true,
-	"__pycache__":   true,
-	".venv":         true,
-	"venv":          true,
-	".aws":          true,
-	".ssh":          true,
+//
+// It is the union of two sets with different reasons for being here. The
+// dangerous ones (VCS internals, .codeterminal, credential dirs) come from
+// editapply.ProtectedDirNames, which is also what the edit WRITER refuses to
+// write into — that shared source of truth is the point. The two lists were
+// maintained separately, and drifted: the indexer pruned .git and .codeterminal
+// while the writer happily wrote into both, so model output could reach hooks
+// it executes and the backups undo restores from (Fix 3). Anything added there
+// is now pruned here for free, and vice versa cannot silently diverge.
+//
+// The rest are local: build output and dependency trees, skipped as noise.
+// They are deliberately NOT protected on the write path — editing vendored or
+// generated code is unusual but legitimate.
+var ignoredDirNames = buildIgnoredDirNames()
+
+func buildIgnoredDirNames() map[string]bool {
+	names := map[string]bool{
+		"node_modules": true,
+		"vendor":       true,
+		"dist":         true,
+		"build":        true,
+		"target":       true,
+		"out":          true,
+		".next":        true,
+		"__pycache__":  true,
+		".venv":        true,
+		"venv":         true,
+	}
+	for name := range editapply.ProtectedDirNames {
+		names[name] = true
+	}
+	return names
 }
 
 // ScanResult is the outcome of walking a workspace: every chunk produced

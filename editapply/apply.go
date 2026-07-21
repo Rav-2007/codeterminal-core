@@ -139,6 +139,19 @@ func describeExt(relPath string) string {
 // realWorkspaceRoot. Files the indexer would secret-skip are refused too —
 // an edit block is untrusted model output and must never rewrite
 // credentials.
+//
+// Confinement to the workspace is necessary but not sufficient (Fix 3): the
+// indexer also prunes whole directories it will never show the model — VCS
+// internals, this product's own backups and logs, credential dirs — and the
+// writer must refuse to write into the same set, or model output can reach
+// state that is executed (.git/hooks/*), trusted (.git/config), or relied on
+// for recovery (.codeterminal/backups/.../before/*). See ProtectedDirNames.
+//
+// That check runs TWICE, deliberately. Once on the path as written, so the
+// refusal is clear and reason-bearing whether or not the target exists; and
+// once on the fully resolved path, so an in-tree symlink (innocent/ -> .git/)
+// cannot launder the write. The resolved check is the load-bearing one; the
+// first only improves the message.
 func ResolveSafeTargetPath(realWorkspaceRoot, relPath string) (string, error) {
 	if filepath.IsAbs(relPath) {
 		return "", fmt.Errorf("path %q is absolute; edits must target workspace-relative paths", relPath)
@@ -147,6 +160,10 @@ func ResolveSafeTargetPath(realWorkspaceRoot, relPath string) (string, error) {
 	cleaned := filepath.Clean(relPath)
 	if cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("path %q escapes the workspace root", relPath)
+	}
+
+	if component := ProtectedDirComponent(cleaned); component != "" {
+		return "", refuseProtectedDir(relPath, component)
 	}
 
 	full := filepath.Join(realWorkspaceRoot, cleaned)
@@ -158,6 +175,10 @@ func ResolveSafeTargetPath(realWorkspaceRoot, relPath string) (string, error) {
 	rel, err := filepath.Rel(realWorkspaceRoot, realFull)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("path %q resolves outside the workspace root", relPath)
+	}
+
+	if component := ProtectedDirComponent(rel); component != "" {
+		return "", refuseProtectedDir(relPath, component)
 	}
 
 	if MatchesSecretName(filepath.Base(realFull)) {
