@@ -26,8 +26,13 @@ type EditBlock struct {
 // blocks and returns them in order. A response with no blocks is valid and
 // returns an empty, nil-error result — plain-text answers are expected to
 // contain none. Malformed blocks (missing path line, unterminated markers,
-// empty SEARCH) produce a descriptive error naming the line number; the
+// ambiguous dividers) produce a descriptive error naming the line number; the
 // parser never panics on malformed input.
+//
+// A block with an EMPTY SEARCH section is well-formed: it is the create
+// instruction, and it parses into a block whose Search is empty for the engine
+// to act on (Fix A). Rejecting it here is what kept file creation unreachable
+// from every shipped client even after the engine grew the capability.
 func ParseEditBlocks(response string) ([]EditBlock, error) {
 	lines := strings.Split(response, "\n")
 
@@ -70,7 +75,9 @@ func ParseEditBlocks(response string) ([]EditBlock, error) {
 		case 0:
 			return nil, fmt.Errorf("line %d: unterminated SEARCH block (no %q found before %q)", lineNum, separatorMarker, replaceMarker)
 		case 1:
-			// Unambiguous: exactly one divider between the markers.
+			// Unambiguous: exactly one divider between the markers. This is
+			// also the ONLY shape a create block may take (Fix A) — see the
+			// empty-SEARCH note below the switch.
 		default:
 			// Genuinely undecidable HERE. Whether a given "=======" is the
 			// divider or content depends on the file the block targets, and
@@ -84,10 +91,27 @@ func ParseEditBlocks(response string) ([]EditBlock, error) {
 		}
 		sepIdx := seps[0]
 
+		// An empty SEARCH section is an explicit CREATE intent, and is passed
+		// through to the engine, which decides what it means against the file
+		// on disk (see IsEmptySearch and PrepareEdit: write REPLACE as the whole
+		// content, creating the file if absent, refusing if it is already there
+		// with content in it). The parser used to reject it outright, which made
+		// the entire creation capability unreachable from every shipped client —
+		// the CLI, the daemon's EditProposals, and the TUI all enter here.
+		//
+		// This does NOT weaken the Fix-4 collision refusal, because it changes
+		// nothing about how the divider is chosen. The create reading is only
+		// ever reached through the single-separator case above: with exactly one
+		// divider in the block, an empty SEARCH has precisely one reading. A
+		// block whose first separator sits immediately after the SEARCH marker
+		// but which carries FURTHER separators before its REPLACE marker stays
+		// ambiguous — it could be a create whose content contains a bare
+		// "=======", or an edit whose SEARCH begins with one — and the default
+		// branch above still refuses it rather than guessing. That refusal is
+		// now per-block (Fix B), so it costs the response's other blocks
+		// nothing; the cost is that creating a file whose content contains a
+		// bare seven-character "=======" line is refused, not supported.
 		search := strings.Join(lines[i+1:sepIdx], "\n")
-		if strings.TrimSpace(search) == "" {
-			return nil, fmt.Errorf("line %d: SEARCH block is empty", lineNum)
-		}
 
 		replace := strings.Join(lines[sepIdx+1:replEndIdx], "\n")
 

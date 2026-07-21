@@ -142,7 +142,12 @@ func TestParseEditBlocks_UnterminatedBeforeNextBlock(t *testing.T) {
 	}
 }
 
-func TestParseEditBlocks_EmptySearch(t *testing.T) {
+// TestParseEditBlocks_EmptySearchIsACreateBlock is this test INVERTED (Fix A).
+// It used to assert the refusal that made file creation unreachable: the engine
+// gained the capability in Fix 7, but every shipped client enters through this
+// parser, and the parser threw the block away before the engine ever saw it. An
+// empty SEARCH is now a create instruction and must parse.
+func TestParseEditBlocks_EmptySearchIsACreateBlock(t *testing.T) {
 	resp := strings.Join([]string{
 		"path: a.go",
 		"<<<<<<< SEARCH",
@@ -151,9 +156,18 @@ func TestParseEditBlocks_EmptySearch(t *testing.T) {
 		">>>>>>> REPLACE",
 	}, "\n")
 
-	_, err := ParseEditBlocks(resp)
-	if err == nil {
-		t.Fatal("expected an error for empty SEARCH, got nil")
+	blocks, err := ParseEditBlocks(resp)
+	if err != nil {
+		t.Fatalf("unexpected error for a create block: %v", err)
+	}
+	want := EditBlock{FilePath: "a.go", Search: "", Replace: "bar"}
+	if len(blocks) != 1 || blocks[0] != want {
+		t.Fatalf("blocks = %+v, want exactly %+v", blocks, want)
+	}
+	// The engine keys creation off exactly this predicate, so the parser's
+	// output has to satisfy it or the block is a no-op edit instead.
+	if !IsEmptySearch(blocks[0].Search) {
+		t.Error("parsed block does not read as a create block to the engine")
 	}
 }
 
