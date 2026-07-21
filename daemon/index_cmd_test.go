@@ -372,7 +372,8 @@ func (erroringLexicalStore) Upsert(ctx context.Context, chunks []Chunk) error { 
 func (erroringLexicalStore) Search(ctx context.Context, query string, k int) ([]Chunk, error) {
 	return nil, fmt.Errorf("simulated: lexical index unavailable")
 }
-func (erroringLexicalStore) Close() error { return nil }
+func (erroringLexicalStore) DeleteByFilePath(ctx context.Context, relPath string) error { return nil }
+func (erroringLexicalStore) Close() error                                               { return nil }
 
 // TestRetrieveTopK_LexicalSearchErrorDegradesToSemanticOnly proves the
 // hybrid retrieval path's core resilience guarantee: a lexical tier that
@@ -420,7 +421,8 @@ func (f *fakeLexicalStore) Search(ctx context.Context, query string, k int) ([]C
 	}
 	return f.hits, nil
 }
-func (f *fakeLexicalStore) Close() error { return nil }
+func (f *fakeLexicalStore) DeleteByFilePath(ctx context.Context, relPath string) error { return nil }
+func (f *fakeLexicalStore) Close() error                                               { return nil }
 
 // TestRetrieveTopK_LexicalHitOutsideSemanticPoolStillSurfaces is the
 // end-to-end version of TestFuseRRF_LexicalOnlyChunkStillSurfacesEvenWithNoSemanticRank:

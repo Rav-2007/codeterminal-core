@@ -26,6 +26,10 @@ const lexicalDBFileName = "lexical.db"
 type LexicalStore interface {
 	Upsert(ctx context.Context, chunks []Chunk) error
 	Search(ctx context.Context, query string, k int) ([]Chunk, error)
+	// DeleteByFilePath removes every chunk belonging to one workspace-relative
+	// file, for the same reason VectorStore.DeleteByFilePath exists: a shrinking
+	// file's orphaned tail chunks would otherwise keep serving pre-edit code.
+	DeleteByFilePath(ctx context.Context, relPath string) error
 	Close() error
 }
 
@@ -111,6 +115,16 @@ func (s *FTSChunkStore) Close() error {
 // chunk_id before being re-inserted, inside one transaction per batch, to
 // give the same "re-indexing replaces rather than duplicates" contract
 // VectorStore.Upsert already documents.
+// DeleteByFilePath removes every row for one workspace-relative file. file_path
+// is an UNINDEXED FTS5 column — not full-text searchable, but still stored and
+// perfectly usable in an ordinary WHERE clause, which is what this needs.
+func (s *FTSChunkStore) DeleteByFilePath(ctx context.Context, relPath string) error {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM code_chunks_fts WHERE file_path = ?`, relPath); err != nil {
+		return fmt.Errorf("deleting lexical chunks for %s: %w", relPath, err)
+	}
+	return nil
+}
+
 func (s *FTSChunkStore) Upsert(ctx context.Context, chunks []Chunk) error {
 	if len(chunks) == 0 {
 		return nil

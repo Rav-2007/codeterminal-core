@@ -40,6 +40,13 @@ type Chunk struct {
 type VectorStore interface {
 	Upsert(ctx context.Context, chunks []Chunk) error
 	Query(ctx context.Context, queryVec []float32, k int) ([]Chunk, error)
+	// DeleteByFilePath removes every chunk belonging to one workspace-relative
+	// file. Upsert alone cannot keep a re-indexed file correct: chunk IDs encode
+	// their line range ("path:12-51"), so a file that SHRINKS leaves its former
+	// tail chunks behind under IDs the new content never regenerates, and those
+	// orphans keep matching queries with pre-edit code. Deleting by file first
+	// is what makes a re-index a replacement rather than a merge.
+	DeleteByFilePath(ctx context.Context, relPath string) error
 	Count() int
 }
 
@@ -102,6 +109,16 @@ func (s *ChromemStore) Upsert(ctx context.Context, chunks []Chunk) error {
 	// concurrent work to parallelize here; keep it simple and deterministic.
 	if err := s.collection.AddDocuments(ctx, docs, 1); err != nil {
 		return fmt.Errorf("upserting %d chunk(s): %w", len(chunks), err)
+	}
+	return nil
+}
+
+// DeleteByFilePath removes every stored chunk whose file_path metadata matches
+// relPath. chromem-go treats an empty result as success, so deleting a file
+// that was never indexed is a no-op rather than an error.
+func (s *ChromemStore) DeleteByFilePath(ctx context.Context, relPath string) error {
+	if err := s.collection.Delete(ctx, map[string]string{"file_path": relPath}, nil); err != nil {
+		return fmt.Errorf("deleting chunks for %s: %w", relPath, err)
 	}
 	return nil
 }

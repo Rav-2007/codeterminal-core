@@ -421,6 +421,13 @@ func (s *Server) handleApplyEdit(enc *json.Encoder, req protocol.ApplyEditReques
 	}
 
 	s.logger.Printf("apply-edit: applied %s (backup: %s)", block.FilePath, backupDir)
+
+	// Success path only, and still under the workspace lock (Fix 5): bring the
+	// index in line with what was just written, so the next turn reasons about
+	// the edited file rather than whatever `index` last saw. Never reached from
+	// a refusal or a failed apply — those left the file untouched.
+	s.reindexAfterApply(realRoot, block.FilePath)
+
 	enc.Encode(protocol.ApplyEditResponse{ProtocolVersion: protocol.ProtocolVersion, Applied: true, BackupDir: backupDir})
 }
 

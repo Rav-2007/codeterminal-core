@@ -229,7 +229,8 @@ func (erroringStore) Upsert(ctx context.Context, chunks []Chunk) error { return 
 func (erroringStore) Query(ctx context.Context, queryVec []float32, k int) ([]Chunk, error) {
 	return nil, errors.New("simulated store failure")
 }
-func (erroringStore) Count() int { return 1 } // non-empty, so retrieval is actually attempted
+func (erroringStore) DeleteByFilePath(ctx context.Context, relPath string) error { return nil }
+func (erroringStore) Count() int                                                 { return 1 } // non-empty, so retrieval is actually attempted
 
 func TestGatherContext_SkipsOnRetrievalError(t *testing.T) {
 	s := &Server{
@@ -255,7 +256,8 @@ func (emptyStore) Upsert(ctx context.Context, chunks []Chunk) error { return nil
 func (emptyStore) Query(ctx context.Context, queryVec []float32, k int) ([]Chunk, error) {
 	return nil, nil
 }
-func (emptyStore) Count() int { return 0 }
+func (emptyStore) DeleteByFilePath(ctx context.Context, relPath string) error { return nil }
+func (emptyStore) Count() int                                                 { return 0 }
 
 func TestGatherContext_SkipsWhenNoHits(t *testing.T) {
 	s := &Server{
