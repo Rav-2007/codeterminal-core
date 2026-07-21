@@ -34,6 +34,8 @@ func resolvedRoots(t *testing.T, ws string) []string {
 	return roots
 }
 
+// assertNoAbsRoot is the Gate-7 guarantee itself: whatever the message says, it
+// must not carry an absolute host path. Applied to every error response.
 func assertNoAbsRoot(t *testing.T, field, msg string, roots []string) {
 	t.Helper()
 	if msg == "" {
@@ -44,6 +46,24 @@ func assertNoAbsRoot(t *testing.T, field, msg string, roots []string) {
 			t.Errorf("%s = %q\n  leaks absolute host path %q — scrub did not strip it", field, msg, r)
 		}
 	}
+}
+
+// assertScrubbedPath is the stronger assertion, for messages that inherently
+// DO carry a path (a syscall error naming the file it failed on). There the
+// "<workspace>" token is the positive proof that the scrub ran, rather than the
+// path merely happening to be absent.
+//
+// It is deliberately not applied to every case any more. Fix 7 removed the
+// absolute path from the not-found errors at the source: they used to be raw
+// EvalSymlinks lstat faults ("lstat /abs/path/ghost.go: no such file or
+// directory") that the scrub then had to rewrite, and are now considered
+// refusals phrased in the caller's own relative path. Requiring a scrub token
+// in a message that never contained a path would be requiring the daemon to
+// mention the workspace for no reason — a message with no path in it is the
+// stronger outcome, and assertNoAbsRoot still proves it.
+func assertScrubbedPath(t *testing.T, field, msg string, roots []string) {
+	t.Helper()
+	assertNoAbsRoot(t, field, msg, roots)
 	if !strings.Contains(msg, workspacePathToken) {
 		t.Errorf("%s = %q\n  want the %q token (proves the path was scrubbed, not just absent)", field, msg, workspacePathToken)
 	}
@@ -57,7 +77,10 @@ func TestHandleApplyEdit_ScrubsAbsolutePathsFromErrorResponses(t *testing.T) {
 	roots := resolvedRoots(t, root)
 	srv := &Server{logger: discardLogger(), workspace: root}
 
-	// (a) nonexistent file: EvalSymlinks lstat error carried the absolute path.
+	// (a) nonexistent file: the EvalSymlinks lstat error used to carry the
+	// absolute path here. Fix 7 turned this into a considered refusal phrased in
+	// the caller's own relative path, so there is no longer a path to scrub --
+	// the leak check still applies, and still passes.
 	resp := applyEditViaHandler(t, srv, protocol.ApplyEditRequest{
 		Edit: protocol.EditBlockWire{FilePath: "ghost.go", Search: "x", Replace: "y"},
 	})
@@ -67,11 +90,16 @@ func TestHandleApplyEdit_ScrubsAbsolutePathsFromErrorResponses(t *testing.T) {
 	}
 
 	// (b) nonexistent NESTED path: the deepest-existing-ancestor absolute path
-	// was disclosed (revealed which directories exist). Must be scrubbed too.
+	// was disclosed (revealed which directories exist). Same as (a) -- the
+	// message no longer names any directory at all, which is what the leak
+	// check confirms.
 	resp = applyEditViaHandler(t, srv, protocol.ApplyEditRequest{
 		Edit: protocol.EditBlockWire{FilePath: "sub/does/not/exist.go", Search: "x", Replace: "y"},
 	})
 	assertNoAbsRoot(t, "apply(nested).Error", resp.Error, roots)
+	if !strings.Contains(resp.Error, "sub/does/not/exist.go") {
+		t.Errorf("apply(nested).Error = %q, want the relative path preserved (debuggability)", resp.Error)
+	}
 
 	// (c) exists-but-unreadable: os.ReadFile permission error carried the
 	// absolute path. Skipped as root, where chmod 000 does not deny reads.
@@ -84,7 +112,9 @@ func TestHandleApplyEdit_ScrubsAbsolutePathsFromErrorResponses(t *testing.T) {
 		resp = applyEditViaHandler(t, srv, protocol.ApplyEditRequest{
 			Edit: protocol.EditBlockWire{FilePath: "locked.go", Search: "x", Replace: "y"},
 		})
-		assertNoAbsRoot(t, "apply(locked.go).Error", resp.Error, roots)
+		// This one DOES still carry a path (os.ReadFile's permission error names
+		// the file), so it is the case that proves the scrub itself runs.
+		assertScrubbedPath(t, "apply(locked.go).Error", resp.Error, roots)
 	}
 }
 

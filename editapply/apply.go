@@ -23,6 +23,20 @@ type PreparedEdit struct {
 	SyntaxNote string // human-readable note on what syntax check ran (or didn't)
 	Tier       MatchTier
 	MatchNote  string // human-readable note on what normalization the match needed; "" when exact
+	Creates    bool   // true when this edit brings a new file into existence (see IsEmptySearch)
+}
+
+// syntaxNoteFor describes what syntax checking applies to relPath, given the
+// content that would be written. Shared by the edit and create paths so a
+// created .go file is reported the same way an edited one is.
+func syntaxNoteFor(relPath, content string) string {
+	if strings.EqualFold(filepath.Ext(relPath), ".go") {
+		if _, err := parser.ParseFile(token.NewFileSet(), relPath, content, parser.AllErrors); err == nil {
+			return "go/parser OK"
+		}
+		return "go/parser reported errors"
+	}
+	return fmt.Sprintf("no syntax check applied (unsupported for %s)", describeExt(relPath))
 }
 
 // PrepareEdit runs the safety tripod's path-safety and exact-match legs,
@@ -33,9 +47,29 @@ type PreparedEdit struct {
 // system fault). This is the single core both the CLI (daemon/apply_cmd.go)
 // and the Mochiii TUI (clients/tui) call — neither keeps its own copy.
 func PrepareEdit(realWorkspaceRoot string, block EditBlock) (*PreparedEdit, error) {
-	targetPath, err := ResolveSafeTargetPath(realWorkspaceRoot, block.FilePath)
+	targetPath, exists, err := resolveSafeTarget(realWorkspaceRoot, block.FilePath)
 	if err != nil {
 		return nil, err
+	}
+
+	// An empty SEARCH section means "this file's content is, or should be,
+	// nothing" — create it, or fill it if it is there and empty (Fix 7). See
+	// IsEmptySearch for why this used to be three different behaviours.
+	if IsEmptySearch(block.Search) {
+		if exists {
+			data, err := os.ReadFile(targetPath)
+			if err != nil {
+				return nil, fmt.Errorf("reading %s: %w", block.FilePath, err)
+			}
+			if len(data) > 0 {
+				return nil, fmt.Errorf("%s already exists and is not empty; an empty SEARCH section means \"create this file\", so refusing to replace its whole content — send a SEARCH section naming the text to replace", block.FilePath)
+			}
+		}
+		return prepareCreate(block, targetPath, exists)
+	}
+
+	if !exists {
+		return nil, fmt.Errorf("%s does not exist; to create it, send an edit block with an empty SEARCH section and the file's content as REPLACE", block.FilePath)
 	}
 
 	data, err := os.ReadFile(targetPath)
@@ -59,13 +93,12 @@ func PrepareEdit(realWorkspaceRoot string, block EditBlock) (*PreparedEdit, erro
 	startLine := strings.Count(original[:match.Start], "\n") + 1
 	endLine := startLine + strings.Count(original[match.Start:match.End], "\n")
 
-	syntaxNote := fmt.Sprintf("no syntax check applied (unsupported for %s)", describeExt(block.FilePath))
 	if strings.EqualFold(filepath.Ext(block.FilePath), ".go") {
 		if _, err := parser.ParseFile(token.NewFileSet(), block.FilePath, newContent, parser.AllErrors); err != nil {
 			return nil, fmt.Errorf("edit would make %s unparseable as Go: %w", block.FilePath, err)
 		}
-		syntaxNote = "go/parser OK"
 	}
+	syntaxNote := syntaxNoteFor(block.FilePath, newContent)
 
 	info, err := os.Stat(targetPath)
 	if err != nil {
@@ -108,7 +141,16 @@ func PrepareEdit(realWorkspaceRoot string, block EditBlock) (*PreparedEdit, erro
 func VerifyUnchanged(prepared *PreparedEdit) error {
 	current, err := os.ReadFile(prepared.TargetPath)
 	if err != nil {
+		// A creating edit expects exactly this: nothing there. Anything else
+		// appearing in the meantime is the same staleness failure as a changed
+		// file, so absence is only acceptable when absence is what was prepared.
+		if os.IsNotExist(err) && prepared.Creates {
+			return nil
+		}
 		return fmt.Errorf("re-reading %s before writing: %w", prepared.Block.FilePath, err)
+	}
+	if prepared.Creates {
+		return fmt.Errorf("%s was created by something else since this edit was prepared; refusing to overwrite it", prepared.Block.FilePath)
 	}
 	if string(current) != prepared.Original {
 		return fmt.Errorf("%s changed since this edit was prepared; refusing to apply a stale edit", prepared.Block.FilePath)
@@ -159,6 +201,16 @@ func Apply(realWorkspaceRoot string, prepared *PreparedEdit, backupDir string) e
 	if err != nil {
 		return fmt.Errorf("recording post-apply snapshot for %s: %w", prepared.Block.FilePath, err)
 	}
+	// A creating edit may name a directory that does not exist yet. This is the
+	// one mutation that precedes the write, and deliberately the last thing
+	// before it: an empty directory is not file content, and leaving one behind
+	// if the write then fails costs nothing and loses nothing.
+	if prepared.Creates {
+		if err := os.MkdirAll(filepath.Dir(prepared.TargetPath), 0755); err != nil {
+			rollbackAfter()
+			return fmt.Errorf("creating parent directories for %s: %w", prepared.Block.FilePath, err)
+		}
+	}
 	if err := os.WriteFile(prepared.TargetPath, []byte(prepared.NewContent), prepared.FileMode); err != nil {
 		rollbackAfter()
 		return fmt.Errorf("writing %s: %w", prepared.Block.FilePath, err)
@@ -195,37 +247,65 @@ func describeExt(relPath string) string {
 // cannot launder the write. The resolved check is the load-bearing one; the
 // first only improves the message.
 func ResolveSafeTargetPath(realWorkspaceRoot, relPath string) (string, error) {
+	path, exists, err := resolveSafeTarget(realWorkspaceRoot, relPath)
+	if err != nil {
+		return "", err
+	}
+	if !exists {
+		return "", fmt.Errorf("resolving %s: no such file", relPath)
+	}
+	return path, nil
+}
+
+// resolveSafeTarget is ResolveSafeTargetPath's implementation, reporting
+// separately whether the target exists rather than treating absence as a
+// failure (Fix 7). Every gate below applies identically to a path that is about
+// to be CREATED — a model must not be able to create a git hook or a
+// credentials file any more than it can overwrite one — so the only thing the
+// two cases differ in is how the leaf is resolved.
+func resolveSafeTarget(realWorkspaceRoot, relPath string) (path string, exists bool, err error) {
 	if filepath.IsAbs(relPath) {
-		return "", fmt.Errorf("path %q is absolute; edits must target workspace-relative paths", relPath)
+		return "", false, fmt.Errorf("path %q is absolute; edits must target workspace-relative paths", relPath)
 	}
 
 	cleaned := filepath.Clean(relPath)
 	if cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("path %q escapes the workspace root", relPath)
+		return "", false, fmt.Errorf("path %q escapes the workspace root", relPath)
 	}
 
 	if component := ProtectedDirComponent(cleaned); component != "" {
-		return "", refuseProtectedDir(relPath, component)
+		return "", false, refuseProtectedDir(relPath, component)
+	}
+	if MatchesSecretName(filepath.Base(cleaned)) {
+		return "", false, fmt.Errorf("path %q matches the indexer's secret-file rules; refusing to edit it", relPath)
 	}
 
 	full := filepath.Join(realWorkspaceRoot, cleaned)
 	realFull, err := filepath.EvalSymlinks(full)
 	if err != nil {
-		return "", fmt.Errorf("resolving %s: %w", relPath, err)
+		if !os.IsNotExist(err) {
+			return "", false, fmt.Errorf("resolving %s: %w", relPath, err)
+		}
+		// Not there yet: confine via the deepest existing ancestor instead.
+		newPath, nerr := resolveSafeNewPath(realWorkspaceRoot, cleaned)
+		if nerr != nil {
+			return "", false, nerr
+		}
+		return newPath, false, nil
 	}
 
 	rel, err := filepath.Rel(realWorkspaceRoot, realFull)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("path %q resolves outside the workspace root", relPath)
+		return "", false, fmt.Errorf("path %q resolves outside the workspace root", relPath)
 	}
 
 	if component := ProtectedDirComponent(rel); component != "" {
-		return "", refuseProtectedDir(relPath, component)
+		return "", false, refuseProtectedDir(relPath, component)
 	}
 
 	if MatchesSecretName(filepath.Base(realFull)) {
-		return "", fmt.Errorf("path %q matches the indexer's secret-file rules; refusing to edit it", relPath)
+		return "", false, fmt.Errorf("path %q matches the indexer's secret-file rules; refusing to edit it", relPath)
 	}
 
-	return realFull, nil
+	return realFull, true, nil
 }
