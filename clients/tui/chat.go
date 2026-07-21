@@ -588,6 +588,12 @@ func renderReviewPanel(index, total int, p *editapply.PreparedEdit) string {
 	for _, l := range strings.Split(p.Block.Replace, "\n") {
 		b.WriteString("\n" + diffAddedStyle.Render("+ "+l))
 	}
+	// Surfaced next to the diff for the same reason the CLI does it: the user is
+	// about to approve this write, and a match that needed whitespace/encoding
+	// tolerance is something they should see before they do.
+	if p.MatchNote != "" {
+		b.WriteString("\n" + helpStyle.Render("match: "+p.MatchNote))
+	}
 	b.WriteString("\n" + helpStyle.Render("syntax check: "+p.SyntaxNote))
 	return b.String()
 }

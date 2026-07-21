@@ -154,6 +154,12 @@ func printEditDiff(out io.Writer, p *editapply.PreparedEdit) {
 	for _, l := range strings.Split(p.Block.Replace, "\n") {
 		fmt.Fprintf(out, "+ %s\n", l)
 	}
+	// A non-exact match is never silent: the user confirming this diff is told
+	// that whitespace/encoding tolerance was needed to find the passage, so
+	// "why did that match?" is answerable without reading the daemon log.
+	if p.MatchNote != "" {
+		fmt.Fprintf(out, "match: %s\n", p.MatchNote)
+	}
 	fmt.Fprintf(out, "syntax check: %s\n", p.SyntaxNote)
 }
 

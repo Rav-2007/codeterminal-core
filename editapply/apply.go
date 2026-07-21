@@ -21,6 +21,8 @@ type PreparedEdit struct {
 	EndLine    int    // 1-indexed line where SEARCH ends in original
 	FileMode   os.FileMode
 	SyntaxNote string // human-readable note on what syntax check ran (or didn't)
+	Tier       MatchTier
+	MatchNote  string // human-readable note on what normalization the match needed; "" when exact
 }
 
 // PrepareEdit runs the safety tripod's path-safety and exact-match legs,
@@ -42,18 +44,20 @@ func PrepareEdit(realWorkspaceRoot string, block EditBlock) (*PreparedEdit, erro
 	}
 	original := string(data)
 
-	n := strings.Count(original, block.Search)
-	if n == 0 {
-		return nil, fmt.Errorf("search text not found in %s", block.FilePath)
-	}
-	if n > 1 {
-		return nil, fmt.Errorf("search text found %d times in %s; ambiguous, refusing", n, block.FilePath)
+	// Locate the SEARCH text in the file AS IT IS NOW, walking the tolerance
+	// ladder (Fix 6). This is a search problem, not a safety check: whether the
+	// file has since changed is decided separately and byte-exactly, by
+	// VerifyUnchanged at write time. Keeping those two apart is what lets the
+	// matcher be forgiving about invisible differences without ever making the
+	// staleness check forgiving about anything.
+	match, err := findSearch(original, block.Search, block.FilePath)
+	if err != nil {
+		return nil, err
 	}
 
-	idx := strings.Index(original, block.Search)
-	newContent := original[:idx] + block.Replace + original[idx+len(block.Search):]
-	startLine := strings.Count(original[:idx], "\n") + 1
-	endLine := startLine + strings.Count(block.Search, "\n")
+	newContent := original[:match.Start] + block.Replace + original[match.End:]
+	startLine := strings.Count(original[:match.Start], "\n") + 1
+	endLine := startLine + strings.Count(original[match.Start:match.End], "\n")
 
 	syntaxNote := fmt.Sprintf("no syntax check applied (unsupported for %s)", describeExt(block.FilePath))
 	if strings.EqualFold(filepath.Ext(block.FilePath), ".go") {
@@ -77,7 +81,39 @@ func PrepareEdit(realWorkspaceRoot string, block EditBlock) (*PreparedEdit, erro
 		EndLine:    endLine,
 		FileMode:   info.Mode(),
 		SyntaxNote: syntaxNote,
+		Tier:       match.Tier,
+		MatchNote:  match.Tier.Note(),
 	}, nil
+}
+
+// VerifyUnchanged is the content-addressed staleness check: it re-reads the
+// target and requires it to be byte-for-byte what PrepareEdit read. A prepared
+// edit describes a splice into one exact sequence of bytes, so applying it to
+// anything else would clobber whatever arrived in between.
+//
+// This is deliberately a SEPARATE check from locating the SEARCH text, and
+// deliberately byte-exact (Fix 6). The matcher normalizes line endings,
+// whitespace, indentation and unicode in order to FIND the passage the model
+// meant in the file as it is now. None of that tolerance may reach here: a file
+// whose line endings were rewritten, whose indentation was retabbed, or whose
+// text was renormalized to NFD since the edit was prepared HAS changed, and a
+// stale splice into it must be refused even though the matcher would happily
+// consider the two forms equivalent. The only comparison this function performs
+// is string equality on raw bytes; it calls nothing from match.go.
+//
+// Before this existed, nothing re-checked the file between PrepareEdit and the
+// write. The daemon holds its per-workspace lock across both, so this always
+// passes there; the TUI's review flow puts a human confirmation in between, and
+// that is the window this closes.
+func VerifyUnchanged(prepared *PreparedEdit) error {
+	current, err := os.ReadFile(prepared.TargetPath)
+	if err != nil {
+		return fmt.Errorf("re-reading %s before writing: %w", prepared.Block.FilePath, err)
+	}
+	if string(current) != prepared.Original {
+		return fmt.Errorf("%s changed since this edit was prepared; refusing to apply a stale edit", prepared.Block.FilePath)
+	}
+	return nil
 }
 
 // Apply writes a prepared edit to disk and records its before/after backup
@@ -110,6 +146,12 @@ func PrepareEdit(realWorkspaceRoot string, block EditBlock) (*PreparedEdit, erro
 // to whatever it held before this call (the previous block's content in a
 // multi-block run, or absent entirely).
 func Apply(realWorkspaceRoot string, prepared *PreparedEdit, backupDir string) error {
+	// Byte-exact staleness check, before any bookkeeping: a file that changed
+	// since the edit was prepared must not be spliced into. See VerifyUnchanged
+	// for why this is separate from — and stricter than — the match ladder.
+	if err := VerifyUnchanged(prepared); err != nil {
+		return err
+	}
 	if err := BackupOriginal(backupDir, realWorkspaceRoot, prepared); err != nil {
 		return fmt.Errorf("backing up %s: %w", prepared.Block.FilePath, err)
 	}
