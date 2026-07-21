@@ -532,8 +532,22 @@ func (s *Server) handleUndo(enc *json.Encoder, req protocol.UndoRequest) {
 
 	restored, guarded, err := runUndoSession(realRoot, sessionDir, false, strings.NewReader(""), io.Discard, s.logger)
 	if err != nil {
-		s.logger.Printf("undo: restoring %s: %v", sessionDir, err)
-		enc.Encode(protocol.UndoResponse{ProtocolVersion: protocol.ProtocolVersion, Error: s.socketSafeError(err, realRoot)})
+		// Report the count and the guarded list ALONGSIDE the error, never
+		// instead of it (Fix 2). This used to send a bare error with Restored
+		// left at zero, which told the client nothing had been reverted while
+		// runUndoSession's file-by-file walk had in fact already reverted part
+		// of the workspace. runUndoSession is all-or-nothing now, so restored
+		// is normally 0 here — but it is the real count when the batch failed
+		// during its commit phase, and the client must be told the truth about
+		// disk in that case rather than a convenient zero.
+		s.logger.Printf("undo: restoring %s: %v (restored %d, guarded %d)", sessionDir, err, restored, len(guarded))
+		enc.Encode(protocol.UndoResponse{
+			ProtocolVersion: protocol.ProtocolVersion,
+			Restored:        restored,
+			Guarded:         guarded,
+			SessionDir:      sessionDir,
+			Error:           s.socketSafeError(err, realRoot),
+		})
 		return
 	}
 

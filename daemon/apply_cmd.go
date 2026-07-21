@@ -253,7 +253,7 @@ func runUndoSession(realWorkspaceRoot, sessionDir string, force bool, in io.Read
 		return 0, nil, nil
 	}
 
-	var safe []string
+	var batch []string
 	for _, rel := range relPaths {
 		afterContent, err := os.ReadFile(filepath.Join(sessionDir, "after", rel))
 		if err != nil {
@@ -263,26 +263,25 @@ func runUndoSession(realWorkspaceRoot, sessionDir string, force bool, in io.Read
 		}
 		// This "unchanged since apply" guard read follows symlinks and is NOT
 		// itself confinement-checked. It is safe only because the write path
-		// (restoreOne -> confinedRestorePath/openNoFollow, 4de7bd4) independently
-		// refuses to write through a symlink, so redirecting this read cannot be
-		// leveraged into a write. If that write-path confinement is ever relaxed,
-		// weakened, or refactored, re-evaluate this read's symlink-following here.
+		// (stageRestore -> confinedRestorePath + leaf symlink refusal, and a
+		// commit by rename, which replaces a symlink rather than writing
+		// through it) independently refuses to write through a symlink, so
+		// redirecting this read cannot be leveraged into a write. If that
+		// write-path confinement is ever relaxed, weakened, or refactored,
+		// re-evaluate this read's symlink-following here.
 		currentContent, err := os.ReadFile(filepath.Join(realWorkspaceRoot, rel))
 		if err != nil || string(currentContent) != string(afterContent) {
 			guarded = append(guarded, rel)
 			continue
 		}
-		safe = append(safe, rel)
+		batch = append(batch, rel)
 	}
 
-	for _, rel := range safe {
-		if err := restoreOne(realWorkspaceRoot, beforeDir, rel); err != nil {
-			return restored, guarded, fmt.Errorf("restoring %s: %w", rel, err)
-		}
-		fmt.Fprintf(out, "restored %s\n", rel)
-		restored++
-	}
-
+	// The guarded prompt runs BEFORE any restore is committed (Fix 2), so a
+	// confirmed force joins the same all-or-nothing batch as the safe files
+	// instead of being a second, separately-failing pass. The user is told what
+	// is at risk before the workspace is touched, not after part of it already
+	// changed.
 	if len(guarded) > 0 {
 		fmt.Fprintf(out, "\n%d file(s) changed since this apply run and were NOT restored automatically:\n", len(guarded))
 		for _, rel := range guarded {
@@ -298,17 +297,21 @@ func runUndoSession(realWorkspaceRoot, sessionDir string, force bool, in io.Read
 		}
 
 		if proceed {
-			for i, rel := range guarded {
-				if err := restoreOne(realWorkspaceRoot, beforeDir, rel); err != nil {
-					return restored, guarded[i:], fmt.Errorf("restoring %s: %w", rel, err)
-				}
-				fmt.Fprintf(out, "restored %s (forced)\n", rel)
-				restored++
-			}
+			batch = append(batch, guarded...)
 			guarded = nil
 		} else {
 			fmt.Fprintln(out, "left as-is")
 		}
+	}
+
+	restoredPaths, err := restoreBatch(realWorkspaceRoot, beforeDir, batch)
+	for _, rel := range restoredPaths {
+		fmt.Fprintf(out, "restored %s\n", rel)
+	}
+	restored = len(restoredPaths)
+	if err != nil {
+		logger.Printf("edits undo: FAILED on %s: %v (restored %d file(s), %d guarded)", sessionDir, err, restored, len(guarded))
+		return restored, guarded, err
 	}
 
 	fmt.Fprintf(out, "\n%d file(s) restored from %s\n", restored, sessionDir)
@@ -316,12 +319,198 @@ func runUndoSession(realWorkspaceRoot, sessionDir string, force bool, in io.Read
 	return restored, guarded, nil
 }
 
-// restoreOne writes the pre-apply snapshot at beforeDir/rel back to
-// realWorkspaceRoot/rel. Undo is a write path over model-adjacent, locally
-// attacker-influenceable layout (a symlink checked out with a repo, or a
-// fabricated backup session), so it must enforce the same confinement the
-// forward edit path (editapply.Apply via ResolveSafeTargetPath) does and that
-// this function historically skipped (FAIL-2). Three gates, mirroring Apply():
+// undoStagingPrefix names the temporary files restoreBatch writes beside each
+// destination while staging. Dot-prefixed so it is hidden, and carrying the
+// product name so a file left behind by a crashed run is identifiable.
+const undoStagingPrefix = ".codeterminal-undo-"
+
+// stagedRestore is one file's restore after it has passed every check and had
+// its content written to a temp file beside its destination — everything done,
+// with nothing yet visible at the destination path.
+type stagedRestore struct {
+	rel         string
+	dest        string
+	tmp         string
+	createdDirs []string // dirs this staging brought into existence, shallowest first
+}
+
+// restoreBatch reverts rels as a single all-or-nothing batch (Fix 2). Undo used
+// to restore file by file in one walk and return on the first failure, which
+// left every earlier file reverted, every later file untouched, and — through
+// handleUndo, which dropped the count whenever an error came back — reported
+// that nothing had been restored at all. A user was told their workspace was
+// untouched while it sat half-reverted.
+//
+// It runs in two phases, the same shape as editapply.Apply's reorder (Fix 1):
+// every fallible step happens first, while the workspace is still untouched.
+//
+//	stage:  validate confinement, read the snapshot, and write the content to a
+//	        temp file beside the destination. Any failure here aborts the whole
+//	        batch, discards every temp file and every directory staging created,
+//	        and reverts NOTHING.
+//	commit: rename each temp over its destination. A same-directory rename is
+//	        atomic and needs no space, so this phase has essentially nothing
+//	        left to fail on.
+//
+// The residual is honest rather than silent: if a commit rename does fail, the
+// files already renamed stay reverted and their exact count is returned
+// alongside the error, so the caller reports what is actually on disk. That is
+// the floor the review asked for, and it is only reachable in this
+// near-impossible window.
+//
+// Committing by rename also strengthens the FAIL-2 leaf guarantee it replaces:
+// os.Rename replaces a symlink standing at the destination instead of writing
+// through it, so even a symlink swapped in after staging validated the path
+// cannot redirect the write.
+func restoreBatch(realWorkspaceRoot, beforeDir string, rels []string) (restored []string, err error) {
+	staged := make([]*stagedRestore, 0, len(rels))
+	for _, rel := range rels {
+		s, err := stageRestore(realWorkspaceRoot, beforeDir, rel)
+		if err != nil {
+			discardStaged(staged)
+			return nil, fmt.Errorf("restoring %s: %w", rel, err)
+		}
+		staged = append(staged, s)
+	}
+
+	for _, s := range staged {
+		if err := os.Rename(s.tmp, s.dest); err != nil {
+			discardStaged(staged[len(restored):])
+			return restored, fmt.Errorf("committing restore of %s: %w (%d of %d file(s) had already been reverted and were left reverted)",
+				s.rel, err, len(restored), len(staged))
+		}
+		restored = append(restored, s.rel)
+	}
+	return restored, nil
+}
+
+// stageRestore runs every check and every fallible write for one file's
+// restore, stopping just short of making it visible. It carries forward the
+// three gates restoreOne enforced (FAIL-2) — never restore a secret-named file,
+// never let the destination escape the root via a symlinked ancestor, never
+// write through a symlinked leaf — and adds the staging write, so that all of
+// it happens before the batch commits anything.
+//
+// The source read is guarded too: a symlink under beforeDir is anomalous
+// (editapply writes backup snapshots as regular files) and following it would
+// read bytes from outside the backup tree.
+func stageRestore(realWorkspaceRoot, beforeDir, rel string) (*stagedRestore, error) {
+	if editapply.MatchesSecretName(filepath.Base(rel)) {
+		return nil, fmt.Errorf("path %q matches the indexer's secret-file rules; refusing to restore it", rel)
+	}
+
+	src := filepath.Join(beforeDir, rel)
+	if sym, err := leafIsSymlink(src); err != nil {
+		return nil, err
+	} else if sym {
+		return nil, fmt.Errorf("backup entry %q is a symlink; refusing to restore from it", rel)
+	}
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return nil, err
+	}
+	info, err := os.Stat(src)
+	if err != nil {
+		return nil, err
+	}
+
+	dest, err := confinedRestorePath(realWorkspaceRoot, rel)
+	if err != nil {
+		return nil, err
+	}
+	// Leaf checks, at validation time so the batch aborts before committing.
+	// The rename that commits cannot follow a symlink here, but a symlink (or a
+	// directory) standing where the backup recorded a regular file is anomalous
+	// and was refused by the O_NOFOLLOW writer this replaces — keep refusing it.
+	if destInfo, err := os.Lstat(dest); err == nil {
+		if destInfo.Mode()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("%q is a symlink; refusing to restore through it", rel)
+		}
+		if destInfo.IsDir() {
+			return nil, fmt.Errorf("%q is a directory; refusing to replace it with a backed-up file", rel)
+		}
+	} else if !os.IsNotExist(err) {
+		return nil, err
+	}
+
+	createdDirs, err := mkdirAllTracked(filepath.Dir(dest))
+	if err != nil {
+		return nil, err
+	}
+
+	tmp, err := os.CreateTemp(filepath.Dir(dest), undoStagingPrefix+"*")
+	if err != nil {
+		removeCreatedDirs(createdDirs)
+		return nil, err
+	}
+	s := &stagedRestore{rel: rel, dest: dest, tmp: tmp.Name(), createdDirs: createdDirs}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		discardStaged([]*stagedRestore{s})
+		return nil, err
+	}
+	if err := tmp.Close(); err != nil {
+		discardStaged([]*stagedRestore{s})
+		return nil, err
+	}
+	// os.CreateTemp always makes 0600; the restored file must carry the mode its
+	// pre-apply snapshot recorded, which the O_NOFOLLOW writer passed as perm.
+	if err := os.Chmod(s.tmp, info.Mode()); err != nil {
+		discardStaged([]*stagedRestore{s})
+		return nil, err
+	}
+	return s, nil
+}
+
+// discardStaged throws away staged restores that will never be committed,
+// leaving no residue: the temp files first, then any directories staging
+// created, deepest first. Directory removal is deliberately non-recursive, so a
+// directory that turns out to hold anything else is simply left alone.
+func discardStaged(staged []*stagedRestore) {
+	for _, s := range staged {
+		os.Remove(s.tmp)
+	}
+	for i := len(staged) - 1; i >= 0; i-- {
+		removeCreatedDirs(staged[i].createdDirs)
+	}
+}
+
+// mkdirAllTracked is os.MkdirAll that also reports which directories it had to
+// bring into existence (shallowest first), so an aborted staging can take them
+// back out again.
+func mkdirAllTracked(dir string) (created []string, err error) {
+	for p := dir; ; {
+		if _, err := os.Lstat(p); err == nil {
+			break
+		}
+		parent := filepath.Dir(p)
+		if parent == p {
+			break
+		}
+		created = append([]string{p}, created...)
+		p = parent
+	}
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return nil, err
+	}
+	return created, nil
+}
+
+// removeCreatedDirs removes dirs deepest first with a non-recursive Remove, so
+// a directory that has since acquired other contents fails harmlessly and is
+// kept.
+func removeCreatedDirs(dirs []string) {
+	for i := len(dirs) - 1; i >= 0; i-- {
+		os.Remove(dirs[i])
+	}
+}
+
+// Undo is a write path over model-adjacent, locally attacker-influenceable
+// layout (a symlink checked out with a repo, or a fabricated backup session),
+// so it enforces the same confinement the forward edit path (editapply.Apply
+// via ResolveSafeTargetPath) does and that it historically skipped (FAIL-2).
+// Those three gates now live in stageRestore, which runs all of them during the
+// staging phase so a refusal aborts the batch before anything is committed:
 //
 //  1. Never restore a secret-named file — parity with Apply(), which refuses
 //     to write such files in the first place, so there is no legitimate
@@ -329,50 +518,11 @@ func runUndoSession(realWorkspaceRoot, sessionDir string, force bool, in io.Read
 //  2. Never let the destination escape the workspace root via a symlinked
 //     ANCESTOR directory (confinedRestorePath resolves the deepest existing
 //     ancestor and requires it to stay inside root).
-//  3. Never write THROUGH a symlinked leaf (open with O_NOFOLLOW). This also
-//     guards the leaf against a symlink swapped in after the ancestor check.
+//  3. Never write THROUGH a symlinked leaf. This was an O_NOFOLLOW open; the
+//     atomic commit (Fix 2) makes it an explicit refusal plus a rename, which
+//     replaces a symlink rather than following it — so a symlink swapped in
+//     after the ancestor check still cannot redirect the write.
 //
-// The source read is guarded too: a symlink under beforeDir is anomalous
-// (editapply writes backup snapshots as regular files) and following it would
-// read bytes from outside the backup tree.
-func restoreOne(realWorkspaceRoot, beforeDir, rel string) error {
-	if editapply.MatchesSecretName(filepath.Base(rel)) {
-		return fmt.Errorf("path %q matches the indexer's secret-file rules; refusing to restore it", rel)
-	}
-
-	src := filepath.Join(beforeDir, rel)
-	if sym, err := leafIsSymlink(src); err != nil {
-		return err
-	} else if sym {
-		return fmt.Errorf("backup entry %q is a symlink; refusing to restore from it", rel)
-	}
-	data, err := os.ReadFile(src)
-	if err != nil {
-		return err
-	}
-	info, err := os.Stat(src)
-	if err != nil {
-		return err
-	}
-
-	dest, err := confinedRestorePath(realWorkspaceRoot, rel)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
-		return err
-	}
-	f, err := openNoFollow(dest, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, info.Mode())
-	if err != nil {
-		return err
-	}
-	if _, err := f.Write(data); err != nil {
-		f.Close()
-		return err
-	}
-	return f.Close()
-}
-
 // confinedRestorePath resolves realWorkspaceRoot/rel to an absolute path that
 // is proven to stay inside realWorkspaceRoot (which is itself already
 // symlink-resolved, see ResolveRealWorkspaceRoot). Rather than EvalSymlinks

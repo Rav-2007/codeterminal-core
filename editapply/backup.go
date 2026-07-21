@@ -117,12 +117,52 @@ func BackupOriginal(backupDir, realWorkspaceRoot string, p *PreparedEdit) error 
 }
 
 // BackupAfter records p's post-edit content under backupDir/after/<relpath>.
-// It's (re)written after every write to a given path in this run, so by the
+// It's (re)written for every write to a given path in this run, so by the
 // time the run finishes it holds each file's final on-disk content — the
 // baseline `edits undo` compares the file's current content against to
 // detect whether it was touched again after this apply run.
+//
+// Apply calls backupAfterReversible instead, since it records the snapshot
+// before the write it describes and must be able to take it back if that
+// write fails. This exported entry point is the plain form, kept for callers
+// that record a snapshot for a write that has already landed.
 func BackupAfter(backupDir, realWorkspaceRoot string, p *PreparedEdit) error {
 	return writeBackupCopy(backupDir, "after", realWorkspaceRoot, p.TargetPath, []byte(p.NewContent), p.FileMode)
+}
+
+// backupAfterReversible is BackupAfter plus an undo of itself. It captures
+// whatever after/<relpath> held first, then overwrites it, and returns a
+// rollback that puts the previous state back — the previous content for a file
+// an earlier block in this run already applied, or removal of the file
+// entirely when this is the first block to touch it.
+//
+// Rollback is best-effort by construction: it only ever restores bytes read
+// moments earlier from the backup dir, and it runs on a path where the caller
+// is already returning an error. A failure to roll back leaves the snapshot
+// disagreeing with disk, which undo interprets conservatively (the file is
+// reported guarded and left alone rather than silently overwritten), so there
+// is no outcome here that can lose user data.
+func backupAfterReversible(backupDir, realWorkspaceRoot string, p *PreparedEdit) (rollback func(), err error) {
+	rel, err := filepath.Rel(realWorkspaceRoot, p.TargetPath)
+	if err != nil {
+		return nil, err
+	}
+	dest := filepath.Join(backupDir, "after", rel)
+
+	previous, readErr := os.ReadFile(dest)
+	switch {
+	case readErr == nil:
+		rollback = func() { os.WriteFile(dest, previous, p.FileMode) }
+	case os.IsNotExist(readErr):
+		rollback = func() { os.Remove(dest) }
+	default:
+		return nil, readErr
+	}
+
+	if err := BackupAfter(backupDir, realWorkspaceRoot, p); err != nil {
+		return nil, err
+	}
+	return rollback, nil
 }
 
 func writeBackupCopy(backupDir, subdir, realWorkspaceRoot, targetPath string, content []byte, mode os.FileMode) error {

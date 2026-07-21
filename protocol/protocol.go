@@ -257,9 +257,18 @@ type UndoRequest struct {
 // deliberately never force-overwrites those without an explicit force flag,
 // which this request does not expose. SessionDir reports which session
 // directory was actually restored, useful when BackupSessionDir was empty
-// and the daemon picked "most recent". Error is set (Restored/Guarded left
-// at their zero values) when the session directory couldn't be resolved or
-// validated at all -- a hard refusal, not a partial-restore report.
+// and the daemon picked "most recent".
+//
+// Error is set when the session directory couldn't be resolved or validated
+// at all (a hard refusal, Restored/Guarded at their zero values), and also
+// when the restore itself failed. In that second case Restored and Guarded
+// are still populated and still true of disk: the daemon reverts a session as
+// one all-or-nothing batch (see runUndoSession), so a failed restore normally
+// reports Restored 0 with nothing on disk changed -- but if the batch failed
+// midway through its commit phase, Restored is the real, non-zero number of
+// files left reverted. A client MUST therefore read Restored even when Error
+// is set; treating an error as "nothing happened" is exactly the wrong
+// assumption this field exists to prevent.
 type UndoResponse struct {
 	ProtocolVersion int      `json:"protocol_version"`
 	Restored        int      `json:"restored"`
