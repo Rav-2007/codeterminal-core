@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 )
 
 // ModelTier describes one entry in models.json. Only active tiers may ever
@@ -17,6 +18,15 @@ type ModelTier struct {
 // Config is the parsed form of models.json. It contains model slugs and
 // metadata only — never credentials. Those still come from
 // CODETERMINAL_API_BASE / CODETERMINAL_API_KEY.
+//
+// warnings holds non-fatal problems found while loading (unknown/misspelled
+// keys, an unrecognized config_version, out-of-range values that were
+// clamped). It is unexported and therefore invisible to encoding/json, which
+// is deliberate: it describes THIS load of the file, not the file's content,
+// and must never round-trip back out as if it were configuration. Read it via
+// Warnings(); the daemon logs it at startup and reports it on the status
+// surface, so a config typo is visible to an operator instead of silently
+// discarding the setting the user thought they had made.
 type Config struct {
 	ConfigVersion int                  `json:"config_version"`
 	DefaultTier   string               `json:"default_tier"`
@@ -30,6 +40,17 @@ type Config struct {
 	// overridden at startup by the daemon's own --no-scrub flag (see
 	// main.go) — either source setting it true disables scrubbing.
 	NoScrub bool `json:"no_scrub,omitempty"`
+
+	warnings []string
+}
+
+// Warnings returns the non-fatal problems found when this config was loaded,
+// in file order. Empty (nil) means the file was fully understood. Safe on a
+// Config built directly by a test, which simply has none.
+func (c *Config) Warnings() []string { return c.warnings }
+
+func (c *Config) warnf(format string, args ...any) {
+	c.warnings = append(c.warnings, fmt.Sprintf(format, args...))
 }
 
 // ZDRConfig controls the OpenRouter provider-routing constraints sent with
@@ -120,7 +141,52 @@ func (c RetrievalConfig) resolvedContextBudgetChars() int {
 	return defaultContextBudgetChars
 }
 
+// supportedConfigVersion is the models.json schema version this build
+// understands. A file declaring a HIGHER version may contain keys with
+// semantics this build does not implement — which is exactly the silent-
+// degradation shape this cluster exists to close — so it is warned about
+// loudly rather than accepted mutely. It is deliberately NOT a hard failure:
+// refusing to start would make a downgrade (running an older daemon against a
+// newer config) unrecoverable, and every key this build does not recognize is
+// already reported individually by checkUnknownKeys below.
+const supportedConfigVersion = 1
+
+// Value bounds for the tunable retrieval settings. Absent/zero still means
+// "use the default" (the documented, migration-free behavior — see
+// RetrievalConfig); these bound what an explicitly SET value may be.
+//
+// A negative value used to fall back to the default silently, and an absurd
+// one (top_k: 100000, context_budget_chars: 100000000 were both accepted
+// verbatim) was applied as written — the second defeats the entire purpose of
+// a context budget. Both are now clamped WITH a warning, so the effective
+// value and the operator's belief about it can't diverge.
+const (
+	maxTopK               = 200
+	maxContextBudgetChars = 200_000
+)
+
+// knownConfigKeys, knownRetrievalKeys and knownZDRKeys mirror the json tags of
+// Config, RetrievalConfig and ZDRConfig. encoding/json ignores a key it doesn't
+// recognize, so a misspelling is silently discarded along with whatever the
+// user meant by it: `"retreival": {"top_k": 50}` parses fine and leaves
+// retrieval running at the default top_k, with nothing said. These sets are
+// what turn that silence into a warning naming the offending key.
+var (
+	knownConfigKeys    = []string{"config_version", "default_tier", "tiers", "retrieval", "zdr", "no_scrub"}
+	knownRetrievalKeys = []string{"disabled", "rerank_disabled", "top_k", "context_budget_chars"}
+	knownZDRKeys       = []string{"allow_non_zdr", "allow_data_collection", "allow_fallbacks"}
+	knownTierKeys      = []string{"slug", "active", "note"}
+)
+
 // LoadConfig reads and validates a models.json file at path.
+//
+// Two kinds of problem are distinguished. A config that cannot be honored at
+// all — unreadable, unparseable, or internally inconsistent (see Validate) —
+// is an error and the daemon refuses to start on it. A config that is usable
+// but not fully understood — an unrecognized version, a misspelled key, an
+// out-of-range value — is recorded on the returned Config's warnings and the
+// daemon starts, since none of those makes the file unservable and refusing
+// forward/backward compatibility would be worse than reporting it.
 func LoadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -136,7 +202,110 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("invalid config %s: %w", path, err)
 	}
 
+	cfg.checkVersion()
+	cfg.checkUnknownKeys(data)
+	cfg.clampRanges()
+
 	return &cfg, nil
+}
+
+// checkVersion warns when config_version is absent or names a schema this
+// build doesn't implement. Version 0 (absent) is the pre-versioning shape and
+// is accepted as "assume current" — the same no-migration-needed courtesy the
+// Disabled-bool defaults extend — but it is still reported, because "the file
+// predates versioning" and "someone deleted the version line" look identical
+// from here and only the operator can tell them apart.
+func (c *Config) checkVersion() {
+	switch {
+	case c.ConfigVersion == 0:
+		c.warnf("config_version is absent; assuming %d (the version this build implements)", supportedConfigVersion)
+	case c.ConfigVersion > supportedConfigVersion:
+		c.warnf("config_version %d is newer than this build understands (%d); settings this build does not implement are being IGNORED, not applied",
+			c.ConfigVersion, supportedConfigVersion)
+	case c.ConfigVersion < supportedConfigVersion:
+		c.warnf("config_version %d is older than this build's %d", c.ConfigVersion, supportedConfigVersion)
+	}
+}
+
+// checkUnknownKeys re-walks the raw JSON and warns about every key no field
+// consumes, at the top level and inside the retrieval/zdr/tiers objects. It
+// re-decodes rather than using json.Decoder's DisallowUnknownFields because
+// that turns an unknown key into a hard parse failure, which would break
+// forward compatibility outright — the goal here is to SAY something, not to
+// refuse the file.
+func (c *Config) checkUnknownKeys(data []byte) {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return // Validate/Unmarshal above already accepted it; nothing to add
+	}
+
+	c.warnUnknown(raw, knownConfigKeys, "")
+
+	if sub, ok := raw["retrieval"]; ok {
+		c.warnNested(sub, knownRetrievalKeys, "retrieval")
+	}
+	if sub, ok := raw["zdr"]; ok {
+		c.warnNested(sub, knownZDRKeys, "zdr")
+	}
+	if sub, ok := raw["tiers"]; ok {
+		var tiers map[string]json.RawMessage
+		if err := json.Unmarshal(sub, &tiers); err == nil {
+			for name, tier := range tiers {
+				c.warnNested(tier, knownTierKeys, "tiers."+name)
+			}
+		}
+	}
+}
+
+// warnNested decodes one nested object and warns about its unknown keys.
+func (c *Config) warnNested(raw json.RawMessage, known []string, prefix string) {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return
+	}
+	c.warnUnknown(obj, known, prefix)
+}
+
+// warnUnknown emits one warning per key of obj that isn't in known, sorted so
+// the output is stable across runs (Go map iteration order is not).
+func (c *Config) warnUnknown(obj map[string]json.RawMessage, known []string, prefix string) {
+	var unknown []string
+	for key := range obj {
+		if !slices.Contains(known, key) {
+			unknown = append(unknown, key)
+		}
+	}
+	slices.Sort(unknown)
+	for _, key := range unknown {
+		full := key
+		if prefix != "" {
+			full = prefix + "." + key
+		}
+		c.warnf("unknown config key %q is being IGNORED (check the spelling; whatever it was meant to set is not in effect)", full)
+	}
+}
+
+// clampRanges brings explicitly-set retrieval values inside their bounds,
+// warning for each one it changes. A value left at zero is untouched: that
+// means "use the default" and is resolved later by resolvedTopK /
+// resolvedContextBudgetChars, not here.
+func (c *Config) clampRanges() {
+	if c.Retrieval.TopK < 0 {
+		c.warnf("retrieval.top_k %d is negative; using the default (%d)", c.Retrieval.TopK, defaultK)
+		c.Retrieval.TopK = 0
+	} else if c.Retrieval.TopK > maxTopK {
+		c.warnf("retrieval.top_k %d exceeds the maximum %d; clamped to %d", c.Retrieval.TopK, maxTopK, maxTopK)
+		c.Retrieval.TopK = maxTopK
+	}
+
+	if c.Retrieval.ContextBudgetChars < 0 {
+		c.warnf("retrieval.context_budget_chars %d is negative; using the default (%d)", c.Retrieval.ContextBudgetChars, defaultContextBudgetChars)
+		c.Retrieval.ContextBudgetChars = 0
+	} else if c.Retrieval.ContextBudgetChars > maxContextBudgetChars {
+		c.warnf("retrieval.context_budget_chars %d exceeds the maximum %d; clamped to %d",
+			c.Retrieval.ContextBudgetChars, maxContextBudgetChars, maxContextBudgetChars)
+		c.Retrieval.ContextBudgetChars = maxContextBudgetChars
+	}
 }
 
 // Validate checks that the config is internally consistent: the default

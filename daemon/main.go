@@ -91,6 +91,14 @@ func main() {
 	if apiBase == "" {
 		logger.Fatal("CODETERMINAL_API_BASE must be set")
 	}
+	// Structural validity, checked before the daemon claims to be ready. An
+	// unparseable base can never serve a request, so failing here — naming the
+	// setting — beats starting and reporting every prompt as a transient
+	// provider outage. Reachability is deliberately not probed; see
+	// startup_validate.go for why that is a runtime state, not a startup error.
+	if err := validateAPIBase(apiBase); err != nil {
+		logger.Fatal(err)
+	}
 	switch {
 	case useProxy && apiKey != "":
 		logger.Print("warning: CODETERMINAL_USE_PROXY is set but CODETERMINAL_API_KEY is also set; the key will still be sent to the proxy needlessly -- the proxy holds its own OpenRouter key. Unset CODETERMINAL_API_KEY when using a proxy.")
@@ -108,6 +116,27 @@ func main() {
 	if err != nil {
 		logger.Fatal(err)
 	}
+	// Non-fatal config problems — an unrecognized config_version, a misspelled
+	// key whose setting is therefore not in effect, a value clamped into range.
+	// None of these makes the file unservable, so none of them stops startup;
+	// all of them used to be accepted in complete silence, which is how a typo
+	// like "retreival" could discard a deliberate setting with nothing said.
+	// Also carried to the status surface, so an operator who missed startup can
+	// still ask.
+	for _, w := range cfg.Warnings() {
+		logger.Printf("config warning: %s", w)
+	}
+
+	// Refuse a workspace that is not a workspace (missing, or a regular file)
+	// rather than starting and then blaming the missing INDEX on every prompt —
+	// advice that could not work, since indexing a nonexistent path fails too.
+	// A real directory with no index yet is not an error and does not come
+	// through here; that stays a reported, serviceable degraded state.
+	absWorkspace, err := validateWorkspace(*workspace)
+	if err != nil {
+		logger.Fatal(err)
+	}
+
 	model := cfg.ResolvedSlug()
 	if *modelOverride != "" {
 		model = *modelOverride
@@ -129,20 +158,17 @@ func main() {
 	}
 	systemPrompt := string(systemPromptBytes)
 
-	retrieval := setupRetrieval(cfg, *workspace, *noContext, logger, newActiveEmbedder)
+	// absWorkspace (resolved and checked by validateWorkspace above) is passed
+	// in place of the raw flag: setupRetrieval would only re-derive the same
+	// absolute path, and threading the validated one keeps a single answer to
+	// "which directory is this daemon grounded against" across retrieval, the
+	// warn sink, and GroundingInfo.
+	retrieval := setupRetrieval(cfg, absWorkspace, *noContext, logger, newActiveEmbedder)
 	defer retrieval.Stop()
 
 	memoryStore := setupMemoryStore(logger)
 	if memoryStore != nil {
 		defer memoryStore.Close()
-	}
-
-	// Resolved independently of setupRetrieval (which does the same Abs
-	// call internally but doesn't expose it) purely so it can be reported
-	// to clients via GroundingInfo even when retrieval itself is disabled.
-	absWorkspace, err := filepath.Abs(*workspace)
-	if err != nil {
-		absWorkspace = *workspace // best-effort label; setupRetrieval already disabled retrieval in this case
 	}
 
 	if _, err := protocol.SocketDir(); err != nil {
