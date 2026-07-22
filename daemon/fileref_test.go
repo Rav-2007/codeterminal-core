@@ -54,6 +54,17 @@ func TestParseFileLineRefs_RecognizesRealToolOutputShapes(t *testing.T) {
 			input: "foo.go:0: something",
 			want:  nil,
 		},
+		{
+			// host:port inside a URL is the one shape that looks like file:line
+			// to the naked eye. It is excluded structurally rather than by
+			// resolution: "/" is not one of the accepted lead-in delimiters, so
+			// the pattern cannot start matching at "host.com". That matters for
+			// cost, not just correctness — an unresolved ref triggers a
+			// workspace walk, and error text quoting a URL is common.
+			name:  "host:port in a URL is not a ref",
+			input: `{"error":{"message":"No endpoints found. Configure: https://openrouter.ai:8443/settings/privacy"}}`,
+			want:  nil,
+		},
 	}
 
 	for _, tt := range tests {
