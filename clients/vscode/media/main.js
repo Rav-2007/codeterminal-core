@@ -8,6 +8,7 @@
   const transcriptEl = document.getElementById('transcript');
   const groundingEl = document.getElementById('grounding');
   const redactionsEl = document.getElementById('redactions');
+  const degradedEl = document.getElementById('degraded');
   const inputEl = document.getElementById('promptInput');
   const sendBtn = document.getElementById('sendBtn');
   const searchInputEl = document.getElementById('searchInput');
@@ -95,6 +96,29 @@
       return;
     }
     redactionsEl.textContent = `⚠ redacted ${kinds.length} suspected secret(s) before sending: ${kinds.join(', ')}`;
+  }
+
+  // setDegraded renders the subsystems the daemon reported as running in a
+  // REDUCED mode (see protocol.TokenResponse.Degraded), one line each,
+  // mirroring setGrounding/setRedactions exactly: cleared at the start of
+  // every new turn (see send()) and set at most once per response, since
+  // 'degraded' arrives on the same pre-token message as 'grounding'.
+  //
+  // Without this the panel showed "grounded · 3 chunk(s)" for a daemon whose
+  // hybrid retrieval had silently collapsed to semantic-only. textContent
+  // (never innerHTML) per line: detail is daemon-authored prose and is
+  // inserted as text, not markup.
+  function setDegraded(items) {
+    degradedEl.textContent = '';
+    if (!items || items.length === 0) {
+      return;
+    }
+    for (const item of items) {
+      const line = document.createElement('span');
+      line.className = 'item';
+      line.textContent = `⚠ degraded (${item.component}): ${item.detail}`;
+      degradedEl.appendChild(line);
+    }
   }
 
   // showEditProposal renders ONE edit block as a whole-block diff -- the
@@ -415,6 +439,7 @@
     inputEl.value = '';
     setGrounding(null);
     setRedactions(null);
+    setDegraded(null);
     setStreaming(true);
     currentAssistantBubble = addBubble('assistant', '');
     // Captured once, for this run only -- see currentRunAuto's doc comment.
@@ -442,6 +467,9 @@
         break;
       case 'redactions':
         setRedactions(msg.kinds);
+        break;
+      case 'degraded':
+        setDegraded(msg.items);
         break;
       case 'token':
         if (currentAssistantBubble) {

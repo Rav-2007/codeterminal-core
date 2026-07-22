@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 
 import {
+  Degradation,
   EditBlockWire,
   GroundingInfo,
   Turn,
@@ -164,6 +165,9 @@ export class ChatPanel {
       },
       onRedactions: (kinds: string[]) => {
         this.panel.webview.postMessage({ type: 'redactions', kinds });
+      },
+      onDegraded: (items: Degradation[]) => {
+        this.panel.webview.postMessage({ type: 'degraded', items });
       },
       onToken: (token: string) => {
         answer += token;
@@ -475,6 +479,13 @@ export class ChatPanel {
     color: var(--vscode-editorWarning-foreground, #cca700);
   }
   #redactions:empty { padding: 0; }
+  #degraded {
+    font-size: 11px;
+    padding: 0 12px 6px;
+    color: var(--vscode-editorWarning-foreground, #cca700);
+  }
+  #degraded:empty { padding: 0; }
+  #degraded .item { display: block; }
   #inputRow { display: flex; gap: 6px; padding: 8px 12px; border-top: 1px solid var(--vscode-panel-border, transparent); }
   #promptInput {
     flex: 1;
@@ -569,6 +580,7 @@ export class ChatPanel {
   <div id="transcript"></div>
   <div id="grounding"></div>
   <div id="redactions"></div>
+  <div id="degraded"></div>
   <div id="inputRow">
     <button id="autoApplyToggle" class="auto-apply-toggle off" title="When ON, proposed edits apply automatically without a per-edit confirmation"></button>
     <input id="promptInput" type="text" placeholder="Ask something…" />

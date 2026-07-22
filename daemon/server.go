@@ -298,10 +298,16 @@ func (s *Server) serveConn(conn net.Conn) {
 	// message (Fix 13): it is decided at the same point, and a client that
 	// silently lost its oldest turns deserves to know before the answer that
 	// was written without them starts arriving.
+	//
+	// Degraded rides along for the same reason, one step further: a reduced
+	// subsystem used to reach stderr and stop there, so a response served by a
+	// half-working daemon was byte-identical to a healthy one. The user learns
+	// it before the answer arrives, not never.
 	if err := enc.Encode(protocol.TokenResponse{
 		ProtocolVersion: protocol.ProtocolVersion,
 		Grounding:       grounding,
 		History:         buildHistoryInfo(historyOutcome),
+		Degraded:        s.degradations(),
 	}); err != nil {
 		s.logger.Printf("grounding info write error: %v", err)
 		return

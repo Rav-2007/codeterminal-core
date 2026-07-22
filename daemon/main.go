@@ -230,6 +230,10 @@ func main() {
 		// vanishing with stderr. Local file only — no network egress.
 		warnSink: newWarnSink(filepath.Join(absWorkspace, ".codeterminal", "logs", "warnmode.jsonl")),
 	}
+	// One line per reduced subsystem, so the log and the wire agree about what
+	// is degraded from the moment the daemon starts serving.
+	srv.logDegradations()
+
 	go srv.Serve(ln)
 
 	// Block here so cleanup runs exactly once, in this goroutine, instead of

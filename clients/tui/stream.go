@@ -25,6 +25,18 @@ type groundingMsg struct{ info *protocol.GroundingInfo }
 // streamPrompt. Never carries a matched value, only kind labels.
 type redactionsMsg struct{ kinds []string }
 
+// degradedMsg carries the daemon's report of which subsystems are currently
+// running in a reduced mode (see protocol.TokenResponse.Degraded). Like
+// groundingMsg it arrives at most once, before any tokens, on the same
+// message as the grounding report.
+//
+// It exists because the daemon could serve a turn with hybrid retrieval
+// silently collapsed to semantic-only, or with conversation memory silently
+// not persisting, and the reply on the wire was identical to a healthy one.
+// Rendering it is the whole point: a field that arrives correctly and is
+// dropped by every client is a wire change, not a fix (see Fix 13).
+type degradedMsg struct{ items []protocol.Degradation }
+
 // streamDoneMsg signals the stream finished successfully.
 type streamDoneMsg struct{}
 
@@ -197,6 +209,9 @@ func streamPrompt(ctx context.Context, clientName, workspace, prompt, promptKind
 		}
 		if len(tok.Redactions) > 0 {
 			ch <- redactionsMsg{tok.Redactions}
+		}
+		if len(tok.Degraded) > 0 {
+			ch <- degradedMsg{tok.Degraded}
 		}
 		if tok.Token != "" {
 			ch <- tokenMsg(tok.Token)

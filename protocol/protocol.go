@@ -186,6 +186,18 @@ type Turn struct {
 // and discarded and the user watched an empty screen while the model thought.
 // Additive: older clients that don't know this field ignore it, which is the
 // pre-existing behaviour.
+// Degraded, when set, rides on the same pre-token message as Grounding and
+// names every subsystem currently running in a REDUCED mode (see Degradation).
+// It is the wire half of a pattern this daemon had systematically: internal
+// state degraded gracefully and was reported honestly to stderr, while the
+// response on the socket stayed byte-identical to a healthy one. A client --
+// and therefore a user -- had no way to learn that hybrid retrieval had fallen
+// back to semantic-only, or that conversation memory had stopped persisting,
+// short of tailing the daemon's log and knowing what to look for.
+//
+// Empty/omitted means nothing is degraded, which is the common case. Additive:
+// older clients that don't know this field simply ignore it, exactly like
+// Grounding and Redactions.
 type TokenResponse struct {
 	ProtocolVersion int             `json:"protocol_version"`
 	Token           string          `json:"token,omitempty"`
@@ -197,6 +209,52 @@ type TokenResponse struct {
 	History         *HistoryInfo    `json:"history,omitempty"`
 	EditProposals   []EditBlockWire `json:"edit_proposals,omitempty"`
 	Redactions      []string        `json:"redactions,omitempty"`
+	Degraded        []Degradation   `json:"degraded,omitempty"`
+}
+
+// Stable, machine-readable component identifiers for Degradation.Component.
+// Named constants for the same reason TokenResponse.ErrorClass has them: a
+// client should be able to branch on WHICH subsystem is degraded (to style it,
+// suppress it, or offer the specific remedy) without string-matching prose
+// that may be reworded.
+const (
+	// DegradedLexicalRetrieval: the FTS5 keyword tier is unavailable while the
+	// semantic tier still works. Retrieval continues, at reduced quality --
+	// hybrid vector+lexical fusion collapses to semantic-only, which is exactly
+	// the case terse, identifier-heavy code is worst served by.
+	DegradedLexicalRetrieval = "lexical_retrieval"
+
+	// DegradedMemory: cross-session conversation memory is unavailable. The
+	// current conversation still works in full; nothing about it will survive
+	// the client closing. Note this is only invisible on the PROMPT path --
+	// SearchResponse.Error has always reported it correctly for searches.
+	DegradedMemory = "memory"
+
+	// DegradedProviderRouting: the configured provider-routing constraints are
+	// weaker than the secure default (see ZDRConfig), so a request may be
+	// served by an endpoint outside the zero-data-retention guarantee.
+	//
+	// Deliberately derived from CONFIGURATION, not from any given response:
+	// OpenRouter reports which provider served a request but does NOT report
+	// whether that provider was reached via a fallback, so a per-request "this
+	// one fell back" signal would be fabricated. This says the honest, weaker,
+	// checkable thing: fallbacks are PERMITTED for this daemon.
+	DegradedProviderRouting = "provider_routing"
+)
+
+// Degradation names one subsystem running in a reduced mode, in the same
+// report-a-decision-already-made spirit as GroundingInfo and HistoryInfo: it
+// carries a conclusion, never the internal detail behind it.
+//
+// Component is a stable slug from the Degraded* constants above. Detail is a
+// client-safe, human-readable explanation of what is reduced AND what that
+// costs the user -- it deliberately follows the Fix 8 discipline established
+// for retrieval's DisabledReason: it names WHAT is wrong and what it means,
+// and never a path, host, or internal error string. Those stay in the daemon
+// log, which keeps the full diagnostic.
+type Degradation struct {
+	Component string `json:"component"`
+	Detail    string `json:"detail"`
 }
 
 // HistoryInfo reports what the daemon did with the conversation turns a

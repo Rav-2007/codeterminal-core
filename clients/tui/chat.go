@@ -80,6 +80,15 @@ type chatModel struct {
 	// value, only kind labels (e.g. "openai_key").
 	lastRedactions []string
 
+	// lastDegraded is the most recent set of reduced-subsystem reports from
+	// the daemon (see degradedMsg), shown in the header on one line each.
+	// Same "arrives once, before any tokens" mechanism and same
+	// cleared-at-the-start-of-each-turn lifetime as lastGrounding and
+	// lastRedactions above — a degradation is re-reported on every turn it
+	// still applies to, so re-deriving it per turn is always current rather
+	// than a stale claim carried forward.
+	lastDegraded []protocol.Degradation
+
 	// Edit-review state: set when the last completed answer contained
 	// SEARCH/REPLACE edit blocks (see editapply.ParseEditBlocks). Reviewed
 	// one block at a time — reviewIndex only ever points at a block that
@@ -217,6 +226,14 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.resizeViewport()
 		return m, waitForNext(m.streamCh)
 
+	case degradedMsg:
+		if m.streamCh == nil {
+			return m, nil // a stray message from an already-abandoned stream
+		}
+		m.lastDegraded = msg.items
+		m.resizeViewport()
+		return m, waitForNext(m.streamCh)
+
 	case tokenMsg:
 		return m.handleToken(msg)
 
@@ -324,6 +341,7 @@ func (m chatModel) startTurn() (tea.Model, tea.Cmd) {
 	m.statusErr = ""
 	m.lastGrounding = nil
 	m.lastRedactions = nil
+	m.lastDegraded = nil
 	m.resizeViewport()
 	m.refreshViewport()
 
@@ -377,6 +395,7 @@ func (m chatModel) clearConversation() (tea.Model, tea.Cmd) {
 	m.turns = nil
 	m.lastGrounding = nil
 	m.lastRedactions = nil
+	m.lastDegraded = nil
 	m.statusErr = ""
 	m.state = stateIdle
 	m.resizeViewport()
@@ -671,6 +690,9 @@ func (m chatModel) noticeLines() []string {
 	if redactions := m.redactionsLabel(); redactions != "" {
 		lines = append(lines, truncateToWidth(redactions, m.width))
 	}
+	for _, degraded := range m.degradedLabels() {
+		lines = append(lines, truncateToWidth(degraded, m.width))
+	}
 	return lines
 }
 
@@ -755,6 +777,29 @@ func (m chatModel) redactionsLabel() string {
 		return ""
 	}
 	return errorStyle.Render(fmt.Sprintf("⚠ redacted %d suspected secret(s) before sending: %s", len(m.lastRedactions), strings.Join(m.lastRedactions, ", ")))
+}
+
+// degradedLabels renders one line per reduced subsystem the daemon reported,
+// or nil when nothing is degraded (the common case — no persistent indicator
+// is shown for a healthy daemon).
+//
+// One line each, rather than one joined line, for the reason renderHeader's
+// doc comment records: a joined line can exceed the terminal width and
+// soft-wrap, desyncing the row count the viewport height is computed from and
+// silently hiding a notice. A degradation notice that can hide itself would
+// defeat its own purpose.
+//
+// errorStyle, matching the "⚠ + red" treatment groundingLabel already gives
+// WorkspaceMismatch and redactionsLabel gives its notice: marked and legible,
+// not an alarm banner. The daemon's Detail text is rendered as sent — it is
+// already written for a user and already free of paths and hosts, and
+// paraphrasing it here would let the client's wording drift from the daemon's.
+func (m chatModel) degradedLabels() []string {
+	var lines []string
+	for _, d := range m.lastDegraded {
+		lines = append(lines, errorStyle.Render("⚠ degraded ("+d.Component+"): "+d.Detail))
+	}
+	return lines
 }
 
 func (m chatModel) stateLabel() string {

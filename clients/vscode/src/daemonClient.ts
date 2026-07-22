@@ -68,6 +68,24 @@ export interface TokenResponse {
   // ["openai_key"]. Arrives on its own message before any tokens, exactly
   // like grounding. Never a matched value, only kind labels.
   redactions?: string[];
+  // degraded mirrors protocol.TokenResponse.Degraded: the subsystems the
+  // daemon is currently running in a REDUCED mode. Arrives on the same
+  // pre-token message as grounding. Empty/absent means nothing is degraded.
+  //
+  // It exists because a daemon serving with hybrid retrieval collapsed to
+  // semantic-only, or with conversation memory not persisting, produced a
+  // response byte-identical to a healthy one -- the degradation reached the
+  // daemon's stderr and stopped there.
+  degraded?: Degradation[];
+}
+
+// Degradation mirrors protocol.Degradation. component is a stable slug
+// ("lexical_retrieval" | "memory" | "provider_routing") a client may branch
+// on; detail is client-safe prose naming what is reduced and what it costs,
+// carrying no path, host, or internal error text.
+export interface Degradation {
+  component: string;
+  detail: string;
 }
 
 export interface ApplyEditRequest {
@@ -273,6 +291,7 @@ export function connectToDaemon(clientName: string, signal?: AbortSignal): Promi
 export interface StreamHandlers {
   onGrounding?: (info: GroundingInfo) => void;
   onRedactions?: (kinds: string[]) => void;
+  onDegraded?: (items: Degradation[]) => void;
   onToken?: (token: string) => void;
   onEditProposals?: (proposals: EditBlockWire[]) => void;
   onDone?: () => void;
@@ -327,6 +346,9 @@ export async function streamPrompt(
     }
     if (tok.redactions && tok.redactions.length > 0) {
       handlers.onRedactions?.(tok.redactions);
+    }
+    if (tok.degraded && tok.degraded.length > 0) {
+      handlers.onDegraded?.(tok.degraded);
     }
     if (tok.token) {
       handlers.onToken?.(tok.token);
