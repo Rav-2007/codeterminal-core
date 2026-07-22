@@ -1299,6 +1299,132 @@ cannot import `daemon`. Folded into the existing
 [confined-writer abstraction](#backlog--added-2026-07-19-confined-writer-abstraction--open-design-question)
 entry as implementation (4) rather than duplicated here — see the 2026-07-21 update in that section.
 
+## Backlog — added 2026-07-22 (Tier 2.5 + Tier 3 merge)
+
+**Both tiers merged to `main` 2026-07-22, fast-forward, no merge commits.** `main` was at `80540de`;
+it is now at `c68de0a`. Nothing pushed — `origin/main` remains 46 commits behind by choice. The
+branch `tier25-creation-reachable` is left intact.
+
+**Tier 2.5 — creation reachable (4 commits):** Fix A (`36f9bbe`) lets create blocks through
+`ParseEditBlocks`; Fix B (`7215dc1`) recovers per block instead of failing the whole response;
+Fix C (`bd43e90`) reverts a created file by removing it; plus an end-to-end create+edit+undo test
+(`c18782c`). Together these close the two OPEN findings recorded in the 2026-07-21 section above —
+see the spot-check below, which reproduced the closure live rather than trusting the tests.
+
+**Tier 3 — retrieval and response robustness (5 commits):** Fix 11 (`fb0770c`) merges
+adjacent/overlapping same-file chunks before rendering; Fix 12 (`83f1bbc`) resolves `file:line`
+references in the prompt directly to spans; Fix 13 (`ef1f5a9`) bounds history by bytes, filters
+empty turns, and reports when it truncated; Fix 14 (`f4ad82e`) rejects empty prompts, stops
+persisting empty turns, reads `delta.reasoning`, and tolerates path-line variants; plus a
+regression pinning that `host:port` in a URL is not a `file:line` reference (`c68de0a`).
+
+**Validation on merged `main` (2026-07-22, real runs, not asserted):** `go build` and `go vet` clean
+across all six workspace modules; `go test` green (`daemon` 12.8s, `editapply`, `clients/tui`,
+`proxy` cached; `protocol`/`helper` have no tests); `go test -race -count=1 ./daemon/... ./editapply/...`
+green (15.7s / 1.1s); `gofmt -l` clean. As before, `./...` does not work from the repo root — the
+root is not itself a module, so the six `go.work` paths must be named explicitly.
+
+### Spot-check at merge time: all four Tier 3 fixes are reachable through a real production path
+The 2026-07-21 merge's most valuable output was noticing that Fix 7 passed its tests while being
+unreachable from every shipped client. The same suspicion was applied here, against a **live daemon**
+— the real `codeterminal-daemon` binary, a real BGE index over a 32-file workspace (65 chunks,
+`top_k=5`), the real Unix socket and wire protocol, with only the model API replaced by a local
+capture server so the assembled request body could be read. Not the test harness.
+
+- **Fix 12 (`file:line` → span) — REACHABLE.** Verified by control/test pair on the *same* prompt
+  text. Without the reference, retrieval returned `distract15.go`, `distract04.go`, `distract09.go`
+  and no `widget.go`. With `widget.go:42:` prepended, `widget.go:22-62` was ranked **first**, the
+  daemon logged `resolved 1 file:line reference(s) … ranked first`, and the referenced lines were
+  present verbatim in the user-role `<retrieved_context>` block actually POSTed upstream. The span
+  arrived because it was named, not because similarity found it.
+- **Fix 11 (chunk merging) — REACHABLE, attribution correct.** A prompt that both named
+  `widget.go:42` and matched `widget.go` by similarity produced
+  `merged 6 chunk(s)/span(s) into contiguous span(s), reclaiming 3993 rendered byte(s)`, and the
+  assembled prompt carried **one** `widget.go` span, not overlapping copies. Line attribution was
+  checked against disk rather than assumed: the span labelled `widget.go:1-89` places file lines 41
+  and 42 at exactly the bytes `widget.go` holds at lines 41 and 42.
+- **Fix 13 (history-truncated flag) — REACHABLE on the wire; NOT surfaced by the shipped TUI.**
+  Twelve 30 KB turns over the real socket returned
+  `"history":{"turns":8,"truncated":true}` in the `TokenResponse`, with the daemon logging
+  `received=12 kept=8 dropped_by_bytes=4 bytes=240064 truncated=true`; the negative control (4 small
+  turns) correctly returned `"history":{"turns":4}` with no flag. The protocol half is honest. But
+  `clients/tui/stream.go:195` reads only `Error`, `Grounding`, `Redactions`, `Token` and `Done` —
+  it never reads `TokenResponse.History`, so the TUI cannot show it. Note this is *parity*, not a
+  regression: `groundingLabel` (`clients/tui/chat.go:732`) renders chunk count but ignores
+  `GroundingInfo.Truncated` too, so Fix 13 mirrors its stated counterpart exactly, including the
+  part neither client renders. See the client-rendering item below.
+- **Fix 14 (empty prompts, path-line variants) — REACHABLE, both halves.** An empty prompt and a
+  whitespace-only prompt over the socket both returned
+  `{"error":"prompt is empty","error_class":"invalid_request"}` and the capture server recorded
+  **no** upstream request, confirming the rejection happens before the model is called. A model
+  reply using the tolerated `**path:** \`target.go\`` + fenced variant parsed into a correct
+  `edit_proposals` entry on the wire.
+- **Tier 2.5 (creation) — REACHABLE end to end, and the 2026-07-21 findings reproduce as closed.**
+  A model reply with an empty SEARCH block now survives the parser and reaches a client as an
+  `edit_proposals` entry; applying it over the socket returned `"applied":true` and created the
+  file on disk; `edits undo` then printed `removed brandnew.go (created by this apply run)` /
+  `1 file(s) reverted (0 restored, 1 removed)` and the file was **gone** — not left at 0 bytes.
+
+### OPEN: `file:line` resolution is unreachable when retrieval is disabled
+Direct `file:line` resolution needs no index — it is a deterministic lookup of a named location on
+disk. But `gatherContext` returns early when retrieval is unavailable
+(`daemon/context.go:110-119`, the `s.embedder == nil || s.store == nil` guard), and the direct-
+resolution call sits **below** it at `daemon/context.go:131` (`resolveFileLineRefs`,
+`daemon/fileref.go:118`). So a user with no index who pastes a compiler error gets no context at
+all, even though their prompt named the exact file and line.
+
+That is precisely the user who most needs the help — no index built yet, hitting a build error —
+getting the least. The fix is likely small: hoist the direct-resolution path above the
+retrieval-disabled early return, and let the outcome report grounding from direct spans alone.
+Severity: low-to-medium — a capability gap in a specific-but-common state, not a correctness bug.
+Nothing is wrong when retrieval *is* enabled (verified live above). **Status: open, unscoped, no
+task written yet.**
+
+### OPEN: the retrieval eval harness is self-referential, so cross-commit comparisons drift
+The eval indexes *this repo*, so every commit changes the corpus being measured. Tier 3 observed
+this directly: question-shaped recall moved 7/9 → 6/9 with a **byte-identical ranking path** —
+`git diff` over `rerank.go`, `index_cmd.go`, `vectorstore.go`, `lexicalstore.go`, `fileclass.go` and
+`chunker.go` was empty. `daemon/router.go:1-40` scored *identically* in both runs and was displaced
+#4 → #6 purely by two chunks of Tier 3's own newly-written source entering the corpus — one of them
+on an exact score tie broken by sort order.
+
+Separately, the n=4 edit eval is effectively **n=3**: `editapply-apply-extraction`
+(`daemon/edit_eval_test.go:128`) can no longer revert cleanly against HEAD, because Tiers 1/2/2.5
+rewrote `editapply/apply.go`. It fails loudly rather than faking a pre-fix tree, which is the
+correct behaviour, but the population will keep eroding as commits rewrite the files it reverts.
+
+Why it matters: any before/after retrieval number compared *across commits* is confounded by corpus
+drift. This does not invalidate within-run comparisons — Tier 3's merged-path re-scoring column was
+clean — but a recall figure from one commit is not directly comparable to one from another. Options
+worth considering later: a frozen corpus snapshot, excluding the repo's own recent commits, or
+explicitly documenting that cross-commit comparisons are indicative only. Severity: low as a defect,
+**medium as a measurement-validity concern** — it governs how much weight any future retrieval
+metric deserves. Deliberately not masked in Tier 3; masking it would be optimising the benchmark.
+**Status: open, unscoped, no task written yet.**
+
+### Noticed during Tier 3, not fixed (one line each)
+- **Reasoning reaches the wire but no client renders it.** `TokenResponse.Reasoning`
+  (`protocol/protocol.go:195`) is populated, but `clients/tui/stream.go:195` never reads it, so the
+  ~907 ms of dead air is closed only at the protocol layer. Same shape as the Fix 13 rendering gap
+  above; both are client-side work, not daemon work.
+- **Python-style tracebacks aren't matched by the `file:line` resolver.** `File "x.py", line 42` is
+  a different shape from `path:line:` and `parseFileLineRefs` (`daemon/fileref.go:77`) does not
+  recognise it.
+- **Chunk end-lines overshoot by one on files ending in a newline** (surfaced by this merge's
+  spot-check, *not* introduced by Fix 11). `splitLines` (`daemon/chunker.go:288`) splits on `"\n"`,
+  so a trailing newline yields a phantom final element and an 88-line file is labelled `1-89`.
+  Confirmed pre-existing and independent of merging: the control run, in which nothing merged, still
+  labelled a 43-line file `distract15.go:31-44`. Cosmetic — the content and its start line are
+  correct, so a reader counting from the start lands on the right line — but the label is inaccurate.
+
+### Input for the separately-scoped default-model evaluation (input, not a task)
+Raw similarity scores cluster at **0.0147–0.0164 across unrelated chunks** — roughly a 1% spread
+deciding top-5 membership. That points at an **embedding-model discrimination ceiling** rather than a
+ranking-logic problem, and it explains why the remaining edit-shaped misses sit at ranks #78/#307
+rather than just outside the cutoff: no amount of re-ranking recovers a signal the embeddings never
+separated. Relevant both to the default-model decision and to how much further ranking work is worth
+doing before that decision is made.
+
 ## Hygiene / recurring
 
 - **Never screenshot .env / keep the API key off-screen.** The key has been exposed in
