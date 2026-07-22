@@ -249,11 +249,23 @@ func runEvalPass(ctx context.Context, t *testing.T, embedder Embedder, store Vec
 		}
 		hitFlags[i] = exactHit
 
+		// Guardrail for Fix 11: production folds same-file overlapping chunks
+		// into contiguous spans before rendering (mergeAdjacentChunks), so this
+		// re-scores the SAME hits through that fold. It must never be worse
+		// than the unmerged verdict -- a merged span only ever covers MORE
+		// lines, so a query that hit before must still hit. Graded by
+		// containment (rankOfChunk, edit_eval_test.go), because merging changes
+		// chunk IDs by design.
+		mergedHit := rankOfChunk(mergeAdjacentChunks(hits), q.exactChunks) != 0
+		if exactHit && !mergedHit {
+			t.Errorf("query %q: hit before merging and MISSES after -- Fix 11 regressed question-shaped recall", q.query)
+		}
+
 		mark := "MISS"
 		if exactHit {
 			mark = "hit"
 		}
-		fmt.Printf("\n%d. query=%q\n   expected files=%v exact chunks=%v\n   chunk-level=%s file-level=%t\n", i+1, q.query, q.expectedFiles, q.exactChunks, mark, fileHit)
+		fmt.Printf("\n%d. query=%q\n   expected files=%v exact chunks=%v\n   chunk-level=%s file-level=%t merged-path=%t\n", i+1, q.query, q.expectedFiles, q.exactChunks, mark, fileHit, mergedHit)
 		for j, h := range hits {
 			fmt.Printf("   %d. %-40s class=%-6s raw=%.4f weighted=%.4f\n", j+1, chunkID(h), h.Class, h.RawScore, h.Score)
 		}

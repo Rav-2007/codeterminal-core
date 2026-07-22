@@ -89,11 +89,15 @@ type retrievalOutcome struct {
 
 	// MergedFrom and MergeSavedBytes describe what mergeAdjacentChunks
 	// (chunkmerge.go) did to the retrieved set before it was budgeted:
-	// how many chunks came out of retrieval, and how many rendered bytes
-	// folding their duplicated overlaps away reclaimed. Both are zero when
-	// nothing merged. Reported in the log line, not on the wire.
+	// how many chunks went in (similarity hits plus any directly-resolved
+	// spans), and how many rendered bytes folding their duplicated overlaps
+	// away reclaimed. Both are zero when nothing merged. DirectRefSpans is
+	// how many of those inputs came from resolving a file:line pointer in the
+	// prompt (Fix 12, fileref.go). All three are for the log line, not the
+	// wire.
 	MergedFrom      int
 	MergeSavedBytes int
+	DirectRefSpans  int
 }
 
 // gatherContext retrieves context for prompt using the exact same
@@ -114,34 +118,45 @@ func (s *Server) gatherContext(ctx context.Context, prompt string) retrievalOutc
 		return retrievalOutcome{Skipped: true, Reason: reason}
 	}
 
-	chunks, err := retrieveTopK(ctx, prompt, s.retrievalTopK, s.embedder, s.store, s.lexicalStore, !s.rerankDisabled)
+	similar, err := retrieveTopK(ctx, prompt, s.retrievalTopK, s.embedder, s.store, s.lexicalStore, !s.rerankDisabled)
 	if err != nil {
 		return retrievalOutcome{Skipped: true, Reason: fmt.Sprintf("retrieval error: %v", err)}
 	}
-	if len(chunks) == 0 {
+
+	// Exact pointers the prompt already contains ("foo.go:142: undefined: bar")
+	// are resolved straight off disk and placed at the top, rather than left to
+	// similarity search to rediscover (Fix 12, fileref.go). Best-effort by
+	// construction: a bad path or an out-of-range line is skipped and normal
+	// retrieval still happens.
+	direct := resolveFileLineRefs(prompt, s.workspace, s.logger)
+
+	// Fuse and fold: fuseDirectSpans puts the direct spans first and runs the
+	// whole set through mergeAdjacentChunks (Fix 11, chunkmerge.go), which is
+	// what makes fusion dedupe — a direct span and a similarity chunk covering
+	// the same lines become one span, not two overlapping copies — and what
+	// reclaims the indexer's deliberate window overlap. Merging happens BEFORE
+	// budgeting so the reclaimed bytes are actually usable: a lower-ranked
+	// chunk that used to be dropped can now fit.
+	fused := fuseDirectSpans(direct, similar, s.retrievalTopK, s.noScrub())
+	if len(fused.Chunks) == 0 {
 		return retrievalOutcome{Skipped: true, Reason: "no relevant chunks found in index"}
 	}
 
-	// Fold same-file chunks whose ranges touch or overlap into contiguous
-	// spans BEFORE budgeting, so the budget is spent on distinct code rather
-	// than on the indexer's deliberate window overlap repeated verbatim
-	// (Fix 11, chunkmerge.go). Sizing after merging is what lets the reclaimed
-	// bytes actually be used: a lower-ranked chunk that used to be dropped can
-	// now fit.
-	merged := mergeAdjacentChunks(chunks)
-	saved := 0
-	if len(merged) != len(chunks) {
-		saved = mergeSavings(chunks, merged, s.cfg.NoScrub)
-	}
-
-	kept, truncated := truncateToBudget(merged, s.contextBudgetChars, s.cfg.NoScrub)
+	kept, truncated := truncateToBudget(fused.Chunks, s.contextBudgetChars, s.noScrub())
 	return retrievalOutcome{
 		Chunks:          kept,
 		Truncated:       truncated,
-		MergedFrom:      len(chunks),
-		MergeSavedBytes: saved,
+		MergedFrom:      fused.InputCount,
+		MergeSavedBytes: fused.SavedBytes,
+		DirectRefSpans:  fused.DirectSpans,
 	}
 }
+
+// noScrub reports whether the --no-scrub escape hatch is set, tolerating a
+// Server built without a Config at all (which in practice means a test that
+// exercises retrieval on its own). Nil is read as "scrub", the safe default —
+// the one case where guessing is allowed is guessing in favour of redaction.
+func (s *Server) noScrub() bool { return s.cfg != nil && s.cfg.NoScrub }
 
 // truncateToBudget keeps chunks (already ranked best-first by the vector
 // store) in order while their rendered size stays within budget chars,
@@ -308,8 +323,11 @@ func (s *Server) logRetrieval(o retrievalOutcome) {
 		refs[i] = fmt.Sprintf("%s:%d-%d(%s)", c.FilePath, c.StartLine, c.EndLine, c.Class)
 	}
 	s.logger.Printf("retrieval: chunks=%d truncated=%t rerank=%t sources=[%s]", len(o.Chunks), o.Truncated, !s.rerankDisabled, strings.Join(refs, ", "))
+	if o.DirectRefSpans > 0 {
+		s.logger.Printf("retrieval: resolved %d file:line reference(s) in the prompt directly to span(s), ranked first", o.DirectRefSpans)
+	}
 	if o.MergeSavedBytes > 0 {
-		s.logger.Printf("retrieval: merged %d retrieved chunk(s) into contiguous span(s), reclaiming %d rendered byte(s) of duplicated overlap",
+		s.logger.Printf("retrieval: merged %d chunk(s)/span(s) into contiguous span(s), reclaiming %d rendered byte(s) of duplicated overlap",
 			o.MergedFrom, o.MergeSavedBytes)
 	}
 

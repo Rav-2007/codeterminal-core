@@ -65,6 +65,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -250,15 +251,63 @@ func captureRealFailureText(t *testing.T, wt, buildDir, runFilter string) string
 	return strings.TrimSpace(string(out))
 }
 
-// rankOfChunk returns the 1-based rank of the first hit whose ID is in
-// exactChunks within hits, or 0 if none is present.
+// rankOfChunk returns the 1-based rank of the first hit that DELIVERS one of
+// exactChunks within hits, or 0 if none does.
+//
+// "Delivers" is containment, not string equality on the chunk ID. Exact-ID
+// matching was correct while every retrieved chunk was verbatim an indexer
+// window, and became WRONG the moment retrieval started merging overlapping
+// windows into contiguous spans (Fix 11, chunkmerge.go): a span covering
+// provider.go:61-130 contains the whole of the expected provider.go:91-130 and
+// shows the model strictly more of the right code, yet scored as a MISS purely
+// because its ID string differs. That is a grading artifact, not a retrieval
+// result, and reading it as a regression would have been reading noise as
+// signal.
+//
+// Containment is required to be FULL: a span that only clips part of the
+// expected chunk is not credited. So this cannot inflate the number either --
+// every exact-ID match is trivially a containment match, and nothing that
+// fails to deliver the expected lines can pass.
 func rankOfChunk(hits []Chunk, exactChunks []string) int {
 	for i, h := range hits {
-		if matchesAny(chunkID(h), exactChunks) {
+		if matchesAny(chunkID(h), exactChunks) || containsAnyChunk(h, exactChunks) {
 			return i + 1
 		}
 	}
 	return 0
+}
+
+// containsAnyChunk reports whether h fully covers any of the expected chunk
+// IDs (each formatted "path:start-end", chunkContent's own format).
+func containsAnyChunk(h Chunk, exactChunks []string) bool {
+	for _, want := range exactChunks {
+		path, start, end, ok := parseChunkID(want)
+		if !ok {
+			continue
+		}
+		if h.FilePath == path && h.StartLine <= start && end <= h.EndLine {
+			return true
+		}
+	}
+	return false
+}
+
+// parseChunkID splits "path/to/file.go:12-51" back into its parts.
+func parseChunkID(id string) (path string, start, end int, ok bool) {
+	colon := strings.LastIndex(id, ":")
+	if colon < 0 {
+		return "", 0, 0, false
+	}
+	dash := strings.LastIndex(id[colon+1:], "-")
+	if dash < 0 {
+		return "", 0, 0, false
+	}
+	start, err1 := strconv.Atoi(id[colon+1 : colon+1+dash])
+	end, err2 := strconv.Atoi(id[colon+1+dash+1:])
+	if err1 != nil || err2 != nil {
+		return "", 0, 0, false
+	}
+	return id[:colon], start, end, true
 }
 
 // editEvalResult is one case's measured outcome.
@@ -283,6 +332,46 @@ type editEvalResult struct {
 	// as "outside the pool" (semRank > semantic pool) vs "in the pool but
 	// reranked out of the top-5".
 	semRank int // 0 = not found
+
+	// --- Fix 12: direct file:line resolution ---------------------------------
+
+	// fusedRank/fusedHit are prodRank/prodHit measured through the FULL
+	// production pipeline as it exists after Fix 12: similarity retrieval, plus
+	// spans resolved deterministically from the file:line pointers the pasted
+	// failure already contains, fused and merged (fuseDirectSpans, fileref.go).
+	// This is the "after" number for the graded implementation-chunk metric.
+	fusedRank int
+	fusedHit  bool
+
+	// refsResolved is how many file:line pointers in the query resolved to an
+	// eligible workspace file. refsCoveredBefore/After are how many of those
+	// referenced LOCATIONS actually reach the top-5 -- before (similarity only)
+	// and after (with direct resolution). This is a DIFFERENT question from
+	// fusedHit and must not be confused with it: it asks "did the model get the
+	// line the tool complained about?", not "did it get the line that has to be
+	// edited". For Go's "undefined:" errors those are different files, since the
+	// compiler reports the USE site, not the definition site.
+	refsResolved      int
+	refsCoveredBefore int
+	refsCoveredAfter  int
+
+	// mergeSavedBytes is Fix 11 measured on this case's REAL retrieved set:
+	// rendered bytes reclaimed by folding same-file overlap out of the
+	// production top-5.
+	mergeSavedBytes int
+	mergedSpans     int
+}
+
+// coversRef reports whether any chunk in hits contains relPath's given line --
+// i.e. whether the location a compiler/test runner pointed at actually reached
+// the prompt.
+func coversRef(hits []Chunk, r resolvedRef) bool {
+	for _, h := range hits {
+		if h.FilePath == r.RelPath && h.StartLine <= r.Line && r.Line <= h.EndLine {
+			return true
+		}
+	}
+	return false
 }
 
 // runEditEvalPass runs every case in editEvalCases against a fresh git-
@@ -355,7 +444,39 @@ func runEditEvalPass(ctx context.Context, t *testing.T, repoRoot string, embedde
 			}
 			semRank := rankOfChunk(semHits, c.exactChunks)
 
-			results[i] = editEvalResult{name: c.name, query: query, rank: rank, hit: hit, prodRank: prodRank, prodHit: prodHit, semRank: semRank}
+			// Fix 12: the production pipeline as it now stands. resolveRefs
+			// reads the pre-fix worktree (wt) -- the same tree that was
+			// indexed -- so a resolved span is real code from the corpus under
+			// test, not from HEAD.
+			refs := resolveRefs(query, wt, logger)
+			direct := make([]Chunk, len(refs))
+			for j, r := range refs {
+				direct[j] = r.Span
+			}
+			fused := fuseDirectSpans(direct, prodHits, displayK, false)
+			fusedRank := rankOfChunk(fused.Chunks, c.exactChunks)
+
+			coveredBefore, coveredAfter := 0, 0
+			for _, r := range refs {
+				if coversRef(prodHits, r) {
+					coveredBefore++
+				}
+				if coversRef(fused.Chunks, r) {
+					coveredAfter++
+				}
+			}
+
+			// Fix 11 measured on this case's real similarity top-5.
+			mergedOnly := mergeAdjacentChunks(prodHits)
+
+			results[i] = editEvalResult{
+				name: c.name, query: query, rank: rank, hit: hit,
+				prodRank: prodRank, prodHit: prodHit, semRank: semRank,
+				fusedRank: fusedRank, fusedHit: fusedRank != 0,
+				refsResolved: len(refs), refsCoveredBefore: coveredBefore, refsCoveredAfter: coveredAfter,
+				mergeSavedBytes: mergeSavings(prodHits, mergedOnly, false),
+				mergedSpans:     len(mergedOnly),
+			}
 
 			fullStr := "not found"
 			if rank != 0 {
@@ -378,6 +499,23 @@ func runEditEvalPass(ctx context.Context, t *testing.T, repoRoot string, embedde
 				c.name, len(query), query, c.exactChunks, fullStr, semStr, displayK, prodStr, prodMark)
 			for j, h := range prodHits[:min(displayK, len(prodHits))] {
 				t.Logf("  prod top-%d #%d: %-40s class=%-6s raw=%.4f weighted=%.4f", displayK, j+1, chunkID(h), h.Class, h.RawScore, h.Score)
+			}
+
+			fusedStr := fmt.Sprintf("not in top-%d", displayK)
+			if fusedRank != 0 {
+				fusedStr = fmt.Sprintf("#%d", fusedRank)
+			}
+			t.Logf("\nFIX 12 (direct file:line resolution):\n"+
+				"  file:line refs resolved:        %d %v\n"+
+				"  referenced location in top-5:   before %d/%d -> after %d/%d\n"+
+				"  graded impl-chunk verdict:      %s\n"+
+				"FIX 11 (merge) on this real top-5: %d chunks -> %d spans, %d rendered bytes reclaimed",
+				len(refs), refDescriptions(refs),
+				coveredBefore, len(refs), coveredAfter, len(refs),
+				fusedStr,
+				len(prodHits), len(mergedOnly), mergeSavings(prodHits, mergedOnly, false))
+			for j, h := range fused.Chunks {
+				t.Logf("  fused top-%d #%d: %-40s", displayK, j+1, chunkID(h))
 			}
 		})
 	}
@@ -429,9 +567,12 @@ func TestEditShapedRetrievalEval(t *testing.T) {
 	var buf bytes.Buffer
 	fmt.Fprintln(&buf)
 	fmt.Fprintln(&buf, "=== Edit-shaped retrieval eval: summary (n=4, see file header for the resolution-limit caveat) ===")
-	fmt.Fprintf(&buf, "%-28s %-11s %-12s %-12s %-14s\n", "case", "prod(k=5)", "full-rank", "sem-rank", "prod-pos")
+	fmt.Fprintf(&buf, "%-28s %-11s %-11s %-12s %-12s %-14s\n", "case", "prod(k=5)", "fused(k=5)", "full-rank", "sem-rank", "prod-pos")
 	hitCount := 0
 	prodHitCount := 0
+	fusedHitCount := 0
+	refsTotal, refsBefore, refsAfter := 0, 0, 0
+	savedBytes := 0
 	sorted := make([]editEvalResult, len(results))
 	copy(sorted, results)
 	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].name < sorted[j].name })
@@ -444,6 +585,15 @@ func TestEditShapedRetrievalEval(t *testing.T) {
 			prodMark = "hit"
 			prodHitCount++
 		}
+		fusedMark := "MISS"
+		if r.fusedHit {
+			fusedMark = "hit"
+			fusedHitCount++
+		}
+		refsTotal += r.refsResolved
+		refsBefore += r.refsCoveredBefore
+		refsAfter += r.refsCoveredAfter
+		savedBytes += r.mergeSavedBytes
 		fullStr := "not found"
 		if r.rank != 0 {
 			fullStr = fmt.Sprintf("#%d", r.rank)
@@ -456,9 +606,23 @@ func TestEditShapedRetrievalEval(t *testing.T) {
 		if r.prodRank != 0 {
 			prodPos = fmt.Sprintf("#%d", r.prodRank)
 		}
-		fmt.Fprintf(&buf, "%-28s %-11s %-12s %-12s %-14s\n", r.name, prodMark, fullStr, semStr, prodPos)
+		fmt.Fprintf(&buf, "%-28s %-11s %-11s %-12s %-12s %-14s\n", r.name, prodMark, fusedMark, fullStr, semStr, prodPos)
 	}
-	fmt.Fprintf(&buf, "\nPRODUCTION-SHAPED recall (k=5, pool-gated -- the pool-SENSITIVE number): %d/%d\n", prodHitCount, len(results))
+	fmt.Fprintf(&buf, "\nPRODUCTION-SHAPED recall, similarity only (k=5, pool-gated): %d/%d\n", prodHitCount, len(results))
+	fmt.Fprintf(&buf, "PRODUCTION-SHAPED recall, WITH direct file:line resolution (Fix 12): %d/%d\n", fusedHitCount, len(results))
 	fmt.Fprintf(&buf, "full-ordering recall (k=all, pool-INSENSITIVE, legacy metric): %d/%d\n", hitCount, len(results))
+	fmt.Fprintf(&buf, "\nREFERENCED-LOCATION recall (Fix 12's own metric -- did the line the tool\n"+
+		"complained about reach the top-5 at all?): before %d/%d -> after %d/%d\n",
+		refsBefore, refsTotal, refsAfter, refsTotal)
+	fmt.Fprintf(&buf, "FIX 11 merge, summed over the real production top-5 sets: %d rendered bytes reclaimed\n", savedBytes)
 	t.Log(buf.String())
+}
+
+// refDescriptions renders resolved refs compactly for the per-case log.
+func refDescriptions(refs []resolvedRef) []string {
+	out := make([]string, len(refs))
+	for i, r := range refs {
+		out[i] = fmt.Sprintf("%s:%d", r.RelPath, r.Line)
+	}
+	return out
 }
