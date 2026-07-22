@@ -6,8 +6,9 @@ import (
 )
 
 // Markers delimiting one SEARCH/REPLACE edit block, as instructed in
-// daemon/prompts/system.txt. The path line must appear on the line
-// immediately before searchMarker.
+// daemon/prompts/system.txt. The path line must appear before searchMarker,
+// separated from it by nothing more than blank lines or a markdown code fence
+// (see findPathLine).
 const (
 	pathPrefix      = "path:"
 	searchMarker    = "<<<<<<< SEARCH"
@@ -111,14 +112,11 @@ func parseBlockAt(lines []string, i int) (EditBlock, int, error) {
 		resume = replEndIdx + 1
 	}
 
-	if i == 0 {
-		return EditBlock{}, resume, fmt.Errorf("line %d: %q with no preceding %q line", lineNum, searchMarker, pathPrefix)
+	path, found, empty := findPathLine(lines, i)
+	if !found {
+		return EditBlock{}, resume, fmt.Errorf("line %d: missing %q line before %q", lineNum, pathPrefix, searchMarker)
 	}
-	path, ok := parsePathLine(lines[i-1])
-	if !ok {
-		return EditBlock{}, resume, fmt.Errorf("line %d: missing %q line immediately before %q", lineNum, pathPrefix, searchMarker)
-	}
-	if path == "" {
+	if empty {
 		return EditBlock{}, resume, fmt.Errorf("line %d: %q line has an empty path", lineNum, pathPrefix)
 	}
 
@@ -174,13 +172,83 @@ func parseBlockAt(lines []string, i int) (EditBlock, int, error) {
 	return EditBlock{FilePath: path, Search: search, Replace: replace}, resume, nil
 }
 
-// parsePathLine extracts the path from a line like "path: some/file.go".
+// findPathLine locates the path line belonging to the block whose SEARCH
+// marker is at lines[i], scanning BACKWARDS from it. found reports whether a
+// path line was there at all; empty reports that one was found but named
+// nothing.
+//
+// It scans back rather than reading lines[i-1] because models routinely put
+// something harmless in between (Fix 14). The rule used to be "the path line
+// must be the line IMMEDIATELY before SEARCH", and every violation of it cost
+// the user a real edit the model had correctly produced:
+//
+//	path: server.go            path: server.go
+//	                           ```go
+//	<<<<<<< SEARCH             <<<<<<< SEARCH
+//
+// Neither of those is a different intent — they are the same edit with a blank
+// line or a markdown fence in the way. Only lines that carry no instruction of
+// their own are skipped (see ignorableBeforeSearch), so the scan still stops
+// dead at a previous block's REPLACE marker, at prose, or at anything else
+// meaningful: a block genuinely missing its path line is still refused.
+func findPathLine(lines []string, i int) (path string, found, empty bool) {
+	for j := i - 1; j >= 0; j-- {
+		if p, ok := parsePathLine(lines[j]); ok {
+			return p, true, p == ""
+		}
+		if !ignorableBeforeSearch(lines[j]) {
+			return "", false, false
+		}
+	}
+	return "", false, false
+}
+
+// ignorableBeforeSearch reports whether a line between the path line and the
+// SEARCH marker carries no instruction of its own: a blank line, or a markdown
+// code-fence line. These are formatting the model wrapped its answer in, not
+// content, and neither changes what the block means.
+func ignorableBeforeSearch(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	return trimmed == "" || strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~")
+}
+
+// pathLinePrefixes are the labels accepted on a path line. "path:" is what
+// prompts/system.txt asks for; "file:" is the variant models emit anyway, often
+// enough to be worth accepting rather than losing the edit over. Matched
+// case-insensitively, so "Path:" and "File:" work too.
+var pathLinePrefixes = []string{pathPrefix, "file:"}
+
+// parsePathLine extracts the path from a line like "path: some/file.go",
+// tolerating the decorations models actually produce (Fix 14): a "File:" label
+// instead of "path:", any capitalization of either, markdown emphasis around
+// the label, and a path wrapped in backticks or quotes. The path itself is
+// returned bare, exactly as the strict form would have returned it — no
+// downstream gate sees any difference, so PrepareEdit's confinement and
+// protected-target checks apply identically however the line was dressed up.
 func parsePathLine(line string) (string, bool) {
 	trimmed := strings.TrimSpace(line)
-	if !strings.HasPrefix(trimmed, pathPrefix) {
+	// Markdown emphasis around the whole label, e.g. "**path:** a.go".
+	trimmed = strings.TrimLeft(trimmed, "*_ \t")
+
+	lower := strings.ToLower(trimmed)
+	rest := ""
+	matched := false
+	for _, prefix := range pathLinePrefixes {
+		if strings.HasPrefix(lower, prefix) {
+			rest = trimmed[len(prefix):]
+			matched = true
+			break
+		}
+	}
+	if !matched {
 		return "", false
 	}
-	return strings.TrimSpace(strings.TrimPrefix(trimmed, pathPrefix)), true
+
+	// Closing emphasis from "**path:** a.go", then the path's own wrapping.
+	rest = strings.TrimLeft(rest, "*_")
+	rest = strings.TrimSpace(rest)
+	rest = strings.Trim(rest, "`\"'")
+	return strings.TrimSpace(rest), true
 }
 
 // findSeparators returns the indexes of every separator line in [start, end).

@@ -189,7 +189,13 @@ func TestParseEditBlocks_EmptyReplaceIsValid(t *testing.T) {
 	}
 }
 
-func TestParseEditBlocks_BlankLineBetweenPathAndSearchIsMissingPath(t *testing.T) {
+// TestParseEditBlocks_BlankLineBetweenPathAndSearchIsAccepted inverts what
+// this test used to assert. A blank line between the path line and SEARCH was
+// refused on the grounds that the path line must be IMMEDIATELY before the
+// marker; models violate that constantly, and every violation cost the user a
+// real edit for a formatting difference that changes nothing about the intent
+// (Fix 14). See findPathLine.
+func TestParseEditBlocks_BlankLineBetweenPathAndSearchIsAccepted(t *testing.T) {
 	resp := strings.Join([]string{
 		"path: a.go",
 		"",
@@ -200,8 +206,12 @@ func TestParseEditBlocks_BlankLineBetweenPathAndSearchIsMissingPath(t *testing.T
 		">>>>>>> REPLACE",
 	}, "\n")
 
-	_, rejected := ParseEditBlocks(resp)
-	if len(rejected) == 0 {
-		t.Fatal("expected an error when a blank line separates path and SEARCH, got nil")
+	blocks, rejected := ParseEditBlocks(resp)
+	if len(rejected) != 0 {
+		t.Fatalf("rejected = %+v, want none", rejected)
+	}
+	want := EditBlock{FilePath: "a.go", Search: "foo", Replace: "bar"}
+	if len(blocks) != 1 || blocks[0] != want {
+		t.Fatalf("blocks = %+v, want [%+v]", blocks, want)
 	}
 }

@@ -36,6 +36,12 @@ const (
 	// ClassPrivacyRefused is this product's own routing constraint refusing to
 	// send data to a provider that does not guarantee zero data retention.
 	ClassPrivacyRefused ModelErrorClass = "privacy_refused"
+	// ClassInvalidRequest is the daemon refusing a request on its own terms,
+	// before any upstream call — currently an empty prompt (Fix 14). It is the
+	// one class in this set that never involves the provider at all, which is
+	// exactly what makes it worth distinguishing: nothing was sent, nothing was
+	// billed, and retrying the identical request will fail identically.
+	ClassInvalidRequest ModelErrorClass = "invalid_request"
 	// ClassUnknown is the honest fallback for anything unrecognised. It keeps
 	// the old generic message rather than inventing a confident wrong one.
 	ClassUnknown ModelErrorClass = "unknown"
@@ -55,6 +61,7 @@ var clientMessages = map[ModelErrorClass]string{
 	ClassAuth:                "the configured API credentials were rejected — check the API key this daemon was started with",
 	ClassUpstreamUnavailable: "the model provider is unreachable or failing right now — this is usually temporary",
 	ClassPrivacyRefused:      "inference refused: no zero-data-retention endpoint available",
+	ClassInvalidRequest:      "the request was rejected before it was sent: the prompt is empty",
 	ClassUnknown:             "calling model API failed",
 }
 

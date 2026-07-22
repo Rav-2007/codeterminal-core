@@ -64,6 +64,16 @@ func backoffFor(attempt int, retryAfter time.Duration) time.Duration {
 //     boundary: an inference call is safe to repeat only before it has produced
 //     anything.
 //
+//     REASONING tokens deliberately do NOT trip this (Fix 14). The boundary
+//     protects the ANSWER: only content tokens accumulate into the reply that
+//     gets parsed for edit blocks and written to conversation memory, so a
+//     retry after reasoning-only output cannot duplicate or interleave any of
+//     that. Counting them would instead make a reasoning-tier request
+//     unretryable from its first millisecond, since thinking starts before any
+//     content does — trading all recovery for a cosmetic repeat of ephemeral
+//     commentary. Named cost: a client that renders reasoning inline will show
+//     the discarded attempt's thinking before the successful attempt's.
+//
 //  2. The failure must be in a retryable class. rate_limited and
 //     upstream_unavailable can succeed on a second try; auth, quota_exceeded,
 //     context_too_large and privacy_refused cannot, and retrying them only
@@ -81,6 +91,7 @@ func streamWithRetry(
 	routing providerRouting,
 	onToken func(string) error,
 	onProvider func(string),
+	onReasoning func(string),
 	logger *log.Logger,
 ) error {
 	start := time.Now()
@@ -94,6 +105,7 @@ func streamWithRetry(
 				return onToken(token)
 			},
 			onProvider,
+			onReasoning,
 		)
 		if err == nil {
 			if attempt > 1 && logger != nil {

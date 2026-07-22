@@ -181,6 +181,7 @@ func TestStreamCompletion_RequestBodyIncludesStrictProviderRoutingByDefault(t *t
 	err := streamCompletion(context.Background(), srv.URL, "test-key", "some/model", "sys", nil, "hello", routing,
 		func(tok string) error { tokens = append(tokens, tok); return nil },
 		nil,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("streamCompletion: %v", err)
@@ -213,6 +214,7 @@ func TestStreamCompletion_RequestBodyReflectsConfigDrivenRouting(t *testing.T) {
 	err := streamCompletion(context.Background(), srv.URL, "test-key", "some/model", "sys", nil, "hello", routing,
 		func(tok string) error { return nil },
 		nil,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("streamCompletion: %v", err)
@@ -243,6 +245,7 @@ func TestStreamCompletion_OnProviderFiresWithObservedProviderName(t *testing.T) 
 	err := streamCompletion(context.Background(), srv.URL, "test-key", "some/model", "sys", nil, "hello", routing,
 		func(tok string) error { return nil },
 		func(provider string) { seen = append(seen, provider) },
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("streamCompletion: %v", err)
@@ -326,6 +329,7 @@ func TestStreamCompletion_ZDRRefusalIsDetectableViaErrorsIs(t *testing.T) {
 	err := streamCompletion(context.Background(), srv.URL, "test-key", "some/model", "sys", nil, "hello", routing,
 		func(tok string) error { return nil },
 		nil,
+		nil,
 	)
 	if err == nil {
 		t.Fatal("streamCompletion: got nil error, want a ZDR refusal error")
@@ -353,6 +357,7 @@ func TestStreamCompletion_LiveObservedDataPolicyRefusalIsDetectableViaErrorsIs(t
 	err := streamCompletion(context.Background(), srv.URL, "test-key", "some/model", "sys", nil, "hello", routing,
 		func(tok string) error { return nil },
 		nil,
+		nil,
 	)
 	if err == nil {
 		t.Fatal("streamCompletion: got nil error, want a ZDR refusal error")
@@ -374,6 +379,7 @@ func TestStreamCompletion_OrdinaryErrorIsNotWrappedAsZDRRefusal(t *testing.T) {
 	routing := ZDRConfig{}.resolvedProviderRouting()
 	err := streamCompletion(context.Background(), srv.URL, "test-key", "some/model", "sys", nil, "hello", routing,
 		func(tok string) error { return nil },
+		nil,
 		nil,
 	)
 	if err == nil {

@@ -75,6 +75,16 @@ type chatCompletionChunk struct {
 	Choices  []struct {
 		Delta struct {
 			Content string `json:"content"`
+			// Reasoning carries a reasoning-tier model's thinking tokens,
+			// which OpenRouter streams in a field of their own alongside
+			// content (Fix 14). The stream used to read delta.content only,
+			// so every reasoning token was decoded and thrown away: the user
+			// watched an empty screen for as long as the model thought (907ms
+			// of dead air observed) and then got the answer in one burst. It
+			// is deliberately NOT folded into content — see streamCompletion's
+			// onReasoning — because thinking is not part of the answer and
+			// must not reach edit-block parsing or conversation memory.
+			Reasoning string `json:"reasoning"`
 		} `json:"delta"`
 	} `json:"choices"`
 }
@@ -161,7 +171,16 @@ func buildChatMessages(systemPrompt string, history []chatMessage, prompt string
 // onProvider, if non-nil, is invoked at most once with the upstream
 // provider name as soon as it's observed in the response stream (purely for
 // observability — see chatCompletionChunk.Provider's doc comment).
-func streamCompletion(ctx context.Context, apiBase, apiKey, model, systemPrompt string, history []chatMessage, prompt string, routing providerRouting, onToken func(string) error, onProvider func(string)) error {
+//
+// onReasoning, if non-nil, receives a reasoning-tier model's thinking tokens
+// (delta.reasoning) as they arrive. It is a SEPARATE callback from onToken on
+// purpose: reasoning is commentary, not answer. Routing it through onToken
+// would splice thinking into the text that gets parsed for SEARCH/REPLACE
+// blocks and written to conversation memory, which is how a model's musings
+// about an edit would end up being mistaken for the edit. Its errors are not
+// propagated — failing to deliver optional commentary must not fail a request
+// that is otherwise succeeding.
+func streamCompletion(ctx context.Context, apiBase, apiKey, model, systemPrompt string, history []chatMessage, prompt string, routing providerRouting, onToken func(string) error, onProvider func(string), onReasoning func(string)) error {
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 
@@ -233,6 +252,9 @@ func streamCompletion(ctx context.Context, apiBase, apiKey, model, systemPrompt 
 		}
 		if len(chunk.Choices) == 0 {
 			continue
+		}
+		if reasoning := chunk.Choices[0].Delta.Reasoning; reasoning != "" && onReasoning != nil {
+			onReasoning(reasoning)
 		}
 		content := chunk.Choices[0].Delta.Content
 		if content == "" {
