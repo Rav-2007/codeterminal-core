@@ -172,15 +172,55 @@ type Turn struct {
 // name, status line or raw error text rides along. Older clients that don't
 // know this field simply ignore it and keep showing Error, exactly like
 // Grounding.
+// History, when set, rides on the same pre-token message as Grounding and
+// reports what the daemon did to the conversation turns the client sent (see
+// HistoryInfo). Additive: older clients that don't know this field ignore it.
+//
+// Reasoning carries a reasoning-tier model's thinking tokens, streamed as they
+// arrive on messages of their own. It is a SEPARATE field from Token, not a
+// flavour of it: Token accumulates into the answer that gets parsed for edit
+// blocks and written to conversation memory, and thinking must never enter
+// that. A client may render it (a "thinking" area), collapse it, or ignore it
+// entirely; what it must NOT do is append it to the reply text. Before this
+// existed the daemon read only delta.content, so reasoning tokens were decoded
+// and discarded and the user watched an empty screen while the model thought.
+// Additive: older clients that don't know this field ignore it, which is the
+// pre-existing behaviour.
 type TokenResponse struct {
 	ProtocolVersion int             `json:"protocol_version"`
 	Token           string          `json:"token,omitempty"`
 	Done            bool            `json:"done"`
 	Error           string          `json:"error,omitempty"`
 	ErrorClass      string          `json:"error_class,omitempty"`
+	Reasoning       string          `json:"reasoning,omitempty"`
 	Grounding       *GroundingInfo  `json:"grounding,omitempty"`
+	History         *HistoryInfo    `json:"history,omitempty"`
 	EditProposals   []EditBlockWire `json:"edit_proposals,omitempty"`
 	Redactions      []string        `json:"redactions,omitempty"`
+}
+
+// HistoryInfo reports what the daemon did with the conversation turns a
+// client sent in PromptRequest.History — the history-side counterpart of
+// GroundingInfo, and deliberately the same shape of report: a decision already
+// made server-side (see daemon/history.go's prepareHistory), never the turn
+// content itself.
+//
+// Truncated is the field this type exists for. The daemon caps history by turn
+// count AND by total bytes, dropping the oldest turns first; before this flag
+// a client had no way to know that had happened, so "what was my first
+// question?" could be answered confidently and wrongly from a conversation
+// whose beginning had been silently dropped on the way out. It mirrors
+// GroundingInfo.Truncated exactly, so the two asymmetric halves of one request
+// now report the same way.
+//
+// Turns is how many turns actually reached the model. DroppedInvalid counts
+// turns refused outright — a role other than "user"/"assistant" (which a
+// client must never be able to use to claim system authority) or empty
+// content.
+type HistoryInfo struct {
+	Turns          int  `json:"turns"`
+	Truncated      bool `json:"truncated,omitempty"`
+	DroppedInvalid int  `json:"dropped_invalid,omitempty"`
 }
 
 // EditBlockWire is the wire form of one parsed SEARCH/REPLACE edit block

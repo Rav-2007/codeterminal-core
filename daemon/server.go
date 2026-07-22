@@ -260,6 +260,23 @@ func (s *Server) serveConn(conn net.Conn) {
 		return
 	}
 
+	// Reject an empty prompt before anything is spent on it (Fix 14). Sending
+	// `{}` used to produce a full, billed model call and a reply to nothing:
+	// the daemon has no question to answer, the user is charged for asking it,
+	// and the empty exchange is then persisted as conversation. Refused here,
+	// at the first point the request's own content is known, so nothing
+	// downstream — routing, retrieval, the model call, memory — runs at all.
+	if strings.TrimSpace(promptReq.Prompt) == "" {
+		s.logger.Print("rejecting empty prompt without calling the model API")
+		enc.Encode(protocol.TokenResponse{
+			ProtocolVersion: protocol.ProtocolVersion,
+			Done:            true,
+			Error:           "prompt is empty",
+			ErrorClass:      string(ClassInvalidRequest),
+		})
+		return
+	}
+
 	s.logger.Printf("received prompt (%d bytes), calling model API", len(promptReq.Prompt))
 
 	decision := s.route(promptReq.PromptKind)
@@ -277,8 +294,15 @@ func (s *Server) serveConn(conn net.Conn) {
 	}
 	// Sent before any tokens, as its own message, so a client can show
 	// grounding status as soon as the turn starts rather than waiting for
-	// the whole answer to finish streaming.
-	if err := enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Grounding: grounding}); err != nil {
+	// the whole answer to finish streaming. History rides along on the same
+	// message (Fix 13): it is decided at the same point, and a client that
+	// silently lost its oldest turns deserves to know before the answer that
+	// was written without them starts arriving.
+	if err := enc.Encode(protocol.TokenResponse{
+		ProtocolVersion: protocol.ProtocolVersion,
+		Grounding:       grounding,
+		History:         buildHistoryInfo(historyOutcome),
+	}); err != nil {
 		s.logger.Printf("grounding info write error: %v", err)
 		return
 	}
@@ -327,6 +351,7 @@ func (s *Server) serveConn(conn net.Conn) {
 	// conversation the model sees.
 	routing := s.cfg.ZDR.resolvedProviderRouting()
 	var full strings.Builder
+	reasoningBytes := 0
 	// streamWithRetry, not streamCompletion (Fix 10): transient failures are
 	// retried with jittered backoff, and only while nothing has streamed yet --
 	// see its doc comment for the two rules that decide.
@@ -338,8 +363,23 @@ func (s *Server) serveConn(conn net.Conn) {
 		func(provider string) {
 			s.logger.Printf("model API served by provider=%q (zdr=%t data_collection=%s allow_fallbacks=%t)", provider, routing.ZDR, routing.DataCollection, routing.AllowFallbacks)
 		},
+		// Reasoning tokens go out on their own field, NEVER into `full` (Fix 14).
+		// `full` is what gets parsed for SEARCH/REPLACE blocks and written to
+		// conversation memory, so folding thinking into it would let a model's
+		// musings about an edit be mistaken for the edit, and would persist
+		// commentary as if it were the answer. A write error here is dropped
+		// rather than returned: optional commentary must not fail a request the
+		// token stream is otherwise completing (the next Token encode will
+		// surface a genuinely broken connection anyway).
+		func(reasoning string) {
+			reasoningBytes += len(reasoning)
+			enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Reasoning: reasoning})
+		},
 		s.logger,
 	)
+	if reasoningBytes > 0 {
+		s.logger.Printf("model API: streamed %d byte(s) of reasoning alongside the answer", reasoningBytes)
+	}
 	if err != nil {
 		// The Gate-7 split, now with a class attached (Fix 9). The full upstream
 		// error — provider base URL, HTTP status, response body, raw transport
@@ -656,6 +696,12 @@ func (s *Server) handleSearch(enc *json.Encoder, req protocol.SearchRequest) {
 // HandshakeResponse — see the doc comment on
 // protocol.HandshakeResponse.PersistedHistory for who's actually meant to
 // consume it (only a client's own startup/preflight connection).
+// Rows are re-validated on the way out with the same validTurn predicate
+// prepareHistory applies to client-supplied turns (Fix 13), so a row written
+// before the write-side guard existed — an empty assistant turn from a
+// zero-content upstream response — can't re-hydrate a client's transcript and
+// ride back in as history. prepareHistory would refuse it again on the return
+// trip; filtering here means the client never displays it either.
 func (s *Server) loadPersistedHistory() []protocol.Turn {
 	if s.memory == nil {
 		return nil
@@ -665,7 +711,19 @@ func (s *Server) loadPersistedHistory() []protocol.Turn {
 		s.logger.Printf("loading persisted history: %v", err)
 		return nil
 	}
-	return turns
+	kept := make([]protocol.Turn, 0, len(turns))
+	for _, t := range turns {
+		if validTurn(t) {
+			kept = append(kept, t)
+		}
+	}
+	if dropped := len(turns) - len(kept); dropped > 0 {
+		s.logger.Printf("persisted history: dropped %d invalid/empty turn(s) on load", dropped)
+	}
+	if len(kept) == 0 {
+		return nil
+	}
+	return kept
 }
 
 // persistTurn appends the just-completed exchange (the user's raw prompt —
@@ -675,8 +733,24 @@ func (s *Server) loadPersistedHistory() []protocol.Turn {
 // only after streamCompletion has already returned successfully, so a
 // mid-stream failure (including a client disconnecting before the answer
 // finished) never persists a truncated answer as if it were complete.
+// An EMPTY answer is never written (Fix 14). A zero-content upstream response
+// used to be persisted as an empty assistant turn, which then re-hydrated into
+// the client's transcript at the next handshake and rode along in every later
+// request — one bad response permanently seated in the context window, teaching
+// the model that an empty answer is an acceptable shape. This is the write-side
+// half of that fix; prepareHistory/loadPersistedHistory hold the read side
+// (history.go), which is what cleans up rows written before this guard existed.
+// Both halves are deliberate: neither alone covers the other's case.
+//
+// The user's prompt is dropped with it rather than stored alone — a question
+// with no answer is not an exchange, and persisting half of one would leave
+// memory claiming the assistant simply never replied.
 func (s *Server) persistTurn(prompt, answer string) {
 	if s.memory == nil {
+		return
+	}
+	if strings.TrimSpace(answer) == "" {
+		s.logger.Print("not persisting turn: the model returned an empty answer")
 		return
 	}
 	ctx := context.Background()
