@@ -2036,3 +2036,148 @@ VS Code extension. Commits M1 `029d764`, M2 `b647490`, M3 `6995259` — separate
 nested-`.gitignore` secret indexing; the `.GIT` case-fold bypass; C3 (billing abort-refund); F1
 (proxy ZDR-enforcement); and all founder-gated P3 / Gate-6 / ZDR items. **Nothing marked closed —
 founder decides.**
+
+## 2026-07-23 — S1 + S2 security fixes and the VS Code E2E harness (verified, NOT closed)
+
+Three independent concerns from the S1/S2/E2E master prompt, done as three isolated commits.
+Part-0 discipline throughout: each claim reconfirmed live against current `main` before any fix
+(the M1-batch C1 precedent — a prior report's severity claim that didn't survive live repro — was
+the explicit warning). **Nothing pushed, nothing marked closed; founder decides.**
+
+### S1 — nested `.gitignore` secret indexing — CONFIRMED live, FIXED (`ae1104c`)
+
+**Step 0 (reconfirmed, not inherited).** Built a real workspace through the real indexing door
+(`ScanWorkspace`, the same function `buildIndex` calls): clean root `.gitignore` (`*.log`), a
+`config/` subdir with its own `config/.gitignore` excluding a **benign-named** file
+`local-settings.json` (deliberately NOT secret-shaped — no `secret`/`credential` substring, no glob
+hit — so `MatchesSecretName` can't mask the question) whose content was a fake API token. Result:
+`nested-ignored secret indexed = true`, chunk `config/local-settings.json:1-2` captured, skip counts
+`map[noise:2]` with **no gitignore skip**. Confirmed: only the workspace-root `.gitignore` was ever
+read (`loadGitignore(realRoot)`), exactly as the old code's own comment admitted ("does not support
+… nested .gitignore files … reads only the workspace root's own .gitignore"). Per the
+chunk-text-network-exit finding, an indexed chunk is retrieval-eligible and leaves the machine
+unscrubbed in a RAG completion POST — so this is a real upstream-exposure path, not a local-only
+cosmetic.
+
+**Scope determination (which nested scenario triggers it).** Single-level reproduced directly;
+the fix was written to git's actual semantics (each directory's `.gitignore` applies to its own
+subtree, patterns relative to that file, deeper overrides shallower, later line overrides earlier =
+`!` negation) rather than guessing, and the regression tests exercise single-level exclusion, subtree
+scoping (an identically-named file in a *different* subdir stays indexed — guards against a naive
+"flatten all `.gitignore`s into one root-relative set" fix), `!` re-include, nested-dir prune, and
+root-behavior-unchanged.
+
+**Fix.** No gitignore-matching library is vendored (checked all six `go.mod`; the environment is
+offline for new modules regardless), and the project's ethos is a minimal hand-rolled subset — so the
+root-only `gitignoreRules` was replaced with a per-directory `gitignoreMatcher` (`daemon/chunker.go`)
+that lazily loads and caches each directory's `.gitignore`, keyed by root-relative dir, and resolves
+a path by walking its ancestor layers shallow→deep with last-match-wins (git precedence, incl.
+negation). The small *pattern* subset (basename/relative `filepath.Match`, dir-only trailing slash,
+dir-prefix) is preserved and now applied at every level; unsupported patterns still fail toward
+*excluding* (the safe direction for a secret boundary). The same matcher is now used by `reindexFile`
+(`reindex.go`) and the `file:line` resolver (`fileref.go`), so no shorter path re-admits a
+nested-ignored file.
+
+**The MatchesSecretName ordering question (asked explicitly, answered).** In `shouldSkipFile`,
+`MatchesSecretName` runs BEFORE ignore-resolution. So a secret-*named* file (`.env`, `id_rsa`,
+anything with `secret`/`credential` in the basename, etc.) was **never** exposed by this bug — it was
+already skipped regardless of gitignore. The S1 leak was therefore specifically **non-secret-named
+files that contain secrets** and are excluded only by a nested `.gitignore` (config files, `.local`
+overrides, etc.). Fixing indexing does not make the secret-name check moot in general (it still
+guards secret-named files that no `.gitignore` excludes) — the two gates are independent and both
+needed.
+
+**Verify.** Re-ran Step 0 post-fix: `nested-ignored secret indexed = false`, skip `map[gitignored:1
+noise:2]`. Regression tests (`daemon/nested_gitignore_test.go`) drive the real `ScanWorkspace`.
+Fail-when-neutered proven: reverting the matcher to root-only makes the exclusion/scoping/dir-prune
+tests fail with the exact leak symptom (`nested-ignored file was indexed`), restored → green.
+
+### S2 — `.GIT` case-fold bypass — CONFIRMED live, FIXED (`40b5980`)
+
+**Recurrence-vs-new determination (asked explicitly).** This is the **same guard Tier 3 introduced
+with an incomplete fix**, not a new code path. Tier 3's Fix 3 added the shared `ProtectedDirNames` +
+`ProtectedDirComponent` and unified indexer-prune and edit-writer confinement — but keyed both on a
+**case-sensitive** map lookup. Because the indexer and writer share that one list, the gap hit **both
+consumers** at once.
+
+**Step 0 (reconfirmed; case-sensitivity handled per the prompt).** The dev box is case-SENSITIVE
+ext4, so — per the prompt's guidance that a case-sensitive compare is broken on a case-insensitive FS
+regardless of what can be locally constructed — the repro used explicit case-variant paths. Indexer:
+real `.GIT/…` and `.Git/…` directories were **indexed** by `ScanWorkspace` (`ignoredDirNames[".GIT"]
+= false`). Writer: `ProtectedDirComponent(".GIT/hooks/pre-commit")` returned `""` (NOT refused), as
+did `.Git/…` and `.SSH/…`. On a case-insensitive filesystem (macOS APFS, Windows NTFS) the OS
+resolves `.GIT`→ the real `.git`, so: for the **writer**, a writable `.GIT/hooks/pre-commit` is the
+same arbitrary-code-execution surface Tier 3 closed for the lowercase form; for the **indexer**, real
+VCS/credential internals get read into the index.
+
+**Fix.** New `editapply.IsProtectedDirName` folds the component to lower before the lowercase-keyed
+`ProtectedDirNames` lookup; `ProtectedDirComponent` routes through it, so every writer path
+(`ResolveSafeTargetPath`, create, undo) is covered at one choke point. The indexer prune is split
+into `isPrunedDir` = case-INsensitive protected dirs (via `IsProtectedDirName`) OR case-SENSITIVE
+`noiseDirNames`. Noise dirs (`build`, `vendor`, …) are deliberately left case-sensitive: they are not
+a security boundary, and folding them would over-prune a legitimately-cased source dir that merely
+shares a name (a Go package literally named `Build`). Grepped for other security-relevant literal
+path-segment compares (`.git`/`.ssh`/`.aws`/`.codeterminal` equality/lookup/prefix) across all six
+Go modules — **these two choke points were the only ones**; no siblings left as follow-ons.
+
+**Verify.** Re-ran Step 0 post-fix against both doors: `.GIT`/`.Git`/`.SSH` variants are pruned by
+`ScanWorkspace` and refused by `ResolveSafeTargetPath`; lookalikes (`notgit/`, `gitignore.txt`) still
+NOT refused; `Build/` (capital) still indexed. Regression tests through the real doors
+(`editapply/protected_casefold_test.go` for the writer incl. the create case; `daemon/casefold_prune_test.go`
+for the indexer + the noise-case-sensitivity boundary). Fail-when-neutered proven: reverting
+`IsProtectedDirName` to the case-sensitive lookup fails BOTH the writer test (`admitted
+.GIT/hooks/pre-commit; code-execution path open`) and the indexer test (`indexed a protected-dir case
+variant`), restored → green.
+
+### Part 3 — real VS Code Extension Development Host E2E harness — BUILT & PROVEN (`5290c08`)
+
+**Scope + technique choice (stated).** Added an in-repo `@vscode/test-electron` runner
+(`clients/vscode/src/test/runTest.ts`) that launches a REAL Extension Development Host (downloads +
+caches a real VS Code build under `.vscode-test/`), loads the real extension, and runs a mocha suite
+*inside* the host. This is the runner the M1-M3 report said did not exist. For the M1/M2/M3 re-run it
+uses the project's **local-stub-daemon** technique (`stubDaemon.ts`: a real Unix-domain-socket server
+speaking the wire protocol + the real lockfile the client reads) rather than a live daemon, so the
+suite is hermetic and controllable — but it drives the **actual compiled `daemonClient.ts`** (the
+shipped module) in VS Code's own Node runtime over a real socket, which is a genuine step past the
+report's hand-driven stubs.
+
+**Proof the tool works (the required deliverable).** `smoke.test.ts`, in a real EDH: the real
+extension **activates**; `codeterminal.openChat` renders a real **"CodeTerminal Chat" webview panel**
+(the real `ChatPanel` + `media/main.js` in a real VS Code webview); the command is idempotent (one
+panel, reveal not duplicate). Not "written", *run* — 3/3 passing.
+
+**Bonus M1/M2/M3 re-run (reported as bonus, not a blocker).** `daemonClientE2E.test.ts`, same real
+host, real compiled client over the stub socket: **M1** an incomplete `finish_reason` surfaces via
+`onIncomplete` before `onDone`; **M2** a clean close before reply **rejects** `applyEdit` (does not
+hang — the `b647490` wedge); **M3** grounding/history/reasoning fan out to their handlers. 3/3
+passing.
+
+**Honest scope boundary (stated, not papered over).** The bonus suite validates the **client/protocol
+half** of M1/M2/M3. The **webview-DOM render half** (`main.js` turning these into a visible
+incomplete-notice / dropped-turns warning / thinking block) is exercised *for real* by the smoke
+test's panel render, but VS Code exposes no webview DOM to the test host, so this suite does not
+assert those specific pixels per-behavior. Asserting them would require a test-only hook inside
+production `main.js`, deliberately not added.
+
+**Environment blocker found and fixed (reported plainly, per the prompt).** Running the harness from
+inside VS Code's integrated terminal (this session) exports `ELECTRON_RUN_AS_NODE=1` and a set of
+`VSCODE_*` vars belonging to the OUTER VS Code; `@vscode/test-electron` spawns the nested VS Code
+inheriting them, so Electron ran as plain Node and treated the first launch arg as a script
+(two successive "Cannot find module" crashes before any test ran — diagnosed from the stacks, not
+guessed). `runTest.ts` strips `ELECTRON_RUN_AS_NODE` + `VSCODE_*` before launching. Also needed
+`@vscode/test-electron` `^3.0.0` (2.5.2 predates the VS Code 1.130 / Node-24 bootstrap). With a real
+`DISPLAY` on this box the full run is **6 passing, exit 0**, VS Code 1.130.0. No silent fallback to
+the old stub approach — the real host runs.
+
+### Regression (six Go modules, explicit paths — `./...` fails from root — plus the extension)
+`gofmt -l` clean; `go build ./...` + `go vet ./...` clean for `daemon`, `editapply`, `protocol`,
+`clients/tui`, `helper`, `proxy`; `go test -count=1 ./...` green (`protocol`/`helper` have no test
+files); `go test -race -count=1 ./...` green for the four modules with tests. `tsc -p ./` clean for
+the extension; the new EDH harness itself: **6 passing, exit 0**. Commits S1 `ae1104c`, S2 `40b5980`,
+E2E `5290c08` — three separate concerns, three separate commits, as required.
+
+### Still open after this batch (unchanged; founder-gated)
+C3 (quota abort-refund / repeatable unmetered inference), F1 (proxy not ZDR-enforcing), and the whole
+founder-gated cluster (P3 socket auth model, the Gate-6 closure contradiction, the OpenRouter ZDR /
+`allow_fallbacks` questions, default-model evaluation). Untouched here by design. **Nothing marked
+closed — founder decides.**
