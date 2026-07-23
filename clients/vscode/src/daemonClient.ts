@@ -85,6 +85,22 @@ export interface TokenResponse {
   // as nothing, never an error. A plain "served by X" fact — never a fallback
   // claim or a ZDR judgement.
   provider?: string;
+  // incomplete mirrors protocol.TokenResponse.Incomplete: set on the final
+  // (done) message when the model's answer was CUT OFF rather than finishing on
+  // its own (e.g. it hit its output-length ceiling mid-sentence). Absent is the
+  // common case (a natural end). A client MUST render its presence as a visibly
+  // incomplete state, distinct from a finished answer -- before this, a
+  // truncated reply arrived as a done message byte-identical to a complete one.
+  incomplete?: IncompleteInfo;
+}
+
+// IncompleteInfo mirrors protocol.IncompleteInfo: reason is a stable slug
+// ("length" | "content_filter" | ...) a client may branch on; detail is
+// client-safe prose naming what happened and what it costs the user, carrying
+// no path, host, provider name, or raw upstream error text.
+export interface IncompleteInfo {
+  reason: string;
+  detail: string;
 }
 
 // Degradation mirrors protocol.Degradation. component is a stable slug
@@ -303,6 +319,7 @@ export interface StreamHandlers {
   onProvider?: (provider: string) => void;
   onToken?: (token: string) => void;
   onEditProposals?: (proposals: EditBlockWire[]) => void;
+  onIncomplete?: (info: IncompleteInfo) => void;
   onDone?: () => void;
   onError?: (err: Error) => void;
 }
@@ -367,6 +384,12 @@ export async function streamPrompt(
     }
     if (tok.done) {
       finished = true;
+      // Fired before onDone so the "cut off" notice is delivered attached to
+      // this answer, ahead of the done that re-enables input (mirrors the
+      // edit_proposals ordering just above and stream.go's incompleteMsg).
+      if (tok.incomplete) {
+        handlers.onIncomplete?.(tok.incomplete);
+      }
       if (tok.edit_proposals && tok.edit_proposals.length > 0) {
         handlers.onEditProposals?.(tok.edit_proposals);
       }

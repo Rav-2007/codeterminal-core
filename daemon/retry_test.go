@@ -56,7 +56,7 @@ func TestRetry_TransientFailureThenSuccessRecovers(t *testing.T) {
 
 	var tokens []string
 	err := streamWithRetry(context.Background(), srv.URL, "k", "m", "sys", nil, "hello",
-		ZDRConfig{}.resolvedProviderRouting(), collectTokens(&tokens), nil, nil, discardLogger())
+		ZDRConfig{}.resolvedProviderRouting(), collectTokens(&tokens), nil, nil, nil, discardLogger())
 	if err != nil {
 		t.Fatalf("want recovery, got: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestRetry_PersistentFailureTerminatesCleanly(t *testing.T) {
 	start := time.Now()
 	var tokens []string
 	err := streamWithRetry(context.Background(), srv.URL, "k", "m", "sys", nil, "hello",
-		ZDRConfig{}.resolvedProviderRouting(), collectTokens(&tokens), nil, nil, discardLogger())
+		ZDRConfig{}.resolvedProviderRouting(), collectTokens(&tokens), nil, nil, nil, discardLogger())
 	elapsed := time.Since(start)
 
 	if err == nil {
@@ -119,7 +119,7 @@ func TestRetry_NonRetryableClassesAreNotRetried(t *testing.T) {
 
 			var tokens []string
 			err := streamWithRetry(context.Background(), srv.URL, "k", "m", "sys", nil, "hello",
-				ZDRConfig{}.resolvedProviderRouting(), collectTokens(&tokens), nil, nil, discardLogger())
+				ZDRConfig{}.resolvedProviderRouting(), collectTokens(&tokens), nil, nil, nil, discardLogger())
 			if err == nil {
 				t.Fatal("want an error")
 			}
@@ -155,7 +155,7 @@ func TestRetry_NeverRetriesOnceTokensHaveStreamed(t *testing.T) {
 
 	var tokens []string
 	_ = streamWithRetry(context.Background(), srv.URL, "k", "m", "sys", nil, "hello",
-		ZDRConfig{}.resolvedProviderRouting(), collectTokens(&tokens), nil, nil, discardLogger())
+		ZDRConfig{}.resolvedProviderRouting(), collectTokens(&tokens), nil, nil, nil, discardLogger())
 
 	if got := requests.Load(); got != 1 {
 		t.Errorf("upstream saw %d requests, want exactly 1 — a retry after streaming would duplicate output", got)
@@ -186,7 +186,7 @@ func TestRetry_HonoursRetryAfter(t *testing.T) {
 	start := time.Now()
 	var tokens []string
 	if err := streamWithRetry(context.Background(), srv.URL, "k", "m", "sys", nil, "hello",
-		ZDRConfig{}.resolvedProviderRouting(), collectTokens(&tokens), nil, nil, discardLogger()); err != nil {
+		ZDRConfig{}.resolvedProviderRouting(), collectTokens(&tokens), nil, nil, nil, discardLogger()); err != nil {
 		t.Fatalf("want recovery, got: %v", err)
 	}
 	// Our own first backoff is well under a second; only Retry-After explains a
@@ -210,7 +210,7 @@ func TestRetry_CancelledContextAbortsImmediately(t *testing.T) {
 	start := time.Now()
 	var tokens []string
 	err := streamWithRetry(ctx, srv.URL, "k", "m", "sys", nil, "hello",
-		ZDRConfig{}.resolvedProviderRouting(), collectTokens(&tokens), nil, nil, discardLogger())
+		ZDRConfig{}.resolvedProviderRouting(), collectTokens(&tokens), nil, nil, nil, discardLogger())
 	if err == nil {
 		t.Fatal("want an error")
 	}

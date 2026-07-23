@@ -4,6 +4,7 @@ import {
   Degradation,
   EditBlockWire,
   GroundingInfo,
+  IncompleteInfo,
   Turn,
   applyEdit,
   preflightHandshake,
@@ -178,6 +179,9 @@ export class ChatPanel {
       },
       onEditProposals: (proposals: EditBlockWire[]) => {
         this.startEditReview(proposals);
+      },
+      onIncomplete: (info: IncompleteInfo) => {
+        this.panel.webview.postMessage({ type: 'incomplete', info });
       },
       onDone: () => {
         this.transcript.push({ role: 'assistant', content: answer });
@@ -475,6 +479,14 @@ export class ChatPanel {
   .turn .role { display: block; font-size: 11px; opacity: 0.6; margin-bottom: 2px; }
   .turn.user .role { color: var(--vscode-textLink-foreground); }
   .turn.error { color: var(--vscode-errorForeground); }
+  /* A cut-off answer is a warning, not an error: the reply is partly valid, the
+     user just needs to know it stopped early. Warning color, marked, persistent
+     in scrollback -- distinct from both a normal turn and a red error. */
+  .turn.incomplete-notice {
+    color: var(--vscode-editorWarning-foreground, #cca700);
+    font-size: 12px;
+    font-style: italic;
+  }
   #grounding { font-size: 11px; opacity: 0.7; padding: 0 12px 6px; min-height: 14px; }
   #redactions {
     font-size: 11px;

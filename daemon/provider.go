@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"codeterminal/protocol"
 )
 
 // requestTimeout bounds a single prompt's total call to the model API so a
@@ -86,7 +88,45 @@ type chatCompletionChunk struct {
 			// must not reach edit-block parsing or conversation memory.
 			Reasoning string `json:"reasoning"`
 		} `json:"delta"`
+		// FinishReason is null on every chunk until the terminal one, where the
+		// provider states why generation stopped: "stop" (natural end), "length"
+		// (hit the output-token ceiling -- the answer is cut off), "content_filter",
+		// etc. The stream used to ignore it entirely, so a "length" truncation was
+		// indistinguishable on the wire from a clean "stop" (M1). Captured here and
+		// reported once via streamCompletion's onFinish callback.
+		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
+}
+
+// incompleteInfoFor maps a terminal SSE finish_reason to the client-facing
+// IncompleteInfo carried on the final Done message (M1), or nil when the answer
+// finished naturally and there is nothing to flag. A natural "stop" -- and the
+// common empty case, where the provider sent no finish_reason at all -- both map
+// to nil, so the field is simply absent on a complete answer. The Detail strings
+// follow the Gate-7 / Degradation discipline: they name what happened and what
+// it costs the user, and carry no path, host, provider name, or raw upstream
+// text. An unrecognized non-"stop" reason is still surfaced (better to flag an
+// early end we can't name precisely than to hide it), labelled generically.
+func incompleteInfoFor(finishReason string) *protocol.IncompleteInfo {
+	switch finishReason {
+	case "", "stop":
+		return nil
+	case protocol.IncompleteLength:
+		return &protocol.IncompleteInfo{
+			Reason: protocol.IncompleteLength,
+			Detail: "the model reached its output-length limit before finishing — this answer is cut off. Ask it to continue.",
+		}
+	case protocol.IncompleteContentFilter:
+		return &protocol.IncompleteInfo{
+			Reason: protocol.IncompleteContentFilter,
+			Detail: "the provider's content filter stopped the response before it finished — this answer is incomplete.",
+		}
+	default:
+		return &protocol.IncompleteInfo{
+			Reason: finishReason,
+			Detail: "the model stopped before finishing its answer — this answer may be incomplete.",
+		}
+	}
 }
 
 // ErrZDRRefused is the sentinel error streamCompletion returns when
@@ -180,7 +220,15 @@ func buildChatMessages(systemPrompt string, history []chatMessage, prompt string
 // about an edit would end up being mistaken for the edit. Its errors are not
 // propagated — failing to deliver optional commentary must not fail a request
 // that is otherwise succeeding.
-func streamCompletion(ctx context.Context, apiBase, apiKey, model, systemPrompt string, history []chatMessage, prompt string, routing providerRouting, onToken func(string) error, onProvider func(string), onReasoning func(string)) error {
+//
+// onFinish, if non-nil, is invoked exactly once when the stream ends
+// SUCCESSFULLY, with the terminal SSE finish_reason (e.g. "stop", "length"),
+// or "" if the provider sent none. It is how the caller learns an answer was
+// cut off (M1): a "length" finish means the model hit its output ceiling
+// mid-generation. It fires only on the success path — an error return already
+// carries its own abnormal-end signal, so onFinish is not called then. Like the
+// other observability callbacks it must never fail the request.
+func streamCompletion(ctx context.Context, apiBase, apiKey, model, systemPrompt string, history []chatMessage, prompt string, routing providerRouting, onToken func(string) error, onProvider func(string), onReasoning func(string), onFinish func(string)) error {
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 
@@ -230,6 +278,12 @@ func streamCompletion(ctx context.Context, apiBase, apiKey, model, systemPrompt 
 	scanner.Buffer(make([]byte, 0, sseInitialBufferSize), sseMaxLineSize)
 
 	providerSeen := false
+	// finishReason is the most recent non-empty SSE finish_reason seen. The
+	// provider reports it on the terminal content chunk (before the "[DONE]"
+	// sentinel), so by the time either success return is reached it holds the
+	// real stopping condition -- "stop" for a natural end, "length" for a cut-off
+	// answer (M1). Reported once, via onFinish, on the success path only.
+	finishReason := ""
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || !strings.HasPrefix(line, "data:") {
@@ -237,6 +291,9 @@ func streamCompletion(ctx context.Context, apiBase, apiKey, model, systemPrompt 
 		}
 		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 		if data == "[DONE]" {
+			if onFinish != nil {
+				onFinish(finishReason)
+			}
 			return nil
 		}
 
@@ -253,6 +310,9 @@ func streamCompletion(ctx context.Context, apiBase, apiKey, model, systemPrompt 
 		if len(chunk.Choices) == 0 {
 			continue
 		}
+		if fr := chunk.Choices[0].FinishReason; fr != "" {
+			finishReason = fr
+		}
 		if reasoning := chunk.Choices[0].Delta.Reasoning; reasoning != "" && onReasoning != nil {
 			onReasoning(reasoning)
 		}
@@ -266,6 +326,12 @@ func streamCompletion(ctx context.Context, apiBase, apiKey, model, systemPrompt 
 	}
 	if err := scanner.Err(); err != nil {
 		return &ModelError{Class: ClassUpstreamUnavailable, detail: "reading model API stream: " + err.Error()}
+	}
+	// Stream ended without an explicit "[DONE]" sentinel (some providers just
+	// close the body). Still a successful, complete read as far as we can tell,
+	// so report whatever terminal finish_reason we captured.
+	if onFinish != nil {
+		onFinish(finishReason)
 	}
 	return nil
 }

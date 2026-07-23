@@ -46,6 +46,14 @@ type degradedMsg struct{ items []protocol.Degradation }
 // X" fact — never a fallback claim or a ZDR judgement (see the field comment).
 type providerMsg struct{ provider string }
 
+// incompleteMsg carries the daemon's report that the model's answer was cut
+// off rather than finishing on its own (see protocol.TokenResponse.Incomplete).
+// It rides on the final Done message, so it is emitted immediately before
+// streamDoneMsg -- a partial answer whose stream ended for a "length" cutoff
+// used to arrive as a Done byte-identical to a complete one, rendering a
+// sentence that stops mid-word as if it were the whole reply.
+type incompleteMsg struct{ info *protocol.IncompleteInfo }
+
 // streamDoneMsg signals the stream finished successfully.
 type streamDoneMsg struct{}
 
@@ -229,6 +237,12 @@ func streamPrompt(ctx context.Context, clientName, workspace, prompt, promptKind
 			ch <- tokenMsg(tok.Token)
 		}
 		if tok.Done {
+			// Rides on the final Done message; emit it before streamDoneMsg so
+			// the "answer cut off" notice lands right under the just-finished
+			// (partial) answer, ahead of any edit-review chrome.
+			if tok.Incomplete != nil {
+				ch <- incompleteMsg{tok.Incomplete}
+			}
 			ch <- streamDoneMsg{}
 			return
 		}

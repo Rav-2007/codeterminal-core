@@ -199,6 +199,25 @@ type Turn struct {
 // older clients that don't know this field simply ignore it, exactly like
 // Grounding and Redactions.
 //
+// Incomplete, when set on the final (Done) message, reports that the model's
+// answer was CUT OFF rather than finishing on its own -- the daemon observed a
+// terminal SSE finish_reason that was not a natural "stop" (e.g. "length", the
+// model hitting its output-token ceiling mid-sentence). Before this existed the
+// daemon decoded only delta.content and never looked at finish_reason at all, so
+// a truncated answer returned a Done message byte-identical to a complete one:
+// the client rendered a sentence that stops mid-word as if it were the whole
+// reply, with nothing to say it had been cut off. A client MUST render its
+// presence as a visibly incomplete state (see IncompleteInfo), distinct from a
+// finished answer.
+//
+// It covers ONLY the truncation the daemon can actually see -- an upstream-side
+// output limit reported in the stream. A connection drop or a mid-stream daemon
+// exit surfaces to the client as a transport close, not as this field (the
+// daemon that died cannot annotate its own final message); those remain the
+// client's to distinguish, and are a separate concern from this one. Empty/
+// omitted is the common case (a natural "stop"). Additive: older clients that
+// don't know this field simply ignore it, exactly like Grounding and Provider.
+//
 // Provider names the upstream provider OpenRouter reports as having served this
 // turn (e.g. "DeepInfra"), surfaced from the daemon's own log-only observation
 // (see daemon/provider.go's chatCompletionChunk.Provider / onProvider). Unlike
@@ -228,6 +247,36 @@ type TokenResponse struct {
 	Redactions      []string        `json:"redactions,omitempty"`
 	Degraded        []Degradation   `json:"degraded,omitempty"`
 	Provider        string          `json:"provider,omitempty"`
+	Incomplete      *IncompleteInfo `json:"incomplete,omitempty"`
+}
+
+// Stable, machine-readable reason slugs for IncompleteInfo.Reason. Named for
+// the same reason ErrorClass and the Degraded* constants are: a client should be
+// able to branch on WHICH kind of truncation happened (to word it, style it, or
+// offer the specific remedy -- "ask me to continue" for a length cutoff) without
+// string-matching prose that may later be reworded. The values are the OpenAI/
+// OpenRouter finish_reason vocabulary, which is provider-neutral (it names the
+// model's stopping condition, never a host, URL, or account) so surfacing it
+// raises no Gate-7 disclosure concern.
+const (
+	// IncompleteLength: the model stopped because it hit its output-token
+	// ceiling, not because it was done -- the answer is cut off mid-generation.
+	IncompleteLength = "length"
+
+	// IncompleteContentFilter: the provider's content filter halted generation
+	// mid-stream, so the answer is partial.
+	IncompleteContentFilter = "content_filter"
+)
+
+// IncompleteInfo reports that a streamed answer ended early rather than
+// naturally, in the same report-a-decision-already-made spirit as GroundingInfo
+// and HistoryInfo: a conclusion (Reason) plus a client-safe, human-readable
+// explanation (Detail), never the internal detail behind it. Detail follows the
+// Fix 8 / Degradation discipline -- it names WHAT happened and what it means for
+// the user, and never a path, host, provider name, or raw upstream error string.
+type IncompleteInfo struct {
+	Reason string `json:"reason"`
+	Detail string `json:"detail"`
 }
 
 // Stable, machine-readable component identifiers for Degradation.Component.

@@ -429,6 +429,7 @@ func TestStreamCompletion_ReadsDeltaReasoning(t *testing.T) {
 		func(tok string) error { tokens = append(tokens, tok); return nil },
 		nil,
 		func(r string) { reasoning = append(reasoning, r) },
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("streamCompletion: %v", err)
@@ -447,7 +448,7 @@ func TestStreamCompletion_NilReasoningCallbackIsSafe(t *testing.T) {
 	upstream, _ := scriptedUpstream(t, []string{deltaLine("answer", "thinking")})
 	err := streamCompletion(context.Background(), upstream.URL, "k", "m", "sys", nil, "hello",
 		ZDRConfig{}.resolvedProviderRouting(),
-		func(string) error { return nil }, nil, nil,
+		func(string) error { return nil }, nil, nil, nil,
 	)
 	if err != nil {
 		t.Fatalf("streamCompletion with a nil onReasoning: %v", err)

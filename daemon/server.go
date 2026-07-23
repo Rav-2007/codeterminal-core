@@ -385,6 +385,11 @@ func (s *Server) serveConn(conn net.Conn) {
 	routing := s.cfg.ZDR.resolvedProviderRouting()
 	var full strings.Builder
 	reasoningBytes := 0
+	// finishReason is captured from the stream's terminal SSE finish_reason via
+	// onFinish below, then mapped to the Incomplete signal on the final Done
+	// message (M1). It fires only on a successful stream, so the error path below
+	// never reads it (an error is its own abnormal-end signal).
+	finishReason := ""
 	// streamWithRetry, not streamCompletion (Fix 10): transient failures are
 	// retried with jittered backoff, and only while nothing has streamed yet --
 	// see its doc comment for the two rules that decide.
@@ -417,6 +422,12 @@ func (s *Server) serveConn(conn net.Conn) {
 			reasoningBytes += len(reasoning)
 			enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Reasoning: reasoning})
 		},
+		// onFinish: record the terminal finish_reason so the final Done message can
+		// flag a cut-off answer (M1). Fires at most once, on success only; a plain
+		// assignment, no wire write of its own -- the signal rides the Done message.
+		func(reason string) {
+			finishReason = reason
+		},
 		s.logger,
 	)
 	if reasoningBytes > 0 {
@@ -443,7 +454,11 @@ func (s *Server) serveConn(conn net.Conn) {
 	}
 
 	blocks := s.parseAndLogEditBlocks(full.String())
-	enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Done: true, EditProposals: editProposalsFromBlocks(blocks)})
+	incomplete := incompleteInfoFor(finishReason)
+	if incomplete != nil {
+		s.logger.Printf("stream ended early: finish_reason=%q (answer cut off)", finishReason)
+	}
+	enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Done: true, EditProposals: editProposalsFromBlocks(blocks), Incomplete: incomplete})
 	s.logger.Print("stream complete")
 
 	s.persistTurn(promptReq.Prompt, full.String())

@@ -92,6 +92,7 @@ func streamWithRetry(
 	onToken func(string) error,
 	onProvider func(string),
 	onReasoning func(string),
+	onFinish func(string),
 	logger *log.Logger,
 ) error {
 	start := time.Now()
@@ -106,6 +107,7 @@ func streamWithRetry(
 			},
 			onProvider,
 			onReasoning,
+			onFinish,
 		)
 		if err == nil {
 			if attempt > 1 && logger != nil {

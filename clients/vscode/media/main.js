@@ -135,6 +135,22 @@
     providerEl.textContent = provider ? `served by: ${provider}` : '';
   }
 
+  // showIncomplete renders a persistent, visibly-distinct notice that the
+  // model's answer was CUT OFF rather than finished (see
+  // protocol.TokenResponse.Incomplete). It is appended to the transcript right
+  // after the partial answer -- NOT a transient header like grounding/provider
+  // that clears next turn -- so the scrollback keeps an honest record that this
+  // reply is incomplete. textContent (never innerHTML): detail is daemon-relayed
+  // prose. Arrives before 'done', while the answer bubble is still current.
+  function showIncomplete(info) {
+    const div = document.createElement('div');
+    div.className = 'turn incomplete-notice';
+    const detail = info && info.detail ? info.detail : 'the answer may be incomplete';
+    div.textContent = `⚠ answer cut off: ${detail}`;
+    transcriptEl.appendChild(div);
+    transcriptEl.scrollTop = transcriptEl.scrollHeight;
+  }
+
   // showEditProposal renders ONE edit block as a whole-block diff -- the
   // entire search text red, the entire replace text green, no word/line-
   // level diffing -- matching the TUI's non-LCS rendering (renderReviewPanel
@@ -507,6 +523,9 @@
         currentAssistantBubble = null;
         addBubble('error', msg.message);
         setStreaming(false);
+        break;
+      case 'incomplete':
+        showIncomplete(msg.info);
         break;
       case 'editProposal':
         showEditProposal(msg.edit, msg.index, msg.total);

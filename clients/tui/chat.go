@@ -255,6 +255,19 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tokenMsg:
 		return m.handleToken(msg)
 
+	case incompleteMsg:
+		if m.streamCh == nil {
+			return m, nil // a stray message from an already-abandoned stream
+		}
+		// A persistent scrollback record that THIS answer was cut off -- a
+		// roleSystem notice (TUI-only chrome, dropped from history by
+		// buildHistory) appended right after the partial answer, not a
+		// header notice that clears on the next turn. streamDoneMsg follows,
+		// so keep draining the channel.
+		m.turns = append(m.turns, turn{role: roleSystem, text: "⚠ answer cut off: " + incompleteText(msg.info)})
+		m.refreshViewport()
+		return m, waitForNext(m.streamCh)
+
 	case streamDoneMsg:
 		m.streamCancel = nil
 		m.streamCh = nil
@@ -800,6 +813,23 @@ func (m chatModel) redactionsLabel() string {
 		return ""
 	}
 	return errorStyle.Render(fmt.Sprintf("⚠ redacted %d suspected secret(s) before sending: %s", len(m.lastRedactions), strings.Join(m.lastRedactions, ", ")))
+}
+
+// incompleteText renders the daemon's cut-off explanation for the transcript
+// notice (see protocol.IncompleteInfo). Prefers the daemon's client-safe Detail
+// prose; falls back to the machine-readable Reason, then a bare generic, so the
+// notice is never empty even if a future daemon sends a reason with no detail.
+func incompleteText(info *protocol.IncompleteInfo) string {
+	if info == nil {
+		return "the answer may be incomplete"
+	}
+	if info.Detail != "" {
+		return info.Detail
+	}
+	if info.Reason != "" {
+		return "the model stopped early (" + info.Reason + ")"
+	}
+	return "the answer may be incomplete"
 }
 
 // providerLabel renders the upstream provider the daemon reported serving this
