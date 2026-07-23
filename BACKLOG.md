@@ -1445,3 +1445,118 @@ doing before that decision is made.
   embedding timeout: batch buildIndex") is excluded because it doesn't revert cleanly against
   current HEAD (conflicts with later `index_cmd.go` rewrites); close by resolving that revert
   conflict or mining a clean 5th defect-fix commit.
+
+## Backlog — added 2026-07-23 (Tier 4 — the operability cluster)
+
+**Three sub-clusters implemented on `main`, isolated commits, each verified through the real
+daemon binary and real client(s) over the real Unix socket.** `main` was at `fccadbc`; it is now
+at `2241daa` (C1 `0599a11`, C2 `6618dda`, C3 `2241daa`). Nothing pushed — `origin/main` stays
+behind by choice. **Nothing marked closed — founder decides.**
+
+The cluster closes the pattern the A6–A9 debug pass named: *the daemon degrades gracefully and
+honestly in its logs, but presents as healthy on the wire.* Per Part 0, each catalogued finding
+was reproduced live against current `main` FIRST (rule 3 — a catalogued finding is still a claim
+until reproduced today), then fixed, then validated through production entry points, never by
+reading code.
+
+### Step 1 — reconfirmation (live, before any code; all 3/3 reproducible)
+
+| Item | Reproduction | Observed on current `main` |
+|---|---|---|
+| C1-a `API_BASE` validity | `CODETERMINAL_API_BASE=':::not a url'`, real prompt | Starts clean; burns 3 retries with backoff on an unparseable URL; reports `"unreachable or failing right now — this is usually temporary"` / `upstream_unavailable`. Not temporary — a typo. (Truly-unset base *does* already fail fast; only validity was unchecked.) |
+| C1-b nonexistent `--workspace` | `--workspace /nonexistent`, and a path naming a file | **Reproduces differently than catalogued** — not "silent" but actively *wrong*: wire says `"no index has been built for this workspace yet (run \`index\`…)"`. The path doesn't exist; indexing it fails too. Recorded as found, not as described. |
+| C1-c version / unknown keys / ranges | 5 crafted `models.json` | `config_version` 0 and 99 accepted mutely; `"retreival"` (typo) silently discarded so a deliberate `top_k` never applied; negatives silently defaulted; `top_k:100000` + `context_budget_chars:100000000` applied verbatim. |
+| C2-a lexical tier down | symlinked `lexical.db` (constructor refuses it); semantic healthy | stderr `lexical=false`; wire `{"grounded":true,"chunks":3}` — **byte-identical to healthy apart from the workspace label.** TUI rendered `grounded ✓ 3 chunk(s)`. The purest instance. |
+| C2-b memory unavailable | `XDG_STATE_HOME` with symlinked `memory.db` | **Partially, not fully, invisible** — prompt path + handshake say nothing, turns silently stop persisting; **but the search path already reports it** (`"conversation memory is not available"`). Not rounded up to "invisible". |
+| C2-c provider-served-but-degraded | capture-server body inspection | Daemon sends `allow_fallbacks:true` (the shipped `models.json` sets it); client receives zero routing/provider info; provider name reaches stderr only. |
+| C3 observability | `{"status":true}` probe; `--help` | No status message type (`{"status":true}` → `"prompt is empty"`); no `--log-file`/levels; stderr the only sink. Confirmed zero. |
+
+### C1 — fail-fast config validation (`0599a11`)
+Two failure modes chosen per case, not uniformly (as the prompt required — "fail fast" is not
+always "exit 1"):
+- **FATAL (exit before listening):** unparseable / schemeless / hostless / non-HTTP `API_BASE`
+  (incl. whitespace-only); a `--workspace` that is missing or is a regular file. These can never
+  start working, so refusing with a message that names the setting beats misattributing per-request
+  forever. **Reachability is deliberately NOT probed** — that is a runtime state (the daemon's
+  retrieval/apply/undo/search paths all work offline), and it is reported as one.
+- **WARN AND CONTINUE:** unrecognized/absent `config_version`; unknown keys (named individually —
+  `"retreival"` is reported, not merely ineffective); out-of-range `top_k`/`context_budget_chars`
+  (clamped to 200 / 200 000 with a warning, negatives → default). None makes the file unservable,
+  and hard-failing would break forward/backward compatibility. `Config.Validate` still hard-fails
+  a genuinely unservable file — a test pins that the warn path didn't soften it.
+- **Verified live:** all four fatal cases exit 1 before listening; all four warn cases start with a
+  named warning; the clamped values are the ones retrieval actually runs (`top_k=200`,
+  `context_budget_chars=200000`); the shipped `models.json` warns nothing.
+
+### C2 — wire-visible degraded-state signals (`6618dda`)
+New `TokenResponse.Degraded []Degradation`, on the same pre-token message as `Grounding`, listing
+every reduced subsystem: `lexical_retrieval`, `memory`, `provider_routing`. Detail strings follow
+the Fix 8 / Gate 7 discipline (what is reduced + what it costs; never a path/host/upstream error);
+a test asserts that discipline directly. Design notes:
+- `lexical_retrieval` is reported ONLY when the semantic tier works — if retrieval is off entirely,
+  `GroundingInfo.Reason` already gives the cause, and this would be noise.
+- `provider_routing` is derived from **config**, not from any response: OpenRouter reports which
+  provider served a request but not whether a fallback was used, so a per-request "this one fell
+  back" claim would be fabricated. It says the honest, checkable thing — fallbacks are *permitted*.
+- **Both shipped clients render it** — this is the Fix-13 trap (a correct wire field no client
+  reads) and the Tier-2.5 trap (a fix unreachable from every client) avoided together. TUI: one
+  header line per degradation (one line each, never joined — a joined line can overflow and
+  soft-wrap, desyncing the viewport row count and hiding a notice). VS Code: a `#degraded` region
+  rendered via `textContent`.
+- **Verified through production entry points:** all three signals captured as raw bytes off the
+  real socket; the **real TUI binary driven in a pty against the real daemon** painting
+  `⚠ degraded (lexical_retrieval): …` and `⚠ degraded (memory): …`; the **real `media/main.js`
+  render path** exercised against a DOM stub. A healthy daemon emits nothing (omitempty), so its
+  response stays byte-identical to before.
+
+### C3 — minimal observability surface (`2241daa`)
+- **Status over the existing Unix socket** (NOT an HTTP port — the daemon's invariant is that it
+  never listens on the network, and the socket is 0600 + SO_PEERCRED-authenticated; a localhost
+  HTTP health endpoint would have neither property). New `StatusRequest`/`StatusResponse` via the
+  same discriminator peek that routes apply/undo/search, plus a `status` CLI subcommand that
+  connects as a client and prints human-readable (or `--json`). Reports the two retrieval tiers
+  **separately** (a single "retrieval: ok" would re-hide the C2-a state); reuses the same
+  `Degradation` values the prompt path pushes (pulled and pushed views can't drift); carries **no
+  api base** (Gate 7 — a test asserts it); read-only and lock-free (can't block or perturb a busy
+  daemon).
+- **`--log-file`**, size-rotated at 5 MiB with one `.1` backup (the `warnsink.go` discipline),
+  **tee'd to stderr** not replacing it. An unwritable path warns and continues (the same
+  over-strict-startup trap C1 avoided).
+- **Verified live:** `{"status":true}` raw off the socket; the real `status` CLI against a live
+  daemon (healthy; lexical-down showing `DEGRADED (2)`; and the no-daemon `is it running?` case
+  exiting 1); `--log-file` confirmed capturing the startup lines a detached daemon would otherwise
+  lose.
+- **Explicit scope call-out:** this adds a log FILE, **not log levels.** Levels would mean
+  reclassifying every call site across the daemon for a filtering benefit, while the operator
+  question that motivated the cluster ("is this daemon healthy?") is answered directly by the
+  status surface. Left undone deliberately, not overlooked.
+
+### Step 4 — regression (real runs, all six `go.work` modules, not asserted)
+`go build`, `go vet`, `gofmt -l` clean across daemon / editapply / protocol / clients/tui / helper /
+proxy. `go test` green (daemon 13.5s; editapply, clients/tui, proxy pass; protocol/helper no tests).
+`go test -race -count=1` green on daemon (22.0s), editapply (1.1s), clients/tui (1.3s). VS Code
+`tsc --noEmit` clean. `./...` still does not work from the repo root — the six paths were named
+explicitly.
+
+### Surfaced but NOT fixed (recorded, in the Tier-3 chunker-off-by-one spirit)
+- **The shipped `models.json` sets `zdr.allow_fallbacks: true`** (flipped `false`→`true` on
+  2026-07-10, see the 2026-07-17 P2 caching section). This is exactly what makes C2's
+  `provider_routing` degradation fire on a stock daemon. It is real config content weakening the
+  ZDR posture the docs describe — **founder's call**, not a code change, recorded here not silently
+  altered. (Config, not the fix's concern; C2 only makes it *visible*.)
+- **C2-b memory is still not surfaced on the handshake itself** — the degradation fires on the
+  first prompt of a session, which is when a client learns memory won't persist, but a client that
+  only ever handshakes (a preflight/hydrate connection) sees nothing new. Small, deferred.
+- **Client-render parity gaps from Tier 3 remain open and untouched here** — `TokenResponse.History`
+  (truncation) and `.Reasoning` are still read by no client; C2 deliberately did not widen its
+  blast radius to fix them. Same client-side bucket as this cluster's C2 render work; a natural
+  next pass.
+
+### Closing statement
+**Done:** C1, C2, C3 implemented as three isolated commits; both shipped clients render the C2
+signal; a status surface and optional durable log exist. **Verified:** every fix through the real
+daemon binary and real client(s) over the real socket (bytes captured, real TUI driven in a pty,
+real webview render path exercised), plus the full six-module regression suite including `-race`.
+**Explicitly still open:** the `allow_fallbacks` config posture (founder's call); handshake-time
+memory reporting; the Tier-3 client-render parity gaps (`History`/`Reasoning`); log *levels*
+(scoped out with reason). **Nothing marked closed — that is the founder's call, as always.**
