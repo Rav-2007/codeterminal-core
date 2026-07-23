@@ -446,12 +446,37 @@ export async function applyEdit(
 ): Promise<ApplyEditResponse> {
   const { socket } = await connectToDaemon(clientName);
   return new Promise((resolve, reject) => {
+    // settled guards the three ways this can end -- a reply line, a socket
+    // error, or a close with neither -- so exactly one wins. Without the close
+    // arm, a clean daemon shutdown mid-apply (a graceful FIN with no reply and
+    // no 'error') left this promise unsettled FOREVER: in an auto-apply run
+    // runAutoApply awaits it, so a hung applyEdit froze autoApplyRunInFlight
+    // true and onPrompt then silently dropped every future prompt -- the panel
+    // wedged with its input re-enabled but inert (M2).
+    let settled = false;
     const decoder = new LineDecoder((obj) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
       socket.destroy();
       resolve(obj as ApplyEditResponse);
     });
     socket.on('data', (chunk: Buffer) => decoder.feed(chunk));
-    socket.once('error', (err) => reject(err));
+    socket.once('error', (err) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      reject(err);
+    });
+    socket.once('close', () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      reject(new Error('daemon closed the connection before replying (it may have been stopped or restarted; try again)'));
+    });
 
     const req: ApplyEditRequest = { protocol_version: PROTOCOL_VERSION, workspace, edit };
     if (backupSessionDir) {
@@ -475,12 +500,32 @@ export async function applyEdit(
 export async function undoEdits(clientName: string, workspace: string, backupSessionDir?: string): Promise<UndoResponse> {
   const { socket } = await connectToDaemon(clientName);
   return new Promise((resolve, reject) => {
+    // Same close-before-reply guard as applyEdit (see its comment): a clean
+    // daemon shutdown mid-undo must reject, not hang.
+    let settled = false;
     const decoder = new LineDecoder((obj) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
       socket.destroy();
       resolve(obj as UndoResponse);
     });
     socket.on('data', (chunk: Buffer) => decoder.feed(chunk));
-    socket.once('error', (err) => reject(err));
+    socket.once('error', (err) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      reject(err);
+    });
+    socket.once('close', () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      reject(new Error('daemon closed the connection before replying (it may have been stopped or restarted; try again)'));
+    });
 
     const req: UndoRequest = { protocol_version: PROTOCOL_VERSION, undo: true, workspace };
     if (backupSessionDir) {
@@ -506,12 +551,32 @@ export async function searchConversations(
 ): Promise<SearchResponse> {
   const { socket } = await connectToDaemon(clientName);
   return new Promise((resolve, reject) => {
+    // Same close-before-reply guard as applyEdit (see its comment): a clean
+    // daemon shutdown mid-search must reject, not hang.
+    let settled = false;
     const decoder = new LineDecoder((obj) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
       socket.destroy();
       resolve(obj as SearchResponse);
     });
     socket.on('data', (chunk: Buffer) => decoder.feed(chunk));
-    socket.once('error', (err) => reject(err));
+    socket.once('error', (err) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      reject(err);
+    });
+    socket.once('close', () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      reject(new Error('daemon closed the connection before replying (it may have been stopped or restarted; try again)'));
+    });
 
     const req: SearchRequest = { protocol_version: PROTOCOL_VERSION, search: true, workspace, query };
     if (limit) {
