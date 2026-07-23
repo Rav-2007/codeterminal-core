@@ -581,7 +581,7 @@ gate stays un-clear on the socket axis until the auth-model decision (below) is 
 
 **The two PARTIAL findings (logged at the review's stated severity — not rounded up):**
 - **Gate 6 — no cross-request lock on the Apply/Undo filesystem path (PARTIAL → deep-audited f97dc09 →
-  FIXED `442d018`).** Each connection is handled on its own goroutine and the Apply / Undo write path
+  FIXED `d96794e`).** Each connection is handled on its own goroutine and the Apply / Undo write path
   takes no cross-request lock, so two concurrent requests can interleave on the same files. Originally
   flagged as a TOCTOU *amplifier* (see Gate 8); the deep audit REFUTED that framing (distinct data
   races, not symlink amplification) and the fix serializes the paths per workspace root — see the dated
@@ -678,7 +678,7 @@ outcomes); method + numbers are the record here.
 - **New follow-ups spun out (flag-only):** (1) `NewBackupSessionDir` same-second collision
   (`editapply/backup.go`); (2) `pruneBackupSessions` `RemoveAll` racing a live undo →
   spurious "session not found" (`editapply/backup.go` + `apply_cmd.go runUndoSession` WalkDir).
-- **FIXED 2026-07-19 (commit `442d018`) — Gate 6 now closed.** In-process per-workspace-root lock
+- **FIXED 2026-07-19 (commit `d96794e`) — Gate 6 now closed.** In-process per-workspace-root lock
   (`Server.applyLocks`, a `sync.Map` of `*sync.Mutex`; `lockWorkspace` get-or-creates it). `handleApplyEdit`
   and `handleUndo` take it right after resolving the root and hold it via `defer` across the whole
   critical section (apply: PrepareEdit read → backup-dir prune → Apply write+copies; undo: session
