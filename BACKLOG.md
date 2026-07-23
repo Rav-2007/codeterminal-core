@@ -1664,18 +1664,69 @@ without any weakened re-send. The proxy forwards the body unchanged (`proxy/main
    endpoints independently confirmed ZDR-compliant. Keeps failover among vetted providers. **Cost:**
    a per-model allow-list to build and maintain as OpenRouter's provider set changes; the daemon
    currently sends no list, so this is new config surface.
-3. **Surface fallback-served requests to the client/logs** so a user can see when their turn left
-   the primary ZDR-verified path. **Tier 4's C2 `provider_routing` degradation already positions
-   this** — today it reports the *config* posture (fallbacks permitted); it could be extended to
-   also flag the *actual served provider* per turn. **Cost:** OpenRouter reports which provider
-   served a request but **not** whether it was reached via fallback (D2), so "this turn fell back"
-   cannot be shown truthfully without OpenRouter data that does not exist — only "served by provider
-   X" could be, and mapping X→ZDR-status needs the allow-list from option 2 anyway.
+3. **Surface the actual served provider to the client** so a user can see which endpoint served
+   their turn. **Corrected 2026-07-23 — see the correction block below; the original wording of this
+   option overstated what C2 provides and understated what the daemon already has.** Reality: the
+   per-request serving-provider identity is *already obtained and logged today* — OpenRouter's
+   streaming response carries a top-level `provider` field on its SSE chunks, the daemon already
+   parses it (`chatCompletionChunk.Provider`, `daemon/provider.go:74`/`247`) and already logs it
+   server-side (`server.go:379`, `model API served by provider=…`). The unbuilt part is only
+   *surfacing that already-captured value to the client per turn over the protocol* — a genuinely
+   small wiring item, **not** gated on option 2 and **not** a new OpenRouter capability. C2's
+   `provider_routing` degradation is a *different* mechanism (a config-derived boolean, "fallbacks
+   permitted") and does **not** "already position" the served-provider identity. **Cost / limits:**
+   OpenRouter reports *which* provider served a request but **not** *whether* it was reached via
+   fallback (D2), so "this turn fell back" still cannot be shown truthfully; only "served by X" can.
+   The allow-list from option 2 is needed *only to map X→ZDR-status*, not to obtain X.
 4. **Leave as-is, documented.** Defensible **iff** D2's outreach confirms the fallback set stays
    ZDR-filtered. Until then this is "accept an unverified edge," not "confirmed fine."
 
 **No option selected — this is a product-posture decision (availability vs. strongest-provable-ZDR
 tradeoff), explicitly the founder's call.**
+
+### Correction (2026-07-23) — D4 option 3 overstated C2 and understated the daemon
+The original D4 option 3 (in commit `57c95f7`) read "Tier 4's C2 `provider_routing` degradation
+already positions this … only 'served by provider X' could be [shown], and mapping X→ZDR-status
+needs the allow-list from option 2 anyway." That framed per-request provider identity as data gated
+on option 2's allow-list, leaning on C2 to imply it was "already positioned." That was wrong in both
+directions. The correction, and how it was checked:
+
+- **What C2 actually is.** C2's `provider_routing` degradation is *config-derived* — a boolean that
+  says fallbacks are *permitted*, read from `models.json`, not from any response (BACKLOG C2 note,
+  line ~1498: "OpenRouter reports which provider served a request but not whether a fallback was
+  used, so a per-request 'this one fell back' claim would be fabricated"). It does **not** carry a
+  per-request served-provider identity, so it does not "already position" option 3.
+- **What the daemon actually already has (this is the part option 3 missed entirely).** The
+  per-request serving provider is **already obtained and logged today**. OpenRouter's streaming chat
+  completion emits a top-level `provider` field on its SSE chunks; the daemon decodes it into
+  `chatCompletionChunk.Provider` (`daemon/provider.go:74`), fires `onProvider` on first sighting
+  (`provider.go:247-251`), and the handler **logs it server-side**: `server.go:379`,
+  `model API served by provider=%q (zdr=… data_collection=… allow_fallbacks=…)`. So "served by X"
+  is not a to-be-obtained value gated on option 2 — it is in hand every turn and already in the
+  daemon log. Option 2's allow-list is needed *only* to map that X to a ZDR-status verdict, **not**
+  to obtain X. The only unbuilt work in option 3 is wiring the already-captured provider value into
+  the *client-facing* protocol per turn (it is server-log-only today) — a small, real scope item.
+- **What remains genuinely unavailable.** OpenRouter reports *which* provider served a request but
+  **not** *whether* a fallback occurred (D2 — the docs describe `allow_fallbacks` with no response
+  signal for it). So "this turn fell back" stays unshowable; "served by X" is the truthful ceiling.
+  That half of the original wording was correct and is retained.
+
+- **How this was verified, and the honest limit on it (per the no-rounding-up rule).** The provider
+  field's *presence in a real OpenRouter response* rests on: (a) OpenRouter's own streaming docs,
+  which show a top-level `"provider"` field on SSE chunks (e.g. `"provider":"openai"`); and (b) the
+  daemon's own code comment at `provider.go:67-73`, "observed in practice, not formally guaranteed on
+  every chunk by OpenRouter's docs" — i.e. prior live observation by this codebase, plus the active
+  `server.go:379` log that only exists because the field is seen in practice. It was **not**
+  re-verified with a fresh live real-OpenRouter capture this session: no OpenRouter/proxy API key is
+  available in this environment (only a Gemini key), and — the load-bearing caveat — **the D1
+  capture method structurally cannot answer this question at all.** D1's "local capture point"
+  (`capture_api2.py`) *replaces* OpenRouter with a stub, and that stub *fabricates* the provider
+  field (`sse({"provider": "CaptureProvider", …})`) precisely because the daemon expects to read one
+  — so no D1 capture, past or re-run, is evidence about what *real* OpenRouter returns. Net, honestly
+  stated: the served-provider field is well-supported as present (OpenRouter docs + the daemon's
+  in-practice observation and live logging) and is already parsed+logged; the one unverified residual
+  is the daemon comment's own hedge — presence is observed, per-chunk completeness is *not* a
+  documented OpenRouter guarantee. This corrects an open item; it closes nothing.
 
 ### Closing statement
 **Verified (live, both paths):** the daemon and proxy send `zdr`/`data_collection`/`allow_fallbacks`
