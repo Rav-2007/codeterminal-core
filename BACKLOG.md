@@ -1960,3 +1960,79 @@ nonetheless worth fixing, on their own merits and independent of shape #2's reac
 **Nothing marked closed.** Step 0 downgraded C1's deref reachability from confirmed-ship-blocker to
 latent-defensive; the `recover()` availability gap and both C2 halves are fixed and verified. The
 founder confirms closure.
+
+---
+
+## 2026-07-23 — M1–M3 client-UX fix batch (three CTO-report mediums; verified, NOT closed)
+
+The three client-UX mediums from the CTO/beta-test report, in its stated priority ("the M1–M3
+client-UX trio for a visibly more honest product"). Three isolated commits; each reproduced/verified
+live through production entry points (real daemon, real socket, real TUI in a pty, the real compiled
+VS Code `daemonClient`, and the real `media/main.js` under a DOM shim). Full six-module regression
+below. **Nothing pushed; nothing marked closed — founder's call.**
+
+### Step 0 — M3 duplication determination (done first, in writing)
+**M3 ("reasoning tokens silently dropped by both clients") is the SAME bug as HANDOFF §3B's
+pre-existing Tier-3 render-parity item** (`TokenResponse.Reasoning` reaches the wire, no client
+renders it), verified in source: the daemon emits reasoning on its own message (`server.go:418`),
+the TUI never reads `tok.Reasoning` (`stream.go`), and the VS Code `TokenResponse` had no `reasoning`
+field at all. Not distinct work — one client-side fix that closes both. **Step 0 part 4:** the other
+two parity gaps in that same §3B item — `HistoryInfo.Truncated` (dropped both clients) and
+`GroundingInfo.Truncated` (dropped by the TUI; VS Code already rendered it) — are cheap (same files,
+same dispatch-a-field→render pattern), so folded into the M3 commit and stated there. They are
+DISTINCT truncations from M1 (answer cutoff): context-trimmed vs. oldest-turns-dropped vs.
+answer-cut-off — kept labelled distinctly.
+
+### M1 — truncated-stream visibility (`029d764`)
+Root cause: the daemon decoded only `delta.content` and never read the SSE `finish_reason`, so a
+`length` cutoff (model hit its output ceiling mid-sentence) returned a `Done` byte-identical to a
+complete answer. Fix: `streamCompletion` now captures the terminal `finish_reason` and reports it
+once via a new `onFinish` callback (threaded through `streamWithRetry`, success-path only);
+`server.go` maps it to a new `protocol.TokenResponse.Incomplete` (`*IncompleteInfo`: stable reason
+slug + client-safe detail, Gate-7 clean) on the final `Done` message — `nil` for a natural `stop`.
+TUI renders a persistent `⚠ answer cut off: <detail>` roleSystem notice (dropped from history); VS
+Code renders a warning-styled `.incomplete-notice` turn. **Live:** stub upstream with
+`finish_reason="length"` → `incomplete{reason:"length"}` on `Done`; `"stop"` → field absent
+(byte-distinct); real TUI (pty) shows the notice; real compiled `daemonClient` fires `onIncomplete`
+before `onDone`. Tests: `daemon/incomplete_test.go`, `clients/tui/incomplete_test.go`
+(fail-when-neutered). Connection-drop / daemon-exit mid-stream are NOT covered by this signal (the
+daemon that died can't annotate its final message) — noted as a separate client-side concern.
+
+### M2 — VS Code panel wedging on a CLEAN daemon close (`b647490`)
+Root cause: `applyEdit`/`undoEdits`/`searchConversations` in `daemonClient.ts` resolved only on a
+reply line and rejected only on socket `'error'` — **no `'close'` arm**. A graceful daemon shutdown
+mid-request (`ln.Close()` + process exit → FIN, no reply, no error) left the promise unsettled
+forever; in an auto-apply run `runAutoApply` awaits it, so `autoApplyRunInFlight` stuck `true` and
+`onPrompt`'s guard then silently dropped every later prompt (the webview had re-enabled input on the
+stream's `done`, so the user typed, hit Send, and nothing happened). Fix: a `'close'` handler
+(guarded by a shared `settled` flag) on all three helpers → rejects with a clear message instead of
+hanging. **Live (before/after):** transport level — pre-fix `applyEdit` hangs >3s, post-fix rejects;
+panel level (real compiled `ChatPanel` + fake `vscode` + real `daemonClient` + stub daemon closing
+mid-apply, auto-apply ON) — pre-fix WEDGED (run never summarizes, second prompt silently dropped),
+post-fix RECOVERED (run reports its outcome, next prompt accepted). No in-repo VS Code test runner
+exists (tsc-only bar); the scratchpad harnesses are the verification.
+
+### M3 + folded parity — reasoning & truncation render (`6995259`)
+No daemon change — purely the client read+render halves. TUI: a dimmed `💭 thinking:` block per
+assistant turn, accumulated in a SEPARATE `turn.reasoning` field never spliced into the answer text
+(which carries back as history / is parsed for edits); a header warning when history was dropped;
+`(context truncated)` on the grounded label. VS Code: `onReasoning` → a dim italic `.turn.reasoning`
+block placed above the answer (its own block); `onHistory` → a `#historyNotice` dropped-turns
+warning (`historyInfo` message, kept distinct from the `history` hydration message);
+grounding-truncation already rendered. **Live:** real TUI (pty) renders the thinking block; real
+compiled `daemonClient` fires `onReasoning` in order before tokens; real `media/main.js` under a DOM
+shim renders the thinking block (verified SEPARATE from the answer), the dropped-history warning, and
+the context-truncated label. Tests: `clients/tui/reasoning_test.go` (incl. reasoning-never-in-answer,
+fail-when-neutered). **This closes both the CTO report's M3 and the pre-existing §3B render-parity
+item** (Reasoning + History + GroundingInfo.Truncated) — one item, not two.
+
+### Regression (six modules, explicit paths — `./...` fails from root)
+`gofmt -l` clean; `go build ./...` + `go vet ./...` clean for `daemon`, `editapply`, `protocol`,
+`clients/tui`, `helper`, `proxy`; `go test -count=1 ./...` green (protocol/helper have no test
+files); `go test -race -count=1 ./...` green for the modules with tests; `tsc --noEmit` clean for the
+VS Code extension. Commits M1 `029d764`, M2 `b647490`, M3 `6995259` — separate, as required.
+
+### Not touched by this batch (remain open, per the report's own remaining list)
+nested-`.gitignore` secret indexing; the `.GIT` case-fold bypass; C3 (billing abort-refund); F1
+(proxy ZDR-enforcement); and all founder-gated P3 / Gate-6 / ZDR items. **Nothing marked closed —
+founder decides.**
