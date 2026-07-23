@@ -55,12 +55,30 @@ export interface EditBlockWire {
   replace: string;
 }
 
+export interface HistoryInfo {
+  turns: number;
+  truncated?: boolean;
+  dropped_invalid?: number;
+}
+
 export interface TokenResponse {
   protocol_version: number;
   token?: string;
   done: boolean;
   error?: string;
   grounding?: GroundingInfo;
+  // history mirrors protocol.TokenResponse.History (HistoryInfo): what the
+  // daemon did with the conversation turns this client sent. Rides on the same
+  // pre-token message as grounding. truncated means the oldest turns were
+  // dropped to fit the model's limit -- a client that silently lost them would
+  // answer "what did I first ask?" confidently and wrongly.
+  history?: HistoryInfo;
+  // reasoning mirrors protocol.TokenResponse.Reasoning: a reasoning-tier model's
+  // thinking tokens, streamed on their own messages, interleaved before/among
+  // the content tokens. It is SEPARATE from token and must NEVER be appended to
+  // the answer text (which is parsed for edit blocks and stored as history) --
+  // rendered as a distinct "thinking" area or ignored, never spliced in.
+  reasoning?: string;
   edit_proposals?: EditBlockWire[];
   // redactions mirrors protocol.TokenResponse.Redactions: the kinds of
   // secret-shaped text the daemon's heuristic scrubber (daemon/scrub.go)
@@ -314,9 +332,11 @@ export function connectToDaemon(clientName: string, signal?: AbortSignal): Promi
 
 export interface StreamHandlers {
   onGrounding?: (info: GroundingInfo) => void;
+  onHistory?: (info: HistoryInfo) => void;
   onRedactions?: (kinds: string[]) => void;
   onDegraded?: (items: Degradation[]) => void;
   onProvider?: (provider: string) => void;
+  onReasoning?: (text: string) => void;
   onToken?: (token: string) => void;
   onEditProposals?: (proposals: EditBlockWire[]) => void;
   onIncomplete?: (info: IncompleteInfo) => void;
@@ -370,8 +390,14 @@ export async function streamPrompt(
     if (tok.grounding) {
       handlers.onGrounding?.(tok.grounding);
     }
+    if (tok.history) {
+      handlers.onHistory?.(tok.history);
+    }
     if (tok.redactions && tok.redactions.length > 0) {
       handlers.onRedactions?.(tok.redactions);
+    }
+    if (tok.reasoning) {
+      handlers.onReasoning?.(tok.reasoning);
     }
     if (tok.degraded && tok.degraded.length > 0) {
       handlers.onDegraded?.(tok.degraded);

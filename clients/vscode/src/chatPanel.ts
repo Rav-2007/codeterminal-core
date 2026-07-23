@@ -4,6 +4,7 @@ import {
   Degradation,
   EditBlockWire,
   GroundingInfo,
+  HistoryInfo,
   IncompleteInfo,
   Turn,
   applyEdit,
@@ -164,8 +165,17 @@ export class ChatPanel {
       onGrounding: (info: GroundingInfo) => {
         this.panel.webview.postMessage({ type: 'grounding', info });
       },
+      // 'historyInfo', NOT 'history' -- 'history' is already the persisted-turn
+      // hydration message (see runPreflight). This one carries HistoryInfo, whose
+      // truncated flag the webview renders as a dropped-turns warning.
+      onHistory: (info: HistoryInfo) => {
+        this.panel.webview.postMessage({ type: 'historyInfo', info });
+      },
       onRedactions: (kinds: string[]) => {
         this.panel.webview.postMessage({ type: 'redactions', kinds });
+      },
+      onReasoning: (text: string) => {
+        this.panel.webview.postMessage({ type: 'reasoning', text });
       },
       onDegraded: (items: Degradation[]) => {
         this.panel.webview.postMessage({ type: 'degraded', items });
@@ -479,6 +489,16 @@ export class ChatPanel {
   .turn .role { display: block; font-size: 11px; opacity: 0.6; margin-bottom: 2px; }
   .turn.user .role { color: var(--vscode-textLink-foreground); }
   .turn.error { color: var(--vscode-errorForeground); }
+  /* Thinking is commentary, not the answer: dim + italic, visibly a separate
+     block above the reply, never styled like the answer it precedes. */
+  .turn.reasoning { opacity: 0.6; font-style: italic; font-size: 12px; }
+  .turn.reasoning .role { color: var(--vscode-descriptionForeground, inherit); }
+  #historyNotice {
+    font-size: 11px;
+    padding: 0 12px 6px;
+    color: var(--vscode-editorWarning-foreground, #cca700);
+  }
+  #historyNotice:empty { padding: 0; }
   /* A cut-off answer is a warning, not an error: the reply is partly valid, the
      user just needs to know it stopped early. Warning color, marked, persistent
      in scrollback -- distinct from both a normal turn and a red error. */
@@ -599,6 +619,7 @@ export class ChatPanel {
   <div id="searchResults"></div>
   <div id="transcript"></div>
   <div id="grounding"></div>
+  <div id="historyNotice"></div>
   <div id="redactions"></div>
   <div id="degraded"></div>
   <div id="provider"></div>

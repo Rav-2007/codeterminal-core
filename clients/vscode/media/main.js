@@ -7,6 +7,7 @@
 
   const transcriptEl = document.getElementById('transcript');
   const groundingEl = document.getElementById('grounding');
+  const historyNoticeEl = document.getElementById('historyNotice');
   const redactionsEl = document.getElementById('redactions');
   const degradedEl = document.getElementById('degraded');
   const providerEl = document.getElementById('provider');
@@ -18,6 +19,7 @@
 
   let streaming = false;
   let currentAssistantBubble = null;
+  let currentReasoningBody = null;
   let currentEditProposalEl = null;
   let pendingUndoButton = null;
 
@@ -83,6 +85,50 @@
     groundingEl.textContent = info.grounded
       ? `grounded · ${info.chunks ?? 0} chunk(s)${info.truncated ? ' (truncated)' : ''}`
       : `not grounded${info.reason ? ' · ' + info.reason : ''}`;
+  }
+
+  // setHistoryInfo renders a warning when the daemon dropped the oldest
+  // conversation turns this client sent (see protocol.HistoryInfo.truncated),
+  // mirroring setGrounding's lifetime: cleared at the start of every turn (see
+  // send()) and set at most once per response, since 'historyInfo' rides the
+  // same pre-token message as 'grounding'. A non-truncated report shows nothing.
+  function setHistoryInfo(info) {
+    historyNoticeEl.textContent =
+      info && info.truncated
+        ? '⚠ older conversation history was dropped to fit the model’s limit'
+        : '';
+  }
+
+  // appendReasoning renders a reasoning-tier model's thinking tokens (see
+  // protocol.TokenResponse.reasoning) as a dim, labelled "thinking" block placed
+  // ABOVE the answer -- a visibly SEPARATE area, never spliced into the answer
+  // text (which is what gets parsed for edits and stored as history). Before this
+  // the tokens were dropped and the user watched a blank bubble while the model
+  // thought. textContent (never innerHTML): thinking is daemon-relayed model
+  // text. Accumulates across the many small chunks that arrive per turn.
+  function appendReasoning(text) {
+    if (!currentReasoningBody) {
+      const container = document.createElement('div');
+      container.className = 'turn reasoning';
+      const label = document.createElement('span');
+      label.className = 'role';
+      label.textContent = 'thinking';
+      container.appendChild(label);
+      const body = document.createElement('span');
+      container.appendChild(body);
+      // Place the thinking block just before the (already-created) answer bubble
+      // so it reads top-to-bottom as think-then-answer.
+      const answerContainer =
+        currentAssistantBubble && currentAssistantBubble.parentElement;
+      if (answerContainer && answerContainer.parentElement === transcriptEl) {
+        transcriptEl.insertBefore(container, answerContainer);
+      } else {
+        transcriptEl.appendChild(container);
+      }
+      currentReasoningBody = body;
+    }
+    currentReasoningBody.textContent += text;
+    transcriptEl.scrollTop = transcriptEl.scrollHeight;
   }
 
   // setRedactions renders the kinds of secret-shaped text the daemon's
@@ -468,10 +514,14 @@
     addBubble('user', text);
     inputEl.value = '';
     setGrounding(null);
+    setHistoryInfo(null);
     setRedactions(null);
     setDegraded(null);
     setProvider(null);
     setStreaming(true);
+    // A fresh turn starts a new thinking block; the previous turn's stays in
+    // scrollback but must not accumulate this turn's reasoning.
+    currentReasoningBody = null;
     currentAssistantBubble = addBubble('assistant', '');
     // Captured once, for this run only -- see currentRunAuto's doc comment.
     currentRunAuto = autoApplyEnabled;
@@ -496,8 +546,14 @@
       case 'grounding':
         setGrounding(msg.info);
         break;
+      case 'historyInfo':
+        setHistoryInfo(msg.info);
+        break;
       case 'redactions':
         setRedactions(msg.kinds);
+        break;
+      case 'reasoning':
+        appendReasoning(msg.text);
         break;
       case 'degraded':
         setDegraded(msg.items);

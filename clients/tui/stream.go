@@ -46,6 +46,20 @@ type degradedMsg struct{ items []protocol.Degradation }
 // X" fact — never a fallback claim or a ZDR judgement (see the field comment).
 type providerMsg struct{ provider string }
 
+// reasoningMsg carries a chunk of a reasoning-tier model's thinking tokens
+// (see protocol.TokenResponse.Reasoning). It arrives on messages of its own,
+// interleaved before/among the content tokens, and is accumulated SEPARATELY
+// from the answer -- the daemon streamed these all along, but the client
+// decoded and dropped them, so the user watched an empty screen (~907 ms of
+// dead air observed) while the model thought, then got the answer in one burst.
+type reasoningMsg struct{ text string }
+
+// historyMsg carries the daemon's report of what it did with the conversation
+// turns the client sent (see protocol.HistoryInfo). It rides on the same
+// pre-token message as grounding. The client cares about Truncated: whether the
+// oldest turns were dropped on the way to the model.
+type historyMsg struct{ info *protocol.HistoryInfo }
+
 // incompleteMsg carries the daemon's report that the model's answer was cut
 // off rather than finishing on its own (see protocol.TokenResponse.Incomplete).
 // It rides on the final Done message, so it is emitted immediately before
@@ -224,8 +238,14 @@ func streamPrompt(ctx context.Context, clientName, workspace, prompt, promptKind
 		if tok.Grounding != nil {
 			ch <- groundingMsg{tok.Grounding}
 		}
+		if tok.History != nil {
+			ch <- historyMsg{tok.History}
+		}
 		if len(tok.Redactions) > 0 {
 			ch <- redactionsMsg{tok.Redactions}
+		}
+		if tok.Reasoning != "" {
+			ch <- reasoningMsg{tok.Reasoning}
 		}
 		if len(tok.Degraded) > 0 {
 			ch <- degradedMsg{tok.Degraded}

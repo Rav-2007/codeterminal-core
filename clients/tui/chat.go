@@ -40,6 +40,13 @@ const (
 type turn struct {
 	role turnRole
 	text string
+	// reasoning holds a reasoning-tier model's thinking tokens for an assistant
+	// turn (see protocol.TokenResponse.Reasoning), accumulated SEPARATELY from
+	// text. It is rendered as a dimmed "thinking" block above the answer and is
+	// NEVER folded into text: text is what gets echoed as the answer and carried
+	// back as history, and thinking must not enter either (Fix 14). Empty for a
+	// non-reasoning turn, which renders exactly as before.
+	reasoning string
 }
 
 // helpText is the persistent hint shown under the input. Conversational
@@ -98,6 +105,14 @@ type chatModel struct {
 	// nothing, never as an error. Plain "served by X"; never a fallback or ZDR
 	// claim (see providerLabel).
 	lastProvider string
+
+	// lastHistoryTruncated records whether the daemon dropped the oldest
+	// conversation turns the client sent, by turn-count or byte cap (see
+	// protocol.HistoryInfo.Truncated, daemon/history.go). Shown in the header for
+	// the same reason grounding truncation is: a client that silently lost its
+	// oldest turns would answer "what did I first ask?" confidently and wrongly.
+	// Same cleared-at-the-start-of-each-turn lifetime as the notices above.
+	lastHistoryTruncated bool
 
 	// Edit-review state: set when the last completed answer contained
 	// SEARCH/REPLACE edit blocks (see editapply.ParseEditBlocks). Reviewed
@@ -252,6 +267,32 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.resizeViewport()
 		return m, waitForNext(m.streamCh)
 
+	case reasoningMsg:
+		if m.streamCh == nil {
+			return m, nil // a stray message from an already-abandoned stream
+		}
+		// Thinking arrives before (and among) the content tokens; start the
+		// assistant turn on the first reasoning chunk if no token has yet, so the
+		// dead air fills with visible thinking instead of a blank screen. Kept in
+		// the turn's SEPARATE reasoning field, never appended to text.
+		if m.state == stateSending {
+			m.state = stateStreaming
+			m.turns = append(m.turns, turn{role: roleAssistant})
+		}
+		if n := len(m.turns); n > 0 {
+			m.turns[n-1].reasoning += msg.text
+		}
+		m.refreshViewport()
+		return m, waitForNext(m.streamCh)
+
+	case historyMsg:
+		if m.streamCh == nil {
+			return m, nil // a stray message from an already-abandoned stream
+		}
+		m.lastHistoryTruncated = msg.info != nil && msg.info.Truncated
+		m.resizeViewport()
+		return m, waitForNext(m.streamCh)
+
 	case tokenMsg:
 		return m.handleToken(msg)
 
@@ -374,6 +415,7 @@ func (m chatModel) startTurn() (tea.Model, tea.Cmd) {
 	m.lastRedactions = nil
 	m.lastDegraded = nil
 	m.lastProvider = ""
+	m.lastHistoryTruncated = false
 	m.resizeViewport()
 	m.refreshViewport()
 
@@ -429,6 +471,7 @@ func (m chatModel) clearConversation() (tea.Model, tea.Cmd) {
 	m.lastRedactions = nil
 	m.lastDegraded = nil
 	m.lastProvider = ""
+	m.lastHistoryTruncated = false
 	m.statusErr = ""
 	m.state = stateIdle
 	m.resizeViewport()
@@ -627,6 +670,14 @@ func renderTranscript(turns []turn) string {
 		case roleUser:
 			b.WriteString(userStyle.Render("You: " + t.text))
 		case roleAssistant:
+			// Thinking (if any) renders first, dimmed and labelled, so it is
+			// visibly SEPARATE from the answer and never mistaken for it -- the
+			// answer text is what carries back as history and gets parsed for edit
+			// blocks; the reasoning never does.
+			if t.reasoning != "" {
+				b.WriteString(helpStyle.Render("💭 thinking: " + t.reasoning))
+				b.WriteString("\n")
+			}
 			b.WriteString(assistantStyle.Render("Mochiii: " + t.text))
 		case roleSystem:
 			b.WriteString(helpStyle.Render(t.text))
@@ -720,6 +771,9 @@ func (m chatModel) noticeLines() []string {
 	if grounding := m.groundingLabel(); grounding != "" {
 		lines = append(lines, truncateToWidth(grounding, m.width))
 	}
+	if history := m.historyTruncatedLabel(); history != "" {
+		lines = append(lines, truncateToWidth(history, m.width))
+	}
 	if redactions := m.redactionsLabel(); redactions != "" {
 		lines = append(lines, truncateToWidth(redactions, m.width))
 	}
@@ -796,9 +850,27 @@ func (m chatModel) groundingLabel() string {
 		return errorStyle.Render(fmt.Sprintf("⚠ grounded against %s, not %s", g.Workspace, m.workspace))
 	}
 	if g.Grounded {
-		return accentStyle.Render(fmt.Sprintf("grounded ✓ %d chunk(s)", g.Chunks))
+		label := fmt.Sprintf("grounded ✓ %d chunk(s)", g.Chunks)
+		if g.Truncated {
+			// The retrieved context didn't all fit the budget and was trimmed --
+			// the answer was written against a partial view, worth knowing.
+			label += " (context truncated)"
+		}
+		return accentStyle.Render(label)
 	}
 	return helpStyle.Render(fmt.Sprintf("ungrounded (%s)", g.Reason))
+}
+
+// historyTruncatedLabel warns, on its own header line, when the daemon dropped
+// the oldest conversation turns the client sent (see lastHistoryTruncated /
+// protocol.HistoryInfo.Truncated). Empty when nothing was dropped (the common
+// case), so it only ever appears on a turn where it actually happened. Uses the
+// same "⚠ + red" errorStyle the other non-fatal-but-worth-noticing notices use.
+func (m chatModel) historyTruncatedLabel() string {
+	if !m.lastHistoryTruncated {
+		return ""
+	}
+	return errorStyle.Render("⚠ older conversation history was dropped to fit the model's limit")
 }
 
 // redactionsLabel renders the most recently reported redaction kinds, or ""
