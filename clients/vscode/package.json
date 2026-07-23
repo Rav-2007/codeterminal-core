@@ -25,11 +25,17 @@
   },
   "scripts": {
     "compile": "tsc -p ./",
-    "watch": "tsc -w -p ./"
+    "watch": "tsc -w -p ./",
+    "pretest": "tsc -p ./",
+    "test": "node ./out/test/runTest.js"
   },
   "devDependencies": {
+    "@types/mocha": "^10.0.6",
     "@types/node": "^20.14.0",
     "@types/vscode": "^1.85.0",
+    "@vscode/test-electron": "^3.0.0",
+    "glob": "^10.4.1",
+    "mocha": "^10.4.0",
     "typescript": "^5.4.0"
   }
 }
