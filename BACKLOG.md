@@ -2180,4 +2180,83 @@ E2E `5290c08` — three separate concerns, three separate commits, as required.
 C3 (quota abort-refund / repeatable unmetered inference), F1 (proxy not ZDR-enforcing), and the whole
 founder-gated cluster (P3 socket auth model, the Gate-6 closure contradiction, the OpenRouter ZDR /
 `allow_fallbacks` questions, default-model evaluation). Untouched here by design. **Nothing marked
-closed — founder decides.**
+closed — founder decides.** *(Update: C3 was picked up next and is now FIXED — see the section
+immediately below. F1 and the founder-gated cluster remain.)*
+
+## 2026-07-23 — C3 billing abort-refund fix (bug-hunt follow-up; verified, NOT closed)
+
+The bug-hunt report's third critical (the one the M1–M3 and S1/S2/E2E batches each listed as still
+open). Fixed as one isolated commit in the `proxy` module. **Nothing pushed, nothing marked closed —
+founder confirms, per Part 0 rule 5.** Distinct from the two *other* things also labelled "C3" in this
+repo (Tier-4 observability C3 `2241daa`; do not conflate — see the HANDOFF's C1/C2/C3 disambiguation).
+
+### The bug (traced in code, not inherited)
+The managed proxy meters usage by **reserving** an estimated token count *before* forwarding to
+OpenRouter (`reserveQuota`, `proxy/main.go`) and **truing it up** *after* the response completes
+(`finalizeUsage` → `correctUsage`). On the streaming path, `streamSSE` only learns the real token
+count from the **terminal usage SSE chunk** (`extractUsage`), which OpenRouter emits *after* the
+answer content. `streamSSE`'s relay loop returns early when a write to the client fails:
+
+```go
+defer func() { p.finalizeUsage(keyID, reserved, totalTokens) }()
+for scanner.Scan() {
+    line := scanner.Text()
+    if _, err := io.WriteString(w, line+"\n"); err != nil { return } // client gone: totalTokens==0
+    ...
+    if tokens, ok := extractUsage(line); ok { totalTokens = tokens }
+}
+```
+
+The old `finalizeUsage` treated `actual == 0` as "nothing was used → **full refund**"
+(`delta = -reserved`). So a client that **reads the full answer and disconnects just before the
+trailing usage chunk** hits the early `return` with `totalTokens == 0` → **full refund of a
+completion OpenRouter already generated and billed**. Repeatable and deliberately exploitable →
+free, unmetered inference on the paid tier. (Distinct from the *no-double-refund* property, which
+holds.) Root-cause read confirms `QUOTA_RESERVATION_DESIGN.md` §5(c) itself wrongly folded
+"SSE stream cut short (client disconnect) before the final usage chunk" into the full-refund bucket
+— that conflation is the bug.
+
+### The fix (`a703978`, `proxy` module, isolated)
+`finalizeUsage` now decides **three** ways instead of two (`finalizeUsage(keyID, reserved, actual int, producedOutput bool)`):
+- `actual > 0` → true up to the real figure (`delta = actual - reserved`) — unchanged.
+- `actual == 0 && producedOutput` → **KEEP the reservation** (`delta 0` — `reserveQuota` already
+  added `reserved` to `tokens_used`; a distinct greppable log line fires) rather than refund it. This
+  is the exploit path: output was produced and billed upstream, so a refund would be free inference.
+- `actual == 0 && !producedOutput` → full refund — unchanged (genuine no-output).
+
+`streamSSE` tracks `producedOutput` via a new `sawData` flag set from `isDataChunk(line)` — a new
+**envelope-only** peek (a non-empty `data:` chunk that isn't `[DONE]`) that mirrors
+`extractProvider`/`extractUsage`'s one-field discipline, so **message content is still never parsed —
+the zero-data-retention posture is preserved.** `sawData` is set *before* the relay write, so a
+client that drops mid-stream is still known to have consumed upstream-billed output. The two
+upstream-error call sites (build-request error, `client.Do` error) pass `producedOutput=false` (their
+full refund stays correct); the non-SSE branch derives it from `2xx && len(body)>0`. **No schema,
+RPC, or reservation-sizing change** — only the refund *decision* changes.
+
+### Verification
+- `gofmt -l` clean; `go build ./...` + `go vet ./...` clean; `go test -race -count=1 ./...` green for
+  the `proxy` module.
+- New tests (`proxy/main_test.go`), all fail-when-neutered:
+  `TestHandleChatCompletions_ClientAbortsBeforeUsageChunk_DoesNotRefund` (the regression — an
+  `abortingResponseWriter` fails the write carrying the usage chunk; asserts **no** correction fires
+  and `tokens_used` stays at the reservation), `TestFinalizeUsage_ProducedNoOutput_FullRefund`, and
+  `TestFinalizeUsage_TrueUpUnchanged`.
+- **Fail-when-neutered proven:** reverting `finalizeUsage` to the old two-way logic makes the abort
+  test fail with the exact symptom (`correction count = 1, deltas=[-4096]`); restored → green.
+- Live re-run against the deployed proxy is **not** done here (no OpenRouter/proxy key in this
+  environment) and needs no schema change if attempted later — reproduce the exploit (stream, kill the
+  client after the answer but before `[DONE]`), confirm the "keeping reservation" log line fires and
+  `usage.tokens_used` does not drop back (`QUOTA_RESERVATION_DESIGN.md` §9's backgrounded-curl method).
+
+### Residual / named follow-up (NOT hidden, NOT built here)
+A **long** completion aborted **late** is charged only the reservation floor (default 4096), not its
+true (possibly higher) usage — so it under-meters, but in the **safe direction and never to zero**
+(the same imprecision `QUOTA_RESERVATION_DESIGN.md` §5(e) already accepts for crash-lost
+corrections). **Exact metering of an aborted stream is a follow-up, deliberately not in this pass:**
+(a) on client-abort, keep draining the upstream stream to capture the real usage chunk before closing
+— requires decoupling the upstream request context from `r.Context()` (today a client disconnect
+cancels the upstream read too) and accepts that draining forces OpenRouter to finish generating; or
+(b) a periodic reconciliation sweep comparing summed real usage against `tokens_used`. Logged so it
+isn't rediscovered; a fix is not implied to be imminent.
+
+**Nothing marked closed — founder confirms.**
