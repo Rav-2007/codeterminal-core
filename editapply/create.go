@@ -42,8 +42,13 @@ func IsEmptySearch(search string) bool {
 //
 // This mirrors the FAIL-2 pattern in daemon/apply_cmd.go's confinedRestorePath,
 // which solved the same problem for restoring a deleted file. The components
-// below the resolved ancestor do not exist, so they cannot be pre-planted
-// symlinks; they are created as real directories by the writer.
+// below the resolved ancestor do not exist AT PREPARE TIME, so they cannot be
+// pre-planted symlinks then; the intermediate ones are created as real
+// directories by the writer. The LEAF is the exception: it can be swapped for a
+// symlink between prepare and write (the TUI's human-confirm window), which is
+// why the write itself no longer trusts resolution alone — Apply commits through
+// writeFileAtomicNoFollow, which refuses a symlinked leaf and commits by an
+// atomic rename that replaces a link rather than following it (C2).
 func resolveSafeNewPath(realWorkspaceRoot, cleaned string) (string, error) {
 	full := filepath.Join(realWorkspaceRoot, cleaned)
 

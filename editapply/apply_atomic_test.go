@@ -90,17 +90,22 @@ func TestApply_BackupOriginalFailureLeavesFileUnmodified(t *testing.T) {
 // Apply must roll the snapshot back to what it was.
 func TestApply_WriteFailureRollsBackAfterSnapshot(t *testing.T) {
 	if os.Geteuid() == 0 {
-		t.Skip("running as root: a read-only file is still writable, so the write cannot be made to fail this way")
+		t.Skip("running as root: a read-only directory is still writable, so the write cannot be made to fail this way")
 	}
 	root, backupDir, prepared := prepareOne(t, "hello world\n", "hello", "goodbye")
 
-	// Make the target unwritable so the final write -- and only the final
-	// write -- fails, after both snapshot steps have already succeeded.
+	// Make the target's directory unwritable so the final write -- and only the
+	// final write -- fails, after both snapshot steps have already succeeded. The
+	// atomic writer creates its temp file in this directory, so removing write
+	// permission there fails the write itself while leaving the already-created
+	// backup session dir (under .codeterminal/backups, whose parents stay
+	// writable) reachable. Injecting via a read-only FILE no longer works: the
+	// atomic rename needs directory-write, not file-write, and would succeed.
 	target := filepath.Join(root, "foo.txt")
-	if err := os.Chmod(target, 0444); err != nil {
+	if err := os.Chmod(root, 0555); err != nil {
 		t.Fatalf("chmod: %v", err)
 	}
-	t.Cleanup(func() { os.Chmod(target, 0644) })
+	t.Cleanup(func() { os.Chmod(root, 0755) })
 
 	if err := Apply(root, prepared, backupDir); err == nil {
 		t.Fatal("expected Apply to fail on an unwritable target, got nil")
@@ -120,7 +125,7 @@ func TestApply_WriteFailureRollsBackAfterSnapshot(t *testing.T) {
 // vanish and not advance to the failed block's content.
 func TestApply_WriteFailureRestoresPriorAfterSnapshot(t *testing.T) {
 	if os.Geteuid() == 0 {
-		t.Skip("running as root: a read-only file is still writable")
+		t.Skip("running as root: a read-only directory is still writable")
 	}
 	root := realTempDir(t)
 	writeTempFile(t, root, "foo.txt", "one\ntwo\n")
@@ -142,10 +147,15 @@ func TestApply_WriteFailureRestoresPriorAfterSnapshot(t *testing.T) {
 		t.Fatalf("PrepareEdit (second): %v", err)
 	}
 	target := filepath.Join(root, "foo.txt")
-	if err := os.Chmod(target, 0444); err != nil {
+	// Fail only the second block's write by removing write permission on the
+	// target's directory (where the atomic writer stages its temp file), after
+	// the first block has already applied. See the note in
+	// TestApply_WriteFailureRollsBackAfterSnapshot on why the file-mode approach
+	// no longer induces a failure under atomic rename.
+	if err := os.Chmod(root, 0555); err != nil {
 		t.Fatalf("chmod: %v", err)
 	}
-	t.Cleanup(func() { os.Chmod(target, 0644) })
+	t.Cleanup(func() { os.Chmod(root, 0755) })
 
 	if err := Apply(root, second, backupDir); err == nil {
 		t.Fatal("expected Apply to fail on an unwritable target, got nil")

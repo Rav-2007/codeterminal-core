@@ -144,6 +144,14 @@ func VerifyUnchanged(prepared *PreparedEdit) error {
 		// A creating edit expects exactly this: nothing there. Anything else
 		// appearing in the meantime is the same staleness failure as a changed
 		// file, so absence is only acceptable when absence is what was prepared.
+		//
+		// Note this ReadFile FOLLOWS symlinks, so a DANGLING symlink planted at
+		// the target reports os.IsNotExist and reaches this "absence is fine"
+		// branch. That is intentionally not caught here — staleness is this
+		// function's job, not symlink safety — because the write itself no longer
+		// trusts it: Apply commits through writeFileAtomicNoFollow, which refuses
+		// a symlinked leaf and never writes through the link (C2). This branch
+		// deciding "proceed" therefore cannot become an out-of-workspace write.
 		if os.IsNotExist(err) && prepared.Creates {
 			return nil
 		}
@@ -225,7 +233,12 @@ func Apply(realWorkspaceRoot string, prepared *PreparedEdit, backupDir string) e
 			return fmt.Errorf("creating parent directories for %s: %w", prepared.Block.FilePath, err)
 		}
 	}
-	if err := os.WriteFile(prepared.TargetPath, []byte(prepared.NewContent), prepared.FileMode); err != nil {
+	// Hardened, atomic, symlink-refusing write — the forward-path mirror of the
+	// undo path's temp-file+rename restore. A plain os.WriteFile here would
+	// follow a symlink planted at the leaf (workspace escape) and truncate-then-
+	// write non-atomically (partial-file corruption on interruption); see
+	// writeFileAtomicNoFollow for how each is closed.
+	if err := writeFileAtomicNoFollow(prepared.TargetPath, []byte(prepared.NewContent), prepared.FileMode); err != nil {
 		rollbackCreated()
 		rollbackAfter()
 		return fmt.Errorf("writing %s: %w", prepared.Block.FilePath, err)
