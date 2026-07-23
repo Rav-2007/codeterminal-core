@@ -286,8 +286,20 @@ func (h *HelperProcess) Health(ctx context.Context) error {
 }
 
 // Embed sends texts to the helper and returns whatever vectors it computes.
-// It does not interpret or validate the vectors' content — that's the
-// caller's (and eventually the Embedder implementation's) job.
+// It does not interpret the vectors' content — that's the caller's (and
+// eventually the Embedder implementation's) job — but it DOES enforce the one
+// structural contract the whole pipeline relies on: exactly one vector per
+// input text. This is the single point where untrusted subprocess output
+// crosses into the daemon, and every downstream consumer indexes the result
+// positionally (retrieveTopK's vecs[0], buildIndex/reindexFile's vecs[i])
+// without re-checking. A helper that returned fewer vectors than texts — a
+// bug, a partial failure, or a swapped-in embedder that ignores the contract —
+// would otherwise reach an out-of-range panic in whichever handler ran, which
+// (until handleConn's recover backstop) took the whole daemon down. The real
+// ONNX helper cannot produce this (helper/onnxembedder.go returns exactly
+// len(texts) vectors or an error), so in practice this only fires for a
+// misbehaving helper; validating here is cheap and turns that class of fault
+// into a clean, contained error instead of a crash (C1).
 func (h *HelperProcess) Embed(ctx context.Context, texts []string) ([][]float32, error) {
 	resp, err := h.call(ctx, helperproto.Request{Method: helperproto.MethodEmbed, Texts: texts})
 	if err != nil {
@@ -295,6 +307,9 @@ func (h *HelperProcess) Embed(ctx context.Context, texts []string) ([][]float32,
 	}
 	if !resp.OK {
 		return nil, fmt.Errorf("embedder helper returned an error: %s", resp.Error)
+	}
+	if len(resp.Vectors) != len(texts) {
+		return nil, fmt.Errorf("embedder helper returned %d vectors for %d input texts; refusing a malformed response", len(resp.Vectors), len(texts))
 	}
 	return resp.Vectors, nil
 }

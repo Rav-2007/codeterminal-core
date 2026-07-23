@@ -70,13 +70,35 @@ func handleConn(conn net.Conn) {
 		return
 	}
 
+	// FAKEHELPER_TRUNCATE, if set, makes an embed reply write a deliberately
+	// truncated (incomplete) JSON body and then drop the connection, standing in
+	// for a helper that dies or has its socket read cut off mid-response. It
+	// exists to prove what such a partial wire read actually does on the daemon
+	// side: a json.Decode error, not a short vector slice. Health still answers
+	// normally so waitReady succeeds.
+	if os.Getenv("FAKEHELPER_TRUNCATE") != "" && req.Method == helperproto.MethodEmbed {
+		_, _ = conn.Write([]byte(`{"ok":true,"vectors":[[1.0,`))
+		return
+	}
+
 	var resp helperproto.Response
 	switch req.Method {
 	case helperproto.MethodHealth:
 		resp = helperproto.Response{OK: true}
 	case helperproto.MethodEmbed:
-		vecs := make([][]float32, len(req.Texts))
-		for i := range req.Texts {
+		n := len(req.Texts)
+		// FAKEHELPER_SHORT_VECTORS, if set, returns ONE FEWER vector than there
+		// were input texts while still reporting ok:true — the precise
+		// count-mismatch shape the CTO report claims a malformed embedder
+		// response could take ("3 vectors for a 4-chunk batch"). The real ONNX
+		// helper cannot produce this (its Embed returns exactly len(texts)
+		// vectors or an error); this fixture fabricates it so the daemon's
+		// boundary handling of a lying helper can be exercised directly.
+		if os.Getenv("FAKEHELPER_SHORT_VECTORS") != "" && n > 0 {
+			n--
+		}
+		vecs := make([][]float32, n)
+		for i := range vecs {
 			vecs[i] = make([]float32, fakeDim)
 			vecs[i][0] = 1
 		}

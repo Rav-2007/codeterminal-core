@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -118,9 +119,11 @@ func (s *Server) route(promptKind string) RouteDecision {
 // immediately rather than queued (which would just relocate the unbounded
 // growth) or allowed to block the accept loop (which would freeze new-
 // connection handling entirely). The slot is released with a defer so a
-// panicking handler frees its slot too, without needing a recover() (the
-// panic still propagates unchanged). This bounds how many connections run at
-// once; it is not an auth control and never inspects who is connecting.
+// panicking handler frees its slot too. A panic in a handler no longer
+// propagates out of the goroutine either: handleConn now recovers it and
+// contains it to the one connection (see handleConn's defer). This bounds how
+// many connections run at once; it is not an auth control and never inspects
+// who is connecting.
 func (s *Server) Serve(ln net.Listener) {
 	sem := make(chan struct{}, s.resolvedMaxConns())
 	for {
@@ -156,6 +159,21 @@ func (s *Server) Serve(ln net.Listener) {
 // itself fails. Fails closed. See authorizePeer.
 func (s *Server) handleConn(conn net.Conn) {
 	defer conn.Close()
+
+	// Panic backstop (FAIL-3 scoped follow-up, given real urgency by C1). A
+	// panic anywhere below — a bounds bug reaching a slice index, a nil
+	// dereference in some handler, a future regression — used to propagate out
+	// of this goroutine and terminate the whole daemon, dropping every other
+	// in-flight client. Recover here so the blast radius is exactly this one
+	// connection: it is logged and closed (the deferred Close above still runs
+	// during unwinding), and the daemon keeps serving everyone else. This is
+	// defense-in-depth, not a substitute for fixing the panics themselves (the
+	// C1 boundary check removes the known embedder-response one at its source).
+	defer func() {
+		if r := recover(); r != nil {
+			s.logger.Printf("recovered from panic while handling a connection: %v\n%s", r, debug.Stack())
+		}
+	}()
 
 	if err := s.authorizePeer(conn); err != nil {
 		s.logger.Printf("connection refused: %v", err)
