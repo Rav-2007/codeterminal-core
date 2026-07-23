@@ -1560,3 +1560,129 @@ real webview render path exercised), plus the full six-module regression suite i
 **Explicitly still open:** the `allow_fallbacks` config posture (founder's call); handshake-time
 memory reporting; the Tier-3 client-render parity gaps (`History`/`Reasoning`); log *levels*
 (scoped out with reason). **Nothing marked closed — that is the founder's call, as always.**
+
+## Backlog — added 2026-07-23 (fallback-provider ZDR posture — EXTENDS 3A, does not stand alone)
+
+**This is an extension of the open OpenRouter-ZDR question in checkpoint Part 3A, not an independent
+finding.** 3A asks whether the ZDR guarantee covers the *implicit prompt-caching* path on the
+primary route. This asks the adjacent question Tier 4's C2 work surfaced: shipped `models.json`
+sets `zdr.allow_fallbacks:true`, which permits a request to be served by a *different provider*
+when the primary is unavailable — and nothing had verified whether that fallback provider is still
+constrained by `zdr:true` / `data_collection:"deny"`. Investigated 2026-07-23. **Nothing changed;
+nothing closed. No code touched** — the daemon's own behavior is correct and conservative; the one
+residual is on OpenRouter's side and is the same *shape* of open question as 3A itself.
+
+### D1 — current behavior, live (both routing paths)
+Reproduced with the prior tiers' local-capture technique: a real daemon + real socket, only the
+model API (and, for the proxy path, a stub Supabase) replaced locally so the **actual outbound
+request body** could be read as bytes. Fault injection forced the two conditions `allow_fallbacks`
+is about.
+
+| Path | Trigger | zdr / data_collection / allow_fallbacks observed on the captured request | Verdict |
+|---|---|---|---|
+| Direct (`provider.go`) | normal | `{"zdr":true,"data_collection":"deny","allow_fallbacks":true}` | all three present, together |
+| Direct | provider **outage** (503 → 3 retries) | **identical** block on **all 3** attempts | no downgrade-on-retry |
+| Direct | **ZDR refusal** (404, OpenRouter's real "No endpoints … Zero data retention" body) | **1** attempt only; classified `privacy_refused`; **no** weakened re-send | **fails closed** |
+| Proxy (`proxy/main.go`) | normal | same block arrives at upstream through the proxy | forwarded **byte-for-byte** |
+| Proxy | ZDR refusal | 1 attempt; 404 passes through; daemon → `privacy_refused` | proxy adds no downgrade |
+| Direct | config `allow_fallbacks:false` | outbound block becomes `…"allow_fallbacks":false` | the lever transmits faithfully |
+
+**What D1 establishes (our side):** there is only ever **one** outbound body per attempt, always
+carrying all three fields together; an OpenRouter "fallback" is *internal re-routing within that one
+body's filters*, not a distinct weakened request the daemon or proxy constructs. `streamWithRetry`
+(`daemon/retry.go:102`) reuses the same `routing` object across every attempt; `privacy_refused` is
+non-retryable (`daemon/modelerror.go:72`), so a no-eligible-provider refusal fails immediately
+without any weakened re-send. The proxy forwards the body unchanged (`proxy/main.go:294`,
+`349`). **Our side is clean and fails closed** — confirmed live on both paths, not read from code.
+
+**What D1 cannot establish:** what OpenRouter does *internally* when it selects a fallback provider
+— because the local capture server stands in for OpenRouter. That is the D2 question.
+
+### D2 — OpenRouter's documented position (desk research, 2026-07-23)
+- The dedicated ZDR doc states verbatim: **"When `zdr` is set to `true`, the request will only be
+  routed to endpoints that have a Zero Data Retention policy."** Absolute language, no fallback
+  carve-out. The provider-routing reference calls `zdr` "Restrict routing to only ZDR (Zero Data
+  Retention) endpoints."
+- **But the exact edge is documented nowhere.** The ZDR doc does **not** state what happens when no
+  ZDR endpoint is available, nor how `zdr` interacts with `allow_fallbacks`. `allow_fallbacks` is
+  described only as "Whether to allow backup providers when the primary is unavailable," with no
+  statement on whether backups are still filtered by `zdr`/`data_collection`. No doc example
+  combines them.
+- OpenRouter's data-residency blog frames the *strongest* guarantee as tied to
+  `allow_fallbacks:false` ("returns an error instead of routing to a provider outside your list") —
+  which is about the explicit `order`/`only` provider list, a mechanism this daemon does not use
+  (it sends a bare `provider` object with no list).
+- **Net:** the plain reading of OpenRouter's own ZDR wording is that `zdr:true` is an absolute
+  filter that fallback does not override, i.e. `allow_fallbacks:true` most likely means "fall back
+  *among ZDR-compliant endpoints*," not "abandon ZDR if none are up." But this is a **documented
+  engineering position in prose, not a contractual guarantee in the DPA/ToS** — the *identical*
+  limitation 3A already found for the caching question. This extends 3A; it is not a new class.
+- Sources: [ZDR guide](https://openrouter.ai/docs/guides/features/zdr),
+  [Provider routing](https://openrouter.ai/docs/guides/routing/provider-selection),
+  [AI data residency (blog)](https://openrouter.ai/blog/insights/ai-data-residency/),
+  [Model routing (blog)](https://openrouter.ai/blog/insights/model-routing/).
+- **Outreach — folded into 3A's existing channels, no fourth opened.** This is the same "is the ZDR
+  position contractual, and what are the exact edge semantics" question as 3A, so it belongs with
+  the same contacts. The support **ticket #37409** is noted as narrowly scoped and near resolution —
+  a poor fit for a new semantics sub-question; do not reopen it for this. The **Discord thread**
+  (#community-help, escalated to mods) and the **LinkedIn** technical-staff contact are the right
+  fits. Specific question to add, verbatim-ready: *"With the per-request provider object
+  `{zdr:true, data_collection:'deny', allow_fallbacks:true}` and no `order`/`only` list, if the
+  primary endpoint for a model is unavailable, is the fallback endpoint still required to satisfy
+  `zdr:true`/`data_collection:'deny'` — or can `allow_fallbacks:true` cause routing to a non-ZDR
+  provider? And if no ZDR endpoint is available at all, does the request error (as it does with
+  `allow_fallbacks:false`) or route anyway?"*
+
+### D3 — severity (argued from D1/D2, correctable either way)
+**Low, and explicitly UNVERIFIED at the exact edge — not dismissable to zero.** Reasoning:
+- *Toward lower:* our side is provably clean and fails closed on both paths (D1); the ZDR doc's own
+  language ("will only be routed to ZDR endpoints") reads as absolute; the daemon has a live-observed
+  hard-refusal path it does **not** downgrade around.
+- *Against dismissing it:* the precise `allow_fallbacks:true` + no-ZDR-provider case is documented
+  **nowhere** (D2), and our one live refusal (`provider.go:112`, **2026-07-09**) predates the
+  `false`→`true` flip (**2026-07-10**), so that "hard refuse" evidence is from the
+  `allow_fallbacks:false` regime and does **not** cover the current config. And the position is
+  prose, not contract (same as 3A).
+- **This is deliberately NOT symmetric with the 2A edge-cache finding**, which went fully "off the
+  table" once *our own request code* was checked. Here, checking our code confirms our side is
+  clean — but the residual lives on OpenRouter's side and stays open, exactly like the 3A caching
+  question it extends. Downgrading the codebase's existing "the ZDR filter still constrains the
+  pool" assertion (BACKLOG 2026-07-17) from *asserted* to *documented-but-unconfirmed-at-the-edge*
+  is the honest correction — the claim is well-supported by OpenRouter's wording but was never
+  verified for the fallback edge specifically.
+- *Urgency note (bears on priority, not on whether it's worth resolving):* fallback is **not
+  dormant** here — `allow_fallbacks:true` was set specifically to escape persistent DeepInfra 429s
+  (BACKLOG 2026-07-10/07-17), i.e. a real fallback demonstrably fires for the active model in normal
+  operation. So this is a live routing behavior, not a hypothetical.
+
+### D4 — remediation options (for the founder; none selected)
+1. **Ship `allow_fallbacks:false`.** Strongest ZDR posture — OpenRouter's docs put the hard
+   "error-instead-of-route-outside-constraints" guarantee here. **Cost:** re-breaks the 2026-07-10
+   congestion fix (DeepInfra 429s) — the known tension already recorded; availability drops when the
+   primary is busy. Not free.
+2. **Keep `allow_fallbacks:true` but add an explicit `order`/`only` provider allow-list** of
+   endpoints independently confirmed ZDR-compliant. Keeps failover among vetted providers. **Cost:**
+   a per-model allow-list to build and maintain as OpenRouter's provider set changes; the daemon
+   currently sends no list, so this is new config surface.
+3. **Surface fallback-served requests to the client/logs** so a user can see when their turn left
+   the primary ZDR-verified path. **Tier 4's C2 `provider_routing` degradation already positions
+   this** — today it reports the *config* posture (fallbacks permitted); it could be extended to
+   also flag the *actual served provider* per turn. **Cost:** OpenRouter reports which provider
+   served a request but **not** whether it was reached via fallback (D2), so "this turn fell back"
+   cannot be shown truthfully without OpenRouter data that does not exist — only "served by provider
+   X" could be, and mapping X→ZDR-status needs the allow-list from option 2 anyway.
+4. **Leave as-is, documented.** Defensible **iff** D2's outreach confirms the fallback set stays
+   ZDR-filtered. Until then this is "accept an unverified edge," not "confirmed fine."
+
+**No option selected — this is a product-posture decision (availability vs. strongest-provable-ZDR
+tradeoff), explicitly the founder's call.**
+
+### Closing statement
+**Verified (live, both paths):** the daemon and proxy send `zdr`/`data_collection`/`allow_fallbacks`
+together in one body every time, never downgrade on retry, and fail closed on a ZDR refusal; the
+`allow_fallbacks:false` lever transmits faithfully. **Documented (D2):** OpenRouter says `zdr:true`
+routes "only to ZDR endpoints" but is silent on the fallback edge and the no-ZDR-provider case, and
+the position is prose not contract — an extension of the open 3A question, folded into 3A's existing
+channels. **Still open:** whether an `allow_fallbacks:true` fallback can reach a non-ZDR provider
+(OpenRouter-side, unverified); and the D4 posture choice. **Severity:** Low but unverified-at-the-edge,
+not dismissable. **Nothing marked closed — founder decides.**
