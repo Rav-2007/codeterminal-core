@@ -153,7 +153,7 @@ func resolveRefs(prompt, workspaceRoot string, logger interface{ Printf(string, 
 	if err != nil {
 		return nil
 	}
-	ignore := loadGitignore(realRoot)
+	ignore := newGitignoreMatcher(realRoot)
 
 	// Two passes so the (relatively expensive) basename search happens at most
 	// once for the whole prompt: first resolve everything that names a real
@@ -239,7 +239,7 @@ func workspaceRelPath(realRoot, refPath string) string {
 // directories, symlinks), so it never descends into node_modules, .git or
 // anything else ScanWorkspace wouldn't — that keeps the cost proportional to
 // the source tree and keeps this from finding files indexing can't see.
-func findFilesBySuffix(realRoot string, ignore *gitignoreRules, suffixes []string) map[string]string {
+func findFilesBySuffix(realRoot string, ignore *gitignoreMatcher, suffixes []string) map[string]string {
 	want := make(map[string]bool, len(suffixes))
 	for _, s := range suffixes {
 		want[s] = true
@@ -295,7 +295,7 @@ func findFilesBySuffix(realRoot string, ignore *gitignoreRules, suffixes []strin
 // Errors — rather than a silent empty chunk — for every degradation case, so
 // the caller can log why a pointer was dropped: a file the indexer would skip,
 // an unreadable file, or a line number past the end of the file.
-func readReferencedSpan(realRoot, relPath string, line int, ignore *gitignoreRules) (Chunk, error) {
+func readReferencedSpan(realRoot, relPath string, line int, ignore *gitignoreMatcher) (Chunk, error) {
 	absPath := filepath.Join(realRoot, filepath.FromSlash(relPath))
 
 	// Exactly the indexer's eligibility gate: secret-named, gitignored,

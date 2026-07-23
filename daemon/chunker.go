@@ -107,7 +107,7 @@ func ScanWorkspace(root string) (*ScanResult, error) {
 		return nil, fmt.Errorf("resolving workspace root %s: %w", root, err)
 	}
 
-	ignore := loadGitignore(realRoot)
+	ignore := newGitignoreMatcher(realRoot)
 	result := newScanResult()
 
 	walkErr := filepath.WalkDir(realRoot, func(path string, d fs.DirEntry, err error) error {
@@ -179,7 +179,7 @@ func ScanWorkspace(root string) (*ScanResult, error) {
 // exactly one place — readEligibleFile, immediately before the read it
 // gates — so the walk-time decision and the actual content read can never
 // diverge; there is no separate walk-time-only prune for files.
-func shouldSkipFile(path, relPath string, ignore *gitignoreRules) (SkipReason, bool, error) {
+func shouldSkipFile(path, relPath string, ignore *gitignoreMatcher) (SkipReason, bool, error) {
 	base := filepath.Base(relPath)
 
 	if editapply.MatchesSecretName(base) {
@@ -214,7 +214,7 @@ func shouldSkipFile(path, relPath string, ignore *gitignoreRules) (SkipReason, b
 // readEligibleFile is the only function in this file that reads a file's
 // content for indexing. It re-runs shouldSkipFile immediately before the
 // read, so nothing can reach chunkContent without passing that same gate.
-func readEligibleFile(path, relPath string, ignore *gitignoreRules) ([]byte, SkipReason, bool, error) {
+func readEligibleFile(path, relPath string, ignore *gitignoreMatcher) ([]byte, SkipReason, bool, error) {
 	reason, skip, err := shouldSkipFile(path, relPath, ignore)
 	if err != nil {
 		return nil, "", false, err
@@ -292,30 +292,71 @@ func splitLines(content []byte) []string {
 type gitignoreRule struct {
 	pattern string
 	dirOnly bool
+	negate  bool // line began with "!": a re-include that overrides an earlier ignore
 }
 
-// gitignoreRules implements a deliberately small subset of .gitignore
-// semantics: exact names and simple shell globs (filepath.Match) matched
-// against a file's basename or root-relative path, plus trailing-slash
-// directory-only rules and plain directory-prefix matches. It does not
-// support negation (!), nested .gitignore files, or full gitignore glob
-// syntax (**, character classes, etc.). It reads only the workspace root's
-// own .gitignore.
-type gitignoreRules struct {
+// gitignoreLayer is one directory's parsed .gitignore (its rules, in file
+// order). An absent .gitignore is a cached empty layer, not a nil.
+type gitignoreLayer struct {
 	rules []gitignoreRule
 }
 
-func loadGitignore(root string) *gitignoreRules {
-	data, err := os.ReadFile(filepath.Join(root, ".gitignore"))
-	if err != nil {
-		return &gitignoreRules{}
-	}
+// gitignoreMatcher resolves .gitignore rules the way git itself does: each
+// directory's .gitignore applies to that directory and everything beneath it,
+// every pattern is interpreted RELATIVE TO THE .gitignore THAT NAMED IT, deeper
+// files override shallower ones, and within a single file a later line overrides
+// an earlier one (which is what makes "!" negation work). Root-only resolution
+// was a real leak: a secret excluded solely by a non-root .gitignore was indexed
+// anyway (S1), because only the workspace-root .gitignore was ever read.
+//
+// It still implements a deliberately small *pattern* subset — exact names and
+// simple shell globs (filepath.Match) against a path's basename or the path
+// relative to the .gitignore that named it, trailing-slash directory-only rules,
+// plain directory-prefix matches, and leading-"!" negation. It does NOT
+// implement full gitignore glob syntax (** across separators, character classes,
+// mid-pattern anchoring precision). Where a pattern isn't supported, the effect
+// is to *not* ignore (index the file) unless a supported form also matches — the
+// same conservative posture the previous root-only subset had, now applied at
+// every level; the MatchesSecretName gate in shouldSkipFile is the independent
+// backstop for the security-critical basenames regardless of ignore semantics.
+//
+// Layers are loaded lazily and cached, keyed by root-relative directory ("" is
+// the root). A matcher is single-goroutine (one per ScanWorkspace / reindex
+// call), so the cache needs no locking.
+type gitignoreMatcher struct {
+	root  string
+	cache map[string]*gitignoreLayer
+}
 
+func newGitignoreMatcher(root string) *gitignoreMatcher {
+	return &gitignoreMatcher{root: root, cache: make(map[string]*gitignoreLayer)}
+}
+
+// layerFor loads (and caches) the .gitignore in the root-relative directory
+// relDir ("" = workspace root).
+func (g *gitignoreMatcher) layerFor(relDir string) *gitignoreLayer {
+	if layer, ok := g.cache[relDir]; ok {
+		return layer
+	}
+	layer := parseGitignoreLayer(filepath.Join(g.root, relDir, ".gitignore"))
+	g.cache[relDir] = layer
+	return layer
+}
+
+func parseGitignoreLayer(path string) *gitignoreLayer {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return &gitignoreLayer{}
+	}
 	var rules []gitignoreRule
 	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
+		}
+		negate := strings.HasPrefix(line, "!")
+		if negate {
+			line = line[1:]
 		}
 		dirOnly := strings.HasSuffix(line, "/")
 		pattern := strings.TrimSuffix(line, "/")
@@ -323,32 +364,64 @@ func loadGitignore(root string) *gitignoreRules {
 		if pattern == "" {
 			continue
 		}
-		rules = append(rules, gitignoreRule{pattern: pattern, dirOnly: dirOnly})
+		rules = append(rules, gitignoreRule{pattern: pattern, dirOnly: dirOnly, negate: negate})
 	}
-	return &gitignoreRules{rules: rules}
+	return &gitignoreLayer{rules: rules}
 }
 
-func (g *gitignoreRules) matches(relPath string, isDir bool) bool {
+// ancestorDirs returns the root-relative directories whose .gitignore can affect
+// relPath: the workspace root ("") and every ancestor directory of relPath, up
+// to but NOT including relPath's own basename. For "a/b/c.txt" it returns
+// ["", "a", "a/b"]. A directory entry's OWN .gitignore never decides whether the
+// directory itself is ignored — only its ancestors do — so the basename is always
+// dropped regardless of whether relPath names a file or a directory.
+func ancestorDirs(relPath string) []string {
+	parts := strings.Split(relPath, string(filepath.Separator))
+	dirs := []string{""}
+	for i := 0; i < len(parts)-1; i++ {
+		dirs = append(dirs, strings.Join(parts[:i+1], string(filepath.Separator)))
+	}
+	return dirs
+}
+
+// matches walks the ancestor .gitignore layers from shallowest to deepest,
+// applying each matching rule in file order and letting the LAST match win —
+// which is exactly git's precedence (deeper overrides shallower; within a file,
+// later overrides earlier; "!" re-includes).
+func (g *gitignoreMatcher) matches(relPath string, isDir bool) bool {
 	if g == nil {
 		return false
 	}
-	base := filepath.Base(relPath)
-	for _, r := range g.rules {
-		if r.dirOnly && !isDir {
-			continue
+	ignored := false
+	for _, dir := range ancestorDirs(relPath) {
+		sub := relPath
+		if dir != "" {
+			sub = strings.TrimPrefix(relPath, dir+string(filepath.Separator))
 		}
-		if ok, _ := filepath.Match(r.pattern, base); ok {
-			return true
-		}
-		if ok, _ := filepath.Match(r.pattern, relPath); ok {
-			return true
-		}
-		if strings.HasPrefix(relPath, r.pattern+string(filepath.Separator)) {
-			return true
+		for _, r := range g.layerFor(dir).rules {
+			if r.dirOnly && !isDir {
+				continue
+			}
+			if ruleMatchesSub(r.pattern, sub) {
+				ignored = !r.negate
+			}
 		}
 	}
-	return false
+	return ignored
 }
 
-func (g *gitignoreRules) matchDir(relPath string) bool  { return g.matches(relPath, true) }
-func (g *gitignoreRules) matchFile(relPath string) bool { return g.matches(relPath, false) }
+// ruleMatchesSub tests one pattern against a path already made relative to the
+// .gitignore that named it: basename match, full relative-path match, or a plain
+// directory-prefix match (the small subset this resolver supports).
+func ruleMatchesSub(pattern, sub string) bool {
+	if ok, _ := filepath.Match(pattern, filepath.Base(sub)); ok {
+		return true
+	}
+	if ok, _ := filepath.Match(pattern, sub); ok {
+		return true
+	}
+	return strings.HasPrefix(sub, pattern+string(filepath.Separator))
+}
+
+func (g *gitignoreMatcher) matchDir(relPath string) bool  { return g.matches(relPath, true) }
+func (g *gitignoreMatcher) matchFile(relPath string) bool { return g.matches(relPath, false) }

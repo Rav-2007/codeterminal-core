@@ -52,7 +52,7 @@ func (s *Server) reindexFile(ctx context.Context, realRoot, relPath string) erro
 
 	// Re-read through the indexer's own eligibility gate, so a file the walk
 	// would skip is never admitted by this shorter path.
-	content, _, skip, err := readEligibleFile(filepath.Join(realRoot, relPath), relPath, loadGitignore(realRoot))
+	content, _, skip, err := readEligibleFile(filepath.Join(realRoot, relPath), relPath, newGitignoreMatcher(realRoot))
 	if err != nil {
 		return fmt.Errorf("re-reading %s: %w", relPath, err)
 	}
