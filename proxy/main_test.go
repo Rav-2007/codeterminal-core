@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -329,5 +331,118 @@ func TestPeekUsageTotal(t *testing.T) {
 				t.Errorf("peekUsageTotal(%q) = (%d, %v), want (%d, %v)", c.body, got, ok, c.want, c.ok)
 			}
 		})
+	}
+}
+
+// abortingResponseWriter simulates a client that disconnects mid-stream: it
+// relays writes normally until it sees a line containing failOn (the trailing
+// usage chunk), then returns an error on that write the way a real broken
+// connection would. This models the exploit -- a client that reads the full
+// answer, then drops just before the usage line -- which streamSSE's write
+// error path handles.
+type abortingResponseWriter struct {
+	header     http.Header
+	body       bytes.Buffer
+	failOn     string
+	statusCode int
+}
+
+func (w *abortingResponseWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = make(http.Header)
+	}
+	return w.header
+}
+
+func (w *abortingResponseWriter) WriteHeader(code int) { w.statusCode = code }
+
+func (w *abortingResponseWriter) Write(b []byte) (int, error) {
+	if w.failOn != "" && bytes.Contains(b, []byte(w.failOn)) {
+		return 0, errors.New("simulated client disconnect")
+	}
+	return w.body.Write(b)
+}
+
+// Flush is a no-op; streamSSE type-asserts http.Flusher and flushes each line.
+func (w *abortingResponseWriter) Flush() {}
+
+// TestHandleChatCompletions_ClientAbortsBeforeUsageChunk_DoesNotRefund is the
+// regression for the C3 abort-refund bug. A client reads the full answer, then
+// disconnects just before the terminal usage chunk -- upstream already produced
+// (and billed) the completion, so the reservation must be KEPT, not refunded.
+// A full refund here is free, repeatable, exploitable inference on the paid
+// tier. Fail-when-neutered: revert finalizeUsage's producedOutput branch and
+// this observes the -reserved full refund instead of no correction.
+func TestHandleChatCompletions_ClientAbortsBeforeUsageChunk_DoesNotRefund(t *testing.T) {
+	const keyID = "55555555-5555-5555-5555-555555555555"
+	const actualTokens = 900 // upstream WOULD report this, but the client aborts first
+
+	store := &fakeUsageStore{tokenLimit: 100000}
+	supabase := newFakeSupabase(store, keyID)
+	defer supabase.Close()
+	upstream := newFakeUpstream(actualTokens)
+	defer upstream.Close()
+
+	p := newTestProxy(supabase.URL, upstream.URL)
+	req := newAuthorizedRequest(`{"model":"x","messages":[{"role":"user","content":"hi"}]}`)
+	// Fail the relay write that carries the usage chunk.
+	rec := &abortingResponseWriter{failOn: "usage"}
+
+	p.handleChatCompletions(rec, req)
+
+	// Assert NO correction fires. Give a (buggy) async refund a moment to land
+	// before asserting its absence -- the correct path issues no goroutine at
+	// all, so this only guards against a regression re-introducing one.
+	time.Sleep(200 * time.Millisecond)
+	if n := store.correctionCount(); n != 0 {
+		t.Fatalf("correction count = %d, want 0 (aborted-but-produced request must keep its reservation, not refund); deltas=%v", n, store.corrections)
+	}
+	store.mu.Lock()
+	used := store.tokensUsed
+	store.mu.Unlock()
+	if used != int64(defaultReservationTokens) {
+		t.Errorf("tokens_used = %d, want %d (reservation kept, nothing refunded)", used, defaultReservationTokens)
+	}
+}
+
+// TestFinalizeUsage_ProducedNoOutput_FullRefund pins that a request which
+// produced no billable output (upstream never reached, or a non-billable error
+// response) is still fully refunded -- the correct behavior for the two error
+// call sites in handleChatCompletions.
+func TestFinalizeUsage_ProducedNoOutput_FullRefund(t *testing.T) {
+	const keyID = "66666666-6666-6666-6666-666666666666"
+	const reserved = 4096
+
+	store := &fakeUsageStore{tokenLimit: 100000}
+	supabase := newFakeSupabase(store, keyID)
+	defer supabase.Close()
+	p := newTestProxy(supabase.URL, "http://unused.invalid")
+
+	p.finalizeUsage(keyID, reserved, 0, false)
+
+	waitForCorrections(t, store, 1)
+	if got, want := store.corrections[0], int64(-reserved); got != want {
+		t.Errorf("delta = %d, want %d (full refund when no output was produced)", got, want)
+	}
+}
+
+// TestFinalizeUsage_TrueUpUnchanged pins that a request with a real usage
+// figure still trues up to it exactly (including a positive top-up when actual
+// exceeds the reservation) -- the fix must not disturb the normal path.
+func TestFinalizeUsage_TrueUpUnchanged(t *testing.T) {
+	const keyID = "77777777-7777-7777-7777-777777777777"
+	const reserved = 4096
+	const actual = 5000 // > reserved: a positive top-up
+
+	store := &fakeUsageStore{tokenLimit: 100000}
+	supabase := newFakeSupabase(store, keyID)
+	defer supabase.Close()
+	p := newTestProxy(supabase.URL, "http://unused.invalid")
+
+	p.finalizeUsage(keyID, reserved, actual, true)
+
+	waitForCorrections(t, store, 1)
+	if got, want := store.corrections[0], int64(actual-reserved); got != want {
+		t.Errorf("delta = %d, want %d (true-up to the real usage figure)", got, want)
 	}
 }

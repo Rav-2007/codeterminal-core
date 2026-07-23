@@ -349,7 +349,7 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.upstreamURL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		p.logger.Printf("building upstream request failed: %v", err)
-		p.finalizeUsage(apiKeyID, reserved, 0)
+		p.finalizeUsage(apiKeyID, reserved, 0, false)
 		http.Error(w, "bad gateway", http.StatusBadGateway)
 		return
 	}
@@ -367,8 +367,9 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		p.logger.Printf("upstream call failed: %v", err)
 		// Reservation was made but OpenRouter was never reached -- none
 		// of it was used, so it's a full refund (see
-		// QUOTA_RESERVATION_DESIGN.md §5(b)).
-		p.finalizeUsage(apiKeyID, reserved, 0)
+		// QUOTA_RESERVATION_DESIGN.md §5(b)). producedOutput=false: nothing
+		// was generated upstream.
+		p.finalizeUsage(apiKeyID, reserved, 0, false)
 		http.Error(w, "bad gateway", http.StatusBadGateway)
 		return
 	}
@@ -403,7 +404,11 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		p.logger.Printf("writing non-streamed response failed: %v", err)
 	}
 	actual, _ := peekUsageTotal(respBytes)
-	p.finalizeUsage(apiKeyID, reserved, actual)
+	// A 2xx response with a body means upstream produced (and billed) output;
+	// a missing usage figure there must not trigger a refund. A non-2xx error
+	// body carries no billable output, so it stays a full refund.
+	producedOutput := resp.StatusCode >= 200 && resp.StatusCode < 300 && len(respBytes) > 0
+	p.finalizeUsage(apiKeyID, reserved, actual, producedOutput)
 }
 
 // authorize validates the caller-supplied Mochiii key ("Authorization:
@@ -618,12 +623,22 @@ func (p *proxy) streamSSE(w http.ResponseWriter, body io.Reader, keyID string, r
 
 	providerLogged := false
 	totalTokens := 0
+	sawData := false
 	defer func() {
-		p.finalizeUsage(keyID, reserved, totalTokens)
+		p.finalizeUsage(keyID, reserved, totalTokens, sawData)
 	}()
 
 	for scanner.Scan() {
 		line := scanner.Text()
+		// Record that billable output flowed from upstream BEFORE the relay
+		// write, so a client that disconnects mid-stream (the write below
+		// erroring) is still known to have consumed real, upstream-billed
+		// output -- finalizeUsage must charge, not refund, in that case. This
+		// is exactly the client-disconnect-before-the-usage-chunk path that
+		// QUOTA_RESERVATION_DESIGN.md §5(c) wrongly folded into "nothing used".
+		if isDataChunk(line) {
+			sawData = true
+		}
 		if _, err := io.WriteString(w, line+"\n"); err != nil {
 			return
 		}
@@ -644,6 +659,22 @@ func (p *proxy) streamSSE(w http.ResponseWriter, body io.Reader, keyID string, r
 	if err := scanner.Err(); err != nil {
 		p.logger.Printf("streaming upstream response failed: %v", err)
 	}
+}
+
+// isDataChunk reports whether an SSE line carries a real completion payload --
+// a non-empty "data:" chunk that isn't the terminal "[DONE]" marker -- i.e.
+// billable output was produced upstream. It inspects only the SSE envelope,
+// never the message content (same one-field discipline as extractProvider /
+// extractUsage), so it preserves this proxy's never-parse-content posture. Used
+// by streamSSE to decide whether an aborted stream consumed real output and so
+// must be charged rather than refunded (see finalizeUsage).
+func isDataChunk(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if !strings.HasPrefix(trimmed, "data:") {
+		return false
+	}
+	data := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
+	return data != "" && data != "[DONE]"
 }
 
 // extractProvider looks at one SSE line and, if it's a "data: {...}" chunk
@@ -735,22 +766,37 @@ func peekUsageTotal(body []byte) (int, bool) {
 	return peek.Usage.TotalTokens, true
 }
 
-// finalizeUsage computes the signed correction delta between what was
-// reserved (reserveQuota, before the call was forwarded) and what the
-// request actually used, and fires it off via correctUsage. actual == 0
-// means no usable usage figure was ever obtained (no usage chunk arrived,
-// the stream was cut short, or the response body didn't carry one) -- in
-// that case the whole reservation is refunded, since none of it is known
-// to have been genuinely used. Unlike the check-then-record gate this
-// replaced, this must run on every exit path, including actual == 0: an
-// unrefunded reservation would otherwise strand real quota forever (see
-// QUOTA_RESERVATION_DESIGN.md §5).
-func (p *proxy) finalizeUsage(keyID string, reserved, actual int) {
-	delta := -reserved
-	if actual > 0 {
-		delta = actual - reserved
+// finalizeUsage reconciles the reservation (reserveQuota, made before the call
+// was forwarded) against what the request actually consumed. It must run on
+// every exit path -- an unreconciled reservation would strand real quota
+// forever (see QUOTA_RESERVATION_DESIGN.md §5) -- and it decides the correction
+// three ways, NOT the old two-way "actual>0 ? true-up : full-refund":
+//
+//   - actual > 0: a real usage figure is in hand -> true up to it exactly.
+//   - actual == 0 && producedOutput: the request produced billable output
+//     upstream (OpenRouter generated and billed tokens) but no usage figure
+//     ever reached us -- the classic case is a client that read the full
+//     answer and disconnected just before the terminal usage chunk. Refunding
+//     here would be free, repeatable, exploitable inference on the paid tier,
+//     so the reservation is KEPT as the charge (delta 0 -- reserveQuota already
+//     added it to tokens_used) rather than refunded. This under-meters a long
+//     completion aborted late relative to its true usage, but in the SAFE
+//     direction and never to zero (§5(d)/(e)); precise metering of an aborted
+//     stream is a named follow-up, not this fix.
+//   - actual == 0 && !producedOutput: nothing was produced (upstream never
+//     reached, or a non-billable error response) -> full refund, as before.
+//
+// producedOutput corrects QUOTA_RESERVATION_DESIGN.md §5(c), which wrongly
+// treated a client-disconnect-before-usage-chunk as "nothing used".
+func (p *proxy) finalizeUsage(keyID string, reserved, actual int, producedOutput bool) {
+	switch {
+	case actual > 0:
+		go p.correctUsage(keyID, actual-reserved)
+	case producedOutput:
+		p.logger.Printf("usage: output produced but no usage figure (key_id=%s) -- keeping reservation=%d, not refunding", keyID, reserved)
+	default:
+		go p.correctUsage(keyID, -reserved)
 	}
-	go p.correctUsage(keyID, delta)
 }
 
 // correctUsage adjusts keyID's tokens_used by the signed delta between what
