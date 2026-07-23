@@ -238,6 +238,15 @@ func (s *Server) serveConn(conn net.Conn) {
 		return
 	}
 
+	// Checked before the prompt path, like every other typed request. Until
+	// this existed, {"status":true} decoded as a PromptRequest with no prompt
+	// and came back "prompt is empty" — the daemon had no answer to "how are
+	// you" because nothing had ever asked.
+	if isStatusRequest(raw) {
+		s.handleStatus(enc)
+		return
+	}
+
 	if isSearchRequest(raw) {
 		var searchReq protocol.SearchRequest
 		if err := json.Unmarshal(raw, &searchReq); err != nil {

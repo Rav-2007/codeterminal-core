@@ -457,6 +457,81 @@ type SearchResponse struct {
 	Error           string         `json:"error,omitempty"`
 }
 
+// StatusRequest asks the daemon to describe its own current state. It is the
+// operator-facing counterpart to the per-request Degraded signal: that one is
+// pushed to whoever happens to be prompting, this one can be pulled at any
+// time by anyone who wants to know whether the daemon is healthy.
+//
+// It exists because there was previously NO way to ask. The daemon had zero
+// metrics or health endpoints and logged only to stderr, so establishing
+// whether a running daemon was degraded meant finding its stderr, having kept
+// it, and knowing which lines mattered. `{"status":true}` before this existed
+// fell through to the prompt path and came back "prompt is empty".
+//
+// Deliberately carried on the EXISTING Unix socket rather than an HTTP port.
+// The daemon's defining constraint is that it never listens on a network port
+// (see daemon/main.go); the socket is 0600 and SO_PEERCRED peer-authenticated
+// (FAIL-3 Gate 3), and a localhost HTTP endpoint would have neither property.
+// A health surface is not worth weakening the thing whose health it reports.
+//
+// Status is the discriminator, always true and deliberately without omitempty,
+// exactly like UndoRequest.Undo and SearchRequest.Search -- see those for why:
+// a real StatusRequest must always serialize this key so the server's peek
+// catches it, and older clients never send it, so they are unaffected.
+type StatusRequest struct {
+	ProtocolVersion int  `json:"protocol_version"`
+	Status          bool `json:"status"`
+}
+
+// StatusRetrieval is the retrieval half of a StatusResponse. It reports the
+// two tiers SEPARATELY, which is the entire point: the semantic tier being up
+// while the lexical tier is down was the state that used to be invisible, and
+// a single "retrieval: ok" boolean would hide it again.
+//
+// Reason is set only when Enabled is false, and carries the same client-safe
+// explanation GroundingInfo.Reason does (see retrieval_setup.go's reason
+// constants) -- no paths, no internal error text.
+type StatusRetrieval struct {
+	Enabled            bool   `json:"enabled"`
+	Reason             string `json:"reason,omitempty"`
+	Lexical            bool   `json:"lexical"`
+	TopK               int    `json:"top_k,omitempty"`
+	ContextBudgetChars int    `json:"context_budget_chars,omitempty"`
+	IndexedChunks      int    `json:"indexed_chunks,omitempty"`
+}
+
+// StatusResponse is the daemon's account of itself.
+//
+// It deliberately does NOT carry the model API base URL. Gate 7 generalized
+// upstream errors specifically so a provider host never crosses the socket,
+// and a status surface is no reason to reintroduce what an audit removed.
+// APIKeyConfigured reports the operationally useful part (whether requests
+// will carry an Authorization header at all) without the host. Workspace IS
+// included, since GroundingInfo has always reported it.
+//
+// ConfigWarnings is the same list logged at startup (see Config.Warnings):
+// unrecognized config_version, unknown/misspelled keys, clamped values. An
+// operator who missed the startup log can still ask why a setting they wrote
+// is not in effect.
+//
+// Degraded is the identical type and content the prompt path reports, so the
+// pushed and pulled views of the daemon's health can never disagree.
+type StatusResponse struct {
+	ProtocolVersion  int             `json:"protocol_version"`
+	DaemonVersion    string          `json:"daemon_version"`
+	PID              int             `json:"pid"`
+	UptimeSeconds    int64           `json:"uptime_seconds"`
+	Workspace        string          `json:"workspace,omitempty"`
+	Tier             string          `json:"tier,omitempty"`
+	Model            string          `json:"model,omitempty"`
+	Retrieval        StatusRetrieval `json:"retrieval"`
+	MemoryAvailable  bool            `json:"memory_available"`
+	APIKeyConfigured bool            `json:"api_key_configured"`
+	ConfigVersion    int             `json:"config_version,omitempty"`
+	ConfigWarnings   []string        `json:"config_warnings,omitempty"`
+	Degraded         []Degradation   `json:"degraded,omitempty"`
+}
+
 // GroundingInfo reports whether the daemon augmented THIS request with
 // retrieved local context, and from where. It's purely a report of a
 // decision already made server-side (see daemon/context.go's

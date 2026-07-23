@@ -26,7 +26,7 @@ func main() {
 	logger := log.New(os.Stderr, "codeterminal-daemon: ", log.LstdFlags)
 
 	// "index", "retrieve", "download-model", "helper-smoketest", "skills",
-	// and "edits" are one-shot subcommands, not flags: they run and exit,
+	// "status", and "edits" are one-shot subcommands, not flags: they run and exit,
 	// deliberately separate from the long-running serve path below (which
 	// they leave entirely untouched — none of them is invoked automatically
 	// on daemon start or per-prompt). Checked before flag.Parse() because
@@ -58,6 +58,11 @@ func main() {
 				logger.Fatal(err)
 			}
 			return
+		case "status":
+			if err := runStatusCommand(os.Args[2:], logger); err != nil {
+				logger.Fatal(err)
+			}
+			return
 		case "edits":
 			if err := runEditsCommand(os.Args[2:], logger); err != nil {
 				logger.Fatal(err)
@@ -74,7 +79,18 @@ func main() {
 	debugContext := flag.Bool("debug-context", false, "additionally log the full content of every retrieved chunk (verbose)")
 	noRerank := flag.Bool("no-rerank", false, "bypass file-class re-ranking; use raw vector-similarity order (A/B comparison, default: re-ranking enabled)")
 	noScrub := flag.Bool("no-scrub", false, "disable heuristic scrubbing of secret-shaped text from the prompt before it's sent to the model API (default: scrubbing enabled)")
+	logFile := flag.String("log-file", "", "additionally append the daemon log to this file (size-rotated at 5 MiB, one .1 backup); stderr is always written too")
 	flag.Parse()
+
+	// Swapped in before anything else is logged, so a --log-file run captures
+	// startup -- which is where the config warnings and degradation notices
+	// are. Tee'd, never redirected: a foreground operator keeps stderr.
+	if logWriter, closeLog, err := newLogWriter(*logFile); err != nil {
+		logger.Printf("warning: could not open --log-file %s (%v); continuing with stderr only", *logFile, err)
+	} else {
+		defer closeLog()
+		logger = log.New(logWriter, "codeterminal-daemon: ", log.LstdFlags)
+	}
 
 	apiBase := os.Getenv("CODETERMINAL_API_BASE")
 	apiKey := os.Getenv("CODETERMINAL_API_KEY")
