@@ -235,7 +235,7 @@ func workspaceRelPath(realRoot, refPath string) string {
 // path. A suffix matching two or more files is left OUT of the result: an
 // ambiguous pointer is refused rather than resolved to a coin flip.
 //
-// The walk prunes exactly what the indexer prunes (ignoredDirNames, gitignored
+// The walk prunes exactly what the indexer prunes (isPrunedDir, gitignored
 // directories, symlinks), so it never descends into node_modules, .git or
 // anything else ScanWorkspace wouldn't — that keeps the cost proportional to
 // the source tree and keeps this from finding files indexing can't see.
@@ -263,7 +263,7 @@ func findFilesBySuffix(realRoot string, ignore *gitignoreMatcher, suffixes []str
 			return nil
 		}
 		if d.IsDir() {
-			if ignoredDirNames[d.Name()] || ignore.matchDir(rel) {
+			if isPrunedDir(d.Name()) || ignore.matchDir(rel) {
 				return fs.SkipDir
 			}
 			return nil

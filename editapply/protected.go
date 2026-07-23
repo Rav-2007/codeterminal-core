@@ -42,18 +42,37 @@ var ProtectedDirNames = map[string]bool{
 	".aws":          true,
 }
 
+// IsProtectedDirName reports whether name (a single path component) is a
+// protected directory, compared CASE-INSENSITIVELY.
+//
+// The literal map lookup this centralizes (ProtectedDirNames[part]) was
+// case-sensitive. On a case-insensitive filesystem (macOS default APFS, Windows
+// NTFS) the OS resolves ".GIT" / ".Git" / ".SSH" to the same inode as the
+// lowercase name, so a case-varied component sailed past the guard while still
+// reaching the real directory — re-opening, for the edit WRITER, the exact
+// ".git/hooks" arbitrary-code-execution path Tier 3 closed for the lowercase
+// form, and, for the INDEXER, letting real VCS/credential internals be read into
+// the index. All ProtectedDirNames keys are lowercase, so folding the input is
+// symmetric. On a genuinely case-sensitive filesystem the fold is merely
+// redundant: no legitimate source directory is a case-variant of .git/.ssh/etc.,
+// so nothing that should be indexed or edited is newly refused.
+func IsProtectedDirName(name string) bool {
+	return ProtectedDirNames[strings.ToLower(name)]
+}
+
 // ProtectedDirComponent returns the first component of a workspace-relative
 // path that names a protected directory, or "" if the path is clear. The path
 // is checked component by component, so a protected directory is refused at any
 // depth, and a file whose name merely resembles one (notgit/, gitignore.txt) is
-// not.
+// not. Matching is case-insensitive (see IsProtectedDirName), so ".GIT/hooks"
+// is refused exactly like ".git/hooks".
 func ProtectedDirComponent(relPath string) string {
 	cleaned := filepath.Clean(relPath)
 	if cleaned == "." {
 		return ""
 	}
 	for _, part := range strings.Split(cleaned, string(filepath.Separator)) {
-		if ProtectedDirNames[part] {
+		if IsProtectedDirName(part) {
 			return part
 		}
 	}

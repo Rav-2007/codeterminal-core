@@ -39,41 +39,42 @@ const (
 	SkipNoise      SkipReason = "noise"
 )
 
-// ignoredDirNames are pruned outright during the walk: a matching directory
-// is never descended into, so nothing beneath it is ever scanned, read, or
-// counted individually — it's one skip per pruned subtree, not one per file.
+// isPrunedDir reports whether a directory named name is pruned outright during
+// the walk: a pruned directory is never descended into, so nothing beneath it is
+// ever scanned, read, or counted individually — one skip per pruned subtree, not
+// one per file.
 //
-// It is the union of two sets with different reasons for being here. The
-// dangerous ones (VCS internals, .codeterminal, credential dirs) come from
-// editapply.ProtectedDirNames, which is also what the edit WRITER refuses to
-// write into — that shared source of truth is the point. The two lists were
-// maintained separately, and drifted: the indexer pruned .git and .codeterminal
-// while the writer happily wrote into both, so model output could reach hooks
-// it executes and the backups undo restores from (Fix 3). Anything added there
-// is now pruned here for free, and vice versa cannot silently diverge.
+// Two sets feed this, with different reasons and different matching rules:
 //
-// The rest are local: build output and dependency trees, skipped as noise.
-// They are deliberately NOT protected on the write path — editing vendored or
-// generated code is unusual but legitimate.
-var ignoredDirNames = buildIgnoredDirNames()
+//   - The dangerous ones (VCS internals, .codeterminal, credential dirs) are
+//     editapply.ProtectedDirNames — the same list the edit WRITER refuses to
+//     write into. That shared source of truth is the point: the two lists once
+//     drifted so the indexer pruned .git while the writer wrote into it (Fix 3).
+//     These are matched CASE-INSENSITIVELY (editapply.IsProtectedDirName): a
+//     case-varied ".GIT" resolves to the real .git on a case-insensitive
+//     filesystem, so a case-sensitive prune would index git internals there (S2).
+//
+//   - noiseDirNames are local build-output and dependency trees, skipped as
+//     noise, deliberately NOT protected on the write path — editing vendored or
+//     generated code is unusual but legitimate. These stay case-SENSITIVE: they
+//     are not a security boundary, and folding them would risk pruning a
+//     legitimately-cased source directory that merely shares a name (e.g. a Go
+//     package literally named "Build").
+var noiseDirNames = map[string]bool{
+	"node_modules": true,
+	"vendor":       true,
+	"dist":         true,
+	"build":        true,
+	"target":       true,
+	"out":          true,
+	".next":        true,
+	"__pycache__":  true,
+	".venv":        true,
+	"venv":         true,
+}
 
-func buildIgnoredDirNames() map[string]bool {
-	names := map[string]bool{
-		"node_modules": true,
-		"vendor":       true,
-		"dist":         true,
-		"build":        true,
-		"target":       true,
-		"out":          true,
-		".next":        true,
-		"__pycache__":  true,
-		".venv":        true,
-		"venv":         true,
-	}
-	for name := range editapply.ProtectedDirNames {
-		names[name] = true
-	}
-	return names
+func isPrunedDir(name string) bool {
+	return editapply.IsProtectedDirName(name) || noiseDirNames[name]
 }
 
 // ScanResult is the outcome of walking a workspace: every chunk produced
@@ -142,7 +143,7 @@ func ScanWorkspace(root string) (*ScanResult, error) {
 		}
 
 		if d.IsDir() {
-			if ignoredDirNames[d.Name()] {
+			if isPrunedDir(d.Name()) {
 				result.Skipped[SkipIgnoredDir]++
 				return fs.SkipDir
 			}
