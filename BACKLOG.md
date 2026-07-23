@@ -700,6 +700,45 @@ outcomes); method + numbers are the record here.
 - **(historical) Not fixed. Gate 6 stays open.** Fix direction (single apply/undo mutex vs. per-workspace lockfile
   vs. `O_EXCL`/rename atomic writes) is the founder's call.
 
+### FOUNDER SIGN-OFF NEEDED — is Gate 6 closed or not? (packaging only; this note is not itself a closure)
+
+**The ask (one line):** Is Gate 6 (socket concurrency, FAIL-3) closed or not? Four locations disagree,
+and no properly-recorded closure decision exists on `main`. Founder to rule one way; docs then follow.
+
+**Not in question — settle this first, don't re-litigate it:** the engineering fix is real. Commit
+`d96794e` (in-process per-workspace-root serialization, `Server.applyLocks`) is on `main`, and was
+verified live — all five audit repros measure 0% and fail-when-neutered (see the deep-audit section
+directly above). **This is a documentation/closure-process contradiction, not an open engineering task.**
+
+**The contradiction:**
+
+| Location | Says |
+|---|---|
+| `BACKLOG.md:633` (this file, audit header) | audit explicitly does **NOT** close Gate 6 |
+| `BACKLOG.md:681` (this file, same section) | "Gate 6 now closed" |
+| `p3-security-review.md:21` (memory) | "Gate 6 CLOSED" |
+| `MEMORY.md:5` (memory index) | "FIXED+CLOSED `d96794e`" |
+
+The only commit that ever explicitly said "mark … CLOSED" (`8d37a6c`) is **dangling — never merged to
+`main`**. So the claim's own origin was walked back, yet the "closed" claim still propagated into three
+of the four locations above. (Source: the already-completed `8d37a6c` correction report — not re-derived here.)
+
+**Why it matters beyond hygiene:** this sub-item sits under the P3 security-gate, which this file's
+standing header and the remaining-work inventory both name as the blocker for all capability work. An
+unresolved closure contradiction on one of the gate's own sub-items is part of what keeps that gate ambiguous.
+
+**Options (no recommendation is being made — that determination is the whole point of this note):**
+- **Rule it closed** — ratify what three of four locations already assume; then fix `BACKLOG.md:633` and
+  the dangling-`8d37a6c` citation to match.
+- **Rule it not yet closed** — pending whatever bar the founder holds beyond "the code fix landed" (e.g.
+  alongside the rest of FAIL-3's gates); then correct `BACKLOG.md:681`, `p3-security-review.md:21`, and
+  `MEMORY.md:5` to stop asserting closure.
+- **This note takes neither position.** It packages the contradiction for a one-pass ruling; it does not resolve it.
+
+**On resolution, update to match (do NOT touch them now):** whichever way this rules, the files to
+reconcile are exactly the four in the table above (plus the dangling-`8d37a6c` citation). **This note is
+not a closure and does not edit any of them.**
+
 ### Gate 7 deep audit — 2026-07-19 (results + path-scrub / upstream-passthrough FIX; does NOT close Gate 7)
 
 Ran after Gate 3 peer-auth (`517c069`) and Gate 6 concurrency (`d96794e`) both landed. Method was the
@@ -1737,3 +1776,68 @@ the position is prose not contract — an extension of the open 3A question, fol
 channels. **Still open:** whether an `allow_fallbacks:true` fallback can reach a non-ZDR provider
 (OpenRouter-side, unverified); and the D4 posture choice. **Severity:** Low but unverified-at-the-edge,
 not dismissable. **Nothing marked closed — founder decides.**
+
+## Backlog — added 2026-07-23 (per-turn provider identity surfaced to clients — D4-option-3 client half)
+
+**This ships ONLY the client-surfacing half of D4 option 3 (log-only → wire-visible → rendered). It
+does NOT resolve D4's posture question or 3A / its extension, does not touch `allow_fallbacks`, does
+not build the option-2 allow-list, and adds no ZDR-status judgement.** Independent of whichever
+posture the founder eventually picks: the daemon receives and logs a `provider` value regardless of
+posture, and a client should be able to see it regardless (E-cluster, this commit).
+
+The corrected D4 option 3 (commit `eee2f03`) established that per-request provider identity is data
+the daemon already had every turn — it decoded OpenRouter's top-level `provider` field
+(`daemon/provider.go:74`, `onProvider` at `247-251`) and logged it server-side (`server.go:379`),
+but never surfaced it to any client. That was the whole gap. This closes it.
+
+### What was built
+- **E1 — wire.** New `TokenResponse.Provider` (`protocol/protocol.go`, `omitempty`). It rides on its
+  OWN message, emitted from the existing `onProvider` closure (`server.go`), NOT the pre-token
+  Grounding message — the provider is not known until the response stream begins. Absent is dropped
+  by `omitempty` (a healthy/older response stays byte-identical). The server-side log line is kept.
+- **E2 — both shipped clients render it (Fix-13 / Tier-2.5 trap avoided).**
+  - **TUI:** a `providerMsg` (`stream.go`), one neutral header line `served by: <provider>` via
+    `providerLabel` (`chat.go`), on its own row like the degradation lines (a joined line can
+    soft-wrap and desync the viewport). Deliberately `helpStyle` (subtle), NOT the `⚠`+red
+    `errorStyle` the degraded/redaction notices use — a served-by-X report is a fact, not a warning.
+    Cleared at the start of every turn and on ctrl+n, like grounding/redactions/degraded.
+  - **VS Code:** `onProvider` → `provider` message → `setProvider` renders `#provider` (`main.js`),
+    a neutral `#grounding`-style region (`chatPanel.ts` CSS/HTML), `textContent` never `innerHTML`,
+    cleared each turn in `send()`. `out/` recompiled.
+- **Labelled "served by," never "fell back"/"routed to."** OpenRouter reports *who* served a request,
+  not *whether* that was a fallback (D2), so fallback-vs-primary stays unshowable — carried forward,
+  not rediscovered. No ZDR verdict is shown (that needs the still-open allow-list + outreach).
+- **Absence is a normal, non-error state.** OpenRouter does not guarantee the field
+  (`provider.go:67-73`); a turn with no provider renders as nothing in both clients, never red/degraded.
+
+### Verification (live; stub-labelled where it must be)
+- **Wire (raw socket bytes, `wire_probe.py`, shares no structs with the daemon):** present → a
+  dedicated line `{"protocol_version":1,"done":false,"provider":"DeepInfra"}` crossed the socket
+  (own message, after grounding, before the token), and `server.go:379` logged it; absent → **no**
+  `provider` field anywhere on the wire, no log line, response byte-identical to before.
+- **TUI (real `ct-tui` binary in a pty against a real daemon):** present → painted a neutral
+  `served by: DeepInfra` line between grounding and the degraded line; absent → no `served by` line
+  at all.
+- **VS Code (real `media/main.js` render path against a DOM stub):** present → `#provider` =
+  `"served by: DeepInfra"`; absent/falsy → `""`; no `⚠`/degraded/fallback connotation. `tsc --noEmit`
+  clean.
+- **Guards:** daemon wire (`TestProvider_IsSurfacedOnTheWire`, `TestProvider_AbsentWhenUpstreamOmitsIt`,
+  `daemon/response_robustness_test.go`) and TUI render/lifecycle (`clients/tui/provider_test.go`).
+  Full build/vet/gofmt/test green on the touched modules; daemon + TUI `-race` clean on the provider
+  paths.
+- **STUB caveat, stated plainly (per the E3 rule and the D4 correction):** the upstream in every live
+  run above is a LOCAL stub that *fabricates* the `provider` value — it is evidence the daemon reads
+  the wire field and both clients render it, **NOT** evidence about what real OpenRouter returns.
+  No OpenRouter/proxy key is available in this environment. What still needs a real key to confirm:
+  that genuine OpenRouter responses actually carry the top-level `provider` field in practice (the
+  daemon's `provider.go:67-73` "observed in practice, not formally guaranteed on every chunk" comment
+  and OpenRouter's streaming docs are the current, non-live basis for that — see the D4 correction).
+
+### Surfaced but NOT fixed (recorded, not acted on)
+- **No allow-list, no ZDR-status label (E4 scope hold).** Mapping a shown provider → ZDR-eligible is
+  D4 option 2 and is deliberately not built here; the panel shows the fact, not a verdict.
+- **Handshake-only clients see no provider.** Like C2-b memory, the value rides the first prompt of a
+  turn; a preflight/hydrate-only connection never sees one. Same small deferred shape as C2-b.
+
+**Nothing marked closed.** This is the client-surfacing half of one D4 option, shipped; the D4 posture
+decision and the 3A/extension OpenRouter-side residual remain open and the founder's call.

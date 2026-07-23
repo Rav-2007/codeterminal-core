@@ -169,6 +169,9 @@ export class ChatPanel {
       onDegraded: (items: Degradation[]) => {
         this.panel.webview.postMessage({ type: 'degraded', items });
       },
+      onProvider: (provider: string) => {
+        this.panel.webview.postMessage({ type: 'provider', provider });
+      },
       onToken: (token: string) => {
         answer += token;
         this.panel.webview.postMessage({ type: 'token', text: token });
@@ -486,6 +489,11 @@ export class ChatPanel {
   }
   #degraded:empty { padding: 0; }
   #degraded .item { display: block; }
+  /* Provider is a plain fact, not a warning: neutral #grounding-style dimming,
+     not the warning color #degraded/#redactions use. :empty removes its padding
+     so an absent provider (the common case) occupies no space. */
+  #provider { font-size: 11px; opacity: 0.7; padding: 0 12px 6px; }
+  #provider:empty { padding: 0; }
   #inputRow { display: flex; gap: 6px; padding: 8px 12px; border-top: 1px solid var(--vscode-panel-border, transparent); }
   #promptInput {
     flex: 1;
@@ -581,6 +589,7 @@ export class ChatPanel {
   <div id="grounding"></div>
   <div id="redactions"></div>
   <div id="degraded"></div>
+  <div id="provider"></div>
   <div id="inputRow">
     <button id="autoApplyToggle" class="auto-apply-toggle off" title="When ON, proposed edits apply automatically without a per-edit confirmation"></button>
     <input id="promptInput" type="text" placeholder="Ask something…" />

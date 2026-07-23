@@ -9,6 +9,7 @@
   const groundingEl = document.getElementById('grounding');
   const redactionsEl = document.getElementById('redactions');
   const degradedEl = document.getElementById('degraded');
+  const providerEl = document.getElementById('provider');
   const inputEl = document.getElementById('promptInput');
   const sendBtn = document.getElementById('sendBtn');
   const searchInputEl = document.getElementById('searchInput');
@@ -119,6 +120,19 @@
       line.textContent = `⚠ degraded (${item.component}): ${item.detail}`;
       degradedEl.appendChild(line);
     }
+  }
+
+  // setProvider renders the upstream provider the daemon reported serving this
+  // turn (see protocol.TokenResponse.Provider). Unlike setGrounding/setDegraded
+  // the value arrives mid-stream (at or before the first token), not before
+  // tokens, but is cleared at the start of every new turn (see send()) just the
+  // same. A falsy/absent provider clears the line and shows nothing — absence
+  // is the common case (OpenRouter does not guarantee the field) and is NOT an
+  // error, so it gets neutral styling, never the warning treatment. textContent
+  // (never innerHTML): the provider name is daemon-relayed text. Strictly
+  // "served by X" — no fallback claim, no ZDR verdict.
+  function setProvider(provider) {
+    providerEl.textContent = provider ? `served by: ${provider}` : '';
   }
 
   // showEditProposal renders ONE edit block as a whole-block diff -- the
@@ -440,6 +454,7 @@
     setGrounding(null);
     setRedactions(null);
     setDegraded(null);
+    setProvider(null);
     setStreaming(true);
     currentAssistantBubble = addBubble('assistant', '');
     // Captured once, for this run only -- see currentRunAuto's doc comment.
@@ -470,6 +485,9 @@
         break;
       case 'degraded':
         setDegraded(msg.items);
+        break;
+      case 'provider':
+        setProvider(msg.provider);
         break;
       case 'token':
         if (currentAssistantBubble) {

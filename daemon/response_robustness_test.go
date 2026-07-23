@@ -360,6 +360,61 @@ func TestReasoningTokens_AbsentWhenTheModelSendsNone(t *testing.T) {
 	}
 }
 
+// providerLine builds one SSE chunk carrying a top-level "provider" field, the
+// shape OpenRouter emits to name the upstream that served the request (and the
+// shape daemon/provider.go's chatCompletionChunk.Provider decodes).
+func providerLine(provider, content string) string {
+	b, _ := json.Marshal(map[string]any{
+		"provider": provider,
+		"choices": []map[string]any{{
+			"delta": map[string]string{"content": content},
+		}},
+	})
+	return string(b)
+}
+
+// TestProvider_IsSurfacedOnTheWire (E1): the daemon already observed and logged
+// the serving provider; this proves the same value now crosses the socket to a
+// client, on its own message, so the client-surfacing gap is actually closed
+// (the Fix-13 trap: a value the daemon has but no client can see). It rides its
+// OWN TokenResponse (not the pre-token grounding message) because the provider
+// is not known until the response begins.
+func TestProvider_IsSurfacedOnTheWire(t *testing.T) {
+	upstream, _ := scriptedUpstream(t, []string{
+		providerLine("DeepInfra", ""),
+		deltaLine("hello", ""),
+	})
+	srv := robustnessServer(t, upstream.URL, "/workspace/provider", nil)
+
+	_, responses := runPromptTurn(t, srv, protocol.PromptRequest{Prompt: "hi"})
+
+	var providers []string
+	for _, r := range responses {
+		if r.Provider != "" {
+			providers = append(providers, r.Provider)
+		}
+	}
+	if len(providers) != 1 || providers[0] != "DeepInfra" {
+		t.Errorf("provider(s) on the wire = %v, want exactly one %q", providers, "DeepInfra")
+	}
+}
+
+// TestProvider_AbsentWhenUpstreamOmitsIt guards the non-error absence path:
+// OpenRouter does not guarantee the field, so a stream without one must leave
+// TokenResponse.Provider empty on every message (omitempty drops it), never a
+// placeholder — the response stays byte-identical to before this existed.
+func TestProvider_AbsentWhenUpstreamOmitsIt(t *testing.T) {
+	upstream, _ := scriptedUpstream(t, []string{deltaLine("plain answer", "")})
+	srv := robustnessServer(t, upstream.URL, "/workspace/noprovider", nil)
+
+	_, responses := runPromptTurn(t, srv, protocol.PromptRequest{Prompt: "hi"})
+	for _, r := range responses {
+		if r.Provider != "" {
+			t.Errorf("Provider = %q on a stream that named none, want empty", r.Provider)
+		}
+	}
+}
+
 // TestStreamCompletion_ReadsDeltaReasoning tests the plumbing directly, so the
 // tier being inactive today doesn't leave this unverified.
 func TestStreamCompletion_ReadsDeltaReasoning(t *testing.T) {

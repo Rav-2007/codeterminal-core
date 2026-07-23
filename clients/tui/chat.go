@@ -89,6 +89,16 @@ type chatModel struct {
 	// than a stale claim carried forward.
 	lastDegraded []protocol.Degradation
 
+	// lastProvider is the upstream provider the daemon reported serving the
+	// current turn (see providerMsg). Unlike the notices above it arrives
+	// mid-stream (at or before the first token), not before tokens, but shares
+	// the same cleared-at-the-start-of-each-turn lifetime so a previous turn's
+	// provider is never shown against the in-flight one. "" means none was
+	// reported (the common case when OpenRouter omits the field) — rendered as
+	// nothing, never as an error. Plain "served by X"; never a fallback or ZDR
+	// claim (see providerLabel).
+	lastProvider string
+
 	// Edit-review state: set when the last completed answer contained
 	// SEARCH/REPLACE edit blocks (see editapply.ParseEditBlocks). Reviewed
 	// one block at a time — reviewIndex only ever points at a block that
@@ -234,6 +244,14 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.resizeViewport()
 		return m, waitForNext(m.streamCh)
 
+	case providerMsg:
+		if m.streamCh == nil {
+			return m, nil // a stray message from an already-abandoned stream
+		}
+		m.lastProvider = msg.provider
+		m.resizeViewport()
+		return m, waitForNext(m.streamCh)
+
 	case tokenMsg:
 		return m.handleToken(msg)
 
@@ -342,6 +360,7 @@ func (m chatModel) startTurn() (tea.Model, tea.Cmd) {
 	m.lastGrounding = nil
 	m.lastRedactions = nil
 	m.lastDegraded = nil
+	m.lastProvider = ""
 	m.resizeViewport()
 	m.refreshViewport()
 
@@ -396,6 +415,7 @@ func (m chatModel) clearConversation() (tea.Model, tea.Cmd) {
 	m.lastGrounding = nil
 	m.lastRedactions = nil
 	m.lastDegraded = nil
+	m.lastProvider = ""
 	m.statusErr = ""
 	m.state = stateIdle
 	m.resizeViewport()
@@ -690,6 +710,9 @@ func (m chatModel) noticeLines() []string {
 	if redactions := m.redactionsLabel(); redactions != "" {
 		lines = append(lines, truncateToWidth(redactions, m.width))
 	}
+	if provider := m.providerLabel(); provider != "" {
+		lines = append(lines, truncateToWidth(provider, m.width))
+	}
 	for _, degraded := range m.degradedLabels() {
 		lines = append(lines, truncateToWidth(degraded, m.width))
 	}
@@ -777,6 +800,22 @@ func (m chatModel) redactionsLabel() string {
 		return ""
 	}
 	return errorStyle.Render(fmt.Sprintf("⚠ redacted %d suspected secret(s) before sending: %s", len(m.lastRedactions), strings.Join(m.lastRedactions, ", ")))
+}
+
+// providerLabel renders the upstream provider the daemon reported serving this
+// turn, or "" when none was reported (the common case when OpenRouter omits the
+// field, or before it has arrived this turn — nothing is shown rather than a
+// placeholder). Deliberately NEUTRAL styling (helpStyle, the same subtle
+// treatment historyLabel uses), NOT the "⚠ + red" errorStyle the degraded /
+// redaction notices use: a served-by-X report is a plain fact, not a warning,
+// and absence is not a fault. The label is strictly factual — "served by X" —
+// and says nothing about whether X is a fallback or about X's ZDR status; both
+// are unshowable from this data (see providerMsg and the D4 correction).
+func (m chatModel) providerLabel() string {
+	if m.lastProvider == "" {
+		return ""
+	}
+	return helpStyle.Render("served by: " + m.lastProvider)
 }
 
 // degradedLabels renders one line per reduced subsystem the daemon reported,

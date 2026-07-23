@@ -37,6 +37,15 @@ type redactionsMsg struct{ kinds []string }
 // dropped by every client is a wire change, not a fix (see Fix 13).
 type degradedMsg struct{ items []protocol.Degradation }
 
+// providerMsg carries the upstream provider the daemon observed serving this
+// turn (see protocol.TokenResponse.Provider). Unlike groundingMsg/degradedMsg
+// it does NOT arrive before tokens: the provider is only known once the model
+// response begins, so it arrives on its own message at or before the first
+// token, at most once. Absence is normal (OpenRouter does not guarantee the
+// field) and is shown as nothing, never as an error. It is a plain "served by
+// X" fact — never a fallback claim or a ZDR judgement (see the field comment).
+type providerMsg struct{ provider string }
+
 // streamDoneMsg signals the stream finished successfully.
 type streamDoneMsg struct{}
 
@@ -212,6 +221,9 @@ func streamPrompt(ctx context.Context, clientName, workspace, prompt, promptKind
 		}
 		if len(tok.Degraded) > 0 {
 			ch <- degradedMsg{tok.Degraded}
+		}
+		if tok.Provider != "" {
+			ch <- providerMsg{tok.Provider}
 		}
 		if tok.Token != "" {
 			ch <- tokenMsg(tok.Token)

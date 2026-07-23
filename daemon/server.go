@@ -377,6 +377,15 @@ func (s *Server) serveConn(conn net.Conn) {
 		},
 		func(provider string) {
 			s.logger.Printf("model API served by provider=%q (zdr=%t data_collection=%s allow_fallbacks=%t)", provider, routing.ZDR, routing.DataCollection, routing.AllowFallbacks)
+			// Surface the same already-observed value to the client on its own
+			// message (E1). It rides here rather than on the pre-token Grounding
+			// message because the provider is not known until the response
+			// stream starts — onProvider fires at most once, at or before the
+			// first token. A write error is dropped, exactly like the reasoning
+			// callback below: this is optional observability and must not fail a
+			// turn the token stream is otherwise completing. Never carries a
+			// fallback-vs-primary claim or a ZDR verdict — just "served by X".
+			enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Provider: provider})
 		},
 		// Reasoning tokens go out on their own field, NEVER into `full` (Fix 14).
 		// `full` is what gets parsed for SEARCH/REPLACE blocks and written to

@@ -77,6 +77,14 @@ export interface TokenResponse {
   // response byte-identical to a healthy one -- the degradation reached the
   // daemon's stderr and stopped there.
   degraded?: Degradation[];
+  // provider mirrors protocol.TokenResponse.Provider: the upstream provider
+  // OpenRouter reported serving this turn (e.g. "DeepInfra"). Unlike grounding
+  // it arrives on its own message mid-stream (at or before the first token),
+  // not before tokens, since the value only exists once the response begins.
+  // Absent is normal (OpenRouter does not guarantee the field) and must render
+  // as nothing, never an error. A plain "served by X" fact — never a fallback
+  // claim or a ZDR judgement.
+  provider?: string;
 }
 
 // Degradation mirrors protocol.Degradation. component is a stable slug
@@ -292,6 +300,7 @@ export interface StreamHandlers {
   onGrounding?: (info: GroundingInfo) => void;
   onRedactions?: (kinds: string[]) => void;
   onDegraded?: (items: Degradation[]) => void;
+  onProvider?: (provider: string) => void;
   onToken?: (token: string) => void;
   onEditProposals?: (proposals: EditBlockWire[]) => void;
   onDone?: () => void;
@@ -349,6 +358,9 @@ export async function streamPrompt(
     }
     if (tok.degraded && tok.degraded.length > 0) {
       handlers.onDegraded?.(tok.degraded);
+    }
+    if (tok.provider) {
+      handlers.onProvider?.(tok.provider);
     }
     if (tok.token) {
       handlers.onToken?.(tok.token);

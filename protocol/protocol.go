@@ -198,6 +198,23 @@ type Turn struct {
 // Empty/omitted means nothing is degraded, which is the common case. Additive:
 // older clients that don't know this field simply ignore it, exactly like
 // Grounding and Redactions.
+//
+// Provider names the upstream provider OpenRouter reports as having served this
+// turn (e.g. "DeepInfra"), surfaced from the daemon's own log-only observation
+// (see daemon/provider.go's chatCompletionChunk.Provider / onProvider). Unlike
+// Grounding, it is NOT known before tokens: the value only exists once the
+// model response begins, so it rides on its OWN message, sent as soon as the
+// provider is first observed in the stream (which in practice is at or before
+// the first token). It is a plain factual "served by X" — deliberately NOT a
+// judgement about ZDR status (that depends on the still-open provider allow-list
+// and outreach) and deliberately NOT a claim about whether a fallback occurred
+// (OpenRouter reports who served a request, not whether that was primary or a
+// fallback — see BACKLOG's fallback-provider ZDR posture entry). Empty/omitted
+// is a legitimate, non-error state: OpenRouter does not formally guarantee the
+// field on every response (daemon/provider.go:67-73), so a turn may simply have
+// no provider to show — clients must render its absence as nothing, never as a
+// degraded/error state. Additive: older clients that don't know this field
+// simply ignore it, exactly like Grounding and Redactions.
 type TokenResponse struct {
 	ProtocolVersion int             `json:"protocol_version"`
 	Token           string          `json:"token,omitempty"`
@@ -210,6 +227,7 @@ type TokenResponse struct {
 	EditProposals   []EditBlockWire `json:"edit_proposals,omitempty"`
 	Redactions      []string        `json:"redactions,omitempty"`
 	Degraded        []Degradation   `json:"degraded,omitempty"`
+	Provider        string          `json:"provider,omitempty"`
 }
 
 // Stable, machine-readable component identifiers for Degradation.Component.
