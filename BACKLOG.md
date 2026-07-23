@@ -1841,3 +1841,122 @@ but never surfaced it to any client. That was the whole gap. This closes it.
 
 **Nothing marked closed.** This is the client-surfacing half of one D4 option, shipped; the D4 posture
 decision and the 3A/extension OpenRouter-side residual remain open and the founder's call.
+
+---
+
+## C1 + C2 ship-blocker fixes (CTO/beta-test bug-hunt follow-up) — 2026-07-23
+
+Source: `~/.claude/plans/what-can-we-improve-snappy-music.md` (report-only pass; no code was
+changed there). This section is the audit-first / fix-second / document-third record for its two
+NEW criticals, C1 and C2. Nothing here is marked closed — founder confirms.
+
+### C1 — Step 0 determination (reachability of the embedder-response deref) — WRITTEN BEFORE THE FIX
+
+**The contradiction.** The report calls C1 a production-reachable CRITICAL: "one malformed embedder
+response crashes the whole daemon," reachable "right after an edit apply during reindex." A standing
+backlog item said the opposite: the missing `handleConn` `recover()` "is not triggered by anything
+today." One of the two had to be wrong.
+
+**What was reproduced, live, over the real wire.** A new fixture mode (`FAKEHELPER_SHORT_VECTORS` /
+`FAKEHELPER_TRUNCATE` in `daemon/testdata/fakehelper`) drives the REAL helper protocol over a REAL
+Unix socket through the REAL `HelperProcess` + `BgeEmbedder` (`daemon/embedder_boundary_test.go`).
+Two shapes the report conflated separate cleanly:
+
+1. **Truncated / partial wire read** (`FAKEHELPER_TRUNCATE`: writes a half JSON body, drops the
+   conn) → `json.NewDecoder(conn).Decode` returns an ERROR → `HelperProcess.Embed` returns that
+   error → every call site's existing `if err != nil` catches it. It **never becomes a short vector
+   slice.** `TestEmbedderBoundary_TruncatedResponseIsError` passes before and after the fix. So the
+   report's cited "truncated wire read" mechanism is **not** a deref trigger.
+2. **Well-formed `ok:true` response carrying fewer vectors than texts** (`FAKEHELPER_SHORT_VECTORS`)
+   → this is the ONLY shape that reaches the unchecked deref. Live result against pre-fix code:
+   `retrieveTopK` panics `index out of range [0] with length 0`; that panic propagates through
+   `gatherContext` → `serveConn` → `handleConn` → the `Serve` goroutine (no `recover()`), i.e. it
+   would crash the whole daemon.
+
+**Can a REAL embedder produce shape #2? No — verified by source, not memory.** The real ONNX helper
+`helper/onnxembedder.go:Embed` returns `make([][]float32, batch)` fully filled (exactly `len(texts)`)
+or `nil, err`; `helper/main.go:dispatch` maps any error to `ok:false`. Therefore **no `ok:true`
+response the shipped helper can emit ever carries a mismatched count** (including the 0-texts→0-vecs
+case). Every real failure mode of the round trip — timeout, connection drop, partial write, restart
+race, dial failure — produces a decode/dial ERROR (shape #1), which is already handled. Shape #2
+requires a genuinely buggy or malicious helper binary, which the shipped one is not.
+
+**Determination.** The prior backlog assessment — "not triggered by anything today" — was **CORRECT**
+for the bounds bug. The report's CRITICAL / confirmed-ship-blocker severity for the deref's
+production-reachability is **OVERSTATED and is corrected here to: a latent defensive gap, not a
+confirmed ship-blocker.** A hand-driven lying helper proves the bug EXISTS; it does not prove
+production traffic triggers it, and the source proves production traffic cannot. Two things are
+nonetheless worth fixing, on their own merits and independent of shape #2's reachability:
+  - **The missing `recover()`** in the connection handler is a real, general availability gap: ANY
+    panic in ANY request handler currently drops every in-flight client, not just this one. This is
+    the FAIL-3 backstop already scoped in the backlog; it is fixed here on that standing merit.
+  - **The boundary length-check** is cheap, closes the latent deref, and hardens the daemon against a
+    future helper regression or a swapped-in third-party embedder that does not honour the contract.
+
+### C1 — fix (two complementary, both under C1's scope)
+- **Boundary validation (input validation).** `HelperProcess.Embed` now requires
+  `len(resp.Vectors) == len(texts)` and returns a descriptive error otherwise, at the single point
+  untrusted subprocess output crosses into the daemon (the report's named "root cause",
+  `helperproc.go`). This one chokepoint protects every downstream deref (`retrieveTopK`'s `vecs[0]`,
+  `buildIndex`/`reindexFile`'s `vecs[i]`) — none of them can now be reached with a short slice.
+- **Panic backstop (defense-in-depth).** `handleConn` gained a `recover()` so a panic in one
+  connection's handling logs + closes that one connection instead of terminating the process. The
+  `Serve` comment that previously said the slot is freed "without needing a recover() (the panic
+  still propagates unchanged)" was updated to reflect that a recover now exists at the handler.
+
+### C2 — fix (forward edit-write symlink + atomicity hardening)
+- `editapply/Apply` previously wrote the forward path (edit AND create) with a plain
+  `os.WriteFile` (`apply.go:228`), while the undo path was hardened (temp file + atomic rename,
+  symlink refusal) and its comments *assumed* a forward parity that did not exist. The forward write
+  now goes through an atomic, symlink-refusing writer that mirrors the undo pattern: refuse if the
+  destination leaf is a symlink, else write a temp file in the target's directory, `chmod` it to the
+  prepared mode, and `os.Rename` it into place.
+- Closes both halves independently: (a) **escape** — a dangling/leaf symlink planted at a
+  to-be-created target during the TUI confirm window can no longer be written *through* (`os.Rename`
+  never follows the link, and the pre-write `Lstat` refuses an anomalous symlink outright); (b)
+  **non-atomic corruption** — a crash/interruption mid-write can no longer leave a truncated file,
+  because the target is only ever swapped by an atomic rename of a fully-written temp.
+- The undo-path comments that asserted forward/undo parity are now accurate.
+
+### Validation evidence (2026-07-23)
+
+**C1 — through the real helper wire, and the real connection door.**
+- `daemon/embedder_boundary_test.go` (real `HelperProcess` + `BgeEmbedder` + fakehelper over a real
+  socket): `TestEmbedderBoundary_TruncatedResponseIsError` (truncated read → error, passes both
+  before and after — the report's "truncated wire read" is not a deref trigger);
+  `TestEmbedderBoundary_ShortVectorCountDoesNotPanicOnRetrieve` (drives `retrieveTopK`; PANICS
+  `index out of range [0] with length 0` pre-fix, clean error post-fix);
+  `TestEmbedderBoundary_ShortVectorCountFailsAtBoundary` (the multi-text index/reindex `vecs[i]`
+  path; `HelperProcess.Embed` returns a descriptive error post-fix). Both fail-when-neutered:
+  removing the length check restores the panic and the nil error.
+- `daemon/handleconn_recover_test.go`: `TestHandleConn_PanicIsContainedToOneConnection` drives a
+  DIFFERENT panic (a panicking embedder) through a real `Server.Serve`/`handleConn` over a real
+  socket; connection A panics and is contained, connection B still gets a well-formed response.
+  Fail-when-neutered verified: with the `recover()` removed, A's panic propagates out of the Serve
+  goroutine and crashes the whole test binary (stack: `retrieveTopK` → `gatherContext` → `serveConn`
+  → `handleConn` → `Serve.func1`).
+
+**C2 — through the real Apply door, and the writer unit.**
+- `editapply/apply_forward_symlink_test.go`:
+  `TestApply_ForwardWriteRefusesDanglingLeafSymlinkEscape` (the report's primary escape: a dangling
+  symlink planted at a create target in the confirm window; pre-fix `os.WriteFile` creates the victim
+  OUTSIDE the workspace, post-fix Apply refuses and nothing appears outside);
+  `TestWriteFileAtomicNoFollow_RefusesSymlinkAndPreservesVictim` (the writer unit refuses a symlinked
+  destination pointing at an existing outside file, leaving it byte-intact — this case is caught
+  upstream by VerifyUnchanged at the Apply level, so the writer is exercised directly);
+  `TestApply_ForwardWriteIsAtomicRename` (the target's inode changes on edit and no `.codeterminal-
+  apply-*` temp is left — proof the commit is a temp+rename, not an in-place rewrite). All
+  fail-when-neutered against the former plain `os.WriteFile`.
+- Atomicity's rollback edge stays covered by the existing `TestApply_WriteFailureRollsBackAfter
+  Snapshot` / `...RestoresPriorAfterSnapshot`, updated to inject the write failure via a read-only
+  target DIRECTORY (an atomic rename tolerates a read-only target FILE), preserving their intent.
+
+**Regression (six modules, explicit paths — `./...` fails from root).** `gofmt -l` clean;
+`go build ./...` + `go vet ./...` clean for `daemon`, `editapply`, `protocol`, `clients/tui`,
+`helper`, `proxy`; `go test -count=1 ./...` green (protocol/helper have no test files);
+`go test -race -count=1 ./...` green for the four modules with tests. Commits: C1 `ee9e992`
+(daemon), C2 `c7cff6c` (editapply) — separate, as required.
+
+**Nothing marked closed.** Step 0 downgraded C1's deref reachability from confirmed-ship-blocker to
+latent-defensive; the `recover()` availability gap and both C2 halves are fixed and verified. The
+founder confirms closure.
