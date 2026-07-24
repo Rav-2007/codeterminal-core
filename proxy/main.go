@@ -128,6 +128,13 @@ const (
 	// QUOTA_RESERVATION_DESIGN.md §5(d)/(e) for why a lost correction
 	// isn't uniformly safe and what remains open after this.
 	correctUsageMaxAttempts = 3
+
+	// defaultAllowedModels is the managed tier's shipped model set (the three
+	// tiers in models.json). Used when ALLOWED_MODELS is unset, so the
+	// cost-authorization check is on by default rather than opt-in.
+	defaultAllowedModels = "deepseek/deepseek-v4-flash," +
+		"qwen/qwen3-coder-30b-a3b-instruct," +
+		"deepseek/deepseek-r1"
 )
 
 // correctUsageRetryBackoff is the delay between correctUsage's retry
@@ -221,8 +228,16 @@ func main() {
 		buildCommit = "unknown"
 	}
 
+	// ALLOWED_MODELS overrides the shipped tier set; empty disables the check and
+	// is warned about loudly so "unrestricted" is never a silent default.
+	allowedModels := parseAllowedModels(os.Getenv("ALLOWED_MODELS"))
+	if len(allowedModels) == 0 {
+		allowedModels = parseAllowedModels(defaultAllowedModels)
+	}
+	logger.Printf("model allow-list: %d model(s) permitted", len(allowedModels))
+
 	p := newProxy(apiKey, strings.TrimRight(upstreamBase, "/")+chatCompletionsPath,
-		supabaseURL, supabaseServiceRoleKey, logger)
+		supabaseURL, supabaseServiceRoleKey, logger, allowedModels)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", p.rateLimitedHealth(makeHealthHandler(buildCommit)))
@@ -259,12 +274,16 @@ type proxy struct {
 	preAuthGlobal    *rateLimiter
 	keyRate          *rateLimiter
 	inFlight         *inFlightLimiter
+
+	// allowedModels is the cost-authorization allow-list (see modelAllowed).
+	// Empty means unrestricted.
+	allowedModels map[string]bool
 }
 
 // newProxy builds a proxy with admission control wired up. Constructing the
 // limiters here (rather than lazily) keeps them non-nil for every code path,
 // including tests, so a missing limiter can never silently mean "unlimited".
-func newProxy(apiKey, upstreamURL, supabaseURL, supabaseServiceRoleKey string, logger *log.Logger) *proxy {
+func newProxy(apiKey, upstreamURL, supabaseURL, supabaseServiceRoleKey string, logger *log.Logger, allowedModels map[string]bool) *proxy {
 	return &proxy{
 		apiKey:                 apiKey,
 		upstreamURL:            upstreamURL,
@@ -279,6 +298,7 @@ func newProxy(apiKey, upstreamURL, supabaseURL, supabaseServiceRoleKey string, l
 		preAuthGlobal:    newRateLimiter(preAuthRateGlobalPerSecond, preAuthBurstGlobal),
 		keyRate:          newRateLimiter(keyRatePerSecond, keyBurst),
 		inFlight:         newInFlightLimiter(maxInFlightPerKey, maxInFlightTotal),
+		allowedModels:    allowedModels,
 	}
 }
 
@@ -306,7 +326,24 @@ func (p *proxy) admitPreAuth(w http.ResponseWriter, r *http.Request) bool {
 // dashboard commit doesn't guarantee the running container matches it.
 type healthResponse struct {
 	Status string `json:"status"`
-	Commit string `json:"commit"`
+	Commit string `json:"commit,omitempty"`
+}
+
+// healthCommitVisible reports whether /health may disclose the build commit.
+//
+// /health is the only UNAUTHENTICATED route, and the commit SHA it returned
+// identified the exact running build to anyone on the internet — free version
+// fingerprinting that tells an attacker precisely which code (and which
+// known-fixed bugs) is deployed. Low severity on its own, but it is disclosure
+// to an anonymous caller for no operational benefit that an authenticated
+// channel could not provide.
+//
+// Kept opt-in rather than deleted: the field exists because Railway's dashboard
+// commit does not guarantee which container is actually running, so a
+// deploy-verify step legitimately wants it. HEALTH_EXPOSE_COMMIT=1 restores it
+// for that use.
+func healthCommitVisible() bool {
+	return os.Getenv("HEALTH_EXPOSE_COMMIT") == "1"
 }
 
 // rateLimitedHealth applies the pre-auth limits to /health. It is the only
@@ -325,7 +362,11 @@ func (p *proxy) rateLimitedHealth(next http.HandlerFunc) http.HandlerFunc {
 // startup in main) so every /health response reports it without a global.
 func makeHealthHandler(commit string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		body, err := json.Marshal(healthResponse{Status: "ok", Commit: commit})
+		reported := ""
+		if healthCommitVisible() {
+			reported = commit
+		}
+		body, err := json.Marshal(healthResponse{Status: "ok", Commit: reported})
 		if err != nil {
 			// Unreachable in practice (healthResponse is two plain
 			// strings), but fail the same way a real health-check
@@ -397,6 +438,17 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		p.logger.Printf("reading request body failed: %v", err)
 		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+
+	// Cost authorization before anything is reserved or forwarded: quota is
+	// counted in tokens, but the bill is in dollars, so the model choice is
+	// itself a spending decision (see modelAllowed).
+	if model, ok := peekModel(bodyBytes); ok && !p.modelAllowed(model) {
+		p.logger.Printf("model: refused (key id=%s requested a model outside the allow-list)", apiKeyID)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		w.Write([]byte(`{"error":"model_not_allowed"}`))
 		return
 	}
 
@@ -870,6 +922,53 @@ func extractUsage(line string) (int, bool) {
 // never sets max_tokens (daemon/provider.go), so reservation sizing falls
 // through to defaultReservationTokens for essentially all real traffic
 // today.
+// peekModel reads only the top-level "model" field, with the same one-field
+// decode discipline as peekMaxTokens: the target struct has a single field, so
+// message content is never touched here either.
+func peekModel(body []byte) (string, bool) {
+	var peek struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(body, &peek); err != nil || peek.Model == "" {
+		return "", false
+	}
+	return peek.Model, true
+}
+
+// modelAllowed reports whether a caller may route to model.
+//
+// COST AUTHORIZATION, which quota alone does not provide. Quota is metered in
+// TOKENS, but the account is billed in DOLLARS, and $/token differs by orders of
+// magnitude across models (this project's own P2 work measured 3.1x variance
+// between PROVIDERS of a single model; across models the spread is far wider).
+// The proxy forwards the body byte-for-byte, so before this an authenticated key
+// could name ANY OpenRouter model and spend far more money than its token budget
+// implies — proven live: an arbitrary model was relayed upstream verbatim.
+//
+// The managed tier ships a decided model set (Phase 4: "Mochiii holds the key
+// and ships brain+agent"), so restricting to that set is the product's own
+// posture rather than a new policy. allowed is built once at startup from
+// ALLOWED_MODELS when set, else the shipped tiers; an empty set means
+// unrestricted and is logged loudly at startup so it can never be the silent
+// default.
+func (p *proxy) modelAllowed(model string) bool {
+	if len(p.allowedModels) == 0 {
+		return true
+	}
+	return p.allowedModels[model]
+}
+
+// parseAllowedModels builds the allow-list set from a comma-separated list.
+func parseAllowedModels(raw string) map[string]bool {
+	set := make(map[string]bool)
+	for _, m := range strings.Split(raw, ",") {
+		if m = strings.TrimSpace(m); m != "" {
+			set[m] = true
+		}
+	}
+	return set
+}
+
 func peekMaxTokens(body []byte) (int, bool) {
 	var peek struct {
 		MaxTokens int `json:"max_tokens"`

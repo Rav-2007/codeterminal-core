@@ -117,8 +117,10 @@ func newFakeUpstream(totalTokens int) *httptest.Server {
 // limiters, which a literal would leave nil (i.e. silently "unlimited", the very
 // state this suite should be able to catch).
 func newTestProxy(supabaseURL, upstreamURL string) *proxy {
+	// Unrestricted model set here so existing tests (which use model "x") are
+	// unaffected; the allow-list has its own dedicated tests.
 	return newProxy("test-openrouter-key", upstreamURL, supabaseURL,
-		"test-service-role-key", log.New(io.Discard, "", 0))
+		"test-service-role-key", log.New(io.Discard, "", 0), nil)
 }
 
 func newAuthorizedRequest(body string) *http.Request {
@@ -329,6 +331,66 @@ func TestPeekUsageTotal(t *testing.T) {
 				t.Errorf("peekUsageTotal(%q) = (%d, %v), want (%d, %v)", c.body, got, ok, c.want, c.ok)
 			}
 		})
+	}
+}
+
+// TestModelAllowList_RefusesUnlistedModelBeforeForwarding covers cost
+// authorization (endpoint audit class 1): quota is metered in TOKENS but billed
+// in DOLLARS, so an unrestricted model choice lets a small token budget buy a
+// large spend. Proven live before the fix: an arbitrary model was relayed
+// upstream verbatim.
+func TestModelAllowList_RefusesUnlistedModelBeforeForwarding(t *testing.T) {
+	const keyID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	store := &fakeUsageStore{tokenLimit: 100000}
+	supabase := newFakeSupabase(store, keyID)
+	defer supabase.Close()
+
+	var upstreamCalled atomic.Bool
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalled.Store(true)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, sseUsageBody(5))
+	}))
+	defer upstream.Close()
+
+	p := newProxy("k", upstream.URL, supabase.URL, "sr", log.New(io.Discard, "", 0),
+		parseAllowedModels(defaultAllowedModels))
+
+	// An expensive model outside the shipped tier set must be refused.
+	rec := httptest.NewRecorder()
+	p.handleChatCompletions(rec, newAuthorizedRequest(
+		`{"model":"openai/o1-pro-very-expensive","messages":[],"stream":true}`))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 for a model outside the allow-list; body=%s",
+			rec.Code, rec.Body.String())
+	}
+	if upstreamCalled.Load() {
+		t.Error("a disallowed model still reached OpenRouter — the check must run BEFORE forwarding")
+	}
+	if store.correctionCount() != 0 || store.tokensUsed != 0 {
+		t.Error("a refused model must not reserve or spend quota")
+	}
+
+	// The shipped primary must still work.
+	rec2 := httptest.NewRecorder()
+	p.handleChatCompletions(rec2, newAuthorizedRequest(
+		`{"model":"deepseek/deepseek-v4-flash","messages":[],"stream":true}`))
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("allowed model got %d, want 200; the allow-list must not break real traffic", rec2.Code)
+	}
+	if !upstreamCalled.Load() {
+		t.Error("allowed model never reached upstream")
+	}
+}
+
+func TestParseAllowedModels(t *testing.T) {
+	got := parseAllowedModels(" a/b , c/d ,, ")
+	if len(got) != 2 || !got["a/b"] || !got["c/d"] {
+		t.Errorf("parseAllowedModels = %v, want {a/b, c/d} with blanks dropped", got)
+	}
+	if len(parseAllowedModels("")) != 0 {
+		t.Error("empty string must yield an empty (unrestricted) set")
 	}
 }
 
