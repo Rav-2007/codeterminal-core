@@ -638,6 +638,14 @@ func (p *proxy) streamSSE(w http.ResponseWriter, body io.Reader, keyID string, r
 		// QUOTA_RESERVATION_DESIGN.md §5(c) wrongly folded into "nothing used".
 		if isDataChunk(line) {
 			sawData = true
+			// Strip account-identifying fields from the STREAMING path too. This
+			// scrubbing existed only on the non-SSE branch, while the daemon always
+			// sets stream:true -- so the scrubber never ran on the only path real
+			// traffic uses, and OpenRouter's account fields (the "user_id" class the
+			// Phase 3 review found on its bodies) were relayed verbatim to every
+			// caller. Proven live before fixing: a chunk carrying user_id arrived at
+			// the client byte-for-byte.
+			line = stripSSEAccountMetadata(line)
 		}
 		if _, err := io.WriteString(w, line+"\n"); err != nil {
 			return
@@ -659,6 +667,58 @@ func (p *proxy) streamSSE(w http.ResponseWriter, body io.Reader, keyID string, r
 	if err := scanner.Err(); err != nil {
 		p.logger.Printf("streaming upstream response failed: %v", err)
 	}
+}
+
+// stripSSEAccountMetadata removes accountMetadataFields from one "data: {...}"
+// SSE line, returning the line unchanged if it carries none (the overwhelmingly
+// common case) or if it isn't a JSON object this function can safely rewrite.
+//
+// It preserves the two properties that make this proxy zero-data-retention-
+// preserving, which is why it does not simply reuse stripAccountMetadata:
+//
+//   - MESSAGE CONTENT IS NEVER INSPECTED. The decode target is
+//     map[string]json.RawMessage, so every value -- including choices/delta text
+//     -- stays an opaque byte slice that is never parsed, never examined and
+//     never logged. Only top-level KEY NAMES are compared.
+//   - THE STREAM IS NEVER BUFFERED. This rewrites at most one line in place;
+//     the caller still relays and flushes line by line, so a chunk that needs no
+//     change is forwarded byte-for-byte at effectively zero cost and the
+//     incremental delivery this proxy exists for is unaffected.
+//
+// Re-marshalling only happens when a field was actually deleted, so the normal
+// chunk is not even re-serialized (which would otherwise perturb key order and
+// spacing for no reason).
+func stripSSEAccountMetadata(line string) string {
+	trimmed := strings.TrimSpace(line)
+	if !strings.HasPrefix(trimmed, "data:") {
+		return line
+	}
+	data := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
+	if data == "" || data == "[DONE]" {
+		return line
+	}
+
+	var parsed map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(data), &parsed); err != nil {
+		// Not a JSON object (or malformed): pass it through untouched rather than
+		// risk mangling a chunk this proxy does not understand.
+		return line
+	}
+	stripped := false
+	for _, field := range accountMetadataFields {
+		if _, ok := parsed[field]; ok {
+			delete(parsed, field)
+			stripped = true
+		}
+	}
+	if !stripped {
+		return line
+	}
+	out, err := json.Marshal(parsed)
+	if err != nil {
+		return line
+	}
+	return "data: " + string(out)
 }
 
 // isDataChunk reports whether an SSE line carries a real completion payload --

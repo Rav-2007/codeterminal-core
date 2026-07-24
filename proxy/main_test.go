@@ -334,6 +334,71 @@ func TestPeekUsageTotal(t *testing.T) {
 	}
 }
 
+// TestStripSSEAccountMetadata covers the streaming-path scrub (endpoint audit
+// class 5 / M9): stripAccountMetadata was wired only to the non-SSE branch while
+// the daemon always sets stream:true, so account-identifying fields reached every
+// caller on the only path real traffic uses. Proven live before the fix.
+func TestStripSSEAccountMetadata(t *testing.T) {
+	cases := []struct {
+		name string
+		line string
+		want string
+	}{
+		{
+			"strips user_id, keeps the rest",
+			`data: {"user_id":"org-SECRET","choices":[{"delta":{"content":"hi"}}]}`,
+			`data: {"choices":[{"delta":{"content":"hi"}}]}`,
+		},
+		{
+			// The common case must be forwarded byte-for-byte: no re-marshal, so
+			// key order and spacing are preserved exactly as upstream sent them.
+			"ordinary chunk passes through unchanged",
+			`data: {"choices":[{"delta":{"content":"hi"}}],"provider":"DeepInfra"}`,
+			`data: {"choices":[{"delta":{"content":"hi"}}],"provider":"DeepInfra"}`,
+		},
+		{"[DONE] untouched", `data: [DONE]`, `data: [DONE]`},
+		{"non-data line untouched", `event: ping`, `event: ping`},
+		{"malformed JSON passed through, not mangled", `data: {not json`, `data: {not json`},
+		{"empty data untouched", `data: `, `data: `},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := stripSSEAccountMetadata(c.line); got != c.want {
+				t.Errorf("stripSSEAccountMetadata(%q)\n got = %q\nwant = %q", c.line, got, c.want)
+			}
+		})
+	}
+}
+
+// TestStreamSSE_StripsAccountMetadataEndToEnd drives the real streamSSE relay and
+// asserts the account field never reaches the client, while the surrounding
+// stream (content + usage + [DONE]) is delivered intact.
+func TestStreamSSE_StripsAccountMetadataEndToEnd(t *testing.T) {
+	const keyID = "88888888-8888-8888-8888-888888888888"
+	store := &fakeUsageStore{tokenLimit: 100000}
+	supabase := newFakeSupabase(store, keyID)
+	defer supabase.Close()
+
+	upstream := `data: {"choices":[{"delta":{"content":"hi"}}]}` + "\n\n" +
+		`data: {"user_id":"org-SECRET-ACCOUNT","choices":[{"delta":{"content":"x"}}]}` + "\n\n" +
+		`data: {"usage":{"total_tokens":7}}` + "\n\n" +
+		`data: [DONE]` + "\n\n"
+
+	p := newTestProxy(supabase.URL, "http://unused.invalid")
+	rec := httptest.NewRecorder()
+	p.streamSSE(rec, strings.NewReader(upstream), keyID, defaultReservationTokens)
+
+	got := rec.Body.String()
+	if strings.Contains(got, "org-SECRET-ACCOUNT") || strings.Contains(got, "user_id") {
+		t.Errorf("account metadata reached the client on the streaming path:\n%s", got)
+	}
+	for _, must := range []string{`"content":"hi"`, `"total_tokens":7`, "[DONE]"} {
+		if !strings.Contains(got, must) {
+			t.Errorf("stream lost %q; relay must only remove account fields:\n%s", must, got)
+		}
+	}
+}
+
 // abortingResponseWriter simulates a client that disconnects mid-stream: it
 // relays writes normally until it sees a line containing failOn (the trailing
 // usage chunk), then returns an error on that write the way a real broken
