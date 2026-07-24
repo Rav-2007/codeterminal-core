@@ -27,6 +27,21 @@ const backupSessionsToKeep = 5
 // self-maintaining bounded backups for free without each needing its own
 // prune call.
 func NewBackupSessionDir(realWorkspaceRoot string) (string, error) {
+	// Cross-process serialization for the mint and its prune (M4). The
+	// stat-for-absence loop below and the MkdirAll that follows it are a
+	// check-then-create pair: two runs starting in the same SECOND both find the
+	// timestamp dir absent and both create it, so they SHARE one backup session
+	// and interleave their before/after snapshots into it — the "backup-session
+	// collapse" race. The daemon's in-process mutex closed that between two
+	// socket requests; a CLI or TUI run is a different process and walked
+	// straight through it. Holding the lock across the prune closes prune-vs-undo
+	// from this side too. See LockWorkspaceApply.
+	release, err := LockWorkspaceApply(realWorkspaceRoot)
+	if err != nil {
+		return "", fmt.Errorf("serializing backup-session creation on %s: %w", realWorkspaceRoot, err)
+	}
+	defer release()
+
 	base := filepath.Join(realWorkspaceRoot, ".codeterminal", "backups")
 	ts := time.Now().Format("20060102-150405")
 	dir := filepath.Join(base, ts)

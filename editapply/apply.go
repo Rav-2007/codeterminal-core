@@ -196,9 +196,26 @@ func VerifyUnchanged(prepared *PreparedEdit) error {
 // to whatever it held before this call (the previous block's content in a
 // multi-block run, or absent entirely).
 func Apply(realWorkspaceRoot string, prepared *PreparedEdit, backupDir string) error {
+	// Cross-process serialization for the whole verify->write span (M4). The
+	// staleness check below and the write at the end of this function are a
+	// read-then-write pair: without a lock spanning BOTH, two concurrent writers
+	// each pass VerifyUnchanged against the same original and then both write,
+	// and the second silently destroys the first's edit while both report
+	// success. The daemon's in-process mutex closed that for two socket requests;
+	// it cannot see the CLI or TUI, which write this same file from their own
+	// processes. See LockWorkspaceApply.
+	release, err := LockWorkspaceApply(realWorkspaceRoot)
+	if err != nil {
+		return fmt.Errorf("serializing apply on %s: %w", realWorkspaceRoot, err)
+	}
+	defer release()
+
 	// Byte-exact staleness check, before any bookkeeping: a file that changed
 	// since the edit was prepared must not be spliced into. See VerifyUnchanged
 	// for why this is separate from — and stricter than — the match ladder.
+	// Now that the lock above spans this check and the write, a concurrent
+	// writer can only land BEFORE it (caught here, refused as stale) or AFTER
+	// the write completes (caught by ITS own check) — never in between.
 	if err := VerifyUnchanged(prepared); err != nil {
 		return err
 	}

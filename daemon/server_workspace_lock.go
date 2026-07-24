@@ -26,11 +26,29 @@ import (
 // serialize unrelated workspaces), so two operations on genuinely different
 // workspaces get different mutexes and never block each other. All three
 // operations mutate the filesystem — none is a pure reader — so an exclusive
-// sync.Mutex is exactly right; an RWMutex would buy nothing. It is in-process
-// only: there is exactly one daemon process behind the socket, so an in-memory
-// lock fully covers the concurrency without a cross-process file lock. Each
-// caller takes exactly this one lock and never nests another, so no acquisition
-// ordering exists to deadlock on.
+// sync.Mutex is exactly right; an RWMutex would buy nothing.
+//
+// It is IN-PROCESS ONLY, and that is no longer the whole story. This comment
+// used to justify that with "there is exactly one daemon process behind the
+// socket, so an in-memory lock fully covers the concurrency without a
+// cross-process file lock." That premise was FALSE and is corrected here (M4):
+// the daemon is only one of three writers of the same workspace files — the CLI
+// (`edits apply`/`edits undo`, daemon/apply_cmd.go) and the TUI review flow
+// (clients/tui/chat.go) each apply from their OWN process, where an in-memory
+// mutex cannot reach them, so every race this lock closes reopened whenever one
+// of those overlapped a daemon operation.
+//
+// Cross-process serialization is now provided separately and underneath this,
+// by editapply.LockWorkspaceApply — a flock(2) on <root>/.codeterminal/apply.lock
+// taken inside the three mutation primitives themselves (editapply.Apply,
+// editapply.NewBackupSessionDir, runUndoSession) so no caller can omit it. This
+// mutex is kept as the in-process fast path: it serializes the daemon's own
+// concurrent socket requests before they ever contend on the file lock, and it
+// holds across the whole handler span rather than each primitive's.
+//
+// Lock ordering is therefore this mutex FIRST, then the flock, always in that
+// direction and never the reverse, so the two cannot deadlock against each
+// other. Each caller takes exactly one of each and never nests a second.
 func (s *Server) lockWorkspace(root string) func() {
 	m, _ := s.applyLocks.LoadOrStore(root, &sync.Mutex{})
 	mu := m.(*sync.Mutex)

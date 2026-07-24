@@ -262,6 +262,28 @@ func resolveBackupSession(backupsRoot, session string) (string, error) {
 // reimplements the restore logic; the handler only additionally needs the
 // counts as return values rather than parsed out of printed text.
 func runUndoSession(realWorkspaceRoot, sessionDir string, force bool, in io.Reader, out io.Writer, logger *log.Logger) (restored int, guarded []string, err error) {
+	// Cross-process serialization across the guard check and the commit (M4).
+	// The "is this file still what the apply run left?" comparison below and the
+	// restoreBatch commit at the end are a read-then-write pair: without a lock
+	// spanning both, a concurrent apply lands in between, the guard passes
+	// against content that no longer exists, and undo reports files restored
+	// while the apply's bytes are what is actually on disk — undo's report and
+	// the disk disagree, the exact failure class this package exists to prevent.
+	// Two concurrent undos of one session likewise both pass the guard and both
+	// "restore". The daemon's in-process mutex closed these between two socket
+	// requests; the CLI `edits undo` is a separate process it cannot see. See
+	// editapply.LockWorkspaceApply.
+	//
+	// The daemon's undo never prompts, so it never holds this across a blocking
+	// read. The CLI's rare "overwrite changed files?" prompt below IS inside this
+	// span — deliberately, because the guard decision it is confirming would
+	// otherwise be re-raced before the commit.
+	release, lockErr := editapply.LockWorkspaceApply(realWorkspaceRoot)
+	if lockErr != nil {
+		return 0, nil, fmt.Errorf("serializing undo on %s: %w", realWorkspaceRoot, lockErr)
+	}
+	defer release()
+
 	beforeDir := filepath.Join(sessionDir, "before")
 
 	var relPaths []string
