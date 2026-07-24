@@ -137,6 +137,34 @@ Three independent concerns, three isolated commits. Part-0 discipline throughout
 
 Commits isolated: S1 `ae1104c`, S2 `40b5980`, E2E `5290c08`, doc `d4936e9`. Full six-module Go regression + `tsc` + the harness all green (inherited).
 
+### 2I. Endpoint / API security pass — the proxy's HTTP surface (NEW; verified live, NOT closed)
+First dedicated endpoint-security review of the **managed proxy**, the project's **only
+network-exposed surface** (prior reviews covered the local socket and Supabase). Audit-first against
+the **real compiled binary** on localhost with stub Supabase/upstream, driven by a raw client sharing
+no code with it; the deployed Railway instance was **deliberately not probed**, so floods could run
+at full strength with no production impact. **14 checks across the five requested classes: before
+5 FAIL + 1 PARTIAL, after 0 FAIL + 1 PARTIAL.** Full matrix and evidence in `BACKLOG.md` (2026-07-24).
+- **Already sound, no change:** BOLA is structurally impossible on the key/quota object (`apiKeyID`
+  is always server-derived from the bearer hash, never client input; the PostgREST filter is a 64-char
+  hex digest so no operator survives); auth fails closed on all 8 variants with upstream never
+  contacted; the client's `Authorization` is never forwarded upstream; error/header hygiene is clean.
+- **SEC-3 (`b0a1085`) — reachable dependency CVE.** `govulncheck` found GO-2026-5970 (infinite loop
+  on invalid input in `golang.org/x/text`) affecting **4 of 6 modules**, reachable via
+  `editapply.PrepareEdit → norm.Form.NextBoundaryInString` — i.e. the match ladder's Unicode
+  normalization over **untrusted model output**. Bumped to v0.39.0; all six modules now scan clean.
+- **SEC-5 (`3e37c44`) — account metadata leaked on the streaming path (M9).** The scrubber was wired
+  only to the non-SSE branch while the daemon always streams, so it never ran on the live path;
+  proven live, then fixed without buffering the stream or ever inspecting message content.
+- **SEC-4 (`a88b88a`) — no rate limiting existed at all.** Measured 40 concurrent upstream calls from
+  one key with zero throttling. Added stdlib-only token-bucket + in-flight caps, pre-auth (bounding
+  Supabase amplification) and post-auth per key. **Honest limit: in-memory ⇒ per-instance.**
+- **SEC-1/SEC-5 (`091ce01`) — cost authorization + `/health`.** Quota is metered in tokens but billed
+  in dollars, and any model could be selected; now allow-listed to the shipped tier set before
+  forwarding. `/health` no longer leaks the build commit SHA.
+- **Correction worth carrying:** two initial FAILs (A2 PostgREST injection, A5 path variants) were
+  **harness bugs, not vulnerabilities**, re-tested over raw sockets and reclassified to PASS rather
+  than reported. A third check had a hardcoded verdict. Recorded so the numbers aren't rounded up.
+
 ### 2H. Other done, load-bearing context
 *(Inherited from v5; unchanged.)*
 - **Supabase auth/RLS/grants posture — closed 2026-07-17** (`SECURITY_MODEL.md`), verified with anon key + real user JWT (not `service_role`). Residual process control: every `SECURITY DEFINER` function in `public` must revoke EXECUTE from PUBLIC in the same migration (`ALTER DEFAULT PRIVILEGES` does not fix functions).
@@ -196,6 +224,7 @@ The only commit that ever said "mark … CLOSED" (`8d37a6c`) is **dangling — n
 - **Bug-hunt C3 — billing abort-refund — FIXED (`a703978`, §2E), NOT closed.** Was: a client reading the full answer then disconnecting before the trailing usage SSE line got a full refund of a completion OpenRouter had already billed (repeatable unmetered paid inference). Now `finalizeUsage` keeps the reservation when output was produced but no usage figure arrived; full refund only when nothing was produced. **Residual staying in this bucket (named follow-up, not built):** a long completion aborted *late* is charged the reservation floor (default 4096), not its true higher usage — the safe direction, never zero. Exact metering of an aborted stream would need either draining the upstream to capture the usage chunk (requires decoupling the upstream context from `r.Context()`, and forces OpenRouter to finish generating) or a reconciliation sweep — both bigger than this fix.
 - **New from M1:** connection-drop / daemon-exit mid-stream is not covered by the incomplete-answer signal (a dead daemon can't annotate its final message).
 - **~~M4 cross-process apply/undo unserialized~~ — FIXED (`2a389c7`, §2E), NOT closed.** Gate-6's lock was in-process only (its comment wrongly asserted "exactly one daemon process"), so the CLI and TUI — each a *separate process* writing the same files — reopened all five Gate-6 races in normal use. Now serialized by a per-workspace `flock` taken inside the mutation primitives themselves.
+- **~~M9 account metadata on the SSE path~~ / ~~M10 slow-drip~~ — addressed by the endpoint-security pass (§2I).** M9 FIXED (`3e37c44`); M10 **mitigated not eliminated** — a single trickle reader can still hold a connection to `WriteTimeout`, but the new in-flight caps bound how many can be pinned at once. A per-connection output-rate bound stays open.
 - **Still open from the bug-hunt report (surfaced, not triaged into fixes):** M7 (a created `.go` file gets only an advisory syntax note where the edit path hard-refuses unparseable Go), M8 (`HelperProcess.Stop` nil-`doneCh` hang — reachable only after a failed helper *startup*, so shutdown-path only), M9, M10, and eight LOWs. Full list in the report file; none is founder-gated, none is scheduled.
 - Two protocol-honesty gaps from Tier 2.5: `EditProposals` doesn't carry refused blocks; `UndoResponse.Restored` doesn't split removals from restores.
 - Python tracebacks (`File "x.py", line 42`) unmatched by the `file:line` resolver; chunk end-lines overshoot by one on files ending in a newline (cosmetic label).

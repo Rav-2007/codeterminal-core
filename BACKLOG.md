@@ -2351,3 +2351,122 @@ hang (reachable only after a failed helper *startup*, so shutdown-path only) and
 receiving only an advisory syntax note where the edit path hard-refuses unparseable Go
 (`editapply/create.go` vs `apply.go:96-99`) — are untouched by design. **Nothing marked closed —
 founder confirms.**
+
+## 2026-07-24 — Endpoint / API security pass (5 vuln classes; audited live, 4 fixes, NOT closed)
+
+**Role: endpoint tester.** First dedicated endpoint-security review of the **managed proxy**, which
+is the project's **only network-exposed surface** and fronts a live OpenRouter key. Prior reviews
+covered the local unix socket (P3 FAIL-3) and the Supabase posture (closed 2026-07-17); the HTTP API
+had never had its own pass. Audit-first: every finding was **reproduced against the real compiled
+proxy binary** on `127.0.0.1` before any fix, driven by a raw HTTP client sharing no code with it.
+**Nothing pushed, nothing marked closed.**
+
+### Method (local only, by choice)
+Real `./proxy` binary, stub Supabase + stub OpenRouter upstream, raw-socket/urllib attacker
+(harness kept in scratchpad, not committed — it demonstrates attacks). **The deployed Railway
+instance was deliberately NOT probed:** floods and slowloris can then be run at full strength with
+no production impact and no real credits spent. Dependency scanning used **govulncheck**
+(reachability-aware) plus `npm audit`, not version eyeballing.
+
+### Attack matrix — 14 checks. Before: 5 FAIL + 1 PARTIAL. After: 0 FAIL, 1 PARTIAL.
+
+| # | Class | Check | Before | After |
+|---|---|---|---|---|
+| A1 | 1 BOLA | body-supplied `p_key_id`/`key_id`/`user_id` steering billing | PASS | PASS |
+| A2 | 1 | PostgREST operator injection via bearer | PASS* | PASS |
+| A3 | 1 | model / cost authorization | **FAIL** | **PASS** |
+| A4 | 2 auth | 8 unauthenticated variants, fail-closed | PASS | PASS |
+| A5 | 2 | both route aliases + method/path variants | PASS* | PASS |
+| A6 | 2 | key via query param / `X-Api-Key` | PASS | PASS |
+| H1 | 5 | `/health` unauthenticated exposure | PARTIAL | **INFO** |
+| A10 | 5 | account metadata on the STREAMING path | **FAIL** | **PASS** |
+| A11 | 5 | error-path / header exposure | PASS | PASS |
+| A9 | 4 limits | oversized body (4 MiB cap) | PASS | PASS |
+| A9b | 4 | unauthenticated `/health` flood | **FAIL** | **PASS** |
+| A7 | 4 | per-key concurrency / rate limiting | **FAIL** | **PASS** |
+| A8 | 4 | slowloris (dribbled headers) | PASS | PASS |
+| A8b | 4 | slow-response-read pinning (M10) | **FAIL** | **PARTIAL** |
+
+**\* Correction, recorded rather than quietly dropped.** A2 and A5 first reported FAIL; both were
+**harness bugs, not vulnerabilities**, and were re-tested before being reclassified. A2's only
+non-401 was status `0` — the *Python client* refused to transmit a CRLF-bearing header, so the proxy
+was never reached; re-driven over a raw socket the proxy answers **400** and upstream is contacted
+0×. A5's "failures" were `405` (method gate) and `301` (Go `ServeMux` path normalisation, whose
+redirect target still requires auth); re-run with redirects disabled, **no variant returns 200 and
+upstream is reached 0×**. A9b was also initially miscoded (a hardcoded verdict that never inspected
+status codes). Reporting these as findings would have been rounding up.
+
+### What was already sound (no change needed)
+- **BOLA is structurally impossible on the key/quota object.** `apiKeyID` is always derived
+  server-side in `authorize` (sha256 of the bearer → Supabase returns `id`) and never taken from
+  client input; every quota call consumes that value. The PostgREST filter is a 64-char hex digest,
+  so no operator can survive. Injected body ids are ignored for billing.
+- **Auth fails closed** on all 8 variants, the client's `Authorization` is never forwarded upstream
+  (replaced with the server key), no client headers are copied, and only the first 8 chars of a key
+  are ever logged. Alternate credential channels (query param, `X-Api-Key`) do not authenticate.
+- **Error/header hygiene**: generic error bodies, response headers limited to `Content-Type`
+  (+`Retry-After`); no upstream URL, host path, stack trace or account id.
+
+### Fixes (four isolated commits)
+
+**SEC-3 — `golang.org/x/text` GO-2026-5970, reachable (`b0a1085`).** govulncheck reported an
+**infinite-loop-on-invalid-input** DoS affecting **4 of 6 modules**, with a call trace landing in
+`editapply.PrepareEdit → norm.Form.NextBoundaryInString`. That path runs the match ladder's Unicode
+normalization over **untrusted model output** and workspace content, so malformed Unicode in an edit
+block could hang the apply path across CLI, TUI and daemon — a reachable defect, not an import-only
+finding. Bumped v0.26.0/v0.25.0/**v0.3.8** → **v0.39.0**; also retires the stale v0.3.8 pin in
+`clients/tui`. **All six modules now scan clean.**
+
+**SEC-5 — account metadata leaked on the SSE path (`3e37c44`, closes M9).** `stripAccountMetadata`
+was wired **only to the non-streaming branch**, while the daemon **always sets `stream:true`** — so
+the scrubber never ran on the only path real traffic uses. Proven live: a chunk carrying
+`user_id` reached the client byte-for-byte. New `stripSSEAccountMetadata` decodes into
+`map[string]json.RawMessage` (so message content stays an opaque byte slice — **never inspected,
+never logged**; only top-level key names are compared) and **re-marshals only when a field was
+actually removed**, so an ordinary chunk is forwarded byte-for-byte and the stream is never buffered.
+
+**SEC-4 — no rate limiting at all (`a88b88a`).** Measured: **40 simultaneous requests on one key →
+40 concurrent upstream calls, 0 throttled, 40 Supabase auth round trips**; 200 unauthenticated
+`/health` requests served in 0.1s. The local-only unix socket had *stricter* limits than the
+internet-facing proxy. New `proxy/ratelimit.go`, **standard library only** (proxy/go.mod keeps its
+zero third-party requires — a real supply-chain property for the one internet-facing component):
+token bucket (bounds requests over *time*) **plus** an in-flight semaphore (bounds them *at once* —
+a rate limit alone lets long streams accumulate). Applied **pre-auth, before any Supabase call**, so
+bad-key floods cannot amplify into a third party — per-source (`X-Forwarded-For`, **spoofable**)
+with a global bucket as the backstop spoofing cannot evade — and **post-auth per `api_keys.id`**,
+which is un-spoofable. Buckets are swept on an idle TTL so the limiter cannot itself become a
+memory-exhaustion vector. After: the same flood peaks at **8** concurrent upstream calls with 32
+throttled; the `/health` flood serves 18 and throttles 182.
+**Honest limitation, in the code not buried: in-memory ⇒ PER-INSTANCE. N replicas allow N× these
+values.** Exact cross-replica limiting needs shared state (a Postgres RPC or Redis) at the cost of a
+round trip against an already ~1.45 s TTFT. Per-instance still converts *unbounded* into *bounded*.
+
+**SEC-1 + SEC-5 — model allow-list and `/health` fingerprinting (`091ce01`).** Quota is metered in
+**tokens** but billed in **dollars**, and the body was forwarded with no restriction on `model`, so
+a key could select an arbitrarily expensive model within the same token budget (proven live:
+relayed verbatim). Now `peekModel` (same one-field discipline as `peekMaxTokens`) + an allow-list
+checked **before** the reservation and before forwarding → `403`, nothing reserved, upstream never
+contacted. Defaults to the managed tier's shipped models.json set — the product's own decided
+posture, not a new policy — overridable via `ALLOWED_MODELS`; an empty set means unrestricted and is
+logged at startup so it is never a silent default. Separately, `/health` (the only unauthenticated
+route) no longer returns the build commit SHA; `HEALTH_EXPOSE_COMMIT=1` restores it for the
+deploy-verify case it existed for.
+
+### Still open / explicitly not fixed
+- **A8b / M10 — slow-response-read pinning: MITIGATED, NOT ELIMINATED.** A single trickle reader can
+  still hold a streaming connection (the only response-side bound remains `WriteTimeout` = 6 min).
+  The new in-flight caps bound *how many* can be pinned at once (8/key, 128 total), turning an
+  unbounded exhaustion vector into a bounded one. A per-connection output-rate bound remains open.
+- **F1 — the proxy does not itself enforce ZDR** (it forwards byte-for-byte; ZDR is set client-side).
+  Founder-gated, part of the open P3/3A gate. **Deliberately not a drive-by fix.**
+- **npm: 2 dev-only advisories** (`mocha` → `serialize-javascript`). **Runtime deps: 0
+  vulnerabilities** — the extension ships no runtime dependencies, so nothing reaches users. The
+  offered remedy is a breaking mocha downgrade; **not taken**, recorded instead.
+- Deployed-Railway probing (excluded by choice), the daemon socket (already audited, local-only),
+  Supabase RLS (closed 2026-07-17).
+
+### Regression
+`gofmt -l` clean; `go build ./...` + `go vet ./...` clean across all six modules; `go test -race
+-count=1` green for daemon / editapply / clients/tui / proxy; **govulncheck clean on all six**.
+Full matrix re-run against the fixed binary: **0 FAIL / 14, 1 PARTIAL**. Commits `b0a1085`,
+`3e37c44`, `a88b88a`, `091ce01`. **Nothing marked closed — founder confirms.**
