@@ -221,23 +221,11 @@ func main() {
 		buildCommit = "unknown"
 	}
 
-	p := &proxy{
-		apiKey:                 apiKey,
-		upstreamURL:            strings.TrimRight(upstreamBase, "/") + chatCompletionsPath,
-		logger:                 logger,
-		supabaseURL:            supabaseURL,
-		supabaseServiceRoleKey: supabaseServiceRoleKey,
-		// No blanket http.Client.Timeout: a streaming response can
-		// legitimately run for minutes. Each request's own context
-		// deadline (upstreamTimeout, applied per-call below) is what
-		// actually bounds it instead. The Supabase auth lookup uses the
-		// same client but its own shorter per-call context deadline
-		// (supabaseAuthTimeout).
-		client: &http.Client{},
-	}
+	p := newProxy(apiKey, strings.TrimRight(upstreamBase, "/")+chatCompletionsPath,
+		supabaseURL, supabaseServiceRoleKey, logger)
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/health", makeHealthHandler(buildCommit))
+	mux.HandleFunc("/health", p.rateLimitedHealth(makeHealthHandler(buildCommit)))
 	mux.HandleFunc(chatCompletionsPath, p.handleChatCompletions)       // "/chat/completions"
 	mux.HandleFunc("/v1"+chatCompletionsPath, p.handleChatCompletions) // "/v1/chat/completions" alias
 
@@ -263,6 +251,54 @@ type proxy struct {
 	client                 *http.Client
 	supabaseURL            string
 	supabaseServiceRoleKey string
+
+	// Admission control (see ratelimit.go). preAuth* run BEFORE the Supabase
+	// lookup so a flood of bad keys cannot amplify into a third party; keyRate
+	// and inFlight run after, keyed by the authenticated api_keys.id.
+	preAuthPerSource *rateLimiter
+	preAuthGlobal    *rateLimiter
+	keyRate          *rateLimiter
+	inFlight         *inFlightLimiter
+}
+
+// newProxy builds a proxy with admission control wired up. Constructing the
+// limiters here (rather than lazily) keeps them non-nil for every code path,
+// including tests, so a missing limiter can never silently mean "unlimited".
+func newProxy(apiKey, upstreamURL, supabaseURL, supabaseServiceRoleKey string, logger *log.Logger) *proxy {
+	return &proxy{
+		apiKey:                 apiKey,
+		upstreamURL:            upstreamURL,
+		logger:                 logger,
+		supabaseURL:            supabaseURL,
+		supabaseServiceRoleKey: supabaseServiceRoleKey,
+		// No blanket http.Client.Timeout: a streaming response can
+		// legitimately run for minutes. Each request's own context deadline
+		// (upstreamTimeout) is what bounds it instead.
+		client:           &http.Client{},
+		preAuthPerSource: newRateLimiter(preAuthRatePerSourcePerSecond, preAuthBurstPerSource),
+		preAuthGlobal:    newRateLimiter(preAuthRateGlobalPerSecond, preAuthBurstGlobal),
+		keyRate:          newRateLimiter(keyRatePerSecond, keyBurst),
+		inFlight:         newInFlightLimiter(maxInFlightPerKey, maxInFlightTotal),
+	}
+}
+
+// admitPreAuth applies the unauthenticated-surface limits. It runs before any
+// Supabase call, so auth-attempt floods are bounded before they can amplify into
+// a third-party dependency. Per-source first (spoofable via X-Forwarded-For),
+// with the global bucket as the backstop that spoofing cannot evade.
+func (p *proxy) admitPreAuth(w http.ResponseWriter, r *http.Request) bool {
+	if !p.preAuthGlobal.allow("global") {
+		p.logger.Printf("rate: refused (pre-auth global ceiling)")
+		tooManyRequests(w, "global")
+		return false
+	}
+	src := clientSource(r)
+	if !p.preAuthPerSource.allow(src) {
+		p.logger.Printf("rate: refused (pre-auth per-source)")
+		tooManyRequests(w, "source")
+		return false
+	}
+	return true
 }
 
 // healthResponse is the /health body. commit lets a deploy-verify step
@@ -271,6 +307,18 @@ type proxy struct {
 type healthResponse struct {
 	Status string `json:"status"`
 	Commit string `json:"commit"`
+}
+
+// rateLimitedHealth applies the pre-auth limits to /health. It is the only
+// unauthenticated route, so without this it is an unbounded free endpoint: the
+// audit served 200 unauthenticated /health requests in 0.1s with zero throttling.
+func (p *proxy) rateLimitedHealth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !p.admitPreAuth(w, r) {
+			return
+		}
+		next(w, r)
+	}
 }
 
 // makeHealthHandler closes over the build's commit SHA (read once at
@@ -314,11 +362,35 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	p.logger.Printf("request received: %s", r.URL.Path)
 
+	// Pre-auth admission FIRST: every authorize() call is a Supabase round trip,
+	// so an unauthenticated flood would otherwise amplify into a third party.
+	// This bounds that before a single lookup is made.
+	if !p.admitPreAuth(w, r) {
+		return
+	}
+
 	apiKeyID, ok := p.authorize(r)
 	if !ok {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
+
+	// Post-auth admission, keyed by the authenticated api_keys.id -- un-spoofable
+	// (it is derived from the key hash, never from client input) and the correct
+	// unit of tenancy. Rate bounds requests over time; in-flight bounds them at
+	// once, which the rate limit alone does not: long streaming calls accumulate.
+	if !p.keyRate.allow(apiKeyID) {
+		p.logger.Printf("rate: refused (key id=%s over its request rate)", apiKeyID)
+		tooManyRequests(w, "key_rate")
+		return
+	}
+	releaseSlot, admitted := p.inFlight.acquire(apiKeyID)
+	if !admitted {
+		p.logger.Printf("rate: refused (key id=%s at in-flight ceiling)", apiKeyID)
+		tooManyRequests(w, "in_flight")
+		return
+	}
+	defer releaseSlot()
 
 	limitedBody := http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 	bodyBytes, err := io.ReadAll(limitedBody)

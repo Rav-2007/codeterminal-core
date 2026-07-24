@@ -112,15 +112,13 @@ func newFakeUpstream(totalTokens int) *httptest.Server {
 	}))
 }
 
+// newTestProxy goes through the real constructor rather than a struct literal,
+// so tests exercise the same wiring production uses -- including the admission
+// limiters, which a literal would leave nil (i.e. silently "unlimited", the very
+// state this suite should be able to catch).
 func newTestProxy(supabaseURL, upstreamURL string) *proxy {
-	return &proxy{
-		apiKey:                 "test-openrouter-key",
-		upstreamURL:            upstreamURL,
-		logger:                 log.New(io.Discard, "", 0),
-		supabaseURL:            supabaseURL,
-		supabaseServiceRoleKey: "test-service-role-key",
-		client:                 &http.Client{},
-	}
+	return newProxy("test-openrouter-key", upstreamURL, supabaseURL,
+		"test-service-role-key", log.New(io.Discard, "", 0))
 }
 
 func newAuthorizedRequest(body string) *http.Request {
@@ -332,6 +330,180 @@ func TestPeekUsageTotal(t *testing.T) {
 			}
 		})
 	}
+}
+
+// --- admission control (endpoint audit class 4: missing limits) ---------------
+
+// TestRateLimiter_AllowsBurstThenThrottles pins the token-bucket contract: a
+// fresh key starts full (a first request is never throttled), the burst is
+// spendable, and the next request past it is refused.
+func TestRateLimiter_AllowsBurstThenThrottles(t *testing.T) {
+	l := newRateLimiter(1.0, 3.0)
+	now := time.Now()
+	l.now = func() time.Time { return now } // freeze: no refill during the burst
+
+	for i := 0; i < 3; i++ {
+		if !l.allow("k") {
+			t.Fatalf("request %d within the burst of 3 was throttled", i+1)
+		}
+	}
+	if l.allow("k") {
+		t.Fatal("request past the burst was admitted — the bucket is not bounding anything")
+	}
+	// Tokens accrue at 1/s, so a second later exactly one more gets through.
+	now = now.Add(1100 * time.Millisecond)
+	if !l.allow("k") {
+		t.Fatal("bucket did not refill after 1.1s at 1 token/sec")
+	}
+	if l.allow("k") {
+		t.Fatal("bucket refilled by more than the elapsed time allows")
+	}
+}
+
+// TestRateLimiter_KeysAreIndependent pins that one noisy tenant cannot throttle
+// another — the limiter is per key, not global.
+func TestRateLimiter_KeysAreIndependent(t *testing.T) {
+	l := newRateLimiter(1.0, 2.0)
+	now := time.Now()
+	l.now = func() time.Time { return now }
+
+	for i := 0; i < 2; i++ {
+		l.allow("noisy")
+	}
+	if l.allow("noisy") {
+		t.Fatal("noisy key was not throttled")
+	}
+	if !l.allow("quiet") {
+		t.Fatal("a different key was throttled by the noisy key's usage")
+	}
+}
+
+// TestInFlightLimiter_PerKeyAndGlobalCeilings covers the semaphore: a rate limit
+// alone does not bound CONCURRENT long-lived streams, which is what pins
+// goroutines and upstream connections.
+func TestInFlightLimiter_PerKeyAndGlobalCeilings(t *testing.T) {
+	l := newInFlightLimiter(2, 3)
+
+	r1, ok1 := l.acquire("a")
+	_, ok2 := l.acquire("a")
+	if !ok1 || !ok2 {
+		t.Fatal("the first two slots for one key should be admitted")
+	}
+	if _, ok := l.acquire("a"); ok {
+		t.Fatal("third concurrent request for one key exceeded maxPerKey but was admitted")
+	}
+	if _, ok := l.acquire("b"); !ok {
+		t.Fatal("a different key was blocked by another key's in-flight usage")
+	}
+	if _, ok := l.acquire("c"); ok {
+		t.Fatal("global in-flight ceiling was exceeded")
+	}
+
+	// Releasing frees exactly one slot, and is idempotent.
+	r1()
+	r1()
+	if _, ok := l.acquire("c"); !ok {
+		t.Fatal("releasing a slot did not free capacity")
+	}
+}
+
+// TestHandleChatCompletions_ThrottlesAFloodOnOneKey is the end-to-end regression
+// for the measured finding: 40 simultaneous requests on one key produced 40
+// concurrent upstream calls with zero throttling. Now the excess must be refused
+// with 429 and must never reach OpenRouter.
+func TestHandleChatCompletions_ThrottlesAFloodOnOneKey(t *testing.T) {
+	const keyID = "99999999-9999-9999-9999-999999999999"
+	store := &fakeUsageStore{tokenLimit: 100_000_000}
+	supabase := newFakeSupabase(store, keyID)
+	defer supabase.Close()
+
+	var upstreamCalls atomic.Int64
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, sseUsageBody(5))
+	}))
+	defer upstream.Close()
+
+	p := newTestProxy(supabase.URL, upstream.URL)
+
+	const n = 60 // deliberately past keyBurst (20)
+	var throttled, served atomic.Int64
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			rec := httptest.NewRecorder()
+			p.handleChatCompletions(rec, newAuthorizedRequest(
+				`{"model":"deepseek/deepseek-v4-flash","messages":[],"stream":true}`))
+			switch rec.Code {
+			case http.StatusTooManyRequests:
+				throttled.Add(1)
+			case http.StatusOK:
+				served.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if throttled.Load() == 0 {
+		t.Fatalf("a %d-request flood on ONE key was not throttled at all (served=%d) — "+
+			"the proxy is still unbounded", n, served.Load())
+	}
+	if upstreamCalls.Load() > served.Load() {
+		t.Errorf("more upstream calls (%d) than served responses (%d): throttled requests "+
+			"must never reach OpenRouter (they cost money)", upstreamCalls.Load(), served.Load())
+	}
+	if served.Load() == 0 {
+		t.Error("the limiter refused everything; legitimate traffic must still pass")
+	}
+	t.Logf("flood of %d on one key: served=%d throttled=%d upstream=%d",
+		n, served.Load(), throttled.Load(), upstreamCalls.Load())
+}
+
+// TestPreAuthLimit_BoundsSupabaseAmplification pins that unauthenticated floods
+// are bounded BEFORE the Supabase lookup, so bad keys cannot amplify into a
+// third-party dependency.
+func TestPreAuthLimit_BoundsSupabaseAmplification(t *testing.T) {
+	const keyID = "77777777-7777-7777-7777-777777777777"
+	store := &fakeUsageStore{tokenLimit: 100000}
+
+	var lookups atomic.Int64
+	mux := http.NewServeMux()
+	mux.HandleFunc("/rest/v1/api_keys", func(w http.ResponseWriter, r *http.Request) {
+		lookups.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`[]`)) // never a valid key: every attempt is a failed auth
+	})
+	supabase := httptest.NewServer(mux)
+	defer supabase.Close()
+	_ = store
+
+	p := newTestProxy(supabase.URL, "http://unused.invalid")
+
+	const n = 300 // well past preAuthBurstPerSource (20)
+	throttled := 0
+	for i := 0; i < n; i++ {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+			strings.NewReader(`{"model":"x","messages":[]}`))
+		req.Header.Set("Authorization", "Bearer wrong_key")
+		p.handleChatCompletions(rec, req)
+		if rec.Code == http.StatusTooManyRequests {
+			throttled++
+		}
+	}
+	if throttled == 0 {
+		t.Fatalf("%d failed auth attempts were never throttled — each is a Supabase round trip", n)
+	}
+	if lookups.Load() >= int64(n) {
+		t.Errorf("Supabase was hit %d times for %d attempts; the pre-auth limit must cut "+
+			"amplification before the lookup", lookups.Load(), n)
+	}
+	t.Logf("%d bad-auth attempts: %d throttled, only %d reached Supabase",
+		n, throttled, lookups.Load())
 }
 
 // TestStripSSEAccountMetadata covers the streaming-path scrub (endpoint audit
