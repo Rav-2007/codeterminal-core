@@ -1,8 +1,6 @@
 module codeterminal/clients/tui
 
-go 1.23.0
-
-toolchain go1.23.4
+go 1.25.0
 
 require (
 	codeterminal/editapply v0.0.0
@@ -29,9 +27,9 @@ require (
 	github.com/muesli/termenv v0.16.0 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
-	golang.org/x/sync v0.11.0 // indirect
+	golang.org/x/sync v0.21.0 // indirect
 	golang.org/x/sys v0.30.0 // indirect
-	golang.org/x/text v0.3.8 // indirect
+	golang.org/x/text v0.39.0 // indirect
 )
 
 replace codeterminal/protocol => ../../protocol
