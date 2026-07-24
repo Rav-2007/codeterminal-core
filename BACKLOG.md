@@ -2260,3 +2260,94 @@ cancels the upstream read too) and accepts that draining forces OpenRouter to fi
 isn't rediscovered; a fix is not implied to be imminent.
 
 **Nothing marked closed — founder confirms.**
+
+## 2026-07-24 — M4: apply/undo serialized ACROSS processes (completes Gate 6; verified, NOT closed)
+
+**Gate 6's fix was only half a fix, and the missing half was load-bearing.** Investigated and fixed
+as one isolated commit (`2a389c7`) spanning `editapply` + `daemon`. **Nothing pushed, nothing marked
+closed.** This is a correctness/data-integrity fix, not a security one (see severity below).
+
+### The gap (confirmed live, not inherited)
+FAIL-3 Gate 6 (`d96794e`) closed five reproduced data-integrity races on the Apply/Undo path —
+Apply/Apply read-modify-write lost update (**100%**, 60/60), backup-session collapse (~68%),
+undo-guard defeat (~98%), double restore (~88%), and prune-vs-undo — using the daemon's
+per-workspace `sync.Mutex` (`Server.applyLocks`). That lock is **in-process only**, and
+`server_workspace_lock.go`'s own comment justified it with: *"there is exactly one daemon process
+behind the socket, so an in-memory lock fully covers the concurrency without a cross-process file
+lock."*
+
+**That premise was false.** There are **three** independent writers of the same workspace files, and
+only one is the daemon:
+
+| Writer | Path | Serialized by `applyLocks`? |
+|---|---|---|
+| daemon socket handlers | `handleApplyEdit` / `handleUndo` (`daemon/server.go:495`/`:613`) | **yes** |
+| CLI `edits apply` / `edits undo` | `daemon/apply_cmd.go:145` / `:203` — dispatched at `daemon/main.go:66-70` as a one-shot subcommand that never starts `serve`, i.e. **a separate OS process** | **no** |
+| Mochiii TUI review flow | `clients/tui/chat.go:612`/`:622`, `editapply.Apply` in the TUI's own process | **no** |
+
+A repo-wide search for `flock`/`Flock`/`O_EXCL`/`LOCK_EX` found **zero** cross-process locking on the
+apply or undo write path. So every one of Gate 6's five races reopened the moment a CLI or TUI run
+overlapped a daemon one — which is **normal, legitimate use** (a terminal apply while the IDE is
+open), and is exactly the "two entirely legitimate clients (CLI + IDE)" scenario the Gate-6 audit
+itself named as the reason those races mattered. The audit fixed it for two *socket* requests only.
+
+### The fix (`2a389c7`)
+New `editapply.LockWorkspaceApply(realRoot)` — an exclusive **`flock(2)`** on
+`<realRoot>/.codeterminal/apply.lock`, returning a release func.
+- **Why `flock`, not an `O_EXCL` lockfile:** flock is released by the kernel when the fd closes,
+  *including on process death*, so a killed CLI cannot wedge the workspace forever. An `O_EXCL`
+  lockfile would need a lock-breaking heuristic and would strand on `SIGKILL`. The lock file is
+  created once and **never deleted** on release (unlink-on-release lets a second process lock an
+  already-unlinked inode and both "hold" it).
+- **Where the lock lives:** `.codeterminal/` is already pruned by the indexer and refused by the edit
+  writer (`ProtectedDirNames`) and covered by the RAG `.gitignore` entry, so the lock file is never
+  indexed, never sent to a model, and not writable by an edit block. Opened `O_NOFOLLOW`, 0600.
+- **Taken INSIDE the three mutation primitives, not at call sites** — deliberately, because the bug
+  being fixed *is* a caller that forgot to lock. Every writer gets it whether or not it remembers:
+  `editapply.Apply` (`VerifyUnchanged` → backups → write), `editapply.NewBackupSessionDir` (the
+  stat/mkdir mint plus its prune), `runUndoSession` (the guard check through the commit).
+- **Why those spans need not be locked *together*:** `Apply` independently re-checks staleness
+  byte-for-byte (`VerifyUnchanged`), so a writer that lands between two primitives is *refused as
+  stale*, never allowed to clobber. Each span being atomic w.r.t. the others is all five races need.
+- **No span covers a human prompt**, so a CLI/TUI user sitting on a `[y/N]` never blocks the daemon.
+  The one exception is stated: the CLI undo's rare "overwrite changed files?" prompt sits inside
+  `runUndoSession`'s guarded branch, deliberately, because the guard decision it confirms would
+  otherwise be re-raced before the commit. The daemon's undo never prompts.
+- **The daemon's `sync.Mutex` is kept** as the in-process fast path (it serializes the daemon's own
+  concurrent socket requests before they ever contend on the file lock, and spans the whole handler).
+  **Lock ordering is always mutex → flock, never the reverse**, so the two cannot deadlock.
+- `server_workspace_lock.go`'s false "exactly one daemon process" comment is **corrected in place**
+  rather than left to mislead the next reader.
+
+### Verification
+- **Cross-process exclusion proven with two REAL OS processes** (not just goroutines, and not
+  inferred from flock's documented semantics): a holder acquired at 0 ms and held 1500 ms; a second
+  *process* launched 300 ms later blocked for **1196 ms** and acquired precisely when the holder
+  released.
+- Regression tests `editapply/applylock_test.go`, all through real doors: concurrent same-file
+  Apply **never loses an applied edit** (30 rounds; asserts the honest invariant — every `Apply` that
+  returned nil must have its edit present in the final file), concurrent `NewBackupSessionDir` hands
+  out **distinct** sessions, the primitive genuinely **excludes** a second holder, and **different
+  workspaces never block each other** (the per-root keying).
+- **Fail-when-neutered proven:** with the `flock` call removed, the suite reproduces the exact
+  original defect — `Apply #1 reported SUCCESS but its edit "YYY" is not in the file
+  (content="XXX\nBBB\n")` — plus the session collapse and the no-exclusion failure. Restored → green.
+- Six modules `gofmt`/`go build`/`go vet` clean; all four suites with tests green and **`-race`
+  clean**, including the existing `gate6_serialization_test.go` socket stress test (evidence the
+  added flock introduces no deadlock beneath the daemon's existing mutex).
+
+### Scope note / severity, stated precisely
+As a **security** finding this is Low and largely subsumed (it needs a same-uid local process, which
+can already write the user's files directly). As a **correctness / data-integrity** finding it is the
+sharp one — silent user data loss and an undo whose report disagrees with the disk, reproducing with
+two entirely legitimate clients. Same framing the Gate-6 audit applied to the in-process case:
+**both, predominantly correctness.** The bug-hunt report filed it as a *medium* (M4); it is recorded
+here at that label, with the note that it is the same race class Gate 6 treated as serious enough to
+warrant repro-driven fixing.
+
+### Not addressed here (unchanged, still open)
+The two remaining lower-severity items from the same report — `HelperProcess.Stop`'s nil-`doneCh`
+hang (reachable only after a failed helper *startup*, so shutdown-path only) and created `.go` files
+receiving only an advisory syntax note where the edit path hard-refuses unparseable Go
+(`editapply/create.go` vs `apply.go:96-99`) — are untouched by design. **Nothing marked closed —
+founder confirms.**
