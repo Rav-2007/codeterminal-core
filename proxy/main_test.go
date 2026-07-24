@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -29,23 +30,90 @@ type fakeUsageStore struct {
 	tokensUsed  int64
 	tokenLimit  int64
 	corrections []int64
+
+	// The pending_corrections outbox (§5(e), migration 0002). reserve opens a
+	// row, correct closes the one it is handed, sweep claims what is left.
+	// Modeled here rather than stubbed because the whole point of the outbox is
+	// what survives when a correction never arrives -- a stub that always closed
+	// would test nothing.
+	nextPendingID int64
+	pending       map[int64]fakePendingRow
+	// pendingIDsSeen records every p_pending_id apply_correction was called
+	// with, including 0 -- which is what a correction that dropped the field
+	// would send, and is how the fail-when-neutered assertions catch it.
+	pendingIDsSeen []int64
 }
 
-func (s *fakeUsageStore) reserve(reserved int64) (tokensUsed, tokenLimit int64, ok bool) {
+type fakePendingRow struct {
+	id        int64
+	keyID     string
+	reserved  int64
+	createdAt time.Time
+}
+
+func (s *fakeUsageStore) reserve(keyID string, reserved int64) (tokensUsed, tokenLimit, pendingID int64, ok bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.tokensUsed+reserved > s.tokenLimit {
-		return 0, 0, false
+		return 0, 0, 0, false
 	}
 	s.tokensUsed += reserved
-	return s.tokensUsed, s.tokenLimit, true
+	// Mirrors reserve_usage's data-modifying CTE: the outbox row is opened by
+	// the same call that reserves, never a second one, and a refusal (above)
+	// opens none.
+	s.nextPendingID++
+	if s.pending == nil {
+		s.pending = make(map[int64]fakePendingRow)
+	}
+	s.pending[s.nextPendingID] = fakePendingRow{keyID: keyID, reserved: reserved, createdAt: time.Now()}
+	return s.tokensUsed, s.tokenLimit, s.nextPendingID, true
 }
 
-func (s *fakeUsageStore) correct(delta int64) {
+// correct mirrors apply_correction: increment AND close the outbox row, in one
+// step. A pendingID that matches nothing (already swept, or never sent) leaves
+// the map alone, exactly as the real DELETE matching no row would.
+func (s *fakeUsageStore) correct(delta, pendingID int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.tokensUsed += delta
 	s.corrections = append(s.corrections, delta)
+	s.pendingIDsSeen = append(s.pendingIDsSeen, pendingID)
+	delete(s.pending, pendingID)
+}
+
+// sweep mirrors sweep_pending_corrections: claim every row older than the
+// cutoff and hand it back. Deliberately does NOT touch tokensUsed -- a swept
+// reservation stays charged, which several tests assert directly.
+func (s *fakeUsageStore) sweep(staleMinutes int) []fakePendingRow {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cutoff := time.Now().Add(-time.Duration(staleMinutes) * time.Minute)
+	var claimed []fakePendingRow
+	var ids []int64
+	for id, row := range s.pending {
+		if row.createdAt.Before(cutoff) {
+			ids = append(ids, id)
+		}
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	for _, id := range ids {
+		row := s.pending[id]
+		row.id = id
+		claimed = append(claimed, row)
+		delete(s.pending, id)
+	}
+	return claimed
+}
+
+// backdatePending ages every open outbox row, standing in for the passage of
+// time between a crash and the sweep that finds what it stranded.
+func (s *fakeUsageStore) backdatePending(d time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, row := range s.pending {
+		row.createdAt = row.createdAt.Add(-d)
+		s.pending[id] = row
+	}
 }
 
 func (s *fakeUsageStore) correctionCount() int {
@@ -54,12 +122,34 @@ func (s *fakeUsageStore) correctionCount() int {
 	return len(s.corrections)
 }
 
-// newFakeSupabase serves the three PostgREST endpoints reserveQuota,
-// correctUsage, and authorize actually call: /rest/v1/api_keys (identity
-// lookup -- always resolves to keyID here, since authorize's own hashing
-// logic is unchanged and untested by this file), /rest/v1/rpc/reserve_usage,
-// and /rest/v1/rpc/increment_usage, both backed by store.
-func newFakeSupabase(store *fakeUsageStore, keyID string) *httptest.Server {
+// openPendingCount is the assertion that matters for §5(e): a healthy request
+// must leave zero rows behind, or the sweep would later report it as an
+// abandoned reservation that never happened.
+func (s *fakeUsageStore) openPendingCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.pending)
+}
+
+// newFakeSupabase serves the four PostgREST endpoints the proxy actually
+// calls: /rest/v1/api_keys (identity lookup -- always resolves to keyID here,
+// since authorize's own hashing logic is unchanged and untested by this file),
+// /rest/v1/rpc/reserve_usage, /rest/v1/rpc/apply_correction, and
+// /rest/v1/rpc/sweep_pending_corrections, all backed by store.
+//
+// /rest/v1/rpc/increment_usage is deliberately NOT served. That RPC still
+// exists in the real database (migration 0002 leaves it in place), but nothing
+// in the proxy calls it any more, and leaving it unserved is what makes the
+// fail-when-neutered check bite: reverting correctUsage to increment_usage
+// makes the call 404, a 404 is non-retryable, so no correction is ever
+// recorded and every correction assertion in this file fails.
+//
+// It also counts requests, so a test can assert that a refused reservation
+// makes exactly one call -- i.e. that the outbox row is opened by the
+// reservation statement itself and never by a second round trip that a crash
+// could land between.
+func newFakeSupabase(store *fakeUsageStore, keyID string) (*httptest.Server, *atomic.Int64) {
+	var calls atomic.Int64
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/rest/v1/api_keys", func(w http.ResponseWriter, r *http.Request) {
@@ -68,31 +158,58 @@ func newFakeSupabase(store *fakeUsageStore, keyID string) *httptest.Server {
 	})
 
 	mux.HandleFunc("/rest/v1/rpc/reserve_usage", func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
 		var body struct {
 			KeyID    string `json:"p_key_id"`
 			Reserved int64  `json:"p_reserved"`
 		}
 		json.NewDecoder(r.Body).Decode(&body)
-		tokensUsed, tokenLimit, ok := store.reserve(body.Reserved)
+		tokensUsed, tokenLimit, pendingID, ok := store.reserve(body.KeyID, body.Reserved)
 		w.Header().Set("Content-Type", "application/json")
 		if !ok {
 			w.Write([]byte(`[]`))
 			return
 		}
-		json.NewEncoder(w).Encode([]map[string]int64{{"tokens_used": tokensUsed, "token_limit": tokenLimit}})
+		json.NewEncoder(w).Encode([]map[string]int64{{
+			"tokens_used": tokensUsed,
+			"token_limit": tokenLimit,
+			"pending_id":  pendingID,
+		}})
 	})
 
-	mux.HandleFunc("/rest/v1/rpc/increment_usage", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/rest/v1/rpc/apply_correction", func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
 		var body struct {
-			KeyID  string `json:"p_key_id"`
-			Tokens int64  `json:"p_tokens"`
+			KeyID     string `json:"p_key_id"`
+			Tokens    int64  `json:"p_tokens"`
+			PendingID int64  `json:"p_pending_id"`
 		}
 		json.NewDecoder(r.Body).Decode(&body)
-		store.correct(body.Tokens)
+		store.correct(body.Tokens, body.PendingID)
 		w.WriteHeader(http.StatusOK)
 	})
 
-	return httptest.NewServer(mux)
+	mux.HandleFunc("/rest/v1/rpc/sweep_pending_corrections", func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		var body struct {
+			StaleMinutes int `json:"p_stale_minutes"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		claimed := store.sweep(body.StaleMinutes)
+		rows := make([]map[string]any, 0, len(claimed))
+		for _, row := range claimed {
+			rows = append(rows, map[string]any{
+				"id":         row.id,
+				"key_id":     row.keyID,
+				"reserved":   row.reserved,
+				"created_at": row.createdAt.UTC().Format(time.RFC3339),
+			})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(rows)
+	})
+
+	return httptest.NewServer(mux), &calls
 }
 
 // sseUsageBody builds a minimal OpenRouter-shaped SSE stream carrying a
@@ -149,7 +266,7 @@ func TestHandleChatCompletions_NormalRequest(t *testing.T) {
 	const actualTokens = 123 // deliberately far under defaultReservationTokens
 
 	store := &fakeUsageStore{tokenLimit: 100000}
-	supabase := newFakeSupabase(store, keyID)
+	supabase, _ := newFakeSupabase(store, keyID)
 	defer supabase.Close()
 	upstream := newFakeUpstream(actualTokens)
 	defer upstream.Close()
@@ -180,7 +297,7 @@ func TestHandleChatCompletions_OverLimitRejected(t *testing.T) {
 
 	// Only 1000 headroom left; defaultReservationTokens (4096) can't fit.
 	store := &fakeUsageStore{tokensUsed: 99000, tokenLimit: 100000}
-	supabase := newFakeSupabase(store, keyID)
+	supabase, _ := newFakeSupabase(store, keyID)
 	defer supabase.Close()
 
 	var upstreamCalled atomic.Bool
@@ -218,7 +335,7 @@ func TestReserveQuota_EightConcurrent(t *testing.T) {
 	const reserved = 50
 
 	store := &fakeUsageStore{tokenLimit: 100}
-	supabase := newFakeSupabase(store, keyID)
+	supabase, _ := newFakeSupabase(store, keyID)
 	defer supabase.Close()
 
 	p := newTestProxy(supabase.URL, "http://unused.invalid")
@@ -229,7 +346,7 @@ func TestReserveQuota_EightConcurrent(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			results[i] = p.reserveQuota(context.Background(), keyID, reserved)
+			_, results[i] = p.reserveQuota(context.Background(), keyID, reserved)
 		}(i)
 	}
 	wg.Wait()
@@ -259,7 +376,7 @@ func TestHandleChatCompletions_FailedUpstreamRefunds(t *testing.T) {
 	const keyID = "44444444-4444-4444-4444-444444444444"
 
 	store := &fakeUsageStore{tokenLimit: 100000}
-	supabase := newFakeSupabase(store, keyID)
+	supabase, _ := newFakeSupabase(store, keyID)
 	defer supabase.Close()
 
 	// Start then immediately close a server to get a reliable
@@ -342,7 +459,7 @@ func TestPeekUsageTotal(t *testing.T) {
 func TestModelAllowList_RefusesUnlistedModelBeforeForwarding(t *testing.T) {
 	const keyID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 	store := &fakeUsageStore{tokenLimit: 100000}
-	supabase := newFakeSupabase(store, keyID)
+	supabase, _ := newFakeSupabase(store, keyID)
 	defer supabase.Close()
 
 	var upstreamCalled atomic.Bool
@@ -476,7 +593,7 @@ func TestInFlightLimiter_PerKeyAndGlobalCeilings(t *testing.T) {
 func TestHandleChatCompletions_ThrottlesAFloodOnOneKey(t *testing.T) {
 	const keyID = "99999999-9999-9999-9999-999999999999"
 	store := &fakeUsageStore{tokenLimit: 100_000_000}
-	supabase := newFakeSupabase(store, keyID)
+	supabase, _ := newFakeSupabase(store, keyID)
 	defer supabase.Close()
 
 	var upstreamCalls atomic.Int64
@@ -610,7 +727,7 @@ func TestStripSSEAccountMetadata(t *testing.T) {
 func TestStreamSSE_StripsAccountMetadataEndToEnd(t *testing.T) {
 	const keyID = "88888888-8888-8888-8888-888888888888"
 	store := &fakeUsageStore{tokenLimit: 100000}
-	supabase := newFakeSupabase(store, keyID)
+	supabase, _ := newFakeSupabase(store, keyID)
 	defer supabase.Close()
 
 	upstream := `data: {"choices":[{"delta":{"content":"hi"}}]}` + "\n\n" +
@@ -620,7 +737,7 @@ func TestStreamSSE_StripsAccountMetadataEndToEnd(t *testing.T) {
 
 	p := newTestProxy(supabase.URL, "http://unused.invalid")
 	rec := httptest.NewRecorder()
-	p.streamSSE(rec, strings.NewReader(upstream), keyID, defaultReservationTokens)
+	p.streamSSE(rec, strings.NewReader(upstream), keyID, defaultReservationTokens, 1)
 
 	got := rec.Body.String()
 	if strings.Contains(got, "org-SECRET-ACCOUNT") || strings.Contains(got, "user_id") {
@@ -670,14 +787,23 @@ func (w *abortingResponseWriter) Flush() {}
 // disconnects just before the terminal usage chunk -- upstream already produced
 // (and billed) the completion, so the reservation must be KEPT, not refunded.
 // A full refund here is free, repeatable, exploitable inference on the paid
-// tier. Fail-when-neutered: revert finalizeUsage's producedOutput branch and
-// this observes the -reserved full refund instead of no correction.
+// tier. Fail-when-neutered: revert finalizeUsage's producedOutput branch to a
+// refund and this observes the -reserved delta instead of 0.
+//
+// Since the outbox landed (§5(e)) this branch also has to CLOSE its
+// pending_corrections row with a zero-delta correction rather than returning
+// early the way it used to. It was the one branch that legitimately had no
+// accounting work to do, and skipping the call left a live row behind on a
+// perfectly healthy request -- which the sweep would then report ~20 minutes
+// later as an abandoned reservation that never happened. That is asserted here
+// too, because this path (clients disconnecting mid-stream) is by far the most
+// frequent way to hit it, so the false alarm would have been the common case.
 func TestHandleChatCompletions_ClientAbortsBeforeUsageChunk_DoesNotRefund(t *testing.T) {
 	const keyID = "55555555-5555-5555-5555-555555555555"
 	const actualTokens = 900 // upstream WOULD report this, but the client aborts first
 
 	store := &fakeUsageStore{tokenLimit: 100000}
-	supabase := newFakeSupabase(store, keyID)
+	supabase, _ := newFakeSupabase(store, keyID)
 	defer supabase.Close()
 	upstream := newFakeUpstream(actualTokens)
 	defer upstream.Close()
@@ -689,18 +815,23 @@ func TestHandleChatCompletions_ClientAbortsBeforeUsageChunk_DoesNotRefund(t *tes
 
 	p.handleChatCompletions(rec, req)
 
-	// Assert NO correction fires. Give a (buggy) async refund a moment to land
-	// before asserting its absence -- the correct path issues no goroutine at
-	// all, so this only guards against a regression re-introducing one.
-	time.Sleep(200 * time.Millisecond)
-	if n := store.correctionCount(); n != 0 {
-		t.Fatalf("correction count = %d, want 0 (aborted-but-produced request must keep its reservation, not refund); deltas=%v", n, store.corrections)
+	// Exactly one correction, and it must be a no-op numerically: the
+	// reservation stays as the charge.
+	waitForCorrections(t, store, 1)
+	if n := store.correctionCount(); n != 1 {
+		t.Fatalf("correction count = %d, want exactly 1 (the zero-delta outbox close); deltas=%v", n, store.corrections)
+	}
+	if got := store.corrections[0]; got != 0 {
+		t.Errorf("delta = %d, want 0 (aborted-but-produced request must keep its reservation, not refund)", got)
 	}
 	store.mu.Lock()
 	used := store.tokensUsed
 	store.mu.Unlock()
 	if used != int64(defaultReservationTokens) {
 		t.Errorf("tokens_used = %d, want %d (reservation kept, nothing refunded)", used, defaultReservationTokens)
+	}
+	if n := store.openPendingCount(); n != 0 {
+		t.Errorf("open outbox rows = %d, want 0 -- this branch must close its own row or the sweep will later report a healthy request as an abandoned reservation", n)
 	}
 }
 
@@ -713,15 +844,22 @@ func TestFinalizeUsage_ProducedNoOutput_FullRefund(t *testing.T) {
 	const reserved = 4096
 
 	store := &fakeUsageStore{tokenLimit: 100000}
-	supabase := newFakeSupabase(store, keyID)
+	supabase, _ := newFakeSupabase(store, keyID)
 	defer supabase.Close()
 	p := newTestProxy(supabase.URL, "http://unused.invalid")
 
-	p.finalizeUsage(keyID, reserved, 0, false)
+	// Open a real outbox row first, so the refund has something to close and
+	// this test also covers the row actually being closed.
+	_, _, pendingID, _ := store.reserve(keyID, reserved)
+
+	p.finalizeUsage(keyID, reserved, 0, false, pendingID)
 
 	waitForCorrections(t, store, 1)
 	if got, want := store.corrections[0], int64(-reserved); got != want {
 		t.Errorf("delta = %d, want %d (full refund when no output was produced)", got, want)
+	}
+	if n := store.openPendingCount(); n != 0 {
+		t.Errorf("open outbox rows = %d, want 0 (the refund must close its row)", n)
 	}
 }
 
@@ -734,14 +872,288 @@ func TestFinalizeUsage_TrueUpUnchanged(t *testing.T) {
 	const actual = 5000 // > reserved: a positive top-up
 
 	store := &fakeUsageStore{tokenLimit: 100000}
-	supabase := newFakeSupabase(store, keyID)
+	supabase, _ := newFakeSupabase(store, keyID)
 	defer supabase.Close()
 	p := newTestProxy(supabase.URL, "http://unused.invalid")
 
-	p.finalizeUsage(keyID, reserved, actual, true)
+	_, _, pendingID, _ := store.reserve(keyID, reserved)
+
+	p.finalizeUsage(keyID, reserved, actual, true, pendingID)
 
 	waitForCorrections(t, store, 1)
+	if n := store.openPendingCount(); n != 0 {
+		t.Errorf("open outbox rows = %d, want 0 (the true-up must close its row)", n)
+	}
 	if got, want := store.corrections[0], int64(actual-reserved); got != want {
 		t.Errorf("delta = %d, want %d (true-up to the real usage figure)", got, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// QUOTA_RESERVATION_DESIGN.md §5(e): the pending_corrections outbox and the
+// reconciliation sweep. §5(d)'s retry covers a correction whose CALL failed;
+// none of it can cover a correction whose PROCESS died, because the goroutine
+// that would have retried died too. These cover the durable record that is left
+// behind instead, and what finds it.
+// ---------------------------------------------------------------------------
+
+// TestReserveQuota_ReturnsPendingID pins the reservation half of the outbox: a
+// granted reservation must hand back the id of the row that records a
+// correction is owed, and a refused one must hand back nothing while making no
+// extra round trip.
+//
+// The round-trip count is the real assertion in the refusal case. A separate
+// INSERT after the UPDATE would reintroduce, inside the outbox, exactly the
+// crash-in-the-gap hole the outbox exists to close -- so "one call" is the
+// property, not an optimization.
+func TestReserveQuota_ReturnsPendingID(t *testing.T) {
+	t.Run("granted returns a nonzero pending id", func(t *testing.T) {
+		const keyID = "aaaa1111-0000-0000-0000-000000000001"
+		store := &fakeUsageStore{tokenLimit: 100000}
+		supabase, calls := newFakeSupabase(store, keyID)
+		defer supabase.Close()
+		p := newTestProxy(supabase.URL, "http://unused.invalid")
+
+		pendingID, ok := p.reserveQuota(context.Background(), keyID, defaultReservationTokens)
+		if !ok {
+			t.Fatal("reserveQuota refused a reservation that fits well under the limit")
+		}
+		if pendingID == 0 {
+			t.Error("pendingID = 0 on a granted reservation -- nothing durable records that a correction is owed, so a crash here is invisible to the sweep")
+		}
+		if n := store.openPendingCount(); n != 1 {
+			t.Errorf("open outbox rows = %d, want 1 (the reservation must open exactly one)", n)
+		}
+		if n := calls.Load(); n != 1 {
+			t.Errorf("supabase calls = %d, want 1 -- the outbox row must be opened by the reservation statement itself, not a second round trip a crash could land between", n)
+		}
+	})
+
+	t.Run("refused returns zero and opens no row", func(t *testing.T) {
+		const keyID = "aaaa1111-0000-0000-0000-000000000002"
+		// Only 1000 headroom; defaultReservationTokens (4096) cannot fit.
+		store := &fakeUsageStore{tokensUsed: 99000, tokenLimit: 100000}
+		supabase, calls := newFakeSupabase(store, keyID)
+		defer supabase.Close()
+		p := newTestProxy(supabase.URL, "http://unused.invalid")
+
+		pendingID, ok := p.reserveQuota(context.Background(), keyID, defaultReservationTokens)
+		if ok {
+			t.Fatal("reserveQuota granted a reservation that exceeds the limit")
+		}
+		if pendingID != 0 {
+			t.Errorf("pendingID = %d, want 0 on a refusal", pendingID)
+		}
+		if n := store.openPendingCount(); n != 0 {
+			t.Errorf("open outbox rows = %d, want 0 -- a refusal reserved nothing, so it owes no correction and must leave no row for the sweep to alarm on", n)
+		}
+		if n := calls.Load(); n != 1 {
+			t.Errorf("supabase calls = %d, want 1 (the single refused reserve_usage call, with no separate outbox write)", n)
+		}
+	})
+}
+
+// TestCorrectUsage_PostsApplyCorrectionWithPendingID pins the wire contract of
+// the correction itself: the RPC it targets and the field that closes the
+// outbox row.
+//
+// Fail-when-neutered, both directions: point correctUsage back at
+// increment_usage and the path assertion fails (and, against the shared fake,
+// the call 404s so no correction lands at all); drop p_pending_id from the
+// payload and the field assertion fails while the row stays open forever.
+func TestCorrectUsage_PostsApplyCorrectionWithPendingID(t *testing.T) {
+	const keyID = "bbbb2222-0000-0000-0000-000000000001"
+	const wantPendingID = int64(4242)
+	const wantDelta = -1234
+
+	type captured struct {
+		path      string
+		keyID     string
+		tokens    int
+		pendingID *int64 // pointer so "absent" is distinguishable from 0
+	}
+	got := make(chan captured, 1)
+
+	supabase := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			KeyID     string `json:"p_key_id"`
+			Tokens    int    `json:"p_tokens"`
+			PendingID *int64 `json:"p_pending_id"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		got <- captured{path: r.URL.Path, keyID: body.KeyID, tokens: body.Tokens, pendingID: body.PendingID}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer supabase.Close()
+
+	p := newTestProxy(supabase.URL, "http://unused.invalid")
+	p.correctUsage(keyID, wantDelta, wantPendingID)
+
+	select {
+	case c := <-got:
+		if c.path != "/rest/v1/rpc/apply_correction" {
+			t.Errorf("path = %q, want /rest/v1/rpc/apply_correction -- increment_usage cannot close the outbox row, so a correction sent there leaves the reservation looking abandoned", c.path)
+		}
+		if c.keyID != keyID {
+			t.Errorf("p_key_id = %q, want %q", c.keyID, keyID)
+		}
+		if c.tokens != wantDelta {
+			t.Errorf("p_tokens = %d, want %d", c.tokens, wantDelta)
+		}
+		if c.pendingID == nil {
+			t.Fatal("p_pending_id absent from the payload -- the correction would apply but never close its outbox row, so the sweep would report a handled request as abandoned")
+		}
+		if *c.pendingID != wantPendingID {
+			t.Errorf("p_pending_id = %d, want %d", *c.pendingID, wantPendingID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the correction RPC call")
+	}
+}
+
+// TestSweepPendingCorrections_ReportsAbandonedReservations is the sweep half.
+// It asserts the loud line per claimed row (the actual deliverable -- an
+// operator seeing it knows which key was over-charged by how much and when),
+// that the claim does NOT refund, and that a clean sweep is silent.
+func TestSweepPendingCorrections_ReportsAbandonedReservations(t *testing.T) {
+	t.Run("claims and loudly reports each abandoned row", func(t *testing.T) {
+		const keyID = "cccc3333-0000-0000-0000-000000000001"
+		store := &fakeUsageStore{tokenLimit: 1000000}
+		supabase, _ := newFakeSupabase(store, keyID)
+		defer supabase.Close()
+
+		// Three reservations whose corrections never arrived, aged past the
+		// stale window -- i.e. three crashed requests.
+		const abandoned = 3
+		for i := 0; i < abandoned; i++ {
+			if _, _, _, ok := store.reserve(keyID, defaultReservationTokens); !ok {
+				t.Fatalf("setup: reservation %d refused", i)
+			}
+		}
+		// One more that is fresh: an in-flight request must never be swept out
+		// from under itself.
+		if _, _, _, ok := store.reserve(keyID, defaultReservationTokens); !ok {
+			t.Fatal("setup: in-flight reservation refused")
+		}
+		store.backdatePending(time.Duration(pendingCorrectionStaleAfterMinutes+5) * time.Minute)
+		// Re-open the fresh one AFTER backdating so only it is recent.
+		if _, _, _, ok := store.reserve(keyID, defaultReservationTokens); !ok {
+			t.Fatal("setup: fresh reservation refused")
+		}
+
+		store.mu.Lock()
+		usedBefore := store.tokensUsed
+		store.mu.Unlock()
+
+		var logs bytes.Buffer
+		p := newProxy("k", "http://unused.invalid", supabase.URL, "sr", log.New(&logs, "", 0), nil)
+		p.sweepPendingCorrections()
+
+		out := logs.String()
+		if n := strings.Count(out, "ABANDONED RESERVATION swept"); n != abandoned+1 {
+			t.Errorf("ABANDONED RESERVATION lines = %d, want %d; log:\n%s", n, abandoned+1, out)
+		}
+		// Every claimed row must carry the fields an operator needs to act.
+		for _, want := range []string{
+			"pending_id=",
+			"key_id=" + keyID,
+			fmt.Sprintf("reserved=%d", defaultReservationTokens),
+			"reserved_at=",
+			"stays CHARGED",
+		} {
+			if !strings.Contains(out, want) {
+				t.Errorf("sweep log missing %q; log:\n%s", want, out)
+			}
+		}
+
+		// The fresh row survives: sweeping a live request's reservation would
+		// double-charge it when its real correction lands.
+		if n := store.openPendingCount(); n != 1 {
+			t.Errorf("open outbox rows after sweep = %d, want 1 (the in-flight reservation must not be claimed)", n)
+		}
+
+		// And nothing was refunded. This is the safe-direction decision, not an
+		// oversight: the crashed request's true usage is unrecoverable, and
+		// refunding hands back quota for inference OpenRouter really billed.
+		store.mu.Lock()
+		usedAfter := store.tokensUsed
+		store.mu.Unlock()
+		if usedAfter != usedBefore {
+			t.Errorf("tokens_used = %d after sweep, want %d unchanged -- a swept reservation stays charged, never refunded on missing usage data", usedAfter, usedBefore)
+		}
+	})
+
+	t.Run("silent when there is nothing to sweep", func(t *testing.T) {
+		const keyID = "cccc3333-0000-0000-0000-000000000002"
+		store := &fakeUsageStore{tokenLimit: 100000}
+		supabase, _ := newFakeSupabase(store, keyID)
+		defer supabase.Close()
+
+		var logs bytes.Buffer
+		p := newProxy("k", "http://unused.invalid", supabase.URL, "sr", log.New(&logs, "", 0), nil)
+		p.sweepPendingCorrections()
+
+		// A healthy proxy runs this every 5 minutes forever. Any routine output
+		// here trains operators to ignore the one prefix that must stay
+		// attention-worthy.
+		if out := logs.String(); out != "" {
+			t.Errorf("sweep logged on the empty common case, want silence:\n%s", out)
+		}
+	})
+}
+
+// TestReservationSurvivesCrash_SweptNotRefunded is the §5(e) scenario end to
+// end, at the only level a unit test can reach it: a request reserves, and the
+// correction never runs -- exactly what a SIGKILL between the two produces,
+// since finalizeUsage's goroutine dies with the process. The durable row is
+// what must be left behind, and the sweep in the NEXT process lifetime is what
+// must find it.
+//
+// The crash is modeled by simply not calling finalizeUsage. That is faithful to
+// the failure being closed: from the database's point of view a crashed proxy
+// and a proxy that never got to the correction are indistinguishable, and the
+// database's point of view is the only one that survives the crash.
+func TestReservationSurvivesCrash_SweptNotRefunded(t *testing.T) {
+	const keyID = "dddd4444-0000-0000-0000-000000000001"
+	store := &fakeUsageStore{tokenLimit: 100000}
+	supabase, _ := newFakeSupabase(store, keyID)
+	defer supabase.Close()
+
+	// Lifetime 1: reserve, then "crash" -- no correction is ever sent.
+	crashed := newTestProxy(supabase.URL, "http://unused.invalid")
+	pendingID, ok := crashed.reserveQuota(context.Background(), keyID, defaultReservationTokens)
+	if !ok || pendingID == 0 {
+		t.Fatalf("setup: reserveQuota returned (%d, %v)", pendingID, ok)
+	}
+	store.mu.Lock()
+	usedAtCrash := store.tokensUsed
+	store.mu.Unlock()
+	if usedAtCrash != int64(defaultReservationTokens) {
+		t.Fatalf("tokens_used at crash = %d, want %d", usedAtCrash, defaultReservationTokens)
+	}
+
+	// The reservation record outlives the process that made it. Without this,
+	// nothing anywhere knows a correction was ever owed -- the whole of §5(e).
+	if n := store.openPendingCount(); n != 1 {
+		t.Fatalf("open outbox rows after crash = %d, want 1 (the reservation must outlive the process)", n)
+	}
+
+	// Lifetime 2: a restarted proxy (or a sibling replica) sweeps.
+	store.backdatePending(time.Duration(pendingCorrectionStaleAfterMinutes+1) * time.Minute)
+	var logs bytes.Buffer
+	restarted := newProxy("k", "http://unused.invalid", supabase.URL, "sr", log.New(&logs, "", 0), nil)
+	restarted.sweepPendingCorrections()
+
+	if !strings.Contains(logs.String(), "ABANDONED RESERVATION swept") {
+		t.Errorf("restarted proxy did not report the stranded reservation; log:\n%s", logs.String())
+	}
+	if n := store.openPendingCount(); n != 0 {
+		t.Errorf("open outbox rows after sweep = %d, want 0 (claimed exactly once)", n)
+	}
+	store.mu.Lock()
+	usedAfter := store.tokensUsed
+	store.mu.Unlock()
+	if usedAfter != usedAtCrash {
+		t.Errorf("tokens_used = %d after sweep, want %d unchanged from its post-reservation value -- the sweep reports, it must never refund on usage data that no longer exists", usedAfter, usedAtCrash)
 	}
 }

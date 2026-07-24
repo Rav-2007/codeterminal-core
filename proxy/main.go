@@ -17,6 +17,14 @@
 // (checkQuota/recordUsage) that had a confirmed TOCTOU race under
 // concurrent requests: reads and writes were separate round trips, so
 // concurrent requests could all observe the same stale "under limit" state.
+//
+// Every reservation also opens a durable pending_corrections row in the same
+// atomic statement, which its correction closes. A reservation whose process
+// died before correcting therefore leaves a record behind, and
+// startReconciliationSweep claims and loudly reports those. This does not
+// recover the dead request's true usage -- nothing can -- it bounds the
+// resulting inaccuracy in time and forces it into the safe (over-metered)
+// direction. See QUOTA_RESERVATION_DESIGN.md §5(e).
 package main
 
 import (
@@ -126,8 +134,36 @@ const (
 	// transient Supabase failure. Not full durability against a sustained
 	// outage or a process crash mid-retry -- see
 	// QUOTA_RESERVATION_DESIGN.md §5(d)/(e) for why a lost correction
-	// isn't uniformly safe and what remains open after this.
+	// isn't uniformly safe. The crash case (e) is covered instead by the
+	// pending_corrections outbox and the sweep below.
 	correctUsageMaxAttempts = 3
+
+	// reconciliationSweepInterval is how often the outbox is checked for
+	// reservations no correction ever closed (QUOTA_RESERVATION_DESIGN.md
+	// §5(e)). Frequent enough that an abandoned reservation surfaces within
+	// ~20 minutes of the crash that stranded it (this interval plus
+	// pendingCorrectionStaleAfterMinutes), cheap enough to be a single
+	// indexed DELETE that returns nothing at all in the normal case.
+	reconciliationSweepInterval = 5 * time.Minute
+
+	// pendingCorrectionStaleAfterMinutes is how old a pending_corrections
+	// row must be before the sweep treats it as abandoned rather than
+	// in-flight. It MUST exceed the longest lifetime a legitimate request
+	// can have, or a live request's own reservation would be swept out from
+	// under it: the ceilings here are upstreamTimeout (5m) and
+	// serverWriteTimeout (6m), so 15 minutes is a >2x margin.
+	pendingCorrectionStaleAfterMinutes = 15
+
+	// reconciliationSweepTimeout bounds one sweep RPC call. Looser than
+	// usageUpdateTimeout because a sweep after a long outage can return
+	// many rows, and a sweep that gives up early just leaves the rows to be
+	// claimed by the next tick -- there is no correctness cost to waiting.
+	reconciliationSweepTimeout = 30 * time.Second
+
+	// maxSweepResponseBytes caps the sweep's response body. Much larger
+	// than maxAuthResponseBytes because this response scales with the
+	// number of abandoned reservations, not with a single fixed row.
+	maxSweepResponseBytes = 4 << 20 // 4MB
 
 	// defaultAllowedModels is the managed tier's shipped model set (the three
 	// tiers in models.json). Used when ALLOWED_MODELS is unset, so the
@@ -238,6 +274,12 @@ func main() {
 
 	p := newProxy(apiKey, strings.TrimRight(upstreamBase, "/")+chatCompletionsPath,
 		supabaseURL, supabaseServiceRoleKey, logger, allowedModels)
+
+	// Crash recovery for quota reservations (QUOTA_RESERVATION_DESIGN.md §5(e)).
+	// Deliberately started before ListenAndServe: a process that just came back
+	// from a crash should be sweeping the reservations that crash stranded, and
+	// the sweep is independent of whether this instance is serving traffic yet.
+	go p.startReconciliationSweep()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", p.rateLimitedHealth(makeHealthHandler(buildCommit)))
@@ -460,7 +502,8 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if !p.reserveQuota(r.Context(), apiKeyID, reserved) {
+	pendingID, ok := p.reserveQuota(r.Context(), apiKeyID, reserved)
+	if !ok {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusTooManyRequests)
 		w.Write([]byte(`{"error":"quota_exceeded"}`))
@@ -473,7 +516,7 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.upstreamURL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		p.logger.Printf("building upstream request failed: %v", err)
-		p.finalizeUsage(apiKeyID, reserved, 0, false)
+		p.finalizeUsage(apiKeyID, reserved, 0, false, pendingID)
 		http.Error(w, "bad gateway", http.StatusBadGateway)
 		return
 	}
@@ -493,7 +536,7 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		// of it was used, so it's a full refund (see
 		// QUOTA_RESERVATION_DESIGN.md §5(b)). producedOutput=false: nothing
 		// was generated upstream.
-		p.finalizeUsage(apiKeyID, reserved, 0, false)
+		p.finalizeUsage(apiKeyID, reserved, 0, false, pendingID)
 		http.Error(w, "bad gateway", http.StatusBadGateway)
 		return
 	}
@@ -509,7 +552,7 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(resp.StatusCode)
 
 	if strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
-		p.streamSSE(w, resp.Body, apiKeyID, reserved)
+		p.streamSSE(w, resp.Body, apiKeyID, reserved, pendingID)
 		return
 	}
 
@@ -532,7 +575,7 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// a missing usage figure there must not trigger a refund. A non-2xx error
 	// body carries no billable output, so it stays a full refund.
 	producedOutput := resp.StatusCode >= 200 && resp.StatusCode < 300 && len(respBytes) > 0
-	p.finalizeUsage(apiKeyID, reserved, actual, producedOutput)
+	p.finalizeUsage(apiKeyID, reserved, actual, producedOutput, pendingID)
 }
 
 // authorize validates the caller-supplied Mochiii key ("Authorization:
@@ -644,10 +687,20 @@ func (p *proxy) authorize(r *http.Request) (string, bool) {
 // the same ambiguity checkQuota already had for "row not found". Only the
 // key id and token counts are ever logged -- never the raw key, never
 // request content.
-func (p *proxy) reserveQuota(ctx context.Context, apiKeyID string, reserved int) bool {
+//
+// It also returns the id of the pending_corrections row that reserve_usage
+// opened in the same atomic statement (proxy/migrations/0002_pending_corrections.sql).
+// That row is this reservation's durable record that a correction is still
+// owed, and it is what makes the crash case survivable: if this process dies
+// before finalizeUsage runs, the row outlives it and the reconciliation sweep
+// finds it. The id must be threaded through to correctUsage, which closes the
+// row as part of applying the correction. A refusal returns (0, false) and
+// opens no row -- the INSERT is driven off the UPDATE's own returned rows, so
+// there is nothing to clean up when nothing was reserved.
+func (p *proxy) reserveQuota(ctx context.Context, apiKeyID string, reserved int) (pendingID int64, ok bool) {
 	if p.supabaseURL == "" || p.supabaseServiceRoleKey == "" {
 		p.logger.Printf("quota: refused (supabase not configured, key id=%s)", apiKeyID)
-		return false
+		return 0, false
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, supabaseAuthTimeout)
@@ -659,14 +712,14 @@ func (p *proxy) reserveQuota(ctx context.Context, apiKeyID string, reserved int)
 	}{KeyID: apiKeyID, Reserved: reserved})
 	if err != nil {
 		p.logger.Printf("quota: refused (encoding reserve_usage body failed, key id=%s): %v", apiKeyID, err)
-		return false
+		return 0, false
 	}
 
 	rpcURL := strings.TrimRight(p.supabaseURL, "/") + "/rest/v1/rpc/reserve_usage"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, rpcURL, bytes.NewReader(payload))
 	if err != nil {
 		p.logger.Printf("quota: refused (building reserve_usage request failed, key id=%s): %v", apiKeyID, err)
-		return false
+		return 0, false
 	}
 	// apikey only -- see authorize's comment on this same header-format
 	// bug (Supabase's sb_secret_ keys aren't JWTs; Authorization: Bearer
@@ -678,32 +731,47 @@ func (p *proxy) reserveQuota(ctx context.Context, apiKeyID string, reserved int)
 	resp, err := p.client.Do(req)
 	if err != nil {
 		p.logger.Printf("quota: refused (reserve_usage call failed, key id=%s): %v", apiKeyID, err)
-		return false
+		return 0, false
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		io.Copy(io.Discard, io.LimitReader(resp.Body, maxAuthResponseBytes))
 		p.logger.Printf("quota: refused (reserve_usage status=%d, key id=%s)", resp.StatusCode, apiKeyID)
-		return false
+		return 0, false
 	}
 
 	var rows []struct {
 		TokensUsed int64 `json:"tokens_used"`
 		TokenLimit int64 `json:"token_limit"`
+		PendingID  int64 `json:"pending_id"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxAuthResponseBytes)).Decode(&rows); err != nil {
 		p.logger.Printf("quota: refused (decoding reserve_usage response failed, key id=%s): %v", apiKeyID, err)
-		return false
+		return 0, false
 	}
 
 	if len(rows) != 1 {
 		p.logger.Printf("quota: refused (key id=%s, reserved=%d, matches=%d)", apiKeyID, reserved, len(rows))
-		return false
+		return 0, false
 	}
 
-	p.logger.Printf("quota: reserved (key id=%s, reserved=%d, new_used=%d, limit=%d)", apiKeyID, reserved, rows[0].TokensUsed, rows[0].TokenLimit)
-	return true
+	// A zero pending_id means the reservation landed but no outbox row came
+	// back with it -- the signature of a database still running the 0001
+	// reserve_usage, i.e. migration 0002 has not been applied to this
+	// environment. Admission is deliberately NOT failed closed on this: the
+	// reservation itself is real and atomic, so quota enforcement is intact;
+	// what is missing is only the crash-recovery record. Refusing the request
+	// would turn a missing migration into a total outage. It is logged at every
+	// occurrence rather than once, because it also means correctUsage's
+	// apply_correction call is about to 404 -- see the DEPLOY ORDER note in
+	// proxy/migrations/0002_pending_corrections.sql.
+	if rows[0].PendingID == 0 {
+		p.logger.Printf("quota: WARNING reserve_usage returned no pending_id (key id=%s) -- migration 0002 likely not applied; crash recovery is INACTIVE and corrections will fail", apiKeyID)
+	}
+
+	p.logger.Printf("quota: reserved (key id=%s, reserved=%d, new_used=%d, limit=%d, pending_id=%d)", apiKeyID, reserved, rows[0].TokensUsed, rows[0].TokenLimit, rows[0].PendingID)
+	return rows[0].PendingID, true
 }
 
 // keyPrefix returns at most the first keyLogPrefixLen characters of key, for
@@ -739,7 +807,7 @@ func keyPrefix(key string) string {
 // been relayed to the client: a fire-and-forget call on its own detached
 // context (see correctUsage) that never delays, blocks, or fails the
 // client's completion.
-func (p *proxy) streamSSE(w http.ResponseWriter, body io.Reader, keyID string, reserved int) {
+func (p *proxy) streamSSE(w http.ResponseWriter, body io.Reader, keyID string, reserved int, pendingID int64) {
 	flusher, canFlush := w.(http.Flusher)
 
 	scanner := bufio.NewScanner(body)
@@ -749,7 +817,7 @@ func (p *proxy) streamSSE(w http.ResponseWriter, body io.Reader, keyID string, r
 	totalTokens := 0
 	sawData := false
 	defer func() {
-		p.finalizeUsage(keyID, reserved, totalTokens, sawData)
+		p.finalizeUsage(keyID, reserved, totalTokens, sawData, pendingID)
 	}()
 
 	for scanner.Scan() {
@@ -1019,21 +1087,40 @@ func peekUsageTotal(body []byte) (int, bool) {
 //
 // producedOutput corrects QUOTA_RESERVATION_DESIGN.md §5(c), which wrongly
 // treated a client-disconnect-before-usage-chunk as "nothing used".
-func (p *proxy) finalizeUsage(keyID string, reserved, actual int, producedOutput bool) {
+//
+// pendingID is the outbox row reserveQuota opened for this reservation. EVERY
+// branch must reach correctUsage with it, including the middle one whose
+// correction is numerically zero: the delta is what the accounting needs, but
+// closing the outbox row is what tells the reconciliation sweep this request
+// was handled. Before the outbox existed the middle branch could simply log and
+// return, since a no-op correction was genuinely nothing to do; now that same
+// early return would leave a live row behind on a perfectly healthy request,
+// and the sweep would report it ~20 minutes later as an abandoned reservation
+// that never happened -- turning the crash alarm into noise on the one path
+// most likely to fire it (clients disconnecting mid-stream).
+func (p *proxy) finalizeUsage(keyID string, reserved, actual int, producedOutput bool, pendingID int64) {
 	switch {
 	case actual > 0:
-		go p.correctUsage(keyID, actual-reserved)
+		go p.correctUsage(keyID, actual-reserved, pendingID)
 	case producedOutput:
 		p.logger.Printf("usage: output produced but no usage figure (key_id=%s) -- keeping reservation=%d, not refunding", keyID, reserved)
+		go p.correctUsage(keyID, 0, pendingID)
 	default:
-		go p.correctUsage(keyID, -reserved)
+		go p.correctUsage(keyID, -reserved, pendingID)
 	}
 }
 
 // correctUsage adjusts keyID's tokens_used by the signed delta between what
-// was reserved (reserveQuota) and what the request actually used, via the
-// increment_usage Postgres RPC (unchanged from the pre-reservation code --
-// see proxy/migrations/0001_reserve_usage.sql). delta may be negative (a
+// was reserved (reserveQuota) and what the request actually used, AND closes
+// this reservation's pending_corrections outbox row, via the apply_correction
+// Postgres RPC (proxy/migrations/0002_pending_corrections.sql). Those two
+// effects are one atomic statement inside that RPC rather than two calls from
+// here: a crash between an increment and a separate row-close would either
+// double-charge the reservation on the next sweep or lose the correction
+// outright, which is the exact failure class the outbox exists to eliminate.
+//
+// This replaced a direct increment_usage call, which had no notion of an
+// outbox. delta may be negative (a
 // refund: actual usage was less than reserved, or there was no usable
 // response at all) or positive (a top-up: actual usage exceeded the
 // reservation -- see QUOTA_RESERVATION_DESIGN.md §3, this is a common case
@@ -1054,22 +1141,25 @@ func (p *proxy) finalizeUsage(keyID string, reserved, actual int, producedOutput
 // mid-retry -- if every attempt is exhausted, that is logged distinctly
 // (CORRECTION LOST, below) rather than silently dropped the way the
 // pre-reservation recordUsage's single failed attempt was, so it is at
-// least visible rather than silent.
-func (p *proxy) correctUsage(keyID string, delta int) {
+// least visible rather than silent. A correction lost that way now also
+// leaves its outbox row open, so the sweep reports it too: exhausted retries
+// are no longer only a log line that has to be noticed in the moment.
+func (p *proxy) correctUsage(keyID string, delta int, pendingID int64) {
 	if p.supabaseURL == "" || p.supabaseServiceRoleKey == "" {
 		return
 	}
 
 	payload, err := json.Marshal(struct {
-		KeyID  string `json:"p_key_id"`
-		Tokens int    `json:"p_tokens"`
-	}{KeyID: keyID, Tokens: delta})
+		KeyID     string `json:"p_key_id"`
+		Tokens    int    `json:"p_tokens"`
+		PendingID int64  `json:"p_pending_id"`
+	}{KeyID: keyID, Tokens: delta, PendingID: pendingID})
 	if err != nil {
 		p.logger.Printf("usage: encoding correction body failed (key_id=%s): %v", keyID, err)
 		return
 	}
 
-	rpcURL := strings.TrimRight(p.supabaseURL, "/") + "/rest/v1/rpc/increment_usage"
+	rpcURL := strings.TrimRight(p.supabaseURL, "/") + "/rest/v1/rpc/apply_correction"
 
 	for attempt := 1; attempt <= correctUsageMaxAttempts; attempt++ {
 		ok, retryable := p.tryCorrectUsage(rpcURL, payload, keyID, delta, attempt)
@@ -1125,4 +1215,111 @@ func (p *proxy) tryCorrectUsage(rpcURL string, payload []byte, keyID string, del
 	}
 
 	return true, false
+}
+
+// startReconciliationSweep runs the outbox sweep forever on
+// reconciliationSweepInterval. Launched as a goroutine from main and never
+// stopped: it is exactly as long-lived as the process, and the sweep it drives
+// is only meaningful while the process is up.
+//
+// This is the half of QUOTA_RESERVATION_DESIGN.md §5(e)'s fix that no
+// in-request code path can provide. Retries (§5(d)) cover a correction whose
+// call failed; nothing in-process can cover a correction whose PROCESS died,
+// because the goroutine that would have retried died with it. The durable
+// record left in pending_corrections is picked up here instead, by whichever
+// process is running next -- the same one after a restart, or a sibling
+// replica that never crashed at all.
+func (p *proxy) startReconciliationSweep() {
+	if p.supabaseURL == "" || p.supabaseServiceRoleKey == "" {
+		p.logger.Printf("reconciliation: sweep disabled (supabase not configured)")
+		return
+	}
+	p.logger.Printf("reconciliation: sweep every %s for reservations older than %dm", reconciliationSweepInterval, pendingCorrectionStaleAfterMinutes)
+	ticker := time.NewTicker(reconciliationSweepInterval)
+	defer ticker.Stop()
+	for range ticker.C {
+		p.sweepPendingCorrections()
+	}
+}
+
+// sweepPendingCorrections claims every reservation older than
+// pendingCorrectionStaleAfterMinutes and logs each one loudly.
+//
+// It does NOT refund them, and that is the deliberate design decision rather
+// than an omission -- see the sweep_pending_corrections comment in
+// proxy/migrations/0002_pending_corrections.sql. The true usage of a request
+// whose process died is not recoverable from anywhere: the figure only ever
+// existed in the response stream that process was reading. Of the two available
+// guesses, refunding is the unsafe one (it hands back quota for inference
+// OpenRouter really did bill, and it is trivially repeatable by anyone who can
+// make the proxy restart). Keeping the reservation charged over-meters at
+// worst, in the direction that can only ever throttle a later request early.
+//
+// So the honest description of what this achieves: it does not fix the
+// accounting, it makes the damage bounded, visible and safely-directed instead
+// of silent and indefinite. The log line is the actual deliverable -- an
+// operator who sees it knows a specific key was over-charged by a specific
+// amount at a specific time, and can decide what to do about it.
+//
+// Errors are logged and the sweep returns; the rows are still there for the
+// next tick, since the claim only happens on a successful DELETE ... RETURNING.
+func (p *proxy) sweepPendingCorrections() {
+	ctx, cancel := context.WithTimeout(context.Background(), reconciliationSweepTimeout)
+	defer cancel()
+
+	payload, err := json.Marshal(struct {
+		StaleMinutes int `json:"p_stale_minutes"`
+	}{StaleMinutes: pendingCorrectionStaleAfterMinutes})
+	if err != nil {
+		p.logger.Printf("reconciliation: encoding sweep body failed: %v", err)
+		return
+	}
+
+	rpcURL := strings.TrimRight(p.supabaseURL, "/") + "/rest/v1/rpc/sweep_pending_corrections"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, rpcURL, bytes.NewReader(payload))
+	if err != nil {
+		p.logger.Printf("reconciliation: building sweep request failed: %v", err)
+		return
+	}
+	// apikey only -- see authorize's comment on this same header-format bug.
+	req.Header.Set("apikey", p.supabaseServiceRoleKey)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := p.client.Do(req)
+	if err != nil {
+		p.logger.Printf("reconciliation: sweep call failed: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		io.Copy(io.Discard, io.LimitReader(resp.Body, maxSweepResponseBytes))
+		p.logger.Printf("reconciliation: sweep returned status=%d", resp.StatusCode)
+		return
+	}
+
+	var rows []struct {
+		ID        int64  `json:"id"`
+		KeyID     string `json:"key_id"`
+		Reserved  int    `json:"reserved"`
+		CreatedAt string `json:"created_at"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxSweepResponseBytes)).Decode(&rows); err != nil {
+		p.logger.Printf("reconciliation: decoding sweep response failed: %v", err)
+		return
+	}
+
+	// Silent on the common case. A healthy proxy sweeps up nothing every five
+	// minutes forever, and a line saying so would train operators to ignore
+	// this prefix -- which is the one prefix that must stay attention-worthy.
+	if len(rows) == 0 {
+		return
+	}
+
+	for _, row := range rows {
+		p.logger.Printf("reconciliation: ABANDONED RESERVATION swept (pending_id=%d, key_id=%s, reserved=%d, reserved_at=%s) -- no correction was ever applied, most likely a proxy crash mid-request; the reservation stays CHARGED (never refunded on missing usage data) and tokens_used for this key is overstated by at most that amount",
+			row.ID, row.KeyID, row.Reserved, row.CreatedAt)
+	}
+	p.logger.Printf("reconciliation: swept %d abandoned reservation(s)", len(rows))
 }
