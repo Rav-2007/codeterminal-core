@@ -2452,6 +2452,25 @@ logged at startup so it is never a silent default. Separately, `/health` (the on
 route) no longer returns the build commit SHA; `HEALTH_EXPOSE_COMMIT=1` restores it for the
 deploy-verify case it existed for.
 
+### Compatibility check — SEC-1's 403 gate vs. the quota-reservation flow
+Checked because two independently-correct changes are exactly what Part-0 rule 3 exists to catch:
+could a reservation ever be *sized or created* for a model that is rejected a moment later? **Read
+live from `proxy/main.go`, not assumed. Confirmed moot — the 403 gate precedes all reservation logic
+in both the current and the designed flow.** The shipped order in `handleChatCompletions` is: rate
+limit + in-flight admission → `io.ReadAll` over the `MaxBytesReader` → **`peekModel` +
+`modelAllowed` → `403`, `return` (`:447`)** → `peekMaxTokens` clamp (`:456`) → `reserveQuota`
+(`:463`). The refusal returns before `reserved` is even computed, so no reservation is sized, none is
+written, and no refund path is entered. `QUOTA_RESERVATION_DESIGN.md` §4's proposed sequence puts the
+body read at step 2, `peekMaxTokens` at step 3 and `reserveQuota` at step 4 — the allow-list gate
+slots between steps 2 and 3, so the as-designed order runs it first as well.
+- **One real (documentation, not security) gap found while checking, for the founder queue:**
+  `QUOTA_RESERVATION_DESIGN.md`'s header still reads *"Status: design only. No code changes yet"*,
+  but that design **has landed** — `proxy/migrations/0001_reserve_usage.sql`, `reserveQuota`
+  (`:647`), `peekMaxTokens` and `finalizeUsage` are all on `main`. The prompt for this batch was
+  itself written from that stale line. A cold reader would conclude the TOCTOU race is still open
+  when it is closed. **Not fixed here** — this batch is proxy endpoint security, and a stale status
+  line in a design doc is an isolated edit belonging to whoever closes that item, per Part-0 rule 6.
+
 ### Still open / explicitly not fixed
 - **A8b / M10 — slow-response-read pinning: MITIGATED, NOT ELIMINATED.** A single trickle reader can
   still hold a streaming connection (the only response-side bound remains `WriteTimeout` = 6 min).
@@ -2470,3 +2489,139 @@ deploy-verify case it existed for.
 -count=1` green for daemon / editapply / clients/tui / proxy; **govulncheck clean on all six**.
 Full matrix re-run against the fixed binary: **0 FAIL / 14, 1 PARTIAL**. Commits `b0a1085`,
 `3e37c44`, `a88b88a`, `091ce01`. **Nothing marked closed — founder confirms.**
+
+## 2026-07-24 — §5(e): durable pending-corrections outbox + reconciliation sweep (verified, NOT closed)
+
+`QUOTA_RESERVATION_DESIGN.md` §5(e) was the one reservation-loss case that design **named and
+explicitly declined to close**, recommending as follow-up "a durable outbox for pending corrections,
+or a periodic reconciliation sweep." This is that follow-up. One isolated commit in the `proxy`
+module (`ca7e3c4`). **Nothing pushed, nothing marked closed — founder confirms, per Part 0 rule 5.**
+
+### What §5(e) was
+The proxy reserves an estimated token count before forwarding (`reserveQuota`) and corrects it after
+the response completes (`finalizeUsage` → `correctUsage`). If the **process dies between those two**
+— redeploy, OOM, crash mid-stream — `tokens_used` stays at the reserved value and **nothing anywhere
+records that a correction was owed**. §5(d)'s bounded retry cannot help by construction: the
+goroutine that would retry died with the process. §5's own direction analysis is what makes this
+matter rather than being bookkeeping noise — a lost *refund* leaves `tokens_used` too high (safe,
+throttles early), but a lost *top-up* leaves it too low (**unsafe** — later requests get admitted
+against quota that was really spent), and §3's real provider data shows top-ups are the normal case
+for the active model, not a tail.
+
+### What was built (`ca7e3c4`)
+**`proxy/migrations/0002_pending_corrections.sql`** — new `pending_corrections` table (`id`,
+`key_id`, `reserved`, `created_at` + a `created_at` index); `reserve_usage` **dropped and recreated**
+(its return shape gains `pending_id`, which `CREATE OR REPLACE` cannot do) to open the outbox row via
+a **data-modifying CTE inside the same statement** that reserves; new `apply_correction(p_key_id,
+p_tokens, p_pending_id)` that increments **and** closes the row in one statement; new
+`sweep_pending_corrections(p_stale_minutes)` as an atomic `DELETE ... RETURNING`, so a row is claimed
+exactly once even across replicas. The reservation UPDATE itself is byte-identical to 0001 — the
+TOCTOU closure is preserved, not re-litigated. `increment_usage` is left in place, unchanged, just no
+longer called.
+
+**Single-statement atomicity is the whole point, in both directions.** A separate `INSERT` after the
+reservation would reintroduce the crash-in-the-gap hole *inside the outbox*; a separate `DELETE`
+after the increment would either double-charge on the next sweep or drop a correction. **Zero added
+round trips** on the request path — the outbox rides the two calls that already existed.
+
+**`proxy/main.go`** — `reserveQuota` returns `(pendingID int64, ok bool)`; that id threads through
+`handleChatCompletions` → `streamSSE` / the non-SSE branch → `finalizeUsage` → `correctUsage`, which
+now posts to `rpc/apply_correction` carrying `p_pending_id` instead of `rpc/increment_usage`. New
+`startReconciliationSweep` (5 min ticker, wired as `go p.startReconciliationSweep()` in `main()`
+before `ListenAndServe`, so a just-restarted process sweeps what its own crash stranded) and
+`sweepPendingCorrections`, claiming anything past 15 minutes.
+
+**A bug this patch introduces and closes in the same pass, called out rather than buried:**
+`finalizeUsage`'s `producedOutput` branch (C3's abort path) previously logged and **returned early**
+— correct when a zero-delta correction was genuinely nothing to do. With an outbox that early return
+leaves a **live row on a perfectly healthy request**, and the sweep would report the single most
+common client-disconnect path as an abandoned reservation ~20 minutes later, turning the crash alarm
+into noise. That branch now calls `correctUsage(keyID, 0, pendingID)`.
+
+### What it does NOT close — read this before summarizing it as "case (e) is solved"
+It does **not** recover the true usage of a request whose process died. That number only ever existed
+in the response stream the dead process was reading; it is not recoverable from anywhere, and the
+sweep does not invent it. What changed is the *shape* of the damage: **silent, indefinite, and
+unsafe-direction → loud within ~20 minutes and resolved in the safe direction** (the reservation
+stays **charged**, never refunded on missing data — the same asymmetry `finalizeUsage` already
+applies). The swept reservation still over-meters that key by up to `reserved` (default 4096), and
+the log line — not the accounting — is the deliverable: an operator sees which key, how much, when.
+
+It is also **not** exact metering of an aborted stream (the C3 residual). §3F of the HANDOFF listed
+"a reconciliation sweep" as one of two possible routes to that; this sweep is **not** that route — it
+reconciles *abandoned reservations*, not *summed real usage vs. `tokens_used`*. **C3's residual stays
+open**; the two are related but distinct and must not be conflated.
+
+### Step-0 verification — what was actually run
+1. **Regression (`proxy` module): all PASS.** `gofmt -l` clean; `go build ./...`, `go vet ./...`
+   clean; `go test -count=1 ./...` and `go test -race -count=1 ./...` green; `govulncheck ./...` →
+   "No vulnerabilities found."
+2. **New unit tests (`proxy/main_test.go`), against `httptest` PostgREST fakes, no live Supabase.**
+   The `fakeUsageStore` now models the outbox for real (open/close/sweep) rather than stubbing it —
+   a stub that always closed would test nothing. Coverage: `reserveQuota` returns a nonzero
+   `pendingID` on success and `(0,false)` opening no row on refusal, **asserting exactly one HTTP
+   call** in both cases; `correctUsage` posts to `.../rpc/apply_correction` with `p_pending_id`
+   present and correct; the `producedOutput` branch closes its row with delta 0; the sweep emits one
+   `ABANDONED RESERVATION swept` line per claimed row with `pending_id`/`key_id`/`reserved`/
+   `reserved_at`, leaves a *fresh* row alone, never changes `tokens_used`, and is **silent on zero
+   rows**; and a crash-then-restart sequence where the correction never runs.
+3. **Fail-when-neutered proven three ways** (each reverted after): pointing `correctUsage` back at
+   `increment_usage` → 6 tests fail; dropping `p_pending_id` from the payload → 4 fail; restoring the
+   `producedOutput` early return → the abort regression fails. Restored → green.
+4. **Live crash test against the REAL compiled binary — ALL PHASES PASS.** Not the live-Supabase test
+   §5(e)'s follow-up envisioned (see blockers below), but a real `proxybin` process against a
+   *separate-process* fake PostgREST that outlives it, with the **real shipped 5-minute ticker**:
+   - *Phase 1 (normal request):* reserved 4096 → `apply_correction delta=-3973 pending_id=1` →
+     `tokens_used=123`, **open rows 0**. The healthy path leaves nothing behind.
+   - *Phase 2 (`kill -9` mid-stream):* `tokens_used=4219`, **open rows 1** — the reservation record
+     survived the SIGKILL, which is the entire claim.
+   - *Phase 3 (restart + sweep):* proxy restarted 17:02:43, swept 17:07:43 (exactly one real 5-minute
+     tick), logging
+     `reconciliation: ABANDONED RESERVATION swept (pending_id=2, key_id=eeee5555-…-00000000cafe,
+     reserved=4096, reserved_at=2026-07-24T16:42:39…) -- no correction was ever applied … the
+     reservation stays CHARGED …` then `swept 1 abandoned reservation(s)`. Open rows **0**;
+     `tokens_used` **4219 → 4219, unchanged** from its post-reservation value. Not refunded.
+   - Harness note: the proxy correctly does **not** forward arbitrary client headers, so the
+     slow-upstream trigger had to ride the request **body** (which *is* forwarded byte-for-byte).
+     The first run failed for this reason and is reported as a fail, not smoothed over.
+
+### Step-0 steps that could NOT be run — blocked, not skipped
+- **The migration is UNAPPLIED and the SQL is UNEXECUTED.** Step 0 called for applying 0002 via the
+  Supabase SQL editor and re-verifying via PostgREST OpenAPI introspection (the §1 technique). **The
+  Supabase project host no longer resolves — `eshpqodurxubjigndiev.supabase.co` returns NXDOMAIN**
+  (general outbound network is fine; `supabase.co` itself resolves). So the schema could not be
+  applied *or* introspected, and **0001's live state could not be re-confirmed either**. There is
+  additionally no `psql`, no `postgres`, and no `docker`/`podman` in this environment, so the SQL
+  could not be executed against a local engine as a substitute. **The `.sql` file has never been run
+  by anything.** Checked by inspection only: OUT-parameter/column ambiguity is avoided by qualifying
+  every column reference (the same discipline 0001 used), data-modifying CTEs are read via their
+  `RETURNING` output (the supported pattern), and `WITH … DELETE` is valid as a top-level statement.
+  **Treat first application as unproven — apply it somewhere disposable first.**
+- **Consequently the live re-test (real proxy → real Supabase) did not happen.** Phase 1–3 above is
+  the strongest available substitute: real binary, real signal, real ticker, fake database.
+
+### Still open after this pass
+- **DEPLOY ORDER IS A HARD CONSTRAINT.** Migration 0002 must land **before** this build ships.
+  `apply_correction` does not exist on an un-migrated database → 404 → **4xx is non-retryable in
+  `correctUsage`** → every correction on every request is lost outright, which is strictly worse than
+  the bug being fixed. `reserveQuota` logs a loud `WARNING … migration 0002 likely not applied` when
+  `reserve_usage` returns no `pending_id` (exactly that state), but **deliberately still admits the
+  request** — the reservation is real and atomic either way, and failing closed would turn a missing
+  migration into a total outage. A compatibility fallback (call `increment_usage` when `pendingID==0`)
+  was considered and **not** built: it was outside the confirmed scope and would silently mask the
+  misconfiguration the warning exists to surface. Noted as an available option, not a recommendation.
+- **The sweep is not a metering reconciliation.** It claims abandoned reservations; it does not
+  compare summed real usage against `tokens_used`. C3's exact-metering residual is untouched.
+- **A sustained Supabase outage longer than the sweep's own reach still loses corrections** — the
+  outbox row survives, so it is *reported*, but nothing re-drives the correction. Re-driving would
+  need the true usage figure, which is exactly what does not survive.
+- **`QUOTA_RESERVATION_DESIGN.md` is now stale in a second place.** Beyond the already-tracked
+  "Status: design only. No code changes yet" line, §5(e) still reads "**Recommending this as a named
+  near-term follow-up**, not doing it in this pass." Folded into the existing HANDOFF §3F doc-staleness
+  item rather than edited here, because that entry already assigns the design doc's status text to a
+  separate isolated edit (Part-0 rule 6).
+
+### Verification summary
+`gofmt -l` clean; `go build ./...` + `go vet ./...` clean; `go test -count=1` and `go test -race
+-count=1` green for the `proxy` module; `govulncheck` clean. Commit `ca7e3c4`. **Nothing marked
+closed — founder confirms.**
