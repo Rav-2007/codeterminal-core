@@ -1,0 +1,18 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  proxy-image:
+    # Builds the proxy Docker image exactly as Railway does (same Dockerfile,
+    # same build context) so a broken build context — e.g. a Dockerfile that
+    # fails to COPY a needed .go file — is caught here instead of at deploy.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build proxy image
+        run: docker build -t codeterminal-proxy:ci ./proxy
