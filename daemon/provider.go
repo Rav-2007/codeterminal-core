@@ -35,12 +35,16 @@ type chatMessage struct {
 	Content string `json:"content"`
 }
 
-// providerRouting is OpenRouter's "provider" request object, restricted to
-// the three fields this codebase enforces. See ZDRConfig.resolvedProviderRouting
-// in config.go for how these values are resolved (secure-by-default) and
-// ErrZDRRefused below for the failure mode when no provider qualifies. No
-// field here is omitempty: every request must state all three explicitly,
-// on purpose, so enforcement is never silently absent from the wire body.
+// providerRouting is OpenRouter's "provider" request object. See
+// ZDRConfig.resolvedProviderRouting in config.go for how these values are
+// resolved (secure-by-default) and ErrZDRRefused below for the failure mode
+// when no provider qualifies. The three ZDR flags are never omitempty: every
+// request must state all three explicitly, on purpose, so enforcement is never
+// silently absent from the wire body (Ignore is the exception -- see its note).
+//
+// NOTE: this struct is NOT ==-comparable -- Ignore is a slice. Compare values
+// with reflect.DeepEqual, not == / != (which is a compile error, not a test
+// failure).
 type providerRouting struct {
 	ZDR            bool   `json:"zdr"`
 	DataCollection string `json:"data_collection"`
