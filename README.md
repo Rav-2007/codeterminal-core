@@ -629,6 +629,57 @@ export CODETERMINAL_API_KEY="sk-..."
 echo "Say hello in five words." | ./clients/tui/codeterminal-tui
 ```
 
+### Pilot: proxy mode
+
+The steps above are **direct mode**: your own OpenRouter key leaves this
+machine and goes to OpenRouter. The pilot instead runs through the managed
+proxy, which holds the OpenRouter key server-side, meters usage per user, and
+enforces the zero-data-retention routing flags before anything reaches
+OpenRouter. Your machine then holds exactly one credential: a Mochiii key.
+
+[`run-proxy.sh`](run-proxy.sh) is the whole path. It sources `.env`, points
+`CODETERMINAL_API_BASE` at the production proxy, sets
+`CODETERMINAL_USE_PROXY=true`, unsets `CODETERMINAL_API_KEY` so a direct
+provider key can't be sent to the proxy by accident, refuses to start on a
+missing Mochiii key, and then `exec`s the daemon — so every daemon flag passes
+straight through:
+
+```bash
+# 0. One-time: put your Mochiii key in .env (gitignored; never commit it)
+cp .env.example .env
+$EDITOR .env          # set CODETERMINAL_MOCHIII_KEY=mochi_...
+
+# 1. One-time: build the binaries and fetch the embedding model. The proxy
+#    serves inference only — retrieval embeddings are computed locally, so
+#    without this the daemon starts but has no grounding.
+(cd helper && go build -o codeterminal-embedder-helper .)
+(cd daemon && go build -o codeterminal-daemon .)
+(cd clients/tui && go build -o codeterminal-tui .)
+./daemon/codeterminal-daemon download-model
+
+# 2. Per repo: index it, so answers are grounded in that codebase. Re-run it
+#    after the code changes — the index is a snapshot, and a stale one makes
+#    the model confidently describe the OLD shape of a file it "retrieved".
+./daemon/codeterminal-daemon index ~/some/repo
+
+# 3. Start the daemon in proxy mode, pointed at that same repo
+./run-proxy.sh --workspace ~/some/repo
+
+# 4. In another terminal, as usual
+./clients/tui/codeterminal-tui --workspace ~/some/repo
+```
+
+The daemon logs `proxy mode: forwarding inference through ...` at startup —
+that line is how you confirm the pilot path is actually in use. The proxy URL
+is a baked-in default, not a secret; override it (e.g. to run against a local
+proxy) by exporting `CODETERMINAL_API_BASE` before invoking the script:
+
+```bash
+CODETERMINAL_API_BASE=http://localhost:8080/v1 ./run-proxy.sh
+```
+
+See [`proxy/README.md`](proxy/README.md) for what the proxy enforces.
+
 Stop the daemon with Ctrl-C (`SIGINT`) or `SIGTERM`; it removes its socket
 and lockfile before exiting. If it's ever killed without a chance to clean
 up (e.g. `SIGKILL`, a crash), the next `codeterminal-daemon` start detects
