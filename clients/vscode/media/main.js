@@ -96,9 +96,24 @@
       groundingEl.textContent = '';
       return;
     }
-    groundingEl.textContent = info.grounded
+    let text = info.grounded
       ? `grounded · ${info.chunks ?? 0} chunk(s)${info.truncated ? ' (truncated)' : ''}`
       : `not grounded${info.reason ? ' · ' + info.reason : ''}`;
+    // The daemon indexes ONE workspace, chosen at its launch, and reports a
+    // mismatch when the workspace this panel sent doesn't match it (see
+    // protocol.GroundingInfo.WorkspaceMismatch, computed in
+    // daemon/context.go's buildGroundingInfo). Untreated, that reads as a
+    // perfectly normal "grounded · N chunk(s)" while the answer is actually
+    // grounded in a DIFFERENT repository -- the one failure mode where the
+    // indicator being reassuring is worse than it being absent. Appended, not
+    // substituted: the grounded/not-grounded verdict is unchanged.
+    if (info.workspace_mismatch) {
+      text +=
+        `  ⚠ the daemon is indexed on a different workspace` +
+        `${info.workspace ? ' (' + info.workspace + ')' : ''}` +
+        ` than the one open here — restart it against this folder for grounded answers`;
+    }
+    groundingEl.textContent = text;
   }
 
   // setHistoryInfo renders a warning when the daemon dropped the oldest
