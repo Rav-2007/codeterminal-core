@@ -75,6 +75,15 @@ type ZDRConfig struct {
 	// outside the above constraints if none qualify, instead of the request
 	// failing loudly (sends provider.allow_fallbacks=true instead of false).
 	AllowFallbacks bool `json:"allow_fallbacks,omitempty"`
+	// ProviderIgnoreList names providers OpenRouter must never route to (sent
+	// as the provider-routing "ignore" deny-list). Unlike the weaken-bools
+	// above it carries no polarity subtlety: an empty/absent list is the
+	// migration-free default and produces exactly today's wire body (the
+	// providerRouting.Ignore field is omitempty). Its purpose is to exclude a
+	// single provider (DeepInfra, pending the OpenRouter retention finding)
+	// while keeping the rest of the ZDR pool available — a deny-list, not an
+	// allow-list, chosen for pool width and self-maintenance (D4).
+	ProviderIgnoreList []string `json:"provider_ignore_list,omitempty"`
 }
 
 // resolvedProviderRouting returns the provider-routing object to send with
@@ -89,6 +98,7 @@ func (c ZDRConfig) resolvedProviderRouting() providerRouting {
 		ZDR:            !c.AllowNonZDR,
 		DataCollection: dataCollection,
 		AllowFallbacks: c.AllowFallbacks,
+		Ignore:         c.ProviderIgnoreList,
 	}
 }
 
@@ -174,7 +184,7 @@ const (
 var (
 	knownConfigKeys    = []string{"config_version", "default_tier", "tiers", "retrieval", "zdr", "no_scrub"}
 	knownRetrievalKeys = []string{"disabled", "rerank_disabled", "top_k", "context_budget_chars"}
-	knownZDRKeys       = []string{"allow_non_zdr", "allow_data_collection", "allow_fallbacks"}
+	knownZDRKeys       = []string{"allow_non_zdr", "allow_data_collection", "allow_fallbacks", "provider_ignore_list"}
 	knownTierKeys      = []string{"slug", "active", "note"}
 )
 

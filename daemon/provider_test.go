@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -193,7 +194,7 @@ func TestStreamCompletion_RequestBodyIncludesStrictProviderRoutingByDefault(t *t
 		t.Fatalf("decoding captured request body: %v\nbody: %s", err, *captured)
 	}
 	want := providerRouting{ZDR: true, DataCollection: "deny", AllowFallbacks: false}
-	if sent.Provider != want {
+	if !reflect.DeepEqual(sent.Provider, want) {
 		t.Errorf("outbound request provider object = %+v, want %+v (strict defaults)", sent.Provider, want)
 	}
 	if !sent.Stream {
@@ -227,7 +228,7 @@ func TestStreamCompletion_RequestBodyReflectsConfigDrivenRouting(t *testing.T) {
 		t.Fatalf("decoding captured request body: %v", err)
 	}
 	want := providerRouting{ZDR: false, DataCollection: "allow", AllowFallbacks: true}
-	if sent.Provider != want {
+	if !reflect.DeepEqual(sent.Provider, want) {
 		t.Errorf("outbound request provider object = %+v, want %+v (the weakened config passed in)", sent.Provider, want)
 	}
 }

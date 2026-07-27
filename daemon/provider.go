@@ -45,6 +45,17 @@ type providerRouting struct {
 	ZDR            bool   `json:"zdr"`
 	DataCollection string `json:"data_collection"`
 	AllowFallbacks bool   `json:"allow_fallbacks"`
+	// Ignore is a deny-list of provider names OpenRouter must NOT route to
+	// (its "provider.ignore" field), used to exclude a specific provider from
+	// the ZDR-eligible pool while keeping every other provider available (D4:
+	// excluding DeepInfra pending the OpenRouter retention finding). Deny-list
+	// rather than an "only" allow-list on purpose — it keeps the pool maximally
+	// wide (only the named provider drops out, so it does not re-introduce the
+	// congestion allow_fallbacks was flipped on to escape) and is self-
+	// maintaining as OpenRouter's ZDR provider set changes. It is the ONE field
+	// here that IS omitempty: an unset list must serialize to exactly today's
+	// wire body, so this change is inert until models.json opts in.
+	Ignore []string `json:"ignore,omitempty"`
 }
 
 // streamOptions is OpenRouter's "stream_options" request object. Setting

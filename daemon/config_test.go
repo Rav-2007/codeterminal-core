@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 )
 
@@ -19,7 +20,7 @@ import (
 func TestZDRConfig_ZeroValueResolvesToStrictEnforcement(t *testing.T) {
 	got := ZDRConfig{}.resolvedProviderRouting()
 	want := providerRouting{ZDR: true, DataCollection: "deny", AllowFallbacks: false}
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("resolvedProviderRouting() on zero-value ZDRConfig = %+v, want %+v (strict defaults)", got, want)
 	}
 }
@@ -59,7 +60,7 @@ func TestZDRConfig_EachWeakenFlagOnlyAffectsItsOwnField(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got := tc.cfg.resolvedProviderRouting()
-			if got != tc.want {
+			if !reflect.DeepEqual(got, tc.want) {
 				t.Errorf("resolvedProviderRouting() = %+v, want %+v", got, tc.want)
 			}
 		})
@@ -87,7 +88,56 @@ func TestConfig_UnmarshalWithoutZDRSectionStillResolvesStrict(t *testing.T) {
 
 	got := cfg.ZDR.resolvedProviderRouting()
 	want := providerRouting{ZDR: true, DataCollection: "deny", AllowFallbacks: false}
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("a models.json with no \"zdr\" section resolved to %+v, want strict defaults %+v", got, want)
 	}
+}
+
+// --- D4: provider ignore-list (deny-list, e.g. exclude DeepInfra) -----------
+
+// TestZDRConfig_ProviderIgnoreList_WireBody proves the two properties D4 needs.
+// Set: the resolved routing carries the ignore list and the marshalled wire
+// body puts ignore:["DeepInfra"] ALONGSIDE the ZDR flags (it does not replace or
+// disturb them). Unset: the marshalled provider object is BYTE-IDENTICAL to
+// today's, so the new field is inert until models.json opts in (the whole point
+// of it being omitempty).
+func TestZDRConfig_ProviderIgnoreList_WireBody(t *testing.T) {
+	t.Run("set: ignore list rides alongside the ZDR flags", func(t *testing.T) {
+		// Mirrors the shipped models.json posture (allow_fallbacks:true) plus the
+		// D4 deny-list.
+		cfg := ZDRConfig{AllowFallbacks: true, ProviderIgnoreList: []string{"DeepInfra"}}
+		routing := cfg.resolvedProviderRouting()
+
+		if !reflect.DeepEqual(routing.Ignore, []string{"DeepInfra"}) {
+			t.Errorf("routing.Ignore = %v, want [DeepInfra]", routing.Ignore)
+		}
+		// The ZDR flags must be untouched by the deny-list.
+		if !routing.ZDR || routing.DataCollection != "deny" || !routing.AllowFallbacks {
+			t.Errorf("ignore list disturbed the ZDR flags: %+v", routing)
+		}
+
+		body, err := json.Marshal(routing)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		want := `{"zdr":true,"data_collection":"deny","allow_fallbacks":true,"ignore":["DeepInfra"]}`
+		if string(body) != want {
+			t.Errorf("wire body = %s\n           want %s", body, want)
+		}
+	})
+
+	t.Run("unset: wire body is byte-identical to today's (omitempty inert)", func(t *testing.T) {
+		// The shipped posture with no ignore list configured.
+		cfg := ZDRConfig{AllowFallbacks: true}
+		body, err := json.Marshal(cfg.resolvedProviderRouting())
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		// Exactly what the daemon put on the wire before D4 existed — no "ignore"
+		// key at all.
+		want := `{"zdr":true,"data_collection":"deny","allow_fallbacks":true}`
+		if string(body) != want {
+			t.Errorf("an unset ignore list changed the wire body:\n got = %s\nwant = %s", body, want)
+		}
+	})
 }
