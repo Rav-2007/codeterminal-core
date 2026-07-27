@@ -2637,3 +2637,108 @@ open**; the two are related but distinct and must not be conflated.
 `gofmt -l` clean; `go build ./...` + `go vet ./...` clean; `go test -count=1` and `go test -race
 -count=1` green for the `proxy` module; `govulncheck` clean. Commit `ca7e3c4`. **Nothing marked
 closed — founder confirms.**
+
+## 2026-07-25 — Migration 0002 GENUINELY applied to live Supabase (corrects an earlier premature "applied" note) — AHEAD of the code that fully uses it (two loose ends: verified + contained)
+
+> **Record correction (2026-07-25T09:23Z / 14:53 IST).** An earlier version of this section, written
+> the same calendar day, stated migration `0002` "has now been applied." **That was false when
+> written** — the SQL had been reviewed and read but never actually pasted into the Supabase SQL editor
+> and run. A subsequent live check found `42P01: relation "pending_corrections" does not exist`, and a
+> diff against a saved pre-migration snapshot (17 columns across `api_keys`, `api_keys_public`, `usage`)
+> confirmed nothing had changed. The "prior session's live 200 post-migration" that the old note cited
+> as corroboration did **not** exercise the new schema. This is the corrected, verified record.
+
+Migration `0002_pending_corrections.sql` **has now genuinely been applied** to the live Supabase
+project (`eshpqodurxubjigndiev`), confirmed by two independent live queries run directly in the
+Supabase dashboard this session: the information-schema check now returns **21 columns** including
+`pending_corrections(id bigint, key_id uuid, reserved integer, created_at timestamptz)`, and the
+routine check shows all three of `apply_correction`, `reserve_usage`, `sweep_pending_corrections`
+present as `FUNCTION`. This reverses the "UNAPPLIED / host NXDOMAIN" state the §5(e) section above
+records.
+
+But the **deployed proxy is still `f25f444`** (confirmed this session via `/health` →
+`{"status":"ok","commit":"f25f4448..."}`), which predates the migration and calls `reserve_usage`
+while having **zero** references to `apply_correction` / `sweep_pending_corrections`. The code that
+calls those (`ca7e3c4`) is on `main` and on `origin/backup/pre-deploy-audit-2026-07-24` but **is not
+deployed** — that deploy is founder-gated (§2J / Incident 2). Applying the schema ahead of that code
+leaves two consequences, both handled here.
+
+### Loose end 1 — field-tolerance of the deployed decode: **CONFIRMED SAFE (source analysis + live test)**
+The source analysis below was written **in advance of confirmation** (it reads `f25f444` Go source,
+which never depended on the migration being live) and is now **confirmed against the live schema** by a
+real authenticated request in this session (see the live-test block at the end of this loose end).
+`reserve_usage` now returns a third column (`pending_id`). Deployed `f25f444` decodes the RPC
+response at `proxy/main.go` (in `f25f444`, lines 562–566) into:
+```go
+var rows []struct {
+    TokensUsed int64 `json:"tokens_used"`
+    TokenLimit int64 `json:"token_limit"`
+}
+json.NewDecoder(io.LimitReader(resp.Body, maxAuthResponseBytes)).Decode(&rows)
+```
+- **Decode method:** slice of structs with named JSON tags.
+- **`DisallowUnknownFields`:** grepped the entire `f25f444` proxy tree — **0 occurrences**. Plain
+  `encoding/json`, which silently ignores unknown object fields.
+- The extra `pending_id` is an added *field* on each row object, not an added array *element*, so the
+  `len(rows) != 1` guard is unaffected (still one row).
+- **Conclusion:** the deployed proxy tolerates the new `pending_id` field.
+
+**Live confirmation (this session, 2026-07-25T09:23Z).** A real authenticated `POST
+/v1/chat/completions` to `codeterminal-core-production.up.railway.app` (model
+`deepseek/deepseek-v4-flash`, `max_tokens:1`) returned **HTTP 200** with a genuine completion
+(`"content":"Hello"`, `usage.total_tokens":6`, `cost:9.8e-7`). Because that request path runs
+`reserveQuota` → `reserve_usage` (`f25f444` `proxy/main.go:339`), the 200 is direct evidence that the
+deployed proxy decodes `reserve_usage`'s new 3-column return shape without error against the now-live
+schema. This is genuine, current, live-tested confirmation — not inference from source reading alone.
+
+### Loose end 2 — `pending_corrections` growth: **monotonic, worth monitoring (storage impact negligible)**
+`reserveQuota` runs once per admitted `/v1/chat/completions` request (`f25f444` `proxy/main.go:339`),
+and `reserve_usage` opens exactly one outbox row per *successful* reservation (refusals write nothing —
+the migration's CTE inserts from the empty `reserved` CTE; mirrored by `proxy/main_test.go:951`).
+Crucially, deployed `f25f444` **never closes any row**: its correction path (`correctUsage`) calls
+`increment_usage`, *not* `apply_correction`, and nothing invokes `sweep_pending_corrections`. So until
+`ca7e3c4` deploys, the table grows **monotonically = cumulative admitted requests since the migration
+actually landed (2026-07-25T09:23Z — the real apply timestamp, not the earlier premature note)**; no
+row is ever removed.
+
+**Growth-clock baseline — capture, don't assume.** The clock starts at the real apply time above, not
+earlier. `reserve_usage` only began writing `pending_corrections` rows once the migration replaced the
+function this session, so the baseline is **not** assumed-zero — it should be captured from the live
+count the founder reports. Run the MONITORING query below and record `pending_rows` / `oldest` /
+`newest` here when known; `oldest` should be ≥ the apply timestamp.
+- **Rate:** ~1 row per admitted request. At the observed volume (dozens to low-hundreds of req/hour,
+  bursty not sustained), that is roughly **a few hundred to low-thousands of rows/day** — more than
+  a "few hundred/week," so not a rounding error on count.
+- **Storage:** each row is 4 small columns (~50–100 B + index). Even at 2k rows/day for a month
+  (~60k rows ≈ single-digit MB) this is negligible for Postgres. The concern is **unbounded growth
+  over an indefinite, founder-gated timeline**, not disk.
+- Because the deploy timeline is unknown/founder-gated, this lands in the "worth monitoring" bucket:
+  a read-only monitoring query is provided (below) and a **conservative, optional** manual cleanup
+  query. Neither is wired into any automation. Cleanup is deliberately more conservative (24h window)
+  than the real sweep (15 min per the migration's own `p_stale_minutes`), and is only for very old
+  rows whose requests have long since completed — run by hand, if ever.
+
+```sql
+-- MONITORING (safe, read-only, run anytime in the Supabase SQL editor):
+select count(*) as pending_rows,
+       min(created_at) as oldest,
+       max(created_at) as newest
+from pending_corrections;
+```
+
+```sql
+-- OPTIONAL MANUAL CLEANUP — only if the count above is large AND you accept that
+-- every one of these reservations is long resolved. Deletes rows older than 24h
+-- (far outside any live request's lifetime). Do NOT run against recent rows;
+-- once ca7e3c4 deploys, sweep_pending_corrections handles this with a 15-min window.
+delete from pending_corrections
+where created_at < now() - interval '24 hours';
+```
+
+### What happened this session vs. what remains untouched
+The migration **was** executed — by the founder, directly in the Supabase SQL editor — and verified by
+two independent live queries there (this repo still has no wired DB connection, so no SQL ran *from
+here*; the monitoring/cleanup queries above remain for the founder to run manually). From this repo:
+source analysis, the corrected doc note, one live authenticated proxy request (read of live behaviour,
+non-mutating beyond a 1-token billed completion), and one `/health` read. **No `git push`, no merge, no
+Railway action.** The `f25f444`-vs-`ca7e3c4` deploy decision remains founder-gated and untouched.
