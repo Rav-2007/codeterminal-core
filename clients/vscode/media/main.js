@@ -56,7 +56,21 @@
 
   renderAutoApplyToggle();
 
+  // dismissFirstRun drops the static first-run guidance (see chatPanel.ts's
+  // #firstRun) once the transcript has real content. Deliberately NOT called
+  // for 'error' bubbles: the commonest first error is "daemon not found", and
+  // that is precisely when the instructions are still worth reading.
+  function dismissFirstRun() {
+    const el = document.getElementById('firstRun');
+    if (el) {
+      el.remove();
+    }
+  }
+
   function addBubble(role, text) {
+    if (role === 'user' || role === 'assistant') {
+      dismissFirstRun();
+    }
     const div = document.createElement('div');
     div.className = 'turn ' + role;
     const label = document.createElement('span');

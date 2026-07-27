@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 
 import {
+  DAEMON_LAUNCH_COMMAND,
   Degradation,
   EditBlockWire,
   GroundingInfo,
@@ -485,6 +486,18 @@ export class ChatPanel {
   .search-empty { padding: 4px 0 10px; font-size: 12px; opacity: 0.7; }
   .search-error { padding: 4px 0 10px; font-size: 12px; color: var(--vscode-errorForeground); }
   #transcript { flex: 1; overflow-y: auto; padding: 8px 12px; }
+  /* Guidance, not conversation: dimmer than a turn so it never reads as a
+     message, and gone the moment the transcript has real content. */
+  .first-run { font-size: 12px; opacity: 0.75; line-height: 1.5; max-width: 60ch; }
+  .first-run p { margin: 0 0 8px; }
+  .first-run pre {
+    margin: 0;
+    padding: 6px 8px;
+    white-space: pre-wrap;
+    font-family: var(--vscode-editor-font-family, monospace);
+    background: var(--vscode-textCodeBlock-background, #00000033);
+    border: 1px solid var(--vscode-panel-border, #444);
+  }
   .turn { margin-bottom: 14px; white-space: pre-wrap; line-height: 1.4; }
   .turn .role { display: block; font-size: 11px; opacity: 0.6; margin-bottom: 2px; }
   .turn.user .role { color: var(--vscode-textLink-foreground); }
@@ -617,7 +630,21 @@ export class ChatPanel {
     <button id="searchBtn">Search</button>
   </div>
   <div id="searchResults"></div>
-  <div id="transcript"></div>
+  <!-- First-run text, rendered INSIDE the empty transcript: a new user's very
+       first sight of this panel was a blank rectangle that never stated the one
+       thing it cannot work without -- a separately launched daemon. Static
+       markup, no state and no settings; main.js removes it as soon as a real
+       conversation turn is added (restored history included). The command must
+       stay identical to daemonClient.ts's DAEMON_LAUNCH_COMMAND, which is why
+       it is interpolated from there rather than written out again. -->
+  <div id="transcript">
+    <div id="firstRun" class="first-run">
+      <p>CodeTerminal answers questions about the code in your workspace, grounded in a local index, and can propose edits you apply from here.</p>
+      <p><strong>It needs the CodeTerminal daemon already running</strong> — this panel talks to it over a local socket and does not start it for you.</p>
+      <p>Start it in a terminal from the repo root, then send a prompt:</p>
+      <pre>${DAEMON_LAUNCH_COMMAND}</pre>
+    </div>
+  </div>
   <div id="grounding"></div>
   <div id="historyNotice"></div>
   <div id="redactions"></div>
