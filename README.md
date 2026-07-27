@@ -702,12 +702,19 @@ $EDITOR .env          # set CODETERMINAL_MOCHIII_KEY=mochi_...
 
 The daemon logs `proxy mode: forwarding inference through ...` at startup —
 that line is how you confirm the pilot path is actually in use. The proxy URL
-is a baked-in default, not a secret; override it (e.g. to run against a local
-proxy) by exporting `CODETERMINAL_API_BASE` before invoking the script:
+is a baked-in default, not a secret; point the script at a different proxy
+(e.g. a local one) with `CODETERMINAL_PROXY_BASE`:
 
 ```bash
-CODETERMINAL_API_BASE=http://localhost:8080/v1 ./run-proxy.sh
+CODETERMINAL_PROXY_BASE=http://localhost:8080/v1 ./run-proxy.sh
 ```
+
+`CODETERMINAL_API_BASE` deliberately does **not** do this: in proxy mode the
+script sets it authoritatively and ignores whatever your shell or `.env`
+carried, printing a note when it displaced a different value. That is what
+makes step 1 above (`source .env`, whose `CODETERMINAL_API_BASE` is the
+direct-to-OpenRouter one) safe to combine with this script — otherwise your
+Mochiii key would be sent to OpenRouter, which cannot use it.
 
 See [`proxy/README.md`](proxy/README.md) for what the proxy enforces.
 
