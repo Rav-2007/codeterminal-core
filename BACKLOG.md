@@ -678,7 +678,9 @@ outcomes); method + numbers are the record here.
 - **New follow-ups spun out (flag-only):** (1) `NewBackupSessionDir` same-second collision
   (`editapply/backup.go`); (2) `pruneBackupSessions` `RemoveAll` racing a live undo →
   spurious "session not found" (`editapply/backup.go` + `apply_cmd.go runUndoSession` WalkDir).
-- **FIXED 2026-07-19 (commit `d96794e`) — Gate 6 now closed.** In-process per-workspace-root lock
+- **FIXED 2026-07-19 (commit `d96794e`) — Gate 6 in-process races closed; NOT formally closed (see the
+  reconciled status below — the formal P3 sign-off is the founder's, and `d96794e` was later found to be
+  only the in-process half, completed across processes by M4 `2a389c7`).** In-process per-workspace-root lock
   (`Server.applyLocks`, a `sync.Map` of `*sync.Mutex`; `lockWorkspace` get-or-creates it). `handleApplyEdit`
   and `handleUndo` take it right after resolving the root and hold it via `defer` across the whole
   critical section (apply: PrepareEdit read → backup-dir prune → Apply write+copies; undo: session
@@ -700,44 +702,48 @@ outcomes); method + numbers are the record here.
 - **(historical) Not fixed. Gate 6 stays open.** Fix direction (single apply/undo mutex vs. per-workspace lockfile
   vs. `O_EXCL`/rename atomic writes) is the founder's call.
 
-### FOUNDER SIGN-OFF NEEDED — is Gate 6 closed or not? (packaging only; this note is not itself a closure)
+### Gate 6 closure status — RECONCILED 2026-07-27 (canonical; supersedes the four-location contradiction)
 
-**The ask (one line):** Is Gate 6 (socket concurrency, FAIL-3) closed or not? Four locations disagree,
-and no properly-recorded closure decision exists on `main`. Founder to rule one way; docs then follow.
+**This section is now the single source of truth for Gate 6's status.** The four locations that
+previously disagreed have been reconciled to the one accurate status below. The reconciliation
+separates two things the old wording conflated: **engineering completeness** (a verified fact) from
+**formal P3 closure** (the founder's call). It does NOT make the founder's call.
 
-**Not in question — settle this first, don't re-litigate it:** the engineering fix is real. Commit
-`d96794e` (in-process per-workspace-root serialization, `Server.applyLocks`) is on `main`, and was
-verified live — all five audit repros measure 0% and fail-when-neutered (see the deep-audit section
-directly above). **This is a documentation/closure-process contradiction, not an open engineering task.**
+**Final status (one line):** Gate 6 (socket concurrency, FAIL-3) is **engineering-COMPLETE and
+verified across both process dimensions, but NOT formally closed** — formal P3-gate sign-off is the
+founder's, and that ruling is still open.
 
-**The contradiction:**
+**Engineering — complete and not in question:**
+- `d96794e` (in-process per-workspace-root serialization, `Server.applyLocks`) — on `main`, all five
+  audit repros 0% and fail-when-neutered (deep-audit section directly above). **This was later found to
+  be only the in-process half.**
+- `2a389c7` (**M4** — per-workspace `flock(2)` inside the mutation primitives) — on `main`, completes
+  Gate 6 **across processes**: `d96794e`'s mutex was in-process only, but the CLI and TUI each write the
+  same workspace files from their own process, so all five races reopened whenever one overlapped a
+  daemon op. Cross-process exclusion proven with two real OS processes; regression tests fail-when-
+  neutered. See the M4 section (`## 2026-07-24 — M4`) below. **Together `d96794e` + `2a389c7` are the
+  complete fix.**
 
-| Location | Says |
-|---|---|
-| `BACKLOG.md:633` (this file, audit header) | audit explicitly does **NOT** close Gate 6 |
-| `BACKLOG.md:681` (this file, same section) | "Gate 6 now closed" |
-| `p3-security-review.md:21` (memory) | "Gate 6 CLOSED" |
-| `MEMORY.md:5` (memory index) | "FIXED+CLOSED `d96794e`" |
-
+**Why it is not marked "closed":** formal closure of a P3 sub-item is the founder's sign-off, and the
+P3 security-gate as a whole remains the named blocker for capability work (socket auth model + this).
 The only commit that ever explicitly said "mark … CLOSED" (`8d37a6c`) is **dangling — never merged to
-`main`**. So the claim's own origin was walked back, yet the "closed" claim still propagated into three
-of the four locations above. (Source: the already-completed `8d37a6c` correction report — not re-derived here.)
+`main`** (re-verified). So no properly-recorded closure decision exists on `main`, and the earlier
+"CLOSED" assertions were premature on two counts: they cited the dangling `8d37a6c`, *and* they predated
+M4's finding that `d96794e` alone was only half the fix.
 
-**Why it matters beyond hygiene:** this sub-item sits under the P3 security-gate, which this file's
-standing header and the remaining-work inventory both name as the blocker for all capability work. An
-unresolved closure contradiction on one of the gate's own sub-items is part of what keeps that gate ambiguous.
+**The four locations, now reconciled to this status:**
 
-**Options (no recommendation is being made — that determination is the whole point of this note):**
-- **Rule it closed** — ratify what three of four locations already assume; then fix `BACKLOG.md:633` and
-  the dangling-`8d37a6c` citation to match.
-- **Rule it not yet closed** — pending whatever bar the founder holds beyond "the code fix landed" (e.g.
-  alongside the rest of FAIL-3's gates); then correct `BACKLOG.md:681`, `p3-security-review.md:21`, and
-  `MEMORY.md:5` to stop asserting closure.
-- **This note takes neither position.** It packages the contradiction for a one-pass ruling; it does not resolve it.
+| Location | Reconciled to |
+|---|---|
+| `BACKLOG.md:633` (audit header) | unchanged — "audit does not close Gate 6" was and stays accurate for that audit |
+| `BACKLOG.md:681` (same section) | corrected: "in-process races closed; NOT formally closed; completed cross-process by M4" |
+| `p3-security-review.md:21` (memory) | corrected: engineering complete (`d96794e`+`2a389c7`), formal closure founder-gated, NOT closed |
+| `MEMORY.md:5` (memory index) | corrected: FIXED (`d96794e` in-process + `2a389c7` cross-process/M4); NOT formally closed — founder sign-off pending |
 
-**On resolution, update to match (do NOT touch them now):** whichever way this rules, the files to
-reconcile are exactly the four in the table above (plus the dangling-`8d37a6c` citation). **This note is
-not a closure and does not edit any of them.**
+**What remains genuinely open (the only open part):** the founder's formal closure ruling on this P3
+sub-item. The documentation contradiction itself is resolved by this section; there is no engineering
+task left. When the founder rules "closed," update this section's one-line status only — the four
+locations already point here.
 
 ### Gate 7 deep audit — 2026-07-19 (results + path-scrub / upstream-passthrough FIX; does NOT close Gate 7)
 
