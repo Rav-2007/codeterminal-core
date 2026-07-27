@@ -69,10 +69,24 @@ deliberately kept apart:
 |---------------------------|-------------------------------------------------------|-----------------------------------|
 | `CODETERMINAL_API_BASE`   | Base URL of an OpenAI-compatible API                  | `https://api.together.xyz/v1`    |
 | `CODETERMINAL_API_KEY`    | API key sent as `Authorization: Bearer <key>`         | `sk-...`                          |
+| `CODETERMINAL_USE_PROXY`  | `true` selects proxy mode (see "Pilot: proxy mode")   | `true`                            |
+| `CODETERMINAL_MOCHIII_KEY`| Per-user Mochiii key; required in proxy mode          | `mochi_xxxxx`                     |
 
 `CODETERMINAL_API_BASE` is required; the daemon refuses to start without it.
 `CODETERMINAL_API_KEY` may be left unset for local OpenAI-compatible servers
 that don't require one. Neither is ever read from a config file.
+
+The last two select **proxy mode**, and are what [`run-proxy.sh`](run-proxy.sh)
+sets for you — they are listed here because the daemon reads them directly, so
+they also work without that script. `CODETERMINAL_USE_PROXY=true` is
+load-bearing, not cosmetic: it is what makes the daemon authenticate with
+`CODETERMINAL_MOCHIII_KEY` instead of `CODETERMINAL_API_KEY`, and the daemon
+refuses to start if the Mochiii key is empty. In proxy mode
+`CODETERMINAL_API_BASE` must point at the proxy
+(`https://codeterminal-core-production.up.railway.app/v1` — the default
+`run-proxy.sh` bakes in, not a secret), and `CODETERMINAL_API_KEY` must be left
+**unset**: with both set the daemon warns and sends the provider key to a proxy
+that neither wants nor uses it.
 
 Copy [`.env.example`](.env.example) to `.env`, fill in real values, and load
 it into your shell before starting the daemon — the daemon only reads plain
