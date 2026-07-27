@@ -611,9 +611,14 @@ go test -tags eval -run TestEvalRetrievalQuality -v ./...
 
 ## Run it
 
-Requires Go 1.23+.
+Requires Go 1.25+ (`go.work` and most modules declare `go 1.25.0`) and a C
+compiler — the embedder helper needs CGO, so `go build` on `helper` fails
+without one. The daemon and TUI are pure Go.
 
 ```bash
+# 0. Copy the env template (see Configuration above)
+cp .env.example .env   # then edit .env with real values
+
 # 1. Configure credentials — either via .env (see Configuration above)...
 set -a && source .env && set +a
 # ...or directly (never commit real keys):
@@ -622,14 +627,26 @@ export CODETERMINAL_API_KEY="sk-..."
 
 # The model slug comes from models.json (repo root) — edit it there, not via env var.
 
-# 2. Build both binaries
+# 2. Build all three binaries. The helper is not optional: the daemon spawns it
+#    to compute embeddings locally, and without it retrieval is disabled.
+(cd helper && go build -o codeterminal-embedder-helper .)
 (cd daemon && go build -o codeterminal-daemon .)
 (cd clients/tui && go build -o codeterminal-tui .)
 
-# 3. Start the daemon in one terminal (it runs in the foreground; logs go to stderr)
+# 3. One-time: fetch the embedding model and onnxruntime library
+#    (~/.codeterminal/models/; a second run with everything present is a no-op)
+./daemon/codeterminal-daemon download-model
+
+# 4. Per repo: index the workspace you want answers grounded in. SKIPPING THIS
+#    IS NOT FATAL — the daemon starts and answers, ungrounded, using no code
+#    from your repo. Re-run it after the code changes; the index is a snapshot.
+./daemon/codeterminal-daemon index .
+
+# 5. Start the daemon in one terminal (it runs in the foreground; logs go to stderr)
+#    --workspace must be the directory you indexed in step 4 (default: current dir)
 ./daemon/codeterminal-daemon
 
-# 4. In another terminal, launch Mochiii — the interactive chat TUI
+# 6. In another terminal, launch Mochiii — the interactive chat TUI
 ./clients/tui/codeterminal-tui
 
 # ...or point it at a specific repo (default: current dir) — this is what
