@@ -15,6 +15,20 @@ import * as path from 'path';
 
 export const PROTOCOL_VERSION = 1;
 
+// DAEMON_LAUNCH_COMMAND is the one command that starts the daemon correctly,
+// and the single place it is spelled. It MUST run from the repo root, not from
+// daemon/: the daemon's own defaults are root-relative (-config
+// "./models.json", -system-prompt "daemon/prompts/system.txt", see
+// daemon/main.go). Started with cwd=daemon/ it silently loads
+// daemon/models.json instead of the canonical root config, and resolves the
+// system prompt to the nonexistent daemon/daemon/prompts/system.txt. Every
+// "the daemon isn't there" message below and the panel's first-run text (see
+// chatPanel.ts) name this exact string -- they must never drift apart.
+export const DAEMON_LAUNCH_COMMAND = './daemon/codeterminal-daemon';
+
+// HANDSHAKE_TIMEOUT_MS bounds connectToDaemon's dial + handshake round trip.
+const HANDSHAKE_TIMEOUT_MS = 5000;
+
 export interface Turn {
   role: string;
   content: string;
@@ -210,8 +224,8 @@ function readLockFile(): LockFile {
     raw = fs.readFileSync(p, 'utf8');
   } catch (err) {
     throw new Error(
-      `daemon not found (expected a lockfile at ${p}; start it with: ` +
-        `(cd daemon && ./codeterminal-daemon)): ${(err as Error).message}`
+      `daemon not found (expected a lockfile at ${p}; start it from the repo root with: ` +
+        `${DAEMON_LAUNCH_COMMAND}): ${(err as Error).message}`
     );
   }
   try {
@@ -275,24 +289,71 @@ export function connectToDaemon(clientName: string, signal?: AbortSignal): Promi
       return;
     }
 
+    // settled guards every way this can end -- abort, socket error, handshake
+    // reply, a close with no reply at all, or the handshake clock running out
+    // -- so exactly one wins. This is applyEdit's guard (see its comment) one
+    // layer up: without the close and timeout arms, a daemon that accepted the
+    // connection and then went away without replying (peer-auth refusal in
+    // server.go's handleConn, an oversized request, a decode error, shutdown
+    // mid-handshake) left this promise unsettled FOREVER -- and since every
+    // prompt, apply and undo starts by awaiting connectToDaemon, that wedged
+    // the panel permanently and silently swallowed everything sent afterward.
     let settled = false;
+    // settle claims the single settle slot and stops the handshake clock.
+    // Returns false when someone else already finished this promise.
+    const settle = (): boolean => {
+      if (settled) {
+        return false;
+      }
+      settled = true;
+      clearTimeout(handshakeTimer);
+      return true;
+    };
+
     const socket = net.createConnection(lock.socket_path);
 
+    // The clock covers the dial AND the handshake round trip: both are
+    // sub-millisecond against a healthy local daemon on a Unix socket, so a
+    // few seconds is generous while still failing visibly instead of hanging.
+    const handshakeTimer = setTimeout(() => {
+      if (!settle()) {
+        return;
+      }
+      socket.destroy();
+      reject(
+        new Error(
+          `daemon at ${lock.socket_path} accepted the connection but did not answer the handshake ` +
+            `within ${HANDSHAKE_TIMEOUT_MS / 1000}s (it may be wedged or shutting down; restart it from ` +
+            `the repo root with: ${DAEMON_LAUNCH_COMMAND})`
+        )
+      );
+    }, HANDSHAKE_TIMEOUT_MS);
+
     const onAbort = () => {
-      if (!settled) {
-        settled = true;
+      if (settle()) {
         reject(new Error('connection aborted'));
       }
       socket.destroy();
     };
     signal?.addEventListener('abort', onAbort);
-    socket.once('close', () => signal?.removeEventListener('abort', onAbort));
-
-    socket.once('error', (err) => {
-      if (settled) {
+    socket.once('close', () => {
+      signal?.removeEventListener('abort', onAbort);
+      if (!settle()) {
         return;
       }
-      settled = true;
+      reject(
+        new Error(
+          `daemon at ${lock.socket_path} closed the connection during the handshake without replying ` +
+            `(it may have been stopped, or it refused this client; restart it from the repo root with: ` +
+            `${DAEMON_LAUNCH_COMMAND})`
+        )
+      );
+    });
+
+    socket.once('error', (err) => {
+      if (!settle()) {
+        return;
+      }
       reject(
         new Error(
           `could not connect to daemon at ${lock.socket_path} (it may have crashed or been stopped; ` +
@@ -303,10 +364,9 @@ export function connectToDaemon(clientName: string, signal?: AbortSignal): Promi
 
     socket.once('connect', () => {
       const decoder = new LineDecoder((obj) => {
-        if (settled) {
+        if (!settle()) {
           return;
         }
-        settled = true;
         socket.removeListener('data', dataListener);
         const handshake = obj as HandshakeResponse;
         if (!handshake.ok) {
