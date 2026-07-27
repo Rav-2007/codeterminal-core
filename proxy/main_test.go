@@ -272,7 +272,7 @@ func TestHandleChatCompletions_NormalRequest(t *testing.T) {
 	defer upstream.Close()
 
 	p := newTestProxy(supabase.URL, upstream.URL)
-	req := newAuthorizedRequest(`{"model":"x","messages":[{"role":"user","content":"hi"}]}`)
+	req := newAuthorizedRequest(`{"model":"x","messages":[{"role":"user","content":"hi"}],"provider":{"zdr":true,"data_collection":"deny","allow_fallbacks":true}}`)
 	rec := httptest.NewRecorder()
 
 	p.handleChatCompletions(rec, req)
@@ -308,7 +308,7 @@ func TestHandleChatCompletions_OverLimitRejected(t *testing.T) {
 	defer upstream.Close()
 
 	p := newTestProxy(supabase.URL, upstream.URL)
-	req := newAuthorizedRequest(`{"model":"x","messages":[{"role":"user","content":"hi"}]}`)
+	req := newAuthorizedRequest(`{"model":"x","messages":[{"role":"user","content":"hi"}],"provider":{"zdr":true,"data_collection":"deny","allow_fallbacks":true}}`)
 	rec := httptest.NewRecorder()
 
 	p.handleChatCompletions(rec, req)
@@ -386,7 +386,7 @@ func TestHandleChatCompletions_FailedUpstreamRefunds(t *testing.T) {
 	deadUpstream.Close()
 
 	p := newTestProxy(supabase.URL, deadUpstreamURL)
-	req := newAuthorizedRequest(`{"model":"x","messages":[{"role":"user","content":"hi"}]}`)
+	req := newAuthorizedRequest(`{"model":"x","messages":[{"role":"user","content":"hi"}],"provider":{"zdr":true,"data_collection":"deny","allow_fallbacks":true}}`)
 	rec := httptest.NewRecorder()
 
 	p.handleChatCompletions(rec, req)
@@ -492,7 +492,7 @@ func TestModelAllowList_RefusesUnlistedModelBeforeForwarding(t *testing.T) {
 	// The shipped primary must still work.
 	rec2 := httptest.NewRecorder()
 	p.handleChatCompletions(rec2, newAuthorizedRequest(
-		`{"model":"deepseek/deepseek-v4-flash","messages":[],"stream":true}`))
+		`{"model":"deepseek/deepseek-v4-flash","messages":[],"stream":true,"provider":{"zdr":true,"data_collection":"deny","allow_fallbacks":true}}`))
 	if rec2.Code != http.StatusOK {
 		t.Fatalf("allowed model got %d, want 200; the allow-list must not break real traffic", rec2.Code)
 	}
@@ -616,7 +616,7 @@ func TestHandleChatCompletions_ThrottlesAFloodOnOneKey(t *testing.T) {
 			defer wg.Done()
 			rec := httptest.NewRecorder()
 			p.handleChatCompletions(rec, newAuthorizedRequest(
-				`{"model":"deepseek/deepseek-v4-flash","messages":[],"stream":true}`))
+				`{"model":"deepseek/deepseek-v4-flash","messages":[],"stream":true,"provider":{"zdr":true,"data_collection":"deny","allow_fallbacks":true}}`))
 			switch rec.Code {
 			case http.StatusTooManyRequests:
 				throttled.Add(1)
@@ -809,7 +809,7 @@ func TestHandleChatCompletions_ClientAbortsBeforeUsageChunk_DoesNotRefund(t *tes
 	defer upstream.Close()
 
 	p := newTestProxy(supabase.URL, upstream.URL)
-	req := newAuthorizedRequest(`{"model":"x","messages":[{"role":"user","content":"hi"}]}`)
+	req := newAuthorizedRequest(`{"model":"x","messages":[{"role":"user","content":"hi"}],"provider":{"zdr":true,"data_collection":"deny","allow_fallbacks":true}}`)
 	// Fail the relay write that carries the usage chunk.
 	rec := &abortingResponseWriter{failOn: "usage"}
 
@@ -1155,5 +1155,211 @@ func TestReservationSurvivesCrash_SweptNotRefunded(t *testing.T) {
 	store.mu.Unlock()
 	if usedAfter != usedAtCrash {
 		t.Errorf("tokens_used = %d after sweep, want %d unchanged from its post-reservation value -- the sweep reports, it must never refund on usage data that no longer exists", usedAfter, usedAtCrash)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// F1: proxy-side ZDR enforcement (Reject). The proxy is the authority that a
+// request carries the required zero-data-retention routing flags, rather than
+// trusting the client to have set them. Fail CLOSED, body never mutated (the
+// accept path forwards byte-for-byte). See proxy/F1_ENFORCEMENT_DESIGN.md.
+// ---------------------------------------------------------------------------
+
+// bodyCapturingUpstream records the exact bytes it received, so a test can prove
+// the accept path forwards the caller's body byte-for-byte (the property that
+// makes Reject, not Stamp, the chosen design).
+func bodyCapturingUpstream(t *testing.T, totalTokens int) (*httptest.Server, *[]byte, *atomic.Bool) {
+	t.Helper()
+	var mu sync.Mutex
+	var got []byte
+	var called atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called.Store(true)
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		got = b
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, sseUsageBody(totalTokens))
+	}))
+	return srv, &got, &called
+}
+
+// TestZDRRoutingEnforced_Predicate is the unit-level table for the fail-closed
+// predicate: every shape short of an explicit, correct routing object must be
+// refused, while extra routing fields (the D4 ignore/only lists) must NOT cause
+// a refusal.
+func TestZDRRoutingEnforced_Predicate(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"correct flags", `{"model":"x","provider":{"zdr":true,"data_collection":"deny","allow_fallbacks":true}}`, true},
+		{"correct flags, no allow_fallbacks", `{"provider":{"zdr":true,"data_collection":"deny"}}`, true},
+		{"correct flags plus D4 ignore list is still accepted", `{"provider":{"zdr":true,"data_collection":"deny","ignore":["DeepInfra"]}}`, true},
+		{"correct flags plus an only list is still accepted", `{"provider":{"zdr":true,"data_collection":"deny","only":["Morph"]}}`, true},
+		{"provider object entirely absent -> reject", `{"model":"x","messages":[]}`, false},
+		{"zdr false -> reject", `{"provider":{"zdr":false,"data_collection":"deny"}}`, false},
+		{"zdr missing -> reject (defaults false)", `{"provider":{"data_collection":"deny"}}`, false},
+		{"data_collection allow -> reject", `{"provider":{"zdr":true,"data_collection":"allow"}}`, false},
+		{"data_collection missing -> reject", `{"provider":{"zdr":true}}`, false},
+		{"provider is not an object -> reject", `{"provider":"zdr"}`, false},
+		{"unparseable body -> reject", `{not json`, false},
+		{"empty body -> reject", ``, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := zdrRoutingEnforced([]byte(c.body)); got != c.want {
+				t.Errorf("zdrRoutingEnforced(%q) = %v, want %v", c.body, got, c.want)
+			}
+		})
+	}
+}
+
+// TestHandleChatCompletions_RejectsStrippedZDRFlags: a request with the ZDR
+// flags stripped is refused with 403, upstream is never called, and no quota is
+// reserved or spent -- the fail-closed contract at the forward seam.
+func TestHandleChatCompletions_RejectsStrippedZDRFlags(t *testing.T) {
+	const keyID = "f1000000-0000-0000-0000-000000000001"
+	store := &fakeUsageStore{tokenLimit: 100000}
+	supabase, _ := newFakeSupabase(store, keyID)
+	defer supabase.Close()
+
+	upstream, _, called := bodyCapturingUpstream(t, 5)
+	defer upstream.Close()
+
+	p := newTestProxy(supabase.URL, upstream.URL)
+
+	// A body with no provider routing object at all.
+	rec := httptest.NewRecorder()
+	p.handleChatCompletions(rec, newAuthorizedRequest(
+		`{"model":"x","messages":[{"role":"user","content":"hi"}]}`))
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 for a request missing ZDR flags; body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "zdr_required") {
+		t.Errorf("response body = %q, want it to name zdr_required", rec.Body.String())
+	}
+	if called.Load() {
+		t.Error("a request without ZDR flags reached OpenRouter -- enforcement must refuse BEFORE forwarding")
+	}
+	if store.correctionCount() != 0 || store.tokensUsed != 0 {
+		t.Error("a refused request must not reserve or spend quota")
+	}
+}
+
+// TestHandleChatCompletions_WeakenedZDRFlagsRejected covers the weakened (not
+// merely absent) variants: each must be refused and never forwarded.
+func TestHandleChatCompletions_WeakenedZDRFlagsRejected(t *testing.T) {
+	const keyID = "f1000000-0000-0000-0000-000000000002"
+	weakened := []string{
+		`{"model":"x","provider":{"zdr":false,"data_collection":"deny","allow_fallbacks":true}}`,
+		`{"model":"x","provider":{"zdr":true,"data_collection":"allow","allow_fallbacks":true}}`,
+		`{"model":"x","provider":{"allow_fallbacks":true}}`,
+	}
+	for _, body := range weakened {
+		t.Run(body, func(t *testing.T) {
+			store := &fakeUsageStore{tokenLimit: 100000}
+			supabase, _ := newFakeSupabase(store, keyID)
+			defer supabase.Close()
+			upstream, _, called := bodyCapturingUpstream(t, 5)
+			defer upstream.Close()
+
+			p := newTestProxy(supabase.URL, upstream.URL)
+			rec := httptest.NewRecorder()
+			p.handleChatCompletions(rec, newAuthorizedRequest(body))
+
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want 403; body=%s", rec.Code, rec.Body.String())
+			}
+			if called.Load() {
+				t.Error("a weakened-ZDR request reached OpenRouter")
+			}
+		})
+	}
+}
+
+// TestHandleChatCompletions_ForwardsBodyByteForByte is the accept-path property
+// that made Reject the right choice over Stamp: a conforming request passes, and
+// the bytes upstream receives are IDENTICAL to the bytes the client sent -- the
+// enforcement peek mutated nothing.
+func TestHandleChatCompletions_ForwardsBodyByteForByte(t *testing.T) {
+	const keyID = "f1000000-0000-0000-0000-000000000003"
+	store := &fakeUsageStore{tokenLimit: 100000}
+	supabase, _ := newFakeSupabase(store, keyID)
+	defer supabase.Close()
+
+	upstream, gotBody, called := bodyCapturingUpstream(t, 42)
+	defer upstream.Close()
+
+	// A realistic daemon body: model, messages with content, stream, and the
+	// full provider routing object -- deliberately with specific key order and
+	// spacing that a re-marshal would perturb.
+	const sent = `{"model":"deepseek/deepseek-v4-flash","messages":[{"role":"user","content":"hello world"}],"stream":true,"provider":{"zdr":true,"data_collection":"deny","allow_fallbacks":true},"stream_options":{"include_usage":true}}`
+
+	p := newTestProxy(supabase.URL, upstream.URL)
+	rec := httptest.NewRecorder()
+	p.handleChatCompletions(rec, newAuthorizedRequest(sent))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 for a conforming request; body=%s", rec.Code, rec.Body.String())
+	}
+	if !called.Load() {
+		t.Fatal("conforming request never reached upstream")
+	}
+	if got := string(*gotBody); got != sent {
+		t.Errorf("forwarded body was not byte-for-byte identical\n sent = %s\n  got = %s", sent, got)
+	}
+}
+
+// TestHandleChatCompletions_AcceptsZDRFlagsWithIgnoreList is the F1/D4 seam: a
+// request carrying BOTH the ZDR flags AND a D4 ignore:["DeepInfra"] list must
+// pass the reject gate and forward unchanged. F1 must judge only the ZDR flags
+// and ignore the extra routing field.
+func TestHandleChatCompletions_AcceptsZDRFlagsWithIgnoreList(t *testing.T) {
+	const keyID = "f1000000-0000-0000-0000-000000000004"
+	store := &fakeUsageStore{tokenLimit: 100000}
+	supabase, _ := newFakeSupabase(store, keyID)
+	defer supabase.Close()
+
+	upstream, gotBody, called := bodyCapturingUpstream(t, 7)
+	defer upstream.Close()
+
+	const sent = `{"model":"deepseek/deepseek-v4-flash","messages":[{"role":"user","content":"hi"}],"stream":true,"provider":{"zdr":true,"data_collection":"deny","allow_fallbacks":true,"ignore":["DeepInfra"]}}`
+
+	p := newTestProxy(supabase.URL, upstream.URL)
+	rec := httptest.NewRecorder()
+	p.handleChatCompletions(rec, newAuthorizedRequest(sent))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 -- a request with an ignore list must still pass the ZDR gate; body=%s", rec.Code, rec.Body.String())
+	}
+	if !called.Load() {
+		t.Fatal("request carrying both ZDR flags and an ignore list never reached upstream")
+	}
+	if got := string(*gotBody); got != sent {
+		t.Errorf("forwarded body (with ignore list) was not byte-for-byte identical\n sent = %s\n  got = %s", sent, got)
+	}
+	if !strings.Contains(string(*gotBody), `"ignore":["DeepInfra"]`) {
+		t.Error("the ignore list did not survive to upstream")
+	}
+}
+
+// TestZDRRoutingEnforced_FailWhenNeutered proves the enforcement predicate is
+// what does the rejecting -- not some other layer. If the gate is "neutered"
+// (made to always return true, i.e. enforcement removed), a stripped-flags
+// request would be accepted; the assertion here is that the predicate itself
+// returns false for that request, so a neutered predicate is directly
+// observable. The handler-level tests above (upstream never called) are what
+// catch a neutered gate in the request path; this pins the predicate.
+func TestZDRRoutingEnforced_FailWhenNeutered(t *testing.T) {
+	stripped := `{"model":"x","messages":[{"role":"user","content":"hi"}]}`
+	if zdrRoutingEnforced([]byte(stripped)) {
+		t.Fatal("zdrRoutingEnforced accepted a request with no provider routing object -- " +
+			"if you are seeing this after replacing the body with `return true`, that is the " +
+			"neutered gate this test exists to catch: a stripped-flags request would be forwarded")
 	}
 }

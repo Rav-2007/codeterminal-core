@@ -494,6 +494,28 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ZDR enforcement (F1). Before this the proxy merely FORWARDED whatever
+	// routing flags the client set; enforcement was entirely client-side, so a
+	// caller that dropped or weakened the zero-data-retention flags had them
+	// relayed to OpenRouter unchanged. This makes the proxy the authority: it
+	// REJECTS -- fail CLOSED -- any request whose provider routing object is
+	// missing, malformed, or weakened, before anything is reserved or forwarded,
+	// so no non-ZDR request ever reaches OpenRouter through this proxy. It is a
+	// read-only peek (zdrRoutingEnforced never mutates bodyBytes), so the accept
+	// path below still forwards the caller's body BYTE-FOR-BYTE -- the reason
+	// Reject was chosen over Stamp (proxy/F1_ENFORCEMENT_DESIGN.md). Runs after
+	// the model check, mirroring its shape and its 403 (a policy refusal of an
+	// authenticated caller, distinct from 401 auth), and only ever fires for a
+	// caller other than the shipped daemon, which always sends the flags
+	// (daemon/provider.go's providerRouting, no field omitempty).
+	if !zdrRoutingEnforced(bodyBytes) {
+		p.logger.Printf("zdr: refused (key id=%s -- request lacks the required zero-data-retention routing flags)", apiKeyID)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		w.Write([]byte(`{"error":"zdr_required"}`))
+		return
+	}
+
 	reserved := defaultReservationTokens
 	if declared, ok := peekMaxTokens(bodyBytes); ok {
 		reserved = declared
@@ -1001,6 +1023,48 @@ func peekModel(body []byte) (string, bool) {
 		return "", false
 	}
 	return peek.Model, true
+}
+
+// requiredDataCollection is the only data_collection value consistent with the
+// zero-data-retention posture the daemon sends by default (daemon/config.go's
+// resolvedProviderRouting resolves the secure default to "deny"). A request must
+// carry exactly this to be forwarded.
+const requiredDataCollection = "deny"
+
+// zdrRoutingEnforced reports whether body carries a provider routing object with
+// the required zero-data-retention flags (zdr:true, data_collection:"deny"). It
+// is the F1 enforcement predicate: handleChatCompletions REFUSES to forward any
+// request for which this returns false.
+//
+// It fails CLOSED. Anything short of an explicit, correct routing object --
+// unparseable body, absent "provider" object, a "provider" that isn't an object,
+// zdr not true, or data_collection not "deny" -- returns false and the request is
+// rejected. Nothing is ever forwarded on the strength of an assumed default.
+//
+// It reads ONLY the two ZDR flags, with the same one-field decode discipline as
+// peekModel/peekMaxTokens: message content is never parsed (the decode target has
+// no messages field), and every OTHER field of the provider object is ignored on
+// purpose. In particular the D4 "ignore"/"only" provider lists are NOT part of
+// this struct, so a request carrying them is judged solely on its ZDR flags and
+// is never rejected for having them -- the seam where F1 and D4 meet.
+//
+// The body is NOT mutated: this is a read-only peek, so the accept path forwards
+// the caller's bytes byte-for-byte (Reject, not Stamp -- see
+// proxy/F1_ENFORCEMENT_DESIGN.md).
+func zdrRoutingEnforced(body []byte) bool {
+	var peek struct {
+		Provider *struct {
+			ZDR            bool   `json:"zdr"`
+			DataCollection string `json:"data_collection"`
+		} `json:"provider"`
+	}
+	if err := json.Unmarshal(body, &peek); err != nil {
+		return false // unparseable body -> fail closed
+	}
+	if peek.Provider == nil {
+		return false // no routing object at all -> fail closed
+	}
+	return peek.Provider.ZDR && peek.Provider.DataCollection == requiredDataCollection
 }
 
 // modelAllowed reports whether a caller may route to model.
