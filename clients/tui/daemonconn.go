@@ -45,7 +45,11 @@ func connectToDaemon(clientName string) (*daemonSession, error) {
 	lockPath := lockPathFunc()
 	lock, err := readLockFile(lockPath)
 	if err != nil {
-		return nil, fmt.Errorf("daemon not found (expected a lockfile at %s; start it with: (cd daemon && go run .)): %w", lockPath, err)
+		// Run from the repo root, NOT from daemon/: the daemon's defaults are
+		// root-relative (-config "./models.json", -system-prompt
+		// "daemon/prompts/system.txt", see daemon/main.go), so a cwd of daemon/
+		// loads daemon/models.json and looks for daemon/daemon/prompts/system.txt.
+		return nil, fmt.Errorf("daemon not found (expected a lockfile at %s; start it from the repo root with: go run ./daemon): %w", lockPath, err)
 	}
 
 	conn, err := net.Dial("unix", lock.SocketPath)
