@@ -2749,7 +2749,33 @@ source analysis, the corrected doc note, one live authenticated proxy request (r
 non-mutating beyond a 1-token billed completion), and one `/health` read. **No `git push`, no merge, no
 Railway action.** The `f25f444`-vs-`ca7e3c4` deploy decision remains founder-gated and untouched.
 
-## 2026-07-27 — RE-REVIEW: `pending_corrections` "no RLS needed, service-role bypasses it anyway" — the mid-incident call does NOT hold under a calm read (FLAGGED, founder SQL required)
+## 2026-07-27 — RESOLVED: `pending_corrections` grant/EXECUTE surface — flagged, verified live, corrective `0003` applied (CLOSED 2026-07-27)
+
+**CLOSURE (2026-07-27).** `proxy/migrations/0003_revoke_public_grants.sql` applied to
+live Supabase production and verified before/after in the SQL editor. Actual finding was
+**narrower than this entry's worst case**:
+
+- **Gap #1 (table grants) was never open.** `role_table_grants` for
+  `anon`/`authenticated`/`PUBLIC` on `pending_corrections` returned **zero rows both before
+  and after** — Supabase's bootstrap auto-grant (trap 3) did *not* fire for this table. The
+  SELECT-leak / DELETE-wipe-the-sweep / INSERT-flood integrity concerns below were latent
+  possibilities, not a real exposure.
+- **Gaps #2 and #3 (function EXECUTE) were real and are now closed.** `has_function_privilege('public', …, 'EXECUTE')`
+  before: `reserve_usage`=**true**, `apply_correction`=**true**, `sweep_pending_corrections`=**true**.
+  After the two `revoke execute … from public` statements: all three = **false**.
+- **How contained it actually was while open:** all three functions are **`SECURITY INVOKER`**
+  (0002 declares no SECURITY clause → Postgres default; verified `grep` — no `SECURITY DEFINER`
+  anywhere in `proxy/migrations/`). So an `anon` caller ran *as* `anon`, and the inner
+  `UPDATE usage` still hit `usage`'s SELECT-only grants and failed. The open EXECUTE was a
+  **defense-in-depth regression, not a live write hole** — matching the reasoning predicted below.
+
+Corrective is tracked as `0003` (dashboard-applied, not auto-run — same discipline as 0001/0002).
+The RLS belt-and-suspenders was left commented/optional; the grant/EXECUTE revokes were the
+load-bearing fix and are sufficient. The original "no RLS needed" note remains superseded.
+
+---
+
+**Original flag (2026-07-27), retained for the record:** RE-REVIEW: `pending_corrections` "no RLS needed, service-role bypasses it anyway" — the mid-incident call does NOT hold under a calm read (FLAGGED, founder SQL required)
 
 A mid-incident decision recorded that migration `0002`'s new `pending_corrections` table needed no
 RLS "because the proxy is `service_role` and bypasses RLS anyway." **On a calm re-read that reasoning
@@ -2805,4 +2831,4 @@ reserve_usage(uuid,integer), apply_correction(uuid,integer,bigint),
 sweep_pending_corrections(integer) from public;` — mirroring the 2026-07-17 discipline that every such
 function revoke EXECUTE-from-PUBLIC in the same migration that (re)creates it. Consider SELECT-only RLS
 parity with `usage`/`api_keys` only if belt-and-suspenders is wanted; the grant revoke is the load-
-bearing fix. **Status: OPEN — not closed; the original "no RLS needed" note is superseded by this.**
+bearing fix. **Status: CLOSED 2026-07-27 — see the CLOSURE block at the top of this entry for verified before/after results; corrective `0003` applied. The original "no RLS needed" note is superseded.**
