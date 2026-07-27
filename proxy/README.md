@@ -15,8 +15,11 @@ later steps, deliberately not built here.
 - `GET /health` -- returns `200 ok`.
 - Never logs request or response bodies. Only method/path, upstream status
   code, and (if visible in-flight in the SSE stream) the serving provider
-  name are logged -- never message content. This is what keeps the proxy
-  zero-data-retention-preserving.
+  name are logged -- never message content. So the proxy's own logging never
+  undermines the client-set ZDR posture -- but note the proxy does **not**
+  itself enforce ZDR: it forwards the body byte-for-byte, and the
+  zero-data-retention routing flags are set client-side in the daemon
+  (requested, not enforced end-to-end -- see backlog F1).
 
 ## Environment variables
 
