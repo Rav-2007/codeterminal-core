@@ -15,17 +15,18 @@ code your question is about, and grounds every answer in *your* real files. When
 it proposes a change, that change passes through a five-gate safety pipeline
 before a single byte is written — and every write is backed up and undoable. The
 only thing that ever leaves your machine is the minimal prompt for one inference
-turn, sent to a **zero-data-retention** provider through a proxy that holds the
-credential server-side. Your code, index, memory, and backups all stay local.
+turn, sent through a proxy that holds the credential server-side — with zero data
+retention **requested** on the wire (a policy set client-side, not yet enforced
+end-to-end; see §7). Your code, index, memory, and backups all stay local.
 
 ### Quick facts
 
 | | |
 |---|---|
 | 🖥️ **Where it runs** | Entirely on your machine — no cloud service, no account, no network listener |
-| 📤 **What leaves your machine** | Only the minimal prompt for a single inference turn — scrubbed of secrets, not retained |
+| 📤 **What leaves your machine** | Only the minimal prompt for a single inference turn — scrubbed of secrets; retention **requested** off (client-set, not yet enforced — see §7) |
 | ✍️ **How edits apply** | As precise `SEARCH/REPLACE` edits through 5 safety gates; every write backed up and undoable |
-| 🔒 **Privacy default** | Zero data retention on the wire; API key held server-side, never on the client |
+| 🔒 **Privacy default** | Zero data retention **requested** on the wire (set client-side, not yet enforced — see §7); API key held server-side, never on the client |
 | 🧩 **How you use it** | A chat terminal (Mochiii), a VS Code extension, and a scriptable CLI — all over one shared engine |
 
 ---
@@ -68,7 +69,7 @@ because it read it locally, and (b) never applies a change on faith.
 > | **Daemon** | A background program that runs quietly on your machine and does the real work. Mochiii's daemon holds the index, the memory, and the safety engine. |
 > | **Indexing / retrieval** | Reading your project once and organizing it so the right pieces can be pulled up instantly when a question relates to them. |
 > | **Embeddings** | A way of turning code into numbers that capture meaning, so "find the code that does X" works even when you don't know the exact words. Computed **on your machine**. |
-> | **Zero data retention (ZDR)** | A guarantee that the model provider does not keep your prompt after answering it. |
+> | **Zero data retention (ZDR)** | A guarantee that the model provider does not keep your prompt after answering it. In Mochiii this retention policy is **requested**, not yet enforced end-to-end — see §7. |
 
 ---
 
@@ -84,7 +85,7 @@ Mochiii's thesis is the opposite:
 | The industry default | Mochiii's stance |
 |---|---|
 | Your code is uploaded and indexed in the cloud | Indexing, embeddings, and retrieval happen **on your machine** |
-| Prompts and completions are retained by the provider | **Zero data retention** enforced on the wire; nothing retained |
+| Prompts and completions are retained by the provider | **Zero data retention** requested on every call (client-side routing flags; end-to-end enforcement is backlog F1, not yet shipped) |
 | The tool has a network listener / account / login | **No network listener** — a local socket with owner-only permissions |
 | Edits are applied on faith | Every edit passes **five safety gates**, is backed up, and is undoable |
 | "It probably didn't leak your secrets" | Secrets are **skipped at index time and scrubbed at send time** |
@@ -113,7 +114,7 @@ mindmap
       Backup then write
       One-click Undo
     Private by design
-      Zero data retention
+      Zero data retention (requested)
       Secret scrubbing
       Key held server-side
     Adversarially reviewed
@@ -133,9 +134,10 @@ and backup gates. If an edit is ambiguous, stale, or would corrupt a file, Mochi
 **refuses rather than guesses.**
 
 **3. Privacy is structural, not a setting.** There is no network listener. The
-inference credential is never on the client. Retention is denied on the wire.
-Secrets are stripped before anything is sent. These are properties of the design,
-not toggles you have to remember to flip.
+inference credential is never on the client. The wire request asks the provider to
+deny retention (a policy requested client-side, not yet enforced end-to-end — see
+§7). Secrets are stripped before anything is sent. These are properties of the
+design, not toggles you have to remember to flip.
 
 **4. Every safety claim was earned adversarially.** The safety model was
 pressure-tested with live exploit reproductions — path-escape symlinks,
@@ -150,7 +152,8 @@ and hardened until the repros went to zero. Claims are verified, not assumed.
 
 Everything in the green box below is **your machine**. Only the orange box is
 off-machine, and only the minimal prompt for one inference turn ever crosses that
-line — with the credential on the proxy, not the client, and retention denied.
+line — with the credential on the proxy, not the client, and the request asking the
+provider to deny retention (see §7 on enforcement).
 
 ```mermaid
 flowchart TB
@@ -179,7 +182,7 @@ flowchart TB
 
     subgraph CLOUD["☁️  OFF-MACHINE — only the minimal prompt"]
         PROXY["Managed proxy<br/>holds API key"]
-        PROV["ZDR model<br/>provider"]
+        PROV["Model provider<br/>(ZDR-routed)"]
     end
 
     TUI & VS & CLI --> SOCK --> DAEMON
@@ -209,7 +212,7 @@ flowchart TB
 | **Edit-apply engine** | The five-gate pipeline that turns a proposed change into a safe, backed-up, undoable write — shared by *every* client. |
 | **Conversation memory** | Per-workspace store for in-session context and cross-session recall, with full-text **search** over past conversations. |
 | **Secret scrubber** | Redacts recognizable secrets from retrieved code **at send time**, as a second line of defense beyond the index-time skip. |
-| **Managed proxy** | Holds the inference API key server-side and enforces zero data retention, so the client never carries the credential. |
+| **Managed proxy** | Holds the inference API key server-side so the client never carries the credential. It forwards the request byte-for-byte, including the client-set zero-data-retention routing flags — it does **not** itself enforce ZDR (backlog F1). |
 
 ---
 
@@ -227,7 +230,7 @@ sequenceDiagram
     participant Store as Local index & memory
     participant Scrub as Secret scrubber
     participant Proxy as Managed proxy
-    participant Model as ZDR provider
+    participant Model as Model provider
 
     You->>Client: Ask a question
     Client->>Daemon: Send over local socket
@@ -236,7 +239,7 @@ sequenceDiagram
     Daemon->>Scrub: Scrub secrets from the prompt
     Note over Daemon,Scrub: everything up to here stays on your machine
     Scrub->>Proxy: Minimal prompt (key added server-side)
-    Proxy->>Model: Forward with retention denied
+    Proxy->>Model: Forward (request asks provider to deny retention)
     Model-->>Proxy: Stream tokens
     Proxy-->>Daemon: Stream tokens
     Daemon-->>Client: Grounded answer (+ any proposed edits)
@@ -314,7 +317,7 @@ flowchart TB
     subgraph WIRE["What crosses the line — and how it's protected"]
         W1["Minimal prompt for ONE turn"]
         W2["Secrets scrubbed before send"]
-        W3["Retention denied on the wire"]
+        W3["Retention denied on the request<br/>(client-set; see F1)"]
         W4["API key held on proxy, never on client"]
     end
 
@@ -332,8 +335,12 @@ flowchart TB
 2. **Send-time scrub** — retrieved code is scanned and recognizable secrets
    (private-key blocks, known API-key prefixes) are redacted before the prompt
    leaves the machine.
-3. **Zero data retention** — the wire request denies data collection and restricts
-   routing to retention-compliant providers, so even the minimal prompt isn't kept.
+3. **Zero data retention (requested — not yet enforced end-to-end).** The wire
+   request denies data collection and restricts routing to retention-compliant
+   providers. These flags are set **client-side** by the daemon; the managed proxy
+   forwards them but does not itself enforce ZDR, and end-to-end enforcement and
+   verification remain open work (backlog **F1**). Treat ZDR as an intended design
+   goal, not a guarantee to rely on today.
 4. **Credential isolation** — the API key lives on the managed proxy, not on any
    client, so a compromised client can't exfiltrate it.
 
@@ -377,7 +384,7 @@ backlog; the discipline *is* the product's assurance.
 
 ### 🔒 Protects you by default
 - No network listener; local socket with owner-only permissions
-- Zero data retention enforced on the wire
+- Zero data retention **requested** on the wire (client-set routing flags; end-to-end enforcement is backlog F1, not yet shipped)
 - Secret files skipped at index time, secrets scrubbed at send time
 - Inference credential held server-side on the managed proxy
 

@@ -2478,6 +2478,18 @@ slots between steps 2 and 3, so the as-designed order runs it first as well.
   unbounded exhaustion vector into a bounded one. A per-connection output-rate bound remains open.
 - **F1 — the proxy does not itself enforce ZDR** (it forwards byte-for-byte; ZDR is set client-side).
   Founder-gated, part of the open P3/3A gate. **Deliberately not a drive-by fix.**
+  - **2026-07-25 — customer-facing ZDR claims stripped/qualified while F1 is open.** Per founder
+    decision to drop ZDR from launch scope until F1 is genuinely closed, the settled-guarantee
+    language ("enforced on the wire", "nothing retained", proxy "enforces zero data retention")
+    was rewritten to the honest **requested-not-enforced** framing across **`PRODUCT_OVERVIEW.md`**
+    (TL;DR, Quick-facts table, §2 comparison table, §3 mindmap + pillar 3, §4 intro + big-picture
+    diagram, §5 sequence diagram, §7 privacy diagram + point 3 anchor caveat, §8 feature catalogue).
+    **`models.json` was NOT changed** — `zdr.allow_non_zdr:false` / `allow_data_collection:false` /
+    `allow_fallbacks:true` are load-bearing: `daemon/config.go`'s `resolvedProviderRouting` reads
+    them into the per-request provider-routing object (consumed by `server.go`, surfaced by
+    `degraded.go`). Those keys express **requested intent** (the flags the daemon sends), not
+    proxy-enforced behavior; JSON permits no comment, so this note is the annotation. **When F1
+    lands, restore the enforced-guarantee wording in the `PRODUCT_OVERVIEW.md` locations above.**
 - **npm: 2 dev-only advisories** (`mocha` → `serialize-javascript`). **Runtime deps: 0
   vulnerabilities** — the extension ships no runtime dependencies, so nothing reaches users. The
   offered remedy is a breaking mocha downgrade; **not taken**, recorded instead.
