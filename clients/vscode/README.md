@@ -7,12 +7,17 @@ proposed edit renders as a red/green diff with Apply/Skip, and Apply routes
 through the same `editapply` engine (all five safety gates) the TUI uses —
 the daemon applies, this client only renders and confirms.
 
-Not in this slice: multi-block review (only the first proposed edit per
-response is actionable; extras are noted as "N more edits not shown yet"),
-a native VS Code diff view/inline decorations, a native Undo button (use
-`codeterminal-daemon edits undo`), ghost text, error interceptor, MCP,
-reset/ctrl+n, or any remote-host (SSH/WSL/devcontainer) daemon discovery —
-this is local-machine-only, same as the TUI's usual two-terminal setup.
+Every proposed edit in a response is reviewable, one block at a time: each
+is presented for Apply/Skip in turn, and block *i+1* is only ever matched
+against what is actually on disk after block *i* has been applied or
+skipped (see `startEditReview` in `src/chatPanel.ts`). An applied batch
+gets a native **Undo this apply** button that runs the same backup restore
+`codeterminal-daemon edits undo` does.
+
+Not in this slice: a native VS Code diff view/inline decorations, ghost
+text, error interceptor, MCP, reset/ctrl+n, or any remote-host
+(SSH/WSL/devcontainer) daemon discovery — this is local-machine-only, same
+as the TUI's usual two-terminal setup.
 
 ## Architecture
 
