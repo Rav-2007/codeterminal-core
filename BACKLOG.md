@@ -2748,3 +2748,61 @@ here*; the monitoring/cleanup queries above remain for the founder to run manual
 source analysis, the corrected doc note, one live authenticated proxy request (read of live behaviour,
 non-mutating beyond a 1-token billed completion), and one `/health` read. **No `git push`, no merge, no
 Railway action.** The `f25f444`-vs-`ca7e3c4` deploy decision remains founder-gated and untouched.
+
+## 2026-07-27 — RE-REVIEW: `pending_corrections` "no RLS needed, service-role bypasses it anyway" — the mid-incident call does NOT hold under a calm read (FLAGGED, founder SQL required)
+
+A mid-incident decision recorded that migration `0002`'s new `pending_corrections` table needed no
+RLS "because the proxy is `service_role` and bypasses RLS anyway." **On a calm re-read that reasoning
+is a non-sequitur** — right answer, wrong question. RLS constrains the `anon` / `authenticated` roles
+(the PostgREST/frontend-reachable path), **not** `service_role`. That `service_role` holds BYPASSRLS
+is true and irrelevant: it says nothing about whether `anon`/`authenticated` can reach the table. The
+call never checked the thing that actually matters, which is the **grant** surface, not RLS-vs-no-RLS.
+
+Two concrete gaps this leaves, both consistent with the 2026-07-17 posture's own **trap 3**
+("Supabase's bootstrap auto-granted full `anon` CRUD on every new relation in `public` — it fired for
+real … the catalog reads clean while the hole is open"):
+
+1. **`pending_corrections` was created with ZERO grant/revoke statements** (`proxy/migrations/0002`
+   contains no GRANT/REVOKE at all; the 2026-07-17 RLS/EXECUTE posture was applied *separately in the
+   dashboard*, never in these files). So unless the 2026-07-17 `ALTER DEFAULT PRIVILEGES … REVOKE`
+   genuinely covers tables created *later* by the SQL-editor role, `anon`/`authenticated` may hold
+   CRUD on it. Impact if so: **SELECT** leaks every key's `key_id`+`reserved`+`created_at`
+   (cross-tenant metadata, no secret material — Low); **DELETE** lets an attacker wipe outbox rows and
+   thereby **defeat the crash-recovery sweep that is the entire purpose of migration 0002**; **INSERT**
+   floods phantom stranded-reservation rows the sweep then reports as real. The DELETE/INSERT paths are
+   an **integrity** concern, not just info-leak.
+
+2. **`0002`'s `drop function if exists reserve_usage(uuid,integer)` + recreate silently drops the
+   2026-07-17 `REVOKE EXECUTE FROM PUBLIC` on `reserve_usage`** (dropping a function drops its ACL; the
+   recreated function reverts to Postgres's EXECUTE-to-PUBLIC baseline). `0002` does not re-revoke.
+   **This is a defense-in-depth regression, not a live hole** — `reserve_usage` is `SECURITY INVOKER`,
+   so an `anon` caller runs as `anon` and the inner `UPDATE usage` still hits `usage`'s SELECT-only
+   grants and fails — but it undoes an established control while the catalog reads clean, exactly trap
+   3's class. (`apply_correction` / `sweep_pending_corrections` are new `SECURITY INVOKER` functions
+   whose bodies write `usage`/`pending_corrections`; same invoker reasoning applies, but they too carry
+   the default EXECUTE-to-PUBLIC.)
+
+**Cannot be resolved from this repo** (no wired DB connection — `QUOTA_RESERVATION_DESIGN.md` §7; this
+is dashboard-applied schema). **Founder verification (run in the Supabase SQL editor):**
+```sql
+-- Does anon/authenticated have ANY privilege on the new table?
+select grantee, privilege_type
+from information_schema.role_table_grants
+where table_name = 'pending_corrections';
+
+-- Did the reserve_usage EXECUTE revoke survive the drop+recreate?
+select r.rolname as grantee
+from pg_proc p
+  join pg_namespace n on n.oid = p.pronamespace
+  cross join lateral aclexplode(p.proacl) a
+  join pg_roles r on r.oid = a.grantee
+where n.nspname='public' and p.proname='reserve_usage' and a.privilege_type='EXECUTE';
+-- PUBLIC shows as an empty/`=X/` acl entry; if anon/authenticated/PUBLIC can EXECUTE, the revoke was lost.
+```
+**Corrective migration to add (a `0003`, applied dashboard-side, NOT auto-run from here):** `revoke all
+on pending_corrections from anon, authenticated;` and re-apply `revoke execute on function
+reserve_usage(uuid,integer), apply_correction(uuid,integer,bigint),
+sweep_pending_corrections(integer) from public;` — mirroring the 2026-07-17 discipline that every such
+function revoke EXECUTE-from-PUBLIC in the same migration that (re)creates it. Consider SELECT-only RLS
+parity with `usage`/`api_keys` only if belt-and-suspenders is wanted; the grant revoke is the load-
+bearing fix. **Status: OPEN — not closed; the original "no RLS needed" note is superseded by this.**
