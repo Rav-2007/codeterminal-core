@@ -9,6 +9,7 @@
   "zdr": {
     "allow_non_zdr": false,
     "allow_data_collection": false,
-    "allow_fallbacks": true
+    "allow_fallbacks": true,
+    "provider_ignore_list": ["DeepInfra"]
   }
 }
