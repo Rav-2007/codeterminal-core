@@ -176,10 +176,19 @@ var ErrZDRRefused = errors.New("no provider satisfies the configured zero-data-r
 // retention" is the feature's own name, essentially guaranteed to appear
 // verbatim in any refusal actually caused by this constraint and absent
 // from rate-limit/auth/outage error text.
+//
+// "zdr_required" is OUR OWN managed proxy's refusal, not OpenRouter's: when a
+// caller's request reaches the proxy without the required routing flags it
+// answers 403 `{"error":"zdr_required"}` (see proxy/main.go's F1 enforcement).
+// That status alone classifies as ClassAuth in classifyHTTPError, so without
+// this substring the user is told to check their API key for what is actually
+// a privacy refusal. Unlike the phrases above this one is a machine-readable
+// code we emit ourselves, so the match is exact and not brittle.
 var zdrRefusalSubstrings = []string{
 	"no allowed providers",
 	"no available model provider",
 	"zero data retention",
+	"zdr_required",
 }
 
 // isZDRRoutingRefusal reports whether body (an error response body from the

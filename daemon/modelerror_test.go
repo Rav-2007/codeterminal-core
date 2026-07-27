@@ -98,6 +98,15 @@ func TestModelError_ClassifiesEachFailureMode(t *testing.T) {
 			body:      `{"error":{"message":"No endpoints found matching your data policy (Zero data retention)."}}`,
 			wantClass: ClassPrivacyRefused, retryable: false,
 		},
+		{
+			// The managed proxy's own F1 refusal (proxy/main.go). A 403 would
+			// otherwise fall through to the status rule and classify as
+			// ClassAuth -- telling the user to check their API key for what is
+			// a privacy refusal.
+			name: "403 proxy zdr_required", status: http.StatusForbidden,
+			body:      `{"error":"zdr_required"}`,
+			wantClass: ClassPrivacyRefused, retryable: false,
+		},
 	}
 
 	for _, tc := range cases {
