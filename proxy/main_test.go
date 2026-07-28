@@ -272,7 +272,7 @@ func TestHandleChatCompletions_NormalRequest(t *testing.T) {
 	defer upstream.Close()
 
 	p := newTestProxy(supabase.URL, upstream.URL)
-	req := newAuthorizedRequest(`{"model":"x","messages":[{"role":"user","content":"hi"}],"provider":{"zdr":true,"data_collection":"deny","allow_fallbacks":true}}`)
+	req := newAuthorizedRequest(`{"model":"x","messages":[{"role":"user","content":"hi"}],"stream":true,"provider":{"zdr":true,"data_collection":"deny","allow_fallbacks":true}}`)
 	rec := httptest.NewRecorder()
 
 	p.handleChatCompletions(rec, req)
@@ -308,7 +308,7 @@ func TestHandleChatCompletions_OverLimitRejected(t *testing.T) {
 	defer upstream.Close()
 
 	p := newTestProxy(supabase.URL, upstream.URL)
-	req := newAuthorizedRequest(`{"model":"x","messages":[{"role":"user","content":"hi"}],"provider":{"zdr":true,"data_collection":"deny","allow_fallbacks":true}}`)
+	req := newAuthorizedRequest(`{"model":"x","messages":[{"role":"user","content":"hi"}],"stream":true,"provider":{"zdr":true,"data_collection":"deny","allow_fallbacks":true}}`)
 	rec := httptest.NewRecorder()
 
 	p.handleChatCompletions(rec, req)
@@ -386,7 +386,7 @@ func TestHandleChatCompletions_FailedUpstreamRefunds(t *testing.T) {
 	deadUpstream.Close()
 
 	p := newTestProxy(supabase.URL, deadUpstreamURL)
-	req := newAuthorizedRequest(`{"model":"x","messages":[{"role":"user","content":"hi"}],"provider":{"zdr":true,"data_collection":"deny","allow_fallbacks":true}}`)
+	req := newAuthorizedRequest(`{"model":"x","messages":[{"role":"user","content":"hi"}],"stream":true,"provider":{"zdr":true,"data_collection":"deny","allow_fallbacks":true}}`)
 	rec := httptest.NewRecorder()
 
 	p.handleChatCompletions(rec, req)
@@ -737,7 +737,7 @@ func TestStreamSSE_StripsAccountMetadataEndToEnd(t *testing.T) {
 
 	p := newTestProxy(supabase.URL, "http://unused.invalid")
 	rec := httptest.NewRecorder()
-	p.streamSSE(rec, strings.NewReader(upstream), keyID, defaultReservationTokens, 1)
+	p.streamSSE(rec, strings.NewReader(upstream), keyID, defaultReservationTokens, 1, absoluteMaxRequestTokens)
 
 	got := rec.Body.String()
 	if strings.Contains(got, "org-SECRET-ACCOUNT") || strings.Contains(got, "user_id") {
@@ -809,7 +809,7 @@ func TestHandleChatCompletions_ClientAbortsBeforeUsageChunk_DoesNotRefund(t *tes
 	defer upstream.Close()
 
 	p := newTestProxy(supabase.URL, upstream.URL)
-	req := newAuthorizedRequest(`{"model":"x","messages":[{"role":"user","content":"hi"}],"provider":{"zdr":true,"data_collection":"deny","allow_fallbacks":true}}`)
+	req := newAuthorizedRequest(`{"model":"x","messages":[{"role":"user","content":"hi"}],"stream":true,"provider":{"zdr":true,"data_collection":"deny","allow_fallbacks":true}}`)
 	// Fail the relay write that carries the usage chunk.
 	rec := &abortingResponseWriter{failOn: "usage"}
 
@@ -914,7 +914,8 @@ func TestReserveQuota_ReturnsPendingID(t *testing.T) {
 		defer supabase.Close()
 		p := newTestProxy(supabase.URL, "http://unused.invalid")
 
-		pendingID, ok := p.reserveQuota(context.Background(), keyID, defaultReservationTokens)
+		res, ok := p.reserveQuota(context.Background(), keyID, defaultReservationTokens)
+		pendingID := res.pendingID
 		if !ok {
 			t.Fatal("reserveQuota refused a reservation that fits well under the limit")
 		}
@@ -937,7 +938,8 @@ func TestReserveQuota_ReturnsPendingID(t *testing.T) {
 		defer supabase.Close()
 		p := newTestProxy(supabase.URL, "http://unused.invalid")
 
-		pendingID, ok := p.reserveQuota(context.Background(), keyID, defaultReservationTokens)
+		res, ok := p.reserveQuota(context.Background(), keyID, defaultReservationTokens)
+		pendingID := res.pendingID
 		if ok {
 			t.Fatal("reserveQuota granted a reservation that exceeds the limit")
 		}
@@ -1121,7 +1123,8 @@ func TestReservationSurvivesCrash_SweptNotRefunded(t *testing.T) {
 
 	// Lifetime 1: reserve, then "crash" -- no correction is ever sent.
 	crashed := newTestProxy(supabase.URL, "http://unused.invalid")
-	pendingID, ok := crashed.reserveQuota(context.Background(), keyID, defaultReservationTokens)
+	crashRes, ok := crashed.reserveQuota(context.Background(), keyID, defaultReservationTokens)
+	pendingID := crashRes.pendingID
 	if !ok || pendingID == 0 {
 		t.Fatalf("setup: reserveQuota returned (%d, %v)", pendingID, ok)
 	}
@@ -1361,5 +1364,684 @@ func TestZDRRoutingEnforced_FailWhenNeutered(t *testing.T) {
 		t.Fatal("zdrRoutingEnforced accepted a request with no provider routing object -- " +
 			"if you are seeing this after replacing the body with `return true`, that is the " +
 			"neutered gate this test exists to catch: a stripped-flags request would be forwarded")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Financial-defense hardening. Each test below guards a control that did not
+// exist before the DoW audit, and each is written to FAIL if that control is
+// removed -- the same discipline as TestZDRRoutingEnforced_FailWhenNeutered.
+// ---------------------------------------------------------------------------
+
+// sseChunks builds a stream of n content chunks with NO usage chunk and no
+// [DONE] -- i.e. a completion still in progress. This is the shape that used to
+// run unbounded: the proxy only ever learned a token count from the terminal
+// usage chunk, so a stream that kept producing was never measured until it
+// stopped.
+func sseChunks(n int) string {
+	var b strings.Builder
+	for i := 0; i < n; i++ {
+		b.WriteString("data: {\"choices\":[{\"delta\":{\"content\":\"tok\"}}]}\n\n")
+	}
+	return b.String()
+}
+
+// realisticChunk mirrors an ACTUAL OpenRouter SSE chunk: ~294 bytes of JSON
+// envelope wrapping a single token of delta content.
+//
+// The toy fixture above is 47 bytes, and using it for budget tests is exactly how
+// a 73x estimator error shipped with a green suite. Any test that asserts
+// something about how much a stream "costs" must use this one, because the
+// envelope-to-content ratio IS the thing under test.
+const realisticChunk = `data: {"id":"gen-1753600000-AbCdEfGhIjKlMnOp","provider":"DeepSeek",` +
+	`"model":"deepseek/deepseek-v4-flash","object":"chat.completion.chunk",` +
+	`"created":1753600000,"choices":[{"index":0,"delta":{"role":"assistant",` +
+	`"content":" the"},"finish_reason":null,"native_finish_reason":null,` +
+	`"logprobs":null}]}`
+
+func sseRealisticChunks(n int) string {
+	var b strings.Builder
+	for i := 0; i < n; i++ {
+		b.WriteString(realisticChunk)
+		b.WriteString("\n\n")
+	}
+	return b.String()
+}
+
+func TestBudgetExceeded(t *testing.T) {
+	const ceiling = 1000
+	tests := []struct {
+		name       string
+		dataChunks int
+		bytes      int
+		wantReason string
+		wantOver   bool
+	}{
+		{"nothing streamed", 0, 0, "", false},
+		{"well under both bounds", 500, 500 * 294, "", false},
+		// The D1 case: 1000 realistic chunks is exactly the ceiling in TOKENS and
+		// 294,000 bytes. The old estimator scored that as 73,500 tokens.
+		{"at the ceiling with realistic envelopes", 1000, 1000 * 294, "", false},
+		{"one chunk over the token ceiling", 1001, 1001 * 294, "token_ceiling", true},
+		// Few chunks, enormous payload: the case chunk-counting alone misses.
+		{"byte guard catches batched giant chunks", 3, ceiling*maxBytesPerChunkGuard + 1, "byte_guard", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reason, over := budgetExceeded(tt.dataChunks, tt.bytes, ceiling)
+			if over != tt.wantOver {
+				t.Fatalf("budgetExceeded(%d, %d, %d) exceeded = %v, want %v",
+					tt.dataChunks, tt.bytes, ceiling, over, tt.wantOver)
+			}
+			if reason != tt.wantReason {
+				t.Errorf("reason = %q, want %q", reason, tt.wantReason)
+			}
+		})
+	}
+}
+
+func TestRequestTokenCeiling_CappedByAbsoluteMax(t *testing.T) {
+	// A key with an enormous quota must still not be drainable by one request.
+	if got := requestTokenCeiling(defaultReservationTokens, 10_000_000); got != absoluteMaxRequestTokens {
+		t.Errorf("ceiling with huge headroom = %d, want the absolute cap %d -- "+
+			"without the cap, one request can spend an entire enterprise quota", got, absoluteMaxRequestTokens)
+	}
+	// A nearly-exhausted key must get a ceiling near its actual headroom, not the cap.
+	if got := requestTokenCeiling(100, 50); got != 150 {
+		t.Errorf("ceiling with 50 headroom = %d, want 150 (reserved+headroom)", got)
+	}
+}
+
+// The load-bearing test. A stream that keeps producing past the ceiling must be
+// CUT, not ridden out. Fails when the ceiling check is removed from streamSSE.
+func TestStreamSSE_KillsStreamOverBudget(t *testing.T) {
+	const keyID = "bbbb1111-0000-0000-0000-000000000001"
+	store := &fakeUsageStore{tokenLimit: 100000}
+	supabase, _ := newFakeSupabase(store, keyID)
+	defer supabase.Close()
+
+	// 500 chunks offered; ceiling of 10 must stop it long before the end.
+	const ceiling = 10
+	p := newTestProxy(supabase.URL, "http://unused.invalid")
+	rec := httptest.NewRecorder()
+	p.streamSSE(rec, strings.NewReader(sseChunks(500)), keyID, defaultReservationTokens, 1, ceiling)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "budget_exceeded") {
+		t.Error("killed stream carried no budget_exceeded chunk -- the client cannot " +
+			"tell throttling from a dropped connection")
+	}
+	if !strings.Contains(body, "[DONE]") {
+		t.Error("killed stream did not terminate with [DONE]")
+	}
+	// The estimator counts one token per chunk here, so the relay must stop within
+	// a chunk or two of the ceiling -- nowhere near all 500.
+	if got := strings.Count(body, `"delta"`); got > ceiling+2 {
+		t.Errorf("relayed %d content chunks with a ceiling of %d -- the stream was not "+
+			"cut. If you are seeing this after removing the ceiling check in streamSSE, "+
+			"that is exactly the unbounded-spend regression this test exists to catch", got, ceiling)
+	}
+}
+
+// A killed stream must be CHARGED, not refunded. Refunding would make an
+// over-budget request free, which is worse than not enforcing at all: it would
+// hand back quota for inference OpenRouter really did bill.
+func TestStreamSSE_KilledStreamIsChargedNotRefunded(t *testing.T) {
+	const keyID = "bbbb1111-0000-0000-0000-000000000002"
+	store := &fakeUsageStore{tokenLimit: 100000}
+	supabase, _ := newFakeSupabase(store, keyID)
+	defer supabase.Close()
+
+	p := newTestProxy(supabase.URL, "http://unused.invalid")
+	rec := httptest.NewRecorder()
+	p.streamSSE(rec, strings.NewReader(sseChunks(500)), keyID, defaultReservationTokens, 1, 10)
+
+	waitForCorrections(t, store, 1)
+	store.mu.Lock()
+	delta := store.corrections[0]
+	store.mu.Unlock()
+
+	if delta == -int64(defaultReservationTokens) {
+		t.Fatal("a killed stream was fully REFUNDED -- over-budget inference would be " +
+			"free and infinitely repeatable")
+	}
+	// The estimate at kill time exceeded the ceiling but is far under the
+	// reservation, so the correction is a partial refund, never a full one.
+	if delta <= -int64(defaultReservationTokens) {
+		t.Errorf("correction delta = %d, want a partial correction above the full refund floor", delta)
+	}
+}
+
+// A stream that stays under its ceiling must be completely untouched -- this is
+// the regression guard that the budget check does not interfere with real traffic.
+func TestStreamSSE_UnderBudgetStreamIsUnaffected(t *testing.T) {
+	const keyID = "bbbb1111-0000-0000-0000-000000000003"
+	store := &fakeUsageStore{tokenLimit: 100000}
+	supabase, _ := newFakeSupabase(store, keyID)
+	defer supabase.Close()
+
+	p := newTestProxy(supabase.URL, "http://unused.invalid")
+	rec := httptest.NewRecorder()
+	p.streamSSE(rec, strings.NewReader(sseUsageBody(42)), keyID, defaultReservationTokens, 1, absoluteMaxRequestTokens)
+
+	body := rec.Body.String()
+	if strings.Contains(body, "budget_exceeded") {
+		t.Error("an under-budget stream was killed -- the ceiling is firing on legitimate traffic")
+	}
+	if !strings.Contains(body, `"total_tokens":42`) {
+		t.Errorf("the real usage chunk did not survive relay:\n%s", body)
+	}
+}
+
+// Cost authorization beyond the single `model` field. Every entry here was
+// forwarded upstream unexamined before the audit.
+func TestCostSurface_RefusesBillableSideChannels(t *testing.T) {
+	p := newProxy("k", "http://unused.invalid", "http://unused.invalid", "k",
+		log.New(io.Discard, "", 0), parseAllowedModels("good/model"))
+
+	const zdr = `"provider":{"zdr":true,"data_collection":"deny"}`
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"fallback models array", `{"model":"good/model","models":["expensive/model"],` + zdr + `}`, "cost_surface_not_allowed"},
+		{"plugins (billed per use, invisible to token quota)", `{"model":"good/model","plugins":[{"id":"web"}],` + zdr + `}`, "cost_surface_not_allowed"},
+		{"transforms", `{"model":"good/model","transforms":["middle-out"],` + zdr + `}`, "cost_surface_not_allowed"},
+		{"provider.only (cost steering)", `{"model":"good/model","provider":{"zdr":true,"data_collection":"deny","only":["expensive"]}}`, "cost_surface_not_allowed"},
+		{"provider.order (cost steering)", `{"model":"good/model","provider":{"zdr":true,"data_collection":"deny","order":["expensive"]}}`, "cost_surface_not_allowed"},
+		{"provider.sort (cost steering)", `{"model":"good/model","provider":{"zdr":true,"data_collection":"deny","sort":"price"}}`, "cost_surface_not_allowed"},
+		{"missing model (was a fail-OPEN)", `{` + zdr + `}`, "model_required"},
+		{"unlisted model", `{"model":"evil/model",` + zdr + `}`, "model_not_allowed"},
+		{"unparseable body", `{not json`, "malformed_request"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, refused := p.costSurfaceRefusal([]byte(tt.body))
+			if !refused {
+				t.Fatalf("costSurfaceRefusal allowed %q -- this field reaches OpenRouter "+
+					"and is billed. If you are seeing this after dropping the field from the "+
+					"predicate, that is the bypass this test exists to catch", tt.name)
+			}
+			if got != tt.want {
+				t.Errorf("refusal = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// D4 REGRESSION GUARD. provider.ignore is how DeepInfra is excluded from routing
+// (commit 0c5bb29); the shipped daemon sends it on every request. Refusing it
+// would break all real traffic, so the cost gate must let it through -- a
+// deny-list narrows where traffic may go, which is the safe direction.
+func TestCostSurface_AllowsProviderIgnore(t *testing.T) {
+	p := newProxy("k", "http://unused.invalid", "http://unused.invalid", "k",
+		log.New(io.Discard, "", 0), parseAllowedModels("good/model"))
+
+	body := `{"model":"good/model","provider":{"zdr":true,"data_collection":"deny","allow_fallbacks":true,"ignore":["DeepInfra"]}}`
+	if refusal, refused := p.costSurfaceRefusal([]byte(body)); refused {
+		t.Fatalf("costSurfaceRefusal refused the shipped daemon's own D4 routing body with %q -- "+
+			"this would 403 every real request", refusal)
+	}
+}
+
+// An oversized declared max_tokens must be REFUSED, not silently clamped.
+// Clamping the reservation while forwarding the caller's larger number was the
+// mismatch that let one request overshoot its own admission.
+func TestHandleChatCompletions_OversizedMaxTokensRefused(t *testing.T) {
+	const keyID = "cccc1111-0000-0000-0000-000000000001"
+	store := &fakeUsageStore{tokenLimit: 100000}
+	supabase, _ := newFakeSupabase(store, keyID)
+	defer supabase.Close()
+
+	reached := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached = true
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, sseUsageBody(1))
+	}))
+	defer upstream.Close()
+
+	p := newTestProxy(supabase.URL, upstream.URL)
+	req := newAuthorizedRequest(fmt.Sprintf(
+		`{"model":"x","max_tokens":%d,"stream":true,"provider":{"zdr":true,"data_collection":"deny"}}`,
+		maxReservationTokens+1))
+	rec := httptest.NewRecorder()
+	p.handleChatCompletions(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403 for an oversized max_tokens; body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "max_tokens_too_large") {
+		t.Errorf("body = %s, want max_tokens_too_large", rec.Body.String())
+	}
+	if reached {
+		t.Error("OpenRouter was contacted despite the refusal -- the check must run BEFORE the forward")
+	}
+	if store.openPendingCount() != 0 {
+		t.Error("a refused request opened an outbox row -- it reserved nothing and owes no correction")
+	}
+}
+
+// A max_tokens at or under the cap must still work normally.
+func TestHandleChatCompletions_AcceptableMaxTokensStillForwards(t *testing.T) {
+	const keyID = "cccc1111-0000-0000-0000-000000000002"
+	store := &fakeUsageStore{tokenLimit: 100000}
+	supabase, _ := newFakeSupabase(store, keyID)
+	defer supabase.Close()
+	upstream := newFakeUpstream(50)
+	defer upstream.Close()
+
+	p := newTestProxy(supabase.URL, upstream.URL)
+	req := newAuthorizedRequest(
+		`{"model":"x","max_tokens":100,"stream":true,"provider":{"zdr":true,"data_collection":"deny"}}`)
+	rec := httptest.NewRecorder()
+	p.handleChatCompletions(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 for a legitimate max_tokens; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// Token-volume limiting: the second layer the request-rate limiter cannot see.
+func TestTokenRateLimit_DebtBlocksTheNextRequest(t *testing.T) {
+	l := newRateLimiter(keyTokenRatePerSecond, keyTokenBurst)
+	base := time.Now()
+	l.now = func() time.Time { return base }
+
+	if !l.available("k") {
+		t.Fatal("a fresh key was refused before spending anything")
+	}
+	// One outsized completion drives the bucket into debt.
+	l.charge("k", keyTokenBurst*2)
+	if l.available("k") {
+		t.Fatal("a key in token debt was admitted -- without post-hoc charging, token " +
+			"volume is unbounded no matter what the request rate is")
+	}
+
+	// Debt must be repaid by elapsed time, not held forever.
+	l.now = func() time.Time { return base.Add(10 * time.Minute) }
+	if !l.available("k") {
+		t.Error("a key was still refused after ample refill time -- the debt floor is not bounding the penalty")
+	}
+}
+
+func TestTokenRateLimit_DebtIsFlooredAtOneBurst(t *testing.T) {
+	l := newRateLimiter(keyTokenRatePerSecond, keyTokenBurst)
+	base := time.Now()
+	l.now = func() time.Time { return base }
+
+	l.charge("k", keyTokenBurst*1000) // one pathological request
+	l.mu.Lock()
+	b, charged := l.buckets["k"]
+	l.mu.Unlock()
+	if !charged {
+		t.Fatal("charge left no bucket at all -- nothing was spent, so token volume is unmetered")
+	}
+	got := b.tokens
+	if got < -keyTokenBurst {
+		t.Errorf("debt = %f, want no worse than -%f -- an unbounded debt would lock a "+
+			"paying key out for an arbitrarily long time", got, keyTokenBurst)
+	}
+}
+
+// Unknown routes were 404ing straight out of the mux without passing through
+// admitPreAuth -- an unauthenticated, entirely unthrottled endpoint.
+func TestUnknownRoute_IsRateLimited(t *testing.T) {
+	p := newTestProxy("http://unused.invalid", "http://unused.invalid")
+	handler := p.rateLimitedNotFound()
+
+	got404, got429 := 0, 0
+	for i := 0; i < int(preAuthBurstGlobal)+50; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/definitely-not-a-route", nil)
+		rec := httptest.NewRecorder()
+		handler(rec, req)
+		switch rec.Code {
+		case http.StatusNotFound:
+			got404++
+		case http.StatusTooManyRequests:
+			got429++
+		}
+	}
+	if got429 == 0 {
+		t.Errorf("404 path served %d requests with zero throttling -- if you are seeing "+
+			"this after unregistering the catch-all, that is the unbounded anonymous "+
+			"endpoint this test exists to catch", got404)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// D1/D2 regression guards. Both defects below shipped with a fully green suite,
+// because the budget tests used a 47-byte toy chunk and no test exercised
+// stream:false at all. These use realistic inputs.
+// ---------------------------------------------------------------------------
+
+// THE D1 GUARD. A completion of ordinary length, with REAL SSE envelopes, must
+// stream to completion untouched.
+//
+// Against the estimator this replaces (max(chunks, bytes/4)) a 4096-token answer
+// scored 4096*294/4 = 301,056 "tokens" against a 65,536 ceiling and was cut at
+// roughly chunk 900 -- every substantial answer truncated in production.
+func TestStreamSSE_RealisticStreamNotKilledUnderCeiling(t *testing.T) {
+	const keyID = "dddd1111-0000-0000-0000-000000000001"
+	const chunks = 4096 // an ordinary long answer, well under absoluteMaxRequestTokens
+
+	store := &fakeUsageStore{tokenLimit: 10_000_000}
+	supabase, _ := newFakeSupabase(store, keyID)
+	defer supabase.Close()
+
+	p := newTestProxy(supabase.URL, "http://unused.invalid")
+	rec := httptest.NewRecorder()
+	p.streamSSE(rec, strings.NewReader(sseRealisticChunks(chunks)), keyID,
+		defaultReservationTokens, 1, absoluteMaxRequestTokens)
+
+	body := rec.Body.String()
+	if strings.Contains(body, "budget_exceeded") {
+		t.Fatalf("a %d-token completion with realistic SSE envelopes was KILLED under a "+
+			"%d-token ceiling. If you are seeing this after reintroducing a bytes/4 term "+
+			"into the budget check, that is the 73x envelope-vs-content error this test "+
+			"exists to catch -- it truncates real traffic, it does not protect it",
+			chunks, absoluteMaxRequestTokens)
+	}
+	if got := strings.Count(body, `"delta"`); got != chunks {
+		t.Errorf("relayed %d chunks, want all %d -- the stream was altered", got, chunks)
+	}
+}
+
+// The byte guard still has to fire on the shape chunk-counting cannot see: a
+// provider batching an entire answer into a few enormous chunks.
+func TestStreamSSE_ByteGuardCatchesBatchedGiantChunks(t *testing.T) {
+	const keyID = "dddd1111-0000-0000-0000-000000000002"
+	const ceiling = 100
+
+	store := &fakeUsageStore{tokenLimit: 10_000_000}
+	supabase, _ := newFakeSupabase(store, keyID)
+	defer supabase.Close()
+
+	// Three chunks, each far past the whole byte allowance -- only 3 by chunk
+	// count, so the token bound alone would let this through.
+	giant := strings.Repeat("x", ceiling*maxBytesPerChunkGuard)
+	var b strings.Builder
+	for i := 0; i < 3; i++ {
+		fmt.Fprintf(&b, `data: {"choices":[{"delta":{"content":"%s"}}]}`+"\n\n", giant)
+	}
+
+	p := newTestProxy(supabase.URL, "http://unused.invalid")
+	rec := httptest.NewRecorder()
+	p.streamSSE(rec, strings.NewReader(b.String()), keyID, defaultReservationTokens, 1, ceiling)
+
+	if !strings.Contains(rec.Body.String(), "budget_exceeded") {
+		t.Error("a stream far past its byte allowance was not killed -- with only 3 chunks " +
+			"the token bound cannot see it, which is the whole reason the byte guard exists")
+	}
+}
+
+// THE D2 GUARD. stream:false took the buffered branch, where the ceiling was
+// never applied -- bounded only by maxNonStreamResponseBytes, a 64x escape.
+func TestHandleChatCompletions_NonStreamedRequestRefused(t *testing.T) {
+	const keyID = "dddd1111-0000-0000-0000-000000000003"
+	store := &fakeUsageStore{tokenLimit: 100000}
+	supabase, _ := newFakeSupabase(store, keyID)
+	defer supabase.Close()
+
+	reached := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached = true
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"usage":{"total_tokens":9}}`)
+	}))
+	defer upstream.Close()
+
+	for _, tt := range []struct {
+		name string
+		body string
+	}{
+		{"stream explicitly false", `{"model":"x","stream":false,"provider":{"zdr":true,"data_collection":"deny"}}`},
+		// Omitted is the dangerous one: OpenAI-compatible APIs default stream to
+		// false, so treating "absent" as streaming would reopen the bypass.
+		{"stream omitted entirely", `{"model":"x","provider":{"zdr":true,"data_collection":"deny"}}`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			reached = false
+			p := newTestProxy(supabase.URL, upstream.URL)
+			rec := httptest.NewRecorder()
+			p.handleChatCompletions(rec, newAuthorizedRequest(tt.body))
+
+			if rec.Code != http.StatusForbidden {
+				t.Errorf("status = %d, want 403; body=%s", rec.Code, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), "stream_required") {
+				t.Errorf("body = %s, want stream_required", rec.Body.String())
+			}
+			if reached {
+				t.Error("OpenRouter was contacted for a non-streamed request -- this is the " +
+					"path where the budget ceiling does not run, so it must never be forwarded")
+			}
+			if store.openPendingCount() != 0 {
+				t.Error("a refused request opened an outbox row")
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// F-1: JSON parser differential. Go's encoding/json matches object keys to
+// struct tags IGNORING CASE; OpenRouter matches exactly. Wherever the proxy
+// therefore sees a SAFE value under a key OpenRouter will not read, the gate is
+// bypassed and OpenRouter falls back to its own (unsafe) default.
+// ---------------------------------------------------------------------------
+
+// Demonstrates the underlying language behaviour these tests defend against, so
+// the reason for the map-based lookup is legible without a doc lookup.
+func TestGoJSONMatchesKeysCaseInsensitively(t *testing.T) {
+	var peek struct {
+		Stream bool `json:"stream"`
+	}
+	if err := json.Unmarshal([]byte(`{"STREAM":true}`), &peek); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !peek.Stream {
+		t.Skip("this Go version matches keys case-sensitively; F-1 does not apply here")
+	}
+	t.Log("confirmed: struct-tag decoding accepts \"STREAM\" for a `json:\"stream\"` field -- " +
+		"any gate built on struct tags reads a key OpenRouter will not")
+}
+
+func TestZDRRoutingEnforced_RejectsCaseVariantKeys(t *testing.T) {
+	// Each body would pass the proxy's gate while carrying NO routing object that
+	// OpenRouter can read -- i.e. it forwards a request believing ZDR is set when
+	// the model provider will never see the flags.
+	for _, tt := range []struct {
+		name string
+		body string
+	}{
+		{"uppercased provider key", `{"model":"x","stream":true,"PROVIDER":{"zdr":true,"data_collection":"deny"}}`},
+		{"uppercased flag keys", `{"model":"x","stream":true,"provider":{"ZDR":true,"DATA_COLLECTION":"deny"}}`},
+		{"mixed case flag keys", `{"model":"x","stream":true,"provider":{"Zdr":true,"Data_Collection":"deny"}}`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if zdrRoutingEnforced([]byte(tt.body)) {
+				t.Error("zdrRoutingEnforced ACCEPTED a body whose routing keys OpenRouter will not " +
+					"read. The proxy would forward this believing ZDR is enforced, while the " +
+					"provider receives no routing object at all -- F1's entire claim (\"the proxy, " +
+					"not the client, is the authority that the flags are correct on the wire\") is " +
+					"false for this request. Fix: exact top-level key lookup, not struct-tag decoding")
+			}
+		})
+	}
+}
+
+func TestStreamRequested_RejectsCaseVariantKeys(t *testing.T) {
+	for _, body := range []string{
+		`{"model":"x","STREAM":true,"provider":{"zdr":true,"data_collection":"deny"}}`,
+		`{"model":"x","Stream":true,"provider":{"zdr":true,"data_collection":"deny"}}`,
+	} {
+		if streamRequested([]byte(body)) {
+			t.Errorf("streamRequested ACCEPTED %s -- OpenRouter reads no `stream` key here, "+
+				"defaults it to false, and returns a buffered body, so the mid-stream budget "+
+				"ceiling never runs. This reopens the 64x spend escape", body)
+		}
+	}
+}
+
+func TestPeekMaxTokens_IgnoresCaseVariantKeys(t *testing.T) {
+	// A case-variant MAX_TOKENS must not be read as a reservation size: the proxy
+	// would reserve the small declared value while OpenRouter, seeing no
+	// max_tokens, applies its own far larger default.
+	if got, ok := peekMaxTokens([]byte(`{"model":"x","MAX_TOKENS":50}`)); ok {
+		t.Errorf("peekMaxTokens read a case-variant key as %d -- the reservation would be sized "+
+			"from a field OpenRouter never sees", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Coverage gaps closed after the QA pass. Each of these was a security control
+// with zero direct tests.
+// ---------------------------------------------------------------------------
+
+// The per-source pre-auth bucket is keyed on X-Forwarded-For, which is
+// caller-supplied and therefore SPOOFABLE. Rotating it yields a fresh bucket
+// every time. The global bucket is the documented backstop -- this asserts it
+// actually holds, which nothing did before.
+func TestPreAuthLimit_ForgedXFFCannotEvadeTheGlobalBucket(t *testing.T) {
+	p := newTestProxy("http://unused.invalid", "http://unused.invalid")
+	handler := p.rateLimitedNotFound()
+
+	throttled := 0
+	attempts := int(preAuthBurstGlobal) + 200
+	for i := 0; i < attempts; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/nope", nil)
+		// A different forged source every single request: the per-source bucket
+		// never sees the same key twice and so never throttles anything.
+		req.Header.Set("X-Forwarded-For", fmt.Sprintf("203.0.113.%d, 10.0.0.1", i%256))
+		rec := httptest.NewRecorder()
+		handler(rec, req)
+		if rec.Code == http.StatusTooManyRequests {
+			throttled++
+		}
+	}
+	if throttled == 0 {
+		t.Fatalf("%d requests from %d forged X-Forwarded-For values were ALL admitted -- "+
+			"per-source limiting is trivially evaded by spoofing, and the global bucket "+
+			"that is documented as the backstop is not bounding anything",
+			attempts, attempts)
+	}
+}
+
+func TestClientSource_PrefersFirstXFFEntryThenPeer(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "192.0.2.7:54321"
+
+	if got := clientSource(req); got != "192.0.2.7" {
+		t.Errorf("with no XFF, clientSource = %q, want the peer IP without its port", got)
+	}
+	// Only the FIRST entry is the client; the rest are hops.
+	req.Header.Set("X-Forwarded-For", " 198.51.100.5 , 10.0.0.1, 10.0.0.2")
+	if got := clientSource(req); got != "198.51.100.5" {
+		t.Errorf("clientSource = %q, want the first XFF entry, trimmed", got)
+	}
+}
+
+// /health is the ONLY unauthenticated route and had zero tests.
+func TestHealth(t *testing.T) {
+	t.Run("returns ok and hides the build commit by default", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		makeHealthHandler("deadbeefcafe")(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rec.Code)
+		}
+		var got healthResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatalf("body is not valid JSON: %v (%s)", err, rec.Body.String())
+		}
+		if got.Status != "ok" {
+			t.Errorf("status field = %q, want ok", got.Status)
+		}
+		if got.Commit != "" {
+			t.Errorf("commit = %q on an anonymous request -- this fingerprints the exact "+
+				"running build, and which known-fixed bugs are deployed, for any caller "+
+				"on the internet", got.Commit)
+		}
+	})
+
+	t.Run("discloses the commit only when explicitly opted in", func(t *testing.T) {
+		t.Setenv("HEALTH_EXPOSE_COMMIT", "1")
+		rec := httptest.NewRecorder()
+		makeHealthHandler("deadbeefcafe")(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
+
+		var got healthResponse
+		json.Unmarshal(rec.Body.Bytes(), &got)
+		if got.Commit != "deadbeefcafe" {
+			t.Errorf("commit = %q with HEALTH_EXPOSE_COMMIT=1, want it reported -- the "+
+				"deploy-verify step depends on this", got.Commit)
+		}
+	})
+
+	t.Run("is rate limited", func(t *testing.T) {
+		p := newTestProxy("http://unused.invalid", "http://unused.invalid")
+		handler := p.rateLimitedHealth(makeHealthHandler("x"))
+
+		throttled := 0
+		for i := 0; i < int(preAuthBurstGlobal)+100; i++ {
+			rec := httptest.NewRecorder()
+			handler(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
+			if rec.Code == http.StatusTooManyRequests {
+				throttled++
+			}
+		}
+		if throttled == 0 {
+			t.Error("/health served an unbounded flood with zero throttling -- it is the " +
+				"only unauthenticated route, so this is a free anonymous endpoint")
+		}
+	})
+}
+
+// The buffered response branch still runs for upstream ERROR bodies, which
+// arrive as application/json even when the request asked to stream. Its
+// account-metadata scrubber had no test at all.
+func TestStripAccountMetadata(t *testing.T) {
+	t.Run("removes account fields", func(t *testing.T) {
+		got := stripAccountMetadata([]byte(`{"user_id":"org-SECRET","error":{"code":400}}`))
+		if strings.Contains(string(got), "user_id") || strings.Contains(string(got), "org-SECRET") {
+			t.Errorf("account metadata survived scrubbing: %s", got)
+		}
+		if !strings.Contains(string(got), `"error"`) {
+			t.Errorf("the real error payload was lost: %s", got)
+		}
+	})
+	t.Run("passes through a body it cannot parse", func(t *testing.T) {
+		const raw = `not json at all`
+		if got := string(stripAccountMetadata([]byte(raw))); got != raw {
+			t.Errorf("stripAccountMetadata mangled an unparseable body: %q", got)
+		}
+	})
+}
+
+// End-to-end: an upstream error body must reach the client scrubbed, on the
+// buffered branch, for a request that legitimately asked to stream.
+func TestHandleChatCompletions_UpstreamErrorBodyIsScrubbed(t *testing.T) {
+	const keyID = "eeee1111-0000-0000-0000-000000000001"
+	store := &fakeUsageStore{tokenLimit: 100000}
+	supabase, _ := newFakeSupabase(store, keyID)
+	defer supabase.Close()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		io.WriteString(w, `{"user_id":"org-LEAKED-ACCOUNT","error":{"message":"bad model"}}`)
+	}))
+	defer upstream.Close()
+
+	p := newTestProxy(supabase.URL, upstream.URL)
+	rec := httptest.NewRecorder()
+	p.handleChatCompletions(rec, newAuthorizedRequest(
+		`{"model":"x","stream":true,"provider":{"zdr":true,"data_collection":"deny"}}`))
+
+	if strings.Contains(rec.Body.String(), "org-LEAKED-ACCOUNT") || strings.Contains(rec.Body.String(), "user_id") {
+		t.Errorf("OpenRouter account metadata reached the client on the error path:\n%s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "bad model") {
+		t.Errorf("the upstream error message was lost:\n%s", rec.Body.String())
 	}
 }

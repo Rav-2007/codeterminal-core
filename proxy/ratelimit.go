@@ -45,6 +45,19 @@ const (
 	keyRatePerSecond = 2.0
 	keyBurst         = 20.0
 
+	// keyTokenRatePerSecond / keyTokenBurst are the SECOND layer: they bound one
+	// key by TOKEN VOLUME, which the request-count limiter above cannot see at
+	// all. Two requests per second is a trivial request rate and an unbounded
+	// spend rate -- the bill is denominated in tokens, so this is the layer that
+	// actually tracks money.
+	//
+	// 1000 tokens/s is 60k/min, far above real IDE use (a grounded turn is a few
+	// thousand tokens) and far below what a scripted drain needs. The burst allows
+	// ~2 minutes of accumulated headroom so a legitimate burst of long completions
+	// is never throttled.
+	keyTokenRatePerSecond = 1000.0
+	keyTokenBurst         = 120000.0
+
 	// maxInFlightPerKey bounds simultaneous in-progress requests for one key.
 	// A human driving CLI + TUI + IDE at once is a handful; 8 leaves headroom
 	// while stopping one key from parking dozens of 5-minute upstream calls.
@@ -121,13 +134,7 @@ func (l *rateLimiter) allow(key string) bool {
 		l.buckets[key] = b
 	}
 
-	if elapsed := now.Sub(b.last).Seconds(); elapsed > 0 {
-		b.tokens += elapsed * l.rate
-		if b.tokens > l.burst {
-			b.tokens = l.burst
-		}
-		b.last = now
-	}
+	l.refillLocked(b, now)
 	if b.tokens < 1 {
 		return false
 	}
@@ -135,10 +142,86 @@ func (l *rateLimiter) allow(key string) bool {
 	return true
 }
 
+// available reports whether key's bucket has anything left to spend, WITHOUT
+// spending it. It is the admission half of post-hoc token limiting: at admission
+// time the request's real token cost is unknowable (it only exists once the
+// response is complete), so the gate can only ask whether the previous requests
+// have already exhausted the budget.
+//
+// Deliberately a >= 1 test rather than > 0, matching allow's own threshold, so a
+// bucket in DEBT (see charge) keeps refusing until it refills past one whole
+// token.
+func (l *rateLimiter) available(key string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	now := l.now()
+	l.sweepLocked(now)
+
+	b, ok := l.buckets[key]
+	if !ok {
+		return true // never seen: a full bucket by construction
+	}
+	l.refillLocked(b, now)
+	return b.tokens >= 1
+}
+
+// charge spends n tokens against key AFTER the fact, and is allowed to drive the
+// bucket NEGATIVE.
+//
+// Debt is the point, not a defect. Real usage is only known once a response
+// completes, so a single large completion can legitimately exceed what was in the
+// bucket when it was admitted. Clamping at zero would make that overrun free;
+// letting the bucket go negative makes the NEXT request wait for the refill that
+// pays it off, which is what converts a per-request overrun into a bounded
+// sustained rate.
+//
+// Debt is floored at one full burst so a single pathological request cannot lock
+// a key out for an unbounded stretch -- the punishment stays proportional.
+func (l *rateLimiter) charge(key string, n float64) {
+	if n <= 0 {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	now := l.now()
+	b, ok := l.buckets[key]
+	if !ok {
+		b = &tokenBucket{tokens: l.burst, last: now}
+		l.buckets[key] = b
+	}
+	l.refillLocked(b, now)
+
+	b.tokens -= n
+	if b.tokens < -l.burst {
+		b.tokens = -l.burst
+	}
+}
+
+// refillLocked accrues elapsed-time tokens into b, capped at burst. Extracted
+// from allow so available and charge apply the identical refill rule -- three
+// copies of this arithmetic would be three chances to drift.
+func (l *rateLimiter) refillLocked(b *tokenBucket, now time.Time) {
+	if elapsed := now.Sub(b.last).Seconds(); elapsed > 0 {
+		b.tokens += elapsed * l.rate
+		if b.tokens > l.burst {
+			b.tokens = l.burst
+		}
+		b.last = now
+	}
+}
+
 // sweepLocked drops buckets untouched for bucketIdleTTL, bounding memory. A
 // swept bucket is equivalent to a fresh one (both start full), so dropping it
 // can never be stricter than keeping it -- only more forgiving, which is the
 // safe direction for a false positive.
+//
+// This holds for a bucket in DEBT too (see charge), and sweeping does not forgive
+// anything the refill would not have: at keyTokenRatePerSecond, bucketIdleTTL of
+// elapsed time accrues far more than keyTokenBurst, so any debt within the floor
+// charge enforces has already been paid off by the time a bucket is old enough to
+// be swept.
 func (l *rateLimiter) sweepLocked(now time.Time) {
 	if now.Sub(l.lastSweep) < bucketSweepE {
 		return

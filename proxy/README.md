@@ -31,6 +31,48 @@ that; the sections below describe what it does now.
   whether OpenRouter honors `zdr:true` when a fallback provider is used -- that
   residual is on OpenRouter's side and is addressed by the D4 provider
   deny-list, not here.
+- **Cost authorization beyond the model field.** 403
+  `{"error":"cost_surface_not_allowed"}` for any request carrying a billable
+  side-channel the token quota cannot see: a `models` fallback array, `plugins`
+  (billed per use), `transforms`, or the cost-steering `provider.only` /
+  `order` / `sort`. `provider.ignore` is deliberately still accepted -- it is
+  what D4 uses to exclude a provider, and narrowing where traffic may go is the
+  safe direction. A body with no `model` at all is refused (`model_required`)
+  rather than waved through, which was a fail-open.
+- **A per-request token ceiling, enforced mid-stream.** `min(reserved +
+  remaining quota headroom, 65536)`. Crossing it kills the stream, emits a
+  terminal `{"error":"budget_exceeded","truncated":true}` chunk so the client
+  can tell throttling from a dropped connection, and **charges** the request
+  rather than refunding it. This is the only control that bounds spend when a
+  caller declares no `max_tokens`, as the shipped daemon does not -- admission
+  control alone let one request run to the provider's own (far larger) default
+  ceiling. It is a circuit breaker, not an accountant. Enforcement uses two
+  INDEPENDENT envelope-only bounds, never a content read: a chunk COUNT against
+  the token ceiling (one SSE chunk carries one delta, so the count is the token
+  proxy), and a raw BYTE guard at `ceiling * 512` that catches a provider
+  batching an answer into a few huge chunks -- the shape counting cannot see.
+  They are deliberately not fused into one number: an earlier version divided
+  accumulated line length by 4 and took the max, which measured the repeated
+  ~294-byte JSON envelope rather than the token inside it, scored 73x high, and
+  would have truncated every completion past ~900 tokens. Known residual: a
+  provider batching N tokens per chunk undercounts the token bound by N, so the
+  ceiling fires late -- the safe direction, still bounded by the byte guard and
+  by quota. Exact accounting still comes from the terminal usage chunk.
+- **Streaming is required.** 403 `{"error":"stream_required"}` for a request that
+  sets `stream:false` or omits it. The budget ceiling can only be enforced on a
+  stream; a buffered completion was bounded only by the 16MB response cap, a 64x
+  escape. Refusing keeps the ceiling enforceable on 100% of forwarded traffic.
+  The buffered response branch remains for upstream *error* bodies, which arrive
+  as `application/json` regardless.
+- **A declared `max_tokens` above the reservation cap is refused**, 403
+  `max_tokens_too_large`, rather than silently clamped. Clamping the
+  reservation while forwarding the caller's larger number was the mismatch that
+  let a request overshoot its own admission.
+- **Token-volume rate limiting** per key, alongside the request-rate limit --
+  the bill is denominated in tokens, and two requests per second is a trivial
+  request rate and an unbounded spend rate. Charged post-hoc from real usage
+  into a debt-capable bucket, so an overrun is paid off by the next request
+  rather than being free.
 
 ## Environment variables
 
@@ -116,4 +158,24 @@ Railway supplies `PORT` automatically.
 - **A model allow-list** as cost authorization -- 403 `model_not_allowed` for a
   model outside the shipped tier set (`ALLOWED_MODELS` overrides; empty
   disables the check and is warned about loudly).
-- **ZDR enforcement** -- see above.
+- **ZDR enforcement**, **cost-surface refusal**, the **mid-stream budget
+  ceiling**, and **token-volume limiting** -- see above.
+- **Every unregistered path is rate-limited too.** Unknown routes used to 404
+  straight out of the mux without passing through the pre-auth limiter at all,
+  which made them an unauthenticated, entirely unthrottled endpoint.
+- **Runs as a non-root user** in the container. The proxy binds a high port,
+  reads its config from the environment, and writes nothing to disk, so it
+  needs no privilege at all.
+
+## What it deliberately does NOT do
+
+**It does not scrub secrets out of message content, and cannot.** The proxy
+never parses `messages` -- that is exactly what makes it zero-data-retention-
+preserving rather than a relay that happens to see everything. Secret scrubbing
+runs client-side in the daemon (`daemon/scrub.go`) *before anything leaves the
+user's machine*. Three limits follow from that, and they are stated here rather
+than buried: the scrubber matches a fixed set of high-confidence **prefixed**
+shapes, so novel, obfuscated, or unprefixed secrets are missed; it is
+**disableable** (`--no-scrub`); and **a caller that is not the shipped daemon
+gets no scrubbing at all**. Closing that would require the proxy to read user
+code, which is a deliberate trade this product has decided against.
