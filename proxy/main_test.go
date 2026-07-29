@@ -1505,10 +1505,158 @@ func TestStreamSSE_KilledStreamIsChargedNotRefunded(t *testing.T) {
 		t.Fatal("a killed stream was fully REFUNDED -- over-budget inference would be " +
 			"free and infinitely repeatable")
 	}
-	// The estimate at kill time exceeded the ceiling but is far under the
-	// reservation, so the correction is a partial refund, never a full one.
-	if delta <= -int64(defaultReservationTokens) {
-		t.Errorf("correction delta = %d, want a partial correction above the full refund floor", delta)
+	// No refund of ANY size. This fixture pairs a ceiling of 10 with the 4096
+	// reservation, which cannot occur in production (requestTokenCeiling makes
+	// ceiling >= reserved), so the kill fires at ~11 chunks. Before chargeForKill
+	// the charge was that raw count and the correction was -4085 -- a partial
+	// refund this test accepted, and the same defect P0-1 made unbounded on the
+	// byte guard. The floor at `reserved` makes it 0.
+	if delta < 0 {
+		t.Errorf("correction delta = %d: a killed stream was refunded %d tokens. "+
+			"Every kill path must charge at least the reservation", delta, -delta)
+	}
+}
+
+// bigChunkUpstream emits `chunks` SSE data lines of roughly `size` bytes each and
+// NO terminal usage chunk -- the shape a provider that batches many tokens into
+// one chunk produces (a reasoning model streaming long `reasoning` deltas, say),
+// and therefore the shape that trips budgetExceeded's BYTE guard rather than its
+// token ceiling. sseChunks/sseRealisticChunks above can only ever trip the token
+// ceiling, which is precisely why the byte bound went untested.
+func bigChunkUpstream(chunks, size int) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		filler := strings.Repeat("A", size)
+		for i := 0; i < chunks; i++ {
+			fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":\"%s\"}}]}\n\n", filler)
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+		}
+	}))
+}
+
+// The P0-1 regression. A stream killed by the BYTE guard must not produce a
+// refund -- the defect this test exists to catch charged the CHUNK COUNT, which
+// on this bound is tiny by construction (a few huge chunks) while the bytes
+// streamed are at the ceiling. finalizeUsage then took its `actual > 0` branch
+// with actual far below reserved and issued a large NEGATIVE correction: 4093 of
+// 4096 tokens refunded after streaming the maximum the ceiling permits.
+//
+// It runs the whole handleChatCompletions path rather than streamSSE directly,
+// because the defect lives in the agreement between the kill site and
+// finalizeUsage and only the real reservation makes `reserved` meaningful.
+//
+// Neuter check: replace chargeForKill's body with `return max(measured,
+// dataChunks)` and this test fails with delta=-4093 while every other budget
+// test still passes -- which is exactly how the defect shipped.
+func TestStreamSSE_ByteGuardKillNeverRefunds(t *testing.T) {
+	const keyID = "bbbb1111-0000-0000-0000-000000000004"
+
+	// Headroom of 100 over the 4096 reservation => ceiling 4196 => the byte guard
+	// trips at 4196*512 = 2,148,352 bytes.
+	store := &fakeUsageStore{tokensUsed: 0, tokenLimit: defaultReservationTokens + 100}
+	supabase, _ := newFakeSupabase(store, keyID)
+	defer supabase.Close()
+
+	// 3 x 900_000 = 2.7MB crosses the byte guard at dataChunks == 3, three orders
+	// of magnitude below the token ceiling of 4196.
+	upstream := bigChunkUpstream(3, 900_000)
+	defer upstream.Close()
+
+	p := newTestProxy(supabase.URL, upstream.URL)
+	req := newAuthorizedRequest(`{"model":"x","messages":[{"role":"user","content":"hi"}],"stream":true,"provider":{"zdr":true,"data_collection":"deny"}}`)
+	p.handleChatCompletions(httptest.NewRecorder(), req)
+
+	waitForCorrections(t, store, 1)
+	store.mu.Lock()
+	delta := store.corrections[0]
+	store.mu.Unlock()
+
+	if delta < 0 {
+		t.Errorf("byte_guard kill refunded %d of %d reserved tokens after streaming the "+
+			"maximum its ceiling permits (finalizeUsage saw actual=%d). A stream killed "+
+			"for exceeding its budget must never move quota in the caller's favour -- "+
+			"this is the C3 abort-refund class through the budget kill path",
+			-delta, defaultReservationTokens, delta+int64(defaultReservationTokens))
+	}
+}
+
+// The byte-guard kill's other half: finalizeUsage charges the same figure to the
+// per-key token-RATE bucket, so the defect defeated both new spend controls at
+// once. A maximum-spend request must leave the bucket materially charged.
+func TestStreamSSE_ByteGuardKillChargesTheTokenRateBucket(t *testing.T) {
+	const keyID = "bbbb1111-0000-0000-0000-000000000005"
+
+	store := &fakeUsageStore{tokensUsed: 0, tokenLimit: defaultReservationTokens + 100}
+	supabase, _ := newFakeSupabase(store, keyID)
+	defer supabase.Close()
+	upstream := bigChunkUpstream(3, 900_000)
+	defer upstream.Close()
+
+	p := newTestProxy(supabase.URL, upstream.URL)
+	req := newAuthorizedRequest(`{"model":"x","messages":[{"role":"user","content":"hi"}],"stream":true,"provider":{"zdr":true,"data_collection":"deny"}}`)
+	p.handleChatCompletions(httptest.NewRecorder(), req)
+	waitForCorrections(t, store, 1)
+
+	// Read the balance rather than asking available(), which is a >= 1 boolean
+	// against a burst of 120000 and so cannot see the difference between a charge
+	// of 3 and a charge of 4096. Measuring the number is the whole point here.
+	p.keyTokens.mu.Lock()
+	b, charged := p.keyTokens.buckets[keyID]
+	var spent float64
+	if charged {
+		spent = keyTokenBurst - b.tokens
+	}
+	p.keyTokens.mu.Unlock()
+
+	if !charged {
+		t.Fatal("a 2.7MB maximum-spend request left no token-rate bucket at all")
+	}
+	if spent < float64(defaultReservationTokens) {
+		t.Errorf("the token-rate bucket was charged %.0f for a request that streamed the "+
+			"maximum its ceiling permits, want at least the reservation %d. Charging the "+
+			"chunk count (3) leaves the token-volume limiter unable to bound a byte-guard "+
+			"kill, so both of this branch's new spend controls fail on the same defect",
+			spent, defaultReservationTokens)
+	}
+}
+
+// chargeForKill's invariant, unit-level: no input combination may produce a
+// figure below the reservation, because that is what makes finalizeUsage emit a
+// negative correction.
+func TestChargeForKill(t *testing.T) {
+	const reserved = 4096
+	tests := []struct {
+		name       string
+		measured   int
+		dataChunks int
+		want       int
+	}{
+		// The byte_guard shape: a handful of huge chunks, no usage figure. The
+		// defect returned 3 here.
+		{"byte guard, no usage figure", 0, 3, reserved},
+		// The token_ceiling shape: the count is above the ceiling, which is itself
+		// at or above the reservation.
+		{"token ceiling, no usage figure", 0, 5000, 5000},
+		// A real usage figure already in hand is never revised DOWN, in either
+		// direction relative to the reservation.
+		{"real usage above the reservation wins", 9000, 5000, 9000},
+		{"real usage below the reservation is floored", 200, 3, reserved},
+		{"nothing measured at all still charges the reservation", 0, 0, reserved},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := chargeForKill(tt.measured, tt.dataChunks, reserved); got != tt.want {
+				t.Errorf("chargeForKill(%d, %d, %d) = %d, want %d",
+					tt.measured, tt.dataChunks, reserved, got, tt.want)
+			}
+			if got := chargeForKill(tt.measured, tt.dataChunks, reserved); got < reserved {
+				t.Errorf("charge %d is below the reservation %d -- finalizeUsage will "+
+					"issue a refund for a killed stream", got, reserved)
+			}
+		})
 	}
 }
 

@@ -1055,12 +1055,7 @@ func (p *proxy) streamSSE(w http.ResponseWriter, body io.Reader, keyID string, r
 		// what actually stops the spend, so no extra plumbing is needed.
 		if reason, over := budgetExceeded(dataChunks, streamedBytes, ceiling); over {
 			p.logger.Printf("budget: KILLED stream (key id=%s, reason=%s, chunks=%d, bytes=%d, ceiling=%d)", keyID, reason, dataChunks, streamedBytes, ceiling)
-			// Charge what was streamed, never refund: real output was generated
-			// and billed upstream. Guarded so a real usage figure already in hand
-			// is never revised DOWN to the chunk count.
-			if dataChunks > totalTokens {
-				totalTokens = dataChunks
-			}
+			totalTokens = chargeForKill(totalTokens, dataChunks, reserved)
 			writeBudgetExceeded(w, flusher, canFlush)
 			return
 		}
@@ -1068,6 +1063,42 @@ func (p *proxy) streamSSE(w http.ResponseWriter, body io.Reader, keyID string, r
 	if err := scanner.Err(); err != nil {
 		p.logger.Printf("streaming upstream response failed: %v", err)
 	}
+}
+
+// chargeForKill decides what a stream killed by the budget ceiling is charged.
+//
+// THE INVARIANT: a killed stream consumed everything its ceiling permitted, so
+// it must never move quota in the caller's favour. Charge the LARGEST defensible
+// figure of the three available:
+//
+//   - measured -- a real usage figure, if a terminal usage chunk already arrived.
+//   - dataChunks -- the chunk count, which is what binds on a token_ceiling kill:
+//     that kill fires at dataChunks > ceiling, and ceiling is
+//     requestTokenCeiling(reserved, headroom) = reserved + headroom (headroom is
+//     never negative -- reserveQuota only succeeds within the limit) capped at
+//     absoluteMaxRequestTokens, itself 2x the maxReservationTokens cap on
+//     reserved. So ceiling >= reserved always, and the chunk count is the
+//     largest of the three there.
+//   - reserved -- the reservation, which is what binds on a byte_guard kill,
+//     where the chunk count is tiny by construction: the guard fires because a
+//     FEW huge chunks crossed the byte bound, so the count is nowhere near the
+//     tokens actually generated.
+//
+// This exists because the previous form raised the charge to dataChunks alone.
+// That holds only on the token_ceiling bound; on byte_guard it handed
+// finalizeUsage an `actual` far BELOW `reserved`, which took the `actual > 0`
+// branch and issued a large NEGATIVE correction -- a refund of ~all of the
+// reservation after streaming the maximum the ceiling permits. Repeatable free
+// paid inference, and the same abort-refund class as C3 (a703978) through a path
+// C3's regression test does not cover. It was worst for the keys with the least
+// headroom, since a smaller ceiling makes the byte guard fire sooner while the
+// refund stays proportionally larger.
+//
+// The charge decision lives in one named function, rather than inline at the
+// kill site, so the invariant has a home and a unit test and a third bound added
+// to budgetExceeded later cannot silently mean "refund".
+func chargeForKill(measured, dataChunks, reserved int) int {
+	return max(measured, dataChunks, reserved)
 }
 
 // budgetExceeded reports whether a stream has crossed either of its two bounds,
