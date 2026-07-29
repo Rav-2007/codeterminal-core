@@ -545,6 +545,23 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Ambiguity check FIRST, before any gate reads the body. Every gate below
+	// resolves a duplicate key last-wins and then this body is forwarded
+	// byte-for-byte carrying both copies, so a gate that judges an ambiguous body
+	// has already judged something other than what OpenRouter will read (see
+	// hasDuplicateKeys). Placed here so no gate ever sees one.
+	//
+	// 400, not the gates' 403: this is a malformed, unanswerable request, not a
+	// policy refusal of a well-formed one. Cannot fire for the shipped daemon,
+	// which marshals its body from structs and so cannot emit a duplicate key.
+	if hasDuplicateKeys(bodyBytes) {
+		p.logger.Printf("body: refused (key id=%s -- duplicate JSON key, request is ambiguous)", apiKeyID)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"error":"duplicate_json_key"}`))
+		return
+	}
+
 	// Cost authorization before anything is reserved or forwarded: quota is
 	// counted in tokens, but the bill is in dollars, so the model choice -- and
 	// every other field that steers what gets billed -- is itself a spending
@@ -1303,6 +1320,109 @@ func extractUsage(line string) (int, bool) {
 // It preserves the never-parse-content posture for the same reason
 // stripSSEAccountMetadata does: values -- including `messages` -- stay opaque
 // byte slices that are never examined. Only top-level KEY NAMES are compared.
+// hasDuplicateKeys reports whether body contains any JSON object with the same
+// key twice, at any depth.
+//
+// WHY THIS IS A REFUSAL AND NOT A PARSING DETAIL. Every body gate reads through
+// topLevelFields -> json.Unmarshal into map[string]json.RawMessage, which
+// resolves duplicates LAST-WINS. The accepted body is then forwarded to
+// OpenRouter BYTE-FOR-BYTE carrying both copies. So a body naming a banned model
+// first and an allowed one second is admitted on the second and forwarded with
+// the first -- the gate's verdict and the bytes the provider actually reads
+// disagree. Reproduced: cost authorization admitted a request whose forwarded
+// body still named the banned model.
+//
+// Whether that completes upstream depends on OpenRouter resolving duplicates
+// first-wins, which RFC 8259 explicitly leaves undefined and which is not this
+// proxy's to assume. Refusing removes the dependency rather than betting on it --
+// the same reasoning that replaced struct-tag decoding with exact-key lookup
+// (topLevelFields), one level down: the proxy's claim to be THE AUTHORITY on
+// model/provider/stream/max_tokens holds only if both parsers read the same body
+// the same way.
+//
+// Nested objects are walked too, so a duplicate inside `provider` -- where the
+// ZDR flags live -- is caught as well as a top-level one.
+//
+// Values stay opaque exactly as in topLevelFields: json.Decoder is driven
+// token-wise and only object KEY NAMES are ever compared. Message content is
+// never examined, so the never-parse-content property the ZDR posture rests on
+// is preserved. Stdlib only -- the proxy stays dependency-free.
+func hasDuplicateKeys(body []byte) bool {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	tok, err := dec.Token()
+	if err != nil {
+		// Empty or malformed: not this function's call. The gates already refuse a
+		// body they cannot decode, so leave that refusal where it belongs.
+		return false
+	}
+	duplicate, _ := scanJSONValue(dec, tok, 0)
+	return duplicate
+}
+
+// maxJSONNestingDepth bounds scanJSONValue's recursion. A 4MB body (the
+// MaxBytesReader cap) of "[[[[..." would otherwise recurse ~4M frames. No real
+// chat-completions body comes close to this depth, so exceeding it is treated as
+// a duplicate -- i.e. REFUSED, the fail-closed direction, consistent with every
+// other gate here.
+const maxJSONNestingDepth = 64
+
+// scanJSONValue consumes the one JSON value whose first token is tok, descending
+// into objects and arrays. It reports whether a duplicate key was found, and
+// whether the scan itself completed (false on malformed input or excess depth).
+func scanJSONValue(dec *json.Decoder, tok json.Token, depth int) (duplicate, ok bool) {
+	delim, isDelim := tok.(json.Delim)
+	if !isDelim {
+		return false, true // a scalar: nothing to descend into
+	}
+	if depth >= maxJSONNestingDepth {
+		return true, false
+	}
+
+	switch delim {
+	case '{':
+		seen := make(map[string]bool)
+		for {
+			keyTok, err := dec.Token()
+			if err != nil {
+				return false, false
+			}
+			if d, isD := keyTok.(json.Delim); isD && d == '}' {
+				return false, true
+			}
+			key, isString := keyTok.(string)
+			if !isString {
+				return false, false // unreachable for well-formed JSON
+			}
+			if seen[key] {
+				return true, true
+			}
+			seen[key] = true
+
+			valTok, err := dec.Token()
+			if err != nil {
+				return false, false
+			}
+			if dup, done := scanJSONValue(dec, valTok, depth+1); dup || !done {
+				return dup, done
+			}
+		}
+	case '[':
+		for {
+			elemTok, err := dec.Token()
+			if err != nil {
+				return false, false
+			}
+			if d, isD := elemTok.(json.Delim); isD && d == ']' {
+				return false, true
+			}
+			if dup, done := scanJSONValue(dec, elemTok, depth+1); dup || !done {
+				return dup, done
+			}
+		}
+	}
+	return false, false
+}
+
 func topLevelFields(body []byte) (map[string]json.RawMessage, bool) {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(body, &fields); err != nil || fields == nil {

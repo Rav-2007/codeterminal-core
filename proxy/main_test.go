@@ -2193,3 +2193,115 @@ func TestHandleChatCompletions_UpstreamErrorBodyIsScrubbed(t *testing.T) {
 		t.Errorf("the upstream error message was lost:\n%s", rec.Body.String())
 	}
 }
+
+// P2-1. Duplicate keys made the gate's verdict and the forwarded bytes disagree:
+// every gate resolves last-wins, and the body is forwarded byte-for-byte
+// carrying both. Reproduced before the fix -- cost authorization admitted a
+// request whose forwarded body still named a banned model first.
+//
+// Neuter check: remove the hasDuplicateKeys call from handleChatCompletions and
+// the first two subtests fail (200 instead of 400, upstream contacted).
+func TestDuplicateJSONKeys_Refused(t *testing.T) {
+	const keyID = "dddd1111-0000-0000-0000-000000000001"
+
+	tests := []struct {
+		name       string
+		body       string
+		wantStatus int
+	}{
+		{
+			// The confirmed bypass: banned model first, allowed model second.
+			name: "duplicate model at the top level",
+			body: `{"model":"expensive-model","model":"cheap-model",` +
+				`"messages":[{"role":"user","content":"hi"}],"stream":true,` +
+				`"provider":{"zdr":true,"data_collection":"deny"}}`,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			// Nested: the ZDR flags live inside `provider`, so the walk must
+			// descend. zdr:false first, zdr:true second reads as compliant to the
+			// gate while the forwarded bytes lead with the weakened flag.
+			name: "duplicate zdr inside the provider object",
+			body: `{"model":"cheap-model","messages":[{"role":"user","content":"hi"}],` +
+				`"stream":true,"provider":{"zdr":false,"zdr":true,"data_collection":"deny"}}`,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			// The shipped daemon's real body shape. It marshals from structs, so it
+			// cannot produce a duplicate key -- this must still be admitted, or the
+			// check has broken all real traffic.
+			name: "the shipped daemon's body shape is unaffected",
+			body: `{"model":"cheap-model","messages":[{"role":"system","content":"sys"},` +
+				`{"role":"user","content":"hi"}],"stream":true,` +
+				`"provider":{"zdr":true,"data_collection":"deny","allow_fallbacks":false,"ignore":["DeepInfra"]},` +
+				`"stream_options":{"include_usage":true}}`,
+			wantStatus: http.StatusOK,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &fakeUsageStore{tokenLimit: 100000}
+			supabase, _ := newFakeSupabase(store, keyID)
+			defer supabase.Close()
+
+			var contacted atomic.Bool
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				contacted.Store(true)
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(http.StatusOK)
+				io.WriteString(w, sseUsageBody(10))
+			}))
+			defer upstream.Close()
+
+			p := newProxy("k", upstream.URL, supabase.URL, "srk", log.New(io.Discard, "", 0),
+				map[string]bool{"cheap-model": true})
+			rec := httptest.NewRecorder()
+			p.handleChatCompletions(rec, newAuthorizedRequest(tt.body))
+
+			if rec.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d (body: %s)", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+			if tt.wantStatus == http.StatusBadRequest {
+				if contacted.Load() {
+					t.Error("an ambiguous body was forwarded upstream -- the whole point is " +
+						"that no gate, and no provider, ever judges a body whose meaning " +
+						"depends on which parser reads it")
+				}
+				if !strings.Contains(rec.Body.String(), "duplicate_json_key") {
+					t.Errorf("refusal body = %s, want the duplicate_json_key slug", rec.Body.String())
+				}
+			}
+		})
+	}
+}
+
+func TestHasDuplicateKeys(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"clean object", `{"model":"a","stream":true}`, false},
+		{"top-level duplicate", `{"model":"a","model":"b"}`, true},
+		{"nested duplicate", `{"provider":{"zdr":false,"zdr":true}}`, true},
+		{"duplicate inside an array element", `{"messages":[{"role":"a","role":"b"}]}`, true},
+		// Same key name at DIFFERENT levels is legitimate and must be allowed --
+		// the sets are per-object, not global.
+		{"same name in two different objects", `{"a":{"x":1},"b":{"x":2}}`, false},
+		{"repeated key across array siblings", `{"m":[{"role":"user"},{"role":"user"}]}`, false},
+		{"empty object", `{}`, false},
+		// Malformed input is left to the gates, which already refuse it.
+		{"malformed", `{"a":`, false},
+		{"not an object", `"just a string"`, false},
+		// Deep nesting is refused rather than recursed into (fail closed).
+		{"excessive nesting", strings.Repeat("[", 200) + strings.Repeat("]", 200), true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := hasDuplicateKeys([]byte(tt.body)); got != tt.want {
+				t.Errorf("hasDuplicateKeys(%s) = %v, want %v", tt.body, got, tt.want)
+			}
+		})
+	}
+}
