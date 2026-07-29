@@ -5,8 +5,105 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # The eval job below is schedule/dispatch-only; these triggers exist so it has
+  # something to hang off. Everything else runs per-push and per-PR.
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+  workflow_dispatch:
+
+# There is no root Go module -- only go.work -- so `./...` from the repo root
+# fails outright ("directory prefix . does not contain modules listed in
+# go.work"). Every Go step below therefore names its module explicitly. Do not
+# "simplify" these to a root-level ./... ; it does not work.
+env:
+  GO_VERSION: "1.25.x"
 
 jobs:
+  go:
+    # 584 Go tests, gofmt, and vet existed in this repo and gated nothing: the
+    # entire pipeline was one docker build. Both regressions in the 2026-07-30
+    # launch-gate review shipped past a green LOCAL suite, because a suite nobody
+    # is required to run is a suite that drifts. This job is what makes it a gate.
+    name: go (${{ matrix.module }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [daemon, editapply, proxy, helper, protocol, clients/tui]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: "**/go.sum"
+
+      - name: Build
+        run: go build ./...
+        working-directory: ${{ matrix.module }}
+
+      # gofmt -l prints offending files and exits 0, so the output is the signal.
+      - name: gofmt
+        working-directory: ${{ matrix.module }}
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt found unformatted files:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+        working-directory: ${{ matrix.module }}
+
+      # -race, not a bare `go test`: this repo's concurrency work (the Gate 6
+      # apply/undo locking in particular) is only defended by the race detector.
+      - name: Test
+        run: go test -race ./...
+        working-directory: ${{ matrix.module }}
+
+  govulncheck:
+    name: govulncheck (${{ matrix.module }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [daemon, editapply, proxy, helper, protocol, clients/tui]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: "**/go.sum"
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - name: Scan
+        run: govulncheck ./...
+        working-directory: ${{ matrix.module }}
+
+  extension:
+    # The VS Code tests run in a real Extension Development Host, which needs a
+    # display; xvfb-run supplies one. Confirmed working -- this is the same
+    # invocation used locally.
+    name: vscode extension
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: clients/vscode/package-lock.json
+      - name: Install
+        run: npm ci
+        working-directory: clients/vscode
+      - name: Compile (tsc)
+        run: npm run compile
+        working-directory: clients/vscode
+      - name: Test (Extension Development Host)
+        run: xvfb-run -a npm test
+        working-directory: clients/vscode
+
   proxy-image:
     # Builds the proxy Docker image exactly as Railway does (same Dockerfile,
     # same build context) so a broken build context — e.g. a Dockerfile that
@@ -16,3 +113,21 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build proxy image
         run: docker build -t codeterminal-proxy:ci ./proxy
+
+  eval:
+    # NOT per-PR. The -tags eval suite downloads a real embedding model and takes
+    # ~148s; running it on every push would make the gate slow enough that people
+    # route around it, which is the failure mode this whole pipeline exists to
+    # fix. On a schedule it still catches retrieval-quality drift within a week.
+    name: retrieval eval (scheduled)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: "**/go.sum"
+      - name: Run gated eval suite
+        run: go test -tags eval ./...
+        working-directory: daemon
