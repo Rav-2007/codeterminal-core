@@ -111,6 +111,58 @@ type chatCompletionChunk struct {
 		// reported once via streamCompletion's onFinish callback.
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
+
+	// Error carries a terminal error signalled INSIDE the SSE stream rather than
+	// by an HTTP status -- by the time the first chunk has been written the status
+	// line is long gone, so a mid-stream failure has nowhere else to go. The
+	// managed proxy uses it to announce a budget kill
+	// ({"error":"budget_exceeded","truncated":true}); OpenRouter can also surface
+	// upstream errors this way.
+	//
+	// json.RawMessage, NOT string, deliberately: the value is a bare string in the
+	// proxy's chunk but an OBJECT in OpenRouter's ({"error":{"message":...,
+	// "code":...}}). Typing it as string would make the whole chunk fail to
+	// unmarshal on the object form and hit the `continue` in streamCompletion,
+	// silently discarding any content that chunk also carried. Keeping it raw
+	// means an error shape this code does not recognize costs nothing -- see
+	// errorSlug, which extracts a slug only when there is a string to extract.
+	Error json.RawMessage `json:"error"`
+}
+
+// errorSlug extracts a machine-readable slug from a chunk's `error` field,
+// reporting false when there is nothing usable. It accepts the two shapes seen
+// in practice and refuses to guess at anything else:
+//
+//   - a bare string:  {"error":"budget_exceeded"}      -> "budget_exceeded"
+//   - an object with a string "code": {"error":{"code":"budget_exceeded"}}
+//
+// Anything else (an object with no code, a number, null) yields false, so an
+// unrecognized error shape falls through to the existing handling rather than
+// inventing a reason. The extracted value is compared against known slugs by the
+// caller and never rendered raw to the user: an upstream error string can carry
+// a host or account detail, which Gate 7 keeps out of client-facing text.
+func errorSlug(raw json.RawMessage) (string, bool) {
+	if len(raw) == 0 {
+		return "", false
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		if s == "" {
+			return "", false
+		}
+		return s, true
+	}
+	var obj struct {
+		Code json.RawMessage `json:"code"`
+	}
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return "", false
+	}
+	var code string
+	if err := json.Unmarshal(obj.Code, &code); err != nil || code == "" {
+		return "", false
+	}
+	return code, true
 }
 
 // incompleteInfoFor maps a terminal SSE finish_reason to the client-facing
@@ -135,6 +187,11 @@ func incompleteInfoFor(finishReason string) *protocol.IncompleteInfo {
 		return &protocol.IncompleteInfo{
 			Reason: protocol.IncompleteContentFilter,
 			Detail: "the provider's content filter stopped the response before it finished — this answer is incomplete.",
+		}
+	case protocol.IncompleteBudgetExceeded:
+		return &protocol.IncompleteInfo{
+			Reason: protocol.IncompleteBudgetExceeded,
+			Detail: "this answer was cut short because the request reached its spending limit — what you see above is everything that was generated. Try asking for something narrower.",
 		}
 	default:
 		return &protocol.IncompleteInfo{
@@ -330,6 +387,23 @@ func streamCompletion(ctx context.Context, apiBase, apiKey, model, systemPrompt 
 			if onProvider != nil {
 				onProvider(chunk.Provider)
 			}
+		}
+		// Checked BEFORE the zero-choices guard below, not after: the proxy's
+		// budget-kill chunk carries an `error` and NO choices, so a check placed
+		// after that guard never runs -- which is exactly why the kill was
+		// invisible. The chunk decoded to an empty struct, `continue` skipped it,
+		// "[DONE]" arrived, and incompleteInfoFor("") returned nil, so a stream cut
+		// off mid-answer was reported to the user as a complete success (P1-1).
+		//
+		// This sets the finish reason rather than returning an error: the answer so
+		// far is real, streamed content the user should keep. It ends early, which
+		// is what IncompleteInfo exists to say.
+		// Deliberately does NOT `continue`: a chunk may carry an error alongside
+		// content, and that content is real streamed output the user should still
+		// receive. The budget-kill chunk has no choices of its own, so it falls
+		// through to the guard below on its own merits.
+		if slug, ok := errorSlug(chunk.Error); ok && slug == protocol.IncompleteBudgetExceeded {
+			finishReason = protocol.IncompleteBudgetExceeded
 		}
 		if len(chunk.Choices) == 0 {
 			continue

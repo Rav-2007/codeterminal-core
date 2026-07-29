@@ -266,6 +266,20 @@ const (
 	// IncompleteContentFilter: the provider's content filter halted generation
 	// mid-stream, so the answer is partial.
 	IncompleteContentFilter = "content_filter"
+
+	// IncompleteBudgetExceeded: the managed proxy killed the stream mid-flight
+	// because the request crossed its per-request spending ceiling, so the answer
+	// stops wherever generation had got to.
+	//
+	// Unlike the two above, this reason does NOT come from the provider's
+	// finish_reason vocabulary -- it is signalled by the proxy's own terminal
+	// chunk, {"error":"budget_exceeded","truncated":true} (proxy/main.go's
+	// writeBudgetExceeded), which carries no choices and therefore no
+	// finish_reason to reuse. It shares the vocabulary anyway so clients keep one
+	// branch point for "this answer is not whole", and it is equally
+	// provider-neutral: it names a limit this product imposed, never a host,
+	// account, or upstream string.
+	IncompleteBudgetExceeded = "budget_exceeded"
 )
 
 // IncompleteInfo reports that a streamed answer ended early rather than
