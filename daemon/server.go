@@ -470,14 +470,17 @@ func (s *Server) serveConn(conn net.Conn) {
 // with no wire-level discriminator field or protocol version bump — older
 // clients only ever send PromptRequest-shaped JSON, which has no "edit"
 // key, so this always falls through to the existing prompt path for them.
+//
+// The key is matched EXACTLY (requestfields.go): {"EDIT":{...}} used to sniff
+// true here through Go's case-insensitive struct-tag matching, routing a body
+// OpenRouter-style exact parsers would read differently.
 func isApplyEditRequest(raw json.RawMessage) bool {
-	var peek struct {
-		Edit *protocol.EditBlockWire `json:"edit"`
-	}
-	if err := json.Unmarshal(raw, &peek); err != nil {
+	fields, ok := requestFields(raw)
+	if !ok {
 		return false
 	}
-	return peek.Edit != nil
+	var edit protocol.EditBlockWire
+	return hasObjectKey(fields, "edit", &edit)
 }
 
 // handleApplyEdit runs an ApplyEditRequest through the same editapply core
@@ -580,14 +583,16 @@ func isWorkspaceBackupSessionDir(realWorkspaceRoot, dir string) bool {
 // caught here; older clients that don't know this message only ever send
 // PromptRequest-shaped JSON, which has no "undo" key, so they always fall
 // through to the prompt path unaffected.
+//
+// The key is matched EXACTLY (requestfields.go). This is the sniffer that most
+// needed it: {"UNDO":true} used to route here, and undo restores files from
+// backup over the user's current work.
 func isUndoRequest(raw json.RawMessage) bool {
-	var peek struct {
-		Undo *bool `json:"undo"`
-	}
-	if err := json.Unmarshal(raw, &peek); err != nil {
+	fields, ok := requestFields(raw)
+	if !ok {
 		return false
 	}
-	return peek.Undo != nil
+	return hasBoolKey(fields, "undo")
 }
 
 // handleUndo runs an UndoRequest through the exact same runUndoSession the
@@ -686,14 +691,14 @@ func (s *Server) handleUndo(enc *json.Encoder, req protocol.UndoRequest) {
 // don't know this message only ever send PromptRequest-shaped JSON, which
 // has no "search" key, so they always fall through to the prompt path
 // unaffected.
+//
+// The key is matched EXACTLY (requestfields.go).
 func isSearchRequest(raw json.RawMessage) bool {
-	var peek struct {
-		Search *bool `json:"search"`
-	}
-	if err := json.Unmarshal(raw, &peek); err != nil {
+	fields, ok := requestFields(raw)
+	if !ok {
 		return false
 	}
-	return peek.Search != nil
+	return hasBoolKey(fields, "search")
 }
 
 // defaultSearchLimit caps how many results a SearchRequest returns when the
