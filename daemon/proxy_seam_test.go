@@ -226,3 +226,112 @@ func waitFor(t *testing.T, limit time.Duration, cond func() bool, msg string) {
 	}
 	t.Fatal(msg)
 }
+
+// The last hop: the daemon SOCKET. The test above proves the real proxy binary
+// reaches streamCompletion; this one carries it the rest of the way, through
+// Server.serveConn, and asserts the WIRE BYTES a client actually receives --
+// which is what the TUI prints and what the VS Code webview renders.
+//
+// P1-1's symptom was defined in exactly these terms ("the daemon then reports
+// Done:true with no Error and no IncompleteInfo"), so this is where that claim
+// is falsifiable. A unit test on the parser cannot state it.
+func TestSeam_BudgetKillReachesTheClientOverTheSocket(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds the proxy binary; skipped under -short")
+	}
+
+	const (
+		keyID    = "seam0000-0000-0000-0000-000000000002"
+		model    = "seam/socket-model"
+		reserved = 4096
+		headroom = 100
+	)
+
+	supabase, _ := seamSupabase(t, keyID, reserved, headroom)
+	defer supabase.Close()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		filler := strings.Repeat("A", 900_000)
+		for i := 0; i < 3; i++ {
+			fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":\"%s\"}}]}\n\n", filler)
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+		}
+	}))
+	defer upstream.Close()
+
+	// The daemon pointed at the real proxy: the CODETERMINAL_PROXY_BASE shape a
+	// pilot user actually runs.
+	srv := &Server{
+		apiBase:       startProxy(t, buildProxyBinary(t), supabase.URL, upstream.URL, model),
+		apiKey:        "mochi_seam_key",
+		cfg:           &Config{},
+		modelOverride: model,
+		logger:        discardLogger(),
+		workspace:     "/workspace/seam",
+	}
+
+	clientConn, serverConn := net.Pipe()
+	done := make(chan struct{})
+	go func() {
+		srv.serveConn(serverConn)
+		serverConn.Close()
+		close(done)
+	}()
+
+	enc := json.NewEncoder(clientConn)
+	dec := json.NewDecoder(clientConn)
+	if err := enc.Encode(protocol.HandshakeRequest{ProtocolVersion: protocol.ProtocolVersion, ClientName: "seam"}); err != nil {
+		t.Fatalf("handshake: %v", err)
+	}
+	var hs protocol.HandshakeResponse
+	if err := dec.Decode(&hs); err != nil {
+		t.Fatalf("handshake response: %v", err)
+	}
+	if err := enc.Encode(protocol.PromptRequest{ProtocolVersion: protocol.ProtocolVersion, Prompt: "explain this repo"}); err != nil {
+		t.Fatalf("prompt: %v", err)
+	}
+
+	var contentMessages int
+	var final protocol.TokenResponse
+	for {
+		var tok protocol.TokenResponse
+		if err := dec.Decode(&tok); err != nil {
+			t.Fatalf("decoding token response: %v", err)
+		}
+		if tok.Token != "" {
+			contentMessages++
+		}
+		if tok.Done {
+			final = tok
+			break
+		}
+	}
+	<-done
+
+	wire, _ := json.Marshal(final)
+	t.Logf("terminal TokenResponse on the wire: %s", wire)
+
+	if final.Incomplete == nil {
+		t.Fatalf("the terminal TokenResponse carries NO IncompleteInfo, so a budget-killed "+
+			"answer reaches the user as a complete success. Wire: %s", wire)
+	}
+	if final.Incomplete.Reason != protocol.IncompleteBudgetExceeded {
+		t.Errorf("Incomplete.Reason = %q, want %q", final.Incomplete.Reason, protocol.IncompleteBudgetExceeded)
+	}
+	if final.Incomplete.Detail == "" {
+		t.Error("Incomplete.Detail is empty; it is the string both clients render")
+	}
+	// A budget kill is a TRUNCATION, not a failure. The partial answer is real
+	// output the caller was billed for, so presenting it as an error would be a
+	// different wrong answer to the same question.
+	if final.Error != "" {
+		t.Errorf("Done.Error = %q, want empty -- the answer is incomplete, not failed", final.Error)
+	}
+	if contentMessages == 0 {
+		t.Error("no content reached the client before the kill")
+	}
+}
