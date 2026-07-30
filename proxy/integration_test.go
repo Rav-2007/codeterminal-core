@@ -81,14 +81,24 @@ func assertLedgerBalanced(t *testing.T, p *proxy, store *fakeUsageStore) {
 // waitForLedgerSettled waits for the deferred finalizer's correction to land.
 // The finalize happens on the handler goroutine, but correctUsage's HTTP call to
 // the fake Supabase completes asynchronously from the test's point of view.
-func waitForLedgerSettled(t *testing.T, store *fakeUsageStore) {
+//
+// It returns quietly on timeout rather than failing: WHY the ledger did not
+// settle is the caller's assertion to make, with its own message. This only
+// bounds the wait.
+//
+// The timeout is a parameter because it is paid once per case on FAILURE, and
+// the money-path matrix runs 150 cases: a 3s wait there turns a real regression
+// into an eight-minute test run, which is long enough that someone starts
+// skipping the suite. The settle is a local httptest round trip taking ~1ms, so
+// even the short bound carries orders of magnitude of headroom.
+func waitForLedgerSettled(t *testing.T, store *fakeUsageStore, timeout time.Duration) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		if store.openPendingCount() == 0 && store.correctionCount() > 0 {
 			return
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 
@@ -128,7 +138,7 @@ func TestIntegration_UpstreamDiesMidStream(t *testing.T) {
 	rec := httptest.NewRecorder()
 	p.handleChatCompletions(rec, newAuthorizedRequest(zdrBody("")))
 
-	waitForLedgerSettled(t, store)
+	waitForLedgerSettled(t, store, 3*time.Second)
 	assertLedgerBalanced(t, p, store)
 
 	// Output was produced, so the reservation must be KEPT, not refunded. A
@@ -191,7 +201,7 @@ func TestIntegration_UpstreamHangsPastDeadline(t *testing.T) {
 		t.Fatalf("the request took %v: the upstream call is not bounded at all", elapsed)
 	}
 
-	waitForLedgerSettled(t, store)
+	waitForLedgerSettled(t, store, 3*time.Second)
 	assertLedgerBalanced(t, p, store)
 
 	// Nothing was ever relayed, so this is the full-refund case.
@@ -245,7 +255,7 @@ func TestIntegration_QuotaCeilingKillsStreamMidFlight(t *testing.T) {
 	rec := httptest.NewRecorder()
 	p.handleChatCompletions(rec, newAuthorizedRequest(zdrBody(`"max_tokens":10,`)))
 
-	waitForLedgerSettled(t, store)
+	waitForLedgerSettled(t, store, 3*time.Second)
 	assertLedgerBalanced(t, p, store)
 
 	// The stream must have been CUT, not relayed in full. 200 chunks would be
@@ -484,7 +494,7 @@ func TestIntegration_ShutdownMidStream_BillsRatherThanStrands(t *testing.T) {
 		t.Fatal("serveUntilSignal never returned")
 	}
 
-	waitForLedgerSettled(t, store)
+	waitForLedgerSettled(t, store, 3*time.Second)
 
 	// THE assertion. Phase 0's baseline left this row open forever.
 	assertLedgerBalanced(t, p, store)
