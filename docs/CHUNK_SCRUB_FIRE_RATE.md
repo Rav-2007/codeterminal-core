@@ -49,6 +49,15 @@ files scanned = 243        chunks = 2,117
 skipped: gitignored=8  noise=8  secret=6  ignored_dir=5
 ```
 
+Measured at `7a70017`. **The corpus is this repository, so it is self-referential and
+it drifts.** Re-running after the Phase-4 commits landed gives 247 files / 2,149
+chunks, 1,366 entropy fires and 50 keyword fires — because this document and the tests
+written alongside it are themselves indexed, and the `AKIAIOSFODNN7EXAMPLE` fixture in
+`chunk_egress_test.go` now counts among Option A's redactions. Absolute counts will
+keep moving. **The ratios are what the conclusions rest on, and they are stable:**
+618.8 → 635.6 entropy fires per 1k chunks, 33.0% → 33.5% of chunks affected. Nothing
+below changes.
+
 Six files were excluded by the **name gate** and never reached a detector — Layer 1
 doing its job silently. The noise filter excluded `package-lock.json`, which matters:
 scanned raw it contributes hundreds of `sha512-…` integrity hashes at 5.5+ bits/char,
