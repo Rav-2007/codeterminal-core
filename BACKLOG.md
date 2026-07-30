@@ -3165,6 +3165,14 @@ been reaped, so all three were reconstructed verbatim from the review record:
 7. **The two retrieval follow-ups** opened by this batch — line-range ground
    truth fragility, and `TestEditShapedRetrievalEval` red at 0/4 (pre-existing;
    the QA report missed it). See the entry above.
+8. **Make CI an *enforced* gate.** `0f3bca2` makes the suite run on every push and
+   PR to `main`; it cannot make a red run block a merge. Required status checks
+   need branch protection, and branch protection is unavailable while this repo is
+   private on a free plan (`403 Upgrade to GitHub Pro or make this repository
+   public`). Two ways out, both decisions rather than work: make the repo public,
+   or move it to Pro. Then require the `go`, `govulncheck`, `vscode extension` and
+   `proxy-image` checks on `main`. Until one of those happens, "the suite is a
+   gate" is a statement about discipline, not about GitHub.
 
 **Status: all ten findings ADDRESSED and verified locally; NOT founder-closed.**
 The QA verdict of FAIL is not retracted — it was correct when written. Whether
@@ -3211,6 +3219,24 @@ addressed here.
 `workflow_dispatch` only lists workflows present on the **default branch**, so it
 is undispatchable until `build.yml` lands on `main`. First chance to run it is
 `gh workflow run build.yml -R Rav-2007/codeterminal-core` after merge.
+
+**And a correction to what P1-2 actually bought: the pipeline RUNS, it does not
+BLOCK.** "Merge gate" — the phrasing in `0f3bca2`'s own comment, in P1-2's title,
+and in this entry — is wrong. Blocking a merge requires *required status checks*,
+which require branch protection, which is **unavailable on this repository**:
+private on a free plan, so
+`GET /repos/Rav-2007/codeterminal-core/branches/main/protection` answers
+`403 Upgrade to GitHub Pro or make this repository public`. What exists is the
+suite running automatically on every push and PR to `main`, with the result
+visible before merge. That fixes the *invisibility* half of P1-2 — the half that
+let the eval gate go red unnoticed — and leaves the *enforcement* half open. Both
+`build.yml` and the QA entry now say so; the residual is item 8 below.
+
+Also worth noting for anyone running `gh` in this repo: there are two remotes, and
+`upstream` is an unrelated fork parent (`NousResearch/hermes-agent`). `gh`
+resolves to it, so a bare `gh pr view 1` returns a *different repository's* merged
+PR. Every `gh` call needs `-R Rav-2007/codeterminal-core`; `gh repo view` takes
+the repo positionally instead.
 
 ### Blocker 1 (migrations): the headline question is ANSWERED
 

@@ -312,6 +312,22 @@ download). Keep the existing image build.
 > **Still unverified:** the scheduled `eval` job. `workflow_dispatch` only lists
 > workflows present on the **default branch**, so it cannot run — or be verified
 > — until `build.yml` lands on `main`.
+>
+> **Correction to this finding's remediation — the pipeline RUNS, it does not
+> BLOCK.** This entry's title and the batch summary both describe `0f3bca2` as
+> making the suite "a merge gate." That overstates what exists. A merge gate
+> requires *required status checks*, which require branch protection, and branch
+> protection is **unavailable on this repository**: it is private on a free plan,
+> so `GET /repos/Rav-2007/codeterminal-core/branches/main/protection` returns
+> `403 Upgrade to GitHub Pro or make this repository public` (checked
+> 2026-07-30). So the accurate claim is: **the suite now runs automatically on
+> every push and PR to `main`, and its result is visible before merge — but a red
+> run cannot stop one.** The original impact statement, "nothing mechanically
+> prevents any of the defects in this report from landing on `main`," is
+> therefore *narrowed, not eliminated*: the drift is now visible, which is the
+> half that made P1-3 go unnoticed, but enforcement still depends on a human
+> reading the check. Closing that gap needs the repo public or on Pro, and is
+> tracked in `BACKLOG.md`.
 
 ### P1-3 — The project's own retrieval-quality gate is currently RED
 

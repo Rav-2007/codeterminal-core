@@ -23,7 +23,17 @@ jobs:
     # 584 Go tests, gofmt, and vet existed in this repo and gated nothing: the
     # entire pipeline was one docker build. Both regressions in the 2026-07-30
     # launch-gate review shipped past a green LOCAL suite, because a suite nobody
-    # is required to run is a suite that drifts. This job is what makes it a gate.
+    # is required to run is a suite that drifts. This job makes the suite run on
+    # every push and PR to main.
+    #
+    # It does NOT yet BLOCK anything, and that distinction matters. Required
+    # status checks need branch protection, and branch protection is unavailable
+    # on this repo: it is private on a free plan, so
+    # `GET /repos/:owner/:repo/branches/main/protection` answers
+    # `403 Upgrade to GitHub Pro or make this repository public` (checked
+    # 2026-07-30). Until the repo goes public or onto Pro, a red run is a signal
+    # someone has to read, not a merge that cannot happen. Making it enforceable
+    # is tracked in BACKLOG.md.
     name: go (${{ matrix.module }})
     runs-on: ubuntu-latest
     strategy:
