@@ -3076,3 +3076,99 @@ scheduled job is a job nobody reads, which is the failure mode P1-2 exists to fi
 that filter when this item closes** — it is the only thing keeping the known-red test out of CI.
 
 **Status: both OPEN, tracked, not scheduled. Linked to the H6 retrieval work.**
+
+---
+
+## 2026-07-30 — Launch-gate remediation batch (all ten findings addressed; NOT founder-closed)
+
+Resolves the 1 P0 + 4 P1 + 5 P2 from the launch-gate QA entry above, plus P3-1.
+One isolated commit per finding, per this repo's convention. Full per-finding
+annotations (including where a fix departed from the recommendation, and why) are
+appended inline to [`docs/QA_LAUNCH_GATE_2026-07-30.md`](docs/QA_LAUNCH_GATE_2026-07-30.md);
+the original findings are left exactly as written.
+
+| Finding | Commit | Outcome |
+|---|---|---|
+| P0-1 byte-guard refund | `efe2bda` | `chargeForKill` = max(measured, chunks, reserved). Delta −4093 → 0 |
+| P1-1 invisible budget kill | `b1fed6b`, `2e68d9d` | New `protocol.IncompleteBudgetExceeded`; 2 integration tests, the repo's first |
+| P1-2 CI gates nothing | `0f3bca2` | 6-module matrix + govulncheck + EDH + scheduled eval |
+| P1-3 retrieval gate RED | `96924a7` | Ground truth was stale, not retrieval. 4/9 → **8/9** |
+| P1-4 schema not in VCS | `50ff5b3` | `0000_baseline` written, RECONSTRUCTED/UNVERIFIED |
+| P2-1 duplicate JSON keys | `f8416a5` | 400 `duplicate_json_key`, nested objects included |
+| P2-2 daemon dispatcher | `fd8d865` | All FOUR sniffers (the report listed three) |
+| P2-3 webview accessibility | `74adfea` | EDH tests 6 → 14 |
+| P2-4 `increment_usage` revoke | `50ff5b3` | `0004` written, 4-function verify query |
+| P2-5 zero coverage | `ae6bbfe` | protocol 88.9%, chunkscrub 100%, helper off zero |
+| P3-1 broken test command | docs commit | README documents the loop CI actually runs |
+
+### Coverage, measured before and after
+
+| Module | Before | After |
+|---|---:|---:|
+| `daemon` | 66.9% | 69.2% |
+| `editapply` | 87.0% | 87.0% |
+| `proxy` | 79.7% | 80.7% |
+| `clients/tui` | 66.7% | 66.7% |
+| `protocol` | **0.0%** | **88.9%** |
+| `helper` | **0.0%** | 6.5% / **75.0%** (helperproto) |
+| `clients/vscode` | 6 EDH tests | **14** EDH tests |
+
+### Whole-batch verification actually run
+
+Six modules: `go build`, `gofmt -l`, `go vet`, `go test -race` — all green.
+`govulncheck` — "No vulnerabilities found" on all six. EDH — 14/14 in a real
+Extension Development Host. `-tags eval` (CI's green subset) —
+`TestEvalRetrievalQuality` top-1 1.00 / top-3 1.00, rerank 8/9,
+`TestTokenEfficiencyEval` pass.
+
+Every fix has a fail-when-neutered twin, verified by removing the control,
+watching the specific test fail, and restoring it. Two were neutered in **two**
+ways: P1-1 both by deleting the error check and by moving it below the
+zero-choices guard (the subtler regression), and P1-3 by restoring the original
+stale expectation to confirm the new guard names it as staleness rather than as a
+retrieval regression.
+
+The QA repro bundle was re-run against the fixed tree. Its `/tmp` directory had
+been reaped, so all three were reconstructed verbatim from the review record:
+
+- **P0-1 repro: now PASSES** (delta 0, was −4093).
+- **M2 duplicate-key repro: PASSES, inverted** — the gate now refuses with
+  400 `duplicate_json_key` and upstream is never contacted.
+- **Sniffer repros: both PASS** — every case variant falls through, duplicates
+  rejected.
+- **Budget-chunk repro: still "fails", and that is CORRECT.** It asserts on
+  intermediate state — that the kill chunk decodes to zero choices and that
+  `incompleteInfoFor("")` returns nil. Both remain true after the fix and *must*:
+  the kill chunk genuinely has no choices, and an empty finish_reason must keep
+  meaning "complete". The repro never exercises the code path that changed. Its
+  premises still hold; its **conclusion** — "a budget-killed answer is reported
+  as a successful, complete response" — is now false, proven by
+  `TestStreamCompletion_BudgetKillIsReportedAsIncomplete` and by the two seam
+  tests, all of which fail when the fix is neutered. It is not a valid post-fix
+  regression test and was not made to pass.
+
+### Still open — founder-gated or blocked, unchanged by this batch
+
+1. **Applying `0000` and `0004`** and running their verification SQL. In
+   particular `usage.key_id` uniqueness: `reserve_usage`'s
+   `select ... from reserved, opened` is a cross join, so a duplicate `key_id`
+   double-reserves on every request with nothing reporting it. Unknown from
+   source; the query is in the file.
+2. **The first green CI run.** The pipeline is written and every command in it
+   was verified locally, but `xvfb-run -a` itself is unproven — this machine has
+   no xvfb, so the EDH runs used a real display.
+3. **Production wire probes against this branch.** Not re-verified since
+   2026-07-27, and never against this code.
+4. **Multi-replica rate-limit dilution.** In-memory limiters remain per-instance;
+   a documented residual, not fixed here.
+5. **Real screen-reader passes.** P2-3's assertions are structural only.
+6. **Intel Mac / linux-arm64**, load/soak, and upstream duplicate-key resolution
+   (P2-1 makes that last one moot rather than answering it).
+7. **The two retrieval follow-ups** opened by this batch — line-range ground
+   truth fragility, and `TestEditShapedRetrievalEval` red at 0/4 (pre-existing;
+   the QA report missed it). See the entry above.
+
+**Status: all ten findings ADDRESSED and verified locally; NOT founder-closed.**
+The QA verdict of FAIL is not retracted — it was correct when written. Whether
+the gate now passes is the founder's call, and items 1 and 2 above are the two
+that most plausibly still block it.

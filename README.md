@@ -845,17 +845,29 @@ later phase, not typed in by hand.
 (cd clients/tui && go build -o codeterminal-tui .)
 (cd proxy       && go build .)
 
-# Fast unit tests — never need the real model or CGO
-go test ./...
-
-# Proxy suite, race-enabled
-go test -race ./proxy/...
+# Fast unit tests — never need the real model or CGO.
+# There is NO root module (only go.work), so `go test ./...` from the repo root
+# fails with "directory prefix . does not contain modules listed in go.work".
+# Run each module explicitly — these are the exact commands CI runs:
+for m in daemon editapply proxy helper protocol clients/tui; do
+  (cd "$m" && go build ./... && gofmt -l . && go vet ./... && go test -race ./...)
+done
 
 # Retrieval quality (needs the real model + CGO; gated behind a build tag)
-go test -tags eval -run TestEvalRetrievalQuality -v ./...
+(cd daemon && go test -tags eval -run TestEvalRetrievalQuality -v ./...)
+
+# VS Code extension (real Extension Development Host; needs a display,
+# so use xvfb-run on a headless machine)
+(cd clients/vscode && npm ci && npm run compile && npm test)
 ```
 
-`go test ./...` never compiles or runs the eval test.
+The untagged run never compiles or runs the eval tests.
+
+CI (`.github/workflows/build.yml`) runs exactly the loop above across all six
+modules on every push and pull request, plus `govulncheck`, the extension's
+Extension Development Host suite, and the proxy image build. The `-tags eval`
+suite runs on a weekly schedule rather than per-PR, because it downloads a real
+embedding model and takes ~150s.
 
 ## Retrieval-quality eval set
 
