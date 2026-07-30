@@ -393,6 +393,10 @@ func main() {
 
 	// ALLOWED_MODELS overrides the shipped tier set; empty disables the check and
 	// is warned about loudly so "unrestricted" is never a silent default.
+	// Read before newProxy so a too-short token kills startup before anything is
+	// listening (see adminTokenFromEnv).
+	adminToken := adminTokenFromEnv(logger)
+
 	allowedModels := parseAllowedModels(os.Getenv("ALLOWED_MODELS"))
 	if len(allowedModels) == 0 {
 		allowedModels = parseAllowedModels(defaultAllowedModels)
@@ -413,9 +417,15 @@ func main() {
 	// the sweep is independent of whether this instance is serving traffic yet.
 	go p.startReconciliationSweep(shutdownCtx)
 
+	if adminToken != "" {
+		startupLog.Info("counters exposed", "path", adminMetricsPath, "auth", "bearer token")
+	} else {
+		startupLog.Info("counters NOT exposed: " + adminTokenEnv + " is unset")
+	}
+
 	srv := &http.Server{
 		Addr:              ":" + port,
-		Handler:           newHandler(p, logger, buildCommit),
+		Handler:           newHandler(p, logger, buildCommit, adminToken),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       serverReadTimeout,
 		WriteTimeout:      serverWriteTimeout,
@@ -459,24 +469,32 @@ func main() {
 //   - withRequestID is outermost, so recoverPanics and accessLog can both READ
 //     the id: inside them, they hold a request whose context never had one, and
 //     the stack and the access line become uncorrelatable.
-func newHandler(p *proxy, logger *log.Logger, buildCommit string) http.Handler {
-	return wrapMiddleware(logger, newMux(p, buildCommit))
+func newHandler(p *proxy, logger *log.Logger, buildCommit, adminToken string) http.Handler {
+	return wrapMiddleware(logger, p.metrics, newMux(p, buildCommit, adminToken))
 }
 
 // wrapMiddleware applies the middlewares, in the order newHandler's comment
 // explains. Separate from newMux so a test can drive this exact wrapping -- the
 // one main serves -- around a handler that panics on purpose, which no real route
 // does.
-func wrapMiddleware(logger *log.Logger, next http.Handler) http.Handler {
-	return withRequestID(accessLog(logger, recoverPanics(logger, next)))
+func wrapMiddleware(logger *log.Logger, m *metricSet, next http.Handler) http.Handler {
+	return withRequestID(accessLog(logger, m, recoverPanics(logger, m, next)))
 }
 
 // newMux is the route table.
-func newMux(p *proxy, buildCommit string) *http.ServeMux {
+func newMux(p *proxy, buildCommit, adminToken string) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", p.rateLimitedHealth(makeHealthHandler(buildCommit, &p.draining)))
 	mux.HandleFunc(chatCompletionsPath, p.handleChatCompletions)       // "/chat/completions"
 	mux.HandleFunc("/v1"+chatCompletionsPath, p.handleChatCompletions) // "/v1/chat/completions" alias
+	// The counters route exists ONLY when a token is configured. Not "exists and
+	// refuses" -- absent configuration must not leave an operational endpoint on a
+	// public listener at all, and an unregistered path is answered by the
+	// throttled catch-all below like any other unknown route.
+	if adminToken != "" {
+		mux.HandleFunc(adminMetricsPath, p.adminMetricsHandler(adminToken))
+	}
+
 	// Catch-all for every unregistered path. Without it those requests 404 out of
 	// the mux without passing through admitPreAuth at all -- an unauthenticated,
 	// completely unthrottled endpoint. Cheap per request, but unbounded is
@@ -578,6 +596,10 @@ type proxy struct {
 	keyTokens        *rateLimiter
 	inFlight         *inFlightLimiter
 
+	// metrics counts what the log describes (see metrics.go). Never nil after
+	// newProxy, so no call site needs a check.
+	metrics *metricSet
+
 	// allowedModels is the cost-authorization allow-list (see modelAllowed).
 	// Empty means unrestricted.
 	allowedModels map[string]bool
@@ -595,7 +617,7 @@ type proxy struct {
 // limiters here (rather than lazily) keeps them non-nil for every code path,
 // including tests, so a missing limiter can never silently mean "unlimited".
 func newProxy(apiKey, upstreamURL, supabaseURL, supabaseServiceRoleKey string, logger *log.Logger, allowedModels map[string]bool) *proxy {
-	return &proxy{
+	p := &proxy{
 		apiKey:                 apiKey,
 		upstreamURL:            upstreamURL,
 		logger:                 logger,
@@ -606,6 +628,7 @@ func newProxy(apiKey, upstreamURL, supabaseURL, supabaseServiceRoleKey string, l
 		// legitimately run for minutes. Each request's own context deadline
 		// (upstreamTimeout) is what bounds it instead.
 		client:           &http.Client{},
+		metrics:          newMetrics(),
 		preAuthPerSource: newRateLimiter(preAuthRatePerSourcePerSecond, preAuthBurstPerSource),
 		preAuthGlobal:    newRateLimiter(preAuthRateGlobalPerSecond, preAuthBurstGlobal),
 		keyRate:          newRateLimiter(keyRatePerSecond, keyBurst),
@@ -613,6 +636,10 @@ func newProxy(apiKey, upstreamURL, supabaseURL, supabaseServiceRoleKey string, l
 		inFlight:         newInFlightLimiter(maxInFlightPerKey, maxInFlightTotal),
 		allowedModels:    allowedModels,
 	}
+	// Bound here rather than in newMetrics because the flag lives on the proxy
+	// that was just built; a scrape reads it live (see bindDraining).
+	p.metrics.bindDraining(&p.draining)
+	return p
 }
 
 // admitPreAuth applies the unauthenticated-surface limits. It runs before any
@@ -623,12 +650,14 @@ func (p *proxy) admitPreAuth(w http.ResponseWriter, r *http.Request) bool {
 	reqID := requestIDFrom(r.Context())
 	if !p.preAuthGlobal.allow("global") {
 		p.log.Warn("rate limited", "req_id", reqID, "gate", gateRateLimited, "scope", "global")
+		p.metrics.countRateLimited("global")
 		tooManyRequests(w, "global", reqID)
 		return false
 	}
 	src := clientSource(r)
 	if !p.preAuthPerSource.allow(src) {
 		p.log.Warn("rate limited", "req_id", reqID, "gate", gateRateLimited, "scope", "source")
+		p.metrics.countRateLimited("source")
 		tooManyRequests(w, "source", reqID)
 		return false
 	}
@@ -698,7 +727,7 @@ func (p *proxy) rateLimitedHealth(next http.HandlerFunc) http.HandlerFunc {
 // called WriteHeader (mid-stream, most likely) cannot change the status, and
 // net/http will log the superfluous-WriteHeader attempt. Returning a truncated
 // stream is the honest outcome there; the log line is what carries the diagnosis.
-func recoverPanics(logger *log.Logger, next http.Handler) http.Handler {
+func recoverPanics(logger *log.Logger, m *metricSet, next http.Handler) http.Handler {
 	sl := slogFromLogger(logger)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
@@ -721,6 +750,7 @@ func recoverPanics(logger *log.Logger, next http.Handler) http.Handler {
 			// recovery. Swap them and this line logs an empty id -- see
 			// TestNewHandlerWiring, which asserts on exactly that.
 			reqID := requestIDFrom(r.Context())
+			m.countPanic()
 			sl.Error("PANIC recovered while handling a request",
 				"req_id", reqID, "path", r.URL.Path, "panic", fmt.Sprint(fault))
 			// The stack goes out as a RAW line rather than a slog attr, and
@@ -744,6 +774,7 @@ func (p *proxy) rateLimitedNotFound() http.HandlerFunc {
 		if !p.admitPreAuth(w, r) {
 			return
 		}
+		p.metrics.countRefusal(gateNotFound)
 		writeRefusal(w, http.StatusNotFound, "not_found", requestIDFrom(r.Context()))
 	}
 }
@@ -806,6 +837,7 @@ func makeHealthHandler(commit string, draining *atomic.Bool) http.HandlerFunc {
 func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFrom(r.Context())
 	if r.Method != http.MethodPost {
+		p.metrics.countRefusal(gateMethodNotAllowed)
 		writeRefusal(w, http.StatusMethodNotAllowed, "method_not_allowed", reqID)
 		return
 	}
@@ -834,6 +866,7 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if !p.keyRate.allow(apiKeyID) {
 		p.log.Warn("rate limited", "req_id", reqID, "gate", gateRateLimited,
 			"scope", "key_rate", "key_id", apiKeyID)
+		p.metrics.countRateLimited("key_rate")
 		tooManyRequests(w, "key_rate", reqID)
 		return
 	}
@@ -844,6 +877,7 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if !p.keyTokens.available(apiKeyID) {
 		p.log.Warn("rate limited", "req_id", reqID, "gate", gateRateLimited,
 			"scope", "token_rate", "key_id", apiKeyID)
+		p.metrics.countRateLimited("token_rate")
 		tooManyRequests(w, "token_rate", reqID)
 		return
 	}
@@ -851,6 +885,7 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if !admitted {
 		p.log.Warn("rate limited", "req_id", reqID, "gate", gateRateLimited,
 			"scope", "in_flight", "key_id", apiKeyID)
+		p.metrics.countRateLimited("in_flight")
 		tooManyRequests(w, "in_flight", reqID)
 		return
 	}
@@ -861,6 +896,7 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		p.log.Warn("refused", "req_id", reqID, "gate", gateBadRequestBody,
 			"key_id", apiKeyID, "err", err)
+		p.metrics.countRefusal(gateBadRequestBody)
 		writeRefusal(w, http.StatusBadRequest, "bad_request", reqID)
 		return
 	}
@@ -877,6 +913,7 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if hasDuplicateKeys(bodyBytes) {
 		p.log.Warn("refused: duplicate JSON key, request is ambiguous",
 			"req_id", reqID, "gate", gateDuplicateJSONKey, "key_id", apiKeyID)
+		p.metrics.countRefusal(gateDuplicateJSONKey)
 		writeRefusal(w, http.StatusBadRequest, "duplicate_json_key", reqID)
 		return
 	}
@@ -888,6 +925,7 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if refusal, refused := p.costSurfaceRefusal(bodyBytes); refused {
 		p.log.Warn("refused: cost surface", "req_id", reqID, "gate", gateCostSurface,
 			"key_id", apiKeyID, "reason", refusal)
+		p.metrics.countRefusal(gateCostSurface)
 		writeRefusal(w, http.StatusForbidden, refusal, reqID)
 		return
 	}
@@ -909,6 +947,7 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if !zdrRoutingEnforced(bodyBytes) {
 		p.log.Warn("refused: request lacks the required zero-data-retention routing flags",
 			"req_id", reqID, "gate", gateZDRRequired, "key_id", apiKeyID)
+		p.metrics.countRefusal(gateZDRRequired)
 		writeRefusal(w, http.StatusForbidden, "zdr_required", reqID)
 		return
 	}
@@ -930,6 +969,7 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if !streamRequested(bodyBytes) {
 		p.log.Warn("refused: non-streamed completions are not forwarded",
 			"req_id", reqID, "gate", gateStreamRequired, "key_id", apiKeyID)
+		p.metrics.countRefusal(gateStreamRequired)
 		writeRefusal(w, http.StatusForbidden, "stream_required", reqID)
 		return
 	}
@@ -948,6 +988,7 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			p.log.Warn("refused: declared max_tokens above the reservation cap",
 				"req_id", reqID, "gate", gateMaxTokens, "key_id", apiKeyID,
 				"declared", declared, "cap", maxReservationTokens)
+			p.metrics.countRefusal(gateMaxTokens)
 			writeRefusal(w, http.StatusForbidden, "max_tokens_too_large", reqID)
 			return
 		}
@@ -1000,6 +1041,8 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		p.log.Error("building upstream request failed", "req_id", reqID,
 			"gate", gateUpstreamRequestBuild, "key_id", apiKeyID, "err", err)
+		p.metrics.countRefusal(gateUpstreamRequestBuild)
+		p.metrics.upstreamErrors.Add(1)
 		writeRefusal(w, http.StatusBadGateway, "bad_gateway", reqID)
 		return
 	}
@@ -1016,6 +1059,8 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		p.log.Error("upstream call failed", "req_id", reqID,
 			"gate", gateUpstreamCallFailed, "key_id", apiKeyID, "err", err)
+		p.metrics.countRefusal(gateUpstreamCallFailed)
+		p.metrics.upstreamErrors.Add(1)
 		// Reservation was made but OpenRouter was never reached -- none
 		// of it was used, so it's a full refund (see
 		// QUOTA_RESERVATION_DESIGN.md §5(b)). That is the outcome zero value
@@ -1082,17 +1127,20 @@ func (p *proxy) authorize(r *http.Request) (string, bool) {
 	authHeader := r.Header.Get("Authorization")
 	if !strings.HasPrefix(authHeader, bearerPrefix) {
 		p.log.Warn("auth rejected", "req_id", reqID, "gate", gateNoBearer)
+		p.metrics.countRefusal(gateNoBearer)
 		return "", false
 	}
 	mochiKey := strings.TrimSpace(strings.TrimPrefix(authHeader, bearerPrefix))
 	if mochiKey == "" {
 		p.log.Warn("auth rejected", "req_id", reqID, "gate", gateEmptyKey)
+		p.metrics.countRefusal(gateEmptyKey)
 		return "", false
 	}
 
 	if p.supabaseURL == "" || p.supabaseServiceRoleKey == "" {
 		p.log.Error("auth rejected", "req_id", reqID, "gate", gateSupabaseUnconfigured,
 			"key_prefix", keyPrefix(mochiKey))
+		p.metrics.countRefusal(gateSupabaseUnconfigured)
 		return "", false
 	}
 
@@ -1112,6 +1160,7 @@ func (p *proxy) authorize(r *http.Request) (string, bool) {
 	if err != nil {
 		p.log.Error("auth rejected", "req_id", reqID, "gate", gateAuthRequestBuild,
 			"key_prefix", keyPrefix(mochiKey), "err", err)
+		p.metrics.countRefusal(gateAuthRequestBuild)
 		return "", false
 	}
 	// apikey only -- deliberately no Authorization header. Supabase's new
@@ -1134,6 +1183,7 @@ func (p *proxy) authorize(r *http.Request) (string, bool) {
 	if err != nil {
 		p.log.Error("auth rejected", "req_id", reqID, "gate", gateAuthLookupFailed,
 			"key_prefix", keyPrefix(mochiKey), "err", err)
+		p.metrics.countRefusal(gateAuthLookupFailed)
 		return "", false
 	}
 	defer resp.Body.Close()
@@ -1141,6 +1191,7 @@ func (p *proxy) authorize(r *http.Request) (string, bool) {
 	if resp.StatusCode != http.StatusOK {
 		p.log.Error("auth rejected", "req_id", reqID, "gate", gateAuthUpstreamStatus,
 			"key_prefix", keyPrefix(mochiKey), "supabase_status", resp.StatusCode)
+		p.metrics.countRefusal(gateAuthUpstreamStatus)
 		return "", false
 	}
 
@@ -1150,6 +1201,7 @@ func (p *proxy) authorize(r *http.Request) (string, bool) {
 	if err := decodeCappedJSON(resp, maxAuthResponseBytes, &rows); err != nil {
 		p.log.Error("auth rejected", "req_id", reqID, "gate", gateAuthDecodeFailed,
 			"key_prefix", keyPrefix(mochiKey), "err", err)
+		p.metrics.countRefusal(gateAuthDecodeFailed)
 		return "", false
 	}
 
@@ -1159,6 +1211,7 @@ func (p *proxy) authorize(r *http.Request) (string, bool) {
 		// a schema problem. The two are one branch and must stay distinguishable.
 		p.log.Warn("auth rejected", "req_id", reqID, "gate", gateAuthRowCount,
 			"key_prefix", keyPrefix(mochiKey), "matches", len(rows))
+		p.metrics.countRefusal(gateAuthRowCount)
 		return "", false
 	}
 
@@ -1211,6 +1264,7 @@ func (p *proxy) reserveQuota(ctx context.Context, apiKeyID string, reserved int)
 	if p.supabaseURL == "" || p.supabaseServiceRoleKey == "" {
 		p.log.Error("quota refused", "req_id", reqID, "gate", gateQuotaUnconfigured,
 			"key_id", apiKeyID)
+		p.metrics.countRefusal(gateQuotaUnconfigured)
 		return reservation{}, false
 	}
 
@@ -1224,6 +1278,7 @@ func (p *proxy) reserveQuota(ctx context.Context, apiKeyID string, reserved int)
 	if err != nil {
 		p.log.Error("quota refused", "req_id", reqID, "gate", gateQuotaEncode,
 			"key_id", apiKeyID, "err", err)
+		p.metrics.countRefusal(gateQuotaEncode)
 		return reservation{}, false
 	}
 
@@ -1232,6 +1287,7 @@ func (p *proxy) reserveQuota(ctx context.Context, apiKeyID string, reserved int)
 	if err != nil {
 		p.log.Error("quota refused", "req_id", reqID, "gate", gateQuotaRequestBuild,
 			"key_id", apiKeyID, "err", err)
+		p.metrics.countRefusal(gateQuotaRequestBuild)
 		return reservation{}, false
 	}
 	// apikey only -- see authorize's comment on this same header-format
@@ -1245,6 +1301,7 @@ func (p *proxy) reserveQuota(ctx context.Context, apiKeyID string, reserved int)
 	if err != nil {
 		p.log.Error("quota refused", "req_id", reqID, "gate", gateQuotaCallFailed,
 			"key_id", apiKeyID, "err", err)
+		p.metrics.countRefusal(gateQuotaCallFailed)
 		return reservation{}, false
 	}
 	defer resp.Body.Close()
@@ -1253,6 +1310,7 @@ func (p *proxy) reserveQuota(ctx context.Context, apiKeyID string, reserved int)
 		io.Copy(io.Discard, io.LimitReader(resp.Body, maxAuthResponseBytes))
 		p.log.Error("quota refused", "req_id", reqID, "gate", gateQuotaStatus,
 			"key_id", apiKeyID, "supabase_status", resp.StatusCode)
+		p.metrics.countRefusal(gateQuotaStatus)
 		return reservation{}, false
 	}
 
@@ -1264,6 +1322,7 @@ func (p *proxy) reserveQuota(ctx context.Context, apiKeyID string, reserved int)
 	if err := decodeCappedJSON(resp, maxAuthResponseBytes, &rows); err != nil {
 		p.log.Error("quota refused", "req_id", reqID, "gate", gateQuotaDecode,
 			"key_id", apiKeyID, "err", err)
+		p.metrics.countRefusal(gateQuotaDecode)
 		return reservation{}, false
 	}
 
@@ -1272,6 +1331,7 @@ func (p *proxy) reserveQuota(ctx context.Context, apiKeyID string, reserved int)
 		// here, the same ambiguity checkQuota always had (see this function's doc).
 		p.log.Warn("quota refused", "req_id", reqID, "gate", gateQuotaDenied,
 			"key_id", apiKeyID, "reserved", reserved, "matches", len(rows))
+		p.metrics.countRefusal(gateQuotaDenied)
 		return reservation{}, false
 	}
 
@@ -1303,6 +1363,7 @@ func (p *proxy) reserveQuota(ctx context.Context, apiKeyID string, reserved int)
 	p.log.Info("quota reserved", "req_id", reqID, "key_id", apiKeyID,
 		"reserved", reserved, "new_used", rows[0].TokensUsed, "limit", rows[0].TokenLimit,
 		"headroom", headroom, "pending_id", rows[0].PendingID)
+	p.metrics.reservationsOpened.Add(1)
 	return reservation{pendingID: rows[0].PendingID, headroom: headroom}, true
 }
 
@@ -1458,6 +1519,8 @@ func (p *proxy) streamSSE(w http.ResponseWriter, body io.Reader, outcome *reserv
 			p.log.Warn("budget ceiling KILLED the stream", "req_id", outcome.reqID,
 				"gate", gateBudgetKill, "key_id", outcome.keyID, "reason", reason,
 				"chunks", dataChunks, "bytes", streamedBytes, "ceiling", ceiling)
+			p.metrics.budgetKills.Add(1)
+			p.metrics.countRefusal(gateBudgetKill)
 			totalTokens = chargeForKill(totalTokens, dataChunks, outcome.reserved)
 			writeBudgetExceeded(w, flusher, canFlush)
 			return
@@ -2132,6 +2195,7 @@ func (p *proxy) finalizeReservation(o *reservationOutcome) {
 		return
 	}
 	o.finalized = true
+	p.metrics.reservationsFinalized.Add(1)
 	p.finalizeUsage(o.keyID, o.reserved, o.actual, o.producedOutput, o.pendingID, o.reqID)
 }
 
@@ -2227,6 +2291,7 @@ func (p *proxy) correctUsage(keyID string, delta int, pendingID int64, reqID str
 
 	p.log.Error("CORRECTION LOST -- tokens_used may be inaccurate", "req_id", reqID,
 		"key_id", keyID, "delta", delta, "attempts", correctUsageMaxAttempts)
+	p.metrics.correctionsLost.Add(1)
 }
 
 // tryCorrectUsage makes a single attempt at the increment_usage RPC call
@@ -2323,6 +2388,8 @@ func (p *proxy) sweepTick() {
 			p.log.Error("reconciliation: PANIC in sweep, recovered so reconciliation keeps running",
 				"panic", fmt.Sprint(r))
 			p.logger.Printf("sweep panic stack:\n%s", debug.Stack())
+			p.metrics.panicsRecovered.Add(1)
+			p.metrics.markSweepRun(0, true)
 		}
 	}()
 	p.sweepPendingCorrections()
@@ -2349,7 +2416,13 @@ func (p *proxy) sweepTick() {
 //
 // Errors are logged and the sweep returns; the rows are still there for the
 // next tick, since the claim only happens on a successful DELETE ... RETURNING.
-func (p *proxy) sweepPendingCorrections() {
+// The (swept, failed) return exists for the liveness counters (metrics.go): a
+// sweep that runs and fails is a different state from one that is not running at
+// all, and sweep_last_run_unix alone cannot tell those apart. Every exit below
+// therefore states its outcome explicitly rather than falling out of the function.
+func (p *proxy) sweepPendingCorrections() (swept int, failed bool) {
+	defer func() { p.metrics.markSweepRun(swept, failed) }()
+
 	ctx, cancel := context.WithTimeout(context.Background(), reconciliationSweepTimeout)
 	defer cancel()
 
@@ -2358,14 +2431,14 @@ func (p *proxy) sweepPendingCorrections() {
 	}{StaleMinutes: pendingCorrectionStaleAfterMinutes})
 	if err != nil {
 		p.log.Error("reconciliation: encoding sweep body failed", "err", err)
-		return
+		return 0, true
 	}
 
 	rpcURL := strings.TrimRight(p.supabaseURL, "/") + "/rest/v1/rpc/sweep_pending_corrections"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, rpcURL, bytes.NewReader(payload))
 	if err != nil {
 		p.log.Error("reconciliation: building sweep request failed", "err", err)
-		return
+		return 0, true
 	}
 	// apikey only -- see authorize's comment on this same header-format bug.
 	req.Header.Set("apikey", p.supabaseServiceRoleKey)
@@ -2375,14 +2448,14 @@ func (p *proxy) sweepPendingCorrections() {
 	resp, err := p.client.Do(req)
 	if err != nil {
 		p.log.Error("reconciliation: sweep call failed", "err", err)
-		return
+		return 0, true
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		io.Copy(io.Discard, io.LimitReader(resp.Body, maxSweepResponseBytes))
 		p.log.Error("reconciliation: sweep returned a non-200", "supabase_status", resp.StatusCode)
-		return
+		return 0, true
 	}
 
 	var rows []struct {
@@ -2393,14 +2466,14 @@ func (p *proxy) sweepPendingCorrections() {
 	}
 	if err := decodeCappedJSON(resp, maxSweepResponseBytes, &rows); err != nil {
 		p.log.Error("reconciliation: decoding sweep response failed", "err", err)
-		return
+		return 0, true
 	}
 
 	// Silent on the common case. A healthy proxy sweeps up nothing every five
 	// minutes forever, and a line saying so would train operators to ignore
 	// this prefix -- which is the one prefix that must stay attention-worthy.
 	if len(rows) == 0 {
-		return
+		return 0, false
 	}
 
 	for _, row := range rows {
@@ -2413,4 +2486,5 @@ func (p *proxy) sweepPendingCorrections() {
 			"reserved_at", row.CreatedAt)
 	}
 	p.log.Info("reconciliation: sweep complete", "swept", len(rows))
+	return len(rows), false
 }

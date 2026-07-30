@@ -2621,7 +2621,8 @@ func TestRecoverPanics(t *testing.T) {
 		var logs bytes.Buffer
 		logger := log.New(&logs, "", 0)
 
-		h := recoverPanics(logger, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		metrics := newMetrics()
+		h := recoverPanics(logger, metrics, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			panic("synthetic handler fault")
 		}))
 
@@ -2649,11 +2650,16 @@ func TestRecoverPanics(t *testing.T) {
 		if !strings.Contains(got, "recoverPanics") && !strings.Contains(got, ".go:") {
 			t.Errorf("log carried no stack trace; got %q", got)
 		}
+		// A contained fault must also be COUNTED: the log line explains one
+		// panic, the counter is how an operator notices there were four hundred.
+		if got := metrics.panicsRecovered.Value(); got != 1 {
+			t.Errorf("panics_recovered_total = %d, want 1", got)
+		}
 	})
 
 	t.Run("healthy handler is untouched", func(t *testing.T) {
 		var logs bytes.Buffer
-		h := recoverPanics(log.New(&logs, "", 0), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := recoverPanics(log.New(&logs, "", 0), newMetrics(), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusTeapot)
 			w.Write([]byte("fine"))
 		}))
@@ -2673,7 +2679,7 @@ func TestRecoverPanics(t *testing.T) {
 	// a 500, making real bugs harder to find in the noise.
 	t.Run("ErrAbortHandler is re-panicked, not logged as a fault", func(t *testing.T) {
 		var logs bytes.Buffer
-		h := recoverPanics(log.New(&logs, "", 0), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := recoverPanics(log.New(&logs, "", 0), newMetrics(), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			panic(http.ErrAbortHandler)
 		}))
 

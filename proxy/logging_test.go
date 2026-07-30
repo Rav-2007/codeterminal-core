@@ -50,7 +50,7 @@ func TestLogNeverContainsSecrets(t *testing.T) {
 	var logs bytes.Buffer
 	p := newProxy(sentinelOpenRouterKey, upstream.URL, supabase.URL,
 		sentinelServiceRoleKey, log.New(&logs, "", 0), parseAllowedModels("good/model"))
-	h := wrapMiddleware(log.New(&logs, "", 0), http.HandlerFunc(p.handleChatCompletions))
+	h := wrapMiddleware(log.New(&logs, "", 0), p.metrics, http.HandlerFunc(p.handleChatCompletions))
 
 	good := `{"model":"good/model","messages":[{"role":"user","content":"` + sentinelPromptText +
 		`"}],"stream":true,"provider":{"zdr":true,"data_collection":"deny","allow_fallbacks":true}}`
@@ -127,7 +127,7 @@ func TestLogNeverContainsSecrets(t *testing.T) {
 func TestAccessLogPreservesFlushing(t *testing.T) {
 	t.Run("the wrapped writer is still an http.Flusher", func(t *testing.T) {
 		var sawFlusher bool
-		h := wrapMiddleware(log.New(io.Discard, "", 0),
+		h := wrapMiddleware(log.New(io.Discard, "", 0), newMetrics(),
 			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				_, sawFlusher = w.(http.Flusher)
 			}))
@@ -145,7 +145,7 @@ func TestAccessLogPreservesFlushing(t *testing.T) {
 	// short and its own failure message says what it means.
 	t.Run("a chunk reaches the client before the handler returns", func(t *testing.T) {
 		release := make(chan struct{})
-		srv := httptest.NewServer(wrapMiddleware(log.New(io.Discard, "", 0),
+		srv := httptest.NewServer(wrapMiddleware(log.New(io.Discard, "", 0), newMetrics(),
 			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "text/event-stream")
 				w.WriteHeader(http.StatusOK)
@@ -224,7 +224,7 @@ func TestStatusRecorderReportsWhatTheCallerGot(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var logs bytes.Buffer
-			h := accessLog(log.New(&logs, "", 0), tc.handler)
+			h := accessLog(log.New(&logs, "", 0), newMetrics(), tc.handler)
 			h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/p", nil))
 
 			got := logs.String()

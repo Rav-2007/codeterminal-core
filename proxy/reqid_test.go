@@ -131,7 +131,7 @@ func TestWithRequestID(t *testing.T) {
 	// and this fails.
 	t.Run("id survives the panic path", func(t *testing.T) {
 		var logs bytes.Buffer
-		h := withRequestID(recoverPanics(log.New(&logs, "", 0),
+		h := withRequestID(recoverPanics(log.New(&logs, "", 0), newMetrics(),
 			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				panic("synthetic fault for the request-id ordering test")
 			})))
@@ -168,7 +168,7 @@ func TestWithRequestID(t *testing.T) {
 func TestNewHandlerWiring(t *testing.T) {
 	var logs bytes.Buffer
 	p := newProxy("k", "http://unused.invalid", "", "", log.New(&logs, "", 0), nil)
-	h := newHandler(p, log.New(&logs, "", 0), "test-commit")
+	h := newHandler(p, log.New(&logs, "", 0), "test-commit", "")
 
 	t.Run("the catch-all 404 carries an id", func(t *testing.T) {
 		rec := httptest.NewRecorder()
@@ -199,7 +199,7 @@ func TestNewHandlerWiring(t *testing.T) {
 	// panics, which is why the inner handler is injected rather than routed to.
 	t.Run("main's own wrapping carries an id on the panic path", func(t *testing.T) {
 		var panicLogs bytes.Buffer
-		wrapped := wrapMiddleware(log.New(&panicLogs, "", 0),
+		wrapped := wrapMiddleware(log.New(&panicLogs, "", 0), newMetrics(),
 			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				panic("synthetic fault through main's real middleware stack")
 			}))

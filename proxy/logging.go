@@ -91,6 +91,9 @@ const (
 	gateQuotaDecode       = "quota_decode"
 	gateQuotaDenied       = "quota_denied"
 
+	// The operational surface (metrics.go).
+	gateAdminAuth = "admin_auth"
+
 	// Upstream and mid-stream outcomes.
 	gateUpstreamRequestBuild = "upstream_request_build"
 	gateUpstreamCallFailed   = "upstream_call_failed"
@@ -219,12 +222,13 @@ func (rec *statusRecorder) Unwrap() http.ResponseWriter { return rec.ResponseWri
 // A status of 0 means the handler returned without writing anything at all, which
 // net/http turns into a 200 on the wire; it is logged as 0 rather than guessed at,
 // because a handler that wrote nothing is itself worth seeing.
-func accessLog(logger *log.Logger, next http.Handler) http.Handler {
+func accessLog(logger *log.Logger, m *metricSet, next http.Handler) http.Handler {
 	sl := slogFromLogger(logger)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		rec := &statusRecorder{ResponseWriter: w}
 		defer func() {
+			m.countResponse(rec.status)
 			sl.Info("request",
 				"req_id", requestIDFrom(r.Context()),
 				"method", r.Method,
