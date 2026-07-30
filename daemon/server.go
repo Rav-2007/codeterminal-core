@@ -93,6 +93,41 @@ type Server struct {
 	// is ready to use, so no constructor is needed and every existing Server
 	// literal gets correct serialization for free. See lockWorkspace.
 	applyLocks sync.Map
+
+	// inFlight counts connections currently being handled, so shutdown can wait
+	// for them instead of exiting from under them. Serve adds before dispatching
+	// and the handler goroutine subtracts on the way out; WaitForDrain blocks on
+	// it. Zero value is ready to use, so every existing Server literal (including
+	// the test ones) gets the same accounting for free.
+	inFlight sync.WaitGroup
+}
+
+// WaitForDrain blocks until every in-flight connection has finished, or until
+// timeout elapses. It reports whether the drain completed.
+//
+// The caller must have closed the listener first: Serve's Accept loop exits on
+// net.ErrClosed, and only then is the set of in-flight connections a fixed set
+// that can actually reach zero. Calling this while still accepting would wait on
+// a moving target.
+//
+// Before this, shutdown was `ln.Close(); os.Remove(socket)` and then main
+// returned, which ends the process and every handler goroutine with it. Serve's
+// semaphore bounded concurrency but nothing ever waited on it. A prompt cut that
+// way is merely annoying, but an ApplyEditRequest is a multi-file write: cutting
+// it mid-batch leaves some files written and some not, with the backup session
+// half-populated. Undo can recover that, but only if the user knows to run it.
+func (s *Server) WaitForDrain(timeout time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		s.inFlight.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
 }
 
 // route decides which tier handles the next request. The request path
@@ -136,7 +171,12 @@ func (s *Server) Serve(ln net.Listener) {
 		}
 		select {
 		case sem <- struct{}{}:
+			// Add BEFORE the goroutine starts. Doing it inside would race
+			// shutdown: WaitForDrain could observe a zero counter and report a
+			// clean drain while this connection's handler had not yet begun.
+			s.inFlight.Add(1)
 			go func() {
+				defer s.inFlight.Done()
 				defer func() { <-sem }()
 				s.handleConn(conn)
 			}()

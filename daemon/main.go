@@ -256,7 +256,29 @@ func main() {
 	// racing a background goroutine's os.Exit against main() returning.
 	sig := <-sigCh
 	logger.Printf("received %s, shutting down", sig)
+
+	// Stop accepting first, so the in-flight set stops growing and Serve's Accept
+	// loop returns. Only then is there a fixed set of connections to wait for.
 	ln.Close()
+
+	// Wait for in-flight work. Without this, main returned here and the process
+	// exited from under every handler goroutine mid-request.
+	//
+	// The grace is deliberately SHORT, and sized by what a cut request can
+	// actually damage rather than by how long a request can take. Everything that
+	// mutates the filesystem -- Apply's multi-file write plus its backup session,
+	// Undo's restore -- is local disk I/O measured in milliseconds, so a few
+	// seconds is generous for the cases where being cut leaves real mess behind
+	// (a half-applied batch, a half-populated backup dir). A streaming prompt can
+	// legitimately run for minutes, and waiting that out would make Ctrl-C feel
+	// broken; a cut prompt mutates nothing and costs the user a re-ask, so it is
+	// the right thing to abandon.
+	if !srv.WaitForDrain(shutdownGrace) {
+		logger.Printf("drain INCOMPLETE after %s -- a request was still running and is being cut. If it was an edit apply, the batch may be partly written; the backup session under .codeterminal/backups is still there and `undo` can revert it", shutdownGrace)
+	} else {
+		logger.Print("drain complete, no requests in flight")
+	}
+
 	os.Remove(socketPath)
 	os.Remove(lockPath)
 }

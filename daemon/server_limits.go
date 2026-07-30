@@ -123,3 +123,14 @@ func (c *limitedConn) Write(p []byte) (int, error) {
 	}
 	return c.Conn.Write(p)
 }
+
+// shutdownGrace is how long shutdown waits for in-flight connections after the
+// listener closes (see Server.WaitForDrain).
+//
+// Sized by what a CUT request can damage, not by how long one can take. The
+// filesystem-mutating paths -- Apply's multi-file write plus its backup session,
+// Undo's restore -- are local disk I/O measured in milliseconds, so 5s is generous
+// for every case where being cut leaves real mess behind. A streaming prompt can
+// legitimately run for minutes; waiting that out would make Ctrl-C feel broken,
+// and a cut prompt mutates nothing and costs only a re-ask.
+const shutdownGrace = 5 * time.Second
