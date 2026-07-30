@@ -509,10 +509,33 @@ side: opaque/novel secrets in chunk text, awaiting the founder's Design-B-vs-C d
     - **Follow-up B** (commit 6028d96): each fire now records the chunk's `FileClass` (threaded from
       the same value `logRetrieval` reports) plus a fixed-label token-shape tag
       (hex/base64/uuid-like/mixed/unknown), for true-vs-false-positive triage without re-opening source.
-  - **Status: fire-rate data now durably accumulating as of 2026-07-18 (commits 064a00a, 6028d96);
-    still LOG-ONLY, item NOT closed.** The B-vs-C redaction decision remains the founder's and remains
-    unmade. Do NOT flip entropy/keyword to redacting without that decision. Class is not closed until
-    opaque-secret coverage is decided and (if chosen) shipped.
+  - **~~Status: fire-rate data now durably accumulating as of 2026-07-18~~ — CORRECTED 2026-07-30.**
+    The sink was wired and durable (064a00a, 6028d96) and **recorded exactly zero events**:
+    `.codeterminal/logs/` on the dev box was created 2026-07-27 and held no `warnmode.jsonl`, and no
+    such file existed anywhere on the machine. Not a broken wire — `newWarnSink` (`daemon/main.go:247`)
+    and the `s.warnSink.write` call (`daemon/context.go:269`) are both correct, now proven by
+    `TestLogChunkScrub_WritesFiresToTheDurableSink`, which fails when that call is deleted while the
+    pre-existing `TestWarnSink_NormalAppend` still passes (a writer test cannot tell "never called"
+    from "called and working"). The sink fills only when a daemon serves grounded turns, and this
+    machine served none. **"Accumulating" was an inference from a shipped mechanism, not an
+    observation** — twelve days of it produced nothing, and no amount of further waiting had a
+    mechanism by which to help.
+  - **Fire-rate data now MEASURED, offline — see [docs/CHUNK_SCRUB_FIRE_RATE.md](docs/CHUNK_SCRUB_FIRE_RATE.md)**
+    (Phase 4, 2026-07-30). `daemon/warnscan_test.go` (`-tags warnscan`) runs the detectors over a
+    corpus through the real pipeline — `ScanWorkspace` → `scrub()` → detectors, so they see the
+    POST-Option-A residual, which is the only thing the B-vs-C question is actually about. Headline:
+    entropy fires on **33% of all chunks** (1,310 fires / 2,117 chunks) with **zero true positives at
+    every threshold** — its population is long identifiers, hyphenated prose, URL fragments and
+    `go.work.sum` hashes, not near-miss secrets; keyword fires 41 times (1.6% of chunks) with zero
+    real credentials, its failures concentrated in three nameable and fixable classes (type
+    annotations, `tokens`-as-a-count, `os.Getenv`-style indirection that `isNonSecretValue` misses).
+    **Recommendation: reject B outright; hold C pending those three fixes AND a corpus that contains
+    real secrets.** The measurement bounds the false-positive cost only — this corpus has no real
+    credentials in it, so it says nothing about recall, and the report says so.
+  - **Status: still LOG-ONLY, item NOT closed.** The B-vs-C redaction decision remains the founder's
+    and remains unmade — but it is no longer blocked on data. Do NOT flip entropy/keyword to
+    redacting without that decision. Class is not closed until opaque-secret coverage is decided and
+    (if chosen) shipped.
 - **`server.go:203` / `scrub.go` false "retrieval never leaves this machine" comments — CORRECTED**
   (same commit): both now state chunk content is scrubbed at `renderChunk` (structural only, partial)
   and is POSTed to the provider on every grounded turn.
