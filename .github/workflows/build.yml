@@ -72,6 +72,17 @@ jobs:
         run: go test -race ./...
         working-directory: ${{ matrix.module }}
 
+      # Deliberately a SEPARATE step from Test, and deliberately without -race.
+      # Separate, because "tests failed" and "coverage regressed" are different
+      # problems and a single red step would not say which. Without -race,
+      # because the race detector is already gated above and instrumenting twice
+      # costs time without moving a coverage number.
+      #
+      # No working-directory: the script runs from the repo root and takes the
+      # module as an argument, since the floors it reads are repo-wide.
+      - name: Coverage ratchet
+        run: ./scripts/coverage-ratchet.sh ${{ matrix.module }}
+
   govulncheck:
     name: govulncheck (${{ matrix.module }})
     runs-on: ubuntu-latest

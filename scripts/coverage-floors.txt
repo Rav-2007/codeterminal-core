@@ -1,0 +1,30 @@
+# Coverage floors — the ratchet's gate. One line per PACKAGE: <import-path> <floor%>
+#
+# Enforced by scripts/coverage-ratchet.sh, which runs in CI per module.
+#
+# These are Phase 0's measured values (docs/ROBUSTNESS_BASELINE.md), not
+# aspirations. The rule is RATCHET, DON'T CHASE: a floor may only ever be raised,
+# and only to a number that has actually been measured on main. Nobody should
+# lower a floor to make a red build green -- that converts the one mechanism that
+# noticed a regression into a rubber stamp. Lower it only with a recorded reason
+# (a package genuinely losing testable surface, e.g. code deleted).
+#
+# Keyed by package, not module, because `helper` contains two packages whose
+# coverage differs by 68 points; a module-level floor would average that into
+# meaninglessness.
+#
+# Every package MUST be listed. The script fails on a package it has no floor
+# for, so a newly added package cannot silently escape the gate -- adding one
+# means deciding its floor, even if that decision is 0.0.
+#
+# Why proxy is 80.3 and not 80.7: the same commit measured both, a run-to-run
+# difference on a shared statement count. The floor takes the LOWER reading so
+# ordinary variance can never trip the ratchet; only a real drop can.
+
+codeterminal/daemon              69.3
+codeterminal/editapply           87.0
+codeterminal/proxy               80.3
+codeterminal/helper               6.5
+codeterminal/helper/helperproto  75.0
+codeterminal/protocol            88.9
+codeterminal/clients/tui         66.7
