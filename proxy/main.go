@@ -35,8 +35,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -354,6 +356,10 @@ func stripAccountMetadata(body []byte) []byte {
 
 func main() {
 	logger := log.New(os.Stderr, "codeterminal-proxy: ", log.LstdFlags)
+	// Startup and shutdown records. logger itself is kept for the Fatal calls
+	// below -- slog has no Fatal, and a misconfiguration must still kill the
+	// process rather than log at Error and carry on serving.
+	startupLog := slogFromLogger(logger)
 
 	apiKey := os.Getenv("OPENROUTER_API_KEY")
 	if apiKey == "" {
@@ -373,7 +379,7 @@ func main() {
 	supabaseURL := os.Getenv("SUPABASE_URL")
 	supabaseServiceRoleKey := os.Getenv("SUPABASE_SERVICE_ROLE_KEY")
 	if supabaseURL == "" || supabaseServiceRoleKey == "" {
-		logger.Printf("WARNING: SUPABASE_URL and/or SUPABASE_SERVICE_ROLE_KEY not set -- every request will fail auth and be rejected with 401 (fail closed)")
+		startupLog.Warn("SUPABASE_URL and/or SUPABASE_SERVICE_ROLE_KEY not set -- every request will fail auth and be rejected with 401 (fail closed)")
 	}
 
 	// RAILWAY_GIT_COMMIT_SHA is set automatically by Railway's build
@@ -391,7 +397,7 @@ func main() {
 	if len(allowedModels) == 0 {
 		allowedModels = parseAllowedModels(defaultAllowedModels)
 	}
-	logger.Printf("model allow-list: %d model(s) permitted", len(allowedModels))
+	startupLog.Info("model allow-list applied", "models", len(allowedModels))
 
 	p := newProxy(apiKey, strings.TrimRight(upstreamBase, "/")+chatCompletionsPath,
 		supabaseURL, supabaseServiceRoleKey, logger, allowedModels)
@@ -426,11 +432,11 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	logger.Printf("listening on :%s -> upstream %s", port, p.upstreamURL)
+	startupLog.Info("listening", "port", port, "upstream", p.upstreamURL, "log_level", logLevelFromEnv().String())
 	if err := serveUntilSignal(srv, ln, logger, &p.draining, beginShutdown, sigCh); err != nil {
 		logger.Fatal(err)
 	}
-	logger.Print("exiting")
+	startupLog.Info("exiting")
 }
 
 // newHandler builds the proxy's whole HTTP surface: the route table, plus the two
@@ -441,26 +447,28 @@ func main() {
 // -- a panic, a 404, a throttle -- and inside main() no test could reach any of
 // it. The route table itself is unchanged.
 //
-// The ordering is load-bearing in both directions:
+// The ordering is load-bearing at every layer:
 //
 //   - recoverPanics wraps the WHOLE mux, which is safe here in a way the rate
 //     limiters are not (hence the catch-all route rather than a wrapper -- a
 //     wrapper would charge the pre-auth bucket twice on the real routes):
 //     recovery has no per-request budget to spend.
-//   - withRequestID sits OUTSIDE recovery, so the panic 500 still carries an id.
-//     Inside, the panic would have aborted the handler before the header was set,
-//     and the one response a caller can least explain would be the one response
-//     they cannot quote.
+//   - accessLog is OUTSIDE recovery, so a panicking request's line reports the
+//     500 recovery wrote rather than the status that had been written when the
+//     fault happened.
+//   - withRequestID is outermost, so recoverPanics and accessLog can both READ
+//     the id: inside them, they hold a request whose context never had one, and
+//     the stack and the access line become uncorrelatable.
 func newHandler(p *proxy, logger *log.Logger, buildCommit string) http.Handler {
 	return wrapMiddleware(logger, newMux(p, buildCommit))
 }
 
-// wrapMiddleware applies the two middlewares, in the order newHandler's comment
+// wrapMiddleware applies the middlewares, in the order newHandler's comment
 // explains. Separate from newMux so a test can drive this exact wrapping -- the
 // one main serves -- around a handler that panics on purpose, which no real route
 // does.
 func wrapMiddleware(logger *log.Logger, next http.Handler) http.Handler {
-	return withRequestID(recoverPanics(logger, next))
+	return withRequestID(accessLog(logger, recoverPanics(logger, next)))
 }
 
 // newMux is the route table.
@@ -506,13 +514,15 @@ func newMux(p *proxy, buildCommit string) *http.ServeMux {
 // is a degraded outcome, not a startup failure, and it is reported in the log where
 // an operator will see it. A non-nil error means the server could not serve at all.
 func serveUntilSignal(srv *http.Server, ln net.Listener, logger *log.Logger, draining *atomic.Bool, beginShutdown func(), sigCh <-chan os.Signal) error {
+	sl := slogFromLogger(logger)
 	shutdownDone := make(chan struct{})
 	go func() {
 		defer close(shutdownDone)
 		sig := <-sigCh
 
 		draining.Store(true)
-		logger.Printf("received %s, draining: /health now reports 503, still accepting for %s so the load balancer can notice, then finishing in-flight requests (grace %s)", sig, preDrainDelay, shutdownGrace)
+		sl.Info("draining: /health now reports 503, still accepting so the load balancer can notice, then finishing in-flight requests",
+			"signal", sig.String(), "pre_drain", preDrainDelay.String(), "grace", shutdownGrace.String())
 
 		beginShutdown()
 
@@ -525,10 +535,11 @@ func serveUntilSignal(srv *http.Server, ln net.Listener, logger *log.Logger, dra
 			// the requests whose reservations may still be stranded, and an
 			// operator needs to know the drain was incomplete rather than reading
 			// a clean-looking exit.
-			logger.Printf("drain INCOMPLETE after %s (%v) -- in-flight requests were cut; any reservation they had not yet corrected will surface in the next reconciliation sweep", shutdownGrace-preDrainDelay, err)
+			sl.Error("drain INCOMPLETE -- in-flight requests were cut; any reservation they had not yet corrected will surface in the next reconciliation sweep",
+				"after", (shutdownGrace - preDrainDelay).String(), "err", err)
 			return
 		}
-		logger.Print("drain complete, all in-flight requests finished")
+		sl.Info("drain complete, all in-flight requests finished")
 	}()
 
 	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -544,9 +555,16 @@ func serveUntilSignal(srv *http.Server, ln net.Listener, logger *log.Logger, dra
 }
 
 type proxy struct {
-	apiKey                 string
-	upstreamURL            string
-	logger                 *log.Logger
+	apiKey      string
+	upstreamURL string
+	// logger is kept for the few places that want a raw line rather than a
+	// record -- a panic stack, which is unreadable escaped into an attr.
+	logger *log.Logger
+	// log is the structured logger everything else writes through. Derived from
+	// logger, so both funnel through one serialized destination (see
+	// logWriterAdapter) and injecting a buffer in a test still captures
+	// everything.
+	log                    *slog.Logger
 	client                 *http.Client
 	supabaseURL            string
 	supabaseServiceRoleKey string
@@ -581,6 +599,7 @@ func newProxy(apiKey, upstreamURL, supabaseURL, supabaseServiceRoleKey string, l
 		apiKey:                 apiKey,
 		upstreamURL:            upstreamURL,
 		logger:                 logger,
+		log:                    slogFromLogger(logger),
 		supabaseURL:            supabaseURL,
 		supabaseServiceRoleKey: supabaseServiceRoleKey,
 		// No blanket http.Client.Timeout: a streaming response can
@@ -603,13 +622,13 @@ func newProxy(apiKey, upstreamURL, supabaseURL, supabaseServiceRoleKey string, l
 func (p *proxy) admitPreAuth(w http.ResponseWriter, r *http.Request) bool {
 	reqID := requestIDFrom(r.Context())
 	if !p.preAuthGlobal.allow("global") {
-		p.logger.Printf("rate: refused (pre-auth global ceiling)")
+		p.log.Warn("rate limited", "req_id", reqID, "gate", gateRateLimited, "scope", "global")
 		tooManyRequests(w, "global", reqID)
 		return false
 	}
 	src := clientSource(r)
 	if !p.preAuthPerSource.allow(src) {
-		p.logger.Printf("rate: refused (pre-auth per-source)")
+		p.log.Warn("rate limited", "req_id", reqID, "gate", gateRateLimited, "scope", "source")
 		tooManyRequests(w, "source", reqID)
 		return false
 	}
@@ -680,6 +699,7 @@ func (p *proxy) rateLimitedHealth(next http.HandlerFunc) http.HandlerFunc {
 // net/http will log the superfluous-WriteHeader attempt. Returning a truncated
 // stream is the honest outcome there; the log line is what carries the diagnosis.
 func recoverPanics(logger *log.Logger, next http.Handler) http.Handler {
+	sl := slogFromLogger(logger)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			// Named `fault`, not `r`: the original spelling shadowed the
@@ -700,8 +720,15 @@ func recoverPanics(logger *log.Logger, next http.Handler) http.Handler {
 			// context, it is present only while withRequestID is OUTSIDE this
 			// recovery. Swap them and this line logs an empty id -- see
 			// TestNewHandlerWiring, which asserts on exactly that.
-			logger.Printf("PANIC recovered while handling a request (req_id=%s): %v\n%s",
-				requestIDFrom(r.Context()), fault, debug.Stack())
+			reqID := requestIDFrom(r.Context())
+			sl.Error("PANIC recovered while handling a request",
+				"req_id", reqID, "path", r.URL.Path, "panic", fmt.Sprint(fault))
+			// The stack goes out as a RAW line rather than a slog attr, and
+			// deliberately: escaped into an attr it becomes one enormous quoted
+			// string with \n between every frame, which is exactly the shape nobody
+			// can read in a log viewer. It carries req_id so it still joins the
+			// record above.
+			logger.Printf("panic stack (req_id=%s):\n%s", reqID, debug.Stack())
 			// Body-less: an error body could echo attacker-controlled content, and
 			// there is nothing useful to say that the status does not already say.
 			w.WriteHeader(http.StatusInternalServerError)
@@ -783,7 +810,9 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p.logger.Printf("request received: %s", r.URL.Path)
+	// Debug: the access-log line (accessLog) already records every request with
+	// its path, status and latency, so this is only useful when tracing.
+	p.log.Debug("request received", "req_id", reqID, "path", r.URL.Path)
 
 	// Pre-auth admission FIRST: every authorize() call is a Supabase round trip,
 	// so an unauthenticated flood would otherwise amplify into a third party.
@@ -803,7 +832,8 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// unit of tenancy. Rate bounds requests over time; in-flight bounds them at
 	// once, which the rate limit alone does not: long streaming calls accumulate.
 	if !p.keyRate.allow(apiKeyID) {
-		p.logger.Printf("rate: refused (key id=%s over its request rate)", apiKeyID)
+		p.log.Warn("rate limited", "req_id", reqID, "gate", gateRateLimited,
+			"scope", "key_rate", "key_id", apiKeyID)
 		tooManyRequests(w, "key_rate", reqID)
 		return
 	}
@@ -812,13 +842,15 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// exist yet -- finalizeUsage charges it once the response completes, and the
 	// resulting debt is what refuses the next request.
 	if !p.keyTokens.available(apiKeyID) {
-		p.logger.Printf("rate: refused (key id=%s over its token rate)", apiKeyID)
+		p.log.Warn("rate limited", "req_id", reqID, "gate", gateRateLimited,
+			"scope", "token_rate", "key_id", apiKeyID)
 		tooManyRequests(w, "token_rate", reqID)
 		return
 	}
 	releaseSlot, admitted := p.inFlight.acquire(apiKeyID)
 	if !admitted {
-		p.logger.Printf("rate: refused (key id=%s at in-flight ceiling)", apiKeyID)
+		p.log.Warn("rate limited", "req_id", reqID, "gate", gateRateLimited,
+			"scope", "in_flight", "key_id", apiKeyID)
 		tooManyRequests(w, "in_flight", reqID)
 		return
 	}
@@ -827,7 +859,8 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	limitedBody := http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 	bodyBytes, err := io.ReadAll(limitedBody)
 	if err != nil {
-		p.logger.Printf("reading request body failed: %v", err)
+		p.log.Warn("refused", "req_id", reqID, "gate", gateBadRequestBody,
+			"key_id", apiKeyID, "err", err)
 		writeRefusal(w, http.StatusBadRequest, "bad_request", reqID)
 		return
 	}
@@ -842,7 +875,8 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// policy refusal of a well-formed one. Cannot fire for the shipped daemon,
 	// which marshals its body from structs and so cannot emit a duplicate key.
 	if hasDuplicateKeys(bodyBytes) {
-		p.logger.Printf("body: refused (key id=%s -- duplicate JSON key, request is ambiguous)", apiKeyID)
+		p.log.Warn("refused: duplicate JSON key, request is ambiguous",
+			"req_id", reqID, "gate", gateDuplicateJSONKey, "key_id", apiKeyID)
 		writeRefusal(w, http.StatusBadRequest, "duplicate_json_key", reqID)
 		return
 	}
@@ -852,7 +886,8 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// every other field that steers what gets billed -- is itself a spending
 	// decision (see costSurfaceRefusal).
 	if refusal, refused := p.costSurfaceRefusal(bodyBytes); refused {
-		p.logger.Printf("cost: refused (key id=%s, reason=%s)", apiKeyID, refusal)
+		p.log.Warn("refused: cost surface", "req_id", reqID, "gate", gateCostSurface,
+			"key_id", apiKeyID, "reason", refusal)
 		writeRefusal(w, http.StatusForbidden, refusal, reqID)
 		return
 	}
@@ -872,7 +907,8 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// caller other than the shipped daemon, which always sends the flags
 	// (daemon/provider.go's providerRouting, no field omitempty).
 	if !zdrRoutingEnforced(bodyBytes) {
-		p.logger.Printf("zdr: refused (key id=%s -- request lacks the required zero-data-retention routing flags)", apiKeyID)
+		p.log.Warn("refused: request lacks the required zero-data-retention routing flags",
+			"req_id", reqID, "gate", gateZDRRequired, "key_id", apiKeyID)
 		writeRefusal(w, http.StatusForbidden, "zdr_required", reqID)
 		return
 	}
@@ -892,7 +928,8 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// Cannot fire for the shipped daemon, which always sets stream:true
 	// (daemon/provider.go).
 	if !streamRequested(bodyBytes) {
-		p.logger.Printf("stream: refused (key id=%s -- non-streamed completions are not forwarded)", apiKeyID)
+		p.log.Warn("refused: non-streamed completions are not forwarded",
+			"req_id", reqID, "gate", gateStreamRequired, "key_id", apiKeyID)
 		writeRefusal(w, http.StatusForbidden, "stream_required", reqID)
 		return
 	}
@@ -908,7 +945,9 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	reserved := defaultReservationTokens
 	if declared, ok := peekMaxTokens(bodyBytes); ok {
 		if declared > maxReservationTokens {
-			p.logger.Printf("max_tokens: refused (key id=%s declared %d, cap %d)", apiKeyID, declared, maxReservationTokens)
+			p.log.Warn("refused: declared max_tokens above the reservation cap",
+				"req_id", reqID, "gate", gateMaxTokens, "key_id", apiKeyID,
+				"declared", declared, "cap", maxReservationTokens)
 			writeRefusal(w, http.StatusForbidden, "max_tokens_too_large", reqID)
 			return
 		}
@@ -949,6 +988,7 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	outcome := reservationOutcome{
 		keyID:     apiKeyID,
 		reserved:  reserved,
+		reqID:     reqID,
 		pendingID: res.pendingID,
 	}
 	defer p.finalizeReservation(&outcome)
@@ -958,7 +998,8 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.upstreamURL, bytes.NewReader(bodyBytes))
 	if err != nil {
-		p.logger.Printf("building upstream request failed: %v", err)
+		p.log.Error("building upstream request failed", "req_id", reqID,
+			"gate", gateUpstreamRequestBuild, "key_id", apiKeyID, "err", err)
 		writeRefusal(w, http.StatusBadGateway, "bad_gateway", reqID)
 		return
 	}
@@ -973,7 +1014,8 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := p.client.Do(upstreamReq)
 	if err != nil {
-		p.logger.Printf("upstream call failed: %v", err)
+		p.log.Error("upstream call failed", "req_id", reqID,
+			"gate", gateUpstreamCallFailed, "key_id", apiKeyID, "err", err)
 		// Reservation was made but OpenRouter was never reached -- none
 		// of it was used, so it's a full refund (see
 		// QUOTA_RESERVATION_DESIGN.md §5(b)). That is the outcome zero value
@@ -984,7 +1026,8 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
-	p.logger.Printf("upstream responded: status=%d", resp.StatusCode)
+	p.log.Info("upstream responded", "req_id", reqID, "key_id", apiKeyID,
+		"status", resp.StatusCode)
 
 	for _, h := range allowedResponseHeaders {
 		if v := resp.Header.Get(h); v != "" {
@@ -1006,11 +1049,13 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// (see QUOTA_RESERVATION_DESIGN.md §5(c)).
 	respBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxNonStreamResponseBytes))
 	if err != nil {
-		p.logger.Printf("reading non-streamed response failed: %v", err)
+		p.log.Error("reading non-streamed response failed", "req_id", reqID,
+			"key_id", apiKeyID, "err", err)
 	}
 	respBytes = stripAccountMetadata(respBytes)
 	if _, err := w.Write(respBytes); err != nil {
-		p.logger.Printf("writing non-streamed response failed: %v", err)
+		p.log.Warn("writing non-streamed response failed", "req_id", reqID,
+			"key_id", apiKeyID, "err", err)
 	}
 	actual, _ := peekUsageTotal(respBytes)
 	outcome.actual = actual
@@ -1032,20 +1077,22 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 // logged; the full mochi_key, the Supabase service-role key, and the
 // OpenRouter key are never logged.
 func (p *proxy) authorize(r *http.Request) (string, bool) {
+	reqID := requestIDFrom(r.Context())
 	const bearerPrefix = "Bearer "
 	authHeader := r.Header.Get("Authorization")
 	if !strings.HasPrefix(authHeader, bearerPrefix) {
-		p.logger.Printf("auth: rejected (no bearer token)")
+		p.log.Warn("auth rejected", "req_id", reqID, "gate", gateNoBearer)
 		return "", false
 	}
 	mochiKey := strings.TrimSpace(strings.TrimPrefix(authHeader, bearerPrefix))
 	if mochiKey == "" {
-		p.logger.Printf("auth: rejected (empty key)")
+		p.log.Warn("auth rejected", "req_id", reqID, "gate", gateEmptyKey)
 		return "", false
 	}
 
 	if p.supabaseURL == "" || p.supabaseServiceRoleKey == "" {
-		p.logger.Printf("auth: rejected (supabase not configured, key prefix=%s)", keyPrefix(mochiKey))
+		p.log.Error("auth rejected", "req_id", reqID, "gate", gateSupabaseUnconfigured,
+			"key_prefix", keyPrefix(mochiKey))
 		return "", false
 	}
 
@@ -1063,7 +1110,8 @@ func (p *proxy) authorize(r *http.Request) (string, bool) {
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, lookupURL, nil)
 	if err != nil {
-		p.logger.Printf("auth: rejected (building supabase request failed, key prefix=%s)", keyPrefix(mochiKey))
+		p.log.Error("auth rejected", "req_id", reqID, "gate", gateAuthRequestBuild,
+			"key_prefix", keyPrefix(mochiKey), "err", err)
 		return "", false
 	}
 	// apikey only -- deliberately no Authorization header. Supabase's new
@@ -1084,13 +1132,15 @@ func (p *proxy) authorize(r *http.Request) (string, bool) {
 
 	resp, err := p.client.Do(req)
 	if err != nil {
-		p.logger.Printf("auth: rejected (supabase lookup failed, key prefix=%s)", keyPrefix(mochiKey))
+		p.log.Error("auth rejected", "req_id", reqID, "gate", gateAuthLookupFailed,
+			"key_prefix", keyPrefix(mochiKey), "err", err)
 		return "", false
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		p.logger.Printf("auth: rejected (supabase status=%d, key prefix=%s)", resp.StatusCode, keyPrefix(mochiKey))
+		p.log.Error("auth rejected", "req_id", reqID, "gate", gateAuthUpstreamStatus,
+			"key_prefix", keyPrefix(mochiKey), "supabase_status", resp.StatusCode)
 		return "", false
 	}
 
@@ -1098,16 +1148,21 @@ func (p *proxy) authorize(r *http.Request) (string, bool) {
 		ID string `json:"id"`
 	}
 	if err := decodeCappedJSON(resp, maxAuthResponseBytes, &rows); err != nil {
-		p.logger.Printf("auth: rejected (decoding supabase response failed, key prefix=%s)", keyPrefix(mochiKey))
+		p.log.Error("auth rejected", "req_id", reqID, "gate", gateAuthDecodeFailed,
+			"key_prefix", keyPrefix(mochiKey), "err", err)
 		return "", false
 	}
 
 	if len(rows) != 1 {
-		p.logger.Printf("auth: rejected (key prefix=%s, matches=%d)", keyPrefix(mochiKey), len(rows))
+		// matches=0 is the production incident's shape: Supabase answered 200 with
+		// an empty array for a key its owner believed was valid. matches>1 would be
+		// a schema problem. The two are one branch and must stay distinguishable.
+		p.log.Warn("auth rejected", "req_id", reqID, "gate", gateAuthRowCount,
+			"key_prefix", keyPrefix(mochiKey), "matches", len(rows))
 		return "", false
 	}
 
-	p.logger.Printf("auth: ok (key prefix=%s)", keyPrefix(mochiKey))
+	p.log.Info("auth ok", "req_id", reqID, "key_prefix", keyPrefix(mochiKey))
 	return rows[0].ID, true
 }
 
@@ -1150,8 +1205,12 @@ func (p *proxy) authorize(r *http.Request) (string, bool) {
 // after a log line. Threading them out costs no extra round trip and nothing on
 // the TTFT budget.
 func (p *proxy) reserveQuota(ctx context.Context, apiKeyID string, reserved int) (res reservation, ok bool) {
+	// The handler's context, so the reservation's log lines join the request's
+	// trail. Empty when called outside a request (a unit test), which is honest.
+	reqID := requestIDFrom(ctx)
 	if p.supabaseURL == "" || p.supabaseServiceRoleKey == "" {
-		p.logger.Printf("quota: refused (supabase not configured, key id=%s)", apiKeyID)
+		p.log.Error("quota refused", "req_id", reqID, "gate", gateQuotaUnconfigured,
+			"key_id", apiKeyID)
 		return reservation{}, false
 	}
 
@@ -1163,14 +1222,16 @@ func (p *proxy) reserveQuota(ctx context.Context, apiKeyID string, reserved int)
 		Reserved int    `json:"p_reserved"`
 	}{KeyID: apiKeyID, Reserved: reserved})
 	if err != nil {
-		p.logger.Printf("quota: refused (encoding reserve_usage body failed, key id=%s): %v", apiKeyID, err)
+		p.log.Error("quota refused", "req_id", reqID, "gate", gateQuotaEncode,
+			"key_id", apiKeyID, "err", err)
 		return reservation{}, false
 	}
 
 	rpcURL := strings.TrimRight(p.supabaseURL, "/") + "/rest/v1/rpc/reserve_usage"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, rpcURL, bytes.NewReader(payload))
 	if err != nil {
-		p.logger.Printf("quota: refused (building reserve_usage request failed, key id=%s): %v", apiKeyID, err)
+		p.log.Error("quota refused", "req_id", reqID, "gate", gateQuotaRequestBuild,
+			"key_id", apiKeyID, "err", err)
 		return reservation{}, false
 	}
 	// apikey only -- see authorize's comment on this same header-format
@@ -1182,14 +1243,16 @@ func (p *proxy) reserveQuota(ctx context.Context, apiKeyID string, reserved int)
 
 	resp, err := p.client.Do(req)
 	if err != nil {
-		p.logger.Printf("quota: refused (reserve_usage call failed, key id=%s): %v", apiKeyID, err)
+		p.log.Error("quota refused", "req_id", reqID, "gate", gateQuotaCallFailed,
+			"key_id", apiKeyID, "err", err)
 		return reservation{}, false
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		io.Copy(io.Discard, io.LimitReader(resp.Body, maxAuthResponseBytes))
-		p.logger.Printf("quota: refused (reserve_usage status=%d, key id=%s)", resp.StatusCode, apiKeyID)
+		p.log.Error("quota refused", "req_id", reqID, "gate", gateQuotaStatus,
+			"key_id", apiKeyID, "supabase_status", resp.StatusCode)
 		return reservation{}, false
 	}
 
@@ -1199,12 +1262,16 @@ func (p *proxy) reserveQuota(ctx context.Context, apiKeyID string, reserved int)
 		PendingID  int64 `json:"pending_id"`
 	}
 	if err := decodeCappedJSON(resp, maxAuthResponseBytes, &rows); err != nil {
-		p.logger.Printf("quota: refused (decoding reserve_usage response failed, key id=%s): %v", apiKeyID, err)
+		p.log.Error("quota refused", "req_id", reqID, "gate", gateQuotaDecode,
+			"key_id", apiKeyID, "err", err)
 		return reservation{}, false
 	}
 
 	if len(rows) != 1 {
-		p.logger.Printf("quota: refused (key id=%s, reserved=%d, matches=%d)", apiKeyID, reserved, len(rows))
+		// A row count of zero is "no usage row OR over the limit" -- indistinguishable
+		// here, the same ambiguity checkQuota always had (see this function's doc).
+		p.log.Warn("quota refused", "req_id", reqID, "gate", gateQuotaDenied,
+			"key_id", apiKeyID, "reserved", reserved, "matches", len(rows))
 		return reservation{}, false
 	}
 
@@ -1219,7 +1286,8 @@ func (p *proxy) reserveQuota(ctx context.Context, apiKeyID string, reserved int)
 	// apply_correction call is about to 404 -- see the DEPLOY ORDER note in
 	// proxy/migrations/0002_pending_corrections.sql.
 	if rows[0].PendingID == 0 {
-		p.logger.Printf("quota: WARNING reserve_usage returned no pending_id (key id=%s) -- migration 0002 likely not applied; crash recovery is INACTIVE and corrections will fail", apiKeyID)
+		p.log.Error("reserve_usage returned no pending_id -- migration 0002 likely not applied; crash recovery is INACTIVE and corrections will fail",
+			"req_id", reqID, "key_id", apiKeyID)
 	}
 
 	// tokens_used comes back POST-increment (RETURNING after UPDATE), so this is
@@ -1232,7 +1300,9 @@ func (p *proxy) reserveQuota(ctx context.Context, apiKeyID string, reserved int)
 		headroom = 0
 	}
 
-	p.logger.Printf("quota: reserved (key id=%s, reserved=%d, new_used=%d, limit=%d, headroom=%d, pending_id=%d)", apiKeyID, reserved, rows[0].TokensUsed, rows[0].TokenLimit, headroom, rows[0].PendingID)
+	p.log.Info("quota reserved", "req_id", reqID, "key_id", apiKeyID,
+		"reserved", reserved, "new_used", rows[0].TokensUsed, "limit", rows[0].TokenLimit,
+		"headroom", headroom, "pending_id", rows[0].PendingID)
 	return reservation{pendingID: rows[0].PendingID, headroom: headroom}, true
 }
 
@@ -1372,7 +1442,7 @@ func (p *proxy) streamSSE(w http.ResponseWriter, body io.Reader, outcome *reserv
 
 		if !providerLogged {
 			if provider, ok := extractProvider(line); ok {
-				p.logger.Printf("provider served: %s", provider)
+				p.log.Info("provider served", "req_id", outcome.reqID, "provider", provider)
 				providerLogged = true
 			}
 		}
@@ -1385,14 +1455,17 @@ func (p *proxy) streamSSE(w http.ResponseWriter, body io.Reader, outcome *reserv
 		// `defer resp.Body.Close()` tear the upstream connection down -- that is
 		// what actually stops the spend, so no extra plumbing is needed.
 		if reason, over := budgetExceeded(dataChunks, streamedBytes, ceiling); over {
-			p.logger.Printf("budget: KILLED stream (key id=%s, reason=%s, chunks=%d, bytes=%d, ceiling=%d)", outcome.keyID, reason, dataChunks, streamedBytes, ceiling)
+			p.log.Warn("budget ceiling KILLED the stream", "req_id", outcome.reqID,
+				"gate", gateBudgetKill, "key_id", outcome.keyID, "reason", reason,
+				"chunks", dataChunks, "bytes", streamedBytes, "ceiling", ceiling)
 			totalTokens = chargeForKill(totalTokens, dataChunks, outcome.reserved)
 			writeBudgetExceeded(w, flusher, canFlush)
 			return
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		p.logger.Printf("streaming upstream response failed: %v", err)
+		p.log.Warn("streaming upstream response failed", "req_id", outcome.reqID,
+			"key_id", outcome.keyID, "err", err)
 	}
 }
 
@@ -2027,8 +2100,13 @@ func peekUsageTotal(body []byte) (int, bool) {
 // nothing at all.
 type reservationOutcome struct {
 	// Set once, at construction, and never mutated.
-	keyID     string
-	reserved  int
+	keyID    string
+	reserved int
+	// reqID ties the money path back to the request that spent it. streamSSE and
+	// the deferred finalizer both run without a *http.Request in scope, and a
+	// billing line that cannot be tied to a request is the one kind of line an
+	// operator most needs to tie to a request.
+	reqID     string
 	pendingID int64
 
 	// Recorded by whichever branch handles the response.
@@ -2054,10 +2132,10 @@ func (p *proxy) finalizeReservation(o *reservationOutcome) {
 		return
 	}
 	o.finalized = true
-	p.finalizeUsage(o.keyID, o.reserved, o.actual, o.producedOutput, o.pendingID)
+	p.finalizeUsage(o.keyID, o.reserved, o.actual, o.producedOutput, o.pendingID, o.reqID)
 }
 
-func (p *proxy) finalizeUsage(keyID string, reserved, actual int, producedOutput bool, pendingID int64) {
+func (p *proxy) finalizeUsage(keyID string, reserved, actual int, producedOutput bool, pendingID int64, reqID string) {
 	// Charge the token-rate bucket with the best figure available: the real usage
 	// when there is one, otherwise the reservation. Never nothing -- a request
 	// that produced output it could not measure must still cost the key something
@@ -2072,12 +2150,13 @@ func (p *proxy) finalizeUsage(keyID string, reserved, actual int, producedOutput
 
 	switch {
 	case actual > 0:
-		go p.correctUsage(keyID, actual-reserved, pendingID)
+		go p.correctUsage(keyID, actual-reserved, pendingID, reqID)
 	case producedOutput:
-		p.logger.Printf("usage: output produced but no usage figure (key_id=%s) -- keeping reservation=%d, not refunding", keyID, reserved)
-		go p.correctUsage(keyID, 0, pendingID)
+		p.log.Warn("output produced but no usage figure -- keeping the reservation, not refunding",
+			"req_id", reqID, "key_id", keyID, "reserved", reserved)
+		go p.correctUsage(keyID, 0, pendingID, reqID)
 	default:
-		go p.correctUsage(keyID, -reserved, pendingID)
+		go p.correctUsage(keyID, -reserved, pendingID, reqID)
 	}
 }
 
@@ -2115,7 +2194,7 @@ func (p *proxy) finalizeUsage(keyID string, reserved, actual int, producedOutput
 // least visible rather than silent. A correction lost that way now also
 // leaves its outbox row open, so the sweep reports it too: exhausted retries
 // are no longer only a log line that has to be noticed in the moment.
-func (p *proxy) correctUsage(keyID string, delta int, pendingID int64) {
+func (p *proxy) correctUsage(keyID string, delta int, pendingID int64, reqID string) {
 	if p.supabaseURL == "" || p.supabaseServiceRoleKey == "" {
 		return
 	}
@@ -2126,7 +2205,8 @@ func (p *proxy) correctUsage(keyID string, delta int, pendingID int64) {
 		PendingID int64  `json:"p_pending_id"`
 	}{KeyID: keyID, Tokens: delta, PendingID: pendingID})
 	if err != nil {
-		p.logger.Printf("usage: encoding correction body failed (key_id=%s): %v", keyID, err)
+		p.log.Error("encoding correction body failed", "req_id", reqID,
+			"key_id", keyID, "err", err)
 		return
 	}
 
@@ -2135,7 +2215,8 @@ func (p *proxy) correctUsage(keyID string, delta int, pendingID int64) {
 	for attempt := 1; attempt <= correctUsageMaxAttempts; attempt++ {
 		ok, retryable := p.tryCorrectUsage(rpcURL, payload, keyID, delta, attempt)
 		if ok {
-			p.logger.Printf("usage: corrected delta=%d for key_id=%s (attempt %d)", delta, keyID, attempt)
+			p.log.Info("usage corrected", "req_id", reqID, "key_id", keyID,
+				"delta", delta, "attempt", attempt)
 			return
 		}
 		if !retryable || attempt == correctUsageMaxAttempts {
@@ -2144,7 +2225,8 @@ func (p *proxy) correctUsage(keyID string, delta int, pendingID int64) {
 		time.Sleep(correctUsageRetryBackoff[attempt-1])
 	}
 
-	p.logger.Printf("usage: CORRECTION LOST after %d attempts (key_id=%s, delta=%d) -- tokens_used may be inaccurate", correctUsageMaxAttempts, keyID, delta)
+	p.log.Error("CORRECTION LOST -- tokens_used may be inaccurate", "req_id", reqID,
+		"key_id", keyID, "delta", delta, "attempts", correctUsageMaxAttempts)
 }
 
 // tryCorrectUsage makes a single attempt at the increment_usage RPC call
@@ -2158,7 +2240,8 @@ func (p *proxy) tryCorrectUsage(rpcURL string, payload []byte, keyID string, del
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, rpcURL, bytes.NewReader(payload))
 	if err != nil {
-		p.logger.Printf("usage: building correction request failed (key_id=%s, attempt=%d): %v", keyID, attempt, err)
+		p.log.Error("building correction request failed", "key_id", keyID,
+			"attempt", attempt, "err", err)
 		return false, false
 	}
 	// apikey only -- see authorize's comment on this same header-format
@@ -2170,18 +2253,21 @@ func (p *proxy) tryCorrectUsage(rpcURL string, payload []byte, keyID string, del
 
 	resp, err := p.client.Do(req)
 	if err != nil {
-		p.logger.Printf("usage: correction call failed (key_id=%s, delta=%d, attempt=%d): %v", keyID, delta, attempt, err)
+		p.log.Error("correction call failed", "key_id", keyID, "delta", delta,
+			"attempt", attempt, "err", err)
 		return false, true
 	}
 	defer resp.Body.Close()
 	io.Copy(io.Discard, io.LimitReader(resp.Body, maxAuthResponseBytes))
 
 	if resp.StatusCode >= 500 {
-		p.logger.Printf("usage: correction RPC returned status=%d (key_id=%s, delta=%d, attempt=%d)", resp.StatusCode, keyID, delta, attempt)
+		p.log.Warn("correction RPC returned a 5xx, will retry", "key_id", keyID,
+			"delta", delta, "attempt", attempt, "supabase_status", resp.StatusCode)
 		return false, true
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		p.logger.Printf("usage: correction RPC returned status=%d (key_id=%s, delta=%d, attempt=%d)", resp.StatusCode, keyID, delta, attempt)
+		p.log.Error("correction RPC refused, not retryable", "key_id", keyID,
+			"delta", delta, "attempt", attempt, "supabase_status", resp.StatusCode)
 		return false, false
 	}
 
@@ -2205,16 +2291,17 @@ func (p *proxy) tryCorrectUsage(rpcURL string, payload []byte, keyID string, del
 // already gone.
 func (p *proxy) startReconciliationSweep(ctx context.Context) {
 	if p.supabaseURL == "" || p.supabaseServiceRoleKey == "" {
-		p.logger.Printf("reconciliation: sweep disabled (supabase not configured)")
+		p.log.Warn("reconciliation: sweep disabled (supabase not configured)")
 		return
 	}
-	p.logger.Printf("reconciliation: sweep every %s for reservations older than %dm", reconciliationSweepInterval, pendingCorrectionStaleAfterMinutes)
+	p.log.Info("reconciliation: sweep scheduled", "interval", reconciliationSweepInterval.String(),
+		"stale_after_min", pendingCorrectionStaleAfterMinutes)
 	ticker := time.NewTicker(reconciliationSweepInterval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
-			p.logger.Print("reconciliation: sweep stopped (shutting down)")
+			p.log.Info("reconciliation: sweep stopped (shutting down)")
 			return
 		case <-ticker.C:
 			p.sweepTick()
@@ -2233,7 +2320,9 @@ func (p *proxy) startReconciliationSweep(ctx context.Context) {
 func (p *proxy) sweepTick() {
 	defer func() {
 		if r := recover(); r != nil {
-			p.logger.Printf("reconciliation: PANIC in sweep, recovered so reconciliation keeps running: %v\n%s", r, debug.Stack())
+			p.log.Error("reconciliation: PANIC in sweep, recovered so reconciliation keeps running",
+				"panic", fmt.Sprint(r))
+			p.logger.Printf("sweep panic stack:\n%s", debug.Stack())
 		}
 	}()
 	p.sweepPendingCorrections()
@@ -2268,14 +2357,14 @@ func (p *proxy) sweepPendingCorrections() {
 		StaleMinutes int `json:"p_stale_minutes"`
 	}{StaleMinutes: pendingCorrectionStaleAfterMinutes})
 	if err != nil {
-		p.logger.Printf("reconciliation: encoding sweep body failed: %v", err)
+		p.log.Error("reconciliation: encoding sweep body failed", "err", err)
 		return
 	}
 
 	rpcURL := strings.TrimRight(p.supabaseURL, "/") + "/rest/v1/rpc/sweep_pending_corrections"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, rpcURL, bytes.NewReader(payload))
 	if err != nil {
-		p.logger.Printf("reconciliation: building sweep request failed: %v", err)
+		p.log.Error("reconciliation: building sweep request failed", "err", err)
 		return
 	}
 	// apikey only -- see authorize's comment on this same header-format bug.
@@ -2285,14 +2374,14 @@ func (p *proxy) sweepPendingCorrections() {
 
 	resp, err := p.client.Do(req)
 	if err != nil {
-		p.logger.Printf("reconciliation: sweep call failed: %v", err)
+		p.log.Error("reconciliation: sweep call failed", "err", err)
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		io.Copy(io.Discard, io.LimitReader(resp.Body, maxSweepResponseBytes))
-		p.logger.Printf("reconciliation: sweep returned status=%d", resp.StatusCode)
+		p.log.Error("reconciliation: sweep returned a non-200", "supabase_status", resp.StatusCode)
 		return
 	}
 
@@ -2303,7 +2392,7 @@ func (p *proxy) sweepPendingCorrections() {
 		CreatedAt string `json:"created_at"`
 	}
 	if err := decodeCappedJSON(resp, maxSweepResponseBytes, &rows); err != nil {
-		p.logger.Printf("reconciliation: decoding sweep response failed: %v", err)
+		p.log.Error("reconciliation: decoding sweep response failed", "err", err)
 		return
 	}
 
@@ -2315,8 +2404,13 @@ func (p *proxy) sweepPendingCorrections() {
 	}
 
 	for _, row := range rows {
-		p.logger.Printf("reconciliation: ABANDONED RESERVATION swept (pending_id=%d, key_id=%s, reserved=%d, reserved_at=%s) -- no correction was ever applied, most likely a proxy crash mid-request; the reservation stays CHARGED (never refunded on missing usage data) and tokens_used for this key is overstated by at most that amount",
-			row.ID, row.KeyID, row.Reserved, row.CreatedAt)
+		// This line IS the deliverable of the outbox design -- the accounting is
+		// not recoverable, so an operator seeing exactly which key was overstated
+		// by how much is the whole product of the sweep. Structured so it can also
+		// be counted (metrics.go's reservations_stranded) rather than only read.
+		p.log.Error("reconciliation: ABANDONED RESERVATION swept -- no correction was ever applied, most likely a proxy crash mid-request; the reservation stays CHARGED (never refunded on missing usage data) and tokens_used for this key is overstated by at most that amount",
+			"pending_id", row.ID, "key_id", row.KeyID, "reserved", row.Reserved,
+			"reserved_at", row.CreatedAt)
 	}
-	p.logger.Printf("reconciliation: swept %d abandoned reservation(s)", len(rows))
+	p.log.Info("reconciliation: sweep complete", "swept", len(rows))
 }

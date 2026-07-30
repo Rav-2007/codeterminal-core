@@ -873,7 +873,7 @@ func TestFinalizeUsage_ProducedNoOutput_FullRefund(t *testing.T) {
 	// this test also covers the row actually being closed.
 	_, _, pendingID, _ := store.reserve(keyID, reserved)
 
-	p.finalizeUsage(keyID, reserved, 0, false, pendingID)
+	p.finalizeUsage(keyID, reserved, 0, false, pendingID, "0123456789abcdef")
 
 	waitForCorrections(t, store, 1)
 	if got, want := store.corrections[0], int64(-reserved); got != want {
@@ -899,7 +899,7 @@ func TestFinalizeUsage_TrueUpUnchanged(t *testing.T) {
 
 	_, _, pendingID, _ := store.reserve(keyID, reserved)
 
-	p.finalizeUsage(keyID, reserved, actual, true, pendingID)
+	p.finalizeUsage(keyID, reserved, actual, true, pendingID, "0123456789abcdef")
 
 	waitForCorrections(t, store, 1)
 	if n := store.openPendingCount(); n != 0 {
@@ -1010,7 +1010,7 @@ func TestCorrectUsage_PostsApplyCorrectionWithPendingID(t *testing.T) {
 	defer supabase.Close()
 
 	p := newTestProxy(supabase.URL, "http://unused.invalid")
-	p.correctUsage(keyID, wantDelta, wantPendingID)
+	p.correctUsage(keyID, wantDelta, wantPendingID, "0123456789abcdef")
 
 	select {
 	case c := <-got:
