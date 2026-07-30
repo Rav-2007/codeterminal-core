@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -2686,6 +2687,90 @@ func TestRecoverPanics(t *testing.T) {
 
 		if strings.Contains(logs.String(), "PANIC recovered") {
 			t.Errorf("a deliberate abort was logged as a fault: %q", logs.String())
+		}
+	})
+}
+
+// TestDecodeCappedJSON pins P1.5, whose scope is deliberately narrow and was set
+// by measurement rather than by the hypothesis it started from (see
+// docs/ROBUSTNESS_BASELINE.md section 4).
+//
+// The hypothesis -- that an un-drained body always breaks connection pooling and
+// explains ~80ms of reserveQuota latency -- was REFUTED. The under-cap subtest
+// records that refutation as an executable fact so the claim cannot creep back:
+// pooling already works there, drained or not. The over-cap subtest is the real
+// defect, and the reason the helper exists.
+func TestDecodeCappedJSON(t *testing.T) {
+	// newCountingServer serves a JSON array whose single row carries padBytes of
+	// padding, and counts distinct TCP connections.
+	newCountingServer := func(padBytes int) (*httptest.Server, *int64) {
+		var conns int64
+		srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode([]map[string]any{{
+				"id":  "11111111-1111-1111-1111-111111111111",
+				"pad": strings.Repeat("x", padBytes),
+			}})
+		}))
+		srv.Config.ConnState = func(_ net.Conn, s http.ConnState) {
+			if s == http.StateNew {
+				atomic.AddInt64(&conns, 1)
+			}
+		}
+		srv.Start()
+		return srv, &conns
+	}
+
+	// requestN issues n sequential requests through one client, decoding each the
+	// way authorize and reserveQuota do.
+	requestN := func(t *testing.T, url string, cap int64, n int) (decodeErrs int) {
+		t.Helper()
+		client := &http.Client{}
+		for i := 0; i < n; i++ {
+			resp, err := client.Get(url)
+			if err != nil {
+				t.Fatalf("request %d: %v", i, err)
+			}
+			var rows []struct {
+				ID string `json:"id"`
+			}
+			if err := decodeCappedJSON(resp, cap, &rows); err != nil {
+				decodeErrs++
+			}
+			resp.Body.Close()
+		}
+		return decodeErrs
+	}
+
+	t.Run("under cap: pooling already worked, and still does", func(t *testing.T) {
+		srv, conns := newCountingServer(100)
+		defer srv.Close()
+
+		if errs := requestN(t, srv.URL, 64<<10, 20); errs != 0 {
+			t.Fatalf("%d decode errors on a well-formed under-cap response", errs)
+		}
+		if got := atomic.LoadInt64(conns); got != 1 {
+			t.Errorf("20 sequential under-cap requests used %d TCP connections, want 1. "+
+				"If this ever fails, the measured premise of P1.5 changed: pooling under the "+
+				"cap was never broken, so the drain was never a latency fix", got)
+		}
+	})
+
+	t.Run("over cap: the drain is what keeps the connection", func(t *testing.T) {
+		const cap = 1 << 10
+		srv, conns := newCountingServer(8 << 10) // 8KB body vs a 1KB cap
+		defer srv.Close()
+
+		// Every one of these must fail to decode -- a truncated body is refused,
+		// which is the fail-closed behaviour these call sites already had.
+		if errs := requestN(t, srv.URL, cap, 20); errs != 20 {
+			t.Fatalf("%d of 20 over-cap responses failed to decode, want all 20: a body past "+
+				"its cap is truncated and must be refused", errs)
+		}
+		if got := atomic.LoadInt64(conns); got != 1 {
+			t.Errorf("20 sequential over-cap requests used %d TCP connections, want 1. "+
+				"Without the drain this is 20 -- one fresh TCP+TLS handshake per request, on "+
+				"the already-degraded path where a response is oversized and refused", got)
 		}
 	})
 }

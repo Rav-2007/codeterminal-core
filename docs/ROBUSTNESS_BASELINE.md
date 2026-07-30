@@ -158,6 +158,20 @@ over-cap case**, not a latency optimisation. `maxAuthResponseBytes` is 64 KB, wh
 condition in which you least want to also lose connection pooling on every
 request.
 
+**Follow-up during implementation — the first cut of the fix was self-defeating.**
+`decodeCappedJSON` originally bounded its drain by the same `cap` as the decode.
+That cannot work: the only case needing a drain is the one where the body
+*exceeded* `cap`, so a `cap`-sized drain never reaches EOF and the connection is
+lost regardless. The over-cap test still measured 20 connections across 20
+requests with the "fix" in place. The drain now has its own larger bound
+(`maxDrainBytes`, 8 MB — above every decode cap, including the sweep's 4 MB), which
+is safe to make generous because the peer is Supabase, our own backend, and the
+decode cap exists to bound memory rather than to distrust the peer.
+
+Worth recording as a process note: this was caught because the test asserts the
+**connection count**, not merely that a drain was attempted. A test written to the
+shape of the fix would have passed.
+
 ## 5. Premises confirmed mechanically (no repro needed)
 
 - **No panic recovery in `proxy`.** The whole repo has exactly one `recover()`,

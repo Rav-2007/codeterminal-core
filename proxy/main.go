@@ -237,6 +237,17 @@ const (
 	// number of abandoned reservations, not with a single fixed row.
 	maxSweepResponseBytes = 4 << 20 // 4MB
 
+	// maxDrainBytes bounds how much of an already-decoded response body
+	// decodeCappedJSON will read past its decode cap in order to reach EOF and let
+	// http.Transport re-pool the connection.
+	//
+	// Deliberately larger than every decode cap above, because the only case that
+	// needs draining is the one where the body exceeded its cap -- a drain bounded
+	// by the cap itself can never reach EOF and buys nothing. 8MB clears any
+	// plausible PostgREST response (the largest legitimate one, the sweep's, is
+	// capped at 4MB) while still being a bound rather than an open invitation.
+	maxDrainBytes = 8 << 20 // 8MB
+
 	// defaultAllowedModels is the managed tier's shipped model set (the three
 	// tiers in models.json). Used when ALLOWED_MODELS is unset, so the
 	// cost-authorization check is on by default rather than opt-in.
@@ -276,6 +287,43 @@ var allowedResponseHeaders = []string{"Content-Type"}
 // non-streaming response, not just errors, in case a future response
 // shape carries the same field on success.
 var accountMetadataFields = []string{"user_id"}
+
+// decodeCappedJSON decodes one JSON value from resp.Body under a byte cap, then
+// drains whatever the decoder left so the connection can be re-pooled.
+//
+// The drain is the only reason this helper exists, and its value is narrower than
+// it looks -- measured rather than assumed (docs/ROBUSTNESS_BASELINE.md §4).
+//
+// The tempting story is that json.Decoder.Decode stops at the first complete value
+// and never reaches EOF, so http.Transport never re-pools and every Supabase call
+// pays a fresh TCP+TLS handshake. That story is FALSE for normal responses, and was
+// measured false at 0B, 100B, 4KB and 64KB: the decoder's buffered reader consumes
+// through EOF while filling its buffer, so for a Content-Length body the transport
+// sees EOF and re-pools anyway. The unexplained ~80ms on reserveQuota is NOT this,
+// and this change must not be reported as a latency fix.
+//
+// What IS real is the over-cap case. When the response exceeds cap, Decode stops
+// early with bytes still unread and pooling genuinely breaks: 20 distinct TCP
+// connections across 20 sequential requests, against 1 when drained. Such a
+// response also fails to decode and is refused, so this is the already-degraded
+// path -- precisely when you least want to also pay a handshake per request.
+//
+// The drain is bounded, but by maxDrainBytes rather than by cap. Bounding it by
+// cap would be self-defeating and was: the case that needs draining is precisely
+// the one where the body EXCEEDED cap, so a cap-sized drain cannot reach EOF and
+// the connection is lost anyway. Caught by the test below rather than by reading
+// this code, which is why the test asserts the connection count instead of merely
+// asserting that a drain was attempted.
+//
+// Reading unboundedly would trade a bounded cost for an unbounded one, so a body
+// past maxDrainBytes correctly loses its connection. That bound is safe to make
+// generous here because this reader is Supabase -- our own backend -- and the
+// decode cap exists to bound MEMORY, not because the peer is hostile.
+func decodeCappedJSON(resp *http.Response, cap int64, v any) error {
+	err := json.NewDecoder(io.LimitReader(resp.Body, cap)).Decode(v)
+	io.Copy(io.Discard, io.LimitReader(resp.Body, maxDrainBytes))
+	return err
+}
 
 // stripAccountMetadata removes accountMetadataFields from a JSON object
 // body, returning it unchanged if it isn't a JSON object (never errors
@@ -995,7 +1043,7 @@ func (p *proxy) authorize(r *http.Request) (string, bool) {
 	var rows []struct {
 		ID string `json:"id"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxAuthResponseBytes)).Decode(&rows); err != nil {
+	if err := decodeCappedJSON(resp, maxAuthResponseBytes, &rows); err != nil {
 		p.logger.Printf("auth: rejected (decoding supabase response failed, key prefix=%s)", keyPrefix(mochiKey))
 		return "", false
 	}
@@ -1096,7 +1144,7 @@ func (p *proxy) reserveQuota(ctx context.Context, apiKeyID string, reserved int)
 		TokenLimit int64 `json:"token_limit"`
 		PendingID  int64 `json:"pending_id"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxAuthResponseBytes)).Decode(&rows); err != nil {
+	if err := decodeCappedJSON(resp, maxAuthResponseBytes, &rows); err != nil {
 		p.logger.Printf("quota: refused (decoding reserve_usage response failed, key id=%s): %v", apiKeyID, err)
 		return reservation{}, false
 	}
@@ -2200,7 +2248,7 @@ func (p *proxy) sweepPendingCorrections() {
 		Reserved  int    `json:"reserved"`
 		CreatedAt string `json:"created_at"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxSweepResponseBytes)).Decode(&rows); err != nil {
+	if err := decodeCappedJSON(resp, maxSweepResponseBytes, &rows); err != nil {
 		p.logger.Printf("reconciliation: decoding sweep response failed: %v", err)
 		return
 	}
