@@ -645,8 +645,34 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{"error":"quota_exceeded"}`))
 		return
 	}
-	pendingID := res.pendingID
 	ceiling := requestTokenCeiling(reserved, res.headroom)
+
+	// From here on the reservation EXISTS and someone owes a correction for it.
+	// Exactly one deferred finalizer discharges that debt, and every branch below
+	// records its result into `outcome` instead of billing directly.
+	//
+	// This is a structural property, not a tidier spelling of the same thing.
+	// Before it, finalizeUsage was called at four hand-placed sites and the
+	// "every reservation is finalized exactly once" invariant was maintained by
+	// eye: a panic after this point discharged nothing (the reservation was
+	// stranded until the sweep reported it permanently over-charged), and any
+	// future early return added below would silently do the same. Neither is
+	// possible now -- the defer runs during panic unwinding too, and a new
+	// `return` inherits it for free.
+	//
+	// The zero value is deliberately the safe one: actual=0, producedOutput=false
+	// means "nothing was generated", i.e. a full refund. The two upstream-failure
+	// branches below therefore just return and let the defer do the right thing.
+	//
+	// Not synchronised, and must not need to be: outcome is written only by this
+	// goroutine and by streamSSE, which this goroutine calls directly. Nothing
+	// here may be moved into a goroutine of its own without adding a lock.
+	outcome := reservationOutcome{
+		keyID:     apiKeyID,
+		reserved:  reserved,
+		pendingID: res.pendingID,
+	}
+	defer p.finalizeReservation(&outcome)
 
 	ctx, cancel := context.WithTimeout(r.Context(), upstreamTimeout)
 	defer cancel()
@@ -654,7 +680,6 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.upstreamURL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		p.logger.Printf("building upstream request failed: %v", err)
-		p.finalizeUsage(apiKeyID, reserved, 0, false, pendingID)
 		http.Error(w, "bad gateway", http.StatusBadGateway)
 		return
 	}
@@ -672,9 +697,9 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		p.logger.Printf("upstream call failed: %v", err)
 		// Reservation was made but OpenRouter was never reached -- none
 		// of it was used, so it's a full refund (see
-		// QUOTA_RESERVATION_DESIGN.md §5(b)). producedOutput=false: nothing
-		// was generated upstream.
-		p.finalizeUsage(apiKeyID, reserved, 0, false, pendingID)
+		// QUOTA_RESERVATION_DESIGN.md §5(b)). That is the outcome zero value
+		// (actual=0, producedOutput=false), so the deferred finalizer above
+		// already issues exactly the refund this branch used to issue by hand.
 		http.Error(w, "bad gateway", http.StatusBadGateway)
 		return
 	}
@@ -690,7 +715,7 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(resp.StatusCode)
 
 	if strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
-		p.streamSSE(w, resp.Body, apiKeyID, reserved, pendingID, ceiling)
+		p.streamSSE(w, resp.Body, &outcome, ceiling)
 		return
 	}
 
@@ -709,11 +734,13 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		p.logger.Printf("writing non-streamed response failed: %v", err)
 	}
 	actual, _ := peekUsageTotal(respBytes)
+	outcome.actual = actual
 	// A 2xx response with a body means upstream produced (and billed) output;
 	// a missing usage figure there must not trigger a refund. A non-2xx error
 	// body carries no billable output, so it stays a full refund.
-	producedOutput := resp.StatusCode >= 200 && resp.StatusCode < 300 && len(respBytes) > 0
-	p.finalizeUsage(apiKeyID, reserved, actual, producedOutput, pendingID)
+	outcome.producedOutput = resp.StatusCode >= 200 && resp.StatusCode < 300 && len(respBytes) > 0
+	// No finalize call here: the deferred finalizer registered right after
+	// reserveQuota bills this outcome on the way out.
 }
 
 // authorize validates the caller-supplied Mochiii key ("Authorization:
@@ -1009,7 +1036,7 @@ func keyPrefix(key string) string {
 //
 // This is a CIRCUIT BREAKER, NOT AN ACCOUNTANT: it bounds worst-case spend, and
 // exact accounting still comes from the terminal usage chunk whenever one arrives.
-func (p *proxy) streamSSE(w http.ResponseWriter, body io.Reader, keyID string, reserved int, pendingID int64, ceiling int) {
+func (p *proxy) streamSSE(w http.ResponseWriter, body io.Reader, outcome *reservationOutcome, ceiling int) {
 	flusher, canFlush := w.(http.Flusher)
 
 	scanner := bufio.NewScanner(body)
@@ -1020,8 +1047,16 @@ func (p *proxy) streamSSE(w http.ResponseWriter, body io.Reader, keyID string, r
 	sawData := false
 	dataChunks := 0
 	streamedBytes := 0
+	// Record into the caller's outcome rather than billing here. Every `return`
+	// below -- clean EOF, client write failure, budget kill -- lands on this, and
+	// the handler's single deferred finalizer does the billing. Recording (not
+	// billing) is what lets the invariant live in one place; it also means a
+	// panic mid-stream still bills the partial result correctly, because these
+	// values are already published to the caller's struct by the time the
+	// handler's defer runs.
 	defer func() {
-		p.finalizeUsage(keyID, reserved, totalTokens, sawData, pendingID)
+		outcome.actual = totalTokens
+		outcome.producedOutput = sawData
 	}()
 
 	for scanner.Scan() {
@@ -1071,8 +1106,8 @@ func (p *proxy) streamSSE(w http.ResponseWriter, body io.Reader, keyID string, r
 		// `defer resp.Body.Close()` tear the upstream connection down -- that is
 		// what actually stops the spend, so no extra plumbing is needed.
 		if reason, over := budgetExceeded(dataChunks, streamedBytes, ceiling); over {
-			p.logger.Printf("budget: KILLED stream (key id=%s, reason=%s, chunks=%d, bytes=%d, ceiling=%d)", keyID, reason, dataChunks, streamedBytes, ceiling)
-			totalTokens = chargeForKill(totalTokens, dataChunks, reserved)
+			p.logger.Printf("budget: KILLED stream (key id=%s, reason=%s, chunks=%d, bytes=%d, ceiling=%d)", outcome.keyID, reason, dataChunks, streamedBytes, ceiling)
+			totalTokens = chargeForKill(totalTokens, dataChunks, outcome.reserved)
 			writeBudgetExceeded(w, flusher, canFlush)
 			return
 		}
@@ -1703,6 +1738,46 @@ func peekUsageTotal(body []byte) (int, bool) {
 // and the sweep would report it ~20 minutes later as an abandoned reservation
 // that never happened -- turning the crash alarm into noise on the one path
 // most likely to fire it (clients disconnecting mid-stream).
+// reservationOutcome accumulates what one request did to its reservation, so
+// that billing happens at exactly one deferred site (see handleChatCompletions)
+// rather than at every branch that can end a request.
+//
+// Its zero value is the SAFE one on purpose: actual=0 and producedOutput=false
+// mean "upstream generated nothing", which finalizeUsage turns into a full
+// refund. A branch that fails before reaching upstream therefore needs to record
+// nothing at all.
+type reservationOutcome struct {
+	// Set once, at construction, and never mutated.
+	keyID     string
+	reserved  int
+	pendingID int64
+
+	// Recorded by whichever branch handles the response.
+	actual         int
+	producedOutput bool
+
+	// finalized makes finalizeReservation idempotent. Two things rely on it:
+	// nested defers (streamSSE unwinding into the handler's own defer), and the
+	// panic path, where the recovery middleware and this defer both run.
+	finalized bool
+}
+
+// finalizeReservation bills o exactly once, however many times it is called.
+//
+// Deliberately separate from finalizeUsage, which is left exactly as it was:
+// finalizeUsage owns the CHARGE POLICY (how a missing usage figure is treated,
+// what the rate bucket is charged, which direction the correction goes) and is
+// unit-tested on that policy. This function owns only the once-ness. Keeping the
+// two apart means the invariant added here cannot perturb the policy the
+// quota-reservation design document specifies.
+func (p *proxy) finalizeReservation(o *reservationOutcome) {
+	if o == nil || o.finalized {
+		return
+	}
+	o.finalized = true
+	p.finalizeUsage(o.keyID, o.reserved, o.actual, o.producedOutput, o.pendingID)
+}
+
 func (p *proxy) finalizeUsage(keyID string, reserved, actual int, producedOutput bool, pendingID int64) {
 	// Charge the token-rate bucket with the best figure available: the real usage
 	// when there is one, otherwise the reservation. Never nothing -- a request

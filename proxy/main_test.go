@@ -18,6 +18,24 @@ import (
 	"time"
 )
 
+// streamSSEAndFinalize drives streamSSE exactly the way handleChatCompletions
+// does: relay the stream, then discharge the reservation through the single
+// deferred finalizer.
+//
+// It exists because streamSSE no longer bills. It RECORDS its result into a
+// reservationOutcome and the handler's one deferred finalizeReservation call
+// bills it, so that "every reservation is finalized exactly once" is a
+// structural property of the handler instead of something four call sites have
+// to remember. A test that calls streamSSE alone would therefore assert on a
+// stream that was never billed -- which is why every billing-sensitive test
+// below goes through this helper rather than the raw method.
+func streamSSEAndFinalize(p *proxy, w http.ResponseWriter, body io.Reader, keyID string, reserved int, pendingID int64, ceiling int) *reservationOutcome {
+	outcome := &reservationOutcome{keyID: keyID, reserved: reserved, pendingID: pendingID}
+	p.streamSSE(w, body, outcome, ceiling)
+	p.finalizeReservation(outcome)
+	return outcome
+}
+
 // fakeUsageStore stands in for the `usage` table's single row, guarded by
 // a mutex so reserve mirrors reserve_usage's real atomic
 // UPDATE...WHERE...RETURNING semantics under concurrent callers -- see
@@ -737,7 +755,7 @@ func TestStreamSSE_StripsAccountMetadataEndToEnd(t *testing.T) {
 
 	p := newTestProxy(supabase.URL, "http://unused.invalid")
 	rec := httptest.NewRecorder()
-	p.streamSSE(rec, strings.NewReader(upstream), keyID, defaultReservationTokens, 1, absoluteMaxRequestTokens)
+	streamSSEAndFinalize(p, rec, strings.NewReader(upstream), keyID, defaultReservationTokens, 1, absoluteMaxRequestTokens)
 
 	got := rec.Body.String()
 	if strings.Contains(got, "org-SECRET-ACCOUNT") || strings.Contains(got, "user_id") {
@@ -1464,7 +1482,7 @@ func TestStreamSSE_KillsStreamOverBudget(t *testing.T) {
 	const ceiling = 10
 	p := newTestProxy(supabase.URL, "http://unused.invalid")
 	rec := httptest.NewRecorder()
-	p.streamSSE(rec, strings.NewReader(sseChunks(500)), keyID, defaultReservationTokens, 1, ceiling)
+	streamSSEAndFinalize(p, rec, strings.NewReader(sseChunks(500)), keyID, defaultReservationTokens, 1, ceiling)
 
 	body := rec.Body.String()
 	if !strings.Contains(body, "budget_exceeded") {
@@ -1494,7 +1512,7 @@ func TestStreamSSE_KilledStreamIsChargedNotRefunded(t *testing.T) {
 
 	p := newTestProxy(supabase.URL, "http://unused.invalid")
 	rec := httptest.NewRecorder()
-	p.streamSSE(rec, strings.NewReader(sseChunks(500)), keyID, defaultReservationTokens, 1, 10)
+	streamSSEAndFinalize(p, rec, strings.NewReader(sseChunks(500)), keyID, defaultReservationTokens, 1, 10)
 
 	waitForCorrections(t, store, 1)
 	store.mu.Lock()
@@ -1670,7 +1688,7 @@ func TestStreamSSE_UnderBudgetStreamIsUnaffected(t *testing.T) {
 
 	p := newTestProxy(supabase.URL, "http://unused.invalid")
 	rec := httptest.NewRecorder()
-	p.streamSSE(rec, strings.NewReader(sseUsageBody(42)), keyID, defaultReservationTokens, 1, absoluteMaxRequestTokens)
+	streamSSEAndFinalize(p, rec, strings.NewReader(sseUsageBody(42)), keyID, defaultReservationTokens, 1, absoluteMaxRequestTokens)
 
 	body := rec.Body.String()
 	if strings.Contains(body, "budget_exceeded") {
@@ -1880,8 +1898,7 @@ func TestStreamSSE_RealisticStreamNotKilledUnderCeiling(t *testing.T) {
 
 	p := newTestProxy(supabase.URL, "http://unused.invalid")
 	rec := httptest.NewRecorder()
-	p.streamSSE(rec, strings.NewReader(sseRealisticChunks(chunks)), keyID,
-		defaultReservationTokens, 1, absoluteMaxRequestTokens)
+	streamSSEAndFinalize(p, rec, strings.NewReader(sseRealisticChunks(chunks)), keyID, defaultReservationTokens, 1, absoluteMaxRequestTokens)
 
 	body := rec.Body.String()
 	if strings.Contains(body, "budget_exceeded") {
@@ -1916,7 +1933,7 @@ func TestStreamSSE_ByteGuardCatchesBatchedGiantChunks(t *testing.T) {
 
 	p := newTestProxy(supabase.URL, "http://unused.invalid")
 	rec := httptest.NewRecorder()
-	p.streamSSE(rec, strings.NewReader(b.String()), keyID, defaultReservationTokens, 1, ceiling)
+	streamSSEAndFinalize(p, rec, strings.NewReader(b.String()), keyID, defaultReservationTokens, 1, ceiling)
 
 	if !strings.Contains(rec.Body.String(), "budget_exceeded") {
 		t.Error("a stream far past its byte allowance was not killed -- with only 3 chunks " +
@@ -2303,5 +2320,197 @@ func TestHasDuplicateKeys(t *testing.T) {
 				t.Errorf("hasDuplicateKeys(%s) = %v, want %v", tt.body, got, tt.want)
 			}
 		})
+	}
+}
+
+// panickingResponseWriter panics on the write whose payload contains panicOn,
+// modelling any runtime fault -- a nil dereference, a bounds bug, a future
+// regression -- that unwinds out of the middle of a request AFTER the
+// reservation already exists. It mirrors abortingResponseWriter above, which
+// does the same for a client disconnect; the difference is that a disconnect is
+// an error return the code handles and a panic is not.
+type panickingResponseWriter struct {
+	header  http.Header
+	body    bytes.Buffer
+	panicOn string
+	code    int
+
+	// panicOnWriteHeader faults at w.WriteHeader instead of at a body write.
+	// That distinction is the whole point of the two subtests below: WriteHeader
+	// runs in handleChatCompletions AFTER the reservation exists but BEFORE
+	// streamSSE is entered, so it is a site that streamSSE's own defer never
+	// covered and only the handler-level defer can.
+	panicOnWriteHeader bool
+}
+
+func (w *panickingResponseWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = http.Header{}
+	}
+	return w.header
+}
+
+func (w *panickingResponseWriter) WriteHeader(code int) {
+	w.code = code
+	if w.panicOnWriteHeader {
+		panic("synthetic fault at WriteHeader, before the stream begins")
+	}
+}
+
+func (w *panickingResponseWriter) Write(b []byte) (int, error) {
+	if w.panicOn != "" && strings.Contains(string(b), w.panicOn) {
+		panic("synthetic fault mid-stream: " + w.panicOn)
+	}
+	return w.body.Write(b)
+}
+
+func (w *panickingResponseWriter) Flush() {}
+
+// TestHandleChatCompletions_PanicStillDischargesReservation is the P1.1
+// regression, and the unit-level half of the defect measured live in
+// docs/ROBUSTNESS_BASELINE.md §3.
+//
+// A reservation is a DEBT: reserve_usage has already incremented tokens_used by
+// the full reserved amount and opened a pending_corrections row, and something
+// must later true that up. If a fault unwinds the request before that happens,
+// the caller stays charged the whole reservation and the outbox row stays open
+// until the sweep reports it as permanently over-charged -- the sweep never
+// refunds, by design.
+//
+// The two subtests are deliberately NOT equivalent, and the difference is what
+// makes this a real regression test rather than a restatement of the fix:
+//
+//   - "before the stream begins" faults at w.WriteHeader, which runs in
+//     handleChatCompletions after the reservation exists and before streamSSE is
+//     entered. NOTHING covered this before P1.1. This is the subtest that fails
+//     when the fix is neutered.
+//   - "mid-stream" faults inside streamSSE's relay write. streamSSE always had
+//     its own deferred finalizeUsage, so this case was ALREADY covered before
+//     P1.1. It is kept to pin that coverage in place now that the billing moved
+//     out of streamSSE and into the handler -- it guards against the refactor
+//     having lost something, and it is honestly not evidence that the refactor
+//     added something.
+//
+// Neuter check for the first subtest: replace handleChatCompletions'
+// `defer p.finalizeReservation(&outcome)` with a plain call at the end of the
+// function. "before the stream begins" then fails with 0 corrections and 1 open
+// pending row; "mid-stream" keeps passing, as does every other test in this
+// file -- which is precisely the shape that let the gap survive unnoticed.
+func TestHandleChatCompletions_PanicStillDischargesReservation(t *testing.T) {
+	tests := []struct {
+		name string
+		// writer decides WHERE the fault lands.
+		writer func() *panickingResponseWriter
+		// wantRefund is whether the discharge should hand quota back. A fault
+		// before any output was relayed is a full refund; a fault after real
+		// upstream-billed output must never move quota in the caller's favour
+		// (the chargeForKill invariant).
+		wantRefund bool
+	}{
+		{
+			name:       "before the stream begins (uncovered before P1.1)",
+			writer:     func() *panickingResponseWriter { return &panickingResponseWriter{panicOnWriteHeader: true} },
+			wantRefund: true,
+		},
+		{
+			name:       "mid-stream (already covered by streamSSE's own defer)",
+			writer:     func() *panickingResponseWriter { return &panickingResponseWriter{panicOn: "BOOM"} },
+			wantRefund: false,
+		},
+	}
+
+	for i, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			keyID := fmt.Sprintf("cccc2222-0000-0000-0000-00000000000%d", i+1)
+
+			store := &fakeUsageStore{tokenLimit: 100000}
+			supabase, _ := newFakeSupabase(store, keyID)
+			defer supabase.Close()
+
+			// Delivers real content first (so sawData is true on the mid-stream
+			// case), then the chunk that triggers the fault, then a usage chunk
+			// that must never be reached.
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(http.StatusOK)
+				fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n")
+				fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"BOOM\"}}]}\n\n")
+				fmt.Fprint(w, "data: {\"usage\":{\"total_tokens\":99}}\n\n")
+			}))
+			defer upstream.Close()
+
+			p := newTestProxy(supabase.URL, upstream.URL)
+			req := newAuthorizedRequest(`{"model":"x","messages":[{"role":"user","content":"hi"}],"stream":true,"provider":{"zdr":true,"data_collection":"deny"}}`)
+
+			func() {
+				// The panic is expected to propagate out of the handler:
+				// CONTAINING it is P1.3's job (the recovery middleware), not
+				// P1.1's. What P1.1 guarantees is that the reservation is
+				// discharged on the way out regardless of who catches it.
+				defer func() {
+					if r := recover(); r == nil {
+						t.Fatal("expected a synthetic fault to panic; the test's own premise is broken")
+					}
+				}()
+				p.handleChatCompletions(tc.writer(), req)
+			}()
+
+			waitForCorrections(t, store, 1)
+
+			if got := store.openPendingCount(); got != 0 {
+				t.Errorf("a panic left %d open pending_corrections row(s); the reservation was "+
+					"stranded and the sweep would later report this key as permanently "+
+					"over-charged. Every reservation must be discharged exactly once, "+
+					"including during panic unwinding", got)
+			}
+
+			store.mu.Lock()
+			delta := store.corrections[0]
+			store.mu.Unlock()
+
+			switch {
+			case tc.wantRefund && delta != -defaultReservationTokens:
+				t.Errorf("fault before any output was relayed corrected by %d, want a full "+
+					"refund of %d: upstream generated nothing, so none of the reservation "+
+					"was spent", delta, -defaultReservationTokens)
+			case !tc.wantRefund && delta < 0:
+				t.Errorf("fault after real output was relayed refunded %d tokens; upstream "+
+					"billed for that output, so a fault must not move quota in the caller's "+
+					"favour (same invariant as chargeForKill)", -delta)
+			}
+		})
+	}
+}
+
+// TestFinalizeReservation_IsIdempotent pins the once-ness directly. Nested
+// defers and the P1.3 recovery middleware can both reach the finalizer for the
+// same request, and a reservation billed twice applies its correction twice --
+// which on the common under-run case is a DOUBLE REFUND of quota the account
+// really spent.
+//
+// Neuter check: delete the `o.finalized` guard in finalizeReservation and this
+// test fails with 2 corrections.
+func TestFinalizeReservation_IsIdempotent(t *testing.T) {
+	const keyID = "cccc2222-0000-0000-0000-000000000002"
+
+	store := &fakeUsageStore{tokenLimit: 100000}
+	supabase, _ := newFakeSupabase(store, keyID)
+	defer supabase.Close()
+
+	p := newTestProxy(supabase.URL, "http://unused.invalid")
+	outcome := &reservationOutcome{keyID: keyID, reserved: defaultReservationTokens, pendingID: 1, actual: 50, producedOutput: true}
+
+	p.finalizeReservation(outcome)
+	p.finalizeReservation(outcome)
+	p.finalizeReservation(outcome)
+
+	waitForCorrections(t, store, 1)
+	// Give any extra correction time to land before asserting there wasn't one.
+	time.Sleep(150 * time.Millisecond)
+
+	if got := store.correctionCount(); got != 1 {
+		t.Errorf("finalizeReservation billed %d times for one reservation; it must bill exactly "+
+			"once however many times it is called, or a request whose actual usage undershot "+
+			"its reservation gets its refund applied repeatedly", got)
 	}
 }
