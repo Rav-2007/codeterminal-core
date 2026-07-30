@@ -869,6 +869,39 @@ Extension Development Host suite, and the proxy image build. The `-tags eval`
 suite runs on a weekly schedule rather than per-PR, because it downloads a real
 embedding model and takes ~150s.
 
+### Make targets and the pre-push hook
+
+A `Makefile` wraps the same gates CI runs, so a green `make check` locally means
+what it means in CI:
+
+```bash
+make hooks    # install the tracked git hooks — do this once per clone
+make check    # fmt, vet, race, lint, coverage ratchet
+make lint     # staticcheck + ineffassign + bodyclose  (scripts/lint.sh)
+make ratchet  # per-package coverage floors            (scripts/coverage-ratchet.sh)
+make fuzz     # 30s per fuzz target; FUZZTIME=5m to search harder
+make drill    # mid-stream SIGTERM drill against the real proxy binary
+```
+
+`make hooks` sets `core.hooksPath` to [`.githooks/`](.githooks). Git never syncs
+`.git/hooks` between clones, so a hook is only shared if it is both tracked and
+pointed at — that target is the second half. The `pre-push` hook runs build,
+gofmt, vet and `go test -race` across the six modules and refuses a push that
+fails any of them.
+
+**Residual, stated plainly: `git push --no-verify` bypasses the hook entirely,
+and nothing in it can prevent that.** It guards against forgetting, not against
+deciding. It exists as a compensating control because branch protection is
+unavailable on this repo — private on a free plan, so the protection API answers
+`403 Upgrade to GitHub Pro or make this repository public`. CI therefore reports
+but cannot block a merge. The real fix is branch protection; until then the
+strongest available veto is the moment before code leaves the machine.
+
+The coverage floors live in
+[`scripts/coverage-floors.txt`](scripts/coverage-floors.txt) and are a
+**ratchet**: raise them to a number that has been measured on `main`, never
+lower them to make a red build green.
+
 ## Retrieval-quality eval set
 
 [`testdata/evalset/`](testdata/evalset) is a small, fixed sample codebase — 8

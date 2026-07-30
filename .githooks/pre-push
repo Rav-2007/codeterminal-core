@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+#
+# pre-push — run the same gate CI runs, before the push rather than after.
+#
+# Installed by `make hooks` (which sets core.hooksPath to .githooks/). Tracked in
+# the repo so it is reviewable and so everyone gets the same one; git does not
+# sync .git/hooks between clones, which is why this lives here instead.
+#
+# WHY THIS EXISTS
+#
+# Branch protection is unavailable on this repo -- private, free plan, so
+# `GET /repos/:owner/:repo/branches/main/protection` answers 403 Upgrade
+# (checked 2026-07-30). CI runs on every push and PR to main but cannot BLOCK a
+# merge. This hook is the compensating control: it moves the gate to the one
+# place that still has a veto, which is the moment before code leaves the
+# machine.
+#
+# RESIDUAL, stated rather than hidden: `git push --no-verify` skips this
+# entirely, and nothing here can prevent that. It is a guard against forgetting,
+# not against deciding. The real fix is branch protection, which needs the repo
+# to go public or onto Pro.
+#
+# WHAT IT RUNS
+#
+# build, gofmt, vet, and `go test -race` across all six modules -- the four that
+# catch a broken push. Deliberately NOT the coverage ratchet, the linters, or
+# the fuzz targets: those add roughly a minute for checks whose failures are
+# advisory rather than "this push is broken", and a hook slow enough to be
+# annoying is a hook people learn to bypass. `make check` runs everything.
+
+set -uo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+
+# There is no root Go module -- only go.work -- so `./...` from the repo root
+# fails outright. Every module is named explicitly.
+MODULES=(daemon editapply proxy helper protocol clients/tui)
+
+status=0
+for module in "${MODULES[@]}"; do
+  dir="$repo_root/$module"
+
+  if ! out="$(cd "$dir" && go build ./... 2>&1)"; then
+    echo "pre-push: BUILD failed in $module" >&2
+    echo "$out" >&2
+    status=1
+    continue
+  fi
+
+  # gofmt -l prints offending files and exits 0, so the output is the signal.
+  unformatted="$(cd "$dir" && gofmt -l . 2>&1)"
+  if [ -n "$unformatted" ]; then
+    echo "pre-push: gofmt found unformatted files in $module:" >&2
+    echo "$unformatted" >&2
+    status=1
+  fi
+
+  if ! out="$(cd "$dir" && go vet ./... 2>&1)"; then
+    echo "pre-push: VET failed in $module" >&2
+    echo "$out" >&2
+    status=1
+    continue
+  fi
+
+  # -race, not a bare `go test`: this repo's concurrency work (the Gate 6
+  # apply/undo locking in particular) is only defended by the race detector.
+  if ! out="$(cd "$dir" && go test -race ./... 2>&1)"; then
+    echo "pre-push: TESTS failed in $module" >&2
+    echo "$out" >&2
+    status=1
+    continue
+  fi
+
+  echo "pre-push: ok $module"
+done
+
+if [ $status -ne 0 ]; then
+  echo "" >&2
+  echo "pre-push: REFUSING THE PUSH. Fix the above, or use --no-verify if you" >&2
+  echo "genuinely mean to push a red tree (and say so in the PR)." >&2
+fi
+
+exit $status
