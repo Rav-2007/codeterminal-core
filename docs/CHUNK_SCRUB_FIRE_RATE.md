@@ -183,10 +183,50 @@ as new provider key formats appear.
 **Whatever is decided, warn-mode should stay log-only until it has been measured on a
 corpus containing real secrets.** This document establishes the cost side only.
 
-## Residual: the sink still has no organic data
+## Addendum — the live drill, and the one data point on the other side
 
-This harness measures a corpus offline; it does not fix the reason `warnmode.jsonl` is
-empty. That path is exercised only by a real daemon serving grounded turns, and it now
-has an end-to-end test proving it writes when it is reached. If organic fire-rate data
-is wanted from live usage, the daemon has to actually be used — no code change will
-produce it.
+Run 2026-07-30 after the corpus scan: a real daemon, real BGE/ONNX embedder, real
+index, against a capturing fake provider, serving one grounded turn over the Unix
+socket. The workspace held a file with a structural secret (`AKIA…`) and an opaque
+36-character token side by side, and the prompt was written to retrieve it.
+
+What went over the wire, read off the captured request body:
+
+| Check | Result |
+|---|---|
+| Structural secret present in the outbound POST | **absent** |
+| Placeholder in its position | `[REDACTED:aws_access_key]` |
+| Surrounding code (`func stagingCreds`) preserved | yes — span-scoped, not chunk-scoped |
+| Opaque token present in the outbound POST | **yes** — log-only, exactly as designed |
+| `warnmode.jsonl` written | **yes**, 0600, one event |
+| Raw secret material anywhere in the sink | none — labels and a `sha256:` indicator only |
+
+This is the first time that file has ever been written. The daemon then drained
+cleanly on `SIGTERM` (`drain complete, no requests in flight`) and removed its socket.
+
+**And the single recorded fire is a true positive.** The entropy detector fired on
+exactly the opaque token — `len=36 bits_per_char=5.00`, `class=code`,
+`shape=base64` — and on nothing else in the turn.
+
+That is worth stating precisely, because it cuts against the corpus result without
+overturning it. The corpus scan found the detector's *precision* to be zero across
+1,310 fires; this run shows its *recall* is not zero when a genuine opaque secret is
+actually present. Both can be true, and together they describe the real trade: the
+detector does find the thing, and it also finds a thousand things that are not it.
+
+**It does not change the recommendation.** n = 1, the secret was planted by the same
+person reading the result, and it was chosen to be found — 5.00 bits/char is at the
+extreme right tail of the corpus distribution, where only 11 of 5,636 real tokens sit.
+A real credential in a real repository has no obligation to be that conspicuous. What
+this run establishes is narrower and still useful: the pipeline works end to end, the
+live redactor is genuinely on the wire, warn-mode is genuinely log-only, and the
+detectors are capable of catching the class they were designed for. The reason to
+hold B is the false-positive cost, not an inability to detect.
+
+## Residual: the sink still has no *organic* data
+
+The drill above proves the path writes when a grounded turn reaches it, and
+`TestLogChunkScrub_WritesFiresToTheDurableSink` keeps that wire from silently
+breaking. Neither produces organic data. That comes only from the daemon actually
+being used on real workspaces — no code change will manufacture it, which is the
+thing twelve days of waiting demonstrated.

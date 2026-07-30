@@ -3930,3 +3930,160 @@ CI 21/21 green on PR #2. Coverage: `protocol` 88.9%, `editapply` 87.0% → **87.
 66.7%, `daemon` 70.1%. No floor breached.
 
 **Status: Phase 3 complete and verified locally; NOT founder-closed.**
+
+---
+
+## Phase 4 — security gates (2026-07-30)
+
+Plan and scorecard: `~/.claude/plans/waiting-on-the-eval-serene-sutton.md` §259-283,
+sequenced in `~/.claude/plans/phase-3-is-complete-validated-yeti.md`. Five items, one
+commit each, against dimension 4 (security posture), the last dimension holding the
+release gate.
+
+**The phase turned out to be less about writing security code than about finding out
+which of the record's security claims were true.** Two of the four items named in the
+plan were already done in code and open only on paper; a third was blocked on data
+that did not exist. That is the finding, and it is not a comfortable one for a program
+whose credibility rests on its own record.
+
+### What was actually open, once checked
+
+| Claimed state | Measured state |
+|---|---|
+| FAIL-1 policy breadth "STILL OPEN — these walk straight through today" | **closed 12 days earlier** in `959a882`/`ade065a`, with positive, negative and case-fold tests |
+| `chunkscrub` wiring on the egress path "the whole question" | **wired**, and no bypass exists — direct `@file:line` spans run the indexer's own gate first |
+| warn-mode "fire-rate data now durably accumulating" | **zero events ever recorded**; the wire was fine, the traffic was absent |
+| Gate 7 blocked on the founder-level auth-model decision | **decided by implementation** in `517c069`, never written down as a model |
+| WAL sidecars hold a duplicate copy of turns at 0644 | worse — the sidecar holds turns the 0600 db file **does not have yet** |
+
+### Commits
+
+1. **`643d52c` — reconcile the FAIL-1 name-gate record.** Docs only, and only after a
+   neuter-check: deleting the added globs turns exactly the 20 `new/*` and `item2/*`
+   cases red while every `existing/*`, `neg/*` and `item1/*` case stays green. Also
+   discharges the egress-wiring question and records what closing the bullet did *not*
+   change — the gate is still a basename blocklist, and bare `config` (`.kube/config`)
+   is still deliberately uncovered.
+2. **`e5e5813` — measure the warn-mode detectors offline.** `daemon/warnscan_test.go`
+   (`-tags warnscan`) runs a corpus through `ScanWorkspace` → `scrub()` → detectors, so
+   they see the post-Option-A residual, which is the only thing the B-vs-C question is
+   about. Plus the wiring test the empty sink deserved.
+3. **`725256e` — lock down the SQLite `-wal`/`-shm` sidecars** (debt item (g)), both
+   stores, via a shared `restrictSQLiteSidecars`.
+4. **`7a70017` — close Gate 7 and the FAIL-3 socket axis by written rationale.** A new
+   socket section in `SECURITY_MODEL.md`, now the canonical statement of that surface.
+5. **This commit** — the end-to-end drill, the egress-path tests, and this record.
+
+### The measurement that unblocked FAIL-1
+
+`docs/CHUNK_SCRUB_FIRE_RATE.md`. Over 243 files / 2,117 chunks:
+
+- **entropy: 1,310 fires, 33% of all chunks, zero true positives — at every
+  threshold.** The residual population above 4.5 bits/char is `go.work.sum` hashes and
+  test fixtures, not near-miss secrets. The token alphabet includes `-`, `_` and `/`,
+  so hyphenated English prose and URL paths classify as "base64"; it is a long-token
+  finder. There is no valley in the distribution to cut at.
+- **keyword: 41 fires, 1.6% of chunks, zero real credentials**, failing in three
+  nameable classes — type annotations (`token: string`, where the "value" is the word
+  `string`), `tokens`-as-a-count, and `os.Getenv`-style indirection `isNonSecretValue`
+  does not cover. Fixing those three removes 54% of fires.
+
+**Recommendation: reject Design B outright; hold Design C pending those fixes and a
+corpus that contains real secrets.** The report states its own limit — this corpus has
+none, so it bounds false-positive cost and says nothing about recall.
+
+### The live drill, and the data point that cuts the other way
+
+A real daemon, real BGE/ONNX embedder, real index, capturing fake provider, one
+grounded turn over the socket. On the wire: the structural secret **absent**, replaced
+by `[REDACTED:aws_access_key]` with surrounding code intact; the opaque token
+**present**, log-only as designed; `warnmode.jsonl` written for the first time ever, at
+0600, carrying labels and a `sha256:` indicator and no raw secret material. The daemon
+then drained cleanly on SIGTERM.
+
+**The single recorded fire is a true positive** — the entropy detector caught exactly
+the opaque token (`bits_per_char=5.00`) and nothing else. Recall is not zero when a
+genuine opaque secret is present; precision is still zero across a real corpus. Both
+are true, and the recommendation stands: n=1, planted by the person reading the result,
+at the extreme right tail where only 11 of 5,636 real tokens sit. The reason to hold B
+is its false-positive cost, not an inability to detect.
+
+### Defects found in this phase's own work, by neutering
+
+1. **The sidecar fix has a placement trap that a passing test would not catch.** The
+   driver creates `-wal`/`-shm` lazily, so the chmod must follow the schema DDL. Placed
+   beside the `journal_mode=WAL` pragma — where it reads most naturally, and where a
+   reviewer would put it — it races their creation and no-ops through its own ENOENT
+   tolerance, leaving 0644 while looking applied. Both failure modes are now
+   neuter-checked: the test fails when the call is deleted **and** when it is merely
+   moved.
+2. **A sidecar test that only opens the store asserts nothing.** It can find no sidecar
+   at all and pass. The test writes a turn first, fails loudly if no `-wal` exists, and
+   asserts its own premise (the turn really is in the `-wal`) so that a future SQLite
+   that checkpoints more eagerly surfaces as a failure rather than a silent hollowing.
+3. **Nothing tested the artifact that actually leaves the machine.** `scrub_test.go`
+   covered the redactor, `chunkscrub_test.go` the detectors,
+   `TestBuildAugmentedUserMessage_LabelsAndDelimitsChunks` the formatting — and
+   dropping `scrub()` from `renderChunk` left all three green. The BACKLOG's evidence
+   for this property was "verified live before/after", once, by hand, in July.
+   `daemon/chunk_egress_test.go` now asserts it on the outbound message.
+4. **A writer test cannot distinguish "never called" from "called and working".**
+   `TestWarnSink_NormalAppend` passed throughout the twelve days the sink recorded
+   nothing.
+
+### Deliberately not done, with reasons
+
+- **Unifying socket error responses — DECLINED, not deferred.** The flattening that
+  hides refused-vs-absent from an attacker hides it from the user too. The existence
+  oracle is accepted instead, with three written reopen conditions.
+- **Memory retention prune (debt (h))** — out of scope this phase; `turns` still grows
+  unbounded.
+- **`git remote remove upstream`** — not done. `gh` still resolves to
+  `NousResearch/hermes-agent` from this directory; every command must keep passing
+  `-R Rav-2007/codeterminal-core`.
+- **Rate-limit replica dilution** — still undecided.
+- **Designs B/C** — measured, recommended, not shipped. That decision is the founder's
+  and is now answerable from evidence.
+
+### Dimension 4 — security posture: 75 → **85** (target 92)
+
+Scored by deduction from evidence, in the same shape as Phase 2's dimension 5 and
+Phase 3's dimensions 3/1/6.
+
+**Credited (+10):** Gate 7 and the FAIL-3 socket axis closed with a written threat
+model and a conditional, reasoned acceptance; the FAIL-1 name gate verified closed by
+neuter-check rather than by reading; the egress path proven wired end to end on a live
+turn rather than by inspection; the opaque-secret decision moved from
+blocked-on-absent-data to answerable-from-measurement; one live permissions defect
+fixed, and it was worse than recorded.
+
+**Not credited, and why the score is not higher:**
+
+- **−4 opaque/novel secrets still leave the machine.** Measured, recommended, still
+  undecided and still shipping. This is the largest single deduction and it is
+  correctly the founder's call, not a coding task.
+- **−2 the existence oracle is accepted, not eliminated.** A conditional acceptance is
+  worth less than a closure, and the conditions are all plausible futures.
+- **−1 the mid-ancestor-directory-swap TOCTOU** remains open, with its urgency raised
+  by the socket's free retries.
+- **−1 the name gate is still a blocklist.** Broadening it closed the named gaps and
+  changed nothing structural; `.kube/config` and GCP-style `*-<hash>.json` still walk
+  through by design.
+- **−1 sidecar symlink opens** are still the driver's, uncovered by the leaf guard.
+
+**Deliberately not deducted:** the `id_rsa_secret.pub` over-refusal fails safe.
+
+**Program position after Phase 4:** ~149 of 232 points closed (~64%), on 6 of 7
+phases. Dimension 5 at target; 4 at 85; 3, 1, 6 moved by Phase 3; 2 at ~83.
+
+### Verification
+
+Six modules: build, `gofmt`, `go vet`, `go test -race -count=1` — all green,
+race-clean. Coverage: `protocol` 88.9%, `editapply` 87.3%, `proxy` 84.6%, `helper`
+6.5% / `helperproto` 75.0%, `clients/tui` 66.7%, `daemon` 70.1% → **70.5%**. No floor
+breached. Live end-to-end drill as described above.
+
+**Status: Phase 4 complete and verified locally; NOT founder-closed.** The FAIL-3
+final call and the Design B-vs-C decision both remain the founder's — the difference
+from a week ago is that both are now answerable from written evidence rather than
+blocked on it.

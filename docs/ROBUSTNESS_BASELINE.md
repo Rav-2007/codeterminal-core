@@ -44,7 +44,8 @@ from the repo root fails outright).
 **Where the moving modules stand now** (the floors above are unchanged — they
 are the ratchet's baseline, not a running total): after Phase 1 `proxy` was 81.7%;
 after Phase 2 `proxy` was **83.6%** and `daemon` **70.1%**; after Phase 3 `proxy`
-is **84.6%** and `editapply` **87.3%**.
+is **84.6%** and `editapply` **87.3%**; after Phase 4 `daemon` is **70.5%** (the
+sidecar-permission, egress-scrub and sink-wiring tests).
 
 **Phase 3 turned this table into a control.** The floors are now enforced by
 [`scripts/coverage-ratchet.sh`](../scripts/coverage-ratchet.sh), keyed per
