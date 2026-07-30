@@ -729,3 +729,137 @@ from a pricing model *first* and then confirmed. A discount observed and rationa
 proves far less.
 
 Full run cost: 4 inference sends + 4 generation lookups, ~$0.0026.
+
+---
+
+# The daemon socket — trust model, and the Gate 7 / FAIL-3 closure
+
+Added 2026-07-30 (Phase 4). The two sections above cover the database and the
+inference hop. This one covers the third surface: the local Unix socket the CLI,
+TUI and IDE integration use to reach the daemon. It exists because FAIL-3's own
+record named the trust model as *the* open question — "everything else in FAIL-3
+is secondary until this is decided" — and that question was answered by
+implementation without the answer ever being written down as a model.
+
+## The model in one paragraph
+
+The daemon listens on a Unix socket at `protocol.SocketPath()`, under a per-user
+runtime directory, chmod 0600. **File permissions are not the access control** —
+they narrow who can reach the socket, but they do not identify who did. The
+access control is `authorizePeer` (`daemon/server_auth.go`): the kernel reports
+the connecting process's UID via `SO_PEERCRED`, and a peer whose UID differs from
+the daemon's own is refused before the handshake is read, before any request is
+decoded, and before anything is dispatched. Every legitimate client runs as the
+user who started the daemon, so same-UID is exactly the trusted set — verified
+with zero client-side configuration and nothing for a user to get wrong.
+
+**The trust boundary is therefore the OS user account, not the process.** A
+same-UID process is trusted completely. This is a deliberate choice, and the
+sections below say what it costs.
+
+## Why the credential cannot be forged, and why it fails closed
+
+`SO_PEERCRED` is filled in by the kernel at `connect()` time from the peer's real
+credentials. It is not read from the wire, so nothing a client sends can change
+it — this is the property that makes it access control rather than a convention.
+
+Every failure path refuses:
+
+| Condition | Result |
+|---|---|
+| Peer UID ≠ daemon UID | refused |
+| Connection exposes no peer credentials (`syscall.Conn` type assertion fails) | refused |
+| `getsockopt` itself fails | refused |
+| Non-Linux build (`peercred_other.go`) | refused — there is no `SO_PEERCRED` equivalent wired up, and the daemon declines rather than degrading to trust-everyone |
+| `os.Getuid()` reports −1 (no UID concept) | refused — the daemon never trusts a peer it cannot meaningfully compare against |
+
+The refusal reason goes to the daemon's own log and is never returned to the
+rejected peer, so peer auth adds no information-leakage surface of its own.
+
+`checkPeerUID` is split out as a pure function precisely so the match/mismatch
+decision is unit-testable: an unprivileged test process cannot construct a real
+cross-UID socket, and a security decision that can only be exercised by a setup
+the test suite cannot build is a security decision that never gets tested.
+
+## Gate 7 — what was fixed
+
+Error responses returned over the socket used to carry absolute filesystem paths
+and internal path-resolution detail. Fixed in `3aeb8b6`: `scrubPaths` and
+`socketSafeError` (`daemon/server_errors.go`) replace workspace roots with a
+token, and upstream model-API errors are returned generically while the real
+error is logged locally.
+
+Enforced by assertion, not by commit message — four tests in
+`daemon/gate7_scrub_test.go`:
+
+- `TestHandleApplyEdit_ScrubsAbsolutePathsFromErrorResponses`
+- `TestHandleUndo_ScrubsAbsoluteBackupsPathFromErrorResponses`
+- `TestServeConn_ModelAPIErrorIsGenericAndLogsUpstreamLocally`
+- `TestServeConn_ZDRRefusalMessageUnchanged`
+
+The last one matters more than its name suggests: scrubbing must not flatten the
+ZDR refusal into a generic error, because that refusal is a *guarantee* the user
+is entitled to see. Scrub-everything would have been the easy fix and the wrong
+one.
+
+## Accepted residual — the existence oracle
+
+**Not fixed, accepted by decision.** Error responses still distinguish "this file
+does not exist" from "this file exists but is refused" (a secret name, a
+protected directory, outside the workspace root). An attacker who could reach the
+socket could use it to probe for the presence of individual paths.
+
+Accepted because of who that attacker can be. Post-`SO_PEERCRED`, the only peer
+that reaches a response at all is an authenticated same-UID process — which can
+already call `stat()` on any path it likes and read `/proc` directly. The oracle
+tells such a peer nothing it cannot obtain more cheaply by other means, so
+closing it would buy no confidentiality against the only audience that exists.
+
+The cost of closing it is real: unifying the socket's error vocabulary means
+collapsing distinctions across every handler's error paths, and the same
+flattening that hides "refused vs absent" from an attacker also hides it from the
+user, whose "why did my edit not apply?" is answered by exactly that distinction.
+Gate 7's own fix was careful to scrub paths while *preserving* diagnostic
+meaning; unification would spend that.
+
+**This acceptance is conditional. Reopen it if any of the following becomes
+true:**
+
+1. The socket becomes reachable by a UID other than the daemon's — a shared
+   service account, a container with multiple identities, a `sudo`-invoked client.
+2. The transport stops being a local Unix socket — any TCP or network listener,
+   including localhost-only.
+3. Any client-facing surface begins relaying daemon error text onward, so that a
+   response can travel off-box.
+
+Each of these changes *who is listening*, which is the entire basis on which the
+residual is accepted. None of them changes the code.
+
+## Logged, not closed
+
+These stay open with their severity stated. They are not part of the acceptance
+above and are not covered by it.
+
+- **Mid-ancestor-directory-swap TOCTOU in `confinedRestorePath`.** The undo path
+  resolves the deepest existing ancestor, checks containment, then relies on
+  `O_NOFOLLOW` for the leaf. A symlink swapped into a *mid-ancestor* directory
+  inside that window is not blocked. Local-write-access-gated, so the attacker is
+  already inside the trust boundary — but the socket gives them unlimited free
+  retries at winning the race, which raises its practical urgency without changing
+  its impact ceiling.
+- **`id_rsa_secret.pub`-style narrow over-refusal in `MatchesSecretName`.** The
+  substring net fires before the `.pub` carve-out is reached, so a public-key name
+  that also contains "secret" or "credential" is refused. This fails in the safe
+  direction — over-refusing a public key, never under-refusing a secret — which is
+  why it is logged rather than fixed.
+- **SQLite `-wal`/`-shm` symlink opens.** The driver owns those opens, so the
+  leaf-lstat guard on the db file does not cover them. Distinct from their file
+  *modes*, which Phase 4 fixed (BACKLOG item (g)).
+
+## Status
+
+Gate 7 and the FAIL-3 socket axis are **engineering-complete and closed by written
+rationale as of 2026-07-30**, with the residual above accepted on the stated
+conditions. As everywhere else in this program, **nothing here is founder-closed**
+— the final call on FAIL-3 remains the founder's, and this document exists to make
+that call reviewable rather than to pre-empt it.

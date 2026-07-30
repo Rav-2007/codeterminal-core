@@ -583,7 +583,7 @@ side: opaque/novel secrets in chunk text, awaiting the founder's Design-B-vs-C d
   Severity low: the practical effect is *occasionally over-refusing* a legitimate public key with an
   unusual name, not *under*-refusing a secret — the safe-failure direction, the same reasoning the
   audit chain applied to `id_rsa.pub` itself before this fix. Logged so it doesn't disappear; a fix
-  is not implied.
+  is not implied. *(Carried into `SECURITY_MODEL.md`'s socket section as a logged residual, Phase 4.)*
 
 ### P3-FAIL-2 (Moderate): the "all writes route through `editapply.Apply()`" claim is false — undo is a 4th, unconfined workspace writer
 Enumerated every workspace-source write at HEAD (not carried forward as assumed). The 3 `Apply`
@@ -702,6 +702,31 @@ gate stays un-clear on the socket axis until the auth-model decision (below) is 
   response that later travels off-box), which the fix closes. The existence-oracle distinguishability
   itself remains open by design (lower-priority, more invasive). Gate 7 overall status / FAIL-3
   closure remains the founder's call.
+  - **CLOSED BY WRITTEN RATIONALE — Phase 4, 2026-07-30.** See the new socket section in
+    [SECURITY_MODEL.md](SECURITY_MODEL.md), which is now the canonical statement of this surface's
+    threat model. Three things it settles, none of them by new code:
+    1. **The trust model, which FAIL-3 named as the item blocking the gate** ("everything else in
+       FAIL-3 is secondary until this is decided"), *was* decided — by implementation, in `517c069`,
+       and then never written down as a model. Re-verified against the source rather than the
+       record: `authorizePeer` (`daemon/server_auth.go`) is called as `handleConn`'s first
+       post-accept step (`daemon/server.go:224`), before the handshake is read or anything is
+       dispatched, and every failure path — UID mismatch, no peer credentials, syscall failure,
+       non-Linux build, `Getuid() < 0` — refuses. The boundary is **the OS user account**: a
+       same-UID process is trusted completely.
+    2. **The existence-oracle residual is ACCEPTED, not eliminated**, with the reasoning written
+       out: the only peer that reaches a response is an authenticated same-UID process that can
+       already `stat()` anything and read `/proc`, so the oracle discloses nothing it could not get
+       more cheaply. The acceptance carries three explicit reopen conditions (a non-daemon UID
+       reaching the socket, a network transport, or daemon error text being relayed off-box) —
+       each changes *who is listening*, which is the whole basis of the acceptance.
+    3. **Unifying error responses is DECLINED, not deferred.** The flattening that hides
+       refused-vs-absent from an attacker hides it from the user too, and Gate 7's own fix was
+       written to scrub paths while preserving diagnostic meaning.
+    Evidence is assertions, not commit messages: the four tests in `daemon/gate7_scrub_test.go`,
+    including `TestServeConn_ZDRRefusalMessageUnchanged` — scrub-everything was the easy fix and
+    would have flattened a guarantee the user is entitled to see.
+    **Nothing here is founder-closed.** The final FAIL-3 call remains the founder's; this makes it
+    reviewable rather than pre-empting it.
 
 **Gate 8 — synthesis against the FAIL-2 fix.** This finding does **not** break the FAIL-2 fix: the
 undo writer's `EvalSymlinks`+`Rel` confinement and `O_NOFOLLOW` leaf guard still hold exactly as
