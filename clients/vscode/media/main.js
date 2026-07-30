@@ -47,6 +47,11 @@
   function renderAutoApplyToggle() {
     autoApplyToggle.textContent = autoApplyEnabled ? 'Auto-apply: ON' : 'Auto-apply: OFF';
     autoApplyToggle.className = autoApplyEnabled ? 'auto-apply-toggle on' : 'auto-apply-toggle off';
+    // aria-checked, not just the label text: the button is role="switch" (see
+    // chatPanel.ts), and its state previously existed ONLY in textContent and a
+    // CSS class -- both invisible to a screen reader, on the control that
+    // decides whether edits reach disk without a per-edit confirmation.
+    autoApplyToggle.setAttribute('aria-checked', autoApplyEnabled ? 'true' : 'false');
   }
 
   autoApplyToggle.addEventListener('click', () => {
@@ -239,6 +244,20 @@
 
     const container = document.createElement('div');
     container.className = 'edit-proposal';
+    // This is Gate 4 -- the point where the user authorizes a write to their own
+    // files -- and it presumed sight. role="group" with a label naming the file
+    // and the change size gives a screen-reader user the same three facts a
+    // sighted user reads off the header: which edit, which file, how big.
+    // aria-live so an edit proposal arriving mid-transcript is announced.
+    const removedCount = edit.search.split('\n').length;
+    const addedCount = edit.replace.split('\n').length;
+    container.setAttribute('role', 'group');
+    container.setAttribute('aria-live', 'polite');
+    container.setAttribute(
+      'aria-label',
+      `Proposed edit ${index + 1} of ${total} in ${edit.file_path}: ` +
+        `${removedCount} line(s) removed, ${addedCount} line(s) added`
+    );
 
     const indexEl = document.createElement('div');
     indexEl.className = 'edit-index';
@@ -250,7 +269,11 @@
     pathEl.textContent = edit.file_path;
     container.appendChild(pathEl);
 
+    // The diff itself is a labelled region so a reader can be told what it is
+    // about to read out, rather than encountering bare +/- lines.
     const pre = document.createElement('pre');
+    pre.setAttribute('role', 'region');
+    pre.setAttribute('aria-label', `Diff for ${edit.file_path}`);
     for (const line of edit.search.split('\n')) {
       const span = document.createElement('span');
       span.className = 'diff-line removed';
@@ -279,10 +302,17 @@
     } else {
       const actions = document.createElement('div');
       actions.className = 'actions';
+      // A labelled group, and buttons whose accessible names name the FILE.
+      // "Apply" alone is ambiguous when several proposals are in the scrollback;
+      // "Apply edit to daemon/server.go" is not.
+      actions.setAttribute('role', 'group');
+      actions.setAttribute('aria-label', `Approve or reject the proposed edit to ${edit.file_path}`);
       const applyBtn = document.createElement('button');
       applyBtn.textContent = 'Apply';
+      applyBtn.setAttribute('aria-label', `Apply edit ${index + 1} of ${total} to ${edit.file_path}`);
       const skipBtn = document.createElement('button');
       skipBtn.textContent = 'Skip';
+      skipBtn.setAttribute('aria-label', `Skip edit ${index + 1} of ${total} to ${edit.file_path}`);
       actions.appendChild(applyBtn);
       actions.appendChild(skipBtn);
       container.appendChild(actions);
@@ -322,6 +352,9 @@
       pending.remove();
     }
     const resultEl = document.createElement('div');
+    // The outcome of authorizing a write to your files must be announced, not
+    // just shown -- especially the refusal case, which carries the gate's reason.
+    resultEl.setAttribute('role', 'status');
     if (result.skipped) {
       resultEl.className = 'result';
       resultEl.textContent = 'skipped';
@@ -555,6 +588,10 @@
     // Captured once, for this run only -- see currentRunAuto's doc comment.
     currentRunAuto = autoApplyEnabled;
     vscode.postMessage({ type: 'prompt', text, autoApply: autoApplyEnabled });
+    // Keep focus on the input across a send. Clicking Send moved focus to the
+    // button, so a keyboard or screen-reader user had to navigate back to ask a
+    // follow-up; the natural next action is always another prompt.
+    inputEl.focus();
   }
 
   sendBtn.addEventListener('click', send);
@@ -563,6 +600,11 @@
       send();
     }
   });
+
+  // Initial focus: the prompt input is the panel's primary control, so opening
+  // the panel puts the caret where the user is going to type. Previously nothing
+  // was focused and a keyboard user had to tab in from the top of the document.
+  inputEl.focus();
 
   window.addEventListener('message', (event) => {
     const msg = event.data;

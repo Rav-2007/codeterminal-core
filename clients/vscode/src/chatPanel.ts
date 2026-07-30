@@ -622,40 +622,24 @@ export class ChatPanel {
     border-color: var(--vscode-inputValidation-warningBorder, #b89500);
     opacity: 1;
   }
+  /* Visible to assistive technology, not on screen. Used for the <label>s that
+     give the two text inputs accessible names -- a placeholder is not an
+     accessible name, and the visual design has no room for visible labels. */
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
 </style>
 </head>
 <body>
-  <div id="searchRow">
-    <input id="searchInput" type="text" placeholder="Search past conversations…" />
-    <button id="searchBtn">Search</button>
-  </div>
-  <div id="searchResults"></div>
-  <!-- First-run text, rendered INSIDE the empty transcript: a new user's very
-       first sight of this panel was a blank rectangle that never stated the one
-       thing it cannot work without -- a separately launched daemon. Static
-       markup, no state and no settings; main.js removes it as soon as a real
-       conversation turn is added (restored history included). The command must
-       stay identical to daemonClient.ts's DAEMON_LAUNCH_COMMAND, which is why
-       it is interpolated from there rather than written out again. -->
-  <div id="transcript">
-    <div id="firstRun" class="first-run">
-      <p>CodeTerminal answers questions about the code in your workspace, grounded in a local index, and can propose edits you apply from here.</p>
-      <p><strong>It needs the CodeTerminal daemon already running</strong> — this panel talks to it over a local socket and does not start it for you.</p>
-      <p>Start it in a terminal from the repo root, then send a prompt:</p>
-      <pre>${DAEMON_LAUNCH_COMMAND}</pre>
-    </div>
-  </div>
-  <div id="grounding"></div>
-  <div id="historyNotice"></div>
-  <div id="redactions"></div>
-  <div id="degraded"></div>
-  <div id="provider"></div>
-  <div id="inputRow">
-    <button id="autoApplyToggle" class="auto-apply-toggle off" title="When ON, proposed edits apply automatically without a per-edit confirmation"></button>
-    <input id="promptInput" type="text" placeholder="Ask something…" />
-    <button id="sendBtn">Send</button>
-  </div>
-  <script nonce="${nonce}" src="${scriptUri}"></script>
+${chatPanelBodyMarkup()}  <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;
   }
@@ -675,4 +659,72 @@ function getNonce(): string {
     text += possible.charAt(Math.floor(Math.random() * possible.length));
   }
   return text;
+}
+
+// chatPanelBodyMarkup is the panel's static body markup, extracted from getHtml
+// so it can be asserted directly. getHtml needs a live webview (for cspSource
+// and asWebviewUri) and a fresh nonce, neither of which a test can supply, and
+// VS Code exposes no webview DOM to the test host -- so without this the
+// accessibility structure below would be unassertable and free to rot.
+//
+// See accessibility.test.ts, which pins the roles and labels this returns.
+export function chatPanelBodyMarkup(): string {
+  return `  <!-- ACCESSIBILITY. The webview had no aria-*, role= or tabindex anywhere: a
+       screen-reader user could not follow a streaming answer (nothing announced
+       it), could not read the Auto-apply toggle's state (it lived only in
+       textContent), and could not operate the diff-approval flow -- Gate 4 of
+       the safety pipeline, where the user authorizes writes to their own files,
+       which presumed sight.
+
+       Everything below is ADDITIVE: roles, labels and live regions only. Every
+       renderer still writes through textContent and never innerHTML, so the CSP
+       + no-dangerous-sinks posture the Phase 3 review verified is untouched. -->
+  <div id="searchRow" role="search">
+    <label for="searchInput" class="sr-only">Search past conversations</label>
+    <input id="searchInput" type="text" placeholder="Search past conversations…" />
+    <button id="searchBtn">Search</button>
+  </div>
+  <!-- Results arrive asynchronously, so they are announced. polite, not
+       assertive: a search result should not interrupt a streaming answer. -->
+  <div id="searchResults" role="region" aria-label="Search results" aria-live="polite"></div>
+  <!-- First-run text, rendered INSIDE the empty transcript: a new user's very
+       first sight of this panel was a blank rectangle that never stated the one
+       thing it cannot work without -- a separately launched daemon. Static
+       markup, no state and no settings; main.js removes it as soon as a real
+       conversation turn is added (restored history included). The command must
+       stay identical to daemonClient.ts's DAEMON_LAUNCH_COMMAND, which is why
+       it is interpolated from there rather than written out again. -->
+  <!-- role="log" + aria-live="polite" + aria-atomic="false" is the combination
+       that makes a STREAMED answer followable: the reader announces each
+       appended token as it arrives instead of re-reading the entire transcript
+       on every mutation (which aria-atomic="true" would do, and which is
+       unusable at streaming rates). -->
+  <div id="transcript" role="log" aria-live="polite" aria-atomic="false" aria-label="Conversation transcript">
+    <div id="firstRun" class="first-run">
+      <p>CodeTerminal answers questions about the code in your workspace, grounded in a local index, and can propose edits you apply from here.</p>
+      <p><strong>It needs the CodeTerminal daemon already running</strong> — this panel talks to it over a local socket and does not start it for you.</p>
+      <p>Start it in a terminal from the repo root, then send a prompt:</p>
+      <pre>${DAEMON_LAUNCH_COMMAND}</pre>
+    </div>
+  </div>
+  <div id="grounding" role="status" aria-live="polite" aria-label="Grounding"></div>
+  <div id="historyNotice" role="status" aria-live="polite" aria-label="Conversation history notice"></div>
+  <!-- Redaction and degradation strips carry information the user needs to
+       decide whether to trust the answer (a secret was scrubbed; a subsystem is
+       unavailable), so they are announced rather than merely displayed. -->
+  <div id="redactions" role="status" aria-live="polite" aria-label="Redaction notice"></div>
+  <div id="degraded" role="status" aria-live="polite" aria-label="Degraded functionality notice"></div>
+  <div id="provider" role="status" aria-live="polite" aria-label="Serving provider"></div>
+  <div id="inputRow">
+    <!-- role="switch" + aria-checked, kept in sync by main.js's
+         setAutoApplyState. Before this the state existed ONLY as textContent,
+         so a reader announced the label with no on/off information -- on the
+         control that decides whether edits reach disk without confirmation. -->
+    <button id="autoApplyToggle" class="auto-apply-toggle off" role="switch" aria-checked="false"
+      aria-label="Auto-apply proposed edits"
+      title="When ON, proposed edits apply automatically without a per-edit confirmation"></button>
+    <label for="promptInput" class="sr-only">Ask a question about your code</label>
+    <input id="promptInput" type="text" placeholder="Ask something…" />
+    <button id="sendBtn">Send</button>
+  </div>`;
 }
