@@ -110,9 +110,20 @@ stays zero at every threshold**, because the residual population is not
 "secrets and near-secrets" — it is hashes. The distribution is unimodal around
 3.5 bits/char with no second mode to separate; there is no valley to cut at.
 
-Note also that hex tops out at exactly 4.0 bits/char, so the current threshold sits
-precisely on the boundary that admits every hex hash in the tree. That is an accident
-of where 4.0 was picked, not a choice.
+**One thing the threshold does get right, which makes the rest worse.** Hex has a
+theoretical ceiling of exactly 4.0 bits/char (log₂16), and real hex strings never
+reach it — over 4,000 random samples, a 32-character SHA averaged 3.61 and topped out
+at 3.93; even 128 characters averaged 3.91. So the 4.0 threshold already sits *above*
+the practical hex ceiling and excludes essentially every git SHA and content hash in
+the tree, which is exactly what the observed shape breakdown shows: **1 hex fire out
+of 1,310**.
+
+That is the strongest available argument against tuning as the remedy. The threshold
+is already filtering out the false-positive class people reach for first, and it still
+fires on a third of all chunks — because the dominant false positives are not hashes.
+They are ordinary identifiers, hyphenated prose and paths, admitted by the token
+*alphabet* rather than by the entropy cut. No threshold reaches them, because they are
+not unusually random; they are just long.
 
 **Cost if shipped as a redactor:** something would be redacted from **one chunk in
 three**. That does not degrade grounding at the margin; it corrupts it as a matter of
