@@ -2606,3 +2606,86 @@ func TestSweepTick_SurvivesPanic(t *testing.T) {
 			"process -- silently, while /health still answered 200")
 	}
 }
+
+// TestRecoverPanics contains the request half of P1.3.
+//
+// net/http already stops a handler panic from ending the process, so what is
+// under test is the two things it does not do: log the fault with a stack in this
+// proxy's own format, and answer the client with a status instead of closing the
+// connection and leaving it to guess.
+func TestRecoverPanics(t *testing.T) {
+	t.Run("faulting handler answers 500 and logs a stack", func(t *testing.T) {
+		var logs bytes.Buffer
+		logger := log.New(&logs, "", 0)
+
+		h := recoverPanics(logger, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			panic("synthetic handler fault")
+		}))
+
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+
+		if rec.Code != http.StatusInternalServerError {
+			t.Errorf("panicking handler answered %d, want 500; without this the caller sees a "+
+				"connection reset and cannot tell a server fault from a transport failure", rec.Code)
+		}
+		if rec.Body.Len() != 0 {
+			t.Errorf("500 carried a body (%q); it is deliberately body-less so nothing "+
+				"attacker-controlled is echoed back", rec.Body.String())
+		}
+		got := logs.String()
+		if !strings.Contains(got, "PANIC recovered") {
+			t.Errorf("fault was not logged in this proxy's format; got %q", got)
+		}
+		if !strings.Contains(got, "synthetic handler fault") {
+			t.Errorf("log omitted the panic value, so the log says a fault happened but not "+
+				"what it was; got %q", got)
+		}
+		// A stack is the whole diagnostic value: without it the log names the
+		// symptom and not the line.
+		if !strings.Contains(got, "recoverPanics") && !strings.Contains(got, ".go:") {
+			t.Errorf("log carried no stack trace; got %q", got)
+		}
+	})
+
+	t.Run("healthy handler is untouched", func(t *testing.T) {
+		var logs bytes.Buffer
+		h := recoverPanics(log.New(&logs, "", 0), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusTeapot)
+			w.Write([]byte("fine"))
+		}))
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+
+		if rec.Code != http.StatusTeapot || rec.Body.String() != "fine" {
+			t.Errorf("wrapper altered a healthy response: got %d %q", rec.Code, rec.Body.String())
+		}
+		if logs.Len() != 0 {
+			t.Errorf("wrapper logged on a healthy request: %q", logs.String())
+		}
+	})
+
+	// http.ErrAbortHandler is net/http's documented way to abort a connection on
+	// purpose. Swallowing it would turn a deliberate abort into a logged fault and
+	// a 500, making real bugs harder to find in the noise.
+	t.Run("ErrAbortHandler is re-panicked, not logged as a fault", func(t *testing.T) {
+		var logs bytes.Buffer
+		h := recoverPanics(log.New(&logs, "", 0), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			panic(http.ErrAbortHandler)
+		}))
+
+		func() {
+			defer func() {
+				if r := recover(); r != http.ErrAbortHandler {
+					t.Errorf("ErrAbortHandler was swallowed (recovered %v); net/http must still "+
+						"see it to abort the connection as the handler asked", r)
+				}
+			}()
+			h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+		}()
+
+		if strings.Contains(logs.String(), "PANIC recovered") {
+			t.Errorf("a deliberate abort was logged as a fault: %q", logs.String())
+		}
+	})
+}

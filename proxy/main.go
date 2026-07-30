@@ -370,8 +370,12 @@ func main() {
 	mux.HandleFunc("/", p.rateLimitedNotFound())
 
 	srv := &http.Server{
-		Addr:              ":" + port,
-		Handler:           mux,
+		Addr: ":" + port,
+		// Wrapping the whole mux is safe here in a way the rate limiters are not
+		// (see the catch-all route above, which exists precisely because wrapping
+		// would double-charge the pre-auth bucket): recovery has no per-request
+		// budget to spend, so applying it once at the outside is correct.
+		Handler:           recoverPanics(logger, mux),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       serverReadTimeout,
 		WriteTimeout:      serverWriteTimeout,
@@ -546,6 +550,55 @@ func (p *proxy) rateLimitedHealth(next http.HandlerFunc) http.HandlerFunc {
 		}
 		next(w, r)
 	}
+}
+
+// recoverPanics contains a panic in any handler to the one request that caused it.
+//
+// net/http already recovers a handler panic at the connection level, so this does
+// not exist to keep the process alive. It exists for the two things net/http's
+// recovery does NOT do, both of which matter here:
+//
+//  1. It logs with a stack. net/http logs the panic to the server's ErrorLog in a
+//     format that is not this proxy's, and an operator chasing a 500 needs the
+//     stack next to the request's own log lines, not in a different shape.
+//  2. It answers the client. net/http's recovery closes the connection without a
+//     response, so the caller sees a reset rather than a status. The daemon's
+//     error handling distinguishes a 5xx from a transport failure, and a reset is
+//     the more confusing of the two to debug.
+//
+// It deliberately does NOT touch the reservation. P1.1 made discharging it a
+// `defer` inside handleChatCompletions, which runs during panic unwinding before
+// this recovery is reached, so by the time we get here the reservation is already
+// billed exactly once. Trying to also finalize from here would be the double-bill
+// this design was built to prevent -- finalizeReservation's `finalized` flag makes
+// that safe rather than merely unlikely, but the right answer is not to reach for
+// it at all.
+//
+// The status write is best-effort by necessity: a panic after the handler already
+// called WriteHeader (mid-stream, most likely) cannot change the status, and
+// net/http will log the superfluous-WriteHeader attempt. Returning a truncated
+// stream is the honest outcome there; the log line is what carries the diagnosis.
+func recoverPanics(logger *log.Logger, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			r := recover()
+			if r == nil {
+				return
+			}
+			// http.ErrAbortHandler is net/http's documented way for a handler to
+			// abort a connection on purpose. It is not a fault and must not be
+			// logged as one, or a deliberate abort becomes indistinguishable from
+			// a real bug in the logs.
+			if r == http.ErrAbortHandler {
+				panic(r)
+			}
+			logger.Printf("PANIC recovered while handling a request: %v\n%s", r, debug.Stack())
+			// Body-less: an error body could echo attacker-controlled content, and
+			// there is nothing useful to say that the status does not already say.
+			w.WriteHeader(http.StatusInternalServerError)
+		}()
+		next.ServeHTTP(w, r)
+	})
 }
 
 // rateLimitedNotFound serves every unregistered path: pre-auth limits first, then
