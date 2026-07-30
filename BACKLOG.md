@@ -3490,6 +3490,33 @@ coverage **80.3% → 81.7%** (it dipped to 78.5% first, because the new
 safety-critical code was written inside `main()` where nothing could reach it —
 which is what prompted P1.2b).
 
+### Scorecard
+
+*Recorded retroactively on 2026-07-30, after a re-measurement pass found this
+line missing: Phase 1 shipped all five movers and passed its gate but never
+scored its own dimension, so the program's single largest completed gain was
+invisible on its own scorecard. Noted rather than backfilled silently, because
+the omission is the kind of bookkeeping drift that makes a scorecard decorative.*
+
+Dimension 2 (failure handling / lifecycle) **45 → ~82**: every mover the plan
+listed for this dimension landed and was measured against the real binary, not
+inferred — a reservation finalizer that discharges exactly once from one deferred
+site, graceful shutdown that drains rather than dying mid-stream (42 chunks +
+`[DONE]` and HTTP 200 where the baseline cut at 10 chunks with `curl` exit 18),
+panic containment where `proxy` previously had no `recover()` at all, and a daemon
+that waits for in-flight requests (live-confirmed both directions in Phase 2 step
+2.0, so it no longer rests on inference).
+
+Not 90, and the gap is one specific defect rather than polish: **a SIGTERM-
+truncated stream still has no incompleteness signal.** `IncompleteBudgetExceeded`
+covers the budget-kill case; a stream cut by the drain deadline remains
+indistinguishable to the daemon from a complete answer. The 25 s grace makes that
+window small, but "small" is a probability, not an invariant — a request that
+outlives the grace is still silently truncated, which is the same class of defect
+Phase 1 was convened to remove. The remaining few points are fault coverage: the
+lifecycle paths are verified by hand-run drills, not by a repeatable suite, which
+is exactly what Phase 3.2's integration matrix is for.
+
 ### Not done / carried forward
 
 - **P1.4's live drain was not separately confirmed.** It rests on unit tests
