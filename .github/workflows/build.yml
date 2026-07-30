@@ -114,6 +114,28 @@ jobs:
       - name: Lint
         run: ./scripts/lint.sh ${{ matrix.module }}
 
+  fuzz:
+    # Nine targets over the two trust boundaries: the request/SSE parsers in
+    # proxy, and the edit-block parser and matcher in editapply. See
+    # scripts/fuzz.sh for what each one asserts.
+    #
+    # 30s per target is a REGRESSION gate, not a search: it re-walks the corpus
+    # and shallow mutations on every PR. Finding something new wants minutes to
+    # hours, via FUZZTIME locally.
+    #
+    # One job rather than a per-module matrix: the whole run is a few minutes,
+    # and a single job keeps the seed-corpus story in one place.
+    name: fuzz
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: "**/go.sum"
+      - name: Fuzz (30s per target)
+        run: ./scripts/fuzz.sh
+
   govulncheck:
     name: govulncheck (${{ matrix.module }})
     runs-on: ubuntu-latest
