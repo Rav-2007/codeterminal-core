@@ -188,6 +188,23 @@ func (m *metricSet) bindDraining(draining *atomic.Bool) {
 	m.vars.Set("draining", expvar.Func(func() any { return atomicBoolToInt(draining) }))
 }
 
+// bindLimiterBuckets exposes the live total of rate-limiter buckets held across
+// every limiter.
+//
+// The rate limiters hold one bucket per distinct key -- a client IP on the
+// pre-auth surface, an api_keys.id after it -- so this is the one dimension of
+// the proxy that grows with the number of DISTINCT callers rather than with
+// concurrency. sweepLocked reclaims idle ones; whether it keeps up was
+// previously only answerable by inferring from RSS, which moves for a dozen
+// unrelated reasons. The soak test asserts on this directly.
+//
+// Read through an expvar.Func for the same reason as draining: the limiters are
+// authoritative, and a mirrored counter would need updating by every caller that
+// creates a bucket.
+func (m *metricSet) bindLimiterBuckets(count func() int) {
+	m.vars.Set("rate_limiter_buckets", expvar.Func(func() any { return count() }))
+}
+
 // writeTo renders the counters as JSON.
 func (m *metricSet) writeTo(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")

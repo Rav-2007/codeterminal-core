@@ -39,6 +39,7 @@ import (
 	"net/http"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -89,6 +90,10 @@ func main() {
 		tokenLimit  = flag.Int64("token-limit", 10_000_000, "token_limit reserve_usage reports")
 		withPending = flag.Bool("pending-id", true,
 			"return a pending_id from reserve_usage; false simulates a database without migration 0002")
+		distinctKeys = flag.Int("distinct-keys", 0,
+			"if > 0, hand out this many DIFFERENT api_keys.id values in rotation. The rate "+
+				"limiters hold one bucket per key, so this is what makes bucket growth -- and "+
+				"the sweep that reclaims it -- observable during a soak. 0 means one fixed key.")
 	)
 	flag.Parse()
 
@@ -97,11 +102,17 @@ func main() {
 	// ---- fake Supabase: the four PostgREST calls the proxy actually makes ----
 	sb := http.NewServeMux()
 
+	var keyRotation atomic.Int64
 	sb.HandleFunc("/rest/v1/api_keys", func(w http.ResponseWriter, r *http.Request) {
 		l.record("authorize", r.RemoteAddr)
 		w.Header().Set("Content-Type", "application/json")
+
+		id := "key-under-test"
+		if *distinctKeys > 0 {
+			id = fmt.Sprintf("key-%08d", keyRotation.Add(1)%int64(*distinctKeys))
+		}
 		// Exactly one row, or the proxy fails closed on the row-count gate.
-		json.NewEncoder(w).Encode([]map[string]any{{"id": "key-under-test"}})
+		json.NewEncoder(w).Encode([]map[string]any{{"id": id}})
 	})
 
 	sb.HandleFunc("/rest/v1/rpc/reserve_usage", func(w http.ResponseWriter, r *http.Request) {

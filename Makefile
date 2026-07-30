@@ -8,7 +8,7 @@
 
 MODULES := daemon editapply proxy helper protocol clients/tui
 
-.PHONY: help hooks test race fmt vet lint ratchet fuzz check drill
+.PHONY: help hooks test race fmt vet lint ratchet fuzz check drill soak
 
 help:
 	@echo "make hooks    install the tracked git hooks (.githooks/) -- do this once"
@@ -18,6 +18,7 @@ help:
 	@echo "make ratchet  per-package coverage floors"
 	@echo "make fuzz     30s per fuzz target (FUZZTIME=5m to search harder)"
 	@echo "make drill    mid-stream SIGTERM drill against the real proxy binary"
+	@echo "make soak     30-minute sustained-load run (DURATION=180 for a quick check)"
 
 # Points git at the tracked hooks directory. git does not sync .git/hooks
 # between clones, so a hook only becomes shared if it is tracked AND git is told
@@ -58,6 +59,9 @@ fuzz:
 
 drill:
 	@./scripts/sigterm-drill.sh
+
+soak:
+	@./scripts/soak.sh
 
 check: fmt vet race lint ratchet
 	@echo "check: all gates green"

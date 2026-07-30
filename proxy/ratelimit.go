@@ -223,6 +223,19 @@ func (l *rateLimiter) refillLocked(b *tokenBucket, now time.Time) {
 // elapsed time accrues far more than keyTokenBurst, so any debt within the floor
 // charge enforces has already been paid off by the time a bucket is old enough to
 // be swept.
+// bucketCount reports how many per-key buckets are currently held.
+//
+// Exists so the soak test can assert that sweepLocked actually reclaims them.
+// Bucket growth is the limiter's one unbounded dimension -- one entry per
+// distinct source IP or api_keys.id -- so "is the sweep keeping up?" is a
+// memory-leak question, and before this it was only answerable by inference
+// from RSS, which moves for a dozen other reasons.
+func (l *rateLimiter) bucketCount() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.buckets)
+}
+
 func (l *rateLimiter) sweepLocked(now time.Time) {
 	if now.Sub(l.lastSweep) < bucketSweepE {
 		return

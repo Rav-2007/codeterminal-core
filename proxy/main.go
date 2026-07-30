@@ -639,6 +639,14 @@ func newProxy(apiKey, upstreamURL, supabaseURL, supabaseServiceRoleKey string, l
 	// Bound here rather than in newMetrics because the flag lives on the proxy
 	// that was just built; a scrape reads it live (see bindDraining).
 	p.metrics.bindDraining(&p.draining)
+	// Same reasoning for the bucket total: the limiters were only just
+	// constructed, and a scrape sums them live rather than reading a mirror.
+	p.metrics.bindLimiterBuckets(func() int {
+		return p.preAuthPerSource.bucketCount() +
+			p.preAuthGlobal.bucketCount() +
+			p.keyRate.bucketCount() +
+			p.keyTokens.bucketCount()
+	})
 	return p
 }
 
