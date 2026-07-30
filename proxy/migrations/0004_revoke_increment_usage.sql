@@ -1,0 +1,85 @@
+-- STATUS: NOT APPLIED. Awaiting founder application via the Supabase SQL
+--   editor. Run VERIFY FIRST below, apply, then RE-VERIFY AFTER and update this
+--   banner with the before/after result and a date, matching 0003's format.
+--
+-- Corrective for 0003, which set out to close the EXECUTE-to-PUBLIC surface and
+-- closed three of the four functions that have it. `increment_usage` appears
+-- ZERO times in 0003 -- neither in its revoke list nor in its verification
+-- query -- while 0001 does `create or replace` on it and 0002 explicitly leaves
+-- it live ("deliberately left in place, unchanged").
+--
+-- SEVERITY, STATED HONESTLY. This is a defense-in-depth gap, NOT a live write
+-- hole, and the containment is identical to the one 0003 documents for its own
+-- gaps #2 and #3: increment_usage is SECURITY INVOKER (no SECURITY clause in
+-- 0001, so Postgres defaults to INVOKER), which means an anon caller executes
+-- it AS anon, and the inner `update usage` then fails on usage's SELECT-only
+-- grants. Nothing is currently writable through it that is not already
+-- writable. That is the same severity 0003 assigns itself, and this file
+-- claims no more.
+--
+-- WHY IT STILL MATTERS. Two reasons, neither of them "it is exploitable today":
+--
+--   1. Of the four functions, increment_usage is the one whose behaviour is
+--      most dangerous IF the containment ever slips. reserve_usage refuses when
+--      the reservation would exceed token_limit; apply_correction is bounded by
+--      an outbox row. increment_usage is an unconditional
+--      `update usage set tokens_used = tokens_used + p_tokens` with NO
+--      token_limit check of any kind, and p_tokens is a signed integer -- so a
+--      caller who could reach it could set any key's consumption to anything,
+--      including driving it negative for unlimited free inference. The
+--      containment is what makes that unreachable, and the containment is a
+--      single grant away from not holding.
+--
+--   2. An audit written to close a class that misses one member of that class
+--      is precisely the 2026-07-17 posture's "trap 3" -- the catalog reads
+--      clean while an established control is missing. 0003's own verification
+--      query returns three green rows and says nothing about the fourth
+--      function, so re-running it confirms a state that is not the state.
+--
+-- ALTERNATIVE CONSIDERED: drop increment_usage instead of revoking. The proxy no
+-- longer calls it -- apply_correction (0002) replaced it at the only call site,
+-- correctUsage -- so it is dead code from this repo's perspective. Not done
+-- here, for the reason 0002 already gives for leaving it alone: dropping a live
+-- function is a riskier change than revoking a grant on it, and nothing outside
+-- this repo's view is known NOT to call it. Revoke now; drop as a separate,
+-- deliberate decision once the founder can confirm no dashboard job, scheduled
+-- task, or manual runbook uses it.
+--
+-- Applied via the Supabase SQL editor -- this repo has no DB connection string
+-- or psql/supabase CLI wired up (QUOTA_RESERVATION_DESIGN.md §7). This file is
+-- NOT auto-run from here; it is the tracked source of record for the
+-- dashboard-applied change.
+--
+-- ============================================================================
+-- VERIFY FIRST (run before this migration; apply only if it shows the gap):
+--
+--   -- All FOUR functions, unlike 0003's query which covers only three. Expect
+--   -- increment_usage = true (the gap) and the other three = false (0003's
+--   -- work, applied 2026-07-27).
+--   select 'increment_usage' as fn,
+--          has_function_privilege('public','increment_usage(uuid,integer)','EXECUTE') as public_can_execute
+--   union all select 'reserve_usage',
+--          has_function_privilege('public','reserve_usage(uuid,integer)','EXECUTE')
+--   union all select 'apply_correction',
+--          has_function_privilege('public','apply_correction(uuid,integer,bigint)','EXECUTE')
+--   union all select 'sweep_pending_corrections',
+--          has_function_privilege('public','sweep_pending_corrections(integer)','EXECUTE');
+--
+--   -- Confirm the containment this file's severity assessment rests on: all
+--   -- four must be SECURITY INVOKER. prosecdef = false means INVOKER.
+--   -- If any row shows true (DEFINER), the severity above is WRONG and that
+--   -- function is a live hole, not a defense-in-depth gap -- escalate.
+--   select p.proname, p.prosecdef as is_security_definer
+--   from pg_proc p
+--   join pg_namespace n on n.oid = p.pronamespace
+--   where n.nspname = 'public'
+--     and p.proname in ('increment_usage','reserve_usage','apply_correction',
+--                       'sweep_pending_corrections');
+--
+-- RE-VERIFY AFTER: re-run the first query. Expected: public_can_execute = false
+-- on ALL FOUR rows. This is now the canonical version of that query -- 0003's
+-- three-row version is superseded and should not be used to certify this
+-- surface again.
+-- ============================================================================
+
+revoke execute on function increment_usage(uuid, integer) from public;

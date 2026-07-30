@@ -1,0 +1,159 @@
+-- STATUS: NOT APPLIED. RECONSTRUCTED FROM CODE AND UNVERIFIED against the live
+--   schema. This file is a RECORD, not an instruction to run: `usage` and
+--   `api_keys` already exist in production and have since before this repo had
+--   migrations. Running the CREATE TABLEs below against production would be a
+--   no-op at best (they are IF NOT EXISTS) and must not be relied on to make
+--   production match this file -- it is this FILE that must be corrected to
+--   match production, using the verification query below. Founder action
+--   required: run VERIFY FIRST and reconcile any difference.
+--
+-- Numbered 0000 because it is logically prior to 0001 (which already references
+-- both tables) even though it is written last.
+--
+-- WHY THIS EXISTS. Until now the only `create table` anywhere in the repo was
+-- pending_corrections (0002:35). The two tables the entire billing system runs
+-- on existed solely in the Supabase dashboard, so the repo could not recreate
+-- its own database, no reviewer could check a constraint from source, and a
+-- schema question could only be answered by someone with dashboard access.
+--
+-- PROVENANCE OF EVERY COLUMN BELOW -- reconstructed from what the code proves
+-- must exist, never invented:
+--
+--   usage.key_id      uuid          -- 0001's header ("read from the live
+--                                      project's PostgREST OpenAPI document,
+--                                      not assumed"); the join key in every
+--                                      function in 0001/0002.
+--   usage.tokens_used bigint        -- same source; reserveQuota decodes it as
+--                                      int64 (proxy/main.go:890-894), and
+--                                      reserve_usage does arithmetic on it.
+--   usage.token_limit bigint not null  -- same source. NOT NULL is load-bearing,
+--                                      not decorative: reserve_usage's guard is
+--                                      `tokens_used + p_reserved <= token_limit`,
+--                                      and in SQL a NULL token_limit makes that
+--                                      predicate NULL, the UPDATE match nothing,
+--                                      and the function return zero rows. The
+--                                      proxy reads zero rows as "refuse" -- so a
+--                                      NULL limit fails CLOSED (every request
+--                                      429s), which is the safe direction but a
+--                                      total outage for that key.
+--   api_keys.id       uuid          -- 0001's header; the value authorize
+--                                      selects and every other table keys on.
+--   api_keys.key_hash text          -- authorize queries `key_hash=eq.<hex>`
+--                                      with a hex-encoded SHA-256
+--                                      (proxy/main.go:745-753). The raw key is
+--                                      never stored.
+--   api_keys.active   boolean       -- authorize queries `active=eq.true`
+--                                      (proxy/main.go:753).
+--
+-- TYPES/DEFAULTS NOT RECOVERABLE FROM CODE and therefore GUESSED below, marked
+-- inline: every default, every timestamp column, and any column the proxy never
+-- reads. The proxy only ever touches the six columns above, so anything else the
+-- live tables carry is invisible from here and is NOT represented in this file.
+-- Do not treat this as a complete schema until the verification below says so.
+--
+-- THE ONE CONSTRAINT THAT IS NOT COSMETIC: unique (usage.key_id).
+--
+-- reserve_usage (0002) ends with:
+--
+--     select reserved.tokens_used, reserved.token_limit, opened.id
+--     from reserved, opened;
+--
+-- `from reserved, opened` is a CROSS JOIN. `opened` always yields exactly one
+-- row (a single INSERT ... returning). `reserved` yields one row PER MATCHING
+-- usage ROW. So if a key_id ever had two usage rows:
+--
+--   * the UPDATE would add p_reserved to BOTH rows -- double-reserving the
+--     caller's quota on every single request, and
+--   * the function would return TWO rows.
+--
+-- proxy/main.go's reserveQuota decodes into a slice and uses rows[0], so it
+-- would silently proceed on the first, and the second row's reservation would
+-- never be corrected by apply_correction (which updates by key_id and would
+-- likewise hit both). The result is quota drifting upward on every request with
+-- nothing reporting it. Whether this constraint exists is unknown from source
+-- and is the single most valuable question in this file.
+--
+-- Apply via the Supabase SQL editor -- this repo has no DB connection string or
+-- psql/supabase CLI wired up (QUOTA_RESERVATION_DESIGN.md §7). Nothing here is
+-- auto-run from the repo.
+--
+-- ============================================================================
+-- VERIFY FIRST. Run all four; they are read-only. Compare against this file and
+-- correct THIS FILE where they differ.
+-- ============================================================================
+--
+--   -- 1. Actual columns, types and nullability of both tables.
+--   select table_name, column_name, data_type, is_nullable, column_default
+--   from information_schema.columns
+--   where table_schema = 'public'
+--     and table_name in ('usage', 'api_keys')
+--   order by table_name, ordinal_position;
+--
+--   -- 2. THE IMPORTANT ONE: is usage.key_id unique? Expect a UNIQUE or PRIMARY
+--   --    KEY constraint whose column list is exactly (key_id). If this returns
+--   --    nothing for key_id, reserve_usage's cross join can multiply and quota
+--   --    is being over-reserved -- see the analysis above.
+--   select c.conname, c.contype,
+--          pg_get_constraintdef(c.oid) as definition
+--   from pg_constraint c
+--   where c.conrelid = 'usage'::regclass;
+--
+--   -- 2b. Belt and braces: are there any duplicate key_ids RIGHT NOW? This
+--   --     answers the practical question even if the constraint is missing.
+--   select key_id, count(*) as rows
+--   from usage
+--   group by key_id
+--   having count(*) > 1;
+--
+--   -- 3. Same for api_keys (expect a primary key on id, and ideally a unique
+--   --    index on key_hash -- two rows with the same hash would make authorize's
+--   --    "exactly one row" check fail closed and lock the key out).
+--   select c.conname, c.contype, pg_get_constraintdef(c.oid) as definition
+--   from pg_constraint c
+--   where c.conrelid = 'api_keys'::regclass;
+--
+--   -- 4. Grant surface, mirroring 0003's discipline. Expect anon/authenticated
+--   --    to hold at most SELECT, and ideally nothing.
+--   select table_name, grantee, privilege_type
+--   from information_schema.role_table_grants
+--   where table_schema = 'public'
+--     and table_name in ('usage', 'api_keys')
+--     and grantee in ('anon', 'authenticated', 'PUBLIC')
+--   order by table_name, grantee;
+--
+-- ============================================================================
+-- RE-VERIFY AFTER: not applicable in the usual sense -- nothing below is
+-- expected to change production. "After" here means: this file has been
+-- reconciled against query 1's output, query 2 has been answered, and the
+-- STATUS banner above has been updated to say so with a date.
+-- ============================================================================
+
+-- Reconstructed. IF NOT EXISTS so this is inert against the live database.
+create table if not exists api_keys (
+  -- Proven by code: authorize selects `id` and every other table keys on it.
+  id uuid primary key default gen_random_uuid(),  -- default GUESSED
+  -- Proven by code: hex-encoded SHA-256 of the Mochiii key. The raw key is
+  -- never stored, so a database compromise does not yield usable keys.
+  key_hash text not null unique,
+  -- Proven by code: authorize filters active=eq.true, so a revoked key is
+  -- deactivated rather than deleted (preserving its usage row's history).
+  active boolean not null default true,           -- default GUESSED
+  created_at timestamptz not null default now()   -- ENTIRE COLUMN GUESSED
+);
+
+create table if not exists usage (
+  -- UNIQUE is the load-bearing part -- see the cross-join analysis above.
+  -- Declared as the primary key because one usage row per key is exactly the
+  -- model reserve_usage assumes.
+  key_id uuid primary key references api_keys(id) on delete cascade,  -- FK GUESSED
+  -- Proven by code: reserve_usage adds to it; reserveQuota decodes int64.
+  tokens_used bigint not null default 0,
+  -- Proven by code and by 0001's header. NOT NULL is load-bearing: see above.
+  token_limit bigint not null
+);
+
+-- Mirrors 0003's discipline: the proxy reaches these tables only as
+-- service_role (which bypasses both grants and RLS), so anon/authenticated need
+-- no privileges at all. Included for a from-scratch rebuild; against production
+-- these are no-ops if the grants were never made.
+revoke all on usage, api_keys from anon, authenticated;
