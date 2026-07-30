@@ -3495,7 +3495,7 @@ which is what prompted P1.2b).
 - **P1.4's live drain was not separately confirmed.** It rests on unit tests
   asserting both directions of `WaitForDrain` plus a neuter check; the `main.go`
   wiring is three lines calling that tested function. A live daemon drill is
-  still worth running.
+  still worth running. **→ DONE in Phase 2 step 2.0, both directions; see below.**
 - **SIGTERM-truncated streams have no incompleteness signal.**
   `IncompleteBudgetExceeded` (`b1fed6b`) covers the budget-kill case; a stream cut
   by a drain deadline is still indistinguishable to the daemon from a complete
@@ -3504,3 +3504,146 @@ which is what prompted P1.2b).
   integrity, maintainability) are unstarted.
 
 **Status: Phase 0 and Phase 1 complete and verified locally; NOT founder-closed.**
+
+---
+
+## 2026-07-30 — Robustness program Phase 2 (observability; verified, NOT founder-closed)
+
+Plan: `~/.claude/plans/phase-0-and-phase-mighty-panda.md`. The bar was set before
+any code was written: **the undiagnosed production 401 becomes diagnosable.** Not
+"logging was added" — a replay drill had to end with the log trail naming the
+branch. It does; the gate transcript is in §Gate below.
+
+### Step 2.0 — Phase 1's one open residual, closed first
+
+P1.4's live daemon drain was never separately confirmed (the first attempt's shell
+took the SIGTERM before the daemon logged). Re-run properly, with the daemon under
+`setsid` and signalled by PID, against a fake upstream that stalls mid-stream:
+
+| | real build | `WaitForDrain(0)` (neutered) |
+|---|---|---|
+| tokens after SIGTERM | kept arriving (t=3.16s, 3.21s, 3.26s) | none |
+| client | `DONE` frame, exit 0 | connection closed, no `DONE`, exit 2 |
+| daemon log | `drain complete, no requests in flight` | `drain INCOMPLETE after 5s` |
+
+So the drill has teeth, and P1.4 is confirmed rather than inferred.
+
+### The five commits
+
+| Item | Commit | What |
+|---|---|---|
+| P2.1 | `2e9a1fe` | A request id every caller can quote |
+| P2.2 | `13c5685` | `log/slog` with a gate vocabulary + the secrets test |
+| P2.3 | `4a6b9ff` | `expvar` counters behind `PROXY_ADMIN_TOKEN` |
+| P2.4 | `9a277f2` | Daemon counters on the existing status surface |
+| P2.4b | `7cdd36b` | `printStatus` made reachable; its ordering pinned |
+
+**P2.1.** `X-Request-Id` on every response (minted, or adopted from the caller),
+repeated in every JSON refusal body, present on the panic 500. Inbound ids are
+adopted only in the lowercase-hex shape we mint, and otherwise **replaced, not
+sanitized** — the id is echoed into error bodies and the daemon classifies proxy
+errors by substring-matching those bodies (`daemon/modelerror.go`'s
+`quotaPhrases`), so a looser charset would let a caller steer how its own error is
+classified. Every needle there contains a non-hex letter, so hex provably cannot
+spell one; hex also excludes newline and `=`, so an id cannot forge a log line.
+
+**P2.2.** ~50 `Printf` sites became logfmt records with a stable key set
+(`req_id`, `gate`, `key_prefix`, `key_id`, `status`, `latency_ms`, `reserved`,
+`actual`, `pending_id`, `scope`, `provider`). The `gate` labels are one const block
+shared with P2.3's counters, so a count and a line name the same thing. Naming
+rule: a label names the **branch**, not the status — six causes all answered 401 in
+the incident, and "401" was exactly the useless part.
+
+**P2.3.** Counters including `sweep_last_run_unix` / `sweep_last_error_unix`, set
+separately because a sweep that **runs and fails** is a different state from one
+that never ran. `/admin/metrics` exists only when a token is configured.
+
+**P2.4.** Daemon counters ride the existing `StatusResponse` over the existing
+0600 + `SO_PEERCRED` socket — no new mechanism, no HTTP listener. Additive with
+`omitempty`, so `ProtocolVersion` stays **1**. The daemon also folds the proxy's
+`X-Request-Id` into its operator-only error detail, through a validator that
+accepts only our hex shape (that header comes from whatever host `apiBase` names
+and lands in a log file, so a newline in it would forge log lines).
+
+### Three things the LIVE runs caught that reading the code did not
+
+1. **The first ordering assertion was inert.** It checked that the panic 500
+   carries the id header — and the header survives *both* middleware orders, since
+   `withRequestID` sets it before the handler panics and a header set before
+   `WriteHeader` is still sent. What actually breaks on a swap is `recoverPanics`
+   being able to **read** the id. The panic line now carries `req_id` and the test
+   asserts it equals the header; swapping the order now fails.
+2. **`expvar.Handler()` disclosed the binary's path.** It renders expvar's
+   *default* registry, which the package populates with `cmdline` and `memstats`.
+   A scrape of the real binary returned the full filesystem path and several
+   hundred lines of heap internals with the counters underneath. It now serves only
+   our own map plus three runtime numbers chosen one at a time; a test asserts
+   `cmdline`/`memstats` are absent. Dropping `expvar.Publish` also removed the
+   duplicate-name panic hazard that had shaped the design.
+3. **Coverage caught an untestable property.** Adding the daemon counters took its
+   coverage 69.3% → **68.9%**, under the Phase-0 floor. The uncovered code was
+   `printStatus`, unreachable because it took an `*os.File` — and it is where the
+   "degraded block prints LAST" property lives, directly below where the counters
+   were inserted. Now an `io.Writer`, with four tests including the ordering.
+
+### Gate — the production 401, replayed end to end
+
+Real proxy binary, fake Supabase answering the key lookup `200 []` (the exact
+production symptom), then the real daemon pointed at that proxy:
+
+```
+client:  401 + X-Request-Id: 142cb6a6e09d41bc
+         {"error":"unauthorized","request_id":"142cb6a6e09d41bc"}
+proxy:   msg="auth rejected" req_id=142cb6a6e09d41bc gate=auth_row_count
+                             key_prefix=mk_live_ matches=0
+         msg=request req_id=142cb6a6e09d41bc status=401 latency_ms=3
+counters: refusals_by_gate = {"auth_row_count": 1}
+daemon:  model API error: [auth] ... (upstream req_id=ab806d854bdf7aad)
+status:  since start  1 prompt(s), 0 apply(s) (0 failed), ...
+```
+
+One quoted string resolves to one request, names which of `authorize`'s eight
+fail-closed branches fired, and the same cause is countable. **The bar is met.**
+
+Also verified live, because it is the trap this phase could most easily have
+introduced: a streamed completion through the wrapped handler still arrives
+incrementally — 7 chunks spread over 2.00s against a 0.4s-per-chunk upstream
+(a buffering wrapper would deliver all 7 within milliseconds). `statusRecorder`
+forwards `http.Flusher`; without that, `streamSSE`'s type assertion fails,
+`canFlush` goes false, every stream silently buffers, and every existing test
+still passes. The whole request trail — `quota reserved` → `usage corrected` →
+access line — now shares one `req_id`.
+
+### Regression
+
+Six modules green on `go build`, `gofmt -l`, `go vet`, `go test -race`. Coverage:
+`protocol` 88.9%, `editapply` 87.0%, **`proxy` 81.7% → 83.6%**, `helper` 6.5% /
+`helperproto` 75.0%, `clients/tui` 66.7%, **`daemon` 69.3% → 70.1%**. Every new
+assertion was neuter-checked (14 neuters this phase); the ones that mattered are
+recorded above.
+
+### Scorecard
+
+Dimension 5 (observability) **35 → ~85**: request identity end to end, structured
+logs with a machine-readable refusal vocabulary, counters including
+reconciliation liveness, and a secrets-in-logs rule that is now asserted rather
+than commented. Not 90+: there is no metrics backend, no tracing, and no alerting
+— a scrape still requires someone to scrape it.
+
+### Not done / carried forward
+
+- **`PROXY_ADMIN_TOKEN`'s fatal short-token path is not asserted in-process** (it
+  calls `logger.Fatal`, which would kill the test binary). The boundary is
+  asserted on the predicate instead. A subprocess test belongs with P3.
+- **`sweep_last_run_unix` is per-instance**, like the rate limiter's buckets: with
+  multiple replicas a scrape answers "is *this* replica's sweep alive". Stated
+  rather than buried; same shape as the limiter's documented residual.
+- **SIGTERM-truncated streams still have no incompleteness signal** (carried from
+  Phase 1, untouched here).
+- **The ~80 ms `reserveQuota` latency remains unexplained.** Phase 2 added
+  `latency_ms` to every request, which makes it measurable in production for the
+  first time, but the collapse-validate+reserve hypothesis is still untested.
+- Phases 3–6 (test depth, security-gate closure, schema integrity,
+  maintainability) are unstarted.
+
+**Status: Phase 2 complete and verified locally; NOT founder-closed.**

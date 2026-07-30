@@ -35,6 +35,16 @@ from the repo root fails outright).
 | `clients/tui` | 66.7% | 66.7% |
 | `daemon` | 69.3% | 69.3% |
 
+**Where the two moving modules stand now** (the floors above are unchanged — they
+are the ratchet's baseline, not a running total): after Phase 1 `proxy` was 81.7%;
+after Phase 2 `proxy` is **83.6%** and `daemon` is **70.1%**.
+
+Phase 2 is also the first time a floor did its job before CI existed to enforce
+it: adding the daemon counters measured 68.9%, *below* 69.3%, and the uncovered
+code turned out to be `printStatus` — unreachable by any test because it took an
+`*os.File`, and the place a deliberate output-ordering property lives. The number
+found a real gap rather than a rounding difference.
+
 `proxy` measures 80.3% here against the 80.7% recorded in BACKLOG for the same
 commit — a rounding/run difference on a shared statement count, not a regression.
 **80.3% is the floor**, i.e. the lower of the two, so the ratchet cannot be
@@ -182,6 +192,9 @@ shape of the fix would have passed.
   either `daemon/main.go` or `daemon/server.go`; shutdown is
   `ln.Close(); os.Remove(...)`.
 - **No request IDs, no structured logging, no metrics** in either binary.
+  *(Closed by Phase 2: `proxy/reqid.go`, `proxy/logging.go`, `proxy/metrics.go`,
+  `daemon/counters.go`. The premise is recorded as it was measured; this note is
+  here so a later reader does not act on a fact that has since been fixed.)*
 - **Zero fuzz targets** in the repo.
 - **Secret hygiene is clean**: no `.env` is tracked, none ever was in history, no
   build artifacts tracked.
