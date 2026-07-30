@@ -667,7 +667,6 @@ func TestHandleChatCompletions_ThrottlesAFloodOnOneKey(t *testing.T) {
 // are bounded BEFORE the Supabase lookup, so bad keys cannot amplify into a
 // third-party dependency.
 func TestPreAuthLimit_BoundsSupabaseAmplification(t *testing.T) {
-	const keyID = "77777777-7777-7777-7777-777777777777"
 	store := &fakeUsageStore{tokenLimit: 100000}
 
 	var lookups atomic.Int64

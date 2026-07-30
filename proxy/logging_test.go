@@ -162,18 +162,23 @@ func TestAccessLogPreservesFlushing(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GET: %v", err)
 		}
-		defer resp.Body.Close()
+		// Bound to a local and passed to the goroutine as an argument rather than
+		// captured: bodyclose cannot follow a body that escapes into a closure and
+		// reports this (correctly closed) body as a leak. Handing it over
+		// explicitly keeps the linter a hard gate instead of one with an exception.
+		body := resp.Body
+		defer body.Close()
 
 		type readResult struct {
 			n   int
 			err error
 		}
 		done := make(chan readResult, 1)
-		go func() {
+		go func(rc io.Reader) {
 			buf := make([]byte, len("data: first\n\n"))
-			n, err := io.ReadFull(resp.Body, buf)
+			n, err := io.ReadFull(rc, buf)
 			done <- readResult{n: n, err: err}
-		}()
+		}(body)
 
 		select {
 		case got := <-done:

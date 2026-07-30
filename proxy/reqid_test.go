@@ -149,6 +149,10 @@ func TestWithRequestID(t *testing.T) {
 	})
 
 	t.Run("requestIDFrom is empty outside a request", func(t *testing.T) {
+		// The nil context IS the case under test: requestIDFrom is called from
+		// logging paths that can run before a context exists, so it must answer
+		// rather than panic. Passing nil is the assertion, not an oversight.
+		//lint:ignore SA1012 deliberate nil-context probe; see above
 		if got := requestIDFrom(nil); got != "" {
 			t.Errorf("requestIDFrom(nil) = %q, want empty", got)
 		}

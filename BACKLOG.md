@@ -177,6 +177,33 @@ built (see "FTS5 search session" below) -- human-facing lexical search over
 model-callable tool and not over backup/session history. This backup-history
 tool is still deferred.
 
+### (j) errcheck adoption — deferred from P3.5 with a measured reason
+
+Phase 3.5 adopted `staticcheck`, `ineffassign` and `bodyclose` as hard CI gates
+(`scripts/lint.sh`, commit `9abc815`). **`errcheck` was named in the same item and
+is NOT wired up**, deliberately, and this entry exists so that is a decision on
+record rather than something rediscovered later as an oversight.
+
+Measured on this tree: **329 findings, 157 outside tests.** The distribution is
+the problem — the top callees are `os.Remove` (17), `fmt.Fprintf` (13),
+`db.Close` (10), `conn.Close` (9), `resp.Body.Close` (7): cleanup-path closes and
+writes to stdout/stderr. After an exclusion list covering the conventional cases,
+**~60 remain**, still dominated by `defer x.Close()` on concrete types and
+`enc.Encode` on a socket write whose error genuinely cannot be acted on because
+the peer is already gone.
+
+Turning that green means either ~60 `_ =` assignments — noise that makes a real
+unchecked error *harder* to spot, which is the opposite of the point — or an
+exclusion list long enough that the gate becomes arbitrary. It is a deliberate
+triage pass over 60 call sites with its own judgement calls, not something to
+bolt onto a CI-wiring commit.
+
+**To close:** triage the ~60 non-excluded sites, decide per site between handling
+the error, `_ =` with a reason, or an exclusion entry, then wire `errcheck` into
+`scripts/lint.sh` alongside the other three. Until then the three adopted tools
+are hard gates, which is worth more than four adopted softly — this repo has
+already learned that a check nobody must pass is a check that drifts.
+
 ## Backlog — added 2026-07-08
 
 - **Daemon must run from repo root (config-path gotcha)** (low priority; docs/DX)
