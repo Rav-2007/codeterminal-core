@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"net"
 	"net/http"
 	"strings"
@@ -298,11 +299,44 @@ func clientSource(r *http.Request) string {
 	return r.RemoteAddr
 }
 
+// refusalBody is the one shape every JSON refusal this proxy writes takes.
+//
+// RequestID is what makes a refusal reportable: the caller can quote it and it
+// resolves to exactly one request's log trail (see reqid.go). It is safe to echo
+// because it is either minted here or validated to lowercase hex -- see
+// validRequestID, which explains why that charset specifically.
+//
+// Scope is set only by the 429s, naming which bucket refused.
+type refusalBody struct {
+	Error     string `json:"error"`
+	Scope     string `json:"scope,omitempty"`
+	RequestID string `json:"request_id,omitempty"`
+}
+
+// writeRefusal writes a refusal as JSON, carrying the request id.
+//
+// Marshalled rather than concatenated: the bodies it replaces were built by
+// string concatenation, which was fine while every value was a compile-time
+// constant, and stops being fine the moment one of them comes off the wire.
+func writeRefusal(w http.ResponseWriter, code int, errCode, reqID string) {
+	writeRefusalBody(w, code, refusalBody{Error: errCode, RequestID: reqID})
+}
+
+func writeRefusalBody(w http.ResponseWriter, code int, body refusalBody) {
+	// Cannot fail: refusalBody is three plain strings.
+	encoded, _ := json.Marshal(body)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	w.Write(encoded)
+}
+
 // tooManyRequests writes the shared 429. Always JSON with a Retry-After, never a
 // silent drop: a caller must be able to tell throttling apart from a failure.
-func tooManyRequests(w http.ResponseWriter, reason string) {
-	w.Header().Set("Content-Type", "application/json")
+func tooManyRequests(w http.ResponseWriter, reason, reqID string) {
 	w.Header().Set("Retry-After", retryAfterValue)
-	w.WriteHeader(http.StatusTooManyRequests)
-	w.Write([]byte(`{"error":"rate_limited","scope":"` + reason + `"}`))
+	writeRefusalBody(w, http.StatusTooManyRequests, refusalBody{
+		Error:     "rate_limited",
+		Scope:     reason,
+		RequestID: reqID,
+	})
 }

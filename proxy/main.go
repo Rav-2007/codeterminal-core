@@ -407,24 +407,9 @@ func main() {
 	// the sweep is independent of whether this instance is serving traffic yet.
 	go p.startReconciliationSweep(shutdownCtx)
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/health", p.rateLimitedHealth(makeHealthHandler(buildCommit, &p.draining)))
-	mux.HandleFunc(chatCompletionsPath, p.handleChatCompletions)       // "/chat/completions"
-	mux.HandleFunc("/v1"+chatCompletionsPath, p.handleChatCompletions) // "/v1/chat/completions" alias
-	// Catch-all for every unregistered path. Without it those requests 404 out of
-	// the mux without passing through admitPreAuth at all -- an unauthenticated,
-	// completely unthrottled endpoint. Cheap per request, but unbounded is
-	// unbounded. A catch-all is used rather than wrapping the whole mux, because a
-	// wrapper would charge the pre-auth bucket twice on the three real routes.
-	mux.HandleFunc("/", p.rateLimitedNotFound())
-
 	srv := &http.Server{
-		Addr: ":" + port,
-		// Wrapping the whole mux is safe here in a way the rate limiters are not
-		// (see the catch-all route above, which exists precisely because wrapping
-		// would double-charge the pre-auth bucket): recovery has no per-request
-		// budget to spend, so applying it once at the outside is correct.
-		Handler:           recoverPanics(logger, mux),
+		Addr:              ":" + port,
+		Handler:           newHandler(p, logger, buildCommit),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       serverReadTimeout,
 		WriteTimeout:      serverWriteTimeout,
@@ -446,6 +431,51 @@ func main() {
 		logger.Fatal(err)
 	}
 	logger.Print("exiting")
+}
+
+// newHandler builds the proxy's whole HTTP surface: the route table, plus the two
+// middlewares in the one order that works.
+//
+// Extracted from main for the same reason serveUntilSignal was (see P1.2b below):
+// this wiring decides what happens on the paths a caller cannot otherwise explain
+// -- a panic, a 404, a throttle -- and inside main() no test could reach any of
+// it. The route table itself is unchanged.
+//
+// The ordering is load-bearing in both directions:
+//
+//   - recoverPanics wraps the WHOLE mux, which is safe here in a way the rate
+//     limiters are not (hence the catch-all route rather than a wrapper -- a
+//     wrapper would charge the pre-auth bucket twice on the real routes):
+//     recovery has no per-request budget to spend.
+//   - withRequestID sits OUTSIDE recovery, so the panic 500 still carries an id.
+//     Inside, the panic would have aborted the handler before the header was set,
+//     and the one response a caller can least explain would be the one response
+//     they cannot quote.
+func newHandler(p *proxy, logger *log.Logger, buildCommit string) http.Handler {
+	return wrapMiddleware(logger, newMux(p, buildCommit))
+}
+
+// wrapMiddleware applies the two middlewares, in the order newHandler's comment
+// explains. Separate from newMux so a test can drive this exact wrapping -- the
+// one main serves -- around a handler that panics on purpose, which no real route
+// does.
+func wrapMiddleware(logger *log.Logger, next http.Handler) http.Handler {
+	return withRequestID(recoverPanics(logger, next))
+}
+
+// newMux is the route table.
+func newMux(p *proxy, buildCommit string) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", p.rateLimitedHealth(makeHealthHandler(buildCommit, &p.draining)))
+	mux.HandleFunc(chatCompletionsPath, p.handleChatCompletions)       // "/chat/completions"
+	mux.HandleFunc("/v1"+chatCompletionsPath, p.handleChatCompletions) // "/v1/chat/completions" alias
+	// Catch-all for every unregistered path. Without it those requests 404 out of
+	// the mux without passing through admitPreAuth at all -- an unauthenticated,
+	// completely unthrottled endpoint. Cheap per request, but unbounded is
+	// unbounded.
+	mux.HandleFunc("/", p.rateLimitedNotFound())
+
+	return mux
 }
 
 // serveUntilSignal serves ln until a signal arrives, then drains and returns.
@@ -571,15 +601,16 @@ func newProxy(apiKey, upstreamURL, supabaseURL, supabaseServiceRoleKey string, l
 // a third-party dependency. Per-source first (spoofable via X-Forwarded-For),
 // with the global bucket as the backstop that spoofing cannot evade.
 func (p *proxy) admitPreAuth(w http.ResponseWriter, r *http.Request) bool {
+	reqID := requestIDFrom(r.Context())
 	if !p.preAuthGlobal.allow("global") {
 		p.logger.Printf("rate: refused (pre-auth global ceiling)")
-		tooManyRequests(w, "global")
+		tooManyRequests(w, "global", reqID)
 		return false
 	}
 	src := clientSource(r)
 	if !p.preAuthPerSource.allow(src) {
 		p.logger.Printf("rate: refused (pre-auth per-source)")
-		tooManyRequests(w, "source")
+		tooManyRequests(w, "source", reqID)
 		return false
 	}
 	return true
@@ -651,18 +682,26 @@ func (p *proxy) rateLimitedHealth(next http.HandlerFunc) http.HandlerFunc {
 func recoverPanics(logger *log.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
-			r := recover()
-			if r == nil {
+			// Named `fault`, not `r`: the original spelling shadowed the
+			// *http.Request, which is now read here for the request id.
+			fault := recover()
+			if fault == nil {
 				return
 			}
 			// http.ErrAbortHandler is net/http's documented way for a handler to
 			// abort a connection on purpose. It is not a fault and must not be
 			// logged as one, or a deliberate abort becomes indistinguishable from
 			// a real bug in the logs.
-			if r == http.ErrAbortHandler {
-				panic(r)
+			if fault == http.ErrAbortHandler {
+				panic(fault)
 			}
-			logger.Printf("PANIC recovered while handling a request: %v\n%s", r, debug.Stack())
+			// req_id ties this stack to the 500 the caller received. It is also
+			// what makes the middleware ORDER checkable: read from the request
+			// context, it is present only while withRequestID is OUTSIDE this
+			// recovery. Swap them and this line logs an empty id -- see
+			// TestNewHandlerWiring, which asserts on exactly that.
+			logger.Printf("PANIC recovered while handling a request (req_id=%s): %v\n%s",
+				requestIDFrom(r.Context()), fault, debug.Stack())
 			// Body-less: an error body could echo attacker-controlled content, and
 			// there is nothing useful to say that the status does not already say.
 			w.WriteHeader(http.StatusInternalServerError)
@@ -678,7 +717,7 @@ func (p *proxy) rateLimitedNotFound() http.HandlerFunc {
 		if !p.admitPreAuth(w, r) {
 			return
 		}
-		http.Error(w, "not found", http.StatusNotFound)
+		writeRefusal(w, http.StatusNotFound, "not_found", requestIDFrom(r.Context()))
 	}
 }
 
@@ -738,8 +777,9 @@ func makeHealthHandler(commit string, draining *atomic.Bool) http.HandlerFunc {
 // what keeps this proxy zero-data-retention-preserving rather than just a
 // relay that happens to also see everything.
 func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
+	reqID := requestIDFrom(r.Context())
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeRefusal(w, http.StatusMethodNotAllowed, "method_not_allowed", reqID)
 		return
 	}
 
@@ -754,7 +794,7 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	apiKeyID, ok := p.authorize(r)
 	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		writeRefusal(w, http.StatusUnauthorized, "unauthorized", reqID)
 		return
 	}
 
@@ -764,7 +804,7 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// once, which the rate limit alone does not: long streaming calls accumulate.
 	if !p.keyRate.allow(apiKeyID) {
 		p.logger.Printf("rate: refused (key id=%s over its request rate)", apiKeyID)
-		tooManyRequests(w, "key_rate")
+		tooManyRequests(w, "key_rate", reqID)
 		return
 	}
 	// Second layer: TOKEN volume, which the request-rate limiter above cannot
@@ -773,13 +813,13 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// resulting debt is what refuses the next request.
 	if !p.keyTokens.available(apiKeyID) {
 		p.logger.Printf("rate: refused (key id=%s over its token rate)", apiKeyID)
-		tooManyRequests(w, "token_rate")
+		tooManyRequests(w, "token_rate", reqID)
 		return
 	}
 	releaseSlot, admitted := p.inFlight.acquire(apiKeyID)
 	if !admitted {
 		p.logger.Printf("rate: refused (key id=%s at in-flight ceiling)", apiKeyID)
-		tooManyRequests(w, "in_flight")
+		tooManyRequests(w, "in_flight", reqID)
 		return
 	}
 	defer releaseSlot()
@@ -788,7 +828,7 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	bodyBytes, err := io.ReadAll(limitedBody)
 	if err != nil {
 		p.logger.Printf("reading request body failed: %v", err)
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeRefusal(w, http.StatusBadRequest, "bad_request", reqID)
 		return
 	}
 
@@ -803,9 +843,7 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// which marshals its body from structs and so cannot emit a duplicate key.
 	if hasDuplicateKeys(bodyBytes) {
 		p.logger.Printf("body: refused (key id=%s -- duplicate JSON key, request is ambiguous)", apiKeyID)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(`{"error":"duplicate_json_key"}`))
+		writeRefusal(w, http.StatusBadRequest, "duplicate_json_key", reqID)
 		return
 	}
 
@@ -815,9 +853,7 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// decision (see costSurfaceRefusal).
 	if refusal, refused := p.costSurfaceRefusal(bodyBytes); refused {
 		p.logger.Printf("cost: refused (key id=%s, reason=%s)", apiKeyID, refusal)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusForbidden)
-		w.Write([]byte(`{"error":"` + refusal + `"}`))
+		writeRefusal(w, http.StatusForbidden, refusal, reqID)
 		return
 	}
 
@@ -837,9 +873,7 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// (daemon/provider.go's providerRouting, no field omitempty).
 	if !zdrRoutingEnforced(bodyBytes) {
 		p.logger.Printf("zdr: refused (key id=%s -- request lacks the required zero-data-retention routing flags)", apiKeyID)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusForbidden)
-		w.Write([]byte(`{"error":"zdr_required"}`))
+		writeRefusal(w, http.StatusForbidden, "zdr_required", reqID)
 		return
 	}
 
@@ -859,9 +893,7 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// (daemon/provider.go).
 	if !streamRequested(bodyBytes) {
 		p.logger.Printf("stream: refused (key id=%s -- non-streamed completions are not forwarded)", apiKeyID)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusForbidden)
-		w.Write([]byte(`{"error":"stream_required"}`))
+		writeRefusal(w, http.StatusForbidden, "stream_required", reqID)
 		return
 	}
 
@@ -877,9 +909,7 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if declared, ok := peekMaxTokens(bodyBytes); ok {
 		if declared > maxReservationTokens {
 			p.logger.Printf("max_tokens: refused (key id=%s declared %d, cap %d)", apiKeyID, declared, maxReservationTokens)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusForbidden)
-			w.Write([]byte(`{"error":"max_tokens_too_large"}`))
+			writeRefusal(w, http.StatusForbidden, "max_tokens_too_large", reqID)
 			return
 		}
 		reserved = declared
@@ -887,9 +917,11 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	res, ok := p.reserveQuota(r.Context(), apiKeyID, reserved)
 	if !ok {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusTooManyRequests)
-		w.Write([]byte(`{"error":"quota_exceeded"}`))
+		// Deliberately NOT tooManyRequests: this 429 is an exhausted allowance,
+		// not a throttle, so it carries no Retry-After -- waiting does not help.
+		// The daemon relies on the quota_exceeded slug to tell the two apart
+		// (daemon/modelerror.go's quotaPhrases).
+		writeRefusal(w, http.StatusTooManyRequests, "quota_exceeded", reqID)
 		return
 	}
 	ceiling := requestTokenCeiling(reserved, res.headroom)
@@ -927,7 +959,7 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.upstreamURL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		p.logger.Printf("building upstream request failed: %v", err)
-		http.Error(w, "bad gateway", http.StatusBadGateway)
+		writeRefusal(w, http.StatusBadGateway, "bad_gateway", reqID)
 		return
 	}
 	// Preserve the caller's declared length instead of leaving it at the
@@ -947,7 +979,7 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		// QUOTA_RESERVATION_DESIGN.md §5(b)). That is the outcome zero value
 		// (actual=0, producedOutput=false), so the deferred finalizer above
 		// already issues exactly the refund this branch used to issue by hand.
-		http.Error(w, "bad gateway", http.StatusBadGateway)
+		writeRefusal(w, http.StatusBadGateway, "bad_gateway", reqID)
 		return
 	}
 	defer resp.Body.Close()
