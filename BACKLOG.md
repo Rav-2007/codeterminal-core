@@ -3377,3 +3377,130 @@ migration blocker is unchanged: one five-minute paste-in at
 [`docs/MIGRATION_RUNBOOK_0000_0004.md`](docs/MIGRATION_RUNBOOK_0000_0004.md),
 still founder-gated because the SQL catalog is not reachable over PostgREST. **The
 FAIL verdict remains unretracted — that is the founder's call, not this entry's.**
+
+---
+
+## 2026-07-30 — Robustness program Phase 0 + Phase 1 (lifecycle & fault containment; verified, NOT founder-closed)
+
+Opening phases of the 70% → 90% robustness program. Plan and scorecard:
+`~/.claude/plans/waiting-on-the-eval-serene-sutton.md`. Baseline and
+measurements: [`docs/ROBUSTNESS_BASELINE.md`](docs/ROBUSTNESS_BASELINE.md).
+
+The program ran under one standing rule, set before any measurement: **a finding
+that fails to reproduce gets struck rather than fixed on faith.** One of the two
+Phase-0 findings was struck. That is recorded here rather than quietly dropped.
+
+### Phase 0 — the baseline, measured on this tree
+
+Coverage floors (`go test -cover`, per module, since `./...` from the root fails):
+`protocol` 88.9%, `editapply` 87.0%, `proxy` 80.3%, `helper` 6.5% /
+`helperproto` 75.0%, `clients/tui` 66.7%, `daemon` 69.3%.
+
+Runtime baseline (real binaries, `/proc`): proxy idle 6 threads / 6 fds /
+7.8 MB, settled after 12 concurrent completions 11 / 10 / 12.8 MB — fds
+plateaued rather than growing, and all 12 reservations closed correctly. Daemon
+idle 8 / 9 / 12.9 MB, unchanged after 20 socket connections.
+
+A purpose-built harness (fake Supabase recording every RPC in order + fake
+OpenRouter streaming SSE at a configurable chunk delay) drives the **real proxy
+binary**. It is the basis of the Phase-3.2 integration matrix and should be
+promoted into `proxy/` there.
+
+### Finding CONFIRMED, and it was worse than the sweep's design assumed
+
+SIGTERM mid-stream, measured against the real binary: `authorize →
+reserve_usage` **and nothing else**. The proxy died instantly (no
+`signal.Notify` anywhere in the module), the client got a truncated body with no
+error frame (`curl` exit 18), and **3,959 of 4,096 tokens stayed charged
+forever** — the sweep never refunds, deliberately, because a dead request's true
+usage is unrecoverable.
+
+The sweep treats this as a rare crash artifact. **A platform redeploy is a
+SIGTERM**, so it fired on every deploy, for every request in flight. The sweep
+was working correctly; its premise was wrong.
+
+### Finding REFUTED — the ~80 ms TTFT hypothesis is not the un-drained body
+
+The TTFT note's explicitly-untested hypothesis (un-drained Supabase response
+bodies break connection pooling, costing a handshake per call) was measured at
+0 B / 100 B / 4 KB / 64 KB: **1 connection across 20 sequential requests either
+way.** `json.Decoder`'s buffered reader consumes through EOF while filling its
+buffer, so a `Content-Length` body re-pools regardless. **The ~80 ms remains
+unexplained**; the other candidate from that note (collapsing validate+reserve
+into one RPC) is untouched and remains live. P1.5 was rescoped accordingly and
+must not be reported as a latency fix.
+
+### Phase 1 — five fixes, one per commit
+
+| Item | Commit | What |
+|---|---|---|
+| P1.1 | `6b029e4` | One deferred exactly-once reservation finalizer |
+| P1.2 | `13b36af` | Proxy graceful shutdown + sweep panic containment |
+| P1.3 | `2f00ee0` | Handler panic recovery with a diagnosable 500 |
+| P1.4 | `eb984a3` | Daemon waits for in-flight requests before exiting |
+| P1.5 | `3aa9c50` | One capped-JSON decode helper that drains its body |
+| P1.2b | `0dcfabe` | Shutdown sequence extracted so it is testable, and tested |
+
+**P1.1** replaces four hand-placed `finalizeUsage` sites with one deferred
+finalizer over a `reservationOutcome` whose zero value is the safe one (full
+refund). `finalizeUsage` is untouched — it owns the charge POLICY and is tested
+on it; `finalizeReservation` owns only the once-ness, guarded so nested defers
+and P1.3's middleware cannot double-bill.
+
+**P1.2** flips `/health` to 503 `draining` with `Retry-After`, stops the sweep,
+then drains under a 25 s grace sized against the platform's SIGTERM→SIGKILL
+window rather than `upstreamTimeout`.
+
+### Three of our own mistakes, caught by neutering rather than by review
+
+Recorded because each one made an assertion silently inert, and the pattern is
+more reusable than the fixes:
+
+1. **P1.1's first test faulted mid-stream** — a site `streamSSE`'s own defer
+   already covered, so it would have passed pre-fix. Moved to `WriteHeader`,
+   which nothing covered. The mid-stream case is kept but labelled as *not*
+   evidence the refactor added anything.
+2. **P1.5's first fix was self-defeating.** The drain was bounded by the same cap
+   as the decode — and the only case needing a drain is the one that *exceeded*
+   that cap, so it could never reach EOF. Still 20 connections with the "fix" in.
+   Caught because the test asserts the **connection count**, not that a drain was
+   attempted. Now bounded by `maxDrainBytes` (8 MB).
+3. **P1.2b's ordering assertion could never fail**, twice over: it sampled after
+   already waiting for the request, and its slow handler (600 ms) finished long
+   before the 3 s pre-drain window elapsed, so `Shutdown` had nothing to wait on.
+
+A fourth was caught by running the drill rather than by testing: the first
+graceful-shutdown cut announced 503 and then called `Shutdown`, which closes the
+listener **immediately** — so nothing could ever connect to observe the 503, and
+a load balancer would learn about the shutdown from a connection error, which is
+exactly what the flip exists to prevent. Fixed with a 3 s `preDrainDelay`.
+
+### Phase 1 gate — the same drill, after
+
+- Stream **ran to completion**: 42 chunks + `[DONE]`, client HTTP **200**
+  (baseline: cut at 10 chunks, `curl` exit 18).
+- `apply_correction(tokens=-3959, pending=1001)` applied; ledger balanced.
+- **Zero** `ABANDONED RESERVATION` lines (baseline: one per SIGTERM'd request).
+- Log reads `drain complete, all in-flight requests finished` → `exiting`.
+- Health sequence observed live: `200 {"status":"ok"}` → SIGTERM →
+  `503 {"status":"draining"}` + `Retry-After: 1` → listener closed.
+
+Six modules green on `go build`, `gofmt -l`, `go vet`, `go test -race`. Proxy
+coverage **80.3% → 81.7%** (it dipped to 78.5% first, because the new
+safety-critical code was written inside `main()` where nothing could reach it —
+which is what prompted P1.2b).
+
+### Not done / carried forward
+
+- **P1.4's live drain was not separately confirmed.** It rests on unit tests
+  asserting both directions of `WaitForDrain` plus a neuter check; the `main.go`
+  wiring is three lines calling that tested function. A live daemon drill is
+  still worth running.
+- **SIGTERM-truncated streams have no incompleteness signal.**
+  `IncompleteBudgetExceeded` (`b1fed6b`) covers the budget-kill case; a stream cut
+  by a drain deadline is still indistinguishable to the daemon from a complete
+  answer. Belongs to whichever phase next touches the stream protocol.
+- Phases 2–6 (observability, test depth, security-gate closure, schema
+  integrity, maintainability) are unstarted.
+
+**Status: Phase 0 and Phase 1 complete and verified locally; NOT founder-closed.**
