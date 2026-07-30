@@ -4073,8 +4073,11 @@ fixed, and it was worse than recorded.
 
 **Deliberately not deducted:** the `id_rsa_secret.pub` over-refusal fails safe.
 
-**Program position after Phase 4:** ~149 of 232 points closed (~64%), on 6 of 7
-phases. Dimension 5 at target; 4 at 85; 3, 1, 6 moved by Phase 3; 2 at ~83.
+**Program position after Phase 4:** ~149 of 232 points closed (~64%) — the Phase-3
+figure of ~139 plus dimension 4's +10. **Phases 0 through 4 are complete; 5 (data &
+schema integrity) and 6 (maintainability) are not started.** Dimension 5 at target; 4
+at 85; 3, 1 and 6 moved by Phase 3; 2 at ~83 and still an estimate rather than a
+measurement.
 
 ### Verification
 
