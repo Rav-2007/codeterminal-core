@@ -597,6 +597,10 @@ type StatusRetrieval struct {
 //
 // Degraded is the identical type and content the prompt path reports, so the
 // pushed and pulled views of the daemon's health can never disagree.
+//
+// Counters is additive and omitted when absent, so ProtocolVersion stays at 1: a
+// client built before it existed decodes the response exactly as it always did
+// and ignores the field. See StatusCounters.
 type StatusResponse struct {
 	ProtocolVersion  int             `json:"protocol_version"`
 	DaemonVersion    string          `json:"daemon_version"`
@@ -611,6 +615,41 @@ type StatusResponse struct {
 	ConfigVersion    int             `json:"config_version,omitempty"`
 	ConfigWarnings   []string        `json:"config_warnings,omitempty"`
 	Degraded         []Degradation   `json:"degraded,omitempty"`
+	Counters         *StatusCounters `json:"counters,omitempty"`
+}
+
+// StatusCounters is what this daemon has done since it started.
+//
+// Every field is a count of something the daemon previously only logged, which
+// meant it was observable exactly once, on stderr, at the moment it happened. The
+// refusal counts are the operationally interesting half: a caller that cannot get
+// past peer auth, or that keeps sending an unsupported protocol version, produced
+// one stderr line on a connection that then went away.
+//
+// Deliberately counts only WHAT happened, never any request's content: no paths,
+// no prompts, no workspace-relative filenames. The socket is same-UID and 0600, but
+// this is a report of a daemon's own activity and there is no reason for it to
+// carry anything from a request body.
+type StatusCounters struct {
+	Prompts       int64 `json:"prompts"`
+	Applies       int64 `json:"applies"`
+	AppliesFailed int64 `json:"applies_failed"`
+	Undos         int64 `json:"undos"`
+	UndosFailed   int64 `json:"undos_failed"`
+	Searches      int64 `json:"searches"`
+	Statuses      int64 `json:"statuses"`
+	Resets        int64 `json:"resets"`
+
+	// Refusals, all of them before dispatch.
+	PeerAuthRefused   int64 `json:"peer_auth_refused"`
+	VersionMismatched int64 `json:"version_mismatched"`
+	Oversized         int64 `json:"oversized"`
+	Malformed         int64 `json:"malformed"`
+	EmptyPrompts      int64 `json:"empty_prompts"`
+
+	// PanicsRecovered counts faults contained by handleConn's recover. Nonzero
+	// means the daemon survived a bug it should not have had.
+	PanicsRecovered int64 `json:"panics_recovered"`
 }
 
 // GroundingInfo reports whether the daemon augmented THIS request with

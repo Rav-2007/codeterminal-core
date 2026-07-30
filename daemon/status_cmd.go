@@ -121,6 +121,24 @@ func printStatus(w *os.File, s protocol.StatusResponse) {
 		}
 	}
 
+	// Before the degraded block, never after: that block is printed LAST and
+	// returns early when it is empty, and burying it under activity numbers would
+	// repeat the exact failure this surface exists to fix.
+	if c := s.Counters; c != nil {
+		p("")
+		p("since start  %d prompt(s), %d apply(s) (%d failed), %d undo(s) (%d failed), %d search(es)",
+			c.Prompts, c.Applies, c.AppliesFailed, c.Undos, c.UndosFailed, c.Searches)
+		if refused := c.PeerAuthRefused + c.VersionMismatched + c.Oversized + c.Malformed; refused > 0 {
+			p("refused      %d (peer auth %d, version %d, oversized %d, malformed %d)",
+				refused, c.PeerAuthRefused, c.VersionMismatched, c.Oversized, c.Malformed)
+		}
+		// Only when nonzero, and worded as the defect it is: a contained panic is
+		// a bug that happened to be survivable, not a statistic.
+		if c.PanicsRecovered > 0 {
+			p("PANICS       %d contained since start -- a fault was survived, not fixed", c.PanicsRecovered)
+		}
+	}
+
 	p("")
 	if len(s.Degraded) == 0 {
 		p("no degraded subsystems")

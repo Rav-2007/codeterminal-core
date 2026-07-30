@@ -245,6 +245,10 @@ func main() {
 		// the log-only fire-rate data survives daemon restarts instead of
 		// vanishing with stderr. Local file only — no network egress.
 		warnSink: newWarnSink(filepath.Join(absWorkspace, ".codeterminal", "logs", "warnmode.jsonl")),
+		// Activity counters, reported through the existing status surface (see
+		// counters.go). Built here rather than lazily so production always has
+		// them; a nil set is valid and simply counts nothing.
+		counters: &counters{},
 	}
 	// One line per reduced subsystem, so the log and the wire agree about what
 	// is degraded from the moment the daemon starts serving.

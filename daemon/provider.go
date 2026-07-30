@@ -352,7 +352,11 @@ func streamCompletion(ctx context.Context, apiBase, apiKey, model, systemPrompt 
 		// errors.Is checks are unaffected.
 		modelErr := classifyHTTPError(resp.StatusCode, resp.Status, bodyStr)
 		modelErr.RetryAfter = parseRetryAfter(resp.Header)
-		return modelErr
+		// The managed proxy answers every request with an X-Request-Id, including
+		// the body-less 500 a contained panic produces. Carrying it into the
+		// operator detail is what turns "a user says it failed at about 3pm" into
+		// one id that resolves to one request's trail in the proxy's log.
+		return modelErr.withUpstreamRequestID(upstreamRequestID(resp.Header))
 	}
 
 	scanner := bufio.NewScanner(resp.Body)

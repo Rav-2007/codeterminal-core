@@ -84,6 +84,11 @@ type Server struct {
 	connIdleTimeout time.Duration
 	maxConns        int
 
+	// counters is what this daemon has done since it started (see counters.go).
+	// Never nil in production (main.go builds the Server literal with one) and
+	// nil-safe everywhere, so a test that builds a bare Server still works.
+	counters *counters
+
 	// applyLocks serializes the filesystem-mutating request paths per workspace
 	// root (FAIL-3, Gate 6 — data-integrity). It maps a resolved workspace root
 	// to the *sync.Mutex guarding it; lockWorkspace get-or-creates and holds it
@@ -211,11 +216,13 @@ func (s *Server) handleConn(conn net.Conn) {
 	// C1 boundary check removes the known embedder-response one at its source).
 	defer func() {
 		if r := recover(); r != nil {
+			s.count(func(c *counters) { c.panicsRecovered.Add(1) })
 			s.logger.Printf("recovered from panic while handling a connection: %v\n%s", r, debug.Stack())
 		}
 	}()
 
 	if err := s.authorizePeer(conn); err != nil {
+		s.count(func(c *counters) { c.peerAuthRefused.Add(1) })
 		s.logger.Printf("connection refused: %v", err)
 		return
 	}
@@ -245,6 +252,7 @@ func (s *Server) serveConn(conn net.Conn) {
 	}
 
 	if hsReq.ProtocolVersion != protocol.ProtocolVersion {
+		s.count(func(c *counters) { c.versionMismatched.Add(1) })
 		s.logger.Printf("rejecting client %q: protocol version %d != %d", hsReq.ClientName, hsReq.ProtocolVersion, protocol.ProtocolVersion)
 		enc.Encode(protocol.HandshakeResponse{
 			ProtocolVersion: protocol.ProtocolVersion,
@@ -269,9 +277,11 @@ func (s *Server) serveConn(conn net.Conn) {
 	var raw json.RawMessage
 	if err := dec.Decode(&raw); err != nil {
 		if errors.Is(err, errRequestTooLarge) {
+			s.count(func(c *counters) { c.oversized.Add(1) })
 			s.logger.Printf("rejecting oversized request (cap %d bytes)", s.resolvedMaxRequestBytes())
 			return
 		}
+		s.count(func(c *counters) { c.malformed.Add(1) })
 		s.logger.Printf("request read error: %v", err)
 		return
 	}
@@ -279,20 +289,28 @@ func (s *Server) serveConn(conn net.Conn) {
 	if isApplyEditRequest(raw) {
 		var applyReq protocol.ApplyEditRequest
 		if err := json.Unmarshal(raw, &applyReq); err != nil {
+			s.count(func(c *counters) { c.malformed.Add(1) })
 			s.logger.Printf("apply-edit request decode error: %v", err)
 			return
 		}
-		s.handleApplyEdit(enc, applyReq)
+		s.count(func(c *counters) { c.applies.Add(1) })
+		if !s.handleApplyEdit(enc, applyReq) {
+			s.count(func(c *counters) { c.appliesFailed.Add(1) })
+		}
 		return
 	}
 
 	if isUndoRequest(raw) {
 		var undoReq protocol.UndoRequest
 		if err := json.Unmarshal(raw, &undoReq); err != nil {
+			s.count(func(c *counters) { c.malformed.Add(1) })
 			s.logger.Printf("undo request decode error: %v", err)
 			return
 		}
-		s.handleUndo(enc, undoReq)
+		s.count(func(c *counters) { c.undos.Add(1) })
+		if !s.handleUndo(enc, undoReq) {
+			s.count(func(c *counters) { c.undosFailed.Add(1) })
+		}
 		return
 	}
 
@@ -301,6 +319,7 @@ func (s *Server) serveConn(conn net.Conn) {
 	// and came back "prompt is empty" — the daemon had no answer to "how are
 	// you" because nothing had ever asked.
 	if isStatusRequest(raw) {
+		s.count(func(c *counters) { c.statuses.Add(1) })
 		s.handleStatus(enc)
 		return
 	}
@@ -308,20 +327,24 @@ func (s *Server) serveConn(conn net.Conn) {
 	if isSearchRequest(raw) {
 		var searchReq protocol.SearchRequest
 		if err := json.Unmarshal(raw, &searchReq); err != nil {
+			s.count(func(c *counters) { c.malformed.Add(1) })
 			s.logger.Printf("search request decode error: %v", err)
 			return
 		}
+		s.count(func(c *counters) { c.searches.Add(1) })
 		s.handleSearch(enc, searchReq)
 		return
 	}
 
 	var promptReq protocol.PromptRequest
 	if err := json.Unmarshal(raw, &promptReq); err != nil {
+		s.count(func(c *counters) { c.malformed.Add(1) })
 		s.logger.Printf("prompt read error: %v", err)
 		return
 	}
 
 	if promptReq.Reset {
+		s.count(func(c *counters) { c.resets.Add(1) })
 		s.resetPersistedHistory()
 		enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Done: true})
 		return
@@ -334,6 +357,7 @@ func (s *Server) serveConn(conn net.Conn) {
 	// at the first point the request's own content is known, so nothing
 	// downstream — routing, retrieval, the model call, memory — runs at all.
 	if strings.TrimSpace(promptReq.Prompt) == "" {
+		s.count(func(c *counters) { c.emptyPrompts.Add(1) })
 		s.logger.Print("rejecting empty prompt without calling the model API")
 		enc.Encode(protocol.TokenResponse{
 			ProtocolVersion: protocol.ProtocolVersion,
@@ -344,6 +368,7 @@ func (s *Server) serveConn(conn net.Conn) {
 		return
 	}
 
+	s.count(func(c *counters) { c.prompts.Add(1) })
 	s.logger.Printf("received prompt (%d bytes), calling model API", len(promptReq.Prompt))
 
 	decision := s.route(promptReq.PromptKind)
@@ -535,12 +560,16 @@ func isApplyEditRequest(raw json.RawMessage) bool {
 // PrepareEdit/Apply would produce for the CLI or TUI — and no file is
 // written, since Apply is only called after PrepareEdit has already
 // succeeded.
-func (s *Server) handleApplyEdit(enc *json.Encoder, req protocol.ApplyEditRequest) {
+// The bool return says whether the edit LANDED. It exists so serveConn can count
+// failures in one place instead of at each of the four refusal returns below --
+// a counter placed per-return is a counter that a future fifth return silently
+// escapes.
+func (s *Server) handleApplyEdit(enc *json.Encoder, req protocol.ApplyEditRequest) (applied bool) {
 	realRoot, err := editapply.ResolveRealWorkspaceRoot(s.workspace)
 	if err != nil {
 		s.logger.Printf("apply-edit: resolving workspace root: %v", err)
 		enc.Encode(protocol.ApplyEditResponse{ProtocolVersion: protocol.ProtocolVersion, Applied: false, Error: s.socketSafeError(err)})
-		return
+		return false
 	}
 
 	// Serialize the entire read-modify-write + backup/prune span per workspace
@@ -556,20 +585,20 @@ func (s *Server) handleApplyEdit(enc *json.Encoder, req protocol.ApplyEditReques
 	if err != nil {
 		s.logger.Printf("apply-edit: refused %s: %v", block.FilePath, err)
 		enc.Encode(protocol.ApplyEditResponse{ProtocolVersion: protocol.ProtocolVersion, Applied: false, Error: s.socketSafeError(err, realRoot)})
-		return
+		return false
 	}
 
 	backupDir, err := resolveBackupSessionDir(realRoot, req.BackupSessionDir)
 	if err != nil {
 		s.logger.Printf("apply-edit: creating backup dir: %v", err)
 		enc.Encode(protocol.ApplyEditResponse{ProtocolVersion: protocol.ProtocolVersion, Applied: false, Error: s.socketSafeError(err, realRoot)})
-		return
+		return false
 	}
 
 	if err := editapply.Apply(realRoot, prepared, backupDir); err != nil {
 		s.logger.Printf("apply-edit: failed %s: %v", block.FilePath, err)
 		enc.Encode(protocol.ApplyEditResponse{ProtocolVersion: protocol.ProtocolVersion, Applied: false, Error: s.socketSafeError(err, realRoot)})
-		return
+		return false
 	}
 
 	s.logger.Printf("apply-edit: applied %s (backup: %s)", block.FilePath, backupDir)
@@ -581,6 +610,7 @@ func (s *Server) handleApplyEdit(enc *json.Encoder, req protocol.ApplyEditReques
 	s.reindexAfterApply(realRoot, block.FilePath)
 
 	enc.Encode(protocol.ApplyEditResponse{ProtocolVersion: protocol.ProtocolVersion, Applied: true, BackupDir: backupDir})
+	return true
 }
 
 // resolveBackupSessionDir returns the backup session directory Apply should
@@ -654,12 +684,14 @@ func isUndoRequest(raw json.RawMessage) bool {
 // prompt, so a file that changed since the apply run is always left guarded
 // rather than silently forced — the same safe default the CLI gets by just
 // pressing enter. Guarded files are returned to the caller, never hidden.
-func (s *Server) handleUndo(enc *json.Encoder, req protocol.UndoRequest) {
+// The bool return says whether the undo completed, for the same reason
+// handleApplyEdit has one.
+func (s *Server) handleUndo(enc *json.Encoder, req protocol.UndoRequest) (reverted bool) {
 	realRoot, err := editapply.ResolveRealWorkspaceRoot(s.workspace)
 	if err != nil {
 		s.logger.Printf("undo: resolving workspace root: %v", err)
 		enc.Encode(protocol.UndoResponse{ProtocolVersion: protocol.ProtocolVersion, Error: s.socketSafeError(err)})
-		return
+		return false
 	}
 
 	// Serialize per workspace (FAIL-3, Gate 6): held across session validation
@@ -679,7 +711,7 @@ func (s *Server) handleUndo(enc *json.Encoder, req protocol.UndoRequest) {
 				ProtocolVersion: protocol.ProtocolVersion,
 				Error:           s.scrubPaths(fmt.Sprintf("backup session %q not found under %s", req.BackupSessionDir, backupsRoot), realRoot),
 			})
-			return
+			return false
 		}
 		sessionDir = req.BackupSessionDir
 	} else {
@@ -687,7 +719,7 @@ func (s *Server) handleUndo(enc *json.Encoder, req protocol.UndoRequest) {
 		if err != nil {
 			s.logger.Printf("undo: resolving latest session: %v", err)
 			enc.Encode(protocol.UndoResponse{ProtocolVersion: protocol.ProtocolVersion, Error: s.socketSafeError(err, realRoot)})
-			return
+			return false
 		}
 	}
 
@@ -709,7 +741,7 @@ func (s *Server) handleUndo(enc *json.Encoder, req protocol.UndoRequest) {
 			SessionDir:      sessionDir,
 			Error:           s.socketSafeError(err, realRoot),
 		})
-		return
+		return false
 	}
 
 	// "reverted", not "restored": a session that created files reverts them by
@@ -722,6 +754,7 @@ func (s *Server) handleUndo(enc *json.Encoder, req protocol.UndoRequest) {
 		Guarded:         guarded,
 		SessionDir:      sessionDir,
 	})
+	return true
 }
 
 // isSearchRequest sniffs whether raw is a SearchRequest (identified by the

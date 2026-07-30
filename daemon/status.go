@@ -79,6 +79,7 @@ func (s *Server) handleStatus(enc *json.Encoder) {
 		MemoryAvailable:  s.memory != nil,
 		APIKeyConfigured: s.apiKey != "",
 		Degraded:         s.degradations(),
+		Counters:         s.counters.snapshot(),
 	}
 	if s.cfg != nil {
 		resp.ConfigVersion = s.cfg.ConfigVersion
