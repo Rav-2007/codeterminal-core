@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -95,7 +96,11 @@ func runStatusCommand(args []string, logger *log.Logger) error {
 // thing the reader is most likely to actually need. A status output whose
 // important line is buried among healthy ones repeats, in a smaller way, the
 // exact failure this cluster is about.
-func printStatus(w *os.File, s protocol.StatusResponse) {
+// w is an io.Writer rather than the *os.File it started as, purely so this is
+// reachable from a test: the ordering below (degraded LAST, and returning early
+// when there is none) is a deliberate property, and a property nothing can assert
+// is a property that quietly stops holding.
+func printStatus(w io.Writer, s protocol.StatusResponse) {
 	p := func(format string, args ...any) { fmt.Fprintf(w, format+"\n", args...) }
 
 	p("daemon      %s (pid %d, up %s)", s.DaemonVersion, s.PID, formatUptime(s.UptimeSeconds))
