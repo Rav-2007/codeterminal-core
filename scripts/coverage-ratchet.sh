@@ -96,21 +96,31 @@ for module in "${MODULES[@]}"; do
     continue
   fi
 
+  # `go test -cover` emits the package name in one of two columns depending on
+  # whether the package had tests:
+  #
+  #   ok  \tcodeterminal/proxy\t8.4s\tcoverage: 83.6% of statements
+  #       \tcodeterminal/proxy/testharness\t\tcoverage: 0.0% of statements
+  #   ?   \tcodeterminal/foo\t[no test files]
+  #
+  # The second shape -- leading TAB, no "ok" -- is what a package with no test
+  # files looks like under -cover, and an earlier version of this parser matched
+  # only the first and third. A newly added test-only-adjacent package therefore
+  # slipped through the gate silently, which is precisely the failure this script
+  # claims to prevent. Found when proxy/testharness was added. Both shapes are
+  # normalised here by skipping a leading ok/?/FAIL token if there is one.
   while IFS= read -r line; do
     case "$line" in
-      # ok  	codeterminal/proxy	8.4s	coverage: 83.6% of statements
-      ok*coverage:*)
-        pkg="$(awk '{print $2}' <<<"$line")"
+      *coverage:*)
+        pkg="$(awk '{ print ($1 == "ok" || $1 == "?" || $1 == "FAIL") ? $2 : $1 }' <<<"$line")"
         pct="$(sed -n 's/.*coverage: \([0-9.]*\)% of statements.*/\1/p' <<<"$line")"
         ;;
-      # ?   	codeterminal/foo	[no test files]
-      #
       # Counted as 0.0 rather than skipped. A package with no tests at all is the
       # single most likely place for a regression to hide, so it must be listed
       # with an explicit floor (0.0 if that is the honest answer) rather than
       # falling through the gate for the very reason it is risky.
-      \?*"[no test files]"*)
-        pkg="$(awk '{print $2}' <<<"$line")"
+      *"[no test files]"*)
+        pkg="$(awk '{ print ($1 == "ok" || $1 == "?" || $1 == "FAIL") ? $2 : $1 }' <<<"$line")"
         pct="0.0"
         ;;
       *) continue ;;

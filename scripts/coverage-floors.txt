@@ -24,6 +24,14 @@
 codeterminal/daemon              69.3
 codeterminal/editapply           87.0
 codeterminal/proxy               80.3
+
+# 0.0 is the honest floor, not an oversight. testharness is a test-support
+# BINARY (fake Supabase + fake OpenRouter) whose whole purpose is to be driven
+# by out-of-process drills and the soak script -- there is nothing meaningful to
+# unit-test in it, and testing it would test the fake rather than the proxy.
+# Listed explicitly because the ratchet fails on any package it has no floor
+# for, so the decision has to be made rather than defaulted into.
+codeterminal/proxy/testharness    0.0
 codeterminal/helper               6.5
 codeterminal/helper/helperproto  75.0
 codeterminal/protocol            88.9
