@@ -2832,3 +2832,247 @@ sweep_pending_corrections(integer) from public;` — mirroring the 2026-07-17 di
 function revoke EXECUTE-from-PUBLIC in the same migration that (re)creates it. Consider SELECT-only RLS
 parity with `usage`/`api_keys` only if belt-and-suspenders is wanted; the grant revoke is the load-
 bearing fix. **Status: CLOSED 2026-07-27 — see the CLOSURE block at the top of this entry for verified before/after results; corrective `0003` applied. The original "no RLS needed" note is superseded.**
+
+---
+
+## 2026-07-30 — Launch-gate QA pass, all seven surfaces (1 P0 + 4 P1 CONFIRMED; verdict FAIL, NOT closed)
+
+First whole-product QA sweep rather than the single-axis passes above. Run against
+`harden/proxy-spend-and-gates` @ `17ffad6` (2 commits ahead of `main`). Full report:
+[`docs/QA_LAUNCH_GATE_2026-07-30.md`](docs/QA_LAUNCH_GATE_2026-07-30.md).
+
+**Scope by agreement:** local build + test execution only. No Railway probes, no live
+Supabase, no real spend, no load testing. `CONFIRMED` below means a repro script was
+written and run; `PLAUSIBLE` means reasoned from source and labelled as such.
+
+### Baseline — measured, replaces the sibling-filename guesswork
+
+| Module | Tests | Coverage | race | gofmt | vet | govulncheck |
+|---|---:|---:|---|---|---|---|
+| `daemon` | 369 | 66.9% | clean | clean | clean | 0 reachable |
+| `editapply` | 86 | 87.0% | clean | clean | clean | 0 |
+| `proxy` | 52 | 79.7% | clean | clean | clean | 0 |
+| `clients/tui` | 77 | 66.7% | clean | clean | clean | 0 reachable |
+| `protocol` | **0** | **0.0%** | — | clean | clean | 0 |
+| `helper` | **0** | **0.0%** | — | clean | clean | 0 |
+| `clients/vscode` | 6 (real EDH, xvfb) | — | — | `tsc` clean | — | — |
+
+The branch's claimed "28 → 52 tests, coverage 79.7%" is **confirmed exactly**. A
+pre-review gap map built on sibling filenames was **wrong** and is retracted:
+`ratelimit.go` ~100%, `protected.go` 100%, `match.go` 80–100% per function. The two
+real zeros are `protocol` (625 lines — the shared wire contract) and `helper`.
+
+### P0-1 — byte-guard kill REFUNDS the reservation (CONFIRMED, money path)
+
+`streamSSE`'s kill raises the charge to `dataChunks` (`main.go:1061`), a chunk COUNT.
+On the **`byte_guard`** bound the count is by definition tiny while bytes are at the
+ceiling, so `finalizeUsage` takes its `actual > 0` branch and `correctUsage` gets a
+large NEGATIVE delta. The site's own comment — *"Charge what was streamed, never
+refund"* — holds only when `dataChunks >= reserved`, guaranteed on a `token_ceiling`
+kill and **never** on a `byte_guard` kill.
+
+Measured (reserved 4096, headroom 100 → ceiling 4196 → guard at 2,148,352 B; upstream
+streams 3 × 900 KB):
+
+```
+reserved=4096  correction delta=-4093
+finalizeUsage got actual=3 vs reserved=4096
+```
+
+**4093 of 4096 tokens refunded after streaming the maximum the ceiling permits.** The
+same figure is charged to the per-key token bucket (`main.go:1562-1566`), so both new
+controls fall to one defect. This is the **C3 abort-refund class** (`a703978`)
+reintroduced via a path C3's regression test does not cover.
+
+Reachability is **inverted**: the guard scales with the ceiling, so the smaller a key's
+headroom, the easier the guard fires and the larger the refund as a fraction of what is
+left. A key at its limit is easiest to exploit and gains most. `deepseek/deepseek-r1` is
+in the shipped default allow-list and its `reasoning` deltas exceed 512 B/chunk, so no
+adversarial provider is required.
+
+**Fix direction:** floor the charge at `reserved` on any kill path, or thread an
+explicit `killed bool` to force the existing "keep the reservation" branch. Then a
+fail-when-neutered test on the **`byte_guard`** bound specifically — the existing budget
+tests exercise `token_ceiling`, which is why 52 green tests missed this.
+
+### P1-1 — the `budget_exceeded` chunk is invisible to the daemon (CONFIRMED)
+
+`writeBudgetExceeded` emits `data: {"error":"budget_exceeded","truncated":true}` so a
+client can *"tell throttling apart from a crashed connection."* The daemon's
+`chatCompletionChunk` (`provider.go:83`) has `provider`, `delta.content`,
+`delta.reasoning`, `finish_reason` — and **no `error` field**. Measured:
+
+```
+decoded provider="" choices=0
+incompleteInfoFor("") = <nil>
+```
+
+No content, no `finish_reason`, so M1's truncation path never fires. The daemon reads
+`[DONE]` and reports `Done:true` with no Error and no IncompleteInfo — a budget-killed
+answer reaches the user as a **complete, successful response**, silently truncated.
+Strictly worse than the silent close the chunk exists to avoid: indistinguishable from
+*success*, not from failure.
+
+A seam defect: the proxy suite asserts the chunk is emitted, the daemon suite asserts
+its own parsing, and **no test spans the two**. There is no proxy↔daemon integration
+test anywhere in the repo.
+
+### P1-2 — CI gates nothing
+
+`.github/workflows/build.yml` is one job: `docker build ./proxy`. 584 Go tests, 6
+extension E2E tests, 4 eval tests, `gofmt`, `vet`, `govulncheck`, `tsc` — none gate a
+merge. Every green number in this entry was produced by hand. P0-1 and P1-1 both shipped
+past a green local suite; P1-3 shows the drift cost.
+
+### P1-3 — the project's own retrieval gate is RED
+
+`TestRerankEvalRetrievalRanking` FAILS: semantic-only 4/9, hybrid **4/9** (no better).
+Its own messages: queries 8 and 9 — *"one of the two measured live failures this feature
+exists to fix"* — are still MISS. File-level `TestEvalRetrievalQuality` is perfect
+(top-1 1.00, top-3 1.00 vs 0.80 threshold), so the gap is chunk-level ranking
+specifically. Invisible day to day because CI never runs `-tags eval`.
+
+### P1-4 — core billing schema is not in version control
+
+No `create table` for `usage` or `api_keys` anywhere — the only one is
+`pending_corrections` (`0002:35`). The repo cannot recreate its own database, and
+constraints are unverifiable from source, including whether `usage.key_id` is unique,
+which `reserve_usage`'s `select ... from reserved, opened` cross join depends on. Plus:
+no migration runner, no applied-version tracking, no down scripts — while `0002`'s own
+banner warns that wrong ordering loses *"every correction on every request."* That
+constraint is enforced by a human reading a comment, and it has already gone wrong once
+(premature "applied", corrected 2026-07-25).
+
+### P2 — four medium findings
+
+- **P2-1 duplicate top-level JSON keys (CONFIRMED proxy-side).** All four gates read
+  through `topLevelFields` → last-wins, then forward byte-for-byte carrying both. A body
+  naming a banned model FIRST and an allowed one second was **admitted**. End-to-end
+  exploitability depends on OpenRouter resolving first-wins — untested, RFC 8259 leaves
+  it undefined → that half stays `PLAUSIBLE`. Same shape as branch defect 3, one level
+  down. Fix: reject duplicate top-level keys rather than trusting two parsers to agree.
+- **P2-2 daemon dispatcher is case-insensitive (CONFIRMED).** `{"UNDO":true}`,
+  `{"Undo":true}`, `{"SEARCH":true}`, `{"EDIT":{...}}` all sniff true
+  (`server.go:473,583,691`) — the exact pattern `491e0f2` replaced in the proxy, left
+  unfixed in the daemon, where the misroute lands in a **destructive** `undo`. Bounded
+  honestly: owner-only socket + `SO_PEERCRED`, so **not** privilege escalation, and no
+  `PromptRequest` field case-folds onto a sniffed key, so no accidental client
+  misroute. P2 for the destructive destination and for leaving a known-wrong pattern
+  fixed in one twin only.
+- **P2-3 zero accessibility affordances in the webview (CONFIRMED).** No `aria-*`,
+  `role=`, or `tabindex` in 647 lines of `main.js` + 678 of `chatPanel.ts`. No live
+  region for streamed tokens, no label on the auto-apply switch, nothing on the diff
+  surface — i.e. Gate ④ ("you see the diff and approve it") is unusable non-visually.
+- **P2-4 `0003` missed `increment_usage` (CONFIRMED static).** The corrective revoke
+  covers `reserve_usage` / `apply_correction` / `sweep_pending_corrections`;
+  `increment_usage` appears **0 times**, yet `0001` re-creates it and `0002` leaves it
+  live. It is the most dangerous of the four if reachable — unconditional
+  `update usage set tokens_used = tokens_used + p_tokens`, no limit check. Contained the
+  same way the others were (SECURITY INVOKER + `usage` SELECT-only grants), so
+  defense-in-depth, not a live hole — but an audit written to close a class that misses
+  a member of that class is trap 3's own pattern. `0003`'s verify block omits it too.
+- **P2-5 zero coverage on `protocol`, `helper`, and all 8 `chunkscrub.go` functions.**
+  The send-time scrubber `scrub.go` is at 100%; the gap is the chunk-level **warn-mode**
+  detector, whose false-negative rate is therefore unmeasured. Note the privacy claim is
+  quantitative in nature and currently carries no number.
+
+### Verified sound — pre-registered hypotheses the code REFUTED
+
+Recorded because a pass that lists only failures misrepresents the system:
+
+- **Missing-env fail-open — REFUTED.** `main.go:288-290` warns; `authorize` fails closed
+  on unconfigured Supabase / error / non-200 / row count ≠ 1. Never serves unmetered.
+- **Webview XSS — REFUTED.** Zero `innerHTML`/`outerHTML`/`insertAdjacentHTML`/
+  `document.write`/`eval`/`new Function` in `media/` or `src/`; `textContent`
+  throughout; CSP `default-src 'none'` + per-load nonce; `localResourceRoots` = `media/`.
+- **Webview state loss — REFUTED.** `retainContextWhenHidden: true` (`chatPanel.ts:92`).
+- **Container — SOUND.** `Dockerfile:17-18` non-root `USER 10001:10001`.
+- **Secrets — SOUND.** `git log --all -p` scan for `sk-or-v1-`/`sk-`/`mochi_`/`eyJ`/
+  `AKIA`/`ghp_` yields only the fixture `AKIA1234567890ABCDEF`. `.env` untracked.
+- **`apply_correction`'s unreferenced data-modifying CTE — REFUTED.** Postgres runs
+  data-modifying `WITH` exactly once to completion regardless of reference. Comment correct.
+
+### P3
+
+- **README:849's `go test ./...` fails from root** (rc=1, no root module — only
+  `go.work`). Fails loudly, so no false confidence, but the documented first command a
+  contributor runs is broken. BACKLOG's long-standing "`./...` fails from root" note is
+  correct and the README was never updated to match.
+- **Gate ③ parses only `.go`** (`apply.go:33`), reporting *"no syntax check applied"*
+  otherwise — honest and qualified in `PRODUCT_OVERVIEW.md:295`, but the headline "five
+  gates … a change only reaches your disk if it passes all of them" reads stronger than
+  what a Python/TS user gets.
+
+### Blocked, NOT skipped
+
+Live Supabase grants (P2-4 + `usage.key_id` uniqueness — founder SQL in the report);
+production wire probes against **this branch**; multi-replica rate-limit dilution (the
+in-memory limiters are per-instance, so the new token bound is not a spend bound under
+horizontal scale — `PLAUSIBLE`, single-instance testing only); real screen-reader passes;
+Intel Mac / linux-arm64; upstream duplicate-key resolution (decides P2-1); load/soak.
+
+### Verification of the review itself
+
+Repros in the session scratchpad (`repro/proxy/zz_qa_repro_test.go`,
+`repro/daemon_sniffer_repro_test.go.txt`, `repro/daemon_budget_chunk_repro_test.go.txt`);
+coverage machine-generated from `-coverprofile`, not estimated; two repros were run
+in-tree and removed, `git status` verified clean (0 files) after each. **No product code
+was changed by this pass** — findings are reported, not fixed, per this repo's
+one-isolated-commit-per-fix convention.
+
+**Status: verdict FAIL, NOT closed.** Path to PASS is small and non-architectural: fix
+P0-1 (a floor + a `byte_guard` fail-when-neutered test), fix P1-1 (one struct field + one
+integration test), land P1-2's pipeline, decide P1-3 explicitly (fix or re-baseline in
+writing), capture P1-4's baseline schema. Founder sign-off still required.
+
+---
+
+## 2026-07-30 — Retrieval eval follow-ups (opened by the launch-gate remediation batch)
+
+Two tracked items opened while resolving P1-3. Both are retrieval-quality work, deliberately
+NOT bundled into the remediation batch that surfaced them.
+
+### (a) OPEN: chunk-ID ground truth is inherently fragile — anchor expectations to symbols
+
+`rerank_eval_test.go`'s `exactChunks` are `file:startLine-endLine` strings, so **every edit
+to a named file silently invalidates them**. That is not a hypothetical: it is what made the
+eval read 4/9 and look like a retrieval regression when retrieval was in fact returning the
+correct chunks (see the P1-3 resolution). Five of nine queries were stale, and the two eval
+files disagreed with each other because both hard-coded line ranges independently.
+
+Mitigated, not fixed, by `assertExpectationsAreCurrent` + the new `anchor` field: staleness
+is now **loud and self-diagnosing** (it names the chunk the anchor actually lives in) instead
+of silently scoring correct retrieval as a miss. The expectations themselves are still line
+ranges and will still go stale — the guard just makes it a 30-second correction with the
+answer printed, rather than an investigation that concludes "retrieval is broken".
+
+Real fix: derive `exactChunks` from the anchor at test time (find the chunks containing the
+anchor, use those as the expectation) so line numbers never appear in the harness at all.
+Deferred because it changes what the eval measures, and doing that in the same batch as a
+money-path fix would make both harder to review.
+
+### (b) OPEN: `TestEditShapedRetrievalEval` is RED at 0/4 — pre-existing, and the QA pass missed it
+
+Not caused by the remediation batch, and **verified so**: a `git worktree` at the QA baseline
+`17ffad6` reproduces the identical failure (0/4, same three subtests —
+`editapply-apply-extraction`, `tui-header-collision`, `zdr-refusal-phrasing`). This is the
+open **H6 chunk-level retrieval** workstream, previously recorded at recall 2/4; it is now 0/4.
+
+Correction to the launch-gate report: `docs/QA_LAUNCH_GATE_2026-07-30.md` states that of the
+four gated eval tests, `TestEvalRetrievalQuality` passes and `TestRerankEvalRetrievalRanking`
+fails. **A second eval test was also red at baseline and went unreported.** The report's
+"`-tags eval` adds 4 gated tests" line is accurate; its implication that only one was failing
+is not.
+
+At least part of this is the same staleness class as (a) — `edit_eval_test.go:156` expects
+`daemon/provider.go:91-130` for "zdrRefusalSubstrings + isZDRRoutingRefusal", the exact stale
+range corrected in `rerank_eval_test.go`. Whether correcting the ground truth recovers the
+recall, or whether there is a real chunk-level ranking gap underneath, is **unmeasured** and is
+the first step of this item. The `anchor` guard should be ported here at the same time.
+
+Consequence for CI: the scheduled `eval` job (`.github/workflows/build.yml`) is scoped by
+`-run` to the three green eval tests, with the reason stated inline. A permanently-red
+scheduled job is a job nobody reads, which is the failure mode P1-2 exists to fix. **Remove
+that filter when this item closes** — it is the only thing keeping the known-red test out of CI.
+
+**Status: both OPEN, tracked, not scheduled. Linked to the H6 retrieval work.**
