@@ -2111,7 +2111,7 @@ func TestClientSource_PrefersFirstXFFEntryThenPeer(t *testing.T) {
 func TestHealth(t *testing.T) {
 	t.Run("returns ok and hides the build commit by default", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		makeHealthHandler("deadbeefcafe")(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
+		makeHealthHandler("deadbeefcafe", nil)(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
 
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status = %d, want 200", rec.Code)
@@ -2133,7 +2133,7 @@ func TestHealth(t *testing.T) {
 	t.Run("discloses the commit only when explicitly opted in", func(t *testing.T) {
 		t.Setenv("HEALTH_EXPOSE_COMMIT", "1")
 		rec := httptest.NewRecorder()
-		makeHealthHandler("deadbeefcafe")(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
+		makeHealthHandler("deadbeefcafe", nil)(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
 
 		var got healthResponse
 		json.Unmarshal(rec.Body.Bytes(), &got)
@@ -2145,7 +2145,7 @@ func TestHealth(t *testing.T) {
 
 	t.Run("is rate limited", func(t *testing.T) {
 		p := newTestProxy("http://unused.invalid", "http://unused.invalid")
-		handler := p.rateLimitedHealth(makeHealthHandler("x"))
+		handler := p.rateLimitedHealth(makeHealthHandler("x", nil))
 
 		throttled := 0
 		for i := 0; i < int(preAuthBurstGlobal)+100; i++ {
@@ -2512,5 +2512,97 @@ func TestFinalizeReservation_IsIdempotent(t *testing.T) {
 		t.Errorf("finalizeReservation billed %d times for one reservation; it must bill exactly "+
 			"once however many times it is called, or a request whose actual usage undershot "+
 			"its reservation gets its refund applied repeatedly", got)
+	}
+}
+
+// TestHealthHandler_ReportsDrainingOnceShutdownBegins covers the announce half of
+// P1.2. A replica that is shutting down but still answers /health with 200 is why
+// a rolling deploy resets live connections: the platform's load balancer has no
+// way to learn this instance is leaving, so it keeps routing new work at a process
+// that is about to stop accepting it.
+//
+// Neuter check: drop the draining branch from makeHealthHandler and the draining
+// subtest fails with 200/"ok".
+func TestHealthHandler_ReportsDrainingOnceShutdownBegins(t *testing.T) {
+	var draining atomic.Bool
+	handler := makeHealthHandler("deadbeefcafe", &draining)
+
+	t.Run("serving", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		handler(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
+		if rec.Code != http.StatusOK {
+			t.Errorf("healthy instance answered %d, want 200", rec.Code)
+		}
+		if !strings.Contains(rec.Body.String(), `"status":"ok"`) {
+			t.Errorf("healthy instance reported %q, want status ok", rec.Body.String())
+		}
+	})
+
+	t.Run("draining", func(t *testing.T) {
+		draining.Store(true)
+		rec := httptest.NewRecorder()
+		handler(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Errorf("draining instance answered %d, want 503 so the load balancer stops "+
+				"routing new requests to a process that is shutting down", rec.Code)
+		}
+		if !strings.Contains(rec.Body.String(), `"status":"draining"`) {
+			t.Errorf("draining instance reported %q, want status draining", rec.Body.String())
+		}
+		if rec.Header().Get("Retry-After") == "" {
+			t.Error("draining instance sent no Retry-After; a caller has no idea whether to retry")
+		}
+	})
+
+	// A nil flag is the "not draining" case, which is what every pre-existing
+	// health test relies on. Pinned so a future change cannot make nil mean
+	// "draining" and silently 503 those tests.
+	t.Run("nil flag means serving", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		makeHealthHandler("x", nil)(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
+		if rec.Code != http.StatusOK {
+			t.Errorf("nil draining flag answered %d, want 200", rec.Code)
+		}
+	})
+}
+
+// TestSweepTick_SurvivesPanic pins the containment added in P1.2. The
+// reconciliation loop is the ONLY thing that ever reports a stranded reservation.
+// A panic in one tick used to take the goroutine with it, so reconciliation
+// stopped for the lifetime of the process -- silently, while /health kept
+// answering 200. A monitoring surface that can die without saying so is worse
+// than not having one, because its silence reads as "nothing to report".
+//
+// The panic is induced through the one seam available without a fake: a Supabase
+// URL that url.Parse accepts but http.NewRequest rejects would only error, not
+// panic, so a nil logger is used instead -- p.logger.Printf on a nil *log.Logger
+// panics inside the tick, which is exactly the shape of the fault being contained
+// (a nil dereference deep in the call).
+//
+// Neuter check: remove the recover from sweepTick and this test panics the test
+// binary instead of failing, which is itself the demonstration.
+func TestSweepTick_SurvivesPanic(t *testing.T) {
+	store := &fakeUsageStore{tokenLimit: 100000}
+	supabase, _ := newFakeSupabase(store, "dddd3333-0000-0000-0000-000000000001")
+	defer supabase.Close()
+
+	p := newTestProxy(supabase.URL, "http://unused.invalid")
+
+	var recovered bool
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				// The panic escaped sweepTick: containment is gone.
+				recovered = true
+			}
+		}()
+		p.logger = nil // any nil deref inside the tick will do
+		p.sweepTick()
+	}()
+
+	if recovered {
+		t.Error("a panic escaped sweepTick, so the reconciliation ticker would die with it " +
+			"and stranded reservations would stop being reported for the lifetime of the " +
+			"process -- silently, while /health still answered 200")
 	}
 }

@@ -40,7 +40,11 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
+	"runtime/debug"
 	"strings"
+	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -98,6 +102,40 @@ const (
 	// serverReadTimeout/serverWriteTimeout's job) -- just reclaims
 	// connections nothing is using.
 	serverIdleTimeout = 120 * time.Second
+
+	// shutdownGrace is how long a SIGTERM'd process keeps serving in-flight
+	// requests before it stops waiting and exits.
+	//
+	// Sized against the PLATFORM, not against upstreamTimeout. Railway sends
+	// SIGTERM and then SIGKILLs after its own grace window; a value above that
+	// window buys nothing, because the kernel ends the process regardless. 25s
+	// sits under the commonly-documented 30s so the process gets to finish on its
+	// own terms and log that it did.
+	//
+	// It is deliberately far BELOW upstreamTimeout (5m). A long completion still
+	// in flight at 25s is cut -- that is unavoidable when the platform is going to
+	// kill us anyway. What matters is that it is cut with the reservation
+	// discharged (P1.1's deferred finalizer runs as the handler unwinds) instead
+	// of stranded, which is the difference between a client retrying and an
+	// account being permanently over-charged. See docs/ROBUSTNESS_BASELINE.md §3.
+	shutdownGrace = 25 * time.Second
+
+	// preDrainDelay is the window between flipping /health to 503 and calling
+	// srv.Shutdown, carved out of shutdownGrace.
+	//
+	// It exists because of a flaw caught by actually running the shutdown drill
+	// rather than reasoning about it: http.Server.Shutdown closes the LISTENER
+	// immediately, so once it is called no new connection is accepted at all and
+	// the 503 nothing can connect to is unobservable. Announcing then instantly
+	// refusing means the load balancer learns this replica is leaving by getting
+	// a connection error -- which is the exact behaviour the flip was added to
+	// avoid.
+	//
+	// So: flip, keep accepting for this long so at least one health poll can see
+	// the 503 and pull the instance from rotation, and only then stop accepting.
+	// 3s covers a 1-2s health-check interval with margin, and it is spent while
+	// in-flight requests continue, so it costs nothing but shutdown latency.
+	preDrainDelay = 3 * time.Second
 
 	// keyLogPrefixLen is the most of a caller-supplied key that is ever
 	// written to a log line -- never the full key.
@@ -309,14 +347,19 @@ func main() {
 	p := newProxy(apiKey, strings.TrimRight(upstreamBase, "/")+chatCompletionsPath,
 		supabaseURL, supabaseServiceRoleKey, logger, allowedModels)
 
+	// One cancel signal shared by every background loop, tripped by the first
+	// SIGTERM/SIGINT so nothing keeps working after the process is on its way out.
+	shutdownCtx, beginShutdown := context.WithCancel(context.Background())
+	defer beginShutdown()
+
 	// Crash recovery for quota reservations (QUOTA_RESERVATION_DESIGN.md §5(e)).
 	// Deliberately started before ListenAndServe: a process that just came back
 	// from a crash should be sweeping the reservations that crash stranded, and
 	// the sweep is independent of whether this instance is serving traffic yet.
-	go p.startReconciliationSweep()
+	go p.startReconciliationSweep(shutdownCtx)
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/health", p.rateLimitedHealth(makeHealthHandler(buildCommit)))
+	mux.HandleFunc("/health", p.rateLimitedHealth(makeHealthHandler(buildCommit, &p.draining)))
 	mux.HandleFunc(chatCompletionsPath, p.handleChatCompletions)       // "/chat/completions"
 	mux.HandleFunc("/v1"+chatCompletionsPath, p.handleChatCompletions) // "/v1/chat/completions" alias
 	// Catch-all for every unregistered path. Without it those requests 404 out of
@@ -335,10 +378,65 @@ func main() {
 		IdleTimeout:       serverIdleTimeout,
 	}
 
+	// Graceful shutdown. Before this the process had NO signal handling at all:
+	// SIGTERM ended it instantly, cutting every in-flight stream and stranding
+	// every reservation that had not yet been corrected. That is not a rare crash
+	// path -- a platform redeploy IS a SIGTERM, so it fired on every deploy, and
+	// the reconciliation sweep would then report each stranded reservation as
+	// permanently over-charged because the sweep never refunds. Measured end to
+	// end in docs/ROBUSTNESS_BASELINE.md §3.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+	shutdownDone := make(chan struct{})
+	go func() {
+		defer close(shutdownDone)
+		sig := <-sigCh
+
+		// Flip /health to 503 FIRST, before refusing anything. The platform's
+		// load balancer takes a moment to notice; until it does, it keeps
+		// routing new requests here, and a 503 with a Retry-After is a far
+		// better answer than a connection reset. Ordering matters: announce,
+		// then drain.
+		p.draining.Store(true)
+		logger.Printf("received %s, draining: /health now reports 503, still accepting for %s so the load balancer can notice, then finishing in-flight requests (grace %s)", sig, preDrainDelay, shutdownGrace)
+
+		// Stop the reconciliation sweep and anything else on this context.
+		beginShutdown()
+
+		// Keep accepting during preDrainDelay. Shutdown closes the listener
+		// immediately, so without this pause the 503 above is announced to a
+		// port that instantly stops answering -- see preDrainDelay.
+		time.Sleep(preDrainDelay)
+
+		// Shutdown stops accepting, closes idle keep-alives, and waits for
+		// active handlers to return. Every handler that returns runs P1.1's
+		// deferred finalizer, so a request cut short here is BILLED, not
+		// stranded -- that is the property this whole change exists for.
+		ctx, cancel := context.WithTimeout(context.Background(), shutdownGrace-preDrainDelay)
+		defer cancel()
+		if err := srv.Shutdown(ctx); err != nil {
+			// Deadline hit with handlers still running. Say so plainly: those
+			// requests are the ones whose reservations may still be stranded,
+			// and an operator needs to know the drain was incomplete rather
+			// than reading a clean-looking exit.
+			logger.Printf("drain INCOMPLETE after %s (%v) -- in-flight requests were cut; any reservation they had not yet corrected will surface in the next reconciliation sweep", shutdownGrace-preDrainDelay, err)
+			return
+		}
+		logger.Printf("drain complete, all in-flight requests finished")
+	}()
+
 	logger.Printf("listening on :%s -> upstream %s", port, p.upstreamURL)
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Fatal(err)
 	}
+
+	// ListenAndServe returns ErrServerClosed the moment Shutdown is called, so
+	// block until the drain actually finishes. Without this the process would exit
+	// here and kill the very handlers Shutdown is waiting for -- reintroducing the
+	// bug with extra steps.
+	<-shutdownDone
+	logger.Print("exiting")
 }
 
 type proxy struct {
@@ -361,6 +459,14 @@ type proxy struct {
 	// allowedModels is the cost-authorization allow-list (see modelAllowed).
 	// Empty means unrestricted.
 	allowedModels map[string]bool
+
+	// draining is set once a shutdown signal arrives and never cleared. It only
+	// changes what /health reports; it deliberately does NOT gate
+	// handleChatCompletions. Refusing in-flight or newly-arrived work ourselves
+	// would duplicate what http.Server.Shutdown already does correctly (stop
+	// accepting, let active handlers finish) while adding a race of our own
+	// between the check and the reservation.
+	draining atomic.Bool
 }
 
 // newProxy builds a proxy with admission control wired up. Constructing the
@@ -455,13 +561,28 @@ func (p *proxy) rateLimitedNotFound() http.HandlerFunc {
 
 // makeHealthHandler closes over the build's commit SHA (read once at
 // startup in main) so every /health response reports it without a global.
-func makeHealthHandler(commit string) http.HandlerFunc {
+//
+// draining is the shutdown flag. Once it is set, /health answers 503 with a
+// Retry-After so the platform's load balancer stops sending new work here while
+// the in-flight requests finish. A draining instance that keeps answering 200 is
+// the reason a rolling deploy resets live connections: the balancer has no way to
+// know this replica is leaving. Passed in rather than read off a package global so
+// the behaviour is testable without a running server.
+func makeHealthHandler(commit string, draining *atomic.Bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		reported := ""
 		if healthCommitVisible() {
 			reported = commit
 		}
-		body, err := json.Marshal(healthResponse{Status: "ok", Commit: reported})
+
+		status := "ok"
+		code := http.StatusOK
+		if draining != nil && draining.Load() {
+			status = "draining"
+			code = http.StatusServiceUnavailable
+		}
+
+		body, err := json.Marshal(healthResponse{Status: status, Commit: reported})
 		if err != nil {
 			// Unreachable in practice (healthResponse is two plain
 			// strings), but fail the same way a real health-check
@@ -470,7 +591,10 @@ func makeHealthHandler(commit string) http.HandlerFunc {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
+		if code == http.StatusServiceUnavailable {
+			w.Header().Set("Retry-After", "1")
+		}
+		w.WriteHeader(code)
 		w.Write(body)
 	}
 }
@@ -1921,7 +2045,10 @@ func (p *proxy) tryCorrectUsage(rpcURL string, payload []byte, keyID string, del
 // record left in pending_corrections is picked up here instead, by whichever
 // process is running next -- the same one after a restart, or a sibling
 // replica that never crashed at all.
-func (p *proxy) startReconciliationSweep() {
+// ctx stops the loop on shutdown. Without it the ticker would keep firing while
+// the process is draining, issuing Supabase calls on behalf of a server that is
+// already gone.
+func (p *proxy) startReconciliationSweep(ctx context.Context) {
 	if p.supabaseURL == "" || p.supabaseServiceRoleKey == "" {
 		p.logger.Printf("reconciliation: sweep disabled (supabase not configured)")
 		return
@@ -1929,9 +2056,32 @@ func (p *proxy) startReconciliationSweep() {
 	p.logger.Printf("reconciliation: sweep every %s for reservations older than %dm", reconciliationSweepInterval, pendingCorrectionStaleAfterMinutes)
 	ticker := time.NewTicker(reconciliationSweepInterval)
 	defer ticker.Stop()
-	for range ticker.C {
-		p.sweepPendingCorrections()
+	for {
+		select {
+		case <-ctx.Done():
+			p.logger.Print("reconciliation: sweep stopped (shutting down)")
+			return
+		case <-ticker.C:
+			p.sweepTick()
+		}
 	}
+}
+
+// sweepTick runs one sweep and contains any panic inside it.
+//
+// The containment is the point. This loop is the only thing that ever reports a
+// stranded reservation, and a panic in the tick used to take the whole goroutine
+// with it: reconciliation would stop for the lifetime of the process, silently,
+// while /health kept answering 200. A monitoring surface that can die without
+// saying so is worse than not having one, because its silence reads as "nothing
+// to report". Log loudly and let the ticker carry on.
+func (p *proxy) sweepTick() {
+	defer func() {
+		if r := recover(); r != nil {
+			p.logger.Printf("reconciliation: PANIC in sweep, recovered so reconciliation keeps running: %v\n%s", r, debug.Stack())
+		}
+	}()
+	p.sweepPendingCorrections()
 }
 
 // sweepPendingCorrections claims every reservation older than
