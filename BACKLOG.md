@@ -430,9 +430,20 @@ claim below was exercised against the real functions via live Go probes, not rea
   the `before/` copy is stale and the concurrent modification is clobbered with no backup of the
   actual overwritten bytes. Narrow (prepare→confirm→apply is fast, human-gated) but real.
 
-### P3-FAIL-1 (High): `MatchesSecretName` — case-fold bug CONTAINED (partial); policy breadth + chunk exit STILL OPEN
-**Status: PARTIALLY CONTAINED, NOT closed.** The case-fold bug is fixed; the two structural
-gaps behind the same leak remain open. Do not record FAIL-1 as resolved.
+### P3-FAIL-1 (High): `MatchesSecretName` — case-fold bug FIXED, policy breadth CLOSED; chunk exit partial (opaque secrets open)
+**Status: NAME GATE CLOSED, CHUNK EXIT PARTIAL. NOT closed as a class.** The case-fold bug is
+fixed and the named policy-breadth gaps are closed (see below). What remains is the content
+side: opaque/novel secrets in chunk text, awaiting the founder's Design-B-vs-C decision.
+
+- **Record correction (Phase 4, 2026-07-30).** The breadth bullet below stood as "STILL OPEN
+  — these walk straight through today" for twelve days after the patterns had in fact shipped
+  (`959a882`, `ade065a`). The code was right and the record was wrong, in the dangerous
+  direction: a live-credential-exfiltration claim against a hole that was already closed.
+  Corrected only after a neuter-check — the added globs were deleted from `SecretFileGlobs`
+  and `go test ./editapply -run TestMatchesSecretName` was re-run, turning exactly the 20
+  `new/*` and `item2/*` cases red while every `existing/*`, `neg/*` and `item1/*` case stayed
+  green, then restored. The record now rests on assertions that demonstrably fail when the
+  thing they guard is removed, not on reading the source.
 
 - **Case-fold bug — FIXED** (commit on 2026-07-18): `MatchesSecretName` (`editapply/secret.go:29`)
   lowercased the basename for the *substring* check but passed the **original-case** basename to
@@ -442,10 +453,21 @@ gaps behind the same leak remain open. Do not record FAIL-1 as resolved.
   `cert.Pem`, `private.KEY`, `cert.P12`, `ID_RSA`, `.ENV.local`. No regression: lowercase secrets
   (`.env`, `server.pem`, `id_rsa`, `cert.p12`, `mysecret.txt`, `credentials.json`) still refuse;
   normal files (`main.go`, `server.py`, `README.md`, `chunker.go`) still allowed.
-- **Secret-name policy breadth — STILL OPEN** (scoped, reviewed follow-up): the case fix does NOT
-  broaden the list. Never covered at all: `id_ed25519`/`id_ecdsa`/`id_dsa` (any non-RSA SSH key —
-  `id_rsa*` doesn't match them), `.npmrc`, `.netrc`, `.pgpass`, `kubeconfig`, `.htpasswd`, `*.pfx`,
-  `*.tfstate`, service-account JSON. These walk straight through today.
+- **Secret-name policy breadth — CLOSED** (`959a882`, then `ade065a` for the `.htpasswd` / `_netrc`
+  follow-up). Every name the original finding listed as "never covered at all" is now in
+  `SecretFileGlobs` (`editapply/secret.go`): `id_ed25519`, `id_ecdsa`, `id_dsa` (exact names, so
+  their `.pub` siblings are not swept up), `.npmrc`, `.netrc`, `_netrc`, `.pgpass`, `.htpasswd`,
+  `*kubeconfig*`, `*.pfx`, `*.tfstate`, `*.tfstate.backup`, `*service-account*.json`,
+  `*serviceaccount*.json`. Covered by `TestMatchesSecretName` (`editapply/secret_test.go`) with
+  true-positives, case-fold variants, and false-positive guards (`package.json`, `tsconfig.json`,
+  `app-config.json`, `state.go`, `terraform.tf`, the three `.pub` public keys) so a later
+  broadening cannot silently start refusing ordinary files.
+  **What closing this did NOT change:** the gate is still a **basename blocklist**. It has no path
+  context, so a bare file named `config` (the `.kube/config` case) is deliberately not caught —
+  matching bare `config` would flag far too many ordinary files — and the GCP-style
+  `*-<hash>.json` service-account form is deliberately not matched either. Both are left to
+  Layer 2 (content scrubbing), which is the sub-item still open below. Enumerating names is not
+  the same as covering secrets, and this bullet closing does not claim otherwise.
 - **Unscrubbed chunk content POSTed to hosted provider — PARTIAL (structural signatures closed;
   opaque secrets still open).** The name gate is only a blocklist over *filenames*; the actual
   exfiltration mechanism is that indexed chunk *content* is retrieved and POSTed unscrubbed to the
@@ -459,6 +481,17 @@ gaps behind the same leak remain open. Do not record FAIL-1 as resolved.
   leak; normal code untouched — no false positives) and against both retrieval evals (no movement —
   structurally, both evals measure `retrieveTopK` ranking, which is upstream of `renderChunk`, so
   scrubbing cannot move them: locate hybrid 8/9, edit prod-k=5 1/4, both unchanged).
+  **Wiring VERIFIED end to end (Phase 4, 2026-07-30)** — the phase spec's "`chunkscrub` exists at
+  100% coverage, verify it is actually wired on the egress path, which is the whole question" task
+  is discharged, and the answer is yes. `renderChunk` (`daemon/context.go`) is the single
+  retrieval-time choke point; it is reached on the real send path at `daemon/server.go:423` via
+  `buildAugmentedUserMessage`, and the *same* function sizes `truncateToBudget`, so what is
+  measured and what is sent cannot diverge. The one plausible bypass was checked and does not
+  exist: directly-referenced `@file:line` spans do not skip the gate — `readReferencedSpan`
+  (`daemon/fileref.go`) runs `shouldSkipFile` → `MatchesSecretName`, the indexer's own eligibility
+  gate, before it reads a byte, and its output joins `outcome.Chunks` upstream of `renderChunk`.
+  This is coverage-of-the-path, not coverage-of-the-function: 100% unit coverage of `chunkscrub`
+  would have been equally true if nothing called it.
   **STILL OPEN — opaque/novel secrets** (bare random values with no recognizable prefix): Option A
   is structural signatures only and does NOT catch these. They await the entropy/keyword decision
   (Designs B/C), which awaits real fire-rate data. **warn-mode** (log-only, no redaction) for the
@@ -490,9 +523,10 @@ gaps behind the same leak remain open. Do not record FAIL-1 as resolved.
   credential-exfiltration path. This is exactly the "assumed-true, never-verified security claim"
   shape this gate exists to catch: the secret gate was believed to cover secrets; it doesn't cover
   case variants or any non-RSA SSH key.
-- **Remaining scoped fix task:** broaden the policy (non-RSA SSH keys, `.pfx`, `.npmrc`, `.netrc`,
-  `.pgpass`, `kubeconfig`, `*.tfstate`, service-account JSON) — reviewed as one unit, and understood
-  as still only a blocklist. The class is not closed until chunk-content scrubbing lands (above).
+- **~~Remaining scoped fix task: broaden the policy~~ — DONE** (`959a882`, `ade065a`; non-RSA SSH
+  keys, `.pfx`, `.npmrc`, `.netrc`, `_netrc`, `.pgpass`, `*kubeconfig*`, `.htpasswd`, `*.tfstate`,
+  service-account JSON), reviewed as one unit and still understood as only a blocklist. The class
+  is **not** closed: it waits on the opaque/novel-secret half of chunk-content scrubbing (above).
 - **`id_rsa_secret.pub`-style narrow over-refusal in `MatchesSecretName` — open, unscoped, no task
   written yet** (low; surfaced with the `.pub` carve-out added in `ade065a`). The `SecretNameAllowlist`
   carve-out (`id_rsa*.pub`, `editapply/secret.go`) is applied *after* the `secret`/`credential`
