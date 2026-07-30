@@ -37,6 +37,7 @@ import (
 	"errors"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -430,65 +431,86 @@ func main() {
 		IdleTimeout:       serverIdleTimeout,
 	}
 
-	// Graceful shutdown. Before this the process had NO signal handling at all:
-	// SIGTERM ended it instantly, cutting every in-flight stream and stranding
-	// every reservation that had not yet been corrected. That is not a rare crash
-	// path -- a platform redeploy IS a SIGTERM, so it fired on every deploy, and
-	// the reconciliation sweep would then report each stranded reservation as
-	// permanently over-charged because the sweep never refunds. Measured end to
-	// end in docs/ROBUSTNESS_BASELINE.md §3.
+	// Bind before serving so a bind failure is a startup error here, rather than
+	// something the serve goroutine discovers later.
+	ln, err := net.Listen("tcp", srv.Addr)
+	if err != nil {
+		logger.Fatalf("listening on %s: %v", srv.Addr, err)
+	}
+
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
+	logger.Printf("listening on :%s -> upstream %s", port, p.upstreamURL)
+	if err := serveUntilSignal(srv, ln, logger, &p.draining, beginShutdown, sigCh); err != nil {
+		logger.Fatal(err)
+	}
+	logger.Print("exiting")
+}
+
+// serveUntilSignal serves ln until a signal arrives, then drains and returns.
+//
+// Extracted from main so the shutdown sequence -- now the most safety-critical
+// code in this file -- is reachable from a test. It was written inline first, and
+// measured: proxy coverage fell from 80.3% to 78.5% because none of it could be
+// exercised. Everything below is testable with a synthetic signal channel and a
+// listener on port 0.
+//
+// The sequence and its ordering both matter:
+//
+//  1. Flip /health to 503 FIRST. The load balancer takes a moment to notice, and
+//     until it does it keeps routing new requests here; a 503 with a Retry-After
+//     is a far better answer than a connection reset.
+//  2. Stop the background loops (the reconciliation sweep), so nothing keeps
+//     working on behalf of a server that is going away.
+//  3. Keep ACCEPTING for preDrainDelay. http.Server.Shutdown closes the listener
+//     immediately, so without this pause the 503 is announced on a port that
+//     instantly stops answering -- the balancer would learn about the shutdown
+//     from a connection error, which is what the flip exists to prevent. This was
+//     a real flaw in the first cut, caught by running the drill.
+//  4. Shutdown: stop accepting, close idle keep-alives, wait for active handlers.
+//     Each handler that returns runs P1.1's deferred finalizer, so a request cut
+//     short here is BILLED rather than stranded.
+//
+// Returns nil on a clean shutdown, including a drain that hit its deadline -- that
+// is a degraded outcome, not a startup failure, and it is reported in the log where
+// an operator will see it. A non-nil error means the server could not serve at all.
+func serveUntilSignal(srv *http.Server, ln net.Listener, logger *log.Logger, draining *atomic.Bool, beginShutdown func(), sigCh <-chan os.Signal) error {
 	shutdownDone := make(chan struct{})
 	go func() {
 		defer close(shutdownDone)
 		sig := <-sigCh
 
-		// Flip /health to 503 FIRST, before refusing anything. The platform's
-		// load balancer takes a moment to notice; until it does, it keeps
-		// routing new requests here, and a 503 with a Retry-After is a far
-		// better answer than a connection reset. Ordering matters: announce,
-		// then drain.
-		p.draining.Store(true)
+		draining.Store(true)
 		logger.Printf("received %s, draining: /health now reports 503, still accepting for %s so the load balancer can notice, then finishing in-flight requests (grace %s)", sig, preDrainDelay, shutdownGrace)
 
-		// Stop the reconciliation sweep and anything else on this context.
 		beginShutdown()
 
-		// Keep accepting during preDrainDelay. Shutdown closes the listener
-		// immediately, so without this pause the 503 above is announced to a
-		// port that instantly stops answering -- see preDrainDelay.
 		time.Sleep(preDrainDelay)
 
-		// Shutdown stops accepting, closes idle keep-alives, and waits for
-		// active handlers to return. Every handler that returns runs P1.1's
-		// deferred finalizer, so a request cut short here is BILLED, not
-		// stranded -- that is the property this whole change exists for.
 		ctx, cancel := context.WithTimeout(context.Background(), shutdownGrace-preDrainDelay)
 		defer cancel()
 		if err := srv.Shutdown(ctx); err != nil {
-			// Deadline hit with handlers still running. Say so plainly: those
-			// requests are the ones whose reservations may still be stranded,
-			// and an operator needs to know the drain was incomplete rather
-			// than reading a clean-looking exit.
+			// Deadline hit with handlers still running. Say so plainly: those are
+			// the requests whose reservations may still be stranded, and an
+			// operator needs to know the drain was incomplete rather than reading
+			// a clean-looking exit.
 			logger.Printf("drain INCOMPLETE after %s (%v) -- in-flight requests were cut; any reservation they had not yet corrected will surface in the next reconciliation sweep", shutdownGrace-preDrainDelay, err)
 			return
 		}
-		logger.Printf("drain complete, all in-flight requests finished")
+		logger.Print("drain complete, all in-flight requests finished")
 	}()
 
-	logger.Printf("listening on :%s -> upstream %s", port, p.upstreamURL)
-	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		logger.Fatal(err)
+	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return err
 	}
 
-	// ListenAndServe returns ErrServerClosed the moment Shutdown is called, so
-	// block until the drain actually finishes. Without this the process would exit
-	// here and kill the very handlers Shutdown is waiting for -- reintroducing the
-	// bug with extra steps.
+	// Serve returns ErrServerClosed the moment Shutdown is called, so block until
+	// the drain actually finishes. Returning here would let the caller exit and
+	// kill the very handlers Shutdown is waiting for -- reintroducing the bug with
+	// extra steps.
 	<-shutdownDone
-	logger.Print("exiting")
+	return nil
 }
 
 type proxy struct {

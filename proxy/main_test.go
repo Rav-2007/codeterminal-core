@@ -11,10 +11,12 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -2771,6 +2773,210 @@ func TestDecodeCappedJSON(t *testing.T) {
 			t.Errorf("20 sequential over-cap requests used %d TCP connections, want 1. "+
 				"Without the drain this is 20 -- one fresh TCP+TLS handshake per request, on "+
 				"the already-degraded path where a response is oversized and refused", got)
+		}
+	})
+}
+
+// TestServeUntilSignal drives the whole shutdown sequence against a real listener
+// and a real in-flight request. This is the code path that was measured broken in
+// docs/ROBUSTNESS_BASELINE.md section 3 (a SIGTERM cut the stream and stranded the
+// reservation), and it was extracted out of main precisely so it could be asserted
+// here rather than only in a manual drill.
+//
+// Four properties, all of which failed before P1.2:
+//   - an in-flight request RUNS TO COMPLETION rather than being cut
+//   - /health reports draining while that is happening, so the load balancer can
+//     pull this replica out of rotation
+//   - the server keeps ACCEPTING during the pre-drain window, which is what makes
+//     that 503 reachable at all
+//   - serveUntilSignal does not return until the drain is done, so a caller that
+//     exits on its return cannot kill the handlers Shutdown is waiting for
+func TestServeUntilSignal(t *testing.T) {
+	var draining atomic.Bool
+
+	// A handler slow enough that the signal lands while it is still running.
+	handlerDone := make(chan struct{})
+	started := make(chan struct{})
+	mux := http.NewServeMux()
+	// Must outlast preDrainDelay, and is derived from it rather than hardcoded: the
+	// request has to still be RUNNING when srv.Shutdown is finally called, or
+	// Shutdown has nothing to wait for and the "did it return too early" assertion
+	// below can never fail. An earlier version slept 600ms against a 3s pre-drain
+	// window, so the handler was always long finished and the assertion was inert.
+	handlerRuntime := preDrainDelay + 1500*time.Millisecond
+	mux.HandleFunc("/slow", func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		time.Sleep(handlerRuntime)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("finished"))
+		close(handlerDone)
+	})
+	mux.HandleFunc("/health", makeHealthHandler("testcommit", &draining))
+
+	srv := &http.Server{Handler: mux}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	base := "http://" + ln.Addr().String()
+
+	sigCh := make(chan os.Signal, 1)
+	var beganShutdown atomic.Bool
+
+	serveErr := make(chan error, 1)
+	// returnedEarly records whether serveUntilSignal returned while the in-flight
+	// handler was STILL RUNNING. It has to be sampled at the moment of return, not
+	// later: the assertions below wait for the request to finish, so any check made
+	// after that point would find the handler done regardless and could never catch
+	// an early return. That mistake made an earlier version of this test pass
+	// against a neutered `<-shutdownDone`.
+	var returnedEarly atomic.Bool
+	go func() {
+		err := serveUntilSignal(srv, ln, log.New(io.Discard, "", 0), &draining,
+			func() { beganShutdown.Store(true) }, sigCh)
+		select {
+		case <-handlerDone:
+		default:
+			returnedEarly.Store(true)
+		}
+		serveErr <- err
+	}()
+
+	// Park a request inside the handler.
+	bodyCh := make(chan string, 1)
+	go func() {
+		resp, err := http.Get(base + "/slow")
+		if err != nil {
+			bodyCh <- "REQUEST FAILED: " + err.Error()
+			return
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		bodyCh <- string(b)
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("request never reached the handler; the test's own premise is broken")
+	}
+
+	// Signal mid-request.
+	sigCh <- syscall.SIGTERM
+
+	// The pre-drain window must still accept NEW connections, and answer 503.
+	// Without it the announce-then-drain design is unobservable: Shutdown closes
+	// the listener at once, so a balancer would see a connection error instead.
+	var sawDraining bool
+	deadline := time.Now().Add(preDrainDelay)
+	for time.Now().Before(deadline) {
+		resp, err := http.Get(base + "/health")
+		if err != nil {
+			break // listener closed: pre-drain window is over
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusServiceUnavailable && strings.Contains(string(body), "draining") {
+			sawDraining = true
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !sawDraining {
+		t.Error("no new connection could observe /health reporting 503 draining during the " +
+			"pre-drain window. The announce half of graceful shutdown is unobservable, so a " +
+			"load balancer learns about the shutdown from a connection error instead")
+	}
+
+	// The in-flight request must have COMPLETED, not been cut.
+	select {
+	case body := <-bodyCh:
+		if body != "finished" {
+			t.Errorf("in-flight request did not complete across the shutdown: got %q. Before "+
+				"this it was cut mid-response, which is what stranded its reservation", body)
+		}
+	case <-time.After(shutdownGrace + 5*time.Second):
+		t.Fatal("in-flight request never returned")
+	}
+
+	select {
+	case err := <-serveErr:
+		if err != nil {
+			t.Errorf("serveUntilSignal returned %v, want nil on a clean drain", err)
+		}
+	case <-time.After(shutdownGrace + 5*time.Second):
+		t.Fatal("serveUntilSignal never returned")
+	}
+
+	// It must not have returned before the handler finished, or a caller exiting on
+	// its return would kill the handlers Shutdown is waiting for.
+	if returnedEarly.Load() {
+		t.Error("serveUntilSignal returned while the in-flight handler was still running; a " +
+			"caller that exits on its return would kill the very requests the drain is " +
+			"waiting for, reintroducing the stranded-reservation bug with extra steps")
+	}
+
+	if !beganShutdown.Load() {
+		t.Error("background loops were never told to stop, so the reconciliation sweep would " +
+			"keep issuing Supabase calls for a server that is gone")
+	}
+}
+
+// TestStartReconciliationSweep covers the sweep loop's lifecycle, which was at 0%
+// coverage. Both branches matter operationally and neither was asserted before.
+func TestStartReconciliationSweep(t *testing.T) {
+	t.Run("disabled and announced when supabase is unconfigured", func(t *testing.T) {
+		var logs bytes.Buffer
+		p := newProxy("k", "http://unused.invalid", "", "", log.New(&logs, "", 0), nil)
+
+		done := make(chan struct{})
+		go func() {
+			// Must return immediately rather than ticking forever against a
+			// backend it cannot reach.
+			p.startReconciliationSweep(context.Background())
+			close(done)
+		}()
+
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("sweep did not return with Supabase unconfigured; it would tick forever " +
+				"against a backend it can never reach")
+		}
+		if !strings.Contains(logs.String(), "sweep disabled") {
+			t.Errorf("crash recovery was silently inactive; startup must say so out loud. got %q",
+				logs.String())
+		}
+	})
+
+	// The context is what stops the sweep on shutdown. Without it the ticker keeps
+	// firing while the process drains, issuing Supabase calls on behalf of a server
+	// that is already gone.
+	t.Run("stops when its context is cancelled", func(t *testing.T) {
+		var logs bytes.Buffer
+		store := &fakeUsageStore{tokenLimit: 100000}
+		supabase, _ := newFakeSupabase(store, "eeee4444-0000-0000-0000-000000000001")
+		defer supabase.Close()
+
+		p := newProxy("k", "http://unused.invalid", supabase.URL, "svc", log.New(&logs, "", 0), nil)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() {
+			p.startReconciliationSweep(ctx)
+			close(done)
+		}()
+
+		cancel()
+
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("sweep ignored its cancelled context; it would keep issuing Supabase " +
+				"calls for a server that is already shutting down")
+		}
+		if !strings.Contains(logs.String(), "sweep stopped") {
+			t.Errorf("sweep stopped without saying so; got %q", logs.String())
 		}
 	})
 }
