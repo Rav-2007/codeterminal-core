@@ -14,8 +14,14 @@ did fail to reproduce, and is struck below.
 The proxy findings were measured against the **real `proxy` binary**, not a test
 double: a purpose-built fake Supabase (recording every RPC in order, with a
 `/__ledger` read-out) and a fake OpenRouter streaming SSE at a configurable chunk
-delay. Lives in the session scratchpad; it is the basis of the Phase-3.2
-integration matrix and should be promoted into `proxy/` at that point.
+delay.
+
+**Promoted in Phase 3** from the session scratchpad — where it was one `/tmp`
+sweep from taking the ability to reproduce any of these numbers with it — to
+[`proxy/testharness`](../proxy/testharness), tracked and configurable. Two
+scripts drive it: [`scripts/sigterm-drill.sh`](../scripts/sigterm-drill.sh)
+reproduces §3 on demand, and [`scripts/soak.sh`](../scripts/soak.sh) compares a
+sustained run against §2 below.
 
 The fake Supabase implements the four calls the proxy actually makes:
 `GET /rest/v1/api_keys`, `POST /rest/v1/rpc/reserve_usage`,
@@ -35,9 +41,19 @@ from the repo root fails outright).
 | `clients/tui` | 66.7% | 66.7% |
 | `daemon` | 69.3% | 69.3% |
 
-**Where the two moving modules stand now** (the floors above are unchanged — they
+**Where the moving modules stand now** (the floors above are unchanged — they
 are the ratchet's baseline, not a running total): after Phase 1 `proxy` was 81.7%;
-after Phase 2 `proxy` is **83.6%** and `daemon` is **70.1%**.
+after Phase 2 `proxy` was **83.6%** and `daemon` **70.1%**; after Phase 3 `proxy`
+is **84.6%** and `editapply` **87.3%**.
+
+**Phase 3 turned this table into a control.** The floors are now enforced by
+[`scripts/coverage-ratchet.sh`](../scripts/coverage-ratchet.sh), keyed per
+PACKAGE rather than per module (`helper` holds two packages whose coverage
+differs by 68 points, which a module-level number would average into
+meaninglessness), and run in CI per module. It fails on a package with no
+recorded floor, so a newly added package cannot silently escape the gate — which
+it immediately did for `proxy/testharness`, exposing a parser bug in the first
+version of the script.
 
 Phase 2 is also the first time a floor did its job before CI existed to enforce
 it: adding the daemon counters measured 68.9%, *below* 69.3%, and the uncovered
@@ -196,6 +212,9 @@ shape of the fix would have passed.
   `daemon/counters.go`. The premise is recorded as it was measured; this note is
   here so a later reader does not act on a fact that has since been fixed.)*
 - **Zero fuzz targets** in the repo.
+  *(Closed by Phase 3: nine targets across `proxy` and `editapply`, run 30s each
+  per PR. The premise is recorded as it was measured; this note is here so a
+  later reader does not act on a fact that has since been fixed.)*
 - **Secret hygiene is clean**: no `.env` is tracked, none ever was in history, no
   build artifacts tracked.
 
