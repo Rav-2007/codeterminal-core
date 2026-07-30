@@ -750,6 +750,37 @@ func leafIsSymlink(path string) (bool, error) {
 	return info.Mode()&os.ModeSymlink != 0, nil
 }
 
+// restrictSQLiteSidecars chmods a SQLite database's -wal and -shm sidecars to
+// perm. Shared by OpenMemoryStore and OpenSkillStore, which have the same
+// exposure for the same reason.
+//
+// WHY THIS IS NOT COSMETIC. In WAL mode a committed row lives in the -wal file
+// until a checkpoint folds it into the main database — so immediately after a
+// write the row is in the sidecar and NOT in the db file. Measured on
+// memory.db: the main file did not contain a just-appended conversation turn
+// and the -wal did. Locking down memory.db alone therefore protected nothing
+// for exactly the data that matters most, the most recent turns; the sidecars
+// were left at the driver's default 0644.
+//
+// WHY IT MUST BE CALLED AFTER THE SCHEMA STEP. The driver creates the sidecars
+// lazily. Calling this straight after the journal_mode pragma races their
+// creation and silently no-ops through the ENOENT tolerance below, leaving
+// 0644 behind — the fix would look applied and do nothing. The schema DDL is a
+// write, so by the time it returns the sidecars exist.
+//
+// ENOENT is tolerated rather than reported because a sidecar's absence is a
+// legitimate state (a store opened and closed cleanly checkpoints and removes
+// them); the caller's concern is only that any sidecar that DOES exist is not
+// readable by other users.
+func restrictSQLiteSidecars(path string, perm os.FileMode) error {
+	for _, suffix := range []string{"-wal", "-shm"} {
+		if err := os.Chmod(path+suffix, perm); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("restricting %s permissions: %w", filepath.Base(path+suffix), err)
+		}
+	}
+	return nil
+}
+
 // writeFileNoFollow is os.WriteFile with O_NOFOLLOW: it refuses to write
 // through a symlink at the final path component (creating path with perm if
 // absent, truncating an existing regular file). Used by the daemon-owned

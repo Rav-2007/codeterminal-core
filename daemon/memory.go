@@ -62,7 +62,10 @@ func DefaultMemoryDBPath() (string, error) {
 // Permissions are locked down explicitly: the containing directory to
 // 0700, and -- unlike skills.go's OpenSkillStore, which only restricts its
 // directory -- the database file itself to 0600, since this store holds a
-// full conversation transcript rather than opt-in saved skills.
+// full conversation transcript rather than opt-in saved skills. The -wal/-shm
+// sidecars are restricted too (both stores do this): in WAL mode they hold
+// committed rows the main file does not yet have, so locking down only the db
+// file left the newest turns readable.
 func OpenMemoryStore(path string) (*MemoryStore, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return nil, fmt.Errorf("creating memory db directory: %w", err)
@@ -72,7 +75,9 @@ func OpenMemoryStore(path string) (*MemoryStore, error) {
 	// would otherwise follow a symlink planted at memory.db and write the
 	// conversation transcript — and the os.Chmod(path, 0600) below would chmod —
 	// through it to an outside file. Leaf-only, so a relocated parent dir is
-	// unaffected; the driver's -wal/-shm sidecar opens remain uncovered.
+	// unaffected; the driver's -wal/-shm sidecar OPENS remain uncovered by this
+	// guard (their modes are restricted after the schema step, but a symlink
+	// planted at a sidecar path is still followed by the driver).
 	if sym, err := leafIsSymlink(path); err != nil {
 		return nil, fmt.Errorf("checking memory db path: %w", err)
 	} else if sym {
@@ -105,6 +110,16 @@ func OpenMemoryStore(path string) (*MemoryStore, error) {
 	if err := os.Chmod(path, 0600); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("restricting memory db permissions: %w", err)
+	}
+	// The -wal/-shm sidecars need the same lockdown, and for this store they
+	// need it MORE than the db file does: in WAL mode a just-appended turn is
+	// in the sidecar and not yet in memory.db, so chmodding only the db file
+	// left the newest transcript lines world-readable. See
+	// restrictSQLiteSidecars for why this call sits after ensureMemorySchema
+	// rather than beside the journal_mode pragma.
+	if err := restrictSQLiteSidecars(path, 0600); err != nil {
+		db.Close()
+		return nil, err
 	}
 
 	return &MemoryStore{db: db}, nil

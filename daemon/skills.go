@@ -64,7 +64,9 @@ func OpenSkillStore(path string) (*SkillStore, error) {
 	// write SQLite pages through it to an outside file. A leaf lstat is the
 	// feasible equivalent of the O_NOFOLLOW the direct-file writers use — the
 	// driver owns the actual open, so this does not cover its -wal/-shm sidecar
-	// opens (residual noted in the (b)-bucket hardening). A symlinked PARENT dir
+	// opens (residual noted in the (b)-bucket hardening; their MODES are
+	// restricted after the schema step, which is a different concern from a
+	// symlink planted at a sidecar path). A symlinked PARENT dir
 	// (a cache deliberately relocated to another disk) is unaffected: lstat only
 	// refuses a symlink at the final component.
 	if sym, err := leafIsSymlink(path); err != nil {
@@ -93,6 +95,18 @@ func OpenSkillStore(path string) (*SkillStore, error) {
 	}
 
 	if err := ensureSchema(db); err != nil {
+		db.Close()
+		return nil, err
+	}
+
+	// Lock down the -wal/-shm sidecars (see restrictSQLiteSidecars). This store
+	// deliberately leaves skills.db itself at the default mode — saved skills
+	// are opt-in content, not a transcript, and that asymmetry with
+	// OpenMemoryStore is intentional and documented there. The sidecars are
+	// restricted anyway: 0600 on them costs nothing, the driver is the only
+	// reader either way, and a sidecar's contents are not something a
+	// per-file mode decision was ever consciously made about.
+	if err := restrictSQLiteSidecars(path, 0600); err != nil {
 		db.Close()
 		return nil, err
 	}

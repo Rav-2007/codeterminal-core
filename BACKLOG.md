@@ -119,15 +119,35 @@ implementation/injection line — the setup chunks out-ranked the actual injecti
   IMPLEMENTED" queries with known-correct implementation files, then tune against the number.
 - When: at shipping / retrieval-quality hardening. Not blocking.
 
-### (g) WAL/shm sidecar permission hardening (low priority; ZDR/privacy-relevant)
-SQLite's `-wal` and `-shm` sidecar files inherit default 0644 perms — only the
-main `.db` file is explicitly chmod'd to 0600. The WAL can hold recently-written,
-un-checkpointed conversation turns in plaintext, so 0600 on the main file
-under-protects on a shared machine. Mitigated in practice by the 0700 state dir
-(`~/.local/state/mochiii/`), which blocks cross-user traversal — confirm that's
-sufficient, else chmod the sidecars on open. Same gap exists in `skills.go`; fix
-both together. Not a regression, surfaced during memory-persistence work. Fold
-into the eventual security/ZDR review.
+### (g) DONE: WAL/shm sidecar permission hardening (Phase 4, 2026-07-30)
+SQLite's `-wal` and `-shm` sidecars inherited the driver's default 0644 while only
+the main `.db` file was chmod'd to 0600. **Now fixed at both sites** via a shared
+`restrictSQLiteSidecars` (`daemon/apply_cmd.go`), called from `OpenMemoryStore` and
+`OpenSkillStore`; regression tests in `daemon/sqlite_sidecar_perms_test.go`.
+
+**The item understated it.** It read "the WAL *can* hold recently-written,
+un-checkpointed turns", i.e. a duplicate copy in a weaker place. Measured, it is
+worse than that: immediately after `AppendTurn`, the transcript line was found in
+`memory.db-wal` and **not** in `memory.db`. In WAL mode the committed row lives in
+the sidecar until a checkpoint folds it in — so 0600 on the main file was protecting
+the copy that did not have the data, and the newest turns (the most sensitive ones)
+were the ones sitting at 0644. "Under-protects" was too generous; for fresh writes
+the lockdown was protecting nothing.
+
+**Ordering is the fix, not an implementation detail.** The driver creates the
+sidecars lazily, so the chmod has to come *after* the schema DDL (which is a write).
+Placed next to the `journal_mode=WAL` pragma — the obvious-looking spot — it races
+their creation and silently no-ops through its own ENOENT tolerance, leaving 0644
+behind while looking applied. Both failure modes are neuter-checked: removing the
+call fails the test, and so does moving it to the pragma.
+
+`skills.db` itself is deliberately left at the default mode (opt-in saved skills, not
+a transcript — the asymmetry is documented in `OpenMemoryStore`); its sidecars are
+restricted anyway, since 0600 on them costs nothing.
+
+Distinct from and does not close the sidecar **symlink-open** residual at §609 — the
+driver still owns those opens, and a symlink planted at a sidecar path is still
+followed. Modes and opens are different concerns.
 
 ### (h) Memory store retention / pruning policy (grows unbounded by design)
 Persistence keeps full conversation history on disk forever (persist-all,
