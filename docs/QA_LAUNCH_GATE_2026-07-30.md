@@ -13,19 +13,27 @@
 > |---|---|---|
 > | P0-1 byte-guard refund | `efe2bda` | FIXED, fail-when-neutered test |
 > | P1-1 invisible budget kill | `b1fed6b`, `2e68d9d` | FIXED, 2 seam tests |
-> | P1-2 CI gates nothing | `0f3bca2` | FIXED, unverified until first CI run |
+> | P1-2 CI gates nothing | `0f3bca2` | FIXED — **14/14 green, first run** |
 > | P1-3 retrieval gate RED | `96924a7` | FIXED — root cause was NOT retrieval |
-> | P1-4 schema not in VCS | `50ff5b3` | FILE WRITTEN, founder must apply/verify |
+> | P1-4 schema not in VCS | `50ff5b3` | FILE WRITTEN, then **reconciled against production** |
 > | P2-1 duplicate JSON keys | `f8416a5` | FIXED |
 > | P2-2 daemon dispatcher | `fd8d865` | FIXED |
 > | P2-3 webview accessibility | `74adfea` | STRUCTURE FIXED, screen-reader passes still blocked |
-> | P2-4 `increment_usage` revoke | `50ff5b3` | FILE WRITTEN, founder must apply/verify |
+> | P2-4 `increment_usage` revoke | `50ff5b3` | FILE WRITTEN, founder must apply/verify — runbook added |
 > | P2-5 zero coverage | `ae6bbfe` | FIXED (protocol 88.9%, chunkscrub 100%) |
 > | P3-1 broken test command | (docs commit) | FIXED |
 >
 > **The verdict below is NOT retracted.** It was correct when written. Whether
-> the gate now passes is the founder's call, and two P1-class items remain
-> genuinely open: applying the migrations, and the first green CI run.
+> the gate now passes is the founder's call.
+>
+> **Both of the two P1-class items that were left open have since been worked
+> (2026-07-30, second pass).** The first green CI run is **done** — 14/14 on the
+> first attempt, no fix commits (PR #1, run `30508475988`). The migration item is
+> **answered on the question that mattered**: `usage.key_id` is the PRIMARY KEY,
+> so `reserve_usage`'s cross join cannot multiply. `0000` has been reconciled
+> against production by read-only probe and was wrong in four places; what
+> remains needs the SQL catalog and is collected in
+> `docs/MIGRATION_RUNBOOK_0000_0004.md`. See the `UPDATE` notes on P1-2 and P1-4.
 >
 > **Two corrections to this report, found while remediating:**
 >
@@ -287,10 +295,23 @@ download). Keep the existing image build.
 > locally first, command for command: build/gofmt/vet/`go test -race` green on
 > all six modules, `govulncheck` clean on all six, `tsc` clean, EDH 6/6 (now
 > 14/14).
-> **Not verified:** the `xvfb-run -a` wrapper itself — this machine has no xvfb,
-> so the EDH run used a real display. Unproven until the first CI run.
 > The scheduled eval job is scoped by `-run` to the three GREEN eval tests; see
 > correction 2 in the banner for why.
+>
+> **VERIFIED 2026-07-30 — 14/14 green on the first run, no fix commits.**
+> PR [#1](https://github.com/Rav-2007/codeterminal-core/pull/1), run
+> `30508475988`. The branch was still unpushed until then (`origin` at `17ffad6`)
+> and the workflow fires only on `push`/`pull_request` to `main`, so a PR was the
+> only way to trigger it.
+> `xvfb-run -a` — the one command this machine could not prove — worked
+> untouched: VS Code **1.131.0** downloaded and launched on a bare
+> `ubuntu-latest`, **14 passing in 638ms**, no extra apt packages. The other two
+> pre-registered risks (`go install govulncheck@latest` under an active
+> `go.work`; `daemon`'s seam test building the proxy binary from a sibling module
+> under `-race`) also did not fire.
+> **Still unverified:** the scheduled `eval` job. `workflow_dispatch` only lists
+> workflows present on the **default branch**, so it cannot run — or be verified
+> — until `build.yml` lands on `main`.
 
 ### P1-3 — The project's own retrieval-quality gate is currently RED
 
@@ -379,8 +400,30 @@ present (fail closed, matching the posture everywhere else); add down scripts.
 > nothing, and the function return zero rows, which the proxy reads as "refuse".
 > Fails closed, but as a total outage for that key.
 > **NOT done, per the decision taken:** no migration runner, no
-> `schema_migrations` table, no startup assertion, no down scripts. **Applying
-> the file and answering the uniqueness question remain founder-gated.**
+> `schema_migrations` table, no startup assertion, no down scripts.
+>
+> **UPDATE 2026-07-30 — the uniqueness question is ANSWERED, and finding 1 is
+> largely closed.** `usage.key_id` **is the PRIMARY KEY**, so the cross-join
+> multiplication this finding worried about is structurally impossible rather
+> than merely absent; 15 rows, zero duplicates, corroborating. The FK to
+> `api_keys.id` is real too. Method: read-only PostgREST probes (`GET /rest/v1/`
+> OpenAPI + `GET /rest/v1/usage?select=key_id`) using the service-role key
+> already in `proxy/.env` — no dashboard access needed, nothing written, and no
+> RPC invoked (deliberately not `increment_usage`: probing it means calling it,
+> and calling it is a write on the one function with no `token_limit` check).
+> `0000` is now RECONCILED, not reconstructed — and **the reconstruction was
+> wrong in four places**: `usage.token_limit` has a default of `100000`;
+> `usage.period_start` was missing entirely; `api_keys.key_prefix` (NOT NULL, no
+> default — would have broken a from-scratch rebuild), `label` and `user_id` were
+> missing. Everything the file explicitly *guessed* turned out correct.
+> **Also found: a fourth relation `api_keys_public`, exposed over PostgREST and
+> in no migration** — `api_keys` minus `key_hash`, so no credential leaks, but
+> unaudited cross-tenant metadata nobody here knew existed.
+> **Still founder-gated,** now one paste-in block in
+> `docs/MIGRATION_RUNBOOK_0000_0004.md`: `0004`'s revoke, the 4-function EXECUTE
+> check, the `prosecdef` containment check, whether `api_keys.key_hash` is
+> UNIQUE, the FK's `ON DELETE` action, and the grant surface. Findings 2 and 3
+> (no runner, no rollback) stand unchanged.
 
 ---
 
@@ -542,6 +585,19 @@ catalog reads clean while an established control is missing.
 > dropping a live function is riskier than revoking a grant, and nothing outside
 > this repo's view is known not to call it.
 > **Applying it and running the verification remain founder-gated.**
+>
+> **UPDATE 2026-07-30 — still founder-gated, and deliberately so.**
+> `has_function_privilege` and `prosecdef` are SQL-catalog reads with no
+> PostgREST equivalent, so the read-only probing that answered P1-4's uniqueness
+> question cannot reach them. The obvious alternative — call `increment_usage`
+> as `anon` and see whether it succeeds — was **considered and rejected**: if the
+> containment does not hold, the probe *is* a successful unauthorized write
+> against live billing, on the one function with no `token_limit` check. Even
+> `p_tokens = 0` is a write. It needs the SQL editor, and the queries are now a
+> single paste-in block in `docs/MIGRATION_RUNBOOK_0000_0004.md`.
+> One thing the probe did confirm: all four functions are exposed as PostgREST
+> RPC endpoints (`/rpc/increment_usage` among them), so HTTP reachability is not
+> hypothetical — only the EXECUTE grant stands between `anon` and a call.
 
 ### P2-5 — `protocol` (625 lines) and `helper` have zero test coverage; `chunkscrub.go` has zero
 
@@ -779,6 +835,12 @@ Out of scope by agreement (local-only depth). Each needs the named evidence:
    select conname, contype from pg_constraint
      where conrelid = 'usage'::regclass;
    ```
+   > **PARTLY UNBLOCKED 2026-07-30.** `usage.key_id` uniqueness no longer needs
+   > the SQL editor — it is the PRIMARY KEY, proven by read-only PostgREST probe
+   > with the service-role key already in `proxy/.env`. The *grants* half stands:
+   > `pg_constraint`, `role_table_grants`, `has_function_privilege` and
+   > `prosecdef` are catalog-only and genuinely unreachable over PostgREST. Now
+   > one paste-in block in `docs/MIGRATION_RUNBOOK_0000_0004.md`.
 2. **Production wire probes** — Railway `/health`, authed completion, the 403
    gates. Needs a real key against prod; previously verified 2026-07-27, not
    re-verified here and not re-verified against **this branch**.

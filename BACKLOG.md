@@ -3149,14 +3149,12 @@ been reaped, so all three were reconstructed verbatim from the review record:
 
 ### Still open — founder-gated or blocked, unchanged by this batch
 
-1. **Applying `0000` and `0004`** and running their verification SQL. In
-   particular `usage.key_id` uniqueness: `reserve_usage`'s
-   `select ... from reserved, opened` is a cross join, so a duplicate `key_id`
-   double-reserves on every request with nothing reporting it. Unknown from
-   source; the query is in the file.
-2. **The first green CI run.** The pipeline is written and every command in it
-   was verified locally, but `xvfb-run -a` itself is unproven — this machine has
-   no xvfb, so the EDH runs used a real display.
+1. ~~**Applying `0000` and `0004`**~~ — **partially CLOSED 2026-07-30, see the
+   next entry.** `usage.key_id` is the PRIMARY KEY; the cross-join concern is
+   structurally impossible. `0004`'s revoke and the remaining catalog queries are
+   still founder-gated.
+2. ~~**The first green CI run.**~~ — **CLOSED 2026-07-30**, 14/14 on the first
+   attempt. See the next entry.
 3. **Production wire probes against this branch.** Not re-verified since
    2026-07-27, and never against this code.
 4. **Multi-replica rate-limit dilution.** In-memory limiters remain per-instance;
@@ -3172,3 +3170,96 @@ been reaped, so all three were reconstructed verbatim from the review record:
 The QA verdict of FAIL is not retracted — it was correct when written. Whether
 the gate now passes is the founder's call, and items 1 and 2 above are the two
 that most plausibly still block it.
+
+---
+
+## 2026-07-30 — The two remaining blockers, worked
+
+Both items the remediation batch left open were carried as far as they can go
+without dashboard access. One is fully closed; the other is answered on the
+question that mattered and reduced to a five-minute paste-in.
+
+### Blocker 2 (CI): CLOSED — 14/14 green on the first run
+
+PR [#1](https://github.com/Rav-2007/codeterminal-core/pull/1) (draft, → `main`),
+run `30508475988`. The branch was **unpushed** until now — `origin` still sat at
+`17ffad6`, all eleven remediation commits local — and the workflow fires only on
+`push: [main]` / `pull_request: [main]`, so opening a PR was the only way to
+trigger it. All fourteen jobs passed with **no fix commits required**:
+`go` ×6, `govulncheck` ×6, `vscode extension`, `proxy-image`. The `eval` job
+correctly did not run (`if:` gated to schedule/dispatch).
+
+Three risks were pre-registered before pushing, and **all three failed to
+materialize** — recorded because predicting them wrongly is the useful part:
+
+- `xvfb-run -a npm test` was the one genuinely unproven command (no xvfb on the
+  dev box). It worked first try: VS Code **1.131.0** downloaded and launched on a
+  bare `ubuntu-latest`, **14 passing in 638ms**, no extra apt packages needed.
+- `go install govulncheck@latest` runs at the repo root with `go.work` active and
+  no `working-directory`. Clean on all six modules; no `GOWORK=off` needed.
+- `daemon`'s `go test -race ./...` runs `TestSeam_ProxyBudgetKillReachesTheUser`,
+  which **builds the proxy binary from a sibling module** mid-test and is skipped
+  only under `-short`, which CI does not pass. Package green in 21.5s (job 2m23s,
+  the longest). Note the log is not `-v`, so this is a package-level pass, not a
+  per-test confirmation.
+
+One cosmetic annotation on every job: `actions/checkout@v4` / `setup-go@v5` /
+`setup-node@v4` target Node 20 and are force-run on Node 24. Not a failure, not
+addressed here.
+
+**Still not verified, and cannot be from a PR:** the scheduled `eval` job.
+`workflow_dispatch` only lists workflows present on the **default branch**, so it
+is undispatchable until `build.yml` lands on `main`. First chance to run it is
+`gh workflow run build.yml -R Rav-2007/codeterminal-core` after merge.
+
+### Blocker 1 (migrations): the headline question is ANSWERED
+
+**`usage.key_id` is the PRIMARY KEY.** The cross-join multiplication `0000` was
+written to ask about is structurally impossible, not merely absent. Corroborated
+independently: 15 usage rows, zero duplicate `key_id`s. The FK to `api_keys.id`
+that `0000` carried as "FK GUESSED" is also real.
+
+Method: read-only PostgREST probes from the dev box using `proxy/.env`'s
+`SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` — `GET /rest/v1/` (the OpenAPI
+document, which stamps `<pk/>` and `<fk .../>` into column descriptions and
+carries `default` and `required`) and `GET /rest/v1/usage?select=key_id`. Both
+GETs. Nothing written, and **no RPC invoked** — deliberately not
+`increment_usage`, because probing that function's reachability means *calling*
+it, and calling it is a write against live billing on the one function with no
+`token_limit` check.
+
+`0000` is now RECONCILED rather than reconstructed. It was wrong in four places:
+
+- `usage.token_limit` has a **default of `100000`**; the file declared none.
+- `usage.period_start` (`timestamptz not null default now()`) was **missing
+  entirely** — a NOT NULL column the repo did not know existed.
+- `api_keys.key_prefix` (`text not null`, **no default**) was missing. This one
+  would have broken a from-scratch rebuild outright.
+- `api_keys.label` and `api_keys.user_id` were missing. `user_id` is the only
+  column in either table implying multi-tenancy and the proxy reads it nowhere.
+
+Everything the file had *guessed* — `gen_random_uuid()`, `default true`, the
+whole `created_at` column, `tokens_used default 0` — was correct.
+
+**New, and not previously known to this repo: a fourth relation
+`api_keys_public` is exposed over PostgREST and appears in no migration.** It
+projects `(id, key_prefix, label, active, created_at, user_id)` — `api_keys`
+minus `key_hash` — which reads as a deliberately safe public projection. No
+credential is exposed. But it is cross-tenant metadata on an unaudited relation,
+and its grant surface is unknown, so it is now covered by the runbook's grant
+query.
+
+**Still founder-gated** (the SQL catalog is not reachable over PostgREST), now
+collected as one paste-in block in
+[`docs/MIGRATION_RUNBOOK_0000_0004.md`](docs/MIGRATION_RUNBOOK_0000_0004.md):
+`0004`'s revoke and its 4-function verify; the `prosecdef` containment check
+(*if any function is SECURITY DEFINER, `0004`'s severity is wrong and it is a
+live hole*); whether `api_keys.key_hash` carries a **UNIQUE** constraint (absent
+⇒ two rows with one hash lock that key out, fail-closed availability landmine);
+the `ON DELETE` action on `usage.key_id`'s FK; and the grant surface across all
+three relations.
+
+**Status: CI blocker CLOSED. Migration blocker reduced from "unknown, most
+valuable question in the repo" to "one five-minute paste-in, with the dangerous
+answer already known to be safe." Still NOT founder-closed; the FAIL verdict
+remains unretracted.**
