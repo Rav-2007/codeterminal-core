@@ -3701,3 +3701,130 @@ than commented. Not 90+: there is no metrics backend, no tracing, and no alertin
   maintainability) are unstarted.
 
 **Status: Phase 2 complete and verified locally; NOT founder-closed.**
+
+---
+
+## 2026-07-30 — Robustness program Phase 3 (test depth & static analysis; verified, NOT founder-closed)
+
+Plan and scorecard: `~/.claude/plans/waiting-on-the-eval-serene-sutton.md` §215-259.
+Baseline: [`docs/ROBUSTNESS_BASELINE.md`](docs/ROBUSTNESS_BASELINE.md).
+
+Run in the plan's dependency order, so the enforcement landed before the work
+that needed enforcing.
+
+### Step A, first — the 13 unpushed commits finally saw CI
+
+Phases 0–2 were verified on one machine, one toolchain, one arch, on a branch
+`build.yml` is not configured to see (it triggers on push/PR to `main` only).
+Pushed and opened as **PR #2**; 14/14 green first run, then 20/20 and 21/21 as
+the new jobs landed.
+
+**`gh` resolves to `NousResearch/hermes-agent` from this directory** — an
+unrelated PUBLIC third-party repo, picked up from an `upstream` remote. A bare
+`gh pr create` would have aimed a PR carrying this private code at someone
+else's public repository. Every `gh` invocation needs `-R Rav-2007/codeterminal-core`.
+
+### Step B — dimension 2 scored (see the Phase 0+1 entry above)
+
+45 → ~82, recorded retroactively and flagged as such.
+
+### The seven items
+
+| Item | Commit | What |
+|---|---|---|
+| P3.6 | `18e3d02` | Per-package coverage ratchet, floors at Phase-0 values |
+| P3.5 | `cf68b91` | staticcheck + ineffassign + bodyclose as hard CI gates |
+| P3.2 | `4cd0b9b` | Integration matrix + harness promoted into `proxy/testharness` |
+| P3.3 | `05192e5` | Money-path invariant over 150 generated cases |
+| P3.1 | `5d0cab6` | Nine fuzz targets across both trust boundaries |
+| P3.7 | `59eed54`, `06b8f00` | Tracked pre-push hook + Makefile |
+| P3.4 | `9ffb00b` | Soak script + the `rate_limiter_buckets` gauge it needs |
+
+### The soak, run for real — 30 minutes, 118 samples, PASS
+
+| | first half | second half | Phase-0 baseline |
+|---|---:|---:|---|
+| RSS | 16,012 kB | 17,544 kB (+9.6%) | 12,792 kB settled |
+| fds | 10 | **10** | 10, plateaued |
+| goroutines | 14 | 14 | — |
+| buckets | 10,832 | 15,217 (peak 16,286) | — |
+
+**fds sat at exactly 10 for the entire run**, which is the Phase-0 plateau
+reproduced under 30 minutes of sustained load rather than 12 requests.
+
+The limiter sweep is visible as a sawtooth: buckets climb with arrivals and drop
+every `bucketSweepE`, first firing at t=722s — `bucketIdleTTL` (10m) plus
+`bucketSweepE` (2m), exactly as predicted. **9 reclamations** across the run.
+
+That sawtooth prompted a better assertion. The original bucket check compared
+half-medians against a 50% threshold and passed at +40.5% — real margin, but
+thin for something tuned by hand. It now also asserts that buckets DECREASED at
+least once, which is direct evidence of reclamation and needs no tuning: a sweep
+that never fires produces a monotonic series and zero decreases whatever the
+rates are. Validated by replaying the real CSV (PASS, 9 reclamations) and a
+forced-monotonic copy of it (FAIL on both checks, +184.4%) — no second
+30-minute run required.
+
+### Six defects found in this phase's OWN work, by neutering rather than review
+
+The pattern is more reusable than the fixes, and five of the six were invisible
+to a passing test run.
+
+1. **The ratchet's fail-closed claim was partly false.** `go test -cover` prints
+   a package with no test files as a TAB-prefixed line carrying
+   `coverage: 0.0%`, matching neither the `ok` nor the `[no test files]` pattern.
+   `proxy/testharness` slipped straight through the gate on the commit that
+   added it. The earlier neuter had only deleted a floor for a package that HAD
+   tests, so it never exercised that shape.
+2. **The ratchet's empty-floors guard was unreachable.** Under `set -u`,
+   expanding `${#floor[@]}` on an empty associative array aborts before the
+   check runs — fail-closed by luck (bash exits 1), not by design.
+3. **The SIGTERM integration test was inert.** Replacing `srv.Shutdown` with an
+   abrupt `srv.Close` still passed it: `preDrainDelay` is 3s, the signal fired
+   at 1.2s, and the 4s stream finished before the pre-drain window elapsed, so
+   Shutdown never had an in-flight request to wait on. **This is precisely the
+   mistake Phase 1 recorded making** (a 600ms handler against a 3s window).
+   Timings now derive from `preDrainDelay`; the neutered build fails with
+   `unexpected EOF`, the in-process form of the baseline's `curl` exit 18.
+4. **The money-path invariant I4 was mis-specified**, and 8 of 150 cases said so.
+   "Produced output ⇒ never refunded below reserved" would have forbidden the
+   ordinary refund the reservation model exists to perform (reserve 4096, use
+   137, refund 3959). The qualifier that makes it true is *unmeasured*.
+5. **The soak measured the rate limiter while appearing to measure streaming.**
+   Unpaced, 4 loops offered ~400 req/s against a 50/s global ceiling, so almost
+   all "load" was a 429 that never reached the money path. Also: the metrics
+   scraper shares the pre-auth bucket with the load, so every scrape after the
+   first returned 429 and the run recorded `?` for the whole soak. And awk
+   allows function definitions only at top level — nested in `END` it is a
+   syntax error, and the script still exited through its success path with an
+   empty verdict.
+6. **The pre-push hook failed its first real push** with `go: command not found`
+   on a tree that builds fine in a terminal: git runs hooks with a stripped
+   PATH. A hook that fails every push for a reason unrelated to the code is a
+   hook everyone learns to `--no-verify`, which removes the only enforcement
+   this repo has.
+
+### Deliberately not done, with reasons
+
+- **errcheck is NOT adopted**, though P3.5 names it. Measured: 329 findings, 157
+  outside tests, dominated by cleanup-path `Close` and `Fprintf`; ~60 remain
+  after conventional exclusions. Green means either ~60 `_ =` assignments —
+  noise that makes a real unchecked error harder to see — or an exclusion list
+  long enough to be arbitrary. Recorded as deferred debt (j) with a closing
+  plan, not dropped.
+- **SIGTERM is not one of the money-path matrix's generated outcomes.** Each
+  case would cost `preDrainDelay`; it is covered end to end by
+  `TestIntegration_ShutdownMidStream_BillsRatherThanStrands`.
+- **Fuzzing is a regression gate, not a search.** 30s/target per PR re-walks the
+  corpus and shallow mutations. Finding something NEW wants minutes to hours
+  (`FUZZTIME`). Said plainly in `scripts/fuzz.sh` so a green fuzz job is not
+  mistaken for proof of absence.
+
+### Regression
+
+Six modules green on `go build`, `gofmt -l`, `go vet`, `go test -race -count=1`;
+CI 21/21 green on PR #2. Coverage: `protocol` 88.9%, `editapply` 87.0% → **87.3%**,
+`proxy` 83.6% → **84.6%**, `helper` 6.5% / `helperproto` 75.0%, `clients/tui`
+66.7%, `daemon` 70.1%. No floor breached.
+
+**Status: Phase 3 complete and verified locally; NOT founder-closed.**

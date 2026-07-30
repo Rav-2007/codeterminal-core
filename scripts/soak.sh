@@ -238,6 +238,15 @@ verdict=$(awk -F, -v warmup="$WARMUP" -v rssPct="$RSS_GROWTH_PCT" \
     fd1  = med(f, 1, half);        fd2  = med(f, half+1, n)
     gr1  = med(g, 1, half);        gr2  = med(g, half+1, n)
     bMax = 0; for (i = 1; i <= n; i++) if (b[i] > bMax) bMax = b[i]
+    # Sample-to-sample DECREASES are direct evidence that sweepLocked reclaimed
+    # something. A steady state shows a sawtooth: buckets climb with arrivals and
+    # drop every bucketSweepE. This is strictly better than the median comparison
+    # below, which is a threshold that has to be tuned and passed with only ~10
+    # points of margin on the first real 30-minute run. A sweep that never fires
+    # produces a monotonically rising series and ZERO decreases, no matter what
+    # the rates happen to be.
+    drops = 0
+    for (i = 2; i <= n; i++) if (b[i] < b[i-1]) drops++
     bLast = b[n]
     buck1 = med(b, 1, half); buck2 = med(b, half+1, n)
 
@@ -254,12 +263,14 @@ verdict=$(awk -F, -v warmup="$WARMUP" -v rssPct="$RSS_GROWTH_PCT" \
     # reclaims the idle ones. If the sweep never ran they would instead grow
     # linearly for the whole run, putting the second-half median at ~3x the
     # first-half. That is the signal this threshold separates.
+    if (judgeBuckets == 1 && drops == 0)
+      fail = fail sprintf("limiter buckets NEVER decreased across %d samples -- the series is monotonic, so sweepLocked reclaimed nothing all run; ", n)
     if (judgeBuckets == 1 && buck1 > 0 && (buck2 - buck1) * 100.0 / buck1 > buckPct)
       fail = fail sprintf("limiter buckets %d->%d (+%.1f%%, allowed %s%%) -- still growing rather than plateauing, so sweepLocked is not reclaiming; ", buck1, buck2, (buck2-buck1)*100.0/buck1, buckPct)
 
     bnote = (judgeBuckets == 1) ? "" : " [buckets NOT judged: run < 15m, sweep not yet due]"
-    printf "%s|samples=%d rss %d->%d kB, fds %d->%d, goroutines %d->%d, buckets %d->%d (peak %d)%s|%s\n",
-      (fail == "" ? "PASS" : "FAIL"), n, rss1, rss2, fd1, fd2, gr1, gr2, buck1, buck2, bMax, bnote, fail
+    printf "%s|samples=%d rss %d->%d kB, fds %d->%d, goroutines %d->%d, buckets %d->%d (peak %d, %d reclamations)%s|%s\n",
+      (fail == "" ? "PASS" : "FAIL"), n, rss1, rss2, fd1, fd2, gr1, gr2, buck1, buck2, bMax, drops, bnote, fail
   }' "$csv")
 
 result="${verdict%%|*}"
