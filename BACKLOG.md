@@ -3289,3 +3289,91 @@ three relations.
 valuable question in the repo" to "one five-minute paste-in, with the dangerous
 answer already known to be safe." Still NOT founder-closed; the FAIL verdict
 remains unretracted.**
+
+---
+
+## 2026-07-30 — PR #1 landed on `main`; CI fully verified; deploy verified in production
+
+Both remaining blockers are now closed by evidence rather than by argument, and one
+remediation claim was corrected rather than confirmed.
+
+`main`: `2797bbd` → **`5ea25b2`**. PR #1 MERGED 03:18:55Z.
+
+### How it was merged, and why that mattered
+
+Fast-forward push (`git push origin harden/proxy-spend-and-gates:main`), not
+squash and not rebase. This report, this file, and the migration banners all cite
+these commits **by SHA**; squash and rebase-merge both rewrite them and would have
+invalidated every one of those references at once. GitHub closed PR #1 as merged
+on its own once the commits appeared on the base branch. `main` is still linear —
+`git log --merges origin/main` is empty — which is also the pre-existing
+convention here.
+
+### CI: the last two unverifiable things, verified
+
+| What | Run | Result |
+|---|---|---|
+| `push` trigger path (both earlier greens were `pull_request`) | `30510849208` | 14 green, `eval` skipped |
+| **scheduled `eval` job** — undispatchable until `build.yml` reached the default branch | `30510976622` | **15/15 green**, incl. `retrieval eval (scheduled)` |
+
+The eval job: `ok codeterminal/daemon 211.715s`, job 4m16s. The pre-registered
+risk did **not** fire — the embedding model and ONNX runtime are fetched at test
+time (`daemon/modelfetch.go`, `daemon/onnxruntimefetch.go`) and were only ever
+cached on the dev box; a bare `ubuntu-latest` fetched both. ~211s vs ~148s locally
+is that fetch. Package-level pass, not per-test: the job does not pass `-v`.
+
+Two things to know before reading the first *scheduled* run: a `workflow_dispatch`
+runs **every** job, not just `eval` (the others carry no `if:` guard), and the
+`-run` filter still excludes the known-red `TestEditShapedRetrievalEval` (H6).
+
+### Production deploy: six probes, cost-ordered
+
+Railway picked the merge up in under two minutes. Probes 1–4 are refused
+**pre-upstream on both the old and new builds**, so they cost nothing whichever is
+running; probe 2 is a *proven* discriminator, baselined against `2797bbd`
+immediately before the merge rather than assumed:
+
+| Probe | Old build (`2797bbd`) | New build (`5ea25b2`) |
+|---|---|---|
+| `GET /health` | `200 {"status":"ok"}` | `200` — the non-root container (`USER 10001`) boots |
+| duplicate `"model"` key, banned model | `403 model_not_allowed` (dup resolved last-wins, model gate sees it) | **`400 duplicate_json_key`** (ambiguity refused before any gate reads the body) |
+| allowed model, `provider` routing absent | `403 zdr_required` | `403 zdr_required` — **F1 not regressed** |
+| bogus bearer token | `401` | `401` — still fails closed |
+| `max_tokens: 999999` | clamps to 32768 and **forwards** (would spend) | **`403 max_tokens_too_large`** — refused, not clamped |
+| small streamed completion | — | `200`, SSE to `[DONE]`, `total_tokens=13`, `cost=$0.00000147` |
+
+`HEALTH_EXPOSE_COMMIT` is **not** set on Railway, so `/health` returns
+`{"status":"ok"}` with no SHA and cannot identify the running build. That is why
+the discriminator exists. Setting that variable would make future deploy
+verification a single zero-spend GET.
+
+### Two items previously deferred to founder SQL, answered read-only
+
+Both from the dev box using `proxy/.env`, both plain `GET`s, no RPC invoked:
+
+- **`usage` records.** `tokens_used` on the probing key moved `69156 → 69183`,
+  **delta +27**, against a stream that reported `total_tokens=27`. Exact match.
+  This is the first live end-to-end confirmation that the metering path works —
+  previously carried as "usage-in-Supabase unverified, needs founder SQL."
+- **The §5(e) outbox drains.** `pending_corrections` is `[]` after two completions.
+  Every reservation opened was closed; nothing stranded.
+
+Neither touches `increment_usage`, which is still deliberately unprobed: calling it
+*is* the write.
+
+### The one claim that got corrected, not confirmed
+
+**P1-2's pipeline RUNS; it does not BLOCK.** Branch protection is unavailable on
+this repo (private, free plan — `403 Upgrade to GitHub Pro or make this repository
+public`), so required status checks cannot exist. `0f3bca2` closed the
+*invisibility* half of P1-2, which is the half that let P1-3 go red unnoticed. The
+*enforcement* half is open and is item 8 in the previous entry's list. `build.yml`,
+the QA report and this file all now say so; the "merge gate" phrasing was wrong.
+
+### Status
+
+CI blocker **CLOSED, fully verified**. Deploy **VERIFIED in production**. The
+migration blocker is unchanged: one five-minute paste-in at
+[`docs/MIGRATION_RUNBOOK_0000_0004.md`](docs/MIGRATION_RUNBOOK_0000_0004.md),
+still founder-gated because the SQL catalog is not reachable over PostgREST. **The
+FAIL verdict remains unretracted — that is the founder's call, not this entry's.**

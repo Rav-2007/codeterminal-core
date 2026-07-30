@@ -50,6 +50,29 @@
 >    reproduces it identically — so it predates this branch. The baseline
 >    section's account of the four gated eval tests is incomplete. Tracked as
 >    the open H6 workstream in `BACKLOG.md`.
+>
+> **LANDED ON `main` 2026-07-30 (`5ea25b2`), and verified in production.** The
+> branch was fast-forwarded onto `main` (PR #1 merged; SHAs and linear history
+> preserved deliberately, because this report and `BACKLOG.md` cite commits by
+> SHA). Three things that could not be verified before the merge now are:
+>
+> - **The `push` trigger path.** Run `30510849208` — 14 green, `eval` skipped.
+>   Both earlier green runs were `pull_request`.
+> - **The scheduled `eval` job — the last unverifiable item, now GREEN.** Run
+>   `30510976622` via `workflow_dispatch` (impossible until `build.yml` reached
+>   the default branch): `ok codeterminal/daemon 211.715s`, job 4m16s. The
+>   pre-registered risk — the embedding model and ONNX runtime are fetched at test
+>   time and only cached locally — did not fire. Package-level pass, not per-test:
+>   the job does not pass `-v`.
+> - **The deploy.** Six wire probes against Railway; see the new `BACKLOG.md`
+>   entry for the table. Notably `403 zdr_required` still fires (F1 not
+>   regressed), and the `usage` row moved `+27` against a stream reporting
+>   `total_tokens=27` with `pending_corrections` left empty — the first live
+>   end-to-end confirmation of the billing path, previously deferred to founder
+>   SQL.
+>
+> One remediation claim was **corrected rather than confirmed** in the process:
+> the CI pipeline runs, it does not *block*. See the correction appended to P1-2.
 
 Whole-product adversarial QA pass across all seven surfaces, run locally against
 branch `harden/proxy-spend-and-gates` (2 commits ahead of `main`, HEAD `17ffad6`).
@@ -309,10 +332,16 @@ download). Keep the existing image build.
 > pre-registered risks (`go install govulncheck@latest` under an active
 > `go.work`; `daemon`'s seam test building the proxy binary from a sibling module
 > under `-race`) also did not fire.
-> **Still unverified:** the scheduled `eval` job. `workflow_dispatch` only lists
-> workflows present on the **default branch**, so it cannot run — or be verified
-> — until `build.yml` lands on `main`.
+> ~~**Still unverified:** the scheduled `eval` job.~~ **VERIFIED 2026-07-30, once
+> `build.yml` reached `main`.** `workflow_dispatch` only lists workflows present on
+> the default branch, which is exactly why this had to wait for the merge. Run
+> `30510976622`, all 15 jobs green including `retrieval eval (scheduled)`:
+> `ok codeterminal/daemon 211.715s`, job 4m16s. Two notes for whoever reads the
+> next scheduled run: a dispatch runs **every** job, not just `eval` (the others
+> carry no `if:` guard), and the embedding model plus ONNX runtime are fetched at
+> test time — ~211s in CI against ~148s locally, the difference being that fetch.
 >
+
 > **Correction to this finding's remediation — the pipeline RUNS, it does not
 > BLOCK.** This entry's title and the batch summary both describe `0f3bca2` as
 > making the suite "a merge gate." That overstates what exists. A merge gate
