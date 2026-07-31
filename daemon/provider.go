@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -30,9 +31,70 @@ const (
 	sseMaxLineSize       = 1024 * 1024
 )
 
+// chatMessage is one message in the model conversation.
+//
+// The three tool fields are ALL omitempty, and that is load-bearing rather than
+// tidy: with agent mode off none of them is ever set, so the serialized request
+// body is byte-identical to the one whose ZDR routing was verified live on
+// 2026-07-27. TestRequestBodyIsByteIdenticalWithoutTools pins that.
+//
+// NOTE: this struct is NOT ==-comparable -- ToolCalls is a slice. Compare
+// values with reflect.DeepEqual, not == / != (which is a compile error, not a
+// test failure). Same footgun providerRouting below already carries.
+//
+// Role is "system", "user", "assistant" or -- new here -- "tool". Note that a
+// "tool" role NEVER reaches protocol.Turn or conversation memory: validTurn
+// (history.go) rejects any role but user/assistant, deliberately, as an
+// injection defense. Tool messages live only in the in-memory slice for the
+// duration of one turn.
 type chatMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
+	// ToolCalls is set on an ASSISTANT message when the model asked to call
+	// tools. Echoed back verbatim on the next request so the provider can pair
+	// each result with the call that produced it.
+	ToolCalls []toolCall `json:"tool_calls,omitempty"`
+	// ToolCallID is set on a TOOL message, naming which call this result
+	// answers. The pairing is the provider's, not ours: getting it wrong makes
+	// the model read one tool's output as another's.
+	ToolCallID string `json:"tool_call_id,omitempty"`
+	// Name carries the tool name on a tool message. Optional in the OpenAI
+	// schema, sent because it costs almost nothing and makes a captured request
+	// body readable by a human debugging a loop.
+	Name string `json:"name,omitempty"`
+}
+
+// toolCall is one tool invocation the model requested, rebuilt from its
+// streamed fragments (see toolCallAccumulator).
+type toolCall struct {
+	ID       string           `json:"id"`
+	Type     string           `json:"type"` // always "function"
+	Function toolCallFunction `json:"function"`
+}
+
+type toolCallFunction struct {
+	Name string `json:"name"`
+	// Arguments is a JSON *string* containing a JSON object -- the provider's
+	// encoding, not ours. It is never parsed here: the daemon passes it to the
+	// tool layer, which decides whether it is usable, so a malformed argument
+	// blob becomes a tool error the model can correct rather than a stream
+	// failure that ends the turn.
+	Arguments string `json:"arguments"`
+}
+
+// toolSpec advertises one tool to the model, in the OpenAI-compatible shape the
+// proxy forwards byte-for-byte. Verified live on 2026-07-31: the proxy's
+// costSurfaceRefusal does not deny-list "tools", and zdrRoutingEnforced reads
+// only provider.zdr/data_collection, so this passes the managed tier unchanged.
+type toolSpec struct {
+	Type     string           `json:"type"` // always "function"
+	Function toolSpecFunction `json:"function"`
+}
+
+type toolSpecFunction struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	Parameters  json.RawMessage `json:"parameters"`
 }
 
 // providerRouting is OpenRouter's "provider" request object. See
@@ -73,8 +135,11 @@ type streamOptions struct {
 }
 
 type chatCompletionRequest struct {
-	Model         string          `json:"model"`
-	Messages      []chatMessage   `json:"messages"`
+	Model    string        `json:"model"`
+	Messages []chatMessage `json:"messages"`
+	// Tools is omitempty so a turn with no tools serializes exactly as it did
+	// before this field existed. See chatMessage's note on why that matters.
+	Tools         []toolSpec      `json:"tools,omitempty"`
 	Stream        bool            `json:"stream"`
 	Provider      providerRouting `json:"provider"`
 	StreamOptions streamOptions   `json:"stream_options"`
@@ -102,6 +167,20 @@ type chatCompletionChunk struct {
 			// onReasoning — because thinking is not part of the answer and
 			// must not reach edit-block parsing or conversation memory.
 			Reasoning string `json:"reasoning"`
+			// ToolCalls arrives as FRAGMENTS, not whole calls: the provider
+			// sends id and function.name once on the first fragment for a given
+			// index, then function.arguments in pieces that are only valid JSON
+			// once concatenated. Any attempt to parse a single fragment fails on
+			// every one but the last. Rebuilt by toolCallAccumulator.
+			ToolCalls []struct {
+				Index    int    `json:"index"`
+				ID       string `json:"id"`
+				Type     string `json:"type"`
+				Function struct {
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+				} `json:"function"`
+			} `json:"tool_calls"`
 		} `json:"delta"`
 		// FinishReason is null on every chunk until the terminal one, where the
 		// provider states why generation stopped: "stop" (natural end), "length"
@@ -177,6 +256,13 @@ func errorSlug(raw json.RawMessage) (string, bool) {
 func incompleteInfoFor(finishReason string) *protocol.IncompleteInfo {
 	switch finishReason {
 	case "", "stop":
+		return nil
+	case finishReasonToolCalls:
+		// A stream that ends in tool_calls is COMPLETE -- the model said what it
+		// wanted to do next and stopped on purpose. Before this case existed it
+		// fell to the default branch below and every tool-calling response was
+		// reported to the user as "this answer may be incomplete", which is both
+		// wrong and alarming: nothing was cut off.
 		return nil
 	case protocol.IncompleteLength:
 		return &protocol.IncompleteInfo{
@@ -262,6 +348,126 @@ func isZDRRoutingRefusal(body string) bool {
 	return false
 }
 
+// finishReasonToolCalls is the provider's terminal finish_reason when the model
+// stopped in order to call tools rather than because it was done talking.
+const finishReasonToolCalls = "tool_calls"
+
+// toolCallAccumulator rebuilds whole tool calls from streamed fragments, keyed
+// by the provider's `index`.
+//
+// This is the piece that has to be right, and it was prototyped and measured
+// against real provider output in the Phase 0 eval before being promoted here
+// (docs/TOOLCALL_RELIABILITY_2026-07-31.md records the observed shape). The
+// arguments arrive as arbitrary string pieces that only form valid JSON once
+// concatenated, so there is no per-fragment validation to do -- only assembly.
+type toolCallAccumulator struct {
+	calls map[int]*accumulatingCall
+	order []int
+}
+
+type accumulatingCall struct {
+	id   string
+	name string
+	typ  string
+	args strings.Builder
+	// sawName records whether any fragment ever supplied a function name.
+	// Providers send it once, on the first fragment for an index; a call that
+	// never got one is structurally incomplete and must not be executed.
+	sawName bool
+}
+
+func newToolCallAccumulator() *toolCallAccumulator {
+	return &toolCallAccumulator{calls: make(map[int]*accumulatingCall)}
+}
+
+func (a *toolCallAccumulator) ingest(chunk chatCompletionChunk) {
+	for _, choice := range chunk.Choices {
+		for _, frag := range choice.Delta.ToolCalls {
+			call, ok := a.calls[frag.Index]
+			if !ok {
+				call = &accumulatingCall{}
+				a.calls[frag.Index] = call
+				a.order = append(a.order, frag.Index)
+			}
+			if frag.ID != "" {
+				call.id = frag.ID
+			}
+			if frag.Type != "" {
+				call.typ = frag.Type
+			}
+			if frag.Function.Name != "" {
+				call.name = frag.Function.Name
+				call.sawName = true
+			}
+			call.args.WriteString(frag.Function.Arguments)
+		}
+	}
+}
+
+func (a *toolCallAccumulator) empty() bool { return len(a.order) == 0 }
+
+// finish returns the assembled calls in provider index order.
+//
+// It REFUSES a structurally incomplete call rather than returning a partial
+// one. A stream cut mid-fragment leaves a call with no name, or with arguments
+// that are a truncated prefix of a JSON object; executing either would mean
+// acting on something the model did not finish saying. The turn ends with an
+// error instead, and the caller never sees a half-built call to be tempted by.
+//
+// Arguments are validated as JSON here and NOWHERE ELSE in this file: this is
+// the boundary between "the provider's stream" and "something the tool layer
+// can dispatch", and it is the last point at which truncation is
+// distinguishable from a tool that legitimately takes no arguments.
+func (a *toolCallAccumulator) finish() ([]toolCall, error) {
+	sort.Ints(a.order)
+	calls := make([]toolCall, 0, len(a.order))
+	for _, index := range a.order {
+		call := a.calls[index]
+		if !call.sawName {
+			return nil, fmt.Errorf("tool call %d arrived without a function name (the stream ended mid-call)", index)
+		}
+		args := strings.TrimSpace(call.args.String())
+		if args == "" {
+			// A tool that genuinely takes no arguments still gets a valid
+			// empty object, so the tool layer never has to special-case "".
+			args = "{}"
+		}
+		if !json.Valid([]byte(args)) {
+			return nil, fmt.Errorf("tool call %d (%s) had incomplete arguments (the stream ended mid-call)", index, call.name)
+		}
+		typ := call.typ
+		if typ == "" {
+			typ = "function"
+		}
+		calls = append(calls, toolCall{
+			ID:       call.id,
+			Type:     typ,
+			Function: toolCallFunction{Name: call.name, Arguments: args},
+		})
+	}
+	return calls, nil
+}
+
+// finishStream assembles any accumulated tool calls and reports the terminal
+// finish reason. Shared by the two success returns in streamCompletion (the
+// "[DONE]" sentinel and a body that simply closes) so they cannot drift -- one
+// of them forgetting the accumulator would silently drop the model's tool call
+// and end the turn as if it had said nothing.
+//
+// onFinish fires only when the calls assembled cleanly: a truncated call is an
+// abnormal end, and reporting a finish reason for it would tell the caller the
+// stream completed normally.
+func finishStream(accumulator *toolCallAccumulator, finishReason string, onFinish func(string)) ([]toolCall, error) {
+	calls, err := accumulator.finish()
+	if err != nil {
+		return nil, &ModelError{Class: ClassUpstreamUnavailable, detail: err.Error()}
+	}
+	if onFinish != nil {
+		onFinish(finishReason)
+	}
+	return calls, nil
+}
+
 // buildChatMessages assembles the message list sent to the model: an
 // optional leading "system" message, then history (already validated and
 // capped by prepareHistory, oldest first, roles "user"/"assistant" only),
@@ -309,27 +515,43 @@ func buildChatMessages(systemPrompt string, history []chatMessage, prompt string
 // mid-generation. It fires only on the success path — an error return already
 // carries its own abnormal-end signal, so onFinish is not called then. Like the
 // other observability callbacks it must never fail the request.
-func streamCompletion(ctx context.Context, apiBase, apiKey, model, systemPrompt string, history []chatMessage, prompt string, routing providerRouting, onToken func(string) error, onProvider func(string), onReasoning func(string), onFinish func(string)) error {
+// It takes the message list ALREADY BUILT, rather than (systemPrompt, history,
+// prompt) as it used to. The old shape rebuilt the conversation from scratch on
+// every call, which is correct for exactly one call and impossible for a loop:
+// an agent turn appends an assistant message carrying tool_calls and one tool
+// message per result, then calls again with the accumulated list. Callers that
+// send a single turn use buildChatMessages, which is unchanged.
+//
+// tools, when non-empty, advertises callable tools. Empty means the request
+// body is byte-identical to the pre-tools one.
+//
+// It RETURNS any tool calls the model requested, rather than reporting them
+// through a callback like the observability hooks above. They are a result of
+// the stream, not an event during it: nothing can be done with a tool call
+// until the stream has ended, and returning them keeps the "did the model ask
+// for something?" question in the caller's control flow rather than in a
+// closure. A non-nil error always comes with nil calls -- including the
+// deliberate refusal of a call the stream truncated (see accumulator.finish).
+func streamCompletion(ctx context.Context, apiBase, apiKey, model string, messages []chatMessage, tools []toolSpec, routing providerRouting, onToken func(string) error, onProvider func(string), onReasoning func(string), onFinish func(string)) ([]toolCall, error) {
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
-
-	messages := buildChatMessages(systemPrompt, history, prompt)
 
 	reqBody, err := json.Marshal(chatCompletionRequest{
 		Model:         model,
 		Messages:      messages,
+		Tools:         tools,
 		Stream:        true,
 		Provider:      routing,
 		StreamOptions: streamOptions{IncludeUsage: true},
 	})
 	if err != nil {
-		return fmt.Errorf("encoding request: %w", err)
+		return nil, fmt.Errorf("encoding request: %w", err)
 	}
 
 	url := strings.TrimRight(apiBase, "/") + chatCompletionsPath
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(reqBody))
 	if err != nil {
-		return fmt.Errorf("building request: %w", err)
+		return nil, fmt.Errorf("building request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "text/event-stream")
@@ -339,7 +561,7 @@ func streamCompletion(ctx context.Context, apiBase, apiKey, model, systemPrompt 
 
 	resp, err := http.DefaultClient.Do(httpReq)
 	if err != nil {
-		return classifyTransportError(err)
+		return nil, classifyTransportError(err)
 	}
 	defer resp.Body.Close()
 
@@ -356,13 +578,14 @@ func streamCompletion(ctx context.Context, apiBase, apiKey, model, systemPrompt 
 		// the body-less 500 a contained panic produces. Carrying it into the
 		// operator detail is what turns "a user says it failed at about 3pm" into
 		// one id that resolves to one request's trail in the proxy's log.
-		return modelErr.withUpstreamRequestID(upstreamRequestID(resp.Header))
+		return nil, modelErr.withUpstreamRequestID(upstreamRequestID(resp.Header))
 	}
 
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, sseInitialBufferSize), sseMaxLineSize)
 
 	providerSeen := false
+	accumulator := newToolCallAccumulator()
 	// finishReason is the most recent non-empty SSE finish_reason seen. The
 	// provider reports it on the terminal content chunk (before the "[DONE]"
 	// sentinel), so by the time either success return is reached it holds the
@@ -376,10 +599,7 @@ func streamCompletion(ctx context.Context, apiBase, apiKey, model, systemPrompt 
 		}
 		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 		if data == "[DONE]" {
-			if onFinish != nil {
-				onFinish(finishReason)
-			}
-			return nil
+			return finishStream(accumulator, finishReason, onFinish)
 		}
 
 		var chunk chatCompletionChunk
@@ -409,6 +629,11 @@ func streamCompletion(ctx context.Context, apiBase, apiKey, model, systemPrompt 
 		if slug, ok := errorSlug(chunk.Error); ok && slug == protocol.IncompleteBudgetExceeded {
 			finishReason = protocol.IncompleteBudgetExceeded
 		}
+		// Fed BEFORE the zero-choices guard's siblings below so a chunk
+		// carrying only tool-call fragments is not skipped by an early
+		// `continue` further down.
+		accumulator.ingest(chunk)
+
 		if len(chunk.Choices) == 0 {
 			continue
 		}
@@ -423,17 +648,14 @@ func streamCompletion(ctx context.Context, apiBase, apiKey, model, systemPrompt 
 			continue
 		}
 		if err := onToken(content); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return &ModelError{Class: ClassUpstreamUnavailable, detail: "reading model API stream: " + err.Error()}
+		return nil, &ModelError{Class: ClassUpstreamUnavailable, detail: "reading model API stream: " + err.Error()}
 	}
 	// Stream ended without an explicit "[DONE]" sentinel (some providers just
 	// close the body). Still a successful, complete read as far as we can tell,
 	// so report whatever terminal finish_reason we captured.
-	if onFinish != nil {
-		onFinish(finishReason)
-	}
-	return nil
+	return finishStream(accumulator, finishReason, onFinish)
 }

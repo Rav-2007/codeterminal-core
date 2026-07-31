@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"reflect"
 	"testing"
 
 	"codeterminal/protocol"
@@ -35,7 +36,9 @@ func TestPrepareHistory_ValidTurnsPassThroughInOrder(t *testing.T) {
 		t.Fatalf("got %d messages, want %d", len(o.Messages), len(want))
 	}
 	for i := range want {
-		if o.Messages[i] != want[i] {
+		// DeepEqual, not ==: chatMessage carries a []toolCall and is therefore
+		// not ==-comparable (a compile error, not a test failure).
+		if !reflect.DeepEqual(o.Messages[i], want[i]) {
 			t.Errorf("message %d = %+v, want %+v", i, o.Messages[i], want[i])
 		}
 	}

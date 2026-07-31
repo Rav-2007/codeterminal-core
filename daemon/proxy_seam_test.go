@@ -126,7 +126,7 @@ func TestSeam_ProxyBudgetKillReachesTheUser(t *testing.T) {
 	var content strings.Builder
 	finish := "<unset>"
 	routing := ZDRConfig{}.resolvedProviderRouting()
-	err := streamCompletion(context.Background(), proxyBase, "mochi_test_key", model, "sys", nil, "hi", routing,
+	_, err := streamCompletion(context.Background(), proxyBase, "mochi_test_key", model, buildChatMessages("sys", nil, "hi"), nil, routing,
 		func(tok string) error { content.WriteString(tok); return nil },
 		nil, nil,
 		func(reason string) { finish = reason },

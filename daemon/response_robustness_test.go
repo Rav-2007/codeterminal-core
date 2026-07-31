@@ -424,7 +424,7 @@ func TestStreamCompletion_ReadsDeltaReasoning(t *testing.T) {
 	})
 
 	var tokens, reasoning []string
-	err := streamCompletion(context.Background(), upstream.URL, "k", "m", "sys", nil, "hello",
+	_, err := streamCompletion(context.Background(), upstream.URL, "k", "m", buildChatMessages("sys", nil, "hello"), nil,
 		ZDRConfig{}.resolvedProviderRouting(),
 		func(tok string) error { tokens = append(tokens, tok); return nil },
 		nil,
@@ -446,7 +446,7 @@ func TestStreamCompletion_ReadsDeltaReasoning(t *testing.T) {
 // about reasoning must not crash on a model that emits it.
 func TestStreamCompletion_NilReasoningCallbackIsSafe(t *testing.T) {
 	upstream, _ := scriptedUpstream(t, []string{deltaLine("answer", "thinking")})
-	err := streamCompletion(context.Background(), upstream.URL, "k", "m", "sys", nil, "hello",
+	_, err := streamCompletion(context.Background(), upstream.URL, "k", "m", buildChatMessages("sys", nil, "hello"), nil,
 		ZDRConfig{}.resolvedProviderRouting(),
 		func(string) error { return nil }, nil, nil, nil,
 	)

@@ -46,7 +46,7 @@ func TestStreamCompletion_BudgetKillIsReportedAsIncomplete(t *testing.T) {
 	var got string
 	var content strings.Builder
 	routing := ZDRConfig{}.resolvedProviderRouting()
-	err := streamCompletion(context.Background(), srv.URL, "k", "m", "sys", nil, "hi", routing,
+	_, err := streamCompletion(context.Background(), srv.URL, "k", "m", buildChatMessages("sys", nil, "hi"), nil, routing,
 		func(tok string) error { content.WriteString(tok); return nil },
 		nil, nil,
 		func(reason string) { got = reason },
@@ -94,7 +94,7 @@ func TestStreamCompletion_ObjectShapedErrorDoesNotDiscardContent(t *testing.T) {
 
 	var content strings.Builder
 	routing := ZDRConfig{}.resolvedProviderRouting()
-	err := streamCompletion(context.Background(), srv.URL, "k", "m", "sys", nil, "hi", routing,
+	_, err := streamCompletion(context.Background(), srv.URL, "k", "m", buildChatMessages("sys", nil, "hi"), nil, routing,
 		func(tok string) error { content.WriteString(tok); return nil },
 		nil, nil, nil,
 	)
@@ -156,7 +156,7 @@ func TestStreamCompletion_UnknownErrorSlugIsNotReportedAsBudgetKill(t *testing.T
 
 	got := "<unset>"
 	routing := ZDRConfig{}.resolvedProviderRouting()
-	err := streamCompletion(context.Background(), srv.URL, "k", "m", "sys", nil, "hi", routing,
+	_, err := streamCompletion(context.Background(), srv.URL, "k", "m", buildChatMessages("sys", nil, "hi"), nil, routing,
 		func(string) error { return nil }, nil, nil,
 		func(reason string) { got = reason },
 	)

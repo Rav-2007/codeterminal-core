@@ -458,7 +458,15 @@ func (s *Server) serveConn(conn net.Conn) {
 	// streamWithRetry, not streamCompletion (Fix 10): transient failures are
 	// retried with jittered backoff, and only while nothing has streamed yet --
 	// see its doc comment for the two rules that decide.
-	err := streamWithRetry(context.Background(), s.apiBase, s.apiKey, decision.Slug, s.systemPrompt, historyOutcome.Messages, augmentedPrompt, routing,
+	// buildChatMessages moved OUT of streamCompletion to here (Phase 3): the
+	// provider seam now takes an already-built message list, because an agent
+	// loop must append to one across iterations rather than have it rebuilt from
+	// (systemPrompt, history, prompt) on every call. This single-turn path
+	// builds exactly the list it always did.
+	messages := buildChatMessages(s.systemPrompt, historyOutcome.Messages, augmentedPrompt)
+	// No tools on this path. Agent mode has its own entry point; passing nil
+	// here is what keeps the request body byte-identical to the pre-tools one.
+	_, err := streamWithRetry(context.Background(), s.apiBase, s.apiKey, decision.Slug, messages, nil, routing,
 		func(token string) error {
 			full.WriteString(token)
 			return enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Token: token})

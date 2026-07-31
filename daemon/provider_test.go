@@ -28,7 +28,7 @@ func TestBuildChatMessages_NoHistoryMatchesOriginalTwoMessageShape(t *testing.T)
 		t.Fatalf("got %d messages, want %d: %+v", len(got), len(want), got)
 	}
 	for i := range want {
-		if got[i] != want[i] {
+		if !reflect.DeepEqual(got[i], want[i]) {
 			t.Errorf("message %d = %+v, want %+v", i, got[i], want[i])
 		}
 	}
@@ -44,7 +44,7 @@ func TestBuildChatMessages_EmptyHistorySliceMatchesNil(t *testing.T) {
 		t.Fatalf("nil history gave %d messages, empty slice gave %d, want equal", len(withNil), len(withEmpty))
 	}
 	for i := range withNil {
-		if withNil[i] != withEmpty[i] {
+		if !reflect.DeepEqual(withNil[i], withEmpty[i]) {
 			t.Errorf("message %d differs: nil=%+v empty=%+v", i, withNil[i], withEmpty[i])
 		}
 	}
@@ -179,7 +179,7 @@ func TestStreamCompletion_RequestBodyIncludesStrictProviderRoutingByDefault(t *t
 
 	routing := ZDRConfig{}.resolvedProviderRouting()
 	var tokens []string
-	err := streamCompletion(context.Background(), srv.URL, "test-key", "some/model", "sys", nil, "hello", routing,
+	_, err := streamCompletion(context.Background(), srv.URL, "test-key", "some/model", buildChatMessages("sys", nil, "hello"), nil, routing,
 		func(tok string) error { tokens = append(tokens, tok); return nil },
 		nil,
 		nil,
@@ -213,7 +213,7 @@ func TestStreamCompletion_RequestBodyReflectsConfigDrivenRouting(t *testing.T) {
 	defer srv.Close()
 
 	routing := ZDRConfig{AllowNonZDR: true, AllowDataCollection: true, AllowFallbacks: true}.resolvedProviderRouting()
-	err := streamCompletion(context.Background(), srv.URL, "test-key", "some/model", "sys", nil, "hello", routing,
+	_, err := streamCompletion(context.Background(), srv.URL, "test-key", "some/model", buildChatMessages("sys", nil, "hello"), nil, routing,
 		func(tok string) error { return nil },
 		nil,
 		nil,
@@ -245,7 +245,7 @@ func TestStreamCompletion_OnProviderFiresWithObservedProviderName(t *testing.T) 
 
 	var seen []string
 	routing := ZDRConfig{}.resolvedProviderRouting()
-	err := streamCompletion(context.Background(), srv.URL, "test-key", "some/model", "sys", nil, "hello", routing,
+	_, err := streamCompletion(context.Background(), srv.URL, "test-key", "some/model", buildChatMessages("sys", nil, "hello"), nil, routing,
 		func(tok string) error { return nil },
 		func(provider string) { seen = append(seen, provider) },
 		nil,
@@ -330,7 +330,7 @@ func TestStreamCompletion_ZDRRefusalIsDetectableViaErrorsIs(t *testing.T) {
 	defer srv.Close()
 
 	routing := ZDRConfig{}.resolvedProviderRouting()
-	err := streamCompletion(context.Background(), srv.URL, "test-key", "some/model", "sys", nil, "hello", routing,
+	_, err := streamCompletion(context.Background(), srv.URL, "test-key", "some/model", buildChatMessages("sys", nil, "hello"), nil, routing,
 		func(tok string) error { return nil },
 		nil,
 		nil,
@@ -359,7 +359,7 @@ func TestStreamCompletion_LiveObservedDataPolicyRefusalIsDetectableViaErrorsIs(t
 	defer srv.Close()
 
 	routing := ZDRConfig{}.resolvedProviderRouting()
-	err := streamCompletion(context.Background(), srv.URL, "test-key", "some/model", "sys", nil, "hello", routing,
+	_, err := streamCompletion(context.Background(), srv.URL, "test-key", "some/model", buildChatMessages("sys", nil, "hello"), nil, routing,
 		func(tok string) error { return nil },
 		nil,
 		nil,
@@ -383,7 +383,7 @@ func TestStreamCompletion_OrdinaryErrorIsNotWrappedAsZDRRefusal(t *testing.T) {
 	defer srv.Close()
 
 	routing := ZDRConfig{}.resolvedProviderRouting()
-	err := streamCompletion(context.Background(), srv.URL, "test-key", "some/model", "sys", nil, "hello", routing,
+	_, err := streamCompletion(context.Background(), srv.URL, "test-key", "some/model", buildChatMessages("sys", nil, "hello"), nil, routing,
 		func(tok string) error { return nil },
 		nil,
 		nil,

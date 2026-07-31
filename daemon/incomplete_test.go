@@ -52,7 +52,7 @@ func TestStreamCompletion_OnFinishReportsTerminalReason(t *testing.T) {
 			calls := 0
 			got := "<unset>"
 			routing := ZDRConfig{}.resolvedProviderRouting()
-			err := streamCompletion(context.Background(), srv.URL, "k", "m", "sys", nil, "hi", routing,
+			_, err := streamCompletion(context.Background(), srv.URL, "k", "m", buildChatMessages("sys", nil, "hi"), nil, routing,
 				func(string) error { return nil },
 				nil,
 				nil,
@@ -94,10 +94,26 @@ func TestIncompleteInfoFor(t *testing.T) {
 		t.Error("Detail is empty; a client needs human-readable text to render")
 	}
 
+	// "tool_calls" is a COMPLETE stream, not a truncated one: the model stopped
+	// on purpose, having said what it wanted to do next.
+	//
+	// This case used to assert the opposite, because tool_calls was then just a
+	// convenient example of a reason we did not recognise. Once tools went on
+	// the wire that stopped being harmless: every tool-calling response would
+	// have been reported to the user as "this answer may be incomplete" —
+	// alarming, and wrong, since nothing was cut off.
+	if got := incompleteInfoFor(finishReasonToolCalls); got != nil {
+		t.Errorf("incompleteInfoFor(%q) = %+v, want nil — a stream that ends in tool_calls is "+
+			"complete, and reporting it as truncated tells the user their answer was cut off "+
+			"when the model simply asked to call a tool", finishReasonToolCalls, got)
+	}
+
 	// An unrecognized non-stop reason must still be surfaced (better to flag an
 	// early end we can't name than to hide it), carrying the reason verbatim.
-	other := incompleteInfoFor("tool_calls")
-	if other == nil || other.Reason != "tool_calls" {
-		t.Errorf("incompleteInfoFor(\"tool_calls\") = %+v, want a report with Reason=\"tool_calls\"", other)
+	// Uses a reason no provider actually sends, so this case cannot quietly
+	// become meaningful later the way tool_calls did.
+	other := incompleteInfoFor("some_future_reason")
+	if other == nil || other.Reason != "some_future_reason" {
+		t.Errorf("incompleteInfoFor(\"some_future_reason\") = %+v, want a report carrying the reason verbatim", other)
 	}
 }
