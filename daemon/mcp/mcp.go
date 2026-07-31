@@ -1,0 +1,229 @@
+// Package mcp is the daemon's tool surface: the types every tool is described
+// by, the environment discipline every external server is launched under, and
+// the Client seam the official MCP SDK sits behind.
+//
+// TWO LANES, ONE SURFACE.
+//
+// Tools reach the model from two places that share nothing but this package's
+// types:
+//
+//   - Lane A ("builtin"): Go functions compiled into the daemon. Confined,
+//     because there is no subprocess to escape and the five gates are on the
+//     actual call path. None of them writes to the filesystem -- the write tool
+//     proposes an edit into the existing human review flow.
+//   - Lane B (external): MCP servers spawned as subprocesses and spoken to over
+//     stdio via github.com/modelcontextprotocol/go-sdk. Ordinary processes with
+//     the user's full privileges. NOT confined, and this package never pretends
+//     otherwise -- see Tool.Confined.
+//
+// The registry unifies them so the loop has one Tools()/Call() surface, and the
+// approval prompt carries the lane so a human can see which one they are
+// authorising.
+package mcp
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"sort"
+	"strings"
+)
+
+// Tool is one callable tool as advertised to the model and described to the
+// user. It is deliberately flat and provider-neutral: the loop turns it into an
+// OpenAI-shaped tool spec, and the approval prompt turns it into a sentence.
+type Tool struct {
+	// Server is the source: "builtin" for Lane A, or the user's configured name
+	// for a Lane B server. It is the user's word for the thing, never the
+	// server's own claim about itself.
+	Server string
+	Name   string
+	// Description and Schema go to the model. Schema is a JSON Schema object
+	// describing the arguments.
+	Description string
+	Schema      json.RawMessage
+
+	// Lane is protocol.LaneFirstParty or protocol.LaneThirdParty, and Confined
+	// says whether this call's effects are constrained by the five-gate
+	// pipeline. Both reach the user on the approval prompt, so neither may ever
+	// be optimistic: Confined is false for every Lane B tool, unconditionally.
+	Lane     string
+	Confined bool
+
+	// ReadOnlyHint and Destructive are the SERVER'S OWN claims about its tool,
+	// carried for display so a client can style the prompt.
+	//
+	// They are never a gate. A server asserting readOnlyHint:true gets exactly
+	// the policy its configuration says it gets. Letting a self-description
+	// lower the bar would make consent optional for any server willing to lie,
+	// which is the entire population that matters.
+	ReadOnlyHint bool
+	Destructive  bool
+}
+
+// QualifiedName is how a tool is named on the wire to the model. Server-scoped
+// because two servers may legitimately both offer "read_file", and a collision
+// that silently resolved to one of them would route a user's approval to a tool
+// they did not authorise.
+func (t Tool) QualifiedName() string { return t.Server + "__" + t.Name }
+
+// SplitQualifiedName reverses QualifiedName. A name the daemon did not generate
+// is refused rather than guessed at: the model is the one supplying this string
+// back to us, and it is the key we dispatch on.
+func SplitQualifiedName(qualified string) (server, tool string, err error) {
+	server, tool, found := strings.Cut(qualified, "__")
+	if !found || server == "" || tool == "" {
+		return "", "", fmt.Errorf("%q is not a qualified tool name (want <server>__<tool>)", qualified)
+	}
+	return server, tool, nil
+}
+
+// Result is one tool call's output.
+//
+// Content is the text fed back to the model -- ALWAYS after scrubbing and
+// truncation by the caller (daemon/toolresult.go). This package never decides
+// what leaves the machine; it only reports what the tool produced.
+//
+// IsError marks a call the tool itself refused or failed, as distinct from a
+// transport failure. Both end up back with the model, because a model that
+// learns its call failed can recover, whereas one that learns nothing repeats
+// the call.
+type Result struct {
+	Content string
+	IsError bool
+}
+
+// Client is the narrow seam the MCP SDK sits behind: three methods, so the
+// implementation stays swappable and every test can use a fake instead of
+// spawning a process.
+//
+// The interface is this small on purpose. MCP is a large and moving protocol
+// (the 2026-07-28 revision deprecated logging, sampling and roots in favour of
+// MRTR); binding the daemon to three verbs means a spec change lands in one
+// adapter rather than across the loop.
+type Client interface {
+	ListTools(ctx context.Context) ([]Tool, error)
+	CallTool(ctx context.Context, name string, args json.RawMessage) (Result, error)
+	Close() error
+}
+
+// ErrServerUnavailable is returned when a server is not running and cannot be
+// started. The loop turns it into a tool-role error the model can read, and a
+// protocol.DegradedMCPServer notice the user can read.
+var ErrServerUnavailable = errors.New("mcp server unavailable")
+
+// BuiltinServerName is the reserved Server value for Lane A tools. Reserved:
+// ValidateServerName refuses it for a configured server, so a user cannot
+// shadow the confined tools with unconfined ones of the same name.
+const BuiltinServerName = "builtin"
+
+// ForbiddenEnvNames are variables that must never reach an MCP server,
+// whatever a config file's env allow-list says.
+//
+// The allow-list exists so a server can be given a credential of its own
+// (GITHUB_TOKEN for a GitHub server, say). These are different: they are THIS
+// PRODUCT'S credentials for the inference path. A server holding
+// CODETERMINAL_MOCHIII_KEY can spend the user's quota; one holding
+// OPENROUTER_API_KEY can spend their money directly. No legitimate MCP server
+// needs either, so the allow-list is not permitted to grant them and a config
+// that asks is refused rather than quietly obeyed.
+var ForbiddenEnvNames = []string{
+	"OPENROUTER_API_KEY",
+	"CODETERMINAL_API_KEY",
+	"CODETERMINAL_MOCHIII_KEY",
+}
+
+// IsForbiddenEnvName reports whether name is one this daemon refuses to pass to
+// a subprocess. Matched case-insensitively: environment variables are
+// case-sensitive on Unix, but a config typo'd as "openrouter_api_key" is a
+// request for the same secret and refusing it costs nothing.
+func IsForbiddenEnvName(name string) bool {
+	for _, forbidden := range ForbiddenEnvNames {
+		if strings.EqualFold(name, forbidden) {
+			return true
+		}
+	}
+	return false
+}
+
+// ServerEnv builds the environment for an MCP server subprocess.
+//
+// This is the direct descendant of daemon/helperproc.go's helperEnv(), and it
+// exists for the same reason: exec.Cmd with a nil Env inherits the DAEMON'S
+// ENTIRE ENVIRONMENT, which is where the model-API keys live. A server that
+// never needed them would hold them anyway, and a hostile one would only have
+// to read os.Environ().
+//
+// PATH and HOME pass through unconditionally -- baseline variables a Unix
+// process, the dynamic linker and most language runtimes reasonably expect.
+// Everything else must be named in allow, and nothing in ForbiddenEnvNames is
+// grantable at all.
+//
+// Verified against a real server in the Phase 2 spike: the child saw exactly
+// HOME, PATH and the one allow-listed name.
+func ServerEnv(allow []string) []string {
+	var env []string
+	seen := map[string]bool{}
+
+	add := func(name string) {
+		if seen[name] || IsForbiddenEnvName(name) {
+			return
+		}
+		if v, ok := os.LookupEnv(name); ok {
+			seen[name] = true
+			env = append(env, name+"="+v)
+		}
+	}
+
+	add("PATH")
+	add("HOME")
+	for _, name := range allow {
+		add(name)
+	}
+	return env
+}
+
+// ValidateEnvAllowList reports why an env allow-list cannot be honoured, or nil
+// if it can. Called at config-validation time so a refused variable is a
+// startup error naming the line, not a silent omission discovered later.
+func ValidateEnvAllowList(allow []string) error {
+	for _, name := range allow {
+		if IsForbiddenEnvName(name) {
+			return fmt.Errorf("env entry %q is one of this product's own inference credentials and is never "+
+				"passed to an MCP server: a server holding it could spend your quota or your money. "+
+				"If the server needs a credential of its own, give it that variable instead", name)
+		}
+	}
+	return nil
+}
+
+// ValidateServerName refuses names that would make the wire ambiguous or
+// shadow the built-in lane.
+func ValidateServerName(name string) error {
+	switch {
+	case strings.TrimSpace(name) == "":
+		return errors.New("server name is empty")
+	case name == BuiltinServerName:
+		return fmt.Errorf("server name %q is reserved for this daemon's own confined tools; "+
+			"an external server using it could shadow them with unconfined ones", BuiltinServerName)
+	case strings.Contains(name, "__"):
+		return fmt.Errorf("server name %q contains %q, which separates server from tool in a qualified "+
+			"tool name and would make the two impossible to tell apart", name, "__")
+	}
+	return nil
+}
+
+// SortTools orders tools deterministically (server, then tool). Go map
+// iteration is randomised, and an advertised tool list that reshuffles between
+// turns both defeats prompt caching and makes a reshuffle indistinguishable
+// from a genuine change.
+func SortTools(tools []Tool) {
+	sort.Slice(tools, func(i, j int) bool {
+		if tools[i].Server != tools[j].Server {
+			return tools[i].Server < tools[j].Server
+		}
+		return tools[i].Name < tools[j].Name
+	})
+}

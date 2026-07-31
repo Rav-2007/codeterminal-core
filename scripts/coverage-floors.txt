@@ -25,6 +25,13 @@ codeterminal/daemon              69.3
 codeterminal/editapply           87.0
 codeterminal/proxy               80.3
 
+# The MCP tool surface. Floored high on purpose: this is the package that
+# decides what a third-party subprocess may see and do, and its own tests are
+# the only thing standing between an env-allowlist bug and every MCP server the
+# user runs holding their inference credentials. Measured 87.3 on the commit
+# that introduced it; floored at 86.0 to leave ordinary run-to-run variance.
+codeterminal/daemon/mcp          86.0
+
 # 0.0 is the honest floor, not an oversight. testharness is a test-support
 # BINARY (fake Supabase + fake OpenRouter) whose whole purpose is to be driven
 # by out-of-process drills and the soak script -- there is nothing meaningful to
