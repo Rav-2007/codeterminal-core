@@ -94,6 +94,12 @@ func main() {
 			"if > 0, hand out this many DIFFERENT api_keys.id values in rotation. The rate "+
 				"limiters hold one bucket per key, so this is what makes bucket growth -- and "+
 				"the sweep that reclaims it -- observable during a soak. 0 means one fixed key.")
+		supabaseDelay = flag.Duration("supabase-delay", 0,
+			"artificial per-call latency on every fake Supabase endpoint. 0 measures the "+
+				"proxy's OWN overhead on a loopback; a production-like value (the 2026-07-17 "+
+				"note measured ~90ms for the second sequential call) is what makes a "+
+				"round-trip-count change -- an auth cache, or collapsing authorize+reserve -- "+
+				"show up as the number a user would actually feel.")
 	)
 	flag.Parse()
 
@@ -181,9 +187,23 @@ func main() {
 		})
 	})
 
+	// The delay wraps the whole mux rather than each handler, so it covers
+	// /__ledger too -- deliberately. The ledger read-out is the harness's own
+	// endpoint and is never on a measured path, and a wrapper that quietly
+	// exempted some routes would be one more thing to remember when reading a
+	// number off this harness later.
+	var sbHandler http.Handler = sb
+	if *supabaseDelay > 0 {
+		inner := sbHandler
+		sbHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			time.Sleep(*supabaseDelay)
+			inner.ServeHTTP(w, r)
+		})
+	}
+
 	go func() {
-		log.Printf("fake supabase on %s", *supabaseAddr)
-		if err := http.ListenAndServe(*supabaseAddr, sb); err != nil {
+		log.Printf("fake supabase on %s (per-call delay %s)", *supabaseAddr, *supabaseDelay)
+		if err := http.ListenAndServe(*supabaseAddr, sbHandler); err != nil {
 			log.Fatalf("fake supabase: %v", err)
 		}
 	}()

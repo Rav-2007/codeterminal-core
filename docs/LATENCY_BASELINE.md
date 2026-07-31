@@ -109,5 +109,80 @@ founder's** — this only adds a price tag to it.
 
 ---
 
-*A.2 (per-stage proxy timing), A.3 (end-to-end TTFT re-measurement) and A.4 (network
-geography) follow.*
+## A.2 — The proxy can now say where its time goes
+
+`accessLog` emitted one `latency_ms`. Four stages now record their own duration on
+that same line, under the same `req_id`: `auth_ms`, `reserve_ms`, `upstream_ms` (to
+provider response headers) and `ttfb_ms` (to the first SSE data chunk reaching the
+client). See [proxy/stagetimer.go](../proxy/stagetimer.go).
+
+Two properties are pinned by tests that fail when the property is reversed: an absent
+stage is **absent, never zero** (a 401 logging `reserve_ms=0` would read as "the
+reservation was instant"), and `ttfb_ms` is the **first** chunk, recorded once.
+
+## A.3 — Per-stage measurement against the real proxy binary
+
+**Harness:** [scripts/latency-bench.sh](../scripts/latency-bench.sh), driving the
+**real proxy binary** against the tracked [proxy/testharness](../proxy/testharness).
+A new `-supabase-delay` flag on the harness imposes a per-call latency on the fake
+Supabase, because the interesting cost is a round trip and a loopback benchmark reports
+it as free.
+
+Two modes, and reading only one of them is a mistake.
+
+### Mode 1 — proxy overhead only (loopback Supabase)
+
+| stage | median | p90 | max |
+|---|---:|---:|---:|
+| `auth_ms` | **0** | 0 | 1 |
+| `reserve_ms` | **0** | 0 | 8 |
+| `upstream_ms` | 0 | 0 | 0 |
+| `ttfb_ms` | 0 | 0 | 0 |
+| `latency_ms` | 46 | 47 | 55 |
+
+n=30. **The proxy's own CPU cost for both money-path gates is sub-millisecond.**
+Whatever those stages cost in production, essentially none of it is this code. The
+46 ms `latency_ms` is the fake stream's own duration (8 chunks × 5 ms), not overhead.
+
+### Mode 2 — production-shaped (90 ms imposed per Supabase call)
+
+| stage | median | p90 | max |
+|---|---:|---:|---:|
+| `auth_ms` | **91** | 91 | 91 |
+| `reserve_ms` | **91** | 91 | 92 |
+| `upstream_ms` | 0 | 0 | 1 |
+| `ttfb_ms` | 0 | 0 | 0 |
+| `latency_ms` | **228** | 228 | 229 |
+
+n=30. **`auth` + `reserve` = 182 ms of a 228 ms request — 80% of it.**
+
+### Finding — the record attributed this cost to the wrong call, and undercounted it by half
+
+`BACKLOG.md:1174` frames the ~80–100 ms as a property of `reserveQuota` specifically:
+*"authorize itself adds ~0 ms while reserveQuota, the **second** sequential Supabase
+call, adds ~90 ms."* That framing survived into every later note, including the
+Phase-0 baseline's REFUTED entry, and it made the cost look like something peculiar to
+the second call — a connection-reuse artifact, a warm-up effect.
+
+Measured directly, with both stages instrumented for the first time: **91 ms and
+91 ms.** Identical. The cost is not a property of `reserveQuota`; it is the price of
+**one Supabase round trip**, and the proxy makes **two** of them before a single byte
+goes upstream. `authorize` appeared free because nothing had ever timed it separately,
+not because it was.
+
+This roughly doubles the size of the available prize, and it is what makes B.1 the
+right first move: the 30 s auth cache removes one of the two round trips outright —
+**91 ms of the 182 ms** — for every warm key, and B.2 (collapsing the pair into one
+RPC) addresses the other.
+
+**Stated precisely, so this is not over-read:** the 90 ms in mode 2 is *imposed by the
+harness*, not discovered. This experiment does **not** explain why production sees
+~90 ms on an intra-region Singapore→Singapore hop where a handshake should cost
+10–20 ms — that remains genuinely open, and A.4 is where it gets attacked. What mode 2
+proves is narrower and still decisive: whatever the per-call cost turns out to be, the
+proxy adds ~nothing on top of it, and it is paid **twice**, symmetrically. A fix that
+removes a round trip removes all of it; a fix that optimises proxy code removes none.
+
+---
+
+*A.4 (network geography) follows.*
