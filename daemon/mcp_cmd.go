@@ -94,13 +94,15 @@ func runMCPCommand(args []string, logger *log.Logger) error {
 	fmt.Printf("Agent mode is ON. %d tool(s) would be offered to the model.\n\n", len(tools))
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "TOOL\tLANE\tCONFINED\tPOLICY\tDESCRIPTION")
+	// Writes to a tabwriter over stdout: nothing here can recover from a
+	// failed write, and a half-printed table is already visible to the reader.
+	_, _ = fmt.Fprintln(w, "TOOL\tLANE\tCONFINED\tPOLICY\tDESCRIPTION")
 	for _, tool := range tools {
 		_, policy, err := registry.Lookup(ctx, tool.QualifiedName())
 		if err != nil {
 			policy = mcp.PolicyDeny
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
 			tool.QualifiedName(), tool.Lane, confinedLabel(tool.Confined), policy,
 			firstLine(tool.Description))
 	}

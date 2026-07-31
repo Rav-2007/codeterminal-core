@@ -9,7 +9,7 @@
 # quietly tolerated. Raising one is a decision that belongs in a commit message.
 #
 # Measured 2026-07-31 on perf/latency-baseline.
-daemon        112
+daemon        111
 editapply      12
 proxy          25
 protocol        0

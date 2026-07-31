@@ -404,8 +404,6 @@ func (a *toolCallAccumulator) ingest(chunk chatCompletionChunk) {
 	}
 }
 
-func (a *toolCallAccumulator) empty() bool { return len(a.order) == 0 }
-
 // finish returns the assembled calls in provider index order.
 //
 // It REFUSES a structurally incomplete call rather than returning a partial

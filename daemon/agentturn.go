@@ -20,7 +20,8 @@ import (
 func (s *Server) runAgentTurn(
 	ctx context.Context,
 	enc *json.Encoder,
-	hsReq protocol.HandshakeRequest,
+	dec *json.Decoder,
+	lc *limitedConn,
 	promptReq protocol.PromptRequest,
 	model string,
 	messages []chatMessage,
@@ -28,6 +29,12 @@ func (s *Server) runAgentTurn(
 	full *strings.Builder,
 ) {
 	s.count(func(c *counters) { c.agentTurns.Add(1) })
+
+	// The consent channel for this turn, and only this turn: it reads and writes
+	// the very connection the answer is streaming over, so it dies when the
+	// connection does. A per-turn grant the user gives inside it cannot outlive
+	// it either -- that state lives on agentTurn, not here and not on Server.
+	appr := &connApprover{enc: enc, dec: dec, lc: lc, logger: s.logger}
 
 	// One sink per turn: propose_edit files its validated edits here, and they
 	// join whatever the assistant text itself produced on the Done message.
@@ -58,7 +65,7 @@ func (s *Server) runAgentTurn(
 		}
 	}
 
-	result, err := s.runAgentLoop(ctx, registry, model, messages, routing,
+	result, err := s.runAgentLoop(ctx, registry, model, messages, routing, appr,
 		func(token string) error {
 			full.WriteString(token)
 			return enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Token: token})
@@ -68,20 +75,25 @@ func (s *Server) runAgentTurn(
 			// the token stream is otherwise completing, exactly like the
 			// provider and reasoning notices on the single-turn path.
 			activity := a
-			enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, ToolActivity: &activity})
+			_ = enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, ToolActivity: &activity})
 		},
 		func(provider string) {
 			s.logger.Printf("agent: model API served by provider=%q", provider)
-			enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Provider: provider})
+			// Dropped for the same reason as the activity notice above: optional
+			// observability must not fail a turn the token stream is completing.
+			_ = enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Provider: provider})
 		},
 		func(reasoning string) {
-			enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Reasoning: reasoning})
+			_ = enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Reasoning: reasoning})
 		},
 	)
 	if err != nil {
 		modelErr := asModelError(err)
 		s.logger.Printf("agent: turn failed: %s", modelErr.Detail())
-		enc.Encode(protocol.TokenResponse{
+		// The connection is already gone if this fails, and the local log above
+		// is the record that survives either way. There is nothing further to
+		// try and nobody left to tell.
+		_ = enc.Encode(protocol.TokenResponse{
 			ProtocolVersion: protocol.ProtocolVersion,
 			Done:            true,
 			Error:           modelErr.Error(),
@@ -93,13 +105,18 @@ func (s *Server) runAgentTurn(
 	if result.Incomplete != nil && result.Incomplete.Reason == protocol.IncompleteAgentBudget {
 		s.count(func(c *counters) { c.budgetTerminations.Add(1) })
 	}
+	// A user-cancelled turn is deliberately NOT counted as a budget termination:
+	// the status surface would then report a ceiling problem to an operator
+	// whose users are simply saying no, and send them to tune the wrong thing.
 
 	// Two sources, one review. Blocks the model wrote as text (the pre-agent
 	// format, still supported) and edits it filed through propose_edit both
 	// arrive as ordinary five-gate proposals -- there is no path by which an
 	// agent turn changes a file without the user seeing a diff first.
 	blocks := append(s.parseAndLogEditBlocks(result.FinalText), proposals.blocks...)
-	enc.Encode(protocol.TokenResponse{
+	// A failed terminal write means the client has gone; the turn's real work
+	// (the edit proposals, the persisted history below) is unaffected.
+	_ = enc.Encode(protocol.TokenResponse{
 		ProtocolVersion: protocol.ProtocolVersion,
 		Done:            true,
 		EditProposals:   editProposalsFromBlocks(blocks),
@@ -112,5 +129,4 @@ func (s *Server) runAgentTurn(
 	// future requests through the history path (D11), and validTurn would
 	// reject a tool role anyway.
 	s.persistTurn(promptReq.Prompt, result.FinalText+summariseToolActivity(result.ToolNames))
-	_ = hsReq
 }
