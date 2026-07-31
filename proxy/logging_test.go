@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"io"
 	"log"
 	"net/http"
@@ -47,7 +46,7 @@ func TestLogNeverContainsSecrets(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	var logs bytes.Buffer
+	var logs syncBuffer
 	p := newProxy(sentinelOpenRouterKey, upstream.URL, supabase.URL,
 		sentinelServiceRoleKey, log.New(&logs, "", 0), parseAllowedModels("good/model"))
 	h := wrapMiddleware(log.New(&logs, "", 0), p.metrics, http.HandlerFunc(p.handleChatCompletions))
@@ -228,7 +227,7 @@ func TestStatusRecorderReportsWhatTheCallerGot(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			var logs bytes.Buffer
+			var logs syncBuffer
 			h := accessLog(log.New(&logs, "", 0), newMetrics(), tc.handler)
 			h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/p", nil))
 
@@ -268,7 +267,7 @@ func TestLogLevelFromEnv(t *testing.T) {
 // against everything else writing to that destination (see logWriterAdapter) and
 // what lets an existing test capture slog output in the buffer it already passes.
 func TestSlogWritesThroughTheInjectedLogger(t *testing.T) {
-	var logs bytes.Buffer
+	var logs syncBuffer
 	sl := slogFromLogger(log.New(&logs, "test-prefix: ", 0))
 	sl.Info("hello", "req_id", "0123456789abcdef")
 

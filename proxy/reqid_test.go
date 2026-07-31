@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -130,7 +129,7 @@ func TestWithRequestID(t *testing.T) {
 	// ever swapped, the header is written after the panic has aborted the handler
 	// and this fails.
 	t.Run("id survives the panic path", func(t *testing.T) {
-		var logs bytes.Buffer
+		var logs syncBuffer
 		h := withRequestID(recoverPanics(log.New(&logs, "", 0), newMetrics(),
 			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				panic("synthetic fault for the request-id ordering test")
@@ -170,7 +169,7 @@ func TestWithRequestID(t *testing.T) {
 // main.go were wired the other way round. That is the P1.2b failure mode -- safety
 // wiring living where no test can reach it -- so newHandler exists to be reached.
 func TestNewHandlerWiring(t *testing.T) {
-	var logs bytes.Buffer
+	var logs syncBuffer
 	p := newProxy("k", "http://unused.invalid", "", "", log.New(&logs, "", 0), nil)
 	h := newHandler(p, log.New(&logs, "", 0), "test-commit", "")
 
@@ -202,7 +201,7 @@ func TestNewHandlerWiring(t *testing.T) {
 	// serves, so swapping the two middlewares there fails HERE. No real route
 	// panics, which is why the inner handler is injected rather than routed to.
 	t.Run("main's own wrapping carries an id on the panic path", func(t *testing.T) {
-		var panicLogs bytes.Buffer
+		var panicLogs syncBuffer
 		wrapped := wrapMiddleware(log.New(&panicLogs, "", 0), newMetrics(),
 			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				panic("synthetic fault through main's real middleware stack")
@@ -267,7 +266,7 @@ func TestRefusalBodyCarriesRequestID(t *testing.T) {
 	}))
 	defer supabase.Close()
 
-	var logs bytes.Buffer
+	var logs syncBuffer
 	p := newProxy("k", "http://unused.invalid", supabase.URL, "sr", log.New(&logs, "", 0), nil)
 	h := withRequestID(http.HandlerFunc(p.handleChatCompletions))
 

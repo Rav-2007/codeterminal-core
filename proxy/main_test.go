@@ -39,6 +39,51 @@ func streamSSEAndFinalize(p *proxy, w http.ResponseWriter, body io.Reader, keyID
 	return outcome
 }
 
+// syncBuffer is a bytes.Buffer that survives -race.
+//
+// It is needed because the deferred finalizer runs correctUsage on its OWN
+// goroutine (main.go's finalizeUsage.gowrap1) and logs from there. A test that
+// holds a bare bytes.Buffer as its log sink therefore reads it while that
+// goroutine is still writing -- which the race detector found immediately, and
+// which is a defect in the test rather than in the proxy: the two writers are
+// the logger's, and log.Logger itself is safe. Only the sink was not.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func (b *syncBuffer) Reset() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.buf.Reset()
+}
+
+func (b *syncBuffer) Len() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Len()
+}
+
+func (b *syncBuffer) Bytes() []byte {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	// A copy, not the buffer's own slice: handing out the live backing array
+	// would put the caller straight back into the race this type exists to end.
+	return append([]byte(nil), b.buf.Bytes()...)
+}
+
 // fakeUsageStore stands in for the `usage` table's single row, guarded by
 // a mutex so reserve mirrors reserve_usage's real atomic
 // UPDATE...WHERE...RETURNING semantics under concurrent callers -- see
@@ -1067,7 +1112,7 @@ func TestSweepPendingCorrections_ReportsAbandonedReservations(t *testing.T) {
 		usedBefore := store.tokensUsed
 		store.mu.Unlock()
 
-		var logs bytes.Buffer
+		var logs syncBuffer
 		p := newProxy("k", "http://unused.invalid", supabase.URL, "sr", log.New(&logs, "", 0), nil)
 		p.sweepPendingCorrections()
 
@@ -1111,7 +1156,7 @@ func TestSweepPendingCorrections_ReportsAbandonedReservations(t *testing.T) {
 		supabase, _ := newFakeSupabase(store, keyID)
 		defer supabase.Close()
 
-		var logs bytes.Buffer
+		var logs syncBuffer
 		p := newProxy("k", "http://unused.invalid", supabase.URL, "sr", log.New(&logs, "", 0), nil)
 		p.sweepPendingCorrections()
 
@@ -1163,7 +1208,7 @@ func TestReservationSurvivesCrash_SweptNotRefunded(t *testing.T) {
 
 	// Lifetime 2: a restarted proxy (or a sibling replica) sweeps.
 	store.backdatePending(time.Duration(pendingCorrectionStaleAfterMinutes+1) * time.Minute)
-	var logs bytes.Buffer
+	var logs syncBuffer
 	restarted := newProxy("k", "http://unused.invalid", supabase.URL, "sr", log.New(&logs, "", 0), nil)
 	restarted.sweepPendingCorrections()
 
@@ -2617,7 +2662,7 @@ func TestSweepTick_SurvivesPanic(t *testing.T) {
 // connection and leaving it to guess.
 func TestRecoverPanics(t *testing.T) {
 	t.Run("faulting handler answers 500 and logs a stack", func(t *testing.T) {
-		var logs bytes.Buffer
+		var logs syncBuffer
 		logger := log.New(&logs, "", 0)
 
 		metrics := newMetrics()
@@ -2657,7 +2702,7 @@ func TestRecoverPanics(t *testing.T) {
 	})
 
 	t.Run("healthy handler is untouched", func(t *testing.T) {
-		var logs bytes.Buffer
+		var logs syncBuffer
 		h := recoverPanics(log.New(&logs, "", 0), newMetrics(), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusTeapot)
 			w.Write([]byte("fine"))
@@ -2677,7 +2722,7 @@ func TestRecoverPanics(t *testing.T) {
 	// purpose. Swallowing it would turn a deliberate abort into a logged fault and
 	// a 500, making real bugs harder to find in the noise.
 	t.Run("ErrAbortHandler is re-panicked, not logged as a fault", func(t *testing.T) {
-		var logs bytes.Buffer
+		var logs syncBuffer
 		h := recoverPanics(log.New(&logs, "", 0), newMetrics(), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			panic(http.ErrAbortHandler)
 		}))
@@ -2931,7 +2976,7 @@ func TestServeUntilSignal(t *testing.T) {
 // coverage. Both branches matter operationally and neither was asserted before.
 func TestStartReconciliationSweep(t *testing.T) {
 	t.Run("disabled and announced when supabase is unconfigured", func(t *testing.T) {
-		var logs bytes.Buffer
+		var logs syncBuffer
 		p := newProxy("k", "http://unused.invalid", "", "", log.New(&logs, "", 0), nil)
 
 		done := make(chan struct{})
@@ -2958,7 +3003,7 @@ func TestStartReconciliationSweep(t *testing.T) {
 	// firing while the process drains, issuing Supabase calls on behalf of a server
 	// that is already gone.
 	t.Run("stops when its context is cancelled", func(t *testing.T) {
-		var logs bytes.Buffer
+		var logs syncBuffer
 		store := &fakeUsageStore{tokenLimit: 100000}
 		supabase, _ := newFakeSupabase(store, "eeee4444-0000-0000-0000-000000000001")
 		defer supabase.Close()

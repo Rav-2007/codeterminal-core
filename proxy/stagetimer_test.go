@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"io"
 	"log"
@@ -12,31 +11,6 @@ import (
 	"testing"
 	"time"
 )
-
-// syncBuffer is a bytes.Buffer that survives -race.
-//
-// It is needed because the deferred finalizer runs correctUsage on its OWN
-// goroutine (main.go's finalizeUsage.gowrap1) and logs from there. A test that
-// holds a bare bytes.Buffer as its log sink therefore reads it while that
-// goroutine is still writing -- which the race detector found immediately, and
-// which is a defect in the test rather than in the proxy: the two writers are
-// the logger's, and log.Logger itself is safe. Only the sink was not.
-type syncBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *syncBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *syncBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
-}
 
 // slowSecondReadReader yields everything up to the split point immediately, then
 // blocks for delay before yielding the rest. It exists so a TTFB assertion has

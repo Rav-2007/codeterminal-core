@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"expvar"
 	"io"
@@ -27,7 +26,7 @@ func TestRefusalsAreCountedByGate(t *testing.T) {
 	supabase, _ := newFakeSupabase(store, keyID)
 	defer supabase.Close()
 
-	var logs bytes.Buffer
+	var logs syncBuffer
 	p := newProxy("k", "http://unused.invalid", supabase.URL, "sr",
 		log.New(&logs, "", 0), parseAllowedModels("good/model"))
 	h := wrapMiddleware(log.New(&logs, "", 0), p.metrics, http.HandlerFunc(p.handleChatCompletions))
@@ -178,7 +177,7 @@ func TestSweepLivenessCounters(t *testing.T) {
 		store.reserve("key-b", 4096)
 		store.backdatePending(time.Duration(pendingCorrectionStaleAfterMinutes+1) * time.Minute)
 
-		var logs bytes.Buffer
+		var logs syncBuffer
 		p := newProxy("k", "http://unused.invalid", supabase.URL, "sr", log.New(&logs, "", 0), nil)
 		swept, failed := p.sweepPendingCorrections()
 
