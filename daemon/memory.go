@@ -21,7 +21,28 @@ import (
 // v1 -> v2: added turns_fts (search.go) -- a lexical FTS5 search index over
 // turns.content, kept in sync by triggers, backfilled once from any turns
 // that already existed. The turns table itself is untouched by this bump.
-const memorySchemaVersion = 2
+//
+// v2 -> v3: added idx_turns_workspace_id. Every query this package makes
+// against turns is "WHERE workspace = ? ORDER BY id", and until now there was
+// no index for it -- LoadRecentTurns scanned the whole table on every prompt,
+// which is invisible on a small store and gets steadily worse on the
+// long-lived workspaces retention (below) exists for. The prune added in the
+// same change would have made that scan happen on every write as well.
+const memorySchemaVersion = 3
+
+// maxTurnsPerWorkspace caps retained history PER WORKSPACE (debt item (h):
+// the turns table had no cap or prune and grew forever).
+//
+// Per-workspace rather than global, deliberately: a global cap lets one busy
+// workspace evict another's history, which is a surprising way to lose data.
+// Count-based rather than age-based for the same reason -- an age cap silently
+// empties a workspace that simply was not used for a while, and "I came back
+// after a month and my conversation was gone" is worse than an old turn being
+// dropped from a workspace still in active use.
+//
+// 1000 is ~500 exchanges, far above the 12 turns hydrateRecentTurns actually
+// replays, so this bounds disk growth without touching what a user can see.
+const maxTurnsPerWorkspace = 1000
 
 // MemoryStore is a per-user, cross-session store of conversation turns, one
 // conversation per workspace (see AppendTurn/LoadRecentTurns/ClearWorkspace).
@@ -161,6 +182,9 @@ func ensureMemorySchema(db *sql.DB) error {
 		if err := createSearchIndex(db); err != nil {
 			return err
 		}
+		if _, err := db.Exec(turnsWorkspaceIndexDDL); err != nil {
+			return fmt.Errorf("creating turns workspace index: %w", err)
+		}
 		if _, err := db.Exec(`INSERT INTO schema_meta (version) VALUES (?)`, memorySchemaVersion); err != nil {
 			return fmt.Errorf("recording schema version: %w", err)
 		}
@@ -169,20 +193,33 @@ func ensureMemorySchema(db *sql.DB) error {
 		return fmt.Errorf("reading schema version: %w", err)
 	case version > memorySchemaVersion:
 		return fmt.Errorf("memory db schema version %d is newer than this binary supports (%d); upgrade codeterminal-daemon", version, memorySchemaVersion)
-	case version < 2:
+	}
+
+	// Migrations are SEQUENTIAL ifs, not switch cases, and that is the whole
+	// point of this shape. The previous version returned after the v1->v2 step,
+	// so a v1 database upgraded by a binary that knows about v3 would have
+	// gained the search index, recorded itself as v3, and never created the v3
+	// index -- a store that claims to be current while missing part of the
+	// schema. Each step must run for every version below it.
+	if version < 2 {
 		if err := createSearchIndex(db); err != nil {
 			return err
 		}
 		if err := backfillSearchIndex(db); err != nil {
 			return err
 		}
+	}
+	if version < 3 {
+		if _, err := db.Exec(turnsWorkspaceIndexDDL); err != nil {
+			return fmt.Errorf("creating turns workspace index: %w", err)
+		}
+	}
+	if version < memorySchemaVersion {
 		if _, err := db.Exec(`UPDATE schema_meta SET version = ?`, memorySchemaVersion); err != nil {
 			return fmt.Errorf("recording schema version: %w", err)
 		}
-		return nil
-	default:
-		return nil
 	}
+	return nil
 }
 
 // id is an explicit INTEGER PRIMARY KEY (a SQLite rowid alias) so
@@ -199,10 +236,20 @@ CREATE TABLE IF NOT EXISTS turns (
 	created_at TEXT NOT NULL
 )`
 
+// turnsWorkspaceIndexDDL indexes exactly the access pattern every query in
+// this package uses: filter by workspace, order by id. It serves
+// LoadRecentTurns, ClearWorkspace and pruneWorkspaceLocked alike.
+const turnsWorkspaceIndexDDL = `
+CREATE INDEX IF NOT EXISTS idx_turns_workspace_id ON turns(workspace, id)`
+
 // AppendTurn records one turn of conversation for workspace. Called
 // write-through, once per completed exchange (see handleConn in
 // server.go), so a non-clean daemon shutdown loses at most the in-flight
 // request, never anything already answered.
+//
+// It also enforces retention, in ONE place, so every caller gets a bounded
+// store for free with no per-call-site change -- the same discipline debt item
+// (i) used for backup-session pruning.
 func (s *MemoryStore) AppendTurn(ctx context.Context, workspace, role, content string) error {
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO turns (workspace, role, content, created_at) VALUES (?, ?, ?, ?)`,
@@ -210,6 +257,42 @@ func (s *MemoryStore) AppendTurn(ctx context.Context, workspace, role, content s
 	)
 	if err != nil {
 		return fmt.Errorf("appending turn: %w", err)
+	}
+	// Retention is best-effort, and the discard is explicit rather than an
+	// `if err != nil` whose branches both return nil. The turn IS written by
+	// this point; failing the caller would report a lost exchange that was not
+	// lost. Unbounded growth is a slow problem, telling a user their message
+	// failed when it did not is an immediate one.
+	//
+	// Known gap, stated rather than hidden: MemoryStore holds no logger and the
+	// daemon's counters hang off *Server, so a persistently failing prune is
+	// currently silent. Giving this a counter needs the store to reach the
+	// server's counters, which is a wider change than retention warrants here.
+	_ = s.pruneWorkspace(ctx, workspace)
+	return nil
+}
+
+// pruneWorkspace drops everything older than the newest maxTurnsPerWorkspace
+// turns for one workspace.
+//
+// The subquery finds the id of the (max+1)th newest turn and deletes at or
+// below it. When the workspace holds fewer than max+1 turns the subquery
+// yields NULL, `id <= NULL` is NULL, and nothing is deleted -- the common case
+// is a correct no-op rather than a special case in Go.
+//
+// turns_fts needs no attention here: search.go's AFTER DELETE trigger
+// (turns_ad) removes the matching row, so the search index cannot drift out of
+// sync with what was pruned.
+func (s *MemoryStore) pruneWorkspace(ctx context.Context, workspace string) error {
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM turns
+		   WHERE workspace = ?
+		     AND id <= (SELECT id FROM turns WHERE workspace = ?
+		                 ORDER BY id DESC LIMIT 1 OFFSET ?)`,
+		workspace, workspace, maxTurnsPerWorkspace,
+	)
+	if err != nil {
+		return fmt.Errorf("pruning workspace history: %w", err)
 	}
 	return nil
 }
