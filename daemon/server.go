@@ -13,6 +13,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"codeterminal/editapply"
@@ -105,6 +106,32 @@ type Server struct {
 	// it. Zero value is ready to use, so every existing Server literal (including
 	// the test ones) gets the same accounting for free.
 	inFlight sync.WaitGroup
+
+	// toolsInFlight counts tool calls currently EXECUTING, which is a stricter
+	// thing than a connection being open. Shutdown consults it because a cut
+	// tool call is the one case where the old "a cut prompt mutates nothing"
+	// assumption fails: a Lane B tool is somebody else's subprocess doing work
+	// this daemon cannot characterise or undo. See WaitForDrain.
+	toolsInFlight atomic.Int64
+
+	// shutdownCtx is cancelled when the daemon begins shutting down. Only the
+	// agent loop consults it, and only between steps: it is how a turn stops
+	// starting NEW tool calls once shutdown has begun, which is what keeps
+	// toolDrainGrace bounded to the one call already running.
+	//
+	// Nil means "never cancelled" (see shutdownContext), so every existing
+	// Server literal, including the test ones, keeps working untouched.
+	shutdownCtx context.Context
+}
+
+// shutdownContext returns the cancellation signal for long-running work,
+// defaulting to a never-cancelled context on a Server that was built without
+// one.
+func (s *Server) shutdownContext() context.Context {
+	if s.shutdownCtx == nil {
+		return context.Background()
+	}
+	return s.shutdownCtx
 }
 
 // WaitForDrain blocks until every in-flight connection has finished, or until
@@ -121,7 +148,22 @@ type Server struct {
 // way is merely annoying, but an ApplyEditRequest is a multi-file write: cutting
 // it mid-batch leaves some files written and some not, with the backup session
 // half-populated. Undo can recover that, but only if the user knows to run it.
+// AGENT MODE CHANGED THE PREMISE. Everything above was written when the worst
+// a cut request could do was abandon a prompt (harmless) or half-write an edit
+// batch (recoverable via the backup session). A turn that runs tools can be
+// mid-tool-call, and a Lane B tool is an arbitrary subprocess doing arbitrary
+// work -- so "5 seconds is generous" stops being true exactly when a tool is
+// executing.
+//
+// Hence two graces rather than one. The ordinary timeout still applies to
+// ordinary work; a turn with a tool actually running gets toolDrainGrace
+// instead. It is not longer for its own sake: the loop stops starting NEW tool
+// calls as soon as the context is cancelled, so this waits out at most the one
+// call already in flight.
 func (s *Server) WaitForDrain(timeout time.Duration) bool {
+	if s.toolsInFlight.Load() > 0 && timeout < toolDrainGrace {
+		timeout = toolDrainGrace
+	}
 	done := make(chan struct{})
 	go func() {
 		s.inFlight.Wait()
@@ -464,6 +506,17 @@ func (s *Server) serveConn(conn net.Conn) {
 	// (systemPrompt, history, prompt) on every call. This single-turn path
 	// builds exactly the list it always did.
 	messages := buildChatMessages(s.systemPrompt, historyOutcome.Messages, augmentedPrompt)
+
+	// AGENT MODE FORK. Three conditions, all required (see agentModeEngaged):
+	// the config enables it, and this client declared it can answer a mid-turn
+	// approval. A client that did not gets the single-turn path below,
+	// byte-identical to what it got before agent mode existed -- which is what
+	// makes shipping the loop safe before every client can render it.
+	if s.agentModeEngaged(hsReq) {
+		s.runAgentTurn(s.shutdownContext(), enc, hsReq, promptReq, decision.Slug, messages, routing, &full)
+		return
+	}
+
 	// No tools on this path. Agent mode has its own entry point; passing nil
 	// here is what keeps the request body byte-identical to the pre-tools one.
 	_, err := streamWithRetry(context.Background(), s.apiBase, s.apiKey, decision.Slug, messages, nil, routing,

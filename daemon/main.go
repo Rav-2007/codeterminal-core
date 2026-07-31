@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -228,7 +229,16 @@ func main() {
 	logger.Printf("tier=%s slug=%s", cfg.DefaultTier, model)
 	logger.Printf("listening on %s (base=%s)", socketPath, apiBase)
 
+	// Cancelled the moment a shutdown signal arrives, BEFORE the drain wait
+	// begins. Only the agent loop consults it, and only between steps: a turn
+	// stops starting new tool calls as soon as this fires, which is what keeps
+	// toolDrainGrace bounded to the single call already in flight rather than
+	// to however many the model would have asked for next.
+	shutdownCtx, beginShutdown := context.WithCancel(context.Background())
+	defer beginShutdown()
+
 	srv := &Server{
+		shutdownCtx:             shutdownCtx,
 		apiBase:                 apiBase,
 		apiKey:                  apiKey,
 		cfg:                     cfg,
@@ -265,6 +275,10 @@ func main() {
 	// racing a background goroutine's os.Exit against main() returning.
 	sig := <-sigCh
 	logger.Printf("received %s, shutting down", sig)
+
+	// Told first, so an agent turn stops queueing further tool calls while the
+	// listener is still being closed below.
+	beginShutdown()
 
 	// Stop accepting first, so the in-flight set stops growing and Serve's Accept
 	// loop returns. Only then is there a fixed set of connections to wait for.

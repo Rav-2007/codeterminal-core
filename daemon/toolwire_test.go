@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -292,4 +293,23 @@ func TestPlainResponseYieldsNoToolCalls(t *testing.T) {
 	if len(calls) != 0 {
 		t.Errorf("a plain text response produced %d tool call(s): %+v", len(calls), calls)
 	}
+}
+
+// rawSSEServerFunc is rawSSEServer's dynamic sibling: the reply depends on the
+// request body, so a multi-iteration agent loop can be scripted turn by turn
+// and the request bodies inspected.
+func rawSSEServerFunc(t *testing.T, reply func(body []byte) []string) string {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, line := range reply(body) {
+			if _, err := w.Write([]byte(line + "\n\n")); err != nil {
+				return
+			}
+			w.(http.Flusher).Flush()
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL
 }

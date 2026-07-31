@@ -283,7 +283,7 @@ func TestBuiltinListDirectoryHidesProtectedAndSecretNames(t *testing.T) {
 func TestBuiltinsAreConfinedAndReadOnly(t *testing.T) {
 	s := builtinTestServer(t)
 	registry := mcp.NewRegistry(configPolicy{cfg: &Config{MCP: MCPConfig{Enabled: true}}}, 20)
-	for _, b := range s.builtinTools() {
+	for _, b := range s.builtinTools(&proposalSink{}) {
 		if err := registry.RegisterBuiltin(b); err != nil {
 			t.Fatalf("registering %s: %v", b.Tool.Name, err)
 		}
@@ -332,7 +332,7 @@ func TestBuildRegistry(t *testing.T) {
 		s := builtinTestServer(t)
 		s.cfg = &Config{MCP: MCPConfig{Enabled: true, Builtin: MCPBuiltinConfig{Disabled: true}}}
 
-		registry, errs := s.buildRegistry(context.Background(), quiet)
+		registry, errs := s.buildRegistry(context.Background(), quiet, &proposalSink{})
 		t.Cleanup(func() { _ = registry.Close() })
 		if len(errs) != 0 {
 			t.Fatalf("unexpected errors: %v", errs)
@@ -351,7 +351,7 @@ func TestBuildRegistry(t *testing.T) {
 			},
 		}}
 
-		registry, errs := s.buildRegistry(context.Background(), quiet)
+		registry, errs := s.buildRegistry(context.Background(), quiet, &proposalSink{})
 		t.Cleanup(func() { _ = registry.Close() })
 
 		if len(errs) != 1 {
@@ -379,7 +379,7 @@ func TestBuildRegistry(t *testing.T) {
 			},
 		}}
 
-		registry, errs := s.buildRegistry(context.Background(), quiet)
+		registry, errs := s.buildRegistry(context.Background(), quiet, &proposalSink{})
 		t.Cleanup(func() { _ = registry.Close() })
 		if len(errs) != 0 {
 			t.Errorf("an unacknowledged server should be skipped silently, not attempted: %v", errs)

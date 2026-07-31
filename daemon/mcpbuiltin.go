@@ -48,10 +48,24 @@ const maxBuiltinReadBytes = 64 * 1024
 // maxBuiltinListEntries bounds a directory listing.
 const maxBuiltinListEntries = 500
 
-// builtinTools returns the Lane A tools, closed over this Server's state.
-// Registered by buildRegistry, which forces their lane and confinement so a
-// tool here cannot misreport itself.
-func (s *Server) builtinTools() []mcp.Builtin {
+// proposalSink collects the edits propose_edit produced during one turn, so
+// they can be emitted on the final Done message exactly like the blocks parsed
+// out of assistant text. Per-turn rather than per-Server: proposals belong to
+// the turn that made them.
+type proposalSink struct {
+	blocks []editapply.EditBlock
+}
+
+func (p *proposalSink) add(b editapply.EditBlock) {
+	if p != nil {
+		p.blocks = append(p.blocks, b)
+	}
+}
+
+// builtinTools returns the Lane A tools, closed over this Server's state and
+// this turn's proposal sink. Registered by buildRegistry, which forces their
+// lane and confinement so a tool here cannot misreport itself.
+func (s *Server) builtinTools(proposals *proposalSink) []mcp.Builtin {
 	return []mcp.Builtin{
 		{
 			Tool: mcp.Tool{
@@ -95,6 +109,30 @@ func (s *Server) builtinTools() []mcp.Builtin {
 				ReadOnlyHint: true,
 			},
 			Handler: s.builtinSearchCode,
+		},
+		{
+			Tool: mcp.Tool{
+				Name: "propose_edit",
+				Description: "Propose an edit to a workspace file. The edit is NOT applied: it is shown " +
+					"to the user as a reviewable diff, which they accept or reject. Give the exact " +
+					"existing text to replace and the text to replace it with.",
+				Schema: schema(`{
+					"type":"object",
+					"properties":{
+						"path":{"type":"string","description":"Workspace-relative path to edit."},
+						"search":{"type":"string","description":"The exact existing text to replace. Must appear exactly once in the file."},
+						"replace":{"type":"string","description":"The text to put in its place."}
+					},
+					"required":["path","search","replace"],
+					"additionalProperties":false
+				}`),
+				// Read-only in the sense that matters here: this call does not
+				// mutate anything. It produces a proposal.
+				ReadOnlyHint: true,
+			},
+			Handler: func(ctx context.Context, raw json.RawMessage) (mcp.Result, error) {
+				return s.builtinProposeEdit(ctx, raw, proposals)
+			},
 		},
 	}
 }
@@ -254,4 +292,60 @@ func (s *Server) builtinSearchCode(ctx context.Context, raw json.RawMessage) (mc
 		b.WriteString(renderChunk(i, chunk, s.noScrub()))
 	}
 	return mcp.Result{Content: b.String()}, nil
+}
+
+// builtinProposeEdit validates a proposed edit and files it for human review.
+// It writes NOTHING.
+//
+// This is the shape the whole Lane A design turns on. The obvious tool to write
+// is write_file, and it would have been wrong: it replaces a diff the user
+// reads with a JSON argument blob they skim, and it puts the daemon's own
+// writer behind a consent prompt that was never designed to carry a code
+// change. So the model gets a tool that PROPOSES, and the proposal lands in the
+// same review that has governed every edit since before agent mode existed --
+// same diff, same exact-match gate, same backup session, same undo.
+//
+// PrepareEdit is called here for its VALIDATION, not to apply anything: it
+// resolves the path under confinement and locates SEARCH, refusing an ambiguous
+// or absent match. Doing it now rather than at apply time means the model finds
+// out immediately that its SEARCH text does not match, while it still has the
+// file in context and can correct itself -- instead of the user discovering it
+// at review time, one round trip too late.
+func (s *Server) builtinProposeEdit(_ context.Context, raw json.RawMessage, proposals *proposalSink) (mcp.Result, error) {
+	var args struct {
+		Path    string `json:"path"`
+		Search  string `json:"search"`
+		Replace string `json:"replace"`
+	}
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return toolError("the arguments were not a valid JSON object: %v", err)
+	}
+	if strings.TrimSpace(args.Path) == "" {
+		return toolError("no path was supplied")
+	}
+
+	block := editapply.EditBlock{FilePath: args.Path, Search: args.Search, Replace: args.Replace}
+
+	prepared, err := editapply.PrepareEdit(s.workspace, block)
+	if err != nil {
+		// The refusal text is already written for a human and names no absolute
+		// path -- it is the same message the edit pipeline shows. Handing it
+		// back to the model lets it fix its own SEARCH text.
+		return toolError("that edit cannot be applied: %v", err)
+	}
+
+	proposals.add(block)
+
+	note := ""
+	if prepared.MatchNote != "" {
+		note = " (" + prepared.MatchNote + ")"
+	}
+	verb := "replaces"
+	if prepared.Creates {
+		verb = "creates"
+	}
+	return mcp.Result{Content: fmt.Sprintf(
+		"Proposed: %s %s lines %d-%d%s. NOT applied — the user will review this as a diff and "+
+			"decide. Do not propose it again, and do not assume it has taken effect.",
+		args.Path, verb, prepared.StartLine, prepared.EndLine, note)}, nil
 }

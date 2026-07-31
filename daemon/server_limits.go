@@ -175,4 +175,21 @@ func (c *limitedConn) withIdleTimeout(d time.Duration) func() {
 // for every case where being cut leaves real mess behind. A streaming prompt can
 // legitimately run for minutes; waiting that out would make Ctrl-C feel broken,
 // and a cut prompt mutates nothing and costs only a re-ask.
+//
+// THAT LAST CLAUSE IS NO LONGER UNIVERSALLY TRUE, and leaving it unqualified
+// would be a documented falsehood. An agent turn can be mid-tool-call, and a
+// Lane B tool is somebody else's subprocess doing work this daemon cannot
+// characterise. It remains true of every non-agent turn, which is still the
+// overwhelming majority and the only kind a daemon with mcp.enabled unset can
+// have -- so the 5s default stays, and toolDrainGrace covers the exception.
 const shutdownGrace = 5 * time.Second
+
+// toolDrainGrace is the drain timeout used instead of shutdownGrace while a
+// tool call is actually executing (see Server.WaitForDrain).
+//
+// Bounded by what it is waiting for rather than generous: the agent loop stops
+// starting new tool calls the moment its context is cancelled, so this waits
+// out at most ONE in-flight call. 30s is enough for a tool doing real local
+// work and short enough that Ctrl-C still feels like Ctrl-C. A tool slower than
+// this is cut, and the log says so.
+const toolDrainGrace = 30 * time.Second

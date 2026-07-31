@@ -855,6 +855,20 @@ type StatusCounters struct {
 	// PanicsRecovered counts faults contained by handleConn's recover. Nonzero
 	// means the daemon survived a bug it should not have had.
 	PanicsRecovered int64 `json:"panics_recovered"`
+
+	// Agent mode. All zero on a daemon that has never run an agent turn, which
+	// is every daemon with mcp.enabled unset -- so a nonzero AgentTurns is
+	// itself the answer to "is this daemon running tools?".
+	//
+	// ToolCallsDenied is the one worth watching. A daemon denying steadily is
+	// either misconfigured or being asked for things it should not do, and from
+	// the user's side those look identical ("it keeps saying it can't").
+	AgentTurns         int64 `json:"agent_turns"`
+	ToolCalls          int64 `json:"tool_calls"`
+	ToolCallsApproved  int64 `json:"tool_calls_approved"`
+	ToolCallsDenied    int64 `json:"tool_calls_denied"`
+	ToolCallsFailed    int64 `json:"tool_calls_failed"`
+	BudgetTerminations int64 `json:"budget_terminations"`
 }
 
 // GroundingInfo reports whether the daemon augmented THIS request with

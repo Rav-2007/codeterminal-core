@@ -47,6 +47,18 @@ type counters struct {
 	malformed         atomic.Int64
 	emptyPrompts      atomic.Int64
 
+	// Agent mode. toolCalls counts every call the model requested that got as
+	// far as dispatch; approved/denied/failed are its outcomes. Denied is the
+	// one to watch: a daemon denying steadily is either misconfigured or being
+	// asked for things it should not do, and the two look identical from the
+	// user's side ("it just says it can't").
+	agentTurns         atomic.Int64
+	toolCalls          atomic.Int64
+	toolCallsApproved  atomic.Int64
+	toolCallsDenied    atomic.Int64
+	toolCallsFailed    atomic.Int64
+	budgetTerminations atomic.Int64
+
 	// Faults contained by handleConn's recover. A daemon that has contained four
 	// hundred panics is in a different state from one that has contained none,
 	// and until now nothing but the log could tell them apart.
@@ -88,5 +100,12 @@ func (c *counters) snapshot() *protocol.StatusCounters {
 		Malformed:         c.malformed.Load(),
 		EmptyPrompts:      c.emptyPrompts.Load(),
 		PanicsRecovered:   c.panicsRecovered.Load(),
+
+		AgentTurns:         c.agentTurns.Load(),
+		ToolCalls:          c.toolCalls.Load(),
+		ToolCallsApproved:  c.toolCallsApproved.Load(),
+		ToolCallsDenied:    c.toolCallsDenied.Load(),
+		ToolCallsFailed:    c.toolCallsFailed.Load(),
+		BudgetTerminations: c.budgetTerminations.Load(),
 	}
 }
