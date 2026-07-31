@@ -233,4 +233,100 @@ someone might genuinely propose. That is the one the test now forbids.
 
 ---
 
-*A.4 (network geography) follows.*
+## B.2 — collapsing authorize+reserve: RECOMMENDED AGAINST, and B.1 is why
+
+The plan made B.2 *conditional on A.3*. A.3 and B.1 have now answered it, and the
+answer is not the one the plan expected.
+
+**B.1 and B.2 are alternatives, not complements.** A combined `authorize`+`reserve`
+RPC is called on every request by construction — it *is* the reservation, and a
+reservation is a write that can never be cached. So a request that calls it gets its
+authorization free and has no use for a cache. Shipping B.2 would make B.1 dead code.
+
+What each one actually buys, from the measured numbers:
+
+| | first request (cold) | subsequent (warm) | schema change |
+|---|---:|---:|---|
+| neither | 228 ms | 228 ms | — |
+| **B.1 (shipped)** | 228 ms | **136 ms** | none |
+| B.2 instead | 136 ms | 136 ms | **money-path migration** |
+
+**B.2's entire marginal value over B.1 is 92 ms on the first request of a session**,
+and nothing thereafter. Against that it wants a new RPC on the money path — the code
+that has already produced a billing abort-refund bug (C3), a quota TOCTOU, and the
+stranded-reservation finding — plus a Supabase migration, which in this project is
+founder-gated because the SQL catalog is not reachable over PostgREST.
+
+**Recommendation: keep B.1, do not build B.2.** The trade is a rewrite of the money
+path for a saving on one request per 30-second idle gap.
+
+### What this means for the remaining 91 ms
+
+It is one Supabase round trip, and it is **irreducible by caching** — reserving quota
+is a write, and a write must reach the database. No further code change in this
+repository removes it.
+
+The only remaining lever on that 91 ms is the round trip's own cost: **network
+distance**. That makes A.4 the next real question rather than a footnote to it.
+
+## A.4 — network geography: what this machine can and cannot measure
+
+**It cannot measure the leg that matters, and neither can any local benchmark.**
+
+The three legs are:
+
+| Leg | Measurable from here? |
+|---|---|
+| client → Railway | in principle, yes |
+| **Railway → Supabase** | **no** — this is the 91 ms, and it happens inside Railway's network |
+| **Railway → OpenRouter** | **no** — likewise |
+
+Two of the three, including the one that owns the entire remaining cost, are invisible
+from a developer machine. Measuring `curl` from here to `openrouter.ai` measures
+*this laptop's* path to OpenRouter, which is a different route on a different network
+and answers a question nobody asked.
+
+Attempted anyway, for completeness, and the attempt is worth recording: repeated
+samples to both hosts from this machine produced 3.2 s TLS handshakes, an 8.4 s TTFB,
+and four outright connection timeouts in eight samples. Those numbers describe a
+congested local link, not either service. **No leg-1 figure is published here, because
+the honest one is "not measurable on this connection today."**
+
+### The instrument for this already exists — it just has to be deployed
+
+A.2's per-stage timing is exactly the missing measurement. Once this branch is
+deployed, the production access log reports, per request, from inside Railway:
+
+- `auth_ms` — the real Railway→Supabase round trip (on cache misses)
+- `reserve_ms` — the same leg, on every request
+- `upstream_ms` — the real Railway→OpenRouter round trip
+
+That answers, with real numbers and no harness, the question the 2026-07-17 note left
+open and this stage could not close: **why an intra-region Singapore→Singapore hop
+costs ~90 ms where a TCP+TLS handshake should cost 10–20 ms.** If `reserve_ms` in
+production comes back at ~15 ms, the ~90 ms was never the network and the note's whole
+premise was wrong; if it comes back at ~90 ms, the region decision has its evidence.
+
+**A.4 is therefore blocked on a deploy, not on analysis** — and that is a much better
+place for it to be than where it started.
+
+### The replica-dilution decision rides along
+
+The rate limiter's per-instance buckets (N replicas ⇒ N× the intended rate) and the
+auth cache's per-instance TTL are the same shape of residual, and both are decided by
+the same fact: how many replicas actually run. That, too, is answerable from the
+deployed counters rather than from here.
+
+---
+
+## Where the program stands on latency
+
+| | 2026-07-17 | now |
+|---|---:|---|
+| Retrieval CPU | ~14 ms (never re-measured) | ~0.44 ms of *added* work priced; the 14 ms itself still not re-measured |
+| Proxy money path | ~180 ms, one call blamed | **136 ms**, both calls measured |
+| Provider prefill | ~1,125 ms (78%) | unchanged, and unchangeable from here |
+
+The code-controllable budget was ~200–280 ms. **92 ms of it is now gone.** The rest is
+one irreducible round trip plus geography, and both are now measurable in production
+for the first time.
