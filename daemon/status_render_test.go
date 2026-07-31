@@ -105,3 +105,33 @@ func TestPrintStatusKeepsDegradedLast(t *testing.T) {
 		t.Errorf("something follows the degraded list:\n%s", tail)
 	}
 }
+
+// Agent counters appear only once a turn has run one, so the status output of
+// every daemon with mcp.enabled unset is byte-for-byte what it was.
+func TestStatusRendersAgentCountersOnlyWhenUsed(t *testing.T) {
+	t.Run("absent on a daemon that has never run an agent turn", func(t *testing.T) {
+		s := baseStatus()
+		s.Counters = &protocol.StatusCounters{Prompts: 5}
+		var buf bytes.Buffer
+		printStatus(&buf, s)
+		out := buf.String()
+		if strings.Contains(out, "agent") {
+			t.Errorf("a daemon that never ran an agent turn mentioned agent mode:\n%s", out)
+		}
+	})
+
+	t.Run("present, with denials called out, once it has", func(t *testing.T) {
+		s := baseStatus()
+		s.Counters = &protocol.StatusCounters{
+			Prompts: 3, AgentTurns: 3, ToolCalls: 7, ToolCallsDenied: 7, BudgetTerminations: 1,
+		}
+		var buf bytes.Buffer
+		printStatus(&buf, s)
+		out := buf.String()
+		for _, want := range []string{"agent", "3 turn(s)", "7 tool call(s)", "DENIED", "budget"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("status output is missing %q:\n%s", want, out)
+			}
+		}
+	})
+}

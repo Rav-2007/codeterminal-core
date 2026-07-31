@@ -40,7 +40,13 @@ type agentTurn struct {
 	// privacy-positioned product should be able to bound and report.
 	toolBytes int
 	toolNames []string
-	iteration int
+	// toolSignatures records name+arguments per executed call. Only the loop
+	// eval reads it, and it earns its place there: repeating an identical call
+	// is a loop's second-most-characteristic failure after not stopping, and it
+	// is invisible in a name-only list (three reads of three different files
+	// look the same as three reads of one).
+	toolSignatures []string
+	iteration      int
 }
 
 // budget is the resolved set of ceilings for one turn.
@@ -70,6 +76,10 @@ type agentResult struct {
 	// it.
 	Incomplete *protocol.IncompleteInfo
 	ToolNames  []string
+	// ToolSignatures is name+arguments per executed call, in order.
+	ToolSignatures []string
+	// Iterations is how many model calls the turn actually made.
+	Iterations int
 }
 
 // runAgentLoop drives model call -> tool dispatch -> model call until the model
@@ -101,7 +111,10 @@ func (s *Server) runAgentLoop(
 
 	for turn.iteration = 1; ; turn.iteration++ {
 		if stop := s.budgetStop(turn, bud); stop != nil {
-			return agentResult{FinalText: full.String(), Incomplete: stop, ToolNames: turn.toolNames}, nil
+			return agentResult{
+				FinalText: full.String(), Incomplete: stop, ToolNames: turn.toolNames,
+				ToolSignatures: turn.toolSignatures, Iterations: turn.iteration - 1,
+			}, nil
 		}
 
 		finishReason := ""
@@ -123,9 +136,11 @@ func (s *Server) runAgentLoop(
 		// normal exit, and it is the model's decision rather than ours.
 		if len(calls) == 0 {
 			return agentResult{
-				FinalText:  full.String(),
-				Incomplete: incompleteInfoFor(finishReason),
-				ToolNames:  turn.toolNames,
+				FinalText:      full.String(),
+				Incomplete:     incompleteInfoFor(finishReason),
+				ToolNames:      turn.toolNames,
+				ToolSignatures: turn.toolSignatures,
+				Iterations:     turn.iteration,
 			}, nil
 		}
 
@@ -251,6 +266,7 @@ func (s *Server) dispatchToolCall(
 	rendered, kinds, emitted := renderToolResult(result.Content, cap, s.noScrub())
 	turn.toolBytes += emitted
 	turn.toolNames = append(turn.toolNames, name)
+	turn.toolSignatures = append(turn.toolSignatures, name+"("+strings.TrimSpace(call.Function.Arguments)+")")
 
 	if len(kinds) > 0 {
 		s.logger.Printf("agent: scrub redacted %d suspected secret(s) in %s output: %s",

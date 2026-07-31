@@ -30,7 +30,7 @@
 // does not need chatCompletionRequest to have grown a Tools field. Phase 0
 // must be runnable before Phase 3's provider refactor exists, otherwise the
 // gate cannot gate anything. The tool_call delta accumulator below (see
-// toolCallAccumulator) is the prototype of the one Phase 3 promotes into
+// phase0Accumulator) is the prototype of the one Phase 3 promotes into
 // provider.go — writing it here first means the accumulator is measured
 // against real provider output before it becomes production code.
 package main
@@ -150,11 +150,18 @@ type evalChunk struct {
 }
 
 // ---------------------------------------------------------------------------
-// The delta accumulator — prototype for the one Phase 3 promotes.
+// The delta accumulator — the PROTOTYPE, kept.
+//
+// Phase 3 promoted this logic into provider.go's toolCallAccumulator. This copy
+// stays, renamed, because the file's whole premise is that Phase 0 runs BEFORE
+// Phase 3 exists: a gate that depends on the thing it gates cannot gate it. If
+// the production accumulator is ever rewritten, this one is the independent
+// second opinion that says whether the rewrite still matches real provider
+// output.
 // ---------------------------------------------------------------------------
 
-// accumulatedCall is one tool call rebuilt from its streamed fragments.
-type accumulatedCall struct {
+// phase0Call is one tool call rebuilt from its streamed fragments.
+type phase0Call struct {
 	ID   string
 	Name string
 	Args strings.Builder
@@ -164,26 +171,26 @@ type accumulatedCall struct {
 	sawName bool
 }
 
-// toolCallAccumulator rebuilds whole tool calls from streamed deltas, keyed by
+// phase0Accumulator rebuilds whole tool calls from streamed deltas, keyed by
 // the provider's `index` field. This is the piece that has to be right: the
 // arguments arrive as arbitrary string fragments that are only valid JSON once
 // concatenated, so any per-chunk parsing attempt fails on every chunk but the
 // last.
-type toolCallAccumulator struct {
-	calls map[int]*accumulatedCall
+type phase0Accumulator struct {
+	calls map[int]*phase0Call
 	order []int
 }
 
-func newToolCallAccumulator() *toolCallAccumulator {
-	return &toolCallAccumulator{calls: make(map[int]*accumulatedCall)}
+func newPhase0Accumulator() *phase0Accumulator {
+	return &phase0Accumulator{calls: make(map[int]*phase0Call)}
 }
 
-func (a *toolCallAccumulator) ingest(c evalChunk) {
+func (a *phase0Accumulator) ingest(c evalChunk) {
 	for _, ch := range c.Choices {
 		for _, tc := range ch.Delta.ToolCalls {
 			call, ok := a.calls[tc.Index]
 			if !ok {
-				call = &accumulatedCall{}
+				call = &phase0Call{}
 				a.calls[tc.Index] = call
 				a.order = append(a.order, tc.Index)
 			}
@@ -200,9 +207,9 @@ func (a *toolCallAccumulator) ingest(c evalChunk) {
 }
 
 // finished returns the accumulated calls in provider index order.
-func (a *toolCallAccumulator) finished() []*accumulatedCall {
+func (a *phase0Accumulator) finished() []*phase0Call {
 	sort.Ints(a.order)
-	out := make([]*accumulatedCall, 0, len(a.order))
+	out := make([]*phase0Call, 0, len(a.order))
 	for _, i := range a.order {
 		out = append(out, a.calls[i])
 	}
@@ -430,7 +437,7 @@ var toolCallScenarios = []toolCallScenario{
 // ---------------------------------------------------------------------------
 
 type probeOutcome struct {
-	calls        []*accumulatedCall
+	calls        []*phase0Call
 	textContent  string
 	finishReason string
 }
@@ -476,7 +483,7 @@ func probeToolCalls(ctx context.Context, apiBase, apiKey, model string, routing 
 		return probeOutcome{}, fmt.Errorf("model API returned %s: %s", resp.Status, strings.TrimSpace(string(buf[:n])))
 	}
 
-	acc := newToolCallAccumulator()
+	acc := newPhase0Accumulator()
 	var text strings.Builder
 	finish := ""
 

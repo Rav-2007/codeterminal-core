@@ -137,6 +137,26 @@ func printStatus(w io.Writer, s protocol.StatusResponse) {
 			p("refused      %d (peer auth %d, version %d, oversized %d, malformed %d)",
 				refused, c.PeerAuthRefused, c.VersionMismatched, c.Oversized, c.Malformed)
 		}
+		// Agent mode, printed only once a turn has actually run one. A daemon
+		// with mcp.enabled unset never reaches this, so the status output of
+		// every existing install is unchanged -- and the line APPEARING is
+		// itself the answer to "is this daemon running tools?".
+		if c.AgentTurns > 0 {
+			p("agent        %d turn(s), %d tool call(s) (%d denied, %d failed)",
+				c.AgentTurns, c.ToolCalls, c.ToolCallsDenied, c.ToolCallsFailed)
+			// Denials are surfaced separately when they dominate, because from
+			// the user's side a denied tool and a broken one look identical
+			// ("it keeps saying it can't") and the fix is entirely different:
+			// one is a config line, the other is a bug.
+			if c.ToolCallsDenied > 0 && c.ToolCallsDenied >= c.ToolCalls {
+				p("             every tool call was DENIED by policy -- check the tool policies in models.json")
+			}
+			if c.BudgetTerminations > 0 {
+				p("             %d turn(s) stopped on a budget rather than finishing (see mcp.budget)",
+					c.BudgetTerminations)
+			}
+		}
+
 		// Only when nonzero, and worded as the defect it is: a contained panic is
 		// a bug that happened to be survivable, not a statistic.
 		if c.PanicsRecovered > 0 {
