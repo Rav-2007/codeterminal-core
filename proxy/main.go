@@ -478,7 +478,7 @@ func newHandler(p *proxy, logger *log.Logger, buildCommit, adminToken string) ht
 // one main serves -- around a handler that panics on purpose, which no real route
 // does.
 func wrapMiddleware(logger *log.Logger, m *metricSet, next http.Handler) http.Handler {
-	return withRequestID(accessLog(logger, m, recoverPanics(logger, m, next)))
+	return withRequestID(withStageTimer(accessLog(logger, m, recoverPanics(logger, m, next))))
 }
 
 // newMux is the route table.
@@ -861,7 +861,9 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	apiKeyID, ok := p.authorize(r)
+	var apiKeyID string
+	var ok bool
+	timeStage(r.Context(), stageAuth, func() { apiKeyID, ok = p.authorize(r) })
 	if !ok {
 		writeRefusal(w, http.StatusUnauthorized, "unauthorized", reqID)
 		return
@@ -1003,7 +1005,8 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		reserved = declared
 	}
 
-	res, ok := p.reserveQuota(r.Context(), apiKeyID, reserved)
+	var res reservation
+	timeStage(r.Context(), stageReserve, func() { res, ok = p.reserveQuota(r.Context(), apiKeyID, reserved) })
 	if !ok {
 		// Deliberately NOT tooManyRequests: this 429 is an exhausted allowance,
 		// not a throttle, so it carries no Retry-After -- waiting does not help.
@@ -1063,7 +1066,11 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	upstreamReq.Header.Set("Accept", "text/event-stream")
 	upstreamReq.Header.Set("Authorization", "Bearer "+p.apiKey)
 
-	resp, err := p.client.Do(upstreamReq)
+	// Timed even on the error path: an upstream that fails after 30 s and one
+	// that refuses in 5 ms are the same log line without this, and they call
+	// for opposite responses.
+	var resp *http.Response
+	timeStage(r.Context(), stageUpstream, func() { resp, err = p.client.Do(upstreamReq) })
 	if err != nil {
 		p.log.Error("upstream call failed", "req_id", reqID,
 			"gate", gateUpstreamCallFailed, "key_id", apiKeyID, "err", err)
@@ -1090,7 +1097,7 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(resp.StatusCode)
 
 	if strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
-		p.streamSSE(w, resp.Body, &outcome, ceiling)
+		p.streamSSE(w, resp.Body, &outcome, ceiling, stageTimerFrom(r.Context()))
 		return
 	}
 
@@ -1454,8 +1461,18 @@ func keyPrefix(key string) string {
 //
 // This is a CIRCUIT BREAKER, NOT AN ACCOUNTANT: it bounds worst-case spend, and
 // exact accounting still comes from the terminal usage chunk whenever one arrives.
-func (p *proxy) streamSSE(w http.ResponseWriter, body io.Reader, outcome *reservationOutcome, ceiling int) {
+// st may be nil: a test calling this directly is outside a request and has no
+// timer, and every *stageTimer method is nil-safe for exactly that case.
+func (p *proxy) streamSSE(w http.ResponseWriter, body io.Reader, outcome *reservationOutcome, ceiling int, st *stageTimer) {
 	flusher, canFlush := w.(http.Flusher)
+
+	// TTFB here means what the USER experiences: the first data chunk relayed
+	// onward, not the upstream response headers (stageUpstream already covers
+	// those). The two differ by the provider's whole prefill, which is the
+	// single largest component of end-to-end latency and the one this proxy
+	// does not control -- so conflating them would hide the only part it does.
+	streamStart := time.Now()
+	firstChunkSeen := false
 
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, sseInitialBufferSize), sseMaxLineSize)
@@ -1486,6 +1503,13 @@ func (p *proxy) streamSSE(w http.ResponseWriter, body io.Reader, outcome *reserv
 		// is exactly the client-disconnect-before-the-usage-chunk path that
 		// QUOTA_RESERVATION_DESIGN.md §5(c) wrongly folded into "nothing used".
 		if isDataChunk(line) {
+			// Recorded once, on the first data chunk only -- this is a
+			// time-to-FIRST-byte, and re-recording per chunk would turn it into
+			// a stream duration wearing a TTFB label.
+			if !firstChunkSeen {
+				firstChunkSeen = true
+				st.record(stageTTFB, time.Since(streamStart))
+			}
 			sawData = true
 			// Budget signals, counted BEFORE the relay write for the same reason
 			// sawData is: a client that disconnects mid-stream still consumed

@@ -229,14 +229,20 @@ func accessLog(logger *log.Logger, m *metricSet, next http.Handler) http.Handler
 		rec := &statusRecorder{ResponseWriter: w}
 		defer func() {
 			m.countResponse(rec.status)
-			sl.Info("request",
+			// Stage timings are appended AFTER the fixed fields, and only for
+			// stages that actually ran -- see stagetimer.go on why an absent
+			// stage must not be logged as zero. latency_ms stays first among
+			// the timings so the whole is read before its parts.
+			args := []any{
 				"req_id", requestIDFrom(r.Context()),
 				"method", r.Method,
 				"path", r.URL.Path,
 				"status", rec.status,
 				"bytes", rec.written,
 				"latency_ms", time.Since(start).Milliseconds(),
-			)
+			}
+			args = append(args, stageTimerFrom(r.Context()).attrs()...)
+			sl.Info("request", args...)
 		}()
 		next.ServeHTTP(rec, r)
 	})

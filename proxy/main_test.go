@@ -34,7 +34,7 @@ import (
 // below goes through this helper rather than the raw method.
 func streamSSEAndFinalize(p *proxy, w http.ResponseWriter, body io.Reader, keyID string, reserved int, pendingID int64, ceiling int) *reservationOutcome {
 	outcome := &reservationOutcome{keyID: keyID, reserved: reserved, pendingID: pendingID}
-	p.streamSSE(w, body, outcome, ceiling)
+	p.streamSSE(w, body, outcome, ceiling, nil)
 	p.finalizeReservation(outcome)
 	return outcome
 }
