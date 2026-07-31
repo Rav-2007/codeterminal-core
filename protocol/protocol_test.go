@@ -30,7 +30,7 @@ func TestWireTags(t *testing.T) {
 		v    any
 		want []string
 	}{
-		{"HandshakeRequest", HandshakeRequest{}, []string{"protocol_version", "client_name"}},
+		{"HandshakeRequest", HandshakeRequest{}, []string{"protocol_version", "client_name", "capabilities"}},
 		{"PromptRequest", PromptRequest{}, []string{"protocol_version", "prompt", "workspace", "history", "reset", "prompt_kind"}},
 		{"Turn", Turn{}, []string{"role", "content"}},
 		{"IncompleteInfo", IncompleteInfo{}, []string{"reason", "detail"}},
@@ -41,6 +41,12 @@ func TestWireTags(t *testing.T) {
 		{"UndoRequest", UndoRequest{}, []string{"protocol_version", "undo"}},
 		{"SearchRequest", SearchRequest{}, []string{"protocol_version", "search"}},
 		{"StatusRequest", StatusRequest{}, []string{"protocol_version", "status"}},
+		{"ToolApprovalRequest", ToolApprovalRequest{}, []string{"call_id", "server", "tool", "arguments",
+			"arguments_sha256", "lane", "confined", "read_only_hint", "destructive", "iteration", "max_iterations"}},
+		{"ToolApprovalResponse", ToolApprovalResponse{}, []string{"protocol_version", "approval", "call_id",
+			"arguments_sha256", "decision"}},
+		{"ToolActivity", ToolActivity{}, []string{"call_id", "server", "tool", "phase", "detail",
+			"duration_ms", "result_bytes"}},
 	}
 
 	for _, tc := range cases {
@@ -75,6 +81,7 @@ func TestDiscriminatorKeysArePresentAndNotOmitempty(t *testing.T) {
 		{"UndoRequest", UndoRequest{}, "Undo", "undo"},
 		{"SearchRequest", SearchRequest{}, "Search", "search"},
 		{"StatusRequest", StatusRequest{}, "Status", "status"},
+		{"ToolApprovalResponse", ToolApprovalResponse{}, "Approval", "approval"},
 	}
 
 	for _, tc := range cases {
@@ -108,6 +115,7 @@ func TestZeroValuedRequestsStillCarryTheirDiscriminator(t *testing.T) {
 		{"UndoRequest", UndoRequest{}, `"undo":`},
 		{"SearchRequest", SearchRequest{}, `"search":`},
 		{"StatusRequest", StatusRequest{}, `"status":`},
+		{"ToolApprovalResponse", ToolApprovalResponse{}, `"approval":`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -173,6 +181,46 @@ func TestRoundTrip(t *testing.T) {
 		{"StatusRequest", StatusRequest{ProtocolVersion: 1, Status: true}, func() any { return &StatusRequest{} }},
 		{"SearchResult", SearchResult{}, func() any { return &SearchResult{} }},
 		{"LockFile", LockFile{}, func() any { return &LockFile{} }},
+		{
+			"HandshakeRequest with capabilities",
+			HandshakeRequest{ProtocolVersion: 1, ClientName: "tui", Capabilities: []string{CapToolApproval}},
+			func() any { return &HandshakeRequest{} },
+		},
+		{
+			"ToolApprovalRequest",
+			ToolApprovalRequest{
+				CallID: "call_1", Server: "fs", Tool: "write_file",
+				Arguments: `{"path":"a.go"}`, ArgumentsSHA256: "abc123",
+				Lane: LaneThirdParty, Confined: false, ReadOnlyHint: true, Destructive: true,
+				Iteration: 2, MaxIterations: 8, Detail: "unconfined server",
+			},
+			func() any { return &ToolApprovalRequest{} },
+		},
+		{
+			"ToolApprovalResponse",
+			ToolApprovalResponse{
+				ProtocolVersion: 1, Approval: true, CallID: "call_1",
+				ArgumentsSHA256: "abc123", Decision: ApprovalApproveForTurn,
+			},
+			func() any { return &ToolApprovalResponse{} },
+		},
+		{
+			"ToolActivity",
+			ToolActivity{
+				CallID: "call_1", Server: "fs", Tool: "read_file",
+				Phase: ToolPhaseSucceeded, Detail: "read 40 lines", DurationMS: 12, ResultBytes: 2048,
+			},
+			func() any { return &ToolActivity{} },
+		},
+		{
+			"TokenResponse carrying an approval ask",
+			TokenResponse{
+				ProtocolVersion: 1,
+				ToolApproval:    &ToolApprovalRequest{CallID: "c", Tool: "t", Lane: LaneFirstParty},
+				ToolActivity:    &ToolActivity{CallID: "c", Phase: ToolPhaseRequested},
+			},
+			func() any { return &TokenResponse{} },
+		},
 	}
 
 	for _, tc := range cases {
@@ -210,6 +258,15 @@ func TestSentinelValues(t *testing.T) {
 		"DegradedLexicalRetrieval": DegradedLexicalRetrieval,
 		"DegradedMemory":           DegradedMemory,
 		"DegradedProviderRouting":  DegradedProviderRouting,
+		"IncompleteAgentBudget":    IncompleteAgentBudget,
+		"DegradedMCPServer":        DegradedMCPServer,
+		"CapToolApproval":          CapToolApproval,
+		"LaneFirstParty":           LaneFirstParty,
+		"LaneThirdParty":           LaneThirdParty,
+		"ApprovalApprove":          ApprovalApprove,
+		"ApprovalDeny":             ApprovalDeny,
+		"ApprovalApproveForTurn":   ApprovalApproveForTurn,
+		"ApprovalCancelTurn":       ApprovalCancelTurn,
 	}
 	want := map[string]string{
 		"IncompleteLength":         "length",
@@ -218,6 +275,15 @@ func TestSentinelValues(t *testing.T) {
 		"DegradedLexicalRetrieval": "lexical_retrieval",
 		"DegradedMemory":           "memory",
 		"DegradedProviderRouting":  "provider_routing",
+		"IncompleteAgentBudget":    "agent_budget",
+		"DegradedMCPServer":        "mcp_server",
+		"CapToolApproval":          "tool_approval",
+		"LaneFirstParty":           "first_party",
+		"LaneThirdParty":           "third_party",
+		"ApprovalApprove":          "approve",
+		"ApprovalDeny":             "deny",
+		"ApprovalApproveForTurn":   "approve_for_turn",
+		"ApprovalCancelTurn":       "cancel_turn",
 	}
 	for name, got := range sentinels {
 		if got != want[name] {
