@@ -203,12 +203,20 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: "**/go.sum"
       # Scoped to the three eval tests that are GREEN, deliberately.
-      # TestEditShapedRetrievalEval is known-red at 0/4 and was already red at
-      # 17ffad6, before the launch-gate batch touched anything -- it is the open
-      # H6 chunk-level retrieval workstream, tracked in BACKLOG.md, not a
-      # regression. Including it would leave this job permanently red, and a job
-      # that is always red is a job nobody reads, which is the exact failure
-      # this pipeline exists to fix. Remove the -run filter when H6 closes.
+      #
+      # TestEditShapedRetrievalEval is excluded because its HARNESS cannot build
+      # its own fixtures -- not, as this comment previously said, because
+      # retrieval scores 0/4. Three of its four cases reconstruct a pre-fix tree
+      # by reverting the fix commit, and those reverts now conflict (the commits
+      # are 178-221 commits behind HEAD), so those cases never issue a query at
+      # all. The "0/4" it prints is a setup failure wearing a recall label. See
+      # BACKLOG.md item (b), corrected 2026-07-31.
+      #
+      # Including it would leave this job permanently red, and a job that is
+      # always red is a job nobody reads -- the exact failure this pipeline
+      # exists to fix. Remove the -run filter once the harness reconstructs the
+      # pre-fix state by checking out the fix commit's PARENT (which always
+      # succeeds) instead of reverting onto today's HEAD.
       - name: Run gated eval suite (green subset -- see comment)
         run: go test -tags eval -run 'TestEvalRetrievalQuality|TestRerankEvalRetrievalRanking|TestTokenEfficiencyEval' ./...
         working-directory: daemon

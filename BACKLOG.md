@@ -3180,7 +3180,48 @@ anchor, use those as the expectation) so line numbers never appear in the harnes
 Deferred because it changes what the eval measures, and doing that in the same batch as a
 money-path fix would make both harder to review.
 
-### (b) OPEN: `TestEditShapedRetrievalEval` is RED at 0/4 — pre-existing, and the QA pass missed it
+### (b) OPEN: `TestEditShapedRetrievalEval` is RED — but NOT for the reason recorded below
+
+> **CORRECTION 2026-07-31 — the "0/4 recall" was never a retrieval measurement.**
+>
+> Re-run on `perf/latency-baseline`. **Three of the four cases never issue a retrieval
+> query at all.** They fail in *setup*: `gitRevertPreFixTree`
+> ([daemon/edit_eval_test.go:388](daemon/edit_eval_test.go#L388)) reverts the fix commit
+> to reconstruct a pre-fix tree, and that revert no longer applies —
+>
+> ```
+> editapply-apply-extraction  conflict in editapply/apply.go
+> tui-header-collision        conflict in clients/tui/chat.go
+> zdr-refusal-phrasing        conflict in daemon/provider.go
+> ```
+>
+> The test is *right* to fail here — it says "refusing to fake a pre-fix state" — but
+> the number it then prints is `0/4`, which reads as a ranking result and is not one.
+>
+> **These are the exact same three subtests the entry below names**, and the worktree at
+> `17ffad6` reproduced them for the same reason. So the original diagnosis — a "real
+> chunk-level ranking gap", and the stale-ground-truth hypothesis at
+> `edit_eval_test.go:156` — was attributing a harness failure to retrieval quality. The
+> cases never get far enough for ground truth to matter.
+>
+> **What the measurable case actually says:** only `helperproc-env-allowlist` runs. It
+> ran, and its target came back at rank **#89** (semantic #84) against `k=5` — a genuine
+> miss. So the honest score is **0/1 measured, 3 unmeasurable**, not 0/4.
+>
+> **Why it will keep getting worse.** The design has an expiry date: the four fix commits
+> are dated 2026-07-08 to 07-14, with **178–221 commits since**. Every commit touching
+> those files makes a clean revert less likely. This is debt item (a)'s fragility, one
+> level up — not the chunk IDs but the whole pre-fix reconstruction.
+>
+> **The fix is a design change, not a ground-truth edit.** Reconstruct the pre-fix state
+> by checking out the fix commit's *parent* into the worktree (a checkout always
+> succeeds) rather than reverting the fix onto today's HEAD. The captured failure text
+> then comes from the tree that actually produced it, which is what the case was trying
+> to model in the first place. Until that lands, **no recall number from this test should
+> be quoted**, and the CI comment excluding it should say "harness cannot build its
+> fixtures", not "known-red at 0/4".
+
+*Original entry, preserved — its first paragraph is what the correction above overturns:*
 
 Not caused by the remediation batch, and **verified so**: a `git worktree` at the QA baseline
 `17ffad6` reproduces the identical failure (0/4, same three subtests —
