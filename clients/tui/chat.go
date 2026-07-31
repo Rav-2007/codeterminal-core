@@ -21,12 +21,13 @@ import (
 type chatState int
 
 const (
-	stateSplash     chatState = iota // welcome screen; any key dismisses it
-	stateIdle                        // ready to accept a prompt
-	stateSending                     // waiting for the first token or an immediate error
-	stateStreaming                   // tokens are arriving
-	stateError                       // last turn failed; shown in the header, input re-enabled
-	stateEditReview                  // the last answer contained edit blocks; reviewing them one at a time
+	stateSplash       chatState = iota // welcome screen; any key dismisses it
+	stateIdle                          // ready to accept a prompt
+	stateSending                       // waiting for the first token or an immediate error
+	stateStreaming                     // tokens are arriving
+	stateError                         // last turn failed; shown in the header, input re-enabled
+	stateEditReview                    // the last answer contained edit blocks; reviewing them one at a time
+	stateToolApproval                  // an agent turn is paused on a tool-call approval
 )
 
 type turnRole int
@@ -58,6 +59,11 @@ const helpText = "enter to send · ctrl+n new conversation · ctrl+c to quit"
 
 // reviewHelpText is shown instead of helpText while reviewing edit blocks.
 const reviewHelpText = "y apply · n skip · q cancel remaining"
+
+// approvalHelpText is shown while an agent turn is paused on a tool call.
+// Worded in the same shape as reviewHelpText because it is the same kind of
+// moment: the product has stopped and is waiting for a person to decide.
+const approvalHelpText = "y run once · a allow this tool for the turn · n deny · q stop the task"
 
 // chatModel is the Bubble Tea model for Mochiii's interactive chat.
 type chatModel struct {
@@ -130,6 +136,32 @@ type chatModel struct {
 	reviewRefusals  []string
 	reviewBackupDir string // lazily created on the first applied edit of a review
 
+	// Tool-approval state: set while an agent turn is paused waiting for the
+	// user to decide about one tool call (see toolApprovalMsg). pendingApproval
+	// is nil at every other moment, and the reply channel is the daemon's turn
+	// held open -- answering it is the only thing that lets the turn continue.
+	pendingApproval *protocol.ToolApprovalRequest
+	approvalReply   chan string
+
+	// activityTurns maps a tool call's id to the transcript turn narrating it,
+	// so a call's line is REWRITTEN from "running" to its outcome rather than
+	// appended to. One call, one line: an agent turn that emitted four lines per
+	// tool would bury the answer it produced.
+	activityTurns map[string]int
+
+	// streamAssistant is the index of the assistant turn the in-flight stream
+	// is writing into, or -1 when none exists yet. Before agent mode the last
+	// turn was ALWAYS the assistant's, so tokens could simply append to
+	// turns[len-1]; a turn that interleaves tool-activity notices broke that
+	// assumption, and appending an answer into a system line is how a
+	// transcript starts lying about who said what.
+	//
+	// One assistant turn per stream, deliberately: buildHistory, the edit-block
+	// parse, and lastAssistantText all still see exactly one assistant answer
+	// per exchange, so an edit block emitted early in a multi-step turn cannot
+	// go missing.
+	streamAssistant int
+
 	clientName    string
 	workspace     string // sent to the daemon so it can flag a workspace mismatch
 	workspaceRoot string // real (symlink-resolved) workspace root edits are confined to
@@ -154,14 +186,15 @@ func newChatModel(clientName, workspace, workspaceRoot string, initialHistory []
 	vp.MouseWheelEnabled = true
 
 	return chatModel{
-		state:         stateSplash,
-		input:         ti,
-		spinner:       sp,
-		viewport:      vp,
-		clientName:    clientName,
-		workspace:     workspace,
-		workspaceRoot: workspaceRoot,
-		turns:         turnsFromProtocol(initialHistory),
+		state:           stateSplash,
+		streamAssistant: -1,
+		input:           ti,
+		spinner:         sp,
+		viewport:        vp,
+		clientName:      clientName,
+		workspace:       workspace,
+		workspaceRoot:   workspaceRoot,
+		turns:           turnsFromProtocol(initialHistory),
 	}
 }
 
@@ -208,6 +241,9 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.state == stateEditReview {
 			return m.handleReviewKey(msg)
+		}
+		if m.state == stateToolApproval {
+			return m.handleApprovalKey(msg)
 		}
 		switch msg.String() {
 		case "ctrl+c", "esc":
@@ -277,11 +313,8 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// the turn's SEPARATE reasoning field, never appended to text.
 		if m.state == stateSending {
 			m.state = stateStreaming
-			m.turns = append(m.turns, turn{role: roleAssistant})
 		}
-		if n := len(m.turns); n > 0 {
-			m.turns[n-1].reasoning += msg.text
-		}
+		m.turns[m.ensureAssistantTurn()].reasoning += msg.text
 		m.refreshViewport()
 		return m, waitForNext(m.streamCh)
 
@@ -291,6 +324,32 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.lastHistoryTruncated = msg.info != nil && msg.info.Truncated
 		m.resizeViewport()
+		return m, waitForNext(m.streamCh)
+
+	case toolActivityMsg:
+		if m.streamCh == nil {
+			return m, nil // a stray message from an already-abandoned stream
+		}
+		m.noteToolActivity(msg.activity)
+		m.refreshViewport()
+		return m, waitForNext(m.streamCh)
+
+	case toolApprovalMsg:
+		if m.streamCh == nil {
+			// The stream was abandoned while the daemon was asking. Answer
+			// anyway, on the safe side, so nothing is left waiting on a
+			// question whose asker has gone.
+			msg.reply <- protocol.ApprovalCancelTurn
+			return m, nil
+		}
+		req := msg.req
+		m.pendingApproval = &req
+		m.approvalReply = msg.reply
+		m.state = stateToolApproval
+		m.refreshViewport()
+		// Keep draining: the stream goroutine is blocked on the reply, so
+		// nothing arrives until the user answers, and this wait is what picks up
+		// the stream again when they do.
 		return m, waitForNext(m.streamCh)
 
 	case tokenMsg:
@@ -416,6 +475,8 @@ func (m chatModel) startTurn() (tea.Model, tea.Cmd) {
 	m.lastDegraded = nil
 	m.lastProvider = ""
 	m.lastHistoryTruncated = false
+	m.streamAssistant = -1
+	m.activityTurns = nil
 	m.resizeViewport()
 	m.refreshViewport()
 
@@ -490,13 +551,22 @@ func (m chatModel) handleToken(msg tokenMsg) (tea.Model, tea.Cmd) {
 	}
 	if m.state == stateSending {
 		m.state = stateStreaming
-		m.turns = append(m.turns, turn{role: roleAssistant})
 	}
-	if n := len(m.turns); n > 0 {
-		m.turns[n-1].text += string(msg)
-	}
+	m.turns[m.ensureAssistantTurn()].text += string(msg)
 	m.refreshViewport()
 	return m, waitForNext(m.streamCh)
+}
+
+// ensureAssistantTurn returns the index of this stream's assistant turn,
+// creating it if the stream has not spoken yet. Wherever the tool-activity
+// notices happen to have landed, the answer keeps going to the same place.
+func (m *chatModel) ensureAssistantTurn() int {
+	if m.streamAssistant >= 0 && m.streamAssistant < len(m.turns) {
+		return m.streamAssistant
+	}
+	m.streamAssistant = len(m.turns)
+	m.turns = append(m.turns, turn{role: roleAssistant})
+	return m.streamAssistant
 }
 
 // checkForEditBlocks runs once a stream finishes: it parses the just-
@@ -600,6 +670,123 @@ func (m chatModel) handleReviewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// handleApprovalKey handles keypresses while an agent turn is paused on a tool
+// call. Only a literal 'y' or 'a' approves -- the same strict default-deny
+// philosophy as the edit review's `[y/N]` and the CLI's, and for a stronger
+// reason: a Lane B tool is an unconfined subprocess, and consent is the only
+// protection standing in front of it.
+//
+// EVERY OTHER KEY IS A NO-OP. Not a deny, not a dismiss: a stray keystroke from
+// a user typing into what they thought was the input box must not answer a
+// security question on their behalf in either direction.
+func (m chatModel) handleApprovalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y":
+		return m.answerApproval(protocol.ApprovalApprove)
+	case "a":
+		return m.answerApproval(protocol.ApprovalApproveForTurn)
+	case "n":
+		return m.answerApproval(protocol.ApprovalDeny)
+	case "q", "esc":
+		return m.answerApproval(protocol.ApprovalCancelTurn)
+	case "ctrl+c":
+		// Stop the task first, so the daemon is not left holding a tool call
+		// open while this process exits, then quit as ctrl+c does everywhere.
+		model, _ := m.answerApproval(protocol.ApprovalCancelTurn)
+		if m.streamCancel != nil {
+			m.streamCancel()
+		}
+		return model, tea.Quit
+	}
+	return m, nil
+}
+
+// answerApproval sends one decision back to the waiting stream goroutine and
+// returns the UI to streaming.
+//
+// The send is inline rather than wrapped in a tea.Cmd, which is safe for
+// exactly one reason worth stating: approvalReply is buffered with capacity 1
+// and receives exactly one send, so it cannot block Update. Anything less
+// certain than that belongs in a Cmd.
+func (m chatModel) answerApproval(decision string) (tea.Model, tea.Cmd) {
+	if m.approvalReply == nil {
+		return m, nil
+	}
+	m.approvalReply <- decision
+
+	m.turns = append(m.turns, turn{role: roleSystem, text: approvalOutcomeLine(*m.pendingApproval, decision)})
+	m.pendingApproval = nil
+	m.approvalReply = nil
+	m.state = stateStreaming
+	m.refreshViewport()
+	return m, nil
+}
+
+// approvalOutcomeLine is the permanent scrollback record of what the user
+// decided. It stays in the transcript after the panel is gone, because "did I
+// approve that?" is a question worth being able to answer by scrolling up.
+func approvalOutcomeLine(req protocol.ToolApprovalRequest, decision string) string {
+	name := req.Server + "__" + req.Tool
+	switch decision {
+	case protocol.ApprovalApprove:
+		return "✓ approved " + name
+	case protocol.ApprovalApproveForTurn:
+		return "✓ approved " + name + " for the rest of this task"
+	case protocol.ApprovalCancelTurn:
+		return "✗ stopped the task at " + name
+	default:
+		return "✗ denied " + name
+	}
+}
+
+// noteToolActivity records one step of an agent turn in the transcript,
+// rewriting the call's existing line rather than adding another.
+//
+// The 'requested' and 'approved' phases are deliberately not rendered: the user
+// has just answered a modal about that exact call, and narrating it back to
+// them is noise. What earns a line is the call actually running, and how it
+// ended.
+func (m *chatModel) noteToolActivity(a protocol.ToolActivity) {
+	line := toolActivityLine(a)
+	if line == "" {
+		return
+	}
+	if m.activityTurns == nil {
+		m.activityTurns = map[string]int{}
+	}
+	if idx, ok := m.activityTurns[a.CallID]; ok && idx < len(m.turns) {
+		m.turns[idx].text = line
+		return
+	}
+	m.activityTurns[a.CallID] = len(m.turns)
+	m.turns = append(m.turns, turn{role: roleSystem, text: line})
+}
+
+func toolActivityLine(a protocol.ToolActivity) string {
+	name := a.Server + "__" + a.Tool
+	switch a.Phase {
+	case protocol.ToolPhaseRunning:
+		return "⚙ running " + name + "…"
+	case protocol.ToolPhaseSucceeded:
+		// ResultBytes is what actually went back to the model after scrubbing
+		// and truncation -- in agent mode that is the quantity leaving the
+		// machine, and a privacy-positioned product should let a user watch it.
+		return fmt.Sprintf("⚙ %s — %d bytes to the model in %dms", name, a.ResultBytes, a.DurationMS)
+	case protocol.ToolPhaseFailed:
+		return "⚠ " + name + " failed" + detailSuffix(a.Detail)
+	case protocol.ToolPhaseDenied:
+		return "✗ " + name + " not run" + detailSuffix(a.Detail)
+	}
+	return ""
+}
+
+func detailSuffix(detail string) string {
+	if detail == "" {
+		return ""
+	}
+	return ": " + detail
+}
+
 // applyCurrentReviewEdit backs up and writes m.reviewPrepared using the same
 // editapply backup+write calls the CLI's applyEditBlocks uses — the same
 // .codeterminal/backups/<session>/{before,after}/ layout, restorable via
@@ -656,6 +843,9 @@ func (m *chatModel) refreshViewport() {
 	if m.state == stateEditReview && m.reviewPrepared != nil {
 		content += "\n\n" + renderReviewPanel(m.reviewIndex, len(m.reviewBlocks), m.reviewPrepared)
 	}
+	if m.state == stateToolApproval && m.pendingApproval != nil {
+		content += "\n\n" + renderApprovalPanel(*m.pendingApproval)
+	}
 	m.viewport.SetContent(content)
 	m.viewport.GotoBottom()
 }
@@ -709,6 +899,44 @@ func renderReviewPanel(index, total int, p *editapply.PreparedEdit) string {
 	return b.String()
 }
 
+// renderApprovalPanel shows one pending tool call the way the review panel
+// shows one pending edit: everything the decision depends on, in front of the
+// user, before they make it.
+//
+// THE ARGUMENTS ARE SHOWN IN FULL, never summarised. A consent prompt that
+// displays less than what will run is not consent, and the daemon binds its
+// approval to a digest of exactly these bytes.
+//
+// The confinement line is the one that must never be softened. For a
+// third-party server it says plainly that nothing here can constrain what the
+// tool touches -- that is the honest description of an ordinary subprocess
+// running with the user's own privileges, and dressing it up as "sandboxed"
+// would be the single most damaging sentence this product could print.
+func renderApprovalPanel(req protocol.ToolApprovalRequest) string {
+	var b strings.Builder
+	b.WriteString(brandStyle.Render(fmt.Sprintf("--- run %s__%s? (step %d of at most %d) ---",
+		req.Server, req.Tool, req.Iteration, req.MaxIterations)))
+
+	b.WriteString("\n" + helpStyle.Render("arguments:"))
+	for _, line := range strings.Split(req.Arguments, "\n") {
+		b.WriteString("\n" + diffAddedStyle.Render("  "+line))
+	}
+
+	if req.Confined {
+		b.WriteString("\n" + helpStyle.Render("this tool ships with Mochiii; anything it changes goes through the same review you use for edits"))
+	} else {
+		b.WriteString("\n" + diffRemovedStyle.Render("NOT SANDBOXED: this is a separate program running with your full access. "+
+			"Mochiii cannot limit what it reads or changes — your approval is the only thing in its way."))
+	}
+	if req.Destructive {
+		b.WriteString("\n" + diffRemovedStyle.Render("the server describes this tool as destructive"))
+	}
+	if req.Detail != "" {
+		b.WriteString("\n" + helpStyle.Render(req.Detail))
+	}
+	return b.String()
+}
+
 func (m chatModel) View() string {
 	if m.state == stateSplash {
 		content := renderSplash()
@@ -727,6 +955,9 @@ func (m chatModel) View() string {
 	if m.state == stateEditReview && m.reviewPrepared != nil {
 		bottomLine = accentStyle.Render(fmt.Sprintf("edit %d/%d: %s", m.reviewIndex+1, len(m.reviewBlocks), m.reviewPrepared.Block.FilePath))
 		help = helpStyle.Render(reviewHelpText)
+	} else if m.state == stateToolApproval && m.pendingApproval != nil {
+		bottomLine = accentStyle.Render(fmt.Sprintf("approve %s__%s?", m.pendingApproval.Server, m.pendingApproval.Tool))
+		help = helpStyle.Render(approvalHelpText)
 	} else {
 		bottomLine = m.input.View()
 		help = helpStyle.Render(helpText)
@@ -953,6 +1184,8 @@ func (m chatModel) stateLabel() string {
 		return errorStyle.Render("error: " + m.statusErr)
 	case stateEditReview:
 		return accentStyle.Render("reviewing edits…")
+	case stateToolApproval:
+		return accentStyle.Render("waiting for your approval…")
 	default:
 		return helpStyle.Render("idle")
 	}

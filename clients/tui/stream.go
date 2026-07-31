@@ -68,6 +68,29 @@ type historyMsg struct{ info *protocol.HistoryInfo }
 // sentence that stops mid-word as if it were the whole reply.
 type incompleteMsg struct{ info *protocol.IncompleteInfo }
 
+// toolApprovalMsg is the daemon asking permission to run one tool call, and
+// the channel it is waiting for the answer on.
+//
+// It is the ONLY message here that expects something back. The stream goroutine
+// blocks until reply carries a protocol.Approval* decision (or the turn is
+// cancelled), which is what makes the guarantee literal rather than aspirational:
+// the daemon does not proceed, and the tool does not run, while this sits on
+// screen.
+//
+// reply is BUFFERED with capacity 1 and receives exactly one send, so answering
+// can happen inline in Update without ever blocking Bubble Tea's loop.
+type toolApprovalMsg struct {
+	req   protocol.ToolApprovalRequest
+	reply chan string
+}
+
+// toolActivityMsg narrates one step of an agent turn (see
+// protocol.ToolActivity). Purely observational -- nothing in it needs an
+// answer. It exists because an agent turn can take many seconds, and a client
+// that showed only a spinner for that long is indistinguishable from a broken
+// one.
+type toolActivityMsg struct{ activity protocol.ToolActivity }
+
 // streamDoneMsg signals the stream finished successfully.
 type streamDoneMsg struct{}
 
@@ -163,6 +186,52 @@ func startStream(ctx context.Context, clientName, workspace, prompt, promptKind 
 	}
 }
 
+// askForApproval hands the request to the UI and waits for the user's answer,
+// then writes it back on the SAME connection the turn is streaming over.
+// Reports whether streaming should continue.
+//
+// BLOCKING HERE IS CORRECT. This runs in streamPrompt's own goroutine, never in
+// Bubble Tea's Update loop, and blocking is the whole point: the daemon is
+// holding a tool call open until a human answers, so the client must too. The
+// ctx case is not optional -- a user quitting mid-prompt cancels the context,
+// and the conn-closing watcher in streamPrompt cannot unblock a channel
+// receive, so without it this goroutine would leak for the life of the process.
+func askForApproval(ctx context.Context, sess *daemonSession, req protocol.ToolApprovalRequest, ch chan tea.Msg) bool {
+	reply := make(chan string, 1)
+	select {
+	case ch <- toolApprovalMsg{req: req, reply: reply}:
+	case <-ctx.Done():
+		return false
+	}
+
+	var decision string
+	select {
+	case decision = <-reply:
+	case <-ctx.Done():
+		return false
+	}
+
+	// CallID and ArgumentsSHA256 are echoed back exactly as they arrived. The
+	// daemon re-checks both before dispatching, so this is what proves the
+	// answer belongs to the question the user was actually shown -- a client
+	// that recomputed the digest from its own copy would be attesting to its own
+	// rendering rather than to the daemon's bytes.
+	if err := sess.enc.Encode(protocol.ToolApprovalResponse{
+		ProtocolVersion: protocol.ProtocolVersion,
+		Approval:        decision == protocol.ApprovalApprove || decision == protocol.ApprovalApproveForTurn,
+		CallID:          req.CallID,
+		ArgumentsSHA256: req.ArgumentsSHA256,
+		Decision:        decision,
+	}); err != nil {
+		if ctx.Err() != nil {
+			return false
+		}
+		ch <- streamErrMsg{err}
+		return false
+	}
+	return true
+}
+
 // waitForNext waits for the next message on an already-started stream.
 // Update re-issues this after every tokenMsg — that's what keeps draining
 // ch without Update itself ever blocking: each wait happens inside its own
@@ -252,6 +321,14 @@ func streamPrompt(ctx context.Context, clientName, workspace, prompt, promptKind
 		}
 		if tok.Provider != "" {
 			ch <- providerMsg{tok.Provider}
+		}
+		if tok.ToolActivity != nil {
+			ch <- toolActivityMsg{*tok.ToolActivity}
+		}
+		if tok.ToolApproval != nil {
+			if !askForApproval(ctx, sess, *tok.ToolApproval, ch) {
+				return
+			}
 		}
 		if tok.Token != "" {
 			ch <- tokenMsg(tok.Token)

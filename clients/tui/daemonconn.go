@@ -63,6 +63,16 @@ func connectToDaemon(clientName string) (*daemonSession, error) {
 	if err := enc.Encode(protocol.HandshakeRequest{
 		ProtocolVersion: protocol.ProtocolVersion,
 		ClientName:      clientName,
+		// THIS IS THE SWITCH THAT TURNS AGENT MODE ON FOR THE TUI.
+		//
+		// The daemon runs the agentic loop only for a client that declared it
+		// can answer a mid-stream approval (see agentModeEngaged), so declaring
+		// the capability is a promise this client keeps: stream.go surfaces the
+		// request and chat.go blocks the turn on a keystroke. A client that
+		// declares it and cannot render it would leave the daemon asking a
+		// question nobody answers, and every such call would be denied five
+		// minutes later.
+		Capabilities: []string{protocol.CapToolApproval},
 	}); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("sending handshake: %w", err)
