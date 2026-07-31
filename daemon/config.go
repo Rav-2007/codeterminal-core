@@ -41,6 +41,12 @@ type Config struct {
 	// main.go) — either source setting it true disables scrubbing.
 	NoScrub bool `json:"no_scrub,omitempty"`
 
+	// MCP configures agent mode: which MCP servers may run, what their tools
+	// are allowed to do without asking, and how far one turn may go. An absent
+	// section means agent mode is OFF and the daemon behaves exactly as it did
+	// before MCP existed — see mcpconfig.go for the full polarity rule.
+	MCP MCPConfig `json:"mcp,omitempty"`
+
 	warnings []string
 }
 
@@ -182,7 +188,7 @@ const (
 // retrieval running at the default top_k, with nothing said. These sets are
 // what turn that silence into a warning naming the offending key.
 var (
-	knownConfigKeys    = []string{"config_version", "default_tier", "tiers", "retrieval", "zdr", "no_scrub"}
+	knownConfigKeys    = []string{"config_version", "default_tier", "tiers", "retrieval", "zdr", "no_scrub", "mcp"}
 	knownRetrievalKeys = []string{"disabled", "rerank_disabled", "top_k", "context_budget_chars"}
 	knownZDRKeys       = []string{"allow_non_zdr", "allow_data_collection", "allow_fallbacks", "provider_ignore_list"}
 	knownTierKeys      = []string{"slug", "active", "note"}
@@ -265,6 +271,34 @@ func (c *Config) checkUnknownKeys(data []byte) {
 			}
 		}
 	}
+	if sub, ok := raw["mcp"]; ok {
+		c.warnNested(sub, knownMCPKeys, "mcp")
+
+		var mcp map[string]json.RawMessage
+		if err := json.Unmarshal(sub, &mcp); err == nil {
+			if budget, ok := mcp["budget"]; ok {
+				c.warnNested(budget, knownMCPBudgetKeys, "mcp.budget")
+			}
+			if builtin, ok := mcp["builtin"]; ok {
+				c.warnNested(builtin, knownMCPBuiltinKeys, "mcp.builtin")
+			}
+			if servers, ok := mcp["servers"]; ok {
+				var byName map[string]json.RawMessage
+				if err := json.Unmarshal(servers, &byName); err == nil {
+					// Sorted so a config with several misspelled server keys
+					// reports them in a stable order across runs.
+					names := make([]string, 0, len(byName))
+					for name := range byName {
+						names = append(names, name)
+					}
+					slices.Sort(names)
+					for _, name := range names {
+						c.warnNested(byName[name], knownMCPServerKeys, "mcp.servers."+name)
+					}
+				}
+			}
+		}
+	}
 }
 
 // warnNested decodes one nested object and warns about its unknown keys.
@@ -316,6 +350,9 @@ func (c *Config) clampRanges() {
 			c.Retrieval.ContextBudgetChars, maxContextBudgetChars, maxContextBudgetChars)
 		c.Retrieval.ContextBudgetChars = maxContextBudgetChars
 	}
+
+	c.clampMCPRanges()
+	c.warnMCPPolicySurface()
 }
 
 // Validate checks that the config is internally consistent: the default
@@ -343,7 +380,11 @@ func (c *Config) Validate() error {
 		}
 	}
 
-	return nil
+	// MCP is validated last and can refuse the file. It is the one section
+	// where an unreadable setting decides whether a program runs on the user's
+	// machine, so its failures are errors rather than warnings -- see
+	// validateMCP.
+	return c.validateMCP()
 }
 
 // ResolvedSlug returns the model slug for the configured default tier.
