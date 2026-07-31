@@ -245,6 +245,34 @@ the error, `_ =` with a reason, or an exclusion entry, then wire `errcheck` into
 are hard gates, which is worth more than four adopted softly — this repo has
 already learned that a check nobody must pass is a check that drifts.
 
+> **UPDATE 2026-07-31 — the deferral was right, and it was also unguarded.**
+>
+> Re-measured on `perf/latency-baseline`: **365 findings, 170 outside tests**, against
+> the 329 / 157 recorded above. **Thirty-six new unchecked errors arrived in two weeks**,
+> for exactly the reason this entry gives for not adopting: nothing was watching.
+>
+> The entry posed this as adopt-or-defer. There is a third option, and it is the one
+> this repo already invented for coverage: **ratchet it.**
+> [`scripts/errcheck-ceiling.sh`](scripts/errcheck-ceiling.sh) +
+> [`scripts/errcheck-ceilings.txt`](scripts/errcheck-ceilings.txt) grandfather the
+> current per-module counts and fail the build on growth — no triage required to start,
+> and the drift stops today. It runs in CI's lint job and in `make check`, fails closed
+> on a module with no recorded ceiling, and **fails when a count DROPS** too, so a
+> slackened ratchet is reported rather than silently tolerated.
+>
+> Non-test only (`-ignoretests`), deliberately: an unchecked error in a test is a real
+> problem but a different one, and sharing a budget would let each hide behind the
+> other. Current ceilings — `daemon` 112, `proxy` 25, `editapply` 12, `helper` 11,
+> `clients/tui` 10, `protocol` 0.
+>
+> **The triage above is still the way to close (j).** This does not do it; it stops the
+> problem getting worse while it waits, and turns "we decided not to" into something a
+> build can enforce. The classification is also sharper now: of the 170, ~91 are the
+> conventional ignorables (40 `Close`, 23 `Fprint*`, 17 `os.Remove`, 7 `fset.Parse`,
+> 4 `io.Copy` drains). The genuinely interesting residue is **15 `enc.Encode` socket
+> writes and 4 `w.Write`** — a failed response encode means the peer never got the
+> answer, and today that is silent. That is where triage should start.
+
 ## Backlog — added 2026-07-08
 
 - **Daemon must run from repo root (config-path gotcha)** (low priority; docs/DX)

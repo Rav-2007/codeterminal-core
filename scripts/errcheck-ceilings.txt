@@ -1,0 +1,17 @@
+# Per-module ceilings on UNCHECKED ERRORS outside tests (errcheck -ignoretests).
+#
+# These are grandfathered counts, not targets. The point is that they may not
+# GROW: debt item (j) deferred errcheck adoption for sound reasons, but the
+# deferral had no mechanism and the count drifted from 157 to 170 in two weeks.
+#
+# Lower a number whenever triage removes a site -- the script FAILS on a count
+# below its ceiling, so a ratchet that has slackened is reported rather than
+# quietly tolerated. Raising one is a decision that belongs in a commit message.
+#
+# Measured 2026-07-31 on perf/latency-baseline.
+daemon        112
+editapply      12
+proxy          25
+protocol        0
+helper         11
+clients/tui    10

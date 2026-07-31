@@ -84,8 +84,9 @@ jobs:
         run: ./scripts/coverage-ratchet.sh ${{ matrix.module }}
 
   lint:
-    # Static analysis: staticcheck, ineffassign, bodyclose. What each one gates,
-    # and why errcheck is deliberately absent, is documented in scripts/lint.sh.
+    # Static analysis: staticcheck, ineffassign, bodyclose as HARD gates (what
+    # each one gates is documented in scripts/lint.sh), plus errcheck as a
+    # RATCHET rather than a gate -- see the ceiling step below and debt item (j).
     #
     # Same explicit module matrix as the other Go jobs, for the same reason: there
     # is no root module, so a root-level ./... does not work.
@@ -110,9 +111,18 @@ jobs:
           go install honnef.co/go/tools/cmd/staticcheck@latest
           go install github.com/gordonklaus/ineffassign@latest
           go install github.com/timakin/bodyclose@latest
+          go install github.com/kisielk/errcheck@latest
 
       - name: Lint
         run: ./scripts/lint.sh ${{ matrix.module }}
+
+      # errcheck is NOT a hard gate -- see debt item (j), which deferred adoption
+      # because turning it green means ~170 `_ =` assignments or an arbitrary
+      # exclusion list. It IS a ratchet: the existing count is grandfathered and
+      # may not grow. The deferral previously had no mechanism, and the count
+      # drifted 157 -> 170 in two weeks.
+      - name: Unchecked-error ceiling
+        run: ./scripts/errcheck-ceiling.sh ${{ matrix.module }}
 
   fuzz:
     # Nine targets over the two trust boundaries: the request/SSE parsers in

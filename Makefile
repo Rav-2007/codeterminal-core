@@ -8,7 +8,7 @@
 
 MODULES := daemon editapply proxy helper protocol clients/tui
 
-.PHONY: help hooks test race fmt vet lint ratchet fuzz check drill soak
+.PHONY: help hooks test race fmt vet lint ratchet errcheck fuzz check drill soak
 
 help:
 	@echo "make hooks    install the tracked git hooks (.githooks/) -- do this once"
@@ -16,6 +16,7 @@ help:
 	@echo "make race     go test -race across all six modules"
 	@echo "make lint     staticcheck + ineffassign + bodyclose"
 	@echo "make ratchet  per-package coverage floors"
+	@echo "make errcheck per-module unchecked-error ceilings (a ratchet, not a gate)"
 	@echo "make fuzz     30s per fuzz target (FUZZTIME=5m to search harder)"
 	@echo "make drill    mid-stream SIGTERM drill against the real proxy binary"
 	@echo "make soak     30-minute sustained-load run (DURATION=180 for a quick check)"
@@ -54,6 +55,9 @@ lint:
 ratchet:
 	@./scripts/coverage-ratchet.sh
 
+errcheck:
+	@./scripts/errcheck-ceiling.sh
+
 fuzz:
 	@./scripts/fuzz.sh
 
@@ -63,5 +67,5 @@ drill:
 soak:
 	@./scripts/soak.sh
 
-check: fmt vet race lint ratchet
+check: fmt vet race lint ratchet errcheck
 	@echo "check: all gates green"
