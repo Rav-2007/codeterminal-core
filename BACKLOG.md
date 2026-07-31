@@ -4266,3 +4266,40 @@ remain not started.**
 
 **Status: verified locally and in CI; NOT founder-closed.** The region decision and the
 B.2 recommendation are the founder's, and both now have numbers behind them.
+
+### Also landed in this batch — Phase 6.2 (confinement conformance) and debt (h)
+
+Both were in scope for later phases and were cheap to close while the relevant code
+was open.
+
+**Phase 6.2 — confinement conformance suite** (`6364ccb`). One table of eight
+attacker-shaped vectors (absolute, bare/nested/deep `..`, symlinked leaf, symlinked
+directory, symlinked ancestor two levels up) mirrored verbatim in
+`daemon/confinement_conformance_test.go` and
+`editapply/confinement_conformance_test.go`, each asserting its own resolver. The
+assertion is *"if it returned a path, that path is inside the root"* rather than
+*"it returned an error"* — a resolver may legitimately accept a path it can prove is
+confined. Each suite also asserts ordinary paths still resolve, so it cannot pass
+against a resolver that refuses everything.
+
+The valuable half is `TestConfinementConformance_DocumentedAsymmetry`, present in both
+with **opposite** expectations, because the two implementations genuinely differ and
+that difference was previously only implicit: `editapply`'s `resolveSafeTarget` also
+refuses protected dirs (`.git`, case-folded `.GIT`) and secret-named files, because it
+gates a **model-proposed edit**; `daemon`'s `confinedRestorePath` deliberately does
+not, because it resolves an **undo destination** whose paths already passed those
+gates, and adding them would make a legitimately-backed-up file un-restorable. Both
+directions are asserted, so changing either is now a decision rather than a drift.
+
+Neuter-checked: weakening the post-symlink escape predicate turns it red with the
+escaped path printed.
+
+**Debt (h) — `turns` retention** (`5072961`): closed, see item (h) above. It surfaced
+two things not in the original item — `turns` had **no index at all**, and
+`ensureMemorySchema` returned right after the v1→v2 case, so adding any later step as
+another switch case would have recorded a v1 database as current while skipping it.
+
+**Still not started from Phases 5 and 6:** migration `0004` and the `api_keys_public`
+audit (both founder-gated — they need live database access), the schema-drift CI check,
+and 6.1's `proxy/main.go` split (now 2,498 lines, up from the 1,942 the plan was
+written against).
