@@ -21,7 +21,7 @@
 # difference on a shared statement count. The floor takes the LOWER reading so
 # ordinary variance can never trip the ratchet; only a real drop can.
 
-codeterminal/daemon              69.3
+codeterminal/daemon              70.5
 codeterminal/editapply           87.0
 codeterminal/proxy               80.3
 

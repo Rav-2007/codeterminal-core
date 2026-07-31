@@ -260,6 +260,12 @@ func main() {
 		// the log-only fire-rate data survives daemon restarts instead of
 		// vanishing with stderr. Local file only — no network egress.
 		warnSink: newWarnSink(filepath.Join(absWorkspace, ".codeterminal", "logs", "warnmode.jsonl")),
+		// The tool-call audit log, alongside it and under the same discipline:
+		// local file only, no network seam. Always constructed, not just when
+		// mcp.enabled -- a daemon that starts with agent mode off and has it
+		// turned on later must not be the one daemon whose calls went
+		// unrecorded, and an unused sink writes nothing.
+		toolAudit: newToolAuditSink(filepath.Join(absWorkspace, ".codeterminal", "logs", "toolcalls.jsonl")),
 		// Activity counters, reported through the existing status surface (see
 		// counters.go). Built here rather than lazily so production always has
 		// them; a nil set is valid and simply counts nothing.

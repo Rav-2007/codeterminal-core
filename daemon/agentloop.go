@@ -26,10 +26,11 @@ import (
 //     that are all config-visible, and every termination says which one bit.
 //   - "must live in the daemon, not the client". It does.
 //
-// THIS PHASE DELIBERATELY CANNOT ASK. Policy "ask" is treated as a refusal (see
-// resolveExecutable) because the approval channel is Phase 5. That means the
-// loop is shippable and testable now, while remaining unable to run anything
-// the user has not written "allow" against in their own config file.
+// The loop ASKS. Policy "ask" -- which is what every tool the user has not
+// written a policy for resolves to -- suspends the turn and puts the exact call
+// in front of a human (see toolapproval.go). Nothing here can run a tool on the
+// strength of the model wanting it to: a call runs because config says allow,
+// or because a person said yes to those exact argument bytes.
 
 // agentTurn is one loop's mutable state.
 type agentTurn struct {
@@ -47,6 +48,26 @@ type agentTurn struct {
 	// look the same as three reads of one).
 	toolSignatures []string
 	iteration      int
+
+	// grants holds the tools the user answered ApprovalApproveForTurn for,
+	// keyed by QUALIFIED NAME ONLY -- not by arguments, because "allow this tool
+	// for the rest of the turn" is exactly what the user chose and narrowing it
+	// to the arguments they happened to see first would make the option do
+	// nothing.
+	//
+	// It lives here, on one turn's state, and nowhere else. It is never written
+	// to disk and never carried to the next turn, so a grant cannot outlive the
+	// task it was given for. A durable "always allow" belongs in models.json,
+	// where the user writes it themselves and can read it back later.
+	grants map[string]bool
+}
+
+// grant records an approve-for-turn decision.
+func (t *agentTurn) grant(qualified string) {
+	if t.grants == nil {
+		t.grants = map[string]bool{}
+	}
+	t.grants[qualified] = true
 }
 
 // budget is the resolved set of ceilings for one turn.
@@ -88,12 +109,17 @@ type agentResult struct {
 // onToken streams assistant text to the client exactly as the single-turn path
 // does. onActivity reports each tool step so a user watching a multi-second
 // loop sees what it is doing rather than a spinner.
+//
+// appr is how the loop asks a human about a call whose policy is "ask". A nil
+// approver means there is nobody to ask, and every such call is refused -- the
+// safe direction, and the one the eval harness runs in.
 func (s *Server) runAgentLoop(
 	ctx context.Context,
 	registry *mcp.Registry,
 	model string,
 	messages []chatMessage,
 	routing providerRouting,
+	appr approver,
 	onToken func(string) error,
 	onActivity func(protocol.ToolActivity),
 	onProvider func(string),
@@ -154,8 +180,26 @@ func (s *Server) runAgentLoop(
 			if err := ctx.Err(); err != nil {
 				return agentResult{}, err
 			}
-			result := s.dispatchToolCall(ctx, registry, turn, bud, call, onActivity)
+			result, cancelled := s.dispatchToolCall(ctx, registry, turn, &bud, call, appr, onActivity)
 			turn.messages = append(turn.messages, result)
+			if cancelled {
+				// The user chose to stop at an approval prompt. Everything
+				// already streamed is theirs, exactly as with a budget stop --
+				// but it is reported as the deliberate act it was, never as a
+				// ceiling they did not hit.
+				s.logger.Print("agent: the user cancelled the turn at an approval prompt")
+				return agentResult{
+					FinalText: full.String(),
+					Incomplete: &protocol.IncompleteInfo{
+						Reason: protocol.IncompleteUserCancelled,
+						Detail: "you stopped this task at a tool approval — what you see above is " +
+							"everything that was done, and nothing further ran.",
+					},
+					ToolNames:      turn.toolNames,
+					ToolSignatures: turn.toolSignatures,
+					Iterations:     turn.iteration,
+				}, nil
+			}
 		}
 	}
 }
@@ -196,19 +240,28 @@ func (s *Server) budgetStop(turn *agentTurn, bud budget) *protocol.IncompleteInf
 	return nil
 }
 
-// dispatchToolCall resolves policy, runs the tool if permitted, and renders the
-// result for the model. It ALWAYS returns a tool message: a refusal or a
-// failure is information the model can act on, whereas silence makes it repeat
-// the call.
+// dispatchToolCall resolves consent, runs the tool if permitted, renders the
+// result for the model, and records the decision in the audit log. It ALWAYS
+// returns a tool message: a refusal or a failure is information the model can
+// act on, whereas silence makes it repeat the call.
+//
+// The second return value reports that the user asked to abandon the whole
+// turn, which is the caller's business rather than this function's.
 func (s *Server) dispatchToolCall(
 	ctx context.Context,
 	registry *mcp.Registry,
 	turn *agentTurn,
-	bud budget,
+	bud *budget,
 	call toolCall,
+	appr approver,
 	onActivity func(protocol.ToolActivity),
-) chatMessage {
+) (chatMessage, bool) {
 	name := call.Function.Name
+	// ONE variable, read once, used for the digest the user approves, the
+	// bytes handed to the tool, and the audit record. Re-reading the call for
+	// any of the three would be how "what you approved" and "what ran" drift
+	// apart.
+	arguments := call.Function.Arguments
 	server, tool, _ := mcp.SplitQualifiedName(name)
 
 	activity := protocol.ToolActivity{CallID: call.ID, Server: server, Tool: tool}
@@ -223,25 +276,51 @@ func (s *Server) dispatchToolCall(
 	}
 	report(protocol.ToolPhaseRequested, "", 0, 0)
 
-	spec, reason, ok := s.resolveExecutable(ctx, registry, name)
-	if !ok {
-		s.count(func(c *counters) { c.toolCallsDenied.Add(1) })
-		s.logger.Printf("agent: refusing %s: %s", name, reason)
-		report(protocol.ToolPhaseDenied, reason, 0, 0)
-		return toolResultMessage(call, reason)
+	decision := s.resolveExecutable(ctx, registry, turn, *bud, call, appr)
+
+	// Give the turn back the time the human spent deciding.
+	// mcp.budget.turn_timeout_seconds bounds how long the MACHINE may work; a
+	// user who paused to actually read the arguments must not have their turn
+	// killed for taking the care this prompt exists to ask of them.
+	bud.deadline = bud.deadline.Add(decision.waited)
+
+	audit := auditFor(turn.iteration, name, decision.tool, decision.policy, arguments)
+	audit.Source, audit.DenyCause = decision.source, decision.cause
+	audit.WaitedMS = decision.waited.Milliseconds()
+	if decision.tool.Server != "" {
+		activity.Server, activity.Tool = decision.tool.Server, decision.tool.Name
 	}
-	activity.Server, activity.Tool = spec.Server, spec.Name
+
+	if !decision.run {
+		s.count(func(c *counters) { c.toolCallsDenied.Add(1) })
+		s.logger.Printf("agent: refusing %s: %s", name, decision.reason)
+		report(protocol.ToolPhaseDenied, decision.reason, 0, 0)
+		audit.Outcome = auditOutcomeRefused
+		if decision.cancel {
+			audit.Outcome = auditOutcomeCancel
+		}
+		s.toolAudit.record(audit)
+		return toolResultMessage(call, decision.reason), decision.cancel
+	}
 
 	s.count(func(c *counters) { c.toolCalls.Add(1) })
+	// "Approved" means a person said so. A config-allow call is permitted, not
+	// approved, and conflating the two would let the counter and the activity
+	// stream both overstate how much a human actually saw.
+	if decision.source != auditConfigAllow {
+		s.count(func(c *counters) { c.toolCallsApproved.Add(1) })
+		report(protocol.ToolPhaseApproved, "", 0, 0)
+	}
 	report(protocol.ToolPhaseRunning, "", 0, 0)
 
 	// toolsInFlight is what shutdown waits on: unlike a cut prompt, a cut tool
 	// call can leave real work half-done. See WaitForDrain.
 	s.toolsInFlight.Add(1)
 	started := time.Now()
-	result, err := registry.Call(ctx, name, json.RawMessage(call.Function.Arguments))
+	result, err := registry.Call(ctx, name, json.RawMessage(arguments))
 	elapsed := time.Since(started)
 	s.toolsInFlight.Add(-1)
+	audit.DurationMS = elapsed.Milliseconds()
 
 	if err != nil {
 		s.count(func(c *counters) { c.toolCallsFailed.Add(1) })
@@ -253,7 +332,9 @@ func (s *Server) dispatchToolCall(
 			detail = "the tool's server is unavailable"
 		}
 		report(protocol.ToolPhaseFailed, detail, 0, elapsed)
-		return toolResultMessage(call, detail)
+		audit.Outcome = auditOutcomeError
+		s.toolAudit.record(audit)
+		return toolResultMessage(call, detail), false
 	}
 
 	// THE EGRESS BOUNDARY. Everything below this line has been scrubbed and
@@ -266,7 +347,7 @@ func (s *Server) dispatchToolCall(
 	rendered, kinds, emitted := renderToolResult(result.Content, cap, s.noScrub())
 	turn.toolBytes += emitted
 	turn.toolNames = append(turn.toolNames, name)
-	turn.toolSignatures = append(turn.toolSignatures, name+"("+strings.TrimSpace(call.Function.Arguments)+")")
+	turn.toolSignatures = append(turn.toolSignatures, name+"("+strings.TrimSpace(arguments)+")")
 
 	if len(kinds) > 0 {
 		s.logger.Printf("agent: scrub redacted %d suspected secret(s) in %s output: %s",
@@ -274,38 +355,133 @@ func (s *Server) dispatchToolCall(
 	}
 
 	phase := protocol.ToolPhaseSucceeded
+	audit.Outcome = auditOutcomeOK
 	if result.IsError {
 		phase = protocol.ToolPhaseFailed
+		audit.Outcome = auditOutcomeError
 		s.count(func(c *counters) { c.toolCallsFailed.Add(1) })
 	}
 	report(phase, "", emitted, elapsed)
-	return toolResultMessage(call, rendered)
+	audit.ResultBytes = emitted
+	s.toolAudit.record(audit)
+	return toolResultMessage(call, rendered), false
 }
 
-// resolveExecutable decides whether one requested call may run, returning a
-// client-safe reason when it may not.
+// toolDecision is the outcome of resolving one requested call: against config
+// policy first, and then -- where policy says ask -- against the user.
+type toolDecision struct {
+	tool   mcp.Tool
+	policy mcp.Policy
+	source string // an audit* constant: how this call came to run, or not
+	cause  string // a denyBy* constant, for the audit; empty when it runs
+	reason string // client-safe refusal text, fed to the model; empty when it runs
+	run    bool
+	cancel bool          // the user abandoned the whole turn
+	waited time.Duration // human deliberation, excluded from the turn deadline
+}
+
+// resolveExecutable decides whether one requested call may run.
 //
-// "ask" is a REFUSAL in this phase. The approval channel is Phase 5, and the
-// alternative -- treating an un-approvable ask as an allow -- is precisely the
-// bug this whole design exists to prevent. The refusal text says so plainly, so
-// a user who configured "ask" and saw nothing happen learns why.
-func (s *Server) resolveExecutable(ctx context.Context, registry *mcp.Registry, qualified string) (mcp.Tool, string, bool) {
+// Three ways a call can be permitted and they are deliberately distinguishable
+// afterwards: the user's config said allow, the user said yes to these exact
+// argument bytes, or the user said yes to this tool earlier in this same turn.
+// Everything else is a refusal, including every failure of the asking machinery
+// itself -- see toolapproval.go for why "we could not ask" resolves to "no".
+func (s *Server) resolveExecutable(
+	ctx context.Context,
+	registry *mcp.Registry,
+	turn *agentTurn,
+	bud budget,
+	call toolCall,
+	appr approver,
+) toolDecision {
+	qualified := call.Function.Name
 	spec, policy, err := registry.Lookup(ctx, qualified)
 	if err != nil {
 		// The model named something that does not exist. Told plainly so it can
 		// pick a real tool rather than retry the same wrong name.
-		return mcp.Tool{}, fmt.Sprintf("there is no tool called %q available in this turn", qualified), false
+		return toolDecision{
+			policy: mcp.PolicyDeny,
+			source: auditDeniedConfig,
+			cause:  denyByNoChannel,
+			reason: fmt.Sprintf("there is no tool called %q available in this turn", qualified),
+		}
 	}
 
-	switch policy {
-	case mcp.PolicyAllow:
-		return spec, "", true
-	case mcp.PolicyAsk:
-		return mcp.Tool{}, fmt.Sprintf("%q needs the user's per-call approval, which this build cannot request yet. "+
-			"Tell the user they can set it to \"allow\" in models.json if they want it to run without asking.", qualified), false
-	default:
-		return mcp.Tool{}, fmt.Sprintf("%q is not permitted by this user's configuration", qualified), false
+	if policy == mcp.PolicyAllow {
+		return toolDecision{tool: spec, policy: policy, source: auditConfigAllow, run: true}
 	}
+	if policy != mcp.PolicyAsk {
+		return toolDecision{
+			tool:   spec,
+			policy: mcp.PolicyDeny,
+			source: auditDeniedConfig,
+			cause:  denyByNoChannel,
+			reason: fmt.Sprintf("%q is not permitted by this user's configuration", qualified),
+		}
+	}
+
+	// A grant given earlier in THIS turn. It skips the prompt and nothing else:
+	// the call is still counted, still narrated, still audited.
+	if turn.grants[qualified] {
+		return toolDecision{tool: spec, policy: policy, source: auditTurnGrant, run: true}
+	}
+
+	arguments := call.Function.Arguments
+	answer := askApproval(ctx, appr, protocol.ToolApprovalRequest{
+		CallID:    call.ID,
+		Server:    spec.Server,
+		Tool:      spec.Name,
+		Arguments: arguments,
+		// The binding between what is shown and what runs. Re-checked against
+		// the client's echo before anything is dispatched.
+		ArgumentsSHA256: argumentsDigest(arguments),
+		Lane:            spec.Lane,
+		Confined:        spec.Confined,
+		ReadOnlyHint:    spec.ReadOnlyHint,
+		Destructive:     spec.Destructive,
+		Iteration:       turn.iteration,
+		MaxIterations:   bud.maxIterations,
+	})
+
+	source, _ := auditSourceFor(answer)
+	decision := toolDecision{
+		tool:   spec,
+		policy: policy,
+		source: source,
+		cause:  answer.Cause,
+		waited: answer.Waited,
+	}
+
+	switch {
+	case answer.Decision == protocol.ApprovalCancelTurn:
+		decision.cancel = true
+		decision.reason = "the user stopped this task rather than approving the call"
+	case answer.approved():
+		decision.run = true
+		if answer.Decision == protocol.ApprovalApproveForTurn {
+			turn.grant(qualified)
+		}
+	case answer.Cause == denyByUser:
+		decision.reason = fmt.Sprintf("the user declined to run %q. Do not ask again for the same thing — "+
+			"explain what you would have done, or take a different route.", qualified)
+	default:
+		// Timeout, a garbled answer, an answer to a different question, or no
+		// approval channel at all. The model is told the truth: nobody said yes.
+		decision.reason = fmt.Sprintf("%q needs the user's approval and no valid answer came back, "+
+			"so it was not run.", qualified)
+	}
+	return decision
+}
+
+// askApproval is the nil-safe front door to the approver. A nil approver is not
+// an error condition -- it is the ordinary state of every caller that has no
+// client on the other end, such as the loop eval -- and it means no.
+func askApproval(ctx context.Context, appr approver, req protocol.ToolApprovalRequest) approvalDecision {
+	if appr == nil {
+		return denied(denyByNoChannel, 0)
+	}
+	return appr.Ask(ctx, req)
 }
 
 // advertisedToolSpecs converts the registry's tools into the provider's wire

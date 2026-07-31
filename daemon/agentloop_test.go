@@ -65,14 +65,21 @@ func textSSE(text string) []string {
 	}
 }
 
+// runLoop drives one agent turn with no approval channel: every "ask" policy
+// is therefore refused. Tests that exercise consent use runLoopWith.
 func runLoop(t *testing.T, s *Server) (agentResult, []protocol.ToolActivity, error) {
+	t.Helper()
+	return runLoopWith(t, s, nil)
+}
+
+func runLoopWith(t *testing.T, s *Server, appr approver) (agentResult, []protocol.ToolActivity, error) {
 	t.Helper()
 	registry, _ := s.buildRegistry(context.Background(), s.logger, &proposalSink{})
 	t.Cleanup(func() { _ = registry.Close() })
 
 	var activity []protocol.ToolActivity
 	res, err := s.runAgentLoop(context.Background(), registry, "m",
-		[]chatMessage{{Role: "user", Content: "go"}}, providerRouting{},
+		[]chatMessage{{Role: "user", Content: "go"}}, providerRouting{}, appr,
 		func(string) error { return nil },
 		func(a protocol.ToolActivity) { activity = append(activity, a) },
 		nil, nil,
@@ -82,12 +89,16 @@ func runLoop(t *testing.T, s *Server) (agentResult, []protocol.ToolActivity, err
 
 // THE PHASE-4 SAFETY PROPERTY.
 //
-// This build has no approval channel -- that is Phase 5. So a tool whose policy
-// is "ask" must be REFUSED, not run. The tempting alternative (treat an
-// un-askable ask as an allow, since we cannot ask) is precisely the bug the
-// whole consent design exists to prevent, and it would be invisible: the tool
-// would simply work.
-func TestAskPolicyIsRefusedWhileNoApprovalChannelExists(t *testing.T) {
+// When there is nobody to ask, a tool whose policy is "ask" must be REFUSED,
+// not run. The tempting alternative -- treat an un-askable ask as an allow,
+// since we cannot ask -- is precisely the bug the whole consent design exists
+// to prevent, and it would be invisible: the tool would simply work.
+//
+// This is not a hypothetical state now that the channel exists. A nil approver
+// is what every caller with no client on the other end has, including the loop
+// eval, and it is what a client that never declared CapToolApproval would get
+// if agentModeEngaged ever stopped requiring it.
+func TestAskPolicyIsRefusedWhenThereIsNobodyToAsk(t *testing.T) {
 	base, _, _ := agentUpstream(t,
 		toolCallSSE("c1", "builtin__read_file", `{"path":"inside.txt"}`),
 		textSSE("I could not read it."),

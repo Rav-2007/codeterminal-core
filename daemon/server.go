@@ -75,6 +75,12 @@ type Server struct {
 	// affect a request, so every use goes through its nil-safe write method.
 	warnSink *warnSink
 
+	// toolAudit is the durable, local, append-only record of every agent-mode
+	// tool-call decision (see toolaudit.go). It is the half of "you approve
+	// every call and everything is audited" that survives the process. nil is a
+	// valid no-op sink, and an audit-write failure never fails a turn.
+	toolAudit *toolAuditSink
+
 	// Connection resource limits (FAIL-3, Gate 5 DoS hardening). Zero means
 	// "use the default" — see defaultMaxRequestBytes / defaultConnIdleTimeout /
 	// defaultMaxConns and the resolved* accessors below. Production leaves them
@@ -513,7 +519,11 @@ func (s *Server) serveConn(conn net.Conn) {
 	// byte-identical to what it got before agent mode existed -- which is what
 	// makes shipping the loop safe before every client can render it.
 	if s.agentModeEngaged(hsReq) {
-		s.runAgentTurn(s.shutdownContext(), enc, hsReq, promptReq, decision.Slug, messages, routing, &full)
+		// dec and lc go with enc because agent mode is the one path that reads
+		// from the client AFTER its request: an approval answer comes back on
+		// this same connection, needs this same decoder, and needs lc to widen
+		// the idle deadline to human scale for the duration of the ask.
+		s.runAgentTurn(s.shutdownContext(), enc, dec, lc, promptReq, decision.Slug, messages, routing, &full)
 		return
 	}
 
