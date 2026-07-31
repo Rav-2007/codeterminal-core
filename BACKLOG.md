@@ -3213,13 +3213,29 @@ money-path fix would make both harder to review.
 > those files makes a clean revert less likely. This is debt item (a)'s fragility, one
 > level up — not the chunk IDs but the whole pre-fix reconstruction.
 >
-> **The fix is a design change, not a ground-truth edit.** Reconstruct the pre-fix state
-> by checking out the fix commit's *parent* into the worktree (a checkout always
-> succeeds) rather than reverting the fix onto today's HEAD. The captured failure text
-> then comes from the tree that actually produced it, which is what the case was trying
-> to model in the first place. Until that lands, **no recall number from this test should
-> be quoted**, and the CI comment excluding it should say "harness cannot build its
-> fixtures", not "known-red at 0/4".
+> **The fix is a design change, not a ground-truth edit** — and the obvious version of
+> that change does not work. Both candidates were tried:
+>
+> - **Restore only the fix's source files from the parent commit**
+>   (`git checkout <fix>^ -- daemon/provider.go`). Mechanically always succeeds.
+>   **Probed, and it does not compile:** the 20-day-old `provider.go` fails against
+>   today's tree with three independent errors — `unknown field Ignore in
+>   providerRouting` (the D4 provider-ignore work), `too many arguments in call to
+>   streamCompletion` (signature changed), and `undefined: incompleteInfoFor` (function
+>   added since). **Dead option.**
+> - **Check out the whole parent tree.** This compiles — it is a coherent historical
+>   tree — but then retrieval is measured against an index of 200-commit-old code, which
+>   is not what production retrieves over. It answers a question about the past.
+>
+> So the real problem is structural: **reconstructing a historical bug state inside a
+> moving tree has an inherent expiry date**, and no mechanical change removes it. The
+> genuine fix is to stop reconstructing history at all — build cases from *current*
+> known-bad queries with hand-labelled ground truth, which is what debt item (a)
+> ("anchor expectations to symbols") was already reaching towards. That is a rewrite of
+> the eval, not a repair.
+>
+> Until then: **no recall number from this test should be quoted**, and the CI comment
+> excluding it should say "harness cannot build its fixtures", not "known-red at 0/4".
 
 *Original entry, preserved — its first paragraph is what the correction above overturns:*
 

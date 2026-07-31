@@ -214,9 +214,14 @@ jobs:
       #
       # Including it would leave this job permanently red, and a job that is
       # always red is a job nobody reads -- the exact failure this pipeline
-      # exists to fix. Remove the -run filter once the harness reconstructs the
-      # pre-fix state by checking out the fix commit's PARENT (which always
-      # succeeds) instead of reverting onto today's HEAD.
+      # exists to fix.
+      #
+      # Do NOT "fix" this by checking out the fix commit's parent: restoring
+      # just the pre-fix source files was probed and does not compile against
+      # today's tree, and restoring the whole parent tree measures retrieval
+      # over 200-commit-old code. Reconstructing a historical bug state in a
+      # moving tree expires by design; the eval needs rebuilding around current
+      # queries with labelled ground truth. Remove the -run filter then.
       - name: Run gated eval suite (green subset -- see comment)
         run: go test -tags eval -run 'TestEvalRetrievalQuality|TestRerankEvalRetrievalRanking|TestTokenEfficiencyEval' ./...
         working-directory: daemon
