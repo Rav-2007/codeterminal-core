@@ -155,6 +155,28 @@ func isJSONNull(raw json.RawMessage) bool {
 	return bytes.Equal(bytes.TrimSpace(raw), []byte("null"))
 }
 
+// isToolApprovalResponse sniffs whether raw is a protocol.ToolApprovalResponse,
+// identified by its "approval" key (no omitempty, see its doc comment).
+//
+// Unlike every other sniffer here, this one is NOT consulted by serveConn's
+// top-level dispatch. A tool approval is only ever read mid-turn, by the agent
+// loop, at a point where an approval is the only message that makes sense --
+// see readToolApproval. It lives here so the exact-key discipline is applied to
+// it identically, and so a future maintainer adding it to the top-level
+// dispatch finds the sniffer already written to the house rule rather than
+// writing a case-folding one.
+//
+// A false return at the loop's call site is a DENIAL, not a fall-through: the
+// loop asked a yes/no question, and a body that is not recognisably an answer
+// is not a yes.
+func isToolApprovalResponse(raw json.RawMessage) bool {
+	fields, ok := requestFields(raw)
+	if !ok {
+		return false
+	}
+	return hasBoolKey(fields, "approval")
+}
+
 // hasObjectKey reports whether fields carries key EXACTLY with a value that
 // decodes into target (a non-null JSON object). Mirrors hasBoolKey's reasoning
 // for the one sniffed key whose payload is a struct rather than a flag.

@@ -68,6 +68,11 @@ func main() {
 				logger.Fatal(err)
 			}
 			return
+		case "mcp":
+			if err := runMCPCommand(os.Args[2:], logger); err != nil {
+				logger.Fatal(err)
+			}
+			return
 		}
 	}
 

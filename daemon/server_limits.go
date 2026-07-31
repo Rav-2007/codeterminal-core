@@ -124,6 +124,48 @@ func (c *limitedConn) Write(p []byte) (int, error) {
 	return c.Conn.Write(p)
 }
 
+// maxApprovalResponseBytes is the read budget granted for ONE tool-approval
+// answer. A ToolApprovalResponse is a call id, a hex digest and a verb; 4 KiB
+// is already generous. It is granted per approval and bounded by the turn's
+// iteration ceiling, so the aggregate a client can unlock this way stays small
+// and finite -- an approval channel must not become a way to lift the 16 MiB
+// request cap by asking to be asked repeatedly.
+const maxApprovalResponseBytes = 4 * 1024
+
+// approvalIdleTimeout is how long a client may take to answer one approval
+// before the daemon stops waiting. Sized for a HUMAN reading a tool name and
+// its arguments and deciding — the ordinary 60s idle timeout is sized for a
+// machine that has already made up its mind, and applying it here would reap
+// the connection of any user who paused to think.
+//
+// Expiry is a DENIAL, never an error and never a hang: the loop feeds the model
+// a refusal and carries on. Silence is not consent, and a consent prompt that
+// blocks forever is a worse failure than one that gives up.
+const approvalIdleTimeout = 5 * time.Minute
+
+// grantReadBudget tops up the connection's remaining read allowance.
+//
+// The whole-connection cap exists so a client cannot make the daemon buffer
+// without bound BEFORE its request is decoded. An approval answer arrives
+// AFTER that point, in reply to a question the daemon chose to ask, so it is
+// not covered by the original budget and would otherwise be refused by a
+// connection that had already spent its allowance on a large prompt. Granting
+// is deliberately explicit and per-answer rather than raising the cap: the
+// daemon extends the budget exactly as far as the thing it just asked for.
+func (c *limitedConn) grantReadBudget(n int64) {
+	c.remaining += n
+}
+
+// withIdleTimeout widens (or narrows) the idle deadline for a bounded window,
+// returning a func that restores the previous value. Callers must defer the
+// restore, so a long human-scale wait cannot leak into the machine-scale reads
+// that follow it on the same connection.
+func (c *limitedConn) withIdleTimeout(d time.Duration) func() {
+	prev := c.idleTimeout
+	c.idleTimeout = d
+	return func() { c.idleTimeout = prev }
+}
+
 // shutdownGrace is how long shutdown waits for in-flight connections after the
 // listener closes (see Server.WaitForDrain).
 //
