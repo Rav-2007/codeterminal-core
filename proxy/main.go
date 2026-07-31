@@ -1090,8 +1090,15 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// Timed even on the error path: an upstream that fails after 30 s and one
 	// that refuses in 5 ms are the same log line without this, and they call
 	// for opposite responses.
-	var resp *http.Response
-	timeStage(r.Context(), stageUpstream, func() { resp, err = p.client.Do(upstreamReq) })
+	//
+	// Timed inline rather than through timeStage's closure deliberately.
+	// Wrapping the Do in a func literal hides the assignment from `bodyclose`,
+	// which then cannot see the `defer resp.Body.Close()` below and reports a
+	// leaked body. The analyser is wrong about the leak but right that the
+	// closure obscures the flow, and the direct form reads better anyway.
+	upstreamStart := time.Now()
+	resp, err := p.client.Do(upstreamReq)
+	stageTimerFrom(r.Context()).record(stageUpstream, time.Since(upstreamStart))
 	if err != nil {
 		p.log.Error("upstream call failed", "req_id", reqID,
 			"gate", gateUpstreamCallFailed, "key_id", apiKeyID, "err", err)
