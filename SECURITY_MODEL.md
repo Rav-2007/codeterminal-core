@@ -449,6 +449,46 @@ with no error anywhere. **A 200 alone does not test `increment_usage`.** Always 
 `tokens_used` moved off the reservation, using a `max_tokens` small enough that the two numbers
 can't coincide.
 
+## The auth cache and the revocation window (2026-07-31)
+
+The proxy caches **successful** API-key lookups in memory
+([proxy/authcache.go](proxy/authcache.go)). This is the one place where a deliberate,
+bounded weakening of key revocation was accepted in exchange for latency, so it is
+recorded here rather than only at the code.
+
+**What it changes.** `authorize()` no longer queries `api_keys` on every request. A key
+hash that resolved successfully is reused for **up to 30 seconds** (`authCacheTTL`).
+
+**Why.** Measured on the real binary against a production-shaped Supabase latency, that
+lookup cost 91 ms of a 228 ms request; removing it took the request to 136 ms, a 40%
+reduction (`docs/LATENCY_BASELINE.md` §B.1).
+
+**The exposure, precisely.** Setting `active = false` on a key — the revocation path,
+and the one *Deferred* below proposes to make self-service — does not take effect for up
+to 30 seconds on any proxy instance that has served that key recently. With N replicas
+each holding its own cache, the window is up to 30 s **per instance**, the same
+per-instance shape as the rate limiter's documented residual.
+
+**What bounds it.**
+
+1. **Only successes are cached.** A revoked key that has *not* been seen recently is
+   refused on the first try, and an invalid key is never cached at all — so this cannot
+   be used to amplify credential stuffing, and there is no negative entry to poison.
+2. **`POST /admin/auth-cache/flush`** drops every entry, making revocation immediate
+   without a redeploy. Same auth shape as `/admin/metrics`: pre-auth admission,
+   constant-time comparison over SHA-256 digests, and the route does not exist at all
+   when `PROXY_ADMIN_TOKEN` is unset.
+3. **The window is announced at startup**, and when no admin token is configured the
+   startup line is a WARNing, because in that configuration the TTL is the only bound
+   there is.
+4. The cache is keyed by the SHA-256 the code already computes, never by the key, so it
+   holds nothing the database does not already hold.
+
+**What would make this unacceptable and require revisiting:** a compliance requirement
+for immediate revocation; a move to per-user keys where revocation is a user-facing
+security action rather than an operator one; or raising the TTL, which should not be
+done without re-reading this section.
+
 ## Current state (2026-07-17)
 
 - `auth.users`: **0 users.** The policies are dormant and will activate with the first real user.

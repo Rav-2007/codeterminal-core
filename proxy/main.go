@@ -423,6 +423,19 @@ func main() {
 		startupLog.Info("counters NOT exposed: " + adminTokenEnv + " is unset")
 	}
 
+	// The revocation window is an operational fact, so it is stated at startup
+	// rather than left to be discovered in authcache.go. When there is no admin
+	// token there is also no flush route, which means the TTL is the ONLY bound
+	// on a revoked key -- worth saying out loud in that configuration.
+	if adminToken != "" {
+		startupLog.Info("auth cache enabled", "ttl", authCacheTTL.String(),
+			"max_entries", authCacheMaxEntries, "flush_path", adminAuthCacheFlushPath)
+	} else {
+		startupLog.Warn("auth cache enabled with NO flush route ("+adminTokenEnv+
+			" is unset): a revoked key stays valid for up to the full TTL",
+			"ttl", authCacheTTL.String(), "max_entries", authCacheMaxEntries)
+	}
+
 	srv := &http.Server{
 		Addr:              ":" + port,
 		Handler:           newHandler(p, logger, buildCommit, adminToken),
