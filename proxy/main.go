@@ -493,6 +493,7 @@ func newMux(p *proxy, buildCommit, adminToken string) *http.ServeMux {
 	// throttled catch-all below like any other unknown route.
 	if adminToken != "" {
 		mux.HandleFunc(adminMetricsPath, p.adminMetricsHandler(adminToken))
+		mux.HandleFunc(adminAuthCacheFlushPath, p.adminAuthCacheFlushHandler(adminToken))
 	}
 
 	// Catch-all for every unregistered path. Without it those requests 404 out of
@@ -604,6 +605,12 @@ type proxy struct {
 	// Empty means unrestricted.
 	allowedModels map[string]bool
 
+	// authCache holds SUCCESSFUL key-hash -> api_keys.id lookups for
+	// authCacheTTL, removing one of the two pre-upstream Supabase round trips
+	// for warm keys (see authcache.go for the security properties, which are
+	// the design rather than a footnote to it).
+	authCache *authCache
+
 	// draining is set once a shutdown signal arrives and never cleared. It only
 	// changes what /health reports; it deliberately does NOT gate
 	// handleChatCompletions. Refusing in-flight or newly-arrived work ourselves
@@ -635,6 +642,7 @@ func newProxy(apiKey, upstreamURL, supabaseURL, supabaseServiceRoleKey string, l
 		keyTokens:        newRateLimiter(keyTokenRatePerSecond, keyTokenBurst),
 		inFlight:         newInFlightLimiter(maxInFlightPerKey, maxInFlightTotal),
 		allowedModels:    allowedModels,
+		authCache:        newAuthCache(authCacheTTL, authCacheMaxEntries),
 	}
 	// Bound here rather than in newMetrics because the flag lives on the proxy
 	// that was just built; a scrape reads it live (see bindDraining).
@@ -1162,6 +1170,20 @@ func (p *proxy) authorize(r *http.Request) (string, bool) {
 	hash := sha256.Sum256([]byte(mochiKey))
 	hashHex := hex.EncodeToString(hash[:])
 
+	// Cache hit short-circuits the round trip that dominates this stage (91 ms
+	// of a 228 ms request, docs/LATENCY_BASELINE.md §A.3).
+	//
+	// Placed AFTER the bearer/empty/configuration gates above deliberately: those
+	// refuse malformed requests without any lookup at all, and a cache consulted
+	// before them would be answering questions that should never have been asked.
+	// It is placed BEFORE the network call and nowhere else -- every failure path
+	// below still runs in full, because only successes are ever stored.
+	if keyID, ok := p.authCache.get(hashHex); ok {
+		p.metrics.authCacheHits.Add(1)
+		return keyID, true
+	}
+	p.metrics.authCacheMisses.Add(1)
+
 	ctx, cancel := context.WithTimeout(r.Context(), supabaseAuthTimeout)
 	defer cancel()
 
@@ -1229,6 +1251,13 @@ func (p *proxy) authorize(r *http.Request) (string, bool) {
 		p.metrics.countRefusal(gateAuthRowCount)
 		return "", false
 	}
+
+	// The ONLY put in the codebase, and it is reached only here: past the
+	// transport error, the non-200, the decode failure and the row-count gate.
+	// Every one of those returns above without storing anything, which is what
+	// makes "positive results only" a property of the control flow rather than a
+	// promise in a comment.
+	p.authCache.put(hashHex, rows[0].ID)
 
 	p.log.Info("auth ok", "req_id", reqID, "key_prefix", keyPrefix(mochiKey))
 	return rows[0].ID, true

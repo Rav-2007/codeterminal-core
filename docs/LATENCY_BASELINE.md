@@ -185,4 +185,52 @@ removes a round trip removes all of it; a fix that optimises proxy code removes 
 
 ---
 
+## B.1 — API-key auth cache: measured before and after
+
+[proxy/authcache.go](../proxy/authcache.go). 30 s TTL, successful lookups only,
+LRU-bounded at 10,000 entries, flushable on an admin-authenticated endpoint.
+
+Same harness, same 90 ms imposed per Supabase call, n=30 each:
+
+| stage | before | after |
+|---|---:|---:|
+| `auth_ms` | 91 | **0** |
+| `reserve_ms` | 91 | 91 |
+| **`latency_ms`** | **228** | **136** |
+
+**92 ms removed; the proxy-controlled request time falls 228 → 136 ms, a 40%
+reduction.** The saving matches the predicted 91 ms to within a millisecond, which is
+the check that matters: a saving that had come out at 30 ms would have meant the model
+of where the time goes was wrong.
+
+`auth`+`reserve` falls from 80% of the request to 67% — still the dominant cost,
+because the *remaining* round trip is now the whole of it. That is B.2's target.
+
+### What it costs, stated plainly
+
+A key revoked in the database keeps working for **up to 30 seconds**. That is the
+entire price, it was the founder's call taken against this measured 91 ms, and
+`POST /admin/auth-cache/flush` makes revocation immediate without a redeploy.
+
+Three properties make the cache safe to sit in front of an auth check, and each is
+pinned by a test that fails when the property is reversed:
+
+- **Positive results only.** An invalid key is never cached, so every attempt still
+  costs a full round trip and is still rate-limited — the cache cannot amplify
+  credential stuffing. *Neuter-checked by adding the plausible "cache misses too"
+  optimisation: the test reports 1 lookup for 4 rejected attempts instead of 4.*
+- **The TTL is the whole exposure.** *Neuter-checked by deleting the expiry
+  comparison: the revoked key then authorizes forever, and the test says so.*
+- **Keyed by hash, never by key.** The map holds the SHA-256 `authorize()` already
+  computed, so a heap dump yields what the database already stores.
+
+One honest note on the neuter-checks: the first attempt at breaking "positive results
+only" — hoisting the `put` above the row-count gate — **did not break anything**,
+because `put` takes `rows[0].ID` and is therefore already guarded by the same
+condition. The property is structural rather than defended by a single line, and the
+mutation that *does* break it is adding negative caching, which is a design change
+someone might genuinely propose. That is the one the test now forbids.
+
+---
+
 *A.4 (network geography) follows.*

@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"expvar"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -73,6 +74,12 @@ type metricSet struct {
 	// Upstream.
 	upstreamErrors expvar.Int
 	budgetKills    expvar.Int
+
+	// Auth cache. The hit RATE is the whole point: it is what says whether the
+	// 91 ms saving is actually being realised in production, or whether traffic
+	// is spread across enough distinct keys that every request still misses.
+	authCacheHits   expvar.Int
+	authCacheMisses expvar.Int
 
 	// Admin surface.
 	adminAuthFailures expvar.Int
@@ -164,6 +171,8 @@ func (m *metricSet) buildVars() {
 	m.vars.Set("upstream_errors_total", &m.upstreamErrors)
 	m.vars.Set("budget_kills_total", &m.budgetKills)
 	m.vars.Set("admin_auth_failures_total", &m.adminAuthFailures)
+	m.vars.Set("auth_cache_hits_total", &m.authCacheHits)
+	m.vars.Set("auth_cache_misses_total", &m.authCacheMisses)
 
 	// Runtime numbers a soak test and a memory-leak question need, chosen one by
 	// one rather than by handing over all of memstats. No paths, no command line.
@@ -256,6 +265,52 @@ func (p *proxy) adminMetricsHandler(token string) http.HandlerFunc {
 			return
 		}
 		p.metrics.writeTo(w)
+	}
+}
+
+// adminAuthCacheFlushPath drops every cached authorization. Registered only when
+// a token is set, exactly like the counters route.
+const adminAuthCacheFlushPath = "/admin/auth-cache/flush"
+
+// adminAuthCacheFlushHandler makes revocation immediate.
+//
+// It exists because authCacheTTL is a real, if small, security cost: a key
+// revoked in the database keeps working for up to 30 seconds. Thirty seconds is
+// a defensible default; thirty seconds with no way to shorten it in an incident
+// is not. This is the lever, and it is why the cache was acceptable to add.
+//
+// POST only: it changes server state, and a GET that mutates is a GET something
+// will eventually issue by accident -- a link checker, a prefetch, a retry.
+//
+// The auth shape is deliberately identical to adminMetricsHandler's rather than
+// merely similar: pre-auth admission first, constant-time comparison over
+// SHA-256 digests of both sides so neither the token's bytes nor its length
+// leaks, and the same 401 for a wrong token as for anything else.
+func (p *proxy) adminAuthCacheFlushHandler(token string) http.HandlerFunc {
+	want := sha256.Sum256([]byte(token))
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !p.admitPreAuth(w, r) {
+			return
+		}
+		reqID := requestIDFrom(r.Context())
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
+			writeRefusal(w, http.StatusMethodNotAllowed, "method_not_allowed", reqID)
+			return
+		}
+		presented := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		got := sha256.Sum256([]byte(strings.TrimSpace(presented)))
+		if subtle.ConstantTimeCompare(got[:], want[:]) != 1 {
+			p.metrics.adminAuthFailures.Add(1)
+			p.log.Warn("admin auth-cache flush rejected", "req_id", reqID, "gate", gateAdminAuth,
+				"source", clientSource(r))
+			writeRefusal(w, http.StatusUnauthorized, "unauthorized", reqID)
+			return
+		}
+		n := p.authCache.flush()
+		p.log.Warn("auth cache flushed by operator", "req_id", reqID, "entries_dropped", n)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, "{\"flushed\":%d}\n", n)
 	}
 }
 
