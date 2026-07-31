@@ -477,6 +477,16 @@ const (
 	// the other: the user can re-ask to continue, or raise the ceiling in
 	// config, neither of which is the answer to a spend kill.
 	IncompleteAgentBudget = "agent_budget"
+
+	// IncompleteUserCancelled: the user answered ApprovalCancelTurn at a tool
+	// approval prompt, so the turn stopped because they said stop.
+	//
+	// Deliberately NOT IncompleteAgentBudget. Reusing that slug would tell a user
+	// who just pressed "cancel" that they had exhausted some ceiling -- a false
+	// explanation that would send them to raise a limit nothing had reached. Like
+	// a budget stop it is not an error: the text already streamed is real work and
+	// the user keeps it.
+	IncompleteUserCancelled = "user_cancelled"
 )
 
 // IncompleteInfo reports that a streamed answer ended early rather than
