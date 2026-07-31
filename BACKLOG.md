@@ -149,12 +149,33 @@ Distinct from and does not close the sidecar **symlink-open** residual at §609 
 driver still owns those opens, and a symlink planted at a sidecar path is still
 followed. Modes and opens are different concerns.
 
-### (h) Memory store retention / pruning policy (grows unbounded by design)
-Persistence keeps full conversation history on disk forever (persist-all,
-hydrate-last-12) — correct default, but the `turns` table has no cap or prune.
-Long-lived workspaces will accumulate indefinitely. Add a retention policy
-(age- or count-based prune, or per-workspace cap). Pairs with the Phase-4
-session-buffer-compression note.
+### (h) DONE: Memory store retention / pruning policy
+Was: persistence kept full conversation history on disk forever (persist-all,
+hydrate-last-12) with no cap or prune on `turns`.
+
+Closed 2026-07-31 (`5072961`). **Per-workspace, count-based**, capped at
+`maxTurnsPerWorkspace` = 1000 (~500 exchanges, far above the 12 hydration
+replays). Both choices are deliberate and recorded at the code: a *global* cap
+lets one busy workspace evict another's history, and an *age* cap silently
+empties a workspace that simply went unused for a while. Pruning lives in one
+place — `AppendTurn` — so all callers get a bounded store with no per-call-site
+change, the same shape (i) used for backup sessions. `turns_fts` stays in sync
+via search.go's existing AFTER DELETE trigger, asserted by an orphaned-row test.
+
+Two things came out of it that were not in the original item:
+
+- **`turns` had no index at all.** Every query in the package is
+  `WHERE workspace = ? ORDER BY id`, so `LoadRecentTurns` full-scanned on every
+  prompt and the new prune would have added that scan to every write. Added as
+  schema v3 (`idx_turns_workspace_id`).
+- **A latent migration bug, found by adding the v3 step.** `ensureMemorySchema`
+  returned immediately after the v1→v2 case, so adding v3 as another switch case
+  would have left a v1 database *recorded as v3* with the v3 index never created.
+  Migrations are now sequential `if`s, with a regression test that fails when the
+  early-return shape is restored.
+
+Still deferred, and unchanged by this: the Phase-4 session-buffer-compression
+note it was paired with.
 
 ### (i) DONE: Bounded backups + multi-run undo
 Backup session dirs under `<workspace>/.codeterminal/backups/` are now
