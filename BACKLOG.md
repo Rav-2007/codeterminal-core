@@ -4147,3 +4147,101 @@ breached. Live end-to-end drill as described above.
 final call and the Design B-vs-C decision both remain the founder's — the difference
 from a week ago is that both are now answerable from written evidence rather than
 blocked on it.
+
+---
+
+## 2026-07-31 — Performance: Stage A (instrument) + B.1 (auth cache); verified, NOT founder-closed
+
+A dimension the eight-dimension scorecard never had. Full write-up and every number:
+[`docs/LATENCY_BASELINE.md`](docs/LATENCY_BASELINE.md). Branch `perf/latency-baseline`,
+PR #3, CI green (21 pass, 1 schedule-only skip).
+
+**Headline: the money path went 228 ms → 136 ms, a 40% cut**, measured before and after
+on the real binary at a production-shaped Supabase latency.
+
+### Stage A — measure first, and strike what fails to reproduce
+
+There were zero Go benchmarks in 49k lines and one whole-request `latency_ms`, so "four
+phases of hardening taxed the hot path" was unfalsifiable. **Three hypotheses died, all
+mine:**
+
+1. **That Phases 1–4 taxed retrieval.** The entire per-turn retrieval CPU path is
+   **~0.44 ms — 0.03% of a 1,450 ms TTFT**. Nothing there can be user-perceptible.
+   B.3 struck as a latency item (`46252b5`).
+2. **That the duplicate `scrub()` was a free win.** It *is* duplicated, but head-to-head
+   the "optimised" variant measured **2 µs slower** with overlapping ranges. If removed,
+   it is for clarity on a maintainability ticket, never reported as a perf fix.
+3. **That collapsing authorize+reserve (B.2) was the next move.** B.1 made it
+   near-worthless: the two are **alternatives, not complements** — a combined RPC is
+   called on every request by construction, so it would make the cache dead code. Its
+   whole marginal value is 92 ms on the *first* request of a session, against a new RPC
+   on the money path plus a founder-gated migration. **Recommended AGAINST.**
+
+**Record correction (`652111c`).** `BACKLOG.md:1174` blamed the ~80–100 ms on
+`reserveQuota` specifically — *"authorize itself adds ~0 ms"* — and that framing carried
+into every later note including Phase 0's REFUTED entry. Instrumented, **both stages
+measure 91 ms.** It is the price of one Supabase round trip, the proxy makes two, and
+`authorize` looked free only because nothing had timed it. The prize was twice what the
+record implied.
+
+### B.1 — the auth cache (`95c40a9`, `befa60a`)
+
+`auth_ms` 91 → 0; `latency_ms` 228 → 136. The saving matching the prediction to within a
+millisecond is the check that matters. **Cost: a revoked key works for up to 30 s**,
+bounded by `POST /admin/auth-cache/flush` and written up in `SECURITY_MODEL.md` beside
+the deferred self-service-revocation item.
+
+**A neuter-check that failed to bite, recorded rather than glossed:** hoisting the `put`
+above the row-count gate broke nothing — `put` takes `rows[0].ID` and is already guarded
+by that condition. The property is structural. The mutation that *does* break it is
+adding negative caching, and that is what the test now forbids.
+
+### Two defects found in this phase's own work
+
+- **A latent `-race` flake** (`bf189aa`), caught by the pre-push hook after **four
+  consecutive `-race -count=1` runs missed it**. Pre-existing: three tests build two
+  `log.Logger`s over one `bytes.Buffer`, sharing no mutex. The stage timer did not create
+  it — it made it *fire*. Fixed as a class; verified at `-count=4`.
+- **Two lint failures reached CI** (`ed7329c`) because `scripts/lint.sh` had been
+  printing "not found on PATH" and exiting 0 locally. Linters now installed; both
+  findings were correct (bodyclose could not see through a closure; staticcheck was right
+  about a literal nil Context).
+
+### Finding — the retrieval eval's "0/4 recall" is a harness failure (`a1e5844`, `38b027f`)
+
+Three of `TestEditShapedRetrievalEval`'s four cases **never issue a retrieval query**.
+They fail in setup: the pre-fix reconstruction reverts a fix commit that no longer
+applies (178–221 commits behind). The honest score is **0/1 measured, 3 unmeasurable**,
+and item (b)'s "real chunk-level ranking gap" diagnosis was attributing a harness failure
+to retrieval quality. My own proposed fix was then **probed and disproved** — the
+pre-fix source does not compile against today's tree. The eval needs rebuilding around
+current queries, not repairing.
+
+### Dimension 9 — performance: **unscored → 60** (target 85)
+
+Scored by deduction, in the same shape as dimensions 5, 3/1/6 and 4.
+
+**Credited:** a per-stage instrument exists in the shipped binary and reports from
+production; a repeatable harness drives the real binary; the largest code-controllable
+cost is measured and **halved**; three speculative optimisations were killed by
+measurement before anyone built them; the record's misattribution of the cost was
+corrected.
+
+**Not credited, and why it is not higher:**
+
+- **−15 the end-to-end TTFT has still not been re-measured.** Everything here prices the
+  proxy; the 2026-07-17 figure of ~1,450 ms remains the only end-to-end number, and it
+  is two weeks and 86 commits stale.
+- **−10 the ~90 ms per round trip is still unexplained.** Mode 2's 90 ms is *imposed*,
+  not discovered. Why an intra-region hop costs 90 ms where a handshake should cost
+  10–20 is unanswered, and A.4 cannot be answered from a developer machine.
+- **−5 the retrieval 14 ms was never re-measured** — only the work added on top of it.
+- **−5 no performance regression gate.** The benchmarks exist; nothing fails a build if
+  they regress.
+
+**Program position:** ~149 of 232 on the original eight dimensions, plus dimension 9
+opening at 60. Phases 0–4 complete; **5 (data & schema integrity) and 6 (maintainability)
+remain not started.**
+
+**Status: verified locally and in CI; NOT founder-closed.** The region decision and the
+B.2 recommendation are the founder's, and both now have numbers behind them.
