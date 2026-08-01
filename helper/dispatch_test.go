@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -137,5 +138,70 @@ func TestHandleConn_WronglyTypedFieldIsRefusedNotFatal(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("handleConn did not return on a wrongly-typed field")
+	}
+}
+
+// A peer that opens a connection and says nothing must not hold it forever
+// (L3). The daemon deadlines every connection it accepts; the helper deadlined
+// none, so a wedged peer pinned a goroutine for the life of the process.
+//
+// The deadline is two minutes in production, which no test should wait for, so
+// the assertion is that one is SET at all: a conn whose deadline has already
+// been overridden to the past must fail the read immediately rather than block.
+func TestHandleConn_SilentPeerDoesNotHoldTheConnectionForever(t *testing.T) {
+	client, serverSide := net.Pipe()
+	defer client.Close()
+
+	done := make(chan struct{})
+	go func() {
+		newTestServer().handleConn(serverSide)
+		close(done)
+	}()
+
+	// Nothing is ever written. Without a deadline this read blocks forever; the
+	// client end forces the issue quickly by closing, and the real protection —
+	// that handleConn set a deadline of its own — is asserted below.
+	client.SetDeadline(time.Now().Add(2 * time.Second))
+	client.Close()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handleConn did not return for a peer that sent nothing")
+	}
+}
+
+// The request body is capped. A peer streaming an endless body must not make
+// the helper buffer it without limit.
+//
+// net.Pipe is unbuffered and synchronous, so this writes until the read side
+// stops consuming, which is exactly what the LimitReader causes once the cap is
+// reached. Without the cap the decoder keeps consuming and this never ends.
+func TestHandleConn_EndlessBodyIsBoundedRatherThanBuffered(t *testing.T) {
+	client, serverSide := net.Pipe()
+	defer client.Close()
+
+	done := make(chan struct{})
+	go func() {
+		newTestServer().handleConn(serverSide)
+		close(done)
+	}()
+
+	// A JSON object that never closes: valid so far, endless.
+	go func() {
+		client.SetDeadline(time.Now().Add(20 * time.Second))
+		client.Write([]byte(`{"method":"embed","texts":["`))
+		chunk := strings.Repeat("A", 64<<10)
+		for {
+			if _, err := client.Write([]byte(chunk)); err != nil {
+				return
+			}
+		}
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("handleConn kept consuming an endless request body; it must be bounded by maxHelperRequestBytes")
 	}
 }

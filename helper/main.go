@@ -17,12 +17,14 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
 	"os/signal"
 	"runtime"
 	"syscall"
+	"time"
 
 	ort "github.com/yalue/onnxruntime_go"
 
@@ -120,11 +122,39 @@ type server struct {
 	logger   *log.Logger
 }
 
+// The helper's own admission limits, mirroring the daemon's limitedConn rather
+// than inventing a second policy (L3).
+//
+// The trust boundary here is real but narrow: this socket lives in a per-user
+// runtime directory and the only thing that dials it is the daemon that spawned
+// this process. Nothing crosses a uid boundary. What these close is the
+// asymmetry — the daemon caps and deadlines every connection it accepts, and
+// this one did neither, so a wedged or malfunctioning peer could hold a helper
+// connection open indefinitely or make it buffer without limit. A same-uid
+// boundary is a reason for the numbers to be generous, not a reason to have
+// none.
+const (
+	// maxHelperRequestBytes bounds one request. An embed batch is text, and
+	// 16 MiB is the same ceiling the daemon applies to a socket request.
+	maxHelperRequestBytes = 16 << 20
+	// helperConnTimeout bounds one whole request/response exchange. Embedding a
+	// large batch is CPU-bound work measured in seconds, so this is sized for a
+	// wedged peer rather than a slow one.
+	helperConnTimeout = 2 * time.Minute
+)
+
 func (s *server) handleConn(conn net.Conn) {
 	defer conn.Close()
 
+	// One deadline over the read, the embed, and the write. A peer that stops
+	// reading its own response cannot pin this goroutine past it either.
+	if err := conn.SetDeadline(time.Now().Add(helperConnTimeout)); err != nil {
+		s.logger.Printf("setting connection deadline: %v", err)
+		return
+	}
+
 	var req helperproto.Request
-	if err := json.NewDecoder(conn).Decode(&req); err != nil {
+	if err := json.NewDecoder(io.LimitReader(conn, maxHelperRequestBytes)).Decode(&req); err != nil {
 		s.logger.Printf("request decode error: %v", err)
 		return
 	}
