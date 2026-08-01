@@ -369,15 +369,13 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, waitForNext(m.streamCh)
 
 	case streamDoneMsg:
-		m.streamCancel = nil
-		m.streamCh = nil
+		m.endStream()
 		return m.checkForEditBlocks()
 
 	case streamErrMsg:
 		m.state = stateError
 		m.statusErr = msg.err.Error()
-		m.streamCancel = nil
-		m.streamCh = nil
+		m.endStream()
 		return m, m.input.Focus()
 
 	case resetErrMsg:
@@ -486,6 +484,28 @@ func (m chatModel) startTurn() (tea.Model, tea.Cmd) {
 	m.streamCh = ch
 
 	return m, tea.Batch(m.spinner.Tick, startStream(ctx, m.clientName, m.workspace, prompt, promptKind, history, ch))
+}
+
+// endStream releases the finished turn's stream state.
+//
+// CALLING cancel IS THE POINT, not clearing the field (L1). context.WithCancel
+// attaches the child context to its parent and to a goroutine that watches for
+// completion; dropping the CancelFunc without calling it leaks both, once per
+// turn, for the life of a session that may run for hours. Setting
+// m.streamCancel = nil -- which is what the two terminal paths used to do --
+// looks like cleanup and is the opposite of it: it discards the only handle
+// that could ever have released the resources.
+//
+// Cancelling a context whose work has already finished is a no-op, which is why
+// this is safe on the done path as well as the error one. Clearing the field
+// afterwards still matters, so a later ctrl+c cannot fire cancel against a turn
+// that is already over.
+func (m *chatModel) endStream() {
+	if m.streamCancel != nil {
+		m.streamCancel()
+		m.streamCancel = nil
+	}
+	m.streamCh = nil
 }
 
 // buildHistory converts the transcript so far into the PromptRequest.History
