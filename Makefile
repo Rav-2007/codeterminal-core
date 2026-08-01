@@ -39,7 +39,13 @@ fmt:
 
 vet:
 	@for m in $(MODULES); do (cd $$m && go vet ./...) || exit 1; done
-	@echo "vet: clean"
+# The eval suites are behind `-tags eval` and CI only RUNS them nightly, so an
+# untagged vet never compiles them. Both eval files broke on a signature change
+# and nothing noticed until the next manual run -- a gate that only fires
+# nightly is a gate that reports rot rather than preventing it. Compiling them
+# here costs a second and is the cheap half of the check.
+	@(cd daemon && go vet -tags eval ./...) || exit 1
+	@echo "vet: clean (including -tags eval)"
 
 test:
 	@for m in $(MODULES); do (cd $$m && go test ./...) || exit 1; done

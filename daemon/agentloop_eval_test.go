@@ -303,7 +303,12 @@ func TestAgentLoopReliability(t *testing.T) {
 
 			registry, _ := srv.buildRegistry(context.Background(), srv.logger, &proposalSink{})
 			messages := buildChatMessages(agentEvalSystemPrompt, nil, sc.prompt)
-			res, err := srv.runAgentLoop(context.Background(), registry, model, messages, routing,
+			// nil approver: every tool in this harness is config-"allow", so
+			// nothing should ever reach an ask. If a scenario's policy ever
+			// changes, the nil approver denies rather than silently running --
+			// the eval would report the failure instead of measuring a loop
+			// that quietly got permissions it was never granted.
+			res, err := srv.runAgentLoop(context.Background(), registry, model, messages, routing, nil,
 				func(string) error { return nil }, nil, nil, nil)
 			registry.Close()
 
