@@ -42,11 +42,20 @@ const (
 // StdioClient is a Lane B MCP server: a subprocess spoken to over stdio.
 type StdioClient struct {
 	name string
+	logf func(format string, args ...any)
 
 	mu      sync.Mutex
 	cmd     *exec.Cmd
 	session *sdk.ClientSession
 	closed  bool
+}
+
+// logf is nil-safe: a client built without a logger discards its diagnostics
+// rather than making every call site check.
+func (c *StdioClient) logfSafe(format string, args ...any) {
+	if c.logf != nil {
+		c.logf(format, args...)
+	}
 }
 
 // LaunchConfig is everything needed to start one server. Deliberately not the
@@ -62,6 +71,10 @@ type LaunchConfig struct {
 	// Stderr receives the server's stderr, prefixed by the caller. Nil
 	// discards it.
 	Stderr io.Writer
+	// Logf receives THIS DAEMON'S diagnostics about the server, kept separate
+	// from Stderr so a line the daemon wrote is never mistaken for a line the
+	// server wrote. Nil discards them.
+	Logf func(format string, args ...any)
 }
 
 // Connect starts the server and completes the MCP initialize handshake.
@@ -107,7 +120,7 @@ func Connect(ctx context.Context, cfg LaunchConfig) (*StdioClient, error) {
 		return nil, fmt.Errorf("%w: server %s failed to start: %v", ErrServerUnavailable, cfg.Name, err)
 	}
 
-	return &StdioClient{name: cfg.Name, cmd: cmd, session: session}, nil
+	return &StdioClient{name: cfg.Name, logf: cfg.Logf, cmd: cmd, session: session}, nil
 }
 
 // ListTools returns the server's advertised tools, translated into this
@@ -134,6 +147,14 @@ func (c *StdioClient) ListTools(ctx context.Context) ([]Tool, error) {
 
 	tools := make([]Tool, 0, len(res.Tools))
 	for _, t := range res.Tools {
+		if err := ValidateToolName(t.Name); err != nil {
+			// Skipped for the same reason and at the same cost as an
+			// unserialisable schema below: one unusable tool must not cost the
+			// user the server's other tools. See ValidateToolName for why a
+			// name is a security-relevant string rather than a label.
+			c.logfSafe("mcp: server %s offered a tool this daemon will not advertise: %v", c.name, err)
+			continue
+		}
 		schema, err := json.Marshal(t.InputSchema)
 		if err != nil {
 			// A tool whose schema will not serialise cannot be advertised to

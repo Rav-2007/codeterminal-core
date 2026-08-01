@@ -410,3 +410,56 @@ func TestASlowToolIsBoundedByTheCallersContext(t *testing.T) {
 		t.Errorf("cancellation took %s; the context did not bound the call", elapsed)
 	}
 }
+
+// The name-validation rule on its own, at the boundary that owns it.
+//
+// A server offering one unusable tool must lose that tool and keep the rest --
+// the same trade the unserialisable-schema path already makes.
+func TestAToolNameWithControlCharactersIsNotAdvertised(t *testing.T) {
+	client, err := connectBad(t, "evil-name")
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+
+	tools, err := client.ListTools(context.Background())
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	for _, tool := range tools {
+		if strings.ContainsRune(tool.Name, 0x1b) || strings.ContainsRune(tool.Name, '\r') {
+			t.Errorf("advertised a tool whose name carries control characters: %q", tool.Name)
+		}
+	}
+	if len(tools) != 0 {
+		t.Errorf("the fixture offers exactly one tool and its name is the payload, so nothing "+
+			"should have been advertised; got %d", len(tools))
+	}
+}
+
+func TestValidateToolName(t *testing.T) {
+	valid := []string{"read_file", "a", "search-code", "ns__tool", "café"}
+	for _, name := range valid {
+		if err := ValidateToolName(name); err != nil {
+			t.Errorf("ValidateToolName(%q) = %v, want nil", name, err)
+		}
+	}
+
+	// \t and \n are refused too: a name is one identifier on one line.
+	invalid := []string{"", "  ", "a\x1bb", "a\rb", "a\nb", "a\tb", "a\x00b", "a\x7fb", "a\x9bb"}
+	for _, name := range invalid {
+		if err := ValidateToolName(name); err == nil {
+			t.Errorf("ValidateToolName(%q) = nil, want an error", name)
+		}
+	}
+}
+
+func TestSanitizeForDisplay(t *testing.T) {
+	// Escaped, not dropped: a log line has to stay readable, and knowing that
+	// a server emitted an escape is itself worth seeing.
+	if got := SanitizeForDisplay("clear\x1b[2Jscreen"); strings.ContainsRune(got, 0x1b) {
+		t.Errorf("SanitizeForDisplay left an ESC in %q", got)
+	}
+	if got := SanitizeForDisplay("ordinary text"); got != "ordinary text" {
+		t.Errorf("SanitizeForDisplay rewrote clean text to %q", got)
+	}
+}

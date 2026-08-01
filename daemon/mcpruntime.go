@@ -116,6 +116,7 @@ func (s *Server) buildRegistry(ctx context.Context, logger *log.Logger, proposal
 			Args:     srv.Args,
 			EnvAllow: srv.Env,
 			Stderr:   serverStderr(name, logger),
+			Logf:     logger.Printf,
 		})
 		if err != nil {
 			logger.Printf("mcp: server %s unavailable: %v", name, err)
@@ -150,6 +151,13 @@ type prefixWriter struct {
 
 // Write splits on newlines so one log line per server line, rather than one per
 // arbitrary read boundary. A partial line is held until its newline arrives.
+//
+// Every line is escaped before it is logged. The daemon's log is read in a
+// terminal, and this is a stream an unconfined third-party subprocess writes
+// whatever it likes to -- so without escaping, a server controls the cursor of
+// anyone tailing the log. Same reasoning as ValidateToolName, different
+// remedy: a log line is displayed rather than dispatched on, so it can be
+// escaped and stay readable instead of being refused.
 func (w *prefixWriter) Write(p []byte) (int, error) {
 	w.buf = append(w.buf, p...)
 	for {
@@ -160,7 +168,7 @@ func (w *prefixWriter) Write(p []byte) (int, error) {
 		line := strings.TrimRight(string(w.buf[:i]), "\r")
 		w.buf = w.buf[i+1:]
 		if line != "" {
-			w.logger.Print(w.prefix + line)
+			w.logger.Print(w.prefix + mcp.SanitizeForDisplay(line))
 		}
 	}
 	return len(p), nil

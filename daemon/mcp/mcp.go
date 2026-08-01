@@ -28,7 +28,9 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // Tool is one callable tool as advertised to the model and described to the
@@ -213,6 +215,76 @@ func ValidateServerName(name string) error {
 			"tool name and would make the two impossible to tell apart", name, "__")
 	}
 	return nil
+}
+
+// ValidateToolName refuses a server-supplied tool name that could not safely be
+// shown to a human.
+//
+// WHY A TOOL NAME IS A SECURITY-RELEVANT STRING, which is not obvious. A tool
+// RESULT goes only to the model -- the daemon never sends result content to a
+// client, and protocol.ToolActivity carries a byte count rather than bytes. A
+// tool NAME goes somewhere else entirely: onto the approval prompt, rendered in
+// the user's terminal, BEFORE they consent, on the same panel that carries the
+// "NOT SANDBOXED" warning. An unconfined third-party subprocess therefore gets
+// to put arbitrary bytes on the screen a human is reading in order to decide
+// whether to trust it. A CSI sequence there does not merely look odd: \x1b[1A
+// and \x1b[2K move the cursor up and erase the line, which is enough to redraw
+// the security notice above it. A bare \r overwrites the line already drawn.
+//
+// REFUSED, NOT SANITISED. A name is the key the daemon dispatches on -- the
+// model echoes the qualified name back and Registry.Call splits it -- so
+// rewriting it here would mean approving one string and dispatching on another,
+// and two distinct names could rewrite to the same one. Skipping the tool costs
+// the user that tool, which is the same price a tool with an unserialisable
+// schema already pays, and no ambiguity.
+//
+// C0 controls, DEL and the C1 range are all refused. Not \t or \n either: a
+// name is one identifier on one line, and neither belongs in it.
+func ValidateToolName(name string) error {
+	if strings.TrimSpace(name) == "" {
+		return errors.New("tool name is empty")
+	}
+	// Bytes first, then runes, and both are needed. A lone 0x9b is the C1 CSI
+	// introducer that a terminal acts on, but it is not valid UTF-8, so ranging
+	// over the string decodes it to U+FFFD and a rune-only check never sees it.
+	for i := 0; i < len(name); i++ {
+		if b := name[i]; b < 0x20 || b == 0x7f {
+			return fmt.Errorf("tool name contains a control character (%#x at byte %d), which would be "+
+				"rendered into the terminal of a user deciding whether to approve it", b, i)
+		}
+	}
+	if !utf8.ValidString(name) {
+		return errors.New("tool name is not valid UTF-8, so what a terminal renders for it is " +
+			"undefined and what the model echoes back may not be the same bytes")
+	}
+	for i, r := range name {
+		if r >= 0x80 && r <= 0x9f {
+			return fmt.Errorf("tool name contains a C1 control character (%#U at byte %d), which "+
+				"terminals act on", r, i)
+		}
+	}
+	return nil
+}
+
+// SanitizeForDisplay renders bytes chosen by a third party safe to write to a
+// log or a terminal, by escaping every control character.
+//
+// For text that is DISPLAYED rather than dispatched on -- an MCP server's
+// stderr, a model-supplied name in a refusal line -- where the value still has
+// to be readable afterwards and refusing it is not an option. strconv.Quote is
+// what Go's own %q uses, so an escape sequence arrives as the literal characters
+// \x1b rather than as an escape, and stays legible.
+//
+// Callers that dispatch on the string must use ValidateToolName instead:
+// escaping a key changes it.
+func SanitizeForDisplay(s string) string {
+	if !strings.ContainsFunc(s, func(r rune) bool {
+		return r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f)
+	}) {
+		return s
+	}
+	quoted := strconv.Quote(s)
+	return quoted[1 : len(quoted)-1]
 }
 
 // SortTools orders tools deterministically (server, then tool). Go map

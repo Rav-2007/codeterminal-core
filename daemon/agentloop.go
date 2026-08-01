@@ -325,7 +325,10 @@ func (s *Server) dispatchToolCall(
 
 	if !decision.run {
 		s.count(func(c *counters) { c.toolCallsDenied.Add(1) })
-		s.logger.Printf("agent: refusing %s: %s", name, decision.reason)
+		// %q, not %s, on every model-supplied name below. The model can name a
+		// tool that does not exist, so this string reaches the log without any
+		// server having had to offer it -- and the log is read in a terminal.
+		s.logger.Printf("agent: refusing %q: %s", name, decision.reason)
 		report(protocol.ToolPhaseDenied, decision.reason, 0, 0)
 		audit.Outcome = auditOutcomeRefused
 		if decision.cancel {
@@ -358,7 +361,7 @@ func (s *Server) dispatchToolCall(
 		s.count(func(c *counters) { c.toolCallsFailed.Add(1) })
 		// Full detail to the local log; a client-safe summary to the model and
 		// the user. Same split socketSafeError makes, for the same reason.
-		s.logger.Printf("agent: tool %s failed: %v", name, err)
+		s.logger.Printf("agent: tool %q failed: %v", name, err)
 		detail := "the tool failed to run"
 		if errors.Is(err, mcp.ErrServerUnavailable) {
 			detail = "the tool's server is unavailable"
@@ -382,7 +385,7 @@ func (s *Server) dispatchToolCall(
 	turn.toolSignatures = append(turn.toolSignatures, name+"("+strings.TrimSpace(arguments)+")")
 
 	if len(kinds) > 0 {
-		s.logger.Printf("agent: scrub redacted %d suspected secret(s) in %s output: %s",
+		s.logger.Printf("agent: scrub redacted %d suspected secret(s) in %q output: %s",
 			len(kinds), name, strings.Join(kinds, ","))
 	}
 

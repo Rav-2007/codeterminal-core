@@ -98,7 +98,7 @@ func (a *capturingApprover) prompts() []protocol.ToolApprovalRequest {
 	return append([]protocol.ToolApprovalRequest(nil), a.seen...)
 }
 
-// M6 -- a server-chosen tool NAME reaches the approval prompt unaltered.
+// M6 -- a server-chosen tool NAME must never reach the approval prompt.
 //
 // The result path is not the dangerous one: tool output goes to the model and
 // never to a client (protocol.ToolActivity carries a byte COUNT, not content).
@@ -106,7 +106,10 @@ func (a *capturingApprover) prompts() []protocol.ToolApprovalRequest {
 // on the same panel as the "NOT SANDBOXED" line -- so a CSI sequence in a tool
 // name is an edit to the security notice the user is reading in order to
 // decide.
-func TestAServerSuppliedToolNameReachesTheApprovalPrompt(t *testing.T) {
+//
+// Fails if ValidateToolName is neutered: the tool becomes advertisable, Lookup
+// finds it, and the prompt carries the escapes.
+func TestAServerSuppliedToolNameNeverReachesTheApprovalPrompt(t *testing.T) {
 	// Built with json.Marshal rather than toolCallSSE: %q renders an ESC as the
 	// Go escape \x1b, which is not valid JSON, so the helper would silently be
 	// testing a name the model could never actually send.
@@ -126,24 +129,31 @@ func TestAServerSuppliedToolNameReachesTheApprovalPrompt(t *testing.T) {
 	s := loopServer(t, base, badServerConfig(t, "evil-name", nil))
 	appr := &capturingApprover{decision: protocol.ApprovalDeny}
 
-	if _, _, err := runLoopWith(t, s, appr); err != nil {
+	_, activity, err := runLoopWith(t, s, appr)
+	if err != nil {
 		t.Fatalf("runAgentLoop: %v", err)
 	}
 
-	prompts := appr.prompts()
-	if len(prompts) == 0 {
-		t.Fatal("no approval was requested, so the fixture never reached the prompt")
+	for _, req := range appr.prompts() {
+		if strings.ContainsRune(req.Tool, 0x1b) || strings.ContainsRune(req.Tool, '\r') {
+			t.Errorf("the approval prompt carried control characters in the tool name (%q). "+
+				"Rendered in a terminal, \\x1b[1A and \\x1b[2K move the cursor up and erase the "+
+				"line -- which is the line carrying NOT SANDBOXED", req.Tool)
+		}
+		if req.Confined {
+			t.Error("a Lane B call reported itself confined on the approval prompt")
+		}
 	}
-	req := prompts[0]
 
-	if req.Confined {
-		t.Error("a Lane B call reported itself confined on the approval prompt")
+	// Not merely unprompted -- unreachable. An unadvertised tool is one Lookup
+	// cannot resolve, so the model naming it is refused outright. "We did not
+	// ask" and "it cannot run" are different guarantees and only the second is
+	// worth anything.
+	for _, a := range activity {
+		if a.Phase == protocol.ToolPhaseRunning || a.Phase == protocol.ToolPhaseSucceeded {
+			t.Errorf("a tool this daemon refused to advertise reached phase %q", a.Phase)
+		}
 	}
-	t.Logf("M6: the approval prompt carried the server's name verbatim: %q\n"+
-		"ESC present=%v, CR present=%v. Rendered in a terminal this repositions the cursor on the "+
-		"panel that also carries the NOT SANDBOXED line; the daemon's own refusal log shows the "+
-		"same bytes reaching stderr unescaped.",
-		req.Tool, strings.ContainsRune(req.Tool, 0x1b), strings.ContainsRune(req.Tool, '\r'))
 }
 
 // evilToolName must match testdata/badserver's evil-name mode exactly: the
