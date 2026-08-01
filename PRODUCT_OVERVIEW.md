@@ -15,7 +15,9 @@ code your question is about, and grounds every answer in *your* real files. When
 it proposes a change, that change passes through a five-gate safety pipeline
 before a single byte is written — and every write is backed up and undoable. The
 only thing that ever leaves your machine is the minimal prompt for one inference
-turn, sent through a proxy that holds the credential server-side — with zero data
+turn — or one prompt per step, if you turn on **agent mode**, where each step's
+tools need your explicit approval (§6a) — sent through a proxy that holds the
+credential server-side — with zero data
 retention set client-side **and enforced server-side** by that proxy, which refuses
 any request whose retention flags are missing or weakened (see §7). Your code,
 index, memory, and backups all stay local.
@@ -25,7 +27,7 @@ index, memory, and backups all stay local.
 | | |
 |---|---|
 | 🖥️ **Where it runs** | Entirely on your machine — no cloud service, no account, no network listener |
-| 📤 **What leaves your machine** | Only the minimal prompt for a single inference turn — scrubbed of secrets on your machine (heuristic, see §7); retention denied on the wire and **enforced at the proxy** |
+| 📤 **What leaves your machine** | Only the minimal prompt for a single inference turn — scrubbed of secrets on your machine (heuristic, see §7); retention denied on the wire and **enforced at the proxy**. With agent mode on, one such prompt per step, plus the scrubbed output of tools you approved (§6a) |
 | ✍️ **How edits apply** | As precise `SEARCH/REPLACE` edits through 5 safety gates; every write backed up and undoable |
 | 🔒 **Privacy default** | Zero data retention denied on the wire, set client-side and **enforced at the proxy** (fail-closed); API key held server-side, never on the client |
 | 🧩 **How you use it** | A chat terminal (Mochiii), a VS Code extension, and a scriptable CLI — all over one shared engine |
@@ -43,6 +45,7 @@ index, memory, and backups all stay local.
 - [4. The big picture](#4-the-big-picture)
 - [5. A question's journey](#5-a-questions-journey)
 - [6. How edits stay safe](#6-how-edits-stay-safe)
+- [6a. How tools stay under your control](#6a-how-tools-stay-under-your-control)
 - [7. How your privacy holds](#7-how-your-privacy-holds)
 
 **Part III — What You Get**
@@ -155,6 +158,11 @@ Everything in the green box below is **your machine**. Only the orange box is
 off-machine, and only the minimal prompt for one inference turn ever crosses that
 line — with the credential on the proxy, not the client, and retention denied on the
 request and enforced at the proxy (see §7).
+
+**With agent mode on, "one turn" becomes "one turn per step."** That is a real
+change to the sentence above and it is stated rather than absorbed: the loop is
+bounded, every step is visible, and no tool runs without your approval. §6a is
+the whole of it.
 
 ```mermaid
 flowchart TB
@@ -303,6 +311,82 @@ recent run stays independently undoable.
 
 ---
 
+## 6a. How tools stay under your control
+
+*Agent mode is **off by default**. Everything in this section is inert until you
+turn it on in `models.json`.*
+
+With it on, Mochiii can do more than answer once: it can read a file, look at
+what it found, and decide to read another — a bounded loop rather than a single
+reply. That is genuinely more capability, and it is the point at which "the
+assistant only ever talks" stops being true. So it comes with its own gate.
+
+**One approval per call, showing exactly what will run.**
+
+```mermaid
+flowchart LR
+    A["Model asks<br/>for a tool"] --> P1
+
+    P1{"① Known tool?<br/>advertised this turn"}
+    P1 -- "no" --> R["🛑 REFUSED<br/>model is told why"]
+    P1 -- ok --> P2
+
+    P2{"② Policy?<br/>deny / ask / allow"}
+    P2 -- "deny" --> R
+    P2 -- "allow" --> P4
+    P2 -- "ask" --> P3
+
+    P3{"③ You approve?<br/>see the exact arguments"}
+    P3 -- "no / no answer" --> R
+    P3 -- "yes" --> P4
+
+    P4["④ Run · scrub output · audit"]
+    P4 --> DONE["✅ Result goes<br/>back to the model"]
+
+    style R fill:#5b1a1a,stroke:#e74c3c,color:#fff
+    style DONE fill:#0d3b2e,stroke:#2ecc71,color:#fff
+```
+
+| Gate | Guarantee |
+|---|---|
+| **① Advertised set** | The model can only ask for tools that were offered this turn. A tool your config denies is never even advertised, and an invented name is refused with a readable reason rather than guessed at. |
+| **② Policy** | Every tool resolves to `deny`, `ask`, or `allow` from **your** `models.json`. Anything you have not written a policy for resolves to `ask` — the default is a question, never a yes. |
+| **③ Your approval** | You see the tool, the **complete** arguments (never a summary), and which trust lane it belongs to. Only an explicit yes runs it. A timeout, a garbled answer, an answer to a different question, and a closed panel are all *no*. |
+| **④ Bounded, scrubbed, recorded** | Four per-turn ceilings (steps, wall clock, per-result bytes, total tool bytes) and every ceiling says which one stopped the turn. Tool output goes through the same secret scrubber as everything else before the model sees it. Every decision — including the ones you were never prompted about — is appended to `.codeterminal/logs/toolcalls.jsonl`. |
+
+**The approval is bound to the bytes, not to the moment.** The prompt carries a
+SHA-256 of the exact argument object, your client echoes it back, and the daemon
+re-checks it before running anything. What you were shown and what runs are
+*provably* the same object — the same discipline that makes the edit gates
+trustworthy, applied one layer up.
+
+### Two lanes, and only one of them is confined
+
+| | **Built-in tools** | **Your MCP servers** |
+|---|---|---|
+| What they are | Functions compiled into Mochiii | Separate programs you configured |
+| Can they write to your files? | **No.** The edit tool *proposes* into the same five-gate review you already use | Mochiii cannot tell, and cannot stop them |
+| Confined? | Yes — same path/secret resolver as the edit pipeline | **No** |
+| On by default? | Only with agent mode on | **No** — and each server needs a separate written acknowledgement |
+
+**We will not claim a third-party MCP server is sandboxed, because it is not.**
+It is an ordinary program running with your full access, and nothing in this
+product can constrain what it reads or changes. What we do claim is narrower and
+true: it does not start unless you configured it, it does not run unless you
+approve each call, you see the exact arguments first, and every decision is
+written down locally. That is consent and audit — not containment. Every
+approval prompt says so in those words.
+
+**Credentials never reach an MCP server.** A server gets `PATH` and `HOME` and
+nothing else unless you explicitly list a variable — and your inference API keys
+cannot be granted that way at all, however loudly a config asks.
+
+**What this costs.** Measured over 30 real agent turns: a median of 2 steps and
+1 tool call per turn, so roughly twice a normal turn rather than the eight-fold
+worst case the ceilings allow (`docs/AGENT_LOOP_RELIABILITY_2026-07-31.md`).
+
+---
+
 ## 7. How your privacy holds
 
 ```mermaid
@@ -392,6 +476,14 @@ backlog; the discipline *is* the product's assurance.
 - **VS Code extension** — chat panel, in-editor diff-apply, native Undo button,
   conversation search
 - **CLI** for scripts and one-shot `edits apply` / `edits undo`
+
+### 🛠️ Uses tools only when you say so
+- **Off by default.** Agent mode and every MCP server are opt-in, per server, in writing
+- One approval per call, showing the **complete** arguments — bound to them by a SHA-256 the daemon re-checks
+- Four per-turn ceilings, and every stop says which one bit
+- Every decision appended to a local audit log — the digest, never the arguments
+- Built-in tools cannot write: the edit tool proposes into the same five-gate review
+- Third-party servers are **not sandboxed**, and every prompt says so plainly
 
 ### 🔒 Protects you by default
 - No network listener; local socket with owner-only permissions

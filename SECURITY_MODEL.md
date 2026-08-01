@@ -903,3 +903,147 @@ rationale as of 2026-07-30**, with the residual above accepted on the stated
 conditions. As everywhere else in this program, **nothing here is founder-closed**
 — the final call on FAIL-3 remains the founder's, and this document exists to make
 that call reviewable rather than to pre-empt it.
+
+---
+
+# Agent mode — two trust lanes, and what we will not claim
+
+Added 2026-08-01 (Phase 5–7). The three sections above cover the database, the
+inference hop, and the local socket. This one covers the fourth surface, and the
+first one that can make this product *do* things rather than say them: the
+agentic tool loop and the MCP servers it can reach.
+
+It exists because the honest description of this feature is uncomfortable in one
+specific place, and a security document that omits the uncomfortable part is
+marketing.
+
+## The model in one paragraph
+
+Agent mode is **off by default** (`mcp.enabled`). With it on, the daemon may run
+a bounded loop: model call → tool call → model call, until the model stops asking
+or one of four per-turn ceilings bites. Tools come from two places that share
+nothing but a type. **Lane A** is Go functions compiled into the daemon —
+confined by the same path/secret resolver that gates every model-proposed edit,
+and *none of them writes*: the edit tool proposes into the existing five-gate
+review. **Lane B** is any MCP server the user configured, spawned as a stdio
+subprocess. Every tool resolves to `deny`, `ask` or `allow` from the user's own
+`models.json`; anything unlisted resolves to `ask`, and `ask` suspends the turn
+until a human answers on the same socket connection the turn is streaming over.
+
+## The claim, stated exactly
+
+**For Lane B we claim consent and audit. We do not claim containment, and we
+will not.**
+
+An MCP server is an ordinary process running with the user's full privileges.
+The five gates constrain *our* writer; they have no reach into somebody else's
+subprocess. There is no OS sandbox here — no seccomp, no namespace, no
+`landlock`. If a configured server decides to read `~/.ssh` and post it
+somewhere, nothing in this product stops it.
+
+What is true, and what every approval prompt says in these words:
+
+- it does not start unless the user configured it (and acknowledged, per server,
+  in writing, that it is unconfined);
+- it does not run unless the user approves that specific call;
+- the user sees the **complete** arguments first, never a summary;
+- every decision is written to a local append-only log.
+
+That is a real protection and a narrower one than "sandboxed". The distinction
+is load-bearing: a user who believes Lane B is contained will configure servers
+they would otherwise refuse.
+
+## What the approval actually binds
+
+The prompt carries the exact argument bytes **and their SHA-256**. The client
+echoes the digest back unchanged; the daemon re-checks it, plus the call id,
+before dispatching. What was shown and what runs are provably the same object.
+
+This is the same class of check `VerifyUnchanged` makes for edits, for the same
+reason: between rendering a thing for a human and acting on it, something must
+prove the thing did not change.
+
+Four independent checks reject an answer, and **every one of them denies rather
+than errors**:
+
+| Check | Failure means |
+|---|---|
+| Exact-key sniff on `approval` | the body is not recognisably an answer (`{"APPROVAL":true}` is not one — same discipline as the request dispatcher) |
+| `call_id` echo | it is an answer to some other question |
+| `arguments_sha256` echo | the arguments shown are not the arguments about to run |
+| Decision in the defined set, with `approval:true` behind an approving verb | an invented verb is not a permission |
+
+A timeout is a denial. A closed connection is a denial. No approval channel at
+all is a denial. **Silence is never consent**, and the code has no path on which
+"we could not ask" resolves to anything but "no".
+
+## Credentials cannot reach a Lane B server
+
+A spawned server's environment is built from scratch, not inherited: it gets
+`PATH` and `HOME`, plus any variable the user explicitly allow-listed. Three
+names — `OPENROUTER_API_KEY`, `CODETERMINAL_API_KEY`, `CODETERMINAL_MOCHIII_KEY`
+— are **ungrantable**: a config that asks for one is refused outright rather than
+spawning and filtering.
+
+Neutering that construction to `os.Environ()` leaks the inference key, the
+managed-mode key, `SSH_AUTH_SOCK`, and ~130 other variables. That is the measured
+consequence, and it is why the environment is built rather than pruned.
+
+## Tool output is egress, and is treated as egress
+
+Whatever a tool returns goes to the model, which means it leaves the machine. It
+passes through the same secret scrubber and the same truncation as retrieved
+chunks, at a single choke point, **truncating before scrubbing** — scrubbing first
+changes the length and could slice a redaction placeholder in half.
+
+Two of the four per-turn ceilings exist for this specifically: per-result bytes
+and cumulative tool bytes per turn. A privacy-positioned product should be able
+to bound and report how much extra left the machine because of tools, and the
+activity stream reports the post-scrub figure per call.
+
+## The audit log
+
+`.codeterminal/logs/toolcalls.jsonl` — local file only, append-only, `O_NOFOLLOW`,
+size-rotated, `0600`. There is deliberately no `io.Writer` seam and no network
+path; it shares its substrate with the warn-mode sink for exactly that reason.
+
+**One record per dispatch decision, including calls that were never prompted**
+(policy `allow`). An audit covering only what the user already watched happen is
+a log of things they already knew.
+
+**It records the argument digest and length, never the arguments.** Those are
+unscrubbed model output — paths, queries, source text — and are the one field
+that would make this file worth stealing. The digest is enough to bind a record
+to the call that ran; it is the same digest the approval was bound to.
+
+A write failure is swallowed, so a full disk means a call runs unrecorded rather
+than a turn failing. That is a real trade and the same one the warn-mode sink
+makes.
+
+## Accepted residuals
+
+- **Lane B is unconfined.** Stated above; accepted deliberately, mitigated by
+  default-off, per-server acknowledgement, per-call consent, and audit. OS
+  sandboxing is a non-goal for v1, not an oversight.
+- **A tool's self-description is never a gate.** `readOnlyHint` and `destructive`
+  are the server's own claims, carried for display only. Letting a
+  self-description lower the bar would make consent optional for any server
+  willing to lie, which is the entire population that matters.
+- **Shutdown mid-approval has a narrow race.** Cancelling pushes the read
+  deadline into the past to unblock the wait, but `limitedConn.Read` re-arms it
+  immediately before each read, so a cancellation landing in a few-instruction
+  window is overwritten and the wait runs its full length. Losing that race costs
+  a slow shutdown, never a wrong decision — an unanswered ask is a denial either
+  way.
+- **Reliability is measured, not proven.** 30 real agent turns, zero
+  non-termination and zero repeated calls
+  (`docs/AGENT_LOOP_RELIABILITY_2026-07-31.md`). The honest claim is "no failures
+  observed in 30 turns", not "never fails"; the 95% interval runs to roughly
+  [88%, 100%].
+
+## Status
+
+Implemented and gate-green as of 2026-08-01, with the residuals above accepted on
+the stated conditions. As everywhere else in this program, **nothing here is
+founder-closed** — this document exists to make that call reviewable rather than
+to pre-empt it.

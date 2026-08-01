@@ -2,7 +2,9 @@
 
 **A local-first AI coding assistant.** Your codebase is indexed, embedded, and
 retrieved entirely on your own machine. The only thing that leaves it is the
-minimal prompt for a single inference turn.
+minimal prompt for a single inference turn — or, with **agent mode** turned on,
+one prompt per step of a bounded, per-call-approved loop (see
+[Agent mode and MCP tools](#agent-mode-and-mcp-tools)).
 
 A background daemon holds the index, the conversation memory, and the edit-safety
 engine. Clients — **Mochiii** (the chat TUI), a VS Code extension, and a scriptable
@@ -16,6 +18,7 @@ anywhere on your machine.
 | **Retrieval** | On-device ONNX embeddings (BGE-small, 384d) + local vector store |
 | **Inference** | Any OpenAI-compatible API, direct or through the managed proxy |
 | **Edit safety** | Five gates: path, exact-match, syntax, confirm, backup |
+| **Agent mode** | Off by default. Per-call approval, four per-turn budgets, local audit log |
 | **Platforms** | linux/amd64, darwin/arm64, windows/amd64 ([Intel Mac is an open gap](#known-gaps)) |
 
 ---
@@ -37,6 +40,7 @@ anywhere on your machine.
 **Capabilities**
 - [Retrieval](#retrieval)
 - [Editing code](#editing-code)
+- [Agent mode and MCP tools](#agent-mode-and-mcp-tools)
 - [Conversation memory](#conversation-memory)
 - [Clients](#clients)
 
@@ -231,7 +235,7 @@ internet-facing component.
   │  ⑤ wrap in <retrieved_context> delimiters   │
   │  ⑥ send GroundingInfo to the client         │
   └─────────────────────────────────────────────┘
-          │  ⑦ one inference turn
+          │  ⑦ one inference turn (agent mode: one per step)
           ▼
   ┌─────────────────────────────────────────────┐
   │ PROXY (managed mode only)                   │
@@ -607,6 +611,121 @@ affected.
 New-file creation is out of scope: `ParseEditBlocks` rejects an empty `SEARCH`, so
 every block necessarily targets an existing file containing that exact text.
 
+## Agent mode and MCP tools
+
+**Off by default.** With `mcp.enabled` unset, everything below is inert and the
+outbound request body is byte-identical to what it was before this existed — no
+`tools` field, one model call per prompt.
+
+With it on, the daemon runs a bounded loop instead of a single call: model →
+tool → model, until the model stops asking for tools or a ceiling stops it.
+
+### The trust lanes
+
+Which map a server sits in *is* its lane — there is no `lane:` field to
+mistype.
+
+- **`mcp.builtin`** — tools compiled into the daemon. Confined by the same
+  path/secret resolver that gates model-proposed edits. **None of them writes:**
+  `propose_edit` validates a change and files it into the normal five-gate
+  review, so an agent turn still cannot change a file without you seeing a diff.
+- **`mcp.servers`** — MCP servers you configured, spawned as stdio subprocesses.
+  Ordinary programs with your full access. **Not sandboxed**, and each one needs
+  `acknowledged_unconfined: true` before it will resolve to anything runnable.
+
+### Configuration
+
+```jsonc
+{
+  "mcp": {
+    "enabled": true,
+
+    "builtin": {
+      // Per-tool policy: "deny" | "ask" | "allow".
+      // A tool you don't list resolves to "ask" — the default is a question.
+      // Built-ins: read_file, list_directory, search_code, propose_edit.
+      "tools": { "read_file": "allow", "list_directory": "allow" }
+    },
+
+    "servers": {
+      "docs": {
+        "command": "/usr/local/bin/some-mcp-server",
+        "args": ["--root", "/home/me/notes"],
+
+        // Environment allow-list. The subprocess gets PATH and HOME and nothing
+        // else unless named here. OPENROUTER_API_KEY, CODETERMINAL_API_KEY and
+        // CODETERMINAL_MOCHIII_KEY are UNGRANTABLE: a config asking for one is
+        // refused outright rather than spawned and filtered.
+        "env": ["SOME_SERVER_TOKEN"],
+
+        // Required. Without it every tool on this server resolves to deny.
+        // It is a written acknowledgement that this product cannot confine it.
+        "acknowledged_unconfined": true,
+
+        "tools": { "search_notes": "ask" }
+      }
+    },
+
+    // Every field below is optional; the value shown IS the default.
+    "budget": {
+      "max_iterations": 8,             // model calls per turn
+      "turn_timeout_seconds": 600,     // MACHINE time; time you spend deciding is added back
+      "max_tool_result_bytes": 32768,  // per result, after scrubbing and truncation
+      "max_total_tool_bytes": 131072,  // per turn, after scrubbing and truncation
+      "max_advertised_tools": 12       // cap on the menu the model sees
+    }
+  }
+}
+```
+
+Servers start when an agent turn begins and are torn down when it ends. A
+configured server is not a running one.
+
+```bash
+codeterminal-daemon mcp list [--config path]   # what would be advertised, and its policy
+```
+
+### Approval
+
+`ask` suspends the turn and puts the call in front of you, on the same
+connection the answer is streaming over. You get the tool name, the **complete**
+arguments, which lane it belongs to, and which step of the loop this is.
+
+| | TUI | One-shot CLI | VS Code |
+|---|---|---|---|
+| Run once | `y` | `y` | **Run once** |
+| Allow this tool for the task | `a` | `a` | **Allow for this task** |
+| Deny | `n` | anything else | **Deny** (focused by default) |
+| Stop the task | `q` / `esc` | `q` | **Stop the task** |
+
+Only an explicit yes runs it. A timeout (5 minutes), a garbled answer, an answer
+to a different call, and a closed client are all denials. An `a` grant covers
+only that tool, only for that turn, and is never written to disk — a durable
+"always allow" belongs in `models.json` where you write it and can read it back.
+
+The one-shot CLI declares it can be asked **only** with `--prompt` from a real
+terminal. A piped run has stdin spent on the prompt and nobody to ask, so it
+gets the ordinary single-turn path.
+
+### Audit
+
+Every decision — including `allow` calls you were never prompted about — is
+appended to `.codeterminal/logs/toolcalls.jsonl`. Local file only, `0600`,
+rotated at 5 MiB.
+
+It records the **SHA-256 of the arguments and their length, never the arguments
+themselves**: those are unscrubbed model output, and the digest is the same one
+your approval was bound to.
+
+`mochiii status` grows an `agent` line once a daemon has run a turn.
+
+### Reliability
+
+Measured over 30 real agent turns against `deepseek/deepseek-v4-flash`: zero
+non-terminating turns, zero repeated identical calls, median 2 steps and 1 tool
+call per turn. `docs/AGENT_LOOP_RELIABILITY_2026-07-31.md` includes what that
+sample does and does not establish.
+
 ## Conversation memory
 
 The daemon keeps **cross-session** conversation memory for its configured
@@ -965,6 +1084,14 @@ prompts, no embedding/vector search over skills, no dedup or ranking, no sync.
 **Routing** — `ghost_text` and `reasoning` are defined but inert; there is no live
 tier-selection logic.
 
-**Other** — `mcp-servers/` is still a stub. On the local machine there is no TCP,
-no network listener, and no auth beyond Unix socket permissions — the socket's
-`0600` mode is the boundary.
+**Agent mode** — no OS sandboxing of third-party MCP servers (consent and audit
+are the protection, and the docs say so rather than implying otherwise); stdio
+transport only, so no remote/HTTP MCP servers and no new network egress; no MCP
+resources or prompts, only tools; no config hot-reload; tool results are never
+persisted into conversation history; our own built-ins are not exported as
+standalone MCP servers.
+
+**Other** — `mcp-servers/` is still a stub (the built-in tools live in the daemon;
+see [Agent mode and MCP tools](#agent-mode-and-mcp-tools)). On the local machine
+there is no TCP, no network listener, and no auth beyond Unix socket permissions —
+the socket's `0600` mode is the boundary.
