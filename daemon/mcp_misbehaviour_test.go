@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -428,3 +429,63 @@ func TestAnUntrimmedToolMenuIsNotReportedAsDegraded(t *testing.T) {
 		}
 	}
 }
+
+// A server that writes to stderr without ever sending a newline must not grow
+// the daemon's log buffer without bound.
+//
+// This is M1a's shape on the channel M1a did not cover. That fix capped stdio
+// MESSAGES via max_message_bytes; stderr never goes through the transport, it
+// goes to prefixWriter, which accumulated until a '\n' arrived. An unconfined
+// third-party process choosing never to send one is not a malfunction, it is an
+// input.
+func TestPrefixWriterBoundsANewlineFreeFlood(t *testing.T) {
+	logged := 0
+	w := &prefixWriter{
+		prefix: "mcp/flood: ",
+		logger: log.New(writerFunc(func(p []byte) (int, error) {
+			logged += len(p)
+			return len(p), nil
+		}), "", 0),
+	}
+
+	// 8 MiB with no newline anywhere.
+	chunk := bytes.Repeat([]byte("A"), 64<<10)
+	for i := 0; i < 128; i++ {
+		if _, err := w.Write(chunk); err != nil {
+			t.Fatalf("Write: %v", err)
+		}
+		if len(w.buf) > maxLogLineBytes {
+			t.Fatalf("after %d MiB the retained buffer is %d bytes, above the %d cap — a server that never sends a newline grows this without limit",
+				(i+1)*64/1024, len(w.buf), maxLogLineBytes)
+		}
+	}
+	if logged == 0 {
+		t.Error("nothing was logged; the flood should be emitted at the cap, not dropped")
+	}
+}
+
+// The ordinary case must be untouched: whole lines still log one per line, and
+// a partial line is still held until its newline arrives.
+func TestPrefixWriterStillBuffersPartialLines(t *testing.T) {
+	var got []string
+	w := &prefixWriter{
+		prefix: "mcp/x: ",
+		logger: log.New(writerFunc(func(p []byte) (int, error) {
+			got = append(got, strings.TrimRight(string(p), "\n"))
+			return len(p), nil
+		}), "", 0),
+	}
+
+	w.Write([]byte("first line\nsec"))
+	if len(got) != 1 || got[0] != "mcp/x: first line" {
+		t.Fatalf("after a complete line plus a partial one, logged = %v", got)
+	}
+	w.Write([]byte("ond line\n"))
+	if len(got) != 2 || got[1] != "mcp/x: second line" {
+		t.Fatalf("the held partial line was not completed correctly: %v", got)
+	}
+}
+
+type writerFunc func([]byte) (int, error)
+
+func (f writerFunc) Write(p []byte) (int, error) { return f(p) }

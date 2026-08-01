@@ -408,6 +408,21 @@ func (h *HelperProcess) Stop() error {
 	return nil
 }
 
+// maxLogLineBytes caps how much of a single newline-free run this writer will
+// hold before emitting it anyway.
+//
+// A line buffer that only drains on a newline is bounded by the writer's
+// politeness, and the writer here is a subprocess. The helper is this project's
+// own code and would have to malfunction to reach this; the MCP variant of the
+// same writer (mcpruntime.go) reads an unconfined third-party process's stderr,
+// where "writes megabytes without a newline" is not a malfunction but an input.
+// Both are capped, at the same place and for the same reason.
+//
+// 64 KiB is far above any real log line and far below a size worth worrying
+// about, and what happens at the cap is a flush rather than a drop: the bytes
+// were going to be logged anyway, they just stop accumulating first.
+const maxLogLineBytes = 64 << 10
+
 // prefixedWriter prefixes every line written to it before forwarding to out.
 // Used to tag the helper's stdout/stderr in the daemon's own log stream.
 type prefixedWriter struct {
@@ -431,6 +446,12 @@ func (w *prefixedWriter) Write(p []byte) (int, error) {
 		line := w.buf[:i]
 		fmt.Fprintf(w.out, "%s%s\n", w.prefix, line)
 		w.buf = w.buf[i+1:]
+	}
+	// No newline in sight and the buffer has grown past what a log line can
+	// reasonably be: emit it and start again, rather than holding it forever.
+	if len(w.buf) >= maxLogLineBytes {
+		fmt.Fprintf(w.out, "%s%s [continues]\n", w.prefix, w.buf)
+		w.buf = w.buf[:0]
 	}
 	return len(p), nil
 }

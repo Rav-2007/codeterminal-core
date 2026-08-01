@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -209,10 +210,22 @@ type prefixWriter struct {
 // anyone tailing the log. Same reasoning as ValidateToolName, different
 // remedy: a log line is displayed rather than dispatched on, so it can be
 // escaped and stay readable instead of being refused.
+//
+// BOUNDED, because this is a hostile stream. The server on the other end is
+// unconfined and can write whatever it likes, including megabytes with no
+// newline in them -- and a buffer that only drains on a newline would grow
+// without limit while it did. That is M1a's exact shape: unbounded allocation
+// driven by a misbehaving server, before any consent step exists. The M1a fix
+// capped stdio MESSAGES (max_message_bytes); stderr does not go through that
+// path and reaches here instead, so it is capped here.
+//
+// bytes.IndexByte rather than strings.IndexByte(string(w.buf), ...): the latter
+// copies the entire buffer on every write, which turns a large accumulation
+// into quadratic work on top of the unbounded memory.
 func (w *prefixWriter) Write(p []byte) (int, error) {
 	w.buf = append(w.buf, p...)
 	for {
-		i := strings.IndexByte(string(w.buf), '\n')
+		i := bytes.IndexByte(w.buf, '\n')
 		if i < 0 {
 			break
 		}
@@ -221,6 +234,10 @@ func (w *prefixWriter) Write(p []byte) (int, error) {
 		if line != "" {
 			w.logger.Print(w.prefix + mcp.SanitizeForDisplay(line))
 		}
+	}
+	if len(w.buf) >= maxLogLineBytes {
+		w.logger.Print(w.prefix + mcp.SanitizeForDisplay(string(w.buf)) + " [continues]")
+		w.buf = w.buf[:0]
 	}
 	return len(p), nil
 }
