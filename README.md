@@ -188,9 +188,9 @@ Key daemon flags:
 | Flag | Effect |
 |---|---|
 | `--workspace <path>` | Which repo grounds answers (default: cwd) |
-| `--config <path>` | Path to `models.json` (default: `./models.json`) |
+| `--config <path>` | Path to `models.json` (default: beside the daemon binary, then `./models.json`) |
 | `--model <slug>` | Override the resolved slug (testing only) |
-| `--system-prompt <path>` | Override the system prompt file |
+| `--system-prompt <path>` | Use this file instead of the prompt compiled into the binary |
 | `--no-context` | Disable retrieval for the daemon's lifetime |
 | `--debug-context` | Log the full content of every retrieved chunk |
 | `--no-rerank` | Bypass class re-ranking, return raw similarity order |
@@ -539,10 +539,12 @@ scrub. Treat it as defense-in-depth, not a guarantee.
 
 ### Edit blocks
 
-The daemon loads [`daemon/prompts/system.txt`](daemon/prompts/system.txt) at
-startup (override with `--system-prompt`) and prepends it as the `system` message
-on every request. It contains no secrets and is plain text, so it is reviewable
-and editable independently of the code.
+The daemon prepends a system prompt as the `system` message on every request.
+Its source is [`daemon/prompts/system.txt`](daemon/prompts/system.txt) — plain
+text, no secrets, reviewable in the repo — and it is **compiled into the binary**
+with `//go:embed`, so the daemon carries it wherever it runs. Point
+`--system-prompt` at a file to use that instead; a path that cannot be read is an
+error rather than a silent fall back to the built-in copy.
 
 That prompt instructs the model to propose changes as SEARCH/REPLACE blocks rather
 than rewriting whole files:

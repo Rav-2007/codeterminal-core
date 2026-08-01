@@ -104,14 +104,17 @@ already learned that a check nobody must pass is a check that drifts.
 
 ## Backlog — added 2026-07-08
 
-- **Daemon must run from repo root (config-path gotcha)** (low priority; docs/DX)
-  The daemon reads ./models.json relative to its working directory, not relative
-  to the binary. Running it from inside daemon/ fails with "reading config
-  ./models.json: no such file or directory" — models.json lives at the repo root.
-  Correct invocation: `cd ~/Desktop/Neww && ./daemon/codeterminal-daemon
-  --workspace .`. Either document this clearly in the run steps, or make the
-  daemon resolve models.json relative to --workspace / the binary path so it can
-  be launched from anywhere. Tripped me up during the VS Code slice.
+- ~~**Daemon must run from repo root (config-path gotcha)**~~ **Fixed 2026-08-01**,
+  and it was never "low priority; docs/DX" — it was a hard blocker for packaging.
+  Both defaults were CWD-relative (`-config ./models.json`,
+  `-system-prompt daemon/prompts/system.txt`), so a daemon bundled inside a VS Code
+  extension, which has no repo root to run from, could not start at all. The system
+  prompt is now `//go:embed`ed (it is a build artifact, not configuration) and
+  `resolveConfigPath` finds `models.json` beside the binary first, mirroring
+  `resolveHelperBinPath`. Verified live: a binary and a `models.json` alone in a
+  directory, started from an unrelated `cwd`, reaches `listening on ...` and drains
+  cleanly; neutering both defaults reproduces the original
+  `reading config ./models.json: no such file or directory`.
 
 - **VS Code launch.json opens Host with "No Folder Opened"** (trivial; DX polish)
   The Extension Development Host launches with no workspace folder because

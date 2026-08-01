@@ -77,9 +77,9 @@ func main() {
 		}
 	}
 
-	configPath := flag.String("config", "./models.json", "path to models.json")
+	configPath := flag.String("config", "", "path to models.json (default: next to the daemon binary, then ./models.json)")
 	modelOverride := flag.String("model", "", "override the resolved model slug (testing only; config is the source of truth)")
-	systemPromptPath := flag.String("system-prompt", "daemon/prompts/system.txt", "path to the system prompt file")
+	systemPromptPath := flag.String("system-prompt", "", "path to a system prompt file (default: the copy compiled into this binary)")
 	workspace := flag.String("workspace", ".", "workspace root containing an existing .codeterminal/index for retrieval-augmented context")
 	noContext := flag.Bool("no-context", false, "disable automatic retrieval-augmented context injection (default: enabled)")
 	debugContext := flag.Bool("debug-context", false, "additionally log the full content of every retrieved chunk (verbose)")
@@ -134,7 +134,13 @@ func main() {
 		logger.Print("warning: CODETERMINAL_API_KEY is not set; requests will be sent without an Authorization header")
 	}
 
-	cfg, err := LoadConfig(*configPath)
+	// An explicit -config is used as given; otherwise it is found relative to
+	// this binary, so the daemon no longer has to be started from the repo root.
+	resolvedConfigPath := *configPath
+	if resolvedConfigPath == "" {
+		resolvedConfigPath = resolveConfigPath()
+	}
+	cfg, err := LoadConfig(resolvedConfigPath)
 	if err != nil {
 		logger.Fatal(err)
 	}
@@ -174,11 +180,10 @@ func main() {
 		logger.Print("secret scrubbing DISABLED (--no-scrub)")
 	}
 
-	systemPromptBytes, err := os.ReadFile(*systemPromptPath)
+	systemPrompt, err := resolveSystemPrompt(*systemPromptPath)
 	if err != nil {
-		logger.Fatalf("reading system prompt %s: %v", *systemPromptPath, err)
+		logger.Fatal(err)
 	}
-	systemPrompt := string(systemPromptBytes)
 
 	// absWorkspace (resolved and checked by validateWorkspace above) is passed
 	// in place of the raw flag: setupRetrieval would only re-derive the same

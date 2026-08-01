@@ -28,7 +28,7 @@ import (
 // will not start should not have to spend a model call to find out why.
 func runMCPCommand(args []string, logger *log.Logger) error {
 	fs := flag.NewFlagSet("mcp", flag.ExitOnError)
-	configPath := fs.String("config", "./models.json", "path to models.json")
+	configPath := fs.String("config", "", "path to models.json (default: next to the daemon binary, then ./models.json)")
 	workspace := fs.String("workspace", ".", "workspace root to ground built-in tools against")
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "usage: %s mcp list [--config models.json] [--workspace .]\n\n"+
@@ -55,7 +55,15 @@ func runMCPCommand(args []string, logger *log.Logger) error {
 		return fmt.Errorf("unexpected argument %q", fs.Arg(0))
 	}
 
-	cfg, err := LoadConfig(*configPath)
+	// Same resolution as the daemon itself, so `mcp list` reports on the config
+	// the daemon would actually load rather than on whatever the CWD happens to
+	// hold. Resolved before use so the "agent mode is OFF" line below can name
+	// the real file.
+	resolvedConfigPath := *configPath
+	if resolvedConfigPath == "" {
+		resolvedConfigPath = resolveConfigPath()
+	}
+	cfg, err := LoadConfig(resolvedConfigPath)
 	if err != nil {
 		return err
 	}
@@ -64,7 +72,7 @@ func runMCPCommand(args []string, logger *log.Logger) error {
 	}
 
 	if !cfg.MCP.Enabled {
-		fmt.Println("Agent mode is OFF (mcp.enabled is not true in " + *configPath + ").")
+		fmt.Println("Agent mode is OFF (mcp.enabled is not true in " + resolvedConfigPath + ").")
 		fmt.Println("No tools would be offered and no servers would be started.")
 		return nil
 	}
