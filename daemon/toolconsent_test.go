@@ -4,9 +4,13 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -397,4 +401,158 @@ func TestANilAuditSinkIsHarmless(t *testing.T) {
 	if _, _, err := runLoopWith(t, s, &scriptedApprover{answers: []approvalDecision{says(protocol.ApprovalApprove)}}); err != nil {
 		t.Fatalf("a nil audit sink broke the turn: %v", err)
 	}
+}
+
+// A FAILURE PART-WAY THROUGH IS AN INCOMPLETE TURN, NOT A VOID ONE.
+//
+// QA gate 2026-08-01, P1-1. runAgentLoop used to return agentResult{} on a
+// stream error, discarding text the user had ALREADY WATCHED ARRIVE -- so any
+// edit blocks in it were never offered, and the turn never reached conversation
+// memory. budgetStop, in the same function, keeps all of that explicitly
+// "because the work done so far is real and the user keeps it".
+//
+// Neuter check: restore `return agentResult{}, err` and both halves fail.
+func TestAProviderFailureMidTurnKeepsTheWorkAlreadyDone(t *testing.T) {
+	const edit = "\n```edit\nFILE: a.txt\n<<<<<<< SEARCH\nalpha\n=======\nomega\n>>>>>>> REPLACE\n```\n"
+
+	scripted := [][]string{
+		{
+			`data: {"choices":[{"delta":{"content":"Reading it now. "}}]}`,
+			`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"builtin__read_file","arguments":"{\"path\":\"inside.txt\"}"}}]}}]}`,
+			`data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`,
+			`data: [DONE]`,
+		},
+		{
+			fmt.Sprintf(`data: {"choices":[{"delta":{"content":%s}}]}`, mustJSON(edit)),
+			`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c2","type":"function","function":{"name":"builtin__read_file","arguments":"{\"path\":\"inside.txt\"}"}}]}}]}`,
+			`data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`,
+			`data: [DONE]`,
+		},
+	}
+
+	var n atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		i := int(n.Add(1)) - 1
+		if i >= len(scripted) {
+			// Iteration 3: the provider has a bad minute. Retryable, so
+			// streamWithRetry exhausts its attempts and gives up.
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, line := range scripted[i] {
+			w.Write([]byte(line + "\n\n"))
+			w.(http.Flusher).Flush()
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	s, _ := askServer(t, srv.URL)
+	s.cfg.MCP.Builtin.Tools = map[string]string{"read_file": PolicyAllow}
+
+	var streamed strings.Builder
+	registry, _ := s.buildRegistry(t.Context(), s.logger, &proposalSink{})
+	t.Cleanup(func() { _ = registry.Close() })
+
+	res, err := s.runAgentLoop(t.Context(), registry, "m",
+		[]chatMessage{{Role: "user", Content: "go"}}, providerRouting{}, nil,
+		func(tok string) error { streamed.WriteString(tok); return nil },
+		nil, nil, nil)
+
+	if err != nil {
+		t.Fatalf("a turn with real work behind it came back as a bare error: %v", err)
+	}
+	if streamed.Len() == 0 {
+		t.Fatal("premise broken: nothing streamed before the failure")
+	}
+	if res.FinalText != streamed.String() {
+		t.Errorf("the user watched %d byte(s) arrive but the turn handed back %d",
+			streamed.Len(), len(res.FinalText))
+	}
+	if res.Incomplete == nil || res.Incomplete.Reason != protocol.IncompleteProviderError {
+		t.Fatalf("a provider failure was not reported as one: %+v", res.Incomplete)
+	}
+	// The load-bearing half: the edit block the user saw must still become a
+	// proposal they can act on.
+	if blocks := s.parseAndLogEditBlocks(res.FinalText); len(blocks) != 1 {
+		t.Errorf("the edit block produced before the failure is lost: %d block(s) survived", len(blocks))
+	}
+}
+
+// The first iteration is the exception: there is no work to preserve, so the
+// error IS the story. Dressing a bare failure up as an "incomplete answer"
+// would tell a user they have something when they have nothing.
+func TestAFailureBeforeAnyOutputIsStillAnError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(srv.Close)
+
+	s, _ := askServer(t, srv.URL)
+	registry, _ := s.buildRegistry(t.Context(), s.logger, &proposalSink{})
+	t.Cleanup(func() { _ = registry.Close() })
+
+	res, err := s.runAgentLoop(t.Context(), registry, "m",
+		[]chatMessage{{Role: "user", Content: "go"}}, providerRouting{}, nil,
+		func(string) error { return nil }, nil, nil, nil)
+
+	if err == nil {
+		t.Fatalf("a turn that produced nothing was reported as a result: %+v", res)
+	}
+	if res.FinalText != "" {
+		t.Errorf("nothing was produced, yet FinalText is %q", res.FinalText)
+	}
+}
+
+// THE ID IS WHAT AN APPROVAL BINDS TO, so a call without one must be refused
+// rather than dispatched (QA gate 2026-08-01, P1-2 -- found by the fuzzer).
+//
+// An empty id makes verifyApproval's call-id check vacuous, leaving consent
+// bound by the argument digest alone. The digest covers the arguments and NOT
+// the tool name, so an approval collected for one tool would verify for another
+// called with the same arguments.
+func TestAToolCallWithNoIDIsRefused(t *testing.T) {
+	acc := newToolCallAccumulator()
+	var chunk chatCompletionChunk
+	if err := json.Unmarshal([]byte(
+		`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"builtin__list_directory","arguments":"{\"path\":\".\"}"}}]}}]}`,
+	), &chunk); err != nil {
+		t.Fatal(err)
+	}
+	acc.ingest(chunk)
+
+	calls, err := acc.finish()
+	if err == nil {
+		t.Fatalf("a call with no id was assembled and is dispatchable: %+v", calls)
+	}
+	if !strings.Contains(err.Error(), "id") {
+		t.Errorf("the refusal does not say what was missing: %v", err)
+	}
+
+	// And the reason it matters, asserted directly rather than left implied: with
+	// no id to echo, one approval verifies for a different tool taking the same
+	// arguments.
+	const args = `{"path":"."}`
+	answer, _ := json.Marshal(protocol.ToolApprovalResponse{
+		Approval: true, CallID: "", ArgumentsSHA256: argumentsDigest(args),
+		Decision: protocol.ApprovalApprove,
+	})
+	other := protocol.ToolApprovalRequest{
+		CallID: "", Tool: "delete_everything",
+		Arguments: args, ArgumentsSHA256: argumentsDigest(args),
+	}
+	if d, _ := verifyApproval(other, answer); d != protocol.ApprovalApprove {
+		t.Fatal("premise broken: the id check is not vacuous when both ids are empty, " +
+			"so refusing the empty id upstream is no longer the thing protecting this")
+	}
+	t.Log("confirmed: the id check IS vacuous when both ids are empty, which is " +
+		"why finish() must refuse an id-less call rather than defend downstream")
+}
+
+func mustJSON(s string) string {
+	b, err := json.Marshal(s)
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
 }

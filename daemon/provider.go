@@ -424,6 +424,26 @@ func (a *toolCallAccumulator) finish() ([]toolCall, error) {
 		if !call.sawName {
 			return nil, fmt.Errorf("tool call %d arrived without a function name (the stream ended mid-call)", index)
 		}
+		// THE ID IS STRUCTURAL, and this check was missing until the fuzzer
+		// found it (QA gate 2026-08-01, P1-2; seed
+		// testdata/fuzz/FuzzToolCallAccumulator/bd61f0f73fd1a68a).
+		//
+		// It is not merely a label. It is what an approval is BOUND to: an empty
+		// id reaches the user as ToolApprovalRequest.CallID="" and makes
+		// verifyApproval's `resp.CallID != req.CallID` check vacuous, leaving
+		// consent bound by the argument digest alone -- and the digest covers
+		// the arguments, not the tool name. Two id-less calls with identical
+		// arguments then become indistinguishable to the verifier, so an
+		// approval collected for one verifies for the other.
+		//
+		// It is also what pairs a tool RESULT back to its call for the provider
+		// (see toolResultMessage), so an empty id is malformed on the way out
+		// too. Refused here rather than defended against downstream, because
+		// this function's whole contract is that a caller never sees a
+		// half-built call to be tempted by.
+		if call.id == "" {
+			return nil, fmt.Errorf("tool call %d (%s) arrived without an id, which is what an approval binds to", index, call.name)
+		}
 		args := strings.TrimSpace(call.args.String())
 		if args == "" {
 			// A tool that genuinely takes no arguments still gets a valid
