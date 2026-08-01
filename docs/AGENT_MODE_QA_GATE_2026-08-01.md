@@ -1,5 +1,27 @@
 # Agent-mode launch gate — QA, security and cost — 2026-08-01
 
+> **REMEDIATION STATUS — appended 2026-08-01, after the review.**
+>
+> Both P1s and the P2 comment defect are FIXED, one isolated commit each, every
+> fix neuter-verified. The findings below are left EXACTLY as written — nothing
+> is edited to look as though it was never there.
+>
+> | Finding | Commit | Status |
+> |---|---|---|
+> | P1-1 mid-turn error discards work | `63d09be` | FIXED — new `IncompleteProviderError`; 2 tests, both fail when neutered in either direction |
+> | P1-2 tool call with no id | `c59f8fd` | FIXED — refused at the accumulator; the crasher seed is now a passing regression test |
+> | P2-1 stale rate-limit comments | `519aa5e` | CORRECTED — comments only; the limits are deliberately unchanged, and the comment now says why |
+> | P2-2 advertised-tool cap vs. measured degradation | — | OPEN, needs real-model spend to quantify |
+> | P2-3 RSS over 50 turns | — | OPEN, needs a longer run with a Lane B server |
+>
+> **`make check` is green again**, including the fuzz seed that was red on
+> `dfbc647` by design.
+>
+> **THE VERDICT IS NOT RETRACTED.** It was correct when written. Whether the
+> gate now passes is the founder's call — and note that two of the seven
+> dimensions (Resources, and the P2-2 half of model behaviour) are still
+> *unestablished* rather than passed, which no amount of remediation changes.
+
 Gate on merging `feat/mcp-agent-loop` (20 commits) to `main`.
 
 **Depth:** local build/test plus `proxy/testharness` (fake Supabase + fake
