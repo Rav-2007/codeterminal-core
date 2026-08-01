@@ -13,11 +13,20 @@ import "regexp"
 
 // Redaction records that a match was found and replaced. It deliberately
 // carries no secret material — Kind is a fixed label (e.g. "openai_key"),
-// Start/End are offsets into the text as scrub saw it at the moment of that
-// pattern's match, never the matched text itself.
+// never the matched text itself.
+//
+// IT NO LONGER CARRIES OFFSETS, and their removal is the fix rather than a
+// simplification (L6). Start/End were recorded against `cleaned` as it stood
+// during that pattern's pass — but scrub runs the patterns in sequence, each
+// rewriting the string for the next, so every offset from a pattern after the
+// first indexed a string that no longer existed by the time scrub returned.
+// Nothing consumed them (redactionKinds reads Kind alone), so nothing was ever
+// wrong on the wire; what existed was accurate-looking data that was not
+// accurate, waiting for the first consumer to trust it. Wrong offsets are worse
+// than no offsets. If a caller ever needs positions, they have to be computed
+// against the returned string, which is a different piece of work.
 type Redaction struct {
-	Kind       string
-	Start, End int
+	Kind string
 }
 
 // scrubPatterns are compiled once at package init. Every pattern here is
@@ -66,8 +75,8 @@ func scrub(text string, disabled bool) (cleaned string, redactions []Redaction) 
 		if matches == nil {
 			continue
 		}
-		for _, m := range matches {
-			redactions = append(redactions, Redaction{Kind: p.kind, Start: m[0], End: m[1]})
+		for range matches {
+			redactions = append(redactions, Redaction{Kind: p.kind})
 		}
 		cleaned = p.re.ReplaceAllString(cleaned, "[REDACTED:"+p.kind+"]")
 	}
