@@ -45,8 +45,9 @@ time, at every menu size, including the one where only five tools are offered.
 
 That reframes the finding entirely. There is no menu-size effect to measure here;
 there is one tool whose description does not win against `list_directory` for a
-prompt containing the word "suite". That is a tool-description defect, and it
-would be just as present on a two-tool menu.
+prompt containing the word "suite", and it would lose just as badly on a two-tool
+menu. `run_tests` is an eval FIXTURE tool and does not ship — see the closing
+section for why that matters and what it does and does not imply.
 
 ---
 
