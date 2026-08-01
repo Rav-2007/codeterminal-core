@@ -242,10 +242,14 @@ func TestHangingInitializeCostsTheFullConnectTimeout(t *testing.T) {
 		"this, and runAgentLoop's deadline clock has not started yet", elapsed.Round(time.Second))
 }
 
-// M3 -- a server that dies mid-call.
+// M3 -- a server that dies mid-call is reported as an unavailable server.
 //
-// The question is whether this costs the model one tool or costs the user their
-// turn. A crash inside someone else's tool handler needs no malice at all.
+// A crash inside someone else's tool handler needs no malice at all and is the
+// likeliest Lane B misbehaviour there is. It arrived as a bare io.EOF wrapped
+// in prose, which the loop could not tell from "this tool failed" -- so the
+// model was told the wrong thing and the degradation notice never fired.
+//
+// Fails if isTransportDeath is neutered.
 func TestServerExitingMidCall(t *testing.T) {
 	client, err := connectBad(t, "exit-midcall")
 	if err != nil {
@@ -255,8 +259,12 @@ func TestServerExitingMidCall(t *testing.T) {
 	res, err := client.CallTool(context.Background(), "crash", nil)
 	switch {
 	case err != nil:
-		t.Logf("M3: a mid-call exit surfaced as a transport error, classified as "+
-			"ErrServerUnavailable=%v: %v", errors.Is(err, ErrServerUnavailable), err)
+		t.Logf("M3: a mid-call exit surfaced as a transport error: %v", err)
+		if !errors.Is(err, ErrServerUnavailable) {
+			t.Errorf("a dead server must be recognisable as ErrServerUnavailable: the loop branches "+
+				"on it to tell the model its server is gone rather than that its tool failed, and "+
+				"to raise a DegradedMCPServer notice. Got an unclassified %v", err)
+		}
 	case res.IsError:
 		t.Logf("M3: a mid-call exit surfaced as a tool error the model can read: %q", res.Content)
 	default:

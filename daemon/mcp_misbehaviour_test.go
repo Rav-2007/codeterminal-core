@@ -274,3 +274,44 @@ func TestHungServersDelayTheTurnOutsideItsBudget(t *testing.T) {
 		t.Logf("connects are no longer serial or the timeout is now shorter: %s", elapsed)
 	}
 }
+
+// M3 (daemon side) -- a server that dies mid-call costs the model that tool,
+// with an honest reason, and not the user's turn.
+//
+// The loop branches on mcp.ErrServerUnavailable to choose between "the tool
+// failed to run" and "the tool's server is unavailable". Those are different
+// facts and the model can act on the difference: a failed tool is worth
+// retrying with other arguments, a dead server is not.
+//
+// Fails if isTransportDeath is neutered -- the classification disappears and
+// the model is told the tool failed.
+func TestAServerDyingMidCallIsReportedAsAnUnavailableServer(t *testing.T) {
+	base, _, _ := agentUpstream(t,
+		toolCallSSE("c1", "bad__crash", `{}`),
+		textSSE("I could not reach that server."),
+	)
+	s := loopServer(t, base, badServerConfig(t, "exit-midcall",
+		map[string]string{"crash": PolicyAllow}))
+
+	res, activity, err := runLoopWith(t, s, nil)
+	if err != nil {
+		t.Fatalf("runAgentLoop: %v", err)
+	}
+	if res.FinalText == "" {
+		t.Error("a dead MCP server ended the turn; it should cost the model a tool, not the user an answer")
+	}
+
+	var failed *protocol.ToolActivity
+	for i := range activity {
+		if activity[i].Phase == protocol.ToolPhaseFailed {
+			failed = &activity[i]
+		}
+	}
+	if failed == nil {
+		t.Fatal("no failed tool activity was reported for a server that exited mid-call")
+	}
+	if !strings.Contains(failed.Detail, "server is unavailable") {
+		t.Errorf("the user and the model were told %q. A dead server is not the same fact as a "+
+			"failed tool, and only one of the two is worth retrying", failed.Detail)
+	}
+}

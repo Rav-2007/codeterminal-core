@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
@@ -340,6 +341,26 @@ func annotationBool(t *sdk.Tool, kind annotationKind) bool {
 	return false
 }
 
+// isTransportDeath reports whether an error means the connection is gone, as
+// distinct from the call having failed.
+//
+// Sentinel checks first, because those are contractual. The string check is
+// the ugly part and it is deliberate: the SDK surfaces a closed pipe as prose
+// wrapping an unexported error, so there is nothing else to match on. It is
+// narrow, and it is additive -- a future SDK that returns a proper sentinel is
+// caught by the lines above without this ever being consulted.
+func isTransportDeath(err error) bool {
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, io.ErrClosedPipe) || errors.Is(err, ErrServerUnavailable) {
+		return true
+	}
+	text := err.Error()
+	return strings.HasSuffix(text, ": EOF") ||
+		strings.Contains(text, "file already closed") ||
+		strings.Contains(text, "broken pipe") ||
+		strings.Contains(text, "connection closed")
+}
+
 // CallTool invokes one tool and flattens its content into text for the model.
 //
 // args is the model's raw JSON argument object. It is decoded here rather than
@@ -367,6 +388,21 @@ func (c *StdioClient) CallTool(ctx context.Context, name string, args json.RawMe
 
 	res, err := session.CallTool(ctx, &sdk.CallToolParams{Name: name, Arguments: decoded})
 	if err != nil {
+		// A SERVER THAT DIED MID-CALL IS AN UNAVAILABLE SERVER, and it must say
+		// so in a way the caller can branch on.
+		//
+		// The SDK reports this as a bare io.EOF wrapped in prose: the transport
+		// noticed stdout close and had no other information. Passed through
+		// unclassified, the loop could not tell "this server is gone" from "this
+		// tool failed", so it reported the generic "the tool failed to run" and
+		// the degradation notice the user should have seen never fired.
+		//
+		// This is the likeliest Lane B misbehaviour in the wild and it needs no
+		// malice at all -- a panic in somebody else's tool handler does it.
+		if isTransportDeath(err) {
+			return Result{}, fmt.Errorf("%w: server %s stopped responding during %s: %v",
+				ErrServerUnavailable, c.name, name, err)
+		}
 		return Result{}, fmt.Errorf("calling %s on server %s: %w", name, c.name, err)
 	}
 
