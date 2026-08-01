@@ -118,10 +118,20 @@ type LaunchConfig struct {
 // Connect starts the server and completes the MCP initialize handshake.
 //
 // The subprocess is constructed HERE rather than handed to the SDK to build,
-// which is what makes the environment discipline enforceable: sdk.CommandTransport
-// takes an *exec.Cmd we own, so cmd.Env is ours to set. Verified against a real
-// server in the Phase 2 spike -- the child saw only HOME, PATH and the one
-// allow-listed variable, with none of this product's credentials present.
+// which is what makes the environment discipline enforceable: cmd.Env is ours
+// to set. Verified against a real server in the Phase 2 spike -- the child saw
+// only HOME, PATH and the one allow-listed variable.
+//
+// THAT LAST SENTENCE IS TRUE ONLY OF A DIRECTLY-EXECUTED SERVER, which the
+// 2026-08-01 interop run against the reference Node server established: this
+// handed the child 2 variables and the child reported 25, the other 23 being
+// npx's own (NODE, PWD, INIT_CWD, and eighteen npm_config_*). A launcher --
+// npx, uvx, a shell wrapper, which is what most real configs name -- adds its
+// environment on top of ours.
+//
+// Not a hole, and not fixable by any allow-list: none of the additions is one
+// of this product's credentials, which is the property that matters and which
+// still holds. What the allow-list bounds is what THIS DAEMON passes.
 //
 // The spike also established that cmd.Process IS populated after Connect, so we
 // retain the handle and can enforce our own teardown rather than trusting the
