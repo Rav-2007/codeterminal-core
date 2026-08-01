@@ -182,7 +182,7 @@ func main() {
 		if *failAfter > 0 && int(reserveSeq.Add(1)) > *failAfter {
 			l.record("reserve_usage(OVER LIMIT)", r.RemoteAddr)
 			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(`[]`))
+			_, _ = w.Write([]byte(`[]`))
 			return
 		}
 
@@ -291,10 +291,13 @@ func main() {
 			n := upstreamSeq.Add(1) - 1
 			if n%int64(*toolCalls+1) < int64(*toolCalls) {
 				args, _ := json.Marshal(*toolArgs)
-				fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-%d\",\"type\":\"function\",\"function\":{\"name\":%q,\"arguments\":%s}}]}}]}\n\n",
+				// Writes to a hijacked SSE stream that the proxy may cut at any
+				// moment -- a failed write here IS the drill, not an error to
+				// report, exactly as the text path below already treats it.
+				_, _ = fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-%d\",\"type\":\"function\",\"function\":{\"name\":%q,\"arguments\":%s}}]}}]}\n\n",
 					n, *toolName, string(args))
-				fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"total_tokens\":"+strconv.Itoa(*totalTokens)+"}}\n\n")
-				fmt.Fprint(w, "data: [DONE]\n\n")
+				_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"total_tokens\":"+strconv.Itoa(*totalTokens)+"}}\n\n")
+				_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
 				if fl != nil {
 					fl.Flush()
 				}

@@ -43,6 +43,23 @@ const (
 	// far above real single-user usage (a developer prompting from an IDE is
 	// well under 1 req/s even when auto-applying) and far below what a flood
 	// needs to be damaging.
+	//
+	// THAT PREMISE NOW HAS AN EXCEPTION, and leaving it unqualified would be a
+	// documented falsehood. One AGENT-MODE turn is up to max_iterations requests
+	// (8 by default), fired back to back with only local tool execution between
+	// them -- so "one prompt" and "one request" stopped being the same thing.
+	//
+	// Measured 2026-08-01 (docs/AGENT_MODE_COST_2026-08-01.md §4): worst-case
+	// turns three seconds apart drain this burst in about seven turns, because a
+	// turn spends 8 and only 6 refill. After that every turn takes a 429.
+	//
+	// The numbers are UNCHANGED anyway, deliberately. The daemon retries a 429
+	// while nothing has streamed, so the user sees a ~1s pause rather than a
+	// failure, and agent mode is off by default. Raising the burst to suit the
+	// most expensive shape of the least-used feature would weaken the bound for
+	// everyone else. Revisit if agent mode becomes the common path -- and note
+	// that the honest fix is probably for the daemon to declare max_tokens, which
+	// would also shrink the 8x quota reservation the same measurement found.
 	keyRatePerSecond = 2.0
 	keyBurst         = 20.0
 
@@ -56,6 +73,13 @@ const (
 	// thousand tokens) and far below what a scripted drain needs. The burst allows
 	// ~2 minutes of accumulated headroom so a legitimate burst of long completions
 	// is never throttled.
+	//
+	// Agent mode raises "a grounded turn" by roughly the iteration count: each
+	// step re-sends the whole message list, which the same measurement found
+	// grows LINEARLY (+one capped tool result per step, 1.9x across eight
+	// steps), so a worst-case agent turn is order-of tens of thousands of tokens
+	// rather than a few thousand. Still inside this burst; noted so the next
+	// reader is not working from the single-turn figure.
 	keyTokenRatePerSecond = 1000.0
 	keyTokenBurst         = 120000.0
 
