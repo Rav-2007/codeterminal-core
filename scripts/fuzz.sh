@@ -50,6 +50,14 @@ TARGETS=(
   "proxy:FuzzExtractUsageAndProvider"
   "editapply:FuzzParseEditBlocks"
   "editapply:FuzzFindSearch"
+  # Agent mode's four readers of bytes this codebase did not author. Added
+  # 2026-08-01 by the agent-mode QA gate, which found the rule above stated and
+  # not applied: the daemon had no targets at all, and FuzzToolCallAccumulator
+  # found a real defect in 4.5 seconds on its first run.
+  "daemon:FuzzRenderToolResult"
+  "daemon:FuzzVerifyApproval"
+  "daemon:FuzzToolCallAccumulator"
+  "daemon:FuzzSplitQualifiedName"
 )
 
 status=0

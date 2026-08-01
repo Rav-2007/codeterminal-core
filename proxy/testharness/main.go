@@ -32,12 +32,15 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -67,6 +70,25 @@ type ledger struct {
 	openPending map[int64]bool
 
 	nextPending int64
+
+	// upstreamBodies is the byte size of every request body the fake OpenRouter
+	// received, in order. THE GROWTH CURVE ACROSS ONE TURN IS THE POINT: an
+	// agent loop re-sends the whole message list on every iteration, so it
+	// carries the system prompt, the retrieved context, and every tool result so
+	// far. Whether that grows linearly or worse is the difference between "an
+	// agent turn costs N x a normal turn" and "it costs N^2", and no number
+	// anywhere else in this repo answers it.
+	upstreamBodies []int
+	// upstreamTools records whether each request carried a "tools" field, so a
+	// turn's shape is readable without re-parsing the bodies.
+	upstreamTools []bool
+}
+
+func (l *ledger) recordUpstream(bodyBytes int, hadTools bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.upstreamBodies = append(l.upstreamBodies, bodyBytes)
+	l.upstreamTools = append(l.upstreamTools, hadTools)
 }
 
 func (l *ledger) record(name, remote string) {
@@ -100,6 +122,35 @@ func main() {
 				"note measured ~90ms for the second sequential call) is what makes a "+
 				"round-trip-count change -- an auth cache, or collapsing authorize+reserve -- "+
 				"show up as the number a user would actually feel.")
+
+		// AGENT MODE. Without these the fake upstream always answers with text,
+		// so the daemon's agent loop runs exactly one iteration and every
+		// question about what a LOOP costs the proxy is unanswerable without
+		// spending real money on a real model.
+		//
+		// The cycle is deterministic on purpose: responses 1..N of each cycle
+		// request a tool, response N+1 is plain text, and the counter wraps. One
+		// turn is therefore exactly N+1 upstream requests, every time, which is
+		// what makes "reservations per turn" a number rather than an average.
+		toolCalls = flag.Int("tool-calls", 0,
+			"emit this many tool_call responses before answering with text, then repeat. "+
+				"0 (the default) is the original text-only behaviour. Set it to the daemon's "+
+				"mcp.budget.max_iterations minus one to drive a worst-case agent turn.")
+		toolName = flag.String("tool-name", "builtin__list_directory",
+			"qualified tool name the fake model asks for. The default needs no index and no "+
+				"approval channel when its policy is \"allow\".")
+		toolArgs = flag.String("tool-args", `{"path":"."}`,
+			"argument JSON the fake model sends with each tool call")
+
+		// reserve_usage returns NO ROW when a key is over its limit -- that is the
+		// real over-limit signal (proxy/main.go's len(rows) != 1 gate), and the
+		// only way to make the proxy answer 429 quota_exceeded. Without this the
+		// fake always succeeds, so "what does a user lose when quota runs out
+		// PART-WAY THROUGH an agent turn?" is unaskable.
+		failAfter = flag.Int("reserve-fail-after", 0,
+			"after this many successful reservations, return no row from reserve_usage "+
+				"(the over-limit signal). 0 never fails. Set it below the iteration count "+
+				"to kill a turn mid-way.")
 	)
 	flag.Parse()
 
@@ -108,7 +159,7 @@ func main() {
 	// ---- fake Supabase: the four PostgREST calls the proxy actually makes ----
 	sb := http.NewServeMux()
 
-	var keyRotation atomic.Int64
+	var keyRotation, reserveSeq atomic.Int64
 	sb.HandleFunc("/rest/v1/api_keys", func(w http.ResponseWriter, r *http.Request) {
 		l.record("authorize", r.RemoteAddr)
 		w.Header().Set("Content-Type", "application/json")
@@ -127,6 +178,13 @@ func main() {
 			Reserved int    `json:"p_reserved"`
 		}
 		json.NewDecoder(r.Body).Decode(&in)
+
+		if *failAfter > 0 && int(reserveSeq.Add(1)) > *failAfter {
+			l.record("reserve_usage(OVER LIMIT)", r.RemoteAddr)
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`[]`))
+			return
+		}
 
 		l.mu.Lock()
 		l.nextPending++
@@ -179,11 +237,13 @@ func main() {
 		defer l.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
-			"calls":          l.calls,
-			"reserved":       l.reserved,
-			"corrections":    l.corrected,
-			"open_pending":   len(l.openPending),
-			"distinct_conns": len(l.conns),
+			"calls":           l.calls,
+			"reserved":        l.reserved,
+			"corrections":     l.corrected,
+			"open_pending":    len(l.openPending),
+			"distinct_conns":  len(l.conns),
+			"upstream_bodies": l.upstreamBodies,
+			"upstream_tools":  l.upstreamTools,
 		})
 	})
 
@@ -210,10 +270,37 @@ func main() {
 
 	// ---- fake OpenRouter -----------------------------------------------------
 	up := http.NewServeMux()
+	var upstreamSeq atomic.Int64
 	up.HandleFunc("/chat/completions", func(w http.ResponseWriter, r *http.Request) {
+		// Read the body before answering: its SIZE is the measurement, and the
+		// presence of a "tools" field distinguishes an agent-mode request from
+		// the byte-identical-when-disabled one. The content is never parsed
+		// beyond that -- this harness has no more business reading a prompt than
+		// the proxy does.
+		body, _ := io.ReadAll(r.Body)
+		l.recordUpstream(len(body), bytes.Contains(body, []byte(`"tools":`)))
+
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		fl, _ := w.(http.Flusher)
+
+		// AGENT MODE: ask for a tool on the first N responses of each cycle,
+		// answer with text on the (N+1)th. Deterministic, so one turn is always
+		// exactly N+1 upstream requests.
+		if *toolCalls > 0 {
+			n := upstreamSeq.Add(1) - 1
+			if n%int64(*toolCalls+1) < int64(*toolCalls) {
+				args, _ := json.Marshal(*toolArgs)
+				fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-%d\",\"type\":\"function\",\"function\":{\"name\":%q,\"arguments\":%s}}]}}]}\n\n",
+					n, *toolName, string(args))
+				fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"total_tokens\":"+strconv.Itoa(*totalTokens)+"}}\n\n")
+				fmt.Fprint(w, "data: [DONE]\n\n")
+				if fl != nil {
+					fl.Flush()
+				}
+				return
+			}
+		}
 
 		for i := 0; i < *chunkCount; i++ {
 			fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":\"tok%d \"}}]}\n\n", i)
