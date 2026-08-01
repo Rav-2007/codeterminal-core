@@ -1786,6 +1786,23 @@ func extractProvider(line string) (string, bool) {
 	if err := json.Unmarshal([]byte(data), &peek); err != nil || peek.Provider == "" {
 		return "", false
 	}
+	// A PROVIDER NAME IS A SLUG THAT GOES INTO A LOG LINE, and it arrives from
+	// upstream, so it is somebody else's bytes on their way to something a human
+	// reads. "DeepInfra" and "Together" never contain a control character; a
+	// value that does is either a broken upstream or an attempt to forge log
+	// lines, and neither is worth logging.
+	//
+	// Found by FuzzExtractUsageAndProvider on the seed
+	// testdata/fuzz/FuzzExtractUsageAndProvider/bda5d6ec956febb7 -- a "\r" in
+	// the provider field. Rated LOW rather than higher because the slog
+	// TextHandler this proxy uses already quotes values needing quoting, so no
+	// log line was actually forgeable today. This closes it at the extraction
+	// boundary instead, where it does not depend on which handler is configured.
+	for i := 0; i < len(peek.Provider); i++ {
+		if b := peek.Provider[i]; b < 0x20 || b == 0x7f {
+			return "", false
+		}
+	}
 	return peek.Provider, true
 }
 

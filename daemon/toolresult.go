@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
 )
 
 // The egress choke point for tool output.
@@ -102,20 +103,47 @@ const controlMarker = "\n\n[... %d control character(s) removed by codeterminal 
 // \n and \t survive: they are text, and tool output is full of both. \r does
 // not, because on its own it returns the cursor to the start of the line and
 // overwrites what is there, which is the behaviour being removed.
+//
+// IT COPIES ORIGINAL BYTES, NEVER RE-ENCODED RUNES, and that is not a detail.
+// The first version used strings.Map, which decodes as UTF-8 and re-encodes
+// whatever the mapping returns -- so every invalid byte became U+FFFD and grew
+// from one byte to three. FuzzRenderToolResult caught it at 9.6s: 248 bytes of
+// cap, 761 bytes out. A tool returning binary-ish output would have had its
+// egress TRIPLED, silently, after the byte cap had already been applied --
+// which is precisely the inflation this function chose dropping over escaping
+// to avoid. Invalid bytes are now passed through unchanged; they were already
+// there before this function ran, and making them bigger helps nobody.
 func stripControlCharacters(s string) (string, int) {
 	removed := 0
-	cleaned := strings.Map(func(r rune) rune {
-		switch r {
-		case '\n', '\t':
-			return r
+	var b strings.Builder
+	b.Grow(len(s))
+
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+
+		// An invalid byte decodes as RuneError with size 1. Kept as itself,
+		// except for a lone C1 introducer -- 0x9b is what a terminal reads as
+		// CSI, and it is invalid UTF-8, so a rune-level check would never see
+		// it.
+		if r == utf8.RuneError && size == 1 {
+			if s[i] >= 0x80 && s[i] <= 0x9f {
+				removed++
+			} else {
+				b.WriteByte(s[i])
+			}
+			i++
+			continue
 		}
-		if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+
+		if r != '\n' && r != '\t' && (r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f)) {
 			removed++
-			return -1
+			i += size
+			continue
 		}
-		return r
-	}, s)
-	return cleaned, removed
+		b.WriteString(s[i : i+size])
+		i += size
+	}
+	return b.String(), removed
 }
 
 // clipUTF8 cuts s to at most n bytes without splitting a multi-byte rune.
