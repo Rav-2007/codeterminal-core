@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -70,24 +71,68 @@ var fileLineRefPattern = regexp.MustCompile(
 		`[\w@+-]+(?:\.[\w@+-]+)*\.[A-Za-z][A-Za-z0-9]*)` + // filename with an extension
 		`:(\d+)(?::\d+)?`) // :line, optional :col
 
+// pythonTracebackPattern matches the OTHER shape a user is overwhelmingly
+// likely to paste: CPython's traceback frame, which does not use "file:line"
+// at all.
+//
+//	File "/abs/or/rel/thing.py", line 42, in handler
+//
+// It gets its own pattern rather than a widened fileLineRefPattern because the
+// two share no structure — a regex covering both would be unreadable, and the
+// trailing-extension rule that keeps the first pattern from firing on clock
+// times has no analogue here (the quotes and the literal "line" do that job).
+//
+// The quoted path is taken verbatim; resolution applies exactly the same gates
+// it applies to every other reference, so nothing about eligibility, secrecy or
+// confinement changes by adding a second way in.
+var pythonTracebackPattern = regexp.MustCompile(`(?m)^\s*File "([^"\n]+)", line (\d+)`)
+
 // parseFileLineRefs extracts every distinct file:line pointer from prompt, in
 // the order it appears, capped at maxParsedRefs. Order matters: the first
 // reference in a build failure is the first error the tool reported, which is
 // usually the one to act on.
 func parseFileLineRefs(prompt string) []fileLineRef {
-	matches := fileLineRefPattern.FindAllStringSubmatch(prompt, -1)
-	seen := make(map[string]bool, len(matches))
-	refs := make([]fileLineRef, 0, len(matches))
-	for _, m := range matches {
-		line, err := strconv.Atoi(m[2])
+	// Both shapes, merged by position in the prompt so ORDER SURVIVES. The
+	// first reference in a failure is the first thing the tool reported and is
+	// usually the one to act on, and a Python traceback's frames are ordered
+	// innermost-last for the same reason — appending one pattern's results
+	// after the other's would put a stack frame from line 1 behind a compiler
+	// error from line 90.
+	type located struct {
+		at   int
+		path string
+		line string
+	}
+	var found []located
+
+	for _, m := range fileLineRefPattern.FindAllStringSubmatchIndex(prompt, -1) {
+		found = append(found, located{
+			at:   m[2], // start of the path capture, not of the delimiter
+			path: prompt[m[2]:m[3]],
+			line: prompt[m[4]:m[5]],
+		})
+	}
+	for _, m := range pythonTracebackPattern.FindAllStringSubmatchIndex(prompt, -1) {
+		found = append(found, located{
+			at:   m[2],
+			path: prompt[m[2]:m[3]],
+			line: prompt[m[4]:m[5]],
+		})
+	}
+	sort.SliceStable(found, func(i, j int) bool { return found[i].at < found[j].at })
+
+	seen := make(map[string]bool, len(found))
+	refs := make([]fileLineRef, 0, len(found))
+	for _, f := range found {
+		line, err := strconv.Atoi(f.line)
 		if err != nil || line < 1 {
 			continue
 		}
-		path := strings.TrimPrefix(filepath.ToSlash(m[1]), "./")
+		path := strings.TrimPrefix(filepath.ToSlash(f.path), "./")
 		if path == "" {
 			continue
 		}
-		key := path + ":" + m[2]
+		key := path + ":" + f.line
 		if seen[key] {
 			continue
 		}
