@@ -289,7 +289,15 @@ func (s *Server) serveConn(conn net.Conn) {
 	// Bound how much this connection can make the daemon buffer, and how long
 	// any single read/write may block, before the request is even decoded
 	// (FAIL-3, Gate 5). Auth-independent: this caps resource use, not access.
-	lc := &limitedConn{Conn: conn, remaining: s.resolvedMaxRequestBytes(), idleTimeout: s.resolvedConnIdleTimeout()}
+	budget := s.resolvedMaxRequestBytes()
+	lc := &limitedConn{
+		Conn:        conn,
+		remaining:   budget,
+		idleTimeout: s.resolvedConnIdleTimeout(),
+		// The approval channel may extend this connection's read budget, but
+		// only by a fixed fraction of it, however many times it is asked.
+		grantCeiling: budget / approvalGrantFraction,
+	}
 	dec := json.NewDecoder(lc)
 	enc := json.NewEncoder(lc)
 

@@ -208,3 +208,152 @@ func TestAClientWithoutTheCapabilityGetsNoToolsAndNoQuestions(t *testing.T) {
 		t.Errorf("a non-agent turn wrote tool audit records: %+v", events)
 	}
 }
+
+// H5 -- A HOSTILE OR BUGGY CLIENT ON THE SHARED DECODER.
+//
+// The approval reply and the prompt stream travel the same connection and the
+// daemon reads answers off one json.Decoder. The idempotence guards that stop a
+// client answering twice are client-side (the VS Code webview's `answered` flag,
+// the CLI's one-shot reader), which means they are exactly the guards a hostile
+// client does not have. Registered in the 2026-08-01 gate and never run.
+//
+// The failure shape worth caring about is not a rejected answer, it is a
+// DESYNCHRONISED one: a leftover reply sitting in the decoder's buffer, read
+// later as consent for a call the user was never shown.
+
+// Two answers for one ask. The second must not become consent for the next
+// call, which is a different call with a different id.
+//
+// Fails if verifyApproval stops checking the call id.
+func TestASecondAnswerDoesNotApproveTheNextCall(t *testing.T) {
+	base, _, _ := agentUpstream(t,
+		toolCallSSE("c1", "builtin__read_file", `{"path":"inside.txt"}`),
+		toolCallSSE("c2", "builtin__read_file", `{"path":"inside.txt"}`),
+		textSSE("done"),
+	)
+	sockPath, auditPath, _ := agentSocketServer(t, base, MCPConfig{Enabled: true})
+	enc, dec, conn := agentClient(t, sockPath, "read it twice", []string{protocol.CapToolApproval})
+	if err := conn.SetDeadline(time.Now().Add(20 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+
+	var asks []protocol.ToolApprovalRequest
+	for {
+		var tok protocol.TokenResponse
+		if err := dec.Decode(&tok); err != nil {
+			t.Fatalf("reading the stream: %v", err)
+		}
+		if tok.ToolApproval != nil {
+			asks = append(asks, *tok.ToolApproval)
+			answer := protocol.ToolApprovalResponse{
+				ProtocolVersion: protocol.ProtocolVersion,
+				Approval:        true,
+				CallID:          tok.ToolApproval.CallID,
+				ArgumentsSHA256: tok.ToolApproval.ArgumentsSHA256,
+				Decision:        protocol.ApprovalApprove,
+			}
+			// Answer, then answer AGAIN. The duplicate is what a buggy client
+			// with a double-fired keypress sends, and what a hostile one sends
+			// on purpose.
+			if len(asks) == 1 {
+				for i := 0; i < 2; i++ {
+					if err := enc.Encode(answer); err != nil {
+						t.Fatalf("sending approval %d: %v", i, err)
+					}
+				}
+			} else {
+				if err := enc.Encode(answer); err != nil {
+					t.Fatalf("sending approval: %v", err)
+				}
+			}
+		}
+		if tok.Done {
+			break
+		}
+	}
+
+	// THE PROPERTY: the second call was asked about, on its own merits. If the
+	// leftover answer had been consumed as its consent, there would be one ask.
+	if len(asks) != 2 {
+		t.Fatalf("%d approval prompt(s) for 2 calls. A duplicate answer to call 1 must not be read "+
+			"as consent for call 2 -- the user would have authorised a call they never saw", len(asks))
+	}
+	if asks[0].CallID == asks[1].CallID {
+		t.Fatal("the harness sent the same call id twice, so this proves nothing")
+	}
+
+	events := readAudit(t, auditPath)
+	if len(events) != 2 {
+		t.Fatalf("expected 2 audit records, got %d: %+v", len(events), events)
+	}
+	for i, e := range events {
+		if e.Source != auditUserApprove {
+			t.Errorf("event %d ran via %q rather than a user approval", i, e.Source)
+		}
+	}
+}
+
+// An approval sent BEFORE any question, with a guessed call id, is not consent.
+//
+// This is the pipelining attack in its most favourable form for the attacker:
+// the reply is already sitting in the daemon's decoder when the first ask goes
+// out, so it is the very next thing read. The digest and the call id are what
+// make it fail, and a denial rather than an error is what makes the turn
+// continue safely.
+//
+// Fails if verifyApproval stops checking the arguments digest.
+func TestAnApprovalSentBeforeTheQuestionIsNotConsent(t *testing.T) {
+	base, _, _ := agentUpstream(t,
+		toolCallSSE("c1", "builtin__read_file", `{"path":"inside.txt"}`),
+		textSSE("I could not read it."),
+	)
+	sockPath, auditPath, _ := agentSocketServer(t, base, MCPConfig{Enabled: true})
+	enc, dec, conn := agentClient(t, sockPath, "read it", []string{protocol.CapToolApproval})
+	if err := conn.SetDeadline(time.Now().Add(20 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+
+	// Sent immediately after the prompt, before the daemon has decided anything.
+	// The call id is a guess -- and it is the RIGHT guess, because this test
+	// scripts the upstream and knows it is "c1". That is the strongest version
+	// of the attack: only the digest stands in the way.
+	if err := enc.Encode(protocol.ToolApprovalResponse{
+		ProtocolVersion: protocol.ProtocolVersion,
+		Approval:        true,
+		CallID:          "c1",
+		ArgumentsSHA256: "0000000000000000000000000000000000000000000000000000000000000000",
+		Decision:        protocol.ApprovalApproveForTurn,
+	}); err != nil {
+		t.Fatalf("pipelining an approval: %v", err)
+	}
+
+	var sawAsk bool
+	for {
+		var tok protocol.TokenResponse
+		if err := dec.Decode(&tok); err != nil {
+			t.Fatalf("reading the stream: %v", err)
+		}
+		if tok.ToolApproval != nil {
+			sawAsk = true
+		}
+		if tok.Done {
+			break
+		}
+	}
+
+	if !sawAsk {
+		t.Fatal("the daemon never asked, so the pre-sent answer was taken as consent outright")
+	}
+	events := readAudit(t, auditPath)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 audit record, got %d: %+v", len(events), events)
+	}
+	if events[0].Outcome != auditOutcomeRefused {
+		t.Errorf("a pre-sent approval with a forged digest ran the tool: %+v", events[0])
+	}
+	if events[0].DenyCause != denyByMismatch {
+		t.Errorf("deny cause %q; a wrong digest is a mismatch, and it must be one so the audit "+
+			"distinguishes 'the user said no' from 'somebody answered a different question'",
+			events[0].DenyCause)
+	}
+}

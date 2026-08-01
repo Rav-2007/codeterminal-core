@@ -90,6 +90,11 @@ type limitedConn struct {
 	net.Conn
 	remaining   int64         // read-byte budget left before errRequestTooLarge
 	idleTimeout time.Duration // re-armed around each Read and Write
+
+	// granted and grantCeiling bound how much the approval channel may add to
+	// remaining over the whole connection. See grantReadBudget.
+	granted      int64
+	grantCeiling int64
 }
 
 // Read enforces the byte budget and re-arms the read deadline before each
@@ -126,11 +131,29 @@ func (c *limitedConn) Write(p []byte) (int, error) {
 
 // maxApprovalResponseBytes is the read budget granted for ONE tool-approval
 // answer. A ToolApprovalResponse is a call id, a hex digest and a verb; 4 KiB
-// is already generous. It is granted per approval and bounded by the turn's
-// iteration ceiling, so the aggregate a client can unlock this way stays small
-// and finite -- an approval channel must not become a way to lift the 16 MiB
-// request cap by asking to be asked repeatedly.
+// is already generous.
+//
+// THE AGGREGATE IS WHAT MATTERS, and the earlier version of this comment got
+// it wrong: it said the total was "bounded by the turn's iteration ceiling",
+// which is not a bound at all. Grants are per ASK, and asks are per TOOL CALL
+// -- and the number of tool calls in one iteration is whatever the provider's
+// stream contains, which toolCallAccumulator does not cap. So the aggregate was
+// a function of provider output, not of any configured ceiling (H6, registered
+// in the 2026-08-01 gate and unchecked until now).
+//
+// grantCeiling makes the bound real and independent of both: see
+// grantReadBudget.
 const maxApprovalResponseBytes = 4 * 1024
+
+// approvalGrantFraction bounds the TOTAL the approval channel may add to a
+// connection's read budget, as a fraction of that budget.
+//
+// A quarter, so the invariant is one sentence: no matter how many times a
+// client is asked, the approval channel cannot extend what it may send by more
+// than 25% of the connection's original allowance. At the 16 MiB default that
+// is 4 MiB, or roughly a thousand answers -- far more than any real turn and
+// far less than unbounded.
+const approvalGrantFraction = 4
 
 // approvalIdleTimeout is how long a client may take to answer one approval
 // before the daemon stops waiting. Sized for a HUMAN reading a tool name and
@@ -143,7 +166,8 @@ const maxApprovalResponseBytes = 4 * 1024
 // blocks forever is a worse failure than one that gives up.
 const approvalIdleTimeout = 5 * time.Minute
 
-// grantReadBudget tops up the connection's remaining read allowance.
+// grantReadBudget tops up the connection's remaining read allowance, up to a
+// cumulative ceiling.
 //
 // The whole-connection cap exists so a client cannot make the daemon buffer
 // without bound BEFORE its request is decoded. An approval answer arrives
@@ -152,7 +176,22 @@ const approvalIdleTimeout = 5 * time.Minute
 // connection that had already spent its allowance on a large prompt. Granting
 // is deliberately explicit and per-answer rather than raising the cap: the
 // daemon extends the budget exactly as far as the thing it just asked for.
+//
+// grantCeiling is what makes "small and finite" true rather than merely
+// intended. Exhausting it is not an error and does not change any decision: the
+// grant is simply not made, the client's answer either fits in what remains or
+// the read fails, and a failed read is already a denial. The safe direction.
+//
+// Zero grantCeiling means unset, which is what every test that builds a
+// limitedConn by hand gets; those never approach any of these numbers.
 func (c *limitedConn) grantReadBudget(n int64) {
+	if c.grantCeiling > 0 && c.granted+n > c.grantCeiling {
+		n = c.grantCeiling - c.granted
+	}
+	if n <= 0 {
+		return
+	}
+	c.granted += n
 	c.remaining += n
 }
 

@@ -174,23 +174,88 @@ func (a *connApprover) Ask(ctx context.Context, req protocol.ToolApprovalRequest
 		}
 	}()
 
-	var raw json.RawMessage
-	err := a.dec.Decode(&raw)
-	waited := time.Since(started)
-	if err != nil {
-		a.closed = true
-		// Client-safe by construction: the tool's own name and a duration. The
-		// underlying error stays local, like every other daemon-side detail.
-		a.logger.Printf("agent: no approval for %s__%s after %s (%v) -- treating silence as no, and asking nothing further this turn",
-			req.Server, req.Tool, waited.Round(time.Second), err)
-		return denied(denyByTimeout, waited)
+	// READ PAST ANSWERS TO OTHER QUESTIONS, rather than treating the first thing
+	// on the wire as this question's answer.
+	//
+	// A client that answers twice -- a double-fired keypress, a webview that
+	// posts on both click and keydown -- leaves a reply in the decoder's buffer.
+	// Without this loop that leftover was read as the answer to the NEXT ask,
+	// failed the call-id check, and denied it. The user's actual "yes" then
+	// became the leftover, and every remaining call in the turn was denied in
+	// the same way: one duplicate desynchronised the rest of the turn.
+	//
+	// Confirmed over a real socket before this existed (H5, 2026-08-01): two
+	// answers to call 1, and call 2 came back denied_ask despite being
+	// approved.
+	//
+	// This does NOT weaken any check. A stale answer still cannot approve
+	// anything -- verifyApproval runs unchanged on whatever is finally read, and
+	// an answer bearing another call's id is skipped rather than believed. What
+	// changes is only whether a stale reply is allowed to answer FOR the user.
+	//
+	// Bounded, because an unbounded skip loop is a client-controlled stall: the
+	// read budget bounds bytes and this bounds messages, so a flood of stale
+	// answers ends in a denial rather than in a daemon reading forever.
+	const maxStaleAnswers = 8
+
+	var (
+		decision, cause string
+		waited          time.Duration
+	)
+	for skipped := 0; ; skipped++ {
+		var raw json.RawMessage
+		err := a.dec.Decode(&raw)
+		waited = time.Since(started)
+		if err != nil {
+			a.closed = true
+			// Client-safe by construction: the tool's own name and a duration. The
+			// underlying error stays local, like every other daemon-side detail.
+			a.logger.Printf("agent: no approval for %s__%s after %s (%v) -- treating silence as no, and asking nothing further this turn",
+				req.Server, req.Tool, waited.Round(time.Second), err)
+			return denied(denyByTimeout, waited)
+		}
+
+		decision, cause = verifyApproval(req, raw)
+
+		// Only a WRONG-QUESTION answer is skippable. A malformed body or an
+		// invented decision is this client answering this question badly, and
+		// that is a denial, not something to wait past.
+		if cause != denyByMismatch || !answersAnotherQuestion(req, raw) {
+			break
+		}
+		if skipped >= maxStaleAnswers {
+			a.logger.Printf("agent: %d stale approval(s) before an answer to %s__%s; refusing rather than reading on",
+				skipped+1, req.Server, req.Tool)
+			return denied(denyByMismatch, waited)
+		}
+		a.lc.grantReadBudget(maxApprovalResponseBytes)
+		a.logger.Printf("agent: discarding an approval for a different call while asking about %s__%s",
+			req.Server, req.Tool)
 	}
 
-	decision, cause := verifyApproval(req, raw)
 	if cause != "" {
 		a.logger.Printf("agent: refusing %s__%s: %s", req.Server, req.Tool, cause)
 	}
 	return approvalDecision{Decision: decision, Cause: cause, Waited: waited}
+}
+
+// answersAnotherQuestion reports whether raw is a well-formed approval response
+// that simply names a different call.
+//
+// The distinction Ask needs: an answer to a DIFFERENT question is stale and can
+// be read past, while an answer to THIS question that fails its digest, or one
+// carrying an invented decision, is this client answering badly and must deny.
+// Collapsing the two would let a client keep the daemon reading by sending
+// well-formed rubbish with the right call id.
+func answersAnotherQuestion(req protocol.ToolApprovalRequest, raw json.RawMessage) bool {
+	if !isToolApprovalResponse(raw) {
+		return false
+	}
+	var resp protocol.ToolApprovalResponse
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return false
+	}
+	return resp.CallID != req.CallID
 }
 
 // verifyApproval decides whether raw is a yes to THIS question.
