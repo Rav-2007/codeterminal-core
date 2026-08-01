@@ -488,6 +488,19 @@ Both crashers committed as seeds before either fix, per `fuzz.sh`'s own rule.
 The daemon seed was verified to fail against the old implementation and pass
 against the new one.
 
+**Re-run after the fixes: 13/13 targets clean, ~41.8M executions.**
+
+| Module | Targets | Result |
+|---|---|---|
+| `proxy` | 7 | ok — 24.6M execs |
+| `editapply` | 2 | ok — 19.6M execs |
+| `daemon` | 4 | ok — 7.6M execs |
+
+Both former crashers now run their full 60 s instead of aborting early
+(`FuzzRenderToolResult` 2.26M execs, `FuzzExtractUsageAndProvider` 4.24M), which
+is the second half of the evidence: not merely that the seed passes, but that
+sixty seconds of fresh mutation around it finds nothing else.
+
 The lesson is the same one this gate recorded about the daemon having no fuzz
 targets at all: **a rule that is correct is not a rule that is applied.** M6b
 had two hand-written tests and a documented rationale, and the case it got wrong
