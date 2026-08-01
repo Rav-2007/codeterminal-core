@@ -107,12 +107,13 @@ cannot bound what a launcher adds**, and no version of it could.
 
 Stated because a threat model that only lists closed items is marketing.
 
-**Connect time is not charged to any budget.** Servers connect before
-`runAgentLoop` creates the turn deadline, so `turn_timeout_seconds` does not
-govern it. Parallelism bounds it at one `connect_timeout_seconds` (20 s default)
-instead of one per server, which makes it a statable constant rather than a
-function of how many servers a user has — but it is still time the turn budget
-does not cover.
+~~**Connect time is not charged to any budget.**~~ **Fixed 2026-08-01.** The
+turn's clock now starts in `runAgentTurn` before any server is spawned, and
+`runAgentLoop` takes that instant rather than reading `time.Now()` after
+connecting. `turn_timeout_seconds` covers the wait the user actually
+experienced. Parallelism still bounds connect at one `connect_timeout_seconds`
+(20 s default) rather than one per server, so the worst case is a statable
+constant — it is now a constant *inside* the budget.
 
 **An approved call is unconstrained.** This is the design, not a gap. A user who
 approves `filesystem__write_file` has authorised an unconfined process to write

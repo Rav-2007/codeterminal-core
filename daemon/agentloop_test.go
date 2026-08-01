@@ -85,7 +85,7 @@ func runLoopWith(t *testing.T, s *Server, appr approver) (agentResult, []protoco
 	t.Cleanup(func() { _ = registry.Close() })
 
 	var activity []protocol.ToolActivity
-	res, err := s.runAgentLoop(context.Background(), registry, "m",
+	res, err := s.runAgentLoop(context.Background(), time.Now(), registry, "m",
 		[]chatMessage{{Role: "user", Content: "go"}}, providerRouting{}, appr,
 		func(string) error { return nil },
 		func(a protocol.ToolActivity) { activity = append(activity, a) },
@@ -507,3 +507,51 @@ func TestAgentTurnWithNoUsableToolsIsAnOrdinaryTurn(t *testing.T) {
 }
 
 var _ = mcp.BuiltinServerName
+
+// Time spent connecting MCP servers must come out of the turn budget.
+//
+// Servers are connected by runAgentTurn BEFORE the loop exists, and a server
+// that starts and never answers initialize costs a full connect_timeout_seconds
+// (20 s by default). The budget used to be resolved from time.Now() inside the
+// loop, so that wait was charged to nothing: a user with a 60 s turn budget
+// could wait 20 s to connect and then 60 s more, and the setting that was
+// supposed to bound their wait bounded only part of it.
+//
+// Passing turnStart makes the deadline cover the turn the user experienced.
+// Here the turn "began" longer ago than the whole budget, which is what a slow
+// connect looks like from the loop's side: the deadline has already passed and
+// the very first iteration must stop on it.
+func TestConnectTimeIsChargedToTheTurnBudget(t *testing.T) {
+	base, _, _ := agentUpstream(t,
+		toolCallSSE("c1", "builtin__read_file", `{"path":"inside.txt"}`),
+		textSSE("done"),
+	)
+	s := loopServer(t, base, MCPConfig{
+		Enabled: true,
+		Builtin: MCPBuiltinConfig{Tools: map[string]string{"read_file": PolicyAllow}},
+		Budget:  MCPBudgetConfig{TurnTimeoutSeconds: 30},
+	})
+
+	registry, _ := s.buildRegistry(context.Background(), s.logger, &proposalSink{})
+	t.Cleanup(func() { _ = registry.Close() })
+
+	// 45 s of connect against a 30 s budget: the budget is already spent.
+	turnStart := time.Now().Add(-45 * time.Second)
+	res, err := s.runAgentLoop(context.Background(), turnStart, registry, "m",
+		[]chatMessage{{Role: "user", Content: "go"}}, providerRouting{}, nil,
+		func(string) error { return nil }, nil, nil, nil, nil,
+	)
+	if err != nil {
+		t.Fatalf("runAgentLoop: %v", err)
+	}
+
+	if res.Incomplete == nil {
+		t.Fatal("turn completed normally: the connect time was not charged to the deadline, so turn_timeout_seconds bounds only part of the user's wait")
+	}
+	if res.Incomplete.Reason != protocol.IncompleteAgentBudget {
+		t.Errorf("Incomplete.Reason = %q, want %q", res.Incomplete.Reason, protocol.IncompleteAgentBudget)
+	}
+	if res.Iterations != 0 {
+		t.Errorf("Iterations = %d, want 0 — the budget was gone before the first model call", res.Iterations)
+	}
+}

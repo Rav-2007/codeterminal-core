@@ -454,7 +454,7 @@ func TestAProviderFailureMidTurnKeepsTheWorkAlreadyDone(t *testing.T) {
 	registry, _ := s.buildRegistry(t.Context(), s.logger, &proposalSink{})
 	t.Cleanup(func() { _ = registry.Close() })
 
-	res, err := s.runAgentLoop(t.Context(), registry, "m",
+	res, err := s.runAgentLoop(t.Context(), time.Now(), registry, "m",
 		[]chatMessage{{Role: "user", Content: "go"}}, providerRouting{}, nil,
 		func(tok string) error { streamed.WriteString(tok); return nil },
 		nil, nil, nil, nil)
@@ -492,7 +492,7 @@ func TestAFailureBeforeAnyOutputIsStillAnError(t *testing.T) {
 	registry, _ := s.buildRegistry(t.Context(), s.logger, &proposalSink{})
 	t.Cleanup(func() { _ = registry.Close() })
 
-	res, err := s.runAgentLoop(t.Context(), registry, "m",
+	res, err := s.runAgentLoop(t.Context(), time.Now(), registry, "m",
 		[]chatMessage{{Role: "user", Content: "go"}}, providerRouting{}, nil,
 		func(string) error { return nil }, nil, nil, nil, nil)
 

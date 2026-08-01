@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"time"
 
 	"codeterminal/protocol"
 )
@@ -29,6 +30,13 @@ func (s *Server) runAgentTurn(
 	full *strings.Builder,
 ) {
 	s.count(func(c *counters) { c.agentTurns.Add(1) })
+
+	// The turn's clock starts HERE, before any server is spawned, because this
+	// is when the user's wait starts. buildRegistry below can block for up to
+	// one connect_timeout_seconds against a server that starts and never
+	// answers initialize, and that time used to be charged to nothing at all --
+	// turn_timeout_seconds was resolved inside runAgentLoop, after connecting.
+	turnStart := time.Now()
 
 	// The consent channel for this turn, and only this turn: it reads and writes
 	// the very connection the answer is streaming over, so it dies when the
@@ -65,7 +73,7 @@ func (s *Server) runAgentTurn(
 		}
 	}
 
-	result, err := s.runAgentLoop(ctx, registry, model, messages, routing, appr,
+	result, err := s.runAgentLoop(ctx, turnStart, registry, model, messages, routing, appr,
 		func(token string) error {
 			full.WriteString(token)
 			return enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Token: token})

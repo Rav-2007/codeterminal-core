@@ -113,8 +113,18 @@ type agentResult struct {
 // appr is how the loop asks a human about a call whose policy is "ask". A nil
 // approver means there is nobody to ask, and every such call is refused -- the
 // safe direction, and the one the eval harness runs in.
+//
+// turnStart is WHEN THE TURN BEGAN, not when this function was called, and the
+// difference is the whole reason it is a parameter. MCP servers are connected
+// by the caller before the loop exists, and connecting can block for up to one
+// connect_timeout_seconds against a server that starts and never answers
+// initialize. Resolving the budget from time.Now() here meant that wait fell
+// outside turn_timeout_seconds entirely: a user who set a 60 s turn budget
+// could sit through 20 s of connect and then a full 60 s of loop. The deadline
+// now covers the turn the user actually experienced.
 func (s *Server) runAgentLoop(
 	ctx context.Context,
+	turnStart time.Time,
 	registry *mcp.Registry,
 	model string,
 	messages []chatMessage,
@@ -126,7 +136,7 @@ func (s *Server) runAgentLoop(
 	onReasoning func(string),
 	onDegraded func(protocol.Degradation),
 ) (agentResult, error) {
-	bud := resolveBudget(s.cfg.MCP.Budget, time.Now())
+	bud := resolveBudget(s.cfg.MCP.Budget, turnStart)
 	turn := &agentTurn{messages: messages}
 
 	tools, listErrs := s.advertisedToolSpecs(ctx, registry)
