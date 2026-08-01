@@ -127,6 +127,28 @@ func (h *HelperProcess) Start() error {
 	if err := h.waitReady(); err != nil {
 		_ = cmd.Process.Kill()
 		<-exitCh
+
+		// PUT THE STRUCT BACK THE WAY IT WAS, and this is not tidiness.
+		//
+		// doneCh is created below, AFTER this point, because it is closed by
+		// monitor and monitor only starts once the helper is healthy. Returning
+		// here left h.cmd set and h.doneCh nil — and Stop's "was this ever
+		// started?" guard is `h.cmd == nil`. So Stop would clear that guard,
+		// SIGTERM a process already killed and reaped two lines above, wait out
+		// stopGrace, and then receive on a nil channel, which blocks FOREVER. A
+		// helper that failed to start would hang daemon shutdown.
+		//
+		// Creating doneCh earlier does not fix it: nobody would ever close it,
+		// so Stop would block on it just the same. The honest state after a
+		// failed start is the state before the start — there is no process, the
+		// one we spawned has been killed and Wait()ed, and Stop's no-op path is
+		// exactly right for that.
+		h.mu.Lock()
+		h.cmd = nil
+		h.mu.Unlock()
+		// The helper may have bound its socket before dying. Stop does this on
+		// the path we are deliberately no longer taking, so do it here.
+		os.Remove(socketPath)
 		return err
 	}
 
