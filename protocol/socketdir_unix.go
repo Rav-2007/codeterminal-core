@@ -35,6 +35,17 @@ import (
 // Refusals are fatal at the call site. Failing closed is right here: the
 // alternative is serving a socket in a directory an attacker controls.
 func ensureOwnerOnlyDir(dir string) error {
+	return ensureOwnerOnlyDirAs(dir, os.Getuid())
+}
+
+// ensureOwnerOnlyDirAs is ensureOwnerOnlyDir with the expected owner passed in.
+//
+// The uid split exists so the REFUSAL can be tested. A check that only ever
+// runs against the current process's own uid has one branch a test can reach
+// and one it cannot, and the one it cannot is the one that does the work —
+// leaving the most important line in this file to be verified by reading it.
+// A test supplying a different uid exercises the refusal directly.
+func ensureOwnerOnlyDirAs(dir string, wantUID int) error {
 	info, err := os.Lstat(dir)
 	if err != nil {
 		return err
@@ -50,9 +61,9 @@ func ensureOwnerOnlyDir(dir string) error {
 	if !ok {
 		return fmt.Errorf("cannot determine the owner of runtime directory %s", dir)
 	}
-	if int(st.Uid) != os.Getuid() {
+	if int(st.Uid) != wantUID {
 		return fmt.Errorf("runtime directory %s is owned by uid %d, not by this user (uid %d); refusing to place a socket in a directory this user does not own",
-			dir, st.Uid, os.Getuid())
+			dir, st.Uid, wantUID)
 	}
 
 	if info.Mode().Perm()&0077 != 0 {

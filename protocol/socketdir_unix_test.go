@@ -108,3 +108,99 @@ func TestSocketDir_AppliesTheOwnerOnlyCheck(t *testing.T) {
 		t.Errorf("SocketDir returned a directory at %04o; the socket and lockfile inside it are only as protected as it is", perm)
 	}
 }
+
+// The refusal must PROPAGATE. A check that runs and whose verdict is discarded
+// is worse than no check, because it reads as protection.
+func TestSocketDir_PropagatesTheRefusal(t *testing.T) {
+	base := t.TempDir()
+	t.Setenv("XDG_RUNTIME_DIR", base)
+
+	// A symlink standing where the service directory should be. MkdirAll
+	// SUCCEEDS against this (it follows the link to a real directory), so
+	// nothing but the explicit check can catch it — which is the point.
+	elsewhere := filepath.Join(base, "elsewhere")
+	if err := os.MkdirAll(elsewhere, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(elsewhere, filepath.Join(base, serviceDirName)); err != nil {
+		t.Fatal(err)
+	}
+
+	dir, err := SocketDir()
+	if err == nil {
+		t.Fatalf("SocketDir returned %q for a symlinked service directory; the refusal was discarded", dir)
+	}
+	if dir != "" {
+		t.Errorf("SocketDir returned %q alongside its error; a refused path must not also be handed back", dir)
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Errorf("error = %q, want it to name the symlink", err)
+	}
+}
+
+// A directory that is not there at all is an error, not a silent pass. This is
+// the branch that would fire if a caller ever used ensureOwnerOnlyDir without
+// the MkdirAll in front of it.
+func TestEnsureOwnerOnlyDir_MissingDirectoryIsAnError(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "never-created")
+	err := ensureOwnerOnlyDir(missing)
+	if err == nil {
+		t.Fatal("a nonexistent directory was accepted")
+	}
+	if !os.IsNotExist(err) {
+		t.Errorf("error = %v, want a not-exist error the caller can distinguish", err)
+	}
+}
+
+// An unwritable parent makes MkdirAll fail, and SocketDir must surface that
+// rather than proceeding to check a directory it did not manage to create.
+// (Skipped as root, which ignores directory permissions.)
+func TestSocketDir_SurfacesACreateFailure(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	base := t.TempDir()
+	if err := os.Chmod(base, 0500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(base, 0700) })
+	t.Setenv("XDG_RUNTIME_DIR", base)
+
+	if dir, err := SocketDir(); err == nil {
+		t.Fatalf("SocketDir returned %q although it could not create the directory", dir)
+	}
+}
+
+// THE REFUSAL ITSELF, which is the branch that does the work and the one a
+// same-uid test can never reach.
+//
+// A directory another user owns must be refused outright rather than chmod'd:
+// its real owner can change the mode back a moment later, so tightening it
+// would be theatre. Arranging a genuinely foreign uid needs root, which a test
+// cannot assume — so the expected owner is injected instead, which exercises
+// the same comparison against the same syscall data.
+func TestEnsureOwnerOnlyDir_RefusesADirectoryOwnedBySomeoneElse(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "runtime")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	// This directory is ours; claim to be expecting a different owner.
+	foreign := os.Getuid() + 1
+	err := ensureOwnerOnlyDirAs(dir, foreign)
+	if err == nil {
+		t.Fatal("a directory owned by another uid was accepted; the socket would be served from a directory this user does not control")
+	}
+	if !strings.Contains(err.Error(), "owned by uid") {
+		t.Errorf("refusal = %q, want it to name the owner mismatch", err)
+	}
+
+	// And it must be a refusal, not a repair: the mode is untouched.
+	info, statErr := os.Stat(dir)
+	if statErr != nil {
+		t.Fatal(statErr)
+	}
+	if info.Mode().Perm() != 0700 {
+		t.Errorf("mode changed to %04o; a foreign directory must be refused, never modified", info.Mode().Perm())
+	}
+}
