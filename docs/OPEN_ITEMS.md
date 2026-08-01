@@ -1,8 +1,9 @@
 # Open items — the register, re-derived against the code
 
-**Written 2026-08-01.** Every entry below was checked **against the source on this
+**Written 2026-08-01. Updated the same day**, after the remediation pass that this
+register scoped — see §6 for what moved and the commit that moved it. Every entry below was checked **against the source on this
 branch**, not carried forward from `BACKLOG.md` or `docs/HANDOFF.md`. Entries the
-record listed as open but that the code shows are closed are in §6, deleted rather
+record listed as open but that the code shows are closed are in §7, deleted rather
 than inherited.
 
 This document exists because the register was the first bug. `docs/HANDOFF.md` was
@@ -120,7 +121,94 @@ skills subsystem (wire in or delete) · Phase 4 packaging.
 
 ---
 
-## 6. Deleted from the register — the record was wrong
+## 6. What this pass closed — items 1 through 19
+
+Every entry is implemented AND neuter-verified: the fix was removed and the test
+was demonstrated to fail, never merely asserted to. **Nothing below is CLOSED**;
+implemented-and-verified is where engineering stops.
+
+| # | Item | Commit | Neuter result |
+|---|---|---|---|
+| 1 | helper shutdown hang (M8) | `9f3c5dc` | Stop never returns — 5s timeout, "blocked on a nil doneCh" |
+| 2 | `file:line` without an index | `59d42a3` | `skipped with "no index found at /nonexistent"` |
+| 3 | connect time outside the turn budget | `bc19419` | "the connect time was not charged to the deadline" |
+| 4 | no per-connection output bound (M10) | `632d110` | slow client carried to completion, all 40 chunks |
+| 5 | CREATE's syntax gate (M7) | `aa3787b` | "creating an unparseable .go file was allowed" |
+| 6 | undo leaves the dirs a create made | `31bf19c` | twice: "left pkg/sub/deep/ standing", and with the emptiness heuristic, "deleted mine/, a directory the user made" |
+| 8 | macOS peer credentials | `648d38b` | **NOT RUN on hardware** — compile-verified darwin/amd64+arm64, vet-clean |
+| 9 | world-readable lexical index | `e3ad4b0` | directory 0755, all three files 0644 |
+| 11 | unbounded MCP stderr buffer | `ffdd553` | 128 KiB retained whole; 8 MiB would be |
+| 13 | stale price note | `3bee775` | n/a (doc) |
+| 14 | `QUOTA_RESERVATION_DESIGN.md` stale | `3bee775` | n/a (doc) — §5(e)'s honesty kept |
+| 16 | `UndoResponse` removal vs restore | `8f6eee0` | n/a (additive field, direct test) |
+| 17 | Python traceback `file:line` | `53cd150` | traceback parses 0 refs; mixed-shape drops to 1 |
+| L1 | TUI CancelFunc dropped | `a2c9905` | "the turn's context is still live after the stream ended" |
+| L3 | helper read uncapped, undeadlined | `6aa1b57` | endless body runs to the test's own 30s timeout |
+| L6 | `Redaction`'s stale offsets | `4e1ee8e` | n/a (fields removed; pinned by a field-count assertion) |
+| L7 | runtime directory unverified | `133a572` | pre-created world-writable directory returned at 0775 |
+
+Two of these were found by this pass and appear on no earlier list: the
+world-readable lexical index (9) and the unbounded MCP stderr buffer (11). Item 11
+is M1a's shape on the one channel the MCP hardening pass did not cover.
+
+### Item 7 — Gate 7, measured rather than fixed
+
+`e4ff6c1` enumerates the oracle instead of unifying the error responses, and the
+recommendation is to **leave it unified-free**. The evidence, produced by driving
+the real Apply handler across ten filesystem states:
+
+- Nine distinct refusals. None carries an absolute host path — `3aeb8b6`'s scrub
+  holds, now pinned across all ten states where the previous tests covered three.
+- Every one of the nine is **acted on by a user**: "does not exist; to create it,
+  send an empty SEARCH section" teaches the create protocol, "search text not
+  found" is the commonest real failure, and the secret-file and protected-directory
+  refusals are policy explanations the package's own doc comment requires be shown
+  verbatim.
+- Gate 4's live analysis already established that the only party who can reach this
+  surface is an authenticated same-uid peer, who can `lstat` everything it
+  discloses. Unification would cost all nine messages and buy that adversary
+  nothing.
+
+Full brief in `docs/DECISION_PACK.md`. **Gate 7's closure is the founder's call**;
+this pass supplies the number and the recommendation, not the ruling.
+
+### Item 10 — `.pub` over-refusal: recommend NO CHANGE
+
+Re-read against the code rather than the record. `MatchesSecretName` runs the
+`{"secret","credential"}` substring net **before** the `id_rsa*.pub` allow-list,
+and `secret.go` says so explicitly: "so a name that literally contains
+secret/credential still over-refuses". `id_rsa.pub` and `id_ed25519.pub` are
+correctly allowed; only names that literally say "secret" are caught.
+
+That is a deliberate design in the safe direction, not an oversight. Reordering it
+would weaken a security net so that a file whose name announces sensitivity can be
+indexed and edited, in exchange for a cosmetic gain. **Recommend leaving it**, and
+the register entry is corrected rather than the code.
+
+### Items deliberately left open, with reasons
+
+- **L2** — the TUI replays a partially-streamed-then-errored answer as prior
+  assistant history. Live session only; cross-session memory stays clean. It is a
+  behavioural question (what *should* a cut-off answer contribute to the next
+  turn's context?) rather than a defect with an obvious fix, and the M1 batch
+  already made the truncation visible to the user.
+- **L4** — backup retention can prune a still-needed session mid-review when a
+  client does not echo `BackupSessionDir`. Fixing it means a retention policy that
+  understands in-flight reviews, which is a design, not a patch.
+- **L5** — the created-files manifest is newline-delimited, so a path containing a
+  literal `\n` resurrects the Fix-C spurious-revert. A format change to a manifest
+  that undo depends on, for an input no parser in this codebase can currently
+  produce.
+- **15** — `EditProposals` does not carry refused blocks. Genuine, and a wire
+  addition with a client half on both sides; larger than the other honesty items
+  and not attempted here.
+- **18** — chunk end-lines overshoot by one on files ending in a newline. Still
+  PLAUSIBLE; not re-measured this pass.
+- **19** — the TUI has no search box. Mechanical but not small.
+
+---
+
+## 7. Deleted from the register — the record was wrong
 
 Removed rather than carried forward, because carrying a resolved item is how the next
 pass wastes a day rediscovering it.
@@ -135,8 +223,11 @@ pass wastes a day rediscovering it.
   gap that *does* remain is a different store (`lexical.db`, item 9) and a different
   mechanism (symlink-open, stated above).
 - **M9 (SSE account-metadata leak) is fixed** (`3e37c44`), verified in the endpoint
-  pass. It appears in the handoff's open list alongside M10, which genuinely is open
-  (item 4).
+  pass. It appears in the handoff's open list alongside M10, which genuinely was
+  open (item 4) and is now fixed too.
+- **`models.json` is TRACKED.** `docs/HANDOFF.md` warns it is untracked and must
+  never be committed via `git add -A`. `git ls-files` disagrees: it is tracked, and
+  has been. There is also no `daemon/models.json`, which the same note names.
 
 ---
 
