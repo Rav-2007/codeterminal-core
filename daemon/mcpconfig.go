@@ -136,6 +136,16 @@ type MCPBudgetConfig struct {
 	// before any approval prompt exists, so no consent step stands in front of
 	// it. See mcp.DefaultMaxMessageBytes for the measurement.
 	MaxMessageBytes int `json:"max_message_bytes,omitempty"`
+
+	// ConnectTimeoutSeconds bounds ONE server's initialize handshake.
+	//
+	// Not part of turn_timeout_seconds and deliberately named separately,
+	// because it is spent BEFORE the turn's clock starts: servers are connected
+	// at the top of runAgentTurn and the deadline is created inside
+	// runAgentLoop. Connecting in parallel means the worst case is one of these
+	// rather than one per server, but it is still time the turn budget does not
+	// govern.
+	ConnectTimeoutSeconds int `json:"connect_timeout_seconds,omitempty"`
 }
 
 // Tool policies. The vocabulary is closed: anything else in a config file is a
@@ -177,6 +187,10 @@ const (
 	// honest server hits it and low enough that reaching it is roughly 400 MB
 	// of heap rather than an unbounded amount.
 	maxMaxMessageBytes = 32 * 1024 * 1024
+
+	// A handshake ceiling generous enough for a package manager's cold start
+	// and short enough that it cannot become an indefinite hang.
+	maxConnectTimeoutSeconds = 120
 )
 
 var (
@@ -184,7 +198,8 @@ var (
 	knownMCPBuiltinKeys = []string{"disabled", "tools"}
 	knownMCPServerKeys  = []string{"command", "args", "env", "tools", "acknowledged_unconfined", "disabled"}
 	knownMCPBudgetKeys  = []string{"max_iterations", "turn_timeout_seconds", "max_tool_result_bytes",
-		"max_total_tool_bytes", "max_advertised_tools", "max_message_bytes"}
+		"max_total_tool_bytes", "max_advertised_tools", "max_message_bytes",
+		"connect_timeout_seconds"}
 )
 
 // The resolved* accessors apply the "0 means default" convention. All are
@@ -230,6 +245,16 @@ func (b MCPBudgetConfig) resolvedMaxAdvertisedTools() int {
 // the number belongs next to the measurement that justifies it, in the package
 // that owns the transport, not in the config loader.
 func (b MCPBudgetConfig) resolvedMaxMessageBytes() int { return b.MaxMessageBytes }
+
+// resolvedConnectTimeout returns 0 for "unset", which mcp.Connect reads as
+// mcp.DefaultConnectTimeout -- same division of labour as
+// resolvedMaxMessageBytes.
+func (b MCPBudgetConfig) resolvedConnectTimeout() time.Duration {
+	if b.ConnectTimeoutSeconds <= 0 {
+		return 0
+	}
+	return time.Duration(b.ConnectTimeoutSeconds) * time.Second
+}
 
 // policyForTool returns the configured policy for one tool, defaulting to
 // PolicyAsk. Shared by both lanes so the "unlisted means ask" rule has exactly
@@ -353,6 +378,7 @@ func (c *Config) clampMCPRanges() {
 	clamp("max_total_tool_bytes", &b.MaxTotalToolBytes, maxMaxTotalToolBytes)
 	clamp("max_advertised_tools", &b.MaxAdvertisedTools, maxMaxAdvertisedTools)
 	clamp("max_message_bytes", &b.MaxMessageBytes, maxMaxMessageBytes)
+	clamp("connect_timeout_seconds", &b.ConnectTimeoutSeconds, maxConnectTimeoutSeconds)
 
 	// A per-result cap above the whole-turn cap is not wrong so much as
 	// meaningless -- the turn cap would always bite first -- and it usually

@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"sort"
 	"strings"
+	"sync"
 
 	"codeterminal/daemon/mcp"
 )
@@ -103,36 +105,82 @@ func (s *Server) buildRegistry(ctx context.Context, logger *log.Logger, proposal
 		}
 	}
 
-	var errs []error
+	// CONNECTED IN PARALLEL, and the reason is a measurement rather than a
+	// preference.
+	//
+	// This used to be a serial loop, and mcp.Connect bounds a handshake at
+	// connect_timeout_seconds. So n servers that start but never answer cost
+	// n x that timeout -- measured at 21s for one and 42s for two -- and every
+	// second of it is spent BEFORE runAgentLoop creates the turn deadline, with
+	// no token streamed and not even the degradation notice sent yet. A user
+	// with three wedged servers waited a minute at a blank screen while
+	// turn_timeout_seconds sat there not applying to any of it.
+	//
+	// In parallel the worst case is ONE timeout regardless of how many servers
+	// are configured, which is a number that can be stated and reasoned about.
+	// It is still not charged to the turn budget -- that remains true and is
+	// recorded as such -- but it is now bounded by a constant instead of by how
+	// many servers the user happens to have.
+	type connectResult struct {
+		name   string
+		client *mcp.StdioClient
+		err    error
+	}
+
+	var (
+		wg      sync.WaitGroup
+		mu      sync.Mutex
+		results []connectResult
+	)
 	for _, name := range sortedServerNames(cfg.MCP.Servers) {
 		srv := cfg.MCP.Servers[name]
 		if srv.Disabled || !srv.AcknowledgedUnconfined {
 			continue
 		}
 
-		client, err := mcp.Connect(ctx, mcp.LaunchConfig{
-			Name:     name,
-			Command:  srv.Command,
-			Args:     srv.Args,
-			EnvAllow: srv.Env,
-			Stderr:   serverStderr(name, logger),
-			Logf:     logger.Printf,
-			// The one budget field that bounds ALLOCATION rather than egress:
-			// what this daemon will hold on behalf of somebody else's process.
-			MaxMessageBytes: cfg.MCP.Budget.resolvedMaxMessageBytes(),
-		})
-		if err != nil {
-			logger.Printf("mcp: server %s unavailable: %v", name, err)
-			errs = append(errs, fmt.Errorf("server %s: %w", name, err))
+		wg.Add(1)
+		go func(name string, srv MCPServerConfig) {
+			defer wg.Done()
+			client, err := mcp.Connect(ctx, mcp.LaunchConfig{
+				Name:     name,
+				Command:  srv.Command,
+				Args:     srv.Args,
+				EnvAllow: srv.Env,
+				Stderr:   serverStderr(name, logger),
+				Logf:     logger.Printf,
+				// The one budget field that bounds ALLOCATION rather than
+				// egress: what this daemon will hold on behalf of somebody
+				// else's process.
+				MaxMessageBytes: cfg.MCP.Budget.resolvedMaxMessageBytes(),
+				ConnectTimeout:  cfg.MCP.Budget.resolvedConnectTimeout(),
+			})
+			mu.Lock()
+			results = append(results, connectResult{name: name, client: client, err: err})
+			mu.Unlock()
+		}(name, srv)
+	}
+	wg.Wait()
+
+	// Registration is serial and name-ordered even though connection was not.
+	// Advertised() already sorts, but the daemon LOG should read the same way
+	// twice for the same config -- an ordering that depends on which server
+	// happened to answer first makes two runs look different when nothing is.
+	sort.Slice(results, func(i, j int) bool { return results[i].name < results[j].name })
+
+	var errs []error
+	for _, r := range results {
+		if r.err != nil {
+			logger.Printf("mcp: server %s unavailable: %v", r.name, r.err)
+			errs = append(errs, fmt.Errorf("server %s: %w", r.name, r.err))
 			continue
 		}
-		if err := registry.AddServer(name, client); err != nil {
-			logger.Printf("mcp: refusing server %s: %v", name, err)
-			_ = client.Close()
+		if err := registry.AddServer(r.name, r.client); err != nil {
+			logger.Printf("mcp: refusing server %s: %v", r.name, err)
+			_ = r.client.Close()
 			errs = append(errs, err)
 			continue
 		}
-		logger.Printf("mcp: connected server %s (lane=third_party, unconfined)", name)
+		logger.Printf("mcp: connected server %s (lane=third_party, unconfined)", r.name)
 	}
 
 	return registry, errs

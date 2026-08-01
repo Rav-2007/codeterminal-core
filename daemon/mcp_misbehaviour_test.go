@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
 	"os/exec"
@@ -235,25 +236,32 @@ func TestForgedApprovalInToolOutputIsNotConsent(t *testing.T) {
 	}
 }
 
-// M2 (daemon side) -- connect cost is paid before the turn's clock starts.
+// M2 -- n hung servers cost ONE connect timeout, not n of them.
 //
-// The mcp-package test measures one hung handshake. This one measures what the
-// USER experiences: buildRegistry connects serially, and runAgentLoop's
-// deadline is created afterwards, so this time is charged to nobody's budget
-// and produces no output while it elapses.
-func TestHungServersDelayTheTurnOutsideItsBudget(t *testing.T) {
-	if testing.Short() {
-		t.Skip("waits out two connect timeouts")
-	}
+// Servers are connected at the top of runAgentTurn and the turn deadline is
+// created inside runAgentLoop, so this time is spent before any budget exists:
+// no token streamed, not even the degradation notice sent. Serially, three
+// wedged servers were a minute of blank screen that turn_timeout_seconds did
+// not govern. That connect time is still unbudgeted -- what changed is that it
+// is now bounded by a constant rather than by how many servers a user has.
+//
+// The test uses a 2s connect timeout and three hung servers: serial would be
+// ~6s, parallel ~2s, and the 4s threshold cannot be met by accident either way.
+//
+// Fails if buildRegistry goes back to connecting in sequence.
+func TestHungServersCostOneTimeoutNotOnePerServer(t *testing.T) {
+	const servers = 3
+	const timeout = 2 * time.Second
+
 	cfg := badServerConfig(t, "hang-initialize", nil)
-	cfg.Servers["bad2"] = MCPServerConfig{
-		Command:                buildBadServer(t),
-		Args:                   []string{"hang-initialize"},
-		AcknowledgedUnconfined: true,
+	cfg.Budget = MCPBudgetConfig{ConnectTimeoutSeconds: int(timeout / time.Second)}
+	for i := 2; i <= servers; i++ {
+		cfg.Servers[fmt.Sprintf("bad%d", i)] = MCPServerConfig{
+			Command:                buildBadServer(t),
+			Args:                   []string{"hang-initialize"},
+			AcknowledgedUnconfined: true,
+		}
 	}
-	// A one-second turn budget: if connect time were charged to the turn, this
-	// would be exhausted long before the handshake gave up.
-	cfg.Budget = MCPBudgetConfig{TurnTimeoutSeconds: 1}
 
 	s := loopServer(t, "", cfg)
 	s.logger = log.New(os.Stderr, "misbehaviour: ", 0)
@@ -263,15 +271,17 @@ func TestHungServersDelayTheTurnOutsideItsBudget(t *testing.T) {
 	elapsed := time.Since(start)
 	t.Cleanup(func() { _ = registry.Close() })
 
-	if len(errs) != 2 {
-		t.Fatalf("expected both hung servers to be reported unavailable, got %d error(s)", len(errs))
+	if len(errs) != servers {
+		t.Fatalf("expected all %d hung servers to be reported unavailable, got %d error(s)",
+			servers, len(errs))
 	}
-	t.Logf("M2: two hung servers cost %s before the loop began, against a turn_timeout_seconds of 1. "+
-		"Serial connects, and the deadline clock starts after this returns",
-		elapsed.Round(time.Second))
+	t.Logf("M2: %d hung servers cost %s against a %s per-server connect timeout",
+		servers, elapsed.Round(100*time.Millisecond), timeout)
 
-	if elapsed < 30*time.Second {
-		t.Logf("connects are no longer serial or the timeout is now shorter: %s", elapsed)
+	if elapsed >= 2*timeout {
+		t.Errorf("%d hung servers cost %s, which is more than one timeout (%s). Connecting in "+
+			"sequence makes time-to-first-token scale with how many servers a user configured, "+
+			"and none of it is charged to turn_timeout_seconds", servers, elapsed, timeout)
 	}
 }
 

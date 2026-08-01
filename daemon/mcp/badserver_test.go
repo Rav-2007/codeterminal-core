@@ -220,14 +220,24 @@ func TestAFloodedToolResultIsRefused(t *testing.T) {
 	}
 }
 
-// M2 -- a server that starts and then says nothing costs the full connect
-// timeout, and that time is spent before the turn's own deadline clock starts.
-func TestHangingInitializeCostsTheFullConnectTimeout(t *testing.T) {
-	if testing.Short() {
-		t.Skip("waits out the connect timeout")
-	}
+// M2 -- a server that starts and then says nothing costs the whole handshake
+// bound, and that bound is honoured as configured.
+//
+// The daemon-side half of this (mcp_misbehaviour_test.go) is the one that
+// matters -- n servers used to cost n timeouts. This one establishes the single
+// server's behaviour that makes that arithmetic true, with a short timeout so
+// the suite does not spend 20s proving it.
+func TestHangingInitializeCostsTheConfiguredTimeout(t *testing.T) {
+	const timeout = 2 * time.Second
+
 	start := time.Now()
-	client, err := connectBad(t, "hang-initialize")
+	client, err := Connect(context.Background(), LaunchConfig{
+		Name:           "bad",
+		Command:        buildBadServer(t),
+		Args:           []string{"hang-initialize"},
+		ConnectTimeout: timeout,
+		Stderr:         os.Stderr,
+	})
 	elapsed := time.Since(start)
 
 	if err == nil {
@@ -238,8 +248,19 @@ func TestHangingInitializeCostsTheFullConnectTimeout(t *testing.T) {
 		t.Errorf("a hung handshake should be ErrServerUnavailable so the caller degrades rather than "+
 			"fails the turn; got %v", err)
 	}
-	t.Logf("M2: one hung server cost %s. buildRegistry connects serially, so n servers cost n times "+
-		"this, and runAgentLoop's deadline clock has not started yet", elapsed.Round(time.Second))
+	t.Logf("M2: one hung server cost %s against a %s bound (default %s)",
+		elapsed.Round(100*time.Millisecond), timeout, DefaultConnectTimeout)
+
+	if elapsed > 2*timeout {
+		t.Errorf("the handshake ran %s against a %s timeout, so the bound was not honoured",
+			elapsed, timeout)
+	}
+	// A hung server that was never reaped is a process left behind by a FAILED
+	// connect, which is the path least likely to be tested and most likely to
+	// leak. Connect closes on handshake failure; this is that promise.
+	if client != nil {
+		t.Error("a failed Connect returned a client, so nothing owns the subprocess")
+	}
 }
 
 // M3 -- a server that dies mid-call is reported as an unavailable server.

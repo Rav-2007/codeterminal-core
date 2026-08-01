@@ -31,10 +31,17 @@ import (
 // only on the opt-in Lane B path.
 
 const (
-	// connectTimeout bounds the initialize handshake. A server that cannot
-	// introduce itself in this long is not going to serve a tool call inside a
-	// turn budget either.
-	connectTimeout = 20 * time.Second
+	// DefaultConnectTimeout bounds the initialize handshake. A server that
+	// cannot introduce itself in this long is not going to serve a tool call
+	// inside a turn budget either.
+	//
+	// Kept at 20s rather than tightened, because the honest failure case is
+	// slowness rather than malice: an `npx`-launched server downloading its
+	// package on first run can legitimately take that long. Configurable
+	// (mcp.budget.connect_timeout_seconds) so a user with a slow server has a
+	// recourse other than losing it -- and because the n-servers problem is
+	// fixed by connecting in parallel, not by making the bound tighter.
+	DefaultConnectTimeout = 20 * time.Second
 
 	// stopGrace is how long a server gets to exit after its transport closes,
 	// before SIGKILL. Mirrors helperproc.go's Stop.
@@ -103,6 +110,9 @@ type LaunchConfig struct {
 	// MaxMessageBytes bounds one JSON-RPC message from the server. Zero means
 	// DefaultMaxMessageBytes; there is no way to ask for no bound.
 	MaxMessageBytes int
+	// ConnectTimeout bounds the initialize handshake. Zero means
+	// DefaultConnectTimeout.
+	ConnectTimeout time.Duration
 }
 
 // Connect starts the server and completes the MCP initialize handshake.
@@ -183,7 +193,11 @@ func Connect(ctx context.Context, cfg LaunchConfig) (*StdioClient, error) {
 		Version: "v1",
 	}, nil)
 
-	connectCtx, cancel := context.WithTimeout(ctx, connectTimeout)
+	handshake := cfg.ConnectTimeout
+	if handshake <= 0 {
+		handshake = DefaultConnectTimeout
+	}
+	connectCtx, cancel := context.WithTimeout(ctx, handshake)
 	defer cancel()
 
 	c := &StdioClient{name: cfg.Name, logf: cfg.Logf, cmd: cmd, stdin: stdin}
