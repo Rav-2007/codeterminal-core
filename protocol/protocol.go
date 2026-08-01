@@ -34,10 +34,15 @@ func RuntimeDir() string {
 }
 
 // SocketDir returns the directory holding the daemon's socket and lockfile,
-// creating it (owner-only) if it doesn't already exist.
+// creating it (owner-only) if it doesn't already exist and verifying that an
+// existing one is safe to use — see ensureOwnerOnlyDir for why the second half
+// is not redundant with the first.
 func SocketDir() (string, error) {
 	dir := filepath.Join(RuntimeDir(), serviceDirName)
 	if err := os.MkdirAll(dir, 0700); err != nil {
+		return "", err
+	}
+	if err := ensureOwnerOnlyDir(dir); err != nil {
 		return "", err
 	}
 	return dir, nil
