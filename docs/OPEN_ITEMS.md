@@ -101,12 +101,26 @@ Unblocked as of this pass: real-model spend is authorized with a **$5 hard stop*
 
 | # | Item | What a number closes |
 |---|---|---|
-| 20 | `max_advertised_tools` 4/8/12 curve | the default moved 12 → 5 on evidence that stops at 5; 8 and 12 are unmeasured |
+| ~~20~~ | ~~`max_advertised_tools` 4/8/12 curve~~ | **MEASURED 2026-08-01** (`d9dbc92`, `docs/TOOL_MENU_SIZE_2026-08-01.md`). Flat: 88.6% @ 5, 85.7% @ 8, 85.7% @ 12 over 105 trials, the whole spread being one trial. **The default moved back to 12** — the accuracy argument for 5 did not survive the data. Every failure at every size is one confusion (`run_tests` → `list_directory`, 14/15), so excluding it the score is 30/30 at all three sizes. |
 | 21 | Production system-prompt delta (D1) | the loop gate used a minimal prompt and said so; a large delta is a finding *about the prompt* |
 | 22 | `search_code` in a live loop (D2) | needs the ONNX embedder and a real index; exercises the production 4-tool menu |
 | 23 | Default-model evaluation | repeatedly named the single biggest reply-quality lever, deferred for weeks |
 
 If a result contradicts a shipped default, **the default moves and the commit says so.**
+Item 20 is the worked example: it contradicted a default set the same morning, and
+the default moved the same day.
+
+**Blocked on a founder action, not on engineering:** the production proxy returns
+`quota_exceeded` for the pilot key, so all 140 calls of the first curve run were
+refused. The measurement was re-run direct against OpenRouter, which measures the
+model but not the proxy path. Items 21–23 have the same obstacle. Raising that
+quota is a Supabase row only the founder can touch.
+
+**A follow-up this surfaced, which is not a menu-size problem at all:** `run_tests`
+loses to `list_directory` on "run the editapply test suite", 14 times out of 15
+across three independent menu sizes. That is the single largest correctable error
+in the data. Fixing it means rewording a tool description; verifying the fix means
+re-running the eval, which now exists.
 
 ---
 
