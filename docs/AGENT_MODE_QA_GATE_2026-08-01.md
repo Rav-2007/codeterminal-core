@@ -250,3 +250,274 @@ opinion:
 **`make check` is RED on this commit, on purpose.** The crasher seed is
 committed and fails, which is what `fuzz.sh` prescribes — *"COMMIT IT, then fix
 the bug."* It goes green with P1-2's fix.
+
+---
+---
+
+# MCP hardening pass — appended 2026-08-01 (later the same day)
+
+> **Nothing above this line has been edited.** The findings, the FAIL verdict
+> and the "Blocked, not skipped" list stand as written. This section records
+> what happened when the blocked items stopped being blocked.
+
+The gate closed with a "Blocked, not skipped" list whose first entry was the
+honest one:
+
+> **A Lane B server in the soak** — no real MCP server was exercised anywhere in
+> this programme. `/bin/true` covers the fails-to-start path only, so a
+> misbehaving server (hangs on `initialize`, floods stdout, exits mid-call) is
+> **untested** (plan item H7, `NOT RUN`).
+
+### First, a correction to that sentence
+
+It was too strong. `daemon/mcp/testdata/echoserver/main.go` is a genuine SDK
+stdio server driven over the real transport by nine tests in
+`stdioclient_test.go`, including the credential-isolation proof. What was
+missing was **misbehaviour**, **the loop end-to-end**, and **interop with a
+server we did not write** — not "a real MCP server".
+
+---
+
+## Method
+
+`daemon/mcp/testdata/badserver` is a real MCP server with ten argv-selected
+misbehaviour modes. Eight are built on the SDK, because **a server does not have
+to violate the spec to be dangerous** — flooding `tools/list`, lying in
+`readOnlyHint`, exiting mid-call, leaving an orphan, putting escapes in a tool
+name are all things a published server could do today, most of them by accident.
+One (`hang-initialize`) is hand-rolled stdio, because the SDK will not let a
+server misbehave at the handshake.
+
+Seven hypotheses (M1–M7) were **registered before anything ran**, same discipline
+as this gate's own. Two tests were written to assert properties expected to hold,
+so the run could distinguish "we fixed it" from "it was already right".
+
+---
+
+## Results
+
+Seven confirmed, two held. Every fix is one isolated commit with a test that
+**fails when the fix is neutered** — demonstrated by neutering it, not asserted.
+
+| # | Finding | Severity | Evidence | Fix |
+|---|---|---|---|---|
+| **M1a** | `tools/list` unbounded, **and read before any consent step exists** | **High** | CONFIRMED | `3bb7443` |
+| **M1b** | `tools/call` result read whole, then capped | Medium | CONFIRMED | `3bb7443` |
+| **M2** | *n* hung servers cost *n* × 21 s, serially, outside the turn budget | Medium | CONFIRMED | `2071793` |
+| **M3** | mid-call death reported as a failed tool, not an absent server | Medium | CONFIRMED | `398a326` |
+| **M4** | a grandchild **survived teardown**, once per turn | Medium | CONFIRMED | `80a3912` |
+| **M5** | a lying `readOnlyHint` | — | **HELD** | n/a |
+| **M6** | escapes in a **tool name** reach the approval prompt | **High** | CONFIRMED | `c47da40` |
+| **M6b** | escapes in tool **output** reach the model | Low | CONFIRMED | `4ad5aac` |
+| **M7** | forged approval JSON in a tool result | — | **HELD** | n/a |
+| **M8** | a launcher adds its own environment on top of ours | Informational | CONFIRMED (interop) | comment corrected |
+
+### M1a is the one to read first
+
+Not because of the amplification, though that is the striking number:
+
+| On the wire | Peak heap | Ratio |
+|---|---|---|
+| 4 MiB | 51 MB | 12.0× |
+| 8 MiB | 101 MB | 12.0× |
+| 32 MiB | 403 MB | 12.0× |
+| 64 MiB | 806 MB | 12.0× |
+
+Linear, no knee, so a 200 MiB response is ~2.4 GB and the OOM killer. After the
+fix the same 8 MiB flood peaks at **7.8 MB**.
+
+The reason it matters more than the ratio is **which message**. `tools/list` is
+read at registry-build time — before the loop exists, before any tool is
+proposed, therefore before any approval prompt could be shown. The consent
+design, which is the thing this product says protects the user from an
+unconfined subprocess, **does not cover it at all**. A user who configured a
+server and typed one prompt had already taken whatever it sent, having
+authorised nothing.
+
+`max_tool_result_bytes` looked like the bound and was not: it caps what goes to
+the *model*, applied to a string already resident. It bounds egress. Nothing
+bounded memory.
+
+### M6 has two surfaces, and the daemon log was the one nobody predicted
+
+A tool RESULT goes only to the model — `protocol.ToolActivity` carries a byte
+count, never bytes. A tool NAME goes onto the approval prompt, rendered in the
+user's terminal, **before they consent**, on the same panel that carries the
+`NOT SANDBOXED` line. `\x1b[1A` and `\x1b[2K` move the cursor up and erase the
+line: enough to redraw the security notice above.
+
+The repro also showed the escapes eating their way up the *daemon log* — the
+refusal line printed them raw. Three surfaces, two remedies, because a name is a
+**dispatch key** (refused; rewriting it would mean approving one string and
+dispatching another) while a log line is **display** (escaped, and stays
+readable).
+
+---
+
+## The three hypotheses this gate registered and never ran
+
+| # | Registered as | Outcome |
+|---|---|---|
+| **H5** | a hostile client pipelining approvals | **REAL, and not the predicted shape** — fixed `e9b6440` |
+| **H6** | `grantReadBudget` accumulation arithmetic | **the comment was wrong about its own bound** — fixed `e9b6440` |
+| **H8** | cross-process audit-log interleaving | **HOLDS**, now measured |
+
+**H5** predicted a consent bypass. It is not one — it fails safe. What a
+duplicate answer actually does is **desynchronise the rest of the turn**: the
+leftover reply is read as the answer to the *next* ask, fails the call-id check,
+and denies a call the user approved; the user's real answer becomes the new
+leftover and every remaining call dies the same way. One double-fired keypress
+silently converts every subsequent *yes* into a *no*. Confirmed over a real
+socket.
+
+**H6** found the comment on `maxApprovalResponseBytes` claiming the aggregate was
+"bounded by the turn's iteration ceiling". It was not: grants are per **ask**,
+asks are per **tool call**, and calls per iteration is whatever the provider's
+stream contains — `toolCallAccumulator` caps neither. The total was a function of
+provider output rather than of any configured number, which is the difference
+between a bound and a hope. There is now a real one: the approval channel may
+extend a connection's read budget by at most **25% of it**, however many times it
+is asked.
+
+**H8** holds. Four real processes (not goroutines — those share the mutex and
+prove nothing) appending 1,600 records through repeated rotations: every
+surviving line complete, parseable and intact, no interleaving within a line.
+
+---
+
+## P2-2 and P2-3, the two the gate left open
+
+**P2-2 — CLOSED by making the default defensible; the curve stays unmeasured.**
+The Phase 0 eval measured 100% @ 1 tool → **85.7% @ 5**. The default was **12**:
+more than twice the widest menu anyone had measured, and nothing is known about
+12 because no run has ever been done there. It is now **5** — the widest menu
+with evidence behind it.
+
+This is not a claim that 5 is optimal. The 4/8/12 curve remains **unmeasured**
+and needs real spend. The claim is the narrower one that can be defended: past
+the evidence we would be guessing, and the honest place to guess is a config
+file the user edits.
+
+Lowering it makes truncation reachable in ordinary use, so it now *is* visible in
+ordinary use: `Registry.Dropped()` had always recorded what the cap left out and
+nothing in a live turn read it — the report existed only in `mcp list`. A dropped
+tool and a tool the server never offered look identical from outside, and only
+one of them is the user's configuration quietly not doing what they wrote.
+
+**P2-3 — CLOSED, and the old number is explained.** The gate recorded "RSS 13.2
+→ 21.2 MB over 50 turns, not shown to plateau" and could not settle it because
+no MCP server was configured — the registry is built and closed per turn, so a
+leak is only visible when there *is* a subprocess.
+
+50 turns with a Lane B server, sampled every second:
+
+| | first half | second half | peak | verdict |
+|---|---|---|---|---|
+| fds | 14 | 14 | 15 | **PLATEAU** |
+| children | 1 | 1 | 1 | **PLATEAU** |
+| rss_kb | 20,746 | 21,252 | 21,516 | **PLATEAU** (+2.4%) |
+| threads | 13 | 16 | 16 | rose 8→16, flat from ~40 s |
+
+Stray MCP server processes after the run: **0**.
+
+**The 8 MB was never a slope.** It lands inside the first second (13,120 →
+20,024 KB) and the remaining 50 turns add 1.5 MB. That is arena warm-up. Two
+endpoint samples could not tell the difference; a series can, which is why the
+bench now takes one.
+
+fds oscillating 9↔15 and children 0↔1 across the run is the per-turn server
+lifecycle, visible for the first time.
+
+---
+
+## Interop — the limit the hermetic fixtures could not escape
+
+`echoserver` and `badserver` are both built on the same Go SDK this client uses,
+so an SDK bug cancels itself out. Against the MCP project's own reference server
+(`npx @modelcontextprotocol/server-everything`): 14 tools, every one
+`Confined:false` / `lane=third_party` / schema present / name passing the
+validator that gates advertising, and `echo` round-tripped.
+
+Two things it established that no hermetic fixture could:
+
+**A cold handshake took 11.6 s.** That is direct evidence for leaving
+`DefaultConnectTimeout` at 20 s while fixing the *n*-servers problem with
+parallelism instead of a shorter fuse — the honest failure case here is slowness,
+not malice.
+
+**M8:** we handed the child 2 variables and it reported **25**, the rest npx's
+own. Not a hole — none is one of this product's credentials — but `Connect`'s
+comment claiming the child sees "only HOME, PATH and the one allow-listed
+variable" was true only of a directly-executed binary, and most real configs name
+a launcher. Comment corrected.
+
+---
+
+## Still blocked, still stated
+
+- **The 4/8/12 menu-width curve**, **the production system prompt delta** (D1)
+  and **`search_code` in a live loop** (D2) all need real-model spend.
+- **CI cadence for the agent-loop eval** (D3) is a founder decision, not a test.
+- **Real screen-reader passes** on the VS Code consent UI.
+- **Connect time is still outside the turn budget.** Parallelism made it a
+  constant instead of a function of server count; it did not make it budgeted.
+
+## The fuzz gate found two more, and one of them was mine
+
+`scripts/fuzz.sh` at 60 s per target, run against the hardened code.
+
+**`FuzzRenderToolResult` failed at 9.6 s.** The control-character strip from
+M6b's fix used `strings.Map`, which decodes as UTF-8 and **re-encodes** whatever
+the mapping returns — so every invalid byte became U+FFFD and grew from one byte
+to three. 248 bytes of cap in, **761 bytes out**. A tool returning binary-ish
+output would have had its egress silently **tripled**, after the byte cap had
+already been applied.
+
+That is precisely the inflation M6b's commit message says it chose dropping over
+escaping to avoid. The fix shipped the thing it was written to prevent, in a
+different form, and nothing but the fuzzer noticed — not the two unit tests
+written for it, which used clean UTF-8.
+
+**`FuzzExtractUsageAndProvider` (proxy)**: a `\r` in an upstream SSE frame's
+provider field reached a log line. Rated **Low** and stated as such: the slog
+`TextHandler` this proxy uses already quotes values needing quoting, so nothing
+was forgeable today. Closed at the extraction boundary anyway, where it does not
+depend on which handler is configured.
+
+Both crashers committed as seeds before either fix, per `fuzz.sh`'s own rule.
+The daemon seed was verified to fail against the old implementation and pass
+against the new one.
+
+The lesson is the same one this gate recorded about the daemon having no fuzz
+targets at all: **a rule that is correct is not a rule that is applied.** M6b
+had two hand-written tests and a documented rationale, and the case it got wrong
+was the one no human would think to type.
+
+---
+
+## What this pass added
+
+| Artefact | What it makes answerable |
+|---|---|
+| `daemon/mcp/testdata/badserver` | ten ways a Lane B server can misbehave, on demand |
+| `daemon/mcp/badserver_test.go` | the adapter's behaviour against a hostile peer |
+| `daemon/mcp_misbehaviour_test.go` | the same through config → registry → loop → approval prompt |
+| `daemon/mcp/interop_test.go` | a server nobody here wrote (`MCP_INTEROP=1`, not in CI) |
+| `daemon/jsonlsink_multiprocess_test.go` | the audit log under four real processes |
+| `scripts/agent-cost-bench.sh` `MCP_SERVER=` / `SAMPLE_EVERY=` | a Lane B soak, sampled as a series |
+| `docs/MCP_LANE_B_THREAT_MODEL.md` | the walked version of what `SECURITY_MODEL.md` asserts |
+| 2 new fuzz seeds | the two crashers above, permanently |
+
+## Where the dimensions stand now
+
+The verdict above is not retracted and is not re-scored here — that is the
+founder's call. What has changed is which dimensions are *established*:
+
+| Dimension | At the gate | Now |
+|---|---|---|
+| Correctness | FAIL (2 P1) | both fixed; 8 more found and fixed since |
+| Resources | **unestablished** | **PLATEAU**, measured with a Lane B server over 50 turns |
+| Model behaviour (P2-2 half) | **unestablished** | default now matches the evidence; the 4/8/12 curve **still unmeasured** |
+| Security | passed at 4 targets | 2 further crashers found at 60 s, both fixed |
+
+**`make check` green.** Branch is local; merge remains the founder's call.
