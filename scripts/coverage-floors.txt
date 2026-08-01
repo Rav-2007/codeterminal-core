@@ -42,4 +42,4 @@ codeterminal/proxy/testharness    0.0
 codeterminal/helper               6.5
 codeterminal/helper/helperproto  75.0
 codeterminal/protocol            88.9
-codeterminal/clients/tui         66.7
+codeterminal/clients/tui         68.9

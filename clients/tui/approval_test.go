@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -157,12 +158,72 @@ func TestTheApprovalPanelIsCompleteAndHonestAboutTheLane(t *testing.T) {
 	}
 }
 
-// The daemon runs the loop only for a client that says it can answer a
-// mid-stream approval. If this declaration were dropped, agent mode would
-// silently stop existing for the TUI; if it were declared by a client that
-// could not render the prompt, every call would hang for five minutes and then
-// be denied.
-func TestTheTUIDeclaresTheApprovalCapability(t *testing.T) {
+// CAPABILITY IS A PROMISE, NOT A BINARY FEATURE FLAG.
+//
+// The daemon runs the agentic loop only for a client that declares it can
+// answer a mid-stream approval, and then suspends a turn waiting for one. So
+// the declaration has to track what the CALLER can do, not what the binary
+// can: an interactive chat can render a modal, a piped one-shot run has stdin
+// already spent on the prompt and nobody to ask. Declaring it without a person
+// there hangs every tool call until the five-minute deadline expires.
+//
+// This drives the three real entry points against a fake daemon and reads the
+// handshake each one actually sent.
+func TestOnlyThePathsThatCanAnswerDeclareTheCapability(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		run  func(t *testing.T)
+		want bool
+	}{
+		{
+			name: "the chat streaming path",
+			want: true,
+			run: func(t *testing.T) {
+				ch := make(chan tea.Msg, 8)
+				go streamPrompt(context.Background(), "test", "/w", "hi", "", nil, ch)
+				waitForStreamEnd(t, ch)
+			},
+		},
+		{
+			name: "a piped one-shot run",
+			want: false,
+			run: func(t *testing.T) {
+				runOneShotPrompt("test", "hi", oneShotIO{
+					in: strings.NewReader(""), out: io.Discard, err: io.Discard, interactive: false,
+				})
+			},
+		},
+		{
+			name: "an interactive one-shot run",
+			want: true,
+			run: func(t *testing.T) {
+				runOneShotPrompt("test", "hi", oneShotIO{
+					in: strings.NewReader(""), out: io.Discard, err: io.Discard, interactive: true,
+				})
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			handshakes := startRecordingDaemon(t)
+			tc.run(t)
+
+			select {
+			case hs := <-handshakes:
+				if got := hs.HasCapability(protocol.CapToolApproval); got != tc.want {
+					t.Errorf("declared %q = %t, want %t (capabilities: %v)",
+						protocol.CapToolApproval, got, tc.want, hs.Capabilities)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("no handshake arrived")
+			}
+		})
+	}
+}
+
+// startRecordingDaemon stands up a fake daemon that records each handshake it
+// receives and answers a prompt with an immediate Done.
+func startRecordingDaemon(t *testing.T) <-chan protocol.HandshakeRequest {
+	t.Helper()
 	dir := t.TempDir()
 	sockPath := filepath.Join(dir, "daemon.sock")
 	lockPath := filepath.Join(dir, "daemon.lock")
@@ -171,40 +232,53 @@ func TestTheTUIDeclaresTheApprovalCapability(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	defer ln.Close()
+	t.Cleanup(func() { _ = ln.Close() })
 
 	data, _ := json.Marshal(protocol.LockFile{SocketPath: sockPath, PID: os.Getpid()})
 	if err := os.WriteFile(lockPath, data, 0644); err != nil {
 		t.Fatal(err)
 	}
-	defer setLockPathForTest(t, lockPath)()
+	t.Cleanup(setLockPathForTest(t, lockPath))
 
-	got := make(chan protocol.HandshakeRequest, 1)
+	handshakes := make(chan protocol.HandshakeRequest, 4)
 	go func() {
-		conn, err := ln.Accept()
-		if err != nil {
-			return
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				dec, enc := json.NewDecoder(conn), json.NewEncoder(conn)
+				var hs protocol.HandshakeRequest
+				if err := dec.Decode(&hs); err != nil {
+					return
+				}
+				handshakes <- hs
+				_ = enc.Encode(protocol.HandshakeResponse{ProtocolVersion: protocol.ProtocolVersion, Ok: true})
+				var req protocol.PromptRequest
+				if err := dec.Decode(&req); err != nil {
+					return
+				}
+				_ = enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Done: true})
+			}()
 		}
-		defer conn.Close()
-		var hs protocol.HandshakeRequest
-		json.NewDecoder(conn).Decode(&hs)
-		got <- hs
-		json.NewEncoder(conn).Encode(protocol.HandshakeResponse{ProtocolVersion: protocol.ProtocolVersion, Ok: true})
 	}()
+	return handshakes
+}
 
-	sess, err := connectToDaemon("test")
-	if err != nil {
-		t.Fatalf("connect: %v", err)
-	}
-	defer sess.Close()
-
-	select {
-	case hs := <-got:
-		if !hs.HasCapability(protocol.CapToolApproval) {
-			t.Errorf("the TUI handshake does not declare %q: %v", protocol.CapToolApproval, hs.Capabilities)
+func waitForStreamEnd(t *testing.T, ch chan tea.Msg) {
+	t.Helper()
+	for {
+		select {
+		case msg := <-ch:
+			switch msg.(type) {
+			case streamDoneMsg, streamErrMsg:
+				return
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("the stream never finished")
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("no handshake arrived")
 	}
 }
 

@@ -253,7 +253,7 @@ func waitForNext(ch chan tea.Msg) tea.Cmd {
 // quietly (no streamErrMsg): the user chose to quit, that's not a failure,
 // and it leaves nothing behind reading a dead socket.
 func streamPrompt(ctx context.Context, clientName, workspace, prompt, promptKind string, history []protocol.Turn, ch chan tea.Msg) {
-	sess, err := connectToDaemon(clientName)
+	sess, err := connectToDaemon(clientName, protocol.CapToolApproval)
 	if err != nil {
 		if ctx.Err() != nil {
 			return

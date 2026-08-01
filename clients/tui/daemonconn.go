@@ -41,7 +41,13 @@ var lockPathFunc = protocol.LockPath
 // one-shot client path (main.go) and the interactive chat's streaming
 // goroutine (stream.go), so the transport and handshake are implemented
 // exactly once.
-func connectToDaemon(clientName string) (*daemonSession, error) {
+//
+// capabilities is what THIS caller can actually do, not what the binary can.
+// It is a parameter rather than a constant precisely because the two callers
+// differ: the chat UI can render a mid-stream approval and the one-shot path
+// generally cannot, and a client that declares a capability it cannot honour
+// leaves the daemon asking a question nobody will answer.
+func connectToDaemon(clientName string, capabilities ...string) (*daemonSession, error) {
 	lockPath := lockPathFunc()
 	lock, err := readLockFile(lockPath)
 	if err != nil {
@@ -63,16 +69,12 @@ func connectToDaemon(clientName string) (*daemonSession, error) {
 	if err := enc.Encode(protocol.HandshakeRequest{
 		ProtocolVersion: protocol.ProtocolVersion,
 		ClientName:      clientName,
-		// THIS IS THE SWITCH THAT TURNS AGENT MODE ON FOR THE TUI.
-		//
-		// The daemon runs the agentic loop only for a client that declared it
-		// can answer a mid-stream approval (see agentModeEngaged), so declaring
-		// the capability is a promise this client keeps: stream.go surfaces the
-		// request and chat.go blocks the turn on a keystroke. A client that
-		// declares it and cannot render it would leave the daemon asking a
-		// question nobody answers, and every such call would be denied five
-		// minutes later.
-		Capabilities: []string{protocol.CapToolApproval},
+		// CapToolApproval here is THE SWITCH THAT TURNS AGENT MODE ON: the
+		// daemon runs the agentic loop only for a client that declared it can
+		// answer a mid-stream approval (see agentModeEngaged). Declaring it is a
+		// promise, so it is passed in by the caller that can keep it rather than
+		// hardcoded for every caller that shares this function.
+		Capabilities: capabilities,
 	}); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("sending handshake: %w", err)

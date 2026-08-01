@@ -14,4 +14,4 @@ editapply      12
 proxy          25
 protocol        0
 helper         11
-clients/tui    10
+clients/tui     8

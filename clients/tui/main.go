@@ -18,7 +18,6 @@ import (
 	"github.com/mattn/go-isatty"
 
 	"codeterminal/editapply"
-	"codeterminal/protocol"
 )
 
 func main() {
@@ -36,48 +35,17 @@ func main() {
 		fmt.Fprintln(os.Stderr, "error: no prompt given (use --prompt \"...\" or pipe text on stdin)")
 		os.Exit(1)
 	}
-	runOneShot(prompt)
-}
-
-// runOneShot is the original non-interactive path: connect, send one
-// prompt, print the streamed answer token-by-token, exit.
-func runOneShot(prompt string) {
-	sess, err := connectToDaemon("codeterminal-tui")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
-	defer sess.Close()
-
-	if err := sess.enc.Encode(protocol.PromptRequest{
-		ProtocolVersion: protocol.ProtocolVersion,
-		Prompt:          prompt,
-	}); err != nil {
-		fmt.Fprintf(os.Stderr, "error: sending prompt: %v\n", err)
-		os.Exit(1)
-	}
-
-	for {
-		var tok protocol.TokenResponse
-		if err := sess.dec.Decode(&tok); err != nil {
-			if err == io.EOF {
-				break
-			}
-			fmt.Fprintf(os.Stderr, "\nerror: reading token stream: %v\n", err)
-			os.Exit(1)
-		}
-		if tok.Error != "" {
-			fmt.Fprintf(os.Stderr, "\nerror from daemon: %s\n", tok.Error)
-			os.Exit(1)
-		}
-		if tok.Token != "" {
-			os.Stdout.WriteString(tok.Token) // written immediately, no buffering, so streaming is visible
-		}
-		if tok.Done {
-			break
-		}
-	}
-	os.Stdout.WriteString("\n")
+	// interactive is what decides whether this run may declare CapToolApproval,
+	// and it is deliberately strict. A PIPED prompt means stdin is already spent
+	// on the prompt itself, so there is nothing left to read an answer from --
+	// and a --prompt run from a script has no person at the other end either.
+	// Only --prompt from a real terminal leaves a human who can be asked.
+	// Declaring the capability without one would hang every tool call until the
+	// daemon's five-minute deadline expired. See oneshot.go.
+	interactive := *promptFlag != "" && isatty.IsTerminal(os.Stdin.Fd())
+	os.Exit(runOneShotPrompt("codeterminal-tui", prompt, oneShotIO{
+		in: os.Stdin, out: os.Stdout, err: os.Stderr, interactive: interactive,
+	}))
 }
 
 // runChat launches Mochiii's interactive chat UI. Before ever drawing the
