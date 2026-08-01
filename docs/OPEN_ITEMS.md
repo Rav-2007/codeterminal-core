@@ -101,6 +101,8 @@ Unblocked as of this pass: real-model spend is authorized with a **$5 hard stop*
 
 | # | Item | What a number closes |
 |---|---|---|
+| 24 | **The reservation floor makes the tail of every quota unreachable.** `reserveQuota` reserves `defaultReservationTokens` (4,096) up front, so a key is refused once its headroom drops below that — 4.1% of a 100,000-token quota, and a larger fraction of a smaller one. The user is told `quota_exceeded` while their own accounting says tokens remain, which reads as a billing bug. Safe direction (never over-spend) and an inherent consequence of reserve-then-correct, but written down nowhere. Options: reserve `min(floor, headroom)` and let the correction settle it, or report the real remaining balance in the refusal. | `proxy/main.go:194`, `reserveQuota` | Medium (UX/billing clarity) | **CONFIRMED** — diagnosed live 2026-08-01 |
+
 | ~~20~~ | ~~`max_advertised_tools` 4/8/12 curve~~ | **MEASURED 2026-08-01** (`d9dbc92`, `docs/TOOL_MENU_SIZE_2026-08-01.md`). Flat: 88.6% @ 5, 85.7% @ 8, 85.7% @ 12 over 105 trials, the whole spread being one trial. **The default moved back to 12** — the accuracy argument for 5 did not survive the data. Every failure at every size is one confusion (`run_tests` → `list_directory`, 14/15), so excluding it the score is 30/30 at all three sizes. |
 | 21 | Production system-prompt delta (D1) | the loop gate used a minimal prompt and said so; a large delta is a finding *about the prompt* |
 | 22 | `search_code` in a live loop (D2) | needs the ONNX embedder and a real index; exercises the production 4-tool menu |
@@ -113,8 +115,25 @@ the default moved the same day.
 **Blocked on a founder action, not on engineering:** the production proxy returns
 `quota_exceeded` for the pilot key, so all 140 calls of the first curve run were
 refused. The measurement was re-run direct against OpenRouter, which measures the
-model but not the proxy path. Items 21–23 have the same obstacle. Raising that
-quota is a Supabase row only the founder can touch.
+model but not the proxy path. Items 21–23 have the same obstacle.
+
+Diagnosed read-only against Supabase 2026-08-01, and it is **not** what the error
+says. The key is not out of quota — it is out of **reservation headroom**:
+
+| | |
+|---|---|
+| `token_limit` | 100,000 |
+| `tokens_used` | 96,313 |
+| headroom | **3,687** |
+| `defaultReservationTokens` | **4,096** |
+
+`reserve_usage` requires `tokens_used + reserved <= token_limit`, and
+96,313 + 4,096 = 100,409. Every request is refused with 3,687 tokens still
+unspent. `pending_corrections` is empty, so no stranded reservation is inflating
+the number — this is real usage against a real limit.
+
+**This is a finding in its own right, item 24 below.** Fixing the pilot key is one
+UPDATE; the behaviour it exposes applies to every user who approaches their limit.
 
 **A follow-up this surfaced, correctly scoped:** `run_tests` loses to
 `list_directory` on "run the editapply test suite", 14 times out of 15 across three
