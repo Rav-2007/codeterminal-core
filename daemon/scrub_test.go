@@ -1,6 +1,7 @@
 package main
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -96,7 +97,7 @@ func TestScrub_NoMatchesReturnsNilRedactions(t *testing.T) {
 }
 
 func TestRedactionKinds(t *testing.T) {
-	redactions := []Redaction{{Kind: "openai_key", Start: 0, End: 5}, {Kind: "aws_access_key", Start: 10, End: 20}}
+	redactions := []Redaction{{Kind: "openai_key"}, {Kind: "aws_access_key"}}
 	kinds := redactionKinds(redactions)
 	want := []string{"openai_key", "aws_access_key"}
 	if len(kinds) != len(want) {
@@ -105,6 +106,39 @@ func TestRedactionKinds(t *testing.T) {
 	for i := range want {
 		if kinds[i] != want[i] {
 			t.Errorf("kinds[%d] = %q, want %q", i, kinds[i], want[i])
+		}
+	}
+}
+
+// Redaction must not carry offsets, because the ones it used to carry were
+// wrong (L6).
+//
+// scrub applies its patterns in sequence, each rewriting the string for the
+// next, so an offset recorded during pattern N indexed a string that no longer
+// existed once pattern N+1 had run. This test pins the removal by construction:
+// the struct has one field, so there is nowhere for a stale offset to live, and
+// a future change that reintroduces one has to delete this test to compile.
+//
+// The scenario below is the one that produced the wrong numbers — two different
+// kinds in one text, where the first replacement changes the length of
+// everything after it.
+func TestScrub_RedactionCarriesKindOnly(t *testing.T) {
+	if n := reflect.TypeOf(Redaction{}).NumField(); n != 1 {
+		t.Fatalf("Redaction has %d fields; it must carry Kind and nothing else — offsets computed across scrub's sequential passes are stale by construction", n)
+	}
+
+	text := "OPENAI_KEY=sk-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA and AKIAIOSFODNN7EXAMPLE"
+	cleaned, redactions := scrub(text, false)
+
+	if len(redactions) < 2 {
+		t.Fatalf("expected both kinds to be found, got %v", redactionKinds(redactions))
+	}
+	if strings.Contains(cleaned, "sk-AAAA") || strings.Contains(cleaned, "AKIAIOSFODNN7EXAMPLE") {
+		t.Errorf("cleaned still carries secret material: %q", cleaned)
+	}
+	for _, k := range redactionKinds(redactions) {
+		if k == "" {
+			t.Error("a redaction has an empty Kind")
 		}
 	}
 }

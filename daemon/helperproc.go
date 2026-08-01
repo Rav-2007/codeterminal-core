@@ -127,6 +127,28 @@ func (h *HelperProcess) Start() error {
 	if err := h.waitReady(); err != nil {
 		_ = cmd.Process.Kill()
 		<-exitCh
+
+		// PUT THE STRUCT BACK THE WAY IT WAS, and this is not tidiness.
+		//
+		// doneCh is created below, AFTER this point, because it is closed by
+		// monitor and monitor only starts once the helper is healthy. Returning
+		// here left h.cmd set and h.doneCh nil — and Stop's "was this ever
+		// started?" guard is `h.cmd == nil`. So Stop would clear that guard,
+		// SIGTERM a process already killed and reaped two lines above, wait out
+		// stopGrace, and then receive on a nil channel, which blocks FOREVER. A
+		// helper that failed to start would hang daemon shutdown.
+		//
+		// Creating doneCh earlier does not fix it: nobody would ever close it,
+		// so Stop would block on it just the same. The honest state after a
+		// failed start is the state before the start — there is no process, the
+		// one we spawned has been killed and Wait()ed, and Stop's no-op path is
+		// exactly right for that.
+		h.mu.Lock()
+		h.cmd = nil
+		h.mu.Unlock()
+		// The helper may have bound its socket before dying. Stop does this on
+		// the path we are deliberately no longer taking, so do it here.
+		_ = os.Remove(socketPath)
 		return err
 	}
 
@@ -386,6 +408,21 @@ func (h *HelperProcess) Stop() error {
 	return nil
 }
 
+// maxLogLineBytes caps how much of a single newline-free run this writer will
+// hold before emitting it anyway.
+//
+// A line buffer that only drains on a newline is bounded by the writer's
+// politeness, and the writer here is a subprocess. The helper is this project's
+// own code and would have to malfunction to reach this; the MCP variant of the
+// same writer (mcpruntime.go) reads an unconfined third-party process's stderr,
+// where "writes megabytes without a newline" is not a malfunction but an input.
+// Both are capped, at the same place and for the same reason.
+//
+// 64 KiB is far above any real log line and far below a size worth worrying
+// about, and what happens at the cap is a flush rather than a drop: the bytes
+// were going to be logged anyway, they just stop accumulating first.
+const maxLogLineBytes = 64 << 10
+
 // prefixedWriter prefixes every line written to it before forwarding to out.
 // Used to tag the helper's stdout/stderr in the daemon's own log stream.
 type prefixedWriter struct {
@@ -409,6 +446,12 @@ func (w *prefixedWriter) Write(p []byte) (int, error) {
 		line := w.buf[:i]
 		fmt.Fprintf(w.out, "%s%s\n", w.prefix, line)
 		w.buf = w.buf[i+1:]
+	}
+	// No newline in sight and the buffer has grown past what a log line can
+	// reasonably be: emit it and start again, rather than holding it forever.
+	if len(w.buf) >= maxLogLineBytes {
+		_, _ = fmt.Fprintf(w.out, "%s%s [continues]\n", w.prefix, w.buf)
+		w.buf = w.buf[:0]
 	}
 	return len(p), nil
 }

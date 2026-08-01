@@ -1291,3 +1291,48 @@ func TestChat_StartTurn_PlainPromptTranscriptUnaffected(t *testing.T) {
 		t.Errorf("turn text = %q, want unchanged: %q", got, "what does this function do")
 	}
 }
+
+// The turn's CancelFunc must be CALLED when the stream ends, not merely
+// forgotten (L1).
+//
+// Both terminal paths used to do `m.streamCancel = nil`, which looks like
+// cleanup and is the opposite of it: context.WithCancel attaches the child to
+// its parent and to a goroutine watching for completion, and dropping the only
+// handle that releases them leaks both — once per turn, for the life of a
+// session that may run for hours.
+//
+// The context itself is the witness. If cancel ran, ctx.Done() is closed; if
+// the field was merely nilled, it never closes.
+func TestStreamEnd_CancelsTheTurnContext(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		msg  tea.Msg
+	}{
+		{"clean finish", streamDoneMsg{}},
+		{"stream error", streamErrMsg{err: errors.New("upstream died")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newTestModel()
+			m = typeText(m, "ask something")
+			m, _ = pressEnter(m)
+
+			// Replace the turn's real cancel with one whose context this test
+			// can observe. startTurn has already set streamCancel; the point of
+			// the assertion is whether the terminal path CALLS it.
+			ctx, cancel := context.WithCancel(context.Background())
+			m.streamCancel = cancel
+
+			updated, _ := m.Update(tc.msg)
+			m = updated.(chatModel)
+
+			select {
+			case <-ctx.Done():
+			default:
+				t.Fatal("the turn's context is still live after the stream ended; the CancelFunc was dropped rather than called, leaking a context and its watcher goroutine every turn")
+			}
+			if m.streamCancel != nil {
+				t.Error("streamCancel should also be cleared, so a later cancel cannot fire against a finished turn")
+			}
+		})
+	}
+}

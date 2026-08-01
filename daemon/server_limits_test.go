@@ -244,3 +244,48 @@ func TestServe_ConnCeilingRejectsExcess(t *testing.T) {
 	admitted := dialAndHandshake(t, path)
 	admitted.Close()
 }
+
+// H6 -- THE READ-BUDGET ARITHMETIC, checked rather than trusted.
+//
+// The old comment claimed the aggregate was "bounded by the turn's iteration
+// ceiling". It was not: a grant happens per ASK, an ask happens per TOOL CALL,
+// and the number of tool calls in one iteration is whatever the provider's
+// stream contains. toolCallAccumulator caps neither. So the total a client
+// could unlock was a function of provider output rather than of any configured
+// number -- which is the difference between a bound and a hope.
+//
+// Fails if grantCeiling stops being enforced.
+func TestApprovalGrantsCannotExceedTheirShareOfTheBudget(t *testing.T) {
+	const budget = 16 << 20
+	lc := &limitedConn{remaining: budget, grantCeiling: budget / approvalGrantFraction}
+
+	// Ten thousand asks: far past any real turn, and past what the iteration
+	// ceiling would have allowed if it had been the bound.
+	for i := 0; i < 10000; i++ {
+		lc.grantReadBudget(maxApprovalResponseBytes)
+	}
+
+	ceiling := int64(budget / approvalGrantFraction)
+	if lc.granted != ceiling {
+		t.Errorf("granted %d bytes over 10000 asks, ceiling is %d", lc.granted, ceiling)
+	}
+	if lc.remaining != budget+ceiling {
+		t.Errorf("remaining = %d, want the original %d plus at most %d", lc.remaining, budget, ceiling)
+	}
+	// The invariant in one sentence, asserted as one sentence.
+	if lc.remaining > budget+budget/approvalGrantFraction {
+		t.Errorf("the approval channel extended a %d byte budget to %d, which is more than the "+
+			"%d%% it is allowed", budget, lc.remaining, 100/approvalGrantFraction)
+	}
+}
+
+// A grant below the ceiling is honoured in full: the cap must not quietly
+// shrink an ordinary answer's allowance.
+func TestAnOrdinaryApprovalGrantIsHonouredInFull(t *testing.T) {
+	const budget = 16 << 20
+	lc := &limitedConn{remaining: budget, grantCeiling: budget / approvalGrantFraction}
+	lc.grantReadBudget(maxApprovalResponseBytes)
+	if lc.remaining != budget+maxApprovalResponseBytes {
+		t.Errorf("remaining = %d, want %d", lc.remaining, budget+maxApprovalResponseBytes)
+	}
+}

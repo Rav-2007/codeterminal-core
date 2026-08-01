@@ -1,0 +1,51 @@
+# Coverage floors — the ratchet's gate. One line per PACKAGE: <import-path> <floor%>
+#
+# Enforced by scripts/coverage-ratchet.sh, which runs in CI per module.
+#
+# These are Phase 0's measured values (docs/ROBUSTNESS_BASELINE.md), not
+# aspirations. The rule is RATCHET, DON'T CHASE: a floor may only ever be raised,
+# and only to a number that has actually been measured on main. Nobody should
+# lower a floor to make a red build green -- that converts the one mechanism that
+# noticed a regression into a rubber stamp. Lower it only with a recorded reason
+# (a package genuinely losing testable surface, e.g. code deleted).
+#
+# Keyed by package, not module, because `helper` contains two packages whose
+# coverage differs by 68 points; a module-level floor would average that into
+# meaninglessness.
+#
+# Every package MUST be listed. The script fails on a package it has no floor
+# for, so a newly added package cannot silently escape the gate -- adding one
+# means deciding its floor, even if that decision is 0.0.
+#
+# Why proxy is 80.3 and not 80.7: the same commit measured both, a run-to-run
+# difference on a shared statement count. The floor takes the LOWER reading so
+# ordinary variance can never trip the ratchet; only a real drop can.
+#
+# RAISED 2026-08-01, after the MCP hardening pass. Four packages had drifted
+# well above their floors -- daemon +2.1, daemon/mcp +5.7, proxy +5.7, protocol
+# +3.4 -- which is unguarded headroom: a regression inside it would not trip
+# anything. Each new floor is a few tenths below a value measured three times
+# in a row, following the same take-the-lower-reading rule as the note above.
+
+codeterminal/daemon              72.0
+codeterminal/editapply           87.0
+codeterminal/proxy               85.0
+
+# The MCP tool surface. Floored high on purpose: this is the package that
+# decides what a third-party subprocess may see and do, and its own tests are
+# the only thing standing between an env-allowlist bug and every MCP server the
+# user runs holding their inference credentials. Measured 87.3 on the commit
+# that introduced it; floored at 86.0 to leave ordinary run-to-run variance.
+codeterminal/daemon/mcp          91.0
+
+# 0.0 is the honest floor, not an oversight. testharness is a test-support
+# BINARY (fake Supabase + fake OpenRouter) whose whole purpose is to be driven
+# by out-of-process drills and the soak script -- there is nothing meaningful to
+# unit-test in it, and testing it would test the fake rather than the proxy.
+# Listed explicitly because the ratchet fails on any package it has no floor
+# for, so the decision has to be made rather than defaulted into.
+codeterminal/proxy/testharness    0.0
+codeterminal/helper               6.5
+codeterminal/helper/helperproto  75.0
+codeterminal/protocol            91.5
+codeterminal/clients/tui         68.9

@@ -5,8 +5,189 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # The eval job below is schedule/dispatch-only; these triggers exist so it has
+  # something to hang off. Everything else runs per-push and per-PR.
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+  workflow_dispatch:
+
+# There is no root Go module -- only go.work -- so `./...` from the repo root
+# fails outright ("directory prefix . does not contain modules listed in
+# go.work"). Every Go step below therefore names its module explicitly. Do not
+# "simplify" these to a root-level ./... ; it does not work.
+env:
+  GO_VERSION: "1.25.x"
 
 jobs:
+  go:
+    # 584 Go tests, gofmt, and vet existed in this repo and gated nothing: the
+    # entire pipeline was one docker build. Both regressions in the 2026-07-30
+    # launch-gate review shipped past a green LOCAL suite, because a suite nobody
+    # is required to run is a suite that drifts. This job makes the suite run on
+    # every push and PR to main.
+    #
+    # It does NOT yet BLOCK anything, and that distinction matters. Required
+    # status checks need branch protection, and branch protection is unavailable
+    # on this repo: it is private on a free plan, so
+    # `GET /repos/:owner/:repo/branches/main/protection` answers
+    # `403 Upgrade to GitHub Pro or make this repository public` (checked
+    # 2026-07-30). Until the repo goes public or onto Pro, a red run is a signal
+    # someone has to read, not a merge that cannot happen. Making it enforceable
+    # is tracked in BACKLOG.md.
+    name: go (${{ matrix.module }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [daemon, editapply, proxy, helper, protocol, clients/tui]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: "**/go.sum"
+
+      - name: Build
+        run: go build ./...
+        working-directory: ${{ matrix.module }}
+
+      # gofmt -l prints offending files and exits 0, so the output is the signal.
+      - name: gofmt
+        working-directory: ${{ matrix.module }}
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt found unformatted files:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+        working-directory: ${{ matrix.module }}
+
+      # -race, not a bare `go test`: this repo's concurrency work (the Gate 6
+      # apply/undo locking in particular) is only defended by the race detector.
+      - name: Test
+        run: go test -race ./...
+        working-directory: ${{ matrix.module }}
+
+      # Deliberately a SEPARATE step from Test, and deliberately without -race.
+      # Separate, because "tests failed" and "coverage regressed" are different
+      # problems and a single red step would not say which. Without -race,
+      # because the race detector is already gated above and instrumenting twice
+      # costs time without moving a coverage number.
+      #
+      # No working-directory: the script runs from the repo root and takes the
+      # module as an argument, since the floors it reads are repo-wide.
+      - name: Coverage ratchet
+        run: ./scripts/coverage-ratchet.sh ${{ matrix.module }}
+
+  lint:
+    # Static analysis: staticcheck, ineffassign, bodyclose as HARD gates (what
+    # each one gates is documented in scripts/lint.sh), plus errcheck as a
+    # RATCHET rather than a gate -- see the ceiling step below and debt item (j).
+    #
+    # Same explicit module matrix as the other Go jobs, for the same reason: there
+    # is no root module, so a root-level ./... does not work.
+    name: lint (${{ matrix.module }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [daemon, editapply, proxy, helper, protocol, clients/tui]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: "**/go.sum"
+
+      # bodyclose builds with the BASE toolchain and its x/sys dependency needs
+      # >= 1.25, so this step depends on setup-go having installed 1.25.x above.
+      # On an older base it fails to install at all -- see scripts/lint.sh.
+      - name: Install linters
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          go install github.com/gordonklaus/ineffassign@latest
+          go install github.com/timakin/bodyclose@latest
+          go install github.com/kisielk/errcheck@latest
+
+      - name: Lint
+        run: ./scripts/lint.sh ${{ matrix.module }}
+
+      # errcheck is NOT a hard gate -- see debt item (j), which deferred adoption
+      # because turning it green means ~170 `_ =` assignments or an arbitrary
+      # exclusion list. It IS a ratchet: the existing count is grandfathered and
+      # may not grow. The deferral previously had no mechanism, and the count
+      # drifted 157 -> 170 in two weeks.
+      - name: Unchecked-error ceiling
+        run: ./scripts/errcheck-ceiling.sh ${{ matrix.module }}
+
+  fuzz:
+    # Nine targets over the two trust boundaries: the request/SSE parsers in
+    # proxy, and the edit-block parser and matcher in editapply. See
+    # scripts/fuzz.sh for what each one asserts.
+    #
+    # 30s per target is a REGRESSION gate, not a search: it re-walks the corpus
+    # and shallow mutations on every PR. Finding something new wants minutes to
+    # hours, via FUZZTIME locally.
+    #
+    # One job rather than a per-module matrix: the whole run is a few minutes,
+    # and a single job keeps the seed-corpus story in one place.
+    name: fuzz
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: "**/go.sum"
+      - name: Fuzz (30s per target)
+        run: ./scripts/fuzz.sh
+
+  govulncheck:
+    name: govulncheck (${{ matrix.module }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [daemon, editapply, proxy, helper, protocol, clients/tui]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: "**/go.sum"
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - name: Scan
+        run: govulncheck ./...
+        working-directory: ${{ matrix.module }}
+
+  extension:
+    # The VS Code tests run in a real Extension Development Host, which needs a
+    # display; xvfb-run supplies one. Confirmed working -- this is the same
+    # invocation used locally.
+    name: vscode extension
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: clients/vscode/package-lock.json
+      - name: Install
+        run: npm ci
+        working-directory: clients/vscode
+      - name: Compile (tsc)
+        run: npm run compile
+        working-directory: clients/vscode
+      - name: Test (Extension Development Host)
+        run: xvfb-run -a npm test
+        working-directory: clients/vscode
+
   proxy-image:
     # Builds the proxy Docker image exactly as Railway does (same Dockerfile,
     # same build context) so a broken build context — e.g. a Dockerfile that
@@ -16,3 +197,41 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build proxy image
         run: docker build -t codeterminal-proxy:ci ./proxy
+
+  eval:
+    # NOT per-PR. The -tags eval suite downloads a real embedding model and takes
+    # ~148s; running it on every push would make the gate slow enough that people
+    # route around it, which is the failure mode this whole pipeline exists to
+    # fix. On a schedule it still catches retrieval-quality drift within a week.
+    name: retrieval eval (scheduled)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: "**/go.sum"
+      # Scoped to the three eval tests that are GREEN, deliberately.
+      #
+      # TestEditShapedRetrievalEval is excluded because its HARNESS cannot build
+      # its own fixtures -- not, as this comment previously said, because
+      # retrieval scores 0/4. Three of its four cases reconstruct a pre-fix tree
+      # by reverting the fix commit, and those reverts now conflict (the commits
+      # are 178-221 commits behind HEAD), so those cases never issue a query at
+      # all. The "0/4" it prints is a setup failure wearing a recall label. See
+      # BACKLOG.md item (b), corrected 2026-07-31.
+      #
+      # Including it would leave this job permanently red, and a job that is
+      # always red is a job nobody reads -- the exact failure this pipeline
+      # exists to fix.
+      #
+      # Do NOT "fix" this by checking out the fix commit's parent: restoring
+      # just the pre-fix source files was probed and does not compile against
+      # today's tree, and restoring the whole parent tree measures retrieval
+      # over 200-commit-old code. Reconstructing a historical bug state in a
+      # moving tree expires by design; the eval needs rebuilding around current
+      # queries with labelled ground truth. Remove the -run filter then.
+      - name: Run gated eval suite (green subset -- see comment)
+        run: go test -tags eval -run 'TestEvalRetrievalQuality|TestRerankEvalRetrievalRanking|TestTokenEfficiencyEval' ./...
+        working-directory: daemon

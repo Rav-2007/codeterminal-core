@@ -24,11 +24,11 @@ const lotusLogo = `        .::::::.  .::::::.  .::::::.
 // inconsistently across terminals/fonts and often force their own color
 // instead of taking the pink foreground, whereas "✿" is a stable
 // single-width glyph that always inherits brandStyle's color.
+//
+// The alternative emoji glyph is 🪷 — swap this value for it if your terminal
+// renders it cleanly and in the pink foreground. Kept as prose rather than as a
+// second const, which nothing referenced.
 const lotusGlyph = "✿"
-
-// lotusGlyphEmoji is the alternative emoji glyph. Swap lotusGlyph's value
-// to this if your terminal renders it cleanly and in the pink foreground.
-const lotusGlyphEmoji = "🪷"
 
 // brandName is Mochiii's display name, used on the splash and in the chat
 // header.

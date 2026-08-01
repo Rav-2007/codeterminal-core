@@ -210,3 +210,40 @@ func TestHelperProcess_StopIsIdempotent(t *testing.T) {
 func discardLogger() *log.Logger {
 	return log.New(io.Discard, "", 0)
 }
+
+// A helper that never becomes ready must not hang daemon shutdown.
+//
+// Start creates doneCh only after waitReady succeeds, so the failure path used
+// to return with h.cmd set and h.doneCh nil. Stop's "never started" guard is
+// h.cmd == nil, so it would sail past, SIGTERM an already-reaped process, wait
+// out stopGrace, and then receive on a nil channel — a permanent block, on the
+// shutdown path, triggered by nothing more exotic than a helper binary that
+// cannot start.
+//
+// The timeout is the assertion. Without the fix this does not fail slowly, it
+// does not return at all.
+func TestHelperProcess_StopAfterFailedStartDoesNotHang(t *testing.T) {
+	h := fastHelperProcess(t)
+	h.extraEnv = []string{"FAKEHELPER_FAIL=1"}
+
+	if err := h.Start(); err == nil {
+		t.Fatal("Start should fail: FAKEHELPER_FAIL makes the helper exit before it can ever report healthy")
+	}
+
+	stopped := make(chan error, 1)
+	go func() { stopped <- h.Stop() }()
+
+	select {
+	case err := <-stopped:
+		if err != nil {
+			t.Fatalf("Stop after a failed Start: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop did not return after a failed Start — it is blocked on a nil doneCh, and this is the daemon's shutdown path")
+	}
+
+	// Stop must stay a no-op rather than becoming one only the first time.
+	if err := h.Stop(); err != nil {
+		t.Fatalf("second Stop: %v", err)
+	}
+}

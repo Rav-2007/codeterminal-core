@@ -8,15 +8,81 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
+
+// streamSSEAndFinalize drives streamSSE exactly the way handleChatCompletions
+// does: relay the stream, then discharge the reservation through the single
+// deferred finalizer.
+//
+// It exists because streamSSE no longer bills. It RECORDS its result into a
+// reservationOutcome and the handler's one deferred finalizeReservation call
+// bills it, so that "every reservation is finalized exactly once" is a
+// structural property of the handler instead of something four call sites have
+// to remember. A test that calls streamSSE alone would therefore assert on a
+// stream that was never billed -- which is why every billing-sensitive test
+// below goes through this helper rather than the raw method.
+func streamSSEAndFinalize(p *proxy, w http.ResponseWriter, body io.Reader, keyID string, reserved int, pendingID int64, ceiling int) *reservationOutcome {
+	outcome := &reservationOutcome{keyID: keyID, reserved: reserved, pendingID: pendingID}
+	p.streamSSE(w, body, outcome, ceiling, nil)
+	p.finalizeReservation(outcome)
+	return outcome
+}
+
+// syncBuffer is a bytes.Buffer that survives -race.
+//
+// It is needed because the deferred finalizer runs correctUsage on its OWN
+// goroutine (main.go's finalizeUsage.gowrap1) and logs from there. A test that
+// holds a bare bytes.Buffer as its log sink therefore reads it while that
+// goroutine is still writing -- which the race detector found immediately, and
+// which is a defect in the test rather than in the proxy: the two writers are
+// the logger's, and log.Logger itself is safe. Only the sink was not.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func (b *syncBuffer) Reset() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.buf.Reset()
+}
+
+func (b *syncBuffer) Len() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Len()
+}
+
+func (b *syncBuffer) Bytes() []byte {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	// A copy, not the buffer's own slice: handing out the live backing array
+	// would put the caller straight back into the race this type exists to end.
+	return append([]byte(nil), b.buf.Bytes()...)
+}
 
 // fakeUsageStore stands in for the `usage` table's single row, guarded by
 // a mutex so reserve mirrors reserve_usage's real atomic
@@ -272,7 +338,7 @@ func TestHandleChatCompletions_NormalRequest(t *testing.T) {
 	defer upstream.Close()
 
 	p := newTestProxy(supabase.URL, upstream.URL)
-	req := newAuthorizedRequest(`{"model":"x","messages":[{"role":"user","content":"hi"}],"provider":{"zdr":true,"data_collection":"deny","allow_fallbacks":true}}`)
+	req := newAuthorizedRequest(`{"model":"x","messages":[{"role":"user","content":"hi"}],"stream":true,"provider":{"zdr":true,"data_collection":"deny","allow_fallbacks":true}}`)
 	rec := httptest.NewRecorder()
 
 	p.handleChatCompletions(rec, req)
@@ -308,7 +374,7 @@ func TestHandleChatCompletions_OverLimitRejected(t *testing.T) {
 	defer upstream.Close()
 
 	p := newTestProxy(supabase.URL, upstream.URL)
-	req := newAuthorizedRequest(`{"model":"x","messages":[{"role":"user","content":"hi"}],"provider":{"zdr":true,"data_collection":"deny","allow_fallbacks":true}}`)
+	req := newAuthorizedRequest(`{"model":"x","messages":[{"role":"user","content":"hi"}],"stream":true,"provider":{"zdr":true,"data_collection":"deny","allow_fallbacks":true}}`)
 	rec := httptest.NewRecorder()
 
 	p.handleChatCompletions(rec, req)
@@ -386,7 +452,7 @@ func TestHandleChatCompletions_FailedUpstreamRefunds(t *testing.T) {
 	deadUpstream.Close()
 
 	p := newTestProxy(supabase.URL, deadUpstreamURL)
-	req := newAuthorizedRequest(`{"model":"x","messages":[{"role":"user","content":"hi"}],"provider":{"zdr":true,"data_collection":"deny","allow_fallbacks":true}}`)
+	req := newAuthorizedRequest(`{"model":"x","messages":[{"role":"user","content":"hi"}],"stream":true,"provider":{"zdr":true,"data_collection":"deny","allow_fallbacks":true}}`)
 	rec := httptest.NewRecorder()
 
 	p.handleChatCompletions(rec, req)
@@ -646,7 +712,6 @@ func TestHandleChatCompletions_ThrottlesAFloodOnOneKey(t *testing.T) {
 // are bounded BEFORE the Supabase lookup, so bad keys cannot amplify into a
 // third-party dependency.
 func TestPreAuthLimit_BoundsSupabaseAmplification(t *testing.T) {
-	const keyID = "77777777-7777-7777-7777-777777777777"
 	store := &fakeUsageStore{tokenLimit: 100000}
 
 	var lookups atomic.Int64
@@ -737,7 +802,7 @@ func TestStreamSSE_StripsAccountMetadataEndToEnd(t *testing.T) {
 
 	p := newTestProxy(supabase.URL, "http://unused.invalid")
 	rec := httptest.NewRecorder()
-	p.streamSSE(rec, strings.NewReader(upstream), keyID, defaultReservationTokens, 1)
+	streamSSEAndFinalize(p, rec, strings.NewReader(upstream), keyID, defaultReservationTokens, 1, absoluteMaxRequestTokens)
 
 	got := rec.Body.String()
 	if strings.Contains(got, "org-SECRET-ACCOUNT") || strings.Contains(got, "user_id") {
@@ -809,7 +874,7 @@ func TestHandleChatCompletions_ClientAbortsBeforeUsageChunk_DoesNotRefund(t *tes
 	defer upstream.Close()
 
 	p := newTestProxy(supabase.URL, upstream.URL)
-	req := newAuthorizedRequest(`{"model":"x","messages":[{"role":"user","content":"hi"}],"provider":{"zdr":true,"data_collection":"deny","allow_fallbacks":true}}`)
+	req := newAuthorizedRequest(`{"model":"x","messages":[{"role":"user","content":"hi"}],"stream":true,"provider":{"zdr":true,"data_collection":"deny","allow_fallbacks":true}}`)
 	// Fail the relay write that carries the usage chunk.
 	rec := &abortingResponseWriter{failOn: "usage"}
 
@@ -852,7 +917,7 @@ func TestFinalizeUsage_ProducedNoOutput_FullRefund(t *testing.T) {
 	// this test also covers the row actually being closed.
 	_, _, pendingID, _ := store.reserve(keyID, reserved)
 
-	p.finalizeUsage(keyID, reserved, 0, false, pendingID)
+	p.finalizeUsage(keyID, reserved, 0, false, pendingID, "0123456789abcdef")
 
 	waitForCorrections(t, store, 1)
 	if got, want := store.corrections[0], int64(-reserved); got != want {
@@ -878,7 +943,7 @@ func TestFinalizeUsage_TrueUpUnchanged(t *testing.T) {
 
 	_, _, pendingID, _ := store.reserve(keyID, reserved)
 
-	p.finalizeUsage(keyID, reserved, actual, true, pendingID)
+	p.finalizeUsage(keyID, reserved, actual, true, pendingID, "0123456789abcdef")
 
 	waitForCorrections(t, store, 1)
 	if n := store.openPendingCount(); n != 0 {
@@ -914,7 +979,8 @@ func TestReserveQuota_ReturnsPendingID(t *testing.T) {
 		defer supabase.Close()
 		p := newTestProxy(supabase.URL, "http://unused.invalid")
 
-		pendingID, ok := p.reserveQuota(context.Background(), keyID, defaultReservationTokens)
+		res, ok := p.reserveQuota(context.Background(), keyID, defaultReservationTokens)
+		pendingID := res.pendingID
 		if !ok {
 			t.Fatal("reserveQuota refused a reservation that fits well under the limit")
 		}
@@ -937,7 +1003,8 @@ func TestReserveQuota_ReturnsPendingID(t *testing.T) {
 		defer supabase.Close()
 		p := newTestProxy(supabase.URL, "http://unused.invalid")
 
-		pendingID, ok := p.reserveQuota(context.Background(), keyID, defaultReservationTokens)
+		res, ok := p.reserveQuota(context.Background(), keyID, defaultReservationTokens)
+		pendingID := res.pendingID
 		if ok {
 			t.Fatal("reserveQuota granted a reservation that exceeds the limit")
 		}
@@ -987,7 +1054,7 @@ func TestCorrectUsage_PostsApplyCorrectionWithPendingID(t *testing.T) {
 	defer supabase.Close()
 
 	p := newTestProxy(supabase.URL, "http://unused.invalid")
-	p.correctUsage(keyID, wantDelta, wantPendingID)
+	p.correctUsage(keyID, wantDelta, wantPendingID, "0123456789abcdef")
 
 	select {
 	case c := <-got:
@@ -1045,7 +1112,7 @@ func TestSweepPendingCorrections_ReportsAbandonedReservations(t *testing.T) {
 		usedBefore := store.tokensUsed
 		store.mu.Unlock()
 
-		var logs bytes.Buffer
+		var logs syncBuffer
 		p := newProxy("k", "http://unused.invalid", supabase.URL, "sr", log.New(&logs, "", 0), nil)
 		p.sweepPendingCorrections()
 
@@ -1089,7 +1156,7 @@ func TestSweepPendingCorrections_ReportsAbandonedReservations(t *testing.T) {
 		supabase, _ := newFakeSupabase(store, keyID)
 		defer supabase.Close()
 
-		var logs bytes.Buffer
+		var logs syncBuffer
 		p := newProxy("k", "http://unused.invalid", supabase.URL, "sr", log.New(&logs, "", 0), nil)
 		p.sweepPendingCorrections()
 
@@ -1121,7 +1188,8 @@ func TestReservationSurvivesCrash_SweptNotRefunded(t *testing.T) {
 
 	// Lifetime 1: reserve, then "crash" -- no correction is ever sent.
 	crashed := newTestProxy(supabase.URL, "http://unused.invalid")
-	pendingID, ok := crashed.reserveQuota(context.Background(), keyID, defaultReservationTokens)
+	crashRes, ok := crashed.reserveQuota(context.Background(), keyID, defaultReservationTokens)
+	pendingID := crashRes.pendingID
 	if !ok || pendingID == 0 {
 		t.Fatalf("setup: reserveQuota returned (%d, %v)", pendingID, ok)
 	}
@@ -1140,7 +1208,7 @@ func TestReservationSurvivesCrash_SweptNotRefunded(t *testing.T) {
 
 	// Lifetime 2: a restarted proxy (or a sibling replica) sweeps.
 	store.backdatePending(time.Duration(pendingCorrectionStaleAfterMinutes+1) * time.Minute)
-	var logs bytes.Buffer
+	var logs syncBuffer
 	restarted := newProxy("k", "http://unused.invalid", supabase.URL, "sr", log.New(&logs, "", 0), nil)
 	restarted.sweepPendingCorrections()
 
@@ -1362,4 +1430,1603 @@ func TestZDRRoutingEnforced_FailWhenNeutered(t *testing.T) {
 			"if you are seeing this after replacing the body with `return true`, that is the " +
 			"neutered gate this test exists to catch: a stripped-flags request would be forwarded")
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Financial-defense hardening. Each test below guards a control that did not
+// exist before the DoW audit, and each is written to FAIL if that control is
+// removed -- the same discipline as TestZDRRoutingEnforced_FailWhenNeutered.
+// ---------------------------------------------------------------------------
+
+// sseChunks builds a stream of n content chunks with NO usage chunk and no
+// [DONE] -- i.e. a completion still in progress. This is the shape that used to
+// run unbounded: the proxy only ever learned a token count from the terminal
+// usage chunk, so a stream that kept producing was never measured until it
+// stopped.
+func sseChunks(n int) string {
+	var b strings.Builder
+	for i := 0; i < n; i++ {
+		b.WriteString("data: {\"choices\":[{\"delta\":{\"content\":\"tok\"}}]}\n\n")
+	}
+	return b.String()
+}
+
+// realisticChunk mirrors an ACTUAL OpenRouter SSE chunk: ~294 bytes of JSON
+// envelope wrapping a single token of delta content.
+//
+// The toy fixture above is 47 bytes, and using it for budget tests is exactly how
+// a 73x estimator error shipped with a green suite. Any test that asserts
+// something about how much a stream "costs" must use this one, because the
+// envelope-to-content ratio IS the thing under test.
+const realisticChunk = `data: {"id":"gen-1753600000-AbCdEfGhIjKlMnOp","provider":"DeepSeek",` +
+	`"model":"deepseek/deepseek-v4-flash","object":"chat.completion.chunk",` +
+	`"created":1753600000,"choices":[{"index":0,"delta":{"role":"assistant",` +
+	`"content":" the"},"finish_reason":null,"native_finish_reason":null,` +
+	`"logprobs":null}]}`
+
+func sseRealisticChunks(n int) string {
+	var b strings.Builder
+	for i := 0; i < n; i++ {
+		b.WriteString(realisticChunk)
+		b.WriteString("\n\n")
+	}
+	return b.String()
+}
+
+func TestBudgetExceeded(t *testing.T) {
+	const ceiling = 1000
+	tests := []struct {
+		name       string
+		dataChunks int
+		bytes      int
+		wantReason string
+		wantOver   bool
+	}{
+		{"nothing streamed", 0, 0, "", false},
+		{"well under both bounds", 500, 500 * 294, "", false},
+		// The D1 case: 1000 realistic chunks is exactly the ceiling in TOKENS and
+		// 294,000 bytes. The old estimator scored that as 73,500 tokens.
+		{"at the ceiling with realistic envelopes", 1000, 1000 * 294, "", false},
+		{"one chunk over the token ceiling", 1001, 1001 * 294, "token_ceiling", true},
+		// Few chunks, enormous payload: the case chunk-counting alone misses.
+		{"byte guard catches batched giant chunks", 3, ceiling*maxBytesPerChunkGuard + 1, "byte_guard", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reason, over := budgetExceeded(tt.dataChunks, tt.bytes, ceiling)
+			if over != tt.wantOver {
+				t.Fatalf("budgetExceeded(%d, %d, %d) exceeded = %v, want %v",
+					tt.dataChunks, tt.bytes, ceiling, over, tt.wantOver)
+			}
+			if reason != tt.wantReason {
+				t.Errorf("reason = %q, want %q", reason, tt.wantReason)
+			}
+		})
+	}
+}
+
+func TestRequestTokenCeiling_CappedByAbsoluteMax(t *testing.T) {
+	// A key with an enormous quota must still not be drainable by one request.
+	if got := requestTokenCeiling(defaultReservationTokens, 10_000_000); got != absoluteMaxRequestTokens {
+		t.Errorf("ceiling with huge headroom = %d, want the absolute cap %d -- "+
+			"without the cap, one request can spend an entire enterprise quota", got, absoluteMaxRequestTokens)
+	}
+	// A nearly-exhausted key must get a ceiling near its actual headroom, not the cap.
+	if got := requestTokenCeiling(100, 50); got != 150 {
+		t.Errorf("ceiling with 50 headroom = %d, want 150 (reserved+headroom)", got)
+	}
+}
+
+// The load-bearing test. A stream that keeps producing past the ceiling must be
+// CUT, not ridden out. Fails when the ceiling check is removed from streamSSE.
+func TestStreamSSE_KillsStreamOverBudget(t *testing.T) {
+	const keyID = "bbbb1111-0000-0000-0000-000000000001"
+	store := &fakeUsageStore{tokenLimit: 100000}
+	supabase, _ := newFakeSupabase(store, keyID)
+	defer supabase.Close()
+
+	// 500 chunks offered; ceiling of 10 must stop it long before the end.
+	const ceiling = 10
+	p := newTestProxy(supabase.URL, "http://unused.invalid")
+	rec := httptest.NewRecorder()
+	streamSSEAndFinalize(p, rec, strings.NewReader(sseChunks(500)), keyID, defaultReservationTokens, 1, ceiling)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "budget_exceeded") {
+		t.Error("killed stream carried no budget_exceeded chunk -- the client cannot " +
+			"tell throttling from a dropped connection")
+	}
+	if !strings.Contains(body, "[DONE]") {
+		t.Error("killed stream did not terminate with [DONE]")
+	}
+	// The estimator counts one token per chunk here, so the relay must stop within
+	// a chunk or two of the ceiling -- nowhere near all 500.
+	if got := strings.Count(body, `"delta"`); got > ceiling+2 {
+		t.Errorf("relayed %d content chunks with a ceiling of %d -- the stream was not "+
+			"cut. If you are seeing this after removing the ceiling check in streamSSE, "+
+			"that is exactly the unbounded-spend regression this test exists to catch", got, ceiling)
+	}
+}
+
+// A killed stream must be CHARGED, not refunded. Refunding would make an
+// over-budget request free, which is worse than not enforcing at all: it would
+// hand back quota for inference OpenRouter really did bill.
+func TestStreamSSE_KilledStreamIsChargedNotRefunded(t *testing.T) {
+	const keyID = "bbbb1111-0000-0000-0000-000000000002"
+	store := &fakeUsageStore{tokenLimit: 100000}
+	supabase, _ := newFakeSupabase(store, keyID)
+	defer supabase.Close()
+
+	p := newTestProxy(supabase.URL, "http://unused.invalid")
+	rec := httptest.NewRecorder()
+	streamSSEAndFinalize(p, rec, strings.NewReader(sseChunks(500)), keyID, defaultReservationTokens, 1, 10)
+
+	waitForCorrections(t, store, 1)
+	store.mu.Lock()
+	delta := store.corrections[0]
+	store.mu.Unlock()
+
+	if delta == -int64(defaultReservationTokens) {
+		t.Fatal("a killed stream was fully REFUNDED -- over-budget inference would be " +
+			"free and infinitely repeatable")
+	}
+	// No refund of ANY size. This fixture pairs a ceiling of 10 with the 4096
+	// reservation, which cannot occur in production (requestTokenCeiling makes
+	// ceiling >= reserved), so the kill fires at ~11 chunks. Before chargeForKill
+	// the charge was that raw count and the correction was -4085 -- a partial
+	// refund this test accepted, and the same defect P0-1 made unbounded on the
+	// byte guard. The floor at `reserved` makes it 0.
+	if delta < 0 {
+		t.Errorf("correction delta = %d: a killed stream was refunded %d tokens. "+
+			"Every kill path must charge at least the reservation", delta, -delta)
+	}
+}
+
+// bigChunkUpstream emits `chunks` SSE data lines of roughly `size` bytes each and
+// NO terminal usage chunk -- the shape a provider that batches many tokens into
+// one chunk produces (a reasoning model streaming long `reasoning` deltas, say),
+// and therefore the shape that trips budgetExceeded's BYTE guard rather than its
+// token ceiling. sseChunks/sseRealisticChunks above can only ever trip the token
+// ceiling, which is precisely why the byte bound went untested.
+func bigChunkUpstream(chunks, size int) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		filler := strings.Repeat("A", size)
+		for i := 0; i < chunks; i++ {
+			fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":\"%s\"}}]}\n\n", filler)
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+		}
+	}))
+}
+
+// The P0-1 regression. A stream killed by the BYTE guard must not produce a
+// refund -- the defect this test exists to catch charged the CHUNK COUNT, which
+// on this bound is tiny by construction (a few huge chunks) while the bytes
+// streamed are at the ceiling. finalizeUsage then took its `actual > 0` branch
+// with actual far below reserved and issued a large NEGATIVE correction: 4093 of
+// 4096 tokens refunded after streaming the maximum the ceiling permits.
+//
+// It runs the whole handleChatCompletions path rather than streamSSE directly,
+// because the defect lives in the agreement between the kill site and
+// finalizeUsage and only the real reservation makes `reserved` meaningful.
+//
+// Neuter check: replace chargeForKill's body with `return max(measured,
+// dataChunks)` and this test fails with delta=-4093 while every other budget
+// test still passes -- which is exactly how the defect shipped.
+func TestStreamSSE_ByteGuardKillNeverRefunds(t *testing.T) {
+	const keyID = "bbbb1111-0000-0000-0000-000000000004"
+
+	// Headroom of 100 over the 4096 reservation => ceiling 4196 => the byte guard
+	// trips at 4196*512 = 2,148,352 bytes.
+	store := &fakeUsageStore{tokensUsed: 0, tokenLimit: defaultReservationTokens + 100}
+	supabase, _ := newFakeSupabase(store, keyID)
+	defer supabase.Close()
+
+	// 3 x 900_000 = 2.7MB crosses the byte guard at dataChunks == 3, three orders
+	// of magnitude below the token ceiling of 4196.
+	upstream := bigChunkUpstream(3, 900_000)
+	defer upstream.Close()
+
+	p := newTestProxy(supabase.URL, upstream.URL)
+	req := newAuthorizedRequest(`{"model":"x","messages":[{"role":"user","content":"hi"}],"stream":true,"provider":{"zdr":true,"data_collection":"deny"}}`)
+	p.handleChatCompletions(httptest.NewRecorder(), req)
+
+	waitForCorrections(t, store, 1)
+	store.mu.Lock()
+	delta := store.corrections[0]
+	store.mu.Unlock()
+
+	if delta < 0 {
+		t.Errorf("byte_guard kill refunded %d of %d reserved tokens after streaming the "+
+			"maximum its ceiling permits (finalizeUsage saw actual=%d). A stream killed "+
+			"for exceeding its budget must never move quota in the caller's favour -- "+
+			"this is the C3 abort-refund class through the budget kill path",
+			-delta, defaultReservationTokens, delta+int64(defaultReservationTokens))
+	}
+}
+
+// The byte-guard kill's other half: finalizeUsage charges the same figure to the
+// per-key token-RATE bucket, so the defect defeated both new spend controls at
+// once. A maximum-spend request must leave the bucket materially charged.
+func TestStreamSSE_ByteGuardKillChargesTheTokenRateBucket(t *testing.T) {
+	const keyID = "bbbb1111-0000-0000-0000-000000000005"
+
+	store := &fakeUsageStore{tokensUsed: 0, tokenLimit: defaultReservationTokens + 100}
+	supabase, _ := newFakeSupabase(store, keyID)
+	defer supabase.Close()
+	upstream := bigChunkUpstream(3, 900_000)
+	defer upstream.Close()
+
+	p := newTestProxy(supabase.URL, upstream.URL)
+	req := newAuthorizedRequest(`{"model":"x","messages":[{"role":"user","content":"hi"}],"stream":true,"provider":{"zdr":true,"data_collection":"deny"}}`)
+	p.handleChatCompletions(httptest.NewRecorder(), req)
+	waitForCorrections(t, store, 1)
+
+	// Read the balance rather than asking available(), which is a >= 1 boolean
+	// against a burst of 120000 and so cannot see the difference between a charge
+	// of 3 and a charge of 4096. Measuring the number is the whole point here.
+	p.keyTokens.mu.Lock()
+	b, charged := p.keyTokens.buckets[keyID]
+	var spent float64
+	if charged {
+		spent = keyTokenBurst - b.tokens
+	}
+	p.keyTokens.mu.Unlock()
+
+	if !charged {
+		t.Fatal("a 2.7MB maximum-spend request left no token-rate bucket at all")
+	}
+	if spent < float64(defaultReservationTokens) {
+		t.Errorf("the token-rate bucket was charged %.0f for a request that streamed the "+
+			"maximum its ceiling permits, want at least the reservation %d. Charging the "+
+			"chunk count (3) leaves the token-volume limiter unable to bound a byte-guard "+
+			"kill, so both of this branch's new spend controls fail on the same defect",
+			spent, defaultReservationTokens)
+	}
+}
+
+// chargeForKill's invariant, unit-level: no input combination may produce a
+// figure below the reservation, because that is what makes finalizeUsage emit a
+// negative correction.
+func TestChargeForKill(t *testing.T) {
+	const reserved = 4096
+	tests := []struct {
+		name       string
+		measured   int
+		dataChunks int
+		want       int
+	}{
+		// The byte_guard shape: a handful of huge chunks, no usage figure. The
+		// defect returned 3 here.
+		{"byte guard, no usage figure", 0, 3, reserved},
+		// The token_ceiling shape: the count is above the ceiling, which is itself
+		// at or above the reservation.
+		{"token ceiling, no usage figure", 0, 5000, 5000},
+		// A real usage figure already in hand is never revised DOWN, in either
+		// direction relative to the reservation.
+		{"real usage above the reservation wins", 9000, 5000, 9000},
+		{"real usage below the reservation is floored", 200, 3, reserved},
+		{"nothing measured at all still charges the reservation", 0, 0, reserved},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := chargeForKill(tt.measured, tt.dataChunks, reserved); got != tt.want {
+				t.Errorf("chargeForKill(%d, %d, %d) = %d, want %d",
+					tt.measured, tt.dataChunks, reserved, got, tt.want)
+			}
+			if got := chargeForKill(tt.measured, tt.dataChunks, reserved); got < reserved {
+				t.Errorf("charge %d is below the reservation %d -- finalizeUsage will "+
+					"issue a refund for a killed stream", got, reserved)
+			}
+		})
+	}
+}
+
+// A stream that stays under its ceiling must be completely untouched -- this is
+// the regression guard that the budget check does not interfere with real traffic.
+func TestStreamSSE_UnderBudgetStreamIsUnaffected(t *testing.T) {
+	const keyID = "bbbb1111-0000-0000-0000-000000000003"
+	store := &fakeUsageStore{tokenLimit: 100000}
+	supabase, _ := newFakeSupabase(store, keyID)
+	defer supabase.Close()
+
+	p := newTestProxy(supabase.URL, "http://unused.invalid")
+	rec := httptest.NewRecorder()
+	streamSSEAndFinalize(p, rec, strings.NewReader(sseUsageBody(42)), keyID, defaultReservationTokens, 1, absoluteMaxRequestTokens)
+
+	body := rec.Body.String()
+	if strings.Contains(body, "budget_exceeded") {
+		t.Error("an under-budget stream was killed -- the ceiling is firing on legitimate traffic")
+	}
+	if !strings.Contains(body, `"total_tokens":42`) {
+		t.Errorf("the real usage chunk did not survive relay:\n%s", body)
+	}
+}
+
+// Cost authorization beyond the single `model` field. Every entry here was
+// forwarded upstream unexamined before the audit.
+func TestCostSurface_RefusesBillableSideChannels(t *testing.T) {
+	p := newProxy("k", "http://unused.invalid", "http://unused.invalid", "k",
+		log.New(io.Discard, "", 0), parseAllowedModels("good/model"))
+
+	const zdr = `"provider":{"zdr":true,"data_collection":"deny"}`
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"fallback models array", `{"model":"good/model","models":["expensive/model"],` + zdr + `}`, "cost_surface_not_allowed"},
+		{"plugins (billed per use, invisible to token quota)", `{"model":"good/model","plugins":[{"id":"web"}],` + zdr + `}`, "cost_surface_not_allowed"},
+		{"transforms", `{"model":"good/model","transforms":["middle-out"],` + zdr + `}`, "cost_surface_not_allowed"},
+		{"provider.only (cost steering)", `{"model":"good/model","provider":{"zdr":true,"data_collection":"deny","only":["expensive"]}}`, "cost_surface_not_allowed"},
+		{"provider.order (cost steering)", `{"model":"good/model","provider":{"zdr":true,"data_collection":"deny","order":["expensive"]}}`, "cost_surface_not_allowed"},
+		{"provider.sort (cost steering)", `{"model":"good/model","provider":{"zdr":true,"data_collection":"deny","sort":"price"}}`, "cost_surface_not_allowed"},
+		{"missing model (was a fail-OPEN)", `{` + zdr + `}`, "model_required"},
+		{"unlisted model", `{"model":"evil/model",` + zdr + `}`, "model_not_allowed"},
+		{"unparseable body", `{not json`, "malformed_request"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, refused := p.costSurfaceRefusal([]byte(tt.body))
+			if !refused {
+				t.Fatalf("costSurfaceRefusal allowed %q -- this field reaches OpenRouter "+
+					"and is billed. If you are seeing this after dropping the field from the "+
+					"predicate, that is the bypass this test exists to catch", tt.name)
+			}
+			if got != tt.want {
+				t.Errorf("refusal = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// D4 REGRESSION GUARD. provider.ignore is how DeepInfra is excluded from routing
+// (commit 0c5bb29); the shipped daemon sends it on every request. Refusing it
+// would break all real traffic, so the cost gate must let it through -- a
+// deny-list narrows where traffic may go, which is the safe direction.
+func TestCostSurface_AllowsProviderIgnore(t *testing.T) {
+	p := newProxy("k", "http://unused.invalid", "http://unused.invalid", "k",
+		log.New(io.Discard, "", 0), parseAllowedModels("good/model"))
+
+	body := `{"model":"good/model","provider":{"zdr":true,"data_collection":"deny","allow_fallbacks":true,"ignore":["DeepInfra"]}}`
+	if refusal, refused := p.costSurfaceRefusal([]byte(body)); refused {
+		t.Fatalf("costSurfaceRefusal refused the shipped daemon's own D4 routing body with %q -- "+
+			"this would 403 every real request", refusal)
+	}
+}
+
+// An oversized declared max_tokens must be REFUSED, not silently clamped.
+// Clamping the reservation while forwarding the caller's larger number was the
+// mismatch that let one request overshoot its own admission.
+func TestHandleChatCompletions_OversizedMaxTokensRefused(t *testing.T) {
+	const keyID = "cccc1111-0000-0000-0000-000000000001"
+	store := &fakeUsageStore{tokenLimit: 100000}
+	supabase, _ := newFakeSupabase(store, keyID)
+	defer supabase.Close()
+
+	reached := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached = true
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, sseUsageBody(1))
+	}))
+	defer upstream.Close()
+
+	p := newTestProxy(supabase.URL, upstream.URL)
+	req := newAuthorizedRequest(fmt.Sprintf(
+		`{"model":"x","max_tokens":%d,"stream":true,"provider":{"zdr":true,"data_collection":"deny"}}`,
+		maxReservationTokens+1))
+	rec := httptest.NewRecorder()
+	p.handleChatCompletions(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403 for an oversized max_tokens; body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "max_tokens_too_large") {
+		t.Errorf("body = %s, want max_tokens_too_large", rec.Body.String())
+	}
+	if reached {
+		t.Error("OpenRouter was contacted despite the refusal -- the check must run BEFORE the forward")
+	}
+	if store.openPendingCount() != 0 {
+		t.Error("a refused request opened an outbox row -- it reserved nothing and owes no correction")
+	}
+}
+
+// A max_tokens at or under the cap must still work normally.
+func TestHandleChatCompletions_AcceptableMaxTokensStillForwards(t *testing.T) {
+	const keyID = "cccc1111-0000-0000-0000-000000000002"
+	store := &fakeUsageStore{tokenLimit: 100000}
+	supabase, _ := newFakeSupabase(store, keyID)
+	defer supabase.Close()
+	upstream := newFakeUpstream(50)
+	defer upstream.Close()
+
+	p := newTestProxy(supabase.URL, upstream.URL)
+	req := newAuthorizedRequest(
+		`{"model":"x","max_tokens":100,"stream":true,"provider":{"zdr":true,"data_collection":"deny"}}`)
+	rec := httptest.NewRecorder()
+	p.handleChatCompletions(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 for a legitimate max_tokens; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// Token-volume limiting: the second layer the request-rate limiter cannot see.
+func TestTokenRateLimit_DebtBlocksTheNextRequest(t *testing.T) {
+	l := newRateLimiter(keyTokenRatePerSecond, keyTokenBurst)
+	base := time.Now()
+	l.now = func() time.Time { return base }
+
+	if !l.available("k") {
+		t.Fatal("a fresh key was refused before spending anything")
+	}
+	// One outsized completion drives the bucket into debt.
+	l.charge("k", keyTokenBurst*2)
+	if l.available("k") {
+		t.Fatal("a key in token debt was admitted -- without post-hoc charging, token " +
+			"volume is unbounded no matter what the request rate is")
+	}
+
+	// Debt must be repaid by elapsed time, not held forever.
+	l.now = func() time.Time { return base.Add(10 * time.Minute) }
+	if !l.available("k") {
+		t.Error("a key was still refused after ample refill time -- the debt floor is not bounding the penalty")
+	}
+}
+
+func TestTokenRateLimit_DebtIsFlooredAtOneBurst(t *testing.T) {
+	l := newRateLimiter(keyTokenRatePerSecond, keyTokenBurst)
+	base := time.Now()
+	l.now = func() time.Time { return base }
+
+	l.charge("k", keyTokenBurst*1000) // one pathological request
+	l.mu.Lock()
+	b, charged := l.buckets["k"]
+	l.mu.Unlock()
+	if !charged {
+		t.Fatal("charge left no bucket at all -- nothing was spent, so token volume is unmetered")
+	}
+	got := b.tokens
+	if got < -keyTokenBurst {
+		t.Errorf("debt = %f, want no worse than -%f -- an unbounded debt would lock a "+
+			"paying key out for an arbitrarily long time", got, keyTokenBurst)
+	}
+}
+
+// Unknown routes were 404ing straight out of the mux without passing through
+// admitPreAuth -- an unauthenticated, entirely unthrottled endpoint.
+func TestUnknownRoute_IsRateLimited(t *testing.T) {
+	p := newTestProxy("http://unused.invalid", "http://unused.invalid")
+	handler := p.rateLimitedNotFound()
+
+	got404, got429 := 0, 0
+	for i := 0; i < int(preAuthBurstGlobal)+50; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/definitely-not-a-route", nil)
+		rec := httptest.NewRecorder()
+		handler(rec, req)
+		switch rec.Code {
+		case http.StatusNotFound:
+			got404++
+		case http.StatusTooManyRequests:
+			got429++
+		}
+	}
+	if got429 == 0 {
+		t.Errorf("404 path served %d requests with zero throttling -- if you are seeing "+
+			"this after unregistering the catch-all, that is the unbounded anonymous "+
+			"endpoint this test exists to catch", got404)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// D1/D2 regression guards. Both defects below shipped with a fully green suite,
+// because the budget tests used a 47-byte toy chunk and no test exercised
+// stream:false at all. These use realistic inputs.
+// ---------------------------------------------------------------------------
+
+// THE D1 GUARD. A completion of ordinary length, with REAL SSE envelopes, must
+// stream to completion untouched.
+//
+// Against the estimator this replaces (max(chunks, bytes/4)) a 4096-token answer
+// scored 4096*294/4 = 301,056 "tokens" against a 65,536 ceiling and was cut at
+// roughly chunk 900 -- every substantial answer truncated in production.
+func TestStreamSSE_RealisticStreamNotKilledUnderCeiling(t *testing.T) {
+	const keyID = "dddd1111-0000-0000-0000-000000000001"
+	const chunks = 4096 // an ordinary long answer, well under absoluteMaxRequestTokens
+
+	store := &fakeUsageStore{tokenLimit: 10_000_000}
+	supabase, _ := newFakeSupabase(store, keyID)
+	defer supabase.Close()
+
+	p := newTestProxy(supabase.URL, "http://unused.invalid")
+	rec := httptest.NewRecorder()
+	streamSSEAndFinalize(p, rec, strings.NewReader(sseRealisticChunks(chunks)), keyID, defaultReservationTokens, 1, absoluteMaxRequestTokens)
+
+	body := rec.Body.String()
+	if strings.Contains(body, "budget_exceeded") {
+		t.Fatalf("a %d-token completion with realistic SSE envelopes was KILLED under a "+
+			"%d-token ceiling. If you are seeing this after reintroducing a bytes/4 term "+
+			"into the budget check, that is the 73x envelope-vs-content error this test "+
+			"exists to catch -- it truncates real traffic, it does not protect it",
+			chunks, absoluteMaxRequestTokens)
+	}
+	if got := strings.Count(body, `"delta"`); got != chunks {
+		t.Errorf("relayed %d chunks, want all %d -- the stream was altered", got, chunks)
+	}
+}
+
+// The byte guard still has to fire on the shape chunk-counting cannot see: a
+// provider batching an entire answer into a few enormous chunks.
+func TestStreamSSE_ByteGuardCatchesBatchedGiantChunks(t *testing.T) {
+	const keyID = "dddd1111-0000-0000-0000-000000000002"
+	const ceiling = 100
+
+	store := &fakeUsageStore{tokenLimit: 10_000_000}
+	supabase, _ := newFakeSupabase(store, keyID)
+	defer supabase.Close()
+
+	// Three chunks, each far past the whole byte allowance -- only 3 by chunk
+	// count, so the token bound alone would let this through.
+	giant := strings.Repeat("x", ceiling*maxBytesPerChunkGuard)
+	var b strings.Builder
+	for i := 0; i < 3; i++ {
+		fmt.Fprintf(&b, `data: {"choices":[{"delta":{"content":"%s"}}]}`+"\n\n", giant)
+	}
+
+	p := newTestProxy(supabase.URL, "http://unused.invalid")
+	rec := httptest.NewRecorder()
+	streamSSEAndFinalize(p, rec, strings.NewReader(b.String()), keyID, defaultReservationTokens, 1, ceiling)
+
+	if !strings.Contains(rec.Body.String(), "budget_exceeded") {
+		t.Error("a stream far past its byte allowance was not killed -- with only 3 chunks " +
+			"the token bound cannot see it, which is the whole reason the byte guard exists")
+	}
+}
+
+// THE D2 GUARD. stream:false took the buffered branch, where the ceiling was
+// never applied -- bounded only by maxNonStreamResponseBytes, a 64x escape.
+func TestHandleChatCompletions_NonStreamedRequestRefused(t *testing.T) {
+	const keyID = "dddd1111-0000-0000-0000-000000000003"
+	store := &fakeUsageStore{tokenLimit: 100000}
+	supabase, _ := newFakeSupabase(store, keyID)
+	defer supabase.Close()
+
+	reached := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached = true
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"usage":{"total_tokens":9}}`)
+	}))
+	defer upstream.Close()
+
+	for _, tt := range []struct {
+		name string
+		body string
+	}{
+		{"stream explicitly false", `{"model":"x","stream":false,"provider":{"zdr":true,"data_collection":"deny"}}`},
+		// Omitted is the dangerous one: OpenAI-compatible APIs default stream to
+		// false, so treating "absent" as streaming would reopen the bypass.
+		{"stream omitted entirely", `{"model":"x","provider":{"zdr":true,"data_collection":"deny"}}`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			reached = false
+			p := newTestProxy(supabase.URL, upstream.URL)
+			rec := httptest.NewRecorder()
+			p.handleChatCompletions(rec, newAuthorizedRequest(tt.body))
+
+			if rec.Code != http.StatusForbidden {
+				t.Errorf("status = %d, want 403; body=%s", rec.Code, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), "stream_required") {
+				t.Errorf("body = %s, want stream_required", rec.Body.String())
+			}
+			if reached {
+				t.Error("OpenRouter was contacted for a non-streamed request -- this is the " +
+					"path where the budget ceiling does not run, so it must never be forwarded")
+			}
+			if store.openPendingCount() != 0 {
+				t.Error("a refused request opened an outbox row")
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// F-1: JSON parser differential. Go's encoding/json matches object keys to
+// struct tags IGNORING CASE; OpenRouter matches exactly. Wherever the proxy
+// therefore sees a SAFE value under a key OpenRouter will not read, the gate is
+// bypassed and OpenRouter falls back to its own (unsafe) default.
+// ---------------------------------------------------------------------------
+
+// Demonstrates the underlying language behaviour these tests defend against, so
+// the reason for the map-based lookup is legible without a doc lookup.
+func TestGoJSONMatchesKeysCaseInsensitively(t *testing.T) {
+	var peek struct {
+		Stream bool `json:"stream"`
+	}
+	if err := json.Unmarshal([]byte(`{"STREAM":true}`), &peek); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !peek.Stream {
+		t.Skip("this Go version matches keys case-sensitively; F-1 does not apply here")
+	}
+	t.Log("confirmed: struct-tag decoding accepts \"STREAM\" for a `json:\"stream\"` field -- " +
+		"any gate built on struct tags reads a key OpenRouter will not")
+}
+
+func TestZDRRoutingEnforced_RejectsCaseVariantKeys(t *testing.T) {
+	// Each body would pass the proxy's gate while carrying NO routing object that
+	// OpenRouter can read -- i.e. it forwards a request believing ZDR is set when
+	// the model provider will never see the flags.
+	for _, tt := range []struct {
+		name string
+		body string
+	}{
+		{"uppercased provider key", `{"model":"x","stream":true,"PROVIDER":{"zdr":true,"data_collection":"deny"}}`},
+		{"uppercased flag keys", `{"model":"x","stream":true,"provider":{"ZDR":true,"DATA_COLLECTION":"deny"}}`},
+		{"mixed case flag keys", `{"model":"x","stream":true,"provider":{"Zdr":true,"Data_Collection":"deny"}}`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if zdrRoutingEnforced([]byte(tt.body)) {
+				t.Error("zdrRoutingEnforced ACCEPTED a body whose routing keys OpenRouter will not " +
+					"read. The proxy would forward this believing ZDR is enforced, while the " +
+					"provider receives no routing object at all -- F1's entire claim (\"the proxy, " +
+					"not the client, is the authority that the flags are correct on the wire\") is " +
+					"false for this request. Fix: exact top-level key lookup, not struct-tag decoding")
+			}
+		})
+	}
+}
+
+func TestStreamRequested_RejectsCaseVariantKeys(t *testing.T) {
+	for _, body := range []string{
+		`{"model":"x","STREAM":true,"provider":{"zdr":true,"data_collection":"deny"}}`,
+		`{"model":"x","Stream":true,"provider":{"zdr":true,"data_collection":"deny"}}`,
+	} {
+		if streamRequested([]byte(body)) {
+			t.Errorf("streamRequested ACCEPTED %s -- OpenRouter reads no `stream` key here, "+
+				"defaults it to false, and returns a buffered body, so the mid-stream budget "+
+				"ceiling never runs. This reopens the 64x spend escape", body)
+		}
+	}
+}
+
+func TestPeekMaxTokens_IgnoresCaseVariantKeys(t *testing.T) {
+	// A case-variant MAX_TOKENS must not be read as a reservation size: the proxy
+	// would reserve the small declared value while OpenRouter, seeing no
+	// max_tokens, applies its own far larger default.
+	if got, ok := peekMaxTokens([]byte(`{"model":"x","MAX_TOKENS":50}`)); ok {
+		t.Errorf("peekMaxTokens read a case-variant key as %d -- the reservation would be sized "+
+			"from a field OpenRouter never sees", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Coverage gaps closed after the QA pass. Each of these was a security control
+// with zero direct tests.
+// ---------------------------------------------------------------------------
+
+// The per-source pre-auth bucket is keyed on X-Forwarded-For, which is
+// caller-supplied and therefore SPOOFABLE. Rotating it yields a fresh bucket
+// every time. The global bucket is the documented backstop -- this asserts it
+// actually holds, which nothing did before.
+func TestPreAuthLimit_ForgedXFFCannotEvadeTheGlobalBucket(t *testing.T) {
+	p := newTestProxy("http://unused.invalid", "http://unused.invalid")
+	handler := p.rateLimitedNotFound()
+
+	throttled := 0
+	attempts := int(preAuthBurstGlobal) + 200
+	for i := 0; i < attempts; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/nope", nil)
+		// A different forged source every single request: the per-source bucket
+		// never sees the same key twice and so never throttles anything.
+		req.Header.Set("X-Forwarded-For", fmt.Sprintf("203.0.113.%d, 10.0.0.1", i%256))
+		rec := httptest.NewRecorder()
+		handler(rec, req)
+		if rec.Code == http.StatusTooManyRequests {
+			throttled++
+		}
+	}
+	if throttled == 0 {
+		t.Fatalf("%d requests from %d forged X-Forwarded-For values were ALL admitted -- "+
+			"per-source limiting is trivially evaded by spoofing, and the global bucket "+
+			"that is documented as the backstop is not bounding anything",
+			attempts, attempts)
+	}
+}
+
+func TestClientSource_PrefersFirstXFFEntryThenPeer(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "192.0.2.7:54321"
+
+	if got := clientSource(req); got != "192.0.2.7" {
+		t.Errorf("with no XFF, clientSource = %q, want the peer IP without its port", got)
+	}
+	// Only the FIRST entry is the client; the rest are hops.
+	req.Header.Set("X-Forwarded-For", " 198.51.100.5 , 10.0.0.1, 10.0.0.2")
+	if got := clientSource(req); got != "198.51.100.5" {
+		t.Errorf("clientSource = %q, want the first XFF entry, trimmed", got)
+	}
+}
+
+// /health is the ONLY unauthenticated route and had zero tests.
+func TestHealth(t *testing.T) {
+	t.Run("returns ok and hides the build commit by default", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		makeHealthHandler("deadbeefcafe", nil)(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rec.Code)
+		}
+		var got healthResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatalf("body is not valid JSON: %v (%s)", err, rec.Body.String())
+		}
+		if got.Status != "ok" {
+			t.Errorf("status field = %q, want ok", got.Status)
+		}
+		if got.Commit != "" {
+			t.Errorf("commit = %q on an anonymous request -- this fingerprints the exact "+
+				"running build, and which known-fixed bugs are deployed, for any caller "+
+				"on the internet", got.Commit)
+		}
+	})
+
+	t.Run("discloses the commit only when explicitly opted in", func(t *testing.T) {
+		t.Setenv("HEALTH_EXPOSE_COMMIT", "1")
+		rec := httptest.NewRecorder()
+		makeHealthHandler("deadbeefcafe", nil)(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
+
+		var got healthResponse
+		json.Unmarshal(rec.Body.Bytes(), &got)
+		if got.Commit != "deadbeefcafe" {
+			t.Errorf("commit = %q with HEALTH_EXPOSE_COMMIT=1, want it reported -- the "+
+				"deploy-verify step depends on this", got.Commit)
+		}
+	})
+
+	t.Run("is rate limited", func(t *testing.T) {
+		p := newTestProxy("http://unused.invalid", "http://unused.invalid")
+		handler := p.rateLimitedHealth(makeHealthHandler("x", nil))
+
+		throttled := 0
+		for i := 0; i < int(preAuthBurstGlobal)+100; i++ {
+			rec := httptest.NewRecorder()
+			handler(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
+			if rec.Code == http.StatusTooManyRequests {
+				throttled++
+			}
+		}
+		if throttled == 0 {
+			t.Error("/health served an unbounded flood with zero throttling -- it is the " +
+				"only unauthenticated route, so this is a free anonymous endpoint")
+		}
+	})
+}
+
+// The buffered response branch still runs for upstream ERROR bodies, which
+// arrive as application/json even when the request asked to stream. Its
+// account-metadata scrubber had no test at all.
+func TestStripAccountMetadata(t *testing.T) {
+	t.Run("removes account fields", func(t *testing.T) {
+		got := stripAccountMetadata([]byte(`{"user_id":"org-SECRET","error":{"code":400}}`))
+		if strings.Contains(string(got), "user_id") || strings.Contains(string(got), "org-SECRET") {
+			t.Errorf("account metadata survived scrubbing: %s", got)
+		}
+		if !strings.Contains(string(got), `"error"`) {
+			t.Errorf("the real error payload was lost: %s", got)
+		}
+	})
+	t.Run("passes through a body it cannot parse", func(t *testing.T) {
+		const raw = `not json at all`
+		if got := string(stripAccountMetadata([]byte(raw))); got != raw {
+			t.Errorf("stripAccountMetadata mangled an unparseable body: %q", got)
+		}
+	})
+}
+
+// End-to-end: an upstream error body must reach the client scrubbed, on the
+// buffered branch, for a request that legitimately asked to stream.
+func TestHandleChatCompletions_UpstreamErrorBodyIsScrubbed(t *testing.T) {
+	const keyID = "eeee1111-0000-0000-0000-000000000001"
+	store := &fakeUsageStore{tokenLimit: 100000}
+	supabase, _ := newFakeSupabase(store, keyID)
+	defer supabase.Close()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		io.WriteString(w, `{"user_id":"org-LEAKED-ACCOUNT","error":{"message":"bad model"}}`)
+	}))
+	defer upstream.Close()
+
+	p := newTestProxy(supabase.URL, upstream.URL)
+	rec := httptest.NewRecorder()
+	p.handleChatCompletions(rec, newAuthorizedRequest(
+		`{"model":"x","stream":true,"provider":{"zdr":true,"data_collection":"deny"}}`))
+
+	if strings.Contains(rec.Body.String(), "org-LEAKED-ACCOUNT") || strings.Contains(rec.Body.String(), "user_id") {
+		t.Errorf("OpenRouter account metadata reached the client on the error path:\n%s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "bad model") {
+		t.Errorf("the upstream error message was lost:\n%s", rec.Body.String())
+	}
+}
+
+// P2-1. Duplicate keys made the gate's verdict and the forwarded bytes disagree:
+// every gate resolves last-wins, and the body is forwarded byte-for-byte
+// carrying both. Reproduced before the fix -- cost authorization admitted a
+// request whose forwarded body still named a banned model first.
+//
+// Neuter check: remove the hasDuplicateKeys call from handleChatCompletions and
+// the first two subtests fail (200 instead of 400, upstream contacted).
+func TestDuplicateJSONKeys_Refused(t *testing.T) {
+	const keyID = "dddd1111-0000-0000-0000-000000000001"
+
+	tests := []struct {
+		name       string
+		body       string
+		wantStatus int
+	}{
+		{
+			// The confirmed bypass: banned model first, allowed model second.
+			name: "duplicate model at the top level",
+			body: `{"model":"expensive-model","model":"cheap-model",` +
+				`"messages":[{"role":"user","content":"hi"}],"stream":true,` +
+				`"provider":{"zdr":true,"data_collection":"deny"}}`,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			// Nested: the ZDR flags live inside `provider`, so the walk must
+			// descend. zdr:false first, zdr:true second reads as compliant to the
+			// gate while the forwarded bytes lead with the weakened flag.
+			name: "duplicate zdr inside the provider object",
+			body: `{"model":"cheap-model","messages":[{"role":"user","content":"hi"}],` +
+				`"stream":true,"provider":{"zdr":false,"zdr":true,"data_collection":"deny"}}`,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			// The shipped daemon's real body shape. It marshals from structs, so it
+			// cannot produce a duplicate key -- this must still be admitted, or the
+			// check has broken all real traffic.
+			name: "the shipped daemon's body shape is unaffected",
+			body: `{"model":"cheap-model","messages":[{"role":"system","content":"sys"},` +
+				`{"role":"user","content":"hi"}],"stream":true,` +
+				`"provider":{"zdr":true,"data_collection":"deny","allow_fallbacks":false,"ignore":["DeepInfra"]},` +
+				`"stream_options":{"include_usage":true}}`,
+			wantStatus: http.StatusOK,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &fakeUsageStore{tokenLimit: 100000}
+			supabase, _ := newFakeSupabase(store, keyID)
+			defer supabase.Close()
+
+			var contacted atomic.Bool
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				contacted.Store(true)
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(http.StatusOK)
+				io.WriteString(w, sseUsageBody(10))
+			}))
+			defer upstream.Close()
+
+			p := newProxy("k", upstream.URL, supabase.URL, "srk", log.New(io.Discard, "", 0),
+				map[string]bool{"cheap-model": true})
+			rec := httptest.NewRecorder()
+			p.handleChatCompletions(rec, newAuthorizedRequest(tt.body))
+
+			if rec.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d (body: %s)", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+			if tt.wantStatus == http.StatusBadRequest {
+				if contacted.Load() {
+					t.Error("an ambiguous body was forwarded upstream -- the whole point is " +
+						"that no gate, and no provider, ever judges a body whose meaning " +
+						"depends on which parser reads it")
+				}
+				if !strings.Contains(rec.Body.String(), "duplicate_json_key") {
+					t.Errorf("refusal body = %s, want the duplicate_json_key slug", rec.Body.String())
+				}
+			}
+		})
+	}
+}
+
+func TestHasDuplicateKeys(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"clean object", `{"model":"a","stream":true}`, false},
+		{"top-level duplicate", `{"model":"a","model":"b"}`, true},
+		{"nested duplicate", `{"provider":{"zdr":false,"zdr":true}}`, true},
+		{"duplicate inside an array element", `{"messages":[{"role":"a","role":"b"}]}`, true},
+		// Same key name at DIFFERENT levels is legitimate and must be allowed --
+		// the sets are per-object, not global.
+		{"same name in two different objects", `{"a":{"x":1},"b":{"x":2}}`, false},
+		{"repeated key across array siblings", `{"m":[{"role":"user"},{"role":"user"}]}`, false},
+		{"empty object", `{}`, false},
+		// Malformed input is left to the gates, which already refuse it.
+		{"malformed", `{"a":`, false},
+		{"not an object", `"just a string"`, false},
+		// Deep nesting is refused rather than recursed into (fail closed).
+		{"excessive nesting", strings.Repeat("[", 200) + strings.Repeat("]", 200), true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := hasDuplicateKeys([]byte(tt.body)); got != tt.want {
+				t.Errorf("hasDuplicateKeys(%s) = %v, want %v", tt.body, got, tt.want)
+			}
+		})
+	}
+}
+
+// panickingResponseWriter panics on the write whose payload contains panicOn,
+// modelling any runtime fault -- a nil dereference, a bounds bug, a future
+// regression -- that unwinds out of the middle of a request AFTER the
+// reservation already exists. It mirrors abortingResponseWriter above, which
+// does the same for a client disconnect; the difference is that a disconnect is
+// an error return the code handles and a panic is not.
+type panickingResponseWriter struct {
+	header  http.Header
+	body    bytes.Buffer
+	panicOn string
+	code    int
+
+	// panicOnWriteHeader faults at w.WriteHeader instead of at a body write.
+	// That distinction is the whole point of the two subtests below: WriteHeader
+	// runs in handleChatCompletions AFTER the reservation exists but BEFORE
+	// streamSSE is entered, so it is a site that streamSSE's own defer never
+	// covered and only the handler-level defer can.
+	panicOnWriteHeader bool
+}
+
+func (w *panickingResponseWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = http.Header{}
+	}
+	return w.header
+}
+
+func (w *panickingResponseWriter) WriteHeader(code int) {
+	w.code = code
+	if w.panicOnWriteHeader {
+		panic("synthetic fault at WriteHeader, before the stream begins")
+	}
+}
+
+func (w *panickingResponseWriter) Write(b []byte) (int, error) {
+	if w.panicOn != "" && strings.Contains(string(b), w.panicOn) {
+		panic("synthetic fault mid-stream: " + w.panicOn)
+	}
+	return w.body.Write(b)
+}
+
+func (w *panickingResponseWriter) Flush() {}
+
+// TestHandleChatCompletions_PanicStillDischargesReservation is the P1.1
+// regression, and the unit-level half of the defect measured live in
+// docs/ROBUSTNESS_BASELINE.md §3.
+//
+// A reservation is a DEBT: reserve_usage has already incremented tokens_used by
+// the full reserved amount and opened a pending_corrections row, and something
+// must later true that up. If a fault unwinds the request before that happens,
+// the caller stays charged the whole reservation and the outbox row stays open
+// until the sweep reports it as permanently over-charged -- the sweep never
+// refunds, by design.
+//
+// The two subtests are deliberately NOT equivalent, and the difference is what
+// makes this a real regression test rather than a restatement of the fix:
+//
+//   - "before the stream begins" faults at w.WriteHeader, which runs in
+//     handleChatCompletions after the reservation exists and before streamSSE is
+//     entered. NOTHING covered this before P1.1. This is the subtest that fails
+//     when the fix is neutered.
+//   - "mid-stream" faults inside streamSSE's relay write. streamSSE always had
+//     its own deferred finalizeUsage, so this case was ALREADY covered before
+//     P1.1. It is kept to pin that coverage in place now that the billing moved
+//     out of streamSSE and into the handler -- it guards against the refactor
+//     having lost something, and it is honestly not evidence that the refactor
+//     added something.
+//
+// Neuter check for the first subtest: replace handleChatCompletions'
+// `defer p.finalizeReservation(&outcome)` with a plain call at the end of the
+// function. "before the stream begins" then fails with 0 corrections and 1 open
+// pending row; "mid-stream" keeps passing, as does every other test in this
+// file -- which is precisely the shape that let the gap survive unnoticed.
+func TestHandleChatCompletions_PanicStillDischargesReservation(t *testing.T) {
+	tests := []struct {
+		name string
+		// writer decides WHERE the fault lands.
+		writer func() *panickingResponseWriter
+		// wantRefund is whether the discharge should hand quota back. A fault
+		// before any output was relayed is a full refund; a fault after real
+		// upstream-billed output must never move quota in the caller's favour
+		// (the chargeForKill invariant).
+		wantRefund bool
+	}{
+		{
+			name:       "before the stream begins (uncovered before P1.1)",
+			writer:     func() *panickingResponseWriter { return &panickingResponseWriter{panicOnWriteHeader: true} },
+			wantRefund: true,
+		},
+		{
+			name:       "mid-stream (already covered by streamSSE's own defer)",
+			writer:     func() *panickingResponseWriter { return &panickingResponseWriter{panicOn: "BOOM"} },
+			wantRefund: false,
+		},
+	}
+
+	for i, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			keyID := fmt.Sprintf("cccc2222-0000-0000-0000-00000000000%d", i+1)
+
+			store := &fakeUsageStore{tokenLimit: 100000}
+			supabase, _ := newFakeSupabase(store, keyID)
+			defer supabase.Close()
+
+			// Delivers real content first (so sawData is true on the mid-stream
+			// case), then the chunk that triggers the fault, then a usage chunk
+			// that must never be reached.
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(http.StatusOK)
+				fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n")
+				fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"BOOM\"}}]}\n\n")
+				fmt.Fprint(w, "data: {\"usage\":{\"total_tokens\":99}}\n\n")
+			}))
+			defer upstream.Close()
+
+			p := newTestProxy(supabase.URL, upstream.URL)
+			req := newAuthorizedRequest(`{"model":"x","messages":[{"role":"user","content":"hi"}],"stream":true,"provider":{"zdr":true,"data_collection":"deny"}}`)
+
+			func() {
+				// The panic is expected to propagate out of the handler:
+				// CONTAINING it is P1.3's job (the recovery middleware), not
+				// P1.1's. What P1.1 guarantees is that the reservation is
+				// discharged on the way out regardless of who catches it.
+				defer func() {
+					if r := recover(); r == nil {
+						t.Fatal("expected a synthetic fault to panic; the test's own premise is broken")
+					}
+				}()
+				p.handleChatCompletions(tc.writer(), req)
+			}()
+
+			waitForCorrections(t, store, 1)
+
+			if got := store.openPendingCount(); got != 0 {
+				t.Errorf("a panic left %d open pending_corrections row(s); the reservation was "+
+					"stranded and the sweep would later report this key as permanently "+
+					"over-charged. Every reservation must be discharged exactly once, "+
+					"including during panic unwinding", got)
+			}
+
+			store.mu.Lock()
+			delta := store.corrections[0]
+			store.mu.Unlock()
+
+			switch {
+			case tc.wantRefund && delta != -defaultReservationTokens:
+				t.Errorf("fault before any output was relayed corrected by %d, want a full "+
+					"refund of %d: upstream generated nothing, so none of the reservation "+
+					"was spent", delta, -defaultReservationTokens)
+			case !tc.wantRefund && delta < 0:
+				t.Errorf("fault after real output was relayed refunded %d tokens; upstream "+
+					"billed for that output, so a fault must not move quota in the caller's "+
+					"favour (same invariant as chargeForKill)", -delta)
+			}
+		})
+	}
+}
+
+// TestFinalizeReservation_IsIdempotent pins the once-ness directly. Nested
+// defers and the P1.3 recovery middleware can both reach the finalizer for the
+// same request, and a reservation billed twice applies its correction twice --
+// which on the common under-run case is a DOUBLE REFUND of quota the account
+// really spent.
+//
+// Neuter check: delete the `o.finalized` guard in finalizeReservation and this
+// test fails with 2 corrections.
+func TestFinalizeReservation_IsIdempotent(t *testing.T) {
+	const keyID = "cccc2222-0000-0000-0000-000000000002"
+
+	store := &fakeUsageStore{tokenLimit: 100000}
+	supabase, _ := newFakeSupabase(store, keyID)
+	defer supabase.Close()
+
+	p := newTestProxy(supabase.URL, "http://unused.invalid")
+	outcome := &reservationOutcome{keyID: keyID, reserved: defaultReservationTokens, pendingID: 1, actual: 50, producedOutput: true}
+
+	p.finalizeReservation(outcome)
+	p.finalizeReservation(outcome)
+	p.finalizeReservation(outcome)
+
+	waitForCorrections(t, store, 1)
+	// Give any extra correction time to land before asserting there wasn't one.
+	time.Sleep(150 * time.Millisecond)
+
+	if got := store.correctionCount(); got != 1 {
+		t.Errorf("finalizeReservation billed %d times for one reservation; it must bill exactly "+
+			"once however many times it is called, or a request whose actual usage undershot "+
+			"its reservation gets its refund applied repeatedly", got)
+	}
+}
+
+// TestHealthHandler_ReportsDrainingOnceShutdownBegins covers the announce half of
+// P1.2. A replica that is shutting down but still answers /health with 200 is why
+// a rolling deploy resets live connections: the platform's load balancer has no
+// way to learn this instance is leaving, so it keeps routing new work at a process
+// that is about to stop accepting it.
+//
+// Neuter check: drop the draining branch from makeHealthHandler and the draining
+// subtest fails with 200/"ok".
+func TestHealthHandler_ReportsDrainingOnceShutdownBegins(t *testing.T) {
+	var draining atomic.Bool
+	handler := makeHealthHandler("deadbeefcafe", &draining)
+
+	t.Run("serving", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		handler(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
+		if rec.Code != http.StatusOK {
+			t.Errorf("healthy instance answered %d, want 200", rec.Code)
+		}
+		if !strings.Contains(rec.Body.String(), `"status":"ok"`) {
+			t.Errorf("healthy instance reported %q, want status ok", rec.Body.String())
+		}
+	})
+
+	t.Run("draining", func(t *testing.T) {
+		draining.Store(true)
+		rec := httptest.NewRecorder()
+		handler(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Errorf("draining instance answered %d, want 503 so the load balancer stops "+
+				"routing new requests to a process that is shutting down", rec.Code)
+		}
+		if !strings.Contains(rec.Body.String(), `"status":"draining"`) {
+			t.Errorf("draining instance reported %q, want status draining", rec.Body.String())
+		}
+		if rec.Header().Get("Retry-After") == "" {
+			t.Error("draining instance sent no Retry-After; a caller has no idea whether to retry")
+		}
+	})
+
+	// A nil flag is the "not draining" case, which is what every pre-existing
+	// health test relies on. Pinned so a future change cannot make nil mean
+	// "draining" and silently 503 those tests.
+	t.Run("nil flag means serving", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		makeHealthHandler("x", nil)(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
+		if rec.Code != http.StatusOK {
+			t.Errorf("nil draining flag answered %d, want 200", rec.Code)
+		}
+	})
+}
+
+// TestSweepTick_SurvivesPanic pins the containment added in P1.2. The
+// reconciliation loop is the ONLY thing that ever reports a stranded reservation.
+// A panic in one tick used to take the goroutine with it, so reconciliation
+// stopped for the lifetime of the process -- silently, while /health kept
+// answering 200. A monitoring surface that can die without saying so is worse
+// than not having one, because its silence reads as "nothing to report".
+//
+// The panic is induced through the one seam available without a fake: a Supabase
+// URL that url.Parse accepts but http.NewRequest rejects would only error, not
+// panic, so a nil logger is used instead -- p.logger.Printf on a nil *log.Logger
+// panics inside the tick, which is exactly the shape of the fault being contained
+// (a nil dereference deep in the call).
+//
+// Neuter check: remove the recover from sweepTick and this test panics the test
+// binary instead of failing, which is itself the demonstration.
+func TestSweepTick_SurvivesPanic(t *testing.T) {
+	store := &fakeUsageStore{tokenLimit: 100000}
+	supabase, _ := newFakeSupabase(store, "dddd3333-0000-0000-0000-000000000001")
+	defer supabase.Close()
+
+	p := newTestProxy(supabase.URL, "http://unused.invalid")
+
+	var recovered bool
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				// The panic escaped sweepTick: containment is gone.
+				recovered = true
+			}
+		}()
+		p.logger = nil // any nil deref inside the tick will do
+		p.sweepTick()
+	}()
+
+	if recovered {
+		t.Error("a panic escaped sweepTick, so the reconciliation ticker would die with it " +
+			"and stranded reservations would stop being reported for the lifetime of the " +
+			"process -- silently, while /health still answered 200")
+	}
+}
+
+// TestRecoverPanics contains the request half of P1.3.
+//
+// net/http already stops a handler panic from ending the process, so what is
+// under test is the two things it does not do: log the fault with a stack in this
+// proxy's own format, and answer the client with a status instead of closing the
+// connection and leaving it to guess.
+func TestRecoverPanics(t *testing.T) {
+	t.Run("faulting handler answers 500 and logs a stack", func(t *testing.T) {
+		var logs syncBuffer
+		logger := log.New(&logs, "", 0)
+
+		metrics := newMetrics()
+		h := recoverPanics(logger, metrics, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			panic("synthetic handler fault")
+		}))
+
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+
+		if rec.Code != http.StatusInternalServerError {
+			t.Errorf("panicking handler answered %d, want 500; without this the caller sees a "+
+				"connection reset and cannot tell a server fault from a transport failure", rec.Code)
+		}
+		if rec.Body.Len() != 0 {
+			t.Errorf("500 carried a body (%q); it is deliberately body-less so nothing "+
+				"attacker-controlled is echoed back", rec.Body.String())
+		}
+		got := logs.String()
+		if !strings.Contains(got, "PANIC recovered") {
+			t.Errorf("fault was not logged in this proxy's format; got %q", got)
+		}
+		if !strings.Contains(got, "synthetic handler fault") {
+			t.Errorf("log omitted the panic value, so the log says a fault happened but not "+
+				"what it was; got %q", got)
+		}
+		// A stack is the whole diagnostic value: without it the log names the
+		// symptom and not the line.
+		if !strings.Contains(got, "recoverPanics") && !strings.Contains(got, ".go:") {
+			t.Errorf("log carried no stack trace; got %q", got)
+		}
+		// A contained fault must also be COUNTED: the log line explains one
+		// panic, the counter is how an operator notices there were four hundred.
+		if got := metrics.panicsRecovered.Value(); got != 1 {
+			t.Errorf("panics_recovered_total = %d, want 1", got)
+		}
+	})
+
+	t.Run("healthy handler is untouched", func(t *testing.T) {
+		var logs syncBuffer
+		h := recoverPanics(log.New(&logs, "", 0), newMetrics(), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusTeapot)
+			w.Write([]byte("fine"))
+		}))
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+
+		if rec.Code != http.StatusTeapot || rec.Body.String() != "fine" {
+			t.Errorf("wrapper altered a healthy response: got %d %q", rec.Code, rec.Body.String())
+		}
+		if logs.Len() != 0 {
+			t.Errorf("wrapper logged on a healthy request: %q", logs.String())
+		}
+	})
+
+	// http.ErrAbortHandler is net/http's documented way to abort a connection on
+	// purpose. Swallowing it would turn a deliberate abort into a logged fault and
+	// a 500, making real bugs harder to find in the noise.
+	t.Run("ErrAbortHandler is re-panicked, not logged as a fault", func(t *testing.T) {
+		var logs syncBuffer
+		h := recoverPanics(log.New(&logs, "", 0), newMetrics(), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			panic(http.ErrAbortHandler)
+		}))
+
+		func() {
+			defer func() {
+				if r := recover(); r != http.ErrAbortHandler {
+					t.Errorf("ErrAbortHandler was swallowed (recovered %v); net/http must still "+
+						"see it to abort the connection as the handler asked", r)
+				}
+			}()
+			h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+		}()
+
+		if strings.Contains(logs.String(), "PANIC recovered") {
+			t.Errorf("a deliberate abort was logged as a fault: %q", logs.String())
+		}
+	})
+}
+
+// TestDecodeCappedJSON pins P1.5, whose scope is deliberately narrow and was set
+// by measurement rather than by the hypothesis it started from (see
+// docs/ROBUSTNESS_BASELINE.md section 4).
+//
+// The hypothesis -- that an un-drained body always breaks connection pooling and
+// explains ~80ms of reserveQuota latency -- was REFUTED. The under-cap subtest
+// records that refutation as an executable fact so the claim cannot creep back:
+// pooling already works there, drained or not. The over-cap subtest is the real
+// defect, and the reason the helper exists.
+func TestDecodeCappedJSON(t *testing.T) {
+	// newCountingServer serves a JSON array whose single row carries padBytes of
+	// padding, and counts distinct TCP connections.
+	newCountingServer := func(padBytes int) (*httptest.Server, *int64) {
+		var conns int64
+		srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode([]map[string]any{{
+				"id":  "11111111-1111-1111-1111-111111111111",
+				"pad": strings.Repeat("x", padBytes),
+			}})
+		}))
+		srv.Config.ConnState = func(_ net.Conn, s http.ConnState) {
+			if s == http.StateNew {
+				atomic.AddInt64(&conns, 1)
+			}
+		}
+		srv.Start()
+		return srv, &conns
+	}
+
+	// requestN issues n sequential requests through one client, decoding each the
+	// way authorize and reserveQuota do.
+	requestN := func(t *testing.T, url string, cap int64, n int) (decodeErrs int) {
+		t.Helper()
+		client := &http.Client{}
+		for i := 0; i < n; i++ {
+			resp, err := client.Get(url)
+			if err != nil {
+				t.Fatalf("request %d: %v", i, err)
+			}
+			var rows []struct {
+				ID string `json:"id"`
+			}
+			if err := decodeCappedJSON(resp, cap, &rows); err != nil {
+				decodeErrs++
+			}
+			resp.Body.Close()
+		}
+		return decodeErrs
+	}
+
+	t.Run("under cap: pooling already worked, and still does", func(t *testing.T) {
+		srv, conns := newCountingServer(100)
+		defer srv.Close()
+
+		if errs := requestN(t, srv.URL, 64<<10, 20); errs != 0 {
+			t.Fatalf("%d decode errors on a well-formed under-cap response", errs)
+		}
+		if got := atomic.LoadInt64(conns); got != 1 {
+			t.Errorf("20 sequential under-cap requests used %d TCP connections, want 1. "+
+				"If this ever fails, the measured premise of P1.5 changed: pooling under the "+
+				"cap was never broken, so the drain was never a latency fix", got)
+		}
+	})
+
+	t.Run("over cap: the drain is what keeps the connection", func(t *testing.T) {
+		const cap = 1 << 10
+		srv, conns := newCountingServer(8 << 10) // 8KB body vs a 1KB cap
+		defer srv.Close()
+
+		// Every one of these must fail to decode -- a truncated body is refused,
+		// which is the fail-closed behaviour these call sites already had.
+		if errs := requestN(t, srv.URL, cap, 20); errs != 20 {
+			t.Fatalf("%d of 20 over-cap responses failed to decode, want all 20: a body past "+
+				"its cap is truncated and must be refused", errs)
+		}
+		if got := atomic.LoadInt64(conns); got != 1 {
+			t.Errorf("20 sequential over-cap requests used %d TCP connections, want 1. "+
+				"Without the drain this is 20 -- one fresh TCP+TLS handshake per request, on "+
+				"the already-degraded path where a response is oversized and refused", got)
+		}
+	})
+}
+
+// TestServeUntilSignal drives the whole shutdown sequence against a real listener
+// and a real in-flight request. This is the code path that was measured broken in
+// docs/ROBUSTNESS_BASELINE.md section 3 (a SIGTERM cut the stream and stranded the
+// reservation), and it was extracted out of main precisely so it could be asserted
+// here rather than only in a manual drill.
+//
+// Four properties, all of which failed before P1.2:
+//   - an in-flight request RUNS TO COMPLETION rather than being cut
+//   - /health reports draining while that is happening, so the load balancer can
+//     pull this replica out of rotation
+//   - the server keeps ACCEPTING during the pre-drain window, which is what makes
+//     that 503 reachable at all
+//   - serveUntilSignal does not return until the drain is done, so a caller that
+//     exits on its return cannot kill the handlers Shutdown is waiting for
+func TestServeUntilSignal(t *testing.T) {
+	var draining atomic.Bool
+
+	// A handler slow enough that the signal lands while it is still running.
+	handlerDone := make(chan struct{})
+	started := make(chan struct{})
+	mux := http.NewServeMux()
+	// Must outlast preDrainDelay, and is derived from it rather than hardcoded: the
+	// request has to still be RUNNING when srv.Shutdown is finally called, or
+	// Shutdown has nothing to wait for and the "did it return too early" assertion
+	// below can never fail. An earlier version slept 600ms against a 3s pre-drain
+	// window, so the handler was always long finished and the assertion was inert.
+	handlerRuntime := preDrainDelay + 1500*time.Millisecond
+	mux.HandleFunc("/slow", func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		time.Sleep(handlerRuntime)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("finished"))
+		close(handlerDone)
+	})
+	mux.HandleFunc("/health", makeHealthHandler("testcommit", &draining))
+
+	srv := &http.Server{Handler: mux}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	base := "http://" + ln.Addr().String()
+
+	sigCh := make(chan os.Signal, 1)
+	var beganShutdown atomic.Bool
+
+	serveErr := make(chan error, 1)
+	// returnedEarly records whether serveUntilSignal returned while the in-flight
+	// handler was STILL RUNNING. It has to be sampled at the moment of return, not
+	// later: the assertions below wait for the request to finish, so any check made
+	// after that point would find the handler done regardless and could never catch
+	// an early return. That mistake made an earlier version of this test pass
+	// against a neutered `<-shutdownDone`.
+	var returnedEarly atomic.Bool
+	go func() {
+		err := serveUntilSignal(srv, ln, log.New(io.Discard, "", 0), &draining,
+			func() { beganShutdown.Store(true) }, sigCh)
+		select {
+		case <-handlerDone:
+		default:
+			returnedEarly.Store(true)
+		}
+		serveErr <- err
+	}()
+
+	// Park a request inside the handler.
+	bodyCh := make(chan string, 1)
+	go func() {
+		resp, err := http.Get(base + "/slow")
+		if err != nil {
+			bodyCh <- "REQUEST FAILED: " + err.Error()
+			return
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		bodyCh <- string(b)
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("request never reached the handler; the test's own premise is broken")
+	}
+
+	// Signal mid-request.
+	sigCh <- syscall.SIGTERM
+
+	// The pre-drain window must still accept NEW connections, and answer 503.
+	// Without it the announce-then-drain design is unobservable: Shutdown closes
+	// the listener at once, so a balancer would see a connection error instead.
+	var sawDraining bool
+	deadline := time.Now().Add(preDrainDelay)
+	for time.Now().Before(deadline) {
+		resp, err := http.Get(base + "/health")
+		if err != nil {
+			break // listener closed: pre-drain window is over
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusServiceUnavailable && strings.Contains(string(body), "draining") {
+			sawDraining = true
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !sawDraining {
+		t.Error("no new connection could observe /health reporting 503 draining during the " +
+			"pre-drain window. The announce half of graceful shutdown is unobservable, so a " +
+			"load balancer learns about the shutdown from a connection error instead")
+	}
+
+	// The in-flight request must have COMPLETED, not been cut.
+	select {
+	case body := <-bodyCh:
+		if body != "finished" {
+			t.Errorf("in-flight request did not complete across the shutdown: got %q. Before "+
+				"this it was cut mid-response, which is what stranded its reservation", body)
+		}
+	case <-time.After(shutdownGrace + 5*time.Second):
+		t.Fatal("in-flight request never returned")
+	}
+
+	select {
+	case err := <-serveErr:
+		if err != nil {
+			t.Errorf("serveUntilSignal returned %v, want nil on a clean drain", err)
+		}
+	case <-time.After(shutdownGrace + 5*time.Second):
+		t.Fatal("serveUntilSignal never returned")
+	}
+
+	// It must not have returned before the handler finished, or a caller exiting on
+	// its return would kill the handlers Shutdown is waiting for.
+	if returnedEarly.Load() {
+		t.Error("serveUntilSignal returned while the in-flight handler was still running; a " +
+			"caller that exits on its return would kill the very requests the drain is " +
+			"waiting for, reintroducing the stranded-reservation bug with extra steps")
+	}
+
+	if !beganShutdown.Load() {
+		t.Error("background loops were never told to stop, so the reconciliation sweep would " +
+			"keep issuing Supabase calls for a server that is gone")
+	}
+}
+
+// TestStartReconciliationSweep covers the sweep loop's lifecycle, which was at 0%
+// coverage. Both branches matter operationally and neither was asserted before.
+func TestStartReconciliationSweep(t *testing.T) {
+	t.Run("disabled and announced when supabase is unconfigured", func(t *testing.T) {
+		var logs syncBuffer
+		p := newProxy("k", "http://unused.invalid", "", "", log.New(&logs, "", 0), nil)
+
+		done := make(chan struct{})
+		go func() {
+			// Must return immediately rather than ticking forever against a
+			// backend it cannot reach.
+			p.startReconciliationSweep(context.Background())
+			close(done)
+		}()
+
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("sweep did not return with Supabase unconfigured; it would tick forever " +
+				"against a backend it can never reach")
+		}
+		if !strings.Contains(logs.String(), "sweep disabled") {
+			t.Errorf("crash recovery was silently inactive; startup must say so out loud. got %q",
+				logs.String())
+		}
+	})
+
+	// The context is what stops the sweep on shutdown. Without it the ticker keeps
+	// firing while the process drains, issuing Supabase calls on behalf of a server
+	// that is already gone.
+	t.Run("stops when its context is cancelled", func(t *testing.T) {
+		var logs syncBuffer
+		store := &fakeUsageStore{tokenLimit: 100000}
+		supabase, _ := newFakeSupabase(store, "eeee4444-0000-0000-0000-000000000001")
+		defer supabase.Close()
+
+		p := newProxy("k", "http://unused.invalid", supabase.URL, "svc", log.New(&logs, "", 0), nil)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() {
+			p.startReconciliationSweep(ctx)
+			close(done)
+		}()
+
+		cancel()
+
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("sweep ignored its cancelled context; it would keep issuing Supabase " +
+				"calls for a server that is already shutting down")
+		}
+		if !strings.Contains(logs.String(), "sweep stopped") {
+			t.Errorf("sweep stopped without saying so; got %q", logs.String())
+		}
+	})
 }

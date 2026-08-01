@@ -37,7 +37,34 @@ export interface Turn {
 export interface HandshakeRequest {
   protocol_version: number;
   client_name: string;
+  // capabilities mirrors protocol.HandshakeRequest.Capabilities: what THIS
+  // client can do beyond the base protocol, negotiated rather than versioned so
+  // an older client is unaffected by a capability it never declares.
+  //
+  // CAP_TOOL_APPROVAL is a promise, not a feature flag. The daemon runs its
+  // agentic loop only for a client that declares it, and then SUSPENDS a turn
+  // waiting for an answer -- so a client that declares it and cannot render an
+  // approval leaves every tool call hanging until the daemon's five-minute
+  // human deadline expires. Declare it only where it can be honoured.
+  capabilities?: string[];
 }
+
+// CAP_TOOL_APPROVAL mirrors protocol.CapToolApproval.
+export const CAP_TOOL_APPROVAL = 'tool_approval';
+
+// Decisions a client may return on a ToolApprovalResponse, mirroring
+// protocol.Approval*. Anything not in this set is treated by the daemon as a
+// denial -- an invented verb is not a permission.
+export const APPROVAL_APPROVE = 'approve';
+export const APPROVAL_DENY = 'deny';
+export const APPROVAL_APPROVE_FOR_TURN = 'approve_for_turn';
+export const APPROVAL_CANCEL_TURN = 'cancel_turn';
+
+// Trust lanes, mirroring protocol.Lane*. LANE_THIRD_PARTY is an ordinary
+// subprocess running with the user's full privileges and nothing in this
+// product can confine it -- see ToolApprovalRequest.confined.
+export const LANE_FIRST_PARTY = 'first_party';
+export const LANE_THIRD_PARTY = 'third_party';
 
 export interface HandshakeResponse {
   protocol_version: number;
@@ -124,6 +151,80 @@ export interface TokenResponse {
   // incomplete state, distinct from a finished answer -- before this, a
   // truncated reply arrived as a done message byte-identical to a complete one.
   incomplete?: IncompleteInfo;
+  // tool_approval mirrors protocol.TokenResponse.ToolApproval: the daemon is
+  // asking permission to run ONE tool call and will not proceed until this
+  // client answers on the same socket. Only ever sent to a client that declared
+  // CAP_TOOL_APPROVAL.
+  tool_approval?: ToolApprovalRequest;
+  // tool_activity mirrors protocol.TokenResponse.ToolActivity: a running
+  // account of what an agent turn is doing. Purely observational -- nothing in
+  // it needs an answer -- and it exists because an agent turn takes many
+  // seconds, during which a client showing only a spinner is indistinguishable
+  // from a broken one.
+  tool_activity?: ToolActivity;
+}
+
+// ToolApprovalRequest mirrors protocol.ToolApprovalRequest.
+//
+// arguments is the EXACT, COMPLETE JSON argument object the daemon will pass to
+// the tool -- not a summary. A consent prompt that shows less than what will run
+// is not consent, so a client must render it whole.
+//
+// arguments_sha256 binds the decision to those bytes. It is echoed back
+// UNCHANGED and the daemon re-checks it before dispatching; a client that
+// recomputed it from its own copy would be attesting to its own rendering
+// rather than to the bytes it was sent, which is the exact gap this closes.
+//
+// confined states whether this call's effects are constrained by the five-gate
+// edit pipeline. FALSE IS THE HONEST ANSWER FOR EVERY THIRD-PARTY SERVER and a
+// client must render it plainly rather than softening it: that server is an
+// ordinary subprocess with the user's full access, and this approval is the
+// only thing in front of it.
+//
+// read_only_hint and destructive are the SERVER'S OWN claims about its tool.
+// They are for styling only and are NEVER a gate -- letting a server's
+// self-description lower the bar would make consent optional for any server
+// willing to lie about itself.
+export interface ToolApprovalRequest {
+  call_id: string;
+  server: string;
+  tool: string;
+  arguments: string;
+  arguments_sha256: string;
+  lane: string;
+  confined: boolean;
+  read_only_hint?: boolean;
+  destructive?: boolean;
+  iteration: number;
+  max_iterations: number;
+  detail?: string;
+}
+
+// ToolApprovalResponse mirrors protocol.ToolApprovalResponse. It is the only
+// message this client ever sends after its initial request, and only ever in
+// reply to an ask.
+//
+// approval is the key the daemon dispatches on, by PRESENCE, so it is always
+// written even when false.
+export interface ToolApprovalResponse {
+  protocol_version: number;
+  approval: boolean;
+  call_id: string;
+  arguments_sha256: string;
+  decision: string;
+}
+
+// ToolActivity mirrors protocol.ToolActivity. result_bytes is the size of the
+// tool's output AFTER scrubbing and truncation -- i.e. what actually goes back
+// to the model, which in agent mode is the quantity that leaves the machine.
+export interface ToolActivity {
+  call_id: string;
+  server: string;
+  tool: string;
+  phase: string;
+  detail?: string;
+  duration_ms?: number;
+  result_bytes?: number;
 }
 
 // IncompleteInfo mirrors protocol.IncompleteInfo: reason is a stable slug
@@ -274,7 +375,11 @@ export interface DaemonConnection {
 // connection attempt (or the handshake wait) and destroys the socket; it is
 // also left attached to the returned socket so a caller streaming a prompt
 // over it can reuse the same signal to cut the connection later.
-export function connectToDaemon(clientName: string, signal?: AbortSignal): Promise<DaemonConnection> {
+export function connectToDaemon(
+  clientName: string,
+  signal?: AbortSignal,
+  capabilities?: string[]
+): Promise<DaemonConnection> {
   return new Promise((resolve, reject) => {
     let lock: LockFile;
     try {
@@ -385,6 +490,9 @@ export function connectToDaemon(clientName: string, signal?: AbortSignal): Promi
       socket.on('data', dataListener);
 
       const req: HandshakeRequest = { protocol_version: PROTOCOL_VERSION, client_name: clientName };
+      if (capabilities && capabilities.length > 0) {
+        req.capabilities = capabilities;
+      }
       writeLine(socket, req);
     });
   });
@@ -400,6 +508,21 @@ export interface StreamHandlers {
   onToken?: (token: string) => void;
   onEditProposals?: (proposals: EditBlockWire[]) => void;
   onIncomplete?: (info: IncompleteInfo) => void;
+  // onToolActivity narrates one step of an agent turn. Observational only.
+  onToolActivity?: (activity: ToolActivity) => void;
+  // onToolApproval is the one handler that OWES AN ANSWER. The daemon has
+  // suspended the turn and is holding a tool call open until respond() is
+  // called, so a handler that returns without calling it stalls the turn until
+  // the daemon's five-minute human deadline expires and then denies.
+  //
+  // respond takes only the decision: the call id and the argument digest are
+  // echoed from the request by streamPrompt itself, so a client cannot
+  // accidentally attest to its own rendering instead of to the daemon's bytes.
+  //
+  // Declaring onToolApproval is what makes streamPrompt declare
+  // CAP_TOOL_APPROVAL at handshake -- the promise and the ability to keep it
+  // are the same fact, so they cannot drift apart.
+  onToolApproval?: (req: ToolApprovalRequest, respond: (decision: string) => void) => void;
   onDone?: () => void;
   onError?: (err: Error) => void;
 }
@@ -418,9 +541,14 @@ export async function streamPrompt(
   signal: AbortSignal,
   handlers: StreamHandlers
 ): Promise<void> {
+  // The capability is derived from the handler, not passed in: a caller that
+  // can render an approval provides one, and a caller that cannot does not, so
+  // there is no way to declare the promise without the means to keep it.
+  const capabilities = handlers.onToolApproval ? [CAP_TOOL_APPROVAL] : [];
+
   let conn: DaemonConnection;
   try {
-    conn = await connectToDaemon(clientName, signal);
+    conn = await connectToDaemon(clientName, signal, capabilities);
   } catch (err) {
     if (!signal.aborted) {
       handlers.onError?.(err as Error);
@@ -465,6 +593,12 @@ export async function streamPrompt(
     if (tok.provider) {
       handlers.onProvider?.(tok.provider);
     }
+    if (tok.tool_activity) {
+      handlers.onToolActivity?.(tok.tool_activity);
+    }
+    if (tok.tool_approval) {
+      askForApproval(socket, tok.tool_approval, handlers, () => finished);
+    }
     if (tok.token) {
       handlers.onToken?.(tok.token);
     }
@@ -507,6 +641,55 @@ export async function streamPrompt(
 
   const req: PromptRequest = { protocol_version: PROTOCOL_VERSION, prompt, workspace, history };
   writeLine(socket, req);
+}
+
+// askForApproval hands one pending call to the UI and writes the answer back on
+// the SAME socket the turn is streaming over.
+//
+// The answer is written exactly once however many times respond is called: a UI
+// that double-fires a button must not put two messages on a wire the daemon
+// reads one message from. A second answer would be read as the reply to the
+// NEXT question, which is the one way a click on this prompt could authorise a
+// call the user never saw.
+//
+// A missing handler answers "deny" immediately rather than leaving the daemon
+// waiting. That state should be unreachable -- the capability is derived from
+// the handler's presence -- and it is handled anyway, in the safe direction,
+// because "unreachable" is a claim about today's callers.
+function askForApproval(
+  socket: net.Socket,
+  req: ToolApprovalRequest,
+  handlers: StreamHandlers,
+  isFinished: () => boolean
+): void {
+  let answered = false;
+  const respond = (decision: string) => {
+    if (answered || isFinished()) {
+      return;
+    }
+    answered = true;
+    const resp: ToolApprovalResponse = {
+      protocol_version: PROTOCOL_VERSION,
+      approval: decision === APPROVAL_APPROVE || decision === APPROVAL_APPROVE_FOR_TURN,
+      // Echoed from the request, never recomputed here -- see
+      // ToolApprovalRequest.arguments_sha256.
+      call_id: req.call_id,
+      arguments_sha256: req.arguments_sha256,
+      decision,
+    };
+    try {
+      writeLine(socket, resp);
+    } catch {
+      // The socket has gone; the turn is over either way and there is nobody
+      // left to tell. An unanswered ask is a denial at the daemon.
+    }
+  };
+
+  if (!handlers.onToolApproval) {
+    respond(APPROVAL_DENY);
+    return;
+  }
+  handlers.onToolApproval(req, respond);
 }
 
 // applyEdit opens a fresh connection, sends exactly one ApplyEditRequest

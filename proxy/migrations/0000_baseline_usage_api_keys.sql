@@ -1,0 +1,264 @@
+-- STATUS: NOT APPLIED, and never to be applied -- this file is a RECORD.
+--   RECONCILED against the live schema 2026-07-30 via the PostgREST OpenAPI
+--   document (`GET /rest/v1/` as service_role, read-only), the same source
+--   0001's header cites. Every column list, type, nullability, default, primary
+--   key and foreign key below is now VERIFIED against production rather than
+--   reconstructed from code. What that probe CANNOT see is listed under "STILL
+--   UNVERIFIED" below and remains founder-gated on the SQL catalog.
+--
+--   `usage` and `api_keys` already exist in production and have since before
+--   this repo had migrations. Running the CREATE TABLEs below against
+--   production would be a no-op (they are IF NOT EXISTS) and must not be relied
+--   on to make production match this file -- it is this FILE that must be
+--   corrected to match production, which is what the 2026-07-30 pass did.
+--
+-- Numbered 0000 because it is logically prior to 0001 (which already references
+-- both tables) even though it is written last.
+--
+-- WHY THIS EXISTS. Until now the only `create table` anywhere in the repo was
+-- pending_corrections (0002:35). The two tables the entire billing system runs
+-- on existed solely in the Supabase dashboard, so the repo could not recreate
+-- its own database, no reviewer could check a constraint from source, and a
+-- schema question could only be answered by someone with dashboard access.
+--
+-- ============================================================================
+-- THE HEADLINE RESULT: usage.key_id IS THE PRIMARY KEY. Verified 2026-07-30.
+-- ============================================================================
+--
+-- The question this file was written to ask is answered, and the answer is the
+-- safe one. PostgREST reports for usage.key_id:
+--
+--     Note: This is a Primary Key.<pk/>
+--     This is a Foreign Key to `api_keys.id`.<fk table='api_keys' column='id'/>
+--
+-- A primary key implies UNIQUE, so the cross-join multiplication analysed below
+-- is structurally impossible, not merely absent. Corroborated independently:
+-- `GET /rest/v1/usage?select=key_id` returned 15 rows with ZERO duplicate
+-- key_ids. The FK -- which this file previously carried as "FK GUESSED" -- is
+-- also real. Both guesses were correct.
+--
+-- The analysis is retained below because it is why the constraint matters, and
+-- because a future migration that drops or replaces this primary key would
+-- reopen it silently.
+--
+-- reserve_usage (0002) ends with:
+--
+--     select reserved.tokens_used, reserved.token_limit, opened.id
+--     from reserved, opened;
+--
+-- `from reserved, opened` is a CROSS JOIN. `opened` always yields exactly one
+-- row (a single INSERT ... returning). `reserved` yields one row PER MATCHING
+-- usage ROW. So if a key_id ever had two usage rows:
+--
+--   * the UPDATE would add p_reserved to BOTH rows -- double-reserving the
+--     caller's quota on every single request, and
+--   * the function would return TWO rows.
+--
+-- proxy/main.go's reserveQuota decodes into a slice and uses rows[0], so it
+-- would silently proceed on the first, and the second row's reservation would
+-- never be corrected by apply_correction (which updates by key_id and would
+-- likewise hit both). The result is quota drifting upward on every request with
+-- nothing reporting it. The primary key is what makes that unreachable.
+--
+-- ============================================================================
+-- WHAT THE 2026-07-30 RECONCILIATION CHANGED
+-- ============================================================================
+--
+-- CONFIRMED exactly as previously guessed:
+--   api_keys.id          default gen_random_uuid()   (was "default GUESSED")
+--   api_keys.active      default true                (was "default GUESSED")
+--   api_keys.created_at  timestamptz not null default now()
+--                                                    (was "ENTIRE COLUMN GUESSED")
+--   usage.tokens_used    bigint not null default 0
+--   usage.token_limit    bigint not null             (NOT NULL confirmed)
+--   usage.key_id         primary key + FK to api_keys(id)
+--
+-- CORRECTED -- this file was WRONG or INCOMPLETE:
+--   usage.token_limit    has a DEFAULT of 100000. This file declared it with no
+--                        default at all, so a from-scratch rebuild would have
+--                        required every INSERT to supply one.
+--   usage.period_start   MISSING ENTIRELY from this file. It is
+--                        `timestamptz not null default now()`. The old header's
+--                        claim that "the proxy only ever touches the six columns
+--                        above, so anything else the live tables carry is
+--                        invisible from here" was true of the method, and this
+--                        is exactly what it cost: a NOT NULL column the repo did
+--                        not know existed. It has a default, so a rebuild would
+--                        not have failed -- it would have silently produced a
+--                        table whose billing period never advanced.
+--   api_keys.key_prefix  MISSING. `text not null`, no default. This one WOULD
+--                        have broken a from-scratch rebuild: NOT NULL with no
+--                        default means every INSERT must supply it.
+--   api_keys.label       MISSING. `text`, nullable.
+--   api_keys.user_id     MISSING. `uuid`, nullable -- the only column in either
+--                        table that suggests multi-tenancy, and the proxy reads
+--                        it nowhere.
+--
+-- ALSO DISCOVERED, and NOT represented as a table below: a fourth relation,
+-- `api_keys_public`, is exposed over PostgREST and appears in NO migration in
+-- this repo. It projects (id, key_prefix, label, active, created_at, user_id)
+-- -- i.e. api_keys MINUS key_hash, which reads as a deliberately safe public
+-- projection. It is not reconstructed here because its definition (view or
+-- table? which grants?) is not recoverable from the OpenAPI document, and
+-- guessing is what this reconciliation exists to stop. Its grant surface is now
+-- a verify query in docs/MIGRATION_RUNBOOK_0000_0004.md: if anon or
+-- authenticated hold SELECT on it, every key prefix, label and user_id in the
+-- system is readable by any unauthenticated caller. That is metadata, not key
+-- material -- key_hash is excluded and the raw key is stored nowhere -- but it
+-- is cross-tenant metadata and nobody in this repo knew the relation existed.
+--
+-- ============================================================================
+-- STILL UNVERIFIED -- the OpenAPI document cannot see these. Founder-gated on
+-- the SQL catalog; queries live in docs/MIGRATION_RUNBOOK_0000_0004.md.
+-- ============================================================================
+--
+--   * `on delete cascade` on usage.key_id's FK. The FK is confirmed; its
+--     ON DELETE action is not. Written below as the repo's intent, still marked.
+--   * `unique` on api_keys.key_hash. Only the PRIMARY KEY is visible over
+--     PostgREST; a secondary UNIQUE constraint is not. Load-bearing: two rows
+--     with the same hash make authorize's "exactly one row" check fail closed
+--     and lock that key out entirely.
+--   * Any other non-PK constraint, index, or check on either table.
+--   * The grant surface (which anon/authenticated privileges actually exist).
+--     Note the revoke at the bottom of this file is written for a from-scratch
+--     rebuild and has NOT been confirmed to match production.
+--
+-- Apply via the Supabase SQL editor -- this repo has no DB connection string or
+-- psql/supabase CLI wired up (QUOTA_RESERVATION_DESIGN.md §7). Nothing here is
+-- auto-run from the repo.
+--
+-- ============================================================================
+-- HOW THE VERIFIED FACTS ABOVE WERE OBTAINED (reproducible, read-only)
+-- ============================================================================
+--
+--   curl -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" "$SUPABASE_URL/rest/v1/"
+--     -> definitions.usage / definitions.api_keys carry, per column: type,
+--        `default`, membership of the `required` array (=> NOT NULL), and a
+--        `description` stamped with <pk/> for primary keys and
+--        <fk table=... column=.../> for foreign keys.
+--
+--   curl -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
+--        "$SUPABASE_URL/rest/v1/usage?select=key_id"
+--     -> verify query 2b below, answered client-side: 15 rows, 0 duplicates.
+--
+-- Both are GETs. Nothing in this reconciliation wrote to production, and no RPC
+-- was invoked -- notably NOT increment_usage, whose containment 0004 discusses:
+-- probing that function's reachability means calling it, and calling it is a
+-- write against live billing on the one function with no token_limit check.
+--
+-- ============================================================================
+-- VERIFY FIRST. All read-only. Queries 1 and 2b are ANSWERED (2026-07-30, see
+-- above) and retained for re-verification; 2, 3 and 4 remain OPEN and are the
+-- reason docs/MIGRATION_RUNBOOK_0000_0004.md exists.
+-- ============================================================================
+--
+--   -- 1. ANSWERED 2026-07-30 via PostgREST OpenAPI; this file now matches.
+--   --    Re-run to re-verify, or if a schema change is suspected.
+--   select table_name, column_name, data_type, is_nullable, column_default
+--   from information_schema.columns
+--   where table_schema = 'public'
+--     and table_name in ('usage', 'api_keys')
+--   order by table_name, ordinal_position;
+--
+--   -- 2. OPEN. usage.key_id's uniqueness is settled (it is the PRIMARY KEY),
+--   --    but this enumerates every OTHER constraint on the table, none of which
+--   --    is visible over PostgREST.
+--   select c.conname, c.contype,
+--          pg_get_constraintdef(c.oid) as definition
+--   from pg_constraint c
+--   where c.conrelid = 'usage'::regclass;
+--
+--   -- 2b. ANSWERED 2026-07-30: 15 rows, zero duplicates. This is the practical
+--   --     check and stays useful even with the constraint confirmed.
+--   select key_id, count(*) as rows
+--   from usage
+--   group by key_id
+--   having count(*) > 1;
+--
+--   -- 3. OPEN, and now the more interesting of the two: the primary key on
+--   --    api_keys.id is confirmed, so what this is really asking is whether
+--   --    key_hash carries a UNIQUE constraint. See STILL UNVERIFIED above.
+--   select c.conname, c.contype, pg_get_constraintdef(c.oid) as definition
+--   from pg_constraint c
+--   where c.conrelid = 'api_keys'::regclass;
+--
+--   -- 4. OPEN. Grant surface, mirroring 0003's discipline. Expect anon/
+--   --    authenticated to hold at most SELECT, and ideally nothing. Extended
+--   --    to api_keys_public, which this repo did not previously know existed.
+--   select table_name, grantee, privilege_type
+--   from information_schema.role_table_grants
+--   where table_schema = 'public'
+--     and table_name in ('usage', 'api_keys', 'api_keys_public')
+--     and grantee in ('anon', 'authenticated', 'PUBLIC')
+--   order by table_name, grantee;
+--
+-- ============================================================================
+-- RE-VERIFY AFTER: not applicable in the usual sense -- nothing below is
+-- expected to change production. "After" here means: this file has been
+-- reconciled against query 1's output (DONE 2026-07-30), query 2 has been
+-- answered (DONE -- primary key), and the STATUS banner updated to say so with
+-- a date (DONE). Queries 2, 3 and 4 remain open and are tracked in the runbook.
+-- ============================================================================
+
+-- Reconstructed, then RECONCILED against production 2026-07-30. IF NOT EXISTS
+-- so this is inert against the live database.
+create table if not exists api_keys (
+  -- VERIFIED: primary key, default gen_random_uuid().
+  id uuid primary key default gen_random_uuid(),
+  -- VERIFIED not null. Hex-encoded SHA-256 of the Mochiii key
+  -- (proxy/main.go:745-753); the raw key is never stored, so a database
+  -- compromise does not yield usable keys.
+  -- UNIQUE is NOT verified -- see STILL UNVERIFIED above. Retained because two
+  -- rows with the same hash would lock the key out, so it is the intent
+  -- regardless; confirm with verify query 3.
+  key_hash text not null unique,                  -- `unique` UNVERIFIED
+  -- VERIFIED not null, NO DEFAULT. The proxy never reads this column; it exists
+  -- so a key is identifiable in the dashboard and in logs without storing
+  -- anything that could authenticate. NOT NULL with no default means a
+  -- from-scratch INSERT must supply it.
+  key_prefix text not null,
+  -- VERIFIED nullable. Human label; the proxy never reads it.
+  label text,
+  -- VERIFIED: not null, default true. authorize filters active=eq.true, so a
+  -- revoked key is deactivated rather than deleted (preserving its usage row).
+  active boolean not null default true,
+  -- VERIFIED: not null, default now().
+  created_at timestamptz not null default now(),
+  -- VERIFIED nullable. The only column in either table implying multi-tenancy.
+  -- The proxy reads it nowhere and no migration in this repo references it; its
+  -- purpose is outside this repo's view. No FK is declared because none is
+  -- visible over PostgREST (a real FK would carry an <fk .../> stamp).
+  user_id uuid
+);
+
+create table if not exists usage (
+  -- VERIFIED: PRIMARY KEY, and a FOREIGN KEY to api_keys(id). One usage row per
+  -- key is exactly the model reserve_usage assumes, and the constraint enforces
+  -- it -- see the cross-join analysis above.
+  -- `on delete cascade` is the repo's intent and is STILL UNVERIFIED: PostgREST
+  -- reports that the FK exists, not its ON DELETE action.
+  key_id uuid primary key references api_keys(id) on delete cascade,  -- ON DELETE UNVERIFIED
+  -- VERIFIED: not null, default 0. reserve_usage adds to it; reserveQuota
+  -- decodes it as int64 (proxy/main.go:890-894).
+  tokens_used bigint not null default 0,
+  -- VERIFIED: not null, default 100000 (this file previously declared no
+  -- default). NOT NULL is load-bearing, not decorative: reserve_usage's guard is
+  -- `tokens_used + p_reserved <= token_limit`, and in SQL a NULL token_limit
+  -- makes that predicate NULL, the UPDATE match nothing, and the function return
+  -- zero rows. The proxy reads zero rows as "refuse" -- so a NULL limit fails
+  -- CLOSED (every request 429s): the safe direction, but a total outage for that
+  -- key.
+  token_limit bigint not null default 100000,
+  -- VERIFIED: not null, default now(). Was missing from this file entirely.
+  -- Nothing in this repo reads or advances it -- no migration references it and
+  -- the proxy never selects it -- so whatever resets a billing period lives
+  -- outside this repo's view, or does not exist yet.
+  period_start timestamptz not null default now()
+);
+
+-- Mirrors 0003's discipline: the proxy reaches these tables only as
+-- service_role (which bypasses both grants and RLS), so anon/authenticated need
+-- no privileges at all. Included for a from-scratch rebuild. Whether it matches
+-- production is verify query 4, which is still OPEN -- do not read this line as
+-- a statement about the live grant surface.
+revoke all on usage, api_keys from anon, authenticated;

@@ -1,7 +1,16 @@
 # Design: closing the quota-check TOCTOU race (Phase 3 continuation)
 
-Status: design only. No code changes yet -- confirm this doc before
-implementation starts (same gating discipline as `SIGNAL_ESCALATION_DESIGN.md`).
+Status: SHIPPED, 2026-07-24. This document is the design that was built, kept
+as the record of why the shape is what it is -- not a proposal awaiting
+approval. It read "design only, no code changes yet" until 2026-08-01, by which
+point a cold reader would conclude the quota TOCTOU race was still open when it
+had been closed for a week.
+
+What landed: `proxy/migrations/0001_reserve_usage.sql`, `reserveQuota`,
+`peekMaxTokens`, `finalizeUsage` (all on `main`), and then the section 5(e)
+outbox in `ca7e3c4` -- migration 0002, `pending_corrections`, and the
+reconciliation sweep. Section 5(e) below is annotated where it describes that
+work as a recommendation.
 
 ## 0. What's confirmed broken
 
@@ -311,6 +320,19 @@ same "transient failure" standard as everything else in this file (bounded
 retry, then loud logging) but not to full durability. (e) is named,
 directionally analyzed, and explicitly not closed -- recommended as
 follow-up work instead of silently accepted.
+
+> **Update 2026-08-01: (e)'s follow-up was built (`ca7e3c4`), and the honest
+> reading of it has not changed.** Every reservation now opens a durable
+> `pending_corrections` row in the same atomic statement that reserves, every
+> correction closes it in the same statement that increments, and a 5-minute
+> sweep claims and loudly reports whatever neither happened to. Proven with a
+> `kill -9` against the real binary and a real tick.
+>
+> **It does not recover a dead request's true usage** -- that number left with
+> the process. It converts a silent, indefinite, unsafe-direction stranding into
+> a loud, ~20-minute-bounded, safely-directed one. The log line, not the
+> accounting, is the deliverable. The paragraph above stands as written: (e) is
+> mitigated and made loud, not solved.
 
 ## 6. What changes vs. what's purely additive
 

@@ -1,10 +1,47 @@
-# Mochiii — Handoff Checkpoint v7
+# Mochiii — Handoff Checkpoint v8
 
-**Date:** 2026-07-24
-**Repo state at synthesis:** `main` @ `ca7e3c4`; local is **78 commits ahead of `origin/main`** (nothing pushed — by choice, as every prior tier has been). *(Counted live with `git rev-list --count origin/main..main` at synthesis, not incremented from v6's figure. v6 was written at `main@d4936e9` / 67-ahead and then committed itself as `a53deee`; ten commits landed after it — the C3 abort-refund fix, the M4 cross-process apply/undo fix, and the four-commit endpoint-security pass this document folds in, each with its doc commit — taking HEAD to `069d4a0` / 77-ahead. **v7 was still uncommitted in the working tree when the §5(e) quota-outbox pass (`ca7e3c4`, §2J) landed, so that work is folded into v7 rather than spawning a v8** — the version number tracks released checkpoints, not editing sessions; HEAD is now `ca7e3c4` / 78-ahead, re-counted live.)*
+**Date:** 2026-08-01
+**Repo state at synthesis:** `main` @ `2797bbd`; working branch `feat/mcp-agent-loop` is **105 commits ahead of `main`** and **88 ahead of `origin/main`** — nothing pushed, by choice, as every prior tier has been. *(Counted live with `git rev-list --count`, not incremented from v7's figure.)*
 **Purpose:** Complete context transfer. A fresh session should be able to read only this document and know what Mochiii is, what's done, what's verified against which standard, what's open (and what it's blocked on), and what to do next — without re-deriving it from `BACKLOG.md`'s running log or any prior report.
-**Supersedes:** v6 (2026-07-23) and all predecessors. v5 was the first checkpoint committed into the repo; v6 and now v7 update it in place at the same canonical path.
+**Supersedes:** v7 (2026-07-24) and all predecessors. v5 was the first checkpoint committed into the repo; each successor updates it in place at the same canonical path.
 **What this document is NOT:** a closure event. It is a synthesis of state. Nothing here closes an item or resolves an open founder decision — it records that they are open, including Gate-6, D4, and everything else on the founder queue. Closure is the founder's call, as always.
+
+---
+
+## ⚠️ WHAT IS OPEN NOW LIVES IN `docs/OPEN_ITEMS.md` — READ THAT FIRST
+
+**PART 3 below is v7's open list, dated 2026-07-24, and it is stale in specific ways
+named here.** It is kept because its *reasoning* is still the best account of why each
+item exists. It is no longer the register.
+
+`docs/OPEN_ITEMS.md` (2026-08-01) is the register. Every entry there was re-derived
+**against the code on this branch** and carries a severity, a `file:line`, and a
+CONFIRMED / PLAUSIBLE / NOT RUN label. It exists because the register itself was the
+first bug: v7 predated the 2026-07-30 launch gate, three robustness phases, PR #1
+landing on `main`, and every commit of this branch, so nobody could answer "what is
+open?" without re-deriving it — which is how the last two passes each rediscovered
+work the previous one had already done.
+
+**Where PART 3 is specifically wrong, corrected here rather than silently edited:**
+
+- **§3E's Gate-6 contradiction is NOT open.** It was reconciled 2026-07-27. The
+  in-process half (`d96794e`) plus the cross-process `flock` half (`2a389c7`) make it
+  engineering-complete; only the founder's formal ruling remains, which belongs on the
+  decision queue, not the bug list. §3E still describes four locations disagreeing and
+  calls it "the dominant remaining category" — that was true when written and is not now.
+- **§3F's "Full list in the report file" is not dangling, it is just outside the repo.**
+  The bug-hunt report lives at `~/.claude/plans/what-can-we-improve-snappy-music.md`, so
+  it does not travel with a checkout. All eight LOWs are now transcribed into
+  `OPEN_ITEMS.md` §2 and re-verified against current source — all eight still present.
+- **§3F's `-wal`/`-shm` permission gap names the wrong database.** `memory.db` and
+  `skills.db` both restrict their sidecars. The store that does not is `lexical.db`
+  (`0644` in a `0755` directory, holding full chunk text), which no prior list mentions.
+- **M9 is fixed** (`3e37c44`); it appears in §3F alongside M10, which genuinely is open.
+
+Two items were also found by the 2026-08-01 re-derivation and appear on no earlier
+list: the world-readable lexical index above, and an **unbounded log buffer on MCP
+server stderr** (`daemon/mcpruntime.go:212`) — the same unbounded-allocation shape the
+MCP hardening pass closed on stdout, on the one channel that pass did not cover.
 
 ---
 
@@ -184,7 +221,7 @@ The follow-up `QUOTA_RESERVATION_DESIGN.md` §5(e) named and explicitly declined
 
 ---
 
-## PART 3 — WHAT'S OPEN (organized by what it's blocked on, not by chronology)
+## PART 3 — WHAT'S OPEN *(v7, 2026-07-24 — superseded by `docs/OPEN_ITEMS.md`; see the correction block at the top of this document)*
 
 The dominant remaining category is now the **founder-decision cluster** (§3D + §3E). Nearly everything that was "actionable, no dependency" in v5 has since shipped (the provider slice, and now the ship-blocker/client-UX/security batches). What remains actionable is small; what's blocked is blocked on people, not code.
 
@@ -252,6 +289,43 @@ The only commit that ever said "mark … CLOSED" (`8d37a6c`) is **dangling — n
 ---
 
 ## PART 4 — WHAT TO DO NEXT
+
+**Updated 2026-08-01, after the remediation pass.** The list below is v7's and is
+kept for its reasoning; three of its bullets have since been done and one of its
+premises has changed. Read this block first.
+
+**Everything engineering can clear on its own is cleared.** `docs/OPEN_ITEMS.md`
+§6 lists seventeen items implemented and neuter-verified in one pass — the M8
+shutdown hang, `file:line` without an index, the turn budget's blind spot, the
+proxy slow-drip bound, the M7 create-gate asymmetry, undo's orphaned directories,
+macOS peer authentication, a world-readable lexical index, an unbounded MCP stderr
+buffer, and five of the eight LOWs. Two of those appear on no earlier list.
+
+**So the queue really is decisions now, and they are in one place.**
+`docs/DECISION_PACK.md` has eight, each with a recommendation and the cost of
+being wrong. Three of them ARE the P3 gate (socket auth, Gate 6, Gate 7), and all
+three are recommended as rulings rather than as work — Gate 7's engineering half
+was measured this pass and the recommendation is to reject the change the record
+proposed. Ruling on those three unblocks §3C in one sitting.
+
+**What changed underneath v7's list:**
+
+- The stale `models.json` price note, the `file:line` hoist and the protocol
+  honesty gaps are **done** (`3bee775`, `59d42a3`, `8f6eee0`). The TUI search box
+  is the one item left in that bucket.
+- The **default-model evaluation** is no longer "when there's appetite" — it is
+  blocked on the same thing items 21–23 are. The production proxy returns
+  `quota_exceeded` for the pilot key, so every eval call through the path a user
+  takes is refused. **Raising that quota is a Supabase row only the founder can
+  touch**, and it is now the cheapest unblock on this list.
+- `max_advertised_tools` moved 12 → 5 → **12** in one day, the second move on a
+  measurement (`docs/TOOL_MENU_SIZE_2026-08-01.md`). Mentioned here because it is
+  the worked example of this project's own rule: a result that contradicts a
+  shipped default moves the default the same day.
+
+---
+
+### v7's list, as written (2026-07-24)
 
 The record now points one direction: **the founder-decision cluster is what remains, and it is the gate.**
 

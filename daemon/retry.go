@@ -83,24 +83,33 @@ func backoffFor(attempt int, retryAfter time.Duration) time.Duration {
 // Attempts and total elapsed time are both bounded, so a persistent failure
 // terminates cleanly with the last real error rather than looping. A cancelled
 // context aborts immediately without waiting out a pending backoff.
+//
+// IN AN AGENT LOOP, both rules keep working unchanged, and it is worth saying
+// why rather than leaving it to be rediscovered. `streamed` is reset per
+// ATTEMPT, so each iteration of the loop gets its own retry budget. And an
+// iteration whose tool calls already ran is never re-entered here: the loop
+// appends those results to `messages` and calls again with a longer list, so a
+// retry can only ever repeat the model call that produced a request to act --
+// never the acting. The dangerous case, retrying a call whose side effects
+// already happened, is unreachable by construction rather than by care.
 func streamWithRetry(
 	ctx context.Context,
-	apiBase, apiKey, model, systemPrompt string,
-	history []chatMessage,
-	prompt string,
+	apiBase, apiKey, model string,
+	messages []chatMessage,
+	tools []toolSpec,
 	routing providerRouting,
 	onToken func(string) error,
 	onProvider func(string),
 	onReasoning func(string),
 	onFinish func(string),
 	logger *log.Logger,
-) error {
+) ([]toolCall, error) {
 	start := time.Now()
 	var lastErr error
 
 	for attempt := 1; attempt <= maxStreamAttempts; attempt++ {
 		streamed := false
-		err := streamCompletion(ctx, apiBase, apiKey, model, systemPrompt, history, prompt, routing,
+		calls, err := streamCompletion(ctx, apiBase, apiKey, model, messages, tools, routing,
 			func(token string) error {
 				streamed = true
 				return onToken(token)
@@ -113,7 +122,7 @@ func streamWithRetry(
 			if attempt > 1 && logger != nil {
 				logger.Printf("model API: succeeded on attempt %d/%d", attempt, maxStreamAttempts)
 			}
-			return nil
+			return calls, nil
 		}
 		lastErr = err
 		modelErr := asModelError(err)
@@ -123,10 +132,10 @@ func streamWithRetry(
 				logger.Printf("model API: failed mid-stream, after output had already reached the client; not retrying (would duplicate it): %s",
 					modelErr.Detail())
 			}
-			return err
+			return nil, err
 		}
 		if !modelErr.Retryable() {
-			return err
+			return nil, err
 		}
 		if attempt == maxStreamAttempts {
 			break
@@ -146,10 +155,10 @@ func streamWithRetry(
 
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return nil, ctx.Err()
 		case <-time.After(delay):
 		}
 	}
 
-	return lastErr
+	return nil, lastErr
 }

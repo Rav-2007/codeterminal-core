@@ -449,6 +449,46 @@ with no error anywhere. **A 200 alone does not test `increment_usage`.** Always 
 `tokens_used` moved off the reservation, using a `max_tokens` small enough that the two numbers
 can't coincide.
 
+## The auth cache and the revocation window (2026-07-31)
+
+The proxy caches **successful** API-key lookups in memory
+([proxy/authcache.go](proxy/authcache.go)). This is the one place where a deliberate,
+bounded weakening of key revocation was accepted in exchange for latency, so it is
+recorded here rather than only at the code.
+
+**What it changes.** `authorize()` no longer queries `api_keys` on every request. A key
+hash that resolved successfully is reused for **up to 30 seconds** (`authCacheTTL`).
+
+**Why.** Measured on the real binary against a production-shaped Supabase latency, that
+lookup cost 91 ms of a 228 ms request; removing it took the request to 136 ms, a 40%
+reduction (`docs/LATENCY_BASELINE.md` §B.1).
+
+**The exposure, precisely.** Setting `active = false` on a key — the revocation path,
+and the one *Deferred* below proposes to make self-service — does not take effect for up
+to 30 seconds on any proxy instance that has served that key recently. With N replicas
+each holding its own cache, the window is up to 30 s **per instance**, the same
+per-instance shape as the rate limiter's documented residual.
+
+**What bounds it.**
+
+1. **Only successes are cached.** A revoked key that has *not* been seen recently is
+   refused on the first try, and an invalid key is never cached at all — so this cannot
+   be used to amplify credential stuffing, and there is no negative entry to poison.
+2. **`POST /admin/auth-cache/flush`** drops every entry, making revocation immediate
+   without a redeploy. Same auth shape as `/admin/metrics`: pre-auth admission,
+   constant-time comparison over SHA-256 digests, and the route does not exist at all
+   when `PROXY_ADMIN_TOKEN` is unset.
+3. **The window is announced at startup**, and when no admin token is configured the
+   startup line is a WARNing, because in that configuration the TTL is the only bound
+   there is.
+4. The cache is keyed by the SHA-256 the code already computes, never by the key, so it
+   holds nothing the database does not already hold.
+
+**What would make this unacceptable and require revisiting:** a compliance requirement
+for immediate revocation; a move to per-user keys where revocation is a user-facing
+security action rather than an operator one; or raising the TTL, which should not be
+done without re-reading this section.
+
 ## Current state (2026-07-17)
 
 - `auth.users`: **0 users.** The policies are dormant and will activate with the first real user.
@@ -729,3 +769,281 @@ from a pricing model *first* and then confirmed. A discount observed and rationa
 proves far less.
 
 Full run cost: 4 inference sends + 4 generation lookups, ~$0.0026.
+
+---
+
+# The daemon socket — trust model, and the Gate 7 / FAIL-3 closure
+
+Added 2026-07-30 (Phase 4). The two sections above cover the database and the
+inference hop. This one covers the third surface: the local Unix socket the CLI,
+TUI and IDE integration use to reach the daemon. It exists because FAIL-3's own
+record named the trust model as *the* open question — "everything else in FAIL-3
+is secondary until this is decided" — and that question was answered by
+implementation without the answer ever being written down as a model.
+
+## The model in one paragraph
+
+The daemon listens on a Unix socket at `protocol.SocketPath()`, under a per-user
+runtime directory, chmod 0600. **File permissions are not the access control** —
+they narrow who can reach the socket, but they do not identify who did. The
+access control is `authorizePeer` (`daemon/server_auth.go`): the kernel reports
+the connecting process's UID via `SO_PEERCRED`, and a peer whose UID differs from
+the daemon's own is refused before the handshake is read, before any request is
+decoded, and before anything is dispatched. Every legitimate client runs as the
+user who started the daemon, so same-UID is exactly the trusted set — verified
+with zero client-side configuration and nothing for a user to get wrong.
+
+**The trust boundary is therefore the OS user account, not the process.** A
+same-UID process is trusted completely. This is a deliberate choice, and the
+sections below say what it costs.
+
+## Why the credential cannot be forged, and why it fails closed
+
+`SO_PEERCRED` is filled in by the kernel at `connect()` time from the peer's real
+credentials. It is not read from the wire, so nothing a client sends can change
+it — this is the property that makes it access control rather than a convention.
+
+Every failure path refuses:
+
+| Condition | Result |
+|---|---|
+| Peer UID ≠ daemon UID | refused |
+| Connection exposes no peer credentials (`syscall.Conn` type assertion fails) | refused |
+| `getsockopt` itself fails | refused |
+| Non-Linux build (`peercred_other.go`) | refused — there is no `SO_PEERCRED` equivalent wired up, and the daemon declines rather than degrading to trust-everyone |
+| `os.Getuid()` reports −1 (no UID concept) | refused — the daemon never trusts a peer it cannot meaningfully compare against |
+
+The refusal reason goes to the daemon's own log and is never returned to the
+rejected peer, so peer auth adds no information-leakage surface of its own.
+
+`checkPeerUID` is split out as a pure function precisely so the match/mismatch
+decision is unit-testable: an unprivileged test process cannot construct a real
+cross-UID socket, and a security decision that can only be exercised by a setup
+the test suite cannot build is a security decision that never gets tested.
+
+## Gate 7 — what was fixed
+
+Error responses returned over the socket used to carry absolute filesystem paths
+and internal path-resolution detail. Fixed in `3aeb8b6`: `scrubPaths` and
+`socketSafeError` (`daemon/server_errors.go`) replace workspace roots with a
+token, and upstream model-API errors are returned generically while the real
+error is logged locally.
+
+Enforced by assertion, not by commit message — four tests in
+`daemon/gate7_scrub_test.go`:
+
+- `TestHandleApplyEdit_ScrubsAbsolutePathsFromErrorResponses`
+- `TestHandleUndo_ScrubsAbsoluteBackupsPathFromErrorResponses`
+- `TestServeConn_ModelAPIErrorIsGenericAndLogsUpstreamLocally`
+- `TestServeConn_ZDRRefusalMessageUnchanged`
+
+The last one matters more than its name suggests: scrubbing must not flatten the
+ZDR refusal into a generic error, because that refusal is a *guarantee* the user
+is entitled to see. Scrub-everything would have been the easy fix and the wrong
+one.
+
+## Accepted residual — the existence oracle
+
+**Not fixed, accepted by decision.** Error responses still distinguish "this file
+does not exist" from "this file exists but is refused" (a secret name, a
+protected directory, outside the workspace root). An attacker who could reach the
+socket could use it to probe for the presence of individual paths.
+
+Accepted because of who that attacker can be. Post-`SO_PEERCRED`, the only peer
+that reaches a response at all is an authenticated same-UID process — which can
+already call `stat()` on any path it likes and read `/proc` directly. The oracle
+tells such a peer nothing it cannot obtain more cheaply by other means, so
+closing it would buy no confidentiality against the only audience that exists.
+
+The cost of closing it is real: unifying the socket's error vocabulary means
+collapsing distinctions across every handler's error paths, and the same
+flattening that hides "refused vs absent" from an attacker also hides it from the
+user, whose "why did my edit not apply?" is answered by exactly that distinction.
+Gate 7's own fix was careful to scrub paths while *preserving* diagnostic
+meaning; unification would spend that.
+
+**This acceptance is conditional. Reopen it if any of the following becomes
+true:**
+
+1. The socket becomes reachable by a UID other than the daemon's — a shared
+   service account, a container with multiple identities, a `sudo`-invoked client.
+2. The transport stops being a local Unix socket — any TCP or network listener,
+   including localhost-only.
+3. Any client-facing surface begins relaying daemon error text onward, so that a
+   response can travel off-box.
+
+Each of these changes *who is listening*, which is the entire basis on which the
+residual is accepted. None of them changes the code.
+
+## Logged, not closed
+
+These stay open with their severity stated. They are not part of the acceptance
+above and are not covered by it.
+
+- **Mid-ancestor-directory-swap TOCTOU in `confinedRestorePath`.** The undo path
+  resolves the deepest existing ancestor, checks containment, then relies on
+  `O_NOFOLLOW` for the leaf. A symlink swapped into a *mid-ancestor* directory
+  inside that window is not blocked. Local-write-access-gated, so the attacker is
+  already inside the trust boundary — but the socket gives them unlimited free
+  retries at winning the race, which raises its practical urgency without changing
+  its impact ceiling.
+- **`id_rsa_secret.pub`-style narrow over-refusal in `MatchesSecretName`.** The
+  substring net fires before the `.pub` carve-out is reached, so a public-key name
+  that also contains "secret" or "credential" is refused. This fails in the safe
+  direction — over-refusing a public key, never under-refusing a secret — which is
+  why it is logged rather than fixed.
+- **SQLite `-wal`/`-shm` symlink opens.** The driver owns those opens, so the
+  leaf-lstat guard on the db file does not cover them. Distinct from their file
+  *modes*, which Phase 4 fixed (BACKLOG item (g)).
+
+## Status
+
+Gate 7 and the FAIL-3 socket axis are **engineering-complete and closed by written
+rationale as of 2026-07-30**, with the residual above accepted on the stated
+conditions. As everywhere else in this program, **nothing here is founder-closed**
+— the final call on FAIL-3 remains the founder's, and this document exists to make
+that call reviewable rather than to pre-empt it.
+
+---
+
+# Agent mode — two trust lanes, and what we will not claim
+
+Added 2026-08-01 (Phase 5–7). The three sections above cover the database, the
+inference hop, and the local socket. This one covers the fourth surface, and the
+first one that can make this product *do* things rather than say them: the
+agentic tool loop and the MCP servers it can reach.
+
+It exists because the honest description of this feature is uncomfortable in one
+specific place, and a security document that omits the uncomfortable part is
+marketing.
+
+## The model in one paragraph
+
+Agent mode is **off by default** (`mcp.enabled`). With it on, the daemon may run
+a bounded loop: model call → tool call → model call, until the model stops asking
+or one of four per-turn ceilings bites. Tools come from two places that share
+nothing but a type. **Lane A** is Go functions compiled into the daemon —
+confined by the same path/secret resolver that gates every model-proposed edit,
+and *none of them writes*: the edit tool proposes into the existing five-gate
+review. **Lane B** is any MCP server the user configured, spawned as a stdio
+subprocess. Every tool resolves to `deny`, `ask` or `allow` from the user's own
+`models.json`; anything unlisted resolves to `ask`, and `ask` suspends the turn
+until a human answers on the same socket connection the turn is streaming over.
+
+## The claim, stated exactly
+
+**For Lane B we claim consent and audit. We do not claim containment, and we
+will not.**
+
+An MCP server is an ordinary process running with the user's full privileges.
+The five gates constrain *our* writer; they have no reach into somebody else's
+subprocess. There is no OS sandbox here — no seccomp, no namespace, no
+`landlock`. If a configured server decides to read `~/.ssh` and post it
+somewhere, nothing in this product stops it.
+
+What is true, and what every approval prompt says in these words:
+
+- it does not start unless the user configured it (and acknowledged, per server,
+  in writing, that it is unconfined);
+- it does not run unless the user approves that specific call;
+- the user sees the **complete** arguments first, never a summary;
+- every decision is written to a local append-only log.
+
+That is a real protection and a narrower one than "sandboxed". The distinction
+is load-bearing: a user who believes Lane B is contained will configure servers
+they would otherwise refuse.
+
+## What the approval actually binds
+
+The prompt carries the exact argument bytes **and their SHA-256**. The client
+echoes the digest back unchanged; the daemon re-checks it, plus the call id,
+before dispatching. What was shown and what runs are provably the same object.
+
+This is the same class of check `VerifyUnchanged` makes for edits, for the same
+reason: between rendering a thing for a human and acting on it, something must
+prove the thing did not change.
+
+Four independent checks reject an answer, and **every one of them denies rather
+than errors**:
+
+| Check | Failure means |
+|---|---|
+| Exact-key sniff on `approval` | the body is not recognisably an answer (`{"APPROVAL":true}` is not one — same discipline as the request dispatcher) |
+| `call_id` echo | it is an answer to some other question |
+| `arguments_sha256` echo | the arguments shown are not the arguments about to run |
+| Decision in the defined set, with `approval:true` behind an approving verb | an invented verb is not a permission |
+
+A timeout is a denial. A closed connection is a denial. No approval channel at
+all is a denial. **Silence is never consent**, and the code has no path on which
+"we could not ask" resolves to anything but "no".
+
+## Credentials cannot reach a Lane B server
+
+A spawned server's environment is built from scratch, not inherited: it gets
+`PATH` and `HOME`, plus any variable the user explicitly allow-listed. Three
+names — `OPENROUTER_API_KEY`, `CODETERMINAL_API_KEY`, `CODETERMINAL_MOCHIII_KEY`
+— are **ungrantable**: a config that asks for one is refused outright rather than
+spawning and filtering.
+
+Neutering that construction to `os.Environ()` leaks the inference key, the
+managed-mode key, `SSH_AUTH_SOCK`, and ~130 other variables. That is the measured
+consequence, and it is why the environment is built rather than pruned.
+
+## Tool output is egress, and is treated as egress
+
+Whatever a tool returns goes to the model, which means it leaves the machine. It
+passes through the same secret scrubber and the same truncation as retrieved
+chunks, at a single choke point, **truncating before scrubbing** — scrubbing first
+changes the length and could slice a redaction placeholder in half.
+
+Two of the four per-turn ceilings exist for this specifically: per-result bytes
+and cumulative tool bytes per turn. A privacy-positioned product should be able
+to bound and report how much extra left the machine because of tools, and the
+activity stream reports the post-scrub figure per call.
+
+## The audit log
+
+`.codeterminal/logs/toolcalls.jsonl` — local file only, append-only, `O_NOFOLLOW`,
+size-rotated, `0600`. There is deliberately no `io.Writer` seam and no network
+path; it shares its substrate with the warn-mode sink for exactly that reason.
+
+**One record per dispatch decision, including calls that were never prompted**
+(policy `allow`). An audit covering only what the user already watched happen is
+a log of things they already knew.
+
+**It records the argument digest and length, never the arguments.** Those are
+unscrubbed model output — paths, queries, source text — and are the one field
+that would make this file worth stealing. The digest is enough to bind a record
+to the call that ran; it is the same digest the approval was bound to.
+
+A write failure is swallowed, so a full disk means a call runs unrecorded rather
+than a turn failing. That is a real trade and the same one the warn-mode sink
+makes.
+
+## Accepted residuals
+
+- **Lane B is unconfined.** Stated above; accepted deliberately, mitigated by
+  default-off, per-server acknowledgement, per-call consent, and audit. OS
+  sandboxing is a non-goal for v1, not an oversight.
+- **A tool's self-description is never a gate.** `readOnlyHint` and `destructive`
+  are the server's own claims, carried for display only. Letting a
+  self-description lower the bar would make consent optional for any server
+  willing to lie, which is the entire population that matters.
+- **Shutdown mid-approval has a narrow race.** Cancelling pushes the read
+  deadline into the past to unblock the wait, but `limitedConn.Read` re-arms it
+  immediately before each read, so a cancellation landing in a few-instruction
+  window is overwritten and the wait runs its full length. Losing that race costs
+  a slow shutdown, never a wrong decision — an unanswered ask is a denial either
+  way.
+- **Reliability is measured, not proven.** 30 real agent turns, zero
+  non-termination and zero repeated calls
+  (`docs/AGENT_LOOP_RELIABILITY_2026-07-31.md`). The honest claim is "no failures
+  observed in 30 turns", not "never fails"; the 95% interval runs to roughly
+  [88%, 100%].
+
+## Status
+
+Implemented and gate-green as of 2026-08-01, with the residuals above accepted on
+the stated conditions. As everywhere else in this program, **nothing here is
+founder-closed** — this document exists to make that call reviewable rather than
+to pre-empt it.

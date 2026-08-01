@@ -28,6 +28,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -38,51 +39,119 @@ import (
 // the symbol/logic in question. exactChunks is the real, gating check;
 // expectedFiles exists only so the eval's printed table can show the old,
 // looser signal alongside the new one.
+// anchor is a literal substring of the code that actually answers the query. It
+// is what makes exactChunks CHECKABLE rather than merely asserted: the harness
+// verifies, before running any query, that the anchor really does appear inside
+// one of the named chunks.
+//
+// This exists because the 2026-07-30 launch-gate review found this eval RED at
+// 4/9 and the cause was not retrieval at all -- it was that exactChunks had gone
+// STALE. Chunk IDs are file:startLine-endLine, so every edit to a named file
+// shifts them, and five of the nine queries were pointing at line ranges whose
+// contents had moved. Query 8 ("where is the ZDR refusal string matched")
+// expected daemon/provider.go:91-130, which holds the chatCompletionChunk struct;
+// the ZDR matching it names lives ~150 lines further down. Retrieval was
+// returning the correct chunk and being scored wrong.
+//
+// A stale expectation and a retrieval regression are indistinguishable in the
+// pass/fail signal but demand opposite responses, so the harness now tells them
+// apart by name. Without this the eval measures how much the repo has been
+// edited since the expectations were written.
 type rerankEvalQuery struct {
 	query         string
 	expectedFiles []string
 	exactChunks   []string
+	anchor        string
+}
+
+// assertExpectationsAreCurrent fails if any query's exactChunks no longer
+// contain that query's anchor -- i.e. the ground truth has drifted from the
+// code. It reports the chunk that DOES contain the anchor, so correcting the
+// expectation is mechanical rather than an investigation.
+//
+// It runs before any query, so a stale harness fails as a stale harness instead
+// of masquerading as a retrieval regression.
+func assertExpectationsAreCurrent(t *testing.T, chunks []Chunk) {
+	t.Helper()
+
+	byID := make(map[string]Chunk, len(chunks))
+	for _, c := range chunks {
+		byID[chunkID(c)] = c
+	}
+
+	for i, q := range rerankEvalQueries {
+		if q.anchor == "" {
+			t.Errorf("query %d (%q) has no anchor -- its exactChunks cannot be checked for "+
+				"staleness, which is how this eval spent an unknown period measuring line "+
+				"drift instead of retrieval", i+1, q.query)
+			continue
+		}
+
+		found := false
+		for _, id := range q.exactChunks {
+			c, present := byID[id]
+			if !present {
+				t.Errorf("query %d (%q): expected chunk %s does not exist in the index at all "+
+					"-- the file shrank or was renamed", i+1, q.query, id)
+				continue
+			}
+			if strings.Contains(c.Content, q.anchor) {
+				found = true
+			}
+		}
+		if found {
+			continue
+		}
+
+		var actual []string
+		for _, c := range chunks {
+			if strings.Contains(c.Content, q.anchor) {
+				actual = append(actual, chunkID(c))
+			}
+		}
+		t.Errorf("STALE EXPECTATION, query %d (%q): none of exactChunks=%v contains the "+
+			"anchor %q. The code moved and the expectation did not follow it. This is NOT a "+
+			"retrieval regression -- retrieval is being scored against the wrong answer. "+
+			"The anchor currently lives in: %v",
+			i+1, q.query, q.exactChunks, q.anchor, actual)
+	}
 }
 
 var rerankEvalQueries = []rerankEvalQuery{
-	// FILE-LEVEL PASSED, CHUNK-LEVEL WAS A MISS UNTIL NOW: daemon/main.go's
-	// top-ranked chunk (1-40) is its package doc comment ("...proxies
-	// prompts to it over a Unix domain socket"), which reads as an excellent
-	// semantic match for this query without containing the actual
-	// net.Listen("unix", ...) call at all — that's at line 129, in a
-	// different chunk entirely. Discovered while upgrading this harness to
-	// chunk-level checking; the same blind spot that hid the ZDR/
-	// SearchRequest failures below was already hiding this one too.
+	// THE ONE REMAINING KNOWN GAP (not gated -- see the note after mustHit).
+	// daemon/main.go's top-ranked chunk (1-40) is its package doc comment
+	// ("...proxies prompts to it over a Unix domain socket"), which reads as an
+	// excellent semantic match for this query AND contains the same words the
+	// real call does, without containing the actual net.Listen("unix", ...) --
+	// that is at line 200, in a different chunk entirely.
 	{"where does the daemon open the unix socket", []string{"daemon/main.go"},
-		[]string{"daemon/main.go:91-130", "daemon/main.go:121-160"}},
+		[]string{"daemon/main.go:181-220"}, `net.Listen("unix"`},
 
 	// editblock.go moved from daemon/ to editapply/ in an earlier, unrelated
-	// refactor (c516479) — this expected path is corrected to match, since
-	// it's pre-existing drift, not something the test-file down-weight
-	// fixes or causes. ParseEditBlocks starts at line 31, itself the
-	// boundary between the first two chunks — either legitimately answers
-	// the query.
+	// refactor (c516479). ParseEditBlocks is at line 59, which the two chunks
+	// straddling it both cover — either legitimately answers the query.
 	{"how are edit blocks parsed from the model response", []string{"editapply/editblock.go"},
-		[]string{"editapply/editblock.go:1-40", "editapply/editblock.go:31-70"}},
+		[]string{"editapply/editblock.go:31-70", "editapply/editblock.go:61-100"}, "func ParseEditBlocks"},
 
-	// Route (daemon/router.go) starts at line 30, inside the file's only
-	// first chunk (router.go is 44 lines total).
+	// The tier decision is made in Route (daemon/router.go:66), not in the
+	// const/type block at the top of the file. router.go is 81 lines, so its
+	// last chunk is the truncated 61-82 (splitLines yields one element per newline,
+	// so an 81-line file with a trailing newline has 82 entries).
 	{"where is the model tier routing decided", []string{"daemon/router.go"},
-		[]string{"daemon/router.go:1-40"}},
+		[]string{"daemon/router.go:31-70", "daemon/router.go:61-82"}, "func Route(cfg *Config"},
 
-	// Query 4 accepts either file: the failure report itself named both
-	// chunker.go (where the actual secret-skipping logic —
-	// MatchesSecretName/SkipSecret — lives, in shouldSkipFile at line 165)
-	// and index_cmd.go (whose formatSkipCounts skip-count summary at line
-	// 279-280 straddles two chunks) as acceptable.
+	// The actual secret-skipping decision is editapply.MatchesSecretName, called
+	// from shouldSkipFile at chunker.go:186 — the two chunks straddling it both
+	// cover it. (index_cmd.go only *reports* skip counts, so it is kept as an
+	// acceptable FILE-level match but is not the chunk-level answer.)
 	{"how does secret skipping work during indexing", []string{"daemon/chunker.go", "daemon/index_cmd.go"},
-		[]string{"daemon/chunker.go:151-190", "daemon/index_cmd.go:241-280", "daemon/index_cmd.go:271-310"}},
+		[]string{"daemon/chunker.go:151-190", "daemon/chunker.go:181-220"}, "editapply.MatchesSecretName"},
 
-	// The Skill/SkillStore struct definitions and DefaultSkillsDBPath live
-	// in skills.go's second chunk (31-70); the CREATE TABLE skills DDL and
-	// its surrounding schema at line 128 sit in the chunks straddling it.
+	// Three chunks legitimately answer this: 31-70 holds DefaultSkillsDBPath and
+	// OpenSkillStore (where the DB lives), and the CREATE TABLE schema at
+	// line 114 onward sits in the two chunks straddling it.
 	{"where are skills stored in sqlite", []string{"daemon/skills.go"},
-		[]string{"daemon/skills.go:31-70", "daemon/skills.go:91-130", "daemon/skills.go:121-160"}},
+		[]string{"daemon/skills.go:31-70", "daemon/skills.go:91-130", "daemon/skills.go:121-160"}, "CREATE TABLE IF NOT EXISTS"},
 
 	// Added for the _test.go down-weight fix (FileClassTest, rerank.go):
 	// the measured live-repo failure this fix targets — provider.go never
@@ -97,7 +166,7 @@ var rerankEvalQueries = []rerankEvalQuery{
 	// the actual matched substrings.
 	{"where in the code is the ZDR refusal string matched, and what substring does it match on?",
 		[]string{"daemon/provider.go"},
-		[]string{"daemon/provider.go:91-130"}},
+		[]string{"daemon/provider.go:211-250", "daemon/provider.go:241-280"}, "zdrRefusalSubstrings"},
 
 	// The paired regression guard for the same fix: a genuinely
 	// test-seeking query must still find the test files. looksTestSeeking
@@ -111,7 +180,7 @@ var rerankEvalQueries = []rerankEvalQuery{
 		[]string{
 			"daemon/provider_test.go:241-280", "daemon/provider_test.go:271-310", "daemon/provider_test.go:301-340",
 			"daemon/config_test.go:1-40", "daemon/config_test.go:31-70",
-		}},
+		}, "func TestIsZDRRoutingRefusal_MatchesKnownPhrasings"},
 
 	// The second symbol/string query that motivated hybrid retrieval: a
 	// natural-language question with essentially no shared vocabulary with
@@ -121,14 +190,11 @@ var rerankEvalQueries = []rerankEvalQuery{
 	// and #164 out of 708 respectively — nowhere near the ~30-candidate
 	// semantic rerank pool for k=5.
 	{"where is the ZDR refusal string matched", []string{"daemon/provider.go"},
-		[]string{"daemon/provider.go:91-130"}},
+		[]string{"daemon/provider.go:211-250", "daemon/provider.go:241-280"}, "zdrRefusalSubstrings"},
 	{"what files does SearchRequest touch",
 		[]string{"protocol/protocol.go", "daemon/search.go", "daemon/server.go"},
-		[]string{
-			"protocol/protocol.go:271-310",
-			"daemon/search.go:91-130", "daemon/search.go:121-153",
-			"daemon/server.go:391-430", "daemon/server.go:421-460",
-		}},
+		[]string{"protocol/protocol.go:481-520", "daemon/search.go:91-130", "daemon/search.go:121-154",
+			"daemon/server.go:691-730", "daemon/server.go:721-760"}, "type SearchRequest struct"},
 }
 
 // evalSelfReferenceFiles are repo-relative paths this eval test itself must
@@ -336,6 +402,11 @@ func TestRerankEvalRetrievalRanking(t *testing.T) {
 	}
 	t.Logf("indexed repo root %s: scanned=%d chunks=%d (self-referential chunks excluded)", repoRoot, scan.FilesScanned, len(scan.Chunks))
 
+	// Before measuring anything: is the ground truth still true? A stale
+	// expectation scores correct retrieval as a miss, which is exactly how this
+	// eval came to read 4/9 while the ranker was working.
+	assertExpectationsAreCurrent(t, scan.Chunks)
+
 	semanticOnlyHits := runEvalPass(ctx, t, embedder, store, nil, "SEMANTIC-ONLY (lexicalStore=nil, today's behavior)")
 	hybridHits := runEvalPass(ctx, t, embedder, store, lexicalStore, "HYBRID (semantic + lexical, fused via RRF)")
 
@@ -388,6 +459,29 @@ func TestRerankEvalRetrievalRanking(t *testing.T) {
 		}
 	}
 
+	// A floor on overall recall, so a regression that spares the three gated
+	// queries is still caught.
+	//
+	// MEASURED 2026-07-30 against this repo: 8/9 under both hybrid and
+	// semantic-only, the one miss being the known query-1 gap documented below.
+	// This restores the figure fuseRRF's doc comment records from the feature's
+	// original grid search; the intervening 4/9 was a STALE-HARNESS artifact,
+	// not a retrieval regression (see rerankEvalQuery.anchor).
+	//
+	// It is a FLOOR, not an equality: a change that improves recall should not
+	// fail. Raise it when a real improvement makes 8/9 the new normal.
+	if hybridCount < evalChunkRecallFloor {
+		t.Errorf("hybrid chunk-level recall %d/%d is below the floor of %d/%d measured on "+
+			"2026-07-30. Check assertExpectationsAreCurrent's output first: if it reported a "+
+			"STALE EXPECTATION, the harness is wrong and retrieval is fine. If it did not, "+
+			"this is a real retrieval regression",
+			hybridCount, total, evalChunkRecallFloor, total)
+	}
+	if semanticOnlyCount > hybridCount {
+		t.Errorf("hybrid recall %d/%d is WORSE than semantic-only %d/%d -- fusion is losing "+
+			"results the semantic tier alone finds", hybridCount, total, semanticOnlyCount, total)
+	}
+
 	// Query 1 (index 0, "where does the daemon open the unix socket") is a
 	// KNOWN, PRE-EXISTING, SEPARATE gap discovered while upgrading this
 	// harness to chunk-level checking (see that query's comment above): the
@@ -408,6 +502,12 @@ func TestRerankEvalRetrievalRanking(t *testing.T) {
 		t.Logf("KNOWN GAP (not gated, pre-existing, out of scope): query 1 (%q) still misses — see comment above mustHit for why", rerankEvalQueries[0].query)
 	}
 }
+
+// evalChunkRecallFloor is the minimum chunk-level recall (out of the 9 queries)
+// TestRerankEvalRetrievalRanking accepts, in the same named-constant style as
+// evalTop3RecallThreshold in eval_test.go. Measured at 8/9 on 2026-07-30; the
+// single miss is the known doc-comment-vs-implementation gap on query 1.
+const evalChunkRecallFloor = 8
 
 func truncateEval(s string, n int) string {
 	if len(s) <= n {

@@ -34,10 +34,15 @@ func RuntimeDir() string {
 }
 
 // SocketDir returns the directory holding the daemon's socket and lockfile,
-// creating it (owner-only) if it doesn't already exist.
+// creating it (owner-only) if it doesn't already exist and verifying that an
+// existing one is safe to use — see ensureOwnerOnlyDir for why the second half
+// is not redundant with the first.
 func SocketDir() (string, error) {
 	dir := filepath.Join(RuntimeDir(), serviceDirName)
 	if err := os.MkdirAll(dir, 0700); err != nil {
+		return "", err
+	}
+	if err := ensureOwnerOnlyDir(dir); err != nil {
 		return "", err
 	}
 	return dir, nil
@@ -49,10 +54,53 @@ func SocketDir() (string, error) {
 func SocketPath() string { return filepath.Join(RuntimeDir(), serviceDirName, socketFileName) }
 func LockPath() string   { return filepath.Join(RuntimeDir(), serviceDirName, lockFileName) }
 
+// Stable, machine-readable capability identifiers for
+// HandshakeRequest.Capabilities.
+const (
+	// CapToolApproval: this client can render a ToolApprovalRequest that
+	// arrives mid-stream and write a ToolApprovalResponse back on the SAME
+	// connection. Declaring it is what enables agent mode for the turn.
+	//
+	// It exists because the alternative fails badly. Agent mode needs the
+	// daemon to ask a question mid-turn and wait for an answer, on a
+	// connection where every client until now sent one request and then only
+	// read. A client that does not know the question exists would ignore the
+	// field (it is additive, like Grounding) and never answer, so the daemon
+	// would block until the approval deadline expired -- fail-closed, but only
+	// after a stall the user cannot explain. Gating on a declared capability
+	// turns that into "this client just doesn't do agent mode", decided before
+	// a single token is spent.
+	//
+	// This is also why agent mode did NOT need a ProtocolVersion bump: a
+	// version bump refuses every old client outright, including for the
+	// ordinary single-turn prompts they handle perfectly well.
+	CapToolApproval = "tool_approval"
+)
+
 // HandshakeRequest is the first message a client sends after connecting.
+//
+// Capabilities is optional and additive: stable slugs (see the Cap* constants)
+// naming optional protocol behaviour this client implements. It is a
+// declaration, never a request -- the daemon uses it to decide what it may
+// send, and an unknown slug is inert. A client that omits the field gets
+// exactly the behaviour it got before the field existed, which is the point:
+// every capability must be safe to not have.
 type HandshakeRequest struct {
-	ProtocolVersion int    `json:"protocol_version"`
-	ClientName      string `json:"client_name"`
+	ProtocolVersion int      `json:"protocol_version"`
+	ClientName      string   `json:"client_name"`
+	Capabilities    []string `json:"capabilities,omitempty"`
+}
+
+// HasCapability reports whether the client declared the given capability slug.
+// Centralised here rather than open-coded at each daemon call site so the
+// "absent means no" default cannot be accidentally inverted by a nil slice.
+func (h HandshakeRequest) HasCapability(cap string) bool {
+	for _, c := range h.Capabilities {
+		if c == cap {
+			return true
+		}
+	}
+	return false
 }
 
 // HandshakeResponse is the daemon's reply to a HandshakeRequest. If Ok is
@@ -234,20 +282,161 @@ type Turn struct {
 // no provider to show — clients must render its absence as nothing, never as a
 // degraded/error state. Additive: older clients that don't know this field
 // simply ignore it, exactly like Grounding and Redactions.
+// ToolApproval is additive and carried on its own message, mid-stream: the
+// daemon is asking permission to run one tool call and will not proceed until
+// the client answers with a ToolApprovalResponse on the same connection. Only
+// ever sent to a client that declared CapToolApproval at handshake.
+//
+// ToolActivity is additive and carried on its own messages throughout an agent
+// turn: a running account of what the loop is doing. Purely observational --
+// nothing in it needs an answer.
 type TokenResponse struct {
-	ProtocolVersion int             `json:"protocol_version"`
-	Token           string          `json:"token,omitempty"`
-	Done            bool            `json:"done"`
-	Error           string          `json:"error,omitempty"`
-	ErrorClass      string          `json:"error_class,omitempty"`
-	Reasoning       string          `json:"reasoning,omitempty"`
-	Grounding       *GroundingInfo  `json:"grounding,omitempty"`
-	History         *HistoryInfo    `json:"history,omitempty"`
-	EditProposals   []EditBlockWire `json:"edit_proposals,omitempty"`
-	Redactions      []string        `json:"redactions,omitempty"`
-	Degraded        []Degradation   `json:"degraded,omitempty"`
-	Provider        string          `json:"provider,omitempty"`
-	Incomplete      *IncompleteInfo `json:"incomplete,omitempty"`
+	ProtocolVersion int                  `json:"protocol_version"`
+	Token           string               `json:"token,omitempty"`
+	Done            bool                 `json:"done"`
+	Error           string               `json:"error,omitempty"`
+	ErrorClass      string               `json:"error_class,omitempty"`
+	Reasoning       string               `json:"reasoning,omitempty"`
+	Grounding       *GroundingInfo       `json:"grounding,omitempty"`
+	History         *HistoryInfo         `json:"history,omitempty"`
+	EditProposals   []EditBlockWire      `json:"edit_proposals,omitempty"`
+	Redactions      []string             `json:"redactions,omitempty"`
+	Degraded        []Degradation        `json:"degraded,omitempty"`
+	Provider        string               `json:"provider,omitempty"`
+	Incomplete      *IncompleteInfo      `json:"incomplete,omitempty"`
+	ToolApproval    *ToolApprovalRequest `json:"tool_approval,omitempty"`
+	ToolActivity    *ToolActivity        `json:"tool_activity,omitempty"`
+}
+
+// Trust lanes for an MCP server, reported on ToolApprovalRequest.Lane. The
+// distinction is the honest one, not a marketing one -- see Confined.
+const (
+	// LaneFirstParty: a server shipped with this product, whose workspace
+	// mutations go through editapply's five gates like every model-proposed
+	// edit does.
+	LaneFirstParty = "first_party"
+
+	// LaneThirdParty: any other configured server. It is an ordinary
+	// subprocess running with the user's full privileges, and nothing in this
+	// product can confine what it touches -- the five gates constrain OUR
+	// writer, not somebody else's process. Consent and audit are the whole of
+	// the protection here, which is exactly why this lane is off by default
+	// and requires a per-server acknowledgement in config.
+	LaneThirdParty = "third_party"
+)
+
+// Decisions a client may return on a ToolApprovalResponse.
+const (
+	// ApprovalApprove: run this one call, with these exact arguments. The
+	// grant does not extend to the next call, even an identical one.
+	ApprovalApprove = "approve"
+
+	// ApprovalDeny: do not run it. The loop feeds the model a refusal and
+	// continues, so the model can explain or take another route.
+	ApprovalDeny = "deny"
+
+	// ApprovalApproveForTurn: run this call and any later call to the SAME
+	// tool for the remainder of THIS turn. Scoped to the turn on purpose: it
+	// dies with the connection and the daemon never writes it anywhere, so a
+	// grant can't outlive the task the user granted it for. This is the
+	// deliberate stopping point short of a persistent allow -- a durable
+	// "always allow" belongs in config, where the user writes it themselves
+	// and can read it back later.
+	ApprovalApproveForTurn = "approve_for_turn"
+
+	// ApprovalCancelTurn: deny this call and abandon the whole turn.
+	ApprovalCancelTurn = "cancel_turn"
+)
+
+// ToolApprovalRequest asks the client to show a pending tool call to the user
+// and return a decision. Sent mid-stream on TokenResponse.ToolApproval.
+//
+// Arguments is the exact, complete JSON argument object the daemon will pass
+// to the tool if approved -- not a summary. A consent prompt that shows less
+// than what will run is not consent.
+//
+// ArgumentsSHA256 binds the decision to those bytes. The client echoes it back
+// and the daemon re-checks it before dispatching, so the arguments shown and
+// the arguments run are provably the same object rather than conventionally
+// the same one. This closes the same class of window that VerifyUnchanged
+// closes for edits (see editapply/apply.go): between rendering a thing for a
+// human and acting on it, something must prove the thing did not change.
+//
+// ReadOnlyHint and Destructive are the MCP server's OWN claims about its tool.
+// They are reported so a client can style the prompt, and they are NEVER a
+// gate: a server that says readOnlyHint:true gets exactly the same policy
+// applied to it as one that says nothing. Letting a server's self-description
+// lower the bar it must clear would make consent optional for any server
+// willing to lie, which is the whole population that matters.
+type ToolApprovalRequest struct {
+	CallID          string `json:"call_id"`
+	Server          string `json:"server"`
+	Tool            string `json:"tool"`
+	Arguments       string `json:"arguments"`
+	ArgumentsSHA256 string `json:"arguments_sha256"`
+	Lane            string `json:"lane"`
+	// Confined states whether this call's effects are constrained by the
+	// five-gate pipeline. False is the honest answer for LaneThirdParty and
+	// clients must render it plainly rather than softening it.
+	Confined      bool   `json:"confined"`
+	ReadOnlyHint  bool   `json:"read_only_hint,omitempty"`
+	Destructive   bool   `json:"destructive,omitempty"`
+	Iteration     int    `json:"iteration"`
+	MaxIterations int    `json:"max_iterations"`
+	Detail        string `json:"detail,omitempty"`
+}
+
+// Phases reported on ToolActivity.Phase.
+const (
+	ToolPhaseRequested = "requested" // the model asked for this call
+	ToolPhaseApproved  = "approved"
+	ToolPhaseDenied    = "denied"
+	ToolPhaseRunning   = "running"
+	ToolPhaseSucceeded = "succeeded"
+	ToolPhaseFailed    = "failed"
+)
+
+// ToolActivity narrates one step of an agent turn so a user watching a loop
+// can see what it is doing rather than a spinner. Observational only: it
+// reports a decision already made, in the same spirit as GroundingInfo, and
+// never asks for anything.
+//
+// Detail follows the same disclosure discipline as Degradation.Detail -- it
+// names what happened and what it means, never a path, host, or raw error
+// string. Those stay in the daemon log.
+type ToolActivity struct {
+	CallID     string `json:"call_id"`
+	Server     string `json:"server"`
+	Tool       string `json:"tool"`
+	Phase      string `json:"phase"`
+	Detail     string `json:"detail,omitempty"`
+	DurationMS int64  `json:"duration_ms,omitempty"`
+	// ResultBytes is the size of the tool's output AFTER scrubbing and
+	// truncation -- i.e. the number of bytes that actually go back to the
+	// model. Reported because in agent mode this is the quantity that leaves
+	// the machine, and a user who cares about that deserves to watch it.
+	ResultBytes int `json:"result_bytes,omitempty"`
+}
+
+// ToolApprovalResponse is the client's answer to a ToolApprovalRequest, sent
+// on the SAME connection the turn is streaming over. It is the only message a
+// client sends after its initial request, and only ever in reply to an ask.
+//
+// Approval is the sniffed discriminator (daemon/requestfields.go) and is
+// deliberately NOT omitempty, like every other typed request's: the daemon
+// dispatches on the key's PRESENCE, so a false value that vanished from the
+// wire would be read as a prompt.
+//
+// CallID and ArgumentsSHA256 must both echo the request. A mismatch on either
+// is treated as a denial rather than an error -- if the client cannot prove it
+// is answering the question that was asked, the safe reading of an ambiguous
+// answer is "no".
+type ToolApprovalResponse struct {
+	ProtocolVersion int    `json:"protocol_version"`
+	Approval        bool   `json:"approval"`
+	CallID          string `json:"call_id"`
+	ArgumentsSHA256 string `json:"arguments_sha256"`
+	Decision        string `json:"decision"`
 }
 
 // Stable, machine-readable reason slugs for IncompleteInfo.Reason. Named for
@@ -266,6 +455,54 @@ const (
 	// IncompleteContentFilter: the provider's content filter halted generation
 	// mid-stream, so the answer is partial.
 	IncompleteContentFilter = "content_filter"
+
+	// IncompleteBudgetExceeded: the managed proxy killed the stream mid-flight
+	// because the request crossed its per-request spending ceiling, so the answer
+	// stops wherever generation had got to.
+	//
+	// Unlike the two above, this reason does NOT come from the provider's
+	// finish_reason vocabulary -- it is signalled by the proxy's own terminal
+	// chunk, {"error":"budget_exceeded","truncated":true} (proxy/main.go's
+	// writeBudgetExceeded), which carries no choices and therefore no
+	// finish_reason to reuse. It shares the vocabulary anyway so clients keep one
+	// branch point for "this answer is not whole", and it is equally
+	// provider-neutral: it names a limit this product imposed, never a host,
+	// account, or upstream string.
+	IncompleteBudgetExceeded = "budget_exceeded"
+
+	// IncompleteAgentBudget: an agent-mode turn hit one of the DAEMON's own
+	// per-turn ceilings -- max iterations, wall clock, or cumulative tool
+	// output -- and stopped with whatever the model had produced by then.
+	//
+	// Distinct from IncompleteBudgetExceeded above, which is the proxy killing
+	// a single request on spend. This one is a local, configured limit on how
+	// far one user action may go (see the mcp.budget section of models.json),
+	// and it exists because a loop's natural failure mode is not stopping. The
+	// remedy differs too, which is why it gets its own slug rather than reusing
+	// the other: the user can re-ask to continue, or raise the ceiling in
+	// config, neither of which is the answer to a spend kill.
+	IncompleteAgentBudget = "agent_budget"
+
+	// IncompleteUserCancelled: the user answered ApprovalCancelTurn at a tool
+	// approval prompt, so the turn stopped because they said stop.
+	//
+	// Deliberately NOT IncompleteAgentBudget. Reusing that slug would tell a user
+	// who just pressed "cancel" that they had exhausted some ceiling -- a false
+	// explanation that would send them to raise a limit nothing had reached. Like
+	// a budget stop it is not an error: the text already streamed is real work and
+	// the user keeps it.
+	IncompleteUserCancelled = "user_cancelled"
+
+	// IncompleteProviderError: an agent-mode turn had already produced work when
+	// the model provider failed on a later step, so it stopped there rather than
+	// finishing.
+	//
+	// It is deliberately not an error. By the time this fires the user has
+	// WATCHED the earlier iterations stream in; throwing that away to report a
+	// failure would take back something they already have, lose any edit blocks
+	// in it, and leave the turn absent from conversation memory. A first-iteration
+	// failure has no work to keep and stays an ordinary error.
+	IncompleteProviderError = "provider_error"
 )
 
 // IncompleteInfo reports that a streamed answer ended early rather than
@@ -307,6 +544,24 @@ const (
 	// one fell back" signal would be fabricated. This says the honest, weaker,
 	// checkable thing: fallbacks are PERMITTED for this daemon.
 	DegradedProviderRouting = "provider_routing"
+
+	// DegradedMCPServer: a configured MCP server is unavailable -- it failed to
+	// start, exited, or stopped answering -- so the tools it provides are
+	// missing from this turn. The turn still runs; the model simply has fewer
+	// tools than the user configured, which is worth saying out loud because
+	// the visible symptom is otherwise just an answer that quietly declines to
+	// do something the user knows it can do.
+	DegradedMCPServer = "mcp_server"
+
+	// DegradedToolMenuTruncated: more tools were available this turn than
+	// max_advertised_tools allows, so some were not offered to the model.
+	//
+	// A degradation rather than a silent bound, because the two are
+	// indistinguishable from the outside: a tool that was dropped and a tool
+	// the server never offered both show up as the model not using it. The user
+	// configured that server on purpose and deserves to know which of the two
+	// happened.
+	DegradedToolMenuTruncated = "tool_menu_truncated"
 )
 
 // Degradation names one subsystem running in a reduced mode, in the same
@@ -453,9 +708,21 @@ type UndoRequest struct {
 // files left reverted. A client MUST therefore read Restored even when Error
 // is set; treating an error as "nothing happened" is exactly the wrong
 // assumption this field exists to prevent.
+// Removed is the SUBSET of Restored that was reverted by DELETING the file,
+// because the apply run had created it and the state being reverted to is "no
+// file here" (Fix C). Restored stays the total number of files this undo
+// changed on disk, so a client that never learned about Removed keeps reading
+// the same number it always did.
+//
+// It exists because "restored 3 files" is not true of a run where two of them
+// were deleted, and this protocol's whole standard is that what the client is
+// told and what is on disk agree. The CLI has printed the breakdown since Fix
+// C; a socket client could not, and had to say "restored" about a deletion.
+// restored-minus-removed is the number of files genuinely put back.
 type UndoResponse struct {
 	ProtocolVersion int      `json:"protocol_version"`
 	Restored        int      `json:"restored"`
+	Removed         int      `json:"removed,omitempty"`
 	Guarded         []string `json:"guarded,omitempty"`
 	SessionDir      string   `json:"session_dir,omitempty"`
 	Error           string   `json:"error,omitempty"`
@@ -583,6 +850,10 @@ type StatusRetrieval struct {
 //
 // Degraded is the identical type and content the prompt path reports, so the
 // pushed and pulled views of the daemon's health can never disagree.
+//
+// Counters is additive and omitted when absent, so ProtocolVersion stays at 1: a
+// client built before it existed decodes the response exactly as it always did
+// and ignores the field. See StatusCounters.
 type StatusResponse struct {
 	ProtocolVersion  int             `json:"protocol_version"`
 	DaemonVersion    string          `json:"daemon_version"`
@@ -597,6 +868,55 @@ type StatusResponse struct {
 	ConfigVersion    int             `json:"config_version,omitempty"`
 	ConfigWarnings   []string        `json:"config_warnings,omitempty"`
 	Degraded         []Degradation   `json:"degraded,omitempty"`
+	Counters         *StatusCounters `json:"counters,omitempty"`
+}
+
+// StatusCounters is what this daemon has done since it started.
+//
+// Every field is a count of something the daemon previously only logged, which
+// meant it was observable exactly once, on stderr, at the moment it happened. The
+// refusal counts are the operationally interesting half: a caller that cannot get
+// past peer auth, or that keeps sending an unsupported protocol version, produced
+// one stderr line on a connection that then went away.
+//
+// Deliberately counts only WHAT happened, never any request's content: no paths,
+// no prompts, no workspace-relative filenames. The socket is same-UID and 0600, but
+// this is a report of a daemon's own activity and there is no reason for it to
+// carry anything from a request body.
+type StatusCounters struct {
+	Prompts       int64 `json:"prompts"`
+	Applies       int64 `json:"applies"`
+	AppliesFailed int64 `json:"applies_failed"`
+	Undos         int64 `json:"undos"`
+	UndosFailed   int64 `json:"undos_failed"`
+	Searches      int64 `json:"searches"`
+	Statuses      int64 `json:"statuses"`
+	Resets        int64 `json:"resets"`
+
+	// Refusals, all of them before dispatch.
+	PeerAuthRefused   int64 `json:"peer_auth_refused"`
+	VersionMismatched int64 `json:"version_mismatched"`
+	Oversized         int64 `json:"oversized"`
+	Malformed         int64 `json:"malformed"`
+	EmptyPrompts      int64 `json:"empty_prompts"`
+
+	// PanicsRecovered counts faults contained by handleConn's recover. Nonzero
+	// means the daemon survived a bug it should not have had.
+	PanicsRecovered int64 `json:"panics_recovered"`
+
+	// Agent mode. All zero on a daemon that has never run an agent turn, which
+	// is every daemon with mcp.enabled unset -- so a nonzero AgentTurns is
+	// itself the answer to "is this daemon running tools?".
+	//
+	// ToolCallsDenied is the one worth watching. A daemon denying steadily is
+	// either misconfigured or being asked for things it should not do, and from
+	// the user's side those look identical ("it keeps saying it can't").
+	AgentTurns         int64 `json:"agent_turns"`
+	ToolCalls          int64 `json:"tool_calls"`
+	ToolCallsApproved  int64 `json:"tool_calls_approved"`
+	ToolCallsDenied    int64 `json:"tool_calls_denied"`
+	ToolCallsFailed    int64 `json:"tool_calls_failed"`
+	BudgetTerminations int64 `json:"budget_terminations"`
 }
 
 // GroundingInfo reports whether the daemon augmented THIS request with

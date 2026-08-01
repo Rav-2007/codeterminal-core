@@ -35,12 +35,19 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
+	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
+	"runtime/debug"
 	"strings"
+	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -93,11 +100,71 @@ const (
 	// above it rather than equal to it.
 	serverWriteTimeout = 6 * time.Minute
 
+	// maxClientWriteStall bounds the CUMULATIVE time one response spends
+	// blocked writing to its own client, which is the per-connection output
+	// bound that serverWriteTimeout is not.
+	//
+	// serverWriteTimeout bounds the whole response, and it has to be generous:
+	// a legitimate completion can stream for five minutes. That generosity is
+	// the hole. A client that reads one byte just under every timeout window
+	// holds its connection, its in-flight slot and its upstream call for the
+	// full six minutes while consuming almost nothing — the M10 slow-drip. The
+	// in-flight caps bound how MANY such connections can exist; nothing bounded
+	// one of them.
+	//
+	// WHAT IS MEASURED IS THE STALL, NOT THE RATE, and that distinction is the
+	// whole design. An average bytes/sec over the stream cannot tell a slow
+	// client from a slow model — and killing a caller because the provider is
+	// thinking would be a far worse bug than the one being fixed. Time spent
+	// blocked INSIDE the write to the client is unambiguous: it is the client's
+	// socket buffer being full, i.e. the client not reading. A healthy client
+	// accumulates almost none of it however long the model takes, because the
+	// write lands in the socket buffer and returns.
+	//
+	// 60s against a 6-minute ceiling: a six-fold reduction in how long one
+	// non-reading client can pin a connection, with two orders of magnitude of
+	// headroom over what normal traffic accrues.
+	maxClientWriteStall = 60 * time.Second
+
 	// serverIdleTimeout bounds how long a keep-alive connection may sit
 	// idle between requests. Doesn't affect an active request (that's
 	// serverReadTimeout/serverWriteTimeout's job) -- just reclaims
 	// connections nothing is using.
 	serverIdleTimeout = 120 * time.Second
+
+	// shutdownGrace is how long a SIGTERM'd process keeps serving in-flight
+	// requests before it stops waiting and exits.
+	//
+	// Sized against the PLATFORM, not against upstreamTimeout. Railway sends
+	// SIGTERM and then SIGKILLs after its own grace window; a value above that
+	// window buys nothing, because the kernel ends the process regardless. 25s
+	// sits under the commonly-documented 30s so the process gets to finish on its
+	// own terms and log that it did.
+	//
+	// It is deliberately far BELOW upstreamTimeout (5m). A long completion still
+	// in flight at 25s is cut -- that is unavoidable when the platform is going to
+	// kill us anyway. What matters is that it is cut with the reservation
+	// discharged (P1.1's deferred finalizer runs as the handler unwinds) instead
+	// of stranded, which is the difference between a client retrying and an
+	// account being permanently over-charged. See docs/ROBUSTNESS_BASELINE.md §3.
+	shutdownGrace = 25 * time.Second
+
+	// preDrainDelay is the window between flipping /health to 503 and calling
+	// srv.Shutdown, carved out of shutdownGrace.
+	//
+	// It exists because of a flaw caught by actually running the shutdown drill
+	// rather than reasoning about it: http.Server.Shutdown closes the LISTENER
+	// immediately, so once it is called no new connection is accepted at all and
+	// the 503 nothing can connect to is unobservable. Announcing then instantly
+	// refusing means the load balancer learns this replica is leaving by getting
+	// a connection error -- which is the exact behaviour the flip was added to
+	// avoid.
+	//
+	// So: flip, keep accepting for this long so at least one health poll can see
+	// the 503 and pull the instance from rotation, and only then stop accepting.
+	// 3s covers a 1-2s health-check interval with margin, and it is spent while
+	// in-flight requests continue, so it costs nothing but shutdown latency.
+	preDrainDelay = 3 * time.Second
 
 	// keyLogPrefixLen is the most of a caller-supplied key that is ever
 	// written to a log line -- never the full key.
@@ -127,8 +194,42 @@ const (
 	defaultReservationTokens = 4096
 
 	// maxReservationTokens clamps a caller-declared max_tokens so one
-	// request can't claim an outsized reservation.
+	// request can't claim an outsized reservation. A declared value ABOVE it is
+	// now refused outright rather than silently clamped -- see the
+	// max_tokens_too_large check in handleChatCompletions for why clamping the
+	// reservation while forwarding the caller's larger number was the mismatch
+	// that created the overshoot in the first place.
 	maxReservationTokens = 32768
+
+	// absoluteMaxRequestTokens is the hard per-request output ceiling enforced
+	// mid-stream (see streamSSE / requestTokenCeiling), applied REGARDLESS of how
+	// much quota headroom a key has. Quota bounds what a key may spend in total;
+	// this bounds what any ONE request may spend, so a large enterprise quota
+	// cannot be drained by a single call. Sized at 2x maxReservationTokens: high
+	// enough that no legitimate completion reaches it, low enough to bound the
+	// damage from a caller that declares no max_tokens and lets the provider's own
+	// (far larger) default ceiling apply.
+	absoluteMaxRequestTokens = 65536
+
+	// maxBytesPerChunkGuard sizes the mid-stream BYTE bound relative to the token
+	// ceiling (see budgetExceeded): a stream may carry at most
+	// ceiling * maxBytesPerChunkGuard bytes.
+	//
+	// 512 is comfortably above a real OpenRouter chunk, which runs ~294 bytes of
+	// JSON envelope (id, provider, model, object, created, choices[].index,
+	// delta.role, finish_reason, native_finish_reason, logprobs) around a single
+	// token of delta content. Scaling the bound by the ceiling rather than fixing
+	// it keeps the guard proportional: a nearly-exhausted key with a ceiling of
+	// 150 gets ~76KB, a full key gets ~32MB.
+	//
+	// This bound exists ONLY to catch the pathological case chunk-counting misses
+	// -- a provider that batches an entire answer into a handful of huge chunks.
+	// It is deliberately NOT a token estimate. An earlier version of this code
+	// divided accumulated line length by 4 ("bytes per token") and took the max
+	// against the chunk count; because it measured the repeated ENVELOPE rather
+	// than the content, it scored ~73 tokens per real token and would have
+	// truncated every legitimate completion at roughly 900 tokens.
+	maxBytesPerChunkGuard = 512
 
 	// correctUsageMaxAttempts bounds correctUsage's retries against a
 	// transient Supabase failure. Not full durability against a sustained
@@ -164,6 +265,17 @@ const (
 	// than maxAuthResponseBytes because this response scales with the
 	// number of abandoned reservations, not with a single fixed row.
 	maxSweepResponseBytes = 4 << 20 // 4MB
+
+	// maxDrainBytes bounds how much of an already-decoded response body
+	// decodeCappedJSON will read past its decode cap in order to reach EOF and let
+	// http.Transport re-pool the connection.
+	//
+	// Deliberately larger than every decode cap above, because the only case that
+	// needs draining is the one where the body exceeded its cap -- a drain bounded
+	// by the cap itself can never reach EOF and buys nothing. 8MB clears any
+	// plausible PostgREST response (the largest legitimate one, the sweep's, is
+	// capped at 4MB) while still being a bound rather than an open invitation.
+	maxDrainBytes = 8 << 20 // 8MB
 
 	// defaultAllowedModels is the managed tier's shipped model set (the three
 	// tiers in models.json). Used when ALLOWED_MODELS is unset, so the
@@ -205,6 +317,43 @@ var allowedResponseHeaders = []string{"Content-Type"}
 // shape carries the same field on success.
 var accountMetadataFields = []string{"user_id"}
 
+// decodeCappedJSON decodes one JSON value from resp.Body under a byte cap, then
+// drains whatever the decoder left so the connection can be re-pooled.
+//
+// The drain is the only reason this helper exists, and its value is narrower than
+// it looks -- measured rather than assumed (docs/ROBUSTNESS_BASELINE.md §4).
+//
+// The tempting story is that json.Decoder.Decode stops at the first complete value
+// and never reaches EOF, so http.Transport never re-pools and every Supabase call
+// pays a fresh TCP+TLS handshake. That story is FALSE for normal responses, and was
+// measured false at 0B, 100B, 4KB and 64KB: the decoder's buffered reader consumes
+// through EOF while filling its buffer, so for a Content-Length body the transport
+// sees EOF and re-pools anyway. The unexplained ~80ms on reserveQuota is NOT this,
+// and this change must not be reported as a latency fix.
+//
+// What IS real is the over-cap case. When the response exceeds cap, Decode stops
+// early with bytes still unread and pooling genuinely breaks: 20 distinct TCP
+// connections across 20 sequential requests, against 1 when drained. Such a
+// response also fails to decode and is refused, so this is the already-degraded
+// path -- precisely when you least want to also pay a handshake per request.
+//
+// The drain is bounded, but by maxDrainBytes rather than by cap. Bounding it by
+// cap would be self-defeating and was: the case that needs draining is precisely
+// the one where the body EXCEEDED cap, so a cap-sized drain cannot reach EOF and
+// the connection is lost anyway. Caught by the test below rather than by reading
+// this code, which is why the test asserts the connection count instead of merely
+// asserting that a drain was attempted.
+//
+// Reading unboundedly would trade a bounded cost for an unbounded one, so a body
+// past maxDrainBytes correctly loses its connection. That bound is safe to make
+// generous here because this reader is Supabase -- our own backend -- and the
+// decode cap exists to bound MEMORY, not because the peer is hostile.
+func decodeCappedJSON(resp *http.Response, cap int64, v any) error {
+	err := json.NewDecoder(io.LimitReader(resp.Body, cap)).Decode(v)
+	io.Copy(io.Discard, io.LimitReader(resp.Body, maxDrainBytes))
+	return err
+}
+
 // stripAccountMetadata removes accountMetadataFields from a JSON object
 // body, returning it unchanged if it isn't a JSON object (never errors
 // the caller over a body this proxy doesn't otherwise parse or validate)
@@ -233,6 +382,10 @@ func stripAccountMetadata(body []byte) []byte {
 
 func main() {
 	logger := log.New(os.Stderr, "codeterminal-proxy: ", log.LstdFlags)
+	// Startup and shutdown records. logger itself is kept for the Fatal calls
+	// below -- slog has no Fatal, and a misconfiguration must still kill the
+	// process rather than log at Error and carry on serving.
+	startupLog := slogFromLogger(logger)
 
 	apiKey := os.Getenv("OPENROUTER_API_KEY")
 	if apiKey == "" {
@@ -252,7 +405,7 @@ func main() {
 	supabaseURL := os.Getenv("SUPABASE_URL")
 	supabaseServiceRoleKey := os.Getenv("SUPABASE_SERVICE_ROLE_KEY")
 	if supabaseURL == "" || supabaseServiceRoleKey == "" {
-		logger.Printf("WARNING: SUPABASE_URL and/or SUPABASE_SERVICE_ROLE_KEY not set -- every request will fail auth and be rejected with 401 (fail closed)")
+		startupLog.Warn("SUPABASE_URL and/or SUPABASE_SERVICE_ROLE_KEY not set -- every request will fail auth and be rejected with 401 (fail closed)")
 	}
 
 	// RAILWAY_GIT_COMMIT_SHA is set automatically by Railway's build
@@ -266,45 +419,210 @@ func main() {
 
 	// ALLOWED_MODELS overrides the shipped tier set; empty disables the check and
 	// is warned about loudly so "unrestricted" is never a silent default.
+	// Read before newProxy so a too-short token kills startup before anything is
+	// listening (see adminTokenFromEnv).
+	adminToken := adminTokenFromEnv(logger)
+
 	allowedModels := parseAllowedModels(os.Getenv("ALLOWED_MODELS"))
 	if len(allowedModels) == 0 {
 		allowedModels = parseAllowedModels(defaultAllowedModels)
 	}
-	logger.Printf("model allow-list: %d model(s) permitted", len(allowedModels))
+	startupLog.Info("model allow-list applied", "models", len(allowedModels))
 
 	p := newProxy(apiKey, strings.TrimRight(upstreamBase, "/")+chatCompletionsPath,
 		supabaseURL, supabaseServiceRoleKey, logger, allowedModels)
+
+	// One cancel signal shared by every background loop, tripped by the first
+	// SIGTERM/SIGINT so nothing keeps working after the process is on its way out.
+	shutdownCtx, beginShutdown := context.WithCancel(context.Background())
+	defer beginShutdown()
 
 	// Crash recovery for quota reservations (QUOTA_RESERVATION_DESIGN.md §5(e)).
 	// Deliberately started before ListenAndServe: a process that just came back
 	// from a crash should be sweeping the reservations that crash stranded, and
 	// the sweep is independent of whether this instance is serving traffic yet.
-	go p.startReconciliationSweep()
+	go p.startReconciliationSweep(shutdownCtx)
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/health", p.rateLimitedHealth(makeHealthHandler(buildCommit)))
-	mux.HandleFunc(chatCompletionsPath, p.handleChatCompletions)       // "/chat/completions"
-	mux.HandleFunc("/v1"+chatCompletionsPath, p.handleChatCompletions) // "/v1/chat/completions" alias
+	if adminToken != "" {
+		startupLog.Info("counters exposed", "path", adminMetricsPath, "auth", "bearer token")
+	} else {
+		startupLog.Info("counters NOT exposed: " + adminTokenEnv + " is unset")
+	}
+
+	// The revocation window is an operational fact, so it is stated at startup
+	// rather than left to be discovered in authcache.go. When there is no admin
+	// token there is also no flush route, which means the TTL is the ONLY bound
+	// on a revoked key -- worth saying out loud in that configuration.
+	if adminToken != "" {
+		startupLog.Info("auth cache enabled", "ttl", authCacheTTL.String(),
+			"max_entries", authCacheMaxEntries, "flush_path", adminAuthCacheFlushPath)
+	} else {
+		startupLog.Warn("auth cache enabled with NO flush route ("+adminTokenEnv+
+			" is unset): a revoked key stays valid for up to the full TTL",
+			"ttl", authCacheTTL.String(), "max_entries", authCacheMaxEntries)
+	}
 
 	srv := &http.Server{
 		Addr:              ":" + port,
-		Handler:           mux,
+		Handler:           newHandler(p, logger, buildCommit, adminToken),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       serverReadTimeout,
 		WriteTimeout:      serverWriteTimeout,
 		IdleTimeout:       serverIdleTimeout,
 	}
 
-	logger.Printf("listening on :%s -> upstream %s", port, p.upstreamURL)
-	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	// Bind before serving so a bind failure is a startup error here, rather than
+	// something the serve goroutine discovers later.
+	ln, err := net.Listen("tcp", srv.Addr)
+	if err != nil {
+		logger.Fatalf("listening on %s: %v", srv.Addr, err)
+	}
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+	startupLog.Info("listening", "port", port, "upstream", p.upstreamURL, "log_level", logLevelFromEnv().String())
+	if err := serveUntilSignal(srv, ln, logger, &p.draining, beginShutdown, sigCh); err != nil {
 		logger.Fatal(err)
 	}
+	startupLog.Info("exiting")
+}
+
+// newHandler builds the proxy's whole HTTP surface: the route table, plus the two
+// middlewares in the one order that works.
+//
+// Extracted from main for the same reason serveUntilSignal was (see P1.2b below):
+// this wiring decides what happens on the paths a caller cannot otherwise explain
+// -- a panic, a 404, a throttle -- and inside main() no test could reach any of
+// it. The route table itself is unchanged.
+//
+// The ordering is load-bearing at every layer:
+//
+//   - recoverPanics wraps the WHOLE mux, which is safe here in a way the rate
+//     limiters are not (hence the catch-all route rather than a wrapper -- a
+//     wrapper would charge the pre-auth bucket twice on the real routes):
+//     recovery has no per-request budget to spend.
+//   - accessLog is OUTSIDE recovery, so a panicking request's line reports the
+//     500 recovery wrote rather than the status that had been written when the
+//     fault happened.
+//   - withRequestID is outermost, so recoverPanics and accessLog can both READ
+//     the id: inside them, they hold a request whose context never had one, and
+//     the stack and the access line become uncorrelatable.
+func newHandler(p *proxy, logger *log.Logger, buildCommit, adminToken string) http.Handler {
+	return wrapMiddleware(logger, p.metrics, newMux(p, buildCommit, adminToken))
+}
+
+// wrapMiddleware applies the middlewares, in the order newHandler's comment
+// explains. Separate from newMux so a test can drive this exact wrapping -- the
+// one main serves -- around a handler that panics on purpose, which no real route
+// does.
+func wrapMiddleware(logger *log.Logger, m *metricSet, next http.Handler) http.Handler {
+	return withRequestID(withStageTimer(accessLog(logger, m, recoverPanics(logger, m, next))))
+}
+
+// newMux is the route table.
+func newMux(p *proxy, buildCommit, adminToken string) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", p.rateLimitedHealth(makeHealthHandler(buildCommit, &p.draining)))
+	mux.HandleFunc(chatCompletionsPath, p.handleChatCompletions)       // "/chat/completions"
+	mux.HandleFunc("/v1"+chatCompletionsPath, p.handleChatCompletions) // "/v1/chat/completions" alias
+	// The counters route exists ONLY when a token is configured. Not "exists and
+	// refuses" -- absent configuration must not leave an operational endpoint on a
+	// public listener at all, and an unregistered path is answered by the
+	// throttled catch-all below like any other unknown route.
+	if adminToken != "" {
+		mux.HandleFunc(adminMetricsPath, p.adminMetricsHandler(adminToken))
+		mux.HandleFunc(adminAuthCacheFlushPath, p.adminAuthCacheFlushHandler(adminToken))
+	}
+
+	// Catch-all for every unregistered path. Without it those requests 404 out of
+	// the mux without passing through admitPreAuth at all -- an unauthenticated,
+	// completely unthrottled endpoint. Cheap per request, but unbounded is
+	// unbounded.
+	mux.HandleFunc("/", p.rateLimitedNotFound())
+
+	return mux
+}
+
+// serveUntilSignal serves ln until a signal arrives, then drains and returns.
+//
+// Extracted from main so the shutdown sequence -- now the most safety-critical
+// code in this file -- is reachable from a test. It was written inline first, and
+// measured: proxy coverage fell from 80.3% to 78.5% because none of it could be
+// exercised. Everything below is testable with a synthetic signal channel and a
+// listener on port 0.
+//
+// The sequence and its ordering both matter:
+//
+//  1. Flip /health to 503 FIRST. The load balancer takes a moment to notice, and
+//     until it does it keeps routing new requests here; a 503 with a Retry-After
+//     is a far better answer than a connection reset.
+//  2. Stop the background loops (the reconciliation sweep), so nothing keeps
+//     working on behalf of a server that is going away.
+//  3. Keep ACCEPTING for preDrainDelay. http.Server.Shutdown closes the listener
+//     immediately, so without this pause the 503 is announced on a port that
+//     instantly stops answering -- the balancer would learn about the shutdown
+//     from a connection error, which is what the flip exists to prevent. This was
+//     a real flaw in the first cut, caught by running the drill.
+//  4. Shutdown: stop accepting, close idle keep-alives, wait for active handlers.
+//     Each handler that returns runs P1.1's deferred finalizer, so a request cut
+//     short here is BILLED rather than stranded.
+//
+// Returns nil on a clean shutdown, including a drain that hit its deadline -- that
+// is a degraded outcome, not a startup failure, and it is reported in the log where
+// an operator will see it. A non-nil error means the server could not serve at all.
+func serveUntilSignal(srv *http.Server, ln net.Listener, logger *log.Logger, draining *atomic.Bool, beginShutdown func(), sigCh <-chan os.Signal) error {
+	sl := slogFromLogger(logger)
+	shutdownDone := make(chan struct{})
+	go func() {
+		defer close(shutdownDone)
+		sig := <-sigCh
+
+		draining.Store(true)
+		sl.Info("draining: /health now reports 503, still accepting so the load balancer can notice, then finishing in-flight requests",
+			"signal", sig.String(), "pre_drain", preDrainDelay.String(), "grace", shutdownGrace.String())
+
+		beginShutdown()
+
+		time.Sleep(preDrainDelay)
+
+		ctx, cancel := context.WithTimeout(context.Background(), shutdownGrace-preDrainDelay)
+		defer cancel()
+		if err := srv.Shutdown(ctx); err != nil {
+			// Deadline hit with handlers still running. Say so plainly: those are
+			// the requests whose reservations may still be stranded, and an
+			// operator needs to know the drain was incomplete rather than reading
+			// a clean-looking exit.
+			sl.Error("drain INCOMPLETE -- in-flight requests were cut; any reservation they had not yet corrected will surface in the next reconciliation sweep",
+				"after", (shutdownGrace - preDrainDelay).String(), "err", err)
+			return
+		}
+		sl.Info("drain complete, all in-flight requests finished")
+	}()
+
+	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+
+	// Serve returns ErrServerClosed the moment Shutdown is called, so block until
+	// the drain actually finishes. Returning here would let the caller exit and
+	// kill the very handlers Shutdown is waiting for -- reintroducing the bug with
+	// extra steps.
+	<-shutdownDone
+	return nil
 }
 
 type proxy struct {
-	apiKey                 string
-	upstreamURL            string
-	logger                 *log.Logger
+	apiKey      string
+	upstreamURL string
+	// logger is kept for the few places that want a raw line rather than a
+	// record -- a panic stack, which is unreadable escaped into an attr.
+	logger *log.Logger
+	// log is the structured logger everything else writes through. Derived from
+	// logger, so both funnel through one serialized destination (see
+	// logWriterAdapter) and injecting a buffer in a test still captures
+	// everything.
+	log                    *slog.Logger
 	client                 *http.Client
 	supabaseURL            string
 	supabaseServiceRoleKey string
@@ -315,33 +633,76 @@ type proxy struct {
 	preAuthPerSource *rateLimiter
 	preAuthGlobal    *rateLimiter
 	keyRate          *rateLimiter
+	keyTokens        *rateLimiter
 	inFlight         *inFlightLimiter
+
+	// metrics counts what the log describes (see metrics.go). Never nil after
+	// newProxy, so no call site needs a check.
+	metrics *metricSet
 
 	// allowedModels is the cost-authorization allow-list (see modelAllowed).
 	// Empty means unrestricted.
 	allowedModels map[string]bool
+
+	// authCache holds SUCCESSFUL key-hash -> api_keys.id lookups for
+	// authCacheTTL, removing one of the two pre-upstream Supabase round trips
+	// for warm keys (see authcache.go for the security properties, which are
+	// the design rather than a footnote to it).
+	authCache *authCache
+
+	// draining is set once a shutdown signal arrives and never cleared. It only
+	// changes what /health reports; it deliberately does NOT gate
+	// handleChatCompletions. Refusing in-flight or newly-arrived work ourselves
+	// would duplicate what http.Server.Shutdown already does correctly (stop
+	// accepting, let active handlers finish) while adding a race of our own
+	// between the check and the reservation.
+	draining atomic.Bool
+
+	// maxClientStall is the per-connection output bound (see
+	// maxClientWriteStall, which is the value it always holds in production).
+	// A field rather than a bare constant so a test can prove the bound bites
+	// without spending a real minute doing it -- the alternative is a test that
+	// takes 60 seconds, which is a test nobody runs.
+	maxClientStall time.Duration
 }
 
 // newProxy builds a proxy with admission control wired up. Constructing the
 // limiters here (rather than lazily) keeps them non-nil for every code path,
 // including tests, so a missing limiter can never silently mean "unlimited".
 func newProxy(apiKey, upstreamURL, supabaseURL, supabaseServiceRoleKey string, logger *log.Logger, allowedModels map[string]bool) *proxy {
-	return &proxy{
+	p := &proxy{
 		apiKey:                 apiKey,
 		upstreamURL:            upstreamURL,
 		logger:                 logger,
+		log:                    slogFromLogger(logger),
 		supabaseURL:            supabaseURL,
 		supabaseServiceRoleKey: supabaseServiceRoleKey,
 		// No blanket http.Client.Timeout: a streaming response can
 		// legitimately run for minutes. Each request's own context deadline
 		// (upstreamTimeout) is what bounds it instead.
 		client:           &http.Client{},
+		metrics:          newMetrics(),
 		preAuthPerSource: newRateLimiter(preAuthRatePerSourcePerSecond, preAuthBurstPerSource),
 		preAuthGlobal:    newRateLimiter(preAuthRateGlobalPerSecond, preAuthBurstGlobal),
 		keyRate:          newRateLimiter(keyRatePerSecond, keyBurst),
+		keyTokens:        newRateLimiter(keyTokenRatePerSecond, keyTokenBurst),
 		inFlight:         newInFlightLimiter(maxInFlightPerKey, maxInFlightTotal),
 		allowedModels:    allowedModels,
+		authCache:        newAuthCache(authCacheTTL, authCacheMaxEntries),
+		maxClientStall:   maxClientWriteStall,
 	}
+	// Bound here rather than in newMetrics because the flag lives on the proxy
+	// that was just built; a scrape reads it live (see bindDraining).
+	p.metrics.bindDraining(&p.draining)
+	// Same reasoning for the bucket total: the limiters were only just
+	// constructed, and a scrape sums them live rather than reading a mirror.
+	p.metrics.bindLimiterBuckets(func() int {
+		return p.preAuthPerSource.bucketCount() +
+			p.preAuthGlobal.bucketCount() +
+			p.keyRate.bucketCount() +
+			p.keyTokens.bucketCount()
+	})
+	return p
 }
 
 // admitPreAuth applies the unauthenticated-surface limits. It runs before any
@@ -349,15 +710,18 @@ func newProxy(apiKey, upstreamURL, supabaseURL, supabaseServiceRoleKey string, l
 // a third-party dependency. Per-source first (spoofable via X-Forwarded-For),
 // with the global bucket as the backstop that spoofing cannot evade.
 func (p *proxy) admitPreAuth(w http.ResponseWriter, r *http.Request) bool {
+	reqID := requestIDFrom(r.Context())
 	if !p.preAuthGlobal.allow("global") {
-		p.logger.Printf("rate: refused (pre-auth global ceiling)")
-		tooManyRequests(w, "global")
+		p.log.Warn("rate limited", "req_id", reqID, "gate", gateRateLimited, "scope", "global")
+		p.metrics.countRateLimited("global")
+		tooManyRequests(w, "global", reqID)
 		return false
 	}
 	src := clientSource(r)
 	if !p.preAuthPerSource.allow(src) {
-		p.logger.Printf("rate: refused (pre-auth per-source)")
-		tooManyRequests(w, "source")
+		p.log.Warn("rate limited", "req_id", reqID, "gate", gateRateLimited, "scope", "source")
+		p.metrics.countRateLimited("source")
+		tooManyRequests(w, "source", reqID)
 		return false
 	}
 	return true
@@ -400,15 +764,108 @@ func (p *proxy) rateLimitedHealth(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// recoverPanics contains a panic in any handler to the one request that caused it.
+//
+// net/http already recovers a handler panic at the connection level, so this does
+// not exist to keep the process alive. It exists for the two things net/http's
+// recovery does NOT do, both of which matter here:
+//
+//  1. It logs with a stack. net/http logs the panic to the server's ErrorLog in a
+//     format that is not this proxy's, and an operator chasing a 500 needs the
+//     stack next to the request's own log lines, not in a different shape.
+//  2. It answers the client. net/http's recovery closes the connection without a
+//     response, so the caller sees a reset rather than a status. The daemon's
+//     error handling distinguishes a 5xx from a transport failure, and a reset is
+//     the more confusing of the two to debug.
+//
+// It deliberately does NOT touch the reservation. P1.1 made discharging it a
+// `defer` inside handleChatCompletions, which runs during panic unwinding before
+// this recovery is reached, so by the time we get here the reservation is already
+// billed exactly once. Trying to also finalize from here would be the double-bill
+// this design was built to prevent -- finalizeReservation's `finalized` flag makes
+// that safe rather than merely unlikely, but the right answer is not to reach for
+// it at all.
+//
+// The status write is best-effort by necessity: a panic after the handler already
+// called WriteHeader (mid-stream, most likely) cannot change the status, and
+// net/http will log the superfluous-WriteHeader attempt. Returning a truncated
+// stream is the honest outcome there; the log line is what carries the diagnosis.
+func recoverPanics(logger *log.Logger, m *metricSet, next http.Handler) http.Handler {
+	sl := slogFromLogger(logger)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			// Named `fault`, not `r`: the original spelling shadowed the
+			// *http.Request, which is now read here for the request id.
+			fault := recover()
+			if fault == nil {
+				return
+			}
+			// http.ErrAbortHandler is net/http's documented way for a handler to
+			// abort a connection on purpose. It is not a fault and must not be
+			// logged as one, or a deliberate abort becomes indistinguishable from
+			// a real bug in the logs.
+			if fault == http.ErrAbortHandler {
+				panic(fault)
+			}
+			// req_id ties this stack to the 500 the caller received. It is also
+			// what makes the middleware ORDER checkable: read from the request
+			// context, it is present only while withRequestID is OUTSIDE this
+			// recovery. Swap them and this line logs an empty id -- see
+			// TestNewHandlerWiring, which asserts on exactly that.
+			reqID := requestIDFrom(r.Context())
+			m.countPanic()
+			sl.Error("PANIC recovered while handling a request",
+				"req_id", reqID, "path", r.URL.Path, "panic", fmt.Sprint(fault))
+			// The stack goes out as a RAW line rather than a slog attr, and
+			// deliberately: escaped into an attr it becomes one enormous quoted
+			// string with \n between every frame, which is exactly the shape nobody
+			// can read in a log viewer. It carries req_id so it still joins the
+			// record above.
+			logger.Printf("panic stack (req_id=%s):\n%s", reqID, debug.Stack())
+			// Body-less: an error body could echo attacker-controlled content, and
+			// there is nothing useful to say that the status does not already say.
+			w.WriteHeader(http.StatusInternalServerError)
+		}()
+		next.ServeHTTP(w, r)
+	})
+}
+
+// rateLimitedNotFound serves every unregistered path: pre-auth limits first, then
+// a 404 that discloses nothing about which routes exist.
+func (p *proxy) rateLimitedNotFound() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !p.admitPreAuth(w, r) {
+			return
+		}
+		p.metrics.countRefusal(gateNotFound)
+		writeRefusal(w, http.StatusNotFound, "not_found", requestIDFrom(r.Context()))
+	}
+}
+
 // makeHealthHandler closes over the build's commit SHA (read once at
 // startup in main) so every /health response reports it without a global.
-func makeHealthHandler(commit string) http.HandlerFunc {
+//
+// draining is the shutdown flag. Once it is set, /health answers 503 with a
+// Retry-After so the platform's load balancer stops sending new work here while
+// the in-flight requests finish. A draining instance that keeps answering 200 is
+// the reason a rolling deploy resets live connections: the balancer has no way to
+// know this replica is leaving. Passed in rather than read off a package global so
+// the behaviour is testable without a running server.
+func makeHealthHandler(commit string, draining *atomic.Bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		reported := ""
 		if healthCommitVisible() {
 			reported = commit
 		}
-		body, err := json.Marshal(healthResponse{Status: "ok", Commit: reported})
+
+		status := "ok"
+		code := http.StatusOK
+		if draining != nil && draining.Load() {
+			status = "draining"
+			code = http.StatusServiceUnavailable
+		}
+
+		body, err := json.Marshal(healthResponse{Status: status, Commit: reported})
 		if err != nil {
 			// Unreachable in practice (healthResponse is two plain
 			// strings), but fail the same way a real health-check
@@ -417,7 +874,10 @@ func makeHealthHandler(commit string) http.HandlerFunc {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
+		if code == http.StatusServiceUnavailable {
+			w.Header().Set("Retry-After", "1")
+		}
+		w.WriteHeader(code)
 		w.Write(body)
 	}
 }
@@ -438,12 +898,16 @@ func makeHealthHandler(commit string) http.HandlerFunc {
 // what keeps this proxy zero-data-retention-preserving rather than just a
 // relay that happens to also see everything.
 func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
+	reqID := requestIDFrom(r.Context())
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		p.metrics.countRefusal(gateMethodNotAllowed)
+		writeRefusal(w, http.StatusMethodNotAllowed, "method_not_allowed", reqID)
 		return
 	}
 
-	p.logger.Printf("request received: %s", r.URL.Path)
+	// Debug: the access-log line (accessLog) already records every request with
+	// its path, status and latency, so this is only useful when tracing.
+	p.log.Debug("request received", "req_id", reqID, "path", r.URL.Path)
 
 	// Pre-auth admission FIRST: every authorize() call is a Supabase round trip,
 	// so an unauthenticated flood would otherwise amplify into a third party.
@@ -452,9 +916,11 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	apiKeyID, ok := p.authorize(r)
+	var apiKeyID string
+	var ok bool
+	timeStage(r.Context(), stageAuth, func() { apiKeyID, ok = p.authorize(r) })
 	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		writeRefusal(w, http.StatusUnauthorized, "unauthorized", reqID)
 		return
 	}
 
@@ -463,14 +929,29 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// unit of tenancy. Rate bounds requests over time; in-flight bounds them at
 	// once, which the rate limit alone does not: long streaming calls accumulate.
 	if !p.keyRate.allow(apiKeyID) {
-		p.logger.Printf("rate: refused (key id=%s over its request rate)", apiKeyID)
-		tooManyRequests(w, "key_rate")
+		p.log.Warn("rate limited", "req_id", reqID, "gate", gateRateLimited,
+			"scope", "key_rate", "key_id", apiKeyID)
+		p.metrics.countRateLimited("key_rate")
+		tooManyRequests(w, "key_rate", reqID)
+		return
+	}
+	// Second layer: TOKEN volume, which the request-rate limiter above cannot
+	// see. Checked (not spent) here because a request's real token cost does not
+	// exist yet -- finalizeUsage charges it once the response completes, and the
+	// resulting debt is what refuses the next request.
+	if !p.keyTokens.available(apiKeyID) {
+		p.log.Warn("rate limited", "req_id", reqID, "gate", gateRateLimited,
+			"scope", "token_rate", "key_id", apiKeyID)
+		p.metrics.countRateLimited("token_rate")
+		tooManyRequests(w, "token_rate", reqID)
 		return
 	}
 	releaseSlot, admitted := p.inFlight.acquire(apiKeyID)
 	if !admitted {
-		p.logger.Printf("rate: refused (key id=%s at in-flight ceiling)", apiKeyID)
-		tooManyRequests(w, "in_flight")
+		p.log.Warn("rate limited", "req_id", reqID, "gate", gateRateLimited,
+			"scope", "in_flight", "key_id", apiKeyID)
+		p.metrics.countRateLimited("in_flight")
+		tooManyRequests(w, "in_flight", reqID)
 		return
 	}
 	defer releaseSlot()
@@ -478,19 +959,39 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	limitedBody := http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 	bodyBytes, err := io.ReadAll(limitedBody)
 	if err != nil {
-		p.logger.Printf("reading request body failed: %v", err)
-		http.Error(w, "bad request", http.StatusBadRequest)
+		p.log.Warn("refused", "req_id", reqID, "gate", gateBadRequestBody,
+			"key_id", apiKeyID, "err", err)
+		p.metrics.countRefusal(gateBadRequestBody)
+		writeRefusal(w, http.StatusBadRequest, "bad_request", reqID)
+		return
+	}
+
+	// Ambiguity check FIRST, before any gate reads the body. Every gate below
+	// resolves a duplicate key last-wins and then this body is forwarded
+	// byte-for-byte carrying both copies, so a gate that judges an ambiguous body
+	// has already judged something other than what OpenRouter will read (see
+	// hasDuplicateKeys). Placed here so no gate ever sees one.
+	//
+	// 400, not the gates' 403: this is a malformed, unanswerable request, not a
+	// policy refusal of a well-formed one. Cannot fire for the shipped daemon,
+	// which marshals its body from structs and so cannot emit a duplicate key.
+	if hasDuplicateKeys(bodyBytes) {
+		p.log.Warn("refused: duplicate JSON key, request is ambiguous",
+			"req_id", reqID, "gate", gateDuplicateJSONKey, "key_id", apiKeyID)
+		p.metrics.countRefusal(gateDuplicateJSONKey)
+		writeRefusal(w, http.StatusBadRequest, "duplicate_json_key", reqID)
 		return
 	}
 
 	// Cost authorization before anything is reserved or forwarded: quota is
-	// counted in tokens, but the bill is in dollars, so the model choice is
-	// itself a spending decision (see modelAllowed).
-	if model, ok := peekModel(bodyBytes); ok && !p.modelAllowed(model) {
-		p.logger.Printf("model: refused (key id=%s requested a model outside the allow-list)", apiKeyID)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusForbidden)
-		w.Write([]byte(`{"error":"model_not_allowed"}`))
+	// counted in tokens, but the bill is in dollars, so the model choice -- and
+	// every other field that steers what gets billed -- is itself a spending
+	// decision (see costSurfaceRefusal).
+	if refusal, refused := p.costSurfaceRefusal(bodyBytes); refused {
+		p.log.Warn("refused: cost surface", "req_id", reqID, "gate", gateCostSurface,
+			"key_id", apiKeyID, "reason", refusal)
+		p.metrics.countRefusal(gateCostSurface)
+		writeRefusal(w, http.StatusForbidden, refusal, reqID)
 		return
 	}
 
@@ -509,37 +1010,106 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// caller other than the shipped daemon, which always sends the flags
 	// (daemon/provider.go's providerRouting, no field omitempty).
 	if !zdrRoutingEnforced(bodyBytes) {
-		p.logger.Printf("zdr: refused (key id=%s -- request lacks the required zero-data-retention routing flags)", apiKeyID)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusForbidden)
-		w.Write([]byte(`{"error":"zdr_required"}`))
+		p.log.Warn("refused: request lacks the required zero-data-retention routing flags",
+			"req_id", reqID, "gate", gateZDRRequired, "key_id", apiKeyID)
+		p.metrics.countRefusal(gateZDRRequired)
+		writeRefusal(w, http.StatusForbidden, "zdr_required", reqID)
 		return
 	}
 
+	// Streaming is REQUIRED, because the budget ceiling below can only be enforced
+	// on a stream. A non-streamed completion arrives as one buffered body, so the
+	// mid-stream kill never runs and the only bound left is
+	// maxNonStreamResponseBytes (16MB, ~4.2M tokens) -- a 64x escape from the
+	// ceiling. Refusing here makes the ceiling enforceable on 100% of forwarded
+	// traffic and leaves one response path to audit instead of two.
+	//
+	// This refuses a caller REQUESTING a non-streamed completion. It does not
+	// affect the buffered branch further down, which still handles upstream error
+	// bodies (those arrive as application/json whatever `stream` said) and keeps
+	// its account-metadata scrubbing and reservation true-up.
+	//
+	// Cannot fire for the shipped daemon, which always sets stream:true
+	// (daemon/provider.go).
+	if !streamRequested(bodyBytes) {
+		p.log.Warn("refused: non-streamed completions are not forwarded",
+			"req_id", reqID, "gate", gateStreamRequired, "key_id", apiKeyID)
+		p.metrics.countRefusal(gateStreamRequired)
+		writeRefusal(w, http.StatusForbidden, "stream_required", reqID)
+		return
+	}
+
+	// A declared max_tokens above the reservation cap is REFUSED, not clamped.
+	// Clamping the reservation while forwarding the caller's larger number
+	// byte-for-byte was precisely the mismatch that let one request overshoot its
+	// admission: the proxy reserved 32768 and OpenRouter honoured 999999. Reject
+	// rather than rewrite, for the same reason F1 chose Reject over Stamp
+	// (proxy/F1_ENFORCEMENT_DESIGN.md) -- the accept path must still forward the
+	// caller's bytes unmodified. Cannot fire for the shipped daemon, which sends
+	// no max_tokens at all (daemon/provider.go).
 	reserved := defaultReservationTokens
 	if declared, ok := peekMaxTokens(bodyBytes); ok {
-		reserved = declared
-		if reserved > maxReservationTokens {
-			reserved = maxReservationTokens
+		if declared > maxReservationTokens {
+			p.log.Warn("refused: declared max_tokens above the reservation cap",
+				"req_id", reqID, "gate", gateMaxTokens, "key_id", apiKeyID,
+				"declared", declared, "cap", maxReservationTokens)
+			p.metrics.countRefusal(gateMaxTokens)
+			writeRefusal(w, http.StatusForbidden, "max_tokens_too_large", reqID)
+			return
 		}
+		reserved = declared
 	}
 
-	pendingID, ok := p.reserveQuota(r.Context(), apiKeyID, reserved)
+	var res reservation
+	timeStage(r.Context(), stageReserve, func() { res, ok = p.reserveQuota(r.Context(), apiKeyID, reserved) })
 	if !ok {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusTooManyRequests)
-		w.Write([]byte(`{"error":"quota_exceeded"}`))
+		// Deliberately NOT tooManyRequests: this 429 is an exhausted allowance,
+		// not a throttle, so it carries no Retry-After -- waiting does not help.
+		// The daemon relies on the quota_exceeded slug to tell the two apart
+		// (daemon/modelerror.go's quotaPhrases).
+		writeRefusal(w, http.StatusTooManyRequests, "quota_exceeded", reqID)
 		return
 	}
+	ceiling := requestTokenCeiling(reserved, res.headroom)
+
+	// From here on the reservation EXISTS and someone owes a correction for it.
+	// Exactly one deferred finalizer discharges that debt, and every branch below
+	// records its result into `outcome` instead of billing directly.
+	//
+	// This is a structural property, not a tidier spelling of the same thing.
+	// Before it, finalizeUsage was called at four hand-placed sites and the
+	// "every reservation is finalized exactly once" invariant was maintained by
+	// eye: a panic after this point discharged nothing (the reservation was
+	// stranded until the sweep reported it permanently over-charged), and any
+	// future early return added below would silently do the same. Neither is
+	// possible now -- the defer runs during panic unwinding too, and a new
+	// `return` inherits it for free.
+	//
+	// The zero value is deliberately the safe one: actual=0, producedOutput=false
+	// means "nothing was generated", i.e. a full refund. The two upstream-failure
+	// branches below therefore just return and let the defer do the right thing.
+	//
+	// Not synchronised, and must not need to be: outcome is written only by this
+	// goroutine and by streamSSE, which this goroutine calls directly. Nothing
+	// here may be moved into a goroutine of its own without adding a lock.
+	outcome := reservationOutcome{
+		keyID:     apiKeyID,
+		reserved:  reserved,
+		reqID:     reqID,
+		pendingID: res.pendingID,
+	}
+	defer p.finalizeReservation(&outcome)
 
 	ctx, cancel := context.WithTimeout(r.Context(), upstreamTimeout)
 	defer cancel()
 
 	upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.upstreamURL, bytes.NewReader(bodyBytes))
 	if err != nil {
-		p.logger.Printf("building upstream request failed: %v", err)
-		p.finalizeUsage(apiKeyID, reserved, 0, false, pendingID)
-		http.Error(w, "bad gateway", http.StatusBadGateway)
+		p.log.Error("building upstream request failed", "req_id", reqID,
+			"gate", gateUpstreamRequestBuild, "key_id", apiKeyID, "err", err)
+		p.metrics.countRefusal(gateUpstreamRequestBuild)
+		p.metrics.upstreamErrors.Add(1)
+		writeRefusal(w, http.StatusBadGateway, "bad_gateway", reqID)
 		return
 	}
 	// Preserve the caller's declared length instead of leaving it at the
@@ -551,20 +1121,35 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	upstreamReq.Header.Set("Accept", "text/event-stream")
 	upstreamReq.Header.Set("Authorization", "Bearer "+p.apiKey)
 
+	// Timed even on the error path: an upstream that fails after 30 s and one
+	// that refuses in 5 ms are the same log line without this, and they call
+	// for opposite responses.
+	//
+	// Timed inline rather than through timeStage's closure deliberately.
+	// Wrapping the Do in a func literal hides the assignment from `bodyclose`,
+	// which then cannot see the `defer resp.Body.Close()` below and reports a
+	// leaked body. The analyser is wrong about the leak but right that the
+	// closure obscures the flow, and the direct form reads better anyway.
+	upstreamStart := time.Now()
 	resp, err := p.client.Do(upstreamReq)
+	stageTimerFrom(r.Context()).record(stageUpstream, time.Since(upstreamStart))
 	if err != nil {
-		p.logger.Printf("upstream call failed: %v", err)
+		p.log.Error("upstream call failed", "req_id", reqID,
+			"gate", gateUpstreamCallFailed, "key_id", apiKeyID, "err", err)
+		p.metrics.countRefusal(gateUpstreamCallFailed)
+		p.metrics.upstreamErrors.Add(1)
 		// Reservation was made but OpenRouter was never reached -- none
 		// of it was used, so it's a full refund (see
-		// QUOTA_RESERVATION_DESIGN.md §5(b)). producedOutput=false: nothing
-		// was generated upstream.
-		p.finalizeUsage(apiKeyID, reserved, 0, false, pendingID)
-		http.Error(w, "bad gateway", http.StatusBadGateway)
+		// QUOTA_RESERVATION_DESIGN.md §5(b)). That is the outcome zero value
+		// (actual=0, producedOutput=false), so the deferred finalizer above
+		// already issues exactly the refund this branch used to issue by hand.
+		writeRefusal(w, http.StatusBadGateway, "bad_gateway", reqID)
 		return
 	}
 	defer resp.Body.Close()
 
-	p.logger.Printf("upstream responded: status=%d", resp.StatusCode)
+	p.log.Info("upstream responded", "req_id", reqID, "key_id", apiKeyID,
+		"status", resp.StatusCode)
 
 	for _, h := range allowedResponseHeaders {
 		if v := resp.Header.Get(h); v != "" {
@@ -574,7 +1159,7 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(resp.StatusCode)
 
 	if strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
-		p.streamSSE(w, resp.Body, apiKeyID, reserved, pendingID)
+		p.streamSSE(w, resp.Body, &outcome, ceiling, stageTimerFrom(r.Context()))
 		return
 	}
 
@@ -586,18 +1171,22 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// (see QUOTA_RESERVATION_DESIGN.md §5(c)).
 	respBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxNonStreamResponseBytes))
 	if err != nil {
-		p.logger.Printf("reading non-streamed response failed: %v", err)
+		p.log.Error("reading non-streamed response failed", "req_id", reqID,
+			"key_id", apiKeyID, "err", err)
 	}
 	respBytes = stripAccountMetadata(respBytes)
 	if _, err := w.Write(respBytes); err != nil {
-		p.logger.Printf("writing non-streamed response failed: %v", err)
+		p.log.Warn("writing non-streamed response failed", "req_id", reqID,
+			"key_id", apiKeyID, "err", err)
 	}
 	actual, _ := peekUsageTotal(respBytes)
+	outcome.actual = actual
 	// A 2xx response with a body means upstream produced (and billed) output;
 	// a missing usage figure there must not trigger a refund. A non-2xx error
 	// body carries no billable output, so it stays a full refund.
-	producedOutput := resp.StatusCode >= 200 && resp.StatusCode < 300 && len(respBytes) > 0
-	p.finalizeUsage(apiKeyID, reserved, actual, producedOutput, pendingID)
+	outcome.producedOutput = resp.StatusCode >= 200 && resp.StatusCode < 300 && len(respBytes) > 0
+	// No finalize call here: the deferred finalizer registered right after
+	// reserveQuota bills this outcome on the way out.
 }
 
 // authorize validates the caller-supplied Mochiii key ("Authorization:
@@ -610,25 +1199,44 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 // logged; the full mochi_key, the Supabase service-role key, and the
 // OpenRouter key are never logged.
 func (p *proxy) authorize(r *http.Request) (string, bool) {
+	reqID := requestIDFrom(r.Context())
 	const bearerPrefix = "Bearer "
 	authHeader := r.Header.Get("Authorization")
 	if !strings.HasPrefix(authHeader, bearerPrefix) {
-		p.logger.Printf("auth: rejected (no bearer token)")
+		p.log.Warn("auth rejected", "req_id", reqID, "gate", gateNoBearer)
+		p.metrics.countRefusal(gateNoBearer)
 		return "", false
 	}
 	mochiKey := strings.TrimSpace(strings.TrimPrefix(authHeader, bearerPrefix))
 	if mochiKey == "" {
-		p.logger.Printf("auth: rejected (empty key)")
+		p.log.Warn("auth rejected", "req_id", reqID, "gate", gateEmptyKey)
+		p.metrics.countRefusal(gateEmptyKey)
 		return "", false
 	}
 
 	if p.supabaseURL == "" || p.supabaseServiceRoleKey == "" {
-		p.logger.Printf("auth: rejected (supabase not configured, key prefix=%s)", keyPrefix(mochiKey))
+		p.log.Error("auth rejected", "req_id", reqID, "gate", gateSupabaseUnconfigured,
+			"key_prefix", keyPrefix(mochiKey))
+		p.metrics.countRefusal(gateSupabaseUnconfigured)
 		return "", false
 	}
 
 	hash := sha256.Sum256([]byte(mochiKey))
 	hashHex := hex.EncodeToString(hash[:])
+
+	// Cache hit short-circuits the round trip that dominates this stage (91 ms
+	// of a 228 ms request, docs/LATENCY_BASELINE.md §A.3).
+	//
+	// Placed AFTER the bearer/empty/configuration gates above deliberately: those
+	// refuse malformed requests without any lookup at all, and a cache consulted
+	// before them would be answering questions that should never have been asked.
+	// It is placed BEFORE the network call and nowhere else -- every failure path
+	// below still runs in full, because only successes are ever stored.
+	if keyID, ok := p.authCache.get(hashHex); ok {
+		p.metrics.authCacheHits.Add(1)
+		return keyID, true
+	}
+	p.metrics.authCacheMisses.Add(1)
 
 	ctx, cancel := context.WithTimeout(r.Context(), supabaseAuthTimeout)
 	defer cancel()
@@ -641,7 +1249,9 @@ func (p *proxy) authorize(r *http.Request) (string, bool) {
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, lookupURL, nil)
 	if err != nil {
-		p.logger.Printf("auth: rejected (building supabase request failed, key prefix=%s)", keyPrefix(mochiKey))
+		p.log.Error("auth rejected", "req_id", reqID, "gate", gateAuthRequestBuild,
+			"key_prefix", keyPrefix(mochiKey), "err", err)
+		p.metrics.countRefusal(gateAuthRequestBuild)
 		return "", false
 	}
 	// apikey only -- deliberately no Authorization header. Supabase's new
@@ -662,30 +1272,48 @@ func (p *proxy) authorize(r *http.Request) (string, bool) {
 
 	resp, err := p.client.Do(req)
 	if err != nil {
-		p.logger.Printf("auth: rejected (supabase lookup failed, key prefix=%s)", keyPrefix(mochiKey))
+		p.log.Error("auth rejected", "req_id", reqID, "gate", gateAuthLookupFailed,
+			"key_prefix", keyPrefix(mochiKey), "err", err)
+		p.metrics.countRefusal(gateAuthLookupFailed)
 		return "", false
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		p.logger.Printf("auth: rejected (supabase status=%d, key prefix=%s)", resp.StatusCode, keyPrefix(mochiKey))
+		p.log.Error("auth rejected", "req_id", reqID, "gate", gateAuthUpstreamStatus,
+			"key_prefix", keyPrefix(mochiKey), "supabase_status", resp.StatusCode)
+		p.metrics.countRefusal(gateAuthUpstreamStatus)
 		return "", false
 	}
 
 	var rows []struct {
 		ID string `json:"id"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxAuthResponseBytes)).Decode(&rows); err != nil {
-		p.logger.Printf("auth: rejected (decoding supabase response failed, key prefix=%s)", keyPrefix(mochiKey))
+	if err := decodeCappedJSON(resp, maxAuthResponseBytes, &rows); err != nil {
+		p.log.Error("auth rejected", "req_id", reqID, "gate", gateAuthDecodeFailed,
+			"key_prefix", keyPrefix(mochiKey), "err", err)
+		p.metrics.countRefusal(gateAuthDecodeFailed)
 		return "", false
 	}
 
 	if len(rows) != 1 {
-		p.logger.Printf("auth: rejected (key prefix=%s, matches=%d)", keyPrefix(mochiKey), len(rows))
+		// matches=0 is the production incident's shape: Supabase answered 200 with
+		// an empty array for a key its owner believed was valid. matches>1 would be
+		// a schema problem. The two are one branch and must stay distinguishable.
+		p.log.Warn("auth rejected", "req_id", reqID, "gate", gateAuthRowCount,
+			"key_prefix", keyPrefix(mochiKey), "matches", len(rows))
+		p.metrics.countRefusal(gateAuthRowCount)
 		return "", false
 	}
 
-	p.logger.Printf("auth: ok (key prefix=%s)", keyPrefix(mochiKey))
+	// The ONLY put in the codebase, and it is reached only here: past the
+	// transport error, the non-200, the decode failure and the row-count gate.
+	// Every one of those returns above without storing anything, which is what
+	// makes "positive results only" a property of the control flow rather than a
+	// promise in a comment.
+	p.authCache.put(hashHex, rows[0].ID)
+
+	p.log.Info("auth ok", "req_id", reqID, "key_prefix", keyPrefix(mochiKey))
 	return rows[0].ID, true
 }
 
@@ -710,19 +1338,32 @@ func (p *proxy) authorize(r *http.Request) (string, bool) {
 // key id and token counts are ever logged -- never the raw key, never
 // request content.
 //
-// It also returns the id of the pending_corrections row that reserve_usage
-// opened in the same atomic statement (proxy/migrations/0002_pending_corrections.sql).
-// That row is this reservation's durable record that a correction is still
+// It returns a reservation carrying both the id of the pending_corrections row
+// that reserve_usage opened in the same atomic statement (proxy/migrations/0002_pending_corrections.sql)
+// and the key's remaining quota headroom.
+//
+// The pendingID is this reservation's durable record that a correction is still
 // owed, and it is what makes the crash case survivable: if this process dies
 // before finalizeUsage runs, the row outlives it and the reconciliation sweep
 // finds it. The id must be threaded through to correctUsage, which closes the
-// row as part of applying the correction. A refusal returns (0, false) and
-// opens no row -- the INSERT is driven off the UPDATE's own returned rows, so
-// there is nothing to clean up when nothing was reserved.
-func (p *proxy) reserveQuota(ctx context.Context, apiKeyID string, reserved int) (pendingID int64, ok bool) {
+// row as part of applying the correction. A refusal returns a zero reservation
+// and opens no row -- the INSERT is driven off the UPDATE's own returned rows,
+// so there is nothing to clean up when nothing was reserved.
+//
+// The headroom is what makes the streaming budget ceiling free (see
+// requestTokenCeiling): reserve_usage ALREADY returns tokens_used and
+// token_limit, and this function already decoded both -- it just discarded them
+// after a log line. Threading them out costs no extra round trip and nothing on
+// the TTFT budget.
+func (p *proxy) reserveQuota(ctx context.Context, apiKeyID string, reserved int) (res reservation, ok bool) {
+	// The handler's context, so the reservation's log lines join the request's
+	// trail. Empty when called outside a request (a unit test), which is honest.
+	reqID := requestIDFrom(ctx)
 	if p.supabaseURL == "" || p.supabaseServiceRoleKey == "" {
-		p.logger.Printf("quota: refused (supabase not configured, key id=%s)", apiKeyID)
-		return 0, false
+		p.log.Error("quota refused", "req_id", reqID, "gate", gateQuotaUnconfigured,
+			"key_id", apiKeyID)
+		p.metrics.countRefusal(gateQuotaUnconfigured)
+		return reservation{}, false
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, supabaseAuthTimeout)
@@ -733,15 +1374,19 @@ func (p *proxy) reserveQuota(ctx context.Context, apiKeyID string, reserved int)
 		Reserved int    `json:"p_reserved"`
 	}{KeyID: apiKeyID, Reserved: reserved})
 	if err != nil {
-		p.logger.Printf("quota: refused (encoding reserve_usage body failed, key id=%s): %v", apiKeyID, err)
-		return 0, false
+		p.log.Error("quota refused", "req_id", reqID, "gate", gateQuotaEncode,
+			"key_id", apiKeyID, "err", err)
+		p.metrics.countRefusal(gateQuotaEncode)
+		return reservation{}, false
 	}
 
 	rpcURL := strings.TrimRight(p.supabaseURL, "/") + "/rest/v1/rpc/reserve_usage"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, rpcURL, bytes.NewReader(payload))
 	if err != nil {
-		p.logger.Printf("quota: refused (building reserve_usage request failed, key id=%s): %v", apiKeyID, err)
-		return 0, false
+		p.log.Error("quota refused", "req_id", reqID, "gate", gateQuotaRequestBuild,
+			"key_id", apiKeyID, "err", err)
+		p.metrics.countRefusal(gateQuotaRequestBuild)
+		return reservation{}, false
 	}
 	// apikey only -- see authorize's comment on this same header-format
 	// bug (Supabase's sb_secret_ keys aren't JWTs; Authorization: Bearer
@@ -752,15 +1397,19 @@ func (p *proxy) reserveQuota(ctx context.Context, apiKeyID string, reserved int)
 
 	resp, err := p.client.Do(req)
 	if err != nil {
-		p.logger.Printf("quota: refused (reserve_usage call failed, key id=%s): %v", apiKeyID, err)
-		return 0, false
+		p.log.Error("quota refused", "req_id", reqID, "gate", gateQuotaCallFailed,
+			"key_id", apiKeyID, "err", err)
+		p.metrics.countRefusal(gateQuotaCallFailed)
+		return reservation{}, false
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		io.Copy(io.Discard, io.LimitReader(resp.Body, maxAuthResponseBytes))
-		p.logger.Printf("quota: refused (reserve_usage status=%d, key id=%s)", resp.StatusCode, apiKeyID)
-		return 0, false
+		p.log.Error("quota refused", "req_id", reqID, "gate", gateQuotaStatus,
+			"key_id", apiKeyID, "supabase_status", resp.StatusCode)
+		p.metrics.countRefusal(gateQuotaStatus)
+		return reservation{}, false
 	}
 
 	var rows []struct {
@@ -768,14 +1417,20 @@ func (p *proxy) reserveQuota(ctx context.Context, apiKeyID string, reserved int)
 		TokenLimit int64 `json:"token_limit"`
 		PendingID  int64 `json:"pending_id"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxAuthResponseBytes)).Decode(&rows); err != nil {
-		p.logger.Printf("quota: refused (decoding reserve_usage response failed, key id=%s): %v", apiKeyID, err)
-		return 0, false
+	if err := decodeCappedJSON(resp, maxAuthResponseBytes, &rows); err != nil {
+		p.log.Error("quota refused", "req_id", reqID, "gate", gateQuotaDecode,
+			"key_id", apiKeyID, "err", err)
+		p.metrics.countRefusal(gateQuotaDecode)
+		return reservation{}, false
 	}
 
 	if len(rows) != 1 {
-		p.logger.Printf("quota: refused (key id=%s, reserved=%d, matches=%d)", apiKeyID, reserved, len(rows))
-		return 0, false
+		// A row count of zero is "no usage row OR over the limit" -- indistinguishable
+		// here, the same ambiguity checkQuota always had (see this function's doc).
+		p.log.Warn("quota refused", "req_id", reqID, "gate", gateQuotaDenied,
+			"key_id", apiKeyID, "reserved", reserved, "matches", len(rows))
+		p.metrics.countRefusal(gateQuotaDenied)
+		return reservation{}, false
 	}
 
 	// A zero pending_id means the reservation landed but no outbox row came
@@ -789,11 +1444,57 @@ func (p *proxy) reserveQuota(ctx context.Context, apiKeyID string, reserved int)
 	// apply_correction call is about to 404 -- see the DEPLOY ORDER note in
 	// proxy/migrations/0002_pending_corrections.sql.
 	if rows[0].PendingID == 0 {
-		p.logger.Printf("quota: WARNING reserve_usage returned no pending_id (key id=%s) -- migration 0002 likely not applied; crash recovery is INACTIVE and corrections will fail", apiKeyID)
+		p.log.Error("reserve_usage returned no pending_id -- migration 0002 likely not applied; crash recovery is INACTIVE and corrections will fail",
+			"req_id", reqID, "key_id", apiKeyID)
 	}
 
-	p.logger.Printf("quota: reserved (key id=%s, reserved=%d, new_used=%d, limit=%d, pending_id=%d)", apiKeyID, reserved, rows[0].TokensUsed, rows[0].TokenLimit, rows[0].PendingID)
-	return rows[0].PendingID, true
+	// tokens_used comes back POST-increment (RETURNING after UPDATE), so this is
+	// what the key may still legally spend BEYOND the reservation just made.
+	// Clamped at zero: reserve_usage's own WHERE clause guarantees it is
+	// non-negative, so a negative here would mean the invariant broke, and a
+	// budget ceiling is the wrong place to discover that by going haywire.
+	headroom := rows[0].TokenLimit - rows[0].TokensUsed
+	if headroom < 0 {
+		headroom = 0
+	}
+
+	p.log.Info("quota reserved", "req_id", reqID, "key_id", apiKeyID,
+		"reserved", reserved, "new_used", rows[0].TokensUsed, "limit", rows[0].TokenLimit,
+		"headroom", headroom, "pending_id", rows[0].PendingID)
+	p.metrics.reservationsOpened.Add(1)
+	return reservation{pendingID: rows[0].PendingID, headroom: headroom}, true
+}
+
+// reservation is what reserveQuota hands back on success: the durable outbox row
+// this reservation must close, and the key's remaining quota headroom.
+type reservation struct {
+	// pendingID is the pending_corrections row opened atomically with the
+	// reservation; correctUsage closes it. Zero means migration 0002 is not
+	// applied (see reserveQuota).
+	pendingID int64
+
+	// headroom is token_limit - tokens_used AFTER this reservation landed --
+	// i.e. what the key may still spend beyond what was just reserved. Feeds
+	// requestTokenCeiling.
+	headroom int64
+}
+
+// requestTokenCeiling is the hard token ceiling for one request: everything the
+// key could still legally spend (the reservation plus its remaining headroom),
+// capped by absoluteMaxRequestTokens so that a single request can never drain a
+// large quota in one shot no matter how much headroom the key has.
+//
+// This is what makes admission control actually BINDING. Before it, quota was
+// checked only at admission: a key with a sliver of quota left was admitted on a
+// maxReservationTokens-sized reservation and could then consume the provider's
+// own output ceiling, since the proxy forwards the body byte-for-byte and the
+// shipped daemon declares no max_tokens at all.
+func requestTokenCeiling(reserved int, headroom int64) int {
+	ceiling := int64(reserved) + headroom
+	if ceiling > absoluteMaxRequestTokens {
+		ceiling = absoluteMaxRequestTokens
+	}
+	return int(ceiling)
 }
 
 // keyPrefix returns at most the first keyLogPrefixLen characters of key, for
@@ -829,8 +1530,32 @@ func keyPrefix(key string) string {
 // been relayed to the client: a fire-and-forget call on its own detached
 // context (see correctUsage) that never delays, blocks, or fails the
 // client's completion.
-func (p *proxy) streamSSE(w http.ResponseWriter, body io.Reader, keyID string, reserved int, pendingID int64) {
+//
+// STREAMING BUDGET ENFORCEMENT. ceiling is the hard token bound for this one
+// request (requestTokenCeiling). Crossing it kills the stream mid-flight rather
+// than letting it run to completion, which is the ONLY control that bounds spend
+// when a caller declares no max_tokens -- as the shipped daemon does not, leaving
+// the provider's own (far larger) default ceiling to apply. Enforcement is
+// deliberately an ESTIMATE, because a real token count only ever arrives in the
+// terminal usage chunk, i.e. after all the money has already been spent. Two
+// independent bounds are tracked, BOTH read only from the SSE envelope and never
+// from the delta text -- a COUNT of chunks and a LENGTH in bytes. See
+// budgetExceeded for what each one is for and why they are not fused.
+//
+// This is a CIRCUIT BREAKER, NOT AN ACCOUNTANT: it bounds worst-case spend, and
+// exact accounting still comes from the terminal usage chunk whenever one arrives.
+// st may be nil: a test calling this directly is outside a request and has no
+// timer, and every *stageTimer method is nil-safe for exactly that case.
+func (p *proxy) streamSSE(w http.ResponseWriter, body io.Reader, outcome *reservationOutcome, ceiling int, st *stageTimer) {
 	flusher, canFlush := w.(http.Flusher)
+
+	// TTFB here means what the USER experiences: the first data chunk relayed
+	// onward, not the upstream response headers (stageUpstream already covers
+	// those). The two differ by the provider's whole prefill, which is the
+	// single largest component of end-to-end latency and the one this proxy
+	// does not control -- so conflating them would hide the only part it does.
+	streamStart := time.Now()
+	firstChunkSeen := false
 
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, sseInitialBufferSize), sseMaxLineSize)
@@ -838,8 +1563,20 @@ func (p *proxy) streamSSE(w http.ResponseWriter, body io.Reader, keyID string, r
 	providerLogged := false
 	totalTokens := 0
 	sawData := false
+	dataChunks := 0
+	streamedBytes := 0
+	// Cumulative time blocked writing to the client. See maxClientWriteStall.
+	var clientStall time.Duration
+	// Record into the caller's outcome rather than billing here. Every `return`
+	// below -- clean EOF, client write failure, budget kill -- lands on this, and
+	// the handler's single deferred finalizer does the billing. Recording (not
+	// billing) is what lets the invariant live in one place; it also means a
+	// panic mid-stream still bills the partial result correctly, because these
+	// values are already published to the caller's struct by the time the
+	// handler's defer runs.
 	defer func() {
-		p.finalizeUsage(keyID, reserved, totalTokens, sawData, pendingID)
+		outcome.actual = totalTokens
+		outcome.producedOutput = sawData
 	}()
 
 	for scanner.Scan() {
@@ -851,7 +1588,20 @@ func (p *proxy) streamSSE(w http.ResponseWriter, body io.Reader, keyID string, r
 		// is exactly the client-disconnect-before-the-usage-chunk path that
 		// QUOTA_RESERVATION_DESIGN.md §5(c) wrongly folded into "nothing used".
 		if isDataChunk(line) {
+			// Recorded once, on the first data chunk only -- this is a
+			// time-to-FIRST-byte, and re-recording per chunk would turn it into
+			// a stream duration wearing a TTFB label.
+			if !firstChunkSeen {
+				firstChunkSeen = true
+				st.record(stageTTFB, time.Since(streamStart))
+			}
 			sawData = true
+			// Budget signals, counted BEFORE the relay write for the same reason
+			// sawData is: a client that disconnects mid-stream still consumed
+			// upstream-billed output, and the ceiling must account for it.
+			// Both are envelope-only -- a count and a length, never a content read.
+			dataChunks++
+			streamedBytes += len(line)
 			// Strip account-identifying fields from the STREAMING path too. This
 			// scrubbing existed only on the non-SSE branch, while the daemon always
 			// sets stream:true -- so the scrubber never ran on the only path real
@@ -861,25 +1611,139 @@ func (p *proxy) streamSSE(w http.ResponseWriter, body io.Reader, keyID string, r
 			// the client byte-for-byte.
 			line = stripSSEAccountMetadata(line)
 		}
-		if _, err := io.WriteString(w, line+"\n"); err != nil {
-			return
-		}
+		// The write and the flush are timed together because both block on the
+		// same thing: a client socket buffer nobody is draining.
+		writeStart := time.Now()
+		_, writeErr := io.WriteString(w, line+"\n")
 		if canFlush {
 			flusher.Flush()
+		}
+		clientStall += time.Since(writeStart)
+		if writeErr != nil {
+			return
+		}
+		if clientStall > p.maxClientStall {
+			p.log.Warn("client is not reading its own response; dropping the stream",
+				"req_id", outcome.reqID, "gate", gateClientStall, "key_id", outcome.keyID,
+				"stall_seconds", clientStall.Seconds(), "chunks", dataChunks, "bytes", streamedBytes)
+			p.metrics.clientStalls.Add(1)
+			p.metrics.countRefusal(gateClientStall)
+			return
 		}
 
 		if !providerLogged {
 			if provider, ok := extractProvider(line); ok {
-				p.logger.Printf("provider served: %s", provider)
+				p.log.Info("provider served", "req_id", outcome.reqID, "provider", provider)
 				providerLogged = true
 			}
 		}
 		if tokens, ok := extractUsage(line); ok {
 			totalTokens = tokens
 		}
+
+		// Budget ceiling, evaluated once per relayed line. Returning here unwinds
+		// to handleChatCompletions, whose existing `defer cancel()` and
+		// `defer resp.Body.Close()` tear the upstream connection down -- that is
+		// what actually stops the spend, so no extra plumbing is needed.
+		if reason, over := budgetExceeded(dataChunks, streamedBytes, ceiling); over {
+			p.log.Warn("budget ceiling KILLED the stream", "req_id", outcome.reqID,
+				"gate", gateBudgetKill, "key_id", outcome.keyID, "reason", reason,
+				"chunks", dataChunks, "bytes", streamedBytes, "ceiling", ceiling)
+			p.metrics.budgetKills.Add(1)
+			p.metrics.countRefusal(gateBudgetKill)
+			totalTokens = chargeForKill(totalTokens, dataChunks, outcome.reserved)
+			writeBudgetExceeded(w, flusher, canFlush)
+			return
+		}
 	}
 	if err := scanner.Err(); err != nil {
-		p.logger.Printf("streaming upstream response failed: %v", err)
+		p.log.Warn("streaming upstream response failed", "req_id", outcome.reqID,
+			"key_id", outcome.keyID, "err", err)
+	}
+}
+
+// chargeForKill decides what a stream killed by the budget ceiling is charged.
+//
+// THE INVARIANT: a killed stream consumed everything its ceiling permitted, so
+// it must never move quota in the caller's favour. Charge the LARGEST defensible
+// figure of the three available:
+//
+//   - measured -- a real usage figure, if a terminal usage chunk already arrived.
+//   - dataChunks -- the chunk count, which is what binds on a token_ceiling kill:
+//     that kill fires at dataChunks > ceiling, and ceiling is
+//     requestTokenCeiling(reserved, headroom) = reserved + headroom (headroom is
+//     never negative -- reserveQuota only succeeds within the limit) capped at
+//     absoluteMaxRequestTokens, itself 2x the maxReservationTokens cap on
+//     reserved. So ceiling >= reserved always, and the chunk count is the
+//     largest of the three there.
+//   - reserved -- the reservation, which is what binds on a byte_guard kill,
+//     where the chunk count is tiny by construction: the guard fires because a
+//     FEW huge chunks crossed the byte bound, so the count is nowhere near the
+//     tokens actually generated.
+//
+// This exists because the previous form raised the charge to dataChunks alone.
+// That holds only on the token_ceiling bound; on byte_guard it handed
+// finalizeUsage an `actual` far BELOW `reserved`, which took the `actual > 0`
+// branch and issued a large NEGATIVE correction -- a refund of ~all of the
+// reservation after streaming the maximum the ceiling permits. Repeatable free
+// paid inference, and the same abort-refund class as C3 (a703978) through a path
+// C3's regression test does not cover. It was worst for the keys with the least
+// headroom, since a smaller ceiling makes the byte guard fire sooner while the
+// refund stays proportionally larger.
+//
+// The charge decision lives in one named function, rather than inline at the
+// kill site, so the invariant has a home and a unit test and a third bound added
+// to budgetExceeded later cannot silently mean "refund".
+func chargeForKill(measured, dataChunks, reserved int) int {
+	return max(measured, dataChunks, reserved)
+}
+
+// budgetExceeded reports whether a stream has crossed either of its two bounds,
+// and which one, for the log line.
+//
+// TWO INDEPENDENT BOUNDS, each compared against what it actually measures. They
+// are deliberately NOT fused into a single synthetic token count:
+//
+//   - TOKENS: dataChunks > ceiling. For OpenAI-compatible SSE one chunk carries
+//     one delta, so the chunk count IS the token proxy.
+//   - BYTES: streamedBytes > ceiling * maxBytesPerChunkGuard. A runaway guard for
+//     the case chunk-counting cannot see -- a provider batching an entire answer
+//     into a few huge chunks.
+//
+// The previous version multiplied these together into one estimate
+// (max(dataChunks, streamedBytes/4)) and was wrong by ~73x, because dividing a
+// whole SSE LINE by four bytes-per-token measures the repeated JSON envelope, not
+// the token inside it. Keeping the bounds separate is what makes each one
+// checkable against reality.
+//
+// KNOWN RESIDUAL, stated rather than hidden: a provider that batches N tokens per
+// chunk undercounts the token bound by N, so the ceiling fires late. That is the
+// safe direction -- spend is still bounded by the byte guard and by quota itself,
+// and it replaces a failure mode that truncated legitimate traffic.
+func budgetExceeded(dataChunks, streamedBytes, ceiling int) (reason string, exceeded bool) {
+	if dataChunks > ceiling {
+		return "token_ceiling", true
+	}
+	if streamedBytes > ceiling*maxBytesPerChunkGuard {
+		return "byte_guard", true
+	}
+	return "", false
+}
+
+// writeBudgetExceeded emits the terminal chunks of a killed stream: a
+// machine-readable error chunk followed by the standard [DONE] sentinel, so a
+// client can render "response truncated: budget exceeded" and, crucially, tell
+// throttling apart from a crashed connection. A silent close would be
+// indistinguishable from a network failure.
+//
+// Write errors are ignored on purpose -- this runs on a stream already being torn
+// down, and the client having gone away first changes nothing about the decision
+// to stop.
+func writeBudgetExceeded(w io.Writer, flusher http.Flusher, canFlush bool) {
+	io.WriteString(w, "data: {\"error\":\"budget_exceeded\",\"truncated\":true}\n\n")
+	io.WriteString(w, "data: [DONE]\n\n")
+	if canFlush {
+		flusher.Flush()
 	}
 }
 
@@ -971,6 +1835,23 @@ func extractProvider(line string) (string, bool) {
 	if err := json.Unmarshal([]byte(data), &peek); err != nil || peek.Provider == "" {
 		return "", false
 	}
+	// A PROVIDER NAME IS A SLUG THAT GOES INTO A LOG LINE, and it arrives from
+	// upstream, so it is somebody else's bytes on their way to something a human
+	// reads. "DeepInfra" and "Together" never contain a control character; a
+	// value that does is either a broken upstream or an attempt to forge log
+	// lines, and neither is worth logging.
+	//
+	// Found by FuzzExtractUsageAndProvider on the seed
+	// testdata/fuzz/FuzzExtractUsageAndProvider/bda5d6ec956febb7 -- a "\r" in
+	// the provider field. Rated LOW rather than higher because the slog
+	// TextHandler this proxy uses already quotes values needing quoting, so no
+	// log line was actually forgeable today. This closes it at the extraction
+	// boundary instead, where it does not depend on which handler is configured.
+	for i := 0; i < len(peek.Provider); i++ {
+		if b := peek.Provider[i]; b < 0x20 || b == 0x7f {
+			return "", false
+		}
+	}
 	return peek.Provider, true
 }
 
@@ -1012,17 +1893,196 @@ func extractUsage(line string) (int, bool) {
 // never sets max_tokens (daemon/provider.go), so reservation sizing falls
 // through to defaultReservationTokens for essentially all real traffic
 // today.
-// peekModel reads only the top-level "model" field, with the same one-field
-// decode discipline as peekMaxTokens: the target struct has a single field, so
-// message content is never touched here either.
-func peekModel(body []byte) (string, bool) {
-	var peek struct {
-		Model string `json:"model"`
+
+// topLevelFields decodes ONLY the top-level object of a request body, leaving
+// every value an opaque json.RawMessage. It is the shared primitive under every
+// body gate in this file, and it exists to make those gates read the body the
+// same way OpenRouter does.
+//
+// WHY NOT STRUCT TAGS. Go's encoding/json "matches incoming object keys to the
+// keys used by Marshal (either the struct field name or its tag), IGNORING CASE"
+// (go doc encoding/json.Unmarshal). OpenRouter, like essentially every JSON API,
+// matches keys exactly. Every gate built on struct-tag decoding therefore had a
+// parser differential, and it split in the unsafe direction: a body carrying
+// {"PROVIDER":{"zdr":true,...}} passed the ZDR gate -- the proxy saw the flags --
+// while OpenRouter saw no `provider` key at all and applied no ZDR routing.
+// {"STREAM":true} did the same to the streaming requirement, reopening the
+// buffered-response escape from the budget ceiling. Reproduced directly; see
+// TestZDRRoutingEnforced_RejectsCaseVariantKeys.
+//
+// Exact lookup fixes both in the FAIL-CLOSED direction: a case-variant key is
+// simply not found, so the gate refuses rather than being satisfied by a key the
+// model provider will never read.
+//
+// It preserves the never-parse-content posture for the same reason
+// stripSSEAccountMetadata does: values -- including `messages` -- stay opaque
+// byte slices that are never examined. Only top-level KEY NAMES are compared.
+// hasDuplicateKeys reports whether body contains any JSON object with the same
+// key twice, at any depth.
+//
+// WHY THIS IS A REFUSAL AND NOT A PARSING DETAIL. Every body gate reads through
+// topLevelFields -> json.Unmarshal into map[string]json.RawMessage, which
+// resolves duplicates LAST-WINS. The accepted body is then forwarded to
+// OpenRouter BYTE-FOR-BYTE carrying both copies. So a body naming a banned model
+// first and an allowed one second is admitted on the second and forwarded with
+// the first -- the gate's verdict and the bytes the provider actually reads
+// disagree. Reproduced: cost authorization admitted a request whose forwarded
+// body still named the banned model.
+//
+// Whether that completes upstream depends on OpenRouter resolving duplicates
+// first-wins, which RFC 8259 explicitly leaves undefined and which is not this
+// proxy's to assume. Refusing removes the dependency rather than betting on it --
+// the same reasoning that replaced struct-tag decoding with exact-key lookup
+// (topLevelFields), one level down: the proxy's claim to be THE AUTHORITY on
+// model/provider/stream/max_tokens holds only if both parsers read the same body
+// the same way.
+//
+// Nested objects are walked too, so a duplicate inside `provider` -- where the
+// ZDR flags live -- is caught as well as a top-level one.
+//
+// Values stay opaque exactly as in topLevelFields: json.Decoder is driven
+// token-wise and only object KEY NAMES are ever compared. Message content is
+// never examined, so the never-parse-content property the ZDR posture rests on
+// is preserved. Stdlib only -- the proxy stays dependency-free.
+func hasDuplicateKeys(body []byte) bool {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	tok, err := dec.Token()
+	if err != nil {
+		// Empty or malformed: not this function's call. The gates already refuse a
+		// body they cannot decode, so leave that refusal where it belongs.
+		return false
 	}
-	if err := json.Unmarshal(body, &peek); err != nil || peek.Model == "" {
+	duplicate, _ := scanJSONValue(dec, tok, 0)
+	return duplicate
+}
+
+// maxJSONNestingDepth bounds scanJSONValue's recursion. A 4MB body (the
+// MaxBytesReader cap) of "[[[[..." would otherwise recurse ~4M frames. No real
+// chat-completions body comes close to this depth, so exceeding it is treated as
+// a duplicate -- i.e. REFUSED, the fail-closed direction, consistent with every
+// other gate here.
+const maxJSONNestingDepth = 64
+
+// scanJSONValue consumes the one JSON value whose first token is tok, descending
+// into objects and arrays. It reports whether a duplicate key was found, and
+// whether the scan itself completed (false on malformed input or excess depth).
+func scanJSONValue(dec *json.Decoder, tok json.Token, depth int) (duplicate, ok bool) {
+	delim, isDelim := tok.(json.Delim)
+	if !isDelim {
+		return false, true // a scalar: nothing to descend into
+	}
+	if depth >= maxJSONNestingDepth {
+		return true, false
+	}
+
+	switch delim {
+	case '{':
+		seen := make(map[string]bool)
+		for {
+			keyTok, err := dec.Token()
+			if err != nil {
+				return false, false
+			}
+			if d, isD := keyTok.(json.Delim); isD && d == '}' {
+				return false, true
+			}
+			key, isString := keyTok.(string)
+			if !isString {
+				return false, false // unreachable for well-formed JSON
+			}
+			if seen[key] {
+				return true, true
+			}
+			seen[key] = true
+
+			valTok, err := dec.Token()
+			if err != nil {
+				return false, false
+			}
+			if dup, done := scanJSONValue(dec, valTok, depth+1); dup || !done {
+				return dup, done
+			}
+		}
+	case '[':
+		for {
+			elemTok, err := dec.Token()
+			if err != nil {
+				return false, false
+			}
+			if d, isD := elemTok.(json.Delim); isD && d == ']' {
+				return false, true
+			}
+			if dup, done := scanJSONValue(dec, elemTok, depth+1); dup || !done {
+				return dup, done
+			}
+		}
+	}
+	return false, false
+}
+
+func topLevelFields(body []byte) (map[string]json.RawMessage, bool) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil || fields == nil {
+		return nil, false
+	}
+	return fields, true
+}
+
+// rawString / rawBool / rawInt decode one opaque field value to a concrete type,
+// reporting false if it is absent or the wrong JSON type. Absent-or-wrong-type is
+// deliberately indistinguishable: every caller treats both as "the gate is not
+// satisfied", which is the fail-closed reading.
+func rawString(fields map[string]json.RawMessage, key string) (string, bool) {
+	raw, ok := fields[key]
+	if !ok {
 		return "", false
 	}
-	return peek.Model, true
+	var v string
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return "", false
+	}
+	return v, true
+}
+
+func rawBool(fields map[string]json.RawMessage, key string) (bool, bool) {
+	raw, ok := fields[key]
+	if !ok {
+		return false, false
+	}
+	var v bool
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return false, false
+	}
+	return v, true
+}
+
+func rawInt(fields map[string]json.RawMessage, key string) (int, bool) {
+	raw, ok := fields[key]
+	if !ok {
+		return 0, false
+	}
+	var v int
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return 0, false
+	}
+	return v, true
+}
+
+// streamRequested reports whether the body explicitly asks for a streamed
+// completion, by EXACT key match (see topLevelFields for why that matters).
+//
+// Fails CLOSED in the same sense as zdrRoutingEnforced -- an unparseable body, an
+// absent `stream`, a non-boolean `stream`, or a case-variant key all return false
+// and the request is refused. The absent case matters: OpenAI-compatible APIs
+// default `stream` to false when the field is omitted, so treating "missing" as
+// "streaming" would reopen the very bypass this closes.
+func streamRequested(body []byte) bool {
+	fields, ok := topLevelFields(body)
+	if !ok {
+		return false
+	}
+	stream, ok := rawBool(fields, "stream")
+	return ok && stream
 }
 
 // requiredDataCollection is the only data_collection value consistent with the
@@ -1042,7 +2102,7 @@ const requiredDataCollection = "deny"
 // rejected. Nothing is ever forwarded on the strength of an assumed default.
 //
 // It reads ONLY the two ZDR flags, with the same one-field decode discipline as
-// peekModel/peekMaxTokens: message content is never parsed (the decode target has
+// costSurfaceRefusal/peekMaxTokens: message content is never parsed (the decode target has
 // no messages field), and every OTHER field of the provider object is ignored on
 // purpose. In particular the D4 "ignore"/"only" provider lists are NOT part of
 // this struct, so a request carrying them is judged solely on its ZDR flags and
@@ -1051,20 +2111,24 @@ const requiredDataCollection = "deny"
 // The body is NOT mutated: this is a read-only peek, so the accept path forwards
 // the caller's bytes byte-for-byte (Reject, not Stamp -- see
 // proxy/F1_ENFORCEMENT_DESIGN.md).
+// Keys are matched EXACTLY (see topLevelFields): a body carrying "PROVIDER" or
+// "ZDR" is refused, because those are keys OpenRouter will not read.
 func zdrRoutingEnforced(body []byte) bool {
-	var peek struct {
-		Provider *struct {
-			ZDR            bool   `json:"zdr"`
-			DataCollection string `json:"data_collection"`
-		} `json:"provider"`
-	}
-	if err := json.Unmarshal(body, &peek); err != nil {
+	fields, ok := topLevelFields(body)
+	if !ok {
 		return false // unparseable body -> fail closed
 	}
-	if peek.Provider == nil {
+	provider, ok := fields["provider"]
+	if !ok {
 		return false // no routing object at all -> fail closed
 	}
-	return peek.Provider.ZDR && peek.Provider.DataCollection == requiredDataCollection
+	routing, ok := topLevelFields(provider)
+	if !ok {
+		return false // "provider" present but not an object -> fail closed
+	}
+	zdr, zdrOK := rawBool(routing, "zdr")
+	collection, collectionOK := rawString(routing, "data_collection")
+	return zdrOK && zdr && collectionOK && collection == requiredDataCollection
 }
 
 // modelAllowed reports whether a caller may route to model.
@@ -1090,6 +2154,75 @@ func (p *proxy) modelAllowed(model string) bool {
 	return p.allowedModels[model]
 }
 
+// costSurfaceRefusal is the full cost-authorization gate. It returns the error
+// code to refuse with and true, or "" and false to allow.
+//
+// modelAllowed alone was not enough. It checked ONLY the top-level "model", while
+// the proxy forwards the body byte-for-byte -- so every OTHER field that steers
+// what gets billed went upstream unexamined:
+//
+//   - "models": OpenRouter's fallback array. A request naming an allow-listed
+//     model can list arbitrary others to fall back to.
+//   - "plugins": billed per use independently of tokens (web search is the
+//     obvious one) -- spend that the token quota cannot see at all.
+//   - "transforms": provider-side processing outside the model's own pricing.
+//   - "provider.only" / "order" / "sort": cost STEERING within one model. This
+//     project's own P2 work measured 3.1x cost variance between PROVIDERS of a
+//     single model, so this is not hypothetical.
+//
+// It also closes a fail-OPEN in the predecessor it replaces: the old
+// `if model, ok := peekModel(body); ok && !p.modelAllowed(model)` skipped the
+// allow-list check entirely when a body parsed but carried no "model". A missing
+// model is now a refusal.
+//
+// Same one-field decode discipline as zdrRoutingEnforced: every cost field is
+// decoded as json.RawMessage purely to test for PRESENCE, never parsed, and the
+// struct has no "messages" field, so content is never touched. Fails closed on an
+// unparseable body.
+//
+// THE D4 SEAM. "provider.ignore" is deliberately NOT refused -- it is what D4
+// (commit 0c5bb29) uses to exclude DeepInfra from routing, and refusing it would
+// break the shipped daemon on every request. Only the cost-STEERING provider
+// fields are refused; a deny-list narrows where traffic may go, which is the safe
+// direction. This predicate is also kept separate from zdrRoutingEnforced rather
+// than folded into it, so the F1 and D4 concerns stay independently reviewable.
+// Keys are matched EXACTLY, like every other gate here (see topLevelFields).
+// This gate's case-differential happened to fail SAFE -- a case-variant
+// "MODELS" was over-refused rather than let through -- but it is converted
+// anyway: every gate reading the body the same way OpenRouter does is itself the
+// property worth having, and one predicate quietly using different matching
+// rules is how the next differential gets missed.
+func (p *proxy) costSurfaceRefusal(body []byte) (string, bool) {
+	fields, ok := topLevelFields(body)
+	if !ok {
+		return "malformed_request", true // unparseable -> fail closed
+	}
+
+	for _, billable := range []string{"models", "plugins", "transforms"} {
+		if _, present := fields[billable]; present {
+			return "cost_surface_not_allowed", true
+		}
+	}
+	if provider, present := fields["provider"]; present {
+		if routing, isObject := topLevelFields(provider); isObject {
+			for _, steering := range []string{"only", "order", "sort"} {
+				if _, present := routing[steering]; present {
+					return "cost_surface_not_allowed", true
+				}
+			}
+		}
+	}
+
+	model, ok := rawString(fields, "model")
+	if !ok || model == "" {
+		return "model_required", true
+	}
+	if !p.modelAllowed(model) {
+		return "model_not_allowed", true
+	}
+	return "", false
+}
+
 // parseAllowedModels builds the allow-list set from a comma-separated list.
 func parseAllowedModels(raw string) map[string]bool {
 	set := make(map[string]bool)
@@ -1101,14 +2234,19 @@ func parseAllowedModels(raw string) map[string]bool {
 	return set
 }
 
+// Keys are matched EXACTLY (see topLevelFields). A case-variant "MAX_TOKENS" is
+// NOT read: sizing a reservation from a field OpenRouter will never see would
+// under-reserve while the provider applied its own far larger default.
 func peekMaxTokens(body []byte) (int, bool) {
-	var peek struct {
-		MaxTokens int `json:"max_tokens"`
-	}
-	if err := json.Unmarshal(body, &peek); err != nil || peek.MaxTokens <= 0 {
+	fields, ok := topLevelFields(body)
+	if !ok {
 		return 0, false
 	}
-	return peek.MaxTokens, true
+	maxTokens, ok := rawInt(fields, "max_tokens")
+	if !ok || maxTokens <= 0 {
+		return 0, false
+	}
+	return maxTokens, true
 }
 
 // peekUsageTotal looks at a non-streamed chat-completion response body and,
@@ -1162,15 +2300,74 @@ func peekUsageTotal(body []byte) (int, bool) {
 // and the sweep would report it ~20 minutes later as an abandoned reservation
 // that never happened -- turning the crash alarm into noise on the one path
 // most likely to fire it (clients disconnecting mid-stream).
-func (p *proxy) finalizeUsage(keyID string, reserved, actual int, producedOutput bool, pendingID int64) {
+// reservationOutcome accumulates what one request did to its reservation, so
+// that billing happens at exactly one deferred site (see handleChatCompletions)
+// rather than at every branch that can end a request.
+//
+// Its zero value is the SAFE one on purpose: actual=0 and producedOutput=false
+// mean "upstream generated nothing", which finalizeUsage turns into a full
+// refund. A branch that fails before reaching upstream therefore needs to record
+// nothing at all.
+type reservationOutcome struct {
+	// Set once, at construction, and never mutated.
+	keyID    string
+	reserved int
+	// reqID ties the money path back to the request that spent it. streamSSE and
+	// the deferred finalizer both run without a *http.Request in scope, and a
+	// billing line that cannot be tied to a request is the one kind of line an
+	// operator most needs to tie to a request.
+	reqID     string
+	pendingID int64
+
+	// Recorded by whichever branch handles the response.
+	actual         int
+	producedOutput bool
+
+	// finalized makes finalizeReservation idempotent. Two things rely on it:
+	// nested defers (streamSSE unwinding into the handler's own defer), and the
+	// panic path, where the recovery middleware and this defer both run.
+	finalized bool
+}
+
+// finalizeReservation bills o exactly once, however many times it is called.
+//
+// Deliberately separate from finalizeUsage, which is left exactly as it was:
+// finalizeUsage owns the CHARGE POLICY (how a missing usage figure is treated,
+// what the rate bucket is charged, which direction the correction goes) and is
+// unit-tested on that policy. This function owns only the once-ness. Keeping the
+// two apart means the invariant added here cannot perturb the policy the
+// quota-reservation design document specifies.
+func (p *proxy) finalizeReservation(o *reservationOutcome) {
+	if o == nil || o.finalized {
+		return
+	}
+	o.finalized = true
+	p.metrics.reservationsFinalized.Add(1)
+	p.finalizeUsage(o.keyID, o.reserved, o.actual, o.producedOutput, o.pendingID, o.reqID)
+}
+
+func (p *proxy) finalizeUsage(keyID string, reserved, actual int, producedOutput bool, pendingID int64, reqID string) {
+	// Charge the token-rate bucket with the best figure available: the real usage
+	// when there is one, otherwise the reservation. Never nothing -- a request
+	// that produced output it could not measure must still cost the key something
+	// against its rate, or "make the usage chunk go missing" becomes the way to
+	// get unmetered throughput. Independent of the quota correction below: quota
+	// is a cumulative budget, this is a rate.
+	charged := actual
+	if charged == 0 && producedOutput {
+		charged = reserved
+	}
+	p.keyTokens.charge(keyID, float64(charged))
+
 	switch {
 	case actual > 0:
-		go p.correctUsage(keyID, actual-reserved, pendingID)
+		go p.correctUsage(keyID, actual-reserved, pendingID, reqID)
 	case producedOutput:
-		p.logger.Printf("usage: output produced but no usage figure (key_id=%s) -- keeping reservation=%d, not refunding", keyID, reserved)
-		go p.correctUsage(keyID, 0, pendingID)
+		p.log.Warn("output produced but no usage figure -- keeping the reservation, not refunding",
+			"req_id", reqID, "key_id", keyID, "reserved", reserved)
+		go p.correctUsage(keyID, 0, pendingID, reqID)
 	default:
-		go p.correctUsage(keyID, -reserved, pendingID)
+		go p.correctUsage(keyID, -reserved, pendingID, reqID)
 	}
 }
 
@@ -1208,7 +2405,7 @@ func (p *proxy) finalizeUsage(keyID string, reserved, actual int, producedOutput
 // least visible rather than silent. A correction lost that way now also
 // leaves its outbox row open, so the sweep reports it too: exhausted retries
 // are no longer only a log line that has to be noticed in the moment.
-func (p *proxy) correctUsage(keyID string, delta int, pendingID int64) {
+func (p *proxy) correctUsage(keyID string, delta int, pendingID int64, reqID string) {
 	if p.supabaseURL == "" || p.supabaseServiceRoleKey == "" {
 		return
 	}
@@ -1219,7 +2416,8 @@ func (p *proxy) correctUsage(keyID string, delta int, pendingID int64) {
 		PendingID int64  `json:"p_pending_id"`
 	}{KeyID: keyID, Tokens: delta, PendingID: pendingID})
 	if err != nil {
-		p.logger.Printf("usage: encoding correction body failed (key_id=%s): %v", keyID, err)
+		p.log.Error("encoding correction body failed", "req_id", reqID,
+			"key_id", keyID, "err", err)
 		return
 	}
 
@@ -1228,7 +2426,8 @@ func (p *proxy) correctUsage(keyID string, delta int, pendingID int64) {
 	for attempt := 1; attempt <= correctUsageMaxAttempts; attempt++ {
 		ok, retryable := p.tryCorrectUsage(rpcURL, payload, keyID, delta, attempt)
 		if ok {
-			p.logger.Printf("usage: corrected delta=%d for key_id=%s (attempt %d)", delta, keyID, attempt)
+			p.log.Info("usage corrected", "req_id", reqID, "key_id", keyID,
+				"delta", delta, "attempt", attempt)
 			return
 		}
 		if !retryable || attempt == correctUsageMaxAttempts {
@@ -1237,7 +2436,9 @@ func (p *proxy) correctUsage(keyID string, delta int, pendingID int64) {
 		time.Sleep(correctUsageRetryBackoff[attempt-1])
 	}
 
-	p.logger.Printf("usage: CORRECTION LOST after %d attempts (key_id=%s, delta=%d) -- tokens_used may be inaccurate", correctUsageMaxAttempts, keyID, delta)
+	p.log.Error("CORRECTION LOST -- tokens_used may be inaccurate", "req_id", reqID,
+		"key_id", keyID, "delta", delta, "attempts", correctUsageMaxAttempts)
+	p.metrics.correctionsLost.Add(1)
 }
 
 // tryCorrectUsage makes a single attempt at the increment_usage RPC call
@@ -1251,7 +2452,8 @@ func (p *proxy) tryCorrectUsage(rpcURL string, payload []byte, keyID string, del
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, rpcURL, bytes.NewReader(payload))
 	if err != nil {
-		p.logger.Printf("usage: building correction request failed (key_id=%s, attempt=%d): %v", keyID, attempt, err)
+		p.log.Error("building correction request failed", "key_id", keyID,
+			"attempt", attempt, "err", err)
 		return false, false
 	}
 	// apikey only -- see authorize's comment on this same header-format
@@ -1263,18 +2465,21 @@ func (p *proxy) tryCorrectUsage(rpcURL string, payload []byte, keyID string, del
 
 	resp, err := p.client.Do(req)
 	if err != nil {
-		p.logger.Printf("usage: correction call failed (key_id=%s, delta=%d, attempt=%d): %v", keyID, delta, attempt, err)
+		p.log.Error("correction call failed", "key_id", keyID, "delta", delta,
+			"attempt", attempt, "err", err)
 		return false, true
 	}
 	defer resp.Body.Close()
 	io.Copy(io.Discard, io.LimitReader(resp.Body, maxAuthResponseBytes))
 
 	if resp.StatusCode >= 500 {
-		p.logger.Printf("usage: correction RPC returned status=%d (key_id=%s, delta=%d, attempt=%d)", resp.StatusCode, keyID, delta, attempt)
+		p.log.Warn("correction RPC returned a 5xx, will retry", "key_id", keyID,
+			"delta", delta, "attempt", attempt, "supabase_status", resp.StatusCode)
 		return false, true
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		p.logger.Printf("usage: correction RPC returned status=%d (key_id=%s, delta=%d, attempt=%d)", resp.StatusCode, keyID, delta, attempt)
+		p.log.Error("correction RPC refused, not retryable", "key_id", keyID,
+			"delta", delta, "attempt", attempt, "supabase_status", resp.StatusCode)
 		return false, false
 	}
 
@@ -1293,17 +2498,48 @@ func (p *proxy) tryCorrectUsage(rpcURL string, payload []byte, keyID string, del
 // record left in pending_corrections is picked up here instead, by whichever
 // process is running next -- the same one after a restart, or a sibling
 // replica that never crashed at all.
-func (p *proxy) startReconciliationSweep() {
+// ctx stops the loop on shutdown. Without it the ticker would keep firing while
+// the process is draining, issuing Supabase calls on behalf of a server that is
+// already gone.
+func (p *proxy) startReconciliationSweep(ctx context.Context) {
 	if p.supabaseURL == "" || p.supabaseServiceRoleKey == "" {
-		p.logger.Printf("reconciliation: sweep disabled (supabase not configured)")
+		p.log.Warn("reconciliation: sweep disabled (supabase not configured)")
 		return
 	}
-	p.logger.Printf("reconciliation: sweep every %s for reservations older than %dm", reconciliationSweepInterval, pendingCorrectionStaleAfterMinutes)
+	p.log.Info("reconciliation: sweep scheduled", "interval", reconciliationSweepInterval.String(),
+		"stale_after_min", pendingCorrectionStaleAfterMinutes)
 	ticker := time.NewTicker(reconciliationSweepInterval)
 	defer ticker.Stop()
-	for range ticker.C {
-		p.sweepPendingCorrections()
+	for {
+		select {
+		case <-ctx.Done():
+			p.log.Info("reconciliation: sweep stopped (shutting down)")
+			return
+		case <-ticker.C:
+			p.sweepTick()
+		}
 	}
+}
+
+// sweepTick runs one sweep and contains any panic inside it.
+//
+// The containment is the point. This loop is the only thing that ever reports a
+// stranded reservation, and a panic in the tick used to take the whole goroutine
+// with it: reconciliation would stop for the lifetime of the process, silently,
+// while /health kept answering 200. A monitoring surface that can die without
+// saying so is worse than not having one, because its silence reads as "nothing
+// to report". Log loudly and let the ticker carry on.
+func (p *proxy) sweepTick() {
+	defer func() {
+		if r := recover(); r != nil {
+			p.log.Error("reconciliation: PANIC in sweep, recovered so reconciliation keeps running",
+				"panic", fmt.Sprint(r))
+			p.logger.Printf("sweep panic stack:\n%s", debug.Stack())
+			p.metrics.panicsRecovered.Add(1)
+			p.metrics.markSweepRun(0, true)
+		}
+	}()
+	p.sweepPendingCorrections()
 }
 
 // sweepPendingCorrections claims every reservation older than
@@ -1327,7 +2563,13 @@ func (p *proxy) startReconciliationSweep() {
 //
 // Errors are logged and the sweep returns; the rows are still there for the
 // next tick, since the claim only happens on a successful DELETE ... RETURNING.
-func (p *proxy) sweepPendingCorrections() {
+// The (swept, failed) return exists for the liveness counters (metrics.go): a
+// sweep that runs and fails is a different state from one that is not running at
+// all, and sweep_last_run_unix alone cannot tell those apart. Every exit below
+// therefore states its outcome explicitly rather than falling out of the function.
+func (p *proxy) sweepPendingCorrections() (swept int, failed bool) {
+	defer func() { p.metrics.markSweepRun(swept, failed) }()
+
 	ctx, cancel := context.WithTimeout(context.Background(), reconciliationSweepTimeout)
 	defer cancel()
 
@@ -1335,15 +2577,15 @@ func (p *proxy) sweepPendingCorrections() {
 		StaleMinutes int `json:"p_stale_minutes"`
 	}{StaleMinutes: pendingCorrectionStaleAfterMinutes})
 	if err != nil {
-		p.logger.Printf("reconciliation: encoding sweep body failed: %v", err)
-		return
+		p.log.Error("reconciliation: encoding sweep body failed", "err", err)
+		return 0, true
 	}
 
 	rpcURL := strings.TrimRight(p.supabaseURL, "/") + "/rest/v1/rpc/sweep_pending_corrections"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, rpcURL, bytes.NewReader(payload))
 	if err != nil {
-		p.logger.Printf("reconciliation: building sweep request failed: %v", err)
-		return
+		p.log.Error("reconciliation: building sweep request failed", "err", err)
+		return 0, true
 	}
 	// apikey only -- see authorize's comment on this same header-format bug.
 	req.Header.Set("apikey", p.supabaseServiceRoleKey)
@@ -1352,15 +2594,15 @@ func (p *proxy) sweepPendingCorrections() {
 
 	resp, err := p.client.Do(req)
 	if err != nil {
-		p.logger.Printf("reconciliation: sweep call failed: %v", err)
-		return
+		p.log.Error("reconciliation: sweep call failed", "err", err)
+		return 0, true
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		io.Copy(io.Discard, io.LimitReader(resp.Body, maxSweepResponseBytes))
-		p.logger.Printf("reconciliation: sweep returned status=%d", resp.StatusCode)
-		return
+		p.log.Error("reconciliation: sweep returned a non-200", "supabase_status", resp.StatusCode)
+		return 0, true
 	}
 
 	var rows []struct {
@@ -1369,21 +2611,27 @@ func (p *proxy) sweepPendingCorrections() {
 		Reserved  int    `json:"reserved"`
 		CreatedAt string `json:"created_at"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxSweepResponseBytes)).Decode(&rows); err != nil {
-		p.logger.Printf("reconciliation: decoding sweep response failed: %v", err)
-		return
+	if err := decodeCappedJSON(resp, maxSweepResponseBytes, &rows); err != nil {
+		p.log.Error("reconciliation: decoding sweep response failed", "err", err)
+		return 0, true
 	}
 
 	// Silent on the common case. A healthy proxy sweeps up nothing every five
 	// minutes forever, and a line saying so would train operators to ignore
 	// this prefix -- which is the one prefix that must stay attention-worthy.
 	if len(rows) == 0 {
-		return
+		return 0, false
 	}
 
 	for _, row := range rows {
-		p.logger.Printf("reconciliation: ABANDONED RESERVATION swept (pending_id=%d, key_id=%s, reserved=%d, reserved_at=%s) -- no correction was ever applied, most likely a proxy crash mid-request; the reservation stays CHARGED (never refunded on missing usage data) and tokens_used for this key is overstated by at most that amount",
-			row.ID, row.KeyID, row.Reserved, row.CreatedAt)
+		// This line IS the deliverable of the outbox design -- the accounting is
+		// not recoverable, so an operator seeing exactly which key was overstated
+		// by how much is the whole product of the sweep. Structured so it can also
+		// be counted (metrics.go's reservations_stranded) rather than only read.
+		p.log.Error("reconciliation: ABANDONED RESERVATION swept -- no correction was ever applied, most likely a proxy crash mid-request; the reservation stays CHARGED (never refunded on missing usage data) and tokens_used for this key is overstated by at most that amount",
+			"pending_id", row.ID, "key_id", row.KeyID, "reserved", row.Reserved,
+			"reserved_at", row.CreatedAt)
 	}
-	p.logger.Printf("reconciliation: swept %d abandoned reservation(s)", len(rows))
+	p.log.Info("reconciliation: sweep complete", "swept", len(rows))
+	return len(rows), false
 }

@@ -46,14 +46,14 @@ var startedAt = time.Now()
 // StatusRequest always serializes "status" (no omitempty, see its doc
 // comment), and no other request type has that key, so a real one is always
 // caught here and every existing message shape still falls through unchanged.
+//
+// The key is matched EXACTLY (requestfields.go).
 func isStatusRequest(raw json.RawMessage) bool {
-	var peek struct {
-		Status *bool `json:"status"`
-	}
-	if err := json.Unmarshal(raw, &peek); err != nil {
+	fields, ok := requestFields(raw)
+	if !ok {
 		return false
 	}
-	return peek.Status != nil
+	return hasBoolKey(fields, "status")
 }
 
 // handleStatus answers a StatusRequest from state the Server already holds.
@@ -79,6 +79,7 @@ func (s *Server) handleStatus(enc *json.Encoder) {
 		MemoryAvailable:  s.memory != nil,
 		APIKeyConfigured: s.apiKey != "",
 		Degraded:         s.degradations(),
+		Counters:         s.counters.snapshot(),
 	}
 	if s.cfg != nil {
 		resp.ConfigVersion = s.cfg.ConfigVersion

@@ -15,18 +15,21 @@ code your question is about, and grounds every answer in *your* real files. When
 it proposes a change, that change passes through a five-gate safety pipeline
 before a single byte is written — and every write is backed up and undoable. The
 only thing that ever leaves your machine is the minimal prompt for one inference
-turn, sent through a proxy that holds the credential server-side — with zero data
-retention **requested** on the wire (a policy set client-side, not yet enforced
-end-to-end; see §7). Your code, index, memory, and backups all stay local.
+turn — or one prompt per step, if you turn on **agent mode**, where each step's
+tools need your explicit approval (§6a) — sent through a proxy that holds the
+credential server-side — with zero data
+retention set client-side **and enforced server-side** by that proxy, which refuses
+any request whose retention flags are missing or weakened (see §7). Your code,
+index, memory, and backups all stay local.
 
 ### Quick facts
 
 | | |
 |---|---|
 | 🖥️ **Where it runs** | Entirely on your machine — no cloud service, no account, no network listener |
-| 📤 **What leaves your machine** | Only the minimal prompt for a single inference turn — scrubbed of secrets; retention **requested** off (client-set, not yet enforced — see §7) |
+| 📤 **What leaves your machine** | Only the minimal prompt for a single inference turn — scrubbed of secrets on your machine (heuristic, see §7); retention denied on the wire and **enforced at the proxy**. With agent mode on, one such prompt per step, plus the scrubbed output of tools you approved (§6a) |
 | ✍️ **How edits apply** | As precise `SEARCH/REPLACE` edits through 5 safety gates; every write backed up and undoable |
-| 🔒 **Privacy default** | Zero data retention **requested** on the wire (set client-side, not yet enforced — see §7); API key held server-side, never on the client |
+| 🔒 **Privacy default** | Zero data retention denied on the wire, set client-side and **enforced at the proxy** (fail-closed); API key held server-side, never on the client |
 | 🧩 **How you use it** | A chat terminal (Mochiii), a VS Code extension, and a scriptable CLI — all over one shared engine |
 
 ---
@@ -42,6 +45,7 @@ end-to-end; see §7). Your code, index, memory, and backups all stay local.
 - [4. The big picture](#4-the-big-picture)
 - [5. A question's journey](#5-a-questions-journey)
 - [6. How edits stay safe](#6-how-edits-stay-safe)
+- [6a. How tools stay under your control](#6a-how-tools-stay-under-your-control)
 - [7. How your privacy holds](#7-how-your-privacy-holds)
 
 **Part III — What You Get**
@@ -69,7 +73,7 @@ because it read it locally, and (b) never applies a change on faith.
 > | **Daemon** | A background program that runs quietly on your machine and does the real work. Mochiii's daemon holds the index, the memory, and the safety engine. |
 > | **Indexing / retrieval** | Reading your project once and organizing it so the right pieces can be pulled up instantly when a question relates to them. |
 > | **Embeddings** | A way of turning code into numbers that capture meaning, so "find the code that does X" works even when you don't know the exact words. Computed **on your machine**. |
-> | **Zero data retention (ZDR)** | A guarantee that the model provider does not keep your prompt after answering it. In Mochiii this retention policy is **requested**, not yet enforced end-to-end — see §7. |
+> | **Zero data retention (ZDR)** | A commitment that the model provider does not keep your prompt after answering it. Mochiii sets the flags client-side and **enforces them at the proxy**, which refuses any request that drops them; whether a provider then honours the flag is that provider's own contractual commitment — see §7. |
 
 ---
 
@@ -85,10 +89,10 @@ Mochiii's thesis is the opposite:
 | The industry default | Mochiii's stance |
 |---|---|
 | Your code is uploaded and indexed in the cloud | Indexing, embeddings, and retrieval happen **on your machine** |
-| Prompts and completions are retained by the provider | **Zero data retention** requested on every call (client-side routing flags; end-to-end enforcement is backlog F1, not yet shipped) |
+| Prompts and completions are retained by the provider | **Zero data retention** on every call — routing flags set client-side and **enforced server-side** by the proxy, which rejects any request that drops or weakens them |
 | The tool has a network listener / account / login | **No network listener** — a local socket with owner-only permissions |
 | Edits are applied on faith | Every edit passes **five safety gates**, is backed up, and is undoable |
-| "It probably didn't leak your secrets" | Secrets are **skipped at index time and scrubbed at send time** |
+| "It probably didn't leak your secrets" | Secrets are **skipped at index time and scrubbed at send time, on your machine** — heuristic and prefix-based, so defense-in-depth rather than a guarantee (§7) |
 
 The goal is a coding assistant that a security-conscious engineer, a regulated
 team, or a privacy-minded solo developer can adopt **without auditing away their
@@ -114,7 +118,7 @@ mindmap
       Backup then write
       One-click Undo
     Private by design
-      Zero data retention (requested)
+      Zero data retention (enforced)
       Secret scrubbing
       Key held server-side
     Adversarially reviewed
@@ -134,10 +138,10 @@ and backup gates. If an edit is ambiguous, stale, or would corrupt a file, Mochi
 **refuses rather than guesses.**
 
 **3. Privacy is structural, not a setting.** There is no network listener. The
-inference credential is never on the client. The wire request asks the provider to
-deny retention (a policy requested client-side, not yet enforced end-to-end — see
-§7). Secrets are stripped before anything is sent. These are properties of the
-design, not toggles you have to remember to flip.
+inference credential is never on the client. The wire request denies retention, and
+the proxy **refuses to forward any request that weakens that flag** (see §7).
+Recognizable secrets are stripped on your machine before anything is sent. These are
+properties of the design, not toggles you have to remember to flip.
 
 **4. Every safety claim was earned adversarially.** The safety model was
 pressure-tested with live exploit reproductions — path-escape symlinks,
@@ -152,8 +156,13 @@ and hardened until the repros went to zero. Claims are verified, not assumed.
 
 Everything in the green box below is **your machine**. Only the orange box is
 off-machine, and only the minimal prompt for one inference turn ever crosses that
-line — with the credential on the proxy, not the client, and the request asking the
-provider to deny retention (see §7 on enforcement).
+line — with the credential on the proxy, not the client, and retention denied on the
+request and enforced at the proxy (see §7).
+
+**With agent mode on, "one turn" becomes "one turn per step."** That is a real
+change to the sentence above and it is stated rather than absorbed: the loop is
+bounded, every step is visible, and no tool runs without your approval. §6a is
+the whole of it.
 
 ```mermaid
 flowchart TB
@@ -212,7 +221,7 @@ flowchart TB
 | **Edit-apply engine** | The five-gate pipeline that turns a proposed change into a safe, backed-up, undoable write — shared by *every* client. |
 | **Conversation memory** | Per-workspace store for in-session context and cross-session recall, with full-text **search** over past conversations. |
 | **Secret scrubber** | Redacts recognizable secrets from retrieved code **at send time**, as a second line of defense beyond the index-time skip. |
-| **Managed proxy** | Holds the inference API key server-side so the client never carries the credential. It forwards the request byte-for-byte, including the client-set zero-data-retention routing flags — it does **not** itself enforce ZDR (backlog F1). |
+| **Managed proxy** | Holds the inference API key server-side so the client never carries the credential. It forwards the request body byte-for-byte and never reads message content, while independently enforcing policy on the envelope: it rejects any request whose zero-data-retention flags are missing or weakened, restricts which models may be billed, and caps what one request or key can spend. |
 
 ---
 
@@ -302,6 +311,82 @@ recent run stays independently undoable.
 
 ---
 
+## 6a. How tools stay under your control
+
+*Agent mode is **off by default**. Everything in this section is inert until you
+turn it on in `models.json`.*
+
+With it on, Mochiii can do more than answer once: it can read a file, look at
+what it found, and decide to read another — a bounded loop rather than a single
+reply. That is genuinely more capability, and it is the point at which "the
+assistant only ever talks" stops being true. So it comes with its own gate.
+
+**One approval per call, showing exactly what will run.**
+
+```mermaid
+flowchart LR
+    A["Model asks<br/>for a tool"] --> P1
+
+    P1{"① Known tool?<br/>advertised this turn"}
+    P1 -- "no" --> R["🛑 REFUSED<br/>model is told why"]
+    P1 -- ok --> P2
+
+    P2{"② Policy?<br/>deny / ask / allow"}
+    P2 -- "deny" --> R
+    P2 -- "allow" --> P4
+    P2 -- "ask" --> P3
+
+    P3{"③ You approve?<br/>see the exact arguments"}
+    P3 -- "no / no answer" --> R
+    P3 -- "yes" --> P4
+
+    P4["④ Run · scrub output · audit"]
+    P4 --> DONE["✅ Result goes<br/>back to the model"]
+
+    style R fill:#5b1a1a,stroke:#e74c3c,color:#fff
+    style DONE fill:#0d3b2e,stroke:#2ecc71,color:#fff
+```
+
+| Gate | Guarantee |
+|---|---|
+| **① Advertised set** | The model can only ask for tools that were offered this turn. A tool your config denies is never even advertised, and an invented name is refused with a readable reason rather than guessed at. |
+| **② Policy** | Every tool resolves to `deny`, `ask`, or `allow` from **your** `models.json`. Anything you have not written a policy for resolves to `ask` — the default is a question, never a yes. |
+| **③ Your approval** | You see the tool, the **complete** arguments (never a summary), and which trust lane it belongs to. Only an explicit yes runs it. A timeout, a garbled answer, an answer to a different question, and a closed panel are all *no*. |
+| **④ Bounded, scrubbed, recorded** | Four per-turn ceilings (steps, wall clock, per-result bytes, total tool bytes) and every ceiling says which one stopped the turn. Tool output goes through the same secret scrubber as everything else before the model sees it. Every decision — including the ones you were never prompted about — is appended to `.codeterminal/logs/toolcalls.jsonl`. |
+
+**The approval is bound to the bytes, not to the moment.** The prompt carries a
+SHA-256 of the exact argument object, your client echoes it back, and the daemon
+re-checks it before running anything. What you were shown and what runs are
+*provably* the same object — the same discipline that makes the edit gates
+trustworthy, applied one layer up.
+
+### Two lanes, and only one of them is confined
+
+| | **Built-in tools** | **Your MCP servers** |
+|---|---|---|
+| What they are | Functions compiled into Mochiii | Separate programs you configured |
+| Can they write to your files? | **No.** The edit tool *proposes* into the same five-gate review you already use | Mochiii cannot tell, and cannot stop them |
+| Confined? | Yes — same path/secret resolver as the edit pipeline | **No** |
+| On by default? | Only with agent mode on | **No** — and each server needs a separate written acknowledgement |
+
+**We will not claim a third-party MCP server is sandboxed, because it is not.**
+It is an ordinary program running with your full access, and nothing in this
+product can constrain what it reads or changes. What we do claim is narrower and
+true: it does not start unless you configured it, it does not run unless you
+approve each call, you see the exact arguments first, and every decision is
+written down locally. That is consent and audit — not containment. Every
+approval prompt says so in those words.
+
+**Credentials never reach an MCP server.** A server gets `PATH` and `HOME` and
+nothing else unless you explicitly list a variable — and your inference API keys
+cannot be granted that way at all, however loudly a config asks.
+
+**What this costs.** Measured over 30 real agent turns: a median of 2 steps and
+1 tool call per turn, so roughly twice a normal turn rather than the eight-fold
+worst case the ceilings allow (`docs/AGENT_LOOP_RELIABILITY_2026-07-31.md`).
+
+---
+
 ## 7. How your privacy holds
 
 ```mermaid
@@ -317,7 +402,7 @@ flowchart TB
     subgraph WIRE["What crosses the line — and how it's protected"]
         W1["Minimal prompt for ONE turn"]
         W2["Secrets scrubbed before send"]
-        W3["Retention denied on the request<br/>(client-set; see F1)"]
+        W3["Retention denied on the request<br/>(client-set, proxy-enforced)"]
         W4["API key held on proxy, never on client"]
     end
 
@@ -334,15 +419,25 @@ flowchart TB
    be retrieved as context in the first place.
 2. **Send-time scrub** — retrieved code is scanned and recognizable secrets
    (private-key blocks, known API-key prefixes) are redacted before the prompt
-   leaves the machine.
-3. **Zero data retention (requested — not yet enforced end-to-end).** The wire
-   request denies data collection and restricts routing to retention-compliant
-   providers. These flags are set **client-side** by the daemon; the managed proxy
-   forwards them but does not itself enforce ZDR, and end-to-end enforcement and
-   verification remain open work (backlog **F1**). Treat ZDR as an intended design
-   goal, not a guarantee to rely on today.
+   leaves the machine. **This runs on your machine, not on our servers**, and has
+   three limits worth stating plainly: it matches a fixed set of high-confidence
+   *prefixed* shapes, so novel, obfuscated, or unprefixed secrets are missed; it
+   can be turned off (`--no-scrub`); and because the managed proxy never reads
+   message content, **a client other than the shipped daemon gets no scrubbing at
+   all**. Treat it as defense-in-depth, not a guarantee.
+3. **Zero data retention (enforced at the proxy).** The wire request denies data
+   collection and restricts routing to retention-compliant providers. These flags
+   are set client-side by the daemon **and independently enforced server-side**:
+   the proxy rejects — fail-closed, 403 `zdr_required` — any request whose routing
+   object is missing, malformed, or weakened, so a caller that strips the flags
+   cannot have them relayed to the model provider (backlog **F1**, verified live
+   on the wire).
 4. **Credential isolation** — the API key lives on the managed proxy, not on any
    client, so a compromised client can't exfiltrate it.
+5. **Spend containment** — the proxy caps what any single request or key can cost:
+   an allow-listed model set, a refusal of billable side-channels (fallback model
+   arrays, plugins, provider cost-steering), a hard per-request token ceiling
+   enforced *mid-stream*, and per-key request- and token-rate limits.
 
 **Assurance is a practice, not a checkbox.** Mochiii's safety claims are subjected
 to adversarial, gate-by-gate security review with *live* exploit reproductions —
@@ -382,11 +477,20 @@ backlog; the discipline *is* the product's assurance.
   conversation search
 - **CLI** for scripts and one-shot `edits apply` / `edits undo`
 
+### 🛠️ Uses tools only when you say so
+- **Off by default.** Agent mode and every MCP server are opt-in, per server, in writing
+- One approval per call, showing the **complete** arguments — bound to them by a SHA-256 the daemon re-checks
+- Four per-turn ceilings, and every stop says which one bit
+- Every decision appended to a local audit log — the digest, never the arguments
+- Built-in tools cannot write: the edit tool proposes into the same five-gate review
+- Third-party servers are **not sandboxed**, and every prompt says so plainly
+
 ### 🔒 Protects you by default
 - No network listener; local socket with owner-only permissions
-- Zero data retention **requested** on the wire (client-set routing flags; end-to-end enforcement is backlog F1, not yet shipped)
-- Secret files skipped at index time, secrets scrubbed at send time
+- Zero data retention denied on the wire, set client-side and **enforced at the proxy** (fail-closed)
+- Secret files skipped at index time; recognizable secrets scrubbed on your machine at send time (heuristic — see §7)
 - Inference credential held server-side on the managed proxy
+- Per-key spend caps: model allow-list, per-request token ceiling, request- and token-rate limits
 
 ---
 

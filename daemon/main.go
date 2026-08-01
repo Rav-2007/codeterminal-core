@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -65,6 +66,11 @@ func main() {
 			return
 		case "edits":
 			if err := runEditsCommand(os.Args[2:], logger); err != nil {
+				logger.Fatal(err)
+			}
+			return
+		case "mcp":
+			if err := runMCPCommand(os.Args[2:], logger); err != nil {
 				logger.Fatal(err)
 			}
 			return
@@ -223,7 +229,16 @@ func main() {
 	logger.Printf("tier=%s slug=%s", cfg.DefaultTier, model)
 	logger.Printf("listening on %s (base=%s)", socketPath, apiBase)
 
+	// Cancelled the moment a shutdown signal arrives, BEFORE the drain wait
+	// begins. Only the agent loop consults it, and only between steps: a turn
+	// stops starting new tool calls as soon as this fires, which is what keeps
+	// toolDrainGrace bounded to the single call already in flight rather than
+	// to however many the model would have asked for next.
+	shutdownCtx, beginShutdown := context.WithCancel(context.Background())
+	defer beginShutdown()
+
 	srv := &Server{
+		shutdownCtx:             shutdownCtx,
 		apiBase:                 apiBase,
 		apiKey:                  apiKey,
 		cfg:                     cfg,
@@ -245,6 +260,16 @@ func main() {
 		// the log-only fire-rate data survives daemon restarts instead of
 		// vanishing with stderr. Local file only — no network egress.
 		warnSink: newWarnSink(filepath.Join(absWorkspace, ".codeterminal", "logs", "warnmode.jsonl")),
+		// The tool-call audit log, alongside it and under the same discipline:
+		// local file only, no network seam. Always constructed, not just when
+		// mcp.enabled -- a daemon that starts with agent mode off and has it
+		// turned on later must not be the one daemon whose calls went
+		// unrecorded, and an unused sink writes nothing.
+		toolAudit: newToolAuditSink(filepath.Join(absWorkspace, ".codeterminal", "logs", "toolcalls.jsonl")),
+		// Activity counters, reported through the existing status surface (see
+		// counters.go). Built here rather than lazily so production always has
+		// them; a nil set is valid and simply counts nothing.
+		counters: &counters{},
 	}
 	// One line per reduced subsystem, so the log and the wire agree about what
 	// is degraded from the moment the daemon starts serving.
@@ -256,7 +281,33 @@ func main() {
 	// racing a background goroutine's os.Exit against main() returning.
 	sig := <-sigCh
 	logger.Printf("received %s, shutting down", sig)
+
+	// Told first, so an agent turn stops queueing further tool calls while the
+	// listener is still being closed below.
+	beginShutdown()
+
+	// Stop accepting first, so the in-flight set stops growing and Serve's Accept
+	// loop returns. Only then is there a fixed set of connections to wait for.
 	ln.Close()
+
+	// Wait for in-flight work. Without this, main returned here and the process
+	// exited from under every handler goroutine mid-request.
+	//
+	// The grace is deliberately SHORT, and sized by what a cut request can
+	// actually damage rather than by how long a request can take. Everything that
+	// mutates the filesystem -- Apply's multi-file write plus its backup session,
+	// Undo's restore -- is local disk I/O measured in milliseconds, so a few
+	// seconds is generous for the cases where being cut leaves real mess behind
+	// (a half-applied batch, a half-populated backup dir). A streaming prompt can
+	// legitimately run for minutes, and waiting that out would make Ctrl-C feel
+	// broken; a cut prompt mutates nothing and costs the user a re-ask, so it is
+	// the right thing to abandon.
+	if !srv.WaitForDrain(shutdownGrace) {
+		logger.Printf("drain INCOMPLETE after %s -- a request was still running and is being cut. If it was an edit apply, the batch may be partly written; the backup session under .codeterminal/backups is still there and `undo` can revert it", shutdownGrace)
+	} else {
+		logger.Print("drain complete, no requests in flight")
+	}
+
 	os.Remove(socketPath)
 	os.Remove(lockPath)
 }

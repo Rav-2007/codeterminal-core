@@ -119,22 +119,63 @@ implementation/injection line — the setup chunks out-ranked the actual injecti
   IMPLEMENTED" queries with known-correct implementation files, then tune against the number.
 - When: at shipping / retrieval-quality hardening. Not blocking.
 
-### (g) WAL/shm sidecar permission hardening (low priority; ZDR/privacy-relevant)
-SQLite's `-wal` and `-shm` sidecar files inherit default 0644 perms — only the
-main `.db` file is explicitly chmod'd to 0600. The WAL can hold recently-written,
-un-checkpointed conversation turns in plaintext, so 0600 on the main file
-under-protects on a shared machine. Mitigated in practice by the 0700 state dir
-(`~/.local/state/mochiii/`), which blocks cross-user traversal — confirm that's
-sufficient, else chmod the sidecars on open. Same gap exists in `skills.go`; fix
-both together. Not a regression, surfaced during memory-persistence work. Fold
-into the eventual security/ZDR review.
+### (g) DONE: WAL/shm sidecar permission hardening (Phase 4, 2026-07-30)
+SQLite's `-wal` and `-shm` sidecars inherited the driver's default 0644 while only
+the main `.db` file was chmod'd to 0600. **Now fixed at both sites** via a shared
+`restrictSQLiteSidecars` (`daemon/apply_cmd.go`), called from `OpenMemoryStore` and
+`OpenSkillStore`; regression tests in `daemon/sqlite_sidecar_perms_test.go`.
 
-### (h) Memory store retention / pruning policy (grows unbounded by design)
-Persistence keeps full conversation history on disk forever (persist-all,
-hydrate-last-12) — correct default, but the `turns` table has no cap or prune.
-Long-lived workspaces will accumulate indefinitely. Add a retention policy
-(age- or count-based prune, or per-workspace cap). Pairs with the Phase-4
-session-buffer-compression note.
+**The item understated it.** It read "the WAL *can* hold recently-written,
+un-checkpointed turns", i.e. a duplicate copy in a weaker place. Measured, it is
+worse than that: immediately after `AppendTurn`, the transcript line was found in
+`memory.db-wal` and **not** in `memory.db`. In WAL mode the committed row lives in
+the sidecar until a checkpoint folds it in — so 0600 on the main file was protecting
+the copy that did not have the data, and the newest turns (the most sensitive ones)
+were the ones sitting at 0644. "Under-protects" was too generous; for fresh writes
+the lockdown was protecting nothing.
+
+**Ordering is the fix, not an implementation detail.** The driver creates the
+sidecars lazily, so the chmod has to come *after* the schema DDL (which is a write).
+Placed next to the `journal_mode=WAL` pragma — the obvious-looking spot — it races
+their creation and silently no-ops through its own ENOENT tolerance, leaving 0644
+behind while looking applied. Both failure modes are neuter-checked: removing the
+call fails the test, and so does moving it to the pragma.
+
+`skills.db` itself is deliberately left at the default mode (opt-in saved skills, not
+a transcript — the asymmetry is documented in `OpenMemoryStore`); its sidecars are
+restricted anyway, since 0600 on them costs nothing.
+
+Distinct from and does not close the sidecar **symlink-open** residual at §609 — the
+driver still owns those opens, and a symlink planted at a sidecar path is still
+followed. Modes and opens are different concerns.
+
+### (h) DONE: Memory store retention / pruning policy
+Was: persistence kept full conversation history on disk forever (persist-all,
+hydrate-last-12) with no cap or prune on `turns`.
+
+Closed 2026-07-31 (`5072961`). **Per-workspace, count-based**, capped at
+`maxTurnsPerWorkspace` = 1000 (~500 exchanges, far above the 12 hydration
+replays). Both choices are deliberate and recorded at the code: a *global* cap
+lets one busy workspace evict another's history, and an *age* cap silently
+empties a workspace that simply went unused for a while. Pruning lives in one
+place — `AppendTurn` — so all callers get a bounded store with no per-call-site
+change, the same shape (i) used for backup sessions. `turns_fts` stays in sync
+via search.go's existing AFTER DELETE trigger, asserted by an orphaned-row test.
+
+Two things came out of it that were not in the original item:
+
+- **`turns` had no index at all.** Every query in the package is
+  `WHERE workspace = ? ORDER BY id`, so `LoadRecentTurns` full-scanned on every
+  prompt and the new prune would have added that scan to every write. Added as
+  schema v3 (`idx_turns_workspace_id`).
+- **A latent migration bug, found by adding the v3 step.** `ensureMemorySchema`
+  returned immediately after the v1→v2 case, so adding v3 as another switch case
+  would have left a v1 database *recorded as v3* with the v3 index never created.
+  Migrations are now sequential `if`s, with a regression test that fails when the
+  early-return shape is restored.
+
+Still deferred, and unchanged by this: the Phase-4 session-buffer-compression
+note it was paired with.
 
 ### (i) DONE: Bounded backups + multi-run undo
 Backup session dirs under `<workspace>/.codeterminal/backups/` are now
@@ -176,6 +217,61 @@ built (see "FTS5 search session" below) -- human-facing lexical search over
 *conversation memory* (turns), driven from the VS Code panel, not a
 model-callable tool and not over backup/session history. This backup-history
 tool is still deferred.
+
+### (j) errcheck adoption — deferred from P3.5 with a measured reason
+
+Phase 3.5 adopted `staticcheck`, `ineffassign` and `bodyclose` as hard CI gates
+(`scripts/lint.sh`, commit `9abc815`). **`errcheck` was named in the same item and
+is NOT wired up**, deliberately, and this entry exists so that is a decision on
+record rather than something rediscovered later as an oversight.
+
+Measured on this tree: **329 findings, 157 outside tests.** The distribution is
+the problem — the top callees are `os.Remove` (17), `fmt.Fprintf` (13),
+`db.Close` (10), `conn.Close` (9), `resp.Body.Close` (7): cleanup-path closes and
+writes to stdout/stderr. After an exclusion list covering the conventional cases,
+**~60 remain**, still dominated by `defer x.Close()` on concrete types and
+`enc.Encode` on a socket write whose error genuinely cannot be acted on because
+the peer is already gone.
+
+Turning that green means either ~60 `_ =` assignments — noise that makes a real
+unchecked error *harder* to spot, which is the opposite of the point — or an
+exclusion list long enough that the gate becomes arbitrary. It is a deliberate
+triage pass over 60 call sites with its own judgement calls, not something to
+bolt onto a CI-wiring commit.
+
+**To close:** triage the ~60 non-excluded sites, decide per site between handling
+the error, `_ =` with a reason, or an exclusion entry, then wire `errcheck` into
+`scripts/lint.sh` alongside the other three. Until then the three adopted tools
+are hard gates, which is worth more than four adopted softly — this repo has
+already learned that a check nobody must pass is a check that drifts.
+
+> **UPDATE 2026-07-31 — the deferral was right, and it was also unguarded.**
+>
+> Re-measured on `perf/latency-baseline`: **365 findings, 170 outside tests**, against
+> the 329 / 157 recorded above. **Thirty-six new unchecked errors arrived in two weeks**,
+> for exactly the reason this entry gives for not adopting: nothing was watching.
+>
+> The entry posed this as adopt-or-defer. There is a third option, and it is the one
+> this repo already invented for coverage: **ratchet it.**
+> [`scripts/errcheck-ceiling.sh`](scripts/errcheck-ceiling.sh) +
+> [`scripts/errcheck-ceilings.txt`](scripts/errcheck-ceilings.txt) grandfather the
+> current per-module counts and fail the build on growth — no triage required to start,
+> and the drift stops today. It runs in CI's lint job and in `make check`, fails closed
+> on a module with no recorded ceiling, and **fails when a count DROPS** too, so a
+> slackened ratchet is reported rather than silently tolerated.
+>
+> Non-test only (`-ignoretests`), deliberately: an unchecked error in a test is a real
+> problem but a different one, and sharing a budget would let each hide behind the
+> other. Current ceilings — `daemon` 112, `proxy` 25, `editapply` 12, `helper` 11,
+> `clients/tui` 10, `protocol` 0.
+>
+> **The triage above is still the way to close (j).** This does not do it; it stops the
+> problem getting worse while it waits, and turns "we decided not to" into something a
+> build can enforce. The classification is also sharper now: of the 170, ~91 are the
+> conventional ignorables (40 `Close`, 23 `Fprint*`, 17 `os.Remove`, 7 `fset.Parse`,
+> 4 `io.Copy` drains). The genuinely interesting residue is **15 `enc.Encode` socket
+> writes and 4 `w.Write`** — a failed response encode means the peer never got the
+> answer, and today that is silent. That is where triage should start.
 
 ## Backlog — added 2026-07-08
 
@@ -403,9 +499,20 @@ claim below was exercised against the real functions via live Go probes, not rea
   the `before/` copy is stale and the concurrent modification is clobbered with no backup of the
   actual overwritten bytes. Narrow (prepare→confirm→apply is fast, human-gated) but real.
 
-### P3-FAIL-1 (High): `MatchesSecretName` — case-fold bug CONTAINED (partial); policy breadth + chunk exit STILL OPEN
-**Status: PARTIALLY CONTAINED, NOT closed.** The case-fold bug is fixed; the two structural
-gaps behind the same leak remain open. Do not record FAIL-1 as resolved.
+### P3-FAIL-1 (High): `MatchesSecretName` — case-fold bug FIXED, policy breadth CLOSED; chunk exit partial (opaque secrets open)
+**Status: NAME GATE CLOSED, CHUNK EXIT PARTIAL. NOT closed as a class.** The case-fold bug is
+fixed and the named policy-breadth gaps are closed (see below). What remains is the content
+side: opaque/novel secrets in chunk text, awaiting the founder's Design-B-vs-C decision.
+
+- **Record correction (Phase 4, 2026-07-30).** The breadth bullet below stood as "STILL OPEN
+  — these walk straight through today" for twelve days after the patterns had in fact shipped
+  (`959a882`, `ade065a`). The code was right and the record was wrong, in the dangerous
+  direction: a live-credential-exfiltration claim against a hole that was already closed.
+  Corrected only after a neuter-check — the added globs were deleted from `SecretFileGlobs`
+  and `go test ./editapply -run TestMatchesSecretName` was re-run, turning exactly the 20
+  `new/*` and `item2/*` cases red while every `existing/*`, `neg/*` and `item1/*` case stayed
+  green, then restored. The record now rests on assertions that demonstrably fail when the
+  thing they guard is removed, not on reading the source.
 
 - **Case-fold bug — FIXED** (commit on 2026-07-18): `MatchesSecretName` (`editapply/secret.go:29`)
   lowercased the basename for the *substring* check but passed the **original-case** basename to
@@ -415,10 +522,21 @@ gaps behind the same leak remain open. Do not record FAIL-1 as resolved.
   `cert.Pem`, `private.KEY`, `cert.P12`, `ID_RSA`, `.ENV.local`. No regression: lowercase secrets
   (`.env`, `server.pem`, `id_rsa`, `cert.p12`, `mysecret.txt`, `credentials.json`) still refuse;
   normal files (`main.go`, `server.py`, `README.md`, `chunker.go`) still allowed.
-- **Secret-name policy breadth — STILL OPEN** (scoped, reviewed follow-up): the case fix does NOT
-  broaden the list. Never covered at all: `id_ed25519`/`id_ecdsa`/`id_dsa` (any non-RSA SSH key —
-  `id_rsa*` doesn't match them), `.npmrc`, `.netrc`, `.pgpass`, `kubeconfig`, `.htpasswd`, `*.pfx`,
-  `*.tfstate`, service-account JSON. These walk straight through today.
+- **Secret-name policy breadth — CLOSED** (`959a882`, then `ade065a` for the `.htpasswd` / `_netrc`
+  follow-up). Every name the original finding listed as "never covered at all" is now in
+  `SecretFileGlobs` (`editapply/secret.go`): `id_ed25519`, `id_ecdsa`, `id_dsa` (exact names, so
+  their `.pub` siblings are not swept up), `.npmrc`, `.netrc`, `_netrc`, `.pgpass`, `.htpasswd`,
+  `*kubeconfig*`, `*.pfx`, `*.tfstate`, `*.tfstate.backup`, `*service-account*.json`,
+  `*serviceaccount*.json`. Covered by `TestMatchesSecretName` (`editapply/secret_test.go`) with
+  true-positives, case-fold variants, and false-positive guards (`package.json`, `tsconfig.json`,
+  `app-config.json`, `state.go`, `terraform.tf`, the three `.pub` public keys) so a later
+  broadening cannot silently start refusing ordinary files.
+  **What closing this did NOT change:** the gate is still a **basename blocklist**. It has no path
+  context, so a bare file named `config` (the `.kube/config` case) is deliberately not caught —
+  matching bare `config` would flag far too many ordinary files — and the GCP-style
+  `*-<hash>.json` service-account form is deliberately not matched either. Both are left to
+  Layer 2 (content scrubbing), which is the sub-item still open below. Enumerating names is not
+  the same as covering secrets, and this bullet closing does not claim otherwise.
 - **Unscrubbed chunk content POSTed to hosted provider — PARTIAL (structural signatures closed;
   opaque secrets still open).** The name gate is only a blocklist over *filenames*; the actual
   exfiltration mechanism is that indexed chunk *content* is retrieved and POSTed unscrubbed to the
@@ -432,6 +550,17 @@ gaps behind the same leak remain open. Do not record FAIL-1 as resolved.
   leak; normal code untouched — no false positives) and against both retrieval evals (no movement —
   structurally, both evals measure `retrieveTopK` ranking, which is upstream of `renderChunk`, so
   scrubbing cannot move them: locate hybrid 8/9, edit prod-k=5 1/4, both unchanged).
+  **Wiring VERIFIED end to end (Phase 4, 2026-07-30)** — the phase spec's "`chunkscrub` exists at
+  100% coverage, verify it is actually wired on the egress path, which is the whole question" task
+  is discharged, and the answer is yes. `renderChunk` (`daemon/context.go`) is the single
+  retrieval-time choke point; it is reached on the real send path at `daemon/server.go:423` via
+  `buildAugmentedUserMessage`, and the *same* function sizes `truncateToBudget`, so what is
+  measured and what is sent cannot diverge. The one plausible bypass was checked and does not
+  exist: directly-referenced `@file:line` spans do not skip the gate — `readReferencedSpan`
+  (`daemon/fileref.go`) runs `shouldSkipFile` → `MatchesSecretName`, the indexer's own eligibility
+  gate, before it reads a byte, and its output joins `outcome.Chunks` upstream of `renderChunk`.
+  This is coverage-of-the-path, not coverage-of-the-function: 100% unit coverage of `chunkscrub`
+  would have been equally true if nothing called it.
   **STILL OPEN — opaque/novel secrets** (bare random values with no recognizable prefix): Option A
   is structural signatures only and does NOT catch these. They await the entropy/keyword decision
   (Designs B/C), which awaits real fire-rate data. **warn-mode** (log-only, no redaction) for the
@@ -449,10 +578,33 @@ gaps behind the same leak remain open. Do not record FAIL-1 as resolved.
     - **Follow-up B** (commit 6028d96): each fire now records the chunk's `FileClass` (threaded from
       the same value `logRetrieval` reports) plus a fixed-label token-shape tag
       (hex/base64/uuid-like/mixed/unknown), for true-vs-false-positive triage without re-opening source.
-  - **Status: fire-rate data now durably accumulating as of 2026-07-18 (commits 064a00a, 6028d96);
-    still LOG-ONLY, item NOT closed.** The B-vs-C redaction decision remains the founder's and remains
-    unmade. Do NOT flip entropy/keyword to redacting without that decision. Class is not closed until
-    opaque-secret coverage is decided and (if chosen) shipped.
+  - **~~Status: fire-rate data now durably accumulating as of 2026-07-18~~ — CORRECTED 2026-07-30.**
+    The sink was wired and durable (064a00a, 6028d96) and **recorded exactly zero events**:
+    `.codeterminal/logs/` on the dev box was created 2026-07-27 and held no `warnmode.jsonl`, and no
+    such file existed anywhere on the machine. Not a broken wire — `newWarnSink` (`daemon/main.go:247`)
+    and the `s.warnSink.write` call (`daemon/context.go:269`) are both correct, now proven by
+    `TestLogChunkScrub_WritesFiresToTheDurableSink`, which fails when that call is deleted while the
+    pre-existing `TestWarnSink_NormalAppend` still passes (a writer test cannot tell "never called"
+    from "called and working"). The sink fills only when a daemon serves grounded turns, and this
+    machine served none. **"Accumulating" was an inference from a shipped mechanism, not an
+    observation** — twelve days of it produced nothing, and no amount of further waiting had a
+    mechanism by which to help.
+  - **Fire-rate data now MEASURED, offline — see [docs/CHUNK_SCRUB_FIRE_RATE.md](docs/CHUNK_SCRUB_FIRE_RATE.md)**
+    (Phase 4, 2026-07-30). `daemon/warnscan_test.go` (`-tags warnscan`) runs the detectors over a
+    corpus through the real pipeline — `ScanWorkspace` → `scrub()` → detectors, so they see the
+    POST-Option-A residual, which is the only thing the B-vs-C question is actually about. Headline:
+    entropy fires on **33% of all chunks** (1,310 fires / 2,117 chunks) with **zero true positives at
+    every threshold** — its population is long identifiers, hyphenated prose, URL fragments and
+    `go.work.sum` hashes, not near-miss secrets; keyword fires 41 times (1.6% of chunks) with zero
+    real credentials, its failures concentrated in three nameable and fixable classes (type
+    annotations, `tokens`-as-a-count, `os.Getenv`-style indirection that `isNonSecretValue` misses).
+    **Recommendation: reject B outright; hold C pending those three fixes AND a corpus that contains
+    real secrets.** The measurement bounds the false-positive cost only — this corpus has no real
+    credentials in it, so it says nothing about recall, and the report says so.
+  - **Status: still LOG-ONLY, item NOT closed.** The B-vs-C redaction decision remains the founder's
+    and remains unmade — but it is no longer blocked on data. Do NOT flip entropy/keyword to
+    redacting without that decision. Class is not closed until opaque-secret coverage is decided and
+    (if chosen) shipped.
 - **`server.go:203` / `scrub.go` false "retrieval never leaves this machine" comments — CORRECTED**
   (same commit): both now state chunk content is scrubbed at `renderChunk` (structural only, partial)
   and is POSTed to the provider on every grounded turn.
@@ -463,9 +615,10 @@ gaps behind the same leak remain open. Do not record FAIL-1 as resolved.
   credential-exfiltration path. This is exactly the "assumed-true, never-verified security claim"
   shape this gate exists to catch: the secret gate was believed to cover secrets; it doesn't cover
   case variants or any non-RSA SSH key.
-- **Remaining scoped fix task:** broaden the policy (non-RSA SSH keys, `.pfx`, `.npmrc`, `.netrc`,
-  `.pgpass`, `kubeconfig`, `*.tfstate`, service-account JSON) — reviewed as one unit, and understood
-  as still only a blocklist. The class is not closed until chunk-content scrubbing lands (above).
+- **~~Remaining scoped fix task: broaden the policy~~ — DONE** (`959a882`, `ade065a`; non-RSA SSH
+  keys, `.pfx`, `.npmrc`, `.netrc`, `_netrc`, `.pgpass`, `*kubeconfig*`, `.htpasswd`, `*.tfstate`,
+  service-account JSON), reviewed as one unit and still understood as only a blocklist. The class
+  is **not** closed: it waits on the opaque/novel-secret half of chunk-content scrubbing (above).
 - **`id_rsa_secret.pub`-style narrow over-refusal in `MatchesSecretName` — open, unscoped, no task
   written yet** (low; surfaced with the `.pub` carve-out added in `ade065a`). The `SecretNameAllowlist`
   carve-out (`id_rsa*.pub`, `editapply/secret.go`) is applied *after* the `secret`/`credential`
@@ -479,7 +632,7 @@ gaps behind the same leak remain open. Do not record FAIL-1 as resolved.
   Severity low: the practical effect is *occasionally over-refusing* a legitimate public key with an
   unusual name, not *under*-refusing a secret — the safe-failure direction, the same reasoning the
   audit chain applied to `id_rsa.pub` itself before this fix. Logged so it doesn't disappear; a fix
-  is not implied.
+  is not implied. *(Carried into `SECURITY_MODEL.md`'s socket section as a logged residual, Phase 4.)*
 
 ### P3-FAIL-2 (Moderate): the "all writes route through `editapply.Apply()`" claim is false — undo is a 4th, unconfined workspace writer
 Enumerated every workspace-source write at HEAD (not carried forward as assumed). The 3 `Apply`
@@ -598,6 +751,31 @@ gate stays un-clear on the socket axis until the auth-model decision (below) is 
   response that later travels off-box), which the fix closes. The existence-oracle distinguishability
   itself remains open by design (lower-priority, more invasive). Gate 7 overall status / FAIL-3
   closure remains the founder's call.
+  - **CLOSED BY WRITTEN RATIONALE — Phase 4, 2026-07-30.** See the new socket section in
+    [SECURITY_MODEL.md](SECURITY_MODEL.md), which is now the canonical statement of this surface's
+    threat model. Three things it settles, none of them by new code:
+    1. **The trust model, which FAIL-3 named as the item blocking the gate** ("everything else in
+       FAIL-3 is secondary until this is decided"), *was* decided — by implementation, in `517c069`,
+       and then never written down as a model. Re-verified against the source rather than the
+       record: `authorizePeer` (`daemon/server_auth.go`) is called as `handleConn`'s first
+       post-accept step (`daemon/server.go:224`), before the handshake is read or anything is
+       dispatched, and every failure path — UID mismatch, no peer credentials, syscall failure,
+       non-Linux build, `Getuid() < 0` — refuses. The boundary is **the OS user account**: a
+       same-UID process is trusted completely.
+    2. **The existence-oracle residual is ACCEPTED, not eliminated**, with the reasoning written
+       out: the only peer that reaches a response is an authenticated same-UID process that can
+       already `stat()` anything and read `/proc`, so the oracle discloses nothing it could not get
+       more cheaply. The acceptance carries three explicit reopen conditions (a non-daemon UID
+       reaching the socket, a network transport, or daemon error text being relayed off-box) —
+       each changes *who is listening*, which is the whole basis of the acceptance.
+    3. **Unifying error responses is DECLINED, not deferred.** The flattening that hides
+       refused-vs-absent from an attacker hides it from the user too, and Gate 7's own fix was
+       written to scrub paths while preserving diagnostic meaning.
+    Evidence is assertions, not commit messages: the four tests in `daemon/gate7_scrub_test.go`,
+    including `TestServeConn_ZDRRefusalMessageUnchanged` — scrub-everything was the easy fix and
+    would have flattened a guarantee the user is entitled to see.
+    **Nothing here is founder-closed.** The final FAIL-3 call remains the founder's; this makes it
+    reviewable rather than pre-empting it.
 
 **Gate 8 — synthesis against the FAIL-2 fix.** This finding does **not** break the FAIL-2 fix: the
 undo writer's `EvalSymlinks`+`Rel` confinement and `O_NOFOLLOW` leaf guard still hold exactly as
@@ -2832,3 +3010,1324 @@ sweep_pending_corrections(integer) from public;` — mirroring the 2026-07-17 di
 function revoke EXECUTE-from-PUBLIC in the same migration that (re)creates it. Consider SELECT-only RLS
 parity with `usage`/`api_keys` only if belt-and-suspenders is wanted; the grant revoke is the load-
 bearing fix. **Status: CLOSED 2026-07-27 — see the CLOSURE block at the top of this entry for verified before/after results; corrective `0003` applied. The original "no RLS needed" note is superseded.**
+
+---
+
+## 2026-07-30 — Launch-gate QA pass, all seven surfaces (1 P0 + 4 P1 CONFIRMED; verdict FAIL, NOT closed)
+
+First whole-product QA sweep rather than the single-axis passes above. Run against
+`harden/proxy-spend-and-gates` @ `17ffad6` (2 commits ahead of `main`). Full report:
+[`docs/QA_LAUNCH_GATE_2026-07-30.md`](docs/QA_LAUNCH_GATE_2026-07-30.md).
+
+**Scope by agreement:** local build + test execution only. No Railway probes, no live
+Supabase, no real spend, no load testing. `CONFIRMED` below means a repro script was
+written and run; `PLAUSIBLE` means reasoned from source and labelled as such.
+
+### Baseline — measured, replaces the sibling-filename guesswork
+
+| Module | Tests | Coverage | race | gofmt | vet | govulncheck |
+|---|---:|---:|---|---|---|---|
+| `daemon` | 369 | 66.9% | clean | clean | clean | 0 reachable |
+| `editapply` | 86 | 87.0% | clean | clean | clean | 0 |
+| `proxy` | 52 | 79.7% | clean | clean | clean | 0 |
+| `clients/tui` | 77 | 66.7% | clean | clean | clean | 0 reachable |
+| `protocol` | **0** | **0.0%** | — | clean | clean | 0 |
+| `helper` | **0** | **0.0%** | — | clean | clean | 0 |
+| `clients/vscode` | 6 (real EDH, xvfb) | — | — | `tsc` clean | — | — |
+
+The branch's claimed "28 → 52 tests, coverage 79.7%" is **confirmed exactly**. A
+pre-review gap map built on sibling filenames was **wrong** and is retracted:
+`ratelimit.go` ~100%, `protected.go` 100%, `match.go` 80–100% per function. The two
+real zeros are `protocol` (625 lines — the shared wire contract) and `helper`.
+
+### P0-1 — byte-guard kill REFUNDS the reservation (CONFIRMED, money path)
+
+`streamSSE`'s kill raises the charge to `dataChunks` (`main.go:1061`), a chunk COUNT.
+On the **`byte_guard`** bound the count is by definition tiny while bytes are at the
+ceiling, so `finalizeUsage` takes its `actual > 0` branch and `correctUsage` gets a
+large NEGATIVE delta. The site's own comment — *"Charge what was streamed, never
+refund"* — holds only when `dataChunks >= reserved`, guaranteed on a `token_ceiling`
+kill and **never** on a `byte_guard` kill.
+
+Measured (reserved 4096, headroom 100 → ceiling 4196 → guard at 2,148,352 B; upstream
+streams 3 × 900 KB):
+
+```
+reserved=4096  correction delta=-4093
+finalizeUsage got actual=3 vs reserved=4096
+```
+
+**4093 of 4096 tokens refunded after streaming the maximum the ceiling permits.** The
+same figure is charged to the per-key token bucket (`main.go:1562-1566`), so both new
+controls fall to one defect. This is the **C3 abort-refund class** (`a703978`)
+reintroduced via a path C3's regression test does not cover.
+
+Reachability is **inverted**: the guard scales with the ceiling, so the smaller a key's
+headroom, the easier the guard fires and the larger the refund as a fraction of what is
+left. A key at its limit is easiest to exploit and gains most. `deepseek/deepseek-r1` is
+in the shipped default allow-list and its `reasoning` deltas exceed 512 B/chunk, so no
+adversarial provider is required.
+
+**Fix direction:** floor the charge at `reserved` on any kill path, or thread an
+explicit `killed bool` to force the existing "keep the reservation" branch. Then a
+fail-when-neutered test on the **`byte_guard`** bound specifically — the existing budget
+tests exercise `token_ceiling`, which is why 52 green tests missed this.
+
+### P1-1 — the `budget_exceeded` chunk is invisible to the daemon (CONFIRMED)
+
+`writeBudgetExceeded` emits `data: {"error":"budget_exceeded","truncated":true}` so a
+client can *"tell throttling apart from a crashed connection."* The daemon's
+`chatCompletionChunk` (`provider.go:83`) has `provider`, `delta.content`,
+`delta.reasoning`, `finish_reason` — and **no `error` field**. Measured:
+
+```
+decoded provider="" choices=0
+incompleteInfoFor("") = <nil>
+```
+
+No content, no `finish_reason`, so M1's truncation path never fires. The daemon reads
+`[DONE]` and reports `Done:true` with no Error and no IncompleteInfo — a budget-killed
+answer reaches the user as a **complete, successful response**, silently truncated.
+Strictly worse than the silent close the chunk exists to avoid: indistinguishable from
+*success*, not from failure.
+
+A seam defect: the proxy suite asserts the chunk is emitted, the daemon suite asserts
+its own parsing, and **no test spans the two**. There is no proxy↔daemon integration
+test anywhere in the repo.
+
+### P1-2 — CI gates nothing
+
+`.github/workflows/build.yml` is one job: `docker build ./proxy`. 584 Go tests, 6
+extension E2E tests, 4 eval tests, `gofmt`, `vet`, `govulncheck`, `tsc` — none gate a
+merge. Every green number in this entry was produced by hand. P0-1 and P1-1 both shipped
+past a green local suite; P1-3 shows the drift cost.
+
+### P1-3 — the project's own retrieval gate is RED
+
+`TestRerankEvalRetrievalRanking` FAILS: semantic-only 4/9, hybrid **4/9** (no better).
+Its own messages: queries 8 and 9 — *"one of the two measured live failures this feature
+exists to fix"* — are still MISS. File-level `TestEvalRetrievalQuality` is perfect
+(top-1 1.00, top-3 1.00 vs 0.80 threshold), so the gap is chunk-level ranking
+specifically. Invisible day to day because CI never runs `-tags eval`.
+
+### P1-4 — core billing schema is not in version control
+
+No `create table` for `usage` or `api_keys` anywhere — the only one is
+`pending_corrections` (`0002:35`). The repo cannot recreate its own database, and
+constraints are unverifiable from source, including whether `usage.key_id` is unique,
+which `reserve_usage`'s `select ... from reserved, opened` cross join depends on. Plus:
+no migration runner, no applied-version tracking, no down scripts — while `0002`'s own
+banner warns that wrong ordering loses *"every correction on every request."* That
+constraint is enforced by a human reading a comment, and it has already gone wrong once
+(premature "applied", corrected 2026-07-25).
+
+### P2 — four medium findings
+
+- **P2-1 duplicate top-level JSON keys (CONFIRMED proxy-side).** All four gates read
+  through `topLevelFields` → last-wins, then forward byte-for-byte carrying both. A body
+  naming a banned model FIRST and an allowed one second was **admitted**. End-to-end
+  exploitability depends on OpenRouter resolving first-wins — untested, RFC 8259 leaves
+  it undefined → that half stays `PLAUSIBLE`. Same shape as branch defect 3, one level
+  down. Fix: reject duplicate top-level keys rather than trusting two parsers to agree.
+- **P2-2 daemon dispatcher is case-insensitive (CONFIRMED).** `{"UNDO":true}`,
+  `{"Undo":true}`, `{"SEARCH":true}`, `{"EDIT":{...}}` all sniff true
+  (`server.go:473,583,691`) — the exact pattern `491e0f2` replaced in the proxy, left
+  unfixed in the daemon, where the misroute lands in a **destructive** `undo`. Bounded
+  honestly: owner-only socket + `SO_PEERCRED`, so **not** privilege escalation, and no
+  `PromptRequest` field case-folds onto a sniffed key, so no accidental client
+  misroute. P2 for the destructive destination and for leaving a known-wrong pattern
+  fixed in one twin only.
+- **P2-3 zero accessibility affordances in the webview (CONFIRMED).** No `aria-*`,
+  `role=`, or `tabindex` in 647 lines of `main.js` + 678 of `chatPanel.ts`. No live
+  region for streamed tokens, no label on the auto-apply switch, nothing on the diff
+  surface — i.e. Gate ④ ("you see the diff and approve it") is unusable non-visually.
+- **P2-4 `0003` missed `increment_usage` (CONFIRMED static).** The corrective revoke
+  covers `reserve_usage` / `apply_correction` / `sweep_pending_corrections`;
+  `increment_usage` appears **0 times**, yet `0001` re-creates it and `0002` leaves it
+  live. It is the most dangerous of the four if reachable — unconditional
+  `update usage set tokens_used = tokens_used + p_tokens`, no limit check. Contained the
+  same way the others were (SECURITY INVOKER + `usage` SELECT-only grants), so
+  defense-in-depth, not a live hole — but an audit written to close a class that misses
+  a member of that class is trap 3's own pattern. `0003`'s verify block omits it too.
+- **P2-5 zero coverage on `protocol`, `helper`, and all 8 `chunkscrub.go` functions.**
+  The send-time scrubber `scrub.go` is at 100%; the gap is the chunk-level **warn-mode**
+  detector, whose false-negative rate is therefore unmeasured. Note the privacy claim is
+  quantitative in nature and currently carries no number.
+
+### Verified sound — pre-registered hypotheses the code REFUTED
+
+Recorded because a pass that lists only failures misrepresents the system:
+
+- **Missing-env fail-open — REFUTED.** `main.go:288-290` warns; `authorize` fails closed
+  on unconfigured Supabase / error / non-200 / row count ≠ 1. Never serves unmetered.
+- **Webview XSS — REFUTED.** Zero `innerHTML`/`outerHTML`/`insertAdjacentHTML`/
+  `document.write`/`eval`/`new Function` in `media/` or `src/`; `textContent`
+  throughout; CSP `default-src 'none'` + per-load nonce; `localResourceRoots` = `media/`.
+- **Webview state loss — REFUTED.** `retainContextWhenHidden: true` (`chatPanel.ts:92`).
+- **Container — SOUND.** `Dockerfile:17-18` non-root `USER 10001:10001`.
+- **Secrets — SOUND.** `git log --all -p` scan for `sk-or-v1-`/`sk-`/`mochi_`/`eyJ`/
+  `AKIA`/`ghp_` yields only the fixture `AKIA1234567890ABCDEF`. `.env` untracked.
+- **`apply_correction`'s unreferenced data-modifying CTE — REFUTED.** Postgres runs
+  data-modifying `WITH` exactly once to completion regardless of reference. Comment correct.
+
+### P3
+
+- **README:849's `go test ./...` fails from root** (rc=1, no root module — only
+  `go.work`). Fails loudly, so no false confidence, but the documented first command a
+  contributor runs is broken. BACKLOG's long-standing "`./...` fails from root" note is
+  correct and the README was never updated to match.
+- **Gate ③ parses only `.go`** (`apply.go:33`), reporting *"no syntax check applied"*
+  otherwise — honest and qualified in `PRODUCT_OVERVIEW.md:295`, but the headline "five
+  gates … a change only reaches your disk if it passes all of them" reads stronger than
+  what a Python/TS user gets.
+
+### Blocked, NOT skipped
+
+Live Supabase grants (P2-4 + `usage.key_id` uniqueness — founder SQL in the report);
+production wire probes against **this branch**; multi-replica rate-limit dilution (the
+in-memory limiters are per-instance, so the new token bound is not a spend bound under
+horizontal scale — `PLAUSIBLE`, single-instance testing only); real screen-reader passes;
+Intel Mac / linux-arm64; upstream duplicate-key resolution (decides P2-1); load/soak.
+
+### Verification of the review itself
+
+Repros in the session scratchpad (`repro/proxy/zz_qa_repro_test.go`,
+`repro/daemon_sniffer_repro_test.go.txt`, `repro/daemon_budget_chunk_repro_test.go.txt`);
+coverage machine-generated from `-coverprofile`, not estimated; two repros were run
+in-tree and removed, `git status` verified clean (0 files) after each. **No product code
+was changed by this pass** — findings are reported, not fixed, per this repo's
+one-isolated-commit-per-fix convention.
+
+**Status: verdict FAIL, NOT closed.** Path to PASS is small and non-architectural: fix
+P0-1 (a floor + a `byte_guard` fail-when-neutered test), fix P1-1 (one struct field + one
+integration test), land P1-2's pipeline, decide P1-3 explicitly (fix or re-baseline in
+writing), capture P1-4's baseline schema. Founder sign-off still required.
+
+---
+
+## 2026-07-30 — Retrieval eval follow-ups (opened by the launch-gate remediation batch)
+
+Two tracked items opened while resolving P1-3. Both are retrieval-quality work, deliberately
+NOT bundled into the remediation batch that surfaced them.
+
+### (a) OPEN: chunk-ID ground truth is inherently fragile — anchor expectations to symbols
+
+`rerank_eval_test.go`'s `exactChunks` are `file:startLine-endLine` strings, so **every edit
+to a named file silently invalidates them**. That is not a hypothetical: it is what made the
+eval read 4/9 and look like a retrieval regression when retrieval was in fact returning the
+correct chunks (see the P1-3 resolution). Five of nine queries were stale, and the two eval
+files disagreed with each other because both hard-coded line ranges independently.
+
+Mitigated, not fixed, by `assertExpectationsAreCurrent` + the new `anchor` field: staleness
+is now **loud and self-diagnosing** (it names the chunk the anchor actually lives in) instead
+of silently scoring correct retrieval as a miss. The expectations themselves are still line
+ranges and will still go stale — the guard just makes it a 30-second correction with the
+answer printed, rather than an investigation that concludes "retrieval is broken".
+
+Real fix: derive `exactChunks` from the anchor at test time (find the chunks containing the
+anchor, use those as the expectation) so line numbers never appear in the harness at all.
+Deferred because it changes what the eval measures, and doing that in the same batch as a
+money-path fix would make both harder to review.
+
+### (b) OPEN: `TestEditShapedRetrievalEval` is RED — but NOT for the reason recorded below
+
+> **CORRECTION 2026-07-31 — the "0/4 recall" was never a retrieval measurement.**
+>
+> Re-run on `perf/latency-baseline`. **Three of the four cases never issue a retrieval
+> query at all.** They fail in *setup*: `gitRevertPreFixTree`
+> ([daemon/edit_eval_test.go:388](daemon/edit_eval_test.go#L388)) reverts the fix commit
+> to reconstruct a pre-fix tree, and that revert no longer applies —
+>
+> ```
+> editapply-apply-extraction  conflict in editapply/apply.go
+> tui-header-collision        conflict in clients/tui/chat.go
+> zdr-refusal-phrasing        conflict in daemon/provider.go
+> ```
+>
+> The test is *right* to fail here — it says "refusing to fake a pre-fix state" — but
+> the number it then prints is `0/4`, which reads as a ranking result and is not one.
+>
+> **These are the exact same three subtests the entry below names**, and the worktree at
+> `17ffad6` reproduced them for the same reason. So the original diagnosis — a "real
+> chunk-level ranking gap", and the stale-ground-truth hypothesis at
+> `edit_eval_test.go:156` — was attributing a harness failure to retrieval quality. The
+> cases never get far enough for ground truth to matter.
+>
+> **What the measurable case actually says:** only `helperproc-env-allowlist` runs. It
+> ran, and its target came back at rank **#89** (semantic #84) against `k=5` — a genuine
+> miss. So the honest score is **0/1 measured, 3 unmeasurable**, not 0/4.
+>
+> **Why it will keep getting worse.** The design has an expiry date: the four fix commits
+> are dated 2026-07-08 to 07-14, with **178–221 commits since**. Every commit touching
+> those files makes a clean revert less likely. This is debt item (a)'s fragility, one
+> level up — not the chunk IDs but the whole pre-fix reconstruction.
+>
+> **The fix is a design change, not a ground-truth edit** — and the obvious version of
+> that change does not work. Both candidates were tried:
+>
+> - **Restore only the fix's source files from the parent commit**
+>   (`git checkout <fix>^ -- daemon/provider.go`). Mechanically always succeeds.
+>   **Probed, and it does not compile:** the 20-day-old `provider.go` fails against
+>   today's tree with three independent errors — `unknown field Ignore in
+>   providerRouting` (the D4 provider-ignore work), `too many arguments in call to
+>   streamCompletion` (signature changed), and `undefined: incompleteInfoFor` (function
+>   added since). **Dead option.**
+> - **Check out the whole parent tree.** This compiles — it is a coherent historical
+>   tree — but then retrieval is measured against an index of 200-commit-old code, which
+>   is not what production retrieves over. It answers a question about the past.
+>
+> So the real problem is structural: **reconstructing a historical bug state inside a
+> moving tree has an inherent expiry date**, and no mechanical change removes it. The
+> genuine fix is to stop reconstructing history at all — build cases from *current*
+> known-bad queries with hand-labelled ground truth, which is what debt item (a)
+> ("anchor expectations to symbols") was already reaching towards. That is a rewrite of
+> the eval, not a repair.
+>
+> Until then: **no recall number from this test should be quoted**, and the CI comment
+> excluding it should say "harness cannot build its fixtures", not "known-red at 0/4".
+
+*Original entry, preserved — its first paragraph is what the correction above overturns:*
+
+Not caused by the remediation batch, and **verified so**: a `git worktree` at the QA baseline
+`17ffad6` reproduces the identical failure (0/4, same three subtests —
+`editapply-apply-extraction`, `tui-header-collision`, `zdr-refusal-phrasing`). This is the
+open **H6 chunk-level retrieval** workstream, previously recorded at recall 2/4; it is now 0/4.
+
+Correction to the launch-gate report: `docs/QA_LAUNCH_GATE_2026-07-30.md` states that of the
+four gated eval tests, `TestEvalRetrievalQuality` passes and `TestRerankEvalRetrievalRanking`
+fails. **A second eval test was also red at baseline and went unreported.** The report's
+"`-tags eval` adds 4 gated tests" line is accurate; its implication that only one was failing
+is not.
+
+At least part of this is the same staleness class as (a) — `edit_eval_test.go:156` expects
+`daemon/provider.go:91-130` for "zdrRefusalSubstrings + isZDRRoutingRefusal", the exact stale
+range corrected in `rerank_eval_test.go`. Whether correcting the ground truth recovers the
+recall, or whether there is a real chunk-level ranking gap underneath, is **unmeasured** and is
+the first step of this item. The `anchor` guard should be ported here at the same time.
+
+Consequence for CI: the scheduled `eval` job (`.github/workflows/build.yml`) is scoped by
+`-run` to the three green eval tests, with the reason stated inline. A permanently-red
+scheduled job is a job nobody reads, which is the failure mode P1-2 exists to fix. **Remove
+that filter when this item closes** — it is the only thing keeping the known-red test out of CI.
+
+**Status: both OPEN, tracked, not scheduled. Linked to the H6 retrieval work.**
+
+---
+
+## 2026-07-30 — Launch-gate remediation batch (all ten findings addressed; NOT founder-closed)
+
+Resolves the 1 P0 + 4 P1 + 5 P2 from the launch-gate QA entry above, plus P3-1.
+One isolated commit per finding, per this repo's convention. Full per-finding
+annotations (including where a fix departed from the recommendation, and why) are
+appended inline to [`docs/QA_LAUNCH_GATE_2026-07-30.md`](docs/QA_LAUNCH_GATE_2026-07-30.md);
+the original findings are left exactly as written.
+
+| Finding | Commit | Outcome |
+|---|---|---|
+| P0-1 byte-guard refund | `efe2bda` | `chargeForKill` = max(measured, chunks, reserved). Delta −4093 → 0 |
+| P1-1 invisible budget kill | `b1fed6b`, `2e68d9d` | New `protocol.IncompleteBudgetExceeded`; 2 integration tests, the repo's first |
+| P1-2 CI gates nothing | `0f3bca2` | 6-module matrix + govulncheck + EDH + scheduled eval |
+| P1-3 retrieval gate RED | `96924a7` | Ground truth was stale, not retrieval. 4/9 → **8/9** |
+| P1-4 schema not in VCS | `50ff5b3` | `0000_baseline` written, RECONSTRUCTED/UNVERIFIED |
+| P2-1 duplicate JSON keys | `f8416a5` | 400 `duplicate_json_key`, nested objects included |
+| P2-2 daemon dispatcher | `fd8d865` | All FOUR sniffers (the report listed three) |
+| P2-3 webview accessibility | `74adfea` | EDH tests 6 → 14 |
+| P2-4 `increment_usage` revoke | `50ff5b3` | `0004` written, 4-function verify query |
+| P2-5 zero coverage | `ae6bbfe` | protocol 88.9%, chunkscrub 100%, helper off zero |
+| P3-1 broken test command | docs commit | README documents the loop CI actually runs |
+
+### Coverage, measured before and after
+
+| Module | Before | After |
+|---|---:|---:|
+| `daemon` | 66.9% | 69.2% |
+| `editapply` | 87.0% | 87.0% |
+| `proxy` | 79.7% | 80.7% |
+| `clients/tui` | 66.7% | 66.7% |
+| `protocol` | **0.0%** | **88.9%** |
+| `helper` | **0.0%** | 6.5% / **75.0%** (helperproto) |
+| `clients/vscode` | 6 EDH tests | **14** EDH tests |
+
+### Whole-batch verification actually run
+
+Six modules: `go build`, `gofmt -l`, `go vet`, `go test -race` — all green.
+`govulncheck` — "No vulnerabilities found" on all six. EDH — 14/14 in a real
+Extension Development Host. `-tags eval` (CI's green subset) —
+`TestEvalRetrievalQuality` top-1 1.00 / top-3 1.00, rerank 8/9,
+`TestTokenEfficiencyEval` pass.
+
+Every fix has a fail-when-neutered twin, verified by removing the control,
+watching the specific test fail, and restoring it. Two were neutered in **two**
+ways: P1-1 both by deleting the error check and by moving it below the
+zero-choices guard (the subtler regression), and P1-3 by restoring the original
+stale expectation to confirm the new guard names it as staleness rather than as a
+retrieval regression.
+
+The QA repro bundle was re-run against the fixed tree. Its `/tmp` directory had
+been reaped, so all three were reconstructed verbatim from the review record:
+
+- **P0-1 repro: now PASSES** (delta 0, was −4093).
+- **M2 duplicate-key repro: PASSES, inverted** — the gate now refuses with
+  400 `duplicate_json_key` and upstream is never contacted.
+- **Sniffer repros: both PASS** — every case variant falls through, duplicates
+  rejected.
+- **Budget-chunk repro: still "fails", and that is CORRECT.** It asserts on
+  intermediate state — that the kill chunk decodes to zero choices and that
+  `incompleteInfoFor("")` returns nil. Both remain true after the fix and *must*:
+  the kill chunk genuinely has no choices, and an empty finish_reason must keep
+  meaning "complete". The repro never exercises the code path that changed. Its
+  premises still hold; its **conclusion** — "a budget-killed answer is reported
+  as a successful, complete response" — is now false, proven by
+  `TestStreamCompletion_BudgetKillIsReportedAsIncomplete` and by the two seam
+  tests, all of which fail when the fix is neutered. It is not a valid post-fix
+  regression test and was not made to pass.
+
+### Still open — founder-gated or blocked, unchanged by this batch
+
+1. ~~**Applying `0000` and `0004`**~~ — **partially CLOSED 2026-07-30, see the
+   next entry.** `usage.key_id` is the PRIMARY KEY; the cross-join concern is
+   structurally impossible. `0004`'s revoke and the remaining catalog queries are
+   still founder-gated.
+2. ~~**The first green CI run.**~~ — **CLOSED 2026-07-30**, 14/14 on the first
+   attempt. See the next entry.
+3. **Production wire probes against this branch.** Not re-verified since
+   2026-07-27, and never against this code.
+4. **Multi-replica rate-limit dilution.** In-memory limiters remain per-instance;
+   a documented residual, not fixed here.
+5. **Real screen-reader passes.** P2-3's assertions are structural only.
+6. **Intel Mac / linux-arm64**, load/soak, and upstream duplicate-key resolution
+   (P2-1 makes that last one moot rather than answering it).
+7. **The two retrieval follow-ups** opened by this batch — line-range ground
+   truth fragility, and `TestEditShapedRetrievalEval` red at 0/4 (pre-existing;
+   the QA report missed it). See the entry above.
+8. **Make CI an *enforced* gate.** `0f3bca2` makes the suite run on every push and
+   PR to `main`; it cannot make a red run block a merge. Required status checks
+   need branch protection, and branch protection is unavailable while this repo is
+   private on a free plan (`403 Upgrade to GitHub Pro or make this repository
+   public`). Two ways out, both decisions rather than work: make the repo public,
+   or move it to Pro. Then require the `go`, `govulncheck`, `vscode extension` and
+   `proxy-image` checks on `main`. Until one of those happens, "the suite is a
+   gate" is a statement about discipline, not about GitHub.
+
+**Status: all ten findings ADDRESSED and verified locally; NOT founder-closed.**
+The QA verdict of FAIL is not retracted — it was correct when written. Whether
+the gate now passes is the founder's call, and items 1 and 2 above are the two
+that most plausibly still block it.
+
+---
+
+## 2026-07-30 — The two remaining blockers, worked
+
+Both items the remediation batch left open were carried as far as they can go
+without dashboard access. One is fully closed; the other is answered on the
+question that mattered and reduced to a five-minute paste-in.
+
+### Blocker 2 (CI): CLOSED — 14/14 green on the first run
+
+PR [#1](https://github.com/Rav-2007/codeterminal-core/pull/1) (draft, → `main`),
+run `30508475988`. The branch was **unpushed** until now — `origin` still sat at
+`17ffad6`, all eleven remediation commits local — and the workflow fires only on
+`push: [main]` / `pull_request: [main]`, so opening a PR was the only way to
+trigger it. All fourteen jobs passed with **no fix commits required**:
+`go` ×6, `govulncheck` ×6, `vscode extension`, `proxy-image`. The `eval` job
+correctly did not run (`if:` gated to schedule/dispatch).
+
+Three risks were pre-registered before pushing, and **all three failed to
+materialize** — recorded because predicting them wrongly is the useful part:
+
+- `xvfb-run -a npm test` was the one genuinely unproven command (no xvfb on the
+  dev box). It worked first try: VS Code **1.131.0** downloaded and launched on a
+  bare `ubuntu-latest`, **14 passing in 638ms**, no extra apt packages needed.
+- `go install govulncheck@latest` runs at the repo root with `go.work` active and
+  no `working-directory`. Clean on all six modules; no `GOWORK=off` needed.
+- `daemon`'s `go test -race ./...` runs `TestSeam_ProxyBudgetKillReachesTheUser`,
+  which **builds the proxy binary from a sibling module** mid-test and is skipped
+  only under `-short`, which CI does not pass. Package green in 21.5s (job 2m23s,
+  the longest). Note the log is not `-v`, so this is a package-level pass, not a
+  per-test confirmation.
+
+One cosmetic annotation on every job: `actions/checkout@v4` / `setup-go@v5` /
+`setup-node@v4` target Node 20 and are force-run on Node 24. Not a failure, not
+addressed here.
+
+**Still not verified, and cannot be from a PR:** the scheduled `eval` job.
+`workflow_dispatch` only lists workflows present on the **default branch**, so it
+is undispatchable until `build.yml` lands on `main`. First chance to run it is
+`gh workflow run build.yml -R Rav-2007/codeterminal-core` after merge.
+
+**And a correction to what P1-2 actually bought: the pipeline RUNS, it does not
+BLOCK.** "Merge gate" — the phrasing in `0f3bca2`'s own comment, in P1-2's title,
+and in this entry — is wrong. Blocking a merge requires *required status checks*,
+which require branch protection, which is **unavailable on this repository**:
+private on a free plan, so
+`GET /repos/Rav-2007/codeterminal-core/branches/main/protection` answers
+`403 Upgrade to GitHub Pro or make this repository public`. What exists is the
+suite running automatically on every push and PR to `main`, with the result
+visible before merge. That fixes the *invisibility* half of P1-2 — the half that
+let the eval gate go red unnoticed — and leaves the *enforcement* half open. Both
+`build.yml` and the QA entry now say so; the residual is item 8 below.
+
+Also worth noting for anyone running `gh` in this repo: there are two remotes, and
+`upstream` is an unrelated fork parent (`NousResearch/hermes-agent`). `gh`
+resolves to it, so a bare `gh pr view 1` returns a *different repository's* merged
+PR. Every `gh` call needs `-R Rav-2007/codeterminal-core`; `gh repo view` takes
+the repo positionally instead.
+
+### Blocker 1 (migrations): the headline question is ANSWERED
+
+**`usage.key_id` is the PRIMARY KEY.** The cross-join multiplication `0000` was
+written to ask about is structurally impossible, not merely absent. Corroborated
+independently: 15 usage rows, zero duplicate `key_id`s. The FK to `api_keys.id`
+that `0000` carried as "FK GUESSED" is also real.
+
+Method: read-only PostgREST probes from the dev box using `proxy/.env`'s
+`SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` — `GET /rest/v1/` (the OpenAPI
+document, which stamps `<pk/>` and `<fk .../>` into column descriptions and
+carries `default` and `required`) and `GET /rest/v1/usage?select=key_id`. Both
+GETs. Nothing written, and **no RPC invoked** — deliberately not
+`increment_usage`, because probing that function's reachability means *calling*
+it, and calling it is a write against live billing on the one function with no
+`token_limit` check.
+
+`0000` is now RECONCILED rather than reconstructed. It was wrong in four places:
+
+- `usage.token_limit` has a **default of `100000`**; the file declared none.
+- `usage.period_start` (`timestamptz not null default now()`) was **missing
+  entirely** — a NOT NULL column the repo did not know existed.
+- `api_keys.key_prefix` (`text not null`, **no default**) was missing. This one
+  would have broken a from-scratch rebuild outright.
+- `api_keys.label` and `api_keys.user_id` were missing. `user_id` is the only
+  column in either table implying multi-tenancy and the proxy reads it nowhere.
+
+Everything the file had *guessed* — `gen_random_uuid()`, `default true`, the
+whole `created_at` column, `tokens_used default 0` — was correct.
+
+**New, and not previously known to this repo: a fourth relation
+`api_keys_public` is exposed over PostgREST and appears in no migration.** It
+projects `(id, key_prefix, label, active, created_at, user_id)` — `api_keys`
+minus `key_hash` — which reads as a deliberately safe public projection. No
+credential is exposed. But it is cross-tenant metadata on an unaudited relation,
+and its grant surface is unknown, so it is now covered by the runbook's grant
+query.
+
+**Still founder-gated** (the SQL catalog is not reachable over PostgREST), now
+collected as one paste-in block in
+[`docs/MIGRATION_RUNBOOK_0000_0004.md`](docs/MIGRATION_RUNBOOK_0000_0004.md):
+`0004`'s revoke and its 4-function verify; the `prosecdef` containment check
+(*if any function is SECURITY DEFINER, `0004`'s severity is wrong and it is a
+live hole*); whether `api_keys.key_hash` carries a **UNIQUE** constraint (absent
+⇒ two rows with one hash lock that key out, fail-closed availability landmine);
+the `ON DELETE` action on `usage.key_id`'s FK; and the grant surface across all
+three relations.
+
+**Status: CI blocker CLOSED. Migration blocker reduced from "unknown, most
+valuable question in the repo" to "one five-minute paste-in, with the dangerous
+answer already known to be safe." Still NOT founder-closed; the FAIL verdict
+remains unretracted.**
+
+---
+
+## 2026-07-30 — PR #1 landed on `main`; CI fully verified; deploy verified in production
+
+Both remaining blockers are now closed by evidence rather than by argument, and one
+remediation claim was corrected rather than confirmed.
+
+`main`: `2797bbd` → **`5ea25b2`**. PR #1 MERGED 03:18:55Z.
+
+### How it was merged, and why that mattered
+
+Fast-forward push (`git push origin harden/proxy-spend-and-gates:main`), not
+squash and not rebase. This report, this file, and the migration banners all cite
+these commits **by SHA**; squash and rebase-merge both rewrite them and would have
+invalidated every one of those references at once. GitHub closed PR #1 as merged
+on its own once the commits appeared on the base branch. `main` is still linear —
+`git log --merges origin/main` is empty — which is also the pre-existing
+convention here.
+
+### CI: the last two unverifiable things, verified
+
+| What | Run | Result |
+|---|---|---|
+| `push` trigger path (both earlier greens were `pull_request`) | `30510849208` | 14 green, `eval` skipped |
+| **scheduled `eval` job** — undispatchable until `build.yml` reached the default branch | `30510976622` | **15/15 green**, incl. `retrieval eval (scheduled)` |
+
+The eval job: `ok codeterminal/daemon 211.715s`, job 4m16s. The pre-registered
+risk did **not** fire — the embedding model and ONNX runtime are fetched at test
+time (`daemon/modelfetch.go`, `daemon/onnxruntimefetch.go`) and were only ever
+cached on the dev box; a bare `ubuntu-latest` fetched both. ~211s vs ~148s locally
+is that fetch. Package-level pass, not per-test: the job does not pass `-v`.
+
+Two things to know before reading the first *scheduled* run: a `workflow_dispatch`
+runs **every** job, not just `eval` (the others carry no `if:` guard), and the
+`-run` filter still excludes the known-red `TestEditShapedRetrievalEval` (H6).
+
+### Production deploy: six probes, cost-ordered
+
+Railway picked the merge up in under two minutes. Probes 1–4 are refused
+**pre-upstream on both the old and new builds**, so they cost nothing whichever is
+running; probe 2 is a *proven* discriminator, baselined against `2797bbd`
+immediately before the merge rather than assumed:
+
+| Probe | Old build (`2797bbd`) | New build (`5ea25b2`) |
+|---|---|---|
+| `GET /health` | `200 {"status":"ok"}` | `200` — the non-root container (`USER 10001`) boots |
+| duplicate `"model"` key, banned model | `403 model_not_allowed` (dup resolved last-wins, model gate sees it) | **`400 duplicate_json_key`** (ambiguity refused before any gate reads the body) |
+| allowed model, `provider` routing absent | `403 zdr_required` | `403 zdr_required` — **F1 not regressed** |
+| bogus bearer token | `401` | `401` — still fails closed |
+| `max_tokens: 999999` | clamps to 32768 and **forwards** (would spend) | **`403 max_tokens_too_large`** — refused, not clamped |
+| small streamed completion | — | `200`, SSE to `[DONE]`, `total_tokens=13`, `cost=$0.00000147` |
+
+`HEALTH_EXPOSE_COMMIT` is **not** set on Railway, so `/health` returns
+`{"status":"ok"}` with no SHA and cannot identify the running build. That is why
+the discriminator exists. Setting that variable would make future deploy
+verification a single zero-spend GET.
+
+### Two items previously deferred to founder SQL, answered read-only
+
+Both from the dev box using `proxy/.env`, both plain `GET`s, no RPC invoked:
+
+- **`usage` records.** `tokens_used` on the probing key moved `69156 → 69183`,
+  **delta +27**, against a stream that reported `total_tokens=27`. Exact match.
+  This is the first live end-to-end confirmation that the metering path works —
+  previously carried as "usage-in-Supabase unverified, needs founder SQL."
+- **The §5(e) outbox drains.** `pending_corrections` is `[]` after two completions.
+  Every reservation opened was closed; nothing stranded.
+
+Neither touches `increment_usage`, which is still deliberately unprobed: calling it
+*is* the write.
+
+### The one claim that got corrected, not confirmed
+
+**P1-2's pipeline RUNS; it does not BLOCK.** Branch protection is unavailable on
+this repo (private, free plan — `403 Upgrade to GitHub Pro or make this repository
+public`), so required status checks cannot exist. `0f3bca2` closed the
+*invisibility* half of P1-2, which is the half that let P1-3 go red unnoticed. The
+*enforcement* half is open and is item 8 in the previous entry's list. `build.yml`,
+the QA report and this file all now say so; the "merge gate" phrasing was wrong.
+
+### Status
+
+CI blocker **CLOSED, fully verified**. Deploy **VERIFIED in production**. The
+migration blocker is unchanged: one five-minute paste-in at
+[`docs/MIGRATION_RUNBOOK_0000_0004.md`](docs/MIGRATION_RUNBOOK_0000_0004.md),
+still founder-gated because the SQL catalog is not reachable over PostgREST. **The
+FAIL verdict remains unretracted — that is the founder's call, not this entry's.**
+
+---
+
+## 2026-07-30 — Robustness program Phase 0 + Phase 1 (lifecycle & fault containment; verified, NOT founder-closed)
+
+Opening phases of the 70% → 90% robustness program. Plan and scorecard:
+`~/.claude/plans/waiting-on-the-eval-serene-sutton.md`. Baseline and
+measurements: [`docs/ROBUSTNESS_BASELINE.md`](docs/ROBUSTNESS_BASELINE.md).
+
+The program ran under one standing rule, set before any measurement: **a finding
+that fails to reproduce gets struck rather than fixed on faith.** One of the two
+Phase-0 findings was struck. That is recorded here rather than quietly dropped.
+
+### Phase 0 — the baseline, measured on this tree
+
+Coverage floors (`go test -cover`, per module, since `./...` from the root fails):
+`protocol` 88.9%, `editapply` 87.0%, `proxy` 80.3%, `helper` 6.5% /
+`helperproto` 75.0%, `clients/tui` 66.7%, `daemon` 69.3%.
+
+Runtime baseline (real binaries, `/proc`): proxy idle 6 threads / 6 fds /
+7.8 MB, settled after 12 concurrent completions 11 / 10 / 12.8 MB — fds
+plateaued rather than growing, and all 12 reservations closed correctly. Daemon
+idle 8 / 9 / 12.9 MB, unchanged after 20 socket connections.
+
+A purpose-built harness (fake Supabase recording every RPC in order + fake
+OpenRouter streaming SSE at a configurable chunk delay) drives the **real proxy
+binary**. It is the basis of the Phase-3.2 integration matrix and should be
+promoted into `proxy/` there.
+
+### Finding CONFIRMED, and it was worse than the sweep's design assumed
+
+SIGTERM mid-stream, measured against the real binary: `authorize →
+reserve_usage` **and nothing else**. The proxy died instantly (no
+`signal.Notify` anywhere in the module), the client got a truncated body with no
+error frame (`curl` exit 18), and **3,959 of 4,096 tokens stayed charged
+forever** — the sweep never refunds, deliberately, because a dead request's true
+usage is unrecoverable.
+
+The sweep treats this as a rare crash artifact. **A platform redeploy is a
+SIGTERM**, so it fired on every deploy, for every request in flight. The sweep
+was working correctly; its premise was wrong.
+
+### Finding REFUTED — the ~80 ms TTFT hypothesis is not the un-drained body
+
+The TTFT note's explicitly-untested hypothesis (un-drained Supabase response
+bodies break connection pooling, costing a handshake per call) was measured at
+0 B / 100 B / 4 KB / 64 KB: **1 connection across 20 sequential requests either
+way.** `json.Decoder`'s buffered reader consumes through EOF while filling its
+buffer, so a `Content-Length` body re-pools regardless. **The ~80 ms remains
+unexplained**; the other candidate from that note (collapsing validate+reserve
+into one RPC) is untouched and remains live. P1.5 was rescoped accordingly and
+must not be reported as a latency fix.
+
+### Phase 1 — five fixes, one per commit
+
+| Item | Commit | What |
+|---|---|---|
+| P1.1 | `6b029e4` | One deferred exactly-once reservation finalizer |
+| P1.2 | `13b36af` | Proxy graceful shutdown + sweep panic containment |
+| P1.3 | `2f00ee0` | Handler panic recovery with a diagnosable 500 |
+| P1.4 | `eb984a3` | Daemon waits for in-flight requests before exiting |
+| P1.5 | `3aa9c50` | One capped-JSON decode helper that drains its body |
+| P1.2b | `0dcfabe` | Shutdown sequence extracted so it is testable, and tested |
+
+**P1.1** replaces four hand-placed `finalizeUsage` sites with one deferred
+finalizer over a `reservationOutcome` whose zero value is the safe one (full
+refund). `finalizeUsage` is untouched — it owns the charge POLICY and is tested
+on it; `finalizeReservation` owns only the once-ness, guarded so nested defers
+and P1.3's middleware cannot double-bill.
+
+**P1.2** flips `/health` to 503 `draining` with `Retry-After`, stops the sweep,
+then drains under a 25 s grace sized against the platform's SIGTERM→SIGKILL
+window rather than `upstreamTimeout`.
+
+### Three of our own mistakes, caught by neutering rather than by review
+
+Recorded because each one made an assertion silently inert, and the pattern is
+more reusable than the fixes:
+
+1. **P1.1's first test faulted mid-stream** — a site `streamSSE`'s own defer
+   already covered, so it would have passed pre-fix. Moved to `WriteHeader`,
+   which nothing covered. The mid-stream case is kept but labelled as *not*
+   evidence the refactor added anything.
+2. **P1.5's first fix was self-defeating.** The drain was bounded by the same cap
+   as the decode — and the only case needing a drain is the one that *exceeded*
+   that cap, so it could never reach EOF. Still 20 connections with the "fix" in.
+   Caught because the test asserts the **connection count**, not that a drain was
+   attempted. Now bounded by `maxDrainBytes` (8 MB).
+3. **P1.2b's ordering assertion could never fail**, twice over: it sampled after
+   already waiting for the request, and its slow handler (600 ms) finished long
+   before the 3 s pre-drain window elapsed, so `Shutdown` had nothing to wait on.
+
+A fourth was caught by running the drill rather than by testing: the first
+graceful-shutdown cut announced 503 and then called `Shutdown`, which closes the
+listener **immediately** — so nothing could ever connect to observe the 503, and
+a load balancer would learn about the shutdown from a connection error, which is
+exactly what the flip exists to prevent. Fixed with a 3 s `preDrainDelay`.
+
+### Phase 1 gate — the same drill, after
+
+- Stream **ran to completion**: 42 chunks + `[DONE]`, client HTTP **200**
+  (baseline: cut at 10 chunks, `curl` exit 18).
+- `apply_correction(tokens=-3959, pending=1001)` applied; ledger balanced.
+- **Zero** `ABANDONED RESERVATION` lines (baseline: one per SIGTERM'd request).
+- Log reads `drain complete, all in-flight requests finished` → `exiting`.
+- Health sequence observed live: `200 {"status":"ok"}` → SIGTERM →
+  `503 {"status":"draining"}` + `Retry-After: 1` → listener closed.
+
+Six modules green on `go build`, `gofmt -l`, `go vet`, `go test -race`. Proxy
+coverage **80.3% → 81.7%** (it dipped to 78.5% first, because the new
+safety-critical code was written inside `main()` where nothing could reach it —
+which is what prompted P1.2b).
+
+### Scorecard
+
+*Recorded retroactively on 2026-07-30, after a re-measurement pass found this
+line missing: Phase 1 shipped all five movers and passed its gate but never
+scored its own dimension, so the program's single largest completed gain was
+invisible on its own scorecard. Noted rather than backfilled silently, because
+the omission is the kind of bookkeeping drift that makes a scorecard decorative.*
+
+Dimension 2 (failure handling / lifecycle) **45 → ~82**: every mover the plan
+listed for this dimension landed and was measured against the real binary, not
+inferred — a reservation finalizer that discharges exactly once from one deferred
+site, graceful shutdown that drains rather than dying mid-stream (42 chunks +
+`[DONE]` and HTTP 200 where the baseline cut at 10 chunks with `curl` exit 18),
+panic containment where `proxy` previously had no `recover()` at all, and a daemon
+that waits for in-flight requests (live-confirmed both directions in Phase 2 step
+2.0, so it no longer rests on inference).
+
+Not 90, and the gap is one specific defect rather than polish: **a SIGTERM-
+truncated stream still has no incompleteness signal.** `IncompleteBudgetExceeded`
+covers the budget-kill case; a stream cut by the drain deadline remains
+indistinguishable to the daemon from a complete answer. The 25 s grace makes that
+window small, but "small" is a probability, not an invariant — a request that
+outlives the grace is still silently truncated, which is the same class of defect
+Phase 1 was convened to remove. The remaining few points are fault coverage: the
+lifecycle paths are verified by hand-run drills, not by a repeatable suite, which
+is exactly what Phase 3.2's integration matrix is for.
+
+### Not done / carried forward
+
+- **P1.4's live drain was not separately confirmed.** It rests on unit tests
+  asserting both directions of `WaitForDrain` plus a neuter check; the `main.go`
+  wiring is three lines calling that tested function. A live daemon drill is
+  still worth running. **→ DONE in Phase 2 step 2.0, both directions; see below.**
+- **SIGTERM-truncated streams have no incompleteness signal.**
+  `IncompleteBudgetExceeded` (`b1fed6b`) covers the budget-kill case; a stream cut
+  by a drain deadline is still indistinguishable to the daemon from a complete
+  answer. Belongs to whichever phase next touches the stream protocol.
+- Phases 2–6 (observability, test depth, security-gate closure, schema
+  integrity, maintainability) are unstarted.
+
+**Status: Phase 0 and Phase 1 complete and verified locally; NOT founder-closed.**
+
+---
+
+## 2026-07-30 — Robustness program Phase 2 (observability; verified, NOT founder-closed)
+
+Plan: `~/.claude/plans/phase-0-and-phase-mighty-panda.md`. The bar was set before
+any code was written: **the undiagnosed production 401 becomes diagnosable.** Not
+"logging was added" — a replay drill had to end with the log trail naming the
+branch. It does; the gate transcript is in §Gate below.
+
+### Step 2.0 — Phase 1's one open residual, closed first
+
+P1.4's live daemon drain was never separately confirmed (the first attempt's shell
+took the SIGTERM before the daemon logged). Re-run properly, with the daemon under
+`setsid` and signalled by PID, against a fake upstream that stalls mid-stream:
+
+| | real build | `WaitForDrain(0)` (neutered) |
+|---|---|---|
+| tokens after SIGTERM | kept arriving (t=3.16s, 3.21s, 3.26s) | none |
+| client | `DONE` frame, exit 0 | connection closed, no `DONE`, exit 2 |
+| daemon log | `drain complete, no requests in flight` | `drain INCOMPLETE after 5s` |
+
+So the drill has teeth, and P1.4 is confirmed rather than inferred.
+
+### The five commits
+
+| Item | Commit | What |
+|---|---|---|
+| P2.1 | `2e9a1fe` | A request id every caller can quote |
+| P2.2 | `13c5685` | `log/slog` with a gate vocabulary + the secrets test |
+| P2.3 | `4a6b9ff` | `expvar` counters behind `PROXY_ADMIN_TOKEN` |
+| P2.4 | `9a277f2` | Daemon counters on the existing status surface |
+| P2.4b | `7cdd36b` | `printStatus` made reachable; its ordering pinned |
+
+**P2.1.** `X-Request-Id` on every response (minted, or adopted from the caller),
+repeated in every JSON refusal body, present on the panic 500. Inbound ids are
+adopted only in the lowercase-hex shape we mint, and otherwise **replaced, not
+sanitized** — the id is echoed into error bodies and the daemon classifies proxy
+errors by substring-matching those bodies (`daemon/modelerror.go`'s
+`quotaPhrases`), so a looser charset would let a caller steer how its own error is
+classified. Every needle there contains a non-hex letter, so hex provably cannot
+spell one; hex also excludes newline and `=`, so an id cannot forge a log line.
+
+**P2.2.** ~50 `Printf` sites became logfmt records with a stable key set
+(`req_id`, `gate`, `key_prefix`, `key_id`, `status`, `latency_ms`, `reserved`,
+`actual`, `pending_id`, `scope`, `provider`). The `gate` labels are one const block
+shared with P2.3's counters, so a count and a line name the same thing. Naming
+rule: a label names the **branch**, not the status — six causes all answered 401 in
+the incident, and "401" was exactly the useless part.
+
+**P2.3.** Counters including `sweep_last_run_unix` / `sweep_last_error_unix`, set
+separately because a sweep that **runs and fails** is a different state from one
+that never ran. `/admin/metrics` exists only when a token is configured.
+
+**P2.4.** Daemon counters ride the existing `StatusResponse` over the existing
+0600 + `SO_PEERCRED` socket — no new mechanism, no HTTP listener. Additive with
+`omitempty`, so `ProtocolVersion` stays **1**. The daemon also folds the proxy's
+`X-Request-Id` into its operator-only error detail, through a validator that
+accepts only our hex shape (that header comes from whatever host `apiBase` names
+and lands in a log file, so a newline in it would forge log lines).
+
+### Three things the LIVE runs caught that reading the code did not
+
+1. **The first ordering assertion was inert.** It checked that the panic 500
+   carries the id header — and the header survives *both* middleware orders, since
+   `withRequestID` sets it before the handler panics and a header set before
+   `WriteHeader` is still sent. What actually breaks on a swap is `recoverPanics`
+   being able to **read** the id. The panic line now carries `req_id` and the test
+   asserts it equals the header; swapping the order now fails.
+2. **`expvar.Handler()` disclosed the binary's path.** It renders expvar's
+   *default* registry, which the package populates with `cmdline` and `memstats`.
+   A scrape of the real binary returned the full filesystem path and several
+   hundred lines of heap internals with the counters underneath. It now serves only
+   our own map plus three runtime numbers chosen one at a time; a test asserts
+   `cmdline`/`memstats` are absent. Dropping `expvar.Publish` also removed the
+   duplicate-name panic hazard that had shaped the design.
+3. **Coverage caught an untestable property.** Adding the daemon counters took its
+   coverage 69.3% → **68.9%**, under the Phase-0 floor. The uncovered code was
+   `printStatus`, unreachable because it took an `*os.File` — and it is where the
+   "degraded block prints LAST" property lives, directly below where the counters
+   were inserted. Now an `io.Writer`, with four tests including the ordering.
+
+### Gate — the production 401, replayed end to end
+
+Real proxy binary, fake Supabase answering the key lookup `200 []` (the exact
+production symptom), then the real daemon pointed at that proxy:
+
+```
+client:  401 + X-Request-Id: 142cb6a6e09d41bc
+         {"error":"unauthorized","request_id":"142cb6a6e09d41bc"}
+proxy:   msg="auth rejected" req_id=142cb6a6e09d41bc gate=auth_row_count
+                             key_prefix=mk_live_ matches=0
+         msg=request req_id=142cb6a6e09d41bc status=401 latency_ms=3
+counters: refusals_by_gate = {"auth_row_count": 1}
+daemon:  model API error: [auth] ... (upstream req_id=ab806d854bdf7aad)
+status:  since start  1 prompt(s), 0 apply(s) (0 failed), ...
+```
+
+One quoted string resolves to one request, names which of `authorize`'s eight
+fail-closed branches fired, and the same cause is countable. **The bar is met.**
+
+Also verified live, because it is the trap this phase could most easily have
+introduced: a streamed completion through the wrapped handler still arrives
+incrementally — 7 chunks spread over 2.00s against a 0.4s-per-chunk upstream
+(a buffering wrapper would deliver all 7 within milliseconds). `statusRecorder`
+forwards `http.Flusher`; without that, `streamSSE`'s type assertion fails,
+`canFlush` goes false, every stream silently buffers, and every existing test
+still passes. The whole request trail — `quota reserved` → `usage corrected` →
+access line — now shares one `req_id`.
+
+### Regression
+
+Six modules green on `go build`, `gofmt -l`, `go vet`, `go test -race`. Coverage:
+`protocol` 88.9%, `editapply` 87.0%, **`proxy` 81.7% → 83.6%**, `helper` 6.5% /
+`helperproto` 75.0%, `clients/tui` 66.7%, **`daemon` 69.3% → 70.1%**. Every new
+assertion was neuter-checked (14 neuters this phase); the ones that mattered are
+recorded above.
+
+### Scorecard
+
+Dimension 5 (observability) **35 → ~85**: request identity end to end, structured
+logs with a machine-readable refusal vocabulary, counters including
+reconciliation liveness, and a secrets-in-logs rule that is now asserted rather
+than commented. Not 90+: there is no metrics backend, no tracing, and no alerting
+— a scrape still requires someone to scrape it.
+
+### Not done / carried forward
+
+- **`PROXY_ADMIN_TOKEN`'s fatal short-token path is not asserted in-process** (it
+  calls `logger.Fatal`, which would kill the test binary). The boundary is
+  asserted on the predicate instead. A subprocess test belongs with P3.
+- **`sweep_last_run_unix` is per-instance**, like the rate limiter's buckets: with
+  multiple replicas a scrape answers "is *this* replica's sweep alive". Stated
+  rather than buried; same shape as the limiter's documented residual.
+- **SIGTERM-truncated streams still have no incompleteness signal** (carried from
+  Phase 1, untouched here).
+- **The ~80 ms `reserveQuota` latency remains unexplained.** Phase 2 added
+  `latency_ms` to every request, which makes it measurable in production for the
+  first time, but the collapse-validate+reserve hypothesis is still untested.
+- Phases 3–6 (test depth, security-gate closure, schema integrity,
+  maintainability) are unstarted.
+
+**Status: Phase 2 complete and verified locally; NOT founder-closed.**
+
+---
+
+## 2026-07-30 — Robustness program Phase 3 (test depth & static analysis; verified, NOT founder-closed)
+
+Plan and scorecard: `~/.claude/plans/waiting-on-the-eval-serene-sutton.md` §215-259.
+Baseline: [`docs/ROBUSTNESS_BASELINE.md`](docs/ROBUSTNESS_BASELINE.md).
+
+Run in the plan's dependency order, so the enforcement landed before the work
+that needed enforcing.
+
+### Step A, first — the 13 unpushed commits finally saw CI
+
+Phases 0–2 were verified on one machine, one toolchain, one arch, on a branch
+`build.yml` is not configured to see (it triggers on push/PR to `main` only).
+Pushed and opened as **PR #2**; 14/14 green first run, then 20/20 and 21/21 as
+the new jobs landed.
+
+**`gh` resolves to `NousResearch/hermes-agent` from this directory** — an
+unrelated PUBLIC third-party repo, picked up from an `upstream` remote. A bare
+`gh pr create` would have aimed a PR carrying this private code at someone
+else's public repository. Every `gh` invocation needs `-R Rav-2007/codeterminal-core`.
+
+### Step B — dimension 2 scored (see the Phase 0+1 entry above)
+
+45 → ~82, recorded retroactively and flagged as such.
+
+### The seven items
+
+| Item | Commit | What |
+|---|---|---|
+| P3.6 | `18e3d02` | Per-package coverage ratchet, floors at Phase-0 values |
+| P3.5 | `cf68b91` | staticcheck + ineffassign + bodyclose as hard CI gates |
+| P3.2 | `4cd0b9b` | Integration matrix + harness promoted into `proxy/testharness` |
+| P3.3 | `05192e5` | Money-path invariant over 150 generated cases |
+| P3.1 | `5d0cab6` | Nine fuzz targets across both trust boundaries |
+| P3.7 | `59eed54`, `06b8f00` | Tracked pre-push hook + Makefile |
+| P3.4 | `9ffb00b` | Soak script + the `rate_limiter_buckets` gauge it needs |
+
+### The soak, run for real — 30 minutes, 118 samples, PASS
+
+| | first half | second half | Phase-0 baseline |
+|---|---:|---:|---|
+| RSS | 16,012 kB | 17,544 kB (+9.6%) | 12,792 kB settled |
+| fds | 10 | **10** | 10, plateaued |
+| goroutines | 14 | 14 | — |
+| buckets | 10,832 | 15,217 (peak 16,286) | — |
+
+**fds sat at exactly 10 for the entire run**, which is the Phase-0 plateau
+reproduced under 30 minutes of sustained load rather than 12 requests.
+
+The limiter sweep is visible as a sawtooth: buckets climb with arrivals and drop
+every `bucketSweepE`, first firing at t=722s — `bucketIdleTTL` (10m) plus
+`bucketSweepE` (2m), exactly as predicted. **9 reclamations** across the run.
+
+That sawtooth prompted a better assertion. The original bucket check compared
+half-medians against a 50% threshold and passed at +40.5% — real margin, but
+thin for something tuned by hand. It now also asserts that buckets DECREASED at
+least once, which is direct evidence of reclamation and needs no tuning: a sweep
+that never fires produces a monotonic series and zero decreases whatever the
+rates are. Validated by replaying the real CSV (PASS, 9 reclamations) and a
+forced-monotonic copy of it (FAIL on both checks, +184.4%) — no second
+30-minute run required.
+
+### Six defects found in this phase's OWN work, by neutering rather than review
+
+The pattern is more reusable than the fixes, and five of the six were invisible
+to a passing test run.
+
+1. **The ratchet's fail-closed claim was partly false.** `go test -cover` prints
+   a package with no test files as a TAB-prefixed line carrying
+   `coverage: 0.0%`, matching neither the `ok` nor the `[no test files]` pattern.
+   `proxy/testharness` slipped straight through the gate on the commit that
+   added it. The earlier neuter had only deleted a floor for a package that HAD
+   tests, so it never exercised that shape.
+2. **The ratchet's empty-floors guard was unreachable.** Under `set -u`,
+   expanding `${#floor[@]}` on an empty associative array aborts before the
+   check runs — fail-closed by luck (bash exits 1), not by design.
+3. **The SIGTERM integration test was inert.** Replacing `srv.Shutdown` with an
+   abrupt `srv.Close` still passed it: `preDrainDelay` is 3s, the signal fired
+   at 1.2s, and the 4s stream finished before the pre-drain window elapsed, so
+   Shutdown never had an in-flight request to wait on. **This is precisely the
+   mistake Phase 1 recorded making** (a 600ms handler against a 3s window).
+   Timings now derive from `preDrainDelay`; the neutered build fails with
+   `unexpected EOF`, the in-process form of the baseline's `curl` exit 18.
+4. **The money-path invariant I4 was mis-specified**, and 8 of 150 cases said so.
+   "Produced output ⇒ never refunded below reserved" would have forbidden the
+   ordinary refund the reservation model exists to perform (reserve 4096, use
+   137, refund 3959). The qualifier that makes it true is *unmeasured*.
+5. **The soak measured the rate limiter while appearing to measure streaming.**
+   Unpaced, 4 loops offered ~400 req/s against a 50/s global ceiling, so almost
+   all "load" was a 429 that never reached the money path. Also: the metrics
+   scraper shares the pre-auth bucket with the load, so every scrape after the
+   first returned 429 and the run recorded `?` for the whole soak. And awk
+   allows function definitions only at top level — nested in `END` it is a
+   syntax error, and the script still exited through its success path with an
+   empty verdict.
+6. **The pre-push hook failed its first real push** with `go: command not found`
+   on a tree that builds fine in a terminal: git runs hooks with a stripped
+   PATH. A hook that fails every push for a reason unrelated to the code is a
+   hook everyone learns to `--no-verify`, which removes the only enforcement
+   this repo has.
+
+### Deliberately not done, with reasons
+
+- **errcheck is NOT adopted**, though P3.5 names it. Measured: 329 findings, 157
+  outside tests, dominated by cleanup-path `Close` and `Fprintf`; ~60 remain
+  after conventional exclusions. Green means either ~60 `_ =` assignments —
+  noise that makes a real unchecked error harder to see — or an exclusion list
+  long enough to be arbitrary. Recorded as deferred debt (j) with a closing
+  plan, not dropped.
+- **SIGTERM is not one of the money-path matrix's generated outcomes.** Each
+  case would cost `preDrainDelay`; it is covered end to end by
+  `TestIntegration_ShutdownMidStream_BillsRatherThanStrands`.
+- **Fuzzing is a regression gate, not a search.** 30s/target per PR re-walks the
+  corpus and shallow mutations. Finding something NEW wants minutes to hours
+  (`FUZZTIME`). Said plainly in `scripts/fuzz.sh` so a green fuzz job is not
+  mistaken for proof of absence.
+
+### Regression
+
+Six modules green on `go build`, `gofmt -l`, `go vet`, `go test -race -count=1`;
+CI 21/21 green on PR #2. Coverage: `protocol` 88.9%, `editapply` 87.0% → **87.3%**,
+`proxy` 83.6% → **84.6%**, `helper` 6.5% / `helperproto` 75.0%, `clients/tui`
+66.7%, `daemon` 70.1%. No floor breached.
+
+**Status: Phase 3 complete and verified locally; NOT founder-closed.**
+
+---
+
+## Phase 4 — security gates (2026-07-30)
+
+Plan and scorecard: `~/.claude/plans/waiting-on-the-eval-serene-sutton.md` §259-283,
+sequenced in `~/.claude/plans/phase-3-is-complete-validated-yeti.md`. Five items, one
+commit each, against dimension 4 (security posture), the last dimension holding the
+release gate.
+
+**The phase turned out to be less about writing security code than about finding out
+which of the record's security claims were true.** Two of the four items named in the
+plan were already done in code and open only on paper; a third was blocked on data
+that did not exist. That is the finding, and it is not a comfortable one for a program
+whose credibility rests on its own record.
+
+### What was actually open, once checked
+
+| Claimed state | Measured state |
+|---|---|
+| FAIL-1 policy breadth "STILL OPEN — these walk straight through today" | **closed 12 days earlier** in `959a882`/`ade065a`, with positive, negative and case-fold tests |
+| `chunkscrub` wiring on the egress path "the whole question" | **wired**, and no bypass exists — direct `@file:line` spans run the indexer's own gate first |
+| warn-mode "fire-rate data now durably accumulating" | **zero events ever recorded**; the wire was fine, the traffic was absent |
+| Gate 7 blocked on the founder-level auth-model decision | **decided by implementation** in `517c069`, never written down as a model |
+| WAL sidecars hold a duplicate copy of turns at 0644 | worse — the sidecar holds turns the 0600 db file **does not have yet** |
+
+### Commits
+
+1. **`643d52c` — reconcile the FAIL-1 name-gate record.** Docs only, and only after a
+   neuter-check: deleting the added globs turns exactly the 20 `new/*` and `item2/*`
+   cases red while every `existing/*`, `neg/*` and `item1/*` case stays green. Also
+   discharges the egress-wiring question and records what closing the bullet did *not*
+   change — the gate is still a basename blocklist, and bare `config` (`.kube/config`)
+   is still deliberately uncovered.
+2. **`e5e5813` — measure the warn-mode detectors offline.** `daemon/warnscan_test.go`
+   (`-tags warnscan`) runs a corpus through `ScanWorkspace` → `scrub()` → detectors, so
+   they see the post-Option-A residual, which is the only thing the B-vs-C question is
+   about. Plus the wiring test the empty sink deserved.
+3. **`725256e` — lock down the SQLite `-wal`/`-shm` sidecars** (debt item (g)), both
+   stores, via a shared `restrictSQLiteSidecars`.
+4. **`7a70017` — close Gate 7 and the FAIL-3 socket axis by written rationale.** A new
+   socket section in `SECURITY_MODEL.md`, now the canonical statement of that surface.
+5. **This commit** — the end-to-end drill, the egress-path tests, and this record.
+
+### The measurement that unblocked FAIL-1
+
+`docs/CHUNK_SCRUB_FIRE_RATE.md`. Over 243 files / 2,117 chunks:
+
+- **entropy: 1,310 fires, 33% of all chunks, zero true positives — at every
+  threshold.** The residual population above 4.5 bits/char is `go.work.sum` hashes and
+  test fixtures, not near-miss secrets. The token alphabet includes `-`, `_` and `/`,
+  so hyphenated English prose and URL paths classify as "base64"; it is a long-token
+  finder. There is no valley in the distribution to cut at.
+- **keyword: 41 fires, 1.6% of chunks, zero real credentials**, failing in three
+  nameable classes — type annotations (`token: string`, where the "value" is the word
+  `string`), `tokens`-as-a-count, and `os.Getenv`-style indirection `isNonSecretValue`
+  does not cover. Fixing those three removes 54% of fires.
+
+**Recommendation: reject Design B outright; hold Design C pending those fixes and a
+corpus that contains real secrets.** The report states its own limit — this corpus has
+none, so it bounds false-positive cost and says nothing about recall.
+
+### The live drill, and the data point that cuts the other way
+
+A real daemon, real BGE/ONNX embedder, real index, capturing fake provider, one
+grounded turn over the socket. On the wire: the structural secret **absent**, replaced
+by `[REDACTED:aws_access_key]` with surrounding code intact; the opaque token
+**present**, log-only as designed; `warnmode.jsonl` written for the first time ever, at
+0600, carrying labels and a `sha256:` indicator and no raw secret material. The daemon
+then drained cleanly on SIGTERM.
+
+**The single recorded fire is a true positive** — the entropy detector caught exactly
+the opaque token (`bits_per_char=5.00`) and nothing else. Recall is not zero when a
+genuine opaque secret is present; precision is still zero across a real corpus. Both
+are true, and the recommendation stands: n=1, planted by the person reading the result,
+at the extreme right tail where only 11 of 5,636 real tokens sit. The reason to hold B
+is its false-positive cost, not an inability to detect.
+
+### Defects found in this phase's own work, by neutering
+
+1. **The sidecar fix has a placement trap that a passing test would not catch.** The
+   driver creates `-wal`/`-shm` lazily, so the chmod must follow the schema DDL. Placed
+   beside the `journal_mode=WAL` pragma — where it reads most naturally, and where a
+   reviewer would put it — it races their creation and no-ops through its own ENOENT
+   tolerance, leaving 0644 while looking applied. Both failure modes are now
+   neuter-checked: the test fails when the call is deleted **and** when it is merely
+   moved.
+2. **A sidecar test that only opens the store asserts nothing.** It can find no sidecar
+   at all and pass. The test writes a turn first, fails loudly if no `-wal` exists, and
+   asserts its own premise (the turn really is in the `-wal`) so that a future SQLite
+   that checkpoints more eagerly surfaces as a failure rather than a silent hollowing.
+3. **Nothing tested the artifact that actually leaves the machine.** `scrub_test.go`
+   covered the redactor, `chunkscrub_test.go` the detectors,
+   `TestBuildAugmentedUserMessage_LabelsAndDelimitsChunks` the formatting — and
+   dropping `scrub()` from `renderChunk` left all three green. The BACKLOG's evidence
+   for this property was "verified live before/after", once, by hand, in July.
+   `daemon/chunk_egress_test.go` now asserts it on the outbound message.
+4. **A writer test cannot distinguish "never called" from "called and working".**
+   `TestWarnSink_NormalAppend` passed throughout the twelve days the sink recorded
+   nothing.
+
+### Deliberately not done, with reasons
+
+- **Unifying socket error responses — DECLINED, not deferred.** The flattening that
+  hides refused-vs-absent from an attacker hides it from the user too. The existence
+  oracle is accepted instead, with three written reopen conditions.
+- **Memory retention prune (debt (h))** — out of scope this phase; `turns` still grows
+  unbounded.
+- **`git remote remove upstream`** — not done. `gh` still resolves to
+  `NousResearch/hermes-agent` from this directory; every command must keep passing
+  `-R Rav-2007/codeterminal-core`.
+- **Rate-limit replica dilution** — still undecided.
+- **Designs B/C** — measured, recommended, not shipped. That decision is the founder's
+  and is now answerable from evidence.
+
+### Dimension 4 — security posture: 75 → **85** (target 92)
+
+Scored by deduction from evidence, in the same shape as Phase 2's dimension 5 and
+Phase 3's dimensions 3/1/6.
+
+**Credited (+10):** Gate 7 and the FAIL-3 socket axis closed with a written threat
+model and a conditional, reasoned acceptance; the FAIL-1 name gate verified closed by
+neuter-check rather than by reading; the egress path proven wired end to end on a live
+turn rather than by inspection; the opaque-secret decision moved from
+blocked-on-absent-data to answerable-from-measurement; one live permissions defect
+fixed, and it was worse than recorded.
+
+**Not credited, and why the score is not higher:**
+
+- **−4 opaque/novel secrets still leave the machine.** Measured, recommended, still
+  undecided and still shipping. This is the largest single deduction and it is
+  correctly the founder's call, not a coding task.
+- **−2 the existence oracle is accepted, not eliminated.** A conditional acceptance is
+  worth less than a closure, and the conditions are all plausible futures.
+- **−1 the mid-ancestor-directory-swap TOCTOU** remains open, with its urgency raised
+  by the socket's free retries.
+- **−1 the name gate is still a blocklist.** Broadening it closed the named gaps and
+  changed nothing structural; `.kube/config` and GCP-style `*-<hash>.json` still walk
+  through by design.
+- **−1 sidecar symlink opens** are still the driver's, uncovered by the leaf guard.
+
+**Deliberately not deducted:** the `id_rsa_secret.pub` over-refusal fails safe.
+
+**Program position after Phase 4:** ~149 of 232 points closed (~64%) — the Phase-3
+figure of ~139 plus dimension 4's +10. **Phases 0 through 4 are complete; 5 (data &
+schema integrity) and 6 (maintainability) are not started.** Dimension 5 at target; 4
+at 85; 3, 1 and 6 moved by Phase 3; 2 at ~83 and still an estimate rather than a
+measurement.
+
+### Verification
+
+Six modules: build, `gofmt`, `go vet`, `go test -race -count=1` — all green,
+race-clean. Coverage: `protocol` 88.9%, `editapply` 87.3%, `proxy` 84.6%, `helper`
+6.5% / `helperproto` 75.0%, `clients/tui` 66.7%, `daemon` 70.1% → **70.5%**. No floor
+breached. Live end-to-end drill as described above.
+
+**Status: Phase 4 complete and verified locally; NOT founder-closed.** The FAIL-3
+final call and the Design B-vs-C decision both remain the founder's — the difference
+from a week ago is that both are now answerable from written evidence rather than
+blocked on it.
+
+---
+
+## 2026-07-31 — Performance: Stage A (instrument) + B.1 (auth cache); verified, NOT founder-closed
+
+A dimension the eight-dimension scorecard never had. Full write-up and every number:
+[`docs/LATENCY_BASELINE.md`](docs/LATENCY_BASELINE.md). Branch `perf/latency-baseline`,
+PR #3, CI green (21 pass, 1 schedule-only skip).
+
+**Headline: the money path went 228 ms → 136 ms, a 40% cut**, measured before and after
+on the real binary at a production-shaped Supabase latency.
+
+### Stage A — measure first, and strike what fails to reproduce
+
+There were zero Go benchmarks in 49k lines and one whole-request `latency_ms`, so "four
+phases of hardening taxed the hot path" was unfalsifiable. **Three hypotheses died, all
+mine:**
+
+1. **That Phases 1–4 taxed retrieval.** The entire per-turn retrieval CPU path is
+   **~0.44 ms — 0.03% of a 1,450 ms TTFT**. Nothing there can be user-perceptible.
+   B.3 struck as a latency item (`46252b5`).
+2. **That the duplicate `scrub()` was a free win.** It *is* duplicated, but head-to-head
+   the "optimised" variant measured **2 µs slower** with overlapping ranges. If removed,
+   it is for clarity on a maintainability ticket, never reported as a perf fix.
+3. **That collapsing authorize+reserve (B.2) was the next move.** B.1 made it
+   near-worthless: the two are **alternatives, not complements** — a combined RPC is
+   called on every request by construction, so it would make the cache dead code. Its
+   whole marginal value is 92 ms on the *first* request of a session, against a new RPC
+   on the money path plus a founder-gated migration. **Recommended AGAINST.**
+
+**Record correction (`652111c`).** `BACKLOG.md:1174` blamed the ~80–100 ms on
+`reserveQuota` specifically — *"authorize itself adds ~0 ms"* — and that framing carried
+into every later note including Phase 0's REFUTED entry. Instrumented, **both stages
+measure 91 ms.** It is the price of one Supabase round trip, the proxy makes two, and
+`authorize` looked free only because nothing had timed it. The prize was twice what the
+record implied.
+
+### B.1 — the auth cache (`95c40a9`, `befa60a`)
+
+`auth_ms` 91 → 0; `latency_ms` 228 → 136. The saving matching the prediction to within a
+millisecond is the check that matters. **Cost: a revoked key works for up to 30 s**,
+bounded by `POST /admin/auth-cache/flush` and written up in `SECURITY_MODEL.md` beside
+the deferred self-service-revocation item.
+
+**A neuter-check that failed to bite, recorded rather than glossed:** hoisting the `put`
+above the row-count gate broke nothing — `put` takes `rows[0].ID` and is already guarded
+by that condition. The property is structural. The mutation that *does* break it is
+adding negative caching, and that is what the test now forbids.
+
+### Two defects found in this phase's own work
+
+- **A latent `-race` flake** (`bf189aa`), caught by the pre-push hook after **four
+  consecutive `-race -count=1` runs missed it**. Pre-existing: three tests build two
+  `log.Logger`s over one `bytes.Buffer`, sharing no mutex. The stage timer did not create
+  it — it made it *fire*. Fixed as a class; verified at `-count=4`.
+- **Two lint failures reached CI** (`ed7329c`) because `scripts/lint.sh` had been
+  printing "not found on PATH" and exiting 0 locally. Linters now installed; both
+  findings were correct (bodyclose could not see through a closure; staticcheck was right
+  about a literal nil Context).
+
+### Finding — the retrieval eval's "0/4 recall" is a harness failure (`a1e5844`, `38b027f`)
+
+Three of `TestEditShapedRetrievalEval`'s four cases **never issue a retrieval query**.
+They fail in setup: the pre-fix reconstruction reverts a fix commit that no longer
+applies (178–221 commits behind). The honest score is **0/1 measured, 3 unmeasurable**,
+and item (b)'s "real chunk-level ranking gap" diagnosis was attributing a harness failure
+to retrieval quality. My own proposed fix was then **probed and disproved** — the
+pre-fix source does not compile against today's tree. The eval needs rebuilding around
+current queries, not repairing.
+
+### Dimension 9 — performance: **unscored → 60** (target 85)
+
+Scored by deduction, in the same shape as dimensions 5, 3/1/6 and 4.
+
+**Credited:** a per-stage instrument exists in the shipped binary and reports from
+production; a repeatable harness drives the real binary; the largest code-controllable
+cost is measured and **halved**; three speculative optimisations were killed by
+measurement before anyone built them; the record's misattribution of the cost was
+corrected.
+
+**Not credited, and why it is not higher:**
+
+- **−15 the end-to-end TTFT has still not been re-measured.** Everything here prices the
+  proxy; the 2026-07-17 figure of ~1,450 ms remains the only end-to-end number, and it
+  is two weeks and 86 commits stale.
+- **−10 the ~90 ms per round trip is still unexplained.** Mode 2's 90 ms is *imposed*,
+  not discovered. Why an intra-region hop costs 90 ms where a handshake should cost
+  10–20 is unanswered, and A.4 cannot be answered from a developer machine.
+- **−5 the retrieval 14 ms was never re-measured** — only the work added on top of it.
+- **−5 no performance regression gate.** The benchmarks exist; nothing fails a build if
+  they regress.
+
+**Program position:** ~149 of 232 on the original eight dimensions, plus dimension 9
+opening at 60. Phases 0–4 complete; **5 (data & schema integrity) and 6 (maintainability)
+remain not started.**
+
+**Status: verified locally and in CI; NOT founder-closed.** The region decision and the
+B.2 recommendation are the founder's, and both now have numbers behind them.
+
+### Also landed in this batch — Phase 6.2 (confinement conformance) and debt (h)
+
+Both were in scope for later phases and were cheap to close while the relevant code
+was open.
+
+**Phase 6.2 — confinement conformance suite** (`6364ccb`). One table of eight
+attacker-shaped vectors (absolute, bare/nested/deep `..`, symlinked leaf, symlinked
+directory, symlinked ancestor two levels up) mirrored verbatim in
+`daemon/confinement_conformance_test.go` and
+`editapply/confinement_conformance_test.go`, each asserting its own resolver. The
+assertion is *"if it returned a path, that path is inside the root"* rather than
+*"it returned an error"* — a resolver may legitimately accept a path it can prove is
+confined. Each suite also asserts ordinary paths still resolve, so it cannot pass
+against a resolver that refuses everything.
+
+The valuable half is `TestConfinementConformance_DocumentedAsymmetry`, present in both
+with **opposite** expectations, because the two implementations genuinely differ and
+that difference was previously only implicit: `editapply`'s `resolveSafeTarget` also
+refuses protected dirs (`.git`, case-folded `.GIT`) and secret-named files, because it
+gates a **model-proposed edit**; `daemon`'s `confinedRestorePath` deliberately does
+not, because it resolves an **undo destination** whose paths already passed those
+gates, and adding them would make a legitimately-backed-up file un-restorable. Both
+directions are asserted, so changing either is now a decision rather than a drift.
+
+Neuter-checked: weakening the post-symlink escape predicate turns it red with the
+escaped path printed.
+
+**Debt (h) — `turns` retention** (`5072961`): closed, see item (h) above. It surfaced
+two things not in the original item — `turns` had **no index at all**, and
+`ensureMemorySchema` returned right after the v1→v2 case, so adding any later step as
+another switch case would have recorded a v1 database as current while skipping it.
+
+**Still not started from Phases 5 and 6:** migration `0004` and the `api_keys_public`
+audit (both founder-gated — they need live database access), the schema-drift CI check,
+and 6.1's `proxy/main.go` split (now 2,498 lines, up from the 1,942 the plan was
+written against).

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -200,7 +201,7 @@ func runEditsUndoCommand(args []string, logger *log.Logger) error {
 		return err
 	}
 
-	_, _, err = runUndoSession(realRoot, sessionDir, *force, os.Stdin, os.Stdout, logger)
+	_, _, _, err = runUndoSession(realRoot, sessionDir, *force, os.Stdin, os.Stdout, logger)
 	return err
 }
 
@@ -261,7 +262,7 @@ func resolveBackupSession(backupsRoot, session string) (string, error) {
 // the daemon's UndoRequest handler (see daemon/server.go) call -- neither
 // reimplements the restore logic; the handler only additionally needs the
 // counts as return values rather than parsed out of printed text.
-func runUndoSession(realWorkspaceRoot, sessionDir string, force bool, in io.Reader, out io.Writer, logger *log.Logger) (restored int, guarded []string, err error) {
+func runUndoSession(realWorkspaceRoot, sessionDir string, force bool, in io.Reader, out io.Writer, logger *log.Logger) (restored, removed int, guarded []string, err error) {
 	// Cross-process serialization across the guard check and the commit (M4).
 	// The "is this file still what the apply run left?" comparison below and the
 	// restoreBatch commit at the end are a read-then-write pair: without a lock
@@ -280,7 +281,7 @@ func runUndoSession(realWorkspaceRoot, sessionDir string, force bool, in io.Read
 	// otherwise be re-raced before the commit.
 	release, lockErr := editapply.LockWorkspaceApply(realWorkspaceRoot)
 	if lockErr != nil {
-		return 0, nil, fmt.Errorf("serializing undo on %s: %w", realWorkspaceRoot, lockErr)
+		return 0, 0, nil, fmt.Errorf("serializing undo on %s: %w", realWorkspaceRoot, lockErr)
 	}
 	defer release()
 
@@ -302,11 +303,11 @@ func runUndoSession(realWorkspaceRoot, sessionDir string, force bool, in io.Read
 		return nil
 	})
 	if err != nil {
-		return 0, nil, fmt.Errorf("reading backup session %s: %w", sessionDir, err)
+		return 0, 0, nil, fmt.Errorf("reading backup session %s: %w", sessionDir, err)
 	}
 	if len(relPaths) == 0 {
 		fmt.Fprintf(out, "no backed-up files in %s\n", sessionDir)
-		return 0, nil, nil
+		return 0, 0, nil, nil
 	}
 
 	// Which of these files did the apply run bring into existence? Reverting
@@ -315,7 +316,7 @@ func runUndoSession(realWorkspaceRoot, sessionDir string, force bool, in io.Read
 	// takes the restore shape exactly as it always did.
 	created, err := editapply.CreatedInSession(sessionDir)
 	if err != nil {
-		return 0, nil, fmt.Errorf("reading created-file record for %s: %w", sessionDir, err)
+		return 0, 0, nil, fmt.Errorf("reading created-file record for %s: %w", sessionDir, err)
 	}
 
 	var batch []string
@@ -373,10 +374,9 @@ func runUndoSession(realWorkspaceRoot, sessionDir string, force bool, in io.Read
 	// Say what actually happened to each file. A created file that undo deleted
 	// is reported as removed, never as "restored" — the honesty invariant is
 	// that this report and the state of the disk agree (Fix C).
-	var removedCount int
 	for _, f := range revertedFiles {
 		if f.removed {
-			removedCount++
+			removed++
 			fmt.Fprintf(out, "removed %s (created by this apply run)\n", f.rel)
 		} else {
 			fmt.Fprintf(out, "restored %s\n", f.rel)
@@ -385,19 +385,88 @@ func runUndoSession(realWorkspaceRoot, sessionDir string, force bool, in io.Read
 	restored = len(revertedFiles)
 	if err != nil {
 		logger.Printf("edits undo: FAILED on %s: %v (reverted %d file(s): %d restored, %d removed; %d guarded)",
-			sessionDir, err, restored, restored-removedCount, removedCount, len(guarded))
-		return restored, guarded, err
+			sessionDir, err, restored, restored-removed, removed, len(guarded))
+		return restored, removed, guarded, err
 	}
 
-	if removedCount > 0 {
+	// Directories the apply run had to create to hold a created file. Removed
+	// only after every file revert has committed, and only ones this run
+	// actually made — see editapply.CreatedDirsInSession for why that is
+	// recorded rather than inferred from emptiness.
+	//
+	// Deliberately after the error return above: a partly-committed undo has
+	// files still standing in these directories, and removing a directory is
+	// not something to attempt on a tree in an unknown state. os.Remove would
+	// refuse a non-empty one anyway; not trying is clearer than relying on that.
+	removedDirs := removeCreatedSessionDirs(realWorkspaceRoot, sessionDir, logger)
+
+	if removed > 0 {
 		fmt.Fprintf(out, "\n%d file(s) reverted from %s (%d restored, %d removed)\n",
-			restored, sessionDir, restored-removedCount, removedCount)
+			restored, sessionDir, restored-removed, removed)
 	} else {
 		fmt.Fprintf(out, "\n%d file(s) restored from %s\n", restored, sessionDir)
 	}
-	logger.Printf("edits undo: reverted %d file(s) from %s (%d restored, %d removed, %d guarded)",
-		restored, sessionDir, restored-removedCount, removedCount, len(guarded))
-	return restored, guarded, nil
+	if removedDirs > 0 {
+		_, _ = fmt.Fprintf(out, "%d empty director(ies) created by that run also removed\n", removedDirs)
+	}
+	logger.Printf("edits undo: reverted %d file(s) from %s (%d restored, %d removed, %d dir(s) removed, %d guarded)",
+		restored, sessionDir, restored-removed, removed, removedDirs, len(guarded))
+	return restored, removed, guarded, nil
+}
+
+// removeCreatedSessionDirs removes the directories the apply run brought into
+// existence, deepest first, and reports how many actually went.
+//
+// THREE THINGS BOUND WHAT THIS CAN DELETE, and it needs all three because a
+// directory removal is the one undo operation with no snapshot behind it.
+//
+//  1. The set comes from the run's own manifest, so a directory the user made
+//     is never a candidate — "remove the parent if it is now empty" would have
+//     deleted an empty directory a user created before asking for a file in it.
+//  2. Every path is put through confinedRestorePath, the same confinement the
+//     file reverts use, so a hand-edited manifest cannot aim this outside the
+//     workspace.
+//  3. os.Remove is non-recursive, so anything that is not empty simply stays.
+//     A directory holding a file this undo could not revert (guarded, refused)
+//     is exactly such a case, and leaving it is right.
+//
+// Failures are logged and skipped rather than returned: the files are already
+// reverted at this point, and turning "an empty directory is still there" into
+// a failed undo would misreport a workspace that is correct.
+func removeCreatedSessionDirs(realWorkspaceRoot, sessionDir string, logger *log.Logger) int {
+	dirs, err := editapply.CreatedDirsInSession(sessionDir)
+	if err != nil {
+		logger.Printf("edits undo: reading the created-directory manifest for %s: %v", sessionDir, err)
+		return 0
+	}
+
+	removed := 0
+	for _, rel := range dirs {
+		dest, err := confinedRestorePath(realWorkspaceRoot, rel)
+		if err != nil {
+			logger.Printf("edits undo: not removing directory %q: %v", rel, err)
+			continue
+		}
+		// A symlink standing where the manifest recorded a directory is
+		// anomalous, and os.Remove would unlink the link rather than the
+		// directory. Refuse it, same posture as the leaf checks in stageRestore.
+		if info, err := os.Lstat(dest); err != nil {
+			continue // already gone, which is the state being aimed at
+		} else if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			logger.Printf("edits undo: %q is not a directory any more; leaving it alone", rel)
+			continue
+		}
+		if err := os.Remove(dest); err != nil {
+			// Not empty is the common case and not worth a line: something the
+			// undo could not revert is still in there.
+			if !errors.Is(err, syscall.ENOTEMPTY) && !errors.Is(err, syscall.EEXIST) {
+				logger.Printf("edits undo: removing directory %q: %v", rel, err)
+			}
+			continue
+		}
+		removed++
+	}
+	return removed
 }
 
 // undoStagingPrefix names the temporary files restoreBatch writes beside each
@@ -748,6 +817,37 @@ func leafIsSymlink(path string) (bool, error) {
 		return false, err
 	}
 	return info.Mode()&os.ModeSymlink != 0, nil
+}
+
+// restrictSQLiteSidecars chmods a SQLite database's -wal and -shm sidecars to
+// perm. Shared by OpenMemoryStore and OpenSkillStore, which have the same
+// exposure for the same reason.
+//
+// WHY THIS IS NOT COSMETIC. In WAL mode a committed row lives in the -wal file
+// until a checkpoint folds it into the main database — so immediately after a
+// write the row is in the sidecar and NOT in the db file. Measured on
+// memory.db: the main file did not contain a just-appended conversation turn
+// and the -wal did. Locking down memory.db alone therefore protected nothing
+// for exactly the data that matters most, the most recent turns; the sidecars
+// were left at the driver's default 0644.
+//
+// WHY IT MUST BE CALLED AFTER THE SCHEMA STEP. The driver creates the sidecars
+// lazily. Calling this straight after the journal_mode pragma races their
+// creation and silently no-ops through the ENOENT tolerance below, leaving
+// 0644 behind — the fix would look applied and do nothing. The schema DDL is a
+// write, so by the time it returns the sidecars exist.
+//
+// ENOENT is tolerated rather than reported because a sidecar's absence is a
+// legitimate state (a store opened and closed cleanly checkpoints and removes
+// them); the caller's concern is only that any sidecar that DOES exist is not
+// readable by other users.
+func restrictSQLiteSidecars(path string, perm os.FileMode) error {
+	for _, suffix := range []string{"-wal", "-shm"} {
+		if err := os.Chmod(path+suffix, perm); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("restricting %s permissions: %w", filepath.Base(path+suffix), err)
+		}
+	}
+	return nil
 }
 
 // writeFileNoFollow is os.WriteFile with O_NOFOLLOW: it refuses to write

@@ -89,7 +89,7 @@ func TestEndToEnd_EditAndCreateApplyThenUndo(t *testing.T) {
 
 	// --- undo: the shared undo core ---
 	var undoOut bytes.Buffer
-	restored, guarded, err := runUndoSession(root, sessionDir, false, strings.NewReader(""), &undoOut, discardLogger())
+	restored, _, guarded, err := runUndoSession(root, sessionDir, false, strings.NewReader(""), &undoOut, discardLogger())
 	if err != nil {
 		t.Fatalf("runUndoSession: %v\n%s", err, undoOut.String())
 	}
@@ -172,7 +172,7 @@ func TestEndToEnd_CreateRefusedDoesNotCostTheEdit(t *testing.T) {
 		t.Fatalf("resolveBackupSession: %v", err)
 	}
 	var undoOut bytes.Buffer
-	restored, _, err := runUndoSession(root, sessionDir, false, strings.NewReader(""), &undoOut, discardLogger())
+	restored, _, _, err := runUndoSession(root, sessionDir, false, strings.NewReader(""), &undoOut, discardLogger())
 	if err != nil {
 		t.Fatalf("runUndoSession: %v", err)
 	}

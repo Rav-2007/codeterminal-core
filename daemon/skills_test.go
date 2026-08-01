@@ -102,19 +102,18 @@ func TestListSkills_NewestFirstWithLimitAndOffset(t *testing.T) {
 	ctx := context.Background()
 
 	base := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
-	var ids []string
 	for i := 0; i < 5; i++ {
-		id, err := store.AddSkill(ctx, Skill{
+		if _, err := store.AddSkill(ctx, Skill{
 			CreatedAt: base.Add(time.Duration(i) * time.Hour),
 			Title:     "skill-" + string(rune('A'+i)),
 			Steps:     "steps",
-		})
-		if err != nil {
+		}); err != nil {
 			t.Fatalf("AddSkill %d: %v", i, err)
 		}
-		ids = append(ids, id)
 	}
-	// ids[4] (skill-E) has the latest CreatedAt, ids[0] (skill-A) the earliest.
+	// skill-E has the latest CreatedAt, skill-A the earliest. Ordering is asserted
+	// on Title below, which is unique per row, so the returned ids are not needed;
+	// they used to be collected into a slice nothing ever read.
 
 	all, err := store.ListSkills(ctx, 100, 0)
 	if err != nil {

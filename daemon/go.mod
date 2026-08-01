@@ -1,8 +1,8 @@
 module codeterminal/daemon
 
-go 1.23.0
+go 1.25.0
 
-toolchain go1.23.4
+toolchain go1.25.12
 
 require codeterminal/protocol v0.0.0
 
@@ -10,7 +10,7 @@ require (
 	codeterminal/editapply v0.0.0
 	codeterminal/helper v0.0.0
 	github.com/philippgille/chromem-go v0.7.0
-	golang.org/x/sys v0.34.0
+	golang.org/x/sys v0.41.0
 	modernc.org/sqlite v1.39.0
 )
 
@@ -18,6 +18,7 @@ require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
+	github.com/modelcontextprotocol/go-sdk v1.7.0 // indirect
 	github.com/ncruces/go-strftime v0.1.9 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	golang.org/x/exp v0.0.0-20250620022241-b7579e27df2b // indirect

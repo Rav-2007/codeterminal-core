@@ -13,6 +13,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"codeterminal/editapply"
@@ -74,6 +75,12 @@ type Server struct {
 	// affect a request, so every use goes through its nil-safe write method.
 	warnSink *warnSink
 
+	// toolAudit is the durable, local, append-only record of every agent-mode
+	// tool-call decision (see toolaudit.go). It is the half of "you approve
+	// every call and everything is audited" that survives the process. nil is a
+	// valid no-op sink, and an audit-write failure never fails a turn.
+	toolAudit *toolAuditSink
+
 	// Connection resource limits (FAIL-3, Gate 5 DoS hardening). Zero means
 	// "use the default" — see defaultMaxRequestBytes / defaultConnIdleTimeout /
 	// defaultMaxConns and the resolved* accessors below. Production leaves them
@@ -84,6 +91,11 @@ type Server struct {
 	connIdleTimeout time.Duration
 	maxConns        int
 
+	// counters is what this daemon has done since it started (see counters.go).
+	// Never nil in production (main.go builds the Server literal with one) and
+	// nil-safe everywhere, so a test that builds a bare Server still works.
+	counters *counters
+
 	// applyLocks serializes the filesystem-mutating request paths per workspace
 	// root (FAIL-3, Gate 6 — data-integrity). It maps a resolved workspace root
 	// to the *sync.Mutex guarding it; lockWorkspace get-or-creates and holds it
@@ -93,6 +105,82 @@ type Server struct {
 	// is ready to use, so no constructor is needed and every existing Server
 	// literal gets correct serialization for free. See lockWorkspace.
 	applyLocks sync.Map
+
+	// inFlight counts connections currently being handled, so shutdown can wait
+	// for them instead of exiting from under them. Serve adds before dispatching
+	// and the handler goroutine subtracts on the way out; WaitForDrain blocks on
+	// it. Zero value is ready to use, so every existing Server literal (including
+	// the test ones) gets the same accounting for free.
+	inFlight sync.WaitGroup
+
+	// toolsInFlight counts tool calls currently EXECUTING, which is a stricter
+	// thing than a connection being open. Shutdown consults it because a cut
+	// tool call is the one case where the old "a cut prompt mutates nothing"
+	// assumption fails: a Lane B tool is somebody else's subprocess doing work
+	// this daemon cannot characterise or undo. See WaitForDrain.
+	toolsInFlight atomic.Int64
+
+	// shutdownCtx is cancelled when the daemon begins shutting down. Only the
+	// agent loop consults it, and only between steps: it is how a turn stops
+	// starting NEW tool calls once shutdown has begun, which is what keeps
+	// toolDrainGrace bounded to the one call already running.
+	//
+	// Nil means "never cancelled" (see shutdownContext), so every existing
+	// Server literal, including the test ones, keeps working untouched.
+	shutdownCtx context.Context
+}
+
+// shutdownContext returns the cancellation signal for long-running work,
+// defaulting to a never-cancelled context on a Server that was built without
+// one.
+func (s *Server) shutdownContext() context.Context {
+	if s.shutdownCtx == nil {
+		return context.Background()
+	}
+	return s.shutdownCtx
+}
+
+// WaitForDrain blocks until every in-flight connection has finished, or until
+// timeout elapses. It reports whether the drain completed.
+//
+// The caller must have closed the listener first: Serve's Accept loop exits on
+// net.ErrClosed, and only then is the set of in-flight connections a fixed set
+// that can actually reach zero. Calling this while still accepting would wait on
+// a moving target.
+//
+// Before this, shutdown was `ln.Close(); os.Remove(socket)` and then main
+// returned, which ends the process and every handler goroutine with it. Serve's
+// semaphore bounded concurrency but nothing ever waited on it. A prompt cut that
+// way is merely annoying, but an ApplyEditRequest is a multi-file write: cutting
+// it mid-batch leaves some files written and some not, with the backup session
+// half-populated. Undo can recover that, but only if the user knows to run it.
+// AGENT MODE CHANGED THE PREMISE. Everything above was written when the worst
+// a cut request could do was abandon a prompt (harmless) or half-write an edit
+// batch (recoverable via the backup session). A turn that runs tools can be
+// mid-tool-call, and a Lane B tool is an arbitrary subprocess doing arbitrary
+// work -- so "5 seconds is generous" stops being true exactly when a tool is
+// executing.
+//
+// Hence two graces rather than one. The ordinary timeout still applies to
+// ordinary work; a turn with a tool actually running gets toolDrainGrace
+// instead. It is not longer for its own sake: the loop stops starting NEW tool
+// calls as soon as the context is cancelled, so this waits out at most the one
+// call already in flight.
+func (s *Server) WaitForDrain(timeout time.Duration) bool {
+	if s.toolsInFlight.Load() > 0 && timeout < toolDrainGrace {
+		timeout = toolDrainGrace
+	}
+	done := make(chan struct{})
+	go func() {
+		s.inFlight.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
 }
 
 // route decides which tier handles the next request. The request path
@@ -136,7 +224,12 @@ func (s *Server) Serve(ln net.Listener) {
 		}
 		select {
 		case sem <- struct{}{}:
+			// Add BEFORE the goroutine starts. Doing it inside would race
+			// shutdown: WaitForDrain could observe a zero counter and report a
+			// clean drain while this connection's handler had not yet begun.
+			s.inFlight.Add(1)
 			go func() {
+				defer s.inFlight.Done()
 				defer func() { <-sem }()
 				s.handleConn(conn)
 			}()
@@ -171,11 +264,13 @@ func (s *Server) handleConn(conn net.Conn) {
 	// C1 boundary check removes the known embedder-response one at its source).
 	defer func() {
 		if r := recover(); r != nil {
+			s.count(func(c *counters) { c.panicsRecovered.Add(1) })
 			s.logger.Printf("recovered from panic while handling a connection: %v\n%s", r, debug.Stack())
 		}
 	}()
 
 	if err := s.authorizePeer(conn); err != nil {
+		s.count(func(c *counters) { c.peerAuthRefused.Add(1) })
 		s.logger.Printf("connection refused: %v", err)
 		return
 	}
@@ -194,7 +289,15 @@ func (s *Server) serveConn(conn net.Conn) {
 	// Bound how much this connection can make the daemon buffer, and how long
 	// any single read/write may block, before the request is even decoded
 	// (FAIL-3, Gate 5). Auth-independent: this caps resource use, not access.
-	lc := &limitedConn{Conn: conn, remaining: s.resolvedMaxRequestBytes(), idleTimeout: s.resolvedConnIdleTimeout()}
+	budget := s.resolvedMaxRequestBytes()
+	lc := &limitedConn{
+		Conn:        conn,
+		remaining:   budget,
+		idleTimeout: s.resolvedConnIdleTimeout(),
+		// The approval channel may extend this connection's read budget, but
+		// only by a fixed fraction of it, however many times it is asked.
+		grantCeiling: budget / approvalGrantFraction,
+	}
 	dec := json.NewDecoder(lc)
 	enc := json.NewEncoder(lc)
 
@@ -205,6 +308,7 @@ func (s *Server) serveConn(conn net.Conn) {
 	}
 
 	if hsReq.ProtocolVersion != protocol.ProtocolVersion {
+		s.count(func(c *counters) { c.versionMismatched.Add(1) })
 		s.logger.Printf("rejecting client %q: protocol version %d != %d", hsReq.ClientName, hsReq.ProtocolVersion, protocol.ProtocolVersion)
 		enc.Encode(protocol.HandshakeResponse{
 			ProtocolVersion: protocol.ProtocolVersion,
@@ -229,9 +333,11 @@ func (s *Server) serveConn(conn net.Conn) {
 	var raw json.RawMessage
 	if err := dec.Decode(&raw); err != nil {
 		if errors.Is(err, errRequestTooLarge) {
+			s.count(func(c *counters) { c.oversized.Add(1) })
 			s.logger.Printf("rejecting oversized request (cap %d bytes)", s.resolvedMaxRequestBytes())
 			return
 		}
+		s.count(func(c *counters) { c.malformed.Add(1) })
 		s.logger.Printf("request read error: %v", err)
 		return
 	}
@@ -239,20 +345,28 @@ func (s *Server) serveConn(conn net.Conn) {
 	if isApplyEditRequest(raw) {
 		var applyReq protocol.ApplyEditRequest
 		if err := json.Unmarshal(raw, &applyReq); err != nil {
+			s.count(func(c *counters) { c.malformed.Add(1) })
 			s.logger.Printf("apply-edit request decode error: %v", err)
 			return
 		}
-		s.handleApplyEdit(enc, applyReq)
+		s.count(func(c *counters) { c.applies.Add(1) })
+		if !s.handleApplyEdit(enc, applyReq) {
+			s.count(func(c *counters) { c.appliesFailed.Add(1) })
+		}
 		return
 	}
 
 	if isUndoRequest(raw) {
 		var undoReq protocol.UndoRequest
 		if err := json.Unmarshal(raw, &undoReq); err != nil {
+			s.count(func(c *counters) { c.malformed.Add(1) })
 			s.logger.Printf("undo request decode error: %v", err)
 			return
 		}
-		s.handleUndo(enc, undoReq)
+		s.count(func(c *counters) { c.undos.Add(1) })
+		if !s.handleUndo(enc, undoReq) {
+			s.count(func(c *counters) { c.undosFailed.Add(1) })
+		}
 		return
 	}
 
@@ -261,6 +375,7 @@ func (s *Server) serveConn(conn net.Conn) {
 	// and came back "prompt is empty" — the daemon had no answer to "how are
 	// you" because nothing had ever asked.
 	if isStatusRequest(raw) {
+		s.count(func(c *counters) { c.statuses.Add(1) })
 		s.handleStatus(enc)
 		return
 	}
@@ -268,20 +383,24 @@ func (s *Server) serveConn(conn net.Conn) {
 	if isSearchRequest(raw) {
 		var searchReq protocol.SearchRequest
 		if err := json.Unmarshal(raw, &searchReq); err != nil {
+			s.count(func(c *counters) { c.malformed.Add(1) })
 			s.logger.Printf("search request decode error: %v", err)
 			return
 		}
+		s.count(func(c *counters) { c.searches.Add(1) })
 		s.handleSearch(enc, searchReq)
 		return
 	}
 
 	var promptReq protocol.PromptRequest
 	if err := json.Unmarshal(raw, &promptReq); err != nil {
+		s.count(func(c *counters) { c.malformed.Add(1) })
 		s.logger.Printf("prompt read error: %v", err)
 		return
 	}
 
 	if promptReq.Reset {
+		s.count(func(c *counters) { c.resets.Add(1) })
 		s.resetPersistedHistory()
 		enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Done: true})
 		return
@@ -294,6 +413,7 @@ func (s *Server) serveConn(conn net.Conn) {
 	// at the first point the request's own content is known, so nothing
 	// downstream — routing, retrieval, the model call, memory — runs at all.
 	if strings.TrimSpace(promptReq.Prompt) == "" {
+		s.count(func(c *counters) { c.emptyPrompts.Add(1) })
 		s.logger.Print("rejecting empty prompt without calling the model API")
 		enc.Encode(protocol.TokenResponse{
 			ProtocolVersion: protocol.ProtocolVersion,
@@ -304,6 +424,7 @@ func (s *Server) serveConn(conn net.Conn) {
 		return
 	}
 
+	s.count(func(c *counters) { c.prompts.Add(1) })
 	s.logger.Printf("received prompt (%d bytes), calling model API", len(promptReq.Prompt))
 
 	decision := s.route(promptReq.PromptKind)
@@ -393,7 +514,30 @@ func (s *Server) serveConn(conn net.Conn) {
 	// streamWithRetry, not streamCompletion (Fix 10): transient failures are
 	// retried with jittered backoff, and only while nothing has streamed yet --
 	// see its doc comment for the two rules that decide.
-	err := streamWithRetry(context.Background(), s.apiBase, s.apiKey, decision.Slug, s.systemPrompt, historyOutcome.Messages, augmentedPrompt, routing,
+	// buildChatMessages moved OUT of streamCompletion to here (Phase 3): the
+	// provider seam now takes an already-built message list, because an agent
+	// loop must append to one across iterations rather than have it rebuilt from
+	// (systemPrompt, history, prompt) on every call. This single-turn path
+	// builds exactly the list it always did.
+	messages := buildChatMessages(s.systemPrompt, historyOutcome.Messages, augmentedPrompt)
+
+	// AGENT MODE FORK. Three conditions, all required (see agentModeEngaged):
+	// the config enables it, and this client declared it can answer a mid-turn
+	// approval. A client that did not gets the single-turn path below,
+	// byte-identical to what it got before agent mode existed -- which is what
+	// makes shipping the loop safe before every client can render it.
+	if s.agentModeEngaged(hsReq) {
+		// dec and lc go with enc because agent mode is the one path that reads
+		// from the client AFTER its request: an approval answer comes back on
+		// this same connection, needs this same decoder, and needs lc to widen
+		// the idle deadline to human scale for the duration of the ask.
+		s.runAgentTurn(s.shutdownContext(), enc, dec, lc, promptReq, decision.Slug, messages, routing, &full)
+		return
+	}
+
+	// No tools on this path. Agent mode has its own entry point; passing nil
+	// here is what keeps the request body byte-identical to the pre-tools one.
+	_, err := streamWithRetry(context.Background(), s.apiBase, s.apiKey, decision.Slug, messages, nil, routing,
 		func(token string) error {
 			full.WriteString(token)
 			return enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Token: token})
@@ -470,14 +614,17 @@ func (s *Server) serveConn(conn net.Conn) {
 // with no wire-level discriminator field or protocol version bump — older
 // clients only ever send PromptRequest-shaped JSON, which has no "edit"
 // key, so this always falls through to the existing prompt path for them.
+//
+// The key is matched EXACTLY (requestfields.go): {"EDIT":{...}} used to sniff
+// true here through Go's case-insensitive struct-tag matching, routing a body
+// OpenRouter-style exact parsers would read differently.
 func isApplyEditRequest(raw json.RawMessage) bool {
-	var peek struct {
-		Edit *protocol.EditBlockWire `json:"edit"`
-	}
-	if err := json.Unmarshal(raw, &peek); err != nil {
+	fields, ok := requestFields(raw)
+	if !ok {
 		return false
 	}
-	return peek.Edit != nil
+	var edit protocol.EditBlockWire
+	return hasObjectKey(fields, "edit", &edit)
 }
 
 // handleApplyEdit runs an ApplyEditRequest through the same editapply core
@@ -492,12 +639,16 @@ func isApplyEditRequest(raw json.RawMessage) bool {
 // PrepareEdit/Apply would produce for the CLI or TUI — and no file is
 // written, since Apply is only called after PrepareEdit has already
 // succeeded.
-func (s *Server) handleApplyEdit(enc *json.Encoder, req protocol.ApplyEditRequest) {
+// The bool return says whether the edit LANDED. It exists so serveConn can count
+// failures in one place instead of at each of the four refusal returns below --
+// a counter placed per-return is a counter that a future fifth return silently
+// escapes.
+func (s *Server) handleApplyEdit(enc *json.Encoder, req protocol.ApplyEditRequest) (applied bool) {
 	realRoot, err := editapply.ResolveRealWorkspaceRoot(s.workspace)
 	if err != nil {
 		s.logger.Printf("apply-edit: resolving workspace root: %v", err)
 		enc.Encode(protocol.ApplyEditResponse{ProtocolVersion: protocol.ProtocolVersion, Applied: false, Error: s.socketSafeError(err)})
-		return
+		return false
 	}
 
 	// Serialize the entire read-modify-write + backup/prune span per workspace
@@ -513,20 +664,20 @@ func (s *Server) handleApplyEdit(enc *json.Encoder, req protocol.ApplyEditReques
 	if err != nil {
 		s.logger.Printf("apply-edit: refused %s: %v", block.FilePath, err)
 		enc.Encode(protocol.ApplyEditResponse{ProtocolVersion: protocol.ProtocolVersion, Applied: false, Error: s.socketSafeError(err, realRoot)})
-		return
+		return false
 	}
 
 	backupDir, err := resolveBackupSessionDir(realRoot, req.BackupSessionDir)
 	if err != nil {
 		s.logger.Printf("apply-edit: creating backup dir: %v", err)
 		enc.Encode(protocol.ApplyEditResponse{ProtocolVersion: protocol.ProtocolVersion, Applied: false, Error: s.socketSafeError(err, realRoot)})
-		return
+		return false
 	}
 
 	if err := editapply.Apply(realRoot, prepared, backupDir); err != nil {
 		s.logger.Printf("apply-edit: failed %s: %v", block.FilePath, err)
 		enc.Encode(protocol.ApplyEditResponse{ProtocolVersion: protocol.ProtocolVersion, Applied: false, Error: s.socketSafeError(err, realRoot)})
-		return
+		return false
 	}
 
 	s.logger.Printf("apply-edit: applied %s (backup: %s)", block.FilePath, backupDir)
@@ -538,6 +689,7 @@ func (s *Server) handleApplyEdit(enc *json.Encoder, req protocol.ApplyEditReques
 	s.reindexAfterApply(realRoot, block.FilePath)
 
 	enc.Encode(protocol.ApplyEditResponse{ProtocolVersion: protocol.ProtocolVersion, Applied: true, BackupDir: backupDir})
+	return true
 }
 
 // resolveBackupSessionDir returns the backup session directory Apply should
@@ -580,14 +732,16 @@ func isWorkspaceBackupSessionDir(realWorkspaceRoot, dir string) bool {
 // caught here; older clients that don't know this message only ever send
 // PromptRequest-shaped JSON, which has no "undo" key, so they always fall
 // through to the prompt path unaffected.
+//
+// The key is matched EXACTLY (requestfields.go). This is the sniffer that most
+// needed it: {"UNDO":true} used to route here, and undo restores files from
+// backup over the user's current work.
 func isUndoRequest(raw json.RawMessage) bool {
-	var peek struct {
-		Undo *bool `json:"undo"`
-	}
-	if err := json.Unmarshal(raw, &peek); err != nil {
+	fields, ok := requestFields(raw)
+	if !ok {
 		return false
 	}
-	return peek.Undo != nil
+	return hasBoolKey(fields, "undo")
 }
 
 // handleUndo runs an UndoRequest through the exact same runUndoSession the
@@ -609,12 +763,14 @@ func isUndoRequest(raw json.RawMessage) bool {
 // prompt, so a file that changed since the apply run is always left guarded
 // rather than silently forced — the same safe default the CLI gets by just
 // pressing enter. Guarded files are returned to the caller, never hidden.
-func (s *Server) handleUndo(enc *json.Encoder, req protocol.UndoRequest) {
+// The bool return says whether the undo completed, for the same reason
+// handleApplyEdit has one.
+func (s *Server) handleUndo(enc *json.Encoder, req protocol.UndoRequest) (reverted bool) {
 	realRoot, err := editapply.ResolveRealWorkspaceRoot(s.workspace)
 	if err != nil {
 		s.logger.Printf("undo: resolving workspace root: %v", err)
 		enc.Encode(protocol.UndoResponse{ProtocolVersion: protocol.ProtocolVersion, Error: s.socketSafeError(err)})
-		return
+		return false
 	}
 
 	// Serialize per workspace (FAIL-3, Gate 6): held across session validation
@@ -634,7 +790,7 @@ func (s *Server) handleUndo(enc *json.Encoder, req protocol.UndoRequest) {
 				ProtocolVersion: protocol.ProtocolVersion,
 				Error:           s.scrubPaths(fmt.Sprintf("backup session %q not found under %s", req.BackupSessionDir, backupsRoot), realRoot),
 			})
-			return
+			return false
 		}
 		sessionDir = req.BackupSessionDir
 	} else {
@@ -642,11 +798,11 @@ func (s *Server) handleUndo(enc *json.Encoder, req protocol.UndoRequest) {
 		if err != nil {
 			s.logger.Printf("undo: resolving latest session: %v", err)
 			enc.Encode(protocol.UndoResponse{ProtocolVersion: protocol.ProtocolVersion, Error: s.socketSafeError(err, realRoot)})
-			return
+			return false
 		}
 	}
 
-	restored, guarded, err := runUndoSession(realRoot, sessionDir, false, strings.NewReader(""), io.Discard, s.logger)
+	restored, removed, guarded, err := runUndoSession(realRoot, sessionDir, false, strings.NewReader(""), io.Discard, s.logger)
 	if err != nil {
 		// Report the count and the guarded list ALONGSIDE the error, never
 		// instead of it (Fix 2). This used to send a bare error with Restored
@@ -660,23 +816,27 @@ func (s *Server) handleUndo(enc *json.Encoder, req protocol.UndoRequest) {
 		enc.Encode(protocol.UndoResponse{
 			ProtocolVersion: protocol.ProtocolVersion,
 			Restored:        restored,
+			Removed:         removed,
 			Guarded:         guarded,
 			SessionDir:      sessionDir,
 			Error:           s.socketSafeError(err, realRoot),
 		})
-		return
+		return false
 	}
 
 	// "reverted", not "restored": a session that created files reverts them by
 	// deleting them, and runUndoSession has already logged the per-shape
 	// breakdown (Fix C).
-	s.logger.Printf("undo: reverted %d file(s) from %s (%d guarded)", restored, sessionDir, len(guarded))
+	s.logger.Printf("undo: reverted %d file(s) from %s (%d restored, %d removed, %d guarded)",
+		restored, sessionDir, restored-removed, removed, len(guarded))
 	enc.Encode(protocol.UndoResponse{
 		ProtocolVersion: protocol.ProtocolVersion,
 		Restored:        restored,
+		Removed:         removed,
 		Guarded:         guarded,
 		SessionDir:      sessionDir,
 	})
+	return true
 }
 
 // isSearchRequest sniffs whether raw is a SearchRequest (identified by the
@@ -686,14 +846,14 @@ func (s *Server) handleUndo(enc *json.Encoder, req protocol.UndoRequest) {
 // don't know this message only ever send PromptRequest-shaped JSON, which
 // has no "search" key, so they always fall through to the prompt path
 // unaffected.
+//
+// The key is matched EXACTLY (requestfields.go).
 func isSearchRequest(raw json.RawMessage) bool {
-	var peek struct {
-		Search *bool `json:"search"`
-	}
-	if err := json.Unmarshal(raw, &peek); err != nil {
+	fields, ok := requestFields(raw)
+	if !ok {
 		return false
 	}
-	return peek.Search != nil
+	return hasBoolKey(fields, "search")
 }
 
 // defaultSearchLimit caps how many results a SearchRequest returns when the

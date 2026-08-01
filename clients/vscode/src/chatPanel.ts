@@ -1,12 +1,15 @@
 import * as vscode from 'vscode';
 
 import {
+  APPROVAL_DENY,
   DAEMON_LAUNCH_COMMAND,
   Degradation,
   EditBlockWire,
   GroundingInfo,
   HistoryInfo,
   IncompleteInfo,
+  ToolActivity,
+  ToolApprovalRequest,
   Turn,
   applyEdit,
   preflightHandshake,
@@ -39,6 +42,12 @@ export class ChatPanel {
   private readonly disposables: vscode.Disposable[] = [];
   private transcript: Turn[] = [];
   private inFlight: AbortController | undefined;
+
+  // pendingApproval is the tool call the daemon is currently holding open,
+  // together with the callback that answers it. Non-undefined ONLY while a turn
+  // is suspended on a question, which is also the only time the webview has an
+  // approval panel on screen.
+  private pendingApproval: { callId: string; respond: (decision: string) => void } | undefined;
 
   // Sequential edit-review state: set from the most recent response's
   // edit_proposals (the FULL list -- the daemon already sends all parsed
@@ -123,8 +132,17 @@ export class ChatPanel {
     }
   }
 
-  private handleMessage(msg: { type: string; text?: string; backupDir?: string; autoApply?: boolean }): void {
-    if (msg.type === 'prompt' && typeof msg.text === 'string') {
+  private handleMessage(msg: {
+    type: string;
+    text?: string;
+    backupDir?: string;
+    autoApply?: boolean;
+    decision?: string;
+    callId?: string;
+  }): void {
+    if (msg.type === 'toolApprovalDecision' && typeof msg.decision === 'string') {
+      this.onToolApprovalDecision(msg.callId, msg.decision);
+    } else if (msg.type === 'prompt' && typeof msg.text === 'string') {
       this.onPrompt(msg.text, msg.autoApply === true);
     } else if (msg.type === 'applyEdit') {
       this.onApplyEdit();
@@ -194,16 +212,60 @@ export class ChatPanel {
       onIncomplete: (info: IncompleteInfo) => {
         this.panel.webview.postMessage({ type: 'incomplete', info });
       },
+      onToolActivity: (activity: ToolActivity) => {
+        this.panel.webview.postMessage({ type: 'toolActivity', activity });
+      },
+      // Providing this handler is what makes streamPrompt declare
+      // CAP_TOOL_APPROVAL, and therefore what turns agent mode on for this
+      // client -- see StreamHandlers.onToolApproval. The daemon suspends the
+      // turn here, so the respond callback must eventually be called; it is
+      // held until the webview reports what the user clicked.
+      onToolApproval: (req: ToolApprovalRequest, respond: (decision: string) => void) => {
+        this.pendingApproval = { callId: req.call_id, respond };
+        this.panel.webview.postMessage({ type: 'toolApproval', request: req });
+      },
       onDone: () => {
         this.transcript.push({ role: 'assistant', content: answer });
         this.inFlight = undefined;
+        this.clearPendingApproval();
         this.panel.webview.postMessage({ type: 'done' });
       },
       onError: (err: Error) => {
         this.inFlight = undefined;
+        this.clearPendingApproval();
         this.panel.webview.postMessage({ type: 'error', message: err.message });
       },
     });
+  }
+
+  // onToolApprovalDecision relays what the user clicked back to the waiting
+  // daemon.
+  //
+  // The call id is checked, not trusted. A click that arrives after the turn
+  // moved on -- a double-click, a lagging renderer, a stale panel -- must not
+  // answer whatever question happens to be pending NOW, which is the one way a
+  // click on one prompt could authorise a call the user never saw. A mismatch
+  // is dropped, and the daemon's own re-check of the id and argument digest is
+  // the second lock behind this one.
+  private onToolApprovalDecision(callId: string | undefined, decision: string): void {
+    const pending = this.pendingApproval;
+    if (!pending || (callId !== undefined && callId !== pending.callId)) {
+      return;
+    }
+    this.pendingApproval = undefined;
+    pending.respond(decision);
+  }
+
+  // clearPendingApproval denies anything still waiting when a turn ends.
+  //
+  // Nothing should be: the daemon does not send done while it is waiting for an
+  // answer. It exists because the alternative to a stale pending approval is a
+  // closure holding a dead socket that a later click would fire into, and
+  // denying costs nothing when there is nothing left to deny.
+  private clearPendingApproval(): void {
+    const pending = this.pendingApproval;
+    this.pendingApproval = undefined;
+    pending?.respond(APPROVAL_DENY);
   }
 
   // clearPendingReview resets all sequential edit-review state -- called on
@@ -595,6 +657,51 @@ export class ChatPanel {
   .edit-proposal .result.ok { color: var(--vscode-gitDecoration-addedResourceForeground, #2ea043); }
   .edit-proposal .result.refused { color: var(--vscode-errorForeground); }
   .edit-proposal .result.auto-pending { opacity: 0.65; }
+  .tool-approval {
+    margin: 4px 12px 14px;
+    padding: 10px 12px;
+    border: 2px solid var(--vscode-inputValidation-warningBorder, #cca700);
+    border-radius: 4px;
+    font-size: 12px;
+  }
+  .tool-approval .approval-heading { font-weight: 600; margin-bottom: 6px; }
+  .tool-approval .approval-args-label { font-size: 11px; opacity: 0.7; }
+  .tool-approval .approval-args {
+    margin: 2px 0 8px;
+    padding: 4px 6px;
+    white-space: pre-wrap;
+    word-break: break-all;
+    font-family: var(--vscode-editor-font-family, monospace);
+    background: var(--vscode-textCodeBlock-background, rgba(127,127,127,0.1));
+  }
+  .tool-approval .approval-lane { margin-bottom: 8px; }
+  /* The unconfined warning is styled as an error, not a hint. It is the most
+     important sentence on the panel: nothing in this product can constrain
+     what that subprocess touches. */
+  .tool-approval .approval-lane.unconfined {
+    color: var(--vscode-errorForeground, #f14c4c);
+    font-weight: 600;
+  }
+  .tool-approval .approval-lane.confined { opacity: 0.75; }
+  .tool-approval .approval-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+  /* Focus must be VISIBLE here even if the theme is quiet about it: the deny
+     button is focused first on purpose, and a user who cannot see where focus
+     landed cannot use that default. */
+  .tool-approval .approval-btn:focus-visible {
+    outline: 2px solid var(--vscode-focusBorder, #007fd4);
+    outline-offset: 1px;
+  }
+  .tool-activity {
+    margin: 2px 12px;
+    font-size: 11px;
+    opacity: 0.7;
+    font-style: italic;
+  }
+  .approval-record {
+    margin: 2px 12px 8px;
+    font-size: 11px;
+    opacity: 0.8;
+  }
   .edit-summary {
     margin: 4px 12px 14px;
     padding: 8px 10px;
@@ -622,40 +729,24 @@ export class ChatPanel {
     border-color: var(--vscode-inputValidation-warningBorder, #b89500);
     opacity: 1;
   }
+  /* Visible to assistive technology, not on screen. Used for the <label>s that
+     give the two text inputs accessible names -- a placeholder is not an
+     accessible name, and the visual design has no room for visible labels. */
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
 </style>
 </head>
 <body>
-  <div id="searchRow">
-    <input id="searchInput" type="text" placeholder="Search past conversations…" />
-    <button id="searchBtn">Search</button>
-  </div>
-  <div id="searchResults"></div>
-  <!-- First-run text, rendered INSIDE the empty transcript: a new user's very
-       first sight of this panel was a blank rectangle that never stated the one
-       thing it cannot work without -- a separately launched daemon. Static
-       markup, no state and no settings; main.js removes it as soon as a real
-       conversation turn is added (restored history included). The command must
-       stay identical to daemonClient.ts's DAEMON_LAUNCH_COMMAND, which is why
-       it is interpolated from there rather than written out again. -->
-  <div id="transcript">
-    <div id="firstRun" class="first-run">
-      <p>CodeTerminal answers questions about the code in your workspace, grounded in a local index, and can propose edits you apply from here.</p>
-      <p><strong>It needs the CodeTerminal daemon already running</strong> — this panel talks to it over a local socket and does not start it for you.</p>
-      <p>Start it in a terminal from the repo root, then send a prompt:</p>
-      <pre>${DAEMON_LAUNCH_COMMAND}</pre>
-    </div>
-  </div>
-  <div id="grounding"></div>
-  <div id="historyNotice"></div>
-  <div id="redactions"></div>
-  <div id="degraded"></div>
-  <div id="provider"></div>
-  <div id="inputRow">
-    <button id="autoApplyToggle" class="auto-apply-toggle off" title="When ON, proposed edits apply automatically without a per-edit confirmation"></button>
-    <input id="promptInput" type="text" placeholder="Ask something…" />
-    <button id="sendBtn">Send</button>
-  </div>
-  <script nonce="${nonce}" src="${scriptUri}"></script>
+${chatPanelBodyMarkup()}  <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;
   }
@@ -675,4 +766,72 @@ function getNonce(): string {
     text += possible.charAt(Math.floor(Math.random() * possible.length));
   }
   return text;
+}
+
+// chatPanelBodyMarkup is the panel's static body markup, extracted from getHtml
+// so it can be asserted directly. getHtml needs a live webview (for cspSource
+// and asWebviewUri) and a fresh nonce, neither of which a test can supply, and
+// VS Code exposes no webview DOM to the test host -- so without this the
+// accessibility structure below would be unassertable and free to rot.
+//
+// See accessibility.test.ts, which pins the roles and labels this returns.
+export function chatPanelBodyMarkup(): string {
+  return `  <!-- ACCESSIBILITY. The webview had no aria-*, role= or tabindex anywhere: a
+       screen-reader user could not follow a streaming answer (nothing announced
+       it), could not read the Auto-apply toggle's state (it lived only in
+       textContent), and could not operate the diff-approval flow -- Gate 4 of
+       the safety pipeline, where the user authorizes writes to their own files,
+       which presumed sight.
+
+       Everything below is ADDITIVE: roles, labels and live regions only. Every
+       renderer still writes through textContent and never innerHTML, so the CSP
+       + no-dangerous-sinks posture the Phase 3 review verified is untouched. -->
+  <div id="searchRow" role="search">
+    <label for="searchInput" class="sr-only">Search past conversations</label>
+    <input id="searchInput" type="text" placeholder="Search past conversations…" />
+    <button id="searchBtn">Search</button>
+  </div>
+  <!-- Results arrive asynchronously, so they are announced. polite, not
+       assertive: a search result should not interrupt a streaming answer. -->
+  <div id="searchResults" role="region" aria-label="Search results" aria-live="polite"></div>
+  <!-- First-run text, rendered INSIDE the empty transcript: a new user's very
+       first sight of this panel was a blank rectangle that never stated the one
+       thing it cannot work without -- a separately launched daemon. Static
+       markup, no state and no settings; main.js removes it as soon as a real
+       conversation turn is added (restored history included). The command must
+       stay identical to daemonClient.ts's DAEMON_LAUNCH_COMMAND, which is why
+       it is interpolated from there rather than written out again. -->
+  <!-- role="log" + aria-live="polite" + aria-atomic="false" is the combination
+       that makes a STREAMED answer followable: the reader announces each
+       appended token as it arrives instead of re-reading the entire transcript
+       on every mutation (which aria-atomic="true" would do, and which is
+       unusable at streaming rates). -->
+  <div id="transcript" role="log" aria-live="polite" aria-atomic="false" aria-label="Conversation transcript">
+    <div id="firstRun" class="first-run">
+      <p>CodeTerminal answers questions about the code in your workspace, grounded in a local index, and can propose edits you apply from here.</p>
+      <p><strong>It needs the CodeTerminal daemon already running</strong> — this panel talks to it over a local socket and does not start it for you.</p>
+      <p>Start it in a terminal from the repo root, then send a prompt:</p>
+      <pre>${DAEMON_LAUNCH_COMMAND}</pre>
+    </div>
+  </div>
+  <div id="grounding" role="status" aria-live="polite" aria-label="Grounding"></div>
+  <div id="historyNotice" role="status" aria-live="polite" aria-label="Conversation history notice"></div>
+  <!-- Redaction and degradation strips carry information the user needs to
+       decide whether to trust the answer (a secret was scrubbed; a subsystem is
+       unavailable), so they are announced rather than merely displayed. -->
+  <div id="redactions" role="status" aria-live="polite" aria-label="Redaction notice"></div>
+  <div id="degraded" role="status" aria-live="polite" aria-label="Degraded functionality notice"></div>
+  <div id="provider" role="status" aria-live="polite" aria-label="Serving provider"></div>
+  <div id="inputRow">
+    <!-- role="switch" + aria-checked, kept in sync by main.js's
+         setAutoApplyState. Before this the state existed ONLY as textContent,
+         so a reader announced the label with no on/off information -- on the
+         control that decides whether edits reach disk without confirmation. -->
+    <button id="autoApplyToggle" class="auto-apply-toggle off" role="switch" aria-checked="false"
+      aria-label="Auto-apply proposed edits"
+      title="When ON, proposed edits apply automatically without a per-edit confirmation"></button>
+    <label for="promptInput" class="sr-only">Ask a question about your code</label>
+    <input id="promptInput" type="text" placeholder="Ask something…" />
+    <button id="sendBtn">Send</button>
+  </div>`;
 }

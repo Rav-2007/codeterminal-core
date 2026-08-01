@@ -26,6 +26,31 @@ type PreparedEdit struct {
 	Creates    bool   // true when this edit brings a new file into existence (see IsEmptySearch)
 }
 
+// refuseIfUnparseable is the syntax gate: a hard refusal, not a note.
+//
+// Shared by the edit and the create path, and it is a shared function rather
+// than two copies for the reason it had to be written at all. The gate was
+// inline in PrepareEdit and prepareCreate carried only syntaxNoteFor, so the
+// SAME model output — a .go file that does not parse — was refused when it
+// arrived as an edit and written to disk when it arrived as a create. A model
+// that had its edit refused could get the identical bytes onto disk by sending
+// them with an empty SEARCH section instead. One function, one behaviour, and
+// no second copy to drift.
+//
+// Best-effort by construction: Go is the only language with a parser in this
+// binary, and everything else is written unchecked. That asymmetry is honest
+// and reported by syntaxNoteFor; what is not defensible is the same language
+// being checked on one write path and not the other.
+func refuseIfUnparseable(relPath, content string) error {
+	if !strings.EqualFold(filepath.Ext(relPath), ".go") {
+		return nil
+	}
+	if _, err := parser.ParseFile(token.NewFileSet(), relPath, content, parser.AllErrors); err != nil {
+		return fmt.Errorf("edit would make %s unparseable as Go: %w", relPath, err)
+	}
+	return nil
+}
+
 // syntaxNoteFor describes what syntax checking applies to relPath, given the
 // content that would be written. Shared by the edit and create paths so a
 // created .go file is reported the same way an edited one is.
@@ -93,10 +118,8 @@ func PrepareEdit(realWorkspaceRoot string, block EditBlock) (*PreparedEdit, erro
 	startLine := strings.Count(original[:match.Start], "\n") + 1
 	endLine := startLine + strings.Count(original[match.Start:match.End], "\n")
 
-	if strings.EqualFold(filepath.Ext(block.FilePath), ".go") {
-		if _, err := parser.ParseFile(token.NewFileSet(), block.FilePath, newContent, parser.AllErrors); err != nil {
-			return nil, fmt.Errorf("edit would make %s unparseable as Go: %w", block.FilePath, err)
-		}
+	if err := refuseIfUnparseable(block.FilePath, newContent); err != nil {
+		return nil, err
 	}
 	syntaxNote := syntaxNoteFor(block.FilePath, newContent)
 
@@ -239,12 +262,26 @@ func Apply(realWorkspaceRoot string, prepared *PreparedEdit, backupDir string) e
 			return fmt.Errorf("recording %s as newly created: %w", prepared.Block.FilePath, err)
 		}
 	}
+	// Which directories the MkdirAll below is about to bring into existence,
+	// recorded BEFORE it runs so undo can take them back again. Same ordering
+	// rule as every other piece of bookkeeping here (Fix 1): fallible, and
+	// reversible, while the workspace is still untouched.
+	rollbackDirs := func() {}
+	if prepared.Creates {
+		rollbackDirs, err = recordCreatedDirsReversible(backupDir, realWorkspaceRoot, prepared)
+		if err != nil {
+			rollbackCreated()
+			rollbackAfter()
+			return fmt.Errorf("recording the directories created for %s: %w", prepared.Block.FilePath, err)
+		}
+	}
 	// A creating edit may name a directory that does not exist yet. This is the
 	// one mutation that precedes the write, and deliberately the last thing
 	// before it: an empty directory is not file content, and leaving one behind
 	// if the write then fails costs nothing and loses nothing.
 	if prepared.Creates {
 		if err := os.MkdirAll(filepath.Dir(prepared.TargetPath), 0755); err != nil {
+			rollbackDirs()
 			rollbackCreated()
 			rollbackAfter()
 			return fmt.Errorf("creating parent directories for %s: %w", prepared.Block.FilePath, err)
@@ -256,6 +293,7 @@ func Apply(realWorkspaceRoot string, prepared *PreparedEdit, backupDir string) e
 	// write non-atomically (partial-file corruption on interruption); see
 	// writeFileAtomicNoFollow for how each is closed.
 	if err := writeFileAtomicNoFollow(prepared.TargetPath, []byte(prepared.NewContent), prepared.FileMode); err != nil {
+		rollbackDirs()
 		rollbackCreated()
 		rollbackAfter()
 		return fmt.Errorf("writing %s: %w", prepared.Block.FilePath, err)

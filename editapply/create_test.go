@@ -319,3 +319,63 @@ func TestCreate_NewFileIsNotExecutable(t *testing.T) {
 		t.Errorf("created file mode = %v, want no executable bit", info.Mode().Perm())
 	}
 }
+
+// The same bytes must be refused whether they arrive as an edit or as a create.
+//
+// PrepareEdit hard-refused a .go file that would not parse; prepareCreate only
+// attached an advisory note and wrote it (M7). So a model whose edit was
+// rejected could land the identical unparseable file by resending it with an
+// empty SEARCH section — the gate was one keystroke of prompt away from being
+// optional.
+func TestCreateRefusesUnparseableGoJustLikeEdit(t *testing.T) {
+	root := t.TempDir()
+	real, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const broken = "package main\n\nfunc broken( {\n"
+
+	// As a CREATE: empty SEARCH section.
+	_, createErr := PrepareEdit(real, EditBlock{FilePath: "new.go", Search: "", Replace: broken})
+	if createErr == nil {
+		t.Fatal("creating an unparseable .go file was allowed; editing one into that state is refused")
+	}
+	if !strings.Contains(createErr.Error(), "unparseable as Go") {
+		t.Errorf("create refusal = %q, want it to name the syntax gate", createErr)
+	}
+
+	// As an EDIT of the same file: identical bytes, identical refusal wording.
+	if err := os.WriteFile(filepath.Join(real, "existing.go"), []byte("package main\n\nfunc ok() {}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, editErr := PrepareEdit(real, EditBlock{FilePath: "existing.go", Search: "func ok() {}", Replace: "func broken( {"})
+	if editErr == nil {
+		t.Fatal("the edit path stopped refusing unparseable Go; the two paths are still asymmetric, just the other way round")
+	}
+	if !strings.Contains(editErr.Error(), "unparseable as Go") {
+		t.Errorf("edit refusal = %q, want it to name the syntax gate", editErr)
+	}
+}
+
+// The gate is Go-only, and that stays true: creating a file in a language this
+// binary has no parser for must still work.
+func TestCreateStillAllowsNonGoContentThatWouldNotParseAsGo(t *testing.T) {
+	root := t.TempDir()
+	real, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	prepared, err := PrepareEdit(real, EditBlock{
+		FilePath: "notes.md",
+		Search:   "",
+		Replace:  "# heading\n\nfunc broken( {\n",
+	})
+	if err != nil {
+		t.Fatalf("creating a markdown file was refused: %v", err)
+	}
+	if !strings.Contains(prepared.SyntaxNote, "no syntax check applied") {
+		t.Errorf("SyntaxNote = %q, want it to say no check applied", prepared.SyntaxNote)
+	}
+}

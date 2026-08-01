@@ -2,7 +2,7 @@
   "config_version": 1,
   "default_tier": "primary",
   "tiers": {
-    "primary":    { "slug": "deepseek/deepseek-v4-flash",             "active": true,  "note": "~90% of tasks: edits, generation, diffs. ~$0.11/$0.80 per 1M" },
+    "primary":    { "slug": "deepseek/deepseek-v4-flash",             "active": true,  "note": "~90% of tasks: edits, generation, diffs. Price varies by served provider - check OpenRouter, do not trust a number cached here" },
     "ghost_text": { "slug": "qwen/qwen3-coder-30b-a3b-instruct", "active": false, "note": "fast keystroke completions; enable in Phase 3.5" },
     "reasoning":  { "slug": "deepseek/deepseek-r1",              "active": false, "note": "gated deep debugging on non-zero exits; ~3x output cost" }
   },

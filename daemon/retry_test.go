@@ -55,7 +55,7 @@ func TestRetry_TransientFailureThenSuccessRecovers(t *testing.T) {
 	srv, requests := flakyUpstream(t, 1, http.StatusInternalServerError, "temporary glitch")
 
 	var tokens []string
-	err := streamWithRetry(context.Background(), srv.URL, "k", "m", "sys", nil, "hello",
+	_, err := streamWithRetry(context.Background(), srv.URL, "k", "m", buildChatMessages("sys", nil, "hello"), nil,
 		ZDRConfig{}.resolvedProviderRouting(), collectTokens(&tokens), nil, nil, nil, discardLogger())
 	if err != nil {
 		t.Fatalf("want recovery, got: %v", err)
@@ -75,7 +75,7 @@ func TestRetry_PersistentFailureTerminatesCleanly(t *testing.T) {
 
 	start := time.Now()
 	var tokens []string
-	err := streamWithRetry(context.Background(), srv.URL, "k", "m", "sys", nil, "hello",
+	_, err := streamWithRetry(context.Background(), srv.URL, "k", "m", buildChatMessages("sys", nil, "hello"), nil,
 		ZDRConfig{}.resolvedProviderRouting(), collectTokens(&tokens), nil, nil, nil, discardLogger())
 	elapsed := time.Since(start)
 
@@ -118,7 +118,7 @@ func TestRetry_NonRetryableClassesAreNotRetried(t *testing.T) {
 			srv, requests := flakyUpstream(t, 1000, tc.status, tc.body)
 
 			var tokens []string
-			err := streamWithRetry(context.Background(), srv.URL, "k", "m", "sys", nil, "hello",
+			_, err := streamWithRetry(context.Background(), srv.URL, "k", "m", buildChatMessages("sys", nil, "hello"), nil,
 				ZDRConfig{}.resolvedProviderRouting(), collectTokens(&tokens), nil, nil, nil, discardLogger())
 			if err == nil {
 				t.Fatal("want an error")
@@ -154,7 +154,7 @@ func TestRetry_NeverRetriesOnceTokensHaveStreamed(t *testing.T) {
 	defer srv.Close()
 
 	var tokens []string
-	_ = streamWithRetry(context.Background(), srv.URL, "k", "m", "sys", nil, "hello",
+	_, _ = streamWithRetry(context.Background(), srv.URL, "k", "m", buildChatMessages("sys", nil, "hello"), nil,
 		ZDRConfig{}.resolvedProviderRouting(), collectTokens(&tokens), nil, nil, nil, discardLogger())
 
 	if got := requests.Load(); got != 1 {
@@ -185,7 +185,7 @@ func TestRetry_HonoursRetryAfter(t *testing.T) {
 
 	start := time.Now()
 	var tokens []string
-	if err := streamWithRetry(context.Background(), srv.URL, "k", "m", "sys", nil, "hello",
+	if _, err := streamWithRetry(context.Background(), srv.URL, "k", "m", buildChatMessages("sys", nil, "hello"), nil,
 		ZDRConfig{}.resolvedProviderRouting(), collectTokens(&tokens), nil, nil, nil, discardLogger()); err != nil {
 		t.Fatalf("want recovery, got: %v", err)
 	}
@@ -209,7 +209,7 @@ func TestRetry_CancelledContextAbortsImmediately(t *testing.T) {
 
 	start := time.Now()
 	var tokens []string
-	err := streamWithRetry(ctx, srv.URL, "k", "m", "sys", nil, "hello",
+	_, err := streamWithRetry(ctx, srv.URL, "k", "m", buildChatMessages("sys", nil, "hello"), nil,
 		ZDRConfig{}.resolvedProviderRouting(), collectTokens(&tokens), nil, nil, nil, discardLogger())
 	if err == nil {
 		t.Fatal("want an error")

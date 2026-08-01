@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -286,5 +288,192 @@ func TestStateDir_FallsBackToLocalStateWhenUnset(t *testing.T) {
 	want := filepath.Join(home, ".local", "state", "mochiii")
 	if got != want {
 		t.Errorf("StateDir() = %q, want %q", got, want)
+	}
+}
+
+// countTurns reports how many rows the turns table holds for a workspace.
+// Reaches past the public API deliberately: retention is about what is on
+// DISK, and LoadRecentTurns caps its own result, so asking it would measure
+// the cap rather than the store.
+func countTurns(t *testing.T, s *MemoryStore, workspace string) int {
+	t.Helper()
+	var n int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM turns WHERE workspace = ?`, workspace).Scan(&n); err != nil {
+		t.Fatalf("counting turns: %v", err)
+	}
+	return n
+}
+
+// TestMemoryStore_PrunesToRetentionCap is debt item (h): the turns table had
+// no cap and grew forever.
+//
+// Neuter-check: delete the pruneWorkspace call in AppendTurn and this goes red
+// with the full un-pruned count.
+func TestMemoryStore_PrunesToRetentionCap(t *testing.T) {
+	s, _ := openTestMemoryStore(t)
+	ctx := context.Background()
+
+	const over = 25
+	for i := 0; i < maxTurnsPerWorkspace+over; i++ {
+		if err := s.AppendTurn(ctx, "/w", "user", fmt.Sprintf("turn-%d", i)); err != nil {
+			t.Fatalf("append %d: %v", i, err)
+		}
+	}
+
+	if got := countTurns(t, s, "/w"); got != maxTurnsPerWorkspace {
+		t.Errorf("turns on disk = %d, want the %d cap", got, maxTurnsPerWorkspace)
+	}
+}
+
+// TestMemoryStore_PruneKeepsNewestAndDropsOldest pins WHICH turns survive.
+// A prune that kept the oldest would also satisfy the count assertion above.
+func TestMemoryStore_PruneKeepsNewestAndDropsOldest(t *testing.T) {
+	s, _ := openTestMemoryStore(t)
+	ctx := context.Background()
+
+	total := maxTurnsPerWorkspace + 10
+	for i := 0; i < total; i++ {
+		if err := s.AppendTurn(ctx, "/w", "user", fmt.Sprintf("turn-%04d", i)); err != nil {
+			t.Fatalf("append %d: %v", i, err)
+		}
+	}
+
+	turns, err := s.LoadRecentTurns(ctx, "/w", 5)
+	if err != nil {
+		t.Fatalf("loading: %v", err)
+	}
+	if len(turns) != 5 {
+		t.Fatalf("loaded %d turns, want 5", len(turns))
+	}
+	// Newest must survive.
+	if want := fmt.Sprintf("turn-%04d", total-1); turns[len(turns)-1].Content != want {
+		t.Errorf("newest turn is %q, want %q", turns[len(turns)-1].Content, want)
+	}
+	// The very first turn must be gone.
+	var n int
+	if err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM turns WHERE workspace = ? AND content = ?`, "/w", "turn-0000").Scan(&n); err != nil {
+		t.Fatalf("querying oldest: %v", err)
+	}
+	if n != 0 {
+		t.Error("the oldest turn survived the prune; retention is dropping the wrong end")
+	}
+}
+
+// TestMemoryStore_PruneIsPerWorkspace guards the choice of a per-workspace cap
+// over a global one: a busy workspace must not evict a quiet one's history.
+func TestMemoryStore_PruneIsPerWorkspace(t *testing.T) {
+	s, _ := openTestMemoryStore(t)
+	ctx := context.Background()
+
+	if err := s.AppendTurn(ctx, "/quiet", "user", "the only thing I ever said"); err != nil {
+		t.Fatalf("seeding quiet workspace: %v", err)
+	}
+	for i := 0; i < maxTurnsPerWorkspace+50; i++ {
+		if err := s.AppendTurn(ctx, "/busy", "user", fmt.Sprintf("turn-%d", i)); err != nil {
+			t.Fatalf("append %d: %v", i, err)
+		}
+	}
+
+	if got := countTurns(t, s, "/quiet"); got != 1 {
+		t.Errorf("quiet workspace holds %d turns, want 1 -- a busy workspace evicted another's history", got)
+	}
+	if got := countTurns(t, s, "/busy"); got != maxTurnsPerWorkspace {
+		t.Errorf("busy workspace holds %d turns, want the %d cap", got, maxTurnsPerWorkspace)
+	}
+}
+
+// TestMemoryStore_PruneKeepsSearchIndexInSync pins the claim in
+// pruneWorkspace's comment: turns_fts is maintained by an AFTER DELETE
+// trigger, so pruned turns must not remain findable.
+func TestMemoryStore_PruneKeepsSearchIndexInSync(t *testing.T) {
+	s, _ := openTestMemoryStore(t)
+	ctx := context.Background()
+
+	if err := s.AppendTurn(ctx, "/w", "user", "zzsentinelzz doomed"); err != nil {
+		t.Fatalf("seeding: %v", err)
+	}
+	for i := 0; i < maxTurnsPerWorkspace+5; i++ {
+		if err := s.AppendTurn(ctx, "/w", "user", fmt.Sprintf("turn-%d", i)); err != nil {
+			t.Fatalf("append %d: %v", i, err)
+		}
+	}
+
+	var orphans int
+	if err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM turns_fts WHERE rowid NOT IN (SELECT id FROM turns)`).Scan(&orphans); err != nil {
+		t.Fatalf("counting orphaned fts rows: %v", err)
+	}
+	if orphans != 0 {
+		t.Errorf("turns_fts holds %d rows with no matching turn: the prune desynced the search index", orphans)
+	}
+}
+
+// TestMemoryStore_MigratesV1AllTheWayToCurrent is the regression test for a
+// migration bug this change introduced and then removed.
+//
+// ensureMemorySchema used to `return nil` after the v1->v2 step. Adding a v3
+// step as another switch case would have left a v1 database recorded as v3
+// with the v3 index never created -- a store claiming to be current while
+// missing part of its schema. Sequential ifs are what prevent that, and this
+// asserts the outcome rather than the shape.
+func TestMemoryStore_MigratesV1AllTheWayToCurrent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "memory.db")
+
+	// Hand-build a v1 database: turns table, version 1, no fts, no index.
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("opening raw db: %v", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE schema_meta (version INTEGER NOT NULL)`); err != nil {
+		t.Fatalf("creating schema_meta: %v", err)
+	}
+	if _, err := db.Exec(turnsTableDDL); err != nil {
+		t.Fatalf("creating turns: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO schema_meta (version) VALUES (1)`); err != nil {
+		t.Fatalf("recording v1: %v", err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO turns (workspace, role, content, created_at) VALUES ('/w','user','pre-existing','2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatalf("seeding a v1 turn: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("closing raw db: %v", err)
+	}
+
+	s, err := OpenMemoryStore(path)
+	if err != nil {
+		t.Fatalf("opening store over a v1 database: %v", err)
+	}
+	defer s.Close()
+
+	var version int
+	if err := s.db.QueryRow(`SELECT version FROM schema_meta LIMIT 1`).Scan(&version); err != nil {
+		t.Fatalf("reading version: %v", err)
+	}
+	if version != memorySchemaVersion {
+		t.Errorf("version = %d, want %d", version, memorySchemaVersion)
+	}
+
+	// The v3 step must have run, not merely been recorded as run.
+	var indexes int
+	if err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_turns_workspace_id'`).Scan(&indexes); err != nil {
+		t.Fatalf("looking for the v3 index: %v", err)
+	}
+	if indexes != 1 {
+		t.Error("database records itself as current but idx_turns_workspace_id does not exist: " +
+			"a migration step was skipped while the version was still bumped")
+	}
+
+	// And the v2 step must still have run, with its backfill.
+	var fts int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM turns_fts`).Scan(&fts); err != nil {
+		t.Fatalf("counting fts rows: %v", err)
+	}
+	if fts != 1 {
+		t.Errorf("turns_fts holds %d rows, want the 1 pre-existing turn backfilled", fts)
 	}
 }

@@ -10,10 +10,6 @@
 package main
 
 import (
-	"encoding/json"
-	"os"
-	"path/filepath"
-	"sync"
 	"time"
 )
 
@@ -51,22 +47,24 @@ const warnSinkMaxBytes = 5 << 20 // 5 MiB
 //     path-is-a-directory, marshal failure) is swallowed. A sink failure must
 //     never fail or delay a retrieval request. A nil *warnSink is a valid
 //     no-op sink, so tests and retrieval-disabled daemons need no special case.
+//
+// Those constraints now live in jsonlSink (jsonlsink.go), which the tool-call
+// audit log shares — they are properties worth having exactly one copy of.
+// This type remains the warn-mode-specific half: the event shape and the
+// timestamp default.
 type warnSink struct {
-	mu       sync.Mutex
-	path     string
-	maxBytes int64
+	sink *jsonlSink
 }
 
 // newWarnSink returns a sink writing to path, or nil (a valid no-op) if path is
 // empty. Construction never fails the caller: the parent dir is best-effort
-// created here (0700 — this is secret-adjacent measurement data), and any
-// residual problem surfaces later as a harmlessly swallowed write.
+// created (0700 — this is secret-adjacent measurement data), and any residual
+// problem surfaces later as a harmlessly swallowed write.
 func newWarnSink(path string) *warnSink {
 	if path == "" {
 		return nil
 	}
-	_ = os.MkdirAll(filepath.Dir(path), 0700)
-	return &warnSink{path: path, maxBytes: warnSinkMaxBytes}
+	return &warnSink{sink: newJSONLSink(path, warnSinkMaxBytes)}
 }
 
 // write appends ev as one JSON line. All errors are swallowed by design (see
@@ -78,40 +76,5 @@ func (w *warnSink) write(ev warnEvent) {
 	if ev.Ts == "" {
 		ev.Ts = time.Now().UTC().Format(time.RFC3339)
 	}
-	line, err := json.Marshal(ev)
-	if err != nil {
-		return
-	}
-	line = append(line, '\n')
-
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	w.rotateIfNeededLocked(int64(len(line)))
-	// O_NOFOLLOW: w.path is a fixed workspace log path, not client input, but
-	// this sink sits next to suspected secrets — refuse to append through a
-	// symlink planted at the log name (ELOOP joins the other swallowed errors,
-	// keeping the sink failure-safe on the request path).
-	f, err := openNoFollow(w.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
-	if err != nil {
-		return // swallow: disk full, read-only dir, path is a directory, symlink, ...
-	}
-	defer f.Close()
-	_, _ = f.Write(line) // swallow a short/failed write too
-}
-
-// rotateIfNeededLocked renames the active file to <path>.1 (replacing any prior
-// backup) once appending incoming bytes would push it past maxBytes, bounding
-// total on-disk size to ~2x maxBytes. Caller holds mu. Any error leaves the
-// current file in place — worst case it grows slightly past the bound, which is
-// still failure-safe.
-func (w *warnSink) rotateIfNeededLocked(incoming int64) {
-	fi, err := os.Stat(w.path)
-	if err != nil {
-		return // no file yet (first write), or unstattable; nothing to rotate
-	}
-	if fi.Size()+incoming <= w.maxBytes {
-		return
-	}
-	_ = os.Rename(w.path, w.path+".1")
+	w.sink.append(ev)
 }

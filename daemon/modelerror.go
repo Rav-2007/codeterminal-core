@@ -107,6 +107,42 @@ func (e *ModelError) Detail() string {
 	return fmt.Sprintf("[%s] %s", e.Class, e.detail)
 }
 
+// withUpstreamRequestID folds the upstream's own request id into the operator
+// detail, so a failure the user reports here can be looked up in the managed
+// proxy's log rather than guessed at from timestamps. Local log only, like the
+// rest of detail -- the socket still gets the generic message (Gate 7).
+func (e *ModelError) withUpstreamRequestID(id string) *ModelError {
+	if id == "" {
+		return e
+	}
+	if e.detail == "" {
+		e.detail = "upstream req_id=" + id
+		return e
+	}
+	e.detail += " (upstream req_id=" + id + ")"
+	return e
+}
+
+// upstreamRequestID reads a correlation id off an upstream response, and refuses
+// anything that is not the shape our own proxy mints (lowercase hex, bounded).
+//
+// The validation is not pedantry: this value comes from whatever host apiBase
+// points at, it is written straight into the daemon's log file, and a header
+// containing a newline would let an upstream forge log lines in it. Hex cannot.
+func upstreamRequestID(h http.Header) string {
+	id := strings.TrimSpace(h.Get("X-Request-Id"))
+	if id == "" || len(id) > 64 {
+		return ""
+	}
+	for i := 0; i < len(id); i++ {
+		c := id[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return ""
+		}
+	}
+	return id
+}
+
 // Retryable reports whether trying the same request again could plausibly
 // succeed.
 func (e *ModelError) Retryable() bool { return retryableClasses[e.Class] }

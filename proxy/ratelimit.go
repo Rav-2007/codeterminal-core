@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"net"
 	"net/http"
 	"strings"
@@ -42,8 +43,45 @@ const (
 	// far above real single-user usage (a developer prompting from an IDE is
 	// well under 1 req/s even when auto-applying) and far below what a flood
 	// needs to be damaging.
+	//
+	// THAT PREMISE NOW HAS AN EXCEPTION, and leaving it unqualified would be a
+	// documented falsehood. One AGENT-MODE turn is up to max_iterations requests
+	// (8 by default), fired back to back with only local tool execution between
+	// them -- so "one prompt" and "one request" stopped being the same thing.
+	//
+	// Measured 2026-08-01 (docs/AGENT_MODE_COST_2026-08-01.md §4): worst-case
+	// turns three seconds apart drain this burst in about seven turns, because a
+	// turn spends 8 and only 6 refill. After that every turn takes a 429.
+	//
+	// The numbers are UNCHANGED anyway, deliberately. The daemon retries a 429
+	// while nothing has streamed, so the user sees a ~1s pause rather than a
+	// failure, and agent mode is off by default. Raising the burst to suit the
+	// most expensive shape of the least-used feature would weaken the bound for
+	// everyone else. Revisit if agent mode becomes the common path -- and note
+	// that the honest fix is probably for the daemon to declare max_tokens, which
+	// would also shrink the 8x quota reservation the same measurement found.
 	keyRatePerSecond = 2.0
 	keyBurst         = 20.0
+
+	// keyTokenRatePerSecond / keyTokenBurst are the SECOND layer: they bound one
+	// key by TOKEN VOLUME, which the request-count limiter above cannot see at
+	// all. Two requests per second is a trivial request rate and an unbounded
+	// spend rate -- the bill is denominated in tokens, so this is the layer that
+	// actually tracks money.
+	//
+	// 1000 tokens/s is 60k/min, far above real IDE use (a grounded turn is a few
+	// thousand tokens) and far below what a scripted drain needs. The burst allows
+	// ~2 minutes of accumulated headroom so a legitimate burst of long completions
+	// is never throttled.
+	//
+	// Agent mode raises "a grounded turn" by roughly the iteration count: each
+	// step re-sends the whole message list, which the same measurement found
+	// grows LINEARLY (+one capped tool result per step, 1.9x across eight
+	// steps), so a worst-case agent turn is order-of tens of thousands of tokens
+	// rather than a few thousand. Still inside this burst; noted so the next
+	// reader is not working from the single-turn figure.
+	keyTokenRatePerSecond = 1000.0
+	keyTokenBurst         = 120000.0
 
 	// maxInFlightPerKey bounds simultaneous in-progress requests for one key.
 	// A human driving CLI + TUI + IDE at once is a handful; 8 leaves headroom
@@ -121,13 +159,7 @@ func (l *rateLimiter) allow(key string) bool {
 		l.buckets[key] = b
 	}
 
-	if elapsed := now.Sub(b.last).Seconds(); elapsed > 0 {
-		b.tokens += elapsed * l.rate
-		if b.tokens > l.burst {
-			b.tokens = l.burst
-		}
-		b.last = now
-	}
+	l.refillLocked(b, now)
 	if b.tokens < 1 {
 		return false
 	}
@@ -135,10 +167,99 @@ func (l *rateLimiter) allow(key string) bool {
 	return true
 }
 
+// available reports whether key's bucket has anything left to spend, WITHOUT
+// spending it. It is the admission half of post-hoc token limiting: at admission
+// time the request's real token cost is unknowable (it only exists once the
+// response is complete), so the gate can only ask whether the previous requests
+// have already exhausted the budget.
+//
+// Deliberately a >= 1 test rather than > 0, matching allow's own threshold, so a
+// bucket in DEBT (see charge) keeps refusing until it refills past one whole
+// token.
+func (l *rateLimiter) available(key string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	now := l.now()
+	l.sweepLocked(now)
+
+	b, ok := l.buckets[key]
+	if !ok {
+		return true // never seen: a full bucket by construction
+	}
+	l.refillLocked(b, now)
+	return b.tokens >= 1
+}
+
+// charge spends n tokens against key AFTER the fact, and is allowed to drive the
+// bucket NEGATIVE.
+//
+// Debt is the point, not a defect. Real usage is only known once a response
+// completes, so a single large completion can legitimately exceed what was in the
+// bucket when it was admitted. Clamping at zero would make that overrun free;
+// letting the bucket go negative makes the NEXT request wait for the refill that
+// pays it off, which is what converts a per-request overrun into a bounded
+// sustained rate.
+//
+// Debt is floored at one full burst so a single pathological request cannot lock
+// a key out for an unbounded stretch -- the punishment stays proportional.
+func (l *rateLimiter) charge(key string, n float64) {
+	if n <= 0 {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	now := l.now()
+	b, ok := l.buckets[key]
+	if !ok {
+		b = &tokenBucket{tokens: l.burst, last: now}
+		l.buckets[key] = b
+	}
+	l.refillLocked(b, now)
+
+	b.tokens -= n
+	if b.tokens < -l.burst {
+		b.tokens = -l.burst
+	}
+}
+
+// refillLocked accrues elapsed-time tokens into b, capped at burst. Extracted
+// from allow so available and charge apply the identical refill rule -- three
+// copies of this arithmetic would be three chances to drift.
+func (l *rateLimiter) refillLocked(b *tokenBucket, now time.Time) {
+	if elapsed := now.Sub(b.last).Seconds(); elapsed > 0 {
+		b.tokens += elapsed * l.rate
+		if b.tokens > l.burst {
+			b.tokens = l.burst
+		}
+		b.last = now
+	}
+}
+
 // sweepLocked drops buckets untouched for bucketIdleTTL, bounding memory. A
 // swept bucket is equivalent to a fresh one (both start full), so dropping it
 // can never be stricter than keeping it -- only more forgiving, which is the
 // safe direction for a false positive.
+//
+// This holds for a bucket in DEBT too (see charge), and sweeping does not forgive
+// anything the refill would not have: at keyTokenRatePerSecond, bucketIdleTTL of
+// elapsed time accrues far more than keyTokenBurst, so any debt within the floor
+// charge enforces has already been paid off by the time a bucket is old enough to
+// be swept.
+// bucketCount reports how many per-key buckets are currently held.
+//
+// Exists so the soak test can assert that sweepLocked actually reclaims them.
+// Bucket growth is the limiter's one unbounded dimension -- one entry per
+// distinct source IP or api_keys.id -- so "is the sweep keeping up?" is a
+// memory-leak question, and before this it was only answerable by inference
+// from RSS, which moves for a dozen other reasons.
+func (l *rateLimiter) bucketCount() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.buckets)
+}
+
 func (l *rateLimiter) sweepLocked(now time.Time) {
 	if now.Sub(l.lastSweep) < bucketSweepE {
 		return
@@ -215,11 +336,44 @@ func clientSource(r *http.Request) string {
 	return r.RemoteAddr
 }
 
+// refusalBody is the one shape every JSON refusal this proxy writes takes.
+//
+// RequestID is what makes a refusal reportable: the caller can quote it and it
+// resolves to exactly one request's log trail (see reqid.go). It is safe to echo
+// because it is either minted here or validated to lowercase hex -- see
+// validRequestID, which explains why that charset specifically.
+//
+// Scope is set only by the 429s, naming which bucket refused.
+type refusalBody struct {
+	Error     string `json:"error"`
+	Scope     string `json:"scope,omitempty"`
+	RequestID string `json:"request_id,omitempty"`
+}
+
+// writeRefusal writes a refusal as JSON, carrying the request id.
+//
+// Marshalled rather than concatenated: the bodies it replaces were built by
+// string concatenation, which was fine while every value was a compile-time
+// constant, and stops being fine the moment one of them comes off the wire.
+func writeRefusal(w http.ResponseWriter, code int, errCode, reqID string) {
+	writeRefusalBody(w, code, refusalBody{Error: errCode, RequestID: reqID})
+}
+
+func writeRefusalBody(w http.ResponseWriter, code int, body refusalBody) {
+	// Cannot fail: refusalBody is three plain strings.
+	encoded, _ := json.Marshal(body)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	w.Write(encoded)
+}
+
 // tooManyRequests writes the shared 429. Always JSON with a Retry-After, never a
 // silent drop: a caller must be able to tell throttling apart from a failure.
-func tooManyRequests(w http.ResponseWriter, reason string) {
-	w.Header().Set("Content-Type", "application/json")
+func tooManyRequests(w http.ResponseWriter, reason, reqID string) {
 	w.Header().Set("Retry-After", retryAfterValue)
-	w.WriteHeader(http.StatusTooManyRequests)
-	w.Write([]byte(`{"error":"rate_limited","scope":"` + reason + `"}`))
+	writeRefusalBody(w, http.StatusTooManyRequests, refusalBody{
+		Error:     "rate_limited",
+		Scope:     reason,
+		RequestID: reqID,
+	})
 }

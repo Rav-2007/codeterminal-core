@@ -66,8 +66,24 @@ type FTSChunkStore struct {
 // run) never justifies a pool, and SQLite's concurrent-writer story is poor
 // enough that avoiding it entirely is simplest.
 func NewFTSChunkStore(indexDir string) (*FTSChunkStore, error) {
-	if err := os.MkdirAll(indexDir, 0755); err != nil {
+	// 0700, and this is a correction rather than a preference.
+	//
+	// This database holds the CHUNK TEXT of the user's workspace -- the same
+	// source the completion request carries, sitting on disk in full. Every
+	// other store this daemon owns treats that class of content as private:
+	// memory.db is 0600 inside a 0700 directory, and chromem creates its own
+	// collection directory 0700, which is why the vector half of this very
+	// index is unreadable to other users. The lexical half was created 0644
+	// inside a 0755 directory and was world-readable on any shared machine.
+	//
+	// MkdirAll does not touch the mode of a directory that already exists, so
+	// existing installs need the explicit Chmod: they are precisely the ones
+	// with an index already written.
+	if err := os.MkdirAll(indexDir, 0700); err != nil {
 		return nil, fmt.Errorf("creating index directory %s: %w", indexDir, err)
+	}
+	if err := os.Chmod(indexDir, 0700); err != nil {
+		return nil, fmt.Errorf("restricting index directory %s: %w", indexDir, err)
 	}
 
 	path := filepath.Join(indexDir, lexicalDBFileName)
@@ -88,16 +104,30 @@ func NewFTSChunkStore(indexDir string) (*FTSChunkStore, error) {
 
 	db.SetMaxOpenConns(1)
 	if _, err := db.Exec(`PRAGMA journal_mode=WAL`); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("setting journal_mode: %w", err)
 	}
 	if _, err := db.Exec(`PRAGMA busy_timeout=5000`); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("setting busy_timeout: %w", err)
 	}
 	if _, err := db.Exec(codeChunksFTSTableDDL); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("creating code_chunks_fts: %w", err)
+	}
+
+	// The db file and its -wal/-shm sidecars, after the schema step so the
+	// sidecars WAL mode created actually exist to be restricted. In WAL mode a
+	// sidecar holds committed rows the main file does not have yet, so locking
+	// down only lexical.db would leave the newest chunks readable -- the same
+	// reasoning OpenMemoryStore records, applied to the store that was missed.
+	if err := os.Chmod(path, 0600); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("restricting lexical index permissions: %w", err)
+	}
+	if err := restrictSQLiteSidecars(path, 0600); err != nil {
+		_ = db.Close()
+		return nil, err
 	}
 
 	return &FTSChunkStore{db: db}, nil

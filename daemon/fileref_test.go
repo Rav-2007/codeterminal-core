@@ -404,3 +404,133 @@ func TestGatherContext_BadReferenceStillGrounds(t *testing.T) {
 		t.Errorf("kept spans = %v, want ordinary similarity retrieval unchanged", ids)
 	}
 }
+
+// A user with no index who names an exact line must still get that line.
+//
+// gatherContext used to return early whenever the embedder or the store was
+// nil, and direct file:line resolution sat below that return — so the case
+// where the user was MOST precise (pasting a compiler error) was the case that
+// returned nothing, for exactly the user least likely to have run `index`.
+// Resolving a pointer reads a file; it needs no embedder and no index.
+func TestGatherContext_DirectReferenceWorksWithoutRetrieval(t *testing.T) {
+	root := refWorkspace(t)
+
+	s := &Server{
+		logger:                  discardLogger(),
+		embedder:                nil, // no helper
+		store:                   nil, // no index
+		retrievalDisabledReason: "no index found at /nonexistent",
+		retrievalTopK:           defaultK,
+		contextBudgetChars:      1 << 20,
+		workspace:               root,
+		cfg:                     &Config{},
+	}
+
+	prompt := "# codeterminal/daemon [codeterminal/daemon.test]\n./target.go:100:2: undefined: thing\nFAIL"
+	out := s.gatherContext(context.Background(), prompt)
+
+	if out.Skipped {
+		t.Fatalf("skipped with %q — the prompt named an exact line and reading it needs no index", out.Reason)
+	}
+	if out.DirectRefSpans != 1 {
+		t.Errorf("DirectRefSpans = %d, want 1", out.DirectRefSpans)
+	}
+	ids := chunkIDs(out.Chunks)
+	if len(ids) != 1 || ids[0] != "daemon/target.go:80-120" {
+		t.Fatalf("kept spans = %v, want exactly the referenced span", ids)
+	}
+
+	msg := buildAugmentedUserMessage(prompt, out.Chunks, false)
+	if !strings.Contains(msg, "[1] daemon/target.go:80-120") {
+		t.Errorf("referenced span not rendered into the prompt:\n%s", msg[:min(600, len(msg))])
+	}
+}
+
+// The unindexed case with nothing to resolve must still report the specific
+// reason setupRetrieval recorded, not the misleading "no relevant chunks found
+// in index" — there is no index.
+func TestGatherContext_NoIndexNoRefsKeepsTheSpecificReason(t *testing.T) {
+	s := &Server{
+		logger:                  discardLogger(),
+		retrievalDisabledReason: "no index found at /nonexistent",
+		workspace:               refWorkspace(t),
+		cfg:                     &Config{},
+	}
+
+	out := s.gatherContext(context.Background(), "why is this slow")
+	if !out.Skipped {
+		t.Fatal("expected Skipped=true: no index, and nothing in the prompt to resolve")
+	}
+	if out.Reason != "no index found at /nonexistent" {
+		t.Errorf("Reason = %q, want the cause setupRetrieval recorded", out.Reason)
+	}
+}
+
+// A pasted Python traceback must ground the same way a compiler error does.
+//
+// The resolver only understood "path:line", which no Python traceback contains
+// — CPython prints `File "x.py", line 42`. So the single most common way a
+// Python user reports a problem grounded nothing at all, while the identical
+// situation in Go worked.
+func TestParseFileLineRefs_PythonTraceback(t *testing.T) {
+	prompt := `Traceback (most recent call last):
+  File "app/main.py", line 12, in <module>
+    run()
+  File "app/handlers.py", line 87, in run
+    raise ValueError("boom")
+ValueError: boom`
+
+	refs := parseFileLineRefs(prompt)
+	if len(refs) != 2 {
+		t.Fatalf("parsed %d refs from a traceback, want 2: %+v", len(refs), refs)
+	}
+	if refs[0].Path != "app/main.py" || refs[0].Line != 12 {
+		t.Errorf("refs[0] = %+v, want app/main.py:12", refs[0])
+	}
+	if refs[1].Path != "app/handlers.py" || refs[1].Line != 87 {
+		t.Errorf("refs[1] = %+v, want app/handlers.py:87", refs[1])
+	}
+}
+
+// Order is by position in the prompt, not by which pattern found it. The first
+// reference in a failure is the first thing the tool reported and is usually
+// the one to act on; appending one pattern's results after the other's would
+// put a traceback frame from line 2 behind a compiler error from line 90.
+func TestParseFileLineRefs_MixedShapesKeepPromptOrder(t *testing.T) {
+	prompt := `  File "early.py", line 3, in setup
+./later.go:90:2: undefined: thing`
+
+	refs := parseFileLineRefs(prompt)
+	if len(refs) != 2 {
+		t.Fatalf("parsed %d refs, want 2: %+v", len(refs), refs)
+	}
+	if refs[0].Path != "early.py" {
+		t.Errorf("refs[0] = %+v, want the traceback frame first — it appears first in the prompt", refs[0])
+	}
+	if refs[1].Path != "later.go" {
+		t.Errorf("refs[1] = %+v, want later.go", refs[1])
+	}
+}
+
+// The traceback shape must not become a new way to name a file the ordinary
+// pattern would have refused. It reuses the same resolution, so the same gates
+// apply — this pins that the parser hands the quoted path through unchanged
+// rather than pre-approving it.
+func TestParseFileLineRefs_TracebackPathGetsNoSpecialTreatment(t *testing.T) {
+	root := refWorkspace(t)
+
+	// A secret-named file that genuinely exists: the indexer refuses it, so
+	// direct resolution must too, whichever syntax names it.
+	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("SECRET=1\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	viaTraceback := resolveFileLineRefs(`  File ".env", line 1, in <module>`, root, discardLogger())
+	if len(viaTraceback) != 0 {
+		t.Errorf("a traceback naming .env resolved %d span(s); the gates must not depend on which syntax was used", len(viaTraceback))
+	}
+	viaColon := resolveFileLineRefs(".env:1: bad", root, discardLogger())
+	if len(viaColon) != 0 {
+		t.Errorf("control: .env:1 resolved %d span(s), so this test proves nothing", len(viaColon))
+	}
+}

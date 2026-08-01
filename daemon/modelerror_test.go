@@ -112,7 +112,7 @@ func TestModelError_ClassifiesEachFailureMode(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := upstreamReturning(t, tc.status, tc.body, nil)
-			err := streamCompletion(context.Background(), srv.URL, "k", "m", "sys", nil, "hello",
+			_, err := streamCompletion(context.Background(), srv.URL, "k", "m", buildChatMessages("sys", nil, "hello"), nil,
 				ZDRConfig{}.resolvedProviderRouting(), func(string) error { return nil }, nil, nil, nil)
 			if err == nil {
 				t.Fatal("want an error")
@@ -134,7 +134,7 @@ func TestModelError_ClassifiesEachFailureMode(t *testing.T) {
 // TestModelError_DeadPortIsUpstreamUnavailable covers the transport half: never
 // reaching the provider at all.
 func TestModelError_DeadPortIsUpstreamUnavailable(t *testing.T) {
-	err := streamCompletion(context.Background(), "http://127.0.0.1:1", "k", "m", "sys", nil, "hello",
+	_, err := streamCompletion(context.Background(), "http://127.0.0.1:1", "k", "m", buildChatMessages("sys", nil, "hello"), nil,
 		ZDRConfig{}.resolvedProviderRouting(), func(string) error { return nil }, nil, nil, nil)
 	if err == nil {
 		t.Fatal("want an error")

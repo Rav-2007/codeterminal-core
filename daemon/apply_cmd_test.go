@@ -182,7 +182,7 @@ func TestEditsUndo_UnchangedFileRestoresCleanly(t *testing.T) {
 	sessionDir := latestBackupSession(t, root)
 
 	var undoOut bytes.Buffer
-	if _, _, err := runUndoSession(root, sessionDir, false, strings.NewReader(""), &undoOut, discardLogger()); err != nil {
+	if _, _, _, err := runUndoSession(root, sessionDir, false, strings.NewReader(""), &undoOut, discardLogger()); err != nil {
 		t.Fatalf("runUndoSession: %v", err)
 	}
 
@@ -224,7 +224,7 @@ func TestEditsUndo_ModifiedFileIsGuardedNotClobbered(t *testing.T) {
 
 	// Decline the guarded-overwrite prompt.
 	var undoOut bytes.Buffer
-	if _, _, err := runUndoSession(root, sessionDir, false, strings.NewReader("n\n"), &undoOut, discardLogger()); err != nil {
+	if _, _, _, err := runUndoSession(root, sessionDir, false, strings.NewReader("n\n"), &undoOut, discardLogger()); err != nil {
 		t.Fatalf("runUndoSession: %v", err)
 	}
 
@@ -246,7 +246,7 @@ func TestEditsUndo_ModifiedFileIsGuardedNotClobbered(t *testing.T) {
 		t.Fatalf("re-simulating hand edit: %v", err)
 	}
 	var forcedOut bytes.Buffer
-	if _, _, err := runUndoSession(root, sessionDir, true, strings.NewReader(""), &forcedOut, discardLogger()); err != nil {
+	if _, _, _, err := runUndoSession(root, sessionDir, true, strings.NewReader(""), &forcedOut, discardLogger()); err != nil {
 		t.Fatalf("runUndoSession (force): %v", err)
 	}
 	original := "package main\n\nfunc old() {}\n"
