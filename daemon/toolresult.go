@@ -64,10 +64,58 @@ func renderToolResult(content string, maxBytes int, scrubDisabled bool) (rendere
 
 	cleaned, redactions := scrub(content, scrubDisabled)
 	out := neutralizeDelimiters(cleaned)
+
+	// Control characters go last, after scrub has seen the original bytes and
+	// after the delimiters are neutralised, so neither of those is reading text
+	// this already altered.
+	out, controls := stripControlCharacters(out)
+	if controls > 0 {
+		out += fmt.Sprintf(controlMarker, controls)
+	}
+
 	if truncated {
 		out += fmt.Sprintf(truncationMarker, len(content), original)
 	}
 	return out, redactionKinds(redactions), len(out)
+}
+
+// controlMarker is appended when control characters were removed, for the same
+// reason truncationMarker exists: a silent edit leaves the model reasoning
+// about text nobody sent.
+const controlMarker = "\n\n[... %d control character(s) removed by codeterminal ...]"
+
+// stripControlCharacters removes terminal control codes from tool output.
+//
+// WHY THIS IS HERE AND NOT AT THE CLIENT. Tool output does not reach a client
+// directly -- protocol.ToolActivity carries a byte count, never bytes -- so the
+// reachable path is longer: an unconfined subprocess returns escapes, they
+// enter the model's context, and the model echoes some of them into an answer
+// that DOES stream to a terminal. That is a weaker path than the tool-name one
+// (see mcp.ValidateToolName, which is the direct one), and it is cheap to close
+// at the choke point that already exists for exactly this class of bytes.
+//
+// DROPPED, NOT ESCAPED. Escaping \x1b as the four characters "\x1b" keeps more
+// information, and would let a server inflate its egress roughly fourfold in
+// tokens the user pays for -- after the byte cap has already been applied.
+// Dropping is announced instead, which is this file's existing idiom.
+//
+// \n and \t survive: they are text, and tool output is full of both. \r does
+// not, because on its own it returns the cursor to the start of the line and
+// overwrites what is there, which is the behaviour being removed.
+func stripControlCharacters(s string) (string, int) {
+	removed := 0
+	cleaned := strings.Map(func(r rune) rune {
+		switch r {
+		case '\n', '\t':
+			return r
+		}
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+			removed++
+			return -1
+		}
+		return r
+	}, s)
+	return cleaned, removed
 }
 
 // clipUTF8 cuts s to at most n bytes without splitting a multi-byte rune.

@@ -161,19 +161,49 @@ func TestAServerSuppliedToolNameNeverReachesTheApprovalPrompt(t *testing.T) {
 // model supplies the qualified name back to us and that is the dispatch key.
 const evilToolName = "safe\x1b[2K\x1b[1Ainnocent__lookup\x1b[0m\r../../etc/passwd"
 
-// M6b -- control sequences in tool OUTPUT reach the model unaltered.
+// M6b -- control sequences in tool output are removed at the egress choke
+// point, and their removal is announced.
 //
-// Rated separately and lower: this is model-facing, not terminal-facing. It is
-// recorded because renderToolResult is the egress choke point and its scrub is
-// shaped for secrets rather than control characters, so the gap is worth
-// stating rather than assuming somebody noticed.
-func TestControlSequencesInToolOutputAreNotStripped(t *testing.T) {
-	payload := "before\x1b]52;c;cGF5bG9hZA==\x07\x1b[2Jafter\x00"
-	rendered, _, _ := renderToolResult(payload, 4096, false)
-	t.Logf("M6b: renderToolResult passed %d of %d control bytes through to the model",
-		countControl(rendered), countControl(payload))
-	if countControl(rendered) == 0 {
-		t.Log("control characters are now stripped at the egress choke point")
+// Rated below M6 and fixed anyway. Tool output does not reach a client
+// directly, so the path is longer than the tool-name one: escapes enter the
+// model's context and the model may echo them into an answer that does stream
+// to a terminal. renderToolResult is the choke point that exists for bytes an
+// unconfined subprocess chose, and this costs one strings.Map.
+//
+// Fails if stripControlCharacters is neutered.
+func TestControlSequencesInToolOutputAreStripped(t *testing.T) {
+	payload := "before\x1b]52;c;cGF5bG9hZA==\x07\x1b[2Jafter\x00\r\nkept\ttab\n"
+	rendered, _, emitted := renderToolResult(payload, 4096, false)
+
+	if got := countControl(rendered); got != 0 {
+		t.Errorf("%d control character(s) survived to the model: %q", got, rendered)
+	}
+	if strings.ContainsRune(rendered, '\r') {
+		t.Error("a bare carriage return survived; on its own it overwrites the line already drawn")
+	}
+	// Text is text: dropping the escapes must not drop what they were wrapped
+	// around, or the model is reasoning about a result it never got.
+	for _, want := range []string{"before", "after", "kept\ttab"} {
+		if !strings.Contains(rendered, want) {
+			t.Errorf("stripping removed real content: %q is missing from %q", want, rendered)
+		}
+	}
+	// Announced, not silent -- the same rule truncation follows.
+	if !strings.Contains(rendered, "control character(s) removed") {
+		t.Errorf("control characters were removed without saying so: %q", rendered)
+	}
+	if emitted != len(rendered) {
+		t.Errorf("emitted %d but rendered %d bytes; the budget must count the bytes that go out",
+			emitted, len(rendered))
+	}
+}
+
+// Clean output is passed through untouched, notice and all. A scrubber that
+// announces work it did not do is a scrubber nobody reads after a while.
+func TestCleanToolOutputGetsNoControlNotice(t *testing.T) {
+	rendered, _, _ := renderToolResult("ordinary\noutput\twith tabs\n", 4096, false)
+	if strings.Contains(rendered, "control character") {
+		t.Errorf("clean output was annotated anyway: %q", rendered)
 	}
 }
 
