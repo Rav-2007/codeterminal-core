@@ -50,9 +50,15 @@ func (s *Server) reindexFile(ctx context.Context, realRoot, relPath string) erro
 		}
 	}
 
+	// relPath is an index key, so it is forward-slash on every platform (see the
+	// Chunk doc comment). Everything below this line touches the filesystem or
+	// the gitignore matcher, both of which want the native separator — so the
+	// conversion happens here, once, and the key itself is never rewritten.
+	nativeRel := filepath.FromSlash(relPath)
+
 	// Re-read through the indexer's own eligibility gate, so a file the walk
 	// would skip is never admitted by this shorter path.
-	content, _, skip, err := readEligibleFile(filepath.Join(realRoot, relPath), relPath, newGitignoreMatcher(realRoot))
+	content, _, skip, err := readEligibleFile(filepath.Join(realRoot, nativeRel), nativeRel, newGitignoreMatcher(realRoot))
 	if err != nil {
 		return fmt.Errorf("re-reading %s: %w", relPath, err)
 	}

@@ -164,7 +164,11 @@ func ScanWorkspace(root string) (*ScanResult, error) {
 		}
 
 		result.FilesScanned++
-		result.Chunks = append(result.Chunks, chunkContent(content, relPath)...)
+		// relPath stays native above this line — the gitignore matcher and the
+		// secret-name gate both split on filepath.Separator. It becomes an index
+		// key here, and index keys are forward-slash on every platform: see the
+		// Chunk doc comment for what native keys cost on Windows.
+		result.Chunks = append(result.Chunks, chunkContent(content, filepath.ToSlash(relPath))...)
 		return nil
 	})
 	if walkErr != nil {

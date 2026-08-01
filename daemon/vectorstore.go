@@ -22,6 +22,17 @@ const collectionName = "codeterminal-chunks"
 // vector-similarity score before class weighting, kept alongside Score (the
 // effective, weighted score that determines final ranking) purely for
 // logging/observability — it is never itself persisted.
+// FilePath (and the ID derived from it) is ALWAYS in forward-slash form,
+// workspace-relative, on every platform. It is an index key and a wire value,
+// not a filesystem path: the same chunk must be addressable by the indexer,
+// by reindexFile, and by a model that has only ever seen forward slashes.
+//
+// Convert with filepath.FromSlash at the point of touching the filesystem,
+// never by storing the native form. On Linux and macOS the two forms are
+// identical, which is exactly why this drifted unnoticed — filepath.Rel
+// yields `src\main.go` on Windows, and DeleteByFilePath("src/main.go") from
+// the apply path then matched nothing, so every applied edit doubled that
+// file's chunks and left the pre-edit version in the index.
 type Chunk struct {
 	ID        string
 	FilePath  string
