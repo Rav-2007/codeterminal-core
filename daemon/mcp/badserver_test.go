@@ -264,13 +264,16 @@ func TestServerExitingMidCall(t *testing.T) {
 	}
 }
 
-// M4 -- Close signals a pid, not a process group.
+// M4 -- teardown reaches what the server spawned, not just the server.
 //
-// A server that leaves a child behind survives teardown with the user's full
-// privileges, and the child holds this server's stdout, which is what stops the
-// SDK's read goroutine unblocking. Registries are built and closed per TURN, so
-// anything that leaks here leaks once per turn.
-func TestOrphanedGrandchildSurvivesClose(t *testing.T) {
+// A server can start a child, hand it stdout, and exit immediately. Before the
+// process-group fix, Close waited for the SERVER to be gone, found it gone, and
+// reported success -- while the child kept running with the user's full
+// privileges. Registries are built and closed per TURN, so the leak was once
+// per turn.
+//
+// Fails if Setpgid or the killGroup call is neutered.
+func TestTeardownReachesWhatTheServerSpawned(t *testing.T) {
 	client, err := connectBad(t, "orphan")
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
@@ -303,10 +306,11 @@ func TestOrphanedGrandchildSurvivesClose(t *testing.T) {
 	t.Logf("M4: after Close, the orphan (pid %d) alive=%v; goroutines %d -> %d",
 		pid, alive, goroutinesBefore, goroutinesAfter)
 	if alive {
-		// Reap it so the test does not leave a process behind.
+		// Reap it so the test does not leave a process behind whichever way
+		// the assertion goes.
 		t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
-		t.Log("M4: a grandchild of an MCP server outlived the daemon's teardown. Close signals " +
-			"cmd.Process, which is one pid; helperproc.go's discipline is a process group")
+		t.Errorf("a grandchild of an MCP server (pid %d) outlived teardown. It is as unconfined as "+
+			"its parent and it outlives the turn the user approved", pid)
 	}
 }
 

@@ -134,6 +134,20 @@ func Connect(ctx context.Context, cfg LaunchConfig) (*StdioClient, error) {
 	cmd.Env = ServerEnv(cfg.EnvAllow)
 	cmd.Stderr = cfg.Stderr
 
+	// ITS OWN PROCESS GROUP, so teardown can reach what it spawned.
+	//
+	// helperproc.go does NOT do this, and the difference is the point: the
+	// embedder helper is our own binary, we know it forks nothing, and killing
+	// its pid is killing all of it. An MCP server is somebody else's program.
+	// Confirmed with testdata/badserver's orphan mode -- a server that starts a
+	// child and exits leaves that child running with the user's full privileges
+	// after Close returns success, because Close signalled one pid.
+	//
+	// A grandchild of a Lane B server is as unconfined as its parent, and it
+	// outlives the turn the user approved. Setpgid is what makes "the turn
+	// ended" and "the programs it started are gone" the same event.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
 	// THE PIPES ARE OURS, WHICH IS THE WHOLE POINT OF NOT USING
 	// sdk.CommandTransport HERE.
 	//
@@ -433,19 +447,41 @@ func (c *StdioClient) Close() error {
 		close(waited)
 	}()
 
-	if gone := waitGone(cmd.Process.Pid, stopGrace); gone {
-		<-waited
-		return closeErr
-	}
+	pid := cmd.Process.Pid
 
-	// Still there after the grace. It has had its chance to exit on a closed
-	// stdin; SIGKILL is not negotiable with a process that ignored that.
-	_ = cmd.Process.Kill()
-	if !waitGone(cmd.Process.Pid, stopGrace) {
-		return fmt.Errorf("mcp server %s (pid %d) survived SIGKILL", c.name, cmd.Process.Pid)
+	// THE GROUP IS KILLED EVEN IF THE SERVER ITSELF EXITED CLEANLY.
+	//
+	// This is the part that is easy to get wrong, and the orphan case is
+	// exactly it: a server can start a child, hand it stdout, and exit
+	// immediately. Waiting for the server to be gone and then stopping -- which
+	// is what this did -- reports success while the child it left behind keeps
+	// running unconfined. So the group signal is unconditional, and the wait is
+	// only about how long the SERVER gets to leave politely.
+	if gone := waitGone(pid, stopGrace); !gone {
+		// It has had its chance to exit on a closed stdin; SIGKILL is not
+		// negotiable with a process that ignored that.
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+		if !waitGone(pid, stopGrace) {
+			killGroup(pid)
+			return fmt.Errorf("mcp server %s (pid %d) survived SIGKILL", c.name, pid)
+		}
 	}
+	killGroup(pid)
 	<-waited
 	return closeErr
+}
+
+// killGroup SIGKILLs everything in the server's process group.
+//
+// Negative pid means "the group whose id is pid", which is this server's group
+// because Connect set Setpgid. Errors are discarded on purpose: ESRCH means the
+// group is already empty, which is the outcome being asked for.
+//
+// It is safe to call after the leader has exited. A process group id is not
+// reused while any member remains, so a negative signal either reaches the
+// survivors or reaches nobody -- it cannot land on an unrelated process.
+func killGroup(pid int) {
+	_ = syscall.Kill(-pid, syscall.SIGKILL)
 }
 
 // waitGone polls for a process's disappearance, up to a grace period. Signal 0
