@@ -125,6 +125,17 @@ type MCPBudgetConfig struct {
 	MaxToolResultBytes int `json:"max_tool_result_bytes,omitempty"`
 	MaxTotalToolBytes  int `json:"max_total_tool_bytes,omitempty"`
 	MaxAdvertisedTools int `json:"max_advertised_tools,omitempty"`
+
+	// MaxMessageBytes bounds ONE JSON-RPC message read from a Lane B server.
+	//
+	// The odd one out: every other field here bounds what the daemon SENDS or
+	// SPENDS, and this one bounds what it is willing to ALLOCATE on behalf of
+	// somebody else's process. It exists because the MCP SDK's stdio transport
+	// is a bare json.Decoder with no limit, so without it a server can make the
+	// daemon hold as much memory as it feels like -- and tools/list is read
+	// before any approval prompt exists, so no consent step stands in front of
+	// it. See mcp.DefaultMaxMessageBytes for the measurement.
+	MaxMessageBytes int `json:"max_message_bytes,omitempty"`
 }
 
 // Tool policies. The vocabulary is closed: anything else in a config file is a
@@ -160,6 +171,12 @@ const (
 	maxMaxTotalToolBytes      = 4 * 1024 * 1024
 	defaultMaxAdvertisedTools = 12
 	maxMaxAdvertisedTools     = 64
+
+	// The ceiling, not the default: mcp.DefaultMaxMessageBytes owns that, next
+	// to the measurement that justifies it. 32 MiB is high enough that no
+	// honest server hits it and low enough that reaching it is roughly 400 MB
+	// of heap rather than an unbounded amount.
+	maxMaxMessageBytes = 32 * 1024 * 1024
 )
 
 var (
@@ -167,7 +184,7 @@ var (
 	knownMCPBuiltinKeys = []string{"disabled", "tools"}
 	knownMCPServerKeys  = []string{"command", "args", "env", "tools", "acknowledged_unconfined", "disabled"}
 	knownMCPBudgetKeys  = []string{"max_iterations", "turn_timeout_seconds", "max_tool_result_bytes",
-		"max_total_tool_bytes", "max_advertised_tools"}
+		"max_total_tool_bytes", "max_advertised_tools", "max_message_bytes"}
 )
 
 // The resolved* accessors apply the "0 means default" convention. All are
@@ -207,6 +224,12 @@ func (b MCPBudgetConfig) resolvedMaxAdvertisedTools() int {
 	}
 	return b.MaxAdvertisedTools
 }
+
+// resolvedMaxMessageBytes returns 0 for "unset", which mcp.Connect reads as
+// mcp.DefaultMaxMessageBytes. Deliberately NOT resolved to the default here:
+// the number belongs next to the measurement that justifies it, in the package
+// that owns the transport, not in the config loader.
+func (b MCPBudgetConfig) resolvedMaxMessageBytes() int { return b.MaxMessageBytes }
 
 // policyForTool returns the configured policy for one tool, defaulting to
 // PolicyAsk. Shared by both lanes so the "unlisted means ask" rule has exactly
@@ -329,6 +352,7 @@ func (c *Config) clampMCPRanges() {
 	clamp("max_tool_result_bytes", &b.MaxToolResultBytes, maxMaxToolResultBytes)
 	clamp("max_total_tool_bytes", &b.MaxTotalToolBytes, maxMaxTotalToolBytes)
 	clamp("max_advertised_tools", &b.MaxAdvertisedTools, maxMaxAdvertisedTools)
+	clamp("max_message_bytes", &b.MaxMessageBytes, maxMaxMessageBytes)
 
 	// A per-result cap above the whole-turn cap is not wrong so much as
 	// meaningless -- the turn cap would always bite first -- and it usually
@@ -336,6 +360,17 @@ func (c *Config) clampMCPRanges() {
 	if b.MaxToolResultBytes > 0 && b.MaxTotalToolBytes > 0 && b.MaxToolResultBytes > b.MaxTotalToolBytes {
 		c.warnf("mcp.budget.max_tool_result_bytes (%d) is larger than max_total_tool_bytes (%d), so the per-result cap can never apply",
 			b.MaxToolResultBytes, b.MaxTotalToolBytes)
+	}
+
+	// A message limit below the per-result cap means the transport refuses the
+	// server before the result cap ever gets to trim it: results that the user
+	// explicitly sized for would arrive as a dead server instead. Warned rather
+	// than corrected, because which of the two numbers is the mistake is the
+	// user's call, not ours.
+	if b.MaxMessageBytes > 0 && b.MaxToolResultBytes > 0 && b.MaxMessageBytes < b.MaxToolResultBytes {
+		c.warnf("mcp.budget.max_message_bytes (%d) is smaller than max_tool_result_bytes (%d), so a "+
+			"result that size is refused as an over-long message rather than truncated",
+			b.MaxMessageBytes, b.MaxToolResultBytes)
 	}
 }
 

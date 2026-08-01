@@ -117,6 +117,9 @@ func (s *Server) buildRegistry(ctx context.Context, logger *log.Logger, proposal
 			EnvAllow: srv.Env,
 			Stderr:   serverStderr(name, logger),
 			Logf:     logger.Printf,
+			// The one budget field that bounds ALLOCATION rather than egress:
+			// what this daemon will hold on behalf of somebody else's process.
+			MaxMessageBytes: cfg.MCP.Budget.resolvedMaxMessageBytes(),
 		})
 		if err != nil {
 			logger.Printf("mcp: server %s unavailable: %v", name, err)

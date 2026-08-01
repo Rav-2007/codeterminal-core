@@ -132,17 +132,22 @@ func samplePeakHeap() func() uint64 {
 	}
 }
 
-// M1a -- tools/list is unbounded, and it runs BEFORE consent exists.
+// M1a -- an over-long tools/list is refused, and refused cheaply.
 //
-// This is the sharpest of the flood cases. buildRegistry calls ListTools at the
-// start of an agent turn, so this response is read in full before the loop has
-// started, before any tool has been proposed, and therefore before any approval
-// prompt could exist. A user who configured a server and typed one prompt has
-// already taken this into memory having authorised nothing.
+// This is the sharpest of the flood cases, because tools/list is read at
+// registry-build time: before the loop has started, before any tool has been
+// proposed, and therefore before any approval prompt could exist. A user who
+// configured a server and typed one prompt has already taken this response,
+// having authorised nothing. max_tool_result_bytes does not apply here at all
+// -- that caps tool RESULTS, and this is a tool LIST.
 //
-// max_tool_result_bytes does not apply here at all: that caps tool RESULTS, and
-// this is a tool LIST.
-func TestFloodedToolListIsReadInFull(t *testing.T) {
+// Measured before messageLimitReader existed: 8 MiB accepted whole, 101 MB of
+// peak heap, 12.0x amplification holding linearly to 64 MiB / 806 MB.
+//
+// Fails if the limit check in messageLimitReader.Read is neutered -- on the
+// error AND on the peak-heap ceiling, which is the assertion that would still
+// catch a "fix" that reported an error after allocating anyway.
+func TestAFloodedToolListIsRefusedBeforeItIsAllocated(t *testing.T) {
 	if testing.Short() {
 		t.Skip("allocates several MiB by design")
 	}
@@ -161,33 +166,37 @@ func TestFloodedToolListIsReadInFull(t *testing.T) {
 	start := time.Now()
 	tools, err := client.ListTools(context.Background())
 	elapsed := time.Since(start)
-	if err != nil {
-		t.Fatalf("ListTools: %v", err)
-	}
 
 	peakHeap := stopPeak()
 	runtime.ReadMemStats(&after)
 	churn := after.TotalAlloc - before.TotalAlloc
+	t.Logf("M1a: a %d MiB tools/list against a %d byte message limit: err=%v, tools=%d, "+
+		"peak heap=%d bytes, cumulative allocation=%d bytes, elapsed=%s",
+		mib, DefaultMaxMessageBytes, err, len(tools), peakHeap, churn, elapsed)
 
-	if len(tools) != 1 {
-		t.Fatalf("expected the server's one tool, got %d", len(tools))
+	if err == nil {
+		t.Fatalf("a %d MiB tools/list was accepted whole. This is read at registry-build time, "+
+			"before any approval prompt exists, so there is no consent step in front of it", mib)
 	}
-	t.Logf("M1a: a %d MiB tools/list was accepted whole: description=%d bytes, "+
-		"peak heap=%d bytes, cumulative allocation=%d bytes, elapsed=%s, approval prompts shown=0",
-		mib, len(tools[0].Description), peakHeap, churn, elapsed)
-
-	if got := len(tools[0].Description); got < mib*1024*1024 {
-		t.Errorf("something truncated the description to %d bytes; if a cap now exists "+
-			"this test should assert it rather than measure its absence", got)
+	if !errors.Is(err, ErrServerUnavailable) {
+		t.Errorf("an over-long message should degrade the server, not fail in some other way: %v", err)
+	}
+	// The bound is on ALLOCATION, so the bound has to hold there too. 4x the
+	// limit is loose enough for decoder headroom and tight enough that reading
+	// the whole 8 MiB would fail it.
+	if ceiling := uint64(4 * DefaultMaxMessageBytes); peakHeap > ceiling {
+		t.Errorf("peak heap %d exceeded %d while refusing an over-long message; the limit did not "+
+			"bound what was actually allocated", peakHeap, ceiling)
 	}
 }
 
-// M1b -- a tool result is read in full, then capped.
+// M1b -- an over-long tool result is refused at the transport.
 //
-// The cap in renderToolResult (32 KiB by default) is real and correct, and it
-// is applied to bytes already resident. This test measures that gap: what the
-// model is sent versus what the machine had to hold to send it.
-func TestFloodedToolResultIsReadInFull(t *testing.T) {
+// renderToolResult's cap (32 KiB by default) is real and correct, and it is
+// applied to a string already resident: it bounds what leaves the machine, not
+// what the machine had to hold to send it. Those are different properties and
+// only one of them was enforced.
+func TestAFloodedToolResultIsRefused(t *testing.T) {
 	if testing.Short() {
 		t.Skip("allocates several MiB by design")
 	}
@@ -198,16 +207,16 @@ func TestFloodedToolResultIsReadInFull(t *testing.T) {
 	}
 
 	res, err := client.CallTool(context.Background(), "firehose", nil)
-	if err != nil {
-		t.Fatalf("CallTool: %v", err)
-	}
-	t.Logf("M1b: the server returned %d bytes; the daemon's default max_tool_result_bytes "+
-		"is 32768, so %d bytes were held to emit at most 32768",
-		len(res.Content), len(res.Content))
+	t.Logf("M1b: a %d MiB tool result against a %d byte message limit: err=%v, content=%d bytes",
+		mib, DefaultMaxMessageBytes, err, len(res.Content))
 
-	if len(res.Content) < mib*1024*1024 {
-		t.Errorf("the result arrived truncated at %d bytes; if a transport cap now exists "+
-			"this test should assert it rather than measure its absence", len(res.Content))
+	if err == nil {
+		t.Fatalf("a %d MiB result was read in full. max_tool_result_bytes caps what goes to the "+
+			"MODEL (32768 by default) and is applied to a string already resident, so it bounds "+
+			"egress and not memory", mib)
+	}
+	if !errors.Is(err, ErrServerUnavailable) {
+		t.Errorf("an over-long result should degrade the server, not fail in some other way: %v", err)
 	}
 }
 

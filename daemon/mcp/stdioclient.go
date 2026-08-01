@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -37,6 +38,28 @@ const (
 	// stopGrace is how long a server gets to exit after its transport closes,
 	// before SIGKILL. Mirrors helperproc.go's Stop.
 	stopGrace = 2 * time.Second
+
+	// DefaultMaxMessageBytes bounds ONE JSON-RPC message from a server.
+	//
+	// Without it there is no bound at all. The SDK's stdio transport is a bare
+	// json.Decoder over the subprocess's stdout (go-sdk v1.7.0,
+	// mcp/transport.go newIOConn) -- no io.LimitReader, and nothing above it
+	// caps anything either, because renderToolResult's max_tool_result_bytes
+	// applies to a string the daemon has ALREADY received.
+	//
+	// Measured before this existed: a server returning an N MiB response drove
+	// peak heap to 12.0x N, linearly, across 4/8/32/64 MiB. 64 MiB on the wire
+	// was 806 MB of live heap. The sharper half is that tools/list is read at
+	// registry-build time, so it lands BEFORE the loop exists and therefore
+	// before any approval prompt could have been shown: a user who configured
+	// a server and typed one prompt has already taken it, having authorised
+	// nothing.
+	//
+	// 2 MiB is twice maxMaxToolResultBytes -- the largest single result the
+	// daemon will ever forward -- which leaves room for JSON envelope and
+	// escaping while keeping the worst case around 25 MB of heap rather than
+	// unbounded.
+	DefaultMaxMessageBytes = 2 * 1024 * 1024
 )
 
 // StdioClient is a Lane B MCP server: a subprocess spoken to over stdio.
@@ -46,6 +69,7 @@ type StdioClient struct {
 
 	mu      sync.Mutex
 	cmd     *exec.Cmd
+	stdin   io.WriteCloser
 	session *sdk.ClientSession
 	closed  bool
 }
@@ -75,6 +99,9 @@ type LaunchConfig struct {
 	// from Stderr so a line the daemon wrote is never mistaken for a line the
 	// server wrote. Nil discards them.
 	Logf func(format string, args ...any)
+	// MaxMessageBytes bounds one JSON-RPC message from the server. Zero means
+	// DefaultMaxMessageBytes; there is no way to ask for no bound.
+	MaxMessageBytes int
 }
 
 // Connect starts the server and completes the MCP initialize handshake.
@@ -107,6 +134,35 @@ func Connect(ctx context.Context, cfg LaunchConfig) (*StdioClient, error) {
 	cmd.Env = ServerEnv(cfg.EnvAllow)
 	cmd.Stderr = cfg.Stderr
 
+	// THE PIPES ARE OURS, WHICH IS THE WHOLE POINT OF NOT USING
+	// sdk.CommandTransport HERE.
+	//
+	// CommandTransport builds the pipes and starts the process itself, handing
+	// the SDK a reader we never see -- and that reader is an unbounded
+	// json.Decoder. Owning the plumbing costs about fifteen lines and buys the
+	// one thing the transport cannot be asked for: a bound on how much a
+	// subprocess can make this daemon allocate. It also puts cmd.Start on this
+	// side of the call, which is what lets the process group be set (see Close).
+	//
+	// The trade is that reaping the process is now ours too. Close does it.
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("%w: server %s: %v", ErrServerUnavailable, cfg.Name, err)
+	}
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, fmt.Errorf("%w: server %s: %v", ErrServerUnavailable, cfg.Name, err)
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("%w: server %s failed to start: %v", ErrServerUnavailable, cfg.Name, err)
+	}
+
+	limit := cfg.MaxMessageBytes
+	if limit <= 0 {
+		limit = DefaultMaxMessageBytes
+	}
+	bounded := &messageLimitReader{r: stdout, max: limit, server: cfg.Name}
+
 	client := sdk.NewClient(&sdk.Implementation{
 		Name:    "codeterminal",
 		Version: "v1",
@@ -115,12 +171,71 @@ func Connect(ctx context.Context, cfg LaunchConfig) (*StdioClient, error) {
 	connectCtx, cancel := context.WithTimeout(ctx, connectTimeout)
 	defer cancel()
 
-	session, err := client.Connect(connectCtx, &sdk.CommandTransport{Command: cmd}, nil)
+	c := &StdioClient{name: cfg.Name, logf: cfg.Logf, cmd: cmd, stdin: stdin}
+
+	session, err := client.Connect(connectCtx,
+		&sdk.IOTransport{Reader: io.NopCloser(bounded), Writer: stdin}, nil)
 	if err != nil {
+		// The process is already running at this point, so a failed handshake
+		// must not leave it behind. Close is idempotent and does the reaping.
+		_ = c.Close()
 		return nil, fmt.Errorf("%w: server %s failed to start: %v", ErrServerUnavailable, cfg.Name, err)
 	}
 
-	return &StdioClient{name: cfg.Name, logf: cfg.Logf, cmd: cmd, session: session}, nil
+	c.mu.Lock()
+	c.session = session
+	c.mu.Unlock()
+	return c, nil
+}
+
+// messageLimitReader fails the stream when a SINGLE newline-delimited message
+// exceeds max bytes.
+//
+// PER MESSAGE, NOT PER STREAM, and the distinction is the whole design. An
+// io.LimitReader over the connection would cap the total bytes a server may
+// ever send, which would kill a long and perfectly well-behaved session after
+// enough legitimate traffic. What needs bounding is one allocation: the SDK
+// decodes each message into a single json.RawMessage, so the size of one
+// message is the size of one buffer.
+//
+// Counting from the last newline is exact rather than approximate here: the
+// transport is newline-delimited JSON by definition (both IOTransport and
+// StdioTransport say so), so bytes-since-newline IS the length of the message
+// being accumulated.
+//
+// Once tripped it stays tripped. A stream that has already produced an
+// over-long message is not one to keep reading from hoping for a short one.
+type messageLimitReader struct {
+	r       io.Reader
+	max     int
+	server  string
+	sinceNL int
+	tripped bool
+}
+
+func (l *messageLimitReader) Read(p []byte) (int, error) {
+	if l.tripped {
+		return 0, l.err()
+	}
+	n, err := l.r.Read(p)
+	if n > 0 {
+		if i := bytes.LastIndexByte(p[:n], '\n'); i >= 0 {
+			l.sinceNL = n - i - 1
+		} else {
+			l.sinceNL += n
+		}
+		if l.sinceNL > l.max {
+			l.tripped = true
+			return 0, l.err()
+		}
+	}
+	return n, err
+}
+
+func (l *messageLimitReader) err() error {
+	return fmt.Errorf("%w: server %s sent a single message larger than the %d byte limit; "+
+		"reading it in full is how an unconfined subprocess exhausts this daemon's memory",
+		ErrServerUnavailable, l.server, l.max)
 }
 
 // ListTools returns the server's advertised tools, translated into this
@@ -279,6 +394,11 @@ func flattenContent(content []sdk.Content) string {
 // allow. So Close mirrors helperproc.go's Stop: ask, wait a bounded grace, then
 // make certain.
 //
+// Since Connect owns cmd.Start, Close owns the reaping: it closes stdin (the
+// spec's shutdown sequence), waits, escalates, and calls Wait so the child does
+// not stay a zombie. Nothing else calls Wait, so this is the only place it can
+// happen.
+//
 // Idempotent -- the registry may close a server that already died.
 func (c *StdioClient) Close() error {
 	c.mu.Lock()
@@ -287,19 +407,34 @@ func (c *StdioClient) Close() error {
 		return nil
 	}
 	c.closed = true
-	session, cmd := c.session, c.cmd
-	c.session, c.cmd = nil, nil
+	session, cmd, stdin := c.session, c.cmd, c.stdin
+	c.session, c.cmd, c.stdin = nil, nil, nil
 	c.mu.Unlock()
 
 	var closeErr error
 	if session != nil {
 		closeErr = session.Close()
 	}
+	// "The client SHOULD initiate shutdown by first closing the input stream to
+	// the child process" -- and a well-behaved server exits on that alone.
+	if stdin != nil {
+		_ = stdin.Close()
+	}
 	if cmd == nil || cmd.Process == nil {
 		return closeErr
 	}
 
+	// Wait in the background: it is what releases the process-table entry, but
+	// it blocks until the child is actually gone, and the whole point of the
+	// escalation below is that a hostile child might not be.
+	waited := make(chan struct{})
+	go func() {
+		_ = cmd.Wait()
+		close(waited)
+	}()
+
 	if gone := waitGone(cmd.Process.Pid, stopGrace); gone {
+		<-waited
 		return closeErr
 	}
 
@@ -309,6 +444,7 @@ func (c *StdioClient) Close() error {
 	if !waitGone(cmd.Process.Pid, stopGrace) {
 		return fmt.Errorf("mcp server %s (pid %d) survived SIGKILL", c.name, cmd.Process.Pid)
 	}
+	<-waited
 	return closeErr
 }
 
