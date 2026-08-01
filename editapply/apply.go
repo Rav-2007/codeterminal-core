@@ -26,6 +26,31 @@ type PreparedEdit struct {
 	Creates    bool   // true when this edit brings a new file into existence (see IsEmptySearch)
 }
 
+// refuseIfUnparseable is the syntax gate: a hard refusal, not a note.
+//
+// Shared by the edit and the create path, and it is a shared function rather
+// than two copies for the reason it had to be written at all. The gate was
+// inline in PrepareEdit and prepareCreate carried only syntaxNoteFor, so the
+// SAME model output — a .go file that does not parse — was refused when it
+// arrived as an edit and written to disk when it arrived as a create. A model
+// that had its edit refused could get the identical bytes onto disk by sending
+// them with an empty SEARCH section instead. One function, one behaviour, and
+// no second copy to drift.
+//
+// Best-effort by construction: Go is the only language with a parser in this
+// binary, and everything else is written unchecked. That asymmetry is honest
+// and reported by syntaxNoteFor; what is not defensible is the same language
+// being checked on one write path and not the other.
+func refuseIfUnparseable(relPath, content string) error {
+	if !strings.EqualFold(filepath.Ext(relPath), ".go") {
+		return nil
+	}
+	if _, err := parser.ParseFile(token.NewFileSet(), relPath, content, parser.AllErrors); err != nil {
+		return fmt.Errorf("edit would make %s unparseable as Go: %w", relPath, err)
+	}
+	return nil
+}
+
 // syntaxNoteFor describes what syntax checking applies to relPath, given the
 // content that would be written. Shared by the edit and create paths so a
 // created .go file is reported the same way an edited one is.
@@ -93,10 +118,8 @@ func PrepareEdit(realWorkspaceRoot string, block EditBlock) (*PreparedEdit, erro
 	startLine := strings.Count(original[:match.Start], "\n") + 1
 	endLine := startLine + strings.Count(original[match.Start:match.End], "\n")
 
-	if strings.EqualFold(filepath.Ext(block.FilePath), ".go") {
-		if _, err := parser.ParseFile(token.NewFileSet(), block.FilePath, newContent, parser.AllErrors); err != nil {
-			return nil, fmt.Errorf("edit would make %s unparseable as Go: %w", block.FilePath, err)
-		}
+	if err := refuseIfUnparseable(block.FilePath, newContent); err != nil {
+		return nil, err
 	}
 	syntaxNote := syntaxNoteFor(block.FilePath, newContent)
 

@@ -89,6 +89,15 @@ func resolveSafeNewPath(realWorkspaceRoot, cleaned string) (string, error) {
 // there is a file there now (an existing but empty file takes this same path,
 // which is the point — one meaning, not two).
 func prepareCreate(block EditBlock, targetPath string, exists bool) (*PreparedEdit, error) {
+	// The same gate the edit path applies, for the same reason and with the
+	// same wording (M7). Creating a .go file that does not parse used to be
+	// merely annotated while editing one into that state was refused, so a
+	// model whose edit was rejected could land the identical bytes by sending
+	// them with an empty SEARCH section instead.
+	if err := refuseIfUnparseable(block.FilePath, block.Replace); err != nil {
+		return nil, err
+	}
+
 	mode := newFileMode
 	if exists {
 		info, err := os.Stat(targetPath)
