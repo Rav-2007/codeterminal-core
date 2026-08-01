@@ -292,3 +292,80 @@ func TestUndoCreate_ManifestNamingAnUnwalkedPathCannotDeleteIt(t *testing.T) {
 		t.Errorf("DELETED AN UNRELATED FILE named only in the manifest: %v", statErr)
 	}
 }
+
+// Undoing a create must also take back the directories the create made.
+//
+// Fix C removed the created FILE and left pkg/sub/ standing — an empty
+// directory tree the user never made, reported as a fully reverted workspace.
+// Same failure class the rest of this file exists for: the report and the disk
+// disagree.
+func TestUndoCreate_RemovesDirectoriesTheApplyRunMade(t *testing.T) {
+	root := realTempDir(t)
+	backupDir := applyCreate(t, root, "pkg/sub/deep/thing.go", "package deep\n")
+
+	var out bytes.Buffer
+	if _, _, err := runUndoSession(root, backupDir, false, strings.NewReader(""), &out, discardLogger()); err != nil {
+		t.Fatalf("runUndoSession: %v", err)
+	}
+
+	for _, rel := range []string{"pkg/sub/deep", "pkg/sub", "pkg"} {
+		if _, err := os.Stat(filepath.Join(root, rel)); err == nil {
+			t.Errorf("undo left %s/ standing; the apply run brought it into existence and the undo claims the workspace is reverted", rel)
+		} else if !os.IsNotExist(err) {
+			t.Fatalf("Stat %s: %v", rel, err)
+		}
+	}
+	if !strings.Contains(out.String(), "director") {
+		t.Errorf("report = %q, want it to mention the directories it removed", out.String())
+	}
+}
+
+// A directory the USER made must survive, even when it is empty afterwards.
+//
+// This is the conflation guard, and the reason the directories are recorded by
+// the apply run rather than inferred from emptiness at undo time. "Remove the
+// parent if it is now empty" gets this exact case wrong, and getting it wrong
+// means deleting something the user created.
+func TestUndoCreate_LeavesADirectoryTheUserMade(t *testing.T) {
+	root := realTempDir(t)
+	if err := os.MkdirAll(filepath.Join(root, "mine"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	backupDir := applyCreate(t, root, "mine/thing.go", "package mine\n")
+
+	var out bytes.Buffer
+	if _, _, err := runUndoSession(root, backupDir, false, strings.NewReader(""), &out, discardLogger()); err != nil {
+		t.Fatalf("runUndoSession: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(root, "mine", "thing.go")); !os.IsNotExist(err) {
+		t.Error("the created file was not removed")
+	}
+	if info, err := os.Stat(filepath.Join(root, "mine")); err != nil || !info.IsDir() {
+		t.Error("undo deleted mine/, a directory the user made and the apply run did not; an empty directory is not this run's to remove")
+	}
+}
+
+// A directory still holding something must stay, whoever made it. The undo
+// could not revert everything (a guarded file, a refusal), and removing the
+// directory around what is left would be the destructive reading of "revert".
+func TestUndoCreate_KeepsADirectoryThatStillHoldsSomething(t *testing.T) {
+	root := realTempDir(t)
+	backupDir := applyCreate(t, root, "pkg/thing.go", "package pkg\n")
+	// Something arrives in the same directory after the apply run.
+	if err := os.WriteFile(filepath.Join(root, "pkg", "notes.txt"), []byte("mine\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	if _, _, err := runUndoSession(root, backupDir, false, strings.NewReader(""), &out, discardLogger()); err != nil {
+		t.Fatalf("runUndoSession: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(root, "pkg", "notes.txt")); err != nil {
+		t.Fatalf("undo destroyed an unrelated file in the directory it was cleaning up: %v", err)
+	}
+	if info, err := os.Stat(filepath.Join(root, "pkg")); err != nil || !info.IsDir() {
+		t.Error("pkg/ should still exist: it is not empty")
+	}
+}

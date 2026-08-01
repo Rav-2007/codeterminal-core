@@ -262,12 +262,26 @@ func Apply(realWorkspaceRoot string, prepared *PreparedEdit, backupDir string) e
 			return fmt.Errorf("recording %s as newly created: %w", prepared.Block.FilePath, err)
 		}
 	}
+	// Which directories the MkdirAll below is about to bring into existence,
+	// recorded BEFORE it runs so undo can take them back again. Same ordering
+	// rule as every other piece of bookkeeping here (Fix 1): fallible, and
+	// reversible, while the workspace is still untouched.
+	rollbackDirs := func() {}
+	if prepared.Creates {
+		rollbackDirs, err = recordCreatedDirsReversible(backupDir, realWorkspaceRoot, prepared)
+		if err != nil {
+			rollbackCreated()
+			rollbackAfter()
+			return fmt.Errorf("recording the directories created for %s: %w", prepared.Block.FilePath, err)
+		}
+	}
 	// A creating edit may name a directory that does not exist yet. This is the
 	// one mutation that precedes the write, and deliberately the last thing
 	// before it: an empty directory is not file content, and leaving one behind
 	// if the write then fails costs nothing and loses nothing.
 	if prepared.Creates {
 		if err := os.MkdirAll(filepath.Dir(prepared.TargetPath), 0755); err != nil {
+			rollbackDirs()
 			rollbackCreated()
 			rollbackAfter()
 			return fmt.Errorf("creating parent directories for %s: %w", prepared.Block.FilePath, err)
@@ -279,6 +293,7 @@ func Apply(realWorkspaceRoot string, prepared *PreparedEdit, backupDir string) e
 	// write non-atomically (partial-file corruption on interruption); see
 	// writeFileAtomicNoFollow for how each is closed.
 	if err := writeFileAtomicNoFollow(prepared.TargetPath, []byte(prepared.NewContent), prepared.FileMode); err != nil {
+		rollbackDirs()
 		rollbackCreated()
 		rollbackAfter()
 		return fmt.Errorf("writing %s: %w", prepared.Block.FilePath, err)

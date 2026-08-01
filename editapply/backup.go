@@ -276,3 +276,136 @@ func writeBackupCopy(backupDir, subdir, realWorkspaceRoot, targetPath string, co
 	}
 	return os.WriteFile(dest, content, mode)
 }
+
+// createdDirsManifestName is the directory counterpart of createdManifestName:
+// which directories the apply run had to bring into existence to write a
+// created file into.
+//
+// It exists for the same reason its sibling does, and closes the same shape of
+// gap. Undo removes a created FILE (Fix C) but left the directories that file
+// arrived in standing, so undoing "create pkg/sub/thing.go" gave back an empty
+// pkg/sub/ the user never made. The report said the workspace was reverted and
+// disk disagreed, which is the failure class this package exists to kill.
+//
+// AND THE DISTINCTION CANNOT BE RECOVERED AT UNDO TIME, which is why it is
+// recorded rather than inferred. "Remove the parent if it is now empty" is
+// nearly right and wrong in the one case that matters: a user who had already
+// made an empty directory and asked for a file inside it would have their
+// directory deleted by an undo that never created it. Recording what MkdirAll
+// actually had to make is exact, and exactness here is cheap.
+//
+// Format, guarantees and the reason for the dumbness are createdManifestName's,
+// unchanged: one workspace-relative path per line, consumed only as a set that
+// undo intersects with its own confinement-checked walk. A corrupted manifest
+// can leave a directory behind; it can never direct a removal at a path undo
+// was not already reverting, and os.Remove refuses a non-empty directory in any
+// case.
+const createdDirsManifestName = "created-dirs"
+
+// missingAncestors lists the directories between realWorkspaceRoot (exclusive)
+// and dir (inclusive) that do not exist yet, outermost first — exactly what a
+// subsequent MkdirAll will create, computed before it runs.
+//
+// Outermost first so the manifest reads top-down; undo reverses it, because a
+// parent cannot be removed before its child.
+func missingAncestors(realWorkspaceRoot, dir string) ([]string, error) {
+	var missing []string
+	for cur := dir; ; cur = filepath.Dir(cur) {
+		rel, err := filepath.Rel(realWorkspaceRoot, cur)
+		if err != nil {
+			return nil, err
+		}
+		if rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			break
+		}
+		if _, err := os.Lstat(cur); err == nil {
+			break // this one exists, so every ancestor above it does too
+		} else if !os.IsNotExist(err) {
+			return nil, err
+		}
+		missing = append([]string{rel}, missing...)
+		if filepath.Dir(cur) == cur {
+			break
+		}
+	}
+	return missing, nil
+}
+
+// recordCreatedDirsReversible notes the directories this run must create to
+// write p, and returns an undo of that note.
+//
+// Reversible for exactly the reason recordCreatedReversible is: it runs before
+// the mutation it describes, so a write that then fails must be able to take
+// the claim back. A stale entry would have undo remove a directory this run is
+// not responsible for.
+func recordCreatedDirsReversible(backupDir, realWorkspaceRoot string, p *PreparedEdit) (rollback func(), err error) {
+	dirs, err := missingAncestors(realWorkspaceRoot, filepath.Dir(p.TargetPath))
+	if err != nil {
+		return nil, err
+	}
+	if len(dirs) == 0 {
+		return func() {}, nil
+	}
+
+	manifest := filepath.Join(backupDir, createdDirsManifestName)
+	previous, readErr := os.ReadFile(manifest)
+	switch {
+	case readErr == nil:
+		rollback = func() { os.WriteFile(manifest, previous, 0644) }
+	case os.IsNotExist(readErr):
+		rollback = func() { os.Remove(manifest) }
+	default:
+		return nil, readErr
+	}
+
+	existing := map[string]bool{}
+	for _, line := range strings.Split(string(previous), "\n") {
+		if line != "" {
+			existing[line] = true
+		}
+	}
+	out := previous
+	for _, d := range dirs {
+		if existing[d] {
+			continue // an earlier block in this run already made it
+		}
+		out = append(out, []byte(d+"\n")...)
+	}
+	if len(out) == len(previous) {
+		return func() {}, nil
+	}
+	if err := os.WriteFile(manifest, out, 0644); err != nil {
+		return nil, err
+	}
+	return rollback, nil
+}
+
+// CreatedDirsInSession reports the workspace-relative directories the apply run
+// that wrote sessionDir brought into existence, DEEPEST FIRST — the order they
+// must be removed in, since a parent cannot go before its child.
+//
+// A session with no manifest — one written before this record existed, or one
+// that created no directories — yields nothing and no error, so undo simply
+// leaves directories alone, which is the previous behaviour and is right for a
+// run that made none.
+func CreatedDirsInSession(sessionDir string) ([]string, error) {
+	data, err := os.ReadFile(filepath.Join(sessionDir, createdDirsManifestName))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var dirs []string
+	for _, line := range strings.Split(string(data), "\n") {
+		if line != "" {
+			dirs = append(dirs, line)
+		}
+	}
+	// Deepest first: more path separators means deeper, and for equal depth the
+	// order between siblings does not matter.
+	sort.SliceStable(dirs, func(i, j int) bool {
+		return strings.Count(dirs[i], string(filepath.Separator)) > strings.Count(dirs[j], string(filepath.Separator))
+	})
+	return dirs, nil
+}
