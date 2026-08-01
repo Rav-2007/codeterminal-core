@@ -359,21 +359,37 @@ func TestAServerDyingMidCallIsReportedAsAnUnavailableServer(t *testing.T) {
 
 // P2-2 -- THE ADVERTISED-TOOL CAP AND THE MEASUREMENT IT CAME FROM.
 //
-// The Phase 0 eval measured tool-selection accuracy at 100% with one tool and
-// 85.7% with five (docs/TOOLCALL_RELIABILITY_2026-07-31.md). The default was
-// 12 -- more than twice the widest menu ever measured, and nothing is known
-// about what happens there. This asserts the default never drifts back above
-// what has actually been measured.
+// The invariant is unchanged and is the whole point: the default must never sit
+// past the widest menu anyone has actually measured. A default beyond the
+// evidence is a guess with a number on it.
 //
-// It is NOT a claim that 5 is optimal. The curve between 5 and 12 is unmeasured
-// and stays unmeasured; measuring it costs real tokens. The claim is narrower
-// and it is the one that can be defended: the default is the widest menu with
-// evidence behind it.
+// WHAT CHANGED IS THE EVIDENCE, and this test is the record of that. It was
+// written with widestMeasuredMenu = 5, because the Phase 0 eval had measured
+// 100% at one tool and 85.7% at five and nothing wider
+// (docs/TOOLCALL_RELIABILITY_2026-07-31.md). It then did its job: when the
+// default moved to 12 it failed, loudly, naming the gap.
+//
+// 8 and 12 have since been measured (docs/TOOL_MENU_SIZE_2026-08-01.md; 105
+// trials, zero transport errors, zero timeouts):
+//
+//	menu  5  ->  88.6%   (31/35)
+//	menu  8  ->  85.7%   (30/35)
+//	menu 12  ->  85.7%   (30/35)
+//
+// Flat -- the entire spread is one trial at n=35 -- and every failure at every
+// size is the same run_tests/list_directory confusion, so excluding that one
+// prompt the score is 30/30 at all three sizes. So the constant below moves to
+// 12 because the MEASUREMENT moved to 12, not because the default wanted room.
+//
+// It is still not a claim that 12 is optimal. Nothing between 13 and the
+// maxMaxAdvertisedTools ceiling of 64 has been run, and the token cost of a
+// wider menu (2.1x the tool JSON at 12 versus 5) is a real cost this accuracy
+// number does not capture.
 func TestTheAdvertisedToolDefaultDoesNotExceedWhatWasMeasured(t *testing.T) {
-	const widestMeasuredMenu = 5
+	const widestMeasuredMenu = 12
 	if defaultMaxAdvertisedTools > widestMeasuredMenu {
 		t.Errorf("defaultMaxAdvertisedTools is %d, but the widest menu ever measured is %d "+
-			"(100%%@1 -> 85.7%%@5). A default past the evidence is a guess with a number on it",
+			"(88.6%%@5, 85.7%%@8, 85.7%%@12). A default past the evidence is a guess with a number on it",
 			defaultMaxAdvertisedTools, widestMeasuredMenu)
 	}
 }

@@ -129,9 +129,13 @@ provider on the next iteration. Delimiters are neutralised and control character
 stripped; instructions in prose are not, and cannot be. The mitigation is that
 acting on them requires an approval prompt a human reads.
 
-**The 4–12 tool-menu curve is unmeasured.** `max_advertised_tools` now defaults
-to 5, the widest menu ever measured (100% @ 1 → 85.7% @ 5). What happens between
-5 and 12 is unknown; measuring it costs real tokens.
+~~**The 4–12 tool-menu curve is unmeasured.**~~ **Measured 2026-08-01**
+(`docs/TOOL_MENU_SIZE_2026-08-01.md`): 88.6% @ 5, 85.7% @ 8, 85.7% @ 12 over 105
+trials — flat, with the entire spread being one trial. `max_advertised_tools`
+went back to a default of **12** because the accuracy argument for 5 did not
+survive contact with the data. A cap still exists, justified now on token cost
+(2.1× the tool JSON at 12 versus 5) rather than on accuracy. Nothing between 13
+and the ceiling of 64 has been run.
 
 ---
 
@@ -147,6 +151,9 @@ MCP_FLOOD_MIB=64 go test ./daemon/mcp/ -run TestAFloodedToolList -v
 
 # Interop (needs network, not in CI):
 MCP_INTEROP=1 go test ./daemon/mcp/ -run TestInterop -v
+
+# The tool-menu size curve (real billed calls):
+go test -tags eval -run TestToolMenuSizeCurve -v -timeout 60m ./daemon
 
 # 50 turns with a Lane B server, watching for leaks:
 TURNS=50 PACE=0.2s SAMPLE_EVERY=1s MCP_SERVER=echo scripts/agent-cost-bench.sh

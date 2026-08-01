@@ -165,22 +165,42 @@ const (
 // than honoured silently or rejected outright.
 //
 // defaultMaxAdvertisedTools is the one number here that came from a
-// measurement rather than a judgement, and until the 2026-08-01 remediation it
-// was the wrong number.
+// measurement rather than a judgement, and it has now been measured twice --
+// the second time contradicting what the first was read to imply.
 //
+// THE HISTORY MATTERS, because both readings were reasonable and one was wrong.
 // The Phase 0 tool-calling eval (docs/TOOLCALL_RELIABILITY_2026-07-31.md) found
 // selection accuracy falling from 100% with one tool on the menu to 85.7% with
-// FIVE. The default was 12: more than twice the widest menu anyone had ever
-// measured, chosen because it seemed roomy. What happens at 12 is not known --
-// no run has ever been done there, and the curve between 5 and 12 is not
-// measured either (P2-2, still open, because measuring it costs real tokens).
+// FIVE, and had measured nothing wider. Earlier on 2026-08-01 this default moved
+// 12 -> 5 on that basis: set it to the widest menu anyone had numbers for, since
+// past that we would be guessing.
 //
-// So the default is now the widest menu that has been measured. That is a
-// defensible sentence: past it we would be guessing, and the honest place to
-// guess is a config file the user edits, not a constant they never see. Raising
-// it is one line, and truncation is now reported as a
-// protocol.DegradedToolMenuTruncated rather than being indistinguishable from a
-// server that never offered the tool.
+// The guess has since been replaced by a measurement
+// (docs/TOOL_MENU_SIZE_2026-08-01.md, 105 trials, zero transport errors):
+//
+//	menu  5  ->  88.6%
+//	menu  8  ->  85.7%
+//	menu 12  ->  85.7%
+//
+// Flat. The whole spread is one trial at n=35. And every failure at every size
+// is the SAME confusion -- "run the editapply test suite" selecting
+// list_directory over run_tests, 14 times out of 15 -- so excluding that one
+// prompt the score is 30/30 at 5, at 8 and at 12. There is no menu-size effect
+// in this data; there is one tool description that loses to another, which would
+// lose just as badly on a two-tool menu.
+//
+// So the number goes back to 12, because the sentence that justified 5 is no
+// longer true.
+//
+// WHAT STILL JUSTIFIES A CAP is token cost, not accuracy. Every advertised
+// tool's full JSON schema rides on every request of every iteration: 12 tools is
+// 3,445 bytes of tool JSON against 5 tools' 1,626, which the user pays for on
+// every iteration of every turn. Wire bytes are not tokens and that ratio is not
+// measured, so this is a direction rather than a magnitude -- which is exactly
+// why the cap stays a config knob the user can lower.
+//
+// Truncation remains reported as a protocol.DegradedToolMenuTruncated rather
+// than being indistinguishable from a server that never offered the tool.
 const (
 	defaultMaxIterations      = 8
 	maxMaxIterations          = 50
@@ -190,7 +210,7 @@ const (
 	maxMaxToolResultBytes     = 1024 * 1024
 	defaultMaxTotalToolBytes  = 128 * 1024
 	maxMaxTotalToolBytes      = 4 * 1024 * 1024
-	defaultMaxAdvertisedTools = 5
+	defaultMaxAdvertisedTools = 12
 	maxMaxAdvertisedTools     = 64
 
 	// The ceiling, not the default: mcp.DefaultMaxMessageBytes owns that, next
