@@ -98,6 +98,7 @@ const (
 	gateUpstreamRequestBuild = "upstream_request_build"
 	gateUpstreamCallFailed   = "upstream_call_failed"
 	gateBudgetKill           = "budget_kill"
+	gateClientStall          = "client_stall"
 )
 
 // logLevelEnv names the level knob. Deliberately unlike the daemon, which chose a

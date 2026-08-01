@@ -74,6 +74,7 @@ type metricSet struct {
 	// Upstream.
 	upstreamErrors expvar.Int
 	budgetKills    expvar.Int
+	clientStalls   expvar.Int
 
 	// Auth cache. The hit RATE is the whole point: it is what says whether the
 	// 91 ms saving is actually being realised in production, or whether traffic
@@ -170,6 +171,7 @@ func (m *metricSet) buildVars() {
 	m.vars.Set("sweep_last_error_unix", &m.sweepLastErrUnix)
 	m.vars.Set("upstream_errors_total", &m.upstreamErrors)
 	m.vars.Set("budget_kills_total", &m.budgetKills)
+	m.vars.Set("client_stalls_total", &m.clientStalls)
 	m.vars.Set("admin_auth_failures_total", &m.adminAuthFailures)
 	m.vars.Set("auth_cache_hits_total", &m.authCacheHits)
 	m.vars.Set("auth_cache_misses_total", &m.authCacheMisses)

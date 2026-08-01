@@ -100,6 +100,32 @@ const (
 	// above it rather than equal to it.
 	serverWriteTimeout = 6 * time.Minute
 
+	// maxClientWriteStall bounds the CUMULATIVE time one response spends
+	// blocked writing to its own client, which is the per-connection output
+	// bound that serverWriteTimeout is not.
+	//
+	// serverWriteTimeout bounds the whole response, and it has to be generous:
+	// a legitimate completion can stream for five minutes. That generosity is
+	// the hole. A client that reads one byte just under every timeout window
+	// holds its connection, its in-flight slot and its upstream call for the
+	// full six minutes while consuming almost nothing — the M10 slow-drip. The
+	// in-flight caps bound how MANY such connections can exist; nothing bounded
+	// one of them.
+	//
+	// WHAT IS MEASURED IS THE STALL, NOT THE RATE, and that distinction is the
+	// whole design. An average bytes/sec over the stream cannot tell a slow
+	// client from a slow model — and killing a caller because the provider is
+	// thinking would be a far worse bug than the one being fixed. Time spent
+	// blocked INSIDE the write to the client is unambiguous: it is the client's
+	// socket buffer being full, i.e. the client not reading. A healthy client
+	// accumulates almost none of it however long the model takes, because the
+	// write lands in the socket buffer and returns.
+	//
+	// 60s against a 6-minute ceiling: a six-fold reduction in how long one
+	// non-reading client can pin a connection, with two orders of magnitude of
+	// headroom over what normal traffic accrues.
+	maxClientWriteStall = 60 * time.Second
+
 	// serverIdleTimeout bounds how long a keep-alive connection may sit
 	// idle between requests. Doesn't affect an active request (that's
 	// serverReadTimeout/serverWriteTimeout's job) -- just reclaims
@@ -631,6 +657,13 @@ type proxy struct {
 	// accepting, let active handlers finish) while adding a race of our own
 	// between the check and the reservation.
 	draining atomic.Bool
+
+	// maxClientStall is the per-connection output bound (see
+	// maxClientWriteStall, which is the value it always holds in production).
+	// A field rather than a bare constant so a test can prove the bound bites
+	// without spending a real minute doing it -- the alternative is a test that
+	// takes 60 seconds, which is a test nobody runs.
+	maxClientStall time.Duration
 }
 
 // newProxy builds a proxy with admission control wired up. Constructing the
@@ -656,6 +689,7 @@ func newProxy(apiKey, upstreamURL, supabaseURL, supabaseServiceRoleKey string, l
 		inFlight:         newInFlightLimiter(maxInFlightPerKey, maxInFlightTotal),
 		allowedModels:    allowedModels,
 		authCache:        newAuthCache(authCacheTTL, authCacheMaxEntries),
+		maxClientStall:   maxClientWriteStall,
 	}
 	// Bound here rather than in newMetrics because the flag lives on the proxy
 	// that was just built; a scrape reads it live (see bindDraining).
@@ -1531,6 +1565,8 @@ func (p *proxy) streamSSE(w http.ResponseWriter, body io.Reader, outcome *reserv
 	sawData := false
 	dataChunks := 0
 	streamedBytes := 0
+	// Cumulative time blocked writing to the client. See maxClientWriteStall.
+	var clientStall time.Duration
 	// Record into the caller's outcome rather than billing here. Every `return`
 	// below -- clean EOF, client write failure, budget kill -- lands on this, and
 	// the handler's single deferred finalizer does the billing. Recording (not
@@ -1575,11 +1611,24 @@ func (p *proxy) streamSSE(w http.ResponseWriter, body io.Reader, outcome *reserv
 			// the client byte-for-byte.
 			line = stripSSEAccountMetadata(line)
 		}
-		if _, err := io.WriteString(w, line+"\n"); err != nil {
-			return
-		}
+		// The write and the flush are timed together because both block on the
+		// same thing: a client socket buffer nobody is draining.
+		writeStart := time.Now()
+		_, writeErr := io.WriteString(w, line+"\n")
 		if canFlush {
 			flusher.Flush()
+		}
+		clientStall += time.Since(writeStart)
+		if writeErr != nil {
+			return
+		}
+		if clientStall > p.maxClientStall {
+			p.log.Warn("client is not reading its own response; dropping the stream",
+				"req_id", outcome.reqID, "gate", gateClientStall, "key_id", outcome.keyID,
+				"stall_seconds", clientStall.Seconds(), "chunks", dataChunks, "bytes", streamedBytes)
+			p.metrics.clientStalls.Add(1)
+			p.metrics.countRefusal(gateClientStall)
+			return
 		}
 
 		if !providerLogged {
