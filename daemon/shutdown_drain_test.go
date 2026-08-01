@@ -136,3 +136,56 @@ func TestWaitForDrain_ReturnsImmediatelyWhenIdle(t *testing.T) {
 			"waiting out the grace period, or Ctrl-C on an unused daemon reads as a hang", elapsed)
 	}
 }
+
+// THE SECOND GRACE, WHICH PHASE 4 ADDED AND NOTHING ASSERTED.
+//
+// shutdownGrace is 5s, sized by what a CUT request can damage: a prompt
+// mutates nothing, an edit apply is millisecond-scale local disk I/O. Agent
+// mode broke that premise. A turn can be mid-tool-call, and a Lane B tool is
+// somebody else's subprocess doing work this daemon cannot characterise, so
+// cutting it at 5s is cutting it arbitrarily.
+//
+// Hence toolDrainGrace, applied ONLY while a tool is actually executing. Both
+// halves are asserted here, because a WaitForDrain that always upgraded the
+// timeout would pass the first check alone -- and it would make every ordinary
+// Ctrl-C take 30 seconds to give up instead of 5.
+func TestWaitForDrain_UpgradesTheGraceOnlyWhileAToolIsExecuting(t *testing.T) {
+	srv := &Server{logger: discardLogger(), workspace: t.TempDir()}
+
+	// A connection that will never finish, so the drain always times out and
+	// the ONLY thing being measured is which timeout was used.
+	srv.inFlight.Add(1)
+	defer srv.inFlight.Done()
+
+	t.Run("no tool running: the caller's timeout stands", func(t *testing.T) {
+		started := time.Now()
+		if srv.WaitForDrain(100 * time.Millisecond) {
+			t.Fatal("reported a clean drain with a connection still in flight")
+		}
+		if elapsed := time.Since(started); elapsed > 5*time.Second {
+			t.Errorf("an ordinary drain waited %s; Ctrl-C on a daemon with no tool "+
+				"running must not sit out the tool grace", elapsed)
+		}
+	})
+
+	t.Run("tool running: the timeout is raised to toolDrainGrace", func(t *testing.T) {
+		srv.toolsInFlight.Add(1)
+		defer srv.toolsInFlight.Add(-1)
+
+		// Not waiting out the real 30s: the property is that the SHORT timeout
+		// was rejected in favour of the longer one, which shows up as the call
+		// outlasting the timeout it was given.
+		started := time.Now()
+		done := make(chan bool, 1)
+		go func() { done <- srv.WaitForDrain(100 * time.Millisecond) }()
+
+		select {
+		case <-done:
+			t.Fatalf("WaitForDrain gave up after %s while a tool was still executing; "+
+				"it used the caller's 100ms rather than toolDrainGrace, so a running "+
+				"tool gets cut at the ordinary grace", time.Since(started))
+		case <-time.After(time.Second):
+			// Still waiting after 10x the requested timeout: the upgrade held.
+		}
+	})
+}

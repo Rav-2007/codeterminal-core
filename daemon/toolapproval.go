@@ -153,6 +153,27 @@ func (a *connApprover) Ask(ctx context.Context, req protocol.ToolApprovalRequest
 	defer a.lc.withIdleTimeout(a.resolvedIdleTimeout())()
 	a.lc.grantReadBudget(maxApprovalResponseBytes)
 
+	// A shutdown arriving mid-question must not leave the daemon sitting out a
+	// five-minute human deadline on a connection it is about to abandon. Nothing
+	// can interrupt a blocked socket read from the outside, so this pushes the
+	// read deadline into the past instead, which is what actually unblocks it.
+	//
+	// Residual race, stated rather than papered over: limitedConn.Read re-arms
+	// the deadline immediately before each underlying read, so a cancellation
+	// landing in the window between this Ask's ctx check and that re-arm is
+	// overwritten and the wait runs its full length. The window is a few
+	// instructions wide and the outcome of losing it is a slow shutdown, never a
+	// wrong decision -- an unanswered ask is a denial either way.
+	stopWatch := make(chan struct{})
+	defer close(stopWatch)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = a.lc.SetReadDeadline(time.Now().Add(-time.Second))
+		case <-stopWatch:
+		}
+	}()
+
 	var raw json.RawMessage
 	err := a.dec.Decode(&raw)
 	waited := time.Since(started)

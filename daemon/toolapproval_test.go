@@ -239,3 +239,42 @@ func TestCancelledContextDeniesWithoutAsking(t *testing.T) {
 		t.Error("a cancelled context should close the channel rather than leave it to time out per call")
 	}
 }
+
+// A SHUTDOWN MID-QUESTION MUST NOT COST THE HUMAN DEADLINE.
+//
+// The daemon drains for seconds, not minutes. A turn parked on an approval
+// prompt holds its connection open for as long as the prompt stands, so
+// without something to unblock the read, Ctrl-C on a daemon that happened to
+// be asking would report an incomplete drain and abandon the connection rather
+// than closing it.
+//
+// Nothing can interrupt a blocked socket read from the outside, so the fix is
+// to move the deadline rather than to signal: see the watcher in Ask.
+func TestShutdownDuringAnApprovalDoesNotWaitOutTheHumanDeadline(t *testing.T) {
+	// A deliberately long human deadline, so the only thing that can end this
+	// wait quickly is the cancellation itself.
+	appr, client := approvalPipe(t, time.Minute)
+
+	go func() {
+		var msg protocol.TokenResponse
+		_ = json.NewDecoder(client).Decode(&msg)
+		select {} // read the question, then never answer
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
+
+	started := time.Now()
+	got := appr.Ask(ctx, approvalRequest("c1", `{"path":"a.txt"}`))
+	elapsed := time.Since(started)
+
+	if got.approved() {
+		t.Fatal("a cancelled approval was treated as a yes")
+	}
+	if elapsed > 5*time.Second {
+		t.Errorf("the ask took %s to notice a shutdown; the daemon drains in seconds", elapsed)
+	}
+}
