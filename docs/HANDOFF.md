@@ -1,366 +1,227 @@
-# Mochiii — Handoff Checkpoint v8
+# Mochiii — Handoff
 
-**Date:** 2026-08-01
-**Repo state at synthesis:** `main` @ `2797bbd`; working branch `feat/mcp-agent-loop` is **105 commits ahead of `main`** and **88 ahead of `origin/main`** — nothing pushed, by choice, as every prior tier has been. *(Counted live with `git rev-list --count`, not incremented from v7's figure.)*
-**Purpose:** Complete context transfer. A fresh session should be able to read only this document and know what Mochiii is, what's done, what's verified against which standard, what's open (and what it's blocked on), and what to do next — without re-deriving it from `BACKLOG.md`'s running log or any prior report.
-**Supersedes:** v7 (2026-07-24) and all predecessors. v5 was the first checkpoint committed into the repo; each successor updates it in place at the same canonical path.
-**What this document is NOT:** a closure event. It is a synthesis of state. Nothing here closes an item or resolves an open founder decision — it records that they are open, including Gate-6, D4, and everything else on the founder queue. Closure is the founder's call, as always.
+**Rewritten 2026-08-01 (v9).** Supersedes v8 and every predecessor.
 
----
+**Purpose:** get a fresh session productive fast. This document is an *entry
+point*, not a synthesis of everything — that is what v5 through v8 tried to be,
+and it is why they went stale. Each version added a layer and removed none, so
+by v8 the same file claimed macOS refused every connection (it has not since
+`648d38b`), that the proxy did not enforce ZDR (it has since F1, verified live
+by wire probe), and that `models.json` was untracked (it is tracked, and always
+has been).
 
-## ⚠️ WHAT IS OPEN NOW LIVES IN `docs/OPEN_ITEMS.md` — READ THAT FIRST
-
-**PART 3 below is v7's open list, dated 2026-07-24, and it is stale in specific ways
-named here.** It is kept because its *reasoning* is still the best account of why each
-item exists. It is no longer the register.
-
-`docs/OPEN_ITEMS.md` (2026-08-01) is the register. Every entry there was re-derived
-**against the code on this branch** and carries a severity, a `file:line`, and a
-CONFIRMED / PLAUSIBLE / NOT RUN label. It exists because the register itself was the
-first bug: v7 predated the 2026-07-30 launch gate, three robustness phases, PR #1
-landing on `main`, and every commit of this branch, so nobody could answer "what is
-open?" without re-deriving it — which is how the last two passes each rediscovered
-work the previous one had already done.
-
-**Where PART 3 is specifically wrong, corrected here rather than silently edited:**
-
-- **§3E's Gate-6 contradiction is NOT open.** It was reconciled 2026-07-27. The
-  in-process half (`d96794e`) plus the cross-process `flock` half (`2a389c7`) make it
-  engineering-complete; only the founder's formal ruling remains, which belongs on the
-  decision queue, not the bug list. §3E still describes four locations disagreeing and
-  calls it "the dominant remaining category" — that was true when written and is not now.
-- **§3F's "Full list in the report file" is not dangling, it is just outside the repo.**
-  The bug-hunt report lives at `~/.claude/plans/what-can-we-improve-snappy-music.md`, so
-  it does not travel with a checkout. All eight LOWs are now transcribed into
-  `OPEN_ITEMS.md` §2 and re-verified against current source — all eight still present.
-- **§3F's `-wal`/`-shm` permission gap names the wrong database.** `memory.db` and
-  `skills.db` both restrict their sidecars. The store that does not is `lexical.db`
-  (`0644` in a `0755` directory, holding full chunk text), which no prior list mentions.
-- **M9 is fixed** (`3e37c44`); it appears in §3F alongside M10, which genuinely is open.
-
-Two items were also found by the 2026-08-01 re-derivation and appear on no earlier
-list: the world-readable lexical index above, and an **unbounded log buffer on MCP
-server stderr** (`daemon/mcpruntime.go:212`) — the same unbounded-allocation shape the
-MCP hardening pass closed on stdout, on the one channel that pass did not cover.
+**This version keeps only what does not rot:** how to work on this project, what
+the architecture is, and where the code lives. Everything that changes weekly is
+now owned by exactly one document, and this one points at it.
 
 ---
 
-## ⚠️ Read this disambiguation first — "C1/C2/C3" names two unrelated clusters
+## Read these four, in this order
 
-The letters **C1/C2/C3 are overloaded in this project's record** and a cold reader will otherwise conflate them. There are two distinct clusters, both real, both on `main`:
-
-- **Tier-4 operability C1/C2/C3** (v5 §2C, this doc §2C): **C1** fail-fast config validation (`0599a11`), **C2** wire-visible degraded-state signals (`6618dda`), **C3** minimal observability surface / status + log file (`2241daa`).
-- **Bug-hunt ship-blocker C1/C2/C3** (new since v5, this doc §2E and §3): **C1** embedder-response length-check + `handleConn` `recover()` (`ee9e992`), **C2** atomic symlink-refusing *forward* edit write (`c7cff6c`), **C3** billing abort-refund — now **fixed** (`a703978`), NOT closed.
-
-They come from different passes (the Tier-4 operability cluster vs. the CTO/beta-tester bug-hunt report `~/.claude/plans/what-can-we-improve-snappy-music.md`). Wherever ambiguity is possible below, the cluster is named. Both C3s (bug-hunt billing `a703978`, Tier-4 observability `2241daa`) are now fixed-and-verified but neither is founder-*closed*; the bug-hunt C3's only residual is exact-metering of an aborted stream (§3F).
-
----
-
-## Where this document lives, and why
-
-**v6 is committed into the repo at `docs/HANDOFF.md`, updating v5 in place.** v5 established this home deliberately (v4 and earlier were repo-external artifacts in `~/Downloads/`, discoverable only via a stale `BACKLOG.md` reference; their absence forced the last full accounting to be reconstructed from the running log alone). The checkpoint now moves with the code, is versioned, and can't silently drift or vanish. Future checkpoints should update this file (or supersede it in place) rather than spawning another external copy. Older external handoffs remain as historical artifacts, no longer the source of record.
-
----
-
-## Verification standard for this synthesis (live-verified vs. inherited)
-
-Per this project's discipline (Part 0, rule 3), claims are not carried forward as fact from memory or from a prior report's text. This document separates the two, per claim.
-
-- **Live-verified this session (2026-07-23, v6 refresh):** repo/branch state and the 67-ahead count; that every fix commit cited for the new work is an ancestor of `main` — `ee9e992` (bug-hunt C1), `c7cff6c` (bug-hunt C2), `029d764` (M1), `b647490` (M2), `6995259` (M3), `ae1104c` (S1), `40b5980` (S2), `5290c08` (E2E harness) — plus the v5-era `d96794e`, `099c165`; that `8d37a6c` is still **dangling** (not an ancestor of `main`); that shipped `daemon/models.json` still sets `"allow_fallbacks": true` and its `primary` note still reads the flagged-stale `"~$0.11/$0.80 per 1M"`; and that the Gate-6 closure contradiction still reads as four disagreeing locations in their prior state (`BACKLOG.md:633` "does NOT close", `BACKLOG.md:681` "now closed", `p3-security-review.md:21` "Gate 6 CLOSED", `MEMORY.md:5` "FIXED+CLOSED `d96794e`").
-- **Inherited (attributed to the cited report/entry, NOT re-run this session):** every *live-execution* claim in the three new batches — the real-daemon/real-socket/real-TUI-in-a-pty captures, the real VS Code Extension Development Host run ("6 passing, exit 0"), the fail-when-neutered assertions, the ship-blocker C1 Step-0 reproduction over the real helper wire, the S1/S2 live before/after repros — is inherited from `BACKLOG.md`'s dated batch entries (lines ~1847–2184) and the project memory files. These were verified live *when written*; this refresh did **not** re-execute the Go suites, the EDH harness, or any repro. Likewise the older figures carried from v5 (audit repro rates 100%/68%/98%/88%→0%, TTFT numbers, ZDR-retention finding, 67.4% token-efficiency, embedding-ceiling spread) are inherited, verified live only when first written.
-- **Honest boundaries (verification that stopped short of full certainty), stated plainly, not smoothed:**
-  - **Provider-identity + provider-field claims are stub-labelled.** Every live run of the provider-surfacing work (`099c165`) and of the fallback-ZDR D1 captures used a **local stub that fabricates the OpenRouter `provider` value**. That is evidence the daemon reads the field and both clients render it — **not** evidence about what real OpenRouter returns. No OpenRouter/proxy key exists in this environment. The residual (that genuine OpenRouter responses carry the top-level `provider` field per chunk) rests on OpenRouter's streaming docs + the daemon's own `provider.go:67-73` "observed in practice, not formally guaranteed" comment.
-  - **VS Code E2E covers the client/protocol half, not the webview pixels.** The EDH harness drives the real compiled `daemonClient.ts` over a real socket and proves the panel *renders*, but VS Code exposes no webview DOM to the test host, so M1/M2/M3's specific rendered artifacts (incomplete-notice / dropped-turns warning / thinking block) are **not asserted per-behavior** in that suite. A platform constraint, not a shortcut — asserting them would need a test-only hook inside production `main.js`, deliberately not added.
-  - **OpenRouter's ZDR-fallback edge is documented-but-not-contractual** (unchanged from v5 §3A) — our side is provably clean; the residual lives on OpenRouter's side and is unverified at the exact edge.
-
----
-
-## PART 0 — READ THIS FIRST (how to work on this project)
-
-This project runs on a specific, consistent discipline. Following it is why the codebase is in good shape.
-
-1. **Audit first, fix second, document third.** An independent "beta tester" pass proves claims with *live execution* (not code reading), produces a PASS/FAIL/PARTIAL findings table with reproducibility rates, and hands findings back. Fixing is a separate task; documenting a third.
-2. **Never round up, and correct severity in *both* directions.** "Mostly works" is not "works." 4-of-5 fixed is reported as 4-of-5. Severity moves up (FAIL-2 went Moderate→High once exploited live) *and down* (the OpenRouter concern got less severe once the request code was read) — most recently, **the bug-hunt C1 "confirmed CRITICAL ship-blocker" was downgraded to "latent defensive gap"** once Step-0 live repro proved the vulnerable path unreachable through the real embedder (§2E). Downgrading a scary claim to what the evidence supports is the same discipline as upgrading a quiet one.
-3. **Verify against real execution, never memory or comments.** This project has a documented history of doc/comment claims that were false and only caught by running the code.
-4. **A fix's test must enter through the same door the user does.** Learned the hard way: Tier 2's Fix 7 (file creation) passed every engine-layer test while being *unreachable from every shipped client* because a parser rejected the input first. Test through production entry points. (The two traps this rule guards — "a wire field no client reads" and "a fix unreachable from clients" — are cited by name repeatedly below as *avoided*.)
-5. **Nobody but the founder closes an item.** Every task — audit or fix — stops at "implemented and verified." Closure is the founder's call.
-6. **Isolated commits per concern.** Don't bundle unrelated changes.
-7. **Two recurring hygiene hazards:** `daemon/models.json` / root `models.json` are **untracked** (model-tier config, no secrets) and have been swept into commits twice via `git add -A` — keep them untracked, stage explicitly. And pasted-transcript drift accumulates in `BACKLOG.md` — check before editing.
-
-**Build note:** `./...` fails from the repo root — the root isn't a module. Name the six `go.work` module paths explicitly (`daemon`, `editapply`, `protocol`, `clients/tui`, `helper`, `proxy`). Rebuild affected binaries after cross-module changes (daemon + TUI + extension drift from source otherwise).
-
----
-
-## PART 1 — WHAT MOCHIII IS
-
-*(Unchanged since v5 — the architecture has not moved.)*
-
-A **security-first, retrieval-grounded AI coding assistant** that runs as a local daemon on the developer's own machine. Product thesis: **trust is a feature** — an agent with write access to your code and your inference credential should be held to safety-critical engineering standards.
-
-**Architecture:**
-- **Local Unix-socket daemon** (`daemon/`) — serves CLI, TUI, and VS Code clients from one shared indexed understanding of the workspace ("one brain, thin clients"). Socket is `0600`, peer-authenticated via `SO_PEERCRED` (Linux; macOS intentionally refuses all connections pending its own implementation).
-- **Retrieval/indexing** — chunks and indexes the codebase; hybrid retrieval (vector + FTS5 lexical, RRF-max fusion K=60, class-aware rerank). Honors nested `.gitignore` at every directory level (S1) and case-folds the protected-dir guard (S2).
-- **Edit engine** (`editapply/`) — applies model-proposed edits with path confinement, backups, and multi-run undo. Supports file creation end-to-end (Tier 2.5). Both the forward write and the undo write are now atomic (temp+rename) and symlink-refusing (undo since FAIL-2; forward since bug-hunt C2).
-- **Secret detection** ("warn-mode") — filename-pattern gate + entropy/keyword content heuristics. Structural-signature scrubbing is live at retrieval time; entropy/keyword layers are **log-only** pending a founder redaction decision.
-- **Inference routing** — two paths to OpenRouter: direct (`daemon/provider.go`) and a managed proxy (`proxy/main.go`, on Railway). Both send `zdr:true` / `data_collection:"deny"` / `allow_fallbacks:true` on every request. The proxy is a byte-for-byte pass-through — it does not itself *enforce* ZDR (see F1, §3A).
-
----
-
-## PART 2 — WHAT'S DONE (verified with live execution; commits on `main` unless noted)
-
-### 2A. Security review — implemented & hardened across two axes (NOT closed — founder's gate)
-The P3 security review is the **blocking release gate for all new capability work**. Both axes were reviewed and hardened; neither is *closed* (the founder's ruling), and one sub-item carries an unresolved documentation contradiction (§3E). *(This table is inherited from v5 + `BACKLOG.md`; commit ancestry re-checked live where cited.)*
-
-| Item | Result | Commits |
-|---|---|---|
-| Warn-mode fire-rate accumulation | Durable JSONL sink + classification | `064a00a`, `6028d96` |
-| FAIL-1 — secret-name policy breadth | Broadened (non-RSA SSH keys, `.npmrc`/`.netrc`/`.pgpass`, kubeconfig, `*.pfx`, `*.tfstate`, service-account JSON); the `MatchesSecretName` glob **case-fold** bug fixed | `959a882`, `ade065a` |
-| Chunk-content scrub at retrieval (structural signatures) | Live at `renderChunk`; opaque/novel secrets still open (Designs B/C, log-only) | (2026-07-18) |
-| FAIL-2 — undo-path confinement (`restoreOne`) | Fixed; severity corrected Moderate→High | `4de7bd4`, `07c59a4` |
-| `ensureGitignoreEntry` (5th writer) | Fixed (found in FAIL-2 writer sweep) | `dbc4e6c` |
-| `O_NOFOLLOW` hardening, all 8 writers | Fixed | `147a7b3` |
-| FAIL-3 Gate 3 — socket peer auth | `SO_PEERCRED`, fail-closed (Linux; macOS refuses all) | `517c069` |
-| FAIL-3 Gate 5 — DoS limits | 16 MiB cap, 60s idle deadline, 128-conn ceiling | `ccf8b8d` |
-| FAIL-3 Gate 6 — concurrency | Per-workspace in-process lock; reframed from "TOCTOU amplifier" to five real data-integrity races (100%/68%/98%/88% → all 0%, fail-when-neutered). **Completed across processes by M4 (`2a389c7`, §2E)** — the in-process lock left the CLI and TUI, each a separate process, unserialized | `d96794e`, `2a389c7` |
-| FAIL-3 Gate 7 — error leakage | Paths scrubbed at socket boundary, upstream errors generalized; severity verified Informational/Low | `3aeb8b6` |
-| `server.go` reorg into per-concern files | Zero behavior change | `14502e5` |
-
-**Still open on this axis (see §3):** the auth-model founder decision (is same-uid-implies-trusted the accepted model?), the Gate-6 closure contradiction (§3E), Gate-7 existence-oracle distinguishability (flagged, not fixed), and several low-severity hardening residuals (mid-ancestor TOCTOU, `-wal`/`-shm` sidecar symlink + permission surface, `id_rsa_secret.pub` over-refusal). **New adjacency:** the bug-hunt C1 `recover()` (§2E) is exactly the FAIL-3 "`handleConn` recover backstop" follow-up that was scoped on this axis — it landed via the ship-blocker batch, not as a separate socket-axis commit.
-
-### 2B. Correctness & effectiveness — Tiers 1, 2, 2.5, 3 merged to `main`
-*(Inherited from v5; unchanged.)* All merged fast-forward, no merge commits, validated with real `go build`/`vet`/`test`/`-race` across all six modules.
-- **Tier 1 (critical):** partial-apply/undo atomicity ("report must match disk", both directions); sensitive-target exclusion (model output could write `.git/hooks/*` → code execution, or into `.codeterminal/backups/before/*` → the undo net itself); `=======` parser split that silently applied *wrong* edits with `applied:true`. (`16e84a1`, `83244ec`, `3f9352f`)
-- **Tier 2 (high):** re-index after apply; tiered SEARCH matching; file-creation engine; helper-binary path via `os.Executable()`; classified error taxonomy; bounded jittered retry with body-read 429 classification. (`07e97d1`, `1066d91`, `a02485c`, `0cf13cc`, `46d9e1c`, `10ba174`)
-- **Tier 2.5 (the merge spot-check catch):** Fix 7 file-creation was **unreachable from every client** (parser rejected empty SEARCH before the engine saw it); worse, one create block failed the whole response, silently dropping every other edit. Fixed: parser accepts create blocks, per-block recovery, undo of a created file now *removes* it. (`36f9bbe`, `7215dc1`, `bd43e90`, `c18782c`)
-- **Tier 3 (reply quality):** chunk merging; `file:line` → span resolution (referenced-location recall 0/6 → 6/6, live on a real daemon); history byte-budget + empty-turn poison closed both sides + truncation flag on wire; empty-prompt rejection, `delta.reasoning`, path-line variants. (`fb0770c`, `83f1bbc`, `ef1f5a9`, `f4ad82e`, `c68de0a`) Doc: `fccadbc`. **Note:** Tier 3 landed several honest wire fields *no client rendered* (`Reasoning`, `History.Truncated`, `GroundingInfo.Truncated`) — the "client-render parity" debt v5 tracked as open. **That debt is now closed by the M3 batch (§2F).**
-
-### 2C. Tier 4 — the operability cluster (done & verified, NOT closed)
-*(Inherited from v5; unchanged. These are the **Tier-4** C1/C2/C3 — not the bug-hunt ones in §2E.)* Closes the A6–A9 pattern: *the daemon degrades gracefully and honestly in its logs, but presents as healthy on the wire.* Three isolated commits, each reproduced live on `main` first, then fixed, then validated through production entry points (raw socket bytes, the real TUI in a pty, the real `media/main.js` render path), plus full six-module regression incl. `-race`. Doc commit `e779326`.
-- **Tier-4 C1 — fail-fast config validation (`0599a11`).** Unparseable/schemeless/hostless/non-HTTP `API_BASE` and a missing/regular-file `--workspace` now **FATAL before listening**; unknown/out-of-range config keys **warn and continue** (clamped, named individually). Reachability deliberately not probed (runtime state).
-- **Tier-4 C2 — wire-visible degraded-state signals (`6618dda`).** `TokenResponse.Degraded []Degradation`: `lexical_retrieval`, `memory`, `provider_routing`. `provider_routing` is **config-derived** (fallbacks *permitted*), not a per-request fallback claim (that would be fabricated). **Both shipped clients render it.**
-- **Tier-4 C3 — minimal observability surface (`2241daa`).** `StatusRequest`/`StatusResponse` over the existing `0600` + `SO_PEERCRED` socket (never an HTTP port) + a `status` CLI; reports the two retrieval tiers separately; carries no API base (Gate-7 discipline). Plus `--log-file`, 5 MiB size-rotated, tee'd to stderr. **Scope call-out:** a log *file*, **not log levels** (deliberate).
-
-### 2D. Provider-identity surfacing (D4-option-3 client half) — landed, stub-verified, NOT closed
-*(Carried from v5 §3G; landed as `099c165`, re-confirmed an ancestor of `main` this session.)* The daemon already decoded and *logged* OpenRouter's per-turn `provider` field server-side but never surfaced it. This commit adds `TokenResponse.Provider` (its own message, `omitempty`), a neutral `served by: <provider>` line in the TUI, and a `#provider` region in VS Code (`textContent`). Ships **only** the client-surfacing half of D4 option 3 — does **not** touch `allow_fallbacks`, build the option-2 allow-list, add a ZDR verdict, or resolve 3A. Both traps avoided. **Verification is live but stub-labelled** (the upstream is a local stub fabricating `provider`); the one residual is the real-OpenRouter provider-field confirmation, which needs a live key — documentation/verification, not code.
-
-### 2E. Bug-hunt ship-blocker fixes — C1 + C2 + C3 (NEW since v5; verified, NOT closed)
-Source: the CTO/beta-tester bug-hunt report `~/.claude/plans/what-can-we-improve-snappy-music.md` (report-only pass; no code changed there). This is the audit-first/fix-second/document-third record for its three *new* criticals — all three now fixed. Only **F1** (proxy ZDR-enforcement) remains open from this report, folded into the P3/3A gate (§3A).
-
-- **Ship-blocker C1 — embedder-response length-check + `handleConn` `recover()` (`ee9e992`).** *The severity-correction is the point here, not just the code.* The report called this a production-reachable CRITICAL ("one malformed embedder response crashes the whole daemon"). A standing backlog note said the opposite ("not triggered by anything today"). **Step 0, written before the fix, reproduced the truth live over the real helper wire** (a new `fakehelper` fixture driving the real `HelperProcess`+`BgeEmbedder` over a real socket) and separated two shapes the report had conflated: a *truncated wire read* is a `json.Decode` **error** (already handled, never a short slice), and only a *well-formed `ok:true` response carrying fewer vectors than texts* reaches the unchecked deref — a shape the **shipped ONNX helper cannot emit** (`helper/onnxembedder.go` returns exactly `len(texts)` vectors or an error; verified by source). **Determination: the report's CRITICAL reachability was OVERSTATED; corrected to a *latent defensive gap*, and the prior "not triggered today" note was CORRECT.** Fixed anyway on independent merit: the boundary length-check closes the latent deref against a future/third-party helper regression, and the missing `recover()` is a real *general* availability gap (any handler panic previously dropped every in-flight client) — the exact FAIL-3 backstop already scoped on the socket axis. Tests: `daemon/embedder_boundary_test.go`, `daemon/handleconn_recover_test.go`, both fail-when-neutered (removing the check restores the panic; removing `recover()` crashes the whole test binary).
-- **Ship-blocker C2 — atomic, symlink-refusing *forward* edit write (`c7cff6c`).** `editapply.Apply`'s forward path (edit *and* create) wrote via plain `os.WriteFile` (`apply.go:228`) while the *undo* path was already hardened (temp+rename, symlink refusal) — and the undo-path comments *assumed* a forward parity that did not exist. Now the forward write goes through an atomic, symlink-refusing writer mirroring the undo pattern. Closes both halves independently: **(a) escape** — a dangling/leaf symlink planted at a to-be-created target during the TUI confirm window can no longer be written *through* (`os.Rename` never follows the link; pre-write `Lstat` refuses it); **(b) non-atomic corruption** — a crash mid-write can no longer leave a truncated file. The parity comments are now accurate. Tests: `editapply/apply_forward_symlink_test.go`, fail-when-neutered against the former `os.WriteFile`.
-- **Ship-blocker C3 — billing abort-refund (`a703978`; live-verified this session, not inherited).** The managed proxy reserves tokens before forwarding and trues up after; on the streaming path it learns the real count only from the terminal usage SSE chunk. A client that **read the full answer and disconnected just before that chunk** hit `streamSSE`'s write-error early-return with `totalTokens==0`, and the old `finalizeUsage` treated `actual==0` as "nothing used → full refund" — refunding a completion OpenRouter had already generated and billed. Repeatable, exploitable → free paid inference. Fix: `finalizeUsage` now decides three ways — true-up when a figure exists; **keep the reservation (no refund)** when billable output was produced but no figure arrived (the exploit path); full refund only when nothing was produced. `streamSSE` tracks `producedOutput` via a new **envelope-only** `isDataChunk` peek (content still never parsed — ZDR posture preserved); the two upstream-error sites pass `producedOutput=false`; the non-SSE branch derives it from `2xx && non-empty body`. No schema/RPC/sizing change. Corrects `QUOTA_RESERVATION_DESIGN.md` §5(c), which wrongly folded client-disconnect-before-usage into full-refund. Tests: `proxy/main_test.go` (client-abort regression + two `finalizeUsage` units), **fail-when-neutered proven** (neutered code fires the `-4096` refund → test catches it); `gofmt`/build/vet clean, `go test -race` green. **Residual, not built:** a long completion aborted late is charged the reservation floor, not its true higher usage — safe direction, never zero; exact metering is a named follow-up (§3F).
-
-- **M4 — apply/undo serialized across processes (`2a389c7`; completes Gate 6, live-verified).** Gate 6 closed five data-integrity races (100% lost update, ~68% backup-session collapse, ~98% undo-guard defeat, ~88% double restore, prune-vs-undo) with the daemon's per-workspace `sync.Mutex` — **in-process only**, justified by a comment claiming "exactly one daemon process behind the socket." False: the CLI (`edits apply`/`edits undo`) and the TUI review flow each write the same workspace files **from their own process**, so all five races reopened whenever one overlapped a daemon operation — normal use (a terminal apply while the IDE is open), and precisely the "CLI + IDE" scenario the Gate-6 audit named. Fix: `editapply.LockWorkspaceApply`, a per-workspace-root **`flock(2)`** on `<root>/.codeterminal/apply.lock` (kernel-released on process death, so a killed CLI can't wedge the workspace), taken **inside** the three mutation primitives — `Apply`, `NewBackupSessionDir`, `runUndoSession` — rather than at call sites, because the bug *is* a caller that forgot to lock. No span covers a human prompt; the daemon's mutex stays as the in-process fast path with a fixed mutex→flock ordering. The false comment is corrected in place. **Verified:** cross-process exclusion proven with **two real OS processes** (second process blocked 1196 ms, acquired exactly on release); regression tests fail-when-neutered reproduce the exact lost update. Filed by the report as a medium; recorded at that label, noting it is the same race class Gate 6 treated as serious.
-
-*Verified through production entry points:* C1/C2 inherited from the report (real helper wire, real `Apply` door); **C3 and M4 re-verified live this session** (the `proxy` suite + fail-when-neutered were run during this refresh). Full regression incl. `-race` green. Commits isolated: C1 `ee9e992` (daemon), C2 `c7cff6c` (editapply), C3 `a703978` (proxy); C1/C2 doc `32bc775`, C3 doc in the 2026-07-23 BACKLOG section.
-
-### 2F. M1–M3 client-UX batch (NEW since v5; verified, NOT closed)
-The three client-UX mediums from the same bug-hunt report, in its stated priority. Three isolated commits; each reproduced/verified live through production entry points (real daemon, real socket, real TUI in a pty, the real compiled VS Code `daemonClient`, the real `media/main.js` under a DOM shim). *(Live-execution claims inherited from `BACKLOG.md`.)*
-
-- **Step 0 finding — M3 was NOT new work.** M3 ("reasoning tokens silently dropped by both clients") is **the same bug as v5 §3B's pre-existing Tier-3 render-parity item** (`TokenResponse.Reasoning` reaches the wire, no client renders it), verified in source. One client-side fix closes both. **The two other parity gaps in that same §3B item were folded in alongside it:** `HistoryInfo.Truncated` (dropped by both clients) and `GroundingInfo.Truncated` (dropped by the TUI; VS Code already rendered it). So the M3 commit closes the entire §3B "client-render parity" debt, not a separate new item.
-- **Three truncation concepts kept distinctly labelled** (do not flatten in any summary): **answer-cut-off** (M1, the model hit its output ceiling), **oldest-turns-dropped** (history byte-budget), **context-trimmed** (grounding budget). Different causes, different notices.
-- **M1 — truncated-stream visibility (`029d764`).** The daemon read only `delta.content`, never the SSE `finish_reason`, so a `length` cutoff returned a `Done` byte-identical to a complete answer. Fix: capture the terminal `finish_reason` → new `TokenResponse.Incomplete` (`*IncompleteInfo`, Gate-7-clean) on the final `Done` (`nil` for a natural `stop`). TUI: a persistent `⚠ answer cut off` notice; VS Code: a warning-styled turn. **Honest boundary:** connection-drop / daemon-exit mid-stream are **not** covered — a daemon that died can't annotate its own final message (noted as a separate client-side concern, still open).
-- **M2 — VS Code panel wedging on a *clean* daemon close (`b647490`).** `applyEdit`/`undoEdits`/`searchConversations` resolved only on a reply line and rejected only on socket `'error'` — no `'close'` arm. A graceful daemon shutdown mid-request left the promise unsettled forever; in an auto-apply run this stuck `autoApplyRunInFlight = true`, after which `onPrompt`'s guard silently dropped every later prompt. Fix: a `'close'` handler (shared `settled` flag) on all three helpers → rejects clearly instead of hanging. Verified at transport and panel levels via scratchpad harnesses (no in-repo VS Code test runner existed *at the time* — see §2G, the E2E harness later filled that gap).
-- **M3 + folded parity — reasoning & truncation render (`6995259`).** Pure client read+render, no daemon change. TUI: a dimmed `💭 thinking:` block kept in a **separate** `turn.reasoning` field (never spliced into the answer text that becomes history / is parsed for edits); a dropped-history header warning; a `(context truncated)` grounded label. VS Code: `onReasoning` → dim italic block above the answer; `onHistory` → a dropped-turns warning kept distinct from history hydration; grounding-truncation already rendered. Tests incl. reasoning-never-in-answer, fail-when-neutered. **This closes both the report's M3 and v5 §3B's render-parity item — one item, not two.**
-
-Commits isolated: M1 `029d764`, M2 `b647490`, M3 `6995259`, doc `a43ac71`. The batch explicitly did **not** touch S1, S2, the bug-hunt C3, or F1 (its own "Not touched" list) — S1/S2 were then picked up next (§2G).
-
-### 2G. S1 + S2 security fixes and the VS Code E2E harness (NEW since v5; verified, NOT closed)
-Three independent concerns, three isolated commits. Part-0 discipline throughout: each reconfirmed live against `main` before any fix (the ship-blocker-C1 precedent — a report severity claim that didn't survive live repro — was the explicit warning).
-
-- **S1 — nested `.gitignore` secret indexing — confirmed real, FIXED (`ae1104c`).** The indexer read **only the workspace-root `.gitignore`** (`loadGitignore(realRoot)`), so a file excluded solely by a *nested* `.gitignore` was indexed, embedded, retrieved, and — per the chunk-text-network-exit finding — POSTed unscrubbed to the provider. Step 0 reproduced it live through the real `ScanWorkspace` door with a deliberately **benign-named** file (so `MatchesSecretName` couldn't mask the question). Fix: a per-directory `gitignoreMatcher` (`daemon/chunker.go`, lazy per-dir load, git precedence incl. `!` negation), reused by `reindex.go` and `fileref.go` so no shorter path re-admits an ignored file. **Ordering precision that matters for historical-exposure assessment:** in `shouldSkipFile`, `MatchesSecretName` runs **before** ignore-resolution — so a secret-*named* file (`.env`, `id_rsa`, anything with `secret`/`credential` in the basename) was **never** exposed by this bug; it was already skipped. The S1 leak was specifically **non-secret-named files that contain secrets** and were excluded only by a nested `.gitignore`. The two gates are independent and both needed. Tests `daemon/nested_gitignore_test.go`, fail-when-neutered.
-- **S2 — `.GIT` case-fold bypass — confirmed real, FIXED (`40b5980`).** A **recurrence** of the same guard Tier 3's Fix 3 introduced with an incomplete fix — `ProtectedDirNames` / `ProtectedDirComponent`, keyed on a **case-sensitive** map lookup — hitting **both** the indexer prune and the edit-writer confinement at once (they share the list). On a case-insensitive FS (macOS APFS, Windows NTFS) the OS resolves `.GIT`→`.git`, so a writable `.GIT/hooks/pre-commit` is the same code-execution surface Tier 3 closed for the lowercase form, and VCS/credential internals get read into the index. Fix: new `editapply.IsProtectedDirName` folds to lowercase before the lookup; the indexer prune splits into `isPrunedDir` = **case-insensitive** protected dirs OR **case-sensitive** `noiseDirNames`. **Deliberate design choice:** noise dirs (`build`, `vendor`, …) stay case-sensitive — they are not a security boundary, and folding them would over-prune a legitimately-cased source dir that merely shares a name (a Go package named `Build`). Not a blanket case-fold — only the security-relevant check. Grepped all six modules for sibling literal path-segment compares; these two choke points were the only ones. Tests `editapply/protected_casefold_test.go` + `daemon/casefold_prune_test.go`, fail-when-neutered. *(This is a **distinct** case-fold bug from the FAIL-1 `MatchesSecretName` glob case-fold in §2A — different guard, different file.)*
-- **VS Code E2E harness — BUILT & PROVEN (`5290c08`), real Extension Development Host, not stubs.** An in-repo `@vscode/test-electron` runner (`clients/vscode/src/test/runTest.ts`) launches a **real** EDH (downloads+caches a real VS Code build), loads the real extension, and runs a mocha suite *inside* the host. This is the runner the M1–M3 batch said did not exist. Smoke suite (3): the real extension **activates**, `codeterminal.openChat` renders the real "CodeTerminal Chat" webview panel, the command is idempotent — 3/3 passing. Bonus M1/M2/M3 re-run (3): the **real compiled `daemonClient.ts`** over a real Unix socket served by `stubDaemon.ts` — M1 `onIncomplete` before `onDone`, M2 a clean close **rejects** (does not hang — the `b647490` wedge), M3 grounding/history/reasoning fan out — 3/3 passing. **Full run: 6 passing, exit 0** (inherited). Two honest points: **(1) environment-pollution bug found and fixed** — running from inside VS Code's integrated terminal exports `ELECTRON_RUN_AS_NODE=1` + `VSCODE_*`, which the nested host inherited, so Electron ran as plain Node ("Cannot find module"); `runTest.ts` strips them before launch (also needed `@vscode/test-electron ^3.0.0` for VS Code 1.130/Node-24). **(2) remaining boundary** — the suite validates the client/protocol half; the webview-DOM render half is exercised for real by the smoke panel render but **not asserted per-behavior**, because VS Code exposes no webview DOM to the test host (a platform constraint, not a shortcut).
-
-Commits isolated: S1 `ae1104c`, S2 `40b5980`, E2E `5290c08`, doc `d4936e9`. Full six-module Go regression + `tsc` + the harness all green (inherited).
-
-### 2I. Endpoint / API security pass — the proxy's HTTP surface (NEW; verified live, NOT closed)
-First dedicated endpoint-security review of the **managed proxy**, the project's **only
-network-exposed surface** (prior reviews covered the local socket and Supabase). Audit-first against
-the **real compiled binary** on localhost with stub Supabase/upstream, driven by a raw client sharing
-no code with it; the deployed Railway instance was **deliberately not probed**, so floods could run
-at full strength with no production impact. **14 checks across the five requested classes: before
-5 FAIL + 1 PARTIAL, after 0 FAIL + 1 PARTIAL.** Full matrix and evidence in `BACKLOG.md` (2026-07-24).
-- **Already sound, no change:** BOLA is structurally impossible on the key/quota object (`apiKeyID`
-  is always server-derived from the bearer hash, never client input; the PostgREST filter is a 64-char
-  hex digest so no operator survives); auth fails closed on all 8 variants with upstream never
-  contacted; the client's `Authorization` is never forwarded upstream; error/header hygiene is clean.
-- **SEC-3 (`b0a1085`) — reachable dependency CVE.** `govulncheck` found GO-2026-5970 (infinite loop
-  on invalid input in `golang.org/x/text`) affecting **4 of 6 modules**, reachable via
-  `editapply.PrepareEdit → norm.Form.NextBoundaryInString` — i.e. the match ladder's Unicode
-  normalization over **untrusted model output**. Bumped to v0.39.0; all six modules now scan clean.
-- **SEC-5 (`3e37c44`) — account metadata leaked on the streaming path (M9).** The scrubber was wired
-  only to the non-SSE branch while the daemon always streams, so it never ran on the live path;
-  proven live, then fixed without buffering the stream or ever inspecting message content.
-- **SEC-4 (`a88b88a`) — no rate limiting existed at all.** Measured 40 concurrent upstream calls from
-  one key with zero throttling. Added stdlib-only token-bucket + in-flight caps, pre-auth (bounding
-  Supabase amplification) and post-auth per key. **Honest limit: in-memory ⇒ per-instance.**
-- **SEC-1/SEC-5 (`091ce01`) — cost authorization + `/health`.** Quota is metered in tokens but billed
-  in dollars, and any model could be selected; now allow-listed to the shipped tier set before
-  forwarding. `/health` no longer leaks the build commit SHA.
-- **Correction worth carrying:** two initial FAILs (A2 PostgREST injection, A5 path variants) were
-  **harness bugs, not vulnerabilities**, re-tested over raw sockets and reclassified to PASS rather
-  than reported. A third check had a hardcoded verdict. Recorded so the numbers aren't rounded up.
-
-### 2J. Quota §5(e) — durable pending-corrections outbox + reconciliation sweep (NEW; verified, NOT closed)
-The follow-up `QUOTA_RESERVATION_DESIGN.md` §5(e) named and explicitly declined to build. One isolated commit (`ca7e3c4`, `proxy`). Full entry in `BACKLOG.md` (2026-07-24).
-- **The gap.** The proxy reserves before forwarding and corrects after. A process that **dies between the two** strands `tokens_used` at the reserved value with nothing recording that a correction was owed. §5(d)'s retry cannot cover it by construction — the goroutine that would retry died with the process. Direction matters and is why this wasn't bookkeeping noise: a lost *refund* is safe (throttles early), a lost *top-up* is **unsafe** (later requests admitted against quota already spent), and §3's real provider data makes top-ups the normal case for the active model.
-- **The build.** `proxy/migrations/0002_pending_corrections.sql`: a `pending_corrections` table; `reserve_usage` **dropped and recreated** (return shape gains `pending_id`, which `CREATE OR REPLACE` cannot do) opening the outbox row via a **data-modifying CTE in the same statement** that reserves; `apply_correction` incrementing **and** closing the row in one statement (replacing the direct `increment_usage` call); `sweep_pending_corrections` as an atomic `DELETE … RETURNING`, so a row is claimed exactly once even across replicas. The reservation UPDATE is byte-identical to 0001 — the TOCTOU closure is preserved, not re-litigated. `proxy/main.go` threads `pendingID` from `reserveQuota` through to `correctUsage`, plus a 5-minute `startReconciliationSweep` wired in `main()` before `ListenAndServe`. **Zero added round trips** — the outbox rides the two calls that already existed.
-- **A bug introduced and closed in the same pass, not buried.** `finalizeUsage`'s `producedOutput` branch (C3's abort path) used to log and **return early**. With an outbox that leaves a live row on a *healthy* request, and the sweep would report the most common client-disconnect path as abandoned ~20 min later — turning the crash alarm into noise. It now closes its own row with a zero-delta correction.
-- **What it does NOT do — do not summarize this as "case (e) is solved."** It does not recover the dead request's true usage; that figure only ever existed in the stream the dead process was reading. It changes the *shape* of the damage: **silent, indefinite, unsafe-direction → loud within ~20 minutes, resolved in the safe direction** (reservation stays **charged**, never refunded on missing data). The swept key is still over-metered by up to `reserved`. The **log line, not the accounting, is the deliverable**. It is also **not** exact metering of an aborted stream — §3F listed "a reconciliation sweep" as a route to *that*; this sweep reconciles abandoned reservations, not summed usage vs. `tokens_used`. **C3's residual stays open.**
-- **Verification.** `gofmt`/build/vet clean, `go test` + `-race` green, `govulncheck` clean. New tests model the outbox for real (a stub that always closed would test nothing) and cover the pending-id return shape (asserting **one** round trip on refusal), the `apply_correction` wire contract, the zero-delta close, sweep reporting/silence, and crash-then-sweep — **fail-when-neutered proven three ways** (revert to `increment_usage` → 6 fail; drop `p_pending_id` → 4 fail; restore the early return → the abort regression fails). Plus a **live process-kill test against the real compiled binary**: normal request leaves 0 rows; `kill -9` mid-stream leaves 1 row surviving at `tokens_used=4219`; a restarted proxy swept it one real 5-minute tick later (17:02:43 → 17:07:43) logging `ABANDONED RESERVATION swept (pending_id=2, …, reserved=4096, …)`, leaving `tokens_used` **4219 → 4219, unchanged**.
-- **Honest boundary — the SQL has never been executed by anything.** Step 0 called for applying 0002 to live Supabase and re-introspecting via PostgREST. **The Supabase project host now returns NXDOMAIN** (`eshpqodurxubjigndiev.supabase.co`; general network is fine), so it could be neither applied nor introspected — and **0001's live state could not be re-confirmed either**. No `psql`/`postgres`/`docker` exists here as a local substitute. Checked by inspection only (column-reference qualification per 0001's discipline; CTE `RETURNING` reads; `WITH … DELETE` validity). **Treat first application as unproven.**
-- **Deploy order is a hard constraint** — see §3F.
-
-### 2H. Other done, load-bearing context
-*(Inherited from v5; unchanged.)*
-- **Supabase auth/RLS/grants posture — closed 2026-07-17** (`SECURITY_MODEL.md`), verified with anon key + real user JWT (not `service_role`). Residual process control: every `SECURITY DEFINER` function in `public` must revoke EXECUTE from PUBLIC in the same migration (`ALTER DEFAULT PRIVILEGES` does not fix functions).
-- **Managed proxy Step 1** — pass-through proxy on Railway, OpenRouter key server-side only, content-free logs, ZDR held on the wire (`702101c`, `8b5aa11`). **Standing risk: no auth yet — do not expose the URL publicly** until Step 2. **And it does not itself enforce ZDR** — it forwards the body byte-for-byte; ZDR is set client-side in the daemon (see F1, §3A).
-- **Hybrid lexical+semantic retrieval** (`ae3e7a4`) — live-verified; two honest caveats stay open (eval-set saturation; token-efficiency measured at **67.4%** average, not the un-measured ~95% floated externally, with a real ~15%-of-queries negative-savings failure mode, investigated and deliberately not fixed — `RETRIEVAL_BUDGET_DESIGN.md`).
-- **Conversational memory** (in-session + cross-session SQLite), **bounded backups + multi-run undo**, **FTS5 conversation search** (VS Code panel), **auto-apply-with-undo** (VS Code) — all built and live-verified.
-
----
-
-## PART 3 — WHAT'S OPEN *(v7, 2026-07-24 — superseded by `docs/OPEN_ITEMS.md`; see the correction block at the top of this document)*
-
-The dominant remaining category is now the **founder-decision cluster** (§3D + §3E). Nearly everything that was "actionable, no dependency" in v5 has since shipped (the provider slice, and now the ship-blocker/client-UX/security batches). What remains actionable is small; what's blocked is blocked on people, not code.
-
-### 3A. The one external blocker — OpenRouter ZDR (open)
-*(Inherited from v5; re-verified that `allow_fallbacks:true` and the stale price note still ship.)* The single external dependency. Two linked sub-questions, both "documented engineering position in prose, not a contractual guarantee":
-1. **Implicit prompt-caching path** — does ZDR cover it? A ZDR-labelled provider was *measured* retaining prompt content (~98% of provably-novel content from cache, 78.6% billing discount). The worst surface (24h edge response cache) is confirmed **off** from the actual request code. What remains is derived KV-cache tensors with short TTLs. `SECURITY_MODEL.md#the-inference-hop--zdr-retention-finding`.
-2. **Fallback-provider ZDR posture (extends 3A, `57c95f7`/`eee2f03`).** Shipped `models.json` sets `allow_fallbacks:true` (still true — verified live). **Our side is provably clean and fails closed** (D1, live both paths): one outbound body per attempt carrying all three fields, retry reuses the routing object, `privacy_refused` non-retryable, the proxy forwards byte-for-byte, the `false` lever transmits faithfully. The **residual is OpenRouter-side and unverified at the exact edge** (D2): the ZDR doc says `zdr:true` routes "only to ZDR endpoints" but is silent on the `allow_fallbacks` interaction and the no-ZDR-provider case. Severity **Low but unverified-at-the-edge, not dismissable** — fallback is not dormant (it was flipped on to escape DeepInfra 429s).
-   - **D4 remediation options (none selected — founder's product-posture call):** (1) `allow_fallbacks:false` (strongest; re-breaks the congestion fix); (2) keep `true` + an `order`/`only` ZDR-vetted allow-list; (3) surface the served provider per turn (**client half already shipped — §2D**; the allow-list is needed only to map provider→ZDR-verdict, not to obtain the provider); (4) leave as-is, documented (defensible only if outreach confirms the fallback set stays ZDR-filtered).
-- **F1 — the managed proxy does not enforce ZDR (founder-gated, part of this same gate).** The proxy forwards the request body byte-for-byte (`proxy/main.go:295`); the ZDR routing fields are set client-side in the daemon (`daemon/config.go`). So a client that omitted them (or a future non-daemon client) would not get ZDR added *by the proxy*. Today the only client is the daemon, which always sets them — so this is a posture/architecture question, not a live leak. Surfaced by the bug-hunt report; **not a drive-by fix** — it belongs to the P3/3A gate. *(v5 framed proxy byte-for-byte forwarding only as a positive; F1 is its flip side and was under-stated there — flagged here.)*
-- **Channels (unchanged):** support ticket **#37409** (near resolution — a poor fit for the fallback sub-question, do not reopen it for that); a **Discord** `#community-help` thread escalated to mods; a **LinkedIn** technical-staff contact. A verbatim-ready fallback-semantics question is recorded in the D2 backlog entry.
-
-### 3B. Actionable now (no external dependency, no founder decision) — a short list, mostly drained
-- **`file:line` resolution unreachable when retrieval is disabled** — `gatherContext` returns early on `s.embedder==nil || s.store==nil`, and direct resolution sits below it, so a user with no index who pastes a compiler error gets nothing though they named the exact line. Likely small (hoist direct resolution above the early return). Open, unscoped.
-- **Fix the stale `models.json` price note** — still reads "~$0.11/$0.80 per 1M" (verified still stale this session); the P2 cost investigation found it ~2.3× off for at least one live provider (Io Net). Both root and `daemon/models.json` carry it.
-- **TUI FTS5 search UI** — the wire+daemon half shipped for VS Code; TUI has no search box (mechanical, same `SearchRequest`/`SearchResponse`).
-- **~~Client-render parity gaps (Tier 3): `History` + `Reasoning`~~ — CLOSED by the M3 batch (`6995259`, §2F).** Removed from this bucket; both are now rendered in both clients, alongside `GroundingInfo.Truncated`. Recorded here only so the v5 line isn't looked for again.
-- **Provider-identity real-OpenRouter confirmation** — the one residual on §2D; needs a live key. Verification/documentation, not code.
-
-### 3C. Blocked (gated on the P3 security review, i.e. on §3E + the auth decision)
-*(Inherited from v5; unchanged.)* All new *capability* work: the autonomous multi-step agent loop (largest single body of work, removes the human-in-the-loop safety property, highest token burn); editapply CREATE's own confinement review (CREATE removes the `EvalSymlinks`-requires-existence property Gate 2 leans on); the self-learning/autonomous skill-capture loop (skill store built, capture loop deferred). None is scheduled; each needs its own decision *after* the gate.
-
-### 3D. Founder decisions (no task written; explicitly the founder's call) — the dominant remaining category
-*(Re-verified this session that none was incidentally resolved by the new batches.)*
-- **Socket auth model** — is same-uid-implies-trusted accepted, or must the daemon verify its peer beyond `SO_PEERCRED`? Gates the socket axis of the P3 review.
-- **Gate-6 closure ruling** — see §3E (packaged, not resolved; contradiction re-confirmed live still standing).
-- **`allow_fallbacks` posture** — the D4 choice (availability vs. strongest-provable ZDR). **F1** (proxy ZDR-enforcement) rides the same decision.
-- **Warn-mode Design B vs. C** — redaction of opaque/novel secrets. Data is durably accumulating (log-only) to inform it. Do not flip entropy/keyword to redacting without the decision.
-- **Default-model evaluation** — flagged repeatedly as likely the single biggest reply-quality lever; made *more* urgent by the embedding-discrimination-ceiling finding (raw similarity clusters at 0.0147–0.0164, a ~1% spread deciding top-5 membership → remaining edit-shaped misses sit at ranks #78/#307, ceiling-limited until the embedder improves).
-- **Shared confinement package** — there are now **four** independently-written confinement guards; consolidating means a *new shared package* (`editapply` can't import `daemon`), not a helper extraction. No correctness gap; a maintainability call.
-- **Skills subsystem** — fully built, completely unused: wire it in or delete it.
-- **Self-hosting / Together AI** — brief exists; not worth the ops burden until volume/contract justifies it.
-- **Phase 4 packaging (decided direction, not started)** — bundle+auto-manage the daemon, cross-platform binaries (Intel-Mac onnxruntime gap known), **managed-key billing model DECIDED** (Mochiii holds the key → commits to Stripe/metering), on-device embeddings per platform, signed `.vsix` publishing. **The bug-hunt C3 billing abort-refund — a correctness precondition for this phase — is now fixed (`a703978`, §2E/§3F), pending founder close.**
-
-### 3E. The Gate-6 closure contradiction — OPEN founder decision (packaged, not resolved)
-Packaged at `BACKLOG.md:703` ("FOUNDER SIGN-OFF NEEDED"). **Not in question:** the engineering fix (`d96794e`) is real, on `main`, verified live (all five repros 0%, fail-when-neutered). This is a **documentation/closure-process contradiction**, not an open engineering task. **Re-verified live this session — all four locations still disagree, in their prior state:**
-
-| Location | Says |
+| Question | Document |
 |---|---|
-| `BACKLOG.md:633` (audit header) | audit explicitly does **NOT** close Gate 6 |
-| `BACKLOG.md:681` (same section) | "Gate 6 now closed" |
-| `p3-security-review.md:21` (memory) | "Gate 6 CLOSED" |
-| `MEMORY.md:5` (memory index) | "FIXED+CLOSED `d96794e`" |
+| What is still ahead? | [`../BACKLOG.md`](../BACKLOG.md) — forward-looking work only |
+| What bugs are open? | [`OPEN_ITEMS.md`](OPEN_ITEMS.md) — the register, re-derived against source, every entry with a `file:line` and a CONFIRMED / PLAUSIBLE / NOT RUN label |
+| What needs a founder ruling? | [`DECISION_PACK.md`](DECISION_PACK.md) — D1–D8, one page each, none taken |
+| What was already done, and why? | [`ARCHIVE/BACKLOG_2026-07.md`](ARCHIVE/BACKLOG_2026-07.md) — 3,839 lines of verbatim record: commit SHAs, verification transcripts, measured numbers |
 
-The only commit that ever said "mark … CLOSED" (`8d37a6c`) is **dangling — never merged to `main`** (re-verified: not an ancestor of `main` this session). So the claim's origin was walked back, yet "closed" propagated into three of four locations. It matters because Gate 6 sits under the P3 gate that blocks all capability work. **The founder rules one way; docs then reconcile the four locations (plus the dangling `8d37a6c` citation). v6 takes no position — it records the contradiction as open, exactly as v5 did.**
-
-### 3F. Small deferred / hygiene (all logged, none urgent)
-- **Bug-hunt C3 — billing abort-refund — FIXED (`a703978`, §2E), NOT closed.** Was: a client reading the full answer then disconnecting before the trailing usage SSE line got a full refund of a completion OpenRouter had already billed (repeatable unmetered paid inference). Now `finalizeUsage` keeps the reservation when output was produced but no usage figure arrived; full refund only when nothing was produced. **Residual staying in this bucket (named follow-up, not built):** a long completion aborted *late* is charged the reservation floor (default 4096), not its true higher usage — the safe direction, never zero. Exact metering of an aborted stream would need either draining the upstream to capture the usage chunk (requires decoupling the upstream context from `r.Context()`, and forces OpenRouter to finish generating) or a reconciliation sweep — both bigger than this fix. **Update (§2J): a reconciliation sweep now exists (`ca7e3c4`) but is NOT this route and does NOT close this residual** — it claims *abandoned reservations* (crash recovery, §5(e)), it does not compare summed real usage against `tokens_used`. The two are adjacent and must not be conflated: §5(e) is addressed, C3's exact-metering residual is untouched and still open.
-- **New from M1:** connection-drop / daemon-exit mid-stream is not covered by the incomplete-answer signal (a dead daemon can't annotate its final message).
-- **~~M4 cross-process apply/undo unserialized~~ — FIXED (`2a389c7`, §2E), NOT closed.** Gate-6's lock was in-process only (its comment wrongly asserted "exactly one daemon process"), so the CLI and TUI — each a *separate process* writing the same files — reopened all five Gate-6 races in normal use. Now serialized by a per-workspace `flock` taken inside the mutation primitives themselves.
-- **~~M9 account metadata on the SSE path~~ / ~~M10 slow-drip~~ — addressed by the endpoint-security pass (§2I).** M9 FIXED (`3e37c44`); M10 **mitigated not eliminated** — a single trickle reader can still hold a connection to `WriteTimeout`, but the new in-flight caps bound how many can be pinned at once. A per-connection output-rate bound stays open.
-- **NEW (§2I) — no per-connection output-rate bound on the proxy's streaming path.** Distinct from the in-flight exhaustion the same pass *did* bound: a client that reads its response one byte at a time still pins its connection for up to `WriteTimeout` (6 min), because nothing measures throughput per connection. The in-flight caps (8/key, 128 total) limit *how many* such connections can exist at once, so the vector is bounded rather than unbounded — but the per-connection bound itself does not exist. Fixing it means a write-deadline-per-chunk or a minimum-bytes/sec reader, neither of which the pass attempted.
-- **NEW (§2I) — the proxy rate limiter is per-instance, not per-key-global.** `proxy/ratelimit.go` keeps its token buckets and in-flight counters **in memory**, so the configured limits hold per running process: under multi-replica deployment (Railway can run N) one key gets up to **N×** the intended rate and N× the in-flight ceiling. Documented at the code, not buried. Exact cross-replica limiting needs shared state (a Postgres RPC or Redis) and pays a round trip against an already ~1.45 s TTFT — a real trade, not an oversight. Per-instance still converts unbounded into bounded.
-- **NEW (documentation, surfaced by §2I's compatibility check; widened by §2J) — `QUOTA_RESERVATION_DESIGN.md` is stale in TWO places now.** (1) Its header still says *"Status: design only. No code changes yet"* while that design has shipped (`proxy/migrations/0001_reserve_usage.sql`, `reserveQuota`, `peekMaxTokens`, `finalizeUsage`, all on `main`) — a cold reader concludes the quota TOCTOU race is open when it is closed. (2) **§5(e) still reads "*Recommending this as a named near-term follow-up*, not doing it in this pass," which is no longer true** — the outbox and sweep landed in `ca7e3c4` (§2J). Both are isolated doc edits belonging to whoever closes the item (Part-0 rule 6), which is why §2J deliberately did not touch the design doc while implementing it. **Anyone reconciling this must keep §5(e)'s honesty intact when updating it: the crash case is *mitigated and made loud*, not fully solved — true post-crash usage remains unrecoverable.**
-- **NEW (§2J) — DEPLOY ORDER IS A HARD CONSTRAINT, not a nicety.** Migration 0002 must be applied **before** the `ca7e3c4` proxy build ships. `apply_correction` does not exist on an un-migrated database → 404 → **4xx is non-retryable in `correctUsage`** → *every* correction on *every* request is lost, strictly worse than the bug being fixed. `reserveQuota` logs a loud `WARNING … migration 0002 likely not applied` when `reserve_usage` returns no `pending_id` (exactly that state) but **still admits the request** — the reservation is real and atomic either way, and failing closed would turn a missing migration into a total outage. A compatibility fallback (call `increment_usage` when `pendingID==0`) was **considered and not built**: out of confirmed scope, and it would silently mask the misconfiguration the warning exists to surface. Recorded as an available option, not a recommendation. **Compounding factor: the migration could not be applied or even introspected this session (Supabase host NXDOMAIN, §2J), so the SQL is entirely unexecuted.**
-- **NEW (§2J) — a Supabase outage outlasting the sweep still loses corrections.** The outbox row survives, so the reservation is *reported* as abandoned rather than lost silently — but nothing re-drives the correction, because re-driving needs the true usage figure, which is precisely what does not survive.
-- **Still open from the bug-hunt report (surfaced, not triaged into fixes):** M7 (a created `.go` file gets only an advisory syntax note where the edit path hard-refuses unparseable Go), M8 (`HelperProcess.Stop` nil-`doneCh` hang — reachable only after a failed helper *startup*, so shutdown-path only), M9, M10, and eight LOWs. Full list in the report file; none is founder-gated, none is scheduled.
-- Two protocol-honesty gaps from Tier 2.5: `EditProposals` doesn't carry refused blocks; `UndoResponse.Restored` doesn't split removals from restores.
-- Python tracebacks (`File "x.py", line 42`) unmatched by the `file:line` resolver; chunk end-lines overshoot by one on files ending in a newline (cosmetic label).
-- Mid-ancestor TOCTOU (needs `openat2(RESOLVE_BENEATH)`); `-wal`/`-shm` sidecar symlink-open hardening (needs custom VFS) *and* separately the 0644-vs-0600 sidecar permission gap; `id_rsa_secret.pub`-style over-refusal (safe-failure direction).
-- macOS peer-credential support (daemon refuses all non-Linux connections); undo leaves empty parent dirs a create brought into existence; Tier-4 C2-b memory + §2D provider not surfaced at handshake (only first prompt); the VS Code E2E webview-DOM per-behavior gap (§2G, platform constraint).
-- Retrieval-eval self-referentiality (indexes this repo → cross-commit comparisons drift; medium as a *measurement-validity* concern); the edit eval is effectively n=3 of its n=5 target.
-- `models.json` (root + `daemon/`) untracked — keep untracked or commit deliberately, never via `git add -A`. (Also `PRODUCT_OVERVIEW.md` currently shows untracked in `git status`.)
-- Stale scratch git worktree from a prior P3-experiment session lingers on disk (harmless); the account must be kept funded (API credits) for any inference to succeed.
+**Do not add a fifth.** The failure mode this project keeps hitting is a second
+copy of the truth that drifts from the first. When something changes, change it
+in the one document that owns it.
 
 ---
 
-## PART 4 — WHAT TO DO NEXT
+## Current state
 
-**Updated 2026-08-01, after the remediation pass.** The list below is v7's and is
-kept for its reasoning; three of its bullets have since been done and one of its
-premises has changed. Read this block first.
-
-**Everything engineering can clear on its own is cleared.** `docs/OPEN_ITEMS.md`
-§6 lists seventeen items implemented and neuter-verified in one pass — the M8
-shutdown hang, `file:line` without an index, the turn budget's blind spot, the
-proxy slow-drip bound, the M7 create-gate asymmetry, undo's orphaned directories,
-macOS peer authentication, a world-readable lexical index, an unbounded MCP stderr
-buffer, and five of the eight LOWs. Two of those appear on no earlier list.
-
-**So the queue really is decisions now, and they are in one place.**
-`docs/DECISION_PACK.md` has eight, each with a recommendation and the cost of
-being wrong. Three of them ARE the P3 gate (socket auth, Gate 6, Gate 7), and all
-three are recommended as rulings rather than as work — Gate 7's engineering half
-was measured this pass and the recommendation is to reject the change the record
-proposed. Ruling on those three unblocks §3C in one sitting.
-
-**What changed underneath v7's list:**
-
-- The stale `models.json` price note, the `file:line` hoist and the protocol
-  honesty gaps are **done** (`3bee775`, `59d42a3`, `8f6eee0`). The TUI search box
-  is the one item left in that bucket.
-- The **default-model evaluation** is no longer "when there's appetite" — it is
-  blocked on the same thing items 21–23 are. The production proxy returns
-  `quota_exceeded` for the pilot key, so every eval call through the path a user
-  takes is refused. **Raising that quota is a Supabase row only the founder can
-  touch**, and it is now the cheapest unblock on this list.
-- `max_advertised_tools` moved 12 → 5 → **12** in one day, the second move on a
-  measurement (`docs/TOOL_MENU_SIZE_2026-08-01.md`). Mentioned here because it is
-  the worked example of this project's own rule: a result that contradicts a
-  shipped default moves the default the same day.
+- **Branch `main`, nothing pushed.** ~119 commits ahead of `origin/main`. Every
+  tier has stayed local by choice; publishing is the founder's call.
+- **`make check` green** — gofmt, vet, `-race` on all six modules, lint, the
+  coverage ratchet, the errcheck ceiling.
+- **The last pass measured the project at ~77% engineering robustness and ~27%
+  product readiness.** That split is the whole story: the code is stronger than
+  most shipped commercial software, and nobody outside this machine can install
+  it. Windows does not run at all, macOS has never been executed on hardware,
+  there is no LICENSE, no `.vsix`, and no install path.
+- **Active plan:** the master launch plan — Windows support, a real install path,
+  and index honesty, in that order.
 
 ---
 
-### v7's list, as written (2026-07-24)
+## PART 0 — How to work on this project
 
-The record now points one direction: **the founder-decision cluster is what remains, and it is the gate.**
+This discipline is why the codebase is in the shape it is. It is not optional.
 
-- **The gate (dominant):** the P3 security review's founder decisions (§3D/§3E) — chiefly the **socket auth model** and the **Gate-6 closure ruling** — are what unblock all capability work (§3C). Nothing new should ship ahead of them. The four-location Gate-6 contradiction is a one-pass reconciliation *after* the founder rules; it is not itself an engineering task.
-- **In parallel, no dependency:** chase the OpenRouter ZDR reply (Discord mods, ticket #37409's verification step, LinkedIn), now carrying the fallback-semantics sub-question and F1 with it.
-- **Immediate, small, no dependency:** fix the stale `models.json` price note; the provider-identity real-OpenRouter confirmation once a live key exists; the `file:line`-when-retrieval-disabled hoist; the TUI search box. This bucket is nearly drained.
-- **Correctness precondition for Phase 4 — now met (pending founder close):** the bug-hunt C3 billing abort-refund is fixed (`a703978`, §2E), and §5(e)'s crash-stranded-reservation gap is now mitigated and made loud (`ca7e3c4`, §2J). Their two residuals (§3F) — exact metering of an aborted stream, and unrecoverable post-crash usage — are named follow-ups, not blockers.
-- **Blocking the §2J deploy, and only that:** apply `proxy/migrations/0002_pending_corrections.sql` **before** shipping the `ca7e3c4` proxy build, and re-verify it via PostgREST introspection. This needs a reachable Supabase project — the configured one now returns NXDOMAIN — so it is an ops/access step, not an engineering one. Until then the migration's SQL remains entirely unexecuted (§3F).
-- **When there's appetite:** the default-model evaluation (§3D) — the embedding-ceiling finding makes it the highest-leverage open lever.
-- **The large body of work:** Phase 4 packaging (managed-key billing/metering, cross-platform bundling), gated behind the security review for the parts that expose others to the daemon.
+1. **Audit first, fix second, document third.** An independent pass proves claims
+   by *live execution*, not code reading, and produces a PASS/FAIL/PARTIAL table
+   with reproducibility rates. Fixing is a separate task; documenting a third.
+2. **Never round up, and correct severity in *both* directions.** "Mostly works"
+   is not "works"; 4-of-5 fixed is reported as 4-of-5. Severity moves up (FAIL-2
+   went Moderate→High once exploited live) *and down* (a "confirmed CRITICAL
+   ship-blocker" became a latent defensive gap once a live repro proved the path
+   unreachable). Downgrading a scary claim to what the evidence supports is the
+   same discipline as upgrading a quiet one.
+3. **Verify against real execution, never memory or comments.** This project has
+   a documented history of doc and comment claims that were false and were caught
+   only by running the code. This very file was one of them.
+4. **A fix's test must enter through the same door the user does.** Learned the
+   hard way: a file-creation fix passed every engine-layer test while being
+   unreachable from every shipped client, because a parser rejected the input
+   first. Test through production entry points.
+5. **Every fix has a test demonstrated to fail when the fix is neutered** —
+   neutered and observed, not asserted. This is the single most valuable habit
+   here; roughly 20 fixes carry a recorded neuter result.
+6. **Nobody but the founder closes an item.** Every task stops at
+   "implemented and verified."
+7. **Isolated commits per concern.** Don't bundle unrelated changes.
+8. **Ratchets only tighten.** `scripts/coverage-floors.txt` goes up, never down.
+   `scripts/errcheck-ceilings.txt` fails if the count moves in *either*
+   direction — a new unchecked error is fixed, never grandfathered.
+
+**Build notes**
+- `./...` fails from the repo root — the root is not a module. Name the six
+  `go.work` modules explicitly: `daemon`, `editapply`, `protocol`,
+  `clients/tui`, `helper`, `proxy`.
+- `staticcheck`/`errcheck` live in `~/go/bin`; the Go toolchain is at
+  `~/.local/go/bin`. A lint step that silently passes is usually a `PATH`
+  problem — check that first.
+- `-tags eval` code is **not** compiled by an untagged `go vet`. Both of these
+  have hidden real breakage before.
+- Rebuild affected binaries after cross-module changes; daemon, TUI and the
+  extension drift from source otherwise.
+
+**Standing constraints**
+- Secrets live in `.env` and `proxy/.env`. Redact before printing:
+  `sed -E 's/(mochi_|sk-or-v1-)[A-Za-z0-9_-]+/\1[REDACTED]/g'`.
+- `ForbiddenEnvNames` must never reach an MCP subprocess, however loudly a
+  config asks.
+- **Lane B is unconfined.** The claim is "you approve every call and everything
+  is audited" — never "it is sandboxed."
+- `api_keys.key_prefix` is **not unique**; always target rows by `id=eq.<uuid>`.
 
 ---
 
-## PART 5 — WHERE THINGS LIVE
+## PART 1 — What Mochiii is
 
-- **Status of record:** `BACKLOG.md` (running log). **This file (`docs/HANDOFF.md`) is the synthesis of record.** The newest batches are recorded in `BACKLOG.md` at, roughly: ship-blocker C1/C2 (§"C1 + C2 ship-blocker fixes", ~L1847), M1–M3 (~L1966), S1/S2/E2E (~L2040), C3 abort-refund (~L2186), M4 cross-process apply/undo (~L2264), the endpoint/API security pass (~L2355), and the §5(e) quota outbox + reconciliation sweep (~L2493).
-- **Security & design docs:** `SECURITY_MODEL.md`, `CHUNK_SCRUB_DESIGN.md`, `RETRIEVAL_BUDGET_DESIGN.md`, `QUOTA_RESERVATION_DESIGN.md`, `SIGNAL_ESCALATION_DESIGN.md`.
-- **Confinement:** `editapply/secret.go` (`MatchesSecretName`), `editapply/apply.go` (`ResolveSafeTargetPath`, atomic symlink-refusing forward writer — C2), `editapply/create.go` (`resolveSafeNewPath`), `editapply/protected.go` (`ProtectedDirNames`, `IsProtectedDirName` — S2 case-fold), `daemon/apply_cmd.go` (`restoreOne`, `confinedRestorePath`), `daemon/index_cmd.go` (`ensureGitignoreEntry`).
-- **Edit parsing:** `editapply/editblock.go` (hardened `=======`; accepts create blocks; per-block recovery).
-- **Warn-mode / scrub:** `daemon/chunkscrub.go`, `daemon/warnsink.go`, `daemon/context.go`.
-- **Indexing / retrieval:** `daemon/chunker.go` (`gitignoreMatcher` per-dir — S1; `isPrunedDir` — S2), `reindex.go`, `fileref.go` (`file:line`), `retrieval_setup.go`, `rerank.go`, `vectorstore.go`, `lexicalstore.go`, `fileclass.go`.
-- **Embedder boundary:** `daemon/helperproc.go` (`HelperProcess.Embed` length-check — C1), `helper/onnxembedder.go`, `daemon/testdata/fakehelper` (lying-helper fixtures).
-- **Socket/daemon (post-reorg):** `daemon/server.go` (lifecycle/dispatch/handlers, `Serve` conn ceiling, `applyLocks`, `handleConn` `recover()` — C1), `server_auth.go` (Gate 3), `server_limits.go` (Gate 5), `server_workspace_lock.go` (Gate 6), `server_errors.go` (Gate 7). Peer-cred readers: `peercred_linux.go` / `peercred_other.go`.
-- **Inference:** `daemon/provider.go` (direct; `chatCompletionChunk.Provider`/`onProvider`, `finish_reason` — M1), `daemon/retry.go` (`streamWithRetry`, `onFinish`), `daemon/modelerror.go`, `proxy/main.go` (managed proxy; F1 byte-for-byte forward at `:295`; C3 abort-refund fix in `finalizeUsage`/`streamSSE`/`isDataChunk`, tests in `proxy/main_test.go`).
-- **Proxy endpoint-security surface (§2I):** `proxy/ratelimit.go` (token buckets + in-flight semaphore; wired in `handleChatCompletions` pre-auth per-source and post-auth per `apiKeyID` via `tooManyRequests`, `inFlight.acquire`) and `proxy/main.go` for the rest — model cost authorization (`peekModel` → `modelAllowed` → `403` at `:447`, allow-list built by `parseAllowedModels` from `ALLOWED_MODELS` else the shipped `defaultAllowedModels` tier set), quota reservation (`peekMaxTokens` → `reserveQuota`, RPC in `proxy/migrations/0001_reserve_usage.sql`), and SSE metadata scrubbing (`stripSSEAccountMetadata` alongside the older non-streaming `stripAccountMetadata`). `/health` commit-SHA exposure is behind `HEALTH_EXPOSE_COMMIT`. **`proxy/go.mod` has zero third-party requires — keep it that way; it is the only internet-facing component.**
-- **Proxy quota / billing (§2J, §2E-C3):** schema in `proxy/migrations/` — `0001_reserve_usage.sql` (`increment_usage` captured from live, `reserve_usage`) and `0002_pending_corrections.sql` (the **`pending_corrections`** outbox table, `reserve_usage` **recreated** to return `pending_id` via a data-modifying CTE, **`apply_correction`** = increment + close in one statement, **`sweep_pending_corrections`** = atomic `DELETE … RETURNING`). Go side in `proxy/main.go`: `reserveQuota` (returns `pendingID`), `finalizeUsage` (the three-way C3 decision; every branch now closes its outbox row), `correctUsage` → `rpc/apply_correction` with `p_pending_id`, `tryCorrectUsage` (retry/backoff), `startReconciliationSweep` + `sweepPendingCorrections` (`reconciliationSweepInterval` 5m, `pendingCorrectionStaleAfterMinutes` 15m — the latter **must** exceed `upstreamTimeout`/`serverWriteTimeout` or live requests get swept). Tests in `proxy/main_test.go` (`fakeUsageStore` models the outbox; `newFakeSupabase` deliberately does **not** serve `increment_usage`, which is what makes the neutering check bite). **Both migrations are apply-by-hand via the Supabase SQL editor; 0002 is UNAPPLIED and unexecuted — see §3F deploy order.**
-- **Protocol:** `protocol/protocol.go` (`TokenResponse.Provider`, `.Incomplete`/`IncompleteInfo`, `.History`/`HistoryInfo`, `.Reasoning`, `.Degraded`).
-- **Clients:** `clients/tui/{stream,chat}.go` (provider, incomplete, reasoning, degraded, history renders); `clients/vscode/src/{daemonClient,chatPanel}.ts` + `media/main.js` (same, `textContent`; M2 `'close'` arm in `daemonClient.ts`).
-- **VS Code E2E harness:** `clients/vscode/src/test/` (`runTest.ts` — strips `ELECTRON_RUN_AS_NODE`/`VSCODE_*`; `stubDaemon.ts`; `smoke.test.ts`; `daemonClientE2E.test.ts`). `.vscode-test/` is gitignored.
-- **New tests (fail-when-neutered):** `daemon/embedder_boundary_test.go`, `daemon/handleconn_recover_test.go`, `editapply/apply_forward_symlink_test.go`, `daemon/incomplete_test.go`, `clients/tui/incomplete_test.go`, `clients/tui/reasoning_test.go`, `daemon/nested_gitignore_test.go`, `editapply/protected_casefold_test.go`, `daemon/casefold_prune_test.go`.
-- **Config:** root `models.json` / `daemon/models.json` (both untracked; `allow_fallbacks:true`, stale price note); `daemon/config.go` (`Config.Validate`, Tier-4-C1 warnings, client-side ZDR fields).
-- **Memory (this project's notes):** `~/.claude/projects/-home-ravi-kiran-Desktop-Neww/memory/` — `MEMORY.md` index plus per-topic files (`p3-security-review.md`, `tier4-operability.md`, `bughunt-cto-pass-2026-07-23.md`, `s1-s2-e2e-batch.md`, `chunk-text-network-exit.md`, `fail2-undo-unconfined-writer.md`, `warnmode-fire-rate-review.md`, `retrieval-diagnosis-h4-h6.md`). Note: `p3-security-review.md` and `MEMORY.md` are two of the four locations in the §3E contradiction.
+A **security-first, retrieval-grounded AI coding assistant** running as a local
+daemon on the developer's own machine. Product thesis: **trust is a feature** —
+an agent with write access to your code and your inference credential should be
+held to safety-critical engineering standards.
+
+- **Local daemon** (`daemon/`) — serves CLI, TUI and VS Code clients from one
+  shared indexed understanding of the workspace ("one brain, thin clients").
+  Unix socket, `0600`, in a `0700` per-user runtime dir, peer-authenticated by
+  kernel-supplied credentials: `SO_PEERCRED` on Linux, `LOCAL_PEERCRED` on macOS
+  (`peercred_darwin.go` — compile-verified, **never run on hardware**). Every
+  other platform **refuses every connection**, which is why Windows does not run.
+- **Retrieval/indexing** — local ONNX embeddings (BGE-small int8) via a
+  subprocess helper; hybrid retrieval (vector + FTS5 lexical, RRF-max fusion
+  K=60, class-aware rerank). Honours nested `.gitignore` at every directory
+  level. **The index is a one-shot snapshot** — no watcher, no incremental
+  rebuild, and no staleness signal at all. It degrades gracefully when absent.
+- **Edit engine** (`editapply/`) — five confinement gates, backups, multi-run
+  undo. Forward and undo writes are both atomic (temp+rename) and
+  symlink-refusing. **Audited against POSIX semantics only** — the conformance
+  suite skips its symlink vectors on Windows.
+- **Secret detection** ("warn-mode") — filename-pattern gate plus
+  entropy/keyword content heuristics. Structural-signature scrubbing is live at
+  retrieval time; the entropy/keyword layers are **log-only**, pending D5.
+- **Agent mode / MCP** — off unless configured. Lane A is this daemon's own
+  in-process tools (confined, never writes); Lane B is a stdio subprocess with
+  the user's full privileges (**unconfined**, requires `acknowledged_unconfined:
+  true` typed by hand, every call human-approved and digest-bound).
+- **Inference routing** — two paths to OpenRouter: direct (`daemon/provider.go`)
+  and a managed proxy (`proxy/main.go`, on Railway). Both send `zdr:true`,
+  `data_collection:"deny"`, `allow_fallbacks:true`, `ignore:["DeepInfra"]`.
+  **The proxy enforces this** — a request lacking the routing block gets
+  `403 zdr_required` (F1, verified live by wire probe).
 
 ---
 
-## PART 6 — ONE-PARAGRAPH SUMMARY
+## PART 2 — Where things live
 
-Mochiii's security surface has been audited and hardened across both P3 axes — editapply write path (five gates hold; FAIL-1/FAIL-2 fixed; the *forward* write now atomic and symlink-refusing like undo — bug-hunt C2) and the Unix socket (peer auth, DoS caps, per-workspace concurrency serialization, error-path scrubbing, and now a `handleConn` `recover()` backstop — bug-hunt C1) — and four tiers of correctness plus a Tier-4 operability cluster are complete. Newest since v5: the **bug-hunt ship-blocker C1/C2** (with C1's "confirmed CRITICAL" honestly downgraded to a latent defensive gap once live repro proved the deref unreachable through the real embedder, fixed anyway on merit), the **M1–M3 client-UX batch** (truncated-answer visibility, a VS Code clean-close wedge, and reasoning/history rendering — which also closed the pre-existing Tier-3 render-parity debt, three truncation concepts kept distinct), **S1** (nested-`.gitignore` secret indexing — real, fixed, and precisely scoped to non-secret-named files by the `MatchesSecretName`-before-ignore ordering), **S2** (a `.GIT` case-fold recurrence of the Tier-3 protected-dir guard, fixed with a deliberate security-check-only fold), and a **real VS Code Extension Development Host E2E harness** (6 passing; an `ELECTRON_RUN_AS_NODE` pollution bug fixed; webview-DOM pixels honestly left unasserted). Newest since v6: **M4**, which found Gate-6's lock was in-process only while the CLI and TUI are separate processes — reopening all five races in ordinary use, now serialized by a per-workspace `flock` — and the **endpoint/API security pass**, the first dedicated review of the managed proxy, the project's only network-exposed surface: 14 checks against the real binary took 5 FAIL + 1 PARTIAL to 0 FAIL + 1 PARTIAL, fixing a *reachable* `x/text` DoS on the untrusted-model-output normalization path, an account-metadata leak that escaped the scrubber because it was wired only to the non-streaming branch the daemon never uses, a complete absence of rate limiting (40 concurrent upstream calls from one key → 8), and a cost-authorization hole where any model could be selected against a token-metered quota — with two of the initial "FAIL"s reclassified as harness bugs rather than reported, the remaining M10 slow-read gap called mitigated-not-eliminated, and the limiter's per-instance scope stated rather than buried. Newest of all: **§5(e)'s quota-crash gap**, the one reservation-loss case `QUOTA_RESERVATION_DESIGN.md` named and declined to build — a proxy dying between reserving and correcting stranded `tokens_used` with nothing recording a correction was owed, and §5's own direction analysis made that the *unsafe* direction whenever the dead request's real usage exceeded its reservation. Now every reservation opens a durable `pending_corrections` row **in the same atomic statement that reserves**, every correction closes it in the same statement that increments, and a 5-minute sweep claims and loudly reports what neither happened to — zero added round trips, proven with a `kill -9` against the real binary and a real 5-minute tick (`tokens_used` 4219 → 4219, unchanged, never refunded). **Deliberately not oversold: this does not recover a dead request's true usage — that number is gone with the process — it converts a silent, indefinite, unsafe-direction stranding into a loud, ~20-minute-bounded, safely-directed one, and the log line rather than the accounting is the deliverable; C3's exact-metering residual is adjacent but untouched, and the migration itself is unapplied and its SQL entirely unexecuted because the Supabase project host now returns NXDOMAIN, making deploy order (schema before build) a hard constraint.** Beware the **C1/C2/C3 letter collision** — the Tier-4 operability cluster and the bug-hunt ship-blockers reuse the same letters for different work. What's left is not fixes but decisions: the founder-level P3 gate (socket auth model + the Gate-6 closure contradiction, which four locations still disagree about because the only "CLOSED" commit is dangling — re-verified this session) blocks all new capability; the OpenRouter ZDR question (now carrying the `allow_fallbacks` fallback edge and F1 proxy-non-enforcement) is the one external blocker; the bug-hunt C3 billing abort-refund — a correctness precondition for Phase 4 — is now fixed (`a703978`, leaving only an exact-metering follow-up); and the highest-leverage lever is the default-model evaluation. Nothing here is closed; this is a synthesis of state, and closure is the founder's call.
+**Confinement** — `editapply/apply.go` (`resolveSafeTarget`, the atomic
+symlink-refusing writer), `editapply/create.go` (`resolveSafeNewPath`),
+`editapply/protected.go` (`ProtectedDirNames`, `IsProtectedDirName`),
+`editapply/secret.go` (`MatchesSecretName`), `editapply/atomicwrite.go`,
+`editapply/applylock.go` (cross-process `flock`), mirrored in
+`daemon/apply_cmd.go` (`restoreOne`, `confinedRestorePath`, `openNoFollow`).
+The mirroring is enforced by `editapply/confinement_conformance_test.go` — read
+its header before touching any of them.
+
+**Indexing / retrieval** — `daemon/chunker.go` (`ScanWorkspace`, per-directory
+`gitignoreMatcher`, `isPrunedDir`), `daemon/index_cmd.go` (`buildIndex`,
+batches of 40), `daemon/reindex.go` (`reindexFile` — the only incremental path,
+and it fires only for files the daemon itself just wrote), `daemon/fileref.go`
+(`file:line` resolution), `daemon/retrieval_setup.go` (**resolved once at
+startup and constant for the daemon's lifetime** — an index built afterwards
+does nothing until restart), `rerank.go`, `vectorstore.go`, `lexicalstore.go`.
+
+**Embedder boundary** — `daemon/helperproc.go`, `daemon/helperpath.go`
+(`resolveHelperBinPath` — checks `<exedir>` before CWD, and its comment records
+why), `helper/onnxembedder.go`, `daemon/modelfetch.go` +
+`daemon/onnxruntimefetch.go` (pinned URLs, exact byte sizes, sha256 for every
+asset — this is what makes the local-model claim true).
+
+**Socket / daemon** — `daemon/main.go` (listen, lockfile, `reclaimStaleSocket`,
+drain), `daemon/server.go` (dispatch by presence-of-key, not a type
+discriminator — deliberate, see the comment), `server_auth.go` (Gate 3),
+`server_limits.go` (Gate 5), `server_workspace_lock.go` (Gate 6),
+`server_errors.go` (Gate 7, path scrubbing), `daemon/degraded.go` (five
+degradation components with prewritten user-facing prose),
+`daemon/modelerror.go` (closed error-class vocabulary; `Error()` is the scrubbed
+string, `Detail()` is log-only).
+
+**Protocol** — `protocol/protocol.go` owns the discovery convention
+(`RuntimeDir`, `SocketDir`, `LockPath`, `LockFile`) and every wire type. Its
+header explains that both sides must derive paths independently and identically;
+honour that.
+
+**Clients** — `clients/tui/` (bubbletea; `/reason` and `/refactor` prefixes,
+`ctrl+n` reset, no search box), `clients/vscode/src/` +
+`media/main.js` (search, native undo, auto-apply toggle, full ARIA pass; renders
+via `textContent`, never `innerHTML`). **The extension does not start the
+daemon** — it reads the lockfile and connects.
+
+**Proxy** — `proxy/main.go` (auth → ZDR gate → model allow-list → quota
+reservation → stream), `proxy/ratelimit.go` (token buckets + in-flight
+semaphore; **per-instance**, so N replicas give one key N× its rate),
+`proxy/metrics.go` (`/admin/metrics` behind `PROXY_ADMIN_TOKEN`, ≥24 chars or
+the process fatals), `proxy/migrations/` (apply-by-hand via the Supabase SQL
+editor; 0002 and 0003 are applied and verified live).
+**`proxy/go.mod` has zero third-party requires — keep it that way.** It is the
+only internet-facing component.
+
+**Config** — root `models.json` (**tracked**; there is no `daemon/models.json`),
+`daemon/config.go`, `daemon/mcpconfig.go` (the polarity contract is stated at
+the top: absent means off, and lanes are structural rather than a field a typo
+could flip).
+
+**Scripts** — `scripts/lint.sh`, `coverage-ratchet.sh`, `errcheck-ceiling.sh`,
+`fuzz.sh` (9 targets), `sigterm-drill.sh`, `soak.sh`, `latency-bench.sh`,
+`agent-cost-bench.sh`. All quality gates; **none of them builds or packages
+anything.**
+
+**Project memory** —
+`~/.claude/projects/-home-ravi-kiran-Desktop-Neww/memory/`, `MEMORY.md` index
+plus per-topic files.
+
+---
+
+## PART 3 — Traps a cold reader falls into
+
+- **"C1/C2/C3" names two unrelated clusters.** The Tier-4 operability cluster
+  (`0599a11`, `6618dda`, `2241daa`) and the bug-hunt ship-blockers (`ee9e992`,
+  `c7cff6c`, `a703978`) reuse the same letters for different work. Always name
+  the cluster.
+- **The eight LOWs live outside the repo**, at
+  `~/.claude/plans/what-can-we-improve-snappy-music.md`, so the pointer looks
+  dangling from a checkout. All eight are transcribed into `OPEN_ITEMS.md` §2.
+- **`.codeterminal/index/` in this repo is months stale** and the product will
+  still report `grounded ✓` against it. That is the bug, not a local accident.
+- **CI cannot block.** Branch protection is unavailable on a private free-plan
+  repo, so a red run is a signal someone has to read. `.githooks/pre-push` is
+  the compensating control, and `--no-verify` bypasses it.
+- **`gh` resolves to the wrong repo from this directory.** Check before trusting
+  any `gh` output.
+- **JSON `null` → `bool` unmarshals with a nil error**, and hex caps Shannon
+  entropy at exactly 4.0. Both have caused real misreadings here.
