@@ -155,7 +155,39 @@ func (s *Server) runAgentLoop(
 			s.logger,
 		)
 		if err != nil {
-			return agentResult{}, err
+			// A FAILURE PART-WAY THROUGH IS AN INCOMPLETE TURN, NOT A VOID ONE
+			// (QA gate 2026-08-01, P1-1).
+			//
+			// This used to return agentResult{}, throwing away everything the
+			// loop had produced. The user had already WATCHED that text arrive
+			// -- it streamed through onToken on its way here -- so discarding it
+			// meant the edit blocks in it were never offered, the turn never
+			// reached conversation memory, and the answer on screen was
+			// contradicted by an error. Meanwhile budgetStop, ten lines up, keeps
+			// all of it, explicitly, because "the work done so far is real and
+			// the user keeps it". Both are mid-turn stops; only one of them was
+			// treating the work as real.
+			//
+			// The first iteration is the exception: nothing has been produced,
+			// so there is no work to preserve and the error is the whole story.
+			// Reporting a bare failure as an "incomplete answer" would be worse
+			// than reporting it as a failure.
+			if full.Len() == 0 {
+				return agentResult{}, err
+			}
+			s.logger.Printf("agent: stopping at iteration %d after a provider failure, keeping %d byte(s) of answer: %v",
+				turn.iteration, full.Len(), asModelError(err).Detail())
+			return agentResult{
+				FinalText: full.String(),
+				Incomplete: &protocol.IncompleteInfo{
+					Reason: protocol.IncompleteProviderError,
+					Detail: "this task stopped part-way because the model provider failed — what you " +
+						"see above is everything that was done, and it is yours to keep. Ask again to continue.",
+				},
+				ToolNames:      turn.toolNames,
+				ToolSignatures: turn.toolSignatures,
+				Iterations:     turn.iteration,
+			}, nil
 		}
 
 		// No tool calls means the model is done talking. This is the ONLY

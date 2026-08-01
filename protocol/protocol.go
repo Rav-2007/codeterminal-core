@@ -487,6 +487,17 @@ const (
 	// a budget stop it is not an error: the text already streamed is real work and
 	// the user keeps it.
 	IncompleteUserCancelled = "user_cancelled"
+
+	// IncompleteProviderError: an agent-mode turn had already produced work when
+	// the model provider failed on a later step, so it stopped there rather than
+	// finishing.
+	//
+	// It is deliberately not an error. By the time this fires the user has
+	// WATCHED the earlier iterations stream in; throwing that away to report a
+	// failure would take back something they already have, lose any edit blocks
+	// in it, and leave the turn absent from conversation memory. A first-iteration
+	// failure has no work to keep and stays an ordinary error.
+	IncompleteProviderError = "provider_error"
 )
 
 // IncompleteInfo reports that a streamed answer ended early rather than
