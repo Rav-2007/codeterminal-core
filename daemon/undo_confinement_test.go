@@ -40,7 +40,7 @@ func TestRestoreOne_RefusesFinalComponentSymlinkEscape(t *testing.T) {
 		t.Fatalf("symlink: %v", err)
 	}
 
-	_, _, err := runUndoSession(root, sessionDir, false, strings.NewReader(""), io.Discard, discardLogger())
+	_, _, _, err := runUndoSession(root, sessionDir, false, strings.NewReader(""), io.Discard, discardLogger())
 	if err == nil {
 		t.Errorf("expected runUndoSession to refuse the escaping symlink, got nil error")
 	}
@@ -67,7 +67,7 @@ func TestRestoreOne_RefusesIntermediateDirSymlinkEscape(t *testing.T) {
 	}
 	escaped := filepath.Join(outside, "pwn.txt")
 
-	_, _, err := runUndoSession(root, sessionDir, true, strings.NewReader("y\n"), io.Discard, discardLogger())
+	_, _, _, err := runUndoSession(root, sessionDir, true, strings.NewReader("y\n"), io.Discard, discardLogger())
 	if err == nil {
 		t.Errorf("expected runUndoSession to refuse the intermediate-dir symlink, got nil error")
 	}
@@ -90,7 +90,7 @@ func TestRestoreOne_RestoresDeletedFileWithinRoot(t *testing.T) {
 	writeAt(t, filepath.Join(sessionDir, "before", "pkg", "gone.txt"), "RESTORED-CONTENT")
 	// no after/ snapshot + file absent on disk -> guarded -> restore under force
 
-	restored, _, err := runUndoSession(root, sessionDir, true, strings.NewReader("y\n"), io.Discard, discardLogger())
+	restored, _, _, err := runUndoSession(root, sessionDir, true, strings.NewReader("y\n"), io.Discard, discardLogger())
 	if err != nil {
 		t.Fatalf("legit deleted-file undo must succeed, got: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestRestoreOne_OrdinaryUndoUnchanged(t *testing.T) {
 	writeAt(t, filepath.Join(sessionDir, "before", "foo.txt"), "ORIGINAL")
 	writeAt(t, filepath.Join(sessionDir, "after", "foo.txt"), "EDITED")
 
-	restored, _, err := runUndoSession(root, sessionDir, false, strings.NewReader(""), io.Discard, discardLogger())
+	restored, _, _, err := runUndoSession(root, sessionDir, false, strings.NewReader(""), io.Discard, discardLogger())
 	if err != nil {
 		t.Fatalf("ordinary undo failed: %v", err)
 	}
@@ -135,7 +135,7 @@ func TestRestoreOne_RefusesSecretNamedFile(t *testing.T) {
 	writeAt(t, filepath.Join(sessionDir, "before", ".env"), "SECRET=v1")
 	writeAt(t, filepath.Join(sessionDir, "after", ".env"), "SECRET=v2")
 
-	_, _, err := runUndoSession(root, sessionDir, false, strings.NewReader(""), io.Discard, discardLogger())
+	_, _, _, err := runUndoSession(root, sessionDir, false, strings.NewReader(""), io.Discard, discardLogger())
 	if err == nil {
 		t.Errorf("expected undo of a secret-named file to be refused, got nil error")
 	}

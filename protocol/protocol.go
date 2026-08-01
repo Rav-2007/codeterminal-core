@@ -708,9 +708,21 @@ type UndoRequest struct {
 // files left reverted. A client MUST therefore read Restored even when Error
 // is set; treating an error as "nothing happened" is exactly the wrong
 // assumption this field exists to prevent.
+// Removed is the SUBSET of Restored that was reverted by DELETING the file,
+// because the apply run had created it and the state being reverted to is "no
+// file here" (Fix C). Restored stays the total number of files this undo
+// changed on disk, so a client that never learned about Removed keeps reading
+// the same number it always did.
+//
+// It exists because "restored 3 files" is not true of a run where two of them
+// were deleted, and this protocol's whole standard is that what the client is
+// told and what is on disk agree. The CLI has printed the breakdown since Fix
+// C; a socket client could not, and had to say "restored" about a deletion.
+// restored-minus-removed is the number of files genuinely put back.
 type UndoResponse struct {
 	ProtocolVersion int      `json:"protocol_version"`
 	Restored        int      `json:"restored"`
+	Removed         int      `json:"removed,omitempty"`
 	Guarded         []string `json:"guarded,omitempty"`
 	SessionDir      string   `json:"session_dir,omitempty"`
 	Error           string   `json:"error,omitempty"`

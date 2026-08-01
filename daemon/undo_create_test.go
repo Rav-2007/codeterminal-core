@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -48,7 +49,7 @@ func TestUndoCreate_RemovesTheFileAndSaysSo(t *testing.T) {
 	backupDir := applyCreate(t, root, "new.txt", "hello\n")
 
 	var out bytes.Buffer
-	restored, guarded, err := runUndoSession(root, backupDir, false, strings.NewReader(""), &out, discardLogger())
+	restored, _, guarded, err := runUndoSession(root, backupDir, false, strings.NewReader(""), &out, discardLogger())
 	if err != nil {
 		t.Fatalf("runUndoSession: %v", err)
 	}
@@ -92,7 +93,7 @@ func TestUndoCreate_EmptyPreexistingFileStillRestores(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	if _, _, err := runUndoSession(root, backupDir, false, strings.NewReader(""), &out, discardLogger()); err != nil {
+	if _, _, _, err := runUndoSession(root, backupDir, false, strings.NewReader(""), &out, discardLogger()); err != nil {
 		t.Fatalf("runUndoSession: %v", err)
 	}
 
@@ -117,7 +118,7 @@ func TestUndoCreate_HandEditedCreatedFileIsGuarded(t *testing.T) {
 	writeTempFile(t, root, "new.txt", "hello\nand my own line\n")
 
 	var out bytes.Buffer
-	restored, guarded, err := runUndoSession(root, backupDir, false, strings.NewReader("n\n"), &out, discardLogger())
+	restored, _, guarded, err := runUndoSession(root, backupDir, false, strings.NewReader("n\n"), &out, discardLogger())
 	if err != nil {
 		t.Fatalf("runUndoSession: %v", err)
 	}
@@ -140,7 +141,7 @@ func TestUndoCreate_HandEditedCreatedFileRemovedOnForce(t *testing.T) {
 	writeTempFile(t, root, "new.txt", "hello\nand my own line\n")
 
 	var out bytes.Buffer
-	restored, guarded, err := runUndoSession(root, backupDir, true, strings.NewReader(""), &out, discardLogger())
+	restored, _, guarded, err := runUndoSession(root, backupDir, true, strings.NewReader(""), &out, discardLogger())
 	if err != nil {
 		t.Fatalf("runUndoSession: %v", err)
 	}
@@ -165,7 +166,7 @@ func TestUndoCreate_AlreadyDeletedCreatedFileIsNotAnError(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	restored, _, err := runUndoSession(root, backupDir, true, strings.NewReader(""), &out, discardLogger())
+	restored, _, _, err := runUndoSession(root, backupDir, true, strings.NewReader(""), &out, discardLogger())
 	if err != nil {
 		t.Fatalf("runUndoSession on an already-deleted created file: %v", err)
 	}
@@ -198,7 +199,7 @@ func TestUndoCreate_MixedSessionRestoresAndRemoves(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	restored, guarded, err := runUndoSession(root, backupDir, false, strings.NewReader(""), &out, discardLogger())
+	restored, _, guarded, err := runUndoSession(root, backupDir, false, strings.NewReader(""), &out, discardLogger())
 	if err != nil {
 		t.Fatalf("runUndoSession: %v", err)
 	}
@@ -254,7 +255,7 @@ func TestUndoCreate_RemovalStillRefusesUnsafePaths(t *testing.T) {
 				t.Fatalf("WriteFile: %v", err)
 			}
 
-			_, _, err := runUndoSession(root, sessionDir, true, strings.NewReader("y\n"), &bytes.Buffer{}, discardLogger())
+			_, _, _, err := runUndoSession(root, sessionDir, true, strings.NewReader("y\n"), &bytes.Buffer{}, discardLogger())
 			if err == nil {
 				t.Errorf("undo did not refuse a removal of %s", tc.rel)
 			}
@@ -285,7 +286,7 @@ func TestUndoCreate_ManifestNamingAnUnwalkedPathCannotDeleteIt(t *testing.T) {
 		t.Fatalf("WriteFile manifest: %v", err)
 	}
 
-	if _, _, err := runUndoSession(root, backupDir, true, strings.NewReader(""), &bytes.Buffer{}, discardLogger()); err != nil {
+	if _, _, _, err := runUndoSession(root, backupDir, true, strings.NewReader(""), &bytes.Buffer{}, discardLogger()); err != nil {
 		t.Fatalf("runUndoSession: %v", err)
 	}
 	if _, statErr := os.Stat(bystander); statErr != nil {
@@ -304,7 +305,7 @@ func TestUndoCreate_RemovesDirectoriesTheApplyRunMade(t *testing.T) {
 	backupDir := applyCreate(t, root, "pkg/sub/deep/thing.go", "package deep\n")
 
 	var out bytes.Buffer
-	if _, _, err := runUndoSession(root, backupDir, false, strings.NewReader(""), &out, discardLogger()); err != nil {
+	if _, _, _, err := runUndoSession(root, backupDir, false, strings.NewReader(""), &out, discardLogger()); err != nil {
 		t.Fatalf("runUndoSession: %v", err)
 	}
 
@@ -334,7 +335,7 @@ func TestUndoCreate_LeavesADirectoryTheUserMade(t *testing.T) {
 	backupDir := applyCreate(t, root, "mine/thing.go", "package mine\n")
 
 	var out bytes.Buffer
-	if _, _, err := runUndoSession(root, backupDir, false, strings.NewReader(""), &out, discardLogger()); err != nil {
+	if _, _, _, err := runUndoSession(root, backupDir, false, strings.NewReader(""), &out, discardLogger()); err != nil {
 		t.Fatalf("runUndoSession: %v", err)
 	}
 
@@ -358,7 +359,7 @@ func TestUndoCreate_KeepsADirectoryThatStillHoldsSomething(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	if _, _, err := runUndoSession(root, backupDir, false, strings.NewReader(""), &out, discardLogger()); err != nil {
+	if _, _, _, err := runUndoSession(root, backupDir, false, strings.NewReader(""), &out, discardLogger()); err != nil {
 		t.Fatalf("runUndoSession: %v", err)
 	}
 
@@ -367,5 +368,56 @@ func TestUndoCreate_KeepsADirectoryThatStillHoldsSomething(t *testing.T) {
 	}
 	if info, err := os.Stat(filepath.Join(root, "pkg")); err != nil || !info.IsDir() {
 		t.Error("pkg/ should still exist: it is not empty")
+	}
+}
+
+// A socket client must be able to tell a deletion from a restore.
+//
+// UndoResponse carried one integer over both outcomes, so the daemon told a
+// client "restored 3 files" about a run where two of them were deleted. The CLI
+// has printed the breakdown since Fix C; the wire could not, and this protocol's
+// whole standard is that what the client is told and what is on disk agree.
+//
+// Restored stays the TOTAL, so a client that never learned about Removed reads
+// the same number it always did; Removed is the subset that were deletions, and
+// restored-minus-removed is the number of files genuinely put back.
+func TestUndoResponse_SplitsRemovalsFromRestores(t *testing.T) {
+	root := realTempDir(t)
+	writeTempFile(t, root, "existing.txt", "before\n")
+
+	// One edit to an existing file (a restore) and one create (a removal), in
+	// the same session.
+	backupDir, err := editapply.NewBackupSessionDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range []editapply.EditBlock{
+		{FilePath: "existing.txt", Search: "before", Replace: "after"},
+		{FilePath: "made.txt", Search: "", Replace: "new\n"},
+	} {
+		prepared, err := editapply.PrepareEdit(root, b)
+		if err != nil {
+			t.Fatalf("PrepareEdit(%s): %v", b.FilePath, err)
+		}
+		if err := editapply.Apply(root, prepared, backupDir); err != nil {
+			t.Fatalf("Apply(%s): %v", b.FilePath, err)
+		}
+	}
+
+	restored, removed, guarded, err := runUndoSession(root, backupDir, false, strings.NewReader(""), io.Discard, discardLogger())
+	if err != nil {
+		t.Fatalf("runUndoSession: %v", err)
+	}
+	if len(guarded) != 0 {
+		t.Fatalf("guarded = %v, want none", guarded)
+	}
+	if restored != 2 {
+		t.Errorf("Restored = %d, want 2 — it is the total number of files reverted", restored)
+	}
+	if removed != 1 {
+		t.Errorf("Removed = %d, want 1 — made.txt was deleted, not restored", removed)
+	}
+	if restored-removed != 1 {
+		t.Errorf("restored-removed = %d, want 1 genuinely restored file", restored-removed)
 	}
 }

@@ -70,7 +70,7 @@ func TestRunUndoSession_MidWalkFailureRevertsNothing(t *testing.T) {
 	stageThreeFileSession(t, root, sessionDir)
 	breakMiddleFile(t, sessionDir)
 
-	restored, _, err := runUndoSession(root, sessionDir, false, strings.NewReader(""), io.Discard, discardLogger())
+	restored, _, _, err := runUndoSession(root, sessionDir, false, strings.NewReader(""), io.Discard, discardLogger())
 	if err == nil {
 		t.Fatal("expected runUndoSession to fail when a backed-up file cannot be restored, got nil")
 	}
@@ -110,7 +110,7 @@ func TestRunUndoSession_AllRestorableStillRevertsEveryFile(t *testing.T) {
 	sessionDir := filepath.Join(root, ".codeterminal", "backups", "20260721-000002")
 	stageThreeFileSession(t, root, sessionDir)
 
-	restored, guarded, err := runUndoSession(root, sessionDir, false, strings.NewReader(""), io.Discard, discardLogger())
+	restored, _, guarded, err := runUndoSession(root, sessionDir, false, strings.NewReader(""), io.Discard, discardLogger())
 	if err != nil {
 		t.Fatalf("clean three-file undo must succeed, got: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestRunUndoSession_GuardedFileStillBlocksOnlyItself(t *testing.T) {
 	stageThreeFileSession(t, root, sessionDir)
 	writeAt(t, filepath.Join(root, "b.txt"), "HAND-EDITED-SINCE-APPLY")
 
-	restored, guarded, err := runUndoSession(root, sessionDir, false, strings.NewReader("n\n"), io.Discard, discardLogger())
+	restored, _, guarded, err := runUndoSession(root, sessionDir, false, strings.NewReader("n\n"), io.Discard, discardLogger())
 	if err != nil {
 		t.Fatalf("a guarded file must not fail the run, got: %v", err)
 	}
@@ -171,7 +171,7 @@ func TestRunUndoSession_ForcedBatchWithUnrestorableGuardedFileRevertsNothing(t *
 	writeAt(t, filepath.Join(root, "b.txt"), "HAND-EDITED-SINCE-APPLY")
 	breakMiddleFile(t, sessionDir)
 
-	restored, _, err := runUndoSession(root, sessionDir, true, strings.NewReader("y\n"), io.Discard, discardLogger())
+	restored, _, _, err := runUndoSession(root, sessionDir, true, strings.NewReader("y\n"), io.Discard, discardLogger())
 	if err == nil {
 		t.Fatal("expected the forced batch to fail on the unrestorable file, got nil")
 	}
@@ -194,7 +194,7 @@ func TestRunUndoSession_LeavesNoStagingResidue(t *testing.T) {
 	stageThreeFileSession(t, root, sessionDir)
 	breakMiddleFile(t, sessionDir)
 
-	if _, _, err := runUndoSession(root, sessionDir, false, strings.NewReader(""), io.Discard, discardLogger()); err == nil {
+	if _, _, _, err := runUndoSession(root, sessionDir, false, strings.NewReader(""), io.Discard, discardLogger()); err == nil {
 		t.Fatal("expected failure")
 	}
 

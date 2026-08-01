@@ -802,7 +802,7 @@ func (s *Server) handleUndo(enc *json.Encoder, req protocol.UndoRequest) (revert
 		}
 	}
 
-	restored, guarded, err := runUndoSession(realRoot, sessionDir, false, strings.NewReader(""), io.Discard, s.logger)
+	restored, removed, guarded, err := runUndoSession(realRoot, sessionDir, false, strings.NewReader(""), io.Discard, s.logger)
 	if err != nil {
 		// Report the count and the guarded list ALONGSIDE the error, never
 		// instead of it (Fix 2). This used to send a bare error with Restored
@@ -816,6 +816,7 @@ func (s *Server) handleUndo(enc *json.Encoder, req protocol.UndoRequest) (revert
 		enc.Encode(protocol.UndoResponse{
 			ProtocolVersion: protocol.ProtocolVersion,
 			Restored:        restored,
+			Removed:         removed,
 			Guarded:         guarded,
 			SessionDir:      sessionDir,
 			Error:           s.socketSafeError(err, realRoot),
@@ -826,10 +827,12 @@ func (s *Server) handleUndo(enc *json.Encoder, req protocol.UndoRequest) (revert
 	// "reverted", not "restored": a session that created files reverts them by
 	// deleting them, and runUndoSession has already logged the per-shape
 	// breakdown (Fix C).
-	s.logger.Printf("undo: reverted %d file(s) from %s (%d guarded)", restored, sessionDir, len(guarded))
+	s.logger.Printf("undo: reverted %d file(s) from %s (%d restored, %d removed, %d guarded)",
+		restored, sessionDir, restored-removed, removed, len(guarded))
 	enc.Encode(protocol.UndoResponse{
 		ProtocolVersion: protocol.ProtocolVersion,
 		Restored:        restored,
+		Removed:         removed,
 		Guarded:         guarded,
 		SessionDir:      sessionDir,
 	})

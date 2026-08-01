@@ -201,7 +201,7 @@ func runEditsUndoCommand(args []string, logger *log.Logger) error {
 		return err
 	}
 
-	_, _, err = runUndoSession(realRoot, sessionDir, *force, os.Stdin, os.Stdout, logger)
+	_, _, _, err = runUndoSession(realRoot, sessionDir, *force, os.Stdin, os.Stdout, logger)
 	return err
 }
 
@@ -262,7 +262,7 @@ func resolveBackupSession(backupsRoot, session string) (string, error) {
 // the daemon's UndoRequest handler (see daemon/server.go) call -- neither
 // reimplements the restore logic; the handler only additionally needs the
 // counts as return values rather than parsed out of printed text.
-func runUndoSession(realWorkspaceRoot, sessionDir string, force bool, in io.Reader, out io.Writer, logger *log.Logger) (restored int, guarded []string, err error) {
+func runUndoSession(realWorkspaceRoot, sessionDir string, force bool, in io.Reader, out io.Writer, logger *log.Logger) (restored, removed int, guarded []string, err error) {
 	// Cross-process serialization across the guard check and the commit (M4).
 	// The "is this file still what the apply run left?" comparison below and the
 	// restoreBatch commit at the end are a read-then-write pair: without a lock
@@ -281,7 +281,7 @@ func runUndoSession(realWorkspaceRoot, sessionDir string, force bool, in io.Read
 	// otherwise be re-raced before the commit.
 	release, lockErr := editapply.LockWorkspaceApply(realWorkspaceRoot)
 	if lockErr != nil {
-		return 0, nil, fmt.Errorf("serializing undo on %s: %w", realWorkspaceRoot, lockErr)
+		return 0, 0, nil, fmt.Errorf("serializing undo on %s: %w", realWorkspaceRoot, lockErr)
 	}
 	defer release()
 
@@ -303,11 +303,11 @@ func runUndoSession(realWorkspaceRoot, sessionDir string, force bool, in io.Read
 		return nil
 	})
 	if err != nil {
-		return 0, nil, fmt.Errorf("reading backup session %s: %w", sessionDir, err)
+		return 0, 0, nil, fmt.Errorf("reading backup session %s: %w", sessionDir, err)
 	}
 	if len(relPaths) == 0 {
 		fmt.Fprintf(out, "no backed-up files in %s\n", sessionDir)
-		return 0, nil, nil
+		return 0, 0, nil, nil
 	}
 
 	// Which of these files did the apply run bring into existence? Reverting
@@ -316,7 +316,7 @@ func runUndoSession(realWorkspaceRoot, sessionDir string, force bool, in io.Read
 	// takes the restore shape exactly as it always did.
 	created, err := editapply.CreatedInSession(sessionDir)
 	if err != nil {
-		return 0, nil, fmt.Errorf("reading created-file record for %s: %w", sessionDir, err)
+		return 0, 0, nil, fmt.Errorf("reading created-file record for %s: %w", sessionDir, err)
 	}
 
 	var batch []string
@@ -374,10 +374,9 @@ func runUndoSession(realWorkspaceRoot, sessionDir string, force bool, in io.Read
 	// Say what actually happened to each file. A created file that undo deleted
 	// is reported as removed, never as "restored" — the honesty invariant is
 	// that this report and the state of the disk agree (Fix C).
-	var removedCount int
 	for _, f := range revertedFiles {
 		if f.removed {
-			removedCount++
+			removed++
 			fmt.Fprintf(out, "removed %s (created by this apply run)\n", f.rel)
 		} else {
 			fmt.Fprintf(out, "restored %s\n", f.rel)
@@ -386,8 +385,8 @@ func runUndoSession(realWorkspaceRoot, sessionDir string, force bool, in io.Read
 	restored = len(revertedFiles)
 	if err != nil {
 		logger.Printf("edits undo: FAILED on %s: %v (reverted %d file(s): %d restored, %d removed; %d guarded)",
-			sessionDir, err, restored, restored-removedCount, removedCount, len(guarded))
-		return restored, guarded, err
+			sessionDir, err, restored, restored-removed, removed, len(guarded))
+		return restored, removed, guarded, err
 	}
 
 	// Directories the apply run had to create to hold a created file. Removed
@@ -401,9 +400,9 @@ func runUndoSession(realWorkspaceRoot, sessionDir string, force bool, in io.Read
 	// refuse a non-empty one anyway; not trying is clearer than relying on that.
 	removedDirs := removeCreatedSessionDirs(realWorkspaceRoot, sessionDir, logger)
 
-	if removedCount > 0 {
+	if removed > 0 {
 		fmt.Fprintf(out, "\n%d file(s) reverted from %s (%d restored, %d removed)\n",
-			restored, sessionDir, restored-removedCount, removedCount)
+			restored, sessionDir, restored-removed, removed)
 	} else {
 		fmt.Fprintf(out, "\n%d file(s) restored from %s\n", restored, sessionDir)
 	}
@@ -411,8 +410,8 @@ func runUndoSession(realWorkspaceRoot, sessionDir string, force bool, in io.Read
 		fmt.Fprintf(out, "%d empty director(ies) created by that run also removed\n", removedDirs)
 	}
 	logger.Printf("edits undo: reverted %d file(s) from %s (%d restored, %d removed, %d dir(s) removed, %d guarded)",
-		restored, sessionDir, restored-removedCount, removedCount, removedDirs, len(guarded))
-	return restored, guarded, nil
+		restored, sessionDir, restored-removed, removed, removedDirs, len(guarded))
+	return restored, removed, guarded, nil
 }
 
 // removeCreatedSessionDirs removes the directories the apply run brought into
