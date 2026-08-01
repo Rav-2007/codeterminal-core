@@ -290,6 +290,43 @@ The only commit that ever said "mark … CLOSED" (`8d37a6c`) is **dangling — n
 
 ## PART 4 — WHAT TO DO NEXT
 
+**Updated 2026-08-01, after the remediation pass.** The list below is v7's and is
+kept for its reasoning; three of its bullets have since been done and one of its
+premises has changed. Read this block first.
+
+**Everything engineering can clear on its own is cleared.** `docs/OPEN_ITEMS.md`
+§6 lists seventeen items implemented and neuter-verified in one pass — the M8
+shutdown hang, `file:line` without an index, the turn budget's blind spot, the
+proxy slow-drip bound, the M7 create-gate asymmetry, undo's orphaned directories,
+macOS peer authentication, a world-readable lexical index, an unbounded MCP stderr
+buffer, and five of the eight LOWs. Two of those appear on no earlier list.
+
+**So the queue really is decisions now, and they are in one place.**
+`docs/DECISION_PACK.md` has eight, each with a recommendation and the cost of
+being wrong. Three of them ARE the P3 gate (socket auth, Gate 6, Gate 7), and all
+three are recommended as rulings rather than as work — Gate 7's engineering half
+was measured this pass and the recommendation is to reject the change the record
+proposed. Ruling on those three unblocks §3C in one sitting.
+
+**What changed underneath v7's list:**
+
+- The stale `models.json` price note, the `file:line` hoist and the protocol
+  honesty gaps are **done** (`3bee775`, `59d42a3`, `8f6eee0`). The TUI search box
+  is the one item left in that bucket.
+- The **default-model evaluation** is no longer "when there's appetite" — it is
+  blocked on the same thing items 21–23 are. The production proxy returns
+  `quota_exceeded` for the pilot key, so every eval call through the path a user
+  takes is refused. **Raising that quota is a Supabase row only the founder can
+  touch**, and it is now the cheapest unblock on this list.
+- `max_advertised_tools` moved 12 → 5 → **12** in one day, the second move on a
+  measurement (`docs/TOOL_MENU_SIZE_2026-08-01.md`). Mentioned here because it is
+  the worked example of this project's own rule: a result that contradicts a
+  shipped default moves the default the same day.
+
+---
+
+### v7's list, as written (2026-07-24)
+
 The record now points one direction: **the founder-decision cluster is what remains, and it is the gate.**
 
 - **The gate (dominant):** the P3 security review's founder decisions (§3D/§3E) — chiefly the **socket auth model** and the **Gate-6 closure ruling** — are what unblock all capability work (§3C). Nothing new should ship ahead of them. The four-location Gate-6 contradiction is a one-pass reconciliation *after* the founder rules; it is not itself an engineering task.
