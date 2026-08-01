@@ -355,3 +355,76 @@ func TestAServerDyingMidCallIsReportedAsAnUnavailableServer(t *testing.T) {
 			"failed tool, and only one of the two is worth retrying", failed.Detail)
 	}
 }
+
+// P2-2 -- THE ADVERTISED-TOOL CAP AND THE MEASUREMENT IT CAME FROM.
+//
+// The Phase 0 eval measured tool-selection accuracy at 100% with one tool and
+// 85.7% with five (docs/TOOLCALL_RELIABILITY_2026-07-31.md). The default was
+// 12 -- more than twice the widest menu ever measured, and nothing is known
+// about what happens there. This asserts the default never drifts back above
+// what has actually been measured.
+//
+// It is NOT a claim that 5 is optimal. The curve between 5 and 12 is unmeasured
+// and stays unmeasured; measuring it costs real tokens. The claim is narrower
+// and it is the one that can be defended: the default is the widest menu with
+// evidence behind it.
+func TestTheAdvertisedToolDefaultDoesNotExceedWhatWasMeasured(t *testing.T) {
+	const widestMeasuredMenu = 5
+	if defaultMaxAdvertisedTools > widestMeasuredMenu {
+		t.Errorf("defaultMaxAdvertisedTools is %d, but the widest menu ever measured is %d "+
+			"(100%%@1 -> 85.7%%@5). A default past the evidence is a guess with a number on it",
+			defaultMaxAdvertisedTools, widestMeasuredMenu)
+	}
+}
+
+// And when the cap bites, the user is told.
+//
+// A dropped tool and a tool the server never offered are indistinguishable from
+// outside -- both look like the model not using it. Registry.Advertised has
+// always recorded what it left out, but until now nothing in a live turn read
+// it: the report existed only in `mcp list`. Lowering the default makes this
+// reachable in ordinary use, so it has to be visible in ordinary use.
+//
+// Fails if the Dropped() notice is removed from runAgentLoop.
+func TestATrimmedToolMenuIsReportedToTheUser(t *testing.T) {
+	base, _, _ := agentUpstream(t, textSSE("done"))
+
+	// Built-ins on (4 tools) with a cap of 2, so two are certainly dropped.
+	s := loopServer(t, base, MCPConfig{
+		Enabled: true,
+		Budget:  MCPBudgetConfig{MaxAdvertisedTools: 2},
+	})
+
+	if _, _, err := runLoopWith(t, s, nil); err != nil {
+		t.Fatalf("runAgentLoop: %v", err)
+	}
+
+	var found *protocol.Degradation
+	for i := range lastDegradations {
+		if lastDegradations[i].Component == protocol.DegradedToolMenuTruncated {
+			found = &lastDegradations[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("the tool menu was trimmed and nothing said so; degradations were %+v", lastDegradations)
+	}
+	if !strings.Contains(found.Detail, "max_advertised_tools") {
+		t.Errorf("the notice does not name the setting that caused it: %q", found.Detail)
+	}
+}
+
+// The notice does not fire when nothing was dropped. A degradation that is
+// always on is a degradation nobody reads.
+func TestAnUntrimmedToolMenuIsNotReportedAsDegraded(t *testing.T) {
+	base, _, _ := agentUpstream(t, textSSE("done"))
+	s := loopServer(t, base, MCPConfig{Enabled: true})
+
+	if _, _, err := runLoopWith(t, s, nil); err != nil {
+		t.Fatalf("runAgentLoop: %v", err)
+	}
+	for _, d := range lastDegradations {
+		if d.Component == protocol.DegradedToolMenuTruncated {
+			t.Errorf("a full tool menu was reported as trimmed: %+v", d)
+		}
+	}
+}

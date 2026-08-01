@@ -124,6 +124,7 @@ func (s *Server) runAgentLoop(
 	onActivity func(protocol.ToolActivity),
 	onProvider func(string),
 	onReasoning func(string),
+	onDegraded func(protocol.Degradation),
 ) (agentResult, error) {
 	bud := resolveBudget(s.cfg.MCP.Budget, time.Now())
 	turn := &agentTurn{messages: messages}
@@ -131,6 +132,25 @@ func (s *Server) runAgentLoop(
 	tools, listErrs := s.advertisedToolSpecs(ctx, registry)
 	for _, err := range listErrs {
 		s.logger.Printf("agent: %v", err)
+	}
+
+	// A TOOL THAT WAS DROPPED AND A TOOL THAT WAS NEVER OFFERED LOOK IDENTICAL
+	// from outside, and only one of them is the user's own configuration
+	// quietly not doing what they wrote. Registry.Advertised has always
+	// recorded what the cap left out; until now nothing in a live turn read it,
+	// so the report existed only in `mcp list`. Lowering the default to the
+	// widest measured menu (5) makes this reachable in ordinary use, so it has
+	// to be visible in ordinary use.
+	if dropped := registry.Dropped(); len(dropped) > 0 && onDegraded != nil {
+		s.logger.Printf("agent: max_advertised_tools (%d) left out %d tool(s): %s",
+			s.cfg.MCP.Budget.resolvedMaxAdvertisedTools(), len(dropped), strings.Join(dropped, ", "))
+		onDegraded(protocol.Degradation{
+			Component: protocol.DegradedToolMenuTruncated,
+			Detail: fmt.Sprintf("%d configured tool(s) were not offered to the model this turn, "+
+				"because mcp.budget.max_advertised_tools is %d. A wider menu measurably makes the "+
+				"model choose worse, so the limit is deliberate — raise it if you need these tools.",
+				len(dropped), s.cfg.MCP.Budget.resolvedMaxAdvertisedTools()),
+		})
 	}
 
 	var full strings.Builder

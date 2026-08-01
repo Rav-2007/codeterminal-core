@@ -165,11 +165,22 @@ const (
 // than honoured silently or rejected outright.
 //
 // defaultMaxAdvertisedTools is the one number here that came from a
-// measurement rather than a judgement. The Phase 0 tool-calling eval
-// (docs/TOOLCALL_RELIABILITY_2026-07-31.md) found selection accuracy falling
-// from 100% with one tool on the menu to 85.7% with five: a wide menu makes the
-// model pick worse, so the advertised set is something to BOUND rather than
-// merely assemble.
+// measurement rather than a judgement, and until the 2026-08-01 remediation it
+// was the wrong number.
+//
+// The Phase 0 tool-calling eval (docs/TOOLCALL_RELIABILITY_2026-07-31.md) found
+// selection accuracy falling from 100% with one tool on the menu to 85.7% with
+// FIVE. The default was 12: more than twice the widest menu anyone had ever
+// measured, chosen because it seemed roomy. What happens at 12 is not known --
+// no run has ever been done there, and the curve between 5 and 12 is not
+// measured either (P2-2, still open, because measuring it costs real tokens).
+//
+// So the default is now the widest menu that has been measured. That is a
+// defensible sentence: past it we would be guessing, and the honest place to
+// guess is a config file the user edits, not a constant they never see. Raising
+// it is one line, and truncation is now reported as a
+// protocol.DegradedToolMenuTruncated rather than being indistinguishable from a
+// server that never offered the tool.
 const (
 	defaultMaxIterations      = 8
 	maxMaxIterations          = 50
@@ -179,7 +190,7 @@ const (
 	maxMaxToolResultBytes     = 1024 * 1024
 	defaultMaxTotalToolBytes  = 128 * 1024
 	maxMaxTotalToolBytes      = 4 * 1024 * 1024
-	defaultMaxAdvertisedTools = 12
+	defaultMaxAdvertisedTools = 5
 	maxMaxAdvertisedTools     = 64
 
 	// The ceiling, not the default: mcp.DefaultMaxMessageBytes owns that, next

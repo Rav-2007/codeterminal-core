@@ -72,8 +72,15 @@ func runLoop(t *testing.T, s *Server) (agentResult, []protocol.ToolActivity, err
 	return runLoopWith(t, s, nil)
 }
 
+// lastDegradations collects the degradations the most recent runLoopWith saw.
+// Package-level because the helper's signature is used by dozens of tests and
+// widening it for the two that care would be noise; the daemon's tests do not
+// run in parallel.
+var lastDegradations []protocol.Degradation
+
 func runLoopWith(t *testing.T, s *Server, appr approver) (agentResult, []protocol.ToolActivity, error) {
 	t.Helper()
+	lastDegradations = nil
 	registry, _ := s.buildRegistry(context.Background(), s.logger, &proposalSink{})
 	t.Cleanup(func() { _ = registry.Close() })
 
@@ -83,6 +90,7 @@ func runLoopWith(t *testing.T, s *Server, appr approver) (agentResult, []protoco
 		func(string) error { return nil },
 		func(a protocol.ToolActivity) { activity = append(activity, a) },
 		nil, nil,
+		func(d protocol.Degradation) { lastDegradations = append(lastDegradations, d) },
 	)
 	return res, activity, err
 }

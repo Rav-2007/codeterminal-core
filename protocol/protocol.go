@@ -547,6 +547,16 @@ const (
 	// the visible symptom is otherwise just an answer that quietly declines to
 	// do something the user knows it can do.
 	DegradedMCPServer = "mcp_server"
+
+	// DegradedToolMenuTruncated: more tools were available this turn than
+	// max_advertised_tools allows, so some were not offered to the model.
+	//
+	// A degradation rather than a silent bound, because the two are
+	// indistinguishable from the outside: a tool that was dropped and a tool
+	// the server never offered both show up as the model not using it. The user
+	// configured that server on purpose and deserves to know which of the two
+	// happened.
+	DegradedToolMenuTruncated = "tool_menu_truncated"
 )
 
 // Degradation names one subsystem running in a reduced mode, in the same

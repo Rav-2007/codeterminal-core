@@ -86,6 +86,15 @@ func (s *Server) runAgentTurn(
 		func(reasoning string) {
 			_ = enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Reasoning: reasoning})
 		},
+		func(d protocol.Degradation) {
+			// Sent on the same channel and with the same best-effort discipline
+			// as the connect-failure notice above: a client that cannot be told
+			// its tool menu was trimmed still gets its answer.
+			_ = enc.Encode(protocol.TokenResponse{
+				ProtocolVersion: protocol.ProtocolVersion,
+				Degraded:        []protocol.Degradation{d},
+			})
+		},
 	)
 	if err != nil {
 		modelErr := asModelError(err)
