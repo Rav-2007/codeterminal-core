@@ -67,6 +67,18 @@ SUPABASE_DELAY="${SUPABASE_DELAY:-0}"
 # is a real thing to measure, but only on purpose. PACE=0 to do that.
 PACE="${PACE:-3s}"
 
+# A Lane B MCP server for the soak. Empty means built-ins only, which is what
+# every previous run of this script measured -- and it is why the 2026-07-30
+# gate's P2-3 (RSS +8 MB over 50 turns, no plateau shown) could not be settled:
+# the registry is built and CLOSED per turn, so a leaked subprocess or fd is
+# only visible when there IS a subprocess. "echo" uses the cooperative fixture;
+# "orphan" uses the one that leaves a child behind.
+MCP_SERVER="${MCP_SERVER:-}"
+# How often to sample daemon resources DURING the run. Two endpoint samples can
+# tell growth from no-growth; they cannot tell growth from a PLATEAU, which is
+# what the threshold actually asks for.
+SAMPLE_EVERY="${SAMPLE_EVERY:-2s}"
+
 SUPABASE_PORT="${SUPABASE_PORT:-9601}"
 UPSTREAM_PORT="${UPSTREAM_PORT:-9602}"
 PROXY_PORT="${PROXY_PORT:-9600}"
@@ -83,6 +95,10 @@ trap cleanup EXIT
 echo "building..."
 (cd "$repo_root/proxy" && go build -o "$work/proxy-bin" . && go build -o "$work/harness-bin" ./testharness) || exit 1
 (cd "$repo_root" && go build -o "$work/daemon-bin" ./daemon && go build -o "$work/agentbench" ./daemon/testdata/agentbench) || exit 1
+if [ -n "$MCP_SERVER" ]; then
+  (cd "$repo_root/daemon" && go build -o "$work/echoserver" ./mcp/testdata/echoserver \
+     && go build -o "$work/badserver" ./mcp/testdata/badserver) || exit 1
+fi
 
 # An empty workspace: the tool under test is list_directory, and pointing it at
 # the repo would make result_bytes a function of how big this checkout is.
@@ -90,6 +106,17 @@ ws="$work/ws"
 mkdir -p "$ws"
 printf 'alpha\n' > "$ws/a.txt"
 printf 'beta\n'  > "$ws/b.txt"
+
+# The Lane B block, when asked for. acknowledged_unconfined is required by the
+# config validator and is not a formality here: this really does start somebody
+# else's program once per turn, which is the whole point of soaking it.
+servers_json=""
+case "$MCP_SERVER" in
+  "")     servers_json="" ;;
+  echo)   servers_json=', "servers": { "soak": { "command": "'"$work/echoserver"'", "acknowledged_unconfined": true } }' ;;
+  orphan) servers_json=', "servers": { "soak": { "command": "'"$work/badserver"'", "args": ["orphan"], "acknowledged_unconfined": true } }' ;;
+  *)      echo "MCP_SERVER must be empty, echo or orphan" >&2; exit 1 ;;
+esac
 
 cat > "$work/models.json" <<EOF
 {
@@ -99,7 +126,7 @@ cat > "$work/models.json" <<EOF
   "mcp": {
     "enabled": true,
     "builtin": { "tools": { "list_directory": "$POLICY" } },
-    "budget": { "max_iterations": $((TOOL_CALLS + 1)) }
+    "budget": { "max_iterations": $((TOOL_CALLS + 1)) }$servers_json
   }
 }
 EOF
@@ -160,13 +187,65 @@ sample_resources() {
   printf '%-8s fds=%-5s threads=%-4s children=%-3s rss_kb=%s\n' "$label" "$fds" "$threads" "$procs" "$rss"
 }
 
-echo "running $TURNS turn(s), $TOOL_CALLS tool call(s) each, policy=$POLICY decision=$DECISION"
+echo "running $TURNS turn(s), $TOOL_CALLS tool call(s) each, policy=$POLICY decision=$DECISION mcp_server=${MCP_SERVER:-none}"
 echo
 echo "=== daemon resources ==="
 sample_resources "before"
+
+# Sampled DURING the run, not only around it. Two endpoints distinguish growth
+# from no growth; only a series distinguishes growth from a plateau, and a
+# plateau is what the P2-3 threshold asks for.
+sampler_pid=""
+if [ "$SAMPLE_EVERY" != "0" ]; then
+  ( while :; do sample_resources "during" >> "$work/samples.txt"; sleep "$SAMPLE_EVERY"; done ) &
+  sampler_pid=$!
+fi
+
 "$work/agentbench" -turns "$TURNS" -workspace "$ws" -decision "$DECISION" \
   -think-ms "$THINK_MS" -pace "$PACE" > "$work/turns.json" 2>"$work/agentbench.err"
+
+[ -n "$sampler_pid" ] && kill "$sampler_pid" 2>/dev/null
 sample_resources "after"
+
+# Every MCP server this daemon started should be gone with the turn that
+# started it. A survivor is the per-turn teardown not working, and it is
+# invisible in any run short enough to have only one turn.
+if [ -n "$MCP_SERVER" ]; then
+  strays="$(pgrep -f "$work/(echoserver|badserver)" 2>/dev/null | wc -l)"
+  echo "stray MCP server processes after the run: $strays"
+  if [ "$strays" != "0" ]; then pkill -f "$work/(echoserver|badserver)" 2>/dev/null; fi
+fi
+
+if [ -f "$work/samples.txt" ]; then
+  echo
+  echo "=== resource series (a plateau, or a slope?) ==="
+  python3 - "$work/samples.txt" <<'PY'
+import re, sys
+
+rows = [dict(re.findall(r'(\w+)=(\d+)', line)) for line in open(sys.argv[1])]
+rows = [r for r in rows if r]
+if not rows:
+    sys.exit(0)
+
+print(f"{'#':>3} {'fds':>5} {'threads':>8} {'children':>9} {'rss_kb':>8}")
+for i, r in enumerate(rows):
+    print(f"{i:>3} {r.get('fds','?'):>5} {r.get('threads','?'):>8} "
+          f"{r.get('children','?'):>9} {r.get('rss_kb','?'):>8}")
+
+print()
+for key in ("fds", "threads", "children", "rss_kb"):
+    vals = [int(r[key]) for r in rows if key in r]
+    if len(vals) < 4:
+        continue
+    half = len(vals) // 2
+    first = sum(vals[:half]) / half
+    second = sum(vals[half:]) / (len(vals) - half)
+    # A plateau means the second half is not meaningfully above the first. 5%
+    # is loose enough for GC noise and tight enough to catch a real slope.
+    verdict = "PLATEAU" if second <= first * 1.05 else "STILL RISING"
+    print(f"{key:>8}: first half {first:.0f}, second half {second:.0f}, peak {max(vals)} -> {verdict}")
+PY
+fi
 
 ledger="$(curl -s -m 5 "http://127.0.0.1:$SUPABASE_PORT/__ledger")"
 
