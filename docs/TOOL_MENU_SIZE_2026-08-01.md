@@ -113,10 +113,23 @@ exist: it failed the run rather than publishing 90.9% from 22 surviving trials.
 - **Argument quality.** Unchanged from `TOOLCALL_RELIABILITY_2026-07-31.md`;
   selection is the only thing menu size could plausibly affect.
 
-## The follow-up this actually surfaced
+## The follow-up this surfaced, and what it is NOT
 
 `run_tests` loses to `list_directory` on "run the editapply test suite", 14 times
-out of 15 across three independent menu sizes. That is the single largest
-correctable error in this data and it has nothing to do with menu size. Fixing it
-means rewording the tool's description; verifying the fix means re-running this
-eval, which now exists.
+out of 15 across three independent menu sizes. It dominates the error rate at
+every size and has nothing to do with menu size.
+
+**It is not a production defect, and saying otherwise would overstate it.**
+`run_tests` is a FIXTURE tool, inherited from the Phase 0 eval's five hypothetical
+tools. The shipped builtin menu is four tools — `read_file`, `list_directory`,
+`search_code`, `propose_edit` (`daemon/mcpbuiltin.go`) — and `run_tests` is not
+among them. No user is hitting this.
+
+What it does affect is **this eval's own sensitivity**. One prompt contributing
+~14% of the error budget at every size compresses the range the measurement can
+resolve: the six other prompts score 30/30 everywhere, so the instrument is
+reading 100% against a constant offset. That is fine for the question asked here
+(is there a menu-size effect? no) and would be a problem for a finer one.
+
+If the fixture is ever revised, the prompt or the `run_tests` description is the
+thing to change — and the same eval re-run is how you would know it worked.

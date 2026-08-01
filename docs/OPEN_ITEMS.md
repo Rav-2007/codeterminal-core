@@ -116,11 +116,15 @@ refused. The measurement was re-run direct against OpenRouter, which measures th
 model but not the proxy path. Items 21–23 have the same obstacle. Raising that
 quota is a Supabase row only the founder can touch.
 
-**A follow-up this surfaced, which is not a menu-size problem at all:** `run_tests`
-loses to `list_directory` on "run the editapply test suite", 14 times out of 15
-across three independent menu sizes. That is the single largest correctable error
-in the data. Fixing it means rewording a tool description; verifying the fix means
-re-running the eval, which now exists.
+**A follow-up this surfaced, correctly scoped:** `run_tests` loses to
+`list_directory` on "run the editapply test suite", 14 times out of 15 across three
+independent menu sizes, dominating the error rate at every size. **It is not a
+production defect** — `run_tests` is a fixture tool inherited from the Phase 0
+eval, and the shipped builtin menu is four tools that do not include it
+(`daemon/mcpbuiltin.go`). What it affects is the eval's own sensitivity: the other
+six prompts score 30/30 everywhere, so the instrument reads 100% against a constant
+offset. Adequate for "is there a menu-size effect?", inadequate for a finer
+question.
 
 ---
 
