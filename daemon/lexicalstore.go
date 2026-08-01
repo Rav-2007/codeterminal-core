@@ -104,15 +104,15 @@ func NewFTSChunkStore(indexDir string) (*FTSChunkStore, error) {
 
 	db.SetMaxOpenConns(1)
 	if _, err := db.Exec(`PRAGMA journal_mode=WAL`); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("setting journal_mode: %w", err)
 	}
 	if _, err := db.Exec(`PRAGMA busy_timeout=5000`); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("setting busy_timeout: %w", err)
 	}
 	if _, err := db.Exec(codeChunksFTSTableDDL); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("creating code_chunks_fts: %w", err)
 	}
 
@@ -122,11 +122,11 @@ func NewFTSChunkStore(indexDir string) (*FTSChunkStore, error) {
 	// down only lexical.db would leave the newest chunks readable -- the same
 	// reasoning OpenMemoryStore records, applied to the store that was missed.
 	if err := os.Chmod(path, 0600); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("restricting lexical index permissions: %w", err)
 	}
 	if err := restrictSQLiteSidecars(path, 0600); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, err
 	}
 

@@ -222,9 +222,9 @@ func recordCreatedReversible(backupDir, realWorkspaceRoot string, p *PreparedEdi
 	previous, readErr := os.ReadFile(manifest)
 	switch {
 	case readErr == nil:
-		rollback = func() { os.WriteFile(manifest, previous, 0644) }
+		rollback = func() { _ = os.WriteFile(manifest, previous, 0644) }
 	case os.IsNotExist(readErr):
-		rollback = func() { os.Remove(manifest) }
+		rollback = func() { _ = os.Remove(manifest) }
 	default:
 		return nil, readErr
 	}
@@ -351,9 +351,9 @@ func recordCreatedDirsReversible(backupDir, realWorkspaceRoot string, p *Prepare
 	previous, readErr := os.ReadFile(manifest)
 	switch {
 	case readErr == nil:
-		rollback = func() { os.WriteFile(manifest, previous, 0644) }
+		rollback = func() { _ = os.WriteFile(manifest, previous, 0644) }
 	case os.IsNotExist(readErr):
-		rollback = func() { os.Remove(manifest) }
+		rollback = func() { _ = os.Remove(manifest) }
 	default:
 		return nil, readErr
 	}

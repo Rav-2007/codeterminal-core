@@ -407,7 +407,7 @@ func runUndoSession(realWorkspaceRoot, sessionDir string, force bool, in io.Read
 		fmt.Fprintf(out, "\n%d file(s) restored from %s\n", restored, sessionDir)
 	}
 	if removedDirs > 0 {
-		fmt.Fprintf(out, "%d empty director(ies) created by that run also removed\n", removedDirs)
+		_, _ = fmt.Fprintf(out, "%d empty director(ies) created by that run also removed\n", removedDirs)
 	}
 	logger.Printf("edits undo: reverted %d file(s) from %s (%d restored, %d removed, %d dir(s) removed, %d guarded)",
 		restored, sessionDir, restored-removed, removed, removedDirs, len(guarded))

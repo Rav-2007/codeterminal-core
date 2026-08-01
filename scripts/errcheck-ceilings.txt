@@ -8,9 +8,17 @@
 # below its ceiling, so a ratchet that has slackened is reported rather than
 # quietly tolerated. Raising one is a decision that belongs in a commit message.
 #
-# Measured 2026-07-31 on perf/latency-baseline.
-daemon        111
-editapply      12
+# 2026-08-01: daemon 111 -> 108, editapply 12 -> 10. The remediation pass added
+# seven new unchecked sites and the ratchet caught every one. Rather than
+# grandfather them, each was made explicit -- and so were the pre-existing
+# neighbours they sat beside, because half a function using `_ =` and half not
+# is worse than either. Net: fewer unchecked errors than before the pass, which
+# is the direction these numbers are supposed to move.
+#
+# Measured 2026-07-31 on perf/latency-baseline; daemon and editapply LOWERED
+# 2026-08-01 by the remediation pass (see below).
+daemon        108
+editapply      10
 proxy          25
 protocol        0
 helper         11

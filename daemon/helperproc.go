@@ -148,7 +148,7 @@ func (h *HelperProcess) Start() error {
 		h.mu.Unlock()
 		// The helper may have bound its socket before dying. Stop does this on
 		// the path we are deliberately no longer taking, so do it here.
-		os.Remove(socketPath)
+		_ = os.Remove(socketPath)
 		return err
 	}
 
@@ -450,7 +450,7 @@ func (w *prefixedWriter) Write(p []byte) (int, error) {
 	// No newline in sight and the buffer has grown past what a log line can
 	// reasonably be: emit it and start again, rather than holding it forever.
 	if len(w.buf) >= maxLogLineBytes {
-		fmt.Fprintf(w.out, "%s%s [continues]\n", w.prefix, w.buf)
+		_, _ = fmt.Fprintf(w.out, "%s%s [continues]\n", w.prefix, w.buf)
 		w.buf = w.buf[:0]
 	}
 	return len(p), nil
