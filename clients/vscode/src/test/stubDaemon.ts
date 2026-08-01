@@ -31,6 +31,12 @@ export class StubDaemon {
   private runtimeDir = '';
   private socketPath = '';
 
+  // handshakes records every HandshakeRequest this stub received, in order.
+  // The stub answers the handshake itself, so without this a test could not see
+  // what the client declared -- and what a client declares is load-bearing:
+  // CAP_TOOL_APPROVAL makes the daemon suspend turns waiting for an answer.
+  readonly handshakes: any[] = [];
+
   // start binds the socket, writes the lockfile under a fresh XDG_RUNTIME_DIR,
   // and points process.env.XDG_RUNTIME_DIR at it so connectToDaemon (which reads
   // that env var at call time) finds this stub. Returns the runtimeDir so the
@@ -67,6 +73,7 @@ export class StubDaemon {
           }
           if (!handshakeDone) {
             handshakeDone = true;
+            this.handshakes.push(req);
             writeLine(socket, { protocol_version: PROTOCOL_VERSION, ok: true, daemon_version: 'stub' });
             continue;
           }

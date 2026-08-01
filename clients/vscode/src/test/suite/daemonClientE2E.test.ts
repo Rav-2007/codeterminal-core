@@ -165,3 +165,153 @@ function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
     );
   });
 }
+
+// ---------------------------------------------------------------- tool consent
+//
+// The client half of the approval cycle, driven through the real compiled
+// module over a real socket: what it declares at handshake, what it writes back,
+// and what it does when a UI misbehaves.
+
+// approvalStub answers the prompt with one approval request, then records the
+// answer it receives. The stub detaches its own line reader before calling a
+// behavior, so this attaches one to keep reading the same socket -- which is
+// the point: the answer comes back on the connection the turn is streaming on.
+function approvalStub(
+  request: unknown,
+  seen: { handshake?: any; answer?: any }
+): Behavior {
+  return (_req, socket) => {
+    writeLine(socket, { protocol_version: PV, tool_approval: request, done: false });
+    let buf = '';
+    socket.on('data', (chunk: Buffer) => {
+      buf += chunk.toString('utf8');
+      let idx: number;
+      while ((idx = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, idx);
+        buf = buf.slice(idx + 1);
+        if (!line) {
+          continue;
+        }
+        if (seen.answer === undefined) {
+          try {
+            seen.answer = JSON.parse(line);
+          } catch {
+            seen.answer = { unparseable: line };
+          }
+          writeLine(socket, { protocol_version: PV, token: 'ok', done: false });
+          writeLine(socket, { protocol_version: PV, done: true });
+        } else {
+          // A SECOND answer would be read by the daemon as the reply to the
+          // NEXT question. Recorded so the double-click test can assert it
+          // never happens.
+          seen.answer.__extra = line;
+        }
+      }
+    });
+  };
+}
+
+const APPROVAL_REQUEST = {
+  call_id: 'c1',
+  server: 'somebodys-server',
+  tool: 'read_anything',
+  arguments: '{"path":"/etc/passwd"}',
+  arguments_sha256: 'deadbeef',
+  lane: 'third_party',
+  confined: false,
+  iteration: 1,
+  max_iterations: 8,
+};
+
+suite('Tool approval over the real client', () => {
+  // THE ANSWER MUST ECHO THE QUESTION. The daemon re-checks the call id and the
+  // argument digest before dispatching; a client that recomputed either would
+  // be attesting to its own rendering rather than to the bytes it was sent.
+  test('the decision is written back with the id and digest echoed verbatim', async () => {
+    for (const [decision, approval] of [
+      ['approve', true],
+      ['approve_for_turn', true],
+      ['deny', false],
+      ['cancel_turn', false],
+    ] as [string, boolean][]) {
+      const seen: { answer?: any } = {};
+      await withStub(approvalStub(APPROVAL_REQUEST, seen), async () => {
+        await streamToCompletion('go', {
+          onToolApproval: (req, respond) => {
+            assert.strictEqual(req.arguments, APPROVAL_REQUEST.arguments, 'the UI was shown different arguments');
+            respond(decision);
+          },
+        });
+      });
+      assert.ok(seen.answer, `no answer reached the daemon for ${decision}`);
+      assert.strictEqual(seen.answer.decision, decision);
+      assert.strictEqual(seen.answer.approval, approval, `approval flag wrong for ${decision}`);
+      assert.strictEqual(seen.answer.call_id, APPROVAL_REQUEST.call_id);
+      assert.strictEqual(seen.answer.arguments_sha256, APPROVAL_REQUEST.arguments_sha256);
+    }
+  });
+
+  // A UI that double-fires a button must not put two messages on a wire the
+  // daemon reads one message from -- the second would be read as the reply to
+  // the NEXT question, which is the one way a click here could authorise a call
+  // the user never saw.
+  test('respond is idempotent, so a double-click cannot answer the next question', async () => {
+    const seen: { answer?: any } = {};
+    await withStub(approvalStub(APPROVAL_REQUEST, seen), async () => {
+      await streamToCompletion('go', {
+        onToolApproval: (_req, respond) => {
+          respond('deny');
+          respond('approve');
+          respond('approve_for_turn');
+        },
+      });
+    });
+    assert.strictEqual(seen.answer.decision, 'deny', 'a later call overwrote the first decision');
+    assert.strictEqual(seen.answer.__extra, undefined, 'more than one answer went on the wire');
+  });
+
+  // CAPABILITY IS A PROMISE. The daemon runs the agentic loop only for a client
+  // that declares it can answer, and then suspends a turn waiting for one.
+  // Deriving the declaration from the handler's presence is what stops the
+  // promise and the ability to keep it from drifting apart -- a client that
+  // declared it without a handler would hang every tool call until the daemon's
+  // five-minute human deadline expired.
+  test('the capability is declared only when a handler exists to honour it', async () => {
+    for (const withHandler of [true, false]) {
+      const prev = process.env.XDG_RUNTIME_DIR;
+      const stub = new StubDaemon();
+      await stub.start((_req, socket) => {
+        writeLine(socket, { protocol_version: PV, done: true });
+      });
+      try {
+        await streamToCompletion('go', withHandler ? { onToolApproval: (_r, respond) => respond('deny') } : {});
+        const hs = stub.handshakes[0];
+        assert.ok(hs, 'the stub saw no handshake at all');
+        const declared = Array.isArray(hs.capabilities) && hs.capabilities.includes('tool_approval');
+        assert.strictEqual(
+          declared,
+          withHandler,
+          `with${withHandler ? '' : 'out'} an onToolApproval handler the client declared ` +
+            `capabilities=${JSON.stringify(hs.capabilities)}`
+        );
+      } finally {
+        await stub.stop();
+        process.env.XDG_RUNTIME_DIR = prev;
+      }
+    }
+  });
+
+  // Unreachable through the shipped panel -- the capability is derived from the
+  // handler -- and handled anyway, in the safe direction, because "unreachable"
+  // is a claim about today's callers. A daemon that asked anyway must get an
+  // answer rather than wait out its deadline.
+  test('an ask with no handler is denied immediately, not left waiting', async () => {
+    const seen: { answer?: any } = {};
+    await withStub(approvalStub(APPROVAL_REQUEST, seen), async () => {
+      await streamToCompletion('go', {});
+    });
+    assert.ok(seen.answer, 'nothing was written back, so the daemon would wait out its deadline');
+    assert.strictEqual(seen.answer.decision, 'deny');
+    assert.strictEqual(seen.answer.approval, false);
+  });
+});

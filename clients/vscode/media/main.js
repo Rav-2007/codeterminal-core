@@ -383,6 +383,207 @@
     currentEditProposalEl = null;
   }
 
+  // ---------------------------------------------------------------- tool consent
+
+  // currentApprovalEl is the panel for the tool call the daemon is currently
+  // holding open, and currentApprovalCallId is the call it belongs to. Both are
+  // null except while a turn is suspended waiting for the user.
+  let currentApprovalEl = null;
+  let currentApprovalCallId = null;
+  // toolActivityEls maps a call id to its narration line, so a call's line is
+  // REWRITTEN from "running" to its outcome rather than a new line per phase.
+  const toolActivityEls = new Map();
+
+  // showToolApproval renders one pending tool call and waits for a decision.
+  //
+  // ACCESSIBILITY IS BUILT IN HERE, NOT ADDED LATER. The Phase 3 review found
+  // Gate 4 -- the edit-approval flow -- unusable non-visually, because it had
+  // been built for the eye and given roles afterwards. This is the same kind of
+  // moment (a person authorizing something with real consequences) and gets the
+  // same treatment from the start:
+  //
+  //   - role="alertdialog" + aria-modal: this is not a notification, it is a
+  //     question that has stopped everything until it is answered.
+  //   - aria-live="assertive": the ONLY assertive region in this panel. A
+  //     streamed answer is polite because interrupting it is rude; a blocking
+  //     security question is exactly the thing that should interrupt.
+  //   - aria-describedby pointing at the arguments and the confinement warning,
+  //     so the buttons are not announced as bare verbs with no object.
+  //   - initial focus on DENY. That is the accessible form of `[y/N]`: a user
+  //     who hits Enter on the default does the safe thing. Focusing Approve
+  //     would make a reflex keystroke authorise an unsandboxed subprocess.
+  function showToolApproval(req) {
+    clearToolApproval();
+
+    const argsId = 'approval-args-' + req.call_id;
+    const laneId = 'approval-lane-' + req.call_id;
+
+    const container = document.createElement('div');
+    container.className = 'tool-approval';
+    container.setAttribute('role', 'alertdialog');
+    container.setAttribute('aria-modal', 'true');
+    container.setAttribute('aria-live', 'assertive');
+    container.setAttribute(
+      'aria-label',
+      'Approval needed to run ' + req.server + '__' + req.tool +
+        ', step ' + req.iteration + ' of at most ' + req.max_iterations
+    );
+    container.setAttribute('aria-describedby', argsId + ' ' + laneId);
+
+    const heading = document.createElement('div');
+    heading.className = 'approval-heading';
+    heading.textContent =
+      'Run ' + req.server + '__' + req.tool + '? (step ' + req.iteration +
+      ' of at most ' + req.max_iterations + ')';
+    container.appendChild(heading);
+
+    // THE FULL ARGUMENTS, never a summary: a consent prompt that shows less
+    // than what will run is not consent, and the daemon binds its approval to a
+    // digest of exactly these bytes.
+    const argsLabel = document.createElement('div');
+    argsLabel.className = 'approval-args-label';
+    argsLabel.textContent = 'Arguments:';
+    container.appendChild(argsLabel);
+
+    const args = document.createElement('pre');
+    args.id = argsId;
+    args.className = 'approval-args';
+    args.setAttribute('role', 'region');
+    args.setAttribute('aria-label', 'Arguments this tool will receive');
+    args.textContent = req.arguments;
+    container.appendChild(args);
+
+    const lane = document.createElement('div');
+    lane.id = laneId;
+    if (req.confined) {
+      lane.className = 'approval-lane confined';
+      lane.textContent =
+        'This tool ships with CodeTerminal. Anything it changes goes through the same review you use for edits.';
+    } else {
+      // NEVER SOFTENED. A third-party MCP server is an ordinary subprocess with
+      // the user's full access; this approval is the only thing in front of it.
+      // Saying "sandboxed" here would be the single most damaging sentence this
+      // panel could print.
+      lane.className = 'approval-lane unconfined';
+      lane.textContent =
+        'NOT SANDBOXED: this is a separate program running with your full access. ' +
+        'CodeTerminal cannot limit what it reads or changes — your approval is the only thing in its way.';
+    }
+    container.appendChild(lane);
+
+    if (req.destructive) {
+      const warn = document.createElement('div');
+      warn.className = 'approval-lane unconfined';
+      warn.textContent = 'The server describes this tool as destructive.';
+      container.appendChild(warn);
+    }
+
+    const actions = document.createElement('div');
+    actions.className = 'approval-actions';
+
+    const deny = approvalButton('Deny', 'deny', req, 'Do not run this tool call');
+    const approve = approvalButton('Run once', 'approve', req, 'Run this tool call with these exact arguments');
+    const forTurn = approvalButton(
+      'Allow for this task',
+      'approve_for_turn',
+      req,
+      'Run this call and any later call to the same tool for the rest of this task'
+    );
+    const cancel = approvalButton('Stop the task', 'cancel_turn', req, 'Deny this call and abandon the whole task');
+
+    // Deny first in DOM order as well as focus order: tab order should reach
+    // the safe option before the permissive one.
+    actions.appendChild(deny);
+    actions.appendChild(approve);
+    actions.appendChild(forTurn);
+    actions.appendChild(cancel);
+    container.appendChild(actions);
+
+    transcriptEl.appendChild(container);
+    transcriptEl.scrollTop = transcriptEl.scrollHeight;
+
+    currentApprovalEl = container;
+    currentApprovalCallId = req.call_id;
+    deny.focus();
+  }
+
+  function approvalButton(label, decision, req, description) {
+    const btn = document.createElement('button');
+    btn.className = 'approval-btn ' + decision;
+    btn.textContent = label;
+    btn.setAttribute('aria-label', label + ': ' + description);
+    btn.addEventListener('click', () => {
+      // The call id rides along so a lagging click cannot answer a question the
+      // user never saw; the extension host drops a mismatch, and the daemon
+      // re-checks the id and the argument digest behind that.
+      if (currentApprovalCallId !== req.call_id) {
+        return;
+      }
+      answerToolApproval(req, decision, label);
+    });
+    return btn;
+  }
+
+  function answerToolApproval(req, decision, label) {
+    vscode.postMessage({ type: 'toolApprovalDecision', callId: req.call_id, decision: decision });
+    clearToolApproval();
+
+    // A permanent record in the transcript, because "did I approve that?" is a
+    // question worth being able to answer by scrolling back. role="status" so
+    // it is announced as the outcome of the choice just made.
+    const note = document.createElement('div');
+    note.className = 'approval-record';
+    note.setAttribute('role', 'status');
+    note.textContent = label + ' — ' + req.server + '__' + req.tool;
+    transcriptEl.appendChild(note);
+    transcriptEl.scrollTop = transcriptEl.scrollHeight;
+    inputEl.focus();
+  }
+
+  function clearToolApproval() {
+    if (currentApprovalEl && currentApprovalEl.parentElement) {
+      currentApprovalEl.remove();
+    }
+    currentApprovalEl = null;
+    currentApprovalCallId = null;
+  }
+
+  // showToolActivity narrates one step of an agent turn, one line per call.
+  //
+  // The 'requested' and 'approved' phases are deliberately not rendered: the
+  // user has just answered a dialog about that exact call, and reading it back
+  // to them is noise -- worse for a screen reader than for an eye.
+  function showToolActivity(activity) {
+    const name = activity.server + '__' + activity.tool;
+    let text = '';
+    if (activity.phase === 'running') {
+      text = 'Running ' + name + '…';
+    } else if (activity.phase === 'succeeded') {
+      text = name + ' — ' + (activity.result_bytes || 0) + ' bytes to the model in ' +
+        (activity.duration_ms || 0) + 'ms';
+    } else if (activity.phase === 'failed') {
+      text = name + ' failed' + (activity.detail ? ': ' + activity.detail : '');
+    } else if (activity.phase === 'denied') {
+      text = name + ' not run' + (activity.detail ? ': ' + activity.detail : '');
+    }
+    if (text === '') {
+      return;
+    }
+
+    const existing = toolActivityEls.get(activity.call_id);
+    if (existing && existing.parentElement) {
+      existing.textContent = text;
+      return;
+    }
+    const el = document.createElement('div');
+    el.className = 'tool-activity';
+    el.setAttribute('role', 'status');
+    el.textContent = text;
+    transcriptEl.appendChild(el);
+    transcriptEl.scrollTop = transcriptEl.scrollHeight;
+    toolActivityEls.set(activity.call_id, el);
+  }
+
   // showEditSummary renders the end-of-run outcome once every block in a
   // sequential review has been applied, skipped, or refused -- mirroring
   // finishReview's system-turn text in clients/tui/chat.go ("N applied, N
@@ -573,6 +774,8 @@
       return;
     }
     clearEditProposal();
+    clearToolApproval();
+    toolActivityEls.clear();
     addBubble('user', text);
     inputEl.value = '';
     setGrounding(null);
@@ -640,6 +843,10 @@
         break;
       case 'done':
         currentAssistantBubble = null;
+        // Nothing should still be pending -- the daemon does not send done
+        // while it is waiting for an answer -- but a panel left on screen with
+        // nothing behind it would invite a click that goes nowhere.
+        clearToolApproval();
         setStreaming(false);
         inputEl.focus();
         break;
@@ -648,11 +855,18 @@
           currentAssistantBubble.parentElement.remove();
         }
         currentAssistantBubble = null;
+        clearToolApproval();
         addBubble('error', msg.message);
         setStreaming(false);
         break;
       case 'incomplete':
         showIncomplete(msg.info);
+        break;
+      case 'toolActivity':
+        showToolActivity(msg.activity);
+        break;
+      case 'toolApproval':
+        showToolApproval(msg.request);
         break;
       case 'editProposal':
         showEditProposal(msg.edit, msg.index, msg.total);

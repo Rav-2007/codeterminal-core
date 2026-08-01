@@ -1,12 +1,15 @@
 import * as vscode from 'vscode';
 
 import {
+  APPROVAL_DENY,
   DAEMON_LAUNCH_COMMAND,
   Degradation,
   EditBlockWire,
   GroundingInfo,
   HistoryInfo,
   IncompleteInfo,
+  ToolActivity,
+  ToolApprovalRequest,
   Turn,
   applyEdit,
   preflightHandshake,
@@ -39,6 +42,12 @@ export class ChatPanel {
   private readonly disposables: vscode.Disposable[] = [];
   private transcript: Turn[] = [];
   private inFlight: AbortController | undefined;
+
+  // pendingApproval is the tool call the daemon is currently holding open,
+  // together with the callback that answers it. Non-undefined ONLY while a turn
+  // is suspended on a question, which is also the only time the webview has an
+  // approval panel on screen.
+  private pendingApproval: { callId: string; respond: (decision: string) => void } | undefined;
 
   // Sequential edit-review state: set from the most recent response's
   // edit_proposals (the FULL list -- the daemon already sends all parsed
@@ -123,8 +132,17 @@ export class ChatPanel {
     }
   }
 
-  private handleMessage(msg: { type: string; text?: string; backupDir?: string; autoApply?: boolean }): void {
-    if (msg.type === 'prompt' && typeof msg.text === 'string') {
+  private handleMessage(msg: {
+    type: string;
+    text?: string;
+    backupDir?: string;
+    autoApply?: boolean;
+    decision?: string;
+    callId?: string;
+  }): void {
+    if (msg.type === 'toolApprovalDecision' && typeof msg.decision === 'string') {
+      this.onToolApprovalDecision(msg.callId, msg.decision);
+    } else if (msg.type === 'prompt' && typeof msg.text === 'string') {
       this.onPrompt(msg.text, msg.autoApply === true);
     } else if (msg.type === 'applyEdit') {
       this.onApplyEdit();
@@ -194,16 +212,60 @@ export class ChatPanel {
       onIncomplete: (info: IncompleteInfo) => {
         this.panel.webview.postMessage({ type: 'incomplete', info });
       },
+      onToolActivity: (activity: ToolActivity) => {
+        this.panel.webview.postMessage({ type: 'toolActivity', activity });
+      },
+      // Providing this handler is what makes streamPrompt declare
+      // CAP_TOOL_APPROVAL, and therefore what turns agent mode on for this
+      // client -- see StreamHandlers.onToolApproval. The daemon suspends the
+      // turn here, so the respond callback must eventually be called; it is
+      // held until the webview reports what the user clicked.
+      onToolApproval: (req: ToolApprovalRequest, respond: (decision: string) => void) => {
+        this.pendingApproval = { callId: req.call_id, respond };
+        this.panel.webview.postMessage({ type: 'toolApproval', request: req });
+      },
       onDone: () => {
         this.transcript.push({ role: 'assistant', content: answer });
         this.inFlight = undefined;
+        this.clearPendingApproval();
         this.panel.webview.postMessage({ type: 'done' });
       },
       onError: (err: Error) => {
         this.inFlight = undefined;
+        this.clearPendingApproval();
         this.panel.webview.postMessage({ type: 'error', message: err.message });
       },
     });
+  }
+
+  // onToolApprovalDecision relays what the user clicked back to the waiting
+  // daemon.
+  //
+  // The call id is checked, not trusted. A click that arrives after the turn
+  // moved on -- a double-click, a lagging renderer, a stale panel -- must not
+  // answer whatever question happens to be pending NOW, which is the one way a
+  // click on one prompt could authorise a call the user never saw. A mismatch
+  // is dropped, and the daemon's own re-check of the id and argument digest is
+  // the second lock behind this one.
+  private onToolApprovalDecision(callId: string | undefined, decision: string): void {
+    const pending = this.pendingApproval;
+    if (!pending || (callId !== undefined && callId !== pending.callId)) {
+      return;
+    }
+    this.pendingApproval = undefined;
+    pending.respond(decision);
+  }
+
+  // clearPendingApproval denies anything still waiting when a turn ends.
+  //
+  // Nothing should be: the daemon does not send done while it is waiting for an
+  // answer. It exists because the alternative to a stale pending approval is a
+  // closure holding a dead socket that a later click would fire into, and
+  // denying costs nothing when there is nothing left to deny.
+  private clearPendingApproval(): void {
+    const pending = this.pendingApproval;
+    this.pendingApproval = undefined;
+    pending?.respond(APPROVAL_DENY);
   }
 
   // clearPendingReview resets all sequential edit-review state -- called on
@@ -595,6 +657,51 @@ export class ChatPanel {
   .edit-proposal .result.ok { color: var(--vscode-gitDecoration-addedResourceForeground, #2ea043); }
   .edit-proposal .result.refused { color: var(--vscode-errorForeground); }
   .edit-proposal .result.auto-pending { opacity: 0.65; }
+  .tool-approval {
+    margin: 4px 12px 14px;
+    padding: 10px 12px;
+    border: 2px solid var(--vscode-inputValidation-warningBorder, #cca700);
+    border-radius: 4px;
+    font-size: 12px;
+  }
+  .tool-approval .approval-heading { font-weight: 600; margin-bottom: 6px; }
+  .tool-approval .approval-args-label { font-size: 11px; opacity: 0.7; }
+  .tool-approval .approval-args {
+    margin: 2px 0 8px;
+    padding: 4px 6px;
+    white-space: pre-wrap;
+    word-break: break-all;
+    font-family: var(--vscode-editor-font-family, monospace);
+    background: var(--vscode-textCodeBlock-background, rgba(127,127,127,0.1));
+  }
+  .tool-approval .approval-lane { margin-bottom: 8px; }
+  /* The unconfined warning is styled as an error, not a hint. It is the most
+     important sentence on the panel: nothing in this product can constrain
+     what that subprocess touches. */
+  .tool-approval .approval-lane.unconfined {
+    color: var(--vscode-errorForeground, #f14c4c);
+    font-weight: 600;
+  }
+  .tool-approval .approval-lane.confined { opacity: 0.75; }
+  .tool-approval .approval-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+  /* Focus must be VISIBLE here even if the theme is quiet about it: the deny
+     button is focused first on purpose, and a user who cannot see where focus
+     landed cannot use that default. */
+  .tool-approval .approval-btn:focus-visible {
+    outline: 2px solid var(--vscode-focusBorder, #007fd4);
+    outline-offset: 1px;
+  }
+  .tool-activity {
+    margin: 2px 12px;
+    font-size: 11px;
+    opacity: 0.7;
+    font-style: italic;
+  }
+  .approval-record {
+    margin: 2px 12px 8px;
+    font-size: 11px;
+    opacity: 0.8;
+  }
   .edit-summary {
     margin: 4px 12px 14px;
     padding: 8px 10px;

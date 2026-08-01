@@ -138,6 +138,99 @@ suite('Webview accessibility structure', () => {
     );
   });
 
+  // THE TOOL-APPROVAL SURFACE, ASSERTED THE SAME WAY GATE 4 IS.
+  //
+  // Gate 4 was found unusable non-visually because it had been built for the eye
+  // and given roles afterwards. Tool consent is the same kind of moment -- a
+  // person authorizing something with real consequences, here an UNCONFINED
+  // subprocess -- so it is pinned from the day it lands rather than audited into
+  // shape later.
+  //
+  // Same honest scope as the rest of this file: these are structural assertions
+  // over main.js's source, because VS Code exposes no webview DOM to the test
+  // host. They prove the roles and labels are present and stay present; they do
+  // not prove the experience is good.
+  test('the tool-approval dialog is an alertdialog, not a passive notice', () => {
+    const code = mainJsCode();
+    assert.match(
+      code,
+      /setAttribute\('role', 'alertdialog'\)/,
+      "the approval panel needs role=alertdialog: it is a question that has stopped everything, not a notification"
+    );
+    assert.match(code, /setAttribute\('aria-modal', 'true'\)/, 'the approval panel needs aria-modal');
+    assert.match(
+      code,
+      /setAttribute\('aria-live', 'assertive'\)/,
+      "a blocking security question is the one thing that SHOULD interrupt; polite would let it pass unannounced"
+    );
+    assert.match(
+      code,
+      /setAttribute\(\s*'aria-describedby'/,
+      'the buttons must be described by the arguments and the confinement warning, not announced as bare verbs'
+    );
+  });
+
+  test('the arguments are a labelled region, shown in full', () => {
+    const code = mainJsCode();
+    assert.match(
+      code,
+      /aria-label', 'Arguments this tool will receive'/,
+      'the arguments region needs a name, or a reader encounters bare JSON with no context'
+    );
+    // A consent prompt that shows less than what will run is not consent, so the
+    // whole argument string is written, never a slice or an ellipsis of it.
+    assert.match(code, /args\.textContent = req\.arguments;/, 'the arguments must be rendered whole');
+    assert.ok(
+      !/req\.arguments\.slice|req\.arguments\.substring/.test(code),
+      'the arguments are being truncated for display; the user would approve less than what runs'
+    );
+  });
+
+  test('focus lands on Deny, which is the accessible form of [y/N]', () => {
+    const code = mainJsCode();
+    assert.match(
+      code,
+      /deny\.focus\(\)/,
+      'initial focus must be the safe option: a reflex Enter must not authorise an unsandboxed subprocess'
+    );
+    // Tab order should reach the safe option before the permissive one.
+    const denyAppend = code.indexOf('actions.appendChild(deny)');
+    const approveAppend = code.indexOf('actions.appendChild(approve)');
+    assert.ok(denyAppend >= 0 && approveAppend >= 0, 'the approval actions are not both present');
+    assert.ok(denyAppend < approveAppend, 'Deny must come before Run in DOM (and therefore tab) order');
+  });
+
+  test('every approval button has a name that says what it does', () => {
+    const code = mainJsCode();
+    assert.match(
+      code,
+      /btn\.setAttribute\('aria-label', label \+ ': ' \+ description\)/,
+      'approval buttons need more than a one-word visible label to be announced usefully'
+    );
+  });
+
+  test('the unconfined warning is present and is not softened', () => {
+    const code = mainJsCode();
+    assert.match(
+      code,
+      /NOT SANDBOXED/,
+      'a third-party tool must be described as unconfined; it is an ordinary subprocess with the user full access'
+    );
+    // And it must not be shown for a confined built-in -- an alarm on everything
+    // is an alarm on nothing.
+    assert.match(code, /if \(req\.confined\)/, 'the lane message must branch on confined');
+  });
+
+  test('the decision and the tool narration are announced as status', () => {
+    const code = mainJsCode();
+    const statusRoles = code.match(/setAttribute\('role', 'status'\)/g) || [];
+    assert.ok(
+      statusRoles.length >= 2,
+      'the approval record and the tool-activity line both need role=status, so a reader learns ' +
+        `what was decided and what ran; found ${statusRoles.length}`
+    );
+  });
+
   test('the prompt input holds focus so a follow-up needs no navigation', () => {
     const js = mainJsSource();
     const focusCalls = js.match(/inputEl\.focus\(\)/g) ?? [];
