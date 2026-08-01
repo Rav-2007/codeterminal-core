@@ -107,28 +107,32 @@ type retrievalOutcome struct {
 // transient retrieval error, zero hits — becomes a Skipped outcome with a
 // human-readable Reason, because retrieval must never prevent generation.
 func (s *Server) gatherContext(ctx context.Context, prompt string) retrievalOutcome {
-	if s.embedder == nil || s.store == nil {
-		// Report the cause setupRetrieval actually recorded, not a guess at it
-		// (Fix 8). The fallback only covers a Server built without going through
-		// setupRetrieval at all, which in practice means a test.
-		reason := s.retrievalDisabledReason
-		if reason == "" {
-			reason = "retrieval unavailable for this daemon"
-		}
-		return retrievalOutcome{Skipped: true, Reason: reason}
-	}
-
-	similar, err := retrieveTopK(ctx, prompt, s.retrievalTopK, s.embedder, s.store, s.lexicalStore, !s.rerankDisabled)
-	if err != nil {
-		return retrievalOutcome{Skipped: true, Reason: fmt.Sprintf("retrieval error: %v", err)}
-	}
-
 	// Exact pointers the prompt already contains ("foo.go:142: undefined: bar")
 	// are resolved straight off disk and placed at the top, rather than left to
 	// similarity search to rediscover (Fix 12, fileref.go). Best-effort by
 	// construction: a bad path or an out-of-range line is skipped and normal
 	// retrieval still happens.
+	//
+	// THIS RUNS BEFORE THE EMBEDDER/STORE CHECK, and that is the point.
+	// Resolving "foo.go:142" opens a file and reads forty lines around a line
+	// number. It needs no embedder, no vector store, and no index — it is not
+	// search, it is a lookup the user already did for us by naming the line.
+	// Sitting below the early return meant the one case where the user was most
+	// precise (pasting a compiler error) was the one case that returned nothing,
+	// for a user who had not indexed their workspace — likely the newest user
+	// there is. Confinement is unchanged and lives in fileref.go: EvalSymlinks
+	// on the root, workspace-relative resolution, the gitignore matcher, and
+	// readReferencedSpan's own bounds. This makes an already-confined resolver
+	// reachable in a state it previously was not; it does not widen what it may
+	// read.
 	direct := resolveFileLineRefs(prompt, s.workspace, s.logger)
+
+	similar, reason := s.similarChunks(ctx, prompt)
+	if reason != "" && len(direct) == 0 {
+		// Nothing resolved and similarity could not run: this is the same
+		// Skipped outcome as before, with the same wording.
+		return retrievalOutcome{Skipped: true, Reason: reason}
+	}
 
 	// Fuse and fold: fuseDirectSpans puts the direct spans first and runs the
 	// whole set through mergeAdjacentChunks (Fix 11, chunkmerge.go), which is
@@ -139,7 +143,12 @@ func (s *Server) gatherContext(ctx context.Context, prompt string) retrievalOutc
 	// chunk that used to be dropped can now fit.
 	fused := fuseDirectSpans(direct, similar, s.retrievalTopK, s.noScrub())
 	if len(fused.Chunks) == 0 {
-		return retrievalOutcome{Skipped: true, Reason: "no relevant chunks found in index"}
+		// Prefer the specific cause when there is one. "No relevant chunks found
+		// in index" is a lie to a user who has no index.
+		if reason == "" {
+			reason = "no relevant chunks found in index"
+		}
+		return retrievalOutcome{Skipped: true, Reason: reason}
 	}
 
 	kept, truncated := truncateToBudget(fused.Chunks, s.contextBudgetChars, s.noScrub())
@@ -150,6 +159,29 @@ func (s *Server) gatherContext(ctx context.Context, prompt string) retrievalOutc
 		MergeSavedBytes: fused.SavedBytes,
 		DirectRefSpans:  fused.DirectSpans,
 	}
+}
+
+// similarChunks runs similarity retrieval, returning a non-empty reason string
+// when it could not run or failed. It returns no error, deliberately: retrieval
+// must never prevent generation, so every failure is a reason the caller may
+// choose to override with whatever it did manage to gather.
+func (s *Server) similarChunks(ctx context.Context, prompt string) ([]Chunk, string) {
+	if s.embedder == nil || s.store == nil {
+		// Report the cause setupRetrieval actually recorded, not a guess at it
+		// (Fix 8). The fallback only covers a Server built without going through
+		// setupRetrieval at all, which in practice means a test.
+		reason := s.retrievalDisabledReason
+		if reason == "" {
+			reason = "retrieval unavailable for this daemon"
+		}
+		return nil, reason
+	}
+
+	similar, err := retrieveTopK(ctx, prompt, s.retrievalTopK, s.embedder, s.store, s.lexicalStore, !s.rerankDisabled)
+	if err != nil {
+		return nil, fmt.Sprintf("retrieval error: %v", err)
+	}
+	return similar, ""
 }
 
 // noScrub reports whether the --no-scrub escape hatch is set, tolerating a

@@ -404,3 +404,64 @@ func TestGatherContext_BadReferenceStillGrounds(t *testing.T) {
 		t.Errorf("kept spans = %v, want ordinary similarity retrieval unchanged", ids)
 	}
 }
+
+// A user with no index who names an exact line must still get that line.
+//
+// gatherContext used to return early whenever the embedder or the store was
+// nil, and direct file:line resolution sat below that return — so the case
+// where the user was MOST precise (pasting a compiler error) was the case that
+// returned nothing, for exactly the user least likely to have run `index`.
+// Resolving a pointer reads a file; it needs no embedder and no index.
+func TestGatherContext_DirectReferenceWorksWithoutRetrieval(t *testing.T) {
+	root := refWorkspace(t)
+
+	s := &Server{
+		logger:                  discardLogger(),
+		embedder:                nil, // no helper
+		store:                   nil, // no index
+		retrievalDisabledReason: "no index found at /nonexistent",
+		retrievalTopK:           defaultK,
+		contextBudgetChars:      1 << 20,
+		workspace:               root,
+		cfg:                     &Config{},
+	}
+
+	prompt := "# codeterminal/daemon [codeterminal/daemon.test]\n./target.go:100:2: undefined: thing\nFAIL"
+	out := s.gatherContext(context.Background(), prompt)
+
+	if out.Skipped {
+		t.Fatalf("skipped with %q — the prompt named an exact line and reading it needs no index", out.Reason)
+	}
+	if out.DirectRefSpans != 1 {
+		t.Errorf("DirectRefSpans = %d, want 1", out.DirectRefSpans)
+	}
+	ids := chunkIDs(out.Chunks)
+	if len(ids) != 1 || ids[0] != "daemon/target.go:80-120" {
+		t.Fatalf("kept spans = %v, want exactly the referenced span", ids)
+	}
+
+	msg := buildAugmentedUserMessage(prompt, out.Chunks, false)
+	if !strings.Contains(msg, "[1] daemon/target.go:80-120") {
+		t.Errorf("referenced span not rendered into the prompt:\n%s", msg[:min(600, len(msg))])
+	}
+}
+
+// The unindexed case with nothing to resolve must still report the specific
+// reason setupRetrieval recorded, not the misleading "no relevant chunks found
+// in index" — there is no index.
+func TestGatherContext_NoIndexNoRefsKeepsTheSpecificReason(t *testing.T) {
+	s := &Server{
+		logger:                  discardLogger(),
+		retrievalDisabledReason: "no index found at /nonexistent",
+		workspace:               refWorkspace(t),
+		cfg:                     &Config{},
+	}
+
+	out := s.gatherContext(context.Background(), "why is this slow")
+	if !out.Skipped {
+		t.Fatal("expected Skipped=true: no index, and nothing in the prompt to resolve")
+	}
+	if out.Reason != "no index found at /nonexistent" {
+		t.Errorf("Reason = %q, want the cause setupRetrieval recorded", out.Reason)
+	}
+}
