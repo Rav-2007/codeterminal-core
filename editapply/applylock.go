@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"syscall"
 )
 
 // applyLockName is the per-workspace lock file backing LockWorkspaceApply. It
@@ -14,10 +13,11 @@ import (
 // an edit block.
 //
 // The file is created once and then left in place forever. It is deliberately
-// never deleted on release: flock() locks an inode, so a release-then-unlink
-// cycle lets a second process acquire a lock on an inode the first has already
-// unlinked, and the two would then hold "the same" lock simultaneously. An
-// empty, permanently-present lock file is the standard, correct shape.
+// never deleted on release: the lock is held on the open file, so a
+// release-then-unlink cycle lets a second process acquire a lock on a file the
+// first has already unlinked, and the two would then hold "the same" lock
+// simultaneously. An empty, permanently-present lock file is the standard,
+// correct shape.
 const applyLockName = "apply.lock"
 
 // LockWorkspaceApply acquires the exclusive, CROSS-PROCESS lock serializing
@@ -42,14 +42,18 @@ const applyLockName = "apply.lock"
 // while a terminal apply is open), not an exotic attack. An in-memory mutex
 // cannot serialize separate processes; only the filesystem can.
 //
-// WHY flock. The lock must survive the holder being killed: a crashed CLI must
-// not wedge the workspace forever. flock(2) is released by the kernel when the
-// file descriptor closes, INCLUDING on process death, so there is no stale-lock
-// problem and no lock-breaking heuristic to get wrong (an O_EXCL "lock file"
-// would need exactly that, and would strand on SIGKILL). Each acquisition opens
-// its OWN descriptor, so the lock also serializes goroutines within one process
-// (flock is per open file description, not per process) — which is what lets a
-// single mechanism cover both the cross-process and the in-process case.
+// WHY AN OS FILE LOCK. The lock must survive the holder being killed: a crashed
+// CLI must not wedge the workspace forever. Both backends release on descriptor
+// close, INCLUDING on process death, so there is no stale-lock problem and no
+// lock-breaking heuristic to get wrong (an O_EXCL "lock file" would need exactly
+// that, and would strand on SIGKILL). Each acquisition opens its OWN descriptor,
+// so the lock also serializes goroutines within one process — which is what lets
+// a single mechanism cover both the cross-process and the in-process case.
+//
+// The two backends and the properties they must share are in applylock_unix.go
+// (flock) and applylock_windows.go (LockFileEx). Read the header of either
+// before changing them: the four properties above are load-bearing, and the
+// Windows one had to reproduce each with a different primitive.
 //
 // SCOPE — what callers must hold this across. It is taken INSIDE the three
 // mutation primitives rather than at their call sites, precisely because the bug
@@ -87,25 +91,25 @@ func LockWorkspaceApply(realWorkspaceRoot string) (release func(), err error) {
 		return nil, fmt.Errorf("creating %s: %w", dir, err)
 	}
 
-	// O_NOFOLLOW on the leaf, matching every other writer in this tree: a symlink
-	// pre-planted at the lock path is refused rather than followed. The path is
-	// constant and workspace-local (never client-supplied), so this is
-	// defense-in-depth, not confinement.
+	// The leaf is opened symlink-refusing, matching every other writer in this
+	// tree: a symlink pre-planted at the lock path is refused rather than
+	// followed. The path is constant and workspace-local (never client-supplied),
+	// so this is defense-in-depth, not confinement.
 	path := filepath.Join(dir, applyLockName)
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|syscall.O_NOFOLLOW, 0600)
+	f, err := openApplyLockFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("opening apply lock %s: %w", path, err)
 	}
 
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+	if err := lockFileExclusive(f); err != nil {
 		f.Close()
 		return nil, fmt.Errorf("locking %s: %w", path, err)
 	}
 
 	return func() {
-		// Closing the descriptor releases the flock on its own; the explicit
-		// LOCK_UN just makes the release a stated act rather than a side effect.
-		syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		// Closing the descriptor releases the lock on its own; the explicit
+		// unlock just makes the release a stated act rather than a side effect.
+		unlockFile(f)
 		f.Close()
 	}, nil
 }

@@ -455,10 +455,3 @@ func (w *prefixedWriter) Write(p []byte) (int, error) {
 	}
 	return len(p), nil
 }
-
-// processAlive reports whether pid refers to a still-running process, using
-// signal 0 (no-op: delivers nothing, just checks existence/permission).
-func processAlive(pid int) bool {
-	err := syscall.Kill(pid, 0)
-	return err == nil
-}

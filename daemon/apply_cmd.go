@@ -796,15 +796,6 @@ func confinedRestorePath(realWorkspaceRoot, rel string) (string, error) {
 	return filepath.Join(append([]string{realAncestor}, suffix...)...), nil
 }
 
-// openNoFollow opens path with O_NOFOLLOW ORed into flag, so a symlink at the
-// final path component is refused (ELOOP) rather than followed. It only guards
-// the leaf — ancestor directories must be confined separately (see
-// confinedRestorePath). Shared by the two workspace write paths that take an
-// attacker-influenceable destination (restoreOne, ensureGitignoreEntry).
-func openNoFollow(path string, flag int, perm os.FileMode) (*os.File, error) {
-	return os.OpenFile(path, flag|syscall.O_NOFOLLOW, perm)
-}
-
 // leafIsSymlink reports whether path itself (not its target) is a symlink. A
 // non-existent path is reported as not-a-symlink so callers can handle absence
 // with their own error path.

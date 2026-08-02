@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"codeterminal/protocol"
@@ -80,6 +79,10 @@ type StdioClient struct {
 	stdin   io.WriteCloser
 	session *sdk.ClientSession
 	closed  bool
+
+	// group contains the server's whole process TREE, not just its process.
+	// See procgroup.go for what that stops and why the two backends differ.
+	group processGroup
 }
 
 // logf is nil-safe: a client built without a logger discards its diagnostics
@@ -155,19 +158,17 @@ func Connect(ctx context.Context, cfg LaunchConfig) (*StdioClient, error) {
 	cmd.Env = ServerEnv(cfg.EnvAllow)
 	cmd.Stderr = cfg.Stderr
 
-	// ITS OWN PROCESS GROUP, so teardown can reach what it spawned.
+	// ITS OWN PROCESS TREE CONTAINER, so teardown can reach what it spawned.
 	//
-	// helperproc.go does NOT do this, and the difference is the point: the
-	// embedder helper is our own binary, we know it forks nothing, and killing
-	// its pid is killing all of it. An MCP server is somebody else's program.
 	// Confirmed with testdata/badserver's orphan mode -- a server that starts a
 	// child and exits leaves that child running with the user's full privileges
 	// after Close returns success, because Close signalled one pid.
 	//
-	// A grandchild of a Lane B server is as unconfined as its parent, and it
-	// outlives the turn the user approved. Setpgid is what makes "the turn
-	// ended" and "the programs it started are gone" the same event.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// The mechanism is per-platform (process group on POSIX, Job Object on
+	// Windows) and lives in procgroup.go, which also explains why adopt below
+	// is a separate step rather than folded in here.
+	var group processGroup
+	group.prepare(cmd)
 
 	// THE PIPES ARE OURS, WHICH IS THE WHOLE POINT OF NOT USING
 	// sdk.CommandTransport HERE.
@@ -189,6 +190,17 @@ func Connect(ctx context.Context, cfg LaunchConfig) (*StdioClient, error) {
 		return nil, fmt.Errorf("%w: server %s: %v", ErrServerUnavailable, cfg.Name, err)
 	}
 	if err := cmd.Start(); err != nil {
+		group.release()
+		return nil, fmt.Errorf("%w: server %s failed to start: %v", ErrServerUnavailable, cfg.Name, err)
+	}
+	// Finish containing the tree. A failure here is fatal rather than
+	// survivable: running an unconfined third-party subprocess whose
+	// descendants cannot be reaped is precisely the state M4 was filed about,
+	// and a working server is not worth it.
+	if err := group.adopt(cmd); err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		group.release()
 		return nil, fmt.Errorf("%w: server %s failed to start: %v", ErrServerUnavailable, cfg.Name, err)
 	}
 
@@ -210,7 +222,7 @@ func Connect(ctx context.Context, cfg LaunchConfig) (*StdioClient, error) {
 	connectCtx, cancel := context.WithTimeout(ctx, handshake)
 	defer cancel()
 
-	c := &StdioClient{name: cfg.Name, logf: cfg.Logf, cmd: cmd, stdin: stdin}
+	c := &StdioClient{name: cfg.Name, logf: cfg.Logf, cmd: cmd, stdin: stdin, group: group}
 
 	session, err := client.Connect(connectCtx,
 		&sdk.IOTransport{Reader: io.NopCloser(bounded), Writer: stdin}, nil)
@@ -518,42 +530,30 @@ func (c *StdioClient) Close() error {
 	// running unconfined. So the group signal is unconditional, and the wait is
 	// only about how long the SERVER gets to leave politely.
 	if gone := waitGone(pid, stopGrace); !gone {
-		// It has had its chance to exit on a closed stdin; SIGKILL is not
-		// negotiable with a process that ignored that.
-		_ = syscall.Kill(pid, syscall.SIGKILL)
+		// It has had its chance to exit on a closed stdin; an unconditional
+		// kill is not negotiable with a process that ignored that.
+		killProcess(pid)
 		if !waitGone(pid, stopGrace) {
-			killGroup(pid)
-			return fmt.Errorf("mcp server %s (pid %d) survived SIGKILL", c.name, pid)
+			c.group.killAll(pid)
+			c.group.release()
+			return fmt.Errorf("mcp server %s (pid %d) survived being killed", c.name, pid)
 		}
 	}
-	killGroup(pid)
+	c.group.killAll(pid)
+	c.group.release()
 	<-waited
 	return closeErr
 }
 
-// killGroup SIGKILLs everything in the server's process group.
-//
-// Negative pid means "the group whose id is pid", which is this server's group
-// because Connect set Setpgid. Errors are discarded on purpose: ESRCH means the
-// group is already empty, which is the outcome being asked for.
-//
-// It is safe to call after the leader has exited. A process group id is not
-// reused while any member remains, so a negative signal either reaches the
-// survivors or reaches nobody -- it cannot land on an unrelated process.
-func killGroup(pid int) {
-	_ = syscall.Kill(-pid, syscall.SIGKILL)
-}
-
-// waitGone polls for a process's disappearance, up to a grace period. Signal 0
-// probes liveness without delivering anything -- an error means the pid is no
-// longer ours to signal, which is what "gone" means here.
+// waitGone polls for a process's disappearance, up to a grace period. The
+// liveness probe itself is per-platform (see procgroup.go).
 func waitGone(pid int, grace time.Duration) bool {
 	deadline := time.Now().Add(grace)
 	for time.Now().Before(deadline) {
-		if err := syscall.Kill(pid, 0); err != nil {
+		if !processAlive(pid) {
 			return true
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	return syscall.Kill(pid, 0) != nil
+	return !processAlive(pid)
 }

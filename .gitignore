@@ -9,6 +9,9 @@ daemon/codeterminal-daemon
 clients/tui/codeterminal-tui
 daemon/daemon
 clients/tui/tui
+
+# Windows build outputs (cross-compiled locally when checking the port).
+*.exe
 helper/codeterminal-embedder-helper
 proxy/codeterminal-proxy
 proxy/proxy
