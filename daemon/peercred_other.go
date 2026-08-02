@@ -1,4 +1,4 @@
-//go:build !linux && !darwin
+//go:build !linux && !darwin && !windows
 
 package main
 
@@ -8,10 +8,10 @@ import (
 )
 
 // peerCred mirrors the Linux type only so authorizePeer compiles on every
-// platform. Linux (SO_PEERCRED) and macOS (LOCAL_PEERCRED) each have a real
-// implementation in their own file; this is what is left, and on it there is no
-// peer-credential mechanism wired up — Windows peer credentials over AF_UNIX
-// are inconsistent — so readPeerCred below returns an error unconditionally.
+// platform. Linux (SO_PEERCRED), macOS (LOCAL_PEERCRED) and Windows (the pipe's
+// DACL plus GetNamedPipeClientProcessId) each have a real implementation in
+// their own file; this is what is left, and on it there is no peer-credential
+// mechanism wired up, so readPeerCred below returns an error unconditionally.
 type peerCred struct {
 	uid uint32
 	pid int32
@@ -24,8 +24,9 @@ type peerCred struct {
 //
 // BE CLEAR ABOUT WHAT FAILING CLOSED COSTS HERE: it does not degrade the
 // daemon on such a platform, it refuses every connection, so the product does
-// not run at all. That was the state on macOS until peercred_darwin.go, and it
-// is the state on Windows now — correct, and not the same thing as supported.
+// not run at all. That was the state on macOS until peercred_darwin.go and on
+// Windows until peercred_windows.go — correct, and not the same thing as
+// supported.
 // See the PEERCRED note on authorizePeer in server.go.
 func readPeerCred(conn syscall.Conn) (peerCred, error) {
 	return peerCred{}, fmt.Errorf("peer credential verification is not implemented on this platform (SO_PEERCRED is Linux-only, LOCAL_PEERCRED macOS-only); refusing rather than trusting an unverified peer")
