@@ -9,7 +9,6 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -201,22 +200,22 @@ func main() {
 	if _, err := protocol.SocketDir(); err != nil {
 		logger.Fatalf("creating runtime dir: %v", err)
 	}
-	socketPath := protocol.SocketPath()
+	addr := protocol.DefaultAddress()
 	lockPath := protocol.LockPath()
 
-	if err := reclaimStaleSocket(socketPath); err != nil {
+	if err := reclaimStaleSocket(addr); err != nil {
 		logger.Fatal(err)
 	}
 
-	ln, err := net.Listen("unix", socketPath)
+	// Listen owns the platform difference, including the 0600 chmod a Unix
+	// socket needs and a named pipe has no equivalent of -- see
+	// protocol/transport_unix.go for why that step lives there and not here.
+	ln, err := protocol.Listen(addr)
 	if err != nil {
-		logger.Fatalf("listening on %s: %v", socketPath, err)
-	}
-	if err := os.Chmod(socketPath, 0600); err != nil {
-		logger.Fatalf("restricting socket permissions: %v", err)
+		logger.Fatalf("listening on %s: %v", addr, err)
 	}
 
-	lock := protocol.LockFile{SocketPath: socketPath, PID: os.Getpid()}
+	lock := protocol.NewLockFile(addr, os.Getpid())
 	lockBytes, err := json.MarshalIndent(lock, "", "  ")
 	if err != nil {
 		logger.Fatalf("encoding lockfile: %v", err)
@@ -232,7 +231,7 @@ func main() {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	logger.Printf("tier=%s slug=%s", cfg.DefaultTier, model)
-	logger.Printf("listening on %s (base=%s)", socketPath, apiBase)
+	logger.Printf("listening on %s (base=%s)", addr, apiBase)
 
 	// Cancelled the moment a shutdown signal arrives, BEFORE the drain wait
 	// begins. Only the agent loop consults it, and only between steps: a turn
@@ -313,7 +312,12 @@ func main() {
 		logger.Print("drain complete, no requests in flight")
 	}
 
-	os.Remove(socketPath)
+	// A Unix socket is a filesystem entry and must be unlinked; a named pipe is
+	// a kernel object that disappears with its last handle, so there is nothing
+	// to remove and Remove would fail on a path that was never a file.
+	if addr.Transport == protocol.TransportUnix {
+		os.Remove(addr.Address)
+	}
 	os.Remove(lockPath)
 }
 
@@ -321,7 +325,25 @@ func main() {
 // daemon is actually listening there, it refuses to start. If the file is
 // left over from a previous crash (nothing answers), it removes it so this
 // startup isn't blocked.
-func reclaimStaleSocket(path string) error {
+func reclaimStaleSocket(addr protocol.Address) error {
+	// A named pipe leaves NO residue when its owner dies: it lives in the kernel
+	// object namespace, not the filesystem, so there is nothing to stat and
+	// nothing to unlink. "Stale" there means only "nothing answers", and the
+	// bind itself is what refuses if something does -- go-winio creates the
+	// first instance with FILE_CREATE. So the probe-and-remove dance below is
+	// Unix-only, and skipping it here is not a gap.
+	if addr.Transport == protocol.TransportNamedPipe {
+		conn, err := protocol.DialTimeout(addr, staleSocketProbeTimeout)
+		if err == nil {
+			// Close failing changes nothing: the probe already answered the only
+			// question asked, which is that somebody is listening.
+			_ = conn.Close()
+			return fmt.Errorf("a daemon is already listening on %s; stop it before starting a new one", addr)
+		}
+		return nil
+	}
+
+	path := addr.Address
 	if _, err := os.Stat(path); err != nil {
 		if os.IsNotExist(err) {
 			return nil
@@ -329,9 +351,10 @@ func reclaimStaleSocket(path string) error {
 		return fmt.Errorf("checking existing socket %s: %w", path, err)
 	}
 
-	conn, err := net.DialTimeout("unix", path, staleSocketProbeTimeout)
+	conn, err := protocol.DialTimeout(addr, staleSocketProbeTimeout)
 	if err == nil {
-		conn.Close()
+		// As above: the probe has already answered.
+		_ = conn.Close()
 		return fmt.Errorf("a daemon is already listening on %s; stop it before starting a new one", path)
 	}
 

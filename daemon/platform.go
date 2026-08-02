@@ -6,6 +6,7 @@ package main
 //	openNoFollow(path, flag, perm)  open a file, REFUSING a link at the leaf
 //	                                rather than following it
 //	processAlive(pid)               is this process still running?
+//	killProcess(pid)                terminate it unconditionally
 //
 // openNoFollow only guards the LEAF. Ancestor directories must be confined
 // separately — see confinedRestorePath, which is what actually keeps a

@@ -303,15 +303,47 @@ export interface SearchResponse {
   error?: string;
 }
 
+interface DaemonAddress {
+  transport: string;
+  address: string;
+}
+
 interface LockFile {
   socket_path: string;
   pid: number;
+  address?: DaemonAddress;
 }
 
 // runtimeDir/lockPath mirror protocol.RuntimeDir/LockPath exactly: the
 // daemon and every client must derive the identical path independently.
+//
+// Both branches read an ENVIRONMENT VARIABLE rather than asking Node for "the
+// cache directory", and so does the Go side. os.UserCacheDir() and
+// LOCALAPPDATA happen to agree today, but "happen to agree" is precisely the
+// drift protocol.go's header exists to prevent -- and the failure mode is a
+// client that cannot find a running daemon, with nothing to indicate why.
+//
+// Windows uses LOCAL AppData, never Roaming: Roaming syncs across machines in a
+// domain environment, and a lockfile naming a pipe on a DIFFERENT machine is
+// worse than no lockfile at all.
 function runtimeDir(): string {
-  return process.env.XDG_RUNTIME_DIR || os.tmpdir();
+  return process.platform === 'win32'
+    ? process.env.LOCALAPPDATA || os.tmpdir()
+    : process.env.XDG_RUNTIME_DIR || os.tmpdir();
+}
+
+// daemonTarget is what net.createConnection is given.
+//
+// This is the payoff of putting the transport in the lockfile: Node needs no
+// platform branch here at all. On Unix the string is a socket path; on Windows
+// it is a \\.\pipe\ name, which libuv's net.connect accepts through the same
+// `path` option -- indeed it accepts ONLY named pipes there, which is why the
+// Go daemon uses them rather than the AF_UNIX sockets Go itself supports.
+//
+// socket_path is the fallback for a lockfile written by a daemon built before
+// `address` existed.
+function daemonTarget(lock: LockFile): string {
+  return lock.address?.address || lock.socket_path;
 }
 
 function lockPath(): string {
@@ -415,7 +447,7 @@ export function connectToDaemon(
       return true;
     };
 
-    const socket = net.createConnection(lock.socket_path);
+    const socket = net.createConnection(daemonTarget(lock));
 
     // The clock covers the dial AND the handshake round trip: both are
     // sub-millisecond against a healthy local daemon on a Unix socket, so a
@@ -427,7 +459,7 @@ export function connectToDaemon(
       socket.destroy();
       reject(
         new Error(
-          `daemon at ${lock.socket_path} accepted the connection but did not answer the handshake ` +
+          `daemon at ${daemonTarget(lock)} accepted the connection but did not answer the handshake ` +
             `within ${HANDSHAKE_TIMEOUT_MS / 1000}s (it may be wedged or shutting down; restart it from ` +
             `the repo root with: ${DAEMON_LAUNCH_COMMAND})`
         )
@@ -448,7 +480,7 @@ export function connectToDaemon(
       }
       reject(
         new Error(
-          `daemon at ${lock.socket_path} closed the connection during the handshake without replying ` +
+          `daemon at ${daemonTarget(lock)} closed the connection during the handshake without replying ` +
             `(it may have been stopped, or it refused this client; restart it from the repo root with: ` +
             `${DAEMON_LAUNCH_COMMAND})`
         )
@@ -461,7 +493,7 @@ export function connectToDaemon(
       }
       reject(
         new Error(
-          `could not connect to daemon at ${lock.socket_path} (it may have crashed or been stopped; ` +
+          `could not connect to daemon at ${daemonTarget(lock)} (it may have crashed or been stopped; ` +
             `restart it and try again): ${err.message}`
         )
       );

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"os"
 	"time"
 
@@ -37,14 +36,14 @@ func runStatusCommand(args []string, logger *log.Logger) error {
 		return err
 	}
 
-	socketPath := protocol.SocketPath()
-	conn, err := net.DialTimeout("unix", socketPath, statusDialTimeout)
+	addr := protocol.DefaultAddress()
+	conn, err := protocol.DialTimeout(addr, statusDialTimeout)
 	if err != nil {
 		// The most common operator question ("is it even running?") deserves a
 		// plain answer, not a dial error. The socket path is included because
 		// this is a local CLI printing to the operator's own terminal, not the
 		// socket surface Gate 7 scrubs.
-		return fmt.Errorf("no daemon is responding on %s (is it running?)", socketPath)
+		return fmt.Errorf("no daemon is responding on %s (is it running?)", addr)
 	}
 	defer conn.Close()
 

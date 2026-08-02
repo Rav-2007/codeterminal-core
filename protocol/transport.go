@@ -1,0 +1,103 @@
+package protocol
+
+import (
+	"net"
+	"time"
+)
+
+// The transport seam.
+//
+// This package already owns the DISCOVERY convention — where the socket and
+// lockfile live — precisely so the daemon and every client derive identical
+// paths and cannot drift. It owns the transport for the same reason: what
+// "connect to the daemon" means differs by platform, and that difference must
+// be stated once.
+//
+// WHY NAMED PIPES ON WINDOWS, AND WHY THAT IS NOT A PREFERENCE. Go supports
+// AF_UNIX on Windows, so a Go-only port could have kept Unix sockets
+// everywhere. Node does not: libuv's net.connect interprets its path option on
+// Windows as a named pipe and nothing else. The VS Code extension is a Node
+// client, so the transport is forced by the TypeScript half rather than chosen
+// by the Go half.
+//
+// THE SEAM IS THE LOCKFILE, NOT THE DIAL CALL. Every client already reads the
+// lockfile to find the daemon. Putting the address there — transport and all —
+// means a client dials whatever it was told rather than deriving it, so
+// clients/vscode/src/daemonClient.ts needs no platform branch at all: it passes
+// one string to net.createConnection either way. That is the payoff, and it is
+// why Address travels in LockFile rather than being recomputed per client.
+
+// Transport names how to reach the daemon.
+const (
+	// TransportUnix is a Unix domain socket. Address is a filesystem path.
+	TransportUnix = "unix"
+	// TransportNamedPipe is a Windows named pipe. Address is a \\.\pipe\ name,
+	// which is NOT a filesystem path: it has no directory, no permissions bits,
+	// and leaves no residue when the owner dies.
+	TransportNamedPipe = "npipe"
+)
+
+// Address is everything needed to reach a daemon.
+//
+// Kept as a struct rather than a bare string because the two fields answer
+// different questions and a reader that guesses gets it wrong: "unix" implies a
+// file that can be stat'd, chmod'd and unlinked, and "npipe" implies none of
+// those. Code that special-cases stale-socket cleanup depends on knowing which.
+type Address struct {
+	Transport string `json:"transport"`
+	Address   string `json:"address"`
+}
+
+// String renders an address for logs and error messages.
+func (a Address) String() string {
+	if a.Transport == "" || a.Transport == TransportUnix {
+		return a.Address
+	}
+	return a.Transport + ":" + a.Address
+}
+
+// IsZero reports whether the address is unset, which is how a lockfile written
+// by an older daemon reads.
+func (a Address) IsZero() bool { return a.Address == "" }
+
+// Listen binds a listener at addr. Callers should use DefaultAddress rather
+// than constructing one, so that both sides of the connection agree.
+func Listen(a Address) (net.Listener, error) { return listen(a) }
+
+// Dial connects to a daemon at addr.
+func Dial(a Address) (net.Conn, error) { return dial(a, 0) }
+
+// DialTimeout connects to a daemon at addr, giving up after d.
+func DialTimeout(a Address, d time.Duration) (net.Conn, error) { return dial(a, d) }
+
+// DefaultAddress is the address this build's daemon listens on and every client
+// of it dials. It is derived, not configured, so all four callers agree without
+// coordinating.
+func DefaultAddress() Address { return defaultAddress() }
+
+// AddressFromLock resolves the address a client should dial from a lockfile.
+//
+// It prefers the explicit Address, and falls back to the legacy SocketPath so a
+// lockfile written by an older daemon on the same machine still works. The
+// fallback is Unix-only by construction: SocketPath never carried a pipe name.
+func AddressFromLock(l LockFile) Address {
+	if !l.Address.IsZero() {
+		return l.Address
+	}
+	return Address{Transport: TransportUnix, Address: l.SocketPath}
+}
+
+// NewLockFile builds the lockfile document for a daemon listening at addr.
+//
+// SocketPath is populated only for a Unix socket, where it is the same string
+// Address carries: it exists so a client built before Address did keeps working
+// against a newer daemon on the same machine. A named pipe has no path, so the
+// field stays empty and an old client fails to find the daemon — which is the
+// honest outcome, since an old client could not have dialled a pipe anyway.
+func NewLockFile(addr Address, pid int) LockFile {
+	l := LockFile{PID: pid, Address: addr}
+	if addr.Transport == TransportUnix {
+		l.SocketPath = addr.Address
+	}
+	return l
+}

@@ -22,3 +22,7 @@ func openNoFollow(path string, flag int, perm os.FileMode) (*os.File, error) {
 func processAlive(pid int) bool {
 	return syscall.Kill(pid, 0) == nil
 }
+
+// killProcess terminates a process unconditionally. Used by the tests that
+// simulate a helper crash; the production shutdown path asks politely first.
+func killProcess(pid int) error { return syscall.Kill(pid, syscall.SIGKILL) }

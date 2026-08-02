@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -301,7 +300,9 @@ func TestServerExitingMidCall(t *testing.T) {
 // privileges. Registries are built and closed per TURN, so the leak was once
 // per turn.
 //
-// Fails if Setpgid or the killGroup call is neutered.
+// Fails if the process-group setup or the killAll call is neutered -- verified
+// by doing exactly that: with prepare() no longer putting the server in its own
+// group, the orphan survives Close and this reports alive=true.
 func TestTeardownReachesWhatTheServerSpawned(t *testing.T) {
 	client, err := connectBad(t, "orphan")
 	if err != nil {
@@ -331,13 +332,13 @@ func TestTeardownReachesWhatTheServerSpawned(t *testing.T) {
 	runtime.GC()
 	goroutinesAfter := runtime.NumGoroutine()
 
-	alive := syscall.Kill(pid, 0) == nil
+	alive := processAlive(pid)
 	t.Logf("M4: after Close, the orphan (pid %d) alive=%v; goroutines %d -> %d",
 		pid, alive, goroutinesBefore, goroutinesAfter)
 	if alive {
 		// Reap it so the test does not leave a process behind whichever way
 		// the assertion goes.
-		t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+		t.Cleanup(func() { killProcess(pid) })
 		t.Errorf("a grandchild of an MCP server (pid %d) outlived teardown. It is as unconfined as "+
 			"its parent and it outlives the turn the user approved", pid)
 	}

@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -211,12 +210,12 @@ func TestCloseReapsTheSubprocess(t *testing.T) {
 	// Signal 0 probes liveness without delivering anything.
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if syscall.Kill(pid, 0) != nil {
+		if !processAlive(pid) {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if syscall.Kill(pid, 0) == nil {
+	if processAlive(pid) {
 		t.Errorf("the server subprocess (pid %d) is still alive after Close", pid)
 	}
 

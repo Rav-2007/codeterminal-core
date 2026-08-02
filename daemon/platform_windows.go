@@ -127,3 +127,14 @@ func processAlive(pid int) bool {
 	}
 	return code == stillActive
 }
+
+// killProcess terminates a process unconditionally. TerminateProcess is the
+// closest Windows has to SIGKILL: it cannot be caught or handled.
+func killProcess(pid int) error {
+	h, err := windows.OpenProcess(windows.PROCESS_TERMINATE, false, uint32(pid))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = windows.CloseHandle(h) }()
+	return windows.TerminateProcess(h, 1)
+}

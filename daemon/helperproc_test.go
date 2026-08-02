@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -84,7 +83,7 @@ func TestHelperProcess_KillDetectedAndRestarted(t *testing.T) {
 	oldPID := h.cmd.Process.Pid
 	h.mu.Unlock()
 
-	if err := syscall.Kill(oldPID, syscall.SIGKILL); err != nil {
+	if err := killProcess(oldPID); err != nil {
 		t.Fatalf("killing helper pid %d: %v", oldPID, err)
 	}
 
@@ -136,7 +135,7 @@ func TestHelperProcess_RestartPolicyIsBounded(t *testing.T) {
 	h.extraEnv = []string{"FAKEHELPER_FAIL=1"}
 	h.mu.Unlock()
 
-	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
+	if err := killProcess(pid); err != nil {
 		t.Fatalf("killing helper pid %d: %v", pid, err)
 	}
 

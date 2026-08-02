@@ -24,14 +24,11 @@ const (
 	lockFileName   = "daemon.lock"
 )
 
-// RuntimeDir returns the per-user directory used for the daemon's socket and
-// lockfile: $XDG_RUNTIME_DIR if set, otherwise the OS temp dir.
-func RuntimeDir() string {
-	if d := os.Getenv("XDG_RUNTIME_DIR"); d != "" {
-		return d
-	}
-	return os.TempDir()
-}
+// RuntimeDir returns the per-user directory used for the daemon's lockfile (and,
+// on Unix, its socket). Platform-specific: see runtimedir_unix.go and
+// runtimedir_windows.go, which must stay in step with the identical derivation
+// in clients/vscode/src/daemonClient.ts.
+func RuntimeDir() string { return runtimeDir() }
 
 // SocketDir returns the directory holding the daemon's socket and lockfile,
 // creating it (owner-only) if it doesn't already exist and verifying that an
@@ -938,8 +935,15 @@ type GroundingInfo struct {
 }
 
 // LockFile is the JSON document the daemon writes on startup so clients can
-// discover its socket path without guessing.
+// discover how to reach it without guessing.
+//
+// Address is authoritative. SocketPath is kept because it is what every shipped
+// client reads today and a lockfile written by an older daemon must keep
+// working on the same machine; on Unix the two agree, and on Windows there is
+// no path to put in it. Resolve with AddressFromLock rather than reading either
+// field directly.
 type LockFile struct {
-	SocketPath string `json:"socket_path"`
-	PID        int    `json:"pid"`
+	SocketPath string  `json:"socket_path"`
+	PID        int     `json:"pid"`
+	Address    Address `json:"address,omitempty"`
 }

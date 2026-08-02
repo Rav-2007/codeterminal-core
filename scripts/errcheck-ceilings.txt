@@ -15,6 +15,13 @@
 # is worse than either. Net: fewer unchecked errors than before the pass, which
 # is the direction these numbers are supposed to move.
 #
+# 2026-08-02: daemon 108 -> 107. The transport seam gave reclaimStaleSocket a
+# second probe branch (a named pipe leaves no filesystem residue, so "stale"
+# there means only "nothing answers"), which added one unchecked Close. Rather
+# than grandfather it, both probe closes were made explicit with the reason --
+# the probe has already answered the only question asked -- so the count went
+# down rather than up.
+#
 # 2026-08-02: editapply 10 -> 9. Splitting applylock.go per platform for the
 # Windows port moved the flock release into unlockFile, and the new call is
 # explicit where the old inline one was not. The ratchet reported the SLACK
@@ -24,7 +31,7 @@
 #
 # Measured 2026-07-31 on perf/latency-baseline; daemon and editapply LOWERED
 # 2026-08-01 by the remediation pass (see below).
-daemon        108
+daemon        107
 editapply       9
 proxy          25
 protocol        0

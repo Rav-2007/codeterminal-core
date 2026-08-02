@@ -51,16 +51,17 @@ func connectToDaemon(clientName string, capabilities ...string) (*daemonSession,
 	lockPath := lockPathFunc()
 	lock, err := readLockFile(lockPath)
 	if err != nil {
-		// Run from the repo root, NOT from daemon/: the daemon's defaults are
-		// root-relative (-config "./models.json", -system-prompt
-		// "daemon/prompts/system.txt", see daemon/main.go), so a cwd of daemon/
-		// loads daemon/models.json and looks for daemon/daemon/prompts/system.txt.
-		return nil, fmt.Errorf("daemon not found (expected a lockfile at %s; start it from the repo root with: go run ./daemon): %w", lockPath, err)
+		return nil, fmt.Errorf("daemon not found (expected a lockfile at %s; start it with: codeterminal-daemon): %w", lockPath, err)
 	}
 
-	conn, err := net.Dial("unix", lock.SocketPath)
+	// The lockfile carries the address, transport and all, so this dials what
+	// it was told rather than deriving it -- which is what lets one line serve
+	// a Unix socket and a Windows named pipe. AddressFromLock also accepts a
+	// lockfile written before Address existed.
+	addr := protocol.AddressFromLock(lock)
+	conn, err := protocol.Dial(addr)
 	if err != nil {
-		return nil, fmt.Errorf("could not connect to daemon at %s (it may have crashed or been stopped; restart it and try again): %w", lock.SocketPath, err)
+		return nil, fmt.Errorf("could not connect to daemon at %s (it may have crashed or been stopped; restart it and try again): %w", addr, err)
 	}
 
 	enc := json.NewEncoder(conn)
