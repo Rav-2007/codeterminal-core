@@ -39,7 +39,7 @@ func buildFakeLSP(t *testing.T) string {
 			fakeLSPOnce.err = err
 			return
 		}
-		bin := filepath.Join(dir, "gopls")
+		bin := filepath.Join(dir, exeName("gopls"))
 		if runtime.GOOS == "windows" {
 			bin += ".exe"
 		}

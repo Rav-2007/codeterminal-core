@@ -24,7 +24,7 @@ import (
 // current code rather than a stale binary.
 func buildEchoServer(t *testing.T) string {
 	t.Helper()
-	bin := filepath.Join(t.TempDir(), "echoserver")
+	bin := filepath.Join(t.TempDir(), exeName("echoserver"))
 	cmd := exec.Command("go", "build", "-o", bin, "./testdata/echoserver")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("building the test MCP server: %v\n%s", err, out)

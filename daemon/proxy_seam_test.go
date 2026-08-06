@@ -37,7 +37,7 @@ import (
 // workspace and returns the binary path.
 func buildProxyBinary(t *testing.T) string {
 	t.Helper()
-	bin := filepath.Join(t.TempDir(), "codeterminal-proxy")
+	bin := filepath.Join(t.TempDir(), exeName("codeterminal-proxy"))
 	cmd := exec.Command("go", "build", "-o", bin, "codeterminal/proxy")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("building the proxy binary: %v\n%s", err, out)

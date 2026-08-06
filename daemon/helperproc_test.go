@@ -23,7 +23,7 @@ func TestMain(m *testing.M) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	fakeHelperBinPath = filepath.Join(tmpDir, "fakehelper")
+	fakeHelperBinPath = filepath.Join(tmpDir, exeName("fakehelper"))
 	cmd := exec.Command("go", "build", "-o", fakeHelperBinPath, "./testdata/fakehelper")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		panic("building fakehelper fixture: " + err.Error() + "\n" + string(out))

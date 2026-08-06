@@ -41,7 +41,7 @@ func buildBadServer(t *testing.T) string {
 			badServerErr = err
 			return
 		}
-		bin := filepath.Join(dir, "badserver")
+		bin := filepath.Join(dir, exeName("badserver"))
 		if out, err := exec.Command("go", "build", "-o", bin, "./mcp/testdata/badserver").CombinedOutput(); err != nil {
 			badServerErr = &buildError{out: string(out)}
 			return
