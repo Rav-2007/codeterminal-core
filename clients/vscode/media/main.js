@@ -42,6 +42,34 @@
   const modesList = document.getElementById('modesList');
   const modeBtnIcon = document.getElementById('modeBtnIcon');
 
+  // One detached <svg> per mode, cloned out of the popup's own markup at load,
+  // so the mode button's icon can be swapped WITHOUT assembling any markup.
+  //
+  // This replaced three SVG source strings and a `modeBtnIcon.innerHTML = ...`.
+  // That assignment was not exploitable -- the three strings were constants and
+  // the key was one of 'manual'/'plan'/'auto' -- and it is removed anyway,
+  // because "there is no HTML sink in this file at all" is a property a reviewer
+  // confirms with one grep, while "the only innerHTML here is safe" is a
+  // judgement every future reader has to re-make. This webview renders model
+  // output; once one blessed innerHTML is present, the second one arrives in a
+  // diff that looks consistent with the file. accessibility.test.ts bans the
+  // sinks categorically for exactly that reason, and it is the test that caught
+  // this.
+  //
+  // Cloning parses nothing: the panel's HTML is server-rendered under the nonce
+  // CSP, so these nodes are already-trusted DOM. It also removes a duplicate --
+  // the same three icons were spelled out here AND in chatPanel.ts, so an icon
+  // change had to be made twice to avoid the button disagreeing with the menu.
+  /** @type {Record<string, Element>} */
+  const modeIcons = {};
+  document.querySelectorAll('.mode-item[data-mode]').forEach(function (item) {
+    const mode = item.getAttribute('data-mode');
+    const svg = item.querySelector('.mode-icon svg');
+    if (mode && svg) {
+      modeIcons[mode] = svg;
+    }
+  });
+
   /** @type {{ name: string, text: string }[]} */
   let pendingAttachments = [];
   const MAX_ATTACH_CHARS = 80000;
@@ -285,12 +313,11 @@
       modeBtnLabelEl.textContent = currentMode.charAt(0).toUpperCase() + currentMode.slice(1);
     }
     if (modeBtnIcon) {
-      const icons = {
-        manual: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="mode-svg manual-icon"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><path d="M2 2l7.586 7.586"/><circle cx="11" cy="11" r="2"/><path d="M4 22h16"/></svg>`,
-        plan: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="mode-svg plan-icon"><rect width="8" height="4" x="8" y="2" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="m7 11 2 2 3-3"/><path d="M14 11h3"/><path d="m7 16 2 2 3-3"/><path d="M14 16h3"/></svg>`,
-        auto: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="mode-svg auto-icon"><path d="m21.64 3.64-1.28-1.28a1.21 1.21 0 0 0-1.72 0L2.36 18.64a1.21 1.21 0 0 0 0 1.72l1.28 1.28a1.2 1.2 0 0 0 1.72 0L21.64 5.36a1.2 1.2 0 0 0 0-1.72Z"/><path d="m14 7 3 3"/><path d="M5 6v4"/><path d="M19 14v4"/><path d="M10 2v2"/><path d="M7 8H3"/><path d="M21 16h-4"/><path d="M11 3H9"/></svg>`
-      };
-      modeBtnIcon.innerHTML = icons[currentMode] || icons['auto'];
+      const icon = modeIcons[currentMode] || modeIcons.auto;
+      if (icon) {
+        clearChildren(modeBtnIcon);
+        modeBtnIcon.appendChild(icon.cloneNode(true));
+      }
     }
     
     // Auto gets special on style, others get off style

@@ -260,4 +260,24 @@ suite('Webview accessibility structure', () => {
         'implementation approach changed and the sink check above needs re-reading'
     );
   });
+
+  // The sink list above is necessary and not sufficient, which the mode-icon
+  // regression demonstrated: `modeBtnIcon.innerHTML = '<svg .../>'` shipped on a
+  // branch whose Go gate was green, because the markup was built first and only
+  // the assignment tripped a check. A string starting with `<tag` is the input
+  // half of that bug, and it is worth failing on its own -- it has no legitimate
+  // use in this file, and it is what a future author reaches for before reaching
+  // for a sink to write it with. The panel's markup belongs in chatPanel.ts,
+  // where it is server-rendered under the nonce CSP; main.js clones from it.
+  test('main.js assembles no HTML markup, not even to hand to a safe API', () => {
+    const code = mainJsCode();
+    const markup = code.match(/['"`]\s*<\/?[a-zA-Z][a-zA-Z0-9-]*[\s/>]/g);
+    assert.strictEqual(
+      markup,
+      null,
+      `media/main.js builds markup as strings (${(markup || []).join(', ')}). Build DOM nodes, ` +
+        'or clone them out of the panel HTML -- see modeIcons. A constant today is a ' +
+        'template with model output interpolated into it tomorrow.'
+    );
+  });
 });
