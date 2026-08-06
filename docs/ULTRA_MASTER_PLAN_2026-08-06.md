@@ -142,9 +142,28 @@ It earned its place before it ever ran: cross-vetting locally found
 build time. Now constrained `//go:build unix` and labelled, because the evidence
 is genuinely POSIX-shaped and Windows needs its own table (that is C2).
 
-**C3-next:** promote from build+vet to `go test` on both runners. Expect the
-first honest look at `peercred_darwin.go` and the named-pipe transport, neither
-of which has ever executed.
+**C3-next — LANDED.** The `cross` job now runs `go test`, not only build+vet, so
+`peercred_darwin.go`, the named-pipe transport and the Windows path seams get
+their first honest look. Expect red; red here is the deliverable.
+
+Two things were decided while landing it, both corrections to this document's
+own earlier advice:
+
+- **macOS is gated on `main`, not on pull requests.** The cost case for PR-only
+  was right (macOS is 40 of the 86 billable minutes a full run costs, for four
+  minutes of real work) and the mechanism was wrong: this repo merges with
+  `git merge --ff-only` and pushes straight to `main`, so a PR-only gate would
+  have meant macOS effectively never ran. Branch pushes get Windows; the
+  mainline gets both; `workflow_dispatch` is the manual override.
+- **The gate shrinks the MATRIX rather than adding a job-level `if`.** The
+  `matrix` context is not available to `jobs.<id>.if`, so the obvious spelling
+  would evaluate against an empty context and silently do nothing — and a
+  skipped macOS job still bills if the runner is requested.
+
+**C3-after-next:** whatever the first red run reports. `filepath.EvalSymlinks`
+versus junctions is the top *unknown* in this plan, and `pathhazard.go` refuses
+junctions, ADS and 8.3 aliases on reasoning about Win32 that has never met
+Win32.
 C4 Platform `.vsix`, bundled daemon, first-run model download.
 
 Two Windows-specific notes surfaced by this pass:

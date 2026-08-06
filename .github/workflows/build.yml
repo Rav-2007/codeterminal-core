@@ -272,7 +272,26 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest]
+        # WINDOWS EVERY PUSH, MACOS ONLY WHERE IT EARNS ITS PRICE.
+        #
+        # Actions bills wall-clock per job, rounded up to the minute, times an
+        # OS rate: Linux 1x, Windows 2x, macOS 10x. Measured on run 31083299803,
+        # one full run cost 86 billable minutes -- and 40 of those were four
+        # macOS jobs doing four minutes of real work, more than all 22 Ubuntu
+        # jobs combined. A private repo on the free plan gets 2,000 a month, so
+        # that is ~23 pushes.
+        #
+        # Gated on `main` rather than on pull_request, deliberately: this repo is
+        # merged with `git merge --ff-only` and pushed straight to main, so a
+        # PR-only gate would mean macOS effectively never ran. Branch pushes get
+        # Windows; whatever lands on the mainline gets both. workflow_dispatch is
+        # the manual escape hatch for testing macOS from a branch.
+        #
+        # Shrinking the MATRIX rather than adding a job-level `if`, because the
+        # matrix context is not available to jobs.<id>.if -- an `if` referencing
+        # matrix.os silently evaluates against an empty context. Here the macOS
+        # runner is never requested at all, which is what actually saves money.
+        os: ${{ fromJSON((github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch') && '["windows-latest","macos-latest"]' || '["windows-latest"]') }}
         module: [daemon, protocol, editapply, clients/tui]
     steps:
       - uses: actions/checkout@v4
@@ -290,6 +309,33 @@ jobs:
       # exact break a GOOS=windows go vet found locally in four test files.
       - name: Vet
         run: go vet ./...
+        working-directory: ${{ matrix.module }}
+
+      # C3-NEXT: the step that turns a large block of NOT RUN into evidence.
+      #
+      # Until now this job answered "does it compile there?", which was the right
+      # first question and is now answered. It never answered "does it WORK
+      # there?" -- and the named-pipe transport, the SID-based peer
+      # authentication, the openNoFollow and process-group seams, and every line
+      # of peercred_darwin.go have therefore never executed on any machine,
+      # anywhere. They are labelled NOT RUN throughout the source precisely
+      # because nobody could claim otherwise.
+      #
+      # EXPECT THIS TO GO RED, and expect that to be the point. pathhazard.go
+      # refuses junctions, ADS, 8.3 aliases and trailing-dot names on reasoning
+      # about Win32 that has never met Win32, and filepath.EvalSymlinks versus
+      # junctions is recorded as the top UNKNOWN security risk in the plan. The
+      # last three CI reds -- the extension test, the docker image, the innerHTML
+      # sink -- were each a real defect found the moment the code met an
+      # environment that could run it.
+      #
+      # NO -race, unlike the Ubuntu job, and that is a deliberate narrowing
+      # rather than an oversight. The race detector roughly doubles runtime and
+      # is the gate this project's concurrency work already passes on Linux;
+      # paying 2x on Windows to re-ask a question that is not platform-specific
+      # would buy noise. Platform-specific FAILURES are what this job is for.
+      - name: Test
+        run: go test ./...
         working-directory: ${{ matrix.module }}
 
   govulncheck:
