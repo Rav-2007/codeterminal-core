@@ -308,10 +308,31 @@
   function renderMode() {
     const isAuto = currentMode === 'auto';
     autoApplyEnabled = isAuto;
-    
+
+    const modeName = currentMode.charAt(0).toUpperCase() + currentMode.slice(1);
+
     if (modeBtnLabelEl) {
-      modeBtnLabelEl.textContent = currentMode.charAt(0).toUpperCase() + currentMode.slice(1);
+      modeBtnLabelEl.textContent = modeName;
     }
+
+    // The accessible name must carry the CURRENT mode, not just the button's
+    // purpose, and this is the line that makes that true.
+    //
+    // Auto is the mode in which the agent writes to the user's files WITHOUT
+    // asking per edit (autoApplyEnabled, three lines up). The visible mode lives
+    // in modeBtnLabelEl's textContent -- but the button carries a static
+    // aria-label="Select mode", and an explicit aria-label OVERRIDES inner text
+    // when the accessible name is computed. So a screen reader announced
+    // "Select mode, button, collapsed" in all three modes, and a blind user had
+    // no way to tell whether the next answer would edit their disk unattended.
+    //
+    // This property used to be enforced. Before the mode selector replaced the
+    // two-state auto-apply switch, the control was role="switch" and a test
+    // asserted its aria-checked was kept in sync, with the comment "its state
+    // must not live only in textContent". The refactor moved the state into
+    // exactly that, and correctly retargeted the test at the popup's
+    // aria-expanded -- which is a different property, so nothing failed.
+    autoApplyToggle.setAttribute('aria-label', 'Mode: ' + modeName + '. Select agent mode');
     if (modeBtnIcon) {
       const icon = modeIcons[currentMode] || modeIcons.auto;
       if (icon) {

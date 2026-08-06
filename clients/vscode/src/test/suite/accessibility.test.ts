@@ -83,6 +83,32 @@ suite('Webview accessibility structure', () => {
     );
   });
 
+  test('the ACTIVE mode is in the accessible name, not only in the visible text', () => {
+    // The test above covers whether the MENU is open. This one covers which
+    // mode is selected, and they are not the same property -- which is how the
+    // second one got lost.
+    //
+    // Before the three-mode selector, this control was a role="switch" whose
+    // aria-checked was asserted here, under the comment "its state must not
+    // live only in textContent". The refactor retargeted that test at the
+    // popup's aria-expanded. Correct as far as it went, but the mode itself
+    // then lived only in modeBtnLabelEl.textContent, and the button's static
+    // aria-label="Select mode" masks inner text when the accessible name is
+    // computed -- so all three modes announced identically.
+    //
+    // It matters because Auto is the mode that writes to the user's files with
+    // no per-edit confirmation. "Which mode am I in" is the same question as
+    // "will this edit my disk without asking", and it must be answerable
+    // without sight.
+    const js = mainJsSource();
+    assert.match(
+      js,
+      /autoApplyToggle\.setAttribute\(\s*'aria-label',[^;]*modeName/,
+      'renderMode must fold the current mode into the button aria-label; a static ' +
+        'label plus a textContent update announces the same name in Manual, Plan and Auto'
+    );
+  });
+
   test('both text inputs have accessible names', () => {
     const html = chatPanelBodyMarkup();
     // A placeholder is not an accessible name.
