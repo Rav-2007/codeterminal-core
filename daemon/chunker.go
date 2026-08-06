@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -21,6 +22,11 @@ const (
 
 // maxFileSize is the size cap above which a file is skipped outright.
 const maxFileSize = 1 << 20 // 1MB
+
+// maxFilesScanned is the cap on total files indexed per workspace to prevent resource exhaustion.
+const maxFilesScanned = 10000
+
+var ErrWorkspaceTooLarge = errors.New("workspace too large")
 
 // binarySniffSize is how many leading bytes of a file are inspected to guess
 // whether it's binary.
@@ -80,9 +86,10 @@ func isPrunedDir(name string) bool {
 // ScanResult is the outcome of walking a workspace: every chunk produced
 // (without vectors yet) plus counters for what was scanned and skipped.
 type ScanResult struct {
-	Chunks       []Chunk
-	FilesScanned int
-	Skipped      map[SkipReason]int
+	Chunks        []Chunk
+	FilesScanned  int
+	Skipped       map[SkipReason]int
+	LimitExceeded bool
 }
 
 func newScanResult() *ScanResult {
@@ -154,6 +161,18 @@ func ScanWorkspace(root string) (*ScanResult, error) {
 			return nil
 		}
 
+		if result.LimitExceeded {
+			reason, skip, err := shouldSkipFile(path, relPath, ignore)
+			if err == nil {
+				if skip {
+					result.Skipped[reason]++
+				} else {
+					result.FilesScanned++
+				}
+			}
+			return nil
+		}
+
 		content, reason, skip, err := readEligibleFile(path, relPath, ignore)
 		if err != nil {
 			return fmt.Errorf("reading %s: %w", relPath, err)
@@ -164,6 +183,10 @@ func ScanWorkspace(root string) (*ScanResult, error) {
 		}
 
 		result.FilesScanned++
+		if result.FilesScanned > maxFilesScanned {
+			result.LimitExceeded = true
+			return nil
+		}
 		// relPath stays native above this line — the gitignore matcher and the
 		// secret-name gate both split on filepath.Separator. It becomes an index
 		// key here, and index keys are forward-slash on every platform: see the
@@ -201,6 +224,30 @@ func shouldSkipFile(path, relPath string, ignore *gitignoreMatcher) (SkipReason,
 	if err != nil {
 		return "", false, err
 	}
+
+	// Never follow a symlink, and do it HERE rather than only in the walk.
+	//
+	// ScanWorkspace has always refused symlinked entries, and its comment said
+	// that check "alone stops any symlink escape". That was true while the walk
+	// was the only way in. It stopped being true when reindexFile arrived: it
+	// calls readEligibleFile directly, so the incremental paths — after every
+	// applied edit, and on every save the workspace watcher sees — reached the
+	// read with no symlink check at all.
+	//
+	// Measured before this: a workspace containing `notes.md -> ~/.ssh/id_rsa`
+	// returned the private key's contents. Every earlier gate passes it, and
+	// each for a good reason — MatchesSecretName sees the LINK's harmless name,
+	// and the size check below is why Lstat is used, so it measures the link
+	// rather than the target. os.ReadFile then follows it. Indexed content is
+	// retrieved into prompts, so this was a read primitive pointed at anything
+	// the daemon's uid could open.
+	//
+	// Lstat reports the link's own type, so this needs no target inspection and
+	// has no TOCTOU window of its own.
+	if info.Mode()&fs.ModeSymlink != 0 {
+		return SkipSymlink, true, nil
+	}
+
 	if info.Size() > maxFileSize {
 		return SkipTooLarge, true, nil
 	}
