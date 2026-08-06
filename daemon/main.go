@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"codeterminal/editapply"
 	"codeterminal/protocol"
 	"crypto/rand"
 	"encoding/hex"
@@ -202,8 +203,30 @@ func main() {
 	if _, err := protocol.SocketDir(); err != nil {
 		logger.Fatalf("creating runtime dir: %v", err)
 	}
-	addr := protocol.DefaultAddress()
-	lockPath := protocol.LockPath()
+	// PER WORKSPACE, not per user. Two VS Code windows on two repositories used
+	// to collide here: the second daemon found the first listening, exited 1,
+	// and the extension restarted it every three seconds forever -- while the
+	// second window's client read the same per-user lockfile and was answered
+	// by the FIRST window's daemon about the wrong repository. Reproduced in
+	// daemon/twoworkspaces_test.go.
+	//
+	// The tag is derived from the RESOLVED root, not absWorkspace, and the
+	// difference is load-bearing. validateWorkspace is filepath.Abs only; it
+	// never calls EvalSymlinks. A workspace reached through a symlink -- /tmp on
+	// macOS, ~/work -> /mnt/data/work on Linux, an 8.3 short name on Windows --
+	// would otherwise produce a DIFFERENT tag from the one a client computes
+	// from the same directory, and each would quietly start its own daemon for
+	// one repository. Clients mirror this with realpath; see WorkspaceTag.
+	realRoot, err := editapply.ResolveRealWorkspaceRoot(absWorkspace)
+	if err != nil {
+		// Not fatal: fall back to the per-user address rather than refuse to
+		// start over a naming detail. One daemon that works beats none.
+		logger.Printf("warning: could not resolve %s for the per-workspace socket name (%v); "+
+			"falling back to the shared one, so a second workspace will not start", absWorkspace, err)
+		realRoot = ""
+	}
+	addr := protocol.DefaultAddressFor(realRoot)
+	lockPath := protocol.LockPathFor(realRoot)
 
 	if err := reclaimStaleSocket(addr); err != nil {
 		logger.Fatal(err)

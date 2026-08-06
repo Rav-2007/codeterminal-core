@@ -3,18 +3,21 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"codeterminal/editapply"
 	"codeterminal/protocol"
 )
 
-// TWO VS CODE WINDOWS ON TWO REPOSITORIES CANNOT BOTH WORK.
+// TWO VS CODE WINDOWS ON TWO REPOSITORIES MUST BOTH WORK.
 //
 // This is the normal case, not an edge case: a developer with two projects
 // open. It has never been executed until now -- the defect was found by reading
@@ -35,135 +38,96 @@ import (
 // And the client that spawned the loop reads the same per-user lockfile, so it
 // reaches the FIRST window's daemon and asks it about the SECOND window's repo.
 //
-// What this test asserts is (1) and (3) -- the daemon-side half, which is where
-// the fix belongs. The extension's restart handler is the other half and is
-// tested in clients/vscode.
+// This file was committed one commit earlier as a REPRODUCTION, asserting each
+// of those failures. The fix -- per-workspace socket and lockfile names, keyed
+// on WorkspaceTag(resolved root) -- inverted every assertion, which is why the
+// tests now read the other way round. The original messages are preserved in
+// b1bfa5e.
 //
-// NOT SILENT, and the test says so below: GroundingInfo.WorkspaceMismatch is
-// set for exactly this case and both clients render it. The user is told their
-// answer is about the wrong repository. That is honest, and it is still not a
-// working product.
-func TestTwoWorkspaces_SecondDaemonCannotStart(t *testing.T) {
+// NEUTER CHECK: change daemon/main.go back to protocol.DefaultAddress() /
+// protocol.LockPath() and the second daemon fails to start again. Measured, not
+// asserted -- that is exactly what these tests did before the fix landed.
+//
+// Worth stating because it bounds what this fixes: the old failure was NOT
+// silent. GroundingInfo.WorkspaceMismatch was set and both clients rendered it,
+// so the user was told the answer was about the wrong repository. The fix is
+// that they are no longer told anything, because nothing is wrong.
+func TestTwoWorkspaces_BothDaemonsStart(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds the daemon binary")
 	}
 	bin := buildDaemonBinary(t)
 
-	// One runtime dir for both, which is the point: a real user has one.
-	runtimeDir := t.TempDir()
+	runtimeDir := shortRuntimeDir(t)
+	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
 	repoA, repoB := t.TempDir(), t.TempDir()
 	writeFile(t, filepath.Join(repoA, "a.go"), "package a\n")
 	writeFile(t, filepath.Join(repoB, "b.go"), "package b\n")
 
 	stopA := startDaemon(t, bin, runtimeDir, repoA)
 	defer stopA()
+	stopB := startDaemon(t, bin, runtimeDir, repoB)
+	defer stopB()
 
-	// THE PREMISE, asserted rather than assumed: the lockfile carries no trace
-	// of the workspace. If it ever does, this test is measuring something else.
-	lockPath := filepath.Join(runtimeDir, "codeterminal", "daemon.lock")
-	raw, err := os.ReadFile(lockPath)
-	if err != nil {
-		t.Fatalf("daemon A wrote no lockfile at %s: %v", lockPath, err)
+	// Two lockfiles, two names. Before the fix the second daemon never got this
+	// far -- it exited 1 with "a daemon is already listening".
+	lockA, lockB := lockPathIn(t, runtimeDir, repoA), lockPathIn(t, runtimeDir, repoB)
+	if lockA == lockB {
+		t.Fatalf("both workspaces derived the SAME lockfile (%s); they would collide exactly as before", lockA)
 	}
-	if strings.Contains(string(raw), filepath.Base(repoA)) {
-		t.Skipf("NOT RUN: the lockfile now names the workspace (%s) -- the per-user "+
-			"collision this test measures no longer exists", raw)
-	}
-
-	// Window B opens the OTHER repo. Same runtime dir, same lockfile.
-	out, err := runDaemonOnce(t, bin, runtimeDir, repoB)
-
-	if err == nil {
-		t.Fatal("daemon B started successfully; the per-user collision is gone and this test " +
-			"should be replaced by one that asserts both daemons serve their own workspace")
-	}
-	exitErr, ok := err.(*exec.ExitError)
-	if !ok {
-		t.Fatalf("daemon B failed in an unexpected way: %v\n%s", err, out)
+	for _, p := range []string{lockA, lockB} {
+		if _, err := os.Stat(p); err != nil {
+			t.Fatalf("no lockfile at %s: %v", p, err)
+		}
 	}
 
-	// THE LOOP TRIGGER. The extension restarts on any non-zero exit that is not
-	// a signal, so this exact code is what turns a correct refusal into an
-	// infinite restart cycle in the user's editor.
-	if code := exitErr.ExitCode(); code != 1 {
-		t.Errorf("daemon B exit code = %d, want 1", code)
+	// The tag must not be the workspace path in disguise: it goes into a
+	// sockaddr_un capped at ~104 bytes, and a real project path is longer than
+	// the budget leaves.
+	if base := filepath.Base(lockA); len(base) > 40 {
+		t.Errorf("lockfile name %q is %d chars; the socket beside it shares a ~104-byte "+
+			"sockaddr_un budget with the runtime directory", base, len(base))
 	}
-	if !strings.Contains(out, "already listening") {
-		t.Errorf("daemon B said %q, want it to name the collision", out)
+	if strings.Contains(filepath.Base(lockA), filepath.Base(repoA)) {
+		t.Errorf("lockfile name %q embeds the workspace path; it must be a bounded hash",
+			filepath.Base(lockA))
 	}
-
-	t.Logf("REPRODUCED: window B's daemon exits %d (%q). "+
-		"clients/vscode/src/extension.ts restarts on code!==0 after 3s, forever.",
-		exitErr.ExitCode(), strings.TrimSpace(lastLine(out)))
 }
 
-// And the consequence for the client that could not start its own daemon: the
-// lockfile it reads points at the OTHER workspace's daemon.
-func TestTwoWorkspaces_TheLockfileSendsWindowBToWindowAsDaemon(t *testing.T) {
+// Each window's client reaches ITS OWN daemon. This is the half that was
+// silently wrong: window B used to read the one per-user lockfile and be
+// answered by window A's daemon about window A's code.
+func TestTwoWorkspaces_EachClientReachesItsOwnDaemon(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds the daemon binary")
 	}
 	bin := buildDaemonBinary(t)
 
-	runtimeDir := t.TempDir()
+	runtimeDir := shortRuntimeDir(t)
+	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
 	repoA, repoB := t.TempDir(), t.TempDir()
 	writeFile(t, filepath.Join(repoA, "a.go"), "package a\n")
+	writeFile(t, filepath.Join(repoB, "b.go"), "package b\n")
 
 	stopA := startDaemon(t, bin, runtimeDir, repoA)
 	defer stopA()
+	stopB := startDaemon(t, bin, runtimeDir, repoB)
+	defer stopB()
 
-	lock := readLockFileAt(t, filepath.Join(runtimeDir, "codeterminal", "daemon.lock"))
-
-	// Window B derives its address exactly as clients/vscode/src/daemonClient.ts
-	// does -- from the per-user lockfile, with no workspace input at all.
-	conn, err := protocol.DialTimeout(lock.Address, 5*time.Second)
-	if err != nil {
-		t.Fatalf("dialling the address window B would find: %v", err)
+	for _, tc := range []struct{ name, repo string }{{"window A", repoA}, {"window B", repoB}} {
+		want, err := filepath.EvalSymlinks(tc.repo)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Derived the way a client derives it: from the workspace it has open,
+		// with no knowledge of any other daemon.
+		lock := readLockFileAt(t, lockPathIn(t, runtimeDir, tc.repo))
+		got := statusWorkspace(t, lock)
+		if got != want {
+			t.Errorf("%s (repo %s) was answered by the daemon serving %s; a client must reach "+
+				"its own workspace's daemon", tc.name, want, got)
+		}
 	}
-	defer conn.Close()
-
-	enc, dec := json.NewEncoder(conn), json.NewDecoder(conn)
-	if err := enc.Encode(protocol.HandshakeRequest{
-		ProtocolVersion: protocol.ProtocolVersion,
-		ClientName:      "window-b",
-	}); err != nil {
-		t.Fatalf("handshake send: %v", err)
-	}
-	var hs protocol.HandshakeResponse
-	if err := dec.Decode(&hs); err != nil {
-		t.Fatalf("handshake recv: %v", err)
-	}
-	if !hs.Ok {
-		t.Fatalf("handshake refused: %s", hs.Error)
-	}
-
-	// StatusRequest, not a prompt: it names the workspace the daemon is actually
-	// grounded against, with no model call and no spend.
-	if err := enc.Encode(protocol.StatusRequest{
-		ProtocolVersion: protocol.ProtocolVersion,
-		Status:          true,
-	}); err != nil {
-		t.Fatalf("status send: %v", err)
-	}
-	var st protocol.StatusResponse
-	if err := dec.Decode(&st); err != nil {
-		t.Fatalf("status recv: %v", err)
-	}
-
-	realB, _ := filepath.EvalSymlinks(repoB)
-	realA, _ := filepath.EvalSymlinks(repoA)
-	if st.Workspace == realB {
-		t.Fatalf("unexpectedly correct: window B reached a daemon serving its OWN workspace (%s); "+
-			"the defect this test records is gone and the test should be inverted", st.Workspace)
-	}
-	if st.Workspace != realA {
-		t.Fatalf("window B reached a daemon serving %q, which is neither repo (A=%s B=%s)",
-			st.Workspace, realA, realB)
-	}
-
-	t.Logf("REPRODUCED: window B (repo %s) was routed to the daemon serving %s. "+
-		"GroundingInfo.WorkspaceMismatch marks this for the user -- it is wrong, not silent.",
-		filepath.Base(realB), filepath.Base(realA))
 }
 
 // --- fixtures ---
@@ -210,6 +174,10 @@ func startDaemon(t *testing.T, bin, runtimeDir, workspace string) (stop func()) 
 	t.Helper()
 	cmd := exec.Command(bin, "--workspace", workspace)
 	cmd.Env = daemonEnv(runtimeDir)
+	// Captured so a startup failure reports the daemon's OWN reason rather than
+	// only "it never wrote a lockfile", which is the symptom and not the cause.
+	var log lockedBuffer
+	cmd.Stdout, cmd.Stderr = &log, &log
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("starting daemon: %v", err)
 	}
@@ -218,7 +186,7 @@ func startDaemon(t *testing.T, bin, runtimeDir, workspace string) (stop func()) 
 		_, _ = cmd.Process.Wait()
 	}
 
-	lockPath := filepath.Join(runtimeDir, "codeterminal", "daemon.lock")
+	lockPath := lockPathIn(t, runtimeDir, workspace)
 	deadline := time.Now().Add(20 * time.Second)
 	for time.Now().Before(deadline) {
 		if _, err := os.Stat(lockPath); err == nil {
@@ -227,16 +195,8 @@ func startDaemon(t *testing.T, bin, runtimeDir, workspace string) (stop func()) 
 		time.Sleep(50 * time.Millisecond)
 	}
 	stop()
-	t.Fatalf("daemon never wrote %s", lockPath)
+	t.Fatalf("daemon for %s never wrote %s. Its output:\n%s", workspace, lockPath, log.String())
 	return stop
-}
-
-func runDaemonOnce(t *testing.T, bin, runtimeDir, workspace string) (string, error) {
-	t.Helper()
-	cmd := exec.Command(bin, "--workspace", workspace)
-	cmd.Env = daemonEnv(runtimeDir)
-	out, err := cmd.CombinedOutput()
-	return string(out), err
 }
 
 func readLockFileAt(t *testing.T, path string) protocol.LockFile {
@@ -252,7 +212,89 @@ func readLockFileAt(t *testing.T, path string) protocol.LockFile {
 	return lf
 }
 
-func lastLine(s string) string {
-	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
-	return lines[len(lines)-1]
+// lockPathIn derives the lockfile a client with this workspace open would read,
+// through protocol's own helper and the same canonicalisation the daemon uses.
+func lockPathIn(t *testing.T, runtimeDir, workspace string) string {
+	t.Helper()
+	real, err := editapply.ResolveRealWorkspaceRoot(workspace)
+	if err != nil {
+		t.Fatalf("resolving %s: %v", workspace, err)
+	}
+	// Through protocol's own helper, never a literal, so a change to the naming
+	// convention cannot leave this test asserting the old one. runtimeDir is
+	// already in the environment; see each test's t.Setenv.
+	_ = runtimeDir
+	return protocol.LockPathFor(real)
+}
+
+// statusWorkspace asks a daemon which workspace it is grounded against.
+// StatusRequest, not a prompt: no model call, no spend.
+func statusWorkspace(t *testing.T, lock protocol.LockFile) string {
+	t.Helper()
+	conn, err := protocol.DialTimeout(protocol.AddressFromLock(lock), 5*time.Second)
+	if err != nil {
+		t.Fatalf("dial %v: %v", lock.Address, err)
+	}
+	defer conn.Close()
+
+	enc, dec := json.NewEncoder(conn), json.NewDecoder(conn)
+	if err := enc.Encode(protocol.HandshakeRequest{
+		ProtocolVersion: protocol.ProtocolVersion, ClientName: "workspace-probe",
+	}); err != nil {
+		t.Fatalf("handshake send: %v", err)
+	}
+	var hs protocol.HandshakeResponse
+	if err := dec.Decode(&hs); err != nil {
+		t.Fatalf("handshake recv: %v", err)
+	}
+	if !hs.Ok {
+		t.Fatalf("handshake refused: %s", hs.Error)
+	}
+	if err := enc.Encode(protocol.StatusRequest{
+		ProtocolVersion: protocol.ProtocolVersion, Status: true,
+	}); err != nil {
+		t.Fatalf("status send: %v", err)
+	}
+	var st protocol.StatusResponse
+	if err := dec.Decode(&st); err != nil {
+		t.Fatalf("status recv: %v", err)
+	}
+	return st.Workspace
+}
+
+// lockedBuffer is an io.Writer safe for a child's stdout and stderr at once.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// shortRuntimeDir is t.TempDir() with the test's NAME left out of the path.
+//
+// Not a convenience. t.TempDir() embeds the test function name, and a unix
+// socket address is capped at 103 bytes (see protocol's checkSocketPathLength),
+// so a longer test name meant a shorter budget for the socket -- and the
+// per-workspace name added 17 bytes to it. TestTwoWorkspaces_BothDaemonsStart
+// fitted and TestTwoWorkspaces_EachClientReachesItsOwnDaemon did not, which is
+// the sort of difference that reads as flakiness. A real $XDG_RUNTIME_DIR is
+// /run/user/1000, so this is also the more faithful fixture.
+func shortRuntimeDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "ctrt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
 }

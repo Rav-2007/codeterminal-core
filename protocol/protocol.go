@@ -7,6 +7,8 @@
 package protocol
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 )
@@ -48,8 +50,63 @@ func SocketDir() (string, error) {
 // SocketPath and LockPath return the conventional paths for the daemon's
 // Unix domain socket and lockfile under SocketDir(), without creating
 // anything on disk.
+//
+// PER USER, WITH NO WORKSPACE IN THEM — which is why a second workspace could
+// not run. See WorkspaceTag and the ...For variants below; these two remain for
+// the single-workspace default and for a client that has no workspace to offer.
 func SocketPath() string { return filepath.Join(RuntimeDir(), serviceDirName, socketFileName) }
 func LockPath() string   { return filepath.Join(RuntimeDir(), serviceDirName, lockFileName) }
+
+// WorkspaceTag derives the short, stable discriminator that distinguishes one
+// workspace's daemon from another's.
+//
+// WHY THIS EXISTS. protocol.LockPath() is per USER. A developer with two
+// projects open in two VS Code windows got: window B's daemon exits 1 because
+// window A's is already listening, the extension restarts it every three
+// seconds forever, and window B's client reads that same per-user lockfile and
+// is answered by window A's daemon about window A's code. Reproduced end to end
+// in daemon/twoworkspaces_test.go before this was written.
+//
+// A HASH, NOT THE PATH. The tag has to be filesystem-safe on three platforms,
+// bounded in length (a Unix socket path is capped at ~104 bytes by sockaddr_un,
+// and a workspace path can be far longer than that), and free of the separators
+// and drive letters a real path carries. sha256 of the canonical path gives all
+// three. It is NOT a secret and is not treated as one: the security property is
+// the 0700 runtime directory and the peer credential check, exactly as before.
+//
+// 16 hex characters — 64 bits. Collision here means two workspaces sharing a
+// daemon, which is the bug this fixes rather than a security failure, and 64
+// bits is far beyond the handful of workspaces one user has open.
+//
+// CANONICALISATION IS THE LOAD-BEARING PART, and it is the caller's job: pass
+// the SAME resolved root the daemon grounds against (editapply.ResolveRealWorkspaceRoot).
+// /tmp/x and /private/tmp/x on macOS, or C:\Users\RUNNER~1 and its long form on
+// Windows, must produce ONE tag or the adoption logic silently starts a second
+// daemon for the same directory. Mirrored in clients/vscode/src/daemonClient.ts;
+// the two derivations must stay byte-identical.
+func WorkspaceTag(realRoot string) string {
+	sum := sha256.Sum256([]byte(realRoot))
+	return hex.EncodeToString(sum[:])[:workspaceTagLen]
+}
+
+const workspaceTagLen = 16
+
+// SocketPathFor and LockPathFor are the per-workspace paths. An empty realRoot
+// falls back to the per-user names above, so a client with no workspace to
+// offer — and any daemon built before this existed — still resolves.
+func SocketPathFor(realRoot string) string {
+	if realRoot == "" {
+		return SocketPath()
+	}
+	return filepath.Join(RuntimeDir(), serviceDirName, "daemon-"+WorkspaceTag(realRoot)+".sock")
+}
+
+func LockPathFor(realRoot string) string {
+	if realRoot == "" {
+		return LockPath()
+	}
+	return filepath.Join(RuntimeDir(), serviceDirName, "daemon-"+WorkspaceTag(realRoot)+".lock")
+}
 
 // Stable, machine-readable capability identifiers for
 // HandshakeRequest.Capabilities.

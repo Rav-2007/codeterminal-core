@@ -39,8 +39,10 @@ const pipePrefix = `\\.\pipe\`
 
 // defaultAddress is ALWAYS the local transport. See transport.go's note on why
 // $HOST no longer selects TCP.
-func defaultAddress() Address {
-	return Address{Transport: TransportNamedPipe, Address: pipeName()}
+func defaultAddress() Address { return defaultAddressFor("") }
+
+func defaultAddressFor(realRoot string) Address {
+	return Address{Transport: TransportNamedPipe, Address: pipeName(realRoot)}
 }
 
 // pipeName derives this user's pipe name.
@@ -55,11 +57,18 @@ func defaultAddress() Address {
 // unqualified, name: failing to start over a naming detail would be a worse
 // outcome than a name that collides only in the multi-user case, and the DACL
 // still refuses the other user.
-func pipeName() string {
+func pipeName(realRoot string) string {
 	suffix := "default"
 	if sid, err := currentUserSID(); err == nil {
 		sum := sha256.Sum256([]byte(sid))
 		suffix = hex.EncodeToString(sum[:])[:16]
+	}
+	// The workspace tag comes AFTER the user discriminator, so the name still
+	// scopes to this user first: the pipe namespace is machine-global, and the
+	// DACL is what enforces that, but a name that reads user-then-workspace is
+	// the one that matches how the access control is actually layered.
+	if realRoot != "" {
+		suffix += "-" + WorkspaceTag(realRoot)
 	}
 	return pipePrefix + serviceDirName + "-" + suffix
 }

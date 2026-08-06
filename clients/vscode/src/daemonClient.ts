@@ -8,6 +8,7 @@
 // handleConn), so every prompt opens a fresh socket; there is no persistent
 // session at the transport level.
 
+import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as net from 'net';
 import * as os from 'os';
@@ -362,8 +363,56 @@ function daemonTarget(lock: LockFile): string {
   return lock.address?.address || lock.socket_path;
 }
 
+// workspaceRoot is the CANONICAL root of the workspace this extension host has
+// open -- absolute and resolved through symlinks -- or '' before it is set.
+//
+// One value for the process, mirroring the daemon, which fixes its workspace at
+// startup and never changes it.
+let workspaceRoot = '';
+
+// setWorkspaceRoot canonicalises and records the workspace, and MUST be called
+// before anything connects. Mirrors editapply.ResolveRealWorkspaceRoot:
+// path.resolve is filepath.Abs, fs.realpathSync is filepath.EvalSymlinks, in
+// that order.
+//
+// A failure here is not fatal: falling back to '' yields the old per-user
+// lockfile, which is worse but still works for a single workspace.
+export function setWorkspaceRoot(root: string): void {
+  if (!root) {
+    workspaceRoot = '';
+    return;
+  }
+  try {
+    workspaceRoot = fs.realpathSync(path.resolve(root));
+  } catch {
+    workspaceRoot = '';
+  }
+}
+
+// workspaceTag MUST stay byte-identical to protocol.WorkspaceTag in Go.
+//
+// sha256 over the canonical root, hex, first 16 characters. Go hashes
+// []byte(realRoot), which is the UTF-8 encoding of the string; Node's update()
+// defaults to utf8, so the two hash the same bytes. Pinned on both sides by a
+// shared golden vector -- protocol/workspacetag_test.go and the extension's own
+// suite assert the SAME hash for the SAME input, so a change to either
+// derivation fails a test rather than silently producing a client that can
+// never find its daemon.
+function workspaceTag(realRoot: string): string {
+  return crypto.createHash('sha256').update(realRoot).digest('hex').slice(0, 16);
+}
+
+// lockPath mirrors protocol.LockPathFor exactly.
+//
+// PER WORKSPACE. It was per user, and two VS Code windows on two repositories
+// therefore shared one lockfile: the second window's daemon could not start,
+// and its client was answered by the first window's daemon about the first
+// window's code. See daemon/twoworkspaces_test.go.
 function lockPath(): string {
-  return path.join(runtimeDir(), 'codeterminal', 'daemon.lock');
+  const dir = path.join(runtimeDir(), 'codeterminal');
+  return workspaceRoot
+    ? path.join(dir, `daemon-${workspaceTag(workspaceRoot)}.lock`)
+    : path.join(dir, 'daemon.lock');
 }
 
 function readLockFile(): LockFile {

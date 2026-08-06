@@ -98,7 +98,19 @@ func DialTimeout(a Address, d time.Duration) (net.Conn, error) { return dial(a, 
 // DefaultAddress is the address this build's daemon listens on and every client
 // of it dials. It is derived, not configured, so all four callers agree without
 // coordinating.
+//
+// PER USER. Prefer DefaultAddressFor: this one cannot distinguish two
+// workspaces, which is the defect daemon/twoworkspaces_test.go reproduces.
 func DefaultAddress() Address { return defaultAddress() }
+
+// DefaultAddressFor is DefaultAddress scoped to one workspace, so two
+// workspaces get two daemons instead of the second failing to start.
+//
+// realRoot must be the CANONICAL root — the same one the daemon grounds
+// against, resolved through symlinks. An empty string reproduces
+// DefaultAddress exactly, which is what a client with no workspace to offer
+// gets. See WorkspaceTag for why canonicalisation is the caller's job.
+func DefaultAddressFor(realRoot string) Address { return defaultAddressFor(realRoot) }
 
 // AddressFromLock resolves the address a client should dial from a lockfile.
 //

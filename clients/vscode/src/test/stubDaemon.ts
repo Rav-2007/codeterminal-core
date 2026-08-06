@@ -14,10 +14,13 @@
 // clean-close-before-reply, a reasoning/history/grounding pre-token message).
 // It deliberately does not implement retrieval, inference, or editapply.
 
+import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as net from 'net';
 import * as os from 'os';
 import * as path from 'path';
+
+import { setWorkspaceRoot } from '../daemonClient';
 
 export const PROTOCOL_VERSION = 1;
 
@@ -36,6 +39,10 @@ export class StubDaemon {
   // what the client declared -- and what a client declares is load-bearing:
   // CAP_TOOL_APPROVAL makes the daemon suspend turns waiting for an answer.
   readonly handshakes: any[] = [];
+
+  // The workspace the client is told it has open, so the lockfile name it
+  // derives matches the one written below.
+  private workspaceDir = '';
 
   // start binds the socket, writes the lockfile under a fresh XDG_RUNTIME_DIR,
   // and points process.env.XDG_RUNTIME_DIR at it so connectToDaemon (which reads
@@ -93,14 +100,37 @@ export class StubDaemon {
       this.server!.listen(this.socketPath, () => resolve());
     });
 
+    // PER-WORKSPACE LOCKFILE, and writing it the hard way on purpose.
+    //
+    // The client's lockPath() derives this name from the workspace root that
+    // setWorkspaceRoot recorded. If the stub simply wrote 'daemon.lock' it
+    // would be testing the legacy fallback and nothing else. Instead it points
+    // the real client at a real workspace and computes the SAME name
+    // independently -- so if the two derivations ever drift, this E2E suite
+    // fails through the real compiled client, not just in a unit test.
+    //
+    // The tag derivation is duplicated rather than imported for the same reason
+    // workspacetag.test.ts duplicates it: importing the function under test
+    // makes the test agree with any change to it automatically.
+    this.workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-ws-'));
+    setWorkspaceRoot(this.workspaceDir);
+    const realRoot = fs.realpathSync(path.resolve(this.workspaceDir));
+    const tag = crypto.createHash('sha256').update(realRoot).digest('hex').slice(0, 16);
+
     fs.writeFileSync(
-      path.join(dir, 'daemon.lock'),
+      path.join(dir, `daemon-${tag}.lock`),
       JSON.stringify({ socket_path: this.socketPath, pid: process.pid })
     );
     process.env.XDG_RUNTIME_DIR = this.runtimeDir;
   }
 
   async stop(): Promise<void> {
+    // Leave no workspace recorded for the next test to inherit.
+    setWorkspaceRoot('');
+    if (this.workspaceDir) {
+      fs.rmSync(this.workspaceDir, { recursive: true, force: true });
+      this.workspaceDir = '';
+    }
     if (this.server) {
       await new Promise<void>((resolve) => this.server!.close(() => resolve()));
       this.server = undefined;

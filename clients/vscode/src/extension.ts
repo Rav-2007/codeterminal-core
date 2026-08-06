@@ -5,6 +5,7 @@ import * as os from 'os';
 import * as fs from 'fs';
 
 import { ChatPanel } from './chatPanel';
+import { setWorkspaceRoot } from './daemonClient';
 
 let daemonProcess: cp.ChildProcess | undefined;
 
@@ -14,6 +15,11 @@ export function activate(context: vscode.ExtensionContext): void {
 
   const workspaceFolders = vscode.workspace.workspaceFolders;
   const workspacePath = workspaceFolders && workspaceFolders.length > 0 ? workspaceFolders[0].uri.fsPath : '.';
+
+  // BEFORE anything connects. The daemon publishes its lockfile under a name
+  // derived from this workspace, so a client that has not recorded the
+  // workspace looks for the old per-user name and finds nothing.
+  setWorkspaceRoot(workspacePath);
 
   function startDaemon() {
     if (daemonProcess) {
