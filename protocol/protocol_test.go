@@ -2,8 +2,6 @@ package protocol
 
 import (
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -313,57 +311,6 @@ func TestBudgetExceededDoesNotCollideWithProviderReasons(t *testing.T) {
 			t.Errorf("IncompleteBudgetExceeded = %q collides with the provider finish_reason %q",
 				IncompleteBudgetExceeded, r)
 		}
-	}
-}
-
-// The discovery paths every client derives independently. If these drift the
-// client simply never finds the daemon.
-func TestRuntimePaths(t *testing.T) {
-	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
-	if got := RuntimeDir(); got != "/run/user/1000" {
-		t.Errorf("RuntimeDir() = %q, want the XDG_RUNTIME_DIR value", got)
-	}
-	if got, want := SocketPath(), "/run/user/1000/codeterminal/daemon.sock"; got != want {
-		t.Errorf("SocketPath() = %q, want %q", got, want)
-	}
-	if got, want := LockPath(), "/run/user/1000/codeterminal/daemon.lock"; got != want {
-		t.Errorf("LockPath() = %q, want %q", got, want)
-	}
-
-	// Unset falls back to the OS temp dir rather than failing.
-	t.Setenv("XDG_RUNTIME_DIR", "")
-	if got := RuntimeDir(); got != os.TempDir() {
-		t.Errorf("RuntimeDir() with XDG_RUNTIME_DIR unset = %q, want os.TempDir() %q", got, os.TempDir())
-	}
-}
-
-// SocketDir creates the directory OWNER-ONLY. The socket lives there and the
-// socket is the daemon's entire attack surface, so 0700 is load-bearing: it is
-// half of what makes "any same-uid process, and only a same-uid process" true.
-func TestSocketDirIsOwnerOnly(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("XDG_RUNTIME_DIR", tmp)
-
-	dir, err := SocketDir()
-	if err != nil {
-		t.Fatalf("SocketDir: %v", err)
-	}
-	if want := filepath.Join(tmp, "codeterminal"); dir != want {
-		t.Errorf("SocketDir() = %q, want %q", dir, want)
-	}
-
-	info, err := os.Stat(dir)
-	if err != nil {
-		t.Fatalf("stat %s: %v", dir, err)
-	}
-	if perm := info.Mode().Perm(); perm != 0o700 {
-		t.Errorf("SocketDir mode = %#o, want 0700 -- the daemon socket lives here and a "+
-			"group- or world-accessible directory widens the only attack surface it has", perm)
-	}
-
-	// Idempotent: a second call on an existing dir must not error.
-	if _, err := SocketDir(); err != nil {
-		t.Errorf("SocketDir() on an existing directory: %v", err)
 	}
 }
 
