@@ -84,7 +84,7 @@ func PrepareEdit(realWorkspaceRoot string, block EditBlock) (*PreparedEdit, erro
 		if exists {
 			data, err := os.ReadFile(targetPath)
 			if err != nil {
-				return nil, fmt.Errorf("reading %s: %w", block.FilePath, err)
+				return nil, describeFileError("reading", block.FilePath, targetPath, err)
 			}
 			if len(data) > 0 {
 				return nil, fmt.Errorf("%s already exists and is not empty; an empty SEARCH section means \"create this file\", so refusing to replace its whole content — send a SEARCH section naming the text to replace", block.FilePath)
@@ -99,7 +99,7 @@ func PrepareEdit(realWorkspaceRoot string, block EditBlock) (*PreparedEdit, erro
 
 	data, err := os.ReadFile(targetPath)
 	if err != nil {
-		return nil, fmt.Errorf("reading %s: %w", block.FilePath, err)
+		return nil, describeFileError("reading", block.FilePath, targetPath, err)
 	}
 	original := string(data)
 
@@ -296,7 +296,7 @@ func Apply(realWorkspaceRoot string, prepared *PreparedEdit, backupDir string) e
 		rollbackDirs()
 		rollbackCreated()
 		rollbackAfter()
-		return fmt.Errorf("writing %s: %w", prepared.Block.FilePath, err)
+		return describeFileError("writing", prepared.Block.FilePath, prepared.TargetPath, err)
 	}
 	return nil
 }
