@@ -1521,11 +1521,29 @@ func TestChat_HandleModelCommand(t *testing.T) {
 }
 
 func TestChat_ApplyCurrentReviewEdit(t *testing.T) {
-	wsDir := t.TempDir()
+	// Resolved, exactly as main.go:83 does before constructing the model.
+	//
+	// Passing a raw t.TempDir() is not a shortcut, it is a different code path:
+	// PrepareEdit's parameter is named realWorkspaceRoot and it TRUSTS the
+	// caller, then compares that root against EvalSymlinks(root/path) with
+	// filepath.Rel -- a byte comparison. An unresolved root therefore refuses
+	// every edit with "resolves outside the workspace root". On Windows
+	// t.TempDir() hands back an 8.3 short name (C:\Users\RUNNER~1\...) and this
+	// test failed on exactly that; on macOS /tmp is a symlink and it would too.
+	//
+	// The same asymmetry was a REAL defect in the daemon's two MCP edit tools,
+	// which passed s.workspace unresolved -- see mcp_symlinked_workspace_test.go.
+	// Here the production path was already correct and only the test was
+	// entering through a door the user never uses.
+	rawDir := t.TempDir()
+	wsDir, err := editapply.ResolveRealWorkspaceRoot(rawDir)
+	if err != nil {
+		t.Fatalf("ResolveRealWorkspaceRoot: %v", err)
+	}
 	targetFile := filepath.Join(wsDir, "foo.txt")
 	_ = os.WriteFile(targetFile, []byte("hello world\n"), 0644)
 
-	m := newChatModel("test", wsDir, wsDir, nil)
+	m := newChatModel("test", rawDir, wsDir, nil)
 	m.state = stateEditReview
 	m.reviewIndex = 0
 	block := editapply.EditBlock{
