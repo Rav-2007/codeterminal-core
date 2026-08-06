@@ -126,9 +126,25 @@ C2 Confinement under Windows path semantics — `pathhazard.go` landed and is
 verified on Linux; `realPath`/`GetFinalPathNameByHandleW` still outstanding.
 This is where junctions, ADS, 8.3 names and reserved device names live, and the
 `.GIT` case-fold bug was a preview of the class.
-C3 **CI matrix: `windows-latest` + `macos-latest`.** *The single highest-leverage
-item in this plan.* It is what converts every "NOT RUN on hardware" label into
-evidence — including `peercred_darwin.go`, which has never executed anywhere.
+**C3 — LANDED (build+vet stage).** The `cross` job runs `windows-latest` and
+`macos-latest` over `daemon`, `protocol`, `editapply` and `clients/tui`.
+
+*Build and vet only, deliberately*: a first contact that runs the whole suite on
+two unproven platforms produces a wall of red in which real porting defects are
+indistinguishable from environment noise. Compile+vet answers one question
+cleanly — does the code the seams produce actually typecheck where it claims? —
+and `vet` compiles the **test** files too, which is the half that catches a
+`_test.go` reaching for a syscall the platform lacks.
+
+It earned its place before it ever ran: cross-vetting locally found
+`apply_forward_symlink_test.go` failing to compile for Windows on
+`syscall.Stat_t`. Its runtime `t.Skip` could never have helped — the break is at
+build time. Now constrained `//go:build unix` and labelled, because the evidence
+is genuinely POSIX-shaped and Windows needs its own table (that is C2).
+
+**C3-next:** promote from build+vet to `go test` on both runners. Expect the
+first honest look at `peercred_darwin.go` and the named-pipe transport, neither
+of which has ever executed.
 C4 Platform `.vsix`, bundled daemon, first-run model download.
 
 Two Windows-specific notes surfaced by this pass:

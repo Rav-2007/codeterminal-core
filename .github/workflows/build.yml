@@ -1,8 +1,19 @@
 name: build
 
 on:
+  # EVERY branch, not just main.
+  #
+  # This used to be `branches: [main]`, which meant a feature branch could be
+  # pushed and receive no verification at all -- the branch carrying 13 commits
+  # of security work sat on the remote with CI having never once looked at it.
+  # Waiting for a PR to find out whether the code compiles inverts the order you
+  # want: the point of CI is to know BEFORE you ask someone to merge it.
   push:
-    branches: [main]
+    branches: ["**"]
+  # Kept, and deliberately narrower. A pull_request run tests the MERGE RESULT
+  # (branch + current main), which is a different question from the branch head
+  # the push run tested, and the only one that catches "fine alone, broken
+  # against what landed meanwhile".
   pull_request:
     branches: [main]
   # The eval job below is schedule/dispatch-only; these triggers exist so it has
@@ -10,6 +21,13 @@ on:
   schedule:
     - cron: "0 6 * * 1" # Mondays 06:00 UTC
   workflow_dispatch:
+
+# Cancel a run that a newer push to the same ref has already superseded. Pushing
+# three times in a minute should cost one run's minutes, not three -- this repo
+# is private on a free plan, where Actions minutes are a finite monthly budget.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 # There is no root Go module -- only go.work -- so `./...` from the repo root
 # fails outright ("directory prefix . does not contain modules listed in
@@ -35,6 +53,13 @@ jobs:
     # someone has to read, not a merge that cannot happen. Making it enforceable
     # is tracked in BACKLOG.md.
     name: go (${{ matrix.module }})
+    # A same-repo PR would otherwise run twice: once for the branch push and
+    # once for the merge result. Forks are the reason pull_request exists at
+    # all, and this repo is private with none -- so skip the PR copy when it
+    # comes from this very repository. Halves the Actions minutes a PR costs.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -91,6 +116,13 @@ jobs:
     # Same explicit module matrix as the other Go jobs, for the same reason: there
     # is no root module, so a root-level ./... does not work.
     name: lint (${{ matrix.module }})
+    # A same-repo PR would otherwise run twice: once for the branch push and
+    # once for the merge result. Forks are the reason pull_request exists at
+    # all, and this repo is private with none -- so skip the PR copy when it
+    # comes from this very repository. Halves the Actions minutes a PR costs.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -136,6 +168,13 @@ jobs:
     # One job rather than a per-module matrix: the whole run is a few minutes,
     # and a single job keeps the seed-corpus story in one place.
     name: fuzz
+    # A same-repo PR would otherwise run twice: once for the branch push and
+    # once for the merge result. Forks are the reason pull_request exists at
+    # all, and this repo is private with none -- so skip the PR copy when it
+    # comes from this very repository. Halves the Actions minutes a PR costs.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -146,8 +185,65 @@ jobs:
       - name: Fuzz (30s per target)
         run: ./scripts/fuzz.sh
 
+  cross:
+    # TRACK C3. Everything Windows in this repo -- the named-pipe transport, the
+    # SID-based peer authentication, the platform seams for openNoFollow and the
+    # process group -- was written, cross-vetted, and NEVER EXECUTED ON HARDWARE.
+    # Same for peercred_darwin.go, which has never run anywhere at all. Those
+    # facts are labelled NOT RUN throughout the source; this job is what turns
+    # the label into evidence.
+    #
+    # BUILD AND VET ONLY, on purpose, and that ordering is from the launch plan:
+    # "Windows and macOS join CI as build-only first, then full test." A first
+    # contact that runs the whole suite on two unproven platforms produces a wall
+    # of red in which the real porting defects are indistinguishable from
+    # environment noise. Compile + vet answers one question cleanly -- does the
+    # code the seams produce actually typecheck on the platform it claims? --
+    # and the answer is worth having before the harder one is asked.
+    #
+    # Modules chosen for what they mean, not for coverage: daemon and protocol
+    # hold every platform seam, editapply holds the confinement gates whose
+    # Windows path semantics are still unverified (junctions, ADS, 8.3 names),
+    # and clients/tui is what a user actually runs. helper is excluded because it
+    # is cgo against onnxruntime and needs a toolchain story of its own; proxy is
+    # excluded because it deploys to Linux and never ships to a desktop.
+    name: cross (${{ matrix.os }}, ${{ matrix.module }})
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+        module: [daemon, protocol, editapply, clients/tui]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: "**/go.sum"
+
+      - name: Build
+        run: go build ./...
+        working-directory: ${{ matrix.module }}
+
+      # Vet compiles the TEST files too, which build alone does not. That is the
+      # half that catches a _test.go using a syscall the platform lacks -- the
+      # exact break a GOOS=windows go vet found locally in four test files.
+      - name: Vet
+        run: go vet ./...
+        working-directory: ${{ matrix.module }}
+
   govulncheck:
     name: govulncheck (${{ matrix.module }})
+    # A same-repo PR would otherwise run twice: once for the branch push and
+    # once for the merge result. Forks are the reason pull_request exists at
+    # all, and this repo is private with none -- so skip the PR copy when it
+    # comes from this very repository. Halves the Actions minutes a PR costs.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -170,6 +266,13 @@ jobs:
     # display; xvfb-run supplies one. Confirmed working -- this is the same
     # invocation used locally.
     name: vscode extension
+    # A same-repo PR would otherwise run twice: once for the branch push and
+    # once for the merge result. Forks are the reason pull_request exists at
+    # all, and this repo is private with none -- so skip the PR copy when it
+    # comes from this very repository. Halves the Actions minutes a PR costs.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

@@ -1,3 +1,22 @@
+//go:build unix
+
+// POSIX-ONLY, and labelled rather than skipped.
+//
+// All three tests here are symlink-shaped, and inodeOf reads syscall.Stat_t,
+// which does not exist on Windows -- so this file did not COMPILE for
+// GOOS=windows, which a `go vet` on that platform reports as a hard failure.
+// The runtime t.Skip inside inodeOf could never help: the break is at build
+// time, not at run time.
+//
+// A build constraint rather than a cross-platform rewrite because the evidence
+// itself is POSIX-shaped, exactly as confinement_conformance_test.go:123
+// already records ("symlink vectors are POSIX-shaped"). Windows has symlinks
+// too, but its escape vectors are junctions, alternate data streams, 8.3 short
+// names and reserved device names -- a different table of attacks that needs
+// its own file and its own evidence. That is Track C2 of the master plan, and
+// pretending these three tests cover it would be worse than admitting they
+// do not.
+
 package editapply
 
 import (
