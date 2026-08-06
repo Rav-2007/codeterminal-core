@@ -62,8 +62,6 @@ func assertOwnerOnly(t *testing.T, path, what string) {
 	}
 }
 
-func ownerOnlyIsEnforced() bool { return true }
-
 func currentUserSIDString() (string, error) {
 	user, err := windows.GetCurrentProcessToken().GetTokenUser()
 	if err != nil {

@@ -27,9 +27,3 @@ func assertOwnerOnly(t *testing.T, path, what string) {
 		t.Errorf("%s mode = %04o, want no group/other bits — %s", path, perm, what)
 	}
 }
-
-// ownerOnlyIsEnforced reports whether this platform enforces the property at
-// all. Both platforms do; it exists so a test can state that fact rather than
-// assume it, and so a future platform that does not can say so out loud
-// instead of passing vacuously.
-func ownerOnlyIsEnforced() bool { return true }
