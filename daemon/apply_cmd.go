@@ -17,6 +17,22 @@ import (
 	"codeterminal/editapply"
 )
 
+// displayRel spells a workspace-relative path the way the rest of this product
+// spells one: with forward slashes, on every platform.
+//
+// The undo report derives its paths from filepath.Rel over the backup tree, so
+// on Windows they came out `docs\notes.md` -- while the apply run that created
+// the backup printed `docs/notes.md`, because THAT comes from the model's own
+// edit block and edit blocks are always forward-slash. One command, one file,
+// two spellings, inside a single workflow whose entire purpose is letting a
+// user check that undo reverted what apply did.
+//
+// Forward slash is the canonical form everywhere else that matters here --
+// chunk keys, the wire, @file references -- so it is the one this follows.
+// Display only: rel keeps its native separators for every filesystem operation,
+// which is why this is applied at the Fprintf and not at the source.
+func displayRel(rel string) string { return filepath.ToSlash(rel) }
+
 // runEditsCommand implements `codeterminal-daemon edits <apply|undo> ...`.
 func runEditsCommand(args []string, logger *log.Logger) error {
 	if len(args) == 0 {
@@ -351,7 +367,7 @@ func runUndoSession(realWorkspaceRoot, sessionDir string, force bool, in io.Read
 	if len(guarded) > 0 {
 		fmt.Fprintf(out, "\n%d file(s) changed since this apply run and were NOT restored automatically:\n", len(guarded))
 		for _, rel := range guarded {
-			fmt.Fprintf(out, "  - %s\n", rel)
+			fmt.Fprintf(out, "  - %s\n", displayRel(rel))
 		}
 
 		proceed := force
@@ -377,9 +393,9 @@ func runUndoSession(realWorkspaceRoot, sessionDir string, force bool, in io.Read
 	for _, f := range revertedFiles {
 		if f.removed {
 			removed++
-			fmt.Fprintf(out, "removed %s (created by this apply run)\n", f.rel)
+			fmt.Fprintf(out, "removed %s (created by this apply run)\n", displayRel(f.rel))
 		} else {
-			fmt.Fprintf(out, "restored %s\n", f.rel)
+			fmt.Fprintf(out, "restored %s\n", displayRel(f.rel))
 		}
 	}
 	restored = len(revertedFiles)
@@ -531,7 +547,7 @@ func restoreBatch(realWorkspaceRoot, beforeDir string, rels []string, created ma
 		s, err := stageRestore(realWorkspaceRoot, beforeDir, rel, created[rel])
 		if err != nil {
 			discardStaged(staged)
-			return nil, fmt.Errorf("restoring %s: %w", rel, err)
+			return nil, fmt.Errorf("restoring %s: %w", displayRel(rel), err)
 		}
 		staged = append(staged, s)
 	}
@@ -605,7 +621,7 @@ func (s *stagedRestore) verb() string {
 // as a membership test on that path and is never itself a source of paths.
 func stageRestore(realWorkspaceRoot, beforeDir, rel string, remove bool) (*stagedRestore, error) {
 	if editapply.MatchesSecretName(filepath.Base(rel)) {
-		return nil, fmt.Errorf("path %q matches the indexer's secret-file rules; refusing to restore it", rel)
+		return nil, fmt.Errorf("path %q matches the indexer's secret-file rules; refusing to restore it", displayRel(rel))
 	}
 	// Parity with the forward path's protected-directory refusal (Fix 3): undo
 	// is a write path too, and a fabricated backup session listing
@@ -613,7 +629,7 @@ func stageRestore(realWorkspaceRoot, beforeDir, rel string, remove bool) (*stage
 	// through the restore. Apply now refuses to create such a backup in the
 	// first place, so no legitimate session can contain one.
 	if component := editapply.ProtectedDirComponent(rel); component != "" {
-		return nil, fmt.Errorf("path %q is inside %s/, which holds version-control, credential, or undo state; refusing to restore it", rel, component)
+		return nil, fmt.Errorf("path %q is inside %s/, which holds version-control, credential, or undo state; refusing to restore it", displayRel(rel), component)
 	}
 
 	var data []byte
@@ -623,7 +639,7 @@ func stageRestore(realWorkspaceRoot, beforeDir, rel string, remove bool) (*stage
 		if sym, err := leafIsSymlink(src); err != nil {
 			return nil, err
 		} else if sym {
-			return nil, fmt.Errorf("backup entry %q is a symlink; refusing to restore from it", rel)
+			return nil, fmt.Errorf("backup entry %q is a symlink; refusing to restore from it", displayRel(rel))
 		}
 		var err error
 		if data, err = os.ReadFile(src); err != nil {
@@ -644,10 +660,10 @@ func stageRestore(realWorkspaceRoot, beforeDir, rel string, remove bool) (*stage
 	// and was refused by the O_NOFOLLOW writer this replaces — keep refusing it.
 	if destInfo, err := os.Lstat(dest); err == nil {
 		if editapply.IsLinkLike(destInfo.Mode()) {
-			return nil, fmt.Errorf("%q is a symlink; refusing to restore through it", rel)
+			return nil, fmt.Errorf("%q is a symlink; refusing to restore through it", displayRel(rel))
 		}
 		if destInfo.IsDir() {
-			return nil, fmt.Errorf("%q is a directory; refusing to replace it with a backed-up file", rel)
+			return nil, fmt.Errorf("%q is a directory; refusing to replace it with a backed-up file", displayRel(rel))
 		}
 	} else if !os.IsNotExist(err) {
 		return nil, err
@@ -765,7 +781,7 @@ func removeCreatedDirs(dirs []string) {
 func confinedRestorePath(realWorkspaceRoot, rel string) (string, error) {
 	cleaned := filepath.Clean(rel)
 	if filepath.IsAbs(cleaned) || cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("path %q escapes the workspace root", rel)
+		return "", fmt.Errorf("path %q escapes the workspace root", displayRel(rel))
 	}
 
 	// The same hazard gate editapply's resolveSafeTarget runs, for the same
@@ -800,7 +816,7 @@ func confinedRestorePath(realWorkspaceRoot, rel string) (string, error) {
 		}
 		parent := filepath.Dir(ancestor)
 		if parent == ancestor {
-			return "", fmt.Errorf("path %q has no existing ancestor within the workspace root", rel)
+			return "", fmt.Errorf("path %q has no existing ancestor within the workspace root", displayRel(rel))
 		}
 		suffix = append([]string{filepath.Base(ancestor)}, suffix...)
 		ancestor = parent
@@ -808,11 +824,11 @@ func confinedRestorePath(realWorkspaceRoot, rel string) (string, error) {
 
 	realAncestor, err := filepath.EvalSymlinks(ancestor)
 	if err != nil {
-		return "", fmt.Errorf("resolving %s: %w", rel, err)
+		return "", fmt.Errorf("resolving %s: %w", displayRel(rel), err)
 	}
 	relToRoot, err := filepath.Rel(realWorkspaceRoot, realAncestor)
 	if err != nil || relToRoot == ".." || strings.HasPrefix(relToRoot, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("path %q resolves outside the workspace root", rel)
+		return "", fmt.Errorf("path %q resolves outside the workspace root", displayRel(rel))
 	}
 
 	return filepath.Join(append([]string{realAncestor}, suffix...)...), nil
