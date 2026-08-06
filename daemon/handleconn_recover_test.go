@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"net"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -52,8 +51,8 @@ func TestHandleConn_PanicIsContainedToOneConnection(t *testing.T) {
 		store:         emptyStore{}, // non-nil so gatherContext proceeds to retrieveTopK
 		retrievalTopK: defaultK,
 	}
-	path := filepath.Join(t.TempDir(), "recover.sock")
-	ln, err := net.Listen("unix", path)
+	addr := testAddress(t)
+	ln, err := protocol.Listen(addr)
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
@@ -64,7 +63,7 @@ func TestHandleConn_PanicIsContainedToOneConnection(t *testing.T) {
 	// EmbedQuery, which panics. With the backstop, the connection is simply
 	// closed under us; without it, the daemon would be gone.
 	func() {
-		c, enc, dec := recoverConn(t, path)
+		c, enc, dec := recoverConn(t, addr)
 		defer c.Close()
 		if err := enc.Encode(protocol.PromptRequest{ProtocolVersion: protocol.ProtocolVersion, Prompt: "trigger the panic"}); err != nil {
 			t.Fatalf("prompt send: %v", err)
@@ -81,7 +80,7 @@ func TestHandleConn_PanicIsContainedToOneConnection(t *testing.T) {
 	// before retrieval runs, so it never touches the panicking embedder — a
 	// clean, well-formed response here means the daemon is still accepting and
 	// serving after A panicked.
-	c, enc, dec := recoverConn(t, path)
+	c, enc, dec := recoverConn(t, addr)
 	defer c.Close()
 	if err := enc.Encode(protocol.PromptRequest{ProtocolVersion: protocol.ProtocolVersion, Prompt: ""}); err != nil {
 		t.Fatalf("second prompt send: %v", err)
@@ -96,9 +95,9 @@ func TestHandleConn_PanicIsContainedToOneConnection(t *testing.T) {
 }
 
 // recoverConn dials + handshakes, returning a connection ready for one request.
-func recoverConn(t *testing.T, path string) (net.Conn, *json.Encoder, *json.Decoder) {
+func recoverConn(t *testing.T, addr protocol.Address) (net.Conn, *json.Encoder, *json.Decoder) {
 	t.Helper()
-	c, err := net.Dial("unix", path)
+	c, err := protocol.Dial(addr)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}

@@ -3,8 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"net"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -72,15 +70,15 @@ func TestWaitForDrain_WaitsForInFlightRequests(t *testing.T) {
 		retrievalTopK: defaultK,
 	}
 
-	path := filepath.Join(t.TempDir(), "drain.sock")
-	ln, err := net.Listen("unix", path)
+	addr := testAddress(t)
+	ln, err := protocol.Listen(addr)
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
 	go srv.Serve(ln)
 
 	// Park one request inside the handler.
-	c, err := net.Dial("unix", path)
+	c, err := protocol.Dial(addr)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}

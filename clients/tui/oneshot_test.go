@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
-	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,16 +19,16 @@ import (
 func oneShotApprovalDaemon(t *testing.T, req protocol.ToolApprovalRequest) <-chan protocol.ToolApprovalResponse {
 	t.Helper()
 	dir := t.TempDir()
-	sockPath := filepath.Join(dir, "daemon.sock")
+	addr := testAddress(t)
 	lockPath := filepath.Join(dir, "daemon.lock")
 
-	ln, err := net.Listen("unix", sockPath)
+	ln, err := protocol.Listen(addr)
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
 	t.Cleanup(func() { _ = ln.Close() })
 
-	data, _ := json.Marshal(protocol.LockFile{SocketPath: sockPath, PID: os.Getpid()})
+	data, _ := json.Marshal(protocol.LockFile{Address: addr, PID: os.Getpid()})
 	if err := os.WriteFile(lockPath, data, 0644); err != nil {
 		t.Fatal(err)
 	}

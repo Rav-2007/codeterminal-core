@@ -27,16 +27,16 @@ import (
 func fakeDaemonServingTiers(t *testing.T, tiers []protocol.StatusTier) string {
 	t.Helper()
 	dir := t.TempDir()
-	sockPath := filepath.Join(dir, "daemon.sock")
+	addr := testAddress(t)
 	lockPath := filepath.Join(dir, "daemon.lock")
 
-	ln, err := net.Listen("unix", sockPath)
+	ln, err := protocol.Listen(addr)
 	if err != nil {
 		t.Fatalf("listening on fake daemon socket: %v", err)
 	}
 	t.Cleanup(func() { _ = ln.Close() })
 
-	data, err := json.Marshal(protocol.LockFile{SocketPath: sockPath, PID: os.Getpid()})
+	data, err := json.Marshal(protocol.LockFile{Address: addr, PID: os.Getpid()})
 	if err != nil {
 		t.Fatal(err)
 	}

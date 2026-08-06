@@ -33,15 +33,15 @@ func setLockPathForTest(t *testing.T, path string) (restore func()) {
 func fakeDaemonHandshakeThenHang(t *testing.T) (lockPath string, cleanup func()) {
 	t.Helper()
 	dir := t.TempDir()
-	sockPath := filepath.Join(dir, "daemon.sock")
+	addr := testAddress(t)
 	lockPath = filepath.Join(dir, "daemon.lock")
 
-	ln, err := net.Listen("unix", sockPath)
+	ln, err := protocol.Listen(addr)
 	if err != nil {
 		t.Fatalf("listening on fake daemon socket: %v", err)
 	}
 
-	lock := protocol.LockFile{SocketPath: sockPath, PID: os.Getpid()}
+	lock := protocol.LockFile{Address: addr, PID: os.Getpid()}
 	data, err := json.Marshal(lock)
 	if err != nil {
 		t.Fatalf("marshal lockfile: %v", err)
@@ -101,15 +101,15 @@ func fakeDaemonHandshakeThenHang(t *testing.T) (lockPath string, cleanup func())
 func fakeDaemonCapturingRequests(t *testing.T, requests chan<- protocol.PromptRequest) (lockPath string, cleanup func()) {
 	t.Helper()
 	dir := t.TempDir()
-	sockPath := filepath.Join(dir, "daemon.sock")
+	addr := testAddress(t)
 	lockPath = filepath.Join(dir, "daemon.lock")
 
-	ln, err := net.Listen("unix", sockPath)
+	ln, err := protocol.Listen(addr)
 	if err != nil {
 		t.Fatalf("listening on fake daemon socket: %v", err)
 	}
 
-	lock := protocol.LockFile{SocketPath: sockPath, PID: os.Getpid()}
+	lock := protocol.LockFile{Address: addr, PID: os.Getpid()}
 	data, err := json.Marshal(lock)
 	if err != nil {
 		t.Fatalf("marshal lockfile: %v", err)
@@ -349,15 +349,15 @@ func TestStreamPrompt_ContextCancelUnblocksBlockedRead(t *testing.T) {
 func fakeDaemonForReset(t *testing.T, failReason string, requests chan<- protocol.PromptRequest) (lockPath string, cleanup func()) {
 	t.Helper()
 	dir := t.TempDir()
-	sockPath := filepath.Join(dir, "daemon.sock")
+	addr := testAddress(t)
 	lockPath = filepath.Join(dir, "daemon.lock")
 
-	ln, err := net.Listen("unix", sockPath)
+	ln, err := protocol.Listen(addr)
 	if err != nil {
 		t.Fatalf("listening on fake daemon socket: %v", err)
 	}
 
-	lock := protocol.LockFile{SocketPath: sockPath, PID: os.Getpid()}
+	lock := protocol.LockFile{Address: addr, PID: os.Getpid()}
 	data, err := json.Marshal(lock)
 	if err != nil {
 		t.Fatalf("marshal lockfile: %v", err)

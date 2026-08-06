@@ -23,23 +23,23 @@ import (
 )
 
 // g6Server runs srv.Serve on a fresh unix socket for workspace ws.
-func g6Server(t *testing.T, ws string) string {
+func g6Server(t *testing.T, ws string) protocol.Address {
 	t.Helper()
 	srv := &Server{logger: discardLogger(), workspace: ws}
-	path := filepath.Join(t.TempDir(), "g6.sock")
-	ln, err := net.Listen("unix", path)
+	addr := testAddress(t)
+	ln, err := protocol.Listen(addr)
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
 	go srv.Serve(ln)
 	t.Cleanup(func() { ln.Close() })
-	return path
+	return addr
 }
 
 // g6Conn dials + handshakes, returning a live connection ready for one request.
-func g6Conn(t *testing.T, path string) (net.Conn, *json.Encoder, *json.Decoder) {
+func g6Conn(t *testing.T, addr protocol.Address) (net.Conn, *json.Encoder, *json.Decoder) {
 	t.Helper()
-	c, err := net.Dial("unix", path)
+	c, err := protocol.Dial(addr)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
@@ -67,9 +67,9 @@ func g6Seed(t *testing.T, path, content string) {
 }
 
 // g6Apply runs one ApplyEditRequest to completion over its own connection.
-func g6Apply(t *testing.T, path string, req protocol.ApplyEditRequest) protocol.ApplyEditResponse {
+func g6Apply(t *testing.T, addr protocol.Address, req protocol.ApplyEditRequest) protocol.ApplyEditResponse {
 	t.Helper()
-	c, e, d := g6Conn(t, path)
+	c, e, d := g6Conn(t, addr)
 	defer c.Close()
 	if err := e.Encode(req); err != nil {
 		t.Fatalf("apply send: %v", err)
@@ -83,10 +83,10 @@ func g6Apply(t *testing.T, path string, req protocol.ApplyEditRequest) protocol.
 
 // g6FireTwo pre-handshakes two connections and releases both requests via a
 // shared start-gun for tight overlap, returning both raw response bytes.
-func g6FireTwo(t *testing.T, path string, reqA, reqB any) (json.RawMessage, json.RawMessage) {
+func g6FireTwo(t *testing.T, addr protocol.Address, reqA, reqB any) (json.RawMessage, json.RawMessage) {
 	t.Helper()
-	cA, eA, dA := g6Conn(t, path)
-	cB, eB, dB := g6Conn(t, path)
+	cA, eA, dA := g6Conn(t, addr)
+	cB, eB, dB := g6Conn(t, addr)
 	defer cA.Close()
 	defer cB.Close()
 	start := make(chan struct{})
@@ -112,7 +112,7 @@ func TestGate6_ApplyApply_NoLostUpdate(t *testing.T) {
 	const iters = 60
 	ws := t.TempDir()
 	target := filepath.Join(ws, "conf.txt")
-	path := g6Server(t, ws)
+	addr := g6Server(t, ws)
 
 	losses := 0
 	for i := 0; i < iters; i++ {
@@ -121,7 +121,7 @@ func TestGate6_ApplyApply_NoLostUpdate(t *testing.T) {
 			Edit: protocol.EditBlockWire{FilePath: "conf.txt", Search: "alpha=0", Replace: "alpha=1"}}
 		reqB := protocol.ApplyEditRequest{ProtocolVersion: protocol.ProtocolVersion,
 			Edit: protocol.EditBlockWire{FilePath: "conf.txt", Search: "beta=0", Replace: "beta=1"}}
-		g6FireTwo(t, path, reqA, reqB)
+		g6FireTwo(t, addr, reqA, reqB)
 
 		final, _ := os.ReadFile(target)
 		if string(final) != "alpha=1\nbeta=1\n" {
@@ -142,7 +142,7 @@ func TestGate6_NoBackupSessionCollapse(t *testing.T) {
 	ws := t.TempDir()
 	target := filepath.Join(ws, "conf.txt")
 	backupsRoot := filepath.Join(ws, ".codeterminal", "backups")
-	path := g6Server(t, ws)
+	addr := g6Server(t, ws)
 
 	shared := 0
 	for i := 0; i < iters; i++ {
@@ -152,7 +152,7 @@ func TestGate6_NoBackupSessionCollapse(t *testing.T) {
 			Edit: protocol.EditBlockWire{FilePath: "conf.txt", Search: "alpha=0", Replace: "alpha=1"}}
 		reqB := protocol.ApplyEditRequest{ProtocolVersion: protocol.ProtocolVersion,
 			Edit: protocol.EditBlockWire{FilePath: "conf.txt", Search: "beta=0", Replace: "beta=1"}}
-		rawA, rawB := g6FireTwo(t, path, reqA, reqB)
+		rawA, rawB := g6FireTwo(t, addr, reqA, reqB)
 		var ra, rb protocol.ApplyEditResponse
 		_ = json.Unmarshal(rawA, &ra)
 		_ = json.Unmarshal(rawB, &rb)
@@ -176,12 +176,12 @@ func TestGate6_ApplyUndo_GuardHolds(t *testing.T) {
 	const iters = 60
 	ws := t.TempDir()
 	target := filepath.Join(ws, "conf.txt")
-	path := g6Server(t, ws)
+	addr := g6Server(t, ws)
 
 	defeats := 0
 	for i := 0; i < iters; i++ {
 		g6Seed(t, target, "v=original\n")
-		seed := g6Apply(t, path, protocol.ApplyEditRequest{ProtocolVersion: protocol.ProtocolVersion,
+		seed := g6Apply(t, addr, protocol.ApplyEditRequest{ProtocolVersion: protocol.ProtocolVersion,
 			Edit: protocol.EditBlockWire{FilePath: "conf.txt", Search: "v=original", Replace: "v=one"}})
 		if !seed.Applied {
 			t.Fatalf("iter %d: seed apply failed: %+v", i, seed)
@@ -189,7 +189,7 @@ func TestGate6_ApplyUndo_GuardHolds(t *testing.T) {
 		applyReq := protocol.ApplyEditRequest{ProtocolVersion: protocol.ProtocolVersion,
 			Edit: protocol.EditBlockWire{FilePath: "conf.txt", Search: "v=one", Replace: "v=two"}}
 		undoReq := protocol.UndoRequest{ProtocolVersion: protocol.ProtocolVersion, Undo: true, BackupSessionDir: seed.BackupDir}
-		_, rawU := g6FireTwo(t, path, applyReq, undoReq)
+		_, rawU := g6FireTwo(t, addr, applyReq, undoReq)
 		var ur protocol.UndoResponse
 		_ = json.Unmarshal(rawU, &ur)
 
@@ -219,18 +219,18 @@ func TestGate6_UndoUndo_NoDoubleRestore(t *testing.T) {
 	const iters = 60
 	ws := t.TempDir()
 	target := filepath.Join(ws, "conf.txt")
-	path := g6Server(t, ws)
+	addr := g6Server(t, ws)
 
 	doubles := 0
 	for i := 0; i < iters; i++ {
 		g6Seed(t, target, "v=original\n")
-		seed := g6Apply(t, path, protocol.ApplyEditRequest{ProtocolVersion: protocol.ProtocolVersion,
+		seed := g6Apply(t, addr, protocol.ApplyEditRequest{ProtocolVersion: protocol.ProtocolVersion,
 			Edit: protocol.EditBlockWire{FilePath: "conf.txt", Search: "v=original", Replace: "v=one"}})
 		if !seed.Applied {
 			t.Fatalf("iter %d: seed apply failed: %+v", i, seed)
 		}
 		undoReq := protocol.UndoRequest{ProtocolVersion: protocol.ProtocolVersion, Undo: true, BackupSessionDir: seed.BackupDir}
-		rawX, rawY := g6FireTwo(t, path, undoReq, undoReq)
+		rawX, rawY := g6FireTwo(t, addr, undoReq, undoReq)
 		var rx, ry protocol.UndoResponse
 		_ = json.Unmarshal(rawX, &rx)
 		_ = json.Unmarshal(rawY, &ry)
@@ -264,7 +264,7 @@ func TestGate6_PruneVsUndo_Atomic(t *testing.T) {
 	for i := 0; i < iters; i++ {
 		ws := t.TempDir()
 		target := filepath.Join(ws, "conf.txt")
-		path := g6Server(t, ws)
+		addr := g6Server(t, ws)
 		g6Seed(t, target, "n=0\n")
 
 		// Build 8 sessions; remember an older, prune-eligible one.
@@ -272,7 +272,7 @@ func TestGate6_PruneVsUndo_Atomic(t *testing.T) {
 		cur := 0
 		for k := 0; k < 8; k++ {
 			next := cur + 1
-			r := g6Apply(t, path, protocol.ApplyEditRequest{ProtocolVersion: protocol.ProtocolVersion,
+			r := g6Apply(t, addr, protocol.ApplyEditRequest{ProtocolVersion: protocol.ProtocolVersion,
 				Edit: protocol.EditBlockWire{FilePath: "conf.txt", Search: fmt.Sprintf("n=%d", cur), Replace: fmt.Sprintf("n=%d", next)}})
 			if r.Applied && k == 1 {
 				oldest = r.BackupDir
@@ -288,7 +288,7 @@ func TestGate6_PruneVsUndo_Atomic(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			c, e, d := g6Conn(t, path)
+			c, e, d := g6Conn(t, addr)
 			defer c.Close()
 			_ = e.Encode(undoReq)
 			_ = d.Decode(&undoResp)
@@ -299,7 +299,7 @@ func TestGate6_PruneVsUndo_Atomic(t *testing.T) {
 			req := protocol.ApplyEditRequest{ProtocolVersion: protocol.ProtocolVersion,
 				Edit: protocol.EditBlockWire{FilePath: "conf.txt", Search: fmt.Sprintf("n=%d", cur), Replace: fmt.Sprintf("n=%d", next)}}
 			cur = next
-			go func(req protocol.ApplyEditRequest) { defer wg.Done(); <-start; _ = g6Apply(t, path, req) }(req)
+			go func(req protocol.ApplyEditRequest) { defer wg.Done(); <-start; _ = g6Apply(t, addr, req) }(req)
 		}
 		close(start)
 		wg.Wait()
@@ -359,22 +359,22 @@ func TestGate6_CrossWorkspace_NoInterference(t *testing.T) {
 // daemons on two different workspace roots apply concurrently without blocking
 // each other, under a timeout that fails loudly on any cross-workspace stall.
 func TestGate6_DifferentWorkspacesRunConcurrently(t *testing.T) {
-	mk := func() (string, string) {
+	mk := func() (protocol.Address, string) {
 		ws := t.TempDir()
 		target := filepath.Join(ws, "f.txt")
 		g6Seed(t, target, "x=0\n")
 		return g6Server(t, ws), target
 	}
-	pathA, tgtA := mk()
-	pathB, tgtB := mk()
+	addrA, tgtA := mk()
+	addrB, tgtB := mk()
 
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		var wg sync.WaitGroup
-		for _, p := range []string{pathA, pathB} {
+		for _, p := range []protocol.Address{addrA, addrB} {
 			wg.Add(1)
-			go func(p string) {
+			go func(p protocol.Address) {
 				defer wg.Done()
 				for k := 0; k < 30; k++ {
 					_ = g6Apply(t, p, protocol.ApplyEditRequest{ProtocolVersion: protocol.ProtocolVersion,
@@ -400,7 +400,7 @@ func TestGate6_DifferentWorkspacesRunConcurrently(t *testing.T) {
 
 func TestGate6_Stress_NoDeadlock(t *testing.T) {
 	ws := t.TempDir()
-	path := g6Server(t, ws)
+	addr := g6Server(t, ws)
 	// Each worker owns its own file (deterministic search text) but shares the
 	// workspace lock + backups root, so applies, prunes, and undos all contend
 	// on the single per-workspace mutex — the real deadlock surface.
@@ -419,12 +419,12 @@ func TestGate6_Stress_NoDeadlock(t *testing.T) {
 				defer wg.Done()
 				file := fmt.Sprintf("f%d.txt", w)
 				for k := 0; k < 4; k++ {
-					r := g6Apply(t, path, protocol.ApplyEditRequest{ProtocolVersion: protocol.ProtocolVersion,
+					r := g6Apply(t, addr, protocol.ApplyEditRequest{ProtocolVersion: protocol.ProtocolVersion,
 						Edit: protocol.EditBlockWire{FilePath: file, Search: fmt.Sprintf("x=%d", k), Replace: fmt.Sprintf("x=%d", k+1)}})
 					if r.Applied {
 						// Undo our own session; interleaves restores with others'
 						// applies and prunes, all under the one workspace lock.
-						c, e, d := g6Conn(t, path)
+						c, e, d := g6Conn(t, addr)
 						_ = e.Encode(protocol.UndoRequest{ProtocolVersion: protocol.ProtocolVersion, Undo: true, BackupSessionDir: r.BackupDir})
 						var ur protocol.UndoResponse
 						_ = d.Decode(&ur)
@@ -447,7 +447,7 @@ func TestGate6_Stress_NoDeadlock(t *testing.T) {
 
 	// Daemon still responsive after the barrage.
 	g6Seed(t, filepath.Join(ws, "after.txt"), "y=0\n")
-	r := g6Apply(t, path, protocol.ApplyEditRequest{ProtocolVersion: protocol.ProtocolVersion,
+	r := g6Apply(t, addr, protocol.ApplyEditRequest{ProtocolVersion: protocol.ProtocolVersion,
 		Edit: protocol.EditBlockWire{FilePath: "after.txt", Search: "y=0", Replace: "y=1"}})
 	if !r.Applied {
 		t.Fatalf("daemon unresponsive after stress: %+v", r)

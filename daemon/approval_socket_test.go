@@ -24,7 +24,7 @@ import (
 // that hangs for five minutes per call because it is reading from the wrong
 // place, or one that never asks at all -- and neither is visible from either
 // side alone.
-func agentSocketServer(t *testing.T, apiBase string, cfg MCPConfig) (sockPath, auditPath string, srv *Server) {
+func agentSocketServer(t *testing.T, apiBase string, cfg MCPConfig) (sockAddr protocol.Address, auditPath string, srv *Server) {
 	t.Helper()
 
 	root, err := editapply.ResolveRealWorkspaceRoot(t.TempDir())
@@ -47,20 +47,20 @@ func agentSocketServer(t *testing.T, apiBase string, cfg MCPConfig) (sockPath, a
 		toolAudit:     newToolAuditSink(auditPath),
 	}
 
-	sockPath = filepath.Join(t.TempDir(), "agent.sock")
-	ln, err := net.Listen("unix", sockPath)
+	sockAddr = testAddress(t)
+	ln, err := protocol.Listen(sockAddr)
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
 	t.Cleanup(func() { _ = ln.Close() })
 	go srv.Serve(ln)
-	return sockPath, auditPath, srv
+	return sockAddr, auditPath, srv
 }
 
 // agentClient dials, handshakes with the given capabilities, and sends prompt.
-func agentClient(t *testing.T, sockPath, prompt string, caps []string) (*json.Encoder, *json.Decoder, net.Conn) {
+func agentClient(t *testing.T, sockAddr protocol.Address, prompt string, caps []string) (*json.Encoder, *json.Decoder, net.Conn) {
 	t.Helper()
-	conn, err := net.Dial("unix", sockPath)
+	conn, err := protocol.Dial(sockAddr)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
@@ -94,8 +94,8 @@ func TestApprovalRoundTripOverTheRealSocket(t *testing.T) {
 		toolCallSSE("c1", "builtin__read_file", `{"path":"inside.txt"}`),
 		textSSE("It says HELLO."),
 	)
-	sockPath, auditPath, srv := agentSocketServer(t, base, MCPConfig{Enabled: true})
-	enc, dec, conn := agentClient(t, sockPath, "what is in inside.txt?", []string{protocol.CapToolApproval})
+	sockAddr, auditPath, srv := agentSocketServer(t, base, MCPConfig{Enabled: true})
+	enc, dec, conn := agentClient(t, sockAddr, "what is in inside.txt?", []string{protocol.CapToolApproval})
 
 	// Nothing should take anywhere near this; it exists so a wiring bug shows up
 	// as a failed test rather than a five-minute hang.
@@ -171,8 +171,8 @@ func TestApprovalRoundTripOverTheRealSocket(t *testing.T) {
 // hanging until the human deadline expired.
 func TestAClientWithoutTheCapabilityGetsNoToolsAndNoQuestions(t *testing.T) {
 	base, calls, bodies := agentUpstream(t, textSSE("plain answer"))
-	sockPath, auditPath, _ := agentSocketServer(t, base, MCPConfig{Enabled: true})
-	_, dec, conn := agentClient(t, sockPath, "hello", nil)
+	sockAddr, auditPath, _ := agentSocketServer(t, base, MCPConfig{Enabled: true})
+	_, dec, conn := agentClient(t, sockAddr, "hello", nil)
 
 	if err := conn.SetDeadline(time.Now().Add(20 * time.Second)); err != nil {
 		t.Fatal(err)
@@ -231,8 +231,8 @@ func TestASecondAnswerDoesNotApproveTheNextCall(t *testing.T) {
 		toolCallSSE("c2", "builtin__read_file", `{"path":"inside.txt"}`),
 		textSSE("done"),
 	)
-	sockPath, auditPath, _ := agentSocketServer(t, base, MCPConfig{Enabled: true})
-	enc, dec, conn := agentClient(t, sockPath, "read it twice", []string{protocol.CapToolApproval})
+	sockAddr, auditPath, _ := agentSocketServer(t, base, MCPConfig{Enabled: true})
+	enc, dec, conn := agentClient(t, sockAddr, "read it twice", []string{protocol.CapToolApproval})
 	if err := conn.SetDeadline(time.Now().Add(20 * time.Second)); err != nil {
 		t.Fatal(err)
 	}
@@ -307,8 +307,8 @@ func TestAnApprovalSentBeforeTheQuestionIsNotConsent(t *testing.T) {
 		toolCallSSE("c1", "builtin__read_file", `{"path":"inside.txt"}`),
 		textSSE("I could not read it."),
 	)
-	sockPath, auditPath, _ := agentSocketServer(t, base, MCPConfig{Enabled: true})
-	enc, dec, conn := agentClient(t, sockPath, "read it", []string{protocol.CapToolApproval})
+	sockAddr, auditPath, _ := agentSocketServer(t, base, MCPConfig{Enabled: true})
+	enc, dec, conn := agentClient(t, sockAddr, "read it", []string{protocol.CapToolApproval})
 	if err := conn.SetDeadline(time.Now().Add(20 * time.Second)); err != nil {
 		t.Fatal(err)
 	}

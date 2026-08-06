@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -27,25 +26,25 @@ import (
 
 // startTestServer runs srv.Serve on a fresh unix socket in a temp dir and
 // returns its path. The listener is closed on test cleanup.
-func startTestServer(t *testing.T, srv *Server) string {
+func startTestServer(t *testing.T, srv *Server) protocol.Address {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "test.sock")
-	ln, err := net.Listen("unix", path)
+	addr := testAddress(t)
+	ln, err := protocol.Listen(addr)
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
 	go srv.Serve(ln)
 	t.Cleanup(func() { ln.Close() })
-	return path
+	return addr
 }
 
 // dialAndHandshake opens a connection and completes the version handshake,
 // returning the live connection. Completing the handshake is the
 // synchronization point that guarantees the server has accepted the
 // connection and its handler goroutine is holding a concurrency slot.
-func dialAndHandshake(t *testing.T, path string) net.Conn {
+func dialAndHandshake(t *testing.T, addr protocol.Address) net.Conn {
 	t.Helper()
-	c, err := net.Dial("unix", path)
+	c, err := protocol.Dial(addr)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
@@ -68,9 +67,9 @@ func dialAndHandshake(t *testing.T, path string) net.Conn {
 // returns a non-nil error if the handshake, the request write, or the response
 // read fails — i.e. any way the server can reject/close the connection surfaces
 // as an error, which is exactly what the size-cap test needs to observe.
-func roundTripPrompt(t *testing.T, path string, req protocol.PromptRequest) (protocol.TokenResponse, error) {
+func roundTripPrompt(t *testing.T, addr protocol.Address, req protocol.PromptRequest) (protocol.TokenResponse, error) {
 	t.Helper()
-	c, err := net.Dial("unix", path)
+	c, err := protocol.Dial(addr)
 	if err != nil {
 		return protocol.TokenResponse{}, err
 	}
@@ -110,7 +109,7 @@ func roundTripPrompt(t *testing.T, path string, req protocol.PromptRequest) (pro
 func TestServe_SizeCap_RejectsOversizeAdmitsLegit(t *testing.T) {
 	const cap = 8 << 20 // 8 MiB cap for a fast, deterministic test
 	srv := &Server{logger: discardLogger(), workspace: "/ws", maxRequestBytes: cap}
-	path := startTestServer(t, srv)
+	addr := startTestServer(t, srv)
 
 	// Under the cap (~6 MiB): decodes and returns a bare Done:true (Reset path,
 	// no model call). Proves the cap does not punish large-but-legitimate
@@ -120,7 +119,7 @@ func TestServe_SizeCap_RejectsOversizeAdmitsLegit(t *testing.T) {
 		Reset:           true,
 		Prompt:          strings.Repeat("x", 6<<20),
 	}
-	resp, err := roundTripPrompt(t, path, under)
+	resp, err := roundTripPrompt(t, addr, under)
 	if err != nil {
 		t.Fatalf("legitimate ~6 MiB request should succeed under an 8 MiB cap, got: %v", err)
 	}
@@ -136,7 +135,7 @@ func TestServe_SizeCap_RejectsOversizeAdmitsLegit(t *testing.T) {
 		Reset:           true,
 		Prompt:          strings.Repeat("x", 10<<20),
 	}
-	if _, err := roundTripPrompt(t, path, over); err == nil {
+	if _, err := roundTripPrompt(t, addr, over); err == nil {
 		t.Fatal("oversized ~10 MiB request should be rejected (connection closed), but the exchange succeeded")
 	}
 }
@@ -153,13 +152,13 @@ func TestServe_IdleDeadlineReapsHalfOpenConns(t *testing.T) {
 		idleTimeout = 1 * time.Second
 	)
 	srv := &Server{logger: discardLogger(), workspace: "/ws", connIdleTimeout: idleTimeout}
-	path := startTestServer(t, srv)
+	addr := startTestServer(t, srv)
 
 	base := runtime.NumGoroutine()
 
 	conns := make([]net.Conn, 0, n)
 	for i := 0; i < n; i++ {
-		c, err := net.Dial("unix", path)
+		c, err := protocol.Dial(addr)
 		if err != nil {
 			t.Fatalf("dial %d: %v", i, err)
 		}
@@ -205,13 +204,13 @@ func TestServe_ConnCeilingRejectsExcess(t *testing.T) {
 		maxConns:        maxConns,
 		connIdleTimeout: 10 * time.Second, // keep held conns alive through the test
 	}
-	path := startTestServer(t, srv)
+	addr := startTestServer(t, srv)
 
 	// Fill every slot. Each handshaked connection's handler is now blocked
 	// reading the request, still holding its slot.
 	held := make([]net.Conn, 0, maxConns)
 	for i := 0; i < maxConns; i++ {
-		held = append(held, dialAndHandshake(t, path))
+		held = append(held, dialAndHandshake(t, addr))
 	}
 	t.Cleanup(func() {
 		for _, c := range held {
@@ -221,7 +220,7 @@ func TestServe_ConnCeilingRejectsExcess(t *testing.T) {
 
 	// The next connection is past the ceiling. The server closes it, so an
 	// attempted handshake gets no response (read error / EOF).
-	extra, err := net.Dial("unix", path)
+	extra, err := protocol.Dial(addr)
 	if err != nil {
 		t.Fatalf("dial extra: %v", err)
 	}
@@ -241,7 +240,7 @@ func TestServe_ConnCeilingRejectsExcess(t *testing.T) {
 	held = held[1:]
 	// Give the freed handler goroutine a moment to release its slot.
 	time.Sleep(200 * time.Millisecond)
-	admitted := dialAndHandshake(t, path)
+	admitted := dialAndHandshake(t, addr)
 	admitted.Close()
 }
 
