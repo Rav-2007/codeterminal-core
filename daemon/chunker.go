@@ -137,11 +137,15 @@ func ScanWorkspace(root string) (*ScanResult, error) {
 			return nil
 		}
 
-		// Never follow symlinks. A symlinked entry is reported by its own
-		// type (ModeSymlink), not the type of whatever it points to, so this
-		// check alone stops any symlink escape without needing to inspect
-		// the target.
-		if d.Type()&fs.ModeSymlink != 0 {
+		// Never follow a link. A linked entry is reported by its OWN type, not
+		// the type of whatever it points to, so this check alone stops the
+		// escape without needing to inspect the target.
+		//
+		// IsLinkLike, not ModeSymlink: on Windows a junction comes back
+		// ModeIrregular and this walk would have gone straight through it, out
+		// of the workspace, indexing whatever it found into text the model is
+		// then given. See editapply/linkmode.go.
+		if editapply.IsLinkLike(d.Type()) {
 			result.Skipped[SkipSymlink]++
 			if d.IsDir() {
 				return fs.SkipDir
@@ -243,8 +247,9 @@ func shouldSkipFile(path, relPath string, ignore *gitignoreMatcher) (SkipReason,
 	// the daemon's uid could open.
 	//
 	// Lstat reports the link's own type, so this needs no target inspection and
-	// has no TOCTOU window of its own.
-	if info.Mode()&fs.ModeSymlink != 0 {
+	// has no TOCTOU window of its own. IsLinkLike covers the Windows junction
+	// this missed; see editapply/linkmode.go.
+	if editapply.IsLinkLike(info.Mode()) {
 		return SkipSymlink, true, nil
 	}
 

@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"codeterminal/editapply"
 )
 
 // Fix 12: resolve the exact pointers a pasted build/test failure already
@@ -301,7 +303,10 @@ func findFilesBySuffix(realRoot string, ignore *gitignoreMatcher, suffixes []str
 		}
 		rel = filepath.ToSlash(rel)
 
-		if d.Type()&fs.ModeSymlink != 0 {
+		// IsLinkLike, not ModeSymlink: a Windows junction reports ModeIrregular,
+		// and this walk is the same read primitive the indexer is. See
+		// editapply/linkmode.go.
+		if editapply.IsLinkLike(d.Type()) {
 			if d.IsDir() {
 				return fs.SkipDir
 			}

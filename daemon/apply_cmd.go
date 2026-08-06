@@ -452,7 +452,7 @@ func removeCreatedSessionDirs(realWorkspaceRoot, sessionDir string, logger *log.
 		// directory. Refuse it, same posture as the leaf checks in stageRestore.
 		if info, err := os.Lstat(dest); err != nil {
 			continue // already gone, which is the state being aimed at
-		} else if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		} else if editapply.IsLinkLike(info.Mode()) || !info.IsDir() {
 			logger.Printf("edits undo: %q is not a directory any more; leaving it alone", rel)
 			continue
 		}
@@ -643,7 +643,7 @@ func stageRestore(realWorkspaceRoot, beforeDir, rel string, remove bool) (*stage
 	// directory) standing where the backup recorded a regular file is anomalous
 	// and was refused by the O_NOFOLLOW writer this replaces — keep refusing it.
 	if destInfo, err := os.Lstat(dest); err == nil {
-		if destInfo.Mode()&os.ModeSymlink != 0 {
+		if editapply.IsLinkLike(destInfo.Mode()) {
 			return nil, fmt.Errorf("%q is a symlink; refusing to restore through it", rel)
 		}
 		if destInfo.IsDir() {
@@ -829,7 +829,7 @@ func leafIsSymlink(path string) (bool, error) {
 		}
 		return false, err
 	}
-	return info.Mode()&os.ModeSymlink != 0, nil
+	return editapply.IsLinkLike(info.Mode()), nil
 }
 
 // restrictSQLiteSidecars chmods a SQLite database's -wal and -shm sidecars to

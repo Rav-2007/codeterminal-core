@@ -43,7 +43,7 @@ func writeFileAtomicNoFollow(path string, data []byte, perm os.FileMode) error {
 	// refusal so the caller gets a reason, not a silently-replaced link. Lstat
 	// does not follow the link itself.
 	if info, err := os.Lstat(path); err == nil {
-		if info.Mode()&os.ModeSymlink != 0 {
+		if IsLinkLike(info.Mode()) {
 			return fmt.Errorf("%s is a symlink; refusing to write through it", path)
 		}
 	} else if !os.IsNotExist(err) {
