@@ -26,25 +26,50 @@ import (
 // These tests RUN bwrap. They skip where it is not installed, which is honest,
 // and they are the reason a future invalid flag fails a test rather than a user.
 
+// requireSandboxEnv, when set, turns "the sandbox could not be exercised here"
+// from a skip into a FAILURE.
+//
+// CI sets it after its own bwrap probe passes. That closes the last gap in the
+// evidence: until now, the claim "the confinement tests executed in CI" was
+// INFERRED -- a probe passed in one workflow step, the tests ran in a later step
+// on the same VM, and `go test` has no -v there, so a skip printed nothing and
+// looked exactly like a pass. The inference was sound and it was still an
+// inference about the very control this repo has twice recorded as verified
+// while it never ran.
+//
+// With this set, a run where bwrap becomes unusable goes RED and names the
+// reason, instead of quietly returning to the state that let --nosuid survive.
+const requireSandboxEnv = "CODETERMINAL_REQUIRE_SANDBOX"
+
+// requireBwrap is the single gate for every test in this file that needs a real
+// sandbox. It replaced a presence-only exec.LookPath check that had become
+// unreachable: each caller already tested BwrapUsable() first, so by the time
+// this ran, bwrap was known to be both present AND working.
+//
+// Presence was never the question. BwrapUsable actually runs bwrap, because a
+// host where the binary exists and cannot unshare -- every Ubuntu 24.04+ desktop
+// -- answers yes to LookPath and no to the only question that matters.
 func requireBwrap(t *testing.T) {
 	t.Helper()
-	if _, err := exec.LookPath("bwrap"); err != nil {
-		t.Skip("bwrap is not installed; this test needs a real sandbox to execute")
+	if BwrapUsable() {
+		return
 	}
+	const why = "bwrap cannot create a user namespace on this host " +
+		"(kernel.apparmor_restrict_unprivileged_userns=1?)"
+	if os.Getenv(requireSandboxEnv) != "" {
+		t.Fatalf("%s is set, so sandbox confinement MUST be exercised in this environment, but %s. "+
+			"Either the host lost the capability or the CI step that relaxes it stopped working; "+
+			"skipping here would silently drop the only coverage this sandbox has.", requireSandboxEnv, why)
+	}
+	// NOT RUN rather than FAIL on a developer machine. That is a host policy,
+	// not a defect in this code, and a test that fails on it blocks every push
+	// from such a machine while telling nobody anything true.
+	t.Skip("NOT RUN: " + why + "; sandbox confinement is UNVERIFIED here")
 }
 
 // Every flag WrapCommand emits must be one bwrap accepts. A single unknown
 // option makes the whole sandbox a no-op that fails closed into "broken".
 func TestBubblewrap_ArgumentsAreAcceptedByRealBwrap(t *testing.T) {
-	// NOT RUN rather than FAIL when the host forbids it. Ubuntu 24.04+ ships
-	// kernel.apparmor_restrict_unprivileged_userns=1, under which bwrap is
-	// installed and cannot create a namespace. That is a host policy, not a
-	// defect in this code, and a test that fails on it blocks every push from
-	// such a machine while telling nobody anything true.
-	if !BwrapUsable() {
-		t.Skip("NOT RUN: bwrap cannot create a user namespace on this host " +
-			"(kernel.apparmor_restrict_unprivileged_userns=1?); sandbox confinement is UNVERIFIED here")
-	}
 	requireBwrap(t)
 
 	ws := t.TempDir()
@@ -72,15 +97,6 @@ func TestBubblewrap_ArgumentsAreAcceptedByRealBwrap(t *testing.T) {
 // The sandbox has to actually WORK, not merely be accepted: a command inside it
 // must run and produce output.
 func TestBubblewrap_RunsACommandAndReturnsItsOutput(t *testing.T) {
-	// NOT RUN rather than FAIL when the host forbids it. Ubuntu 24.04+ ships
-	// kernel.apparmor_restrict_unprivileged_userns=1, under which bwrap is
-	// installed and cannot create a namespace. That is a host policy, not a
-	// defect in this code, and a test that fails on it blocks every push from
-	// such a machine while telling nobody anything true.
-	if !BwrapUsable() {
-		t.Skip("NOT RUN: bwrap cannot create a user namespace on this host " +
-			"(kernel.apparmor_restrict_unprivileged_userns=1?); sandbox confinement is UNVERIFIED here")
-	}
 	requireBwrap(t)
 
 	ws := t.TempDir()
@@ -110,15 +126,6 @@ func TestBubblewrap_RunsACommandAndReturnsItsOutput(t *testing.T) {
 // readable from inside the sandbox. Without this, "sandboxed" means only
 // "wrapped in bwrap", which is not the same thing.
 func TestBubblewrap_CannotReadOutsideTheWorkspace(t *testing.T) {
-	// NOT RUN rather than FAIL when the host forbids it. Ubuntu 24.04+ ships
-	// kernel.apparmor_restrict_unprivileged_userns=1, under which bwrap is
-	// installed and cannot create a namespace. That is a host policy, not a
-	// defect in this code, and a test that fails on it blocks every push from
-	// such a machine while telling nobody anything true.
-	if !BwrapUsable() {
-		t.Skip("NOT RUN: bwrap cannot create a user namespace on this host " +
-			"(kernel.apparmor_restrict_unprivileged_userns=1?); sandbox confinement is UNVERIFIED here")
-	}
 	requireBwrap(t)
 
 	outside := t.TempDir()
@@ -146,15 +153,6 @@ func TestBubblewrap_CannotReadOutsideTheWorkspace(t *testing.T) {
 // --unshare-net must actually remove the network, since it is the control that
 // turns "can read a secret" into "cannot send it anywhere".
 func TestBubblewrap_UnshareNetRemovesTheNetwork(t *testing.T) {
-	// NOT RUN rather than FAIL when the host forbids it. Ubuntu 24.04+ ships
-	// kernel.apparmor_restrict_unprivileged_userns=1, under which bwrap is
-	// installed and cannot create a namespace. That is a host policy, not a
-	// defect in this code, and a test that fails on it blocks every push from
-	// such a machine while telling nobody anything true.
-	if !BwrapUsable() {
-		t.Skip("NOT RUN: bwrap cannot create a user namespace on this host " +
-			"(kernel.apparmor_restrict_unprivileged_userns=1?); sandbox confinement is UNVERIFIED here")
-	}
 	requireBwrap(t)
 	if _, err := exec.LookPath("ip"); err != nil {
 		t.Skip("`ip` is not installed; needed to observe the network namespace")

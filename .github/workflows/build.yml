@@ -138,6 +138,19 @@ jobs:
       # -race, not a bare `go test`: this repo's concurrency work (the Gate 6
       # apply/undo locking in particular) is only defended by the race detector.
       - name: Test
+        # CODETERMINAL_REQUIRE_SANDBOX makes the bubblewrap confinement tests
+        # FAIL instead of skip when bwrap cannot create a user namespace.
+        #
+        # Set only for daemon, which is the module that owns them, and set
+        # because the step above has already PROVED bwrap works here by running
+        # one. Without this, the evidence that those tests executed in CI was an
+        # inference: the probe passes in one step, the tests run in another, and
+        # `go test` without -v prints nothing for a skip -- so silently losing
+        # the sandbox again would look identical to a green run. It is the exact
+        # failure mode that let --nosuid survive two campaigns marked CONFIRMED,
+        # so it gets a tripwire rather than a comment.
+        env:
+          CODETERMINAL_REQUIRE_SANDBOX: ${{ matrix.module == 'daemon' && '1' || '' }}
         run: go test -race ./...
         working-directory: ${{ matrix.module }}
 
