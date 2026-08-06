@@ -196,10 +196,10 @@ func TestCreatedDirs_ManifestEntryIsRolledBackWhenTheWriteFails(t *testing.T) {
 	}
 	root := realDir(t)
 	// pkg/ exists but nothing may be created inside it.
-	if err := os.Mkdir(filepath.Join(root, "pkg"), 0500); err != nil {
+	if err := os.Mkdir(filepath.Join(root, "pkg"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.Chmod(filepath.Join(root, "pkg"), 0700) })
+	makeDirUnwritable(t, filepath.Join(root, "pkg"))
 	backupDir, err := NewBackupSessionDir(root)
 	if err != nil {
 		t.Fatal(err)

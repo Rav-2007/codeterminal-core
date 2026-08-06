@@ -102,10 +102,7 @@ func TestApply_WriteFailureRollsBackAfterSnapshot(t *testing.T) {
 	// writable) reachable. Injecting via a read-only FILE no longer works: the
 	// atomic rename needs directory-write, not file-write, and would succeed.
 	target := filepath.Join(root, "foo.txt")
-	if err := os.Chmod(root, 0555); err != nil {
-		t.Fatalf("chmod: %v", err)
-	}
-	t.Cleanup(func() { os.Chmod(root, 0755) })
+	makeDirUnwritable(t, root)
 
 	if err := Apply(root, prepared, backupDir); err == nil {
 		t.Fatal("expected Apply to fail on an unwritable target, got nil")
@@ -152,10 +149,7 @@ func TestApply_WriteFailureRestoresPriorAfterSnapshot(t *testing.T) {
 	// the first block has already applied. See the note in
 	// TestApply_WriteFailureRollsBackAfterSnapshot on why the file-mode approach
 	// no longer induces a failure under atomic rename.
-	if err := os.Chmod(root, 0555); err != nil {
-		t.Fatalf("chmod: %v", err)
-	}
-	t.Cleanup(func() { os.Chmod(root, 0755) })
+	makeDirUnwritable(t, root)
 
 	if err := Apply(root, second, backupDir); err == nil {
 		t.Fatal("expected Apply to fail on an unwritable target, got nil")
