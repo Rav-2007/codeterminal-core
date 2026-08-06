@@ -37,6 +37,20 @@ func TestWrapCommandAuto(t *testing.T) {
 	lookPath = func(file string) (string, error) {
 		return "/usr/bin/" + file, nil
 	}
+	// Stub the capability probe alongside lookPath. These tests are about the
+	// ARGUMENTS WrapCommand builds, which is a host-independent question; the
+	// probe runs a real bwrap and would make them fail on any machine where
+	// unprivileged user namespaces are restricted (Ubuntu 24.04+ by default).
+	//
+	// The pairing is deliberate and is the rule this campaign added: a test that
+	// stubs a seam must be accompanied by one that does not. Argument
+	// construction is covered here; actual execution is covered in
+	// sandbox_exec_test.go, which runs bwrap for real and SKIPS with NOT RUN
+	// when the host forbids it.
+	origUsable := BwrapUsable
+	defer func() { BwrapUsable = origUsable }()
+	BwrapUsable = func() bool { return true }
+
 	tmpDir := t.TempDir()
 	cmd, _, err = WrapCommand("node", []string{"app.js"}, SandboxConfig{Mode: SandboxAuto, WorkspaceRoot: tmpDir})
 	if err != nil {
@@ -61,6 +75,20 @@ func TestWrapCommandBubblewrapValidation(t *testing.T) {
 	lookPath = func(file string) (string, error) {
 		return "/usr/bin/" + file, nil
 	}
+
+	// Stub the capability probe alongside lookPath. These tests are about the
+	// ARGUMENTS WrapCommand builds, which is a host-independent question; the
+	// probe runs a real bwrap and would make them fail on any machine where
+	// unprivileged user namespaces are restricted (Ubuntu 24.04+ by default).
+	//
+	// The pairing is deliberate and is the rule this campaign added: a test that
+	// stubs a seam must be accompanied by one that does not. Argument
+	// construction is covered here; actual execution is covered in
+	// sandbox_exec_test.go, which runs bwrap for real and SKIPS with NOT RUN
+	// when the host forbids it.
+	origUsable := BwrapUsable
+	defer func() { BwrapUsable = origUsable }()
+	BwrapUsable = func() bool { return true }
 
 	// Missing workspace root
 	_, _, err := WrapCommand("node", []string{"server.js"}, SandboxConfig{Mode: SandboxBubblewrap})
