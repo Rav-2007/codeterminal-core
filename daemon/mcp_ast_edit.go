@@ -157,7 +157,14 @@ func (s *Server) builtinProposeASTEdit(_ context.Context, raw json.RawMessage, p
 	extractedText := extractLSPRange(string(contentBytes), sym.Range)
 
 	block := editapply.EditBlock{FilePath: args.Path, Search: extractedText, Replace: args.Replace}
-	prepared, err := editapply.PrepareEdit(s.workspace, block)
+	// Resolved, not s.workspace: see realWorkspaceRoot. Passing the unresolved
+	// root refuses every edit whenever the workspace is reached through a
+	// symlink or an 8.3 short name.
+	realRoot, err := s.realWorkspaceRoot()
+	if err != nil {
+		return toolError("that edit cannot be applied: %v", err)
+	}
+	prepared, err := editapply.PrepareEdit(realRoot, block)
 	if err != nil {
 		return toolError("that edit cannot be applied: %v", err)
 	}

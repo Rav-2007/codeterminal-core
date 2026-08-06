@@ -397,6 +397,30 @@ func (s *Server) builtinSearchCode(ctx context.Context, raw json.RawMessage) (mc
 // out immediately that its SEARCH text does not match, while it still has the
 // file in context and can correct itself -- instead of the user discovering it
 // at review time, one round trip too late.
+// realWorkspaceRoot resolves s.workspace to the symlink-free form the
+// confinement gates require.
+//
+// s.workspace is filepath.Abs ONLY -- validateWorkspace never calls
+// EvalSymlinks -- while resolveSafeTarget compares the root it is given against
+// EvalSymlinks(root/relPath) using filepath.Rel, which is a BYTE comparison.
+// Hand it the unresolved form and the two sides disagree about every path in the
+// workspace, so Rel returns "../.." and EVERY edit is refused with "resolves
+// outside the workspace root" -- an availability outage wearing a confinement
+// error's clothes.
+//
+// That is not hypothetical and it was not Windows-specific. Both MCP edit tools
+// passed s.workspace straight through; the Windows runner surfaced it first
+// (8.3 short names) but it reproduces on Linux through any symlinked path, and
+// on macOS /tmp is a symlink to /private/tmp by default.
+//
+// A method rather than an inline call at each site, so a sixth caller has
+// something to find. server.go and apply_cmd.go predate this and inline the
+// identical call -- they were already correct, which is what made the asymmetry
+// invisible: three callers resolved, two did not.
+func (s *Server) realWorkspaceRoot() (string, error) {
+	return editapply.ResolveRealWorkspaceRoot(s.workspace)
+}
+
 func (s *Server) builtinProposeEdit(_ context.Context, raw json.RawMessage, proposals *proposalSink) (mcp.Result, error) {
 	var args struct {
 		Path    string `json:"path"`
@@ -412,7 +436,11 @@ func (s *Server) builtinProposeEdit(_ context.Context, raw json.RawMessage, prop
 
 	block := editapply.EditBlock{FilePath: args.Path, Search: args.Search, Replace: args.Replace}
 
-	prepared, err := editapply.PrepareEdit(s.workspace, block)
+	realRoot, err := s.realWorkspaceRoot()
+	if err != nil {
+		return toolError("that edit cannot be applied: %v", err)
+	}
+	prepared, err := editapply.PrepareEdit(realRoot, block)
 	if err != nil {
 		// The refusal text is already written for a human and names no absolute
 		// path -- it is the same message the edit pipeline shows. Handing it
