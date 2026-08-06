@@ -72,6 +72,33 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: "**/go.sum"
 
+      # The sandbox under test. Without bubblewrap installed, WrapCommand falls
+      # back, the tests that EXECUTE a sandbox skip themselves with NOT RUN, and
+      # daemon/mcp coverage drops from ~91% to 89.2% -- straight through its
+      # 91.0 floor. Measured, not guessed: that is what turned this job red on
+      # its first ever run.
+      #
+      # Installing it here is the right fix rather than a workaround. A
+      # developer's machine may forbid user namespaces (Ubuntu 24.04+ desktops
+      # do by default), so CI is the one place the confinement claims can be
+      # verified on every commit. That is the whole point of the job.
+      #
+      # The probe is deliberate: apt succeeding proves the binary is PRESENT,
+      # which this campaign has twice mistaken for it being USABLE. If it cannot
+      # create a namespace, say so loudly here rather than let it surface later
+      # as an unexplained coverage drop.
+      - name: Install bubblewrap
+        if: matrix.module == 'daemon'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bubblewrap
+          bwrap --version
+          if bwrap --ro-bind / / --unshare-user --die-with-parent /bin/true; then
+            echo "::notice::bwrap CAN create a user namespace - sandbox tests will execute"
+          else
+            echo "::warning::bwrap CANNOT create a user namespace - sandbox tests will skip and coverage will drop"
+          fi
+
       - name: Build
         run: go build ./...
         working-directory: ${{ matrix.module }}
@@ -281,6 +308,19 @@ jobs:
           node-version: "20"
           cache: npm
           cache-dependency-path: clients/vscode/package-lock.json
+      # Go, in the NODE job, and not a mistake. package.json's `compile` script
+      # is `npm run build:daemon && tsc -p ./`, and build:daemon shells out to
+      # `go build ./daemon` to bundle the binary into the extension. So this job
+      # needs a Go toolchain despite being about TypeScript.
+      #
+      # It did not have one, and the job failed on its first ever run with
+      # `sh: 1: go: not found`. The bundling step arrived with the daemon-
+      # supervision work and was never exercised, because CI only ran on main
+      # and that work has never been on main.
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: "**/go.sum"
       - name: Install
         run: npm ci
         working-directory: clients/vscode

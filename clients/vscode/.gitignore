@@ -2,3 +2,9 @@ out/
 node_modules/
 *.vsix
 .vscode-test/
+
+# The bundled daemon binary, produced by `npm run build:daemon` on every
+# compile. 19 MB of build output that was tracked: every rebuild showed up as a
+# spurious diff, and every commit of it is permanent repo weight. Packaging
+# reads it from this path at vsce time; it does not need to be in history.
+daemon/
