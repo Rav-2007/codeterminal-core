@@ -118,6 +118,32 @@ func ownerOnlySDDL() (string, error) {
 // This function pins both properties in a comment because they come from a
 // dependency: if go-winio is ever upgraded, they are what to re-check.
 func listen(a Address) (net.Listener, error) {
+	// A pipe created with a zero quota has NO buffer, and a write to it does not
+	// return until the peer has read every byte. A Unix socket has ~200 KiB of
+	// kernel buffer and returns immediately. Everything on both sides of this
+	// seam was written against the socket's behaviour.
+	//
+	// MEASURED, not anticipated. The first Windows CI run failed three tests
+	// that a Linux runner passes, and all three write before the peer reads:
+	// the two approval-PIPELINING tests sat at a 20 s i/o timeout sending a
+	// second message, and TestWaitForDrain_WaitsForInFlightRequests hung because
+	// the handler blocked writing a response the test never read -- so inFlight
+	// never reached zero and the drain never completed.
+	//
+	// That last one is the reason this is a PRODUCT fix and not a test fix. A
+	// client that stops reading -- crashed, suspended, or just slow -- pins a
+	// daemon handler goroutine forever. Serve's concurrency semaphore is finite,
+	// so enough wedged clients stop the daemon accepting at all, and shutdown
+	// can never drain. On Unix the socket buffer absorbs the response and the
+	// handler exits; on Windows, with no buffer, it does not.
+	//
+	// 64 KiB restores parity with the socket, comfortably over the largest frame
+	// either side sends in one write. It is parity, not a guarantee: a write
+	// larger than the buffer with no reader still blocks -- exactly as it does
+	// on Unix. The unbounded-wait residual is the same on both platforms and is
+	// a separate concern from this one.
+	const bufferBytes = 64 * 1024
+
 	if a.Transport != "" && a.Transport != TransportNamedPipe && a.Transport != TransportTCP {
 		return nil, fmt.Errorf("transport %q is not supported on this platform", a.Transport)
 	}
@@ -128,7 +154,11 @@ func listen(a Address) (net.Listener, error) {
 	if err != nil {
 		return nil, err
 	}
-	return winio.ListenPipe(a.Address, &winio.PipeConfig{SecurityDescriptor: sddl})
+	return winio.ListenPipe(a.Address, &winio.PipeConfig{
+		SecurityDescriptor: sddl,
+		InputBufferSize:    bufferBytes,
+		OutputBufferSize:   bufferBytes,
+	})
 }
 
 func dial(a Address, timeout time.Duration) (net.Conn, error) {
