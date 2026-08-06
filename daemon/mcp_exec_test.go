@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"codeterminal/daemon/mcp"
 )
 
 // P0, found 2026-08-05 and reproduced before it was fixed.
@@ -67,7 +70,32 @@ func runExecTool(t *testing.T, s *Server, command string) string {
 
 // THE ONE THAT MATTERS. A whitelisted binary running a project-supplied recipe
 // must not be able to see this daemon's credentials.
+// requireWorkingSandbox skips when no sandbox backend on this host can actually
+// execute a command.
+//
+// Ubuntu 24.04+ ships kernel.apparmor_restrict_unprivileged_userns=1, under
+// which bwrap is installed and every invocation dies with "setting up uid map:
+// Permission denied". sandbox_exec correctly FAILS CLOSED there -- it does not
+// silently run the command unconfined -- so the tests below that need the
+// command to actually run have an unmet premise, not a defect to report.
+//
+// NOT RUN, loudly, rather than a green tick: the confinement these tests cover
+// is unverified on such a host, and pretending otherwise is what this whole
+// campaign exists to stop.
+func requireWorkingSandbox(t *testing.T) {
+	t.Helper()
+	if mcp.BwrapUsable() {
+		return
+	}
+	if _, err := exec.LookPath("docker"); err == nil {
+		return
+	}
+	t.Skip("NOT RUN: no sandbox backend on this host can execute (bwrap cannot create a user " +
+		"namespace and docker is absent); sandbox_exec confinement is UNVERIFIED here")
+}
+
 func TestSandboxExec_DoesNotLeakInferenceCredentials(t *testing.T) {
+	requireWorkingSandbox(t)
 	if _, err := os.Stat("/usr/bin/make"); err != nil {
 		if _, err2 := os.Stat("/bin/make"); err2 != nil {
 			t.Skip("make is not installed; this test needs a real whitelisted binary")
@@ -92,6 +120,7 @@ func TestSandboxExec_DoesNotLeakInferenceCredentials(t *testing.T) {
 // PATH and HOME must survive, or every one of go/npm/make/cargo fails to
 // resolve its own toolchain and the scrub gets reverted as "broken".
 func TestSandboxExec_KeepsTheEnvironmentACompilerNeeds(t *testing.T) {
+	requireWorkingSandbox(t)
 	s := execToolFixture(t)
 
 	raw, _ := json.Marshal(map[string]string{"command": "go env GOPATH"})
@@ -141,6 +170,7 @@ func TestSandboxExec_RejectsEmptyAndMalformedInput(t *testing.T) {
 // The command runs in the workspace, not in whatever directory the daemon
 // happens to have been started from.
 func TestSandboxExec_RunsInTheWorkspace(t *testing.T) {
+	requireWorkingSandbox(t)
 	s := execToolFixture(t)
 	out := runExecTool(t, s, "make leak")
 	if strings.Contains(out, "No rule to make target") || strings.Contains(out, "No targets") {

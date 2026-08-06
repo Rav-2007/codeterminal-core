@@ -1,10 +1,13 @@
 package mcp
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
+	"time"
 )
 
 // SandboxMode specifies the level of OS-level containment applied to a
@@ -43,6 +46,46 @@ var lookPath = exec.LookPath
 var getUID = os.Getuid
 var getGID = os.Getgid
 
+// BwrapUsable reports whether bwrap can actually create a user namespace on
+// this host, by running one.
+//
+// PRESENCE IS NOT CAPABILITY, and assuming otherwise is the mistake this file
+// has now made twice. The first was --nosuid, a flag that looked right and made
+// every invocation fail. This is the second: selecting the bubblewrap backend
+// because the BINARY IS ON PATH.
+//
+// Ubuntu 24.04 and later ship kernel.apparmor_restrict_unprivileged_userns=1 by
+// default. Under it /usr/bin/bwrap exists, is executable, and fails every time:
+//
+//	bwrap: setting up uid map: Permission denied
+//
+// So on a very common desktop Linux, lookPath said yes, the sandbox was
+// selected, and the tool could never run — while a working Docker backend sat
+// unused two branches below, because the bwrap branch had already matched.
+//
+// The probe is a real bwrap invocation because that is the only thing that
+// answers the question; reading the sysctl would be a proxy, and proxies are
+// what got us here. It runs once per process (sync.OnceValue) and costs one
+// fork of /bin/true against a read-only bind of /.
+var BwrapUsable = sync.OnceValue(func() bool {
+	if _, err := lookPath("bwrap"); err != nil {
+		return false
+	}
+	truePath, err := lookPath("true")
+	if err != nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	probe := exec.CommandContext(ctx, "bwrap",
+		"--ro-bind", "/", "/",
+		"--unshare-user",
+		"--die-with-parent",
+		"--", truePath)
+	probe.Env = ServerEnv(nil)
+	return probe.Run() == nil
+})
+
 // WrapCommand inspects cfg and wraps the specified executable and arguments
 // into a sandboxed command specification if a supported sandbox mode is active
 // and available on the host system.
@@ -51,7 +94,11 @@ func WrapCommand(command string, args []string, cfg SandboxConfig) (string, []st
 	if mode == SandboxAuto || mode == "" {
 		if cfg.WorkspaceRoot == "" {
 			mode = SandboxNone
-		} else if _, err := lookPath("bwrap"); err == nil {
+		} else if BwrapUsable() {
+			// Deliberately BwrapUsable() rather than lookPath("bwrap"): see its
+			// comment. A host where bwrap is installed but forbidden from
+			// creating user namespaces must fall through to Docker, not select
+			// a backend that cannot run.
 			mode = SandboxBubblewrap
 		} else if _, err := lookPath("docker"); err == nil {
 			mode = SandboxDocker
@@ -67,6 +114,16 @@ func WrapCommand(command string, args []string, cfg SandboxConfig) (string, []st
 	case SandboxBubblewrap:
 		if _, err := lookPath("bwrap"); err != nil {
 			return "", nil, fmt.Errorf("bubblewrap sandbox requested (bwrap), but 'bwrap' executable is not installed on PATH: %w", err)
+		}
+		// Explicitly requested, and installed, but unable to run. Say why and
+		// what to do, rather than letting the caller discover it as
+		// "bwrap: setting up uid map: Permission denied".
+		if !BwrapUsable() {
+			return "", nil, fmt.Errorf("bubblewrap sandbox requested and 'bwrap' is installed, but this host " +
+				"forbids it from creating a user namespace (typically Ubuntu 24.04+ with " +
+				"kernel.apparmor_restrict_unprivileged_userns=1). Allow it with " +
+				"`sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`, install Docker so the " +
+				"docker backend can be used instead, or set the sandbox mode explicitly")
 		}
 		if cfg.WorkspaceRoot == "" {
 			return "", nil, fmt.Errorf("bubblewrap sandbox requires a non-empty WorkspaceRoot")
