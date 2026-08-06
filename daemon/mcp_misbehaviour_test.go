@@ -298,7 +298,7 @@ func TestHungServersCostOneTimeoutNotOnePerServer(t *testing.T) {
 	s.logger = log.New(os.Stderr, "misbehaviour: ", 0)
 
 	start := time.Now()
-	registry, errs := s.buildRegistry(context.Background(), s.logger, &proposalSink{})
+	registry, errs := s.buildRegistry(context.Background(), s.logger, &proposalSink{}, "")
 	elapsed := time.Since(start)
 	t.Cleanup(func() { _ = registry.Close() })
 

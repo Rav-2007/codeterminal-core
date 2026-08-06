@@ -90,6 +90,10 @@ type ZDRConfig struct {
 	// while keeping the rest of the ZDR pool available — a deny-list, not an
 	// allow-list, chosen for pool width and self-maintenance (D4).
 	ProviderIgnoreList []string `json:"provider_ignore_list,omitempty"`
+	// ProviderOrder specifies a strict preference list of providers.
+	ProviderOrder []string `json:"provider_order,omitempty"`
+	// ProviderSort specifies the provider property to sort by ("price" or "throughput").
+	ProviderSort string `json:"provider_sort,omitempty"`
 }
 
 // resolvedProviderRouting returns the provider-routing object to send with
@@ -105,6 +109,8 @@ func (c ZDRConfig) resolvedProviderRouting() providerRouting {
 		DataCollection: dataCollection,
 		AllowFallbacks: c.AllowFallbacks,
 		Ignore:         c.ProviderIgnoreList,
+		Order:          c.ProviderOrder,
+		Sort:           c.ProviderSort,
 	}
 }
 
@@ -190,7 +196,7 @@ const (
 var (
 	knownConfigKeys    = []string{"config_version", "default_tier", "tiers", "retrieval", "zdr", "no_scrub", "mcp"}
 	knownRetrievalKeys = []string{"disabled", "rerank_disabled", "top_k", "context_budget_chars"}
-	knownZDRKeys       = []string{"allow_non_zdr", "allow_data_collection", "allow_fallbacks", "provider_ignore_list"}
+	knownZDRKeys       = []string{"allow_non_zdr", "allow_data_collection", "allow_fallbacks", "provider_ignore_list", "provider_order", "provider_sort"}
 	knownTierKeys      = []string{"slug", "active", "note"}
 )
 

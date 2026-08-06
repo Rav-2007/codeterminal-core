@@ -86,6 +86,7 @@ type HandshakeRequest struct {
 	ProtocolVersion int      `json:"protocol_version"`
 	ClientName      string   `json:"client_name"`
 	Capabilities    []string `json:"capabilities,omitempty"`
+	BearerToken     string   `json:"bearer_token,omitempty"`
 }
 
 // HasCapability reports whether the client declared the given capability slug.
@@ -161,6 +162,13 @@ type HandshakeResponse struct {
 // is inert and behaves identically to leaving it empty. A daemon built
 // before this field existed simply ignores it (routes as if it were
 // empty), exactly like Workspace/History above.
+//
+// Tier is optional and additive: the user's chosen models.json tier name
+// (e.g. "minimax_m3", "qwen36_plus"). When set to an active tier with a
+// non-empty slug, the router uses that model for this request and does not
+// apply PromptKind escalation. Empty means "use default routing". An unknown
+// or inactive name falls back to the default tier with a logged reason — it
+// never invents a slug. Older daemons ignore the field.
 type PromptRequest struct {
 	ProtocolVersion int    `json:"protocol_version"`
 	Prompt          string `json:"prompt"`
@@ -168,6 +176,8 @@ type PromptRequest struct {
 	History         []Turn `json:"history,omitempty"`
 	Reset           bool   `json:"reset,omitempty"`
 	PromptKind      string `json:"prompt_kind,omitempty"`
+	Tier            string `json:"tier,omitempty"`
+	Mode            string `json:"mode,omitempty"`
 }
 
 // Turn is one prior message in a conversation, supplied by the client so
@@ -559,6 +569,10 @@ const (
 	// configured that server on purpose and deserves to know which of the two
 	// happened.
 	DegradedToolMenuTruncated = "tool_menu_truncated"
+
+	// DegradedWorkspaceTooLarge: the workspace has exceeded the maximum file count
+	// limit, and indexing has been suspended to prevent resource exhaustion.
+	DegradedWorkspaceTooLarge = "workspace_too_large"
 )
 
 // Degradation names one subsystem running in a reduced mode, in the same
@@ -572,8 +586,9 @@ const (
 // and never a path, host, or internal error string. Those stay in the daemon
 // log, which keeps the full diagnostic.
 type Degradation struct {
-	Component string `json:"component"`
-	Detail    string `json:"detail"`
+	Component string         `json:"component"`
+	Detail    string         `json:"detail"`
+	Metadata  map[string]any `json:"metadata,omitempty"`
 }
 
 // HistoryInfo reports what the daemon did with the conversation turns a
@@ -851,6 +866,18 @@ type StatusRetrieval struct {
 // Counters is additive and omitted when absent, so ProtocolVersion stays at 1: a
 // client built before it existed decodes the response exactly as it always did
 // and ignores the field. See StatusCounters.
+//
+// AvailableTiers lists every models.json tier so a client can offer model
+// selection (e.g. TUI `/model`) without reading the config file itself.
+
+// StatusTier is one models.json tier as advertised on the status surface.
+type StatusTier struct {
+	Name   string `json:"name"`
+	Slug   string `json:"slug"`
+	Active bool   `json:"active"`
+	Note   string `json:"note,omitempty"`
+}
+
 type StatusResponse struct {
 	ProtocolVersion  int             `json:"protocol_version"`
 	DaemonVersion    string          `json:"daemon_version"`
@@ -859,6 +886,7 @@ type StatusResponse struct {
 	Workspace        string          `json:"workspace,omitempty"`
 	Tier             string          `json:"tier,omitempty"`
 	Model            string          `json:"model,omitempty"`
+	AvailableTiers   []StatusTier    `json:"available_tiers,omitempty"`
 	Retrieval        StatusRetrieval `json:"retrieval"`
 	MemoryAvailable  bool            `json:"memory_available"`
 	APIKeyConfigured bool            `json:"api_key_configured"`

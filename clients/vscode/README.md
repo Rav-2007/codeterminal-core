@@ -1,4 +1,4 @@
-# CodeTerminal VS Code Extension
+# Mochiii VS Code Extension
 
 A chat panel inside VS Code that talks to the **already-running** local
 `codeterminal-daemon` over its existing newline-delimited JSON Unix-socket
@@ -60,7 +60,7 @@ npm run compile
 
 Then open this `clients/vscode` folder as a VS Code workspace and press
 `F5` to launch an Extension Development Host. Run the command
-**"CodeTerminal: Open Chat"** (Ctrl/Cmd+Shift+P). Any cross-session history
+**"Mochiii: Open Chat"** (Ctrl/Cmd+Shift+P). Any cross-session history
 the daemon has for its workspace renders before you type anything; sending
 a prompt streams the grounded answer back token-by-token.
 

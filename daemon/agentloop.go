@@ -60,6 +60,7 @@ type agentTurn struct {
 	// task it was given for. A durable "always allow" belongs in models.json,
 	// where the user writes it themselves and can read it back later.
 	grants map[string]bool
+	mode   string
 }
 
 // grant records an approve-for-turn decision.
@@ -127,6 +128,7 @@ func (s *Server) runAgentLoop(
 	turnStart time.Time,
 	registry *mcp.Registry,
 	model string,
+	mode string,
 	messages []chatMessage,
 	routing providerRouting,
 	appr approver,
@@ -137,7 +139,7 @@ func (s *Server) runAgentLoop(
 	onDegraded func(protocol.Degradation),
 ) (agentResult, error) {
 	bud := resolveBudget(s.cfg.MCP.Budget, turnStart)
-	turn := &agentTurn{messages: messages}
+	turn := &agentTurn{messages: messages, mode: mode}
 
 	tools, listErrs := s.advertisedToolSpecs(ctx, registry)
 	for _, err := range listErrs {
@@ -263,6 +265,13 @@ func (s *Server) runAgentLoop(
 				}, nil
 			}
 		}
+
+		// Breakpoint 3: the end of this turn's tool results. This ensures that a long
+		// loop caches its own intermediate work as it goes, preventing the cumulative
+		// context window from being re-evaluated on every iteration.
+		if len(turn.messages) > 0 {
+			turn.messages[len(turn.messages)-1].CacheControl = &cacheControl{Type: "ephemeral"}
+		}
 	}
 }
 
@@ -346,7 +355,7 @@ func (s *Server) dispatchToolCall(
 	// killed for taking the care this prompt exists to ask of them.
 	bud.deadline = bud.deadline.Add(decision.waited)
 
-	audit := auditFor(turn.iteration, name, decision.tool, decision.policy, arguments)
+	audit := auditFor(turn.iteration, turn.mode, name, decision.tool, decision.policy, arguments)
 	audit.Source, audit.DenyCause = decision.source, decision.cause
 	audit.WaitedMS = decision.waited.Milliseconds()
 	if decision.tool.Server != "" {

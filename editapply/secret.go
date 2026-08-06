@@ -58,13 +58,20 @@ var SecretFileGlobs = []string{
 	// for a basename gate) and is left to Layer 2.
 	"*service-account*.json",
 	"*serviceaccount*.json",
+
+	// Keyrings, keystores, and password databases.
+	"*.kdbx",
+	"*.keystore",
+	"*.jks",
+	"*.keychain",
+	"*.pkcs12",
 }
 
 // SecretSubstrings is a defense-in-depth net beyond the glob list: any
 // basename containing one of these (case-insensitive) is refused too.
 // Over-refusing is a safe failure mode for a security boundary; under-
 // refusing isn't.
-var SecretSubstrings = []string{"secret", "credential"}
+var SecretSubstrings = []string{"secret", "credential", "private_key", "privatekey", "id_token"}
 
 // SecretNameAllowlist carves specific PUBLIC-key names back out of the broader
 // private-key globs above. The exact-match SSH patterns (id_ed25519, id_ecdsa,
@@ -86,7 +93,10 @@ var SecretNameAllowlist = []string{
 // source of truth for that policy — daemon's chunker.go and this package's
 // ResolveSafeTargetPath both call it, rather than each keeping their own copy.
 func MatchesSecretName(base string) bool {
-	lower := strings.ToLower(base)
+	// NormalizeComponent, not strings.ToLower: Win32 strips trailing dots and
+	// spaces before resolving, so ".env " and "id_rsa." reach the same files a
+	// bare fold would let past. See pathhazard.go.
+	lower := NormalizeComponent(base)
 	for _, sub := range SecretSubstrings {
 		if strings.Contains(lower, sub) {
 			return true

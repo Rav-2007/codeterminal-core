@@ -34,7 +34,7 @@ func TestWireTags(t *testing.T) {
 		{"PromptRequest", PromptRequest{}, []string{"protocol_version", "prompt", "workspace", "history", "reset", "prompt_kind"}},
 		{"Turn", Turn{}, []string{"role", "content"}},
 		{"IncompleteInfo", IncompleteInfo{}, []string{"reason", "detail"}},
-		{"Degradation", Degradation{}, []string{"component", "detail"}},
+		{"Degradation", Degradation{}, []string{"component", "detail", "metadata"}},
 		{"HistoryInfo", HistoryInfo{}, []string{}},
 		{"EditBlockWire", EditBlockWire{}, []string{"file_path", "search", "replace"}},
 		{"ApplyEditRequest", ApplyEditRequest{}, []string{"protocol_version", "edit"}},

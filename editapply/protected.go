@@ -3,7 +3,6 @@ package editapply
 import (
 	"fmt"
 	"path/filepath"
-	"strings"
 )
 
 // ProtectedDirNames are directory names an edit block may never write into, at
@@ -56,8 +55,12 @@ var ProtectedDirNames = map[string]bool{
 // symmetric. On a genuinely case-sensitive filesystem the fold is merely
 // redundant: no legitimate source directory is a case-variant of .git/.ssh/etc.,
 // so nothing that should be indexed or edited is newly refused.
+// Normalization is NormalizeComponent rather than strings.ToLower: Win32 strips
+// trailing dots and spaces before resolving, so ".GIT." and ".git " reach the
+// same directory a bare fold would miss. Same reasoning as the case fold
+// itself, one step further -- see pathhazard.go.
 func IsProtectedDirName(name string) bool {
-	return ProtectedDirNames[strings.ToLower(name)]
+	return ProtectedDirNames[NormalizeComponent(name)]
 }
 
 // ProtectedDirComponent returns the first component of a workspace-relative
@@ -71,7 +74,10 @@ func ProtectedDirComponent(relPath string) string {
 	if cleaned == "." {
 		return ""
 	}
-	for _, part := range strings.Split(cleaned, string(filepath.Separator)) {
+	// SplitComponents, not a split on this platform's separator: on Linux
+	// `.git\hooks\evil` is ONE component and is not protected, while on the
+	// NTFS share it may be written to it is three and the first is .git.
+	for _, part := range SplitComponents(cleaned) {
 		if IsProtectedDirName(part) {
 			return part
 		}

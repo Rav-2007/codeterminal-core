@@ -81,11 +81,11 @@ var lastDegradations []protocol.Degradation
 func runLoopWith(t *testing.T, s *Server, appr approver) (agentResult, []protocol.ToolActivity, error) {
 	t.Helper()
 	lastDegradations = nil
-	registry, _ := s.buildRegistry(context.Background(), s.logger, &proposalSink{})
+	registry, _ := s.buildRegistry(context.Background(), s.logger, &proposalSink{}, "")
 	t.Cleanup(func() { _ = registry.Close() })
 
 	var activity []protocol.ToolActivity
-	res, err := s.runAgentLoop(context.Background(), time.Now(), registry, "m",
+	res, err := s.runAgentLoop(context.Background(), time.Now(), registry, "m", "auto",
 		[]chatMessage{{Role: "user", Content: "go"}}, providerRouting{}, appr,
 		func(string) error { return nil },
 		func(a protocol.ToolActivity) { activity = append(activity, a) },
@@ -532,12 +532,12 @@ func TestConnectTimeIsChargedToTheTurnBudget(t *testing.T) {
 		Budget:  MCPBudgetConfig{TurnTimeoutSeconds: 30},
 	})
 
-	registry, _ := s.buildRegistry(context.Background(), s.logger, &proposalSink{})
+	registry, _ := s.buildRegistry(context.Background(), s.logger, &proposalSink{}, "")
 	t.Cleanup(func() { _ = registry.Close() })
 
 	// 45 s of connect against a 30 s budget: the budget is already spent.
 	turnStart := time.Now().Add(-45 * time.Second)
-	res, err := s.runAgentLoop(context.Background(), turnStart, registry, "m",
+	res, err := s.runAgentLoop(context.Background(), turnStart, registry, "m", "auto",
 		[]chatMessage{{Role: "user", Content: "go"}}, providerRouting{}, nil,
 		func(string) error { return nil }, nil, nil, nil, nil,
 	)

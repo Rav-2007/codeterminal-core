@@ -65,8 +65,8 @@ func (p *proposalSink) add(b editapply.EditBlock) {
 // builtinTools returns the Lane A tools, closed over this Server's state and
 // this turn's proposal sink. Registered by buildRegistry, which forces their
 // lane and confinement so a tool here cannot misreport itself.
-func (s *Server) builtinTools(proposals *proposalSink) []mcp.Builtin {
-	return []mcp.Builtin{
+func (s *Server) builtinTools(proposals *proposalSink, mode string) []mcp.Builtin {
+	tools := []mcp.Builtin{
 		{
 			Tool: mcp.Tool{
 				Name:        "read_file",
@@ -83,8 +83,9 @@ func (s *Server) builtinTools(proposals *proposalSink) []mcp.Builtin {
 		},
 		{
 			Tool: mcp.Tool{
-				Name:        "list_directory",
-				Description: "List the entries of a workspace directory. The path must be workspace-relative.",
+				Name: "list_directory",
+				Description: "List file and subdirectory names in a workspace directory. " +
+					"Does not execute tests, builds, or other commands. The path must be workspace-relative.",
 				Schema: schema(`{
 					"type":"object",
 					"properties":{"path":{"type":"string","description":"Workspace-relative directory, or \".\" for the root."}},
@@ -112,6 +113,71 @@ func (s *Server) builtinTools(proposals *proposalSink) []mcp.Builtin {
 		},
 		{
 			Tool: mcp.Tool{
+				Name: "query_compiler_definition",
+				Description: "Queries the native language compiler/server (e.g., gopls) for the definition of a symbol. " +
+					"The path must be workspace-relative. Line and character are 0-indexed.",
+				Schema: schema(`{
+					"type":"object",
+					"properties":{
+						"path":{"type":"string","description":"Workspace-relative path to the file containing the symbol."},
+						"line":{"type":"integer","description":"0-indexed line number."},
+						"character":{"type":"integer","description":"0-indexed character offset."}
+					},
+					"required":["path","line","character"],
+					"additionalProperties":false
+				}`),
+				ReadOnlyHint: true,
+			},
+			Handler: s.builtinLSPDefinition,
+		},
+		{
+			Tool: mcp.Tool{
+				Name: "query_compiler_references",
+				Description: "Queries the native language compiler/server (e.g., gopls) for all usages/references of a symbol. " +
+					"The path must be workspace-relative. Line and character are 0-indexed.",
+				Schema: schema(`{
+					"type":"object",
+					"properties":{
+						"path":{"type":"string","description":"Workspace-relative path to the file containing the symbol."},
+						"line":{"type":"integer","description":"0-indexed line number."},
+						"character":{"type":"integer","description":"0-indexed character offset."}
+					},
+					"required":["path","line","character"],
+					"additionalProperties":false
+				}`),
+				ReadOnlyHint: true,
+			},
+			Handler: s.builtinLSPReferences,
+		},
+		{
+			Tool: mcp.Tool{
+				Name: "sandbox_exec",
+				// The description is what the approving human reads, so it must
+				// not promise confinement the host may not provide. It said
+				// "Runs in a restricted sandbox" while the handler executed
+				// straight on the host with the daemon's full environment.
+				Description: "Run a build or test command (go, npm, make, cargo) in the workspace root, " +
+					"with a 30s timeout. Confined by bwrap or docker WHEN ONE IS INSTALLED; otherwise it " +
+					"runs with your full privileges. These tools execute project-supplied scripts " +
+					"(Makefile recipes, package.json scripts, build.rs), so approving a call approves " +
+					"whatever the project's build files do. This daemon's API credentials are never passed to it.",
+				Schema: schema(`{
+					"type":"object",
+					"properties":{
+						"command":{"type":"string","description":"The shell command to execute."}
+					},
+					"required":["command"],
+					"additionalProperties":false
+				}`),
+				ReadOnlyHint: false,
+			},
+			Handler: s.builtinSandboxExec,
+		},
+	}
+
+	if mode != "plan" {
+		tools = append(tools, mcp.Builtin{
+			Tool: mcp.Tool{
 				Name: "propose_edit",
 				Description: "Propose an edit to a workspace file. The edit is NOT applied: it is shown " +
 					"to the user as a reviewable diff, which they accept or reject. Give the exact " +
@@ -126,15 +192,35 @@ func (s *Server) builtinTools(proposals *proposalSink) []mcp.Builtin {
 					"required":["path","search","replace"],
 					"additionalProperties":false
 				}`),
-				// Read-only in the sense that matters here: this call does not
-				// mutate anything. It produces a proposal.
 				ReadOnlyHint: true,
 			},
 			Handler: func(ctx context.Context, raw json.RawMessage) (mcp.Result, error) {
 				return s.builtinProposeEdit(ctx, raw, proposals)
 			},
 		},
+			mcp.Builtin{
+				Tool: mcp.Tool{
+					Name:        "propose_ast_edit",
+					Description: "Propose an edit to a workspace file via AST diffing. Finds the exact node for the given symbol (e.g. 'function foo' or 'MyStruct') using the native compiler, and replaces its entire definition with the supplied code. The edit is NOT applied immediately: it is shown to the user as a reviewable diff.",
+					Schema: schema(`{
+					"type":"object",
+					"properties":{
+						"path":{"type":"string","description":"Workspace-relative path to edit."},
+						"symbol":{"type":"string","description":"The exact name of the symbol/function to replace (e.g. 'foo' or 'MyClass')."},
+						"replace":{"type":"string","description":"The full new code to replace the symbol with."}
+					},
+					"required":["path","symbol","replace"],
+					"additionalProperties":false
+				}`),
+					ReadOnlyHint: true,
+				},
+				Handler: func(ctx context.Context, raw json.RawMessage) (mcp.Result, error) {
+					return s.builtinProposeASTEdit(ctx, raw, proposals)
+				},
+			})
 	}
+
+	return tools
 }
 
 func schema(s string) json.RawMessage {

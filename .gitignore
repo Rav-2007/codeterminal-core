@@ -21,3 +21,8 @@ proxy/proxy
 *.db
 *.db-shm
 *.db-wal
+
+# Coverage profiles are build output, not source. They were appearing as
+# untracked noise in every status during the 2026-08 QA passes.
+coverage.out
+**/coverage.out

@@ -356,6 +356,12 @@ func resolveSafeTarget(realWorkspaceRoot, relPath string) (path string, exists b
 		return "", false, fmt.Errorf("path %q escapes the workspace root", relPath)
 	}
 
+	// Before the protected and secret gates, because every hazard it refuses is
+	// a way of spelling a name those gates would not recognise.
+	if err := RejectPathHazards(cleaned); err != nil {
+		return "", false, err
+	}
+
 	if component := ProtectedDirComponent(cleaned); component != "" {
 		return "", false, refuseProtectedDir(relPath, component)
 	}

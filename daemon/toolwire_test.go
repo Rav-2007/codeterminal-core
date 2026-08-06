@@ -43,7 +43,7 @@ func TestRequestBodyIsByteIdenticalWithoutTools(t *testing.T) {
 	// up here as a literal diff a reviewer can read.
 	want := `{"model":"deepseek/deepseek-v4-flash",` +
 		`"messages":[{"role":"system","content":"you are an assistant"},` +
-		`{"role":"user","content":"earlier"},` +
+		`{"role":"user","content":"earlier","cache_control":{"type":"ephemeral"}},` +
 		`{"role":"user","content":"hello"}],` +
 		`"stream":true,` +
 		`"provider":{"zdr":true,"data_collection":"deny","allow_fallbacks":false},` +

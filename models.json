@@ -2,14 +2,23 @@
   "config_version": 1,
   "default_tier": "primary",
   "tiers": {
-    "primary":    { "slug": "deepseek/deepseek-v4-flash",             "active": true,  "note": "~90% of tasks: edits, generation, diffs. Price varies by served provider - check OpenRouter, do not trust a number cached here" },
-    "ghost_text": { "slug": "qwen/qwen3-coder-30b-a3b-instruct", "active": false, "note": "fast keystroke completions; enable in Phase 3.5" },
-    "reasoning":  { "slug": "deepseek/deepseek-r1",              "active": false, "note": "gated deep debugging on non-zero exits; ~3x output cost" }
+    "primary":         { "slug": "deepseek/deepseek-v4-flash",          "active": true,  "note": "Default: ~90% of tasks — edits, generation, diffs (DeepSeek V4 Flash)" },
+    "laguna_s_21":     { "slug": "poolside/laguna-s-2.1",               "active": true,  "note": "Laguna S 2.1 — select with /model laguna_s_21" },
+    "step_37_flash":   { "slug": "stepfun/step-3.7-flash",              "active": true,  "note": "Step 3.7 Flash — select with /model step_37_flash" },
+    "ling_30_flash":   { "slug": "inclusionai/ling-3.0-flash",          "active": true,  "note": "Ling 3.0 Flash — select with /model ling_30_flash" },
+    "minimax_m3":      { "slug": "minimax/minimax-m3",                  "active": true,  "note": "MiniMax M3 — select with /model minimax_m3" },
+    "qwen35_397b":     { "slug": "qwen/qwen3.5-397b-a17b",              "active": true,  "note": "Qwen 3.5 397B — select with /model qwen35_397b" },
+    "qwen36_plus":     { "slug": "qwen/qwen3.6-plus",                   "active": true,  "note": "Qwen 3.6 Plus — select with /model qwen36_plus" },
+    "deepseek_v4_pro": { "slug": "deepseek/deepseek-v4-pro",            "active": true,  "note": "DeepSeek V4 Pro — select with /model deepseek_v4_pro" },
+    "gemini_36_flash": { "slug": "google/gemini-3.6-flash",             "active": true,  "note": "Gemini 3.6 Flash — select with /model gemini_36_flash" },
+    "ghost_text":      { "slug": "qwen/qwen3-coder-30b-a3b-instruct",   "active": false, "note": "fast keystroke completions; enable in Phase 3.5" },
+    "reasoning":       { "slug": "deepseek/deepseek-r1",                "active": false, "note": "gated deep debugging on non-zero exits; ~3x output cost" }
   },
   "zdr": {
     "allow_non_zdr": false,
     "allow_data_collection": false,
     "allow_fallbacks": true,
-    "provider_ignore_list": ["DeepInfra"]
+    "provider_ignore_list": ["DeepInfra"],
+    "provider_sort": "price"
   }
 }

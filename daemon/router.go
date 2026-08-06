@@ -27,7 +27,12 @@ var reasoningPromptKinds = map[string]bool{
 type RouteInput struct {
 	// PromptKind is an explicit, client-stated signal (see
 	// reasoningPromptKinds) -- not inferred from prompt content.
-	PromptKind    string
+	PromptKind string
+	// PreferredTier is an explicit user model choice (models.json tier name).
+	// When set to an active tier with a non-empty slug it wins over default
+	// routing and over PromptKind escalation. Unknown/inactive names fall
+	// through with a reason string — they never invent a slug.
+	PreferredTier string
 	HasExitSignal bool
 	LastExitCode  int
 }
@@ -58,12 +63,20 @@ func reasoningSignals(input RouteInput) []string {
 }
 
 // Route selects a model tier for a request and resolves its slug from cfg.
-// It never returns an inactive or missing tier's slug: reasoning is only
-// selected on a genuine escalation signal (non-zero exit, or an explicit
-// client-set PromptKind -- see reasoningSignals), and only if the tier is
-// active in cfg; every other case falls back to cfg's default tier. Route
-// does not call the model — it only decides.
+// Preference order:
+//  1. PreferredTier when it names an active tier with a non-empty slug
+//  2. reasoning escalation on a genuine signal, if that tier is active
+//  3. cfg's default tier
+//
+// It never returns an inactive or missing tier's slug. Route does not call
+// the model — it only decides.
 func Route(cfg *Config, input RouteInput) RouteDecision {
+	if name := strings.TrimSpace(input.PreferredTier); name != "" {
+		if tier, ok := cfg.Tiers[name]; ok && tier.Active && tier.Slug != "" {
+			return RouteDecision{Tier: name, Slug: tier.Slug, Reason: "user-selected tier"}
+		}
+		return defaultDecision(cfg, "preferred tier \""+name+"\" is unknown, inactive, or has no slug")
+	}
 	if signals := reasoningSignals(input); len(signals) > 0 {
 		reason := strings.Join(signals, "; ")
 		if tier, ok := cfg.Tiers[tierReasoning]; ok && tier.Active && tier.Slug != "" {

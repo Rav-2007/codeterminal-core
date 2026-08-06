@@ -48,7 +48,7 @@ func (s *Server) runAgentTurn(
 	// join whatever the assistant text itself produced on the Done message.
 	proposals := &proposalSink{}
 
-	registry, connectErrs := s.buildRegistry(ctx, s.logger, proposals)
+	registry, connectErrs := s.buildRegistry(ctx, s.logger, proposals, promptReq.Mode)
 	defer func() {
 		if err := registry.Close(); err != nil {
 			s.logger.Printf("agent: shutting down MCP servers: %v", err)
@@ -73,7 +73,7 @@ func (s *Server) runAgentTurn(
 		}
 	}
 
-	result, err := s.runAgentLoop(ctx, turnStart, registry, model, messages, routing, appr,
+	result, err := s.runAgentLoop(ctx, turnStart, registry, model, promptReq.Mode, messages, routing, appr,
 		func(token string) error {
 			full.WriteString(token)
 			return enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Token: token})

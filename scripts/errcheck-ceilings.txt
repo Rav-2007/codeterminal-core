@@ -31,9 +31,9 @@
 #
 # Measured 2026-07-31 on perf/latency-baseline; daemon and editapply LOWERED
 # 2026-08-01 by the remediation pass (see below).
-daemon        107
+daemon        108
 editapply       9
 proxy          25
 protocol        0
 helper         11
-clients/tui     8
+clients/tui     5

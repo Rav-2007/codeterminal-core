@@ -6,6 +6,22 @@ branch**, not carried forward from `BACKLOG.md` or `docs/HANDOFF.md`. Entries th
 record listed as open but that the code shows are closed are in §7, deleted rather
 than inherited.
 
+**MCP evidence 2026-08-03 (SHA `8979530`):** live-evidence pass + master readiness
+package — hermetic hostile matrix PASS, M1a@64MiB PASS, Lane B echo soak
+**PLATEAU**, orphan soak stray **0**, third-party interop PASS. Front door:
+[`MCP_MASTER.md`](MCP_MASTER.md). Numbers:
+[`MCP_ROBUSTNESS_REPORT_2026-08-03.md`](MCP_ROBUSTNESS_REPORT_2026-08-03.md).
+Playbook: [`MCP_DEBUG_PLAYBOOK.md`](MCP_DEBUG_PLAYBOOK.md). Items 3 and 11 in §6
+remain the engineering closures for connect-budget and stderr bound; this note
+does not reopen them.
+
+**Enterprise QA 2026-08-03:** skill + campaign + Phases 0–4 **PASS** + final
+`make check` green + MCP hermetic spot green. Pathhazard WIP still
+**SHIP-READY** uncommitted. Front door:
+[`ENTERPRISE_QA_MASTER.md`](ENTERPRISE_QA_MASTER.md). Report:
+[`ENTERPRISE_QA_REPORT_2026-08-03.md`](ENTERPRISE_QA_REPORT_2026-08-03.md).
+Phase 5 (real-model) **NOT RUN**.
+
 This document exists because the register was the first bug. `docs/HANDOFF.md` was
 v7 (2026-07-24) and predated the 2026-07-30 launch gate, three robustness phases,
 PR #1 landing on `main`, and every commit of this branch — so "what is open?" could

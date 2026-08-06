@@ -16,9 +16,227 @@
   const searchInputEl = document.getElementById('searchInput');
   const searchBtn = document.getElementById('searchBtn');
   const searchResultsEl = document.getElementById('searchResults');
+  const searchRowEl = document.getElementById('searchRow');
+  const slashMenuEl = document.getElementById('slashMenu');
+  const modelChipEl = document.getElementById('modelChip');
+  const modelChipLabelEl = document.getElementById('modelChipLabel');
+  const newChatBtn = document.getElementById('newChatBtn');
+  const historyBtn = document.getElementById('historyBtn');
+  const settingsBtn = document.getElementById('settingsBtn');
+  const closeBtn = document.getElementById('closeBtn');
+  const attachBtn = document.getElementById('attachBtn');
+  const fileInputEl = document.getElementById('fileInput');
+  const attachListEl = document.getElementById('attachList');
+  const composerShellEl = document.getElementById('composerShell');
+  const effortMeterEl = document.getElementById('effortMeter');
+  const modeBtnLabelEl = document.getElementById('modeBtnLabel');
+  const contextBtn = document.getElementById('contextBtn');
+  const contextPopup = document.getElementById('contextPopup');
+  const contextPopupClose = document.getElementById('contextPopupClose');
+  const contextPctEl = document.getElementById('contextPct');
+  const contextTotalsEl = document.getElementById('contextTotals');
+  const contextBarEl = document.getElementById('contextBar');
+  const contextRowsEl = document.getElementById('contextRows');
+  const contextRingFill = document.getElementById('contextRingFill');
+  const modesPopup = document.getElementById('modesPopup');
+  const modesList = document.getElementById('modesList');
+  const modeBtnIcon = document.getElementById('modeBtnIcon');
+
+  /** @type {{ name: string, text: string }[]} */
+  let pendingAttachments = [];
+  const MAX_ATTACH_CHARS = 80000;
+  const MAX_ATTACH_FILES = 8;
+  const CONTEXT_LIMIT_TOKENS = 128000;
+  const RING_CIRCUMFERENCE = 2 * Math.PI * 8; // r=8 in the SVG
+
+  let lastGroundingInfo = null;
+  let lastHistoryMeta = null;
+
+  function estimateTokens(chars) {
+    return Math.max(0, Math.ceil(chars / 4));
+  }
+
+  function formatTokenCount(n) {
+    if (n >= 1000) {
+      const k = n / 1000;
+      return (k >= 10 ? k.toFixed(0) : k.toFixed(1).replace(/\.0$/, '')) + 'K';
+    }
+    return String(n);
+  }
+
+  function collectConversationChars() {
+    let chars = 0;
+    const msgs = transcriptEl.querySelectorAll('.msg.user .body, .msg.assistant .body');
+    msgs.forEach((el) => {
+      chars += (el.textContent || '').length;
+    });
+    return chars;
+  }
+
+  function computeContextUsage() {
+    const systemPrompt = 1200; // embedded daemon system prompt (approx)
+    const tools = 2400; // MCP / agent tool schemas when enabled (approx)
+    const rules = 400;
+    const attachChars = pendingAttachments.reduce((sum, f) => sum + f.name.length + f.text.length, 0);
+    const attachments = estimateTokens(attachChars);
+    const chunks = (lastGroundingInfo && lastGroundingInfo.chunks) || 0;
+    const retrieval = estimateTokens(chunks * 800); // ~800 chars/chunk estimate
+    const conversation = estimateTokens(collectConversationChars());
+    const rows = [
+      { key: 'system', label: 'System prompt', tokens: systemPrompt, color: '#c4b0b4' },
+      { key: 'tools', label: 'Tool definitions', tokens: tools, color: '#c4a0e0' },
+      { key: 'rules', label: 'Rules', tokens: rules, color: '#7dbe8a' },
+      { key: 'retrieval', label: 'Retrieved context', tokens: retrieval, color: '#6eb0e0' },
+      { key: 'attachments', label: 'Attachments', tokens: attachments, color: '#f0a060' },
+      { key: 'conversation', label: 'Conversation', tokens: conversation, color: '#d4727d' },
+    ];
+    const used = rows.reduce((s, r) => s + r.tokens, 0);
+    const pct = Math.min(100, Math.round((used / CONTEXT_LIMIT_TOKENS) * 100));
+    return { rows, used, pct, limit: CONTEXT_LIMIT_TOKENS };
+  }
+
+  function refreshContextUsage() {
+    const usage = computeContextUsage();
+    if (contextRingFill) {
+      const offset = RING_CIRCUMFERENCE * (1 - usage.pct / 100);
+      contextRingFill.setAttribute('stroke-dasharray', String(RING_CIRCUMFERENCE));
+      contextRingFill.setAttribute('stroke-dashoffset', String(offset));
+    }
+    if (contextBtn) {
+      contextBtn.classList.toggle('hot', usage.pct >= 80);
+      contextBtn.title = `Context usage: ${usage.pct}% (~${formatTokenCount(usage.used)} / ${formatTokenCount(usage.limit)})`;
+    }
+    if (!contextPopup || contextPopup.hidden) {
+      return;
+    }
+    if (contextPctEl) {
+      contextPctEl.textContent = usage.pct + '% Full';
+    }
+    if (contextTotalsEl) {
+      contextTotalsEl.textContent =
+        '~' + formatTokenCount(usage.used) + ' / ' + formatTokenCount(usage.limit) + ' Tokens';
+    }
+    if (contextBarEl) {
+      clearChildren(contextBarEl);
+      usage.rows.forEach((row) => {
+        if (row.tokens <= 0) {
+          return;
+        }
+        const seg = document.createElement('div');
+        seg.className = 'seg';
+        seg.style.background = row.color;
+        seg.style.flexGrow = String(Math.max(row.tokens, 1));
+        seg.title = row.label + ': ' + formatTokenCount(row.tokens);
+        contextBarEl.appendChild(seg);
+      });
+      const remain = Math.max(usage.limit - usage.used, 0);
+      if (remain > 0) {
+        const empty = document.createElement('div');
+        empty.className = 'seg';
+        empty.style.background = '#f3e8ea';
+        empty.style.flexGrow = String(remain);
+        empty.title = 'Free: ' + formatTokenCount(remain);
+        contextBarEl.appendChild(empty);
+      }
+    }
+    if (contextRowsEl) {
+      clearChildren(contextRowsEl);
+      usage.rows.forEach((row) => {
+        const line = document.createElement('div');
+        line.className = 'context-row';
+        const swatch = document.createElement('span');
+        swatch.className = 'swatch';
+        swatch.style.background = row.color;
+        const label = document.createElement('span');
+        label.className = 'label';
+        label.textContent = row.label;
+        const count = document.createElement('span');
+        count.className = 'count';
+        count.textContent = formatTokenCount(row.tokens);
+        line.appendChild(swatch);
+        line.appendChild(label);
+        line.appendChild(count);
+        contextRowsEl.appendChild(line);
+      });
+    }
+  }
+
+  function setContextPopupOpen(open) {
+    if (!contextPopup || !contextBtn) {
+      return;
+    }
+    contextPopup.hidden = !open;
+    contextBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (open) {
+      refreshContextUsage();
+    }
+  }
+
+  if (contextBtn) {
+    contextBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      setContextPopupOpen(contextPopup.hidden);
+    });
+  }
+  if (contextPopupClose) {
+    contextPopupClose.addEventListener('click', () => setContextPopupOpen(false));
+  }
+  document.addEventListener('click', (e) => {
+    if (contextPopup && !contextPopup.hidden) {
+      if (!contextPopup.contains(e.target) && (!contextBtn || !contextBtn.contains(e.target))) {
+        setContextPopupOpen(false);
+      }
+    }
+    if (modesPopup && !modesPopup.hidden) {
+      if (!modesPopup.contains(e.target) && (!autoApplyToggle || !autoApplyToggle.contains(e.target))) {
+        setModesPopupOpen(false);
+      }
+    }
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      setContextPopupOpen(false);
+      if (typeof setModesPopupOpen === 'function') setModesPopupOpen(false);
+    }
+  });
+
+  refreshContextUsage();
+
+  // Keep in sync with clients/vscode/src/slashCommands.ts (and TUI slash.go).
+  const SLASH_COMMANDS = [
+    { name: 'help', summary: 'list slash commands' },
+    { name: 'model', summary: 'list or select a models.json tier' },
+    { name: 'mcp-server', summary: 'show configured MCP servers and tool policy' },
+    { name: 'clear', summary: 'clear the on-screen transcript' },
+    { name: 'compact', summary: 'drop older turns; keep the last few' },
+    { name: 'context', summary: 'show workspace, model tier, and last grounding' },
+    { name: 'git', summary: 'show git status for the workspace' },
+    { name: 'init', summary: 'quick start checklist for this workspace' },
+    { name: 'search', summary: 'search past conversation turns' },
+    { name: 'exit', summary: 'close the chat panel' },
+    { name: 'explain', summary: 'explain code or a concept' },
+    { name: 'fix', summary: 'find and fix a bug' },
+    { name: 'test', summary: 'add or improve tests' },
+    { name: 'refactor', summary: 'refactor code' },
+    { name: 'doc', summary: 'write or improve documentation' },
+    { name: 'security', summary: 'security review' },
+    { name: 'review', summary: 'code review' },
+    { name: 'plan', summary: 'make an implementation plan' },
+    { name: 'run', summary: 'suggest how to run/build/test' },
+    { name: 'implement', summary: 'implement a new feature from end-to-end' },
+    { name: 'debug', summary: 'deeply debug an issue, error, or failing test' },
+    { name: 'explore', summary: 'explore the codebase to gather context' },
+    { name: 'research', summary: 'research a topic comprehensively' },
+    { name: 'reason', summary: 'deep reasoning pass' },
+  ];
+
+  let slashFilter = '';
+  let slashIndex = 0;
 
   let streaming = false;
   let currentAssistantBubble = null;
+  let currentAssistantCard = null;
+  let currentAssistantRaw = '';
   let currentReasoningBody = null;
   let currentEditProposalEl = null;
   let pendingUndoButton = null;
@@ -40,26 +258,226 @@
   // captures that value per-run and never re-reads this variable mid-run
   // (see currentRunAutoApply in chatPanel.ts), so flipping this toggle
   // while a run is in flight has no effect until the next prompt.
-  let autoApplyEnabled = false;
+  let currentMode = 'auto'; // 'manual', 'plan', 'auto'
+  let autoApplyEnabled = true;
 
   const autoApplyToggle = document.getElementById('autoApplyToggle');
 
-  function renderAutoApplyToggle() {
-    autoApplyToggle.textContent = autoApplyEnabled ? 'Auto-apply: ON' : 'Auto-apply: OFF';
-    autoApplyToggle.className = autoApplyEnabled ? 'auto-apply-toggle on' : 'auto-apply-toggle off';
-    // aria-checked, not just the label text: the button is role="switch" (see
-    // chatPanel.ts), and its state previously existed ONLY in textContent and a
-    // CSS class -- both invisible to a screen reader, on the control that
-    // decides whether edits reach disk without a per-edit confirmation.
-    autoApplyToggle.setAttribute('aria-checked', autoApplyEnabled ? 'true' : 'false');
+  function clearChildren(el) {
+    while (el.firstChild) {
+      el.removeChild(el.firstChild);
+    }
   }
 
-  autoApplyToggle.addEventListener('click', () => {
-    autoApplyEnabled = !autoApplyEnabled;
-    renderAutoApplyToggle();
+  function setModesPopupOpen(open) {
+    if (!modesPopup || !autoApplyToggle) {
+      return;
+    }
+    modesPopup.hidden = !open;
+    autoApplyToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+
+  function renderMode() {
+    const isAuto = currentMode === 'auto';
+    autoApplyEnabled = isAuto;
+    
+    if (modeBtnLabelEl) {
+      modeBtnLabelEl.textContent = currentMode.charAt(0).toUpperCase() + currentMode.slice(1);
+    }
+    if (modeBtnIcon) {
+      const icons = {
+        manual: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="mode-svg manual-icon"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><path d="M2 2l7.586 7.586"/><circle cx="11" cy="11" r="2"/><path d="M4 22h16"/></svg>`,
+        plan: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="mode-svg plan-icon"><rect width="8" height="4" x="8" y="2" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="m7 11 2 2 3-3"/><path d="M14 11h3"/><path d="m7 16 2 2 3-3"/><path d="M14 16h3"/></svg>`,
+        auto: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="mode-svg auto-icon"><path d="m21.64 3.64-1.28-1.28a1.21 1.21 0 0 0-1.72 0L2.36 18.64a1.21 1.21 0 0 0 0 1.72l1.28 1.28a1.2 1.2 0 0 0 1.72 0L21.64 5.36a1.2 1.2 0 0 0 0-1.72Z"/><path d="m14 7 3 3"/><path d="M5 6v4"/><path d="M19 14v4"/><path d="M10 2v2"/><path d="M7 8H3"/><path d="M21 16h-4"/><path d="M11 3H9"/></svg>`
+      };
+      modeBtnIcon.innerHTML = icons[currentMode] || icons['auto'];
+    }
+    
+    // Auto gets special on style, others get off style
+    autoApplyToggle.className = isAuto ? 'pill mode-btn on' : 'pill mode-btn off';
+    
+    // Update selected state in popup
+    if (modesList) {
+      const items = modesList.querySelectorAll('.mode-item');
+      items.forEach(item => {
+        item.setAttribute('aria-selected', item.getAttribute('data-mode') === currentMode ? 'true' : 'false');
+      });
+    }
+  }
+
+  autoApplyToggle.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (modesPopup && !modesPopup.hidden) {
+      setModesPopupOpen(false);
+    } else {
+      setContextPopupOpen(false);
+      setModesPopupOpen(true);
+    }
   });
 
-  renderAutoApplyToggle();
+  if (modesList) {
+    modesList.addEventListener('click', (e) => {
+      const item = e.target.closest('.mode-item');
+      if (item) {
+        currentMode = item.getAttribute('data-mode') || 'auto';
+        renderMode();
+        setModesPopupOpen(false);
+      }
+    });
+  }
+
+  renderMode();
+
+  let effortLevel = 3;
+  function renderEffort() {
+    if (!effortMeterEl) {
+      return;
+    }
+    const dots = effortMeterEl.querySelectorAll('.dot');
+    dots.forEach((dot) => {
+      const level = Number(dot.getAttribute('data-level') || '0');
+      dot.classList.toggle('on', level <= effortLevel);
+      dot.classList.toggle('active', level === effortLevel);
+    });
+    effortMeterEl.setAttribute('aria-valuenow', String(effortLevel));
+    effortMeterEl.title = 'Effort: ' + effortLevel + '/5';
+  }
+  if (effortMeterEl) {
+    effortMeterEl.addEventListener('click', () => {
+      effortLevel = effortLevel >= 5 ? 1 : effortLevel + 1;
+      renderEffort();
+    });
+    renderEffort();
+  }
+
+  if (composerShellEl && inputEl) {
+    inputEl.addEventListener('focus', () => composerShellEl.classList.add('focused'));
+    inputEl.addEventListener('blur', () => composerShellEl.classList.remove('focused'));
+  }
+
+  if (newChatBtn) {
+    newChatBtn.addEventListener('click', () => {
+      vscode.postMessage({ type: 'newChat' });
+    });
+  }
+  if (historyBtn && searchRowEl) {
+    historyBtn.addEventListener('click', () => {
+      searchRowEl.classList.toggle('visible');
+      if (searchRowEl.classList.contains('visible')) {
+        searchInputEl.focus();
+      }
+    });
+  }
+  if (settingsBtn) {
+    settingsBtn.addEventListener('click', () => {
+      inputEl.value = '/model ';
+      inputEl.focus();
+      updateSlashFromInput();
+    });
+  }
+  if (closeBtn) {
+    closeBtn.addEventListener('click', () => {
+      vscode.postMessage({ type: 'closePanel' });
+    });
+  }
+  function queueCommand(text) {
+    if (streaming) {
+      return;
+    }
+    inputEl.value = text;
+    send();
+  }
+  if (modelChipEl) {
+    modelChipEl.addEventListener('click', () => queueCommand('/model'));
+  }
+
+  function renderAttachments() {
+    if (!attachListEl) {
+      return;
+    }
+    clearChildren(attachListEl);
+    if (pendingAttachments.length === 0) {
+      attachListEl.hidden = true;
+      return;
+    }
+    attachListEl.hidden = false;
+    pendingAttachments.forEach((file, index) => {
+      const chip = document.createElement('div');
+      chip.className = 'attach-chip';
+      const name = document.createElement('span');
+      name.className = 'attach-name';
+      name.textContent = file.name;
+      name.title = file.name;
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'attach-remove';
+      remove.setAttribute('aria-label', 'Remove ' + file.name);
+      remove.textContent = '×';
+      remove.addEventListener('click', () => {
+        pendingAttachments = pendingAttachments.filter((f) => f !== file);
+        renderAttachments();
+      });
+      chip.appendChild(name);
+      chip.appendChild(remove);
+      attachListEl.appendChild(chip);
+    });
+  }
+
+  function readFileAsText(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ''));
+      reader.onerror = () => reject(reader.error || new Error('read failed'));
+      reader.readAsText(file);
+    });
+  }
+
+  function readFileAsDataURL(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ''));
+      reader.onerror = () => reject(reader.error || new Error('read failed'));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  if (attachBtn && fileInputEl) {
+    attachBtn.addEventListener('click', () => {
+      fileInputEl.click();
+    });
+    fileInputEl.addEventListener('change', async () => {
+      const files = Array.from(fileInputEl.files || []);
+      fileInputEl.value = '';
+      for (const file of files) {
+        if (pendingAttachments.length >= MAX_ATTACH_FILES) {
+          break;
+        }
+        // Increase size limit for images if needed, but 512KB is what's there
+        if (file.size > 2 * 1024 * 1024) { // Allow up to 2MB for images and text now
+          addBubble('error', `skipped ${file.name}: larger than 2MB`);
+          continue;
+        }
+        try {
+          let text;
+          let isImage = file.type.startsWith('image/');
+          if (isImage) {
+            text = await readFileAsDataURL(file);
+          } else {
+            text = await readFileAsText(file);
+            if (text.length > MAX_ATTACH_CHARS) {
+              text = text.slice(0, MAX_ATTACH_CHARS) + '\n…[truncated]';
+            }
+          }
+          pendingAttachments.push({ name: file.name, text, isImage });
+        } catch (err) {
+          addBubble('error', `could not read ${file.name}`);
+        }
+      }
+      renderAttachments();
+      refreshContextUsage();
+      inputEl.focus();
+    });
+  }
 
   // dismissFirstRun drops the static first-run guidance (see chatPanel.ts's
   // #firstRun) once the transcript has real content. Deliberately NOT called
@@ -72,31 +490,189 @@
     }
   }
 
+  function avatarLabel(role) {
+    if (role === 'user') {
+      return 'Y';
+    }
+    if (role === 'error') {
+      return '!';
+    }
+    return 'C';
+  }
+
+  function roleLabel(role) {
+    if (role === 'user') {
+      return 'You';
+    }
+    if (role === 'error') {
+      return 'Error';
+    }
+    return 'CodeTerminal';
+  }
+
   function addBubble(role, text) {
     if (role === 'user' || role === 'assistant') {
       dismissFirstRun();
     }
-    const div = document.createElement('div');
-    div.className = 'turn ' + role;
+    const msg = document.createElement('div');
+    msg.className = 'msg ' + role;
+
+    const avatar = document.createElement('div');
+    avatar.className = 'avatar';
+    avatar.textContent = avatarLabel(role);
+    msg.appendChild(avatar);
+
+    const card = document.createElement('div');
+    card.className = 'card';
+
     const label = document.createElement('span');
     label.className = 'role';
-    label.textContent = role === 'user' ? 'you' : role === 'error' ? 'error' : 'codeterminal';
-    div.appendChild(label);
-    const body = document.createElement('span');
+    label.textContent = roleLabel(role);
+    card.appendChild(label);
+
+    const body = document.createElement('div');
+    body.className = 'body';
     body.textContent = text;
-    div.appendChild(body);
-    transcriptEl.appendChild(div);
+    card.appendChild(body);
+
+    msg.appendChild(card);
+    transcriptEl.appendChild(msg);
     transcriptEl.scrollTop = transcriptEl.scrollHeight;
+
+    if (role === 'assistant') {
+      currentAssistantCard = card;
+      currentAssistantRaw = text;
+    }
     return body;
+  }
+
+  // renderFencedContent builds DOM for assistant text with ``` fences.
+  // textContent / createElement ONLY -- never assemble markup strings.
+  function renderFencedContent(container, text) {
+    clearChildren(container);
+    const parts = String(text).split(/```/);
+    for (let i = 0; i < parts.length; i++) {
+      const chunk = parts[i];
+      if (i % 2 === 0) {
+        if (!chunk) {
+          continue;
+        }
+        const p = document.createElement('div');
+        p.className = 'md-p';
+        p.textContent = chunk;
+        container.appendChild(p);
+        continue;
+      }
+      let lang = '';
+      let code = chunk;
+      const nl = chunk.indexOf('\n');
+      if (nl >= 0) {
+        lang = chunk.slice(0, nl).trim();
+        code = chunk.slice(nl + 1);
+      } else {
+        lang = chunk.trim();
+        code = '';
+      }
+      if (code.endsWith('\n')) {
+        code = code.slice(0, -1);
+      }
+      const block = document.createElement('div');
+      block.className = 'code-block';
+      if (lang) {
+        const langEl = document.createElement('div');
+        langEl.className = 'code-lang';
+        langEl.textContent = lang;
+        block.appendChild(langEl);
+      }
+      const lines = code.split('\n');
+      for (let n = 0; n < lines.length; n++) {
+        const row = document.createElement('div');
+        row.className = 'code-row';
+        const ln = document.createElement('span');
+        ln.className = 'ln';
+        ln.textContent = String(n + 1);
+        const lc = document.createElement('span');
+        lc.className = 'lc';
+        lc.textContent = lines[n];
+        row.appendChild(ln);
+        row.appendChild(lc);
+        block.appendChild(row);
+      }
+      container.appendChild(block);
+    }
+  }
+
+  function attachFeedbackFooter(card, rawText) {
+    if (!card || card.querySelector('.msg-footer')) {
+      return;
+    }
+    const footer = document.createElement('div');
+    footer.className = 'msg-footer';
+
+    const copyBtn = document.createElement('button');
+    copyBtn.type = 'button';
+    copyBtn.textContent = 'Copy';
+    copyBtn.addEventListener('click', () => {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(rawText).then(() => {
+          copyBtn.textContent = 'Copied';
+          setTimeout(() => {
+            copyBtn.textContent = 'Copy';
+          }, 1200);
+        });
+      }
+    });
+    footer.appendChild(copyBtn);
+
+    const up = document.createElement('button');
+    up.type = 'button';
+    up.textContent = '👍';
+    up.setAttribute('aria-label', 'Helpful');
+    const down = document.createElement('button');
+    down.type = 'button';
+    down.textContent = '👎';
+    down.setAttribute('aria-label', 'Not helpful');
+    up.addEventListener('click', () => {
+      up.classList.add('active');
+      down.classList.remove('active');
+    });
+    down.addEventListener('click', () => {
+      down.classList.add('active');
+      up.classList.remove('active');
+    });
+    footer.appendChild(up);
+    footer.appendChild(down);
+
+    const helpful = document.createElement('span');
+    helpful.className = 'helpful';
+    helpful.textContent = 'Was this helpful?';
+    footer.appendChild(helpful);
+
+    card.appendChild(footer);
+  }
+
+  function finalizeAssistant() {
+    if (currentAssistantBubble && currentAssistantCard) {
+      renderFencedContent(currentAssistantBubble, currentAssistantRaw);
+      attachFeedbackFooter(currentAssistantCard, currentAssistantRaw);
+    }
+    currentAssistantBubble = null;
+    currentAssistantCard = null;
+    currentAssistantRaw = '';
   }
 
   function setStreaming(value) {
     streaming = value;
     inputEl.disabled = value;
     sendBtn.disabled = value;
+    if (composerShellEl) {
+      composerShellEl.classList.toggle('sending', value);
+    }
   }
 
   function setGrounding(info) {
+    lastGroundingInfo = info || null;
+    refreshContextUsage();
     if (!info) {
       groundingEl.textContent = '';
       return;
@@ -127,6 +703,8 @@
   // send()) and set at most once per response, since 'historyInfo' rides the
   // same pre-token message as 'grounding'. A non-truncated report shows nothing.
   function setHistoryInfo(info) {
+    lastHistoryMeta = info || null;
+    refreshContextUsage();
     historyNoticeEl.textContent =
       info && info.truncated
         ? '⚠ older conversation history was dropped to fit the model’s limit'
@@ -138,7 +716,7 @@
   // ABOVE the answer -- a visibly SEPARATE area, never spliced into the answer
   // text (which is what gets parsed for edits and stored as history). Before this
   // the tokens were dropped and the user watched a blank bubble while the model
-  // thought. textContent (never innerHTML): thinking is daemon-relayed model
+  // thought. textContent (never assemble markup): thinking is daemon-relayed model
   // text. Accumulates across the many small chunks that arrive per turn.
   function appendReasoning(text) {
     if (!currentReasoningBody) {
@@ -153,7 +731,9 @@
       // Place the thinking block just before the (already-created) answer bubble
       // so it reads top-to-bottom as think-then-answer.
       const answerContainer =
-        currentAssistantBubble && currentAssistantBubble.parentElement;
+        currentAssistantBubble &&
+        currentAssistantBubble.parentElement &&
+        currentAssistantBubble.parentElement.parentElement;
       if (answerContainer && answerContainer.parentElement === transcriptEl) {
         transcriptEl.insertBefore(container, answerContainer);
       } else {
@@ -187,17 +767,22 @@
   //
   // Without this the panel showed "grounded · 3 chunk(s)" for a daemon whose
   // hybrid retrieval had silently collapsed to semantic-only. textContent
-  // (never innerHTML) per line: detail is daemon-authored prose and is
+  // (never assemble markup) per line: detail is daemon-authored prose and is
   // inserted as text, not markup.
   function setDegraded(items) {
-    degradedEl.textContent = '';
+    clearChildren(degradedEl);
     if (!items || items.length === 0) {
       return;
     }
     for (const item of items) {
       const line = document.createElement('span');
       line.className = 'item';
-      line.textContent = `⚠ degraded (${item.component}): ${item.detail}`;
+      let text = `⚠ degraded (${item.component}): ${item.detail}`;
+      if (item.component === 'workspace_too_large' && item.metadata && item.metadata.file_count) {
+        const count = new Intl.NumberFormat().format(item.metadata.file_count);
+        text = `⚠ degraded (${item.component}): workspace is too large (> 10,000 files, exactly ${count}), semantic search is disabled`;
+      }
+      line.textContent = text;
       degradedEl.appendChild(line);
     }
   }
@@ -209,7 +794,7 @@
   // same. A falsy/absent provider clears the line and shows nothing — absence
   // is the common case (OpenRouter does not guarantee the field) and is NOT an
   // error, so it gets neutral styling, never the warning treatment. textContent
-  // (never innerHTML): the provider name is daemon-relayed text. Strictly
+  // (never assemble markup): the provider name is daemon-relayed text. Strictly
   // "served by X" — no fallback claim, no ZDR verdict.
   function setProvider(provider) {
     providerEl.textContent = provider ? `served by: ${provider}` : '';
@@ -220,7 +805,7 @@
   // protocol.TokenResponse.Incomplete). It is appended to the transcript right
   // after the partial answer -- NOT a transient header like grounding/provider
   // that clears next turn -- so the scrollback keeps an honest record that this
-  // reply is incomplete. textContent (never innerHTML): detail is daemon-relayed
+  // reply is incomplete. textContent (never assemble markup): detail is daemon-relayed
   // prose. Arrives before 'done', while the answer bubble is still current.
   function showIncomplete(info) {
     const div = document.createElement('div');
@@ -678,9 +1263,9 @@
   // renderSnippet turns a SearchResult.snippet's literal '[' / ']' match
   // markers (inserted by the daemon's FTS5 snippet() call, see
   // daemon/search.go) into visible highlighting -- built via createElement/
-  // textContent like every other renderer in this file, never innerHTML, so
-  // nothing in a search result (which is a user's own past conversation
-  // text, not vetted markup) can inject anything into the page.
+  // textContent like every other renderer in this file, never assembling
+  // markup, so nothing in a search result (which is a user's own past
+  // conversation text, not vetted markup) can inject anything into the page.
   function renderSnippet(container, text) {
     const parts = text.split(/([[\]])/);
     let highlighting = false;
@@ -711,9 +1296,7 @@
   // NOT an error, see protocol.SearchResponse's doc comment), or the ranked
   // result list -- already bm25-ranked by the daemon, never re-sorted here.
   function showSearchResults(msg) {
-    while (searchResultsEl.firstChild) {
-      searchResultsEl.removeChild(searchResultsEl.firstChild);
-    }
+    clearChildren(searchResultsEl);
 
     if (msg.error) {
       const el = document.createElement('div');
@@ -768,15 +1351,106 @@
     }
   });
 
-  function send() {
-    const text = inputEl.value.trim();
-    if (!text || streaming) {
+  function filteredSlashCommands() {
+    const q = slashFilter.toLowerCase();
+    return SLASH_COMMANDS.filter((c) => c.name.startsWith(q));
+  }
+
+  function hideSlashMenu() {
+    slashMenuEl.classList.remove('visible');
+    clearChildren(slashMenuEl);
+  }
+
+  function renderSlashMenu() {
+    const items = filteredSlashCommands();
+    if (!inputEl.value.startsWith('/') || inputEl.value.includes(' ') || items.length === 0) {
+      hideSlashMenu();
       return;
     }
+    if (slashIndex >= items.length) {
+      slashIndex = 0;
+    }
+    clearChildren(slashMenuEl);
+    items.forEach((c, i) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.setAttribute('role', 'option');
+      if (i === slashIndex) {
+        btn.className = 'active';
+      }
+      const name = document.createElement('span');
+      name.className = 'slash-name';
+      name.textContent = '/' + c.name;
+      const summary = document.createElement('span');
+      summary.className = 'slash-summary';
+      summary.textContent = c.summary;
+      btn.appendChild(name);
+      btn.appendChild(summary);
+      btn.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        applySlash(c.name);
+      });
+      slashMenuEl.appendChild(btn);
+    });
+    slashMenuEl.classList.add('visible');
+  }
+
+  function applySlash(name) {
+    inputEl.value = '/' + name + ' ';
+    hideSlashMenu();
+    inputEl.focus();
+  }
+
+  function updateSlashFromInput() {
+    const v = inputEl.value;
+    if (!v.startsWith('/') || v.includes(' ')) {
+      hideSlashMenu();
+      return;
+    }
+    slashFilter = v.slice(1);
+    renderSlashMenu();
+  }
+
+  function send() {
+    const typed = inputEl.value.trim();
+    if ((!typed && pendingAttachments.length === 0) || streaming) {
+      return;
+    }
+    hideSlashMenu();
     clearEditProposal();
     clearToolApproval();
     toolActivityEls.clear();
-    addBubble('user', text);
+
+    let text = typed;
+    if (pendingAttachments.length > 0) {
+      const blocks = pendingAttachments.map((f) => {
+        if (f.isImage) {
+          return `![${f.name}](${f.text})`;
+        }
+        return `--- attached: ${f.name} ---\n${f.text}\n--- end ${f.name} ---`;
+      });
+      text = (typed ? typed + '\n\n' : '') + blocks.join('\n\n');
+    }
+
+    addBubble('user', typed || `(${pendingAttachments.length} attached file(s))`);
+    if (pendingAttachments.length > 0) {
+      // Show which files rode along without dumping full contents into the bubble.
+      const note = document.createElement('div');
+      note.className = 'attach-chip';
+      note.style.marginTop = '8px';
+      const label = document.createElement('span');
+      label.className = 'attach-name';
+      label.textContent = 'attached: ' + pendingAttachments.map((f) => f.name).join(', ');
+      note.appendChild(label);
+      const card = transcriptEl.lastElementChild && transcriptEl.lastElementChild.querySelector('.card');
+      if (card) {
+        card.appendChild(note);
+      }
+    }
+    pendingAttachments = [];
+    renderAttachments();
+    refreshContextUsage();
+
     inputEl.value = '';
     setGrounding(null);
     setHistoryInfo(null);
@@ -790,7 +1464,7 @@
     currentAssistantBubble = addBubble('assistant', '');
     // Captured once, for this run only -- see currentRunAuto's doc comment.
     currentRunAuto = autoApplyEnabled;
-    vscode.postMessage({ type: 'prompt', text, autoApply: autoApplyEnabled });
+    vscode.postMessage({ type: 'prompt', text, autoApply: autoApplyEnabled, mode: currentMode });
     // Keep focus on the input across a send. Clicking Send moved focus to the
     // button, so a keyboard or screen-reader user had to navigate back to ask a
     // follow-up; the natural next action is always another prompt.
@@ -798,8 +1472,44 @@
   }
 
   sendBtn.addEventListener('click', send);
+  inputEl.addEventListener('input', updateSlashFromInput);
   inputEl.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
+    const menuOpen = slashMenuEl.classList.contains('visible');
+    if (menuOpen && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+      e.preventDefault();
+      const items = filteredSlashCommands();
+      if (items.length === 0) {
+        return;
+      }
+      slashIndex =
+        e.key === 'ArrowDown'
+          ? (slashIndex + 1) % items.length
+          : (slashIndex - 1 + items.length) % items.length;
+      renderSlashMenu();
+      return;
+    }
+    if (menuOpen && e.key === 'Tab') {
+      e.preventDefault();
+      const items = filteredSlashCommands();
+      if (items[slashIndex]) {
+        applySlash(items[slashIndex].name);
+      }
+      return;
+    }
+    if (menuOpen && e.key === 'Escape') {
+      hideSlashMenu();
+      return;
+    }
+    if (e.key === 'Enter' && !e.shiftKey) {
+      if (menuOpen) {
+        const items = filteredSlashCommands();
+        if (items[slashIndex] && !inputEl.value.includes(' ')) {
+          e.preventDefault();
+          applySlash(items[slashIndex].name);
+          return;
+        }
+      }
+      e.preventDefault();
       send();
     }
   });
@@ -809,12 +1519,51 @@
   // was focused and a keyboard user had to tab in from the top of the document.
   inputEl.focus();
 
+  function clearTranscriptView() {
+    clearChildren(transcriptEl);
+    currentAssistantBubble = null;
+    currentAssistantCard = null;
+    currentAssistantRaw = '';
+    currentReasoningBody = null;
+    clearEditProposal();
+    clearToolApproval();
+    toolActivityEls.clear();
+    clearChildren(searchResultsEl);
+    lastGroundingInfo = null;
+    lastHistoryMeta = null;
+    refreshContextUsage();
+  }
+
   window.addEventListener('message', (event) => {
     const msg = event.data;
     switch (msg.type) {
       case 'history':
         for (const turn of msg.turns) {
-          addBubble(turn.role, turn.content);
+          const body = addBubble(turn.role, '');
+          if (turn.role === 'assistant') {
+            currentAssistantRaw = turn.content || '';
+            renderFencedContent(body, currentAssistantRaw);
+            if (currentAssistantCard) {
+              attachFeedbackFooter(currentAssistantCard, currentAssistantRaw);
+            }
+            currentAssistantBubble = null;
+            currentAssistantCard = null;
+            currentAssistantRaw = '';
+          } else {
+            body.textContent = turn.content || '';
+          }
+        }
+        break;
+      case 'clearTranscript':
+        clearTranscriptView();
+        break;
+      case 'modelTier':
+        if (modelChipEl) {
+          if (modelChipLabelEl) {
+            modelChipLabelEl.textContent = msg.tier || 'Model';
+          } else if (modelChipEl) {
+            modelChipEl.textContent = msg.tier || 'Model';
+          }
         }
         break;
       case 'grounding':
@@ -836,25 +1585,34 @@
         setProvider(msg.provider);
         break;
       case 'token':
-        if (currentAssistantBubble) {
-          currentAssistantBubble.textContent += msg.text;
-          transcriptEl.scrollTop = transcriptEl.scrollHeight;
+        if (!currentAssistantBubble) {
+          currentAssistantBubble = addBubble('assistant', '');
         }
+        currentAssistantRaw += msg.text;
+        currentAssistantBubble.textContent = currentAssistantRaw;
+        transcriptEl.scrollTop = transcriptEl.scrollHeight;
         break;
       case 'done':
-        currentAssistantBubble = null;
+        finalizeAssistant();
         // Nothing should still be pending -- the daemon does not send done
         // while it is waiting for an answer -- but a panel left on screen with
         // nothing behind it would invite a click that goes nowhere.
         clearToolApproval();
         setStreaming(false);
+        refreshContextUsage();
         inputEl.focus();
         break;
       case 'error':
-        if (currentAssistantBubble && currentAssistantBubble.textContent === '') {
-          currentAssistantBubble.parentElement.remove();
+        if (currentAssistantBubble && currentAssistantRaw === '') {
+          const card = currentAssistantBubble.parentElement;
+          const msgEl = card && card.parentElement;
+          if (msgEl) {
+            msgEl.remove();
+          }
         }
         currentAssistantBubble = null;
+        currentAssistantCard = null;
+        currentAssistantRaw = '';
         clearToolApproval();
         addBubble('error', msg.message);
         setStreaming(false);

@@ -1,4 +1,4 @@
-# CodeTerminal
+# Mochiii
 
 **A local-first AI coding assistant.** Your codebase is indexed, embedded, and
 retrieved entirely on your own machine. The only thing that leaves it is the
@@ -311,22 +311,45 @@ set -a && source .env && set +a
 ### `models.json` — model tiers
 
 The **model slug** lives in [`models.json`](models.json) rather than an env var,
-since it is not a secret and is useful under version control:
+since it is not a secret and is useful under version control. The shipped file
+lists multiple **active** OpenRouter models (DeepSeek V4 Flash as `primary`
+default, plus Laguna S 2.1, Step 3.7 Flash, Ling 3.0 Flash, MiniMax M3,
+Qwen 3.5 397B, Qwen 3.6 Plus, DeepSeek V4 Pro, Gemini 3.6 Flash). Inactive tiers
+(`ghost_text`, `reasoning`) stay gated.
+
+In the TUI and VS Code chat, pick one for the session:
+
+```text
+/model                 # list active tiers
+/model minimax_m3      # select MiniMax M3
+/model clear           # back to default_tier
+```
+
+Type `/` in either client for the slash-command menu. Local commands run in the
+client; steered commands send a task preamble to the model:
+
+```text
+/help                  # list all commands
+/mcp-server            # configured MCP servers + tool policy
+/explain <topic>       # explain code or a concept
+/fix <bug>            # diagnose and fix
+/test <what>           # add or improve tests
+/refactor <what>       # refactor (may escalate tier)
+/doc /security /review /plan /run …
+/clear /compact /context /git /init /search /exit
+```
+
+Clients send the chosen tier name as `PromptRequest.tier`. The daemon status
+surface also returns `available_tiers` for menus.
 
 ```json
 {
   "config_version": 1,
   "default_tier": "primary",
   "tiers": {
-    "primary":    { "slug": "deepseek/deepseek-v4-flash",        "active": true  },
-    "ghost_text": { "slug": "qwen/qwen3-coder-30b-a3b-instruct", "active": false },
-    "reasoning":  { "slug": "deepseek/deepseek-r1",              "active": false }
-  },
-  "zdr": {
-    "allow_non_zdr": false,
-    "allow_data_collection": false,
-    "allow_fallbacks": true,
-    "provider_ignore_list": ["DeepInfra"]
+    "primary":         { "slug": "deepseek/deepseek-v4-flash", "active": true },
+    "minimax_m3":      { "slug": "minimax/minimax-m3",         "active": true },
+    "deepseek_v4_pro": { "slug": "deepseek/deepseek-v4-pro",   "active": true }
   }
 }
 ```
@@ -918,14 +941,15 @@ Full details, error codes, and configuration: [`proxy/README.md`](proxy/README.m
 ## Tier router
 
 [`daemon/router.go`](daemon/router.go) decides which `models.json` tier handles each
-request and resolves its slug. It ships **primary-only**: every normal request logs
-`route tier=primary slug=... reason=default`.
+request and resolves its slug. Preference order:
 
-The `reasoning` tier is wired but gated — `Route` selects it only when a request
-carries a genuine non-zero exit signal *and* `reasoning` is `active`, and today's
-request path never sets that signal. If the escalation target is inactive or
-missing, the router falls back to the default tier rather than erroring or silently
-calling something inactive. Ghost-text is not selectable here. See
+1. **User-selected tier** — `PromptRequest.tier` naming an active tier (TUI `/model`)
+2. **Reasoning escalation** — only when the request carries a genuine non-zero exit
+   signal or an explicit `/reason`/`/refactor` PromptKind *and* `reasoning` is active
+3. **Default** — `default_tier` (shipped as `primary` → DeepSeek V4 Flash)
+
+Unknown or inactive preferred names fall back to the default tier with a logged
+reason; they never invent a slug. Ghost-text is not auto-selected. See
 [`daemon/router_test.go`](daemon/router_test.go) for the guaranteed cases.
 
 ## Skills database
@@ -1083,8 +1107,9 @@ streamed back).
 **Skills** — no auto-capture from conversations or agent runs, no injection into
 prompts, no embedding/vector search over skills, no dedup or ranking, no sync.
 
-**Routing** — `ghost_text` and `reasoning` are defined but inert; there is no live
-tier-selection logic.
+**Routing** — `ghost_text` and `reasoning` remain inactive by default. Users can
+select any *active* models.json tier via TUI `/model` (or `PromptRequest.tier`);
+VS Code does not yet ship a model picker UI.
 
 **Agent mode** — no OS sandboxing of third-party MCP servers (consent and audit
 are the protection, and the docs say so rather than implying otherwise); stdio

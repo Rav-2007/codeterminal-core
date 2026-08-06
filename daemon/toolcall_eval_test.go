@@ -262,8 +262,11 @@ func toolReadFile() evalTool {
 
 func toolListDir() evalTool {
 	return evalTool{Type: "function", Function: evalToolFunction{
-		Name:        "list_directory",
-		Description: "List the entries in a workspace directory.",
+		Name: "list_directory",
+		// Explicitly not a test runner: the menu-size curve's only systematic
+		// miss was run_tests → list_directory on "run the … test suite", because
+		// "suite" alone is too weak against a directory-listing tool.
+		Description: "List file and subdirectory names in a workspace directory. Does not execute tests, builds, or other commands.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -299,12 +302,15 @@ func toolSearchCode() evalTool {
 
 func toolRunTests() evalTool {
 	return evalTool{Type: "function", Function: evalToolFunction{
-		Name:        "run_tests",
-		Description: "Run the test suite for a Go package and return the output.",
+		Name: "run_tests",
+		// Named for the action (execute go test), not the noun "suite", which
+		// the model otherwise maps to list_directory. Kept as an eval fixture —
+		// production Lane A does not ship this tool (see mcpbuiltin.go).
+		Description: "Execute `go test` (or the package's test runner) for a Go package and return the command output. Use this when the user asks to run tests or a test suite — not for listing files.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"package": map[string]any{"type": "string", "description": "Package path, e.g. ./daemon"},
+				"package": map[string]any{"type": "string", "description": "Package path, e.g. ./daemon or ./editapply"},
 				"verbose": map[string]any{"type": "boolean"},
 			},
 			"required": []string{"package"},

@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"codeterminal/protocol"
+	"crypto/rand"
+	"encoding/hex"
 )
 
 // staleSocketProbeTimeout bounds how long startup waits when checking
@@ -215,6 +217,20 @@ func main() {
 		logger.Fatalf("listening on %s: %v", addr, err)
 	}
 
+	var tcpToken string
+	if addr.Transport == protocol.TransportTCP {
+		b := make([]byte, 32)
+		if _, err := rand.Read(b); err != nil {
+			logger.Fatalf("generating tcp token: %v", err)
+		}
+		tcpToken = hex.EncodeToString(b)
+		dir, _ := protocol.SocketDir()
+		tokenPath := filepath.Join(dir, "tcp_token")
+		if err := writeFileNoFollow(tokenPath, []byte(tcpToken), 0600); err != nil {
+			logger.Fatalf("writing tcp token %s: %v", tokenPath, err)
+		}
+	}
+
 	lock := protocol.NewLockFile(addr, os.Getpid())
 	lockBytes, err := json.MarshalIndent(lock, "", "  ")
 	if err != nil {
@@ -248,6 +264,7 @@ func main() {
 		cfg:                     cfg,
 		modelOverride:           *modelOverride,
 		systemPrompt:            systemPrompt,
+		tcpToken:                tcpToken,
 		logger:                  logger,
 		embedder:                retrieval.Embedder,
 		store:                   retrieval.Store,
@@ -273,12 +290,14 @@ func main() {
 		// Activity counters, reported through the existing status surface (see
 		// counters.go). Built here rather than lazily so production always has
 		// them; a nil set is valid and simply counts nothing.
-		counters: &counters{},
+		counters:  &counters{},
+		lspBridge: NewLSPBridge(absWorkspace),
 	}
 	// One line per reduced subsystem, so the log and the wire agree about what
 	// is degraded from the moment the daemon starts serving.
 	srv.logDegradations()
 
+	srv.startWorkspaceWatcher()
 	go srv.Serve(ln)
 
 	// Block here so cleanup runs exactly once, in this goroutine, instead of
@@ -319,6 +338,8 @@ func main() {
 		os.Remove(addr.Address)
 	}
 	os.Remove(lockPath)
+
+	srv.lspBridge.Close()
 }
 
 // reclaimStaleSocket checks whether a file already exists at path. If a

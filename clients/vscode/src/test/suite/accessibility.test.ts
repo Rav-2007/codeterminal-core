@@ -62,25 +62,24 @@ suite('Webview accessibility structure', () => {
     );
   });
 
-  test('the auto-apply toggle is a labelled switch, not a bare button', () => {
+  test('the mode selector is a labelled button with popup, not a bare button', () => {
     const html = chatPanelBodyMarkup();
     const toggle = /<button id="autoApplyToggle"[\s\S]*?>/.exec(html);
     assert.ok(toggle, 'no #autoApplyToggle element found');
 
     const tag = toggle[0];
-    assert.match(tag, /role="switch"/, 'the auto-apply toggle needs role="switch"');
-    assert.match(tag, /aria-checked="(true|false)"/, 'the auto-apply toggle needs an initial aria-checked');
-    assert.match(tag, /aria-label="[^"]+"/, 'the auto-apply toggle needs an accessible name');
+    assert.match(tag, /aria-haspopup="listbox"/, 'the mode selector needs aria-haspopup="listbox"');
+    assert.match(tag, /aria-expanded="(true|false)"/, 'the mode selector needs an initial aria-expanded');
+    assert.match(tag, /aria-label="[^"]+"/, 'the mode selector needs an accessible name');
   });
 
-  test('auto-apply state changes are mirrored into aria-checked', () => {
-    // This is the control that decides whether edits reach disk without a
-    // per-edit confirmation. Its state must not live only in textContent.
+  test('mode selector state changes are mirrored into aria-expanded', () => {
+    // This is the control that opens the mode selection menu.
     const js = mainJsSource();
     assert.match(
       js,
-      /autoApplyToggle\.setAttribute\(\s*'aria-checked'/,
-      "renderAutoApplyToggle must set aria-checked, or the switch's state is invisible to a reader"
+      /autoApplyToggle\.setAttribute\(\s*'aria-expanded'/,
+      "setModesPopupOpen must set aria-expanded, or the menu's state is invisible to a reader"
     );
   });
 

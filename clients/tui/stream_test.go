@@ -172,7 +172,7 @@ func TestStreamPrompt_HistorySentOnThirdTurnContainsPriorTwoInOrder(t *testing.T
 	runTurn := func(prompt string, history []protocol.Turn) protocol.PromptRequest {
 		t.Helper()
 		ch := make(chan tea.Msg, 8)
-		streamPrompt(context.Background(), "test-client", "", prompt, "", history, ch)
+		streamPrompt(context.Background(), "test-client", "", prompt, "", "", history, ch)
 		for {
 			msg := <-ch
 			if errMsg, ok := msg.(streamErrMsg); ok {
@@ -240,7 +240,7 @@ func TestStreamPrompt_PromptKindReachesWire(t *testing.T) {
 	send := func(promptKind string) protocol.PromptRequest {
 		t.Helper()
 		ch := make(chan tea.Msg, 8)
-		streamPrompt(context.Background(), "test-client", "", "some question", promptKind, nil, ch)
+		streamPrompt(context.Background(), "test-client", "", "some question", promptKind, "", nil, ch)
 		for {
 			msg := <-ch
 			if errMsg, ok := msg.(streamErrMsg); ok {
@@ -270,6 +270,34 @@ func TestStreamPrompt_PromptKindReachesWire(t *testing.T) {
 	}
 }
 
+func TestStreamPrompt_TierReachesWire(t *testing.T) {
+	requests := make(chan protocol.PromptRequest, 4)
+	lockPath, cleanup := fakeDaemonCapturingRequests(t, requests)
+	defer cleanup()
+	restoreLockPath := setLockPathForTest(t, lockPath)
+	defer restoreLockPath()
+
+	ch := make(chan tea.Msg, 8)
+	streamPrompt(context.Background(), "test-client", "", "q", "", "minimax_m3", nil, ch)
+	for {
+		msg := <-ch
+		if _, ok := msg.(streamDoneMsg); ok {
+			break
+		}
+		if errMsg, ok := msg.(streamErrMsg); ok {
+			t.Fatalf("stream error: %v", errMsg.err)
+		}
+	}
+	select {
+	case req := <-requests:
+		if req.Tier != "minimax_m3" {
+			t.Errorf("Tier = %q, want minimax_m3", req.Tier)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no PromptRequest")
+	}
+}
+
 // TestStreamPrompt_ContextCancelUnblocksBlockedRead is the mid-stream-quit
 // safety net this task calls out explicitly: cancelling the context while
 // streamPrompt is blocked inside dec.Decode (waiting on a daemon that's mid-
@@ -288,7 +316,7 @@ func TestStreamPrompt_ContextCancelUnblocksBlockedRead(t *testing.T) {
 
 	streamReturned := make(chan struct{})
 	go func() {
-		streamPrompt(ctx, "test-client", "", "hello", "", nil, ch)
+		streamPrompt(ctx, "test-client", "", "hello", "", "", nil, ch)
 		close(streamReturned)
 	}()
 

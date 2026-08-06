@@ -62,6 +62,13 @@ type chatMessage struct {
 	// schema, sent because it costs almost nothing and makes a captured request
 	// body readable by a human debugging a loop.
 	Name string `json:"name,omitempty"`
+	// CacheControl marks a message for provider-side prompt caching (e.g. Anthropic
+	// ephemeral caching via OpenRouter).
+	CacheControl *cacheControl `json:"cache_control,omitempty"`
+}
+
+type cacheControl struct {
+	Type string `json:"type"`
 }
 
 // toolCall is one tool invocation the model requested, rebuilt from its
@@ -122,6 +129,10 @@ type providerRouting struct {
 	// here that IS omitempty: an unset list must serialize to exactly today's
 	// wire body, so this change is inert until models.json opts in.
 	Ignore []string `json:"ignore,omitempty"`
+	// Order enforces a strict preference list of providers.
+	Order []string `json:"order,omitempty"`
+	// Sort specifies the provider property to sort by ("price" or "throughput").
+	Sort string `json:"sort,omitempty"`
 }
 
 // streamOptions is OpenRouter's "stream_options" request object. Setting
@@ -497,10 +508,24 @@ func finishStream(accumulator *toolCallAccumulator, finishReason string, onFinis
 // in "system" either regardless of what a client sent.
 func buildChatMessages(systemPrompt string, history []chatMessage, prompt string) []chatMessage {
 	var messages []chatMessage
-	if systemPrompt != "" {
-		messages = append(messages, chatMessage{Role: "system", Content: systemPrompt})
+
+	// Breakpoint 1: the system prompt (static). If there is no history, this is the
+	// only cacheable prefix before the current turn.
+	var sysCache *cacheControl
+	if len(history) == 0 {
+		sysCache = &cacheControl{Type: "ephemeral"}
 	}
-	messages = append(messages, history...)
+	if systemPrompt != "" {
+		messages = append(messages, chatMessage{Role: "system", Content: systemPrompt, CacheControl: sysCache})
+	}
+
+	if len(history) > 0 {
+		// Breakpoint 2: the last message of the history. This caches the entire
+		// prefix (system prompt + all prior turns + all prior retrieved context).
+		history[len(history)-1].CacheControl = &cacheControl{Type: "ephemeral"}
+		messages = append(messages, history...)
+	}
+
 	messages = append(messages, chatMessage{Role: "user", Content: prompt})
 	return messages
 }

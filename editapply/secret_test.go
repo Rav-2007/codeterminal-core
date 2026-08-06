@@ -84,6 +84,15 @@ func TestMatchesSecretName(t *testing.T) {
 		{"item2/htpasswd", ".htpasswd", true},      // baseline: FAIL
 		{"item2/netrc_windows", "_netrc", true},    // Windows/legacy .netrc variant; baseline: FAIL
 		{"item2/htpasswd_case", ".HTPASSWD", true}, // case-fold extends to the new patterns; baseline: FAIL
+
+		// ---- Item 3 — Keyrings, keystores, and private key substrings ----
+		{"item3/kdbx", "passwords.kdbx", true},
+		{"item3/keystore", "app.keystore", true},
+		{"item3/jks", "server.jks", true},
+		{"item3/keychain", "login.keychain", true},
+		{"item3/pkcs12", "identity.pkcs12", true},
+		{"item3/private_key", "my_private_key.txt", true},
+		{"item3/id_token", "jwt_id_token.json", true},
 	}
 
 	for _, c := range cases {

@@ -1,4 +1,8 @@
 import * as vscode from 'vscode';
+import { execFile } from 'child_process';
+import * as fs from 'fs';
+import * as path from 'path';
+import { promisify } from 'util';
 
 import {
   APPROVAL_DENY,
@@ -12,11 +16,21 @@ import {
   ToolApprovalRequest,
   Turn,
   applyEdit,
+  fetchAvailableTiers,
   preflightHandshake,
   searchConversations,
   streamPrompt,
   undoEdits,
 } from './daemonClient';
+import {
+  formatInitChecklist,
+  formatSlashHelp,
+  parseModelCommand,
+  parseSlash,
+  steeredPrompt,
+} from './slashCommands';
+
+const execFileAsync = promisify(execFile);
 
 const CLIENT_NAME = 'codeterminal-vscode';
 const VIEW_TYPE = 'codeterminalChat';
@@ -42,6 +56,12 @@ export class ChatPanel {
   private readonly disposables: vscode.Disposable[] = [];
   private transcript: Turn[] = [];
   private inFlight: AbortController | undefined;
+
+  // preferredTier is the models.json tier name chosen via /model <name>.
+  // Empty means default routing. Sent as PromptRequest.tier on every turn.
+  private preferredTier = '';
+  // lastGrounding is the most recent GroundingInfo for /context.
+  private lastGrounding: GroundingInfo | undefined;
 
   // pendingApproval is the tool call the daemon is currently holding open,
   // together with the callback that answers it. Non-undefined ONLY while a turn
@@ -124,6 +144,7 @@ export class ChatPanel {
       const persisted = turnsFromWire(await preflightHandshake(CLIENT_NAME));
       this.transcript = persisted;
       this.panel.webview.postMessage({ type: 'history', turns: persisted });
+      this.postModelTier();
     } catch (err) {
       this.panel.webview.postMessage({
         type: 'error',
@@ -132,18 +153,26 @@ export class ChatPanel {
     }
   }
 
+  private postModelTier(): void {
+    this.panel.webview.postMessage({
+      type: 'modelTier',
+      tier: this.preferredTier || 'default',
+    });
+  }
+
   private handleMessage(msg: {
     type: string;
     text?: string;
     backupDir?: string;
     autoApply?: boolean;
+    mode?: string;
     decision?: string;
     callId?: string;
   }): void {
     if (msg.type === 'toolApprovalDecision' && typeof msg.decision === 'string') {
       this.onToolApprovalDecision(msg.callId, msg.decision);
     } else if (msg.type === 'prompt' && typeof msg.text === 'string') {
-      this.onPrompt(msg.text, msg.autoApply === true);
+      this.onPrompt(msg.text, msg.autoApply === true, msg.mode);
     } else if (msg.type === 'applyEdit') {
       this.onApplyEdit();
     } else if (msg.type === 'skipEdit') {
@@ -152,14 +181,173 @@ export class ChatPanel {
       this.onUndoEdit(msg.backupDir);
     } else if (msg.type === 'search' && typeof msg.text === 'string') {
       this.onSearch(msg.text);
+    } else if (msg.type === 'closePanel') {
+      this.panel.dispose();
+    } else if (msg.type === 'newChat') {
+      this.onNewChat();
     }
   }
 
-  private onPrompt(text: string, autoApply: boolean): void {
+  private onNewChat(): void {
+    this.inFlight?.abort();
+    this.inFlight = undefined;
+    this.clearPendingApproval();
+    this.clearPendingReview();
+    this.transcript = [];
+    this.lastGrounding = undefined;
+    this.panel.webview.postMessage({ type: 'clearTranscript' });
+  }
+
+  private onPrompt(text: string, autoApply: boolean, mode?: string): void {
     if (this.inFlight || this.autoApplyRunInFlight) {
       return; // a turn is already in flight, or a previous run's auto-apply loop hasn't finished yet
     }
 
+    const model = parseModelCommand(text);
+    if (model.ok) {
+      void this.handleModelCommand(model.arg);
+      return;
+    }
+
+    const slash = parseSlash(text);
+    if (!slash.rawPassthrough) {
+      if (slash.usageOnly && slash.def) {
+        this.replyLocal(`usage: /${slash.def.name} <args…>`);
+        return;
+      }
+      if (slash.def?.kind === 'local') {
+        void this.handleLocalSlash(slash.def.name, slash.args);
+        return;
+      }
+      if (slash.def?.kind === 'steered') {
+        const wirePrompt = steeredPrompt(slash.def, slash.args);
+        this.startModelTurn(text, wirePrompt, slash.def.promptKind, autoApply, mode);
+        return;
+      }
+    }
+
+    this.startModelTurn(text, text, undefined, autoApply, mode);
+  }
+
+  private replyLocal(reply: string): void {
+    this.transcript.push({ role: 'assistant', content: reply });
+    this.panel.webview.postMessage({ type: 'token', text: reply });
+    this.panel.webview.postMessage({ type: 'done' });
+  }
+
+  private async handleModelCommand(arg: string): Promise<void> {
+    if (arg === '' || arg === 'list') {
+      try {
+        const tiers = await fetchAvailableTiers(CLIENT_NAME);
+        const current = this.preferredTier || '(default)';
+        const lines = [
+          'models (active only — /model <name> to select; /model clear to reset):',
+          `current: ${current}`,
+        ];
+        for (const t of tiers) {
+          if (!t.active) {
+            continue;
+          }
+          const mark =
+            t.name === this.preferredTier || (!this.preferredTier && t.name === 'primary')
+              ? '* '
+              : '  ';
+          lines.push(`${mark}${t.name}  ${t.slug}`);
+        }
+        this.replyLocal(lines.join('\n'));
+      } catch (err) {
+        this.replyLocal(`could not list models: ${(err as Error).message}`);
+      }
+      return;
+    }
+    if (arg === 'clear' || arg === 'default') {
+      this.preferredTier = '';
+      this.postModelTier();
+      this.replyLocal('model reset to default tier (models.json default_tier)');
+      return;
+    }
+    try {
+      const tiers = await fetchAvailableTiers(CLIENT_NAME);
+      const found = tiers.find((t) => t.active && t.name === arg);
+      if (!found) {
+        this.replyLocal(`unknown model tier "${arg}" — try /model for the list`);
+        return;
+      }
+      this.preferredTier = found.name;
+      this.postModelTier();
+      this.replyLocal(`model set to ${found.name} (${found.slug})`);
+    } catch (err) {
+      this.replyLocal(`could not select model: ${(err as Error).message}`);
+    }
+  }
+
+  private async handleLocalSlash(name: string, args: string): Promise<void> {
+    const ws = workspacePath();
+    switch (name) {
+      case 'help':
+        this.replyLocal(formatSlashHelp());
+        return;
+      case 'clear':
+        this.transcript = [];
+        this.lastGrounding = undefined;
+        this.panel.webview.postMessage({ type: 'clearTranscript' });
+        this.replyLocal('transcript cleared');
+        return;
+      case 'compact': {
+        const keep = 8;
+        if (this.transcript.length > keep) {
+          this.transcript = this.transcript.slice(-keep);
+          this.replyLocal(`kept last ${keep} turns`);
+        } else {
+          this.replyLocal('transcript already compact');
+        }
+        return;
+      }
+      case 'context': {
+        const tier = this.preferredTier || '(default)';
+        let g = '(none this turn)';
+        if (this.lastGrounding) {
+          g = `chunks=${this.lastGrounding.chunks ?? 0} truncated=${!!this.lastGrounding.truncated} mismatch=${!!this.lastGrounding.workspace_mismatch}`;
+        }
+        this.replyLocal(`workspace: ${ws}\nmodel tier: ${tier}\ngrounding: ${g}`);
+        return;
+      }
+      case 'git':
+        this.replyLocal(await runGitStatus(ws));
+        return;
+      case 'init':
+        this.replyLocal(formatInitChecklist(ws));
+        return;
+      case 'mcp-server':
+        this.replyLocal(await runMCPServerList(ws));
+        return;
+      case 'search': {
+        const q = args.toLowerCase();
+        const hits: string[] = [];
+        this.transcript.forEach((t, i) => {
+          if (t.content.toLowerCase().includes(q)) {
+            const snippet = t.content.length > 120 ? t.content.slice(0, 120) + '…' : t.content;
+            hits.push(`${i + 1}. [${t.role}] ${snippet}`);
+          }
+        });
+        this.replyLocal(hits.length === 0 ? 'no matching turns' : 'matches:\n' + hits.join('\n'));
+        return;
+      }
+      case 'exit':
+        this.panel.dispose();
+        return;
+      default:
+        this.replyLocal('unknown local command');
+    }
+  }
+
+  private startModelTurn(
+    displayText: string,
+    wirePrompt: string,
+    promptKind: string | undefined,
+    autoApply: boolean,
+    mode?: string
+  ): void {
     // Captured once, for this run only -- see the currentRunAutoApply field
     // doc comment for why this must not be re-read later.
     this.currentRunAutoApply = autoApply;
@@ -174,68 +362,77 @@ export class ChatPanel {
     // never ends up in its own History -- same ordering as chat.go's
     // startTurn.
     const history = [...this.transcript];
-    this.transcript.push({ role: 'user', content: text });
+    this.transcript.push({ role: 'user', content: displayText });
 
     const controller = new AbortController();
     this.inFlight = controller;
     let answer = '';
 
-    streamPrompt(CLIENT_NAME, text, workspacePath(), history, controller.signal, {
-      onGrounding: (info: GroundingInfo) => {
-        this.panel.webview.postMessage({ type: 'grounding', info });
+    streamPrompt(
+      CLIENT_NAME,
+      wirePrompt,
+      workspacePath(),
+      history,
+      controller.signal,
+      {
+        onGrounding: (info: GroundingInfo) => {
+          this.lastGrounding = info;
+          this.panel.webview.postMessage({ type: 'grounding', info });
+        },
+        // 'historyInfo', NOT 'history' -- 'history' is already the persisted-turn
+        // hydration message (see runPreflight). This one carries HistoryInfo, whose
+        // truncated flag the webview renders as a dropped-turns warning.
+        onHistory: (info: HistoryInfo) => {
+          this.panel.webview.postMessage({ type: 'historyInfo', info });
+        },
+        onRedactions: (kinds: string[]) => {
+          this.panel.webview.postMessage({ type: 'redactions', kinds });
+        },
+        onReasoning: (text: string) => {
+          this.panel.webview.postMessage({ type: 'reasoning', text });
+        },
+        onDegraded: (items: Degradation[]) => {
+          this.panel.webview.postMessage({ type: 'degraded', items });
+        },
+        onProvider: (provider: string) => {
+          this.panel.webview.postMessage({ type: 'provider', provider });
+        },
+        onToken: (token: string) => {
+          answer += token;
+          this.panel.webview.postMessage({ type: 'token', text: token });
+        },
+        onEditProposals: (proposals: EditBlockWire[]) => {
+          this.startEditReview(proposals);
+        },
+        onIncomplete: (info: IncompleteInfo) => {
+          this.panel.webview.postMessage({ type: 'incomplete', info });
+        },
+        onToolActivity: (activity: ToolActivity) => {
+          this.panel.webview.postMessage({ type: 'toolActivity', activity });
+        },
+        // Providing this handler is what makes streamPrompt declare
+        // CAP_TOOL_APPROVAL, and therefore what turns agent mode on for this
+        // client -- see StreamHandlers.onToolApproval. The daemon suspends the
+        // turn here, so the respond callback must eventually be called; it is
+        // held until the webview reports what the user clicked.
+        onToolApproval: (req: ToolApprovalRequest, respond: (decision: string) => void) => {
+          this.pendingApproval = { callId: req.call_id, respond };
+          this.panel.webview.postMessage({ type: 'toolApproval', request: req });
+        },
+        onDone: () => {
+          this.transcript.push({ role: 'assistant', content: answer });
+          this.inFlight = undefined;
+          this.clearPendingApproval();
+          this.panel.webview.postMessage({ type: 'done' });
+        },
+        onError: (err: Error) => {
+          this.inFlight = undefined;
+          this.clearPendingApproval();
+          this.panel.webview.postMessage({ type: 'error', message: err.message });
+        },
       },
-      // 'historyInfo', NOT 'history' -- 'history' is already the persisted-turn
-      // hydration message (see runPreflight). This one carries HistoryInfo, whose
-      // truncated flag the webview renders as a dropped-turns warning.
-      onHistory: (info: HistoryInfo) => {
-        this.panel.webview.postMessage({ type: 'historyInfo', info });
-      },
-      onRedactions: (kinds: string[]) => {
-        this.panel.webview.postMessage({ type: 'redactions', kinds });
-      },
-      onReasoning: (text: string) => {
-        this.panel.webview.postMessage({ type: 'reasoning', text });
-      },
-      onDegraded: (items: Degradation[]) => {
-        this.panel.webview.postMessage({ type: 'degraded', items });
-      },
-      onProvider: (provider: string) => {
-        this.panel.webview.postMessage({ type: 'provider', provider });
-      },
-      onToken: (token: string) => {
-        answer += token;
-        this.panel.webview.postMessage({ type: 'token', text: token });
-      },
-      onEditProposals: (proposals: EditBlockWire[]) => {
-        this.startEditReview(proposals);
-      },
-      onIncomplete: (info: IncompleteInfo) => {
-        this.panel.webview.postMessage({ type: 'incomplete', info });
-      },
-      onToolActivity: (activity: ToolActivity) => {
-        this.panel.webview.postMessage({ type: 'toolActivity', activity });
-      },
-      // Providing this handler is what makes streamPrompt declare
-      // CAP_TOOL_APPROVAL, and therefore what turns agent mode on for this
-      // client -- see StreamHandlers.onToolApproval. The daemon suspends the
-      // turn here, so the respond callback must eventually be called; it is
-      // held until the webview reports what the user clicked.
-      onToolApproval: (req: ToolApprovalRequest, respond: (decision: string) => void) => {
-        this.pendingApproval = { callId: req.call_id, respond };
-        this.panel.webview.postMessage({ type: 'toolApproval', request: req });
-      },
-      onDone: () => {
-        this.transcript.push({ role: 'assistant', content: answer });
-        this.inFlight = undefined;
-        this.clearPendingApproval();
-        this.panel.webview.postMessage({ type: 'done' });
-      },
-      onError: (err: Error) => {
-        this.inFlight = undefined;
-        this.clearPendingApproval();
-        this.panel.webview.postMessage({ type: 'error', message: err.message });
-      },
-    });
+      { promptKind, tier: this.preferredTier || undefined, mode }
+    );
   }
 
   // onToolApprovalDecision relays what the user clicked back to the waiting
@@ -503,250 +700,21 @@ export class ChatPanel {
   private getHtml(extensionUri: vscode.Uri): string {
     const webview = this.panel.webview;
     const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'main.js'));
+    const logoUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'logo.png'));
     const nonce = getNonce();
 
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} https: data:; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
 <title>CodeTerminal Chat</title>
 <style>
-  body {
-    font-family: var(--vscode-font-family);
-    color: var(--vscode-foreground);
-    background: var(--vscode-editor-background);
-    margin: 0;
-    display: flex;
-    flex-direction: column;
-    height: 100vh;
-  }
-  #searchRow { display: flex; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--vscode-panel-border, transparent); }
-  #searchInput {
-    flex: 1;
-    background: var(--vscode-input-background);
-    color: var(--vscode-input-foreground);
-    border: 1px solid var(--vscode-input-border, transparent);
-    padding: 6px 8px;
-    font-family: inherit;
-    font-size: inherit;
-  }
-  #searchResults { padding: 0 12px; }
-  .search-result {
-    margin-bottom: 10px;
-    padding: 8px 10px;
-    border: 1px solid var(--vscode-panel-border, #444);
-    border-radius: 4px;
-    font-size: 12px;
-  }
-  .search-result .search-result-meta { font-size: 11px; opacity: 0.6; margin-bottom: 4px; }
-  .search-result .search-result-snippet { white-space: pre-wrap; line-height: 1.4; }
-  .search-result mark {
-    background: var(--vscode-editor-findMatchHighlightBackground, #ffd33d55);
-    color: inherit;
-  }
-  .search-empty { padding: 4px 0 10px; font-size: 12px; opacity: 0.7; }
-  .search-error { padding: 4px 0 10px; font-size: 12px; color: var(--vscode-errorForeground); }
-  #transcript { flex: 1; overflow-y: auto; padding: 8px 12px; }
-  /* Guidance, not conversation: dimmer than a turn so it never reads as a
-     message, and gone the moment the transcript has real content. */
-  .first-run { font-size: 12px; opacity: 0.75; line-height: 1.5; max-width: 60ch; }
-  .first-run p { margin: 0 0 8px; }
-  .first-run pre {
-    margin: 0;
-    padding: 6px 8px;
-    white-space: pre-wrap;
-    font-family: var(--vscode-editor-font-family, monospace);
-    background: var(--vscode-textCodeBlock-background, #00000033);
-    border: 1px solid var(--vscode-panel-border, #444);
-  }
-  .turn { margin-bottom: 14px; white-space: pre-wrap; line-height: 1.4; }
-  .turn .role { display: block; font-size: 11px; opacity: 0.6; margin-bottom: 2px; }
-  .turn.user .role { color: var(--vscode-textLink-foreground); }
-  .turn.error { color: var(--vscode-errorForeground); }
-  /* Thinking is commentary, not the answer: dim + italic, visibly a separate
-     block above the reply, never styled like the answer it precedes. */
-  .turn.reasoning { opacity: 0.6; font-style: italic; font-size: 12px; }
-  .turn.reasoning .role { color: var(--vscode-descriptionForeground, inherit); }
-  #historyNotice {
-    font-size: 11px;
-    padding: 0 12px 6px;
-    color: var(--vscode-editorWarning-foreground, #cca700);
-  }
-  #historyNotice:empty { padding: 0; }
-  /* A cut-off answer is a warning, not an error: the reply is partly valid, the
-     user just needs to know it stopped early. Warning color, marked, persistent
-     in scrollback -- distinct from both a normal turn and a red error. */
-  .turn.incomplete-notice {
-    color: var(--vscode-editorWarning-foreground, #cca700);
-    font-size: 12px;
-    font-style: italic;
-  }
-  #grounding { font-size: 11px; opacity: 0.7; padding: 0 12px 6px; min-height: 14px; }
-  #redactions {
-    font-size: 11px;
-    padding: 0 12px 6px;
-    color: var(--vscode-editorWarning-foreground, #cca700);
-  }
-  #redactions:empty { padding: 0; }
-  #degraded {
-    font-size: 11px;
-    padding: 0 12px 6px;
-    color: var(--vscode-editorWarning-foreground, #cca700);
-  }
-  #degraded:empty { padding: 0; }
-  #degraded .item { display: block; }
-  /* Provider is a plain fact, not a warning: neutral #grounding-style dimming,
-     not the warning color #degraded/#redactions use. :empty removes its padding
-     so an absent provider (the common case) occupies no space. */
-  #provider { font-size: 11px; opacity: 0.7; padding: 0 12px 6px; }
-  #provider:empty { padding: 0; }
-  #inputRow { display: flex; gap: 6px; padding: 8px 12px; border-top: 1px solid var(--vscode-panel-border, transparent); }
-  #promptInput {
-    flex: 1;
-    background: var(--vscode-input-background);
-    color: var(--vscode-input-foreground);
-    border: 1px solid var(--vscode-input-border, transparent);
-    padding: 6px 8px;
-    font-family: inherit;
-    font-size: inherit;
-  }
-  button {
-    background: var(--vscode-button-background);
-    color: var(--vscode-button-foreground);
-    border: none;
-    padding: 6px 14px;
-    cursor: pointer;
-  }
-  button:disabled { opacity: 0.5; cursor: default; }
-  .edit-proposal {
-    margin: 4px 12px 14px;
-    padding: 8px 10px;
-    border: 1px solid var(--vscode-panel-border, #444);
-    border-radius: 4px;
-    font-size: 12px;
-  }
-  .edit-proposal .edit-index {
-    font-size: 11px;
-    opacity: 0.6;
-    margin-bottom: 2px;
-  }
-  .edit-proposal .file-path {
-    font-weight: 600;
-    margin-bottom: 6px;
-  }
-  .edit-proposal pre {
-    margin: 0 0 8px;
-    white-space: pre-wrap;
-    font-family: var(--vscode-editor-font-family, monospace);
-  }
-  .edit-proposal .diff-line { display: block; padding: 0 4px; }
-  .edit-proposal .diff-line.removed {
-    color: var(--vscode-gitDecoration-deletedResourceForeground, #f14c4c);
-    background: rgba(241, 76, 76, 0.08);
-  }
-  .edit-proposal .diff-line.added {
-    color: var(--vscode-gitDecoration-addedResourceForeground, #2ea043);
-    background: rgba(46, 160, 67, 0.08);
-  }
-  .edit-proposal .actions { display: flex; gap: 6px; }
-  .edit-proposal .result {
-    margin-top: 6px;
-    font-style: italic;
-  }
-  .edit-proposal .result.ok { color: var(--vscode-gitDecoration-addedResourceForeground, #2ea043); }
-  .edit-proposal .result.refused { color: var(--vscode-errorForeground); }
-  .edit-proposal .result.auto-pending { opacity: 0.65; }
-  .tool-approval {
-    margin: 4px 12px 14px;
-    padding: 10px 12px;
-    border: 2px solid var(--vscode-inputValidation-warningBorder, #cca700);
-    border-radius: 4px;
-    font-size: 12px;
-  }
-  .tool-approval .approval-heading { font-weight: 600; margin-bottom: 6px; }
-  .tool-approval .approval-args-label { font-size: 11px; opacity: 0.7; }
-  .tool-approval .approval-args {
-    margin: 2px 0 8px;
-    padding: 4px 6px;
-    white-space: pre-wrap;
-    word-break: break-all;
-    font-family: var(--vscode-editor-font-family, monospace);
-    background: var(--vscode-textCodeBlock-background, rgba(127,127,127,0.1));
-  }
-  .tool-approval .approval-lane { margin-bottom: 8px; }
-  /* The unconfined warning is styled as an error, not a hint. It is the most
-     important sentence on the panel: nothing in this product can constrain
-     what that subprocess touches. */
-  .tool-approval .approval-lane.unconfined {
-    color: var(--vscode-errorForeground, #f14c4c);
-    font-weight: 600;
-  }
-  .tool-approval .approval-lane.confined { opacity: 0.75; }
-  .tool-approval .approval-actions { display: flex; gap: 6px; flex-wrap: wrap; }
-  /* Focus must be VISIBLE here even if the theme is quiet about it: the deny
-     button is focused first on purpose, and a user who cannot see where focus
-     landed cannot use that default. */
-  .tool-approval .approval-btn:focus-visible {
-    outline: 2px solid var(--vscode-focusBorder, #007fd4);
-    outline-offset: 1px;
-  }
-  .tool-activity {
-    margin: 2px 12px;
-    font-size: 11px;
-    opacity: 0.7;
-    font-style: italic;
-  }
-  .approval-record {
-    margin: 2px 12px 8px;
-    font-size: 11px;
-    opacity: 0.8;
-  }
-  .edit-summary {
-    margin: 4px 12px 14px;
-    padding: 8px 10px;
-    border: 1px solid var(--vscode-panel-border, #444);
-    border-radius: 4px;
-    font-size: 12px;
-  }
-  .edit-summary .summary-line { font-weight: 600; margin-bottom: 4px; }
-  .edit-summary .summary-refusal { color: var(--vscode-errorForeground); margin-bottom: 2px; }
-  .edit-summary .summary-backup { opacity: 0.7; font-style: italic; margin-top: 4px; }
-  .edit-summary .undo-btn { margin-top: 6px; }
-  .edit-summary .summary-undo-result { margin-top: 6px; font-style: italic; }
-  .auto-apply-toggle {
-    font-weight: 600;
-    border: 1px solid var(--vscode-panel-border, #444);
-  }
-  .auto-apply-toggle.off {
-    background: transparent;
-    color: var(--vscode-foreground);
-    opacity: 0.7;
-  }
-  .auto-apply-toggle.on {
-    background: var(--vscode-inputValidation-warningBackground, #7a5c00);
-    color: var(--vscode-inputValidation-warningForeground, #fff);
-    border-color: var(--vscode-inputValidation-warningBorder, #b89500);
-    opacity: 1;
-  }
-  /* Visible to assistive technology, not on screen. Used for the <label>s that
-     give the two text inputs accessible names -- a placeholder is not an
-     accessible name, and the visual design has no room for visible labels. */
-  .sr-only {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0, 0, 0, 0);
-    white-space: nowrap;
-    border: 0;
-  }
+${chatPanelStyles()}
 </style>
 </head>
 <body>
-${chatPanelBodyMarkup()}  <script nonce="${nonce}" src="${scriptUri}"></script>
+${chatPanelBodyMarkup(logoUri.toString())}  <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;
   }
@@ -759,6 +727,52 @@ function workspacePath(): string {
   return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
 }
 
+async function runGitStatus(workspace: string): Promise<string> {
+  const dir = workspace || '.';
+  try {
+    const { stdout, stderr } = await execFileAsync('git', ['-C', dir, 'status', '-sb']);
+    const s = (stdout + stderr).trim();
+    return s || '(git status: empty)';
+  } catch (err) {
+    return `git status failed: ${(err as Error).message}`;
+  }
+}
+
+async function runMCPServerList(workspace: string): Promise<string> {
+  const candidates = [
+    path.join(workspace, 'daemon', 'codeterminal-daemon'),
+    path.join(workspace, 'codeterminal-daemon'),
+    'codeterminal-daemon',
+  ];
+  const bin = candidates.find((c) => {
+    try {
+      return fs.existsSync(c) && fs.statSync(c).isFile();
+    } catch {
+      return false;
+    }
+  });
+  if (!bin) {
+    return (
+      'codeterminal-daemon binary not found — build it with:\n' +
+      '  (cd daemon && go build -o codeterminal-daemon .)\n' +
+      'then retry /mcp-server'
+    );
+  }
+  const config = path.join(workspace, 'models.json');
+  try {
+    const args = ['mcp', 'list'];
+    if (fs.existsSync(config)) {
+      args.push('--config', config);
+    }
+    const { stdout, stderr } = await execFileAsync(bin, args, { cwd: workspace || undefined });
+    const s = (stdout + stderr).trim();
+    return s || 'no MCP servers configured (agent mode off or empty mcp.servers)';
+  } catch (err) {
+    const e = err as { message: string; stdout?: string; stderr?: string };
+    return `mcp list failed: ${e.message}\n${(e.stdout || '') + (e.stderr || '')}`.trim();
+  }
+}
+
 function getNonce(): string {
   let text = '';
   const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
@@ -768,6 +782,867 @@ function getNonce(): string {
   return text;
 }
 
+export function chatPanelStyles(): string {
+  return `  :root {
+    --ct-bg: #fff8f9;
+    --ct-surface: #ffffff;
+    --ct-rose: #e8919a;
+    --ct-rose-deep: #d4727d;
+    --ct-rose-soft: #fce8eb;
+    --ct-ink: #3d2c2e;
+    --ct-muted: #8a6f73;
+    --ct-border: #f0d6da;
+    --ct-code-bg: #fff6f7;
+    --ct-code-fg: #5b3a44;
+    --ct-user-bg: #fff0f2;
+    --ct-radius: 14px;
+    --ct-composer-bg: #fff5f7;
+    --ct-composer-border: #f0c8d0;
+    --ct-composer-glow: rgba(232, 145, 154, 0.28);
+    --ct-composer-text: #4a3438;
+    --ct-composer-muted: #a88a90;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: "Segoe UI", "Helvetica Neue", sans-serif;
+    color: var(--ct-ink);
+    background: var(--ct-bg);
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+  }
+  #appHeader {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 14px;
+    background: var(--ct-surface);
+    border-bottom: 1px solid var(--ct-border);
+  }
+  #appHeader .brand {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 700;
+    font-size: 15px;
+    letter-spacing: 0.01em;
+    color: var(--ct-ink);
+  }
+  #appHeader .brand-mark {
+    width: 26px;
+    height: 26px;
+    border-radius: 8px;
+    background: linear-gradient(145deg, var(--ct-rose), var(--ct-rose-deep));
+    color: #fff;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    box-shadow: 0 4px 10px rgba(212, 114, 125, 0.28);
+  }
+  #appHeader .brand-logo {
+    width: 44px;
+    height: 44px;
+    object-fit: contain;
+    transform: scale(2.5);
+    transform-origin: center;
+  }
+  #appHeader .header-actions { display: flex; gap: 4px; }
+  .icon-btn {
+    width: 32px;
+    height: 32px;
+    border: none;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--ct-muted);
+    cursor: pointer;
+    font-size: 16px;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .icon-btn:hover { background: var(--ct-rose-soft); color: var(--ct-rose-deep); }
+  #searchRow {
+    display: none;
+    gap: 6px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--ct-border);
+    background: var(--ct-surface);
+  }
+  #searchRow.visible { display: flex; }
+  #searchInput {
+    flex: 1;
+    background: var(--ct-bg);
+    color: var(--ct-ink);
+    border: 1px solid var(--ct-border);
+    border-radius: 10px;
+    padding: 8px 10px;
+    font-family: inherit;
+    font-size: 13px;
+  }
+  #searchBtn {
+    background: var(--ct-rose);
+    color: #fff;
+    border: none;
+    border-radius: 10px;
+    padding: 8px 14px;
+    cursor: pointer;
+  }
+  #searchResults { padding: 0 12px; }
+  .search-result {
+    margin-bottom: 10px;
+    padding: 10px 12px;
+    border: 1px solid var(--ct-border);
+    border-radius: var(--ct-radius);
+    background: var(--ct-surface);
+    font-size: 12px;
+  }
+  .search-result .search-result-meta { font-size: 11px; color: var(--ct-muted); margin-bottom: 4px; }
+  .search-result .search-result-snippet { white-space: pre-wrap; line-height: 1.4; }
+  .search-result mark {
+    background: #ffe0e4;
+    color: inherit;
+  }
+  .search-empty { padding: 4px 0 10px; font-size: 12px; color: var(--ct-muted); }
+  .search-error { padding: 4px 0 10px; font-size: 12px; color: #c0392b; }
+  #transcript { flex: 1; overflow-y: auto; padding: 14px 16px; }
+  .first-run {
+    font-size: 13px;
+    color: var(--ct-muted);
+    line-height: 1.55;
+    max-width: 62ch;
+    background: var(--ct-surface);
+    border: 1px solid var(--ct-border);
+    border-radius: var(--ct-radius);
+    padding: 14px 16px;
+  }
+  .first-run p { margin: 0 0 8px; color: var(--ct-ink); }
+  .first-run pre {
+    margin: 0;
+    padding: 8px 10px;
+    white-space: pre-wrap;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    background: var(--ct-rose-soft);
+    border: 1px solid var(--ct-border);
+    border-radius: 10px;
+    color: var(--ct-ink);
+  }
+  .msg {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 16px;
+    align-items: flex-start;
+  }
+  .msg .avatar {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: 700;
+    color: #fff;
+  }
+  .msg.user .avatar { background: var(--ct-rose-soft); color: var(--ct-rose-deep); border: 1px solid var(--ct-border); }
+  .msg.assistant .avatar { background: linear-gradient(145deg, var(--ct-rose), var(--ct-rose-deep)); color: #fff; }
+  .msg.error .avatar { background: #c0392b; }
+  .msg .card {
+    flex: 1;
+    min-width: 0;
+    background: var(--ct-surface);
+    border: 1px solid var(--ct-border);
+    border-radius: var(--ct-radius);
+    padding: 12px 14px;
+    box-shadow: 0 1px 2px rgba(212, 114, 125, 0.06);
+  }
+  .msg.user .card { background: var(--ct-user-bg); }
+  .msg .role {
+    display: block;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--ct-muted);
+    margin-bottom: 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .msg .body { white-space: pre-wrap; line-height: 1.5; font-size: 13.5px; }
+  .msg .body .md-p { margin: 0 0 8px; white-space: pre-wrap; }
+  .msg .code-block {
+    margin: 8px 0;
+    border-radius: 10px;
+    overflow: hidden;
+    background: var(--ct-code-bg);
+    color: var(--ct-code-fg);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+  }
+  .msg .code-block .code-lang {
+    padding: 4px 10px;
+    font-size: 10px;
+    color: var(--ct-muted);
+    background: #fff;
+    border-bottom: 1px solid var(--ct-border);
+  }
+  .msg .code-block .code-row {
+    display: flex;
+    line-height: 1.45;
+  }
+  .msg .code-block .ln {
+    width: 36px;
+    flex-shrink: 0;
+    text-align: right;
+    padding: 0 8px;
+    color: #c4a4ad;
+    background: #fffafb;
+    border-right: 1px solid var(--ct-border);
+    user-select: none;
+  }
+  .msg .code-block .lc {
+    flex: 1;
+    padding-right: 10px;
+    white-space: pre;
+    overflow-x: auto;
+  }
+  .msg-footer {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 1px solid var(--ct-border);
+    font-size: 12px;
+    color: var(--ct-muted);
+  }
+  .msg-footer button {
+    background: transparent;
+    border: 1px solid var(--ct-border);
+    border-radius: 8px;
+    color: var(--ct-muted);
+    padding: 3px 8px;
+    cursor: pointer;
+    font-size: 12px;
+  }
+  .msg-footer button:hover { border-color: var(--ct-rose); color: var(--ct-rose-deep); }
+  .msg-footer button.active { background: var(--ct-rose-soft); border-color: var(--ct-rose); color: var(--ct-rose-deep); }
+  .msg-footer .helpful { margin-left: auto; }
+  .turn.reasoning {
+    opacity: 0.7;
+    font-style: italic;
+    font-size: 12px;
+    margin: 0 0 8px 38px;
+    padding: 8px 12px;
+    background: var(--ct-rose-soft);
+    border-radius: 10px;
+    color: var(--ct-muted);
+  }
+  .turn.reasoning .role { color: var(--ct-muted); display: block; margin-bottom: 2px; font-style: normal; font-size: 11px; }
+  .turn.incomplete-notice {
+    color: #b8860b;
+    font-size: 12px;
+    font-style: italic;
+    margin: 4px 0 12px 38px;
+  }
+  .turn.error-inline {
+    color: #c0392b;
+    margin-bottom: 14px;
+    white-space: pre-wrap;
+  }
+  #historyNotice {
+    font-size: 11px;
+    padding: 0 12px 6px;
+    color: #b8860b;
+  }
+  #historyNotice:empty { padding: 0; }
+  #grounding { font-size: 11px; color: var(--ct-muted); padding: 0 12px 6px; min-height: 14px; }
+  #redactions, #degraded {
+    font-size: 11px;
+    padding: 0 12px 6px;
+    color: #b8860b;
+  }
+  #redactions:empty, #degraded:empty { padding: 0; }
+  #degraded .item { display: block; }
+  #provider { font-size: 11px; color: var(--ct-muted); padding: 0 12px 6px; }
+  #provider:empty { padding: 0; }
+  #composer {
+    padding: 12px 14px 14px;
+    background: transparent;
+    border-top: none;
+    position: relative;
+  }
+  #composerShell {
+    position: relative;
+    background: var(--ct-composer-bg);
+    border: 1px solid var(--ct-composer-border);
+    border-radius: 18px;
+    box-shadow:
+      0 1px 2px rgba(232, 145, 154, 0.08),
+      0 8px 24px rgba(232, 145, 154, 0.12);
+    overflow: hidden;
+    transition: border-color 180ms ease, box-shadow 220ms ease;
+  }
+  #composerShell.focused {
+    border-color: var(--ct-rose);
+    box-shadow:
+      0 0 0 3px rgba(232, 145, 154, 0.18),
+      0 10px 28px rgba(232, 145, 154, 0.2);
+  }
+  #composerShell.sending {
+    animation: composerPulse 900ms ease;
+  }
+  @keyframes composerPulse {
+    0% { box-shadow: 0 0 0 2px rgba(232, 145, 154, 0.15); }
+    45% { box-shadow: 0 0 0 4px rgba(232, 145, 154, 0.28), 0 8px 28px rgba(232, 145, 154, 0.25); }
+    100% { box-shadow: 0 1px 2px rgba(232, 145, 154, 0.08), 0 8px 24px rgba(232, 145, 154, 0.12); }
+  }
+  #slashMenu {
+    display: none;
+    position: absolute;
+    bottom: calc(100% + 8px);
+    left: 0;
+    right: 0;
+    max-height: 220px;
+    overflow-y: auto;
+    background: #fff;
+    color: var(--ct-ink);
+    border: 1px solid var(--ct-border);
+    border-radius: 14px;
+    box-shadow: 0 12px 32px rgba(61, 44, 46, 0.12);
+    z-index: 8;
+  }
+  #slashMenu.visible { display: block; }
+  #slashMenu button {
+    display: flex;
+    width: 100%;
+    text-align: left;
+    background: transparent;
+    color: inherit;
+    border: 0;
+    padding: 9px 12px;
+    font: inherit;
+    cursor: pointer;
+    gap: 8px;
+    align-items: baseline;
+  }
+  #slashMenu button:hover, #slashMenu button.active {
+    background: var(--ct-rose-soft);
+  }
+  #slashMenu .slash-name {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: var(--ct-rose-deep);
+  }
+  #slashMenu .slash-summary { color: var(--ct-muted); font-size: 12px; }
+
+  .composer-top {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 14px 14px 8px;
+  }
+  #promptInput {
+    flex: 1;
+    min-height: 52px;
+    max-height: 160px;
+    resize: none;
+    background: transparent;
+    color: var(--ct-composer-text);
+    border: none;
+    border-radius: 0;
+    padding: 4px 0;
+    font-family: inherit;
+    font-size: 14px;
+    line-height: 1.45;
+    box-shadow: none;
+  }
+  #promptInput::placeholder { color: var(--ct-composer-muted); }
+  #promptInput:focus {
+    outline: none;
+    border: none;
+    box-shadow: none;
+  }
+
+  #sendBtn {
+    width: 36px;
+    height: 36px;
+    margin-top: 2px;
+    border-radius: 11px;
+    background: var(--ct-rose);
+    color: #fff;
+    border: none;
+    cursor: pointer;
+    font-size: 16px;
+    font-weight: 600;
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 4px 12px rgba(232, 145, 154, 0.4);
+    transition: transform 120ms ease, background 120ms ease, box-shadow 160ms ease;
+  }
+  #sendBtn:hover:not(:disabled) {
+    background: var(--ct-rose-deep);
+    box-shadow: 0 6px 16px rgba(212, 114, 125, 0.45);
+    transform: translateY(-1px);
+  }
+  #sendBtn:disabled { opacity: 0.4; cursor: default; box-shadow: none; transform: none; }
+
+  .composer-bottom {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 6px 12px 12px;
+  }
+  .composer-left, .composer-right {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+  .composer-right { margin-left: auto; gap: 6px; }
+
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    height: 28px;
+    padding: 0 10px;
+    border-radius: 999px;
+    border: 1px solid var(--ct-border);
+    background: #fff;
+    color: var(--ct-ink);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    white-space: nowrap;
+    max-width: 140px;
+  }
+  .pill:hover {
+    border-color: var(--ct-rose);
+    background: var(--ct-rose-soft);
+    color: var(--ct-rose-deep);
+  }
+  .pill .chev { opacity: 0.5; font-size: 10px; }
+  .pill .bolt { color: inherit; display: flex; align-items: center; justify-content: center; margin-right: 2px; }
+  .mode-svg { display: block; }
+  #autoApplyToggle.on .bolt { color: #e6a317; }
+  #autoApplyToggle.off .bolt { color: inherit; }
+
+  #modelChip, #autoApplyToggle {
+    /* pills */
+  }
+  #modelChip {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  #autoApplyToggle.mode-btn,
+  #autoApplyToggle.pill {
+    display: inline-flex;
+    font-weight: 500;
+  }
+  #autoApplyToggle.off {
+    background: #fff;
+    color: var(--ct-ink);
+    border-color: var(--ct-border);
+  }
+  #autoApplyToggle.on {
+    background: var(--ct-rose-soft);
+    color: var(--ct-rose-deep);
+    border-color: var(--ct-rose);
+  }
+
+  #effortMeter {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    height: 28px;
+    padding: 0 8px;
+    border-radius: 999px;
+    background: #fff;
+    border: 1px solid var(--ct-border);
+    cursor: pointer;
+  }
+  #effortMeter:hover { border-color: var(--ct-rose); background: var(--ct-rose-soft); }
+  #effortMeter .effort-label {
+    font-size: 10px;
+    color: var(--ct-muted);
+    margin-right: 2px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  #effortMeter .dot {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: #e8d0d4;
+    transition: transform 160ms ease, background 160ms ease, box-shadow 160ms ease;
+  }
+  #effortMeter .dot.on {
+    background: #f0a0ac;
+  }
+  #effortMeter .dot.active {
+    width: 9px;
+    height: 9px;
+    background: radial-gradient(circle at 35% 35%, #fff, #f5c0ca 45%, #e8919a 100%);
+    box-shadow: 0 0 10px rgba(232, 145, 154, 0.75), 0 0 2px #fff;
+    animation: effortGlow 1.8s ease-in-out infinite;
+  }
+  @keyframes effortGlow {
+    0%, 100% { box-shadow: 0 0 8px rgba(232, 145, 154, 0.45), 0 0 1px #fff; }
+    50% { box-shadow: 0 0 14px rgba(232, 145, 154, 0.85), 0 0 3px #fff; }
+  }
+
+  .composer-icon {
+    width: 30px;
+    height: 30px;
+    border-radius: 8px;
+    border: none;
+    background: transparent;
+    color: var(--ct-muted);
+    cursor: pointer;
+    font: inherit;
+    font-size: 15px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .composer-icon:hover { background: var(--ct-rose-soft); color: var(--ct-rose-deep); }
+  .composer-icon:disabled { opacity: 0.35; cursor: default; }
+
+  .attach-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 0 12px 12px;
+  }
+  .attach-list[hidden] { display: none !important; }
+  .attach-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 100%;
+    padding: 4px 8px 4px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--ct-border);
+    background: #fff;
+    color: var(--ct-ink);
+    font-size: 11px;
+  }
+  .attach-chip .attach-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 180px;
+  }
+  .attach-chip .attach-remove {
+    width: 18px;
+    height: 18px;
+    border: none;
+    border-radius: 50%;
+    background: var(--ct-rose-soft);
+    color: var(--ct-rose-deep);
+    cursor: pointer;
+    font-size: 12px;
+    line-height: 1;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .attach-chip .attach-remove:hover { background: var(--ct-rose); color: #fff; }
+
+  .context-btn {
+    position: relative;
+  }
+  .context-ring {
+    width: 18px;
+    height: 18px;
+    display: block;
+  }
+  .context-ring-track {
+    stroke: var(--ct-border);
+  }
+  .context-ring-fill {
+    stroke: var(--ct-rose);
+    transition: stroke-dashoffset 200ms ease;
+  }
+  .context-btn.hot .context-ring-fill { stroke: var(--ct-rose-deep); }
+
+  .context-popup {
+    position: absolute;
+    right: 12px;
+    bottom: calc(100% + 10px);
+    width: min(340px, calc(100% - 24px));
+    background: #fff;
+    border: 1px solid var(--ct-border);
+    border-radius: 16px;
+    box-shadow: 0 12px 36px rgba(212, 114, 125, 0.18);
+    padding: 14px;
+    z-index: 20;
+    color: var(--ct-ink);
+  }
+  .context-popup[hidden] { display: none !important; }
+  .context-popup-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 6px;
+  }
+  .context-popup-title {
+    font-weight: 700;
+    font-size: 14px;
+  }
+  .context-popup-close {
+    width: 26px;
+    height: 26px;
+    border: none;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--ct-muted);
+    cursor: pointer;
+    font-size: 14px;
+  }
+  .context-popup-close:hover { background: var(--ct-rose-soft); color: var(--ct-rose-deep); }
+  .context-popup-summary {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--ct-muted);
+    margin-bottom: 10px;
+  }
+  .context-popup-summary #contextPct {
+    color: var(--ct-ink);
+    font-weight: 650;
+  }
+  .context-bar {
+    display: flex;
+    height: 8px;
+    border-radius: 999px;
+    overflow: hidden;
+    background: #f3e8ea;
+    margin-bottom: 12px;
+  }
+  .context-bar .seg {
+    height: 100%;
+    min-width: 0;
+  }
+  .context-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .context-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12.5px;
+  }
+  .context-row .swatch {
+    width: 10px;
+    height: 10px;
+    border-radius: 3px;
+    flex-shrink: 0;
+  }
+  .context-row .label { flex: 1; color: var(--ct-ink); }
+  .context-row .count {
+    color: var(--ct-muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .context-note {
+    margin-top: 12px;
+    font-size: 11px;
+    color: var(--ct-muted);
+    line-height: 1.4;
+  }
+
+  .modes-popup {
+    position: absolute;
+    right: 12px;
+    bottom: calc(100% + 10px);
+    width: min(340px, calc(100% - 24px));
+    background: #fff;
+    border: 1px solid var(--ct-border);
+    border-radius: 16px;
+    box-shadow: 0 12px 36px rgba(212, 114, 125, 0.18);
+    padding: 8px;
+    z-index: 20;
+    color: var(--ct-ink);
+  }
+  .modes-popup[hidden] { display: none !important; }
+  .modes-popup-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 12px;
+    margin-bottom: 4px;
+  }
+  .modes-popup-title {
+    font-weight: 600;
+    font-size: 11px;
+    color: var(--ct-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .modes-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .mode-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    width: 100%;
+    text-align: left;
+    background: transparent;
+    border: none;
+    padding: 10px 12px;
+    border-radius: 10px;
+    cursor: pointer;
+    color: inherit;
+  }
+  .mode-item:hover { background: #f9f5f6; }
+  .mode-item[aria-selected="true"] { background: var(--ct-rose-soft); }
+  .mode-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    margin-top: 1px;
+    flex-shrink: 0;
+  }
+  .mode-text { flex: 1; min-width: 0; }
+  .mode-name {
+    font-weight: 600;
+    font-size: 13px;
+    margin-bottom: 2px;
+    color: var(--ct-ink);
+  }
+  .mode-desc {
+    font-size: 11px;
+    color: var(--ct-muted);
+    line-height: 1.35;
+  }
+  .mode-item[aria-selected="true"] .mode-name { color: var(--ct-rose-deep); }
+  .mode-check {
+    font-size: 14px;
+    color: var(--ct-rose-deep);
+    opacity: 0;
+    font-weight: bold;
+    margin-top: 1px;
+  }
+  .mode-item[aria-selected="true"] .mode-check { opacity: 1; }
+
+  .composer-mic, .composer-divider { display: none; }
+
+  #toolbar { display: none; }
+  .chip { display: none; }
+
+
+  button {
+    background: var(--ct-rose);
+    color: #fff;
+    border: none;
+    padding: 6px 14px;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+  button:disabled { opacity: 0.5; cursor: default; }
+  .edit-proposal {
+    margin: 4px 0 14px 38px;
+    padding: 10px 12px;
+    border: 1px solid var(--ct-border);
+    border-radius: var(--ct-radius);
+    background: var(--ct-surface);
+    font-size: 12px;
+  }
+  .edit-proposal .edit-index { font-size: 11px; color: var(--ct-muted); margin-bottom: 2px; }
+  .edit-proposal .file-path { font-weight: 600; margin-bottom: 6px; }
+  .edit-proposal pre {
+    margin: 0 0 8px;
+    white-space: pre-wrap;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .edit-proposal .diff-line { display: block; padding: 0 4px; }
+  .edit-proposal .diff-line.removed { color: #c0392b; background: rgba(192, 57, 43, 0.08); }
+  .edit-proposal .diff-line.added { color: #1e7a3a; background: rgba(30, 122, 58, 0.08); }
+  .edit-proposal .actions { display: flex; gap: 6px; }
+  .edit-proposal .result { margin-top: 6px; font-style: italic; }
+  .edit-proposal .result.ok { color: #1e7a3a; }
+  .edit-proposal .result.refused { color: #c0392b; }
+  .edit-proposal .result.auto-pending { opacity: 0.65; }
+  .tool-approval {
+    margin: 4px 0 14px 38px;
+    padding: 12px;
+    border: 2px solid #d4a017;
+    border-radius: var(--ct-radius);
+    background: var(--ct-surface);
+    font-size: 12px;
+  }
+  .tool-approval .approval-heading { font-weight: 600; margin-bottom: 6px; }
+  .tool-approval .approval-args-label { font-size: 11px; color: var(--ct-muted); }
+  .tool-approval .approval-args {
+    margin: 2px 0 8px;
+    padding: 6px 8px;
+    white-space: pre-wrap;
+    word-break: break-all;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    background: var(--ct-bg);
+    border-radius: 8px;
+  }
+  .tool-approval .approval-lane { margin-bottom: 8px; }
+  .tool-approval .approval-lane.unconfined {
+    color: #c0392b;
+    font-weight: 600;
+  }
+  .tool-approval .approval-lane.confined { color: var(--ct-muted); }
+  .tool-approval .approval-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+  .tool-approval .approval-btn:focus-visible {
+    outline: 2px solid var(--ct-rose);
+    outline-offset: 1px;
+  }
+  .tool-activity {
+    margin: 2px 0 2px 38px;
+    font-size: 11px;
+    color: var(--ct-muted);
+    font-style: italic;
+  }
+  .approval-record {
+    margin: 2px 0 8px 38px;
+    font-size: 11px;
+    color: var(--ct-muted);
+  }
+  .edit-summary {
+    margin: 4px 0 14px 38px;
+    padding: 10px 12px;
+    border: 1px solid var(--ct-border);
+    border-radius: var(--ct-radius);
+    background: var(--ct-surface);
+    font-size: 12px;
+  }
+  .edit-summary .summary-line { font-weight: 600; margin-bottom: 4px; }
+  .edit-summary .summary-refusal { color: #c0392b; margin-bottom: 2px; }
+  .edit-summary .summary-backup { color: var(--ct-muted); font-style: italic; margin-top: 4px; }
+  .edit-summary .undo-btn { margin-top: 6px; }
+  .edit-summary .summary-undo-result { margin-top: 6px; font-style: italic; }
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }`;
+}
+
 // chatPanelBodyMarkup is the panel's static body markup, extracted from getHtml
 // so it can be asserted directly. getHtml needs a live webview (for cspSource
 // and asWebviewUri) and a fresh nonce, neither of which a test can supply, and
@@ -775,7 +1650,7 @@ function getNonce(): string {
 // accessibility structure below would be unassertable and free to rot.
 //
 // See accessibility.test.ts, which pins the roles and labels this returns.
-export function chatPanelBodyMarkup(): string {
+export function chatPanelBodyMarkup(logoUri: string = ''): string {
   return `  <!-- ACCESSIBILITY. The webview had no aria-*, role= or tabindex anywhere: a
        screen-reader user could not follow a streaming answer (nothing announced
        it), could not read the Auto-apply toggle's state (it lived only in
@@ -786,6 +1661,16 @@ export function chatPanelBodyMarkup(): string {
        Everything below is ADDITIVE: roles, labels and live regions only. Every
        renderer still writes through textContent and never innerHTML, so the CSP
        + no-dangerous-sinks posture the Phase 3 review verified is untouched. -->
+  <header id="appHeader">
+    <div class="brand">
+      ${logoUri ? `<img src="${logoUri}" alt="Mochiii Logo" class="brand-logo" />` : `<span class="brand-mark" aria-hidden="true">✦</span>`}
+      Mochiii
+    </div>
+    <div class="header-actions">
+      <button type="button" id="newChatBtn" class="icon-btn" title="New chat" aria-label="New chat">＋</button>
+      <button type="button" id="historyBtn" class="icon-btn" title="History / search" aria-label="History and search">◷</button>
+    </div>
+  </header>
   <div id="searchRow" role="search">
     <label for="searchInput" class="sr-only">Search past conversations</label>
     <input id="searchInput" type="text" placeholder="Search past conversations…" />
@@ -808,8 +1693,8 @@ export function chatPanelBodyMarkup(): string {
        unusable at streaming rates). -->
   <div id="transcript" role="log" aria-live="polite" aria-atomic="false" aria-label="Conversation transcript">
     <div id="firstRun" class="first-run">
-      <p>CodeTerminal answers questions about the code in your workspace, grounded in a local index, and can propose edits you apply from here.</p>
-      <p><strong>It needs the CodeTerminal daemon already running</strong> — this panel talks to it over a local socket and does not start it for you.</p>
+      <p>Mochiii answers questions about the code in your workspace, grounded in a local index, and can propose edits you apply from here.</p>
+      <p><strong>It needs the Mochiii daemon already running</strong> — this panel talks to it over a local socket and does not start it for you.</p>
       <p>Start it in a terminal from the repo root, then send a prompt:</p>
       <pre>${DAEMON_LAUNCH_COMMAND}</pre>
     </div>
@@ -822,16 +1707,92 @@ export function chatPanelBodyMarkup(): string {
   <div id="redactions" role="status" aria-live="polite" aria-label="Redaction notice"></div>
   <div id="degraded" role="status" aria-live="polite" aria-label="Degraded functionality notice"></div>
   <div id="provider" role="status" aria-live="polite" aria-label="Serving provider"></div>
-  <div id="inputRow">
-    <!-- role="switch" + aria-checked, kept in sync by main.js's
-         setAutoApplyState. Before this the state existed ONLY as textContent,
-         so a reader announced the label with no on/off information -- on the
-         control that decides whether edits reach disk without confirmation. -->
-    <button id="autoApplyToggle" class="auto-apply-toggle off" role="switch" aria-checked="false"
-      aria-label="Auto-apply proposed edits"
-      title="When ON, proposed edits apply automatically without a per-edit confirmation"></button>
-    <label for="promptInput" class="sr-only">Ask a question about your code</label>
-    <input id="promptInput" type="text" placeholder="Ask something…" />
-    <button id="sendBtn">Send</button>
+  <div id="composer">
+    <div id="slashMenu" role="listbox" aria-label="Slash commands"></div>
+    <div id="composerShell">
+      <div class="composer-top">
+        <label for="promptInput" class="sr-only">Ask a question about your code</label>
+        <textarea id="promptInput" rows="2" placeholder="Ask Mochiii anything… or type /"></textarea>
+        <button type="button" id="sendBtn" title="Send" aria-label="Send">✈</button>
+      </div>
+      <div class="composer-bottom">
+        <div class="composer-left">
+          <button type="button" class="pill" id="modelChip" title="Choose model (/model)" aria-label="Choose model">
+            <span id="modelChipLabel">Model</span><span class="chev" aria-hidden="true">▾</span>
+          </button>
+          <div id="effortMeter" role="slider" aria-valuemin="1" aria-valuemax="5" aria-valuenow="3" aria-label="Effort level" title="Effort">
+            <span class="effort-label">Effort</span>
+            <span class="dot" data-level="1"></span>
+            <span class="dot" data-level="2"></span>
+            <span class="dot" data-level="3"></span>
+            <span class="dot" data-level="4"></span>
+            <span class="dot" data-level="5"></span>
+          </div>
+        </div>
+        <div class="composer-right">
+          <button type="button" class="composer-icon context-btn" id="contextBtn" title="Context usage" aria-label="Open context usage" aria-expanded="false" aria-controls="contextPopup">
+            <svg class="context-ring" viewBox="0 0 24 24" aria-hidden="true">
+              <circle class="context-ring-track" cx="12" cy="12" r="8" fill="none" stroke-width="2.5"/>
+              <circle class="context-ring-fill" id="contextRingFill" cx="12" cy="12" r="8" fill="none" stroke-width="2.5"
+                stroke-linecap="round" transform="rotate(-90 12 12)"
+                stroke-dasharray="50.27" stroke-dashoffset="50.27"/>
+            </svg>
+          </button>
+          <input type="file" id="fileInput" multiple hidden
+            accept=".txt,.md,.json,.js,.ts,.tsx,.jsx,.py,.go,.rs,.java,.c,.h,.cpp,.hpp,.css,.html,.xml,.yaml,.yml,.toml,.sh,.sql,.csv,.log,.env.example,image/*,.png,.jpg,.jpeg,.webp,.gif" />
+          <button type="button" class="composer-icon" id="attachBtn" title="Attach files" aria-label="Attach files">📎</button>
+          <button id="autoApplyToggle" class="pill mode-btn on" aria-haspopup="listbox" aria-expanded="false"
+            aria-label="Select mode"
+            title="Select agent mode (Manual, Plan, Auto)">
+            <span class="bolt" aria-hidden="true" id="modeBtnIcon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="mode-svg auto-icon"><path d="m21.64 3.64-1.28-1.28a1.21 1.21 0 0 0-1.72 0L2.36 18.64a1.21 1.21 0 0 0 0 1.72l1.28 1.28a1.2 1.2 0 0 0 1.72 0L21.64 5.36a1.2 1.2 0 0 0 0-1.72Z"/><path d="m14 7 3 3"/><path d="M5 6v4"/><path d="M19 14v4"/><path d="M10 2v2"/><path d="M7 8H3"/><path d="M21 16h-4"/><path d="M11 3H9"/></svg></span><span id="modeBtnLabel">Auto</span>
+          </button>
+        </div>
+      </div>
+      <div id="attachList" class="attach-list" hidden></div>
+    </div>
+    <div id="contextPopup" class="context-popup" hidden role="dialog" aria-label="Context usage">
+      <div class="context-popup-head">
+        <div class="context-popup-title">Context Usage</div>
+        <button type="button" class="context-popup-close" id="contextPopupClose" aria-label="Close context usage">✕</button>
+      </div>
+      <div class="context-popup-summary">
+        <span id="contextPct">0% Full</span>
+        <span id="contextTotals">~0 / 128K Tokens</span>
+      </div>
+      <div class="context-bar" id="contextBar" aria-hidden="true"></div>
+      <div class="context-rows" id="contextRows"></div>
+      <div class="context-note" id="contextNote">Estimates from this chat panel (chars÷4). Not exact provider billing.</div>
+    </div>
+    <div id="modesPopup" class="modes-popup" hidden role="dialog" aria-label="Select mode">
+      <div class="modes-popup-head">
+        <div class="modes-popup-title">Modes</div>
+      </div>
+      <div class="modes-list" id="modesList" role="listbox">
+        <button type="button" class="mode-item" role="option" aria-selected="false" data-mode="manual">
+          <div class="mode-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="mode-svg manual-icon"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><path d="M2 2l7.586 7.586"/><circle cx="11" cy="11" r="2"/><path d="M4 22h16"/></svg></div>
+          <div class="mode-text">
+            <div class="mode-name">Manual</div>
+            <div class="mode-desc">Mochiii will ask for approval before making each edit</div>
+          </div>
+          <div class="mode-check" aria-hidden="true">✓</div>
+        </button>
+        <button type="button" class="mode-item" role="option" aria-selected="false" data-mode="plan">
+          <div class="mode-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="mode-svg plan-icon"><rect width="8" height="4" x="8" y="2" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="m7 11 2 2 3-3"/><path d="M14 11h3"/><path d="m7 16 2 2 3-3"/><path d="M14 16h3"/></svg></div>
+          <div class="mode-text">
+            <div class="mode-name">Plan</div>
+            <div class="mode-desc">Mochiii will explore the code and present a plan before editing</div>
+          </div>
+          <div class="mode-check" aria-hidden="true">✓</div>
+        </button>
+        <button type="button" class="mode-item" role="option" aria-selected="true" data-mode="auto">
+          <div class="mode-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="mode-svg auto-icon"><path d="m21.64 3.64-1.28-1.28a1.21 1.21 0 0 0-1.72 0L2.36 18.64a1.21 1.21 0 0 0 0 1.72l1.28 1.28a1.2 1.2 0 0 0 1.72 0L21.64 5.36a1.2 1.2 0 0 0 0-1.72Z"/><path d="m14 7 3 3"/><path d="M5 6v4"/><path d="M19 14v4"/><path d="M10 2v2"/><path d="M7 8H3"/><path d="M21 16h-4"/><path d="M11 3H9"/></svg></div>
+          <div class="mode-text">
+            <div class="mode-name">Auto</div>
+            <div class="mode-desc">Mochiii will approve actions that pass a safety check</div>
+          </div>
+          <div class="mode-check" aria-hidden="true">✓</div>
+        </button>
+      </div>
+    </div>
   </div>`;
 }

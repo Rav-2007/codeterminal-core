@@ -77,17 +77,17 @@ func connectToDaemon(clientName string, capabilities ...string) (*daemonSession,
 		// hardcoded for every caller that shares this function.
 		Capabilities: capabilities,
 	}); err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, fmt.Errorf("sending handshake: %w", err)
 	}
 
 	var hsResp protocol.HandshakeResponse
 	if err := dec.Decode(&hsResp); err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, fmt.Errorf("reading handshake response: %w", err)
 	}
 	if !hsResp.Ok {
-		conn.Close()
+		_ = conn.Close()
 		return nil, fmt.Errorf("daemon rejected handshake: %s (this client speaks protocol v%d; make sure client and daemon are the same build)", hsResp.Error, protocol.ProtocolVersion)
 	}
 
@@ -104,4 +104,26 @@ func readLockFile(path string) (protocol.LockFile, error) {
 		return lock, fmt.Errorf("corrupt lockfile: %w", err)
 	}
 	return lock, nil
+}
+
+// fetchAvailableTiers asks the daemon for models.json tiers via StatusRequest.
+// Used by /model so the menu always matches the running config.
+func fetchAvailableTiers(clientName string) ([]protocol.StatusTier, error) {
+	sess, err := connectToDaemon(clientName)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = sess.Close() }()
+
+	if err := sess.enc.Encode(protocol.StatusRequest{
+		ProtocolVersion: protocol.ProtocolVersion,
+		Status:          true,
+	}); err != nil {
+		return nil, err
+	}
+	var resp protocol.StatusResponse
+	if err := sess.dec.Decode(&resp); err != nil {
+		return nil, err
+	}
+	return resp.AvailableTiers, nil
 }

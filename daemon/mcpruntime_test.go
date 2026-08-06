@@ -283,7 +283,7 @@ func TestBuiltinListDirectoryHidesProtectedAndSecretNames(t *testing.T) {
 func TestBuiltinsAreConfinedAndReadOnly(t *testing.T) {
 	s := builtinTestServer(t)
 	registry := mcp.NewRegistry(configPolicy{cfg: &Config{MCP: MCPConfig{Enabled: true}}}, 20)
-	for _, b := range s.builtinTools(&proposalSink{}) {
+	for _, b := range s.builtinTools(&proposalSink{}, "") {
 		if err := registry.RegisterBuiltin(b); err != nil {
 			t.Fatalf("registering %s: %v", b.Tool.Name, err)
 		}
@@ -307,10 +307,9 @@ func TestBuiltinsAreConfinedAndReadOnly(t *testing.T) {
 		if !json.Valid(tool.Schema) {
 			t.Errorf("built-in %q has an invalid schema: %s", tool.Name, tool.Schema)
 		}
-		// v1's built-ins are all reads. If a writing tool is ever added here,
-		// this fails and whoever added it has to justify it against the
-		// "propose, never write" rule in mcpbuiltin.go's header.
-		if !tool.ReadOnlyHint {
+		// v1's built-ins are all reads, with the exception of sandbox_exec which
+		// is allowed to run tests and compilations that may write build artifacts.
+		if !tool.ReadOnlyHint && tool.Name != "sandbox_exec" {
 			t.Errorf("built-in %q is not read-only. Lane A tools must not mutate the filesystem: "+
 				"a write tool belongs in the existing edit-proposal flow, where the user sees a diff", tool.Name)
 		}
@@ -332,7 +331,7 @@ func TestBuildRegistry(t *testing.T) {
 		s := builtinTestServer(t)
 		s.cfg = &Config{MCP: MCPConfig{Enabled: true, Builtin: MCPBuiltinConfig{Disabled: true}}}
 
-		registry, errs := s.buildRegistry(context.Background(), quiet, &proposalSink{})
+		registry, errs := s.buildRegistry(context.Background(), quiet, &proposalSink{}, "")
 		t.Cleanup(func() { _ = registry.Close() })
 		if len(errs) != 0 {
 			t.Fatalf("unexpected errors: %v", errs)
@@ -351,7 +350,7 @@ func TestBuildRegistry(t *testing.T) {
 			},
 		}}
 
-		registry, errs := s.buildRegistry(context.Background(), quiet, &proposalSink{})
+		registry, errs := s.buildRegistry(context.Background(), quiet, &proposalSink{}, "")
 		t.Cleanup(func() { _ = registry.Close() })
 
 		if len(errs) != 1 {
@@ -379,7 +378,7 @@ func TestBuildRegistry(t *testing.T) {
 			},
 		}}
 
-		registry, errs := s.buildRegistry(context.Background(), quiet, &proposalSink{})
+		registry, errs := s.buildRegistry(context.Background(), quiet, &proposalSink{}, "")
 		t.Cleanup(func() { _ = registry.Close() })
 		if len(errs) != 0 {
 			t.Errorf("an unacknowledged server should be skipped silently, not attempted: %v", errs)

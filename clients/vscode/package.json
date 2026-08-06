@@ -1,7 +1,7 @@
 {
   "name": "codeterminal-vscode",
   "displayName": "CodeTerminal",
-  "description": "Chat with CodeTerminal's local daemon (grounded answers over the Mochiii protocol) from inside VS Code.",
+  "description": "Chat with CodeTerminal's local daemon from inside VS Code.",
   "version": "0.0.1",
   "private": true,
   "publisher": "codeterminal",
@@ -12,7 +12,8 @@
     "Other"
   ],
   "activationEvents": [
-    "onCommand:codeterminal.openChat"
+    "onCommand:codeterminal.openChat",
+    "onCommand:codeterminal.restartDaemon"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -20,11 +21,16 @@
       {
         "command": "codeterminal.openChat",
         "title": "CodeTerminal: Open Chat"
+      },
+      {
+        "command": "codeterminal.restartDaemon",
+        "title": "CodeTerminal: Restart Daemon"
       }
     ]
   },
   "scripts": {
-    "compile": "tsc -p ./",
+    "build:daemon": "cd ../../ && go build -o clients/vscode/daemon/codeterminal-daemon ./daemon",
+    "compile": "npm run build:daemon && tsc -p ./",
     "watch": "tsc -w -p ./",
     "pretest": "tsc -p ./",
     "test": "node ./out/test/runTest.js"

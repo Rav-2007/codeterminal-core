@@ -1,6 +1,11 @@
 package main
 
-import "codeterminal/protocol"
+import (
+	"codeterminal/protocol"
+	"encoding/json"
+	"os"
+	"path/filepath"
+)
 
 // Wire-visible degraded-state reporting.
 //
@@ -19,11 +24,12 @@ import "codeterminal/protocol"
 // keeps the full diagnostic (including the absolute index path and the
 // underlying open error), and the client gets the consequence.
 const (
-	detailLexicalDown = "keyword (lexical) search is unavailable, so answers are grounded by semantic similarity alone; exact identifier matches may be missed"
-	detailMemoryDown  = "cross-session conversation memory is unavailable; this conversation works normally but will not be remembered after the client closes"
-	detailFallbacks   = "provider routing permits fallbacks outside the configured zero-data-retention constraints, so a request may be served by a non-ZDR endpoint"
-	detailNonZDR      = "zero-data-retention routing is not enforced for this daemon"
-	detailCollection  = "providers that may store or train on request data are permitted for this daemon"
+	detailLexicalDown       = "keyword (lexical) search is unavailable, so answers are grounded by semantic similarity alone; exact identifier matches may be missed"
+	detailMemoryDown        = "cross-session conversation memory is unavailable; this conversation works normally but will not be remembered after the client closes"
+	detailFallbacks         = "provider routing permits fallbacks outside the configured zero-data-retention constraints, so a request may be served by a non-ZDR endpoint"
+	detailNonZDR            = "zero-data-retention routing is not enforced for this daemon"
+	detailCollection        = "providers that may store or train on request data are permitted for this daemon"
+	detailWorkspaceTooLarge = "workspace is too large (> 10,000 files), semantic search is disabled"
 )
 
 // degradations reports every subsystem currently running in a reduced mode.
@@ -57,6 +63,18 @@ func (s *Server) degradations() []protocol.Degradation {
 	}
 
 	out = append(out, s.routingDegradations()...)
+
+	if payload, err := os.ReadFile(filepath.Join(s.workspace, ".codeterminal/index/TOO_LARGE")); err == nil {
+		var meta map[string]any
+		if len(payload) > 0 {
+			_ = json.Unmarshal(payload, &meta)
+		}
+		out = append(out, protocol.Degradation{
+			Component: protocol.DegradedWorkspaceTooLarge,
+			Detail:    detailWorkspaceTooLarge,
+			Metadata:  meta,
+		})
+	}
 
 	return out
 }

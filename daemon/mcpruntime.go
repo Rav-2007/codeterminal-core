@@ -92,12 +92,12 @@ func toRegistryPolicy(s string) mcp.Policy {
 // A server that fails to connect does not fail the build: its error is
 // collected and surfaced as a protocol.DegradedMCPServer, because losing one
 // server's tools should cost the user those tools and not their turn.
-func (s *Server) buildRegistry(ctx context.Context, logger *log.Logger, proposals *proposalSink) (*mcp.Registry, []error) {
+func (s *Server) buildRegistry(ctx context.Context, logger *log.Logger, proposals *proposalSink, mode string) (*mcp.Registry, []error) {
 	cfg := s.cfg
 	registry := mcp.NewRegistry(configPolicy{cfg: cfg}, cfg.MCP.Budget.resolvedMaxAdvertisedTools())
 
 	if !cfg.MCP.Builtin.Disabled {
-		for _, b := range s.builtinTools(proposals) {
+		for _, b := range s.builtinTools(proposals, mode) {
 			if err := registry.RegisterBuiltin(b); err != nil {
 				// A duplicate or malformed built-in is our own bug, not the
 				// user's config, so it is loud rather than silent.

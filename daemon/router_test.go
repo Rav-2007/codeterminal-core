@@ -201,3 +201,63 @@ func TestRoute_ReasoningActiveButEmptySlug_FallsBackToPrimary(t *testing.T) {
 		t.Errorf("Tier = %q, want %q (active tier with empty slug must never be selected)", decision.Tier, "primary")
 	}
 }
+
+func TestRoute_PreferredTierWins(t *testing.T) {
+	cfg := testConfig(true)
+	cfg.Tiers["minimax_m3"] = ModelTier{Slug: "minimax/minimax-m3", Active: true}
+
+	decision := Route(cfg, RouteInput{
+		PreferredTier: "minimax_m3",
+		PromptKind:    PromptKindReason, // must NOT override preferred
+	})
+	if decision.Tier != "minimax_m3" || decision.Slug != "minimax/minimax-m3" {
+		t.Fatalf("got tier=%q slug=%q, want minimax_m3", decision.Tier, decision.Slug)
+	}
+	if decision.Reason != "user-selected tier" {
+		t.Errorf("Reason = %q", decision.Reason)
+	}
+}
+
+func TestRoute_PreferredTierUnknownFallsBack(t *testing.T) {
+	cfg := testConfig(false)
+	decision := Route(cfg, RouteInput{PreferredTier: "no_such_tier"})
+	if decision.Tier != "primary" {
+		t.Errorf("Tier = %q, want primary", decision.Tier)
+	}
+	if !strings.Contains(decision.Reason, "no_such_tier") {
+		t.Errorf("Reason = %q, want mention of unknown tier", decision.Reason)
+	}
+}
+
+func TestRoute_PreferredTierInactiveFallsBack(t *testing.T) {
+	cfg := testConfig(false)
+	cfg.Tiers["ghost_text"] = ModelTier{Slug: "vendor/ghost", Active: false}
+	decision := Route(cfg, RouteInput{PreferredTier: "ghost_text"})
+	if decision.Tier != "primary" {
+		t.Errorf("Tier = %q, want primary for inactive preferred", decision.Tier)
+	}
+}
+
+func TestLoadConfig_ExpandedModelsCatalog(t *testing.T) {
+	cfg, err := LoadConfig("../models.json")
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	want := []string{
+		"primary", "laguna_s_21", "step_37_flash", "ling_30_flash",
+		"minimax_m3", "qwen35_397b", "qwen36_plus", "deepseek_v4_pro", "gemini_36_flash",
+	}
+	for _, name := range want {
+		tier, ok := cfg.Tiers[name]
+		if !ok {
+			t.Errorf("missing tier %q", name)
+			continue
+		}
+		if !tier.Active {
+			t.Errorf("tier %q should be active", name)
+		}
+		if tier.Slug == "" {
+			t.Errorf("tier %q has empty slug", name)
+		}
+	}
+}

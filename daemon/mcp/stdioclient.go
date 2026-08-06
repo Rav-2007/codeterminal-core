@@ -116,6 +116,8 @@ type LaunchConfig struct {
 	// ConnectTimeout bounds the initialize handshake. Zero means
 	// DefaultConnectTimeout.
 	ConnectTimeout time.Duration
+	// Sandbox specifies OS-level sandbox isolation parameters (bwrap / docker).
+	Sandbox SandboxConfig
 }
 
 // Connect starts the server and completes the MCP initialize handshake.
@@ -150,11 +152,16 @@ func Connect(ctx context.Context, cfg LaunchConfig) (*StdioClient, error) {
 		return nil, fmt.Errorf("server %s has no command to run", cfg.Name)
 	}
 
+	execCmd, execArgs, err := WrapCommand(cfg.Command, cfg.Args, cfg.Sandbox)
+	if err != nil {
+		return nil, fmt.Errorf("server %s sandbox preparation error: %w", cfg.Name, err)
+	}
+
 	// exec.Command, never a shell. Args is a []string all the way down, so
 	// there is no command string for a metacharacter to live in and nothing to
 	// quote. A server name or argument containing a semicolon is just a
 	// semicolon.
-	cmd := exec.Command(cfg.Command, cfg.Args...)
+	cmd := exec.Command(execCmd, execArgs...)
 	cmd.Env = ServerEnv(cfg.EnvAllow)
 	cmd.Stderr = cfg.Stderr
 

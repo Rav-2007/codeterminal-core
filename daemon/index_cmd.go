@@ -7,7 +7,9 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"time"
 )
 
 // indexDirName is where a workspace's index lives, relative to its root.
@@ -51,7 +53,7 @@ func buildIndex(ctx context.Context, root string, embedder Embedder, store Vecto
 	if err != nil {
 		return nil, fmt.Errorf("scanning workspace: %w", err)
 	}
-	if len(scan.Chunks) == 0 {
+	if scan.LimitExceeded || len(scan.Chunks) == 0 {
 		return scan, nil
 	}
 
@@ -199,10 +201,24 @@ func runIndexCommand(args []string, logger *log.Logger) error {
 	}
 	defer stopEmbedder()
 
+	start := time.Now()
 	scan, err := indexWorkspace(context.Background(), indexDir, absRoot, embedder, store, lexicalStore, logger)
 	if err != nil {
 		return err
 	}
+
+	if scan.LimitExceeded {
+		var m runtime.MemStats
+		runtime.ReadMemStats(&m)
+		payload := fmt.Sprintf(`{"file_count": %d, "limit_exceeded": true, "time_ms": %d, "mem_mb": %d}`,
+			scan.FilesScanned, time.Since(start).Milliseconds(), m.Alloc/1024/1024)
+		_ = os.WriteFile(filepath.Join(indexDir, "TOO_LARGE"), []byte(payload), 0644) // TOO_LARGE metadata
+		logger.Printf("index: workspace too large (> %d files), search disabled", maxFilesScanned)
+		return nil
+	}
+
+	// Remove TOO_LARGE marker if we successfully indexed (e.g. after files were deleted)
+	_ = os.Remove(filepath.Join(indexDir, "TOO_LARGE")) // clear previous TOO_LARGE
 
 	if err := ensureGitignoreEntry(absRoot, gitignoreEntry); err != nil {
 		return fmt.Errorf("updating .gitignore: %w", err)

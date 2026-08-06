@@ -79,6 +79,21 @@ export interface PromptRequest {
   prompt: string;
   workspace?: string;
   history?: Turn[];
+  prompt_kind?: string;
+  tier?: string;
+  mode?: string;
+}
+
+export interface StatusTier {
+  name: string;
+  slug: string;
+  active: boolean;
+}
+
+export interface StatusResponse {
+  protocol_version: number;
+  available_tiers?: StatusTier[];
+  error?: string;
 }
 
 export interface GroundingInfo {
@@ -243,6 +258,7 @@ export interface IncompleteInfo {
 export interface Degradation {
   component: string;
   detail: string;
+  metadata?: Record<string, any>;
 }
 
 export interface ApplyEditRequest {
@@ -357,8 +373,7 @@ function readLockFile(): LockFile {
     raw = fs.readFileSync(p, 'utf8');
   } catch (err) {
     throw new Error(
-      `daemon not found (expected a lockfile at ${p}; start it from the repo root with: ` +
-        `${DAEMON_LAUNCH_COMMAND}): ${(err as Error).message}`
+      `daemon not found (expected a lockfile at ${p}). The bundled daemon may have failed to start: ${(err as Error).message}`
     );
   }
   try {
@@ -571,7 +586,8 @@ export async function streamPrompt(
   workspace: string,
   history: Turn[],
   signal: AbortSignal,
-  handlers: StreamHandlers
+  handlers: StreamHandlers,
+  opts?: { promptKind?: string; tier?: string; mode?: string }
 ): Promise<void> {
   // The capability is derived from the handler, not passed in: a caller that
   // can render an approval provides one, and a caller that cannot does not, so
@@ -671,8 +687,59 @@ export async function streamPrompt(
     handlers.onDone?.();
   });
 
-  const req: PromptRequest = { protocol_version: PROTOCOL_VERSION, prompt, workspace, history };
+  const req: PromptRequest = {
+    protocol_version: PROTOCOL_VERSION,
+    prompt,
+    workspace,
+    history,
+  };
+  if (opts?.promptKind) {
+    req.prompt_kind = opts.promptKind;
+  }
+  if (opts?.tier) {
+    req.tier = opts.tier;
+  }
+  if (opts?.mode) {
+    req.mode = opts.mode;
+  }
   writeLine(socket, req);
+}
+
+/** fetchAvailableTiers asks the daemon status surface for models.json tiers. */
+export async function fetchAvailableTiers(clientName: string): Promise<StatusTier[]> {
+  const { socket } = await connectToDaemon(clientName);
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const decoder = new LineDecoder((obj) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      socket.destroy();
+      const resp = obj as StatusResponse;
+      if (resp.error) {
+        reject(new Error(resp.error));
+        return;
+      }
+      resolve(resp.available_tiers ?? []);
+    });
+    socket.on('data', (chunk: Buffer) => decoder.feed(chunk));
+    socket.once('error', (err) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      reject(err);
+    });
+    socket.once('close', () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      reject(new Error('daemon closed before status reply'));
+    });
+    writeLine(socket, { protocol_version: PROTOCOL_VERSION, status: true });
+  });
 }
 
 // askForApproval hands one pending call to the UI and writes the answer back on

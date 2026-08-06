@@ -100,6 +100,15 @@ func looksTestSeeking(query string) bool {
 	return testSeekingWords.MatchString(stripped) || testFuncPattern.MatchString(query)
 }
 
+var implSeekingWords = regexp.MustCompile(`(?i)\b(implemented|implementation|how does|where does|where is)\b`)
+var setupFilesPattern = regexp.MustCompile(`(?i)(main\.go|setup\w*\.go|config\w*\.go|init\w*\.go)`)
+
+// looksImplSeeking reports whether query appears to ask for the implementation
+// of a feature (e.g., "where is X implemented").
+func looksImplSeeking(query string) bool {
+	return implSeekingWords.MatchString(query)
+}
+
 // rerankOverfetchFactor and rerankOverfetchFloor size the raw candidate pool
 // fetched from the vector store BEFORE reweighting. This matters: reweighting
 // only the raw top-k could never recover a chunk ranked just outside it (the
@@ -268,6 +277,7 @@ func rerankChunks(candidates []Chunk, k int, query string) []Chunk {
 	copy(weighted, candidates)
 
 	testSeeking := looksTestSeeking(query)
+	implSeeking := looksImplSeeking(query)
 	for i := range weighted {
 		raw := weighted[i].Score
 		weighted[i].RawScore = raw
@@ -276,6 +286,9 @@ func rerankChunks(candidates []Chunk, k int, query string) []Chunk {
 		w := classWeight(weighted[i].Class)
 		if weighted[i].Class == FileClassTest && !testSeeking {
 			w = testClassWeight
+		}
+		if implSeeking && setupFilesPattern.MatchString(weighted[i].FilePath) {
+			w *= 0.85
 		}
 		weighted[i].Score = raw * w
 	}

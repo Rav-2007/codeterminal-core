@@ -173,3 +173,30 @@ func TestOneShotPromptIsHonestAboutTheLane(t *testing.T) {
 		t.Errorf("a confined built-in was labelled unsandboxed:\n%s", buf.String())
 	}
 }
+
+func TestOneShotActivityLine(t *testing.T) {
+	act := protocol.ToolActivity{
+		Server: "srv", Tool: "tool", Phase: protocol.ToolPhaseRunning,
+	}
+	if line := oneShotActivityLine(act); !strings.Contains(line, "running srv__tool") {
+		t.Errorf("unexpected running line: %s", line)
+	}
+
+	act.Phase = protocol.ToolPhaseSucceeded
+	act.ResultBytes = 100
+	act.DurationMS = 50
+	if line := oneShotActivityLine(act); !strings.Contains(line, "100 bytes") {
+		t.Errorf("unexpected succeeded line: %s", line)
+	}
+
+	act.Phase = protocol.ToolPhaseFailed
+	act.Detail = "bad input"
+	if line := oneShotActivityLine(act); !strings.Contains(line, "failed: bad input") {
+		t.Errorf("unexpected failed line: %s", line)
+	}
+
+	act.Phase = protocol.ToolPhaseDenied
+	if line := oneShotActivityLine(act); !strings.Contains(line, "not run: bad input") {
+		t.Errorf("unexpected denied line: %s", line)
+	}
+}

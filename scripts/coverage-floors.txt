@@ -27,8 +27,8 @@
 # anything. Each new floor is a few tenths below a value measured three times
 # in a row, following the same take-the-lower-reading rule as the note above.
 
-codeterminal/daemon              72.0
-codeterminal/editapply           87.0
+codeterminal/daemon              73.6
+codeterminal/editapply           88.0
 codeterminal/proxy               85.0
 
 # The MCP tool surface. Floored high on purpose: this is the package that
@@ -45,7 +45,7 @@ codeterminal/daemon/mcp          91.0
 # Listed explicitly because the ratchet fails on any package it has no floor
 # for, so the decision has to be made rather than defaulted into.
 codeterminal/proxy/testharness    0.0
-codeterminal/helper               6.5
+codeterminal/helper              21.0
 codeterminal/helper/helperproto  75.0
-codeterminal/protocol            91.5
-codeterminal/clients/tui         68.9
+codeterminal/protocol            91.8
+codeterminal/clients/tui         74.5

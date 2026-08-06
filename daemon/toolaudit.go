@@ -57,6 +57,7 @@ type toolAuditEvent struct {
 	// tool unconditionally (see mcp.Tool), and this record must not soften that:
 	// the whole reason to keep an audit is that consent is the only protection
 	// on that lane.
+	Mode     string `json:"mode,omitempty"` // manual | plan | auto
 	Lane     string `json:"lane"`
 	Confined bool   `json:"confined"`
 	Policy   string `json:"policy"` // deny | ask | allow, as resolved from config
@@ -123,7 +124,7 @@ func (s *toolAuditSink) record(ev toolAuditEvent) {
 // in which case the qualified name the model asked for is what gets recorded --
 // a request for a tool that does not exist is exactly the kind of thing an
 // audit should keep.
-func auditFor(iteration int, qualified string, tool mcp.Tool, policy mcp.Policy, arguments string) toolAuditEvent {
+func auditFor(iteration int, mode string, qualified string, tool mcp.Tool, policy mcp.Policy, arguments string) toolAuditEvent {
 	server, name, err := mcp.SplitQualifiedName(qualified)
 	if err != nil {
 		// Not a name this daemon would ever generate. Recorded whole, in the
@@ -136,6 +137,7 @@ func auditFor(iteration int, qualified string, tool mcp.Tool, policy mcp.Policy,
 	}
 	return toolAuditEvent{
 		Iteration:       iteration,
+		Mode:            mode,
 		Server:          server,
 		Tool:            name,
 		Lane:            tool.Lane,

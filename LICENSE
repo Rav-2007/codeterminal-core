@@ -1,46 +1,46 @@
-Mochiii / CodeTerminal — Software License Agreement
+CodeTerminal Software License Agreement
 
-Copyright (c) 2026 Mochiii. All rights reserved.
+Copyright (c) 2026 rkvenom2406@gmail.com. All rights reserved.
 
 This software is proprietary. It is licensed, not sold. Except for the rights
-expressly granted below, no rights are granted to you, whether by implication,
-estoppel, or otherwise.
+expressly granted below, no rights are granted to you by implication, estoppel,
+or otherwise.
 
 
-1. DEFINITIONS
+1. Definitions
 
-"Software" means the Mochiii / CodeTerminal programs distributed under this
-agreement, including the daemon, the embedder helper, the command-line and
-terminal clients, and the editor extension, together with their documentation
-and any updates supplied to you.
+"Software" means the CodeTerminal programs distributed under this agreement
+(also known as Mochiii), including the daemon, embedder helper, command-line and
+terminal clients, editor extension, documentation, and any updates supplied to
+you.
 
 "Service" means any hosted or managed service operated by the licensor that the
-Software connects to, including the inference proxy.
+Software connects to, including any inference proxy.
 
-"You" means the individual or entity exercising the rights granted here.
+"You" means the individual or entity exercising rights under this agreement.
 
 
-2. GRANT OF LICENSE
+2. Grant of license
 
 Subject to your compliance with this agreement, the licensor grants you a
-non-exclusive, non-transferable, revocable, worldwide license to install and
-run the Software on machines you own or control, for your own personal or
-internal business purposes, including the development of your own software.
+non-exclusive, non-transferable, revocable, worldwide license to install and run
+the Software on machines you own or control, for your own personal or internal
+business purposes, including developing your own software.
 
-Code, text, and other output that the Software helps you produce is yours. The
-licensor claims no ownership of your work product, your source code, or
-anything the Software generates for you.
+Code, text, and other output the Software helps you produce is yours. The
+licensor claims no ownership of your work product, your source code, or anything
+the Software generates for you.
 
 
-3. RESTRICTIONS
+3. Restrictions
 
 You may not:
 
   (a) distribute, publish, sublicense, sell, rent, lease, or otherwise make the
       Software available to any third party;
 
-  (b) modify the Software, or create derivative works of it, for distribution
-      to any third party;
+  (b) modify the Software, or create derivative works of it, for distribution to
+      any third party;
 
   (c) remove, obscure, or alter any copyright, trademark, or other proprietary
       notice in the Software;
@@ -49,49 +49,47 @@ You may not:
       with the Software or the Service; or
 
   (e) reverse engineer, decompile, or disassemble the Software, except to the
-      extent that this restriction is expressly prohibited by applicable law.
-      Nothing in this agreement limits any right you have under applicable law
-      that cannot be waived by contract — including, where it applies, the
-      right to decompile for interoperability purposes.
+      extent applicable law expressly prohibits that restriction. Nothing in this
+      agreement limits any non-waivable right you have under applicable law,
+      including, where it applies, the right to decompile for interoperability.
 
 
-4. THIRD-PARTY COMPONENTS
+4. Third-party components
 
 The Software incorporates third-party open-source components. Those components
 are licensed to you under their own terms, not under this agreement, and those
-terms prevail over this agreement to the extent of any conflict. The components
-and their license texts are listed in THIRD_PARTY_LICENSES.txt.
+terms prevail over this agreement to the extent of any conflict. Components and
+license texts are listed in THIRD_PARTY_LICENSES.txt.
 
 
-5. THE SERVICE
+5. The Service
 
-Use of the Service, where the Software is configured to use it, is subject to
+Use of the Service, when the Software is configured to use it, is subject to
 separate terms and may be subject to quotas, rate limits, and fees. This
-agreement grants no right to access the Service. The Software can be operated
-without the Service by supplying your own model-provider credentials.
+agreement grants no right to access the Service. The Software can run without
+the Service if you supply your own model-provider credentials.
 
 
-6. PRIVACY
+6. Privacy
 
 The Software is designed to run locally. It builds its search index on your
-machine and computes embeddings on your machine. What it does transmit, and to
-whom, is described in the accompanying documentation. Nothing in this agreement
-should be read as permission for the licensor to collect, retain, or train on
-your source code.
+machine and computes embeddings on your machine. What it transmits, and to whom,
+is described in the accompanying documentation. Nothing in this agreement
+permits the licensor to collect, retain, or train on your source code.
 
 
-7. NO WARRANTY
+7. No warranty
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT.
 
-The Software modifies files in directories you point it at, and applies changes
-proposed by a machine-learning model. You are responsible for reviewing those
-changes and for maintaining backups and version control of your work.
+The Software may modify files in directories you point it at, and may apply
+changes proposed by a machine-learning model. You are responsible for reviewing
+those changes and for maintaining backups and version control of your work.
 
 
-8. LIMITATION OF LIABILITY
+8. Limitation of liability
 
 IN NO EVENT SHALL THE LICENSOR BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM,
@@ -103,22 +101,22 @@ limitation of certain liabilities. Where that is the case, the exclusions and
 limitations above apply only to the extent permitted.
 
 
-9. TERMINATION
+9. Termination
 
 This license terminates automatically if you breach it. On termination you must
-stop using the Software and remove all copies. Sections 3, 4, 7, and 8 survive
-termination.
+stop using the Software and destroy all copies in your possession or control.
+Sections 3, 4, 7, and 8 survive termination.
 
 
-10. CONTACT
+10. Contact
 
-Questions about this license, including requests for terms other than these:
-thebyte24@gmail.com
+Questions about this license, including requests for different terms:
+rkvenom2406@gmail.com
 
 
 ---
 
-Note for the maintainer, not part of the license: this is a conventional
-proprietary EULA and it is not legal advice. Have a lawyer review it before
-the first paid customer, before publishing to a marketplace, and before
-adopting a company name different from the one in the copyright line above.
+Note for the maintainer (not part of the license): this is a conventional
+proprietary EULA and is not legal advice. Have a lawyer review it before the
+first paid customer, before publishing to a marketplace, and before changing
+the copyright owner listed above.

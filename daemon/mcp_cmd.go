@@ -90,7 +90,7 @@ func runMCPCommand(args []string, logger *log.Logger) error {
 	srv := &Server{cfg: cfg, workspace: root, logger: logger}
 
 	ctx := context.Background()
-	registry, connectErrs := srv.buildRegistry(ctx, logger, &proposalSink{})
+	registry, connectErrs := srv.buildRegistry(ctx, logger, &proposalSink{}, "")
 	defer func() {
 		if err := registry.Close(); err != nil {
 			logger.Printf("shutting down MCP servers: %v", err)

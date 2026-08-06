@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"sort"
 	"time"
 
 	"codeterminal/protocol"
@@ -65,7 +66,7 @@ func isStatusRequest(raw json.RawMessage) bool {
 // specifically -- one that can hang, or that changes behavior by being called,
 // is worse than none.
 func (s *Server) handleStatus(enc *json.Encoder) {
-	decision := s.route("")
+	decision := s.route("", "")
 
 	resp := protocol.StatusResponse{
 		ProtocolVersion:  protocol.ProtocolVersion,
@@ -75,6 +76,7 @@ func (s *Server) handleStatus(enc *json.Encoder) {
 		Workspace:        s.workspace,
 		Tier:             decision.Tier,
 		Model:            decision.Slug,
+		AvailableTiers:   availableTiers(s.cfg),
 		Retrieval:        s.statusRetrieval(),
 		MemoryAvailable:  s.memory != nil,
 		APIKeyConfigured: s.apiKey != "",
@@ -92,6 +94,30 @@ func (s *Server) handleStatus(enc *json.Encoder) {
 	if err := enc.Encode(resp); err != nil {
 		s.logger.Printf("status write error: %v", err)
 	}
+}
+
+// availableTiers copies models.json tiers into the wire shape, sorted by name
+// so clients get a stable list for "/model" menus.
+func availableTiers(cfg *Config) []protocol.StatusTier {
+	if cfg == nil || len(cfg.Tiers) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(cfg.Tiers))
+	for name := range cfg.Tiers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]protocol.StatusTier, 0, len(names))
+	for _, name := range names {
+		t := cfg.Tiers[name]
+		out = append(out, protocol.StatusTier{
+			Name:   name,
+			Slug:   t.Slug,
+			Active: t.Active,
+			Note:   t.Note,
+		})
+	}
+	return out
 }
 
 // statusRetrieval describes both retrieval tiers independently. Enabled
