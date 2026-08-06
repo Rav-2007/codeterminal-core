@@ -65,6 +65,12 @@ func pipeName() string {
 }
 
 // currentUserSID returns this process's user SID in string form.
+//
+// The pipe DACL wants this and not socketdir_windows.go's currentTokenOwnerSID,
+// and the asymmetry is deliberate. Granting the token OWNER would grant
+// BUILTIN\Administrators on an elevated token — every administrator on the
+// machine, where the point of this ACE is one individual. Ownership of a
+// directory we created and access to a pipe we serve are different questions.
 func currentUserSID() (string, error) {
 	token := windows.GetCurrentProcessToken()
 	user, err := token.GetTokenUser()

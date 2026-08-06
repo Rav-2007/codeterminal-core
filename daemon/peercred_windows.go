@@ -115,6 +115,17 @@ func sidOfProcess(pid uint32) (string, error) {
 }
 
 // selfSID returns this daemon's own user SID, for comparison against a peer's.
+//
+// DELIBERATELY GetTokenUser, AND IT MUST STAY THAT WAY. protocol's
+// ensureOwnerOnlyDir was just changed from GetTokenUser to TokenOwner, and the
+// same edit here would be a privilege-boundary collapse rather than a fix.
+//
+// The two ask different questions. Object ownership asks "did a token like mine
+// create this?", and TokenOwner answers it. Peer authentication asks "is the
+// process on the other end the SAME HUMAN as me?", and only the user SID answers
+// that: on an elevated token TokenOwner is BUILTIN\Administrators, which every
+// administrator on the machine shares, so comparing it would let any admin
+// connect as any other admin. Same SID, opposite meaning.
 func selfSID() (string, error) {
 	token := windows.GetCurrentProcessToken()
 	user, err := token.GetTokenUser()
