@@ -102,6 +102,88 @@ func mustRejectVectors() []confinementVector {
 
 // newConformanceRoot returns a workspace root with a sibling directory
 // available for "outside" targets, both EvalSymlinks-resolved so the assertions
+
+// mustRefuseHazardVectors are paths that must be REFUSED OUTRIGHT by both
+// implementations, and they need their own table because the assertion is
+// strictly stronger than the one above.
+//
+// mustRejectVectors asks "refused, or provably inside the root?" -- correct for
+// an escape, where containment IS the property. It is not sufficient here.
+// `<root>/nul` is inside the root and still opens the console device; `<root>/
+// .git:x` is inside the root and still writes an alternate data stream on .git.
+// These paths do not escape confinement, they resolve to something other than
+// what they read as, so "contained" is not an acceptable answer -- only a
+// refusal is.
+//
+// Mirrored verbatim in the other implementation's conformance file, same as the
+// escape table. This table is why: editapply/pathhazard.go landed a whole new
+// hazard class with 212 lines of its own tests and NOTHING in the shared table,
+// which is the exact drift S1 and S2 were, and which this pair of files exists
+// to prevent.
+func mustRefuseHazardVectors() []confinementVector {
+	return []confinementVector{
+		{
+			name: "alternate data stream on a protected directory",
+			// Component-wise this is one part, ".git:x", which is not ".git" and
+			// so passes a protected-name gate while reaching .git itself.
+			rel: ".git:x",
+		},
+		{
+			name: "alternate data stream past the secret gate",
+			rel:  ".env:leak",
+		},
+		{
+			name: "reserved device name",
+			// A write to NUL succeeds and goes nowhere: the model is told its
+			// edit landed when nothing was written.
+			rel: "nul",
+		},
+		{
+			name: "reserved device name keeps its meaning with an extension",
+			rel:  "CON.txt",
+		},
+		{
+			name: "win32 8.3 short name aliasing a protected directory",
+			rel:  "GIT~1/config",
+		},
+		{
+			name: "UNC path names a host outside the workspace",
+			rel:  `\\server\share\evil.txt`,
+		},
+		{
+			name: "component of only dots resolves to a parent or to nothing",
+			rel:  ".../evil.txt",
+		},
+		{
+			name: "unicode right-to-left override spoofs the extension",
+			rel:  "src/\u202eevil.txt",
+		},
+	}
+}
+
+// TestConfinementConformance_DaemonRefusesEveryHazardVector runs the shared
+// hazard table against daemon's confinedRestorePath.
+//
+// No GOOS skip, unlike the escape table above: these vectors are pure string
+// shapes, not symlinks, and the whole point of pathhazard.go is that they are
+// checked on every platform.
+func TestConfinementConformance_DaemonRefusesEveryHazardVector(t *testing.T) {
+	for _, v := range mustRefuseHazardVectors() {
+		t.Run(v.name, func(t *testing.T) {
+			root := newConformanceRoot(t)
+			if v.setup != nil {
+				v.setup(t, root)
+			}
+			got, err := confinedRestorePath(root, v.rel)
+			if err == nil {
+				t.Errorf("confinedRestorePath(%q) = %q with no error; a path whose shape "+
+					"resolves to something other than it reads as must be refused, not merely contained",
+					v.rel, got)
+			}
+		})
+	}
+}
+
 // are not defeated by /tmp itself being a symlink (it is, on macOS).
 func newConformanceRoot(t *testing.T) string {
 	t.Helper()
