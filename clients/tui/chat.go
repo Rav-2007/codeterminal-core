@@ -160,11 +160,21 @@ type chatModel struct {
 	// parse, and lastAssistantText all still see exactly one assistant answer
 	// per exchange, so an edit block emitted early in a multi-step turn cannot
 	// go missing.
+	autocompleteIdx int
+	// autocompletePicked is set only when the user has moved through the popup
+	// with the arrow keys. It is what separates Enter-submits from
+	// Enter-accepts-a-completion: without it, Enter was a duplicate of Tab and
+	// a slash command could never be run in one keystroke.
+	autocompletePicked bool
+
 	streamAssistant int
 
 	clientName    string
 	workspace     string // sent to the daemon so it can flag a workspace mismatch
 	workspaceRoot string // real (symlink-resolved) workspace root edits are confined to
+	// preferredTier is the models.json tier name chosen via /model <name>.
+	// Empty means default routing. Sent as PromptRequest.Tier on every turn.
+	preferredTier string
 	width         int
 	height        int
 	ready         bool // true once the first WindowSizeMsg has sized the viewport
@@ -252,7 +262,64 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, tea.Quit
 		case "enter":
+			// Enter SUBMITS. It accepts a completion only when the user has
+			// actively chosen one with the arrow keys, which is the convention
+			// every editor popup follows.
+			//
+			// This used to be a byte-for-byte copy of the "tab" arm below, so
+			// Enter on "/help" only rewrote the input to "/help " and ran
+			// nothing. Every no-argument command -- /help, /clear, /git,
+			// /init, /context, /exit -- needed two Enters, and the two tests
+			// that assert otherwise were failing on main.
+			if m.state == stateIdle && m.autocompletePicked {
+				matches := m.slashMatches()
+				if len(matches) > 0 {
+					idx := m.autocompleteIdx
+					if idx >= 0 && idx < len(matches) {
+						m.input.SetValue("/" + matches[idx].Name + " ")
+						m.input.SetCursor(len(m.input.Value()))
+						m.autocompleteIdx = 0
+						m.autocompletePicked = false
+						m.resizeViewport()
+						return m, nil
+					}
+				}
+			}
+			m.autocompletePicked = false
 			return m.startTurn()
+		case "tab":
+			if m.state == stateIdle {
+				matches := m.slashMatches()
+				if len(matches) > 0 {
+					idx := m.autocompleteIdx
+					if idx >= 0 && idx < len(matches) {
+						m.input.SetValue("/" + matches[idx].Name + " ")
+						m.input.SetCursor(len(m.input.Value()))
+						m.autocompleteIdx = 0
+						m.resizeViewport()
+						return m, nil
+					}
+				}
+			}
+		case "up", "down":
+			if m.state == stateIdle {
+				matches := m.slashMatches()
+				if len(matches) > 0 {
+					if msg.String() == "up" {
+						m.autocompleteIdx--
+						if m.autocompleteIdx < 0 {
+							m.autocompleteIdx = len(matches) - 1
+						}
+					} else {
+						m.autocompleteIdx++
+						if m.autocompleteIdx >= len(matches) {
+							m.autocompleteIdx = 0
+						}
+					}
+					m.autocompletePicked = true
+					return m, nil
+				}
+			}
 		case "ctrl+n":
 			return m.clearConversation()
 		case "pgup":
@@ -263,7 +330,22 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		var cmd tea.Cmd
+		oldPopupLines := 0
+		if m.state == stateIdle {
+			_, oldPopupLines = m.renderSlashPopup()
+		}
 		m.input, cmd = m.input.Update(msg)
+		newPopupLines := 0
+		if m.state == stateIdle {
+			_, newPopupLines = m.renderSlashPopup()
+		}
+		if oldPopupLines != newPopupLines {
+			m.resizeViewport()
+		}
+		if newPopupLines == 0 {
+			m.autocompleteIdx = 0
+			m.autocompletePicked = false
+		}
 		return m, cmd
 
 	case tea.MouseMsg:
@@ -413,6 +495,7 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 const (
 	commandReason   = "/reason "
 	commandRefactor = "/refactor "
+	commandModel    = "/model"
 )
 
 // promptKindReason and promptKindRefactor are the wire values sent as
@@ -446,6 +529,18 @@ func parsePromptKind(raw string) (kind, prompt string) {
 	}
 }
 
+// parseModelCommand recognizes /model and /model <tier>. Returns ok=false
+// when raw is not a model command (caller should treat it as a normal prompt).
+func parseModelCommand(raw string) (arg string, ok bool) {
+	if raw == commandModel {
+		return "", true
+	}
+	if strings.HasPrefix(raw, commandModel+" ") {
+		return strings.TrimSpace(strings.TrimPrefix(raw, commandModel+" ")), true
+	}
+	return "", false
+}
+
 // startTurn handles Enter while idle or errored: it's a no-op while busy or
 // on empty input, otherwise it appends the user's turn and kicks off the
 // stream.
@@ -456,6 +551,14 @@ func (m chatModel) startTurn() (tea.Model, tea.Cmd) {
 	raw := strings.TrimSpace(m.input.Value())
 	if raw == "" {
 		return m, nil
+	}
+	if arg, isModel := parseModelCommand(raw); isModel {
+		m.input.SetValue("")
+		return m.handleModelCommand(arg)
+	}
+	if sp := parseSlash(raw); !sp.RawPassthrough {
+		m.input.SetValue("")
+		return m.handleSlash(sp)
 	}
 	promptKind, prompt := parsePromptKind(raw)
 
@@ -483,7 +586,194 @@ func (m chatModel) startTurn() (tea.Model, tea.Cmd) {
 	ch := make(chan tea.Msg)
 	m.streamCh = ch
 
-	return m, tea.Batch(m.spinner.Tick, startStream(ctx, m.clientName, m.workspace, prompt, promptKind, history, ch))
+	return m, tea.Batch(m.spinner.Tick, startStream(ctx, m.clientName, m.workspace, prompt, promptKind, m.preferredTier, history, ch))
+}
+
+func (m chatModel) handleSlash(sp slashParse) (tea.Model, tea.Cmd) {
+	if sp.Def == nil {
+		return m, nil
+	}
+	if sp.UsageOnly {
+		msg := fmt.Sprintf("usage: /%s <args…>", sp.Def.Name)
+		m.turns = append(m.turns, turn{role: roleAssistant, text: msg})
+		m.resizeViewport()
+		m.refreshViewport()
+		return m, nil
+	}
+	switch sp.Def.Kind {
+	case slashLocal:
+		return m.handleLocalSlash(sp.Def.Name, sp.Args)
+	case slashSteered:
+		prompt := steeredPrompt(sp.Def, sp.Args)
+		promptKind := sp.Def.PromptKind
+		history := buildHistory(m.turns)
+		m.turns = append(m.turns, turn{role: roleUser, text: "/" + sp.Def.Name + " " + sp.Args})
+		m.input.Blur()
+		m.state = stateSending
+		m.statusErr = ""
+		m.lastGrounding = nil
+		m.lastRedactions = nil
+		m.lastDegraded = nil
+		m.lastProvider = ""
+		m.lastHistoryTruncated = false
+		m.streamAssistant = -1
+		m.activityTurns = nil
+		m.resizeViewport()
+		m.refreshViewport()
+		ctx, cancel := context.WithCancel(context.Background())
+		m.streamCancel = cancel
+		ch := make(chan tea.Msg)
+		m.streamCh = ch
+		return m, tea.Batch(m.spinner.Tick, startStream(ctx, m.clientName, m.workspace, prompt, promptKind, m.preferredTier, history, ch))
+	}
+	return m, nil
+}
+
+func (m chatModel) handleLocalSlash(name, args string) (tea.Model, tea.Cmd) {
+	var reply string
+	switch name {
+	case "help":
+		reply = formatSlashHelp()
+	case "clear":
+		m.turns = nil
+		m.lastGrounding = nil
+		m.lastRedactions = nil
+		m.lastDegraded = nil
+		m.lastProvider = ""
+		reply = "transcript cleared"
+	case "compact":
+		const keep = 8
+		if len(m.turns) > keep {
+			m.turns = append([]turn(nil), m.turns[len(m.turns)-keep:]...)
+			reply = fmt.Sprintf("kept last %d turns", keep)
+		} else {
+			reply = "transcript already compact"
+		}
+	case "context":
+		tier := m.preferredTier
+		if tier == "" {
+			tier = "(default)"
+		}
+		var g string
+		if m.lastGrounding != nil {
+			g = fmt.Sprintf("chunks=%d truncated=%v mismatch=%v",
+				m.lastGrounding.Chunks, m.lastGrounding.Truncated, m.lastGrounding.WorkspaceMismatch)
+		} else {
+			g = "(none this turn)"
+		}
+		reply = fmt.Sprintf("workspace: %s\nmodel tier: %s\ngrounding: %s", m.workspace, tier, g)
+	case "git":
+		reply = runGitStatus(m.workspaceRoot)
+		if reply == "(git status: empty)" || strings.HasPrefix(reply, "git status failed") {
+			alt := runGitStatus(m.workspace)
+			if alt != "" {
+				reply = alt
+			}
+		}
+	case "init":
+		ws := m.workspace
+		if ws == "" {
+			ws = m.workspaceRoot
+		}
+		reply = formatInitChecklist(ws)
+	case "mcp-server":
+		reply = runMCPServerList("./models.json")
+	case "search":
+		q := strings.ToLower(args)
+		var hits []string
+		for i, t := range m.turns {
+			if strings.Contains(strings.ToLower(t.text), q) {
+				snippet := t.text
+				if len(snippet) > 120 {
+					snippet = snippet[:120] + "…"
+				}
+				hits = append(hits, fmt.Sprintf("%d. [%v] %s", i+1, t.role, snippet))
+			}
+		}
+		if len(hits) == 0 {
+			reply = "no matching turns"
+		} else {
+			reply = "matches:\n" + strings.Join(hits, "\n")
+		}
+	case "exit":
+		return m, tea.Quit
+	default:
+		reply = "unknown local command"
+	}
+	m.turns = append(m.turns, turn{role: roleAssistant, text: reply})
+	m.resizeViewport()
+	m.refreshViewport()
+	return m, nil
+}
+
+// handleModelCommand implements /model and /model <tier> without starting a
+// model turn. Listing hits the daemon status surface so the menu always
+// matches models.json.
+func (m chatModel) handleModelCommand(arg string) (tea.Model, tea.Cmd) {
+	if arg == "" || arg == "list" {
+		tiers, err := fetchAvailableTiers(m.clientName)
+		if err != nil {
+			m.statusErr = "could not list models: " + err.Error()
+			return m, nil
+		}
+		var b strings.Builder
+		b.WriteString("models (active only — /model <name> to select; /model clear to reset):\n")
+		current := m.preferredTier
+		if current == "" {
+			current = "(default)"
+		}
+		fmt.Fprintf(&b, "current: %s\n", current)
+		for _, t := range tiers {
+			if !t.Active {
+				continue
+			}
+			mark := "  "
+			if t.Name == m.preferredTier || (m.preferredTier == "" && t.Name == "primary") {
+				mark = "* "
+			}
+			fmt.Fprintf(&b, "%s%s  %s\n", mark, t.Name, t.Slug)
+		}
+		m.turns = append(m.turns, turn{role: roleAssistant, text: strings.TrimRight(b.String(), "\n")})
+		m.resizeViewport()
+		m.refreshViewport()
+		return m, nil
+	}
+	if arg == "clear" || arg == "default" {
+		m.preferredTier = ""
+		m.turns = append(m.turns, turn{role: roleAssistant, text: "model reset to default tier (models.json default_tier)"})
+		m.resizeViewport()
+		m.refreshViewport()
+		return m, nil
+	}
+	tiers, err := fetchAvailableTiers(m.clientName)
+	if err != nil {
+		m.statusErr = "could not resolve model: " + err.Error()
+		return m, nil
+	}
+	var found *protocol.StatusTier
+	for i := range tiers {
+		if tiers[i].Name == arg {
+			found = &tiers[i]
+			break
+		}
+	}
+	if found == nil {
+		m.turns = append(m.turns, turn{role: roleAssistant, text: fmt.Sprintf("unknown model tier %q — try /model for the list", arg)})
+		m.resizeViewport()
+		m.refreshViewport()
+		return m, nil
+	}
+	if !found.Active {
+		m.turns = append(m.turns, turn{role: roleAssistant, text: fmt.Sprintf("tier %q is inactive in models.json", arg)})
+		m.resizeViewport()
+		m.refreshViewport()
+		return m, nil
+	}
+	m.preferredTier = found.Name
+	m.turns = append(m.turns, turn{role: roleAssistant, text: fmt.Sprintf("model set to %s (%s)", found.Name, found.Slug)})
+	m.resizeViewport()
+	m.refreshViewport()
+	return m, nil
 }
 
 // endStream releases the finished turn's stream state.
@@ -979,11 +1269,74 @@ func (m chatModel) View() string {
 		bottomLine = accentStyle.Render(fmt.Sprintf("approve %s__%s?", m.pendingApproval.Server, m.pendingApproval.Tool))
 		help = helpStyle.Render(approvalHelpText)
 	} else {
-		bottomLine = m.input.View()
+		popupStr, _ := m.renderSlashPopup()
+		if popupStr != "" {
+			bottomLine = popupStr + "\n" + m.input.View()
+		} else {
+			bottomLine = m.input.View()
+		}
 		help = helpStyle.Render(helpText)
 	}
 
 	return header + "\n" + m.viewport.View() + "\n" + bottomLine + "\n" + help
+}
+
+func (m chatModel) slashMatches() []slashDef {
+	val := m.input.Value()
+	if !strings.HasPrefix(val, "/") || strings.Contains(val, " ") {
+		return nil
+	}
+	prefix := strings.ToLower(val[1:])
+	var matches []slashDef
+	for _, d := range slashCatalog {
+		if strings.HasPrefix(d.Name, prefix) {
+			matches = append(matches, d)
+		}
+	}
+	if strings.HasPrefix("model", prefix) && prefix != "model" {
+		matches = append(matches, slashDef{Name: "model", Summary: "list or select a models.json tier (/model <name>)"})
+	}
+	return matches
+}
+
+var popupStyle = lipgloss.NewStyle().
+	Border(lipgloss.RoundedBorder()).
+	BorderForeground(lipgloss.Color("240")).
+	Padding(0, 1)
+
+var selectedItemStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Bold(true)
+var unselectedItemStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+
+func (m chatModel) renderSlashPopup() (string, int) {
+	matches := m.slashMatches()
+	if len(matches) == 0 {
+		return "", 0
+	}
+	idx := m.autocompleteIdx
+	if idx < 0 {
+		idx = 0
+	}
+	if idx >= len(matches) {
+		idx = len(matches) - 1
+	}
+
+	var lines []string
+	for i, match := range matches {
+		name := "/" + match.Name
+		sum := match.Summary
+		if len(sum) > 50 {
+			sum = sum[:47] + "..."
+		}
+		row := fmt.Sprintf("%-15s %s", name, sum)
+		if i == idx {
+			lines = append(lines, selectedItemStyle.Render("> "+row))
+		} else {
+			lines = append(lines, unselectedItemStyle.Render("  "+row))
+		}
+	}
+
+	box := popupStyle.Render(strings.Join(lines, "\n"))
+	return box, len(lines) + 2
 }
 
 // renderHeader renders the brand/state/history line, followed by zero or

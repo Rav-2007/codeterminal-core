@@ -11,6 +11,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"codeterminal/editapply"
 	"codeterminal/protocol"
 )
 
@@ -1195,11 +1196,36 @@ func TestParsePromptKind(t *testing.T) {
 	}
 }
 
-// TestChat_StartTurn_ReasonCommandStripsPrefixFromTranscript proves the
-// stripping happens end-to-end through the real Update/startTurn path, not
-// just in the pure parser: the transcript entry for the turn must show the
-// clean question, not "/reason " glued to the front of it.
-func TestChat_StartTurn_ReasonCommandStripsPrefixFromTranscript(t *testing.T) {
+func TestParseModelCommand(t *testing.T) {
+	cases := []struct {
+		raw     string
+		wantArg string
+		wantOK  bool
+	}{
+		{raw: "/model", wantArg: "", wantOK: true},
+		{raw: "/model list", wantArg: "list", wantOK: true},
+		{raw: "/model minimax_m3", wantArg: "minimax_m3", wantOK: true},
+		{raw: "/model clear", wantArg: "clear", wantOK: true},
+		{raw: "/reason x", wantOK: false},
+		{raw: "model foo", wantOK: false},
+		{raw: "/models", wantOK: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.raw, func(t *testing.T) {
+			arg, ok := parseModelCommand(tc.raw)
+			if ok != tc.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, tc.wantOK)
+			}
+			if ok && arg != tc.wantArg {
+				t.Errorf("arg = %q, want %q", arg, tc.wantArg)
+			}
+		})
+	}
+}
+
+// TestChat_StartTurn_ReasonCommandKeepsSlashInTranscript: steered commands
+// keep the slash form in the user turn; the preamble is only on the wire prompt.
+func TestChat_StartTurn_ReasonCommandKeepsSlashInTranscript(t *testing.T) {
 	m := newTestModel()
 	m = typeText(m, "/reason what should I do")
 	m, _ = pressEnter(m)
@@ -1207,12 +1233,15 @@ func TestChat_StartTurn_ReasonCommandStripsPrefixFromTranscript(t *testing.T) {
 	if len(m.turns) != 1 {
 		t.Fatalf("turns = %+v, want exactly 1", m.turns)
 	}
-	if got := m.turns[0].text; got != "what should I do" {
-		t.Errorf("turn text = %q, want the command stripped: %q", got, "what should I do")
+	if got := m.turns[0].text; got != "/reason what should I do" {
+		t.Errorf("turn text = %q, want slash kept: %q", got, "/reason what should I do")
+	}
+	if m.state != stateSending && m.state != stateStreaming {
+		t.Errorf("state = %v, want sending/streaming after steered /reason", m.state)
 	}
 }
 
-func TestChat_StartTurn_RefactorCommandStripsPrefixFromTranscript(t *testing.T) {
+func TestChat_StartTurn_RefactorCommandKeepsSlashInTranscript(t *testing.T) {
 	m := newTestModel()
 	m = typeText(m, "/refactor make this cleaner")
 	m, _ = pressEnter(m)
@@ -1220,8 +1249,8 @@ func TestChat_StartTurn_RefactorCommandStripsPrefixFromTranscript(t *testing.T) 
 	if len(m.turns) != 1 {
 		t.Fatalf("turns = %+v, want exactly 1", m.turns)
 	}
-	if got := m.turns[0].text; got != "make this cleaner" {
-		t.Errorf("turn text = %q, want the command stripped: %q", got, "make this cleaner")
+	if got := m.turns[0].text; got != "/refactor make this cleaner" {
+		t.Errorf("turn text = %q, want slash kept: %q", got, "/refactor make this cleaner")
 	}
 }
 
@@ -1230,22 +1259,20 @@ func TestChat_StartTurn_RefactorCommandStripsPrefixFromTranscript(t *testing.T) 
 // shown exactly as typed, not partially parsed or stripped.
 func TestChat_StartTurn_UnrecognizedSlashPassesThroughUnchanged(t *testing.T) {
 	m := newTestModel()
-	m = typeText(m, "/explain what is X")
+	m = typeText(m, "/foobar what is X")
 	m, _ = pressEnter(m)
 
 	if len(m.turns) != 1 {
 		t.Fatalf("turns = %+v, want exactly 1", m.turns)
 	}
-	if got := m.turns[0].text; got != "/explain what is X" {
-		t.Errorf("turn text = %q, want unchanged: %q", got, "/explain what is X")
+	if got := m.turns[0].text; got != "/foobar what is X" {
+		t.Errorf("turn text = %q, want unchanged: %q", got, "/foobar what is X")
 	}
 }
 
-// TestChat_StartTurn_BareReasonWithNoQuestionPassesThroughUnchanged covers
-// the edge case explicitly: a lone "/reason" with nothing after it has no
-// real question to send, so it is not treated as a command at all -- it's
-// sent and shown as the literal text "/reason", same as any other prompt.
-func TestChat_StartTurn_BareReasonWithNoQuestionPassesThroughUnchanged(t *testing.T) {
+// TestChat_StartTurn_BareReasonShowsUsage: a lone "/reason" needs args, so
+// it shows usage and does not start a model turn.
+func TestChat_StartTurn_BareReasonShowsUsage(t *testing.T) {
 	m := newTestModel()
 	m = typeText(m, "/reason")
 	m, _ = pressEnter(m)
@@ -1253,15 +1280,34 @@ func TestChat_StartTurn_BareReasonWithNoQuestionPassesThroughUnchanged(t *testin
 	if len(m.turns) != 1 {
 		t.Fatalf("turns = %+v, want exactly 1", m.turns)
 	}
-	if got := m.turns[0].text; got != "/reason" {
-		t.Errorf("turn text = %q, want unchanged literal: %q", got, "/reason")
+	if m.turns[0].role != roleAssistant {
+		t.Errorf("role = %q, want assistant usage reply", m.turns[0].role)
+	}
+	if !strings.Contains(m.turns[0].text, "usage:") {
+		t.Errorf("text = %q, want usage hint", m.turns[0].text)
+	}
+	if m.state == stateSending || m.state == stateStreaming {
+		t.Errorf("state = %v, want idle after usage-only slash", m.state)
+	}
+}
+
+func TestChat_StartTurn_HelpIsLocal(t *testing.T) {
+	m := newTestModel()
+	m = typeText(m, "/help")
+	m, _ = pressEnter(m)
+
+	if len(m.turns) != 1 || m.turns[0].role != roleAssistant {
+		t.Fatalf("turns = %+v, want one assistant help reply", m.turns)
+	}
+	if !strings.Contains(m.turns[0].text, "/mcp-server") {
+		t.Errorf("help missing /mcp-server: %s", m.turns[0].text)
 	}
 }
 
 // TestChat_StartTurn_LeadingWhitespaceBeforeCommandStillRecognized proves
 // leading whitespace before the whole input doesn't prevent the command
 // from being recognized -- startTurn's existing strings.TrimSpace on the
-// raw input value handles this before parsePromptKind ever sees it.
+// raw input value handles this before parseSlash ever sees it.
 func TestChat_StartTurn_LeadingWhitespaceBeforeCommandStillRecognized(t *testing.T) {
 	m := newTestModel()
 	m = typeText(m, "  /reason what should I do")
@@ -1270,8 +1316,8 @@ func TestChat_StartTurn_LeadingWhitespaceBeforeCommandStillRecognized(t *testing
 	if len(m.turns) != 1 {
 		t.Fatalf("turns = %+v, want exactly 1", m.turns)
 	}
-	if got := m.turns[0].text; got != "what should I do" {
-		t.Errorf("turn text = %q, want the command stripped: %q", got, "what should I do")
+	if got := m.turns[0].text; got != "/reason what should I do" {
+		t.Errorf("turn text = %q, want slash kept: %q", got, "/reason what should I do")
 	}
 }
 
@@ -1334,5 +1380,174 @@ func TestStreamEnd_CancelsTheTurnContext(t *testing.T) {
 				t.Error("streamCancel should also be cleared, so a later cancel cannot fire against a finished turn")
 			}
 		})
+	}
+}
+
+func TestChat_HandleLocalSlashCommands(t *testing.T) {
+	cmds := []string{"help", "clear", "compact", "context", "git", "init", "mcp-server", "search", "exit", "unknown"}
+	for _, c := range cmds {
+		m := newTestModel()
+		m.turns = []turn{{role: roleUser, text: "prior query"}}
+		m.lastGrounding = &protocol.GroundingInfo{Chunks: 2}
+		updated, _ := m.handleLocalSlash(c, "query")
+		res := updated.(chatModel)
+		if c == "clear" {
+			if len(res.turns) != 1 {
+				t.Fatalf("expected clear to reset turns except assistant reply, got %d", len(res.turns))
+			}
+		} else if c == "exit" {
+			// exit returns tea.Quit
+		} else {
+			if len(res.turns) == 0 {
+				t.Fatalf("expected command %s to produce a turn", c)
+			}
+		}
+	}
+}
+
+func TestChat_StateLabelsAndApprovals(t *testing.T) {
+	m := newTestModel()
+	m.state = stateSending
+	if m.stateLabel() == "" {
+		t.Fatal("expected stateLabel for stateSending")
+	}
+	m.state = stateStreaming
+	if m.stateLabel() == "" {
+		t.Fatal("expected stateLabel for stateStreaming")
+	}
+	m.state = stateError
+	m.statusErr = "test err"
+	if !strings.Contains(m.stateLabel(), "test err") {
+		t.Fatal("expected stateLabel for stateError")
+	}
+	m.state = stateEditReview
+	if m.stateLabel() == "" {
+		t.Fatal("expected stateLabel for stateEditReview")
+	}
+	m.state = stateToolApproval
+	if m.stateLabel() == "" {
+		t.Fatal("expected stateLabel for stateToolApproval")
+	}
+
+	m.lastDegraded = []protocol.Degradation{{Component: "embedder", Detail: "slow"}}
+	labels := m.degradedLabels()
+	if len(labels) != 1 || !strings.Contains(labels[0], "embedder") {
+		t.Fatalf("unexpected degradedLabels: %v", labels)
+	}
+
+	if detailSuffix("foo") != ": foo" || detailSuffix("") != "" {
+		t.Fatal("unexpected detailSuffix output")
+	}
+
+	// Tool approval keys
+	m.state = stateToolApproval
+	req := protocol.ToolApprovalRequest{Server: "test", Tool: "read"}
+	m.pendingApproval = &req
+	replyCh := make(chan string, 1)
+	m.approvalReply = replyCh
+
+	m2, _ := m.handleApprovalKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	resModel := m2.(chatModel)
+	if resModel.state != stateStreaming {
+		t.Fatalf("expected stateStreaming after y, got %v", resModel.state)
+	}
+	dec := <-replyCh
+	if dec != protocol.ApprovalApprove {
+		t.Fatalf("expected ApprovalApprove, got %s", dec)
+	}
+}
+
+func TestChat_ViewRendersAllStates(t *testing.T) {
+	m := newChatModel("test", "/ws", "/ws", nil)
+	// stateSplash before ready
+	if v := m.View(); !strings.Contains(v, "Mochiii") {
+		t.Fatalf("expected splash content, got: %s", v)
+	}
+	// stateSplash after ready
+	m.width, m.height, m.ready = 80, 24, true
+	if v := m.View(); v == "" {
+		t.Fatal("expected non-empty splash View when ready")
+	}
+
+	m.state = stateIdle
+	if v := m.View(); !strings.Contains(v, "idle") && !strings.Contains(v, "/ws") {
+		t.Fatalf("expected idle View, got: %s", v)
+	}
+
+	m.ready = false
+	if v := m.View(); v != "booting…" {
+		t.Fatalf("expected booting…, got %s", v)
+	}
+
+	m.ready = true
+	m.state = stateEditReview
+	m.reviewPrepared = &editapply.PreparedEdit{Block: editapply.EditBlock{FilePath: "main.go"}}
+	m.reviewIndex, m.reviewBlocks = 0, []editapply.EditBlock{{FilePath: "main.go"}}
+	if v := m.View(); !strings.Contains(v, "edit 1/1") {
+		t.Fatalf("expected review View, got: %s", v)
+	}
+
+	m.state = stateToolApproval
+	req := protocol.ToolApprovalRequest{Server: "test", Tool: "tool"}
+	m.pendingApproval = &req
+	if v := m.View(); !strings.Contains(v, "approve test__tool?") {
+		t.Fatalf("expected approval View, got: %s", v)
+	}
+
+	if cmd := m.Init(); cmd == nil {
+		t.Fatal("expected non-nil Init cmd")
+	}
+}
+
+func TestChat_HandleModelCommand(t *testing.T) {
+	m := newTestModel()
+	m2, _ := m.handleModelCommand("clear")
+	res := m2.(chatModel)
+	if res.preferredTier != "" {
+		t.Fatalf("expected preferredTier to be clear, got %s", res.preferredTier)
+	}
+
+	m3, _ := m.handleModelCommand("default")
+	res3 := m3.(chatModel)
+	if res3.preferredTier != "" {
+		t.Fatalf("expected preferredTier to be empty for default, got %s", res3.preferredTier)
+	}
+
+	m4, _ := m.handleModelCommand("invalid_tier")
+	res4 := m4.(chatModel)
+	if !strings.Contains(res4.statusErr, "could not resolve model") {
+		t.Fatalf("expected statusErr on invalid tier with no daemon, got: %s", res4.statusErr)
+	}
+}
+
+func TestChat_ApplyCurrentReviewEdit(t *testing.T) {
+	wsDir := t.TempDir()
+	targetFile := filepath.Join(wsDir, "foo.txt")
+	_ = os.WriteFile(targetFile, []byte("hello world\n"), 0644)
+
+	m := newChatModel("test", wsDir, wsDir, nil)
+	m.state = stateEditReview
+	m.reviewIndex = 0
+	block := editapply.EditBlock{
+		FilePath: "foo.txt",
+		Search:   "hello world",
+		Replace:  "hello universe",
+	}
+	m.reviewBlocks = []editapply.EditBlock{block}
+	prep, err := editapply.PrepareEdit(wsDir, block)
+	if err != nil {
+		t.Fatalf("PrepareEdit: %v", err)
+	}
+	m.reviewPrepared = prep
+
+	m2, _ := m.applyCurrentReviewEdit()
+	res := m2.(chatModel)
+	if res.reviewApplied != 1 {
+		t.Fatalf("expected 1 edit applied, got %d", res.reviewApplied)
+	}
+
+	data, err := os.ReadFile(targetFile)
+	if err != nil || string(data) != "hello universe\n" {
+		t.Fatalf("expected updated file content 'hello universe\\n', got %q (err: %v)", string(data), err)
 	}
 }
