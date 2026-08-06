@@ -162,3 +162,43 @@ func TestDial_RefusesAForeignTransport(t *testing.T) {
 		t.Error("listening on a transport this platform does not support should fail loudly")
 	}
 }
+
+// THE GUARANTEE. daemon/main.go's package comment says the daemon "never
+// listens on a network port", and $HOST used to silently make that false --
+// $HOST is set by containers, CI runners, PaaS platforms and tcsh, none of
+// which are asking for a remote daemon.
+//
+// It could not work either: authorizePeer runs on every accepted connection and
+// fails closed, and SO_PEERCRED on a TCP socket reports uid 4294967295, so every
+// TCP client was refused before its token was read. Setting $HOST bought a bound
+// port and a broken daemon.
+func TestDefaultAddress_IsNeverTCPHowever_HOST_IsSet(t *testing.T) {
+	for _, host := range []string{"127.0.0.1", "0.0.0.0", "example.com", "localhost"} {
+		t.Setenv("HOST", host)
+		t.Setenv("PORT", "9999")
+		if addr := DefaultAddress(); addr.Transport == TransportTCP {
+			t.Errorf("HOST=%s selected a NETWORK transport: %+v", host, addr)
+		}
+	}
+}
+
+// The TCP backend still has to work when asked for EXPLICITLY -- it is retained
+// for tests and for any future, deliberately-designed remote mode. What changed
+// is that nothing selects it by accident.
+func TestTransportTCP(t *testing.T) {
+	addr := Address{Transport: TransportTCP, Address: "127.0.0.1:0"}
+
+	ln, err := Listen(addr)
+	if err != nil {
+		t.Fatalf("Listen failed: %v", err)
+	}
+	defer ln.Close()
+
+	addr.Address = ln.Addr().String()
+
+	conn, err := Dial(addr)
+	if err != nil {
+		t.Fatalf("Dial failed: %v", err)
+	}
+	conn.Close()
+}

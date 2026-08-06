@@ -31,6 +31,31 @@ import (
 const (
 	// TransportUnix is a Unix domain socket. Address is a filesystem path.
 	TransportUnix = "unix"
+	// TransportTCP is a TCP socket. Address is a host:port.
+	//
+	// NOT REACHABLE IN PRODUCTION, AND DELIBERATELY SO. Nothing returns it from
+	// DefaultAddress; it survives as a type for tests and for any future,
+	// explicitly-designed remote mode.
+	//
+	// It used to be selected whenever $HOST was set, which was wrong twice
+	// over. First, $HOST is set for unrelated reasons all over the place —
+	// containers, CI runners, PaaS platforms, tcsh — so a daemon documented as
+	// "never listens on a network port" (daemon/main.go) would silently bind
+	// one. Second, it could not work anyway: authorizePeer runs on every
+	// accepted connection and fails closed, and SO_PEERCRED on a TCP socket
+	// reports uid 4294967295 (UID_INVALID), which never matches a real uid.
+	// Measured on Linux — every TCP client was refused before its bearer token
+	// was even read.
+	//
+	// So the observable effect of setting $HOST was a daemon that bound a port,
+	// wrote a token file, and then rejected every client with a peer-uid
+	// mismatch. An availability failure wearing a feature's clothes.
+	//
+	// Reviving it means designing a remote story on purpose: a bind address
+	// that defaults to loopback, a constant-time token comparison, token
+	// rotation, and a transport-level answer to everything peer auth was doing.
+	// That is a project, not a flag.
+	TransportTCP = "tcp"
 	// TransportNamedPipe is a Windows named pipe. Address is a \\.\pipe\ name,
 	// which is NOT a filesystem path: it has no directory, no permissions bits,
 	// and leaves no residue when the owner dies.

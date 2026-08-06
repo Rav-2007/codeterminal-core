@@ -13,6 +13,8 @@ import (
 // the seam unchanged, and it is the reference the named-pipe backend had to
 // reproduce.
 
+// defaultAddress is ALWAYS the local transport. See transport.go's note on why
+// $HOST no longer selects TCP.
 func defaultAddress() Address {
 	return Address{Transport: TransportUnix, Address: SocketPath()}
 }
@@ -30,8 +32,11 @@ func defaultAddress() Address {
 // belongs behind the seam rather than in daemon/main.go where both platforms
 // would have to reason about it.
 func listen(a Address) (net.Listener, error) {
-	if a.Transport != "" && a.Transport != TransportUnix {
+	if a.Transport != "" && a.Transport != TransportUnix && a.Transport != TransportTCP {
 		return nil, fmt.Errorf("transport %q is not supported on this platform", a.Transport)
+	}
+	if a.Transport == TransportTCP {
+		return net.Listen("tcp", a.Address)
 	}
 	ln, err := net.Listen("unix", a.Address)
 	if err != nil {
@@ -45,11 +50,15 @@ func listen(a Address) (net.Listener, error) {
 }
 
 func dial(a Address, timeout time.Duration) (net.Conn, error) {
-	if a.Transport != "" && a.Transport != TransportUnix {
+	if a.Transport != "" && a.Transport != TransportUnix && a.Transport != TransportTCP {
 		return nil, fmt.Errorf("transport %q is not supported on this platform", a.Transport)
 	}
-	if timeout > 0 {
-		return net.DialTimeout("unix", a.Address, timeout)
+	network := "unix"
+	if a.Transport == TransportTCP {
+		network = "tcp"
 	}
-	return net.Dial("unix", a.Address)
+	if timeout > 0 {
+		return net.DialTimeout(network, a.Address, timeout)
+	}
+	return net.Dial(network, a.Address)
 }

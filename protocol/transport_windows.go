@@ -37,6 +37,8 @@ import (
 // no directory and cannot be stat'd.
 const pipePrefix = `\\.\pipe\`
 
+// defaultAddress is ALWAYS the local transport. See transport.go's note on why
+// $HOST no longer selects TCP.
 func defaultAddress() Address {
 	return Address{Transport: TransportNamedPipe, Address: pipeName()}
 }
@@ -110,8 +112,11 @@ func ownerOnlySDDL() (string, error) {
 // This function pins both properties in a comment because they come from a
 // dependency: if go-winio is ever upgraded, they are what to re-check.
 func listen(a Address) (net.Listener, error) {
-	if a.Transport != TransportNamedPipe {
+	if a.Transport != "" && a.Transport != TransportNamedPipe && a.Transport != TransportTCP {
 		return nil, fmt.Errorf("transport %q is not supported on this platform", a.Transport)
+	}
+	if a.Transport == TransportTCP {
+		return net.Listen("tcp", a.Address)
 	}
 	sddl, err := ownerOnlySDDL()
 	if err != nil {
@@ -121,8 +126,14 @@ func listen(a Address) (net.Listener, error) {
 }
 
 func dial(a Address, timeout time.Duration) (net.Conn, error) {
-	if a.Transport != TransportNamedPipe {
+	if a.Transport != "" && a.Transport != TransportNamedPipe && a.Transport != TransportTCP {
 		return nil, fmt.Errorf("transport %q is not supported on this platform", a.Transport)
+	}
+	if a.Transport == TransportTCP {
+		if timeout > 0 {
+			return net.DialTimeout("tcp", a.Address, timeout)
+		}
+		return net.Dial("tcp", a.Address)
 	}
 	if timeout > 0 {
 		return winio.DialPipe(a.Address, &timeout)

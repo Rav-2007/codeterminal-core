@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,6 +32,7 @@ type Server struct {
 	cfg           *Config
 	modelOverride string // optional testing override; bypasses the router when set
 	systemPrompt  string
+	tcpToken      string // Bearer token for TCP auth; empty if UDS
 	logger        *log.Logger
 
 	// embedder and store are both nil when retrieval is disabled or
@@ -128,6 +130,10 @@ type Server struct {
 	// Nil means "never cancelled" (see shutdownContext), so every existing
 	// Server literal, including the test ones, keeps working untouched.
 	shutdownCtx context.Context
+
+	// lspBridge manages the connection to native LSP servers (like gopls)
+	// for precise AST/compiler-based definitions and references.
+	lspBridge *LSPBridge
 }
 
 // shutdownContext returns the cancellation signal for long-running work,
@@ -183,18 +189,15 @@ func (s *Server) WaitForDrain(timeout time.Duration) bool {
 	}
 }
 
-// route decides which tier handles the next request. The request path
-// never carries a real exit signal (capturing one is a later, client/UX-side
-// phase), so escalation today comes only from promptKind — the client's
-// explicit, wire-level PromptKind (see protocol.PromptRequest.PromptKind and
-// the TUI's /reason and /refactor commands in chat.go). An empty or
-// unrecognized promptKind resolves to the default tier, same as before this
-// was wired up.
-func (s *Server) route(promptKind string) RouteDecision {
+// route decides which tier handles the next request. preferredTier is the
+// client's explicit models.json tier name (PromptRequest.Tier); when set and
+// valid it wins. Otherwise promptKind may escalate to reasoning. An empty
+// preferredTier and unrecognized promptKind resolve to the default tier.
+func (s *Server) route(promptKind, preferredTier string) RouteDecision {
 	if s.modelOverride != "" {
 		return RouteDecision{Tier: "override", Slug: s.modelOverride, Reason: "manual override via --model flag"}
 	}
-	return Route(s.cfg, RouteInput{HasExitSignal: false, PromptKind: promptKind})
+	return Route(s.cfg, RouteInput{HasExitSignal: false, PromptKind: promptKind, PreferredTier: preferredTier})
 }
 
 // Serve accepts connections until the listener is closed. Each connection is
@@ -319,6 +322,22 @@ func (s *Server) serveConn(conn net.Conn) {
 		return
 	}
 
+	// Constant-time. A bearer token is the ONLY thing standing in front of a
+	// network listener, so an ordinary string compare — which returns on the
+	// first differing byte — leaks the token's prefix through response timing.
+	// Unreachable today (see protocol.TransportTCP: nothing selects TCP), but
+	// this is the line that would be load-bearing the moment anything does, and
+	// a timing-safe compare costs nothing.
+	if s.tcpToken != "" && subtle.ConstantTimeCompare([]byte(hsReq.BearerToken), []byte(s.tcpToken)) != 1 {
+		s.logger.Printf("rejecting client %q: missing or invalid bearer token", hsReq.ClientName)
+		enc.Encode(protocol.HandshakeResponse{
+			ProtocolVersion: protocol.ProtocolVersion,
+			Ok:              false,
+			Error:           "HTTP 401 Unauthorized: invalid or missing bearer token",
+		})
+		return
+	}
+
 	if err := enc.Encode(protocol.HandshakeResponse{
 		ProtocolVersion:  protocol.ProtocolVersion,
 		Ok:               true,
@@ -427,7 +446,7 @@ func (s *Server) serveConn(conn net.Conn) {
 	s.count(func(c *counters) { c.prompts.Add(1) })
 	s.logger.Printf("received prompt (%d bytes), calling model API", len(promptReq.Prompt))
 
-	decision := s.route(promptReq.PromptKind)
+	decision := s.route(promptReq.PromptKind, promptReq.Tier)
 	s.logger.Printf("route tier=%s slug=%s reason=%s", decision.Tier, decision.Slug, decision.Reason)
 
 	historyOutcome := prepareHistory(promptReq.History)
@@ -482,6 +501,9 @@ func (s *Server) serveConn(conn net.Conn) {
 		// only) and runs the deferred entropy/keyword detectors in log-only
 		// warn-mode. This never changes augmentedPrompt.
 		s.logChunkScrub(outcome.Chunks)
+	}
+	if promptReq.Mode == "plan" {
+		augmentedPrompt += "\n\n[SYSTEM]: The user has requested an implementation plan. DO NOT propose edits directly. Instead, output a structured Markdown artifact (`implementation_plan.md`) utilizing Mermaid diagrams and sequential step definitions. You may use view_file and grep_search to explore the workspace before planning."
 	}
 	if len(redactions) > 0 {
 		kinds := redactionKinds(redactions)
