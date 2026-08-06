@@ -128,7 +128,7 @@ func OpenMemoryStore(path string) (*MemoryStore, error) {
 		return nil, err
 	}
 
-	if err := os.Chmod(path, 0600); err != nil {
+	if err := restrictToOwner(path, 0600); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("restricting memory db permissions: %w", err)
 	}

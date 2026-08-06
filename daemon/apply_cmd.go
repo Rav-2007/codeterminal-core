@@ -856,7 +856,7 @@ func leafIsSymlink(path string) (bool, error) {
 // readable by other users.
 func restrictSQLiteSidecars(path string, perm os.FileMode) error {
 	for _, suffix := range []string{"-wal", "-shm"} {
-		if err := os.Chmod(path+suffix, perm); err != nil && !os.IsNotExist(err) {
+		if err := restrictToOwner(path+suffix, perm); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("restricting %s permissions: %w", filepath.Base(path+suffix), err)
 		}
 	}

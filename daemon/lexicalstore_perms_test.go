@@ -35,27 +35,14 @@ func TestLexicalIndexIsNotWorldReadable(t *testing.T) {
 		t.Fatalf("Upsert: %v", err)
 	}
 
-	info, err := os.Stat(idx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if perm := info.Mode().Perm(); perm&0077 != 0 {
-		t.Errorf("index directory mode = %04o, want no group/other bits", perm)
-	}
+	assertOwnerOnly(t, idx, "the index directory")
 
 	db := filepath.Join(idx, lexicalDBFileName)
 	for _, p := range []string{db, db + "-wal", db + "-shm"} {
-		fi, err := os.Stat(p)
-		if os.IsNotExist(err) {
+		if _, err := os.Stat(p); os.IsNotExist(err) {
 			continue // a sidecar that does not exist cannot leak
 		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		if perm := fi.Mode().Perm(); perm&0077 != 0 {
-			t.Errorf("%s mode = %04o, want no group/other bits — it holds indexed source text",
-				filepath.Base(p), perm)
-		}
+		assertOwnerOnly(t, p, "it holds indexed source text")
 	}
 }
 
@@ -76,11 +63,5 @@ func TestExistingLexicalIndexDirectoryIsTightenedOnOpen(t *testing.T) {
 	}
 	defer s.Close()
 
-	info, err := os.Stat(idx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if perm := info.Mode().Perm(); perm&0077 != 0 {
-		t.Errorf("pre-existing index directory left at %04o; an install that already had an index stays world-readable", perm)
-	}
+	assertOwnerOnly(t, idx, "an install that already had an index must not stay world-readable")
 }

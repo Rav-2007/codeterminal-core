@@ -26,3 +26,13 @@ func processAlive(pid int) bool {
 // killProcess terminates a process unconditionally. Used by the tests that
 // simulate a helper crash; the production shutdown path asks politely first.
 func killProcess(pid int) error { return syscall.Kill(pid, syscall.SIGKILL) }
+
+// restrictToOwner makes path readable by its owner and nobody else.
+//
+// On POSIX that is exactly the chmod this replaces, and perm is honoured
+// verbatim — 0700 for a directory, 0600 for a file — so nothing about the
+// existing behaviour changes. The seam exists for the Windows half, where
+// os.Chmod cannot express this at all.
+func restrictToOwner(path string, perm os.FileMode) error {
+	return os.Chmod(path, perm)
+}

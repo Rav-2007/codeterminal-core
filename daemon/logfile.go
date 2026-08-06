@@ -57,6 +57,13 @@ func openRotatingFile(path string, maxBytes int64) (*rotatingFile, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The 0600 above is a POSIX creation mode and Windows discards it, so the
+	// restriction is applied explicitly rather than left to the open flags. Best
+	// effort: a log that cannot be locked down is still better than no log, and
+	// the daemon has nowhere to report the failure yet -- this IS the reporting
+	// channel being opened.
+	_ = restrictToOwner(path, 0600)
+
 	var size int64
 	if fi, err := f.Stat(); err == nil {
 		size = fi.Size()

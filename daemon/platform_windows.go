@@ -4,6 +4,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"os"
 
 	"golang.org/x/sys/windows"
@@ -168,6 +169,65 @@ func processAlive(pid int) bool {
 		return false
 	}
 	return code == stillActive
+}
+
+// restrictToOwner makes path readable by its owner and nobody else.
+//
+// perm is ignored, and that is the whole point. os.Chmod on Windows maps a Unix
+// mode onto FILE_ATTRIBUTE_READONLY and nothing else, and os.Stat maps it back
+// out as a flat 0666 or 0777 — so the five os.Chmod(…, 0600) calls this
+// replaces were silent no-ops here, and the tests asserting them were reading a
+// constant. The files in question hold indexed source text, conversation
+// transcripts and the daemon's log.
+//
+// Access control on Windows is the DACL, so that is what gets set:
+//
+//   - ONE explicit ACE, GENERIC_ALL, to the current user's SID. The SID comes
+//     from the process token's User, not its Owner: on an elevated token the
+//     owner is BUILTIN\Administrators, and granting that would grant every
+//     administrator on the machine where the point is one individual. Exactly
+//     the asymmetry protocol/transport_windows.go documents for the pipe.
+//   - PROTECTED_DACL_SECURITY_INFORMATION, so inherited ACEs from the parent
+//     directory are DROPPED rather than merged. Without it the workspace's own
+//     permissive inheritance survives and the restriction is decorative.
+//   - SUB_CONTAINERS_AND_OBJECTS_INHERIT on directories, so files SQLite
+//     creates later (the -wal and -shm sidecars, which in WAL mode hold
+//     committed rows the main database does not have yet) are born restricted.
+//
+// SYSTEM and Administrators can still take ownership and read anything, exactly
+// as root can on POSIX. That is the same boundary, not a weaker one.
+func restrictToOwner(path string, _ os.FileMode) error {
+	token := windows.GetCurrentProcessToken()
+	user, err := token.GetTokenUser()
+	if err != nil {
+		return fmt.Errorf("determining this user's SID to restrict %s: %w", path, err)
+	}
+
+	inheritance := uint32(windows.NO_INHERITANCE)
+	if info, err := os.Stat(path); err == nil && info.IsDir() {
+		inheritance = windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT
+	}
+
+	acl, err := windows.ACLFromEntries([]windows.EXPLICIT_ACCESS{{
+		AccessPermissions: windows.GENERIC_ALL,
+		AccessMode:        windows.GRANT_ACCESS,
+		Inheritance:       inheritance,
+		Trustee: windows.TRUSTEE{
+			TrusteeForm:  windows.TRUSTEE_IS_SID,
+			TrusteeType:  windows.TRUSTEE_IS_USER,
+			TrusteeValue: windows.TrusteeValueFromSID(user.User.Sid),
+		},
+	}}, nil)
+	if err != nil {
+		return fmt.Errorf("building the owner-only ACL for %s: %w", path, err)
+	}
+
+	return windows.SetNamedSecurityInfo(
+		path,
+		windows.SE_FILE_OBJECT,
+		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
+		nil, nil, acl, nil,
+	)
 }
 
 // killProcess terminates a process unconditionally. TerminateProcess is the

@@ -82,7 +82,7 @@ func NewFTSChunkStore(indexDir string) (*FTSChunkStore, error) {
 	if err := os.MkdirAll(indexDir, 0700); err != nil {
 		return nil, fmt.Errorf("creating index directory %s: %w", indexDir, err)
 	}
-	if err := os.Chmod(indexDir, 0700); err != nil {
+	if err := restrictToOwner(indexDir, 0700); err != nil {
 		return nil, fmt.Errorf("restricting index directory %s: %w", indexDir, err)
 	}
 
@@ -121,7 +121,7 @@ func NewFTSChunkStore(indexDir string) (*FTSChunkStore, error) {
 	// sidecar holds committed rows the main file does not have yet, so locking
 	// down only lexical.db would leave the newest chunks readable -- the same
 	// reasoning OpenMemoryStore records, applied to the store that was missed.
-	if err := os.Chmod(path, 0600); err != nil {
+	if err := restrictToOwner(path, 0600); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("restricting lexical index permissions: %w", err)
 	}

@@ -40,17 +40,12 @@ func TestMemoryStore_SidecarsAreNotWorldReadable(t *testing.T) {
 
 	// Guard against the vacuous pass: if no sidecar exists there is nothing to
 	// assert and the test must say so rather than report success.
-	wal, err := os.Stat(path + "-wal")
-	if err != nil {
+	if _, err := os.Stat(path + "-wal"); err != nil {
 		t.Fatalf("no -wal sidecar after a write; this test asserts nothing: %v", err)
 	}
-	if mode := wal.Mode().Perm(); mode != 0600 {
-		t.Errorf("memory.db-wal mode = %v, want 0600", mode)
-	}
-	if shm, err := os.Stat(path + "-shm"); err == nil {
-		if mode := shm.Mode().Perm(); mode != 0600 {
-			t.Errorf("memory.db-shm mode = %v, want 0600", mode)
-		}
+	assertOwnerOnly(t, path+"-wal", "it holds the newest conversation turns")
+	if _, err := os.Stat(path + "-shm"); err == nil {
+		assertOwnerOnly(t, path+"-shm", "it holds the newest conversation turns")
 	}
 
 	// The premise, asserted rather than assumed: the turn really is in the
@@ -79,17 +74,12 @@ func TestSkillStore_SidecarsAreNotWorldReadable(t *testing.T) {
 	}
 	defer store.Close()
 
-	wal, err := os.Stat(path + "-wal")
-	if err != nil {
+	if _, err := os.Stat(path + "-wal"); err != nil {
 		t.Fatalf("no -wal sidecar after open; this test asserts nothing: %v", err)
 	}
-	if mode := wal.Mode().Perm(); mode != 0600 {
-		t.Errorf("skills.db-wal mode = %v, want 0600", mode)
-	}
-	if shm, err := os.Stat(path + "-shm"); err == nil {
-		if mode := shm.Mode().Perm(); mode != 0600 {
-			t.Errorf("skills.db-shm mode = %v, want 0600", mode)
-		}
+	assertOwnerOnly(t, path+"-wal", "it holds the newest skill rows")
+	if _, err := os.Stat(path + "-shm"); err == nil {
+		assertOwnerOnly(t, path+"-shm", "it holds the newest skill rows")
 	}
 }
 

@@ -227,11 +227,7 @@ func TestLogWriterTeesToFileAndStderr(t *testing.T) {
 	if !strings.Contains(string(body), "degraded: component=memory") {
 		t.Errorf("log file = %q, want the logged line", body)
 	}
-	if fi, err := os.Stat(path); err != nil {
-		t.Fatal(err)
-	} else if perm := fi.Mode().Perm(); perm != 0600 {
-		t.Errorf("log file mode = %o, want 0600", perm)
-	}
+	assertOwnerOnly(t, path, "a daemon log carries workspace paths and prompt sizes")
 }
 
 func TestLogWriterDefaultsToStderrWhenUnset(t *testing.T) {
