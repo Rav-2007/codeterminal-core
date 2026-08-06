@@ -768,6 +768,28 @@ func confinedRestorePath(realWorkspaceRoot, rel string) (string, error) {
 		return "", fmt.Errorf("path %q escapes the workspace root", rel)
 	}
 
+	// The same hazard gate editapply's resolveSafeTarget runs, for the same
+	// reason, on the other implementation of the same job.
+	//
+	// It was missing here. pathhazard.go arrived wired into ONE of the two
+	// confinement resolvers, and the containment check below cannot stand in for
+	// it: containment is not the property these paths violate. `<root>/nul` is
+	// provably inside the workspace and still opens the console device;
+	// `<root>/.git:x` is inside the workspace and still writes a stream on .git.
+	// Every one of the eight shared hazard vectors resolved to a path this
+	// function returned WITHOUT error, which is what the conformance test now
+	// asserts against.
+	//
+	// Reachability is narrow and worth stating rather than overselling: undo
+	// restores paths from a backup manifest this daemon wrote, and an apply that
+	// wrote one today already passed the gate in editapply. The gap is manifests
+	// written BEFORE the gate existed, which are still on disk. Contained,
+	// low-severity -- and mirrored anyway, because "one implementation has the
+	// check" is precisely how S1 and S2 happened.
+	if err := editapply.RejectPathHazards(cleaned); err != nil {
+		return "", err
+	}
+
 	full := filepath.Join(realWorkspaceRoot, cleaned)
 	ancestor := full
 	var suffix []string
