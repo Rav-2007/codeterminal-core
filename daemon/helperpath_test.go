@@ -226,3 +226,120 @@ func TestGatherContext_SurfacesTheConfiguredReason(t *testing.T) {
 		t.Errorf("Reason = %q, want the specific reason %q", out.Reason, reasonEmbedderUnavailable)
 	}
 }
+
+// THE HIJACK VARIANT. legacyHelperBinPath resolves against the WORKING
+// DIRECTORY, and the daemon's working directory is the workspace it was asked
+// to serve. So a repository shipping helper/codeterminal-embedder-helper could
+// have it started as this daemon's embedder — the same defect class as the
+// TUI's /mcp-server hijack, narrower only because it is the last candidate and
+// needs the real helper to be absent first.
+//
+// The candidate is now offered only under `go run`, which is what its own
+// comment always said it was for. An installed binary never sees it.
+//
+// Neuter check: append legacyHelperBinPath unconditionally and this fails with
+// the planted path returned.
+func TestResolveHelperBinPath_IgnoresTheWorkingDirectoryWhenInstalled(t *testing.T) {
+	t.Setenv(helperBinEnvVar, "")
+
+	// A hostile workspace that ships something at the legacy path.
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, "helper"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	planted := filepath.Join(repo, legacyHelperBinPath)
+	if err := os.WriteFile(planted, []byte("#!/bin/sh\necho pwned\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(repo)
+
+	// Stand in for an INSTALLED daemon. A test binary is itself built into the
+	// temp directory, so without this the case that actually matters could
+	// never run and this test would permanently skip.
+	original := goRunDetector
+	goRunDetector = func() bool { return false }
+	defer func() { goRunDetector = original }()
+
+	got, err := resolveHelperBinPath()
+	if err == nil {
+		t.Fatalf("a helper was found where none should be: %q", got)
+	}
+	if _, statErr := os.Stat(got); statErr == nil {
+		t.Errorf("resolveHelperBinPath returned an EXISTING path from the working directory: %q", got)
+	}
+}
+
+// The explicit override still wins, and is the documented escape hatch for any
+// layout the candidates do not describe.
+func TestResolveHelperBinPath_OverrideStillWins(t *testing.T) {
+	want := filepath.Join(t.TempDir(), "my-helper")
+	t.Setenv(helperBinEnvVar, want)
+	got, err := resolveHelperBinPath()
+	if err != nil || got != want {
+		t.Errorf("resolveHelperBinPath() = %q, %v; want %q", got, err, want)
+	}
+}
+
+// Under `go run`, the candidate must still be offered — the whole point is that
+// the developer workflow the comment protects is untouched.
+func TestResolveHelperBinPath_OffersTheWorkingDirectoryUnderGoRun(t *testing.T) {
+	t.Setenv(helperBinEnvVar, "")
+
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, "helper"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	planted := filepath.Join(repo, legacyHelperBinPath)
+	if err := os.WriteFile(planted, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(repo)
+
+	original := goRunDetector
+	goRunDetector = func() bool { return true }
+	defer func() { goRunDetector = original }()
+
+	got, err := resolveHelperBinPath()
+	if err != nil {
+		t.Fatalf("under go run the legacy candidate must still resolve: %v", err)
+	}
+	if got != legacyHelperBinPath {
+		t.Errorf("resolveHelperBinPath() = %q, want %q", got, legacyHelperBinPath)
+	}
+}
+
+// pathIsUnder is the entire security decision, so it is tested against the path
+// shapes that break naive implementations.
+func TestPathIsUnder(t *testing.T) {
+	for _, tc := range []struct {
+		path, dir string
+		want      bool
+	}{
+		{"/tmp/go-build123/b001/exe/daemon", "/tmp", true},
+		{"/tmp", "/tmp", true},
+		{"/usr/local/bin/codeterminal-daemon", "/tmp", false},
+		{"/home/u/repo/daemon", "/tmp", false},
+		// The one a strings.HasPrefix implementation gets WRONG: a sibling
+		// directory sharing a textual prefix.
+		{"/tmpfoo/daemon", "/tmp", false},
+		{"/tmp-other/daemon", "/tmp", false},
+		// Escapes must not count as inside.
+		{"/tmp/../usr/bin/daemon", "/tmp", false},
+	} {
+		if got := pathIsUnder(tc.path, tc.dir); got != tc.want {
+			t.Errorf("pathIsUnder(%q, %q) = %v, want %v", tc.path, tc.dir, got, tc.want)
+		}
+	}
+}
+
+// The OS-touching half must be deterministic and must not panic. Deterministic
+// matters because it gates a security decision: a predicate that flickered
+// would offer the working-directory candidate intermittently.
+func TestRunningFromGoRun_IsDeterministic(t *testing.T) {
+	first := runningFromGoRun()
+	for i := 0; i < 5; i++ {
+		if again := runningFromGoRun(); again != first {
+			t.Fatalf("runningFromGoRun returned %v then %v", first, again)
+		}
+	}
+}
