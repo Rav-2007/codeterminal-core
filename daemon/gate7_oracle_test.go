@@ -40,10 +40,10 @@ func TestGate7_ApplyOracleIsEnumeratedAndCarriesNoAbsolutePaths(t *testing.T) {
 	writeTempFile(t, root, "readable.go", "package main\n\nfunc keep() {}\n")
 	writeTempFile(t, root, "nomatch.go", "package main\n\nfunc other() {}\n")
 	writeTempFile(t, root, "unreadable.go", "package main\n\nfunc keep() {}\n")
-	if err := os.Chmod(filepath.Join(root, "unreadable.go"), 0000); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.Chmod(filepath.Join(root, "unreadable.go"), 0644) })
+	// denyReads, not chmod 0000: the latter is a no-op for READING on Windows,
+	// so this state was not the state under test there. The helper verifies the
+	// denial took and reports why if it could not.
+	unreadableDenied, unreadableWhy := denyReads(t, filepath.Join(root, "unreadable.go"))
 	writeTempFile(t, root, "id_rsa_secret", "x")
 	if err := os.WriteFile(filepath.Join(outside, "target.go"), []byte("package main\n"), 0644); err != nil {
 		t.Fatal(err)
@@ -70,7 +70,7 @@ func TestGate7_ApplyOracleIsEnumeratedAndCarriesNoAbsolutePaths(t *testing.T) {
 		{"absent nested", "a/b/c/ghost.go", "func keep() {}", "does not exist"},
 		{"present, no match", "nomatch.go", "func keep() {}", "search text not found"},
 		{"present, matches", "readable.go", "func keep() {}", ""},
-		{"unreadable", "unreadable.go", "func keep() {}", "permission denied"},
+		{"unreadable", "unreadable.go", "func keep() {}", "permission denied"}, // gated below
 		{"secret-named", "id_rsa_secret", "x", "secret-file rules"},
 		{"symlink outside root", "link.go", "func keep() {}", "resolves outside the workspace root"},
 		{"a directory", "adir", "func keep() {}", "is a directory"},
@@ -80,6 +80,11 @@ func TestGate7_ApplyOracleIsEnumeratedAndCarriesNoAbsolutePaths(t *testing.T) {
 
 	seen := map[string]string{}
 	for _, c := range cases {
+		if c.state == "unreadable" && !unreadableDenied {
+			t.Logf("NOT RUN: the unreadable state (%s); the oracle's permission-denied branch "+
+				"is UNVERIFIED here and the count below is adjusted for it", unreadableWhy)
+			continue
+		}
 		resp := applyEditViaHandler(t, srv, protocol.ApplyEditRequest{
 			ProtocolVersion: protocol.ProtocolVersion,
 			Workspace:       root,
@@ -114,7 +119,11 @@ func TestGate7_ApplyOracleIsEnumeratedAndCarriesNoAbsolutePaths(t *testing.T) {
 
 	// The oracle's size, stated as a number so a change to it is visible in a
 	// diff rather than only in behaviour.
-	if len(seen) != 9 {
-		t.Errorf("Apply distinguishes %d refusal states, expected 9 — the oracle changed shape; update the Gate 7 decision brief with it", len(seen))
+	want := 9
+	if !unreadableDenied {
+		want-- // the state above that could not be built here
+	}
+	if len(seen) != want {
+		t.Errorf("Apply distinguishes %d refusal states, expected %d — the oracle changed shape; update the Gate 7 decision brief with it", len(seen), want)
 	}
 }

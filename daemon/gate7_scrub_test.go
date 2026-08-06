@@ -102,18 +102,25 @@ func TestHandleApplyEdit_ScrubsAbsolutePathsFromErrorResponses(t *testing.T) {
 	}
 
 	// (c) exists-but-unreadable: os.ReadFile permission error carried the
-	// absolute path. Skipped as root, where chmod 000 does not deny reads.
-	if os.Getuid() != 0 {
-		locked := filepath.Join(root, "locked.go")
-		if err := os.WriteFile(locked, []byte("package main\n"), 0000); err != nil {
-			t.Fatalf("writing locked fixture: %v", err)
-		}
-		defer os.Chmod(locked, 0644) // so t.TempDir cleanup can remove it
+	// absolute path. This is the case that proves the scrub RUNS -- the two
+	// above prove only that no path is present, which a message naming nothing
+	// would also satisfy.
+	//
+	// denyReads rather than an inline chmod 0000: that is POSIX-only, and on
+	// Windows it left an ordinary readable file here, so this assertion ran
+	// against "search text not found" and failed. The helper verifies the
+	// denial took effect and says NOT RUN if it could not.
+	locked := filepath.Join(root, "locked.go")
+	if err := os.WriteFile(locked, []byte("package main\n"), 0600); err != nil {
+		t.Fatalf("writing locked fixture: %v", err)
+	}
+	if ok, why := denyReads(t, locked); !ok {
+		t.Logf("NOT RUN: the unreadable case (%s); the scrub is proven here only by the "+
+			"absent-path cases above, which cannot distinguish scrubbed from never-present", why)
+	} else {
 		resp = applyEditViaHandler(t, srv, protocol.ApplyEditRequest{
 			Edit: protocol.EditBlockWire{FilePath: "locked.go", Search: "x", Replace: "y"},
 		})
-		// This one DOES still carry a path (os.ReadFile's permission error names
-		// the file), so it is the case that proves the scrub itself runs.
 		assertScrubbedPath(t, "apply(locked.go).Error", resp.Error, roots)
 	}
 }
