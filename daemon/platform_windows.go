@@ -29,6 +29,33 @@ import (
 // This matters more here than on POSIX: Windows directory junctions need no
 // privilege to create, where symlinks do.
 //
+// WHY NO SUPERSEDING DISPOSITION. The obvious mapping for O_CREATE|O_TRUNC is
+// CREATE_ALWAYS, and it is wrong here: on an existing reparse point,
+// CREATE_ALWAYS *replaces the link with a fresh regular file* rather than
+// opening it. The handle then has no FILE_ATTRIBUTE_REPARSE_POINT, the check
+// below passes, and the call SUCCEEDS. Nothing is followed and no victim is
+// touched -- but the contract is "refuse", and Windows silently clobbered
+// instead. Measured, not reasoned: on the first Windows CI run both
+// TestWriteEmbedderStamp_RefusesSymlink and TestWriteExtractedFile_RefusesSymlink
+// failed their refusal assertion while PASSING their victim-untouched assertion,
+// which is that behaviour exactly.
+//
+// So a truncating open is split into two steps that no disposition can
+// short-circuit: open NON-destructively (OPEN_ALWAYS / OPEN_EXISTING, neither of
+// which can destroy a reparse point), check the attribute on the handle we are
+// actually holding, and only then truncate with SetEndOfFile. That is also what
+// POSIX does -- O_NOFOLLOW is evaluated before O_TRUNC takes effect -- so the
+// two platforms now refuse in the same order.
+//
+// There is no TOCTOU here, because there is no window: the attribute is read
+// from the handle, not from the path. A link planted between resolution and
+// CreateFile is opened AS the link and rejected.
+//
+// O_APPEND|O_TRUNC is the one combination this cannot serve: append strips
+// GENERIC_WRITE (see below) and SetEndOfFile needs FILE_WRITE_DATA. No caller
+// combines them -- verified across all nine call sites -- and if one ever does
+// it fails loudly with ACCESS_DENIED rather than quietly not truncating.
+//
 // perm is accepted for signature parity and is otherwise unused, matching
 // os.OpenFile on Windows, which maps a Unix mode onto nothing more than the
 // read-only attribute. Callers relying on 0600 to mean "only this user" are
@@ -60,16 +87,22 @@ func openNoFollow(path string, flag int, perm os.FileMode) (*os.File, error) {
 		access |= windows.FILE_APPEND_DATA | windows.SYNCHRONIZE
 	}
 
+	// truncate is deferred to after the reparse-point check; see the note above
+	// on why no disposition here may be a superseding one.
 	var disposition uint32
+	truncate := false
 	switch {
 	case flag&(os.O_CREATE|os.O_EXCL) == os.O_CREATE|os.O_EXCL:
+		// CREATE_NEW already fails on an existing link, so it needs no help.
 		disposition = windows.CREATE_NEW
 	case flag&(os.O_CREATE|os.O_TRUNC) == os.O_CREATE|os.O_TRUNC:
-		disposition = windows.CREATE_ALWAYS
+		disposition = windows.OPEN_ALWAYS
+		truncate = true
 	case flag&os.O_CREATE != 0:
 		disposition = windows.OPEN_ALWAYS
 	case flag&os.O_TRUNC != 0:
-		disposition = windows.TRUNCATE_EXISTING
+		disposition = windows.OPEN_EXISTING
+		truncate = true
 	default:
 		disposition = windows.OPEN_EXISTING
 	}
@@ -98,6 +131,15 @@ func openNoFollow(path string, flag int, perm os.FileMode) (*os.File, error) {
 			Op:   "open",
 			Path: path,
 			Err:  errors.New("is a reparse point (symlink or junction); refusing to follow it"),
+		}
+	}
+
+	// Only now, on a handle proven to refer to a real file. SetEndOfFile cuts at
+	// the current file pointer, which CreateFile leaves at 0.
+	if truncate {
+		if err := windows.SetEndOfFile(h); err != nil {
+			_ = windows.CloseHandle(h)
+			return nil, &os.PathError{Op: "truncate", Path: path, Err: err}
 		}
 	}
 
