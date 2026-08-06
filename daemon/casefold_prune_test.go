@@ -81,11 +81,9 @@ func TestCaseFoldPrune_NoiseStaysCaseSensitive(t *testing.T) {
 	writeFile(t, filepath.Join(root, "build", "out.o"), "generated\n")
 	writeFile(t, filepath.Join(root, "Build", "engine.go"), "package Build\n")
 
-	got := indexedPaths(t, root)
-	if got[filepath.Join("build", "out.o")] {
-		t.Errorf("lowercase build/ should be pruned as noise")
-	}
-	if !got[filepath.Join("Build", "engine.go")] {
-		t.Errorf("capital Build/ is real source and must stay indexed; got %v", got)
-	}
+	// Exact set, not key probes: build/out.o is asserted absent BY OMISSION.
+	// The probe form was vacuous on any platform whose separator is not "/" --
+	// index keys are forward-slash everywhere -- so the negative half proved
+	// nothing there. See assertIndexedExactly in nested_gitignore_test.go.
+	assertIndexedExactly(t, root, "Build/engine.go")
 }
