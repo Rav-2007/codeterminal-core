@@ -9,6 +9,8 @@ package main
 //	killProcess(pid)                terminate it unconditionally
 //	restrictToOwner(path, perm)     make path readable by its owner and nobody
 //	                                else
+//	openControllingTerminal()       open this process's terminal, for prompting
+//	                                when stdin has been consumed
 //
 // restrictToOwner replaced five bare os.Chmod calls, and it is here rather than
 // inline because os.Chmod DOES NOTHING USEFUL ON WINDOWS. Go maps a Unix mode

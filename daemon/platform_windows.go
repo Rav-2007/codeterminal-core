@@ -171,6 +171,27 @@ func processAlive(pid int) bool {
 	return code == stillActive
 }
 
+// openControllingTerminal opens this process's console for reading prompts when
+// stdin has already been consumed by something else.
+//
+// There is no /dev/tty here, and the POSIX path was not a portability wart that
+// merely failed to compile -- it compiled fine and failed at RUNTIME, on every
+// Windows machine, for every invocation of `edits apply -`. The user got
+// "confirmation prompts need a controlling terminal, but none is available",
+// which is a true sentence about the wrong thing: there was a console, we asked
+// for it by a name this OS has never had.
+//
+// CONIN$ is the console's own name for its input buffer, and it is the exact
+// analogue: it resolves to the attached console regardless of what stdin was
+// redirected from, and it fails when a process has no console at all -- which
+// is the case the caller's message is actually for.
+//
+// O_RDWR matches the POSIX side. CONIN$ requires GENERIC_READ|GENERIC_WRITE to
+// open even for reading, because a console handle is bidirectional.
+func openControllingTerminal() (*os.File, error) {
+	return os.OpenFile("CONIN$", os.O_RDWR, 0)
+}
+
 // restrictToOwner makes path readable by its owner and nobody else.
 //
 // perm is ignored, and that is the whole point. os.Chmod on Windows maps a Unix

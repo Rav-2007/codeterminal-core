@@ -27,6 +27,17 @@ func processAlive(pid int) bool {
 // simulate a helper crash; the production shutdown path asks politely first.
 func killProcess(pid int) error { return syscall.Kill(pid, syscall.SIGKILL) }
 
+// openControllingTerminal opens this process's terminal for reading prompts
+// when stdin has already been consumed by something else.
+//
+// /dev/tty is the POSIX name for "whatever terminal I am attached to",
+// independent of what stdin was redirected from. It fails, correctly, when
+// there is no terminal at all — a cron job, a pipeline, a CI step — and the
+// caller turns that into a message telling the user to pass a file instead.
+func openControllingTerminal() (*os.File, error) {
+	return os.OpenFile("/dev/tty", os.O_RDWR, 0)
+}
+
 // restrictToOwner makes path readable by its owner and nobody else.
 //
 // On POSIX that is exactly the chmod this replaces, and perm is honoured

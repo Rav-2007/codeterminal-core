@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"syscall"
 
 	"codeterminal/editapply"
 )
@@ -69,7 +68,7 @@ func runEditsApplyCommand(args []string, logger *log.Logger) error {
 		if err != nil {
 			return fmt.Errorf("reading model response from stdin: %w", err)
 		}
-		tty, ttyErr := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+		tty, ttyErr := openControllingTerminal()
 		if ttyErr != nil {
 			return fmt.Errorf("response was read from stdin, so confirmation prompts need a controlling terminal, but none is available (%v); pass the response as a file argument instead", ttyErr)
 		}
@@ -475,8 +474,22 @@ func removeCreatedSessionDirs(realWorkspaceRoot, sessionDir string, logger *log.
 		if err := os.Remove(dest); err != nil {
 			// Not empty is the common case and not worth a line: something the
 			// undo could not revert is still in there.
-			if !errors.Is(err, syscall.ENOTEMPTY) && !errors.Is(err, syscall.EEXIST) {
-				logger.Printf("edits undo: removing directory %q: %v", rel, err)
+			//
+			// fs.ErrExist, not syscall.ENOTEMPTY/EEXIST. Those two constants are
+			// SYNTHETIC on Windows: zerrors_windows.go defines them as
+			// APPLICATION_ERROR + n, i.e. above 1<<29, precisely so they cannot
+			// collide with a real Win32 code. A non-empty directory there comes
+			// back as ERROR_DIR_NOT_EMPTY (145), and Errno.Is answers only for
+			// the fs sentinels -- so errors.Is(err, syscall.ENOTEMPTY) is
+			// ALWAYS FALSE on Windows and this branch logged a line for the one
+			// case the comment above says is not worth a line.
+			//
+			// fs.ErrExist is the predicate that spans both: EEXIST|ENOTEMPTY on
+			// Unix (syscall_unix.go), and those plus ERROR_DIR_NOT_EMPTY and
+			// ERROR_ALREADY_EXISTS on Windows (syscall_windows.go). Behaviour on
+			// Linux is unchanged.
+			if !errors.Is(err, fs.ErrExist) {
+				logger.Printf("edits undo: removing directory %q: %v", displayRel(rel), err)
 			}
 			continue
 		}
