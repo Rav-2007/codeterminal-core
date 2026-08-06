@@ -74,12 +74,35 @@ func TestRealServerNeverSeesCredentials(t *testing.T) {
 	if !slices.Contains(seen, "A_SERVERS_OWN_TOKEN") {
 		t.Errorf("the allow-listed variable did not reach the child; it saw %v", seen)
 	}
-	// PATH and HOME come free; nothing else should be there.
+	// The baseline comes free; nothing else may be there.
+	//
+	// Against BaselineEnvNames rather than a hardcoded {PATH, HOME}, because the
+	// baseline is platform-shaped and a POSIX literal here was wrong twice over
+	// on Windows: HOME does not exist, and SYSTEMROOT arrives whether or not
+	// ServerEnv passes it -- os/exec's addCriticalEnv appends it to every Cmd
+	// below this scrubber. The first Windows CI run failed on exactly that.
+	//
+	// This still fails loudly on a leak: BaselineEnvNames is a fixed list of
+	// non-secret variables, ForbiddenEnvNames is checked separately above, and
+	// anything outside both is an error. Widening the baseline to hide a leak
+	// would mean editing the named list in mcp.go, which is a visible diff.
+	allowed := append(append([]string{}, BaselineEnvNames...), "A_SERVERS_OWN_TOKEN")
 	for _, name := range seen {
-		switch name {
-		case "PATH", "HOME", "A_SERVERS_OWN_TOKEN":
-		default:
-			t.Errorf("the child saw %q, which was neither allow-listed nor a baseline variable", name)
+		if !slices.ContainsFunc(allowed, func(a string) bool { return strings.EqualFold(a, name) }) {
+			t.Errorf("the child saw %q, which was neither allow-listed nor a baseline variable (baseline: %v)",
+				name, BaselineEnvNames)
+		}
+	}
+}
+
+// The baseline must never be a route to a credential, however the platform
+// spells its variables. Cheap, and it is the one property that a
+// platform-varying list could quietly lose.
+func TestBaselineEnvNamesAreNeverCredentials(t *testing.T) {
+	for _, name := range BaselineEnvNames {
+		if IsForbiddenEnvName(name) {
+			t.Errorf("%q is in the unconditional baseline AND in ForbiddenEnvNames; the baseline "+
+				"would hand every MCP server a credential this daemon refuses to grant on request", name)
 		}
 	}
 }

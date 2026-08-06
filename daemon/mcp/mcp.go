@@ -27,6 +27,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -158,13 +159,45 @@ func IsForbiddenEnvName(name string) bool {
 // never needed them would hold them anyway, and a hostile one would only have
 // to read os.Environ().
 //
-// PATH and HOME pass through unconditionally -- baseline variables a Unix
-// process, the dynamic linker and most language runtimes reasonably expect.
-// Everything else must be named in allow, and nothing in ForbiddenEnvNames is
-// grantable at all.
+// BaselineEnvNames pass through unconditionally: the variables a process needs
+// to run AT ALL on the host platform. Everything else must be named in allow,
+// and nothing in ForbiddenEnvNames is grantable at all.
 //
-// Verified against a real server in the Phase 2 spike: the child saw exactly
-// HOME, PATH and the one allow-listed name.
+// The list was POSIX-only, and on Windows that is not a tight allow-list -- it
+// is a broken one. HOME does not exist there, so an MCP server was handed PATH
+// and nothing else: no home directory, no temp directory, no PATHEXT (so its
+// OWN child-process lookups fail), no APPDATA. Node- and Python-based servers,
+// which is most of them, do not start. Nothing in the Windows additions is a
+// credential; they are the same category as HOME and PATH, spelled the way that
+// platform spells them.
+//
+// SYSTEMROOT IS LISTED BECAUSE IT ARRIVES WHETHER OR NOT WE LIST IT. os/exec's
+// addCriticalEnv appends SYSTEMROOT to every Cmd on Windows if it is absent
+// (exec.go, `// We already have it.`), because too much of Win32 breaks without
+// it. It is therefore below this scrubber and outside its control. Naming it
+// here makes the contract honest rather than leaving a variable in the child
+// that this function claims it did not pass -- the first Windows CI run failed
+// TestRealServerNeverSeesCredentials on exactly that discrepancy.
+//
+// Verified against a real server in the Phase 2 spike: on Linux the child saw
+// exactly HOME, PATH and the one allow-listed name.
+var BaselineEnvNames = baselineEnvNames()
+
+func baselineEnvNames() []string {
+	if runtime.GOOS == "windows" {
+		return []string{
+			"PATH",
+			"SYSTEMROOT",  // injected by os/exec regardless; see above
+			"USERPROFILE", // the HOME analogue
+			"TEMP", "TMP", // no /tmp to fall back on
+			"PATHEXT",                 // without it the child's own exec lookups find nothing
+			"APPDATA", "LOCALAPPDATA", // where a Windows program keeps its state
+			"COMSPEC", // npm and friends shell out through it
+		}
+	}
+	return []string{"PATH", "HOME"}
+}
+
 func ServerEnv(allow []string) []string {
 	var env []string
 	seen := map[string]bool{}
@@ -179,8 +212,9 @@ func ServerEnv(allow []string) []string {
 		}
 	}
 
-	add("PATH")
-	add("HOME")
+	for _, name := range BaselineEnvNames {
+		add(name)
+	}
 	for _, name := range allow {
 		add(name)
 	}
