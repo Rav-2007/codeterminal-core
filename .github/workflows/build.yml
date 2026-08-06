@@ -93,10 +93,27 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq bubblewrap
           bwrap --version
+
+          # GitHub's ubuntu-latest carries the same Ubuntu 24.04+ default a
+          # modern desktop does: kernel.apparmor_restrict_unprivileged_userns=1,
+          # under which bwrap installs fine and then dies with "setting up uid
+          # map: Permission denied". The first run of this step proved it.
+          #
+          # Relax it HERE, on a throwaway VM that is destroyed after the job, so
+          # the confinement tests actually execute. Skipping them instead is the
+          # bad trade: bwrap is unusable on Ubuntu desktops too, so CI would be
+          # the second environment in a row where the sandbox is never
+          # exercised -- and a sandbox nobody executes is how --nosuid survived
+          # two green campaigns.
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          fi
+
+          # Probe AFTER relaxing, because apt succeeding only proves presence.
           if bwrap --ro-bind / / --unshare-user --die-with-parent /bin/true; then
             echo "::notice::bwrap CAN create a user namespace - sandbox tests will execute"
           else
-            echo "::warning::bwrap CANNOT create a user namespace - sandbox tests will skip and coverage will drop"
+            echo "::warning::bwrap CANNOT create a user namespace - sandbox tests will skip and daemon/mcp coverage will fall below its floor"
           fi
 
       - name: Build

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -40,6 +41,36 @@ type SandboxConfig struct {
 	AllowNetwork      bool
 	MemoryLimitMB     int
 	CPULimit          float64
+
+	// Image is the container image the docker backend runs in. There is no
+	// sane default: the image has to carry whatever toolchain the command
+	// needs, which only the caller knows.
+	//
+	// Empty means the docker backend is UNAVAILABLE, and that is why this field
+	// exists. Without it the backend appended the command directly after the
+	// docker flags, so `docker run --rm -i ... make leak` asked Docker for an
+	// image literally named "make":
+	//
+	//	Unable to find image 'make:latest' locally
+	//	docker: pull access denied for make
+	//
+	// The docker backend had therefore never worked. Nothing noticed because
+	// SandboxAuto only reached it when bwrap was absent, and bwrap is installed
+	// nearly everywhere -- so the branch was effectively dead until the bwrap
+	// capability probe started routing real traffic to it.
+	Image string
+}
+
+// DockerUsable reports whether the docker backend can actually run cfg.
+//
+// Presence of the binary is not enough, for the third time in this file: a
+// docker with no image to run is as useless as a bwrap that cannot unshare.
+func DockerUsable(cfg SandboxConfig) bool {
+	if strings.TrimSpace(cfg.Image) == "" {
+		return false
+	}
+	_, err := lookPath("docker")
+	return err == nil
 }
 
 var lookPath = exec.LookPath
@@ -100,7 +131,7 @@ func WrapCommand(command string, args []string, cfg SandboxConfig) (string, []st
 			// creating user namespaces must fall through to Docker, not select
 			// a backend that cannot run.
 			mode = SandboxBubblewrap
-		} else if _, err := lookPath("docker"); err == nil {
+		} else if DockerUsable(cfg) {
 			mode = SandboxDocker
 		} else {
 			mode = SandboxNone
@@ -185,6 +216,10 @@ func WrapCommand(command string, args []string, cfg SandboxConfig) (string, []st
 		if cfg.WorkspaceRoot == "" {
 			return "", nil, fmt.Errorf("docker sandbox requires a non-empty WorkspaceRoot")
 		}
+		if strings.TrimSpace(cfg.Image) == "" {
+			return "", nil, fmt.Errorf("docker sandbox requires an Image: without one the command name is " +
+				"passed where docker expects an image, and `docker run ... make` asks for an image called \"make\"")
+		}
 
 		cleanWs := filepath.Clean(cfg.WorkspaceRoot)
 		uid, gid := getUID(), getGID()
@@ -217,7 +252,9 @@ func WrapCommand(command string, args []string, cfg SandboxConfig) (string, []st
 			dockerArgs = append(dockerArgs, "--network", "none")
 		}
 
-		dockerArgs = append(dockerArgs, command)
+		// The image goes BEFORE the command. This line is the bug fix: without
+		// it docker read the command as the image name.
+		dockerArgs = append(dockerArgs, cfg.Image, command)
 		dockerArgs = append(dockerArgs, args...)
 
 		return "docker", dockerArgs, nil

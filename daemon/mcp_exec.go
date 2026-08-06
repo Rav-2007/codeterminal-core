@@ -51,6 +51,15 @@ const execTimeout = 30 * time.Second
 // mcp.ForbiddenEnvNames exists to keep out of subprocesses. Both are fixed
 // here: the sandbox is the one Lane B already had, and the environment is
 // scrubbed by the same function Lane B already used.
+// sandboxExecImage names the container image the docker backend would use.
+//
+// Empty, and that is the whole point: an empty image means DockerUsable is
+// false, so SandboxAuto skips the docker backend instead of building an
+// invocation that cannot run. Exposed as a function rather than inlined so the
+// tests can ask the same question the tool does, instead of guessing from
+// whether a docker binary happens to be on PATH.
+func sandboxExecImage() string { return "" }
+
 func (s *Server) builtinSandboxExec(ctx context.Context, raw json.RawMessage) (mcp.Result, error) {
 	var args struct {
 		Command string `json:"command"`
@@ -72,9 +81,18 @@ func (s *Server) builtinSandboxExec(ctx context.Context, raw json.RawMessage) (m
 	// Ask for a sandbox; take what the host can give. Mode is left at Auto so
 	// bwrap is preferred, docker is the fallback, and neither being installed
 	// degrades to host execution rather than failing the call.
+	//
+	// NO IMAGE, so the docker backend is deliberately unavailable. Choosing one
+	// is a product decision this code cannot make: the image has to carry the
+	// user's Go, Node, Make or Cargo toolchain at the versions their project
+	// expects, and guessing wrong breaks the build in a way that looks like the
+	// tool is broken. Until that is decided, docker is off rather than
+	// half-configured -- which is what produced `docker run ... make` asking
+	// Docker for an image named "make".
 	cfg := mcp.SandboxConfig{
 		Mode:          mcp.SandboxAuto,
 		WorkspaceRoot: s.workspace,
+		Image:         sandboxExecImage(),
 		// A build writes: compiled artifacts, node_modules, target/. Read-only
 		// would refuse the tool's whole purpose.
 		ReadOnlyWorkspace: false,

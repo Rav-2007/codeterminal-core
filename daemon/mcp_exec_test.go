@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -87,11 +86,18 @@ func requireWorkingSandbox(t *testing.T) {
 	if mcp.BwrapUsable() {
 		return
 	}
-	if _, err := exec.LookPath("docker"); err == nil {
+	// NOT exec.LookPath("docker"), which is what this said first and is the
+	// same presence-is-not-capability mistake a third time. A docker with no
+	// image configured cannot run anything, and sandbox_exec configures none --
+	// so on a host without a usable bwrap there is no working backend, whatever
+	// docker binaries are lying around. GitHub's ubuntu-latest runners are
+	// exactly that host: bubblewrap installs and then fails with "setting up
+	// uid map: Permission denied", and docker is present but imageless.
+	if mcp.DockerUsable(mcp.SandboxConfig{Image: sandboxExecImage()}) {
 		return
 	}
 	t.Skip("NOT RUN: no sandbox backend on this host can execute (bwrap cannot create a user " +
-		"namespace and docker is absent); sandbox_exec confinement is UNVERIFIED here")
+		"namespace and no docker image is configured); sandbox_exec confinement is UNVERIFIED here")
 }
 
 func TestSandboxExec_DoesNotLeakInferenceCredentials(t *testing.T) {

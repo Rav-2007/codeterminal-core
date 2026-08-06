@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -140,10 +141,23 @@ func TestWrapCommandDockerValidation(t *testing.T) {
 		t.Fatal("expected error when docker has empty WorkspaceRoot")
 	}
 
+	// An image is now required, and its absence is its own refusal: without one
+	// the command name landed where docker expects an image, so
+	// `docker run ... make leak` asked Docker for an image called "make". That
+	// is not hypothetical -- it is what CI hit the first time a host without a
+	// usable bwrap routed real traffic to this backend.
+	if _, _, err := WrapCommand("node", nil, SandboxConfig{
+		Mode:          SandboxDocker,
+		WorkspaceRoot: t.TempDir(),
+	}); err == nil {
+		t.Fatal("expected an error when the docker sandbox has no Image")
+	}
+
 	tmpDir := t.TempDir()
 	cmd, args, err := WrapCommand("node", []string{"index.js"}, SandboxConfig{
 		Mode:          SandboxDocker,
 		WorkspaceRoot: tmpDir,
+		Image:         "node:20-alpine",
 		AllowNetwork:  false,
 		MemoryLimitMB: 512,
 		CPULimit:      1.5,
@@ -161,6 +175,12 @@ func TestWrapCommandDockerValidation(t *testing.T) {
 	if !strings.Contains(argsStr, "--network none") || !strings.Contains(argsStr, filepath.Clean(tmpDir)) {
 		t.Errorf("expected --network none and workspace root in docker args, got: %s", argsStr)
 	}
+	// ORDER IS THE BUG. docker run takes [flags] IMAGE COMMAND [args], so the
+	// image must sit immediately before the command; anything else makes docker
+	// read the command as the image name.
+	if !strings.Contains(argsStr, "node:20-alpine node index.js") {
+		t.Errorf("expected the image immediately before the command, got: %s", argsStr)
+	}
 }
 
 func TestConnectWithSandboxError(t *testing.T) {
@@ -175,5 +195,81 @@ func TestConnectWithSandboxError(t *testing.T) {
 	_, err := Connect(ctx, cfg)
 	if err == nil || !strings.Contains(err.Error(), "sandbox preparation error") {
 		t.Fatalf("expected sandbox preparation error, got %v", err)
+	}
+}
+
+// DockerUsable is the gate that decides whether SandboxAuto may route to the
+// docker backend, and it exists because routing there without an image
+// generated `docker run ... make leak` -- which asks Docker for an image
+// literally called "make". CI hit exactly that the first time a host with an
+// unusable bwrap sent real traffic down this path.
+func TestDockerUsable(t *testing.T) {
+	origLookPath := lookPath
+	defer func() { lookPath = origLookPath }()
+
+	present := func(string) (string, error) { return "/usr/bin/docker", nil }
+	absent := func(string) (string, error) { return "", exec.ErrNotFound }
+
+	for _, tc := range []struct {
+		name  string
+		image string
+		look  func(string) (string, error)
+		want  bool
+	}{
+		{"binary and image", "alpine:3", present, true},
+		// The case that matters: a docker binary is not a usable backend. This
+		// is the shape of GitHub's ubuntu-latest runners, where docker is
+		// installed and no image is configured.
+		{"binary but no image", "", present, false},
+		{"image but no binary", "alpine:3", absent, false},
+		{"neither", "", absent, false},
+		{"whitespace image is no image", "   ", present, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lookPath = tc.look
+			if got := DockerUsable(SandboxConfig{Image: tc.image}); got != tc.want {
+				t.Errorf("DockerUsable(image=%q) = %v, want %v", tc.image, got, tc.want)
+			}
+		})
+	}
+}
+
+// SandboxAuto must not select a backend it cannot drive. With bwrap unusable
+// and no image configured, the only honest answer is host mode -- not a docker
+// invocation that fails at run time with a confusing error.
+func TestWrapCommandAuto_SkipsDockerWithoutAnImage(t *testing.T) {
+	origLookPath := lookPath
+	origUsable := BwrapUsable
+	defer func() { lookPath = origLookPath; BwrapUsable = origUsable }()
+
+	// Every binary "exists"; bwrap cannot run. This is the CI host exactly.
+	lookPath = func(file string) (string, error) { return "/usr/bin/" + file, nil }
+	BwrapUsable = func() bool { return false }
+
+	cmd, args, err := WrapCommand("make", []string{"leak"}, SandboxConfig{
+		Mode:          SandboxAuto,
+		WorkspaceRoot: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("auto should degrade to host mode, not error: %v", err)
+	}
+	if cmd != "make" || len(args) != 1 || args[0] != "leak" {
+		t.Errorf("expected the bare command, got cmd=%q args=%v -- a docker wrapper here is the bug that asked Docker for an image named \"make\"", cmd, args)
+	}
+
+	// With an image, the same host DOES get docker.
+	cmd, args, err = WrapCommand("make", []string{"leak"}, SandboxConfig{
+		Mode:          SandboxAuto,
+		WorkspaceRoot: t.TempDir(),
+		Image:         "alpine:3",
+	})
+	if err != nil {
+		t.Fatalf("auto with an image should select docker: %v", err)
+	}
+	if cmd != "docker" {
+		t.Errorf("expected docker, got %q", cmd)
+	}
+	if joined := strings.Join(args, " "); !strings.Contains(joined, "alpine:3 make leak") {
+		t.Errorf("image must sit immediately before the command, got: %s", joined)
 	}
 }
