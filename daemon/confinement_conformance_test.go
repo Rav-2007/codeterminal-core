@@ -155,6 +155,14 @@ func mustRefuseHazardVectors() []confinementVector {
 			rel:  ".../evil.txt",
 		},
 		{
+			name: "rooted POSIX path is not absolute to Win32 and must still be refused",
+			// filepath.IsAbs requires a volume name on Windows, so this passes
+			// the absolute-path gate there and Join makes it <root>\tmp\evil.txt.
+			// Contained, and still refused: a path that reads as the system temp
+			// directory must not silently become one inside the project.
+			rel: "/tmp/evil.txt",
+		},
+		{
 			name: "unicode right-to-left override spoofs the extension",
 			rel:  "src/\u202eevil.txt",
 		},

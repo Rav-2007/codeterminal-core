@@ -132,6 +132,31 @@ func RejectPathHazards(rel string) error {
 		return fmt.Errorf("path %q is a UNC path; edits must target workspace-relative paths", rel)
 	}
 
+	// A ROOTED path -- one starting with a single separator -- after the UNC
+	// check above has taken the double-separator forms.
+	//
+	// filepath.IsAbs does not catch this on Windows, and that is the bug CI's
+	// first Windows test run found:
+	//
+	//	CREATED A PROTECTED PATH: /tmp/evil.txt was allowed
+	//
+	// Windows requires a VOLUME NAME for a path to be absolute, so
+	// IsAbs(`/tmp/evil.txt`) is FALSE there and the absolute-path gate in
+	// resolveSafeTarget never fires. filepath.Join then treats it as relative and
+	// the edit lands at <workspace>\tmp\evil.txt.
+	//
+	// Contained, so not an escape -- and refused anyway, because a path that
+	// READS as "the system temp directory" must never be silently reinterpreted
+	// as a directory inside the user's project. Two separate tests assert the
+	// refusal; on Windows both got a successful write instead.
+	//
+	// Checked on every platform for the usual reason: on POSIX this is dead code
+	// (IsAbs already refused it upstream), and dead code that agrees with the
+	// live check is cheaper than remembering which platform needs which gate.
+	if rel[0] == '/' || rel[0] == '\\' {
+		return fmt.Errorf("path %q is absolute (it starts with a path separator); edits must target workspace-relative paths", rel)
+	}
+
 	// Win32 8.3 short names. An old 8.3 name (like GIT~1) bypasses the
 	// ProtectedDirNames gate (which looks for .git). Rather than guessing
 	// the short name, we refuse any component containing a tilde followed

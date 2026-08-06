@@ -42,6 +42,22 @@ func TestRejectPathHazards_RefusesEveryKnownForm(t *testing.T) {
 		{`//server/share/x`, "UNC with forward slashes"},
 		{`\\?\C:\x`, "extended-length"},
 
+		// ROOTED, which Win32 does not consider absolute because there is no
+		// volume name. CI's first Windows test run found this the hard way:
+		// filepath.IsAbs("/tmp/evil.txt") is FALSE there, resolveSafeTarget's
+		// absolute-path gate never fired, and Join produced
+		// <workspace>\tmp\evil.txt -- a successful write where two tests demanded
+		// a refusal.
+		//
+		// ASSERTED HERE RATHER THAN ONLY THROUGH resolveSafeTarget, on purpose.
+		// On POSIX that entry point refuses these upstream via IsAbs, so a test
+		// driven through it passes on Linux whether this check exists or not and
+		// proves nothing. Calling the gate directly is what makes the refusal
+		// verifiable on the platform the developer is actually sitting at.
+		{`/tmp/evil.txt`, "rooted POSIX path; IsAbs is false for it on Windows"},
+		{`\Windows\System32\drivers\etc\hosts`, "rooted with a backslash, which is what Clean produces on Windows"},
+		{`/`, "the root itself"},
+
 		// Reserved device names, at any depth, with any extension.
 		{`CON`, "console"},
 		{`NUL`, "writes are silently discarded"},
