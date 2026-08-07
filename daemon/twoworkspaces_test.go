@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -322,9 +321,9 @@ func TestTwoWorkspaces_TheReportedWorkspaceIsTheResolvedOne(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds the daemon binary")
 	}
-	if runtime.GOOS == "windows" {
-		t.Skip("symlink creation is privileged on Windows; NOT RUN on this platform")
-	}
+	// No Windows guard: this whole file is //go:build unix, so there is no
+	// platform here on which symlink creation is privileged. staticcheck says so
+	// (SA4032) if you add one anyway.
 	bin := buildDaemonBinary(t)
 
 	runtimeDir := shortRuntimeDir(t)
