@@ -30,6 +30,12 @@ export const DAEMON_LAUNCH_COMMAND = './daemon/codeterminal-daemon';
 // HANDSHAKE_TIMEOUT_MS bounds connectToDaemon's dial + handshake round trip.
 const HANDSHAKE_TIMEOUT_MS = 5000;
 
+// PROBE_TIMEOUT_MS bounds probeDaemon, which runs during activate(). Shorter
+// than HANDSHAKE_TIMEOUT_MS on purpose: a healthy local daemon answers in under
+// a millisecond, and this budget is paid on the startup path where the
+// alternative to waiting is simply starting one.
+const PROBE_TIMEOUT_MS = 2000;
+
 export interface Turn {
   role: string;
   content: string;
@@ -592,6 +598,46 @@ export function connectToDaemon(
       writeLine(socket, req);
     });
   });
+}
+
+// probeDaemon asks whether a daemon is ALREADY serving this workspace, so the
+// extension can adopt it instead of starting a second one that must lose.
+//
+// WHY A FULL HANDSHAKE, AND NOT THE LOCKFILE'S PID. The lockfile carries a pid,
+// and checking it with a zero signal is the obvious cheap probe. It is also
+// wrong twice over. PIDs are RECYCLED: an unrelated process that inherited the
+// dead daemon's number reports a healthy daemon that does not exist, and the
+// extension then adopts nothing and never starts one -- a window with no daemon
+// and no error. And a pid says nothing about whether the process is SERVING;
+// a wedged daemon has a perfectly live pid.
+//
+// Dialling and completing the version handshake answers the only question that
+// matters -- "is there something at this address that speaks our protocol right
+// now" -- and it answers it about the address a client will actually use rather
+// than about a number in a file. It is also what refuses a SQUATTER: something
+// else holding the address fails the handshake, so this returns false and the
+// daemon's own exit is reported rather than silently adopted.
+//
+// THIS NEVER DELETES A STALE LOCKFILE. That logic exists in exactly one correct
+// place -- reclaimStaleSocket in daemon/main.go -- and belongs there. A client
+// cannot distinguish "stale" from "a daemon that is mid-startup and has not
+// bound yet", and deleting another window's lockfile during its startup is
+// precisely the race this whole change exists to remove.
+//
+// False is the safe answer to every failure: it means "start one", and starting
+// one that turns out to be redundant now costs a clean exit 3, not a leak.
+export async function probeDaemon(): Promise<boolean> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
+  try {
+    const { socket } = await connectToDaemon('codeterminal-vscode-probe', controller.signal);
+    socket.destroy();
+    return true;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export interface StreamHandlers {
