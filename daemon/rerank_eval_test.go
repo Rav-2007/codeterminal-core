@@ -28,6 +28,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -58,143 +59,208 @@ import (
 // apart by name. Without this the eval measures how much the repo has been
 // edited since the expectations were written.
 type rerankEvalQuery struct {
-	query         string
+	query string
+	// expectedFiles are the files that legitimately answer this query. DECLARED,
+	// because a file changes name only when something is deliberately moved, and
+	// that is a change a human should have to acknowledge here.
 	expectedFiles []string
-	exactChunks   []string
-	anchor        string
+	// anchors are literal substrings of the code that actually answers the
+	// query -- at least one per expected file that has a chunk-level answer.
+	// DECLARED, because what counts as the answer is a judgement, not a fact the
+	// harness can derive.
+	anchors []string
 }
 
-// assertExpectationsAreCurrent fails if any query's exactChunks no longer
-// contain that query's anchor -- i.e. the ground truth has drifted from the
-// code. It reports the chunk that DOES contain the anchor, so correcting the
-// expectation is mechanical rather than an investigation.
+// resolveExactChunks computes each query's chunk-level ground truth FROM THE
+// INDEX, rather than reading it from a list written by hand.
 //
-// It runs before any query, so a stale harness fails as a stale harness instead
-// of masquerading as a retrieval regression.
-func assertExpectationsAreCurrent(t *testing.T, chunks []Chunk) {
+// WHY THE GROUND TRUTH IS NOW DERIVED. It used to be a literal list of chunk
+// IDs, and a chunk ID is file:startLine-endLine -- so every edit to a named
+// file shifted the ranges and the expectation silently stopped describing the
+// code. The 2026-07-30 launch-gate review found this eval red at 4/9 with
+// retrieval working perfectly; the answer key had rotted. A staleness CHECK was
+// added then, which was the right first move: it made the harness say which of
+// the two it was. But a check only converts a wrong number into a chore, and
+// the chore came due again five queries at a time -- on 2026-08-07 the scheduled
+// job was red with STALE EXPECTATION on 5 of 9, one of them because a startup
+// refactor had moved the code the first query points at.
+//
+// Deriving removes the failure mode instead of reporting it. expectedFiles and
+// anchors are stable facts about the codebase, and the volatile part -- which
+// chunk holds the anchor today -- is computed from the same index the queries
+// are run against, every run.
+//
+// It is NOT a weakening. The check is still chunk-level, which is the whole
+// point of this eval (file-level checking is what hid the original defect): the
+// derived set is the chunks that contain the anchor, not every chunk in the
+// file. The three guards below are what keep it that way.
+func resolveExactChunks(t *testing.T, chunks []Chunk) [][]string {
 	t.Helper()
 
-	byID := make(map[string]Chunk, len(chunks))
-	for _, c := range chunks {
-		byID[chunkID(c)] = c
-	}
+	// PER ANCHOR, not per query, because "is this anchor specific?" is the
+	// property that matters and it does not get weaker just because a query has
+	// three expected files.
+	//
+	// A single line falls inside at most two chunks (40-line windows on a
+	// 30-line stride), so an anchor occurring once yields 1-2. Three allows for
+	// one that legitimately appears twice, and refuses to let the ground truth
+	// quietly become "anywhere in the file" -- which would make every query pass
+	// and mean nothing.
+	const maxChunksPerAnchor = 3
 
+	resolved := make([][]string, len(rerankEvalQueries))
 	for i, q := range rerankEvalQueries {
-		if q.anchor == "" {
-			t.Errorf("query %d (%q) has no anchor -- its exactChunks cannot be checked for "+
-				"staleness, which is how this eval spent an unknown period measuring line "+
-				"drift instead of retrieval", i+1, q.query)
+		if len(q.anchors) == 0 {
+			t.Errorf("query %d (%q) declares no anchors, so it has no checkable "+
+				"chunk-level ground truth at all", i+1, q.query)
 			continue
 		}
 
-		found := false
-		for _, id := range q.exactChunks {
-			c, present := byID[id]
-			if !present {
-				t.Errorf("query %d (%q): expected chunk %s does not exist in the index at all "+
-					"-- the file shrank or was renamed", i+1, q.query, id)
+		seen := make(map[string]bool)
+		var ids []string
+		for _, a := range q.anchors {
+			var here []string
+			elsewhere := make(map[string]bool)
+			for _, c := range chunks {
+				if !strings.Contains(c.Content, a) {
+					continue
+				}
+				if matchesAny(c.FilePath, q.expectedFiles) {
+					here = append(here, chunkID(c))
+				} else {
+					elsewhere[c.FilePath] = true
+				}
+			}
+
+			if len(here) == 0 {
+				t.Errorf("query %d (%q): anchor %q appears in no indexed chunk of %v. This is a "+
+					"DECLARED fact that stopped being true -- the code was moved or renamed -- "+
+					"and it is NOT a retrieval regression. It currently appears in: %v",
+					i+1, q.query, a, q.expectedFiles, sortedFileNames(elsewhere))
 				continue
 			}
-			if strings.Contains(c.Content, q.anchor) {
-				found = true
+			if len(here) > maxChunksPerAnchor {
+				t.Errorf("query %d (%q): anchor %q resolves to %d chunks (%v), past the %d "+
+					"ceiling. An anchor that broad makes the ground truth 'somewhere in the "+
+					"file', which is the file-level check this eval exists to be stricter than.",
+					i+1, q.query, a, len(here), here, maxChunksPerAnchor)
 			}
-		}
-		if found {
-			continue
-		}
+			// Reported, never failed. A shared helper name legitimately appears
+			// in several callers; it matters only if one of them should have been
+			// declared in expectedFiles.
+			if len(elsewhere) > 0 {
+				t.Logf("query %d (%q): anchor %q also appears outside expectedFiles, in %v -- "+
+					"harmless unless one of those is a better answer than what is declared",
+					i+1, q.query, a, sortedFileNames(elsewhere))
+			}
 
-		var actual []string
-		for _, c := range chunks {
-			if strings.Contains(c.Content, q.anchor) {
-				actual = append(actual, chunkID(c))
+			for _, id := range here {
+				if !seen[id] {
+					seen[id] = true
+					ids = append(ids, id)
+				}
 			}
 		}
-		t.Errorf("STALE EXPECTATION, query %d (%q): none of exactChunks=%v contains the "+
-			"anchor %q. The code moved and the expectation did not follow it. This is NOT a "+
-			"retrieval regression -- retrieval is being scored against the wrong answer. "+
-			"The anchor currently lives in: %v",
-			i+1, q.query, q.exactChunks, q.anchor, actual)
+		sort.Strings(ids)
+		resolved[i] = ids
 	}
+	return resolved
+}
+
+func sortedFileNames(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 var rerankEvalQueries = []rerankEvalQuery{
 	// THE ONE REMAINING KNOWN GAP (not gated -- see the note after mustHit).
-	// daemon/main.go's top-ranked chunk (1-40) is its package doc comment
-	// ("...proxies prompts to it over a Unix domain socket"), which reads as an
-	// excellent semantic match for this query AND contains the same words the
-	// real call does, without containing the actual net.Listen("unix", ...) --
-	// that is at line 200, in a different chunk entirely.
-	{"where does the daemon open the unix socket", []string{"daemon/main.go"},
-		[]string{"daemon/main.go:181-220"}, `net.Listen("unix"`},
+	// The top-ranked chunk for this query is a package doc comment that reads as
+	// an excellent semantic match AND contains the same words the real call
+	// does, without containing the call.
+	//
+	// The answer used to be in daemon/main.go and is now in protocol: the
+	// transport seam moved every net.Listen behind protocol.Listen so the
+	// Windows named-pipe implementation could sit beside it. The old
+	// expectation pointed at daemon/main.go:181-220 and had been scoring
+	// correct retrieval as a miss ever since.
+	{"where does the daemon open the unix socket",
+		[]string{"protocol/transport_unix.go"},
+		[]string{`net.Listen("unix"`}},
 
 	// editblock.go moved from daemon/ to editapply/ in an earlier, unrelated
-	// refactor (c516479). ParseEditBlocks is at line 59, which the two chunks
-	// straddling it both cover — either legitimately answers the query.
-	{"how are edit blocks parsed from the model response", []string{"editapply/editblock.go"},
-		[]string{"editapply/editblock.go:31-70", "editapply/editblock.go:61-100"}, "func ParseEditBlocks"},
+	// refactor (c516479).
+	{"how are edit blocks parsed from the model response",
+		[]string{"editapply/editblock.go"},
+		[]string{"func ParseEditBlocks"}},
 
-	// The tier decision is made in Route (daemon/router.go:66), not in the
-	// const/type block at the top of the file. router.go is 81 lines, so its
-	// last chunk is the truncated 61-82 (splitLines yields one element per newline,
-	// so an 81-line file with a trailing newline has 82 entries).
-	{"where is the model tier routing decided", []string{"daemon/router.go"},
-		[]string{"daemon/router.go:31-70", "daemon/router.go:61-82"}, "func Route(cfg *Config"},
+	// The tier decision is made in Route, not in the const/type block at the top
+	// of the file -- which is what the file-level check could not tell apart.
+	{"where is the model tier routing decided",
+		[]string{"daemon/router.go"},
+		[]string{"func Route(cfg *Config"}},
 
 	// The actual secret-skipping decision is editapply.MatchesSecretName, called
-	// from shouldSkipFile at chunker.go:186 — the two chunks straddling it both
-	// cover it. (index_cmd.go only *reports* skip counts, so it is kept as an
-	// acceptable FILE-level match but is not the chunk-level answer.)
-	{"how does secret skipping work during indexing", []string{"daemon/chunker.go", "daemon/index_cmd.go"},
-		[]string{"daemon/chunker.go:151-190", "daemon/chunker.go:181-220"}, "editapply.MatchesSecretName"},
+	// from shouldSkipFile. index_cmd.go only REPORTS skip counts, so it stays an
+	// acceptable file-level match with no chunk-level answer of its own.
+	{"how does secret skipping work during indexing",
+		[]string{"daemon/chunker.go", "daemon/index_cmd.go"},
+		[]string{"editapply.MatchesSecretName"}},
 
-	// Three chunks legitimately answer this: 31-70 holds DefaultSkillsDBPath and
-	// OpenSkillStore (where the DB lives), and the CREATE TABLE schema at
-	// line 114 onward sits in the two chunks straddling it.
-	{"where are skills stored in sqlite", []string{"daemon/skills.go"},
-		[]string{"daemon/skills.go:31-70", "daemon/skills.go:91-130", "daemon/skills.go:121-160"}, "CREATE TABLE IF NOT EXISTS"},
+	// Two things legitimately answer this: where the DB lives, and its schema.
+	{"where are skills stored in sqlite",
+		[]string{"daemon/skills.go"},
+		[]string{"func OpenSkillStore", "CREATE TABLE IF NOT EXISTS"}},
 
-	// Added for the _test.go down-weight fix (FileClassTest, rerank.go):
-	// the measured live-repo failure this fix targets — provider.go never
-	// made the top-5 at all because provider_test.go/config_test.go
-	// out-ranked it despite identical class weight. Implementation-seeking,
-	// so the test down-weight must apply here. This is one of the two
-	// queries that motivated hybrid retrieval in the first place:
-	// zdrRefusalSubstrings + isZDRRoutingRefusal live at lines 103-120,
-	// inside chunk 91-130 — which the file-level check alone couldn't tell
-	// apart from provider.go's OTHER chunks (e.g. the ErrZDRRefused
-	// sentinel/doc comment) that rank better semantically but don't contain
-	// the actual matched substrings.
+	// Added for the _test.go down-weight fix (FileClassTest, rerank.go): the
+	// measured live-repo failure this fix targets -- provider.go never made the
+	// top-5 at all because provider_test.go/config_test.go out-ranked it despite
+	// identical class weight. Implementation-seeking, so the test down-weight
+	// must apply here. One of the two queries that motivated hybrid retrieval:
+	// the answer is the substring TABLE, which the file-level check could not
+	// tell apart from provider.go's other chunks (the ErrZDRRefused sentinel and
+	// its doc comment) that rank better semantically and contain none of it.
 	{"where in the code is the ZDR refusal string matched, and what substring does it match on?",
 		[]string{"daemon/provider.go"},
-		[]string{"daemon/provider.go:211-250", "daemon/provider.go:241-280"}, "zdrRefusalSubstrings"},
+		[]string{"zdrRefusalSubstrings"}},
 
-	// The paired regression guard for the same fix: a genuinely
-	// test-seeking query must still find the test files. looksTestSeeking
-	// must recognize this and skip the down-weight, or this query would
-	// start failing the moment the down-weight above is added. The relevant
-	// isZDRRoutingRefusal test funcs span provider_test.go lines 261-311
-	// (three overlapping chunks); the ZDR config tests span config_test.go
-	// lines 19-31 (two overlapping chunks).
+	// The paired regression guard for the same fix: a genuinely test-seeking
+	// query must still find the test files, or it would start failing the moment
+	// the down-weight above is added. Two anchors, because two files carry a
+	// real chunk-level answer.
 	{"how is the ZDR refusal detection logic tested end to end",
 		[]string{"daemon/provider_test.go", "daemon/config_test.go"},
 		[]string{
-			"daemon/provider_test.go:241-280", "daemon/provider_test.go:271-310", "daemon/provider_test.go:301-340",
-			"daemon/config_test.go:1-40", "daemon/config_test.go:31-70",
-		}, "func TestIsZDRRoutingRefusal_MatchesKnownPhrasings"},
+			"func TestIsZDRRoutingRefusal_MatchesKnownPhrasings",
+			"func TestZDRConfig_ZeroValueResolvesToStrictEnforcement",
+		}},
+
+	{"where is the ZDR refusal string matched",
+		[]string{"daemon/provider.go"},
+		[]string{"zdrRefusalSubstrings"}},
 
 	// The second symbol/string query that motivated hybrid retrieval: a
-	// natural-language question with essentially no shared vocabulary with
-	// any single chunk's dominant semantic content, whose three real answer
-	// chunks (the struct definition, its search implementation, and its
-	// server-side dispatch) were measured at raw semantic ranks #273, #352,
-	// and #164 out of 708 respectively — nowhere near the ~30-candidate
-	// semantic rerank pool for k=5.
-	{"where is the ZDR refusal string matched", []string{"daemon/provider.go"},
-		[]string{"daemon/provider.go:211-250", "daemon/provider.go:241-280"}, "zdrRefusalSubstrings"},
+	// natural-language question with essentially no shared vocabulary with any
+	// single chunk's dominant semantic content, whose three real answer chunks
+	// (the struct, its search implementation, and its server-side dispatch) were
+	// measured at raw semantic ranks #273, #352 and #164 out of 708 -- nowhere
+	// near the ~30-candidate rerank pool for k=5.
 	{"what files does SearchRequest touch",
 		[]string{"protocol/protocol.go", "daemon/search.go", "daemon/server.go"},
-		[]string{"protocol/protocol.go:481-520", "daemon/search.go:91-130", "daemon/search.go:121-154",
-			"daemon/server.go:691-730", "daemon/server.go:721-760"}, "type SearchRequest struct"},
+		[]string{
+			"type SearchRequest struct",
+			"func (s *MemoryStore) SearchTurns",
+			// BOTH halves of the server-side dispatch. isSearchRequest is the
+			// sniffer that routes the message and handleSearch is what runs it;
+			// the expectation this replaces named two adjacent server.go chunks
+			// for exactly that reason, and listing only the handler was a
+			// transcription slip that scored a correct hit as a miss.
+			"func isSearchRequest",
+			"func (s *Server) handleSearch",
+		}},
 }
 
 // evalSelfReferenceFiles are repo-relative paths this eval test itself must
@@ -293,7 +359,7 @@ func hitsExactChunk(hits []Chunk, n int, exactChunks []string) bool {
 // production default — not an arbitrary top-3 subset of a wider fetch,
 // since what matters is whether the chunk actually gets injected into the
 // prompt).
-func runEvalPass(ctx context.Context, t *testing.T, embedder Embedder, store VectorStore, lexicalStore LexicalStore, label string) []bool {
+func runEvalPass(ctx context.Context, t *testing.T, embedder Embedder, store VectorStore, lexicalStore LexicalStore, exact [][]string, label string) []bool {
 	t.Helper()
 	const displayK = 5
 
@@ -306,7 +372,7 @@ func runEvalPass(ctx context.Context, t *testing.T, embedder Embedder, store Vec
 			t.Fatalf("retrieveTopK(%q): %v", q.query, err)
 		}
 
-		exactHit := hitsExactChunk(hits, displayK, q.exactChunks)
+		exactHit := hitsExactChunk(hits, displayK, exact[i])
 		fileHit := false
 		for _, h := range hits[:min(displayK, len(hits))] {
 			if matchesAny(h.FilePath, q.expectedFiles) {
@@ -322,7 +388,7 @@ func runEvalPass(ctx context.Context, t *testing.T, embedder Embedder, store Vec
 		// lines, so a query that hit before must still hit. Graded by
 		// containment (rankOfChunk, edit_eval_test.go), because merging changes
 		// chunk IDs by design.
-		mergedHit := rankOfChunk(mergeAdjacentChunks(hits), q.exactChunks) != 0
+		mergedHit := rankOfChunk(mergeAdjacentChunks(hits), exact[i]) != 0
 		if exactHit && !mergedHit {
 			t.Errorf("query %q: hit before merging and MISSES after -- Fix 11 regressed question-shaped recall", q.query)
 		}
@@ -331,7 +397,7 @@ func runEvalPass(ctx context.Context, t *testing.T, embedder Embedder, store Vec
 		if exactHit {
 			mark = "hit"
 		}
-		fmt.Printf("\n%d. query=%q\n   expected files=%v exact chunks=%v\n   chunk-level=%s file-level=%t merged-path=%t\n", i+1, q.query, q.expectedFiles, q.exactChunks, mark, fileHit, mergedHit)
+		fmt.Printf("\n%d. query=%q\n   expected files=%v exact chunks=%v\n   chunk-level=%s file-level=%t merged-path=%t\n", i+1, q.query, q.expectedFiles, exact[i], mark, fileHit, mergedHit)
 		for j, h := range hits {
 			fmt.Printf("   %d. %-40s class=%-6s raw=%.4f weighted=%.4f\n", j+1, chunkID(h), h.Class, h.RawScore, h.Score)
 		}
@@ -402,13 +468,13 @@ func TestRerankEvalRetrievalRanking(t *testing.T) {
 	}
 	t.Logf("indexed repo root %s: scanned=%d chunks=%d (self-referential chunks excluded)", repoRoot, scan.FilesScanned, len(scan.Chunks))
 
-	// Before measuring anything: is the ground truth still true? A stale
-	// expectation scores correct retrieval as a miss, which is exactly how this
-	// eval came to read 4/9 while the ranker was working.
-	assertExpectationsAreCurrent(t, scan.Chunks)
+	// The chunk-level ground truth, computed from the index that was just built
+	// rather than read from a list of line ranges written weeks ago. See
+	// resolveExactChunks.
+	exact := resolveExactChunks(t, scan.Chunks)
 
-	semanticOnlyHits := runEvalPass(ctx, t, embedder, store, nil, "SEMANTIC-ONLY (lexicalStore=nil, today's behavior)")
-	hybridHits := runEvalPass(ctx, t, embedder, store, lexicalStore, "HYBRID (semantic + lexical, fused via RRF)")
+	semanticOnlyHits := runEvalPass(ctx, t, embedder, store, nil, exact, "SEMANTIC-ONLY (lexicalStore=nil, today's behavior)")
+	hybridHits := runEvalPass(ctx, t, embedder, store, lexicalStore, exact, "HYBRID (semantic + lexical, fused via RRF)")
 
 	fmt.Println()
 	fmt.Println("=== Before/after summary (chunk-level hit = exact symbol-containing chunk reached top-5) ===")
@@ -472,9 +538,11 @@ func TestRerankEvalRetrievalRanking(t *testing.T) {
 	// fail. Raise it when a real improvement makes 8/9 the new normal.
 	if hybridCount < evalChunkRecallFloor {
 		t.Errorf("hybrid chunk-level recall %d/%d is below the floor of %d/%d measured on "+
-			"2026-07-30. Check assertExpectationsAreCurrent's output first: if it reported a "+
-			"STALE EXPECTATION, the harness is wrong and retrieval is fine. If it did not, "+
-			"this is a real retrieval regression",
+			"2026-07-30. Read resolveExactChunks' output first. If it reported an anchor that "+
+			"appears in no chunk of its expectedFiles, the DECLARED half of the ground truth "+
+			"has gone stale (code was moved or renamed) and retrieval is fine. If it reported "+
+			"nothing, this is a real retrieval regression: the derived half cannot go stale, "+
+			"because it is computed from the index this run just built",
 			hybridCount, total, evalChunkRecallFloor, total)
 	}
 	if semanticOnlyCount > hybridCount {
