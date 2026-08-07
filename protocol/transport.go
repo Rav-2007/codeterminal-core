@@ -138,3 +138,31 @@ func NewLockFile(addr Address, pid int) LockFile {
 	}
 	return l
 }
+
+// socketBufferBytes is how much unread data this transport must be able to hold
+// for a peer that has stopped reading, on EVERY platform.
+//
+// THE PROPERTY, and why it is a number rather than a default. A client that
+// stops reading -- crashed, suspended, or merely slow -- leaves the daemon's
+// handler goroutine parked in a write it can never finish. Serve's concurrency
+// semaphore is finite, so enough such clients stop the daemon accepting at all,
+// and WaitForDrain can never complete because inFlight never falls to zero.
+// That is an availability failure, and it is decided entirely by a buffer size.
+//
+// It was declared on exactly one platform. The Windows named pipe sets it
+// explicitly because a pipe created with a zero quota has NO buffer and every
+// write blocks -- that default cost three unrelated-looking symptoms on the
+// first Windows CI run. Unix inherited whatever the kernel happened to pick,
+// and the test pinning this property said "a Unix socket carries ~200 KiB",
+// which is a LINUX figure written down as a Unix one.
+//
+// macOS is not Linux here. Its default for a unix stream socket is
+// net.local.stream.sendspace = 8 KiB, so a 32 KiB response blocked, and the
+// first macOS run this repository has ever had reported exactly that. Same
+// shape as sun_path being 108 bytes on Linux and 104 on macOS: a per-kernel
+// constant treated as portable because only one kernel had ever run it.
+//
+// 64 KiB is the number the Windows backend already had to name, so it is the
+// contract, and both other platforms are now held to it instead of to their
+// defaults.
+const socketBufferBytes = 64 * 1024

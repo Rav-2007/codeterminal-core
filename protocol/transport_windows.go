@@ -151,8 +151,6 @@ func listen(a Address) (net.Listener, error) {
 	// larger than the buffer with no reader still blocks -- exactly as it does
 	// on Unix. The unbounded-wait residual is the same on both platforms and is
 	// a separate concern from this one.
-	const bufferBytes = 64 * 1024
-
 	if a.Transport != "" && a.Transport != TransportNamedPipe && a.Transport != TransportTCP {
 		return nil, fmt.Errorf("transport %q is not supported on this platform", a.Transport)
 	}
@@ -165,8 +163,8 @@ func listen(a Address) (net.Listener, error) {
 	}
 	return winio.ListenPipe(a.Address, &winio.PipeConfig{
 		SecurityDescriptor: sddl,
-		InputBufferSize:    bufferBytes,
-		OutputBufferSize:   bufferBytes,
+		InputBufferSize:    socketBufferBytes,
+		OutputBufferSize:   socketBufferBytes,
 	})
 }
 

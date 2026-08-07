@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"syscall"
 	"time"
 )
 
@@ -51,7 +52,56 @@ func listen(a Address) (net.Listener, error) {
 		_ = ln.Close()
 		return nil, fmt.Errorf("restricting socket permissions: %w", err)
 	}
+	if ul, ok := ln.(*net.UnixListener); ok {
+		return bufferedListener{ul}, nil
+	}
 	return ln, nil
+}
+
+// bufferedListener applies socketBufferBytes to every accepted connection.
+//
+// PER CONNECTION, not once on the listening socket, because whether an accepted
+// socket inherits its listener's buffer sizes is exactly the kind of
+// per-kernel detail this constant exists to stop depending on.
+//
+// Accept still hands back the real *net.UnixConn: daemon/peercred_*.go reaches
+// through it for SO_PEERCRED and LOCAL_PEERCRED, and wrapping the CONNECTION
+// would break peer authentication to fix a buffer size.
+type bufferedListener struct{ *net.UnixListener }
+
+func (l bufferedListener) Accept() (net.Conn, error) {
+	c, err := l.UnixListener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	if uc, ok := c.(*net.UnixConn); ok {
+		setSocketBuffers(uc)
+	}
+	return c, nil
+}
+
+// setSocketBuffers raises a Unix socket's send and receive buffers to
+// socketBufferBytes.
+//
+// BOTH directions, on BOTH ends, because which one governs a blocking write is
+// per-kernel: Linux bounds unix_stream_sendmsg by the SENDER's sk_sndbuf, while
+// the BSDs append to the RECEIVER's socket buffer and bound it by that. Setting
+// one pair would fix one platform and leave the other exactly as it was.
+//
+// BEST EFFORT, and deliberately so: a kernel that refuses the size, or a
+// hardened environment that caps it, must not turn a working connection into a
+// failed dial over a performance property. That leaves no error to report --
+// which is precisely why TestTransport_BuffersAWriteThePeerHasNotRead exists and
+// runs on all three platforms in CI. The test is the tripwire, not a log line.
+func setSocketBuffers(c syscall.Conn) {
+	raw, err := c.SyscallConn()
+	if err != nil {
+		return
+	}
+	_ = raw.Control(func(fd uintptr) {
+		_ = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_SNDBUF, socketBufferBytes)
+		_ = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_RCVBUF, socketBufferBytes)
+	})
 }
 
 func dial(a Address, timeout time.Duration) (net.Conn, error) {
@@ -62,10 +112,22 @@ func dial(a Address, timeout time.Duration) (net.Conn, error) {
 	if a.Transport == TransportTCP {
 		network = "tcp"
 	}
+	var c net.Conn
+	var err error
 	if timeout > 0 {
-		return net.DialTimeout(network, a.Address, timeout)
+		c, err = net.DialTimeout(network, a.Address, timeout)
+	} else {
+		c, err = net.Dial(network, a.Address)
 	}
-	return net.Dial(network, a.Address)
+	if err != nil {
+		return nil, err
+	}
+	// The client end of the same contract. A daemon writing a long answer is
+	// bounded by whichever end's buffer the kernel consults, so both are set.
+	if uc, ok := c.(*net.UnixConn); ok {
+		setSocketBuffers(uc)
+	}
+	return c, nil
 }
 
 // maxUnixSocketPath is the shortest sun_path any supported platform offers.

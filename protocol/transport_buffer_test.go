@@ -30,11 +30,17 @@ func localTestAddress(t *testing.T) Address {
 // THE TRANSPORT MUST BUFFER A WRITE THE PEER HAS NOT READ.
 //
 // This is the property every caller on both sides of this seam was written
-// against, and it is a property of the SOCKET, not of anything protocol/ does.
-// A Unix socket carries ~200 KiB of kernel buffer, so a small write returns
-// immediately whether or not anyone is reading. A Windows named pipe created
-// with a zero quota carries NONE, and every write blocks until the peer drains
-// it.
+// against. It used to be a property of whatever the platform happened to
+// provide; it is now a property this transport DECLARES, as socketBufferBytes,
+// on all three platforms. See that constant for why.
+//
+// This comment used to read "a Unix socket carries ~200 KiB of kernel buffer".
+// That is a LINUX figure written down as a Unix one, and it survived because
+// Linux was the only kernel that had ever run it. macOS defaults a unix stream
+// socket to net.local.stream.sendspace = 8 KiB, so the 32 KiB write below
+// blocked, and the first macOS run this repository has ever had said so. Same
+// shape as sun_path being 108 bytes on Linux and 104 on macOS -- and that one
+// was found the same week, by the same runner.
 //
 // WHAT THAT COSTS, and why this is a transport test rather than a caller's
 // problem. A client that stops reading -- crashed, suspended, or merely slow --
@@ -48,11 +54,13 @@ func localTestAddress(t *testing.T) Address {
 // Windows CI run were all this one default. This test is the direct probe for
 // it, so the next person sees the cause rather than three unrelated symptoms.
 //
-// Neuter check: set InputBufferSize/OutputBufferSize back to 0 in
-// transport_windows.go's PipeConfig and this fails on windows-latest. On Unix it
-// passes either way -- there is nothing to neuter there, which is precisely the
-// point. It is not a vacuous assertion on Linux: it pins the CONTRACT that the
-// Windows backend has to meet, and Linux is where that contract came from.
+// Neuter check, and it is no longer vacuous on Unix. Lowering socketBufferBytes
+// to 2048 makes this FAIL on Linux -- measured, not assumed -- which is the
+// evidence that setSocketBuffers actually takes effect rather than being a
+// setsockopt whose result nobody checks. At Linux's ~200 KiB default it would
+// have passed either way and proved nothing. Setting InputBufferSize/
+// OutputBufferSize back to 0 in transport_windows.go's PipeConfig fails it on
+// windows-latest, as before.
 func TestTransport_BuffersAWriteThePeerHasNotRead(t *testing.T) {
 	addr := localTestAddress(t)
 	ln, err := Listen(addr)
