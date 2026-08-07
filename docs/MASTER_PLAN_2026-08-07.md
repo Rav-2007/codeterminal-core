@@ -32,6 +32,32 @@ It runs `go test ./...` as of the transport-seam batch. Fix the comment.
 **Stage 0 is these seven edits.** They cost under an hour and they are the
 difference between the next session starting from the truth or from 2026-08-01.
 
+### ✅ STAGE 0 DONE 2026-08-07
+
+All seven landed, plus three more that only appeared once each claim was
+re-verified against source rather than trusted:
+
+| Extra | What |
+|---|---|
+| 8 | **`OPEN_ITEMS.md` contradicted itself.** §1–§2 listed twelve items; §6 of the same file recorded nine of them fixed, with SHAs. The register's front tables — the first thing anyone reads — were **75% wrong**, and items 8 and 11 were simultaneously CONFIRMED-open and fixed-with-a-SHA. Resolved with a **Status** column so each row answers on its own. |
+| 9 | **`HANDOFF.md` said "D1–D8 … none taken".** D4 was taken on 2026-07-27. |
+| 10 | **`HANDOFF.md`'s state block was stale** — branch, commit count, and "Windows does not run at all". |
+
+**Two of the seven were themselves already stale**, which is the finding worth
+keeping: `daemon/main.go:300` had become **375** in the same session that wrote
+it down, and `extension.ts:33` had moved *and* changed behaviour. Hence the new
+convention in [`README.md`](README.md): **cite a file and a symbol, never a line
+number.**
+
+**The structural fix, and the reason there were seven of these at all:**
+[`docs/README.md`](README.md) now exists — an index that says, for every one of
+the 34 documents, whether it is current, a dated measurement, or historical.
+There was previously no way to tell a live plan from a superseded one without
+opening it, so sessions opened all of them, and the ones they skipped are the
+ones that went stale. Superseded plans now carry a `⛔ SUPERSEDED` banner naming
+their successor, and are **annotated, never rewritten** — their reasoning is the
+record of why a decision was made.
+
 ---
 
 ## 2. Where the project actually stands
@@ -44,7 +70,7 @@ Measured on this tree, 2026-08-07:
 | Tests | **1,081** (1,055 on 08-06) · VS Code **45/45** |
 | Coverage | daemon 74.0 · mcp 92.1 · editapply 88.5 · proxy 86.1 · protocol **94.0** · tui 77.6 · helper 21.7 |
 | errcheck ceilings | all six at ceiling, none moved |
-| Commits pending | **18** on `ci/cross-go-test` (10 Windows + 6 lifecycle + 2 docs) |
+| Commits pending | **30** on `ci/cross-go-test`, none pushed; `main` is level with `origin/main` |
 | CI | **blocked** — GitHub Actions `major_outage` since 15:22Z; run #41 cancelled |
 
 **Windows went from 58 failures to 13, and all 13 now have fixes that have never
@@ -75,7 +101,7 @@ than leaving a decided question in a queue of undecided ones.
 
 ### Stage 1 — Land Windows (blocked on GitHub, then 1–3 days)
 
-Push the 10 commits when Actions recovers. **Do not push into the outage** — the
+Push all 30 commits when Actions recovers. **Do not push into the outage** — the
 `concurrency: cancel-in-progress` group means a second push cancels the first
 run, and run #41 already sat 14 minutes with zero of 26 jobs allocated.
 

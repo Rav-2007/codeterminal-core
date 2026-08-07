@@ -22,28 +22,42 @@ now owned by exactly one document, and this one points at it.
 |---|---|
 | What is still ahead? | [`../BACKLOG.md`](../BACKLOG.md) — forward-looking work only |
 | What bugs are open? | [`OPEN_ITEMS.md`](OPEN_ITEMS.md) — the register, re-derived against source, every entry with a `file:line` and a CONFIRMED / PLAUSIBLE / NOT RUN label |
-| What needs a founder ruling? | [`DECISION_PACK.md`](DECISION_PACK.md) — D1–D8, one page each, none taken |
+| What needs a founder ruling? | [`DECISION_PACK.md`](DECISION_PACK.md) — D1–D8, one page each; **D4 taken 2026-07-27**, seven still open |
 | What was already done, and why? | [`ARCHIVE/BACKLOG_2026-07.md`](ARCHIVE/BACKLOG_2026-07.md) — 3,839 lines of verbatim record: commit SHAs, verification transcripts, measured numbers |
 
 **Do not add a fifth.** The failure mode this project keeps hitting is a second
 copy of the truth that drifts from the first. When something changes, change it
 in the one document that owns it.
 
+Everything *else* under `docs/` — measurements, QA transcripts, superseded plans
+— is catalogued in [`README.md`](README.md), which says for each one whether it
+is current, a dated measurement, or historical. **A superseded plan carries a
+`⛔ SUPERSEDED` banner at the top naming its successor**; if you are reading a
+plan without one, it is the current plan.
+
 ---
 
 ## Current state
 
-- **Branch `main`, nothing pushed.** ~119 commits ahead of `origin/main`. Every
-  tier has stayed local by choice; publishing is the founder's call.
+- **Branch `ci/cross-go-test`, nothing pushed.** **30 commits ahead of both
+  `main` and `origin/main`**; `main` is level with `origin/main`. Everything has
+  stayed local by choice; publishing is the founder's call.
 - **`make check` green** — gofmt, vet, `-race` on all six modules, lint, the
-  coverage ratchet, the errcheck ceiling.
+  coverage ratchet, the errcheck ceiling. VS Code suite 45/45.
 - **The last pass measured the project at ~77% engineering robustness and ~27%
   product readiness.** That split is the whole story: the code is stronger than
   most shipped commercial software, and nobody outside this machine can install
-  it. Windows does not run at all, macOS has never been executed on hardware,
-  there is no LICENSE, no `.vsix`, and no install path.
-- **Active plan:** the master launch plan — Windows support, a real install path,
-  and index honesty, in that order.
+  it. macOS has never been executed on hardware, there is **no `.vsix` and no
+  install path**, and `package.json` still carries `"private": true`, which
+  `vsce` refuses outright.
+- **Windows compiles and its seams are written**, all of them labelled NOT RUN
+  ON HARDWARE until CI says otherwise. It is no longer true that "Windows does
+  not run at all" — see `MASTER_PLAN_2026-08-07.md` §2.
+- **`LICENSE` exists** — 122 lines, proprietary, "All rights reserved". It is
+  *not* an open-source licence, and that is a constraint on marketplace framing
+  rather than a missing file.
+- **Active plan:** [`MASTER_PLAN_2026-08-07.md`](MASTER_PLAN_2026-08-07.md) —
+  land Windows, then packaging, then index honesty.
 
 ---
 
@@ -116,8 +130,11 @@ held to safety-critical engineering standards.
 - **Retrieval/indexing** — local ONNX embeddings (BGE-small int8) via a
   subprocess helper; hybrid retrieval (vector + FTS5 lexical, RRF-max fusion
   K=60, class-aware rerank). Honours nested `.gitignore` at every directory
-  level. **The index is a one-shot snapshot** — no watcher, no incremental
-  rebuild, and no staleness signal at all. It degrades gracefully when absent.
+  level. **The index rebuilds incrementally** — `daemon/watcher.go` runs a
+  debounced recursive workspace watcher, started by `Server.startWorkspaceWatcher`
+  from `main`, and it calls `reindexFile` per changed path. What is still missing
+  is a **staleness signal**: nothing records when the index was built, so a stale
+  one still reports `grounded ✓`. It degrades gracefully when absent.
 - **Edit engine** (`editapply/`) — five confinement gates, backups, multi-run
   undo. Forward and undo writes are both atomic (temp+rename) and
   symlink-refusing. **Audited against POSIX semantics only** — the conformance
@@ -179,8 +196,12 @@ honour that.
 **Clients** — `clients/tui/` (bubbletea; `/reason` and `/refactor` prefixes,
 `ctrl+n` reset, no search box), `clients/vscode/src/` +
 `media/main.js` (search, native undo, auto-apply toggle, full ARIA pass; renders
-via `textContent`, never `innerHTML`). **The extension does not start the
-daemon** — it reads the lockfile and connects.
+via `textContent`, never `innerHTML`). **The extension manages the daemon**:
+`daemonSupervisor.ts` probes the per-workspace lockfile, adopts a daemon that
+answers a full handshake, and spawns one only when nothing does. It never
+deletes a stale lockfile — that belongs to `reclaimStaleSocket` alone. Restarts
+are bounded and back off; exit code 3 means "another window already serves this
+repo" and is adopted silently rather than charged to the budget.
 
 **Proxy** — `proxy/main.go` (auth → ZDR gate → model allow-list → quota
 reservation → stream), `proxy/ratelimit.go` (token buckets + in-flight

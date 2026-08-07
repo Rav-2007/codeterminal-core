@@ -1,5 +1,22 @@
 # Master Plan — debug the project, then outperform
 
+> # ⛔ SUPERSEDED — HISTORICAL RECORD, DO NOT ACT ON
+>
+> Superseded by [`ULTRA_MASTER_PLAN_2026-08-06.md`](ULTRA_MASTER_PLAN_2026-08-06.md),
+> itself superseded by **[`MASTER_PLAN_2026-08-07.md`](MASTER_PLAN_2026-08-07.md)
+> — the current plan. Start there.**
+>
+> Kept unedited because its Track A finding (a QA campaign that recorded PASS on
+> a sandbox that did not exist) is the reason this project audits by execution
+> rather than by reading, and that reasoning should survive.
+>
+> **Known-false claim inside, corrected 2026-08-07:** **B4** says "`watcher.go`
+> exists but is unwired". It was true when written and is not now —
+> `Server.startWorkspaceWatcher` is called from `main`, debounces, and calls
+> `reindexFile`. What B4 was *really* pointing at is still open: the index has no
+> **freshness signal**, so a stale one reports `grounded ✓`. That survives as
+> Stage 4 of the current plan. The body below is left as written.
+
 **2026-08-05.** Roles: CEO · CTO · Security Patcher · Security Improver · Tester.
 Supersedes the launch plan's sequencing where they disagree; that plan's Windows
 work is folded in as Track C.

@@ -250,13 +250,25 @@ jobs:
     # facts are labelled NOT RUN throughout the source; this job is what turns
     # the label into evidence.
     #
-    # BUILD AND VET ONLY, on purpose, and that ordering is from the launch plan:
-    # "Windows and macOS join CI as build-only first, then full test." A first
-    # contact that runs the whole suite on two unproven platforms produces a wall
-    # of red in which the real porting defects are indistinguishable from
-    # environment noise. Compile + vet answers one question cleanly -- does the
-    # code the seams produce actually typecheck on the platform it claims? --
-    # and the answer is worth having before the harder one is asked.
+    # BUILD, VET AND TEST. This said "BUILD AND VET ONLY, on purpose" until
+    # 2026-08-07, by which point the job had been running `go test ./...` for
+    # several commits -- a comment describing an earlier intent as though it were
+    # the current behaviour, which is worse than no comment because it is
+    # believed.
+    #
+    # The staged plan it described was real and it worked, so the reasoning is
+    # kept rather than deleted: "Windows and macOS join CI as build-only first,
+    # then full test." A first contact that runs the whole suite on two unproven
+    # platforms produces a wall of red in which the real porting defects are
+    # indistinguishable from environment noise. Compile + vet answered one
+    # question cleanly -- does the code the seams produce actually typecheck on
+    # the platform it claims? -- and that answer was worth having first.
+    #
+    # STAGE 1 IS DONE. Run #40 was the first honest Windows test run: 58 failures
+    # became 13, and those 13 resolved to 6 root causes, 5 of which were real
+    # product defects rather than test artefacts. Testing is now the point of
+    # this job, and turning it back off would give up the only signal that has
+    # ever found a Windows bug here.
     #
     # Modules chosen for what they mean, not for coverage: daemon and protocol
     # hold every platform seam, editapply holds the confinement gates whose

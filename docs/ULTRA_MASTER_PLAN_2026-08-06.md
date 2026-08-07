@@ -1,5 +1,20 @@
 # Ultra Master Plan — robust first, then outperforming
 
+> # ⛔ SUPERSEDED — HISTORICAL RECORD, DO NOT ACT ON
+>
+> Superseded by **[`MASTER_PLAN_2026-08-07.md`](MASTER_PLAN_2026-08-07.md) — the
+> current plan. Start there.**
+>
+> Track A is closed. Track C was half-executed and is now carried by the current
+> plan's Stages 1–4.
+>
+> Kept unedited for one reason worth preserving: it named **"junctions vs
+> `Lstat`/`EvalSymlinks`" as the top unknown security risk**, and it was right.
+> That call was closed by `c17e14c` — Go 1.23+ reports a junction as
+> `ModeIrregular`, not `ModeSymlink`, and seven confinement checks tested only for
+> the latter, including the indexer walk. A junction needs no privilege; a symlink
+> needs `SeCreateSymbolicLinkPrivilege`. The cheaper vector was the unguarded one.
+
 **2026-08-06.** Roles: CTO · Security Checker · QA Tester.
 Supersedes [`MASTER_PLAN_2026-08-05.md`](MASTER_PLAN_2026-08-05.md), whose Tracks
 A and B are now closed. Its Track C (Windows) and Track D (performance) survive

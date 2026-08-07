@@ -1,8 +1,16 @@
 # Decision pack — eight rulings only the founder can make
 
-**2026-08-01.** Engineering has taken none of these. Each brief is one page: what
-is actually at stake, what the measured evidence says, a recommendation, and what
-it costs to be wrong.
+**2026-08-01. Status refreshed 2026-08-07.** **Seven are open; D4 was taken on
+2026-07-27 and is kept below as a closed record, not a question.** Each brief is
+one page: what is actually at stake, what the measured evidence says, a
+recommendation, and what it costs to be wrong.
+
+> **Why a taken decision stays in this file.** Deleting it would lose the
+> evidence and the reasoning, and this pack is the only place either is written
+> down. Leaving it *unmarked* was worse: it sat in a queue of open questions for
+> ten days after it had been implemented and shipped to the wire, so every reader
+> of this list counted the queue one item too long. Taken decisions are marked
+> **TAKEN** in the table and banner-stamped in their own section.
 
 They are gathered here because eight open questions scattered across a 4,300-line
 backlog is eight separate sittings, and a decision queue nobody can enumerate is a
@@ -13,16 +21,21 @@ everything engineering can clear on its own; this holds everything it cannot.
 security gate, and the P3 gate blocks all new capability work. Nothing else on this
 list blocks anything.
 
-| # | Decision | Recommendation | Blocks |
-|---|---|---|---|
-| D1 | Socket auth model | **Accept same-uid** | the P3 gate |
-| D2 | Gate 6 formal closure | **Rule it closed** | the P3 gate |
-| D3 | Gate 7 error unification | **Reject the unification** | the P3 gate |
-| D4 | `allow_fallbacks` / F1 posture | **Option 3 — surface the provider** | nothing |
-| D5 | Warn-mode Design B vs C | **Reject B; defer C** | nothing |
-| D6 | Default model | **Decide after the §4 measurement** | reply quality |
-| D7 | Shared confinement package | **Do not build it yet** | nothing |
-| D8 | Skills subsystem | **Delete it** | nothing |
+| # | Decision | Status | Recommendation | Blocks |
+|---|---|---|---|---|
+| D1 | Socket auth model | open | **Accept same-uid** | the P3 gate |
+| D2 | Gate 6 formal closure | open | **Rule it closed** | the P3 gate |
+| D3 | Gate 7 error unification | open | **Reject the unification** | the P3 gate |
+| D4 | `allow_fallbacks` / F1 posture | **TAKEN 2026-07-27** | option 3, and it shipped | nothing |
+| D5 | Warn-mode Design B vs C | open | **Reject B; defer C** | nothing |
+| D6 | Default model | open | **Decide after the §4 measurement** | reply quality |
+| D7 | Shared confinement package | open | **Do not build it yet** | nothing |
+| D8 | Skills subsystem | open | **Delete it** | nothing |
+
+**The three cheapest sittings, in order.** D1+D2+D3 are one sitting and unblock
+the P3 gate, which blocks every new capability. D8 is a deletion of a subsystem
+confirmed to have no callers. D5 and D7 are both "do nothing yet" and cost only
+the act of saying so.
 
 Phase 4 packaging is deliberately not on this list: its direction is already
 decided and what remains is execution, not a ruling.
@@ -124,7 +137,24 @@ that would have to collapse.
 
 ---
 
-## D4 — `allow_fallbacks` and the proxy's ZDR posture (F1)
+## D4 — `allow_fallbacks` and the proxy's ZDR posture (F1) — **TAKEN**
+
+> ### ✅ DECIDED 2026-07-27 · option 3 · IMPLEMENTED AND ON THE WIRE
+>
+> `models.json` ships `provider_ignore_list: ["DeepInfra"]` and
+> `provider_sort: "price"`; the per-turn served-provider surface shipped on both
+> clients. F1 is **verified live by wire probe** (403 `zdr_required`).
+>
+> **Nothing is asked of the founder here.** The brief below is the reasoning as
+> it stood before the ruling, kept because it is the only written record of the
+> evidence — not because the question is still open. It went unmarked for ten
+> days and was counted as open work in three separate documents; that is the
+> cost this banner exists to prevent.
+>
+> **Residual, unchanged by the ruling:** option 3 *reveals* a non-ZDR fallback,
+> it does not *prevent* one. Only `allow_fallbacks: false` prevents it, and that
+> re-breaks the congestion fix. If the requirement ever becomes prevention, this
+> is reopened.
 
 **At stake.** Availability against the strongest *provable* ZDR guarantee.
 
