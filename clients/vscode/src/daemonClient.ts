@@ -392,12 +392,30 @@ let workspaceRoot = '';
 // A failure here is not fatal: falling back to '' yields the old per-user
 // lockfile, which is worse but still works for a single workspace.
 export function setWorkspaceRoot(root: string): void {
-  if (!root) {
+  // A RELATIVE PATH IS NOT A WORKSPACE, and '' is the honest answer for one.
+  //
+  // path.resolve('.') is not a no-op: it returns the EXTENSION HOST's current
+  // directory, which is whatever directory VS Code happened to be launched from
+  // -- a terminal's cwd, the user's home, or /. activate() passed exactly that
+  // '.' when no folder was open, so this function answered with a real,
+  // absolute, wrong directory instead of nothing.
+  //
+  // What followed from that one character: the daemon was started with that
+  // directory as its workspace and INDEXED it, so a VS Code launched from $HOME
+  // read the home directory into the retrieval index -- and index content
+  // becomes prompt context, which leaves the machine. It also created
+  // .codeterminal/logs/ there, outside any project.
+  //
+  // The guard is here rather than only in activate() because every caller wants
+  // the same thing: a root the daemon and this client can BOTH derive, and a
+  // relative path means two processes with different working directories
+  // disagree about which workspace they are talking about.
+  if (!root || !path.isAbsolute(root)) {
     workspaceRoot = '';
     return;
   }
   try {
-    workspaceRoot = fs.realpathSync(path.resolve(root));
+    workspaceRoot = fs.realpathSync(root);
   } catch {
     workspaceRoot = '';
   }

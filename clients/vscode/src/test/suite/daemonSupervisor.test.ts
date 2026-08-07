@@ -670,13 +670,60 @@ suite('daemon supervisor', () => {
     );
   });
 
-  test('no workspace means no log path, rather than one written somewhere unpredictable', () => {
-    setWorkspaceRoot('');
-    assert.strictEqual(
-      resolvedWorkspaceRoot(),
-      '',
-      'with no folder open there is no per-workspace daemon and nowhere predictable for its ' +
-        'log; a relative path would land wherever the extension host was started'
+  // THE TEST THAT ASSERTED THE OPPOSITE OF WHAT THE PRODUCT DID.
+  //
+  // This used to call setWorkspaceRoot('') and check the result was '' -- and it
+  // passed, and meant nothing, because activate() never passed ''. It passed
+  // '.', and path.resolve('.') is not a no-op: it returns the EXTENSION HOST's
+  // current directory, i.e. whatever directory VS Code was launched from.
+  //
+  // So with no folder open the daemon was started with the user's home
+  // directory (or /) as its workspace and INDEXED it -- and index content
+  // becomes prompt context, which leaves the machine. It also created
+  // .codeterminal/logs/ there, outside any project. The test one layer below
+  // the product reported that none of this was happening.
+  //
+  // Every input activate() can actually produce is checked here now.
+  test('no workspace means no root, for every value activate() can pass', () => {
+    for (const input of ['', '.', './', '..', 'relative/path']) {
+      setWorkspaceRoot(input);
+      assert.strictEqual(
+        resolvedWorkspaceRoot(),
+        '',
+        `setWorkspaceRoot(${JSON.stringify(input)}) resolved to ` +
+          `${JSON.stringify(resolvedWorkspaceRoot())}. A relative path resolves against the ` +
+          `extension host's cwd -- a directory the user never chose -- and the daemon then ` +
+          `indexes it and writes .codeterminal/ into it`
+      );
+    }
+  });
+
+  // ...and the guard must not be so broad that it refuses a real folder.
+  test('an absolute folder is still a workspace', () => {
+    const real = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'wsroot')));
+    setWorkspaceRoot(real);
+    assert.strictEqual(resolvedWorkspaceRoot(), real);
+  });
+
+  // The half that lives in activate(): having established there is no root, it
+  // must not start a daemon anyway. A daemon started here has no workspace to
+  // be bound to, and the binding is immutable for its lifetime.
+  test('activate() starts no daemon when there is no folder', () => {
+    const src = fs.readFileSync(
+      path.join(__dirname, '..', '..', '..', 'src', 'extension.ts'),
+      'utf8'
+    );
+    assert.match(
+      src,
+      /if \(root\) \{[\s\S]*?supervisor\.ensure\(\)/,
+      'the supervisor must be built and ensured only inside a check that there IS a resolved ' +
+        'root; without it, a window with no folder starts a daemon rooted at the extension ' +
+        "host's cwd and indexes whatever is there"
+    );
+    assert.doesNotMatch(
+      src,
+      /workspaceFolders\[0\]\.uri\.fsPath : '\.'/,
+      "no folder must resolve to '', not '.'"
     );
   });
 

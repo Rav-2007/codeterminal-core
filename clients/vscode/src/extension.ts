@@ -16,7 +16,15 @@ export function activate(context: vscode.ExtensionContext): void {
   const binaryPath = path.join(context.extensionPath, 'daemon', binaryName);
 
   const workspaceFolders = vscode.workspace.workspaceFolders;
-  const workspacePath = workspaceFolders && workspaceFolders.length > 0 ? workspaceFolders[0].uri.fsPath : '.';
+  // '' when no folder is open, NOT '.'.
+  //
+  // '.' resolved to the extension host's current directory -- whatever
+  // directory VS Code was launched from. The daemon was then started with that
+  // as its workspace and indexed it, so a VS Code launched from $HOME read the
+  // home directory into the retrieval index, and index content becomes prompt
+  // context. It also wrote .codeterminal/logs/ there, outside any project.
+  // setWorkspaceRoot refuses a relative path for the same reason.
+  const workspacePath = workspaceFolders && workspaceFolders.length > 0 ? workspaceFolders[0].uri.fsPath : '';
 
   // BEFORE anything connects, including the supervisor's first probe. The
   // daemon publishes its lockfile under a name derived from this workspace, so
@@ -54,33 +62,65 @@ export function activate(context: vscode.ExtensionContext): void {
   const root = resolvedWorkspaceRoot();
   const daemonLogPath = root ? path.join(root, '.codeterminal', 'logs', 'daemon.log') : '';
 
-  supervisor = new DaemonSupervisor({
-    probe: probeDaemon,
-    spawn: () => spawnDaemon(binaryPath, workspacePath, daemonLogPath),
-    warn: (m) => vscode.window.showWarningMessage(m),
-    error: (m) => vscode.window.showErrorMessage(m),
-    // Adoption is the ordinary case and must be SILENT. It goes to the output
-    // channel, where someone debugging can find it, and nowhere a user who did
-    // nothing wrong has to dismiss it.
-    log: (m) => output?.appendLine(`[daemon] ${m}`),
-    schedule: (ms, fn) => {
-      const t = setTimeout(fn, ms);
-      return { cancel: () => clearTimeout(t) };
-    },
-  });
+  // NO FOLDER, NO DAEMON.
+  //
+  // This daemon is bound to one workspace at startup, in immutable Server
+  // fields: it indexes that directory, grounds every answer in it, and writes
+  // its state under it. There is no such directory here, and the previous
+  // answer -- start one anyway, rooted at whatever directory VS Code was
+  // launched from -- indexed a directory nobody chose.
+  //
+  // Declining is not a degradation of the product, it is the product's scope.
+  // Every command below says so plainly when it is used, which beats the
+  // "daemon not found (expected a lockfile at ...)" a connection attempt would
+  // otherwise produce.
+  if (root) {
+    supervisor = new DaemonSupervisor({
+      probe: probeDaemon,
+      spawn: () => spawnDaemon(binaryPath, root, daemonLogPath),
+      warn: (m) => vscode.window.showWarningMessage(m),
+      error: (m) => vscode.window.showErrorMessage(m),
+      // Adoption is the ordinary case and must be SILENT. It goes to the output
+      // channel, where someone debugging can find it, and nowhere a user who did
+      // nothing wrong has to dismiss it.
+      log: (m) => output?.appendLine(`[daemon] ${m}`),
+      schedule: (ms, fn) => {
+        const t = setTimeout(fn, ms);
+        return { cancel: () => clearTimeout(t) };
+      },
+    });
+    void supervisor.ensure();
+  } else {
+    output.appendLine(
+      '[daemon] no folder is open, so there is no workspace to ground answers in and no daemon was started'
+    );
+  }
 
-  void supervisor.ensure();
+  // NO_WORKSPACE is what every command says instead of failing obscurely. One
+  // string, because three commands must not drift into three explanations of
+  // the same fact.
+  const NO_WORKSPACE =
+    'Mochiii grounds its answers in an open folder, and this window has none. ' +
+    'Open a folder or workspace, then try again.';
 
   context.subscriptions.push(
     vscode.commands.registerCommand('codeterminal.openChat', () => {
+      if (!root) {
+        vscode.window.showInformationMessage(NO_WORKSPACE);
+        return;
+      }
       ChatPanel.createOrShow(context.extensionUri);
     })
   );
 
   context.subscriptions.push(
     vscode.commands.registerCommand('codeterminal.restartDaemon', async () => {
+      if (!supervisor) {
+        vscode.window.showInformationMessage(NO_WORKSPACE);
+        return;
+      }
       vscode.window.showInformationMessage('Restarting Mochiii daemon...');
-      await supervisor?.restart();
+      await supervisor.restart();
     })
   );
 
@@ -92,9 +132,7 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.commands.registerCommand('codeterminal.showDaemonLog', async () => {
       if (!daemonLogPath) {
-        vscode.window.showInformationMessage(
-          'No folder is open, so Mochiii has no workspace to keep a daemon log for.'
-        );
+        vscode.window.showInformationMessage(NO_WORKSPACE);
         return;
       }
       try {
