@@ -38,12 +38,13 @@ func TestOpenRotatingFile_CreatesItsParentDirectory(t *testing.T) {
 
 	// The directory holds a log carrying workspace paths and prompt sizes, and
 	// the file mode already says 0600; the directory must not be looser.
-	fi, err := os.Stat(filepath.Dir(path))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if perm := fi.Mode().Perm(); perm&0077 != 0 {
-		t.Errorf("log directory is %04o, want owner-only; it sits beside the warn sink "+
-			"and the tool audit log, which are both 0700", perm)
-	}
+	//
+	// Through assertOwnerOnly, the MIRRORED helper, not a raw Mode().Perm()
+	// check. That is not a style preference: os.Stat().Mode().Perm() returns a
+	// flat 0777 for a directory on Windows -- it is synthesised from the
+	// read-only attribute and carries no ACL information -- so `perm&0077 != 0`
+	// is not merely weak there, it FAILS on a correctly locked-down directory.
+	// Writing it that way is how this file would have gone red on the Windows
+	// runner, which is the exact defect class this branch exists to remove.
+	assertOwnerOnly(t, filepath.Dir(path), "it holds a log carrying workspace paths and prompt sizes")
 }

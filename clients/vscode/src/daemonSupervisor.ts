@@ -43,19 +43,33 @@ export const RESTART_BASE_MS = 2000;
 // How long to keep looking for the winner after losing the race.
 //
 // Exit 3 is POSITIVE EVIDENCE that a daemon holds the address -- ours tried to
-// bind and was refused -- but the winner does not publish its lockfile until it
-// has finished starting, and starting includes loading the embedding model.
-// Asking once, immediately, therefore asks at the worst possible moment: the
-// winner exists and is provably unreachable for another several seconds.
+// bind and was refused. But the winner publishes its lockfile only at the END of
+// startup: daemon/main.go binds, then runs setupRetrieval and setupMemoryStore,
+// and only then writes the lockfile. So there is a window in which the winner
+// provably exists and is provably undiscoverable, and asking once lands in it.
 //
-// Left unhandled that turned an ordinary second window into an error. Probe
+// Left unhandled, that turned an ordinary second window into an error: probe
 // misses, budget charged, retry spawns another daemon, that one loses too --
 // repeat until the budget is spent and the user is told the daemon "will not be
-// restarted again", about a daemon that was starting perfectly well the whole
-// time.
+// restarted again", about a daemon that was starting perfectly well.
 //
-// 10 attempts at 1.5 s covers a cold model load with room to spare. Nothing is
-// charged to the restart budget during the wait, because nothing has failed.
+// SIZING, MEASURED RATHER THAN GUESSED. On this machine, warm, with retrieval
+// enabled, spawn-to-lockfile is 0.45-0.49 s over three runs -- NOT the several
+// seconds an earlier version of this comment asserted. The embedding model is
+// loaded inside the helper subprocess and `waitReady` returns well before the
+// window that matters.
+//
+// 15 s is therefore ~30x the measured figure, and the headroom is deliberate
+// rather than padding: setupRetrieval also opens the chromem collection and the
+// FTS index, and both scale with the size of the workspace's index, which this
+// repository's is not a large example of. A cold page cache, a network home
+// directory, or a first-ever start pay more than a warm local one.
+//
+// The cost of the headroom is bounded and falls only on the genuinely-broken
+// case: a winner that really died delays the first retry by 15 s. The cost of
+// being too tight is the bug above, which was silent and reached the user.
+// Nothing is charged to the restart budget during the wait, because nothing has
+// failed.
 export const ADOPT_PROBE_ATTEMPTS = 10;
 export const ADOPT_PROBE_INTERVAL_MS = 1500;
 

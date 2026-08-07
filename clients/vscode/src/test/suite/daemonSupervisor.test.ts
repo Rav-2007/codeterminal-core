@@ -1,6 +1,9 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
+
+import { resolvedWorkspaceRoot, setWorkspaceRoot } from '../../daemonClient';
 
 import {
   ADOPT_PROBE_ATTEMPTS,
@@ -468,6 +471,48 @@ suite('daemon supervisor', () => {
           `(This really happened: titles said "CodeTerminal: ..." while every toast said "Mochiii".)`
       );
     }
+  });
+
+  // THE INVARIANT THAT BROKE. The log path and the socket must be derived from
+  // the SAME string, or a window that adopted a daemon looks for a log its owner
+  // never wrote.
+  //
+  // It was built from the extension host's raw workspace path while the lockfile
+  // was keyed on the realpath'd one. Those agree until a workspace is reached
+  // through a symlink -- /tmp on macOS is /private/tmp, ~/work -> /mnt/data/work
+  // on Linux -- and then one daemon serves two windows that disagree about where
+  // its log is. Silent: the adopting window simply reports "no log yet".
+  test('the daemon log is keyed on the same resolved root as the lockfile', function () {
+    const real = fs.mkdtempSync(path.join(os.tmpdir(), 'logreal'));
+    const link = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'loglink')), 'ws');
+    try {
+      fs.symlinkSync(real, link);
+    } catch {
+      this.skip(); // NOT RUN: this platform will not create a symlink
+      return;
+    }
+
+    const logPathFor = (root: string): string => {
+      setWorkspaceRoot(root);
+      return path.join(resolvedWorkspaceRoot(), '.codeterminal', 'logs', 'daemon.log');
+    };
+
+    assert.strictEqual(
+      logPathFor(link),
+      logPathFor(real),
+      'the same directory reached through a symlink must yield ONE log path, or the window ' +
+        'that adopted the daemon opens a file the owner never writes'
+    );
+  });
+
+  test('no workspace means no log path, rather than one written somewhere unpredictable', () => {
+    setWorkspaceRoot('');
+    assert.strictEqual(
+      resolvedWorkspaceRoot(),
+      '',
+      'with no folder open there is no per-workspace daemon and nowhere predictable for its ' +
+        'log; a relative path would land wherever the extension host was started'
+    );
   });
 
   test('the daemon is always given a log file, because an adopting window has no pipe', () => {

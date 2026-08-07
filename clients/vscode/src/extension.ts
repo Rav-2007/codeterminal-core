@@ -5,7 +5,7 @@ import * as os from 'os';
 import * as fs from 'fs';
 
 import { ChatPanel } from './chatPanel';
-import { probeDaemon, setWorkspaceRoot } from './daemonClient';
+import { probeDaemon, resolvedWorkspaceRoot, setWorkspaceRoot } from './daemonClient';
 import { DaemonHandle, DaemonSupervisor } from './daemonSupervisor';
 
 let supervisor: DaemonSupervisor | undefined;
@@ -42,7 +42,17 @@ export function activate(context: vscode.ExtensionContext): void {
   // window has no pipe to the daemon by construction, so a file is the only
   // channel it can ever read. Same directory as the warn sink and the tool
   // audit log, and already gitignored.
-  const daemonLogPath = path.join(workspacePath, '.codeterminal', 'logs', 'daemon.log');
+  // Derived from the RESOLVED root, exactly as the lockfile name is. Built from
+  // the raw path it disagreed with the socket whenever a workspace was reached
+  // through a symlink, so a window that had ADOPTED a daemon looked for a log
+  // its owner never wrote.
+  //
+  // Empty when no folder is open: there is then no per-workspace daemon and
+  // nowhere predictable to put a log, and a relative path would land wherever
+  // the extension host happened to be started. Better to pass nothing and say so
+  // than to write somewhere nobody will find.
+  const root = resolvedWorkspaceRoot();
+  const daemonLogPath = root ? path.join(root, '.codeterminal', 'logs', 'daemon.log') : '';
 
   supervisor = new DaemonSupervisor({
     probe: probeDaemon,
@@ -81,6 +91,12 @@ export function activate(context: vscode.ExtensionContext): void {
   // only a way to look at it.
   context.subscriptions.push(
     vscode.commands.registerCommand('codeterminal.showDaemonLog', async () => {
+      if (!daemonLogPath) {
+        vscode.window.showInformationMessage(
+          'No folder is open, so Mochiii has no workspace to keep a daemon log for.'
+        );
+        return;
+      }
       try {
         const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(daemonLogPath));
         await vscode.window.showTextDocument(doc, { preview: false });
@@ -108,7 +124,16 @@ function spawnDaemon(binaryPath: string, workspacePath: string, logPath: string)
     vscode.window.showWarningMessage(`Failed to set execution permissions on the Mochiii daemon: ${err}`);
   }
 
-  const child = cp.spawn(binaryPath, ['--workspace', workspacePath, '-log-file', logPath], {
+  // -log-file only when there is a resolved workspace to anchor it to; see
+  // daemonLogPath in activate(). Without it the daemon logs to stderr, which for
+  // a detached child means nowhere -- the honest outcome when there is no
+  // workspace, rather than a file written to an unpredictable cwd.
+  const args = ['--workspace', workspacePath];
+  if (logPath) {
+    args.push('-log-file', logPath);
+  }
+
+  const child = cp.spawn(binaryPath, args, {
     cwd: workspacePath,
     detached: true,
     // NOT a pipe. See daemonLogPath in activate(): a detached child that

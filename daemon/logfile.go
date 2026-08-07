@@ -65,9 +65,19 @@ func openRotatingFile(path string, maxBytes int64) (*rotatingFile, error) {
 	//
 	// 0700, not 0755: the log carries workspace paths and prompt sizes, and the
 	// mode below says so.
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, err
 	}
+	// MkdirAll's mode is a POSIX creation mode and Windows DISCARDS it -- a
+	// directory created there inherits its parent's ACL instead, so the 0700
+	// above is a promise kept on one platform and silently not on the other.
+	// Applied explicitly through the same seam the file below uses.
+	//
+	// Best effort for the same reason as the file: this IS the reporting
+	// channel being opened, so there is nowhere to report its own failure, and a
+	// log that cannot be locked down still beats no log.
+	_ = restrictToOwner(dir, 0700)
 	// O_NOFOLLOW: refuse to append through a symlink planted at the log path,
 	// the same leaf-level protection every other writer in this codebase applies.
 	f, err := openNoFollow(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)

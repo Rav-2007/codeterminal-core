@@ -403,6 +403,20 @@ export function setWorkspaceRoot(root: string): void {
   }
 }
 
+// resolvedWorkspaceRoot is the canonical root recorded above, or '' if there
+// isn't one. Exported so that ANYTHING keyed to "which daemon serves this
+// window" derives from the same string the lockfile name does.
+//
+// That sharing is the point, not a convenience. The daemon log path was built
+// from the extension host's RAW workspace path while the socket was keyed on
+// the RESOLVED one, so two windows reaching one directory by different spellings
+// -- /tmp on macOS is a symlink to /private/tmp, ~/work -> /mnt/data/work on
+// Linux -- shared a daemon but disagreed about where its log was. The adopting
+// window's "Show Daemon Log" then opened a file the owner never wrote.
+export function resolvedWorkspaceRoot(): string {
+  return workspaceRoot;
+}
+
 // workspaceTag MUST stay byte-identical to protocol.WorkspaceTag in Go.
 //
 // sha256 over the canonical root, hex, first 16 characters. Go hashes
