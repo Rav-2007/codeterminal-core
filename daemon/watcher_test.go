@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -352,6 +353,234 @@ func TestWorkspaceWatcher_AppliesTheWalksSkipRulesToDirectoriesCreatedLater(t *t
 		if strings.Contains(line, "reindexing") {
 			t.Errorf("a directory created after startup was watched despite the walk skipping "+
 				"its name, and a write inside it triggered a reindex: %q", line)
+		}
+	}
+}
+
+// lockedStore is recordingStore made safe to read from the test goroutine while
+// the watcher's worker writes it. recordingStore itself is used only by
+// single-goroutine tests and deliberately stays that way.
+type lockedStore struct {
+	mu    sync.Mutex
+	inner recordingStore
+}
+
+func (l *lockedStore) Upsert(ctx context.Context, chunks []Chunk) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.inner.Upsert(ctx, chunks)
+}
+
+func (l *lockedStore) Query(ctx context.Context, v []float32, k int) ([]Chunk, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.inner.Query(ctx, v, k)
+}
+
+func (l *lockedStore) DeleteByFilePath(ctx context.Context, relPath string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.inner.DeleteByFilePath(ctx, relPath)
+}
+
+func (l *lockedStore) Count() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.inner.Count()
+}
+
+func (l *lockedStore) indexedContent(relPath string) string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.inner.indexedContent(relPath)
+}
+
+// chunksFor counts what the index currently holds for one file. Two reindexes
+// of one path that overlap leave this at twice what it should be.
+func (l *lockedStore) chunksFor(relPath string) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	n := 0
+	for _, c := range l.inner.chunks {
+		if c.FilePath == relPath {
+			n++
+		}
+	}
+	return n
+}
+
+// watcherServerWithIndex is newWatcherServer plus a real in-memory index, so a
+// test can ask what the daemon would actually be able to retrieve rather than
+// inferring it from a log line.
+func watcherServerWithIndex(t *testing.T) (*Server, string, *lockedStore) {
+	t.Helper()
+	s, ws, _ := newWatcherServer(t)
+	store := &lockedStore{}
+	s.store = store
+	s.embedder = NewPlaceholderEmbedder(embedDim)
+	return s, ws, store
+}
+
+// seedIndex puts a file on disk and its chunks in the index, exactly as a full
+// `index` run would leave them.
+func seedIndex(t *testing.T, s *Server, ws, relPath, content string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(ws, relPath), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	chunks := chunkContent([]byte(content), relPath)
+	for i := range chunks {
+		chunks[i].Vector = make([]float32, embedDim)
+	}
+	if err := s.store.Upsert(context.Background(), chunks); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A DELETED FILE STAYED IN THE INDEX FOR THE LIFE OF THE DAEMON.
+//
+// The event loop only ever examined Write and Create, so Remove and Rename fell
+// through to nothing. The chunks of a deleted file kept matching queries and
+// kept being handed to the model as grounded context -- describing code that no
+// longer exists, with the same `grounded ✓` a correct answer gets.
+//
+// Neuter check: drop the Remove|Rename branch and this test fails with the
+// deleted file's contents still retrievable.
+func TestWorkspaceWatcher_DropsADeletedFileFromTheIndex(t *testing.T) {
+	s, ws, store := watcherServerWithIndex(t)
+
+	seedIndex(t, s, ws, "doomed.go", "package main\n\nconst Canary = \"STILL-INDEXED\"\n")
+	if !strings.Contains(store.indexedContent("doomed.go"), "STILL-INDEXED") {
+		t.Fatal("test bug: the index should start holding the file")
+	}
+
+	s.startWorkspaceWatcher()
+	time.Sleep(200 * time.Millisecond)
+
+	if err := os.Remove(filepath.Join(ws, "doomed.go")); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(1500 * time.Millisecond)
+
+	if got := store.indexedContent("doomed.go"); got != "" {
+		t.Errorf("a deleted file is still in the index and still retrievable: %q -- retrieval "+
+			"will keep serving it as grounded context for code that no longer exists", got)
+	}
+}
+
+// A rename is the same problem wearing a different event: fsnotify reports the
+// OLD path as Rename and the new one as Create, so the old key must be dropped
+// or the file is indexed under both names, one of which is a lie.
+func TestWorkspaceWatcher_DropsTheOldKeyWhenAFileIsRenamed(t *testing.T) {
+	s, ws, store := watcherServerWithIndex(t)
+
+	seedIndex(t, s, ws, "old.go", "package main\n\nconst Canary = \"UNDER-THE-OLD-NAME\"\n")
+
+	s.startWorkspaceWatcher()
+	time.Sleep(200 * time.Millisecond)
+
+	if err := os.Rename(filepath.Join(ws, "old.go"), filepath.Join(ws, "new.go")); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(1500 * time.Millisecond)
+
+	if got := store.indexedContent("old.go"); got != "" {
+		t.Errorf("the index still holds %q under the pre-rename path: %q", "old.go", got)
+	}
+}
+
+// concurrencyProbeEmbedder records the greatest number of Embed calls that were
+// ever in flight at the same time. Sleeping inside Embed is what makes overlap
+// observable at all: without it every call finishes before the next begins and
+// a maximum of 1 proves nothing.
+type concurrencyProbeEmbedder struct {
+	mu       sync.Mutex
+	inFlight int
+	max      int
+}
+
+func (e *concurrencyProbeEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
+	e.mu.Lock()
+	e.inFlight++
+	if e.inFlight > e.max {
+		e.max = e.inFlight
+	}
+	e.mu.Unlock()
+
+	time.Sleep(150 * time.Millisecond)
+
+	e.mu.Lock()
+	e.inFlight--
+	e.mu.Unlock()
+
+	out := make([][]float32, len(texts))
+	for i := range out {
+		out[i] = make([]float32, embedDim)
+	}
+	return out, nil
+}
+
+func (e *concurrencyProbeEmbedder) EmbedQuery(ctx context.Context, texts []string) ([][]float32, error) {
+	return e.Embed(ctx, texts)
+}
+func (e *concurrencyProbeEmbedder) Dim() int   { return embedDim }
+func (e *concurrencyProbeEmbedder) ID() string { return "concurrency-probe" }
+
+func (e *concurrencyProbeEmbedder) peak() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.max
+}
+
+// EMBEDDING WAS FANNED OUT WITHOUT A BOUND.
+//
+// time.AfterFunc runs its function in a NEW GOROUTINE, and the function
+// embedded the file inline. One goroutine per changed path meant a burst --
+// `git checkout`, a branch switch, a formatter over the tree -- fired one
+// concurrent embed per file at a single helper subprocess holding a single
+// model. Embedding is the most expensive thing this daemon does and nothing
+// upstream of it was bounded.
+//
+// The same fan-out is a CORRECTNESS bug on one path: reindexFile is
+// delete-then-insert, so two overlapping runs interleave as delete-A, delete-B,
+// insert-A, insert-B and leave that file's chunks in the index twice -- the
+// exact duplication DeleteByFilePath exists to prevent.
+//
+// Neuter check: restore the inline time.AfterFunc body in place of the single
+// worker and this reports a peak in the high single digits.
+func TestWorkspaceWatcher_ReindexesOneFileAtATime(t *testing.T) {
+	s, ws, _ := newWatcherServer(t)
+	store := &lockedStore{}
+	probe := &concurrencyProbeEmbedder{}
+	s.store = store
+	s.embedder = probe
+
+	s.startWorkspaceWatcher()
+	time.Sleep(200 * time.Millisecond)
+
+	// Written together so their debounce timers expire together, which is what a
+	// checkout looks like from in here.
+	const files = 8
+	for i := 0; i < files; i++ {
+		name := filepath.Join(ws, "f"+strconv.Itoa(i)+".go")
+		if err := os.WriteFile(name, []byte("package main\n\nfunc F"+strconv.Itoa(i)+"() {}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// 1s debounce, then 8 serialized embeds at 150ms each, plus slack.
+	time.Sleep(1*time.Second + files*150*time.Millisecond + 1500*time.Millisecond)
+
+	if peak := probe.peak(); peak > 1 {
+		t.Errorf("%d embeds were in flight at once: a burst of file changes fans out one "+
+			"goroutine per path straight at the single embedder helper, and two runs over ONE "+
+			"path would double that file's chunks", peak)
+	}
+	// A serialized pipeline that never gets round to the work is not a fix.
+	for i := 0; i < files; i++ {
+		rel := "f" + strconv.Itoa(i) + ".go"
+		if store.chunksFor(rel) == 0 {
+			t.Errorf("%s was never indexed; serializing the work must not drop it", rel)
 		}
 	}
 }
