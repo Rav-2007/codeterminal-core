@@ -220,7 +220,7 @@ implemented-and-verified is where engineering stops.
 | 4 | no per-connection output bound (M10) | `632d110` | slow client carried to completion, all 40 chunks |
 | 5 | CREATE's syntax gate (M7) | `aa3787b` | "creating an unparseable .go file was allowed" |
 | 6 | undo leaves the dirs a create made | `31bf19c` | twice: "left pkg/sub/deep/ standing", and with the emptiness heuristic, "deleted mine/, a directory the user made" |
-| 8 | macOS peer credentials | `648d38b` | **NOT RUN on hardware** — compile-verified darwin/amd64+arm64, vet-clean |
+| 8 | macOS peer credentials | `648d38b` | **RUN ON HARDWARE 2026-08-07** — macos-latest, run `31204152210`, `ok codeterminal/daemon 53.019s`. Was *NOT RUN on hardware, compile-verified only* for the entire life of this record. `peercred_darwin_test.go` has no `t.Skip` and no `testing.Short` guard and is `//go:build darwin`, so green admits no third state: `LOCAL_PEERCRED` executed and the uid it returned came from the kernel. |
 | 9 | world-readable lexical index | `e3ad4b0` | directory 0755, all three files 0644 |
 | 11 | unbounded MCP stderr buffer | `ffdd553` | 128 KiB retained whole; 8 MiB would be |
 | 13 | stale price note | `3bee775` | n/a (doc) |
@@ -235,6 +235,26 @@ implemented-and-verified is where engineering stops.
 Two of these were found by this pass and appear on no earlier list: the
 world-readable lexical index (9) and the unbounded MCP stderr buffer (11). Item 11
 is M1a's shape on the one channel the MCP hardening pass did not cover.
+
+### 6a. `LOCAL_PEERCRED` finally ran
+
+The longest-standing NOT RUN in this repository closed on 2026-08-07:
+**macos-latest, run `31204152210`, `ok codeterminal/daemon 53.019s`.**
+
+It took four macOS runs, and **none of the three failures in between was in the
+peer-authentication code** — a socket path over the 103-byte budget (`19eb200`),
+a workspace reported by an unresolved spelling (`85ad77a`), and a bind returning
+`EEXIST` where Linux returns `EADDRINUSE` (`10b0e0a`). Each killed the package
+before the thing under test could execute. That is the ordinary shape of first
+contact with a platform: what you were trying to verify is the last thing you
+get to, and everything you learn on the way there is a real defect you did not
+know you had.
+
+Green admits no third state here — no `t.Skip`, no `testing.Short` guard,
+`//go:build darwin` — which is why this is evidence rather than inference. The
+distinction is not academic: the bubblewrap sandbox tests DO skip themselves, so
+a green run looked identical to one where they never executed, and `--nosuid`
+survived two campaigns marked CONFIRMED.
 
 ### 6b. The 2026-08-07 bug-hunt pass — eleven defects, none of them on any list
 

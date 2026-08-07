@@ -14,10 +14,29 @@ import (
 // things about the same function so "peer authentication works" means one thing
 // on both platforms rather than two.
 //
-// NOT RUN on the machine this was written on — there is no Mac here, and the
-// implementation is compile-verified (darwin/amd64 and darwin/arm64) and vet-
-// clean, nothing more. It is committed so that the first person with a Mac gets
-// a real answer from `go test ./daemon/` rather than having to go looking.
+// RUN ON HARDWARE, at last: macos-latest, GitHub Actions run 31204152210,
+// 2026-08-07, `ok codeterminal/daemon 53.019s`. LOCAL_PEERCRED had never
+// executed on any machine anywhere before that.
+//
+// This comment used to read "NOT RUN on the machine this was written on — there
+// is no Mac here, and the implementation is compile-verified (darwin/amd64 and
+// darwin/arm64) and vet-clean, nothing more." It was committed so the first
+// person with a Mac would get a real answer from `go test ./daemon/` rather than
+// having to go looking. A CI matrix turned out to be that person.
+//
+// It took four macOS runs to get here, and none of the three failures in between
+// was in this file — a socket path over the 103-byte budget, a workspace
+// reported by an unresolved spelling, and a bind returning EEXIST where Linux
+// returns EADDRINUSE. Each one killed the package before these tests could
+// execute, which is the ordinary shape of first contact with a platform: the
+// thing you were trying to verify is the last thing you get to.
+//
+// WHAT GREEN PROVES HERE, precisely. There is no t.Skip and no testing.Short
+// guard below, and the file is //go:build darwin, so on a Mac there is no third
+// state: these tests ran and passed. That is worth stating because this project
+// has been burned by the opposite shape — the bubblewrap sandbox tests DO skip
+// themselves, so a green run looked identical to one where they never executed,
+// and --nosuid survived two campaigns marked CONFIRMED.
 
 // acceptOneUnixDarwin listens on a fresh unix socket, dials it from this same
 // process, and returns both ends of the accepted connection. Both peers are
