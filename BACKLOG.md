@@ -5,10 +5,22 @@ Stage 3 (packaging).** The code board is clear; the product board is not. The
 project sits at roughly **77% engineering robustness / 27% product readiness** —
 strong code that nobody outside this machine can install.
 
-Stages 0 (make the record true) and 2 (the daemon lifecycle) are done. Windows
-compiles with every seam written and is waiting on CI. **Packaging is now the
-binding constraint**: `clients/vscode/package.json` still carries
-`"private": true`, which `vsce` refuses outright, and there is no `.vsix`.
+Stages 0 (make the record true) and 2 (the daemon lifecycle) are done.
+
+**Windows and macOS are no longer "waiting on CI" — they have RUN, and they are
+green.** That sentence stood here while four macOS runs and several Windows runs
+came and went, which is the exact staleness the paragraph below describes this
+file having had before. On `ci/cross-go-test` at `8154e1f`, run `31205934426`
+finished `success` with every Go, lint, govulncheck, cross (Windows ×4, macOS
+×4), fuzz, extension and proxy-image job green; the retrieval eval passed
+separately at 8/9 in dispatch run `31204152210`, which is also where
+`LOCAL_PEERCRED` executed on hardware for the first time. Getting there cost
+**twelve defects** — see [`docs/OPEN_ITEMS.md`](docs/OPEN_ITEMS.md) §6a/§6b —
+three of them product bugs that only a Mac could reach.
+
+**Packaging is now the binding constraint**: `clients/vscode/package.json` still
+carries `"private": true`, which `vsce` refuses outright, and there is no
+`.vsix`.
 
 This file was **split on 2026-08-01**. It had grown to 4,333 lines and was two
 documents wearing one name: a work log and a register. Its own opening paragraph

@@ -407,6 +407,18 @@ something. Do not launch with a red gate and no decision recorded.
 > before any query and distinguishes a stale harness from a retrieval regression
 > BY NAME, printing where the anchor actually lives. It immediately caught two
 > chunk IDs derived wrongly while writing the fix.
+>
+> **⛔ SUPERSEDED 2026-08-07 (`27ff6ba`) — the "durable part" was not durable.**
+> `assertExpectationsAreCurrent` no longer exists. The check was the right first
+> move and it did its job: it named the failure correctly every time. But a check
+> only converts a wrong number into a chore, and the chore came due again five
+> queries at a time — on 2026-08-07 the scheduled job was red with STALE
+> EXPECTATION on 5 of 9, one because a startup refactor had moved the code query 1
+> points at into another module entirely. The ground truth is now DERIVED from the
+> index on every run (`resolveExactChunks`): `expectedFiles` and `anchors` stay
+> declared, the volatile chunk IDs are computed. Measured 4/9 red → 8/9 green with
+> no retrieval code changed. The 8/9 figure and the `evalChunkRecallFloor = 8`
+> gate above both still stand — only the mechanism that keeps them true changed.
 
 ### P1-4 — The core billing schema is not in version control, and migrations have no runner, no versioning, and no rollback
 

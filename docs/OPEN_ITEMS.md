@@ -205,7 +205,7 @@ skills subsystem (wire in or delete) · Phase 4 packaging.
 
 ## 6. What this pass closed — items 1 through 19
 
-> Section 6b below records a **separate, later pass** (2026-08-07) that found eleven
+> Section 6b below records a **separate, later pass** (2026-08-07) that found twelve
 > defects on no list at all. Read both.
 
 Every entry is implemented AND neuter-verified: the fix was removed and the test
@@ -256,13 +256,14 @@ distinction is not academic: the bubblewrap sandbox tests DO skip themselves, so
 a green run looked identical to one where they never executed, and `--nosuid`
 survived two campaigns marked CONFIRMED.
 
-### 6b. The 2026-08-07 bug-hunt pass — eleven defects, none of them on any list
+### 6b. The 2026-08-07 bug-hunt pass — twelve defects, none of them on any list
 
 B1-B7 were found by reading the code that the daemon-lifecycle and macOS work
 had just touched, plus a sweep for the first one's *class*. **B8-B10 were found
 by the first macOS CI runs this repository has ever had**, which is the argument
 for the cross-platform matrix in one line: three of the four are product bugs, not
-fixture noise, and none was reachable from a Linux desk.
+fixture noise, and none was reachable from a Linux desk. **B12 is the gate
+itself** — the fuzz runner was claiming findings it had not found.
 
 **B8, B9 and B11 are one mistake made three times**: a per-kernel constant treated
 as a Unix constant. `sun_path` is 108 bytes on Linux and 104 on macOS; a unix
@@ -284,6 +285,7 @@ a test demonstrated to fail with the fix neutered, never merely asserted to.
 | B9 | **The socket buffer was declared on one platform and inherited on two.** A peer that stops reading parks the daemon's handler goroutine in a write it can never finish; enough of them and `Serve`'s semaphore fills, the daemon stops accepting, and `WaitForDrain` never reaches zero. Windows names 64 KiB because a zero-quota pipe has no buffer at all. Unix took whatever the kernel picked, and the test pinning the property said *"a Unix socket carries ~200 KiB"* — a **Linux** figure written down as a Unix one, which survived because Linux was the only kernel that had ever run it. macOS defaults to 8 KiB and a 32 KiB write blocked. | `f80ab25` | Same shape as `sun_path` being 108 bytes on Linux and 104 on macOS, found the same week by the same runner. Set in **both directions on both ends**, because which buffer bounds a blocking write is per-kernel (Linux: sender's `sk_sndbuf`; BSD: receiver's). **The test was vacuous on Unix and now is not** — lowering the constant to 2048 makes it fail on Linux, measured, which is the evidence the `setsockopt` takes effect. |
 | B10 | The scheduled eval job was failing for **two** reasons and only one was diagnosed: `panic: test timed out after 10m0s` sat underneath the stale ground truth, in that run and the one before it. Nothing was hanging — three full-repo index passes exceed `go test`'s default budget. | `27a73ce` | The `~148s` in the job's comment was one test's LOCAL time quoted as the suite's, which is how the default never looked like a risk. A job red for two reasons teaches you about one of them. |
 | B11 | **On macOS every daemon that lost a concurrent startup race exited 1 instead of 3.** Binding an AF_UNIX socket over an existing path is `EADDRINUSE` on Linux and **`EEXIST`** on macOS/BSD; `isAddrInUse` checked only the first, so the loser fell through to `logger.Fatalf`. Exit 1 means "this daemon is broken", so `DaemonSupervisor` charges it against the restart budget and after five attempts reports a daemon that was never broken. Opening a second window on one repo is enough. This defeats the entire `exitcodes.go` contract on that platform. | `efaafb2`+ | From the daemon's own log: `listen unix ...: bind: file exists`. **The existing real-collision test PASSED on macOS in the same job**, so it cannot reach `EEXIST` there and could never have defended this — why the two paths differ on macOS is NOT established. Both errnos are therefore pinned directly, with the `net.OpError`/`os.SyscallError` wrapping `net.Listen` really produces, plus a companion test that unrelated errnos are still rejected. |
+| B12 | **The fuzz gate reported a finding it had not found.** `scripts/fuzz.sh` printed *"A failing input has been written to `<module>/testdata/fuzz/<target>/`. Commit it as a regression seed, THEN fix the bug"* on **every** non-zero exit, unconditionally. Run `31204152210` failed with `context deadline exceeded` — Go's fuzzing coordinator timing out at the `-fuzztime` boundary on a loaded two-worker runner, against `FuzzVerifyApproval`, which is a **pure function taking no context at all**. No input was written because nothing crashed, and the message sent its reader hunting for a file that does not exist and a bug that is not there. | `8154e1f` | Measured before changing anything: 120 s locally = **1,734,900 execs, PASS**, vs 140,113 in the CI run that failed; full sweep green across all 13 targets at **24.4M execs**. Now matches Go's real `"Failing input written to"` marker instead of the exit code, and otherwise names the coordinator timeout and says re-run. A gate that cries wolf gets ignored, and an ignored gate is the same end state as not having one. |
 
 **The sweep that found no second instance.** B1's class is "a POSIX primitive
 used where its link-following behaviour is the whole question". Every `os.Stat`
