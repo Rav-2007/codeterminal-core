@@ -205,7 +205,7 @@ skills subsystem (wire in or delete) · Phase 4 packaging.
 
 ## 6. What this pass closed — items 1 through 19
 
-> Section 6b below records a **separate, later pass** (2026-08-07) that found seven
+> Section 6b below records a **separate, later pass** (2026-08-07) that found eleven
 > defects on no list at all. Read both.
 
 Every entry is implemented AND neuter-verified: the fix was removed and the test
@@ -236,10 +236,19 @@ Two of these were found by this pass and appear on no earlier list: the
 world-readable lexical index (9) and the unbounded MCP stderr buffer (11). Item 11
 is M1a's shape on the one channel the MCP hardening pass did not cover.
 
-### 6b. The 2026-08-07 bug-hunt pass — seven defects, none of them on any list
+### 6b. The 2026-08-07 bug-hunt pass — eleven defects, none of them on any list
 
-Found by reading the code that the daemon-lifecycle and macOS work had just
-touched, plus a sweep for the first one's *class*. Same discipline: every fix has
+B1-B7 were found by reading the code that the daemon-lifecycle and macOS work
+had just touched, plus a sweep for the first one's *class*. **B8-B10 were found
+by the first macOS CI runs this repository has ever had**, which is the argument
+for the cross-platform matrix in one line: three of the four are product bugs, not
+fixture noise, and none was reachable from a Linux desk.
+
+**B8, B9 and B11 are one mistake made three times**: a per-kernel constant treated
+as a Unix constant. `sun_path` is 108 bytes on Linux and 104 on macOS; a unix
+socket's default buffer is ~200 KiB and 8 KiB; binding over an existing path is
+`EADDRINUSE` and `EEXIST`. Each was correct for years on the only kernel that had
+ever run it. Same discipline: every fix has
 a test demonstrated to fail with the fix neutered, never merely asserted to.
 
 | # | Item | Commit | Evidence |
@@ -251,6 +260,10 @@ a test demonstrated to fail with the fix neutered, never merely asserted to.
 | B5 | **Restart adopted the corpse it had just made.** `restart()` killed its own daemon then probed — and a signalled daemon keeps answering handshakes while it drains. It returned `'adopted'`, owning nothing, about a process that was exiting. | `249dad1` | Also: two overlapping `ensure()` calls spawned two daemons and tracked one. |
 | B6 | **With no folder open the extension indexed whatever directory VS Code was launched from.** `activate()` passed `'.'`, and `path.resolve('.')` returns the extension host's cwd. A VS Code launched from `$HOME` read the home directory into the retrieval index and wrote `.codeterminal/logs/` there. | `5af2f18` | **The test asserted the opposite, one layer below the product**: it called `setWorkspaceRoot('')`, which `activate()` never passed. Neuter reports `setWorkspaceRoot(".") resolved to "…/clients/vscode"`. |
 | B7 | The retrieval eval's ground truth was a hand-written list of `file:startLine-endLine`, so it went stale on every edit and the scheduled job was permanently red. | `27ff6ba` | Measured **4/9 red → 8/9 green with no retrieval code changed**; baseline run, not inferred. `expectedFiles`/`anchors` stay declared, chunks are derived from the index each run. |
+| B8 | **The daemon reported a different spelling of its own workspace than the one it is keyed on.** The resolved root keyed the socket and lockfile and NOTHING else: retrieval, the warn sink, the tool audit log, the LSP bridge and the reported workspace all took `absWorkspace`, which is `filepath.Abs` only. `main.go` states this four lines above the split and then contradicts it further down ("resolved and checked by validateWorkspace") — the wrong statement was load-bearing. Two windows reaching one directory by different spellings share a daemon by design, and the second was then told **WORKSPACE MISMATCH on every turn** about a daemon serving exactly the right code. `buildGroundingInfo` compared with `filepath.Clean`, which is purely lexical, so it could not tell them apart. | `85ad77a` | Found by **the first macOS CI run this repository has ever had** — `/var` is a symlink to `/private/var`, so macOS makes this the DEFAULT case for any workspace under `/tmp` or `/var`, not an edge one. Reproduced on Linux by starting the daemon through a symlink, so it does not need a mac to stay fixed. Both layers neutered separately. |
+| B9 | **The socket buffer was declared on one platform and inherited on two.** A peer that stops reading parks the daemon's handler goroutine in a write it can never finish; enough of them and `Serve`'s semaphore fills, the daemon stops accepting, and `WaitForDrain` never reaches zero. Windows names 64 KiB because a zero-quota pipe has no buffer at all. Unix took whatever the kernel picked, and the test pinning the property said *"a Unix socket carries ~200 KiB"* — a **Linux** figure written down as a Unix one, which survived because Linux was the only kernel that had ever run it. macOS defaults to 8 KiB and a 32 KiB write blocked. | `f80ab25` | Same shape as `sun_path` being 108 bytes on Linux and 104 on macOS, found the same week by the same runner. Set in **both directions on both ends**, because which buffer bounds a blocking write is per-kernel (Linux: sender's `sk_sndbuf`; BSD: receiver's). **The test was vacuous on Unix and now is not** — lowering the constant to 2048 makes it fail on Linux, measured, which is the evidence the `setsockopt` takes effect. |
+| B10 | The scheduled eval job was failing for **two** reasons and only one was diagnosed: `panic: test timed out after 10m0s` sat underneath the stale ground truth, in that run and the one before it. Nothing was hanging — three full-repo index passes exceed `go test`'s default budget. | `27a73ce` | The `~148s` in the job's comment was one test's LOCAL time quoted as the suite's, which is how the default never looked like a risk. A job red for two reasons teaches you about one of them. |
+| B11 | **On macOS every daemon that lost a concurrent startup race exited 1 instead of 3.** Binding an AF_UNIX socket over an existing path is `EADDRINUSE` on Linux and **`EEXIST`** on macOS/BSD; `isAddrInUse` checked only the first, so the loser fell through to `logger.Fatalf`. Exit 1 means "this daemon is broken", so `DaemonSupervisor` charges it against the restart budget and after five attempts reports a daemon that was never broken. Opening a second window on one repo is enough. This defeats the entire `exitcodes.go` contract on that platform. | `efaafb2`+ | From the daemon's own log: `listen unix ...: bind: file exists`. **The existing real-collision test PASSED on macOS in the same job**, so it cannot reach `EEXIST` there and could never have defended this — why the two paths differ on macOS is NOT established. Both errnos are therefore pinned directly, with the `net.OpError`/`os.SyscallError` wrapping `net.Listen` really produces, plus a companion test that unrelated errnos are still rejected. |
 
 **The sweep that found no second instance.** B1's class is "a POSIX primitive
 used where its link-following behaviour is the whole question". Every `os.Stat`
