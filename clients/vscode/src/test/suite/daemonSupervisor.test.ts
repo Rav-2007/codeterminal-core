@@ -12,6 +12,7 @@ import {
   EXIT_ALREADY_RUNNING,
   MAX_RESTARTS,
   RESTART_BASE_MS,
+  RESTART_EXIT_GRACE_MS,
   SupervisorDeps,
   Timer,
 } from '../../daemonSupervisor';
@@ -441,6 +442,170 @@ suite('daemon supervisor', () => {
     assert.strictEqual(h.spawns.length, 0, 'we cannot restart what we did not start');
     assert.strictEqual(h.warns.length, 1);
     assert.match(h.warns[0], /another VS Code window/);
+  });
+
+  // THE ORPHAN THIS CLASS EXISTS TO PREVENT, COMING BACK THROUGH THE BACK DOOR.
+  //
+  // kill() DELIVERS a signal; it does not wait for the process to die. The exit
+  // event therefore arrives some time later -- by which point restart() has
+  // already spawned the replacement. Both callbacks cleared this.own
+  // unconditionally, so the dead daemon's exit un-tracked the LIVE one, and
+  // dispose() then had nothing to kill.
+  //
+  // That is a daemon nobody owns, holding the socket, with its 81 MB embedder
+  // helper, for as long as the machine is up.
+  //
+  // Neuter check: drop the `this.own !== owned` guard from onExit and this fails.
+  test('a killed daemon\'s late exit does not un-track the one that replaced it', async () => {
+    const h = new Harness();
+    const sup = new DaemonSupervisor(h.deps);
+
+    await sup.ensure();
+    const dead = h.last;
+
+    // Wedged badly enough to outlast the grace period -- which is exactly the
+    // daemon a user reaches for Restart Daemon about. The replacement therefore
+    // starts while the old process is still, formally, alive.
+    const restarting = sup.restart();
+    await tick();
+    const grace = h.timers.filter((t) => !t.cancelled);
+    assert.strictEqual(grace.length, 1);
+    grace[0].cancelled = true;
+    grace[0].fn();
+    await restarting;
+
+    const live = h.last;
+    assert.notStrictEqual(live, dead, 'restart must have spawned a replacement');
+
+    // And NOW the old one finally goes, long after its replacement is up.
+    dead.exit(null, 'SIGTERM');
+    await tick();
+
+    sup.dispose();
+    assert.strictEqual(
+      live.killed,
+      true,
+      'the replacement was left untracked by the dead one\'s exit, so dispose() killed ' +
+        'nothing -- a daemon nobody owns, holding the socket and an 81 MB helper, until reboot'
+    );
+  });
+
+  // ...and the same clobber via onError, which has the identical shape.
+  test('a killed daemon\'s late error does not un-track the one that replaced it', async () => {
+    const h = new Harness();
+    const sup = new DaemonSupervisor(h.deps);
+
+    await sup.ensure();
+    const dead = h.last;
+
+    const restarting = sup.restart();
+    dead.exit(null, 'SIGTERM');
+    await restarting;
+    const live = h.last;
+
+    dead.fail('ECONNRESET on a process that is already gone');
+    await tick();
+
+    sup.dispose();
+    assert.strictEqual(live.killed, true, 'a dead handle must not speak for a live one');
+    assert.deepStrictEqual(
+      h.errors,
+      [],
+      'and it must not report a failure about a daemon that was replaced on purpose'
+    );
+  });
+
+  // RESTART MUST NOT ADOPT THE CORPSE IT JUST MADE.
+  //
+  // restart() killed its own daemon and went straight to ensure(), which probes
+  // first. A daemon that has been signalled is still answering handshakes while
+  // it drains, so the probe said "yes" -- and restart returned 'adopted', owning
+  // nothing, about a process that was in the middle of exiting. Seconds later
+  // the window had no daemon at all and no supervisor state saying so.
+  //
+  // The other half is just as bad: if the probe misses but the socket has not
+  // been released yet, the replacement loses the bind, exits 3, and waits out a
+  // 15s adoption window for a winner that is never coming.
+  //
+  // Neuter check: drop the await on the exit and this fails as 'adopted'.
+  test('restart waits for its own daemon to go before deciding anything', async () => {
+    const h = new Harness();
+    const sup = new DaemonSupervisor(h.deps);
+
+    await sup.ensure();
+    const dying = h.last;
+
+    // Still answering handshakes while it drains -- which is what a daemon with
+    // a shutdown grace period does.
+    h.daemonUp = true;
+
+    const restarting = sup.restart();
+    await tick();
+    assert.strictEqual(
+      h.spawns.length,
+      1,
+      'restart must not have decided anything yet: the daemon it killed has not exited'
+    );
+
+    dying.exit(null, 'SIGTERM');
+    h.daemonUp = false; // the socket is released as it goes
+    const outcome = await restarting;
+
+    assert.strictEqual(
+      outcome,
+      'spawned',
+      'restart adopted the corpse of the daemon it had just killed; the window ends up with ' +
+        'no daemon and a supervisor that believes one is running'
+    );
+    assert.strictEqual(h.spawns.length, 2);
+  });
+
+  // A daemon wedged badly enough to ignore SIGTERM must not wedge the command
+  // the user reached for BECAUSE it is wedged.
+  test('restart does not wait forever for a daemon that will not die', async () => {
+    const h = new Harness();
+    const sup = new DaemonSupervisor(h.deps);
+
+    await sup.ensure();
+
+    const restarting = sup.restart();
+    await tick();
+
+    const waiting = h.timers.filter((t) => !t.cancelled);
+    assert.strictEqual(waiting.length, 1, 'the wait must be bounded by a timer, not open-ended');
+    assert.strictEqual(waiting[0].ms, RESTART_EXIT_GRACE_MS);
+    waiting[0].cancelled = true;
+    waiting[0].fn();
+
+    assert.strictEqual(await restarting, 'spawned');
+    assert.strictEqual(h.spawns.length, 2, 'it gives up on the old one and starts a new one');
+  });
+
+  // Two ensure() calls can genuinely overlap: activate() fires one without
+  // awaiting it, and the probe it is waiting on has a two-second budget, during
+  // which the user can invoke Restart Daemon. Both would see "nothing there" and
+  // both would spawn -- and only the second handle is kept, so the first is an
+  // orphan from the moment it starts.
+  test('concurrent ensure() calls start one daemon, not two', async () => {
+    const h = new Harness();
+    let release: (v: boolean) => void = () => undefined;
+    h.deps.probe = () =>
+      new Promise<boolean>((r) => {
+        release = r;
+      });
+    const sup = new DaemonSupervisor(h.deps);
+
+    const first = sup.ensure();
+    const second = sup.ensure();
+    release(false);
+    await Promise.all([first, second]);
+
+    assert.strictEqual(
+      h.spawns.length,
+      1,
+      'two overlapping ensures each spawned a daemon, and only the last handle is tracked -- ' +
+        'the first is unkillable by dispose() the moment it exists'
+    );
   });
 
   // TWO CONTRACTS THAT LIVE IN DIFFERENT FILES AND MUST AGREE.

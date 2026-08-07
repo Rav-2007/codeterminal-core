@@ -73,6 +73,24 @@ export const RESTART_BASE_MS = 2000;
 export const ADOPT_PROBE_ATTEMPTS = 10;
 export const ADOPT_PROBE_INTERVAL_MS = 1500;
 
+// How long restart() waits for the daemon it just asked to stop.
+//
+// kill() DELIVERS a signal; it does not wait for the process to die, and the
+// daemon deliberately drains in-flight work before it goes. Deciding anything
+// during that window gets both possible answers wrong: probe while it is still
+// answering handshakes and restart "adopts" the corpse it just made, owning
+// nothing; spawn before the socket is released and the replacement loses the
+// bind, exits 3, and waits out a 15 s adoption window for a winner that is
+// never coming.
+//
+// Bounded, because the daemon a user is restarting is disproportionately likely
+// to be one that is wedged -- and a wedged daemon must not wedge the command
+// reached for BECAUSE it is wedged. Past this we give up on it and start a new
+// one; if the old one is somehow still holding the address, the new one exits 3
+// and the ordinary adoption path takes over, which is the correct behaviour
+// rather than a special case.
+export const RESTART_EXIT_GRACE_MS = 5000;
+
 /** A daemon process this supervisor started. */
 export interface DaemonHandle {
   onExit(cb: (code: number | null, signal: string | null) => void): void;
@@ -98,6 +116,18 @@ export interface SupervisorDeps {
 
 export type EnsureOutcome = 'adopted' | 'spawned' | 'disposed';
 
+/**
+ * A daemon this supervisor started, and the promise of its death.
+ *
+ * `exited` is settled by the handle's own exit/error callbacks and is what
+ * restart() waits on. It is deliberately settled even for a handle that is no
+ * longer `own`: the whole reason to wait is that we have just stopped owning it.
+ */
+interface OwnedDaemon {
+  handle: DaemonHandle;
+  exited: Promise<void>;
+}
+
 export class DaemonSupervisor {
   private restarts = 0;
   private timer: Timer | undefined;
@@ -105,7 +135,10 @@ export class DaemonSupervisor {
   // Set ONLY when this supervisor spawned the process. An adopted daemon
   // belongs to another window and is never held here -- which is what stops
   // dispose() from killing it. See dispose().
-  private own: DaemonHandle | undefined;
+  private own: OwnedDaemon | undefined;
+  // The ensure() currently in flight, so two callers get one daemon. See
+  // ensure().
+  private ensuring: Promise<EnsureOutcome> | undefined;
 
   constructor(private readonly deps: SupervisorDeps) {}
 
@@ -117,6 +150,30 @@ export class DaemonSupervisor {
    * third process to lose a second race.
    */
   async ensure(): Promise<EnsureOutcome> {
+    // ONE AT A TIME. Two ensure() calls genuinely overlap: activate() fires one
+    // without awaiting it, and the probe it waits on has a two-second budget,
+    // during which the user can invoke Restart Daemon. Both would see "nothing
+    // there" and both would spawn -- and startOwn keeps only the last handle, so
+    // the first daemon is unkillable by dispose() from the moment it exists.
+    //
+    // Joining the in-flight call rather than queueing a second one is the right
+    // answer to the question actually being asked, which is "is a daemon
+    // serving this workspace" and not "start one now".
+    if (this.ensuring) {
+      return this.ensuring;
+    }
+    const run = this.ensureOnce();
+    this.ensuring = run;
+    try {
+      return await run;
+    } finally {
+      if (this.ensuring === run) {
+        this.ensuring = undefined;
+      }
+    }
+  }
+
+  private async ensureOnce(): Promise<EnsureOutcome> {
     if (this.disposed) {
       return 'disposed';
     }
@@ -144,10 +201,16 @@ export class DaemonSupervisor {
     this.restarts = 0;
     this.cancelTimer();
 
-    const hadOwn = this.own !== undefined;
-    this.killOwn();
+    // WAIT FOR IT TO ACTUALLY GO before deciding anything. kill() delivers a
+    // signal and returns; the daemon drains in-flight work before exiting. See
+    // RESTART_EXIT_GRACE_MS for both ways this used to go wrong.
+    const dying = this.killOwn();
+    if (dying) {
+      await this.settleOrGiveUp(dying, RESTART_EXIT_GRACE_MS);
+      return this.ensure();
+    }
 
-    if (!hadOwn && (await this.deps.probe())) {
+    if (await this.deps.probe()) {
       // Nothing of ours to restart, and the daemon serving this workspace is
       // still there: it belongs to another window. Killing another window's
       // daemon out from under it would be worse than declining, and this
@@ -177,10 +240,33 @@ export class DaemonSupervisor {
 
   private startOwn(): void {
     const handle = this.deps.spawn();
-    this.own = handle;
+    let settle: () => void = () => undefined;
+    const owned: OwnedDaemon = {
+      handle,
+      exited: new Promise<void>((resolve) => {
+        settle = resolve;
+      }),
+    };
+    this.own = owned;
+
+    // `this.own !== owned` IS THE WHOLE FIX FOR A REAL ORPHAN.
+    //
+    // kill() delivers a signal; the exit event arrives later, by which time
+    // restart() has already spawned the replacement. Both callbacks used to
+    // clear this.own unconditionally, so the dead daemon's exit un-tracked the
+    // LIVE one -- and dispose() then had nothing to kill. That is a daemon
+    // nobody owns, holding the socket and its 81 MB embedder helper, until the
+    // machine is rebooted: precisely the leak this class was written to stop,
+    // reached through the back door.
+    //
+    // settle() runs FIRST and unconditionally, before the ownership check,
+    // because restart() is waiting on exactly this promise for a handle it has
+    // deliberately stopped owning.
+    const stale = (): boolean => this.disposed || this.own !== owned;
 
     handle.onError((err) => {
-      if (this.disposed) {
+      settle();
+      if (stale()) {
         return;
       }
       this.own = undefined;
@@ -188,7 +274,8 @@ export class DaemonSupervisor {
     });
 
     handle.onExit((code, signal) => {
-      if (this.disposed) {
+      settle();
+      if (stale()) {
         return;
       }
       this.own = undefined;
@@ -232,8 +319,7 @@ export class DaemonSupervisor {
     // an immediate miss says nothing. Wait and look again -- see
     // ADOPT_PROBE_ATTEMPTS. No budget is charged here; nothing has failed.
     if (attempt < ADOPT_PROBE_ATTEMPTS) {
-      this.timer = this.deps.schedule(ADOPT_PROBE_INTERVAL_MS, () => {
-        this.timer = undefined;
+      this.setTimer(ADOPT_PROBE_INTERVAL_MS, () => {
         void this.adoptAfterLosingTheRace(attempt + 1);
       });
       return;
@@ -260,9 +346,24 @@ export class DaemonSupervisor {
 
     const delay = RESTART_BASE_MS * 2 ** (this.restarts - 1);
     this.deps.warn(`Mochiii daemon exited ${code}; restarting (${this.restarts}/${MAX_RESTARTS})...`);
-    this.timer = this.deps.schedule(delay, () => {
-      this.timer = undefined;
+    this.setTimer(delay, () => {
       void this.ensure();
+    });
+  }
+
+  /**
+   * Record a pending timer, replacing (and cancelling) any previous one.
+   *
+   * There is only ever one thing this supervisor is waiting to do next, so two
+   * live timers means one of them is a leak: it fires later, calls ensure(), and
+   * spends budget on behalf of a decision that was superseded. Assigning
+   * `this.timer` directly is what let that happen.
+   */
+  private setTimer(ms: number, fn: () => void): void {
+    this.cancelTimer();
+    this.timer = this.deps.schedule(ms, () => {
+      this.timer = undefined;
+      fn();
     });
   }
 
@@ -271,16 +372,52 @@ export class DaemonSupervisor {
     this.timer = undefined;
   }
 
-  private killOwn(): void {
-    if (!this.own) {
-      return;
+  /**
+   * Wait for `p`, but not past `ms`.
+   *
+   * The deadline goes through deps.schedule like every other wait in this
+   * class, so it is a fake clock in tests rather than a real second of wall
+   * time. It is deliberately NOT stored in this.timer: cancelTimer() means
+   * "abandon the next scheduled action", and this is a caller blocked on an
+   * answer, not an action to abandon.
+   */
+  private settleOrGiveUp(p: Promise<void>, ms: number): Promise<void> {
+    return new Promise<void>((resolve) => {
+      let done = false;
+      const finish = (): void => {
+        if (!done) {
+          done = true;
+          resolve();
+        }
+      };
+      const deadline = this.deps.schedule(ms, () => {
+        this.deps.log(
+          `the daemon did not exit within ${ms}ms of being asked to; starting a replacement anyway`
+        );
+        finish();
+      });
+      void p.then(() => {
+        deadline.cancel();
+        finish();
+      });
+    });
+  }
+
+  /**
+   * Stop the daemon this supervisor started, and hand back the promise of its
+   * death so a caller can wait for it. Undefined when we own nothing.
+   */
+  private killOwn(): Promise<void> | undefined {
+    const owned = this.own;
+    if (!owned) {
+      return undefined;
     }
-    const handle = this.own;
     this.own = undefined;
     try {
-      handle.kill();
+      owned.handle.kill();
     } catch {
       // Already dead. The only goal was that it not be running.
     }
+    return owned.exited;
   }
 }
