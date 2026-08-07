@@ -73,8 +73,29 @@ for entry in "${TARGETS[@]}"; do
     echo "FAIL  $module/$target" >&2
     echo "$out" >&2
     echo "" >&2
-    echo "  A failing input has been written to $module/testdata/fuzz/$target/." >&2
-    echo "  Commit it as a regression seed, THEN fix the bug." >&2
+    # A NON-ZERO EXIT IS NOT THE SAME AS A CRASHING INPUT, and this said it was.
+    #
+    # It printed "a failing input has been written ... commit it as a regression
+    # seed, THEN fix the bug" on EVERY failure, unconditionally. Run 31204152210
+    # failed here with `context deadline exceeded` -- Go's fuzzing coordinator
+    # timing out on a loaded two-worker runner, against a target that is a pure
+    # function taking no context at all. No input was written, because none
+    # crashed. The message sent its reader looking for a file that does not exist
+    # and a bug that is not there.
+    #
+    # Go announces a real crasher in a fixed form, so that is what gets matched
+    # rather than the exit code. When it is absent, say what actually happened
+    # and name the likeliest cause instead of inventing a finding.
+    if grep -q "Failing input written to" <<<"$out"; then
+      echo "  A failing input WAS written under $module/testdata/fuzz/$target/." >&2
+      echo "  Commit it as a regression seed, THEN fix the bug." >&2
+    else
+      echo "  NO crashing input was recorded -- this is not a fuzzing FINDING." >&2
+      echo "  The fuzz command failed for another reason (the line above is it)." >&2
+      echo "  'context deadline exceeded' at ~\$FUZZTIME is the coordinator timing" >&2
+      echo "  out under load, and is expected to be intermittent on a busy runner." >&2
+      echo "  Re-run before investigating; do not go looking for a corpus file." >&2
+    fi
     status=1
   else
     execs="$(grep -oE 'execs: [0-9]+' <<<"$out" | tail -1)"
