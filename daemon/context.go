@@ -334,10 +334,44 @@ func buildGroundingInfo(o retrievalOutcome, daemonWorkspace, clientWorkspace str
 		Chunks:    len(o.Chunks),
 		Truncated: o.Truncated,
 	}
-	if clientWorkspace != "" && filepath.Clean(clientWorkspace) != filepath.Clean(daemonWorkspace) {
+	if clientWorkspace != "" && !sameWorkspaceDir(clientWorkspace, daemonWorkspace) {
 		info.WorkspaceMismatch = true
 	}
 	return info
+}
+
+// sameWorkspaceDir reports whether two paths name the same directory.
+//
+// filepath.Clean alone -- which is what this used to be -- is LEXICAL. It
+// removes "." and ".." and duplicate separators and nothing else, so two
+// spellings of one directory that differ by a symlink compare unequal, and this
+// daemon reports WORKSPACE MISMATCH about the very directory it is serving.
+//
+// Both sides need resolving, not just ours. The daemon's own root is already
+// canonical (see groundedRoot in main.go), but no client is required to send a
+// resolved path and neither of ours does: the VS Code extension sends
+// workspaceFolders[0].uri.fsPath verbatim, and the TUI sends whatever it was
+// given. On macOS that is enough on its own, because /tmp and /var are symlinks
+// into /private, so ANY workspace under either has two spellings in ordinary
+// use.
+//
+// Best effort, and it degrades to the old behaviour rather than to a wrong
+// answer: a path that cannot be resolved -- because it does not exist on THIS
+// machine, which is the normal case for a client path -- falls back to the
+// lexical comparison. Mismatch is an advisory flag on a response that is being
+// served either way, so a wrong "same" is a missed warning and a wrong
+// "different" is a warning on every single turn. Failing towards the quieter
+// one is deliberate.
+func sameWorkspaceDir(a, b string) bool {
+	if filepath.Clean(a) == filepath.Clean(b) {
+		return true
+	}
+	ra, errA := filepath.EvalSymlinks(a)
+	rb, errB := filepath.EvalSymlinks(b)
+	if errA != nil || errB != nil {
+		return false
+	}
+	return filepath.Clean(ra) == filepath.Clean(rb)
 }
 
 // logRetrieval writes one summary line per request describing what

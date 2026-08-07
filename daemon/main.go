@@ -234,6 +234,35 @@ func main() {
 	addr := protocol.DefaultAddressFor(realRoot)
 	lockPath := protocol.LockPathFor(realRoot)
 
+	// ONE STRING FOR "WHICH DIRECTORY IS THIS DAEMON GROUNDED AGAINST", and it
+	// is the resolved one.
+	//
+	// The resolved root used to key the socket and NOTHING ELSE: retrieval, the
+	// warn sink, the tool audit log, the LSP bridge and the workspace this daemon
+	// REPORTS all took absWorkspace, which is filepath.Abs only. Four lines above
+	// this one, the comment already says so.
+	//
+	// That split is invisible until two spellings of one directory meet, which is
+	// exactly what adopting a shared daemon made ordinary. Window A opens
+	// /tmp/proj and starts the daemon; window B opens /private/tmp/proj, computes
+	// the same tag (both resolve identically), and adopts A's daemon -- as
+	// designed. B then sends its own spelling with every prompt, buildGroundingInfo
+	// compares it lexically against A's, and every single turn comes back flagged
+	// WORKSPACE MISMATCH about a daemon serving precisely the right directory.
+	//
+	// macOS makes this the DEFAULT case rather than an edge one: /tmp and /var are
+	// symlinks into /private, so the two spellings differ for any workspace under
+	// either. Caught by twoworkspaces_test.go on the first macOS run this
+	// repository has ever had.
+	//
+	// Falls back to absWorkspace only when resolution failed, where realRoot is ""
+	// and a per-user address is already being used -- the same "one daemon that
+	// works beats none" trade made above.
+	groundedRoot := absWorkspace
+	if realRoot != "" {
+		groundedRoot = realRoot
+	}
+
 	if err := reclaimStaleSocket(addr); err != nil {
 		// Losing is not failing. Another daemon already serves this exact
 		// workspace, which is what SHOULD happen when a second window opens the
@@ -279,12 +308,13 @@ func main() {
 	// the model load waits in the accept backlog rather than being refused,
 	// which is the behaviour we want and the reason binding early is safe.
 	//
-	// absWorkspace (resolved and checked by validateWorkspace above) is passed
-	// in place of the raw flag: setupRetrieval would only re-derive the same
-	// absolute path, and threading the validated one keeps a single answer to
-	// "which directory is this daemon grounded against" across retrieval, the
-	// warn sink, and GroundingInfo.
-	retrieval := setupRetrieval(cfg, absWorkspace, *noContext, logger, newActiveEmbedder)
+	// groundedRoot, not the raw flag and not absWorkspace: see its declaration
+	// above. This comment used to say absWorkspace was "resolved and checked by
+	// validateWorkspace", which is not true and is contradicted a few lines
+	// earlier in this same file -- validateWorkspace is filepath.Abs only. The
+	// single answer to "which directory is this daemon grounded against" is now
+	// actually single, and actually resolved.
+	retrieval := setupRetrieval(cfg, groundedRoot, *noContext, logger, newActiveEmbedder)
 	defer retrieval.Stop()
 
 	memoryStore := setupMemoryStore(logger)
@@ -349,24 +379,24 @@ func main() {
 		retrievalDisabledReason: retrieval.DisabledReason,
 		debugContext:            *debugContext,
 		rerankDisabled:          *noRerank || cfg.Retrieval.RerankDisabled,
-		workspace:               absWorkspace,
+		workspace:               groundedRoot,
 		memory:                  memoryStore,
 		// Durable warn-mode sink under the workspace's already-gitignored
 		// .codeterminal state dir (same convention as index/ and backups/), so
 		// the log-only fire-rate data survives daemon restarts instead of
 		// vanishing with stderr. Local file only — no network egress.
-		warnSink: newWarnSink(filepath.Join(absWorkspace, ".codeterminal", "logs", "warnmode.jsonl")),
+		warnSink: newWarnSink(filepath.Join(groundedRoot, ".codeterminal", "logs", "warnmode.jsonl")),
 		// The tool-call audit log, alongside it and under the same discipline:
 		// local file only, no network seam. Always constructed, not just when
 		// mcp.enabled -- a daemon that starts with agent mode off and has it
 		// turned on later must not be the one daemon whose calls went
 		// unrecorded, and an unused sink writes nothing.
-		toolAudit: newToolAuditSink(filepath.Join(absWorkspace, ".codeterminal", "logs", "toolcalls.jsonl")),
+		toolAudit: newToolAuditSink(filepath.Join(groundedRoot, ".codeterminal", "logs", "toolcalls.jsonl")),
 		// Activity counters, reported through the existing status surface (see
 		// counters.go). Built here rather than lazily so production always has
 		// them; a nil set is valid and simply counts nothing.
 		counters:  &counters{},
-		lspBridge: NewLSPBridge(absWorkspace),
+		lspBridge: NewLSPBridge(groundedRoot),
 	}
 	// One line per reduced subsystem, so the log and the wire agree about what
 	// is degraded from the moment the daemon starts serving.

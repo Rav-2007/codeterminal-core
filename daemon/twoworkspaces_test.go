@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -294,4 +295,60 @@ func shortRuntimeDir(t *testing.T) string {
 	// Delegates: this used to call os.MkdirTemp("", "ctrt"), which honours
 	// $TMPDIR and so was still ~49 bytes deep on macOS. See shortTempDir.
 	return shortTempDir(t)
+}
+
+// THE DAEMON MUST REPORT THE DIRECTORY IT IS KEYED ON, NOT THE SPELLING IT WAS
+// STARTED WITH.
+//
+// The resolved root keyed the socket and the lockfile and NOTHING ELSE:
+// retrieval, the warn sink, the tool audit log, the LSP bridge and the workspace
+// this daemon REPORTS all took absWorkspace, which is filepath.Abs only.
+//
+// Invisible until two spellings of one directory meet -- which is exactly what
+// adopting a shared daemon made ordinary, and what macOS makes the default,
+// since /tmp and /var are symlinks into /private. Reported by
+// TestTwoWorkspaces_EachClientReachesItsOwnDaemon on the first macOS run this
+// repository has ever had:
+//
+//	window A (repo /private/var/folders/.../002) was answered by the daemon
+//	serving /var/folders/.../002
+//
+// Reproduced here on any platform, by starting the daemon through a symlink the
+// way macOS hands one to every workspace under /tmp.
+//
+// Neuter check: pass absWorkspace instead of groundedRoot to the Server and
+// this fails with the link's spelling.
+func TestTwoWorkspaces_TheReportedWorkspaceIsTheResolvedOne(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds the daemon binary")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation is privileged on Windows; NOT RUN on this platform")
+	}
+	bin := buildDaemonBinary(t)
+
+	runtimeDir := shortRuntimeDir(t)
+	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
+
+	real, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(real, "a.go"), "package a\n")
+	link := filepath.Join(shortTempDir(t), "via-link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skip(err)
+	}
+
+	// Started through the LINK, exactly as macOS starts one through /tmp.
+	stop := startDaemon(t, bin, runtimeDir, link)
+	defer stop()
+
+	lock := readLockFileAt(t, lockPathIn(t, runtimeDir, link))
+	if got := statusWorkspace(t, lock); got != real {
+		t.Errorf("started with --workspace %s, the daemon reports it is grounding against %s, "+
+			"want the resolved %s. The socket is keyed on the resolved root, so a second window "+
+			"reaching this directory by its real name adopts this daemon and is then told "+
+			"WORKSPACE MISMATCH on every turn.", link, got, real)
+	}
 }
