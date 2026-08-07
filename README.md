@@ -94,7 +94,13 @@ export CODETERMINAL_API_KEY="sk-..."
 
 # 4. Per repo: index the workspace you want answers grounded in.
 #    Skipping this is NOT fatal — the daemon starts and answers ungrounded,
-#    using no code from your repo. Re-run after changes; the index is a snapshot.
+#    using no code from your repo.
+#
+#    While the daemon RUNS it watches the workspace and re-indexes a file about
+#    a second after you save it, so ordinary editing needs no action. Re-run
+#    this after anything the watcher does not see: changes made while the daemon
+#    was stopped (a branch switch, a pull) and DELETIONS or RENAMES, which are
+#    not tracked — a deleted file's chunks stay in the index until you re-index.
 ./daemon/codeterminal-daemon index .
 
 # 5. Start the daemon (foreground; logs to stderr).
@@ -139,8 +145,10 @@ $EDITOR .env                  # set CODETERMINAL_MOCHIII_KEY=mochi_...
 (cd clients/tui && go build -o codeterminal-tui .)
 ./daemon/codeterminal-daemon download-model
 
-# 2. Per repo: index it. Re-run after changes — a stale index makes the model
-#    confidently describe the OLD shape of a file it "retrieved".
+# 2. Per repo: index it. Saves are picked up automatically while the daemon
+#    runs; re-run after offline changes, deletions or renames (see step 4 of the
+#    local quick start) — a stale index makes the model confidently describe the
+#    OLD shape of a file it "retrieved", and nothing yet warns you that it is.
 ./daemon/codeterminal-daemon index ~/some/repo
 
 # 3. Start the daemon in proxy mode, pointed at that same repo
@@ -834,6 +842,13 @@ socket protocol as every other client. It surfaces grounding state in the editor
 including `workspace_mismatch`, and classifies the proxy's `zdr_required` refusal as
 a privacy refusal rather than a generic error. See its own
 [README](clients/vscode/README.md) for what has shipped.
+
+**Unlike the TUI, it MANAGES the daemon** — steps 5 and 6 of the quick start
+above are the TUI's two-terminal setup and are not needed here. `daemonSupervisor.ts`
+probes the per-workspace lockfile, adopts a daemon that answers a handshake, and
+starts one only when nothing does, so two windows on one folder share a single
+daemon. Restarts are bounded and back off; `Mochiii: Show Daemon Log` opens the
+log even from a window that adopted rather than started it.
 
 ### One-shot CLI
 

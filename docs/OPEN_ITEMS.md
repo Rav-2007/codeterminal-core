@@ -2,7 +2,7 @@
 
 **Written 2026-08-01. Statuses resolved in place 2026-08-07.**
 
-> ## Only three items in §1–§2 are still open: **7, 10, 12.**
+> ## Four items in §1–§2 are still open: **7, 10, 12, 20.**
 >
 > Every other row carries **FIXED** and the commit that fixed it. Read the
 > **Status** column; it is the answer.
@@ -76,6 +76,7 @@ closure is the founder's call.
 | 4 | **FIXED `632d110`** | **No per-connection output-rate bound on the proxy.** A one-byte-at-a-time reader pins a connection for the full 6-minute `WriteTimeout`. The in-flight caps bound *how many* can be pinned at once; nothing bounds *one*. | `proxy/ratelimit.go` (`inFlightLimiter`) | Medium | **CONFIRMED** — recorded as mitigated-not-eliminated (M10) in the endpoint pass |
 | 5 | **FIXED `aa3787b`** | **CREATE's syntax gate is weaker than EDIT's.** `PrepareEdit` hard-refuses an edit that would make a `.go` file unparseable (`apply.go:96-99`); `prepareCreate` only attaches an advisory `SyntaxNote` (`create.go:109`). The same model output is refused as an edit and accepted as a create. | `editapply/create.go:109` vs `editapply/apply.go:96` | Medium | **CONFIRMED** |
 | 6 | **FIXED `31bf19c`** | **Undo leaves behind the directories a create made.** `editapply/apply.go:247` `MkdirAll`s parents on the create path. The undo removal branch has no directory cleanup: `stageRestore` returns early for `remove` with no `createdDirs`, and `commit()` unlinks only the file. `removeCreatedDirs` runs only on *discard* (a staging failure), never after a successful removal. | `daemon/apply_cmd.go:587-592, 498-508` | Low | **CONFIRMED** (read); repro pending |
+| 20 | **OPEN** | **The watcher does not track deletions or renames.** `startWorkspaceWatcher` acts only on `fsnotify.Write`/`Create`, so a deleted or renamed file's chunks stay in both the vector and lexical stores indefinitely. `reindexFile` already calls `DeleteByFilePath` and would handle it; nothing calls it for a removal. The model then retrieves and confidently describes a file that no longer exists — worse than a stale file, because re-reading disk cannot correct it. Compounded by there being no staleness signal at all (plan Stage 4). | `daemon/watcher.go` | Medium | **CONFIRMED** 2026-08-07 by reading the event mask; repro not run. Found while correcting README claims that the index is a one-shot snapshot. |
 
 ---
 

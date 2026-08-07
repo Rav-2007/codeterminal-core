@@ -196,10 +196,23 @@ because `syscall.EADDRINUSE` on Windows is synthetic and never matches).
   gated by peer auth.
 - **`--idle-timeout`**, because `deactivate()` cannot know whether another window
   has adopted the daemon, and never runs at all if the extension host crashes.
-- **stderr is `'ignore'`** — nothing is captured. An `OutputChannel`, plus always
-  passing `-log-file` so an *adopting* window can still see the log.
-- Delete `DAEMON_LAUNCH_COMMAND` and the first-run `<pre>` block telling users to
-  start the daemon by hand.
+- ~~**stderr is `'ignore'`** — nothing is captured.~~ **DONE `69dc2d3`**, though
+  not the way this line assumed. stderr STAYS `'ignore'`: piping into the
+  extension host would wedge a detached daemon on a pipe nobody drains, which is
+  the same unbounded-write failure the Windows named-pipe buffer already taught
+  us. `-log-file` is now passed on every spawn instead, plus a
+  `Mochiii: Show Daemon Log` command — and a file is the only channel an
+  *adopting* window can ever read, since it has no pipe by construction. Exposed
+  a daemon bug on the way: `openRotatingFile` did not create its parent
+  directory, so on a never-indexed workspace the daemon's own log was the one
+  file it silently failed to write.
+- ~~Delete `DAEMON_LAUNCH_COMMAND` and the first-run `<pre>` block.~~
+  **DONE `69dc2d3`.** It had become advice to start a *second* daemon that could
+  only lose the bind. Replaced by `RESTART_HINT`, which names a Command Palette
+  entry — and that turned up a second defect: the hint said "Mochiii: Restart
+  Daemon" while `package.json` contributed "CodeTerminal: Restart Daemon", so
+  searching the palette found nothing at exactly the moment the message was the
+  user's only way out. Both now pinned by a test that reads `package.json`.
 - **Shared-daemon lifetime**, surfaced by adoption and *not* fixed by it: closing
   the window that OWNS the daemon stops it under a window that adopted it. This
   is pre-existing — before adoption the second window never got a daemon of its

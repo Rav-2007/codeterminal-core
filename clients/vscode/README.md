@@ -1,11 +1,18 @@
 # Mochiii VS Code Extension
 
-A chat panel inside VS Code that talks to the **already-running** local
-`codeterminal-daemon` over its existing newline-delimited JSON Unix-socket
-protocol (see `protocol/protocol.go`), plus in-editor diff-apply: a model-
-proposed edit renders as a red/green diff with Apply/Skip, and Apply routes
-through the same `editapply` engine (all five safety gates) the TUI uses —
-the daemon applies, this client only renders and confirms.
+A chat panel inside VS Code that talks to the local `codeterminal-daemon` over
+its existing newline-delimited JSON socket protocol (see `protocol/protocol.go`),
+plus in-editor diff-apply: a model-proposed edit renders as a red/green diff with
+Apply/Skip, and Apply routes through the same `editapply` engine (all five safety
+gates) the TUI uses — the daemon applies, this client only renders and confirms.
+
+**The extension manages the daemon; you do not start one by hand.** It used to
+require an already-running daemon, which is why the TUI's two-terminal setup is
+described everywhere else. `src/daemonSupervisor.ts` probes the per-workspace
+lockfile, adopts a daemon that answers a full handshake, and starts one only when
+nothing does — so two windows open on the same folder share one daemon rather
+than racing to bind. It never deletes a stale lockfile: that belongs to the
+daemon's own `reclaimStaleSocket` and nowhere else.
 
 Every proposed edit in a response is reviewable, one block at a time: each
 is presented for Apply/Skip in turn, and block *i+1* is only ever matched
@@ -16,8 +23,11 @@ gets a native **Undo this apply** button that runs the same backup restore
 
 Not in this slice: a native VS Code diff view/inline decorations, ghost
 text, error interceptor, MCP, reset/ctrl+n, or any remote-host
-(SSH/WSL/devcontainer) daemon discovery — this is local-machine-only, same
-as the TUI's usual two-terminal setup.
+(SSH/WSL/devcontainer) daemon discovery — this is local-machine-only.
+
+Also not here yet, and worth knowing before relying on it: closing the window
+that STARTED the daemon stops it under a window that adopted it. The fix is an
+idle timeout plus a shutdown RPC, both scoped and neither built.
 
 ## Architecture
 
