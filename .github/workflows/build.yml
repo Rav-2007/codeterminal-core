@@ -443,6 +443,18 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: "**/go.sum"
+      # 2026-08-07: this job had been RED, and the cause was the harness, not
+      # retrieval. TestRerankEvalRetrievalRanking's ground truth was a
+      # hand-written list of file:startLine-endLine chunk IDs, so every edit to a
+      # named file shifted the ranges out from under it -- five of nine queries
+      # were reporting STALE EXPECTATION, one of them because the transport seam
+      # had moved net.Listen("unix") into another module entirely.
+      #
+      # The expectation is now DERIVED from the index each run (declared files
+      # and code anchors in, chunk IDs out), so it cannot go stale. Measured
+      # 4/9 red -> 8/9 green with no retrieval code changed. See
+      # resolveExactChunks in daemon/rerank_eval_test.go.
+      #
       # Scoped to the three eval tests that are GREEN, deliberately.
       #
       # TestEditShapedRetrievalEval is excluded because its HARNESS cannot build
