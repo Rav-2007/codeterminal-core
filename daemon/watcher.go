@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"codeterminal/editapply"
+
 	"github.com/fsnotify/fsnotify"
 )
 
@@ -20,6 +22,20 @@ import (
 // just break this daemon, it breaks whatever asks next, so the ceiling is here
 // to be a good neighbour rather than to protect ourselves.
 const maxWatchedDirs = 5000
+
+// watchableDirName reports whether a directory of this name is worth an inotify
+// watch.
+//
+// ONE PREDICATE, TWO CALLERS, and that is the point of extracting it. The
+// initial walk had this rule inline and the Create handler had no rule at all,
+// so a directory that appeared after startup was watched whatever it was called
+// -- `git init` in a subdirectory, an npm install, a build that materialises its
+// own output tree. The walk skips those precisely because they churn, and a
+// watcher that agrees with the walk only until the workspace changes shape is
+// not a watcher that agrees with the walk.
+func watchableDirName(name string) bool {
+	return !strings.HasPrefix(name, ".") && name != "node_modules" && name != "vendor"
+}
 
 // startWorkspaceWatcher starts a recursive filesystem watcher on the workspace.
 // When a file is written (e.g. by the user in VS Code), it triggers a background
@@ -44,8 +60,7 @@ func (s *Server) startWorkspaceWatcher() {
 				s.logger.Printf("watcher: reached the %d directory limit, stopping recursive watch to prevent inotify exhaustion", maxWatchedDirs)
 				return filepath.SkipAll
 			}
-			name := d.Name()
-			if strings.HasPrefix(name, ".") || name == "node_modules" || name == "vendor" {
+			if !watchableDirName(d.Name()) {
 				return filepath.SkipDir
 			}
 			// Only count a directory we are ACTUALLY watching. Incrementing
@@ -92,13 +107,47 @@ func (s *Server) startWorkspaceWatcher() {
 
 				// We care about writes (saves in VS Code) and creations.
 				if event.Op&(fsnotify.Write|fsnotify.Create) != 0 {
-					stat, err := os.Stat(event.Name)
-					if err == nil && stat.IsDir() {
-						// It's a new directory, add it to the watcher if under limit.
+					// os.LSTAT, NEVER os.Stat, and editapply/linkmode.go says so in
+					// as many words: "Pass fs.DirEntry.Type() or the result of an
+					// LSTAT -- never a Stat, which has already followed the link and
+					// will answer about the target."
+					//
+					// This asked os.Stat. A symlink to a directory therefore came
+					// back IsDir, was handed to watcher.Add, and registered an
+					// inotify watch on a directory OUTSIDE the workspace. Every write
+					// behind it then arrived as <workspace>/<link>/<file>, survived
+					// filepath.Rel, and reached reindexFile -- which reads the file
+					// and puts its content in the retrieval index. Index content
+					// becomes prompt context, and prompt context leaves the machine.
+					//
+					// ScanWorkspace has always refused link-like entries, and the
+					// walk above inherits that for free (WalkDir reports a link by
+					// its own type, so d.IsDir() is false and it never descends).
+					// This handler was the one incremental door the indexer's
+					// confinement did not cover.
+					//
+					// IsLinkLike rather than ModeSymlink for the reason
+					// editapply/linkmode.go exists: a Windows junction is
+					// ModeIrregular and needs no privilege to create. And none of
+					// this needs an attacker -- `ln -s ../shared lib` is ordinary,
+					// and so is checking out a branch that contains one.
+					//
+					// Placed before the IsDir branch so it covers a linked FILE too,
+					// which readEligibleFile would refuse anyway; refusing here as
+					// well costs nothing and keeps one rule in one place.
+					info, err := os.Lstat(event.Name)
+					if err == nil && editapply.IsLinkLike(info.Mode()) {
+						continue
+					}
+					if err == nil && info.IsDir() {
+						// A directory that appeared after the walk. Same rules as the
+						// walk, via the same predicate: only watch what the walk
+						// would have watched, and only count what is really watched.
+						if !watchableDirName(info.Name()) {
+							continue
+						}
 						pendingMu.Lock()
 						if dirCount < maxWatchedDirs {
-							// Same rule as the initial walk: only count what is
-							// really being watched.
 							if err := watcher.Add(event.Name); err == nil {
 								dirCount++
 							}

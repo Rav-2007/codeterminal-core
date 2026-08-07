@@ -234,3 +234,124 @@ func TestWorkspaceWatcher_MissingWorkspaceIsNotFatal(t *testing.T) {
 	s.startWorkspaceWatcher() // must not panic
 	time.Sleep(100 * time.Millisecond)
 }
+
+// THE INCREMENTAL DOOR INTO THE INDEX THAT THE INDEXER'S CONFINEMENT DID NOT
+// COVER.
+//
+// ScanWorkspace refuses a link-like entry and never descends through one, and
+// the watcher's INITIAL walk inherits that for free: filepath.WalkDir reports a
+// symlink by its own type, so d.IsDir() is false and the directory is neither
+// entered nor watched.
+//
+// The Create handler was the hole. It asked os.STAT, which follows the link and
+// answers about the target, so a symlinked directory came back IsDir and was
+// handed to watcher.Add -- registering an inotify watch on a directory OUTSIDE
+// the workspace. Every write behind it then arrived as <workspace>/<link>/<file>,
+// survived filepath.Rel, and reached reindexFile, which reads the file and puts
+// its content in the retrieval index. Index content becomes prompt context, and
+// prompt context leaves the machine.
+//
+// `ln -s ../shared lib` is ordinary, and so is checking out a branch that
+// contains one. This needs no attacker.
+//
+// Neuter check: change os.Lstat back to os.Stat (or drop the IsLinkLike branch)
+// and this test fails with the outside file named in the message.
+func TestWorkspaceWatcher_RefusesToWatchThroughASymlinkedDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation is privileged on Windows; NOT RUN on this platform")
+	}
+	s, ws, cancel := newWatcherServer(t)
+	defer cancel()
+
+	outside := t.TempDir()
+
+	var mu sync.Mutex
+	var logged []string
+	s.logger = capturingLogger(&mu, &logged)
+
+	s.startWorkspaceWatcher()
+	time.Sleep(200 * time.Millisecond)
+
+	// Created AFTER the walk, deliberately: the Create event is the only way in.
+	if err := os.Symlink(outside, filepath.Join(ws, "shared")); err != nil {
+		t.Skip(err)
+	}
+	time.Sleep(300 * time.Millisecond)
+
+	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("CANARY\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(1500 * time.Millisecond) // past the 1s debounce
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, line := range logged {
+		if strings.Contains(line, "reindexing") {
+			t.Errorf("a write OUTSIDE the workspace reached the reindex path through a symlinked "+
+				"directory: %q -- the watcher followed a link the indexer refuses, and whatever it "+
+				"indexes becomes prompt context", line)
+		}
+	}
+}
+
+// THE SAME DIVERGENCE, ITS SECOND SYMPTOM.
+//
+// TestWorkspaceWatcher_SkipsHiddenAndVendorDirectories creates its directories
+// BEFORE the watcher starts, so it only ever exercised the initial walk. The
+// Create handler had no skip rule at all, so a directory that appeared after
+// startup was watched whatever it was called.
+//
+// .git is the one that hurts: it churns on every checkout, fetch, commit and
+// gc, and the dotfile filter does not save you -- the filter tests the BASE
+// name, and .git/objects/ab/cdef0123 has a base of cdef0123.
+//
+// `git init` in a subdirectory, an npm install, and a build that materialises
+// its own output tree all reach this path. Neuter check: drop the
+// watchableDirName call from the Create handler and this test fails.
+func TestWorkspaceWatcher_AppliesTheWalksSkipRulesToDirectoriesCreatedLater(t *testing.T) {
+	s, ws, cancel := newWatcherServer(t)
+	defer cancel()
+
+	var mu sync.Mutex
+	var logged []string
+	s.logger = capturingLogger(&mu, &logged)
+
+	s.startWorkspaceWatcher()
+	time.Sleep(200 * time.Millisecond)
+
+	// ONE LEVEL, AND A PAUSE, both load-bearing. A first draft of this test used
+	// MkdirAll(".git/objects") and then wrote inside objects/ -- and it passed
+	// against the UNFIXED watcher, for a reason that had nothing to do with the
+	// property: MkdirAll creates both levels in microseconds, so objects/ already
+	// existed by the time the handler got around to watching .git/, no Create
+	// event for it was ever seen, and nothing inside it could fire. A test that
+	// passes because the event never arrives proves nothing about what the code
+	// would do with the event.
+	//
+	// So: create the skipped directory alone, let the handler actually process
+	// its Create, and only then write a file directly inside it.
+	for _, d := range []string{".git", "node_modules"} {
+		if err := os.Mkdir(filepath.Join(ws, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	time.Sleep(500 * time.Millisecond)
+
+	// Bases that do NOT start with a dot, so the dotfile filter cannot be what
+	// saves us -- the directory rule has to.
+	for _, f := range []string{".git/HEAD", "node_modules/index.js"} {
+		if err := os.WriteFile(filepath.Join(ws, f), []byte("x\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	time.Sleep(1500 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, line := range logged {
+		if strings.Contains(line, "reindexing") {
+			t.Errorf("a directory created after startup was watched despite the walk skipping "+
+				"its name, and a write inside it triggered a reindex: %q", line)
+		}
+	}
+}
