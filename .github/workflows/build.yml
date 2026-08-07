@@ -430,10 +430,21 @@ jobs:
         run: docker build -t codeterminal-proxy:ci ./proxy
 
   eval:
-    # NOT per-PR. The -tags eval suite downloads a real embedding model and takes
-    # ~148s; running it on every push would make the gate slow enough that people
-    # route around it, which is the failure mode this whole pipeline exists to
-    # fix. On a schedule it still catches retrieval-quality drift within a week.
+    # NOT per-PR. The -tags eval suite downloads a real embedding model and
+    # indexes this whole repository once per test; running it on every push would
+    # make the gate slow enough that people route around it, which is the failure
+    # mode this whole pipeline exists to fix. On a schedule it still catches
+    # retrieval-quality drift within a week.
+    #
+    # The "~148s" this comment used to claim was one test's local time, quoted as
+    # the suite's. The three tests together exceeded `go test`'s DEFAULT 10-minute
+    # timeout on this runner and the job died with `panic: test timed out after
+    # 10m0s` -- in run 31168478415 and again in 31174599384, both times with the
+    # panic sitting underneath a separate, real failure that was easier to see. A
+    # job that is red for two reasons at once teaches you about one of them.
+    #
+    # -timeout is therefore explicit below. Nothing was hanging: when the alarm
+    # fired, TestTokenEfficiencyEval had been running 3m25s of legitimate work.
     name: retrieval eval (scheduled)
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
@@ -476,5 +487,5 @@ jobs:
       # moving tree expires by design; the eval needs rebuilding around current
       # queries with labelled ground truth. Remove the -run filter then.
       - name: Run gated eval suite (green subset -- see comment)
-        run: go test -tags eval -run 'TestEvalRetrievalQuality|TestRerankEvalRetrievalRanking|TestTokenEfficiencyEval' ./...
+        run: go test -tags eval -timeout 30m -run 'TestEvalRetrievalQuality|TestRerankEvalRetrievalRanking|TestTokenEfficiencyEval' ./...
         working-directory: daemon
