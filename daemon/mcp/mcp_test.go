@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -29,10 +30,39 @@ func TestServerEnvNeverLeaksCredentials(t *testing.T) {
 
 	t.Run("nothing is inherited by default", func(t *testing.T) {
 		env := ServerEnv(nil)
+		got := names(env)
 
-		if got := names(env); !slices.Equal(got, []string{"PATH", "HOME"}) {
-			t.Errorf("ServerEnv(nil) passed %v, want exactly [PATH HOME]. Anything else means the "+
-				"daemon's environment is being inherited", got)
+		// EVERY name must be one this package chose. Asserted as a subset of the
+		// baseline rather than as an exact list, because the baseline is
+		// PLATFORM-SHAPED: POSIX gets [PATH HOME], Windows gets nine more that a
+		// child there genuinely cannot run without (see baselineEnvNames). The
+		// old assertion hardcoded [PATH HOME] and so encoded the POSIX shape as
+		// if it were the contract -- it failed all three of these subtests on the
+		// Windows runner in CI run #42, against correct code.
+		//
+		// This is not weaker. It is the property the subtest is named for, and it
+		// still fails hard against `return os.Environ()`: the daemon's real
+		// environment contains AWS_SECRET_ACCESS_KEY and the three inference keys
+		// set above, none of which is in any baseline.
+		var uninvited []string
+		for _, name := range got {
+			if !slices.Contains(BaselineEnvNames, name) {
+				uninvited = append(uninvited, name)
+			}
+		}
+		// Collected and reported ONCE. Reported per-name, the neuter check dumped
+		// the whole inherited environment about 130 times -- roughly half a
+		// megabyte of CI log in which the actual finding was unfindable. A test
+		// whose failure output cannot be read is most of the way to a test nobody
+		// reads.
+		if len(uninvited) > 0 {
+			t.Errorf("ServerEnv(nil) passed %d variable(s) nobody asked for: %v.\n"+
+				"The baseline for this platform is %v; anything outside it means the daemon's "+
+				"environment is being inherited.", len(uninvited), truncate(uninvited, 10), BaselineEnvNames)
+		}
+		// A child with no PATH cannot exec anything, on any platform.
+		if !slices.Contains(got, "PATH") {
+			t.Errorf("ServerEnv(nil) = %v, with no PATH; a server subprocess cannot run without it", got)
 		}
 		assertNoSecrets(t, env)
 	})
@@ -42,11 +72,17 @@ func TestServerEnvNeverLeaksCredentials(t *testing.T) {
 		// exists so a server can have a credential OF ITS OWN; it is not a
 		// mechanism for handing over ours, and asking loudly does not change
 		// that.
-		env := ServerEnv([]string{"OPENROUTER_API_KEY", "CODETERMINAL_MOCHIII_KEY", "CODETERMINAL_API_KEY"})
+		asked := []string{"OPENROUTER_API_KEY", "CODETERMINAL_MOCHIII_KEY", "CODETERMINAL_API_KEY"}
+		env := ServerEnv(asked)
 
-		if got := names(env); !slices.Equal(got, []string{"PATH", "HOME"}) {
-			t.Errorf("an allow-list naming the inference keys produced %v; those names must be "+
-				"ungrantable, not merely absent by default", got)
+		// The property is that ASKING DOES NOT GRANT -- stated directly, rather
+		// than inferred from the whole list matching a POSIX-shaped snapshot.
+		got := names(env)
+		for _, name := range asked {
+			if slices.Contains(got, name) {
+				t.Errorf("an allow-list naming %q was honoured; this product's own inference "+
+					"credentials must be ungrantable, not merely absent by default. Got %v", name, got)
+			}
 		}
 		assertNoSecrets(t, env)
 	})
@@ -75,8 +111,17 @@ func TestServerEnvNeverLeaksCredentials(t *testing.T) {
 
 	t.Run("duplicates do not duplicate", func(t *testing.T) {
 		env := ServerEnv([]string{"PATH", "PATH", "HOME"})
-		if got := names(env); !slices.Equal(got, []string{"PATH", "HOME"}) {
-			t.Errorf("ServerEnv produced %v; a repeated name must not produce a repeated entry", got)
+		// Stated as "no name appears twice", which is the actual rule. The old
+		// form compared against [PATH HOME] and so also asserted the platform's
+		// whole baseline as a side effect -- which is why it went red on Windows
+		// for a reason that had nothing to do with duplicates.
+		seen := map[string]bool{}
+		got := names(env)
+		for _, name := range got {
+			if seen[name] {
+				t.Errorf("ServerEnv produced %v; %q appears more than once", got, name)
+			}
+			seen[name] = true
 		}
 	})
 }
@@ -214,4 +259,14 @@ func assertNoSecrets(t *testing.T, env []string) {
 			}
 		}
 	}
+}
+
+// truncate keeps a failure message readable when the "wrong" answer is the
+// entire environment: the first n names are enough to identify what happened,
+// and the count above says how bad it is.
+func truncate(names []string, n int) string {
+	if len(names) <= n {
+		return fmt.Sprint(names)
+	}
+	return fmt.Sprintf("%v ...and %d more", names[:n], len(names)-n)
 }

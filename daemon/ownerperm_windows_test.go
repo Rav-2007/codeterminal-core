@@ -50,24 +50,35 @@ func assertOwnerOnly(t *testing.T, path, what string) {
 			"are merged in, so the restriction is decorative under a permissive parent", path, what, sddl)
 	}
 
-	self, err := currentUserSIDString()
+	self, err := currentUserSID()
 	if err != nil {
 		t.Fatalf("determining this user's SID: %v", err)
 	}
 	for _, trustee := range aceTrustees(dacl) {
-		if trustee != self {
-			t.Errorf("%s (%s) grants access to %s, which is not this user (%s). Full descriptor: %q",
-				path, what, trustee, self, sddl)
+		// RESOLVED, NOT STRING-COMPARED. See resolveTrustee: SDDL renders
+		// well-known SIDs as two-letter aliases, so the same principal has two
+		// spellings and `trustee != self` called a correct descriptor a leak.
+		sid, err := windows.StringToSid(trustee)
+		if err != nil {
+			t.Errorf("%s (%s) has an ACE for trustee %q that could not be resolved to a SID (%v); "+
+				"it cannot be shown to be this user, so it is treated as a leak. Full descriptor: %q",
+				path, what, trustee, err, sddl)
+			continue
+		}
+		if !sid.Equals(self) {
+			t.Errorf("%s (%s) grants access to %s (%s), which is not this user (%s). Full descriptor: %q",
+				path, what, trustee, sid, self, sddl)
 		}
 	}
 }
 
-func currentUserSIDString() (string, error) {
+// currentUserSID is the SID of the user this process runs as.
+func currentUserSID() (*windows.SID, error) {
 	user, err := windows.GetCurrentProcessToken().GetTokenUser()
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	return user.User.Sid.String(), nil
+	return user.User.Sid, nil
 }
 
 // daclSection returns the body of the "D:" section of an SDDL string, i.e.
@@ -87,6 +98,40 @@ func daclSection(sddl string) (string, bool) {
 	}
 	return rest, true
 }
+
+// WHY THE TRUSTEE IS RESOLVED RATHER THAN COMPARED AS TEXT.
+//
+// SDDL renders WELL-KNOWN SIDs as two-letter ALIASES, not as S-R-I-S-S strings:
+// "LA" is the local Administrator account, "BA" is BUILTIN\Administrators, "SY"
+// is LocalSystem, "WD" is Everyone. So a descriptor granting exactly this user
+// comes back as
+//
+//	D:PAI(A;;FA;;;LA)(A;OICIIO;GA;;;LA)
+//
+// while the process token reports S-1-5-21-1067599573-4126134432-3943563581-500.
+// One principal, two spellings, and `trustee != self` calls it a leak.
+//
+// MEASURED, not anticipated. This failed SIX owner-only tests across twelve
+// assertions on the Windows runner in CI run #42 -- lexical index, its sidecars,
+// the memory and skills sidecars, the daemon log, and the log directory -- every
+// one of them reporting a security violation about a descriptor that was
+// correct. The runner happens to run as the built-in Administrator (RID 500),
+// which is precisely the account SDDL abbreviates.
+//
+// A false failure in a security assertion is not the harmless direction. The
+// next reader either believes it and "fixes" working code, or learns that these
+// tests cry wolf and stops reading them -- and that is the same end state as not
+// having them.
+//
+// windows.StringToSid wraps ConvertStringSidToSidW, which accepts BOTH the
+// alias constants and the numeric form, so the comparison becomes structural via
+// SID.Equals and no longer depends on which spelling Windows chose.
+//
+// Note that inherit-only ACEs (the IO flag above) are deliberately NOT skipped.
+// They grant nothing on the object itself, but on a directory they govern what
+// its future children get -- an inherit-only grant to another principal would
+// make every file written later readable, which is exactly the leak these tests
+// exist to catch.
 
 // aceTrustees returns the trustee field of every ACE in an SDDL DACL body.
 // Each ACE is (type;flags;rights;object_guid;inherit_object_guid;trustee).
