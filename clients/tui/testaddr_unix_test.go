@@ -30,6 +30,6 @@ func testAddress(t *testing.T) protocol.Address {
 	// "d.sock" rather than "daemon.sock" is a deliberate saving.
 	return protocol.Address{
 		Transport: protocol.TransportUnix,
-		Address:   filepath.Join(t.TempDir(), "d.sock"),
+		Address:   filepath.Join(shortTempDir(t), "d.sock"),
 	}
 }

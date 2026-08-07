@@ -24,7 +24,7 @@ import (
 // this test process, so LOCAL_PEERCRED must report this process's own uid.
 func acceptOneUnixDarwin(t *testing.T) (client, server net.Conn) {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "peercred.sock")
+	path := filepath.Join(shortTempDir(t), "peercred.sock")
 	ln, err := net.Listen("unix", path)
 	if err != nil {
 		t.Fatalf("listen: %v", err)

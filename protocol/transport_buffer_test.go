@@ -24,7 +24,7 @@ func localTestAddress(t *testing.T) Address {
 			Address:   fmt.Sprintf(`\\.\pipe\codeterminal-buftest-%d-%d`, os.Getpid(), bufTestSeq.Add(1)),
 		}
 	}
-	return Address{Transport: TransportUnix, Address: filepath.Join(t.TempDir(), "d.sock")}
+	return Address{Transport: TransportUnix, Address: filepath.Join(shortTempDir(t), "d.sock")}
 }
 
 // THE TRANSPORT MUST BUFFER A WRITE THE PEER HAS NOT READ.

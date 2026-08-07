@@ -10,22 +10,6 @@ import (
 	"time"
 )
 
-// shortTempDir returns a temp directory with a SHORT path.
-//
-// t.TempDir() embeds the test name, and a Unix socket path is capped at ~108
-// bytes by the kernel — a limit that is easy to exceed under a long test name
-// or a long TMPDIR, and which surfaces as a bare "invalid argument" from bind
-// that looks nothing like a length problem.
-func shortTempDir(t *testing.T) string {
-	t.Helper()
-	dir, err := os.MkdirTemp("", "ctp")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	return dir
-}
-
 // The seam's whole job: something bound by Listen is reachable by Dial, and the
 // bytes survive the trip.
 func TestListenAndDial_RoundTrip(t *testing.T) {

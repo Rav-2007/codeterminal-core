@@ -25,11 +25,13 @@ import (
 // it exists for. PART 0 rule 4: a test must enter through the same door.
 func testAddress(t *testing.T) protocol.Address {
 	t.Helper()
-	// t.TempDir(), not a fixed path: sun_path caps a Unix socket around 108
-	// bytes, and a long test name plus a nested temp dir gets close enough that
-	// "d.sock" rather than "daemon.sock" is a deliberate saving.
+	// shortTempDir, not t.TempDir(): sun_path is 104 bytes on macOS and
+	// $TMPDIR there is ~49 of them before a test name is added. See its doc
+	// comment -- this is the fixture fault that failed 15 tests on the first
+	// macOS CI run. "d.sock" over "daemon.sock" is kept, but it was never the
+	// part that mattered.
 	return protocol.Address{
 		Transport: protocol.TransportUnix,
-		Address:   filepath.Join(t.TempDir(), "d.sock"),
+		Address:   filepath.Join(shortTempDir(t), "d.sock"),
 	}
 }

@@ -15,7 +15,7 @@ import (
 // this test process, so SO_PEERCRED must report this process's own uid/pid.
 func acceptOneUnix(t *testing.T) (client, server net.Conn) {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "peercred.sock")
+	path := filepath.Join(shortTempDir(t), "peercred.sock")
 	ln, err := net.Listen("unix", path)
 	if err != nil {
 		t.Fatalf("listen: %v", err)

@@ -291,10 +291,7 @@ func (b *lockedBuffer) String() string {
 // /run/user/1000, so this is also the more faithful fixture.
 func shortRuntimeDir(t *testing.T) string {
 	t.Helper()
-	dir, err := os.MkdirTemp("", "ctrt")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	return dir
+	// Delegates: this used to call os.MkdirTemp("", "ctrt"), which honours
+	// $TMPDIR and so was still ~49 bytes deep on macOS. See shortTempDir.
+	return shortTempDir(t)
 }
