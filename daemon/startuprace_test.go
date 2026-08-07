@@ -173,53 +173,26 @@ func TestStartupRace_ConcurrentLosersAllReportTheSameWay(t *testing.T) {
 	writeFile(t, filepath.Join(repo, "a.go"), "package a\n")
 
 	const racers = 6
-	cmds := make([]*exec.Cmd, racers)
-	logs := make([]*lockedBuffer, racers)
-	// Each racer's own goroutine calls Wait, which is not optional: an exited
-	// child that nobody reaps is a ZOMBIE, and a zombie still answers signal 0.
-	// Polling liveness that way reported all six as running when five had
-	// already exited -- the harness measuring itself instead of the daemon.
-	exited := make([]chan int, racers)
+	rs := make([]*racer, racers)
 	start := make(chan struct{})
-
-	for i := range cmds {
-		cmd := exec.Command(bin, "--workspace", repo)
-		cmd.Env = daemonEnv(runtimeDir)
-		logs[i] = &lockedBuffer{}
-		cmd.Stdout, cmd.Stderr = logs[i], logs[i]
-		cmds[i] = cmd
-		exited[i] = make(chan int, 1)
-
-		go func(c *exec.Cmd, done chan int) {
-			<-start // released together, so they contend for real
-			if err := c.Start(); err != nil {
-				done <- -1
-				return
-			}
-			err := c.Wait()
-			var exit *exec.ExitError
-			if errors.As(err, &exit) {
-				done <- exit.ExitCode()
-				return
-			}
-			done <- 0
-		}(cmd, exited[i])
+	for i := range rs {
+		rs[i] = startRacer(bin, runtimeDir, repo, start)
 	}
-	close(start)
+	close(start) // released together, so they contend for real
 
 	// Long enough for every loser to lose. A loser now allocates nothing before
 	// deciding (that is the other half of this fix), so this is fast.
 	time.Sleep(5 * time.Second)
 
 	var survivors []int
-	for i := range cmds {
+	for i, r := range rs {
 		select {
-		case code := <-exited[i]:
+		case code := <-r.exited:
 			if code != exitAlreadyRunning {
 				t.Errorf("racer %d exited %d, want %d (exitAlreadyRunning).\n"+
 					"Every daemon that loses this race lost it for the same reason and must say "+
 					"so the same way, whether it lost at the probe or at the bind.\nIts output:\n%s",
-					i, code, exitAlreadyRunning, logs[i].String())
+					i, code, exitAlreadyRunning, r.log.String())
 			}
 		default:
 			survivors = append(survivors, i)
@@ -227,10 +200,7 @@ func TestStartupRace_ConcurrentLosersAllReportTheSameWay(t *testing.T) {
 	}
 
 	for _, i := range survivors {
-		if cmds[i].Process != nil {
-			_ = cmds[i].Process.Kill()
-		}
-		<-exited[i] // its own goroutine reaps it
+		rs[i].shutdown()
 	}
 
 	if len(survivors) != 1 {
@@ -240,6 +210,79 @@ func TestStartupRace_ConcurrentLosersAllReportTheSameWay(t *testing.T) {
 }
 
 // --- fixtures ---
+
+// racer is one contender in the concurrent-startup test, and it OWNS its
+// exec.Cmd completely.
+//
+// That ownership is the point, not a style choice. The first version of this
+// test kept the []*exec.Cmd in the test goroutine and reached into
+// cmds[i].Process to poll and kill. -race caught it: Cmd.Start WRITES
+// cmd.Process from the racer's goroutine, and the test goroutine read it with
+// no happens-before edge between them. Killing across that boundary raced again
+// inside os.Process. So nothing outside this struct's own goroutine touches the
+// command; the test learns everything through channels.
+type racer struct {
+	log    *lockedBuffer
+	exited chan int      // the exit code, exactly once
+	stop   chan struct{} // closed to ask this racer to stop
+}
+
+// startRacer launches one daemon that waits on `gate` before exec'ing, so a
+// whole field can be released at once.
+func startRacer(bin, runtimeDir, workspace string, gate <-chan struct{}) *racer {
+	r := &racer{
+		log:    &lockedBuffer{},
+		exited: make(chan int, 1),
+		stop:   make(chan struct{}),
+	}
+
+	go func() {
+		<-gate
+		cmd := exec.Command(bin, "--workspace", workspace)
+		cmd.Env = daemonEnv(runtimeDir)
+		cmd.Stdout, cmd.Stderr = r.log, r.log
+		if err := cmd.Start(); err != nil {
+			r.log.Write([]byte("start failed: " + err.Error()))
+			r.exited <- -1
+			return
+		}
+
+		// Wait in its own goroutine so this one can serve a stop request while
+		// the child is still running. Killing via cmd.Process from here while
+		// Wait runs there is the same arrangement exec.CommandContext uses
+		// internally, and is supported; reaching in from the TEST goroutine,
+		// which is what the first version did, is not.
+		waited := make(chan int, 1)
+		go func() {
+			err := cmd.Wait()
+			var exit *exec.ExitError
+			if errors.As(err, &exit) {
+				waited <- exit.ExitCode()
+				return
+			}
+			waited <- 0
+		}()
+
+		select {
+		case code := <-waited:
+			r.exited <- code
+		case <-r.stop:
+			_ = cmd.Process.Kill()
+			<-waited // reaped by its own goroutine; no zombie
+			r.exited <- exitKilledByTest
+		}
+	}()
+
+	return r
+}
+
+// exitKilledByTest marks the winner, which never exits on its own.
+const exitKilledByTest = -2
+
+func (r *racer) shutdown() {
+	close(r.stop)
+	<-r.exited
+}
 
 type daemonRun struct {
 	code int
