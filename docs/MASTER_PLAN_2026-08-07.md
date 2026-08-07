@@ -41,10 +41,10 @@ Measured on this tree, 2026-08-07:
 | | Value |
 |---|---|
 | `make check` | **exit 0** |
-| Tests | **1,081** (1,055 on 08-06) |
-| Coverage | daemon 74.2 · mcp 92.1 · editapply 88.5 · proxy 86.1 · protocol 92.6 · tui 77.6 · helper 21.7 |
+| Tests | **1,081** (1,055 on 08-06) · VS Code **45/45** |
+| Coverage | daemon 74.0 · mcp 92.1 · editapply 88.5 · proxy 86.1 · protocol **94.0** · tui 77.6 · helper 21.7 |
 | errcheck ceilings | all six at ceiling, none moved |
-| Commits pending | **10** on `ci/cross-go-test`; `bea5562` unpushed |
+| Commits pending | **18** on `ci/cross-go-test` (10 Windows + 6 lifecycle + 2 docs) |
 | CI | **blocked** — GitHub Actions `major_outage` since 15:22Z; run #41 cancelled |
 
 **Windows went from 58 failures to 13, and all 13 now have fixes that have never
@@ -128,7 +128,41 @@ code so the loser of a race does not read as a crash. The extension must **never
 delete a stale lockfile**; that logic exists correctly in exactly one place
 (`reclaimStaleSocket`) and stays there.
 
-Also in this stage, because they are the same file and the same session:
+#### DONE 2026-08-07 — six commits, `b1bfa5e`…`f1babbd`
+
+All of the above landed, and the pass turned up one defect nobody had
+predicted.
+
+| | |
+|---|---|
+| `b1bfa5e` | repro: two workspaces, both halves |
+| `4ae4778` | per-workspace lockfile/socket/pipe + TS mirror + golden vectors |
+| `200308e` | bounded the extension's infinite restart loop |
+| `ef7eb0e` | repro: the startup-race leak |
+| `e21809b` | claim the address before acquiring resources; exit-code contract |
+| `57c22ad` | probe-and-adopt supervisor |
+
+**The unpredicted defect, and it was the severe one.** `main()` ran
+`setupRetrieval` and `setupMemoryStore` *before* `reclaimStaleSocket`, so a
+daemon that had already lost spawned the 81 MB embedder helper and opened SQLite
+first — then exited through `logger.Fatal`, which is `os.Exit(1)`, which **does
+not run deferred functions**. The helper was reparented and never collected.
+
+Measured, not reasoned: baseline 0 helpers → A running 1 → B lost and exited
+leaving **2** → stopping A cleanly returned to **1, not 0**. Combined with the
+pre-`200308e` three-second retry, that was **81 MB orphaned every three seconds**
+for as long as the window stayed open. After the fix the same sequence ends at 0
+and B's entire output is two lines.
+
+The general lesson, which applies well beyond this file: *mutual exclusion is the
+cheapest step in startup and the one that decides everything, and it ran last.*
+
+`exitAlreadyRunning = 3` is now a contract between `daemon/exitcodes.go` and
+`daemonSupervisor.ts`, covered in **both** places a daemon can lose — the
+sequential probe and the concurrent `bind` (`isAddrInUse`, a platform seam
+because `syscall.EADDRINUSE` on Windows is synthetic and never matches).
+
+**Still open in this stage** (unchanged, and none of it is blocked):
 
 - **Shutdown is `SIGTERM`**, which Windows does not deliver — `child.kill()` is
   `TerminateProcess` and skips the entire drain path at `daemon/main.go:287-309`.
@@ -140,6 +174,13 @@ Also in this stage, because they are the same file and the same session:
   passing `-log-file` so an *adopting* window can still see the log.
 - Delete `DAEMON_LAUNCH_COMMAND` and the first-run `<pre>` block telling users to
   start the daemon by hand.
+- **Shared-daemon lifetime**, surfaced by adoption and *not* fixed by it: closing
+  the window that OWNS the daemon stops it under a window that adopted it. This
+  is pre-existing — before adoption the second window never got a daemon of its
+  own either, so it already depended on the winner's — but adoption makes it the
+  normal path rather than an accident. The real fix is `--idle-timeout` plus the
+  shutdown RPC above, i.e. the two items already in this list. Recorded so it is
+  not rediscovered as a regression of `57c22ad`.
 
 ### Stage 3 — Packaging (1.5–2 weeks)
 
