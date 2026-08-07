@@ -1,5 +1,16 @@
 package main
 
+import "errors"
+
+// errAlreadyRunning is the condition exitAlreadyRunning reports.
+//
+// A sentinel rather than a string match, because it is produced in two places
+// that fail differently and must be treated identically: reclaimStaleSocket's
+// probe (a daemon that was ALREADY up when this one started) and a bind that
+// loses EADDRINUSE (two daemons starting AT ONCE, arbitrated by the kernel).
+// See main.go for why one cannot cover the other.
+var errAlreadyRunning = errors.New("another daemon already serves this workspace")
+
 // The daemon's exit codes, which are a CONTRACT with whatever supervises it.
 //
 // clients/vscode/src/daemonSupervisor.ts is the consumer, and the question it

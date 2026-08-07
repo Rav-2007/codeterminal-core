@@ -8,6 +8,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"codeterminal/editapply"
+	"codeterminal/protocol"
 )
 
 // LOSING THE STARTUP RACE, AND WHAT IT COSTS.
@@ -76,13 +80,12 @@ func TestStartupRace_LoserIsDistinguishableFromABrokenDaemon(t *testing.T) {
 	// could be satisfied by making every failure exit 3, which would leave a
 	// client exactly as unable to tell the two apart as it is now.
 	broken := runDaemonToCompletion(t, bin, runtimeDir, repo, "--config", filepath.Join(repo, "nope.json"))
-	if broken.code == exitAlreadyRunning {
-		t.Errorf("a daemon that could not read its config ALSO exited %d; the code must "+
-			"distinguish losing the race from being broken, or a supervisor cannot act on it.\n"+
-			"Its output:\n%s", broken.code, broken.log)
-	}
-	if broken.code == 0 {
-		t.Fatalf("the broken-config control exited 0; it is not testing what it claims.\nIts output:\n%s", broken.log)
+	if broken.code != exitFailure {
+		t.Errorf("a daemon that could not read its config exited %d, want %d (exitFailure).\n"+
+			"The two codes must stay DIFFERENT: a supervisor that cannot separate 'another "+
+			"window serves this repo' from 'this daemon is broken' has to guess, and is wrong "+
+			"in one of the two cases whichever way it guesses.\nIts output:\n%s",
+			broken.code, exitFailure, broken.log)
 	}
 }
 
@@ -125,11 +128,114 @@ func TestStartupRace_LoserExitsBeforeAcquiringResources(t *testing.T) {
 		}
 	}
 
-	// And it must still say WHY, or the exit code is the only diagnostic and a
-	// human reading a log learns nothing.
-	if !strings.Contains(loser.log, "already listening") {
-		t.Errorf("the loser exited without naming the reason; the code is for the supervisor, "+
-			"the message is for the human.\nIts output:\n%s", loser.log)
+	// And it must still say WHY. The exit code is for the supervisor; the message
+	// is for the human reading a log, who gets no exit code at all.
+	//
+	// Asserted against the product's OWN sentinel text rather than a copied
+	// string, so rewording the message cannot silently empty this check out.
+	if !strings.Contains(loser.log, errAlreadyRunning.Error()) {
+		t.Errorf("the loser exited without naming the reason (want %q in its output).\n"+
+			"Its output:\n%s", errAlreadyRunning.Error(), loser.log)
+	}
+	if !strings.Contains(loser.log, addressOf(t, repo)) {
+		t.Errorf("the loser named the reason but not WHICH address was taken, which is what "+
+			"tells a human whether it is the daemon they think it is.\nIts output:\n%s", loser.log)
+	}
+}
+
+// THE CONCURRENT RACE, which the two tests above cannot reach.
+//
+// They are SEQUENTIAL: daemon A is fully up before B starts, so B loses at
+// reclaimStaleSocket's probe. Two windows opening the same repo AT ONCE lose
+// somewhere else entirely -- both probe, both find nothing, and both reach
+// net.Listen, where the kernel arbitrates and the loser gets EADDRINUSE. That is
+// a second code path (main.go's isAddrInUse branch) and without it the
+// concurrent loser exits 1, burning a supervisor restart attempt on a daemon
+// that was never broken.
+//
+// This asserts the CONTRACT under real concurrency rather than which branch
+// fired -- there is no way to force a specific one of the two without a seam in
+// product code that exists only for the test. What it does prove is the property
+// that matters: however a daemon loses, it says so the same way.
+//
+// Not flaky in the failing direction. A correct implementation exits 0 or 3 on
+// every schedule; only a missing branch produces a 1, and any schedule that
+// reaches it fails the test.
+func TestStartupRace_ConcurrentLosersAllReportTheSameWay(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds the daemon binary")
+	}
+	bin := buildDaemonBinary(t)
+
+	runtimeDir := shortRuntimeDir(t)
+	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "a.go"), "package a\n")
+
+	const racers = 6
+	cmds := make([]*exec.Cmd, racers)
+	logs := make([]*lockedBuffer, racers)
+	// Each racer's own goroutine calls Wait, which is not optional: an exited
+	// child that nobody reaps is a ZOMBIE, and a zombie still answers signal 0.
+	// Polling liveness that way reported all six as running when five had
+	// already exited -- the harness measuring itself instead of the daemon.
+	exited := make([]chan int, racers)
+	start := make(chan struct{})
+
+	for i := range cmds {
+		cmd := exec.Command(bin, "--workspace", repo)
+		cmd.Env = daemonEnv(runtimeDir)
+		logs[i] = &lockedBuffer{}
+		cmd.Stdout, cmd.Stderr = logs[i], logs[i]
+		cmds[i] = cmd
+		exited[i] = make(chan int, 1)
+
+		go func(c *exec.Cmd, done chan int) {
+			<-start // released together, so they contend for real
+			if err := c.Start(); err != nil {
+				done <- -1
+				return
+			}
+			err := c.Wait()
+			var exit *exec.ExitError
+			if errors.As(err, &exit) {
+				done <- exit.ExitCode()
+				return
+			}
+			done <- 0
+		}(cmd, exited[i])
+	}
+	close(start)
+
+	// Long enough for every loser to lose. A loser now allocates nothing before
+	// deciding (that is the other half of this fix), so this is fast.
+	time.Sleep(5 * time.Second)
+
+	var survivors []int
+	for i := range cmds {
+		select {
+		case code := <-exited[i]:
+			if code != exitAlreadyRunning {
+				t.Errorf("racer %d exited %d, want %d (exitAlreadyRunning).\n"+
+					"Every daemon that loses this race lost it for the same reason and must say "+
+					"so the same way, whether it lost at the probe or at the bind.\nIts output:\n%s",
+					i, code, exitAlreadyRunning, logs[i].String())
+			}
+		default:
+			survivors = append(survivors, i)
+		}
+	}
+
+	for _, i := range survivors {
+		if cmds[i].Process != nil {
+			_ = cmds[i].Process.Kill()
+		}
+		<-exited[i] // its own goroutine reaps it
+	}
+
+	if len(survivors) != 1 {
+		t.Errorf("%d of %d racers were still running, want exactly 1; the point of the race is "+
+			"that exactly one daemon ends up serving the workspace", len(survivors), racers)
 	}
 }
 
@@ -138,6 +244,17 @@ func TestStartupRace_LoserExitsBeforeAcquiringResources(t *testing.T) {
 type daemonRun struct {
 	code int
 	log  string
+}
+
+// addressOf derives the address a daemon for this workspace binds, the same way
+// a client would -- through protocol's own helpers, never a literal.
+func addressOf(t *testing.T, workspace string) string {
+	t.Helper()
+	real, err := editapply.ResolveRealWorkspaceRoot(workspace)
+	if err != nil {
+		t.Fatalf("resolving %s: %v", workspace, err)
+	}
+	return protocol.DefaultAddressFor(real).Address
 }
 
 // runDaemonToCompletion runs a daemon in the FOREGROUND and returns how it

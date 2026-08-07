@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -187,19 +188,24 @@ func main() {
 		logger.Fatal(err)
 	}
 
-	// absWorkspace (resolved and checked by validateWorkspace above) is passed
-	// in place of the raw flag: setupRetrieval would only re-derive the same
-	// absolute path, and threading the validated one keeps a single answer to
-	// "which directory is this daemon grounded against" across retrieval, the
-	// warn sink, and GroundingInfo.
-	retrieval := setupRetrieval(cfg, absWorkspace, *noContext, logger, newActiveEmbedder)
-	defer retrieval.Stop()
-
-	memoryStore := setupMemoryStore(logger)
-	if memoryStore != nil {
-		defer memoryStore.Close()
-	}
-
+	// CLAIM THE ADDRESS BEFORE ACQUIRING ANYTHING EXPENSIVE.
+	//
+	// This block used to sit BELOW setupRetrieval, and the order was the whole
+	// bug. Binding is the cheapest step in startup and the one that decides
+	// whether this process may run at all; doing it last meant a daemon that had
+	// already lost spawned the embedder helper (81 MB, holding the BGE model) and
+	// opened the SQLite conversation store first, and then exited through
+	// logger.Fatal -- which is os.Exit(1), and os.Exit does not run deferred
+	// functions. The helper was reparented and never collected.
+	//
+	// Measured: baseline 0 helpers, daemon A running 1, daemon B lost and exited
+	// leaving 2; stopping A cleanly returned to 1, not 0. With the extension's
+	// pre-200308e three-second retry, that was 81 MB orphaned every three
+	// seconds for as long as the window stayed open. Reproduced in
+	// daemon/startuprace_test.go.
+	//
+	// Nothing between here and the listener needs a model, a database or a
+	// subprocess, so a daemon that loses now exits having allocated nothing.
 	if _, err := protocol.SocketDir(); err != nil {
 		logger.Fatalf("creating runtime dir: %v", err)
 	}
@@ -229,6 +235,15 @@ func main() {
 	lockPath := protocol.LockPathFor(realRoot)
 
 	if err := reclaimStaleSocket(addr); err != nil {
+		// Losing is not failing. Another daemon already serves this exact
+		// workspace, which is what SHOULD happen when a second window opens the
+		// same repository -- one root, one index, one daemon. Say so with a code
+		// a supervisor can act on rather than the generic 1 that an unreadable
+		// models.json also produces; see exitcodes.go for the contract.
+		if errors.Is(err, errAlreadyRunning) {
+			logger.Print(err)
+			os.Exit(exitAlreadyRunning)
+		}
 		logger.Fatal(err)
 	}
 
@@ -237,7 +252,44 @@ func main() {
 	// protocol/transport_unix.go for why that step lives there and not here.
 	ln, err := protocol.Listen(addr)
 	if err != nil {
+		// THE RACE HALF, and the reason reclaimStaleSocket above is not enough.
+		// That probe closes the SEQUENTIAL window -- a daemon already up when
+		// this one started. It cannot close the CONCURRENT one: two windows
+		// opening the same repo at once both probe, both find nothing, and both
+		// reach this line, where the kernel arbitrates. Exactly one binds; the
+		// other gets EADDRINUSE, and it lost the same race for the same reason,
+		// so it exits the same way.
+		//
+		// Without this the concurrent loser exits 1 and gets counted against the
+		// supervisor's restart budget -- an ordinary two-window startup burning
+		// attempts on a daemon that was never broken.
+		if isAddrInUse(err) {
+			logger.Printf("%v (%v)", errAlreadyRunning, err)
+			os.Exit(exitAlreadyRunning)
+		}
 		logger.Fatalf("listening on %s: %v", addr, err)
+	}
+
+	// EXPENSIVE SETUP STARTS HERE, and only here, because the address is now
+	// held: from this point on losing the race is impossible, so every resource
+	// below is acquired by the daemon that will actually use it.
+	//
+	// The listener existing does not mean the daemon is serving -- nothing is
+	// accepted until `go srv.Serve(ln)` far below. A client that connects during
+	// the model load waits in the accept backlog rather than being refused,
+	// which is the behaviour we want and the reason binding early is safe.
+	//
+	// absWorkspace (resolved and checked by validateWorkspace above) is passed
+	// in place of the raw flag: setupRetrieval would only re-derive the same
+	// absolute path, and threading the validated one keeps a single answer to
+	// "which directory is this daemon grounded against" across retrieval, the
+	// warn sink, and GroundingInfo.
+	retrieval := setupRetrieval(cfg, absWorkspace, *noContext, logger, newActiveEmbedder)
+	defer retrieval.Stop()
+
+	memoryStore := setupMemoryStore(logger)
+	if memoryStore != nil {
+		defer memoryStore.Close()
 	}
 
 	var tcpToken string
@@ -382,7 +434,7 @@ func reclaimStaleSocket(addr protocol.Address) error {
 			// Close failing changes nothing: the probe already answered the only
 			// question asked, which is that somebody is listening.
 			_ = conn.Close()
-			return fmt.Errorf("a daemon is already listening on %s; stop it before starting a new one", addr)
+			return fmt.Errorf("%w: it is listening on %s", errAlreadyRunning, addr)
 		}
 		return nil
 	}
@@ -399,7 +451,7 @@ func reclaimStaleSocket(addr protocol.Address) error {
 	if err == nil {
 		// As above: the probe has already answered.
 		_ = conn.Close()
-		return fmt.Errorf("a daemon is already listening on %s; stop it before starting a new one", path)
+		return fmt.Errorf("%w: it is listening on %s", errAlreadyRunning, path)
 	}
 
 	if err := os.Remove(path); err != nil {
