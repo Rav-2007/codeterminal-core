@@ -3,6 +3,7 @@ package main
 import (
 	"io"
 	"os"
+	"path/filepath"
 	"sync"
 )
 
@@ -51,6 +52,22 @@ type rotatingFile struct {
 // openRotatingFile opens (creating, 0600 -- a daemon log can contain workspace
 // paths and prompt sizes) the log at path, appending to whatever is there.
 func openRotatingFile(path string, maxBytes int64) (*rotatingFile, error) {
+	// The parent directory is created rather than required, matching
+	// jsonlsink.go -- the warn sink and the tool audit log write into the same
+	// .codeterminal/logs/ and both create it on the way.
+	//
+	// This mattered the moment the VS Code extension started passing -log-file
+	// unconditionally: on a workspace that has never been indexed, that
+	// directory does not exist yet, so the daemon's own log was the one file it
+	// silently failed to create. Failing soft (newLogWriter falls back to
+	// stderr) meant an ADOPTING window -- which has no pipe to the daemon at all
+	// -- had nowhere to read anything.
+	//
+	// 0700, not 0755: the log carries workspace paths and prompt sizes, and the
+	// mode below says so.
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return nil, err
+	}
 	// O_NOFOLLOW: refuse to append through a symlink planted at the log path,
 	// the same leaf-level protection every other writer in this codebase applies.
 	f, err := openNoFollow(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)

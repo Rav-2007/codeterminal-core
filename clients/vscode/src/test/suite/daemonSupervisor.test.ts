@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import {
+  ADOPT_PROBE_ATTEMPTS,
   DaemonHandle,
   DaemonSupervisor,
   EXIT_ALREADY_RUNNING,
@@ -188,22 +189,69 @@ suite('daemon supervisor', () => {
     );
   });
 
-  // The bound on the bound: exit 3 is only free if somebody really is there.
-  test('losing to a winner that then vanishes does spend budget', async () => {
+  // THE COLD-START WINDOW, and the reason a single probe was not enough.
+  //
+  // The winner does not publish its lockfile until it has finished starting, and
+  // starting includes loading the embedding model -- seconds. So the loser's
+  // probe fires at the worst possible moment: the winner provably exists (we
+  // were refused the bind) and is provably unreachable.
+  //
+  // Asking once turned an ordinary second window into an error: miss, charge
+  // budget, retry, spawn, lose again, repeat until the budget was spent and the
+  // user was told the daemon "will not be restarted again" -- about a daemon
+  // that was starting perfectly well the whole time.
+  test('losing the race waits out the winner cold start before charging anything', async () => {
     const h = new Harness();
     const sup = new DaemonSupervisor(h.deps);
 
     await sup.ensure();
-    h.daemonUp = false; // it claimed to lose, and nobody holds the address
+    h.daemonUp = false; // the winner is up but still loading its model
     h.last.exit(EXIT_ALREADY_RUNNING);
     await tick();
     await tick();
+
+    // Three misses in a row: still nothing said, still nothing charged.
+    for (let i = 0; i < 3; i++) {
+      assert.deepStrictEqual(h.userVisible, [], `attempt ${i + 1} must stay silent`);
+      assert.strictEqual(h.spawns.length, 1, 'and must not spawn another daemon to lose again');
+      await h.fire();
+    }
+
+    // The winner finishes starting and publishes its lockfile.
+    h.daemonUp = true;
+    await h.fire();
+
+    assert.deepStrictEqual(h.userVisible, [], 'adopting a slow starter is still adoption');
+    assert.strictEqual(h.spawns.length, 1);
+    assert.ok(
+      h.logs.some((l) => /adopted/.test(l)),
+      'the adoption should be recorded where someone debugging can see it'
+    );
+  });
+
+  // The bound on the wait: it cannot be indefinite, or a winner that really did
+  // die leaves the window with no daemon and no message, forever.
+  test('a winner that never appears eventually spends budget', async () => {
+    const h = new Harness();
+    const sup = new DaemonSupervisor(h.deps);
+
+    await sup.ensure();
+    h.daemonUp = false;
+    h.last.exit(EXIT_ALREADY_RUNNING);
+    await tick();
+    await tick();
+
+    // Exhaust every adoption attempt.
+    for (let i = 1; i < ADOPT_PROBE_ATTEMPTS; i++) {
+      assert.deepStrictEqual(h.userVisible, [], `attempt ${i} must stay silent`);
+      await h.fire();
+    }
 
     assert.match(
       h.warns[h.warns.length - 1],
       new RegExp(`\\(1/${MAX_RESTARTS}\\)`),
       'two daemons dying alternately would hand the race back and forth forever if this ' +
-        'path were free; it must be charged like any other failure'
+        'path were free; once the wait is exhausted it must be charged like any other failure'
     );
   });
 
@@ -390,6 +438,55 @@ suite('daemon supervisor', () => {
     assert.strictEqual(h.spawns.length, 0, 'we cannot restart what we did not start');
     assert.strictEqual(h.warns.length, 1);
     assert.match(h.warns[0], /another VS Code window/);
+  });
+
+  // TWO CONTRACTS THAT LIVE IN DIFFERENT FILES AND MUST AGREE.
+  //
+  // Both fail silently and only in front of a user, which is why they are pinned
+  // here rather than left to review.
+  test('every user-facing hint names a command that actually exists', () => {
+    const pkg = JSON.parse(
+      fs.readFileSync(path.join(__dirname, '..', '..', '..', 'package.json'), 'utf8')
+    );
+    const titles: string[] = pkg.contributes.commands.map((c: { title: string }) => c.title);
+
+    const src = (f: string) =>
+      fs.readFileSync(path.join(__dirname, '..', '..', '..', 'src', f), 'utf8');
+    const hints = [...src('daemonClient.ts').matchAll(/run "([^"]+)" from the Command Palette/g)]
+      .map((m) => m[1])
+      .concat(
+        [...src('daemonSupervisor.ts').matchAll(/run "([^"]+)"/g)].map((m) => m[1])
+      );
+
+    assert.ok(hints.length >= 2, 'expected the restart hint to appear in both files');
+    for (const hint of hints) {
+      assert.ok(
+        titles.includes(hint),
+        `a message tells the user to run "${hint}", but package.json contributes ` +
+          `[${titles.join(', ')}]. Searching the palette for that name finds NOTHING — and this ` +
+          `message is shown at exactly the moment it is the user's only way out. ` +
+          `(This really happened: titles said "CodeTerminal: ..." while every toast said "Mochiii".)`
+      );
+    }
+  });
+
+  test('the daemon is always given a log file, because an adopting window has no pipe', () => {
+    const src = fs.readFileSync(
+      path.join(__dirname, '..', '..', '..', 'src', 'extension.ts'),
+      'utf8'
+    );
+    assert.match(
+      src,
+      /'-log-file'/,
+      'spawnDaemon must pass -log-file unconditionally: stdio is `ignore` (deliberately — a ' +
+        'detached child would wedge on a pipe nobody drains), so a file is the ONLY channel, ' +
+        'and the window that most needs it is the one that adopted rather than spawned'
+    );
+    assert.match(
+      src,
+      /codeterminal\.showDaemonLog/,
+      'and there must be a way to read it from a window that has no child process at all'
+    );
   });
 
   // The one fact that still belongs to extension.ts rather than to the policy:

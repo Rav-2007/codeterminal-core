@@ -28,9 +28,25 @@ export function activate(context: vscode.ExtensionContext): void {
   output = vscode.window.createOutputChannel('Mochiii');
   context.subscriptions.push(output);
 
+  // WHERE THE DAEMON'S LOG GOES, and why it is unconditional.
+  //
+  // The daemon is spawned detached with stdio 'ignore', so its stderr goes
+  // nowhere. That is deliberate and stays: piping into this extension host
+  // would wedge the daemon the moment the host died or stopped draining, which
+  // is the same unbounded-write failure the Windows named-pipe buffer already
+  // taught us. A file is the durable answer, and the daemon already knows how
+  // to write one, size-rotated, teeing rather than redirecting.
+  //
+  // It is passed on EVERY spawn rather than only when debugging, because the
+  // window that most needs the log is the one that did NOT spawn: an adopting
+  // window has no pipe to the daemon by construction, so a file is the only
+  // channel it can ever read. Same directory as the warn sink and the tool
+  // audit log, and already gitignored.
+  const daemonLogPath = path.join(workspacePath, '.codeterminal', 'logs', 'daemon.log');
+
   supervisor = new DaemonSupervisor({
     probe: probeDaemon,
-    spawn: () => spawnDaemon(binaryPath, workspacePath),
+    spawn: () => spawnDaemon(binaryPath, workspacePath, daemonLogPath),
     warn: (m) => vscode.window.showWarningMessage(m),
     error: (m) => vscode.window.showErrorMessage(m),
     // Adoption is the ordinary case and must be SILENT. It goes to the output
@@ -57,12 +73,32 @@ export function activate(context: vscode.ExtensionContext): void {
       await supervisor?.restart();
     })
   );
+
+  // Reachable from a window that ADOPTED the daemon and therefore has no pipe,
+  // no child process, and nothing else to show. Opening the file rather than
+  // streaming it into the OutputChannel keeps one copy of the truth: the log is
+  // whatever the daemon wrote, size-rotated by the daemon, and this command is
+  // only a way to look at it.
+  context.subscriptions.push(
+    vscode.commands.registerCommand('codeterminal.showDaemonLog', async () => {
+      try {
+        const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(daemonLogPath));
+        await vscode.window.showTextDocument(doc, { preview: false });
+      } catch {
+        // Absent is a normal state, not an error: no daemon has started in this
+        // workspace yet. Say which file was looked for, so it is actionable.
+        vscode.window.showInformationMessage(
+          `No Mochiii daemon log yet at ${daemonLogPath}. It is written once a daemon starts in this workspace.`
+        );
+      }
+    })
+  );
 }
 
 // spawnDaemon starts one daemon process and adapts it to the supervisor's
 // DaemonHandle. It contains no policy: whether to spawn at all, and what a
 // given exit means, are decisions that live in DaemonSupervisor.
-function spawnDaemon(binaryPath: string, workspacePath: string): DaemonHandle {
+function spawnDaemon(binaryPath: string, workspacePath: string, logPath: string): DaemonHandle {
   try {
     // Ensure binary is executable on Unix-like systems
     if (os.platform() !== 'win32' && fs.existsSync(binaryPath)) {
@@ -72,9 +108,13 @@ function spawnDaemon(binaryPath: string, workspacePath: string): DaemonHandle {
     vscode.window.showWarningMessage(`Failed to set execution permissions on the Mochiii daemon: ${err}`);
   }
 
-  const child = cp.spawn(binaryPath, ['--workspace', workspacePath], {
+  const child = cp.spawn(binaryPath, ['--workspace', workspacePath, '-log-file', logPath], {
     cwd: workspacePath,
     detached: true,
+    // NOT a pipe. See daemonLogPath in activate(): a detached child that
+    // outlives this host would block on a full pipe nobody is draining. The
+    // -log-file above is the durable channel, and it works for an adopting
+    // window too, which has no pipe at all.
     stdio: 'ignore',
   });
   child.unref();

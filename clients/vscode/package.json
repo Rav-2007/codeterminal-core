@@ -11,20 +11,20 @@
   "categories": [
     "Other"
   ],
-  "activationEvents": [
-    "onCommand:codeterminal.openChat",
-    "onCommand:codeterminal.restartDaemon"
-  ],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
       {
         "command": "codeterminal.openChat",
-        "title": "CodeTerminal: Open Chat"
+        "title": "Mochiii: Open Chat"
       },
       {
         "command": "codeterminal.restartDaemon",
-        "title": "CodeTerminal: Restart Daemon"
+        "title": "Mochiii: Restart Daemon"
+      },
+      {
+        "command": "codeterminal.showDaemonLog",
+        "title": "Mochiii: Show Daemon Log"
       }
     ]
   },

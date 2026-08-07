@@ -6,7 +6,7 @@ import { promisify } from 'util';
 
 import {
   APPROVAL_DENY,
-  DAEMON_LAUNCH_COMMAND,
+  RESTART_HINT,
   Degradation,
   EditBlockWire,
   GroundingInfo,
@@ -919,16 +919,10 @@ export function chatPanelStyles(): string {
     padding: 14px 16px;
   }
   .first-run p { margin: 0 0 8px; color: var(--ct-ink); }
-  .first-run pre {
-    margin: 0;
-    padding: 8px 10px;
-    white-space: pre-wrap;
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    background: var(--ct-rose-soft);
-    border: 1px solid var(--ct-border);
-    border-radius: 10px;
-    color: var(--ct-ink);
-  }
+  .first-run p:last-child { margin-bottom: 0; }
+  /* The recovery hint is secondary: it matters only if the common case fails,
+     so it must not compete with the sentence telling the user to just type. */
+  .first-run .first-run-quiet { color: var(--ct-muted); font-size: 12px; }
   .msg {
     display: flex;
     gap: 10px;
@@ -1680,12 +1674,17 @@ export function chatPanelBodyMarkup(logoUri: string = ''): string {
        assertive: a search result should not interrupt a streaming answer. -->
   <div id="searchResults" role="region" aria-label="Search results" aria-live="polite"></div>
   <!-- First-run text, rendered INSIDE the empty transcript: a new user's very
-       first sight of this panel was a blank rectangle that never stated the one
-       thing it cannot work without -- a separately launched daemon. Static
-       markup, no state and no settings; main.js removes it as soon as a real
-       conversation turn is added (restored history included). The command must
-       stay identical to daemonClient.ts's DAEMON_LAUNCH_COMMAND, which is why
-       it is interpolated from there rather than written out again. -->
+       first sight of this panel was a blank rectangle that never said what it
+       does. Static markup, no state and no settings; main.js removes it as soon
+       as a real conversation turn is added (restored history included).
+
+       THIS USED TO TELL THE USER TO START THE DAEMON BY HAND, in a <pre> block
+       naming ./daemon/codeterminal-daemon. That was true when written and is
+       now the opposite of the truth: the extension starts and supervises the
+       daemon (daemonSupervisor.ts), so following the old instruction started a
+       SECOND daemon which could only lose the bind and exit. The recovery hint
+       is interpolated from daemonClient.ts's RESTART_HINT rather than written
+       out again, so it cannot drift from the palette entry it names. -->
   <!-- role="log" + aria-live="polite" + aria-atomic="false" is the combination
        that makes a STREAMED answer followable: the reader announces each
        appended token as it arrives instead of re-reading the entire transcript
@@ -1694,9 +1693,8 @@ export function chatPanelBodyMarkup(logoUri: string = ''): string {
   <div id="transcript" role="log" aria-live="polite" aria-atomic="false" aria-label="Conversation transcript">
     <div id="firstRun" class="first-run">
       <p>Mochiii answers questions about the code in your workspace, grounded in a local index, and can propose edits you apply from here.</p>
-      <p><strong>It needs the Mochiii daemon already running</strong> — this panel talks to it over a local socket and does not start it for you.</p>
-      <p>Start it in a terminal from the repo root, then send a prompt:</p>
-      <pre>${DAEMON_LAUNCH_COMMAND}</pre>
+      <p>The Mochiii daemon starts automatically and is shared with any other window open on this same folder. Just send a prompt.</p>
+      <p class="first-run-quiet">First answer slow? It is loading the local embedding model. If it never arrives, ${RESTART_HINT}.</p>
     </div>
   </div>
   <div id="grounding" role="status" aria-live="polite" aria-label="Grounding"></div>

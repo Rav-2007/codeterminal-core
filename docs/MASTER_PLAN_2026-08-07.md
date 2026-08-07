@@ -214,8 +214,20 @@ Nothing here has started. Verified absent right now in
 `clients/vscode/package.json`: `license`, `icon`, `repository`,
 `contributes.configuration` (**zero settings are contributed**), `@vscode/vsce`,
 and a `.vscodeignore`. `"private": true` is still set, which `vsce` refuses
-outright. `activationEvents` is still `onCommand:*` and must become
-`onStartupFinished` now that the extension manages a process.
+outright.
+
+**`activationEvents` — deliberately NOT flipped to `onStartupFinished` yet, and
+this reverses the earlier instruction.** The reasoning for it was sound (the
+extension manages a process, so it should activate with the window), but the
+ORDER was wrong. Activating at startup starts a daemon for *every* open window,
+and each daemon carries its own ~81 MB embedder helper — the ">1 GB at five
+windows" risk this plan already names. The thing that makes startup activation
+safe is `--idle-timeout`, which is Stage 2's remaining work and does not exist.
+
+Flip it *after* the idle timeout, not before. What did land 2026-08-07 is the
+harmless half: the explicit `onCommand:*` entries were removed, since VS Code
+generates them from `contributes.commands` on engine ^1.85. Behaviour is
+unchanged; the redundancy is gone.
 
 Platform-specific `.vsix` via `--target`. Binaries land in `bin/`, which
 `resolveHelperBinPath` already checks first — zero Go changes for helper

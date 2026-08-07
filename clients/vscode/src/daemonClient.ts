@@ -16,16 +16,24 @@ import * as path from 'path';
 
 export const PROTOCOL_VERSION = 1;
 
-// DAEMON_LAUNCH_COMMAND is the one command that starts the daemon correctly,
-// and the single place it is spelled. It MUST run from the repo root, not from
-// daemon/: the daemon's own defaults are root-relative (-config
-// "./models.json", -system-prompt "daemon/prompts/system.txt", see
-// daemon/main.go). Started with cwd=daemon/ it silently loads
-// daemon/models.json instead of the canonical root config, and resolves the
-// system prompt to the nonexistent daemon/daemon/prompts/system.txt. Every
-// "the daemon isn't there" message below and the panel's first-run text (see
-// chatPanel.ts) name this exact string -- they must never drift apart.
-export const DAEMON_LAUNCH_COMMAND = './daemon/codeterminal-daemon';
+// RESTART_HINT is what a user is told to do when the daemon cannot be reached,
+// and the single place it is spelled. Every message below and the panel's
+// first-run text (see chatPanel.ts) use this exact string, so they cannot drift.
+//
+// IT NAMES A COMMAND PALETTE ENTRY, NOT A SHELL COMMAND. It used to be
+// `./daemon/codeterminal-daemon`, from when the extension genuinely did not
+// start the daemon and a user had to run one by hand in a terminal. The
+// extension has managed the daemon since it gained a supervisor
+// (daemonSupervisor.ts), so that instruction became advice to start a SECOND
+// daemon which could only lose the bind and exit -- telling the user to do the
+// one thing the supervisor exists to prevent.
+//
+// The title must stay byte-identical to contributes.commands in package.json,
+// or this sends the user to a palette entry that does not exist. That is not
+// hypothetical: the titles read "CodeTerminal: ..." while every message in the
+// UI said "Mochiii", so searching the palette for the name in the error found
+// nothing. They now agree.
+export const RESTART_HINT = 'run "Mochiii: Restart Daemon" from the Command Palette';
 
 // HANDSHAKE_TIMEOUT_MS bounds connectToDaemon's dial + handshake round trip.
 const HANDSHAKE_TIMEOUT_MS = 5000;
@@ -530,8 +538,7 @@ export function connectToDaemon(
       reject(
         new Error(
           `daemon at ${daemonTarget(lock)} accepted the connection but did not answer the handshake ` +
-            `within ${HANDSHAKE_TIMEOUT_MS / 1000}s (it may be wedged or shutting down; restart it from ` +
-            `the repo root with: ${DAEMON_LAUNCH_COMMAND})`
+            `within ${HANDSHAKE_TIMEOUT_MS / 1000}s (it may be wedged or shutting down; ${RESTART_HINT})`
         )
       );
     }, HANDSHAKE_TIMEOUT_MS);
@@ -551,8 +558,7 @@ export function connectToDaemon(
       reject(
         new Error(
           `daemon at ${daemonTarget(lock)} closed the connection during the handshake without replying ` +
-            `(it may have been stopped, or it refused this client; restart it from the repo root with: ` +
-            `${DAEMON_LAUNCH_COMMAND})`
+            `(it may have been stopped, or it refused this client; ${RESTART_HINT})`
         )
       );
     });

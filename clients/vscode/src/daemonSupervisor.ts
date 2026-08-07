@@ -40,6 +40,25 @@ export const EXIT_ALREADY_RUNNING = 3;
 export const MAX_RESTARTS = 5;
 export const RESTART_BASE_MS = 2000;
 
+// How long to keep looking for the winner after losing the race.
+//
+// Exit 3 is POSITIVE EVIDENCE that a daemon holds the address -- ours tried to
+// bind and was refused -- but the winner does not publish its lockfile until it
+// has finished starting, and starting includes loading the embedding model.
+// Asking once, immediately, therefore asks at the worst possible moment: the
+// winner exists and is provably unreachable for another several seconds.
+//
+// Left unhandled that turned an ordinary second window into an error. Probe
+// misses, budget charged, retry spawns another daemon, that one loses too --
+// repeat until the budget is spent and the user is told the daemon "will not be
+// restarted again", about a daemon that was starting perfectly well the whole
+// time.
+//
+// 10 attempts at 1.5 s covers a cold model load with room to spare. Nothing is
+// charged to the restart budget during the wait, because nothing has failed.
+export const ADOPT_PROBE_ATTEMPTS = 10;
+export const ADOPT_PROBE_INTERVAL_MS = 1500;
+
 /** A daemon process this supervisor started. */
 export interface DaemonHandle {
   onExit(cb: (code: number | null, signal: string | null) => void): void;
@@ -182,7 +201,7 @@ export class DaemonSupervisor {
    * not announced: a user who opened a second window did not do anything wrong
    * and has nothing to act on.
    */
-  private async adoptAfterLosingTheRace(): Promise<void> {
+  private async adoptAfterLosingTheRace(attempt = 1): Promise<void> {
     if (this.disposed) {
       return;
     }
@@ -190,12 +209,28 @@ export class DaemonSupervisor {
       this.deps.log('another window started the daemon first; adopted it');
       return;
     }
-    // It said someone else had the address, and by the time we looked, nobody
-    // did -- the winner died between its bind and our probe. Something is
+    if (this.disposed) {
+      return;
+    }
+
+    // Not there YET. The winner publishes its lockfile only once it has
+    // finished starting, and starting includes loading the embedding model, so
+    // an immediate miss says nothing. Wait and look again -- see
+    // ADOPT_PROBE_ATTEMPTS. No budget is charged here; nothing has failed.
+    if (attempt < ADOPT_PROBE_ATTEMPTS) {
+      this.timer = this.deps.schedule(ADOPT_PROBE_INTERVAL_MS, () => {
+        this.timer = undefined;
+        void this.adoptAfterLosingTheRace(attempt + 1);
+      });
+      return;
+    }
+
+    // It said someone else had the address, and after waiting out a cold start,
+    // nobody does -- the winner died between its bind and now. Something is
     // genuinely wrong, so this one DOES spend budget. Without that, two daemons
     // dying alternately would hand the race back and forth forever, which is
     // the unbounded loop this whole design is meant to be free of.
-    this.deps.log('lost the startup race, but the winner is already gone; retrying');
+    this.deps.log('lost the startup race, but the winner never appeared; retrying');
     this.scheduleRetry(EXIT_ALREADY_RUNNING);
   }
 

@@ -1,10 +1,14 @@
 # Backlog — what is still ahead
 
-**Next action: execute the master launch plan.** The code board is clear; the
-product board is not. The last remediation pass closed every engineering item it
-could and left the project at roughly **77% engineering robustness / 27% product
-readiness** — strong code that nobody outside this machine can install. The work
-now is Windows support, a real install path, and index honesty, in that order.
+**Next action: [`docs/MASTER_PLAN_2026-08-07.md`](docs/MASTER_PLAN_2026-08-07.md),
+Stage 3 (packaging).** The code board is clear; the product board is not. The
+project sits at roughly **77% engineering robustness / 27% product readiness** —
+strong code that nobody outside this machine can install.
+
+Stages 0 (make the record true) and 2 (the daemon lifecycle) are done. Windows
+compiles with every seam written and is waiting on CI. **Packaging is now the
+binding constraint**: `clients/vscode/package.json` still carries
+`"private": true`, which `vsce` refuses outright, and there is no `.vsix`.
 
 This file was **split on 2026-08-01**. It had grown to 4,333 lines and was two
 documents wearing one name: a work log and a register. Its own opening paragraph
@@ -12,12 +16,14 @@ had gone stale — it told readers the next action was addressing P3 FAILs that 
 been fixed weeks earlier. Completed records now live in
 [`docs/ARCHIVE/BACKLOG_2026-07.md`](docs/ARCHIVE/BACKLOG_2026-07.md), verbatim.
 
-**Four documents, four jobs. Keep them separate:**
+**One document per job. Keep them separate:**
 
 | Question | Document |
 |---|---|
-| What bugs are open? | [`docs/OPEN_ITEMS.md`](docs/OPEN_ITEMS.md) — the register, re-derived against source |
-| What needs a founder ruling? | [`docs/DECISION_PACK.md`](docs/DECISION_PACK.md) — D1–D8, none taken |
+| Where do I start? | [`docs/HANDOFF.md`](docs/HANDOFF.md) — entry point; [`docs/README.md`](docs/README.md) catalogues everything else |
+| What are we doing next? | [`docs/MASTER_PLAN_2026-08-07.md`](docs/MASTER_PLAN_2026-08-07.md) — **the current plan** |
+| What bugs are open? | [`docs/OPEN_ITEMS.md`](docs/OPEN_ITEMS.md) — read the Status column; §1–§2 are resolved except 7, 10, 12 |
+| What needs a founder ruling? | [`docs/DECISION_PACK.md`](docs/DECISION_PACK.md) — D1–D8; **D4 taken**, seven open |
 | What was already done, and why? | [`docs/ARCHIVE/BACKLOG_2026-07.md`](docs/ARCHIVE/BACKLOG_2026-07.md) |
 | What is still ahead? | **this file** |
 
