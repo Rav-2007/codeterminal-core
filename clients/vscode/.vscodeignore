@@ -1,0 +1,45 @@
+# WHAT SHIPS TO A USER, decided here rather than remembered.
+#
+# The 2026-08-05 package shipped this extension's own TypeScript source, its
+# test suite, its .vscode/ directory, its tsconfig and both logos -- because no
+# .vscodeignore existed, and vsce's fallback is .gitignore, which was written to
+# answer a completely different question. "Remember to exclude the tests" is not
+# a control. This file is.
+#
+# NOTE the deliberate difference from .gitignore: that file excludes `daemon/`,
+# because a 19 MB build artifact does not belong in git history. This file must
+# NOT exclude it -- daemon/ is the runtime (daemon + embedder helper +
+# models.json) and is the whole point of the package. The two files disagree on
+# purpose, and this paragraph is why.
+#
+# Verified by scripts/verify-vsix.js, which asserts on the ARCHIVE CONTENTS.
+# `vsce package` exiting 0 is exactly what produced the broken package.
+
+# --- source, kept out; only compiled output ships ---
+src/**
+tsconfig.json
+**/*.ts
+**/*.map
+
+# --- tests, and the 3 GB of VS Code builds their harness downloads ---
+out/test/**
+.vscode-test/**
+.vscode/**
+
+# --- development-only metadata ---
+.gitignore
+.vscodeignore
+package-lock.json
+node_modules/**
+
+# --- our own build/verify tooling: runs BEFORE packaging, never inside it ---
+scripts/**
+
+# --- previously built packages, so a rebuild never nests one inside another ---
+*.vsix
+
+# --- unused assets ---
+# logo.jpg has no reference anywhere in src/ or media/main.js: logo.png is the
+# webview logo and icon.png is the marketplace tile. It was 147 KB of the last
+# package for nothing.
+media/logo.jpg

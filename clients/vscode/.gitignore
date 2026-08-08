@@ -8,3 +8,8 @@ node_modules/
 # spurious diff, and every commit of it is permanent repo weight. Packaging
 # reads it from this path at vsce time; it does not need to be in history.
 daemon/
+
+# Staged at package time by scripts/stage-runtime.js, copied from the root
+# LICENSE. Tracking it would create a second copy of the licence that can drift
+# from the real one -- the root file is the single source of truth.
+LICENSE

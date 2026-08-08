@@ -1,15 +1,27 @@
 {
   "name": "codeterminal-vscode",
-  "displayName": "CodeTerminal",
-  "description": "Chat with CodeTerminal's local daemon from inside VS Code.",
+  "displayName": "Mochiii",
+  "description": "A local-first AI coding assistant. Your code is indexed, embedded and retrieved on your own machine.",
   "version": "0.0.1",
-  "private": true,
   "publisher": "codeterminal",
+  "license": "SEE LICENSE IN LICENSE",
+  "icon": "media/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Rav-2007/codeterminal-core.git",
+    "directory": "clients/vscode"
+  },
   "engines": {
     "vscode": "^1.85.0"
   },
   "categories": [
+    "AI",
+    "Chat",
+    "Programming Languages",
     "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -30,16 +42,21 @@
   },
   "scripts": {
     "build:daemon": "cd ../../ && go build -o clients/vscode/daemon/codeterminal-daemon ./daemon",
+    "build:helper": "cd ../../helper && go build -o ../clients/vscode/daemon/codeterminal-embedder-helper .",
+    "build:runtime": "npm run build:daemon && npm run build:helper && node scripts/stage-runtime.js",
     "compile": "npm run build:daemon && tsc -p ./",
     "watch": "tsc -w -p ./",
     "pretest": "tsc -p ./",
-    "test": "node ./out/test/runTest.js"
+    "test": "node ./out/test/runTest.js",
+    "package": "npm run build:runtime && tsc -p ./ && vsce package --no-dependencies -o codeterminal-vscode-$npm_package_version.vsix && node scripts/verify-vsix.js codeterminal-vscode-$npm_package_version.vsix",
+    "verify:vsix": "node scripts/verify-vsix.js"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.6",
     "@types/node": "^20.14.0",
     "@types/vscode": "^1.85.0",
     "@vscode/test-electron": "^3.0.0",
+    "@vscode/vsce": "^3.2.0",
     "glob": "^10.4.1",
     "mocha": "^10.4.0",
     "typescript": "^5.4.0"
