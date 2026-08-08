@@ -8,11 +8,12 @@
 
 MODULES := daemon editapply proxy helper protocol clients/tui
 
-.PHONY: help hooks test race fmt vet lint ratchet errcheck fuzz check drill soak
+.PHONY: help hooks test race fmt vet lint ratchet errcheck fuzz check docs drill soak
 
 help:
 	@echo "make hooks    install the tracked git hooks (.githooks/) -- do this once"
-	@echo "make check    everything CI runs: build, fmt, vet, race, lint, ratchet"
+	@echo "make check    everything CI runs: build, fmt, vet, race, lint, ratchet, docs"
+	@echo "make docs     every relative link in a tracked .md resolves"
 	@echo "make race     go test -race across all six modules"
 	@echo "make lint     staticcheck + ineffassign + bodyclose"
 	@echo "make ratchet  per-package coverage floors"
@@ -73,5 +74,11 @@ drill:
 soak:
 	@./scripts/soak.sh
 
-check: fmt vet race lint ratchet errcheck
+# docs is last and costs ~1s. It is in `check` rather than in a docs-only job
+# because a rename breaks links in the same commit that makes it, and that is
+# the only moment anyone can fix it cheaply.
+check: fmt vet race lint ratchet errcheck docs
 	@echo "check: all gates green"
+
+docs:
+	@./scripts/docs-links.sh

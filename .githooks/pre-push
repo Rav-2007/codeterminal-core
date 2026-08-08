@@ -100,6 +100,24 @@ for module in "${MODULES[@]}"; do
   echo "pre-push: ok $module"
 done
 
+# Markdown links. Cheap (~1s, no toolchain), and its failure means what the
+# other checks here mean: something is broken in what is about to leave.
+#
+# THIS HOOK IS THE ONLY GATE THAT COVERS IT. build.yml carries
+# `paths-ignore: ["**.md"]`, so a documentation-only push does not start CI at
+# all -- and a documentation-only push is precisely how a link breaks, because
+# renaming or deleting a doc touches nothing else. Removing this from here does
+# not move the check elsewhere; it removes it.
+if [ -x "$repo_root/scripts/docs-links.sh" ]; then
+  if ! out="$("$repo_root/scripts/docs-links.sh" 2>&1)"; then
+    echo "pre-push: BROKEN DOC LINKS" >&2
+    echo "$out" >&2
+    status=1
+  else
+    echo "pre-push: ok docs ($(printf '%s' "$out" | tail -1))"
+  fi
+fi
+
 if [ $status -ne 0 ]; then
   echo "" >&2
   echo "pre-push: REFUSING THE PUSH. Fix the above, or use --no-verify if you" >&2
