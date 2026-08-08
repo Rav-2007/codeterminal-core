@@ -46,7 +46,14 @@ vet:
 # nightly is a gate that reports rot rather than preventing it. Compiling them
 # here costs a second and is the cheap half of the check.
 	@(cd daemon && go vet -tags eval ./...) || exit 1
-	@echo "vet: clean (including -tags eval)"
+# Same reasoning, second tag. `warnscan` gates daemon/warnscan_test.go, the
+# offline fire-rate harness that produces the data D5 (warn-mode Design B vs C)
+# is waiting on. It was compiled by NOTHING -- not this vet, not any CI job, not
+# the pre-push hook -- so it carried exactly the latent-rot risk the eval tags
+# above were added to fix, and would have been discovered the next time someone
+# needed the decision data rather than at the commit that broke it.
+	@(cd daemon && go vet -tags warnscan ./...) || exit 1
+	@echo "vet: clean (including -tags eval and -tags warnscan)"
 
 test:
 	@for m in $(MODULES); do (cd $$m && go test ./...) || exit 1; done
