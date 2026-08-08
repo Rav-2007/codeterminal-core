@@ -25,6 +25,11 @@ Then [`../BACKLOG.md`](../BACKLOG.md) for forward-looking capability work.
 second copy of the truth that drifts from the first. When something changes,
 change it in the one document that owns it.
 
+**Coming from outside?** [`../README.md`](../README.md) is the front door — what
+the product is, how to build and run it, and what it does not do. It is written
+for someone evaluating the project; everything in *this* directory is written for
+someone working on it. The four above assume you have read it.
+
 ---
 
 ## The rule that keeps this set honest

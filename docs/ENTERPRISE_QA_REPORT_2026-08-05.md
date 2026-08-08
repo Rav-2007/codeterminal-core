@@ -1,5 +1,12 @@
 # Enterprise QA Report — 2026-08-05
 
+> **📋 DATED RECORD — evidence, not instructions.** This is a point-in-time audit.
+> Its findings were acted on elsewhere; do not treat anything here as an open task
+> or as current behaviour. **The live bug register is
+> [`OPEN_ITEMS.md`](OPEN_ITEMS.md)** and the current plan is
+> [`MASTER_PLAN_2026-08-07.md`](MASTER_PLAN_2026-08-07.md). Cite this file only
+> with its date attached — a measurement is *of a date*.
+
 **Base SHA:** `8979530` · **Scope:** the ~3,500 uncommitted lines on top of it
 **Roles:** CEO · CTO · Security Patcher · Security Improver · Tester
 Evidence labels: **CONFIRMED** (reproduced by execution) · **PLAUSIBLE** (reasoned from source) · **NOT RUN**

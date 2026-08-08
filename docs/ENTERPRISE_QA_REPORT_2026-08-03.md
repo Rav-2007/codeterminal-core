@@ -1,5 +1,12 @@
 # Enterprise QA Report — 2026-08-03
 
+> **📋 DATED RECORD — evidence, not instructions.** This is a point-in-time audit.
+> Its findings were acted on elsewhere; do not treat anything here as an open task
+> or as current behaviour. **The live bug register is
+> [`OPEN_ITEMS.md`](OPEN_ITEMS.md)** and the current plan is
+> [`MASTER_PLAN_2026-08-07.md`](MASTER_PLAN_2026-08-07.md). Cite this file only
+> with its date attached — a measurement is *of a date*.
+
 **SHA:** `89795309d3ea6631555d5593d4d923b5f843fa29` (`8979530`)  
 **Toolchain:** go1.25.12 linux/amd64  
 **Campaign:** [`ENTERPRISE_QA_MASTER.md`](ENTERPRISE_QA_MASTER.md)  
