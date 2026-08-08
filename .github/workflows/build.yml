@@ -8,14 +8,35 @@ on:
   # of security work sat on the remote with CI having never once looked at it.
   # Waiting for a PR to find out whether the code compiles inverts the order you
   # want: the point of CI is to know BEFORE you ask someone to merge it.
+  #
+  # NOT for a push that changes only markdown. `paths-ignore` skips the run only
+  # when EVERY changed file matches it, so a commit touching both code and docs
+  # still runs the full matrix -- this buys nothing back from a mixed push, and
+  # is not a hole. It is safe here because nothing in the build depends on a
+  # .md file: there is no markdown under any testdata/, no `go:embed` of a .md,
+  # and no test that reads one (the `"README.md"` strings in editapply's tests
+  # are literals in path-hazard tables, not files opened from disk).
+  #
+  # The usual footgun -- a skipped workflow leaving a REQUIRED status check
+  # pending forever -- cannot bite here, because this repo has no required
+  # checks: branch protection is unavailable on a private free-plan repo, as the
+  # `go` job's comment below records. Re-check this if the repo ever goes public
+  # or onto Pro.
+  #
+  # This was measured, not guessed. A three-file markdown-only push
+  # (docs/readme-rewrite, run 31234293957) queued the whole Linux matrix plus
+  # the Windows cross job -- roughly 50-60 billable minutes to re-prove that
+  # unchanged Go still compiles. On main it would also have paid macOS at 10x.
   push:
     branches: ["**"]
+    paths-ignore: ["**.md"]
   # Kept, and deliberately narrower. A pull_request run tests the MERGE RESULT
   # (branch + current main), which is a different question from the branch head
   # the push run tested, and the only one that catches "fine alone, broken
   # against what landed meanwhile".
   pull_request:
     branches: [main]
+    paths-ignore: ["**.md"]
   # The eval job below is schedule/dispatch-only; these triggers exist so it has
   # something to hang off. Everything else runs per-push and per-PR.
   schedule:
