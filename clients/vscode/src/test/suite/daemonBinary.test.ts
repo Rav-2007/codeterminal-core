@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { runMCPServerList } from '../../chatPanel';
+import { runMCPServerList } from '../../mcpServerList';
 import { DAEMON_BIN_ENV, daemonBinaryName, resolveDaemonBin } from '../../daemonBinary';
 
 // AN EXECUTABLE PATH IS NEVER DERIVED FROM WORKSPACE CONTENT.

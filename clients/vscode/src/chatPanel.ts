@@ -1,12 +1,15 @@
 import * as vscode from 'vscode';
-import { execFile } from 'child_process';
-import { promisify } from 'util';
 
 // fs and path used to be imported here solely to build executable paths out of
 // the workspace. Both uses were the vulnerability; there are now zero callers,
 // and leaving the imports would invite the next one.
-import { DAEMON_BIN_ENV, resolveDaemonBin } from './daemonBinary';
-import { runGitStatus } from './safeGit';
+//
+// child_process is gone for the same reason. Every local command that runs
+// something now lives behind runLocalCommand, in a file that does not import
+// vscode and can therefore be driven against a hostile workspace by
+// src/test/suite/localCommandsHostile.test.ts. A spawn added back here would be
+// outside that guard.
+import { LocalCommandHost, runLocalCommand } from './localCommands';
 
 import {
   APPROVAL_DENY,
@@ -26,15 +29,7 @@ import {
   streamPrompt,
   undoEdits,
 } from './daemonClient';
-import {
-  formatInitChecklist,
-  formatSlashHelp,
-  parseModelCommand,
-  parseSlash,
-  steeredPrompt,
-} from './slashCommands';
-
-const execFileAsync = promisify(execFile);
+import { parseModelCommand, parseSlash, steeredPrompt } from './slashCommands';
 
 const CLIENT_NAME = 'codeterminal-vscode';
 const VIEW_TYPE = 'codeterminalChat';
@@ -291,63 +286,34 @@ export class ChatPanel {
     }
   }
 
-  private async handleLocalSlash(name: string, args: string): Promise<void> {
-    const ws = workspacePath();
-    switch (name) {
-      case 'help':
-        this.replyLocal(formatSlashHelp());
-        return;
-      case 'clear':
-        this.transcript = [];
+  // localHost adapts this panel to LocalCommandHost. The workspace is read here,
+  // ONCE, and passed in -- rather than read inside the dispatcher from
+  // module-level editor state, which is what used to make the local commands
+  // impossible to test against a folder we control.
+  private localHost(): LocalCommandHost {
+    return {
+      workspace: workspacePath(),
+      extensionPath: this.extensionPath,
+      transcript: this.transcript,
+      preferredTier: this.preferredTier,
+      lastGrounding: this.lastGrounding,
+      replaceTranscript: (turns) => {
+        this.transcript = turns;
+      },
+      forgetGrounding: () => {
         this.lastGrounding = undefined;
-        this.panel.webview.postMessage({ type: 'clearTranscript' });
-        this.replyLocal('transcript cleared');
-        return;
-      case 'compact': {
-        const keep = 8;
-        if (this.transcript.length > keep) {
-          this.transcript = this.transcript.slice(-keep);
-          this.replyLocal(`kept last ${keep} turns`);
-        } else {
-          this.replyLocal('transcript already compact');
-        }
-        return;
-      }
-      case 'context': {
-        const tier = this.preferredTier || '(default)';
-        let g = '(none this turn)';
-        if (this.lastGrounding) {
-          g = `chunks=${this.lastGrounding.chunks ?? 0} truncated=${!!this.lastGrounding.truncated} mismatch=${!!this.lastGrounding.workspace_mismatch}`;
-        }
-        this.replyLocal(`workspace: ${ws}\nmodel tier: ${tier}\ngrounding: ${g}`);
-        return;
-      }
-      case 'git':
-        this.replyLocal(await runGitStatus(ws));
-        return;
-      case 'init':
-        this.replyLocal(formatInitChecklist(ws));
-        return;
-      case 'mcp-server':
-        this.replyLocal(await runMCPServerList(ws, this.extensionPath));
-        return;
-      case 'search': {
-        const q = args.toLowerCase();
-        const hits: string[] = [];
-        this.transcript.forEach((t, i) => {
-          if (t.content.toLowerCase().includes(q)) {
-            const snippet = t.content.length > 120 ? t.content.slice(0, 120) + '…' : t.content;
-            hits.push(`${i + 1}. [${t.role}] ${snippet}`);
-          }
-        });
-        this.replyLocal(hits.length === 0 ? 'no matching turns' : 'matches:\n' + hits.join('\n'));
-        return;
-      }
-      case 'exit':
-        this.panel.dispose();
-        return;
-      default:
-        this.replyLocal('unknown local command');
+      },
+      clearScreen: () => {
+        void this.panel.webview.postMessage({ type: 'clearTranscript' });
+      },
+      close: () => this.panel.dispose(),
+    };
+  }
+
+  private async handleLocalSlash(name: string, args: string): Promise<void> {
+    const reply = await runLocalCommand(this.localHost(), name, args);
+    if (reply !== '') {
+      this.replyLocal(reply);
     }
   }
 
@@ -735,32 +701,6 @@ ${chatPanelBodyMarkup(logoUri.toString())}  <script nonce="${nonce}" src="${scri
 // daemon report a mismatch if this doesn't match its own --workspace.
 function workspacePath(): string {
   return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
-}
-
-export async function runMCPServerList(workspace: string, extensionPath: string): Promise<string> {
-  const bin = resolveDaemonBin(extensionPath);
-  if (!bin) {
-    return (
-      'codeterminal-daemon binary not found.\n' +
-      'It ships inside this extension; a development checkout needs it built:\n' +
-      '  (cd daemon && go build -o codeterminal-daemon .)\n' +
-      `then put it on PATH, or set ${DAEMON_BIN_ENV} to its path, and retry /mcp-server`
-    );
-  }
-  try {
-    const args = ['mcp', 'list'];
-    if (workspace) {
-      args.push('--workspace', workspace);
-    }
-    // cwd is deliberately NOT the workspace. Nothing below resolves a relative
-    // path, and leaving it unset keeps that true if someone later adds one.
-    const { stdout, stderr } = await execFileAsync(bin, args, { cwd: extensionPath });
-    const s = (stdout + stderr).trim();
-    return s || 'no MCP servers configured (agent mode off or empty mcp.servers)';
-  } catch (err) {
-    const e = err as { message: string; stdout?: string; stderr?: string };
-    return `mcp list failed: ${e.message}\n${(e.stdout || '') + (e.stderr || '')}`.trim();
-  }
 }
 
 function getNonce(): string {
