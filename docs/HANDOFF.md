@@ -66,8 +66,10 @@ plan without one, it is the current plan.
 - **`LICENSE` exists** — 122 lines, proprietary, "All rights reserved". It is
   *not* an open-source licence, and that is a constraint on marketplace framing
   rather than a missing file.
-- **Active plan:** [`MASTER_PLAN_2026-08-07.md`](MASTER_PLAN_2026-08-07.md) —
-  land Windows, then packaging, then index honesty.
+- **Active plan:** [`ULTRA_MASTER_PLAN_2026-08-08.md`](ULTRA_MASTER_PLAN_2026-08-08.md)
+  — packaging. **Blocked on a P0 first:** `/mcp-server` in the VS Code extension
+  executes a binary out of the opened repository (the TUI's identical bug was
+  fixed in `d56e425`; the extension was not carried along).
 
 ---
 

@@ -1,6 +1,6 @@
 # Documentation index
 
-**34 markdown files, ~10,000 lines. This page says which four you need and what
+**39 markdown files, ~15,100 lines. This page says which four you need and what
 every other one is for.**
 
 Written 2026-08-07, because the seven stale claims corrected that day were not
@@ -15,7 +15,7 @@ and the ones it skipped are the ones that went stale.
 | # | Read | For |
 |---|---|---|
 | 1 | [`HANDOFF.md`](HANDOFF.md) | How to work on this project, what the architecture is, where the code lives. **The entry point.** |
-| 2 | [`MASTER_PLAN_2026-08-07.md`](MASTER_PLAN_2026-08-07.md) | **The current plan.** What we are doing next and why, in order. |
+| 2 | [`ULTRA_MASTER_PLAN_2026-08-08.md`](ULTRA_MASTER_PLAN_2026-08-08.md) | **The current plan.** Stage 3 packaging, and the P0 that blocks it. |
 | 3 | [`OPEN_ITEMS.md`](OPEN_ITEMS.md) | **The bug register.** Read the Status column; §1–§2 are all resolved except items 7, 10, 12. |
 | 4 | [`DECISION_PACK.md`](DECISION_PACK.md) | The eight founder rulings. Seven open, D4 taken. |
 
@@ -56,7 +56,7 @@ a refactor or fails loudly; a line number silently points at something else.
 | Document | What it is |
 |---|---|
 | [`HANDOFF.md`](HANDOFF.md) | Entry point. Architecture, working discipline, where things live. |
-| [`MASTER_PLAN_2026-08-07.md`](MASTER_PLAN_2026-08-07.md) | **The current plan.** Stages 0–5. |
+| [`ULTRA_MASTER_PLAN_2026-08-08.md`](ULTRA_MASTER_PLAN_2026-08-08.md) | **The current plan.** Packaging, with Stages 4–5 carried forward. |
 | [`OPEN_ITEMS.md`](OPEN_ITEMS.md) | The bug register, statuses resolved in place. |
 | [`DECISION_PACK.md`](DECISION_PACK.md) | D1–D8 founder rulings, one page each. |
 | [`../BACKLOG.md`](../BACKLOG.md) | Forward-looking capability work only. |
@@ -102,6 +102,7 @@ evidence trail; the ones that are plans carry a `⛔ SUPERSEDED` banner.
 
 | Document | Kept because |
 |---|---|
+| [`MASTER_PLAN_2026-08-07.md`](MASTER_PLAN_2026-08-07.md) | ⛔ Superseded 2026-08-08. Its Stages 0–2 shipped. Its Stage 3 named the wrong install directory and assumed no `.vsix` existed; both are corrected in the successor's §1. |
 | [`ULTRA_MASTER_PLAN_2026-08-06.md`](ULTRA_MASTER_PLAN_2026-08-06.md) | ⛔ Superseded. Named junctions as the top unknown security risk — and was right (`c17e14c`). |
 | [`MASTER_PLAN_2026-08-05.md`](MASTER_PLAN_2026-08-05.md) | ⛔ Superseded. Its Track A found a QA campaign that recorded PASS on a sandbox that did not exist; that is why this project audits by execution. |
 | [`QA_LAUNCH_GATE_2026-07-30.md`](QA_LAUNCH_GATE_2026-07-30.md) | The launch-gate audit and same-day remediation, commit by commit. 951 lines of transcript. |

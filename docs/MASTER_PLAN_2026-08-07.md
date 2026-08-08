@@ -1,5 +1,27 @@
 # Master Plan — 2026-08-07
 
+> # ⛔ SUPERSEDED — HISTORICAL RECORD, DO NOT ACT ON
+>
+> Superseded by **[`ULTRA_MASTER_PLAN_2026-08-08.md`](ULTRA_MASTER_PLAN_2026-08-08.md)
+> — the current plan. Start there.**
+>
+> Stages 0–2 are **done**. Stages 4–5 are carried forward there unchanged.
+>
+> **Two claims in its Stage 3 are now known false, and are the reason it was
+> superseded rather than amended:**
+>
+> 1. It says binaries land in `bin/`, "which `resolveHelperBinPath` already
+>    checks first". They do not. The real layout is `<exedir>` — the daemon's own
+>    directory — which three separate resolvers already agree on.
+> 2. It assumes no `.vsix` exists. One does (2026-08-05, gitignored) and it is
+>    unshippable: no embedder helper, no `daemonSupervisor.ts`, and it ships its
+>    own source tree.
+>
+> It also never saw the P0 that now blocks packaging: `/mcp-server` in the VS Code
+> extension executes a binary out of the opened repository. Per this project's
+> rule, the body below is **annotated, not rewritten** — it is the record of what
+> was believed on 2026-08-07.
+
 **Supersedes** [`ULTRA_MASTER_PLAN_2026-08-06.md`](ULTRA_MASTER_PLAN_2026-08-06.md),
 whose Track A is closed and whose Track C is now half-executed. Roles: CTO ·
 Security · QA.
