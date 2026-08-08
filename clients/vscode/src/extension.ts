@@ -7,6 +7,7 @@ import * as fs from 'fs';
 import { ChatPanel } from './chatPanel';
 import { bundledDaemonDir, daemonBinaryName } from './daemonBinary';
 import { probeDaemon, resolvedWorkspaceRoot, setWorkspaceRoot } from './daemonClient';
+import { ensureModelAvailable } from './modelSetup';
 import { DaemonHandle, DaemonSupervisor } from './daemonSupervisor';
 
 let supervisor: DaemonSupervisor | undefined;
@@ -100,6 +101,14 @@ export function activate(context: vscode.ExtensionContext): void {
       },
     });
     void supervisor.ensure();
+
+    // AFTER ensure(), and deliberately not awaited.
+    //
+    // The daemon must come up on its own schedule: it works without the model
+    // (ungrounded), and making its start wait on a filesystem probe -- let alone
+    // on a user answering a dialog -- would trade a working product for a
+    // prompt. This only ever tells the user something true and offers to fix it.
+    void ensureModelAvailable(binaryPath, context, output);
   } else {
     output.appendLine(
       '[daemon] no folder is open, so there is no workspace to ground answers in and no daemon was started'

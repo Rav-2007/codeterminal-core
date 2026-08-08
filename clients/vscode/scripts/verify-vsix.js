@@ -83,7 +83,24 @@ function readEntry(buf, entry) {
 
 // --- the contract ------------------------------------------------------------
 
-const exe = process.env.VSIX_TARGET_WIN === '1' ? '.exe' : process.platform === 'win32' ? '.exe' : '';
+// The expected binary names follow the TARGET, not the machine doing the
+// packaging. The release job assembles all three .vsix files on one Linux
+// runner, so deriving this from process.platform would check for
+// `codeterminal-daemon` inside the win32-x64 package and pass on a package that
+// cannot start.
+//
+//   verify-vsix.js <file.vsix> [vsce-target]
+//
+// With no target it falls back to the host, which is what a local
+// `npm run package` wants.
+function exeSuffixFor(target) {
+  if (target) {
+    return target.startsWith('win32') ? '.exe' : '';
+  }
+  return process.platform === 'win32' ? '.exe' : '';
+}
+
+const exe = exeSuffixFor(process.argv[3]);
 
 // Present, or the package is broken in a way that does not error at runtime.
 const MUST_CONTAIN = [

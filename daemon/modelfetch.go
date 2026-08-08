@@ -4,12 +4,15 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 )
 
 // bgeModelBaseURL is the pinned source for the embedding model files: the
@@ -223,7 +226,43 @@ func sha256File(path string) (string, error) {
 // an explicit, manual trigger for EnsureModelFiles against the real pinned
 // bgeModelAssets, plus the onnxruntime shared library the helper needs to
 // run them. It is never invoked automatically.
+// ErrModelNotCached is returned by `download-model --check` when the on-device
+// assets are absent or fail verification. It exists so a CALLER can ask "is
+// retrieval going to work?" without triggering a 43-110 MB download as a side
+// effect of asking.
+//
+// The VS Code extension is that caller: on first activation it must decide
+// whether to offer the download, and the alternative was for it to reimplement
+// defaultModelCacheDir and the asset list in TypeScript. Two copies of a path
+// and a manifest, in two languages, is how they drift -- and the failure would
+// be silent, because a wrong answer here just means retrieval quietly stays off.
+var ErrModelNotCached = errors.New("model assets are not cached")
+
+// modelAssetsCached reports whether every asset is already present AND valid,
+// using the SAME verifyAsset the download path uses. Sharing that predicate is
+// the point: a cheaper check (exists? right size?) would answer "yes" for a
+// truncated or tampered file that EnsureModelFiles would then re-download, and
+// the two would disagree about what "ready" means.
+func modelAssetsCached(cacheDir string, assets []modelAsset) bool {
+	for _, asset := range assets {
+		if err := verifyAsset(filepath.Join(cacheDir, asset.name), asset); err != nil {
+			return false
+		}
+	}
+	return true
+}
+
 func runDownloadModelCommand(args []string, logger *log.Logger) error {
+	fs := flag.NewFlagSet("download-model", flag.ExitOnError)
+	check := fs.Bool("check", false, "report whether the assets are already cached; download nothing")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	if *check {
+		return checkModelCached(logger)
+	}
+
 	cacheDir, err := defaultModelCacheDir()
 	if err != nil {
 		return err
@@ -244,4 +283,77 @@ func runDownloadModelCommand(args []string, logger *log.Logger) error {
 	}
 	logger.Printf("onnxruntime: ready at %s", ortLibPath)
 	return nil
+}
+
+// checkModelCached answers "would retrieval work right now?" and downloads
+// nothing.
+//
+// It reports on BOTH halves, because they fail independently and a caller that
+// checked only the model would offer a download that then also has to fetch the
+// runtime library -- whose size is the part that actually varies by platform
+// (8.6 MB on linux/amd64, 31.7 MB on darwin/arm64, 75.7 MB on windows/amd64,
+// against a flat 34.7 MB of model). Quoting one number to every user would be
+// wrong on two platforms out of three.
+//
+// Exit status is the contract, so a caller can branch on it without parsing
+// prose: nil when ready, ErrModelNotCached when not. Any OTHER error means the
+// question could not be answered (no home directory, unsupported platform) and
+// must not be reported to a user as "not downloaded".
+func checkModelCached(logger *log.Logger) error {
+	cacheDir, err := defaultModelCacheDir()
+	if err != nil {
+		return err
+	}
+	ortCacheDir, err := defaultONNXRuntimeCacheDir()
+	if err != nil {
+		return err
+	}
+
+	modelOK := modelAssetsCached(cacheDir, bgeModelAssets)
+	ortOK := onnxRuntimeLibCached(ortCacheDir)
+
+	// ONE machine-readable line on STDOUT, while every human-facing line goes to
+	// the logger on stderr. The split is what makes this parseable without
+	// scraping prose: a caller reads one line of JSON and ignores the rest.
+	//
+	// download_bytes is reported BY THE DAEMON rather than computed by the
+	// caller, because it is the number that varies by platform -- the model is a
+	// flat 34.7 MB but the onnxruntime library is 8.6 MB on linux/amd64, 31.7 MB
+	// on darwin/arm64 and 75.7 MB on windows/amd64. A hardcoded table in the
+	// extension would be a second copy of the manifest, in another language,
+	// wrong on two platforms the day someone bumps a version.
+	fmt.Printf("{\"cached\":%t,\"download_bytes\":%d}\n", modelOK && ortOK, pendingDownloadBytes(modelOK, ortOK))
+
+	if modelOK && ortOK {
+		logger.Printf("model cache: ready (%s)", cacheDir)
+		logger.Printf("onnxruntime: ready (%s)", ortCacheDir)
+		return nil
+	}
+
+	if !modelOK {
+		logger.Printf("model cache: MISSING or unverified under %s", cacheDir)
+	}
+	if !ortOK {
+		logger.Printf("onnxruntime: MISSING under %s", ortCacheDir)
+	}
+	return ErrModelNotCached
+}
+
+// pendingDownloadBytes is what a user would actually have to fetch, counting
+// only the halves that are missing. Quoting the full 43-110 MB to someone who
+// already has the model and is only missing the runtime library would be a
+// number they never spend.
+func pendingDownloadBytes(modelOK, ortOK bool) int64 {
+	var total int64
+	if !modelOK {
+		for _, a := range bgeModelAssets {
+			total += a.size
+		}
+	}
+	if !ortOK {
+		if platform, err := lookupONNXRuntimePlatform(runtime.GOOS, runtime.GOARCH); err == nil {
+			total += platform.archive.size
+		}
+	}
+	return total
 }

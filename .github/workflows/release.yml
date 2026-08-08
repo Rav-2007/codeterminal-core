@@ -1,0 +1,205 @@
+name: release
+
+# Tag-triggered, and deliberately separate from build.yml so an ordinary push
+# never pays for a release matrix. build.yml answers "is this correct?"; this
+# answers "is this shippable?", and they are different questions with different
+# costs.
+on:
+  push:
+    tags: ["v*"]
+  # So a release can be rehearsed without inventing a tag. Produces the same
+  # artifacts and the same gates; only the upload target differs.
+  workflow_dispatch:
+
+# A second tag push must not race the first to the same release.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write # creating the GitHub Release
+
+env:
+  GO_VERSION: "1.25.x"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Binaries are built on the OS they run on. NOT cross-compiled, and that is a
+  # decision rather than an omission.
+  #
+  # `helper` requires CGO -- measured: CGO_ENABLED=0 fails with
+  # "onnxruntime_go: build constraints exclude all Go files". onnxruntime itself
+  # is dlopen'd at runtime (ort.SetSharedLibraryPath), so a cross-build would
+  # need only a C toolchain for the target and no onnxruntime at all -- mingw-w64
+  # would genuinely work for Windows. macOS is where it stops: cross-building
+  # needs an Apple SDK whose redistribution is constrained, and the signing and
+  # notarisation steps must run on macOS regardless. Native everywhere is one
+  # rule instead of two, and CI already has all three runners green.
+  # ---------------------------------------------------------------------------
+  binaries:
+    name: binaries (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-x64
+          - os: macos-latest
+            target: darwin-arm64
+          - os: windows-latest
+            target: win32-x64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: "**/go.sum"
+
+      # CGO_ENABLED is explicit on both, in opposite directions, because the
+      # difference is the entire reason the helper is a separate process:
+      # the daemon must stay pure Go, and CGO is confined to the helper.
+      - name: Build daemon (pure Go)
+        run: go build -o "${{ github.workspace }}/dist/codeterminal-daemon${{ matrix.target == 'win32-x64' && '.exe' || '' }}" .
+        working-directory: daemon
+        env:
+          CGO_ENABLED: 0
+
+      - name: Build embedder helper (CGO)
+        run: go build -o "${{ github.workspace }}/dist/codeterminal-embedder-helper${{ matrix.target == 'win32-x64' && '.exe' || '' }}" .
+        working-directory: helper
+        env:
+          CGO_ENABLED: 1
+
+      # SIGNING GOES HERE, and its absence is recorded rather than skipped.
+      #
+      # macOS: unsigned Mach-O binaries inside a .vsix are quarantined by
+      # Gatekeeper and killed, so the daemon never starts and the user sees an
+      # unexplained "daemon not running". That makes signing a HARD gate for
+      # darwin-arm64 specifically -- shipping an unsigned macOS package is worse
+      # than shipping none. Windows SmartScreen only warns.
+      #
+      # Both are no-ops until the secrets exist, so this workflow is runnable
+      # today and gains signing without restructuring.
+      - name: Sign (macOS)
+        if: matrix.target == 'darwin-arm64' && env.MACOS_CERT_P12 != ''
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+        run: echo "TODO codesign + notarytool + stapler; see ULTRA_MASTER_PLAN_2026-08-08 §5"
+
+      - name: Record signing status
+        shell: bash
+        run: |
+          if [ "${{ matrix.target }}" = "darwin-arm64" ] && [ -z "${{ secrets.MACOS_CERT_P12 }}" ]; then
+            echo "::warning title=Unsigned macOS binaries::darwin-arm64 binaries are UNSIGNED. Gatekeeper will quarantine them and the daemon will not start. Do not publish this target."
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ matrix.target }}
+          path: dist/
+          retention-days: 7
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # One Linux runner assembles all three packages. vsce --target only LABELS the
+  # package; the contents come from what is staged, so each target gets its own
+  # platform's binaries staged before packaging, and the gate is told which
+  # target it is checking.
+  # ---------------------------------------------------------------------------
+  package:
+    name: package
+    needs: binaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: clients/vscode/package-lock.json
+
+      - name: Install extension deps
+        run: npm ci
+        working-directory: clients/vscode
+
+      - name: Compile TypeScript
+        run: npx tsc -p ./
+        working-directory: clients/vscode
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Package all three targets
+        shell: bash
+        working-directory: clients/vscode
+        run: |
+          set -euo pipefail
+          VERSION=$(node -p "require('./package.json').version")
+          mkdir -p ../../out-vsix
+
+          for TARGET in linux-x64 darwin-arm64 win32-x64; do
+            echo "::group::$TARGET"
+            rm -rf daemon && mkdir -p daemon
+            cp -a "../../artifacts/binaries-$TARGET/." daemon/
+            chmod +x daemon/codeterminal-daemon* daemon/codeterminal-embedder-helper* 2>/dev/null || true
+
+            # Stages models.json and the LICENSE, and FAILS if either binary is
+            # missing rather than packaging a broken runtime.
+            node scripts/stage-runtime.js
+
+            OUT="../../out-vsix/codeterminal-vscode-$TARGET-$VERSION.vsix"
+            npx vsce package --no-dependencies --target "$TARGET" -o "$OUT"
+
+            # THE GATE. Asserts on archive contents, told which target it is
+            # checking so the win32 package is checked for .exe names.
+            node scripts/verify-vsix.js "$OUT" "$TARGET"
+            echo "::endgroup::"
+          done
+
+      - name: Checksums
+        shell: bash
+        working-directory: out-vsix
+        run: |
+          sha256sum *.vsix | tee SHA256SUMS
+          echo "### Packages" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat SHA256SUMS >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vsix-packages
+          path: out-vsix/
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Attach to the GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            out-vsix/*.vsix
+            out-vsix/SHA256SUMS
+          draft: true # a human decides when it is public
+          generate_release_notes: true
+
+  # ---------------------------------------------------------------------------
+  # PUBLISHING IS NOT AUTOMATIC, and this job is deliberately left un-wired.
+  #
+  # Marketplace publication is irreversible in practice: a bad version cannot be
+  # cleanly unpublished, only superseded. There must be no automatic path from a
+  # merge to a marketplace, so this runs only when a human dispatches it, only
+  # against an already-built and already-gated artifact, and only once the two
+  # things §5 of the plan names are true -- macOS binaries are notarised, and
+  # the founder has approved the listing.
+  # ---------------------------------------------------------------------------
+  publish:
+    name: publish (manual, founder action)
+    needs: package
+    if: false # flip this on deliberately, never as a side effect
+    runs-on: ubuntu-latest
+    environment: marketplace
+    steps:
+      - run: echo "vsce publish runs here, from the artifacts package/ produced."

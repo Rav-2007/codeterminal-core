@@ -136,6 +136,28 @@ func EnsureONNXRuntimeLib(ctx context.Context, cacheDir string, logger *log.Logg
 	return libPath, nil
 }
 
+// onnxRuntimeLibCached reports whether the extracted shared library for THIS
+// platform is already present, without downloading anything.
+//
+// It deliberately mirrors EnsureONNXRuntimeLib's cache-hit test above --
+// os.Stat plus a non-zero size on the same libPath -- rather than inventing a
+// second notion of "cached". The extracted library carries no pinned checksum
+// of its own (the sha256 is on the ARCHIVE it came out of), so a stricter test
+// here would claim a stronger guarantee than the download path itself provides.
+//
+// An unsupported platform reports false, not an error: on Intel Mac there is no
+// library to have cached, and the honest answer to "is it there?" is no. The
+// actionable "Intel Mac is not supported" message belongs to the download path,
+// which is where a user can do something about it.
+func onnxRuntimeLibCached(cacheDir string) bool {
+	platform, err := lookupONNXRuntimePlatform(runtime.GOOS, runtime.GOARCH)
+	if err != nil {
+		return false
+	}
+	info, err := os.Stat(filepath.Join(cacheDir, platform.libFileName))
+	return err == nil && info.Size() > 0
+}
+
 // extractArchiveMember extracts exactly one named member from a .tgz or
 // .zip archive to destPath, inferring the archive format from its file
 // extension.
