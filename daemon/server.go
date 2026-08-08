@@ -71,6 +71,13 @@ type Server struct {
 	// request, exactly like embedder/store above.
 	memory *MemoryStore
 
+	// freshness memoises "has the workspace changed since the index was built"
+	// for the status handler (see indexfreshness.go). nil disables the check
+	// entirely, which is what every test Server that does not opt in gets --
+	// deliberately, so a directory walk never appears in a test that did not
+	// ask for one.
+	freshness *freshnessCache
+
 	// warnSink is the durable, local, append-only home for warn-mode
 	// (log-only) chunk-secret fire events (see warnsink.go / logChunkScrub).
 	// nil is a valid no-op sink — a failing or unconfigured sink must never

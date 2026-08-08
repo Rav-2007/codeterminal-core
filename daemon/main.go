@@ -381,6 +381,14 @@ func main() {
 		rerankDisabled:          *noRerank || cfg.Retrieval.RerankDisabled,
 		workspace:               groundedRoot,
 		memory:                  memoryStore,
+		// Index-freshness sweeps for the status handler, memoised. Constructed
+		// here rather than lazily so a running daemon's behaviour does not
+		// depend on whether status has been called before.
+		//
+		// 30s: long enough that polling status in a loop cannot turn a health
+		// check into load, short enough that a human who re-indexes and asks
+		// again sees the new answer rather than a cached complaint.
+		freshness: newFreshnessCache(30 * time.Second),
 		// Durable warn-mode sink under the workspace's already-gitignored
 		// .codeterminal state dir (same convention as index/ and backups/), so
 		// the log-only fire-rate data survives daemon restarts instead of

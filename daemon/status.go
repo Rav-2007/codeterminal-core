@@ -80,8 +80,12 @@ func (s *Server) handleStatus(enc *json.Encoder) {
 		Retrieval:        s.statusRetrieval(),
 		MemoryAvailable:  s.memory != nil,
 		APIKeyConfigured: s.apiKey != "",
-		Degraded:         s.degradations(),
-		Counters:         s.counters.snapshot(),
+		// statusDegradations, not degradations: this is the ONE surface that
+		// reports index staleness, which is not constant for the daemon's
+		// lifetime and costs a stat-only sweep. The prompt path keeps the cheap,
+		// lifetime-constant set.
+		Degraded: s.statusDegradations(time.Now()),
+		Counters: s.counters.snapshot(),
 	}
 	if s.cfg != nil {
 		resp.ConfigVersion = s.cfg.ConfigVersion

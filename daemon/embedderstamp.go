@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // embedderStampFileName is written into a workspace's index directory after
@@ -30,13 +31,37 @@ type embedderStamp struct {
 	EmbedderID         string `json:"embedder_id"`
 	Dim                int    `json:"dim"`
 	IndexSchemaVersion int    `json:"index_schema_version"`
+
+	// BuiltAt is when this index finished building, UTC. It exists because the
+	// index had NO freshness concept at all -- no mtime, no timestamp, no
+	// watcher -- so a daemon answered from a snapshot of unknown age and
+	// reported `grounded ✓` with total confidence either way. This repository
+	// demonstrated it: `.codeterminal/index/` was dated 22 days behind HEAD
+	// while the product cheerfully cited it.
+	//
+	// A ZERO VALUE MEANS "UNKNOWN", NOT "OLD". Every index built before this
+	// field existed decodes to the zero time, and there are many. Treating
+	// unknown as stale would flip an entire installed base into a warning state
+	// on upgrade, for a condition nobody has measured -- so unknown SUPPRESSES
+	// the signal instead. See indexFreshness.
+	//
+	// omitempty so a healthy stamp written by an older binary and re-read by a
+	// newer one is byte-identical to what it was.
+	BuiltAt time.Time `json:"built_at,omitempty"`
 }
 
 // writeEmbedderStamp stamps indexDir with embedder's identity and the
 // current index schema version, overwriting any previous stamp. Called
 // after a successful index build.
 func writeEmbedderStamp(indexDir string, embedder Embedder) error {
-	stamp := embedderStamp{EmbedderID: embedder.ID(), Dim: embedder.Dim(), IndexSchemaVersion: currentIndexSchemaVersion}
+	stamp := embedderStamp{
+		EmbedderID:         embedder.ID(),
+		Dim:                embedder.Dim(),
+		IndexSchemaVersion: currentIndexSchemaVersion,
+		// UTC, so a stamp written in one timezone and compared in another does
+		// not produce a freshness answer that depends on where the laptop was.
+		BuiltAt: time.Now().UTC(),
+	}
 	data, err := json.MarshalIndent(stamp, "", "  ")
 	if err != nil {
 		return err

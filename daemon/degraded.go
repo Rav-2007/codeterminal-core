@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // Wire-visible degraded-state reporting.
@@ -41,6 +42,9 @@ const (
 // which is why this can be computed per-request without cost and without
 // racing anything: retrieval and memory are wired once in main.go and never
 // re-opened, and the routing config is read-only after load.
+//
+// THAT INVARIANT IS LOAD-BEARING, and index staleness deliberately breaks it --
+// which is why staleness is NOT here. See statusDegradations below.
 func (s *Server) degradations() []protocol.Degradation {
 	var out []protocol.Degradation
 
@@ -114,4 +118,53 @@ func (s *Server) logDegradations() {
 	for _, d := range s.degradations() {
 		s.logger.Printf("degraded: component=%s: %s", d.Component, d.Detail)
 	}
+}
+
+// statusDegradations is degradations() plus the ones that can CHANGE while the
+// daemon runs. Today that is exactly one: index staleness.
+//
+// This is a separate function, not an argument to degradations(), and the
+// separation is structural rather than a performance tweak:
+//
+//   - degradations()'s doc comment states that everything it reports is
+//     constant for the daemon's lifetime, and several callers rely on that by
+//     computing it per-prompt without caching. Index staleness violates it in
+//     both directions -- editing a file makes a fresh index stale, and
+//     re-indexing makes it fresh again, neither requiring a restart. Folding it
+//     in would quietly falsify a comment that other code trusts.
+//
+//   - It costs a directory walk. The prompt path must not pay that per turn,
+//     and a signal that made every prompt slower would be removed by the first
+//     person who profiled it.
+//
+//   - A prompt reports grounding per-answer already (GroundingInfo). The right
+//     place for "your index is behind" is the health surface an operator or an
+//     extension polls, not a line appended to every reply.
+//
+// The sweep is cached (freshnessCache), so polling status in a loop does not
+// turn a health check into load.
+func (s *Server) statusDegradations(now time.Time) []protocol.Degradation {
+	out := s.degradations()
+
+	// Only meaningful when the semantic tier is actually serving. With
+	// retrieval off, StatusRetrieval.Reason already says so specifically, and
+	// "your index is stale" about an index nobody is reading is noise.
+	if s.store == nil || s.embedder == nil || s.workspace == "" {
+		return out
+	}
+	if s.freshness == nil {
+		return out
+	}
+
+	indexDir := filepath.Join(s.workspace, indexDirName)
+	res := s.freshness.get(now, func() indexFreshnessResult {
+		return scanIndexFreshness(s.workspace, readStampBuiltAt(indexDir))
+	})
+	if d := indexStaleDegradation(res); d != nil {
+		// The operator's copy gets the evidence; the wire gets counts only.
+		s.logger.Printf("degraded: component=%s: %d file(s) modified after the index was built at %s",
+			d.Component, res.Changed, res.BuiltAt.UTC().Format(time.RFC3339))
+		out = append(out, *d)
+	}
+	return out
 }

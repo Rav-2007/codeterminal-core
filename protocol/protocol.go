@@ -598,6 +598,21 @@ const (
 	// SearchResponse.Error has always reported it correctly for searches.
 	DegradedMemory = "memory"
 
+	// DegradedIndexStale: the search index was built before the workspace's
+	// current state, so grounding may cite code that has since changed.
+	//
+	// Unlike every other component here, this one is NOT constant for the
+	// daemon's lifetime -- the workspace can change under a running daemon, and
+	// re-indexing can clear it without a restart. It is therefore reported on
+	// StatusResponse ONLY, never on the prompt path. See daemon's
+	// statusDegradations for why that separation is structural.
+	//
+	// Metadata carries "changed_files" (int) and, when known, "index_built_at"
+	// (RFC3339). Deliberately counts and timestamps, never paths: a path would
+	// leak workspace content into a health response, which is exactly what the
+	// Degradation contract above forbids.
+	DegradedIndexStale = "index_stale"
+
 	// DegradedProviderRouting: the configured provider-routing constraints are
 	// weaker than the secure default (see ZDRConfig), so a request may be
 	// served by an endpoint outside the zero-data-retention guarantee.
