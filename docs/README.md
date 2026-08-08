@@ -1,6 +1,6 @@
 # Documentation index
 
-**39 markdown files, ~15,100 lines. This page says which four you need and what
+**43 markdown files, ~15800 lines. This page says which four you need and what
 every other one is for.**
 
 Written 2026-08-07, because the seven stale claims corrected that day were not
@@ -92,6 +92,7 @@ date attached.
 | [`TOOL_MENU_SIZE_2026-08-01.md`](TOOL_MENU_SIZE_2026-08-01.md) | Selection accuracy vs menu width: flat between 5 and 12 |
 | [`TOOLCALL_RELIABILITY_2026-07-31.md`](TOOLCALL_RELIABILITY_2026-07-31.md) | Tool-selection degradation as the menu widens |
 | [`AGENT_LOOP_RELIABILITY_2026-07-31.md`](AGENT_LOOP_RELIABILITY_2026-07-31.md) | Agent-loop failure modes that did **not** occur |
+| [`RETRIEVAL_EVAL_CHECKPOINT_2026-08-08.md`](RETRIEVAL_EVAL_CHECKPOINT_2026-08-08.md) | The gated eval suite run by hand at `23550e4`: 15/15, 8/9, 90.1% — and what the excluded fourth test actually measures |
 
 ---
 

@@ -501,12 +501,21 @@ jobs:
       # Scoped to the three eval tests that are GREEN, deliberately.
       #
       # TestEditShapedRetrievalEval is excluded because its HARNESS cannot build
-      # its own fixtures -- not, as this comment previously said, because
-      # retrieval scores 0/4. Three of its four cases reconstruct a pre-fix tree
-      # by reverting the fix commit, and those reverts now conflict (the commits
-      # are 178-221 commits behind HEAD), so those cases never issue a query at
-      # all. The "0/4" it prints is a setup failure wearing a recall label. See
-      # BACKLOG.md item (b), corrected 2026-07-31.
+      # its own fixtures -- not, as this comment once said, because retrieval
+      # scores 0/4. Three of its four cases reconstruct a pre-fix tree by
+      # reverting the fix commit, and those reverts now conflict (the commits are
+      # 178-221 commits behind HEAD), so those cases never issue a query at all.
+      # See BACKLOG.md item (b), corrected 2026-07-31.
+      #
+      # BUT THE "0/4" IS NOT ENTIRELY A SETUP FAILURE, which this comment used to
+      # imply and which would lead someone to read the number as carrying no
+      # retrieval signal at all. Measured 2026-08-08 at 23550e4 (see
+      # docs/RETRIEVAL_EVAL_CHECKPOINT_2026-08-08.md): the fourth case,
+      # helperproc-env-allowlist, reverts cleanly, runs for 131s, issues a REAL
+      # query -- and misses, at rank #109 of the full ordering (#189
+      # semantic-only). It is the one case here that measures anything, and what
+      # it measures is a miss. So 0/4 = three cases that never ran, plus one that
+      # ran and genuinely failed. Do not quote the 0/4 as "no signal".
       #
       # Including it would leave this job permanently red, and a job that is
       # always red is a job nobody reads -- the exact failure this pipeline
