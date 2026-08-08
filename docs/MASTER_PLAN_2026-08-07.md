@@ -330,10 +330,23 @@ at peak — a 100k quota fits three worst-case turns.
 
 ## 5. Risks, stated plainly
 
-1. **The Windows fixes are unexecuted.** Ten commits, `GOOS=windows` vet-clean,
-   green on Linux — and the DACL code, the DENY-ace fixture, the junction test
-   and the pipe buffers have never met the OS. Stage 1 is not optional.
-2. **macOS has never run at all.** Not "probably fine" — unrun.
+1. **The Windows fixes are PARTLY executed** *(updated 2026-08-07)*. The `cross`
+   job now runs `go build`, `go vet` **and `go test ./...`** on `windows-latest`,
+   and it is green. What that does *not* cover: there is no
+   `peercred_windows_test.go`, so the DACL grant and
+   `GetNamedPipeClientProcessId` still have **no test that exercises them** —
+   green here means "the package's other tests pass on Windows", not "peer auth
+   works". The junction-versus-`EvalSymlinks` question is likewise still open.
+   Those two remain NOT RUN; the rest of this risk is discharged.
+2. ~~**macOS has never run at all.** Not "probably fine" — unrun.~~
+   **DISCHARGED 2026-08-07.** macos-latest, run `31204152210`,
+   `ok codeterminal/daemon 53.019s`. `peercred_darwin_test.go` carries no
+   `t.Skip` and no `testing.Short` guard and is `//go:build darwin`, so green
+   admits no third state: it ran. It took four macOS runs, and the three
+   failures before it were all real product bugs — `sun_path` 104 vs 108, an
+   unresolved workspace spelling, and `EEXIST` vs `EADDRINUSE`. **Each was a
+   per-kernel constant mistaken for a Unix one**, which is the pattern to expect
+   on the next new platform.
 3. **The daemon-lifecycle defect (Stage 2) has not been reproduced**, only read.
    Repro before fixing.
 4. **The hostile-repository surface is larger than what has been found.** P0-5

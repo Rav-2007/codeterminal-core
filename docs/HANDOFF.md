@@ -39,20 +39,30 @@ plan without one, it is the current plan.
 
 ## Current state
 
-- **Branch `ci/cross-go-test`, nothing pushed.** **30 commits ahead of both
-  `main` and `origin/main`**; `main` is level with `origin/main`. Everything has
-  stayed local by choice; publishing is the founder's call.
+- **Merged and pushed (2026-08-07).** `ci/cross-go-test` landed on `main` as a
+  fast-forward at `aead295` — 50 commits, a twelve-defect bug hunt. Nothing is
+  unpushed; `main` and `origin/main` are level.
 - **`make check` green** — gofmt, vet, `-race` on all six modules, lint, the
-  coverage ratchet, the errcheck ceiling. VS Code suite 45/45.
+  coverage ratchet, the errcheck ceiling. VS Code suite 45/45. CI green on
+  `main`: run `31210785353`, 29/30, the one non-green being the retrieval eval,
+  correctly `skipped` because it is gated to `schedule || workflow_dispatch`.
 - **The last pass measured the project at ~77% engineering robustness and ~27%
-  product readiness.** That split is the whole story: the code is stronger than
-  most shipped commercial software, and nobody outside this machine can install
-  it. macOS has never been executed on hardware, there is **no `.vsix` and no
-  install path**, and `package.json` still carries `"private": true`, which
-  `vsce` refuses outright.
-- **Windows compiles and its seams are written**, all of them labelled NOT RUN
-  ON HARDWARE until CI says otherwise. It is no longer true that "Windows does
-  not run at all" — see `MASTER_PLAN_2026-08-07.md` §2.
+  product readiness.** That split is still the whole story: the code is stronger
+  than most shipped commercial software, and nobody outside this machine can
+  install it. There is **no `.vsix` and no install path**, and `package.json`
+  still carries `"private": true`, which `vsce` refuses outright.
+- **macOS HAS now executed on hardware** — macos-latest, run `31204152210`,
+  `ok codeterminal/daemon 53.019s`. `LOCAL_PEERCRED` had never run anywhere
+  before that. Four macOS runs were needed to get there, and three product bugs
+  unreachable from a Linux desk fell out of the first three: a socket path over
+  the 103-byte `sun_path` budget, a workspace grounded against an unresolved
+  spelling, and a bind returning `EEXIST` where Linux returns `EADDRINUSE`.
+  **All three were per-kernel constants mistaken for Unix ones.**
+- **Windows compiles and its seams are written**, still labelled NOT RUN ON
+  HARDWARE — the Windows jobs build and test, but the peer-auth and
+  junction-resolution claims specifically have not been exercised. It is no
+  longer true that "Windows does not run at all" — see
+  `MASTER_PLAN_2026-08-07.md` §2.
 - **`LICENSE` exists** — 122 lines, proprietary, "All rights reserved". It is
   *not* an open-source licence, and that is a constraint on marketplace framing
   rather than a missing file.
@@ -123,10 +133,15 @@ held to safety-critical engineering standards.
 
 - **Local daemon** (`daemon/`) — serves CLI, TUI and VS Code clients from one
   shared indexed understanding of the workspace ("one brain, thin clients").
-  Unix socket, `0600`, in a `0700` per-user runtime dir, peer-authenticated by
-  kernel-supplied credentials: `SO_PEERCRED` on Linux, `LOCAL_PEERCRED` on macOS
-  (`peercred_darwin.go` — compile-verified, **never run on hardware**). Every
-  other platform **refuses every connection**, which is why Windows does not run.
+  Unix socket, `0600`, in a `0700` per-user runtime dir — or a named pipe on
+  Windows — peer-authenticated by kernel-supplied credentials: `SO_PEERCRED` on
+  Linux, `LOCAL_PEERCRED` on macOS (**run on hardware**, run `31204152210`), and
+  on Windows the pipe's DACL plus `GetNamedPipeClientProcessId`
+  (`peercred_windows.go`, **NOT RUN on hardware**). Its header records why
+  `ImpersonateNamedPipeClient` — the obvious answer — is the wrong one: every
+  go-winio dial connects at `PipeImpLevelAnonymous`, so an impersonation check
+  would refuse this product's own clients every time. Only platforms that are
+  none of those three refuse every connection.
 - **Retrieval/indexing** — local ONNX embeddings (BGE-small int8) via a
   subprocess helper; hybrid retrieval (vector + FTS5 lexical, RRF-max fusion
   K=60, class-aware rerank). Honours nested `.gitignore` at every directory
