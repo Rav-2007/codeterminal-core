@@ -12,10 +12,15 @@ network.**
 
 > ### Project status — read before you start
 >
-> **This builds from source. There is no installer.** No `.vsix` is published,
-> `clients/vscode/package.json` still carries `"private": true`, and the quick
-> start below needs a Go toolchain and a C compiler. Packaging is the next
-> milestone, not a shipped feature.
+> **A `.vsix` now builds, and nothing is published yet.** `npm run package` in
+> [`clients/vscode/`](clients/vscode/) produces an installable extension
+> carrying the daemon, the embedder helper and `models.json` — verified by a
+> gate that asserts on the archive's contents. It is **not on any marketplace**,
+> and macOS packages are **unsigned**, which means Gatekeeper will quarantine
+> them. See [Installing](#installing).
+>
+> Building from source still needs Go 1.25+ and a C compiler. Installing the
+> `.vsix` needs neither.
 >
 > **The licence is proprietary** — `LICENSE`, "All rights reserved". This
 > repository is readable, not open source. See [Licence](#licence).
@@ -36,14 +41,46 @@ network.**
 
 | | |
 |---|---|
-| **Use it** | [Quick start](#quick-start) · [Commands](#commands) · [Configuration](#configuration) |
+| **Use it** | [Installing](#installing) · [Quick start](#quick-start--from-source) · [Commands](#commands) · [Configuration](#configuration) |
 | **Understand it** | [How it works](#how-it-works) · [Security posture](#security-posture) |
 | **Work on it** | [Development](#development) · [Documentation map](#documentation-map) |
 | **Trust it** | [Status and scope](#status-and-scope) · [Licence](#licence) |
 
 ---
 
-# Quick start
+# Installing
+
+The VS Code extension is the packaged path, and it manages the daemon for you —
+no second terminal, no `index` command, no daemon started by hand.
+
+```bash
+cd clients/vscode
+npm ci
+npm run package        # builds daemon + helper, stages them, packages, verifies
+code --install-extension codeterminal-vscode-0.0.1.vsix
+```
+
+`npm run package` needs the Go toolchain because it builds the binaries it
+bundles. **Installing the resulting `.vsix` does not** — that is the point of it.
+
+The package carries the daemon, the embedder helper and `models.json` side by
+side in `daemon/`, which is where the daemon looks for its helper and config.
+It does **not** carry the embedding model: that is a one-time **41 MB** download
+on Linux (63 MB macOS, 104 MB Windows), and the extension offers it on first
+activation. **Declining is fine** — you get a working extension that answers
+without reading your code, and the offer returns next session.
+
+Packaging is gated by [`scripts/verify-vsix.js`](clients/vscode/scripts/verify-vsix.js),
+which opens the archive and asserts on its contents. That gate exists because
+`vsce package` exiting `0` is exactly what produced an earlier package that
+shipped this repository's own source and omitted the embedder helper entirely —
+which does not error, it just silently turns retrieval off.
+
+---
+
+# Quick start — from source
+
+For working on Mochiii, or for the TUI, which is not packaged.
 
 **Requirements:** Go 1.25+, and a C compiler for the embedder helper only. The
 daemon and TUI are pure Go and build with `CGO_ENABLED=0`.
@@ -590,8 +627,12 @@ building onnxruntime from source. `linux/arm64` is unpinned but not committed
 anywhere; adding it follows the same pattern as the three pinned platforms
 ([`daemon/onnxruntimefetch.go`](daemon/onnxruntimefetch.go)).
 
-**There is no install path yet.** No `.vsix` is built or published. This is the
-current milestone.
+**Nothing is published.** A `.vsix` builds and installs, but it is not on any
+marketplace, and the macOS package is **unsigned** — Gatekeeper quarantines
+unsigned binaries inside an extension, so the daemon will not start and the
+failure reads as an unexplained "daemon not running". Signing and notarisation
+are the remaining work; until they are done, `linux-x64` and `win32-x64` are the
+shippable targets.
 
 ### Out of scope, on purpose
 

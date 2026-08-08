@@ -49,8 +49,13 @@ plan without one, it is the current plan.
 - **The last pass measured the project at ~77% engineering robustness and ~27%
   product readiness.** That split is still the whole story: the code is stronger
   than most shipped commercial software, and nobody outside this machine can
-  install it. There is **no `.vsix` and no install path**, and `package.json`
-  still carries `"private": true`, which `vsce` refuses outright.
+  install it — though that gap narrowed on 2026-08-08. **A `.vsix` now builds
+  and installs**: `npm run package` in `clients/vscode/` bundles the daemon, the
+  embedder helper and `models.json`, gated by `scripts/verify-vsix.js`, which
+  asserts on the ARCHIVE CONTENTS rather than on vsce's exit code. `"private":
+  true` is gone. What is left before a stranger can install it: **signing**
+  (unsigned macOS binaries are quarantined by Gatekeeper, so the daemon never
+  starts) and a marketplace listing, which is a founder action.
 - **macOS HAS now executed on hardware** — macos-latest, run `31204152210`,
   `ok codeterminal/daemon 53.019s`. `LOCAL_PEERCRED` had never run anywhere
   before that. Four macOS runs were needed to get there, and three product bugs

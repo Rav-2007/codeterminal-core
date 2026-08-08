@@ -222,7 +222,14 @@ Ordered so the tree is shippable-or-honest at every boundary. **Estimated 6–9
 working days to a `.vsix` a stranger can install**, excluding Apple developer
 enrolment, which is calendar time nobody controls.
 
-### Stage 3.0 — Close the RCE (½ day) — **BLOCKING, do first**
+### ✅ Stage 3.0 — Close the RCE — **DONE 2026-08-08** (`b7e393d`)
+
+> Two RCE paths, not one. The binary candidate was the known bug; `--config
+> <workspace>/models.json` was found while fixing it and is worse, because
+> `mcp list` STARTS the servers a config names and `acknowledged_unconfined`
+> lives in that same attacker-written file. Both CONFIRMED by execution in a
+> real Extension Development Host, both neuter-verified. `daemonBinary.ts` is
+> now the one implementation and `extension.ts` shares its layout helpers.
 
 Fix `runMCPServerList`. **Write the failing test first**: a fixture workspace
 containing a fake `daemon/codeterminal-daemon` that writes a sentinel file when
@@ -233,7 +240,7 @@ then land the fix.
 > — not asserted. Mirrored in the TUI's suite so the pair cannot drift apart
 > again, which is how this one survived `d56e425`.
 
-### Stage 3.1 — Manifest and content selection (½ day)
+### ✅ Stage 3.1 — Manifest and content selection — **DONE 2026-08-08** (`4453825`)
 
 `.vscodeignore`, the `package.json` fields, `@vscode/vsce` pinned as a
 devDependency.
@@ -243,7 +250,10 @@ devDependency.
 > logo** — asserted against contents, because that is the failure the Aug-5
 > package actually had.
 
-### Stage 3.2 — Bundle the runtime (1 day)
+### ✅ Stage 3.2 — Bundle the runtime — **DONE 2026-08-08** (`4453825`)
+
+> Proven by execution, not by reading: the packaged daemon was run from `/` and
+> found its helper (`vector_length=384`) and its `models.json` with no flags.
 
 Stage `daemon`, `helper` and `models.json` into `<extensionPath>/daemon/`. No Go
 changes; §1.2 is why.
@@ -253,7 +263,12 @@ changes; §1.2 is why.
 > assertion — it is what the missing helper broke, invisibly, in the Aug-5
 > package.
 
-### Stage 3.3 — The release pipeline (1–2 days)
+### ✅ Stage 3.3 — The release pipeline — **WRITTEN 2026-08-08** (`bd7f975`), NOT RUN
+
+> `release.yml` exists and its YAML parses; **no tag has fired it**, so the
+> three-target matrix is PLAUSIBLE, not CONFIRMED. The target-aware gate IS
+> verified locally: the linux package checked as `win32-x64` fails on both
+> missing `.exe` names.
 
 `release.yml` per §3.3, artifact upload, three targets, checksums.
 
@@ -261,7 +276,13 @@ changes; §1.2 is why.
 > `linux-x64` one installs and works. Windows and macOS are gated separately at
 > 3.5, because that is where signing lands.
 
-### Stage 3.4 — First-run experience (1 day)
+### ✅ Stage 3.4 — First-run experience — **DONE 2026-08-08** (`bd7f975`)
+
+> `download-model --check`, prompt-not-gate, per-platform size reported BY THE
+> DAEMON. Resumable download was **not** built: `downloadAsset` already writes
+> `<name>.part` and renames only after verification, so a cancelled download
+> leaves nothing a check would mistake for good. Resuming would save bandwidth,
+> not correctness — deferred deliberately.
 
 Model-download prompt with the real per-platform number, progress in a
 notification, resumable download (`.part` + `Range` — safe *because* `verifyAsset`
