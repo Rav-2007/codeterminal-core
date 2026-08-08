@@ -1,7 +1,17 @@
 # Design: additional signals for reasoning-tier escalation (Phase 1)
 
-Status: design + `router.go`-only patch. No client/protocol wiring yet
-(that's Phase 2, gated on review of this doc).
+> **Status: Phase 2 SHIPPED. This is the design record, not work remaining.**
+> *(Corrected 2026-08-08.)*
+>
+> This line used to read *"No client/protocol wiring yet (that's Phase 2, gated
+> on review of this doc)."* The wiring exists: `PromptKind` is a field on
+> `PromptRequest` in [`protocol/protocol.go`](protocol/protocol.go), and
+> `reasoningPromptKinds` in [`daemon/router.go`](daemon/router.go) consumes it,
+> admitting exactly `PromptKindReason` and `PromptKindRefactor`.
+>
+> One thing below is still true and is the reason the feature is invisible:
+> **the `reasoning` tier ships `active: false` in `models.json`**, so escalation
+> resolves back to the default tier. The plumbing is done; the tier is off.
 
 ## 1. Candidate signal sources
 

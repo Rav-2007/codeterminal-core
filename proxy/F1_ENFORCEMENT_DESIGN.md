@@ -1,44 +1,62 @@
-# F1 — Proxy-Side ZDR Enforcement: Design (for approval, NOT implemented)
+# F1 — Proxy-Side ZDR Enforcement: Design
 
-**Status:** Design artifact only. No enforcement code exists yet. Un-applied,
-un-committed. This document exists so the founder can approve or reject an
-approach before any code is written.
+> ## ✅ BUILT AND VERIFIED LIVE — this is the design that shipped
+>
+> **Updated 2026-08-08.** This header used to read *"Design artifact only. No
+> enforcement code exists yet. Un-applied, un-committed."* That was true when it
+> was written and has been false since the decision was taken on 2026-07-27.
+>
+> **The gate exists.** `handleChatCompletions` refuses a request whose ZDR
+> routing block is missing or weakened with `403 zdr_required` — see
+> `writeRefusal(w, http.StatusForbidden, "zdr_required", reqID)` in
+> [`proxy/main.go`](main.go) and `gateZDRRequired` in
+> [`proxy/logging.go`](logging.go). **Verified live on the production proxy by
+> wire probe**, not by reading: a request without the block came back `403
+> zdr_required`.
+>
+> The body below is the design as approved. It is kept because it is the
+> reasoning the built thing was built from — read it as "why it works this way",
+> not as "what remains to do".
 
-**What F1 is** (BACKLOG.md:2485): *the proxy does not itself enforce ZDR — it
-forwards the request body byte-for-byte, and the zero-data-retention routing
-flags are set client-side in the daemon.* Founder-gated, part of the open P3/3A
-gate. While F1 is open, customer-facing ZDR language was rewritten to the
-**requested-not-enforced** framing (BACKLOG.md:2487); closing F1 is the trigger
-to restore the enforced-guarantee wording in `PRODUCT_OVERVIEW.md`.
+**What F1 was:** *the proxy does not itself enforce ZDR — it forwards the
+request body byte-for-byte, and the zero-data-retention routing flags are set
+client-side in the daemon.* Founder-gated, part of the P3/3A gate. While F1 was
+open, customer-facing ZDR language used the **requested-not-enforced** framing;
+closing F1 was the trigger to restore enforced-guarantee wording in
+`PRODUCT_OVERVIEW.md`. See `## F1` in
+[`../docs/DECISION_PACK.md`](../docs/DECISION_PACK.md) for the ruling, and the
+2026-07 record in [`../docs/ARCHIVE/BACKLOG_2026-07.md`](../docs/ARCHIVE/BACKLOG_2026-07.md)
+for the original framing — its line numbers moved when `BACKLOG.md` was
+archived, which is why they are no longer cited here.
 
 ---
 
 ## 1. Where the body is forwarded today, and where a gate would insert
 
 The proxy's single forward path is `handleChatCompletions`
-([proxy/main.go:440](proxy/main.go#L440)):
+([proxy/main.go:440](main.go#L440)):
 
 | Step | Location | What happens |
 |---|---|---|
-| Read body once, bounded | [main.go:478-484](proxy/main.go#L478-L484) | `io.ReadAll` into `bodyBytes` (cap `maxRequestBodyBytes`, 4MB). |
-| **Cost-authz peek (precedent)** | [main.go:489](proxy/main.go#L489) | `peekModel(bodyBytes)` → one-field decode, rejects with 403 if the model is off the allow-list. |
-| Quota reservation | [main.go:497-511](proxy/main.go#L497-L511) | `peekMaxTokens` + `reserveQuota`. |
-| Build upstream request | [main.go:516](proxy/main.go#L516) | `bytes.NewReader(bodyBytes)` — **the body forwarded byte-for-byte**. |
-| Forward | [main.go:532](proxy/main.go#L532) | `p.client.Do(upstreamReq)`. |
+| Read body once, bounded | [main.go:478-484](main.go#L478-L484) | `io.ReadAll` into `bodyBytes` (cap `maxRequestBodyBytes`, 4MB). |
+| **Cost-authz peek (precedent)** | [main.go:489](main.go#L489) | `peekModel(bodyBytes)` → one-field decode, rejects with 403 if the model is off the allow-list. |
+| Quota reservation | [main.go:497-511](main.go#L497-L511) | `peekMaxTokens` + `reserveQuota`. |
+| Build upstream request | [main.go:516](main.go#L516) | `bytes.NewReader(bodyBytes)` — **the body forwarded byte-for-byte**. |
+| Forward | [main.go:532](main.go#L532) | `p.client.Do(upstreamReq)`. |
 
 **A ZDR enforcement step inserts at the same point the model-allow-list check
 already lives — immediately after the body is read
-([main.go:489](proxy/main.go#L489)), before the reservation and the forward.**
+([main.go:489](main.go#L489)), before the reservation and the forward.**
 This is not a new architectural seam: the proxy *already* does a one-field,
 content-blind peek of the body at exactly this spot and *already* rejects a
 request (403 `model_not_allowed`) on policy grounds. F1 enforcement is a second
 peek of the same shape reading the `provider` object instead of `model`.
 
 The precedent matters for the ZDR posture argument (§4): `peekModel`
-([main.go:996](proxy/main.go#L996)) and `peekMaxTokens`
-([main.go:1040](proxy/main.go#L1040)) decode into a **single-field struct**, so
+([main.go:996](main.go#L996)) and `peekMaxTokens`
+([main.go:1040](main.go#L1040)) decode into a **single-field struct**, so
 message content is never parsed. The SSE scrubber `stripSSEAccountMetadata`
-([main.go:883](proxy/main.go#L883)) goes further: it decodes into
+([main.go:883](main.go#L883)) goes further: it decodes into
 `map[string]json.RawMessage`, mutates only top-level *key names*, and leaves
 every value (including `messages`) an **opaque byte slice**. Both disciplines
 are directly reusable here.
@@ -48,7 +66,7 @@ are directly reusable here.
 ## 2. What the daemon actually sends (grounds the whole design)
 
 The routing object is OpenRouter's `provider` field. The daemon's wire struct
-is `providerRouting` ([daemon/provider.go:44-48](daemon/provider.go#L44-L48)):
+is `providerRouting` ([daemon/provider.go:44-48](../daemon/provider.go#L44-L48)):
 
 ```go
 type providerRouting struct {
@@ -59,17 +77,17 @@ type providerRouting struct {
 ```
 
 It is serialized on **every** request inside `chatCompletionRequest.Provider`
-([daemon/provider.go:60-66](daemon/provider.go#L60-L66), marshalled at
-[provider.go:237-243](daemon/provider.go#L237-L243)). Critically, **no field is
-`omitempty`** — the struct comment ([provider.go:43](daemon/provider.go#L43))
+([daemon/provider.go:60-66](../daemon/provider.go#L60-L66), marshalled at
+[provider.go:237-243](../daemon/provider.go#L237-L243)). Critically, **no field is
+`omitempty`** — the struct comment ([provider.go:43](../daemon/provider.go#L43))
 states this is deliberate: *"every request must state all three explicitly … so
 enforcement is never silently absent from the wire body."*
 
 Values come from `ZDRConfig.resolvedProviderRouting`
-([daemon/config.go:83-93](daemon/config.go#L83-L93)), which is **secure-by-
+([daemon/config.go:83-93](../daemon/config.go#L83-L93)), which is **secure-by-
 default**: an absent/legacy `zdr` section resolves to `zdr:true`,
 `data_collection:"deny"` (the weaken-bools default to the strict polarity,
-[config.go:66-78](daemon/config.go#L66-L78)). The shipped `daemon/models.json`
+[config.go:66-78](../daemon/config.go#L66-L78)). The shipped `daemon/models.json`
 sets `allow_non_zdr:false`, `allow_data_collection:false`, `allow_fallbacks:true`,
 so today's resolved wire body is:
 
@@ -77,7 +95,7 @@ so today's resolved wire body is:
 {"zdr":true,"data_collection":"deny","allow_fallbacks":true}
 ```
 
-confirmed live (BACKLOG.md:1628, D1 capture table).
+confirmed live (the D1 capture table, [`../docs/ARCHIVE/BACKLOG_2026-07.md`](../docs/ARCHIVE/BACKLOG_2026-07.md)).
 
 **Consequence for enforcement:** because the current daemon *always* sends all
 three flags with `zdr:true`/`data_collection:"deny"`, a rejection gate keyed on
@@ -95,7 +113,7 @@ about: enforcement that does not depend on trusting the client.
 The proxy decodes only the `provider` object (single-field struct, same
 discipline as `peekModel`) and refuses the request unless it carries the required
 ZDR flags. The body is **never mutated** — on the pass path it is still forwarded
-by the same `bytes.NewReader(bodyBytes)` at [main.go:516](proxy/main.go#L516).
+by the same `bytes.NewReader(bodyBytes)` at [main.go:516](main.go#L516).
 
 ```go
 // peekProvider — content-blind, one-field decode, mirrors peekModel.
@@ -136,7 +154,7 @@ The proxy decodes the body into `map[string]json.RawMessage`, overwrites (or
 inserts) the `provider` object with a proxy-controlled `{"zdr":true,
 "data_collection":"deny", …}`, re-marshals, and forwards the re-marshalled bytes.
 Modeled exactly on `stripSSEAccountMetadata`
-([main.go:883-914](proxy/main.go#L883-L914)): decode to `RawMessage` map, mutate
+([main.go:883-914](main.go#L883-L914)): decode to `RawMessage` map, mutate
 only the top-level `provider` key, re-marshal only when something changed, leave
 every other value (including `messages`) an opaque byte slice.
 
@@ -173,7 +191,7 @@ every other value (including `messages`) an opaque byte slice.
    OpenRouter"* — by refusing such a request at the proxy. Enforcement moves
    server-side; the guarantee no longer rests on trusting the client.
 2. It preserves the byte-for-byte forwarding the proxy README
-   ([proxy/README.md:10-22](proxy/README.md#L10-L22)) leans on as part of the ZDR
+   ([proxy/README.md:10-22](README.md#L10-L22)) leans on as part of the ZDR
    story. Stamping would make that README claim conditionally false.
 3. It reuses an existing, reviewed pattern (`peekModel` + 403) rather than the
    heavier re-marshal path.
@@ -190,7 +208,7 @@ and the merge-not-replace requirement.
 
 - **The proxy has no `models.json`.** The load-bearing keys
   (`allow_non_zdr` / `allow_data_collection` / `allow_fallbacks`) live only in the
-  **daemon's** config ([daemon/config.go:66-78](daemon/config.go#L66-L78)) and are
+  **daemon's** config ([daemon/config.go:66-78](../daemon/config.go#L66-L78)) and are
   read by `resolvedProviderRouting` into the per-request `provider` object. The
   hard constraint "never touch `daemon/models.json`" is unaffected by either
   option: **no enforcement design reads or edits `models.json`.**
@@ -210,7 +228,7 @@ and the merge-not-replace requirement.
 proxy makes the proxy the authority that *the flag is present and correct on the
 wire*. It does **not** resolve the open D3/D4 edge — whether OpenRouter honors
 `zdr:true` when `allow_fallbacks:true` and no ZDR endpoint is available
-(BACKLOG.md:1681-1701). That residual lives on OpenRouter's side and is
+(the ZDR retention finding, now `# The inference hop` in [`../SECURITY_MODEL.md`](../SECURITY_MODEL.md)). That residual lives on OpenRouter's side and is
 untouched by F1. **Closing F1 ≠ closing the ZDR guarantee**; F1 removes the
 "enforcement is client-side" caveat, D4 + the OpenRouter escalation address the
 fallback-provider caveat. The two should be tracked as distinct closures.
@@ -248,11 +266,11 @@ Answers needed before implementation:
    `data_collection:"deny"` here, and handle the fallback-provider risk via D4's
    provider allow-list — **not** by refusing fallback at the proxy. Confirm.
 3. **Failure contract.** 403 with `{"error":"zdr_required"}` (mirroring the
-   existing `model_not_allowed` shape at [main.go:489-495](proxy/main.go#L489-L495))?
+   existing `model_not_allowed` shape at [main.go:489-495](main.go#L489-L495))?
    Or a different status/body?
 4. **On by default, with an env override?** The model allow-list uses
    `ALLOWED_MODELS` (default-on, opt-out, loudly warned when disabled,
-   [main.go:267-273](proxy/main.go#L267-L273)). Mirror that with e.g.
+   [main.go:267-273](main.go#L267-L273)). Mirror that with e.g.
    `ENFORCE_ZDR` default-on? Or hard-code with no override so it can never be
    silently disabled?
 5. **Launch-gate semantics.** Does closing F1 this way (proxy becomes the

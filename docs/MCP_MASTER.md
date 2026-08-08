@@ -4,8 +4,8 @@
 
 | | |
 |---|---|
-| **Status** | **MERGE-READY** (hermetic + live evidence) on SHA `8979530` |
-| **Date (UTC)** | 2026-08-03 |
+| **Status** | **MERGED AND ON `main`.** Agent mode ships **off by default** (`mcp.enabled` unset ⇒ inert) |
+| **Assessed** | 2026-08-03 at SHA `8979530`, when this read "MERGE-READY". That was ~76 commits ago; the numbers below are **of that date** and are not re-measured per commit |
 | **Git SHA** | `89795309d3ea6631555d5593d4d923b5f843fa29` |
 | **Lane B claim** | Consent + audit. **Not** confined. |
 | **Whole-product QA** | [`ENTERPRISE_QA_MASTER.md`](ENTERPRISE_QA_MASTER.md) · [`ENTERPRISE_QA_REPORT_2026-08-03.md`](ENTERPRISE_QA_REPORT_2026-08-03.md) |

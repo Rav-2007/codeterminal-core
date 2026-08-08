@@ -6,7 +6,8 @@ Roles: CEO · CTO · Security Patcher · Security Improver · Tester.
 | | |
 |---|---|
 | **Skill** | `.cursor/skills/enterprise-qa-master/` |
-| **Latest report** | [`ENTERPRISE_QA_REPORT_2026-08-03.md`](ENTERPRISE_QA_REPORT_2026-08-03.md) — Phases 0–5 **PASS**; final `make check` green |
+| **Latest report** | [`ENTERPRISE_QA_REPORT_2026-08-05.md`](ENTERPRISE_QA_REPORT_2026-08-05.md) — the third and last pass of this campaign |
+| **Earlier passes** | [`-08-03`](ENTERPRISE_QA_REPORT_2026-08-03.md) (Phases 0–5 **PASS**, `make check` green) · [`-08-04`](ENTERPRISE_QA_REPORT_2026-08-04.md). All three ran against SHA `8979530`; keep all three, because what changed *between* them is the finding |
 | **MCP front door** | [`MCP_MASTER.md`](MCP_MASTER.md) (Phase 3 defers here) |
 | **Enterprise campaign** | this file |
 | **Security position** | [`../SECURITY_MODEL.md`](../SECURITY_MODEL.md) |
