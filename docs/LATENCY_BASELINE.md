@@ -9,7 +9,7 @@ is recorded below rather than quietly dropped.
 ## Why this document exists
 
 The only end-to-end latency figure this project owned was measured **2026-07-17**
-(`BACKLOG.md:1174`). Since then **29 commits landed in `proxy/` and 57 in `daemon/`** —
+(recorded in [`ARCHIVE/BACKLOG_2026-07.md`](ARCHIVE/BACKLOG_2026-07.md), P2 caching investigation). Since then **29 commits landed in `proxy/` and 57 in `daemon/`** —
 a window in which Phases 1–4 *added* work to the hot path: request IDs, structured
 logging, metrics, rate limiting, extra gates, and per-chunk secret scrubbing. Nobody
 had re-measured, there were **zero Go benchmarks in 49k lines**, and the only timing
@@ -158,7 +158,7 @@ n=30. **`auth` + `reserve` = 182 ms of a 228 ms request — 80% of it.**
 
 ### Finding — the record attributed this cost to the wrong call, and undercounted it by half
 
-`BACKLOG.md:1174` frames the ~80–100 ms as a property of `reserveQuota` specifically:
+That 2026-07-17 record ([`ARCHIVE/BACKLOG_2026-07.md`](ARCHIVE/BACKLOG_2026-07.md)) frames the ~80–100 ms as a property of `reserveQuota` specifically:
 *"authorize itself adds ~0 ms while reserveQuota, the **second** sequential Supabase
 call, adds ~90 ms."* That framing survived into every later note, including the
 Phase-0 baseline's REFUTED entry, and it made the cost look like something peculiar to

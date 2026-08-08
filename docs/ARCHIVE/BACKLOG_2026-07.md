@@ -456,7 +456,7 @@ side: opaque/novel secrets in chunk text, awaiting the founder's Design-B-vs-C d
     machine served none. **"Accumulating" was an inference from a shipped mechanism, not an
     observation** — twelve days of it produced nothing, and no amount of further waiting had a
     mechanism by which to help.
-  - **Fire-rate data now MEASURED, offline — see [docs/CHUNK_SCRUB_FIRE_RATE.md](docs/CHUNK_SCRUB_FIRE_RATE.md)**
+  - **Fire-rate data now MEASURED, offline — see [docs/CHUNK_SCRUB_FIRE_RATE.md](../CHUNK_SCRUB_FIRE_RATE.md)**
     (Phase 4, 2026-07-30). `daemon/warnscan_test.go` (`-tags warnscan`) runs the detectors over a
     corpus through the real pipeline — `ScanWorkspace` → `scrub()` → detectors, so they see the
     POST-Option-A residual, which is the only thing the B-vs-C question is actually about. Headline:
@@ -619,7 +619,7 @@ gate stays un-clear on the socket axis until the auth-model decision (below) is 
   itself remains open by design (lower-priority, more invasive). Gate 7 overall status / FAIL-3
   closure remains the founder's call.
   - **CLOSED BY WRITTEN RATIONALE — Phase 4, 2026-07-30.** See the new socket section in
-    [SECURITY_MODEL.md](SECURITY_MODEL.md), which is now the canonical statement of this surface's
+    [SECURITY_MODEL.md](../../SECURITY_MODEL.md), which is now the canonical statement of this surface's
     threat model. Three things it settles, none of them by new code:
     1. **The trust model, which FAIL-3 named as the item blocking the gate** ("everything else in
        FAIL-3 is secondary until this is decided"), *was* decided — by implementation, in `517c069`,
@@ -2523,7 +2523,7 @@ bearing fix. **Status: CLOSED 2026-07-27 — see the CLOSURE block at the top of
 
 First whole-product QA sweep rather than the single-axis passes above. Run against
 `harden/proxy-spend-and-gates` @ `17ffad6` (2 commits ahead of `main`). Full report:
-[`docs/QA_LAUNCH_GATE_2026-07-30.md`](docs/QA_LAUNCH_GATE_2026-07-30.md).
+[`docs/QA_LAUNCH_GATE_2026-07-30.md`](../QA_LAUNCH_GATE_2026-07-30.md).
 
 **Scope by agreement:** local build + test execution only. No Railway probes, no live
 Supabase, no real spend, no load testing. `CONFIRMED` below means a repro script was
@@ -2741,7 +2741,7 @@ money-path fix would make both harder to review.
 >
 > Re-run on `perf/latency-baseline`. **Three of the four cases never issue a retrieval
 > query at all.** They fail in *setup*: `gitRevertPreFixTree`
-> ([daemon/edit_eval_test.go:388](daemon/edit_eval_test.go#L388)) reverts the fix commit
+> ([daemon/edit_eval_test.go:388](../../daemon/edit_eval_test.go#L388)) reverts the fix commit
 > to reconstruct a pre-fix tree, and that revert no longer applies —
 >
 > ```
@@ -2825,7 +2825,7 @@ that filter when this item closes** — it is the only thing keeping the known-r
 Resolves the 1 P0 + 4 P1 + 5 P2 from the launch-gate QA entry above, plus P3-1.
 One isolated commit per finding, per this repo's convention. Full per-finding
 annotations (including where a fix departed from the recommendation, and why) are
-appended inline to [`docs/QA_LAUNCH_GATE_2026-07-30.md`](docs/QA_LAUNCH_GATE_2026-07-30.md);
+appended inline to [`docs/QA_LAUNCH_GATE_2026-07-30.md`](../QA_LAUNCH_GATE_2026-07-30.md);
 the original findings are left exactly as written.
 
 | Finding | Commit | Outcome |
@@ -3018,7 +3018,7 @@ query.
 
 **Still founder-gated** (the SQL catalog is not reachable over PostgREST), now
 collected as one paste-in block in
-[`docs/MIGRATION_RUNBOOK_0000_0004.md`](docs/MIGRATION_RUNBOOK_0000_0004.md):
+[`docs/MIGRATION_RUNBOOK_0000_0004.md`](../MIGRATION_RUNBOOK_0000_0004.md):
 `0004`'s revoke and its 4-function verify; the `prosecdef` containment check
 (*if any function is SECURITY DEFINER, `0004`'s severity is wrong and it is a
 live hole*); whether `api_keys.key_hash` carries a **UNIQUE** constraint (absent
@@ -3115,7 +3115,7 @@ the QA report and this file all now say so; the "merge gate" phrasing was wrong.
 
 CI blocker **CLOSED, fully verified**. Deploy **VERIFIED in production**. The
 migration blocker is unchanged: one five-minute paste-in at
-[`docs/MIGRATION_RUNBOOK_0000_0004.md`](docs/MIGRATION_RUNBOOK_0000_0004.md),
+[`docs/MIGRATION_RUNBOOK_0000_0004.md`](../MIGRATION_RUNBOOK_0000_0004.md),
 still founder-gated because the SQL catalog is not reachable over PostgREST. **The
 FAIL verdict remains unretracted — that is the founder's call, not this entry's.**
 
@@ -3125,7 +3125,7 @@ FAIL verdict remains unretracted — that is the founder's call, not this entry'
 
 Opening phases of the 70% → 90% robustness program. Plan and scorecard:
 `~/.claude/plans/waiting-on-the-eval-serene-sutton.md`. Baseline and
-measurements: [`docs/ROBUSTNESS_BASELINE.md`](docs/ROBUSTNESS_BASELINE.md).
+measurements: [`docs/ROBUSTNESS_BASELINE.md`](../ROBUSTNESS_BASELINE.md).
 
 The program ran under one standing rule, set before any measurement: **a finding
 that fails to reproduce gets struck rather than fixed on faith.** One of the two
@@ -3421,7 +3421,7 @@ than commented. Not 90+: there is no metrics backend, no tracing, and no alertin
 ## 2026-07-30 — Robustness program Phase 3 (test depth & static analysis; verified, NOT founder-closed)
 
 Plan and scorecard: `~/.claude/plans/waiting-on-the-eval-serene-sutton.md` §215-259.
-Baseline: [`docs/ROBUSTNESS_BASELINE.md`](docs/ROBUSTNESS_BASELINE.md).
+Baseline: [`docs/ROBUSTNESS_BASELINE.md`](../ROBUSTNESS_BASELINE.md).
 
 Run in the plan's dependency order, so the enforcement landed before the work
 that needed enforcing.
@@ -3708,7 +3708,7 @@ blocked on it.
 ## 2026-07-31 — Performance: Stage A (instrument) + B.1 (auth cache); verified, NOT founder-closed
 
 A dimension the eight-dimension scorecard never had. Full write-up and every number:
-[`docs/LATENCY_BASELINE.md`](docs/LATENCY_BASELINE.md). Branch `perf/latency-baseline`,
+[`docs/LATENCY_BASELINE.md`](../LATENCY_BASELINE.md). Branch `perf/latency-baseline`,
 PR #3, CI green (21 pass, 1 schedule-only skip).
 
 **Headline: the money path went 228 ms → 136 ms, a 40% cut**, measured before and after
