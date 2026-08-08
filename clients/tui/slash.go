@@ -171,12 +171,59 @@ func steeredPrompt(def *slashDef, args string) string {
 	return def.Preamble + args
 }
 
-func runGitStatus(workspace string) string {
-	dir := workspace
-	if dir == "" {
-		dir = "."
+// neutralisedGitConfig lists the config keys whose values git EXECUTES as
+// commands. They are overridden on the command line, where -c beats anything
+// the repository's own .git/config says.
+//
+// `git status` reads the config of the repository it is pointed at, and
+// core.fsmonitor names a command it then runs. CONFIRMED BY EXECUTION
+// 2026-08-08: a planted core.fsmonitor script ran during
+// `git -C <repo> status -sb`. /git is one keystroke away for the user.
+//
+// REACHABILITY. `git clone` does not transfer config, so cloning a hostile
+// repository does not carry this. Every other way a folder arrives does: an
+// unzipped release archive containing .git/, a synced directory, a container
+// mount. Git's safe.directory ownership check does not help -- it refuses
+// repositories owned by a DIFFERENT user, and a folder you unzipped is yours.
+//
+// Mirrored verbatim in clients/vscode/src/safeGit.ts. Two clients ran the same
+// command and only one of them being fixed is precisely how the /mcp-server
+// hijack survived d56e425.
+var neutralisedGitConfig = []string{
+	"core.fsmonitor=",
+	"core.pager=cat",
+	"core.sshCommand=",
+	"core.alternateRefsCommand=",
+	"diff.external=",
+	"uploadpack.packObjectsHook=",
+}
+
+// safeGitArgs builds the argument vector for git inside an untrusted
+// repository. The -c overrides must precede -C, or the repository is selected
+// before they apply.
+func safeGitArgs(dir string, subcommand ...string) []string {
+	args := []string{"--no-pager"}
+	for _, kv := range neutralisedGitConfig {
+		args = append(args, "-c", kv)
 	}
-	cmd := exec.Command("git", "-C", dir, "status", "-sb")
+	// A read-only question must not write to a repository the user only asked
+	// about.
+	args = append(args, "--no-optional-locks", "-C", dir)
+	return append(args, subcommand...)
+}
+
+func runGitStatus(workspace string) string {
+	// An empty workspace is a REFUSAL, not a fallback to ".". The TUI's working
+	// directory is whatever the user happened to launch it from, and reporting
+	// on that is reporting on a repository nobody asked about -- the same
+	// working-directory trust that d56e425 removed from this very file.
+	if workspace == "" {
+		return "no workspace is set, so there is no repository to report on"
+	}
+	cmd := exec.Command("git", safeGitArgs(workspace, "status", "-sb")...)
+	// Not the workspace. Every path here is absolute, and staying out of the
+	// repository keeps it that way if a relative one is ever added.
+	cmd.Dir = ""
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Sprintf("git status failed: %v\n%s", err, strings.TrimSpace(string(out)))
@@ -250,7 +297,24 @@ func runMCPServerList(configPath string) string {
 			" to its path, and retry /mcp-server"
 	}
 	args := []string{"mcp", "list"}
+	// A RELATIVE config path is refused outright rather than passed through.
+	//
+	// `mcp list` STARTS the servers a config names, so --config is a
+	// code-execution argument, not a display option. A relative path resolves
+	// against this process's working directory, which is the repository the user
+	// opened -- and that is how a workspace models.json got its command run
+	// (CONFIRMED by execution 2026-08-08).
+	//
+	// An ABSOLUTE path is still honoured: that is a developer pointing at a
+	// config they chose, which is a trusted input in the same way
+	// CODETERMINAL_DAEMON_BIN is. Empty means "let the daemon resolve its own",
+	// which is what every ordinary caller now passes.
 	if configPath != "" {
+		if !filepath.IsAbs(configPath) {
+			return "refusing a relative --config path (" + configPath + "): it would resolve " +
+				"against the current directory, and `mcp list` STARTS the servers a config names. " +
+				"Pass an absolute path, or none to use the daemon's own config."
+		}
 		args = append(args, "--config", configPath)
 	}
 	cmd := exec.Command(bin, args...)
@@ -268,7 +332,7 @@ func runMCPServerList(configPath string) string {
 func formatInitChecklist(workspace string) string {
 	return strings.TrimSpace(fmt.Sprintf(`workspace init checklist:
   workspace: %s
-  1. Daemon running with --config ./models.json
+  1. Daemon running (it finds models.json beside its own binary)
   2. CODETERMINAL_API_KEY set (OpenRouter) OR run-proxy.sh for managed proxy
   3. Optional: ./daemon/codeterminal-daemon index %s
   4. /model to pick a model; /mcp-server to see agent tools

@@ -65,6 +65,10 @@ function isExecutableFile(p: string): boolean {
 // dropped rather than joined. That is a real vector, not a hypothetical: a
 // trailing colon in PATH is common, and it would otherwise reintroduce exactly
 // the CWD trust this module exists to remove.
+export function lookPathForTest(name: string): string | undefined {
+  return lookPath(name);
+}
+
 function lookPath(name: string): string | undefined {
   const raw = process.env.PATH;
   if (!raw) {

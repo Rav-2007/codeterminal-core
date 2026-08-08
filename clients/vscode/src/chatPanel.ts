@@ -6,6 +6,7 @@ import { promisify } from 'util';
 // the workspace. Both uses were the vulnerability; there are now zero callers,
 // and leaving the imports would invite the next one.
 import { DAEMON_BIN_ENV, resolveDaemonBin } from './daemonBinary';
+import { runGitStatus } from './safeGit';
 
 import {
   APPROVAL_DENY,
@@ -736,34 +737,6 @@ function workspacePath(): string {
   return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
 }
 
-async function runGitStatus(workspace: string): Promise<string> {
-  const dir = workspace || '.';
-  try {
-    const { stdout, stderr } = await execFileAsync('git', ['-C', dir, 'status', '-sb']);
-    const s = (stdout + stderr).trim();
-    return s || '(git status: empty)';
-  } catch (err) {
-    return `git status failed: ${(err as Error).message}`;
-  }
-}
-
-// NOTHING HERE IS DERIVED FROM WORKSPACE CONTENT. See daemonBinary.ts for the
-// rule and src/test/suite/daemonBinary.test.ts for the two exploits this shape
-// replaces, both of which were CONFIRMED by execution rather than reasoned:
-//
-//   1. The binary was resolved as <workspace>/daemon/codeterminal-daemon, so a
-//      repository shipping that file had it run.
-//   2. `--config <workspace>/models.json` was passed when present. `mcp list`
-//      STARTS the servers a config names -- its own usage text says so -- and
-//      acknowledged_unconfined, the gate meant to require a human, is a field in
-//      that same attacker-written file.
-//
-// The daemon resolves its own config (resolveConfigPath: <exedir>/models.json,
-// then <exedir>/../models.json), which finds the packaged one when installed and
-// the repo's when run from a checkout. Passing --config at all was the defect.
-//
-// --workspace is still the opened folder, and that is correct: it is the root
-// the built-in tools are CONFINED to, not a place anything is loaded from.
 export async function runMCPServerList(workspace: string, extensionPath: string): Promise<string> {
   const bin = resolveDaemonBin(extensionPath);
   if (!bin) {

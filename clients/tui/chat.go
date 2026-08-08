@@ -677,7 +677,21 @@ func (m chatModel) handleLocalSlash(name, args string) (tea.Model, tea.Cmd) {
 		}
 		reply = formatInitChecklist(ws)
 	case "mcp-server":
-		reply = runMCPServerList("./models.json")
+		// EMPTY, not "./models.json". That relative path resolved against the
+		// TUI's working directory -- the repository the user opened -- and
+		// `mcp list` does not merely READ a config: its own usage text says
+		// "Starts the configured MCP servers to ask them", and buildRegistry
+		// does. So a repository shipping a models.json with an mcp.servers
+		// entry had its command RUN. CONFIRMED by execution 2026-08-08.
+		//
+		// acknowledged_unconfined, the gate documented as a written
+		// acknowledgement a human types, is a field in that same
+		// attacker-written file.
+		//
+		// Empty makes the daemon resolve its own config (resolveConfigPath:
+		// <exedir>/models.json, then <exedir>/../models.json), which is the
+		// installed one, or the repo's own when run from a checkout.
+		reply = runMCPServerList("")
 	case "search":
 		q := strings.ToLower(args)
 		var hits []string
