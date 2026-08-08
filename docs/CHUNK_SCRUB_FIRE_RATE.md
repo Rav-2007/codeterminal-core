@@ -250,3 +250,58 @@ The drill above proves the path writes when a grounded turn reaches it, and
 breaking. Neither produces organic data. That comes only from the daemon actually
 being used on real workspaces — no code change will manufacture it, which is the
 thing twelve days of waiting demonstrated.
+
+---
+
+## Re-measurement — 2026-08-08, at `23550e4`
+
+The 2026-07-30 numbers above were taken on `harden/proxy-spend-and-gates`. This
+repeats the same harness on `main` at `23550e4`, nine days and a great deal of
+code later, to check whether the B-vs-C conclusion still holds against a grown
+corpus. **It does.**
+
+Reproduced offline in **1.10s** — the whole point of this harness, and the reason
+the decision it feeds should not be waiting on organic data that has never
+arrived.
+
+| | 2026-07-30 | 2026-08-08 (`23550e4`) |
+|---|---|---|
+| Files scanned | — | 445 |
+| Chunks | — | 3,711 |
+| **Option A** — live structural redactor | on the wire | **21 chunks (5.7 per 1k)** |
+| **Design B** — entropy, chunks with ≥1 fire | ~33% of chunks | **1,075 (29.0%)** |
+| **Design C** — keyword, chunks with ≥1 fire | — | **44 (1.2%)** |
+
+Option A's 21 redactions break down as `aws_access_key=17`, `private_key_block=5`,
+`openai_key=4`, `github_token=3`, `slack_token=2` — structural patterns, matching
+what they are named for.
+
+**Design B still fails on the same ground, and the top-firing files say why:**
+`proxy/main_test.go=103`, `clients/tui/chat_test.go=79`,
+`docs/ARCHIVE/BACKLOG_2026-07.md=64`, `daemon/chunkscrub_test.go=50`. Entropy fires
+hardest on test fixtures, archived prose and `go.work.sum` — a redactor that blanks
+29% of a repository's chunks, concentrated in exactly the files a developer asks
+questions about, destroys the product to protect against a class Option A already
+covers structurally. The earlier ~33% and today's 29.0% are the same finding; the
+small difference is corpus composition, not a change in behaviour.
+
+**Design C fires on 1.2% of chunks**, and inspection shows those hits are
+themselves mostly test fixtures containing literal `password` / `api_key` /
+`client_secret` strings. Note the self-referential case: this very document fires
+three times (`docs/CHUNK_SCRUB_FIRE_RATE.md` — `tokens`, `token`, `secrets`),
+which is a fair illustration of keyword redaction's own false-positive mode on
+documentation *about* secrets.
+
+The entropy distribution is unchanged in shape: 8,735 tokens considered, mass
+centred at 3.25–3.75 bits/char, with 1,921 fires above the 4.00 threshold. Hex
+content caps at exactly 4.0 bits/char, which is why the threshold sits where it
+does and why so much ordinary code sits just underneath it.
+
+**Conclusion: no change to the standing recommendation — reject Design B, defer
+Design C.** D5 remains the founder's call; this re-measurement removes "the data
+might be stale" as a reason to defer it.
+
+**Also fixed on this date:** the `warnscan` build tag was compiled by nothing —
+not `make check`'s vet, not any CI job, not the pre-push hook. `make vet` now
+includes `-tags warnscan` (commit `87af8d7`), so this harness cannot rot silently
+between the rare occasions someone needs it.
