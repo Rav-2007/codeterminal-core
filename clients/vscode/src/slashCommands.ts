@@ -11,11 +11,33 @@ export interface SlashDef {
   /** Wire PromptKind for /reason and /refactor. */
   promptKind?: string;
   needsArgs?: boolean;
+  /**
+   * Set when a `local` command is dispatched by ChatPanel itself rather than by
+   * runLocalCommand -- currently only /model, which onPrompt intercepts via
+   * parseModelCommand BEFORE parseSlash runs.
+   *
+   * This flag exists because that interception was previously invisible: the
+   * catalog said `local`, so a reader had every reason to expect the local
+   * dispatcher to handle it, and it worked only by an ordering accident in
+   * onPrompt. The hostile-workspace guard asserts that every OTHER local
+   * command is handled by runLocalCommand, and that this flag appears on
+   * exactly the commands listed there -- so a new command cannot quietly
+   * escape the guard by being dispatched somewhere else.
+   *
+   * A panel-dispatched command must take no path-shaped input. /model qualifies:
+   * it sends a tier name to the daemon and touches no filesystem path.
+   */
+  panelDispatched?: boolean;
 }
 
 export const SLASH_CATALOG: SlashDef[] = [
   { name: 'help', kind: 'local', summary: 'list slash commands' },
-  { name: 'model', kind: 'local', summary: 'list or select a models.json tier (/model <name>)' },
+  {
+    name: 'model',
+    kind: 'local',
+    summary: 'list or select a models.json tier (/model <name>)',
+    panelDispatched: true,
+  },
   { name: 'mcp-server', kind: 'local', summary: 'show configured MCP servers and tool policy' },
   { name: 'clear', kind: 'local', summary: 'clear the on-screen transcript' },
   { name: 'compact', kind: 'local', summary: 'drop older turns; keep the last few' },
@@ -199,7 +221,7 @@ export function steeredPrompt(def: SlashDef, args: string): string {
 export function formatInitChecklist(workspace: string): string {
   return `workspace init checklist:
   workspace: ${workspace}
-  1. Daemon running with --config ./models.json
+  1. Daemon running (it finds models.json beside its own binary)
   2. CODETERMINAL_API_KEY set (OpenRouter) OR run-proxy.sh for managed proxy
   3. Optional: ./daemon/codeterminal-daemon index ${workspace}
   4. /model to pick a model; /mcp-server to see agent tools
