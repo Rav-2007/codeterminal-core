@@ -8,13 +8,14 @@
 
 MODULES := daemon editapply proxy helper protocol clients/tui
 
-.PHONY: help hooks test race fmt vet lint ratchet errcheck fuzz check docs drill soak
+.PHONY: help hooks test race fmt vet crossvet lint ratchet errcheck fuzz check docs drill soak
 
 help:
 	@echo "make hooks    install the tracked git hooks (.githooks/) -- do this once"
 	@echo "make check    everything CI runs: build, fmt, vet, race, lint, ratchet, docs"
 	@echo "make docs     every relative link in a tracked .md resolves"
 	@echo "make race     go test -race across all six modules"
+	@echo "make crossvet compile the windows& darwin files this machine never sees"
 	@echo "make lint     staticcheck + ineffassign + bodyclose"
 	@echo "make ratchet  per-package coverage floors"
 	@echo "make errcheck per-module unchecked-error ceilings (a ratchet, not a gate)"
@@ -55,6 +56,31 @@ vet:
 	@(cd daemon && go vet -tags warnscan ./...) || exit 1
 	@echo "vet: clean (including -tags eval and -tags warnscan)"
 
+# Compile the windows/ and darwin/ tagged files, which a vet on this machine
+# never sees. 23 files carry `//go:build windows` and 3 carry darwin -- the
+# peer-credential implementations, the lock and no-follow syscall splits, the
+# owner-permission checks. That is security-relevant code on the two platforms
+# nobody here can run.
+#
+# CI's `cross` matrix covered this. When Actions is unavailable -- a spending
+# limit, an outage, a fork without minutes -- that cover disappears silently and
+# the tree still looks green, because nothing local disagrees. This makes the
+# check exist on the machine doing the work.
+#
+# helper is excluded, and not by oversight: it links onnxruntime_go, which is
+# CGO-only, so a cross-target vet reports "build constraints exclude all Go
+# files" for reasons that have nothing to do with our code. CI's cross matrix
+# omits it too, and builds it natively per-runner instead.
+CROSSVET_MODULES := daemon editapply protocol clients/tui
+
+crossvet:
+	@for os in windows darwin; do \
+		for m in $(CROSSVET_MODULES); do \
+			(cd $$m && GOOS=$$os go vet ./...) || { echo "crossvet: FAILED GOOS=$$os $$m"; exit 1; }; \
+		done; \
+	done
+	@echo "crossvet: clean (windows + darwin, $(words $(CROSSVET_MODULES)) modules)"
+
 test:
 	@for m in $(MODULES); do (cd $$m && go test ./...) || exit 1; done
 
@@ -84,7 +110,7 @@ soak:
 # docs is last and costs ~1s. It is in `check` rather than in a docs-only job
 # because a rename breaks links in the same commit that makes it, and that is
 # the only moment anyone can fix it cheaply.
-check: fmt vet race lint ratchet errcheck docs
+check: fmt vet crossvet race lint ratchet errcheck docs
 	@echo "check: all gates green"
 
 docs:
