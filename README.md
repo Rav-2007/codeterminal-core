@@ -379,6 +379,20 @@ order:
 
 **There is no auto-apply anywhere.** Every edit requires an explicit `y`.
 
+**Creating a file** is the same mechanism, not a second one: a block with an
+**empty `SEARCH`** means "this file's content is, or should be, nothing", so
+`REPLACE` is written as the whole file ([`editapply/create.go`](editapply/create.go)).
+It goes through the identical gates — confinement, the syntax check, your
+confirmation. Two behaviours are worth knowing:
+
+- **It will not clobber.** An empty `SEARCH` against a file that already exists
+  and is non-empty is **refused**, with an error telling the model to send a real
+  `SEARCH` section instead. An existing but *empty* file is filled, because
+  that is the same intent.
+- **The syntax gate applies to creation too**, deliberately. Without that, a
+  model whose edit was refused for not parsing could land the identical bytes by
+  resending them as a creation.
+
 `edits undo` restores a session, comparing current on-disk content against the
 `after/` snapshot first. A file modified since is **never silently clobbered**:
 it is listed as guarded and restored only with `--force` or an explicit
@@ -583,8 +597,8 @@ current milestone.
 
 | Area | Not done, deliberately |
 |---|---|
-| **Retrieval** | No auto-index on start or per request; no query rewriting; no multi-hop. Re-running `index` rebuilds chunk-by-chunk keyed by a deterministic ID rather than diffing |
-| **Editing** | No auto-apply; no fuzzy `SEARCH` matching; ambiguous is always a refusal; no new-file creation; no mid-stream parsing |
+| **Retrieval** | No *full* index build on start or per request — the running daemon's watcher does keep it current per file; no query rewriting; no multi-hop. Re-running `index` rebuilds chunk-by-chunk keyed by a deterministic ID rather than diffing |
+| **Editing** | No auto-apply; no fuzzy `SEARCH` matching; ambiguous is always a refusal; no mid-stream parsing. File *creation* **is** supported — see [Editing](#editing) |
 | **Agent mode** | No OS sandboxing of third-party servers — consent and audit are the protection, and the docs say so; stdio only, so no remote MCP and no new egress; tools only, no resources or prompts; no hot-reload; tool results never persist into history |
 | **Skills** | Storage plumbing only: no auto-capture, no injection into prompts, no vector search, no sync |
 | **Routing** | `ghost_text` and `reasoning` stay inactive; VS Code has no model picker UI yet |
