@@ -5,6 +5,7 @@ import * as os from 'os';
 import * as fs from 'fs';
 
 import { ChatPanel } from './chatPanel';
+import { bundledDaemonDir, daemonBinaryName } from './daemonBinary';
 import { probeDaemon, resolvedWorkspaceRoot, setWorkspaceRoot } from './daemonClient';
 import { DaemonHandle, DaemonSupervisor } from './daemonSupervisor';
 
@@ -12,8 +13,17 @@ let supervisor: DaemonSupervisor | undefined;
 let output: vscode.OutputChannel | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
-  const binaryName = os.platform() === 'win32' ? 'codeterminal-daemon.exe' : 'codeterminal-daemon';
-  const binaryPath = path.join(context.extensionPath, 'daemon', binaryName);
+  // The bundled location, defined once in daemonBinary.ts so the spawn path and
+  // /mcp-server cannot drift apart on where the runtime lives. This path was
+  // always safe -- it is anchored to extensionPath -- but it was a second
+  // spelling of the same layout, and the two spellings are how /mcp-server was
+  // able to grow a workspace-relative one without anyone noticing.
+  //
+  // Deliberately NOT resolveDaemonBin: that falls back to PATH, which is right
+  // for a diagnostic command and wrong for the daemon this window MANAGES.
+  // Silently supervising some other daemon found on PATH is not a lifecycle
+  // anyone asked for.
+  const binaryPath = path.join(bundledDaemonDir(context.extensionPath), daemonBinaryName());
 
   const workspaceFolders = vscode.workspace.workspaceFolders;
   // '' when no folder is open, NOT '.'.

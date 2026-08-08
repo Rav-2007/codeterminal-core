@@ -1,8 +1,11 @@
 import * as vscode from 'vscode';
 import { execFile } from 'child_process';
-import * as fs from 'fs';
-import * as path from 'path';
 import { promisify } from 'util';
+
+// fs and path used to be imported here solely to build executable paths out of
+// the workspace. Both uses were the vulnerability; there are now zero callers,
+// and leaving the imports would invite the next one.
+import { DAEMON_BIN_ENV, resolveDaemonBin } from './daemonBinary';
 
 import {
   APPROVAL_DENY,
@@ -125,8 +128,14 @@ export class ChatPanel {
     ChatPanel.current = new ChatPanel(panel, extensionUri);
   }
 
+  // Kept as a field because /mcp-server needs it: the daemon it runs must be
+  // resolved against OUR installation directory, never against the workspace.
+  // See daemonBinary.ts for why that distinction is load-bearing.
+  private readonly extensionPath: string;
+
   private constructor(panel: vscode.WebviewPanel, extensionUri: vscode.Uri) {
     this.panel = panel;
+    this.extensionPath = extensionUri.fsPath;
     this.panel.webview.html = this.getHtml(extensionUri);
 
     this.panel.webview.onDidReceiveMessage((msg) => this.handleMessage(msg), null, this.disposables);
@@ -319,7 +328,7 @@ export class ChatPanel {
         this.replyLocal(formatInitChecklist(ws));
         return;
       case 'mcp-server':
-        this.replyLocal(await runMCPServerList(ws));
+        this.replyLocal(await runMCPServerList(ws, this.extensionPath));
         return;
       case 'search': {
         const q = args.toLowerCase();
@@ -738,33 +747,41 @@ async function runGitStatus(workspace: string): Promise<string> {
   }
 }
 
-async function runMCPServerList(workspace: string): Promise<string> {
-  const candidates = [
-    path.join(workspace, 'daemon', 'codeterminal-daemon'),
-    path.join(workspace, 'codeterminal-daemon'),
-    'codeterminal-daemon',
-  ];
-  const bin = candidates.find((c) => {
-    try {
-      return fs.existsSync(c) && fs.statSync(c).isFile();
-    } catch {
-      return false;
-    }
-  });
+// NOTHING HERE IS DERIVED FROM WORKSPACE CONTENT. See daemonBinary.ts for the
+// rule and src/test/suite/daemonBinary.test.ts for the two exploits this shape
+// replaces, both of which were CONFIRMED by execution rather than reasoned:
+//
+//   1. The binary was resolved as <workspace>/daemon/codeterminal-daemon, so a
+//      repository shipping that file had it run.
+//   2. `--config <workspace>/models.json` was passed when present. `mcp list`
+//      STARTS the servers a config names -- its own usage text says so -- and
+//      acknowledged_unconfined, the gate meant to require a human, is a field in
+//      that same attacker-written file.
+//
+// The daemon resolves its own config (resolveConfigPath: <exedir>/models.json,
+// then <exedir>/../models.json), which finds the packaged one when installed and
+// the repo's when run from a checkout. Passing --config at all was the defect.
+//
+// --workspace is still the opened folder, and that is correct: it is the root
+// the built-in tools are CONFINED to, not a place anything is loaded from.
+export async function runMCPServerList(workspace: string, extensionPath: string): Promise<string> {
+  const bin = resolveDaemonBin(extensionPath);
   if (!bin) {
     return (
-      'codeterminal-daemon binary not found — build it with:\n' +
+      'codeterminal-daemon binary not found.\n' +
+      'It ships inside this extension; a development checkout needs it built:\n' +
       '  (cd daemon && go build -o codeterminal-daemon .)\n' +
-      'then retry /mcp-server'
+      `then put it on PATH, or set ${DAEMON_BIN_ENV} to its path, and retry /mcp-server`
     );
   }
-  const config = path.join(workspace, 'models.json');
   try {
     const args = ['mcp', 'list'];
-    if (fs.existsSync(config)) {
-      args.push('--config', config);
+    if (workspace) {
+      args.push('--workspace', workspace);
     }
-    const { stdout, stderr } = await execFileAsync(bin, args, { cwd: workspace || undefined });
+    // cwd is deliberately NOT the workspace. Nothing below resolves a relative
+    // path, and leaving it unset keeps that true if someone later adds one.
+    const { stdout, stderr } = await execFileAsync(bin, args, { cwd: extensionPath });
     const s = (stdout + stderr).trim();
     return s || 'no MCP servers configured (agent mode off or empty mcp.servers)';
   } catch (err) {
