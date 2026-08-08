@@ -12,10 +12,21 @@ on:
   # NOT for a push that changes only markdown. `paths-ignore` skips the run only
   # when EVERY changed file matches it, so a commit touching both code and docs
   # still runs the full matrix -- this buys nothing back from a mixed push, and
-  # is not a hole. It is safe here because nothing in the build depends on a
-  # .md file: there is no markdown under any testdata/, no `go:embed` of a .md,
-  # and no test that reads one (the `"README.md"` strings in editapply's tests
-  # are literals in path-hazard tables, not files opened from disk).
+  # is not a hole. It is safe for the jobs this trigger controls, because none of
+  # them depends on a .md file: there is no markdown under any testdata/, no
+  # `go:embed` of a .md, and no UNTAGGED test that reads one (the `"README.md"`
+  # strings in editapply's tests are literals in path-hazard tables, not files
+  # opened from disk).
+  #
+  # CORRECTION, 2026-08-08: that last clause first said "no test that reads one",
+  # full stop, and that is wrong. `daemon/agentloop_eval_test.go` is `//go:build
+  # eval` and asks the model to read `mcp-servers/README.md` and
+  # `clients/vscode/README.md` as a real fixture, so editing either of those CAN
+  # change an eval outcome. It does not make this trigger unsafe -- the eval job
+  # is schedule/dispatch-only and was never on the push path, so paths-ignore
+  # neither covers it nor changed it. But it does mean those two files are test
+  # fixtures rather than deletable stubs, and a markdown-only push will not tell
+  # you if one of them broke the eval. The Monday schedule is what tells you.
   #
   # The usual footgun -- a skipped workflow leaving a REQUIRED status check
   # pending forever -- cannot bite here, because this repo has no required
