@@ -9,6 +9,20 @@ this session.** Where it contradicts the previous plan, §1 says so. Two of its
 Stage 3 assumptions were wrong, and one of them is a shipping blocker it never
 saw.
 
+> ### Status — end of 2026-08-08
+>
+> **Stages 3.0–3.4 are DONE and on `main`.** Stage 3.3 is written but has never
+> fired — no tag has been pushed. **Stage 3.5 has not started.**
+>
+> Work done this day that this plan did not contain is recorded in **§9**, along
+> with the only honest answer to "what is left": **§9.2**.
+>
+> **Two things block everything and neither is code.** GitHub Actions refuses to
+> start any job — *"recent account payments have failed or your spending limit
+> needs to be increased"* — so CI reports nothing and the pre-push hook is the
+> only remaining gate, on a repo where branch protection is already unavailable.
+> And D1+D2+D3 are one founder sitting that unblocks all capability work.
+
 ---
 
 ## 1. What this pass overturned
@@ -394,3 +408,73 @@ Unchanged, and still after packaging:
    That is evidence about the search, not about the remainder — a focused sweep
    of every path the extension derives from workspace content is worth half a day
    before publishing.
+
+   > **This risk was right, and it was paid.** The sweep it asks for was done and
+   > found **four more instances**, not zero — see §9.1. The rule is now enforced
+   > by a guard in both clients rather than by re-reading. Risk retained anyway:
+   > a guard covers the surface it enumerates, and the next instance will be
+   > wherever nothing enumerates.
+
+---
+
+## 9. What is actually left — written 2026-08-08 evening
+
+This section exists because the answer was spread across four documents and
+nobody could see it whole. It **points at** the owning document for each item
+rather than restating it, so it cannot drift into a fifth copy of the truth.
+
+### 9.1 Done this day, beyond what this plan contained
+
+Five instances of one class — code execution controlled by the opened repository
+— are now fixed, and the *class* is under a guard in **both** clients rather than
+one. Then a sweep for the same shape of problem elsewhere:
+
+| Landed | What |
+|---|---|
+| `b7e393d` `4918a0c` | RCEs 1–4: workspace daemon, `--config <workspace>/models.json`, `core.fsmonitor` in **both** clients, TUI `--config ./models.json` |
+| `ef61c9d` `76a87d0` `75960b6` | RCE 5 (`/init` *recommended* the exploit) + the VS Code all-commands hostile-workspace guard |
+| `fa4035c` | Cross-client mirrors enforced — including `neutralisedGitConfig`, a **security list** kept in sync by comment |
+| `23550e4` | Broken doc links fail a build (255 links); in the pre-push hook because `paths-ignore` skips md-only pushes |
+| `8ccc591` | The weekly eval, run by hand at `23550e4`; corrected what its `0/4` means |
+| `87af8d7` | `-tags warnscan` was compiled by **nothing** |
+| `fb35711` | Warn-mode fire rate re-measured, so D5 is not deferred on stale data |
+| `0c7afb9` | `make crossvet` — 23 `windows` + 3 `darwin` files that no local gate compiled |
+
+**The thread joining them:** every one was an invariant maintained by a comment,
+a convention, or a habit rather than by something that fails. `make check` now
+covers six build tags, two platforms, and every relative documentation link.
+
+### 9.2 Remaining, sequenced — and what each is blocked on
+
+**Blocked on the founder, not on engineering:**
+
+| # | Item | Owns it | Why it matters |
+|---|---|---|---|
+| B1 | **GitHub Actions billing** | Settings → Billing | Every job refuses to start. No CI signal at all. |
+| B2 | **D1 + D2 + D3** — one sitting | [`DECISION_PACK.md`](DECISION_PACK.md) | **These are the P3 gate, which blocks all capability work.** All three have written recommendations. |
+| B3 | Apple Developer enrolment | — | Calendar time nobody controls. Gates Stage 3.5, and therefore macOS. |
+| B4 | D5 · D6 · D7 · D8 | [`DECISION_PACK.md`](DECISION_PACK.md) | D5's data is now fresh ([`CHUNK_SCRUB_FIRE_RATE.md`](CHUNK_SCRUB_FIRE_RATE.md)). D8 deletes a subsystem with no callers. |
+
+**Engineering, in the order it should be done:**
+
+| # | Item | Owns it | Note |
+|---|---|---|---|
+| E1 | **Stage 3.5** — signing + clean-VM install | §4 above | The last packaging stage. Needs B3 and a clean VM per platform. |
+| E2 | **Stage 3.3 has never run** | §3.3 above | `release.yml` is written; no tag has been pushed. Its `publish` job is `if: false`. |
+| E3 | **Stage 4** — index honesty | §7 above | A stale index still reports `grounded ✓`. **Live in this repo now.** |
+| E4 | Item 7 — Gate 7 existence oracle | [`OPEN_ITEMS.md`](OPEN_ITEMS.md) | Last engineering item under FAIL-3; the rest is D3. |
+| E5 | Rebuild the edit-shaped eval | [`RETRIEVAL_EVAL_CHECKPOINT_2026-08-08.md`](RETRIEVAL_EVAL_CHECKPOINT_2026-08-08.md) | Its harness expires by design; its one working case misses at rank #109. |
+| E6 | Items 10, 12 and L1–L8 | [`OPEN_ITEMS.md`](OPEN_ITEMS.md) | All CONFIRMED present, all Low. |
+| E7 | **Stage 5** — pilot, 10–25 users | §7 above | Everything above is upstream of it. |
+
+### 9.3 The limits of what today proved — stated, not implied
+
+- **`crossvet` compiles Windows and macOS code. It does not execute it.**
+  `peercred_darwin.go` has still never run on a Mac. Compiling is not running,
+  and the new green line must not be read as saying otherwise.
+- **Retrieval is verified weekly, not per-push**, and one of four eval tests is
+  verified by nothing on any schedule.
+- **Three eval tests make real, billed API calls** and are correctly excluded.
+  They refuse rather than guess when credentials are absent.
+- **Nothing here is CLOSED.** Implemented-and-verified is where engineering
+  stops; closure is the founder's.
