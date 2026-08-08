@@ -345,17 +345,27 @@ suite('local commands against a hostile workspace', () => {
     );
   });
 
-  // The fifth instance, and the only one that is pure text: /init printed a
-  // checklist telling the user to start the daemon with `--config ./models.json`.
-  // The TUI's copy of that line was corrected when the vector was fixed; this
-  // one was not, so the product went on RECOMMENDING the exploit in the client
-  // that had already been patched against it.
-  test('initChecklistDoesNotRecommendARelativeConfig', () => {
+});
+
+// Deliberately a SEPARATE suite, with no setup hook.
+//
+// This assertion is pure string comparison and needs no git, no daemon and no
+// workspace. Sharing the suite above would have made it skip on any machine
+// without git -- a text check silenced by an unrelated missing dependency,
+// which is its own small way of proving nothing.
+suite('the /init checklist', () => {
+  // The fifth instance of the class, and the only one that is pure text: /init
+  // printed a checklist telling the user to start the daemon with
+  // `--config ./models.json`. The TUI's copy of that line was corrected when
+  // the vector was fixed; this one was not, so the client that had ALREADY been
+  // patched went on recommending the exploit in prose.
+  test('doesNotRecommendARelativeConfig', () => {
     const text = formatInitChecklist('/some/workspace');
     assert.ok(
       !text.includes('--config ./') && !text.includes('--config .\\'),
-      `/init tells the user to pass a relative --config, which resolves against whatever ` +
-        `directory they happen to be in: ${text}`,
+      '/init tells the user to pass a relative --config, which resolves against whatever ' +
+        'directory they happen to be in, and "mcp list" STARTS the servers a config ' +
+        `names: ${text}`,
     );
   });
 });
