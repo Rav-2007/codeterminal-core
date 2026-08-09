@@ -30,6 +30,23 @@ const (
 	vscodeChatPanel    = "../vscode/src/chatPanel.ts"
 )
 
+// incompleteField matches the FIELD `incomplete:` and nothing else -- not the
+// bare word.
+//
+// Both looser forms were tried and both were measured letting a real regression
+// through, which is why this is one shared, tested matcher rather than three
+// strings.Contains calls:
+//
+//	"incomplete" in the Turn interface   matched the field's own DOC COMMENT
+//	"incomplete" in the onDone handler   matched `incompleteReason`, the local
+//	                                     variable holding the value, so deleting
+//	                                     the field it is assigned to changed nothing
+//
+// The `\b...\s*:` shape is what separates a use of the name from a declaration
+// of the field. TestCutOffParityParsersAreNotVacuous drives it against both
+// near-misses above.
+var incompleteField = regexp.MustCompile(`\bincomplete\??\s*:`)
+
 func readClientSource(t *testing.T, path string) string {
 	t.Helper()
 	raw, err := os.ReadFile(path)
@@ -60,7 +77,7 @@ func TestVSCodeTurnTypeCarriesTheCutOffFlag(t *testing.T) {
 	// Match the DECLARATION, not the word. The field is documented in a comment
 	// that also contains "incomplete", so a substring check passes on the prose
 	// alone -- measured: deleting the field left a plain Contains() green.
-	if !regexp.MustCompile(`(?m)^\s*incomplete\??\s*:`).MatchString(block[1]) {
+	if !incompleteField.MatchString(block[1]) {
 		t.Errorf("the VS Code client's Turn type has no `incomplete` field, so a cut-off answer "+
 			"goes back to the daemon indistinguishable from a finished one "+
 			"(protocol.Turn.Incomplete is how the fact travels):\n%s", block[1])
@@ -88,9 +105,19 @@ func TestVSCodeChatPanelCarriesTheCutOffFlagIntoHistory(t *testing.T) {
 
 	// Step 2: the transcript turn must carry it. The transcript is what becomes
 	// the next request's history (`const history = [...this.transcript]`).
-	if !regexp.MustCompile(`role: 'assistant'[^}]*incomplete`).MatchString(src) {
-		t.Error("no assistant transcript push in chatPanel.ts carries an `incomplete` field, so " +
-			"the captured reason never reaches the next request's history")
+	//
+	// Anchored INSIDE the onDone handler, not searched file-wide. A file-wide
+	// match is what this test did first, and adding the second push site (in
+	// onError, checked below) silently defeated it: neutering the onDone push
+	// left the onError one matching, and the neuter matrix reported NOT CAUGHT
+	// for a live regression. Each push site is now checked where it lives.
+	handlerDone := regexp.MustCompile(`(?s)onDone: \(\) => \{(.*?)\n\s*\},`).FindStringSubmatch(src)
+	if handlerDone == nil {
+		t.Fatal("could not find the onDone handler in chatPanel.ts; the parser anchor has moved")
+	}
+	if !incompleteField.MatchString(handlerDone[1]) {
+		t.Errorf("chatPanel's onDone pushes an assistant turn with no `incomplete` field, so a "+
+			"cut-off answer reaches the next request looking finished:\n%s", handlerDone[1])
 	}
 
 	// Step 3: the ERROR path too. A stream that fails partway has already shown
@@ -103,7 +130,7 @@ func TestVSCodeChatPanelCarriesTheCutOffFlagIntoHistory(t *testing.T) {
 	if handlerErr == nil {
 		t.Fatal("could not find the onError handler in chatPanel.ts; the parser anchor has moved")
 	}
-	if !strings.Contains(handlerErr[1], "incomplete") {
+	if !incompleteField.MatchString(handlerErr[1]) {
 		t.Errorf("chatPanel's onError does not mark the partial answer it keeps, so a stream that "+
 			"failed partway either vanishes from history or returns to the model looking "+
 			"finished:\n%s", handlerErr[1])
@@ -126,21 +153,35 @@ func TestCutOffParityParsersAreNotVacuous(t *testing.T) {
 
 	// The field-declaration matcher must reject a doc comment that merely
 	// mentions the name -- the hole the neuter matrix found in this very test.
-	field := regexp.MustCompile(`(?m)^\s*incomplete\??\s*:`)
-	if !field.MatchString("  incomplete?: string;") {
+	if !incompleteField.MatchString("  incomplete?: string;") {
 		t.Error("the field matcher does not match a real declaration")
 	}
-	if field.MatchString("  // incomplete mirrors protocol.Turn.Incomplete: a slug") {
+	if !incompleteField.MatchString("{ role: 'assistant', content: answer, incomplete: reason }") {
+		t.Error("the field matcher does not match an inline object property")
+	}
+	if incompleteField.MatchString("  // incomplete mirrors protocol.Turn.Incomplete: a slug") {
 		t.Error("the field matcher matches a COMMENT mentioning the name, so deleting the field " +
 			"would leave this test green -- the exact vacuity it exists to prevent")
 	}
-
-	push := regexp.MustCompile(`role: 'assistant'[^}]*incomplete`)
-	if !push.MatchString("{ role: 'assistant', content: a, incomplete: r }") {
-		t.Error("the transcript-push parser does not match a carrying push")
+	if incompleteField.MatchString("incompleteReason\n  ? { role: 'assistant' }") {
+		t.Error("the field matcher matches the local variable `incompleteReason`, so neutering " +
+			"the field it feeds would leave this test green -- measured, it did")
 	}
-	if push.MatchString("{ role: 'assistant', content: a }") {
-		t.Error("the transcript-push parser matches a push that carries nothing, so it would " +
-			"pass against the very bug it exists to catch")
+
+	// The handler-block matchers must isolate ONE handler. A matcher that runs
+	// past its own closing brace would pull in the next handler's body, and a
+	// neighbour carrying `incomplete` would then satisfy a check for this one --
+	// which is exactly how the file-wide version of step 2 was defeated when the
+	// onError push was added.
+	done := regexp.MustCompile(`(?s)onDone: \(\) => \{(.*?)\n\s*\},`)
+	twoHandlers := "        onDone: () => {\n          pushWithoutTheField();\n        },\n" +
+		"        onError: (err: Error) => {\n          push({ incomplete: r });\n        },"
+	m := done.FindStringSubmatch(twoHandlers)
+	if m == nil {
+		t.Fatal("the onDone matcher does not match a realistic handler pair")
+	}
+	if incompleteField.MatchString(m[1]) {
+		t.Error("the onDone matcher runs past its own handler and captures the NEXT one, so a " +
+			"neighbouring push would satisfy a check meant for this handler")
 	}
 }
