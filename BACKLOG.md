@@ -472,17 +472,38 @@ in the daemon. Its own doc comment addresses each original objection:
 
 **Robustness work still open on it** (none blocking, all local, none needing CI or a provider):
 
-- **b1.** `TestAgentLoopReliability` is behind `-tags eval` and makes REAL BILLED calls, so it
-  runs nowhere by default — the loop's own reliability harness is effectively unrun. A
-  fixture-driven variant that exercises the four ceilings and the ask/allow/deny paths against
-  a stub provider would run in `make check` for free. **This is the highest-value item here.**
-- **b2.** Tool-result bytes are budgeted (`toolBytes`), but the budget's exhaustion path
-  deserves the same "say which ceiling bit" treatment the others have — confirm by test that
-  each of the four ceilings produces a distinct, named termination.
-- **b3.** No degradation signal when a loop terminates on a ceiling rather than on the model
-  finishing. The user sees an answer; they are not told it was cut short by a budget. This is
-  the same class as the index-staleness gap closed in Stage 4 and should reuse
-  `statusDegradations`/`Degradation` rather than invent a second vocabulary.
+- ~~**b1.** The loop's reliability harness runs nowhere.~~ **WRONG, corrected same day.** This
+  conflated `TestAgentLoopReliability` — a `-tags eval`, billed harness that measures loop
+  *quality* against a real model — with the loop's *correctness* tests, which are comprehensive
+  and untagged: 26 of them across `agentloop_test.go` and `toolconsent_test.go`, all running in
+  `make check`. They cover every ceiling, ask/allow/deny, grant scoping and non-persistence,
+  scrubbing, truncation, rune safety, the audit, and mid-turn provider failure. Nothing to
+  build. *(Writing "largest untested surface in the project" about the single most thoroughly
+  tested subsystem is the exact error this backlog keeps making: describing from memory instead
+  of reading.)*
+- ~~**b2.** Confirm each ceiling produces a distinct named termination.~~ **ALREADY TRUE.**
+  `budgetStop` returns a separate user-facing `Detail` per ceiling, each naming the knob to
+  raise (`max_iterations`, `turn_timeout_seconds`, `max_total_tool_bytes`), and each is covered
+  by its own test.
+- ~~**b3.** No signal when a loop stops on a ceiling.~~ **WRONG.** `IncompleteInfo` is exactly
+  that signal, it is set on every budget stop, and both clients render it — the TUI as a
+  persistent "⚠ answer cut off" note, VS Code via `onIncomplete`. A `Degradation` would have
+  been a second vocabulary for a thing already reported.
+- **b1′ (real, and still open).** The cut-off notice reaches the SCREEN but not the MODEL. The
+  TUI appends it as `roleSystem`, and `buildHistory` drops `roleSystem` — so on the next turn
+  the model is re-shown its own truncated output with no indication it was cut short, and may
+  continue as though it had finished. This is register item **L2**, CONFIRMED. It is the real
+  version of what b3 was reaching for, and it is an agent-workflow correctness bug rather than
+  a reporting one.
+- **b2′ — DONE 2026-08-09: the repeated-call stall.** `toolSignatures`' own comment called a
+  repeated identical call "a loop's second-most-characteristic failure after not stopping", and
+  the loop recorded it and did nothing: a stalled turn paid an iteration off `max_iterations`
+  and the whole result off `max_total_tool_bytes` to learn nothing. Now, when a call repeats
+  with identical arguments AND produces byte-identical output, the payload fed back is replaced
+  by a short note telling the model it is repeating itself. **The tool still runs** — side
+  effects are unchanged — and the match is on the rendered bytes, not the signature, so
+  edit-then-read-back keeps working. Measured 2,600 bytes saved on a single repeat in the test.
+  Neuter-verified both ways, including the guard that a changed result is never suppressed.
 
 ### 2. Multi-model / user-selectable brains — **MECHANISM SHIPPED, guardrail unmet**
 
