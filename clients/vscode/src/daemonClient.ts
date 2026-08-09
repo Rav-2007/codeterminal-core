@@ -47,6 +47,15 @@ const PROBE_TIMEOUT_MS = 2000;
 export interface Turn {
   role: string;
   content: string;
+  // incomplete mirrors protocol.Turn.Incomplete: the IncompleteInfo.reason slug
+  // when THIS assistant turn was cut off rather than finished, carried back so
+  // the next request's context says so. A slug, never prose -- the daemon owns
+  // the wording it renders into the model's context (daemon/history.go).
+  //
+  // Without it the cut-off notice reached the webview and stopped there, and
+  // the truncated text went back up as ordinary history: the model was re-shown
+  // its own half-finished answer as though it had chosen to end there.
+  incomplete?: string;
 }
 
 export interface HandshakeRequest {

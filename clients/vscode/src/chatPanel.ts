@@ -343,6 +343,10 @@ export class ChatPanel {
     const controller = new AbortController();
     this.inFlight = controller;
     let answer = '';
+    // The reason slug for a cut-off answer, held here so onDone can attach it
+    // to the transcript turn. The webview message onIncomplete posts is for the
+    // user's eye and never comes back; this is the model's copy.
+    let incompleteReason = '';
 
     streamPrompt(
       CLIENT_NAME,
@@ -381,6 +385,7 @@ export class ChatPanel {
           this.startEditReview(proposals);
         },
         onIncomplete: (info: IncompleteInfo) => {
+          incompleteReason = info.reason;
           this.panel.webview.postMessage({ type: 'incomplete', info });
         },
         onToolActivity: (activity: ToolActivity) => {
@@ -396,7 +401,11 @@ export class ChatPanel {
           this.panel.webview.postMessage({ type: 'toolApproval', request: req });
         },
         onDone: () => {
-          this.transcript.push({ role: 'assistant', content: answer });
+          this.transcript.push(
+            incompleteReason
+              ? { role: 'assistant', content: answer, incomplete: incompleteReason }
+              : { role: 'assistant', content: answer },
+          );
           this.inFlight = undefined;
           this.clearPendingApproval();
           this.panel.webview.postMessage({ type: 'done' });

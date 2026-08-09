@@ -45,9 +45,14 @@ func TestChat_IncompleteMsgAppendsCutOffNotice(t *testing.T) {
 	}
 }
 
-// The cut-off notice must NOT ride back out as conversation history: it is a
+// The notice PROSE must NOT ride back out as conversation history: it is a
 // client-side annotation, and buildHistory drops roleSystem turns (the daemon
 // would refuse a non-user/assistant role anyway).
+//
+// Read this together with its sibling below, and never alone. On its own it
+// says only "the chrome stays out", and for a long time that was the only test
+// in this area -- which let the FACT stay out too. The prose is TUI-only; the
+// fact is the model's, and travels as a slug on the assistant turn.
 func TestChat_IncompleteNoticeIsNotSentAsHistory(t *testing.T) {
 	m := newTestModel()
 	m = typeText(m, "hi")
@@ -58,6 +63,74 @@ func TestChat_IncompleteNoticeIsNotSentAsHistory(t *testing.T) {
 	for _, turn := range buildHistory(m.turns) {
 		if strings.Contains(turn.Content, "answer cut off") {
 			t.Errorf("history carried the cut-off notice %q; it must be TUI-only chrome", turn.Content)
+		}
+	}
+}
+
+// THE SIBLING, and the regression test for the bug itself: the FACT that the
+// answer was cut off must reach the next request, even though the notice does
+// not. It rides as protocol.Turn.Incomplete on the assistant turn -- the one
+// turn buildHistory keeps -- and the daemon renders the wording from it.
+//
+// Before this, the roleSystem notice was the only record, buildHistory dropped
+// it, and the next turn re-showed the model its own truncated output as a
+// finished answer.
+//
+// NEUTER CHECK: stop setting m.turns[m.streamAssistant].incomplete in the
+// incompleteMsg handler, or drop the field from buildHistory's assistant case,
+// and this fails -- measured, both ways.
+func TestChat_ACutOffAnswerIsMarkedCutOffInTheNextRequestsHistory(t *testing.T) {
+	m := newTestModel()
+	m = typeText(m, "explain goroutines")
+	m, _ = pressEnter(m)
+
+	// A partial answer arrives, then the daemon reports it was cut off.
+	updated, _ := m.Update(tokenMsg("A goroutine is a lightweight"))
+	m = updated.(chatModel)
+	updated, _ = m.Update(incompleteMsg{&protocol.IncompleteInfo{
+		Reason: protocol.IncompleteLength,
+		Detail: "the model reached its output-length limit before finishing.",
+	}})
+	m = updated.(chatModel)
+
+	history := buildHistory(m.turns)
+
+	var assistant []protocol.Turn
+	for _, turn := range history {
+		if turn.Role == "assistant" {
+			assistant = append(assistant, turn)
+		}
+	}
+	// ANTI-VACUITY: with no assistant turn in history there is nothing to carry
+	// the flag, and every assertion below would pass by never running.
+	if len(assistant) != 1 {
+		t.Fatalf("history has %d assistant turn(s), want exactly 1 to carry the flag: %+v",
+			len(assistant), history)
+	}
+
+	if assistant[0].Incomplete != protocol.IncompleteLength {
+		t.Errorf("assistant turn went back to the daemon with Incomplete=%q, want %q. The model "+
+			"will be re-shown this truncated answer as though it were finished",
+			assistant[0].Incomplete, protocol.IncompleteLength)
+	}
+	if !strings.Contains(assistant[0].Content, "A goroutine is a lightweight") {
+		t.Errorf("the partial answer itself did not survive into history: %q", assistant[0].Content)
+	}
+}
+
+// A turn that finished normally must carry no slug -- otherwise every answer
+// arrives at the daemon claiming truncation, and the annotation becomes noise
+// the model learns to ignore.
+func TestChat_AFinishedAnswerCarriesNoCutOffFlag(t *testing.T) {
+	m := newTestModel()
+	m = typeText(m, "explain goroutines")
+	m, _ = pressEnter(m)
+	updated, _ := m.Update(tokenMsg("A goroutine is a lightweight thread."))
+	m = updated.(chatModel)
+
+	for _, turn := range buildHistory(m.turns) {
+		if turn.Incomplete != "" {
+			t.Errorf("a completed turn carried Incomplete=%q", turn.Incomplete)
 		}
 	}
 }

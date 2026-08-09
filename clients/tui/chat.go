@@ -48,6 +48,16 @@ type turn struct {
 	// back as history, and thinking must not enter either (Fix 14). Empty for a
 	// non-reasoning turn, which renders exactly as before.
 	reasoning string
+	// incomplete is the protocol.IncompleteInfo.Reason slug when THIS assistant
+	// turn was cut off rather than finished. Carried back to the daemon by
+	// buildHistory so the next request's context says so.
+	//
+	// It is a separate field from the roleSystem notice appended beside it
+	// because those two serve different readers: the notice is for the user's
+	// eye and stays out of history, this is for the model and never renders.
+	// Keeping the display copy as the source of truth would have meant the
+	// model's view of the conversation depended on string-matching TUI chrome.
+	incomplete string
 }
 
 // helpText is the persistent hint shown under the input. Conversational
@@ -441,11 +451,24 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.streamCh == nil {
 			return m, nil // a stray message from an already-abandoned stream
 		}
-		// A persistent scrollback record that THIS answer was cut off -- a
-		// roleSystem notice (TUI-only chrome, dropped from history by
-		// buildHistory) appended right after the partial answer, not a
-		// header notice that clears on the next turn. streamDoneMsg follows,
-		// so keep draining the channel.
+		// TWO RECORDS, ONE EVENT, because the screen and the model are
+		// different audiences.
+		//
+		// For the model: the reason slug goes on the assistant turn itself, so
+		// buildHistory can carry it into the next request. Without this the
+		// notice below was the ONLY record, and buildHistory drops roleSystem
+		// -- so the next turn re-showed the model its own truncated answer
+		// with nothing to say it had been cut short, and it would build on a
+		// conclusion it never actually reached.
+		//
+		// For the user: a persistent scrollback notice (TUI-only chrome)
+		// appended right after the partial answer, not a header notice that
+		// clears on the next turn.
+		//
+		// streamDoneMsg follows, so keep draining the channel.
+		if msg.info != nil && m.streamAssistant >= 0 && m.streamAssistant < len(m.turns) {
+			m.turns[m.streamAssistant].incomplete = msg.info.Reason
+		}
 		m.turns = append(m.turns, turn{role: roleSystem, text: "⚠ answer cut off: " + incompleteText(msg.info)})
 		m.refreshViewport()
 		return m, waitForNext(m.streamCh)
@@ -819,6 +842,12 @@ func (m *chatModel) endStream() {
 // accepts "user"/"assistant" roles anyway (daemon/history.go) and would
 // drop anything else itself.
 //
+// That drop is why turn.incomplete exists. The "answer cut off" notice is one
+// of those roleSystem turns, so for as long as it was the only record of the
+// event, the fact died here: the model got the truncated text back as ordinary
+// history and no indication it was truncated. The flag travels on the assistant
+// turn instead, where it survives the filter.
+//
 // This does no capping of its own: Layer 1 already caps and logs truncation
 // server-side (maxHistoryTurns in daemon/history.go), so a long session just
 // sends its whole transcript and lets the daemon decide what fits.
@@ -829,7 +858,11 @@ func buildHistory(turns []turn) []protocol.Turn {
 		case roleUser:
 			history = append(history, protocol.Turn{Role: "user", Content: t.text})
 		case roleAssistant:
-			history = append(history, protocol.Turn{Role: "assistant", Content: t.text})
+			// t.incomplete rides along: an answer that was cut off must reach
+			// the model marked as cut off, or the next turn sees a truncated
+			// reply as a finished one. The daemon renders the wording from
+			// this slug (daemon/history.go) -- the client never sends prose.
+			history = append(history, protocol.Turn{Role: "assistant", Content: t.text, Incomplete: t.incomplete})
 		}
 	}
 	return history
