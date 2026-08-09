@@ -26,8 +26,23 @@
 # +3.4 -- which is unguarded headroom: a regression inside it would not trip
 # anything. Each new floor is a few tenths below a value measured three times
 # in a row, following the same take-the-lower-reading rule as the note above.
+#
+# RAISED 2026-08-09, after the cut-off-history fix (b1'/L2) added tests to
+# daemon and clients/tui. Both measured identically on three UNCACHED runs
+# (`go test -count=1`): daemon 74.3 x3, clients/tui 79.2 x3. Floored a few tenths
+# below each (74.0, 78.9), per the take-the-lower-reading rule above.
+#
+# protocol was NOT raised, deliberately, and the reason is worth recording: the
+# same three uncached runs gave 93.3, 93.3, 92.3. A one-point run-to-run swing
+# is larger than the 0.5 of headroom above its current floor even at the LOWER
+# reading, so raising it would buy a little coverage guard and pay for it in
+# ratchet flakes -- and a gate that cries wolf is the one people start passing
+# with -count=1 until it goes green. Left at 91.8 until the variance is
+# understood. (The first attempt at this measurement read three identical
+# numbers because Go had CACHED runs 2 and 3; a cached result is one
+# measurement wearing three hats, and would have hidden the swing entirely.)
 
-codeterminal/daemon              73.6
+codeterminal/daemon              74.0
 codeterminal/editapply           88.0
 codeterminal/proxy               85.0
 
@@ -48,4 +63,4 @@ codeterminal/proxy/testharness    0.0
 codeterminal/helper              21.0
 codeterminal/helper/helperproto  75.0
 codeterminal/protocol            91.8
-codeterminal/clients/tui         74.5
+codeterminal/clients/tui         78.9
