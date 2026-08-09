@@ -277,10 +277,42 @@ const (
 	// capped at 4MB) while still being a bound rather than an open invitation.
 	maxDrainBytes = 8 << 20 // 8MB
 
-	// defaultAllowedModels is the managed tier's shipped model set (the three
-	// tiers in models.json). Used when ALLOWED_MODELS is unset, so the
-	// cost-authorization check is on by default rather than opt-in.
+	// defaultAllowedModels is the managed tier's shipped model set: every slug
+	// declared in the repository's models.json. Used when ALLOWED_MODELS is
+	// unset, so the cost-authorization check is on by default rather than
+	// opt-in.
+	//
+	// THIS LIST AND models.json MUST AGREE, and they did not.
+	//
+	// This constant read "the three tiers in models.json" and named three slugs.
+	// That was true when it was written. models.json has since grown to eleven
+	// tiers, nine of them active -- and the two extra slugs frozen here are the
+	// two INACTIVE ones. The result, measured 2026-08-09: eight of the nine
+	// models a user can actually select through `/model` were refused
+	// `model_not_allowed` by the managed proxy. Only the default tier worked.
+	//
+	// The failure was safe -- a refusal, never a leak, and ZDR enforcement is
+	// per-request and fail-closed regardless of model -- but it silently broke
+	// eight of nine advertised choices for every managed-proxy user.
+	//
+	// TestDefaultAllowedModelsMatchesShippedModelsJSON now fails if the two
+	// drift again, in either direction. Adding a tier to models.json without
+	// adding it here is a broken model; removing one here without removing it
+	// there is a cost-authorization hole.
+	//
+	// Note this is deliberately EVERY slug, not only the active ones: `active`
+	// is a client-side display toggle that a user can flip locally, and the
+	// proxy must not need a redeploy to honour a change to a manifest that
+	// already passed review.
 	defaultAllowedModels = "deepseek/deepseek-v4-flash," +
+		"poolside/laguna-s-2.1," +
+		"stepfun/step-3.7-flash," +
+		"inclusionai/ling-3.0-flash," +
+		"minimax/minimax-m3," +
+		"qwen/qwen3.5-397b-a17b," +
+		"qwen/qwen3.6-plus," +
+		"deepseek/deepseek-v4-pro," +
+		"google/gemini-3.6-flash," +
 		"qwen/qwen3-coder-30b-a3b-instruct," +
 		"deepseek/deepseek-r1"
 )
