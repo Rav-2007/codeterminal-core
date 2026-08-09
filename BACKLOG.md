@@ -424,46 +424,164 @@ Code" experience. This is the packaging phase, the single largest remaining body
     for the **`ghost_text` tier** (fast keystroke completions, `models.json` `ghost_text`, currently
     `active:false`, Phase 3.5) — re-scope it there and measure once that tier is live.
 
-## North-Star / Deferred Capabilities (post-launch, post-security-review)
+## North Star — **all three shipped.** Now: making them robust
 
-Capabilities considered and deliberately NOT being built yet, with the reasoning, so this
-doesn't get re-litigated. Nothing here is scheduled; each needs its own explicit decision to
-start, gated at minimum on the security review above, and, for the two big-ticket items,
-validated user demand.
+> **Rewritten 2026-08-09.** This section used to be called "Deferred Capabilities" and
+> described three things "deliberately NOT being built yet". **All three are built.** Two of
+> the three entries said otherwise, and one of those stale entries was hiding a live defect —
+> eight of nine selectable models refused by the managed proxy, found only because this section
+> was re-derived against source instead of re-read.
+>
+> That is the lesson worth keeping: **a backlog entry that describes work as deferred, after it
+> shipped, is not merely out of date — it is a place nobody looks for bugs.**
 
-### 1. Autonomous multi-step agent loop (plan → edit → run → observe → fix)
-Deferred deliberately.
-- Removes the human-in-the-loop safety property the whole architecture rests on today (every
-  edit is proposed, reviewed, and explicitly applied/undone by a person).
-- Largest single body of work in the project — bigger than anything shipped so far.
-- Highest token-burn feature: a multi-step loop means multiple model calls per user action,
-  which threatens the thin managed-tier margins (see Phase 4's managed-key/billing model).
-- Must NOT precede the security review or validated user demand — it's new capability, not
-  a fix to something broken.
-- **When built:** lives in the DAEMON (per the locked "one brain, thin clients" decision),
-  NOT in the terminal client.
+| # | Capability | Status | What is left |
+|---|---|---|---|
+| 1 | Autonomous multi-step agent loop | **BUILT** — bounded, consent-gated, in the daemon | b1–b3 |
+| 2 | Multi-model / user-selectable brains | **MECHANISM SHIPPED** — 9 active tiers; one defect fixed 2026-08-09 | b4–b6, then the parked ZDR item |
+| 3 | Hybrid lexical+semantic retrieval | **DONE, LIVE-VERIFIED, re-measured** at `23550e4` | b7–b9 |
 
-### 2. Multi-model / user-selectable brains (e.g. DeepSeek V4 Flash, Qwen 2.5 Coder, DeepSeek
-R1 Distill Qwen 32B, etc.)
-Deferred deliberately.
+**Order of work.** b1 first — the agent loop's own reliability harness is behind `-tags eval`
+and makes billed calls, so it runs nowhere; a stub-provider variant would run in `make check`
+for free and is the largest untested surface of the three. Then b4 (a user who picks a model
+and gets an unexplained refusal is the worst live UX left). Then b7/b8, which need measurement
+rather than guessing. **The per-model ZDR verification is parked LAST and deliberately** — it
+is blocked on OpenRouter, not on us, and §2 below states precisely why that park is safe.
+
+Nothing in this section is CLOSED. Each remaining item needs its own decision to start, and the
+security review still gates new capability.
+
+### 1. Autonomous multi-step agent loop — **BUILT. This entry was stale.**
+
+> **Status corrected 2026-08-09** by reading `daemon/agentloop.go`, not by recall. The text
+> below said "deferred deliberately" long after the loop shipped. Kept rather than deleted,
+> because the *reasons* it was deferred are the specification the shipped design had to meet —
+> and its header answers them one by one.
+
+**What shipped** (`daemon/agentloop.go`, `runAgentLoop`): a bounded, consent-gated loop living
+in the daemon. Its own doc comment addresses each original objection:
+
+- *"Removes the human-in-the-loop property"* — **it does not.** Lane A tools cannot write; the
+  edit tool proposes into the existing diff review. Lane B tools require consent per call.
+  Unspecified policy resolves to `ask`, which suspends the turn and puts the exact call in
+  front of a person. Quoting the source: *a call runs because config says allow, or because a
+  person said yes to those exact argument bytes.*
+- *"Highest token-burn feature"* — bounded by four config-visible ceilings, and every
+  termination reports which one bit.
+- *"Must live in the daemon"* — it does.
+
+**Robustness work still open on it** (none blocking, all local, none needing CI or a provider):
+
+- **b1.** `TestAgentLoopReliability` is behind `-tags eval` and makes REAL BILLED calls, so it
+  runs nowhere by default — the loop's own reliability harness is effectively unrun. A
+  fixture-driven variant that exercises the four ceilings and the ask/allow/deny paths against
+  a stub provider would run in `make check` for free. **This is the highest-value item here.**
+- **b2.** Tool-result bytes are budgeted (`toolBytes`), but the budget's exhaustion path
+  deserves the same "say which ceiling bit" treatment the others have — confirm by test that
+  each of the four ceilings produces a distinct, named termination.
+- **b3.** No degradation signal when a loop terminates on a ceiling rather than on the model
+  finishing. The user sees an answer; they are not told it was cut short by a budget. This is
+  the same class as the index-staleness gap closed in Stage 4 and should reuse
+  `statusDegradations`/`Degradation` rather than invent a second vocabulary.
+
+### 2. Multi-model / user-selectable brains — **MECHANISM SHIPPED, guardrail unmet**
+
+> **Status corrected 2026-08-09.** This entry said "deferred deliberately". `models.json` ships
+> **eleven tiers, nine active**, and `/model` lists and selects them in both clients. The
+> capability is live; what has *not* happened is the verification this entry made a
+> precondition.
+
+**The defect this correction found, and fixed** — `proxy/main.go`'s `defaultAllowedModels` had
+frozen at three slugs with a comment reading "the three tiers in models.json", while
+models.json grew to eleven. Measured: **eight of the nine selectable models were refused
+`model_not_allowed`** by the managed proxy; only the default tier worked. Worse, two of the
+three slugs it *did* allow were the two INACTIVE tiers. Safe (a refusal, never a leak — ZDR
+enforcement is per-request and fail-closed regardless of model) but silently broken for every
+managed-proxy user. Fixed, and `proxy/modelallowparity_test.go` now fails in **both**
+directions if the two lists drift again: a shipped model the proxy refuses is a broken model, a
+proxy entry with no shipped tier is unauthorized spend.
+
+**Robustness work still open:**
+
+- **b4.** No client-side signal when the proxy refuses a model. The user picks a tier, sends a
+  prompt, and gets a refusal with no mapping back to "that model is not available on your
+  plan". `/model` should mark unavailable tiers, or the refusal should name the tier.
+- **b5.** `models.json` is the manifest for the client and the proxy independently. The parity
+  test binds them at build time; nothing binds a *deployed* proxy's `ALLOWED_MODELS` to the
+  models.json a given user actually has. Worth a `status`-time reconciliation.
+- **b6.** Per-model cost differs and metering does not yet distinguish. See Phase 4 billing.
+
+#### The original reasoning, kept because two of its three points still bind
+
 - (a) Contradicts the managed-key cost model — different models have different per-token
   prices and would complicate metering and the fixed PPP token-cap math (see Phase 4's
-  billing/metering item).
-- (b) Reopens the just-closed ZDR gate above — ZDR availability is per-model. deepseek-v4-flash
-  is verified ZDR-servable (positive + negative path, 2026-07-09); Qwen 2.5 Coder and DeepSeek
-  R1 Distill Qwen 32B are NOT verified, and ~123 of the 343 currently-listed OpenRouter models
-  have zero ZDR-compliant providers at all (per OpenRouter's public `/api/v1/endpoints/zdr`
-  listing, checked live during that verification) — so every added model needs its own
-  from-scratch ZDR verification, not an assumption it inherits deepseek-v4-flash's.
-- (c) No user has requested it — it adds a new capability rather than improving the core
-  coding loop.
-- **Guardrail for when built:** every user-selectable model must pass the same ZDR
-  live-verification (positive + negative path) as deepseek-v4-flash before being offered. For
-  the cost-sensitive Indian market, curation ("we picked the best cheap private model for
-  you") is likely a stronger position than choice — reconsider that framing before building
-  this, not just the mechanics of adding it.
+  billing/metering item). **Still true — this is b6 above.**
+- (b) ZDR availability is per-model. See the parked item below.
+- (c) No user has requested it. **Superseded** — the tiers shipped regardless.
+- **Original framing note, still worth re-reading before widening the menu further:** for the
+  cost-sensitive Indian market, curation ("we picked the best cheap private model for you") is
+  likely a stronger position than choice. Nine tiers is a lot of choice for a product whose
+  pitch is that it does the thinking about safety for you.
 
-### 3. DONE — LIVE-VERIFIED: Hybrid lexical+semantic code retrieval — the real fix for lexical-miss defects
+#### ⏸️ PARKED LAST — per-model ZDR live-verification
+
+**Blocked on OpenRouter, not on us. Do this after everything else in this section.**
+
+The guardrail this entry set was: *every user-selectable model must pass the same ZDR
+live-verification (positive + negative path) as `deepseek-v4-flash` before being offered.*
+Nine are offered; **only `deepseek/deepseek-v4-flash` has that verification on record**
+(2026-07-09). The other eight do not.
+
+Why it is parked rather than scheduled: **OpenRouter has not given a usable answer**, and the
+verification is a claim about *their* provider routing that cannot be manufactured from this
+side. Guessing would produce exactly the unverified assurance this project refuses to ship.
+
+**What makes the park safe, stated precisely so nobody mistakes parked for ignored:**
+
+1. The proxy enforces ZDR **per request**, fail-closed, regardless of model — a request without
+   the retention flags is refused `403 zdr_required` before anything is reserved or forwarded.
+   Verified live by wire probe.
+2. With those flags set, OpenRouter can only route to ZDR-compliant providers. A model with
+   none cannot be served — it fails to route rather than leaking.
+
+So the residual is **availability, not privacy**: an unverified model either works under ZDR or
+does not work at all. That is a materially different risk from the one this guardrail was
+written to prevent, and it is why the park is defensible.
+
+**What it still costs, and why it cannot stay parked forever:** ~123 of the 343 listed
+OpenRouter models had zero ZDR-compliant providers when this was last checked. If several of
+the eight are in that set, those tiers are dead menu entries that fail at routing time with an
+error the product does not explain (**b4** covers the signal; this covers the fact). Before any
+paying user, either verify the eight or cut `models.json` back to what is verified.
+
+**Definition of done:** positive + negative path recorded per model, in this file, with a date
+— the same shape as the `deepseek-v4-flash` record.
+
+### 3. Hybrid lexical+semantic retrieval — **DONE, LIVE-VERIFIED, and re-measured 2026-08-08**
+
+> **Re-measured at `23550e4`**, offline, against the project's own eval set — see
+> [`docs/RETRIEVAL_EVAL_CHECKPOINT_2026-08-08.md`](docs/RETRIEVAL_EVAL_CHECKPOINT_2026-08-08.md).
+> Top-3 recall **15/15**; chunk-level recall **8/9** under BOTH semantic-only and hybrid;
+> token savings **90.1%** over the 13 full-hit queries of 20. Retrieval costs **~14 ms** of a
+> ~1,450 ms first token — about 1%, where model prefill is 78%.
+>
+> **Robustness work still open on it:**
+>
+> - **b7.** The 8/9 gap is one query — *"where does the daemon open the unix socket"* — and it
+>   misses under hybrid too, so the lexical tier did not rescue it. Named as a known gap in
+>   the harness and not gated. Worth one focused look now that the RRF grid is known flat.
+> - **b8.** `TestEditShapedRetrievalEval` is excluded from CI because three of its four cases
+>   can no longer build their fixtures (the reverts conflict, 178–221 commits behind). Its one
+>   case that DOES run misses at rank **#109**. That is the only edit-shaped retrieval
+>   measurement anyone has, and it is bad. Rebuild the eval around current queries with
+>   labelled ground truth; the harness expires by design.
+> - **b9.** Retrieval quality is verified **weekly**, not per-push — the eval job is
+>   schedule-only for good reasons (it indexes the whole repo per test). A regression
+>   introduced today is caught within seven days, not at the commit that caused it.
+
+**Original entry, kept for the shipping record:**
+
+**DONE — LIVE-VERIFIED: Hybrid lexical+semantic code retrieval — the real fix for lexical-miss defects**
 **Shipped 2026-07-10, commit `ae3e7a4` ("Add lexical retrieval tier fused with semantic via
 max-based RRF"), tag `hybrid-retrieval-complete`.** Adds an FTS5/trigram lexical tier
 (`daemon/lexicalstore.go`) fused with the existing semantic tier via max-based Reciprocal Rank
