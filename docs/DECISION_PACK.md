@@ -66,11 +66,38 @@ rather than leaving it implicit.** It is the strongest boundary the OS offers fo
 a local socket without inventing key management that the threat model itself
 defeats.
 
+**Also decide: which sockets this rules on.** Added 2026-08-09; the recommendation
+above is unchanged, but its *scope* was ambiguous and should not be.
+
+There are **two** local listeners, not one. The daemon's socket calls
+`authorizePeer`. The embedder helper's socket (`helper/main.go`) does not — it has
+no peer check at all, and relies on its 0600 mode inside the 0700 `SocketDir`. So
+for that listener, file permissions *are* the access control, which is the exact
+thing [`SECURITY_MODEL.md`](../SECURITY_MODEL.md) says they are not for the daemon
+socket.
+
+Not a vulnerability: the helper computes embeddings, holds no credential and no
+write path, and anyone who can reach it is already same-uid by virtue of being
+inside a 0700 directory this user owns. But it means the question as written has
+two answers today. **Recommend ruling on both explicitly** — accept same-uid for
+the daemon socket via `authorizePeer`, and record the helper as accepting the
+weaker filesystem-only enforcement for its stated, bounded surface. The full
+comparison is in `SECURITY_MODEL.md` under "The embedder helper socket".
+
+**Note also that D1's stated deliverable is already met.** The recommendation says
+to "say so in `SECURITY_MODEL.md` rather than leaving it implicit" — that section
+exists and has since 2026-07-30. Nothing needs writing; this is a signature.
+
 **Cost of being wrong.** If a future client is *not* a local same-uid process — a
 remote IDE, a container, a service account — this rule is exactly wrong and the
 decision has to be reopened. That is a real possibility and the reason to write the
 model down: so the next person adding a transport knows they are changing an
 assumption rather than adding a feature.
+
+That reopen-trigger is now **enforced rather than remembered**:
+`daemon/socketauthcoverage_test.go` classifies every accept loop in the product
+and fails the build on an unclassified one, naming D1 and D3 in the failure. A new
+listener cannot be added without someone deciding what admits its peers.
 
 ---
 
@@ -134,6 +161,17 @@ improvement would be a mislabel.
 remote transport, a shared daemon — the premise fails and this must be revisited.
 The enumeration test is written so that day is cheap: it names the nine messages
 that would have to collapse.
+
+That day is now **detected, not merely cheap.** D3 borrows its premise from D1,
+and `daemon/socketauthcoverage_test.go` fails the build when any new accept loop
+appears unclassified — naming both rulings. Previously the two documents each held
+this warning in prose and nothing connected either to the code, so the premise
+could have been widened by a change that mentioned neither.
+
+**Decide D1 first.** D3 is a consequence of it, not an independent question: if
+same-uid is not accepted as the model, the argument for keeping nine distinct
+refusal messages loses its foundation and this must be re-argued rather than
+re-affirmed.
 
 ---
 

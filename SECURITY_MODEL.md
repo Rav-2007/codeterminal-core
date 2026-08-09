@@ -896,6 +896,61 @@ above and are not covered by it.
   leaf-lstat guard on the db file does not cover them. Distinct from their file
   *modes*, which Phase 4 fixed (BACKLOG item (g)).
 
+## The embedder helper socket — a second listener, a different rule
+
+Added 2026-08-09, while preparing D1 for a ruling. The section above describes
+*the* socket as though there were one. There are two, and until now only one was
+written down.
+
+The daemon spawns an embedder helper (`helper/main.go`) and reaches it over its
+own Unix socket at `helperproto.SocketPath(daemonPID)` — inside the same 0700
+`protocol.SocketDir()`, chmod 0600, named per daemon PID. That helper has its own
+accept loop, and **it does not call `authorizePeer`**. No peer credential is read;
+no UID is compared.
+
+So the two listeners enforce "same-uid" by two different mechanisms:
+
+| | Daemon socket | Helper socket |
+|---|---|---|
+| Parent directory | 0700 `SocketDir()` | 0700 `SocketDir()` (same) |
+| Socket mode | 0600 | 0600 |
+| Peer credential | **`authorizePeer`** — kernel-supplied UID/SID, fails closed | **none** |
+| What actually admits a peer | the kernel's answer to *who connected* | the filesystem's answer to *who may open this path* |
+
+This is worth stating plainly because the paragraph above is emphatic in the
+other direction: *"File permissions are not the access control — they narrow who
+can reach the socket, but they do not identify who did."* For the helper socket,
+file permissions **are** the access control. That is the honest description.
+
+**One consequence does not carry over.** L7 (the umask window between `net.Listen`
+and `chmod 0600`) is recorded as "narrowed by the 0700 runtime directory and
+closed in practice by `SO_PEERCRED`" — see the note at
+[`protocol/transport_unix.go`](protocol/transport_unix.go). The second clause is
+true only of the daemon socket. On the helper socket that window is closed by the
+0700 directory **alone**, because there is no peer check behind it.
+
+**Why this is recorded rather than fixed.** The helper's job is to turn text into
+vectors. It holds no credential, no workspace handle and no write path; its
+dispatch surface is one embed request. An attacker who could reach it — meaning
+one who is already inside a 0700 directory owned by this user, i.e. already
+same-uid — gains the ability to compute embeddings. Adding peer authentication
+there is cheap and defensible, but it is a change to a security boundary and
+therefore belongs to a ruling, not to a tidy-up.
+
+**This is a scope question for D1**, and it is the reason it is written here:
+"is same-uid-implies-trusted the socket's auth model?" currently has two answers,
+and the ruling should say whether it covers both listeners or only the daemon's.
+Either answer is defensible. What was not defensible was leaving the asymmetry
+undocumented, so that D1 would be ruled on a description of the system that was
+accurate about one socket and silent about the other.
+
+**Enforced, not just described.** `daemon/socketauthcoverage_test.go` classifies
+every accept loop in the product and fails the build on an unclassified one. The
+helper is listed there as an explicit, reasoned exemption rather than an
+omission, and the test refuses an exemption with no written justification. If a
+third listener ever appears, it fails until somebody classifies it — which is the
+moment to reopen D1 and D3, and previously depended on somebody remembering to.
+
 ## Status
 
 Gate 7 and the FAIL-3 socket axis are **engineering-complete and closed by written
