@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -131,6 +132,55 @@ func TestChat_AFinishedAnswerCarriesNoCutOffFlag(t *testing.T) {
 	for _, turn := range buildHistory(m.turns) {
 		if turn.Incomplete != "" {
 			t.Errorf("a completed turn carried Incomplete=%q", turn.Incomplete)
+		}
+	}
+}
+
+// L2's FIRST HALF: a stream that fails partway leaves a partial answer in the
+// transcript, and it must not go back up as a finished one. The daemon cannot
+// mark this case -- its error path carries no Incomplete, and a transport drop
+// has no daemon left to annotate anything -- so the client marks it.
+//
+// NEUTER CHECK: remove the assignment in the streamErrMsg case and this fails
+// -- measured.
+func TestChat_APartialAnswerThatThenErroredIsMarkedInHistory(t *testing.T) {
+	m := newTestModel()
+	m = typeText(m, "explain goroutines")
+	m, _ = pressEnter(m)
+	updated, _ := m.Update(tokenMsg("A goroutine is a lightweight"))
+	m = updated.(chatModel)
+	updated, _ = m.Update(streamErrMsg{err: errors.New("connection reset")})
+	m = updated.(chatModel)
+
+	var assistant []protocol.Turn
+	for _, turn := range buildHistory(m.turns) {
+		if turn.Role == "assistant" {
+			assistant = append(assistant, turn)
+		}
+	}
+	if len(assistant) != 1 {
+		t.Fatalf("history has %d assistant turn(s), want exactly 1 to carry the flag", len(assistant))
+	}
+	if assistant[0].Incomplete != protocol.IncompleteProviderError {
+		t.Errorf("a partial answer whose stream then FAILED went back as Incomplete=%q, want %q. "+
+			"The model will read a reply that stops mid-sentence as a finished one",
+			assistant[0].Incomplete, protocol.IncompleteProviderError)
+	}
+}
+
+// An error before ANY token produces no partial answer, so there is nothing to
+// mark. Marking an empty turn would put a "this was cut off" note on a message
+// with no content -- and validTurn drops it server-side regardless.
+func TestChat_AnErrorBeforeAnyTokenMarksNothing(t *testing.T) {
+	m := newTestModel()
+	m = typeText(m, "explain goroutines")
+	m, _ = pressEnter(m)
+	updated, _ := m.Update(streamErrMsg{err: errors.New("connection refused")})
+	m = updated.(chatModel)
+
+	for _, turn := range buildHistory(m.turns) {
+		if turn.Incomplete != "" {
+			t.Errorf("an empty turn was marked cut off: %+v", turn)
 		}
 	}
 }

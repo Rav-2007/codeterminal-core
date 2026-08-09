@@ -92,6 +92,22 @@ func TestVSCodeChatPanelCarriesTheCutOffFlagIntoHistory(t *testing.T) {
 		t.Error("no assistant transcript push in chatPanel.ts carries an `incomplete` field, so " +
 			"the captured reason never reaches the next request's history")
 	}
+
+	// Step 3: the ERROR path too. A stream that fails partway has already shown
+	// the user real text; both clients keep it and mark it, and neither may
+	// silently drop it (which loses it from the model's view) or keep it
+	// unmarked (which presents it as finished). The TUI's half is
+	// TestChat_APartialAnswerThatThenErroredIsMarkedInHistory.
+	handlerErr := regexp.MustCompile(`(?s)onError: \(err: Error\) => \{(.*?)\n\s*\},`).
+		FindStringSubmatch(src)
+	if handlerErr == nil {
+		t.Fatal("could not find the onError handler in chatPanel.ts; the parser anchor has moved")
+	}
+	if !strings.Contains(handlerErr[1], "incomplete") {
+		t.Errorf("chatPanel's onError does not mark the partial answer it keeps, so a stream that "+
+			"failed partway either vanishes from history or returns to the model looking "+
+			"finished:\n%s", handlerErr[1])
+	}
 }
 
 // A guard on the guards. Both regexes above are anchored on real syntax, and a

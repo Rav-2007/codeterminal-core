@@ -478,6 +478,24 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.checkForEditBlocks()
 
 	case streamErrMsg:
+		// THE SAME LOSS, THROUGH THE ERROR DOOR (register item L2's first half).
+		// A stream that fails PARTWAY leaves whatever streamed sitting in
+		// m.turns as an ordinary assistant turn, and buildHistory sends it on
+		// the next prompt as a finished answer -- so the model is re-shown a
+		// reply that stops mid-sentence with nothing to say it was interrupted.
+		//
+		// The daemon cannot mark this one: its error path sends Done+Error with
+		// no Incomplete, and a transport drop has no daemon left to annotate it
+		// (protocol.go says exactly this -- a connection drop "remains the
+		// client's to distinguish"). This is the client doing that.
+		//
+		// Only when something actually streamed. An empty assistant turn is not
+		// a partial answer, carries no risk of being read as one, and is dropped
+		// by validTurn server-side anyway.
+		if m.streamAssistant >= 0 && m.streamAssistant < len(m.turns) &&
+			strings.TrimSpace(m.turns[m.streamAssistant].text) != "" {
+			m.turns[m.streamAssistant].incomplete = protocol.IncompleteProviderError
+		}
 		m.state = stateError
 		m.statusErr = msg.err.Error()
 		m.endStream()

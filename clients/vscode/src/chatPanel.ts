@@ -411,6 +411,25 @@ export class ChatPanel {
           this.panel.webview.postMessage({ type: 'done' });
         },
         onError: (err: Error) => {
+          // A stream that fails PARTWAY has already shown the user real text.
+          // Dropping it here (which is what happened before) left the webview
+          // displaying an answer the model would never see again, so a
+          // follow-up like "expand on your second point" referred to something
+          // absent from the conversation. Keeping it unmarked would be worse --
+          // the model would read a reply that stops mid-sentence as a finished
+          // one. So it is kept, and marked.
+          //
+          // Mirrors the TUI's streamErrMsg case (clients/tui/chat.go), and
+          // 'provider_error' is protocol.IncompleteProviderError. onError and
+          // onDone are mutually exclusive (daemonClient's `finished` guard), so
+          // this cannot double-push.
+          if (answer.trim()) {
+            this.transcript.push({
+              role: 'assistant',
+              content: answer,
+              incomplete: incompleteReason || 'provider_error',
+            });
+          }
           this.inFlight = undefined;
           this.clearPendingApproval();
           this.panel.webview.postMessage({ type: 'error', message: err.message });
