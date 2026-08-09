@@ -91,7 +91,7 @@ closure is the founder's call.
 | 9 | **FIXED `e3ad4b0`** | **The lexical index is world-readable.** `lexical.db` holds full chunk `Content` — the user's source text — and is created `0644` inside a `0755` directory, with its `-wal`/`-shm` sidecars the same. `memory.db` is `0600` in a `0700` dir and `skills.db` locks its directory down; the FTS store got neither. chromem's own collection dir is `0700`, so the vector half is covered and the lexical half is not. | `daemon/lexicalstore.go:69` | Medium | **CONFIRMED** — probe run 2026-08-01: `index/ drwxr-xr-x`, `lexical.db -rw-r--r--`, both sidecars `-rw-r--r--` |
 | 10 | **OPEN** | **`MatchesSecretName` over-refuses `.pub` public keys containing "secret".** `id_rsa.pub` and `id_ed25519.pub` are correctly allowed; `id_rsa_secret.pub` and `secrets.pub` are refused by the substring rule. Fails in the safe direction — a correctness annoyance, not a hole. | `editapply/secret.go` | Low | **CONFIRMED** — probe run 2026-08-01 |
 | ~~11~~ | **FIXED `ffdd553`** | ~~**The MCP log writer has no buffer bound.** `prefixWriter.Write` appends to `w.buf` and only drains on a newline, on stderr from an unconfined third-party subprocess.~~ | `daemon/mcpruntime.go` | Medium | **NO — FIXED `ffdd553`**, the same commit and the same `maxLogLineBytes = 64 << 10` that closed L8. This row contradicted §6 of this very document for six days; corrected 2026-08-07. |
-| 12 | **PARTLY OPEN — 4 of 8 remain** | **The eight LOWs.** The original report is at `~/.claude/plans/what-can-we-improve-snappy-music.md` — **outside the repo**, which is why `docs/HANDOFF.md`'s pointer looks dangling from a checkout; the table below is the in-repo copy so this register no longer depends on a file that does not travel with the code. **This cell used to read "all eight still present", which was wrong:** L1, L3, L6 and L8 are fixed, L7 has moved file, and L2 is now CONFIRMED rather than PLAUSIBLE. Remaining: **L2, L4, L5, L7**. | various | Low | **RE-VERIFIED 2026-08-09** at `4dca1c8`, read against current source |
+| 12 | **PARTLY OPEN — 3 of 8 remain** | **The eight LOWs.** The original report is at `~/.claude/plans/what-can-we-improve-snappy-music.md` — **outside the repo**, which is why `docs/HANDOFF.md`'s pointer looks dangling from a checkout; the table below is the in-repo copy so this register no longer depends on a file that does not travel with the code. **This cell used to read "all eight still present", which was wrong:** L1, L3, L6 and L8 are fixed, L7 has moved file. **L2 was fixed 2026-08-09** — and was broader than this register recorded in two directions (cross-session memory was NOT clean; the two clients' error paths were broken oppositely). Remaining: **L4, L5, L7**. | various | Low | **RE-VERIFIED 2026-08-09** at `4dca1c8`; L2 row updated at `592e12c` |
 
 ### The eight LOWs (item 12) — RE-VERIFIED 2026-08-09 at `4dca1c8`
 
@@ -102,13 +102,15 @@ closure is the founder's call.
 > overstates what is open is the same failure as one that overstates what is
 > closed: both make the next person distrust the whole document.
 >
-> Net: **three fixed** (L1, L3, L6), **one relocated** (L7), **one upgraded from
-> PLAUSIBLE to CONFIRMED** (L2), **two unchanged** (L4, L5).
+> Net: **four fixed** (L1, L3, L6, and L2 on 2026-08-09), **one relocated** (L7),
+> **two unchanged** (L4, L5). L2 went PLAUSIBLE → CONFIRMED → fixed inside two
+> days, and grew twice on the way: what was filed as one client's live-session
+> quirk was three loss paths across both clients and the memory store.
 
 | ID | Finding | Where | Still open? |
 |---|---|---|---|
 | ~~L1~~ | ~~TUI leaks a `context.CancelFunc` per turn~~ | `clients/tui/chat.go` | **NO — FIXED.** `endStream` calls `m.streamCancel()` *then* nils it, and its comment records that "the two terminal paths used to" nil it directly. Verified 2026-08-09. |
-| L2 | TUI replays a partially-streamed-then-errored answer as prior assistant history to the model (live session only; cross-session memory stays clean) | `clients/tui/chat.go`, `streamErrMsg` case | **yes — now CONFIRMED**, upgraded from PLAUSIBLE. `streamErrMsg` sets `stateError` and calls `endStream`, leaving the partial assistant turn in `m.turns`; `buildHistory` drops only `roleSystem`. **Broader than recorded:** the `incompleteMsg` "⚠ answer cut off" notice is `roleSystem`, so it is dropped from history too — the model is re-shown the truncated answer *without* the caveat the user can see. |
+| ~~L2~~ | ~~A cut-off or partially-streamed answer is replayed to the model as a finished one~~ | `clients/tui/chat.go`, `clients/vscode/src/chatPanel.ts`, `daemon/history.go`, `daemon/server.go` | **NO — FIXED 2026-08-09**, and it was broader than the record in *two* further directions. The record said "live session only; cross-session memory stays clean" — **that was wrong**: `persistTurn` stored the truncated text unmarked, so it re-hydrated at every later handshake as a complete reply. And the error path was broken in *both* clients in **opposite** directions — the TUI replayed the partial as finished, VS Code dropped it from the transcript entirely while leaving it on screen. Fixed via `protocol.Turn.Incomplete` (a closed-set **slug**; the daemon owns the rendered wording, so `validTurn`'s anti-injection property is untouched). Commits `a4c9d15`, `f79d965`, `592e12c`. Eleven neuters measured. |
 | ~~L3~~ | ~~Helper decodes a request with no size cap and no deadline~~ | `helper/main.go` | **NO — FIXED.** `conn.SetDeadline(helperConnTimeout)` + `json.NewDecoder(io.LimitReader(conn, maxHelperRequestBytes))`, 16 MiB / 2 min, with a test that fails if the body is unbounded. Verified 2026-08-09. |
 | L4 | Backup retention (`backupSessionsToKeep = 5`) can prune a still-needed session mid-review when a client doesn't echo `BackupSessionDir` | `editapply/backup.go` | **yes** — CONFIRMED present, unchanged. |
 | L5 | `created-files` manifest is newline-delimited, so a path containing a literal `\n` resurrects the Fix-C spurious-0-byte-file revert | `editapply/backup.go`, `recordCreatedReversible` | **yes** — CONFIRMED present: still `strings.Split(…, "\n")` and `append(previous, rel+"\n")`. Severity stays Low for the reason `createdManifestName`'s own comment gives — a corrupt manifest can only cause a created file to be restored as empty, never direct a delete at a path undo was not already reverting. |
@@ -341,11 +343,23 @@ the register entry is corrected rather than the code.
 
 ### Items deliberately left open, with reasons
 
-- **L2** — the TUI replays a partially-streamed-then-errored answer as prior
-  assistant history. Live session only; cross-session memory stays clean. It is a
-  behavioural question (what *should* a cut-off answer contribute to the next
-  turn's context?) rather than a defect with an obvious fix, and the M1 batch
-  already made the truncation visible to the user.
+- ~~**L2**~~ — **no longer left open; fixed 2026-08-09.** This entry is kept rather
+  than deleted because its *reasoning* is the instructive part, and it was wrong in
+  a way worth not repeating. It argued the item was "a behavioural question rather
+  than a defect with an obvious fix", and that "the M1 batch already made the
+  truncation visible to the user."
+
+  Both clauses pointed the wrong way. Making it visible **to the user** was exactly
+  what disguised it: the notice on screen made the system look like it had handled
+  the case, while the model — the party that acts on the answer — was still being
+  shown a truncated reply as a finished one. And the question was not behavioural.
+  "Should a cut-off answer be labelled as cut off?" has one defensible answer; the
+  only real design decision was *who owns the wording*, settled by making the wire
+  field a slug so the daemon does.
+
+  Filed under three separate under-statements, each found only by reading the
+  source: cross-session memory was not clean, and the two clients' error paths were
+  broken in opposite directions.
 - **L4** — backup retention can prune a still-needed session mid-review when a
   client does not echo `BackupSessionDir`. Fixing it means a retention policy that
   understands in-flight reviews, which is a design, not a patch.

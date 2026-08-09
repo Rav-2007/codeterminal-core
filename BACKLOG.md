@@ -489,12 +489,33 @@ in the daemon. Its own doc comment addresses each original objection:
   that signal, it is set on every budget stop, and both clients render it — the TUI as a
   persistent "⚠ answer cut off" note, VS Code via `onIncomplete`. A `Degradation` would have
   been a second vocabulary for a thing already reported.
-- **b1′ (real, and still open).** The cut-off notice reaches the SCREEN but not the MODEL. The
-  TUI appends it as `roleSystem`, and `buildHistory` drops `roleSystem` — so on the next turn
-  the model is re-shown its own truncated output with no indication it was cut short, and may
-  continue as though it had finished. This is register item **L2**, CONFIRMED. It is the real
-  version of what b3 was reaching for, and it is an agent-workflow correctness bug rather than
-  a reporting one.
+- **b1′ — IMPLEMENTED AND VERIFIED 2026-08-09: the cut-off notice reached the SCREEN and not
+  the MODEL.** Register item **L2**, both halves. The real version of what b3 was reaching
+  for, and an agent-workflow correctness bug rather than a reporting one.
+
+  **Three doors, not one**, which is why the first diagnosis was incomplete:
+
+  | path | what happened | fix |
+  |---|---|---|
+  | within a session | TUI appended the notice as `roleSystem`; `buildHistory` drops `roleSystem`. VS Code posted `incomplete` to the webview and pushed a bare assistant turn. | `protocol.Turn.Incomplete` slug, set by both clients |
+  | across sessions | `persistTurn` stored the truncated text unmarked, and it re-hydrated at every later handshake as a complete reply | note baked into stored content |
+  | on error | TUI replayed the partial as finished; **VS Code dropped it entirely**, so the user saw text the model never would | both keep it, both mark it |
+
+  `persistTurn` is the older bug: its doc comment promised a truncated answer is never stored
+  as complete, and that held for the case it was written about — a mid-stream *failure*, which
+  errors out and never reaches it. A stream ending early on `finish_reason` is a **successful**
+  stream, so it walked straight past.
+
+  **The client sends a SLUG, never prose.** The daemon owns every byte of wording
+  (`incompleteHistoryNote`). A client able to attach a sentence would have regained exactly the
+  inject-with-daemon-authority ability that `validTurn`'s role rule exists to remove; an
+  unrecognized slug renders nothing rather than being echoed.
+  `TestEveryIncompleteReasonHasAHistoryNote` parses the slugs out of `protocol.go`, so a
+  seventh reason cannot be added and silently reach the model unmarked.
+
+  Commits `a4c9d15`, `f79d965`, `592e12c`, `74473da`. Eleven neuters, all measured — one of
+  which found a hole in the *guard*: the VS Code field check matched its own doc comment, so
+  deleting the field left the test green.
 - **b2′ — DONE 2026-08-09: the repeated-call stall.** `toolSignatures`' own comment called a
   repeated identical call "a loop's second-most-characteristic failure after not stopping", and
   the loop recorded it and did nothing: a stalled turn paid an iteration off `max_iterations`
