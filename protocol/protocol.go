@@ -242,9 +242,28 @@ type PromptRequest struct {
 // "assistant" — the daemon drops any turn with a different role rather
 // than passing it through, so a client can never use History to inject a
 // message claiming system-level authority (see daemon/history.go).
+// Incomplete, set only on an assistant turn, carries the IncompleteInfo.Reason
+// slug for why THAT answer was cut off (see the Incomplete* constants). It is
+// how the fact travels from the client's transcript back into the next
+// request's context.
+//
+// It exists because the notice reached the screen and not the model. Both
+// clients rendered a cut-off answer as visibly incomplete, then sent the
+// truncated text back as ordinary history on the next turn with nothing
+// marking it — so the model was re-shown its own half-finished output as if it
+// had chosen to stop there, and would happily build on it, or repeat it, or
+// answer a follow-up about a conclusion it never actually reached.
+//
+// A SLUG, deliberately, not a sentence. The daemon owns the wording it renders
+// into the model's context (daemon/history.go); the client states only WHICH
+// closed-set condition applied. That is what keeps the role rule above
+// meaningful: a client that could attach prose here would have regained
+// exactly the ability to inject text of the daemon's authority that dropping
+// non-user/assistant roles takes away. An unrecognized slug annotates nothing.
 type Turn struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role       string `json:"role"`
+	Content    string `json:"content"`
+	Incomplete string `json:"incomplete,omitempty"`
 }
 
 // TokenResponse is one message in a streamed reply. The daemon sends, in

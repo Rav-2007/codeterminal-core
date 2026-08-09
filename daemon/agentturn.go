@@ -145,5 +145,5 @@ func (s *Server) runAgentTurn(
 	// tools ran rather than what they returned. Tool output must not re-enter
 	// future requests through the history path (D11), and validTurn would
 	// reject a tool role anyway.
-	s.persistTurn(promptReq.Prompt, result.FinalText+summariseToolActivity(result.ToolNames))
+	s.persistTurn(promptReq.Prompt, result.FinalText+summariseToolActivity(result.ToolNames), result.Incomplete)
 }

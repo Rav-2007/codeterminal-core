@@ -17,15 +17,15 @@ func TestServer_MemoryHelpersAreNoOpsWhenMemoryIsNil(t *testing.T) {
 	if got := srv.loadPersistedHistory(); got != nil {
 		t.Errorf("loadPersistedHistory() = %+v, want nil when s.memory is nil", got)
 	}
-	srv.persistTurn("q", "a")   // must not panic
-	srv.resetPersistedHistory() // must not panic
+	srv.persistTurn("q", "a", nil) // must not panic
+	srv.resetPersistedHistory()    // must not panic
 }
 
 func TestServer_PersistTurnAppendsUserThenAssistant(t *testing.T) {
 	memStore, _ := openTestMemoryStore(t)
 	srv := &Server{logger: discardLogger(), workspace: "/workspace/persist", memory: memStore}
 
-	srv.persistTurn("what is a goroutine?", "a lightweight thread")
+	srv.persistTurn("what is a goroutine?", "a lightweight thread", nil)
 
 	got, err := memStore.LoadRecentTurns(context.Background(), "/workspace/persist", 12)
 	if err != nil {

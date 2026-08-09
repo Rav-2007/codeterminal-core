@@ -39,13 +39,56 @@ const maxHistoryBytes = 256 * 1024
 // enough detail to log what happened (mirrors retrievalOutcome/logRetrieval
 // in context.go).
 type historyOutcome struct {
-	Messages       []chatMessage
-	ReceivedTurns  int
-	KeptTurns      int
-	DroppedInvalid int
-	Truncated      bool // true when valid turns had to be dropped (oldest first) to fit either cap
-	SentBytes      int  // total content bytes of Messages, after both caps
-	DroppedByBytes int  // turns dropped by the byte budget specifically
+	Messages        []chatMessage
+	ReceivedTurns   int
+	KeptTurns       int
+	DroppedInvalid  int
+	Truncated       bool // true when valid turns had to be dropped (oldest first) to fit either cap
+	SentBytes       int  // total content bytes of Messages, after both caps
+	DroppedByBytes  int  // turns dropped by the byte budget specifically
+	AnnotatedCutOff int  // assistant turns marked as cut off (see incompleteHistoryNote)
+}
+
+// incompleteHistoryNote is the ONE place a cut-off prior answer is described to
+// the model. Given an IncompleteInfo.Reason slug it returns the sentence to
+// append to that assistant turn's content, or "" for a reason it does not
+// recognize.
+//
+// THE DAEMON OWNS THIS WORDING, and that is the security property, not a style
+// preference. protocol.Turn.Incomplete is a slug precisely so a client cannot
+// author text that arrives in the model's context wearing the daemon's
+// authority -- the same reason validTurn refuses any role but user/assistant.
+// An unrecognized slug therefore returns "" rather than being echoed: a client
+// that invents a value gets silence, never a channel.
+//
+// The wording differs per reason because the REMEDY differs, which is the whole
+// argument for the slugs being distinct in the first place (see their doc
+// comments in protocol.go). Telling a model that the user cancelled the turn
+// and telling it that it ran out of output tokens should not produce the same
+// next move: one means stop and wait, the other means it is safe to continue.
+func incompleteHistoryNote(reason string) string {
+	switch reason {
+	case protocol.IncompleteLength:
+		return "\n\n[This answer was cut off: it reached the output-token limit before finishing. " +
+			"The text above stops mid-thought and is not a complete reply.]"
+	case protocol.IncompleteContentFilter:
+		return "\n\n[This answer was cut off: the provider's content filter halted it mid-generation. " +
+			"The text above is partial.]"
+	case protocol.IncompleteBudgetExceeded:
+		return "\n\n[This answer was cut off: the request crossed its spending ceiling and was stopped " +
+			"mid-generation. The text above is partial.]"
+	case protocol.IncompleteAgentBudget:
+		return "\n\n[This answer was cut off: the turn hit a per-turn ceiling (iterations, time, or tool " +
+			"output) and stopped with whatever had been produced. The work above is real but unfinished.]"
+	case protocol.IncompleteUserCancelled:
+		return "\n\n[This turn was stopped by the user before it finished. The work above is real, but " +
+			"they chose to stop it -- do not simply resume it unless they ask.]"
+	case protocol.IncompleteProviderError:
+		return "\n\n[This answer was cut off: the model provider failed partway through the turn. " +
+			"The work above is real but unfinished.]"
+	default:
+		return ""
+	}
 }
 
 // validTurn reports whether a turn may be sent to the model at all.
@@ -101,6 +144,20 @@ func prepareHistory(turns []protocol.Turn) historyOutcome {
 		if !validTurn(t) {
 			outcome.DroppedInvalid++
 			continue
+		}
+		// Mark a cut-off prior answer as cut off, BEFORE either cap runs, so
+		// the note sits inside the byte budget it costs instead of being
+		// smuggled past a ceiling that has already been measured. `t` is a
+		// range copy, so this never touches the caller's slice.
+		//
+		// Assistant turns only: "cut off" is a fact about generation, and a
+		// user turn claiming it is meaningless -- so it is ignored rather than
+		// honored, keeping the annotation reachable from exactly one direction.
+		if t.Role == "assistant" {
+			if note := incompleteHistoryNote(t.Incomplete); note != "" {
+				t.Content += note
+				outcome.AnnotatedCutOff++
+			}
 		}
 		valid = append(valid, t)
 	}
@@ -163,6 +220,6 @@ func (s *Server) logHistory(o historyOutcome) {
 	if o.ReceivedTurns == 0 {
 		return
 	}
-	s.logger.Printf("history: received=%d kept=%d dropped_invalid=%d dropped_by_bytes=%d bytes=%d truncated=%t",
-		o.ReceivedTurns, o.KeptTurns, o.DroppedInvalid, o.DroppedByBytes, o.SentBytes, o.Truncated)
+	s.logger.Printf("history: received=%d kept=%d dropped_invalid=%d dropped_by_bytes=%d bytes=%d truncated=%t cut_off_marked=%d",
+		o.ReceivedTurns, o.KeptTurns, o.DroppedInvalid, o.DroppedByBytes, o.SentBytes, o.Truncated, o.AnnotatedCutOff)
 }

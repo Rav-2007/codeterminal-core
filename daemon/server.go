@@ -634,7 +634,7 @@ func (s *Server) serveConn(conn net.Conn) {
 	enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Done: true, EditProposals: editProposalsFromBlocks(blocks), Incomplete: incomplete})
 	s.logger.Print("stream complete")
 
-	s.persistTurn(promptReq.Prompt, full.String())
+	s.persistTurn(promptReq.Prompt, full.String(), incomplete)
 }
 
 // isApplyEditRequest sniffs whether raw is an ApplyEditRequest (identified
@@ -991,13 +991,34 @@ func (s *Server) loadPersistedHistory() []protocol.Turn {
 // The user's prompt is dropped with it rather than stored alone — a question
 // with no answer is not an exchange, and persisting half of one would leave
 // memory claiming the assistant simply never replied.
-func (s *Server) persistTurn(prompt, answer string) {
+// A CUT-OFF ANSWER IS PERSISTED AS CUT OFF. The doc above promises a truncated
+// answer is never stored as if it were complete, and it held for the case it
+// was written about -- a mid-stream failure, which returns an error and never
+// reaches here. It did NOT hold for the case that actually happens: a stream
+// that ends early on finish_reason (or an agent turn stopped by a budget) is a
+// SUCCESSFUL stream, so it landed in memory indistinguishable from a finished
+// reply, re-hydrated at the next session's handshake, and was fed back to the
+// model forever after as a complete thought it had chosen to end there.
+//
+// The note is appended to the stored content rather than kept in a column
+// beside it, deliberately: memory rows are re-validated through prepareHistory
+// on the way out (LoadRecentTurns), the wording is the daemon's either way, and
+// baking it in means the fact cannot be separated from the text it qualifies by
+// any later reader -- including one that predates this field. Requires no
+// migration, and a hydrated turn carries no Incomplete slug, so it cannot be
+// annotated twice.
+func (s *Server) persistTurn(prompt, answer string, incomplete *protocol.IncompleteInfo) {
 	if s.memory == nil {
 		return
 	}
 	if strings.TrimSpace(answer) == "" {
 		s.logger.Print("not persisting turn: the model returned an empty answer")
 		return
+	}
+	if incomplete != nil {
+		if note := incompleteHistoryNote(incomplete.Reason); note != "" {
+			answer += note
+		}
 	}
 	ctx := context.Background()
 	if err := s.memory.AppendTurn(ctx, s.workspace, "user", prompt); err != nil {
