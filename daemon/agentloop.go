@@ -49,6 +49,21 @@ type agentTurn struct {
 	toolSignatures []string
 	iteration      int
 
+	// resultDigests maps an executed call's signature to the rendered bytes it
+	// produced, so a later identical call can be recognised as having changed
+	// nothing. Keyed on name+arguments and compared on the POST-scrub,
+	// POST-truncation text -- the same bytes the model would have been sent, so
+	// two calls "match" exactly when re-sending would teach the model nothing.
+	//
+	// One turn's state, like grants: a repeat is only a stall within the task
+	// that is stalling, and carrying digests across turns would suppress a
+	// legitimate re-read in the next one.
+	resultDigests map[string]string
+	// repeats counts identical-call-identical-result events this turn. Reported
+	// so "it went in circles" is answerable after the fact rather than a
+	// suspicion.
+	repeats int
+
 	// grants holds the tools the user answered ApprovalApproveForTurn for,
 	// keyed by QUALIFIED NAME ONLY -- not by arguments, because "allow this tool
 	// for the rest of the turn" is exactly what the user chose and narrowing it
@@ -419,9 +434,45 @@ func (s *Server) dispatchToolCall(
 		cap = remaining
 	}
 	rendered, kinds, emitted := renderToolResult(result.Content, cap, s.noScrub())
+
+	// THE REPEATED-CALL STALL.
+	//
+	// A loop that asks for the same tool with the same arguments and gets the
+	// same bytes back is stuck, and this file already said so: toolSignatures'
+	// comment calls it "a loop's second-most-characteristic failure after not
+	// stopping". It was recorded and never acted on, so a stalled turn paid full
+	// price for every repeat -- an iteration off max_iterations, and the whole
+	// result off max_total_tool_bytes, to learn nothing.
+	//
+	// WHAT THIS DOES NOT DO: skip the call. The tool still runs, so side effects
+	// still happen and semantics are unchanged. Re-reading a file after an edit
+	// is a legitimate repeat and must keep working; only a repeat that produced
+	// BYTE-IDENTICAL output is treated as a stall, which is a fact about the
+	// result rather than a guess about intent.
+	//
+	// What it saves is the expensive half: feeding the same payload to the model
+	// a second time. The note below is a few dozen bytes instead of a few
+	// thousand, and it tells the model plainly that it is repeating itself --
+	// which is the thing that actually breaks the stall.
+	sig := name + "(" + strings.TrimSpace(arguments) + ")"
+	if prior, seen := turn.resultDigests[sig]; seen && prior == rendered {
+		turn.repeats++
+		s.logger.Printf("agent: %q repeated with identical arguments and identical output; "+
+			"feeding a stall note instead of %d byte(s) (repeat %d this turn)", name, emitted, turn.repeats)
+		rendered = fmt.Sprintf("This is the same call you already made this turn (%s), and it "+
+			"returned exactly the same result. Nothing has changed. Use what you already have, "+
+			"or do something different.", name)
+		emitted = len(rendered)
+	} else {
+		if turn.resultDigests == nil {
+			turn.resultDigests = map[string]string{}
+		}
+		turn.resultDigests[sig] = rendered
+	}
+
 	turn.toolBytes += emitted
 	turn.toolNames = append(turn.toolNames, name)
-	turn.toolSignatures = append(turn.toolSignatures, name+"("+strings.TrimSpace(arguments)+")")
+	turn.toolSignatures = append(turn.toolSignatures, sig)
 
 	if len(kinds) > 0 {
 		s.logger.Printf("agent: scrub redacted %d suspected secret(s) in %q output: %s",
