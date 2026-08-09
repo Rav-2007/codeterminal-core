@@ -1,40 +1,124 @@
 # Backlog — what is still ahead
 
-**Next action: [`docs/MASTER_PLAN_2026-08-07.md`](docs/MASTER_PLAN_2026-08-07.md),
-Stage 3 (packaging).** The code board is clear; the product board is not. The
-project sits at roughly **77% engineering robustness / 27% product readiness** —
-strong code that nobody outside this machine can install.
+**Header rewritten 2026-08-09.** It had gone stale in the way this file's own
+history warns about twice: its "Next action" pointed at
+`docs/MASTER_PLAN_2026-08-07.md`, which [`docs/README.md`](docs/README.md) has
+carried a **⛔ SUPERSEDED** banner for since 2026-08-08. A reader following the
+first line of this file was sent to a superseded plan.
 
-Stages 0 (make the record true) and 2 (the daemon lifecycle) are done.
+**Current plan: [`docs/ULTRA_MASTER_PLAN_2026-08-08.md`](docs/ULTRA_MASTER_PLAN_2026-08-08.md).**
 
-**Windows and macOS are no longer "waiting on CI" — they have RUN, and they are
-green.** That sentence stood here while four macOS runs and several Windows runs
-came and went, which is the exact staleness the paragraph below describes this
-file having had before. On `ci/cross-go-test` at `8154e1f`, run `31205934426`
-finished `success` with every Go, lint, govulncheck, cross (Windows ×4, macOS
-×4), fuzz, extension and proxy-image job green; the retrieval eval passed
-separately at 8/9 in dispatch run `31204152210`, which is also where
-`LOCAL_PEERCRED` executed on hardware for the first time. Getting there cost
-**twelve defects** — see [`docs/OPEN_ITEMS.md`](docs/OPEN_ITEMS.md) §6a/§6b —
-three of them product bugs that only a Mac could reach.
+---
 
-**Packaging is now the binding constraint**: `clients/vscode/package.json` still
-carries `"private": true`, which `vsce` refuses outright, and there is no
-`.vsix`.
+## The one-paragraph state of the project
 
-This file was **split on 2026-08-01**. It had grown to 4,333 lines and was two
-documents wearing one name: a work log and a register. Its own opening paragraph
-had gone stale — it told readers the next action was addressing P3 FAILs that had
-been fixed weeks earlier. Completed records now live in
-[`docs/ARCHIVE/BACKLOG_2026-07.md`](docs/ARCHIVE/BACKLOG_2026-07.md), verbatim.
+Two boards, scored separately on purpose. **The engineering board is strong and
+keeps getting stronger; the readiness board moves only when someone signs
+something.** 446 commits since 2026-07-05 have produced 1,149 tests at a 1.47:1
+test-to-source ratio, a race-clean tree, six ratcheted coverage floors and a
+green cross-platform CI.
 
-**One document per job. Keep them separate:**
+The product is now **installable but not distributed**: a `.vsix` builds, carries
+the daemon and helper, and passes a gate that asserts on the archive's contents —
+but it is on no marketplace, the macOS build is unsigned (Gatekeeper quarantines
+it, and the failure reads to a user as "daemon not running"), and no external
+human has run it.
+
+**Everything genuinely blocking launch is a founder decision, a billing account,
+or an Apple enrolment. None of it is code** — which is why more hardening, however
+good, does not move the second board.
+
+---
+
+## What shipped, and when
+
+Dated so a reader can tell recent from settled. Full verbatim record with SHAs and
+verification transcripts is in
+[`docs/ARCHIVE/BACKLOG_2026-07.md`](docs/ARCHIVE/BACKLOG_2026-07.md).
+
+| When | What |
+|---|---|
+| **2026-07-05 → 07-17** | Walking skeleton → tier router → RAG on chromem-go → edit-apply with five confinement gates → Supabase auth/RLS/grants posture |
+| **2026-07-18 → 07-24** | P3 security passes: secret-name matching, the unconfined undo writer (`4de7bd4`), socket peer auth on Linux (`517c069`), DoS caps (`ccf8b8d`), apply/undo serialised in-process (`d96794e`) then **across** processes (`2a389c7`) |
+| **2026-07-23 → 07-25** | Nested-`.gitignore` leak (`ae1104c`), `.GIT` case-fold bypass (`40b5980`), quota §5(e) outbox + sweep, migration 0002 applied and deployed |
+| **2026-07-27 → 07-30** | F1 ZDR **verified live by wire probe** (403 `zdr_required`); launch-gate QA — 1 P0 + 4 P1 + 5 P2 found and all ten fixed the same day; observability phase (request IDs, expvar behind an admin token) |
+| **2026-08-01 → 08-03** | Agent mode: two trust lanes, per-call consent, four per-turn ceilings; macOS peer auth (`648d38b`); MCP hardening pass |
+| **2026-08-06 → 08-07** | Ultra vulnerability pass — **six P0s** (LSP panic/OOM, symlink escape, TUI RCE, `$HOST` TCP); daemon lifecycle Stage 2; docs index created after seven stale claims in one day |
+| **2026-08-08** | Windows + macOS CI **ran green on hardware** (`LOCAL_PEERCRED` executed for the first time); cross-client mirrors enforced by test (`fa4035c`); a fifth repository-controlled-execution instance found and fixed (`76a87d0`); broken doc links fail a build (`23550e4`) |
+| **2026-08-09** | Proxy refused 8 of 9 shipped models (`a30e664`); agent-loop repeated-call stall (`6b11c35`); **register item L2 closed** — a cut-off answer no longer reaches the model looking finished, across three loss paths (`a4c9d15`, `f79d965`, `592e12c`); socket peer-auth tripwire (`c8f7ca2`) |
+
+**How this was built** — the techniques, and the bug behind each — is
+[`docs/ENGINEERING_METHOD.md`](docs/ENGINEERING_METHOD.md).
+
+---
+
+## What is left, in the order it has to happen
+
+The ordering is real: each tier is blocked by the one above it.
+
+### Tier 0 — blocked on the founder. Nothing else moves until these do.
+
+| # | Item | Why it blocks |
+|---|---|---|
+| **B1** | **GitHub Actions billing** | Every job refuses to start. **18 commits have no CI signal**, and the gap widens with each one. |
+| **B2** | **D1 + D2 + D3** ([`docs/DECISION_PACK.md`](docs/DECISION_PACK.md)) | These *are* the P3 gate, which blocks all capability work. **No engineering remains** — D1's deliverable has existed since 2026-07-30, D2 is explicitly "a ruling, not a fix", D3 is a decision to *not* do work. One read, three signatures, in the order **D2 → D1 → D3** (D3 is a consequence of D1). |
+| **B3** | **Apple Developer enrolment** | Gates signing/notarisation, therefore macOS shipping. Unsigned binaries in a `.vsix` are quarantined by Gatekeeper and read to a user as "daemon not running". |
+| **B4** | **D5 – D8** | D5's data is fresh (measured 29.0% vs 1.2%); D8 deletes a subsystem with no callers. |
+
+### Tier 1 — distribution. **Packaging itself is done**; shipping it is not.
+
+> **Corrected 2026-08-09.** This tier previously said `package.json` carries
+> `"private": true` and that no `.vsix` is produced. **Both were false**, and the
+> claim was carried forward from an older header without being checked — the exact
+> failure this file's history keeps recording. Verified against source: `package.json`
+> declares `publisher`, `license`, `icon` and `repository`, depends on `@vscode/vsce`,
+> and its `package` script builds a `.vsix` *and* runs `scripts/verify-vsix.js` against
+> the archive's contents. A built `codeterminal-vscode-0.0.1.vsix` is in the tree.
+> [`README.md`](README.md) had it right; this file did not.
+
+| # | Item | State |
+|---|---|---|
+| **E1** | macOS **signing + notarisation** | Blocked on **B3**. `release.yml` already emits a build warning that darwin-arm64 binaries are unsigned and must not be published — so the gap is guarded, not silent. `linux-x64` and `win32-x64` are shippable today. |
+| **E2** | `release.yml` has **never fired** | CONFIRMED: it triggers on `tags: ["v*"]` and the repo has 12 tags, **none** matching `v*`. Its `publish` job is additionally `if: false` by design — "flip this on deliberately, never as a side effect". Firing it is a founder action. |
+| **E3** | Clean-VM install per platform | The end-to-end proof: install the `.vsix`, open a repo, ask a question, apply an edit, undo it — with no Go toolchain, no compiler, no terminal. Not yet run on any platform. |
+
+### Tier 2 — engineering, unblocked, do in any order
+
+| # | Item |
+|---|---|
+| **b4** | No client-side signal when the proxy refuses a model — the user sees a failure with no explanation |
+| **b5** | Nothing binds a deployed proxy's `ALLOWED_MODELS` to a user's `models.json` (the local mirror is now tested; the deployed one is not) |
+| **b6** | Per-model cost metering |
+| **b7** | The 8/9 retrieval gap — "where does the daemon open the unix socket" misses under hybrid too |
+| **b8** | Rebuild the edit-shaped eval; its harness expires by design and its one working case misses at rank #109 |
+| **b9** | Retrieval is verified weekly, not per-push |
+| **L4** | Backup retention can prune a still-needed session mid-review — needs a retention policy that understands in-flight reviews |
+| **L5** | Created-files manifest is newline-delimited; a path containing a literal `\n` resurrects the Fix-C spurious revert |
+| **L7** | Socket created under the ambient umask then chmod'd — narrowed by the 0700 runtime dir, closed in practice by peer auth on the daemon socket **but not on the helper's** |
+
+### Tier 3 — first contact
+
+**E7 — pilot.** 10–25 users with hand-inserted keys (which is how keys work today
+anyway). Everything above Tier 3 exists to make this possible.
+
+### Parked deliberately, last
+
+**Per-model ZDR live-verification** for the eight models beyond
+`deepseek-v4-flash`. Blocked on OpenRouter, who have not responded. Parked at the
+founder's instruction rather than forgotten: the enforcement itself is
+per-request and fail-closed regardless of model, so what is missing is
+*confirmation*, not protection.
+
+---
+
+## Reading order for everything else
 
 | Question | Document |
 |---|---|
 | Where do I start? | [`docs/HANDOFF.md`](docs/HANDOFF.md) — entry point; [`docs/README.md`](docs/README.md) catalogues everything else |
-| What are we doing next? | [`docs/MASTER_PLAN_2026-08-07.md`](docs/MASTER_PLAN_2026-08-07.md) — **the current plan** |
-| What bugs are open? | [`docs/OPEN_ITEMS.md`](docs/OPEN_ITEMS.md) — read the Status column; §1–§2 are resolved except 7, 10, 12 |
+| What are we doing next? | [`docs/ULTRA_MASTER_PLAN_2026-08-08.md`](docs/ULTRA_MASTER_PLAN_2026-08-08.md) — **the current plan** |
+| How is this made robust? | [`docs/ENGINEERING_METHOD.md`](docs/ENGINEERING_METHOD.md) — the techniques and the bug behind each |
+| What bugs are open? | [`docs/OPEN_ITEMS.md`](docs/OPEN_ITEMS.md) — read the Status column; items 7, 10 and 12 remain |
 | What needs a founder ruling? | [`docs/DECISION_PACK.md`](docs/DECISION_PACK.md) — D1–D8; **D4 taken**, seven open |
 | What was already done, and why? | [`docs/ARCHIVE/BACKLOG_2026-07.md`](docs/ARCHIVE/BACKLOG_2026-07.md) |
 | What is still ahead? | **this file** |
@@ -437,16 +521,29 @@ Code" experience. This is the packaging phase, the single largest remaining body
 
 | # | Capability | Status | What is left |
 |---|---|---|---|
-| 1 | Autonomous multi-step agent loop | **BUILT** — bounded, consent-gated, in the daemon | b1–b3 |
+| 1 | Autonomous multi-step agent loop | **BUILT** — bounded, consent-gated, in the daemon | **nothing open** — see below |
 | 2 | Multi-model / user-selectable brains | **MECHANISM SHIPPED** — 9 active tiers; one defect fixed 2026-08-09 | b4–b6, then the parked ZDR item |
 | 3 | Hybrid lexical+semantic retrieval | **DONE, LIVE-VERIFIED, re-measured** at `23550e4` | b7–b9 |
 
-**Order of work.** b1 first — the agent loop's own reliability harness is behind `-tags eval`
-and makes billed calls, so it runs nowhere; a stub-provider variant would run in `make check`
-for free and is the largest untested surface of the three. Then b4 (a user who picks a model
-and gets an unexplained refusal is the worst live UX left). Then b7/b8, which need measurement
-rather than guessing. **The per-model ZDR verification is parked LAST and deliberately** — it
-is blocked on OpenRouter, not on us, and §2 below states precisely why that park is safe.
+**Capability 1 has no open items, and how that happened is the point.** b1, b2 and b3 were all
+written by me and **all three were wrong** — verified against source on 2026-08-09 rather than
+re-read. b1 claimed the loop's reliability harness "runs nowhere"; it had conflated the billed
+`-tags eval` harness (which measures loop *quality*) with the loop's *correctness* tests, which
+are untagged, run in `make check`, and number **26**. b2 was already true. b3's premise was
+false — `IncompleteInfo` is exactly the signal it asked for.
+
+The two real items underneath them were found the same way and are both done:
+**b2′** the repeated-call stall (`6b11c35` — the loop detected its second-worst failure mode
+and did nothing about it), and **b1′** the cut-off answer reaching the screen but not the model
+(`a4c9d15`, `f79d965`, `592e12c`), which was register item **L2** and turned out to have three
+loss paths rather than one.
+
+**Order of the rest.** **b4 first** — a user who picks a model and gets an unexplained refusal
+is the worst live UX remaining, and `a30e664` fixed the refusal without fixing the silence.
+Then **b5** (nothing binds the *deployed* proxy's allow-list to `models.json`; the local mirror
+is now tested, the deployed one is not). Then **b7/b8**, which need measurement rather than
+guessing. **The per-model ZDR verification is parked LAST and deliberately** — it is blocked on
+OpenRouter, not on us, and §2 below states precisely why that park is safe.
 
 Nothing in this section is CLOSED. Each remaining item needs its own decision to start, and the
 security review still gates new capability.

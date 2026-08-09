@@ -617,6 +617,25 @@ constant (`0.80`) — tune it there, never by hand-picking queries.
 
 # Status and scope
 
+### Two boards, scored separately
+
+**Engineering and readiness are not the same axis, and this project is
+deliberately lopsided.** The code is heavily tested, race-clean, ratcheted and
+cross-platform-green; the product is installable from a locally built `.vsix` but
+is on no marketplace, unsigned on macOS, and has not yet been run by anyone
+outside this machine.
+
+That gap does not close with more hardening. What remains is a set of founder
+decisions, a billing account and an Apple enrolment —
+[`BACKLOG.md`](BACKLOG.md) lists them in the order they unblock each other.
+
+**How the engineering side was built** — the verification discipline, the ratchets,
+the parity tests, and the specific bug behind each — is
+[`docs/ENGINEERING_METHOD.md`](docs/ENGINEERING_METHOD.md). The short version:
+*a fix is not done when its test passes, it is done when the test has been
+demonstrated to fail with the fix removed.* Numbers live in that document rather
+than here, so there is one copy of them.
+
 ### Known platform gaps
 
 **Intel Mac (`darwin/amd64`) is not supported.** Upstream onnxruntime v1.26.0
@@ -653,12 +672,13 @@ in the document that owns it.
 
 | Read | For |
 |---|---|
-| [`docs/README.md`](docs/README.md) | **The documentation index.** Which of the 34 files are current, which are dated measurements, and which are historical |
+| [`docs/README.md`](docs/README.md) | **The documentation index.** Which of the 44 files are current, which are dated measurements, and which are historical |
 | [`docs/HANDOFF.md`](docs/HANDOFF.md) | The contributor entry point: working discipline, architecture, where every subsystem lives |
+| [`docs/ENGINEERING_METHOD.md`](docs/ENGINEERING_METHOD.md) | **How this codebase is made robust** — each technique, and the bug that made it necessary |
 | [`PRODUCT_OVERVIEW.md`](PRODUCT_OVERVIEW.md) | What the product is, for a reader who has never seen it |
 | [`SECURITY_MODEL.md`](SECURITY_MODEL.md) | The threat model, and what each gate actually promises |
 | [`docs/OPEN_ITEMS.md`](docs/OPEN_ITEMS.md) | The bug register, every entry labelled CONFIRMED / PLAUSIBLE / NOT RUN |
-| [`BACKLOG.md`](BACKLOG.md) | Forward-looking capability work only |
+| [`BACKLOG.md`](BACKLOG.md) | What is still ahead: what shipped and when, then what is left in dependency order |
 | [`proxy/README.md`](proxy/README.md) · [`clients/vscode/README.md`](clients/vscode/README.md) | The two components with their own front doors |
 
 **Vocabulary** used consistently across all of them: **CONFIRMED** means

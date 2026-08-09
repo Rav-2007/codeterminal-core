@@ -1,6 +1,6 @@
 # Documentation index
 
-**43 markdown files, ~15800 lines. This page says which four you need and what
+**44 markdown files, ~16600 lines. This page says which four you need and what
 every other one is for.**
 
 Written 2026-08-07, because the seven stale claims corrected that day were not
@@ -16,10 +16,16 @@ and the ones it skipped are the ones that went stale.
 |---|---|---|
 | 1 | [`HANDOFF.md`](HANDOFF.md) | How to work on this project, what the architecture is, where the code lives. **The entry point.** |
 | 2 | [`ULTRA_MASTER_PLAN_2026-08-08.md`](ULTRA_MASTER_PLAN_2026-08-08.md) | **The current plan.** Stage 3 packaging, and the P0 that blocks it. |
-| 3 | [`OPEN_ITEMS.md`](OPEN_ITEMS.md) | **The bug register.** Read the Status column; §1–§2 are all resolved except items 7, 10, 12. |
+| 3 | [`OPEN_ITEMS.md`](OPEN_ITEMS.md) | **The bug register.** Read the Status column; §1–§2 are all resolved except items 7, 10, 12. L2 was fixed 2026-08-09. |
 | 4 | [`DECISION_PACK.md`](DECISION_PACK.md) | The eight founder rulings. Seven open, D4 taken. |
 
-Then [`../BACKLOG.md`](../BACKLOG.md) for forward-looking capability work.
+Then [`../BACKLOG.md`](../BACKLOG.md) — what shipped and when, then what is left in
+dependency order.
+
+**Working on the code rather than reading about it?**
+[`ENGINEERING_METHOD.md`](ENGINEERING_METHOD.md) is the fifth document you may
+read and the only one exempt from the rule below, because it describes *practices*
+rather than *state*: it cannot drift from a tree it makes no claims about.
 
 **Do not add a fifth to that list.** The failure this project keeps hitting is a
 second copy of the truth that drifts from the first. When something changes,
@@ -56,6 +62,7 @@ a refactor or fails loudly; a line number silently points at something else.
 | Document | What it is |
 |---|---|
 | [`HANDOFF.md`](HANDOFF.md) | Entry point. Architecture, working discipline, where things live. |
+| [`ENGINEERING_METHOD.md`](ENGINEERING_METHOD.md) | **How this codebase is made robust.** Each technique, the bug that made it necessary, and what it costs. |
 | [`ULTRA_MASTER_PLAN_2026-08-08.md`](ULTRA_MASTER_PLAN_2026-08-08.md) | **The current plan.** Packaging, with Stages 4–5 carried forward. |
 | [`OPEN_ITEMS.md`](OPEN_ITEMS.md) | The bug register, statuses resolved in place. |
 | [`DECISION_PACK.md`](DECISION_PACK.md) | D1–D8 founder rulings, one page each. |
