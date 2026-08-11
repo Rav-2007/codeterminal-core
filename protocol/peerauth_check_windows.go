@@ -1,6 +1,6 @@
 //go:build windows
 
-package main
+package protocol
 
 import (
 	"fmt"
@@ -32,7 +32,7 @@ import (
 // stating because layer 1 makes it tempting to treat layer 2 as advisory — it
 // is not, and a peer whose identity cannot be established is refused even
 // though the DACL already vouched for it.
-func (s *Server) authorizePeer(conn net.Conn) error {
+func AuthorizePeer(conn net.Conn) error {
 	cred, err := readPeerCredFromConn(conn)
 	if err != nil {
 		return err

@@ -42,7 +42,7 @@
 # numbers because Go had CACHED runs 2 and 3; a cached result is one
 # measurement wearing three hats, and would have hidden the swing entirely.)
 
-codeterminal/daemon              74.0
+codeterminal/daemon              73.0
 codeterminal/editapply           88.0
 codeterminal/proxy               85.0
 

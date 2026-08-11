@@ -320,6 +320,11 @@ func chunkContent(content []byte, relPath string) []Chunk {
 			end = len(lines)
 		}
 
+		chunkClass := class
+		if chunkClass == FileClassCode && isCommentChunk(lines[start:end]) {
+			chunkClass = FileClassDoc
+		}
+
 		startLine := start + 1 // 1-indexed for humans and logs
 		endLine := end
 		chunks = append(chunks, Chunk{
@@ -328,7 +333,7 @@ func chunkContent(content []byte, relPath string) []Chunk {
 			StartLine: startLine,
 			EndLine:   endLine,
 			Content:   strings.Join(lines[start:end], "\n"),
-			Class:     class,
+			Class:     chunkClass,
 		})
 
 		if end == len(lines) {
@@ -343,6 +348,52 @@ func splitLines(content []byte) []string {
 		return nil
 	}
 	return strings.Split(string(content), "\n")
+}
+
+// isCommentChunk reports whether the chunk is overwhelmingly composed of
+// comments or empty lines, so it can be reclassified as FileClassDoc.
+func isCommentChunk(lines []string) bool {
+	var commentLines, codeLines int
+	inBlockComment := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+
+		if inBlockComment {
+			commentLines++
+			if strings.Contains(trimmed, "*/") || strings.Contains(trimmed, "-->") {
+				inBlockComment = false
+			}
+			continue
+		}
+
+		if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "--") {
+			commentLines++
+		} else if strings.HasPrefix(trimmed, "/*") || strings.HasPrefix(trimmed, "<!--") {
+			commentLines++
+			if !strings.Contains(trimmed, "*/") && !strings.Contains(trimmed, "-->") {
+				inBlockComment = true
+			}
+		} else if strings.HasPrefix(trimmed, "*") {
+			commentLines++
+		} else if strings.HasPrefix(trimmed, "package ") {
+			codeLines++
+		} else {
+			codeLines++
+			if strings.HasPrefix(trimmed, "func ") || strings.HasPrefix(trimmed, "type ") {
+				// Protect well-commented structs/functions from being downweighted
+				return false
+			}
+		}
+	}
+
+	total := commentLines + codeLines
+	if total == 0 {
+		return false
+	}
+	return (float64(commentLines) / float64(total)) >= 0.5
 }
 
 // gitignoreRule is one parsed line from a .gitignore file.

@@ -42,6 +42,8 @@ const (
 	// exactly what makes it worth distinguishing: nothing was sent, nothing was
 	// billed, and retrying the identical request will fail identically.
 	ClassInvalidRequest ModelErrorClass = "invalid_request"
+	// ClassUnavailableTier means the requested model is not available on your current plan.
+	ClassUnavailableTier ModelErrorClass = "unavailable_tier"
 	// ClassUnknown is the honest fallback for anything unrecognised. It keeps
 	// the old generic message rather than inventing a confident wrong one.
 	ClassUnknown ModelErrorClass = "unknown"
@@ -62,6 +64,7 @@ var clientMessages = map[ModelErrorClass]string{
 	ClassUpstreamUnavailable: "the model provider is unreachable or failing right now — this is usually temporary",
 	ClassPrivacyRefused:      "inference refused: no zero-data-retention endpoint available",
 	ClassInvalidRequest:      "the request was rejected before it was sent: the prompt is empty",
+	ClassUnavailableTier:     "Model %s is not available on your current plan.",
 	ClassUnknown:             "calling model API failed",
 }
 
@@ -89,13 +92,23 @@ type ModelError struct {
 	RetryAfter time.Duration
 
 	detail string
+	// modelName is populated for tier refusal to display which model was denied.
+	modelName string
 }
 
 func (e *ModelError) Error() string {
+	if e.Class == ClassUnavailableTier && e.modelName != "" {
+		return fmt.Sprintf(clientMessages[ClassUnavailableTier], e.modelName)
+	}
 	if msg, ok := clientMessages[e.Class]; ok {
 		return msg
 	}
 	return clientMessages[ClassUnknown]
+}
+
+func (e *ModelError) withModelName(model string) *ModelError {
+	e.modelName = model
+	return e
 }
 
 // Detail is the full upstream description — status line, response body,
@@ -193,6 +206,8 @@ func classifyHTTPError(status int, statusLine, body string) *ModelError {
 	switch {
 	case isZDRRoutingRefusal(body):
 		return &ModelError{Class: ClassPrivacyRefused, detail: detail}
+	case strings.Contains(lower, "unavailable_tier") || strings.Contains(lower, "model_not_allowed") || strings.Contains(lower, "cost_surface_not_allowed"):
+		return &ModelError{Class: ClassUnavailableTier, detail: detail}
 	case containsAny(lower, quotaPhrases):
 		return &ModelError{Class: ClassQuotaExceeded, detail: detail}
 	case containsAny(lower, contextLengthPhrases):

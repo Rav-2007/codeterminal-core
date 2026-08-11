@@ -70,7 +70,7 @@ func TestHandleConn_OneRequestOneResponse(t *testing.T) {
 	client, serverSide := net.Pipe()
 	defer client.Close()
 
-	go newTestServer().handleConn(serverSide)
+	go newTestServer().serveConn(serverSide)
 
 	client.SetDeadline(time.Now().Add(5 * time.Second))
 	if err := json.NewEncoder(client).Encode(helperproto.Request{Method: helperproto.MethodHealth}); err != nil {
@@ -95,7 +95,7 @@ func TestHandleConn_MalformedRequestClosesWithoutHanging(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		newTestServer().handleConn(serverSide)
+		newTestServer().serveConn(serverSide)
 		close(done)
 	}()
 
@@ -125,7 +125,7 @@ func TestHandleConn_WronglyTypedFieldIsRefusedNotFatal(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		newTestServer().handleConn(serverSide)
+		newTestServer().serveConn(serverSide)
 		close(done)
 	}()
 
@@ -154,7 +154,7 @@ func TestHandleConn_SilentPeerDoesNotHoldTheConnectionForever(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		newTestServer().handleConn(serverSide)
+		newTestServer().serveConn(serverSide)
 		close(done)
 	}()
 
@@ -183,7 +183,7 @@ func TestHandleConn_EndlessBodyIsBoundedRatherThanBuffered(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		newTestServer().handleConn(serverSide)
+		newTestServer().serveConn(serverSide)
 		close(done)
 	}()
 

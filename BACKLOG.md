@@ -86,15 +86,16 @@ The ordering is real: each tier is blocked by the one above it.
 
 | # | Item |
 |---|---|
-| **b4** | No client-side signal when the proxy refuses a model — the user sees a failure with no explanation |
-| **b5** | Nothing binds a deployed proxy's `ALLOWED_MODELS` to a user's `models.json` (the local mirror is now tested; the deployed one is not) |
-| **b6** | Per-model cost metering |
-| **b7** | The 8/9 retrieval gap — "where does the daemon open the unix socket" misses under hybrid too |
-| **b8** | Rebuild the edit-shaped eval; its harness expires by design and its one working case misses at rank #109 |
-| **b9** | Retrieval is verified weekly, not per-push |
-| **L4** | Backup retention can prune a still-needed session mid-review — needs a retention policy that understands in-flight reviews |
-| **L5** | Created-files manifest is newline-delimited; a path containing a literal `\n` resurrects the Fix-C spurious revert |
-| **L7** | Socket created under the ambient umask then chmod'd — narrowed by the 0700 runtime dir, closed in practice by peer auth on the daemon socket **but not on the helper's** |
+| ~~**b4**~~ | ~~No client-side signal when the proxy refuses a model~~ (Completed 2026-08-11) |
+| ~~**b5**~~ | ~~Nothing binds a deployed proxy's `ALLOWED_MODELS` to a user's `models.json`~~ (Completed 2026-08-11) |
+| ~~**b6**~~ | ~~Per-model cost metering~~ (Completed 2026-08-11) |
+| ~~**b7**~~ | ~~The 8/9 retrieval gap — "where does the daemon open the unix socket" misses under hybrid too~~ (Completed 2026-08-11) |
+| ~~**b8**~~ | ~~Rebuild the edit-shaped eval; its harness expires by design and its one working case misses at rank #109~~ (Completed 2026-08-11) |
+| ~~**b9**~~ | ~~Retrieval is verified weekly, not per-push~~ (Completed 2026-08-11) |
+| ~~**L4**~~ | ~~Backup retention can prune a still-needed session mid-review — needs a retention policy that understands in-flight reviews~~ (Completed 2026-08-11) |
+| ~~**L5**~~ | ~~Created-files manifest is newline-delimited; a path containing a literal `\n` resurrects the Fix-C spurious revert~~ (Completed 2026-08-11) |
+| ~~**L7**~~ | ~~Socket created under the ambient umask then chmod'd — narrowed by the 0700 runtime dir, closed in practice by peer auth on the daemon socket **but not on the helper's**~~ (Completed 2026-08-11) |
+
 
 ### Tier 3 — first contact
 

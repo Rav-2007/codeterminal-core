@@ -279,7 +279,7 @@ func (s *Server) handleConn(conn net.Conn) {
 		}
 	}()
 
-	if err := s.authorizePeer(conn); err != nil {
+	if err := protocol.AuthorizePeer(conn); err != nil {
 		s.count(func(c *counters) { c.peerAuthRefused.Add(1) })
 		s.logger.Printf("connection refused: %v", err)
 		return

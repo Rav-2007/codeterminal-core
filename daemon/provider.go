@@ -615,7 +615,7 @@ func streamCompletion(ctx context.Context, apiBase, apiKey, model string, messag
 		// and the headers together (Fix 9). The ZDR refusal keeps its identity:
 		// ModelError.Unwrap returns ErrZDRRefused for that class, so existing
 		// errors.Is checks are unaffected.
-		modelErr := classifyHTTPError(resp.StatusCode, resp.Status, bodyStr)
+		modelErr := classifyHTTPError(resp.StatusCode, resp.Status, bodyStr).withModelName(model)
 		modelErr.RetryAfter = parseRetryAfter(resp.Header)
 		// The managed proxy answers every request with an X-Request-Id, including
 		// the body-less 500 a contained panic produces. Carrying it into the

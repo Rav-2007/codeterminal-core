@@ -29,6 +29,7 @@ import (
 	ort "github.com/yalue/onnxruntime_go"
 
 	"codeterminal/helper/helperproto"
+	"codeterminal/protocol"
 )
 
 func main() {
@@ -55,12 +56,9 @@ func main() {
 	// spawning us, a leftover here can only be our own dead predecessor.
 	os.Remove(*socketPath)
 
-	ln, err := net.Listen("unix", *socketPath)
+	ln, err := protocol.Listen(protocol.Address{Transport: protocol.TransportUnix, Address: *socketPath})
 	if err != nil {
 		logger.Fatalf("listening on %s: %v", *socketPath, err)
-	}
-	if err := os.Chmod(*socketPath, 0600); err != nil {
-		logger.Fatalf("restricting socket permissions: %v", err)
 	}
 
 	sigCh := make(chan os.Signal, 1)
@@ -146,6 +144,15 @@ const (
 func (s *server) handleConn(conn net.Conn) {
 	defer conn.Close()
 
+	if err := protocol.AuthorizePeer(conn); err != nil {
+		s.logger.Printf("connection refused: %v", err)
+		return
+	}
+
+	s.serveConn(conn)
+}
+
+func (s *server) serveConn(conn net.Conn) {
 	// One deadline over the read, the embed, and the write. A peer that stops
 	// reading its own response cannot pin this goroutine past it either.
 	if err := conn.SetDeadline(time.Now().Add(helperConnTimeout)); err != nil {

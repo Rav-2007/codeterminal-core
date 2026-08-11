@@ -136,7 +136,7 @@ func rerankPoolSize(k int) int {
 // overfetching costs nothing, and fuseRRF benefits from a wider net before
 // rerankChunks's class-weight tilt gets the final say.
 const (
-	lexicalOverfetchFactor = 6
+	lexicalOverfetchFactor = 10
 	lexicalOverfetchFloor  = 20
 )
 

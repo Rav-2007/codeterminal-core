@@ -1,6 +1,6 @@
 //go:build unix
 
-package main
+package protocol
 
 import (
 	"fmt"
@@ -32,7 +32,7 @@ import (
 // The Windows counterpart is in server_auth_windows.go. It compares SIDs
 // rather than uids, because that is what identity is there — see its header
 // for why the two could not share one implementation honestly.
-func (s *Server) authorizePeer(conn net.Conn) error {
+func AuthorizePeer(conn net.Conn) error {
 	sc, ok := conn.(syscall.Conn)
 	if !ok {
 		return fmt.Errorf("connection type %T exposes no peer credentials", conn)

@@ -7,7 +7,7 @@
 // handleConn (server.go) calls authorizePeer as its first post-accept step. See
 // BACKLOG.md Gate 3 (commit 517c069).
 
-package main
+package protocol
 
 import "fmt"
 

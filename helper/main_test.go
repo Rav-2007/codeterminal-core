@@ -74,7 +74,7 @@ func TestServerHandleConn(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		srv.handleConn(serverConn)
+		srv.serveConn(serverConn)
 		errCh <- nil
 	}()
 
@@ -110,7 +110,7 @@ func TestServerHandleConnDecodeError(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		srv.handleConn(serverConn)
+		srv.serveConn(serverConn)
 		close(done)
 	}()
 

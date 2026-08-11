@@ -125,37 +125,42 @@ var editEvalCases = []editEvalCase{
 		note: "pre-fix spawnLocked leaves cmd.Env nil (inherits the daemon's FULL env, incl. API keys, into the helper subprocess); fix adds helperEnv() + HelperProcess.extraEnv",
 	},
 	{
-		name:      "editapply-apply-extraction",
-		fixCommit: "b885f504ff667019d1d58ecfda09ea8361186410",
-		testFile:  "editapply/apply_test.go",
-		buildDir:  "editapply",
-		runFilter: "TestApply_",
-		exactChunks: []string{
-			"editapply/apply.go:61-100", // where the extracted Apply() function belongs (right after PrepareEdit)
-		},
-		note: "pre-fix editapply/apply.go has PrepareEdit and ResolveSafeTargetPath but no Apply -- this is a CREATE-shaped gap (the answer chunk is where the missing function belongs, not a chunk that already contains it)",
-	},
-	{
-		name:      "tui-header-collision",
-		fixCommit: "1befc860a86adbfd4c3943359ccf3498d950d449",
-		testFile:  "clients/tui/chat_test.go",
-		buildDir:  "clients/tui",
-		runFilter: "TestChat_HeaderLineCountTracksActiveNotices|TestChat_ViewportShrinksWhenNoticeLinesGrow",
-		exactChunks: []string{
-			"clients/tui/chat.go:571-610", // renderHeader/View pre-fix -- the header-rendering code the fix splits into headerLineCount/noticeLines
-		},
-		note: "pre-fix renderHeader/View computed header line count ad hoc, causing the P4 grounding+redaction notice collision; fix extracts headerLineCount()/noticeLines() as the single source of truth",
-	},
-	{
-		name:      "zdr-refusal-phrasing",
-		fixCommit: "d84524eb52559bd1821a507ec611fe2d988ba30a",
-		testFile:  "daemon/provider_test.go",
+		name:      "mac-eexist-addrinuse",
+		fixCommit: "10b0e0a036a4a053c96c3e5fa8e9b9cd5c07c9f2",
+		testFile:  "daemon/addrinuse_unix_test.go",
 		buildDir:  "daemon",
-		runFilter: "TestIsZDRRoutingRefusal_MatchesLiveObservedDataPolicyPhrasing",
+		runFilter: "TestIsAddrInUse_ReturnsTrueForEEXIST|TestIsAddrInUse_StillRejectsUnrelatedErrnos",
 		exactChunks: []string{
-			"daemon/provider.go:91-130", // zdrRefusalSubstrings + isZDRRoutingRefusal
+			"daemon/addrinuse_unix.go:1-40",
 		},
-		note: "pre-fix zdrRefusalSubstrings is missing the live-observed \"zero data retention\" phrasing OpenRouter actually returns, so a real ZDR refusal surfaced as a raw error instead of the friendly message -- this case is a TEST-assertion failure, not a build failure: its captured query OPENS with \"--- FAIL: TestXxx\" (a real TestXxx name, testFuncPattern's own trigger), a second false-positive shape distinct from the go-test/.test build-failure one and now gated by capturedFailurePrefix so the test-file down-weight applies here too",
+		note: "macOS returns EEXIST when bind fails due to address in use; pre-fix only EADDRINUSE was checked",
+	},
+	{
+		name:      "watcher-symlink-escape",
+		fixCommit: "0f3a411680f5676cfa2a81e48d0620c813820ade",
+		testFile:  "daemon/watcher_test.go",
+		buildDir:  "daemon",
+		runFilter: "TestWorkspaceWatcher_RefusesToWatchThroughASymlinkedDirectory",
+		exactChunks: []string{
+			"daemon/watcher.go:91-130",
+			"daemon/watcher.go:101-140",
+		},
+		note: "watcher used os.Stat instead of os.Lstat on Create events, watching symlinked directories outside the workspace",
+	},
+	{
+		name:      "undo-file-separator",
+		fixCommit: "80bd2eff547efb667ce73afa8d0a35ef2e7a8f60",
+		testFile:  "daemon/displayrel_test.go",
+		buildDir:  "daemon",
+		runFilter: "TestUndoOutputAlwaysGoesThroughDisplayRel",
+		exactChunks: []string{
+			"daemon/apply_cmd.go:341-380",
+			"daemon/apply_cmd.go:371-410",
+			"daemon/apply_cmd.go:521-560",
+			"daemon/apply_cmd.go:591-630",
+			"daemon/apply_cmd.go:631-670",
+		},
+		note: "undo report named files with backslashes on Windows; fix adds and uses displayRel() (filepath.ToSlash)",
 	},
 }
 

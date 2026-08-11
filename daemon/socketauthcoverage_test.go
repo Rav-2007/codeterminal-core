@@ -66,18 +66,8 @@ var acceptSites = map[string]acceptSite{
 	// The daemon's request socket -- the surface D1 and D3 are about.
 	"daemon/server.go": {admission: authorizesPeer},
 
-	// The embedder helper. Documented in SECURITY_MODEL.md under "The embedder
-	// helper socket".
-	"helper/main.go": {
-		admission: filePermissionsOnly,
-		why: "The helper turns text into vectors and holds no credential, no workspace " +
-			"handle and no write path. It is spawned by the daemon on a PID-scoped path " +
-			"inside the same 0700 SocketDir, chmod 0600. Its exposure is bounded by the " +
-			"parent directory rather than by a peer credential, so L7's stated mitigation " +
-			"(\"closed in practice by SO_PEERCRED\", protocol/transport_unix.go) does NOT " +
-			"apply here -- the window is closed by the 0700 directory alone. Recorded " +
-			"rather than fixed: see D1's scope clause.",
-	},
+	// The embedder helper.
+	"helper/main.go": {admission: authorizesPeer},
 
 	// A listener wrapper, not an admission point.
 	"protocol/transport_unix.go": {admission: transportPrimitive},
@@ -221,8 +211,8 @@ func TestEveryAcceptSiteIsClassifiedForPeerAuth(t *testing.T) {
 			// The classification must be true, not aspirational. Matched as a
 			// CALL -- the bare name appears in this file's own doc comments, and
 			// a name is not an invocation.
-			if !strings.Contains(src, "authorizePeer(") {
-				t.Errorf("%s is classified as authorizesPeer but never calls authorizePeer. "+
+			if !strings.Contains(src, "protocol.AuthorizePeer(") {
+				t.Errorf("%s is classified as authorizesPeer but never calls protocol.AuthorizePeer. "+
 					"The peer-authentication step has been removed from a surface D1 and D3 "+
 					"depend on.", path)
 			}
@@ -316,8 +306,8 @@ func TestStripGoComments(t *testing.T) {
 	// Code must survive intact -- an over-eager stripper that removed the call
 	// would fail the daemon's check for the opposite reason and send someone
 	// hunting a security regression that does not exist.
-	code := "if err := s.authorizePeer(conn); err != nil { // fail closed\n\treturn\n}\n"
-	if !strings.Contains(stripGoComments(code), "s.authorizePeer(conn)") {
+	code := "if err := protocol.AuthorizePeer(conn); err != nil { // fail closed\n\treturn\n}\n"
+	if !strings.Contains(stripGoComments(code), "protocol.AuthorizePeer(conn)") {
 		t.Error("stripGoComments removed a real call alongside its trailing comment")
 	}
 }

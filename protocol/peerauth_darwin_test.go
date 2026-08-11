@@ -1,6 +1,6 @@
 //go:build darwin
 
-package main
+package protocol
 
 import (
 	"net"
@@ -104,10 +104,9 @@ func TestReadPeerCred_Darwin_ReturnsCurrentProcessCreds(t *testing.T) {
 // on macOS, refusing every connection, which is why the item was an
 // availability bug rather than a hardening one.
 func TestAuthorizePeer_Darwin_SameUIDAllows(t *testing.T) {
-	srv := &Server{logger: discardLogger(), workspace: "/ws"}
 	_, server := acceptOneUnixDarwin(t)
 
-	if err := srv.authorizePeer(server); err != nil {
-		t.Fatalf("authorizePeer refused a legitimate same-uid peer: %v", err)
+	if err := AuthorizePeer(server); err != nil {
+		t.Fatalf("AuthorizePeer refused a legitimate same-uid peer: %v", err)
 	}
 }

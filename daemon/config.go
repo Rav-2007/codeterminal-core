@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"slices"
+	"strings"
 )
 
 // ModelTier describes one entry in models.json. Only active tiers may ever
@@ -396,4 +399,61 @@ func (c *Config) Validate() error {
 // ResolvedSlug returns the model slug for the configured default tier.
 func (c *Config) ResolvedSlug() string {
 	return c.Tiers[c.DefaultTier].Slug
+}
+
+// ReconcileWithProxy fetches the allowed models from the proxy and disables
+// any tiers in this config that the proxy will refuse, proactively aligning
+// the UI's capabilities with the backend's policy (b5).
+func (c *Config) ReconcileWithProxy(ctx context.Context, apiBase, apiKey string) error {
+	importURL := strings.TrimRight(apiBase, "/") + "/models/status"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, importURL, nil)
+	if err != nil {
+		return err
+	}
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+
+	var status struct {
+		AllowedModels []string `json:"allowed_models"`
+		Unrestricted  bool     `json:"unrestricted"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+		return err
+	}
+
+	if status.Unrestricted {
+		return nil
+	}
+
+	allowedSet := make(map[string]bool)
+	for _, m := range status.AllowedModels {
+		allowedSet[m] = true
+	}
+
+	for name, tier := range c.Tiers {
+		if tier.Active && !allowedSet[tier.Slug] {
+			tier.Active = false
+			tier.Note = "Disabled: not available on your current plan."
+			c.Tiers[name] = tier
+			c.warnf("tier %q (%s) disabled by proxy reconcile (not in allowed list)", name, tier.Slug)
+		}
+	}
+
+	// If the default tier was disabled, log a specific warning so the operator knows.
+	if def, ok := c.Tiers[c.DefaultTier]; ok && !def.Active {
+		c.warnf("CRITICAL: default_tier %q was disabled by the proxy. Inference will fail unless overridden.", c.DefaultTier)
+	}
+
+	return nil
 }

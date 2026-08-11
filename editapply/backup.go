@@ -1,6 +1,7 @@
 package editapply
 
 import (
+	"bytes"
 	"fmt"
 	"log"
 	"os"
@@ -54,6 +55,7 @@ func NewBackupSessionDir(realWorkspaceRoot string) (string, error) {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return "", err
 	}
+	_ = os.WriteFile(filepath.Join(dir, ".in-flight"), []byte("active"), 0644)
 	pruneBackupSessions(base, backupSessionsToKeep)
 	return dir, nil
 }
@@ -105,6 +107,14 @@ func pruneBackupSessions(backupsRoot string, keep int) {
 			log.Printf("editapply: refusing to prune %q (would escape backups root %q)", candidate, backupsRoot)
 			continue
 		}
+		lockfile := filepath.Join(candidate, ".in-flight")
+		if stat, err := os.Stat(lockfile); err == nil {
+			if time.Since(stat.ModTime()) < 2*time.Hour {
+				// Generous TTL: respect the in-flight lock while the user is actively reviewing diffs
+				continue
+			}
+		}
+
 		if err := os.RemoveAll(candidate); err != nil {
 			log.Printf("editapply: pruning backup session %q: %v", candidate, err)
 		}
@@ -203,6 +213,25 @@ func backupAfterReversible(backupDir, realWorkspaceRoot string, p *PreparedEdit)
 // undo would not otherwise have been reverting.
 const createdManifestName = "created-files"
 
+// parseManifest parses a manifest file, handling both the legacy newline-delimited
+// format and the new null-byte delimited format seamlessly.
+func parseManifest(data []byte) []string {
+	if len(data) == 0 {
+		return nil
+	}
+	var items []string
+	delim := byte('\n')
+	if bytes.Contains(data, []byte{0}) {
+		delim = 0
+	}
+	for _, item := range bytes.Split(data, []byte{delim}) {
+		if len(item) > 0 {
+			items = append(items, string(item))
+		}
+	}
+	return items
+}
+
 // recordCreatedReversible notes that p's target did not exist before this run,
 // and returns an undo of that note.
 //
@@ -229,12 +258,12 @@ func recordCreatedReversible(backupDir, realWorkspaceRoot string, p *PreparedEdi
 		return nil, readErr
 	}
 
-	for _, line := range strings.Split(string(previous), "\n") {
+	for _, line := range parseManifest(previous) {
 		if line == rel {
 			return func() {}, nil // already recorded by an earlier block in this run
 		}
 	}
-	if err := os.WriteFile(manifest, append(previous, []byte(rel+"\n")...), 0644); err != nil {
+	if err := os.WriteFile(manifest, append(previous, []byte(rel+"\x00")...), 0644); err != nil {
 		return nil, err
 	}
 	return rollback, nil
@@ -257,10 +286,8 @@ func CreatedInSession(sessionDir string) (map[string]bool, error) {
 		return nil, err
 	}
 	created := make(map[string]bool)
-	for _, line := range strings.Split(string(data), "\n") {
-		if line != "" {
-			created[line] = true
-		}
+	for _, line := range parseManifest(data) {
+		created[line] = true
 	}
 	return created, nil
 }
@@ -359,17 +386,15 @@ func recordCreatedDirsReversible(backupDir, realWorkspaceRoot string, p *Prepare
 	}
 
 	existing := map[string]bool{}
-	for _, line := range strings.Split(string(previous), "\n") {
-		if line != "" {
-			existing[line] = true
-		}
+	for _, line := range parseManifest(previous) {
+		existing[line] = true
 	}
 	out := previous
 	for _, d := range dirs {
 		if existing[d] {
 			continue // an earlier block in this run already made it
 		}
-		out = append(out, []byte(d+"\n")...)
+		out = append(out, []byte(d+"\x00")...)
 	}
 	if len(out) == len(previous) {
 		return func() {}, nil
@@ -396,12 +421,7 @@ func CreatedDirsInSession(sessionDir string) ([]string, error) {
 		}
 		return nil, err
 	}
-	var dirs []string
-	for _, line := range strings.Split(string(data), "\n") {
-		if line != "" {
-			dirs = append(dirs, line)
-		}
-	}
+	dirs := parseManifest(data)
 	// Deepest first: more path separators means deeper, and for equal depth the
 	// order between siblings does not matter.
 	sort.SliceStable(dirs, func(i, j int) bool {

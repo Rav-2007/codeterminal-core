@@ -44,7 +44,10 @@ func listen(a Address) (net.Listener, error) {
 	if err := checkSocketPathLength(a.Address); err != nil {
 		return nil, err
 	}
+	oldMask := syscall.Umask(0177)
 	ln, err := net.Listen("unix", a.Address)
+	syscall.Umask(oldMask)
+
 	if err != nil {
 		return nil, err
 	}

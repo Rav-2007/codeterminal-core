@@ -1,0 +1,62 @@
+loop-test: agent: refusing "builtin__read_file": "builtin__read_file" needs the user's approval and no valid answer came back, so it was not run.
+loop-test: agent: refusing "builtin__read_file": "builtin__read_file" is not permitted by this user's configuration
+loop-test: agent: "builtin__read_file" repeated with identical arguments and identical output; feeding a stall note instead of 1 byte(s) (repeat 1 this turn)
+loop-test: agent: "builtin__read_file" repeated with identical arguments and identical output; feeding a stall note instead of 1 byte(s) (repeat 2 this turn)
+loop-test: agent: stopping after 3 iterations (mcp.budget.max_iterations)
+loop-test: agent: stopping on the turn deadline (mcp.budget.turn_timeout_seconds)
+agent: stopping after 100 bytes of tool output (mcp.budget.max_total_tool_bytes)
+loop-test: agent: scrub redacted 1 suspected secret(s) in "builtin__read_file" output: openai_key
+loop-test: agent: refusing "builtin__delete_everything": there is no tool called "builtin__delete_everything" available in this turn
+loop-test: agent: stopping on the turn deadline (mcp.budget.turn_timeout_seconds)
+loop-test: agent: "builtin__read_file" repeated with identical arguments and identical output; feeding a stall note instead of 2600 byte(s) (repeat 1 this turn)
+loop-test: mcp: connected server bad (lane=third_party, unconfined)
+loop-test: mcp: server bad offered a tool this daemon will not advertise: tool name contains a control character (0x1b at byte 4), which would be rendered into the terminal of a user deciding whether to approve it
+loop-test: mcp: server bad offered a tool this daemon will not advertise: tool name contains a control character (0x1b at byte 4), which would be rendered into the terminal of a user deciding whether to approve it
+loop-test: agent: refusing "bad__safe\x1b[2K\x1b[1Ainnocent__lookup\x1b[0m\r../../etc/passwd": there is no tool called "bad__safe\x1b[2K\x1b[1Ainnocent__lookup\x1b[0m\r../../etc/passwd" available in this turn
+loop-test: mcp: connected server bad (lane=third_party, unconfined)
+loop-test: agent: "bad__helpful_notes" repeated with identical arguments and identical output; feeding a stall note instead of 344 byte(s) (repeat 1 this turn)
+misbehaviour: mcp: server bad unavailable: mcp server unavailable: server bad failed to start: context deadline exceeded
+misbehaviour: mcp: server bad2 unavailable: mcp server unavailable: server bad2 failed to start: context deadline exceeded
+misbehaviour: mcp: server bad3 unavailable: mcp server unavailable: server bad3 failed to start: context deadline exceeded
+loop-test: mcp: connected server bad (lane=third_party, unconfined)
+loop-test: agent: tool "bad__crash" failed: mcp server unavailable: server bad stopped responding during crash: calling "tools/call": EOF
+loop-test: agent: max_advertised_tools (2) left out 6 tool(s): builtin__propose_edit, builtin__query_compiler_definition, builtin__query_compiler_references, builtin__read_file, builtin__sandbox_exec, builtin__search_code
+[
+  {
+    "ID": "caeaec9836bd2aaec9d01a54266a81e3",
+    "CreatedAt": "2026-08-11T09:37:16.830639078Z",
+    "Title": "Test Skill",
+    "Steps": "Do testing",
+    "Tags": [
+      "go",
+      "test"
+    ],
+    "SourcePrompt": ""
+  }
+]
+ID                                CREATED              TITLE       TAGS
+caeaec9836bd2aaec9d01a54266a81e3  2026-08-11 09:37:16  Test Skill  go,test
+no skills recorded
+--- FAIL: TestEveryAcceptSiteIsClassifiedForPeerAuth (0.01s)
+    socketauthcoverage_test.go:249: helper/main.go relies on file permissions as its ONLY access control but does not chmod its socket to 0600. That is not a weaker model than peer auth -- it is no model.
+    socketauthcoverage_test.go:256: classified 3 accept site(s): daemon/server.go, helper/main.go, protocol/transport_unix.go
+degraded: component=memory
+loop-test: agent: refusing "builtin__read_file": the user declined to run "builtin__read_file". Do not ask again for the same thing — explain what you would have done, or take a different route.
+loop-test: agent: "builtin__read_file" repeated with identical arguments and identical output; feeding a stall note instead of 5 byte(s) (repeat 1 this turn)
+loop-test: agent: refusing "builtin__list_directory": the user declined to run "builtin__list_directory". Do not ask again for the same thing — explain what you would have done, or take a different route.
+loop-test: agent: refusing "builtin__read_file": the user stopped this task rather than approving the call
+loop-test: agent: the user cancelled the turn at an approval prompt
+loop-test: agent: refusing "builtin__read_file": the user declined to run "builtin__read_file". Do not ask again for the same thing — explain what you would have done, or take a different route.
+loop-test: agent: refusing "builtin__no_such_tool": there is no tool called "builtin__no_such_tool" available in this turn
+loop-test: agent: "builtin__read_file" repeated with identical arguments and identical output; feeding a stall note instead of 5 byte(s) (repeat 1 this turn)
+loop-test: model API: attempt 1/3 failed (upstream_unavailable), retrying in 628ms: [upstream_unavailable] model API returned 500 Internal Server Error: 
+loop-test: model API: attempt 2/3 failed (upstream_unavailable), retrying in 473ms: [upstream_unavailable] model API returned 500 Internal Server Error: 
+loop-test: agent: stopping at iteration 3 after a provider failure, keeping 92 byte(s) of answer: [upstream_unavailable] model API returned 500 Internal Server Error: 
+loop-test: parsed 1 edit block(s), 0 refused
+loop-test:   block 1: path=a.txt search_lines=1 replace_lines=1
+loop-test: model API: attempt 1/3 failed (upstream_unavailable), retrying in 718ms: [upstream_unavailable] model API returned 500 Internal Server Error: 
+loop-test: model API: attempt 2/3 failed (upstream_unavailable), retrying in 416ms: [upstream_unavailable] model API returned 500 Internal Server Error: 
+FAIL
+FAIL	codeterminal/daemon	60.956s
+ok  	codeterminal/daemon/mcp	(cached)
+FAIL

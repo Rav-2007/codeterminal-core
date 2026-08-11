@@ -229,8 +229,8 @@ func TestRerankPoolSize_UsesOverfetchFactorWithFloor(t *testing.T) {
 }
 
 func TestLexicalPoolSize_UsesOverfetchFactorWithFloor(t *testing.T) {
-	if got := lexicalPoolSize(3); got != lexicalOverfetchFloor {
-		t.Errorf("lexicalPoolSize(3) = %d, want the floor %d (3*%d=%d is below it)", got, lexicalOverfetchFloor, lexicalOverfetchFactor, 3*lexicalOverfetchFactor)
+	if got := lexicalPoolSize(1); got != lexicalOverfetchFloor {
+		t.Errorf("lexicalPoolSize(1) = %d, want the floor %d (1*%d=%d is below it)", got, lexicalOverfetchFloor, lexicalOverfetchFactor, 1*lexicalOverfetchFactor)
 	}
 	if got := lexicalPoolSize(10); got != 10*lexicalOverfetchFactor {
 		t.Errorf("lexicalPoolSize(10) = %d, want %d", got, 10*lexicalOverfetchFactor)

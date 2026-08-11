@@ -39,12 +39,14 @@ import (
 	"io"
 	"log"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -304,17 +306,17 @@ const (
 	// is a client-side display toggle that a user can flip locally, and the
 	// proxy must not need a redeploy to honour a change to a manifest that
 	// already passed review.
-	defaultAllowedModels = "deepseek/deepseek-v4-flash," +
-		"poolside/laguna-s-2.1," +
-		"stepfun/step-3.7-flash," +
-		"inclusionai/ling-3.0-flash," +
-		"minimax/minimax-m3," +
-		"qwen/qwen3.5-397b-a17b," +
-		"qwen/qwen3.6-plus," +
-		"deepseek/deepseek-v4-pro," +
-		"google/gemini-3.6-flash," +
-		"qwen/qwen3-coder-30b-a3b-instruct," +
-		"deepseek/deepseek-r1"
+	defaultAllowedModels = "deepseek/deepseek-v4-flash:1.0," +
+		"poolside/laguna-s-2.1:5.0," +
+		"stepfun/step-3.7-flash:1.0," +
+		"inclusionai/ling-3.0-flash:1.0," +
+		"minimax/minimax-m3:1.0," +
+		"qwen/qwen3.5-397b-a17b:1.0," +
+		"qwen/qwen3.6-plus:1.0," +
+		"deepseek/deepseek-v4-pro:10.0," +
+		"google/gemini-3.6-flash:2.0," +
+		"qwen/qwen3-coder-30b-a3b-instruct:1.0," +
+		"deepseek/deepseek-r1:30.0"
 )
 
 // correctUsageRetryBackoff is the delay between correctUsage's retry
@@ -556,6 +558,7 @@ func wrapMiddleware(logger *log.Logger, m *metricSet, next http.Handler) http.Ha
 func newMux(p *proxy, buildCommit, adminToken string) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", p.rateLimitedHealth(makeHealthHandler(buildCommit, &p.draining)))
+	mux.HandleFunc("/models/status", p.handleModelsStatus)             // b5: Dynamic Model Allow-List
 	mux.HandleFunc(chatCompletionsPath, p.handleChatCompletions)       // "/chat/completions"
 	mux.HandleFunc("/v1"+chatCompletionsPath, p.handleChatCompletions) // "/v1/chat/completions" alias
 	// The counters route exists ONLY when a token is configured. Not "exists and
@@ -674,7 +677,7 @@ type proxy struct {
 
 	// allowedModels is the cost-authorization allow-list (see modelAllowed).
 	// Empty means unrestricted.
-	allowedModels map[string]bool
+	allowedModels map[string]float64
 
 	// authCache holds SUCCESSFUL key-hash -> api_keys.id lookups for
 	// authCacheTTL, removing one of the two pre-upstream Supabase round trips
@@ -701,7 +704,7 @@ type proxy struct {
 // newProxy builds a proxy with admission control wired up. Constructing the
 // limiters here (rather than lazily) keeps them non-nil for every code path,
 // including tests, so a missing limiter can never silently mean "unlimited".
-func newProxy(apiKey, upstreamURL, supabaseURL, supabaseServiceRoleKey string, logger *log.Logger, allowedModels map[string]bool) *proxy {
+func newProxy(apiKey, upstreamURL, supabaseURL, supabaseServiceRoleKey string, logger *log.Logger, allowedModels map[string]float64) *proxy {
 	p := &proxy{
 		apiKey:                 apiKey,
 		upstreamURL:            upstreamURL,
@@ -1019,7 +1022,8 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// counted in tokens, but the bill is in dollars, so the model choice -- and
 	// every other field that steers what gets billed -- is itself a spending
 	// decision (see costSurfaceRefusal).
-	if refusal, refused := p.costSurfaceRefusal(bodyBytes); refused {
+	refusal, modelName, refused := p.costSurfaceRefusal(bodyBytes)
+	if refused {
 		p.log.Warn("refused: cost surface", "req_id", reqID, "gate", gateCostSurface,
 			"key_id", apiKeyID, "reason", refusal)
 		p.metrics.countRefusal(gateCostSurface)
@@ -1092,6 +1096,11 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		reserved = declared
 	}
 
+	weight := p.modelWeight(modelName)
+	if weight != 1.0 {
+		reserved = int(math.Ceil(float64(reserved) * weight))
+	}
+
 	var res reservation
 	timeStage(r.Context(), stageReserve, func() { res, ok = p.reserveQuota(r.Context(), apiKeyID, reserved) })
 	if !ok {
@@ -1129,6 +1138,7 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		reserved:  reserved,
 		reqID:     reqID,
 		pendingID: res.pendingID,
+		weight:    weight,
 	}
 	defer p.finalizeReservation(&outcome)
 
@@ -2183,7 +2193,20 @@ func (p *proxy) modelAllowed(model string) bool {
 	if len(p.allowedModels) == 0 {
 		return true
 	}
-	return p.allowedModels[model]
+	_, ok := p.allowedModels[model]
+	return ok
+}
+
+// modelWeight returns the token cost multiplier for the requested model.
+// Default is 1.0 for unrestricted or unrecognized models.
+func (p *proxy) modelWeight(model string) float64 {
+	if len(p.allowedModels) == 0 {
+		return 1.0
+	}
+	if w, ok := p.allowedModels[model]; ok {
+		return w
+	}
+	return 1.0
 }
 
 // costSurfaceRefusal is the full cost-authorization gate. It returns the error
@@ -2224,22 +2247,22 @@ func (p *proxy) modelAllowed(model string) bool {
 // anyway: every gate reading the body the same way OpenRouter does is itself the
 // property worth having, and one predicate quietly using different matching
 // rules is how the next differential gets missed.
-func (p *proxy) costSurfaceRefusal(body []byte) (string, bool) {
+func (p *proxy) costSurfaceRefusal(body []byte) (string, string, bool) {
 	fields, ok := topLevelFields(body)
 	if !ok {
-		return "malformed_request", true // unparseable -> fail closed
+		return "malformed_request", "", true // unparseable -> fail closed
 	}
 
 	for _, billable := range []string{"models", "plugins", "transforms"} {
 		if _, present := fields[billable]; present {
-			return "cost_surface_not_allowed", true
+			return "cost_surface_not_allowed", "", true
 		}
 	}
 	if provider, present := fields["provider"]; present {
 		if routing, isObject := topLevelFields(provider); isObject {
 			for _, steering := range []string{"only", "order", "sort"} {
 				if _, present := routing[steering]; present {
-					return "cost_surface_not_allowed", true
+					return "cost_surface_not_allowed", "", true
 				}
 			}
 		}
@@ -2247,21 +2270,58 @@ func (p *proxy) costSurfaceRefusal(body []byte) (string, bool) {
 
 	model, ok := rawString(fields, "model")
 	if !ok || model == "" {
-		return "model_required", true
+		return "model_required", "", true
 	}
 	if !p.modelAllowed(model) {
-		return "model_not_allowed", true
+		return "unavailable_tier", model, true
 	}
-	return "", false
+	return "", model, false
 }
 
-// parseAllowedModels builds the allow-list set from a comma-separated list.
-func parseAllowedModels(raw string) map[string]bool {
-	set := make(map[string]bool)
+// handleModelsStatus implements the b5 /models/status endpoint for the daemon
+// to fetch the currently allowed models list proactively.
+func (p *proxy) handleModelsStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	allowed := make([]string, 0, len(p.allowedModels))
+	for m := range p.allowedModels {
+		allowed = append(allowed, m)
+	}
+
+	resp := struct {
+		AllowedModels []string `json:"allowed_models"`
+		Unrestricted  bool     `json:"unrestricted"`
+	}{
+		AllowedModels: allowed,
+		Unrestricted:  len(p.allowedModels) == 0,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
+// parseAllowedModels builds the allow-list set from a comma-separated list,
+// optionally parsing a weight suffix delimited by a colon (e.g., "model:1.5").
+func parseAllowedModels(raw string) map[string]float64 {
+	set := make(map[string]float64)
 	for _, m := range strings.Split(raw, ",") {
-		if m = strings.TrimSpace(m); m != "" {
-			set[m] = true
+		m = strings.TrimSpace(m)
+		if m == "" {
+			continue
 		}
+		parts := strings.SplitN(m, ":", 2)
+		modelName := strings.TrimSpace(parts[0])
+		weight := 1.0
+		if len(parts) == 2 {
+			if w, err := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64); err == nil && w > 0 {
+				weight = w
+			}
+		}
+		set[modelName] = weight
 	}
 	return set
 }
@@ -2350,6 +2410,7 @@ type reservationOutcome struct {
 	// operator most needs to tie to a request.
 	reqID     string
 	pendingID int64
+	weight    float64
 
 	// Recorded by whichever branch handles the response.
 	actual         int
@@ -2375,7 +2436,13 @@ func (p *proxy) finalizeReservation(o *reservationOutcome) {
 	}
 	o.finalized = true
 	p.metrics.reservationsFinalized.Add(1)
-	p.finalizeUsage(o.keyID, o.reserved, o.actual, o.producedOutput, o.pendingID, o.reqID)
+
+	actualWeighted := o.actual
+	if o.weight != 1.0 && o.actual > 0 {
+		actualWeighted = int(math.Ceil(float64(o.actual) * o.weight))
+	}
+
+	p.finalizeUsage(o.keyID, o.reserved, actualWeighted, o.producedOutput, o.pendingID, o.reqID)
 }
 
 func (p *proxy) finalizeUsage(keyID string, reserved, actual int, producedOutput bool, pendingID int64, reqID string) {

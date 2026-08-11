@@ -88,6 +88,15 @@ func sortedKeys(m map[string]bool) []string {
 	return out
 }
 
+func sortedKeysFloat(m map[string]float64) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
 func TestDefaultAllowedModelsMatchesShippedModelsJSON(t *testing.T) {
 	shipped := loadShippedSlugs(t)
 	allowed := parseAllowedModels(defaultAllowedModels)
@@ -100,7 +109,7 @@ func TestDefaultAllowedModelsMatchesShippedModelsJSON(t *testing.T) {
 	// Every shipped model must be usable. This is the direction that broke.
 	var refused []string
 	for slug := range shipped {
-		if !allowed[slug] {
+		if allowed[slug] == 0 {
 			refused = append(refused, slug)
 		}
 	}
@@ -131,7 +140,7 @@ func TestDefaultAllowedModelsMatchesShippedModelsJSON(t *testing.T) {
 
 	if t.Failed() {
 		t.Logf("shipped (%d): %s", len(shipped), strings.Join(sortedKeys(shipped), ", "))
-		t.Logf("allowed (%d): %s", len(allowed), strings.Join(sortedKeys(allowed), ", "))
+		t.Logf("allowed (%d): %s", len(allowed), strings.Join(sortedKeysFloat(allowed), ", "))
 	}
 }
 

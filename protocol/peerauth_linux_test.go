@@ -1,6 +1,6 @@
 //go:build linux
 
-package main
+package protocol
 
 import (
 	"net"
@@ -72,10 +72,9 @@ func TestReadPeerCred_ReturnsCurrentProcessCreds(t *testing.T) {
 // a same-uid unix peer (the common, legitimate case for every real client) is
 // accepted.
 func TestAuthorizePeer_SameUID_Allows(t *testing.T) {
-	srv := &Server{logger: discardLogger(), workspace: "/ws"}
 	_, server := acceptOneUnix(t)
 
-	if err := srv.authorizePeer(server); err != nil {
-		t.Fatalf("authorizePeer refused a legitimate same-uid peer: %v", err)
+	if err := AuthorizePeer(server); err != nil {
+		t.Fatalf("AuthorizePeer refused a legitimate same-uid peer: %v", err)
 	}
 }

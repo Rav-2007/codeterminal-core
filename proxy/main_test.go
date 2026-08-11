@@ -251,6 +251,10 @@ func newFakeSupabase(store *fakeUsageStore, keyID string) (*httptest.Server, *at
 			PendingID int64  `json:"p_pending_id"`
 		}
 		json.NewDecoder(r.Body).Decode(&body)
+		if body.KeyID != keyID {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		store.correct(body.Tokens, body.PendingID)
 		w.WriteHeader(http.StatusOK)
 	})
@@ -569,7 +573,7 @@ func TestModelAllowList_RefusesUnlistedModelBeforeForwarding(t *testing.T) {
 
 func TestParseAllowedModels(t *testing.T) {
 	got := parseAllowedModels(" a/b , c/d ,, ")
-	if len(got) != 2 || !got["a/b"] || !got["c/d"] {
+	if len(got) != 2 || got["a/b"] == 0 || got["c/d"] == 0 {
 		t.Errorf("parseAllowedModels = %v, want {a/b, c/d} with blanks dropped", got)
 	}
 	if len(parseAllowedModels("")) != 0 {
@@ -1765,12 +1769,12 @@ func TestCostSurface_RefusesBillableSideChannels(t *testing.T) {
 		{"provider.order (cost steering)", `{"model":"good/model","provider":{"zdr":true,"data_collection":"deny","order":["expensive"]}}`, "cost_surface_not_allowed"},
 		{"provider.sort (cost steering)", `{"model":"good/model","provider":{"zdr":true,"data_collection":"deny","sort":"price"}}`, "cost_surface_not_allowed"},
 		{"missing model (was a fail-OPEN)", `{` + zdr + `}`, "model_required"},
-		{"unlisted model", `{"model":"evil/model",` + zdr + `}`, "model_not_allowed"},
+		{"unlisted model", `{"model":"evil/model",` + zdr + `}`, "unavailable_tier"},
 		{"unparseable body", `{not json`, "malformed_request"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, refused := p.costSurfaceRefusal([]byte(tt.body))
+			got, _, refused := p.costSurfaceRefusal([]byte(tt.body))
 			if !refused {
 				t.Fatalf("costSurfaceRefusal allowed %q -- this field reaches OpenRouter "+
 					"and is billed. If you are seeing this after dropping the field from the "+
@@ -1792,7 +1796,7 @@ func TestCostSurface_AllowsProviderIgnore(t *testing.T) {
 		log.New(io.Discard, "", 0), parseAllowedModels("good/model"))
 
 	body := `{"model":"good/model","provider":{"zdr":true,"data_collection":"deny","allow_fallbacks":true,"ignore":["DeepInfra"]}}`
-	if refusal, refused := p.costSurfaceRefusal([]byte(body)); refused {
+	if refusal, _, refused := p.costSurfaceRefusal([]byte(body)); refused {
 		t.Fatalf("costSurfaceRefusal refused the shipped daemon's own D4 routing body with %q -- "+
 			"this would 403 every real request", refusal)
 	}
@@ -2319,7 +2323,7 @@ func TestDuplicateJSONKeys_Refused(t *testing.T) {
 			defer upstream.Close()
 
 			p := newProxy("k", upstream.URL, supabase.URL, "srk", log.New(io.Discard, "", 0),
-				map[string]bool{"cheap-model": true})
+				map[string]float64{"cheap-model": 1.0})
 			rec := httptest.NewRecorder()
 			p.handleChatCompletions(rec, newAuthorizedRequest(tt.body))
 
