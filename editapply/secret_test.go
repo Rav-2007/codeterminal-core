@@ -79,6 +79,7 @@ func TestMatchesSecretName(t *testing.T) {
 		{"item1/id_rsa_backup_still_flagged", "id_rsa_backup", true},    // private-key copy — must stay flagged
 		{"item1/id_rsa_pub_case", "ID_RSA.PUB", false},                  // carve-out is case-insensitive: baseline FAIL
 		{"item1/id_rsa_backup_pub_allowed", "id_rsa_backup.pub", false}, // .pub of a copy is still public
+		{"item1/id_rsa_secret_pub_allowed", "id_rsa_secret.pub", false}, // .pub overrides "secret" substring
 
 		// ---- Item 2 — .htpasswd / _netrc inclusion (FAIL-1 follow-up) ----
 		{"item2/htpasswd", ".htpasswd", true},      // baseline: FAIL

@@ -66,11 +66,11 @@ func TestGate7_ApplyOracleIsEnumeratedAndCarriesNoAbsolutePaths(t *testing.T) {
 		search        string
 		wantSubstring string
 	}{
-		{"absent", "ghost.go", "func keep() {}", "does not exist"},
-		{"absent nested", "a/b/c/ghost.go", "func keep() {}", "does not exist"},
+		{"absent", "ghost.go", "func keep() {}", "access denied or does not exist"},
+		{"absent nested", "a/b/c/ghost.go", "func keep() {}", "access denied or does not exist"},
 		{"present, no match", "nomatch.go", "func keep() {}", "search text not found"},
 		{"present, matches", "readable.go", "func keep() {}", ""},
-		{"unreadable", "unreadable.go", "func keep() {}", "permission denied"}, // gated below
+		{"unreadable", "unreadable.go", "func keep() {}", "access denied or does not exist"}, // unified shape
 		{"secret-named", "id_rsa_secret", "x", "secret-file rules"},
 		{"symlink outside root", "link.go", "func keep() {}", "resolves outside the workspace root"},
 		{"a directory", "adir", "func keep() {}", "is a directory"},

@@ -85,7 +85,7 @@ var SecretSubstrings = []string{"secret", "credential", "private_key", "privatek
 // glob list (so it overrides id_rsa*). Excluding a public key opens no writer
 // path — it only stops an over-broad refusal on a file that was never a secret.
 var SecretNameAllowlist = []string{
-	"id_rsa*.pub",
+	"*.pub",
 }
 
 // MatchesSecretName reports whether base (a file's basename) matches the
@@ -97,19 +97,22 @@ func MatchesSecretName(base string) bool {
 	// spaces before resolving, so ".env " and "id_rsa." reach the same files a
 	// bare fold would let past. See pathhazard.go.
 	lower := NormalizeComponent(base)
-	for _, sub := range SecretSubstrings {
-		if strings.Contains(lower, sub) {
-			return true
-		}
-	}
-	// Public-key carve-outs: names a broader private-key glob would catch but
-	// that are not secrets (SSH .pub public keys). Checked before the glob list
-	// so the id_rsa* wildcard can stay broad while its .pub sibling is allowed.
+	// Public-key carve-outs: names a broader private-key glob or substring would
+	// catch but that are not secrets (SSH .pub public keys). Checked before the
+	// substrings and globs so wildcards and "secret" substring can stay broad
+	// while their .pub siblings are allowed.
 	for _, allow := range SecretNameAllowlist {
 		if ok, _ := filepath.Match(allow, lower); ok {
 			return false
 		}
 	}
+
+	for _, sub := range SecretSubstrings {
+		if strings.Contains(lower, sub) {
+			return true
+		}
+	}
+
 	// Match the globs against the lowercased basename. filepath.Match has no
 	// case-fold mode, so matching against the original-case base let case
 	// variants (.ENV, *.PEM, *.KEY, *.P12, ID_RSA) slip through. The globs in

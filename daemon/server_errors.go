@@ -8,6 +8,8 @@
 package main
 
 import (
+	"errors"
+	"os"
 	"strings"
 )
 
@@ -45,6 +47,33 @@ func (s *Server) scrubPaths(msg string, roots ...string) string {
 // socketSafeError is scrubPaths over err.Error() — the form used at every error
 // encode in the Apply/Undo handlers, mirroring how the prompt path already
 // rewrites ErrZDRRefused to a generic string before sending it over the socket.
+// It also unifies existence and permission errors into a single shape to close
+// the Gate 7 existence oracle (Item 7).
 func (s *Server) socketSafeError(err error, roots ...string) string {
-	return s.scrubPaths(err.Error(), roots...)
+	msg := err.Error()
+
+	// Unify existence and permission errors to close the Gate 7 oracle,
+	// but leave backup-related errors intact (they are distinct operational errors).
+	isOracleLeak := strings.Contains(msg, "does not exist; to create it") ||
+		strings.Contains(msg, "permission denied") ||
+		strings.Contains(msg, "no such file or directory")
+
+	if isOracleLeak && !strings.Contains(msg, "backup") {
+		// Include the scrubbed path if we can extract it from os.PathError,
+		// otherwise just return a generic string.
+		pathStr := "file"
+		var pe *os.PathError
+		if errors.As(err, &pe) {
+			pathStr = s.scrubPaths(pe.Path, roots...)
+		} else if strings.Contains(msg, " does not exist; to create it") {
+			// Extract filename from editapply's custom message: "foo.go does not exist; to create it..."
+			parts := strings.SplitN(msg, " does not exist", 2)
+			if len(parts) == 2 {
+				pathStr = s.scrubPaths(parts[0], roots...)
+			}
+		}
+		return pathStr + ": access denied or does not exist"
+	}
+
+	return s.scrubPaths(msg, roots...)
 }

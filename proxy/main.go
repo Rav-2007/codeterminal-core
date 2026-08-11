@@ -1104,6 +1104,17 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	var res reservation
 	timeStage(r.Context(), stageReserve, func() { res, ok = p.reserveQuota(r.Context(), apiKeyID, reserved) })
 	if !ok {
+		// The reservation failed. It could be because the key's remaining headroom
+		// is less than the fixed `reserved` amount (making the tail of the quota
+		// unreachable). Fetch the actual headroom to see if a smaller reservation
+		// would succeed.
+		if hr, hrOk := p.getHeadroom(r.Context(), apiKeyID); hrOk && hr > 0 && hr < reserved {
+			p.log.Info("quota tail retry", "req_id", reqID, "key_id", apiKeyID, "original_reserved", reserved, "headroom", hr)
+			reserved = hr
+			timeStage(r.Context(), stageReserve, func() { res, ok = p.reserveQuota(r.Context(), apiKeyID, reserved) })
+		}
+	}
+	if !ok {
 		// Deliberately NOT tooManyRequests: this 429 is an exhausted allowance,
 		// not a throttle, so it carries no Retry-After -- waiting does not help.
 		// The daemon relies on the quota_exceeded slug to tell the two apart
@@ -1505,6 +1516,60 @@ func (p *proxy) reserveQuota(ctx context.Context, apiKeyID string, reserved int)
 		"headroom", headroom, "pending_id", rows[0].PendingID)
 	p.metrics.reservationsOpened.Add(1)
 	return reservation{pendingID: rows[0].PendingID, headroom: headroom}, true
+}
+
+// getHeadroom fetches the key's current quota headroom from Supabase.
+// Used only as a fallback when reserveQuota fails (Item 24), to check if the
+// failure was due to the reservation floor exceeding the remaining tail of the
+// quota. This keeps the happy-path to a single atomic round trip while making
+// the last few tokens of a quota reachable.
+func (p *proxy) getHeadroom(ctx context.Context, apiKeyID string) (int, bool) {
+	if p.supabaseURL == "" || p.supabaseServiceRoleKey == "" {
+		return 0, false
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, supabaseAuthTimeout)
+	defer cancel()
+
+	q := url.Values{}
+	q.Set("key_id", "eq."+apiKeyID)
+	q.Set("select", "tokens_used,token_limit")
+	lookupURL := strings.TrimRight(p.supabaseURL, "/") + "/rest/v1/usage?" + q.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, lookupURL, nil)
+	if err != nil {
+		return 0, false
+	}
+	req.Header.Set("apikey", p.supabaseServiceRoleKey)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return 0, false
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		io.Copy(io.Discard, io.LimitReader(resp.Body, maxAuthResponseBytes))
+		return 0, false
+	}
+
+	var rows []struct {
+		TokensUsed int64 `json:"tokens_used"`
+		TokenLimit int64 `json:"token_limit"`
+	}
+	if err := decodeCappedJSON(resp, maxAuthResponseBytes, &rows); err != nil {
+		return 0, false
+	}
+	if len(rows) != 1 {
+		return 0, false
+	}
+
+	headroom := rows[0].TokenLimit - rows[0].TokensUsed
+	if headroom < 0 {
+		headroom = 0
+	}
+	return int(headroom), true
 }
 
 // reservation is what reserveQuota hands back on success: the durable outbox row
