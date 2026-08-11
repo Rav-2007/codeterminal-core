@@ -79,7 +79,7 @@ The ordering is real: each tier is blocked by the one above it.
 | # | Item | State |
 |---|---|---|
 | **E1** | macOS **signing + notarisation** | Blocked on **B3**. `release.yml` already emits a build warning that darwin-arm64 binaries are unsigned and must not be published — so the gap is guarded, not silent. `linux-x64` and `win32-x64` are shippable today. |
-| **E2** | `release.yml` has **never fired** | CONFIRMED: it triggers on `tags: ["v*"]` and the repo has 12 tags, **none** matching `v*`. Its `publish` job is additionally `if: false` by design — "flip this on deliberately, never as a side effect". Firing it is a founder action. |
+| ~~**E2**~~ | ~~`release.yml` has **never fired**~~ | ~~CONFIRMED: it triggers on `tags: ["v*"]` and the repo has 12 tags, **none** matching `v*`. Its `publish` job is additionally `if: false` by design — "flip this on deliberately, never as a side effect". Firing it is a founder action.~~ (Completed 2026-08-11: fired `v0.0.1`) |
 | **E3** | Clean-VM install per platform | The end-to-end proof: install the `.vsix`, open a repo, ask a question, apply an edit, undo it — with no Go toolchain, no compiler, no terminal. Not yet run on any platform. |
 
 ### Tier 2 — engineering, unblocked, do in any order
