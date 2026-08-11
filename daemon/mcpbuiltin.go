@@ -258,7 +258,11 @@ func (s *Server) builtinReadFile(_ context.Context, raw json.RawMessage) (mcp.Re
 		return toolError("no path was supplied")
 	}
 
-	full, err := editapply.ResolveSafeTargetPath(s.workspace, args.Path)
+	realRoot, err := s.realWorkspaceRoot()
+	if err != nil {
+		return toolError("cannot read %s: %v", args.Path, err)
+	}
+	full, err := editapply.ResolveSafeTargetPath(realRoot, args.Path)
 	if err != nil {
 		// The resolver's message is already written for a human and carries no
 		// absolute path -- it is the same text the edit pipeline shows.
@@ -300,7 +304,11 @@ func (s *Server) builtinListDirectory(_ context.Context, raw json.RawMessage) (m
 		args.Path = "."
 	}
 
-	full, err := editapply.ResolveSafeTargetPath(s.workspace, args.Path)
+	realRoot, err := s.realWorkspaceRoot()
+	if err != nil {
+		return toolError("cannot list %s: %v", args.Path, err)
+	}
+	full, err := editapply.ResolveSafeTargetPath(realRoot, args.Path)
 	if err != nil {
 		return toolError("cannot list %s: %v", args.Path, err)
 	}

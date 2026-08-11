@@ -28,7 +28,11 @@ func (s *Server) handleLSPQuery(method string, raw json.RawMessage) (mcp.Result,
 		return toolError("arguments were not a valid JSON object: %v", err)
 	}
 
-	full, err := editapply.ResolveSafeTargetPath(s.workspace, args.Path)
+	realRoot, err := s.realWorkspaceRoot()
+	if err != nil {
+		return toolError("invalid path: %v", err)
+	}
+	full, err := editapply.ResolveSafeTargetPath(realRoot, args.Path)
 	if err != nil {
 		return toolError("invalid path: %v", err)
 	}

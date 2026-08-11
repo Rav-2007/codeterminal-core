@@ -103,7 +103,11 @@ func (s *Server) builtinProposeASTEdit(_ context.Context, raw json.RawMessage, p
 		return toolError("no symbol was supplied")
 	}
 
-	full, err := editapply.ResolveSafeTargetPath(s.workspace, args.Path)
+	realRoot, err := s.realWorkspaceRoot()
+	if err != nil {
+		return toolError("invalid path: %v", err)
+	}
+	full, err := editapply.ResolveSafeTargetPath(realRoot, args.Path)
 	if err != nil {
 		return toolError("invalid path: %v", err)
 	}
@@ -160,10 +164,7 @@ func (s *Server) builtinProposeASTEdit(_ context.Context, raw json.RawMessage, p
 	// Resolved, not s.workspace: see realWorkspaceRoot. Passing the unresolved
 	// root refuses every edit whenever the workspace is reached through a
 	// symlink or an 8.3 short name.
-	realRoot, err := s.realWorkspaceRoot()
-	if err != nil {
-		return toolError("that edit cannot be applied: %v", err)
-	}
+
 	prepared, err := editapply.PrepareEdit(realRoot, block)
 	if err != nil {
 		return toolError("that edit cannot be applied: %v", err)
