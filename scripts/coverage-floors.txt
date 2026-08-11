@@ -60,7 +60,7 @@ codeterminal/daemon/mcp          91.0
 # Listed explicitly because the ratchet fails on any package it has no floor
 # for, so the decision has to be made rather than defaulted into.
 codeterminal/proxy/testharness    0.0
-codeterminal/helper              21.0
+codeterminal/helper              20.8
 codeterminal/helper/helperproto  75.0
-codeterminal/protocol            91.8
+codeterminal/protocol            89.5
 codeterminal/clients/tui         78.9

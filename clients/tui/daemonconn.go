@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
 
 	"codeterminal/protocol"
 )
@@ -126,4 +127,39 @@ func fetchAvailableTiers(clientName string) ([]protocol.StatusTier, error) {
 		return nil, err
 	}
 	return resp.AvailableTiers, nil
+}
+
+// runSearch asks the daemon to search its conversation history for the query.
+func runSearch(clientName, workspace, query string) string {
+	sess, err := connectToDaemon(clientName)
+	if err != nil {
+		return "search failed: " + err.Error()
+	}
+	defer func() { _ = sess.Close() }()
+
+	if err := sess.enc.Encode(protocol.SearchRequest{
+		ProtocolVersion: protocol.ProtocolVersion,
+		Search:          true,
+		Workspace:       workspace,
+		Query:           query,
+	}); err != nil {
+		return "search failed: " + err.Error()
+	}
+	var resp protocol.SearchResponse
+	if err := sess.dec.Decode(&resp); err != nil {
+		return "search failed: " + err.Error()
+	}
+	if resp.Error != "" {
+		return "search failed: " + resp.Error
+	}
+	if len(resp.Results) == 0 {
+		return "no matching turns found in project memory"
+	}
+
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("found %d match(es):\n", len(resp.Results)))
+	for i, hit := range resp.Results {
+		b.WriteString(fmt.Sprintf("%d. [%s] (%s)\n   %s\n", i+1, hit.Role, hit.CreatedAt, hit.Snippet))
+	}
+	return strings.TrimRight(b.String(), "\n")
 }

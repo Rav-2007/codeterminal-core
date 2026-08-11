@@ -2301,7 +2301,7 @@ func (p *proxy) handleModelsStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 // parseAllowedModels builds the allow-list set from a comma-separated list,

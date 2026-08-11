@@ -734,22 +734,7 @@ func (m chatModel) handleLocalSlash(name, args string) (tea.Model, tea.Cmd) {
 		// installed one, or the repo's own when run from a checkout.
 		reply = runMCPServerList("")
 	case "search":
-		q := strings.ToLower(args)
-		var hits []string
-		for i, t := range m.turns {
-			if strings.Contains(strings.ToLower(t.text), q) {
-				snippet := t.text
-				if len(snippet) > 120 {
-					snippet = snippet[:120] + "…"
-				}
-				hits = append(hits, fmt.Sprintf("%d. [%v] %s", i+1, t.role, snippet))
-			}
-		}
-		if len(hits) == 0 {
-			reply = "no matching turns"
-		} else {
-			reply = "matches:\n" + strings.Join(hits, "\n")
-		}
+		reply = runSearch(m.clientName, m.workspaceRoot, args)
 	case "exit":
 		return m, tea.Quit
 	default:

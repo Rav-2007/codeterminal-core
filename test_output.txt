@@ -1,0 +1,195 @@
+=== RUN   TestRerankEvalRetrievalRanking
+[embedder-helper] codeterminal-embedder-helper: 2026/08/11 16:48:46 ready, listening on /run/user/1000/codeterminal/embedder-helper-6936.sock
+    rerank_eval_test.go:469: indexed repo root /home/ravi-kiran/Desktop/Neww: scanned=456 chunks=3782 (self-referential chunks excluded)
+    rerank_eval_test.go:474: query 1 ("where does the daemon open the unix socket"): anchor "net.Listen(\"unix\"" also appears outside expectedFiles, in [.github/workflows/build.yml clients/tui/testaddr_unix_test.go daemon/addrinuse_unix_test.go daemon/testaddr_unix_test.go daemon/testdata/fakehelper/main.go docs/ARCHIVE/BACKLOG_2026-07.md protocol/peerauth_darwin_test.go protocol/peerauth_linux_test.go] -- harmless unless one of those is a better answer than what is declared
+    rerank_eval_test.go:474: query 4 ("how does secret skipping work during indexing"): anchor "editapply.MatchesSecretName" also appears outside expectedFiles, in [daemon/apply_cmd.go daemon/mcpbuiltin.go] -- harmless unless one of those is a better answer than what is declared
+    rerank_eval_test.go:474: query 5 ("where are skills stored in sqlite"): anchor "CREATE TABLE IF NOT EXISTS" also appears outside expectedFiles, in [daemon/memory.go] -- harmless unless one of those is a better answer than what is declared
+    rerank_eval_test.go:474: query 6 ("where in the code is the ZDR refusal string matched, and what substring does it match on?"): anchor "zdrRefusalSubstrings" also appears outside expectedFiles, in [BACKLOG.md daemon/modelerror.go daemon/provider_test.go docs/ARCHIVE/BACKLOG_2026-07.md] -- harmless unless one of those is a better answer than what is declared
+    rerank_eval_test.go:474: query 8 ("where is the ZDR refusal string matched"): anchor "zdrRefusalSubstrings" also appears outside expectedFiles, in [BACKLOG.md daemon/modelerror.go daemon/provider_test.go docs/ARCHIVE/BACKLOG_2026-07.md] -- harmless unless one of those is a better answer than what is declared
+
+=== Retrieval ranking eval: SEMANTIC-ONLY (lexicalStore=nil, today's behavior) ===
+
+1. query="where does the daemon open the unix socket"
+   expected files=[protocol/transport_unix.go] exact chunks=[protocol/transport_unix.go:31-70]
+   chunk-level=MISS file-level=false merged-path=false
+   1. daemon/status.go:1-40                    class=code   raw=0.0161 weighted=0.0185
+   2. clients/vscode/src/daemonClient.ts:511-550 class=code   raw=0.0159 weighted=0.0183
+   3. protocol/protocol.go:31-70               class=code   raw=0.0156 weighted=0.0180
+   4. clients/tui/daemonconn.go:1-40           class=code   raw=0.0149 weighted=0.0172
+   5. clients/vscode/src/daemonClient.ts:421-460 class=code   raw=0.0147 weighted=0.0169
+
+2. query="how are edit blocks parsed from the model response"
+   expected files=[editapply/editblock.go] exact chunks=[editapply/editblock.go:31-70]
+   chunk-level=hit file-level=true merged-path=true
+   1. editapply/editblock.go:31-70             class=code   raw=0.0164 weighted=0.0189
+   2. clients/tui/chat.go:961-1000             class=code   raw=0.0145 weighted=0.0167
+   3. editapply/editblock.go:61-100            class=code   raw=0.0137 weighted=0.0158
+   4. daemon/server.go:1081-1105               class=code   raw=0.0133 weighted=0.0153
+   5. editapply/editblock.go:1-40              class=code   raw=0.0132 weighted=0.0151
+
+3. query="where is the model tier routing decided"
+   expected files=[daemon/router.go] exact chunks=[daemon/router.go:61-95]
+   chunk-level=hit file-level=true merged-path=true
+   1. daemon/router.go:61-95                   class=code   raw=0.0164 weighted=0.0189
+   2. clients/vscode/src/chatPanel.ts:271-310  class=code   raw=0.0161 weighted=0.0185
+   3. clients/tui/chat.go:811-850              class=code   raw=0.0154 weighted=0.0177
+   4. clients/tui/chat.go:781-820              class=code   raw=0.0147 weighted=0.0169
+   5. daemon/server.go:181-220                 class=code   raw=0.0135 weighted=0.0155
+
+4. query="how does secret skipping work during indexing"
+   expected files=[daemon/chunker.go daemon/index_cmd.go] exact chunks=[daemon/chunker.go:181-220 daemon/chunker.go:211-250]
+   chunk-level=hit file-level=true merged-path=true
+   1. daemon/indexfreshness.go:121-160         class=code   raw=0.0159 weighted=0.0183
+   2. daemon/chunker.go:181-220                class=code   raw=0.0147 weighted=0.0169
+   3. daemon/index_cmd_test.go:1-40            class=test   raw=0.0164 weighted=0.0139
+   4. daemon/chunker.go:1-40                   class=code   raw=0.0115 weighted=0.0132
+   5. daemon/mcpbuiltin.go:361-400             class=code   raw=0.0114 weighted=0.0131
+
+5. query="where are skills stored in sqlite"
+   expected files=[daemon/skills.go] exact chunks=[daemon/skills.go:121-160 daemon/skills.go:151-190 daemon/skills.go:31-70 daemon/skills.go:91-130]
+   chunk-level=hit file-level=true merged-path=true
+   1. daemon/skills.go:31-70                   class=code   raw=0.0164 weighted=0.0189
+   2. daemon/skills.go:1-40                    class=code   raw=0.0161 weighted=0.0185
+   3. daemon/skills.go:211-250                 class=code   raw=0.0159 weighted=0.0183
+   4. daemon/skills.go:181-220                 class=code   raw=0.0156 weighted=0.0180
+   5. daemon/skills.go:241-280                 class=code   raw=0.0154 weighted=0.0177
+
+6. query="where in the code is the ZDR refusal string matched, and what substring does it match on?"
+   expected files=[daemon/provider.go] exact chunks=[daemon/provider.go:271-310 daemon/provider.go:301-340 daemon/provider.go:331-370]
+   chunk-level=hit file-level=true merged-path=true
+   1. daemon/provider.go:601-640               class=code   raw=0.0154 weighted=0.0177
+   2. proxy/ratelimit.go:331-370               class=code   raw=0.0127 weighted=0.0146
+   3. daemon/provider.go:331-370               class=code   raw=0.0125 weighted=0.0144
+   4. daemon/provider_test.go:331-370          class=test   raw=0.0161 weighted=0.0137
+   5. daemon/chunker.go:451-485                class=code   raw=0.0118 weighted=0.0135
+
+7. query="how is the ZDR refusal detection logic tested end to end"
+   expected files=[daemon/provider_test.go daemon/config_test.go] exact chunks=[daemon/config_test.go:1-40 daemon/provider_test.go:241-280]
+   chunk-level=hit file-level=true merged-path=true
+   1. daemon/provider_test.go:301-340          class=test   raw=0.0164 weighted=0.0189
+   2. daemon/config_test.go:1-40               class=test   raw=0.0159 weighted=0.0183
+   3. daemon/degraded_test.go:91-130           class=test   raw=0.0145 weighted=0.0167
+   4. daemon/provider_test.go:331-370          class=test   raw=0.0139 weighted=0.0160
+   5. daemon/provider.go:601-640               class=code   raw=0.0133 weighted=0.0153
+
+8. query="where is the ZDR refusal string matched"
+   expected files=[daemon/provider.go] exact chunks=[daemon/provider.go:271-310 daemon/provider.go:301-340 daemon/provider.go:331-370]
+   chunk-level=hit file-level=true merged-path=true
+   1. daemon/provider.go:601-640               class=code   raw=0.0152 weighted=0.0174
+   2. proxy/ratelimit.go:331-370               class=code   raw=0.0132 weighted=0.0151
+   3. daemon/provider.go:331-370               class=code   raw=0.0128 weighted=0.0147
+   4. daemon/provider_test.go:331-370          class=test   raw=0.0161 weighted=0.0137
+   5. editapply/match_matrix_test.go:211-250   class=test   raw=0.0156 weighted=0.0133
+
+9. query="what files does SearchRequest touch"
+   expected files=[protocol/protocol.go daemon/search.go daemon/server.go] exact chunks=[daemon/search.go:121-154 daemon/search.go:91-130 daemon/server.go:841-880 daemon/server.go:871-910 daemon/server.go:901-940 protocol/protocol.go:841-880]
+   chunk-level=hit file-level=true merged-path=true
+   1. protocol/protocol.go:781-820             class=code   raw=0.0164 weighted=0.0189
+   2. daemon/mcpbuiltin.go:361-400             class=code   raw=0.0159 weighted=0.0183
+   3. daemon/server.go:871-910                 class=code   raw=0.0149 weighted=0.0172
+   4. daemon/server.go:751-790                 class=code   raw=0.0147 weighted=0.0169
+   5. daemon/context.go:1-40                   class=code   raw=0.0135 weighted=0.0155
+
+=== Retrieval ranking eval: HYBRID (semantic + lexical, fused via RRF) ===
+
+1. query="where does the daemon open the unix socket"
+   expected files=[protocol/transport_unix.go] exact chunks=[protocol/transport_unix.go:31-70]
+   chunk-level=MISS file-level=true merged-path=false
+   1. daemon/status.go:1-40                    class=code   raw=0.0161 weighted=0.0185
+   2. clients/vscode/src/daemonClient.ts:511-550 class=code   raw=0.0159 weighted=0.0183
+   3. protocol/transport.go:121-160            class=code   raw=0.0159 weighted=0.0183
+   4. protocol/protocol.go:31-70               class=code   raw=0.0156 weighted=0.0180
+   5. protocol/transport_unix.go:151-171       class=code   raw=0.0156 weighted=0.0180
+
+2. query="how are edit blocks parsed from the model response"
+   expected files=[editapply/editblock.go] exact chunks=[editapply/editblock.go:31-70]
+   chunk-level=hit file-level=true merged-path=true
+   1. editapply/editblock.go:31-70             class=code   raw=0.0164 weighted=0.0189
+   2. daemon/server.go:1051-1090               class=code   raw=0.0164 weighted=0.0189
+   3. daemon/server.go:1081-1105               class=code   raw=0.0161 weighted=0.0185
+   4. editapply/editblock.go:1-40              class=code   raw=0.0154 weighted=0.0177
+   5. clients/tui/chat.go:961-1000             class=code   raw=0.0145 weighted=0.0167
+
+3. query="where is the model tier routing decided"
+   expected files=[daemon/router.go] exact chunks=[daemon/router.go:61-95]
+   chunk-level=hit file-level=true merged-path=true
+   1. daemon/router.go:61-95                   class=code   raw=0.0164 weighted=0.0189
+   2. clients/vscode/src/chatPanel.ts:271-310  class=code   raw=0.0161 weighted=0.0185
+   3. clients/tui/chat.go:811-850              class=code   raw=0.0154 weighted=0.0177
+   4. daemon/router.go:1-40                    class=code   raw=0.0152 weighted=0.0174
+   5. clients/tui/chat.go:781-820              class=code   raw=0.0147 weighted=0.0169
+
+4. query="how does secret skipping work during indexing"
+   expected files=[daemon/chunker.go daemon/index_cmd.go] exact chunks=[daemon/chunker.go:181-220 daemon/chunker.go:211-250]
+   chunk-level=hit file-level=true merged-path=true
+   1. daemon/indexfreshness.go:121-160         class=code   raw=0.0159 weighted=0.0183
+   2. daemon/chunker.go:31-70                  class=code   raw=0.0152 weighted=0.0174
+   3. daemon/chunker.go:181-220                class=code   raw=0.0147 weighted=0.0169
+   4. daemon/chunker.go:1-40                   class=code   raw=0.0141 weighted=0.0162
+   5. daemon/mcpbuiltin.go:331-370             class=code   raw=0.0133 weighted=0.0153
+
+5. query="where are skills stored in sqlite"
+   expected files=[daemon/skills.go] exact chunks=[daemon/skills.go:121-160 daemon/skills.go:151-190 daemon/skills.go:31-70 daemon/skills.go:91-130]
+   chunk-level=hit file-level=true merged-path=true
+   1. daemon/skills.go:31-70                   class=code   raw=0.0164 weighted=0.0189
+   2. daemon/skills.go:1-40                    class=code   raw=0.0161 weighted=0.0185
+   3. daemon/skills.go:211-250                 class=code   raw=0.0159 weighted=0.0183
+   4. daemon/skills.go:181-220                 class=code   raw=0.0156 weighted=0.0180
+   5. daemon/skills.go:241-280                 class=code   raw=0.0154 weighted=0.0177
+
+6. query="where in the code is the ZDR refusal string matched, and what substring does it match on?"
+   expected files=[daemon/provider.go] exact chunks=[daemon/provider.go:271-310 daemon/provider.go:301-340 daemon/provider.go:331-370]
+   chunk-level=hit file-level=true merged-path=true
+   1. daemon/provider.go:301-340               class=code   raw=0.0164 weighted=0.0189
+   2. daemon/provider.go:331-370               class=code   raw=0.0156 weighted=0.0180
+   3. daemon/provider.go:601-640               class=code   raw=0.0154 weighted=0.0177
+   4. daemon/modelerror.go:151-190             class=code   raw=0.0145 weighted=0.0167
+   5. daemon/lexicalstore.go:211-250           class=code   raw=0.0135 weighted=0.0155
+
+7. query="how is the ZDR refusal detection logic tested end to end"
+   expected files=[daemon/provider_test.go daemon/config_test.go] exact chunks=[daemon/config_test.go:1-40 daemon/provider_test.go:241-280]
+   chunk-level=hit file-level=true merged-path=true
+   1. daemon/provider_test.go:301-340          class=test   raw=0.0164 weighted=0.0189
+   2. daemon/provider_test.go:271-310          class=test   raw=0.0161 weighted=0.0185
+   3. daemon/config_test.go:1-40               class=test   raw=0.0159 weighted=0.0183
+   4. daemon/provider_test.go:241-280          class=test   raw=0.0159 weighted=0.0183
+   5. daemon/provider.go:301-340               class=code   raw=0.0154 weighted=0.0177
+
+8. query="where is the ZDR refusal string matched"
+   expected files=[daemon/provider.go] exact chunks=[daemon/provider.go:271-310 daemon/provider.go:301-340 daemon/provider.go:331-370]
+   chunk-level=hit file-level=true merged-path=true
+   1. daemon/provider.go:301-340               class=code   raw=0.0161 weighted=0.0185
+   2. daemon/rerank.go:151-190                 class=code   raw=0.0159 weighted=0.0183
+   3. daemon/provider.go:601-640               class=code   raw=0.0152 weighted=0.0174
+   4. daemon/provider.go:331-370               class=code   raw=0.0143 weighted=0.0164
+   5. proxy/main.go:2131-2170                  class=code   raw=0.0156 weighted=0.0153
+
+9. query="what files does SearchRequest touch"
+   expected files=[protocol/protocol.go daemon/search.go daemon/server.go] exact chunks=[daemon/search.go:121-154 daemon/search.go:91-130 daemon/server.go:841-880 daemon/server.go:871-910 daemon/server.go:901-940 protocol/protocol.go:841-880]
+   chunk-level=hit file-level=true merged-path=true
+   1. protocol/protocol.go:781-820             class=code   raw=0.0164 weighted=0.0189
+   2. protocol/protocol.go:811-850             class=code   raw=0.0164 weighted=0.0189
+   3. daemon/mcpbuiltin.go:361-400             class=code   raw=0.0159 weighted=0.0183
+   4. daemon/server.go:841-880                 class=code   raw=0.0159 weighted=0.0183
+   5. protocol/protocol.go:841-880             class=code   raw=0.0154 weighted=0.0177
+
+=== Before/after summary (chunk-level hit = exact symbol-containing chunk reached top-5) ===
+#   query                                                                  semantic     hybrid  
+1   where does the daemon open the unix socket                             MISS         MISS    
+2   how are edit blocks parsed from the model response                     hit          hit     
+3   where is the model tier routing decided                                hit          hit     
+4   how does secret skipping work during indexing                          hit          hit     
+5   where are skills stored in sqlite                                      hit          hit     
+6   where in the code is the ZDR refusal string matched, and what substri… hit          hit     
+7   how is the ZDR refusal detection logic tested end to end               hit          hit     
+8   where is the ZDR refusal string matched                                hit          hit     
+9   what files does SearchRequest touch                                    hit          hit     
+
+semantic-only chunk-level recall: 8/9
+hybrid chunk-level recall:         8/9
+
+    rerank_eval_test.go:570: KNOWN GAP (not gated, pre-existing, out of scope): query 1 ("where does the daemon open the unix socket") still misses — see comment above mustHit for why
+[embedder-helper] codeterminal-embedder-helper: 2026/08/11 16:50:59 received terminated, shutting down
+--- PASS: TestRerankEvalRetrievalRanking (133.94s)
+PASS
+ok  	codeterminal/daemon	(cached)

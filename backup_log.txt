@@ -1,0 +1,866 @@
+commit e81a3a6042c0dda295de561855c1cfc6f98ddb6e
+Author: thebyte24 <thebyte24@gmail.com>
+Date:   Sat Aug 1 18:15:59 2026 +0530
+
+    chore: triage the unchecked errors this pass added, and lower the ceilings
+    
+    The errcheck ratchet caught seven new unchecked sites — five in daemon,
+    two in editapply — which is exactly what it exists for. Its policy is
+    also explicit: the grandfathered ones stay, NEW ones fail the build, and
+    raising a ceiling is a decision that belongs in a commit message.
+    
+    So none was grandfathered. Each is now explicit, and so are the
+    pre-existing neighbours they sat beside: half a function writing `_ =`
+    and half not is worse than either convention on its own, and the
+    inconsistency is what would make a real unchecked error hard to spot
+    later. That is the whole argument the ceiling script makes for why it
+    exists instead of a hard errcheck gate.
+    
+    daemon 111 -> 108, editapply 12 -> 10. Fewer unchecked errors than
+    before the pass, which is the direction these numbers are meant to move.
+
+diff --git a/editapply/backup.go b/editapply/backup.go
+index c6e3dc6..e7fa978 100644
+--- a/editapply/backup.go
++++ b/editapply/backup.go
+@@ -222,9 +222,9 @@ func recordCreatedReversible(backupDir, realWorkspaceRoot string, p *PreparedEdi
+ 	previous, readErr := os.ReadFile(manifest)
+ 	switch {
+ 	case readErr == nil:
+-		rollback = func() { os.WriteFile(manifest, previous, 0644) }
++		rollback = func() { _ = os.WriteFile(manifest, previous, 0644) }
+ 	case os.IsNotExist(readErr):
+-		rollback = func() { os.Remove(manifest) }
++		rollback = func() { _ = os.Remove(manifest) }
+ 	default:
+ 		return nil, readErr
+ 	}
+@@ -351,9 +351,9 @@ func recordCreatedDirsReversible(backupDir, realWorkspaceRoot string, p *Prepare
+ 	previous, readErr := os.ReadFile(manifest)
+ 	switch {
+ 	case readErr == nil:
+-		rollback = func() { os.WriteFile(manifest, previous, 0644) }
++		rollback = func() { _ = os.WriteFile(manifest, previous, 0644) }
+ 	case os.IsNotExist(readErr):
+-		rollback = func() { os.Remove(manifest) }
++		rollback = func() { _ = os.Remove(manifest) }
+ 	default:
+ 		return nil, readErr
+ 	}
+
+commit 31bf19cbf8623c863b04a5f19e3a4cf0a3d113c7
+Author: thebyte24 <thebyte24@gmail.com>
+Date:   Sat Aug 1 16:51:22 2026 +0530
+
+    fix(editapply): undo takes back the directories the apply run created
+    
+    Fix C made undo remove a created FILE instead of restoring its 0-byte
+    snapshot. It left the directories that file arrived in standing, so
+    undoing "create pkg/sub/deep/thing.go" gave the user back an empty
+    three-level tree they never made, while reporting the workspace
+    reverted. Same failure class Fix C was written for: the report and the
+    disk disagree.
+    
+    THE DIRECTORIES ARE RECORDED, NOT INFERRED, and that is the whole design
+    rather than an implementation choice. "Remove the parent if it is now
+    empty" is nearly right and wrong in the one case that matters: a user who
+    had already made an empty directory and asked for a file inside it would
+    have their directory deleted by an undo that never created it. So the
+    apply run writes a created-dirs manifest beside created-files, using the
+    same reversible pre-write bookkeeping (Fix 1 ordering) — a write that
+    then fails takes the claim back, exactly as it does for created-files.
+    
+    Three things bound what the removal can touch, and it needs all three
+    because a directory removal has no snapshot behind it:
+    
+      - the set comes from the run's own manifest, so a user's directory is
+        never a candidate;
+      - every path goes through confinedRestorePath, the same confinement
+        the file reverts use, so a hand-edited manifest cannot aim it
+        outside the workspace;
+      - os.Remove is non-recursive, so a directory holding anything at all
+        simply stays — including one holding a file this undo could not
+        revert.
+    
+    It runs only after every file revert has committed, and never after a
+    partial failure: removing directories in a tree of unknown state is not
+    something to attempt, and relying on ENOTEMPTY to save us would be
+    relying rather than deciding.
+    
+    Neuter-verified twice. Without the removal, "undo left pkg/sub/deep/
+    standing". With the manifest swapped for the emptiness heuristic, "undo
+    deleted mine/, a directory the user made" — which is the test that
+    proves the manifest is load-bearing and not ceremony.
+
+diff --git a/editapply/backup.go b/editapply/backup.go
+index bf03b83..c6e3dc6 100644
+--- a/editapply/backup.go
++++ b/editapply/backup.go
+@@ -276,3 +276,136 @@ func writeBackupCopy(backupDir, subdir, realWorkspaceRoot, targetPath string, co
+ 	}
+ 	return os.WriteFile(dest, content, mode)
+ }
++
++// createdDirsManifestName is the directory counterpart of createdManifestName:
++// which directories the apply run had to bring into existence to write a
++// created file into.
++//
++// It exists for the same reason its sibling does, and closes the same shape of
++// gap. Undo removes a created FILE (Fix C) but left the directories that file
++// arrived in standing, so undoing "create pkg/sub/thing.go" gave back an empty
++// pkg/sub/ the user never made. The report said the workspace was reverted and
++// disk disagreed, which is the failure class this package exists to kill.
++//
++// AND THE DISTINCTION CANNOT BE RECOVERED AT UNDO TIME, which is why it is
++// recorded rather than inferred. "Remove the parent if it is now empty" is
++// nearly right and wrong in the one case that matters: a user who had already
++// made an empty directory and asked for a file inside it would have their
++// directory deleted by an undo that never created it. Recording what MkdirAll
++// actually had to make is exact, and exactness here is cheap.
++//
++// Format, guarantees and the reason for the dumbness are createdManifestName's,
++// unchanged: one workspace-relative path per line, consumed only as a set that
++// undo intersects with its own confinement-checked walk. A corrupted manifest
++// can leave a directory behind; it can never direct a removal at a path undo
++// was not already reverting, and os.Remove refuses a non-empty directory in any
++// case.
++const createdDirsManifestName = "created-dirs"
++
++// missingAncestors lists the directories between realWorkspaceRoot (exclusive)
++// and dir (inclusive) that do not exist yet, outermost first — exactly what a
++// subsequent MkdirAll will create, computed before it runs.
++//
++// Outermost first so the manifest reads top-down; undo reverses it, because a
++// parent cannot be removed before its child.
++func missingAncestors(realWorkspaceRoot, dir string) ([]string, error) {
++	var missing []string
++	for cur := dir; ; cur = filepath.Dir(cur) {
++		rel, err := filepath.Rel(realWorkspaceRoot, cur)
++		if err != nil {
++			return nil, err
++		}
++		if rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
++			break
++		}
++		if _, err := os.Lstat(cur); err == nil {
++			break // this one exists, so every ancestor above it does too
++		} else if !os.IsNotExist(err) {
++			return nil, err
++		}
++		missing = append([]string{rel}, missing...)
++		if filepath.Dir(cur) == cur {
++			break
++		}
++	}
++	return missing, nil
++}
++
++// recordCreatedDirsReversible notes the directories this run must create to
++// write p, and returns an undo of that note.
++//
++// Reversible for exactly the reason recordCreatedReversible is: it runs before
++// the mutation it describes, so a write that then fails must be able to take
++// the claim back. A stale entry would have undo remove a directory this run is
++// not responsible for.
++func recordCreatedDirsReversible(backupDir, realWorkspaceRoot string, p *PreparedEdit) (rollback func(), err error) {
++	dirs, err := missingAncestors(realWorkspaceRoot, filepath.Dir(p.TargetPath))
++	if err != nil {
++		return nil, err
++	}
++	if len(dirs) == 0 {
++		return func() {}, nil
++	}
++
++	manifest := filepath.Join(backupDir, createdDirsManifestName)
++	previous, readErr := os.ReadFile(manifest)
++	switch {
++	case readErr == nil:
++		rollback = func() { os.WriteFile(manifest, previous, 0644) }
++	case os.IsNotExist(readErr):
++		rollback = func() { os.Remove(manifest) }
++	default:
++		return nil, readErr
++	}
++
++	existing := map[string]bool{}
++	for _, line := range strings.Split(string(previous), "\n") {
++		if line != "" {
++			existing[line] = true
++		}
++	}
++	out := previous
++	for _, d := range dirs {
++		if existing[d] {
++			continue // an earlier block in this run already made it
++		}
++		out = append(out, []byte(d+"\n")...)
++	}
++	if len(out) == len(previous) {
++		return func() {}, nil
++	}
++	if err := os.WriteFile(manifest, out, 0644); err != nil {
++		return nil, err
++	}
++	return rollback, nil
++}
++
++// CreatedDirsInSession reports the workspace-relative directories the apply run
++// that wrote sessionDir brought into existence, DEEPEST FIRST — the order they
++// must be removed in, since a parent cannot go before its child.
++//
++// A session with no manifest — one written before this record existed, or one
++// that created no directories — yields nothing and no error, so undo simply
++// leaves directories alone, which is the previous behaviour and is right for a
++// run that made none.
++func CreatedDirsInSession(sessionDir string) ([]string, error) {
++	data, err := os.ReadFile(filepath.Join(sessionDir, createdDirsManifestName))
++	if err != nil {
++		if os.IsNotExist(err) {
++			return nil, nil
++		}
++		return nil, err
++	}
++	var dirs []string
++	for _, line := range strings.Split(string(data), "\n") {
++		if line != "" {
++			dirs = append(dirs, line)
++		}
++	}
++	// Deepest first: more path separators means deeper, and for equal depth the
++	// order between siblings does not matter.
++	sort.SliceStable(dirs, func(i, j int) bool {
++		return strings.Count(dirs[i], string(filepath.Separator)) > strings.Count(dirs[j], string(filepath.Separator))
++	})
++	return dirs, nil
++}
+
+commit 2a389c7e1288a781ce8c254a9f27cfb57b0f977b
+Author: thebyte24 <thebyte24@gmail.com>
+Date:   Fri Jul 24 08:11:42 2026 +0530
+
+    editapply+daemon(M4): serialize apply/undo ACROSS processes, not just in-process
+    
+    Gate 6 closed five data-integrity races (100% read-modify-write lost update,
+    ~68% backup-session collapse, ~98% undo-guard defeat, ~88% double restore,
+    prune-vs-undo) with the daemon's per-workspace sync.Mutex. That lock is
+    in-process only, and its own comment justified this with "there is exactly one
+    daemon process behind the socket." That premise was false: the CLI (`edits
+    apply`/`edits undo`) and the TUI review flow each write the same workspace
+    files from their OWN process. Every one of those races therefore reopened
+    whenever a CLI or TUI run overlapped a daemon one — normal, legitimate use
+    (terminal apply while the IDE is open), not an exotic attack.
+    
+    Adds editapply.LockWorkspaceApply: a per-workspace-root flock(2) on
+    <root>/.codeterminal/apply.lock. flock is released by the kernel on process
+    death, so a killed CLI cannot wedge the workspace (an O_EXCL lockfile would
+    have needed lock-breaking heuristics and would strand on SIGKILL). Each
+    acquisition opens its own fd, so one mechanism covers both the cross-process
+    and in-process cases.
+    
+    Taken INSIDE the three mutation primitives, not at their call sites, because
+    the bug being fixed is precisely a caller that forgot to lock:
+      editapply.Apply               VerifyUnchanged -> backups -> write
+      editapply.NewBackupSessionDir the stat/mkdir mint plus its prune
+      daemon.runUndoSession         the guard check through the commit
+    Each span is atomic w.r.t. the others, which is all five races need; they need
+    not be locked together, since Apply independently re-checks staleness
+    byte-for-byte and so refuses rather than clobbers. No span covers a human
+    prompt, so a CLI/TUI user sitting on [y/N] never blocks the daemon. The
+    daemon's mutex is kept as the in-process fast path; ordering is always mutex
+    then flock, so the two cannot deadlock. server_workspace_lock.go's false
+    "one process" comment is corrected in place.
+    
+    Verified: cross-process exclusion proven with two real OS processes (holder
+    held 1500ms; a second process blocked 1196ms and acquired exactly on release).
+    Tests in editapply/applylock_test.go (lost-update through the real Apply door,
+    session-collapse, exclusion, per-root keying) — fail-when-neutered proven: the
+    neutered build reproduces the exact lost update ("Apply #1 reported SUCCESS but
+    its edit is not in the file") and the collapse. Six modules gofmt/build/vet
+    clean; all suites green and -race clean, incl. the existing Gate-6 socket
+    serialization stress test.
+    
+    Nothing marked closed — founder confirms.
+    
+    Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+
+diff --git a/editapply/backup.go b/editapply/backup.go
+index c09d80b..bf03b83 100644
+--- a/editapply/backup.go
++++ b/editapply/backup.go
+@@ -27,6 +27,21 @@ const backupSessionsToKeep = 5
+ // self-maintaining bounded backups for free without each needing its own
+ // prune call.
+ func NewBackupSessionDir(realWorkspaceRoot string) (string, error) {
++	// Cross-process serialization for the mint and its prune (M4). The
++	// stat-for-absence loop below and the MkdirAll that follows it are a
++	// check-then-create pair: two runs starting in the same SECOND both find the
++	// timestamp dir absent and both create it, so they SHARE one backup session
++	// and interleave their before/after snapshots into it — the "backup-session
++	// collapse" race. The daemon's in-process mutex closed that between two
++	// socket requests; a CLI or TUI run is a different process and walked
++	// straight through it. Holding the lock across the prune closes prune-vs-undo
++	// from this side too. See LockWorkspaceApply.
++	release, err := LockWorkspaceApply(realWorkspaceRoot)
++	if err != nil {
++		return "", fmt.Errorf("serializing backup-session creation on %s: %w", realWorkspaceRoot, err)
++	}
++	defer release()
++
+ 	base := filepath.Join(realWorkspaceRoot, ".codeterminal", "backups")
+ 	ts := time.Now().Format("20060102-150405")
+ 	dir := filepath.Join(base, ts)
+
+commit bd43e9008788018fdb9669e9e6e4e47c693aecb2
+Author: RK <your@email.com>
+Date:   Tue Jul 21 23:44:14 2026 +0530
+
+    undo: revert a created file by removing it (Fix C)
+    
+    Undoing a CREATED file lied. Its before/ snapshot is a 0-byte file --
+    byte-for-byte identical to the snapshot of a file that existed and was
+    empty -- so undo restored the empty snapshot, printed "restored new.txt",
+    reported 1 file restored, and left a 0-byte file standing where the
+    correct answer was no file at all. Report disagreed with disk: the exact
+    failure class Tier 1 set out to kill, reintroduced by a capability that
+    had no undo story.
+    
+    The distinction cannot be recovered from the snapshots, so the backup
+    session now records it. A per-session created-files manifest lists the
+    workspace-relative paths the run brought into existence, written beside
+    before/ and after/ so undo's walk never mistakes it for a backed-up file.
+    editapply.Apply writes it reversibly and BEFORE the write it describes,
+    holding the Fix 1 ordering: every fallible bookkeeping step runs while
+    the workspace is still untouched, and a write that then fails takes the
+    claim back, because a stale "this run created it" would have undo delete
+    a file the run never wrote.
+    
+    runUndoSession reverts each file by its recorded shape. A changed file is
+    restored from its snapshot; a created file is removed. Both go through
+    the same all-or-nothing staging batch (Fix 2), and a removal passes every
+    gate a restore passes (FAIL-2): secret-name refusal, protected-directory
+    refusal, ancestor confinement, and leaf-symlink refusal. os.Remove
+    unlinks a symlink itself rather than its target, so a symlink swapped in
+    after validation cannot redirect it, matching the guarantee rename gives
+    the restore path.
+    
+    The manifest is a MEMBERSHIP TEST, never a source of paths. Undo acts
+    only on paths its own walk of before/ found and its own confinement check
+    approved. A corrupted or fabricated manifest can therefore at worst cause
+    a created file to be restored as an empty file -- the old behaviour --
+    and can never point a delete at a path undo was not already reverting.
+    Pinned by test.
+    
+    The guard is unchanged and covers both shapes: a created file the user
+    has since hand-edited is guarded, not silently deleted, and only removed
+    on force or confirmation.
+    
+    The report now says what happened per file -- "removed X (created by this
+    apply run)" versus "restored X" -- with the counts broken down. Telling a
+    user a file was restored when it was deleted is the same untruth as the
+    0-byte file, in a different costume.
+    
+    Named residuals:
+      - The reverted COUNT (and UndoResponse.Restored) does not distinguish
+        removals from restores; only the prose does. Splitting the wire field
+        is a protocol change and is not made here.
+      - Undoing a create removes the file but leaves any directories the
+        create brought into existence. An empty directory is not file
+        content; recursive directory removal on the undo path is a larger
+        risk than the residue it cleans up.
+    
+    Verified fail-when-neutered: stubbing CreatedInSession to return an empty
+    set fails 4 of the new tests, including the repro.
+    
+    Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+
+diff --git a/editapply/backup.go b/editapply/backup.go
+index 9c54ca1..c09d80b 100644
+--- a/editapply/backup.go
++++ b/editapply/backup.go
+@@ -6,6 +6,7 @@ import (
+ 	"os"
+ 	"path/filepath"
+ 	"sort"
++	"strings"
+ 	"time"
+ )
+ 
+@@ -165,6 +166,90 @@ func backupAfterReversible(backupDir, realWorkspaceRoot string, p *PreparedEdit)
+ 	return rollback, nil
+ }
+ 
++// createdManifestName is the session-level record of which files the apply run
++// brought into existence, as opposed to which it merely changed. It lives
++// beside before/ and after/ rather than inside them, so it is never mistaken
++// for a backed-up file by undo's walk of before/.
++//
++// The distinction cannot be recovered from the snapshots themselves, and that
++// was the bug (Fix C). A created file's before/ snapshot is a 0-byte file,
++// which is indistinguishable from the snapshot of a file that existed and was
++// empty -- so undo restored the empty snapshot, reported "1 file restored", and
++// left a 0-byte file standing where the correct answer was no file at all. The
++// report disagreed with disk, which is the exact failure class Tier 1 set out
++// to kill.
++//
++// Format is one workspace-relative path per line. Deliberately dumb: it is
++// written by this package and consumed as a SET MEMBERSHIP TEST ONLY -- undo
++// derives every path it acts on from its own walk of before/ and its own
++// confinement check, and never from a line in this file. A corrupted or
++// hand-edited manifest can therefore only cause a created file to be restored
++// as an empty file (the old behaviour) and can never direct a delete at a path
++// undo would not otherwise have been reverting.
++const createdManifestName = "created-files"
++
++// recordCreatedReversible notes that p's target did not exist before this run,
++// and returns an undo of that note.
++//
++// It is reversible for the same reason backupAfterReversible is: it runs BEFORE
++// the write it describes (Fix 1 ordering -- every fallible bookkeeping step
++// happens while the workspace is still untouched), so a write that then fails
++// must be able to take the claim back. A stale "this run created it" entry for
++// a file the run never wrote would tell undo to delete a file this run is not
++// responsible for.
++func recordCreatedReversible(backupDir, realWorkspaceRoot string, p *PreparedEdit) (rollback func(), err error) {
++	rel, err := filepath.Rel(realWorkspaceRoot, p.TargetPath)
++	if err != nil {
++		return nil, err
++	}
++	manifest := filepath.Join(backupDir, createdManifestName)
++
++	previous, readErr := os.ReadFile(manifest)
++	switch {
++	case readErr == nil:
++		rollback = func() { os.WriteFile(manifest, previous, 0644) }
++	case os.IsNotExist(readErr):
++		rollback = func() { os.Remove(manifest) }
++	default:
++		return nil, readErr
++	}
++
++	for _, line := range strings.Split(string(previous), "\n") {
++		if line == rel {
++			return func() {}, nil // already recorded by an earlier block in this run
++		}
++	}
++	if err := os.WriteFile(manifest, append(previous, []byte(rel+"\n")...), 0644); err != nil {
++		return nil, err
++	}
++	return rollback, nil
++}
++
++// CreatedInSession reports which workspace-relative paths the apply run that
++// wrote sessionDir brought into existence. Undoing those means REMOVING them,
++// not restoring their (empty) before/ snapshot.
++//
++// A session with no manifest -- one written before this record existed, or one
++// in which nothing was created -- yields an empty set and no error, so undo
++// falls back to restore-everything, which is exactly right for a run that
++// created nothing.
++func CreatedInSession(sessionDir string) (map[string]bool, error) {
++	data, err := os.ReadFile(filepath.Join(sessionDir, createdManifestName))
++	if err != nil {
++		if os.IsNotExist(err) {
++			return map[string]bool{}, nil
++		}
++		return nil, err
++	}
++	created := make(map[string]bool)
++	for _, line := range strings.Split(string(data), "\n") {
++		if line != "" {
++			created[line] = true
++		}
++	}
++	return created, nil
++}
++
+ func writeBackupCopy(backupDir, subdir, realWorkspaceRoot, targetPath string, content []byte, mode os.FileMode) error {
+ 	rel, err := filepath.Rel(realWorkspaceRoot, targetPath)
+ 	if err != nil {
+
+commit 16e84a1dc5b82262e1adf2c93558e4bbf5bdabaa
+Author: RK <your@email.com>
+Date:   Tue Jul 21 20:36:22 2026 +0530
+
+    editapply+daemon: make apply and undo report what is actually on disk (Fix 1+2)
+    
+    Two directions of one defect: a fallible multi-step file operation with no
+    rollback and a misreported outcome. A client and a user must never be told an
+    outcome that disagrees with disk, so both mirrors are fixed together.
+    
+    Fix 1 -- partial APPLY left an unreported, unrevertable modification.
+    editapply.Apply wrote the target file BEFORE recording its post-apply
+    snapshot, so a BackupAfter failure (full disk, permission problem) returned an
+    error for a file that had already been mutated. The daemon reported
+    applied:false, and undo then refused to revert the change because no after/
+    snapshot existed to match it against. Reordered to
+    BackupOriginal -> BackupAfter -> write, a pure reorder since NewContent is
+    fully determined by PrepareEdit. The snapshot is now recorded before the write
+    it describes, so it is taken back (backupAfterReversible) if that write fails
+    -- after/<file> must never advertise content that is not on disk, since undo
+    reads it to decide whether reverting is safe.
+    
+    Fix 2 -- partial UNDO half-reverted and reported restored:0.
+    runUndoSession restored file by file in one walk and returned on the first
+    failure, leaving earlier files reverted and later ones untouched; handleUndo
+    then dropped the count whenever an error came back, so a three-file session
+    failing on its middle file told the client nothing had been reverted while the
+    workspace sat half-reverted. Undo is now all-or-nothing, staging every restore
+    to a temp file beside its destination (validating confinement, reading the
+    snapshot, writing the bytes) before committing any of them by rename. A
+    staging failure aborts the batch, discards every temp file and every directory
+    staging created, and reverts nothing. The guarded-overwrite prompt moved ahead
+    of all commits, so a confirmed force joins the same batch instead of being a
+    second separately-failing pass. If a commit rename does fail -- essentially
+    nothing left to fail on, a same-directory rename -- the real count comes back
+    with the error rather than a convenient zero, and handleUndo now sends
+    Restored/Guarded alongside Error instead of instead of it.
+    
+    FAIL-2 confinement is preserved, not traded away: the secret-name refusal, the
+    symlinked-ancestor refusal and the symlinked-leaf refusal all moved into the
+    staging phase, so they abort the batch before anything is committed. The leaf
+    guarantee is strictly stronger -- os.Rename replaces a symlink at the
+    destination rather than writing through it, so a symlink swapped in after
+    validation cannot redirect the write, which the O_NOFOLLOW open it replaces
+    could only refuse after the fact.
+    
+    Repros from the review are committed as regression tests and fail against the
+    pre-fix code: editapply/apply_atomic_test.go (unreported mutation on snapshot
+    failure, stale-snapshot rollback) and daemon/undo_atomic_test.go (mid-walk
+    failure reverts nothing, over both runUndoSession and the wire; forced batch;
+    no staging residue). The negative controls -- clean multi-file undo, hand-edit
+    guarding, deleted-file restore, both FAIL-2 symlink escapes -- pass before and
+    after.
+    
+    Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+
+diff --git a/editapply/backup.go b/editapply/backup.go
+index 46f016f..9c54ca1 100644
+--- a/editapply/backup.go
++++ b/editapply/backup.go
+@@ -117,14 +117,54 @@ func BackupOriginal(backupDir, realWorkspaceRoot string, p *PreparedEdit) error
+ }
+ 
+ // BackupAfter records p's post-edit content under backupDir/after/<relpath>.
+-// It's (re)written after every write to a given path in this run, so by the
++// It's (re)written for every write to a given path in this run, so by the
+ // time the run finishes it holds each file's final on-disk content — the
+ // baseline `edits undo` compares the file's current content against to
+ // detect whether it was touched again after this apply run.
++//
++// Apply calls backupAfterReversible instead, since it records the snapshot
++// before the write it describes and must be able to take it back if that
++// write fails. This exported entry point is the plain form, kept for callers
++// that record a snapshot for a write that has already landed.
+ func BackupAfter(backupDir, realWorkspaceRoot string, p *PreparedEdit) error {
+ 	return writeBackupCopy(backupDir, "after", realWorkspaceRoot, p.TargetPath, []byte(p.NewContent), p.FileMode)
+ }
+ 
++// backupAfterReversible is BackupAfter plus an undo of itself. It captures
++// whatever after/<relpath> held first, then overwrites it, and returns a
++// rollback that puts the previous state back — the previous content for a file
++// an earlier block in this run already applied, or removal of the file
++// entirely when this is the first block to touch it.
++//
++// Rollback is best-effort by construction: it only ever restores bytes read
++// moments earlier from the backup dir, and it runs on a path where the caller
++// is already returning an error. A failure to roll back leaves the snapshot
++// disagreeing with disk, which undo interprets conservatively (the file is
++// reported guarded and left alone rather than silently overwritten), so there
++// is no outcome here that can lose user data.
++func backupAfterReversible(backupDir, realWorkspaceRoot string, p *PreparedEdit) (rollback func(), err error) {
++	rel, err := filepath.Rel(realWorkspaceRoot, p.TargetPath)
++	if err != nil {
++		return nil, err
++	}
++	dest := filepath.Join(backupDir, "after", rel)
++
++	previous, readErr := os.ReadFile(dest)
++	switch {
++	case readErr == nil:
++		rollback = func() { os.WriteFile(dest, previous, p.FileMode) }
++	case os.IsNotExist(readErr):
++		rollback = func() { os.Remove(dest) }
++	default:
++		return nil, readErr
++	}
++
++	if err := BackupAfter(backupDir, realWorkspaceRoot, p); err != nil {
++		return nil, err
++	}
++	return rollback, nil
++}
++
+ func writeBackupCopy(backupDir, subdir, realWorkspaceRoot, targetPath string, content []byte, mode os.FileMode) error {
+ 	rel, err := filepath.Rel(realWorkspaceRoot, targetPath)
+ 	if err != nil {
+
+commit 49b11414b16ba0590be90fa155a8ef8abf5306f2
+Author: RK <your@email.com>
+Date:   Thu Jul 9 08:53:26 2026 +0530
+
+    Bounded backups: prune old session dirs inside NewBackupSessionDir
+    
+    Adds pruneBackupSessions(backupsRoot, keep), called once, right after a
+    new session dir is successfully created inside NewBackupSessionDir -- the
+    single hook point through which the CLI, TUI, and daemon (its three
+    callers) all get self-maintaining bounded retention for free, with no
+    call needed at any of their 3 individual call sites. Keeps the newest 5
+    session dirs (backupSessionsToKeep, fixed, not configurable this slice);
+    lexical sort of the zero-padded timestamp names equals chronological
+    order, so the just-created dir is always newest and therefore never
+    self-pruned.
+    
+    Confinement is safe by construction (backupsRoot is always the locally-
+    computed <workspace>/.codeterminal/backups, never client input; names
+    always come from os.ReadDir, which can't return "." / ".." / anything
+    with a path separator), plus a defense-in-depth filepath.Dir(candidate)
+    == backupsRoot assertion before every RemoveAll as insurance against a
+    future refactor. Deliberately does not reuse daemon's
+    isWorkspaceBackupSessionDir (different threat model: validating
+    client-supplied paths vs. internally-enumerated ones), so editapply stays
+    independent of daemon.
+    
+    Every failure mode is non-fatal and logged, never returned: a stray
+    non-dir entry is skipped silently, and a RemoveAll failure (permissions,
+    or a dir already removed by a concurrent CLI/TUI/daemon prune against the
+    same workspace) is logged and swallowed -- pruning can never fail the
+    apply run that triggered it.
+    
+    5 new tests: 6-dirs-prune-to-5 end-to-end via NewBackupSessionDir, the
+    just-created dir is never self-pruned (boundary case at exactly 5
+    pre-existing), a stray non-dir file is never deleted and doesn't crash
+    pruning, fewer-than-keep dirs are left untouched, and a sibling dir
+    outside .codeterminal/backups survives pruning untouched. Full editapply,
+    daemon, and TUI suites all still green (additive change).
+
+diff --git a/editapply/backup.go b/editapply/backup.go
+index 5b38ca8..46f016f 100644
+--- a/editapply/backup.go
++++ b/editapply/backup.go
+@@ -2,16 +2,29 @@ package editapply
+ 
+ import (
+ 	"fmt"
++	"log"
+ 	"os"
+ 	"path/filepath"
++	"sort"
+ 	"time"
+ )
+ 
++// backupSessionsToKeep is the fixed number of most-recent backup session
++// dirs retained per workspace; see pruneBackupSessions. Not configurable
++// this slice.
++const backupSessionsToKeep = 5
++
+ // NewBackupSessionDir creates a fresh, uniquely-named directory under
+ // .codeterminal/backups for one apply run (CLI or TUI). That parent
+ // directory is already covered by chunker.go's ignoredDirNames and the RAG
+ // .gitignore entry, so backups are automatically excluded from indexing and
+ // git.
++//
++// After creating the new dir, it prunes old session dirs down to the newest
++// backupSessionsToKeep -- this is the ONE hook point for retention, so the
++// CLI, TUI, and daemon (the three callers of this function) all get
++// self-maintaining bounded backups for free without each needing its own
++// prune call.
+ func NewBackupSessionDir(realWorkspaceRoot string) (string, error) {
+ 	base := filepath.Join(realWorkspaceRoot, ".codeterminal", "backups")
+ 	ts := time.Now().Format("20060102-150405")
+@@ -25,9 +38,63 @@ func NewBackupSessionDir(realWorkspaceRoot string) (string, error) {
+ 	if err := os.MkdirAll(dir, 0755); err != nil {
+ 		return "", err
+ 	}
++	pruneBackupSessions(base, backupSessionsToKeep)
+ 	return dir, nil
+ }
+ 
++// pruneBackupSessions deletes all but the `keep` most-recent session dirs
++// directly inside backupsRoot. Session dir names are zero-padded timestamps
++// (see NewBackupSessionDir), so lexical sort == chronological order, and
++// since this always runs immediately after a new dir is created, that new
++// dir is always the lexically-newest entry and is therefore always kept --
++// no self-pruning is possible.
++//
++// Every failure mode here is non-fatal and silent-but-logged: a workspace
++// with a pruning problem (a stray non-dir file, a permission error, a dir
++// already removed by a concurrent CLI/TUI/daemon prune against the same
++// workspace) must never block the apply run that triggered it -- the
++// actual edit and its own backup have already succeeded by the time this
++// runs.
++func pruneBackupSessions(backupsRoot string, keep int) {
++	entries, err := os.ReadDir(backupsRoot)
++	if err != nil {
++		return // nothing to prune (or root doesn't exist yet) -- not fatal
++	}
++
++	var names []string
++	for _, e := range entries {
++		if e.IsDir() {
++			names = append(names, e.Name()) // stray non-dir entries are skipped silently
++		}
++	}
++	sort.Strings(names)
++	if len(names) <= keep {
++		return
++	}
++
++	for _, name := range names[:len(names)-keep] {
++		candidate := filepath.Join(backupsRoot, name)
++		// Defense-in-depth only: backupsRoot is always the locally-computed
++		// <realWorkspaceRoot>/.codeterminal/backups (never client-supplied
++		// input), and name always comes from os.ReadDir, which can never
++		// return "." or ".." or anything containing a path separator -- so
++		// this join cannot escape backupsRoot by construction. This
++		// assertion is pure insurance against a future refactor loosening
++		// that guarantee; it should never actually trigger. Deliberately
++		// NOT reusing the daemon's isWorkspaceBackupSessionDir here -- that
++		// function validates externally-supplied, potentially adversarial
++		// paths (a different threat model), and editapply must not depend
++		// on daemon.
++		if filepath.Dir(candidate) != backupsRoot {
++			log.Printf("editapply: refusing to prune %q (would escape backups root %q)", candidate, backupsRoot)
++			continue
++		}
++		if err := os.RemoveAll(candidate); err != nil {
++			log.Printf("editapply: pruning backup session %q: %v", candidate, err)
++		}
++	}
++}
++
+ // BackupOriginal saves p's pre-edit content under backupDir/before/<relpath>
+ // — the copy `edits undo` restores from. It is idempotent per (backupDir,
+ // file): if that file's original has already been captured in this backup
+
+commit b885f504ff667019d1d58ecfda09ea8361186410
+Author: RK <your@email.com>
+Date:   Wed Jul 8 11:57:43 2026 +0530
+
+    Extract shared editapply.Apply(), fixing a latent TUI backup bug
+    
+    The write+backup sequence (BackupOriginal, write, BackupAfter) was
+    inlined identically in daemon/apply_cmd.go and clients/tui/chat.go.
+    Extracted into editapply.Apply(), used by both.
+    
+    While unifying, found the two copies actually diverged: the CLI
+    deduped BackupOriginal per file across multiple blocks in one run
+    (via its own map), the TUI didn't. A response with two edit blocks
+    against the same file would let the TUI's before/<file> backup get
+    clobbered with the intermediate post-first-block state instead of
+    the true pre-run original, silently weakening `edits undo`. Fixed by
+    making BackupOriginal itself idempotent per (backupDir, file), so
+    both callers get the correct guarantee with no per-caller bookkeeping.
+    
+    Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+
+diff --git a/editapply/backup.go b/editapply/backup.go
+index 28e79b8..5b38ca8 100644
+--- a/editapply/backup.go
++++ b/editapply/backup.go
+@@ -29,9 +29,23 @@ func NewBackupSessionDir(realWorkspaceRoot string) (string, error) {
+ }
+ 
+ // BackupOriginal saves p's pre-edit content under backupDir/before/<relpath>
+-// — the copy `edits undo` restores from. Called once per file per run, on
+-// its first write.
++// — the copy `edits undo` restores from. It is idempotent per (backupDir,
++// file): if that file's original has already been captured in this backup
++// session (e.g. a second edit block in the same run touching the same
++// file), later calls are no-ops. This guarantees before/<relpath> always
++// holds the file's content from before ANY block in the run touched it,
++// never an intermediate state from a prior block in the same run.
+ func BackupOriginal(backupDir, realWorkspaceRoot string, p *PreparedEdit) error {
++	rel, err := filepath.Rel(realWorkspaceRoot, p.TargetPath)
++	if err != nil {
++		return err
++	}
++	dest := filepath.Join(backupDir, "before", rel)
++	if _, err := os.Stat(dest); err == nil {
++		return nil
++	} else if !os.IsNotExist(err) {
++		return err
++	}
+ 	return writeBackupCopy(backupDir, "before", realWorkspaceRoot, p.TargetPath, []byte(p.Original), p.FileMode)
+ }
+ 
+
+commit c5164790707f2eb2672f66150dd898dcb4787cd8
+Author: RK <your@email.com>
+Date:   Mon Jul 6 18:41:49 2026 +0530
+
+    Wire apply-edits into Mochiii via a shared editapply engine
+    
+    Extract the apply-edits core (parse, path-safety, exact-match, syntax
+    gate, backup) out of daemon into its own editapply module so the CLI's
+    `edits apply`/`edits undo` and Mochiii's new in-chat edit review call
+    one engine, not two. Mochiii now turns a completed answer's SEARCH/REPLACE
+    blocks into a modal diff-review (y apply / n skip / q cancel remaining)
+    instead of dumping raw markup as text, reusing every safety gate and the
+    same CLI-compatible backup layout so edits stay restorable via `edits undo`
+    regardless of which surface applied them.
+    
+    Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+
+diff --git a/editapply/backup.go b/editapply/backup.go
+new file mode 100644
+index 0000000..28e79b8
+--- /dev/null
++++ b/editapply/backup.go
+@@ -0,0 +1,57 @@
++package editapply
++
++import (
++	"fmt"
++	"os"
++	"path/filepath"
++	"time"
++)
++
++// NewBackupSessionDir creates a fresh, uniquely-named directory under
++// .codeterminal/backups for one apply run (CLI or TUI). That parent
++// directory is already covered by chunker.go's ignoredDirNames and the RAG
++// .gitignore entry, so backups are automatically excluded from indexing and
++// git.
++func NewBackupSessionDir(realWorkspaceRoot string) (string, error) {
++	base := filepath.Join(realWorkspaceRoot, ".codeterminal", "backups")
++	ts := time.Now().Format("20060102-150405")
++	dir := filepath.Join(base, ts)
++	for suffix := 1; ; suffix++ {
++		if _, err := os.Stat(dir); os.IsNotExist(err) {
++			break
++		}
++		dir = filepath.Join(base, fmt.Sprintf("%s-%d", ts, suffix))
++	}
++	if err := os.MkdirAll(dir, 0755); err != nil {
++		return "", err
++	}
++	return dir, nil
++}
++
++// BackupOriginal saves p's pre-edit content under backupDir/before/<relpath>
++// — the copy `edits undo` restores from. Called once per file per run, on
++// its first write.
++func BackupOriginal(backupDir, realWorkspaceRoot string, p *PreparedEdit) error {
++	return writeBackupCopy(backupDir, "before", realWorkspaceRoot, p.TargetPath, []byte(p.Original), p.FileMode)
++}
++
++// BackupAfter records p's post-edit content under backupDir/after/<relpath>.
++// It's (re)written after every write to a given path in this run, so by the
++// time the run finishes it holds each file's final on-disk content — the
++// baseline `edits undo` compares the file's current content against to
++// detect whether it was touched again after this apply run.
++func BackupAfter(backupDir, realWorkspaceRoot string, p *PreparedEdit) error {
++	return writeBackupCopy(backupDir, "after", realWorkspaceRoot, p.TargetPath, []byte(p.NewContent), p.FileMode)
++}
++
++func writeBackupCopy(backupDir, subdir, realWorkspaceRoot, targetPath string, content []byte, mode os.FileMode) error {
++	rel, err := filepath.Rel(realWorkspaceRoot, targetPath)
++	if err != nil {
++		return err
++	}
++	dest := filepath.Join(backupDir, subdir, rel)
++	if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
++		return err
++	}
++	return os.WriteFile(dest, content, mode)
++}

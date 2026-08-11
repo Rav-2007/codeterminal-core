@@ -1,0 +1,90 @@
+=== RUN   TestEditShapedRetrievalEval
+[embedder-helper] codeterminal-embedder-helper: 2026/08/11 17:07:55 ready, listening on /run/user/1000/codeterminal/embedder-helper-8297.sock
+=== RUN   TestEditShapedRetrievalEval/helperproc-env-allowlist
+    edit_eval_test.go:495: 
+        === helperproc-env-allowlist ===
+        query (462 bytes, raw captured):
+        # codeterminal/daemon [codeterminal/daemon.test]
+        ./embedder_boundary_test.go:39:4: h.extraEnv undefined (type *HelperProcess has no field or method extraEnv)
+        ./helperproc_test.go:135:4: h.extraEnv undefined (type *HelperProcess has no field or method extraEnv)
+        ./helperproc_test.go:226:4: h.extraEnv undefined (type *HelperProcess has no field or method extraEnv)
+        FAIL	codeterminal/daemon [build failed]
+        ok  	codeterminal/daemon/mcp	0.003s [no tests to run]
+        FAIL
+        
+        expected chunks: [daemon/helperproc.go:31-70 daemon/helperproc.go:121-160]
+        full-ordering rank (k=all, POOL-INSENSITIVE diagnostic): #97 of 3768
+        raw semantic rank (rerank=false):                      #188 of 3768
+        PRODUCTION-SHAPED verdict (k=5, pool-gated):           not in top-5 -> MISS
+    edit_eval_test.go:501:   prod top-5 #1: daemon/fileref_test.go:1-40              class=test   raw=0.0164 weighted=0.0189
+    edit_eval_test.go:501:   prod top-5 #2: helper/main.go:31-70                     class=code   raw=0.0161 weighted=0.0185
+    edit_eval_test.go:501:   prod top-5 #3: daemon/fileref.go:1-40                   class=code   raw=0.0161 weighted=0.0185
+    edit_eval_test.go:501:   prod top-5 #4: daemon/helperproc_cmd.go:31-70           class=code   raw=0.0159 weighted=0.0183
+    edit_eval_test.go:501:   prod top-5 #5: daemon/helperproc_test.go:121-160        class=test   raw=0.0159 weighted=0.0183
+    edit_eval_test.go:508: 
+        FIX 12 (direct file:line resolution):
+          file:line refs resolved:        3 [daemon/embedder_boundary_test.go:39 daemon/helperproc_test.go:135 daemon/helperproc_test.go:226]
+          referenced location in top-5:   before 1/3 -> after 3/3
+          graded impl-chunk verdict:      not in top-5
+        FIX 11 (merge) on this real top-5: 5 chunks -> 5 spans, 0 rendered bytes reclaimed
+    edit_eval_test.go:518:   fused top-5 #1: daemon/embedder_boundary_test.go:19-59  
+    edit_eval_test.go:518:   fused top-5 #2: daemon/helperproc_test.go:115-160       
+    edit_eval_test.go:518:   fused top-5 #3: daemon/helperproc_test.go:206-246       
+    edit_eval_test.go:518:   fused top-5 #4: daemon/fileref_test.go:1-40             
+    edit_eval_test.go:518:   fused top-5 #5: helper/main.go:31-70                    
+=== RUN   TestEditShapedRetrievalEval/editapply-apply-extraction
+    edit_eval_test.go:388: case TestEditShapedRetrievalEval/editapply-apply-extraction: fixCommit b885f504ff667019d1d58ecfda09ea8361186410 does not revert cleanly -- real conflict in editapply/apply.go (not a doc file), refusing to fake a pre-fix state:
+        Auto-merging clients/tui/chat.go
+        Auto-merging daemon/apply_cmd.go
+        Auto-merging editapply/apply.go
+        CONFLICT (content): Merge conflict in editapply/apply.go
+        Auto-merging editapply/backup.go
+        error: could not revert b885f50... Extract shared editapply.Apply(), fixing a latent TUI backup bug
+        hint: after resolving the conflicts, mark the corrected paths
+        hint: with 'git add <paths>' or 'git rm <paths>'
+=== RUN   TestEditShapedRetrievalEval/tui-header-collision
+    edit_eval_test.go:388: case TestEditShapedRetrievalEval/tui-header-collision: fixCommit 1befc860a86adbfd4c3943359ccf3498d950d449 does not revert cleanly -- real conflict in clients/tui/chat.go (not a doc file), refusing to fake a pre-fix state:
+        Auto-merging clients/tui/chat.go
+        CONFLICT (content): Merge conflict in clients/tui/chat.go
+        Auto-merging clients/tui/chat_test.go
+        Auto-merging clients/tui/go.mod
+        error: could not revert 1befc86... Fix P4 header collision: grounding + redaction notices now render on independent, individually-truncated lines
+        hint: after resolving the conflicts, mark the corrected paths
+        hint: with 'git add <paths>' or 'git rm <paths>'
+=== RUN   TestEditShapedRetrievalEval/zdr-refusal-phrasing
+    edit_eval_test.go:388: case TestEditShapedRetrievalEval/zdr-refusal-phrasing: fixCommit d84524eb52559bd1821a507ec611fe2d988ba30a does not revert cleanly -- real conflict in daemon/provider.go (not a doc file), refusing to fake a pre-fix state:
+        Auto-merging BACKLOG.md
+        CONFLICT (content): Merge conflict in BACKLOG.md
+        Auto-merging daemon/provider.go
+        CONFLICT (content): Merge conflict in daemon/provider.go
+        Auto-merging daemon/provider_test.go
+        CONFLICT (content): Merge conflict in daemon/provider_test.go
+        error: could not revert d84524e... Recognize OpenRouter's real ZDR-refusal phrasing in zdrRefusalSubstrings
+        hint: after resolving the conflicts, mark the corrected paths
+        hint: with 'git add <paths>' or 'git rm <paths>'
+=== NAME  TestEditShapedRetrievalEval
+    edit_eval_test.go:618: 
+        === Edit-shaped retrieval eval: summary (n=4, see file header for the resolution-limit caveat) ===
+        case                         prod(k=5)   fused(k=5)  full-rank    sem-rank     prod-pos      
+                                     MISS        MISS        not found    not found    not in top-5  
+                                     MISS        MISS        not found    not found    not in top-5  
+                                     MISS        MISS        not found    not found    not in top-5  
+        helperproc-env-allowlist     MISS        MISS        #97          #188         not in top-5  
+        
+        PRODUCTION-SHAPED recall, similarity only (k=5, pool-gated): 0/4
+        PRODUCTION-SHAPED recall, WITH direct file:line resolution (Fix 12): 0/4
+        full-ordering recall (k=all, pool-INSENSITIVE, legacy metric): 0/4
+        
+        REFERENCED-LOCATION recall (Fix 12's own metric -- did the line the tool
+        complained about reach the top-5 at all?): before 1/3 -> after 3/3
+        FIX 11 merge, summed over the real production top-5 sets: 0 rendered bytes reclaimed
+        
+[embedder-helper] codeterminal-embedder-helper: 2026/08/11 17:10:12 received terminated, shutting down
+--- FAIL: TestEditShapedRetrievalEval (138.54s)
+    --- PASS: TestEditShapedRetrievalEval/helperproc-env-allowlist (137.27s)
+    --- FAIL: TestEditShapedRetrievalEval/editapply-apply-extraction (0.11s)
+    --- FAIL: TestEditShapedRetrievalEval/tui-header-collision (0.11s)
+    --- FAIL: TestEditShapedRetrievalEval/zdr-refusal-phrasing (0.15s)
+FAIL
+FAIL	codeterminal/daemon	138.803s
+FAIL

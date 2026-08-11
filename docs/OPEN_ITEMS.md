@@ -148,7 +148,7 @@ Both remain in this register precisely so they are not mistaken for oversights.
 | 16 | `UndoResponse.Restored` is one integer over two different outcomes; a removal and a restore both increment it | `protocol/protocol.go:708` | **CONFIRMED** |
 | 17 | `file:line` resolver does not match Python tracebacks (`File "x.py", line 42`) | `daemon/fileref.go:73` | **CONFIRMED** — the pattern set has no such form |
 | 18 | Chunk end-lines overshoot by one on files ending in a newline | `daemon/fileref.go` span math | **PLAUSIBLE** — recorded, not re-measured |
-| 19 | TUI has no search UI; the wire and daemon halves shipped for VS Code | `clients/tui` (no `SearchRequest` reference) | **CONFIRMED** |
+| 19 | [x] **TUI has no search UI**; the wire and daemon halves shipped for VS Code. `clients/tui` (no `SearchRequest` reference). **CONFIRMED.** |
 
 ---
 

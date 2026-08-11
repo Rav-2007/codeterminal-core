@@ -418,7 +418,7 @@ func (c *Config) ReconcileWithProxy(ctx context.Context, apiBase, apiKey string)
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("HTTP %d", resp.StatusCode)
