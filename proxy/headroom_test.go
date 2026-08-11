@@ -25,7 +25,7 @@ func TestGetHeadroom_Success(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode([]map[string]int64{
+		_ = json.NewEncoder(w).Encode([]map[string]int64{
 			{"tokens_used": 800, "token_limit": 1000},
 		})
 	}))
@@ -44,7 +44,7 @@ func TestGetHeadroom_Success(t *testing.T) {
 func TestGetHeadroom_NegativeHeadroomClamped(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode([]map[string]int64{
+		_ = json.NewEncoder(w).Encode([]map[string]int64{
 			{"tokens_used": 1200, "token_limit": 1000},
 		})
 	}))
@@ -76,25 +76,25 @@ func TestQuotaTailRetry_SucceedsOnSecondAttempt(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/rest/v1/api_keys":
-			json.NewEncoder(w).Encode([]map[string]string{{"id": "test-key-id"}})
+			_ = json.NewEncoder(w).Encode([]map[string]string{{"id": "test-key-id"}})
 		case "/rest/v1/rpc/reserve_usage":
 			att := reserveAttempts.Add(1)
 			if att == 1 {
 				// First reservation with 4096 tokens fails (exceeds limit)
-				w.Write([]byte(`[]`))
+				_, _ = w.Write([]byte(`[]`))
 			} else {
 				// Second reservation with reduced headroom (500) succeeds
-				json.NewEncoder(w).Encode([]map[string]any{
+				_ = json.NewEncoder(w).Encode([]map[string]any{
 					{"tokens_used": 4000, "token_limit": 4000, "pending_id": 99},
 				})
 			}
 		case "/rest/v1/usage":
 			// Headroom query returns 500 remaining tokens
-			json.NewEncoder(w).Encode([]map[string]int64{
+			_ = json.NewEncoder(w).Encode([]map[string]int64{
 				{"tokens_used": 3500, "token_limit": 4000},
 			})
 		case "/rest/v1/rpc/apply_correction":
-			w.Write([]byte(`[]`))
+			_, _ = w.Write([]byte(`[]`))
 		default:
 			http.NotFound(w, r)
 		}

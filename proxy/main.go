@@ -1547,10 +1547,10 @@ func (p *proxy) getHeadroom(ctx context.Context, apiKeyID string) (int, bool) {
 	if err != nil {
 		return 0, false
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		io.Copy(io.Discard, io.LimitReader(resp.Body, maxAuthResponseBytes))
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxAuthResponseBytes))
 		return 0, false
 	}
 
