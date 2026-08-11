@@ -26,3 +26,7 @@ proxy/proxy
 # untracked noise in every status during the 2026-08 QA passes.
 coverage.out
 **/coverage.out
+
+# Prototype landing page directory ignored from core repo tracking
+website/
+
