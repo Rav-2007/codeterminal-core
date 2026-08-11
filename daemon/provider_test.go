@@ -21,7 +21,7 @@ import (
 func TestBuildChatMessages_NoHistoryMatchesOriginalTwoMessageShape(t *testing.T) {
 	got := buildChatMessages("you are an assistant", nil, "hello")
 	want := []chatMessage{
-		{Role: "system", Content: "you are an assistant", CacheControl: &cacheControl{Type: "ephemeral"}},
+		{Role: "system", Content: "you are an assistant"},
 		{Role: "user", Content: "hello"},
 	}
 	if len(got) != len(want) {

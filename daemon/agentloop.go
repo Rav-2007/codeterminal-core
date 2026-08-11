@@ -281,12 +281,6 @@ func (s *Server) runAgentLoop(
 			}
 		}
 
-		// Breakpoint 3: the end of this turn's tool results. This ensures that a long
-		// loop caches its own intermediate work as it goes, preventing the cumulative
-		// context window from being re-evaluated on every iteration.
-		if len(turn.messages) > 0 {
-			turn.messages[len(turn.messages)-1].CacheControl = &cacheControl{Type: "ephemeral"}
-		}
 	}
 }
 
