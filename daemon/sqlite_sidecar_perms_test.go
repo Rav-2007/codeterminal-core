@@ -61,28 +61,6 @@ func TestMemoryStore_SidecarsAreNotWorldReadable(t *testing.T) {
 	}
 }
 
-// TestSkillStore_SidecarsAreNotWorldReadable covers the second site. The store
-// deliberately leaves skills.db itself at the default mode (opt-in saved skills,
-// not a transcript -- see OpenMemoryStore's comment), so this asserts the
-// sidecars only, and asserts that intentional asymmetry explicitly so a future
-// reader does not "fix" it by accident.
-func TestSkillStore_SidecarsAreNotWorldReadable(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "skills.db")
-	store, err := OpenSkillStore(path)
-	if err != nil {
-		t.Fatalf("OpenSkillStore: %v", err)
-	}
-	defer store.Close()
-
-	if _, err := os.Stat(path + "-wal"); err != nil {
-		t.Fatalf("no -wal sidecar after open; this test asserts nothing: %v", err)
-	}
-	assertOwnerOnly(t, path+"-wal", "it holds the newest skill rows")
-	if _, err := os.Stat(path + "-shm"); err == nil {
-		assertOwnerOnly(t, path+"-shm", "it holds the newest skill rows")
-	}
-}
-
 // TestRestrictSQLiteSidecars_ToleratesAbsentSidecars pins the ENOENT tolerance.
 // A cleanly-closed store checkpoints and removes its sidecars, so absence is a
 // legitimate state and must not be an error -- but every OTHER chmod failure

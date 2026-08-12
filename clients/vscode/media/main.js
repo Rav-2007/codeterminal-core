@@ -902,24 +902,16 @@
     pathEl.textContent = edit.file_path;
     container.appendChild(pathEl);
 
-    // The diff itself is a labelled region so a reader can be told what it is
-    // about to read out, rather than encountering bare +/- lines.
-    const pre = document.createElement('pre');
-    pre.setAttribute('role', 'region');
-    pre.setAttribute('aria-label', `Diff for ${edit.file_path}`);
-    for (const line of edit.search.split('\n')) {
-      const span = document.createElement('span');
-      span.className = 'diff-line removed';
-      span.textContent = '- ' + line;
-      pre.appendChild(span);
-    }
-    for (const line of edit.replace.split('\n')) {
-      const span = document.createElement('span');
-      span.className = 'diff-line added';
-      span.textContent = '+ ' + line;
-      pre.appendChild(span);
-    }
-    container.appendChild(pre);
+    // The diff itself is now handled natively via the extension host,
+    // so we just offer a button to view it instead of red/green lines.
+    const diffBtn = document.createElement('button');
+    diffBtn.textContent = 'View Native Diff';
+    diffBtn.className = 'view-diff-btn';
+    diffBtn.setAttribute('aria-label', `View diff for ${edit.file_path}`);
+    diffBtn.addEventListener('click', () => {
+      vscode.postMessage({ type: 'viewDiff', index: index });
+    });
+    container.appendChild(diffBtn);
 
     // HARD SAFETY REQUIREMENT: during an auto-apply run, no clickable
     // Apply/Skip buttons are rendered at all -- the host is already firing

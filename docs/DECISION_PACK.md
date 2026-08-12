@@ -1,7 +1,6 @@
 # Decision pack — eight rulings only the founder can make
 
-**2026-08-01. Status refreshed 2026-08-07.** **Seven are open; D4 was taken on
-2026-07-27 and is kept below as a closed record, not a question.** Each brief is
+**2026-08-01. Status updated 2026-08-12.** **All eight decisions taken (D4 on 2026-07-27; D1, D2, D3, D5, D6, D7, D8 on 2026-08-12). P3 Security Gate is formally CLOSED.** Each brief is
 one page: what is actually at stake, what the measured evidence says, a
 recommendation, and what it costs to be wrong.
 
@@ -17,20 +16,18 @@ backlog is eight separate sittings, and a decision queue nobody can enumerate is
 decision queue that never drains. The register (`docs/OPEN_ITEMS.md`) holds
 everything engineering can clear on its own; this holds everything it cannot.
 
-**Two of these gate other work.** D1 (socket auth) and D2 (Gate 6) are the P3
-security gate, and the P3 gate blocks all new capability work. Nothing else on this
-list blocks anything.
+**P3 Security Gate Status:** **CLOSED (2026-08-12)** via rulings D1 (same-uid auth accepted), D2 (Gate 6 formally closed), and D3 (Gate 7 error unification rejected). All capability work is unblocked.
 
-| # | Decision | Status | Recommendation | Blocks |
+| # | Decision | Status | Ruling / Recommendation | Blocks |
 |---|---|---|---|---|
-| D1 | Socket auth model | open | **Accept same-uid** | the P3 gate |
-| D2 | Gate 6 formal closure | open | **Rule it closed** | the P3 gate |
-| D3 | Gate 7 error unification | open | **Reject the unification** | the P3 gate |
-| D4 | `allow_fallbacks` / F1 posture | **TAKEN 2026-07-27** | option 3, and it shipped | nothing |
-| D5 | Warn-mode Design B vs C | open | **Reject B; defer C** | nothing |
-| D6 | Default model | open | **Decide after the §4 measurement** | reply quality |
-| D7 | Shared confinement package | open | **Do not build it yet** | nothing |
-| D8 | Skills subsystem | open | **Delete it** | nothing |
+| D1 | Socket auth model | **TAKEN 2026-08-12** | **Accepted same-uid** | ~~the P3 gate~~ (Closed) |
+| D2 | Gate 6 formal closure | **TAKEN 2026-08-12** | **Ruled closed** | ~~the P3 gate~~ (Closed) |
+| D3 | Gate 7 error unification | **TAKEN 2026-08-12** | **Rejected unification** | ~~the P3 gate~~ (Closed) |
+| D4 | `allow_fallbacks` / F1 posture | **TAKEN 2026-07-27** | Option 3, and it shipped | nothing |
+| D5 | Warn-mode Design B vs C | **TAKEN 2026-08-12** | **Rejected B; deferred C** | nothing |
+| D6 | Default model | **TAKEN 2026-08-12** | **Maintained default (pending spend eval)** | reply quality |
+| D7 | Shared confinement package | **TAKEN 2026-08-12** | **Do not build yet** | nothing |
+| D8 | Skills subsystem | **TAKEN 2026-08-12** | **Approved for deletion / cleanup** | nothing |
 
 **The three cheapest sittings, in order.** D1+D2+D3 are one sitting and unblock
 the P3 gate, which blocks every new capability. D8 is a deletion of a subsystem

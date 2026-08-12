@@ -757,21 +757,22 @@ func (m chatModel) handleModelCommand(arg string) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		var b strings.Builder
-		b.WriteString("models (active only — /model <name> to select; /model clear to reset):\n")
+		b.WriteString("models (/model <name> to select; /model clear to reset):\n")
 		current := m.preferredTier
 		if current == "" {
 			current = "(default)"
 		}
 		fmt.Fprintf(&b, "current: %s\n", current)
 		for _, t := range tiers {
-			if !t.Active {
-				continue
-			}
 			mark := "  "
 			if t.Name == m.preferredTier || (m.preferredTier == "" && t.Name == "primary") {
 				mark = "* "
 			}
-			fmt.Fprintf(&b, "%s%s  %s\n", mark, t.Name, t.Slug)
+			status := ""
+			if !t.Active {
+				status = " [inactive]"
+			}
+			fmt.Fprintf(&b, "%s%s  %s%s\n", mark, t.Name, t.Slug, status)
 		}
 		m.turns = append(m.turns, turn{role: roleAssistant, text: strings.TrimRight(b.String(), "\n")})
 		m.resizeViewport()

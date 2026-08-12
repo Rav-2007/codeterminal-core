@@ -211,9 +211,9 @@ var rerankEvalQueries = []rerankEvalQuery{
 		[]string{"editapply.MatchesSecretName"}},
 
 	// Two things legitimately answer this: where the DB lives, and its schema.
-	{"where are skills stored in sqlite",
-		[]string{"daemon/skills.go"},
-		[]string{"func OpenSkillStore", "CREATE TABLE IF NOT EXISTS"}},
+	{"where are conversation turns stored in sqlite",
+		[]string{"daemon/memory.go"},
+		[]string{"func OpenMemoryStore", "CREATE TABLE IF NOT EXISTS"}},
 
 	// Added for the _test.go down-weight fix (FileClassTest, rerank.go): the
 	// measured live-repo failure this fix targets -- provider.go never made the

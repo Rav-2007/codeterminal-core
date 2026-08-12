@@ -60,7 +60,10 @@ func TestTwoWorkspaces_BothDaemonsStart(t *testing.T) {
 
 	runtimeDir := shortRuntimeDir(t)
 	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
-	repoA, repoB := t.TempDir(), t.TempDir()
+	parentA, parentB := t.TempDir(), t.TempDir()
+	repoA, repoB := filepath.Join(parentA, "workspace_a"), filepath.Join(parentB, "workspace_b")
+	_ = os.MkdirAll(repoA, 0755)
+	_ = os.MkdirAll(repoB, 0755)
 	writeFile(t, filepath.Join(repoA, "a.go"), "package a\n")
 	writeFile(t, filepath.Join(repoB, "b.go"), "package b\n")
 

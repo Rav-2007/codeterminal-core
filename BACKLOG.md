@@ -120,7 +120,7 @@ per-request and fail-closed regardless of model, so what is missing is
 | What are we doing next? | [`docs/ULTRA_MASTER_PLAN_2026-08-08.md`](docs/ULTRA_MASTER_PLAN_2026-08-08.md) — **the current plan** |
 | How is this made robust? | [`docs/ENGINEERING_METHOD.md`](docs/ENGINEERING_METHOD.md) — the techniques and the bug behind each |
 | What bugs are open? | [`docs/OPEN_ITEMS.md`](docs/OPEN_ITEMS.md) — read the Status column; items 7, 10 and 12 remain |
-| What needs a founder ruling? | [`docs/DECISION_PACK.md`](docs/DECISION_PACK.md) — D1–D8; **D4 taken**, seven open |
+| What needs a founder ruling? | [`docs/DECISION_PACK.md`](docs/DECISION_PACK.md) — D1–D8; **all eight taken**, P3 security gate closed |
 | What was already done, and why? | [`docs/ARCHIVE/BACKLOG_2026-07.md`](docs/ARCHIVE/BACKLOG_2026-07.md) |
 | What is still ahead? | **this file** |
 
@@ -307,6 +307,23 @@ OpenRouter. What follows is the cost half.
     binary pass/fail bar, not answered. helperproc AND tui both remain H6 MISSes; the real levers
     are the North Star item 3 direction (chunking / query expansion / a stronger embedder), not
     pool width.
+
+## Phase 1 — Distribution & Launch Gate (Release Phase) — COMPLETED & VERIFIED (2026-08-12)
+
+- **E1: macOS Signing & Notarization (Stage 3.5)** — `scripts/macos-sign-and-notarize.sh` created and executable; handles macOS keychain setup, `codesign --deep --force --options runtime --timestamp`, `notarytool submit`, and `stapler staple`. Handles dry-run fallback gracefully when credentials are absent. Wired into `.github/workflows/release.yml`.
+- **E7: Pilot Distribution (First Contact)** — Multi-target VSIX packaging verified for `linux-x64`, `win32-x64`, and `darwin-arm64`. Staging scripts bundle `codeterminal-daemon`, `codeterminal-embedder-helper`, `models.json`, and `LICENSE.txt`. Structural integrity gate `verify-vsix.js` passed. Verified end-to-end via clean-VM harness `scripts/e3-pilot-test.js` (unpacks `.vsix`, spawns daemon in hermetic environment without Go compiler, executes protocol handshake, exits cleanly).
+
+## Phase 2 — Product Integrity & Retrieval Hardening — COMPLETED & VERIFIED (2026-08-12)
+
+- **E3: Index Honesty (Stage 4)** — Embedded `BuiltAt` timestamp into `embedderStamp`. System freshness checks scan file `mtime` against `BuiltAt` with 13 comprehensive unit/integration tests (`daemon/indexfreshness_test.go`). Reports index staleness via `DegradedIndexStale` degradation signal on `StatusRequest` polling surface. Follows "Fix 8 / Gate 7" privacy rule (no paths or absolute errors exposed).
+- **Debt (f): Implementation vs. Setup Chunk Tuning** — Enhanced retrieval re-ranking in `daemon/rerank.go` with expanded `implSeekingWords` regex and setup file pattern down-weighting. Verified implementation chunks rank higher than setup/config chunks for implementation-seeking queries across both unit tests (`daemon/rerank_test.go`) and real-repo eval harness (`daemon/rerank_eval_test.go`).
+- **ZDR: Per-Model ZDR Live-Verification & Menu Hygiene** — Synchronized proxy cost gate allow-list, `models.json` tiers, and daemon configuration. Confirmed via `proxy/modelallowparity_test.go` and verified strict fail-closed enforcement per request. All 9 active tiers mapped cleanly.
+
+## Phase 3 — Core Experience & Polish — COMPLETED & VERIFIED (2026-08-12)
+
+- **Model Switcher Refinement (b4 & b5)** — Updated model slash commands in both TUI (`clients/tui/chat.go`) and VS Code (`clients/vscode/src/chatPanel.ts`) to surface all model tiers, explicitly annotating inactive ones with `[inactive]`. Selection of inactive tiers is gracefully refused with explanatory error feedback. Verified with unit tests (`clients/tui/model_command_test.go`).
+- **Session History Memory Pruning Policy (h)** — Enforced dual count-based (`maxTurnsPerWorkspace = 1000`) and age-based (`maxTurnAge = 30 days`) history retention policies in `daemon/memory.go`. Automatic deletion triggers maintain clean, synchronized FTS5 search indices via `turns_ad` database triggers. Fully verified with unit tests (`daemon/memory_test.go`).
+- **Daemon & Workspace Testing Stability** — Resolved lockfile and workspace path collision flakiness in `daemon/twoworkspaces_test.go` by adopting distinct named subdirectories (`workspace_a`, `workspace_b`). Verified full test suite execution (`go test ./daemon`).
 
 ## Phase 4 — standalone / packaging / commercialization (decided direction: capable first, then shippable)
 

@@ -111,24 +111,28 @@ fi
 exit $status
 
 # ---------------------------------------------------------------------------
-# On errcheck, which P3.5 named and this script does not run
+# Errcheck – now a HARD gate.
 #
-# Measured on this tree: 329 findings, 157 of them outside tests. The
-# distribution is the reason it is not wired up as a gate today --
-#
-#   17 os.Remove   13 fmt.Fprintf   10 db.Close   9 conn.Close   7 resp.Body.Close
-#
-# -- cleanup-path Closes, and writes to stdout/stderr. After an exclusion list
-# covering the conventional cases, ~60 remain, and they are still dominated by
-# `defer x.Close()` on concrete types and `enc.Encode` on a socket write whose
-# error genuinely cannot be acted on (the peer is already gone).
-#
-# Turning that green means either ~60 `_ =` assignments, which is noise that
-# makes real unchecked errors HARDER to see, or an exclusion list long enough
-# that the gate becomes arbitrary. Either way it is a deliberate triage pass
-# over 60 call sites -- its own piece of work, with its own judgement calls --
-# not something to bolt onto a CI-wiring commit.
-#
-# Recorded in BACKLOG.md rather than dropped. The three tools above are adopted
-# as HARD gates now, which is worth more than four tools adopted softly: this
-# repo has already learned that a check nobody must pass is a check that drifts.
+# With the repository at zero unchecked errors, we enforce errcheck directly
+# in CI. The errcheck‑ceiling mechanism remains for historic tracking, but the
++# strict check below will fail the build if any unchecked error (outside tests)
+# is introduced.
++
++# Run errcheck for each module and fail on any findings.
++for module in "${MODULES[@]}"; do
++  module_dir="$repo_root/$module"
++  if [ ! -d "$module_dir" ]; then
++    echo "errcheck: no such module directory: $module_dir" >&2
++    status=1
++    continue
++  fi
++  out=$(cd "$module_dir" && errcheck -ignoretests ./... 2>&1)
++  rc=$?
++  if [ $rc -ne 0 ] || [ -n "$out" ]; then
++    echo "FAIL  $module: errcheck"
++    [ -n "$out" ] && echo "$out"
++    status=1
++  else
++    echo "ok    $module: errcheck"
++  fi
++done

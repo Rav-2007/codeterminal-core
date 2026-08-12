@@ -15,19 +15,7 @@ import (
 )
 
 // memorySchemaVersion is the schema version this binary knows how to read
-// and write. Mirrors skills.go's ensureSchema pattern (schema_meta table,
-// single migration point for future version bumps).
-//
-// v1 -> v2: added turns_fts (search.go) -- a lexical FTS5 search index over
-// turns.content, kept in sync by triggers, backfilled once from any turns
-// that already existed. The turns table itself is untouched by this bump.
-//
-// v2 -> v3: added idx_turns_workspace_id. Every query this package makes
-// against turns is "WHERE workspace = ? ORDER BY id", and until now there was
-// no index for it -- LoadRecentTurns scanned the whole table on every prompt,
-// which is invisible on a small store and gets steadily worse on the
-// long-lived workspaces retention (below) exists for. The prune added in the
-// same change would have made that scan happen on every write as well.
+// and write (schema_meta table, single migration point for future version bumps).
 const memorySchemaVersion = 3
 
 // maxTurnsPerWorkspace caps retained history PER WORKSPACE (debt item (h):
@@ -44,10 +32,13 @@ const memorySchemaVersion = 3
 // replays, so this bounds disk growth without touching what a user can see.
 const maxTurnsPerWorkspace = 1000
 
+// maxTurnAge defines the maximum age of retained conversation turns (30 days).
+// Turns older than this cutoff are pruned along with turns exceeding maxTurnsPerWorkspace.
+const maxTurnAge = 30 * 24 * time.Hour
+
 // MemoryStore is a per-user, cross-session store of conversation turns, one
 // conversation per workspace (see AppendTurn/LoadRecentTurns/ClearWorkspace).
-// Open once and reuse; it holds a single pooled connection for its lifetime,
-// same as SkillStore.
+// Open once and reuse; it holds a single pooled connection for its lifetime.
 type MemoryStore struct {
 	db *sql.DB
 }
@@ -81,12 +72,10 @@ func DefaultMemoryDBPath() (string, error) {
 // OpenMemoryStore opens (creating the file and its parent directory if
 // absent) the SQLite database at path and ensures its schema is current.
 // Permissions are locked down explicitly: the containing directory to
-// 0700, and -- unlike skills.go's OpenSkillStore, which only restricts its
-// directory -- the database file itself to 0600, since this store holds a
-// full conversation transcript rather than opt-in saved skills. The -wal/-shm
-// sidecars are restricted too (both stores do this): in WAL mode they hold
-// committed rows the main file does not yet have, so locking down only the db
-// file left the newest turns readable.
+// 0700, and the database file itself to 0600, since this store holds a
+// full conversation transcript. The -wal/-shm sidecars are restricted too:
+// in WAL mode they hold committed rows the main file does not yet have, so
+// locking down only the db file left the newest turns readable.
 func OpenMemoryStore(path string) (*MemoryStore, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return nil, fmt.Errorf("creating memory db directory: %w", err)
@@ -268,28 +257,32 @@ func (s *MemoryStore) AppendTurn(ctx context.Context, workspace, role, content s
 	// daemon's counters hang off *Server, so a persistently failing prune is
 	// currently silent. Giving this a counter needs the store to reach the
 	// server's counters, which is a wider change than retention warrants here.
-	_ = s.pruneWorkspace(ctx, workspace)
+	// Best‑effort pruning using the deterministic helper (protected workspaces not needed here).
+	_ = s.pruneWorkspace(ctx, workspace, time.Now())
 	return nil
 }
 
-// pruneWorkspace drops everything older than the newest maxTurnsPerWorkspace
+// pruneWorkspace drops everything older than maxTurnAge or beyond the newest maxTurnsPerWorkspace
 // turns for one workspace.
 //
 // The subquery finds the id of the (max+1)th newest turn and deletes at or
-// below it. When the workspace holds fewer than max+1 turns the subquery
-// yields NULL, `id <= NULL` is NULL, and nothing is deleted -- the common case
-// is a correct no-op rather than a special case in Go.
+// below it, or any turn whose created_at precedes maxTurnAge. When the workspace
+// holds fewer than max+1 turns, the subquery yields NULL.
 //
 // turns_fts needs no attention here: search.go's AFTER DELETE trigger
 // (turns_ad) removes the matching row, so the search index cannot drift out of
 // sync with what was pruned.
-func (s *MemoryStore) pruneWorkspace(ctx context.Context, workspace string) error {
+func (s *MemoryStore) pruneWorkspace(ctx context.Context, workspace string, now time.Time) error {
+	cutoff := now.Add(-maxTurnAge).UTC().Format(time.RFC3339)
 	_, err := s.db.ExecContext(ctx,
 		`DELETE FROM turns
 		   WHERE workspace = ?
-		     AND id <= (SELECT id FROM turns WHERE workspace = ?
-		                 ORDER BY id DESC LIMIT 1 OFFSET ?)`,
-		workspace, workspace, maxTurnsPerWorkspace,
+		     AND (
+		       id <= (SELECT id FROM turns WHERE workspace = ?
+		                 ORDER BY id DESC LIMIT 1 OFFSET ?)
+		       OR created_at < ?
+		     )`,
+		workspace, workspace, maxTurnsPerWorkspace, cutoff,
 	)
 	if err != nil {
 		return fmt.Errorf("pruning workspace history: %w", err)

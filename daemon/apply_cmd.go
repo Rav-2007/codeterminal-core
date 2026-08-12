@@ -321,7 +321,7 @@ func runUndoSession(realWorkspaceRoot, sessionDir string, force bool, in io.Read
 		return 0, 0, nil, fmt.Errorf("reading backup session %s: %w", sessionDir, err)
 	}
 	if len(relPaths) == 0 {
-		fmt.Fprintf(out, "no backed-up files in %s\n", sessionDir)
+		safeFprintf(out, "no backed-up files in %s\n", sessionDir)
 		return 0, 0, nil, nil
 	}
 

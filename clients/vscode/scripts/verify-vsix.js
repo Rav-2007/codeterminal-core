@@ -182,6 +182,52 @@ function main() {
     }
   }
 
+  // Verify bundled daemon & helper binary sizes & header magic bytes
+  const daemonEntry = entries.find((e) => e.name === `extension/daemon/codeterminal-daemon${exe}`);
+  if (daemonEntry) {
+    if (daemonEntry.size < 1000000) { // < 1MB
+      failures.push(`CORRUPT  daemon binary size is suspiciously small: ${(daemonEntry.size / 1024 / 1024).toFixed(2)} MB`);
+    } else {
+      const header = readEntry(buf, daemonEntry).subarray(0, 4);
+      const isElf = header[0] === 0x7f && header[1] === 0x45 && header[2] === 0x4c && header[3] === 0x46;
+      const isPE = header[0] === 0x4d && header[1] === 0x5a;
+      const isMachO = (header[0] === 0xcf && header[1] === 0xfa && header[2] === 0xed && header[3] === 0xfe) ||
+                      (header[0] === 0xca && header[1] === 0xfe && header[2] === 0xba && header[3] === 0xbe);
+      if (!isElf && !isPE && !isMachO) {
+        failures.push(`CORRUPT  daemon binary invalid header magic bytes: 0x${header.toString('hex')}`);
+      }
+    }
+  }
+
+  const helperEntry = entries.find((e) => e.name === `extension/daemon/codeterminal-embedder-helper${exe}`);
+  if (helperEntry) {
+    if (helperEntry.size < 1000000) { // < 1MB
+      failures.push(`CORRUPT  helper binary size is suspiciously small: ${(helperEntry.size / 1024 / 1024).toFixed(2)} MB`);
+    } else {
+      const header = readEntry(buf, helperEntry).subarray(0, 4);
+      const isElf = header[0] === 0x7f && header[1] === 0x45 && header[2] === 0x4c && header[3] === 0x46;
+      const isPE = header[0] === 0x4d && header[1] === 0x5a;
+      const isMachO = (header[0] === 0xcf && header[1] === 0xfa && header[2] === 0xed && header[3] === 0xfe) ||
+                      (header[0] === 0xca && header[1] === 0xfe && header[2] === 0xba && header[3] === 0xbe);
+      if (!isElf && !isPE && !isMachO) {
+        failures.push(`CORRUPT  helper binary invalid header magic bytes: 0x${header.toString('hex')}`);
+      }
+    }
+  }
+
+  // Verify models.json schema validity inside the archive
+  const modelsEntry = entries.find((e) => e.name === 'extension/daemon/models.json');
+  if (modelsEntry) {
+    try {
+      const modelsData = JSON.parse(readEntry(buf, modelsEntry).toString('utf8'));
+      if (!modelsData.tiers || !modelsData.default_tier) {
+        failures.push('INVALID  packaged daemon/models.json lacks tiers or default_tier declaration');
+      }
+    } catch (e) {
+      failures.push(`CORRUPT  packaged daemon/models.json is invalid JSON: ${e.message}`);
+    }
+  }
+
   const totalMB = (entries.reduce((n, e) => n + e.size, 0) / 1024 / 1024).toFixed(1);
   const onDiskMB = (fs.statSync(file).size / 1024 / 1024).toFixed(1);
 

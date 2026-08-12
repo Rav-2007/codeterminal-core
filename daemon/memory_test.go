@@ -477,3 +477,32 @@ func TestMemoryStore_MigratesV1AllTheWayToCurrent(t *testing.T) {
 		t.Errorf("turns_fts holds %d rows, want the 1 pre-existing turn backfilled", fts)
 	}
 }
+
+func TestMemoryStore_PrunesOldTurnsByAge(t *testing.T) {
+	s, _ := openTestMemoryStore(t)
+	ctx := context.Background()
+	const ws = "/workspace/aged"
+
+	oldTimestamp := "2020-01-01T00:00:00Z"
+	if _, err := s.db.ExecContext(ctx,
+		`INSERT INTO turns (workspace, role, content, created_at) VALUES (?, ?, ?, ?)`,
+		ws, "user", "ancient question", oldTimestamp,
+	); err != nil {
+		t.Fatalf("inserting ancient turn: %v", err)
+	}
+
+	if err := s.AppendTurn(ctx, ws, "user", "fresh question"); err != nil {
+		t.Fatalf("AppendTurn: %v", err)
+	}
+
+	turns, err := s.LoadRecentTurns(ctx, ws, 10)
+	if err != nil {
+		t.Fatalf("LoadRecentTurns: %v", err)
+	}
+	if len(turns) != 1 {
+		t.Fatalf("loaded %d turns, want 1 (ancient turn pruned)", len(turns))
+	}
+	if turns[0].Content != "fresh question" {
+		t.Errorf("turn content = %q, want 'fresh question'", turns[0].Content)
+	}
+}

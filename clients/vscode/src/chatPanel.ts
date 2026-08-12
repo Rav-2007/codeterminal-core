@@ -31,6 +31,29 @@ import {
 } from './daemonClient';
 import { parseModelCommand, parseSlash, steeredPrompt } from './slashCommands';
 
+export class DiffContentProvider implements vscode.TextDocumentContentProvider {
+  static scheme = 'codeterminal-diff';
+  private static contents = new Map<string, string>();
+
+  static register(context: vscode.ExtensionContext) {
+    context.subscriptions.push(
+      vscode.workspace.registerTextDocumentContentProvider(this.scheme, new DiffContentProvider())
+    );
+  }
+
+  static addContent(content: string, filename: string): vscode.Uri {
+    const id = Math.random().toString(36).substring(2);
+    this.contents.set(id, content);
+    // Use filename in the path so the diff editor tab title looks better (e.g. Snippet.go)
+    return vscode.Uri.parse(`${this.scheme}:${filename}?id=${id}`);
+  }
+
+  provideTextDocumentContent(uri: vscode.Uri): string {
+    const id = uri.query.replace('id=', '');
+    return DiffContentProvider.contents.get(id) || '';
+  }
+}
+
 const CLIENT_NAME = 'codeterminal-vscode';
 const VIEW_TYPE = 'codeterminalChat';
 
@@ -173,6 +196,7 @@ export class ChatPanel {
     mode?: string;
     decision?: string;
     callId?: string;
+    index?: number;
   }): void {
     if (msg.type === 'toolApprovalDecision' && typeof msg.decision === 'string') {
       this.onToolApprovalDecision(msg.callId, msg.decision);
@@ -184,6 +208,8 @@ export class ChatPanel {
       this.onSkipEdit();
     } else if (msg.type === 'undoEdit' && typeof msg.backupDir === 'string') {
       this.onUndoEdit(msg.backupDir);
+    } else if (msg.type === 'viewDiff' && typeof msg.index === 'number') {
+      this.onViewDiff(msg.index);
     } else if (msg.type === 'search' && typeof msg.text === 'string') {
       this.onSearch(msg.text);
     } else if (msg.type === 'closePanel') {
@@ -246,18 +272,16 @@ export class ChatPanel {
         const tiers = await fetchAvailableTiers(CLIENT_NAME);
         const current = this.preferredTier || '(default)';
         const lines = [
-          'models (active only — /model <name> to select; /model clear to reset):',
+          'models (/model <name> to select; /model clear to reset):',
           `current: ${current}`,
         ];
         for (const t of tiers) {
-          if (!t.active) {
-            continue;
-          }
           const mark =
             t.name === this.preferredTier || (!this.preferredTier && t.name === 'primary')
               ? '* '
               : '  ';
-          lines.push(`${mark}${t.name}  ${t.slug}`);
+          const status = t.active ? '' : ' [inactive]';
+          lines.push(`${mark}${t.name}  ${t.slug}${status}`);
         }
         this.replyLocal(lines.join('\n'));
       } catch (err) {
@@ -273,9 +297,13 @@ export class ChatPanel {
     }
     try {
       const tiers = await fetchAvailableTiers(CLIENT_NAME);
-      const found = tiers.find((t) => t.active && t.name === arg);
+      const found = tiers.find((t) => t.name === arg);
       if (!found) {
         this.replyLocal(`unknown model tier "${arg}" — try /model for the list`);
+        return;
+      }
+      if (!found.active) {
+        this.replyLocal(`tier "${arg}" is currently inactive in models.json`);
         return;
       }
       this.preferredTier = found.name;
@@ -615,6 +643,17 @@ export class ChatPanel {
     }
   }
 
+  private onViewDiff(index: number): void {
+    if (index < 0 || index >= this.pendingBlocks.length) {
+      return;
+    }
+    const edit = this.pendingBlocks[index];
+    const filename = edit.file_path.split(/[/\\]/).pop() || 'Snippet';
+    const originalUri = DiffContentProvider.addContent(edit.search, filename);
+    const modifiedUri = DiffContentProvider.addContent(edit.replace, filename);
+    vscode.commands.executeCommand('vscode.diff', originalUri, modifiedUri, `Proposed Edit: ${edit.file_path}`);
+  }
+
   // onSkipEdit skips the current block with no daemon call, then advances
   // -- same "no confirm prompt needed, just move on" shape as Apply's
   // advance, but nothing is sent over the wire.
@@ -742,23 +781,23 @@ function getNonce(): string {
 
 export function chatPanelStyles(): string {
   return `  :root {
-    --ct-bg: #fff8f9;
-    --ct-surface: #ffffff;
+    --ct-bg: var(--vscode-editor-background, #fff8f9);
+    --ct-surface: var(--vscode-sideBar-background, #ffffff);
     --ct-rose: #e8919a;
     --ct-rose-deep: #d4727d;
-    --ct-rose-soft: #fce8eb;
-    --ct-ink: #3d2c2e;
-    --ct-muted: #8a6f73;
-    --ct-border: #f0d6da;
-    --ct-code-bg: #fff6f7;
-    --ct-code-fg: #5b3a44;
-    --ct-user-bg: #fff0f2;
+    --ct-rose-soft: rgba(232, 145, 154, 0.15);
+    --ct-ink: var(--vscode-editor-foreground, #3d2c2e);
+    --ct-muted: var(--vscode-descriptionForeground, #8a6f73);
+    --ct-border: var(--vscode-widget-border, rgba(232, 145, 154, 0.25));
+    --ct-code-bg: var(--vscode-editorWidget-background, rgba(0, 0, 0, 0.04));
+    --ct-code-fg: var(--vscode-editorWidget-foreground, inherit);
+    --ct-user-bg: rgba(232, 145, 154, 0.08);
     --ct-radius: 14px;
-    --ct-composer-bg: #fff5f7;
-    --ct-composer-border: #f0c8d0;
+    --ct-composer-bg: var(--vscode-input-background, rgba(255, 245, 247, 0.6));
+    --ct-composer-border: var(--vscode-input-border, rgba(240, 200, 208, 0.6));
     --ct-composer-glow: rgba(232, 145, 154, 0.28);
-    --ct-composer-text: #4a3438;
-    --ct-composer-muted: #a88a90;
+    --ct-composer-text: var(--vscode-input-foreground, inherit);
+    --ct-composer-muted: var(--vscode-input-placeholderForeground, #a88a90);
   }
   * { box-sizing: border-box; }
   body {
@@ -1520,9 +1559,17 @@ export function chatPanelStyles(): string {
     white-space: pre-wrap;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   }
-  .edit-proposal .diff-line { display: block; padding: 0 4px; }
-  .edit-proposal .diff-line.removed { color: #c0392b; background: rgba(192, 57, 43, 0.08); }
-  .edit-proposal .diff-line.added { color: #1e7a3a; background: rgba(30, 122, 58, 0.08); }
+  .edit-proposal .view-diff-btn {
+    display: inline-block;
+    margin: 4px 0 10px;
+    background: transparent;
+    color: var(--ct-ink);
+    border: 1px solid var(--ct-border);
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 11px;
+  }
+  .edit-proposal .view-diff-btn:hover { background: var(--ct-rose-soft); border-color: var(--ct-rose); }
   .edit-proposal .actions { display: flex; gap: 6px; }
   .edit-proposal .result { margin-top: 6px; font-style: italic; }
   .edit-proposal .result.ok { color: #1e7a3a; }

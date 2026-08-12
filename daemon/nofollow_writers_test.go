@@ -158,33 +158,6 @@ func TestWarnSink_RefusesSymlink(t *testing.T) {
 
 // --- SQLite stores: leaf lstat guard before sql.Open ---
 
-func TestSkillStore_RefusesSymlinkDBFile(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "skills.db")
-	victim := plantSymlinkOverEmptyVictim(t, path)
-
-	s, err := OpenSkillStore(path)
-	if err == nil {
-		s.Close()
-		t.Fatalf("OpenSkillStore opened a symlinked db file; want refusal")
-	}
-	if !strings.Contains(err.Error(), "symlink") {
-		t.Errorf("refusal not attributable to the symlink guard: %v", err)
-	}
-	if !victimStillEmpty(t, victim) {
-		t.Errorf("OpenSkillStore wrote SQLite pages through a symlink to an outside file")
-	}
-}
-
-func TestSkillStore_NormalOpen(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "skills.db")
-	s, err := OpenSkillStore(path)
-	if err != nil {
-		t.Fatalf("normal skills open failed: %v", err)
-	}
-	s.Close()
-}
-
 func TestMemoryStore_RefusesSymlinkDBFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "memory.db")

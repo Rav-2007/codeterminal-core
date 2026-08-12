@@ -54,15 +54,15 @@ CREATE VIRTUAL TABLE IF NOT EXISTS code_chunks_fts USING fts5(
 )`
 
 // FTSChunkStore is a LexicalStore backed by a local, on-disk SQLite FTS5
-// database -- the same modernc.org/sqlite dependency memory.go/skills.go
-// already use, so this adds no new dependency.
+// database -- the same modernc.org/sqlite dependency memory.go
+// already uses, so this adds no new dependency.
 type FTSChunkStore struct {
 	db *sql.DB
 }
 
 // NewFTSChunkStore opens (creating if absent) the lexical index at
 // indexDir/lexical.db. Single pooled connection, same rationale as
-// MemoryStore/SkillStore: this store's write volume (one upsert per index
+// MemoryStore: this store's write volume (one upsert per index
 // run) never justifies a pool, and SQLite's concurrent-writer story is poor
 // enough that avoiding it entirely is simplest.
 func NewFTSChunkStore(indexDir string) (*FTSChunkStore, error) {

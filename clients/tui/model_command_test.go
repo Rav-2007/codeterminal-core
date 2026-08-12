@@ -96,7 +96,7 @@ func lastTurn(t *testing.T, m tea.Model) string {
 	return cm.turns[len(cm.turns)-1].text
 }
 
-func TestHandleModelCommand_ListsOnlyActiveTiersAndMarksTheCurrentOne(t *testing.T) {
+func TestHandleModelCommand_ListsAllTiersAndMarksInactiveOnes(t *testing.T) {
 	fakeDaemonServingTiers(t, tierFixture())
 
 	m := newTestModel()
@@ -108,8 +108,8 @@ func TestHandleModelCommand_ListsOnlyActiveTiersAndMarksTheCurrentOne(t *testing
 	if !strings.Contains(text, "primary") || !strings.Contains(text, "fast") {
 		t.Errorf("active tiers missing from the listing:\n%s", text)
 	}
-	if strings.Contains(text, "retired") {
-		t.Errorf("an INACTIVE tier was offered to the user:\n%s", text)
+	if !strings.Contains(text, "retired") || !strings.Contains(text, "[inactive]") {
+		t.Errorf("inactive tier missing or not marked with [inactive]:\n%s", text)
 	}
 	if !strings.Contains(text, "* fast") {
 		t.Errorf("the current tier was not marked:\n%s", text)

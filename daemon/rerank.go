@@ -100,7 +100,7 @@ func looksTestSeeking(query string) bool {
 	return testSeekingWords.MatchString(stripped) || testFuncPattern.MatchString(query)
 }
 
-var implSeekingWords = regexp.MustCompile(`(?i)\b(implemented|implementation|how does|where does|where is)\b`)
+var implSeekingWords = regexp.MustCompile(`(?i)\b(implemented|implementation|how does|how is|where does|where is|where are|where live|how works?)\b`)
 var setupFilesPattern = regexp.MustCompile(`(?i)(main\.go|setup\w*\.go|config\w*\.go|init\w*\.go)`)
 
 // looksImplSeeking reports whether query appears to ask for the implementation

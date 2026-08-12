@@ -55,7 +55,10 @@
 # Forcing a ceiling down by editing correct code is the same failure as raising
 # a coverage floor to make a build green -- it moves the metric and teaches the
 # ratchet to lie. The ceiling is honest at 108.
-daemon        108
+# 2026-08-12: daemon 108 -> 96. D8 founder ruling authorized the deletion of
+# the dead skills subsystem (skills.go, skills_cmd.go). Removing 12 unchecked
+# error sites lowered the ceiling automatically. Ratcheted to 96.
+daemon         96
 editapply       9
 proxy          25
 protocol        0

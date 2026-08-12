@@ -81,11 +81,16 @@ jobs:
       #
       # Both are no-ops until the secrets exist, so this workflow is runnable
       # today and gains signing without restructuring.
-      - name: Sign (macOS)
-        if: matrix.target == 'darwin-arm64' && env.MACOS_CERT_P12 != ''
+      - name: Sign & Notarize (macOS)
+        if: matrix.target == 'darwin-arm64'
         env:
           MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
-        run: echo "TODO codesign + notarytool + stapler; see ULTRA_MASTER_PLAN_2026-08-08 §5"
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+          MACOS_NOTARY_KEY_BASE64: ${{ secrets.MACOS_NOTARY_KEY_BASE64 }}
+          DIST_DIR: ${{ github.workspace }}/dist
+        run: ./scripts/macos-sign-and-notarize.sh
 
       - name: Record signing status
         shell: bash

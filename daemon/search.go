@@ -74,8 +74,7 @@ func createSearchIndex(db *sql.DB) error {
 // pre-existing, already-populated memory.db -- the insert trigger only
 // covers turns written AFTER turns_fts existed. Called exactly once, from
 // ensureMemorySchema's version<2 migration branch, which itself only ever
-// runs once per database (guarded by schema_meta.version, the same gate
-// skills.go's ensureSchema pattern already relies on) -- so this needs no
+// runs once per database (guarded by schema_meta.version) -- so this needs no
 // separate "already ran" check of its own.
 func backfillSearchIndex(db *sql.DB) error {
 	if _, err := db.Exec(`INSERT INTO turns_fts(rowid, content, workspace) SELECT id, content, workspace FROM turns`); err != nil {

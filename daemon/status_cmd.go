@@ -25,7 +25,7 @@ const statusDialTimeout = 2 * time.Second
 // client, which is barely better than reading the source. One command, no
 // arguments, human-readable by default and --json for tooling.
 //
-// It is a one-shot subcommand alongside index/retrieve/skills/edits (see
+// It is a one-shot subcommand alongside index/retrieve/edits (see
 // main.go), and like them it never touches the long-running serve path.
 // Notably it starts nothing: if no daemon is running, that is itself the
 // answer and is reported as such, rather than silently launching one.

@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs';
 
-import { ChatPanel } from './chatPanel';
+import { ChatPanel, DiffContentProvider } from './chatPanel';
 import { bundledDaemonDir, daemonBinaryName } from './daemonBinary';
 import { probeDaemon, resolvedWorkspaceRoot, setWorkspaceRoot } from './daemonClient';
 import { ensureModelAvailable } from './modelSetup';
@@ -14,6 +14,8 @@ let supervisor: DaemonSupervisor | undefined;
 let output: vscode.OutputChannel | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
+  DiffContentProvider.register(context);
+
   // The bundled location, defined once in daemonBinary.ts so the spawn path and
   // /mcp-server cannot drift apart on where the runtime lives. This path was
   // always safe -- it is anchored to extensionPath -- but it was a second

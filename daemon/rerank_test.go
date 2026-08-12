@@ -177,6 +177,20 @@ func TestLooksTestSeeking_IgnoresCapturedAssertionFailureAndPanic(t *testing.T) 
 	}
 }
 
+func TestLooksImplSeeking(t *testing.T) {
+	implQueries := []string{
+		"where is the router implemented",
+		"how does edit apply work",
+		"where is ZDR refusal logic implemented",
+		"where are conversation turns stored",
+	}
+	for _, q := range implQueries {
+		if !looksImplSeeking(q) {
+			t.Errorf("looksImplSeeking(%q) = false, want true", q)
+		}
+	}
+}
+
 func TestRerankChunks_DownWeightsTestFileForImplementationQuery(t *testing.T) {
 	// A _test.go chunk with a modest raw-score edge over the real
 	// implementation should lose once down-weighted, for a query that
@@ -189,6 +203,19 @@ func TestRerankChunks_DownWeightsTestFileForImplementationQuery(t *testing.T) {
 	got := rerankChunks(candidates, 2, "explain how the widget subsystem processes a request")
 	if got[0].FilePath != "daemon/widget.go" {
 		t.Errorf("top result = %q, want the implementation to win once the test chunk is down-weighted", got[0].FilePath)
+	}
+}
+
+func TestRerankChunks_DownWeightsSetupFilesForImplSeekingQuery(t *testing.T) {
+	// Setup/entrypoint chunks (main.go, config.go) with a slight raw score advantage
+	// should lose to the real implementation file for implementation-seeking queries.
+	candidates := []Chunk{
+		{FilePath: "daemon/main.go", Score: 0.72, Class: FileClassCode},
+		{FilePath: "daemon/widget.go", Score: 0.68, Class: FileClassCode},
+	}
+	got := rerankChunks(candidates, 2, "where is the widget subsystem implemented")
+	if got[0].FilePath != "daemon/widget.go" {
+		t.Errorf("top result = %q, want implementation file widget.go to outrank setup file main.go", got[0].FilePath)
 	}
 }
 

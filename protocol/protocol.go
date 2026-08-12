@@ -227,14 +227,17 @@ type HandshakeResponse struct {
 // or inactive name falls back to the default tier with a logged reason — it
 // never invents a slug. Older daemons ignore the field.
 type PromptRequest struct {
-	ProtocolVersion int    `json:"protocol_version"`
-	Prompt          string `json:"prompt"`
-	Workspace       string `json:"workspace,omitempty"`
-	History         []Turn `json:"history,omitempty"`
-	Reset           bool   `json:"reset,omitempty"`
-	PromptKind      string `json:"prompt_kind,omitempty"`
-	Tier            string `json:"tier,omitempty"`
-	Mode            string `json:"mode,omitempty"`
+	ProtocolVersion int `json:"protocol_version"`
+	// The absence of an "edit" or "undo" key on the wire is what implicitly
+	// distinguishes this message as a PromptRequest rather than an ApplyEditRequest
+	// or UndoRequest (see daemon/server.go's isApplyEditRequest).
+	Prompt     string `json:"prompt"`
+	Workspace  string `json:"workspace,omitempty"`
+	History    []Turn `json:"history,omitempty"`
+	Reset      bool   `json:"reset,omitempty"`
+	PromptKind string `json:"prompt_kind,omitempty"`
+	Tier       string `json:"tier,omitempty"`
+	Mode       string `json:"mode,omitempty"`
 }
 
 // Turn is one prior message in a conversation, supplied by the client so
@@ -735,8 +738,10 @@ type EditBlockWire struct {
 // whole batch at once. Older clients that never send this field get today's
 // behavior unchanged: a fresh backup dir per ApplyEditRequest.
 type ApplyEditRequest struct {
-	ProtocolVersion  int           `json:"protocol_version"`
-	Workspace        string        `json:"workspace,omitempty"`
+	ProtocolVersion int    `json:"protocol_version"`
+	Workspace       string `json:"workspace,omitempty"`
+	// Edit is the explicit JSON discriminator distinguishing this message from
+	// PromptRequest on the wire (via isApplyEditRequest).
 	Edit             EditBlockWire `json:"edit"`
 	BackupSessionDir string        `json:"backup_session_dir,omitempty"`
 }
