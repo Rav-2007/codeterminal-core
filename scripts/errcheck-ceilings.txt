@@ -58,7 +58,10 @@
 # 2026-08-12: daemon 108 -> 96. D8 founder ruling authorized the deletion of
 # the dead skills subsystem (skills.go, skills_cmd.go). Removing 12 unchecked
 # error sites lowered the ceiling automatically. Ratcheted to 96.
-daemon         96
+# 2026-08-12: daemon 96 -> 95. Phase 4 pruneWorkspace clock-injection changed
+# one call site from time.Now() (unchecked) to a parameter, removing one
+# unchecked site.
+daemon         95
 editapply       9
 proxy          25
 protocol        0
