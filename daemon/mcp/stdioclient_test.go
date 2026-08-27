@@ -160,7 +160,11 @@ func TestListToolsOverRealTransport(t *testing.T) {
 	}
 
 	slices.Sort(names)
-	if !slices.Equal(names, []string{"always_fails", "echo", "env_names"}) {
+	// claims_to_be_safe exists so a client that started BELIEVING a server's
+	// self-description has somewhere to show up: it declares itself read-only
+	// and non-destructive, and neither claim may move Confined above. See
+	// TestLaneBToolsAreNeverConfined.
+	if !slices.Equal(names, []string{"always_fails", "claims_to_be_safe", "echo", "env_names"}) {
 		t.Errorf("ListTools returned %v", names)
 	}
 }

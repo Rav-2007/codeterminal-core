@@ -81,6 +81,42 @@ func toRegistryPolicy(s string) mcp.Policy {
 	}
 }
 
+// laneBLaunchConfig builds the launch parameters for one third-party MCP server.
+//
+// EXTRACTED SO THE ABSENCE CAN BE ASSERTED. mcp.LaunchConfig has a Sandbox
+// field, WrapCommand honours it, and this function deliberately does not set
+// it -- so ResolveMode sees a zero config and returns SandboxNone, and a Lane B
+// server runs with the user's own privileges. That is the documented posture
+// (SECURITY_MODEL.md, "Lane B is unconfined... accepted deliberately"), not an
+// oversight, but read inline it looks exactly like one: the plumbing is right
+// there, unused.
+//
+// A DECISION NOBODY CAN SEE IS ONE SOMEBODY WILL QUIETLY REVERSE, in either
+// direction -- a future edit "fixing" the omission would change the product's
+// security posture without anyone reviewing that change, and a future reader
+// assuming containment would misjudge what an approval is worth. Both are
+// closed by TestLaneBLaunchesUnconfinedOnPurpose, which fails the moment this
+// stops being true and sends whoever changed it to the document that says why.
+//
+// What DOES contain a Lane B server is consent, twice: AcknowledgedUnconfined
+// at config time (the caller checks it before ever reaching here) and
+// Tool.Confined == false at approval time, which is what the client prints
+// over the prompt. Neither is a sandbox and neither is described as one.
+func laneBLaunchConfig(name string, srv MCPServerConfig, cfg *Config, stderr io.Writer, logf func(string, ...any)) mcp.LaunchConfig {
+	return mcp.LaunchConfig{
+		Name:     name,
+		Command:  srv.Command,
+		Args:     srv.Args,
+		EnvAllow: srv.Env,
+		Stderr:   stderr,
+		Logf:     logf,
+		// The one budget field that bounds ALLOCATION rather than egress: what
+		// this daemon will hold on behalf of somebody else's process.
+		MaxMessageBytes: cfg.MCP.Budget.resolvedMaxMessageBytes(),
+		ConnectTimeout:  cfg.MCP.Budget.resolvedConnectTimeout(),
+	}
+}
+
 // buildRegistry assembles the tool surface for this daemon: the built-in Lane A
 // tools, plus a connected client for each enabled Lane B server.
 //
@@ -142,19 +178,7 @@ func (s *Server) buildRegistry(ctx context.Context, logger *log.Logger, proposal
 		wg.Add(1)
 		go func(name string, srv MCPServerConfig) {
 			defer wg.Done()
-			client, err := mcp.Connect(ctx, mcp.LaunchConfig{
-				Name:     name,
-				Command:  srv.Command,
-				Args:     srv.Args,
-				EnvAllow: srv.Env,
-				Stderr:   serverStderr(name, logger),
-				Logf:     logger.Printf,
-				// The one budget field that bounds ALLOCATION rather than
-				// egress: what this daemon will hold on behalf of somebody
-				// else's process.
-				MaxMessageBytes: cfg.MCP.Budget.resolvedMaxMessageBytes(),
-				ConnectTimeout:  cfg.MCP.Budget.resolvedConnectTimeout(),
-			})
+			client, err := mcp.Connect(ctx, laneBLaunchConfig(name, srv, cfg, serverStderr(name, logger), logger.Printf))
 			mu.Lock()
 			results = append(results, connectResult{name: name, client: client, err: err})
 			mu.Unlock()

@@ -63,7 +63,31 @@ func main() {
 		}, nil, nil
 	})
 
+	// THE SERVER THAT CLAIMS TO BE HARMLESS.
+	//
+	// Every annotation here is the server's own description of itself, and a
+	// third-party server is exactly the party with a motive to describe itself
+	// well. Without a tool that actually makes such a claim, a client that
+	// STARTED trusting one would pass every test in this package: the other
+	// three tools assert nothing, so there is no input for the trust to show up
+	// on. Measured -- neutering StdioClient.ListTools to read confinement off
+	// this annotation left the whole suite green until this tool existed.
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "claims_to_be_safe",
+		Description: "Declares itself read-only and non-destructive. Says so, at least.",
+		Annotations: &mcp.ToolAnnotations{
+			ReadOnlyHint:    true,
+			DestructiveHint: boolPtr(false),
+		},
+	}, func(_ context.Context, _ *mcp.CallToolRequest, _ noArgs) (*mcp.CallToolResult, any, error) {
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: "a claim is not a property"}},
+		}, nil, nil
+	})
+
 	if err := s.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
 		log.Fatal(err)
 	}
 }
+
+func boolPtr(b bool) *bool { return &b }

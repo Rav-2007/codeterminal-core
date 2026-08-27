@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"strings"
@@ -200,20 +201,42 @@ func TestValidateServerName(t *testing.T) {
 }
 
 // Confinement is a property of the lane, not a value anyone computes per call.
-// This pins that a Lane B tool can never report itself confined, since that
-// value reaches the user on the approval prompt.
+// A Lane B tool can never report itself confined, because that value reaches
+// the user on the approval prompt and is the whole basis on which they decide.
+//
+// THIS TEST USED TO ASSERT A LITERAL. It built Tool{Confined: false} by hand
+// and checked that false was false -- no code under test, no input that could
+// have moved it, and a doc comment claiming it pinned the property. That is the
+// shape this project keeps finding and keeps writing down: a test that cannot
+// fail is not a check, it is a place nobody looks.
+//
+// The guarantee actually lives in StdioClient.ListTools, which builds every
+// Tool with Confined:false and Lane:third_party without consulting anything the
+// server said. So the assertion is made where it is kept: a real subprocess,
+// over a real stdio pipe, asked what it advertises.
 func TestLaneBToolsAreNeverConfined(t *testing.T) {
-	tool := Tool{
-		Server: "anything", Name: "t",
-		Lane: protocol.LaneThirdParty, Confined: false,
-		// A server claiming to be harmless changes nothing.
-		ReadOnlyHint: true, Destructive: false,
+	client := connectEcho(t, nil)
+
+	tools, err := client.ListTools(context.Background())
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
 	}
-	if tool.Confined {
-		t.Error("a third-party tool reported confined")
+	// ANTI-VACUITY, the failure this test is being rescued from: an empty list
+	// would satisfy every loop below.
+	if len(tools) == 0 {
+		t.Fatal("the server advertised nothing, so this test compares over an empty list")
 	}
-	if tool.Lane != protocol.LaneThirdParty {
-		t.Errorf("lane = %q", tool.Lane)
+
+	for _, tool := range tools {
+		if tool.Confined {
+			t.Errorf("tool %q came back confined, so a client would print "+
+				"\"anything it changes goes through the same review you use for edits\" over a "+
+				"separate program running with the user's full privileges", tool.QualifiedName())
+		}
+		if tool.Lane != protocol.LaneThirdParty {
+			t.Errorf("tool %q reported lane %q, so a client cannot tell it is third-party",
+				tool.QualifiedName(), tool.Lane)
+		}
 	}
 }
 
