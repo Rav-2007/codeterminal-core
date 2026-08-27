@@ -41,11 +41,29 @@ async function main(): Promise<void> {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-vscode-ws-'));
     const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-vscode-user-'));
 
-    await runTests({
-      extensionDevelopmentPath,
-      extensionTestsPath,
-      launchArgs: [workspace, '--user-data-dir', userDataDir, '--disable-gpu'],
-    });
+    try {
+      await runTests({
+        extensionDevelopmentPath,
+        extensionTestsPath,
+        launchArgs: [workspace, '--user-data-dir', userDataDir, '--disable-gpu'],
+      });
+    } finally {
+      // THE HOST DOES NOT CLEAN UP AFTER ITSELF, and these are not small: a
+      // user-data dir is tens of megabytes, and one is created per run. Ten
+      // runs of this suite left 36 MB across 18 directories and a crashpad
+      // handler still holding each one -- measured, on a working machine, while
+      // verifying a feature that had nothing to do with any of it.
+      //
+      // In a finally so a failing suite cleans up too: the run that leaves
+      // something behind is usually the one that went wrong.
+      for (const dir of [workspace, userDataDir]) {
+        try {
+          fs.rmSync(dir, { recursive: true, force: true });
+        } catch {
+          /* best-effort: a live crashpad handler can hold a descriptor here */
+        }
+      }
+    }
   } catch (err) {
     console.error('Failed to run E2E tests:', err);
     process.exit(1);

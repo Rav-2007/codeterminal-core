@@ -106,6 +106,16 @@ export interface PromptRequest {
   prompt_kind?: string;
   tier?: string;
   mode?: string;
+  /**
+   * pipeline names the specialist phases for THIS TURN ONLY (protocol.PromptRequest
+   * .Pipeline). Absent means the daemon's configured shape, which is what every
+   * ordinary prompt sends.
+   *
+   * Until this field existed the extension could not ask for a pipeline at all:
+   * the daemon resolved one, the TUI sent one, and this client had no way to
+   * express it -- so an entire subsystem was reachable from one of two clients.
+   */
+  pipeline?: string[];
 }
 
 export interface StatusTier {
@@ -729,7 +739,7 @@ export async function streamPrompt(
   history: Turn[],
   signal: AbortSignal,
   handlers: StreamHandlers,
-  opts?: { promptKind?: string; tier?: string; mode?: string }
+  opts?: { promptKind?: string; tier?: string; mode?: string; pipeline?: string[] }
 ): Promise<void> {
   // The capability is derived from the handler, not passed in: a caller that
   // can render an approval provides one, and a caller that cannot does not, so
@@ -840,6 +850,12 @@ export async function streamPrompt(
   }
   if (opts?.tier) {
     req.tier = opts.tier;
+  }
+  // Sent only when non-empty: an empty array is not "no pipeline", it is a
+  // pipeline of nothing, and omitting the field is how a client says "use
+  // whatever you are configured to do".
+  if (opts?.pipeline && opts.pipeline.length > 0) {
+    req.pipeline = opts.pipeline;
   }
   if (opts?.mode) {
     req.mode = opts.mode;

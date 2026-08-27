@@ -51,6 +51,22 @@ var slashCatalog = []slashDef{
 	{Name: "search", Kind: slashLocal, Summary: "search past conversation turns (/search <query>)", NeedsArgs: true},
 	{Name: "exit", Kind: slashLocal, Summary: "quit the TUI"},
 
+	// /team is in the catalog to be FOUND, and parsed elsewhere.
+	//
+	// The pipeline it runs (daemon/orchestrator.go, four specialist roles, an
+	// A/B-measured default shape) has been complete and reachable-in-principle
+	// since it was written, and reachable-in-practice by nobody: the wire field
+	// existed, the daemon resolved it, and the command that sends it appeared in
+	// no help text and no autocomplete popup. A capability the user cannot find
+	// is not a capability, which is the whole reason this line exists.
+	//
+	// Kind is steered because that is what it is -- a turn that goes to the
+	// model -- but it carries NO preamble: what it steers is the pipeline shape
+	// on the wire, not the text. parseSlash hands it straight past (see there),
+	// exactly as it does /model.
+	{Name: "team", Kind: slashSteered, NeedsArgs: true,
+		Summary: "run one turn through specialists (/team:a,b …)"},
+
 	{Name: "explain", Kind: slashSteered, NeedsArgs: true, Summary: "explain code or a concept",
 		Preamble: "Explain clearly and thoroughly. Use concrete references from the workspace when relevant.\n\n"},
 	{Name: "fix", Kind: slashSteered, NeedsArgs: true, Summary: "find and fix a bug",
@@ -127,6 +143,26 @@ func parseSlash(raw string) slashParse {
 	if raw == "/model" || strings.HasPrefix(raw, "/model ") {
 		return slashParse{RawPassthrough: true}
 	}
+	// /team is the same arrangement as /model, and the ORDER IS LOAD-BEARING.
+	//
+	// startTurn runs parseSlash BEFORE parseTeamCommand, so the moment "team"
+	// appears in the catalog, "/team fix this" starts matching here and routes
+	// to handleSlash -- a steered command with no preamble, which sends the raw
+	// text and no pipeline. Adding the catalog entry would then have broken the
+	// very command it was advertising, silently, with every existing test still
+	// green (they call parseTeamCommand directly). Hence this exclusion, and
+	// TestParseSlashHandsTheTeamCommandOnward, which fails if it is ever
+	// deleted.
+	//
+	// The bare form is the one exception: it has no question to ask, so it gets
+	// the usage line every other NeedsArgs command gets, rather than being sent
+	// to the model as the literal text "/team".
+	if raw == "/team" {
+		return slashParse{Def: lookupSlash("team"), UsageOnly: true}
+	}
+	if strings.HasPrefix(raw, commandTeam) || strings.HasPrefix(raw, commandTeamShape) {
+		return slashParse{RawPassthrough: true}
+	}
 	body := strings.TrimPrefix(raw, "/")
 	name, rest, _ := strings.Cut(body, " ")
 	name = strings.ToLower(strings.TrimSpace(name))
@@ -144,11 +180,21 @@ func parseSlash(raw string) slashParse {
 func formatSlashHelp() string {
 	var b strings.Builder
 	b.WriteString("slash commands:\n")
+	// DEDUPED, because "model" is both in the catalog and appended below, and
+	// the un-deduped version printed /model twice in every /help this product
+	// has ever shown. The VS Code mirror used a Set and never had the bug (see
+	// slashAutocompleteNames in slashCommands.ts); this is that behaviour.
+	seen := make(map[string]bool, len(slashCatalog)+1)
 	names := make([]string, 0, len(slashCatalog)+1)
 	for _, d := range slashCatalog {
-		names = append(names, d.Name)
+		if !seen[d.Name] {
+			seen[d.Name] = true
+			names = append(names, d.Name)
+		}
 	}
-	names = append(names, "model")
+	if !seen["model"] {
+		names = append(names, "model")
+	}
 	sort.Strings(names)
 	for _, name := range names {
 		if name == "model" {
@@ -161,6 +207,13 @@ func formatSlashHelp() string {
 		}
 		fmt.Fprintf(&b, "  /%-12s %s\n", d.Name, d.Summary)
 	}
+	// The keys, listed here because /help is where someone looks for "how do I
+	// make it do X" -- and the one they most need mid-turn is the one they
+	// cannot go looking for once a turn is running.
+	b.WriteString("\nkeys:\n")
+	b.WriteString("  esc            stop the turn in flight; the transcript is kept\n")
+	b.WriteString("  ctrl+c         stop the turn in flight, or quit when nothing is running\n")
+	b.WriteString("  ctrl+n         start a new conversation\n")
 	return strings.TrimRight(b.String(), "\n")
 }
 

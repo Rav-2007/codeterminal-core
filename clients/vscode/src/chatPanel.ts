@@ -29,7 +29,7 @@ import {
   streamPrompt,
   undoEdits,
 } from './daemonClient';
-import { parseModelCommand, parseSlash, steeredPrompt } from './slashCommands';
+import { parseModelCommand, parseSlash, parseTeamCommand, steeredPrompt } from './slashCommands';
 
 export class DiffContentProvider implements vscode.TextDocumentContentProvider {
   static scheme = 'codeterminal-diff';
@@ -240,6 +240,17 @@ export class ChatPanel {
       return;
     }
 
+    // BEFORE parseSlash, exactly like /model above, because the catalog now
+    // contains a 'team' entry and parseSlash would otherwise match it first and
+    // route the turn as an ordinary steered command -- text on the wire, no
+    // pipeline. parseSlash has a matching exclusion; both are needed, and
+    // either alone is a silent regression.
+    const team = parseTeamCommand(text);
+    if (team.ok) {
+      this.startModelTurn(text, team.prompt, undefined, autoApply, mode, team.pipeline);
+      return;
+    }
+
     const slash = parseSlash(text);
     if (!slash.rawPassthrough) {
       if (slash.usageOnly && slash.def) {
@@ -350,7 +361,8 @@ export class ChatPanel {
     wirePrompt: string,
     promptKind: string | undefined,
     autoApply: boolean,
-    mode?: string
+    mode?: string,
+    pipeline?: string[]
   ): void {
     // Captured once, for this run only -- see the currentRunAutoApply field
     // doc comment for why this must not be re-read later.
@@ -463,7 +475,7 @@ export class ChatPanel {
           this.panel.webview.postMessage({ type: 'error', message: err.message });
         },
       },
-      { promptKind, tier: this.preferredTier || undefined, mode }
+      { promptKind, tier: this.preferredTier || undefined, mode, pipeline }
     );
   }
 

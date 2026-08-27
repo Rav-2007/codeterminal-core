@@ -17,6 +17,7 @@
 import * as assert from 'assert';
 
 import { StreamHandlers, applyEdit, streamPrompt } from '../../daemonClient';
+import { parseTeamCommand } from '../../slashCommands';
 import { Behavior, StubDaemon, writeLine } from '../stubDaemon';
 
 const CLIENT = 'codeterminal-vscode-test';
@@ -29,7 +30,11 @@ const PV = 1;
 // streamPrompt, it reacts to onDone/onError). A test that asserted right after
 // `await streamPrompt(...)` would race those callbacks; this gates on the
 // terminal handler instead. The caller's own onDone/onError still run first.
-function streamToCompletion(prompt: string, handlers: StreamHandlers): Promise<void> {
+function streamToCompletion(
+  prompt: string,
+  handlers: StreamHandlers,
+  opts?: { promptKind?: string; tier?: string; mode?: string; pipeline?: string[] }
+): Promise<void> {
   const ctrl = new AbortController();
   return new Promise<void>((resolve) => {
     void streamPrompt(CLIENT, prompt, '', [], ctrl.signal, {
@@ -42,7 +47,7 @@ function streamToCompletion(prompt: string, handlers: StreamHandlers): Promise<v
         handlers.onError?.(e);
         resolve();
       },
-    });
+    }, opts);
   });
 }
 
@@ -61,6 +66,79 @@ async function withStub(behavior: Behavior, fn: () => Promise<void>): Promise<vo
     }
   }
 }
+
+suite('E2E daemonClient — the specialist pipeline on the wire', () => {
+  // THE ASSERTION THIS CLIENT COULD NOT MAKE UNTIL NOW.
+  //
+  // The daemon has resolved PromptRequest.Pipeline since the orchestrator was
+  // written, and this client had no field to put it in -- so four specialist
+  // roles, a phase runner and its whole test suite were reachable from the TUI
+  // and from nowhere else. The unit tests in teamCommand.test.ts prove the
+  // command PARSES here; this proves the shape it parses actually leaves the
+  // process, which is the half a type-checker cannot see.
+  //
+  // Driven from the typed command rather than a hand-written array on purpose:
+  // a literal here would still pass if parseTeamCommand returned something else
+  // entirely, which is exactly the seam being tested.
+  test('a typed /team command puts its shape on the socket', async () => {
+    let seen: unknown;
+    const behavior: Behavior = (req, socket) => {
+      seen = req.pipeline;
+      writeLine(socket, { protocol_version: PV, token: 'ok' });
+      writeLine(socket, { protocol_version: PV, done: true });
+      socket.end();
+    };
+
+    const team = parseTeamCommand('/team why is this slow');
+    assert.strictEqual(team.ok, true, 'the command did not parse; the test premise is broken');
+
+    await withStub(behavior, async () => {
+      await streamToCompletion(team.prompt, {}, { pipeline: team.pipeline });
+    });
+
+    assert.deepStrictEqual(
+      seen,
+      ['researcher', 'coder'],
+      'the daemon received no pipeline (or the wrong one), so /team is an ordinary turn here'
+    );
+  });
+
+  // An explicit shape reaches the daemon verbatim -- this is the form that makes
+  // the planner and the tester usable at all, from either client.
+  test('an explicit shape reaches the daemon verbatim', async () => {
+    let seen: unknown;
+    const behavior: Behavior = (req, socket) => {
+      seen = req.pipeline;
+      writeLine(socket, { protocol_version: PV, done: true });
+      socket.end();
+    };
+
+    const team = parseTeamCommand('/team:planner,tester check the parser');
+    await withStub(behavior, async () => {
+      await streamToCompletion(team.prompt, {}, { pipeline: team.pipeline });
+    });
+
+    assert.deepStrictEqual(seen, ['planner', 'tester']);
+  });
+
+  // ABSENCE IS A VALUE. An ordinary prompt must carry NO pipeline field at all:
+  // an empty array is not "use your configured shape", it is a pipeline of
+  // nothing, and the daemon reads the two differently.
+  test('an ordinary prompt sends no pipeline field', async () => {
+    let present = true;
+    const behavior: Behavior = (req, socket) => {
+      present = 'pipeline' in req;
+      writeLine(socket, { protocol_version: PV, done: true });
+      socket.end();
+    };
+
+    await withStub(behavior, async () => {
+      await streamToCompletion('an ordinary question', {});
+    });
+
+    assert.strictEqual(present, false, 'an ordinary prompt carried a pipeline field');
+  });
+});
 
 suite('E2E daemonClient (M1/M2/M3 client half)', () => {
   // M1: a done message carrying `incomplete` must reach the client as a distinct

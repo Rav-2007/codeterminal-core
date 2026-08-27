@@ -303,6 +303,80 @@ func TestSlashCatalogsAgreeAcrossClients(t *testing.T) {
 	}
 }
 
+// tsStringArray returns the string literals of the first bracketed array
+// assigned after marker.
+//
+// Anchored on the ASSIGNMENT rather than the first bracket, for the reason
+// tsArrayObjects learned the hard way and this declaration would have repeated:
+// `export const TEAM_PIPELINE: readonly string[] = [...]` carries a '[' in its
+// TYPE, and scanning from there meets that type's ']' immediately and returns
+// nothing at all.
+func tsStringArray(src, marker string) ([]string, error) {
+	start := strings.Index(src, marker)
+	if start < 0 {
+		return nil, fmt.Errorf("marker %q not found", marker)
+	}
+	eq := strings.Index(src[start:], "=")
+	if eq < 0 {
+		return nil, fmt.Errorf("no assignment after marker %q", marker)
+	}
+	open := strings.Index(src[start+eq:], "[")
+	if open < 0 {
+		return nil, fmt.Errorf("no [ after the assignment for marker %q", marker)
+	}
+	from := start + eq + open + 1
+	end := strings.Index(src[from:], "]")
+	if end < 0 {
+		return nil, fmt.Errorf("unterminated array for marker %q", marker)
+	}
+
+	var out []string
+	for _, field := range strings.Split(src[from:from+end], ",") {
+		field = strings.TrimSpace(field)
+		if field == "" {
+			continue
+		}
+		v, err := tsUnquote(field)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, nil
+}
+
+// THE DEFAULT TEAM SHAPE IS A WIRE VALUE, in exactly the same class as a
+// steered preamble: it is what the client asks the daemon to run. Two clients
+// sending different shapes for the same command is two products, and the shape
+// is not a detail -- §14 measured researcher-then-coder ahead 2-1 while the
+// four-phase shape lost 1-2 at three and a half times the wall clock, so drift
+// here is drift into the measured loser.
+//
+// The two constants live in separate modules with no shared source, which is
+// why this is a test and not a comment asking someone to remember.
+func TestTheTeamShapeAgreesAcrossClients(t *testing.T) {
+	raw, err := os.ReadFile(vscodeSlashCommands)
+	if err != nil {
+		t.Fatalf("reading the VS Code catalog: %v", err)
+	}
+	got, err := tsStringArray(string(raw), "TEAM_PIPELINE")
+	if err != nil {
+		t.Fatalf("parsing TEAM_PIPELINE: %v", err)
+	}
+	// ANTI-VACUITY: a parser that found nothing would agree with nothing.
+	if len(got) == 0 {
+		t.Fatal("parsed an empty TEAM_PIPELINE; this test is comparing nothing")
+	}
+	if len(got) != len(teamPipeline) {
+		t.Fatalf("shape length differs: Go %v, VS Code %v", teamPipeline, got)
+	}
+	for i := range got {
+		if got[i] != teamPipeline[i] {
+			t.Errorf("phase %d differs: Go %q, VS Code %q", i, teamPipeline[i], got[i])
+		}
+	}
+}
+
 // The security mirror. If one client neutralises a git config key and the other
 // does not, that client is exploitable by a repository through exactly the
 // vector both files were written to close.

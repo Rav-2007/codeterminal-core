@@ -47,6 +47,17 @@ export const SLASH_CATALOG: SlashDef[] = [
   { name: 'search', kind: 'local', summary: 'search past conversation turns (/search <query>)', needsArgs: true },
   { name: 'exit', kind: 'local', summary: 'close the chat panel' },
 
+  // /team is in the catalog to be FOUND, and parsed elsewhere -- see
+  // parseTeamCommand below and the mirror in clients/tui/slash.go. Steered
+  // because it is a turn that goes to the model, with NO preamble: what it
+  // steers is the pipeline shape on the wire, not the text.
+  {
+    name: 'team',
+    kind: 'steered',
+    needsArgs: true,
+    summary: 'run one turn through specialists (/team:a,b …)',
+  },
+
   {
     name: 'explain',
     kind: 'steered',
@@ -190,6 +201,17 @@ export function parseSlash(raw: string): SlashParse {
   if (raw === '/model' || raw.startsWith('/model ')) {
     return { args: '', rawPassthrough: true, usageOnly: false };
   }
+  // /team is the same arrangement as /model, and the ORDER IS LOAD-BEARING:
+  // onPrompt runs parseSlash BEFORE parseTeamCommand, so without this the
+  // catalog entry above would match '/team fix this' and route it as a steered
+  // command with no preamble -- sending the raw text and no pipeline, and
+  // breaking the command the entry exists to advertise. Mirrored in slash.go.
+  if (raw === '/team') {
+    return { def: lookupSlash('team'), args: '', rawPassthrough: false, usageOnly: true };
+  }
+  if (raw.startsWith(TEAM_PREFIX) || raw.startsWith(TEAM_SHAPE_PREFIX)) {
+    return { args: '', rawPassthrough: true, usageOnly: false };
+  }
   const body = raw.slice(1);
   const space = body.indexOf(' ');
   const name = (space < 0 ? body : body.slice(0, space)).trim().toLowerCase();
@@ -202,6 +224,93 @@ export function parseSlash(raw: string): SlashParse {
     return { def, args: '', rawPassthrough: false, usageOnly: true };
   }
   return { def, args, rawPassthrough: false, usageOnly: false };
+}
+
+export const TEAM_PREFIX = '/team ';
+export const TEAM_SHAPE_PREFIX = '/team:';
+
+/**
+ * TEAM_PIPELINE is the shape a bare `/team` asks for, sent as
+ * protocol.PromptRequest.Pipeline.
+ *
+ * MIRRORED FROM clients/tui/chat.go's teamPipeline, and enforced by
+ * TestTheTeamShapeAgreesAcrossClients rather than by this comment -- it is a
+ * WIRE VALUE, in the same class as a steered preamble: two clients sending
+ * different shapes for the same command is two products.
+ *
+ * Two phases, not four: blind pairwise judging against a budget-matched single
+ * agent (docs/MULTI_AGENT_DESIGN.md §14) put researcher-then-coder ahead 2-1 at
+ * 1.02x the tokens, and the four-phase shape BEHIND at 1-2 for three and a half
+ * times the wall clock.
+ */
+export const TEAM_PIPELINE: readonly string[] = ['researcher', 'coder'];
+
+/**
+ * parseTeamCommand recognises `/team <question>` and
+ * `/team:role,role <question>`. A line that is neither passes through byte for
+ * byte, which is what lets an ordinary question mentioning "/team" stay one.
+ *
+ * A direct mirror of parseTeamCommand in clients/tui/chat.go, including the
+ * rule that earns its keep: THE SHAPE ENDS AT THE FIRST SPACE THAT DOES NOT
+ * FOLLOW A COMMA. Cutting at the first space is the obvious rule and it is
+ * wrong -- "researcher, coder why is this slow" is what a person actually
+ * types, and the obvious rule reads the shape as "researcher," and swallows
+ * "coder" as the first word of the question.
+ *
+ * ROLE NAMES ARE NOT VALIDATED HERE, on purpose: what roles exist is
+ * daemon/roles.go's fact, and a copy of that list in a client is a copy that
+ * drifts. Unknown names are dropped by the daemon and reported back as a
+ * pipeline-shape notice the user can read.
+ */
+export function parseTeamCommand(raw: string): {
+  pipeline: string[];
+  prompt: string;
+  ok: boolean;
+} {
+  const passthrough = { pipeline: [] as string[], prompt: raw, ok: false };
+
+  if (raw.startsWith(TEAM_SHAPE_PREFIX)) {
+    const rest = raw.slice(TEAM_SHAPE_PREFIX.length);
+    let end = 0;
+    for (;;) {
+      const next = rest.indexOf(' ', end);
+      if (next < 0) {
+        return passthrough; // a shape with nothing to ask
+      }
+      end = next;
+      if (!rest.slice(0, end).endsWith(',')) {
+        break;
+      }
+      end++;
+      if (end >= rest.length) {
+        return passthrough;
+      }
+    }
+    const question = rest.slice(end).trim();
+    if (question === '') {
+      return passthrough;
+    }
+    const names = rest
+      .slice(0, end)
+      .split(',')
+      .map((n) => n.trim())
+      .filter((n) => n !== '');
+    if (names.length === 0) {
+      // '/team: q' named no phases at all. The user typed a colon meaning to
+      // choose, so this is not a request for the default shape.
+      return passthrough;
+    }
+    return { pipeline: names, prompt: question, ok: true };
+  }
+
+  if (!raw.startsWith(TEAM_PREFIX)) {
+    return passthrough;
+  }
+  const question = raw.slice(TEAM_PREFIX.length).trim();
+  if (question === '') {
+    return passthrough;
+  }
+  return { pipeline: [...TEAM_PIPELINE], prompt: question, ok: true };
 }
 
 export function parseModelCommand(raw: string): { arg: string; ok: boolean } {
