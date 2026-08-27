@@ -61,7 +61,17 @@
 # 2026-08-12: daemon 96 -> 95. Phase 4 pruneWorkspace clock-injection changed
 # one call site from time.Now() (unchecked) to a parameter, removing one
 # unchecked site.
-daemon         95
+#
+# 2026-08-26: daemon 95 -> 92. The incremental-indexing pass rewrote the lexical
+# store's two write paths (chunk_index, see lexicalstore.go). Its prepared
+# statements and both transaction rollbacks are explicit `_ =` discards rather
+# than the bare calls the old code used -- a rollback after a successful commit
+# is a no-op by definition, and a prepared statement's Close has already had its
+# only interesting failure reported by the Exec that used it. The bare
+# `defer tx.Rollback()` that Upsert inherited was converted with them, on this
+# file's own rule that half a function marking its discards and half not is worse
+# than either. Net -3, claimed here rather than left as slack.
+daemon         92
 editapply       9
 proxy          25
 protocol        0
