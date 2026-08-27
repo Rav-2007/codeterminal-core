@@ -232,7 +232,7 @@ func askForApproval(ctx context.Context, sess *daemonSession, req protocol.ToolA
 		if ctx.Err() != nil {
 			return false
 		}
-		ch <- streamErrMsg{err}
+		deliver(ctx, ch, streamErrMsg{err})
 		return false
 	}
 	return true
@@ -244,6 +244,25 @@ func askForApproval(ctx context.Context, sess *daemonSession, req protocol.ToolA
 // Cmd goroutine, not inside Update.
 func waitForNext(ch chan tea.Msg) tea.Cmd {
 	return func() tea.Msg { return <-ch }
+}
+
+// deliver hands one message to the UI, and gives up if the turn is cancelled
+// first. Reports whether it was delivered.
+//
+// EVERY SEND IN streamPrompt MUST GO THROUGH THIS, because ch is unbuffered and
+// the UI only reads it while it still cares. Interrupting a turn (esc/ctrl+c --
+// see interruptTurn in chat.go) stops re-issuing waitForNext, so a bare `ch <-`
+// after that point blocks forever: one leaked goroutine, holding the turn's
+// buffers, for every interrupt in a session that may run for hours. That was
+// invisible while cancellation only ever happened on the way out of the
+// process; an interrupt key makes it a live leak.
+func deliver(ctx context.Context, ch chan tea.Msg, msg tea.Msg) bool {
+	select {
+	case ch <- msg:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 // streamPrompt opens a fresh connection (the wire protocol is one prompt
@@ -264,7 +283,7 @@ func streamPrompt(ctx context.Context, clientName, workspace, prompt, promptKind
 		if ctx.Err() != nil {
 			return
 		}
-		ch <- streamErrMsg{err}
+		deliver(ctx, ch, streamErrMsg{err})
 		return
 	}
 	defer sess.Close()
@@ -291,7 +310,7 @@ func streamPrompt(ctx context.Context, clientName, workspace, prompt, promptKind
 		if ctx.Err() != nil {
 			return
 		}
-		ch <- streamErrMsg{err}
+		deliver(ctx, ch, streamErrMsg{err})
 		return
 	}
 
@@ -302,53 +321,53 @@ func streamPrompt(ctx context.Context, clientName, workspace, prompt, promptKind
 				return
 			}
 			if errors.Is(err, io.EOF) {
-				ch <- streamDoneMsg{}
+				deliver(ctx, ch, streamDoneMsg{})
 				return
 			}
-			ch <- streamErrMsg{err}
+			deliver(ctx, ch, streamErrMsg{err})
 			return
 		}
 		if tok.Error != "" {
-			ch <- streamErrMsg{errors.New(tok.Error)}
+			deliver(ctx, ch, streamErrMsg{errors.New(tok.Error)})
 			return
 		}
-		if tok.Grounding != nil {
-			ch <- groundingMsg{tok.Grounding}
+		if tok.Grounding != nil && !deliver(ctx, ch, groundingMsg{tok.Grounding}) {
+			return
 		}
-		if tok.History != nil {
-			ch <- historyMsg{tok.History}
+		if tok.History != nil && !deliver(ctx, ch, historyMsg{tok.History}) {
+			return
 		}
-		if len(tok.Redactions) > 0 {
-			ch <- redactionsMsg{tok.Redactions}
+		if len(tok.Redactions) > 0 && !deliver(ctx, ch, redactionsMsg{tok.Redactions}) {
+			return
 		}
-		if tok.Reasoning != "" {
-			ch <- reasoningMsg{tok.Reasoning}
+		if tok.Reasoning != "" && !deliver(ctx, ch, reasoningMsg{tok.Reasoning}) {
+			return
 		}
-		if len(tok.Degraded) > 0 {
-			ch <- degradedMsg{tok.Degraded}
+		if len(tok.Degraded) > 0 && !deliver(ctx, ch, degradedMsg{tok.Degraded}) {
+			return
 		}
-		if tok.Provider != "" {
-			ch <- providerMsg{tok.Provider}
+		if tok.Provider != "" && !deliver(ctx, ch, providerMsg{tok.Provider}) {
+			return
 		}
-		if tok.ToolActivity != nil {
-			ch <- toolActivityMsg{*tok.ToolActivity}
+		if tok.ToolActivity != nil && !deliver(ctx, ch, toolActivityMsg{*tok.ToolActivity}) {
+			return
 		}
 		if tok.ToolApproval != nil {
 			if !askForApproval(ctx, sess, *tok.ToolApproval, ch) {
 				return
 			}
 		}
-		if tok.Token != "" {
-			ch <- tokenMsg(tok.Token)
+		if tok.Token != "" && !deliver(ctx, ch, tokenMsg(tok.Token)) {
+			return
 		}
 		if tok.Done {
 			// Rides on the final Done message; emit it before streamDoneMsg so
 			// the "answer cut off" notice lands right under the just-finished
 			// (partial) answer, ahead of any edit-review chrome.
-			if tok.Incomplete != nil {
-				ch <- incompleteMsg{tok.Incomplete}
+			if tok.Incomplete != nil && !deliver(ctx, ch, incompleteMsg{tok.Incomplete}) {
+				return
 			}
-			ch <- streamDoneMsg{}
+			deliver(ctx, ch, streamDoneMsg{})
 			return
 		}
 	}

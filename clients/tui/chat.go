@@ -85,6 +85,16 @@ const helpText = "enter to send · ctrl+n new conversation · ctrl+c to quit"
 // reviewHelpText is shown instead of helpText while reviewing edit blocks.
 const reviewHelpText = "y apply · n skip · q cancel remaining"
 
+// quitConfirmHelpText replaces the footer once ctrl+c has been pressed with
+// nothing to stop. See handleCtrlC for why quitting asks first.
+const quitConfirmHelpText = "press ctrl+c again to quit · any other key cancels"
+
+// interruptHelpText replaces helpText while a turn is in flight. The hint
+// changes because the available action does: an interrupt nobody can find is
+// the same as not having one, and this is the moment the user is looking at
+// the footer wondering how to make it stop.
+const interruptHelpText = "esc or ctrl+c to stop this turn"
+
 // approvalHelpText is shown while an agent turn is paused on a tool call.
 // Worded in the same shape as reviewHelpText because it is the same kind of
 // moment: the product has stopped and is waiting for a person to decide.
@@ -103,6 +113,11 @@ type chatModel struct {
 
 	streamCh     chan tea.Msg       // the active stream's channel; nil when idle
 	streamCancel context.CancelFunc // cancels the in-flight request; nil when idle
+
+	// quitArmed is set by a ctrl+c that had nothing to stop, and cleared by any
+	// other key. Only a ctrl+c pressed while it is set actually quits. See
+	// handleCtrlC.
+	quitArmed bool
 
 	// lastGrounding is the most recent GroundingInfo reported by the
 	// daemon, shown in the header. Cleared at the start of each new turn
@@ -300,6 +315,13 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.state = stateIdle
 			return m, m.input.Focus()
 		}
+		// ctrl+c is answered in ONE place for every state, above the per-state
+		// handlers, so the key cannot mean "quit" in one corner of the UI and
+		// "stop" in another. That split is what made it feel like a trapdoor.
+		if msg.String() == "ctrl+c" {
+			return m.handleCtrlC()
+		}
+		m.quitArmed = false
 		if m.state == stateEditReview {
 			return m.handleReviewKey(msg)
 		}
@@ -307,11 +329,13 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.handleApprovalKey(msg)
 		}
 		switch msg.String() {
-		case "ctrl+c", "esc":
-			if m.streamCancel != nil {
-				m.streamCancel()
-			}
-			return m, tea.Quit
+		case "esc":
+			// ESC NEVER QUITS THE PROGRAM. It means "stop what is happening
+			// now", and that is the only reading of it that is safe to press by
+			// reflex: a user who hits esc a beat after the answer finished must
+			// not lose their session for it. With nothing in flight it does
+			// nothing at all.
+			return m.interruptTurn()
 		case "enter":
 			// Enter SUBMITS. It accepts a completion only when the user has
 			// actively chosen one with the arrow keys, which is the convention
@@ -1002,6 +1026,115 @@ func (m *chatModel) endStream() {
 	m.streamCh = nil
 }
 
+// handleCtrlC answers every ctrl+c in the program, in every state.
+//
+// ONE PRESS NEVER ENDS THE SESSION. That was the complaint that started this:
+// "when I press esc / ctrl+c it exits". The stop key landed, the turn ended,
+// and the NEXT ctrl+c -- pressed a beat later, out of the same habit that had
+// just been rewarded -- quit the program and took the transcript with it. A key
+// whose meaning flips from "stop" to "exit" depending on whether a turn
+// happened to still be running is a trapdoor, and the fix is that the exit half
+// asks first.
+//
+// So, in order:
+//
+//  1. a turn in flight is stopped (interruptTurn);
+//  2. a turn paused at an approval prompt is stopped through the approval
+//     channel, which tells the daemon why rather than hanging up on it;
+//  3. with nothing to stop, the FIRST press only arms the quit and says so in
+//     the footer. Only a second consecutive ctrl+c exits.
+//
+// Any other key disarms it (see the Update case above), so the armed state can
+// never survive long enough to surprise anyone. There is no timer: a keypress
+// is a better disarm signal than a clock, and it is deterministic to test.
+// /exit still quits outright for anyone who wants one keystroke's worth of
+// certainty.
+func (m chatModel) handleCtrlC() (tea.Model, tea.Cmd) {
+	if m.turnInFlight() {
+		m.quitArmed = false
+		return m.interruptTurn()
+	}
+	if m.state == stateToolApproval {
+		m.quitArmed = false
+		return m.answerApproval(protocol.ApprovalCancelTurn)
+	}
+	if m.quitArmed {
+		if m.streamCancel != nil {
+			m.streamCancel()
+		}
+		return m, tea.Quit
+	}
+	m.quitArmed = true
+	return m, nil
+}
+
+// turnInFlight reports whether there is a turn to stop: the daemon is working
+// on this prompt right now, whether or not any of it has reached the screen.
+// stateToolApproval is deliberately NOT in here -- a paused turn is stopped
+// through the approval channel (handleApprovalKey), which tells the daemon WHY
+// it stopped rather than hanging up on it mid-question.
+func (m chatModel) turnInFlight() bool {
+	return m.state == stateSending || m.state == stateStreaming
+}
+
+// interruptTurn stops the turn in flight and hands the session back to the
+// user, instead of ending the process.
+//
+// IT EXISTS BECAUSE THERE WAS NO WAY TO SAY STOP. Once a prompt was sent, the
+// only key that ended the wait was ctrl+c, and that quit -- so a turn that had
+// gone somewhere useless (a long agent loop, a web fetch that was never going
+// to answer the question, an answer already visibly wrong in its first
+// sentence) could only be escaped by throwing away the whole conversation. That
+// is a bad trade to force on someone, and it silently taught the habit of
+// sitting through turns nobody wanted.
+//
+// Three things happen, and the second and third are what make this an interrupt
+// rather than a way to lose work:
+//
+//  1. endStream cancels the request context. That is what actually stops
+//     things: streamPrompt's watcher closes the connection, the daemon's next
+//     write to this client fails, and it abandons the turn (see the write-error
+//     cancel in daemon/agentturn.go) rather than finishing an answer nobody is
+//     reading. Clearing streamCh is what makes every message still in flight
+//     from the abandoned stream a no-op -- every handler in Update already
+//     checks it.
+//
+//  2. Whatever streamed stays. It is real output the user watched arrive, and
+//     deleting it on a keypress would make the key frightening to press.
+//
+//  3. The partial answer is MARKED user_cancelled, so the next prompt carries
+//     it back to the model as a turn the user stopped rather than as a finished
+//     reply (see buildHistory and daemon/history.go's incompleteHistoryNote).
+//     Without this the model would read its own truncated answer as a
+//     conclusion it had reached, which is the same loss the streamErrMsg branch
+//     above exists to prevent -- through a different door.
+func (m chatModel) interruptTurn() (tea.Model, tea.Cmd) {
+	if !m.turnInFlight() {
+		return m, nil
+	}
+	m.endStream()
+
+	if m.streamAssistant >= 0 && m.streamAssistant < len(m.turns) &&
+		strings.TrimSpace(m.turns[m.streamAssistant].text) != "" {
+		m.turns[m.streamAssistant].incomplete = protocol.IncompleteUserCancelled
+	}
+	// A permanent scrollback line rather than a header notice, for the same
+	// reason the cut-off notice is one: "why does this answer stop there?" is a
+	// question asked while scrolling back, long after a header has been
+	// overwritten by the next turn.
+	// Worded as what the CLIENT knows for certain. It stopped listening and hung
+	// up; the daemon stops on its next write (see agentturn.go), and a tool
+	// already dispatched may still be finishing as this line is drawn. "nothing
+	// further ran" would be a claim about the far end that this side cannot make.
+	m.turns = append(m.turns, turn{role: roleSystem, text: "⏹ stopped — you interrupted this turn"})
+
+	m.state = stateIdle
+	m.statusErr = ""
+	m.resizeViewport()
+	m.refreshViewport()
+	return m, m.input.Focus()
+}
+
 // buildHistory converts the transcript so far into the PromptRequest.History
 // the next prompt will carry, oldest first. roleSystem turns (edit-review
 // summaries, parse-error notices) are TUI-only chrome, not conversation
@@ -1174,19 +1307,22 @@ func (m chatModel) advanceReview() (tea.Model, tea.Cmd) {
 
 // handleReviewKey handles keypresses while m.state == stateEditReview. Only
 // a literal 'y' applies — the same strict default-deny confirm philosophy
-// as the CLI's `[y/N]` prompt. 'n' skips just the current block; 'q' cancels
-// every remaining block (including the current one) as skipped.
+// as the CLI's `[y/N]` prompt. 'n' skips just the current block; 'q' (and esc,
+// which means "stop this" everywhere in this UI) cancels every remaining block
+// (including the current one) as skipped.
 func (m chatModel) handleReviewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "ctrl+c", "esc":
-		return m, tea.Quit
 	case "y":
 		return m.applyCurrentReviewEdit()
 	case "n":
 		m.reviewSkipped++
 		m.reviewIndex++
 		return m.advanceReview()
-	case "q":
+	case "q", "esc":
+		// esc is 'q' here, not quit, under the same rule it follows everywhere
+		// else in this UI: it stops the thing in front of you. The thing in
+		// front of you is the review, and leaving it applies nothing further --
+		// esc has never been able to apply an edit and still cannot.
 		m.reviewSkipped += len(m.reviewBlocks) - m.reviewIndex
 		m.reviewIndex = len(m.reviewBlocks)
 		return m.finishReview()
@@ -1212,15 +1348,11 @@ func (m chatModel) handleApprovalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "n":
 		return m.answerApproval(protocol.ApprovalDeny)
 	case "q", "esc":
+		// Both stop the TASK and stay in the session. ctrl+c does the same, from
+		// handleCtrlC: a paused turn is the one moment where hanging up is
+		// strictly worse than answering, because the daemon is holding a tool
+		// call open and only a decision on this channel closes it cleanly.
 		return m.answerApproval(protocol.ApprovalCancelTurn)
-	case "ctrl+c":
-		// Stop the task first, so the daemon is not left holding a tool call
-		// open while this process exits, then quit as ctrl+c does everywhere.
-		model, _ := m.answerApproval(protocol.ApprovalCancelTurn)
-		if m.streamCancel != nil {
-			m.streamCancel()
-		}
-		return model, tea.Quit
 	}
 	return m, nil
 }
@@ -1641,7 +1773,18 @@ func (m chatModel) View() string {
 		} else {
 			bottomLine = m.input.View()
 		}
-		help = helpStyle.Render(helpText)
+		if m.turnInFlight() {
+			help = helpStyle.Render(interruptHelpText)
+		} else {
+			help = helpStyle.Render(helpText)
+		}
+	}
+
+	// Overrides whatever the state would otherwise hint, in every state: the
+	// question "will this key exit?" outranks every other hint on the line, and
+	// it is only on screen until the next keypress answers it.
+	if m.quitArmed {
+		help = helpStyle.Render(quitConfirmHelpText)
 	}
 
 	return header + "\n" + m.viewport.View() + "\n" + bottomLine + "\n" + help

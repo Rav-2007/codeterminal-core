@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"time"
 
@@ -30,6 +31,43 @@ func (s *Server) runAgentTurn(
 	full *strings.Builder,
 ) {
 	s.count(func(c *counters) { c.agentTurns.Add(1) })
+
+	// THE TURN'S OWN CANCELLABLE CONTEXT, and the reason it exists is the stop
+	// key the clients now have (interruptTurn in clients/tui/chat.go).
+	//
+	// An interrupt reaches the daemon as a closed connection -- there is no
+	// "cancel" message on this wire, and there could not usefully be one: the
+	// daemon is not reading from this connection except while it is asking an
+	// approval question. What it has instead is the write side, and a write that
+	// fails is proof the client is gone. Until now that proof was thrown away:
+	// the token callback returned the error and unwound the current model call,
+	// but a turn stopped BETWEEN calls -- during a tool that takes half a minute
+	// -- carried on regardless, ran the tool to completion, and paid for another
+	// model call to narrate it to nobody. Cancelling here is what turns "this
+	// write failed" into "stop the turn", because runAgentLoop already checks
+	// ctx.Err() between iterations and between every tool call, and
+	// dispatchToolCall passes it to the tool itself.
+	ctx, cancelTurn := context.WithCancel(ctx)
+	defer cancelTurn()
+
+	// clientGone latches the same fact for the LOG, so an interrupt is not
+	// reported as a turn that failed. "context canceled" is what shutdown looks
+	// like too, and an operator reading these lines should not have to guess
+	// which of the two happened.
+	clientGone := false
+
+	// writeToClient is the single write path for everything this turn streams.
+	// A failure here means the answer has nowhere left to go -- either the peer
+	// hung up, or it has not drained a byte for a full idle timeout, and neither
+	// is a state to keep working through.
+	writeToClient := func(resp protocol.TokenResponse) error {
+		if err := enc.Encode(resp); err != nil {
+			clientGone = true
+			cancelTurn()
+			return err
+		}
+		return nil
+	}
 
 	// The turn's clock starts HERE, before any server is spawned, because this
 	// is when the user's wait starts. buildRegistry below can block for up to
@@ -121,34 +159,50 @@ func (s *Server) runAgentTurn(
 	result, err := run(
 		func(token string) error {
 			full.WriteString(token)
-			return enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Token: token})
+			return writeToClient(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Token: token})
 		},
 		func(a protocol.ToolActivity) {
-			// Optional observability: a write error here must not fail a turn
-			// the token stream is otherwise completing, exactly like the
-			// provider and reasoning notices on the single-turn path.
+			// The RETURN VALUE is still dropped -- an optional notice must not
+			// fail a turn the token stream is otherwise completing, exactly like
+			// the provider and reasoning notices on the single-turn path. What
+			// changed is that writeToClient stops the turn when the connection
+			// itself is gone, and this callback is where that is worth the most:
+			// it fires while tools run, which is the stretch of an agent turn
+			// where nothing else writes and an interrupt would otherwise go
+			// unnoticed for as long as the tool takes.
 			activity := a
-			_ = enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, ToolActivity: &activity})
+			_ = writeToClient(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, ToolActivity: &activity})
 		},
 		func(provider string) {
 			s.logger.Printf("agent: model API served by provider=%q", provider)
 			// Dropped for the same reason as the activity notice above: optional
 			// observability must not fail a turn the token stream is completing.
-			_ = enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Provider: provider})
+			_ = writeToClient(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Provider: provider})
 		},
 		func(reasoning string) {
-			_ = enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Reasoning: reasoning})
+			_ = writeToClient(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Reasoning: reasoning})
 		},
 		func(d protocol.Degradation) {
 			// Sent on the same channel and with the same best-effort discipline
 			// as the connect-failure notice above: a client that cannot be told
 			// its tool menu was trimmed still gets its answer.
-			_ = enc.Encode(protocol.TokenResponse{
+			_ = writeToClient(protocol.TokenResponse{
 				ProtocolVersion: protocol.ProtocolVersion,
 				Degraded:        []protocol.Degradation{d},
 			})
 		},
 	)
+	if err != nil && clientGone && errors.Is(err, context.Canceled) {
+		// THE INTERRUPT PATH, and it ends here deliberately quietly. There is
+		// nobody to send a Done to (the write that proved it is why this branch
+		// ran at all), and the turn is not persisted: a turn the user stopped is
+		// not a turn they asked to remember, and writing a half-finished answer
+		// into conversation memory would feed it back to the model on their next
+		// prompt as though it had completed. The client keeps what it already
+		// received and marks it as stopped itself.
+		s.logger.Printf("agent: the client went away mid-turn; stopped after %s", time.Since(turnStart).Round(time.Millisecond))
+		return
+	}
 	if err != nil {
 		modelErr := asModelError(err)
 		s.logger.Printf("agent: turn failed: %s", modelErr.Detail())

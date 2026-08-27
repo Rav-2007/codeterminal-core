@@ -536,12 +536,16 @@ func TestChat_EnterWhileSendingOrStreamingIsANoOp(t *testing.T) {
 	}
 }
 
-// TestChat_CtrlCCancelsAndQuits is the mid-stream-quit safety net: it
-// confirms Ctrl-C actually invokes streamCancel (not just that it returns
-// tea.Quit), which is the mechanism that unblocks streamPrompt's blocked
-// read (see TestStreamPrompt_ContextCancelUnblocksBlockedRead in
-// stream_test.go for the full end-to-end proof).
-func TestChat_CtrlCCancelsAndQuits(t *testing.T) {
+// TestChat_CtrlCCancelsTheRequest is the mid-stream safety net: it confirms
+// Ctrl-C actually invokes streamCancel, which is the mechanism that unblocks
+// streamPrompt's blocked read (see TestStreamPrompt_ContextCancelUnblocksBlockedRead
+// in stream_test.go for the full end-to-end proof).
+//
+// It used to also assert tea.Quit. Mid-stream, Ctrl-C now stops the TURN and
+// stays in the session (see interruptTurn); quitting moved to the next press
+// and is covered by TestCtrlCStopsTheTurnThenQuitsOnTheNextPress. The
+// cancellation half -- the part this test was written for -- is unchanged.
+func TestChat_CtrlCCancelsTheRequest(t *testing.T) {
 	m := newTestModel()
 	m = typeText(m, "hi")
 	m, _ = pressEnter(m)
@@ -549,17 +553,14 @@ func TestChat_CtrlCCancelsAndQuits(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	m.streamCancel = cancel
 
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
 	m = updated.(chatModel)
 
 	if ctx.Err() == nil {
 		t.Error("expected streamCancel to have been called (context should be Done)")
 	}
-	if cmd == nil {
-		t.Fatal("expected a non-nil Cmd (tea.Quit)")
-	}
-	if _, ok := cmd().(tea.QuitMsg); !ok {
-		t.Error("expected the returned Cmd to produce a tea.QuitMsg")
+	if m.streamCancel != nil {
+		t.Error("expected the cancelled turn's stream state to be released")
 	}
 }
 
