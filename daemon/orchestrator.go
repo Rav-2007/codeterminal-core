@@ -130,7 +130,13 @@ func (s *Server) runOrchestrated(
 	var (
 		combined agentResult
 		outcomes []phaseOutcome
+		// Built at most ONCE per turn, and only if a phase asks for it. Not
+		// cached across turns on purpose: a cache of the filesystem is a cache
+		// that goes stale the moment the user edits a file, and this costs ~55ms
+		// on a 515-file repository -- cheaper than the invalidation bug.
+		turnMap repoMapOnce
 	)
+	turnMap.root = s.workspace
 
 	for i, role := range phases {
 		if err := ctx.Err(); err != nil {
@@ -162,7 +168,7 @@ func (s *Server) runOrchestrated(
 		// is to report cannot have its report discarded by the plumbing.
 		streams := i >= answerAt
 		phaseMessages := buildPhaseMessages(baseSystem, history, userPrompt, role, outcomes,
-			s.cfg.MCP.Budget.resolvedMaxToolResultBytes())
+			s.cfg.MCP.Budget.resolvedMaxToolResultBytes(), repoMapFor(ctx, role, &turnMap))
 
 		// A non-answer phase's tokens are captured, not streamed. The captured
 		// text becomes the next phase's context.
@@ -383,7 +389,32 @@ func splitMessages(messages []chatMessage) (system string, history []chatMessage
 // none of the tool results, dead ends, or files read along the way.
 // maxHandoff bounds ONE earlier phase's contribution. Zero means unbounded,
 // which only tests should ever pass.
-func buildPhaseMessages(system string, history []chatMessage, prompt string, role *agentRole, prior []phaseOutcome, maxHandoff int) []chatMessage {
+// repoMapOnce builds the repository map lazily, at most once per turn.
+type repoMapOnce struct {
+	root  string
+	done  bool
+	text  string
+	built bool
+}
+
+// repoMapFor returns the map for a role that wants one, building it on first
+// use. A role that does not want it never pays for it.
+func repoMapFor(ctx context.Context, role *agentRole, once *repoMapOnce) string {
+	if role == nil || !role.WantsRepoMap || once == nil || once.root == "" {
+		return ""
+	}
+	if !once.done {
+		once.done = true
+		m, err := buildRepoMap(ctx, once.root)
+		if err == nil {
+			once.text = m.Render()
+			once.built = true
+		}
+	}
+	return once.text
+}
+
+func buildPhaseMessages(system string, history []chatMessage, prompt string, role *agentRole, prior []phaseOutcome, maxHandoff int, repoMap string) []chatMessage {
 	var messages []chatMessage
 
 	roleSystem := system
@@ -392,6 +423,17 @@ func buildPhaseMessages(system string, history []chatMessage, prompt string, rol
 			roleSystem += "\n\n"
 		}
 		roleSystem += role.Prompt
+	}
+	if repoMap != "" {
+		// In the SYSTEM message, not the user turn: it is standing context about
+		// the workspace, not part of what the user asked, and folding it into
+		// the request would make every handoff quote it back.
+		if roleSystem != "" {
+			roleSystem += "\n\n"
+		}
+		roleSystem += "The workspace contains the following. These paths are real; " +
+			"any path not listed here may not exist, so say you do not know rather than " +
+			"naming one.\n\n" + repoMap
 	}
 	if roleSystem != "" {
 		messages = append(messages, chatMessage{Role: "system", Content: roleSystem})

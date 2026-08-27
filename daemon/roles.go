@@ -38,6 +38,11 @@ import (
 // and why nil is threaded through rather than a "default role": an existing turn
 // must not change shape because roles now exist.
 type agentRole struct {
+	// WantsRepoMap asks for the repository map (repomap.go) in this role's
+	// context. It is not "on for everyone": a specialist that can search does
+	// not need a map more than it needs the budget the map would spend.
+	WantsRepoMap bool
+
 	// Name is the stable identifier used in config, logs and audit records.
 	Name string
 
@@ -156,6 +161,17 @@ var rolePlanner = agentRole{
 	Display:       "Planner",
 	MaxIterations: 1,
 	Tools:         []string{}, // no tools at all: planning is reasoning over the request
+	// THE ONE ROLE THAT CANNOT GO LOOK, so it is the one that gets shown.
+	//
+	// A tool-less specialist asked to name the files involved has exactly two
+	// options, and MEASURED it took the wrong one: it invented
+	// `src/agent/agent.ts` in a Go repository and the later phases carried the
+	// invention forward as fact (see orchestrator.go's handoff note and
+	// repomap.go). The role prompt already tells it to say when it does not
+	// know. Telling a model not to guess is a control that works until it does
+	// not; giving it the answer is a control that does not depend on the model
+	// choosing to obey.
+	WantsRepoMap: true,
 	Prompt: "You are the PLANNER for this task. Produce a short, ordered plan and nothing else.\n\n" +
 		"Do NOT write code, do not produce edit blocks, and do not attempt to solve the task -- " +
 		"a later specialist does that, and it will have your plan.\n\n" +
@@ -167,7 +183,7 @@ var rolePlanner = agentRole{
 var roleResearcher = agentRole{
 	Name:    roleNameResearcher,
 	Display: "Researcher",
-	Tools:   []string{"search_code", "read_file", "list_directory", "query_compiler_definition", "query_compiler_references"},
+	Tools:   []string{"repo_map", "search_code", "read_file", "list_directory", "query_compiler_definition", "query_compiler_references"},
 	Prompt: "You are the RESEARCHER for this task. Gather the specific code the plan needs and report what you found.\n\n" +
 		"Do NOT propose edits, do not write code, and do not judge the plan -- report evidence.\n\n" +
 		"For each finding give the file path, the line range, and what is actually there. Quote only " +
@@ -179,7 +195,7 @@ var roleCoder = agentRole{
 	Name:          roleNameCoder,
 	Display:       "Coder",
 	StreamsAnswer: true,
-	Tools:         []string{"search_code", "read_file", "list_directory", "propose_edit", "propose_ast_edit", "query_compiler_definition", "query_compiler_references"},
+	Tools:         []string{"repo_map", "search_code", "read_file", "list_directory", "propose_edit", "propose_ast_edit", "query_compiler_definition", "query_compiler_references"},
 	Prompt: "You are the CODER for this task. Implement it using the plan and research you were given.\n\n" +
 		"Prefer the findings you were handed over re-deriving them; read a file again only when you " +
 		"actually need something the research did not carry.\n\n" +

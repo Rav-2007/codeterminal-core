@@ -189,6 +189,26 @@ func (s *Server) sandboxExecDescription() string {
 		"This daemon's API credentials are never passed to it."
 }
 
+// builtinRepoMap answers the repo_map tool.
+//
+// Built on demand rather than cached: the workspace changes under this daemon
+// (the user edits, and this product's own edit path writes), and a stale map is
+// worse than a slow one -- it is the same "invented path" failure arriving from
+// the other direction. Measured at ~55ms over 515 files, which is cheaper than
+// the round trip that asked for it.
+func (s *Server) builtinRepoMap(ctx context.Context) (mcp.Result, error) {
+	if s.workspace == "" {
+		return toolError("this daemon has no workspace to map")
+	}
+	m, err := buildRepoMap(ctx, s.workspace)
+	if err != nil {
+		// Client-safe by construction: buildRepoMap's errors name the workspace
+		// root, which the caller already knows.
+		return toolError("could not read the workspace: %v", err)
+	}
+	return mcp.Result{Content: m.Render()}, nil
+}
+
 func (s *Server) builtinSandboxExec(ctx context.Context, raw json.RawMessage) (mcp.Result, error) {
 	var args struct {
 		Command string `json:"command"`

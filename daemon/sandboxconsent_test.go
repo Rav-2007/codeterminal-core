@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -57,18 +58,44 @@ func TestSandboxExecReportsUnconfinedWhenTheHostHasNoBackend(t *testing.T) {
 
 // The read-and-propose built-ins are confined by construction and must STAY
 // asserted -- the fix must not turn every tool into a scary banner.
+//
+// THE EXEMPTION IS A PROPERTY, NOT A NAME. This used to skip the literal
+// "sandbox_exec", which was right when that was the only exempt tool and
+// silently wrong the moment web_search and web_fetch arrived: they are forced
+// unconfined because a tool that talks to the internet is not confined on any
+// host, and this loop would have demanded the opposite. It was never reached,
+// because those two were also missing from allBuiltinNames -- two gaps that
+// concealed each other. Asking the tool what it IS survives the next arrival.
 func TestTheReadAndProposeBuiltinsAreStillConfined(t *testing.T) {
 	restore := stubNoSandboxBackend(t)
 	defer restore()
 
 	s := builtinTestServer(t)
 	for _, name := range allBuiltinNames {
-		if name == "sandbox_exec" {
-			continue
+		spec := builtinSpec(t, s, name)
+		if spec.ExecutesCode || spec.ReachesNetwork {
+			continue // exempt by construction; the two tests below pin who qualifies
 		}
-		if spec := builtinSpec(t, s, name); !spec.Confined {
+		if !spec.Confined {
 			t.Errorf("%s reports unconfined; it is this daemon's own code behind the same gates", name)
 		}
+	}
+}
+
+// Exactly the two tools that leave the machine, named. An exemption nobody
+// enumerates is an exemption anything can join.
+func TestOnlyTheWebToolsReachTheNetwork(t *testing.T) {
+	s := builtinTestServer(t)
+
+	var marked []string
+	for _, name := range allBuiltinNames {
+		if builtinSpec(t, s, name).ReachesNetwork {
+			marked = append(marked, name)
+		}
+	}
+	slices.Sort(marked)
+	if strings.Join(marked, ",") != "web_fetch,web_search" {
+		t.Fatalf("tools marked as reaching the network: %v, want exactly [web_fetch web_search]", marked)
 	}
 }
 
@@ -178,9 +205,54 @@ func (r *recordingApprover) Ask(_ context.Context, req protocol.ToolApprovalRequ
 // a list that has to be edited when a tool is added is the point: a new built-in
 // should have to answer "does this execute code?" once, deliberately.
 var allBuiltinNames = []string{
-	"read_file", "list_directory", "search_code",
+	"read_file", "list_directory", "search_code", "repo_map",
 	"query_compiler_definition", "query_compiler_references",
 	"sandbox_exec", "propose_edit", "propose_ast_edit",
+	"web_search", "web_fetch",
+}
+
+// AND THE LIST HAS TO BE COMPLETE, or the sentence above is not true.
+//
+// It said "a list that has to be edited when a tool is added is the point" --
+// and nothing checked, so a tool could be added and never answer the question.
+// Measured: repo_map was registered, advertised, and callable while this list
+// still named eight tools, and every test here passed. A list that silently
+// covers a subset is worse than no list, because it reads as an inventory.
+func TestEveryBuiltinAnswersTheConfinementQuestion(t *testing.T) {
+	s := builtinTestServer(t)
+	// Built-ins are registered only when agent mode is configured, which is the
+	// state this list describes.
+	s.cfg.MCP.Enabled = true
+	registry, _ := s.buildRegistry(context.Background(), s.logger, &proposalSink{}, "")
+	t.Cleanup(func() { _ = registry.Close() })
+
+	advertised, _ := registry.Advertised(context.Background())
+	var registered []string
+	for _, tool := range advertised {
+		if tool.Server == mcp.BuiltinServerName {
+			registered = append(registered, tool.Name)
+		}
+	}
+	if len(registered) == 0 {
+		t.Fatal("no built-ins advertised; this test is comparing against nothing")
+	}
+
+	listed := map[string]bool{}
+	for _, name := range allBuiltinNames {
+		listed[name] = true
+	}
+	for _, name := range registered {
+		if !listed[name] {
+			t.Errorf("built-in %q is registered but missing from allBuiltinNames, so it has never "+
+				"been asked whether it executes code -- add it there and answer that question", name)
+		}
+	}
+	for _, name := range allBuiltinNames {
+		if !slices.Contains(registered, name) {
+			t.Errorf("allBuiltinNames names %q, which is not registered; the list is describing a "+
+				"tool that no longer exists", name)
+		}
+	}
 }
 
 // builtinSpec returns the tool exactly as resolveExecutable would see it --

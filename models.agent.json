@@ -75,6 +75,7 @@
         "read_file": "allow",
         "list_directory": "allow",
         "search_code": "allow",
+        "repo_map": "allow",
         "query_compiler_definition": "allow",
         "query_compiler_references": "allow",
         "propose_edit": "ask",

@@ -177,7 +177,7 @@ func TestNilRoleIsUnrestrictedAndEmptyListIsNothing(t *testing.T) {
 // handoff is the entire reason the pipeline exists.
 func TestLaterPhaseReceivesEarlierPhaseOutput(t *testing.T) {
 	msgs := buildPhaseMessages("BASE", nil, "add a retry", &roleCoder,
-		[]phaseOutcome{{role: &rolePlanner, text: "1. wrap the call\n2. add a backoff"}}, 0)
+		[]phaseOutcome{{role: &rolePlanner, text: "1. wrap the call\n2. add a backoff"}}, 0, "")
 
 	last := msgs[len(msgs)-1]
 	if last.Role != "user" {
@@ -198,7 +198,7 @@ func TestLaterPhaseReceivesEarlierPhaseOutput(t *testing.T) {
 // that replaced the base prompt would drop every safety instruction in it for
 // exactly that phase.
 func TestRolePromptAppendsToBaseRatherThanReplacingIt(t *testing.T) {
-	msgs := buildPhaseMessages("BASE SAFETY RULES", nil, "go", &rolePlanner, nil, 0)
+	msgs := buildPhaseMessages("BASE SAFETY RULES", nil, "go", &rolePlanner, nil, 0, "")
 
 	if msgs[0].Role != "system" {
 		t.Fatalf("first message role = %q, want system", msgs[0].Role)
@@ -541,7 +541,7 @@ func TestAllUnknownRolesStillProducesAnAnswer(t *testing.T) {
 // splitMessages yields an empty prompt when the list does not end in a user
 // turn. An empty user message is a malformed request; it must not be sent.
 func TestNoEmptyUserMessageIsBuilt(t *testing.T) {
-	msgs := buildPhaseMessages("S", nil, "", &rolePlanner, nil, 0)
+	msgs := buildPhaseMessages("S", nil, "", &rolePlanner, nil, 0, "")
 	for _, m := range msgs {
 		if m.Role == "user" && strings.TrimSpace(m.Content) == "" {
 			t.Error("an empty user message was built; providers reject it and it costs a round trip")
@@ -576,7 +576,7 @@ func TestHandoffTextIsBounded(t *testing.T) {
 		{role: &roleCoder, text: big},
 	}
 
-	msgs := buildPhaseMessages("SYS", nil, "do it", &roleTester, prior, cap)
+	msgs := buildPhaseMessages("SYS", nil, "do it", &roleTester, prior, cap, "")
 	total := 0
 	for _, m := range msgs {
 		total += len(m.Content)
@@ -618,7 +618,7 @@ func TestZeroValuedOutcomeDoesNotPanic(t *testing.T) {
 			t.Fatalf("a zero-valued phaseOutcome panicked: %v", r)
 		}
 	}()
-	msgs := buildPhaseMessages("S", nil, "go", &roleCoder, []phaseOutcome{{text: "orphaned"}}, 0)
+	msgs := buildPhaseMessages("S", nil, "go", &roleCoder, []phaseOutcome{{text: "orphaned"}}, 0, "")
 	if len(msgs) == 0 {
 		t.Error("no messages built")
 	}
@@ -1081,7 +1081,7 @@ func TestThePhaseReservationCanOnlyTightenTheToolBudget(t *testing.T) {
 // pipeline's losses on that scenario were attributed to those paths.
 func TestAToollessPhasesHandoffIsMarkedUnverified(t *testing.T) {
 	prior := []phaseOutcome{{role: &rolePlanner, text: "look at src/agent/agent.ts"}}
-	messages := buildPhaseMessages("BASE", nil, "trace the approval path", &roleCoder, prior, 0)
+	messages := buildPhaseMessages("BASE", nil, "trace the approval path", &roleCoder, prior, 0, "")
 
 	var user string
 	for _, m := range messages {
@@ -1097,7 +1097,7 @@ func TestAToollessPhasesHandoffIsMarkedUnverified(t *testing.T) {
 	// A phase that DID have tools must not be labelled -- the marker has to mean
 	// something, and marking everything would make it mean nothing.
 	prior = []phaseOutcome{{role: &roleResearcher, text: "daemon/agentloop.go:614 resolveExecutable"}}
-	messages = buildPhaseMessages("BASE", nil, "trace the approval path", &roleCoder, prior, 0)
+	messages = buildPhaseMessages("BASE", nil, "trace the approval path", &roleCoder, prior, 0, "")
 	for _, m := range messages {
 		if m.Role == "user" && strings.Contains(m.Content, "NO TOOLS") {
 			t.Errorf("a Researcher's findings were labelled unverified; it has tools and used them:\n%s", m.Content)

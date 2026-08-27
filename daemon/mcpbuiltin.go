@@ -217,6 +217,19 @@ func (s *Server) builtinTools(proposals *proposalSink, mode string) []mcp.Builti
 		},
 			mcp.Builtin{
 				Tool: mcp.Tool{
+					Name: "repo_map",
+					Description: "Show the shape of this workspace: every directory, the files in it, " +
+						"and the top-level declarations of as many files as fit. Use it to find out what " +
+						"exists before searching or guessing at a path. Takes no arguments.",
+					Schema:       schema(`{"type":"object","properties":{},"additionalProperties":false}`),
+					ReadOnlyHint: true,
+				},
+				Handler: func(ctx context.Context, _ json.RawMessage) (mcp.Result, error) {
+					return s.builtinRepoMap(ctx)
+				},
+			},
+			mcp.Builtin{
+				Tool: mcp.Tool{
 					Name:        "propose_ast_edit",
 					Description: "Propose an edit to a workspace file via AST diffing. Finds the exact node for the given symbol (e.g. 'function foo' or 'MyStruct') using the native compiler, and replaces its entire definition with the supplied code. The edit is NOT applied immediately: it is shown to the user as a reviewable diff.",
 					Schema: schema(`{
