@@ -312,12 +312,14 @@ func chunkContent(content []byte, relPath string) []Chunk {
 
 	class := classifyFile(relPath)
 
-	stride := chunkLines - overlapLines
+	boundaries := constructStarts(lines)
+	byteAt := byteOffsets(lines)
+
 	var chunks []Chunk
-	for start := 0; start < len(lines); start += stride {
-		end := start + chunkLines
-		if end > len(lines) {
-			end = len(lines)
+	for start := 0; start < len(lines); {
+		end, clean := snapEnd(lines, byteAt, start, chunkLines, boundaries)
+		if end <= start {
+			break // snapEnd never returns this; a guard against an infinite loop
 		}
 
 		chunkClass := class
@@ -338,6 +340,26 @@ func chunkContent(content []byte, relPath string) []Chunk {
 
 		if end == len(lines) {
 			break
+		}
+		// A CLEAN CUT NEEDS NO OVERLAP. The overlap exists so a construct
+		// straddling a window edge is whole in at least one window; when the
+		// edge IS the construct's own boundary there is nothing straddling it,
+		// and repeating ten lines would only cost budget and hand
+		// mergeAdjacentChunks a seam to undo.
+		if clean {
+			start = end
+			continue
+		}
+		// THE OVERLAP MUST NEVER WALK BACKWARDS. A chunk cut short by the byte
+		// ceiling can be shorter than the overlap itself -- one 100 KB line is
+		// a whole chunk -- and subtracting ten lines from it then produced a
+		// NEGATIVE start, which indexed out of range and, had it not, would
+		// have looped forever re-chunking the same lines. Overlap is an
+		// optimisation for a forced cut; progress is not negotiable.
+		if next := end - overlapLines; next > start {
+			start = next
+		} else {
+			start = end
 		}
 	}
 	return chunks

@@ -101,11 +101,11 @@ type editEvalCase struct {
 	// is a wrong-answer/test-assertion failure, not a compile failure).
 	runFilter string
 
-	// exactChunks are the chunk IDs (file:startLine-endLine, chunkContent's
-	// ID format) that actually contain the code the fix touched, computed
-	// from fixCommit's own diff hunk headers (the pre-fix side, "-N,M") and
-	// this repo's real chunkLines=40/overlapLines=10 windowing -- not
-	// eyeballed. A hit is any of these landing in the real top-5.
+	// exactChunks WAS the grading target: chunk IDs derived from fixCommit's
+	// diff hunks and the chunker's then-current 40/10 windowing. It is kept
+	// only as a historical record of what these cases used to assert, and is
+	// no longer read by anything -- see rankOfAnchor for why a window is the
+	// wrong target and fixAnchorLines for what replaced it.
 	exactChunks []string
 
 	note string
@@ -173,61 +173,52 @@ func init() {
 	evalSelfReferenceFiles["daemon/edit_eval_test.go"] = true
 }
 
-// gitRevertPreFixTree creates a scratch git worktree at repoRoot's current
-// HEAD, reverts fixCommit in it, and restores testFile to its HEAD (post-
-// fix) content -- reconstructing exactly the tree a developer/model would
-// face while fixCommit's bug was still live. Any conflict outside a .go
-// file (e.g. BACKLOG.md prose describing the very fix being reverted) is
-// resolved by keeping the HEAD copy, since it has no bearing on the code
-// under test; a conflict IN a .go file fails the case loudly rather than
-// faking a pre-fix state, per this eval's own discipline (see the P3
-// convergence experiment, which excluded two cases outright for exactly
-// this reason instead of hand-authoring a synthetic revert).
-func gitRevertPreFixTree(t *testing.T, repoRoot, fixCommit, testFile string) string {
+// gitPreFixTree materialises the state of the repository immediately BEFORE
+// fixCommit, in a throwaway worktree, with that commit's test file restored so
+// the bug it describes is reproducible.
+//
+// IT CHECKS OUT THE PARENT; IT NO LONGER REVERTS, and the difference is the
+// difference between an eval that decays and one that does not.
+//
+// Reverting fixCommit out of HEAD looked more faithful -- a CURRENT repository
+// with one fix undone -- and it degrades in two ways that both showed up here:
+//
+//   - Line numbers move. The grading targets were written against the coordinates
+//     of the day, and one of them had already drifted onto a region the fix does
+//     not touch (see rankOfAnchor). Silently: a stale target and a retrieval
+//     regression are the same pass/fail signal.
+//   - Eventually the revert stops applying at all. MEASURED on the
+//     watcher-symlink-escape case: HEAD had grown ~90 lines in that region
+//     (watchableDirName, indexKeyFor) that did not exist pre-fix, so git could
+//     no longer separate the fix from what was built around it and the case
+//     failed outright -- refusing to run, correctly, rather than faking a
+//     pre-fix state.
+//
+// Both are the same root cause: the pre-fix state was being RECONSTRUCTED from a
+// moving target. The parent commit IS that state, exactly, and it is immutable --
+// so the checkout cannot conflict, the anchors cannot drift, and the tree is one
+// that genuinely compiled once, which a HEAD-minus-one-old-commit tree need not.
+//
+// The cost is honest and small: the indexed corpus is the repository as it was,
+// not as it is. For a benchmark that is a feature.
+func gitPreFixTree(t *testing.T, repoRoot, fixCommit, testFile string) string {
 	t.Helper()
 
 	wt := filepath.Join(t.TempDir(), "prefix-worktree")
-	if out, err := exec.Command("git", "-C", repoRoot, "worktree", "add", "--detach", "-q", wt, "HEAD").CombinedOutput(); err != nil {
-		t.Fatalf("git worktree add: %v\n%s", err, out)
+	if out, err := exec.Command("git", "-C", repoRoot, "worktree", "add", "--detach", "-q", wt, fixCommit+"~1").CombinedOutput(); err != nil {
+		t.Fatalf("git worktree add %s~1: %v\n%s", fixCommit, err, out)
 	}
 	t.Cleanup(func() {
 		if out, err := exec.Command("git", "-C", repoRoot, "worktree", "remove", "--force", wt).CombinedOutput(); err != nil {
-			// The worktree may be left mid-revert (we never commit or abort
-			// it -- see below); fall back to a plain removal + prune so a
-			// failed case doesn't leak scratch worktrees across runs.
 			os.RemoveAll(wt)
 			exec.Command("git", "-C", repoRoot, "worktree", "prune").Run()
 			t.Logf("git worktree remove %s (falling back to manual cleanup): %v\n%s", wt, err, out)
 		}
 	})
 
-	revertCmd := exec.Command("git", "revert", "--no-commit", "--no-edit", fixCommit)
-	revertCmd.Dir = wt
-	revertOut, revertErr := revertCmd.CombinedOutput()
-
-	unmergedOut, err := exec.Command("git", "-C", wt, "diff", "--name-only", "--diff-filter=U").CombinedOutput()
-	if err != nil {
-		t.Fatalf("git diff --diff-filter=U: %v\n%s", err, unmergedOut)
-	}
-	for _, f := range strings.Fields(string(unmergedOut)) {
-		if strings.HasSuffix(f, ".go") {
-			t.Fatalf("case %s: fixCommit %s does not revert cleanly -- real conflict in %s (not a doc file), refusing to fake a pre-fix state:\n%s", t.Name(), fixCommit, f, revertOut)
-		}
-		// Non-Go conflict (docs, etc.): keep HEAD's copy, it has no bearing
-		// on the code under test.
-		if out, err := exec.Command("git", "-C", wt, "checkout", "HEAD", "--", f).CombinedOutput(); err != nil {
-			t.Fatalf("resolving non-Go conflict in %s: %v\n%s", f, err, out)
-		}
-		if out, err := exec.Command("git", "-C", wt, "add", f).CombinedOutput(); err != nil {
-			t.Fatalf("git add %s: %v\n%s", f, err, out)
-		}
-	}
-	if revertErr != nil && len(unmergedOut) == 0 {
-		// revert failed for a reason other than a mergeable conflict.
-		t.Fatalf("git revert %s: %v\n%s", fixCommit, revertErr, revertOut)
-	}
-
-	if out, err := exec.Command("git", "-C", wt, "checkout", "HEAD", "--", testFile).CombinedOutput(); err != nil {
+	// The fix's own test file comes from the fix, so the bug is reproducible:
+	// everything else is pre-fix, and this one file asserts the fix's behaviour.
+	if out, err := exec.Command("git", "-C", wt, "checkout", fixCommit, "--", testFile).CombinedOutput(); err != nil {
 		t.Fatalf("restoring %s to post-fix content: %v\n%s", testFile, err, out)
 	}
 
@@ -256,23 +247,61 @@ func captureRealFailureText(t *testing.T, wt, buildDir, runFilter string) string
 	return strings.TrimSpace(string(out))
 }
 
-// rankOfChunk returns the 1-based rank of the first hit that DELIVERS one of
-// exactChunks within hits, or 0 if none does.
+// rankOfAnchor returns the 1-based rank of the first hit that SHOWS THE MODEL A
+// LINE THE FIX ACTUALLY CHANGED, or 0 if none does.
 //
-// "Delivers" is containment, not string equality on the chunk ID. Exact-ID
-// matching was correct while every retrieved chunk was verbatim an indexer
-// window, and became WRONG the moment retrieval started merging overlapping
-// windows into contiguous spans (Fix 11, chunkmerge.go): a span covering
-// provider.go:61-130 contains the whole of the expected provider.go:91-130 and
-// shows the model strictly more of the right code, yet scored as a MISS purely
-// because its ID string differs. That is a grading artifact, not a retrieval
-// result, and reading it as a regression would have been reading noise as
-// signal.
+// THE TARGET IS THE FIX, NOT A WINDOW, and getting there took two corrections.
 //
-// Containment is required to be FULL: a span that only clips part of the
-// expected chunk is not credited. So this cannot inflate the number either --
-// every exact-ID match is trivially a containment match, and nothing that
-// fails to deliver the expected lines can pass.
+// The first is recorded below in its original words: exact chunk-ID equality
+// was correct while every retrieved chunk was verbatim an indexer window, and
+// became WRONG the moment retrieval merged overlapping windows into contiguous
+// spans (chunkmerge.go) -- a span covering provider.go:61-130 contains the whole
+// of the expected provider.go:91-130 and shows the model strictly MORE of the
+// right code, yet scored a MISS purely because its ID string differed. A grading
+// artifact, not a retrieval result.
+//
+// The second correction is the same mistake one level down, and it was still
+// here. The expectations were chunk IDs -- 40-line windows that happened to
+// contain the fix -- so the grader still depended on the chunker's own
+// geometry. Two things fell out of that when it was checked rather than
+// trusted:
+//
+//   - Structure-aware chunk boundaries moved every window slightly, and
+//     helperproc.go:31-70 became 31-68: same code, same start line, graded a
+//     miss for two lines nobody was asking about.
+//   - MEASURED, one expectation was ALREADY WRONG, with no chunker change
+//     involved. This eval indexes HEAD with the fix reverted, not fixCommit~1,
+//     so the line numbers move whenever the file moves. helperproc.go's second
+//     expectation was 121-160; in the reverted worktree that fix touches lines
+//     165 and 174. The eval was grading retrieval on whether it found a region
+//     the fix does not touch.
+//
+// So the ground truth is computed in situ instead of written down: the anchors
+// are the lines that differ between HEAD and the reverted worktree, in the
+// reverted worktree's own coordinates (see fixAnchorLines). They cannot go
+// stale against the repository and they cannot move with the chunker, because
+// neither is involved in deriving them.
+//
+// A hit is a retrieved span containing an anchor line. That is a genuinely
+// different bar from "fully covers the 40-line window around it" and NOT
+// comparable to numbers recorded before this change: an insertion point has no
+// pre-image range at all, and demanding forty lines around it was an artifact
+// of how the old expectations were produced, not a property anyone wanted.
+func rankOfAnchor(hits []Chunk, anchors map[string][]int) int {
+	for i, h := range hits {
+		for _, line := range anchors[h.FilePath] {
+			if h.StartLine <= line && line <= h.EndLine {
+				return i + 1
+			}
+		}
+	}
+	return 0
+}
+
+// rankOfChunk grades by containment of a chunk ID, and is still what
+// rerank_eval_test.go uses -- correctly, because that eval RESOLVES its chunk
+// IDs at run time from stable code anchors (resolveExactChunks) rather than
+// writing them down, so nothing there can go stale against the chunker.
 func rankOfChunk(hits []Chunk, exactChunks []string) int {
 	for i, h := range hits {
 		if matchesAny(chunkID(h), exactChunks) || containsAnyChunk(h, exactChunks) {
@@ -280,6 +309,82 @@ func rankOfChunk(hits []Chunk, exactChunks []string) int {
 		}
 	}
 	return 0
+}
+
+// fixAnchorLines returns, per non-test source file, the line numbers IN THE
+// PRE-FIX TREE that fixCommit changed. Those are the lines retrieval has to put
+// in front of the model; finding them is the whole task being measured.
+//
+// The fix's own diff against its parent is the ground truth, and the "-" side of
+// each hunk header is already in the pre-fix coordinates the indexer sees. A
+// hunk with a zero-length "-" side is the common case -- the fix ADDED code, so
+// pre-fix there is an insertion point rather than a range -- and that point is
+// where retrieval has to land.
+//
+// Computed, never written down. The expectations used to be chunk IDs pasted
+// into the case table, and BOTH halves of that went wrong: they encoded the
+// chunker's geometry, so changing chunk boundaries looked like a retrieval
+// regression, and they encoded line numbers from a tree that kept moving, so one
+// of them had already drifted onto a region its fix does not touch. Deriving
+// them from an immutable commit pair removes both failure modes at once.
+func fixAnchorLines(t *testing.T, repoRoot, fixCommit, testFile string) map[string][]int {
+	t.Helper()
+
+	out, err := exec.Command("git", "-C", repoRoot, "diff", "--unified=0", fixCommit+"~1", fixCommit).Output()
+	if err != nil {
+		t.Fatalf("computing fix anchors for %s: %v", fixCommit, err)
+	}
+	anchors := map[string][]int{}
+	var path string
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.HasPrefix(line, "--- a/") {
+			path = strings.TrimPrefix(line, "--- a/")
+			continue
+		}
+		if !strings.HasPrefix(line, "@@ ") || path == "" {
+			continue
+		}
+		// The fix's own test file is restored to post-fix content, so it is not
+		// something retrieval is being asked to find.
+		if path == testFile || !strings.HasSuffix(path, ".go") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 || !strings.HasPrefix(fields[1], "-") {
+			continue
+		}
+		spec := strings.TrimPrefix(fields[1], "-")
+		start, count := 0, 1
+		if i := strings.Index(spec, ","); i >= 0 {
+			start = atoiOrZero(spec[:i])
+			count = atoiOrZero(spec[i+1:])
+		} else {
+			start = atoiOrZero(spec)
+		}
+		if start == 0 {
+			continue
+		}
+		if count == 0 {
+			anchors[path] = append(anchors[path], start) // insertion point
+			continue
+		}
+		for n := 0; n < count; n++ {
+			anchors[path] = append(anchors[path], start+n)
+		}
+	}
+	if len(anchors) == 0 {
+		t.Fatalf("no fix anchors found for %s: the grader would credit nothing and this case "+
+			"would report a miss for every retrieval strategy", fixCommit)
+	}
+	return anchors
+}
+
+func atoiOrZero(s string) int {
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 // containsAnyChunk reports whether h fully covers any of the expected chunk
@@ -390,7 +495,8 @@ func runEditEvalPass(ctx context.Context, t *testing.T, repoRoot string, embedde
 	results := make([]editEvalResult, len(editEvalCases))
 	for i, c := range editEvalCases {
 		t.Run(c.name, func(t *testing.T) {
-			wt := gitRevertPreFixTree(t, repoRoot, c.fixCommit, c.testFile)
+			wt := gitPreFixTree(t, repoRoot, c.fixCommit, c.testFile)
+			anchors := fixAnchorLines(t, repoRoot, c.fixCommit, c.testFile)
 			query := captureRealFailureText(t, wt, c.buildDir, c.runFilter)
 			if query == "" {
 				t.Fatalf("captured empty failure text for case %s", c.name)
@@ -421,7 +527,7 @@ func runEditEvalPass(ctx context.Context, t *testing.T, repoRoot string, embedde
 				t.Fatalf("retrieveTopK(%q): %v", query, err)
 			}
 
-			rank := rankOfChunk(hits, c.exactChunks)
+			rank := rankOfAnchor(hits, anchors)
 			hit := rank != 0 && rank <= displayK
 
 			// Production-shaped retrieval: k = displayK, so rerankPoolSize(k)
@@ -435,7 +541,7 @@ func runEditEvalPass(ctx context.Context, t *testing.T, repoRoot string, embedde
 			if err != nil {
 				t.Fatalf("retrieveTopK(prod k=%d, %q): %v", displayK, query, err)
 			}
-			prodRank := rankOfChunk(prodHits, c.exactChunks)
+			prodRank := rankOfAnchor(prodHits, anchors)
 			prodHit := prodRank != 0
 
 			// Raw semantic ordering (rerank=false, k=all: pure store.Query --
@@ -447,7 +553,7 @@ func runEditEvalPass(ctx context.Context, t *testing.T, repoRoot string, embedde
 			if err != nil {
 				t.Fatalf("retrieveTopK(semantic k=all, %q): %v", query, err)
 			}
-			semRank := rankOfChunk(semHits, c.exactChunks)
+			semRank := rankOfAnchor(semHits, anchors)
 
 			// Fix 12: the production pipeline as it now stands. resolveRefs
 			// reads the pre-fix worktree (wt) -- the same tree that was
@@ -459,7 +565,7 @@ func runEditEvalPass(ctx context.Context, t *testing.T, repoRoot string, embedde
 				direct[j] = r.Span
 			}
 			fused := fuseDirectSpans(direct, prodHits, displayK, false)
-			fusedRank := rankOfChunk(fused.Chunks, c.exactChunks)
+			fusedRank := rankOfAnchor(fused.Chunks, anchors)
 
 			coveredBefore, coveredAfter := 0, 0
 			for _, r := range refs {
@@ -501,7 +607,7 @@ func runEditEvalPass(ctx context.Context, t *testing.T, repoRoot string, embedde
 				"full-ordering rank (k=all, POOL-INSENSITIVE diagnostic): %s\n"+
 				"raw semantic rank (rerank=false):                      %s\n"+
 				"PRODUCTION-SHAPED verdict (k=%d, pool-gated):           %s -> %s\n",
-				c.name, len(query), query, c.exactChunks, fullStr, semStr, displayK, prodStr, prodMark)
+				c.name, len(query), query, anchors, fullStr, semStr, displayK, prodStr, prodMark)
 			for j, h := range prodHits[:min(displayK, len(prodHits))] {
 				t.Logf("  prod top-%d #%d: %-40s class=%-6s raw=%.4f weighted=%.4f", displayK, j+1, chunkID(h), h.Class, h.RawScore, h.Score)
 			}

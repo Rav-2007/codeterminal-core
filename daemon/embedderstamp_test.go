@@ -2,10 +2,13 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"codeterminal/helper/helperproto"
 )
 
 func TestEmbedderStamp_RoundTripMatches(t *testing.T) {
@@ -102,5 +105,67 @@ func TestEmbedderStamp_CorruptStampRefused(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "re-index required") {
 		t.Errorf("error = %v, want it to mention re-index required", err)
+	}
+}
+
+// THE SEQUENCE LENGTH IS PART OF WHAT A VECTOR MEANS.
+//
+// The helper truncates every input to helperproto.MaxSequenceLength before
+// embedding it, so that number decides which part of a chunk the vector
+// actually describes. An index built at 256 and queried at 512 is comparing
+// vectors of half-chunks against vectors of whole ones, and embedderStamp is
+// the only thing that can notice -- but only if the identity it stamps moves
+// when the cap moves. It did not: ID() was a fixed string that named the model
+// and the runtime and said nothing about how much of the input was read.
+func TestTheEmbedderIdentityCoversTheSequenceLength(t *testing.T) {
+	id := (&BgeEmbedder{}).ID()
+	if !strings.Contains(id, fmt.Sprintf("seq%d", helperproto.MaxSequenceLength)) {
+		t.Errorf("the embedder ID %q does not name the sequence cap (%d), so changing the cap "+
+			"leaves every existing index looking valid while its vectors describe different text",
+			id, helperproto.MaxSequenceLength)
+	}
+	// ANTI-VACUITY: the ID must still identify the model and runtime too, or
+	// this "fix" traded one blind spot for another.
+	for _, want := range []string{"bge-small-en-v1.5-int8", "onnxruntime-1.26.0"} {
+		if !strings.Contains(id, want) {
+			t.Errorf("the embedder ID %q no longer names %q", id, want)
+		}
+	}
+}
+
+// A workspace indexed by an embedder that has since changed its sequence cap
+// must be REFUSED, not queried. This drives the real guard rather than
+// asserting on the ID string.
+func TestAnIndexBuiltAtADifferentSequenceCapIsRefused(t *testing.T) {
+	dir := t.TempDir()
+	stale := embedderStamp{
+		EmbedderID:         "bge-small-en-v1.5-int8+onnxruntime-1.26.0+seq256",
+		Dim:                embedDim,
+		IndexSchemaVersion: currentIndexSchemaVersion,
+	}
+	data, err := json.Marshal(stale)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, embedderStampFileName), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkEmbedderStamp(dir, &BgeEmbedder{}, false); err == nil {
+		t.Error("an index whose vectors were built reading only the first 256 tokens of each chunk " +
+			"is accepted by an embedder that now reads 512")
+	}
+	// ANTI-VACUITY: the same stamp at the CURRENT cap has to be accepted, or
+	// the check above is just refusing everything.
+	fresh := stale
+	fresh.EmbedderID = (&BgeEmbedder{}).ID()
+	data, err = json.Marshal(fresh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, embedderStampFileName), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkEmbedderStamp(dir, &BgeEmbedder{}, false); err != nil {
+		t.Errorf("a matching stamp is refused too (%v), so the refusal above proves nothing", err)
 	}
 }

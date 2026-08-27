@@ -4,13 +4,27 @@ import (
 	"context"
 	"fmt"
 	"log"
+
+	"codeterminal/helper/helperproto"
 )
 
 // bgeEmbedderID is stamped into every index BgeEmbedder builds, and checked
 // on retrieve (see embedderstamp.go). It must change whenever the embedding
-// semantics change — model version, pooling method, or prefix convention —
-// so a stale index is never silently queried with mismatched vectors.
-const bgeEmbedderID = "bge-small-en-v1.5-int8+onnxruntime-1.26.0"
+// semantics change — model version, pooling method, prefix convention, or how
+// much of the input is actually read — so a stale index is never silently
+// queried with mismatched vectors.
+//
+// THE SEQUENCE LENGTH IS PART OF THE IDENTITY, and it was the item this list
+// was missing. The helper truncates every input to helperproto.MaxSequenceLength
+// before embedding it, so that number decides which half of a chunk the vector
+// describes; changing it changes every vector in the index. Nothing here
+// referenced it, so the cap could have moved -- and did, from 256 to 512 --
+// while ID() went on reporting the same string, leaving a user's existing index
+// silently mixing vectors of whole chunks with vectors of half-chunks. Building
+// the ID from the constant means that can never be forgotten again, rather than
+// being remembered correctly once.
+var bgeEmbedderID = fmt.Sprintf("bge-small-en-v1.5-int8+onnxruntime-1.26.0+seq%d",
+	helperproto.MaxSequenceLength)
 
 // bgeQueryPrefix is BAAI's documented instruction prefix for embedding
 // retrieval QUERIES (not documents) with BGE v1.5 models — verified against

@@ -8,17 +8,20 @@ import (
 	"github.com/sugarme/tokenizer"
 	"github.com/sugarme/tokenizer/pretrained"
 	ort "github.com/yalue/onnxruntime_go"
+
+	"codeterminal/helper/helperproto"
 )
 
 // embedDim is the real model's output width: BGE-small's hidden size.
 const embedDim = 384
 
-// maxSequenceLength bounds tokenized input length. BGE's own
-// model_max_length is 512, but code chunks (~40 lines) rarely need
-// anywhere close to that, and bounding it keeps latency and memory
-// predictable. Truncation preserves the final token (assumed [SEP]) so a
-// truncated sequence still ends properly.
-const maxSequenceLength = 256
+// maxSequenceLength bounds tokenized input length.
+//
+// The value, and the measurements behind it, live in helperproto: the daemon
+// needs the same number to build the embedder ID it stamps into an index, and
+// two copies of a constant that changes what a vector means is exactly the
+// drift that stamp exists to catch.
+const maxSequenceLength = helperproto.MaxSequenceLength
 
 // OnnxEmbedder runs the real BGE model via ONNX Runtime. CGO — needed by
 // the onnxruntime_go binding — is confined to this file (and main.go's
