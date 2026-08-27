@@ -111,7 +111,7 @@ func runMCPCommand(args []string, logger *log.Logger) error {
 			policy = mcp.PolicyDeny
 		}
 		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
-			tool.QualifiedName(), tool.Lane, confinedLabel(tool.Confined), policy,
+			tool.QualifiedName(), tool.Lane, confinedLabel(tool), policy,
 			firstLine(tool.Description))
 	}
 	if err := w.Flush(); err != nil {
@@ -127,11 +127,27 @@ func runMCPCommand(args []string, logger *log.Logger) error {
 
 	// The unconfined half, said plainly and once, rather than left implicit in
 	// a column the reader may skim.
-	if unconfined := countUnconfined(tools); unconfined > 0 {
+	//
+	// TWO COUNTS, NOT ONE, because "not confined" stopped meaning one thing.
+	// It used to be synonymous with "an external subprocess", so a single
+	// sentence about subprocesses covered every tool the column marked NO. A
+	// network tool is also not confined and is not a subprocess at all -- it
+	// spawns nothing and touches nothing local -- so folding it into that
+	// sentence would print something plainly false about web_search, in the
+	// alarming direction. Overstating a risk is not the safe error: it is how a
+	// warning stops being read, and the sentence about real subprocesses is one
+	// that needs to keep working.
+	if external := countExternal(tools); external > 0 {
 		fmt.Printf("\n%d of these run in external MCP servers, which this product CANNOT confine:\n"+
 			"they are subprocesses with your full privileges, and the edit pipeline's gates\n"+
 			"constrain only this daemon's own writer. Consent and the audit log are the protection.\n",
-			unconfined)
+			external)
+	}
+	if networked := countNetworked(tools); networked > 0 {
+		fmt.Printf("\n%d of these reach the open internet. They run no program and touch no file here;\n"+
+			"what they do is send text the model chose to a third party and bring a reply back.\n"+
+			"Secrets are stripped outbound and replies are treated as untrusted data, never instructions.\n",
+			networked)
 	}
 
 	for _, err := range append(connectErrs, listErrs...) {
@@ -144,11 +160,22 @@ func runMCPCommand(args []string, logger *log.Logger) error {
 	return nil
 }
 
-func confinedLabel(confined bool) string {
-	if confined {
+// confinedLabel names the honest answer for one tool.
+//
+// THREE VALUES, NOT TWO. A bare "NO" told the reader that web_search sits in
+// the same category as an unconfined third-party subprocess, which is the
+// column's whole purpose and is wrong here in the direction that matters: the
+// reader's next action after seeing NO is to think about what the tool can do
+// to their machine, and the answer for this one is "nothing".
+func confinedLabel(tool mcp.Tool) string {
+	switch {
+	case tool.ReachesNetwork:
+		return "network"
+	case tool.Confined:
 		return "yes"
+	default:
+		return "NO"
 	}
-	return "NO"
 }
 
 func firstLine(s string) string {
@@ -162,10 +189,24 @@ func firstLine(s string) string {
 	return s
 }
 
-func countUnconfined(tools []mcp.Tool) int {
+// countExternal counts tools that are unconfined BECAUSE they are somebody
+// else's subprocess -- the population the subprocess warning is about.
+func countExternal(tools []mcp.Tool) int {
 	n := 0
 	for _, tool := range tools {
-		if !tool.Confined {
+		if !tool.Confined && !tool.ReachesNetwork {
+			n++
+		}
+	}
+	return n
+}
+
+// countNetworked counts tools that are unconfined because they leave the
+// machine.
+func countNetworked(tools []mcp.Tool) int {
+	n := 0
+	for _, tool := range tools {
+		if tool.ReachesNetwork {
 			n++
 		}
 	}

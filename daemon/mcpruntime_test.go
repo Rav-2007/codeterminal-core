@@ -298,7 +298,21 @@ func TestBuiltinsAreConfinedAndReadOnly(t *testing.T) {
 	}
 
 	for _, tool := range tools {
-		if !tool.Confined {
+		// CONFINEMENT IS ASSERTED FOR EVERY BUILT-IN EXCEPT THE ONES THAT LEAVE
+		// THE MACHINE, and the exception is checked rather than merely skipped.
+		//
+		// A blanket "everything is confined" here would have quietly passed
+		// web_search the moment it was added -- it spawns nothing and writes
+		// nothing, so it satisfies every other clause in this loop. That is the
+		// same shape of miss RegisterBuiltin made about sandbox_exec: the flags
+		// that describe LOCAL effects all say "harmless", and the honest answer
+		// to "where does this go" is not among them.
+		if tool.ReachesNetwork {
+			if tool.Confined {
+				t.Errorf("built-in %q reaches the network and still reports itself confined; "+
+					"the approval prompt would tell the user their query is governed by the edit-review pipeline", tool.Name)
+			}
+		} else if !tool.Confined {
 			t.Errorf("built-in %q is not confined", tool.Name)
 		}
 		if tool.Server != mcp.BuiltinServerName {

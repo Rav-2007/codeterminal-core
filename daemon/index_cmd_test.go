@@ -28,7 +28,7 @@ func TestIndexing_SecretsNeverStored(t *testing.T) {
 	embedder := NewPlaceholderEmbedder(embedDim)
 	ctx := context.Background()
 
-	scan, err := buildIndex(ctx, dir, embedder, store, nil, discardLogger())
+	scan, err := buildIndex(ctx, dir, embedder, store, nil, discardLogger(), false)
 	if err != nil {
 		t.Fatalf("buildIndex: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestIndexing_CodeterminalPrunedAndGitignoreAppendedIdempotently(t *testing.
 		if err != nil {
 			t.Fatalf("NewChromemStore: %v", err)
 		}
-		scan, err := buildIndex(context.Background(), dir, NewPlaceholderEmbedder(embedDim), store, nil, discardLogger())
+		scan, err := buildIndex(context.Background(), dir, NewPlaceholderEmbedder(embedDim), store, nil, discardLogger(), false)
 		if err != nil {
 			t.Fatalf("buildIndex: %v", err)
 		}
@@ -171,7 +171,7 @@ func TestBuildIndex_AcceptsInjectedEmbedder(t *testing.T) {
 	}
 
 	fake := &fakeEmbedder{dim: 8}
-	scan, err := buildIndex(context.Background(), dir, fake, store, nil, discardLogger())
+	scan, err := buildIndex(context.Background(), dir, fake, store, nil, discardLogger(), false)
 	if err != nil {
 		t.Fatalf("buildIndex: %v", err)
 	}
@@ -250,7 +250,7 @@ func TestBuildIndex_EmbedsInBatchesNotOneCall(t *testing.T) {
 	}
 	counting := &callCountingEmbedder{Embedder: NewPlaceholderEmbedder(embedDim)}
 
-	scan, err := buildIndex(context.Background(), dir, counting, store, nil, discardLogger())
+	scan, err := buildIndex(context.Background(), dir, counting, store, nil, discardLogger(), false)
 	if err != nil {
 		t.Fatalf("buildIndex: %v", err)
 	}

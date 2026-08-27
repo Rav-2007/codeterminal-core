@@ -238,6 +238,30 @@ type PromptRequest struct {
 	PromptKind string `json:"prompt_kind,omitempty"`
 	Tier       string `json:"tier,omitempty"`
 	Mode       string `json:"mode,omitempty"`
+
+	// Pipeline names the specialist phases for THIS TURN ONLY, overriding
+	// mcp.pipeline. Absent means use the configured shape, which is what every
+	// existing client sends.
+	//
+	// EXPLICIT, NEVER INFERRED, and that is a decision with a measurement behind
+	// it rather than a preference. docs/MULTI_AGENT_DESIGN.md §14 established
+	// that the right number of phases depends on the question -- multi-hop
+	// questions want specialists, single lookups want one agent at a quarter of
+	// the cost -- and §15 then falsified two attempts to detect which is which
+	// from local retrieval. Both failed for mechanical reasons, so the daemon
+	// does not guess. The person who asked the question is told to say.
+	//
+	// This mirrors PromptKind above, which the model-tier router treats the same
+	// way for the same reason (see daemon/router.go: "triggered by explicit
+	// signals only -- never by reading or guessing at prompt content").
+	//
+	// IT CANNOT WIDEN WHAT A TURN MAY DO. A phase is a RESTRICTION: the
+	// unorchestrated agent is a nil role, which is unrestricted, and every named
+	// role allows exactly the tools it lists and no others. The budgets are
+	// whole-turn and shared across phases, so naming more of them buys no extra
+	// iterations, no extra time and no extra bytes. Unknown names are dropped
+	// with a log line, and the count is capped (see maxRequestedPhases).
+	Pipeline []string `json:"pipeline,omitempty"`
 }
 
 // Turn is one prior message in a conversation, supplied by the client so
@@ -464,12 +488,20 @@ type ToolApprovalRequest struct {
 	// Confined states whether this call's effects are constrained by the
 	// five-gate pipeline. False is the honest answer for LaneThirdParty and
 	// clients must render it plainly rather than softening it.
-	Confined      bool   `json:"confined"`
-	ReadOnlyHint  bool   `json:"read_only_hint,omitempty"`
-	Destructive   bool   `json:"destructive,omitempty"`
-	Iteration     int    `json:"iteration"`
-	MaxIterations int    `json:"max_iterations"`
-	Detail        string `json:"detail,omitempty"`
+	Confined bool `json:"confined"`
+	// ReachesNetwork states that running this call sends data to a host outside
+	// this machine and brings data back. It is a SEPARATE question from
+	// Confined, because a tool can be perfectly confined in its effects on the
+	// workspace and still be the thing that puts the user's words on the wire.
+	// Confined answers "what can it change here"; this answers "where does it
+	// go". Clients must render it as plainly as they render Confined: a user
+	// deciding about a search has to be told a search is leaving.
+	ReachesNetwork bool   `json:"reaches_network,omitempty"`
+	ReadOnlyHint   bool   `json:"read_only_hint,omitempty"`
+	Destructive    bool   `json:"destructive,omitempty"`
+	Iteration      int    `json:"iteration"`
+	MaxIterations  int    `json:"max_iterations"`
+	Detail         string `json:"detail,omitempty"`
 }
 
 // Phases reported on ToolActivity.Phase.
@@ -480,6 +512,24 @@ const (
 	ToolPhaseRunning   = "running"
 	ToolPhaseSucceeded = "succeeded"
 	ToolPhaseFailed    = "failed"
+
+	// ToolPhaseStep is NOT a tool call. It marks the start of one specialist's
+	// phase in an orchestrated turn (daemon/orchestrator.go), reusing this
+	// message because a client already renders a stream of steps and a whole
+	// new message type would mean older clients seeing nothing at all.
+	//
+	// It has its own value because the first attempt reused ToolPhaseRequested,
+	// which BOTH shipping clients deliberately render as the empty string --
+	// the user has just answered a modal about that exact call, so narrating it
+	// back is noise. The result was that phase narration, the feature that tells
+	// a user which specialist is working, was emitted by the daemon and dropped
+	// on the floor by every client. A marker that renders as nothing is not a
+	// marker.
+	//
+	// Tool carries the specialist's display name and Detail carries "step i/n".
+	// CallID is EMPTY, because there is no call: a client keyed on CallID must
+	// append these rather than collapsing them onto one line.
+	ToolPhaseStep = "step"
 )
 
 // ToolActivity narrates one step of an agent turn so a user watching a loop
@@ -667,6 +717,22 @@ const (
 	// DegradedWorkspaceTooLarge: the workspace has exceeded the maximum file count
 	// limit, and indexing has been suspended to prevent resource exhaustion.
 	DegradedWorkspaceTooLarge = "workspace_too_large"
+
+	// DegradedPipelineShape: the specialist shape this turn ran is one that has
+	// been MEASURED to do worse than the alternative, or it named a phase that
+	// does not exist and that phase was skipped.
+	//
+	// A degradation rather than a refusal, and the distinction is the whole
+	// design. Every shape a user can name is one they are entitled to run -- it
+	// is their money and their repository, and a daemon that refused a legal
+	// config because a three-question trial went against it would be
+	// substituting its judgement for theirs. What they are NOT entitled to is
+	// running it having never been told what happened when it was measured.
+	//
+	// It reaches the user rather than only the daemon log for the same reason:
+	// a warning nobody reads is a comment with extra steps, and the person who
+	// typed the command is not the person tailing the log.
+	DegradedPipelineShape = "pipeline_shape"
 )
 
 // Degradation names one subsystem running in a reduced mode, in the same
@@ -1038,6 +1104,23 @@ type StatusCounters struct {
 	ToolCallsDenied    int64 `json:"tool_calls_denied"`
 	ToolCallsFailed    int64 `json:"tool_calls_failed"`
 	BudgetTerminations int64 `json:"budget_terminations"`
+
+	// ToolNamesCanonicalized counts calls where the model gave a bare tool name
+	// and the registry resolved it to a first-party built-in. A climbing count
+	// means the model is drifting from the advertised names.
+	ToolNamesCanonicalized int64 `json:"tool_names_canonicalized"`
+
+	// WebSearchParseFailures counts searches where an endpoint returned a real
+	// page that could not be parsed into results.
+	//
+	// IT IS THE ONE COUNTER THAT PREDICTS A SILENT REGRESSION. The search
+	// backends scrape markup nobody here controls, and when an operator renames
+	// a CSS class the tool starts returning nothing while every request still
+	// succeeds -- so answers quietly fall back to the model's memory and no
+	// error is ever raised. Zero results and an unreadable page are told apart
+	// precisely so this number can exist; if it climbs off zero, the parsers
+	// need attention before anyone notices the answers got worse.
+	WebSearchParseFailures int64 `json:"web_search_parse_failures"`
 }
 
 // GroundingInfo reports whether the daemon augmented THIS request with

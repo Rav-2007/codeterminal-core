@@ -52,12 +52,22 @@ type counters struct {
 	// one to watch: a daemon denying steadily is either misconfigured or being
 	// asked for things it should not do, and the two look identical from the
 	// user's side ("it just says it can't").
-	agentTurns         atomic.Int64
-	toolCalls          atomic.Int64
-	toolCallsApproved  atomic.Int64
-	toolCallsDenied    atomic.Int64
-	toolCallsFailed    atomic.Int64
-	budgetTerminations atomic.Int64
+	agentTurns        atomic.Int64
+	toolCalls         atomic.Int64
+	toolCallsApproved atomic.Int64
+	toolCallsDenied   atomic.Int64
+	// toolNamesCanonicalized counts calls where the model gave a bare tool name
+	// and the registry resolved it to a built-in (see Registry.Canonicalize).
+	// Each one used to be a refusal and a wasted iteration, so this is the tax
+	// staying measurable after it stopped being paid -- if it climbs, the model
+	// is drifting from the advertised names and the prompt needs attention.
+	toolNamesCanonicalized atomic.Int64
+	// webSearchParseFailures counts search responses that arrived intact and
+	// could not be read. See protocol.CountersSnapshot for why this one matters
+	// more than its size suggests.
+	webSearchParseFailures atomic.Int64
+	toolCallsFailed        atomic.Int64
+	budgetTerminations     atomic.Int64
 
 	// Faults contained by handleConn's recover. A daemon that has contained four
 	// hundred panics is in a different state from one that has contained none,
@@ -107,5 +117,11 @@ func (c *counters) snapshot() *protocol.StatusCounters {
 		ToolCallsDenied:    c.toolCallsDenied.Load(),
 		ToolCallsFailed:    c.toolCallsFailed.Load(),
 		BudgetTerminations: c.budgetTerminations.Load(),
+
+		// Previously incremented and never reported. A counter nothing surfaces
+		// is a counter that does not exist, and this one is the bare-name tax's
+		// only ongoing measurement (docs/MULTI_AGENT_DESIGN.md §13).
+		ToolNamesCanonicalized: c.toolNamesCanonicalized.Load(),
+		WebSearchParseFailures: c.webSearchParseFailures.Load(),
 	}
 }

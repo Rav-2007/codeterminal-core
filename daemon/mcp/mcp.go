@@ -55,6 +55,51 @@ type Tool struct {
 	Lane     string
 	Confined bool
 
+	// ExecutesCode marks a tool that runs arbitrary code by design.
+	//
+	// TWO PROPERTIES OF THIS FILE'S SECURITY MODEL ARE WRONG FOR SUCH A TOOL,
+	// and they are wrong in different places, so one flag names the class once:
+	//
+	//   - Confined is a STATIC property of the lane for every other built-in,
+	//     and a DYNAMIC property of the host for this one. RegisterBuiltin
+	//     therefore stops asserting it here and takes what the tool resolved.
+	//   - "Allow for the rest of this turn" means "this tool" everywhere else,
+	//     which is exactly what a user choosing it intends for read_file. For a
+	//     tool that executes code it would mean approving one command and
+	//     authorising every later one, unseen -- so the grant is bound to the
+	//     arguments as well (see agentTurn.grant).
+	//
+	// It is a property of the TOOL rather than of the lane because a first-party
+	// tool broke the "first-party implies confined" assumption; naming the class
+	// is what stops the next one breaking it silently.
+	ExecutesCode bool
+
+	// ReachesNetwork marks a tool that sends data to, and receives data from,
+	// a host outside this machine.
+	//
+	// IT EXISTS FOR THE SAME REASON ExecutesCode DOES, and it was added the
+	// same way: by a first-party tool breaking the "first-party implies
+	// confined" assumption in a NEW direction. ExecutesCode named the tool
+	// whose effects escape sideways, into the host. This names the tool whose
+	// effects escape OUTWARD, onto the wire.
+	//
+	// web_search and web_fetch run no subprocess and write no file, so every
+	// test RegisterBuiltin applies would have passed them and stamped them
+	// Confined -- and the approval prompt would have told the user "anything it
+	// changes goes through the same review you use for edits" about a call that
+	// posts their query to a third party and pulls an attacker-controlled
+	// document into the model's context. Nothing is "changed", so the sentence
+	// is not even false; it is just answering a question nobody asked. The
+	// question the user is actually asking at that prompt is "where does this
+	// go", and Confined was about to answer it wrong by omission.
+	//
+	// So confinement is not asserted for these either. The daemon confines what
+	// it can (see daemon/webfetch.go: scheme allow-list, private-address
+	// refusal re-checked across every redirect, byte cap, timeout, outbound
+	// scrub) and says so in the description; what it cannot confine is the
+	// remote end, and the prompt says that too.
+	ReachesNetwork bool
+
 	// ReadOnlyHint and Destructive are the SERVER'S OWN claims about its tool,
 	// carried for display so a client can style the prompt.
 	//
@@ -121,6 +166,12 @@ var ErrServerUnavailable = errors.New("mcp server unavailable")
 // ValidateServerName refuses it for a configured server, so a user cannot
 // shadow the confined tools with unconfined ones of the same name.
 const BuiltinServerName = "builtin"
+
+// QualifiedNameSeparator joins a server name to a tool name. Spelled once, so
+// the three places that build a qualified name and the two that split one
+// cannot drift -- an earlier bug used "." in a test and the mismatch was
+// invisible because the wrong name was simply refused.
+const QualifiedNameSeparator = "__"
 
 // ForbiddenEnvNames are variables that must never reach an MCP server,
 // whatever a config file's env allow-list says.

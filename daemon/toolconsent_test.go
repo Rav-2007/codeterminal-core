@@ -457,7 +457,7 @@ func TestAProviderFailureMidTurnKeepsTheWorkAlreadyDone(t *testing.T) {
 	res, err := s.runAgentLoop(t.Context(), time.Now(), registry, "m", "auto",
 		[]chatMessage{{Role: "user", Content: "go"}}, providerRouting{}, nil,
 		func(tok string) error { streamed.WriteString(tok); return nil },
-		nil, nil, nil, nil)
+		nil, nil, nil, nil, nil, nil)
 
 	if err != nil {
 		t.Fatalf("a turn with real work behind it came back as a bare error: %v", err)
@@ -494,7 +494,7 @@ func TestAFailureBeforeAnyOutputIsStillAnError(t *testing.T) {
 
 	res, err := s.runAgentLoop(t.Context(), time.Now(), registry, "m", "auto",
 		[]chatMessage{{Role: "user", Content: "go"}}, providerRouting{}, nil,
-		func(string) error { return nil }, nil, nil, nil, nil)
+		func(string) error { return nil }, nil, nil, nil, nil, nil, nil)
 
 	if err == nil {
 		t.Fatalf("a turn that produced nothing was reported as a result: %+v", res)

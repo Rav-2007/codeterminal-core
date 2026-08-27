@@ -121,9 +121,22 @@ func askOneShotApproval(req protocol.ToolApprovalRequest, reader *bufio.Reader, 
 	say(out, "\n--- run %s__%s? (step %d of at most %d) ---\n",
 		req.Server, req.Tool, req.Iteration, req.MaxIterations)
 	say(out, "arguments: %s\n", req.Arguments)
-	if req.Confined {
+	switch {
+	case req.ReachesNetwork:
+		// CHECKED FIRST, because BOTH of the other branches are wrong for a
+		// network call and they are wrong in opposite directions. Confined
+		// would say "anything it changes goes through the same review you use
+		// for edits" -- true, and not the question. The unconfined branch below
+		// would say "a separate program running with your full access" -- and
+		// that is simply false: web_search spawns nothing and has no access to
+		// anything local. Crying wolf here is not the safe error; it is how a
+		// prompt gets trained out of being read.
+		say(out, "LEAVES YOUR MACHINE: this sends the text above to a third party over the internet\n")
+		say(out, "and brings a reply back into the conversation. Secrets are stripped on the way out and\n")
+		say(out, "the reply is treated as untrusted data — but nothing here can vouch for the far end.\n")
+	case req.Confined:
 		say(out, "this tool ships with Mochiii; anything it changes goes through the same review you use for edits\n")
-	} else {
+	default:
 		// Never softened. A third-party MCP server is an ordinary subprocess
 		// with the user's full access, and this approval is the only thing in
 		// front of it.
@@ -160,8 +173,10 @@ func askOneShotApproval(req protocol.ToolApprovalRequest, reader *bufio.Reader, 
 // benefits from seeing: the approval prompt already told them the call was
 // requested and that they approved it.
 func oneShotActivityLine(a protocol.ToolActivity) string {
-	name := a.Server + "__" + a.Tool
+	name := qualifiedActivityName(a)
 	switch a.Phase {
+	case protocol.ToolPhaseStep:
+		return a.Detail + " — " + a.Tool
 	case protocol.ToolPhaseRunning:
 		return "running " + name + "…"
 	case protocol.ToolPhaseSucceeded:

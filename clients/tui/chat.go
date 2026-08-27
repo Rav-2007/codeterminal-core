@@ -36,6 +36,21 @@ const (
 	roleUser turnRole = iota
 	roleAssistant
 	roleSystem // parse-error notices and end-of-review summaries
+	// roleSevered marks a prompt that never reached the daemon at all.
+	//
+	// IT EXISTS BECAUSE THE TRANSCRIPT USED TO SAY NOTHING. A failed connection
+	// set m.statusErr -- one line, in the header, overwritten by the next
+	// failure with identical text. Five prompts in a row against a stopped
+	// daemon therefore produced five "You: ..." entries with no reply under any
+	// of them and one header line that looked stale rather than fresh, which
+	// reads exactly like a model ignoring you. Observed live.
+	//
+	// Distinct from roleSystem because the two are not the same event and must
+	// not look alike: a roleSystem notice annotates something that HAPPENED,
+	// this records something that did NOT. Like roleSystem it is display-only
+	// and buildHistory drops it -- a message that never left must never reach
+	// the model as though it had.
+	roleSevered
 )
 
 type turn struct {
@@ -238,6 +253,32 @@ func turnsFromProtocol(protoTurns []protocol.Turn) []turn {
 	return turns
 }
 
+// inputWidthFor sizes the prompt box for a terminal of the given width.
+//
+// IT MUST NEVER RETURN A NEGATIVE NUMBER, and that is a crash rather than a
+// cosmetic rule. bubbles/textinput.placeholderView allocates `make([]rune,
+// m.Width+1)` with no guard of its own, so a Width of -2 panics the whole
+// client with "makeslice: len out of range" -- not a mis-drawn line, a stack
+// trace where the UI was.
+//
+// MEASURED, by running the client under a pty with no window size: bubbletea
+// delivers WindowSizeMsg{0, 0}, the old expression `m.width - len(Prompt) - 2`
+// gave -4, and the client died on its first render after the splash. A terminal
+// narrower than the prompt plus its padding reaches the same place, and so does
+// any host that cannot report a size.
+//
+// Zero rather than one: textinput treats Width 0 as "unbounded", which for a
+// terminal this small is the least wrong of the available behaviours -- the
+// line will not fit whatever we pass, and a client that draws badly is worth
+// more than one that is not there.
+func inputWidthFor(terminalWidth int, prompt string) int {
+	w := terminalWidth - len(prompt) - 2
+	if w < 0 {
+		return 0
+	}
+	return w
+}
+
 func (m chatModel) Init() tea.Cmd {
 	return textinput.Blink
 }
@@ -250,7 +291,7 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.ready = true
 		m.viewport.Width = m.width
 		m.resizeViewport()
-		m.input.Width = m.width - len(m.input.Prompt) - 2
+		m.input.Width = inputWidthFor(m.width, m.input.Prompt)
 		m.refreshViewport()
 		return m, nil
 
@@ -495,6 +536,14 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.streamAssistant >= 0 && m.streamAssistant < len(m.turns) &&
 			strings.TrimSpace(m.turns[m.streamAssistant].text) != "" {
 			m.turns[m.streamAssistant].incomplete = protocol.IncompleteProviderError
+		} else {
+			// NOTHING STREAMED, so the branch above has no partial answer to
+			// mark -- and until this existed that meant the transcript recorded
+			// the failure nowhere. The header still carries the error, but a
+			// header is one line that the next identical failure overwrites;
+			// this puts the failure UNDER THE MESSAGE THAT CAUSED IT, where a
+			// reader looking for their answer is already looking.
+			m.turns = append(m.turns, turn{role: roleSevered, text: msg.err.Error()})
 		}
 		m.state = stateError
 		m.statusErr = msg.err.Error()
@@ -537,6 +586,21 @@ const (
 	commandReason   = "/reason "
 	commandRefactor = "/refactor "
 	commandModel    = "/model"
+	// commandTeam runs ONE turn through the specialist pipeline, whatever the
+	// daemon is configured to do. Same trailing space, load-bearing for the same
+	// reason as the two above.
+	commandTeam = "/team "
+
+	// commandTeamShape names the phases explicitly: "/team:researcher,coder q".
+	//
+	// A COLON RATHER THAN A SPACE, because a space would make "/team planner
+	// what does this do" ambiguous forever -- is "planner" the first phase or
+	// the first word of the question? Every disambiguation rule for that is a
+	// rule the user has to know, and the one they would hit is the one where
+	// their question happened to start with a role name. The colon binds the
+	// shape to the command token, so the question is always everything after
+	// the first space and never has to be guessed at.
+	commandTeamShape = "/team:"
 )
 
 // promptKindReason and promptKindRefactor are the wire values sent as
@@ -570,6 +634,100 @@ func parsePromptKind(raw string) (kind, prompt string) {
 	}
 }
 
+// teamPipeline is the shape "/team" asks for, sent as
+// protocol.PromptRequest.Pipeline. The role names MUST match daemon/roles.go's
+// roleNameResearcher/roleNameCoder exactly -- separate Go modules, no shared
+// constant, the same convention-and-comment contract parsePromptKind's wire
+// values live under.
+//
+// TWO PHASES, and specifically not four. Blind pairwise judging against a
+// budget-matched single agent (docs/MULTI_AGENT_DESIGN.md §14) put
+// researcher-then-coder ahead 2 wins to 1 at 1.02x the tokens, and the
+// four-phase shape behind at 1 to 2 for the same tokens and three and a half
+// times the wall-clock. A command that offers a user "more specialists" and
+// hands them the measured loser is a worse command than none.
+var teamPipeline = []string{"researcher", "coder"}
+
+// parseTeamCommand checks raw (already trimmed) for "/team ".
+//
+// WHY THIS IS A COMMAND AND NOT A DETECTOR. §14 established that the right
+// number of phases depends on the question: multi-hop questions want
+// specialists, single lookups want one agent at a quarter of the cost. §15 then
+// tried twice to tell those apart from local retrieval and failed both times for
+// mechanical reasons -- the fused scores are reciprocal-RANK values with no
+// relevance magnitude, and lexical breadth saturates on any natural-language
+// question. So the daemon does not guess, and the person who asked the question
+// gets to say. That is the same stance daemon/router.go takes on model tier, in
+// its words: "triggered by explicit signals only -- never by reading or guessing
+// at prompt content".
+//
+// "/team q" runs the measured winner. "/team:planner,coder q" runs exactly what
+// it names, which is how the planner and tester -- roles that have existed and
+// been unreachable from here since they were written -- become usable without
+// editing a config file and restarting the daemon.
+//
+// THE ROLE NAMES ARE NOT VALIDATED HERE, on purpose. What roles exist is
+// daemon/roles.go's fact, and a copy of that list in the TUI is a copy that
+// drifts: the day someone adds a fifth role, a client that "helpfully" rejected
+// it would be the reason it does not work. Unknown names are dropped by
+// resolvePipeline and reported back as a protocol.DegradedPipelineShape notice,
+// which is both the authoritative answer and one the user can read.
+func parseTeamCommand(raw string) (pipeline []string, prompt string, ok bool) {
+	if rest, found := strings.CutPrefix(raw, commandTeamShape); found {
+		// THE SHAPE ENDS AT THE FIRST SPACE THAT DOES NOT FOLLOW A COMMA.
+		//
+		// Cutting at the first space full stop is the obvious rule and it is
+		// wrong, because "researcher, coder why is this slow" is what a person
+		// actually types -- and that rule reads the shape as "researcher," and
+		// silently swallows "coder" as the first word of the question. A
+		// trailing comma means "another role follows", which is the same thing
+		// it means in prose, so it is a rule nobody has to be taught.
+		end := 0
+		for {
+			next := strings.IndexByte(rest[end:], ' ')
+			if next < 0 {
+				// No space at all: a shape with nothing to ask.
+				return nil, raw, false
+			}
+			end += next
+			if !strings.HasSuffix(rest[:end], ",") {
+				break
+			}
+			if end++; end >= len(rest) {
+				return nil, raw, false
+			}
+		}
+		spec, question := rest[:end], strings.TrimSpace(rest[end:])
+		if question == "" {
+			// "/team:coder " with nothing to ask, exactly like a bare "/team".
+			return nil, raw, false
+		}
+		var names []string
+		for _, n := range strings.Split(spec, ",") {
+			if n = strings.TrimSpace(n); n != "" {
+				names = append(names, n)
+			}
+		}
+		if len(names) == 0 {
+			// "/team: q" named no phases at all. That is not a request for the
+			// default shape -- the user typed a colon meaning to choose -- so it
+			// falls through as text rather than silently picking for them.
+			return nil, raw, false
+		}
+		return names, question, true
+	}
+	if !strings.HasPrefix(raw, commandTeam) {
+		return nil, raw, false
+	}
+	rest := strings.TrimSpace(strings.TrimPrefix(raw, commandTeam))
+	if rest == "" {
+		// "/team" with no question is not a request for a pipeline over nothing.
+		// Falls through as ordinary text, exactly as a bare "/reason" does.
+		return nil, raw, false
+	}
+	return teamPipeline, rest, true
+}
+
 // parseModelCommand recognizes /model and /model <tier>. Returns ok=false
 // when raw is not a model command (caller should treat it as a normal prompt).
 func parseModelCommand(raw string) (arg string, ok bool) {
@@ -601,7 +759,11 @@ func (m chatModel) startTurn() (tea.Model, tea.Cmd) {
 		m.input.SetValue("")
 		return m.handleSlash(sp)
 	}
-	promptKind, prompt := parsePromptKind(raw)
+	pipeline, prompt, isTeam := parseTeamCommand(raw)
+	promptKind := ""
+	if !isTeam {
+		promptKind, prompt = parsePromptKind(raw)
+	}
 
 	// Built from the transcript BEFORE the current prompt is appended below,
 	// so the not-yet-answered prompt can never end up in its own History.
@@ -627,7 +789,7 @@ func (m chatModel) startTurn() (tea.Model, tea.Cmd) {
 	ch := make(chan tea.Msg)
 	m.streamCh = ch
 
-	return m, tea.Batch(m.spinner.Tick, startStream(ctx, m.clientName, m.workspace, prompt, promptKind, m.preferredTier, history, ch))
+	return m, tea.Batch(m.spinner.Tick, startStream(ctx, m.clientName, m.workspace, prompt, promptKind, m.preferredTier, pipeline, history, ch))
 }
 
 func (m chatModel) handleSlash(sp slashParse) (tea.Model, tea.Cmd) {
@@ -647,6 +809,7 @@ func (m chatModel) handleSlash(sp slashParse) (tea.Model, tea.Cmd) {
 	case slashSteered:
 		prompt := steeredPrompt(sp.Def, sp.Args)
 		promptKind := sp.Def.PromptKind
+		var pipeline []string // steered slash commands do not choose a shape
 		history := buildHistory(m.turns)
 		m.turns = append(m.turns, turn{role: roleUser, text: "/" + sp.Def.Name + " " + sp.Args})
 		m.input.Blur()
@@ -665,7 +828,7 @@ func (m chatModel) handleSlash(sp slashParse) (tea.Model, tea.Cmd) {
 		m.streamCancel = cancel
 		ch := make(chan tea.Msg)
 		m.streamCh = ch
-		return m, tea.Batch(m.spinner.Tick, startStream(ctx, m.clientName, m.workspace, prompt, promptKind, m.preferredTier, history, ch))
+		return m, tea.Batch(m.spinner.Tick, startStream(ctx, m.clientName, m.workspace, prompt, promptKind, m.preferredTier, pipeline, history, ch))
 	}
 	return m, nil
 }
@@ -1115,17 +1278,30 @@ func (m *chatModel) noteToolActivity(a protocol.ToolActivity) {
 	if m.activityTurns == nil {
 		m.activityTurns = map[string]int{}
 	}
-	if idx, ok := m.activityTurns[a.CallID]; ok && idx < len(m.turns) {
-		m.turns[idx].text = line
-		return
+	// An EMPTY CallID is not a call to rewrite, so it must never be used as a
+	// key. Two things arrive with one: a pipeline phase marker (there is no
+	// call), and -- MEASURED against a live provider -- a real tool call the
+	// model emitted with no id at all. Keying on "" collapsed all of them onto
+	// a single line, so four phase markers showed as one and the second of two
+	// refusals silently overwrote the first.
+	if a.CallID != "" {
+		if idx, ok := m.activityTurns[a.CallID]; ok && idx < len(m.turns) {
+			m.turns[idx].text = line
+			return
+		}
+		m.activityTurns[a.CallID] = len(m.turns)
 	}
-	m.activityTurns[a.CallID] = len(m.turns)
 	m.turns = append(m.turns, turn{role: roleSystem, text: line})
 }
 
 func toolActivityLine(a protocol.ToolActivity) string {
-	name := a.Server + "__" + a.Tool
+	name := qualifiedActivityName(a)
 	switch a.Phase {
+	case protocol.ToolPhaseStep:
+		// A pipeline phase, not a tool call -- rendered differently on purpose,
+		// so a user can see the specialists change hands rather than reading it
+		// as one more tool the agent ran.
+		return "▸ " + a.Detail + " — " + a.Tool
 	case protocol.ToolPhaseRunning:
 		return "⚙ running " + name + "…"
 	case protocol.ToolPhaseSucceeded:
@@ -1139,6 +1315,18 @@ func toolActivityLine(a protocol.ToolActivity) string {
 		return "✗ " + name + " not run" + detailSuffix(a.Detail)
 	}
 	return ""
+}
+
+// qualifiedActivityName renders the tool's name for a human.
+//
+// Server is EMPTY when the model named a tool without its server prefix, and
+// the unconditional a.Server+"__"+a.Tool that used to be here then rendered a
+// leading "__" on a name the user was being asked to make sense of.
+func qualifiedActivityName(a protocol.ToolActivity) string {
+	if a.Server == "" {
+		return a.Tool
+	}
+	return a.Server + "__" + a.Tool
 }
 
 func detailSuffix(detail string) string {
@@ -1200,18 +1388,53 @@ func (m chatModel) finishReview() (tea.Model, tea.Cmd) {
 }
 
 func (m *chatModel) refreshViewport() {
-	content := renderTranscript(m.turns)
+	content := renderTranscript(m.turns, m.viewport.Width)
 	if m.state == stateEditReview && m.reviewPrepared != nil {
 		content += "\n\n" + renderReviewPanel(m.reviewIndex, len(m.reviewBlocks), m.reviewPrepared)
 	}
 	if m.state == stateToolApproval && m.pendingApproval != nil {
 		content += "\n\n" + renderApprovalPanel(*m.pendingApproval)
 	}
-	m.viewport.SetContent(content)
+	m.viewport.SetContent(wrapToWidth(content, m.viewport.Width))
 	m.viewport.GotoBottom()
 }
 
-func renderTranscript(turns []turn) string {
+// wrapToWidth reflows transcript content to the viewport's width.
+//
+// THE VIEWPORT DOES NOT WRAP. bubbles' viewport.SetContent splits on "\n" and
+// nothing else, and View() then clips each line to Width -- so every answer
+// longer than the terminal was readable up to the right edge and INVISIBLE
+// after it, with no scrollbar, no ellipsis and nothing on screen to say text
+// had been cut. A model's paragraph is one logical line, so in practice that
+// meant most real answers.
+//
+// ansi.Wrap rather than ansi.Wordwrap, and the difference is not cosmetic:
+// Wordwrap leaves a word longer than the limit intact, so a file path, a URL or
+// a base64 blob -- exactly what a coding assistant emits -- would still run off
+// the edge and still be unreadable. Wrap breaks inside an over-long word.
+//
+// It preserves ANSI styling and counts wide characters, which both matter here:
+// the content arrives already styled by userStyle/assistantStyle, and a naive
+// byte- or rune-based wrap would either cut an escape sequence in half or
+// mis-measure CJK and emoji.
+//
+// Width 0 means the terminal size is not known yet (before the first
+// WindowSizeMsg). Returned unchanged rather than wrapped to nothing -- the same
+// tolerance truncateToWidth has, for the same reason.
+func wrapToWidth(s string, width int) string {
+	if width <= 0 {
+		return s
+	}
+	return ansi.Wrap(s, width, "")
+}
+
+// renderTranscript renders the conversation.
+//
+// It takes a WIDTH, which it did not before, because one thing in here has to
+// be drawn to the edge of the terminal rather than wrapped to it: the severed
+// rail below fades across the full line, and a rule that wrapToWidth folds onto
+// a second line stops reading as a rule and starts reading as damage.
+func renderTranscript(turns []turn, width int) string {
 	var b strings.Builder
 	for i, t := range turns {
 		if i > 0 {
@@ -1232,9 +1455,90 @@ func renderTranscript(turns []turn) string {
 			b.WriteString(assistantStyle.Render("Mochiii: " + t.text))
 		case roleSystem:
 			b.WriteString(helpStyle.Render(t.text))
+		case roleSevered:
+			b.WriteString(renderSevered(t.text, width))
 		}
 	}
 	return b.String()
+}
+
+// severedDecay is the fade the rail is drawn from: dense to sparse, left to
+// right. Four stages rather than a gradient of colour because a terminal's
+// colour support is a variable and its glyph set is not -- the fade still
+// reads as a fade in a monochrome terminal, which is where an error most needs
+// to be legible.
+const severedDecay = "▓▒░·"
+
+// severedLabel opens the rail. Block glyphs rather than an emoji: this line has
+// to survive a terminal that renders emoji at double width and one that renders
+// them as a replacement box, and "⚠" is already spoken for by the cut-off
+// answer notice -- two different failures should not open with the same mark.
+const severedLabel = "▚▚ LINK SEVERED "
+
+// renderSevered draws a prompt that never left the machine.
+//
+// THE SHAPE IS THE MESSAGE. A boxed red error is what every program prints and
+// is therefore what a reader's eye has learned to skip; this is a transmission
+// visibly decaying to nothing across the width of the terminal, which is
+// literally what happened. Underneath it, in plain text and unstyled by
+// anything that could obscure it, the daemon's own words -- because a marker
+// that looks striking and hides the actual error would be a worse bug than the
+// silence it replaced.
+func renderSevered(detail string, width int) string {
+	var b strings.Builder
+
+	// The rail fills whatever is left. Skipped entirely when there is no room:
+	// a fade squeezed into four columns is not a fade, and this client is
+	// expected to survive widths down to zero (see narrowterminal_test.go).
+	// When it IS skipped the label loses its trailing space too -- a bold,
+	// coloured space at the end of a line is invisible until someone selects
+	// the text, and then it looks like a mistake.
+	if remaining := width - lipgloss.Width(severedLabel); remaining > 8 {
+		dense, sparse := severedRail(remaining)
+		b.WriteString(severedStyle.Render(severedLabel))
+		b.WriteString(errorStyle.Render(dense))
+		b.WriteString(helpStyle.Render(sparse))
+	} else {
+		b.WriteString(severedStyle.Render(strings.TrimRight(severedLabel, " ")))
+	}
+
+	// Indented under the rail so the error belongs to it visually, and rendered
+	// in the error colour rather than faint: this is the part the user actually
+	// needs to read.
+	b.WriteString("\n" + errorStyle.Render("  "+detail))
+	b.WriteString("\n" + helpStyle.Render("  ↳ nothing was sent — this prompt never reached the daemon"))
+	return b.String()
+}
+
+// severedRail builds the fade and splits it where the colour changes.
+//
+// Returned as two pieces rather than one string so the caller can style the
+// dense head and the sparse tail differently, which is what turns a row of
+// glyphs into something that looks like it is receding.
+func severedRail(width int) (dense, sparse string) {
+	stages := []rune(severedDecay)
+	per := width / len(stages)
+	if per < 1 {
+		per = 1
+	}
+	var all []rune
+	for _, r := range stages {
+		for i := 0; i < per && len(all) < width; i++ {
+			all = append(all, r)
+		}
+	}
+	// Any remainder is the faintest glyph: a fade must end at its lightest, not
+	// restart. Integer division leaves up to len(stages)-1 columns short.
+	for len(all) < width {
+		all = append(all, stages[len(stages)-1])
+	}
+	// The split point is where the fade stops being "solid". Half the rail is
+	// dense, half is sparse.
+	cut := per * 2
+	if cut > len(all) {
+		cut = len(all)
+	}
+	return string(all[:cut]), string(all[cut:])
 }
 
 // renderReviewPanel shows one edit block as a diff: the whole SEARCH block
@@ -1283,9 +1587,20 @@ func renderApprovalPanel(req protocol.ToolApprovalRequest) string {
 		b.WriteString("\n" + diffAddedStyle.Render("  "+line))
 	}
 
-	if req.Confined {
+	switch {
+	case req.ReachesNetwork:
+		// CHECKED BEFORE Confined, because for a network tool the confinement
+		// line is not the sentence the user needs. "Anything it changes goes
+		// through the same review you use for edits" is TRUE of web_search --
+		// it changes nothing -- and it is the wrong answer to the question
+		// actually being asked, which is where the words above are about to go.
+		b.WriteString("\n" + diffRemovedStyle.Render("LEAVES YOUR MACHINE: this sends the text above to a third party "+
+			"over the internet and brings a reply back into the conversation."))
+		b.WriteString("\n" + helpStyle.Render("Mochiii strips secrets on the way out and treats whatever comes back as untrusted data, "+
+			"never as instructions — but it cannot vouch for the far end."))
+	case req.Confined:
 		b.WriteString("\n" + helpStyle.Render("this tool ships with Mochiii; anything it changes goes through the same review you use for edits"))
-	} else {
+	default:
 		b.WriteString("\n" + diffRemovedStyle.Render("NOT SANDBOXED: this is a separate program running with your full access. "+
 			"Mochiii cannot limit what it reads or changes — your approval is the only thing in its way."))
 	}
@@ -1415,30 +1730,48 @@ func (m chatModel) renderHeader() string {
 // noticeLines returns grounding/redactions each on their own line, so two
 // concurrently active notices always get their own guaranteed row instead
 // of competing for space on one shared line (see renderHeader's doc
-// comment for the bug this fixes). Each line is truncated (ANSI- and
-// wide-rune-aware, via charmbracelet/x/ansi) to m.width with a trailing
-// "…" if it would otherwise overflow the terminal -- truncation, not
-// wrapping, so every notice always occupies EXACTLY one terminal row and
-// headerLineCount's arithmetic never has to guess how many rows a wrapped
-// line actually consumed.
+// comment for the bug this fixes).
+//
+// ONE ELEMENT IS ONE TERMINAL ROW. That is the contract headerLineCount's
+// arithmetic depends on, and everything here exists to keep it exact: a notice
+// that soft-wrapped would consume a row nobody counted, desyncing the viewport
+// height and pushing content off-screen.
+//
+// It used to be kept by TRUNCATING each notice to m.width with a trailing "…",
+// which held the invariant by throwing away the end of the sentence. That is
+// the wrong half to give up: the longest notice this renders is the ZDR
+// degradation, whose whole purpose is to disclose a weakened privacy guarantee,
+// and on an 80-column terminal it was cut off around "...permits fallbacks
+// outside the c…" -- disclosing that something was wrong while hiding what.
+//
+// Wrapping and returning one element PER ROW keeps the invariant and the text:
+// every element is still exactly one row, len() is still the exact count, and
+// nothing is hidden. A long notice on a narrow terminal now costs header rows,
+// which is the correct trade -- resizeViewport floors the viewport at one row,
+// so it can shrink the transcript but never break the layout.
 func (m chatModel) noticeLines() []string {
 	var lines []string
-	if grounding := m.groundingLabel(); grounding != "" {
-		lines = append(lines, truncateToWidth(grounding, m.width))
+	add := func(s string) {
+		if s == "" {
+			return
+		}
+		lines = append(lines, wrapToRows(s, m.width)...)
 	}
-	if history := m.historyTruncatedLabel(); history != "" {
-		lines = append(lines, truncateToWidth(history, m.width))
-	}
-	if redactions := m.redactionsLabel(); redactions != "" {
-		lines = append(lines, truncateToWidth(redactions, m.width))
-	}
-	if provider := m.providerLabel(); provider != "" {
-		lines = append(lines, truncateToWidth(provider, m.width))
-	}
+	add(m.groundingLabel())
+	add(m.historyTruncatedLabel())
+	add(m.redactionsLabel())
+	add(m.providerLabel())
 	for _, degraded := range m.degradedLabels() {
-		lines = append(lines, truncateToWidth(degraded, m.width))
+		add(degraded)
 	}
 	return lines
+}
+
+// wrapToRows wraps s to width and returns one string per terminal row, so a
+// caller counting rows can count elements. See noticeLines for why that
+// equivalence is load-bearing.
+func wrapToRows(s string, width int) []string {
+	return strings.Split(wrapToWidth(s, width), "\n")
 }
 
 // truncateToWidth truncates s (which may already carry ANSI styling, e.g.

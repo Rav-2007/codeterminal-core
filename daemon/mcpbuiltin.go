@@ -156,11 +156,12 @@ func (s *Server) builtinTools(proposals *proposalSink, mode string) []mcp.Builti
 				// not promise confinement the host may not provide. It said
 				// "Runs in a restricted sandbox" while the handler executed
 				// straight on the host with the daemon's full environment.
-				Description: "Run a build or test command (go, npm, make, cargo) in the workspace root, " +
-					"with a 30s timeout. Confined by bwrap or docker WHEN ONE IS INSTALLED; otherwise it " +
-					"runs with your full privileges. These tools execute project-supplied scripts " +
-					"(Makefile recipes, package.json scripts, build.rs), so approving a call approves " +
-					"whatever the project's build files do. This daemon's API credentials are never passed to it.",
+				// RESOLVED PER HOST, not written once. See
+				// sandboxExecDescription: both the confinement claim and the
+				// resource-limit claim are derived from the same config the
+				// handler uses, because a description is consent and consent
+				// obtained for the wrong thing is not consent.
+				Description: s.sandboxExecDescription(),
 				Schema: schema(`{
 					"type":"object",
 					"properties":{
@@ -170,10 +171,26 @@ func (s *Server) builtinTools(proposals *proposalSink, mode string) []mcp.Builti
 					"additionalProperties":false
 				}`),
 				ReadOnlyHint: false,
+				// RUNS ARBITRARY CODE BY DESIGN. This is what stops
+				// RegisterBuiltin asserting Confined, and what binds an
+				// approve-for-turn grant to the arguments as well as the tool.
+				ExecutesCode: true,
+				// RESOLVED, NOT ASSERTED. Every other built-in is confined by
+				// construction; this one is confined only if the host supplies
+				// bwrap or docker. Reported from the same computation the
+				// handler confines with (sandboxExecConfig), so the prompt
+				// cannot describe a sandbox the command does not get.
+				Confined: s.sandboxExecConfined(),
 			},
 			Handler: s.builtinSandboxExec,
 		},
 	}
+
+	// The network tools, when they are not switched off. Appended rather than
+	// listed inline because they are the only built-ins whose PRESENCE is
+	// configurable -- every other tool in this function exists unconditionally
+	// and is governed only by policy.
+	tools = append(tools, s.webTools()...)
 
 	if mode != "plan" {
 		tools = append(tools, mcp.Builtin{

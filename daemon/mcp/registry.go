@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 
 	"codeterminal/protocol"
@@ -90,7 +91,57 @@ func (r *Registry) RegisterBuiltin(b Builtin) error {
 
 	b.Tool.Server = BuiltinServerName
 	b.Tool.Lane = protocol.LaneFirstParty
-	b.Tool.Confined = true
+
+	// CONFINED IS ASSERTED FOR EVERY BUILT-IN EXCEPT ONE THAT EXECUTES CODE.
+	//
+	// The blanket `b.Tool.Confined = true` that used to sit here was correct for
+	// the read-and-propose tools -- they are this daemon's own code behind the
+	// same gates as every other path through it -- and FALSE for sandbox_exec,
+	// which runs go/npm/make/cargo. A Makefile recipe is shell; `go run`
+	// compiles and runs anything in the tree. Whether that is contained depends
+	// on whether the HOST supplies bwrap or docker, which is a runtime fact a
+	// constant cannot express.
+	//
+	// The flag travels on ToolApprovalRequest and is what the user is told, so
+	// asserting it here obtained consent under false pretences: the TUI printed
+	// "anything it changes goes through the same review you use for edits" for a
+	// command that runs immediately, possibly on the host with full privileges.
+	// protocol.ToolApprovalRequest.Confined states the rule this broke -- clients
+	// must render the honest answer "plainly rather than softening it".
+	//
+	// A tool that executes code carries whatever it resolved (see
+	// mcp.Confines); everything else is still asserted, so a new built-in cannot
+	// forget to be honest by omission.
+	//
+	// ReachesNetwork is the SECOND exemption, and it was added because the
+	// first one was written as though "escapes" could only ever mean "escapes
+	// into the host". web_search and web_fetch run no subprocess and write no
+	// file, so every structural test above passes them -- and stamping them
+	// Confined would print "anything it changes goes through the same review
+	// you use for edits" over a call that ships the user's query to a third
+	// party and pulls an attacker-controlled page into the model's context.
+	// See Tool.ReachesNetwork for why that sentence is worse than false.
+	if !b.Tool.ExecutesCode && !b.Tool.ReachesNetwork {
+		b.Tool.Confined = true
+	}
+
+	// THE TWO EXEMPTIONS ARE NOT SYMMETRIC, and a test caught the asymmetry
+	// being missed. ExecutesCode means "confinement is a fact about the HOST",
+	// so the tool's own resolved value is taken and may legitimately be true --
+	// sandbox_exec under bwrap really is confined. ReachesNetwork admits no
+	// such reading: a tool that talks to the internet is not confined on any
+	// host, under any configuration, ever.
+	//
+	// Merely declining to ASSERT confinement therefore left a hole, because a
+	// caller could still assert it themselves. Registering
+	// Tool{ReachesNetwork: true, Confined: true} sailed through and printed the
+	// reassuring sentence -- the precise outcome this whole exemption exists to
+	// prevent, reached from the other direction. So it is FORCED false rather
+	// than left alone: for this class the honest value is a constant, and a
+	// constant should not be a field anyone can fill in wrong.
+	if b.Tool.ReachesNetwork {
+		b.Tool.Confined = false
+	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -194,8 +245,83 @@ func (r *Registry) Dropped() []string {
 	return append([]string(nil), r.dropped...)
 }
 
+// Canonicalize resolves a tool name the MODEL supplied to the exact qualified
+// name this registry dispatches on.
+//
+// THE PROBLEM. Measured against a live model over this repository: 8 refusals
+// across 3 orchestrated turns, and roughly 5 of one turn's 14 model calls, were
+// spent on the model asking for "search_code" when the registry knows it as
+// "builtin__search_code". Every one was refused, re-prompted, and retried. The
+// name was never ambiguous and never unsafe -- it was unqualified, and the tax
+// was paid in iterations the user's budget bought for real work.
+//
+// THE RULE, and why it is drawn exactly here:
+//
+//	A bare name resolves to the FIRST-PARTY BUILTIN LANE, or it does not
+//	resolve at all. It NEVER reaches a third-party server.
+//
+// The obvious alternative -- resolve a bare name to whichever configured server
+// uniquely offers it -- is the one to reject, and it is worth being explicit
+// about why, because it looks more useful. It makes the meaning of a bare name
+// depend on the SET OF INSTALLED SERVERS: adding one could silently change what
+// an existing bare name resolves to, or make a name that worked yesterday
+// ambiguous today. That is PATH shadowing, and a security surface that mutates
+// with configuration is not one anybody can review.
+//
+// Lane A is safe to alias into precisely because its namespace cannot be
+// influenced by anyone: the builtins are registered at startup from compiled-in
+// code, and ValidateServerName already REFUSES an external server called
+// "builtin" so it cannot shadow a confined tool with an unconfined one. This
+// function is a second consumer of that existing invariant rather than a new
+// assumption.
+//
+// So the dangerous direction -- the model means a confined built-in and reaches
+// an unconfined third-party tool -- is impossible by construction. The only
+// misfire left is the reverse: a model that meant some server's "read_file" and
+// gets the built-in one. That lands on the MORE restricted tool, which is
+// workspace-confined and policy-gated, and the result tells the model what it
+// actually got.
+//
+// WHAT THIS IS NOT. It is not a policy decision and it must never become one.
+// The canonical name is what the caller then resolves policy, role scoping and
+// consent against, and what the human is shown on the approval prompt. Aliasing
+// a name and THEN checking permission on the raw string is how a convenience
+// becomes a bypass; see resolveExecutable, where exactly one variable carries
+// the resolved name into all four.
+//
+// No case folding, no fuzzy matching, no trimming: an exact match against a
+// registered builtin, or nothing. This codebase has been bitten by case-
+// insensitive path matching before, and a tool name is dispatched on.
+//
+// aliased reports that a bare name WAS rewritten, so the caller can log and
+// count it -- the tax stays measurable after it stops being paid.
+func (r *Registry) Canonicalize(name string) (canonical string, aliased bool) {
+	// Already qualified (or malformed in a way only exact matching should
+	// judge): hand it back untouched. A name containing the separator is the
+	// model addressing a specific server, and second-guessing that is how it
+	// would reach a server it did not name.
+	if strings.Contains(name, "__") {
+		return name, false
+	}
+
+	r.mu.RLock()
+	_, isBuiltin := r.builtins[name]
+	r.mu.RUnlock()
+
+	if !isBuiltin {
+		// Not a built-in. Left exactly as it arrived so it is refused by name
+		// downstream rather than quietly becoming something else.
+		return name, false
+	}
+	return BuiltinServerName + QualifiedNameSeparator + name, true
+}
+
 // Lookup finds one tool by qualified name, with its resolved policy. Used by the
 // loop to build the approval prompt before anything runs.
+//
+// It matches EXACTLY. Callers that want to accept a bare name run it through
+// Canonicalize first, so that the rewrite is a visible step in the caller
+// rather than a leniency buried in dispatch.
 func (r *Registry) Lookup(ctx context.Context, qualified string) (Tool, Policy, error) {
 	server, name, err := SplitQualifiedName(qualified)
 	if err != nil {

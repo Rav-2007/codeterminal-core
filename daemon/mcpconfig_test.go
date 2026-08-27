@@ -361,7 +361,7 @@ func TestEmptyMCPSectionMarshalsInertlyLikeItsNeighbours(t *testing.T) {
 
 	// The section is present-but-inert, in the same shape as the two sections
 	// that already behave this way.
-	for _, want := range []string{`"retrieval":{}`, `"zdr":{}`, `"mcp":{"builtin":{},"budget":{}}`} {
+	for _, want := range []string{`"retrieval":{}`, `"zdr":{}`, `"mcp":{"builtin":{},"budget":{},"web":{}}`} {
 		if !strings.Contains(got, want) {
 			t.Errorf("marshalled config %s does not contain %s; if the shape of these sections "+
 				"changed, re-check whether Config is now written back to disk anywhere", got, want)

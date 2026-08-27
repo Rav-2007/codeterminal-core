@@ -12,6 +12,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"codeterminal/editapply"
+	"github.com/charmbracelet/x/ansi"
+
 	"codeterminal/protocol"
 )
 
@@ -392,30 +394,50 @@ func TestChat_ViewportShrinksWhenNoticeLinesGrow(t *testing.T) {
 	}
 }
 
-// TestChat_NoticeLineTruncatesRatherThanDisappearing covers the case where
-// even a single notice line is too long for a narrow terminal: it must be
-// visibly truncated (with a "…" tail), never silently dropped, and must
-// never cause renderHeader to produce more lines than headerLineCount
-// expects (which would desync resizeViewport all over again).
-func TestChat_NoticeLineTruncatesRatherThanDisappearing(t *testing.T) {
+// TestChat_NoticeLineWrapsRatherThanDisappearing covers the case where even a
+// single notice line is too long for a narrow terminal.
+//
+// It must be visibly present in full, never silently dropped, and must never
+// cause renderHeader to produce more rows than headerLineCount expects (which
+// would desync resizeViewport all over again).
+//
+// The MECHANISM changed and the intent did not. This previously asserted the
+// notice was cut to one row with a "…" tail -- which held the row invariant by
+// throwing away the end of the sentence. For the longest notice there is, the
+// ZDR degradation, that meant disclosing that a privacy guarantee was weakened
+// while hiding WHICH. noticeLines now wraps and returns one element per ROW, so
+// the count stays exact and nothing is hidden.
+func TestChat_NoticeLineWrapsRatherThanDisappearing(t *testing.T) {
 	m := newTestModel()
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 20, Height: 24})
 	m = updated.(chatModel)
 	m = typeText(m, "hi")
 	m, _ = pressEnter(m)
 
-	updated, _ = m.Update(groundingMsg{&protocol.GroundingInfo{Grounded: true, WorkspaceMismatch: true, Workspace: "/a/very/long/workspace/path/that/will/not/fit"}})
+	const path = "/a/very/long/workspace/path/that/will/not/fit"
+	updated, _ = m.Update(groundingMsg{&protocol.GroundingInfo{Grounded: true, WorkspaceMismatch: true, Workspace: path}})
 	m = updated.(chatModel)
 
 	lines := m.noticeLines()
-	if len(lines) != 1 {
-		t.Fatalf("noticeLines = %v, want exactly 1 line", lines)
+	if len(lines) < 2 {
+		t.Fatalf("noticeLines = %v, want the notice wrapped across several rows at width 20", lines)
 	}
-	if !strings.Contains(lines[0], "…") {
-		t.Errorf("noticeLines[0] = %q, want it truncated with a %q tail at width 20", lines[0], "…")
+	for i, line := range lines {
+		if line == "" {
+			t.Errorf("noticeLines[%d] is empty, want the notice visibly present, not silently dropped", i)
+		}
+		if strings.Contains(line, "\n") {
+			t.Errorf("noticeLines[%d] holds more than one terminal row, which headerLineCount cannot count", i)
+		}
 	}
-	if lines[0] == "" {
-		t.Error("noticeLines[0] is empty, want the notice still visibly present (truncated), not silently dropped")
+	if joined := ansi.Strip(strings.Join(lines, "")); strings.Contains(joined, "…") {
+		t.Errorf("the notice was cut with an ellipsis rather than wrapped: %q", joined)
+	}
+
+	// The invariant the whole thing exists for: what is drawn and what is
+	// counted must agree.
+	if drawn := len(strings.Split(m.renderHeader(), "\n")); drawn != m.headerLineCount() {
+		t.Errorf("renderHeader drew %d rows, headerLineCount says %d", drawn, m.headerLineCount())
 	}
 }
 
@@ -478,8 +500,19 @@ func TestChat_EnterAfterErrorStartsANewTurn(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("expected a Cmd starting the new stream")
 	}
-	if len(m.turns) != 2 || m.turns[1].text != "second" {
-		t.Errorf("turns = %+v, want the second prompt appended", m.turns)
+	// THREE turns, not two: the failed first prompt now leaves a roleSevered
+	// marker between them (see severed_test.go). This assertion used to read
+	// `len(m.turns) != 2`, which encoded the old behaviour -- a failure that
+	// left no trace in the transcript at all -- rather than what this test is
+	// actually about, which is that Enter after an error starts a new turn.
+	if len(m.turns) != 3 {
+		t.Fatalf("turns = %+v, want the prompt, its severed marker, and the second prompt", m.turns)
+	}
+	if last := m.turns[len(m.turns)-1]; last.role != roleUser || last.text != "second" {
+		t.Errorf("last turn = %+v, want the second prompt appended", last)
+	}
+	if m.turns[1].role != roleSevered {
+		t.Errorf("turn 1 = %+v, want the severed marker for the failed first prompt", m.turns[1])
 	}
 }
 

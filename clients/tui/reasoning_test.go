@@ -47,7 +47,7 @@ func TestChat_ReasoningRendersSeparatelyAndNotInAnswer(t *testing.T) {
 	}
 
 	// And it must actually render (visibly), labelled as thinking.
-	rendered := renderTranscript(m.turns)
+	rendered := renderTranscript(m.turns, 80)
 	if !strings.Contains(rendered, "thinking") || !strings.Contains(rendered, "Let me think") {
 		t.Errorf("transcript render does not show the thinking block:\n%s", rendered)
 	}

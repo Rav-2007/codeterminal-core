@@ -179,9 +179,15 @@ func resetHistoryOnDaemon(ctx context.Context, clientName string, ch chan tea.Ms
 //
 // promptKind is the wire value parsePromptKind (chat.go) resolved from the
 // raw input, or "" for ordinary prompts — see protocol.PromptRequest.PromptKind.
-func startStream(ctx context.Context, clientName, workspace, prompt, promptKind, preferredTier string, history []protocol.Turn, ch chan tea.Msg) tea.Cmd {
+//
+// pipeline is the specialist shape for this turn only, or nil to use whatever
+// the daemon has configured — which is what every ordinary prompt sends. It is
+// set from an explicit command and never inferred from what the question looks
+// like; see protocol.PromptRequest.Pipeline for why that is a measured decision
+// rather than caution.
+func startStream(ctx context.Context, clientName, workspace, prompt, promptKind, preferredTier string, pipeline []string, history []protocol.Turn, ch chan tea.Msg) tea.Cmd {
 	return func() tea.Msg {
-		go streamPrompt(ctx, clientName, workspace, prompt, promptKind, preferredTier, history, ch)
+		go streamPrompt(ctx, clientName, workspace, prompt, promptKind, preferredTier, pipeline, history, ch)
 		return <-ch
 	}
 }
@@ -252,7 +258,7 @@ func waitForNext(ch chan tea.Msg) tea.Cmd {
 // cancellation is recognized via ctx.Err() and this function returns
 // quietly (no streamErrMsg): the user chose to quit, that's not a failure,
 // and it leaves nothing behind reading a dead socket.
-func streamPrompt(ctx context.Context, clientName, workspace, prompt, promptKind, preferredTier string, history []protocol.Turn, ch chan tea.Msg) {
+func streamPrompt(ctx context.Context, clientName, workspace, prompt, promptKind, preferredTier string, pipeline []string, history []protocol.Turn, ch chan tea.Msg) {
 	sess, err := connectToDaemon(clientName, protocol.CapToolApproval)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -280,6 +286,7 @@ func streamPrompt(ctx context.Context, clientName, workspace, prompt, promptKind
 		History:         history,
 		PromptKind:      promptKind,
 		Tier:            preferredTier,
+		Pipeline:        pipeline,
 	}); err != nil {
 		if ctx.Err() != nil {
 			return

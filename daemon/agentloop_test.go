@@ -80,18 +80,30 @@ var lastDegradations []protocol.Degradation
 
 func runLoopWith(t *testing.T, s *Server, appr approver) (agentResult, []protocol.ToolActivity, error) {
 	t.Helper()
+	return runLoopPrompt(t, s, appr, "go")
+}
+
+// runLoopWithPrompt drives a turn with a SPECIFIC user message, for the tests
+// that turn on what the user actually asked -- the live-question classifier
+// cannot be exercised through the fixed "go" prompt the other helpers send.
+func runLoopWithPrompt(t *testing.T, s *Server, prompt string) (agentResult, []protocol.ToolActivity, error) {
+	t.Helper()
+	return runLoopPrompt(t, s, nil, prompt)
+}
+
+func runLoopPrompt(t *testing.T, s *Server, appr approver, prompt string) (agentResult, []protocol.ToolActivity, error) {
+	t.Helper()
 	lastDegradations = nil
 	registry, _ := s.buildRegistry(context.Background(), s.logger, &proposalSink{}, "")
 	t.Cleanup(func() { _ = registry.Close() })
 
 	var activity []protocol.ToolActivity
 	res, err := s.runAgentLoop(context.Background(), time.Now(), registry, "m", "auto",
-		[]chatMessage{{Role: "user", Content: "go"}}, providerRouting{}, appr,
+		[]chatMessage{{Role: "system", Content: "SYSTEM"}, {Role: "user", Content: prompt}}, providerRouting{}, appr,
 		func(string) error { return nil },
 		func(a protocol.ToolActivity) { activity = append(activity, a) },
 		nil, nil,
-		func(d protocol.Degradation) { lastDegradations = append(lastDegradations, d) },
-	)
+		func(d protocol.Degradation) { lastDegradations = append(lastDegradations, d) }, nil, nil)
 	return res, activity, err
 }
 
@@ -539,8 +551,7 @@ func TestConnectTimeIsChargedToTheTurnBudget(t *testing.T) {
 	turnStart := time.Now().Add(-45 * time.Second)
 	res, err := s.runAgentLoop(context.Background(), turnStart, registry, "m", "auto",
 		[]chatMessage{{Role: "user", Content: "go"}}, providerRouting{}, nil,
-		func(string) error { return nil }, nil, nil, nil, nil,
-	)
+		func(string) error { return nil }, nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("runAgentLoop: %v", err)
 	}

@@ -261,6 +261,33 @@ is **secure by default**: an absent or legacy block resolves to `zdr: true`,
 the whole `mcp` block ([agent mode](#agent-mode)). Unknown keys are warned about,
 never silently ignored.
 
+#### `models.agent.json` — agent mode, and the one setting that reaches the internet
+
+`models.agent.json` is `models.json` plus an `mcp` block, and it is what
+[`run-tui.sh`](run-tui.sh) uses by default. Two of the tools it enables —
+`web_search` and `web_fetch` — **send text to a third party over the internet**,
+and both ship as `"allow"`, meaning they run without stopping to ask:
+
+```json
+"mcp": { "builtin": { "tools": {
+  "web_search": "allow",
+  "web_fetch":  "allow"
+} } }
+```
+
+That is a deliberate default: an assistant that cannot look anything up answers
+questions about the changing world from a frozen memory, confidently and without
+saying so, which is worse than the exposure. The daemon prints one line at every
+startup naming exactly which tools do this and how to undo it. Change both values
+to `"ask"` and every call stops for a human first — the prompt shows the outgoing
+text in full before anything is sent.
+
+What the daemon does and does not promise on this path: secret-shaped values are
+stripped from the query before it leaves, private and link-local addresses are
+refused, and fetched pages are fenced as untrusted data that the model may quote
+but never obey. It cannot vouch for the far end. See
+[`SECURITY_MODEL.md`](SECURITY_MODEL.md).
+
 ### Slash commands
 
 Type `/` in the TUI or the VS Code chat for the menu. Local commands run in the

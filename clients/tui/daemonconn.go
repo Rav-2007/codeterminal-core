@@ -31,11 +31,46 @@ func (s *daemonSession) Close() error {
 	return s.conn.Close()
 }
 
+// daemonWorkspaceRoot is the canonical, symlink-resolved workspace root this
+// process talks to a daemon about, and it is what puts this client on the same
+// lockfile as its daemon.
+//
+// PER WORKSPACE, AND THIS CLIENT WAS THE ONE THAT MISSED IT. The daemon's
+// lockfile moved from per-user (`daemon.lock`) to per-workspace
+// (`daemon-<tag>.lock`) so two projects could both be open -- see
+// protocol.WorkspaceTag and daemon/twoworkspaces_test.go. That change updated
+// the daemon, the protocol and the VS Code client; it did not update this one,
+// which went on reading protocol.LockPath(). The daemon always writes the
+// tagged name (daemon/main.go passes a non-empty root), so the two could never
+// meet and every terminal run failed with "daemon not found" naming a path
+// nothing writes.
+//
+// NO TEST CAUGHT IT because every test here substitutes lockPathFunc for a
+// fake, so the real derivation was the one thing never exercised. That is what
+// TestTheLockPathMatchesTheDaemons is for.
+//
+// A PACKAGE VARIABLE, set once in main before anything connects and never
+// written again. The workspace is a property of the process -- this client
+// serves exactly one -- so threading it through connectToDaemon, and through
+// fetchAvailableTiers, runSearch and resetHistoryOnDaemon which do not
+// otherwise care, would be five parameters carrying one fact. The VS Code
+// client holds the same fact the same way (clients/vscode/src/daemonClient.ts).
+//
+// Empty is a valid value: protocol.LockPathFor falls back to the per-user name
+// for a client with no workspace to offer, which is what one-shot runs from a
+// directory that cannot be resolved get.
+var daemonWorkspaceRoot string
+
+// setDaemonWorkspaceRoot records the root for the rest of the process. Called
+// from main, once, BEFORE the first connection -- a call after that point would
+// change which daemon later requests reach mid-session.
+func setDaemonWorkspaceRoot(realRoot string) { daemonWorkspaceRoot = realRoot }
+
 // lockPathFunc resolves the daemon lockfile's path. It's a variable — not a
-// direct call to protocol.LockPath() — purely so tests can point it at a
+// direct call to protocol.LockPathFor() — purely so tests can point it at a
 // fake daemon's lockfile (see stream_test.go); production code never
 // changes it.
-var lockPathFunc = protocol.LockPath
+var lockPathFunc = func() string { return protocol.LockPathFor(daemonWorkspaceRoot) }
 
 // connectToDaemon finds the daemon via its lockfile, dials its Unix domain
 // socket, and performs the version handshake. It's shared by both the

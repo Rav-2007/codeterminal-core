@@ -73,7 +73,52 @@ func (s *Server) runAgentTurn(
 		}
 	}
 
-	result, err := s.runAgentLoop(ctx, turnStart, registry, model, promptReq.Mode, messages, routing, appr,
+	// One pipeline resolution per turn, before any phase runs, so a typo in a
+	// role name is reported once rather than once per phase.
+	phases, unknownRoles, fromRequest := pipelineForTurn(s.cfg.MCP, promptReq.Pipeline)
+	source := "mcp.pipeline"
+	if fromRequest {
+		source = "this request"
+		names := make([]string, 0, len(phases))
+		for _, p := range phases {
+			names = append(names, p.Name)
+		}
+		s.logger.Printf("agent: %s names the phases for this turn: %v", source, names)
+	}
+	for _, name := range unknownRoles {
+		s.logger.Printf("agent: %s names an unknown role %q; that phase is skipped", source, name)
+	}
+	for _, w := range pipelineWarnings(phases, source) {
+		s.logger.Printf("agent: %s", w)
+	}
+	// The same facts, addressed to the person who chose the shape rather than to
+	// whoever is tailing the log. See pipelineNotices for why a typo is always
+	// reported and a deliberate config choice is not.
+	if notices := pipelineNotices(phases, unknownRoles, source, fromRequest); len(notices) > 0 {
+		if err := enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Degraded: notices}); err != nil {
+			s.logger.Printf("agent: pipeline notice write error: %v", err)
+			return
+		}
+	}
+
+	run := func(
+		onToken func(string) error,
+		onActivity func(protocol.ToolActivity),
+		onProvider func(string),
+		onReasoning func(string),
+		onDegraded func(protocol.Degradation),
+	) (agentResult, error) {
+		if len(phases) == 0 {
+			// Unorchestrated: exactly the call this function has always made,
+			// with a nil role meaning "no scoping, no phase prompt".
+			return s.runAgentLoop(ctx, turnStart, registry, model, promptReq.Mode, messages, routing, appr,
+				onToken, onActivity, onProvider, onReasoning, onDegraded, nil, nil)
+		}
+		return s.runOrchestrated(ctx, turnStart, registry, model, promptReq.Mode, messages, routing, appr,
+			onToken, onActivity, onProvider, onReasoning, onDegraded, phases)
+	}
+
+	result, err := run(
 		func(token string) error {
 			full.WriteString(token)
 			return enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Token: token})

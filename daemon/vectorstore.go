@@ -173,3 +173,36 @@ func (s *ChromemStore) Query(ctx context.Context, queryVec []float32, k int) ([]
 func (s *ChromemStore) Count() int {
 	return s.collection.Count()
 }
+
+// Existing returns the stored chunk for id, and whether it was found.
+//
+// It exists for ONE caller -- buildIndex's reuse check (index_cmd.go) -- and it
+// returns Content alongside Vector because both are needed to answer the only
+// question that matters there: is the chunk under this id byte-for-byte what we
+// are about to index? An id match alone is not enough. Chunk ids encode a line
+// RANGE ("path:40-79"), so an edit that leaves a later chunk starting on the
+// same line produces the same id over different text, and reusing a vector on
+// that evidence would silently serve the embedding of code that no longer
+// exists.
+//
+// A miss is not an error. An id that was never indexed, a store that cannot
+// answer, or a document that came back without an embedding all mean the same
+// thing to the caller -- embed it -- so they collapse to (zero, false) rather
+// than to an error nobody could act on differently.
+func (s *ChromemStore) Existing(ctx context.Context, id string) (Chunk, bool) {
+	doc, err := s.collection.GetByID(ctx, id)
+	if err != nil || len(doc.Embedding) == 0 {
+		return Chunk{}, false
+	}
+	startLine, _ := strconv.Atoi(doc.Metadata["start_line"])
+	endLine, _ := strconv.Atoi(doc.Metadata["end_line"])
+	return Chunk{
+		ID:        doc.ID,
+		FilePath:  doc.Metadata["file_path"],
+		StartLine: startLine,
+		EndLine:   endLine,
+		Content:   doc.Content,
+		Vector:    doc.Embedding,
+		Class:     FileClass(doc.Metadata["class"]),
+	}, true
+}

@@ -48,7 +48,7 @@ const indexEmbedBatchSize = 40
 // treated as a valid index by the rest of the system — see indexWorkspace,
 // which wraps this with embedder-stamp handling so a partial store is always
 // refused by checkEmbedderStamp rather than silently trusted.
-func buildIndex(ctx context.Context, root string, embedder Embedder, store VectorStore, lexicalStore LexicalStore, logger *log.Logger) (*ScanResult, error) {
+func buildIndex(ctx context.Context, root string, embedder Embedder, store VectorStore, lexicalStore LexicalStore, logger *log.Logger, reuse bool) (*ScanResult, error) {
 	scan, err := ScanWorkspace(root)
 	if err != nil {
 		return nil, fmt.Errorf("scanning workspace: %w", err)
@@ -57,37 +57,216 @@ func buildIndex(ctx context.Context, root string, embedder Embedder, store Vecto
 		return scan, nil
 	}
 
-	totalBatches := (len(scan.Chunks) + indexEmbedBatchSize - 1) / indexEmbedBatchSize
+	reused, inSync := carryOverUnchanged(ctx, scan.Chunks, store, lexicalStore, reuse)
+	if reused > 0 {
+		logger.Printf("index: %d/%d chunk(s) are unchanged since the last build and keep their existing embedding (%d already correct in both stores)",
+			reused, len(scan.Chunks), countTrue(inSync))
+	}
+
+	// The batches are formed over the chunks that still NEED embedding, not over
+	// every chunk, which is the whole point: an unchanged chunk must not occupy a
+	// slot in an embedding call. Re-indexing a repository where three files moved
+	// then costs three files' worth of model time instead of the whole tree's.
+	pending := make([]int, 0, len(scan.Chunks))
+	for i := range scan.Chunks {
+		if scan.Chunks[i].Vector == nil {
+			pending = append(pending, i)
+		}
+	}
+
+	// A carried-over vector still has to be WRITTEN unless BOTH stores already
+	// hold it correctly -- its class metadata may have moved even though its text
+	// did not, and the lexical store may simply not have the row.
+	//
+	// Skipping the ones that are already right is not a micro-optimisation. A
+	// re-upsert deletes and re-inserts a trigram-tokenised FTS row, which is the
+	// single most expensive write in this file: MEASURED at 515µs/chunk against
+	// 132µs for the vector store and 1µs for the reuse lookup itself. Rewriting
+	// 3,000 rows that were already correct cost ~1.9s of a ~2s rebuild.
 	for start := 0; start < len(scan.Chunks); start += indexEmbedBatchSize {
 		end := min(start+indexEmbedBatchSize, len(scan.Chunks))
-		batch := scan.Chunks[start:end]
+		batch := carriedNeedingWrite(scan.Chunks[start:end], inSync[start:end])
+		if len(batch) == 0 {
+			continue
+		}
+		if err := upsertBatch(ctx, batch, store, lexicalStore); err != nil {
+			return nil, fmt.Errorf("upserting carried-over chunks [%d:%d]: %w", start, end, err)
+		}
+	}
+
+	// EMBED THEN UPSERT, ONE BATCH AT A TIME, and the interleaving is deliberate
+	// rather than tidier-looking than the alternative.
+	//
+	// Doing every embed first and every upsert afterwards reads better and is
+	// wrong: a failure in the last batch would then discard every vector the
+	// preceding batches had paid the model for, so a run that died at 80/83 would
+	// re-embed all 83 next time. Upserting each batch as it lands means a failed
+	// run leaves its completed work durable, and -- now that carryOverUnchanged
+	// exists -- the retry picks that work straight back up instead of buying it
+	// twice. The partial index is still refused by checkEmbedderStamp, because
+	// indexWorkspace writes no stamp on a failure; durable is not the same as
+	// trusted.
+	totalBatches := (len(pending) + indexEmbedBatchSize - 1) / indexEmbedBatchSize
+	for start := 0; start < len(pending); start += indexEmbedBatchSize {
+		end := min(start+indexEmbedBatchSize, len(pending))
+		idxs := pending[start:end]
 		batchNum := start/indexEmbedBatchSize + 1
 
-		logger.Printf("index: embedding batch %d/%d (chunks %d-%d)", batchNum, totalBatches, start, end-1)
+		logger.Printf("index: embedding batch %d/%d (%d chunk(s))", batchNum, totalBatches, len(idxs))
 
-		texts := make([]string, len(batch))
-		for i, c := range batch {
-			texts[i] = c.Content
+		texts := make([]string, len(idxs))
+		for i, ci := range idxs {
+			texts[i] = scan.Chunks[ci].Content
 		}
 		vecs, err := embedder.Embed(ctx, texts)
 		if err != nil {
-			return nil, fmt.Errorf("embedding batch %d/%d (chunks [%d:%d]): %w", batchNum, totalBatches, start, end, err)
+			return nil, fmt.Errorf("embedding batch %d/%d (%d chunk(s)): %w", batchNum, totalBatches, len(idxs), err)
 		}
-		for i := range batch {
-			batch[i].Vector = vecs[i]
-		}
-
-		if err := store.Upsert(ctx, batch); err != nil {
-			return nil, fmt.Errorf("upserting batch %d/%d (chunks [%d:%d]): %w", batchNum, totalBatches, start, end, err)
+		if len(vecs) != len(idxs) {
+			return nil, fmt.Errorf("embedding batch %d/%d: embedder returned %d vector(s) for %d chunk(s)",
+				batchNum, totalBatches, len(vecs), len(idxs))
 		}
 
-		if lexicalStore != nil {
-			if err := lexicalStore.Upsert(ctx, batch); err != nil {
-				return nil, fmt.Errorf("upserting lexical batch %d/%d (chunks [%d:%d]): %w", batchNum, totalBatches, start, end, err)
-			}
+		batch := make([]Chunk, len(idxs))
+		for i, ci := range idxs {
+			scan.Chunks[ci].Vector = vecs[i]
+			batch[i] = scan.Chunks[ci]
+		}
+		if err := upsertBatch(ctx, batch, store, lexicalStore); err != nil {
+			return nil, fmt.Errorf("upserting batch %d/%d: %w", batchNum, totalBatches, err)
 		}
 	}
 	return scan, nil
+}
+
+// upsertBatch writes one batch to both stores, so the two call sites above
+// cannot drift in which stores they remember to update.
+func upsertBatch(ctx context.Context, batch []Chunk, store VectorStore, lexicalStore LexicalStore) error {
+	if err := store.Upsert(ctx, batch); err != nil {
+		return err
+	}
+	if lexicalStore != nil {
+		if err := lexicalStore.Upsert(ctx, batch); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// carriedNeedingWrite returns the chunks in window that already have a vector
+// (carryOverUnchanged filled them in) but are NOT already correct on disk.
+//
+// A nil Vector is the single marker for "still needs the model", set by nothing
+// else on this path; inSync[i] is the separate question of whether both stores
+// already hold this chunk exactly as it is now.
+func carriedNeedingWrite(window []Chunk, inSync []bool) []Chunk {
+	out := make([]Chunk, 0, len(window))
+	for i := range window {
+		if window[i].Vector != nil && !inSync[i] {
+			out = append(out, window[i])
+		}
+	}
+	return out
+}
+
+func countTrue(flags []bool) int {
+	n := 0
+	for _, f := range flags {
+		if f {
+			n++
+		}
+	}
+	return n
+}
+
+// vectorReader is the optional half of VectorStore that buildIndex needs to
+// reuse work: given a chunk id, hand back what is already stored under it.
+//
+// Optional -- a type assertion rather than a method on VectorStore -- so that
+// every fake store in the test suite, and any future implementation, keeps
+// working unchanged and simply gets no reuse. A store that cannot answer the
+// question is not broken; it just pays full price, which is what every store
+// paid before this existed.
+type vectorReader interface {
+	Existing(ctx context.Context, id string) (Chunk, bool)
+}
+
+// lexicalHaser is the same optional shape for the lexical store: it answers
+// whether a chunk id is already present, so a chunk that both stores already
+// hold correctly can be skipped instead of rewritten. A store that does not
+// implement it is treated as "does not have it", so every chunk is written --
+// the pre-existing behaviour, and the safe direction.
+type lexicalHaser interface {
+	Has(ctx context.Context, id string) bool
+}
+
+// carryOverUnchanged fills in the Vector of every chunk whose stored copy is
+// byte-identical, and reports how many it filled plus which of them need no
+// write at all.
+//
+// The equality test is on CONTENT, not on the id, and not on a hash of the
+// content. Ids encode line ranges and therefore collide across edits (see
+// ChromemStore.Existing); a hash would be a second thing to get wrong for no
+// gain, since the store already hands back the text itself and a string compare
+// over a few KB is nothing beside a model call.
+//
+// CLASS IS COMPARED TOO, and separately from content, because it is derived from
+// the path by rules that live in this binary rather than in the file: classifyFile
+// can be corrected without any chunk's text changing, and a chunk carried over on
+// text alone would keep a class the current rules no longer assign. Content
+// decides whether the VECTOR is still valid; class decides whether the stored
+// METADATA is.
+//
+// The returned inSync flags mark chunks that both stores already hold exactly as
+// they now are, so the caller can skip rewriting them. It is deliberately AND-ed
+// with the lexical store's own answer rather than inferred from the vector
+// store's: the two are separate databases and a build that ran while lexical.db
+// was unavailable populated only one of them.
+//
+// reuse=false disables it entirely, which is how the caller expresses "the
+// vectors on disk were made by a different embedder and mean nothing to this
+// one" -- see indexWorkspace.
+func carryOverUnchanged(ctx context.Context, chunks []Chunk, store VectorStore, lexicalStore LexicalStore, reuse bool) (int, []bool) {
+	inSync := make([]bool, len(chunks))
+	if !reuse {
+		return 0, inSync
+	}
+	reader, ok := store.(vectorReader)
+	if !ok {
+		return 0, inSync
+	}
+	// Three cases, and the middle one is the reason this is a closure rather than
+	// an inline `&&`: with no lexical tier configured at all there is no second
+	// store to keep in step, so "both stores are correct" collapses to the vector
+	// store's answer. A tier that exists but cannot be asked is the opposite case
+	// and must resolve to "write it".
+	lexicalHasIt := func(id string) bool {
+		if lexicalStore == nil {
+			return true
+		}
+		haser, ok := lexicalStore.(lexicalHaser)
+		if !ok {
+			return false
+		}
+		return haser.Has(ctx, id)
+	}
+
+	carried := 0
+	for i := range chunks {
+		prior, found := reader.Existing(ctx, chunks[i].ID)
+		if !found || prior.Content != chunks[i].Content {
+			continue
+		}
+		chunks[i].Vector = prior.Vector
+		carried++
+
+		// Only now, having established the text is identical, is it worth asking
+		// the cheaper questions that decide whether a write can be skipped.
+		if prior.Class == chunks[i].Class && lexicalHasIt(chunks[i].ID) {
+			inSync[i] = true
+		}
+	}
+	return carried, inSync
 }
 
 // indexWorkspace builds a fresh index for root into indexDir, wrapping
@@ -98,9 +277,28 @@ func buildIndex(ctx context.Context, root string, embedder Embedder, store Vecto
 // and therefore refused by checkEmbedderStamp, instead of quietly passing
 // under a stamp left over from an earlier, unrelated successful run.
 func indexWorkspace(ctx context.Context, indexDir, root string, embedder Embedder, store VectorStore, lexicalStore LexicalStore, logger *log.Logger) (*ScanResult, error) {
+	// ASKED BEFORE THE STAMP IS REMOVED, and the order is the safety property.
+	//
+	// Carrying a vector over from the previous build is only sound if that build
+	// used the same embedder and the same chunk schema, and the stamp is the only
+	// record of which one it used. Removing it first -- which the line below does,
+	// deliberately, so a build that dies half-way leaves an index nothing will
+	// trust -- destroys the evidence. So the question is asked first, and its
+	// answer travels into buildIndex.
+	//
+	// checkEmbedderStamp is reused rather than reimplemented: it already encodes
+	// every reason a prior index is incomparable (missing stamp, corrupt stamp,
+	// different embedder id, different dimensionality, older chunk schema), and a
+	// second opinion on that would be a second thing to keep in sync. Any error at
+	// all means full re-embed, which is exactly the pre-existing behaviour.
+	reuse := checkEmbedderStamp(indexDir, embedder, false) == nil
+	if !reuse {
+		logger.Print("index: no comparable previous index, embedding every chunk")
+	}
+
 	_ = os.Remove(filepath.Join(indexDir, embedderStampFileName))
 
-	scan, err := buildIndex(ctx, root, embedder, store, lexicalStore, logger)
+	scan, err := buildIndex(ctx, root, embedder, store, lexicalStore, logger, reuse)
 	if err != nil {
 		return nil, err
 	}

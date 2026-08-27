@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -52,6 +53,47 @@ CREATE VIRTUAL TABLE IF NOT EXISTS code_chunks_fts USING fts5(
 	class UNINDEXED,
 	tokenize='trigram'
 )`
+
+// chunkIndexDDL is the companion lookup table, and it exists because
+// "UNINDEXED" in the DDL above means exactly what it says.
+//
+// An FTS5 column marked UNINDEXED is STORED but carries no b-tree. So
+// `DELETE ... WHERE chunk_id = ?` cannot seek -- SQLite scans every row of the
+// virtual table and decodes each one, and each row carries a full chunk of
+// source text. That made the two write paths quadratic in the size of the
+// index they were writing into:
+//
+//	MEASURED, 2026-08-26, before this table existed:
+//	  Upsert    n=500  -> 443µs/chunk   n=4000 -> 1.906ms/chunk  (222ms -> 7.6s total)
+//	  DeleteByFilePath  index=1000 -> 1.7ms      index=4000 -> 4.2ms per call
+//
+// Per-chunk cost RISING with n is the signature: 8x the chunks cost 34x the
+// time. The vector store over the identical corpus was flat at ~92µs/chunk, so
+// the lexical half was ~20x the cost of the semantic half and pulling away.
+//
+// It is worse than a slow index build, because DeleteByFilePath is on the
+// INTERACTIVE path: reindexFile (reindex.go) calls it on every applied edit,
+// synchronously, inside the per-workspace apply lock. Every edit a user
+// accepted paid a full scan of the lexical index, and paid more of it the
+// longer they had been working.
+//
+// This table gives both paths a real index to seek on: chunk_id is the primary
+// key, file_path is indexed, and fts_rowid points at the FTS row so deletion
+// happens by rowid -- which FTS5 does support efficiently. The FTS table keeps
+// owning the search; this one owns only identity.
+//
+// INVARIANT, relied on by every method below: exactly one chunk_index row per
+// code_chunks_fts row, and vice versa. ensureLexicalSchema establishes it on an
+// existing database and every write below preserves it.
+const chunkIndexDDL = `
+CREATE TABLE IF NOT EXISTS chunk_index (
+	chunk_id  TEXT PRIMARY KEY,
+	file_path TEXT NOT NULL,
+	fts_rowid INTEGER NOT NULL
+)`
+
+const chunkIndexFileDDL = `
+CREATE INDEX IF NOT EXISTS idx_chunk_index_file_path ON chunk_index(file_path)`
 
 // FTSChunkStore is a LexicalStore backed by a local, on-disk SQLite FTS5
 // database -- the same modernc.org/sqlite dependency memory.go
@@ -111,9 +153,23 @@ func NewFTSChunkStore(indexDir string) (*FTSChunkStore, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("setting busy_timeout: %w", err)
 	}
-	if _, err := db.Exec(codeChunksFTSTableDDL); err != nil {
+	// synchronous=NORMAL, and ONLY here -- memory.db deliberately does not get
+	// this. Under WAL, NORMAL stops fsync-ing on every commit and syncs at
+	// checkpoint instead; the exposure is that a machine losing power mid-write
+	// can lose the most recent commits. For conversation transcripts that would
+	// be losing the user's data, which is why MemoryStore keeps the default. This
+	// database is a DERIVED CACHE of files that are still on disk: the worst case
+	// is a stale lexical index, which `index` rebuilds and which checkEmbedderStamp
+	// already treats as a recoverable state. Paying a per-commit fsync to protect
+	// a rebuildable artifact is the wrong trade, and buildIndex commits once per
+	// 40-chunk batch.
+	if _, err := db.Exec(`PRAGMA synchronous=NORMAL`); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("creating code_chunks_fts: %w", err)
+		return nil, fmt.Errorf("setting synchronous: %w", err)
+	}
+	if err := ensureLexicalSchema(db); err != nil {
+		_ = db.Close()
+		return nil, err
 	}
 
 	// The db file and its -wal/-shm sidecars, after the schema step so the
@@ -133,6 +189,79 @@ func NewFTSChunkStore(indexDir string) (*FTSChunkStore, error) {
 	return &FTSChunkStore{db: db}, nil
 }
 
+// ensureLexicalSchema creates both tables and, on a database written before
+// chunk_index existed, backfills it from the FTS rows already there.
+//
+// The backfill is gated on chunk_index being EMPTY rather than on a version
+// number, because this store has never had a schema_meta table and adding one
+// now would not help the databases that are already on disk. "Empty companion,
+// non-empty FTS" is the only shape an un-migrated database can have, and it is
+// answerable with an indexed EXISTS rather than a count over the FTS table.
+//
+// The orphan sweep afterwards is not defensive padding. The OLD delete-by-
+// chunk_id path could leave duplicate FTS rows behind (two rows for one
+// chunk_id, only one of which any later delete would find), and an FTS row with
+// no chunk_index entry is unreachable forever: it can never be updated or
+// deleted, so it would keep serving pre-edit code into every future search.
+// Establishing the one-to-one invariant here is what lets every method below
+// assume it.
+func ensureLexicalSchema(db *sql.DB) error {
+	for _, stmt := range []struct{ what, ddl string }{
+		{"code_chunks_fts", codeChunksFTSTableDDL},
+		{"chunk_index", chunkIndexDDL},
+		{"idx_chunk_index_file_path", chunkIndexFileDDL},
+	} {
+		if _, err := db.Exec(stmt.ddl); err != nil {
+			return fmt.Errorf("creating %s: %w", stmt.what, err)
+		}
+	}
+
+	var populated bool
+	if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM chunk_index)`).Scan(&populated); err != nil {
+		return fmt.Errorf("checking chunk_index: %w", err)
+	}
+	if populated {
+		return nil
+	}
+
+	// Either a fresh database (both tables empty, so this is two no-op scans of
+	// nothing) or one that predates chunk_index (one scan, once, ever).
+	if _, err := db.Exec(
+		`INSERT OR IGNORE INTO chunk_index(chunk_id, file_path, fts_rowid)
+		 SELECT chunk_id, file_path, rowid FROM code_chunks_fts`); err != nil {
+		return fmt.Errorf("backfilling chunk_index: %w", err)
+	}
+	if _, err := db.Exec(
+		`DELETE FROM code_chunks_fts
+		 WHERE rowid NOT IN (SELECT fts_rowid FROM chunk_index)`); err != nil {
+		return fmt.Errorf("sweeping orphaned lexical rows: %w", err)
+	}
+	return nil
+}
+
+// Has reports whether a chunk id is already stored.
+//
+// It answers one question for buildIndex: may this chunk's write be skipped
+// entirely? The vector store can say the text is unchanged, but the two stores
+// are separate databases and can legitimately disagree -- a build that ran while
+// lexical.db failed to open populated one and not the other. Skipping on the
+// vector store's word alone would leave those chunks permanently missing from
+// lexical search, findable semantically and not by symbol, which is exactly the
+// asymmetry fuseRRF exists to fix.
+//
+// Cheap enough to ask per chunk BECAUSE of chunk_index: this is a primary-key
+// seek, not the scan the same question would have cost against the FTS table.
+func (s *FTSChunkStore) Has(ctx context.Context, id string) bool {
+	var present bool
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM chunk_index WHERE chunk_id = ?)`, id).Scan(&present); err != nil {
+		// An unanswerable question is answered "no": the caller then writes the
+		// chunk, which is the safe direction and the pre-existing behaviour.
+		return false
+	}
+	return present
+}
+
 // Close releases the underlying database handle.
 func (s *FTSChunkStore) Close() error {
 	return s.db.Close()
@@ -148,9 +277,29 @@ func (s *FTSChunkStore) Close() error {
 // DeleteByFilePath removes every row for one workspace-relative file. file_path
 // is an UNINDEXED FTS5 column — not full-text searchable, but still stored and
 // perfectly usable in an ordinary WHERE clause, which is what this needs.
+// Both statements seek: the subquery rides idx_chunk_index_file_path, and FTS5
+// deletes by rowid without scanning. They run in one transaction because the
+// one-to-one invariant must not be observable as broken -- a search landing
+// between them would otherwise see rows whose identity had already been
+// deleted.
 func (s *FTSChunkStore) DeleteByFilePath(ctx context.Context, relPath string) error {
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM code_chunks_fts WHERE file_path = ?`, relPath); err != nil {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("beginning lexical delete transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM code_chunks_fts
+		 WHERE rowid IN (SELECT fts_rowid FROM chunk_index WHERE file_path = ?)`, relPath); err != nil {
 		return fmt.Errorf("deleting lexical chunks for %s: %w", relPath, err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM chunk_index WHERE file_path = ?`, relPath); err != nil {
+		return fmt.Errorf("deleting lexical index rows for %s: %w", relPath, err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing lexical delete: %w", err)
 	}
 	return nil
 }
@@ -164,27 +313,66 @@ func (s *FTSChunkStore) Upsert(ctx context.Context, chunks []Chunk) error {
 	if err != nil {
 		return fmt.Errorf("beginning lexical upsert transaction: %w", err)
 	}
-	defer tx.Rollback()
+	// Explicit, like every other discard in this function: a rollback after the
+	// commit below has succeeded is a no-op by definition, and leaving one of the
+	// five bare while the rest are marked is how a reader learns to skip them all.
+	defer func() { _ = tx.Rollback() }()
 
-	del, err := tx.PrepareContext(ctx, `DELETE FROM code_chunks_fts WHERE chunk_id = ?`)
+	// Four prepared statements rather than two, and the pair that replaced the
+	// old `DELETE ... WHERE chunk_id = ?` is the whole point: that statement had
+	// no index to use and scanned the entire FTS table once PER CHUNK. Looking
+	// the rowid up first turns each replacement into two index seeks.
+	lookup, err := tx.PrepareContext(ctx, `SELECT fts_rowid FROM chunk_index WHERE chunk_id = ?`)
+	if err != nil {
+		return fmt.Errorf("preparing lexical lookup: %w", err)
+	}
+	defer func() { _ = lookup.Close() }()
+
+	delFTS, err := tx.PrepareContext(ctx, `DELETE FROM code_chunks_fts WHERE rowid = ?`)
 	if err != nil {
 		return fmt.Errorf("preparing lexical delete: %w", err)
 	}
-	defer del.Close()
+	defer func() { _ = delFTS.Close() }()
 
 	ins, err := tx.PrepareContext(ctx,
 		`INSERT INTO code_chunks_fts(chunk_id, content, file_path, start_line, end_line, class) VALUES (?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("preparing lexical insert: %w", err)
 	}
-	defer ins.Close()
+	defer func() { _ = ins.Close() }()
+
+	// INSERT OR REPLACE, not INSERT: the chunk_index row for a re-indexed chunk
+	// already exists and must now point at the new FTS rowid.
+	insIdx, err := tx.PrepareContext(ctx,
+		`INSERT OR REPLACE INTO chunk_index(chunk_id, file_path, fts_rowid) VALUES (?, ?, ?)`)
+	if err != nil {
+		return fmt.Errorf("preparing lexical index insert: %w", err)
+	}
+	defer func() { _ = insIdx.Close() }()
 
 	for _, c := range chunks {
-		if _, err := del.ExecContext(ctx, c.ID); err != nil {
-			return fmt.Errorf("deleting stale lexical chunk %s: %w", c.ID, err)
+		var oldRowID int64
+		switch err := lookup.QueryRowContext(ctx, c.ID).Scan(&oldRowID); {
+		case err == nil:
+			if _, err := delFTS.ExecContext(ctx, oldRowID); err != nil {
+				return fmt.Errorf("deleting stale lexical chunk %s: %w", c.ID, err)
+			}
+		case errors.Is(err, sql.ErrNoRows):
+			// First time this chunk id has been seen; nothing to replace.
+		default:
+			return fmt.Errorf("looking up lexical chunk %s: %w", c.ID, err)
 		}
-		if _, err := ins.ExecContext(ctx, c.ID, c.Content, c.FilePath, c.StartLine, c.EndLine, string(c.Class)); err != nil {
+
+		res, err := ins.ExecContext(ctx, c.ID, c.Content, c.FilePath, c.StartLine, c.EndLine, string(c.Class))
+		if err != nil {
 			return fmt.Errorf("inserting lexical chunk %s: %w", c.ID, err)
+		}
+		rowID, err := res.LastInsertId()
+		if err != nil {
+			return fmt.Errorf("reading rowid for lexical chunk %s: %w", c.ID, err)
+		}
+		if _, err := insIdx.ExecContext(ctx, c.ID, c.FilePath, rowID); err != nil {
+			return fmt.Errorf("indexing lexical chunk %s: %w", c.ID, err)
 		}
 	}
 

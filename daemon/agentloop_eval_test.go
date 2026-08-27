@@ -309,7 +309,7 @@ func TestAgentLoopReliability(t *testing.T) {
 			// the eval would report the failure instead of measuring a loop
 			// that quietly got permissions it was never granted.
 			res, err := srv.runAgentLoop(context.Background(), time.Now(), registry, model, "auto", messages, routing, nil,
-				func(string) error { return nil }, nil, nil, nil, nil)
+				func(string) error { return nil }, nil, nil, nil, nil, nil, nil)
 			registry.Close()
 
 			if err != nil {

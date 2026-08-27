@@ -23,6 +23,13 @@ var (
 	errorStyle     = lipgloss.NewStyle().Foreground(colorRed)
 	helpStyle      = lipgloss.NewStyle().Foreground(colorGray).Faint(true)
 
+	// severedStyle is the "LINK SEVERED" label on a prompt that never reached
+	// the daemon. Defined here rather than built inline as errorStyle.Bold(true)
+	// so the palette stays in one file -- and so nothing in the render path
+	// derives a style from a package-level one, which is the shape of bug that
+	// bites when a library's Style stops being a pure value type.
+	severedStyle = lipgloss.NewStyle().Foreground(colorRed).Bold(true)
+
 	// diffRemovedStyle/diffAddedStyle render an edit-review diff's SEARCH
 	// (removed) and REPLACE (added) lines respectively.
 	diffRemovedStyle = lipgloss.NewStyle().Foreground(colorRed)

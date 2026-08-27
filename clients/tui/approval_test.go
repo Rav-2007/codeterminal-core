@@ -180,7 +180,7 @@ func TestOnlyThePathsThatCanAnswerDeclareTheCapability(t *testing.T) {
 			want: true,
 			run: func(t *testing.T) {
 				ch := make(chan tea.Msg, 8)
-				go streamPrompt(context.Background(), "test", "/w", "hi", "", "", nil, ch)
+				go streamPrompt(context.Background(), "test", "/w", "hi", "", "", nil, nil, ch)
 				waitForStreamEnd(t, ch)
 			},
 		},
@@ -426,7 +426,7 @@ func TestTheDecisionIsRecordedInTheTranscript(t *testing.T) {
 	} {
 		m, _ := pendingApprovalModel(t, laneBRequest())
 		next, _ := m.answerApproval(decision)
-		transcript := renderTranscript(next.(chatModel).turns)
+		transcript := renderTranscript(next.(chatModel).turns, 80)
 		if !strings.Contains(transcript, want) {
 			t.Errorf("%q left no %q record in the transcript:\n%s", decision, want, transcript)
 		}

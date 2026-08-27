@@ -43,6 +43,15 @@ func main() {
 	// Declaring the capability without one would hang every tool call until the
 	// daemon's five-minute deadline expired. See oneshot.go.
 	interactive := *promptFlag != "" && isatty.IsTerminal(os.Stdin.Fd())
+	// --workspace selects WHICH DAEMON to talk to, in one-shot mode too. That is
+	// a different question from grounding, which one-shot still does not send
+	// (see this flag's help): the lockfile is per workspace, so a client with no
+	// root resolves to the per-user name no daemon writes any more. Best-effort
+	// -- an unresolvable path leaves the root empty, which is the documented
+	// fallback rather than a reason to refuse to run.
+	if realRoot, err := editapply.ResolveRealWorkspaceRoot(*workspaceFlag); err == nil {
+		setDaemonWorkspaceRoot(realRoot)
+	}
 	os.Exit(runOneShotPrompt("codeterminal-tui", prompt, oneShotIO{
 		in: os.Stdin, out: os.Stdout, err: os.Stderr, interactive: interactive,
 	}))
@@ -62,6 +71,17 @@ func main() {
 // grounding workspace (see daemon/main.go) can be compared against it
 // meaningfully — see protocol.GroundingInfo.WorkspaceMismatch.
 func runChat(workspace string) {
+	// RESOLVED BEFORE THE PREFLIGHT, not after. The daemon's lockfile is named
+	// from this root, so connecting without it looks for a file nothing writes.
+	// It used to sit below the connection, where it served only to fail fast on
+	// a bad --workspace before review.
+	workspaceRoot, err := editapply.ResolveRealWorkspaceRoot(workspace)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	setDaemonWorkspaceRoot(workspaceRoot)
+
 	preflight, err := connectToDaemon("codeterminal-tui")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -78,12 +98,6 @@ func runChat(workspace string) {
 	absWorkspace, err := filepath.Abs(workspace)
 	if err != nil {
 		absWorkspace = workspace // best-effort label; still sent as-is
-	}
-
-	workspaceRoot, err := editapply.ResolveRealWorkspaceRoot(workspace)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
 	}
 
 	p := tea.NewProgram(newChatModel("codeterminal-tui", absWorkspace, workspaceRoot, persistedHistory), tea.WithAltScreen(), tea.WithMouseCellMotion())
