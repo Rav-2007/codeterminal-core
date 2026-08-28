@@ -43,10 +43,13 @@
 //
 // The GATED number is DELIVERED: what survives retrieval, expansion, merging
 // and the character budget, because only that reaches the model. MEASURED
-// 2026-08-28: 29/49 (59.2%) delivered, 27/49 (55.1%) retrieved, 44/49 (89.8%)
-// file-level. Of the misses, 17 are the RIGHT FILE with the wrong forty lines
-// of it and 5 are the right file never retrieved at all -- so most of the
-// remaining failure mass is still granularity, not ranking.
+// 2026-08-28 after chunks began carrying their file path into the embedder
+// (chunkcontext.go): 33/49 (67.3%) delivered, 32/49 (65.3%) retrieved, 45/49
+// (91.8%) file-level, against 31/49 delivered with the prefix off.
+//
+// Of the 16 remaining misses, 12 have the RIGHT FILE already retrieved -- 3 are
+// thrown away by the character budget and the rest are the wrong forty lines of
+// a file that was found. Granularity, not ranking, is still where the mass is.
 //
 // Do not compare any of this to the old 8/9 = 89%. That set was built out of
 // failures that had already been fixed; it was measuring questions retrieval
@@ -689,11 +692,11 @@ func indexRepoExcludingSelfReference(ctx context.Context, root string, embedder 
 		end := min(start+indexEmbedBatchSize, len(scan.Chunks))
 		batch := scan.Chunks[start:end]
 
-		texts := make([]string, len(batch))
-		for i, c := range batch {
-			texts[i] = c.Content
-		}
-		vecs, err := embedder.Embed(ctx, texts)
+		// embedTextsFor, not a .Content loop: this eval builds its own index, so
+		// embedding raw Content here would measure a representation production
+		// no longer uses -- the instrument silently grading the wrong product,
+		// which is the fault this file documents three times over.
+		vecs, err := embedder.Embed(ctx, embedTextsFor(batch))
 		if err != nil {
 			return nil, fmt.Errorf("embedding batch [%d:%d]: %w", start, end, err)
 		}
@@ -1158,7 +1161,17 @@ func TestRerankEvalRetrievalRanking(t *testing.T) {
 // re-measure the spread when you do. Do NOT raise it to whatever the last run
 // printed: given the corpus sensitivity above, a floor with no slack fails on
 // an unrelated edit.
-const evalChunkRecallFloor = 0.53
+// 0.63 since 2026-08-28, when prefixing every chunk with its file path took
+// DELIVERED from 31/49 to 33/49 on this tree. Two queries of slack, the same
+// convention the 0.53 before it used, because the corpus moves under this eval:
+// two runs on one day have differed by two queries out of forty-nine.
+//
+// IT IS STILL NOT THE REVERT GUARD, and the note above already said so for the
+// previous value. 0.63 is 30.9/49, so a revert to the 31 the no-prefix baseline
+// scores would squeak past it. What actually fails on a revert is sharper and
+// cheaper: TestEveryChunkIsPrefixedWithItsOwnPathAndNothingElse and
+// TestTheChunkerIDChangesWhenTheEmbeddedTextDoes, both offline, both immediate.
+const evalChunkRecallFloor = 0.63
 
 func truncateEval(s string, n int) string {
 	if len(s) <= n {

@@ -71,11 +71,7 @@ func (s *Server) reindexFile(ctx context.Context, realRoot, relPath string) erro
 		return nil
 	}
 
-	texts := make([]string, len(chunks))
-	for i, c := range chunks {
-		texts[i] = c.Content
-	}
-	vecs, err := s.embedder.Embed(ctx, texts)
+	vecs, err := s.embedder.Embed(ctx, embedTextsFor(chunks))
 	if err != nil {
 		return fmt.Errorf("re-embedding %s: %w", relPath, err)
 	}

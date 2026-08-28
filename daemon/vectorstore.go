@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 
 	chromem "github.com/philippgille/chromem-go"
 )
@@ -43,6 +44,31 @@ type Chunk struct {
 	Score     float32
 	Class     FileClass
 	RawScore  float32
+
+	// EmbedText is what the EMBEDDER was given, which is not what Content
+	// holds: every chunk is embedded with its file path prepended, so its vector
+	// records which document it came from (chunkcontext.go, where the six arms
+	// that established this are tabulated).
+	//
+	// THREE PROPERTIES, and they are why this is a separate field rather than a
+	// richer Content.
+	//
+	// It is NOT STORED AS A FIELD. ChromemStore.Upsert builds its document
+	// field by field and stores Content; only the PREFIX is persisted, under the
+	// "embed_prefix" metadata key, and only Existing reassembles the two. A
+	// chunk from Query has EmbedText == "", which embedTextOf handles by falling
+	// back to Content.
+	//
+	// It is NEVER RENDERED AND NEVER EGRESSES. Only Content reaches a prompt,
+	// through the scrubber (context.go). Nothing new leaves the machine — and
+	// the prefix is a path already present in every rendered chunk's header line.
+	//
+	// Content STAYS BYTE-EXACT to the file's lines, and that is not tidiness:
+	// chunkLinesOf (chunkmerge.go) refuses to splice any chunk whose content
+	// line count contradicts its declared range, so a prefix written INTO
+	// Content would make every merge and every neighbour expansion silently
+	// refuse, and would break the line-number attribution the model is shown.
+	EmbedText string
 }
 
 // VectorStore persists chunks and finds the ones nearest a query vector.
@@ -126,6 +152,12 @@ func (s *ChromemStore) Upsert(ctx context.Context, chunks []Chunk) error {
 				"start_line": strconv.Itoa(c.StartLine),
 				"end_line":   strconv.Itoa(c.EndLine),
 				"class":      string(c.Class),
+				// What was PREPENDED before embedding, stored separately so
+				// Content stays byte-exact. Existing reconstructs EmbedText from
+				// it, which is the only way the reuse check can ask whether the
+				// stored vector still describes what we would embed today. See
+				// carryOverUnchanged (index_cmd.go).
+				"embed_prefix": strings.TrimSuffix(c.EmbedText, c.Content),
 			},
 			Embedding: c.Vector,
 			Content:   c.Content,
@@ -254,5 +286,12 @@ func (s *ChromemStore) Existing(ctx context.Context, id string) (Chunk, bool) {
 		Content:   doc.Content,
 		Vector:    doc.Embedding,
 		Class:     FileClass(doc.Metadata["class"]),
+		// EmbedText is reconstructed HERE AND NOWHERE ELSE. Query deliberately
+		// leaves it empty: a retrieved chunk flows on to merging, expansion and
+		// rendering, and a populated EmbedText there is a trap -- spliceChunk
+		// has to clear it for exactly that reason. Existing has one caller and
+		// one question, "would we embed the same text today", and that question
+		// cannot be answered from Content alone.
+		EmbedText: doc.Metadata["embed_prefix"] + doc.Content,
 	}, true
 }

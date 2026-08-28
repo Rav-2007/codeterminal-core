@@ -258,9 +258,11 @@ func buildIndex(ctx context.Context, root string, embedder Embedder, store Vecto
 
 		logger.Printf("index: embedding batch %d/%d (%d chunk(s))", batchNum, totalBatches, len(idxs))
 
+		// embedTextOf, not .Content: a chunk opening mid-construct is embedded
+		// with its enclosing declaration prepended (chunkcontext.go).
 		texts := make([]string, len(idxs))
 		for i, ci := range idxs {
-			texts[i] = scan.Chunks[ci].Content
+			texts[i] = embedTextOf(scan.Chunks[ci])
 		}
 		vecs, err := embedder.Embed(ctx, texts)
 		if err != nil {
@@ -348,11 +350,32 @@ type lexicalHaser interface {
 // byte-identical, and reports how many it filled plus which of them need no
 // write at all.
 //
-// The equality test is on CONTENT, not on the id, and not on a hash of the
-// content. Ids encode line ranges and therefore collide across edits (see
+// The equality test is on THE TEXT THAT WAS EMBEDDED, not on the id, and not on
+// a hash of it. Ids encode line ranges and therefore collide across edits (see
 // ChromemStore.Existing); a hash would be a second thing to get wrong for no
 // gain, since the store already hands back the text itself and a string compare
 // over a few KB is nothing beside a model call.
+//
+// IT USED TO COMPARE Content, under a comment saying "Content decides whether
+// the VECTOR is still valid". That claim is only true while the embedded text IS
+// the content, and it stopped being either (chunkcontext.go).
+//
+// UNDER TODAY'S POLICY THE GAP IS NOT REACHABLE, and pretending otherwise would
+// be worse than saying so. The prefix is the file path and an id is
+// "path:start-end", so a matching id plus matching Content implies matching
+// embedded text; there is nowhere for a stale vector to hide. A first draft of
+// this comment claimed a rename exposed it, and the test written to demonstrate
+// that passed with the fix REMOVED -- a rename changes the id, the lookup misses,
+// and the chunk is re-embedded regardless.
+//
+// It is reachable for any prefix derived from something OUTSIDE the chunk, which
+// is what every enclosing-declaration policy measured on 2026-08-28 was: rename a
+// function, leave its body's line count alone, and its mid-body chunks keep
+// byte-identical Content under unchanged ids while the text that would be
+// embedded has changed. Comparing through embedTextOf -- the same funnel the
+// embedder is fed from -- means this check cannot drift from the representation
+// again, whichever representation comes next. See
+// TestTheReuseCheckComparesTheEmbeddedTextNotTheStoredContent.
 //
 // CLASS IS COMPARED TOO, and separately from content, because it is derived from
 // the path by rules that live in this binary rather than in the file: classifyFile
@@ -398,14 +421,15 @@ func carryOverUnchanged(ctx context.Context, chunks []Chunk, store VectorStore, 
 	carried := 0
 	for i := range chunks {
 		prior, found := reader.Existing(ctx, chunks[i].ID)
-		if !found || prior.Content != chunks[i].Content {
+		if !found || embedTextOf(prior) != embedTextOf(chunks[i]) {
 			continue
 		}
 		chunks[i].Vector = prior.Vector
 		carried++
 
-		// Only now, having established the text is identical, is it worth asking
-		// the cheaper questions that decide whether a write can be skipped.
+		// Only now, having established the embedded text is identical, is it
+		// worth asking the cheaper questions that decide whether a write can be
+		// skipped.
 		if prior.Class == chunks[i].Class && lexicalHasIt(chunks[i].ID) {
 			inSync[i] = true
 		}

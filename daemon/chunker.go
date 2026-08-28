@@ -303,7 +303,8 @@ func sniffBinary(path string) (bool, error) {
 }
 
 // chunkContent splits content into overlapping line-based windows of
-// chunkerID identifies the CHUNK-BOUNDARY ALGORITHM that built an index.
+// chunkerID identifies HOW A CHUNK'S EMBEDDED TEXT IS PRODUCED: both where the
+// cuts fall and what is prepended to the text before it is embedded.
 //
 // It exists because neither existing stamp field covers boundaries. The
 // embedder ID covers which model produced the vectors; currentIndexSchemaVersion
@@ -321,7 +322,18 @@ func sniffBinary(path string) (bool, error) {
 // unchanged parameters -- which is exactly what AST-aware chunk boundaries
 // would be. TestTheChunkerIDChangesWhenTheBoundariesDo pins that, so it is not
 // left to whoever edits this file to remember.
-var chunkerID = fmt.Sprintf("fixed-window/v1/lines=%d/overlap=%d", chunkLines, overlapLines)
+// THE CONTRACT IS WIDER THAN BOUNDARIES, and it had to be. As first written
+// this identified where the cuts fall, which was the only thing that varied.
+// Then the text handed to the EMBEDDER stopped being the chunk's own lines
+// (chunkcontext.go): same cuts, same ids, same stored Content, different
+// vectors -- and no stamp field covered it. bgeEmbedderID covers the model and
+// its sequence length, currentIndexSchemaVersion covers the shape of what is
+// stored. An index built under one header policy would have been accepted and
+// queried under another, which is exactly the silent-mismatch class this
+// variable exists to prevent. The policy is interpolated, so switching arms
+// invalidates every index by itself.
+var chunkerID = fmt.Sprintf("fixed-window/v2/lines=%d/overlap=%d/prefix=%s",
+	chunkLines, overlapLines, activeEmbedPrefix)
 
 // chunkLines with overlapLines of overlap between consecutive windows.
 func chunkContent(content []byte, relPath string) []Chunk {
@@ -376,6 +388,19 @@ func chunkContent(content []byte, relPath string) []Chunk {
 	// specific. Body elision is the nearer lever: it targets the 13% of
 	// constructs too big for a window, which is where the measured misses
 	// actually concentrate, and it does not narrow what a chunk is about.
+	//
+	// THAT LEVER WAS TAKEN, AND IT LOST TOO. Enclosing-context injection was
+	// built and measured in four more arms on 2026-08-28: prefixing a mid-body
+	// chunk with its enclosing declaration scores 28/49, with the declaration
+	// and its doc line 27/49, against a 30/49 baseline. Adding that prefix to a
+	// run that already prefixes the FILE PATH costs two further queries, 33 down
+	// to 31. Six attempts to put program structure into the vector, six losses.
+	//
+	// WHAT DID WORK is one line of the file's own path, prepended to every
+	// chunk's embedded text: 30/49 -> 33/49 delivered, and the semantic tier
+	// alone from 23/49 to 30/49. It is the EmbedText below. The cuts are
+	// untouched -- every chunk keeps the line range, ID and Content it had --
+	// and the full table with the mechanism is at the top of chunkcontext.go.
 	stride := chunkLines - overlapLines
 
 	var chunks []Chunk
@@ -392,13 +417,15 @@ func chunkContent(content []byte, relPath string) []Chunk {
 
 		startLine := start + 1 // 1-indexed for humans and logs
 		endLine := end
+		content := strings.Join(lines[start:end], "\n")
 		chunks = append(chunks, Chunk{
 			ID:        fmt.Sprintf("%s:%d-%d", relPath, startLine, endLine),
 			FilePath:  relPath,
 			StartLine: startLine,
 			EndLine:   endLine,
-			Content:   strings.Join(lines[start:end], "\n"),
+			Content:   content,
 			Class:     chunkClass,
+			EmbedText: embedPrefixFor(relPath) + content,
 		})
 
 		if end == len(lines) {

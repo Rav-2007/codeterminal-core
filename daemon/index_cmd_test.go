@@ -467,3 +467,77 @@ func TestRetrieveTopK_LexicalHitOutsideSemanticPoolStillSurfaces(t *testing.T) {
 		t.Fatalf("lexical-only hit missing from final results: %+v", results)
 	}
 }
+
+// priorStore is a VectorStore whose Existing hands back one chosen chunk, so a
+// test can put carryOverUnchanged in front of a specific stored state instead of
+// having to manufacture that state through a real index build.
+type priorStore struct {
+	emptyStore
+	prior Chunk
+}
+
+func (p priorStore) Existing(ctx context.Context, id string) (Chunk, bool) {
+	if id != p.prior.ID {
+		return Chunk{}, false
+	}
+	return p.prior, true
+}
+
+// THE REUSE CHECK MUST COMPARE WHAT WAS EMBEDDED, NOT WHAT WAS STORED.
+//
+// carryOverUnchanged skips re-embedding when the stored chunk still matches, and
+// what "matches" means is the whole question. It used to mean identical Content,
+// under a comment asserting "Content decides whether the VECTOR is still valid".
+// That is only true while the embedded text IS the content.
+//
+// UNDER TODAY'S POLICY THE HOLE IS NOT REACHABLE, and saying so is the point of
+// this comment. The prefix is the file path, a chunk id is "path:start-end", so
+// identical id plus identical Content implies identical embedded text — there is
+// no gap for a stale vector to live in, and an earlier version of this test tried
+// to demonstrate one via a rename and proved nothing (a rename changes the id, so
+// the lookup misses and the chunk is re-embedded either way).
+//
+// It is reachable for any prefix derived from something OUTSIDE the chunk, which
+// is what every enclosing-declaration policy measured on 2026-08-28 was: rename a
+// function and the mid-body chunks of it keep byte-identical Content under
+// unchanged ids while the text that would be embedded has changed. So this test
+// pins the RULE directly rather than a scenario, because the rule is what has to
+// survive the next representation change. Neuter the comparison in
+// carryOverUnchanged back to Content and it fails.
+func TestTheReuseCheckComparesTheEmbeddedTextNotTheStoredContent(t *testing.T) {
+	const id = "pkg/thing.go:1-3"
+	content := "package p\n\nfunc F() {}"
+
+	fresh := Chunk{ID: id, FilePath: "pkg/thing.go", StartLine: 1, EndLine: 3,
+		Content: content, EmbedText: "pkg/thing.go\n" + content}
+
+	t.Run("identical embedded text is carried over", func(t *testing.T) {
+		prior := fresh
+		prior.Vector = []float32{1, 2, 3}
+		chunks := []Chunk{fresh}
+		carried, _ := carryOverUnchanged(context.Background(), chunks, priorStore{prior: prior}, nil, true)
+		if carried != 1 {
+			t.Fatalf("carried %d, want 1: an unchanged chunk must not be re-embedded", carried)
+		}
+		if chunks[0].Vector == nil {
+			t.Fatal("the carried-over chunk has no vector")
+		}
+	})
+
+	t.Run("same content, different embedded text is NOT carried over", func(t *testing.T) {
+		prior := fresh
+		prior.Vector = []float32{1, 2, 3}
+		// Same id, same Content, embedded under a different prefix — exactly the
+		// state a representation change leaves behind.
+		prior.EmbedText = "some/other/path.go\n" + content
+		chunks := []Chunk{fresh}
+		carried, _ := carryOverUnchanged(context.Background(), chunks, priorStore{prior: prior}, nil, true)
+		if carried != 0 {
+			t.Fatalf("carried %d, want 0. The stored vector was built from different text, so reusing "+
+				"it serves an embedding of something this chunk is not.", carried)
+		}
+		if chunks[0].Vector != nil {
+			t.Fatal("a chunk whose embedded text changed kept the stale vector")
+		}
+	})
+}

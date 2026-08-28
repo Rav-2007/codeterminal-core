@@ -20,7 +20,12 @@ const embedderStampFileName = "embedder_stamp.json"
 // Class. Rather than let that pass silently, an old stamp (which decodes
 // IndexSchemaVersion to its zero value, since the field didn't exist yet)
 // is treated as stale, the same way an embedder-ID mismatch already is.
-const currentIndexSchemaVersion = 2
+//
+// Bumped to 3 for "embed_prefix", the second metadata key, for the same reason:
+// an index written before it reads back with no prefix recorded, and
+// carryOverUnchanged would then compare an empty prefix against the real one and
+// re-embed the entire tree on every run — correct, but silently and forever.
+const currentIndexSchemaVersion = 3
 
 // embedderStamp records which embedder built an index (so a later retrieve
 // using a different or updated embedder can detect the mismatch instead of

@@ -42,6 +42,79 @@ func chunkerBoundaryFingerprint() (string, int) {
 	return hex.EncodeToString(sum[:8]), strings.Count(b.String(), ";")
 }
 
+// chunkerEmbedTextFingerprint hashes the TEXT THAT WOULD BE EMBEDDED, which the
+// boundary fingerprint above deliberately excludes.
+//
+// The two are separate because they fail for opposite reasons and demand
+// opposite fixes. Boundaries move when the cutting changes; embedded text moves
+// when the REPRESENTATION changes -- a prefix added, a body elided, a comment
+// stripped -- at identical cuts. On 2026-08-28 the representation changed
+// exactly that way (chunkcontext.go) and this file could not see it: it hashes
+// line ranges and says so. One fingerprint would have had to be re-recorded for
+// either kind of change, which tells the next person nothing about which one
+// they made.
+func chunkerEmbedTextFingerprint() (string, int) {
+	var b strings.Builder
+	var n int
+	for _, lines := range []int{1, 7, 40, 41, 95, 200} {
+		var src strings.Builder
+		for i := 1; i <= lines; i++ {
+			switch i % 5 {
+			case 0:
+				fmt.Fprintf(&src, "func f%d() {\n", i)
+			case 1:
+				fmt.Fprintf(&src, "\treturn %d\n", i)
+			case 2:
+				src.WriteString("}\n")
+			case 3:
+				fmt.Fprintf(&src, "// comment %d\n", i)
+			default:
+				fmt.Fprintf(&src, "type T%d struct{}\n", i)
+			}
+		}
+		for _, c := range chunkContent([]byte(src.String()), "fixture.go") {
+			b.WriteString(embedTextOf(c))
+			b.WriteString("\x00")
+			n++
+		}
+	}
+	sum := sha256.Sum256([]byte(b.String()))
+	return hex.EncodeToString(sum[:8]), n
+}
+
+// THE EMBEDDED TEXT IS PART OF THE INDEX'S IDENTITY TOO, and until 2026-08-28
+// nothing said so. bgeEmbedderID covers the model and its sequence length;
+// currentIndexSchemaVersion covers the shape of what is STORED; the fingerprint
+// below covers where the cuts fall. Change what is handed to the embedder at
+// unchanged cuts, unchanged model and unchanged stored shape -- which is exactly
+// what prefixing the file path did -- and all three stay identical while every
+// vector in the index means something different.
+func TestTheChunkerIDChangesWhenTheEmbeddedTextDoes(t *testing.T) {
+	const (
+		// Recorded 2026-08-28 for chunkerID "fixed-window/v2/lines=40/overlap=10/prefix=path".
+		wantFingerprint = "4e0a5e30bd6c9c9d"
+		wantTexts       = 16
+	)
+	got, texts := chunkerEmbedTextFingerprint()
+
+	// ANTI-VACUITY: a chunkContent returning nothing would hash a constant.
+	if texts < 10 {
+		t.Fatalf("the fixture produced only %d chunks; the fingerprint below would pin almost nothing", texts)
+	}
+	if got != wantFingerprint || texts != wantTexts {
+		t.Fatalf(`the text handed to the EMBEDDER changed: fingerprint %s (%d chunks), recorded %s (%d chunks).
+
+The boundaries may well be untouched -- TestTheChunkerIDChangesWhenTheBoundariesDo
+answers that separately. What moved is what each chunk is embedded AS, and every
+vector in every existing index was built from the old version.
+
+chunkerID is currently %q. If this change was intended, make sure chunkerID moves
+with it (it interpolates activeEmbedPrefix, so a new policy is covered; a change
+to how an existing policy renders is NOT), then update the values above.`,
+			got, texts, wantFingerprint, wantTexts, chunkerID)
+	}
+}
+
 // THE POINT OF THIS TEST IS THAT chunkerID CANNOT BE FORGOTTEN.
 //
 // chunkerID interpolates chunkLines and overlapLines, so tuning either of those
@@ -90,6 +163,7 @@ func TestTheChunkerIDCarriesItsParameters(t *testing.T) {
 	for _, want := range []string{
 		fmt.Sprintf("lines=%d", chunkLines),
 		fmt.Sprintf("overlap=%d", overlapLines),
+		fmt.Sprintf("prefix=%s", activeEmbedPrefix),
 	} {
 		if !strings.Contains(chunkerID, want) {
 			t.Errorf("chunkerID %q does not carry %q, so changing that constant would not "+

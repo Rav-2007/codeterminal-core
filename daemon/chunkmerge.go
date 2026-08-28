@@ -194,7 +194,15 @@ func spliceChunk(cur, next Chunk) (Chunk, bool) {
 	// A merged span is no longer a stored document; nothing downstream reads
 	// Vector off a retrieved chunk, and a stale one would be a lie about the
 	// new content.
+	//
+	// EmbedText goes for exactly the same reason, and it is the newer half of
+	// this pair. `merged := cur` above copies cur's embedded text onto a span
+	// whose Content is now two chunks joined, so it describes a chunk that no
+	// longer exists. Nothing re-embeds a merged span today -- embedTextOf is
+	// only reached from the index paths -- so this is latent rather than live,
+	// which is precisely the state Vector was in when it was given this comment.
 	merged.Vector = nil
+	merged.EmbedText = ""
 	return merged, true
 }
 

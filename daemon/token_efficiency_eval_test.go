@@ -197,11 +197,9 @@ func TestTokenEfficiencyEval(t *testing.T) {
 	for start := 0; start < len(scan.Chunks); start += indexEmbedBatchSize {
 		end := min(start+indexEmbedBatchSize, len(scan.Chunks))
 		batch := scan.Chunks[start:end]
-		texts := make([]string, len(batch))
-		for i, c := range batch {
-			texts[i] = c.Content
-		}
-		vecs, err := embedder.Embed(ctx, texts)
+		// embedTextsFor, not a .Content loop -- see the note in
+		// indexRepoExcludingSelfReference (rerank_eval_test.go).
+		vecs, err := embedder.Embed(ctx, embedTextsFor(batch))
 		if err != nil {
 			t.Fatalf("embedding batch [%d:%d]: %v", start, end, err)
 		}
