@@ -88,6 +88,18 @@ env:
 # are guaranteed. The 19 jobs that do move (go, lint, govulncheck x6 modules each,
 # plus fuzz) need only Go, which setup-go installs into the runner's own cache.
 #
+# THE OTHER SWITCH, `vars.HOSTED_RUNNERS_DISABLED`, is the quota escape hatch and
+# is meant to be TEMPORARY. Moving the Linux jobs onto a self-hosted runner does
+# not help while the account is at zero minutes, because the Windows `cross` jobs
+# still bill at 2x and would fail the run on their own. Setting this variable to
+# `true` skips every job that needs a hosted runner -- cross, extension,
+# proxy-image -- so a push can go fully green on the self-hosted runner alone.
+#
+# BE HONEST ABOUT WHAT THAT COSTS: with it set there is NO Windows or macOS
+# verification, no VS Code extension test and no proxy image build. That is a
+# real reduction in what CI proves, not a free win. Unset it when the monthly
+# quota resets, and do not leave it set on a run that is about to reach main.
+#
 # SAFE HERE BECAUSE THE REPO IS PRIVATE. A self-hosted runner on a PUBLIC repo is
 # a documented remote-code-execution hole -- anyone's fork PR runs on your
 # hardware. Do not set this variable if this repo is ever made public.
@@ -345,8 +357,9 @@ jobs:
     # excluded because it deploys to Linux and never ships to a desktop.
     name: cross (${{ matrix.os }}, ${{ matrix.module }})
     if: >-
-      github.event_name != 'pull_request' ||
-      github.event.pull_request.head.repo.full_name != github.repository
+      vars.HOSTED_RUNNERS_DISABLED != 'true' &&
+      (github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name != github.repository)
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -453,8 +466,9 @@ jobs:
     # all, and this repo is private with none -- so skip the PR copy when it
     # comes from this very repository. Halves the Actions minutes a PR costs.
     if: >-
-      github.event_name != 'pull_request' ||
-      github.event.pull_request.head.repo.full_name != github.repository
+      vars.HOSTED_RUNNERS_DISABLED != 'true' &&
+      (github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name != github.repository)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -490,6 +504,7 @@ jobs:
     # Builds the proxy Docker image exactly as Railway does (same Dockerfile,
     # same build context) so a broken build context — e.g. a Dockerfile that
     # fails to COPY a needed .go file — is caught here instead of at deploy.
+    if: vars.HOSTED_RUNNERS_DISABLED != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
