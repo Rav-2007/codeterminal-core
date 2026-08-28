@@ -336,3 +336,36 @@ func TestBuildGroundingInfo_TrailingSlashIsNotAMismatch(t *testing.T) {
 		t.Error("WorkspaceMismatch = true, want false — differs only by a trailing slash")
 	}
 }
+
+// A SPAN THAT DOES NOT FIT MUST NOT TAKE THE TAIL WITH IT.
+//
+// truncateToBudget used to return on the first overflow, so one large span
+// forfeited every span behind it however much budget was left. That is invisible
+// in the tests above because their chunks are all the same size — the two
+// behaviours only diverge when something SMALLER is ranked lower, which is
+// exactly what construct widening produces.
+//
+// Revert the `continue` in truncateToBudget to a `return` and this fails.
+func TestTruncateToBudget_AnOversizedSpanDoesNotForfeitTheTail(t *testing.T) {
+	small := Chunk{FilePath: "small.go", StartLine: 1, EndLine: 2, Content: strings.Repeat("s", 50)}
+	chunks := []Chunk{
+		{FilePath: "top.go", StartLine: 1, EndLine: 5, Content: strings.Repeat("t", 100)},
+		{FilePath: "huge.go", StartLine: 1, EndLine: 400, Content: strings.Repeat("h", 5000)},
+		small,
+	}
+	// Room for the top span and the small one, nowhere near enough for the huge.
+	budget := len(renderChunk(1, chunks[0], false)) + len(renderChunk(2, small, false)) + 10
+
+	kept, truncated := truncateToBudget(chunks, budget, false)
+	if !truncated {
+		t.Fatal("truncated = false, want true: the huge span was dropped")
+	}
+	if len(kept) != 2 {
+		t.Fatalf("kept %d spans, want 2 (top.go and small.go). The oversized span in the middle "+
+			"must be skipped, not end the packing", len(kept))
+	}
+	if kept[0].FilePath != "top.go" || kept[1].FilePath != "small.go" {
+		t.Fatalf("kept %q then %q, want top.go then small.go in rank order",
+			kept[0].FilePath, kept[1].FilePath)
+	}
+}

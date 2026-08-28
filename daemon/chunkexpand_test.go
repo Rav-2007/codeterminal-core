@@ -7,6 +7,12 @@ import (
 	"testing"
 )
 
+// fixedNeighbourPolicy is the pre-construct behaviour: widen the top hits by one
+// window either side and never to a declaration. The tests below were written
+// against it and still pin it, because it is the FALLBACK the construct policy
+// uses whenever no declaration qualifies -- which is most of the time.
+var fixedNeighbourPolicy = expandPolicy{TopN: expandNeighbourTopN}
+
 func expandWorkspace(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
@@ -52,7 +58,7 @@ func TestExpansionWidensAHitIntoOneContiguousSpan(t *testing.T) {
 	}
 	middle := all[2]
 
-	expanded := expandToNeighbours([]Chunk{middle}, root, expandNeighbourTopN)
+	expanded := expandToNeighbours([]Chunk{middle}, root, fixedNeighbourPolicy)
 	if len(expanded) != 3 {
 		t.Fatalf("expected the hit plus both neighbours, got %d: %v", len(expanded), chunkIDsOf(expanded))
 	}
@@ -90,7 +96,7 @@ func TestExpansionOnlyWidensTheTopRankedHits(t *testing.T) {
 	if len(hits) < expandNeighbourTopN+1 {
 		t.Fatalf("fixture yields only %d spaced hits; need %d", len(hits), expandNeighbourTopN+1)
 	}
-	expanded := expandToNeighbours(hits, root, expandNeighbourTopN)
+	expanded := expandToNeighbours(hits, root, fixedNeighbourPolicy)
 
 	last := hits[len(hits)-1]
 	li := -1
@@ -145,7 +151,7 @@ func TestExpansionRefusesWhatTheIndexerRefusesToRead(t *testing.T) {
 func TestExpansionLeavesAHitAloneWhenItsFileHasMovedUnderIt(t *testing.T) {
 	root := expandWorkspace(t)
 	stale := Chunk{ID: "long.go:7-59", FilePath: "long.go", StartLine: 7, EndLine: 59, Content: "old"}
-	got := expandToNeighbours([]Chunk{stale}, root, expandNeighbourTopN)
+	got := expandToNeighbours([]Chunk{stale}, root, fixedNeighbourPolicy)
 	if len(got) != 1 || got[0].ID != stale.ID {
 		t.Errorf("a hit whose line range the chunker no longer produces was expanded anyway: %v", chunkIDsOf(got))
 	}
@@ -155,10 +161,10 @@ func TestExpansionLeavesAHitAloneWhenItsFileHasMovedUnderIt(t *testing.T) {
 func TestExpansionIsOffWhenNotConfigured(t *testing.T) {
 	root := expandWorkspace(t)
 	all := chunksOf(t, root, "long.go")
-	if got := expandToNeighbours(all[:1], root, 0); len(got) != 1 {
+	if got := expandToNeighbours(all[:1], root, expandPolicy{}); len(got) != 1 {
 		t.Errorf("topN=0 must not expand, got %d chunks", len(got))
 	}
-	if got := expandToNeighbours(all[:1], "", expandNeighbourTopN); len(got) != 1 {
+	if got := expandToNeighbours(all[:1], "", fixedNeighbourPolicy); len(got) != 1 {
 		t.Errorf("an empty workspace root must not expand, got %d chunks", len(got))
 	}
 }
@@ -169,4 +175,124 @@ func chunkIDsOf(cs []Chunk) []string {
 		out[i] = c.ID
 	}
 	return out
+}
+
+// constructWorkspace writes a file holding one function far longer than a single
+// 40-line window, followed by a second declaration, so a hit landing inside the
+// long one can be checked for whether widening stops at the right place.
+func constructWorkspace(t *testing.T, bodyLines int) string {
+	t.Helper()
+	root := t.TempDir()
+	var b strings.Builder
+	b.WriteString("package main\n\n")
+	b.WriteString("// Long is the construct under test.\n")
+	b.WriteString("func Long() {\n")
+	for i := 1; i <= bodyLines; i++ {
+		b.WriteString("\tstep()\n")
+	}
+	b.WriteString("}\n\n")
+	b.WriteString("// After must never be pulled in by widening Long.\n")
+	b.WriteString("func After() {\n\treturn\n}\n")
+	if err := os.WriteFile(filepath.Join(root, "long.go"), []byte(b.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	real, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return real
+}
+
+// THE PROPERTY THE CONSTRUCT POLICY EXISTS FOR: a hit in the middle of a long
+// function brings back the WHOLE function, not one window either side.
+//
+// This is what the +-1 policy could not do. Measured over the locate eval, most
+// of the remaining misses are the right file with the wrong forty lines of it,
+// and for six of them the answer sits inside the same declaration as a chunk
+// that was already retrieved.
+func TestWideningReachesTheWholeEnclosingConstruct(t *testing.T) {
+	root := constructWorkspace(t, 150)
+	all := chunksOf(t, root, "long.go")
+	if len(all) < 5 {
+		t.Fatalf("fixture produced %d chunks; need several windows", len(all))
+	}
+	mid := all[len(all)/2]
+
+	expanded := expandToNeighbours([]Chunk{mid}, root, expandPolicy{TopN: 1, ConstructCap: 300})
+	spans := mergeAdjacentChunks(expanded)
+	if len(spans) != 1 {
+		t.Fatalf("widening produced %d spans, want 1 contiguous region", len(spans))
+	}
+	got := spans[0]
+
+	lines := strings.Split(readFileForTest(t, root, "long.go"), "\n")
+	var want [2]int
+	for _, e := range constructExtents(lines) {
+		if e[0] <= mid.StartLine && mid.StartLine <= e[1] {
+			want = e
+		}
+	}
+	if want[0] == 0 {
+		t.Fatal("the fixture's long function was not found by constructExtents")
+	}
+	// Chunks are 40-line windows, so the span rounds outward to window edges; it
+	// must COVER the declaration, which is what containment scoring asks.
+	if got.StartLine > want[0] || got.EndLine < want[1] {
+		t.Errorf("widened span is %d-%d, which does not cover the construct at %d-%d",
+			got.StartLine, got.EndLine, want[0], want[1])
+	}
+	if !strings.Contains(got.Content, "func Long() {") {
+		t.Error("the widened span does not contain the declaration it was widened to")
+	}
+}
+
+// AN OVERSIZED CONSTRUCT FALLS BACK, IT DOES NOT WIDEN TO NOTHING.
+//
+// A construct past the cap is exactly where a hit is most likely to be one
+// window away from its answer, so refusing to widen there would regress hits the
+// pre-construct policy already caught. The fallback is what stops this change
+// from being a trade instead of an addition.
+func TestAConstructPastTheCapFallsBackToFixedNeighbours(t *testing.T) {
+	root := constructWorkspace(t, 400) // far past any cap under test
+	all := chunksOf(t, root, "long.go")
+	mid := all[len(all)/2]
+
+	capped := expandToNeighbours([]Chunk{mid}, root, expandPolicy{TopN: 1, ConstructCap: 50})
+	if len(capped) != 3 {
+		t.Fatalf("got %d chunks, want the hit plus its two fixed neighbours; widening to an "+
+			"oversized construct must fall back, not return the hit alone", len(capped))
+	}
+	uncapped := expandToNeighbours([]Chunk{mid}, root, expandPolicy{TopN: 1, ConstructCap: 1000})
+	if len(uncapped) <= len(capped) {
+		t.Fatalf("with the cap raised past the construct's size, widening returned %d chunks and "+
+			"the capped run returned %d; the cap is not actually binding", len(uncapped), len(capped))
+	}
+}
+
+// THE CAP IS A BUDGET GUARD, so it has to bound what is actually delivered.
+func TestTheCapBoundsHowMuchWideningCanDeliver(t *testing.T) {
+	root := constructWorkspace(t, 400)
+	all := chunksOf(t, root, "long.go")
+	mid := all[len(all)/2]
+	for _, capLines := range []int{50, 120, 1000} {
+		spans := mergeAdjacentChunks(expandToNeighbours([]Chunk{mid}, root, expandPolicy{TopN: 1, ConstructCap: capLines}))
+		total := 0
+		for _, s := range spans {
+			total += s.EndLine - s.StartLine + 1
+		}
+		// One window plus its two neighbours is the floor; the cap plus a window
+		// of rounding is the ceiling.
+		if ceiling := capLines + 2*chunkLines; total > ceiling {
+			t.Errorf("cap %d delivered %d lines, past the %d ceiling", capLines, total, ceiling)
+		}
+	}
+}
+
+func readFileForTest(t *testing.T, root, rel string) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(root, rel))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
 }

@@ -146,7 +146,7 @@ func (s *Server) gatherContext(ctx context.Context, prompt string) retrievalOutc
 	// mergeAdjacentChunks -- fuseDirectSpans is what folds a chunk and its new
 	// siblings into one contiguous span, and that fold is the whole mechanism.
 	// See chunkexpand.go for the measurement.
-	similar = expandToNeighbours(similar, s.workspace, expandNeighbourTopN)
+	similar = expandToNeighbours(similar, s.workspace, defaultExpandPolicy)
 
 	fused := fuseDirectSpans(direct, similar, s.retrievalTopK, s.noScrub())
 	if len(fused.Chunks) == 0 {
@@ -198,21 +198,37 @@ func (s *Server) similarChunks(ctx context.Context, prompt string) ([]Chunk, str
 func (s *Server) noScrub() bool { return s.cfg != nil && s.cfg.NoScrub }
 
 // truncateToBudget keeps chunks (already ranked best-first by the vector
-// store) in order while their rendered size stays within budget chars,
-// dropping only lowest-ranked overflow — the top hit is never sacrificed to
-// make room for a lower-ranked one. Reports whether anything was dropped.
+// store) in rank order while their rendered size stays within budget chars.
+// The top hit is never sacrificed to make room for a lower-ranked one.
+// Reports whether anything was dropped.
+//
+// IT SKIPS AN OVERSIZED SPAN RATHER THAN STOPPING AT IT, and that one word is
+// worth a query. This used to `return` on the first span that did not fit,
+// which threw away the entire remaining tail — so a small span ranked eighth was
+// discarded because a large one ranked fifth had not fitted, even with thousands
+// of characters of budget still free. Measured over the locate eval by replaying
+// one run's retrieval through this function, continuing instead of returning
+// delivers one more query for 2.6% more context, and it is a precondition for
+// the construct widening in chunkexpand.go: widening makes some spans much
+// bigger, and stopping at the first big one would forfeit everything behind it.
+//
+// RANK ORDER AMONG SURVIVORS IS UNCHANGED. This only ever ADDS a span that would
+// otherwise have been dropped; it never promotes one above a better-ranked span
+// that was kept.
 func truncateToBudget(chunks []Chunk, budget int, scrubDisabled bool) ([]Chunk, bool) {
 	var kept []Chunk
 	used := 0
+	dropped := false
 	for _, c := range chunks {
 		size := len(renderChunk(len(kept)+1, c, scrubDisabled))
 		if len(kept) > 0 && used+size > budget {
-			return kept, true
+			dropped = true
+			continue
 		}
 		kept = append(kept, c)
 		used += size
 	}
-	return kept, false
+	return kept, dropped
 }
 
 // renderChunk formats one chunk as it will appear inside the

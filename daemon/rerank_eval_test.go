@@ -43,13 +43,22 @@
 //
 // The GATED number is DELIVERED: what survives retrieval, expansion, merging
 // and the character budget, because only that reaches the model. MEASURED
-// 2026-08-28 after chunks began carrying their file path into the embedder
-// (chunkcontext.go): 33/49 (67.3%) delivered, 32/49 (65.3%) retrieved, 45/49
-// (91.8%) file-level, against 31/49 delivered with the prefix off.
+// 2026-08-28, after two changes on one day:
 //
-// Of the 16 remaining misses, 12 have the RIGHT FILE already retrieved -- 3 are
-// thrown away by the character budget and the rest are the wrong forty lines of
-// a file that was found. Granularity, not ranking, is still where the mass is.
+//	                                       delivered  retrieved  file-level
+//	before both                            31/49      28         44
+//	+ file path in the embedded text       33/49      32         45
+//	+ widen to the declaration, b=24000    39/49      31         45
+//
+// DELIVERED (39) now far EXCEEDS retrieved (31), which is not a paradox: the
+// budget only ever removes spans, while expansion adds the region around a hit,
+// so a query whose answer was never itself retrieved is delivered anyway inside
+// the declaration a neighbouring chunk belongs to. That is the entire mechanism
+// of the second change, and it is why measuring retrieval alone stopped being
+// enough. Only ONE query is now thrown away by the budget, down from three.
+//
+// Of the remaining misses, most still have the RIGHT FILE retrieved. Four are
+// files retrieval never finds at all, which no delivery-side change can reach.
 //
 // Do not compare any of this to the old 8/9 = 89%. That set was built out of
 // failures that had already been fixed; it was measuring questions retrieval
@@ -809,7 +818,7 @@ func runEvalPass(ctx context.Context, t *testing.T, embedder Embedder, store Vec
 		// change in what the model receives -- the same fault that let the
 		// character budget go unmeasured until 2026-08-28, and the reason
 		// displayK is read from defaultK rather than written as a literal.
-		expanded := expandToNeighbours(hits, repoRoot, expandNeighbourTopN)
+		expanded := expandToNeighbours(hits, repoRoot, defaultExpandPolicy)
 		delivered, _ := truncateToBudget(
 			fuseDirectSpans(nil, expanded, displayK, false).Chunks,
 			defaultContextBudgetChars, false)
@@ -949,7 +958,8 @@ func TestRerankEvalRetrievalRanking(t *testing.T) {
 	fmt.Printf("semantic-only chunk-level recall: %d/%d (%.1f%%)\n", semanticOnlyCount, total, 100*float64(semanticOnlyCount)/float64(total))
 	fmt.Printf("hybrid chunk-level recall:        %d/%d (%.1f%%)  (retrieval only)\n", hybridCount, total, 100*float64(hybridCount)/float64(total))
 	fmt.Printf("DELIVERED to the prompt:          %d/%d (%.1f%%)  <- THE GATED NUMBER\n", deliveredCount, total, 100*deliveredRate)
-	fmt.Printf("  retrieved then BUDGETED OUT:    %d  (k=%d, budget=%d chars, expand top %d)\n", retrievedButBudgeted, defaultK, defaultContextBudgetChars, expandNeighbourTopN)
+	fmt.Printf("  retrieved then BUDGETED OUT:    %d  (k=%d, budget=%d chars, expand top %d, construct cap %d)\n",
+		retrievedButBudgeted, defaultK, defaultContextBudgetChars, defaultExpandPolicy.TopN, defaultExpandPolicy.ConstructCap)
 	fmt.Println()
 
 	// The chunk-level number alone cannot tell "retrieval had no idea" apart
@@ -1161,17 +1171,21 @@ func TestRerankEvalRetrievalRanking(t *testing.T) {
 // re-measure the spread when you do. Do NOT raise it to whatever the last run
 // printed: given the corpus sensitivity above, a floor with no slack fails on
 // an unrelated edit.
-// 0.63 since 2026-08-28, when prefixing every chunk with its file path took
-// DELIVERED from 31/49 to 33/49 on this tree. Two queries of slack, the same
-// convention the 0.53 before it used, because the corpus moves under this eval:
-// two runs on one day have differed by two queries out of forty-nine.
+// 0.75 since 2026-08-28, after two changes on the same day took DELIVERED from
+// 31/49 to 39/49: prefixing every chunk with its file path before embedding
+// (chunkcontext.go) and widening a hit to its enclosing declaration at a 24,000
+// character budget (chunkexpand.go, config.go). 0.75 is 36.75/49, so it holds
+// two queries of slack below the 39 measured — the same convention 0.63 and 0.53
+// used, because the corpus moves under this eval and two runs on one day have
+// differed by two queries out of forty-nine.
 //
-// IT IS STILL NOT THE REVERT GUARD, and the note above already said so for the
-// previous value. 0.63 is 30.9/49, so a revert to the 31 the no-prefix baseline
-// scores would squeak past it. What actually fails on a revert is sharper and
-// cheaper: TestEveryChunkIsPrefixedWithItsOwnPathAndNothingElse and
-// TestTheChunkerIDChangesWhenTheEmbeddedTextDoes, both offline, both immediate.
-const evalChunkRecallFloor = 0.63
+// IT IS STILL NOT THE REVERT GUARD, and it now matters more, because the
+// delivery policy and the budget are ONE decision: reverting either alone lands
+// at 27/49, well under this floor, so that direction does fail here. What fails
+// faster and offline is the pinned pair — TestEveryChunkIsPrefixedWithItsOwnPath
+// AndNothingElse, TestTheChunkerIDChangesWhenTheEmbeddedTextDoes, and
+// TestTruncateToBudget_AnOversizedSpanDoesNotForfeitTheTail.
+const evalChunkRecallFloor = 0.75
 
 func truncateEval(s string, n int) string {
 	if len(s) <= n {

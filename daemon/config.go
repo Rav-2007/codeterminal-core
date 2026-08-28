@@ -168,12 +168,30 @@ type RetrievalConfig struct {
 // Against the shipped 8000/k=5 configuration that is 46.9% -> 61.2%, +14.3pp,
 // for roughly 2.1x the injected context (~2,000 -> ~4,200 tokens per prompt).
 //
+// 24000 SINCE 2026-08-28 (LATER THE SAME DAY), BECAUSE THE SATURATION POINT
+// MOVED WHEN THE EXPANSION POLICY DID. "16000 is the saturation point" was true
+// of a delivery path that widened a hit by one window either side. Widening to
+// the enclosing DECLARATION instead (defaultExpandPolicy, chunkexpand.go)
+// produces much larger spans, and at 16000 they simply displace other files --
+// the policy measures neutral-to-worse there and only pays once there is room.
+// The two constants are one decision, exactly as k and the budget were:
+//
+//	                        budget 16000   20000   24000   28000
+//	+-1 on top 3 (before)    32/49         35      35      35
+//	construct<=300, top 10   27            35      39      39
+//
+// Note the 16000 column: the shipped expansion policy scores 27 there, five
+// BELOW the old one. Reverting this constant without also reverting
+// defaultExpandPolicy lands in the worst cell of that table, not a middle one.
+// The full grid is in chunkexpand.go and TestDeliveryPolicySweep regenerates it.
+//
 // The cost is real and is not only money: more injected context is more prefill
 // latency, and a longer context is not automatically a better one. What has NOT
 // been measured is whether the extra spans help or distract the MODEL --
 // TestRerankEvalRetrievalRanking measures what reaches the prompt, not what the
-// model does with it. An agentic eval is where that would be settled.
-const defaultContextBudgetChars = 16000
+// model does with it. An agentic eval is where that would be settled, and at
+// 24000 that question is worth more than it was at 16000.
+const defaultContextBudgetChars = 24000
 
 // resolvedTopK returns the configured TopK, falling back to defaultK.
 func (c RetrievalConfig) resolvedTopK() int {
