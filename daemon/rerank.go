@@ -300,6 +300,35 @@ func rerankChunks(candidates []Chunk, k int, query string) []Chunk {
 		return weighted[i].Score > weighted[j].Score
 	})
 
+	// PLAIN TRUNCATION, and a per-file diversity cap was MEASURED AND REJECTED
+	// here on 2026-08-28. The idea was well motivated: the top-10 is routinely
+	// dominated by one file, reaching 9 of 10 slots, and a big file earns slots
+	// simply for being big -- server.go produces ~35 chunks to
+	// peerauth_linux.go's 2, so it buys ~35 lottery tickets to their 2. There was
+	// (and is) no diversity control of any kind.
+	//
+	// It loses anyway. TestRetrievalPolicySweep, one index build, all 49 queries,
+	// DELIVERED/49 with chunk-level beside it:
+	//
+	//	no cap (shipped)   39   chunk-level 33   defuse 7/7
+	//	cap = 1            32   chunk-level 21   defuse 4/7
+	//	cap = 2            37   chunk-level 27   defuse 5/7
+	//	cap = 3            39   chunk-level 32   defuse 6/7
+	//	cap = 4            39   chunk-level 32   defuse 7/7
+	//
+	// No value wins, and the two that tie on DELIVERED pay for it in chunk-level
+	// recall. THE REASON, and it is the same one AST-aware chunking died of: on
+	// this corpus the answer to a question is often several adjacent chunks of
+	// ONE file, so "spread the slots across files" is spending the budget
+	// against the grain of where answers actually live. The defuse shape --
+	// where a declaration and its use sites are the answer -- falls fastest,
+	// which is exactly the fingerprint you would predict.
+	//
+	// Pool depth was swept alongside it and is INERT: 60/60, 100/100, 150/150 and
+	// 300/300 give byte-identical results at every cap, because RRF scores decay
+	// as 1/(60+rank) and class weights span barely 2x, so a candidate past rank
+	// ~60 can never outscore one inside it. Deepening the pool is free and buys
+	// nothing.
 	if len(weighted) > k {
 		weighted = weighted[:k]
 	}
