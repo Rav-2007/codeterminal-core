@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -556,5 +557,108 @@ func TestCommonJSImportsAreNotDeclarations(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("the exclusion also dropped %q: %q", want, got)
 		}
+	}
+}
+
+// PROSE IS NOT CODE, and the map used to think it was.
+//
+// Measured on this repository before symbolsFor grew its FileClassDoc guard:
+// two of the 33 files it described in detail were markdown, and what it said
+// about them was "var rows, function this, function revoke, let the, record
+// implied" and "class P0". Every one of those is an English sentence that
+// happens to begin at column zero with a word some language uses as a keyword.
+//
+// The wasted bytes are the small half. The real cost is that roles.go gives the
+// planner this map SPECIFICALLY so it stops citing things that do not exist --
+// and a map that offers it "function revoke" from a changelog is that same
+// failure wearing the fix's clothes.
+func TestTheMapNeverDescribesProseAsCode(t *testing.T) {
+	root := t.TempDir()
+	write := func(name, body string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(root, name)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Real prose from the shapes actually observed, at column zero.
+	write("NOTES.md", strings.Join([]string{
+		"var rows were dropped by the sweep.",
+		"function this way round is clearer.",
+		"function revoke was the one that mattered.",
+		"let the reader decide.",
+		"record implied a schema change.",
+		"class P0 defects block the gate.",
+	}, "\n")+"\n")
+	// A real Go file, so the map has something legitimate to say.
+	write("real.go", "package main\n\nfunc RealDeclaration() {}\n")
+
+	m, err := buildRepoMap(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := m.Render()
+
+	for _, invented := range []string{"function revoke", "let the", "record implied", "class P0", "function this", "var rows"} {
+		if strings.Contains(out, invented) {
+			t.Errorf("the map presents prose as a declaration (%q) -- it is describing a .md file "+
+				"as if it declared code, which is exactly the invention the map exists to prevent:\n%s",
+				invented, out)
+		}
+	}
+	// ANTI-VACUITY: a map that extracted nothing at all would pass the loop
+	// above while proving nothing.
+	if !strings.Contains(out, "func RealDeclaration") {
+		t.Fatalf("the map named no real declaration, so the assertions above are vacuous:\n%s", out)
+	}
+	// The doc must still be LISTED. The guard suppresses its declaration line,
+	// not its existence -- a file the planner cannot see is a file it can
+	// invent a replacement for.
+	if !strings.Contains(out, "NOTES.md") {
+		t.Errorf("the doc vanished from the map entirely; only its declaration line should be suppressed:\n%s", out)
+	}
+}
+
+// One line per file, so a name printed twice spends a scarce slot to say
+// nothing and reads as a bug in the map rather than a fact about the file.
+// Measured: scripts/agent-cost-bench.sh rendered as "... func print, func print".
+func TestTheMapNeverRepeatsASymbol(t *testing.T) {
+	root := t.TempDir()
+	// A shell function defined twice under a guard -- the real shape this came
+	// from, not a contrived one.
+	if err := os.WriteFile(filepath.Join(root, "tool.sh"), []byte(
+		"print() { echo \"$1\"; }\n\nif [ -t 1 ]; then\nprint() { printf '%s' \"$1\"; }\nfi\n\nrun() { print hi; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := buildRepoMap(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var f *repoFile
+	for i := range m.Files {
+		if m.Files[i].Path == "tool.sh" {
+			f = &m.Files[i]
+		}
+	}
+	if f == nil {
+		t.Fatal("tool.sh is not in the map at all")
+	}
+	syms := m.symbolsFor(f)
+	// ANTI-VACUITY: the dedupe is meaningless if nothing was extracted.
+	if len(syms) == 0 {
+		t.Fatal("no symbols extracted from tool.sh, so the dedupe assertion below proves nothing")
+	}
+	seen := map[string]bool{}
+	for _, s := range syms {
+		if seen[s] {
+			t.Errorf("symbol %q appears twice in %v", s, syms)
+		}
+		seen[s] = true
+	}
+	if !slices.Contains(syms, "func print") {
+		t.Errorf("dedupe dropped the symbol entirely rather than its repeat: %v", syms)
 	}
 }

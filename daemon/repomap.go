@@ -194,11 +194,61 @@ func buildRepoMap(ctx context.Context, root string) (*RepoMap, error) {
 // answer, including the empty one -- a file with no top-level declarations must
 // not be re-read on every round of the detail pass.
 func (m *RepoMap) symbolsFor(f *repoFile) []string {
-	if !f.loaded {
-		f.loaded = true
-		f.Symbols = declarationsIn(filepath.Join(m.WorkspaceR, filepath.FromSlash(f.Path)))
+	if f.loaded {
+		return f.Symbols
 	}
+	f.loaded = true
+
+	// PROSE IS NOT CODE. declarationsIn matches a column-zero declaration
+	// keyword, and English obliges: "let the", "record implied", "function
+	// this", "class P0". Measured on this repo before this guard, 2 of the 33
+	// files the map described in detail were markdown, and what it said about
+	// them was:
+	//
+	//	docs/ARCHIVE/BACKLOG_2026-07.md: var rows, function this, function
+	//	  revoke, let the, record implied
+	//	docs/ENTERPRISE_QA_REPORT_2026-08-05.md: class P0
+	//
+	// Two costs, and the second is the serious one. It spends a scarce byte
+	// budget on nothing, and it feeds the planner INVENTED SYMBOLS -- which
+	// inverts the entire reason this map exists. roles.go records that reason:
+	// the planner was citing files that do not exist, and the fix was to give
+	// it the real ones rather than to ask it not to guess. A map that hands it
+	// "function revoke" from a changelog is the same failure with extra steps.
+	//
+	// Docs keep their place in the FILE listing; only the declaration line is
+	// suppressed. classRank already ranks them below code, so in practice this
+	// also returns budget to files that have real symbols.
+	if f.Class == FileClassDoc {
+		return nil
+	}
+
+	f.Symbols = dedupeSymbols(declarationsIn(filepath.Join(m.WorkspaceR, filepath.FromSlash(f.Path))))
 	return f.Symbols
+}
+
+// dedupeSymbols drops repeats, keeping first-seen (source) order.
+//
+// A name can legitimately appear twice at column zero -- an overload in a
+// dynamic language, a shell function redefined under a guard, a Go method name
+// shared by two receivers. The map has room for one line per file, so printing
+// "func print, func print" (measured, scripts/agent-cost-bench.sh) spends a
+// slot to say nothing and reads as a bug in the map rather than a fact about
+// the file.
+func dedupeSymbols(in []string) []string {
+	if len(in) < 2 {
+		return in
+	}
+	seen := make(map[string]bool, len(in))
+	out := in[:0]
+	for _, s := range in {
+		if seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	return out
 }
 
 // declarationsIn extracts a file's top-level declarations.
