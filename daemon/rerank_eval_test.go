@@ -414,9 +414,19 @@ var rerankEvalQueries = []rerankEvalQuery{
 		[]string{"daemon/toolapproval.go"},
 		[]string{"ApprovalCancelTurn"}, shapeDefUse},
 
+	// GROUND TRUTH CORRECTED 2026-08-28 -- was daemon/scrub.go alone, and that
+	// was wrong about this repository rather than strict about it. The query
+	// asks about RETRIEVED CODE, and the choke point where retrieved code is
+	// scrubbed is renderChunk (context.go), not the generic scrub() primitive.
+	// The comment above buildAugmentedUserMessage in server.go states the split
+	// in as many words: the typed prompt goes through scrub() directly, while
+	// chunk content goes through "the same structural scrub()" running inside
+	// renderChunk. Retrieval was returning the context.go chunks that bracket
+	// that call and being scored a miss for a correct answer. The pre-correction
+	// number is still reported, every run -- see supersededGroundTruth.
 	{"how are secrets stripped out of retrieved code before it is sent to the model",
-		[]string{"daemon/scrub.go"},
-		[]string{"func scrub(text string"}, shapeImpl},
+		[]string{"daemon/scrub.go", "daemon/context.go"},
+		[]string{"func scrub(text string", "scrub(c.Content, scrubDisabled)"}, shapeImpl},
 
 	{"where does the agent loop stop iterating",
 		[]string{"daemon/agentloop.go"},
@@ -539,9 +549,16 @@ var rerankEvalQueries = []rerankEvalQuery{
 		[]string{"daemon/config.go"},
 		[]string{"func LoadConfig"}, shapeImpl},
 
+	// GROUND TRUTH CORRECTED 2026-08-28 -- was daemon/degraded.go alone. TWO
+	// different things tell the user this and both answer the question as it is
+	// asked: degraded.go's detailMemoryDown is the proactive notice that rides
+	// out with every turn, and handleSearch returns an explicit error to a
+	// client that tries to search history while s.memory is nil. Declaring only
+	// the first scored the second as a miss. The pre-correction number is still
+	// reported, every run -- see supersededGroundTruth.
 	{"what does the user get told when cross-session memory is unavailable",
-		[]string{"daemon/degraded.go"},
-		[]string{"detailMemoryDown"}, shapeImpl},
+		[]string{"daemon/degraded.go", "daemon/server.go"},
+		[]string{"detailMemoryDown", "conversation memory is not available"}, shapeImpl},
 
 	{"where is a proposed edit turned into a reviewable diff",
 		[]string{"daemon/mcpbuiltin.go"},
@@ -590,6 +607,70 @@ var rerankEvalQueries = []rerankEvalQuery{
 // match beats any embedding similarity), so exclusion — not just rewording
 // — is required for this test to measure the real defect rather than its
 // own reflection.
+// supersededGroundTruth records what a query's ground truth was BEFORE it was
+// corrected, so this eval reports its recall BOTH WAYS, permanently.
+//
+// WHY THIS EXISTS, AND WHY IT IS NOT TEMPORARY. Correcting ground truth raises
+// the score, and in a summary line "we fixed the eval" is indistinguishable from
+// "we fixed retrieval". The rule this encodes is therefore not "never correct
+// ground truth" -- a declared answer that is simply wrong about the code makes
+// the eval measure nothing -- it is "never let a correction be reported as a
+// retrieval win". Both numbers are printed on every run and the floor is set off
+// the retrieval one.
+//
+// The opposite mistake is on record too: a launch-gate P1 was diagnosed as a
+// retrieval regression when what had actually happened was that the ground truth
+// went stale. Ground truth is code that rots like any other, and pretending it
+// is immutable is how a harness quietly stops measuring the product.
+//
+// Keyed by 0-based index into rerankEvalQueries.
+var supersededGroundTruth = map[int]struct {
+	files   []string
+	anchors []string
+	why     string
+}{
+	11: {
+		[]string{"daemon/scrub.go"}, []string{"func scrub(text string"},
+		"declared only the generic scrub() primitive; the query asks about retrieved code, " +
+			"whose scrub choke point is renderChunk in context.go",
+	},
+	41: {
+		[]string{"daemon/degraded.go"}, []string{"detailMemoryDown"},
+		"declared only the proactive degradation notice; handleSearch's explicit error is a " +
+			"second, equally user-facing answer to the same question",
+	},
+}
+
+// resolveSupersededChunks resolves the PRE-correction ground truth using the
+// same anchor-inside-expected-files rule resolveExactChunks uses.
+//
+// Diagnostic only, so it deliberately does not re-run that function's
+// assertions: a superseded anchor going stale is not a failure, it only means
+// the historical number can no longer be computed. It is reported as absent
+// rather than silently counted as a miss, which would understate the old number
+// and flatter the new one.
+func resolveSupersededChunks(chunks []Chunk) map[int][]string {
+	out := make(map[int][]string, len(supersededGroundTruth))
+	for i, old := range supersededGroundTruth {
+		seen := make(map[string]bool)
+		var ids []string
+		for _, a := range old.anchors {
+			for _, c := range chunks {
+				if !strings.Contains(c.Content, a) || !matchesAny(c.FilePath, old.files) {
+					continue
+				}
+				if id := chunkID(c); !seen[id] {
+					seen[id] = true
+					ids = append(ids, id)
+				}
+			}
+		}
+		sort.Strings(ids)
+		out[i] = ids
+	}
+	return out
+}
+
 var evalSelfReferenceFiles = map[string]bool{
 	"daemon/rerank_eval_test.go":  true,
 	"daemon/lexicalstore_test.go": true,
@@ -755,7 +836,7 @@ func hitsExactChunk(hits []Chunk, n int, exactChunks []string) bool {
 // production default — not an arbitrary top-3 subset of a wider fetch,
 // since what matters is whether the chunk actually gets injected into the
 // prompt).
-func runEvalPass(ctx context.Context, t *testing.T, embedder Embedder, store VectorStore, lexicalStore LexicalStore, exact [][]string, repoRoot, label string) (chunkHits, fileHits, deliveredHits []bool) {
+func runEvalPass(ctx context.Context, t *testing.T, embedder Embedder, store VectorStore, lexicalStore LexicalStore, exact [][]string, superseded map[int][]string, repoRoot, label string) (chunkHits, fileHits, deliveredHits, legacyDelivered, legacyFile []bool) {
 	t.Helper()
 	// BOUND TO PRODUCTION, not written as 5. It was `const displayK = 5`, and on
 	// 2026-08-28 production moved to 10 -- at which point a hardcoded 5 would
@@ -767,6 +848,8 @@ func runEvalPass(ctx context.Context, t *testing.T, embedder Embedder, store Vec
 	chunkHits = make([]bool, len(rerankEvalQueries))
 	fileHits = make([]bool, len(rerankEvalQueries))
 	deliveredHits = make([]bool, len(rerankEvalQueries))
+	legacyDelivered = make([]bool, len(rerankEvalQueries))
+	legacyFile = make([]bool, len(rerankEvalQueries))
 	fmt.Println()
 	fmt.Printf("=== Retrieval ranking eval: %s ===\n", label)
 	for i, q := range rerankEvalQueries {
@@ -825,6 +908,22 @@ func runEvalPass(ctx context.Context, t *testing.T, embedder Embedder, store Vec
 		deliveredHit := rankOfChunk(delivered, exact[i]) != 0
 		deliveredHits[i] = deliveredHit
 
+		// The SAME delivered spans, re-graded against the PRE-correction ground
+		// truth wherever one exists. The spans are already in hand, so this
+		// costs nothing, and it is what makes a ground-truth correction
+		// impossible to pass off as a retrieval improvement.
+		legacyDelivered[i], legacyFile[i] = deliveredHit, fileHit
+		if old, ok := supersededGroundTruth[i]; ok {
+			legacyDelivered[i] = rankOfChunk(delivered, superseded[i]) != 0
+			lf := false
+			for _, h := range hits[:min(displayK, len(hits))] {
+				if matchesAny(h.FilePath, old.files) {
+					lf = true
+				}
+			}
+			legacyFile[i] = lf
+		}
+
 		mark := "MISS"
 		if exactHit {
 			mark = "hit"
@@ -834,7 +933,7 @@ func runEvalPass(ctx context.Context, t *testing.T, embedder Embedder, store Vec
 			fmt.Printf("   %d. %-40s class=%-6s raw=%.4f weighted=%.4f\n", j+1, chunkID(h), h.Class, h.RawScore, h.Score)
 		}
 	}
-	return chunkHits, fileHits, deliveredHits
+	return chunkHits, fileHits, deliveredHits, legacyDelivered, legacyFile
 }
 
 func TestRerankEvalRetrievalRanking(t *testing.T) {
@@ -905,8 +1004,9 @@ func TestRerankEvalRetrievalRanking(t *testing.T) {
 	// resolveExactChunks.
 	exact := resolveExactChunks(t, scan.Chunks)
 
-	semanticOnlyHits, _, _ := runEvalPass(ctx, t, embedder, store, nil, exact, repoRoot, "SEMANTIC-ONLY (lexicalStore=nil, today's behavior)")
-	hybridHits, hybridFileHits, hybridDelivered := runEvalPass(ctx, t, embedder, store, lexicalStore, exact, repoRoot, "HYBRID (semantic + lexical, fused via RRF)")
+	superseded := resolveSupersededChunks(scan.Chunks)
+	semanticOnlyHits, _, _, _, _ := runEvalPass(ctx, t, embedder, store, nil, exact, superseded, repoRoot, "SEMANTIC-ONLY (lexicalStore=nil, today's behavior)")
+	hybridHits, hybridFileHits, hybridDelivered, hybridLegacyDelivered, hybridLegacyFile := runEvalPass(ctx, t, embedder, store, lexicalStore, exact, superseded, repoRoot, "HYBRID (semantic + lexical, fused via RRF)")
 
 	fmt.Println()
 	fmt.Println("=== Before/after summary (chunk-level hit = exact symbol-containing chunk reached top-5) ===")
@@ -960,6 +1060,43 @@ func TestRerankEvalRetrievalRanking(t *testing.T) {
 	fmt.Printf("DELIVERED to the prompt:          %d/%d (%.1f%%)  <- THE GATED NUMBER\n", deliveredCount, total, 100*deliveredRate)
 	fmt.Printf("  retrieved then BUDGETED OUT:    %d  (k=%d, budget=%d chars, expand top %d, construct cap %d)\n",
 		retrievedButBudgeted, defaultK, defaultContextBudgetChars, defaultExpandPolicy.TopN, defaultExpandPolicy.ConstructCap)
+
+	// THE SAME RUN, SCORED AGAINST THE GROUND TRUTH AS IT WAS BEFORE ANY
+	// CORRECTION. Printed unconditionally, so that a reader comparing this run
+	// to an older write-up is comparing like with like, and so that a
+	// correction can never be quietly banked as a retrieval gain. See
+	// supersededGroundTruth for why each query was corrected.
+	if len(supersededGroundTruth) > 0 {
+		legacyDeliveredCount, legacyFileCount := 0, 0
+		for i := range rerankEvalQueries {
+			if hybridLegacyDelivered[i] {
+				legacyDeliveredCount++
+			}
+			if hybridLegacyFile[i] {
+				legacyFileCount++
+			}
+		}
+		fmt.Printf("\nsame run, PRE-CORRECTION ground truth (%d corrected quer(ies)):\n", len(supersededGroundTruth))
+		fmt.Printf("  DELIVERED:                     %d/%d (%.1f%%)   delta from corrections: %+d\n",
+			legacyDeliveredCount, total, 100*float64(legacyDeliveredCount)/float64(total),
+			deliveredCount-legacyDeliveredCount)
+		fmt.Printf("  file-level:                    %d/%d          delta from corrections: %+d\n",
+			legacyFileCount, total, fileLevelCount-legacyFileCount)
+		// Sorted: map order is randomised in Go, and this report gets diffed
+		// between runs.
+		corrected := make([]int, 0, len(supersededGroundTruth))
+		for i := range supersededGroundTruth {
+			corrected = append(corrected, i)
+		}
+		sort.Ints(corrected)
+		for _, i := range corrected {
+			old := supersededGroundTruth[i]
+			fmt.Printf("  q%-2d was %v -> now %v\n      %s\n",
+				i+1, old.files, rerankEvalQueries[i].expectedFiles, old.why)
+		}
+		fmt.Println("  A positive delta here is the EVAL getting more correct, not retrieval " +
+			"getting better.\n  Never quote it as a retrieval improvement.")
+	}
 	fmt.Println()
 
 	// The chunk-level number alone cannot tell "retrieval had no idea" apart
