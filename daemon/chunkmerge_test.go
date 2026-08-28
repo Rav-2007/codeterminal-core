@@ -284,6 +284,8 @@ func (s fixedStore) Query(ctx context.Context, queryVec []float32, k int) ([]Chu
 	return s.chunks[:k], nil
 }
 func (fixedStore) DeleteByFilePath(ctx context.Context, relPath string) error { return nil }
+
+func (fixedStore) AllIDs(ctx context.Context, probeDim int) ([]string, error) { return nil, nil }
 func (s fixedStore) Count() int                                               { return len(s.chunks) }
 
 // TestGatherContext_MergingReclaimsBudgetForMoreDistinctContext is the

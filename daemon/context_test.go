@@ -230,6 +230,8 @@ func (erroringStore) Query(ctx context.Context, queryVec []float32, k int) ([]Ch
 	return nil, errors.New("simulated store failure")
 }
 func (erroringStore) DeleteByFilePath(ctx context.Context, relPath string) error { return nil }
+
+func (erroringStore) AllIDs(ctx context.Context, probeDim int) ([]string, error) { return nil, nil }
 func (erroringStore) Count() int                                                 { return 1 } // non-empty, so retrieval is actually attempted
 
 func TestGatherContext_SkipsOnRetrievalError(t *testing.T) {
@@ -257,6 +259,8 @@ func (emptyStore) Query(ctx context.Context, queryVec []float32, k int) ([]Chunk
 	return nil, nil
 }
 func (emptyStore) DeleteByFilePath(ctx context.Context, relPath string) error { return nil }
+
+func (emptyStore) AllIDs(ctx context.Context, probeDim int) ([]string, error) { return nil, nil }
 func (emptyStore) Count() int                                                 { return 0 }
 
 func TestGatherContext_SkipsWhenNoHits(t *testing.T) {

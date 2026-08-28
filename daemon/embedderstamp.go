@@ -32,6 +32,21 @@ type embedderStamp struct {
 	Dim                int    `json:"dim"`
 	IndexSchemaVersion int    `json:"index_schema_version"`
 
+	// ChunkerID identifies the chunk-BOUNDARY algorithm (chunker.go). Neither
+	// field above covers it: EmbedderID says which model made the vectors, and
+	// IndexSchemaVersion says what shape each chunk is stored in. Change how
+	// text is cut and both stay identical -- so yesterday's boundaries were
+	// accepted by today's binary, and since chunk IDs encode line ranges, every
+	// boundary the new chunker never regenerates sat in the store describing a
+	// file it no longer matched.
+	//
+	// NO omitempty, deliberately, unlike BuiltAt. An index built before this
+	// field existed decodes to "", which mismatches and forces one re-index.
+	// That is intended rather than collateral: those are exactly the indexes
+	// that may carry orphans from before pruneOrphanedChunks existed, and a
+	// rebuild is what clears them.
+	ChunkerID string `json:"chunker_id"`
+
 	// BuiltAt is when this index finished building, UTC. It exists because the
 	// index had NO freshness concept at all -- no mtime, no timestamp, no
 	// watcher -- so a daemon answered from a snapshot of unknown age and
@@ -58,6 +73,7 @@ func writeEmbedderStamp(indexDir string, embedder Embedder) error {
 		EmbedderID:         embedder.ID(),
 		Dim:                embedder.Dim(),
 		IndexSchemaVersion: currentIndexSchemaVersion,
+		ChunkerID:          chunkerID,
 		// UTC, so a stamp written in one timezone and compared in another does
 		// not produce a freshness answer that depends on where the laptop was.
 		BuiltAt: time.Now().UTC(),
@@ -98,6 +114,15 @@ func checkEmbedderStamp(indexDir string, embedder Embedder, storeIsEmpty bool) e
 		return fmt.Errorf(
 			"index was built with a different embedder (id=%s dim=%d) than the active one (id=%s dim=%d); re-index required: run `index` again",
 			stamp.EmbedderID, stamp.Dim, embedder.ID(), embedder.Dim())
+	}
+	if stamp.ChunkerID != chunkerID {
+		was := stamp.ChunkerID
+		if was == "" {
+			was = "an unrecorded chunker (the index predates this check)"
+		}
+		return fmt.Errorf(
+			"index was built by %s, but this binary chunks as %s; chunk ids encode line ranges, so the stored boundaries no longer describe the files; re-index required: run `index` again",
+			was, chunkerID)
 	}
 	if stamp.IndexSchemaVersion != currentIndexSchemaVersion {
 		return fmt.Errorf(

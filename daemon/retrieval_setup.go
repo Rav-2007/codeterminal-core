@@ -24,7 +24,12 @@ const (
 	reasonNoIndex               = "retrieval unavailable: no index has been built for this workspace yet (run `index` to enable grounded answers)"
 	reasonIndexUnreadable       = "retrieval unavailable: the workspace index exists but could not be opened"
 	reasonEmbedderUnavailable   = "retrieval unavailable: the embedding helper could not be started (check that `download-model` has been run and the helper binary is built)"
-	reasonIndexModelMismatch    = "retrieval unavailable: the index was built with a different embedding model and needs rebuilding (run `index`)"
+	// Covers BOTH stamp mismatches, and says so. It used to name only the
+	// embedding model, which became a lie when checkEmbedderStamp started
+	// refusing a chunk-BOUNDARY mismatch too -- it would have told a user their
+	// model changed when their chunker had. The precise cause is in the log line
+	// immediately above the caller; this is the one-line status a client shows.
+	reasonIndexModelMismatch = "retrieval unavailable: the index was built by a different embedder or chunker and needs rebuilding (run `index`)"
 )
 
 // retrievalSetup is everything the live prompt path needs for retrieval, plus

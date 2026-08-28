@@ -303,6 +303,26 @@ func sniffBinary(path string) (bool, error) {
 }
 
 // chunkContent splits content into overlapping line-based windows of
+// chunkerID identifies the CHUNK-BOUNDARY ALGORITHM that built an index.
+//
+// It exists because neither existing stamp field covers boundaries. The
+// embedder ID covers which model produced the vectors; currentIndexSchemaVersion
+// covers the SHAPE of what is stored per chunk (its doc comment says so: it was
+// bumped when chunks gained class metadata). Change how text is cut into
+// chunks and both are unchanged, so an index built by yesterday's chunker is
+// accepted by today's binary -- and since chunk IDs encode line ranges, every
+// boundary the new chunker does not reproduce is left behind. pruneOrphanedChunks
+// now clears those on a rebuild, but only once a rebuild HAPPENS, and nothing
+// was asking for one.
+//
+// The parameters are interpolated rather than written out so that tuning
+// chunkLines or overlapLines cannot silently keep the old identity. The version
+// segment covers what the parameters cannot: a change to the ALGORITHM at
+// unchanged parameters -- which is exactly what AST-aware chunk boundaries
+// would be. TestTheChunkerIDChangesWhenTheBoundariesDo pins that, so it is not
+// left to whoever edits this file to remember.
+var chunkerID = fmt.Sprintf("fixed-window/v1/lines=%d/overlap=%d", chunkLines, overlapLines)
+
 // chunkLines with overlapLines of overlap between consecutive windows.
 func chunkContent(content []byte, relPath string) []Chunk {
 	lines := splitLines(content)

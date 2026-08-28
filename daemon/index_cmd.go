@@ -69,6 +69,118 @@ const indexEmbedBatchSize = 40
 // treated as a valid index by the rest of the system — see indexWorkspace,
 // which wraps this with embedder-stamp handling so a partial store is always
 // refused by checkEmbedderStamp rather than silently trusted.
+// pruneOrphanedChunks deletes stored chunks the current scan no longer
+// produces, and marks the affected files for rewriting.
+//
+// WHY THIS EXISTS. buildIndex only ever UPSERTED, so the store grew and never
+// shrank. VectorStore.DeleteByFilePath was written for exactly this and its own
+// doc comment says so -- "deleting by file first is what makes a re-index a
+// replacement rather than a merge" -- but only the incremental paths
+// (reindex.go, watcher.go) ever called it. The full `index` command never did.
+// A wiring gap, not a design gap.
+//
+// MEASURED, on a full rebuild with reuse OFF, the most thorough thing a user
+// can run:
+//
+//	deleted file   two files indexed, one deleted, rebuilt -> the deleted
+//	               file's 4 chunks all survive
+//	shrunk file    200 lines -> 30 lines, rebuilt -> store goes 7 -> 8: it
+//	               adds the new chunk and keeps all 7 stale ones
+//	re-chunked     a chunk planted at a line range the chunker no longer
+//	               emits survives a full rebuild with its content intact
+//
+// The deleted-file case is the serious one and it is not merely a quality
+// problem: a user who deletes a file and re-indexes still has its full text in
+// the store, still retrievable, still eligible to be sent to the model.
+//
+// ONE RULE COVERS ALL THREE. Any stored ID the scan does not regenerate is an
+// orphan; the file it belongs to is replaced wholesale. Deleted files, shrunk
+// files, renamed files, newly-ignored files and chunk-boundary changes are the
+// same fact wearing different clothes, and none of them needs its own branch.
+//
+// Both stores are asked, and the union is taken. They are written together and
+// should agree, so a divergence means one of them already dropped a write --
+// trusting either one alone would leave the other's orphans in place.
+//
+// COST IN THE STEADY STATE IS TWO READS. Nothing changed means no orphans,
+// which means no deletes and no forced rewrites, which is what keeps the
+// measured "~1.9s of a ~2s rebuild" saving that carriedNeedingWrite exists for.
+func pruneOrphanedChunks(ctx context.Context, chunks []Chunk, store VectorStore, lexicalStore LexicalStore, probeDim int, inSync []bool, logger *log.Logger) error {
+	want := make(map[string]bool, len(chunks))
+	for i := range chunks {
+		want[chunks[i].ID] = true
+	}
+
+	stored, err := store.AllIDs(ctx, probeDim)
+	if err != nil {
+		return fmt.Errorf("reading the index to find what this build replaces: %w", err)
+	}
+	if lexicalStore != nil {
+		lexIDs, err := lexicalStore.AllIDs(ctx)
+		if err != nil {
+			return fmt.Errorf("reading the lexical index to find what this build replaces: %w", err)
+		}
+		stored = append(stored, lexIDs...)
+	}
+
+	orphanFiles := make(map[string]bool)
+	orphanCount := 0
+	for _, id := range stored {
+		if want[id] {
+			continue
+		}
+		orphanCount++
+		orphanFiles[filePathOfChunkID(id)] = true
+	}
+	if len(orphanFiles) == 0 {
+		return nil
+	}
+
+	for path := range orphanFiles {
+		if path == "" {
+			continue
+		}
+		if err := store.DeleteByFilePath(ctx, path); err != nil {
+			return fmt.Errorf("removing superseded chunks for %s: %w", path, err)
+		}
+		if lexicalStore != nil {
+			if err := lexicalStore.DeleteByFilePath(ctx, path); err != nil {
+				return fmt.Errorf("removing superseded lexical chunks for %s: %w", path, err)
+			}
+		}
+	}
+
+	// A file whose rows were just deleted is no longer in sync however correct
+	// it looked a moment ago, so the write loops must put it back. Without this
+	// the deletion would be the bug: carriedNeedingWrite skips in-sync chunks,
+	// and a surviving chunk of a shrunk file is in-sync right up until its file
+	// is dropped.
+	restored := 0
+	for i := range chunks {
+		if orphanFiles[chunks[i].FilePath] && i < len(inSync) && inSync[i] {
+			inSync[i] = false
+			restored++
+		}
+	}
+
+	logger.Printf("index: removed %d superseded chunk(s) across %d file(s) that this build no longer produces; %d surviving chunk(s) rewritten",
+		orphanCount, len(orphanFiles), restored)
+	return nil
+}
+
+// filePathOfChunkID recovers the file path from a chunk ID.
+//
+// chunkID formats "path:startLine-endLine", and the line range never contains a
+// colon, so the LAST colon is the separator. Splitting on the first would break
+// any path that legitimately contains one.
+func filePathOfChunkID(id string) string {
+	i := strings.LastIndex(id, ":")
+	if i <= 0 {
+		return ""
+	}
+	return id[:i]
+}
+
 func buildIndex(ctx context.Context, root string, embedder Embedder, store VectorStore, lexicalStore LexicalStore, logger *log.Logger, reuse bool) (*ScanResult, error) {
 	scan, err := ScanWorkspace(root)
 	if err != nil {
@@ -79,6 +191,17 @@ func buildIndex(ctx context.Context, root string, embedder Embedder, store Vecto
 	}
 
 	reused, inSync := carryOverUnchanged(ctx, scan.Chunks, store, lexicalStore, reuse)
+
+	// PRUNE BEFORE WRITING, and after carryOverUnchanged, because that order is
+	// the whole reason this is cheap. carryOverUnchanged has by now copied every
+	// reusable vector into scan.Chunks IN MEMORY, so deleting a file's rows
+	// below costs nothing in model time -- the write loops put the same vectors
+	// straight back. Pruning first, before the carry-over, would make every
+	// reuse lookup miss and re-embed the tree.
+	if err := pruneOrphanedChunks(ctx, scan.Chunks, store, lexicalStore, embedder.Dim(), inSync, logger); err != nil {
+		return nil, err
+	}
+
 	if reused > 0 {
 		logger.Printf("index: %d/%d chunk(s) are unchanged since the last build and keep their existing embedding (%d already correct in both stores)",
 			reused, len(scan.Chunks), countTrue(inSync))

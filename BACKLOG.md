@@ -388,6 +388,54 @@ OpenRouter. What follows is the cost half.
   one run — the same one-run inference was made about this query during the 2026-08-27
   embed-window work and did not reproduce.
 
+- **P1 DATA INTEGRITY, found and fixed 2026-08-28: a full `index` run only ever ADDED. The store
+  grew and never shrank.** Found while checking the prerequisites for AST-aware chunking; it turned
+  out not to be an AST problem at all but a live bug hitting ordinary users with no code change.
+  `VectorStore.DeleteByFilePath` was written for exactly this and its own doc comment says so
+  ("deleting by file first is what makes a re-index a replacement rather than a merge") — but only
+  `reindex.go` and `watcher.go` ever called it. `buildIndex` never did. A wiring gap, not a design
+  gap. Measured on a full rebuild with **reuse off**, the most thorough thing a user can run:
+
+  | trigger | before the fix |
+  |---|---|
+  | delete a file, re-index | its 4 chunks all survive, still retrievable |
+  | file shrinks 200 → 30 lines | store goes 7 → **8**: adds the new chunk, keeps all 7 stale ones |
+  | chunk boundaries change | a chunk at a line range the chunker no longer emits survives intact |
+
+  **The deleted-file case is not only a quality problem.** A user who deletes a file and re-indexes
+  still had its full text in the store, retrievable, and eligible to be sent to the model.
+
+  Fixed in two parts, each neuter-verified:
+  - **`pruneOrphanedChunks`** (index_cmd.go), run after `carryOverUnchanged` so carried vectors are
+    already in memory and pruning costs **zero** model time. One rule covers every trigger: any
+    stored ID the scan does not regenerate is an orphan, and its file is replaced wholesale.
+    Needed one new primitive, `AllIDs`, on both stores — chromem exposes no listing API, so its
+    side is a `k=Count()` query, verified complete against a 4,400-doc store seeded so half the
+    vectors were **orthogonal** to the probe (none dropped, 6.9ms).
+  - **`chunkerID`** in the embedder stamp. Neither existing field covered boundaries: `EmbedderID`
+    says which model made the vectors, `IndexSchemaVersion` says what shape each chunk is stored
+    in. Change how text is *cut* and both stay identical.
+
+  **The chunkerID guard is behavioural, not a hand-bumped integer.**
+  `TestTheChunkerIDChangesWhenTheBoundariesDo` hashes the line ranges `chunkContent` produces over
+  a fixture. Change the algorithm at unchanged parameters — which is exactly what AST-aware
+  boundaries are — and it fails, naming what to do. `currentIndexSchemaVersion` is the
+  counterexample: a hand-bumped integer is a promise that somebody will remember.
+
+  **Neutering caught a bug in the fix itself.** Deleting a file's rows without clearing its `inSync`
+  flags makes `carriedNeedingWrite` skip the rewrite — so under `reuse=true` the prune would have
+  removed an orphan *and its innocent neighbours*, permanently. The first four tests all used
+  `reuse=false`, where `inSync` is all-false anyway, so they never exercised it. Closed by
+  `TestPruningUnderReuseRestoresTheChunksItHadToDeleteAlongside`.
+
+  Upgrade path: an index with no `chunker_id` decodes to `""`, mismatches, and forces one rebuild —
+  intended, since those are exactly the indexes that may carry orphans from before this existed.
+  Retrieval disables gracefully with a message rather than crashing, and `reuse` turns off so the
+  rebuild re-embeds. `reasonIndexModelMismatch` reworded: it named only the embedding model, which
+  would have told a user their model changed when their chunker had.
+
+  **This was step 1 of the AST-aware chunking sequence, and it is now unblocked.**
+
 - **Corpus hygiene — the eval had been scoring against its own answer key, and nobody knew.**
   Found 2026-08-28 while expanding the set above. Three captured `go test` output files were
   **committed** (`test.log`, `test_output.txt`, `daemon/test_out.txt`), and `test_output.txt`

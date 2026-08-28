@@ -142,6 +142,10 @@ func TestAnIndexBuiltAtADifferentSequenceCapIsRefused(t *testing.T) {
 		EmbedderID:         "bge-small-en-v1.5-int8+onnxruntime-1.26.0+seq256",
 		Dim:                embedDim,
 		IndexSchemaVersion: currentIndexSchemaVersion,
+		// Current, so this test keeps measuring the SEQUENCE CAP. Every other
+		// field has to be what today's binary writes, or the refusal below
+		// could be coming from any of them.
+		ChunkerID: chunkerID,
 	}
 	data, err := json.Marshal(stale)
 	if err != nil {

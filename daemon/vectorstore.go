@@ -58,6 +58,22 @@ type VectorStore interface {
 	// orphans keep matching queries with pre-edit code. Deleting by file first
 	// is what makes a re-index a replacement rather than a merge.
 	DeleteByFilePath(ctx context.Context, relPath string) error
+	// AllIDs returns the ID of every chunk the store currently holds.
+	//
+	// It exists so a full index build can tell what it is REPLACING. Upsert
+	// cannot: it writes the chunks the scan produced and is blind to anything
+	// already stored under an ID the scan no longer generates, so without this
+	// the store only ever grows. See pruneOrphanedChunks (index_cmd.go) for the
+	// three measured ways that happens.
+	//
+	// probeDim is the embedder's vector width. It is a parameter rather than
+	// something the store works out for itself because the chromem backend can
+	// only enumerate by running a query, a query needs a vector, and chromem
+	// returns "vectors must have the same length" on a mismatch. Guessing the
+	// width would turn a wrong guess into an empty list -- which reads exactly
+	// like "nothing to prune" and would silently restore the bug this method
+	// exists to fix.
+	AllIDs(ctx context.Context, probeDim int) ([]string, error)
 	Count() int
 }
 
@@ -167,6 +183,40 @@ func (s *ChromemStore) Query(ctx context.Context, queryVec []float32, k int) ([]
 		})
 	}
 	return chunks, nil
+}
+
+// AllIDs returns every stored chunk ID.
+//
+// IMPLEMENTED AS A QUERY, which looks odd and is not. chromem-go exposes no
+// listing API: Collection offers Add/Get/Delete/Count/Query and nothing that
+// walks its documents (the map is unexported). A k=Count() query is the only
+// read path that yields IDs, and it yields ALL of them -- verified against a
+// 4,400-document store seeded so half the vectors were ORTHOGONAL to the probe,
+// which any similarity floor would have dropped. None were dropped, in 6.9ms.
+// That is once per index build, against a build measured in seconds.
+//
+// The probe is a fixed unit vector, not a zero vector: cosine similarity
+// against a zero vector is undefined, and ranking by an undefined quantity is a
+// good way to depend on an implementation detail.
+func (s *ChromemStore) AllIDs(ctx context.Context, probeDim int) ([]string, error) {
+	n := s.collection.Count()
+	if n == 0 {
+		return nil, nil
+	}
+	if probeDim <= 0 {
+		return nil, fmt.Errorf("listing stored chunk ids: probe dimension %d is not usable", probeDim)
+	}
+	probe := make([]float32, probeDim)
+	probe[0] = 1
+	docs, err := s.Query(ctx, probe, n)
+	if err != nil {
+		return nil, fmt.Errorf("listing stored chunk ids: %w", err)
+	}
+	ids := make([]string, 0, len(docs))
+	for _, d := range docs {
+		ids = append(ids, d.ID)
+	}
+	return ids, nil
 }
 
 // Count returns the number of chunks currently stored.

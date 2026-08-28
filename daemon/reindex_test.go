@@ -31,6 +31,18 @@ func (r *recordingStore) Upsert(_ context.Context, chunks []Chunk) error {
 	return nil
 }
 
+// AllIDs reports what this fake actually holds, rather than an empty list.
+// A fake that claims to hold nothing would make pruneOrphanedChunks find no
+// orphans and do nothing -- which is the bug it exists to fix, so the fake
+// would quietly disable the code under test.
+func (r *recordingStore) AllIDs(_ context.Context, _ int) ([]string, error) {
+	ids := make([]string, 0, len(r.chunks))
+	for _, c := range r.chunks {
+		ids = append(ids, c.ID)
+	}
+	return ids, nil
+}
+
 func (r *recordingStore) Query(_ context.Context, _ []float32, k int) ([]Chunk, error) {
 	if k < len(r.chunks) {
 		return r.chunks[:k], nil

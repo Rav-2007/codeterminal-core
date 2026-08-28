@@ -383,6 +383,12 @@ func (l *lockedStore) DeleteByFilePath(ctx context.Context, relPath string) erro
 	return l.inner.DeleteByFilePath(ctx, relPath)
 }
 
+func (l *lockedStore) AllIDs(ctx context.Context, probeDim int) ([]string, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.inner.AllIDs(ctx, probeDim)
+}
+
 func (l *lockedStore) Count() int {
 	l.mu.Lock()
 	defer l.mu.Unlock()

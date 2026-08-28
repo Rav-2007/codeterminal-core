@@ -31,6 +31,10 @@ type LexicalStore interface {
 	// file, for the same reason VectorStore.DeleteByFilePath exists: a shrinking
 	// file's orphaned tail chunks would otherwise keep serving pre-edit code.
 	DeleteByFilePath(ctx context.Context, relPath string) error
+	// AllIDs returns every stored chunk ID, so a full index build can tell what
+	// it is replacing. See VectorStore.AllIDs; this side needs no probe vector
+	// because SQLite can simply be asked.
+	AllIDs(ctx context.Context) ([]string, error)
 	Close() error
 }
 
@@ -282,6 +286,31 @@ func (s *FTSChunkStore) Close() error {
 // one-to-one invariant must not be observable as broken -- a search landing
 // between them would otherwise see rows whose identity had already been
 // deleted.
+// AllIDs returns every stored chunk ID. chunk_index is the authoritative row
+// per chunk (code_chunks_fts is the trigram side, keyed by fts_rowid), so one
+// column scan answers it exactly -- no probe vector and no similarity maths,
+// unlike the vector store's implementation.
+func (s *FTSChunkStore) AllIDs(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT chunk_id FROM chunk_index`)
+	if err != nil {
+		return nil, fmt.Errorf("listing lexical chunk ids: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scanning lexical chunk id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("listing lexical chunk ids: %w", err)
+	}
+	return ids, nil
+}
+
 func (s *FTSChunkStore) DeleteByFilePath(ctx context.Context, relPath string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
