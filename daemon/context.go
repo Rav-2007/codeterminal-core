@@ -141,6 +141,13 @@ func (s *Server) gatherContext(ctx context.Context, prompt string) retrievalOutc
 	// reclaims the indexer's deliberate window overlap. Merging happens BEFORE
 	// budgeting so the reclaimed bytes are actually usable: a lower-ranked
 	// chunk that used to be dropped can now fit.
+	// Widen the top hits into the regions around them before fusing. This sits
+	// here, not inside similarChunks, because it must run BEFORE
+	// mergeAdjacentChunks -- fuseDirectSpans is what folds a chunk and its new
+	// siblings into one contiguous span, and that fold is the whole mechanism.
+	// See chunkexpand.go for the measurement.
+	similar = expandToNeighbours(similar, s.workspace, expandNeighbourTopN)
+
 	fused := fuseDirectSpans(direct, similar, s.retrievalTopK, s.noScrub())
 	if len(fused.Chunks) == 0 {
 		// Prefer the specific cause when there is one. "No relevant chunks found

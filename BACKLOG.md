@@ -388,6 +388,47 @@ OpenRouter. What follows is the cost half.
   one run — the same one-run inference was made about this query during the 2026-08-27
   embed-window work and did not reproduce.
 
+- **Neighbour expansion: +10.2pp delivered for +2% context, and it came from DIAGNOSING the misses
+  rather than guessing at them.** 2026-08-28. Step 2 of the AST-chunking sequence was "diagnose the
+  right-file-wrong-chunk misses at line level", and the diagnosis changed the answer: the winning
+  intervention was **not one of the three options that step was meant to choose between**.
+
+  Of 19 misses where the right FILE reached the prompt but the wrong chunk did, **10 had a
+  retrieved chunk within one position of the answer** — retrieval was right about the file and even
+  the region, wrong about which forty lines. `mergeAdjacentChunks` cannot help: it folds chunks that
+  are BOTH retrieved, and here only one of the pair is.
+
+  Measured policy grid, full production path, delivered recall out of 49 with mean rendered size:
+
+  | policy | budget 16000 | 20000 | 24000 |
+  |---|---|---|---|
+  | none (before) | 25 (14,620ch) | 26 | 26 |
+  | ±1 on all | 26 (13,174ch) | 31 | 31 |
+  | ±1 on top 5 | 28 (14,277ch) | 30 | 30 |
+  | **±1 on top 3** | **30 (14,924ch)** | 31 | 32 |
+  | ±2 on all | 21 (12,845ch) | 24 | 30 |
+
+  - **Top 3 at the existing budget is +5 queries for +2% context.** Widening the budget to 24,000
+    buys two more for 36% more context — a far worse trade, not taken. Expanding by two neighbours
+    is *worse than not expanding at all*.
+  - **Both sides, not forward-only.** 9 of the off-by-one answers lay BEFORE the retrieved chunk,
+    4 after — retrieval tends to match slightly below the code that answers the question.
+  - **Delivered (29/49) now EXCEEDS retrieved (27/49)**, which was previously impossible: the budget
+    only removes, so delivered was capped by retrieval. Expansion adds the region around a hit, so
+    an answer retrieval never ranked in its top ten still reaches the prompt.
+
+  Confinement reuses `shouldSkipFile` — the indexer's own gate — because expansion reads from disk
+  and would otherwise be a second, weaker exclusion surface. Neutering that gate leaks `.env` into
+  a prompt; the test catches it.
+
+  **What the diagnosis says about AST chunking specifically:** 10 of the 19 have a construct
+  *split* across chunks, which looks like an argument for AST boundaries until you read the sizes —
+  567%, 640%, 260%, 252% of the chunk window. **The construct is 2–6× larger than the chunk, so
+  boundary snapping cannot contain it either**; it would produce chunks far past the embedder's
+  512-token limit and have to split them anyway. Body elision addresses an oversized construct;
+  boundary snapping does not. And 11 of 19 sit beyond rank 20 — for those the ranker has no idea,
+  and no chunking change helps.
+
 - **P1 DATA INTEGRITY, found and fixed 2026-08-28: a full `index` run only ever ADDED. The store
   grew and never shrank.** Found while checking the prerequisites for AST-aware chunking; it turned
   out not to be an AST problem at all but a live bug hitting ordinary users with no code change.
