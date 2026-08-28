@@ -106,6 +106,19 @@ type expandPolicy struct {
 // one.
 var defaultExpandPolicy = expandPolicy{TopN: 10, ConstructCap: 300}
 
+// resolvedExpandPolicy returns the policy this Server widens hits with,
+// falling back to defaultExpandPolicy when none was set.
+//
+// Every Server that does not name a policy -- the daemon's own, and every test
+// written before the field existed -- keeps getting production's behaviour.
+// Only a caller that deliberately sets one gets something else.
+func (s *Server) resolvedExpandPolicy() expandPolicy {
+	if s.expandPolicy == nil {
+		return defaultExpandPolicy
+	}
+	return *s.expandPolicy
+}
+
 // expandToNeighbours widens the top-ranked retrieved chunks into the region
 // around them by appending their file-adjacent siblings, which
 // mergeAdjacentChunks then folds into one contiguous span (the siblings share

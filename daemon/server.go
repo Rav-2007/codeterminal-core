@@ -49,6 +49,19 @@ type Server struct {
 	lexicalStore       LexicalStore
 	retrievalTopK      int
 	contextBudgetChars int
+	// expandPolicy is how far a hit is widened before budgeting, or nil for
+	// defaultExpandPolicy (chunkexpand.go).
+	//
+	// A POINTER, not a value, because the zero expandPolicy is meaningful --
+	// TopN 0 turns expansion off -- so an unset field and "expansion disabled"
+	// would otherwise be indistinguishable, and every Server built before this
+	// field existed would have silently lost expansion. nil means "unset".
+	//
+	// It is per-Server for the same reason retrievalTopK and contextBudgetChars
+	// are: these three together decide how much retrieved context reaches the
+	// model, and measuring that trade-off needs two Servers that differ only in
+	// them. See TestContextDilutionEarnsItsTokens.
+	expandPolicy *expandPolicy
 	// retrievalDisabledReason is the specific, client-safe explanation of why
 	// embedder/store are nil, set once at startup by setupRetrieval (Fix 8).
 	// Without it every cause reported the same misleading "no embedder/index

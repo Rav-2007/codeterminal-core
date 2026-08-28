@@ -146,7 +146,7 @@ func (s *Server) gatherContext(ctx context.Context, prompt string) retrievalOutc
 	// mergeAdjacentChunks -- fuseDirectSpans is what folds a chunk and its new
 	// siblings into one contiguous span, and that fold is the whole mechanism.
 	// See chunkexpand.go for the measurement.
-	similar = expandToNeighbours(similar, s.workspace, defaultExpandPolicy)
+	similar = expandToNeighbours(similar, s.workspace, s.resolvedExpandPolicy())
 
 	fused := fuseDirectSpans(direct, similar, s.retrievalTopK, s.noScrub())
 	if len(fused.Chunks) == 0 {

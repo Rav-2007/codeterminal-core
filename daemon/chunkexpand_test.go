@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -295,4 +297,62 @@ func readFileForTest(t *testing.T, root, rel string) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+// THE PROPERTY: the expansion policy a Server is built with is the one
+// gatherContext actually uses.
+//
+// This is a wiring test, and it exists because the wiring is the part that
+// silently rots. context.go called the package-level defaultExpandPolicy
+// directly until the policy became per-Server; had the field been added and the
+// call site left alone, everything would still compile, every existing test
+// would still pass, and the A/B that motivated the field would have measured one
+// arm twice and reported a dead heat. Neuter s.resolvedExpandPolicy() back to
+// defaultExpandPolicy and this fails.
+func TestTheServersOwnExpansionPolicyIsTheOneThatRuns(t *testing.T) {
+	root := expandWorkspace(t)
+	all := chunksOf(t, root, "long.go")
+	if len(all) < 3 {
+		t.Fatalf("premise broken: long.go produced %d chunks, need at least 3 to observe widening", len(all))
+	}
+	// A middle chunk, so there is a sibling on each side to gain.
+	hit := all[len(all)/2]
+
+	newServer := func(pol *expandPolicy) *Server {
+		return &Server{
+			logger:             discardLogger(),
+			workspace:          root,
+			embedder:           &fakeEmbedder{dim: embedDim},
+			store:              fixedStore{chunks: []Chunk{hit}},
+			retrievalTopK:      1,
+			contextBudgetChars: 1 << 20, // never binding: this is about expansion, not budget
+			rerankDisabled:     true,
+			expandPolicy:       pol,
+			cfg:                &Config{},
+		}
+	}
+
+	widened := newServer(nil).gatherContext(context.Background(), "anything")
+	if widened.Skipped {
+		t.Fatalf("retrieval skipped: %s", widened.Reason)
+	}
+	// The default policy widens, and the siblings overlap by construction, so
+	// they fold into one span covering strictly more lines than the hit alone.
+	if got := widened.Chunks[0].EndLine - widened.Chunks[0].StartLine; got <= hit.EndLine-hit.StartLine {
+		t.Errorf("with the default policy the delivered span covers %d lines, no more than the "+
+			"un-widened hit's %d -- expansion did not run at all",
+			got+1, hit.EndLine-hit.StartLine+1)
+	}
+
+	// TopN 0 is "expansion off", and it must be reachable -- which is why the
+	// field is a pointer. A plain value could not tell "off" from "unset".
+	off := newServer(&expandPolicy{}).gatherContext(context.Background(), "anything")
+	if off.Skipped {
+		t.Fatalf("retrieval skipped: %s", off.Reason)
+	}
+	if len(off.Chunks) != 1 || off.Chunks[0].StartLine != hit.StartLine || off.Chunks[0].EndLine != hit.EndLine {
+		t.Errorf("with expansion off the delivered set is %v, want exactly the one un-widened hit %s -- "+
+			"the Server's policy is being ignored in favour of the package default",
+			chunkIDs(off.Chunks), fmt.Sprintf("%s:%d-%d", hit.FilePath, hit.StartLine, hit.EndLine))
+	}
 }
