@@ -332,8 +332,50 @@ func chunkContent(content []byte, relPath string) []Chunk {
 
 	class := classifyFile(relPath)
 
-	// FIXED WINDOWS, AND THE OVERLAP IS LOAD-BEARING -- see chunkboundary.go for
-	// the structure-aware version that was measured and reverted.
+	// FIXED WINDOWS, AND THE OVERLAP IS LOAD-BEARING.
+	//
+	// STRUCTURE-AWARE BOUNDARIES WERE TRIED THREE TIMES AND LOST THREE TIMES.
+	// Do not attempt a fourth without reading this, because the reason is not
+	// the one it looks like.
+	//
+	// The idea is sound on its face: 55% of chunks here begin on an indented
+	// line, which means opening mid-function with no signature and no name. The
+	// implementation exists and works -- `git show 880df70:daemon/chunkboundary.go`,
+	// 261 lines with 358 lines of tests, snapping each cut to the nearest
+	// construct start.
+	//
+	//	arm                                delivered  semantic tier  chunks  impl
+	//	fixed windows (this)               29/49      24/49          4,581   12/24
+	//	snap, no overlap, byte cap         26/49      15/49          5,266   11/24
+	//	snap, overlap kept, no byte cap    27/49      17/49          4,911   13/24
+	//
+	// (First measured at k=5 as 8/9 -> 4/9 and reverted in b552daf; the two
+	// rows above are re-measurements at today's k=10 / 16000 with neighbour
+	// expansion, which was built partly to repair the harm the first attempt
+	// caused. It repaired some of it and did not save the feature.)
+	//
+	// WHAT ACTUALLY KILLS IT IS THE SEMANTIC TIER, and that survived every fix.
+	// Aligning a chunk to a construct makes it SEMANTICALLY NARROWER: it is
+	// about one thing, so its single 384-dimensional vector matches one kind of
+	// question. An arbitrary 40-line window straddles two or three constructs
+	// and embeds as a broader, blurrier thing that matches more queries. The
+	// blur is not a defect being tolerated here -- on this corpus it is worth
+	// seven queries, and no boundary policy recovers them.
+	//
+	// The corpus explains why. Measured over 887 real functions: median 12
+	// lines, p75 26, and only 13% exceed one 40-line window. One construct per
+	// chunk is simply too fine a granularity to embed well.
+	//
+	// The upside is real and small: implementation-seeking queries do best
+	// under snapping (13/24, the highest of any arm). It is not worth a forced
+	// re-index of every existing installation, which chunkerID now makes
+	// mandatory.
+	//
+	// If this is revisited, the thing to change is the EMBEDDING, not the
+	// boundary -- a per-chunk representation that does not lose by being
+	// specific. Body elision is the nearer lever: it targets the 13% of
+	// constructs too big for a window, which is where the measured misses
+	// actually concentrate, and it does not narrow what a chunk is about.
 	stride := chunkLines - overlapLines
 
 	var chunks []Chunk

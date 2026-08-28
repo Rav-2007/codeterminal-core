@@ -388,6 +388,47 @@ OpenRouter. What follows is the cost half.
   one run — the same one-run inference was made about this query during the 2026-08-27
   embed-window work and did not reproduce.
 
+- **AST-aware chunking: CLOSED, measured, do not reopen without changing the EMBEDDING.**
+  2026-08-28. Tried three times, lost three times. The third attempt was built specifically to
+  fix the first two failures and still lost, which is what makes this a close-out rather than
+  another revert.
+
+  | arm | delivered | semantic tier | chunks | impl shape |
+  |---|---|---|---|---|
+  | **fixed windows (shipped)** | **29/49** | **24/49** | 4,581 | 12/24 |
+  | snap, no overlap, byte cap (`880df70`) | 26/49 | 15/49 | 5,266 | 11/24 |
+  | snap, overlap kept, no byte cap | 27/49 | 17/49 | 4,911 | **13/24** |
+
+  Agreed bar before running: ≥32/49 and no shape falling by more than 1. Best arm reached 27
+  and dropped `defuse` by 2.
+
+  **The diagnosis that was wrong, and the one that replaced it.** `880df70` bundled three
+  changes — snap boundaries, drop the overlap at a clean seam, add a 1638-byte ceiling — and
+  the harm was attributed to the last two. Both were fixed in the third arm: the overlap was
+  kept at every seam and the byte cap deleted. Chunk count fell 5,266 → 4,911 and the semantic
+  tier recovered 15 → 17. **It did not recover to 24.**
+
+  **What actually kills it is the semantic tier, and it survived every fix.** Aligning a chunk
+  to a construct makes it *semantically narrower*: it is about one thing, so its single
+  384-dimensional vector matches one kind of question. An arbitrary 40-line window straddles two
+  or three constructs and embeds as a broader, blurrier thing that matches more queries. On this
+  corpus that blur is worth **seven queries**, and no boundary policy recovers them.
+
+  The corpus explains why: measured over **887 real functions — median 12 lines, p75 26, only
+  13% exceed one 40-line window**. One construct per chunk is too fine a granularity to embed
+  well.
+
+  **The upside is real and small.** Implementation-seeking queries score best under snapping
+  (13/24, the highest of any arm) — the structural claim about mid-function chunk starts holds.
+  It does not pay for a forced re-index of every installation, which `chunkerID` now makes
+  mandatory and unskippable.
+
+  **If revisited, change the EMBEDDING, not the boundary** — a per-chunk representation that
+  does not lose by being specific. The nearer lever is **body elision**: it targets the 13% of
+  constructs too big for a window, which is where the measured misses concentrate, and it does
+  not narrow what a chunk is about. The verdict is repeated at the top of `chunkContent` so the
+  next reader meets it before writing any code.
+
 - **Neighbour expansion: +10.2pp delivered for +2% context, and it came from DIAGNOSING the misses
   rather than guessing at them.** 2026-08-28. Step 2 of the AST-chunking sequence was "diagnose the
   right-file-wrong-chunk misses at line level", and the diagnosis changed the answer: the winning
