@@ -6,6 +6,31 @@
 //
 //	go test -tags eval -run TestEditShapedRetrievalEval -v ./...
 //
+// ⚠️ STATUS, 2026-08-28: HISTORICAL BENCHMARK. Not gated, deliberately, and
+// not because it is broken.
+//
+// The harness was fixed this session -- it now reconstructs the pre-fix tree by
+// checking out fixCommit~1 and then restoring the fixed file, instead of
+// reverting the fix commit on top of HEAD, and that made all four cases
+// materialise where three used to abort on merge conflicts before issuing a
+// query. Grading was also rewritten to derive its ground truth from the fix
+// diff's own pre-fix line numbers (rankOfAnchor/fixAnchorLines) rather than
+// from hand-written chunk IDs.
+//
+// It still does not gate anything, because the objection recorded in
+// .github/workflows/build.yml is correct and the fix does not answer it:
+// checking out a 200-commit-old parent tree measures retrieval over a corpus
+// that is not the product. A number from it describes August 2026's repository,
+// not today's. Reconstructing a historical bug state inside a moving tree
+// expires by design.
+//
+// What it was FOR -- "can retrieval find the code a fix must touch?" -- is now
+// asked against current code by the expanded locate eval in
+// rerank_eval_test.go, whose 49 queries include the def-vs-use shape that is
+// the closest analogue of an edit-shaped query. Keep this file: the harness is
+// the only working example of mining real fix commits into eval fixtures, and
+// that technique is what a properly rebuilt edit-shaped eval would reuse.
+//
 // ⚠️ READ THIS BEFORE READING THE NUMBER BELOW.
 //
 // rerank_eval_test.go and token_efficiency_eval_test.go measure retrieval

@@ -302,11 +302,66 @@ OpenRouter. What follows is the cost half.
      (helperproc did not flip; locate eval held 8/9; editapply/zdr prod-HITs held at both pool
      sizes) → `rerankOverfetchFactor` reverted to 6. **No pool size rescues helperproc** — the
      full corpus (a maximally wide pool) already reranks it to #67, so don't reattempt widening.
-  - **Still open, NOT resolved by this task:** the locate-eval saturation flag (whether the
+  - ~~**Still open, NOT resolved by this task:** the locate-eval saturation flag (whether the
     9-query set must grow before finer retrieval tuning is trustworthy) — sidestepped here via a
-    binary pass/fail bar, not answered. helperproc AND tui both remain H6 MISSes; the real levers
+    binary pass/fail bar, not answered.~~ **CLOSED 2026-08-28. The set was saturated, and the cost
+    of leaving it that way was paid on 2026-08-27:** a structure-aware chunking change took
+    real-repo chunk-level recall from 8/9 to 4/9 and **shipped**, because `make check` was green,
+    the small offline fixture eval reported 14/15 throughout, and the one eval that could see it
+    was schedule-only. Reverted in `b552daf`. Resolution:
+    - **`rerankEvalQueries` grew 9 → 49**, every anchor verified to resolve to 1–3 chunks before
+      being committed. Each query carries a declared `shape` (impl / def-vs-use / test /
+      cross-module / doc / multi-file) so a regression is attributable to a class of question.
+    - **The floor is now a RATE, not a tally** (`evalChunkRecallFloor = 0.40`). One flip is 2.0pp
+      instead of 11pp; the gate fires on a 3-query loss.
+    - **It gates on PRs that touch retrieval** (`.github/workflows/retrieval-eval.yml`, path-
+      filtered), not only on the Monday schedule. `make eval` runs the same thing locally.
+    - **ACCEPTANCE TEST — the instrument now catches the exact regression that shipped green.**
+      The reverted chunking was re-applied in a scratch worktree and both evals run against it:
+
+      | | fixture eval (`TestEvalRetrievalQuality`) | locate eval (this one) |
+      |---|---|---|
+      | HEAD, fixed 40/10 windows | 14/15 **PASS** | 24/49 = 49.0% **PASS** |
+      | structure-aware chunk boundaries | 14/15 **PASS** | 17/49 = 34.7% **FAIL** |
+
+      The fixture eval scores *identically* on both, which is exactly what it did in real life.
+      And the per-shape column reproduced, unprompted, the diagnosis that had taken a manual
+      investigation: **def-vs-use collapsed 6/7 → 1/7 while impl-seeking IMPROVED 8/24 → 10/24**.
+      Cutting at construct boundaries separates a declaration from the code that uses it.
+    - **The measured answer to "was 8/9 trustworthy": no.** 49 queries score **24/49 = 49.0%**
+      chunk-level. 89% was the score of a set built out of failures that had already been fixed;
+      49.0% is the first number from questions retrieval was not tuned on.
+    - **The most useful thing it surfaced:** file-level recall is **39/49 (79.6%)**, and **15 of
+      the 25 chunk-level misses are the right file with the wrong forty lines of it**. Most of the
+      failure mass is a *granularity* failure, not a ranking failure — which is both a direction
+      for North Star item 3 and the reason a chunk-boundary change was able to do so much damage
+      so fast.
+    - **Per-shape, the dominant real query shape is the weakest: impl 8/24 (33%)**, against
+      def-vs-use 6/7, multi 3/4, test 2/3, cross 5/10, doc 0/1. Not acted on here; recorded so the
+      next retrieval push starts from where the loss actually is.
+    - **Retrieval is deterministic but corpus-SENSITIVE — measured, not assumed.** Indexing once
+      and running the identical pass three times gives byte-identical hit vectors. Two whole runs
+      the same day differed (22/49 then 24/49) purely because the corpus grew by 5 chunks out of
+      ~4,385, in files no flipped query even names. Near-misses sit right at the top-5 cut, so
+      what they compete against decides them. That is why the floor is 40% and not the measured
+      49.0%: it has to sit above the regression's 34.7% and below the observed band, and it does.
+
+    Still open and unchanged by this: helperproc AND tui both remain H6 MISSes; the real levers
     are the North Star item 3 direction (chunking / query expansion / a stronger embedder), not
     pool width.
+
+- **Corpus hygiene — the eval had been scoring against its own answer key, and nobody knew.**
+  Found 2026-08-28 while expanding the set above. Three captured `go test` output files were
+  **committed** (`test.log`, `test_output.txt`, `daemon/test_out.txt`), and `test_output.txt`
+  — added in `3ff9ee2` on 2026-08-11 — was a transcript of a `TestRerankEvalRetrievalRanking`
+  run: every query string verbatim, each a few lines above the chunk IDs of its correct answers,
+  sitting inside the corpus the eval indexes. Seventeen days of runs were inflated by an unknown
+  amount. `evalSelfReferenceFiles` could not catch it: a hand-maintained exclusion list only
+  covers leaks somebody thought of. Fixed three ways — files deleted and `.gitignore`d, four more
+  leaking files found and handled (one, `daemon/rerank.go`, is product source and a declared
+  ANSWER, so it was reworded rather than excluded), and `TestNoIndexedFileEchoesAnEvalQuery` added
+  and **wired into `make check`** (needs no model, runs in under a second) so a recurrence is red
+  at commit time rather than silent for a fortnight.
 
 ## Phase 1 — Distribution & Launch Gate (Release Phase) — COMPLETED & VERIFIED (2026-08-12)
 

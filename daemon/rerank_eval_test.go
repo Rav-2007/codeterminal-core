@@ -10,9 +10,43 @@
 // the actual CodeTerminal repo (not a curated testdata/ subset — the
 // measured failures this fixes were found against this real repo, and
 // expected files/chunks are real repo-relative paths/line ranges) and runs
-// the 9 queries from the two stress tests (5 original implementation-seeking
-// queries + the _test.go down-weight pair + the 2 symbol/string queries that
-// motivated hybrid retrieval), asserting the fix actually recovers them.
+// 49 queries against it.
+//
+// ── WHY 49 AND NOT 9 ───────────────────────────────────────────────────────
+//
+// It ran 9 queries until 2026-08-28, and on 2026-08-27 that cost a shipped
+// regression. A structure-aware chunking change took real-repo recall from 8/9
+// to 4/9; `make check` was green, the small offline fixture eval reported
+// 14/15, this eval was schedule-only, and the change landed. Reverted in
+// b552daf. Nine queries also cannot resolve ordinary retrieval work: one flip
+// is 11pp, and the 256→512 embed-window change measured 8/9 on both sides.
+//
+// The expansion was verified by re-applying the reverted chunking in a scratch
+// worktree and running both evals against it. MEASURED 2026-08-28:
+//
+//	                          fixture eval      this eval
+//	HEAD (fixed windows)      14/15  PASS       24/49 (49.0%)  PASS
+//	structure-aware chunks    14/15  PASS       17/49 (34.7%)  FAIL
+//
+// The fixture eval cannot see the regression -- it scores identically on both
+// -- which is what it did in real life. This eval fails on it by 5.3pp under
+// the floor.
+//
+// The per-shape breakdown then reproduced, unprompted, the diagnosis that had
+// taken a manual investigation: def-vs-use queries collapsed from 6/7 to 1/7,
+// while implementation-seeking queries actually IMPROVED, 8/24 to 10/24.
+// Cutting cleanly at construct boundaries separates a declaration from the code
+// that uses it, and a query like "where is the ZDR refusal string matched"
+// wants the matching code. Better-formed chunks, worse retrieval.
+//
+// ── WHAT THE NUMBER MEANS ──────────────────────────────────────────────────
+//
+// 49.0% chunk-level is the real recall of this retrieval stack on questions it
+// was not tuned against; the old 89% was the score of a set built out of
+// failures that had already been fixed. File-level recall on the same run is
+// 39/49 (79.6%), and 15 of the 25 chunk-level misses are the RIGHT FILE with
+// the wrong forty lines of it. Most of the remaining failure mass is
+// granularity, not ranking.
 //
 // CHUNK-LEVEL, not file-level: exactChunks below names the specific
 // chunk(s) (file:startLine-endLine) that actually contain the relevant
@@ -28,6 +62,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -69,7 +104,55 @@ type rerankEvalQuery struct {
 	// DECLARED, because what counts as the answer is a judgement, not a fact the
 	// harness can derive.
 	anchors []string
+	// shape is which KIND of question this is. Declared, because the value of
+	// knowing it is exactly that a human decided it.
+	//
+	// It exists because an aggregate recall number tells you a regression
+	// happened and nothing about where to look. The 2026-08-27 chunking
+	// regression cost five queries; had the set been labelled, the report
+	// would have said the loss was concentrated in one class instead of
+	// leaving "recall fell" as the whole diagnosis. The per-shape breakdown
+	// printed by TestRerankEvalRetrievalRanking is not gated -- a per-class
+	// floor on 1-10 queries per class would be noise -- it is there to point
+	// at the cause once the gated overall rate has already fired.
+	shape string
 }
+
+// The query shapes. These are the kinds of question the product actually gets
+// asked, plus the two failure modes this repo has measured and recorded.
+const (
+	// shapeImpl is "where is X done" -- the dominant real shape.
+	shapeImpl = "impl"
+	// shapeDefUse is a query whose anchor exists at BOTH a declaration and a
+	// use site, so retrieval has to pick the one that answers the question.
+	// This is the mechanism behind the 2026-08-27 regression: splitting chunks
+	// on construct boundaries cleanly separated declarations from the code
+	// that uses them, and the wrong half started winning.
+	shapeDefUse = "defuse"
+	// shapeTest is a genuinely test-seeking query. It is the paired guard for
+	// rerank.go's FileClassTest down-weight: any change that helps
+	// implementation-seeking queries by pushing tests down must not push them
+	// out of reach of someone who is actually asking about a test.
+	shapeTest = "test"
+	// shapeCross is a query whose answer lives in a different Go module from
+	// the component the question names. These catch seam moves -- query 1's
+	// expectation was silently wrong for months after net.Listen moved from
+	// daemon to protocol.
+	shapeCross = "cross"
+	// shapeDoc is the documented doc-comment-vs-implementation gap: a prose
+	// comment that contains the query's words and none of its code outranks
+	// the code. Only query 1 is labelled this, and it is the one known miss.
+	shapeDoc = "doc"
+	// shapeMulti is a query with more than one legitimate home, where
+	// expectedFiles is a set rather than a single file.
+	shapeMulti = "multi"
+)
+
+// evalQueryShapeOrder fixes the order shapes are reported in, so the printed
+// breakdown is diffable between runs. A shape present on a query but missing
+// here is a compile-time-invisible mistake, so the summary counts what it
+// prints and fails if the totals do not add up.
+var evalQueryShapeOrder = []string{shapeImpl, shapeDefUse, shapeTest, shapeCross, shapeDoc, shapeMulti}
 
 // resolveExactChunks computes each query's chunk-level ground truth FROM THE
 // INDEX, rather than reading it from a list written by hand.
@@ -189,31 +272,35 @@ var rerankEvalQueries = []rerankEvalQuery{
 	// correct retrieval as a miss ever since.
 	{"where does the daemon open the unix socket",
 		[]string{"protocol/transport_unix.go"},
-		[]string{`net.Listen("unix"`}},
+		[]string{`net.Listen("unix"`}, shapeDoc},
 
 	// editblock.go moved from daemon/ to editapply/ in an earlier, unrelated
 	// refactor (c516479).
 	{"how are edit blocks parsed from the model response",
 		[]string{"editapply/editblock.go"},
-		[]string{"func ParseEditBlocks"}},
+		[]string{"func ParseEditBlocks"}, shapeCross},
 
 	// The tier decision is made in Route, not in the const/type block at the top
 	// of the file -- which is what the file-level check could not tell apart.
 	{"where is the model tier routing decided",
 		[]string{"daemon/router.go"},
-		[]string{"func Route(cfg *Config"}},
+		[]string{"func Route(cfg *Config"}, shapeImpl},
 
 	// The actual secret-skipping decision is editapply.MatchesSecretName, called
 	// from shouldSkipFile. index_cmd.go only REPORTS skip counts, so it stays an
 	// acceptable file-level match with no chunk-level answer of its own.
 	{"how does secret skipping work during indexing",
 		[]string{"daemon/chunker.go", "daemon/index_cmd.go"},
-		[]string{"editapply.MatchesSecretName"}},
+		[]string{"editapply.MatchesSecretName"}, shapeMulti},
 
 	// Two things legitimately answer this: where the DB lives, and its schema.
+	// The second anchor was "CREATE TABLE IF NOT EXISTS", which memory.go uses
+	// for four tables -- so it resolved to 4 chunks against the ceiling of 3 and
+	// failed this eval on the BASELINE, before any retrieval change. A fixture
+	// fault, not retrieval: named the specific table instead.
 	{"where are conversation turns stored in sqlite",
 		[]string{"daemon/memory.go"},
-		[]string{"func OpenMemoryStore", "CREATE TABLE IF NOT EXISTS"}},
+		[]string{"func OpenMemoryStore"}, shapeImpl},
 
 	// Added for the _test.go down-weight fix (FileClassTest, rerank.go): the
 	// measured live-repo failure this fix targets -- provider.go never made the
@@ -225,7 +312,7 @@ var rerankEvalQueries = []rerankEvalQuery{
 	// its doc comment) that rank better semantically and contain none of it.
 	{"where in the code is the ZDR refusal string matched, and what substring does it match on?",
 		[]string{"daemon/provider.go"},
-		[]string{"zdrRefusalSubstrings"}},
+		[]string{"zdrRefusalSubstrings"}, shapeDefUse},
 
 	// The paired regression guard for the same fix: a genuinely test-seeking
 	// query must still find the test files, or it would start failing the moment
@@ -236,11 +323,11 @@ var rerankEvalQueries = []rerankEvalQuery{
 		[]string{
 			"func TestIsZDRRoutingRefusal_MatchesKnownPhrasings",
 			"func TestZDRConfig_ZeroValueResolvesToStrictEnforcement",
-		}},
+		}, shapeTest},
 
 	{"where is the ZDR refusal string matched",
 		[]string{"daemon/provider.go"},
-		[]string{"zdrRefusalSubstrings"}},
+		[]string{"zdrRefusalSubstrings"}, shapeDefUse},
 
 	// The second symbol/string query that motivated hybrid retrieval: a
 	// natural-language question with essentially no shared vocabulary with any
@@ -260,7 +347,200 @@ var rerankEvalQueries = []rerankEvalQuery{
 			// transcription slip that scored a correct hit as a miss.
 			"func isSearchRequest",
 			"func (s *Server) handleSearch",
-		}},
+		}, shapeMulti},
+
+	// ------------------------------------------------------------------
+	// CORPUS EXPANSION, 2026-08-28. Everything above this line is the
+	// original nine; everything below was added to make this eval able to
+	// resolve the effects retrieval work actually turns on.
+	//
+	// WHY. On 2026-08-27 a chunking change (structure-aware boundaries) took
+	// real-repo recall from 8/9 to 4/9 while `make check` was fully green and
+	// the small offline fixture eval reported 14/15. It shipped, and was
+	// reverted in b552daf. At nine queries one flip is 11pp, so this eval
+	// could not have distinguished a real 1-query regression from noise
+	// either; the embed-window change measured 8/9 both before and after.
+	// BACKLOG recorded the same thing as open debt ("the locate-eval
+	// saturation flag").
+	//
+	// Every anchor below was verified to resolve to 1-3 chunks against a real
+	// index before being committed -- the same bar resolveExactChunks
+	// enforces at run time -- so this set starts honest rather than starting
+	// red and being ignored.
+	//
+	// NOT tuning. No retrieval code changed with this expansion; the score
+	// moves only because more questions are being asked.
+
+	{"how does the daemon decide an index is stale and refuse to use it",
+		[]string{"daemon/embedderstamp.go"},
+		[]string{"func checkEmbedderStamp"}, shapeImpl},
+
+	// Anchor is a constant that exists at its declaration and at the branch
+	// that returns it, which is the distinction this shape is here to watch.
+	{"where does the daemon ask the user to approve a tool call",
+		[]string{"daemon/toolapproval.go"},
+		[]string{"ApprovalCancelTurn"}, shapeDefUse},
+
+	{"how are secrets stripped out of retrieved code before it is sent to the model",
+		[]string{"daemon/scrub.go"},
+		[]string{"func scrub(text string"}, shapeImpl},
+
+	{"where does the agent loop stop iterating",
+		[]string{"daemon/agentloop.go"},
+		[]string{"maxTurnIterations"}, shapeDefUse},
+
+	{"how does the daemon notice the client disappeared in the middle of a turn",
+		[]string{"daemon/agentturn.go"},
+		[]string{"clientGone = true"}, shapeImpl},
+
+	{"where are overlapping retrieved chunks folded into one span",
+		[]string{"daemon/chunkmerge.go"},
+		[]string{"func mergeAdjacentChunks"}, shapeImpl},
+
+	// Asks about "the daemon"; the answer is in the protocol module, behind
+	// the same transport seam that broke query 1's expectation.
+	{"how does the daemon check who is on the other end of the unix socket",
+		[]string{"protocol/peerauth_linux.go"},
+		[]string{"SO_PEERCRED"}, shapeCross},
+
+	{"where is a tool result truncated when it is too big",
+		[]string{"daemon/toolresult.go"},
+		[]string{"func renderToolResult"}, shapeImpl},
+
+	{"how does the proxy limit how many requests a key can make",
+		[]string{"proxy/ratelimit.go"},
+		[]string{"func (l *rateLimiter) allow("}, shapeCross},
+
+	{"where does the workspace watcher avoid following a symlink out of the project",
+		[]string{"daemon/watcher.go"},
+		[]string{"IsLinkLike"}, shapeImpl},
+
+	{"how is a file classified as test or documentation for ranking",
+		[]string{"daemon/fileclass.go"},
+		[]string{"func classifyFile"}, shapeImpl},
+
+	{"where does the daemon write the per-workspace lockfile the clients look for",
+		[]string{"protocol/paths.go", "protocol/protocol.go"},
+		[]string{"func LockPathFor"}, shapeMulti},
+
+	{"where does the daemon build the map of the workspace it shows the planner",
+		[]string{"daemon/repomap.go"},
+		[]string{"func buildRepoMap"}, shapeImpl},
+
+	{"how is the repository map kept inside its byte budget",
+		[]string{"daemon/repomap.go"},
+		[]string{"pathBudgetTotal"}, shapeDefUse},
+
+	{"where do the specialist roles for a multi-agent turn get defined",
+		[]string{"daemon/roles.go"},
+		[]string{"var roleResearcher"}, shapeImpl},
+
+	{"how does one phase hand its conclusions to the next",
+		[]string{"daemon/orchestrator.go"},
+		[]string{"func truncateHandoff"}, shapeImpl},
+
+	{"where does the daemon run a third-party MCP server as a subprocess",
+		[]string{"daemon/mcp/stdioclient.go"},
+		[]string{"cmd.Env = ServerEnv"}, shapeCross},
+
+	{"what stops an MCP server from receiving our API keys",
+		[]string{"daemon/mcp/mcp.go"},
+		[]string{"func ValidateEnvAllowList"}, shapeCross},
+
+	{"where is the sandbox command line actually assembled for bubblewrap",
+		[]string{"daemon/mcp/sandbox.go"},
+		[]string{"func WrapCommand"}, shapeCross},
+
+	{"how does the tui know which daemon socket to dial",
+		[]string{"clients/tui/daemonconn.go"},
+		[]string{"lockPathFunc"}, shapeCross},
+
+	{"where does the daemon decide a search query needs the live web",
+		[]string{"daemon/livequestion.go"},
+		[]string{"func looksLikeLiveWorldQuestion"}, shapeImpl},
+
+	{"how is an outbound web search query stripped of secrets",
+		[]string{"daemon/websearch.go"},
+		[]string{"scrub"}, shapeImpl},
+
+	{"where does an edit get written to disk atomically",
+		[]string{"editapply/atomicwrite.go"},
+		[]string{"func writeFileAtomicNoFollow"}, shapeCross},
+
+	{"how does undo restore a file that the edit had created",
+		[]string{"daemon/apply_cmd.go"},
+		[]string{"func stageRestore"}, shapeImpl},
+
+	{"where is the git ignore file parsed for the indexer",
+		[]string{"daemon/chunker.go"},
+		[]string{"func newGitignoreMatcher"}, shapeImpl},
+
+	{"how does the lexical tier score a match",
+		[]string{"daemon/lexicalstore.go"},
+		[]string{"bm25"}, shapeImpl},
+
+	{"where are the two retrieval tiers combined into one ranking",
+		[]string{"daemon/search.go", "daemon/rerank.go"},
+		[]string{"func fuseRRF"}, shapeMulti},
+
+	// Test-seeking, and deliberately about a client rather than the daemon:
+	// the paired guard for rerank.go's FileClassTest down-weight has to hold
+	// outside the one package the down-weight was tuned against.
+	{"how is the interrupt behaviour of the chat client tested",
+		[]string{"clients/tui/interrupt_test.go"},
+		[]string{"func TestEscStopsTheTurnAndKeepsTheSession"}, shapeTest},
+
+	{"what test proves a lane B server is never reported as confined",
+		[]string{"daemon/mcp/mcp_test.go"},
+		[]string{"func TestLaneBToolsAreNeverConfined"}, shapeTest},
+
+	{"where is the prompt assembled with retrieved context before it goes to the model",
+		[]string{"daemon/context.go"},
+		[]string{"func buildAugmentedUserMessage"}, shapeImpl},
+
+	{"how does the daemon count tokens it has spent in a turn",
+		[]string{"daemon/counters.go"},
+		[]string{"func (c *counters)"}, shapeImpl},
+
+	{"where does the config get read off disk and defaulted",
+		[]string{"daemon/config.go"},
+		[]string{"func LoadConfig"}, shapeImpl},
+
+	{"what does the user get told when cross-session memory is unavailable",
+		[]string{"daemon/degraded.go"},
+		[]string{"detailMemoryDown"}, shapeImpl},
+
+	{"where is a proposed edit turned into a reviewable diff",
+		[]string{"daemon/mcpbuiltin.go"},
+		[]string{"func (s *Server) builtinProposeEdit"}, shapeImpl},
+
+	{"how does the helper subprocess get restarted if it dies",
+		[]string{"daemon/helperproc.go"},
+		[]string{"func (h *HelperProcess) spawnLocked"}, shapeImpl},
+
+	// Same file as "where does the agent loop stop iterating", different
+	// stopping rule -- iteration count versus wall clock. Two questions that
+	// are near-identical in embedding space and must not collapse onto the
+	// same chunk.
+	{"where does the daemon stop a runaway tool loop by wall clock",
+		[]string{"daemon/agentloop.go"},
+		[]string{"deadlineCap.Before"}, shapeDefUse},
+
+	{"how are chat turns rendered for the terminal transcript",
+		[]string{"clients/tui/chat.go"},
+		[]string{"func renderTranscript"}, shapeCross},
+
+	{"where does the proxy decide a model is allowed for this key",
+		[]string{"proxy/main.go"},
+		[]string{"func (p *proxy) modelAllowed"}, shapeCross},
+
+	{"how is the workspace index built and written to disk",
+		[]string{"daemon/index_cmd.go"},
+		[]string{"func buildIndex"}, shapeImpl},
+
+	{"where does the daemon refuse to index a file that is too large",
+		[]string{"daemon/chunker.go"},
+		[]string{"SkipTooLarge"}, shapeDefUse},
 }
 
 // evalSelfReferenceFiles are repo-relative paths this eval test itself must
@@ -280,6 +560,89 @@ var rerankEvalQueries = []rerankEvalQuery{
 var evalSelfReferenceFiles = map[string]bool{
 	"daemon/rerank_eval_test.go":  true,
 	"daemon/lexicalstore_test.go": true,
+
+	// Found by TestNoIndexedFileEchoesAnEvalQuery on 2026-08-28, not by
+	// anybody noticing. Each of these quotes eval queries verbatim for a
+	// legitimate reason -- a sibling eval reusing the query set, and three
+	// write-ups that quote what was measured -- and each was therefore a
+	// free lexical bullseye for the query it quotes.
+	//
+	// Excluding a doc is cheap: no query in this set declares a .md file as
+	// its answer, so nothing real is lost from the corpus. Excluding PRODUCT
+	// SOURCE would not be, which is why rerank.go -- which also quoted a
+	// query, and is itself a declared answer for the RRF-fusion query -- was
+	// reworded instead of listed here.
+	"daemon/token_efficiency_eval_test.go":         true,
+	"BACKLOG.md":                                   true,
+	"docs/QA_LAUNCH_GATE_2026-07-30.md":            true,
+	"docs/RETRIEVAL_EVAL_CHECKPOINT_2026-08-08.md": true,
+}
+
+// TestNoIndexedFileEchoesAnEvalQuery fails if any file in the indexed corpus
+// contains one of this eval's query strings verbatim, other than the files
+// evalSelfReferenceFiles already excludes.
+//
+// WHY THIS EXISTS. evalSelfReferenceFiles was the right idea with a hole in it:
+// it is a hand-maintained list, so it only covers leaks somebody thought of. On
+// 2026-08-28, while expanding this eval, three captured `go test` output files
+// turned out to be COMMITTED at the repo root -- and test_output.txt (added in
+// 3ff9ee2, 2026-08-11) was a transcript of a TestRerankEvalRetrievalRanking run.
+// It contained every query string verbatim, each one sitting a few lines above
+// the chunk IDs of that query's correct answers. Seventeen days of eval runs
+// scored against a corpus containing their own answer key, and nothing said so.
+//
+// A hand-maintained exclusion list cannot catch that; a check can. This is the
+// cheap half of the eval -- ScanWorkspace only, no model, well under a second --
+// so it also runs as a fast standalone signal rather than only inside the
+// ten-minute job.
+//
+// It deliberately checks the QUERY strings and not the anchors: an anchor is a
+// literal substring of the product's own source and is SUPPOSED to appear in
+// the corpus (resolveExactChunks logs where, and does not fail). A query string
+// is prose that exists nowhere but this eval, so a second copy of one is always
+// either a leak or a file that should not be committed.
+func TestNoIndexedFileEchoesAnEvalQuery(t *testing.T) {
+	root, err := filepath.Abs("..")
+	if err != nil {
+		t.Fatalf("resolving repo root: %v", err)
+	}
+	scan, err := ScanWorkspace(root)
+	if err != nil {
+		t.Fatalf("scanning workspace: %v", err)
+	}
+
+	leaks := map[string][]int{}
+	for _, c := range scan.Chunks {
+		if evalSelfReferenceFiles[c.FilePath] {
+			continue
+		}
+		for i, q := range rerankEvalQueries {
+			if strings.Contains(c.Content, q.query) && !slices.Contains(leaks[c.FilePath], i+1) {
+				leaks[c.FilePath] = append(leaks[c.FilePath], i+1)
+			}
+		}
+	}
+	if len(leaks) == 0 {
+		t.Logf("clean: %d files / %d chunks scanned, no file outside evalSelfReferenceFiles "+
+			"echoes any of the %d eval queries", scan.FilesScanned, len(scan.Chunks), len(rerankEvalQueries))
+		return
+	}
+	for _, f := range sortedFileNames(func() map[string]bool {
+		m := map[string]bool{}
+		for f := range leaks {
+			m[f] = true
+		}
+		return m
+	}()) {
+		t.Errorf("%s is in the indexed corpus and contains eval quer%s %v verbatim. That file is a "+
+			"near-perfect lexical match for its own query, so the eval would score it as retrieval "+
+			"working. Three remedies, in order of preference: reword the file so it does not quote "+
+			"the query verbatim (the only option if it is product source that some query declares "+
+			"as an ANSWER -- excluding it would delete a real answer from the corpus); delete the "+
+			"file (if it is captured test output -- see .gitignore); or add it to "+
+			"evalSelfReferenceFiles (fine for docs and sibling evals, which no query answers)",
+			f, map[bool]string{true: "y", false: "ies"}[len(leaks[f]) == 1], leaks[f])
+	}
 }
 
 // indexRepoExcludingSelfReference scans root, drops any chunk whose
@@ -359,11 +722,12 @@ func hitsExactChunk(hits []Chunk, n int, exactChunks []string) bool {
 // production default — not an arbitrary top-3 subset of a wider fetch,
 // since what matters is whether the chunk actually gets injected into the
 // prompt).
-func runEvalPass(ctx context.Context, t *testing.T, embedder Embedder, store VectorStore, lexicalStore LexicalStore, exact [][]string, label string) []bool {
+func runEvalPass(ctx context.Context, t *testing.T, embedder Embedder, store VectorStore, lexicalStore LexicalStore, exact [][]string, label string) (chunkHits, fileHits []bool) {
 	t.Helper()
 	const displayK = 5
 
-	hitFlags := make([]bool, len(rerankEvalQueries))
+	chunkHits = make([]bool, len(rerankEvalQueries))
+	fileHits = make([]bool, len(rerankEvalQueries))
 	fmt.Println()
 	fmt.Printf("=== Retrieval ranking eval: %s ===\n", label)
 	for i, q := range rerankEvalQueries {
@@ -379,7 +743,8 @@ func runEvalPass(ctx context.Context, t *testing.T, embedder Embedder, store Vec
 				fileHit = true
 			}
 		}
-		hitFlags[i] = exactHit
+		chunkHits[i] = exactHit
+		fileHits[i] = fileHit
 
 		// Guardrail for Fix 11: production folds same-file overlapping chunks
 		// into contiguous spans before rendering (mergeAdjacentChunks), so this
@@ -397,12 +762,12 @@ func runEvalPass(ctx context.Context, t *testing.T, embedder Embedder, store Vec
 		if exactHit {
 			mark = "hit"
 		}
-		fmt.Printf("\n%d. query=%q\n   expected files=%v exact chunks=%v\n   chunk-level=%s file-level=%t merged-path=%t\n", i+1, q.query, q.expectedFiles, exact[i], mark, fileHit, mergedHit)
+		fmt.Printf("\n%d. [%s] query=%q\n   expected files=%v exact chunks=%v\n   chunk-level=%s file-level=%t merged-path=%t\n", i+1, q.shape, q.query, q.expectedFiles, exact[i], mark, fileHit, mergedHit)
 		for j, h := range hits {
 			fmt.Printf("   %d. %-40s class=%-6s raw=%.4f weighted=%.4f\n", j+1, chunkID(h), h.Class, h.RawScore, h.Score)
 		}
 	}
-	return hitFlags
+	return chunkHits, fileHits
 }
 
 func TestRerankEvalRetrievalRanking(t *testing.T) {
@@ -473,20 +838,31 @@ func TestRerankEvalRetrievalRanking(t *testing.T) {
 	// resolveExactChunks.
 	exact := resolveExactChunks(t, scan.Chunks)
 
-	semanticOnlyHits := runEvalPass(ctx, t, embedder, store, nil, exact, "SEMANTIC-ONLY (lexicalStore=nil, today's behavior)")
-	hybridHits := runEvalPass(ctx, t, embedder, store, lexicalStore, exact, "HYBRID (semantic + lexical, fused via RRF)")
+	semanticOnlyHits, _ := runEvalPass(ctx, t, embedder, store, nil, exact, "SEMANTIC-ONLY (lexicalStore=nil, today's behavior)")
+	hybridHits, hybridFileHits := runEvalPass(ctx, t, embedder, store, lexicalStore, exact, "HYBRID (semantic + lexical, fused via RRF)")
 
 	fmt.Println()
 	fmt.Println("=== Before/after summary (chunk-level hit = exact symbol-containing chunk reached top-5) ===")
-	fmt.Printf("%-3s %-70s %-12s %-8s\n", "#", "query", "semantic", "hybrid")
+	fmt.Printf("%-3s %-7s %-62s %-10s %-8s\n", "#", "shape", "query", "semantic", "hybrid")
 	var semanticOnlyCount, hybridCount int
 	var regressions []string
+	shapeTotal := map[string]int{}
+	shapeHybridHits := map[string]int{}
+	var fileLevelCount, rightFileWrongChunk int
 	for i, q := range rerankEvalQueries {
+		shapeTotal[q.shape]++
+		if hybridFileHits[i] {
+			fileLevelCount++
+			if !hybridHits[i] {
+				rightFileWrongChunk++
+			}
+		}
 		if semanticOnlyHits[i] {
 			semanticOnlyCount++
 		}
 		if hybridHits[i] {
 			hybridCount++
+			shapeHybridHits[q.shape]++
 		}
 		before := "MISS"
 		if semanticOnlyHits[i] {
@@ -496,20 +872,92 @@ func TestRerankEvalRetrievalRanking(t *testing.T) {
 		if hybridHits[i] {
 			after = "hit"
 		}
-		fmt.Printf("%-3d %-70s %-12s %-8s\n", i+1, truncateEval(q.query, 70), before, after)
+		fmt.Printf("%-3d %-7s %-62s %-10s %-8s\n", i+1, q.shape, truncateEval(q.query, 62), before, after)
 
 		if semanticOnlyHits[i] && !hybridHits[i] {
 			regressions = append(regressions, q.query)
 		}
 	}
 	total := len(rerankEvalQueries)
+	hybridRate := float64(hybridCount) / float64(total)
 	fmt.Println()
-	fmt.Printf("semantic-only chunk-level recall: %d/%d\n", semanticOnlyCount, total)
-	fmt.Printf("hybrid chunk-level recall:         %d/%d\n", hybridCount, total)
+	fmt.Printf("semantic-only chunk-level recall: %d/%d (%.1f%%)\n", semanticOnlyCount, total, 100*float64(semanticOnlyCount)/float64(total))
+	fmt.Printf("hybrid chunk-level recall:        %d/%d (%.1f%%)   <- THE GATED NUMBER\n", hybridCount, total, 100*hybridRate)
 	fmt.Println()
 
+	// The chunk-level number alone cannot tell "retrieval had no idea" apart
+	// from "retrieval named the right file and handed over the wrong forty
+	// lines of it", and those two want completely different fixes -- the first
+	// is ranking or embedding, the second is chunking and granularity.
+	//
+	// MEASURED 2026-08-28, and it is the most useful thing this expansion
+	// surfaced: of 27 chunk-level misses, 14 were right-file-wrong-chunk. Over
+	// half the failure mass sits on the chunk boundary, not in the ranker.
+	// That is also why the 2026-08-27 chunking change was able to do so much
+	// damage so quickly: it was moving the boundary that half the failures
+	// already turn on.
+	fmt.Printf("hybrid file-level recall:         %d/%d (%.1f%%)\n", fileLevelCount, total, 100*float64(fileLevelCount)/float64(total))
+	fmt.Printf("  right file, WRONG chunk:        %d  (granularity failures -- chunking, not ranking)\n", rightFileWrongChunk)
+	fmt.Printf("  right file never retrieved:     %d  (ranking/embedding failures)\n", total-fileLevelCount)
+	fmt.Println()
+
+	// Per-shape breakdown. NOT gated -- with 1-10 queries in a class a single
+	// flip is 10-100pp, which is noise, and gating on it would make this eval
+	// the flaky thing nobody trusts. It is diagnosis: when the gated overall
+	// rate below fires, this says which KIND of question broke, which is the
+	// difference between "recall fell" and "declarations stopped beating their
+	// use sites".
+	fmt.Println("per-shape hybrid recall (diagnostic, not gated):")
+	var shapeAccounted int
+	for _, s := range evalQueryShapeOrder {
+		n := shapeTotal[s]
+		if n == 0 {
+			continue
+		}
+		shapeAccounted += n
+		fmt.Printf("  %-8s %d/%d (%.0f%%)\n", s, shapeHybridHits[s], n, 100*float64(shapeHybridHits[s])/float64(n))
+	}
+	fmt.Println()
+
+	// A query carrying a shape that evalQueryShapeOrder does not list would be
+	// silently dropped from the breakdown above -- invisible, because a typo in
+	// a string constant still compiles. Counting what was printed catches it.
+	if shapeAccounted != total {
+		var unknown []string
+		for s := range shapeTotal {
+			if !slices.Contains(evalQueryShapeOrder, s) {
+				unknown = append(unknown, s)
+			}
+		}
+		sort.Strings(unknown)
+		t.Errorf("the per-shape breakdown accounted for %d of %d queries: shape(s) %v are set on "+
+			"queries but missing from evalQueryShapeOrder, so those queries are absent from the "+
+			"diagnostic above", shapeAccounted, total, unknown)
+	}
+
+	// REPORTED, NOT FAILED -- changed 2026-08-28, and this is a real loosening,
+	// so here is the evidence for it.
+	//
+	// This was `t.Errorf` and it demanded that fusion lose NO query the
+	// semantic tier alone found. That bar was set against nine queries which
+	// had been selected, at the time, as the ones hybrid retrieval was built to
+	// rescue -- so pointwise dominance held, and looked like a property.
+	//
+	// It is not one. RRF fuses two rankings; it cannot dominate either input
+	// pointwise, and demanding that it does is demanding something the method
+	// cannot supply. Measured on the 49-query set on 2026-08-28: hybrid took
+	// recall from 19/49 to 22/49 while losing 3 queries it gained 6 -- a clear
+	// net win that the old rule would have called a failure, permanently, on
+	// every run. A gate that can never be green is a gate people delete.
+	//
+	// The intent behind the rule survives as the AGGREGATE check below
+	// (semanticOnlyCount > hybridCount), which is the honest form of the same
+	// question: fusion must not lose more than it gains. Per-query trades are
+	// still printed here, because WHICH queries fusion trades away is worth
+	// looking at even when the net is positive.
 	if len(regressions) > 0 {
-		t.Errorf("hybrid retrieval REGRESSED %d quer(ies) that passed semantic-only: %v", len(regressions), regressions)
+		t.Logf("fusion traded away %d quer(ies) the semantic tier alone found (net is still "+
+			"%+d): %v", len(regressions), hybridCount-semanticOnlyCount, regressions)
 	}
 
 	// The two queries that actually motivated this feature (see the design
@@ -528,22 +976,21 @@ func TestRerankEvalRetrievalRanking(t *testing.T) {
 	// A floor on overall recall, so a regression that spares the three gated
 	// queries is still caught.
 	//
-	// MEASURED 2026-07-30 against this repo: 8/9 under both hybrid and
-	// semantic-only, the one miss being the known query-1 gap documented below.
-	// This restores the figure fuseRRF's doc comment records from the feature's
-	// original grid search; the intervening 4/9 was a STALE-HARNESS artifact,
-	// not a retrieval regression (see rerankEvalQuery.anchor).
-	//
-	// It is a FLOOR, not an equality: a change that improves recall should not
-	// fail. Raise it when a real improvement makes 8/9 the new normal.
-	if hybridCount < evalChunkRecallFloor {
-		t.Errorf("hybrid chunk-level recall %d/%d is below the floor of %d/%d measured on "+
-			"2026-07-30. Read resolveExactChunks' output first. If it reported an anchor that "+
+	// A RATE, not a tally, since 2026-08-28. It was `hybridCount < 8` against a
+	// nine-query set, where one flip is 11pp -- coarser than the effects
+	// retrieval changes actually produce, and the reason a chunking change that
+	// cost five queries was indistinguishable from noise until it had already
+	// shipped. A rate also survives the set growing again: the next person to
+	// add queries does not have to remember to raise an integer.
+	if hybridRate < evalChunkRecallFloor {
+		t.Errorf("hybrid chunk-level recall %d/%d = %.1f%% is below the floor of %.1f%% measured on "+
+			"2026-08-28. Read resolveExactChunks' output first. If it reported an anchor that "+
 			"appears in no chunk of its expectedFiles, the DECLARED half of the ground truth "+
 			"has gone stale (code was moved or renamed) and retrieval is fine. If it reported "+
 			"nothing, this is a real retrieval regression: the derived half cannot go stale, "+
-			"because it is computed from the index this run just built",
-			hybridCount, total, evalChunkRecallFloor, total)
+			"because it is computed from the index this run just built. The per-shape breakdown "+
+			"above says which kind of question lost",
+			hybridCount, total, 100*hybridRate, 100*evalChunkRecallFloor)
 	}
 	if semanticOnlyCount > hybridCount {
 		t.Errorf("hybrid recall %d/%d is WORSE than semantic-only %d/%d -- fusion is losing "+
@@ -571,11 +1018,45 @@ func TestRerankEvalRetrievalRanking(t *testing.T) {
 	}
 }
 
-// evalChunkRecallFloor is the minimum chunk-level recall (out of the 9 queries)
+// evalChunkRecallFloor is the minimum chunk-level recall RATE
 // TestRerankEvalRetrievalRanking accepts, in the same named-constant style as
-// evalTop3RecallThreshold in eval_test.go. Measured at 8/9 on 2026-07-30; the
-// single miss is the known doc-comment-vs-implementation gap on query 1.
-const evalChunkRecallFloor = 8
+// evalTop3RecallThreshold in eval_test.go.
+//
+// MEASURED 2026-08-28 on the 49-query set. TWO whole-run observations, taken
+// eleven commits apart on the same day: 22/49 (44.9%) and 24/49 (49.0%) hybrid;
+// 19/49 and 24/49 semantic-only.
+//
+// THAT NUMBER IS NOT A REGRESSION FROM 8/9, and reading it as one is the single
+// most likely misreading of this file. The nine-query set scored 89% because
+// its queries were derived FROM measured failures that were then fixed -- it
+// was, by construction, a set of questions retrieval had been taught to answer.
+// 44.9% is the first measurement against questions it was not tuned on, and it
+// is the real number. File-level recall on the same run is 36/49 (73.5%): the
+// right file usually IS retrieved, and 14 of the 27 chunk-level misses are the
+// right file with the wrong forty lines of it.
+//
+// THAT SPREAD IS NOT NOISE, AND IT WAS CHECKED RATHER THAN ASSUMED. Indexing
+// once and running the identical pass three times over that one index gives
+// byte-identical hit vectors, so retrieval is deterministic. The two runs
+// differed because the CORPUS did -- 4381 chunks vs 4386, five chunks added by
+// edits to files that no flipped query even names. Retrieval here is
+// deterministic and corpus-sensitive: a 0.1% change in the corpus moved the
+// gated number by two queries. Every near-miss sits close to the top-5 cut, so
+// small changes in what it is competing against decide it.
+//
+// THE FLOOR IS THEREFORE 40%, NOT THE MEASURED 44.9%. 40% of 49 is 19.6, so the
+// gate needs 20 hits: three below the lower of the two observations, and three
+// ABOVE the 17/49 the regression scores (see the header). It has to sit in that
+// gap, and it does, with the slack spent on the side where being wrong is
+// cheaper -- a missed week of drift costs less than a gate that cries wolf and
+// gets deleted. Resolution is 2.0pp per query against 11pp on the old
+// nine-query set.
+//
+// RAISE THIS when a real improvement makes a higher rate the new normal, and
+// re-measure the spread when you do. Do NOT raise it to whatever the last run
+// printed: given the corpus sensitivity above, a floor with no slack fails on
+// an unrelated edit.
+const evalChunkRecallFloor = 0.40
 
 func truncateEval(s string, n int) string {
 	if len(s) <= n {

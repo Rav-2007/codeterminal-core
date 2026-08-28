@@ -30,3 +30,15 @@ coverage.out
 # Prototype landing page directory ignored from core repo tracking
 website/
 
+
+# Captured `go test` output. Three of these (test.log, test_output.txt,
+# daemon/test_out.txt) had been COMMITTED and were therefore inside the corpus
+# the retrieval eval indexes -- and test_output.txt was a transcript of a
+# TestRerankEvalRetrievalRanking run, so it held every eval query verbatim
+# alongside the chunk IDs of the correct answers. That is the exact oracle leak
+# evalSelfReferenceFiles exists to prevent, reintroduced by accident.
+# TestNoIndexedFileEchoesAnEvalQuery now fails if it happens again.
+test.log
+test_out.txt
+test_output.txt
+*.testlog

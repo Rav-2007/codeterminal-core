@@ -180,7 +180,10 @@ const rrfK = 60.0
 // "matched" in prose that reads as a near-paraphrase of the query — rank
 // respectably on BOTH tiers simultaneously and, under summed RRF, edge out
 // the real answer even after class-weighting. Switching to max fixed this
-// (and the other motivating query, "what files does SearchRequest touch")
+// (and the other motivating query, the cross-file SearchRequest one --
+// deliberately not quoted verbatim: this file is inside the corpus that eval
+// indexes, and a verbatim copy of a query is a perfect lexical match for
+// itself; see TestNoIndexedFileEchoesAnEvalQuery)
 // across every point in the rrfK/pool-size grid, with no regressions on the
 // 7 already-passing queries; summed RRF only fixed a minority of grid points
 // and regressed one existing query at the current default pool size. Max

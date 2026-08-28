@@ -1,0 +1,114 @@
+name: retrieval eval
+
+# WHY THIS IS A SEPARATE WORKFLOW FILE, not a job in build.yml.
+#
+# The requirement was "run the real retrieval eval on a PR, but only when the
+# PR touches retrieval." GitHub Actions has no job-level `paths:` filter -- path
+# filtering lives on the workflow TRIGGER -- so a job inside build.yml cannot be
+# path-scoped without either a third-party action or a hand-rolled `git diff`
+# step whose failure mode is silently running nothing. A second workflow file
+# with its own trigger is the mechanism the platform actually provides.
+#
+# WHY IT EXISTS AT ALL. On 2026-08-27 a chunking change took real-repo
+# chunk-level recall from 8/9 to 4/9 and shipped, because `make check` was green
+# and the eval that could see it was schedule-only -- so the first report was
+# six days away and the regression was already on main. The scheduled run in
+# build.yml is kept for drift; this one exists so the person who changed
+# retrieval is the person who learns it broke.
+#
+# COST. Roughly one ubuntu runner for 15-20 minutes, and only when the paths
+# below change -- perhaps a handful of runs a month, against the ~60 billable
+# minutes a single build.yml matrix run already costs. The model download is not
+# cached deliberately: a cache key that goes stale against a model change would
+# fail by quietly measuring the wrong embedder, which is precisely the class of
+# silent-wrong-answer this whole workflow is being added to prevent.
+
+on:
+  pull_request:
+    branches: [main]
+    paths: &retrieval_paths
+      # The retrieval path proper: anything that changes what gets indexed, how
+      # it is embedded, how it is searched, or how results are ranked and cut.
+      - "daemon/chunker.go"
+      - "daemon/chunkmerge.go"
+      - "daemon/chunkscrub.go"
+      - "daemon/rerank.go"
+      - "daemon/embedder.go"
+      - "daemon/bge_embedder.go"
+      - "daemon/embedderstamp.go"
+      - "daemon/context.go"
+      - "daemon/retrieval_setup.go"
+      - "daemon/vectorstore.go"
+      - "daemon/lexicalstore.go"
+      - "daemon/search.go"
+      - "daemon/fileclass.go"
+      - "daemon/index_cmd.go"
+      # The embedding helper is a separate process and a separate module; a
+      # change to the tokenizer or the sequence cap changes every vector.
+      - "helper/**"
+      # The evals themselves and their fixtures. A change to the answer key is
+      # exactly when you want the answer key re-run.
+      - "daemon/eval_test.go"
+      - "daemon/rerank_eval_test.go"
+      - "testdata/evalset/**"
+      - "testdata/queries.json"
+      # And this file.
+      - ".github/workflows/retrieval-eval.yml"
+  # Same filter on push, so a branch gets the signal before the PR exists --
+  # build.yml's comment records why waiting for a PR inverts the order you want.
+  push:
+    branches: ["**"]
+    paths: *retrieval_paths
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: "1.25.x"
+
+jobs:
+  locate-eval:
+    name: locate eval (retrieval paths changed)
+    runs-on: ubuntu-latest
+    # Generous, and explicit. build.yml's eval job died twice on `go test`'s
+    # DEFAULT 10-minute timeout with the panic sitting underneath a separate
+    # real failure -- a job red for two reasons teaches you about one of them.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: "**/go.sum"
+
+      # Sub-second, no model, no network. Run it FIRST and separately: if a
+      # committed file contains an eval query verbatim then the corpus holds the
+      # answer key, every number below is inflated, and knowing that before
+      # spending fifteen minutes on those numbers is worth its own step.
+      - name: Corpus contains no copy of the answer key
+        run: go test -tags eval -count=1 -run 'TestNoIndexedFileEchoesAnEvalQuery' -v ./
+        working-directory: daemon
+
+      # Scoped to the two retrieval-QUALITY evals.
+      #
+      # TestEvalRetrievalQuality (8 files, 22 chunks) is kept for the fast
+      # offline signal it does give, but it is NOT the authority and must not be
+      # read as one: at k=5 the model already sees ~23% of that corpus, and it
+      # reported 14/15 throughout the 8/9 -> 4/9 regression. It is here to catch
+      # a total break, not a ranking change.
+      #
+      # TestRerankEvalRetrievalRanking is the real gate: 49 queries against this
+      # whole repository, labelled by question shape, scored as a rate.
+      #
+      # TestTokenEfficiencyEval is deliberately left to the Monday schedule in
+      # build.yml -- it costs ~3.5 minutes and measures budget packing, not
+      # ranking, so it is not what a retrieval-path PR is asking about.
+      #
+      # TestEditShapedRetrievalEval is excluded for the reason build.yml's eval
+      # job documents at length: its harness cannot build three of its four
+      # fixtures. See daemon/edit_eval_test.go's header.
+      - name: Locate eval (real BGE model, whole-repo corpus)
+        run: go test -tags eval -count=1 -timeout 40m -v -run 'TestEvalRetrievalQuality|TestRerankEvalRetrievalRanking' ./
+        working-directory: daemon

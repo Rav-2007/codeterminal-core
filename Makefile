@@ -8,7 +8,7 @@
 
 MODULES := daemon editapply proxy helper protocol clients/tui
 
-.PHONY: help hooks test race fmt vet crossvet lint ratchet errcheck fuzz check docs drill soak
+.PHONY: help hooks test race fmt vet crossvet lint ratchet errcheck fuzz check docs drill soak eval evalguard
 
 help:
 	@echo "make hooks    install the tracked git hooks (.githooks/) -- do this once"
@@ -20,6 +20,7 @@ help:
 	@echo "make ratchet  per-package coverage floors"
 	@echo "make errcheck per-module unchecked-error ceilings (a ratchet, not a gate)"
 	@echo "make fuzz     30s per fuzz target (FUZZTIME=5m to search harder)"
+	@echo "make eval     real-model retrieval eval (~15min, downloads a model) -- NOT in check"
 	@echo "make drill    mid-stream SIGTERM drill against the real proxy binary"
 	@echo "make soak     30-minute sustained-load run (DURATION=180 for a quick check)"
 
@@ -101,16 +102,39 @@ errcheck:
 fuzz:
 	@./scripts/fuzz.sh
 
+# The real-model retrieval eval. NOT part of `check`, and that is deliberate:
+# it downloads an embedding model and indexes the whole repository, so folding
+# it into the fast gate would make the fast gate slow enough that people route
+# around it. CI runs it on every PR that touches the retrieval path (see
+# .github/workflows/retrieval-eval.yml) and weekly regardless.
+#
+# This target exists so the command is the SAME one locally. On 2026-08-27 a
+# chunking change halved real-repo recall and shipped anyway, because `check`
+# was green and running the real eval meant remembering a long `go test -tags`
+# incantation. One `make eval` is the difference.
+eval:
+	@(cd daemon && go test -tags eval -count=1 -timeout 40m -v -run 'TestEvalRetrievalQuality|TestRerankEvalRetrievalRanking|TestTokenEfficiencyEval' ./...)
+
 drill:
 	@./scripts/sigterm-drill.sh
 
 soak:
 	@./scripts/soak.sh
 
+# The one part of the eval suite that belongs in the fast gate: it needs no
+# model and no network, scans the repo once, and takes under a second. It fails
+# if a committed file contains a retrieval-eval query verbatim -- which is how
+# a captured `go test` transcript sat in the indexed corpus from 2026-08-11 to
+# 2026-08-28, handing the eval its own answer key. That is a corpus problem, it
+# is introduced by committing a file, and `check` is the moment to catch it.
+evalguard:
+	@(cd daemon && go test -tags eval -count=1 -run 'TestNoIndexedFileEchoesAnEvalQuery' ./ >/dev/null) || exit 1
+	@echo "evalguard: no committed file echoes a retrieval-eval query"
+
 # docs is last and costs ~1s. It is in `check` rather than in a docs-only job
 # because a rename breaks links in the same commit that makes it, and that is
 # the only moment anyone can fix it cheaply.
-check: fmt vet crossvet race lint ratchet errcheck docs
+check: fmt vet crossvet race lint ratchet errcheck evalguard docs
 	@echo "check: all gates green"
 
 docs:

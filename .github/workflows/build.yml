@@ -521,12 +521,20 @@ jobs:
       # always red is a job nobody reads -- the exact failure this pipeline
       # exists to fix.
       #
-      # Do NOT "fix" this by checking out the fix commit's parent: restoring
-      # just the pre-fix source files was probed and does not compile against
-      # today's tree, and restoring the whole parent tree measures retrieval
-      # over 200-commit-old code. Reconstructing a historical bug state in a
-      # moving tree expires by design; the eval needs rebuilding around current
-      # queries with labelled ground truth. Remove the -run filter then.
+      # UPDATE 2026-08-28. The harness WAS fixed -- it now checks out
+      # fixCommit~1 and restores the fixed file on top, so all four cases
+      # materialise instead of three aborting on a conflict, and grading derives
+      # its ground truth from the fix diff instead of hand-written chunk IDs.
+      # The exclusion stands anyway, and the objection this comment used to
+      # state as a prohibition is the reason why: a 200-commit-old parent tree
+      # is not the corpus the product retrieves over, so the number describes a
+      # repository that no longer exists. It is a historical benchmark now, and
+      # daemon/edit_eval_test.go's header says so at the top.
+      #
+      # The question it existed to ask -- can retrieval find the code a fix must
+      # touch -- is asked against CURRENT code by the expanded locate eval, and
+      # that one does gate: .github/workflows/retrieval-eval.yml runs it on
+      # every PR that touches the retrieval path.
       - name: Run gated eval suite (green subset -- see comment)
         run: go test -tags eval -timeout 30m -run 'TestEvalRetrievalQuality|TestRerankEvalRetrievalRanking|TestTokenEfficiencyEval' ./...
         working-directory: daemon
