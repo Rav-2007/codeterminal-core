@@ -190,6 +190,20 @@ func parseUsage(stream []byte) (prompt, completion int) {
 	return prompt, completion
 }
 
+// snapshot reads the counters.
+//
+// KNOWN RACE, found 2026-08-29 by TestContextDilutionEarnsItsTokens: handle()
+// does its accounting only after the upstream body is fully drained, in the
+// httptest server's goroutine, while the caller's streamCompletion returns as
+// soon as IT has finished reading. A snapshot taken immediately after the call
+// can therefore miss that call's tokens entirely -- in the dilution harness the
+// FIRST arm of each pair read 0 every time while the second read a full count,
+// which is this race, not a provider that declined to send usage.
+//
+// Left as-is here rather than fixed blind: the arms in THIS file each run many
+// model calls, so the effect is proportionally smaller and the recorded totals
+// may still be usable. It is flagged so the next person reading a cost table
+// knows the number can undercount, and does not spend a day re-deriving it.
 func (r *costRecorder) snapshot() (calls, prompt, completion int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
