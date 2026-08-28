@@ -79,7 +79,7 @@ env:
 jobs:
   locate-eval:
     name: locate eval (retrieval paths changed)
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
     # Generous, and explicit. build.yml's eval job died twice on `go test`'s
     # DEFAULT 10-minute timeout with the panic sitting underneath a separate
     # real failure -- a job red for two reasons teaches you about one of them.

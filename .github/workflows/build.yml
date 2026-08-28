@@ -68,6 +68,29 @@ concurrency:
 env:
   GO_VERSION: "1.25.x"
 
+# WHERE THE LINUX JOBS RUN, and why it is a variable rather than a literal.
+#
+# Actions bills a private repo 2,000 minutes a month and one full run of this
+# workflow costs 86 of them (see the `cross` matrix comment for the breakdown),
+# so the quota buys roughly 23 pushes. Self-hosted runners are billed NOTHING and
+# have no cap, which is the only lever here that removes the ceiling rather than
+# raising it.
+#
+# `vars.LINUX_RUNNER` is a repository variable, and UNSET means ubuntu-latest --
+# i.e. the default behaviour is exactly what it was before this existed. Set it
+# to `self-hosted` to move the Linux jobs onto a registered runner; unset it to
+# come straight back. That matters more than saving an edit: a self-hosted job
+# whose runner is offline QUEUES rather than fails, so the escape hatch has to be
+# one click and not a commit.
+#
+# NOT every Linux job. `extension` needs xvfb-run and `proxy-image` needs docker,
+# and both would need root to install; they stay on hosted runners where those
+# are guaranteed. The 19 jobs that do move (go, lint, govulncheck x6 modules each,
+# plus fuzz) need only Go, which setup-go installs into the runner's own cache.
+#
+# SAFE HERE BECAUSE THE REPO IS PRIVATE. A self-hosted runner on a PUBLIC repo is
+# a documented remote-code-execution hole -- anyone's fork PR runs on your
+# hardware. Do not set this variable if this repo is ever made public.
 jobs:
   go:
     # 584 Go tests, gofmt, and vet existed in this repo and gated nothing: the
@@ -92,7 +115,7 @@ jobs:
     if: >-
       github.event_name != 'pull_request' ||
       github.event.pull_request.head.repo.full_name != github.repository
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
       matrix:
@@ -122,8 +145,16 @@ jobs:
       - name: Install bubblewrap
         if: matrix.module == 'daemon'
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq bubblewrap
+          # Only reach for apt when bwrap is genuinely missing. A self-hosted
+          # runner (see LINUX_RUNNER above) has no passwordless sudo, so an
+          # unconditional apt-get fails the job on a machine that already has
+          # the binary. Hosted runners take the install path exactly as before.
+          if command -v bwrap >/dev/null 2>&1; then
+            echo "bwrap already present, skipping apt"
+          else
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq bubblewrap
+          fi
           bwrap --version
 
           # GitHub's ubuntu-latest carries the same Ubuntu 24.04+ default a
@@ -137,8 +168,12 @@ jobs:
           # the second environment in a row where the sandbox is never
           # exercised -- and a sandbox nobody executes is how --nosuid survived
           # two green campaigns.
+          # `|| true` and the -n: on a self-hosted runner sudo would block for a
+          # password forever rather than fail, and the probe below is what
+          # actually decides whether the sandbox tests can run. Relaxing this is
+          # a nicety on a throwaway VM and must never hang a real machine.
           if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
-            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+            sudo -n sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           fi
 
           # Probe AFTER relaxing, because apt succeeding only proves presence.
@@ -212,7 +247,7 @@ jobs:
     if: >-
       github.event_name != 'pull_request' ||
       github.event.pull_request.head.repo.full_name != github.repository
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
       matrix:
@@ -264,7 +299,7 @@ jobs:
     if: >-
       github.event_name != 'pull_request' ||
       github.event.pull_request.head.repo.full_name != github.repository
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -391,7 +426,7 @@ jobs:
     if: >-
       github.event_name != 'pull_request' ||
       github.event.pull_request.head.repo.full_name != github.repository
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
       matrix:
@@ -479,7 +514,7 @@ jobs:
     # fired, TestTokenEfficiencyEval had been running 3m25s of legitimate work.
     name: retrieval eval (scheduled)
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
