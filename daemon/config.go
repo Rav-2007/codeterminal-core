@@ -144,10 +144,36 @@ type RetrievalConfig struct {
 }
 
 // defaultContextBudgetChars caps injected retrieval context at roughly
-// 2000-2600 tokens (code averages ~3-4 chars/token), a small, conservative
-// slice of any modern model's context window — plenty of headroom under the
-// system prompt, conversation, and generation budget.
-const defaultContextBudgetChars = 8000
+// 4000-5300 tokens (code averages ~3-4 chars/token), still a modest slice of
+// any modern model's context window — with headroom under the system prompt,
+// conversation, and generation budget.
+//
+// 16000 SINCE 2026-08-28, MEASURED, AND IT WAS THE BINDING CONSTRAINT ALL
+// ALONG. At 8000 with k=5 this budget was truncating 27 of 49 eval queries --
+// 55% of them -- and costing a query outright: 23/49 delivered against 24/49
+// retrieved. The budget, not the ranker, was the thing standing between the
+// model and answers retrieval had already found.
+//
+// 16000 IS THE SATURATION POINT, not a taste call. Measured at k=10 through the
+// full production path, recall stops moving there and 16000 still caps 21 of 49
+// query sets:
+//
+//	budget=8000    24/49 (49.0%)   ~6,890 chars
+//	budget=12000   27/49 (55.1%)  ~10,925 chars
+//	budget=16000   30/49 (61.2%)  ~14,740 chars
+//	unbudgeted     30/49 (61.2%)  ~15,900 chars
+//
+// So this buys every point of recall that is available to buy, at 93% of the
+// cost of removing the cap, and remains a real cap rather than a formality.
+// Against the shipped 8000/k=5 configuration that is 46.9% -> 61.2%, +14.3pp,
+// for roughly 2.1x the injected context (~2,000 -> ~4,200 tokens per prompt).
+//
+// The cost is real and is not only money: more injected context is more prefill
+// latency, and a longer context is not automatically a better one. What has NOT
+// been measured is whether the extra spans help or distract the MODEL --
+// TestRerankEvalRetrievalRanking measures what reaches the prompt, not what the
+// model does with it. An agentic eval is where that would be settled.
+const defaultContextBudgetChars = 16000
 
 // resolvedTopK returns the configured TopK, falling back to defaultK.
 func (c RetrievalConfig) resolvedTopK() int {

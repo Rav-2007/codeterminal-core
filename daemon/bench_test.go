@@ -16,11 +16,16 @@ import (
 // keyword detectors -- so the 14 ms figure does not describe today's code and
 // nothing in the tree could price the difference. These are the instrument.
 //
-// They are sized to a REAL turn, not to a round number: chunkLines is 40,
-// defaultK is 5, and defaultContextBudgetChars is 8000, so benchTurnChunks
+// They are sized to a REAL turn, not to a round number: chunkLines is 40 and
+// benchTurnChunks is built from defaultK / defaultContextBudgetChars, so it
 // models what actually gets folded into one prompt. A benchmark over a 1 MB
 // synthetic blob would produce a bigger, more impressive, and entirely
 // meaningless number.
+//
+// Those two constants are read, not written out, deliberately: they moved on
+// 2026-08-28 (5 -> 10 chunks, 8000 -> 16000 chars), which roughly doubles the
+// per-turn scrubbing work these benchmarks price. A comment quoting the old
+// values would have gone quietly wrong.
 
 // benchChunkBody is one realistic 40-line source chunk. It deliberately
 // contains the token shapes the fire-rate report found dominating real

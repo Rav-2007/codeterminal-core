@@ -515,7 +515,9 @@ func coversRef(hits []Chunk, r resolvedRef) bool {
 // context.go:102). Returns one result per case, in editEvalCases order.
 func runEditEvalPass(ctx context.Context, t *testing.T, repoRoot string, embedder Embedder, logger *log.Logger) []editEvalResult {
 	t.Helper()
-	const displayK = 5
+	// Bound to production rather than written as 5; see the same note in
+	// rerank_eval_test.go's runEvalPass.
+	displayK := defaultK
 
 	results := make([]editEvalResult, len(editEvalCases))
 	for i, c := range editEvalCases {

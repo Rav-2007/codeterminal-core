@@ -350,6 +350,44 @@ OpenRouter. What follows is the cost half.
     are the North Star item 3 direction (chunking / query expansion / a stronger embedder), not
     pool width.
 
+- **k=5 -> 10 and the context budget 8000 -> 16000 chars, measured. The BUDGET was the binding
+  constraint, not the ranker.** Decided 2026-08-28 off the expanded eval above, which is what made
+  it visible. Measured through the full production path (retrieve -> merge -> budget):
+
+  | config | delivered to the prompt | mean chars | truncated |
+  |---|---|---|---|
+  | k=5, budget=8000 (shipped until now) | 23/49 = 46.9% | ~6,990 | **27/49** |
+  | k=10, budget=8000 | 24/49 = 49.0% | ~6,890 | 49/49 |
+  | k=10, budget=12000 | 27/49 = 55.1% | ~10,925 | 49/49 |
+  | **k=10, budget=16000 (now)** | **30/49 = 61.2%** | ~14,740 | 21/49 |
+  | k=10, unbudgeted | 30/49 = 61.2% | ~15,900 | 0/49 |
+
+  Three things worth keeping:
+  - **The old 8000-char budget was truncating 55% of query sets** and costing a query outright
+    (23 delivered vs 24 retrieved). Retrieval was finding answers the budget then threw away.
+  - **Raising k alone is nearly a no-op** — at the old budget k=10 delivers FEWER spans than k=5
+    (3.2 vs 3.7), because merging folds the window overlap and the survivors are individually
+    bigger. The two constants are one decision, not two.
+  - **16000 is the saturation point, not a taste call**: recall stops moving there, and it still
+    caps 21/49 so it remains a real budget. Net +14.3pp delivered for ~2.1x injected context
+    (~2,000 -> ~4,200 tokens/prompt).
+
+  Re-measured after the change: DELIVERED **28/49 (57.1%)**, retrieved 30/49, file-level 43/49
+  (87.8%), impl-shape 8/24 -> 11/24. The 28-vs-30 gap is the ±2 corpus band already recorded
+  below, not a discrepancy.
+
+  **NOT measured, and it is the honest limit of this:** whether the extra spans help or distract
+  the MODEL. This eval measures what reaches the prompt, not what is done with it. An agentic eval
+  is where that gets settled.
+
+- **Query 1's "known gap" was a truncation, not the semantic failure it was documented as.**
+  `"where does the daemon open the unix socket"` had been recorded for months as a
+  doc-comment-vs-implementation problem needing chunk-level content classification, "out of
+  scope". At k=10 it hits: the answer chunk comes back at **rank 7**, and the top five are all
+  real transport code with no doc comment among them. Deliberately NOT promoted to `mustHit` on
+  one run — the same one-run inference was made about this query during the 2026-08-27
+  embed-window work and did not reproduce.
+
 - **Corpus hygiene — the eval had been scoring against its own answer key, and nobody knew.**
   Found 2026-08-28 while expanding the set above. Three captured `go test` output files were
   **committed** (`test.log`, `test_output.txt`, `daemon/test_out.txt`), and `test_output.txt`

@@ -19,8 +19,29 @@ const indexDirName = ".codeterminal/index"
 // never committed.
 const gitignoreEntry = ".codeterminal/"
 
-// defaultK is how many chunks "retrieve" returns when --k isn't given.
-const defaultK = 5
+// defaultK is how many chunks "retrieve" returns when --k isn't given, and --
+// via RetrievalConfig.resolvedTopK -- how many the daemon injects per prompt.
+//
+// 10 SINCE 2026-08-28, MEASURED. It was 5, and 5 was throwing away answers
+// retrieval had already found: on the 49-query locate eval, recall@5 is 49.0%
+// and recall@10 is 63.3%, so five queries in every forty-nine were located and
+// then discarded at the cut.
+//
+// RAISING THIS ALONE DOES ALMOST NOTHING, which is the trap and the reason this
+// comment is long. The chunks are budgeted after they are retrieved
+// (truncateToBudget, context.go), and at the old 8000-char budget k=10 measured
+// 24/49 while DELIVERING FEWER SPANS than k=5 did -- 3.2 against 3.7 -- because
+// merging folds the window overlap and the surviving spans are individually
+// bigger. k and defaultContextBudgetChars are one decision, not two. Measured
+// through the full production path (retrieve -> merge -> budget):
+//
+//	k=5,  budget=8000    23/49 (46.9%)   ~6,990 chars   truncated on 27/49
+//	k=10, budget=8000    24/49 (49.0%)   ~6,890 chars   truncated on 49/49
+//	k=10, budget=12000   27/49 (55.1%)  ~10,925 chars   truncated on 49/49
+//	k=10, budget=16000   30/49 (61.2%)  ~14,740 chars   truncated on 21/49
+//
+// See defaultContextBudgetChars for why the budget moved to 16000.
+const defaultK = 10
 
 // indexEmbedBatchSize caps how many chunks go into a single Embed() RPC call
 // to the embedder helper. The full CodeTerminal repo is ~334 chunks;

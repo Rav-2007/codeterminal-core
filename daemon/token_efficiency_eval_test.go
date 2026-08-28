@@ -218,7 +218,7 @@ func TestTokenEfficiencyEval(t *testing.T) {
 	t.Logf("indexed repo root %s: scanned=%d chunks=%d (self-referential chunks excluded)", repoRoot, scan.FilesScanned, len(scan.Chunks))
 
 	// Real production defaults -- not tuned for this benchmark.
-	const topK = defaultK                    // 5
+	const topK = defaultK                    // 10 since 2026-08-28
 	const budget = defaultContextBudgetChars // 8000 chars
 
 	var results []tokenEffResult

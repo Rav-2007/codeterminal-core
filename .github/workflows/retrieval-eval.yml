@@ -42,7 +42,15 @@ on:
       - "daemon/lexicalstore.go"
       - "daemon/search.go"
       - "daemon/fileclass.go"
+      # defaultK lives here.
       - "daemon/index_cmd.go"
+      # defaultContextBudgetChars lives here. config.go changes for plenty of
+      # unrelated reasons and this will fire the job more often than it needs
+      # to -- kept anyway, because on 2026-08-28 that one constant turned out to
+      # be the single biggest lever on what the model actually receives (the
+      # 8000-char budget was truncating 55% of eval query sets), and this job is
+      # the only thing in the repo that can price a change to it.
+      - "daemon/config.go"
       # The embedding helper is a separate process and a separate module; a
       # change to the tokenizer or the sequence cap changes every vector.
       - "helper/**"

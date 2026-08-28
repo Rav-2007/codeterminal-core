@@ -41,12 +41,33 @@
 //
 // ── WHAT THE NUMBER MEANS ──────────────────────────────────────────────────
 //
-// 49.0% chunk-level is the real recall of this retrieval stack on questions it
-// was not tuned against; the old 89% was the score of a set built out of
-// failures that had already been fixed. File-level recall on the same run is
-// 39/49 (79.6%), and 15 of the 25 chunk-level misses are the RIGHT FILE with
-// the wrong forty lines of it. Most of the remaining failure mass is
-// granularity, not ranking.
+// The GATED number is DELIVERED: what survives retrieval, merging, and the
+// character budget, because only that reaches the model. MEASURED 2026-08-28 at
+// k=10 / 16000 chars: 28/49 (57.1%) delivered, 30/49 (61.2%) retrieved,
+// 43/49 (87.8%) file-level. Of the misses, 13 are the RIGHT FILE with the wrong
+// forty lines of it and 6 are the right file never retrieved at all -- so most
+// of the remaining failure mass is granularity, not ranking.
+//
+// Do not compare any of this to the old 8/9 = 89%. That set was built out of
+// failures that had already been fixed; it was measuring questions retrieval
+// had been taught to answer.
+//
+// ── THE BUDGET WAS THE BINDING CONSTRAINT, NOT THE RANKER ──────────────────
+//
+// Measured 2026-08-28 through the full production path, which is what prompted
+// k=5 -> 10 and 8000 -> 16000 chars:
+//
+//	k=5,  budget=8000 (shipped until now)   23/49 (46.9%)  truncated on 27/49
+//	k=10, budget=8000                       24/49 (49.0%)  truncated on 49/49
+//	k=10, budget=12000                      27/49 (55.1%)  truncated on 49/49
+//	k=10, budget=16000 (now)                30/49 (61.2%)  truncated on 21/49
+//
+// Raising k alone is nearly a no-op and briefly delivers FEWER spans (3.2 vs
+// 3.7), because merging folds the window overlap and the survivors are bigger.
+// The two constants are one decision. This eval reads both from production
+// (defaultK, defaultContextBudgetChars) rather than hardcoding them, so it
+// cannot drift away from the shipped configuration the way it did when
+// displayK was written as a literal 5.
 //
 // CHUNK-LEVEL, not file-level: exactChunks below names the specific
 // chunk(s) (file:startLine-endLine) that actually contain the relevant
@@ -722,12 +743,18 @@ func hitsExactChunk(hits []Chunk, n int, exactChunks []string) bool {
 // production default — not an arbitrary top-3 subset of a wider fetch,
 // since what matters is whether the chunk actually gets injected into the
 // prompt).
-func runEvalPass(ctx context.Context, t *testing.T, embedder Embedder, store VectorStore, lexicalStore LexicalStore, exact [][]string, label string) (chunkHits, fileHits []bool) {
+func runEvalPass(ctx context.Context, t *testing.T, embedder Embedder, store VectorStore, lexicalStore LexicalStore, exact [][]string, label string) (chunkHits, fileHits, deliveredHits []bool) {
 	t.Helper()
-	const displayK = 5
+	// BOUND TO PRODUCTION, not written as 5. It was `const displayK = 5`, and on
+	// 2026-08-28 production moved to 10 -- at which point a hardcoded 5 would
+	// have left this eval reporting a number for a configuration that no longer
+	// ships, green, forever. That is the same fault as every other one this file
+	// documents: the instrument quietly stopping measuring the product.
+	displayK := defaultK
 
 	chunkHits = make([]bool, len(rerankEvalQueries))
 	fileHits = make([]bool, len(rerankEvalQueries))
+	deliveredHits = make([]bool, len(rerankEvalQueries))
 	fmt.Println()
 	fmt.Printf("=== Retrieval ranking eval: %s ===\n", label)
 	for i, q := range rerankEvalQueries {
@@ -758,16 +785,37 @@ func runEvalPass(ctx context.Context, t *testing.T, embedder Embedder, store Vec
 			t.Errorf("query %q: hit before merging and MISSES after -- Fix 11 regressed question-shaped recall", q.query)
 		}
 
+		// DELIVERED: the whole production tail, not just retrieval. buildContext
+		// (context.go) does retrieve -> fuseDirectSpans -> truncateToBudget, and
+		// only what survives all three is in the prompt the model reads.
+		//
+		// This exists because until 2026-08-28 this eval stopped at retrieval and
+		// was therefore blind to the budget -- and the budget turned out to be
+		// the binding constraint. At the shipped 8000 chars it was truncating 27
+		// of these 49 queries and costing one outright, and no assertion in this
+		// file could see any of it. Someone could have halved the budget and left
+		// this eval green.
+		//
+		// Direct spans are nil: those come from file:line references in the
+		// prompt, and these queries are natural-language questions with none.
+		// That is the harder path, not a shortcut -- direct spans would only add
+		// context.
+		delivered, _ := truncateToBudget(
+			fuseDirectSpans(nil, hits, displayK, false).Chunks,
+			defaultContextBudgetChars, false)
+		deliveredHit := rankOfChunk(delivered, exact[i]) != 0
+		deliveredHits[i] = deliveredHit
+
 		mark := "MISS"
 		if exactHit {
 			mark = "hit"
 		}
-		fmt.Printf("\n%d. [%s] query=%q\n   expected files=%v exact chunks=%v\n   chunk-level=%s file-level=%t merged-path=%t\n", i+1, q.shape, q.query, q.expectedFiles, exact[i], mark, fileHit, mergedHit)
+		fmt.Printf("\n%d. [%s] query=%q\n   expected files=%v exact chunks=%v\n   chunk-level=%s file-level=%t merged-path=%t DELIVERED=%t\n", i+1, q.shape, q.query, q.expectedFiles, exact[i], mark, fileHit, mergedHit, deliveredHit)
 		for j, h := range hits {
 			fmt.Printf("   %d. %-40s class=%-6s raw=%.4f weighted=%.4f\n", j+1, chunkID(h), h.Class, h.RawScore, h.Score)
 		}
 	}
-	return chunkHits, fileHits
+	return chunkHits, fileHits, deliveredHits
 }
 
 func TestRerankEvalRetrievalRanking(t *testing.T) {
@@ -838,8 +886,8 @@ func TestRerankEvalRetrievalRanking(t *testing.T) {
 	// resolveExactChunks.
 	exact := resolveExactChunks(t, scan.Chunks)
 
-	semanticOnlyHits, _ := runEvalPass(ctx, t, embedder, store, nil, exact, "SEMANTIC-ONLY (lexicalStore=nil, today's behavior)")
-	hybridHits, hybridFileHits := runEvalPass(ctx, t, embedder, store, lexicalStore, exact, "HYBRID (semantic + lexical, fused via RRF)")
+	semanticOnlyHits, _, _ := runEvalPass(ctx, t, embedder, store, nil, exact, "SEMANTIC-ONLY (lexicalStore=nil, today's behavior)")
+	hybridHits, hybridFileHits, hybridDelivered := runEvalPass(ctx, t, embedder, store, lexicalStore, exact, "HYBRID (semantic + lexical, fused via RRF)")
 
 	fmt.Println()
 	fmt.Println("=== Before/after summary (chunk-level hit = exact symbol-containing chunk reached top-5) ===")
@@ -848,9 +896,14 @@ func TestRerankEvalRetrievalRanking(t *testing.T) {
 	var regressions []string
 	shapeTotal := map[string]int{}
 	shapeHybridHits := map[string]int{}
-	var fileLevelCount, rightFileWrongChunk int
+	var fileLevelCount, rightFileWrongChunk, deliveredCount, retrievedButBudgeted int
 	for i, q := range rerankEvalQueries {
 		shapeTotal[q.shape]++
+		if hybridDelivered[i] {
+			deliveredCount++
+		} else if hybridHits[i] {
+			retrievedButBudgeted++
+		}
 		if hybridFileHits[i] {
 			fileLevelCount++
 			if !hybridHits[i] {
@@ -862,6 +915,8 @@ func TestRerankEvalRetrievalRanking(t *testing.T) {
 		}
 		if hybridHits[i] {
 			hybridCount++
+		}
+		if hybridDelivered[i] {
 			shapeHybridHits[q.shape]++
 		}
 		before := "MISS"
@@ -879,10 +934,12 @@ func TestRerankEvalRetrievalRanking(t *testing.T) {
 		}
 	}
 	total := len(rerankEvalQueries)
-	hybridRate := float64(hybridCount) / float64(total)
+	deliveredRate := float64(deliveredCount) / float64(total)
 	fmt.Println()
 	fmt.Printf("semantic-only chunk-level recall: %d/%d (%.1f%%)\n", semanticOnlyCount, total, 100*float64(semanticOnlyCount)/float64(total))
-	fmt.Printf("hybrid chunk-level recall:        %d/%d (%.1f%%)   <- THE GATED NUMBER\n", hybridCount, total, 100*hybridRate)
+	fmt.Printf("hybrid chunk-level recall:        %d/%d (%.1f%%)  (retrieval only)\n", hybridCount, total, 100*float64(hybridCount)/float64(total))
+	fmt.Printf("DELIVERED to the prompt:          %d/%d (%.1f%%)  <- THE GATED NUMBER\n", deliveredCount, total, 100*deliveredRate)
+	fmt.Printf("  retrieved then BUDGETED OUT:    %d  (k=%d, budget=%d chars)\n", retrievedButBudgeted, defaultK, defaultContextBudgetChars)
 	fmt.Println()
 
 	// The chunk-level number alone cannot tell "retrieval had no idea" apart
@@ -968,9 +1025,17 @@ func TestRerankEvalRetrievalRanking(t *testing.T) {
 	// SearchRequest cross-file.
 	mustHit := []int{5, 7, 8}
 	for _, i := range mustHit {
-		if !hybridHits[i] {
-			t.Errorf("query %d (%q) — one of the two measured live failures this feature exists to fix — is still MISS under hybrid retrieval", i+1, rerankEvalQueries[i].query)
+		if hybridDelivered[i] {
+			continue
 		}
+		// Two different failures wear the same red. Say which.
+		if hybridHits[i] {
+			t.Errorf("query %d (%q) — one of the measured live failures this feature exists to fix — "+
+				"IS retrieved but does not survive the %d-char budget, so the model never sees it",
+				i+1, rerankEvalQueries[i].query, defaultContextBudgetChars)
+			continue
+		}
+		t.Errorf("query %d (%q) — one of the two measured live failures this feature exists to fix — is still MISS under hybrid retrieval", i+1, rerankEvalQueries[i].query)
 	}
 
 	// A floor on overall recall, so a regression that spares the three gated
@@ -982,15 +1047,16 @@ func TestRerankEvalRetrievalRanking(t *testing.T) {
 	// cost five queries was indistinguishable from noise until it had already
 	// shipped. A rate also survives the set growing again: the next person to
 	// add queries does not have to remember to raise an integer.
-	if hybridRate < evalChunkRecallFloor {
-		t.Errorf("hybrid chunk-level recall %d/%d = %.1f%% is below the floor of %.1f%% measured on "+
+	if deliveredRate < evalChunkRecallFloor {
+		t.Errorf("DELIVERED chunk-level recall %d/%d = %.1f%% is below the floor of %.1f%% measured on "+
 			"2026-08-28. Read resolveExactChunks' output first. If it reported an anchor that "+
 			"appears in no chunk of its expectedFiles, the DECLARED half of the ground truth "+
 			"has gone stale (code was moved or renamed) and retrieval is fine. If it reported "+
 			"nothing, this is a real retrieval regression: the derived half cannot go stale, "+
 			"because it is computed from the index this run just built. The per-shape breakdown "+
-			"above says which kind of question lost",
-			hybridCount, total, 100*hybridRate, 100*evalChunkRecallFloor)
+			"above says which kind of question lost. If chunk-level recall held and only "+
+			"DELIVERED fell, the loss is in the budget or the merge, not in the ranker",
+			deliveredCount, total, 100*deliveredRate, 100*evalChunkRecallFloor)
 	}
 	if semanticOnlyCount > hybridCount {
 		t.Errorf("hybrid recall %d/%d is WORSE than semantic-only %d/%d -- fusion is losing "+
@@ -1011,8 +1077,14 @@ func TestRerankEvalRetrievalRanking(t *testing.T) {
 	// which is out of this feature's scope (retrieval MERGE, not
 	// reclassification granularity) — flagged here, deliberately not gated,
 	// so it isn't silently lost.
-	if hybridHits[0] {
-		t.Logf("NOTE: query 1 unexpectedly now hits — the known pre-existing doc-comment-vs-implementation gap may have been incidentally resolved; safe to add index 0 to mustHit above if this is stable")
+	if hybridDelivered[0] {
+		t.Logf("NOTE: query 1 HITS. Measured 2026-08-28 at k=10: its answer chunk " +
+			"(protocol/transport_unix.go:31-70) came back at RANK 7, and the top five were all " +
+			"real transport code with no package doc comment among them -- so on this run the " +
+			"gap was k=5 truncation, not the semantic doc-vs-code confusion described above. " +
+			"NOT added to mustHit on one run: the same one-run inference was made about this " +
+			"query during the 2026-08-27 embed-window work and did not reproduce. Add it after " +
+			"it holds across several runs on different corpus states.")
 	} else {
 		t.Logf("KNOWN GAP (not gated, pre-existing, out of scope): query 1 (%q) still misses — see comment above mustHit for why", rerankEvalQueries[0].query)
 	}
@@ -1022,9 +1094,16 @@ func TestRerankEvalRetrievalRanking(t *testing.T) {
 // TestRerankEvalRetrievalRanking accepts, in the same named-constant style as
 // evalTop3RecallThreshold in eval_test.go.
 //
-// MEASURED 2026-08-28 on the 49-query set. TWO whole-run observations, taken
-// eleven commits apart on the same day: 22/49 (44.9%) and 24/49 (49.0%) hybrid;
-// 19/49 and 24/49 semantic-only.
+// IT GATES THE **DELIVERED** NUMBER -- what survives retrieval AND merging AND
+// the character budget -- not what retrieval returned. Those differ, and the
+// difference is not decorative: at the configuration shipped until 2026-08-28
+// (k=5, 8000 chars) the budget was truncating 27 of these 49 query sets and
+// costing a query outright, and an eval that stopped at retrieval could not see
+// any of it.
+//
+// MEASURED 2026-08-28 at k=10 / 16000 chars: DELIVERED 28/49 (57.1%), against
+// 30/49 (61.2%) retrieved -- 2 found and then budgeted out. The configuration
+// this replaced (k=5 / 8000) delivers 23/49 (46.9%) on the same corpus.
 //
 // THAT NUMBER IS NOT A REGRESSION FROM 8/9, and reading it as one is the single
 // most likely misreading of this file. The nine-query set scored 89% because
@@ -1044,19 +1123,24 @@ func TestRerankEvalRetrievalRanking(t *testing.T) {
 // gated number by two queries. Every near-miss sits close to the top-5 cut, so
 // small changes in what it is competing against decide it.
 //
-// THE FLOOR IS THEREFORE 40%, NOT THE MEASURED 44.9%. 40% of 49 is 19.6, so the
-// gate needs 20 hits: three below the lower of the two observations, and three
-// ABOVE the 17/49 the regression scores (see the header). It has to sit in that
-// gap, and it does, with the slack spent on the side where being wrong is
-// cheaper -- a missed week of drift costs less than a gate that cries wolf and
-// gets deleted. Resolution is 2.0pp per query against 11pp on the old
-// nine-query set.
+// THE FLOOR IS 49%, WHICH IS DELIBERATELY TIGHT, and the window is narrow
+// enough to be worth writing down. It needs 25 of 49. That is:
+//
+//   - three below the measured 28, which is one more than the +/-2 corpus band
+//     above -- so ordinary churn should not trip it, but there is not much room;
+//   - ABOVE the 23/49 (46.9%) that k=5 / 8000 delivers, so reverting either
+//     constant fails this gate rather than quietly halving what the model sees.
+//
+// The second property is why the floor is not looser. Both constants are read
+// from production here (defaultK, defaultContextBudgetChars), so a change to
+// either moves this number, and that is exactly what should be caught.
+// Resolution is 2.0pp per query, against 11pp on the old nine-query set.
 //
 // RAISE THIS when a real improvement makes a higher rate the new normal, and
 // re-measure the spread when you do. Do NOT raise it to whatever the last run
 // printed: given the corpus sensitivity above, a floor with no slack fails on
 // an unrelated edit.
-const evalChunkRecallFloor = 0.40
+const evalChunkRecallFloor = 0.49
 
 func truncateEval(s string, n int) string {
 	if len(s) <= n {
