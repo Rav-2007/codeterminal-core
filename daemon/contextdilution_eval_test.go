@@ -26,6 +26,29 @@
 // A LOSS here, though, transfers completely -- if more context makes the answer
 // worse when context is all there is, more context is not helping.
 //
+// MEASURED 2026-08-29, deepseek-v4-flash, 14 scenarios, blind position-randomised
+// judge. Two runs, and the pair is worth more than either alone:
+//
+//	sample                     names right    bad paths        judged
+//	first n of each shape        13/14 both     0 / 2      7-5-2 to wide
+//	strided across each shape    13/14 both     1 / 1      8-4-2 to wide
+//
+// The first sample was UNREPRESENTATIVE: taking all[:n] selected q1-q18, which is
+// disproportionately the original nine-query set -- the queries both arms already
+// handle. Striding fixed it (q1..q42, including the known-hard ones), and only
+// then does the margin clear the declared materiality bar.
+//
+// WHAT THE PAIR ACTUALLY SAYS. Naming the right file is a DEAD TIE in both runs,
+// 13/14 each, even though the locate eval says WIDE delivers the answer chunk 6
+// more often. So the extra context is not helping the model FIND the right code;
+// it is helping it WRITE a better answer about code both arms had already found.
+// That is a narrower claim than "more context is better" and it is the one the
+// data supports.
+//
+// The 0-vs-2 fabricated paths in the first run did NOT reproduce (1-1). One run
+// of a 14-sample difference was noise, which is exactly why the second run was
+// worth its money.
+//
 //	export CODETERMINAL_API_BASE=https://openrouter.ai/api/v1 CODETERMINAL_API_KEY=...
 //	go test -tags eval -count=1 -timeout 60m -v -run TestContextDilutionEarnsItsTokens ./
 //
