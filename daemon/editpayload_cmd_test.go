@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"codeterminal/editapply"
 )
 
 // runEditsApply drives the real `edits apply <file>` entry point against a
@@ -33,24 +36,78 @@ const unifiedDiffPayload = `diff --git a/a.txt b/a.txt
 +new line
 `
 
-// TestApplyExitsNonZeroOnUnreadableEditPayload is the headline Stage 0
-// regression.
+// TestApplyExitsNonZeroOnUnreadableEditPayload covers what is STILL unreadable
+// now that unified diffs are ingested.
 //
-// ParseEditBlocks returns (nil, nil) for a plain-text answer AND for a
-// response full of unified-diff hunks it cannot read. This command reported
-// both identically -- it printed "no edit blocks found in input" and returned
-// nil, so `edits apply < some.patch` exited 0. Every script and every reader
-// takes exit 0 as success. Nothing was applied and nothing said so.
+// The original silence was this: ParseEditBlocks returns (nil, nil) for a
+// plain-text answer AND for edit-shaped input it cannot read, so the command
+// printed "no edit blocks found in input" and exited 0 either way. Every script
+// and every reader takes exit 0 as success. Ingestion removed the diff from
+// that set; these shapes remain in it, and must still fail loudly.
 func TestApplyExitsNonZeroOnUnreadableEditPayload(t *testing.T) {
-	err := runEditsApply(t, unifiedDiffPayload)
-	if err == nil {
-		t.Fatal("a unified diff was accepted silently with a zero exit status; nothing was applied and the caller was told everything was fine")
+	tests := []struct{ name, input, want string }{
+		{
+			// A diff header with no hunk. Recognised as edit-shaped but never
+			// parsed, deliberately: requiring a hunk header is what keeps a
+			// markdown rule from being read as a patch.
+			name:  "diff header with no hunk",
+			input: "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n",
+			want:  "unified diff",
+		},
+		{
+			name:  "markers that missed the grammar",
+			input: "path: a.txt\n<<<<<<<SEARCH\nold line\n=======\nnew line\n>>>>>>>REPLACE\n",
+			want:  "conflict-style edit markers",
+		},
 	}
-	if !strings.Contains(err.Error(), "unified diff") {
-		t.Errorf("error = %q, want it to name what it saw so the user knows what to re-send", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := runEditsApply(t, tt.input)
+			if err == nil {
+				t.Fatal("accepted silently with a zero exit status; nothing was applied and the caller was told everything was fine")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("error = %q, want it to name what it saw (%q) so the user knows what to re-send", err, tt.want)
+			}
+			if !strings.Contains(err.Error(), "nothing applied") {
+				t.Errorf("error = %q, want it to say plainly that nothing reached disk", err)
+			}
+		})
 	}
-	if !strings.Contains(err.Error(), "nothing applied") {
-		t.Errorf("error = %q, want it to say plainly that nothing reached disk", err)
+}
+
+// TestUnifiedDiffReachesTheConfirmPrompt is the Stage 1 headline at the CLI
+// boundary: a real patch is no longer refused, it is offered.
+func TestUnifiedDiffReachesTheConfirmPrompt(t *testing.T) {
+	if err := runEditsApply(t, unifiedDiffPayload); err != nil {
+		t.Fatalf("a readable patch was rejected: %v", err)
+	}
+}
+
+// TestUnifiedDiffAppliesThroughTheSameGates drives the whole CLI path with a
+// scripted confirmation, so the proof is a changed file rather than an absent
+// error. The blocks come from ParseEditPayload and are handed to the SAME
+// applyEditBlocks a SEARCH/REPLACE response uses -- that shared path is the
+// point of translating rather than adding a second apply route.
+func TestUnifiedDiffAppliesThroughTheSameGates(t *testing.T) {
+	root := realTempDir(t)
+	writeTempFile(t, root, "a.txt", "old line\n")
+
+	payload := editapply.ParseEditPayload(unifiedDiffPayload)
+	if payload.Format != editapply.FormatUnifiedDiff {
+		t.Fatalf("Format = %v, want FormatUnifiedDiff (rejections: %v)", payload.Format, payload.Rejected)
+	}
+
+	var out bytes.Buffer
+	if err := applyEditBlocks(root, payload.Blocks, payload.Rejected, strings.NewReader("y\n"), &out, discardLogger()); err != nil {
+		t.Fatalf("applyEditBlocks: %v", err)
+	}
+
+	if got := readFileString(t, filepath.Join(root, "a.txt")); got != "new line\n" {
+		t.Errorf("file content = %q, want the patch applied byte for byte", got)
+	}
+	if !strings.Contains(out.String(), "1 applied") {
+		t.Errorf("summary = %q, want 1 applied", out.String())
 	}
 }
 
@@ -68,17 +125,6 @@ func TestPlainTextAnswerStillExitsZero(t *testing.T) {
 		if err := runEditsApply(t, answer); err != nil {
 			t.Errorf("plain answer %q was reported as a failure: %v", answer, err)
 		}
-	}
-}
-
-// TestMalformedMarkersDoNotExitZero covers the third silent shape: a model that
-// typed the conflict markers slightly wrong. ParseEditBlocks anchors on the
-// exact trimmed marker line, so "<<<<<<<SEARCH" produces no block AND no
-// rejection -- it vanishes exactly like a diff did.
-func TestMalformedMarkersDoNotExitZero(t *testing.T) {
-	input := "path: a.txt\n<<<<<<<SEARCH\nold line\n=======\nnew line\n>>>>>>>REPLACE\n"
-	if err := runEditsApply(t, input); err == nil {
-		t.Fatal("markers that missed the grammar were accepted silently with a zero exit status")
 	}
 }
 

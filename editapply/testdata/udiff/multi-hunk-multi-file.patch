@@ -1,0 +1,31 @@
+diff --git a/big.txt b/big.txt
+index bab081f..06f0ce8 100644
+--- a/big.txt
++++ b/big.txt
+@@ -2,7 +2,7 @@ line 1
+ line 2
+ line 3
+ line 4
+-line 5
++CHANGED FIVE
+ line 6
+ line 7
+ line 8
+@@ -22,7 +22,7 @@ line 21
+ line 22
+ line 23
+ line 24
+-line 25
++CHANGED TWENTYFIVE
+ line 26
+ line 27
+ line 28
+diff --git a/other.txt b/other.txt
+index 4cb29ea..9ed0bf0 100644
+--- a/other.txt
++++ b/other.txt
+@@ -1,3 +1,3 @@
+ one
+-two
++TWO CHANGED
+ three

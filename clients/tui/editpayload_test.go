@@ -146,16 +146,39 @@ func TestChat_OlderDaemonWithoutProposalsStillReviews(t *testing.T) {
 	}
 }
 
-// TestChat_UnreadableEditPayloadIsReported is the TUI half of the silence fix.
-// A response full of unified-diff hunks parses to zero blocks AND zero
-// rejections, so this client returned to an idle prompt saying nothing at all:
-// the user watched an edit arrive and then watched the client behave as though
-// a question had been answered.
-func TestChat_UnreadableEditPayloadIsReported(t *testing.T) {
+// TestChat_UnifiedDiffAnswerReachesReview is the Stage 1 headline in the TUI: a
+// model that answers with a patch instead of edit blocks is understood, not
+// merely named. Before ingestion this response reached an idle prompt, and
+// before Stage 0 it did so in complete silence.
+func TestChat_UnifiedDiffAnswerReachesReview(t *testing.T) {
 	m := reviewReady(t)
 
 	diff := "Here is the change:\n\ndiff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old line\n+new line\n"
 	updated, _ := m.Update(tokenMsg(diff))
+	m = updated.(chatModel)
+	updated, _ = m.Update(streamDoneMsg{})
+	m = updated.(chatModel)
+
+	if m.state != stateEditReview {
+		t.Fatalf("state = %v, want stateEditReview: a patch is an edit the user should be offered", m.state)
+	}
+	if len(m.reviewBlocks) != 1 || m.reviewBlocks[0].FilePath != "a.txt" {
+		t.Fatalf("reviewBlocks = %+v, want one block for a.txt", m.reviewBlocks)
+	}
+	if m.reviewBlocks[0].Search != "old line" || m.reviewBlocks[0].Replace != "new line" {
+		t.Errorf("block = %+v, want the hunk's minus/plus lines", m.reviewBlocks[0])
+	}
+}
+
+// TestChat_UnreadableEditPayloadIsReported is the TUI half of the silence fix,
+// now covering what is STILL unreadable after ingestion. A diff header with no
+// hunk is recognised as edit-shaped and deliberately never parsed — requiring a
+// hunk header is what stops a markdown rule being read as a patch — so it must
+// reach the user as a notice rather than as an idle prompt.
+func TestChat_UnreadableEditPayloadIsReported(t *testing.T) {
+	m := reviewReady(t)
+
+	updated, _ := m.Update(tokenMsg("Here you go:\n\ndiff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n"))
 	m = updated.(chatModel)
 	updated, _ = m.Update(streamDoneMsg{})
 	m = updated.(chatModel)

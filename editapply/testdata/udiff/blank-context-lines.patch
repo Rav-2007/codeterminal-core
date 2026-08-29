@@ -1,0 +1,11 @@
+diff --git a/blanks.txt b/blanks.txt
+index d979b36..db93486 100644
+--- a/blanks.txt
++++ b/blanks.txt
+@@ -1,5 +1,5 @@
+ head
+ 
+-middle
++MIDDLE
+ 
+ tail

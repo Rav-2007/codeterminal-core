@@ -1068,20 +1068,36 @@ func (s *Server) resetPersistedHistory() {
 // beside a bad one proposed nothing at all. Each refusal is logged with its own
 // line number and reason rather than collapsed into a single "parse error".
 //
-// Named gap: those refusals reach the daemon log and stop there — EditProposals
-// carries proposals only, so the VS Code panel shows the readable blocks and
-// says nothing about the refused ones. Surfacing them to clients is a protocol
-// change (a rejections field on TokenResponse) and is deliberately not made
-// here.
+// Named gap, and it GREW when unified-diff ingestion landed: refusals reach the
+// daemon log and stop there. EditProposals carries proposals only, so a client
+// shows the readable blocks and says nothing about the refused ones. That cost
+// little when a refusal meant a malformed SEARCH/REPLACE block — rare, and the
+// user could see its raw text anyway. A diff refuses PER HUNK, with reasons the
+// user can act on (a delete, a rename, an executable mode, a truncated hunk), so
+// an agent-mode user can now watch four hunks apply and never learn a fifth was
+// refused, or why.
+//
+// Surfacing them needs a rejections field on TokenResponse. Deliberately NOT
+// done here, and deliberately not smuggled through Degraded either: that field
+// means "this daemon is running in a reduced mode", and a hunk this engine
+// cannot express is not a daemon degradation. Borrowing the channel would buy
+// one message at the cost of the word, and Degraded is worth more meaning
+// exactly one thing. The field belongs with the protocol change the incremental
+// streaming work already has to make.
 func (s *Server) parseAndLogEditBlocks(response string) []editapply.EditBlock {
-	blocks, rejected := editapply.ParseEditBlocks(response)
+	payload := editapply.ParseEditPayload(response)
+	blocks, rejected := payload.Blocks, payload.Rejected
+
+	if payload.Format == editapply.FormatUnifiedDiff {
+		s.logger.Printf("response carried a unified diff; read %d hunk(s), %d refused", len(blocks), len(rejected))
+	}
 	for _, bad := range rejected {
 		s.logger.Printf("edit block refused at line %d: %v", bad.Line, bad.Reason)
 	}
 	if len(blocks) == 0 {
 		if len(rejected) > 0 {
 			s.logger.Printf("parsed 0 usable edit block(s), %d refused", len(rejected))
-		} else if hint, ok := editapply.LooksLikeEditPayload(response); ok {
+		} else if hint := payload.Hint; payload.Format == editapply.FormatUnrecognised {
 			// Zero blocks AND zero rejections is the parser saying "this is a
 			// plain-text answer". For a response full of unified-diff hunks
 			// that is wrong, and the wrongness was invisible: nothing was

@@ -1300,19 +1300,23 @@ func (m chatModel) checkForEditBlocks() (tea.Model, tea.Cmd) {
 		if text == "" {
 			return m, m.input.Focus()
 		}
-		blocks, rejected = editapply.ParseEditBlocks(text)
+		// ParseEditPayload rather than ParseEditBlocks, so a model that
+		// answers with a unified diff is UNDERSTOOD here and not merely named:
+		// its hunks become ordinary blocks and go to the same review panel.
+		payload := editapply.ParseEditPayload(text)
+		blocks, rejected = payload.Blocks, payload.Rejected
 
-		// Nothing readable, but something edit-shaped in the text: say so
-		// rather than returning to an idle prompt in silence. A response full
-		// of unified-diff hunks parses to zero blocks AND zero rejections, so
-		// without this the user watched an edit arrive and then watched the
-		// client act as though the model had answered a question.
+		// Edit-shaped and unreadable: say so rather than returning to an idle
+		// prompt in silence. Without this the user watched an edit arrive and
+		// then watched the client behave as though a question had been
+		// answered.
+		if payload.Format == editapply.FormatUnrecognised {
+			m.turns = append(m.turns, turn{role: roleSystem,
+				text: fmt.Sprintf("(no edits offered — line %d of the answer %s)", payload.Hint.Line, payload.Hint.Advice)})
+			m.refreshViewport()
+			return m, m.input.Focus()
+		}
 		if len(blocks) == 0 && len(rejected) == 0 {
-			if hint, ok := editapply.LooksLikeEditPayload(text); ok {
-				m.turns = append(m.turns, turn{role: roleSystem,
-					text: fmt.Sprintf("(no edits offered — line %d of the answer %s)", hint.Line, hint.Advice)})
-				m.refreshViewport()
-			}
 			return m, m.input.Focus()
 		}
 	}

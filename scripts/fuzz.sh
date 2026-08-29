@@ -50,6 +50,15 @@ TARGETS=(
   "proxy:FuzzExtractUsageAndProvider"
   "editapply:FuzzParseEditBlocks"
   "editapply:FuzzFindSearch"
+  # The unified-diff reader, added 2026-08-29 with ingestion. Same rule as the
+  # agent-mode note below, and the same result: FuzzParseUnifiedDiff found two
+  # real defects in under a minute on its first run -- a one-sided hunk-count
+  # check that let a body overrun its header into an empty-file create, and a
+  # NUL byte reaching an EditBlock's FilePath. The second turned out to be a
+  # PRE-EXISTING hole in FuzzParseEditBlocks' own contract, which had asserted
+  # the property for weeks without ever generating an input that broke it.
+  "editapply:FuzzParseUnifiedDiff"
+  "editapply:FuzzParseEditPayload"
   # Agent mode's four readers of bytes this codebase did not author. Added
   # 2026-08-01 by the agent-mode QA gate, which found the rule above stated and
   # not applied: the daemon had no targets at all, and FuzzToolCallAccumulator

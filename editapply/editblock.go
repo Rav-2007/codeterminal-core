@@ -119,6 +119,17 @@ func parseBlockAt(lines []string, i int) (EditBlock, int, error) {
 	if empty {
 		return EditBlock{}, resume, fmt.Errorf("line %d: %q line has an empty path", lineNum, pathPrefix)
 	}
+	// A path is not merely somewhere the edit may not point -- it can fail to
+	// be a path at all. This parser's fuzz contract already asserts that no
+	// EditBlock carries a NUL or newline in its FilePath, and until this check
+	// existed that assertion was simply untrue: "path: \x00" parsed cleanly and
+	// produced a block whose target was a control character. Nothing reached
+	// disk (resolveSafeTarget refuses it), but the block travelled to every
+	// client as a proposal first. Refused here, with a line number, like every
+	// other malformed block.
+	if err := RejectUnprintablePath(path); err != nil {
+		return EditBlock{}, resume, fmt.Errorf("line %d: %v", lineNum, err)
+	}
 
 	if replEndIdx == -1 || hitNextBlock {
 		return EditBlock{}, resume, fmt.Errorf("line %d: unterminated block (no %q found before end of response)", lineNum, replaceMarker)

@@ -293,9 +293,13 @@ jobs:
         run: ./scripts/errcheck-ceiling.sh ${{ matrix.module }}
 
   fuzz:
-    # Nine targets over the two trust boundaries: the request/SSE parsers in
-    # proxy, and the edit-block parser and matcher in editapply. See
-    # scripts/fuzz.sh for what each one asserts.
+    # Fifteen targets over three trust boundaries: the request/SSE parsers in
+    # proxy; the edit-block parser, unified-diff reader and matcher in
+    # editapply; and agent mode's readers in daemon. The count is stated here
+    # and enforced in scripts/fuzz.sh, which lists every target explicitly --
+    # this comment said "Nine" while the array held thirteen, which is the
+    # drift that makes a number in a comment worth less than the list it
+    # describes. See scripts/fuzz.sh for what each target asserts.
     #
     # 30s per target is a REGRESSION gate, not a search: it re-walks the corpus
     # and shallow mutations on every PR. Finding something new wants minutes to

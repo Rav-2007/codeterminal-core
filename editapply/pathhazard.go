@@ -90,18 +90,8 @@ func RejectPathHazards(rel string) error {
 		return fmt.Errorf("path exceeds maximum length limit of 4096 bytes")
 	}
 
-	// Control characters, Unicode RTL overrides, and invisible zero-width characters.
-	// Never legitimate in a path, and used to spoof file extensions or slip past secret gates.
-	for _, r := range rel {
-		if r < 0x20 || r == 0x7f {
-			return fmt.Errorf("path %q contains a control character", rel)
-		}
-		switch r {
-		case '\u202A', '\u202B', '\u202C', '\u202D', '\u202E', '\u2066', '\u2067', '\u2068', '\u2069':
-			return fmt.Errorf("path %q contains a Unicode directional override character", rel)
-		case '\u200B', '\u200C', '\u200D', '\uFEFF':
-			return fmt.Errorf("path %q contains an invisible zero-width character", rel)
-		}
+	if err := RejectUnprintablePath(rel); err != nil {
+		return err
 	}
 
 	// A COLON anywhere is refused, which covers three distinct Win32 forms at
@@ -187,5 +177,35 @@ func RejectPathHazards(rel string) error {
 		}
 	}
 
+	return nil
+}
+
+// RejectUnprintablePath refuses a path carrying characters that cannot be part
+// of a filename anyone typed on purpose: control characters, Unicode
+// directional overrides, and invisible zero-width characters. They are used to
+// spoof file extensions and to slip past name-based gates.
+//
+// Split out of RejectPathHazards so the EDIT PARSERS can run it at the moment
+// they build an EditBlock, which is earlier than the confinement gates and for
+// a different reason. Confinement decides where a path may point;
+// this decides whether the text is a path at all, and a block carrying a NUL
+// byte as its target is malformed rather than merely out of bounds.
+//
+// It is shared rather than copied because both parsers assert this property in
+// their fuzz contracts, and two predicates claiming the same thing is how the
+// two drift apart. RejectPathHazards still calls it, so confinement loses
+// nothing: this is an earlier, narrower gate, not a replacement.
+func RejectUnprintablePath(rel string) error {
+	for _, r := range rel {
+		if r < 0x20 || r == 0x7f {
+			return fmt.Errorf("path %q contains a control character", rel)
+		}
+		switch r {
+		case '\u202A', '\u202B', '\u202C', '\u202D', '\u202E', '\u2066', '\u2067', '\u2068', '\u2069':
+			return fmt.Errorf("path %q contains a Unicode directional override character", rel)
+		case '\u200B', '\u200C', '\u200D', '\uFEFF':
+			return fmt.Errorf("path %q contains an invisible zero-width character", rel)
+		}
+	}
 	return nil
 }

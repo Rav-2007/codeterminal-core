@@ -81,36 +81,39 @@ func runEditsApplyCommand(args []string, logger *log.Logger) error {
 		}
 	}
 
-	blocks, rejected := editapply.ParseEditBlocks(string(input))
-	if len(blocks) == 0 && len(rejected) == 0 {
-		// This branch used to report TWO different situations identically, and
-		// the one it got wrong cost the user real work.
-		//
-		// ParseEditBlocks returns (nil, nil) both for a plain-text answer that
-		// proposes no edit -- the common, correct case -- and for a response
-		// full of unified-diff hunks it simply cannot read. Printing the same
-		// shrug for both and returning nil meant `edits apply < some.patch`
-		// exited 0 with the word "no" in its output, which every script and
-		// every reader takes as success. Nothing was applied and nothing said
-		// so.
-		//
-		// The sniffer separates them. A recognised-but-unreadable payload is a
-		// failure: it exits non-zero (logger.Fatal in main.go, i.e.
-		// exitFailure) because running the identical command again cannot
-		// succeed. Genuine plain text keeps the old message and the old exit 0,
-		// which scripts do depend on.
-		//
-		// The diagnosis travels in the RETURNED ERROR rather than a separate
-		// print. main.go hands it to logger.Fatal, so it is shown exactly once,
-		// on the path that also sets the exit status -- and there is no second
-		// unchecked write to stdout to keep in step with it.
-		if hint, ok := editapply.LooksLikeEditPayload(string(input)); ok {
-			logger.Printf("edits apply: unreadable edit payload (kind=%s line=%d)", hint.Kind, hint.Line)
-			return fmt.Errorf("nothing applied: line %d of the input %s", hint.Line, hint.Advice)
-		}
+	// ParseEditPayload, not ParseEditBlocks, because the fact this command
+	// needs cannot be expressed in the pair ParseEditBlocks returns.
+	//
+	// That pair says "no blocks" for a plain-text answer AND for a patch the
+	// engine could not read, so this command reported both with the same shrug
+	// and the same exit 0 -- and `edits apply < some.patch` looked like success
+	// while nothing reached disk. EditPayload's third state is what separates
+	// them, and it is also what lets a unified diff be READ rather than merely
+	// named: a hunk's context+'-' lines are SEARCH and its context+'+' lines
+	// are REPLACE, so a patch becomes ordinary blocks and every gate below runs
+	// on it unchanged.
+	payload := editapply.ParseEditPayload(string(input))
+
+	switch payload.Format {
+	case editapply.FormatNone:
+		// A genuine answer to a question. Scripts depend on this exit 0.
 		fmt.Println("no edit blocks found in input")
 		return nil
+
+	case editapply.FormatUnrecognised:
+		// Edit-shaped and unreadable. Non-zero, because running the identical
+		// command again cannot succeed. The diagnosis travels in the RETURNED
+		// ERROR rather than a separate print, so it is shown once, on the path
+		// that also sets the exit status, with no second unchecked write to
+		// stdout to keep in step with it.
+		logger.Printf("edits apply: unreadable edit payload (kind=%s line=%d)", payload.Hint.Kind, payload.Hint.Line)
+		return fmt.Errorf("nothing applied: line %d of the input %s", payload.Hint.Line, payload.Hint.Advice)
+
+	case editapply.FormatUnifiedDiff:
+		logger.Printf("edits apply: read a unified diff (%d hunk(s), %d refused)", len(payload.Blocks), len(payload.Rejected))
 	}
+
+	blocks, rejected := payload.Blocks, payload.Rejected
 
 	realRoot, err := editapply.ResolveRealWorkspaceRoot(*workspace)
 	if err != nil {
