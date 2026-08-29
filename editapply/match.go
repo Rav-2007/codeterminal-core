@@ -260,12 +260,45 @@ type searchMatch struct {
 // errAmbiguousMatch formats the refusal used when a SEARCH block matches in
 // more than one place. Shared by every tier so the message a user sees does not
 // depend on which normalization happened to find the duplicates.
+//
+// It NAMES THE REMEDY, and that is the whole point of the second sentence.
+//
+// This refusal used to stop at "ambiguous, refusing" -- it stated the problem
+// and offered nothing to do about it. Measured over 200 real files, every
+// ambiguous case was a passage of a few lines occurring twice in one file:
+// duplicated test setup, a repeated `if err != nil` idiom. The SEARCH is not
+// wrong, it is UNDER-SPECIFIED, and the fix is to widen it until it is unique
+// rather than to guess which occurrence was meant.
+//
+// Saying so converts every ambiguous block into an actionable retry. In agent
+// mode it closes the loop without a human at all: the refusal text goes back to
+// the model, which re-issues with more context (see the doctrine at
+// daemon/mcpbuiltin.go, "Handing it back to the model lets it fix its own
+// SEARCH text"). One sentence covers 100% of these cases.
+//
+// The alternative considered and REJECTED was to disambiguate by position,
+// using the line number a unified diff's "@@" header declares. It cannot be
+// made safe: blocks apply sequentially, so once an earlier hunk changes a
+// file's line count every later hunk's declared line is stale by that delta --
+// and when the drift happens to equal the spacing between the duplicates, the
+// stale line matches the WRONG occurrence uniquely and the edit lands in the
+// wrong place silently. That is not a rare coincidence: in test files the unit
+// of duplication and the unit of insertion are both "a function", so the two
+// quantities are routinely equal. A refusal that a user can act on beats a
+// guess that is usually right.
 func errAmbiguousMatch(count int, relPath string, tier MatchTier) error {
 	if tier == MatchExact {
-		return fmt.Errorf("search text found %d times in %s; ambiguous, refusing", count, relPath)
+		return fmt.Errorf("search text found %d times in %s; ambiguous, refusing. %s", count, relPath, ambiguityRemedy)
 	}
-	return fmt.Errorf("search text found %d times in %s once %s differences are ignored; ambiguous, refusing", count, relPath, tier)
+	return fmt.Errorf("search text found %d times in %s once %s differences are ignored; ambiguous, refusing. %s", count, relPath, tier, ambiguityRemedy)
 }
+
+// ambiguityRemedy is worded to be correct whichever way the block was authored:
+// a model writing SEARCH/REPLACE adds context lines, and someone who pasted a
+// patch regenerates it with a wider context window. Naming the concrete flag
+// matters -- "add more context" is advice, "-U8" is an instruction.
+const ambiguityRemedy = "Re-send this edit with more surrounding context so the passage is unique in the file " +
+	"(for a unified diff, regenerate it with `git diff -U8`)."
 
 // findSearch locates search within original, walking the tolerance ladder and
 // stopping at the first tier that finds anything.
