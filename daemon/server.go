@@ -1081,6 +1081,15 @@ func (s *Server) parseAndLogEditBlocks(response string) []editapply.EditBlock {
 	if len(blocks) == 0 {
 		if len(rejected) > 0 {
 			s.logger.Printf("parsed 0 usable edit block(s), %d refused", len(rejected))
+		} else if hint, ok := editapply.LooksLikeEditPayload(response); ok {
+			// Zero blocks AND zero rejections is the parser saying "this is a
+			// plain-text answer". For a response full of unified-diff hunks
+			// that is wrong, and the wrongness was invisible: nothing was
+			// logged, EditProposals was empty, and every client rendered a
+			// perfectly ordinary reply. Logged here so an operator debugging
+			// "the model keeps proposing edits and nothing happens" finds the
+			// answer in one grep instead of inferring it.
+			s.logger.Printf("response carries an edit this engine cannot read (kind=%s line=%d); no proposals sent", hint.Kind, hint.Line)
 		}
 		return nil
 	}

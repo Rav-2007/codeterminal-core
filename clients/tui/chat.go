@@ -167,6 +167,17 @@ type chatModel struct {
 	// ambiguous / outside workspace / secret / syntax-breaking) are
 	// recorded into reviewRefusals and skipped past automatically, exactly
 	// like the CLI's applyEditBlocks never prompts for a refused block.
+	// daemonProposals holds what the DAEMON parsed, when it sent any
+	// (protocol.TokenResponse.EditProposals). It is preferred over a local
+	// re-parse because the daemon's list is strictly larger: it merges the
+	// blocks in the assistant text with the edits the model filed through the
+	// propose_edit tool, and only the daemon can see the second kind.
+	// gotDaemonProposals distinguishes "the daemon sent an empty list" from
+	// "the daemon never sent the field", which is the older-daemon case the
+	// local fallback exists for.
+	daemonProposals    []protocol.EditBlockWire
+	gotDaemonProposals bool
+
 	reviewBlocks    []editapply.EditBlock
 	reviewIndex     int
 	reviewPrepared  *editapply.PreparedEdit
@@ -538,6 +549,16 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshViewport()
 		return m, waitForNext(m.streamCh)
 
+	case editProposalsMsg:
+		if m.streamCh == nil {
+			return m, nil // a stray message from an already-abandoned stream
+		}
+		// Recorded, not acted on: streamDoneMsg follows immediately and is what
+		// starts the review. Keep draining.
+		m.daemonProposals = msg.blocks
+		m.gotDaemonProposals = true
+		return m, waitForNext(m.streamCh)
+
 	case streamDoneMsg:
 		m.endStream()
 		return m.checkForEditBlocks()
@@ -805,6 +826,8 @@ func (m chatModel) startTurn() (tea.Model, tea.Cmd) {
 	m.lastHistoryTruncated = false
 	m.streamAssistant = -1
 	m.activityTurns = nil
+	m.daemonProposals = nil
+	m.gotDaemonProposals = false
 	m.resizeViewport()
 	m.refreshViewport()
 
@@ -846,6 +869,8 @@ func (m chatModel) handleSlash(sp slashParse) (tea.Model, tea.Cmd) {
 		m.lastHistoryTruncated = false
 		m.streamAssistant = -1
 		m.activityTurns = nil
+		m.daemonProposals = nil
+		m.gotDaemonProposals = false
 		m.resizeViewport()
 		m.refreshViewport()
 		ctx, cancel := context.WithCancel(context.Background())
@@ -1132,7 +1157,22 @@ func (m chatModel) interruptTurn() (tea.Model, tea.Cmd) {
 	m.statusErr = ""
 	m.resizeViewport()
 	m.refreshViewport()
-	return m, m.input.Focus()
+
+	// 4. EDITS THE MODEL ALREADY FINISHED ARE STILL OFFERED.
+	//
+	// This used to return straight to an idle prompt, and that quietly
+	// contradicted rule 2 above. "Whatever streamed stays" kept the TEXT of a
+	// completed edit block on screen while throwing away the edit -- the one
+	// thing in it the user could act on. Stopping a turn three files in meant
+	// re-running the whole turn to get back the two files that had finished.
+	//
+	// checkForEditBlocks is the same review the normal streamDoneMsg path runs.
+	// An interrupted turn never reaches the Done message, so the daemon's
+	// EditProposals never arrived and it takes its local-parse fallback -- which
+	// is exactly the case that fallback exists for. A block the model was still
+	// mid-way through writing is unterminated, so the parser refuses it by line
+	// number and the completed ones are unaffected (Fix B).
+	return m.checkForEditBlocks()
 }
 
 // buildHistory converts the transcript so far into the PromptRequest.History
@@ -1226,24 +1266,57 @@ func (m *chatModel) ensureAssistantTurn() int {
 	return m.streamAssistant
 }
 
-// checkForEditBlocks runs once a stream finishes: it parses the just-
-// completed assistant turn for SEARCH/REPLACE edit blocks (the same
-// editapply.ParseEditBlocks the daemon already runs to log and, as of the
-// EditProposals protocol field, surface to other clients — see
-// parseAndLogEditBlocks in daemon/server.go). The TUI ignores that new
-// field entirely and keeps parsing client-side, same as before. No blocks,
-// or a parse error, means
-// there's nothing to review: back to normal idle chat, unchanged from
-// before this feature existed. Blocks found means entering the modal
-// edit-review state instead.
+// checkForEditBlocks decides what, if anything, the just-finished turn asked
+// to change on disk, and moves into the modal review state when the answer is
+// "something". Nothing found means ordinary idle chat, unchanged from before
+// this feature existed.
+//
+// It prefers the DAEMON's list (protocol.TokenResponse.EditProposals) and falls
+// back to parsing the assistant text locally. That order is a fix, not a
+// preference. This client used to only ever parse locally, which looks
+// equivalent and is not: the daemon merges two sources into EditProposals
+// (daemon/agentturn.go:232) -- blocks the model wrote as text, AND edits it
+// filed through the propose_edit tool -- and the second kind never appears in
+// the assistant text at all. So in agent mode every propose_edit proposal was
+// silently invisible here, while daemon/agentturn.go's own comment asserts
+// "there is no path by which an agent turn changes a file without the user
+// seeing a diff first". The invariant held on the wire and this client broke it.
+//
+// The local parse stays as the fallback for two live cases: an older daemon
+// that does not send the field at all, and an INTERRUPTED turn, which never
+// reaches the Done message the field rides on. Blocks the model finished before
+// the user pressed esc are still real edits, and interruptTurn routes here to
+// offer them.
 func (m chatModel) checkForEditBlocks() (tea.Model, tea.Cmd) {
 	m.state = stateIdle
-	text := lastAssistantText(m.turns)
-	if text == "" {
-		return m, m.input.Focus()
+
+	var blocks []editapply.EditBlock
+	var rejected []editapply.BlockError
+
+	if m.gotDaemonProposals {
+		blocks = blocksFromWire(m.daemonProposals)
+	} else {
+		text := lastAssistantText(m.turns)
+		if text == "" {
+			return m, m.input.Focus()
+		}
+		blocks, rejected = editapply.ParseEditBlocks(text)
+
+		// Nothing readable, but something edit-shaped in the text: say so
+		// rather than returning to an idle prompt in silence. A response full
+		// of unified-diff hunks parses to zero blocks AND zero rejections, so
+		// without this the user watched an edit arrive and then watched the
+		// client act as though the model had answered a question.
+		if len(blocks) == 0 && len(rejected) == 0 {
+			if hint, ok := editapply.LooksLikeEditPayload(text); ok {
+				m.turns = append(m.turns, turn{role: roleSystem,
+					text: fmt.Sprintf("(no edits offered — line %d of the answer %s)", hint.Line, hint.Advice)})
+				m.refreshViewport()
+			}
+			return m, m.input.Focus()
+		}
 	}
 
-	blocks, rejected := editapply.ParseEditBlocks(text)
 	// A refused block is shown as its own system turn and costs only itself
 	// (Fix B): the readable blocks in the same response still go to review,
 	// where before a single bad block sent the whole reply to this message and
@@ -1251,14 +1324,11 @@ func (m chatModel) checkForEditBlocks() (tea.Model, tea.Cmd) {
 	for _, bad := range rejected {
 		m.turns = append(m.turns, turn{role: roleSystem, text: fmt.Sprintf("(edit block at line %d refused: %v)", bad.Line, bad.Reason)})
 	}
-	if len(blocks) == 0 {
-		if len(rejected) > 0 {
-			m.refreshViewport()
-		}
-		return m, m.input.Focus()
-	}
 	if len(rejected) > 0 {
 		m.refreshViewport()
+	}
+	if len(blocks) == 0 {
+		return m, m.input.Focus()
 	}
 
 	m.reviewBlocks = blocks
@@ -1270,6 +1340,22 @@ func (m chatModel) checkForEditBlocks() (tea.Model, tea.Cmd) {
 	m.reviewBackupDir = ""
 	m.state = stateEditReview
 	return m.advanceReview()
+}
+
+// blocksFromWire converts the daemon's proposals to the engine's own type. It
+// is a field-for-field copy on purpose: protocol.EditBlockWire is the wire
+// shape and editapply.EditBlock is what PrepareEdit takes, and keeping them
+// distinct is what stops a protocol change from silently altering the engine's
+// input.
+func blocksFromWire(wire []protocol.EditBlockWire) []editapply.EditBlock {
+	if len(wire) == 0 {
+		return nil
+	}
+	blocks := make([]editapply.EditBlock, len(wire))
+	for i, w := range wire {
+		blocks[i] = editapply.EditBlock{FilePath: w.FilePath, Search: w.Search, Replace: w.Replace}
+	}
+	return blocks
 }
 
 func lastAssistantText(turns []turn) string {

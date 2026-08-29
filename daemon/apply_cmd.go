@@ -83,6 +83,31 @@ func runEditsApplyCommand(args []string, logger *log.Logger) error {
 
 	blocks, rejected := editapply.ParseEditBlocks(string(input))
 	if len(blocks) == 0 && len(rejected) == 0 {
+		// This branch used to report TWO different situations identically, and
+		// the one it got wrong cost the user real work.
+		//
+		// ParseEditBlocks returns (nil, nil) both for a plain-text answer that
+		// proposes no edit -- the common, correct case -- and for a response
+		// full of unified-diff hunks it simply cannot read. Printing the same
+		// shrug for both and returning nil meant `edits apply < some.patch`
+		// exited 0 with the word "no" in its output, which every script and
+		// every reader takes as success. Nothing was applied and nothing said
+		// so.
+		//
+		// The sniffer separates them. A recognised-but-unreadable payload is a
+		// failure: it exits non-zero (logger.Fatal in main.go, i.e.
+		// exitFailure) because running the identical command again cannot
+		// succeed. Genuine plain text keeps the old message and the old exit 0,
+		// which scripts do depend on.
+		//
+		// The diagnosis travels in the RETURNED ERROR rather than a separate
+		// print. main.go hands it to logger.Fatal, so it is shown exactly once,
+		// on the path that also sets the exit status -- and there is no second
+		// unchecked write to stdout to keep in step with it.
+		if hint, ok := editapply.LooksLikeEditPayload(string(input)); ok {
+			logger.Printf("edits apply: unreadable edit payload (kind=%s line=%d)", hint.Kind, hint.Line)
+			return fmt.Errorf("nothing applied: line %d of the input %s", hint.Line, hint.Advice)
+		}
 		fmt.Println("no edit blocks found in input")
 		return nil
 	}

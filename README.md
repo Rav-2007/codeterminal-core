@@ -437,11 +437,16 @@ order:
 |---|---|---|
 | 1 | **Path safety** | Anything resolving, through symlinks, outside the workspace root; absolute paths; `..` escapes; files the indexer would secret-skip |
 | 2 | **Exact match** | `SEARCH` text not found, or found more than once — ambiguous is a refusal, never a guess |
-| 3 | **Syntax** | A `.go` edit whose result will not parse. Other languages are skipped, and say so |
+| 3 | **Syntax** | A `.go` edit whose result will not parse. **Go is the only language with a parser in this binary** — every other file type is written unchecked, and the note beside the diff says so verbatim. On a non-Go repository this gate does not fire, so the list below is four gates, not five |
 | 4 | **Confirm** | Everything except a literal `y` at the diff prompt |
 | 5 | **Backup** | Nothing — it records pre- and post-edit content under `.codeterminal/backups/<ts>/{before,after}/` before the real write |
 
-**There is no auto-apply anywhere.** Every edit requires an explicit `y`.
+**Nothing is applied without a human decision.** In the CLI and the TUI that is an
+explicit `y` per edit. The VS Code panel additionally offers a session-scoped
+auto-apply which the user turns on deliberately; it drives the *same* per-block
+path a manual click would, so all five gates still run on every block
+([`chatPanel.ts`](clients/vscode/src/chatPanel.ts)). What no surface has is an
+edit reaching disk that the user did not ask for.
 
 **Creating a file** is the same mechanism, not a second one: a block with an
 **empty `SEARCH`** means "this file's content is, or should be, nothing", so
@@ -685,7 +690,7 @@ shippable targets.
 | Area | Not done, deliberately |
 |---|---|
 | **Retrieval** | No *full* index build on start or per request — the running daemon's watcher does keep it current per file; no query rewriting; no multi-hop. Re-running `index` rebuilds chunk-by-chunk keyed by a deterministic ID rather than diffing |
-| **Editing** | No auto-apply; no fuzzy `SEARCH` matching; ambiguous is always a refusal; no mid-stream parsing. File *creation* **is** supported — see [Editing](#editing) |
+| **Editing** | No *scored or approximate* `SEARCH` matching — the matcher normalizes (line endings, trailing space, indentation, unicode) and then matches exactly, and **ambiguous is always a refusal**, never a guess ([`match.go`](editapply/match.go)). No mid-stream parsing: edits are read from the completed response. Unified diffs are not parsed — a response carrying one is refused by name, not silently ignored. File *creation* **is** supported — see [Editing](#editing) |
 | **Agent mode** | No OS sandboxing of third-party servers — consent and audit are the protection, and the docs say so; stdio only, so no remote MCP and no new egress; tools only, no resources or prompts; no hot-reload; tool results never persist into history |
 | **Skills** | Storage plumbing only: no auto-capture, no injection into prompts, no vector search, no sync |
 | **Routing** | `ghost_text` and `reasoning` stay inactive; VS Code has no model picker UI yet |

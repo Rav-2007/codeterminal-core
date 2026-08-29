@@ -60,6 +60,21 @@ type reasoningMsg struct{ text string }
 // oldest turns were dropped on the way to the model.
 type historyMsg struct{ info *protocol.HistoryInfo }
 
+// editProposalsMsg carries the edit blocks the DAEMON parsed out of the
+// just-completed response (see protocol.TokenResponse.EditProposals). Like
+// incompleteMsg it rides the final Done message, and it is delivered before
+// streamDoneMsg so the review that streamDoneMsg triggers can use it.
+//
+// The TUI used to ignore this field entirely and re-parse the assistant text
+// locally, which looked equivalent and was not. The daemon merges TWO sources
+// into it (daemon/agentturn.go:232): blocks the model wrote as text, AND edits
+// it filed through the propose_edit tool. Only the first of those is in the
+// assistant text, so in agent mode every propose_edit proposal was invisible
+// here -- while daemon/agentturn.go's own comment asserts "there is no path by
+// which an agent turn changes a file without the user seeing a diff first".
+// That invariant was true of the wire and false of this client.
+type editProposalsMsg struct{ blocks []protocol.EditBlockWire }
+
 // incompleteMsg carries the daemon's report that the model's answer was cut
 // off rather than finishing on its own (see protocol.TokenResponse.Incomplete).
 // It rides on the final Done message, so it is emitted immediately before
@@ -365,6 +380,11 @@ func streamPrompt(ctx context.Context, clientName, workspace, prompt, promptKind
 			// the "answer cut off" notice lands right under the just-finished
 			// (partial) answer, ahead of any edit-review chrome.
 			if tok.Incomplete != nil && !deliver(ctx, ch, incompleteMsg{tok.Incomplete}) {
+				return
+			}
+			// Before streamDoneMsg, which is what starts the review: the
+			// proposals have to be in hand by the time it arrives.
+			if len(tok.EditProposals) > 0 && !deliver(ctx, ch, editProposalsMsg{tok.EditProposals}) {
 				return
 			}
 			deliver(ctx, ch, streamDoneMsg{})
