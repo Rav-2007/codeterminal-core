@@ -345,7 +345,10 @@ var declKeywords = []string{
 // declarationName returns the declared name in line, or "" if the line does not
 // declare anything at the top level.
 func declarationName(line string) string {
-	trimmed := strings.TrimRight(line, " \t{(")
+	// trimCR first: this is reached both from repomap's bufio.Scanner (already
+	// CR-free) and from the chunker's hand-rolled split (not), and a trailing
+	// carriage return would defeat the "{(" trim below.
+	trimmed := strings.TrimRight(trimCR(line), " \t{(")
 
 	// A CommonJS import is not a declaration of anything this project owns.
 	// `const fs = require("fs")` is written at column zero and begins with a

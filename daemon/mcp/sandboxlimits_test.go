@@ -272,22 +272,32 @@ func TestConfinesAndLimitsApplyAreIndependent(t *testing.T) {
 func TestEveryUnrunnableSandboxRefusesWithAReason(t *testing.T) {
 	stubLimiter(t, false)
 	_, dockerErr := lookPath("docker")
+	_, bwrapErr := lookPath("bwrap")
 	for _, tc := range []struct {
 		name        string
 		cfg         SandboxConfig
 		want        string
 		needsDocker bool
+		needsBwrap  bool
 	}{
 		// The binary check runs first by design -- "docker is not installed" is
 		// a more useful answer than "no image" on a host with no docker -- so
 		// these two only reach the branch they are about where docker exists.
-		{"docker with no image", SandboxConfig{Mode: SandboxDocker, WorkspaceRoot: t.TempDir()}, "requires an Image", true},
-		{"docker with no workspace", SandboxConfig{Mode: SandboxDocker, Image: "x"}, "non-empty WorkspaceRoot", true},
-		{"docker absent entirely", SandboxConfig{Mode: SandboxDocker}, "not installed on PATH", false},
-		{"bwrap with no workspace", SandboxConfig{Mode: SandboxBubblewrap}, "WorkspaceRoot", false},
-		{"a mode that does not exist", SandboxConfig{Mode: SandboxMode("chroot")}, "unknown sandbox mode", false},
+		{"docker with no image", SandboxConfig{Mode: SandboxDocker, WorkspaceRoot: t.TempDir()}, "requires an Image", true, false},
+		{"docker with no workspace", SandboxConfig{Mode: SandboxDocker, Image: "x"}, "non-empty WorkspaceRoot", true, false},
+		{"docker absent entirely", SandboxConfig{Mode: SandboxDocker}, "not installed on PATH", false, false},
+		// needsBwrap for the same reason the docker rows carry needsDocker, and
+		// its absence is why this test could never pass on Windows: the binary
+		// check runs first by design, so with no bwrap installed the error says
+		// "not installed on PATH" and never reaches the WorkspaceRoot branch
+		// this row is about.
+		{"bwrap with no workspace", SandboxConfig{Mode: SandboxBubblewrap}, "WorkspaceRoot", false, true},
+		{"a mode that does not exist", SandboxConfig{Mode: SandboxMode("chroot")}, "unknown sandbox mode", false, false},
 	} {
 		if tc.needsDocker && dockerErr != nil {
+			continue
+		}
+		if tc.needsBwrap && bwrapErr != nil {
 			continue
 		}
 		if tc.name == "docker absent entirely" && dockerErr == nil {

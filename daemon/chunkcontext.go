@@ -217,7 +217,30 @@ func constructExtents(lines []string) [][2]int {
 // column-zero rule agreed on 97.7% of the compiler's own top-level declaration
 // positions with ZERO false positives, and every one of the 79 disagreements was
 // a grouped block. Handling that one shape is what closes the gap.
+// trimCR removes the carriage return a CRLF line keeps after splitLines, which
+// splits on "\n" alone (chunker.go).
+//
+// STRUCTURE ONLY, NEVER CONTENT. It is applied inside the predicates that ask
+// what a line IS, and nowhere near the text that gets chunked, embedded or shown
+// to the model -- so a Windows checkout is still indexed with the bytes it has on
+// disk. The alternative, stripping in splitLines, would quietly change every
+// chunk's text on such a tree and with it every embedding.
+//
+// WHAT IT COSTS TO OMIT, measured on a CRLF checkout of this repository: the
+// heuristic missed 87 of 3745 top-level declarations, all of them grouped
+// declarations, because isGroupedDeclOpener asks whether the line ENDS in "(" and
+// "const (\r" does not. Chunk expansion then widens to the wrong region, so
+// retrieval is worse on Windows than on Linux for the same source.
+//
+// repomap.go never had this problem and that is not luck: declarationsIn reads
+// through bufio.Scanner, whose ScanLines drops the CR for free. Only the
+// hand-rolled split needed telling.
+func trimCR(line string) string {
+	return strings.TrimSuffix(line, "\r")
+}
+
 func isConstructStart(line string) bool {
+	line = trimCR(line)
 	if declarationName(line) != "" {
 		return true
 	}
@@ -232,7 +255,7 @@ func isConstructStart(line string) bool {
 // least informative thing in a file to name a region after. Counting them made
 // the heuristic look 12% wrong when it is 2.3% wrong.
 func isGroupedDeclOpener(line string) bool {
-	trimmed := strings.TrimRight(line, " \t")
+	trimmed := strings.TrimRight(trimCR(line), " \t")
 	if !strings.HasSuffix(trimmed, "(") {
 		return false
 	}
@@ -246,6 +269,7 @@ func isGroupedDeclOpener(line string) bool {
 // isTopLevelComment reports whether line is a comment at column zero, in any of
 // the comment syntaxes this project's languages use.
 func isTopLevelComment(line string) bool {
+	line = trimCR(line)
 	if line == "" || line[0] == ' ' || line[0] == '\t' {
 		return false
 	}

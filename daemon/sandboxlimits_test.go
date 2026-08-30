@@ -179,6 +179,19 @@ func TestTheSandboxHomeSurvivesBetweenRuns(t *testing.T) {
 	if home == "" {
 		t.Skip("no user cache directory on this host")
 	}
+	// HomeDir IS ONLY APPLIED BY A SANDBOX. WrapCommand honours cfg.HomeDir in
+	// its bwrap and docker branches; SandboxNone is host execution, where the
+	// command keeps the user's real HOME -- which is correct, because the whole
+	// reason to redirect it is that bwrap's HOME is a tmpfs that would
+	// re-download the module cache into RAM on every run. There is no tmpfs to
+	// avoid in host mode, and the user's own cache is warm.
+	//
+	// So on a host with neither bwrap nor docker this test is asserting a
+	// property nothing claims. Skipped by the product's own predicate rather
+	// than by GOOS, so it also skips on a minimal Linux image.
+	if !s.sandboxExecConfined() {
+		t.Skip("nothing confines on this host, so HomeDir is not applied and there is no sandbox home to test")
+	}
 	t.Cleanup(func() { _ = os.RemoveAll(home) })
 
 	first := makeRecipe(t, s, `echo "HOME=[$HOME]"; echo persisted > "$HOME/cache-probe"; echo WROTE=$?`)
@@ -226,7 +239,11 @@ func TestTheGoToolchainRunsInTheSandboxAndCachesOnDisk(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if home != "" && !strings.HasPrefix(strings.TrimSpace(res.Content), home) {
+	// Same reasoning as TestTheSandboxHomeSurvivesBetweenRuns: the cache is only
+	// redirected when a sandbox applies HomeDir. In host mode the toolchain uses
+	// the user's own module cache, which is the right answer -- there is no
+	// tmpfs HOME to re-download into.
+	if home != "" && s.sandboxExecConfined() && !strings.HasPrefix(strings.TrimSpace(res.Content), home) {
 		t.Errorf("GOMODCACHE is %q, not under the persistent sandbox home %q -- every build would "+
 			"re-download into the memory budget", strings.TrimSpace(res.Content), home)
 	}

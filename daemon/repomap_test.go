@@ -167,7 +167,11 @@ func TestDeclarationDetailIsSpreadAcrossDirectories(t *testing.T) {
 	for _, dir := range []string{"aaa", "mmm", "zzz"} {
 		for i := 0; i < 30; i++ {
 			body := "package p\n\nfunc " + dir + "F() {}\n\ntype " + dir + "T struct{}\n"
-			p := filepath.Join(real, dir, filepath.Base(dir)+string(rune('a'+i))+".go")
+			// %02d, not string(rune('a'+i)): the loop runs to 30, so the rune
+			// form walked past 'z' into '{', '|', '}' and '~' -- and '|' is not
+			// a legal character in a Windows filename, so this test could never
+			// have run there.
+			p := filepath.Join(real, dir, fmt.Sprintf("%s%02d.go", filepath.Base(dir), i))
 			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 				t.Fatal(err)
 			}

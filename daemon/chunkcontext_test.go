@@ -1,6 +1,7 @@
 package main
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -95,5 +96,65 @@ func TestTheEmbedPrefixMovedNoBoundary(t *testing.T) {
 		if got := c.EndLine - c.StartLine + 1; got > chunkLines {
 			t.Fatalf("chunk %s covers %d lines, past the %d-line window: a boundary moved", c.ID, got, chunkLines)
 		}
+	}
+}
+
+// THE HEURISTIC MUST NOT SEE A DIFFERENT FILE ON WINDOWS.
+//
+// splitLines splits on "\n" alone, so every line of a CRLF checkout arrives with
+// a trailing carriage return. The structural predicates ask what a line ENDS in
+// -- isGroupedDeclOpener wants "(" -- and "const (\r" does not end in "(". So on
+// a Windows checkout the heuristic silently missed every grouped declaration:
+// measured over this repository, 87 of 3745. Chunk expansion then widens to the
+// wrong region and retrieval is worse there than on Linux for the same source.
+//
+// It was caught only by the Windows CI job, on a platform this suite had never
+// run on before. This test moves the guard onto every machine, because a defect
+// that only one runner can see is one nobody will notice regressing.
+func TestTheHeuristicIsBlindToLineEndings(t *testing.T) {
+	const src = "package main\n" +
+		"\n" +
+		"// A grouped constant block.\n" +
+		"const (\n" +
+		"\tA = 1\n" +
+		")\n" +
+		"\n" +
+		"var (\n" +
+		"\tB = 2\n" +
+		")\n" +
+		"\n" +
+		"type (\n" +
+		"\tC int\n" +
+		")\n" +
+		"\n" +
+		"type D struct {\n" +
+		"\tE int\n" +
+		"}\n" +
+		"\n" +
+		"func f() int { return 0 }\n"
+
+	crlf := strings.ReplaceAll(src, "\n", "\r\n")
+
+	lfStarts := constructStarts(splitLines([]byte(src)))
+	crlfStarts := constructStarts(splitLines([]byte(crlf)))
+
+	// ANTI-VACUITY: two empty slices are equal, and would prove nothing. The
+	// fixture holds const/var/type groups, a struct and a func, so anything
+	// under five starts means the heuristic is not doing its job at all.
+	if len(lfStarts) < 5 {
+		t.Fatalf("the heuristic found only %d starts in the LF fixture (%v); this test would "+
+			"pass on two empty results", len(lfStarts), lfStarts)
+	}
+	if !slices.Equal(lfStarts, crlfStarts) {
+		t.Errorf("constructStarts differs by line ending:\n  LF   = %v\n  CRLF = %v\n\n"+
+			"A carriage return is a line TERMINATOR, not part of the construct. Every predicate "+
+			"that asks what a line ends in has to trim it -- see trimCR.", lfStarts, crlfStarts)
+	}
+
+	lfExtents := constructExtents(splitLines([]byte(src)))
+	crlfExtents := constructExtents(splitLines([]byte(crlf)))
+	if !slices.Equal(lfExtents, crlfExtents) {
+		t.Errorf("constructExtents differs by line ending:\n  LF   = %v\n  CRLF = %v",
+			lfExtents, crlfExtents)
 	}
 }

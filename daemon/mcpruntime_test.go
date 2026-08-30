@@ -312,7 +312,7 @@ func TestBuiltinsAreConfinedAndReadOnly(t *testing.T) {
 				t.Errorf("built-in %q reaches the network and still reports itself confined; "+
 					"the approval prompt would tell the user their query is governed by the edit-review pipeline", tool.Name)
 			}
-		} else if !tool.Confined {
+		} else if !tool.Confined && !hostCannotConfine(t, s, tool.Name) {
 			t.Errorf("built-in %q is not confined", tool.Name)
 		}
 		if tool.Server != mcp.BuiltinServerName {
@@ -430,5 +430,70 @@ func TestPrefixWriterAttributesEachLine(t *testing.T) {
 	}
 	if strings.Contains(buf.String(), "incomplete") {
 		t.Error("a line without a newline was emitted early, splitting one server line across two log lines")
+	}
+}
+
+// hostCannotConfine reports whether tool's unconfined flag is the HOST's answer
+// rather than a defect.
+//
+// sandbox_exec is the one built-in whose confinement is a property of the
+// machine: sandboxExecConfined is mcp.Confines(cfg), which is false when neither
+// bwrap nor docker is installed -- every Windows runner, and any minimal Linux
+// image. The product is already honest about it at runtime; the approval prompt
+// says "NOT confined on this host: ... it runs with your full privileges."
+//
+// So the assertion is narrowed rather than skipped: this returns true ONLY for
+// that tool and ONLY when the host genuinely cannot confine, so a sandbox_exec
+// that reports itself unconfined on a machine that CAN confine still fails, and
+// no other built-in is excused at all.
+func hostCannotConfine(t *testing.T, s *Server, name string) bool {
+	t.Helper()
+	if name != "sandbox_exec" {
+		return false
+	}
+	if s.sandboxExecConfined() {
+		return false
+	}
+	t.Logf("sandbox_exec reports unconfined because this host has no usable bwrap or docker; " +
+		"that is the answer the approval prompt gives the user too")
+	return true
+}
+
+// THE EXEMPTION HAS TO BE GUARDED, OR IT BECOMES THE HOLE.
+//
+// hostCannotConfine narrows one assertion, and a narrowing nothing checks is
+// just a slower way of deleting it. Measured: widening it to return true
+// unconditionally let a sandbox_exec hard-coded to Confined:false pass
+// TestBuiltinsAreConfinedAndReadOnly, and no other test noticed.
+//
+// So both halves of its narrowness are pinned here: the tool it names, and the
+// host condition it depends on.
+func TestTheConfinementExemptionIsNarrow(t *testing.T) {
+	s := builtinTestServer(t)
+
+	// A server that CANNOT confine, so the host clause does not short-circuit
+	// and the NAME clause is the only thing standing between this loop and a
+	// blanket exemption. Auto with no workspace root cannot confine -- see
+	// TestConfinesAndLimitsApplyAreIndependent, which pins that.
+	//
+	// Without this, dropping the name check is invisible on any machine where
+	// confinement works: the host clause returns false first and every tool
+	// looks correctly un-excused. Measured exactly that way.
+	unconfinable := &Server{logger: discardLogger(), workspace: ""}
+	if unconfinable.sandboxExecConfined() {
+		t.Fatal("the fixture server can confine after all, so the loop below proves nothing")
+	}
+	for _, name := range []string{"read_file", "search_code", "propose_edit", "repo_map", ""} {
+		if hostCannotConfine(t, unconfinable, name) {
+			t.Errorf("the confinement exemption excused %q; it exists for sandbox_exec alone, "+
+				"whose confinement is a fact about the HOST rather than about the tool", name)
+		}
+	}
+
+	// And on a host that CAN confine, it must not excuse sandbox_exec either --
+	// otherwise a genuinely unconfined sandbox_exec passes unnoticed.
+	if s.sandboxExecConfined() && hostCannotConfine(t, s, "sandbox_exec") {
+		t.Error("the exemption fired for sandbox_exec on a host that DOES confine, so a real " +
+			"regression in its confinement would no longer fail any test")
 	}
 }
