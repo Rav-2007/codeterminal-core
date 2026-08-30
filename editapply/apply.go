@@ -169,7 +169,14 @@ func PrepareEdit(realWorkspaceRoot string, block EditBlock) (*PreparedEdit, erro
 		return nil, err
 	}
 
-	newContent := original[:match.Start] + block.Replace + original[match.End:]
+	// The replacement is re-encoded to the line-ending convention of the text it
+	// displaces before it is spliced in. Without that, the ordinary Windows
+	// workflow -- an LF patch from `git diff` under core.autocrlf=true, applied to
+	// a CRLF file -- leaves the file MIXED. See conformReplacementEOL, including
+	// why this is not gated on match.Tier.
+	replace, eolNote := conformReplacementEOL(block.Replace, original[match.Start:match.End], original)
+
+	newContent := original[:match.Start] + replace + original[match.End:]
 	startLine := strings.Count(original[:match.Start], "\n") + 1
 	endLine := startLine + strings.Count(original[match.Start:match.End], "\n")
 
@@ -183,6 +190,19 @@ func PrepareEdit(realWorkspaceRoot string, block EditBlock) (*PreparedEdit, erro
 		return nil, fmt.Errorf("stat %s: %w", block.FilePath, err)
 	}
 
+	// One note, composed rather than replaced: the tier says what the matcher had
+	// to forgive to FIND the text, the re-encode says what the writer did to it.
+	// Both are separate facts and a caller that sees only one is missing half of
+	// what happened. MatchNote reaches the model through propose_edit's result
+	// text as well as the CLI and TUI, so neither is ever silent.
+	matchNote := match.Tier.Note()
+	if eolNote != "" {
+		if matchNote != "" {
+			matchNote += "; "
+		}
+		matchNote += eolNote
+	}
+
 	return &PreparedEdit{
 		Block:      block,
 		TargetPath: targetPath,
@@ -193,7 +213,7 @@ func PrepareEdit(realWorkspaceRoot string, block EditBlock) (*PreparedEdit, erro
 		FileMode:   info.Mode(),
 		SyntaxNote: syntaxNote,
 		Tier:       match.Tier,
-		MatchNote:  match.Tier.Note(),
+		MatchNote:  matchNote,
 	}, nil
 }
 

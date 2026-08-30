@@ -358,3 +358,158 @@ func TestRealDocumentationIsNeverReadAsADiff(t *testing.T) {
 	}
 	t.Logf("FALSE-POSITIVE SCREEN: %d real markdown files, none read as a diff", len(docs))
 }
+
+// toCRLF rewrites an LF text as CRLF. The sources are Go files checked in with
+// LF, so this is exactly what a Windows clone under core.autocrlf=true puts on
+// disk.
+func toCRLF(s string) string { return strings.ReplaceAll(s, "\n", "\r\n") }
+
+// TestAnLFPatchAppliedToACRLFTreeKeepsTheTreeCRLF is the measurement the
+// line-ending work is gated on, and it reproduces the ordinary Windows
+// workflow rather than an invented one.
+//
+// Git for Windows defaults to core.autocrlf=true. Under it `git diff` emits LF
+// while the files on disk stay CRLF, so a Windows user's patch describes
+// different bytes than their own working tree holds. The reader reads it and
+// the matcher finds the text at the line-ending tier -- both correct -- but the
+// splice used to write the patch's LF lines into the CRLF file, leaving it
+// MIXED. Measured before conformReplacementEOL: 0 of 200 files byte-identical,
+// with not_found=0 and refusals_from_reader=0, which is the tell that both
+// halves were working on a question that had been mis-stated.
+//
+// The setup is HERMETIC rather than autocrlf-driven: the patch is computed from
+// the LF tree and the CRLF conversion is done here, so the test measures the
+// splice on every platform instead of measuring the host's git config. That is
+// the same mistake TestTheCorpusAsksGitForUntranslatedBytes exists to prevent,
+// one level up.
+func TestAnLFPatchAppliedToACRLFTreeKeepsTheTreeCRLF(t *testing.T) {
+	requireGit(t)
+
+	sources := collectRealSources(t)
+	if len(sources) < minRoundTripFiles {
+		t.Fatalf("collected only %d source files (floor %d); the walk must have broken", len(sources), minRoundTripFiles)
+	}
+	if len(sources) > 200 {
+		sources = sources[:200]
+	}
+
+	root := realTempDir(t)
+	git(t, root, "init", "-q", ".")
+	git(t, root, "config", "user.email", "test@example.invalid")
+	git(t, root, "config", "user.name", "test")
+
+	originals := make([]string, len(sources))
+	wanted := make([]string, len(sources))
+	for i, src := range sources {
+		name := fmt.Sprintf("f%03d.txt", i)
+		originals[i] = src
+		if err := os.WriteFile(filepath.Join(root, name), []byte(src), 0644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		mutatedText, _ := mutate(src, i)
+		wanted[i] = mutatedText
+	}
+
+	git(t, root, "add", "-A")
+	git(t, root, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "base")
+
+	for i := range sources {
+		if err := os.WriteFile(filepath.Join(root, fmt.Sprintf("f%03d.txt", i)), []byte(wanted[i]), 0644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+	}
+
+	// The patch, in LF -- what `git diff` hands a Windows user.
+	patch := git(t, root, "diff", "--unified=3")
+	if strings.TrimSpace(patch) == "" {
+		t.Skip("git produced no diff (git present but not usable in this environment)")
+	}
+	if strings.Contains(patch, "\r") {
+		t.Fatalf("the patch carries CR; this test is only evidence while the patch is LF and the tree is CRLF")
+	}
+
+	// The tree, in CRLF -- what is actually on that user's disk.
+	for i := range sources {
+		if err := os.WriteFile(filepath.Join(root, fmt.Sprintf("f%03d.txt", i)), []byte(toCRLF(originals[i])), 0644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+	}
+
+	payload := ParseEditPayload(patch)
+	if payload.Format != FormatUnifiedDiff {
+		t.Fatalf("Format = %v, want FormatUnifiedDiff", payload.Format)
+	}
+	if len(payload.Blocks) < minRoundTripHunks {
+		t.Fatalf("ingested only %d hunks (floor %d)", len(payload.Blocks), minRoundTripHunks)
+	}
+
+	backupDir, err := NewBackupSessionDir(root)
+	if err != nil {
+		t.Fatalf("NewBackupSessionDir: %v", err)
+	}
+
+	var applied, ambiguous, notFound, reencoded int
+	otherRefusals := map[string]int{}
+	for _, block := range payload.Blocks {
+		prepared, err := PrepareEdit(root, block)
+		if err != nil {
+			switch {
+			case strings.Contains(err.Error(), "ambiguous"):
+				ambiguous++
+			case strings.Contains(err.Error(), "not found"):
+				notFound++
+			default:
+				otherRefusals[err.Error()]++
+			}
+			continue
+		}
+		if strings.Contains(prepared.MatchNote, "re-encoded") {
+			reencoded++
+		}
+		if err := Apply(root, prepared, backupDir); err != nil {
+			t.Fatalf("Apply %s: %v", block.FilePath, err)
+		}
+		applied++
+	}
+
+	if len(otherRefusals) > 0 {
+		t.Errorf("hunks refused for reasons that are not ambiguity or staleness: %v", otherRefusals)
+	}
+	if notFound > 0 {
+		t.Errorf("%d hunk(s) produced SEARCH text that is not in the CRLF file -- the matcher stopped tolerating line endings", notFound)
+	}
+
+	exact, mixed := 0, 0
+	for i := range sources {
+		got, err := os.ReadFile(filepath.Join(root, fmt.Sprintf("f%03d.txt", i)))
+		if err != nil {
+			t.Fatalf("ReadFile: %v", err)
+		}
+		if string(got) == toCRLF(wanted[i]) {
+			exact++
+		}
+		if dominantEOL(string(got)) == eolMixed {
+			mixed++
+		}
+	}
+
+	t.Logf("CRLF-TREE MEASUREMENT: files=%d hunks=%d applied=%d re-encoded=%d AMBIGUOUS=%d not_found=%d MIXED=%d byte_identical=%d/%d",
+		len(sources), len(payload.Blocks), applied, reencoded, ambiguous, notFound, mixed, exact, len(sources))
+
+	// The defect, stated as an assertion: not one file may come back with two
+	// line-ending conventions in it. This is the number that was equal to the
+	// count of edited files before the fix.
+	if mixed > 0 {
+		t.Errorf("%d/%d files came back with MIXED line endings; an edit must not change the convention of the file it writes into", mixed, len(sources))
+	}
+	// Ambiguity is a legitimate refusal, so a handful of files legitimately do
+	// not reach byte-identical -- the same bar the LF round trip uses.
+	if exact*10 < len(sources)*9 {
+		t.Errorf("only %d/%d files round-tripped byte-identically; want at least 90%%", exact, len(sources))
+	}
+	// A run in which nothing was re-encoded would pass every assertion above
+	// while proving nothing about the code under test.
+	if reencoded == 0 {
+		t.Error("no hunk was re-encoded; this test cannot be evidence for a path it never took")
+	}
+}

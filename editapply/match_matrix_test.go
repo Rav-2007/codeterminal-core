@@ -32,7 +32,10 @@ type matchCase struct {
 	wantTier  MatchTier
 	// wantFile, when set, is the exact expected file content after the edit --
 	// used to pin that a non-exact match still writes back byte-correct
-	// surroundings (line endings above all).
+	// surroundings (line endings above all), AND that the replacement itself is
+	// written in the file's own convention rather than the one it arrived in.
+	// The second half is newer than the first: the splice used to insert the
+	// replacement's bytes verbatim, which left a CRLF file mixed.
 	wantFile string
 }
 
@@ -70,8 +73,10 @@ func matchMatrix() []matchCase {
 			name: "03 CRLF file, LF search", file: "alpha\r\nbeta\r\ngamma\r\n",
 			search: "alpha\nbeta", replace: "ALPHA\nBETA",
 			wantMatch: true, wantTier: MatchLineEndings,
-			// The file is CRLF and must STAY CRLF outside the replacement.
-			wantFile: "ALPHA\nBETA\r\ngamma\r\n",
+			// The file is CRLF and stays CRLF. Outside the replacement, which
+			// was always true; and inside it, which is conformReplacementEOL --
+			// the LF replacement is re-encoded rather than spliced in as-is.
+			wantFile: "ALPHA\r\nBETA\r\ngamma\r\n",
 		},
 		{
 			name: "04 LF file, CRLF search", file: "alpha\nbeta\ngamma\n",
@@ -187,7 +192,9 @@ func matchMatrix() []matchCase {
 			name: "20 CRLF + trailing WS + tabs together", file: "func f() {\r\n\treturn 1  \r\n}\r\n",
 			search: "func f() {\n    return 1\n}", replace: "func f() {\n\treturn 2\n}",
 			wantMatch: true, wantTier: MatchIndentation,
-			wantFile: "func f() {\n\treturn 2\n}\r\n",
+			// Three tolerances at once, and the write still lands entirely in
+			// the file's CRLF.
+			wantFile: "func f() {\r\n\treturn 2\r\n}\r\n",
 		},
 
 		// --- negative controls: tolerance must NOT rescue these ---
@@ -278,7 +285,9 @@ func TestMatchTier_LineEndingsPreservedOnWrite(t *testing.T) {
 
 // TestMatchTier_MultiLineCRLFMatchPreservesUnmatchedLineEndings is the harder
 // version: the match itself succeeds at the line-ending tier, spanning several
-// CRLF lines. Everything OUTSIDE the replaced span must keep its exact bytes.
+// CRLF lines. Everything OUTSIDE the replaced span must keep its exact bytes --
+// and, since conformReplacementEOL, the span itself comes back CRLF too, so the
+// file has one convention rather than two.
 func TestMatchTier_MultiLineCRLFMatchPreservesUnmatchedLineEndings(t *testing.T) {
 	root := realTempDir(t)
 	writeTempFile(t, root, "crlf.txt", "one\r\ntwo\r\nthree\r\nfour\r\n")
@@ -301,9 +310,12 @@ func TestMatchTier_MultiLineCRLFMatchPreservesUnmatchedLineEndings(t *testing.T)
 	}
 
 	got := readFile(t, filepath.Join(root, "crlf.txt"))
-	want := "one\r\nTWO\nTHREE\r\nfour\r\n"
+	want := "one\r\nTWO\r\nTHREE\r\nfour\r\n"
 	if got != want {
-		t.Errorf("got %q, want %q -- lines outside the match must keep their CRLF", got, want)
+		t.Errorf("got %q, want %q -- lines outside the match must keep their CRLF, and the replacement must be written in it", got, want)
+	}
+	if strings.Contains(got, "\n") && strings.Count(got, "\r\n") != strings.Count(got, "\n") {
+		t.Errorf("file came back MIXED: %q has %d LF but only %d CRLF", got, strings.Count(got, "\n"), strings.Count(got, "\r\n"))
 	}
 }
 
