@@ -147,7 +147,7 @@ Both remain in this register precisely so they are not mistaken for oversights.
 |---|---|---|---|
 | 13 | Stale price note `~$0.11/$0.80 per 1M`, measured ~2.3× off for at least one live provider | `models.json:5` | **CONFIRMED** |
 | 14 | `QUOTA_RESERVATION_DESIGN.md:3` still reads "design only. No code changes yet" — it shipped in `ca7e3c4`; §5(e) at line 312 still says "recommended as a follow-up" when the outbox landed. **§5(e)'s honesty is kept**: the crash case is mitigated and made loud, not solved. | `QUOTA_RESERVATION_DESIGN.md:3,312` | **CONFIRMED** |
-| 15 | `EditProposals` carries accepted blocks only — a refused block is invisible to the client | `protocol/protocol.go:297` | **CONFIRMED** |
+| 15 | ~~`EditProposals` carries accepted blocks only — a refused block is invisible to the client~~ | `protocol/protocol.go` | **FIXED 2026-08-30** — `TokenResponse.EditRejections`, additive, on the same Done message. Daemon returns them from `parseAndLogEditBlocks` (including the zero-usable-blocks path, which used to send nothing at all); VS Code renders them ahead of the modal edit review. Not sent to the model — that is a separate decision. |
 | 16 | `UndoResponse.Restored` is one integer over two different outcomes; a removal and a restore both increment it | `protocol/protocol.go:708` | **CONFIRMED** |
 | 17 | `file:line` resolver does not match Python tracebacks (`File "x.py", line 42`) | `daemon/fileref.go:73` | **CONFIRMED** — the pattern set has no such form |
 | 18 | Chunk end-lines overshoot by one on files ending in a newline | `daemon/fileref.go` span math | **PLAUSIBLE** — recorded, not re-measured |
@@ -370,9 +370,13 @@ the register entry is corrected rather than the code.
   literal `\n` resurrects the Fix-C spurious-revert. A format change to a manifest
   that undo depends on, for an input no parser in this codebase can currently
   produce.
-- **15** — `EditProposals` does not carry refused blocks. Genuine, and a wire
-  addition with a client half on both sides; larger than the other honesty items
-  and not attempted here.
+- ~~**15** — `EditProposals` does not carry refused blocks.~~ **DONE 2026-08-30.**
+  It was correctly sized here — a wire addition with a client half — and the
+  estimate that made it look larger than it was turned out to be a coupling that
+  did not exist: `daemon/server.go` recorded that the field "belongs with the
+  protocol change the incremental streaming work already has to make", and it
+  did not. The field is additive and lands beside `EditProposals` on the Done
+  message, with no streaming work underneath it.
 - **18** — chunk end-lines overshoot by one on files ending in a newline. Still
   PLAUSIBLE; not re-measured this pass.
 - **19** — the TUI has no search box. Mechanical but not small.
