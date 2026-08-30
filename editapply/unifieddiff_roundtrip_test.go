@@ -359,10 +359,53 @@ func TestRealDocumentationIsNeverReadAsADiff(t *testing.T) {
 	t.Logf("FALSE-POSITIVE SCREEN: %d real markdown files, none read as a diff", len(docs))
 }
 
-// toCRLF rewrites an LF text as CRLF. The sources are Go files checked in with
-// LF, so this is exactly what a Windows clone under core.autocrlf=true puts on
-// disk.
-func toCRLF(s string) string { return strings.ReplaceAll(s, "\n", "\r\n") }
+// toLF and toCRLF convert between conventions. Both NORMALISE FIRST, so they
+// are idempotent and cannot be fed their own output to produce "\r\r\n" --
+// which is exactly what a naive toCRLF does when handed text that is already
+// CRLF, and what a Windows checkout hands it.
+func toLF(s string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(s, "\r\n", "\n"), "\r", "\n")
+}
+
+func toCRLF(s string) string { return strings.ReplaceAll(toLF(s), "\n", "\r\n") }
+
+// TestToCRLFAndToLFAreTotalAndIdempotent guards the normalise-first half of
+// those two helpers, which nothing else can see.
+//
+// It exists because its own neuter came back NOT CAUGHT: with sources already
+// normalised by the caller, toCRLF never receives CRLF input, so stripping its
+// internal toLF changed no other test's result. The property is still worth
+// having -- a future caller WILL hand one of these its own output -- so it gets
+// a guard of its own rather than being deleted or left unguarded.
+func TestToCRLFAndToLFAreTotalAndIdempotent(t *testing.T) {
+	cases := []struct{ name, in, wantCRLF, wantLF string }{
+		{"LF input", "a\nb\n", "a\r\nb\r\n", "a\nb\n"},
+		// The one that matters: a naive toCRLF doubles this into "a\r\r\n".
+		{"CRLF input, as a Windows checkout gives it", "a\r\nb\r\n", "a\r\nb\r\n", "a\nb\n"},
+		{"lone CR input", "a\rb\r", "a\r\nb\r\n", "a\nb\n"},
+		{"mixed input is made uniform", "a\r\nb\nc\r", "a\r\nb\r\nc\r\n", "a\nb\nc\n"},
+		{"no line break", "alpha", "alpha", "alpha"},
+		{"empty", "", "", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := toCRLF(c.in); got != c.wantCRLF {
+				t.Errorf("toCRLF(%q) = %q, want %q", c.in, got, c.wantCRLF)
+			}
+			if got := toLF(c.in); got != c.wantLF {
+				t.Errorf("toLF(%q) = %q, want %q", c.in, got, c.wantLF)
+			}
+			// Idempotence stated directly, so a regression cannot hide behind a
+			// caller that happens to normalise first.
+			if got := toCRLF(toCRLF(c.in)); got != c.wantCRLF {
+				t.Errorf("toCRLF is not idempotent: toCRLF(toCRLF(%q)) = %q, want %q", c.in, got, c.wantCRLF)
+			}
+			if got := toLF(toLF(c.in)); got != c.wantLF {
+				t.Errorf("toLF is not idempotent: toLF(toLF(%q)) = %q, want %q", c.in, got, c.wantLF)
+			}
+		})
+	}
+}
 
 // TestAnLFPatchAppliedToACRLFTreeKeepsTheTreeCRLF is the measurement the
 // line-ending work is gated on, and it reproduces the ordinary Windows
@@ -391,6 +434,21 @@ func TestAnLFPatchAppliedToACRLFTreeKeepsTheTreeCRLF(t *testing.T) {
 	}
 	if len(sources) > 200 {
 		sources = sources[:200]
+	}
+
+	// THE CHECKOUT IS PART OF THE FIXTURE, not just the git config.
+	//
+	// collectRealSources reads these files from DISK, and on a Windows runner git
+	// checks them out as CRLF (core.autocrlf=true) -- so "the LF original" is not
+	// LF at all. `git diff` then returns a patch carrying CR, the guard below
+	// fires, and toCRLF would double every ending into "\r\r\n".
+	//
+	// Normalising here is what makes this test measure the SPLICE instead of the
+	// runner's checkout. It is the same lesson as gitNeutralConfig one level up,
+	// applied to the bytes on disk rather than the bytes git prints -- and it was
+	// learned the same way, from a red Windows job.
+	for i := range sources {
+		sources[i] = toLF(sources[i])
 	}
 
 	root := realTempDir(t)
