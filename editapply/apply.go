@@ -26,7 +26,46 @@ type PreparedEdit struct {
 	Creates    bool   // true when this edit brings a new file into existence (see IsEmptySearch)
 }
 
-// parseSyntax reports whether this binary can check lang at all, and if so
+// syntaxTier is how strongly this binary can judge one language, and therefore
+// how forcefully it is allowed to act on what it finds.
+//
+// THE TIER DECIDES THE CONSEQUENCE, NOT JUST THE CHECK. tierParser has a real
+// parser behind it, so a failure is ground for a refusal. tierDelimiters has a
+// bracket count behind it, so a failure is ground for a note and nothing more.
+// Keeping those two facts in one enum stops the pairing drifting -- there is no
+// way to add a language to a tier without also deciding what a failure there is
+// allowed to do, because the tier IS that decision.
+type syntaxTier int
+
+const (
+	// tierNone: this build cannot say anything about the language.
+	tierNone syntaxTier = iota
+	// tierParser: a real parser. A failure can refuse.
+	tierParser
+	// tierDelimiters: structural balance only. A failure is ADVISORY and can
+	// never refuse -- see delimiters.go, where that is enforced by signature.
+	tierDelimiters
+)
+
+// syntaxTierFor is the ONE place that maps a language to how well this binary
+// knows it. LanguageOf says what a file is; this says what we can do about it.
+//
+// The three delimiter-tier languages are exactly the non-Go entries in
+// extensionLanguages. That is not a coincidence to be preserved by hand: a
+// language earns a table entry only when this product can do something with the
+// answer (see langtable.go), and Tier B is now one of the things it can do.
+func syntaxTierFor(lang Language) syntaxTier {
+	switch lang {
+	case LangGo:
+		return tierParser
+	case LangTypeScript, LangJavaScript, LangPython:
+		return tierDelimiters
+	default:
+		return tierNone
+	}
+}
+
+// parseSyntax reports whether this binary can PARSE lang at all, and if so
 // whether content is well-formed for it.
 //
 // checked == false means "no parser for this language", which is never a
@@ -34,6 +73,10 @@ type PreparedEdit struct {
 // languages this binary can judge lives here and in LanguageOf, and nowhere
 // else, so a caller cannot decide a file is checkable by a different rule than
 // the one that checks it.
+//
+// This is Tier A only. A language with a delimiter check but no parser is still
+// `checked == false` here, because it is still true that nothing parsed it --
+// checkSyntax routes on syntaxTierFor before it ever gets here.
 func parseSyntax(lang Language, relPath, content string) (checked bool, err error) {
 	if lang != LangGo {
 		return false, nil
@@ -88,6 +131,14 @@ func parseSyntax(lang Language, relPath, content string) (checked bool, err erro
 // asymmetry is honest and is reported in the returned note.
 func checkSyntax(relPath string, prior *string, content string) (note string, err error) {
 	lang := LanguageOf(relPath)
+
+	// TIER B, and note what it cannot do: checkDelimiterTier returns one value.
+	// There is no error to propagate, so this branch cannot refuse, and no edit
+	// to it can make it refuse without changing that function's signature. See
+	// delimiters.go for why the weaker check must be the quieter one.
+	if syntaxTierFor(lang) == tierDelimiters {
+		return checkDelimiterTier(lang, relPath, prior, content), nil
+	}
 
 	checked, parseErr := parseSyntax(lang, relPath, content)
 	if !checked {

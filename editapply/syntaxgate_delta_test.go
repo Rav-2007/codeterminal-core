@@ -172,10 +172,22 @@ func TestCreateOfUnparseableGoIsStillRefused(t *testing.T) {
 	}
 }
 
-// A language with no parser in this binary is never refused and never claimed to
-// be checked -- on either side of the delta.
+// A language with no parser in this binary is never refused -- on either side
+// of the delta.
+//
+// SPLIT 2026-08-30, WHEN TIER B ARRIVED. This test used to assert that .py and
+// .js also say "no syntax check applied", and that assertion was correct right
+// up until those two languages started getting a delimiter check. It failed on
+// the Tier B branch, which is the test doing its job: the note is a claim about
+// what this build did, and what it does changed.
+//
+// The invariant that survives untouched is the one in the name -- NEVER
+// REFUSED. Both groups below assert it. What splits is the note, because
+// "nothing checked this" and "the brackets balance" are different claims and
+// collapsing them is how a gate starts overstating itself.
 func TestUncheckedLanguagesAreNeverRefusedByTheGate(t *testing.T) {
-	for _, path := range []string{"main.rs", "notes.txt", "app.py", "index.js"} {
+	// No tier at all: no parser, no delimiter check. The note must say so.
+	for _, path := range []string{"main.rs", "notes.txt"} {
 		note, err := checkEditSyntax(path, "anything at all", "{[(<<< not balanced")
 		if err != nil {
 			t.Errorf("checkEditSyntax(%q) refused: %v; only Go has a parser here", path, err)
@@ -183,5 +195,136 @@ func TestUncheckedLanguagesAreNeverRefusedByTheGate(t *testing.T) {
 		if !strings.Contains(note, "no syntax check applied") {
 			t.Errorf("note for %q = %q, want it to say plainly that nothing was checked", path, note)
 		}
+	}
+
+	// Tier B: checked, still never refused, and the note says which it was.
+	for _, path := range []string{"app.py", "index.js"} {
+		note, err := checkEditSyntax(path, "anything at all", "{[(<<< not balanced")
+		if err != nil {
+			t.Errorf("checkEditSyntax(%q) refused: %v; Tier B is advisory and must never refuse",
+				path, err)
+		}
+		if !strings.Contains(strings.ToLower(note), "advisory") {
+			t.Errorf("note for %q = %q, want it marked advisory", path, note)
+		}
+		if strings.Contains(note, "no syntax check applied") {
+			t.Errorf("note for %q = %q, but a delimiter check DID run -- claiming nothing was "+
+				"checked understates the build", path, note)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TIER B: delimiter balance, advisory only.
+// ---------------------------------------------------------------------------
+
+// TestTierBNeverRefuses is the load-bearing test of Tier B.
+//
+// Every case here is an edit that leaves the file structurally worse. All of
+// them must be APPLIED. A bracket count is a heuristic, and a heuristic that
+// refuses blocks correct edits on constructs it failed to model -- exactly the
+// fault the delta rule removed from Tier A, reintroduced by a weaker check with
+// more confidence than it has earned.
+//
+// If any case here starts returning an error, Tier B has become a gate and the
+// design is broken, whatever the note says.
+func TestTierBNeverRefuses(t *testing.T) {
+	for _, tc := range []struct {
+		name, file, before, search, replace string
+	}{
+		{
+			name: "edit unbalances a balanced file", file: "a.ts",
+			before: "function f() { return 1; }\n",
+			search: "function f() { return 1; }", replace: "function f() { return 1;",
+		},
+		{
+			name: "edit adds a stray closer", file: "a.ts",
+			before: "const a = 1;\n",
+			search: "const a = 1;", replace: "const a = 1; }",
+		},
+		{
+			name: "edit leaves an unterminated string", file: "a.js",
+			before: "const a = 1;\n",
+			search: "const a = 1;", replace: "const a = \"oops;",
+		},
+		{
+			name: "edit leaves an unterminated block comment", file: "a.ts",
+			before: "const a = 1;\n",
+			search: "const a = 1;", replace: "/* oops",
+		},
+		{
+			name: "python bracket left open", file: "a.py",
+			before: "d = {'a': 1}\n",
+			search: "d = {'a': 1}", replace: "d = {'a': 1",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := realTempDir(t)
+			writeTempFile(t, root, tc.file, tc.before)
+
+			prepared, err := PrepareEdit(root, EditBlock{
+				FilePath: tc.file, Search: tc.search, Replace: tc.replace,
+			})
+			if err != nil {
+				t.Fatalf("TIER B REFUSED AN EDIT: %v\n\n"+
+					"Tier B is a bracket count, not a parser. It is allowed to say what it "+
+					"noticed and nothing more. A refusal here blocks a correct edit whenever "+
+					"the scan mismodels a construct, which is the failure mode the delta rule "+
+					"was written to remove from the tier that DOES have a parser.", err)
+			}
+			if !strings.Contains(strings.ToLower(prepared.SyntaxNote), "advisory") {
+				t.Errorf("SyntaxNote = %q, want the note to mark itself advisory so a reader "+
+					"does not take a bracket count for a syntax error", prepared.SyntaxNote)
+			}
+		})
+	}
+}
+
+// A balanced edit to a Tier B file gets a note saying so, and says which tier
+// produced it -- "delimiters balanced" and "no syntax check applied" are very
+// different claims and the user is entitled to know which one they got.
+func TestTierBReportsABalancedEditAsChecked(t *testing.T) {
+	root := realTempDir(t)
+	writeTempFile(t, root, "a.ts", "function f() { return 1; }\n")
+
+	prepared, err := PrepareEdit(root, EditBlock{
+		FilePath: "a.ts", Search: "return 1;", Replace: "return [1, 2];",
+	})
+	if err != nil {
+		t.Fatalf("PrepareEdit: %v", err)
+	}
+	if !strings.Contains(prepared.SyntaxNote, "balanced") {
+		t.Errorf("SyntaxNote = %q, want it to report that the delimiters were checked and balanced",
+			prepared.SyntaxNote)
+	}
+	if strings.Contains(prepared.SyntaxNote, "no syntax check applied") {
+		t.Errorf("SyntaxNote = %q -- this file IS checked now, at Tier B. Reporting the "+
+			"pre-Tier-B message understates what the build did", prepared.SyntaxNote)
+	}
+}
+
+// Tier A is untouched by Tier B's arrival, and so is Tier "none".
+func TestTierAIsUnchangedByTierB(t *testing.T) {
+	root := realTempDir(t)
+	writeTempFile(t, root, "foo.go", "package main\n\nfunc old() {}\n")
+
+	if _, err := PrepareEdit(root, EditBlock{
+		FilePath: "foo.go", Search: "func old() {}", Replace: "func broken( {",
+	}); err == nil {
+		t.Fatal("Go must still REFUSE an edit that breaks a working file -- Tier B's " +
+			"advisory contract must not have leaked onto the tier that has a parser")
+	}
+
+	writeTempFile(t, root, "a.rs", "fn main() {}\n")
+	prepared, err := PrepareEdit(root, EditBlock{
+		FilePath: "a.rs", Search: "fn main() {}", Replace: "fn main() {",
+	})
+	if err != nil {
+		t.Fatalf("an unchecked language must never be refused: %v", err)
+	}
+	if !strings.Contains(prepared.SyntaxNote, "no syntax check applied") {
+		t.Errorf("SyntaxNote = %q, want .rs to still report that nothing checked it -- "+
+			"Tier B covers the table's languages, and Rust is deliberately not one",
+			prepared.SyntaxNote)
 	}
 }
