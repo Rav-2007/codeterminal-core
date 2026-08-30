@@ -188,7 +188,7 @@ All commands are subcommands of the `codeterminal-daemon` binary.
 | *(none)* | Run the daemon in the foreground |
 | `index <path>` | Build the vector + lexical index for a workspace |
 | `retrieve --workspace <p> --k N <query>` | Query the index and print top-k hits |
-| `edits apply [--workspace p] [file\|-]` | Apply SEARCH/REPLACE blocks from a response |
+| `edits apply [--workspace p] [file\|-]` | Apply SEARCH/REPLACE blocks, or a unified diff, from a response |
 | `edits undo [--workspace p] [--session ts] [--force]` | Restore a backup session |
 | `mcp list [--config p]` | Show what agent mode would advertise, and its policy |
 | `skills list [--limit N] [--json]` · `skills delete <id>` | Local skills store |
@@ -695,7 +695,7 @@ shippable targets.
 | Area | Not done, deliberately |
 |---|---|
 | **Retrieval** | No *full* index build on start or per request — the running daemon's watcher does keep it current per file; no query rewriting; no multi-hop. Re-running `index` rebuilds chunk-by-chunk keyed by a deterministic ID rather than diffing |
-| **Editing** | No *scored or approximate* `SEARCH` matching — the matcher normalizes (line endings, trailing space, indentation, unicode) and then matches exactly, and **ambiguous is always a refusal**, never a guess ([`match.go`](editapply/match.go)). No mid-stream parsing: edits are read from the completed response. Unified diffs are not parsed — a response carrying one is refused by name, not silently ignored. File *creation* **is** supported — see [Editing](#editing) |
+| **Editing** | No *scored or approximate* `SEARCH` matching — the matcher normalizes (line endings, trailing space, indentation, unicode) and then matches exactly, and **ambiguous is always a refusal**, never a guess ([`match.go`](editapply/match.go)). The replacement is then written back in the file's own line-ending convention, so an LF patch never leaves a CRLF file mixed ([`lineendings.go`](editapply/lineendings.go)). No mid-stream parsing: edits are read from the completed response. A unified diff **is** read — each hunk becomes one SEARCH/REPLACE block and goes through the same gates — but it is never what the model is instructed to produce. File *creation* **is** supported — see [Editing](#editing) |
 | **Agent mode** | No OS sandboxing of third-party servers — consent and audit are the protection, and the docs say so; stdio only, so no remote MCP and no new egress; tools only, no resources or prompts; no hot-reload; tool results never persist into history |
 | **Skills** | Storage plumbing only: no auto-capture, no injection into prompts, no vector search, no sync |
 | **Routing** | `ghost_text` and `reasoning` stay inactive; VS Code has no model picker UI yet |
