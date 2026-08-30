@@ -68,6 +68,17 @@ on:
       # The embedding helper is a separate process and a separate module; a
       # change to the tokenizer or the sequence cap changes every vector.
       - "helper/**"
+      # And the daemon side of that subprocess. helperproc.go owns how every
+      # embedding call is BATCHED, DEADLINED and RESTARTED, so it can fail or
+      # slow this job without changing a single vector.
+      #
+      # Added 2026-08-30 after it did exactly that and this filter hid it: run
+      # 33321602030 died on `i/o timeout` embedding a 40-chunk batch, the fix
+      # went into helperproc.go, and because that file was not listed the eval
+      # DID NOT RE-RUN on the commit that fixed it. Only `build` did. Third
+      # instance of this miss, after the chunkexpand.go group and
+      # evalcorpus_test.go above.
+      - "daemon/helperproc.go"
       # The evals themselves and their fixtures. A change to the answer key is
       # exactly when you want the answer key re-run.
       - "daemon/eval_test.go"
