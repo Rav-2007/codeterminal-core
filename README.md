@@ -437,7 +437,7 @@ order:
 |---|---|---|
 | 1 | **Path safety** | Anything resolving, through symlinks, outside the workspace root; absolute paths; `..` escapes; files the indexer would secret-skip |
 | 2 | **Exact match** | `SEARCH` text not found, or found more than once — ambiguous is a refusal, never a guess |
-| 3 | **Syntax** | A `.go` edit whose result will not parse. **Go is the only language with a parser in this binary** — every other file type is written unchecked, and the note beside the diff says so verbatim. On a non-Go repository this gate does not fire, so the list below is four gates, not five |
+| 3 | **Syntax** | A `.go` edit that **breaks a file which parsed before it**. Judged on the delta, not the result — an edit to an *already*-broken file is allowed, and the note says the file did not parse beforehand either, so a syntax error stays fixable through edit blocks. Creating a file is judged absolutely, because there is no “before”. **Go is the only language with a parser in this binary** — every other file type is written unchecked, and the note beside the diff says so verbatim. On a non-Go repository this gate does not fire, so the list below is four gates, not five |
 | 4 | **Confirm** | Everything except a literal `y` at the diff prompt |
 | 5 | **Backup** | Nothing — it records pre- and post-edit content under `.codeterminal/backups/<ts>/{before,after}/` before the real write |
 
@@ -460,7 +460,12 @@ confirmation. Two behaviours are worth knowing:
   that is the same intent.
 - **The syntax gate applies to creation too**, deliberately. Without that, a
   model whose edit was refused for not parsing could land the identical bytes by
-  resending them as a creation.
+  resending them as a creation. It is *absolute* here where the edit path judges
+  the delta, and that asymmetry is the same decision rather than an exception: an
+  empty `SEARCH` means the file's content is, or should be, nothing, and nothing
+  has no prior brokenness to inherit. (An empty `.go` file does not parse, so a
+  delta rule on this path would read every creation as a repair and excuse
+  anything.)
 
 `edits undo` restores a session, comparing current on-disk content against the
 `after/` snapshot first. A file modified since is **never silently clobbered**:

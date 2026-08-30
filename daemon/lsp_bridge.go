@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"codeterminal/daemon/mcp"
+	"codeterminal/editapply"
 )
 
 // A language server is UNTRUSTED INPUT, and this file treats it that way.
@@ -119,14 +120,14 @@ func fileURI(path string) string {
 // LSPBridge manages a pool of language servers for the workspace.
 type LSPBridge struct {
 	workspace string
-	servers   map[string]*LSPServer
+	servers   map[editapply.Language]*LSPServer
 	mu        sync.Mutex
 }
 
 func NewLSPBridge(workspace string) *LSPBridge {
 	return &LSPBridge{
 		workspace: workspace,
-		servers:   make(map[string]*LSPServer),
+		servers:   make(map[editapply.Language]*LSPServer),
 	}
 }
 
@@ -137,25 +138,105 @@ func (b *LSPBridge) Close() {
 	for _, srv := range b.servers {
 		srv.Close()
 	}
-	b.servers = make(map[string]*LSPServer)
+	b.servers = make(map[editapply.Language]*LSPServer)
 }
 
 // serverCommand maps a language to the binary that serves it.
-func serverCommand(lang string) (string, error) {
+//
+// THE PARAMETER IS TYPED, AND THAT IS THE ENFORCEMENT. It used to take a bare
+// string and accept the aliases "ts", "js" and "py" alongside the real names --
+// aliases that existed only because callers derived a language themselves, from
+// their own private copy of an extension switch. Two such copies existed, byte
+// for byte identical, and both opened by DEFAULTING an unrecognised file to Go
+// (see editapply.Language). Taking editapply.Language here does not merely
+// forbid a third copy; it makes one impossible to write, because there is now no
+// way to reach this function except through the one table that produces the
+// type. The aliases went with it: nothing can spell a language any more, so
+// nothing can misspell one.
+func serverCommand(lang editapply.Language) (string, error) {
 	switch lang {
-	case "go":
+	case editapply.LangGo:
 		return "gopls", nil
-	case "typescript", "javascript", "ts", "js":
+	case editapply.LangTypeScript, editapply.LangJavaScript:
 		return "typescript-language-server", nil
-	case "python", "py":
+	case editapply.LangPython:
 		return "pyright-langserver", nil
 	default:
 		return "", fmt.Errorf("unsupported language for LSP: %s", lang)
 	}
 }
 
+// lspServerForFile resolves the language server that can answer for full, or a
+// descriptive error saying why none can.
+//
+// THIS IS THE SITE THE DUPLICATE SWITCHES USED TO OCCUPY. builtinLSPDefinition,
+// builtinLSPReferences and builtinProposeASTEdit each carried their own copy of
+// "extension -> language -> bridge -> GetServer", and the two extension switches
+// were identical down to the byte. One function now, so the next tool that needs
+// a language server inherits the LangUnknown refusal rather than reinventing the
+// default that caused the bug.
+func (s *Server) lspServerForFile(full string) (*LSPServer, error) {
+	lang := editapply.LanguageOf(full)
+	if lang == editapply.LangUnknown {
+		// NAMED, NOT DEFAULTED. The old code sent this file to gopls, which
+		// answered honestly that it held no symbols -- and the caller reported
+		// that as "symbol not found", telling the user their code was wrong when
+		// the truth was that we had asked the wrong compiler.
+		return nil, fmt.Errorf("no language server is configured for %s; language-server tools cover %s",
+			describeFileExt(full), englishList(languageNames()))
+	}
+
+	// A nil bridge is a configuration state, not a crash. main.go always sets
+	// one, but nothing enforced that: every other Server construction -- a
+	// one-shot subcommand, a test, whatever is written next -- reached GetServer
+	// on a nil pointer and took the daemon's goroutine down with it. handleConn's
+	// recover() would have contained it, at the cost of the user's turn and a
+	// counted panic.
+	if s.lspBridge == nil {
+		return nil, fmt.Errorf("language-server support is not available in this daemon")
+	}
+
+	srv, err := s.lspBridge.GetServer(lang)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get language server for %s: %v", lang, err)
+	}
+	return srv, nil
+}
+
+// describeFileExt names a path's extension for a refusal message, in the same
+// shape editapply's own gate messages use.
+func describeFileExt(path string) string {
+	if ext := filepath.Ext(path); ext != "" {
+		return ext + " files"
+	}
+	return "files with no extension"
+}
+
+// languageNames renders the language table's own contents, so a message about
+// what is supported cannot drift from what is supported.
+func languageNames() []string {
+	langs := editapply.KnownLanguages()
+	names := make([]string, 0, len(langs))
+	for _, l := range langs {
+		names = append(names, string(l))
+	}
+	return names
+}
+
+// englishList joins names as a person would read them: "a, b and c".
+func englishList(names []string) string {
+	switch len(names) {
+	case 0:
+		return "no languages"
+	case 1:
+		return names[0]
+	default:
+		return strings.Join(names[:len(names)-1], ", ") + " and " + names[len(names)-1]
+	}
+}
+
 // GetServer spins up and initializes a language server if one doesn't exist.
-func (b *LSPBridge) GetServer(lang string) (*LSPServer, error) {
+func (b *LSPBridge) GetServer(lang editapply.Language) (*LSPServer, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 

@@ -26,42 +26,97 @@ type PreparedEdit struct {
 	Creates    bool   // true when this edit brings a new file into existence (see IsEmptySearch)
 }
 
-// refuseIfUnparseable is the syntax gate: a hard refusal, not a note.
+// parseSyntax reports whether this binary can check lang at all, and if so
+// whether content is well-formed for it.
+//
+// checked == false means "no parser for this language", which is never a
+// refusal. Keeping that in ONE place is the point: the knowledge of which
+// languages this binary can judge lives here and in LanguageOf, and nowhere
+// else, so a caller cannot decide a file is checkable by a different rule than
+// the one that checks it.
+func parseSyntax(lang Language, relPath, content string) (checked bool, err error) {
+	if lang != LangGo {
+		return false, nil
+	}
+	_, err = parser.ParseFile(token.NewFileSet(), relPath, content, parser.AllErrors)
+	return true, err
+}
+
+// checkSyntax is the syntax gate: it decides whether a proposed write is
+// refused, and describes what it decided.
 //
 // Shared by the edit and the create path, and it is a shared function rather
 // than two copies for the reason it had to be written at all. The gate was
-// inline in PrepareEdit and prepareCreate carried only syntaxNoteFor, so the
-// SAME model output — a .go file that does not parse — was refused when it
-// arrived as an edit and written to disk when it arrived as a create. A model
-// that had its edit refused could get the identical bytes onto disk by sending
-// them with an empty SEARCH section instead. One function, one behaviour, and
-// no second copy to drift.
+// inline in PrepareEdit and prepareCreate carried only a note, so the SAME
+// model output -- a .go file that does not parse -- was refused when it arrived
+// as an edit and written to disk when it arrived as a create. A model that had
+// its edit refused could get the identical bytes onto disk by sending them with
+// an empty SEARCH section instead. One function, one behaviour, and no second
+// copy to drift.
+//
+// PRIOR IS WHAT MAKES THE REFUSAL TRUE. It is the file's content before this
+// write, or nil when there is no before -- the create path. This gate used to
+// look only at the RESULT, and so refused an edit to an already-broken file
+// with "edit would make X unparseable as Go": a false statement about what the
+// edit did, and one that made a broken file unfixable through edit blocks. A
+// model asked to repair a syntax error could not, because its repair was judged
+// against a standard the file did not meet before it started -- and repairing a
+// broken file is one of the things a user most often asks for.
+//
+// So exactly one transition is refused:
+//
+//	before   after    verdict
+//	parses   parses   allow
+//	parses   BROKEN   REFUSE  <- the gate's whole purpose: do not break a working file
+//	BROKEN   parses   allow   <- this is a repair
+//	BROKEN   BROKEN   allow, and the note says the file was already broken
+//
+// A create has no before, so there every failure is a refusal. That asymmetry
+// is not an inconsistency: an empty SEARCH section means "this file's content
+// is, or should be, nothing", and nothing has no prior brokenness to inherit.
+// The laundering route the shared gate exists to close stays closed too, because
+// the edit path still refuses those same bytes whenever the target parses now.
+//
+// What the delta rule gives up, stated plainly: a file that is already broken
+// can be edited into differently-broken. There is nothing to protect in that
+// case -- the gate's promise is that an edit will not break a WORKING file, and
+// that promise is kept exactly.
 //
 // Best-effort by construction: Go is the only language with a parser in this
-// binary, and everything else is written unchecked. That asymmetry is honest
-// and reported by syntaxNoteFor; what is not defensible is the same language
-// being checked on one write path and not the other.
-func refuseIfUnparseable(relPath, content string) error {
-	if !strings.EqualFold(filepath.Ext(relPath), ".go") {
-		return nil
+// binary, and everything else is written unchecked. See langtable.go for why the
+// list stops at Go, and parseSyntax for the single place that decides it. The
+// asymmetry is honest and is reported in the returned note.
+func checkSyntax(relPath string, prior *string, content string) (note string, err error) {
+	lang := LanguageOf(relPath)
+
+	checked, parseErr := parseSyntax(lang, relPath, content)
+	if !checked {
+		return fmt.Sprintf("no syntax check applied (unsupported for %s)", describeExt(relPath)), nil
 	}
-	if _, err := parser.ParseFile(token.NewFileSet(), relPath, content, parser.AllErrors); err != nil {
-		return fmt.Errorf("edit would make %s unparseable as Go: %w", relPath, err)
+	if parseErr != nil {
+		// The prior state is only worth a second parse once the result has
+		// already failed, so the common case -- a write that parses -- pays
+		// nothing for this rule.
+		if prior != nil {
+			if _, priorErr := parseSyntax(lang, relPath, *prior); priorErr != nil {
+				return "go/parser reported errors; this file did not parse before this edit either", nil
+			}
+		}
+		return "", fmt.Errorf("edit would make %s unparseable as Go: %w", relPath, parseErr)
 	}
-	return nil
+	return "go/parser OK", nil
 }
 
-// syntaxNoteFor describes what syntax checking applies to relPath, given the
-// content that would be written. Shared by the edit and create paths so a
-// created .go file is reported the same way an edited one is.
-func syntaxNoteFor(relPath, content string) string {
-	if strings.EqualFold(filepath.Ext(relPath), ".go") {
-		if _, err := parser.ParseFile(token.NewFileSet(), relPath, content, parser.AllErrors); err == nil {
-			return "go/parser OK"
-		}
-		return "go/parser reported errors"
-	}
-	return fmt.Sprintf("no syntax check applied (unsupported for %s)", describeExt(relPath))
+// checkEditSyntax applies the gate to a splice into an existing file, which has
+// a before state and is therefore judged on the DELTA.
+func checkEditSyntax(relPath, original, newContent string) (note string, err error) {
+	return checkSyntax(relPath, &original, newContent)
+}
+
+// checkCreateSyntax applies the gate to a file being brought into existence,
+// which has no before state and is therefore judged absolutely.
+func checkCreateSyntax(relPath, content string) (note string, err error) {
+	return checkSyntax(relPath, nil, content)
 }
 
 // PrepareEdit runs the safety tripod's path-safety and exact-match legs,
@@ -118,10 +173,10 @@ func PrepareEdit(realWorkspaceRoot string, block EditBlock) (*PreparedEdit, erro
 	startLine := strings.Count(original[:match.Start], "\n") + 1
 	endLine := startLine + strings.Count(original[match.Start:match.End], "\n")
 
-	if err := refuseIfUnparseable(block.FilePath, newContent); err != nil {
+	syntaxNote, err := checkEditSyntax(block.FilePath, original, newContent)
+	if err != nil {
 		return nil, err
 	}
-	syntaxNote := syntaxNoteFor(block.FilePath, newContent)
 
 	info, err := os.Stat(targetPath)
 	if err != nil {

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"codeterminal/daemon/mcp"
@@ -112,27 +111,13 @@ func (s *Server) builtinProposeASTEdit(_ context.Context, raw json.RawMessage, p
 		return toolError("invalid path: %v", err)
 	}
 
-	lang := "go"
-	ext := strings.ToLower(filepath.Ext(full))
-	switch ext {
-	case ".ts", ".js", ".tsx", ".jsx":
-		lang = "typescript"
-	case ".py":
-		lang = "python"
-	}
-
-	// A nil bridge is a configuration state, not a crash. main.go always sets
-	// one, but nothing enforced that: every other Server construction -- a
-	// one-shot subcommand, a test, whatever is written next -- reached
-	// GetServer on a nil pointer and took the daemon's goroutine down with it.
-	// handleConn's recover() would have contained it, at the cost of the user's
-	// turn and a counted panic.
-	if s.lspBridge == nil {
-		return toolError("language-server support is not available in this daemon")
-	}
-	srv, err := s.lspBridge.GetServer(lang)
+	// One resolver, shared with every other language-server tool. The extension
+	// switch that used to sit here -- byte-identical to the one in its sibling
+	// file, and defaulting an unknown extension to Go -- is gone; see
+	// lspServerForFile.
+	srv, err := s.lspServerForFile(full)
 	if err != nil {
-		return toolError("failed to get language server for %s: %v", lang, err)
+		return toolError("%v", err)
 	}
 
 	params := map[string]any{

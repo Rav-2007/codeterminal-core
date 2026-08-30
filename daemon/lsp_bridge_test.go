@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"codeterminal/editapply"
 )
 
 // lsp_bridge.go shipped with every function at 0.0% coverage, and it is not a
@@ -346,20 +348,50 @@ func TestFileURI_SeparatorsArePlatformSpecific(t *testing.T) {
 }
 
 func TestServerCommand(t *testing.T) {
-	for _, tc := range []struct{ lang, want string }{
-		{"go", "gopls"},
-		{"typescript", "typescript-language-server"},
-		{"js", "typescript-language-server"},
-		{"python", "pyright-langserver"},
-		{"py", "pyright-langserver"},
+	for _, tc := range []struct {
+		lang editapply.Language
+		want string
+	}{
+		{editapply.LangGo, "gopls"},
+		{editapply.LangTypeScript, "typescript-language-server"},
+		{editapply.LangJavaScript, "typescript-language-server"},
+		{editapply.LangPython, "pyright-langserver"},
 	} {
 		got, err := serverCommand(tc.lang)
 		if err != nil || got != tc.want {
 			t.Errorf("serverCommand(%q) = %q, %v; want %q", tc.lang, got, err, tc.want)
 		}
 	}
-	if _, err := serverCommand("brainfuck"); err == nil {
-		t.Error("an unsupported language returned a command")
+	if _, err := serverCommand(editapply.LangUnknown); err == nil {
+		t.Error("LangUnknown returned a command; a file we could not identify must not " +
+			"be routed to any language server -- that IS the bug this type exists to prevent")
+	}
+}
+
+// THE SUPPORTED-LANGUAGE MESSAGE MUST NOT LIE.
+//
+// lspServerForFile refuses an unrecognised file by listing what IS covered, and
+// it builds that list from editapply.KnownLanguages(). If a language can be
+// named by the table but has no server binary behind it, that sentence promises
+// a capability this daemon does not have -- and the user is sent to try
+// something that cannot work. Adding a language to the table is therefore a
+// decision about this bridge too, and this is where the build says so.
+func TestEveryKnownLanguageHasAServerCommand(t *testing.T) {
+	langs := editapply.KnownLanguages()
+	if len(langs) == 0 {
+		t.Fatal("KnownLanguages() is empty; this test would assert nothing")
+	}
+	for _, lang := range langs {
+		cmd, err := serverCommand(lang)
+		if err != nil {
+			t.Errorf("KnownLanguages() names %q but serverCommand has no binary for it: %v. "+
+				"Either give it one, or drop it from the table -- the refusal message "+
+				"tells users this language is covered.", lang, err)
+			continue
+		}
+		if cmd == "" {
+			t.Errorf("serverCommand(%q) returned an empty command with no error", lang)
+		}
 	}
 }
 

@@ -94,7 +94,14 @@ func prepareCreate(block EditBlock, targetPath string, exists bool) (*PreparedEd
 	// merely annotated while editing one into that state was refused, so a
 	// model whose edit was rejected could land the identical bytes by sending
 	// them with an empty SEARCH section instead.
-	if err := refuseIfUnparseable(block.FilePath, block.Replace); err != nil {
+	//
+	// ABSOLUTE HERE, DELTA ON THE EDIT PATH, and that is deliberate rather than
+	// a gap: checkEditSyntax excuses a result that does not parse only when the
+	// file did not parse BEFORE either, and this path has no before to excuse it
+	// with. An empty SEARCH section means "this file's content is, or should be,
+	// nothing", and nothing has no prior brokenness to inherit. See checkSyntax.
+	syntaxNote, err := checkCreateSyntax(block.FilePath, block.Replace)
+	if err != nil {
 		return nil, err
 	}
 
@@ -115,7 +122,7 @@ func prepareCreate(block EditBlock, targetPath string, exists bool) (*PreparedEd
 		StartLine:  1,
 		EndLine:    1,
 		FileMode:   mode,
-		SyntaxNote: syntaxNoteFor(block.FilePath, block.Replace),
+		SyntaxNote: syntaxNote,
 		Tier:       MatchExact,
 		Creates:    !exists,
 	}, nil
