@@ -26,6 +26,29 @@ const (
 	defaultHelperReadyPollStep = 50 * time.Millisecond
 	defaultHelperStopGrace     = 2 * time.Second
 	defaultHelperCallTimeout   = 10 * time.Second
+
+	// Added per TEXT on a batched Embed, on top of defaultHelperCallTimeout.
+	//
+	// One deadline cannot serve both shapes of call this helper receives. A live
+	// query embeds ONE short string and 10s is already generous. An index build
+	// embeds indexEmbedBatchSize (40) chunks in a single request, which is not
+	// forty times more urgent, it is forty times more work -- and the FIRST batch
+	// also pays the ONNX session's cold start.
+	//
+	// Measured 2026-08-30: 4,704 chunks in 7m36.7s on a 12-core machine is ~97ms
+	// per chunk, so a 40-chunk batch is ~4s there and several times that on a
+	// small CI runner. It went over 10s on a github-hosted ubuntu-latest and
+	// failed a run outright (`i/o timeout` on run 33321602030) -- and that is NOT
+	// an eval-only fault: newActiveEmbedder gives the real `index` command and
+	// the daemon's live retrieval this same default, so `index` on a slow or
+	// loaded machine could fail the same way.
+	//
+	// 1s per text is deliberately far above measured cost. A deadline here exists
+	// to catch a HUNG helper, not to bound legitimate work, so it should sit well
+	// clear of what the work actually takes; the cost of being wrong in the tight
+	// direction is a user's index failing, and in the loose direction is waiting
+	// longer to notice a hang.
+	defaultHelperPerTextTimeout = 1 * time.Second
 )
 
 // HelperProcess manages the embedder helper subprocess end to end: spawning
@@ -57,6 +80,8 @@ type HelperProcess struct {
 	readyPollStep time.Duration
 	stopGrace     time.Duration
 	callTimeout   time.Duration
+	// perTextTimeout is added per text beyond the first on a batched Embed.
+	perTextTimeout time.Duration
 
 	mu         sync.Mutex
 	cmd        *exec.Cmd
@@ -91,6 +116,7 @@ func NewHelperProcess(binPath, modelDir, onnxRuntimeLib string, logger *log.Logg
 		readyPollStep:  defaultHelperReadyPollStep,
 		stopGrace:      defaultHelperStopGrace,
 		callTimeout:    defaultHelperCallTimeout,
+		perTextTimeout: defaultHelperPerTextTimeout,
 		stopSignal:     make(chan struct{}),
 	}
 }
@@ -323,6 +349,14 @@ func (h *HelperProcess) Health(ctx context.Context) error {
 // misbehaving helper; validating here is cheap and turns that class of fault
 // into a clean, contained error instead of a crash (C1).
 func (h *HelperProcess) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	// Size the deadline to the batch before call() falls back to its
+	// one-request-shaped default. A caller that set its own deadline keeps it:
+	// call() only supplies one when the context has none, and so does this.
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, h.embedDeadline(len(texts)))
+		defer cancel()
+	}
 	resp, err := h.call(ctx, helperproto.Request{Method: helperproto.MethodEmbed, Texts: texts})
 	if err != nil {
 		return nil, err
@@ -334,6 +368,19 @@ func (h *HelperProcess) Embed(ctx context.Context, texts []string) ([][]float32,
 		return nil, fmt.Errorf("embedder helper returned %d vectors for %d input texts; refusing a malformed response", len(resp.Vectors), len(texts))
 	}
 	return resp.Vectors, nil
+}
+
+// embedDeadline is how long a batch of n texts is allowed to take: the
+// one-call budget, plus a per-text allowance for everything beyond the first.
+//
+// A single text is unchanged at callTimeout, so interactive latency behaves
+// exactly as it did -- this only ever LENGTHENS the deadline, and only for
+// calls that are doing proportionally more work.
+func (h *HelperProcess) embedDeadline(n int) time.Duration {
+	if n <= 1 {
+		return h.callTimeout
+	}
+	return h.callTimeout + time.Duration(n-1)*h.perTextTimeout
 }
 
 // call performs exactly one request/response round trip: dial, encode,

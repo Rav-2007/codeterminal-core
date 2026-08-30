@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"codeterminal/helper/helperproto"
 )
@@ -86,6 +87,15 @@ func handleConn(conn net.Conn) {
 	case helperproto.MethodHealth:
 		resp = helperproto.Response{OK: true}
 	case helperproto.MethodEmbed:
+		// FAKEHELPER_EMBED_DELAY, if set to a Go duration, stalls the embed
+		// response by that long. It exists to test that the call deadline
+		// SCALES WITH THE BATCH: a stall longer than the one-call budget but
+		// shorter than the batched budget must fail a single-text embed and
+		// succeed a batched one. Health is deliberately unaffected, so the
+		// helper still starts normally.
+		if d, err := time.ParseDuration(os.Getenv("FAKEHELPER_EMBED_DELAY")); err == nil && d > 0 {
+			time.Sleep(d)
+		}
 		n := len(req.Texts)
 		// FAKEHELPER_SHORT_VECTORS, if set, returns ONE FEWER vector than there
 		// were input texts while still reporting ok:true — the precise

@@ -266,3 +266,118 @@ func TestHelperProcess_StopAfterFailedStartDoesNotHang(t *testing.T) {
 		t.Fatalf("second Stop: %v", err)
 	}
 }
+
+// TestEmbedDeadlineScalesWithTheBatch pins the fix for a failure that reached
+// CI on 2026-08-30: a 40-chunk index batch exceeded the 10-second call
+// timeout and the run died with `i/o timeout` (run 33321602030).
+//
+// The timeout was not wrong for what it was written for. It was written for a
+// live query, which embeds ONE short string. An index build sends
+// indexEmbedBatchSize texts in a single request, which is not more urgent, it
+// is more work — and newActiveEmbedder hands that same default to the real
+// `index` command, so this was a product fault and not an eval-harness one.
+//
+// The assertion is a PAIR, in both directions, because "make the timeout
+// bigger" would pass a one-sided test while destroying what the deadline is
+// for. The fake helper stalls for longer than the single-call budget and less
+// than the batched one, so:
+//
+//   - a ONE-text embed must still time out (the deadline still bounds a hang)
+//   - a BATCHED embed of the same stall must succeed (it scales with the work)
+//
+// A fixed deadline of any size fails one of these two.
+func TestEmbedDeadlineScalesWithTheBatch(t *testing.T) {
+	const (
+		callBudget = 300 * time.Millisecond
+		perText    = 300 * time.Millisecond
+		stall      = 600 * time.Millisecond // > callBudget, < callBudget+3*perText
+	)
+
+	newHelper := func(t *testing.T) *HelperProcess {
+		t.Helper()
+		h := NewHelperProcess(fakeHelperBinPath, "", "", discardLogger())
+		h.readyTimeout = 5 * time.Second
+		h.readyPollStep = 10 * time.Millisecond
+		h.stopGrace = 300 * time.Millisecond
+		h.callTimeout = callBudget
+		h.perTextTimeout = perText
+		h.extraEnv = []string{"FAKEHELPER_EMBED_DELAY=" + stall.String()}
+		if err := h.Start(); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		t.Cleanup(func() { _ = h.Stop() })
+		return h
+	}
+
+	t.Run("one text still times out", func(t *testing.T) {
+		h := newHelper(t)
+		if _, err := h.Embed(context.Background(), []string{"a"}); err == nil {
+			t.Fatalf("a %s stall must exceed the %s single-call budget: the deadline has stopped "+
+				"bounding a hung helper", stall, callBudget)
+		}
+	})
+
+	t.Run("a batch of the same stall succeeds", func(t *testing.T) {
+		h := newHelper(t)
+		texts := []string{"a", "b", "c", "d"}
+		vecs, err := h.Embed(context.Background(), texts)
+		if err != nil {
+			t.Fatalf("a %s stall is well inside the budget for %d texts (%s), so this must "+
+				"succeed — the deadline is not scaling with the batch: %v",
+				stall, len(texts), callBudget+3*perText, err)
+		}
+		if len(vecs) != len(texts) {
+			t.Fatalf("got %d vectors for %d texts", len(vecs), len(texts))
+		}
+	})
+
+	// A caller's SHORTER deadline needs no defending: context.WithTimeout keeps
+	// whichever deadline is earlier, so it survives on its own. The case that
+	// does need the `if _, ok := ctx.Deadline(); !ok` guard is a caller whose
+	// deadline is LONGER than the batch budget -- without the guard, Embed
+	// silently shortens it to a budget the caller never asked for. That is the
+	// direction tested here, and it is the direction a one-sided test misses.
+	t.Run("a caller's longer deadline is not shortened", func(t *testing.T) {
+		h := newHelper(t)
+		// One text, so the batch budget is the bare callBudget (300ms) — less
+		// than the 600ms stall. The caller allows far more. It must be honoured.
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if _, err := h.Embed(ctx, []string{"a"}); err != nil {
+			t.Fatalf("the caller allowed 10s and the stall is %s, so this must succeed. "+
+				"Embed has overridden a deadline its caller set: %v", stall, err)
+		}
+	})
+
+	t.Run("a caller's shorter deadline still wins", func(t *testing.T) {
+		h := newHelper(t)
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
+		if _, err := h.Embed(ctx, []string{"a", "b", "c", "d"}); err == nil {
+			t.Fatal("a caller that set a 50ms deadline must get it, not a batch-sized one")
+		}
+	})
+}
+
+// TestEmbedDeadlineArithmetic covers the boundary cases the behavioural test
+// above cannot reach quickly: the empty and single-text calls, which must be
+// exactly the unchanged one-call budget so interactive latency is untouched.
+func TestEmbedDeadlineArithmetic(t *testing.T) {
+	h := NewHelperProcess("", "", "", discardLogger())
+	h.callTimeout = 10 * time.Second
+	h.perTextTimeout = time.Second
+
+	for _, tc := range []struct {
+		n    int
+		want time.Duration
+	}{
+		{0, 10 * time.Second},
+		{1, 10 * time.Second},
+		{2, 11 * time.Second},
+		{40, 49 * time.Second},
+	} {
+		if got := h.embedDeadline(tc.n); got != tc.want {
+			t.Errorf("embedDeadline(%d) = %s, want %s", tc.n, got, tc.want)
+		}
+	}
+}
