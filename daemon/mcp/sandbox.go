@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -169,13 +170,39 @@ func LimiterEnv(allow []string) []string {
 	return ServerEnv(append(append([]string{}, allow...), limiterRuntimeEnvNames...))
 }
 
-// LimiterUsable reports whether a systemd user scope can actually be created
-// here, by creating one.
+// probeMemoryMaxBytes is the limit the usability probe asks for. Small enough
+// to be unmistakable when read back, and never applied to anything real.
+const probeMemoryMaxBytes = 64 * 1024 * 1024
+
+// LimiterUsable reports whether a systemd user scope will actually BOUND what
+// it is asked to bound here, by creating one and reading the limit back out of
+// the kernel.
 //
-// PRESENCE IS NOT CAPABILITY, FOR THE THIRD TIME IN THIS FILE. The first was
-// --nosuid, a flag that looked right and broke every invocation. The second was
-// selecting bwrap because the binary was on PATH. This is the third, and it has
-// two independent ways to look available and not be:
+// PRESENCE IS NOT CAPABILITY, FOR THE FOURTH TIME IN THIS FILE, and the fourth
+// was this function itself. The first was --nosuid, a flag that looked right and
+// broke every invocation. The second was selecting bwrap because the binary was
+// on PATH. The third is the two ways a scope can look creatable and not be, both
+// listed below. The fourth is subtler and cost a green CI run to find:
+//
+//	systemd-run ACCEPTS -p MemoryMax= and creates the scope even when the memory
+//	controller is not delegated to the user manager. The property is recorded and
+//	silently never enforced.
+//
+// The old probe ran /bin/true inside such a scope and returned whether it
+// exited zero -- which it does either way. So on a host with no delegated
+// memory controller this function returned true, LimitsApply returned true, and
+// the approval prompt told the user their command was capped at N MiB while it
+// allocated 4 GiB. Measured exactly that way on a CI runner: the cap held on a
+// workstation whose user manager has `cpu memory pids` delegated, and did
+// nothing on a runner that does not.
+//
+// So the probe now reads back what the kernel actually applied. It runs, inside
+// the scope, the smallest thing that can answer the question: find this
+// process's own cgroup, and print that cgroup's memory.max. A delegated
+// controller prints the byte count that was asked for; an undelegated one prints
+// "max", which is the kernel saying "unbounded" in as many words.
+//
+// The two older traps this still has to clear, unchanged:
 //
 //   - No user systemd (a container, a minimal image, an init that is not
 //     systemd), or no cgroup v2 delegation of the controllers we set.
@@ -185,26 +212,73 @@ func LimiterEnv(allow []string) []string {
 //     ServerEnv -- then fails every time. So the probe runs under LimiterEnv,
 //     which is precisely what the real call gets.
 //
-// One scope of /bin/true, once per process.
+// CGROUP V1 READS AS UNUSABLE, deliberately. /proc/self/cgroup there names a
+// per-controller hierarchy and there is no memory.max to read, so this cannot
+// prove enforcement -- and an unprovable bound must be reported as absent. That
+// is the whole lesson of the four paragraphs above; a host that loses the
+// limiter this way is told so honestly by the prompt rather than reassured
+// falsely.
+//
+// One scope, once per process.
 var LimiterUsable = sync.OnceValue(func() bool {
 	if _, err := lookPath("systemd-run"); err != nil {
 		return false
 	}
-	truePath, err := lookPath("true")
+	// sh for the two builtins that locate the cgroup, cat to read the one file.
+	// Both are as ordinary as the /bin/true this used to run, and unlike it they
+	// can answer the question that matters.
+	shPath, err := lookPath("sh")
 	if err != nil {
 		return false
 	}
+	if _, err := lookPath("cat"); err != nil {
+		return false
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+
+	// Read INSIDE the scope, not after it. A transient scope is collected as
+	// soon as its process exits, so a probe that printed its cgroup path and
+	// left the daemon to read memory.max would be racing the cleanup for a file
+	// that is usually already gone.
+	const readBackOwnMemoryMax = `IFS=: read -r _ _ p < /proc/self/cgroup; exec cat "/sys/fs/cgroup$p/memory.max"`
+
 	// The same controllers the real invocation sets: a host that delegates
 	// none of them must not report the limiter as usable.
 	probe := exec.CommandContext(ctx, "systemd-run",
 		"--user", "--scope", "--quiet",
-		"-p", "MemoryMax=64M", "-p", "TasksMax=16", "-p", "CPUQuota=100%",
-		"--", truePath)
+		"-p", fmt.Sprintf("MemoryMax=%d", probeMemoryMaxBytes),
+		"-p", "TasksMax=16", "-p", "CPUQuota=100%",
+		"--", shPath, "-c", readBackOwnMemoryMax)
 	probe.Env = LimiterEnv(nil)
-	return probe.Run() == nil
+
+	out, err := probe.Output()
+	if err != nil {
+		return false
+	}
+	return memoryMaxIsEnforced(string(out), probeMemoryMaxBytes)
 })
+
+// memoryMaxIsEnforced reads a cgroup v2 memory.max value and reports whether it
+// is a real bound at or below want.
+//
+// "max" is the kernel's word for unbounded and is the exact reading an
+// undelegated memory controller produces, so it is the one answer this must
+// never accept. A number ABOVE what was asked for is refused too: it means
+// something other than our property decided the limit, and a bound we did not
+// set is not a bound we can promise.
+func memoryMaxIsEnforced(readBack string, want int64) bool {
+	v := strings.TrimSpace(readBack)
+	if v == "" || v == "max" {
+		return false
+	}
+	got, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		return false
+	}
+	return got > 0 && got <= want
+}
 
 // wantsLimits reports whether cfg asked for any resource bound at all.
 func wantsLimits(cfg SandboxConfig) bool {

@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -272,25 +273,106 @@ func TestEveryUnrunnableSandboxRefusesWithAReason(t *testing.T) {
 // It asserts agreement with an independently-built invocation rather than a
 // fixed value, because the right answer genuinely differs by host: a CI
 // container with no user systemd must report false and still pass.
-func TestTheLimiterProbeAgreesWithAnActualScope(t *testing.T) {
+// delegatedControllers reads which cgroup v2 controllers this user's systemd
+// manager may actually apply. It is the INDEPENDENT oracle for the test below:
+// systemd-run will happily accept -p MemoryMax= without this list containing
+// "memory", and then enforce nothing.
+func delegatedControllers() ([]string, bool) {
+	uid := os.Getuid()
+	path := fmt.Sprintf("/sys/fs/cgroup/user.slice/user-%d.slice/user@%d.service/cgroup.controllers", uid, uid)
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false
+	}
+	return strings.Fields(string(b)), true
+}
+
+// THE PROBE MUST AGREE WITH THE KERNEL, NOT WITH systemd-run's EXIT CODE.
+//
+// This test used to compare LimiterUsable() against whether a scope could be
+// CREATED, and passed on every host anyone had run it on. That equivalence was
+// the bug: on a runner whose user manager has no delegated memory controller,
+// the scope is created, systemd-run exits zero, MemoryMax is silently discarded,
+// and a 4 GiB allocation runs to completion under a "2048 MiB cap" -- while the
+// approval prompt tells the user the command is bounded.
+//
+// So the oracle is now what the kernel will actually enforce, and the assertion
+// is two-sided, because the two directions catch opposite defects:
+//
+//	memory delegated, probe false  -> the probe is broken, and its breakage is
+//	                                  SILENT: every limits test skips, CI goes
+//	                                  green, and nothing is ever bounded again.
+//	memory undelegated, probe true -> the original bug: a promise we cannot keep.
+func TestTheLimiterProbeAgreesWithWhatTheKernelEnforces(t *testing.T) {
+	controllers, ok := delegatedControllers()
+	if !ok {
+		t.Skip("no systemd user manager cgroup on this host; nothing to compare the probe against")
+	}
+	memoryDelegated := false
+	for _, c := range controllers {
+		if c == "memory" {
+			memoryDelegated = true
+			break
+		}
+	}
+
 	got := LimiterUsable()
 
-	independent := false
+	// What the OLD probe measured, kept only as evidence in the failure message.
+	scopeStarts := false
 	if _, err := lookPath("systemd-run"); err == nil {
 		if truePath, err := lookPath("true"); err == nil {
 			cmd := exec.Command("systemd-run", "--user", "--scope", "--quiet",
 				"-p", "MemoryMax=64M", "-p", "TasksMax=16", "-p", "CPUQuota=100%", "--", truePath)
 			cmd.Env = LimiterEnv(nil)
-			independent = cmd.Run() == nil
+			scopeStarts = cmd.Run() == nil
 		}
 	}
 
-	if got != independent {
-		t.Errorf("LimiterUsable()=%v but a real scope %s here -- the probe and the thing it "+
-			"predicts disagree, which is the failure mode it exists to prevent",
-			got, map[bool]string{true: "succeeded", false: "failed"}[independent])
+	switch {
+	case memoryDelegated && !got:
+		t.Errorf("this host delegates %v, so MemoryMax binds here, but LimiterUsable() is false.\n\n"+
+			"That is the SILENT direction: every test gated on LimiterUsable now skips, the suite "+
+			"goes green, and sandbox_exec stops bounding anything. Check the read-back probe -- a "+
+			"missing sh or cat, or a changed /proc/self/cgroup format, looks exactly like this.",
+			controllers)
+	case !memoryDelegated && got:
+		t.Errorf("this host does NOT delegate a memory controller (%v), so MemoryMax cannot bind, "+
+			"but LimiterUsable() is true.\n\n"+
+			"A scope still starts here (%v) -- that is precisely what the old probe measured and "+
+			"why it was wrong. LimitsApply will now tell the user their command is capped while it "+
+			"is not.", controllers, scopeStarts)
 	}
-	t.Logf("limiter usable on this host: %v", got)
+	t.Logf("delegated controllers=%v limiterUsable=%v scopeStarts=%v", controllers, got, scopeStarts)
+}
+
+// The read-back decision, in isolation. "max" is the exact string an
+// undelegated memory controller returns, and is the one answer that must never
+// be read as a bound.
+func TestMemoryMaxIsEnforced(t *testing.T) {
+	const want = 64 * 1024 * 1024
+	for _, tc := range []struct {
+		readBack string
+		enforced bool
+		why      string
+	}{
+		{"67108864\n", true, "exactly what was asked for"},
+		{"67108864", true, "no trailing newline"},
+		{"  33554432\t\n", true, "a tighter bound than asked for is still a bound"},
+		{"max\n", false, "THE CI READING: the kernel's word for unbounded"},
+		{"max", false, "unbounded, unpadded"},
+		{"", false, "no output at all -- cat failed, or the file was gone"},
+		{"\n", false, "whitespace only"},
+		{"134217728\n", false, "looser than asked for: something else set this, so we did not"},
+		{"0\n", false, "zero is not a bound this code ever asks for"},
+		{"-1\n", false, "negative"},
+		{"6710886four\n", false, "not a number"},
+		{"67108864 67108864\n", false, "two values, so the read-back is not what we think it is"},
+	} {
+		if got := memoryMaxIsEnforced(tc.readBack, want); got != tc.enforced {
+			t.Errorf("memoryMaxIsEnforced(%q) = %v, want %v -- %s", tc.readBack, got, tc.enforced, tc.why)
+		}
+	}
 }
 
 // LimitsApply must short-circuit before consulting the host when nothing was

@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // THE REGRESSION THIS FILE EXISTS FOR.
@@ -298,12 +299,32 @@ func TestPlainResponseYieldsNoToolCalls(t *testing.T) {
 // rawSSEServerFunc is rawSSEServer's dynamic sibling: the reply depends on the
 // request body, so a multi-iteration agent loop can be scripted turn by turn
 // and the request bodies inspected.
+// ssePause is a sentinel line rather than an SSE event: the server flushes
+// everything before it and then WAITS, instead of writing it.
+//
+// It exists so a test can put a known, generous gap in the middle of a model
+// response and rely on it. The alternative is to race the daemon, and one test
+// that did (TestAClientThatHangsUpMidTurnStopsTheAgentTurn) was green 40 times
+// locally and red on a CI runner, because "the client closed before the daemon
+// got to its next write" was true only while the machine was idle. Measured:
+// two milliseconds of client slowness was enough to invert it.
+const ssePause = "__SSE_PAUSE__"
+
+// ssePauseFor is long enough to dwarf any scheduling delay a loaded runner can
+// insert between a client decoding a message and closing its socket, and short
+// enough that a test spending one is not slow.
+const ssePauseFor = 300 * time.Millisecond
+
 func rawSSEServerFunc(t *testing.T, reply func(body []byte) []string) string {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		w.Header().Set("Content-Type", "text/event-stream")
 		for _, line := range reply(body) {
+			if line == ssePause {
+				time.Sleep(ssePauseFor)
+				continue
+			}
 			if _, err := w.Write([]byte(line + "\n\n")); err != nil {
 				return
 			}
