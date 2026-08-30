@@ -112,12 +112,12 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"os"
 	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
 	"testing"
+	"time"
 )
 
 // rerankEvalQuery is one query from the measured stress tests, with the
@@ -705,8 +705,26 @@ var evalSelfReferenceFiles = map[string]bool{
 	// SOURCE would not be, which is why rerank.go -- which also quoted a
 	// query, and is itself a declared answer for the RRF-fusion query -- was
 	// reworded instead of listed here.
-	"daemon/token_efficiency_eval_test.go":         true,
-	"BACKLOG.md":                                   true,
+	"daemon/token_efficiency_eval_test.go": true,
+	"BACKLOG.md":                           true,
+
+	// FOUND 2026-08-30, the first time this guard was run against the
+	// token-efficiency query set as well as the locate set. It had been in the
+	// corpus since 2026-07-17 -- six weeks -- and nothing could see it, because
+	// this scan only ever compared against rerankEvalQueries.
+	//
+	// RETRIEVAL_BUDGET_DESIGN.md:60 is a RESULTS TABLE FROM THE EVAL ITSELF:
+	// three rows, each pairing a token-efficiency query with the ground-truth
+	// file it is supposed to find. Row 15 quotes its query verbatim; rows 2 and
+	// 3 paraphrase, which this scan cannot see and which is why the note below
+	// about paraphrase exists. A chunk that reads "where is outbound secret
+	// scrubbing implemented | daemon/scrub.go" is not a distractor, it is the
+	// answer key.
+	//
+	// Excluded rather than reworded because it is a design doc that no query
+	// declares as an answer -- the third remedy in the error message below, and
+	// the one it names as appropriate for exactly this case.
+	"RETRIEVAL_BUDGET_DESIGN.md":                   true,
 	"docs/QA_LAUNCH_GATE_2026-07-30.md":            true,
 	"docs/RETRIEVAL_EVAL_CHECKPOINT_2026-08-08.md": true,
 }
@@ -734,6 +752,16 @@ var evalSelfReferenceFiles = map[string]bool{
 // the corpus (resolveExactChunks logs where, and does not fail). A query string
 // is prose that exists nowhere but this eval, so a second copy of one is always
 // either a leak or a file that should not be committed.
+// WHAT THIS SCAN DELIBERATELY CANNOT SEE: a PARAPHRASE. It compares literal
+// substrings, so a file that pairs "where is model tier routing decided" with
+// `daemon/router.go` is caught only if it quotes the query exactly. Two of the
+// three answer-key rows in RETRIEVAL_BUDGET_DESIGN.md were paraphrases and this
+// scan found neither; it found the file through the third, and a human then
+// read the table. That limit is stated rather than papered over: a fuzzy match
+// would fire on ordinary prose about the same subject, and a leak guard that
+// cries wolf is one people switch off. The mechanical half catches verbatim
+// leaks in both query sets; the judgement half is still a person reading the
+// file the mechanical half points at.
 func TestNoIndexedFileEchoesAnEvalQuery(t *testing.T) {
 	root, err := filepath.Abs("..")
 	if err != nil {
@@ -744,20 +772,49 @@ func TestNoIndexedFileEchoesAnEvalQuery(t *testing.T) {
 		t.Fatalf("scanning workspace: %v", err)
 	}
 
-	leaks := map[string][]int{}
+	// BOTH QUERY SETS, since 2026-08-30. This used to check rerankEvalQueries
+	// alone, which was a hole even then -- nothing had ever checked whether a
+	// committed file quotes a tokenEffQueries string verbatim -- and the shared
+	// corpus makes it a sharper one: ONE index now answers both evals, so a
+	// file that echoes either set's query contaminates both.
+	//
+	// The label is carried so the error names which eval a leak would flatter.
+	type evalQueryRef struct {
+		label string
+		text  string
+	}
+	var allQueries []evalQueryRef
+	for _, q := range rerankEvalQueries {
+		allQueries = append(allQueries, evalQueryRef{"locate", q.query})
+	}
+	for _, q := range tokenEffQueries {
+		allQueries = append(allQueries, evalQueryRef{"token-efficiency", q.query})
+	}
+	// Anti-vacuity. An empty query list would make every file look clean, and
+	// this test's whole job is to report that nothing leaks -- the one shape of
+	// answer a broken scan produces for free.
+	if len(allQueries) < len(rerankEvalQueries) {
+		t.Fatalf("collected %d queries from two sets that hold at least %d — this scan would "+
+			"pass vacuously", len(allQueries), len(rerankEvalQueries))
+	}
+
+	leaks := map[string][]string{}
 	for _, c := range scan.Chunks {
 		if evalSelfReferenceFiles[c.FilePath] {
 			continue
 		}
-		for i, q := range rerankEvalQueries {
-			if strings.Contains(c.Content, q.query) && !slices.Contains(leaks[c.FilePath], i+1) {
-				leaks[c.FilePath] = append(leaks[c.FilePath], i+1)
+		for i, q := range allQueries {
+			ref := fmt.Sprintf("%s#%d", q.label, i+1)
+			if strings.Contains(c.Content, q.text) && !slices.Contains(leaks[c.FilePath], ref) {
+				leaks[c.FilePath] = append(leaks[c.FilePath], ref)
 			}
 		}
 	}
 	if len(leaks) == 0 {
 		t.Logf("clean: %d files / %d chunks scanned, no file outside evalSelfReferenceFiles "+
-			"echoes any of the %d eval queries", scan.FilesScanned, len(scan.Chunks), len(rerankEvalQueries))
+			"echoes any of the %d eval queries (%d locate + %d token-efficiency)",
+			scan.FilesScanned, len(scan.Chunks), len(allQueries),
+			len(rerankEvalQueries), len(tokenEffQueries))
 		return
 	}
 	for _, f := range sortedFileNames(func() map[string]bool {
@@ -780,7 +837,17 @@ func TestNoIndexedFileEchoesAnEvalQuery(t *testing.T) {
 
 // indexRepoExcludingSelfReference scans root, drops any chunk whose
 // FilePath is in evalSelfReferenceFiles, and embeds/upserts the rest into
-// store and lexicalStore in indexEmbedBatchSize-sized batches — the same
+// store and lexicalStore in indexEmbedBatchSize-sized batches.
+//
+// IT HAS EXACTLY ONE CALLER LEFT, and that is deliberate rather than
+// neglect. Every eval that indexes the CURRENT repository now shares one
+// build (evalcorpus_test.go). TestEditShapedRetrievalEval cannot: it indexes
+// a reconstructed worktree at an old commit, which is a different corpus, so
+// it must build its own and this function is how it does it. Do not route a
+// new whole-repo eval through here — call sharedEvalCorpus instead, or the
+// suite goes back to paying for the same embeddings once per test.
+//
+// The original note follows — the same
 // batching buildIndex (index_cmd.go) uses, duplicated here only because
 // buildIndex has no hook to filter chunks between scanning and embedding.
 func indexRepoExcludingSelfReference(ctx context.Context, root string, embedder Embedder, store VectorStore, lexicalStore LexicalStore, logger *log.Logger) (*ScanResult, error) {
@@ -960,63 +1027,20 @@ func TestRerankEvalRetrievalRanking(t *testing.T) {
 		t.Skip("skipping eval test in -short mode")
 	}
 
-	logger := log.New(os.Stderr, "rerank-eval: ", log.LstdFlags)
-
-	modelCacheDir, err := defaultModelCacheDir()
-	if err != nil {
-		t.Fatalf("defaultModelCacheDir: %v", err)
-	}
-	modelDir, err := EnsureModelFiles(context.Background(), modelCacheDir, bgeModelAssets, logger)
-	if err != nil {
-		t.Fatalf("EnsureModelFiles (downloads only if not already cached): %v", err)
-	}
-
-	ortCacheDir, err := defaultONNXRuntimeCacheDir()
-	if err != nil {
-		t.Fatalf("defaultONNXRuntimeCacheDir: %v", err)
-	}
-	onnxRuntimeLib, err := EnsureONNXRuntimeLib(context.Background(), ortCacheDir, logger)
-	if err != nil {
-		t.Fatalf("EnsureONNXRuntimeLib (downloads only if not already cached): %v", err)
-	}
-
-	helperBin := buildRealHelperBinary(t)
-	helper := NewHelperProcess(helperBin, modelDir, onnxRuntimeLib, logger)
-	if err := helper.Start(); err != nil {
-		t.Fatalf("starting real embedder helper: %v", err)
-	}
-	defer helper.Stop()
-
-	embedder := NewBgeEmbedder(helper)
-
-	// Index the actual repo root (one level up from daemon/), not a
-	// curated subset — this is what makes the test faithful to the
-	// measured, real-repo failures. Both the semantic (chromem) and lexical
-	// (FTS5) stores are built from the same chunks, exactly as production
-	// indexing does — except this test scans and filters manually instead
-	// of calling buildIndex directly, to drop self-referential chunks (see
-	// evalSelfReferenceFiles) before they're ever embedded/upserted.
-	repoRoot, err := filepath.Abs("..")
-	if err != nil {
-		t.Fatalf("resolving repo root: %v", err)
-	}
-	indexDir := filepath.Join(t.TempDir(), "index")
-	store, err := NewChromemStore(indexDir)
-	if err != nil {
-		t.Fatalf("NewChromemStore: %v", err)
-	}
-	lexicalStore, err := NewFTSChunkStore(indexDir)
-	if err != nil {
-		t.Fatalf("NewFTSChunkStore: %v", err)
-	}
-	defer lexicalStore.Close()
-
+	// ONE INDEX FOR THE WHOLE EVAL SUITE. This test used to scan, embed and
+	// upsert the entire repository itself, immediately before
+	// TestTokenEfficiencyEval did exactly the same thing again for the same
+	// vectors. See evalcorpus_test.go for the measurement that motivated
+	// sharing it and for what the shared fixture deliberately does not cache.
+	//
+	// The corpus is READ-ONLY here: this test only queries it.
+	corpus := sharedEvalCorpus(t)
+	embedder, store, lexicalStore := corpus.Embedder, corpus.Store, corpus.LexicalStore
+	repoRoot, scan := corpus.RepoRoot, corpus.Scan
 	ctx := context.Background()
-	scan, err := indexRepoExcludingSelfReference(ctx, repoRoot, embedder, store, lexicalStore, logger)
-	if err != nil {
-		t.Fatalf("indexing repo: %v", err)
-	}
-	t.Logf("indexed repo root %s: scanned=%d chunks=%d (self-referential chunks excluded)", repoRoot, scan.FilesScanned, len(scan.Chunks))
+	t.Logf("shared corpus at %s: scanned=%d chunks=%d (self-referential chunks excluded) scan=%s embed=%s",
+		repoRoot, scan.FilesScanned, len(scan.Chunks),
+		corpus.ScanTime.Round(time.Millisecond), corpus.EmbedTime.Round(time.Millisecond))
 
 	// The chunk-level ground truth, computed from the index that was just built
 	// rather than read from a list of line ranges written weeks ago. See
@@ -1223,6 +1247,7 @@ func TestRerankEvalRetrievalRanking(t *testing.T) {
 	// cost five queries was indistinguishable from noise until it had already
 	// shipped. A rate also survives the set growing again: the next person to
 	// add queries does not have to remember to raise an integer.
+	retrievedRate := float64(hybridCount) / float64(total)
 	if deliveredRate < evalChunkRecallFloor {
 		t.Errorf("DELIVERED chunk-level recall %d/%d = %.1f%% is below the floor of %.1f%% measured on "+
 			"2026-08-28. Read resolveExactChunks' output first. If it reported an anchor that "+
@@ -1230,10 +1255,57 @@ func TestRerankEvalRetrievalRanking(t *testing.T) {
 			"has gone stale (code was moved or renamed) and retrieval is fine. If it reported "+
 			"nothing, this is a real retrieval regression: the derived half cannot go stale, "+
 			"because it is computed from the index this run just built. The per-shape breakdown "+
-			"above says which kind of question lost. If chunk-level recall held and only "+
-			"DELIVERED fell, the loss is in the budget or the merge, not in the ranker",
+			"above says which kind of question lost. AND READ THE OTHER TWO GATES BEFORE "+
+			"DIAGNOSING THIS ONE: this is an OUTCOME, and it is the only one of the three "+
+			"that cannot name its own cause. If evalChunkRetrievedFloor is also red the "+
+			"ranker regressed; if evalBudgetedOutCeiling is also red the corpus outgrew the "+
+			"budget; if both are green then expansion or merging lost something retrieval "+
+			"had found",
 			deliveredCount, total, 100*deliveredRate, 100*evalChunkRecallFloor)
 	}
+	// THE TWO GATES THAT SPLIT THE ONE ABOVE INTO ITS CAUSES.
+	//
+	// The DELIVERED floor is an outcome. It goes red for two unrelated reasons
+	// -- the ranker got worse, or the corpus outgrew the character budget --
+	// and it cannot say which, so every red run started with a human deciding
+	// what kind of failure they were looking at. That is not hypothetical: on
+	// 2026-08-30 delivered recall fell 39 -> 36 while retrieval IMPROVED over
+	// the same period (31 -> 32 retrieved, 45 -> 47 file-level) and the queries
+	// budgeted out went 1 -> 3. The corpus had grown by about a module. The
+	// instrument was right and it was reporting corpus growth in the vocabulary
+	// of a retrieval regression.
+	//
+	// A FIXED FLOOR ON A SELF-REFERENTIAL EVAL WILL MEET CORPUS GROWTH AGAIN,
+	// because this eval's corpus IS the product: every commit enlarges the
+	// haystack. Raising the constant each time it happens treats the symptom
+	// and loses the information. These two gates keep the information instead,
+	// by asking the two questions separately.
+	//
+	// WHAT WAS DELIBERATELY NOT DONE: making the budget a function of corpus
+	// size. It is tempting here and it is wrong for the product -- a user with
+	// a large repository does not get a larger model context window, so a
+	// budget that grows with the corpus would make this eval green by measuring
+	// a configuration that never ships.
+	if retrievedRate < evalChunkRetrievedFloor {
+		t.Errorf("RETRIEVED chunk-level recall %d/%d = %.1f%% is below the ranker floor of %.1f%%. "+
+			"This gate takes NO budget input -- it asks only whether the answer chunk reached the "+
+			"top %d -- so this is a ranking or indexing regression, not a budget one. Compare with "+
+			"the DELIVERED floor: if that is green and this is red, something is scoring worse and "+
+			"expansion is covering for it",
+			hybridCount, total, 100*retrievedRate, 100*evalChunkRetrievedFloor, defaultK)
+	}
+	if retrievedButBudgeted > evalBudgetedOutCeiling {
+		t.Errorf("%d of %d queries RETRIEVED the answer chunk and then lost it to the %d-char "+
+			"budget, above the ceiling of %d. Retrieval is not the problem: the ranker found "+
+			"these and the budget threw them away. This is the corpus outgrowing the context "+
+			"budget, which is what this eval's own history predicts will keep happening -- the "+
+			"corpus is this repository. The remedies, in order: pack the budget better "+
+			"(truncateToBudget, mergeAdjacentChunks), narrow what expansion adds "+
+			"(chunkexpand.go), or raise defaultContextBudgetChars and price the CI cost. Do NOT "+
+			"reach for this ceiling first",
+			retrievedButBudgeted, total, defaultContextBudgetChars, evalBudgetedOutCeiling)
+	}
+
 	if semanticOnlyCount > hybridCount {
 		t.Errorf("hybrid recall %d/%d is WORSE than semantic-only %d/%d -- fusion is losing "+
 			"results the semantic tier alone finds", hybridCount, total, semanticOnlyCount, total)
@@ -1342,6 +1414,61 @@ func TestRerankEvalRetrievalRanking(t *testing.T) {
 // AndNothingElse, TestTheChunkerIDChangesWhenTheEmbeddedTextDoes, and
 // TestTruncateToBudget_AnOversizedSpanDoesNotForfeitTheTail.
 const evalChunkRecallFloor = 0.75
+
+// evalChunkRetrievedFloor gates the RANKER, and nothing else.
+//
+// It is the chunk-level RETRIEVED rate -- did the answer chunk reach the top
+// defaultK -- before expansion, before merging, before the character budget.
+// Nothing downstream of retrieval can move it, which is exactly the property
+// evalChunkRecallFloor lacks and the reason this constant exists.
+//
+// MEASURED 2026-08-30, one machine, one worktree at 3655730, back to back,
+// with defaultContextBudgetChars as the only difference between the arms:
+//
+//	                  24000        32000
+//	semantic-only     30/49        30/49
+//	RETRIEVED         32/49        32/49
+//	budgeted out      4            1
+//	DELIVERED         35/49        41/49
+//
+// RETRIEVED IS IDENTICAL ACROSS THE TWO ARMS and delivered moves by six
+// queries. That is the whole argument for splitting the gate, measured rather
+// than asserted: one number was carrying two independent signals, and the one
+// that people read as "did retrieval regress" was the one being moved by a
+// constant that retrieval never sees.
+//
+// CONFIRMED ON THE TREE THIS SHIPPED WITH: retrieved 32/49, budgeted out 1,
+// delivered 41/49 -- so all three gates are green with 2, 3 and 4 queries of
+// slack respectively. (Semantic-only moved 30 -> 29 between that A/B worktree
+// and this one on comment edits alone, which is the corpus sensitivity this
+// file documents, and is why the slack is not optional.)
+//
+// 0.61 needs 30 of 49, two below the measured 32 -- the same two-query slack
+// evalChunkRecallFloor uses, and for the same reason: this corpus is the
+// repository, and two runs on one day have differed by two queries out of
+// forty-nine on edits that touched no file any flipped query names.
+const evalChunkRetrievedFloor = 0.61
+
+// evalBudgetedOutCeiling gates the BUDGET, and nothing else.
+//
+// It counts queries where the ranker DID find the answer chunk and the
+// character budget then dropped it, so the model never saw it. Those are
+// losses no amount of ranking work can recover; the only remedies are packing
+// more into the budget or enlarging it.
+//
+// THIS IS THE GATE THAT MAKES CORPUS GROWTH ANNOUNCE ITSELF. A self-referential
+// eval -- one whose corpus is the product -- gets a bigger haystack with every
+// commit, so budget pressure rises monotonically whatever the ranker does. Left
+// to the delivered floor alone, that arrives as an unexplained recall drop
+// months later, which is exactly how it arrived on 2026-08-30. Here it arrives
+// as a number with one cause and a named list of remedies.
+//
+// 4 against the 1 measured at the shipped 32,000-char budget. The slack is
+// deliberately wide: 24,000 measured exactly 4, so the ceiling sits at the
+// configuration this repo shipped until 2026-08-30 and would not have fired on
+// it. A ceiling that fails the moment the budget is anything less than today's
+// best is a ceiling that fails on ordinary churn.
+const evalBudgetedOutCeiling = 4
 
 func truncateEval(s string, n int) string {
 	if len(s) <= n {
