@@ -242,42 +242,53 @@ var LimiterUsable = sync.OnceValue(func() bool {
 	// soon as its process exits, so a probe that printed its cgroup path and
 	// left the daemon to read memory.max would be racing the cleanup for a file
 	// that is usually already gone.
-	const readBackOwnMemoryMax = `IFS=: read -r _ _ p < /proc/self/cgroup; exec cat "/sys/fs/cgroup$p/memory.max"`
+	// Both files, in one cat: if either is missing -- a kernel with no swap
+	// accounting, a controller that is not delegated -- cat exits non-zero and
+	// the probe reports unusable, which is the honest answer for a bound this
+	// cannot prove.
+	const readBackOwnMemoryLimits = `IFS=: read -r _ _ p < /proc/self/cgroup; exec cat "/sys/fs/cgroup$p/memory.max" "/sys/fs/cgroup$p/memory.swap.max"`
 
 	// The same controllers the real invocation sets: a host that delegates
 	// none of them must not report the limiter as usable.
 	probe := exec.CommandContext(ctx, "systemd-run",
 		"--user", "--scope", "--quiet",
 		"-p", fmt.Sprintf("MemoryMax=%d", probeMemoryMaxBytes),
+		"-p", "MemorySwapMax=0",
 		"-p", "TasksMax=16", "-p", "CPUQuota=100%",
-		"--", shPath, "-c", readBackOwnMemoryMax)
+		"--", shPath, "-c", readBackOwnMemoryLimits)
 	probe.Env = LimiterEnv(nil)
 
 	out, err := probe.Output()
 	if err != nil {
 		return false
 	}
-	return memoryMaxIsEnforced(string(out), probeMemoryMaxBytes)
+	return memoryLimitsAreEnforced(string(out), probeMemoryMaxBytes)
 })
 
-// memoryMaxIsEnforced reads a cgroup v2 memory.max value and reports whether it
-// is a real bound at or below want.
+// memoryLimitsAreEnforced reads back a scope's memory.max and memory.swap.max
+// and reports whether the pair is a real bound at or below want.
 //
-// "max" is the kernel's word for unbounded and is the exact reading an
-// undelegated memory controller produces, so it is the one answer this must
-// never accept. A number ABOVE what was asked for is refused too: it means
-// something other than our property decided the limit, and a bound we did not
-// set is not a bound we can promise.
-func memoryMaxIsEnforced(readBack string, want int64) bool {
-	v := strings.TrimSpace(readBack)
-	if v == "" || v == "max" {
+// BOTH LINES MATTER, and the second is the one that was missing. "max" is the
+// kernel's word for unbounded and is exactly what an undelegated memory
+// controller reports, so it can never be accepted for memory.max. And
+// memory.swap.max must be 0, because any other value lets the cgroup exceed
+// memory.max by that much again through swap -- which is not a smaller bound,
+// it is a different one, and not the one the approval prompt quoted.
+//
+// A memory.max ABOVE what was asked for is refused too: it means something
+// other than our property decided the limit, and a bound we did not set is not
+// a bound we can promise.
+func memoryLimitsAreEnforced(readBack string, wantMax int64) bool {
+	fields := strings.Fields(readBack)
+	if len(fields) != 2 {
 		return false
 	}
-	got, err := strconv.ParseInt(v, 10, 64)
-	if err != nil {
+	max, err := strconv.ParseInt(fields[0], 10, 64)
+	if err != nil || max <= 0 || max > wantMax {
 		return false
 	}
-	return got > 0 && got <= want
+	swap, err := strconv.ParseInt(fields[1], 10, 64)
+	return err == nil && swap == 0
 }
 
 // wantsLimits reports whether cfg asked for any resource bound at all.
@@ -317,7 +328,18 @@ func LimitsApply(cfg SandboxConfig) bool {
 func limiterPrefix(cfg SandboxConfig) []string {
 	args := []string{"--user", "--scope", "--quiet", "--collect"}
 	if cfg.MemoryLimitMB > 0 {
+		// BOTH, ALWAYS. MemoryMax alone is memory.max, which caps RESIDENT
+		// memory and lets the cgroup push the rest to swap: on any host with
+		// swap a "2048 MiB cap" is a 2048 MiB + all-of-swap cap, and a runaway
+		// build thrashes the machine instead of dying. Measured on a CI runner
+		// with ~4 GiB of swap: a 4 GiB allocation ran to completion under this
+		// exact cap. It passed on a workstation only because that box has
+		// SwapTotal=0, which turns memory.max into the hard bound it looked like.
+		//
+		// MemoryLimitMB therefore means TOTAL memory, and memory.swap.max=0 is
+		// what makes the number mean that.
 		args = append(args, "-p", fmt.Sprintf("MemoryMax=%dM", cfg.MemoryLimitMB))
+		args = append(args, "-p", "MemorySwapMax=0")
 	}
 	if cfg.PidsLimit > 0 {
 		args = append(args, "-p", fmt.Sprintf("TasksMax=%d", cfg.PidsLimit))

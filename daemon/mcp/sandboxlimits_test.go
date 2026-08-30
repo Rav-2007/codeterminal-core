@@ -35,6 +35,48 @@ func TestACommandThatAsksForNoLimitsIsNotWrapped(t *testing.T) {
 	}
 }
 
+// A MEMORY BOUND WITHOUT A SWAP BOUND IS NOT A MEMORY BOUND.
+//
+// MemoryMax is cgroup v2 memory.max, which caps RESIDENT memory and lets the
+// cgroup push everything else to swap. So on any host with swap, a "2048 MiB
+// cap" is really 2048 MiB plus the whole swap device, and the number quoted in
+// the approval prompt is not the number enforced.
+//
+// MEASURED: a 4 GiB allocation ran to completion under this exact cap on a CI
+// runner with ~4 GiB of swap, and was killed on a workstation only because that
+// machine has SwapTotal=0 -- which is what made memory.max look like the hard
+// bound it is not. The end-to-end test could therefore never catch this on a
+// swapless box, which is why the pairing is asserted here instead.
+func TestAMemoryBoundAlwaysBindsSwapToo(t *testing.T) {
+	stubLimiter(t, true)
+	_, args, err := WrapCommand("go", []string{"build"}, SandboxConfig{
+		Mode: SandboxNone, MemoryLimitMB: 512,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	all := joined(args)
+	if !strings.Contains(all, "MemoryMax=512M") {
+		t.Fatalf("the memory bound is missing entirely: %s", all)
+	}
+	if !strings.Contains(all, "MemorySwapMax=0") {
+		t.Errorf("MemoryMax was set without MemorySwapMax=0, so the cap leaks through swap "+
+			"on every host that has any: %s", all)
+	}
+
+	// The converse: asking for no memory bound must not silently bind swap,
+	// which would be a limit nobody requested.
+	_, none, err := WrapCommand("go", []string{"build"}, SandboxConfig{
+		Mode: SandboxNone, PidsLimit: 16,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(joined(none), "MemorySwapMax") {
+		t.Errorf("a config asking only for a pids bound came back with a swap bound: %s", joined(none))
+	}
+}
+
 // DEGRADES IN ONE DIRECTION. A host with no user systemd is not a host where a
 // build must stop working; it is one where the command is less contained, and
 // the honest response is to run it and say so.
@@ -78,7 +120,7 @@ func TestTheScopeWrapsTheSandboxAndCarriesEveryBound(t *testing.T) {
 		t.Fatalf("bin = %q, want the scope on the outside", bin)
 	}
 	all := joined(args)
-	for _, want := range []string{"MemoryMax=2048M", "TasksMax=512", "CPUQuota=150%"} {
+	for _, want := range []string{"MemoryMax=2048M", "MemorySwapMax=0", "TasksMax=512", "CPUQuota=150%"} {
 		if !strings.Contains(all, want) {
 			t.Errorf("missing bound %q in: %s", want, all)
 		}
@@ -315,6 +357,14 @@ func TestTheLimiterProbeAgreesWithWhatTheKernelEnforces(t *testing.T) {
 			break
 		}
 	}
+	// A delegated memory controller is not enough: the bound this product
+	// promises includes swap, so a kernel with no swap accounting cannot honour
+	// it and the probe is right to say so. See memoryLimitsAreEnforced.
+	uid := os.Getuid()
+	swapFile := fmt.Sprintf("/sys/fs/cgroup/user.slice/user-%d.slice/user@%d.service/memory.swap.max", uid, uid)
+	if _, err := os.Stat(swapFile); err != nil {
+		memoryDelegated = false
+	}
 
 	got := LimiterUsable()
 
@@ -331,7 +381,7 @@ func TestTheLimiterProbeAgreesWithWhatTheKernelEnforces(t *testing.T) {
 
 	switch {
 	case memoryDelegated && !got:
-		t.Errorf("this host delegates %v, so MemoryMax binds here, but LimiterUsable() is false.\n\n"+
+		t.Errorf("this host delegates %v and has swap accounting, so the bound binds here, but LimiterUsable() is false.\n\n"+
 			"That is the SILENT direction: every test gated on LimiterUsable now skips, the suite "+
 			"goes green, and sandbox_exec stops bounding anything. Check the read-back probe -- a "+
 			"missing sh or cat, or a changed /proc/self/cgroup format, looks exactly like this.",
@@ -347,30 +397,33 @@ func TestTheLimiterProbeAgreesWithWhatTheKernelEnforces(t *testing.T) {
 }
 
 // The read-back decision, in isolation. "max" is the exact string an
-// undelegated memory controller returns, and is the one answer that must never
-// be read as a bound.
-func TestMemoryMaxIsEnforced(t *testing.T) {
+// undelegated memory controller returns for memory.max, and a non-zero
+// memory.swap.max is how a cap that looks right lets a process exceed it by
+// the size of swap -- the defect that survived the first version of this probe.
+func TestMemoryLimitsAreEnforced(t *testing.T) {
 	const want = 64 * 1024 * 1024
 	for _, tc := range []struct {
 		readBack string
 		enforced bool
 		why      string
 	}{
-		{"67108864\n", true, "exactly what was asked for"},
-		{"67108864", true, "no trailing newline"},
-		{"  33554432\t\n", true, "a tighter bound than asked for is still a bound"},
-		{"max\n", false, "THE CI READING: the kernel's word for unbounded"},
-		{"max", false, "unbounded, unpadded"},
-		{"", false, "no output at all -- cat failed, or the file was gone"},
-		{"\n", false, "whitespace only"},
-		{"134217728\n", false, "looser than asked for: something else set this, so we did not"},
-		{"0\n", false, "zero is not a bound this code ever asks for"},
-		{"-1\n", false, "negative"},
-		{"6710886four\n", false, "not a number"},
-		{"67108864 67108864\n", false, "two values, so the read-back is not what we think it is"},
+		{"67108864\n0\n", true, "exactly what was asked for, swap bound to zero"},
+		{"67108864 0", true, "whitespace-separated rather than newline"},
+		{"33554432\n0\n", true, "a tighter bound than asked for is still a bound"},
+		{"67108864\nmax\n", false, "THE CI READING: capped memory, UNBOUNDED SWAP"},
+		{"67108864\n1048576\n", false, "a little swap is still more than the number we quoted"},
+		{"max\n0\n", false, "unbounded memory, whatever swap says"},
+		{"max\nmax\n", false, "unbounded both ways"},
+		{"67108864\n", false, "only one file read back -- swap could not be checked"},
+		{"", false, "no output at all: cat failed, or a file was missing"},
+		{"134217728\n0\n", false, "looser than asked for: something else set this, so we did not"},
+		{"0\n0\n", false, "zero is not a bound this code ever asks for"},
+		{"-1\n0\n", false, "negative"},
+		{"6710886four\n0\n", false, "not a number"},
+		{"67108864\n0\n0\n", false, "three values, so the read-back is not what we think it is"},
 	} {
-		if got := memoryMaxIsEnforced(tc.readBack, want); got != tc.enforced {
-			t.Errorf("memoryMaxIsEnforced(%q) = %v, want %v -- %s", tc.readBack, got, tc.enforced, tc.why)
+		if got := memoryLimitsAreEnforced(tc.readBack, want); got != tc.enforced {
+			t.Errorf("memoryLimitsAreEnforced(%q) = %v, want %v -- %s", tc.readBack, got, tc.enforced, tc.why)
 		}
 	}
 }
