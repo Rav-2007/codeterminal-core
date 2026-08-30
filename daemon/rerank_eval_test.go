@@ -50,6 +50,25 @@
 //	+ file path in the embedded text       33/49      32         45
 //	+ widen to the declaration, b=24000    39/49      31         45
 //
+// RE-MEASURED 2026-08-30, and the interesting row is the one where nothing in
+// the retrieval path changed at all:
+//
+//	same code, corpus grown, b=24000       36/49      32         47
+//	+ budget raised to 28000               37/49      33         47
+//	+ budget raised to 32000 (ships)       41/49      32         47
+//
+// The retrieved column bounces by one between these runs and the delivered
+// column by one between two runs of the SHIPPED setting. That is the corpus
+// moving, not the ranker: every commit changes what is indexed, including a
+// commit that only edits comments.
+//
+// Delivered fell three while retrieved and file-level both ROSE. The whole loss
+// was the character budget: queries retrieved and then budgeted out went 1 -> 3,
+// because this eval indexes THIS repository and the repository had grown by
+// about a module's worth of code. A budget's sufficiency is a function of corpus
+// size, so this number can fall with no commit to blame -- read the BUDGETED OUT
+// line before concluding anything about the ranker.
+//
 // DELIVERED (39) now far EXCEEDS retrieved (31), which is not a paradox: the
 // budget only ever removes spans, while expansion adds the region around a hit,
 // so a query whose answer was never itself retrieved is delivered anyway inside

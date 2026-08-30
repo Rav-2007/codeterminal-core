@@ -94,16 +94,41 @@ type expandPolicy struct {
 // because the budget is what binds, so offering it more candidates costs
 // nothing and lets it choose better ones.
 //
-// 24,000 AND NOT 28,000. The extra 4,000 chars buys nothing at top 10 (39 both
-// ways) and one query at top 5, so the cheaper cell wins.
+// 24,000 AND NOT 28,000 -- TRUE WHEN MEASURED, AND NO LONGER TRUE. The extra
+// 4,000 chars bought nothing at top 10 on THAT corpus (39 both ways) and one
+// query at top 5, so the cheaper cell won. The repository has since grown by
+// about a module's worth of code, and delivered recall fell 39 -> 36 with the
+// policy and the ranker both untouched -- retrieval IMPROVED over the same
+// period (31 -> 32 retrieved, 45 -> 47 file-level) while queries budgeted out
+// went 1 -> 3. THE SUFFICIENCY OF A CHARACTER BUDGET IS A FUNCTION OF REPOSITORY
+// SIZE, which is the thing none of these tables said.
 //
-// Against this run's own baseline (+-1 top 3 at 16,000 = 32/49) that is +7
-// queries: impl 13 -> 20/24, defuse 6 -> 7/7, cross and doc unchanged, multi
-// unchanged, test 2 -> 1/3. The one regression is a single query of three.
+// Re-swept 2026-08-30 with the grid extended past 28,000, because the answer had
+// moved beyond where the old grid stopped looking:
+//
+//	policy                 b=24000        28000          32000          36000
+//	construct<=300 top 5   37 (22.0k)     39 (24.9k)     39 (27.1k)     39
+//	construct<=300 top 10  36 (22.4k)     39 (25.9k)     41 (29.2k)     42 (32.5k)
+//
+// Top 5 SATURATES at 39 however much room it is given; top 10 keeps climbing.
+// Trading TopN down to buy back a thousand characters would win once and lose
+// every time the repository grows again -- which is why the policy below did not
+// move and defaultContextBudgetChars did, to 32,000. See config.go for the
+// measured ladder and for why 28,000 was rejected as a trap.
+//
+// READ THIS TABLE AS SHAPE, NOT AS THE FINAL NUMBER. It predicted 39/49 at
+// 28,000 where the full eval then measured 37/49. One index build scoring every
+// policy is what makes the sweep worth having, and it is faithful when both run
+// on the same tree -- its SHIPPED row reproduced the eval exactly at 36/49 -- but
+// these figures are computed on the corpus as it stood at sweep time.
+// TestRerankEvalRetrievalRanking is the instrument; this is the map.
 //
 // This is one decision with defaultContextBudgetChars, not two. Reverting either
 // constant alone lands in the WORST cell of the table above rather than a middle
-// one.
+// one -- and the 2026-08-30 re-sweep sharpened that: top 5 SATURATES at 39 no
+// matter how much room it is given, while top 10 keeps climbing to 41 and 42.
+// Trading TopN down to buy back a thousand characters would win once and lose
+// every time the repository grows again.
 var defaultExpandPolicy = expandPolicy{TopN: 10, ConstructCap: 300}
 
 // resolvedExpandPolicy returns the policy this Server widens hits with,

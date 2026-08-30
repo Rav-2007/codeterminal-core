@@ -113,7 +113,15 @@ func TestDeliveryPolicySweep(t *testing.T) {
 		// The guard row: whatever production is configured as today.
 		{"SHIPPED (defaultExpandPolicy)", defaultExpandPolicy, defaultContextBudgetChars},
 	}
-	for _, budget := range []int{16000, 20000, 24000, 28000} {
+	// 32000 and 36000 were added 2026-08-30. The 2026-08-28 sweep stopped at 28000
+	// because 24000 already reached the best score in the table and the extra
+	// 4,000 chars bought nothing -- true of THAT corpus. This eval indexes the
+	// repository itself, the repository has since grown by a module's worth of
+	// code, and delivered recall fell 39 -> 36 with retrieval IMPROVING and the
+	// count of queries budgeted out going 1 -> 3. The budget is what binds, so the
+	// grid has to reach past where the answer used to sit or it cannot find where
+	// the answer moved to. Columns are free: one index build scores them all.
+	for _, budget := range []int{16000, 20000, 24000, 28000, 32000, 36000} {
 		for _, p := range []struct {
 			name string
 			pol  expandPolicy

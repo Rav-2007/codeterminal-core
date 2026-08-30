@@ -190,8 +190,67 @@ type RetrievalConfig struct {
 // been measured is whether the extra spans help or distract the MODEL --
 // TestRerankEvalRetrievalRanking measures what reaches the prompt, not what the
 // model does with it. An agentic eval is where that would be settled, and at
-// 24000 that question is worth more than it was at 16000.
-const defaultContextBudgetChars = 24000
+// this budget that question is worth more than it was at 16000.
+//
+// 32000 SINCE 2026-08-30, AND THE REASON IS THE ONE NOBODY HAD MEASURED: THIS
+// BUDGET'S SUFFICIENCY IS A FUNCTION OF REPOSITORY SIZE.
+//
+// 24000 was correct when it was chosen, and it decayed without anything in the
+// retrieval path changing. This eval indexes THIS repository, the repository
+// grew by roughly a module's worth of code (unified-diff ingestion, the language
+// table, the line-ending work and their tests), and delivered recall fell 39/49
+// to 36/49 -- while retrieval IMPROVED over the same period, 31 to 32 retrieved
+// and 45 to 47 file-level. The entire loss was the budget: queries retrieved and
+// then budgeted out went 1 to 3. More code competes for the same characters, so
+// spans that used to fit stopped fitting.
+//
+// MEASURED BY TestRerankEvalRetrievalRanking, the real instrument, one full run
+// per row on the same tree:
+//
+//	budget   delivered   budgeted out   impl     multi
+//	24000    36/49       3              17/24    3/4
+//	28000    37/49       3              18/24    3/4
+//	32000    40/49       1              19/24    4/4
+//
+// The 28000 and 32000 rows differ only in this constant, on one tree, so that
+// comparison is clean; the 24000 row is the tree as it failed CI. As committed,
+// the shipped configuration measures 41/49 with budgeted-out 1. The one-query
+// spread between that and the 40/49 above is the corpus moving under the eval
+// again -- editing these very comments did it -- and it is why this entry does
+// not chase the last query. The floor has better than four queries of slack
+// either way, which is the point of choosing by budgeted-out rather than by the
+// delivered number.
+//
+// 32000 BECAUSE BUDGETED-OUT RETURNS TO 1, not because 40 is the biggest number
+// in the column. One query thrown away by the budget is the condition the
+// 2026-08-28 measurement recorded and the state this constant is supposed to
+// hold; 3 is the symptom being fixed. Retrieval is identical across all three
+// rows (30 semantic / 33 hybrid / 47 file-level), which is what makes this a
+// delivery decision and not a ranking one.
+//
+// AND NOT 28000, which was the first cell tried and is a trap. It clears
+// evalChunkRecallFloor (0.75 = 36.75/49) at 37/49 by a QUARTER of a query, with
+// budgeted-out still at 3 -- the pressure unrelieved and the gate perched one
+// unrelated commit away from failing again. 32000 leaves 3.25 queries of slack.
+//
+// TRUST THE EVAL, NOT THE SWEEP, FOR THE FINAL NUMBER. TestDeliveryPolicySweep
+// predicted 39/49 for 28000 and the eval measured 37/49. The sweep is still the
+// right tool for SHAPE -- it prices every policy from one index build, and its
+// SHIPPED row reproduced the eval exactly when both ran on the same tree -- but
+// its numbers are computed on the corpus as it stood at sweep time. Writing the
+// very comments recording this finding changed daemon/*.go enough to move the
+// result. That is not a flaw in the sweep; it is the corpus sensitivity this
+// whole entry is about, observed on itself.
+//
+// THE COST IS REAL: roughly +33% injected retrieval context per query against
+// 24000 (~29.2k mean rendered chars against ~22.4k), so more prefill latency and
+// more money on every request. It buys four queries and, more durably, the
+// headroom that stops this constant needing revisiting on the next commit that
+// grows the repository. What is STILL not measured is whether the extra spans
+// help or distract the MODEL -- this eval measures what reaches the prompt, not
+// what is done with it. An agentic eval is where that gets settled, and at 32000
+// that question is worth more than it was at 16000.
+const defaultContextBudgetChars = 32000
 
 // resolvedTopK returns the configured TopK, falling back to defaultK.
 func (c RetrievalConfig) resolvedTopK() int {
