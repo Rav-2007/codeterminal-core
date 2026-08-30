@@ -149,5 +149,14 @@ jobs:
       # job documents at length: its harness cannot build three of its four
       # fixtures. See daemon/edit_eval_test.go's header.
       - name: Locate eval (real BGE model, whole-repo corpus)
-        run: go test -tags eval -count=1 -timeout 40m -v -run 'TestEvalRetrievalQuality|TestRerankEvalRetrievalRanking' ./
+        # TestFirstEmbedBatchFitsItsDeadline is here because it is CHEAP (~5s
+        # once the model is cached, which the steps above have already done) and
+        # because it guards the failure that took this job down on 2026-08-30:
+        # one 40-chunk batch exceeding the embedder's call deadline. It measures
+        # the real model's cold first batch against the deadline production
+        # grants it and fails when the MARGIN erodes -- which is the only way to
+        # see that coming, since a green eval is equally consistent with a fast
+        # runner. It runs on this job rather than only the weekly one so the
+        # signal arrives with the change that caused it.
+        run: go test -tags eval -count=1 -timeout 40m -v -run 'TestEvalRetrievalQuality|TestRerankEvalRetrievalRanking|TestFirstEmbedBatchFitsItsDeadline|TestEmbeddingIsDeterministic' ./
         working-directory: daemon

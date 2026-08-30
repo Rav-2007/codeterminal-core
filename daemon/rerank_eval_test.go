@@ -1306,9 +1306,37 @@ func TestRerankEvalRetrievalRanking(t *testing.T) {
 			retrievedButBudgeted, total, defaultContextBudgetChars, evalBudgetedOutCeiling)
 	}
 
-	if semanticOnlyCount > hybridCount {
-		t.Errorf("hybrid recall %d/%d is WORSE than semantic-only %d/%d -- fusion is losing "+
-			"results the semantic tier alone finds", hybridCount, total, semanticOnlyCount, total)
+	// SLACK ADDED 2026-08-30, and this is a real loosening, so here is the
+	// evidence for it. It is the same argument that turned this check from a
+	// per-query rule into an aggregate one, applied a second time to the
+	// aggregate: a bar the method cannot clear on every run is a bar that fails
+	// on churn instead of on regressions.
+	//
+	// This was a bare `semanticOnlyCount > hybridCount` -- zero slack, on a
+	// number now measured to carry up to THREE queries of machine-to-machine
+	// noise on a byte-identical corpus (see the correction on
+	// evalChunkRecallFloor). Commit 3ada6ea proved it: the branch run scored
+	// semantic 35 / hybrid 34 and went red, the main run scored 32 / 33 and went
+	// green, same SHA, same 4757 chunks, three queries flipped by
+	// fourth-decimal score differences between two CPUs.
+	//
+	// A gate that reports the runner it landed on is not reporting the ranker.
+	//
+	// evalFusionLossSlack is 3 -- the full measured spread, not a margin on top
+	// of it, because this compares TWO numbers that each carry that noise and a
+	// wider band would stop catching anything. What it still catches is fusion
+	// genuinely losing: RRF dropping a class of result, or the lexical tier
+	// swamping the semantic one, which shows up as a gap of many queries and
+	// not one. The 2026-08-28 measurement that motivated the aggregate form --
+	// 19/49 semantic to 22/49 hybrid, losing 3 while gaining 6 -- sits far
+	// inside this.
+	if semanticOnlyCount > hybridCount+evalFusionLossSlack {
+		t.Errorf("hybrid recall %d/%d is WORSE than semantic-only %d/%d by more than the "+
+			"%d-query noise band -- fusion is losing results the semantic tier alone finds. "+
+			"This is not a near-tie flipping on a different runner: that is worth up to 3 "+
+			"queries and is what the slack absorbs. Check whether the lexical tier is "+
+			"swamping the semantic one in fuseRRF",
+			hybridCount, total, semanticOnlyCount, total, evalFusionLossSlack)
 	}
 
 	// Query 1 (index 0, "where does the daemon open the unix socket") is a
@@ -1379,6 +1407,41 @@ func TestRerankEvalRetrievalRanking(t *testing.T) {
 // gated number by two queries. Every near-miss sits close to the top-5 cut, so
 // small changes in what it is competing against decide it.
 //
+// CORRECTION 2026-08-30: "RETRIEVAL IS DETERMINISTIC" IS TRUE ON ONE MACHINE
+// AND FALSE ACROSS TWO, and the experiment above could not tell the difference
+// because it held the INDEX fixed and re-ran queries. It never re-embedded.
+//
+// Commit 3ada6ea ran this eval twice, on the branch and on main, at the same
+// SHA and therefore over a byte-identical corpus (4757 chunks, 558 files, both
+// runs). They disagreed:
+//
+//	                  branch run   main run
+//	semantic-only     35/49        32/49
+//	hybrid            34/49        33/49
+//	DELIVERED         41/49        42/49
+//
+// Three queries flipped (11, 14, 30), all in the same direction. The cause is
+// visible in the per-chunk scores the two runs printed: 308 of 400 compared
+// score lines differ, in the third and fourth decimal, and adjacent ranks swap
+// as a result --
+//
+//	rank 2  daemon/addrinuse_unix.go   raw=0.0154 (branch)  raw=0.0149 (main)
+//	rank 4  daemonClient.ts            raw=0.0149 (branch)  raw=0.0145 (main)
+//
+// The two runners embedded identical text to different vectors. Within ONE
+// machine embedding is bit-identical, including across a fresh helper process
+// -- TestEmbeddingIsDeterministic measures exactly that and passes, which is
+// what makes the difference attributable to the machine rather than to the
+// code. Different CPUs take different reduction paths through the same int8
+// model, and the scores here are tiny (~0.015) precisely where queries have no
+// strong match, so fourth-decimal differences decide the ordering.
+//
+// WHAT THAT MEANS FOR EVERY FLOOR IN THIS FILE: the "two queries of slack"
+// convention was calibrated against CORPUS sensitivity alone. There is a second
+// noise source, worth up to three queries on a fixed corpus, that none of them
+// were sized for. The floors happen to survive it. The one gate with NO slack
+// did not -- see evalFusionLossSlack below.
+//
 // THE FLOOR IS 53%: it needs 26 of 49, three below the measured 29. Three is
 // one more than the +/-2 corpus band above, which is the same slack every
 // previous setting of this constant has used.
@@ -1448,6 +1511,21 @@ const evalChunkRecallFloor = 0.75
 // repository, and two runs on one day have differed by two queries out of
 // forty-nine on edits that touched no file any flipped query names.
 const evalChunkRetrievedFloor = 0.61
+
+// evalFusionLossSlack is how far semantic-only may beat hybrid before the
+// fusion check fires.
+//
+// 3, because that is the measured machine-to-machine spread of these numbers on
+// a FIXED corpus: commit 3ada6ea scored semantic 35 / hybrid 34 on one runner
+// and 32 / 33 on another, from vectors that differed in the fourth decimal. A
+// zero-slack comparison between two numbers that each move by three is a coin
+// flip dressed as a gate.
+//
+// Do NOT raise this to accommodate a real regression. Its whole justification
+// is a measured noise band; widening it past that measurement converts it from
+// a gate into a formality, and the thing it is guarding -- fusion actively
+// destroying recall -- moves this number by many queries, not by four.
+const evalFusionLossSlack = 3
 
 // evalBudgetedOutCeiling gates the BUDGET, and nothing else.
 //
