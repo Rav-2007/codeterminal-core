@@ -21,15 +21,35 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		panic(err)
 	}
-	defer os.RemoveAll(tmpDir)
+
+	// Registered rather than deferred, and registered FIRST so it unwinds LAST
+	// -- runProcessCleanups runs in reverse, the way defer would have. Routing
+	// this through the same registry the eval fixtures use means there is one
+	// teardown path in this package instead of two that have to agree.
+	registerProcessCleanup(func() { _ = os.RemoveAll(tmpDir) })
 
 	fakeHelperBinPath = filepath.Join(tmpDir, exeName("fakehelper"))
 	cmd := exec.Command("go", "build", "-o", fakeHelperBinPath, "./testdata/fakehelper")
 	if out, err := cmd.CombinedOutput(); err != nil {
+		runProcessCleanups()
 		panic("building fakehelper fixture: " + err.Error() + "\n" + string(out))
 	}
 
-	os.Exit(m.Run())
+	code := m.Run()
+
+	// NOT `defer`, AND THIS IS NOT A STYLE PREFERENCE. os.Exit does not run
+	// deferred functions. The `defer os.RemoveAll(tmpDir)` that used to sit
+	// above the build was therefore dead code from the day it was written, and
+	// every `go test ./daemon` on every machine leaked this directory --
+	// measured at 379 directories and 1.5 GB on one developer machine when it
+	// was finally noticed, in a session investigating something else entirely.
+	//
+	// Teardown that has to survive a TestMain belongs in this window, between
+	// m.Run returning and os.Exit being called. runProcessCleanups is the
+	// registry the eval suite's shared corpus unwinds through, for the same
+	// reason; see processcleanup_test.go.
+	runProcessCleanups()
+	os.Exit(code)
 }
 
 // fastHelperProcess returns a HelperProcess wired to the fake helper with

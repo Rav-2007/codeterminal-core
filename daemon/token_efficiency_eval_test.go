@@ -26,10 +26,10 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // tokenEffQuery is one benchmark query with its ground-truth relevant
@@ -86,15 +86,6 @@ var tokenEffQueries = []tokenEffQuery{
 		[]string{"daemon/context.go", "daemon/index_cmd.go"}},
 }
 
-// tokenEffSelfReferenceFiles are repo-relative paths this eval test itself
-// must exclude from the indexed corpus for the same oracle-leak reason
-// rerank_eval_test.go's evalSelfReferenceFiles exists: this file's own
-// query strings, indexed as ordinary content, would otherwise contribute a
-// chunk that's a near-perfect lexical/semantic match for its own query.
-var tokenEffSelfReferenceFiles = map[string]bool{
-	"daemon/token_efficiency_eval_test.go": true,
-}
-
 // approxCharsPerToken is the repo's own documented approximation for code
 // (see daemon/config.go's defaultContextBudgetChars comment: "code
 // averages ~3-4 chars/token"), used here only to render a human-readable
@@ -132,88 +123,27 @@ func TestTokenEfficiencyEval(t *testing.T) {
 		t.Skip("skipping eval test in -short mode")
 	}
 
-	logger := log.New(os.Stderr, "token-eff-eval: ", log.LstdFlags)
-
-	modelCacheDir, err := defaultModelCacheDir()
-	if err != nil {
-		t.Fatalf("defaultModelCacheDir: %v", err)
-	}
-	modelDir, err := EnsureModelFiles(context.Background(), modelCacheDir, bgeModelAssets, logger)
-	if err != nil {
-		t.Fatalf("EnsureModelFiles (downloads only if not already cached): %v", err)
-	}
-
-	ortCacheDir, err := defaultONNXRuntimeCacheDir()
-	if err != nil {
-		t.Fatalf("defaultONNXRuntimeCacheDir: %v", err)
-	}
-	onnxRuntimeLib, err := EnsureONNXRuntimeLib(context.Background(), ortCacheDir, logger)
-	if err != nil {
-		t.Fatalf("EnsureONNXRuntimeLib (downloads only if not already cached): %v", err)
-	}
-
-	helperBin := buildRealHelperBinary(t)
-	helper := NewHelperProcess(helperBin, modelDir, onnxRuntimeLib, logger)
-	if err := helper.Start(); err != nil {
-		t.Fatalf("starting real embedder helper: %v", err)
-	}
-	defer helper.Stop()
-
-	embedder := NewBgeEmbedder(helper)
-
-	repoRoot, err := filepath.Abs("..")
-	if err != nil {
-		t.Fatalf("resolving repo root: %v", err)
-	}
-	indexDir := filepath.Join(t.TempDir(), "index")
-	store, err := NewChromemStore(indexDir)
-	if err != nil {
-		t.Fatalf("NewChromemStore: %v", err)
-	}
-	lexicalStore, err := NewFTSChunkStore(indexDir)
-	if err != nil {
-		t.Fatalf("NewFTSChunkStore: %v", err)
-	}
-	defer lexicalStore.Close()
-
+	// ONE INDEX FOR THE WHOLE EVAL SUITE -- see evalcorpus_test.go. This test
+	// used to repeat, verbatim, the scan/filter/embed/upsert that
+	// TestRerankEvalRetrievalRanking had just finished, for the same ~4,700
+	// chunks and therefore the same vectors.
+	//
+	// THE ONE THING THAT CHANGED WHEN THEY WERE MERGED, stated plainly because
+	// it is a change to an instrument: the shared corpus excludes the UNION of
+	// the two former exclusion sets, so six files are held out here where one
+	// used to be. That is safe for this eval's ground truth by inspection --
+	// none of the five newly-excluded files is named in any tokenEffQueries
+	// expectedFiles list, and TestSharedCorpusExclusionsAreNotAnswerFiles keeps
+	// it that way -- but it does remove five files' worth of DISTRACTORS from
+	// the retrieval pool, which can only move the numbers in this eval's
+	// favour. The measured before/after is recorded in BACKLOG.md.
+	corpus := sharedEvalCorpus(t)
+	embedder, store, lexicalStore := corpus.Embedder, corpus.Store, corpus.LexicalStore
+	repoRoot, scan := corpus.RepoRoot, corpus.Scan
 	ctx := context.Background()
-
-	// Same scan+filter+embed+upsert sequence as
-	// indexRepoExcludingSelfReference (rerank_eval_test.go), duplicated
-	// rather than reused so this file's exclusion set stays local and this
-	// file doesn't require rerank_eval_test.go's evalSelfReferenceFiles to
-	// also list this file.
-	scan, err := ScanWorkspace(repoRoot)
-	if err != nil {
-		t.Fatalf("scanning workspace: %v", err)
-	}
-	filtered := scan.Chunks[:0]
-	for _, c := range scan.Chunks {
-		if !tokenEffSelfReferenceFiles[c.FilePath] {
-			filtered = append(filtered, c)
-		}
-	}
-	scan.Chunks = filtered
-	for start := 0; start < len(scan.Chunks); start += indexEmbedBatchSize {
-		end := min(start+indexEmbedBatchSize, len(scan.Chunks))
-		batch := scan.Chunks[start:end]
-		// embedTextsFor, not a .Content loop -- see the note in
-		// indexRepoExcludingSelfReference (rerank_eval_test.go).
-		vecs, err := embedder.Embed(ctx, embedTextsFor(batch))
-		if err != nil {
-			t.Fatalf("embedding batch [%d:%d]: %v", start, end, err)
-		}
-		for i := range batch {
-			batch[i].Vector = vecs[i]
-		}
-		if err := store.Upsert(ctx, batch); err != nil {
-			t.Fatalf("upserting batch [%d:%d]: %v", start, end, err)
-		}
-		if err := lexicalStore.Upsert(ctx, batch); err != nil {
-			t.Fatalf("upserting lexical batch [%d:%d]: %v", start, end, err)
-		}
-	}
-	t.Logf("indexed repo root %s: scanned=%d chunks=%d (self-referential chunks excluded)", repoRoot, scan.FilesScanned, len(scan.Chunks))
+	t.Logf("shared corpus at %s: scanned=%d chunks=%d (self-referential chunks excluded) scan=%s embed=%s",
+		repoRoot, scan.FilesScanned, len(scan.Chunks),
+		corpus.ScanTime.Round(time.Millisecond), corpus.EmbedTime.Round(time.Millisecond))
 
 	// Real production defaults -- not tuned for this benchmark.
 	const topK = defaultK                    // 10 since 2026-08-28

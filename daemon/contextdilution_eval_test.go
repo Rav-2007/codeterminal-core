@@ -245,57 +245,19 @@ func TestContextDilutionEarnsItsTokens(t *testing.T) {
 	model := cfg.Tiers["primary"].Slug
 	routing := cfg.ZDR.resolvedProviderRouting()
 
-	logger := log.New(os.Stderr, "dilution: ", log.LstdFlags)
+	// ONE INDEX FOR THE WHOLE EVAL SUITE -- see evalcorpus_test.go. Every
+	// whole-repo eval in this package used to scan, embed and upsert this
+	// repository for itself, so a full `-tags eval` run paid for the same
+	// ~4,700 embeddings six times over for identical vectors.
+	//
+	// READ-ONLY. sharedEvalCorpus re-checks the store's document count on
+	// every call, so a test that upserted here would be caught by the next
+	// one to ask for the corpus.
+	corpus := sharedEvalCorpus(t)
+	embedder, store, lexical := corpus.Embedder, corpus.Store, corpus.LexicalStore
+	repoRoot, scan := corpus.RepoRoot, corpus.Scan
 	ctx := context.Background()
-
-	// A FRESH INDEX THAT EXCLUDES THE SELF-REFERENTIAL FILES, not the workspace's
-	// live one. rerank_eval_test.go contains all 49 queries verbatim next to
-	// their answers; retrieving it would hand both arms the answer key, and the
-	// arm with the bigger budget would get more of it. That is not a subtle
-	// confound, it is the measurement inverted.
-	modelCacheDir, err := defaultModelCacheDir()
-	if err != nil {
-		t.Fatalf("defaultModelCacheDir: %v", err)
-	}
-	modelDir, err := EnsureModelFiles(ctx, modelCacheDir, bgeModelAssets, logger)
-	if err != nil {
-		t.Fatalf("EnsureModelFiles: %v", err)
-	}
-	ortCacheDir, err := defaultONNXRuntimeCacheDir()
-	if err != nil {
-		t.Fatalf("defaultONNXRuntimeCacheDir: %v", err)
-	}
-	onnxRuntimeLib, err := EnsureONNXRuntimeLib(ctx, ortCacheDir, logger)
-	if err != nil {
-		t.Fatalf("EnsureONNXRuntimeLib: %v", err)
-	}
-	helper := NewHelperProcess(buildRealHelperBinary(t), modelDir, onnxRuntimeLib, logger)
-	if err := helper.Start(); err != nil {
-		t.Fatalf("starting real embedder helper: %v", err)
-	}
-	defer helper.Stop()
-	embedder := NewBgeEmbedder(helper)
-
-	repoRoot, err := filepath.Abs("..")
-	if err != nil {
-		t.Fatal(err)
-	}
-	indexDir := filepath.Join(t.TempDir(), "index")
-	store, err := NewChromemStore(indexDir)
-	if err != nil {
-		t.Fatalf("NewChromemStore: %v", err)
-	}
-	lexical, err := NewFTSChunkStore(indexDir)
-	if err != nil {
-		t.Fatalf("NewFTSChunkStore: %v", err)
-	}
-	defer lexical.Close()
-
-	scan, err := indexRepoExcludingSelfReference(ctx, repoRoot, embedder, store, lexical, logger)
-	if err != nil {
-		t.Fatalf("indexing: %v", err)
-	}
-	t.Logf("indexed %s: scanned=%d chunks=%d", repoRoot, scan.FilesScanned, len(scan.Chunks))
+	t.Logf("shared corpus at %s: scanned=%d chunks=%d", repoRoot, scan.FilesScanned, len(scan.Chunks))
 	known := knownPaths(scan)
 
 	rec := newCostRecorder(t, apiBase)
