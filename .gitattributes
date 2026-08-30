@@ -1,0 +1,9 @@
+# Checked-in patch fixtures are read BYTE-FOR-BYTE by editapply's round-trip
+# suite, so they have to mean the same thing on every platform. Without this,
+# git for Windows checks them out with CRLF (core.autocrlf=true is its default)
+# and the static corpus arm silently tests a document its author never wrote.
+#
+# Scoped to the fixtures deliberately: pinning the whole tree would change
+# checkout behaviour for every Windows developer, which is a bigger decision
+# than this file is making.
+*.patch text eol=lf

@@ -33,9 +33,30 @@ func requireGit(t *testing.T) {
 	}
 }
 
+// gitNeutralConfig stops git rewriting the bytes this test is measuring.
+//
+// THE RUNNER'S CONFIG IS PART OF THE FIXTURE, and on Windows it is not neutral:
+// git for Windows defaults to core.autocrlf=true, under which `git diff`
+// normalises CRLF to LF in its OUTPUT while leaving the files on disk alone. The
+// patch then describes different bytes than the file holds -- so the reader is
+// handed LF text, the matcher finds it anyway at the MatchLineEndings tier
+// (correctly; that tier exists for exactly this), and the splice writes LF lines
+// into a CRLF file. Every byte-for-byte assertion in this file then fails for a
+// reason that has nothing to do with the code under test.
+//
+// MEASURED: a CRLF checkout with core.autocrlf=true gives
+// "0/200 files byte-identical", with refusals_from_reader=0 and not_found=0 --
+// the reader and the matcher both did their jobs, and the harness was lying to
+// them. With these two settings the same tree passes.
+//
+// safecrlf as well as autocrlf: it turns the same normalisation into a warning
+// or an error depending on the host's config, so leaving it unset trades one
+// environment-dependent result for another.
+var gitNeutralConfig = []string{"-c", "core.autocrlf=false", "-c", "core.safecrlf=false"}
+
 func git(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("git", args...)
+	cmd := exec.Command("git", append(append([]string{}, gitNeutralConfig...), args...)...)
 	cmd.Dir = dir
 	// git diff exits 1 when files differ, which is the normal case here, so
 	// output is trusted over exit status and only a truly empty result fails.
@@ -48,6 +69,29 @@ func git(t *testing.T, dir string, args ...string) string {
 // nothing else. The files are written into the temp workspace as .txt so the
 // Go syntax gate plays no part: this test is about whether a diff round-trips,
 // and a refusal from a different gate would silently shrink the sample.
+// THE NEUTRAL CONFIG HAS TO REACH git, not just exist in a slice.
+//
+// gitNeutralConfig is a fix for an environment-dependent failure, which is the
+// kind that comes back: it passes everywhere it is not needed, so dropping it
+// looks free on every machine except the one that breaks. This asks git what it
+// actually resolved, which is the only thing that answers the question.
+func TestTheCorpusAsksGitForUntranslatedBytes(t *testing.T) {
+	requireGit(t)
+	root := realTempDir(t)
+
+	for _, setting := range []string{"core.autocrlf", "core.safecrlf"} {
+		got := strings.TrimSpace(git(t, root, "config", "--get", setting))
+		if got != "false" {
+			t.Errorf("git resolved %s=%q through this suite's helper, want \"false\".\n\n"+
+				"With autocrlf on, `git diff` normalises CRLF to LF in its OUTPUT while leaving "+
+				"the files alone, so every byte-for-byte assertion here compares the patch's "+
+				"bytes against different bytes on disk. Measured on a CRLF checkout: "+
+				"0/200 files round-tripped, with the reader and matcher both working correctly.",
+				setting, got)
+		}
+	}
+}
+
 func collectRealSources(t *testing.T) []string {
 	t.Helper()
 	var sources []string
