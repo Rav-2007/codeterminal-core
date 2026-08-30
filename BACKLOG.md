@@ -52,6 +52,8 @@ verification transcripts is in
 | **2026-08-08** | Windows + macOS CI **ran green on hardware** (`LOCAL_PEERCRED` executed for the first time); cross-client mirrors enforced by test (`fa4035c`); a fifth repository-controlled-execution instance found and fixed (`76a87d0`); broken doc links fail a build (`23550e4`) |
 | **2026-08-09** | Proxy refused 8 of 9 shipped models (`a30e664`); agent-loop repeated-call stall (`6b11c35`); **register item L2 closed** — a cut-off answer no longer reaches the model looking finished, across three loss paths (`a4c9d15`, `f79d965`, `592e12c`); socket peer-auth tripwire (`c8f7ca2`) |
 | **2026-08-30** | Capability rows 8–9, stages 0–2: unified **diff ingestion** (one `EditBlock` per hunk, every gate unchanged), one **canonical language table** (`filepath.Ext` sites 7→4; a `.rs` file no longer routed to gopls) and a **delta-rule syntax gate** so a file with a syntax error is no longer unfixable through edit blocks. Four defects CI found and one it could not: an edit no longer changes a file's **line-ending convention** (a CRLF file patched with an LF diff came back mixed, and git reported the whole file modified); the **chunker was blind to every grouped declaration on a CRLF checkout**, so retrieval was quietly worse on Windows than Linux for identical source; a memory cap **swap walked through**; and the retrieval **context budget had decayed as the repository grew** — delivered recall 36→41/49 with the ranker untouched, because the eval indexes this repo and more code competes for the same characters. 39 commits, fast-forwarded to `main`, dispatch `33311677642` 30/30 green including macOS. |
+| **2026-08-30** (later) | The eval's own cost, diagnosed rather than guessed. The scheduled retrieval eval went 843s → 2220s and the only non-comment change in the window was `defaultContextBudgetChars` 24000→32000, which made the budget look guilty on a controlled comparison. It was not: the goroutine dump from a timed-out run put the time inside `embedder.Embed` during **index build**, a phase that takes no budget input, and a local A/B on one machine confirmed it. The real finding was that the job **embedded this whole repository twice per run for byte-identical vectors** — now built once per process (`daemon/evalcorpus_test.go`). Two supporting fixes: the eval job passed neither `-v` nor `-count=1`, so a 38-minute passing run emitted one line and threw away every measurement it had just made; and `TestMain` had a `defer os.RemoveAll` in front of an `os.Exit`, leaking a build directory on every `go test` since it was written (379 dirs, 1.5 GB on one machine). The recall gate was split into the two things it conflated — see debt **(k)**. |
+
 
 **How this was built** — the techniques, and the bug behind each — is
 [`docs/ENGINEERING_METHOD.md`](docs/ENGINEERING_METHOD.md).
@@ -155,6 +157,55 @@ implementation/injection line — the setup chunks out-ranked the actual injecti
 - Do this as a MEASURED step (like the last re-rank fix): build a small eval of "where is X
   IMPLEMENTED" queries with known-correct implementation files, then tune against the number.
 - When: at shipping / retrieval-quality hardening. Not blocking.
+
+### (k) The eval is self-referential, so its corpus grows with the product — CLOSED AS A DESIGN, OPEN AS A COST
+
+**The design half is done.** `TestRerankEvalRetrievalRanking` gated one number,
+DELIVERED recall, which goes red for two unrelated reasons: the ranker got
+worse, or the corpus outgrew the character budget. It could not say which, and
+on 2026-08-30 it said "retrieval regression" when it meant "the repository grew
+by about a module" — delivered fell 39→36 while retrieval *improved* over the
+same period. Because this eval indexes **this repository**, that is not a
+one-off; every commit enlarges the haystack, so budget pressure rises
+monotonically whatever the ranker does, and a fixed floor will keep meeting it.
+
+The floor is now three gates, each answering one question, measured as a
+controlled pair on one tree:
+
+| | budget 24000 | budget 32000 |
+|---|---|---|
+| RETRIEVED (`evalChunkRetrievedFloor`, ranker) | 32/49 | 32/49 |
+| BUDGETED OUT (`evalBudgetedOutCeiling`, budget) | 4 | 1 |
+| DELIVERED (`evalChunkRecallFloor`, outcome) | 35/49 | 41/49 |
+
+Retrieved is **identical** across the arms and delivered moves by six queries.
+That is the argument for the split, measured rather than asserted. A red run now
+names its own cause, and corpus growth arrives as a budget number with a list of
+remedies instead of as an unexplained recall drop.
+
+**What was deliberately not done:** making the budget a function of corpus size.
+Tempting, and wrong for the product — a user with a large repository does not get
+a larger model context window, so the eval would go green by measuring a
+configuration that never ships.
+
+**The cost half is still open.** ~95% of the eval's wall clock is embedding
+~4,700 chunks with the real BGE model. Building once per process instead of once
+per test removes one of the two whole-repo builds in the scheduled job, and five
+of the six a full `-tags eval` run does — but the remaining build is still ~7
+minutes and is repeated in full on every CI run, for a corpus that typically
+changes by well under 1% between runs.
+
+The fix, designed and not built: **content-addressed memoisation of embeddings**
+— cache `vector` under `sha256(model stamp ‖ chunker version ‖ the exact embed
+text)`, restore it with `actions/cache`, and re-embed only the chunks whose text
+actually changed. `.github/workflows/retrieval-eval.yml` rejects caching *the
+model* on the grounds that "a cache key that goes stale against a model change
+would fail by quietly measuring the wrong embedder", and that objection is
+correct and is answered by construction here: the model identity is *inside*
+every entry's key, so a stale entry cannot be produced — a changed model changes
+every key and the cache simply misses. Not built in this pass because it is a
+silent-wrong-answer risk if the key is got wrong, and it wants its own neuter
+matrix rather than a corner of a cost investigation.
 
 ### (j) errcheck adoption — deferred from P3.5 with a measured reason
 
