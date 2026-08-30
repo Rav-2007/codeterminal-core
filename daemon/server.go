@@ -639,12 +639,12 @@ func (s *Server) serveConn(conn net.Conn) {
 		return
 	}
 
-	blocks := s.parseAndLogEditBlocks(full.String())
+	blocks, rejections := s.parseAndLogEditBlocks(full.String())
 	incomplete := incompleteInfoFor(finishReason)
 	if incomplete != nil {
 		s.logger.Printf("stream ended early: finish_reason=%q (answer cut off)", finishReason)
 	}
-	enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Done: true, EditProposals: editProposalsFromBlocks(blocks), Incomplete: incomplete})
+	enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Done: true, EditProposals: editProposalsFromBlocks(blocks), EditRejections: rejections, Incomplete: incomplete})
 	s.logger.Print("stream complete")
 
 	s.persistTurn(promptReq.Prompt, full.String(), incomplete)
@@ -730,7 +730,20 @@ func (s *Server) handleApplyEdit(enc *json.Encoder, req protocol.ApplyEditReques
 	// a refusal or a failed apply — those left the file untouched.
 	s.reindexAfterApply(realRoot, block.FilePath)
 
-	enc.Encode(protocol.ApplyEditResponse{ProtocolVersion: protocol.ProtocolVersion, Applied: true, BackupDir: backupDir})
+	// SyntaxNote and MatchNote come from the SAME Prepared this function already
+	// gated on, so there is no second evaluation and no way for the note to
+	// describe a different decision than the one that was acted on. Before this,
+	// both were computed, used for the refusal decision, and then dropped on the
+	// floor at exactly this line -- the socket was the only apply path that
+	// discarded them, which is why VS Code was the only surface that could not
+	// show them.
+	enc.Encode(protocol.ApplyEditResponse{
+		ProtocolVersion: protocol.ProtocolVersion,
+		Applied:         true,
+		BackupDir:       backupDir,
+		SyntaxNote:      prepared.SyntaxNote,
+		MatchNote:       prepared.MatchNote,
+	})
 	return true
 }
 
@@ -1068,25 +1081,48 @@ func (s *Server) resetPersistedHistory() {
 // beside a bad one proposed nothing at all. Each refusal is logged with its own
 // line number and reason rather than collapsed into a single "parse error".
 //
-// Named gap, and it GREW when unified-diff ingestion landed: refusals reach the
-// daemon log and stop there. EditProposals carries proposals only, so a client
-// shows the readable blocks and says nothing about the refused ones. That cost
-// little when a refusal meant a malformed SEARCH/REPLACE block — rare, and the
-// user could see its raw text anyway. A diff refuses PER HUNK, with reasons the
-// user can act on (a delete, a rename, an executable mode, a truncated hunk), so
-// an agent-mode user can now watch four hunks apply and never learn a fifth was
-// refused, or why.
+// CLOSED 2026-08-30. Rejections now leave this function alongside the blocks
+// and are carried on TokenResponse.EditRejections, so a client can say "3
+// proposed, 1 unreadable" instead of silently showing two. The gap and the
+// argument that kept it open are both preserved below, because the argument is
+// still correct and is the reason the new field is its own channel.
 //
-// Surfacing them needs a rejections field on TokenResponse. Deliberately NOT
-// done here, and deliberately not smuggled through Degraded either: that field
+// The gap, as it stood: refusals reached the daemon log and stopped there.
+// EditProposals carries proposals only, so a client showed the readable blocks
+// and said nothing about the refused ones. That cost little when a refusal meant
+// a malformed SEARCH/REPLACE block — rare, and the user could see its raw text
+// anyway. A diff refuses PER HUNK, with reasons the user can act on (a delete, a
+// rename, an executable mode, a truncated hunk), so an agent-mode user could
+// watch four hunks apply and never learn a fifth was refused, or why.
+//
+// It was NOT smuggled through Degraded, then or now: that field
 // means "this daemon is running in a reduced mode", and a hunk this engine
 // cannot express is not a daemon degradation. Borrowing the channel would buy
 // one message at the cost of the word, and Degraded is worth more meaning
-// exactly one thing. The field belongs with the protocol change the incremental
-// streaming work already has to make.
-func (s *Server) parseAndLogEditBlocks(response string) []editapply.EditBlock {
+// exactly one thing. EditRejections is that channel, and it means one thing too.
+//
+// The comment used to say the field "belongs with the protocol change the
+// incremental streaming work already has to make". That coupling was not real:
+// the field is additive and lands on the Done message beside EditProposals,
+// where nothing about streaming has to change first. It shipped on its own.
+func (s *Server) parseAndLogEditBlocks(response string) ([]editapply.EditBlock, []protocol.EditRejectionWire) {
 	payload := editapply.ParseEditPayload(response)
 	blocks, rejected := payload.Blocks, payload.Rejected
+
+	// Converted once, up front, so both return paths carry the same thing. The
+	// zero-blocks path below is the one that matters most: a response whose
+	// edits are ALL malformed used to return nil and send the client nothing at
+	// all, which is the case where the user most needs to be told something
+	// happened.
+	wire := make([]protocol.EditRejectionWire, 0, len(rejected))
+	for _, bad := range rejected {
+		wire = append(wire, protocol.EditRejectionWire{Line: bad.Line, Reason: bad.Reason})
+	}
+	if len(wire) == 0 {
+		// nil, not an empty slice: `omitempty` distinguishes them on the wire,
+		// and "no rejections" should send no field rather than `[]`.
+		wire = nil
+	}
 
 	if payload.Format == editapply.FormatUnifiedDiff {
 		s.logger.Printf("response carried a unified diff; read %d hunk(s), %d refused", len(blocks), len(rejected))
@@ -1107,7 +1143,7 @@ func (s *Server) parseAndLogEditBlocks(response string) []editapply.EditBlock {
 			// answer in one grep instead of inferring it.
 			s.logger.Printf("response carries an edit this engine cannot read (kind=%s line=%d); no proposals sent", hint.Kind, hint.Line)
 		}
-		return nil
+		return nil, wire
 	}
 
 	s.logger.Printf("parsed %d edit block(s), %d refused", len(blocks), len(rejected))
@@ -1115,7 +1151,7 @@ func (s *Server) parseAndLogEditBlocks(response string) []editapply.EditBlock {
 		s.logger.Printf("  block %d: path=%s search_lines=%d replace_lines=%d",
 			i+1, b.FilePath, lineCount(b.Search), lineCount(b.Replace))
 	}
-	return blocks
+	return blocks, wire
 }
 
 // editProposalsFromBlocks converts parsed edit blocks to their wire form for

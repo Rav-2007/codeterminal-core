@@ -229,13 +229,19 @@ func (s *Server) runAgentTurn(
 	// format, still supported) and edits it filed through propose_edit both
 	// arrive as ordinary five-gate proposals -- there is no path by which an
 	// agent turn changes a file without the user seeing a diff first.
-	blocks := append(s.parseAndLogEditBlocks(result.FinalText), proposals.blocks...)
+	// Rejections come only from the TEXT half. An edit filed through
+	// propose_edit was structured when it arrived and never went through the
+	// block parser, so it has nothing to be rejected by -- if it is bad, it is
+	// bad at a gate, and the gate answers on the ApplyEditResponse.
+	textBlocks, rejections := s.parseAndLogEditBlocks(result.FinalText)
+	blocks := append(textBlocks, proposals.blocks...)
 	// A failed terminal write means the client has gone; the turn's real work
 	// (the edit proposals, the persisted history below) is unaffected.
 	_ = enc.Encode(protocol.TokenResponse{
 		ProtocolVersion: protocol.ProtocolVersion,
 		Done:            true,
 		EditProposals:   editProposalsFromBlocks(blocks),
+		EditRejections:  rejections,
 		Incomplete:      result.Incomplete,
 	})
 	s.logger.Printf("agent: turn complete after %d tool call(s)", len(result.ToolNames))

@@ -993,9 +993,55 @@
       resultEl.textContent = `${prefix}: ${result.error}`;
     }
     container.appendChild(resultEl);
+
+    // What the gates LEARNED, under what they decided. Secondary on purpose:
+    // the outcome is the headline and these qualify it. A Tier B delimiter
+    // advisory in particular must not read as a failure -- the edit applied.
+    //
+    // Not announced (no role="status"): the outcome above already is, and
+    // interrupting a screen reader twice for one action is worse than once.
+    const notes = [result.syntaxNote, result.matchNote].filter(Boolean);
+    if (result.applied && notes.length > 0) {
+      const notesEl = document.createElement('div');
+      notesEl.className = 'result-notes';
+      notesEl.textContent = notes.join(' · ');
+      container.appendChild(notesEl);
+    }
+
     if (currentEditProposalEl === container) {
       currentEditProposalEl = null;
     }
+  }
+
+  // showEditRejections reports blocks the daemon's parser could not read.
+  //
+  // It is deliberately NOT attached to a proposal bubble: these have no
+  // proposal to attach to, and the case that matters most is the one where
+  // there are no proposals at all -- a reply whose every edit was malformed,
+  // which used to render as a perfectly ordinary answer that silently did
+  // nothing.
+  function showEditRejections(rejections) {
+    if (!rejections || rejections.length === 0) {
+      return;
+    }
+    const el = document.createElement('div');
+    el.className = 'edit-rejections';
+    el.setAttribute('role', 'status');
+    const heading = document.createElement('div');
+    heading.className = 'edit-rejections-heading';
+    heading.textContent =
+      rejections.length === 1
+        ? '1 proposed edit could not be read'
+        : `${rejections.length} proposed edits could not be read`;
+    el.appendChild(heading);
+    for (const r of rejections) {
+      const line = document.createElement('div');
+      line.className = 'edit-rejection';
+      line.textContent = `line ${r.line}: ${r.reason}`;
+      el.appendChild(line);
+    }
+    messages.appendChild(el);
+    scrollToBottom();
   }
 
   // clearEditProposal removes a still-pending (not yet applied/skipped)
@@ -1675,8 +1721,13 @@
             applied: msg.applied,
             error: msg.error,
             backupDir: msg.backupDir,
+            syntaxNote: msg.syntaxNote,
+            matchNote: msg.matchNote,
           });
         }
+        break;
+      case 'editRejections':
+        showEditRejections(msg.rejections);
         break;
       case 'editSummary':
         showEditSummary(msg);

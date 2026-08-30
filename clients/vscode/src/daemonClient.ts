@@ -145,6 +145,14 @@ export interface EditBlockWire {
   replace: string;
 }
 
+// EditRejectionWire mirrors protocol.EditRejectionWire: one edit block the
+// daemon's parser could not read, and why. line is 1-indexed into the model's
+// response text, not into any file.
+export interface EditRejectionWire {
+  line: number;
+  reason: string;
+}
+
 export interface HistoryInfo {
   turns: number;
   truncated?: boolean;
@@ -170,6 +178,17 @@ export interface TokenResponse {
   // rendered as a distinct "thinking" area or ignored, never spliced in.
   reasoning?: string;
   edit_proposals?: EditBlockWire[];
+  // edit_rejections mirrors protocol.TokenResponse.EditRejections: edit blocks
+  // the daemon's parser found and COULD NOT READ. Arrives on the same final
+  // (done) message as edit_proposals, and is the other half of it -- a reply
+  // with three edits of which one is malformed sends two proposals and one
+  // rejection.
+  //
+  // Before this existed those refusals went to the daemon log only, so a user
+  // watched a reply that clearly proposed edits produce two of them, or none,
+  // with no way to find out why. line is 1-indexed into the model's response
+  // text, not into any file.
+  edit_rejections?: EditRejectionWire[];
   // redactions mirrors protocol.TokenResponse.Redactions: the kinds of
   // secret-shaped text the daemon's heuristic scrubber (daemon/scrub.go)
   // redacted from the prompt before sending it to the model, e.g.
@@ -307,6 +326,24 @@ export interface ApplyEditResponse {
   applied: boolean;
   error?: string;
   backup_dir?: string;
+  // What the gates LEARNED, as opposed to what they decided. Both are set only
+  // when applied is true, and both are optional because an older daemon does
+  // not send them.
+  //
+  // This extension was the ONLY surface that could not see these. The CLI and
+  // the TUI call editapply.PrepareEdit in their own process, so they have
+  // printed the syntax note since it existed; this client applies over the
+  // socket, and the socket dropped it. Not a client that was served worse — the
+  // only client actually on that path.
+  //
+  // syntax_note: which tier ran and what it found ("go/parser OK", a Tier B
+  // delimiter advisory, or that nothing checks this language).
+  // match_note: what normalisation the match needed. An edit that matched only
+  // after reconciling line endings or indentation applied correctly, and is
+  // still worth surfacing — it means the model's SEARCH text did not match the
+  // file byte for byte.
+  syntax_note?: string;
+  match_note?: string;
 }
 
 export interface UndoRequest {
@@ -706,6 +743,11 @@ export interface StreamHandlers {
   onReasoning?: (text: string) => void;
   onToken?: (token: string) => void;
   onEditProposals?: (proposals: EditBlockWire[]) => void;
+  // onEditRejections fires on the same done message as onEditProposals, and
+  // fires INDEPENDENTLY of it: a reply whose every edit was malformed sends
+  // rejections and no proposals, which is the case where the user is most
+  // owed an explanation and previously got silence.
+  onEditRejections?: (rejections: EditRejectionWire[]) => void;
   onIncomplete?: (info: IncompleteInfo) => void;
   // onToolActivity narrates one step of an agent turn. Observational only.
   onToolActivity?: (activity: ToolActivity) => void;
@@ -809,6 +851,13 @@ export async function streamPrompt(
       // edit_proposals ordering just above and stream.go's incompleteMsg).
       if (tok.incomplete) {
         handlers.onIncomplete?.(tok.incomplete);
+      }
+      // Rejections BEFORE proposals: the review flow that onEditProposals
+      // starts is modal and walks one block at a time, so anything delivered
+      // after it lands behind the review the user is now doing. "One of these
+      // was unreadable" is context for that review, not a footnote to it.
+      if (tok.edit_rejections && tok.edit_rejections.length > 0) {
+        handlers.onEditRejections?.(tok.edit_rejections);
       }
       if (tok.edit_proposals && tok.edit_proposals.length > 0) {
         handlers.onEditProposals?.(tok.edit_proposals);

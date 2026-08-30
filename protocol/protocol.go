@@ -310,6 +310,19 @@ type Turn struct {
 // for one of these. Older clients that don't know this field simply ignore
 // it, exactly like Grounding.
 //
+// EditRejections is additive, carried on the SAME final (Done) message as
+// EditProposals, and is the other half of it: blocks the parser found and
+// could not read. A response with three edits of which one is malformed sends
+// two proposals and one rejection, so a client can say "3 proposed, 1
+// unreadable" instead of silently showing two. Until 2026-08-30 these went to
+// the daemon log only, which is a place the person who wrote the prompt cannot
+// see. Empty/omitted means nothing was rejected, which is the common case —
+// not that parsing didn't run. Older clients ignore it, exactly like Grounding.
+//
+// It is NOT a retry channel. The model is not told about these; a rejection is
+// shown to the human who can act on it. Feeding them back is a real option and
+// a separate decision, with a per-rejection turn cost and a loop risk.
+//
 // Redactions is additive and, like Grounding, carried on its own message
 // sent before any tokens: the kinds of secret-shaped text the daemon's
 // heuristic scrubber (see daemon/scrub.go) found and replaced in the user's
@@ -410,6 +423,7 @@ type TokenResponse struct {
 	Grounding       *GroundingInfo       `json:"grounding,omitempty"`
 	History         *HistoryInfo         `json:"history,omitempty"`
 	EditProposals   []EditBlockWire      `json:"edit_proposals,omitempty"`
+	EditRejections  []EditRejectionWire  `json:"edit_rejections,omitempty"`
 	Redactions      []string             `json:"redactions,omitempty"`
 	Degraded        []Degradation        `json:"degraded,omitempty"`
 	Provider        string               `json:"provider,omitempty"`
@@ -785,6 +799,28 @@ type EditBlockWire struct {
 	Replace  string `json:"replace"`
 }
 
+// EditRejectionWire is the wire form of one edit block the parser could not
+// read (see editapply.BlockError) — a plain data mirror with json tags, the
+// same arrangement as EditBlockWire and for the same reason: protocol must not
+// import editapply.
+//
+// WHAT IT FIXES, recorded because the gap was deliberate and documented before
+// it was closed. EditProposals carried accepted blocks only, so a model
+// response containing three edits of which one was malformed reached every
+// client as two edits and nothing else. The refusal went to the daemon log,
+// where a user cannot see it, and daemon/server.go's comment recorded the
+// decision not to surface it — including the argument against smuggling it
+// through Degraded, which meant "this daemon is running in a reduced mode" and
+// would have lost that meaning to buy one message. That argument still holds
+// and this field is why it no longer has to be made: rejections have their own
+// channel now. Registered as docs/OPEN_ITEMS.md item 15.
+//
+// Line is 1-indexed into the model's response text, not into any file.
+type EditRejectionWire struct {
+	Line   int    `json:"line"`
+	Reason string `json:"reason"`
+}
+
 // ApplyEditRequest asks the daemon to apply one edit block through the
 // existing editapply safety gates and write it to disk. Sent on its own
 // fresh connection (after a HandshakeRequest, same as PromptRequest) —
@@ -818,11 +854,29 @@ type ApplyEditRequest struct {
 // text editapply.PrepareEdit/Apply would produce for the CLI or TUI) so a
 // client can show the identical reason without reimplementing any gate.
 // BackupDir is set only when Applied is true.
+//
+// SyntaxNote and MatchNote are additive, set only when Applied is true, and are
+// what the daemon's gates LEARNED rather than what they decided. Until
+// 2026-08-30 neither crossed this wire, and the asymmetry that created is worth
+// stating because it looks like client neglect and is not: the CLI and the TUI
+// both call editapply.PrepareEdit IN THEIR OWN PROCESS, so they have had these
+// notes all along. VS Code is the only surface that applies an edit over the
+// socket, so it was the only one that could not see them -- not a
+// worse-served client, the only client actually using this path.
+//
+// SyntaxNote says which tier ran and what it found ("go/parser OK", or a Tier B
+// delimiter advisory, or that nothing checked the language). MatchNote says what
+// normalisation the match needed -- an edit that matched only after reconciling
+// line endings or indentation applied correctly and is still worth knowing
+// about, because it means the model's SEARCH text did not match the file byte
+// for byte.
 type ApplyEditResponse struct {
 	ProtocolVersion int    `json:"protocol_version"`
 	Applied         bool   `json:"applied"`
 	Error           string `json:"error,omitempty"`
 	BackupDir       string `json:"backup_dir,omitempty"`
+	SyntaxNote      string `json:"syntax_note,omitempty"`
+	MatchNote       string `json:"match_note,omitempty"`
 }
 
 // UndoRequest asks the daemon to revert a backup session -- the same

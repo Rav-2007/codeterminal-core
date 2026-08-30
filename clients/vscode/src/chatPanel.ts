@@ -16,6 +16,7 @@ import {
   RESTART_HINT,
   Degradation,
   EditBlockWire,
+  EditRejectionWire,
   GroundingInfo,
   HistoryInfo,
   IncompleteInfo,
@@ -424,6 +425,17 @@ export class ChatPanel {
         onEditProposals: (proposals: EditBlockWire[]) => {
           this.startEditReview(proposals);
         },
+        // Fires independently of onEditProposals. A reply whose edits were ALL
+        // malformed sends rejections and no proposals -- previously that reached
+        // this panel as a completely ordinary answer, and the user watched a
+        // reply that plainly contained edits produce nothing at all, with the
+        // reason sitting in a daemon log they cannot see.
+        onEditRejections: (rejections: EditRejectionWire[]) => {
+          this.panel.webview.postMessage({
+            type: 'editRejections',
+            rejections,
+          });
+        },
         onIncomplete: (info: IncompleteInfo) => {
           incompleteReason = info.reason;
           this.panel.webview.postMessage({ type: 'incomplete', info });
@@ -638,6 +650,10 @@ export class ChatPanel {
         applied: result.applied,
         error: result.error,
         backupDir: result.backup_dir,
+        // What the gates learned, not what they decided. Absent on an older
+        // daemon, which is why both are optional all the way down.
+        syntaxNote: result.syntax_note,
+        matchNote: result.match_note,
       });
     } catch (err) {
       const message = (err as Error).message;
@@ -1587,6 +1603,26 @@ export function chatPanelStyles(): string {
   .edit-proposal .result.ok { color: #1e7a3a; }
   .edit-proposal .result.refused { color: #c0392b; }
   .edit-proposal .result.auto-pending { opacity: 0.65; }
+  /* What the gates learned, under what they decided. Muted deliberately: a
+     Tier B delimiter advisory qualifies an edit that APPLIED, and styling it
+     like the refusal above would read as a failure. */
+  .edit-proposal .result-notes {
+    margin-top: 4px;
+    font-size: 0.9em;
+    opacity: 0.75;
+  }
+  /* Blocks the parser could not read. These have no proposal bubble to live
+     in -- the case that matters most is when there are no proposals at all. */
+  .edit-rejections {
+    margin: 4px 0 14px 38px;
+    padding: 10px 12px;
+    border-left: 3px solid var(--ct-rose, #c0392b);
+    background: var(--ct-rose-soft, rgba(192, 57, 43, 0.08));
+    border-radius: 4px;
+    font-size: 0.92em;
+  }
+  .edit-rejections-heading { font-weight: 600; margin-bottom: 4px; }
+  .edit-rejection { opacity: 0.85; font-family: var(--vscode-editor-font-family, monospace); }
   .tool-approval {
     margin: 4px 0 14px 38px;
     padding: 12px;

@@ -393,3 +393,164 @@ suite('Tool approval over the real client', () => {
     assert.strictEqual(seen.answer.approval, false);
   });
 });
+
+// The client half of the edit-honesty wire fields (Stage 4).
+//
+// These run the REAL compiled daemonClient against a stub that speaks the
+// actual wire shapes. They exist because this is exactly the class of field a
+// hand-written client half silently stops reading: TypeScript still compiles,
+// every other test still passes, and the only symptom is a person not being
+// told something.
+suite('E2E daemonClient — edit rejections and gate notes', () => {
+  test('edit_rejections reaches onEditRejections, and fires with NO proposals', async () => {
+    const behavior: Behavior = (_req, socket) => {
+      writeLine(socket, { protocol_version: PV, token: 'here are your edits' });
+      writeLine(socket, {
+        protocol_version: PV,
+        done: true,
+        edit_rejections: [
+          { line: 47, reason: 'no closing REPLACE marker' },
+          { line: 61, reason: 'missing "path:" line before "<<<<<<< SEARCH"' },
+        ],
+      });
+      socket.end();
+    };
+
+    await withStub(behavior, async () => {
+      const seen: { line: number; reason: string }[] = [];
+      let proposalsFired = false;
+      await streamToCompletion('edit something', {
+        onEditRejections: (r) => seen.push(...r),
+        onEditProposals: () => {
+          proposalsFired = true;
+        },
+      });
+
+      assert.strictEqual(
+        seen.length,
+        2,
+        'onEditRejections did not receive the rejections the daemon sent. This is the ' +
+          'case a user is most owed an explanation for: a reply that plainly contained ' +
+          'edits produced none, and the reason previously lived only in the daemon log.'
+      );
+      assert.strictEqual(seen[0].line, 47);
+      assert.match(seen[0].reason, /REPLACE/);
+      assert.strictEqual(
+        proposalsFired,
+        false,
+        'onEditProposals must not fire when there are no proposals'
+      );
+    });
+  });
+
+  test('rejections are delivered BEFORE proposals on the same done message', async () => {
+    const behavior: Behavior = (_req, socket) => {
+      writeLine(socket, {
+        protocol_version: PV,
+        done: true,
+        edit_proposals: [{ file_path: 'a.go', search: 'old', replace: 'new' }],
+        edit_rejections: [{ line: 9, reason: 'unterminated block' }],
+      });
+      socket.end();
+    };
+
+    await withStub(behavior, async () => {
+      const order: string[] = [];
+      await streamToCompletion('edit something', {
+        onEditRejections: () => order.push('rejections'),
+        onEditProposals: () => order.push('proposals'),
+      });
+
+      assert.deepStrictEqual(
+        order,
+        ['rejections', 'proposals'],
+        'the edit review onEditProposals starts is modal and walks one block at a ' +
+          'time, so anything delivered after it lands behind the review the user is ' +
+          'already doing. "One of these was unreadable" is context for that review.'
+      );
+    });
+  });
+
+  test('a done message with no rejections fires nothing — the additive contract', async () => {
+    const behavior: Behavior = (_req, socket) => {
+      writeLine(socket, {
+        protocol_version: PV,
+        done: true,
+        edit_proposals: [{ file_path: 'a.go', search: 'old', replace: 'new' }],
+      });
+      socket.end();
+    };
+
+    await withStub(behavior, async () => {
+      let rejectionsFired = false;
+      let proposalsFired = false;
+      await streamToCompletion('edit something', {
+        onEditRejections: () => {
+          rejectionsFired = true;
+        },
+        onEditProposals: () => {
+          proposalsFired = true;
+        },
+      });
+
+      assert.strictEqual(
+        rejectionsFired,
+        false,
+        'an older daemon sends no edit_rejections field at all, and this client must ' +
+          'behave exactly as it did before the field existed'
+      );
+      assert.strictEqual(proposalsFired, true, 'the proposal must still arrive');
+    });
+  });
+
+  test('applyEdit surfaces syntax_note and match_note, and tolerates their absence', async () => {
+    const withNotes: Behavior = (req, socket) => {
+      if (req.edit) {
+        writeLine(socket, {
+          protocol_version: PV,
+          applied: true,
+          backup_dir: '/tmp/b',
+          syntax_note: 'delimiters balanced (advisory: no parser for typescript)',
+          match_note: 'matched after normalising line endings',
+        });
+        socket.end();
+      }
+    };
+
+    await withStub(withNotes, async () => {
+      const res = await applyEdit(CLIENT, '/tmp/ws', {
+        file_path: 'a.ts',
+        search: 'old',
+        replace: 'new',
+      });
+      assert.strictEqual(res.applied, true);
+      assert.match(
+        res.syntax_note ?? '',
+        /advisory/,
+        'the syntax note did not survive the wire. This extension is the ONLY surface ' +
+          'that applies over the socket — the CLI and TUI call PrepareEdit in-process — ' +
+          'so a note dropped here is a note nobody using VS Code ever sees.'
+      );
+      assert.match(res.match_note ?? '', /line endings/);
+    });
+
+    // An older daemon that has never heard of these fields.
+    const withoutNotes: Behavior = (req, socket) => {
+      if (req.edit) {
+        writeLine(socket, { protocol_version: PV, applied: true, backup_dir: '/tmp/b' });
+        socket.end();
+      }
+    };
+
+    await withStub(withoutNotes, async () => {
+      const res = await applyEdit(CLIENT, '/tmp/ws', {
+        file_path: 'a.ts',
+        search: 'old',
+        replace: 'new',
+      });
+      assert.strictEqual(res.applied, true, 'an older daemon must still work unchanged');
+      assert.strictEqual(res.syntax_note, undefined);
+      assert.strictEqual(res.match_note, undefined);
+    });
+  });
+});

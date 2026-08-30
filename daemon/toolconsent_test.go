@@ -474,7 +474,7 @@ func TestAProviderFailureMidTurnKeepsTheWorkAlreadyDone(t *testing.T) {
 	}
 	// The load-bearing half: the edit block the user saw must still become a
 	// proposal they can act on.
-	if blocks := s.parseAndLogEditBlocks(res.FinalText); len(blocks) != 1 {
+	if blocks, _ := s.parseAndLogEditBlocks(res.FinalText); len(blocks) != 1 {
 		t.Errorf("the edit block produced before the failure is lost: %d block(s) survived", len(blocks))
 	}
 }
