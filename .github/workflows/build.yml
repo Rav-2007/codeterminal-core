@@ -589,45 +589,97 @@ jobs:
       # touch -- is asked against CURRENT code by the expanded locate eval, and
       # that one does gate: .github/workflows/retrieval-eval.yml runs it on
       # every PR that touches the retrieval path.
+      # THE DATUM THAT WAS MISSING WHEN THIS JOB WENT 2.63x SLOWER. Three eval
+      # runs on 2026-08-30 carried the same `ubuntu-latest` label and landed on
+      # three different runner instances, one of which took 2220s for work the
+      # other did in 843s. Whether that instance had fewer cores or a slower
+      # host could not be answered afterwards, because nothing had recorded
+      # what the machine was. Four lines, once per run, and the next
+      # investigation starts with the answer instead of a hypothesis.
+      - name: Record what machine this ran on
+        run: |
+          echo "runner: $RUNNER_NAME  os: $RUNNER_OS  arch: $RUNNER_ARCH"
+          echo "nproc: $(nproc)"
+          grep -m1 'model name' /proc/cpuinfo || true
+          free -g | head -2
+
       - name: Run gated eval suite (green subset -- see comment)
-        # 60m SINCE 2026-08-30. THE 45m THAT PRECEDED IT CARRIED AN EXPLANATION
-        # THAT WAS MEASURED AND FOUND WRONG, SO IT IS CORRECTED HERE RATHER THAN
-        # LEFT STANDING.
+        # -v AND -count=1 ARE LOAD-BEARING HERE, not tidiness. See below.
         #
-        # That comment said run 33309133076's `panic: test timed out after 30m0s`
-        # had caught a slow RUNNER rather than a cost, and predicted this step
-        # would land near 15m once the alarm moved. It did not. Same step, same
-        # github-hosted ubuntu-latest, budget the only material difference:
+        # 60m SINCE 2026-08-30, and the reason has now been established rather
+        # than guessed. Two earlier explanations were written into this file as
+        # fact and both were wrong, so the evidence is recorded with the answer.
         #
-        #   budget 24000 (run 33305669593)   14m36s, completed
-        #   budget 32000 (run 33309133076)   >30m46s, killed by the 30m alarm
-        #   budget 32000 (run 33311677642)   37m43s, completed
+        # THE MEASUREMENTS. Same step, same github-hosted ubuntu-latest, same
+        # runner image (ubuntu-24.04 20260823.283.1) and region:
         #
-        # 2.58x, reproducible across both runs at the higher budget. Raising
-        # defaultContextBudgetChars to 32000 really does cost that here.
+        #   budget 24000 (run 33305669593)   843s,   all three tests completed
+        #   budget 32000 (run 33309133076)   killed by the 30m alarm
+        #   budget 32000 (run 33311677642)   2220s,  all three tests completed
         #
-        # THE ERROR IN THE REASONING, recorded because it is easy to repeat: the
-        # local suite runs all three tests in 14m10s at 32000, and that was
-        # compared against CI's 14m36s at 24000 and called equivalent. Different
-        # machine AND different budget, so the comparison said nothing. Only the
-        # CI-to-CI rows above are a controlled measurement.
+        # 2.63x, and the window between those commits contains exactly ONE
+        # non-comment code change: defaultContextBudgetChars, 24000 -> 32000.
+        # Which is what made "the budget costs 2.58x" look like a controlled
+        # result. It is not the cause.
         #
-        # THE MECHANISM IS NOT ESTABLISHED. A 33% larger budget does not obviously
-        # buy 158% more runtime, so something after retrieval scales worse than
-        # the delivered character count -- most likely per-kept-chunk work in the
-        # token-efficiency comparison. That is worth finding; it is not worth
-        # guessing at a second confident story in a comment, having just had the
-        # first one refuted.
+        # WHAT ACTUALLY ESTABLISHED IT was the goroutine dump from the run that
+        # timed out. At the 30-minute alarm TestTokenEfficiencyEval had been
+        # running 11m43s and was sitting in embedder.Embed, at
+        # token_efficiency_eval_test.go:202 -- INSIDE THE INDEX BUILD. That
+        # phase embeds ~4,700 chunks and takes no budget input whatsoever: the
+        # budget enters the eval at exactly one call, truncateToBudget, over at
+        # most a few dozen chunks per query. There is no mechanism in this code
+        # by which a constant can cost 1,376 seconds, and the profile says the
+        # time did not go anywhere near it.
         #
-        # 60m, not 45m: the observed cost is 37m43s and these runners have varied
-        # by better than 2x, so 45m was 1.19x headroom and would flake. This still
-        # bounds a genuine hang, which is all a timeout is for -- a failing test
-        # still fails, only the alarm moved.
+        # THE CONTROLLED TEST, run locally on one machine, one worktree, back to
+        # back, with that constant as the only difference:
         #
-        # THE REAL FIX IS THE SHARED INDEX, and this measurement raises its
-        # priority rather than settling it. All three tests build their own index.
-        # TestDeliveryPolicySweep already proves one build can score many arms.
-        # That is a refactor with its own risk and does not belong in a red-build
-        # repair.
-        run: go test -tags eval -timeout 60m -run 'TestEvalRetrievalQuality|TestRerankEvalRetrievalRanking|TestTokenEfficiencyEval' ./...
+        #                        24000      32000     ratio
+        #   rerank eval          419.84s    469.96s   1.119x
+        #   token-efficiency     446.27s    472.30s   1.058x
+        #   package total        866.4s     942.6s    1.088x
+        #   max RSS              3228800K   3226216K  1.000x
+        #
+        # THE BUDGET COSTS 8.8%. Not 158%. It is a real cost and it is
+        # proportionate to what it does -- more chunks survive truncateToBudget,
+        # so more get rendered and scanned. Identical peak memory also rules out
+        # the obvious second story, that a bigger budget pushes a small runner
+        # into swap.
+        #
+        # So of CI's observed 2.63x, the budget accounts for 1.09x and the
+        # remaining 2.4x is the runner. Three eval runs that day carried the
+        # same `ubuntu-latest` label and landed on three different instances
+        # (1000000122, 1000000172, 1000000238); no repo variable overrides the
+        # label. Which is as far as this can be taken from outside GitHub, so it
+        # is left there rather than given a third confident explanation.
+        #
+        # And the cross-check that rules out the hardware: CI at budget 24000
+        # ran that same test in 413.42s, against 419.84s on the developer
+        # laptop. A healthy runner and this laptop are the same speed to within
+        # 2%. The 2.63x is one runner instance being slow at CPU-bound ONNX
+        # inference for an hour -- the model DOWNLOAD, 32MB of HTTPS with no
+        # repo code in it at all, was ~3x slower on that same instance.
+        #
+        # SO THE REAL PROBLEM WAS NEVER THE BUDGET. It is that this job spends
+        # ~95% of its wall clock embedding, and until 2026-08-30 it embedded the
+        # whole repository TWICE per run for byte-identical vectors. That is
+        # what daemon/evalcorpus_test.go fixes. 60m stays: the observed worst
+        # case was 37m43s and these runners vary by better than 2x, so a tighter
+        # alarm flakes. A timeout only bounds a hang; a failing test still fails.
+        #
+        # WHY -v. THIS IS THE DEFECT THAT MADE ALL OF THE ABOVE ARCHAEOLOGY.
+        # `go test` discards a passing package's output. The 37m43s run
+        # therefore emitted, in 38 minutes, one line: "ok codeterminal/daemon
+        # 2219.578s". Which test, which phase, how many chunks -- none of it
+        # survived, and the only reason the cause is known is that a DIFFERENT
+        # run crashed and dumped a stack. A job whose whole purpose is to
+        # measure must not throw its measurements away when it passes.
+        # retrieval-eval.yml already passed -v; this one did not.
+        #
+        # WHY -count=1. Without it, `go test` may serve a CACHED result, and
+        # setup-go restores GOCACHE across runs. A cached pass prints "ok" and
+        # measures nothing -- a scheduled drift detector that silently stops
+        # detecting drift. retrieval-eval.yml already passed it.
+        run: go test -tags eval -count=1 -v -timeout 60m -run 'TestEvalRetrievalQuality|TestRerankEvalRetrievalRanking|TestTokenEfficiencyEval' ./...
         working-directory: daemon

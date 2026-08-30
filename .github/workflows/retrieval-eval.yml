@@ -72,6 +72,12 @@ on:
       # exactly when you want the answer key re-run.
       - "daemon/eval_test.go"
       - "daemon/rerank_eval_test.go"
+      # ADDED 2026-08-30 WITH THE FILE ITSELF. evalcorpus_test.go now builds the
+      # index this job scores against -- what is scanned, what is excluded, and
+      # what text is embedded all live there. A change to it can move every
+      # number below without touching a single other file on this list, which is
+      # the same miss the three entries above chunkexpand.go record.
+      - "daemon/evalcorpus_test.go"
       - "testdata/evalset/**"
       - "testdata/queries.json"
       # And this file.
