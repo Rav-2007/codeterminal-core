@@ -118,6 +118,26 @@ if [ -x "$repo_root/scripts/docs-links.sh" ]; then
   fi
 fi
 
+# The cross-register claim check, here for exactly the reason stated above and
+# with more force than the link checker needs it.
+#
+# A documentation-only push does not start CI, and a documentation-only push is
+# the ONLY way BACKLOG.md and docs/OPEN_ITEMS.md drift apart -- editing a status
+# cell touches no code. Wiring this into `make docs` alone would have left it
+# inert for its own use case: the drift it exists to catch would sail past the
+# hook, never reach CI, and be found the next time somebody read both files
+# carefully, which last time took nineteen days.
+if [ -x "$repo_root/scripts/docs-claims.sh" ]; then
+  if ! out="$("$repo_root/scripts/docs-claims.sh" --self-test 2>&1)" \
+     || ! out="$("$repo_root/scripts/docs-claims.sh" 2>&1)"; then
+    echo "pre-push: DOC REGISTERS DISAGREE" >&2
+    echo "$out" >&2
+    status=1
+  else
+    echo "pre-push: ok claims ($(printf '%s' "$out" | tail -1))"
+  fi
+fi
+
 if [ $status -ne 0 ]; then
   echo "" >&2
   echo "pre-push: REFUSING THE PUSH. Fix the above, or use --no-verify if you" >&2
