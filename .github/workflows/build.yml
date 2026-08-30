@@ -590,5 +590,30 @@ jobs:
       # that one does gate: .github/workflows/retrieval-eval.yml runs it on
       # every PR that touches the retrieval path.
       - name: Run gated eval suite (green subset -- see comment)
-        run: go test -tags eval -timeout 30m -run 'TestEvalRetrievalQuality|TestRerankEvalRetrievalRanking|TestTokenEfficiencyEval' ./...
+        # 45m SINCE 2026-08-30, RAISED FROM 30m, AND NOT TO PAPER OVER A SLOW
+        # TEST. Run 33309133076 died on `panic: test timed out after 30m0s` with
+        # TestTokenEfficiencyEval 11m43s into legitimate work -- the same shape
+        # as the two 10m deaths recorded above. What the alarm caught was a
+        # RUNNER, not a regression:
+        #
+        #   CI at budget 24000 (run 33305669593)   all three tests, 14m36s, completed
+        #   CI at budget 32000 (run 33309133076)   quality+rerank alone ~18m17s
+        #   local at budget 32000                  all three, 14m10s, all pass
+        #
+        # The rerank test cannot triple because of a budget change: the budget is
+        # read only by truncateToBudget at DELIVERY time, while the ~6-minute
+        # index build that dominates each test never references it. Both runs
+        # were github-hosted ubuntu-latest, different instances.
+        #
+        # So the nominal cost is ~15m and these runners vary by better than 2x.
+        # 30m was 2x headroom and lost; 45m is 3x. It still bounds a genuine
+        # hang, which is all this is for -- a test that fails still fails, and
+        # only the alarm moved.
+        #
+        # THE REAL COST DRIVER, left alone deliberately: all three tests build
+        # their own index, ~6 minutes each. TestDeliveryPolicySweep already
+        # proves one build can score many arms, so sharing it here is the fix
+        # that would make this timeout irrelevant. That is a refactor, not a
+        # red-build repair, and it is not being smuggled into one.
+        run: go test -tags eval -timeout 45m -run 'TestEvalRetrievalQuality|TestRerankEvalRetrievalRanking|TestTokenEfficiencyEval' ./...
         working-directory: daemon

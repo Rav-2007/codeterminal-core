@@ -217,7 +217,7 @@ func TestTokenEfficiencyEval(t *testing.T) {
 
 	// Real production defaults -- not tuned for this benchmark.
 	const topK = defaultK                    // 10 since 2026-08-28
-	const budget = defaultContextBudgetChars // 8000 chars
+	const budget = defaultContextBudgetChars // 32000 since 2026-08-30
 
 	var results []tokenEffResult
 	fmt.Println()
