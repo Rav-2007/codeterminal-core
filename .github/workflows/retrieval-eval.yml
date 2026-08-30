@@ -32,6 +32,20 @@ on:
       - "daemon/chunker.go"
       - "daemon/chunkmerge.go"
       - "daemon/chunkscrub.go"
+      # The three below decide what the model RECEIVES rather than what gets
+      # embedded, and were missing from this list until 2026-08-30 -- so the
+      # single biggest measured change of the preceding fortnight fired nothing.
+      # chunkexpand.go holds constructExtents and the delivery-expansion policy
+      # (widening a hit to its enclosing declaration took the locate eval from
+      # 33/49 to 39/49); chunkcontext.go holds the column-zero construct
+      # heuristics it runs on, which a CRLF checkout silently defeated; and
+      # repomap.go is the workspace map that goes into the same context budget.
+      # A change to any of them can move recall without touching a single file
+      # that was already listed here, which is precisely the failure this
+      # workflow was built for.
+      - "daemon/chunkcontext.go"
+      - "daemon/chunkexpand.go"
+      - "daemon/repomap.go"
       - "daemon/rerank.go"
       - "daemon/embedder.go"
       - "daemon/bge_embedder.go"
