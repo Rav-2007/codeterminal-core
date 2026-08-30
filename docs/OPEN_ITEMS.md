@@ -2,7 +2,7 @@
 
 **Written 2026-08-01. Statuses resolved in place 2026-08-07.**
 
-> ## One item in §1–§2 is still partly open: **12.**
+> ## Nothing in §1–§2 is open. Item 12, the last one, closed 2026-08-30.
 >
 > *(Item 20 closed 2026-08-07 — `d5a8fdf`, with two further defects in the same loop.)*
 >
@@ -91,7 +91,7 @@ closure is the founder's call.
 | 9 | **FIXED `e3ad4b0`** | **The lexical index is world-readable.** `lexical.db` holds full chunk `Content` — the user's source text — and is created `0644` inside a `0755` directory, with its `-wal`/`-shm` sidecars the same. `memory.db` is `0600` in a `0700` dir and `skills.db` locks its directory down; the FTS store got neither. chromem's own collection dir is `0700`, so the vector half is covered and the lexical half is not. | `daemon/lexicalstore.go:69` | Medium | **CONFIRMED** — probe run 2026-08-01: `index/ drwxr-xr-x`, `lexical.db -rw-r--r--`, both sidecars `-rw-r--r--` |
 | 10 | **FIXED** | **`MatchesSecretName` over-refuses `.pub` public keys containing "secret".** `id_rsa.pub` and `id_ed25519.pub` are correctly allowed; `id_rsa_secret.pub` and `secrets.pub` are refused by the substring rule. Fails in the safe direction — a correctness annoyance, not a hole. | `editapply/secret.go` | Low | **FIXED** (2026-08-11) — `.pub` allowlist now runs before substring checks. |
 | ~~11~~ | **FIXED `ffdd553`** | ~~**The MCP log writer has no buffer bound.** `prefixWriter.Write` appends to `w.buf` and only drains on a newline, on stderr from an unconfined third-party subprocess.~~ | `daemon/mcpruntime.go` | Medium | **NO — FIXED `ffdd553`**, the same commit and the same `maxLogLineBytes = 64 << 10` that closed L8. This row contradicted §6 of this very document for six days; corrected 2026-08-07. |
-| 12 | **PARTLY OPEN — 3 of 8 remain** | **The eight LOWs.** The original report is at `~/.claude/plans/what-can-we-improve-snappy-music.md` — **outside the repo**, which is why `docs/HANDOFF.md`'s pointer looks dangling from a checkout; the table below is the in-repo copy so this register no longer depends on a file that does not travel with the code. **This cell used to read "all eight still present", which was wrong:** L1, L3, L6 and L8 are fixed, L7 has moved file. **L2 was fixed 2026-08-09** — and was broader than this register recorded in two directions (cross-session memory was NOT clean; the two clients' error paths were broken oppositely). Remaining: **L4, L5, L7**. | various | Low | **RE-VERIFIED 2026-08-09** at `4dca1c8`; L2 row updated at `592e12c` |
+| 12 | **FIXED** | **The eight LOWs.** The original report is at `~/.claude/plans/what-can-we-improve-snappy-music.md` — **outside the repo**, which is why `docs/HANDOFF.md`'s pointer looks dangling from a checkout; the table below is the in-repo copy so this register no longer depends on a file that does not travel with the code. **This cell used to read "all eight still present", which was wrong:** L1, L3, L6 and L8 are fixed, L7 has moved file. **L2 was fixed 2026-08-09** — and was broader than this register recorded in two directions (cross-session memory was NOT clean; the two clients' error paths were broken oppositely). Remaining: **none**. | various | Low | **FIXED 2026-08-30.** L4, L5 and L7 were fixed by `ce96997` (2026-08-11) and verified against current source: L4 honours an `.in-flight` lockfile with a 2h TTL in `pruneBackupSessions`; L5 writes a NUL-delimited manifest and reads the legacy format via `parseManifest`; L7 guards the helper socket with `protocol.AuthorizePeer` (`helper/main.go:147`) — the exact gap the finding named, closed by moving `peerauth` into `protocol/` so both sockets share it. **This cell was stale against the table ten lines below it**, which had marked all three `~~struck~~ NO — FIXED` since 2026-08-11, while BACKLOG.md's Tier 2 said completed. One summary, its own detail table, and a second register: three places, and only this cell was wrong. `scripts/docs-claims.sh` now fails the build when this cell and BACKLOG disagree. |
 
 ### The eight LOWs (item 12) — RE-VERIFIED 2026-08-09 at `4dca1c8`
 
@@ -102,8 +102,11 @@ closure is the founder's call.
 > overstates what is open is the same failure as one that overstates what is
 > closed: both make the next person distrust the whole document.
 >
-> Net: **four fixed** (L1, L3, L6, and L2 on 2026-08-09), **one relocated** (L7),
-> **two unchanged** (L4, L5). L2 went PLAUSIBLE → CONFIRMED → fixed inside two
+> Net, as of 2026-08-30: **all eight fixed**. Seven were closed by 2026-08-09
+> (L1, L3, L6, L8, and L2 that day); L4, L5 and L7 followed in `ce96997` on
+> 2026-08-11 — L7 also **relocated**, to `protocol/transport_unix.go`. The rows
+> below were already correct; item 12's summary cell above was not, for
+> nineteen days. L2 went PLAUSIBLE → CONFIRMED → fixed inside two
 > days, and grew twice on the way: what was filed as one client's live-session
 > quirk was three loss paths across both clients and the memory store.
 

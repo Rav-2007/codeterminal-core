@@ -139,3 +139,5 @@ check: fmt vet crossvet race lint ratchet errcheck evalguard docs
 
 docs:
 	@./scripts/docs-links.sh
+	@./scripts/docs-claims.sh --self-test
+	@./scripts/docs-claims.sh

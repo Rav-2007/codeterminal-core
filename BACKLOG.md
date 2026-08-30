@@ -14,9 +14,14 @@ first line of this file was sent to a superseded plan.
 
 Two boards, scored separately on purpose. **The engineering board is strong and
 keeps getting stronger; the readiness board moves only when someone signs
-something.** 446 commits since 2026-07-05 have produced 1,149 tests at a 1.47:1
-test-to-source ratio, a race-clean tree, six ratcheted coverage floors and a
-green cross-platform CI.
+something.** Since 2026-07-05 it has produced a test suite that outweighs the
+source it covers, a race-clean tree, six ratcheted coverage floors, fifteen fuzz
+targets and a green cross-platform CI including macOS.
+
+*(Exact commit and test counts used to be quoted here. They were hand-written
+derived facts, stale the moment the next commit landed — 446 and 1,149 against an
+actual 493 and 1,522 by 2026-08-30 — and nobody chooses work based on which
+number it is. Run `git rev-list --count` if you want them.)*
 
 The product is now **installable but not distributed**: a `.vsix` builds, carries
 the daemon and helper, and passes a gate that asserts on the archive's contents —
@@ -46,6 +51,7 @@ verification transcripts is in
 | **2026-08-06 → 08-07** | Ultra vulnerability pass — **six P0s** (LSP panic/OOM, symlink escape, TUI RCE, `$HOST` TCP); daemon lifecycle Stage 2; docs index created after seven stale claims in one day |
 | **2026-08-08** | Windows + macOS CI **ran green on hardware** (`LOCAL_PEERCRED` executed for the first time); cross-client mirrors enforced by test (`fa4035c`); a fifth repository-controlled-execution instance found and fixed (`76a87d0`); broken doc links fail a build (`23550e4`) |
 | **2026-08-09** | Proxy refused 8 of 9 shipped models (`a30e664`); agent-loop repeated-call stall (`6b11c35`); **register item L2 closed** — a cut-off answer no longer reaches the model looking finished, across three loss paths (`a4c9d15`, `f79d965`, `592e12c`); socket peer-auth tripwire (`c8f7ca2`) |
+| **2026-08-30** | Capability rows 8–9, stages 0–2: unified **diff ingestion** (one `EditBlock` per hunk, every gate unchanged), one **canonical language table** (`filepath.Ext` sites 7→4; a `.rs` file no longer routed to gopls) and a **delta-rule syntax gate** so a file with a syntax error is no longer unfixable through edit blocks. Four defects CI found and one it could not: an edit no longer changes a file's **line-ending convention** (a CRLF file patched with an LF diff came back mixed, and git reported the whole file modified); the **chunker was blind to every grouped declaration on a CRLF checkout**, so retrieval was quietly worse on Windows than Linux for identical source; a memory cap **swap walked through**; and the retrieval **context budget had decayed as the repository grew** — delivered recall 36→41/49 with the ranker untouched, because the eval indexes this repo and more code competes for the same characters. 39 commits, fast-forwarded to `main`, dispatch `33311677642` 30/30 green including macOS. |
 
 **How this was built** — the techniques, and the bug behind each — is
 [`docs/ENGINEERING_METHOD.md`](docs/ENGINEERING_METHOD.md).
@@ -60,7 +66,7 @@ The ordering is real: each tier is blocked by the one above it.
 
 | # | Item | Why it blocks |
 |---|---|---|
-| **B1** | **GitHub Actions billing** | Every job refuses to start. **18 commits have no CI signal**, and the gap widens with each one. |
+| ~~**B1**~~ | ~~**GitHub Actions billing**~~ | ~~Every job refuses to start. **18 commits have no CI signal**, and the gap widens with each one.~~ **RESOLVED 2026-08-30.** CI ran eight times that day; dispatch `33311677642` was **30/30 green including all four macOS jobs**, and a 39-commit stack fast-forwarded onto `main`, which now runs its own matrix. **Tier 0's critical path changes with this row: the top blocker is gone and B2/B3/B4 are what Tier 0 now means.** This row mattered more than a stale row usually does — it told a reader there was no CI signal, and CI is where `govulncheck` and the confinement conformance suites run, so believing it means not looking at a security gate's output. |
 | **B2** | **D1 + D2 + D3** ([`docs/DECISION_PACK.md`](docs/DECISION_PACK.md)) | These *are* the P3 gate, which blocks all capability work. **No engineering remains** — D1's deliverable has existed since 2026-07-30, D2 is explicitly "a ruling, not a fix", D3 is a decision to *not* do work. One read, three signatures, in the order **D2 → D1 → D3** (D3 is a consequence of D1). |
 | **B3** | **Apple Developer enrolment** | Gates signing/notarisation, therefore macOS shipping. Unsigned binaries in a `.vsix` are quarantined by Gatekeeper and read to a user as "daemon not running". |
 | **B4** | **D5 – D8** | D5's data is fresh (measured 29.0% vs 1.2%); D8 deletes a subsystem with no callers. |
@@ -119,7 +125,7 @@ per-request and fail-closed regardless of model, so what is missing is
 | Where do I start? | [`docs/HANDOFF.md`](docs/HANDOFF.md) — entry point; [`docs/README.md`](docs/README.md) catalogues everything else |
 | What are we doing next? | [`docs/ULTRA_MASTER_PLAN_2026-08-08.md`](docs/ULTRA_MASTER_PLAN_2026-08-08.md) — **the current plan** |
 | How is this made robust? | [`docs/ENGINEERING_METHOD.md`](docs/ENGINEERING_METHOD.md) — the techniques and the bug behind each |
-| What bugs are open? | [`docs/OPEN_ITEMS.md`](docs/OPEN_ITEMS.md) — read the Status column; items 7, 10 and 12 remain |
+| What bugs are open? | [`docs/OPEN_ITEMS.md`](docs/OPEN_ITEMS.md) — read the Status column; **open items: none**. Enforced by `scripts/docs-claims.sh`, which fails the build when this cell and that Status column disagree — in either direction. |
 | What needs a founder ruling? | [`docs/DECISION_PACK.md`](docs/DECISION_PACK.md) — D1–D8; **all eight taken**, P3 security gate closed |
 | What was already done, and why? | [`docs/ARCHIVE/BACKLOG_2026-07.md`](docs/ARCHIVE/BACKLOG_2026-07.md) |
 | What is still ahead? | **this file** |
