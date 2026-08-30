@@ -242,9 +242,18 @@ type RetrievalConfig struct {
 // result. That is not a flaw in the sweep; it is the corpus sensitivity this
 // whole entry is about, observed on itself.
 //
-// THE COST IS REAL: roughly +33% injected retrieval context per query against
-// 24000 (~29.2k mean rendered chars against ~22.4k), so more prefill latency and
-// more money on every request. It buys four queries and, more durably, the
+// THE COST IS REAL, AND LARGER THAN THE CONTEXT FIGURE SUGGESTS: roughly +33%
+// injected retrieval context per query against 24000 (~29.2k mean rendered chars
+// against ~22.4k), so more prefill latency and more money on every request --
+// and, measured on CI, 2.58x the eval suite's runtime (14m36s at 24000 against
+// 37m43s at 32000, same runner type, reproducible across two runs). A 33% larger
+// budget buying 158% more runtime is not explained by the delivered character
+// count, so something after retrieval scales worse than linearly in kept chunks.
+// That is unexplained rather than accepted; see the eval job's comment in
+// .github/workflows/build.yml. It does not change this constant's value -- the
+// recall regression it fixes is a product defect and the eval runs weekly or on
+// dispatch, not per push -- but anyone tuning this should know the second number
+// exists. It buys four queries and, more durably, the
 // headroom that stops this constant needing revisiting on the next commit that
 // grows the repository. What is STILL not measured is whether the extra spans
 // help or distract the MODEL -- this eval measures what reaches the prompt, not

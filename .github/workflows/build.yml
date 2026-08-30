@@ -590,30 +590,44 @@ jobs:
       # that one does gate: .github/workflows/retrieval-eval.yml runs it on
       # every PR that touches the retrieval path.
       - name: Run gated eval suite (green subset -- see comment)
-        # 45m SINCE 2026-08-30, RAISED FROM 30m, AND NOT TO PAPER OVER A SLOW
-        # TEST. Run 33309133076 died on `panic: test timed out after 30m0s` with
-        # TestTokenEfficiencyEval 11m43s into legitimate work -- the same shape
-        # as the two 10m deaths recorded above. What the alarm caught was a
-        # RUNNER, not a regression:
+        # 60m SINCE 2026-08-30. THE 45m THAT PRECEDED IT CARRIED AN EXPLANATION
+        # THAT WAS MEASURED AND FOUND WRONG, SO IT IS CORRECTED HERE RATHER THAN
+        # LEFT STANDING.
         #
-        #   CI at budget 24000 (run 33305669593)   all three tests, 14m36s, completed
-        #   CI at budget 32000 (run 33309133076)   quality+rerank alone ~18m17s
-        #   local at budget 32000                  all three, 14m10s, all pass
+        # That comment said run 33309133076's `panic: test timed out after 30m0s`
+        # had caught a slow RUNNER rather than a cost, and predicted this step
+        # would land near 15m once the alarm moved. It did not. Same step, same
+        # github-hosted ubuntu-latest, budget the only material difference:
         #
-        # The rerank test cannot triple because of a budget change: the budget is
-        # read only by truncateToBudget at DELIVERY time, while the ~6-minute
-        # index build that dominates each test never references it. Both runs
-        # were github-hosted ubuntu-latest, different instances.
+        #   budget 24000 (run 33305669593)   14m36s, completed
+        #   budget 32000 (run 33309133076)   >30m46s, killed by the 30m alarm
+        #   budget 32000 (run 33311677642)   37m43s, completed
         #
-        # So the nominal cost is ~15m and these runners vary by better than 2x.
-        # 30m was 2x headroom and lost; 45m is 3x. It still bounds a genuine
-        # hang, which is all this is for -- a test that fails still fails, and
-        # only the alarm moved.
+        # 2.58x, reproducible across both runs at the higher budget. Raising
+        # defaultContextBudgetChars to 32000 really does cost that here.
         #
-        # THE REAL COST DRIVER, left alone deliberately: all three tests build
-        # their own index, ~6 minutes each. TestDeliveryPolicySweep already
-        # proves one build can score many arms, so sharing it here is the fix
-        # that would make this timeout irrelevant. That is a refactor, not a
-        # red-build repair, and it is not being smuggled into one.
-        run: go test -tags eval -timeout 45m -run 'TestEvalRetrievalQuality|TestRerankEvalRetrievalRanking|TestTokenEfficiencyEval' ./...
+        # THE ERROR IN THE REASONING, recorded because it is easy to repeat: the
+        # local suite runs all three tests in 14m10s at 32000, and that was
+        # compared against CI's 14m36s at 24000 and called equivalent. Different
+        # machine AND different budget, so the comparison said nothing. Only the
+        # CI-to-CI rows above are a controlled measurement.
+        #
+        # THE MECHANISM IS NOT ESTABLISHED. A 33% larger budget does not obviously
+        # buy 158% more runtime, so something after retrieval scales worse than
+        # the delivered character count -- most likely per-kept-chunk work in the
+        # token-efficiency comparison. That is worth finding; it is not worth
+        # guessing at a second confident story in a comment, having just had the
+        # first one refuted.
+        #
+        # 60m, not 45m: the observed cost is 37m43s and these runners have varied
+        # by better than 2x, so 45m was 1.19x headroom and would flake. This still
+        # bounds a genuine hang, which is all a timeout is for -- a failing test
+        # still fails, only the alarm moved.
+        #
+        # THE REAL FIX IS THE SHARED INDEX, and this measurement raises its
+        # priority rather than settling it. All three tests build their own index.
+        # TestDeliveryPolicySweep already proves one build can score many arms.
+        # That is a refactor with its own risk and does not belong in a red-build
+        # repair.
+        run: go test -tags eval -timeout 60m -run 'TestEvalRetrievalQuality|TestRerankEvalRetrievalRanking|TestTokenEfficiencyEval' ./...
         working-directory: daemon
