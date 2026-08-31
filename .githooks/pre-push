@@ -27,6 +27,10 @@
 # the fuzz targets: those add roughly a minute for checks whose failures are
 # advisory rather than "this push is broken", and a hook slow enough to be
 # annoying is a hook people learn to bypass. `make check` runs everything.
+#
+# Plus three sub-second, offline checks that have NO OTHER ENFORCEMENT POINT:
+# doc links, the cross-register claim check, and action pinning. Each is here
+# because CI cannot or does not cover it -- see the comment above each one.
 
 set -uo pipefail
 
@@ -135,6 +139,30 @@ if [ -x "$repo_root/scripts/docs-claims.sh" ]; then
     status=1
   else
     echo "pre-push: ok claims ($(printf '%s' "$out" | tail -1))"
+  fi
+fi
+
+# Supply-chain pinning, here because THIS HOOK IS THE ONLY THING THAT RUNS IT.
+#
+# scripts/actions-pinned.sh went into `make check` on 2026-08-31 and that is not
+# an enforcement point: CI does not run `make check` -- build.yml runs individual
+# steps per module -- so the check fired only for someone who chose to run it.
+# A gate whose entire coverage is "somebody remembered" is the shape of every
+# stale claim this repo has had to correct.
+#
+# It belongs in the same tier as the two doc checks above rather than with the
+# linters the header excludes: sub-second, offline, no toolchain. Its sibling
+# scripts/govulncheck.sh deliberately stays OUT -- ~17s and it needs the
+# vulnerability database, so it would make this hook slow and fail on a train.
+# build.yml already runs govulncheck per module, so that one has a real CI
+# enforcement point and this one does not.
+if [ -x "$repo_root/scripts/actions-pinned.sh" ]; then
+  if ! out="$("$repo_root/scripts/actions-pinned.sh" 2>&1)"; then
+    echo "pre-push: UNPINNED GITHUB ACTION" >&2
+    echo "$out" >&2
+    status=1
+  else
+    echo "pre-push: ok actions ($(printf '%s' "$out" | tail -1))"
   fi
 fi
 
