@@ -130,7 +130,7 @@ per-request and fail-closed regardless of model, so what is missing is
 | Where do I start? | [`docs/HANDOFF.md`](docs/HANDOFF.md) — entry point; [`docs/README.md`](docs/README.md) catalogues everything else |
 | What are we doing next? | [`docs/ULTRA_MASTER_PLAN_2026-08-08.md`](docs/ULTRA_MASTER_PLAN_2026-08-08.md) — **the current plan** |
 | How is this made robust? | [`docs/ENGINEERING_METHOD.md`](docs/ENGINEERING_METHOD.md) — the techniques and the bug behind each |
-| What bugs are open? | [`docs/OPEN_ITEMS.md`](docs/OPEN_ITEMS.md) — read the Status column; **open items: none**. Enforced by `scripts/docs-claims.sh`, which fails the build when this cell and that Status column disagree — in either direction. |
+| What bugs are open? | [`docs/OPEN_ITEMS.md`](docs/OPEN_ITEMS.md) — read the Status column; **open: 20, 21, 22, 24** — the security residuals carried over from [`AGENT_SECURITY_AND_CAPABILITY_AUDIT.md`](AGENT_SECURITY_AND_CAPABILITY_AUDIT.md), which had been tracked by git and referenced by nothing. This cell said *none* while that report listed six open findings, and it was not lying — the register it is checked against had never heard of them. Enforced by `scripts/docs-claims.sh`, which fails the build when this cell and that Status column disagree — in either direction. |
 | What needs a founder ruling? | [`docs/DECISION_PACK.md`](docs/DECISION_PACK.md) — D1–D8; **all eight taken**, P3 security gate closed |
 | What was already done, and why? | [`docs/ARCHIVE/BACKLOG_2026-07.md`](docs/ARCHIVE/BACKLOG_2026-07.md) |
 | What is still ahead? | **this file** |
@@ -228,6 +228,16 @@ becomes a per-fill one. That is a benefit beyond cost, and it is worth weighing
 against the mixing hazard rather than treating the hazard as decisive.
 
 ### (j) errcheck adoption — deferred from P3.5 with a measured reason
+
+> **STALE, corrected 2026-08-31.** The paragraph below says errcheck "is NOT
+> wired up". It is: `make check` runs it through `scripts/errcheck-ceiling.sh`
+> against per-module ceilings in `scripts/errcheck-ceilings.txt`, and every
+> module currently reports *at ceiling*. What follows is the reasoning for why
+> it was adopted as a **ceiling ratchet** rather than a zero-findings gate — that
+> reasoning is still correct, and it is the resolution of the problem described
+> below, not a deferral of it. Found while checking a different claim; nothing
+> machine-checks this entry, which is the same gap that let items 20-25 sit
+> outside the register.
 
 Phase 3.5 adopted `staticcheck`, `ineffassign` and `bodyclose` as hard CI gates
 (`scripts/lint.sh`, commit `9abc815`). **`errcheck` was named in the same item and

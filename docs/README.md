@@ -16,7 +16,7 @@ and the ones it skipped are the ones that went stale.
 |---|---|---|
 | 1 | [`HANDOFF.md`](HANDOFF.md) | How to work on this project, what the architecture is, where the code lives. **The entry point.** |
 | 2 | [`ULTRA_MASTER_PLAN_2026-08-08.md`](ULTRA_MASTER_PLAN_2026-08-08.md) | **The current plan.** Stage 3 packaging, and the P0 that blocks it. |
-| 3 | [`OPEN_ITEMS.md`](OPEN_ITEMS.md) | **The bug register.** Read the Status column; §1–§2 are all resolved except items 7, 10, 12. L2 was fixed 2026-08-09. |
+| 3 | [`OPEN_ITEMS.md`](OPEN_ITEMS.md) | **The bug register.** Read the Status column — this cell summarises and summaries go stale (items 7, 10 and 12 were named here as open long after they were fixed). As of 2026-08-31: §1 is clear, §2 carries items 20, 21, 22 and 24, the security residuals from the agent audit. `scripts/docs-claims.sh` checks the Status column against BACKLOG, not against this line. |
 | 4 | [`DECISION_PACK.md`](DECISION_PACK.md) | The eight founder rulings. Seven open, D4 taken. |
 
 Then [`../BACKLOG.md`](../BACKLOG.md) — what shipped and when, then what is left in
@@ -100,6 +100,7 @@ date attached.
 | [`TOOLCALL_RELIABILITY_2026-07-31.md`](TOOLCALL_RELIABILITY_2026-07-31.md) | Tool-selection degradation as the menu widens |
 | [`AGENT_LOOP_RELIABILITY_2026-07-31.md`](AGENT_LOOP_RELIABILITY_2026-07-31.md) | Agent-loop failure modes that did **not** occur |
 | [`RETRIEVAL_EVAL_CHECKPOINT_2026-08-08.md`](RETRIEVAL_EVAL_CHECKPOINT_2026-08-08.md) | The gated eval suite run by hand at `23550e4`: 15/15, 8/9, 90.1% — and what the excluded fourth test actually measures |
+| [`../AGENT_SECURITY_AND_CAPABILITY_AUDIT.md`](../AGENT_SECURITY_AND_CAPABILITY_AUDIT.md) | **The AI-agent security axis, 2026-08-26 at `efc611d`.** Consent truthfulness, tool-description injection, budget enforcement — the surfaces the filesystem and socket passes did not cover. Its live findings are mirrored into [`OPEN_ITEMS.md`](OPEN_ITEMS.md) items 20–25, which is the register the build actually checks; read the statuses there, not the ones in the report |
 | [`RETRIEVAL_EVAL_TREND.md`](RETRIEVAL_EVAL_TREND.md) | **A series, not a point.** One line per locate-eval run, because the thing it tracks — a self-referential corpus growing against a fixed budget — only exists as a slope. Appended by hand; the reason is in the file |
 | [`SYNTAX_GATE_TIER_C_DESIGN.md`](SYNTAX_GATE_TIER_C_DESIGN.md) | **Design, not shipped.** LSP diagnostics as a third syntax tier, and the two things that make it larger than it looks: `publishDiagnostics` has no id so the bridge drops it today, and a clean file is indistinguishable from a slow one |
 
