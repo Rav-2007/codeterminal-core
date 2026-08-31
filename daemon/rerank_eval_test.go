@@ -1104,6 +1104,26 @@ func TestRerankEvalRetrievalRanking(t *testing.T) {
 	fmt.Printf("  retrieved then BUDGETED OUT:    %d  (k=%d, budget=%d chars, expand top %d, construct cap %d)\n",
 		retrievedButBudgeted, defaultK, defaultContextBudgetChars, defaultExpandPolicy.TopN, defaultExpandPolicy.ConstructCap)
 
+	// ONE GREPPABLE LINE, for the series rather than the run.
+	//
+	// Every number above is formatted for a person reading one job's log. None
+	// of them answer "is delivered recall trending down, and how fast" -- and
+	// that is the question this eval keeps raising, because its corpus is the
+	// product and the budget is fixed. Answering it from prose output means
+	// re-reading old logs by hand, which is why nobody has.
+	//
+	// The fingerprint rides along deliberately: it is what distinguishes "the
+	// numbers moved because the corpus grew" from "the numbers moved because
+	// this runner computed different vectors", and those two have already been
+	// confused once.
+	//
+	// docs/RETRIEVAL_EVAL_TREND.md is where these lines accumulate, appended by
+	// hand -- see that file for why a CI job cannot commit them itself.
+	fmt.Printf("EVALTREND chunks=%d files=%d semantic=%d retrieved=%d budgeted_out=%d delivered=%d total=%d fingerprint=%s\n",
+		len(corpus.Scan.Chunks), corpus.Scan.FilesScanned,
+		semanticOnlyCount, hybridCount, retrievedButBudgeted, deliveredCount, total,
+		corpus.VectorFingerprint[:16])
+
 	// THE SAME RUN, SCORED AGAINST THE GROUND TRUTH AS IT WAS BEFORE ANY
 	// CORRECTION. Printed unconditionally, so that a reader comparing this run
 	// to an older write-up is comparing like with like, and so that a
@@ -1260,8 +1280,18 @@ func TestRerankEvalRetrievalRanking(t *testing.T) {
 			"that cannot name its own cause. If evalChunkRetrievedFloor is also red the "+
 			"ranker regressed; if evalBudgetedOutCeiling is also red the corpus outgrew the "+
 			"budget; if both are green then expansion or merging lost something retrieval "+
-			"had found",
-			deliveredCount, total, 100*deliveredRate, 100*evalChunkRecallFloor)
+			"had found.\n\nCORPUS SINCE THIS FLOOR WAS CALIBRATED: %d chunks over %d files "+
+			"today, against %d over %d when 0.75 was set on 2026-08-28 (%+.1f%% chunks). This "+
+			"eval indexes THIS repository, so the haystack grows with every commit while the "+
+			"character budget does not. The measured sensitivity is steep: +0.3%% of corpus "+
+			"cost 2-3 queries on 2026-08-30. If that percentage is large and the other two "+
+			"gates are green, you are looking at corpus growth, and the remedies are the ones "+
+			"evalBudgetedOutCeiling lists -- pack the budget better, narrow expansion, or "+
+			"raise the budget and price the CI cost. RAISING THIS FLOOR IS NOT ONE OF THEM",
+			deliveredCount, total, 100*deliveredRate, 100*evalChunkRecallFloor,
+			len(corpus.Scan.Chunks), corpus.Scan.FilesScanned,
+			evalRecallFloorCalibrationChunks, evalRecallFloorCalibrationFiles,
+			100*(float64(len(corpus.Scan.Chunks))/float64(evalRecallFloorCalibrationChunks)-1))
 	}
 	// THE TWO GATES THAT SPLIT THE ONE ABOVE INTO ITS CAUSES.
 	//
@@ -1330,6 +1360,25 @@ func TestRerankEvalRetrievalRanking(t *testing.T) {
 	// not one. The 2026-08-28 measurement that motivated the aggregate form --
 	// 19/49 semantic to 22/49 hybrid, losing 3 while gaining 6 -- sits far
 	// inside this.
+	//
+	// TWO HONEST QUALIFICATIONS ON THE ABOVE, both learned after it was
+	// written and both of which make this slack less proven than it reads.
+	//
+	// FIRST, THE SLACK HAS NEVER BEEN EXERCISED. The commit that added it,
+	// 44a2ed9, went green on both runners -- but at semantic 31 / hybrid 33,
+	// which passes the BARE comparison this replaced. The loosening has
+	// therefore not yet been shown to do anything except be present, and the
+	// only run it would have changed is the one that motivated it.
+	//
+	// SECOND, THE DIVERGENCE IS INTERMITTENT. 3ada6ea's two runners differed
+	// on 308 of 400 compared score lines; 44a2ed9's two agreed on all 995, and
+	// reported identical recall. One divergent pair, one identical pair. So
+	// "three queries of machine noise" is the WORST observed case and not a
+	// per-run expectation, and a green run is not evidence that the underlying
+	// variance is gone. The mechanism is narrowed but not closed: the intra-op
+	// thread count is REFUTED (see TestEmbeddingVariesWithThreadCount), and
+	// what remains is the CPU's own kernels, which retrieval-eval.yml now
+	// records so the next divergence is attributable.
 	if semanticOnlyCount > hybridCount+evalFusionLossSlack {
 		t.Errorf("hybrid recall %d/%d is WORSE than semantic-only %d/%d by more than the "+
 			"%d-query noise band -- fusion is losing results the semantic tier alone finds. "+
@@ -1477,6 +1526,28 @@ func TestRerankEvalRetrievalRanking(t *testing.T) {
 // AndNothingElse, TestTheChunkerIDChangesWhenTheEmbeddedTextDoes, and
 // TestTruncateToBudget_AnOversizedSpanDoesNotForfeitTheTail.
 const evalChunkRecallFloor = 0.75
+
+// evalRecallFloorCalibrationChunks and ...Files record the CORPUS THIS FLOOR WAS
+// SET AGAINST, so a red run can tell the two causes apart without a human
+// having to remember what the repository looked like six weeks ago.
+//
+// WHY A CONSTANT AND NOT A COMMENT. This eval's corpus is the repository, so the
+// haystack grows with every commit while the character budget does not: budget
+// pressure rises monotonically whatever the ranker does. That is not a
+// prediction, it is the measured behaviour -- adding two test files on 2026-08-30
+// grew the corpus 0.3% (4757 -> 4771 chunks) and cost DELIVERED two to three
+// queries, from 41-42 down to 39. At 39/49 against a 36.75 floor, the headroom
+// is TWO QUERIES.
+//
+// So the next person to see this gate red is very likely seeing corpus growth,
+// and the failure message below computes and says so rather than leaving them to
+// choose between "regression" and "bump the constant". Read as: the floor was
+// honest about 4771 chunks; if you are now at 5200, roughly this much of the
+// drop was never about retrieval.
+const (
+	evalRecallFloorCalibrationChunks = 4771
+	evalRecallFloorCalibrationFiles  = 560
+)
 
 // evalChunkRetrievedFloor gates the RANKER, and nothing else.
 //

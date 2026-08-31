@@ -38,15 +38,49 @@ type OnnxEmbedder struct {
 // NewOnnxEmbedder loads the tokenizer and opens an inference session for
 // the int8 BGE model found under modelDir (model_int8.onnx + tokenizer.json,
 // as fetched by the daemon's EnsureModelFiles).
-func NewOnnxEmbedder(modelDir string) (*OnnxEmbedder, error) {
+//
+// intraOpThreads is a DIAGNOSTIC, and zero -- the production value -- means
+// "pass no session options at all", which is byte-for-byte what this function
+// did before the parameter existed.
+//
+// WHY IT EXISTS. Two CI runners embedding a byte-identical corpus on
+// 2026-08-30 produced vectors that differed in the third and fourth decimal,
+// enough to reorder near-ties and move the locate eval by three queries. Two
+// mechanisms explain that equally well and only one is testable on a single
+// machine: ONNX Runtime sizes its intra-op thread pool from the host's core
+// count, and a different pool size reduces a sum in a different ORDER, which
+// for floats is a different answer. The other candidate is the CPU itself
+// dispatching different SIMD kernels, which no knob here can change.
+//
+// So this parameter is the instrument that tells those two apart --
+// TestEmbeddingVariesWithThreadCount in the daemon's eval suite drives it --
+// and NOT a fix. Pinning the default would be a performance change to every
+// user's first index and has to be measured on its own terms.
+func NewOnnxEmbedder(modelDir string, intraOpThreads int) (*OnnxEmbedder, error) {
 	tk, err := pretrained.FromFile(filepath.Join(modelDir, "tokenizer.json"))
 	if err != nil {
 		return nil, fmt.Errorf("loading tokenizer.json: %w", err)
 	}
 
+	// nil options is not the same as default-valued options: it is the path
+	// this code took for its whole life, and production must keep taking it.
+	var opts *ort.SessionOptions
+	if intraOpThreads > 0 {
+		opts, err = ort.NewSessionOptions()
+		if err != nil {
+			return nil, fmt.Errorf("creating ONNX session options: %w", err)
+		}
+		// Destroyed as soon as the session exists: onnxruntime_go documents
+		// the options as consumed by the constructor, not retained by it.
+		defer func() { _ = opts.Destroy() }()
+		if err := opts.SetIntraOpNumThreads(intraOpThreads); err != nil {
+			return nil, fmt.Errorf("setting intra-op thread count to %d: %w", intraOpThreads, err)
+		}
+	}
+
 	inputNames := []string{"input_ids", "attention_mask", "token_type_ids"}
 	outputNames := []string{"last_hidden_state"}
-	session, err := ort.NewDynamicAdvancedSession(filepath.Join(modelDir, "model_int8.onnx"), inputNames, outputNames, nil)
+	session, err := ort.NewDynamicAdvancedSession(filepath.Join(modelDir, "model_int8.onnx"), inputNames, outputNames, opts)
 	if err != nil {
 		return nil, fmt.Errorf("opening ONNX session for model_int8.onnx: %w", err)
 	}

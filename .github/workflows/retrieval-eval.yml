@@ -122,6 +122,27 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: "**/go.sum"
 
+      # THE DATUM THIS JOB WAS MISSING WHILE ITS NUMBERS DEPENDED ON IT.
+      # build.yml has recorded this since 2026-08-30; this job, whose entire
+      # output is a set of recall figures computed from floating-point vectors,
+      # did not -- so when two runs of commit 3ada6ea reported semantic-only
+      # recall three queries apart on a byte-identical corpus, the logs could
+      # say only `Image: ubuntu-24.04` for both. Whether those runners had
+      # different core counts (which changes ONNX Runtime's reduction ORDER) or
+      # different CPUs (which changes the SIMD kernels) could not be answered
+      # afterwards, and the two need telling apart: the first is fixable with
+      # SetIntraOpNumThreads and the second is not.
+      #
+      # Four lines, once per run. The next divergence starts with the answer.
+      - name: Record what machine this ran on
+        run: |
+          echo "runner: $RUNNER_NAME  os: $RUNNER_OS  arch: $RUNNER_ARCH"
+          echo "nproc: $(nproc)"
+          grep -m1 'model name' /proc/cpuinfo || true
+          grep -m1 'flags' /proc/cpuinfo | tr ' ' '\n' | grep -E '^(avx|avx2|avx512f|avx512_vnni|sse4_2)$' | tr '\n' ' ' || true
+          echo
+          free -g | head -2
+
       # Sub-second, no model, no network. Run it FIRST and separately: if a
       # committed file contains an eval query verbatim then the corpus holds the
       # answer key, every number below is inflated, and knowing that before
@@ -158,5 +179,31 @@ jobs:
         # see that coming, since a green eval is equally consistent with a fast
         # runner. It runs on this job rather than only the weekly one so the
         # signal arrives with the change that caused it.
-        run: go test -tags eval -count=1 -timeout 40m -v -run 'TestEvalRetrievalQuality|TestRerankEvalRetrievalRanking|TestFirstEmbedBatchFitsItsDeadline|TestEmbeddingIsDeterministic' ./
+        #
+        # TestEmbeddingVariesWithThreadCount is ~18s and answers the question
+        # this job's own numbers depend on: does the intra-op thread count
+        # change the vectors. Refuted on a 16-core i5-1340P on 2026-08-31, but
+        # that is ONE machine and this job is the only place the question gets
+        # asked on anything else.
+        run: |
+          set -o pipefail
+          go test -tags eval -count=1 -timeout 40m -v \
+            -run 'TestEvalRetrievalQuality|TestRerankEvalRetrievalRanking|TestFirstEmbedBatchFitsItsDeadline|TestEmbeddingIsDeterministic|TestEmbeddingVariesWithThreadCount' \
+            ./ 2>&1 | tee "$RUNNER_TEMP/eval.log"
         working-directory: daemon
+
+      # The one line worth carrying out of a 20-minute log, promoted to the
+      # job summary so the series in docs/RETRIEVAL_EVAL_TREND.md can be
+      # appended by copying rather than by re-reading the whole run.
+      #
+      # `if: always()` because a RED run is exactly when the trend line matters:
+      # it is what says whether the corpus grew or the ranker moved.
+      - name: Trend line
+        if: always()
+        run: |
+          echo '### Retrieval eval' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          grep -E '^EVALTREND ' "$RUNNER_TEMP/eval.log" >> "$GITHUB_STEP_SUMMARY" \
+            || echo 'no EVALTREND line (the ranking eval did not reach its summary)' >> "$GITHUB_STEP_SUMMARY"
+          grep -E 'vector fingerprint:' "$RUNNER_TEMP/eval.log" >> "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"

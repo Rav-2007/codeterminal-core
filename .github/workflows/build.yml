@@ -681,5 +681,5 @@ jobs:
         # setup-go restores GOCACHE across runs. A cached pass prints "ok" and
         # measures nothing -- a scheduled drift detector that silently stops
         # detecting drift. retrieval-eval.yml already passed it.
-        run: go test -tags eval -count=1 -v -timeout 60m -run 'TestEvalRetrievalQuality|TestRerankEvalRetrievalRanking|TestTokenEfficiencyEval|TestFirstEmbedBatchFitsItsDeadline|TestEmbeddingIsDeterministic' ./...
+        run: go test -tags eval -count=1 -v -timeout 60m -run 'TestEvalRetrievalQuality|TestRerankEvalRetrievalRanking|TestTokenEfficiencyEval|TestFirstEmbedBatchFitsItsDeadline|TestEmbeddingIsDeterministic|TestEmbeddingVariesWithThreadCount' ./...
         working-directory: daemon

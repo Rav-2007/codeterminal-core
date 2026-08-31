@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -66,6 +67,17 @@ type HelperProcess struct {
 	modelDir       string // passed to the helper as --model-dir; empty means omit the flag
 	onnxRuntimeLib string // passed to the helper as --onnxruntime-lib; empty means omit the flag
 	logger         *log.Logger
+
+	// intraOpThreads pins ONNX Runtime's intra-op thread count in the helper.
+	// Zero -- always, in production (see NewHelperProcess) -- omits the flag
+	// entirely, so the helper passes nil session options and behaves exactly
+	// as it did before the flag existed.
+	//
+	// It exists for one experiment: whether the thread count is what makes two
+	// machines embed identical text to different vectors. See
+	// NewOnnxEmbedder's comment for the two competing mechanisms, and
+	// TestEmbeddingVariesWithThreadCount for the measurement.
+	intraOpThreads int
 
 	// extraEnv is appended to helperEnv()'s minimal allowlist when spawning
 	// the helper. Always nil in production (see NewHelperProcess) -- it
@@ -193,6 +205,9 @@ func (h *HelperProcess) spawnLocked() error {
 	}
 	if h.onnxRuntimeLib != "" {
 		args = append(args, "--onnxruntime-lib", h.onnxRuntimeLib)
+	}
+	if h.intraOpThreads > 0 {
+		args = append(args, "--intra-op-threads", strconv.Itoa(h.intraOpThreads))
 	}
 
 	cmd := exec.Command(h.binPath, args...)

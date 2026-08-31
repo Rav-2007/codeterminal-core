@@ -31,6 +31,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"os"
@@ -68,6 +70,17 @@ type evalCorpus struct {
 	ScanTime  time.Duration
 	EmbedTime time.Duration
 	Chunks    int
+
+	// VectorFingerprint is sha256 over every vector in this index, in build
+	// order. It answers, in ONE line of a CI log, the question that took a
+	// download of two full run logs and a 995-line diff to answer on
+	// 2026-08-30: did these two runners compute the same vectors?
+	//
+	// It is a diagnostic, not a gate. Vectors are ALLOWED to differ between
+	// machines -- that is the open finding this instruments, not a failure --
+	// so nothing asserts on this value. It exists so the next divergence is
+	// one grep instead of an afternoon.
+	VectorFingerprint string
 
 	// storeCount is the vector store's document count as the build left it,
 	// used to detect a consumer mutating the shared index.
@@ -186,17 +199,18 @@ func buildSharedEvalCorpus() (*evalCorpus, error) {
 	}
 	filtered := scan.Chunks[:0]
 	for _, c := range scan.Chunks {
-		if !evalSelfReferenceFiles[c.FilePath] {
+		if !evalSelfReferenceFiles[c.FilePath] && !evalInstrumentFiles[c.FilePath] {
 			filtered = append(filtered, c)
 		}
 	}
 	scan.Chunks = filtered
 	scanTime := time.Since(scanStart)
-	logger.Printf("scanned %s: files=%d chunks=%d in %s (self-referential chunks excluded)",
+	logger.Printf("scanned %s: files=%d chunks=%d in %s (self-referential and instrument chunks excluded)",
 		repoRoot, scan.FilesScanned, len(scan.Chunks), scanTime.Round(time.Millisecond))
 
 	embedStart := time.Now()
 	batches := 0
+	fingerprint := sha256.New()
 	for start := 0; start < len(scan.Chunks); start += indexEmbedBatchSize {
 		end := min(start+indexEmbedBatchSize, len(scan.Chunks))
 		batch := scan.Chunks[start:end]
@@ -211,6 +225,10 @@ func buildSharedEvalCorpus() (*evalCorpus, error) {
 		for i := range batch {
 			batch[i].Vector = vecs[i]
 		}
+		// Hashed in build order, which is scan order, which is stable for a
+		// given tree -- so two runs over the same commit are comparable and a
+		// reordering would show up as a difference rather than hiding.
+		writeVectorsToHash(fingerprint, vecs)
 		if err := store.Upsert(ctx, batch); err != nil {
 			return nil, fmt.Errorf("upserting batch [%d:%d]: %w", start, end, err)
 		}
@@ -231,17 +249,51 @@ func buildSharedEvalCorpus() (*evalCorpus, error) {
 		time.Since(started).Round(time.Millisecond),
 		100*embedTime.Seconds()/time.Since(started).Seconds())
 
+	vectorFingerprint := hex.EncodeToString(fingerprint.Sum(nil))
+	// Same reasoning as the line above: unconditional, timestamped, and on
+	// stderr, so two CI runs can be compared without -v and without anyone
+	// having planned in advance to compare them.
+	logger.Printf("vector fingerprint: %s (sha256 over %d vectors in build order)",
+		vectorFingerprint, len(scan.Chunks))
+
 	return &evalCorpus{
-		RepoRoot:     repoRoot,
-		storeCount:   store.Count(),
-		Embedder:     embedder,
-		Store:        store,
-		LexicalStore: lexical,
-		Scan:         scan,
-		ScanTime:     scanTime,
-		EmbedTime:    embedTime,
-		Chunks:       len(scan.Chunks),
+		RepoRoot:          repoRoot,
+		storeCount:        store.Count(),
+		Embedder:          embedder,
+		Store:             store,
+		LexicalStore:      lexical,
+		Scan:              scan,
+		ScanTime:          scanTime,
+		EmbedTime:         embedTime,
+		Chunks:            len(scan.Chunks),
+		VectorFingerprint: vectorFingerprint,
 	}, nil
+}
+
+// evalInstrumentFiles are files the eval WRITES ABOUT ITSELF, held out of its own
+// corpus.
+//
+// WHY THIS IS A SECOND MAP AND NOT MORE ENTRIES IN evalSelfReferenceFiles.
+// That map means one specific thing -- "this file contains an eval query
+// verbatim, so indexing it hands the eval its own answer key" -- and
+// TestNoIndexedFileEchoesAnEvalQuery is the scan that DISCOVERS its members.
+// A membership test that finds entries is a different kind of thing from a
+// membership list that is maintained, and merging them would leave a set whose
+// guard passes for half its contents and says nothing about the other half.
+//
+// The reason here is unrelated and does not involve leakage at all:
+// RETRIEVAL_EVAL_TREND.md is a record of this eval's own output, appended to
+// after every checkpoint, and this eval measures recall against a fixed
+// character budget over a corpus that IS this repository. A file that grows
+// every time the instrument is read is the instrument perturbing its own
+// subject -- small, but in exactly the direction that makes the numbers worse,
+// and dishonest in a way that compounds.
+//
+// It is deliberately not an extension rule or a directory rule. A file earns a
+// place here by being about the measurement rather than about the product, and
+// that is a judgement, so it is a list.
+var evalInstrumentFiles = map[string]bool{
+	"docs/RETRIEVAL_EVAL_TREND.md": true,
 }
 
 // TestSharedCorpusExclusionsAreNotAnswerFiles is the guard on the decision to
@@ -277,13 +329,18 @@ func TestSharedCorpusExclusionsAreNotAnswerFiles(t *testing.T) {
 			"pass vacuously. Expected dozens", len(answers))
 	}
 
-	for excluded := range evalSelfReferenceFiles {
-		if qs := answers[excluded]; len(qs) > 0 {
-			t.Errorf("%s is excluded from the shared eval corpus AND is a declared answer file "+
-				"for %d quer(y/ies): %v. An excluded file cannot be retrieved, so those queries "+
-				"can never pass and the failure would read as a retrieval regression. Either "+
-				"drop the exclusion (and reword the file so it does not quote its own query) or "+
-				"drop the query", excluded, len(qs), qs)
+	// BOTH exclusion sets, because the hazard is a property of being excluded
+	// and has nothing to do with WHY. A file held out as an instrument is just
+	// as unretrievable as one held out as an answer-key leak.
+	for _, set := range []map[string]bool{evalSelfReferenceFiles, evalInstrumentFiles} {
+		for excluded := range set {
+			if qs := answers[excluded]; len(qs) > 0 {
+				t.Errorf("%s is excluded from the shared eval corpus AND is a declared answer file "+
+					"for %d quer(y/ies): %v. An excluded file cannot be retrieved, so those queries "+
+					"can never pass and the failure would read as a retrieval regression. Either "+
+					"drop the exclusion (and reword the file so it does not quote its own query) or "+
+					"drop the query", excluded, len(qs), qs)
+			}
 		}
 	}
 }

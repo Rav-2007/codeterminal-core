@@ -38,13 +38,20 @@ func main() {
 	socketPath := flag.String("socket", "", "Unix domain socket path to listen on (required; the daemon supplies this)")
 	modelDir := flag.String("model-dir", "", "directory containing model_int8.onnx + tokenizer files (required; the daemon supplies this after `download-model`)")
 	onnxRuntimeLib := flag.String("onnxruntime-lib", "", "path to the onnxruntime shared library (required; the daemon supplies this after `download-model`)")
+	// A FLAG rather than an environment variable, deliberately: helperEnv() in
+	// the daemon passes this process only PATH and HOME, on the stated grounds
+	// that the helper "takes every real input via flags and reads no
+	// environment variables itself". A diagnostic knob is not a reason to
+	// falsify that. Zero means "say nothing to ONNX Runtime", which is what
+	// production does and what this binary did before the flag existed.
+	intraOpThreads := flag.Int("intra-op-threads", 0, "diagnostic: pin ONNX Runtime's intra-op thread count (0 = library default, and the only value production uses)")
 	flag.Parse()
 
 	if *socketPath == "" {
 		logger.Fatal("--socket is required")
 	}
 
-	embedder, err := loadEmbedder(*modelDir, *onnxRuntimeLib)
+	embedder, err := loadEmbedder(*modelDir, *onnxRuntimeLib, *intraOpThreads)
 	if err != nil {
 		logger.Fatal(err)
 	}
@@ -89,9 +96,18 @@ func main() {
 // on-disk paths they name, then initializes ONNX Runtime and loads the
 // model. Every failure path here is written to be actionable: what's
 // missing and how to fix it, not a raw library error.
-func loadEmbedder(modelDir, onnxRuntimeLib string) (*OnnxEmbedder, error) {
+func loadEmbedder(modelDir, onnxRuntimeLib string, intraOpThreads int) (*OnnxEmbedder, error) {
 	if runtime.GOOS == "darwin" && runtime.GOARCH == "amd64" {
 		return nil, fmt.Errorf("Intel Mac (darwin/amd64) is not supported: no prebuilt onnxruntime shared library exists for this platform (upstream onnxruntime v1.26.0 ships no darwin/amd64 release); this is a known, open platform-coverage gap, not a bug — see \"Known platform gaps\" in the project README")
+	}
+
+	// Validated HERE rather than left to ONNX Runtime, which rejects a negative
+	// count only when the session is constructed -- after the platform check,
+	// the path checks, the dlopen and the environment init, and behind a C
+	// status string that names no flag. A bad flag value should fail before any
+	// of that and say which flag it was.
+	if intraOpThreads < 0 {
+		return nil, fmt.Errorf("--intra-op-threads must be 0 (the library default, and the only value production uses) or a positive thread count; got %d", intraOpThreads)
 	}
 
 	if modelDir == "" || onnxRuntimeLib == "" {
@@ -106,7 +122,7 @@ func loadEmbedder(modelDir, onnxRuntimeLib string) (*OnnxEmbedder, error) {
 		return nil, fmt.Errorf("initializing ONNX Runtime using shared library %s: %w", onnxRuntimeLib, err)
 	}
 
-	embedder, err := NewOnnxEmbedder(modelDir)
+	embedder, err := NewOnnxEmbedder(modelDir, intraOpThreads)
 	if err != nil {
 		ort.DestroyEnvironment()
 		return nil, fmt.Errorf("loading BGE model from %s (run `codeterminal-daemon download-model` first): %w", modelDir, err)

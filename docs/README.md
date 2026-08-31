@@ -100,6 +100,7 @@ date attached.
 | [`TOOLCALL_RELIABILITY_2026-07-31.md`](TOOLCALL_RELIABILITY_2026-07-31.md) | Tool-selection degradation as the menu widens |
 | [`AGENT_LOOP_RELIABILITY_2026-07-31.md`](AGENT_LOOP_RELIABILITY_2026-07-31.md) | Agent-loop failure modes that did **not** occur |
 | [`RETRIEVAL_EVAL_CHECKPOINT_2026-08-08.md`](RETRIEVAL_EVAL_CHECKPOINT_2026-08-08.md) | The gated eval suite run by hand at `23550e4`: 15/15, 8/9, 90.1% — and what the excluded fourth test actually measures |
+| [`RETRIEVAL_EVAL_TREND.md`](RETRIEVAL_EVAL_TREND.md) | **A series, not a point.** One line per locate-eval run, because the thing it tracks — a self-referential corpus growing against a fixed budget — only exists as a slope. Appended by hand; the reason is in the file |
 | [`SYNTAX_GATE_TIER_C_DESIGN.md`](SYNTAX_GATE_TIER_C_DESIGN.md) | **Design, not shipped.** LSP diagnostics as a third syntax tier, and the two things that make it larger than it looks: `publishDiagnostics` has no id so the bridge drops it today, and a clean file is indistinguishable from a slow one |
 
 ---
