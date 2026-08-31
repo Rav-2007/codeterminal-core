@@ -522,9 +522,8 @@ func (s *Server) serveConn(conn net.Conn) {
 		// warn-mode. This never changes augmentedPrompt.
 		s.logChunkScrub(outcome.Chunks)
 	}
-	if promptReq.Mode == "plan" {
-		augmentedPrompt += "\n\n[SYSTEM]: The user has requested an implementation plan. DO NOT propose edits directly. Instead, output a structured Markdown artifact (`implementation_plan.md`) utilizing Mermaid diagrams and sequential step definitions. You may use view_file and grep_search to explore the workspace before planning."
-	}
+	// The plan directive is applied to the SYSTEM prompt below, not appended
+	// here. See planModeSystemPrompt.
 	if len(redactions) > 0 {
 		kinds := redactionKinds(redactions)
 		s.logger.Printf("scrub: redacted %d suspected secret(s): %s", len(redactions), kinds)
@@ -561,7 +560,7 @@ func (s *Server) serveConn(conn net.Conn) {
 	// loop must append to one across iterations rather than have it rebuilt from
 	// (systemPrompt, history, prompt) on every call. This single-turn path
 	// builds exactly the list it always did.
-	messages := buildChatMessages(s.systemPrompt, historyOutcome.Messages, augmentedPrompt)
+	messages := buildChatMessages(planModeSystemPrompt(s.systemPrompt, promptReq.Mode), historyOutcome.Messages, augmentedPrompt)
 
 	// AGENT MODE FORK. Three conditions, all required (see agentModeEngaged):
 	// the config enables it, and this client declared it can answer a mid-turn

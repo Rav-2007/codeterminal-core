@@ -250,6 +250,33 @@ func (s *Server) builtinTools(proposals *proposalSink, mode string) []mcp.Builti
 			})
 	}
 
+	// PLAN MODE DROPS EVERY TOOL THAT EXECUTES CODE.
+	//
+	// This used to be one line above -- `if mode != "plan"` removing
+	// propose_edit -- and that was the whole of it. The effect was backwards:
+	// plan mode withdrew the tool that proposes a REVIEWED edit and left
+	// sandbox_exec, the one built-in that runs arbitrary code, registered
+	// unconditionally. A user who picks a mode called "plan" has said they want
+	// thinking and not doing; what they got was the safe way to change the
+	// workspace removed and the unreviewed one kept.
+	//
+	// KEYED ON THE CAPABILITY, NOT ON THE NAME. mcp.Tool.ExecutesCode already
+	// exists for exactly this reason -- registry.go and agentloop.go both branch
+	// on it, because confinement is a property of a tool and not a fact about
+	// its spelling. Filtering on `Name == "sandbox_exec"` would work today and
+	// fail silently on the day a second code-executing built-in is added, which
+	// is the failure this flag was introduced to prevent.
+	if mode == "plan" {
+		kept := tools[:0]
+		for _, b := range tools {
+			if b.Tool.ExecutesCode {
+				continue
+			}
+			kept = append(kept, b)
+		}
+		tools = kept
+	}
+
 	return tools
 }
 
