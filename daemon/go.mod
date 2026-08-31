@@ -2,7 +2,7 @@ module codeterminal/daemon
 
 go 1.25.0
 
-toolchain go1.25.12
+toolchain go1.25.13
 
 require codeterminal/protocol v0.0.0
 

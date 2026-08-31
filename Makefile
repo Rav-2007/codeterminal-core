@@ -137,12 +137,18 @@ evalguard:
 check: fmt vet crossvet race lint ratchet errcheck evalguard supplychain docs
 	@echo "check: all gates green"
 
-# Sub-second, no network. In `check` rather than only in CI for the reason
-# scripts/actions-pinned.sh gives: the person who adds an unpinned action is the
-# person who should hear about it, and they are at a terminal, not reading a
-# workflow log.
+# Two supply-chain gates. actions-pinned is sub-second and offline;
+# govulncheck is ~17s warm and needs the vulnerability database.
+#
+# In `check` rather than only in CI, for the same reason in both cases: the
+# person who adds an unpinned action, or whose toolchain has fallen behind, is
+# at a terminal and not reading a workflow log. govulncheck earns its 17s
+# against a `check` that already runs the race detector -- and it earns it twice
+# over, because the CI job alone was green while this repo's own machine had ten
+# reachable stdlib vulnerabilities on the same commit.
 supplychain:
 	@./scripts/actions-pinned.sh
+	@./scripts/govulncheck.sh
 
 docs:
 	@./scripts/docs-links.sh
