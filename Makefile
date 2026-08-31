@@ -134,8 +134,15 @@ evalguard:
 # docs is last and costs ~1s. It is in `check` rather than in a docs-only job
 # because a rename breaks links in the same commit that makes it, and that is
 # the only moment anyone can fix it cheaply.
-check: fmt vet crossvet race lint ratchet errcheck evalguard docs
+check: fmt vet crossvet race lint ratchet errcheck evalguard supplychain docs
 	@echo "check: all gates green"
+
+# Sub-second, no network. In `check` rather than only in CI for the reason
+# scripts/actions-pinned.sh gives: the person who adds an unpinned action is the
+# person who should hear about it, and they are at a terminal, not reading a
+# workflow log.
+supplychain:
+	@./scripts/actions-pinned.sh
 
 docs:
 	@./scripts/docs-links.sh
