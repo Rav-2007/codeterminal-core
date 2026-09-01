@@ -92,6 +92,35 @@ for module in "${MODULES[@]}"; do
     continue
   fi
 
+  # THE BUILD-TAGGED FILES, which an untagged vet does not compile.
+  #
+  # Same class of gap as the action-pinning one this hook was extended for
+  # yesterday, and found the same way -- by asking where a check actually runs
+  # rather than where it is written down. `go vet -tags eval` and
+  # `-tags warnscan` were added to `make check` and called done. CI runs neither:
+  # build.yml's Vet step is a bare `go vet ./...`, and so was this hook. So the
+  # only thing compiling daemon's eval and warnscan suites was somebody choosing
+  # to run make check.
+  #
+  # That is exactly the state the Makefile comment beside those lines was
+  # written to end -- "a gate that only fires nightly is a gate that reports rot
+  # rather than preventing it" -- and warnscan was worse: it moved from being
+  # compiled by NOTHING to being compiled by make check, which is the same
+  # enforcement value. Both eval files had already broken once on a signature
+  # change with nothing noticing until the next manual run.
+  #
+  # daemon only, because daemon is the only module with tagged files. Costs
+  # about a second; these compile the test files without running them.
+  if [ "$module" = "daemon" ]; then
+    for tag in eval warnscan; do
+      if ! out="$(cd "$dir" && go vet -tags "$tag" ./... 2>&1)"; then
+        echo "pre-push: VET (-tags $tag) failed in $module" >&2
+        echo "$out" >&2
+        status=1
+      fi
+    done
+  fi
+
   # -race, not a bare `go test`: this repo's concurrency work (the Gate 6
   # apply/undo locking in particular) is only defended by the race detector.
   if ! out="$(cd "$dir" && go test -race ./... 2>&1)"; then

@@ -214,6 +214,26 @@ jobs:
         run: go vet ./...
         working-directory: ${{ matrix.module }}
 
+      # THE BUILD-TAGGED FILES. An untagged vet does not compile them, so
+      # daemon's eval and warnscan suites were built by nothing in CI.
+      #
+      # They were added to `make check` and recorded as covered. CI does not run
+      # make check -- it runs the individual steps in this file -- so the gate
+      # fired only for whoever chose to run it locally. That is the same failure
+      # this repo has now corrected three times (action pinning, warnscan
+      # itself, and this), and the reason it keeps recurring is that adding a
+      # check to `make check` LOOKS like wiring it up.
+      #
+      # Cheap: this compiles the tagged test files, it does not run them. The
+      # eval suite itself stays schedule-only for the reasons the eval job
+      # records -- what was missing was knowing the code still BUILDS.
+      - name: Vet (build-tagged suites)
+        if: matrix.module == 'daemon'
+        run: |
+          go vet -tags eval ./...
+          go vet -tags warnscan ./...
+        working-directory: ${{ matrix.module }}
+
       # -race, not a bare `go test`: this repo's concurrency work (the Gate 6
       # apply/undo locking in particular) is only defended by the race detector.
       - name: Test
