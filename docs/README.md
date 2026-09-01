@@ -16,7 +16,7 @@ and the ones it skipped are the ones that went stale.
 |---|---|---|
 | 1 | [`HANDOFF.md`](HANDOFF.md) | How to work on this project, what the architecture is, where the code lives. **The entry point.** |
 | 2 | [`ULTRA_MASTER_PLAN_2026-08-08.md`](ULTRA_MASTER_PLAN_2026-08-08.md) | **The current plan.** Stage 3 packaging, and the P0 that blocks it. |
-| 3 | [`OPEN_ITEMS.md`](OPEN_ITEMS.md) | **The bug register.** Read the Status column — this cell summarises and summaries go stale (items 7, 10 and 12 were named here as open long after they were fixed). As of 2026-08-31: §1 is clear, §2 carries items 20, 21, 22 and 24, the security residuals from the agent audit. `scripts/docs-claims.sh` checks the Status column against BACKLOG, not against this line. |
+| 3 | [`OPEN_ITEMS.md`](OPEN_ITEMS.md) | **The bug register.** Read the Status column — this cell summarises, and summaries go stale: items 7, 10 and 12 were named here as open long after they were fixed, and then this line did it again, carrying item 22 as open after `6bbe549` closed it. It said so itself — *"docs-claims.sh checks the Status column against BACKLOG, not against this line"* — which is an accurate note about an exemption and no help at all to the reader who believed the sentence in front of it. The exemption is gone: this cell is now compared against the register on every push, the same as BACKLOG's. **open: 20, 21, 24** |
 | 4 | [`DECISION_PACK.md`](DECISION_PACK.md) | The eight founder rulings. Seven open, D4 taken. |
 
 Then [`../BACKLOG.md`](../BACKLOG.md) — what shipped and when, then what is left in
