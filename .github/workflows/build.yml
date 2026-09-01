@@ -45,11 +45,19 @@ on:
   # (branch + current main), which is a different question from the branch head
   # the push run tested, and the only one that catches "fine alone, broken
   # against what landed meanwhile".
+  #
+  # WHICH JOBS ACTUALLY HONOUR THAT, because for a long time none did. Every job
+  # carried a same-repo PR skip, and this repo is private with no forks, so
+  # every PR skipped everything except `proxy-image` -- the merge-result run
+  # this comment describes never happened once. The `go` job now runs on
+  # same-repo PRs; lint, fuzz, cross, govulncheck and extension still skip,
+  # because their answers do not change under a merge. See the `go` job.
   pull_request:
     branches: [main]
     paths-ignore: ["**.md"]
   # The eval job below is schedule/dispatch-only; these triggers exist so it has
-  # something to hang off. Everything else runs per-push and per-PR.
+  # something to hang off. Everything else runs per-push; on a same-repo PR only
+  # `go` and `proxy-image` re-run (see above).
   schedule:
     - cron: "0 6 * * 1" # Mondays 06:00 UTC
   workflow_dispatch:
@@ -120,13 +128,26 @@ jobs:
     # someone has to read, not a merge that cannot happen. Making it enforceable
     # is tracked in BACKLOG.md.
     name: go (${{ matrix.module }})
-    # A same-repo PR would otherwise run twice: once for the branch push and
-    # once for the merge result. Forks are the reason pull_request exists at
-    # all, and this repo is private with none -- so skip the PR copy when it
-    # comes from this very repository. Halves the Actions minutes a PR costs.
-    if: >-
-      github.event_name != 'pull_request' ||
-      github.event.pull_request.head.repo.full_name != github.repository
+    # NO same-repo PR skip on this job, deliberately, and it is the only job
+    # without one.
+    #
+    # The other five still skip, and the reason they can is that their questions
+    # do not change under a merge: a lint rule, a fuzz target or a vulnerable
+    # dependency is as true of the branch head as of the merge result, and the
+    # push run already answered it. This job's question does change. "Compiles
+    # and passes alone, broken against what landed meanwhile" is a property of
+    # the MERGE, and build/vet/test is what detects it.
+    #
+    # The skip used to be here too, which made the pull_request trigger
+    # decorative: this repo is private with no forks, so EVERY PR is same-repo,
+    # so every job skipped and a PR ran nothing but `docker build ./proxy`. The
+    # trigger's own comment above said it existed to test the merge result --
+    # the one thing it was then structurally unable to do.
+    #
+    # Cost is the reason the other five keep the skip rather than all six losing
+    # it: this restores merge verification for roughly a third of what running
+    # the whole matrix twice would cost, on a repo that exhausted its Actions
+    # quota on 2026-08-31.
     runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
