@@ -943,6 +943,33 @@ func (s *Server) resolveExecutable(
 		}
 	}
 
+	// THE ENFORCEMENT HALF of plan mode, added for the same reason the role
+	// check below has one, and absent until now.
+	//
+	// Plan mode had exactly one enforcement point: builtinTools declined to put
+	// the tool in the registry, so Lookup failed and the call died there. For
+	// the BUILT-INS that is structurally sufficient -- there is no second way to
+	// obtain one. It is not sufficient as a design, and the asymmetry was the
+	// tell: role scoping filters the menu AND checks at dispatch, on the
+	// reasoning written three lines below, while plan mode filtered the menu and
+	// stopped. Any future path that assembles a registry without consulting
+	// mode -- which is precisely the bug being fixed in this batch, where Lane B
+	// did exactly that -- reopens the hole with nothing behind it.
+	//
+	// Checking `turn.mode` here also gives that field a job. It existed already
+	// and was read in exactly one place, to stamp the audit record: the daemon
+	// recorded which mode a tool ran under without ever letting the mode decide
+	// whether it could.
+	if isPlanMode(turn.mode) && (planModeDenies(spec) || spec.Lane != protocol.LaneFirstParty) {
+		return toolDecision{
+			tool:   spec,
+			policy: mcp.PolicyDeny,
+			source: auditDeniedConfig,
+			cause:  denyByNoChannel,
+			reason: fmt.Sprintf("%q is not available in plan mode", qualified),
+		}
+	}
+
 	// THE ENFORCEMENT HALF of role scoping. The menu this phase was shown
 	// already excluded the tool, so reaching here means the model named
 	// something it was not offered -- which is precisely the shape a

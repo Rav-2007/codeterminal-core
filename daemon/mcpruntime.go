@@ -142,6 +142,33 @@ func (s *Server) buildRegistry(ctx context.Context, logger *log.Logger, proposal
 		}
 	}
 
+	// LANE B IS WITHHELD ENTIRELY IN PLAN MODE, and this is the half of the
+	// plan-mode filter that was missing.
+	//
+	// The built-in filter above (builtinTools) withdrew propose_edit and
+	// sandbox_exec and was recorded as closing the issue. It could not have:
+	// it operates on the []mcp.Builtin slice and nothing else, while the
+	// third-party servers are connected and registered HERE, sixty lines below
+	// it, in a loop that never saw `mode`. So plan mode removed the reviewed,
+	// confined, first-party write path and kept the unreviewed, unconfined,
+	// third-party one -- which is, precisely, the inversion the built-in fix
+	// was written to correct, one lane over.
+	//
+	// A user with a filesystem or shell MCP server configured got that server's
+	// full tool surface in the mode whose entire promise is that nothing will be
+	// touched, gated only by the same `ask` policy that governs normal mode.
+	//
+	// RETURNING BEFORE THE CONNECT LOOP, not filtering after it. Connecting is
+	// not a read: mcp.Connect launches the server's command as a subprocess with
+	// the user's privileges. Starting a third-party process is a side effect,
+	// and a turn that promised not to act should not cause one -- so plan mode
+	// must not reach the launch, rather than launch and then decline to
+	// advertise.
+	if isPlanMode(mode) {
+		logger.Printf("mcp: plan mode -- %d third-party server(s) not connected", len(cfg.MCP.Servers))
+		return registry, nil
+	}
+
 	// CONNECTED IN PARALLEL, and the reason is a measurement rather than a
 	// preference.
 	//

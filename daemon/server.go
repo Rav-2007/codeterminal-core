@@ -438,6 +438,35 @@ func (s *Server) serveConn(conn net.Conn) {
 		return
 	}
 
+	// MODE IS VALIDATED HERE, at the first point the request's own content is
+	// known, and the canonical form is written back so nothing downstream has to
+	// repeat the parse.
+	//
+	// It is validated at all because the comparison it feeds used to be a bare
+	// `mode != "plan"`, which is fail-OPEN: every string that was not exactly
+	// that selected the full tool menu. "Plan" from a client that capitalises,
+	// "planning" from one that guesses, or a field a future client misspells all
+	// resolved to the menu containing sandbox_exec -- the user having asked, in
+	// each case, for the mode that runs nothing. A mode the daemon cannot
+	// interpret is now refused rather than interpreted permissively.
+	//
+	// See normalizeMode for why "auto" and "manual" are accepted: the wire field
+	// is shared with the VS Code approval picker, and "auto" is what an ordinary
+	// turn sends.
+	normalizedMode, modeErr := normalizeMode(promptReq.Mode)
+	if modeErr != nil {
+		s.count(func(c *counters) { c.malformed.Add(1) })
+		s.logger.Printf("rejecting prompt: %v", modeErr)
+		enc.Encode(protocol.TokenResponse{
+			ProtocolVersion: protocol.ProtocolVersion,
+			Done:            true,
+			Error:           modeErr.Error(),
+			ErrorClass:      string(ClassInvalidRequest),
+		})
+		return
+	}
+	promptReq.Mode = normalizedMode
+
 	if promptReq.Reset {
 		s.count(func(c *counters) { c.resets.Add(1) })
 		s.resetPersistedHistory()

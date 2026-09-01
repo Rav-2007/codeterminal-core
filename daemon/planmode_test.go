@@ -1,8 +1,14 @@
 package main
 
 import (
+	"context"
+	"io"
+	"log"
 	"strings"
 	"testing"
+
+	"codeterminal/daemon/mcp"
+	"codeterminal/protocol"
 )
 
 // TestPlanModeOffersNoToolThatExecutesCode is the security assertion this file
@@ -158,5 +164,241 @@ func TestPlanDirectiveGoesToTheSystemRoleNotTheUsersText(t *testing.T) {
 		if got := planModeSystemPrompt(base, mode); got != base {
 			t.Errorf("mode %q changed the system prompt to %q; only plan mode may", mode, got)
 		}
+	}
+}
+
+// planModeRegistryTools builds the registry the way a real turn does and
+// returns what it advertises.
+//
+// THROUGH buildRegistry, NOT builtinTools, and that distinction is the whole
+// point of the tests below.
+//
+// Every plan-mode test in this file used to call s.builtinTools(..., "plan")
+// directly. That function is one of TWO things buildRegistry does, and the
+// other one -- connecting third-party servers -- never saw `mode` at all. So a
+// suite that looked thorough asserted over the half that was fixed and could
+// not observe the half that was broken. Worse, all nineteen buildRegistry call
+// sites in this package passed "", so the single line that carries the client's
+// mode into the filter (agentturn.go) could have been reverted to a constant
+// and every test here would still have passed.
+func planModeRegistryTools(t *testing.T, s *Server, mode string) ([]mcp.Tool, []error) {
+	t.Helper()
+	registry, errs := s.buildRegistry(context.Background(), log.New(io.Discard, "", 0), &proposalSink{}, mode)
+	t.Cleanup(func() { _ = registry.Close() })
+	tools, _ := registry.Advertised(context.Background())
+	return tools, errs
+}
+
+// TestPlanModeRegistryWithholdsEveryActingTool is the assertion at the boundary
+// a real turn crosses.
+func TestPlanModeRegistryWithholdsEveryActingTool(t *testing.T) {
+	s := builtinTestServer(t)
+	// MCP.Enabled matters: configPolicy denies every tool when it is false, so
+	// Advertised returns an empty list and the assertions below would all hold
+	// for a registry that offers nothing. The anti-vacuity check catches that,
+	// but the config is the honest fix.
+	s.cfg = &Config{MCP: MCPConfig{Enabled: true}}
+
+	tools, errs := planModeRegistryTools(t, s, "plan")
+	if len(errs) != 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+
+	got := map[string]bool{}
+	for _, tool := range tools {
+		got[tool.Name] = true
+		if tool.ExecutesCode {
+			t.Errorf("plan mode advertises %q, which executes code", tool.Name)
+		}
+		if tool.ReachesNetwork {
+			t.Errorf("plan mode advertises %q, which reaches the network. The filter tested "+
+				"ExecutesCode alone while calling itself capability-keyed, and mcp.Tool "+
+				"declares two such flags", tool.Name)
+		}
+	}
+
+	// ANTI-VACUITY, and it has to be here: a buildRegistry that returned an
+	// empty registry in plan mode would satisfy every assertion above.
+	if len(tools) == 0 {
+		t.Fatal("plan mode advertises no tools at all, so the checks above prove nothing")
+	}
+	for _, want := range []string{"read_file", "search_code", "list_directory", "repo_map"} {
+		if !got[want] {
+			t.Errorf("plan mode does not offer %q, so it cannot explore the workspace it is "+
+				"asked to plan against", want)
+		}
+	}
+	// repo_map specifically: it is ReadOnlyHint and was withheld only because it
+	// had been typed inside the `mode != "plan"` block next to the propose_*
+	// tools. Nothing about it warrants removal, and plan mode is the mode that
+	// most needs it.
+	if !got["repo_map"] {
+		t.Error("repo_map is read-only and was filtered as collateral")
+	}
+	for _, unwanted := range []string{"sandbox_exec", "web_search", "web_fetch", "propose_edit", "propose_ast_edit"} {
+		if got[unwanted] {
+			t.Errorf("plan mode advertises %q", unwanted)
+		}
+	}
+}
+
+// TestPlanModeNeverConnectsLaneBServers is the hole this batch was opened for.
+//
+// The built-in filter was recorded as closing the plan-mode issue. It could not
+// have: third-party servers are connected and registered further down
+// buildRegistry, in a loop that never saw `mode`. Plan mode therefore withdrew
+// the REVIEWED, confined, first-party write path and kept the UNREVIEWED,
+// unconfined, third-party one -- the same inversion the built-in fix was
+// written to correct, one lane over.
+//
+// HOW THIS DETECTS IT. The configured command does not exist, so a connection
+// ATTEMPT is observable as an error: non-plan mode reports exactly one. Plan
+// mode must report zero -- not "an error that was tolerated", but no attempt at
+// all. Asserting on the error count rather than the tool list is what makes
+// this test able to tell "never launched" apart from "launched, then not
+// advertised", and the difference matters: mcp.Connect starts the server's
+// command as a subprocess with the user's privileges, which is an effect a
+// turn promising not to act must not cause.
+func TestPlanModeNeverConnectsLaneBServers(t *testing.T) {
+	cfg := func() *Config {
+		return &Config{MCP: MCPConfig{
+			Enabled: true,
+			Servers: map[string]MCPServerConfig{
+				"broken": {Command: "/definitely/not/a/binary", AcknowledgedUnconfined: true},
+			},
+		}}
+	}
+
+	// Control: outside plan mode the server IS attempted, so the probe works.
+	s := builtinTestServer(t)
+	s.cfg = cfg()
+	if _, errs := planModeRegistryTools(t, s, ""); len(errs) != 1 {
+		t.Fatalf("errs = %v, want exactly one; without a connection attempt here the plan-mode "+
+			"assertion below would pass for the wrong reason", errs)
+	}
+
+	s = builtinTestServer(t)
+	s.cfg = cfg()
+	tools, errs := planModeRegistryTools(t, s, "plan")
+	if len(errs) != 0 {
+		t.Errorf("plan mode attempted to connect a third-party server (errs = %v). Connecting "+
+			"launches the server's command as a subprocess with the user's privileges, which is "+
+			"an effect plan mode must not cause", errs)
+	}
+	for _, tool := range tools {
+		if tool.Lane != protocol.LaneFirstParty {
+			t.Errorf("plan mode advertises %q from lane %v -- an unconfined third-party tool in "+
+				"the mode whose whole promise is that nothing is touched", tool.Name, tool.Lane)
+		}
+	}
+}
+
+// TestBuildRegistryHonoursMode asserts that the mode argument decides the menu
+// at the boundary a real turn crosses, for the spellings a real client sends.
+//
+// WHAT THIS DOES NOT COVER, stated because the batch it belongs to exists to
+// stop tests claiming more than they check: it calls buildRegistry directly, so
+// it does NOT prove that agentturn.go passes promptReq.Mode rather than a
+// constant. That one line is still unasserted here -- driving it needs a live
+// socket, model and approver. What stands behind it instead is the dispatch
+// check in resolveExecutable, which reads turn.mode independently: both call
+// sites would have to regress together for plan mode to stop applying, where
+// before this batch either one alone was enough.
+func TestBuildRegistryHonoursMode(t *testing.T) {
+	for _, tc := range []struct {
+		mode     string
+		filtered bool
+	}{
+		{"plan", true},
+		{"Plan", true},   // case must not decide whether a security filter runs
+		{" plan ", true}, // nor whitespace
+		{"", false},
+		{"auto", false},
+		{"manual", false},
+	} {
+		t.Run("mode="+tc.mode, func(t *testing.T) {
+			s := builtinTestServer(t)
+			s.cfg = &Config{MCP: MCPConfig{Enabled: true}}
+			tools, _ := planModeRegistryTools(t, s, tc.mode)
+
+			if len(tools) == 0 {
+				t.Fatal("no tools advertised at all, so this case proves nothing either way")
+			}
+			acting := false
+			for _, tool := range tools {
+				if tool.ExecutesCode || tool.ReachesNetwork {
+					acting = true
+				}
+			}
+			if tc.filtered && acting {
+				t.Errorf("mode %q still offers a code-executing or network-reaching tool", tc.mode)
+			}
+			if !tc.filtered && !acting {
+				t.Errorf("mode %q offers no acting tool -- the plan filter has leaked into "+
+					"every mode, which is a capability regression wearing a security fix's "+
+					"clothes", tc.mode)
+			}
+		})
+	}
+}
+
+// TestNormalizeModeRejectsWhatItCannotInterpret.
+//
+// The comparison this replaces was `mode != "plan"`, which is fail-OPEN: any
+// string that was not exactly that selected the full menu, including the one
+// containing sandbox_exec. "Plan" from a client that capitalises and "planning"
+// from one that guesses both resolved to full execution capability, for a user
+// who had asked for the mode that runs nothing.
+//
+// "auto" and "manual" are accepted deliberately and this test says why: the
+// wire field is shared with the VS Code approval picker, whose default is
+// "auto". An enum of {"", "plan"} would look stricter, pass every test in this
+// package, and reject the primary client's ordinary turn.
+func TestNormalizeModeRejectsWhatItCannotInterpret(t *testing.T) {
+	for _, tc := range []struct {
+		in      string
+		want    string
+		wantErr bool
+	}{
+		{"plan", modePlan, false},
+		{"PLAN", modePlan, false},
+		{"  Plan  ", modePlan, false},
+		{"", "", false},
+		{"auto", modeAuto, false},
+		{"manual", modeManual, false},
+		{"planning", "", true},
+		{"chat", "", true},
+		{"agent", "", true},
+		{"plan mode", "", true},
+	} {
+		got, err := normalizeMode(tc.in)
+		if tc.wantErr {
+			if err == nil {
+				t.Errorf("normalizeMode(%q) = %q, want an error. Falling through to the full "+
+					"menu is how a mode the daemon cannot interpret becomes code execution", tc.in, got)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("normalizeMode(%q) errored: %v", tc.in, err)
+		}
+		if got != tc.want {
+			t.Errorf("normalizeMode(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// TestPlanModeDeniesBothCapabilities covers the predicate directly, so a future
+// third flag on mcp.Tool has an obvious place to be added.
+func TestPlanModeDeniesBothCapabilities(t *testing.T) {
+	if !planModeDenies(mcp.Tool{ExecutesCode: true}) {
+		t.Error("a code-executing tool is allowed in plan mode")
+	}
+	if !planModeDenies(mcp.Tool{ReachesNetwork: true}) {
+		t.Error("a network-reaching tool is allowed in plan mode. mcp.go says of ReachesNetwork " +
+			"that it exists for the same reason ExecutesCode does; the filter honoured one")
+	}
+	if planModeDenies(mcp.Tool{ReadOnlyHint: true}) {
+		t.Error("a read-only tool is withheld in plan mode, which makes the mode useless")
 	}
 }

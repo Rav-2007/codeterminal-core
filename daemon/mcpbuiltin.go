@@ -192,7 +192,29 @@ func (s *Server) builtinTools(proposals *proposalSink, mode string) []mcp.Builti
 	// and is governed only by policy.
 	tools = append(tools, s.webTools()...)
 
-	if mode != "plan" {
+	// repo_map is READ-ONLY and belongs to every mode, plan included.
+	//
+	// It used to sit in the `mode != "plan"` block below, alongside the two
+	// propose_* tools, and so was withdrawn from plan mode as collateral -- not
+	// by any decision about what plan mode should allow, but because it had been
+	// typed inside the same append. Plan mode is the mode that most needs it:
+	// working out what to change means finding out what exists first, and the
+	// alternative to a repo map is the model guessing at paths.
+	tools = append(tools, mcp.Builtin{
+		Tool: mcp.Tool{
+			Name: "repo_map",
+			Description: "Show the shape of this workspace: every directory, the files in it, " +
+				"and the top-level declarations of as many files as fit. Use it to find out what " +
+				"exists before searching or guessing at a path. Takes no arguments.",
+			Schema:       schema(`{"type":"object","properties":{},"additionalProperties":false}`),
+			ReadOnlyHint: true,
+		},
+		Handler: func(ctx context.Context, _ json.RawMessage) (mcp.Result, error) {
+			return s.builtinRepoMap(ctx)
+		},
+	})
+
+	if !isPlanMode(mode) {
 		tools = append(tools, mcp.Builtin{
 			Tool: mcp.Tool{
 				Name: "propose_edit",
@@ -217,19 +239,6 @@ func (s *Server) builtinTools(proposals *proposalSink, mode string) []mcp.Builti
 		},
 			mcp.Builtin{
 				Tool: mcp.Tool{
-					Name: "repo_map",
-					Description: "Show the shape of this workspace: every directory, the files in it, " +
-						"and the top-level declarations of as many files as fit. Use it to find out what " +
-						"exists before searching or guessing at a path. Takes no arguments.",
-					Schema:       schema(`{"type":"object","properties":{},"additionalProperties":false}`),
-					ReadOnlyHint: true,
-				},
-				Handler: func(ctx context.Context, _ json.RawMessage) (mcp.Result, error) {
-					return s.builtinRepoMap(ctx)
-				},
-			},
-			mcp.Builtin{
-				Tool: mcp.Tool{
 					Name:        "propose_ast_edit",
 					Description: "Propose an edit to a workspace file via AST diffing. Finds the exact node for the given symbol (e.g. 'function foo' or 'MyStruct') using the native compiler, and replaces its entire definition with the supplied code. The edit is NOT applied immediately: it is shown to the user as a reviewable diff.",
 					Schema: schema(`{
@@ -250,7 +259,7 @@ func (s *Server) builtinTools(proposals *proposalSink, mode string) []mcp.Builti
 			})
 	}
 
-	// PLAN MODE DROPS EVERY TOOL THAT EXECUTES CODE.
+	// PLAN MODE DROPS EVERY TOOL THAT EXECUTES CODE OR REACHES THE NETWORK.
 	//
 	// This used to be one line above -- `if mode != "plan"` removing
 	// propose_edit -- and that was the whole of it. The effect was backwards:
@@ -260,16 +269,23 @@ func (s *Server) builtinTools(proposals *proposalSink, mode string) []mcp.Builti
 	// thinking and not doing; what they got was the safe way to change the
 	// workspace removed and the unreviewed one kept.
 	//
-	// KEYED ON THE CAPABILITY, NOT ON THE NAME. mcp.Tool.ExecutesCode already
-	// exists for exactly this reason -- registry.go and agentloop.go both branch
-	// on it, because confinement is a property of a tool and not a fact about
-	// its spelling. Filtering on `Name == "sandbox_exec"` would work today and
-	// fail silently on the day a second code-executing built-in is added, which
-	// is the failure this flag was introduced to prevent.
-	if mode == "plan" {
+	// KEYED ON THE CAPABILITY, NOT ON THE NAME -- see planModeDenies, which is
+	// where that argument now lives and where the correction was made. The fix
+	// above replaced the name check with `t.ExecutesCode` and described itself
+	// as capability-keyed; mcp.Tool declares TWO capability flags and this
+	// tested one. web_search and web_fetch set ReachesNetwork, not
+	// ExecutesCode, and were appended to `tools` a few lines up -- so they
+	// survived a filter whose stated purpose they fell squarely inside.
+	//
+	// The lesson is narrower than "check both flags": a filter that names the
+	// principle it follows ("the capability") and then implements one instance
+	// of it reads as complete to every later reviewer. planModeDenies exists so
+	// there is exactly one place where the set of withheld capabilities is
+	// written down.
+	if isPlanMode(mode) {
 		kept := tools[:0]
 		for _, b := range tools {
-			if b.Tool.ExecutesCode {
+			if planModeDenies(b.Tool) {
 				continue
 			}
 			kept = append(kept, b)
