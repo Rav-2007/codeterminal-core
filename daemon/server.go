@@ -457,7 +457,10 @@ func (s *Server) serveConn(conn net.Conn) {
 	if modeErr != nil {
 		s.count(func(c *counters) { c.malformed.Add(1) })
 		s.logger.Printf("rejecting prompt: %v", modeErr)
-		enc.Encode(protocol.TokenResponse{
+		// Ignored deliberately: the turn is already being refused, and a write
+		// failure here means the client is gone -- which changes nothing about
+		// what this branch does next, which is return.
+		_ = enc.Encode(protocol.TokenResponse{
 			ProtocolVersion: protocol.ProtocolVersion,
 			Done:            true,
 			Error:           modeErr.Error(),
