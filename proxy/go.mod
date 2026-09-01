@@ -1,5 +1,3 @@
 module codeterminal/proxy
 
-go 1.25.0
-
-toolchain go1.25.13
+go 1.25.13

@@ -35,8 +35,19 @@ fail=0
 scanned=0
 offline=0
 
+# GOWORK=off -- SCAN THE WEAKER CONFIGURATION, not the stronger one.
+#
+# This loop used to run with the workspace active, which is the BEST case: the
+# one arrangement in which go.work's floor covers every module at once. A module
+# built on its own -- by the release job, by a Docker build that copies only its
+# go.mod, by anyone consuming it -- gets whatever its own go.mod demands, and
+# that is what this now measures.
+#
+# It is why item 22 could be closed with a measurement that was true. Scanning
+# the configuration where the fix is guaranteed to work cannot discover that the
+# fix does not work anywhere else.
 for m in "${MODULES[@]}"; do
-  out="$(cd "$m" && govulncheck ./... 2>&1)"
+  out="$(cd "$m" && GOWORK=off govulncheck ./... 2>&1)"
   status=$?
   scanned=$((scanned + 1))
 
@@ -86,8 +97,11 @@ fi
 if [ "$fail" -ne 0 ]; then
   echo
   echo "Reachable means govulncheck traced a call path from this code to the flaw."
-  echo "For a standard-library finding the fix is the toolchain line in go.work --"
-  echo "which governs in a workspace and overrides every module's go.mod."
+  echo "For a standard-library finding the fix is the go directive in that module's own"
+  echo "go.mod. This scan runs with GOWORK=off, so go.work is not in play and"
+  echo "raising it changes nothing here. The go directive is the hard floor; the"
+  echo "toolchain line is only a selection hint and GOTOOLCHAIN=local ignores it."
+  echo "scripts/go-toolchain-pinned.sh keeps all seven files agreeing."
   exit 1
 fi
 

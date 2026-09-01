@@ -69,7 +69,7 @@ if [ $missing -ne 0 ]; then
   echo "Install them with:" >&2
   echo "  go install honnef.co/go/tools/cmd/staticcheck@latest" >&2
   echo "  go install github.com/gordonklaus/ineffassign@latest" >&2
-  echo "  GOTOOLCHAIN=go1.25.12 go install github.com/timakin/bodyclose@latest" >&2
+  echo "  GOTOOLCHAIN=go1.25.13 go install github.com/timakin/bodyclose@latest" >&2
   exit 2
 fi
 

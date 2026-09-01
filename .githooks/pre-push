@@ -195,6 +195,28 @@ if [ -x "$repo_root/scripts/actions-pinned.sh" ]; then
   fi
 fi
 
+# The Go version floor, here for the same reason the three checks above are: it
+# is sub-second, offline, needs no toolchain, and has no other enforcement point.
+#
+# It exists because `toolchain go1.25.13` is a SELECTION HINT, not a floor.
+# Measured 2026-09-01: `daemon` carries that line and still built on go1.25.12
+# under GOTOOLCHAIN=local, with four reachable stdlib flaws; `proxy`, the
+# internet-facing one, had five. The hard floor is the `go` directive, and it now
+# has to agree across go.work and all six go.mod -- seven files, bumped by hand,
+# which is precisely the shape that drifts.
+#
+# Its sibling scripts/govulncheck.sh stays OUT, unchanged: ~17s and it needs the
+# vulnerability database. This one is string comparison and runs on a train.
+if [ -x "$repo_root/scripts/go-toolchain-pinned.sh" ]; then
+  if ! out="$("$repo_root/scripts/go-toolchain-pinned.sh" 2>&1)"; then
+    echo "pre-push: GO TOOLCHAIN PINS DISAGREE" >&2
+    echo "$out" >&2
+    status=1
+  else
+    echo "pre-push: ok toolchain ($(printf '%s' "$out" | tail -1))"
+  fi
+fi
+
 if [ $status -ne 0 ]; then
   echo "" >&2
   echo "pre-push: REFUSING THE PUSH. Fix the above, or use --no-verify if you" >&2

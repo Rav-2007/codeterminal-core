@@ -450,7 +450,7 @@ for all three tool-bearing roles.
 | | |
 |---|---|
 | **Severity** | **MEDIUM — 5.8** |
-| **Status** | **FIXED `6bbe549`** — register item 22. Residual, measured 2026-09-01: the toolchain pin lives in `go.work`, so with `GOWORK=off` four modules fall back to go1.25.12 and `helper` reports `GO-2026-5972` reachable. Release builds unaffected. |
+| **Status** | **FIXED `6bbe549`, completed 2026-09-01** — register item 22. The first fix raised `go.work`'s toolchain line, which is a selection hint that `GOTOOLCHAIN=local` ignores; measured then, `daemon` had 4 and `proxy` 5 reachable stdlib flaws standalone. Closed by raising the `go` directive — the hard floor — in all seven files. |
 | **Components** | toolchain (go1.25.12), `.github/workflows/build.yml`, `scripts/lint.sh`, `Makefile` |
 | **Failure class** | F10 — Dependency failure |
 

@@ -148,6 +148,8 @@ check: fmt vet crossvet race lint ratchet errcheck evalguard supplychain docs
 # reachable stdlib vulnerabilities on the same commit.
 supplychain:
 	@./scripts/actions-pinned.sh
+	@./scripts/go-toolchain-pinned.sh --self-test
+	@./scripts/go-toolchain-pinned.sh
 	@./scripts/govulncheck.sh
 
 docs:
