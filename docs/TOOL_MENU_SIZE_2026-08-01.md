@@ -4,7 +4,7 @@
 The default that shipped this morning was set on the opposite assumption, and it
 moves as a result.
 
-Register item 20 / P2-2. Reproduce with:
+Register item 27 / P2-2. Reproduce with:
 
 ```sh
 export CODETERMINAL_API_BASE=... CODETERMINAL_API_KEY=...

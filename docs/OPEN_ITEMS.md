@@ -167,15 +167,15 @@ Unblocked as of this pass: real-model spend is authorized with a **$5 hard stop*
 
 | # | Item | What a number closes |
 |---|---|---|
-| 24 | **FIXED** | **The reservation floor makes the tail of every quota unreachable.** `reserveQuota` reserves `defaultReservationTokens` (4,096) up front, so a key is refused once its headroom drops below that — 4.1% of a 100,000-token quota, and a larger fraction of a smaller one. The user is told `quota_exceeded` while their own accounting says tokens remain, which reads as a billing bug. Safe direction (never over-spend) and an inherent consequence of reserve-then-correct, but written down nowhere. Options: reserve `min(floor, headroom)` and let the correction settle it, or report the real remaining balance in the refusal. | `proxy/main.go:194`, `reserveQuota` | Medium (UX/billing clarity) | **FIXED** (2026-08-11) — fetches headroom upon reserve failure and retries with `min(floor, headroom)`. |
+| 31 | **FIXED** | **The reservation floor makes the tail of every quota unreachable.** `reserveQuota` reserves `defaultReservationTokens` (4,096) up front, so a key is refused once its headroom drops below that — 4.1% of a 100,000-token quota, and a larger fraction of a smaller one. The user is told `quota_exceeded` while their own accounting says tokens remain, which reads as a billing bug. Safe direction (never over-spend) and an inherent consequence of reserve-then-correct, but written down nowhere. Options: reserve `min(floor, headroom)` and let the correction settle it, or report the real remaining balance in the refusal. | `proxy/main.go:194`, `reserveQuota` | Medium (UX/billing clarity) | **FIXED** (2026-08-11) — fetches headroom upon reserve failure and retries with `min(floor, headroom)`. |
 
-| ~~20~~ | ~~`max_advertised_tools` 4/8/12 curve~~ | **MEASURED 2026-08-01** (`d9dbc92`, `docs/TOOL_MENU_SIZE_2026-08-01.md`). Flat: 88.6% @ 5, 85.7% @ 8, 85.7% @ 12 over 105 trials, the whole spread being one trial. **The default moved back to 12** — the accuracy argument for 5 did not survive the data. Every failure at every size is one confusion (`run_tests` → `list_directory`, 14/15), so excluding it the score is 30/30 at all three sizes. |
-| 21 | Production system-prompt delta (D1) | the loop gate used a minimal prompt and said so; a large delta is a finding *about the prompt* |
-| 22 | `search_code` in a live loop (D2) | needs the ONNX embedder and a real index; exercises the production 4-tool menu |
-| 23 | Default-model evaluation | repeatedly named the single biggest reply-quality lever, deferred for weeks |
+| ~~27~~ | ~~`max_advertised_tools` 4/8/12 curve~~ | **MEASURED 2026-08-01** (`d9dbc92`, `docs/TOOL_MENU_SIZE_2026-08-01.md`). Flat: 88.6% @ 5, 85.7% @ 8, 85.7% @ 12 over 105 trials, the whole spread being one trial. **The default moved back to 12** — the accuracy argument for 5 did not survive the data. Every failure at every size is one confusion (`run_tests` → `list_directory`, 14/15), so excluding it the score is 30/30 at all three sizes. |
+| 28 | Production system-prompt delta (D1) | the loop gate used a minimal prompt and said so; a large delta is a finding *about the prompt* |
+| 29 | `search_code` in a live loop (D2) | needs the ONNX embedder and a real index; exercises the production 4-tool menu |
+| 30 | Default-model evaluation | repeatedly named the single biggest reply-quality lever, deferred for weeks |
 
 If a result contradicts a shipped default, **the default moves and the commit says so.**
-Item 20 is the worked example: it contradicted a default set the same morning, and
+Item 27 is the worked example: it contradicted a default set the same morning, and
 the default moved the same day.
 
 **Blocked on a founder action, not on engineering:** the production proxy returns
@@ -198,7 +198,7 @@ says. The key is not out of quota — it is out of **reservation headroom**:
 unspent. `pending_corrections` is empty, so no stranded reservation is inflating
 the number — this is real usage against a real limit.
 
-**This is a finding in its own right, item 24 below.** Fixing the pilot key is one
+**This is a finding in its own right, item 31 below.** Fixing the pilot key is one
 UPDATE; the behaviour it exposes applies to every user who approaches their limit.
 
 **A follow-up this surfaced, correctly scoped:** `run_tests` loses to

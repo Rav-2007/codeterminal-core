@@ -241,7 +241,7 @@ into `toolresult.go`'s header and `SECURITY_MODEL.md`, not buried.
 **At stake.** Repeatedly named the single biggest reply-quality lever, deferred for
 weeks.
 
-**Evidence.** Currently absent, deliberately: this is item 23 in the register's §4
+**Evidence.** Currently absent, deliberately: this is item 30 in the register's §4
 and needs real-model spend, now authorized under a $5 ceiling. One finding already
 constrains it — the embedding discrimination ceiling (raw similarity clustering at
 0.0147–0.0164, a ~1% spread deciding top-5 membership) means remaining

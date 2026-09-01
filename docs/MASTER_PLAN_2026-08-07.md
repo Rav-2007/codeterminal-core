@@ -321,7 +321,7 @@ Then 10–25 pilot users with hand-inserted keys.
 present: `reserved := defaultReservationTokens` at `proxy/main.go:1050` is a flat
 4,096 with no `min(floor, headroom)`, so the last 4,096 tokens of every quota are
 unreachable and the user is told `quota_exceeded` while their own accounting says
-tokens remain (register item 24). And an 8-iteration agent turn reserves 32,768
+tokens remain (register item 31). And an 8-iteration agent turn reserves 32,768
 at peak — a 100k quota fits three worst-case turns.
 
 ---

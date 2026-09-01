@@ -158,7 +158,33 @@ fi
 # Checked here rather than left to care because an ambiguous id defeats the
 # whole point of the register: the numbers are how BACKLOG, docs/README and the
 # audit report refer to these rows across files.
-dupes=$(printf '%s\n' "$parsed" | awk '{ print $1 }' | sort -n | uniq -d | tr '\n' ' ' | sed 's/ $//')
+# COLLECTED FROM EVERY DEFINING TABLE, not just the two with a Status column.
+#
+# The first version of this check parsed only the Status tables, so it saw §1 and
+# §2 and reported "no duplicates" over a file where §4 reused 20, 21, 22, 23 and
+# 24 for unrelated measurement items. That is not hypothetical drift: it had
+# already reached other documents, and DECISION_PACK.md:244 had to write "item 23
+# in the register's §4" to say which one it meant. A reader following a bare
+# number could land on either row.
+#
+# §6's tables are deliberately NOT here. They are a closure LOG and reference ids
+# defined above; requiring uniqueness there would forbid the cross-reference they
+# exist to make.
+defining_ids=$(awk '
+  /^\| # \| Status \| Item \| Where \| Sev \| Evidence \|/ { intable = 1; next }
+  /^\| # \| Item \| Where \| Evidence \|/                     { intable = 1; next }
+  /^\| # \| Item \| What a number closes \|/                   { intable = 1; next }
+  /^\| # \| Item \| Commit \|/                                 { intable = 0; next }
+  intable && $0 !~ /^\|/ { next }
+  intable && $0 ~ /^\|---/ { next }
+  intable {
+    n = $0; gsub(/[~*`]/, "", n); split(n, cells, "|")
+    num = cells[2]; gsub(/^[ \t]+|[ \t]+$/, "", num)
+    if (num ~ /^[0-9]+$/) print num
+  }
+' "$OPEN_ITEMS")
+
+dupes=$(printf '%s\n' "$defining_ids" | grep -c . >/dev/null && printf '%s\n' "$defining_ids" | sort -n | uniq -d | tr '\n' ' ' | sed 's/ $//')
 if [ -n "$dupes" ]; then
   echo "docs-claims: FAIL -- item number(s) used more than once in $OPEN_ITEMS: $dupes"
   echo "  An id that names two rows makes every cross-file reference to it ambiguous."
@@ -192,8 +218,26 @@ claimed=$(printf '%s' "$claim_line" | sed 's/^[0-9]*://' | sed 's/.*Status colum
 # script silently stops finding. A missing marker FAILS: a claim that cannot be
 # located is not a claim that has been checked.
 README="${DOCS_CLAIMS_README:-docs/README.md}"
-if [ -f "$README" ]; then
+# REQUIRED, not "checked if present". Guarding this with `[ -f ]` meant deleting
+# the file skipped the comparison and still printed agreement -- the gate
+# asserting it agrees with something it never opened, which is the inverse of the
+# rule applied to BACKLOG's claim row three lines up.
+if [ ! -f "$README" ]; then
+  echo "docs-claims: FAIL -- $README does not exist."
+  echo "  It is one of the three registers this checker compares. Restore it, or"
+  echo "  remove it from this script deliberately."
+  exit 1
+fi
+if true; then
   readme_line=$(grep -n '\*\*open: ' "$README" | head -1 || true)
+  markers=$(grep -c '\*\*open: ' "$README" || true)
+  # A11: more than one marker means the ones after the first are never compared
+  # and can go stale indefinitely -- the failure this check was added for.
+  if [ "$markers" -gt 1 ]; then
+    echo "docs-claims: FAIL -- $README has $markers '**open: ...**' markers; only the first is compared."
+    echo "  The others would drift unchecked. Keep exactly one."
+    exit 1
+  fi
   if [ -z "$readme_line" ]; then
     echo "docs-claims: FAIL -- no '**open: ...**' marker in $README."
     echo "  That index names the open items; without the marker this checker cannot compare it."
