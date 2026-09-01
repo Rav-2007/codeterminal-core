@@ -110,7 +110,7 @@ CLIENTS                      TRUST BOUNDARY 1: unix socket, SO_PEERCRED (uid-che
 | | |
 |---|---|
 | **Severity** | **HIGH — 8.1** |
-| **Status** | Open, measured |
+| **Status** | **FIXED 2026-08-26**, neuter-verified — confinement is resolved per host and reported honestly. See the update row in §1 and `docs/OPEN_ITEMS.md`. |
 | **Components** | `daemon/mcpbuiltin.go`, `daemon/mcp/registry.go:91-93`, `daemon/mcp_exec.go`, `clients/tui/chat.go:1286`, `clients/tui/oneshot.go:124`, `daemon/toolaudit.go` |
 | **Failure class** | F5 — Authorization failure (consent obtained under false pretences) |
 
@@ -213,7 +213,7 @@ the NOT-SANDBOXED branch. Neuter-verify: the test must fail against today's code
 | | |
 |---|---|
 | **Severity** | **HIGH — 7.4** |
-| **Status** | Open, by documented design; the design is right for read tools and wrong for exec |
+| **Status** | **FIXED 2026-08-26**, neuter-verified — exec grants bind to the arguments approved. See the update row in §1 and `docs/OPEN_ITEMS.md`. |
 | **Components** | `daemon/agentloop.go:67-87, 545-547, 581-583`, `clients/tui/oneshot.go:138` |
 | **Failure class** | F5 — Authorization failure |
 
@@ -253,7 +253,7 @@ same turn; assert a second `ToolApprovalRequest` is raised.
 | | |
 |---|---|
 | **Severity** | **MEDIUM — 6.4** |
-| **Status** | Open, measured |
+| **Status** | **FIXED 2026-08-26**, neuter-verified — the egress cap no longer inverts once exceeded. See the update row in §1 and `docs/OPEN_ITEMS.md`. |
 | **Components** | `daemon/agentloop.go:425-430`, `daemon/toolresult.go:61` |
 | **Failure class** | F8 — Orchestration failure |
 
@@ -450,7 +450,7 @@ for all three tool-bearing roles.
 | | |
 |---|---|
 | **Severity** | **MEDIUM — 5.8** |
-| **Status** | Open, measured |
+| **Status** | **FIXED `6bbe549`** — register item 22. Residual, measured 2026-09-01: the toolchain pin lives in `go.work`, so with `GOWORK=off` four modules fall back to go1.25.12 and `helper` reports `GO-2026-5972` reachable. Release builds unaffected. |
 | **Components** | toolchain (go1.25.12), `.github/workflows/build.yml`, `scripts/lint.sh`, `Makefile` |
 | **Failure class** | F10 — Dependency failure |
 
@@ -485,7 +485,7 @@ budget), attach it to the existing Ubuntu job rather than adding a matrix entry.
 | | |
 |---|---|
 | **Severity** | **MEDIUM — 5.2** |
-| **Status** | Open, measured |
+| **Status** | **FIXED `3f12a02`, completed `c69dbfe`/`db2c2b2`** — register item 23. The first fix closed one of four routes; Lane B was never filtered, the filter read one of two capability flags, and mode matching failed open. |
 | **Components** | `daemon/server.go:512-513`, `daemon/mcpbuiltin.go:178` |
 | **Failure class** | F2 — Planning failure / F5 — weak authorization |
 
@@ -704,7 +704,7 @@ each value in turn.
 | | |
 |---|---|
 | **Severity** | **LOW — 2.6** |
-| **Status** | Open |
+| **Status** | **FIXED `7443f73`** — register item 25. All 26 references pinned to commit SHAs; `scripts/actions-pinned.sh` runs in the pre-push hook. |
 | **Components** | `.github/workflows/build.yml`, `release.yml` |
 
 All actions are pinned to floating major tags (`actions/checkout@v4`,
