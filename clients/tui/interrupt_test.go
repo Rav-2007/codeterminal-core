@@ -350,7 +350,7 @@ func TestStreamPromptExitsWhenAStoppedUIQuitsReading(t *testing.T) {
 
 	returned := make(chan struct{})
 	go func() {
-		streamPrompt(ctx, "test-client", "", "hello", "", "", nil, nil, ch)
+		streamPrompt(ctx, "test-client", "", "hello", "", "", "", nil, nil, ch)
 		close(returned)
 	}()
 

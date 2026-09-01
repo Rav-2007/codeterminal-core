@@ -172,7 +172,7 @@ func TestStreamPrompt_HistorySentOnThirdTurnContainsPriorTwoInOrder(t *testing.T
 	runTurn := func(prompt string, history []protocol.Turn) protocol.PromptRequest {
 		t.Helper()
 		ch := make(chan tea.Msg, 8)
-		streamPrompt(context.Background(), "test-client", "", prompt, "", "", nil, history, ch)
+		streamPrompt(context.Background(), "test-client", "", prompt, "", "", "", nil, history, ch)
 		for {
 			msg := <-ch
 			if errMsg, ok := msg.(streamErrMsg); ok {
@@ -240,7 +240,7 @@ func TestStreamPrompt_PromptKindReachesWire(t *testing.T) {
 	send := func(promptKind string) protocol.PromptRequest {
 		t.Helper()
 		ch := make(chan tea.Msg, 8)
-		streamPrompt(context.Background(), "test-client", "", "some question", promptKind, "", nil, nil, ch)
+		streamPrompt(context.Background(), "test-client", "", "some question", promptKind, "", "", nil, nil, ch)
 		for {
 			msg := <-ch
 			if errMsg, ok := msg.(streamErrMsg); ok {
@@ -278,7 +278,7 @@ func TestStreamPrompt_TierReachesWire(t *testing.T) {
 	defer restoreLockPath()
 
 	ch := make(chan tea.Msg, 8)
-	streamPrompt(context.Background(), "test-client", "", "q", "", "minimax_m3", nil, nil, ch)
+	streamPrompt(context.Background(), "test-client", "", "q", "", "", "minimax_m3", nil, nil, ch)
 	for {
 		msg := <-ch
 		if _, ok := msg.(streamDoneMsg); ok {
@@ -316,7 +316,7 @@ func TestStreamPrompt_ContextCancelUnblocksBlockedRead(t *testing.T) {
 
 	streamReturned := make(chan struct{})
 	go func() {
-		streamPrompt(ctx, "test-client", "", "hello", "", "", nil, nil, ch)
+		streamPrompt(ctx, "test-client", "", "hello", "", "", "", nil, nil, ch)
 		close(streamReturned)
 	}()
 

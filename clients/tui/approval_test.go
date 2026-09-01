@@ -180,7 +180,7 @@ func TestOnlyThePathsThatCanAnswerDeclareTheCapability(t *testing.T) {
 			want: true,
 			run: func(t *testing.T) {
 				ch := make(chan tea.Msg, 8)
-				go streamPrompt(context.Background(), "test", "/w", "hi", "", "", nil, nil, ch)
+				go streamPrompt(context.Background(), "test", "/w", "hi", "", "", "", nil, nil, ch)
 				waitForStreamEnd(t, ch)
 			},
 		},

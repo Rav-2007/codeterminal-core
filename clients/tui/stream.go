@@ -200,9 +200,9 @@ func resetHistoryOnDaemon(ctx context.Context, clientName string, ch chan tea.Ms
 // set from an explicit command and never inferred from what the question looks
 // like; see protocol.PromptRequest.Pipeline for why that is a measured decision
 // rather than caution.
-func startStream(ctx context.Context, clientName, workspace, prompt, promptKind, preferredTier string, pipeline []string, history []protocol.Turn, ch chan tea.Msg) tea.Cmd {
+func startStream(ctx context.Context, clientName, workspace, prompt, promptKind, mode, preferredTier string, pipeline []string, history []protocol.Turn, ch chan tea.Msg) tea.Cmd {
 	return func() tea.Msg {
-		go streamPrompt(ctx, clientName, workspace, prompt, promptKind, preferredTier, pipeline, history, ch)
+		go streamPrompt(ctx, clientName, workspace, prompt, promptKind, mode, preferredTier, pipeline, history, ch)
 		return <-ch
 	}
 }
@@ -292,7 +292,7 @@ func deliver(ctx context.Context, ch chan tea.Msg, msg tea.Msg) bool {
 // cancellation is recognized via ctx.Err() and this function returns
 // quietly (no streamErrMsg): the user chose to quit, that's not a failure,
 // and it leaves nothing behind reading a dead socket.
-func streamPrompt(ctx context.Context, clientName, workspace, prompt, promptKind, preferredTier string, pipeline []string, history []protocol.Turn, ch chan tea.Msg) {
+func streamPrompt(ctx context.Context, clientName, workspace, prompt, promptKind, mode, preferredTier string, pipeline []string, history []protocol.Turn, ch chan tea.Msg) {
 	sess, err := connectToDaemon(clientName, protocol.CapToolApproval)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -319,6 +319,7 @@ func streamPrompt(ctx context.Context, clientName, workspace, prompt, promptKind
 		Workspace:       workspace,
 		History:         history,
 		PromptKind:      promptKind,
+		Mode:            mode,
 		Tier:            preferredTier,
 		Pipeline:        pipeline,
 	}); err != nil {

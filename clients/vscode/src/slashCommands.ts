@@ -10,6 +10,16 @@ export interface SlashDef {
   preamble?: string;
   /** Wire PromptKind for /reason and /refactor. */
   promptKind?: string;
+  /**
+   * Wire Mode (PromptRequest.mode). Set only by /plan, and it OVERRIDES the
+   * mode picker for that turn: a user who types /plan has asked for plan mode
+   * as plainly as one who selected it.
+   *
+   * Before this, /plan and the picker's "Plan" were different features sharing
+   * a word -- the picker set the mode and got the daemon's tool filter, while
+   * /plan sent steering text and got the full menu, sandbox_exec included.
+   */
+  mode?: string;
   needsArgs?: boolean;
   /**
    * Set when a `local` command is dispatched by ChatPanel itself rather than by
@@ -108,12 +118,16 @@ export const SLASH_CATALOG: SlashDef[] = [
     summary: 'code review',
     preamble: 'Review the code as a careful senior engineer. Separate blockers from suggestions.\n\n',
   },
+  // /plan carries no preamble: the daemon appends the plan directive to the
+  // SYSTEM role for mode=plan. A preamble is prepended to the user's own
+  // message, and the daemon's planmode.go records at length why instructions to
+  // the model do not belong in user-role text.
   {
     name: 'plan',
     kind: 'steered',
     needsArgs: true,
-    summary: 'make an implementation plan',
-    preamble: 'Produce a concise implementation plan with ordered steps and key files. Do not write full code yet unless asked.\n\n',
+    summary: 'make an implementation plan (read-only: no edits, no commands, no network)',
+    mode: 'plan',
   },
   {
     name: 'run',

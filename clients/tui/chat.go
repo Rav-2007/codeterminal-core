@@ -809,6 +809,9 @@ func (m chatModel) startTurn() (tea.Model, tea.Cmd) {
 	if !isTeam {
 		promptKind, prompt = parsePromptKind(raw)
 	}
+	// A free-typed prompt selects no mode. "" is the wire's "unset" and the
+	// daemon reads it as the ordinary full menu.
+	mode := ""
 
 	// Built from the transcript BEFORE the current prompt is appended below,
 	// so the not-yet-answered prompt can never end up in its own History.
@@ -836,7 +839,7 @@ func (m chatModel) startTurn() (tea.Model, tea.Cmd) {
 	ch := make(chan tea.Msg)
 	m.streamCh = ch
 
-	return m, tea.Batch(m.spinner.Tick, startStream(ctx, m.clientName, m.workspace, prompt, promptKind, m.preferredTier, pipeline, history, ch))
+	return m, tea.Batch(m.spinner.Tick, startStream(ctx, m.clientName, m.workspace, prompt, promptKind, mode, m.preferredTier, pipeline, history, ch))
 }
 
 func (m chatModel) handleSlash(sp slashParse) (tea.Model, tea.Cmd) {
@@ -856,6 +859,7 @@ func (m chatModel) handleSlash(sp slashParse) (tea.Model, tea.Cmd) {
 	case slashSteered:
 		prompt := steeredPrompt(sp.Def, sp.Args)
 		promptKind := sp.Def.PromptKind
+		mode := sp.Def.Mode
 		var pipeline []string // steered slash commands do not choose a shape
 		history := buildHistory(m.turns)
 		m.turns = append(m.turns, turn{role: roleUser, text: "/" + sp.Def.Name + " " + sp.Args})
@@ -877,7 +881,7 @@ func (m chatModel) handleSlash(sp slashParse) (tea.Model, tea.Cmd) {
 		m.streamCancel = cancel
 		ch := make(chan tea.Msg)
 		m.streamCh = ch
-		return m, tea.Batch(m.spinner.Tick, startStream(ctx, m.clientName, m.workspace, prompt, promptKind, m.preferredTier, pipeline, history, ch))
+		return m, tea.Batch(m.spinner.Tick, startStream(ctx, m.clientName, m.workspace, prompt, promptKind, mode, m.preferredTier, pipeline, history, ch))
 	}
 	return m, nil
 }

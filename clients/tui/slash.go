@@ -20,6 +20,10 @@ import (
 // /reason and /refactor keep their existing PromptKind wire values (reasoning
 // tier escalation) and also apply a short steered preamble.
 
+// modePlan is protocol.PromptRequest.Mode's plan value. Must equal the daemon's
+// modePlan; see slashDef.Mode.
+const modePlan = "plan"
+
 type slashKind int
 
 const (
@@ -35,6 +39,11 @@ type slashDef struct {
 	Preamble string
 	// PromptKind is the optional wire PromptKind (/reason, /refactor).
 	PromptKind string
+	// Mode is the optional wire Mode (protocol.PromptRequest.Mode). Set only by
+	// /plan. MUST match the daemon's modePlan exactly -- the two packages are
+	// separate and nothing compiles one against the other, the same
+	// convention-and-comment contract PromptKind's wire values carry above.
+	Mode string
 	// NeedsArgs: if true, a bare "/name" shows usage instead of running.
 	NeedsArgs bool
 }
@@ -82,8 +91,22 @@ var slashCatalog = []slashDef{
 		Preamble: "Perform a security review. Call out concrete risks, severity, and mitigations. Do not invent exploits.\n\n"},
 	{Name: "review", Kind: slashSteered, NeedsArgs: true, Summary: "code review",
 		Preamble: "Review the code as a careful senior engineer. Separate blockers from suggestions.\n\n"},
-	{Name: "plan", Kind: slashSteered, NeedsArgs: true, Summary: "make an implementation plan",
-		Preamble: "Produce a concise implementation plan with ordered steps and key files. Do not write full code yet unless asked.\n\n"},
+	// /plan SENDS A MODE, and no longer a preamble.
+	//
+	// It used to be steering text prepended to the user's own message, which
+	// meant the TUI's plan command and the VS Code one shared a name and nothing
+	// else: VS Code set PromptRequest.Mode and got the daemon's tool filter,
+	// while this sent a polite request and got the full menu, sandbox_exec
+	// included. A user typing /plan here was told the model would plan rather
+	// than act, and nothing enforced it.
+	//
+	// Dropping the preamble is not a loss. The daemon appends the same
+	// instruction for mode=plan (planModeSystemPrompt) into the SYSTEM role,
+	// where a preamble concatenated onto the user's text could never go -- and
+	// planmode.go records at length why instructions to the model do not belong
+	// in user-role text.
+	{Name: "plan", Kind: slashSteered, NeedsArgs: true, Summary: "make an implementation plan (read-only: no edits, no commands, no network)",
+		Mode: modePlan},
 	{Name: "run", Kind: slashSteered, NeedsArgs: true, Summary: "suggest how to run/build/test something",
 		Preamble: "Explain exactly which commands to run, from which directory, and what success looks like.\n\n"},
 

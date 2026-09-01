@@ -264,7 +264,7 @@ export class ChatPanel {
       }
       if (slash.def?.kind === 'steered') {
         const wirePrompt = steeredPrompt(slash.def, slash.args);
-        this.startModelTurn(text, wirePrompt, slash.def.promptKind, autoApply, mode);
+        this.startModelTurn(text, wirePrompt, slash.def.promptKind, autoApply, slash.def.mode ?? mode);
         return;
       }
     }

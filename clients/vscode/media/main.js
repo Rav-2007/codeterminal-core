@@ -249,7 +249,7 @@
     { name: 'doc', summary: 'write or improve documentation' },
     { name: 'security', summary: 'security review' },
     { name: 'review', summary: 'code review' },
-    { name: 'plan', summary: 'make an implementation plan' },
+    { name: 'plan', summary: 'make an implementation plan (read-only: no edits, no commands, no network)' },
     { name: 'run', summary: 'suggest how to run/build/test' },
     { name: 'implement', summary: 'implement a new feature from end-to-end' },
     { name: 'debug', summary: 'deeply debug an issue, error, or failing test' },
