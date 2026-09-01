@@ -111,6 +111,30 @@ func (s *Server) runAgentTurn(
 		}
 	}
 
+	// PLAN MODE WITHHOLDING LANE B IS SAID OUT LOUD, for the reason this file
+	// already applies to every other reduced tool surface.
+	//
+	// DegradedToolMenuTruncated states the rule: "a tool that was dropped and a
+	// tool the server never offered both show up as the model not using it. The
+	// user configured that server on purpose and deserves to know which of the
+	// two happened." Withholding for the mode is a third way to drop one, and it
+	// began silent -- so a user who typed /plan with a filesystem server
+	// configured saw an agent that inexplicably could not read their workspace,
+	// and no reason anywhere. The exclusion is correct; doing it quietly is not.
+	if withheld := eligibleLaneBServers(s.cfg); isPlanMode(promptReq.Mode) && withheld > 0 {
+		if err := enc.Encode(protocol.TokenResponse{
+			ProtocolVersion: protocol.ProtocolVersion,
+			Degraded: []protocol.Degradation{{
+				Component: protocol.DegradedMCPServer,
+				Detail: "plan mode: this turn does not connect your configured MCP servers, so " +
+					"their tools are not available. Re-send without plan mode to use them.",
+			}},
+		}); err != nil {
+			s.logger.Printf("agent: plan-mode notice write error: %v", err)
+			return
+		}
+	}
+
 	// One pipeline resolution per turn, before any phase runs, so a typo in a
 	// role name is reported once rather than once per phase.
 	phases, unknownRoles, fromRequest := pipelineForTurn(s.cfg.MCP, promptReq.Pipeline)
@@ -235,6 +259,13 @@ func (s *Server) runAgentTurn(
 	// bad at a gate, and the gate answers on the ApplyEditResponse.
 	textBlocks, rejections := s.parseAndLogEditBlocks(result.FinalText)
 	blocks := append(textBlocks, proposals.blocks...)
+	// Plan mode withholds the TEXT write path too. The tool filter took away
+	// propose_edit; without this, a SEARCH/REPLACE block in the model's prose
+	// still reached the client as a proposal, and an auto-apply client still
+	// wrote it.
+	if isPlanMode(promptReq.Mode) {
+		blocks, rejections = planModeWithholdEdits(blocks, rejections)
+	}
 	// A failed terminal write means the client has gone; the turn's real work
 	// (the edit proposals, the persisted history below) is unaffected.
 	_ = enc.Encode(protocol.TokenResponse{

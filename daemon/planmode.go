@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	"codeterminal/daemon/mcp"
+	"codeterminal/editapply"
+	"codeterminal/protocol"
 )
 
 // The values PromptRequest.Mode may carry.
@@ -80,6 +82,58 @@ func isPlanMode(mode string) bool {
 // on a list of names.
 func planModeDenies(t mcp.Tool) bool {
 	return t.ExecutesCode || t.ReachesNetwork
+}
+
+// planModeWithholdEdits drops edit blocks parsed out of the model's prose in
+// plan mode, and reports each one it dropped.
+//
+// THE TOOL FILTER WAS NEVER THE WHOLE WRITE SURFACE. builtinTools withholds
+// propose_edit and sandbox_exec, and that closed the path a tool takes. It does
+// nothing about the other one: the model can emit a SEARCH/REPLACE block in
+// ordinary text, parseAndLogEditBlocks lifts it out of the reply, and it arrives
+// at the client as an EditProposal like any other. In VS Code auto-apply is
+// derived from the mode PICKER rather than from the wire mode, so a turn sent as
+// `{mode:"plan", autoApply:true}` -- which is what typing /plan with the picker
+// on Auto produces -- could write that block to disk.
+//
+// The summary shipped for /plan says "read-only: no edits, no commands, no
+// network". Two of those three were structural and the first was not, which is
+// item 23's shape exactly: a control that holds on the path someone checked and
+// is an instruction on the path they did not.
+//
+// REPORTED, NOT SILENTLY DROPPED. editapply.BlockError exists because "a refused
+// block is a block the user asked for and did not get, and dropping it silently
+// is the failure mode this type exists to make impossible". Withholding one
+// because of the mode is the same event, so it travels the same channel: the
+// user sees that the model proposed an edit and that plan mode declined it,
+// rather than watching a plan quietly lose a paragraph.
+func planModeWithholdEdits(blocks []editapply.EditBlock, rejections []protocol.EditRejectionWire) ([]editapply.EditBlock, []protocol.EditRejectionWire) {
+	for _, b := range blocks {
+		rejections = append(rejections, protocol.EditRejectionWire{
+			Reason: fmt.Sprintf("plan mode: withheld a proposed edit to %s. This mode does not "+
+				"change files; re-send without /plan to propose it.", b.FilePath),
+		})
+	}
+	return nil, rejections
+}
+
+// eligibleLaneBServers counts the third-party servers a NON-plan turn would
+// actually have connected.
+//
+// Not len(cfg.MCP.Servers): the connect loop skips a server that is disabled or
+// whose unconfined nature has not been acknowledged, so the raw map size
+// overstates what plan mode withheld. It is the number a user is told, and a
+// count that says "5 withheld" when four were switched off sends them to debug
+// a config that is behaving correctly.
+func eligibleLaneBServers(cfg *Config) int {
+	n := 0
+	for _, srv := range cfg.MCP.Servers {
+		if srv.Disabled || !srv.AcknowledgedUnconfined {
+			continue
+		}
+		n++
+	}
+	return n
 }
 
 // planModeToolNames are the tools the plan directive tells the model it may

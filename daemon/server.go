@@ -671,6 +671,12 @@ func (s *Server) serveConn(conn net.Conn) {
 	}
 
 	blocks, rejections := s.parseAndLogEditBlocks(full.String())
+	// This path has no tools at all, so before this line plan mode was a prompt
+	// string and nothing else: a client without CapToolApproval got the
+	// directive, no filter, and every edit block the model produced.
+	if isPlanMode(promptReq.Mode) {
+		blocks, rejections = planModeWithholdEdits(blocks, rejections)
+	}
 	incomplete := incompleteInfoFor(finishReason)
 	if incomplete != nil {
 		s.logger.Printf("stream ended early: finish_reason=%q (answer cut off)", finishReason)

@@ -193,8 +193,8 @@ func tsField(obj, key string) (string, bool) {
 }
 
 type tsSlashDef struct {
-	name, kind, summary, preamble, promptKind string
-	needsArgs                                 bool
+	name, kind, summary, preamble, promptKind, mode string
+	needsArgs                                       bool
 }
 
 func parseVSCodeCatalog(t *testing.T) map[string]tsSlashDef {
@@ -227,6 +227,7 @@ func parseVSCodeCatalog(t *testing.T) map[string]tsSlashDef {
 		d.summary = str("summary")
 		d.preamble = str("preamble")
 		d.promptKind = str("promptKind")
+		d.mode = str("mode")
 		if v, ok := tsField(o, "needsArgs"); ok {
 			d.needsArgs = v == "true"
 		}
@@ -276,6 +277,21 @@ func TestSlashCatalogsAgreeAcrossClients(t *testing.T) {
 		}
 		if v.promptKind != g.PromptKind {
 			t.Errorf("/%s promptKind differs: Go=%q VS Code=%q", g.Name, g.PromptKind, v.promptKind)
+		}
+		// MODE GOES ON THE WIRE AND IS A SECURITY CONTROL, which makes it the
+		// most load-bearing field compared here -- more so than the preamble
+		// the comment below rightly protects.
+		//
+		// It was not compared until 2026-09-01, and the gap was live: deleting
+		// `mode: 'plan'` from the VS Code catalog left TypeScript compiling
+		// (the field is optional), chatPanel's `slash.def.mode ?? mode` falling
+		// back to the picker, VS Code's /plan silently reverting to the full
+		// menu including sandbox_exec -- and this test green. One deleted line
+		// reopened the defect db2c2b2 was written to close.
+		if v.mode != g.Mode {
+			t.Errorf("/%s MODE differs -- mode goes on the wire and decides which tools the "+
+				"daemon registers, so drift here means one client enforces a restriction the "+
+				"other only describes:\n  Go:      %q\n  VS Code: %q", g.Name, g.Mode, v.mode)
 		}
 		// The preamble is the one that is not cosmetic: it is prepended to the
 		// user's text and sent to the model, so drift here means the same
