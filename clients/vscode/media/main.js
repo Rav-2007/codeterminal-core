@@ -1040,8 +1040,21 @@
       line.textContent = `line ${r.line}: ${r.reason}`;
       el.appendChild(line);
     }
-    messages.appendChild(el);
-    scrollToBottom();
+    // transcriptEl, and the scroll idiom used by every other renderer in this
+    // file (see appendMessage and the answer container).
+    //
+    // THIS SAID `messages.appendChild(el); scrollToBottom();` UNTIL 2026-09-02,
+    // and neither name exists anywhere in this file -- so every call threw
+    // ReferenceError and the user saw nothing. The feature's own reason for
+    // existing, in daemonClient.ts, is that a reply whose every edit was
+    // malformed "sends rejections and no proposals, which is the case where the
+    // user is most owed an explanation and previously got silence". The bug
+    // delivered exactly the silence the feature was built to end.
+    //
+    // Found by turning on checkJs for this file, which had never been
+    // typechecked or linted by anything.
+    transcriptEl.appendChild(el);
+    transcriptEl.scrollTop = transcriptEl.scrollHeight;
   }
 
   // clearEditProposal removes a still-pending (not yet applied/skipped)

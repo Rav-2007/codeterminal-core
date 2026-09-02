@@ -8,7 +8,7 @@
 
 MODULES := daemon editapply proxy helper protocol clients/tui
 
-.PHONY: help hooks hookcheck test race fmt vet crossvet lint ratchet errcheck fuzz check docs drill soak eval evalguard
+.PHONY: help hooks hookcheck test race fmt vet crossvet lint ratchet errcheck fuzz check docs webview drill soak eval evalguard
 
 help:
 	@echo "make hooks    install the tracked git hooks (.githooks/) -- do this once"
@@ -161,7 +161,7 @@ evalguard:
 # docs is last and costs ~1s. It is in `check` rather than in a docs-only job
 # because a rename breaks links in the same commit that makes it, and that is
 # the only moment anyone can fix it cheaply.
-check: hookcheck fmt vet crossvet race lint ratchet errcheck evalguard supplychain docs
+check: hookcheck fmt vet crossvet race lint ratchet errcheck evalguard supplychain webview docs
 	@echo "check: all gates green"
 
 # Two supply-chain gates. actions-pinned is sub-second and offline;
@@ -178,6 +178,17 @@ supplychain:
 	@./scripts/go-toolchain-pinned.sh --self-test
 	@./scripts/go-toolchain-pinned.sh
 	@./scripts/govulncheck.sh
+
+# The VS Code extension's two offline gates. Node only, no VS Code download, so
+# they belong in the fast local gate rather than only in CI -- the person who
+# breaks the webview is at a terminal, not reading a workflow log.
+#
+# webview-check is here because media/main.js, which renders the tool-approval
+# panel and the edit-approval flow, was checked by NOTHING until 2026-09-02. The
+# first run of it found a ReferenceError that had shipped.
+webview:
+	@cd clients/vscode && node scripts/verify-vsix.js --self-test
+	@cd clients/vscode && node scripts/webview-check.js
 
 docs:
 	@./scripts/docs-links.sh

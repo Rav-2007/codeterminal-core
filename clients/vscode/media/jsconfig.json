@@ -1,0 +1,35 @@
+{
+  "//": [
+    "TYPECHECKING FOR THE FILE THAT RENDERS THE SECURITY DECISIONS.",
+    "",
+    "media/main.js is 1,776 lines -- 28% of this extension -- and until",
+    "2026-09-02 it had no static analysis of any kind: it sits outside the root",
+    "tsconfig's `include`, so tsc never saw it, and there was no ESLint config",
+    "in the repository at all.",
+    "",
+    "That is where the approval panel lives. On 2026-09-02 the panel was found",
+    "to branch on `req.confined` alone and never read `req.reaches_network`, so",
+    "a VS Code user approving web_search was shown the third-party subprocess",
+    "warning instead of being told their words were leaving the machine. The",
+    "wire type had never declared the field either. A field-name typo in this",
+    "file fails silently at runtime and nothing could flag it.",
+    "",
+    "checkJs is the smallest control that would have caught the type half.",
+    "strict is deliberately NOT enabled here: this is a browser script written",
+    "without annotations, and turning on strict null checks would produce",
+    "hundreds of findings on day one, which is how a gate gets switched off.",
+    "The bar is 'no undefined symbols, no wrong arity, no obvious type errors',",
+    "and it can be raised once it is green and staying green."
+  ],
+  "compilerOptions": {
+    "target": "ES2020",
+    "lib": ["ES2020", "DOM"],
+    "checkJs": true,
+    "allowJs": true,
+    "noEmit": true,
+    "strict": false,
+    "noImplicitAny": false,
+    "moduleResolution": "node"
+  },
+  "include": ["*.js", "*.d.ts"]
+}

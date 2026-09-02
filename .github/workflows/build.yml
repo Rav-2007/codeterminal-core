@@ -547,6 +547,13 @@ jobs:
         run: npm run verify:vsix:selftest
         working-directory: clients/vscode
 
+      # media/main.js is 28% of this extension and renders the security
+      # decisions; nothing checked it until 2026-09-02, and switching checkJs on
+      # immediately found a live ReferenceError in the edit-rejection renderer.
+      - name: Webview static analysis
+        run: npm run check:webview
+        working-directory: clients/vscode
+
       - name: Compile (tsc)
         run: npm run compile
         working-directory: clients/vscode
