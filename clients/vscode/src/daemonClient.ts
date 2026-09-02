@@ -249,10 +249,24 @@ export interface TokenResponse {
 // ordinary subprocess with the user's full access, and this approval is the
 // only thing in front of it.
 //
+// reaches_network and launches_subprocess are the OTHER TWO capability
+// questions, and this interface declared neither until 2026-09-02 -- which is
+// the whole reason media/main.js never rendered them. The daemon has sent
+// reaches_network since the flag existed, protocol.go has said all along that
+// "clients must render it as plainly as they render Confined: a user deciding
+// about a search has to be told a search is leaving", and a VS Code user
+// approving web_search was shown the third-party subprocess warning instead.
+// A field absent from the type is a fact the client cannot use.
+//
+// The three answer three different questions and none substitutes for another:
+// confined is "what can it change here", reaches_network is "where does it go",
+// launches_subprocess is "what does it start on this machine".
+//
 // read_only_hint and destructive are the SERVER'S OWN claims about its tool.
 // They are for styling only and are NEVER a gate -- letting a server's
 // self-description lower the bar would make consent optional for any server
-// willing to lie about itself.
+// willing to lie about itself. The three capability fields above are not in
+// that category: the daemon resolves them.
 export interface ToolApprovalRequest {
   call_id: string;
   server: string;
@@ -261,6 +275,8 @@ export interface ToolApprovalRequest {
   arguments_sha256: string;
   lane: string;
   confined: boolean;
+  reaches_network?: boolean;
+  launches_subprocess?: boolean;
   read_only_hint?: boolean;
   destructive?: boolean;
   iteration: number;

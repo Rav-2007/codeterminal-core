@@ -29,7 +29,24 @@ function mainJsCode(): string {
   return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
 }
 
+function daemonClientSource(): string {
+  return fs.readFileSync(path.join(__dirname, '..', '..', '..', 'src', 'daemonClient.ts'), 'utf8');
+}
+
 suite('tool approval capability flags', () => {
+  test('the wire type declares every capability field the daemon sends', () => {
+    const src = daemonClientSource();
+    // The type is the reason the panel could not render reaches_network: a
+    // field absent from the interface is a fact the client cannot use, however
+    // faithfully the daemon sends it.
+    for (const field of ['confined', 'reaches_network', 'launches_subprocess']) {
+      assert.ok(
+        new RegExp(`\\b${field}\\??:\\s*boolean`).test(src),
+        `ToolApprovalRequest in daemonClient.ts does not declare ${field}`
+      );
+    }
+  });
+
   test('every capability field on the wire is branched on', () => {
     const code = mainJsCode();
     for (const field of ['req.confined', 'req.reaches_network', 'req.launches_subprocess']) {
