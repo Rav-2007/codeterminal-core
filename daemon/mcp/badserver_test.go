@@ -12,6 +12,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // THE ADVERSARIAL HALF of stdioclient_test.go.
@@ -476,6 +477,101 @@ func TestAToolNameWithControlCharactersIsNotAdvertised(t *testing.T) {
 	if len(tools) != 0 {
 		t.Errorf("the fixture offers exactly one tool and its name is the payload, so nothing "+
 			"should have been advertised; got %d", len(tools))
+	}
+}
+
+// THE TWIN OF TestEvilToolNameIsRefused, added 2026-09-02 because it was not
+// there.
+//
+// The name test's own fixture comment argues that a tool name reaches the
+// approval prompt "BEFORE they consent, on the exact screen carrying the NOT
+// SANDBOXED warning". Every word of that became true of the DESCRIPTION when
+// ToolApprovalRequest started carrying it, and the description was copied out
+// of the server's reply with no validation whatsoever -- one field over from
+// ValidateToolName, in the same struct.
+//
+// Unlike the name, the tool is KEPT: a description is prose, not an identifier,
+// so it is degraded rather than allowed to cost the user a working server. What
+// must not survive is anything that moves a terminal cursor, and anything long
+// enough to matter to a context window.
+func TestEvilToolDescriptionIsSanitisedButTheToolSurvives(t *testing.T) {
+	client, err := connectBad(t, "evil-description")
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+
+	tools, err := client.ListTools(context.Background())
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	if len(tools) != 1 {
+		t.Fatalf("got %d tools, want 1 -- a hostile DESCRIPTION must not cost the user the tool", len(tools))
+	}
+
+	desc := tools[0].Description
+	for _, bad := range []struct {
+		what string
+		has  func(string) bool
+	}{
+		{"ESC (0x1b), which starts every ANSI sequence", func(s string) bool { return strings.ContainsRune(s, 0x1b) }},
+		{"carriage return, which overwrites the line", func(s string) bool { return strings.ContainsRune(s, '\r') }},
+		{"a lone 0x9b C1 introducer", func(s string) bool { return strings.Contains(s, "\x9b") }},
+	} {
+		if bad.has(desc) {
+			t.Errorf("the advertised description still carries %s.\n"+
+				"  It is printed to the user at the approval prompt, directly below the\n"+
+				"  NOT SANDBOXED warning, and can therefore overwrite it.\n  got: %q", bad.what, desc)
+		}
+	}
+
+	// TWO CEILINGS, AND THE LITERAL ONE IS THE POINT.
+	//
+	// Checking only against maxToolDescriptionBytes would read the constant it
+	// is meant to be policing: raise the constant to a gigabyte and the
+	// assertion passes while nothing is bounded at all. Verified -- that neuter
+	// was NOT caught until this literal was added. The literal encodes the
+	// requirement rather than the implementation: this text is printed to a
+	// human at a consent prompt and sent to the model on every request, so a
+	// few kilobytes is the outer limit of defensible whatever the constant says.
+	const absoluteCeiling = 4096
+	if len(desc) > absoluteCeiling {
+		t.Errorf("description is %d bytes, past the %d-byte ceiling this text can ever justify: "+
+			"it is printed at a consent prompt and sent to the model every request", len(desc), absoluteCeiling)
+	}
+	if len(desc) > maxToolDescriptionBytes+64 {
+		t.Errorf("description is %d bytes, past the %d-byte bound plus its truncation marker",
+			len(desc), maxToolDescriptionBytes)
+	}
+	if !strings.Contains(desc, "Reads a file.") {
+		t.Errorf("sanitising destroyed the legitimate text; a degraded description must still inform: %q", desc)
+	}
+}
+
+func TestSanitiseToolDescription(t *testing.T) {
+	// Text survives, including the whitespace a paragraph needs.
+	if got := SanitiseToolDescription("line one\n\ttabbed"); got != "line one\n\ttabbed" {
+		t.Errorf("SanitiseToolDescription mangled ordinary text: %q", got)
+	}
+	// Every byte that can steer a terminal goes.
+	for _, in := range []string{"a\x1bb", "a\rb", "a\x00b", "a\x7fb", "a\x9bb"} {
+		got := SanitiseToolDescription(in)
+		if got != "ab" {
+			t.Errorf("SanitiseToolDescription(%q) = %q, want %q", in, got, "ab")
+		}
+	}
+	// Invalid UTF-8 that is NOT a C1 introducer is passed through unchanged
+	// rather than re-encoded -- toolresult.go records why: strings.Map turns
+	// each such byte into U+FFFD and triples the size, after the bound.
+	if got := SanitiseToolDescription("a\xffb"); got != "a\xffb" {
+		t.Errorf("SanitiseToolDescription re-encoded an invalid byte: %q", got)
+	}
+	// The bound holds, and cuts on a rune boundary.
+	long := SanitiseToolDescription(strings.Repeat("é", maxToolDescriptionBytes))
+	if len(long) > maxToolDescriptionBytes+64 {
+		t.Errorf("bounded description is %d bytes", len(long))
+	}
+	if !utf8.ValidString(long) {
+		t.Error("truncation split a multi-byte rune")
 	}
 }
 

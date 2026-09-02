@@ -439,3 +439,90 @@ func SortTools(tools []Tool) {
 		return tools[i].Name < tools[j].Name
 	})
 }
+
+// maxToolDescriptionBytes bounds one advertised tool description.
+//
+// Generous on purpose: the daemon's own built-ins are held to 320 characters by
+// a test whose reason is that "a consent prompt reads it in full, so it has to
+// stay one short paragraph rather than an essay", and this is three times that.
+// A third-party server writing an ordinary paragraph is unaffected; one writing
+// a megabyte is not spending the user's context window on every request for the
+// rest of the turn.
+const maxToolDescriptionBytes = 1024
+
+// SanitiseToolDescription makes a third-party tool description safe for the two
+// places it is read.
+//
+// WHY THIS EXISTS, AND WHY IT DID NOT. ValidateToolName, thirty lines up,
+// refuses a NAME containing a control byte, invalid UTF-8, or a C1 introducer,
+// and its own error text says why: it "would be rendered into the terminal of a
+// user deciding whether to approve it". The DESCRIPTION -- longer, free-form,
+// and read by the same eyes -- was copied out of the server's reply verbatim
+// (stdioclient.go) and validated by nothing at all. One field over, same
+// struct, same file, opposite treatment.
+//
+// It was survivable while the description only reached the model. It stopped
+// being survivable when F-01's fix routed it to the human: agentloop.go sets
+// ToolApprovalRequest.Detail from it, and the TUI renders that with
+// lipgloss, which wraps text and does not strip it -- immediately below the
+// line reading "NOT SANDBOXED: this is a separate program running with your
+// full access." A server that can write ANSI into its own description can move
+// the cursor back over that warning and print something friendlier. The audit's
+// whole thesis is that the human is the security control; this hands the
+// attacker the control's display.
+//
+// Nothing re-scored F-04 when that fix shipped, which is the more useful lesson:
+// a fix that adds a CONSUMER changes the severity of every open finding about
+// the data it consumes.
+//
+// SANITISED, NOT REJECTED -- deliberately different from ValidateToolName. A
+// name is an identifier: the model calls it, the audit log records it, the
+// grant key is built from it, so a name that is not what it appears to be
+// poisons all three and the tool must go. A description is prose whose only job
+// is to inform. Dropping the dangerous bytes keeps a useful tool and removes
+// the weapon; refusing the tool would cost the user a working server because
+// its author put a smart quote in the wrong place.
+//
+// Bytes are copied, never re-encoded, for the reason
+// daemon/toolresult.go:stripControlCharacters records at length: strings.Map
+// turns every invalid byte into U+FFFD and triples its size. \n and \t survive
+// as text; \r does not, because alone it returns the cursor to the start of the
+// line and overwrites what is there.
+func SanitiseToolDescription(desc string) string {
+	var b strings.Builder
+	b.Grow(len(desc))
+
+	for i := 0; i < len(desc); {
+		r, size := utf8.DecodeRuneInString(desc[i:])
+
+		// An invalid byte decodes as RuneError with size 1. Passed through as
+		// itself, except a lone C1 introducer: 0x9b is what a terminal reads as
+		// CSI and it is not valid UTF-8, so a rune-level test never sees it.
+		if r == utf8.RuneError && size == 1 {
+			if desc[i] < 0x80 || desc[i] > 0x9f {
+				b.WriteByte(desc[i])
+			}
+			i++
+			continue
+		}
+
+		if r != '\n' && r != '\t' && (r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f)) {
+			i += size
+			continue
+		}
+		b.WriteString(desc[i : i+size])
+		i += size
+	}
+
+	out := b.String()
+	if len(out) > maxToolDescriptionBytes {
+		// Cut on a rune boundary so the truncation cannot splice a partial
+		// rune into a consent prompt.
+		cut := maxToolDescriptionBytes
+		for cut > 0 && !utf8.RuneStart(out[cut]) {
+			cut--
+		}
+		out = out[:cut] + "… [description truncated by Mochiii]"
+	}
+	return out
+}

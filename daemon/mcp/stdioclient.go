@@ -337,9 +337,12 @@ func (c *StdioClient) ListTools(ctx context.Context) ([]Tool, error) {
 			continue
 		}
 		tools = append(tools, Tool{
-			Server:       c.name,
-			Name:         t.Name,
-			Description:  t.Description,
+			Server: c.name,
+			Name:   t.Name,
+			// SANITISED, NOT COPIED. This string is read by the model on
+			// every request AND printed to the human at the approval prompt
+			// (ToolApprovalRequest.Detail). See SanitiseToolDescription.
+			Description:  SanitiseToolDescription(t.Description),
 			Schema:       schema,
 			Lane:         protocol.LaneThirdParty,
 			Confined:     false,
