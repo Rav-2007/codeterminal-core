@@ -133,9 +133,156 @@ const MUST_NOT_MATCH = [
   [/\.vsix$/, 'nests a previously built package inside this one'],
   [/^extension\/media\/logo\.jpg$/, 'ships an unreferenced 147 KB image'],
   [/^extension\/scripts\//, 'ships our build/verify tooling, which runs before packaging'],
+
+  // --- CREDENTIALS, by name. Added 2026-09-02. ---
+  //
+  // Every pattern above this point is filename HYGIENE -- source, maps, tests,
+  // node_modules. Not one of them was about a secret, and that was confirmed by
+  // execution rather than inferred: a .env planted in clients/vscode/ is listed
+  // by `vsce ls`, and all twelve patterns above miss `extension/.env`,
+  // `extension/daemon/.env`, `extension/secrets.json` and `extension/id_rsa`.
+  //
+  // .vscodeignore now excludes these so they never enter the archive. This list
+  // is the second half, and the two are not redundant: .vscodeignore is a file
+  // someone edits, and its own header records that creating it silently
+  // disabled the .gitignore fallback that had been excluding .env. A gate that
+  // opens the box has to check for the worst thing that could be in it.
+  [/(^|\/)\.env($|\.)/, 'ships an environment file, which is where credentials live'],
+  [/\.(pem|key|p12|pfx)$/, 'ships a private key or certificate'],
+  [/(^|\/)id_(rsa|ecdsa|ed25519)/, 'ships an SSH private key'],
+  [/(^|\/)(credentials|service-account[^/]*)\.json$/, 'ships a service-account credential'],
 ];
 
+// CREDENTIAL-SHAPED CONTENT, which is the half a filename list cannot do.
+//
+// A secret does not have to be in a file called .env. It can be pasted into a
+// config, baked into a binary by a build that read the environment, or left in
+// a fixture. These patterns are deliberately high-signal -- each is a vendor's
+// own key format, so a match is close to proof rather than a hint, and the
+// noise cost of scanning a 19 MB Go binary stays near zero.
+const SECRET_PATTERNS = [
+  [/sk-or-v1-[A-Za-z0-9]{32,}/, 'an OpenRouter API key'],
+  [/sk-[A-Za-z0-9]{32,}/, 'an OpenAI-style API key'],
+  [/eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\./, 'a JWT (Supabase keys are JWTs)'],
+  [/AKIA[0-9A-Z]{16}/, 'an AWS access key id'],
+  [/-----BEGIN [A-Z ]*PRIVATE KEY-----/, 'a private key'],
+  [/ghp_[A-Za-z0-9]{30,}/, 'a GitHub personal access token'],
+  [/xox[baprs]-[A-Za-z0-9-]{10,}/, 'a Slack token'],
+];
+
+// scanForSecrets reads every entry and reports the first match per pattern.
+//
+// The MATCHED TEXT IS NEVER PRINTED. This output goes to a CI log, which is a
+// less private place than the archive it is protecting, and a gate that prints
+// the secret it found has moved the leak rather than closed it. The entry name
+// and the kind of secret are enough to act on.
+function scanForSecrets(buf, entries) {
+  const found = [];
+  for (const entry of entries) {
+    if (entry.name.endsWith('/')) continue;
+    let content;
+    try {
+      content = readEntry(buf, entry).toString('latin1');
+    } catch {
+      continue; // an unreadable entry is reported by the checks above, not here
+    }
+    for (const [re, what] of SECRET_PATTERNS) {
+      if (re.test(content)) {
+        found.push(`SECRET   ${entry.name} contains ${what}`);
+      }
+    }
+  }
+  return found;
+}
+
+// --self-test proves THIS GATE can still fail, using inputs whose answer is
+// known. It follows the convention scripts/docs-claims.sh and
+// scripts/go-toolchain-pinned.sh already use in this repo: a checker that only
+// ever sees passing input cannot demonstrate it is able to reject anything.
+//
+// SCOPE, STATED HONESTLY. It exercises the two CONSTANTS a real run depends on
+// -- the credential filename patterns and the secret content patterns -- not
+// the zip plumbing, which every real invocation already exercises. The point is
+// that neutering either list turns this red.
+function selfTest() {
+  const failures = [];
+
+  // (a) credential filenames must be refused. Every one of these was MISSED by
+  // the twelve patterns that existed before 2026-09-02, verified by running
+  // them; that is why this case exists.
+  const mustReject = [
+    'extension/.env',
+    'extension/.env.local',
+    'extension/daemon/.env',
+    'extension/id_rsa',
+    'extension/certs/server.pem',
+    'extension/credentials.json',
+  ];
+  for (const name of mustReject) {
+    if (!MUST_NOT_MATCH.some(([re]) => re.test(name))) {
+      failures.push(`SELF-TEST: ${name} would be accepted into the package`);
+    }
+  }
+
+  // (b) ordinary shipped files must NOT be refused, or the gate is merely
+  // always-red and someone will route around it.
+  const mustAccept = [
+    'extension/out/extension.js',
+    'extension/media/main.js',
+    'extension/daemon/codeterminal-daemon',
+    'extension/daemon/models.json',
+    'extension/package.json',
+  ];
+  for (const name of mustAccept) {
+    const hit = MUST_NOT_MATCH.find(([re]) => re.test(name));
+    if (hit) {
+      failures.push(`SELF-TEST: ${name} is wrongly refused by ${hit[0]}`);
+    }
+  }
+
+  // (c) the content scan must fire on a secret that is NOT in a file named
+  // .env -- the half a filename list structurally cannot do.
+  const secrets = [
+    'OPENROUTER_API_KEY=sk-or-v1-' + 'a'.repeat(40),
+    '{"token":"eyJhbGciOiJIUzI1NiJ9.eyJyb2xlIjoic2VydmljZV9yb2xlIn0.sig"}',
+    'AKIAIOSFODNN7EXAMPLE',
+    '-----BEGIN RSA PRIVATE KEY-----',
+  ];
+  for (const text of secrets) {
+    if (!SECRET_PATTERNS.some(([re]) => re.test(text))) {
+      failures.push(`SELF-TEST: a credential-shaped string was not detected: ${text.slice(0, 24)}...`);
+    }
+  }
+
+  // (d) and it must not fire on ordinary code, or a real package can never ship.
+  const innocent = [
+    'const sk = 1; // short name',
+    'function eyJson() { return {}; }',
+    'https://example.com/path?query=value',
+    'export const KEY_PREFIX_LEN = 8;',
+  ];
+  for (const text of innocent) {
+    const hit = SECRET_PATTERNS.find(([re]) => re.test(text));
+    if (hit) {
+      failures.push(`SELF-TEST: ordinary text matched ${hit[0]}: ${text}`);
+    }
+  }
+
+  if (failures.length > 0) {
+    console.error('verify-vsix: SELF-TEST FAILED');
+    for (const f of failures) console.error('  ' + f);
+    process.exit(1);
+  }
+  console.log(`verify-vsix: self-test ok (${mustReject.length} credential names refused, ` +
+    `${mustAccept.length} shipped paths accepted, ${secrets.length} secret shapes detected, ` +
+    `${innocent.length} innocent strings ignored)`);
+  process.exit(0);
+}
+
 function main() {
+  if (process.argv[2] === '--self-test') {
+    selfTest();
+  }
   const file = process.argv[2];
   if (!file) {
     console.error('usage: verify-vsix.js <file.vsix>');
@@ -162,6 +309,8 @@ function main() {
       failures.push(`PRESENT  ${hits.length} file(s) matching ${re} — ${why}\n           e.g. ${hits.slice(0, 3).join(', ')}`);
     }
   }
+
+  failures.push(...scanForSecrets(buf, entries));
 
   // The manifest must not be marked private, and must carry the fields the
   // marketplace listing is built from.

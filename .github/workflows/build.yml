@@ -538,6 +538,15 @@ jobs:
       - name: Install
         run: npm ci
         working-directory: clients/vscode
+      # The packaging gate's own self-test, BEFORE the suite. It costs
+      # milliseconds and it is the only thing that proves verify-vsix.js can
+      # still refuse an archive -- which matters because on 2026-09-02 that gate
+      # was found to have twelve patterns, none of them about a credential, and
+      # a planted .env was confirmed by execution to reach `vsce ls`.
+      - name: Packaging gate self-test
+        run: npm run verify:vsix:selftest
+        working-directory: clients/vscode
+
       - name: Compile (tsc)
         run: npm run compile
         working-directory: clients/vscode

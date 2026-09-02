@@ -38,6 +38,36 @@ scripts/**
 # --- previously built packages, so a rebuild never nests one inside another ---
 *.vsix
 
+# --- CREDENTIALS. Nothing that could hold a secret, ever. ---
+#
+# ADDED 2026-09-02 after this was CONFIRMED BY EXECUTION: a .env dropped in this
+# directory is listed by `vsce ls`, i.e. it ships to every marketplace user, and
+# scripts/verify-vsix.js does not catch it -- all twelve of its patterns are
+# filename hygiene (source, maps, tests, node_modules) and none of them is about
+# a secret.
+#
+# THE TRAP IS AT THE TOP OF THIS FILE. The header explains that vsce's fallback
+# is .gitignore. That is true only while this file does NOT exist. It exists, so
+# .gitignore no longer applies to packaging AT ALL -- and .gitignore is exactly
+# where `.env` was excluded. Creating this file to fix one leak silently
+# disabled the rule protecting against a worse one.
+#
+# proxy/.env holds SUPABASE_SERVICE_ROLE_KEY, the BYPASSRLS credential. A
+# developer putting a .env here for local daemon config is an ordinary thing to
+# do, and it is one `npm run package` away from publishing it.
+.env
+.env.*
+**/.env
+**/.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+**/credentials.json
+**/service-account*.json
+
 # --- unused assets ---
 # logo.jpg has no reference anywhere in src/ or media/main.js: logo.png is the
 # webview logo and icon.png is the marketplace tile. It was 147 KB of the last
