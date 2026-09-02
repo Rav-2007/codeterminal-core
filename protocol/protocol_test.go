@@ -41,6 +41,9 @@ func TestWireTags(t *testing.T) {
 		{"StatusRequest", StatusRequest{}, []string{"protocol_version", "status"}},
 		{"ToolApprovalRequest", ToolApprovalRequest{}, []string{"call_id", "server", "tool", "arguments",
 			"arguments_sha256", "lane", "confined", "read_only_hint", "destructive", "iteration", "max_iterations"}},
+		// launches_subprocess and reaches_network are omitempty, so the zero
+		// value above cannot carry them; TestApprovalCapabilityFlagsAreOnTheWire
+		// asserts on a populated request instead.
 		{"ToolApprovalResponse", ToolApprovalResponse{}, []string{"protocol_version", "approval", "call_id",
 			"arguments_sha256", "decision"}},
 		{"ToolActivity", ToolActivity{}, []string{"call_id", "server", "tool", "phase", "detail",

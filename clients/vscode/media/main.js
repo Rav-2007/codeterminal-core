@@ -1126,7 +1126,31 @@
 
     const lane = document.createElement('div');
     lane.id = laneId;
-    if (req.confined) {
+    // THREE QUESTIONS, THREE FIELDS, IN THE ORDER THE TUI ASKS THEM.
+    //
+    // This panel branched on `confined` alone until 2026-09-02, so it answered
+    // one of the three. protocol.go has said since ReachesNetwork was added
+    // that "clients must render it as plainly as they render Confined: a user
+    // deciding about a search has to be told a search is leaving" -- and this
+    // client never did. A VS Code user approving web_search was shown "NOT
+    // SANDBOXED: this is a separate program running with your full access",
+    // which is wrong twice over: web_search is first-party and changes nothing
+    // locally, and the one thing that actually happens -- their words going to
+    // a third party over the internet -- was not mentioned at all. The TUI got
+    // this right and the panel drifted from it.
+    if (req.reaches_network) {
+      lane.className = 'approval-lane unconfined';
+      lane.textContent =
+        'LEAVES YOUR MACHINE: this sends the arguments above to a third party over the internet ' +
+        'and brings a reply back into the conversation. CodeTerminal strips secrets on the way out ' +
+        'and treats whatever comes back as untrusted data — but it cannot vouch for the far end.';
+    } else if (req.launches_subprocess) {
+      lane.className = 'approval-lane unconfined';
+      lane.textContent =
+        'STARTS ANOTHER PROGRAM: this runs a language server from your PATH against this repository — ' +
+        'gopls, tsserver or pyright. CodeTerminal ships the tool but not that program. It reads ' +
+        'configuration out of the project you have open, so a repository you do not trust can influence it.';
+    } else if (req.confined) {
       lane.className = 'approval-lane confined';
       lane.textContent =
         'This tool ships with CodeTerminal. Anything it changes goes through the same review you use for edits.';

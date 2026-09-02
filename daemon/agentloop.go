@@ -1044,10 +1044,15 @@ func (s *Server) resolveExecutable(
 		Lane:            spec.Lane,
 		Confined:        spec.Confined,
 		ReachesNetwork:  spec.ReachesNetwork,
-		ReadOnlyHint:    spec.ReadOnlyHint,
-		Destructive:     spec.Destructive,
-		Iteration:       turn.iteration,
-		MaxIterations:   bud.maxIterations,
+		// The third capability question. It drove the Confined stamp and
+		// plan-mode denial from the day it was added and reached no client, so
+		// the prompt could say "not sandboxed" about a go-to-definition call
+		// and not say why.
+		LaunchesSubprocess: spec.LaunchesSubprocess,
+		ReadOnlyHint:       spec.ReadOnlyHint,
+		Destructive:        spec.Destructive,
+		Iteration:          turn.iteration,
+		MaxIterations:      bud.maxIterations,
 		// THE TOOL'S OWN DESCRIPTION, at the moment of consent.
 		//
 		// It was written and never shown. sandbox_exec's description is the one

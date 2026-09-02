@@ -510,12 +510,30 @@ type ToolApprovalRequest struct {
 	// Confined answers "what can it change here"; this answers "where does it
 	// go". Clients must render it as plainly as they render Confined: a user
 	// deciding about a search has to be told a search is leaving.
-	ReachesNetwork bool   `json:"reaches_network,omitempty"`
-	ReadOnlyHint   bool   `json:"read_only_hint,omitempty"`
-	Destructive    bool   `json:"destructive,omitempty"`
-	Iteration      int    `json:"iteration"`
-	MaxIterations  int    `json:"max_iterations"`
-	Detail         string `json:"detail,omitempty"`
+	ReachesNetwork bool `json:"reaches_network,omitempty"`
+	// LaunchesSubprocess states that running this call starts another program
+	// on this machine.
+	//
+	// THE THIRD QUESTION, AND IT EARNS ITS OWN FIELD FOR THE REASON THE SECOND
+	// ONE DID. Confined answers "what can it change here"; ReachesNetwork
+	// answers "where does it go"; this answers "what does it start". They are
+	// independent: query_compiler_definition changes nothing, sends nothing to
+	// the internet, and spawns a language server that reads project-supplied
+	// configuration -- so both existing fields describe it accurately and
+	// neither describes the thing worth knowing.
+	//
+	// It existed inside the daemon before it existed here. mcp.Tool gained the
+	// flag, and it correctly drove the Confined stamp and plan-mode denial, so
+	// the consent screen began saying "not sandboxed" about a go-to-definition
+	// call and had no way to say WHY. Clients must render it as plainly as they
+	// render the other two: a user is entitled to know that approving a lookup
+	// starts gopls or tsserver against this repository.
+	LaunchesSubprocess bool   `json:"launches_subprocess,omitempty"`
+	ReadOnlyHint       bool   `json:"read_only_hint,omitempty"`
+	Destructive        bool   `json:"destructive,omitempty"`
+	Iteration          int    `json:"iteration"`
+	MaxIterations      int    `json:"max_iterations"`
+	Detail             string `json:"detail,omitempty"`
 }
 
 // Phases reported on ToolActivity.Phase.

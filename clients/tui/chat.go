@@ -1824,6 +1824,18 @@ func renderApprovalPanel(req protocol.ToolApprovalRequest) string {
 			"over the internet and brings a reply back into the conversation."))
 		b.WriteString("\n" + helpStyle.Render("Mochiii strips secrets on the way out and treats whatever comes back as untrusted data, "+
 			"never as instructions — but it cannot vouch for the far end."))
+	case req.LaunchesSubprocess:
+		// BEFORE Confined and before the default, because neither of those
+		// sentences is the one this user needs. "Ships with Mochiii" is true
+		// and irrelevant -- the risk is not our code, it is the program our
+		// code starts. "A separate program running with your full access" is
+		// also true, and reads as though a third-party MCP server were being
+		// approved, which sends the user looking for a server they never
+		// configured.
+		b.WriteString("\n" + diffRemovedStyle.Render("STARTS ANOTHER PROGRAM: this runs a language server from your "+
+			"PATH against this repository — gopls, tsserver or pyright."))
+		b.WriteString("\n" + helpStyle.Render("Mochiii ships the tool but not that program. It reads configuration out of the "+
+			"project you have open (a tsconfig.json can load plugins), so a repository you do not trust can influence it."))
 	case req.Confined:
 		b.WriteString("\n" + helpStyle.Render("this tool ships with Mochiii; anything it changes goes through the same review you use for edits"))
 	default:
