@@ -69,9 +69,14 @@ if [ "${1:-}" = "--self-test" ]; then
 
   # Every invocation below runs through this, so a new env knob cannot be added
   # to the checker and silently left out of half the cases.
+  # A fifth fixture register. Defaults to an agreeing one so the existing cases
+  # keep testing what they were written to test; case (i) overrides it.
+  echo '| x | entry point — **taken: D1** |' > "$tmp/handoff.md"
+
   st() {
     DOCS_CLAIMS_OPEN_ITEMS="${1}" DOCS_CLAIMS_BACKLOG="${2}" DOCS_CLAIMS_README="${3}" \
-    DOCS_CLAIMS_PACK="${4}" DOCS_CLAIMS_FLOOR=2 DOCS_CLAIMS_PACK_FLOOR=2 \
+    DOCS_CLAIMS_PACK="${4}" DOCS_CLAIMS_HANDOFF="${5:-$tmp/handoff.md}" \
+    DOCS_CLAIMS_FLOOR=2 DOCS_CLAIMS_PACK_FLOOR=2 \
       "$0" >/dev/null 2>&1
   }
 
@@ -155,6 +160,25 @@ if [ "${1:-}" = "--self-test" ]; then
     exit 1
   fi
 
+  # (i) THE FOURTH REGISTER. docs/HANDOFF.md makes the founder-decision claim
+  # too and was not compared when this check first shipped -- it was stale in
+  # exactly the way the other three were, on the day they were corrected. It is
+  # the document docs/README.md ranks first, so a reader meets its version of
+  # the claim before any of the others.
+  echo '| x | entry point — **taken: none** |' > "$tmp/handoff-stale.md"
+  if st "$tmp/items.md" "$tmp/backlog.md" "$tmp/readme.md" "$tmp/pack.md" "$tmp/handoff-stale.md"; then
+    echo "docs-claims: SELF-TEST FAIL -- a stale docs/HANDOFF.md was accepted."
+    echo "  It is the fourth register and the first one a new reader opens."
+    exit 1
+  fi
+
+  # (j) and a missing marker there must fail rather than skip, same as the rest.
+  echo '| x | entry point, no marker |' > "$tmp/handoff-nomarker.md"
+  if st "$tmp/items.md" "$tmp/backlog.md" "$tmp/readme.md" "$tmp/pack.md" "$tmp/handoff-nomarker.md"; then
+    echo "docs-claims: SELF-TEST FAIL -- docs/HANDOFF.md with no '**taken:**' marker was skipped."
+    exit 1
+  fi
+
   # (d) the REAL registers must still parse. Checked here with their own
   # hardcoded floors so that deleting the floors above cannot also disable this.
   real=$(DOCS_CLAIMS_FLOOR=1 "$0" --count 2>/dev/null || echo 0)
@@ -164,7 +188,7 @@ if [ "${1:-}" = "--self-test" ]; then
     exit 1
   fi
 
-  echo "docs-claims: self-test ok (8 cases: disagreement, agreement, third register, duplicate ids, both decision directions, missing marker, blind pack parser; $real real items)"
+  echo "docs-claims: self-test ok (10 cases: disagreement, agreement, third register, duplicate ids, both decision directions, missing marker, blind pack parser, stale fourth register, its missing marker; $real real items)"
   exit 0
 fi
 
@@ -389,7 +413,29 @@ fi
 
 pack_taken=$(printf '%s\n' "$pack_parsed" | awk '$2 == "taken" { print $1 }' | sort -V | tr '\n' ' ' | sed 's/ $//')
 
-for reg in "$BACKLOG" "$README" "$OPEN_ITEMS"; do
+# FOUR REGISTERS, NOT THREE, and the fourth is the one that matters most.
+#
+# This check shipped on 2026-09-02 comparing BACKLOG.md, docs/README.md and
+# docs/OPEN_ITEMS.md -- the three files whose founder-decision claims had gone
+# stale, corrected in the same commit. docs/HANDOFF.md makes the same claim, was
+# equally stale ("D4 taken 2026-07-27, seven still open"), and was not in the
+# list, because the list was built from the three files the drift had been found
+# in rather than from every file that makes the claim.
+#
+# That is the identical defect this whole session has been fixing -- a control
+# applied to the enumerated instances instead of to the property -- committed
+# INSIDE the fix for it, the same day. And HANDOFF.md is not an incidental
+# fourth: docs/README.md ranks it #1, "The entry point", so it is the first
+# document a new reader opens.
+HANDOFF="${DOCS_CLAIMS_HANDOFF:-docs/HANDOFF.md}"
+if [ ! -f "$HANDOFF" ]; then
+  echo "docs-claims: FAIL -- $HANDOFF does not exist."
+  echo "  It is the entry point named by docs/README.md and one of the four registers"
+  echo "  this checker compares. Restore it, or remove it from this script deliberately."
+  exit 1
+fi
+
+for reg in "$BACKLOG" "$README" "$OPEN_ITEMS" "$HANDOFF"; do
   n_markers=$(grep -c '\*\*taken: ' "$reg" || true)
   if [ "$n_markers" -eq 0 ]; then
     echo "docs-claims: FAIL -- no '**taken: ...**' marker in $reg."
@@ -425,7 +471,7 @@ done
 
 if [ "$claimed" = "$actual_open" ]; then
   echo "docs-claims: BACKLOG.md:$lineno, $README:${readme_no:-?} and $OPEN_ITEMS agree (open: ${actual_open:-none}, $total items checked)"
-  echo "docs-claims: all three registers agree with $PACK (taken: ${pack_taken:-none}, $pack_total decisions checked)"
+  echo "docs-claims: all four registers agree with $PACK (taken: ${pack_taken:-none}, $pack_total decisions checked)"
   exit 0
 fi
 

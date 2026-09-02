@@ -22,7 +22,7 @@ now owned by exactly one document, and this one points at it.
 |---|---|
 | What is still ahead? | [`../BACKLOG.md`](../BACKLOG.md) — forward-looking work only |
 | What bugs are open? | [`OPEN_ITEMS.md`](OPEN_ITEMS.md) — the register, re-derived against source, every entry with a `file:line` and a CONFIRMED / PLAUSIBLE / NOT RUN label |
-| What needs a founder ruling? | [`DECISION_PACK.md`](DECISION_PACK.md) — D1–D8, one page each; **D4 taken 2026-07-27**, seven still open |
+| What needs a founder ruling? | [`DECISION_PACK.md`](DECISION_PACK.md) — D1–D8, one page each; **all eight taken** (D4 on 2026-07-27, the rest on 2026-08-12) and the P3 security gate closed with them. **taken: D1 D2 D3 D4 D5 D6 D7 D8** |
 | What was already done, and why? | [`ARCHIVE/BACKLOG_2026-07.md`](ARCHIVE/BACKLOG_2026-07.md) — 3,839 lines of verbatim record: commit SHAs, verification transcripts, measured numbers |
 
 **Do not add a fifth.** The failure mode this project keeps hitting is a second
@@ -39,13 +39,26 @@ plan without one, it is the current plan.
 
 ## Current state
 
-- **Merged and pushed (2026-08-07).** `ci/cross-go-test` landed on `main` as a
-  fast-forward at `aead295` — 50 commits, a twelve-defect bug hunt. Nothing is
-  unpushed; `main` and `origin/main` are level.
-- **`make check` green** — gofmt, vet, `-race` on all six modules, lint, the
-  coverage ratchet, the errcheck ceiling. VS Code suite 45/45. CI green on
-  `main`: run `31210785353`, 29/30, the one non-green being the retrieval eval,
-  correctly `skipped` because it is gated to `schedule || workflow_dispatch`.
+> **Corrected 2026-09-02, and the correction is structural.** The two bullets
+> below used to quote a `main` SHA, a commit count and a CI run id. Every one of
+> them is a derived fact that goes stale on the next push, and all three had:
+> they named `aead295`/50 commits and run `31210785353` three and a half weeks
+> after both moved. `BACKLOG.md` fixed the same class of rot by deleting its
+> hand-written commit counts and saying to run `git rev-list --count` instead.
+> The same applies here — a document nobody can keep current will not be kept
+> current, so it should not make the claim.
+
+- **`main` is where work lands, by direct fast-forward.** For its current head,
+  the commit count and whether anything is unpushed, ask git:
+  `git log --oneline -1 origin/main` and `git status -sb`. Do not trust a SHA
+  written into a document.
+- **`make check` is the local gate** — gofmt, vet, cross-vet, `-race` on all six
+  modules, lint, the coverage ratchet, the errcheck ceiling, evalguard, the
+  supply-chain gates and the doc gates. CI runs the same ground in three
+  workflows (`build`, `gates`, `retrieval eval`); for their current state, run
+  `gh run list -R Rav-i24/Mochiii --branch main --limit 3` rather than reading a
+  run id here. The scheduled retrieval eval reports `skipped` on a push run,
+  which is correct and not a failure.
 - **The last pass measured the project at ~77% engineering robustness and ~27%
   product readiness.** That split is still the whole story: the code is stronger
   than most shipped commercial software, and nobody outside this machine can
@@ -72,9 +85,24 @@ plan without one, it is the current plan.
   *not* an open-source licence, and that is a constraint on marketplace framing
   rather than a missing file.
 - **Active plan:** [`ULTRA_MASTER_PLAN_2026-08-08.md`](ULTRA_MASTER_PLAN_2026-08-08.md)
-  — packaging. **Blocked on a P0 first:** `/mcp-server` in the VS Code extension
-  executes a binary out of the opened repository (the TUI's identical bug was
-  fixed in `d56e425`; the extension was not carried along).
+  — packaging. Stages 3.0–3.4 are **done**; Stage 3.3 is written but has never
+  fired (no tag pushed); **Stage 3.5 (signing) has not started** and is blocked
+  on the Apple enrolment, which is Tier 0's only remaining item.
+
+  > **Corrected 2026-09-02.** This bullet said the plan was *"Blocked on a P0
+  > first: `/mcp-server` in the VS Code extension executes a binary out of the
+  > opened repository"*. That P0 was closed the day after the sentence was
+  > written — Stage 3.0, `b7e393d`, **two** RCE paths rather than one, both
+  > confirmed by execution in a real Extension Development Host and both
+  > neuter-verified. The plan linked on the line directly above has carried a
+  > ✅ DONE banner on it ever since.
+  >
+  > This is the most expensive stale claim the repository has held. `README.md`
+  > ranks this document **#1, "The entry point"**, so it is the first thing a
+  > new reader opens, and it told them the project was blocked on a live remote
+  > code execution for three and a half weeks after the fix shipped. A register
+  > that overstates what is open costs the same as one that understates it, and
+  > it costs the most at the top of the reading order.
 
 ---
 

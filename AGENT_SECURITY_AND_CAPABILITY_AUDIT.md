@@ -28,6 +28,7 @@ human *is* the security control, and a control fed false inputs fails silently.
 |---|---|---|
 | Overall security posture | **72 / 100** | Strong architecture, one High-severity truthfulness defect in the consent path |
 | Sandbox containment | **55 / 100** — PARTIAL ISOLATION | Single working backend, no resource limits, silent degradation to none |
+| ↳ *update 2026-09-02* | **F-04, F-05 FIXED**, all nine neuters verified | The untrusted-text axis. `<web_content>` could be closed from inside by the page it wrapped, while the envelope's own comment listed that as one of three reasons it held; Lane B tool descriptions were unvalidated and, since F-01, printed to the approval terminal; tool results had no instruction-handling rule at all. **F-04 re-scored Medium 6.0 → High 7.0 at closure** — F-01's fix added a consumer and nothing revisited the finding about the data it consumed. |
 | ↳ *update 2026-08-27* | **F-09 resource limits CLOSED; F-13 FIXED**, all six neuters verified | `sandbox_exec` is now bounded by a systemd user scope (2 GiB / 512 tasks, measured killing a 4 GiB allocation through the real handler) with a persistent on-disk HOME. Found while verifying it: the sandbox could not execute go, npm or cargo at all — only `make`, the one binary in a system directory, which is why no test caught it. Network egress remains open by decision, stated rather than closed. |
 | ↳ *update 2026-08-26 (b)* | **F-11, F-12 FIXED**, both neuter-verified | A specialist role's allowlist matched a tool name without checking its lane, so an unconfined third-party namesake was admitted into a slot reserved for the confined first-party tool — through both halves of the two-part control at once. The same match made every third-party tool vanish from every pipeline phase, silently. |
 | ↳ *update 2026-08-26* | **F-01, F-02, F-03 FIXED**, each neuter-verified | Confinement is now resolved per host and reported honestly; exec grants bind to the arguments; the egress cap no longer inverts. Still open: only one working backend (docker needs an image decision), and bwrap cannot enforce memory/CPU limits without cgroup delegation. |
@@ -35,7 +36,9 @@ human *is* the security control, and a control fed false inputs fails silently.
 | Reliability | **80 / 100** | Full suite green; one measured budget-enforcement bug |
 | Observability / forensics | **68 / 100** | Excellent decision audit, cannot reconstruct *what* a command did |
 
-**Findings: 0 Critical · 2 High · 5 Medium · 3 Low.**
+**Findings as first written: 0 Critical · 2 High · 5 Medium · 3 Low.** **As of 2026-09-02: eleven of thirteen closed** — F-01, F-02, F-03, F-04, F-05, F-06, F-07, F-09 (limits), F-10, F-11, F-12, F-13. Open: **F-08** (audit log records the decision, not the effect — open by documented design) and **F-09's network residual** (accepted). Two later findings are in the register rather than here, because they were found after this report: items **32** (language-server consent fires per turn against a cached server) and **34** (a large page truncated past its own closing tag).
+
+> **One count moved, and the direction matters.** F-04 was raised from Medium 6.0 to High 7.0 *at closure*, not at discovery. It was written as a model-injection channel; F-01's fix later routed the same unvalidated string to the human's terminal, and no one re-read F-04 when that shipped. **A fix that adds a CONSUMER changes the severity of every open finding about the data it consumes.** This report's method section already requires severity to move in both directions; it did not require re-reading the open findings when a fix changes who reads the data, and now it should.
 
 The single most important sentence in this report:
 
@@ -318,7 +321,7 @@ exceed `maxResultBytes`, for any value of `toolBytes`.
 | | |
 |---|---|
 | **Severity** | **MEDIUM — 6.0** |
-| **Status** | Open |
+| **Status** | **FIXED `0ee0d60`, 2026-09-02** — register item 20. **Severity raised Medium 6.0 → High 7.0 at closure.** This was scored as a model-injection channel only; F-01's own fix then routed the same unvalidated string to `ToolApprovalRequest.Detail`, which the TUI renders directly below the `NOT SANDBOXED` warning, and nothing re-scored it. A fix that adds a consumer changes the severity of every open finding about the data it consumes. Closed by `SanitiseToolDescription` (drop control bytes and C1, bound at 1 KiB, keep the tool); exploit path exercised by badserver `evil-description`. |
 | **Components** | `daemon/mcp/stdioclient.go:342`, `daemon/agentloop.go:608-622` |
 | **Failure class** | F3 — Tool selection failure / indirect prompt injection |
 
@@ -362,7 +365,7 @@ compromised-update case.
 | | |
 |---|---|
 | **Severity** | **MEDIUM — 5.5** |
-| **Status** | Open |
+| **Status** | **FIXED `1d9d2b2`, 2026-09-02** — register item 21. **This finding's premise was half wrong and the half it missed was worse.** Tool output was already scrubbed, delimiter-neutralised, control-stripped and truncated; what was absent was the RULE — `prompts/system.txt` covered `<retrieved_context>` and `<web_content>` and said nothing about tool results. Meanwhile the `<web_content>` fence itself did not hold: `neutralizeDelimiters` knew two tag families and not `webcontent`, so a fetched page could close its own envelope — a defect this finding did not name, in the channel it was written about. Closed by a tag-family registry with an enumerating test, defusing page text before wrapping, and a `<lane_b_output>` envelope framed after rendering. |
 | **Components** | `daemon/prompts/system.txt`, `daemon/toolresult.go:173-180` |
 | **Failure class** | F1/F3 — indirect prompt injection |
 
