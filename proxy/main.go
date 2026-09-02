@@ -557,10 +557,15 @@ func wrapMiddleware(logger *log.Logger, m *metricSet, next http.Handler) http.Ha
 // newMux is the route table.
 func newMux(p *proxy, buildCommit, adminToken string) *http.ServeMux {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/health", p.rateLimitedHealth(makeHealthHandler(buildCommit, &p.draining)))
-	mux.HandleFunc("/models/status", p.handleModelsStatus)             // b5: Dynamic Model Allow-List
-	mux.HandleFunc(chatCompletionsPath, p.handleChatCompletions)       // "/chat/completions"
-	mux.HandleFunc("/v1"+chatCompletionsPath, p.handleChatCompletions) // "/v1/chat/completions" alias
+	mux.HandleFunc("/health", p.rateLimitedPublic(makeHealthHandler(buildCommit, &p.draining)))
+	// Unauthenticated like /health, and rate-limited for the same reason: it
+	// discloses the paid-tier allow-list to any anonymous caller, and unwrapped
+	// it was the one route bypassing both the global and per-source pre-auth
+	// buckets -- a free, unmetered probe during exactly the flood those buckets
+	// exist to bound.
+	mux.HandleFunc("/models/status", p.rateLimitedPublic(p.handleModelsStatus)) // b5: Dynamic Model Allow-List
+	mux.HandleFunc(chatCompletionsPath, p.handleChatCompletions)                // "/chat/completions"
+	mux.HandleFunc("/v1"+chatCompletionsPath, p.handleChatCompletions)          // "/v1/chat/completions" alias
 	// The counters route exists ONLY when a token is configured. Not "exists and
 	// refuses" -- absent configuration must not leave an operational endpoint on a
 	// public listener at all, and an unregistered path is answered by the
@@ -772,7 +777,8 @@ type healthResponse struct {
 
 // healthCommitVisible reports whether /health may disclose the build commit.
 //
-// /health is the only UNAUTHENTICATED route, and the commit SHA it returned
+// /health is one of two UNAUTHENTICATED routes (with /models/status), and the
+// commit SHA it returned
 // identified the exact running build to anyone on the internet — free version
 // fingerprinting that tells an attacker precisely which code (and which
 // known-fixed bugs) is deployed. Low severity on its own, but it is disclosure
@@ -787,10 +793,18 @@ func healthCommitVisible() bool {
 	return os.Getenv("HEALTH_EXPOSE_COMMIT") == "1"
 }
 
-// rateLimitedHealth applies the pre-auth limits to /health. It is the only
-// unauthenticated route, so without this it is an unbounded free endpoint: the
-// audit served 200 unauthenticated /health requests in 0.1s with zero throttling.
-func (p *proxy) rateLimitedHealth(next http.HandlerFunc) http.HandlerFunc {
+// rateLimitedPublic applies the pre-auth limits to a route served without a
+// bearer token. Without it such a route is an unbounded free endpoint: the audit
+// served 200 unauthenticated /health requests in 0.1s with zero throttling.
+//
+// THERE ARE TWO SUCH ROUTES, NOT ONE, and that correction is why this is no
+// longer named for /health. /models/status was registered bare from the day it
+// was added -- no admitPreAuth, no limiter -- while four places in this repo
+// went on saying /health was the only unauthenticated route. The catch-all `/`
+// was wrapped precisely because an unwrapped route is "an unauthenticated,
+// completely unthrottled endpoint"; that argument applied here all along and
+// this route was simply not on the list anyone checked.
+func (p *proxy) rateLimitedPublic(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !p.admitPreAuth(w, r) {
 			return

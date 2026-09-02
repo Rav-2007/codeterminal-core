@@ -77,7 +77,8 @@ both the streamed and buffered response paths.
 
 ### `GET /health`
 
-Returns `200 {"status":"ok"}`. The only unauthenticated route, and rate-limited
+Returns `200 {"status":"ok"}`. One of two unauthenticated routes (with
+`/models/status`), and rate-limited
 like any other. The build commit is **omitted by default** — it fingerprints the
 exact running build for anonymous callers — and included only when
 `HEALTH_EXPOSE_COMMIT=1`, for deploy verification.

@@ -2196,7 +2196,7 @@ func TestHealth(t *testing.T) {
 
 	t.Run("is rate limited", func(t *testing.T) {
 		p := newTestProxy("http://unused.invalid", "http://unused.invalid")
-		handler := p.rateLimitedHealth(makeHealthHandler("x", nil))
+		handler := p.rateLimitedPublic(makeHealthHandler("x", nil))
 
 		throttled := 0
 		for i := 0; i < int(preAuthBurstGlobal)+100; i++ {
@@ -2208,7 +2208,7 @@ func TestHealth(t *testing.T) {
 		}
 		if throttled == 0 {
 			t.Error("/health served an unbounded flood with zero throttling -- it is the " +
-				"only unauthenticated route, so this is a free anonymous endpoint")
+				"unauthenticated route, so this is a free anonymous endpoint")
 		}
 	})
 }
@@ -3033,4 +3033,47 @@ func TestStartReconciliationSweep(t *testing.T) {
 			t.Errorf("sweep stopped without saying so; got %q", logs.String())
 		}
 	})
+}
+
+// /models/status is unauthenticated and must therefore be throttled, and it was
+// not -- from the day it was added until 2026-09-02.
+//
+// It is the one route that skipped admission control entirely. /health is
+// wrapped, /chat/completions calls admitPreAuth, and the catch-all `/` was
+// wrapped precisely because an unwrapped route is "an unauthenticated,
+// completely unthrottled endpoint". That argument covered this route all along;
+// it was simply not on the list anyone re-read. Four places in this repo went on
+// saying /health was the only unauthenticated route, and no test referenced
+// /models/status at all -- so nothing anywhere could have noticed.
+//
+// GOES THROUGH THE MUX, not the handler, because the defect was in the wiring
+// rather than in handleModelsStatus. Calling the handler directly would pass
+// against exactly the bug this covers.
+func TestModelsStatus_IsRateLimited(t *testing.T) {
+	p := newTestProxy("http://unused.invalid", "http://unused.invalid")
+	mux := newMux(p, "test-commit", "")
+
+	served, throttled := 0, 0
+	for i := 0; i < int(preAuthBurstGlobal)+50; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/models/status", nil)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code == http.StatusTooManyRequests {
+			throttled++
+		} else {
+			served++
+		}
+	}
+	if throttled == 0 {
+		t.Errorf("/models/status served %d anonymous requests with zero throttling. It "+
+			"discloses the paid-tier allow-list and bypasses both the global and per-source "+
+			"pre-auth buckets, which makes it a free unmetered probe during the flood those "+
+			"buckets exist to bound", served)
+	}
+	// ANTI-VACUITY: a route that 404s or rejects everything would also report
+	// zero unthrottled requests, and prove nothing.
+	if served == 0 {
+		t.Error("/models/status served nothing at all; this test would pass against a route " +
+			"that no longer exists, which is not what it is checking")
+	}
 }
