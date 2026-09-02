@@ -21,6 +21,39 @@
 # difference on a shared statement count. The floor takes the LOWER reading so
 # ordinary variance can never trip the ratchet; only a real drop can.
 #
+# RAISED 2026-09-02, after the plan-mode / capability / gates batch. Three
+# packages were carrying headroom a regression could hide inside: daemon +5.2,
+# clients/tui +3.3, helper +1.4. Each measured THREE TIMES UNCACHED
+# (`go test -count=1 -cover`) with zero variance across the three -- daemon
+# 78.2 x3, clients/tui 82.2 x3, helper 22.2 x3 -- and floored a few tenths
+# below, per the take-the-lower-reading rule above.
+#
+# The tree measured is the one that fast-forwards main in the same batch, and
+# CI's own ratchet reported the SAME THREE FIGURES on it, read out of the job
+# logs rather than assumed: daemon 78.2, helper 22.2, clients/tui 82.2 (run
+# 33596543817, all 25 jobs green). Local and Linux CI agree to the tenth. That
+# is what "measured on main" is asking for; it is recorded here because the
+# rule above is the only reason these numbers can be trusted at all. No other
+# platform measures coverage -- the Windows and macOS jobs vet and cross-build.
+#
+# 0.2 of headroom is deliberate and is not thin by this file's standard:
+# protocol and helper/helperproto sit at +0.0 today. It is affordable only
+# BECAUSE the variance is zero across four independent runs; if any package
+# ever shows a spread, its floor goes back to a few tenths below the LOWEST
+# reading, not below the mode.
+#
+# ONE CONDITIONAL WORTH KNOWING, from the same CI log: the daemon job warns
+# `bwrap CANNOT create a user namespace - sandbox tests will skip and
+# daemon/mcp coverage will fall below its floor`. That is a pre-existing
+# runner-dependent failure and it names daemon/mcp, which is why daemon/mcp is
+# NOT among the three raised here. If it ever turns out to move the top-level
+# daemon figure as well, 78.0 is the floor to revisit first.
+#
+# daemon/mcp (+1.0), editapply (+1.6) and proxy (+1.1) were NOT raised. Their
+# headroom is within the range the protocol note below calls ordinary variance,
+# and only one reading was taken for editapply and proxy. Raising a floor on a
+# single measurement is exactly what the three-run rule exists to prevent.
+#
 # RAISED 2026-08-01, after the MCP hardening pass. Four packages had drifted
 # well above their floors -- daemon +2.1, daemon/mcp +5.7, proxy +5.7, protocol
 # +3.4 -- which is unguarded headroom: a regression inside it would not trip
@@ -42,7 +75,7 @@
 # numbers because Go had CACHED runs 2 and 3; a cached result is one
 # measurement wearing three hats, and would have hidden the swing entirely.)
 
-codeterminal/daemon              73.0
+codeterminal/daemon              78.0
 codeterminal/editapply           88.0
 codeterminal/proxy               85.0
 
@@ -60,7 +93,7 @@ codeterminal/daemon/mcp          91.0
 # Listed explicitly because the ratchet fails on any package it has no floor
 # for, so the decision has to be made rather than defaulted into.
 codeterminal/proxy/testharness    0.0
-codeterminal/helper              20.8
+codeterminal/helper              22.0
 codeterminal/helper/helperproto  75.0
 codeterminal/protocol            89.5
-codeterminal/clients/tui         78.9
+codeterminal/clients/tui         82.0
