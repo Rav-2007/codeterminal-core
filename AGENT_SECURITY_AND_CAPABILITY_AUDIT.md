@@ -961,13 +961,43 @@ users rather than internal ones who understand the system.
 
 ### Deployment blockers
 
+**All five cleared. Ticked 2026-09-02 — see the note below.**
+
 ```
-- [ ] F-01  sandbox_exec must not report Confined:true when no sandbox is applied
-- [ ] F-01  ToolApprovalRequest must carry the tool description to the consent screen
-- [ ] F-02  Turn-scoped grants must not cover arbitrary later commands for exec tools
-- [ ] F-06  Toolchain ≥ go1.25.13 (10 reachable vulnerabilities, 5 in the proxy)
-- [ ] F-03  Tool-egress budget must remain enforced after exhaustion
+- [x] F-01  sandbox_exec must not report Confined:true when no sandbox is applied
+- [x] F-01  ToolApprovalRequest must carry the tool description to the consent screen
+- [x] F-02  Turn-scoped grants must not cover arbitrary later commands for exec tools
+- [x] F-06  Toolchain ≥ go1.25.13 (10 reachable vulnerabilities, 5 in the proxy)
+- [x] F-03  Tool-egress budget must remain enforced after exhaustion
 ```
+
+> **Why this list was wrong, and for how long.** Every one of these five boxes
+> was already recorded as fixed *in this same file* — F-01, F-02 and F-03 in the
+> update row at the top (2026-08-26, each neuter-verified), F-06 in its own
+> **Status** row (`FIXED 6bbe549`, completed 2026-09-01). The checklist sat
+> unticked underneath a verdict of *"not yet ready for limited external
+> deployment"*, so the document's summary and its own findings disagreed, and
+> the summary is the part people read.
+>
+> **The verdict above is now the only thing standing between this audit and a
+> re-rating, and it is a judgement rather than a checklist item.** That call is
+> deliberately left where it belongs: the five *engineering* preconditions it
+> named are met, which is what this section is for. Whoever re-rates the product
+> should re-read §9 against the current tree rather than trust these ticks.
+>
+> One caveat that is a real limit and not a stale box: F-01's fix makes
+> confinement a resolved per-host fact reported honestly, but only one backend
+> works, and `bwrap` still cannot enforce memory or CPU limits without cgroup
+> delegation. That is recorded in the update row and is not undone by ticking
+> these.
+>
+> A sixth blocker was found on 2026-09-01 and is **not** on this list because it
+> did not exist when the list was written: `query_compiler_definition` and
+> `query_compiler_references` spawned an untrusted language server while
+> declaring no capability at all, so they were stamped `Confined` — F-01's exact
+> shape, on a different tool. Fixed by a third flag (`LaunchesSubprocess`) plus a
+> call-graph test that enumerates the *property* rather than the names, which is
+> what found the third instance nobody had named.
 
 ### Highest-impact improvements
 

@@ -67,14 +67,27 @@ verification transcripts is in
 
 The ordering is real: each tier is blocked by the one above it.
 
-### Tier 0 — blocked on the founder. Nothing else moves until these do.
+### Tier 0 — blocked on the founder. One item, and it gates macOS only.
+
+> **Corrected 2026-09-02. Only B3 is left.** B2 (D1+D2+D3) and B4 (D5–D8) were
+> **taken on 2026-08-12** and this table went on listing them as blockers for
+> three weeks, under a heading that said *"nothing else moves until these do"*. `DECISION_PACK.md`
+> stamped all eight **TAKEN** in its Status column, and the reading-order table
+> further down *this same file* has said **"all eight taken, P3 security gate
+> closed"** the whole time — so BACKLOG.md contradicted itself across 60 lines.
+>
+> This is the most expensive stale row in the repository, and not because it is
+> the most wrong. Tier 0 is what someone opens to decide what to do next; a
+> reader who believed it concluded the project was waiting on a signature and
+> that starting capability work was pointless. A register that overstates what
+> is open costs the same as one that understates it.
 
 | # | Item | Why it blocks |
 |---|---|---|
 | ~~**B1**~~ | ~~**GitHub Actions billing**~~ | ~~Every job refuses to start. **18 commits have no CI signal**, and the gap widens with each one.~~ **RESOLVED 2026-08-30.** CI ran eight times that day; dispatch `33311677642` was **30/30 green including all four macOS jobs**, and a 39-commit stack fast-forwarded onto `main`, which now runs its own matrix. **Tier 0's critical path changes with this row: the top blocker is gone and B2/B3/B4 are what Tier 0 now means.** This row mattered more than a stale row usually does — it told a reader there was no CI signal, and CI is where `govulncheck` and the confinement conformance suites run, so believing it means not looking at a security gate's output. |
-| **B2** | **D1 + D2 + D3** ([`docs/DECISION_PACK.md`](docs/DECISION_PACK.md)) | These *are* the P3 gate, which blocks all capability work. **No engineering remains** — D1's deliverable has existed since 2026-07-30, D2 is explicitly "a ruling, not a fix", D3 is a decision to *not* do work. One read, three signatures, in the order **D2 → D1 → D3** (D3 is a consequence of D1). |
+| ~~**B2**~~ | ~~**D1 + D2 + D3**~~ ([`docs/DECISION_PACK.md`](docs/DECISION_PACK.md)) | ~~These *are* the P3 gate, which blocks all capability work.~~ **TAKEN 2026-08-12.** D1 accepted same-uid, D2 ruled Gate 6 closed, D3 rejected error unification. **The P3 security gate is formally CLOSED and all capability work is unblocked.** |
 | **B3** | **Apple Developer enrolment** | Gates signing/notarisation, therefore macOS shipping. Unsigned binaries in a `.vsix` are quarantined by Gatekeeper and read to a user as "daemon not running". |
-| **B4** | **D5 – D8** | D5's data is fresh (measured 29.0% vs 1.2%); D8 deletes a subsystem with no callers. |
+| ~~**B4**~~ | ~~**D5 – D8**~~ | **TAKEN 2026-08-12.** D5 rejected Design B and deferred C; D6 maintained the default model pending a spend eval; D7 ruled the shared confinement package not-yet; D8 approved the skills subsystem for deletion. D8's deletion is engineering work that is now unblocked, not a blocker. |
 
 ### Tier 1 — distribution. **Packaging itself is done**; shipping it is not.
 
@@ -130,8 +143,8 @@ per-request and fail-closed regardless of model, so what is missing is
 | Where do I start? | [`docs/HANDOFF.md`](docs/HANDOFF.md) — entry point; [`docs/README.md`](docs/README.md) catalogues everything else |
 | What are we doing next? | [`docs/ULTRA_MASTER_PLAN_2026-08-08.md`](docs/ULTRA_MASTER_PLAN_2026-08-08.md) — **the current plan** |
 | How is this made robust? | [`docs/ENGINEERING_METHOD.md`](docs/ENGINEERING_METHOD.md) — the techniques and the bug behind each |
-| What bugs are open? | [`docs/OPEN_ITEMS.md`](docs/OPEN_ITEMS.md) — read the Status column; **open: 20, 21, 24** — the security residuals carried over from [`AGENT_SECURITY_AND_CAPABILITY_AUDIT.md`](AGENT_SECURITY_AND_CAPABILITY_AUDIT.md), which had been tracked by git and referenced by nothing. This cell said *none* while that report listed six open findings, and it was not lying — the register it is checked against had never heard of them. Enforced by `scripts/docs-claims.sh`, which fails the build when this cell and that Status column disagree — in either direction. |
-| What needs a founder ruling? | [`docs/DECISION_PACK.md`](docs/DECISION_PACK.md) — D1–D8; **all eight taken**, P3 security gate closed |
+| What bugs are open? | [`docs/OPEN_ITEMS.md`](docs/OPEN_ITEMS.md) — read the Status column; **open: 20, 21, 24, 32, 33** — the security residuals carried over from [`AGENT_SECURITY_AND_CAPABILITY_AUDIT.md`](AGENT_SECURITY_AND_CAPABILITY_AUDIT.md), which had been tracked by git and referenced by nothing. This cell said *none* while that report listed six open findings, and it was not lying — the register it is checked against had never heard of them. Enforced by `scripts/docs-claims.sh`, which fails the build when this cell and that Status column disagree — in either direction. |
+| What needs a founder ruling? | [`docs/DECISION_PACK.md`](docs/DECISION_PACK.md) — D1–D8; **all eight taken**, P3 security gate closed. **taken: D1 D2 D3 D4 D5 D6 D7 D8** |
 | What was already done, and why? | [`docs/ARCHIVE/BACKLOG_2026-07.md`](docs/ARCHIVE/BACKLOG_2026-07.md) |
 | What is still ahead? | **this file** |
 

@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
-# Cross-register claim checker: BACKLOG.md's summary of which OPEN_ITEMS remain
-# must agree with OPEN_ITEMS.md's own Status column.
+# Cross-register claim checker. Two invariants, both cross-file:
+#   1. BACKLOG.md and docs/README.md's summary of which OPEN_ITEMS remain must
+#      agree with docs/OPEN_ITEMS.md's own Status column.
+#   2. All three registers' summary of which founder decisions are taken must
+#      agree with docs/DECISION_PACK.md's Status column.
 #
 # WHY THIS EXISTS. Two files answer "what is open": BACKLOG.md's tiers and
 # docs/OPEN_ITEMS.md's numbered register, and they cross-reference each other by
@@ -43,27 +46,46 @@ FLOOR="${DOCS_CLAIMS_FLOOR:-10}"
 # a checker that only ever sees passing input cannot demonstrate it can fail.
 if [ "${1:-}" = "--self-test" ]; then
   tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+
+  # Every fixture register carries BOTH markers, because the real ones do and a
+  # fixture that omits one would make the checks below pass for the wrong reason.
   {
     echo '| # | Status | Item | Where | Sev | Evidence |'
     echo '|---|---|---|---|---|---|'
     echo '| 1 | **FIXED** | a | b | Low | c |'
     echo '| 2 | **OPEN** | a | b | Low | c |'
+    echo ''
+    echo '**taken: D1**'
   } > "$tmp/items.md"
-  echo '| x | index — **open: 2** |' > "$tmp/readme.md"
+  echo '| x | index — **open: 2** · **taken: D1** |' > "$tmp/readme.md"
+
+  # The decision pack fixture: one taken, one not.
+  {
+    echo '| # | Decision | Status | Ruling / Recommendation | Blocks |'
+    echo '|---|---|---|---|---|'
+    echo '| D1 | a | **TAKEN 2026-01-01** | x | nothing |'
+    echo '| D2 | b | pending | x | everything |'
+  } > "$tmp/pack.md"
+
+  # Every invocation below runs through this, so a new env knob cannot be added
+  # to the checker and silently left out of half the cases.
+  st() {
+    DOCS_CLAIMS_OPEN_ITEMS="${1}" DOCS_CLAIMS_BACKLOG="${2}" DOCS_CLAIMS_README="${3}" \
+    DOCS_CLAIMS_PACK="${4}" DOCS_CLAIMS_FLOOR=2 DOCS_CLAIMS_PACK_FLOOR=2 \
+      "$0" >/dev/null 2>&1
+  }
 
   # (a) a disagreeing pair MUST fail
-  echo "| x | ($tmp/items.md) - read the Status column; open items: none |" > "$tmp/backlog.md"
-  if DOCS_CLAIMS_OPEN_ITEMS="$tmp/items.md" DOCS_CLAIMS_BACKLOG="$tmp/backlog.md" DOCS_CLAIMS_README="$tmp/readme.md" DOCS_CLAIMS_FLOOR=2 \
-       "$0" >/dev/null 2>&1; then
+  echo "| x | ($tmp/items.md) - read the Status column; **open: none** · **taken: D1** |" > "$tmp/backlog.md"
+  if st "$tmp/items.md" "$tmp/backlog.md" "$tmp/readme.md" "$tmp/pack.md"; then
     echo "docs-claims: SELF-TEST FAIL -- a disagreeing pair was reported as agreeing."
     echo "  The comparison is not doing its job; this checker cannot be trusted until it is fixed."
     exit 1
   fi
 
   # (b) an agreeing pair MUST pass, or the checker is merely always-red
-  echo "| x | ($tmp/items.md) - read the Status column; open items: 2 |" > "$tmp/backlog.md"
-  if ! DOCS_CLAIMS_OPEN_ITEMS="$tmp/items.md" DOCS_CLAIMS_BACKLOG="$tmp/backlog.md" DOCS_CLAIMS_README="$tmp/readme.md" DOCS_CLAIMS_FLOOR=2 \
-       "$0" >/dev/null 2>&1; then
+  echo "| x | ($tmp/items.md) - read the Status column; **open: 2** · **taken: D1** |" > "$tmp/backlog.md"
+  if ! st "$tmp/items.md" "$tmp/backlog.md" "$tmp/readme.md" "$tmp/pack.md"; then
     echo "docs-claims: SELF-TEST FAIL -- an agreeing pair was reported as disagreeing."
     exit 1
   fi
@@ -72,9 +94,8 @@ if [ "${1:-}" = "--self-test" ]; then
   # is the case that was missing entirely: docs/README.md named the open items
   # and nothing checked it, which is how it came to say 22 was open after 22 was
   # fixed.
-  echo '| x | index — **open: 1, 2** |' > "$tmp/readme-bad.md"
-  if DOCS_CLAIMS_OPEN_ITEMS="$tmp/items.md" DOCS_CLAIMS_BACKLOG="$tmp/backlog.md" DOCS_CLAIMS_README="$tmp/readme-bad.md" DOCS_CLAIMS_FLOOR=2 \
-       "$0" >/dev/null 2>&1; then
+  echo '| x | index — **open: 1, 2** · **taken: D1** |' > "$tmp/readme-bad.md"
+  if st "$tmp/items.md" "$tmp/backlog.md" "$tmp/readme-bad.md" "$tmp/pack.md"; then
     echo "docs-claims: SELF-TEST FAIL -- a disagreeing docs/README.md was accepted."
     exit 1
   fi
@@ -86,16 +107,56 @@ if [ "${1:-}" = "--self-test" ]; then
     echo '|---|---|---|---|---|---|'
     echo '| 1 | **FIXED** | a | b | Low | c |'
     echo '| 1 | **OPEN** | a | b | Low | c |'
+    echo ''
+    echo '**taken: D1**'
   } > "$tmp/dupes.md"
-  echo "| x | ($tmp/dupes.md) - read the Status column; open items: 1 |" > "$tmp/backlog.md"
-  if DOCS_CLAIMS_OPEN_ITEMS="$tmp/dupes.md" DOCS_CLAIMS_BACKLOG="$tmp/backlog.md" DOCS_CLAIMS_README="$tmp/readme.md" DOCS_CLAIMS_FLOOR=2 \
-       "$0" >/dev/null 2>&1; then
+  echo "| x | ($tmp/dupes.md) - read the Status column; **open: 1** · **taken: D1** |" > "$tmp/backlog.md"
+  if st "$tmp/dupes.md" "$tmp/backlog.md" "$tmp/readme.md" "$tmp/pack.md"; then
     echo "docs-claims: SELF-TEST FAIL -- a duplicated item number was accepted."
     exit 1
   fi
 
-  # (d) the REAL register must still parse. Checked here with its own hardcoded
-  # floor so that deleting the floor below cannot also disable this.
+  # (e) A REGISTER CLAIMING A DECISION THE PACK HAS NOT TAKEN must fail --
+  # someone acting on a ruling nobody made.
+  echo "| x | ($tmp/items.md) - read the Status column; **open: 2** · **taken: D1 D2** |" > "$tmp/backlog-d.md"
+  if st "$tmp/items.md" "$tmp/backlog-d.md" "$tmp/readme.md" "$tmp/pack.md"; then
+    echo "docs-claims: SELF-TEST FAIL -- a register claiming an untaken decision was accepted."
+    exit 1
+  fi
+
+  # (f) AND THE OTHER DIRECTION, which is the one that actually happened: the
+  # pack has taken D1, the register still lists nothing as taken. Tier 0 said
+  # the project was blocked for three weeks after it was not.
+  echo '| x | index — **open: 2** · **taken: none** |' > "$tmp/readme-stale.md"
+  echo "| x | ($tmp/items.md) - read the Status column; **open: 2** · **taken: D1** |" > "$tmp/backlog.md"
+  if st "$tmp/items.md" "$tmp/backlog.md" "$tmp/readme-stale.md" "$tmp/pack.md"; then
+    echo "docs-claims: SELF-TEST FAIL -- a register that had not caught up with a TAKEN ruling was accepted."
+    exit 1
+  fi
+
+  # (g) a MISSING marker must fail rather than skip. A claim that cannot be
+  # located is not a claim that has been checked -- the rule this script already
+  # applies to BACKLOG's claim row and to docs/README.md's existence.
+  echo '| x | index — **open: 2** |' > "$tmp/readme-nomarker.md"
+  if st "$tmp/items.md" "$tmp/backlog.md" "$tmp/readme-nomarker.md" "$tmp/pack.md"; then
+    echo "docs-claims: SELF-TEST FAIL -- a register with no '**taken:**' marker was silently skipped."
+    exit 1
+  fi
+
+  # (h) the pack parser must not go blind. A table format change that reads zero
+  # decisions would otherwise compare {} to {} and print agreement.
+  {
+    echo '| # | Ruling | State |'
+    echo '|---|---|---|'
+    echo '| D1 | a | TAKEN |'
+  } > "$tmp/pack-moved.md"
+  if st "$tmp/items.md" "$tmp/backlog.md" "$tmp/readme.md" "$tmp/pack-moved.md"; then
+    echo "docs-claims: SELF-TEST FAIL -- a decision table the parser cannot read was accepted."
+    exit 1
+  fi
+
+  # (d) the REAL registers must still parse. Checked here with their own
+  # hardcoded floors so that deleting the floors above cannot also disable this.
   real=$(DOCS_CLAIMS_FLOOR=1 "$0" --count 2>/dev/null || echo 0)
   if [ "${real:-0}" -lt 10 ]; then
     echo "docs-claims: SELF-TEST FAIL -- parsed $real items from the real register (expected >= 10)."
@@ -103,7 +164,7 @@ if [ "${1:-}" = "--self-test" ]; then
     exit 1
   fi
 
-  echo "docs-claims: self-test ok (detects disagreement, accepts agreement, parses $real real items)"
+  echo "docs-claims: self-test ok (8 cases: disagreement, agreement, third register, duplicate ids, both decision directions, missing marker, blind pack parser; $real real items)"
   exit 0
 fi
 
@@ -205,7 +266,22 @@ if [ -z "$claim_line" ]; then
 fi
 
 lineno=${claim_line%%:*}
-claimed=$(printf '%s' "$claim_line" | sed 's/^[0-9]*://' | sed 's/.*Status column;//' | grep -oE '[0-9]+' | sort -n | tr '\n' ' ' | sed 's/ $//')
+# ANCHORED ON THE `**open: ...**` MARKER, the same convention docs/README.md
+# uses -- not on "every digit after the words Status column".
+#
+# That looser form was live until 2026-09-02 and it silently ate anything else
+# numeric in the cell. Adding the founder-decision marker to this row made it
+# read `**taken: D1 D2**` as items 1 and 2 being open, and the failure was a
+# confident, specific, entirely wrong disagreement report. A parser whose input
+# is a whole prose cell will eventually be handed prose.
+if ! printf '%s' "$claim_line" | grep -q '\*\*open: '; then
+  echo "docs-claims: FAIL -- $BACKLOG:${claim_line%%:*} has no '**open: ...**' marker."
+  echo "  That marker is how this checker reads the claim. Other text in the cell is"
+  echo "  prose and is deliberately not parsed. Add the marker, or delete this checker"
+  echo "  deliberately."
+  exit 1
+fi
+claimed=$(printf '%s' "$claim_line" | grep -oE '\*\*open: [^*]+\*\*' | grep -oE '[0-9]+' | sort -n | tr '\n' ' ' | sed 's/ $//')
 
 # THE THIRD REGISTER. docs/README.md's index names the open items too, and was
 # exempt -- a fact it stated in its own cell, one clause after the claim the
@@ -253,8 +329,103 @@ if true; then
   fi
 fi
 
+# ============================================================================
+# THE FOURTH CLAIM: which founder decisions are taken.
+#
+# Added 2026-09-02, after the same failure this whole script exists for turned
+# up on a claim it was not watching. `docs/DECISION_PACK.md` stamped all eight
+# rulings TAKEN in its Status column on 2026-08-12. Three weeks later:
+#
+#   docs/README.md      "Seven open, D4 taken"
+#   docs/OPEN_ITEMS.md  "None is taken on the founder's behalf"
+#   BACKLOG.md Tier 0   B2 and B4 still listed as blockers, under a heading
+#                       reading "nothing else moves until these do"
+#
+# while BACKLOG.md's own reading-order table, sixty lines below Tier 0, said
+# "all eight taken". Four restatements of one fact, three of them wrong, one
+# file disagreeing with itself.
+#
+# This direction is the expensive one and it is the opposite of the bug-register
+# case. An OPEN item wrongly listed as fixed hides a defect; a TAKEN decision
+# wrongly listed as open reports the PROJECT BLOCKED ON A PERSON when it is not,
+# in the table someone opens to decide what to work on. Nobody works on anything
+# while they believe Tier 0.
+#
+# DECISION_PACK.md's Status column is the authority -- it is where the rulings
+# are recorded -- and the three registers restate it. Same shape as the block
+# above, same marker convention, and required in all three for the same reason:
+# a claim that cannot be located is not a claim that has been checked.
+PACK="${DOCS_CLAIMS_PACK:-docs/DECISION_PACK.md}"
+PACK_FLOOR="${DOCS_CLAIMS_PACK_FLOOR:-8}"
+
+if [ ! -f "$PACK" ]; then
+  echo "docs-claims: FAIL -- $PACK does not exist."
+  echo "  It is the authority for which founder decisions are taken. Restore it,"
+  echo "  or remove this section deliberately."
+  exit 1
+fi
+
+pack_parsed=$(awk '
+  /^\| # \| Decision \| Status \|/ { intable = 1; next }
+  intable && $0 !~ /^\|/ { intable = 0 }
+  intable && $0 ~ /^\|---/ { next }
+  intable {
+    n = $0; gsub(/[~*`]/, "", n); split(n, cells, "|")
+    id = cells[2]; status = cells[4]
+    gsub(/^[ \t]+|[ \t]+$/, "", id); gsub(/^[ \t]+|[ \t]+$/, "", status)
+    if (id ~ /^D[0-9]+$/) print id, (status ~ /^TAKEN/) ? "taken" : "open"
+  }
+' "$PACK")
+
+pack_total=$(printf '%s\n' "$pack_parsed" | grep -c . || true)
+
+# Same anti-vacuity rule as the register above: zero parsed decisions must never
+# read as "the empty set agrees with the empty set".
+if [ "$pack_total" -lt "$PACK_FLOOR" ]; then
+  echo "docs-claims: FAIL -- parsed only $pack_total decisions from $PACK (floor $PACK_FLOOR)."
+  echo "  The decision table moved and this checker went blind. Fix the parser, do not lower the floor."
+  exit 1
+fi
+
+pack_taken=$(printf '%s\n' "$pack_parsed" | awk '$2 == "taken" { print $1 }' | sort -V | tr '\n' ' ' | sed 's/ $//')
+
+for reg in "$BACKLOG" "$README" "$OPEN_ITEMS"; do
+  n_markers=$(grep -c '\*\*taken: ' "$reg" || true)
+  if [ "$n_markers" -eq 0 ]; then
+    echo "docs-claims: FAIL -- no '**taken: ...**' marker in $reg."
+    echo "  All three registers restate which founder decisions are taken; without the"
+    echo "  marker this checker cannot compare $reg against $PACK."
+    exit 1
+  fi
+  if [ "$n_markers" -gt 1 ]; then
+    echo "docs-claims: FAIL -- $reg has $n_markers '**taken: ...**' markers; only the first is compared."
+    echo "  The others would drift unchecked. Keep exactly one."
+    exit 1
+  fi
+  marker_line=$(grep -n '\*\*taken: ' "$reg" | head -1)
+  marker_no=${marker_line%%:*}
+  reg_taken=$(printf '%s' "$marker_line" | grep -oE '\*\*taken: [^*]+\*\*' | grep -oE 'D[0-9]+' | sort -V | tr '\n' ' ' | sed 's/ $//')
+  if [ "$reg_taken" != "$pack_taken" ]; then
+    echo "docs-claims: FAIL -- $reg:$marker_no and $PACK disagree about the founder decisions."
+    echo "  $reg says taken: ${reg_taken:-none}"
+    echo "  $PACK Status column: ${pack_taken:-none}"
+    for d in $pack_taken; do
+      case " $reg_taken " in *" $d "*) ;; *)
+        echo "  -> $d: $PACK says TAKEN, $reg does not (THE EXPENSIVE DIRECTION -- a settled question is reported as blocking work)";;
+      esac
+    done
+    for d in $reg_taken; do
+      case " $pack_taken " in *" $d "*) ;; *)
+        echo "  -> $d: $reg says taken, $PACK does not (a ruling is being assumed that nobody made)";;
+      esac
+    done
+    exit 1
+  fi
+done
+
 if [ "$claimed" = "$actual_open" ]; then
   echo "docs-claims: BACKLOG.md:$lineno, $README:${readme_no:-?} and $OPEN_ITEMS agree (open: ${actual_open:-none}, $total items checked)"
+  echo "docs-claims: all three registers agree with $PACK (taken: ${pack_taken:-none}, $pack_total decisions checked)"
   exit 0
 fi
 

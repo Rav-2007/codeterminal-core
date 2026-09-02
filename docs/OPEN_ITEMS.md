@@ -2,12 +2,28 @@
 
 **Written 2026-08-01. Statuses resolved in place 2026-08-07.**
 
-> ## Nothing in §1–§2 is open. Item 12, the last one, closed 2026-08-30.
+> ## Five open rows: **20, 21, 24, 32** in §2 and **33** in §1.
 >
-> *(Item 26 closed 2026-08-07 — `d5a8fdf`, with two further defects in the same loop.)*
+> Items 32 and 33 were opened 2026-09-02 by the batch that closed 22, 23 and 25.
+> Item 12, the last of §1's original twelve, closed 2026-08-30. *(Item 26 closed 2026-08-07 —
+> `d5a8fdf`, with two further defects in the same loop.)*
 >
 > Every other row carries **FIXED** and the commit that fixed it. Read the
 > **Status** column; it is the answer.
+>
+> **Corrected 2026-09-02.** This heading said *"Nothing in §1–§2 is open"* while
+> items 20, 21 and 24 sat six rows below it carrying **OPEN** and **CONFIRMED**.
+> It was true when written and stopped being true when the security residuals
+> from `AGENT_SECURITY_AND_CAPABILITY_AUDIT.md` were merged into §2 — the rows
+> were added correctly and the summary above them was not revisited.
+>
+> Note what this means about the enforcement: `scripts/docs-claims.sh` had those
+> three ids right the whole time, and printed them on every push. It compares
+> **Status cells** across the three registers. This line is prose, so it was
+> outside the check that would have caught it, sitting directly above rows the
+> check was reading — which is the same shape as the four gates this session
+> found running nowhere. The summary is now checked too; see the bottom of
+> `docs-claims.sh`.
 >
 > **Why this needed fixing.** §1 and §2 listed twelve items and §6 separately
 > recorded that nine of them had been fixed — so the register's own front tables,
@@ -79,6 +95,7 @@ closure is the founder's call.
 | 5 | **FIXED `aa3787b`** | **CREATE's syntax gate is weaker than EDIT's.** `PrepareEdit` hard-refuses an edit that would make a `.go` file unparseable (`apply.go:96-99`); `prepareCreate` only attaches an advisory `SyntaxNote` (`create.go:109`). The same model output is refused as an edit and accepted as a create. | `editapply/create.go:109` vs `editapply/apply.go:96` | Medium | **CONFIRMED** |
 | 6 | **FIXED `31bf19c`** | **Undo leaves behind the directories a create made.** `editapply/apply.go:247` `MkdirAll`s parents on the create path. The undo removal branch has no directory cleanup: `stageRestore` returns early for `remove` with no `createdDirs`, and `commit()` unlinks only the file. `removeCreatedDirs` runs only on *discard* (a staging failure), never after a successful removal. | `daemon/apply_cmd.go:587-592, 498-508` | Low | **CONFIRMED** (read); repro pending |
 | 26 | **FIXED `d5a8fdf`** | **The watcher did not track deletions or renames.** `startWorkspaceWatcher` acted only on `fsnotify.Write`/`Create`, so a deleted or renamed file's chunks stayed in both the vector and lexical stores for the life of the daemon -- still matching queries, still handed to the model as grounded context, describing code that no longer exists, with the same `grounded ✓` a correct answer gets. A rename is the same event twice: fsnotify reports the old path as `Rename` and the new one as `Create`, so dropping the old key and letting the Create re-index the new one is the whole of it. **Two further defects in the same loop, found while fixing it and fixed with it:** reindexing fanned out one goroutine per changed path straight at the single embedder helper (measured peak 8 concurrent embeds on a burst of 8 files, now 1 -- a branch switch does thousands), and because `reindexFile` is delete-then-insert, two overlapping runs over ONE path left that file's chunks in the index twice. Deletions and reindexes now go through a set drained by one worker. | `daemon/watcher.go` | Medium | **FIXED** 2026-08-07. Three tests, each demonstrated to fail against the previous watcher. Note the freshness gap this leaves: a tree deleted under a directory the walk never watched still needs the next full `index` run, and there is still no staleness *signal* (plan Stage 4). |
+| 33 | **OPEN** | **A coverage floor whose package was renamed or deleted gates nothing, and CI cannot tell.** `scripts/coverage-ratchet.sh:153` guards its orphan check on `[ $# -eq 0 ]` — only a full, zero-argument run visits every floor, because a partial run legitimately does not. `build.yml` always invokes it as `coverage-ratchet.sh ${{ matrix.module }}`, so the zero-argument form runs **only** when a human types `make ratchet`. A floor left behind by a rename is a gate that stopped gating, silently, which is the same shape as items 22 and 25. Not fixed in the same batch as `gates.yml` deliberately: the zero-arg run means the full six-module test suite, and putting that on every push would duplicate `build.yml`'s ~60 billable minutes on exactly the docs-only commits that workflow exists to check cheaply. It needs a floors-vs-packages check that does not require measuring coverage. | `scripts/coverage-ratchet.sh`, `.github/workflows/build.yml` | Low-Medium 3.5 | **CONFIRMED** — read off the line cited, 2026-09-02 |
 
 ---
 
@@ -98,6 +115,7 @@ closure is the founder's call.
 | 23 | **FIXED `3f12a02`** | **Plan mode withdrew the reviewed write path and kept the unreviewed one.** `builtinTools` used its `mode` argument once, to remove `propose_edit`; `sandbox_exec` — the only built-in that runs arbitrary code — stayed registered, so the only remaining route from model to filesystem was the one that skips edit review. The same directive forged a `[SYSTEM]:` marker inside the **user's** message (the primitive an indirect prompt injection needs, in a codebase that runs a delimiter defence against exactly that) and named two tools, `view_file` and `grep_search`, that have never existed here. | `daemon/mcpbuiltin.go` (`builtinTools`), `daemon/planmode.go` | Medium 5.2 | **CONFIRMED** — F-07, same report; fixed by `3f12a02`, and that fix was **incomplete and closed anyway**. Completed by `c69dbfe`/`db2c2b2` 2026-09-01. What `3f12a02` left, found by auditing the closure rather than the code: (a) **Lane B was never filtered** — `builtinTools` takes `mode`, but third-party MCP servers are registered sixty lines below it in `buildRegistry`, where `mode` is not in scope, so plan mode withdrew the reviewed first-party write path and kept the unconfined third-party one — the same inversion, one lane over; (b) the filter tested `ExecutesCode` **alone** while its comment claimed it was keyed on capability — `mcp.Tool` declares two such flags, so `web_search`/`web_fetch` (`ReachesNetwork`) survived; (c) `mode != "plan"` **failed open** — `"Plan"`, `"planning"` and the empty string all selected the full menu, and the TUI sent the empty string on every turn because its `PromptRequest` had no `Mode` field at all. The four neuters this cell previously cited were real but all bore on `sandbox_exec`; none crossed `buildRegistry`, and all 19 of its call sites in tests passed `""`. Now: five neuters against a verified-passing baseline, tests at the `buildRegistry` boundary, and a second enforcement point in `resolveExecutable`. **A fourth route was found by re-reviewing the closure rather than the code, and is fixed here too:** the tool filter only ever covered the path an edit takes through a TOOL. The model can also emit a SEARCH/REPLACE block in ordinary prose, which `parseAndLogEditBlocks` lifts out of the reply and delivers as an `EditProposal`; VS Code derives auto-apply from the mode PICKER rather than the wire mode, so `/plan` with the picker on Auto sent `{mode:"plan", autoApply:true}` and that block was written to disk — under a command whose summary reads *"read-only: no edits"*. Plan mode now withholds prose edit blocks on both the agent and single-turn paths and reports each one withheld rather than dropping it silently, and the client-parity test compares `Mode`, which it did not: deleting one line from the VS Code catalog reverted the whole fix and stayed green. Three further neuters, each verified against a passing baseline |
 | 24 | **OPEN** | **The audit log cannot answer "what did the command do?"** `toolaudit` records the decision — which tool, which arguments, approved or refused — and not the effect. After an incident there is no way to reconstruct what a `sandbox_exec` invocation changed. Open **by documented design**, recorded here so the limit is visible to someone relying on the log rather than discovered during an incident. | `daemon/toolaudit.go` | Low-Medium 3.8 | **CONFIRMED** — F-08, same report |
 | 25 | **FIXED `7443f73`** | **All 26 CI action references were mutable tags.** `actions/checkout@v4` and five others resolve at run time to whatever the tag points at; a moved tag runs new code inside a workflow holding this repo's secrets and release credentials, changing nothing in the repo and firing no review. `softprops/action-gh-release@v2` — the only third-party action, in the **release** workflow — was floating with the rest. | `.github/workflows/*.yml` | Low 2.6 | **CONFIRMED** — F-10, same report. All pinned to 40-char SHAs; `scripts/actions-pinned.sh` in `make check` keeps them pinned. Three neuters, all caught |
+| 32 | **OPEN** | **Language-server consent fires on the wrong event.** `query_compiler_definition` and `query_compiler_references` now declare `LaunchesSubprocess` and prompt at `ask`, which closes the lie (they were stamped `Confined`). But the risk being consented to is *starting* an untrusted language server, and `lsp_bridge.go:243` returns a cached one — so the server launches once per language per daemon lifetime while the prompt fires once per turn against an already-running process. The approval a user grants is therefore not the event that carries the risk: the first call spawns `gopls`, and a later turn's prompt asks about a process that has been reading `tsconfig.json`-supplied plugin config for an hour. Correct design is spawn-time consent, one prompt per language per daemon lifetime, at the moment the binary launches. Recorded rather than built: it needs plumbing from the bridge back to the consent channel. | `daemon/lsp_bridge.go`, `daemon/mcpbuiltin.go`, `daemon/toolconsent.go` | Medium 4.5 | **CONFIRMED** — F-01's shape, 2026-09-01 |
 
 ### The eight LOWs (item 12) — RE-VERIFIED 2026-08-09 at `4dca1c8`
 
@@ -216,11 +234,26 @@ question.
 ## 5. Founder decisions — engineering cannot clear these
 
 Packaged one page each in `docs/DECISION_PACK.md` with a recommendation and the cost
-of being wrong. **None is taken on the founder's behalf.**
+of being wrong. **All eight are now taken** — D4 on 2026-07-27, the remaining seven
+on 2026-08-12 — and the P3 security gate closed with them.
+**taken: D1 D2 D3 D4 D5 D6 D7 D8**
 
-Socket auth model · Gate-6 formal closure · `allow_fallbacks` / F1 posture · warn-mode
-Design B vs C · default-model choice (informed by §4) · shared confinement package ·
-skills subsystem (wire in or delete) · Phase 4 packaging.
+Socket auth model (D1, same-uid accepted) · Gate-6 formal closure (D2, ruled closed) ·
+Gate-7 error unification (D3, rejected) · `allow_fallbacks` / F1 posture (D4, option 3,
+shipped and wire-verified) · warn-mode Design B vs C (D5, B rejected, C deferred) ·
+default model (D6, maintained) · shared confinement package (D7, not yet) · skills
+subsystem (D8, approved for deletion).
+
+Phase 4 packaging is not a ruling — its direction is decided and what remains is
+execution. It was on this list as a ninth item for a month.
+
+> **Corrected 2026-09-02.** This section said **"None is taken on the founder's
+> behalf"** for three weeks after all eight were taken, while
+> `docs/DECISION_PACK.md` stamped each one **TAKEN** in its Status column. §5's
+> entire purpose is to tell a reader what engineering cannot clear, so the stale
+> version did the most expensive thing a register can do: it reported the project
+> blocked on a person when it was not. `BACKLOG.md`'s Tier 0 said the same, which
+> is worse — that is the table someone reads to choose what to work on next.
 
 ---
 

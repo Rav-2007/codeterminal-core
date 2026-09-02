@@ -10,6 +10,14 @@ recommendation, and what it costs to be wrong.
 > ten days after it had been implemented and shipped to the wire, so every reader
 > of this list counted the queue one item too long. Taken decisions are marked
 > **TAKEN** in the table and banner-stamped in their own section.
+>
+> **2026-09-02: that rule was half-kept.** Only D4 carried a section
+> banner; D1, D2, D3, D5, D6, D7 and D8 were stamped in the table above
+> and nowhere else, so a reader who scrolled straight to a brief — which
+> is what the briefs are for — met an open question that had been settled
+> for three weeks. All seven are banner-stamped now. The lesson is the
+> file's own: a convention stated once and applied to the item that
+> prompted it is not a convention.
 
 They are gathered here because eight open questions scattered across a 4,300-line
 backlog is eight separate sittings, and a decision queue nobody can enumerate is a
@@ -39,7 +47,15 @@ decided and what remains is execution, not a ruling.
 
 ---
 
-## D1 — Is same-uid-implies-trusted the socket's auth model?
+## D1 — Is same-uid-implies-trusted the socket's auth model? — **TAKEN**
+
+> ### ✅ DECIDED 2026-08-12
+>
+> **Accepted same-uid.** `authorizePeer`'s kernel-verified rule is the final answer, not an interim one. This was one of the three that closed the P3 gate.
+>
+> **Nothing is asked of the founder here.** The brief below is the
+> reasoning as it stood before the ruling, kept because it is the only
+> written record of the evidence.
 
 **At stake.** Whether `authorizePeer`'s rule — the connecting process must run as
 this daemon's uid, verified by the kernel — is the *final* answer or an interim one
@@ -98,7 +114,15 @@ listener cannot be added without someone deciding what admits its peers.
 
 ---
 
-## D2 — Formal closure of Gate 6
+## D2 — Formal closure of Gate 6 — **TAKEN**
+
+> ### ✅ DECIDED 2026-08-12
+>
+> **Ruled closed.** The apply/undo race is fixed in-process (`d96794e`) and cross-process (`2a389c7`); there was never engineering left, only the ruling.
+>
+> **Nothing is asked of the founder here.** The brief below is the
+> reasoning as it stood before the ruling, kept because it is the only
+> written record of the evidence.
 
 **At stake.** A ruling, not a fix. There is no engineering task left.
 
@@ -119,7 +143,15 @@ longer exists.
 
 ---
 
-## D3 — Should Apply/Undo unify their error responses? (Gate 7)
+## D3 — Should Apply/Undo unify their error responses? (Gate 7) — **TAKEN**
+
+> ### ✅ DECIDED 2026-08-12
+>
+> **Rejected.** The two surfaces keep their own error shapes. A decision not to do work, and the last of the three that closed the P3 gate.
+>
+> **Nothing is asked of the founder here.** The brief below is the
+> reasoning as it stood before the ruling, kept because it is the only
+> written record of the evidence.
 
 **At stake.** The last engineering item under FAIL-3, and the third of the three
 things holding the P3 gate.
@@ -216,7 +248,15 @@ only one that provides it, and it re-breaks the congestion fix.
 
 ---
 
-## D5 — Warn-mode Design B vs C (opaque-secret redaction)
+## D5 — Warn-mode Design B vs C (opaque-secret redaction) — **TAKEN**
+
+> ### ✅ DECIDED 2026-08-12
+>
+> **Design B rejected, Design C deferred.** B was recommended REJECT on measured data — 33% of chunks touched, zero precision.
+>
+> **Nothing is asked of the founder here.** The brief below is the
+> reasoning as it stood before the ruling, kept because it is the only
+> written record of the evidence.
 
 **At stake.** Whether to start redacting secrets with no recognisable prefix.
 
@@ -236,7 +276,15 @@ into `toolresult.go`'s header and `SECURITY_MODEL.md`, not buried.
 
 ---
 
-## D6 — The default model
+## D6 — The default model — **TAKEN**
+
+> ### ✅ DECIDED 2026-08-12
+>
+> **Default maintained**, pending a spend eval. Revisit when §4's measurement lands, not before.
+>
+> **Nothing is asked of the founder here.** The brief below is the
+> reasoning as it stood before the ruling, kept because it is the only
+> written record of the evidence.
 
 **At stake.** Repeatedly named the single biggest reply-quality lever, deferred for
 weeks.
@@ -258,7 +306,15 @@ nobody notices until users do.
 
 ---
 
-## D7 — A shared confinement package
+## D7 — A shared confinement package — **TAKEN**
+
+> ### ✅ DECIDED 2026-08-12
+>
+> **Do not build yet.** Two callers is not yet an abstraction.
+>
+> **Nothing is asked of the founder here.** The brief below is the
+> reasoning as it stood before the ruling, kept because it is the only
+> written record of the evidence.
 
 **At stake.** There are now **four** independently written confinement guards.
 Consolidating means a genuinely new shared package, because `editapply` cannot
@@ -280,7 +336,15 @@ maintenance risk, and the mitigation — `editapply/confinement_conformance_test
 
 ---
 
-## D8 — The skills subsystem
+## D8 — The skills subsystem — **TAKEN**
+
+> ### ✅ DECIDED 2026-08-12
+>
+> **Approved for deletion.** The subsystem has no callers; removing it is engineering work that this ruling unblocks.
+>
+> **Nothing is asked of the founder here.** The brief below is the
+> reasoning as it stood before the ruling, kept because it is the only
+> written record of the evidence.
 
 **At stake.** `daemon/skills.go` is fully built (`AddSkill`/`GetSkill`/
 `ListSkills`/`DeleteSkill`, a per-user SQLite store, a CLI) and **completely
