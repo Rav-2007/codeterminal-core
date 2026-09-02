@@ -46,7 +46,7 @@ const truncationMarker = "\n\n[... truncated by codeterminal: %d of %d bytes sho
 // Returns the rendered text, the redaction kinds found (for the client's
 // Redactions notice, kinds only -- never the matched text), and the byte count
 // actually emitted, which is what the turn's cumulative egress budget counts.
-func renderToolResult(content string, maxBytes int, scrubDisabled bool) (rendered string, kinds []string, emitted int) {
+func renderToolResult(content string, maxBytes int, scrubDisabled bool, preNeutralized bool) (rendered string, kinds []string, emitted int) {
 	// Truncate FIRST, on the raw bytes, then scrub what survives.
 	//
 	// The order matters and the other way round is a real bug: scrubbing first
@@ -64,7 +64,18 @@ func renderToolResult(content string, maxBytes int, scrubDisabled bool) (rendere
 	}
 
 	cleaned, redactions := scrub(content, scrubDisabled)
-	out := neutralizeDelimiters(cleaned)
+
+	// Delimiters are defused here for every ordinary result, and deliberately
+	// NOT for one that arrives pre-framed. See mcp.Result.PreNeutralized: a
+	// producer that has already wrapped untrusted text in the daemon's own
+	// delimiters has already defused what went inside them, and a second pass
+	// here would strip the daemon's tags rather than an attacker's -- it cannot
+	// tell them apart. Scrubbing above and control-stripping below run on both
+	// paths; neither touches a tag.
+	out := cleaned
+	if !preNeutralized {
+		out = neutralizeDelimiters(out)
+	}
 
 	// Control characters go last, after scrub has seen the original bytes and
 	// after the delimiters are neutralised, so neither of those is reading text
@@ -203,4 +214,47 @@ func summariseToolActivity(names []string) string {
 		return ""
 	}
 	return fmt.Sprintf("\n\n[used %d tool call(s): %s]", len(names), strings.Join(names, ", "))
+}
+
+// Tag text for the third-party-output envelope.
+const (
+	laneBOutputOpenTagPrefix = "<lane_b_output server=\""
+	laneBOutputCloseTag      = "</lane_b_output>"
+)
+
+// frameLaneBOutput wraps one third-party tool result so the model is told, at
+// the point of reading it, whose text this is.
+//
+// WHY LANE B AND NOT EVERY RESULT. The system prompt now carries a rule for
+// tool output generally (prompts/system.txt), and for a first-party builtin
+// that rule is the whole of what is needed: the daemon wrote the tool, so the
+// only untrusted thing in the result is the DATA it read, and the data is
+// already scrubbed, neutralised and bounded. Wrapping those too would spend
+// budget on every turn to restate what the rule already says.
+//
+// Lane B is different in kind. The text is authored by whoever wrote the
+// server -- a program the user configured but did not audit, running outside
+// the five-gate pipeline -- and it arrives looking exactly like first-party
+// output. F-04 is the same gap on the tool DESCRIPTION; this is the gap on the
+// RESULT. Naming the server inside the envelope also does for tool output what
+// point 3 of webContentEnvelope does for a fetched page: it makes a claim
+// attributable instead of laundered.
+//
+// APPLIED AFTER renderToolResult, NOT BEFORE, and the order is the security
+// property. renderToolResult defuses anything tag-shaped in the server's
+// output, INCLUDING a forged </lane_b_output>, and only then does the daemon
+// write the real one. Wrapping first would hand the server a fence it could
+// close from the inside -- which is precisely how <web_content> was broken
+// (see webContentEnvelope). "laneboutput" is a registered family in
+// context.go, so the forged version cannot survive the pass.
+func frameLaneBOutput(server, rendered string) string {
+	var b strings.Builder
+	b.Grow(len(rendered) + len(laneBOutputOpenTagPrefix) + len(laneBOutputCloseTag) + 8)
+	b.WriteString(laneBOutputOpenTagPrefix)
+	b.WriteString(sanitiseTagAttribute(server))
+	b.WriteString("\">\n")
+	b.WriteString(rendered)
+	b.WriteString("\n")
+	b.WriteString(laneBOutputCloseTag)
+	return b.String()
 }

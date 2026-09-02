@@ -814,7 +814,32 @@ func (s *Server) dispatchToolCall(
 			"allowed to send to the model in one turn, so this result was withheld. Answer from what "+
 			"you have, or ask for a narrower step."), false
 	}
-	rendered, kinds, emitted := renderToolResult(result.Content, cap, s.noScrub())
+	// THE THIRD-PARTY ENVELOPE, AND ITS COST TAKEN OUT OF THE CAP FIRST.
+	//
+	// A Lane B result is wrapped in <lane_b_output server="..."> after
+	// rendering (see frameLaneBOutput for why after, and not before). Those
+	// wrapper bytes are model-facing text like any other, so they are reserved
+	// from the cap BEFORE the render rather than added to the total after it.
+	//
+	// Adding them afterwards would have been three characters shorter and would
+	// have put the turn a few dozen bytes over max_total_tool_bytes on every
+	// third-party call. This file already carries the postmortem of an egress
+	// cap that stopped binding (the 16x overrun above); a new, small, permanent
+	// overrun in the same budget is not a rounding error, it is the same bug
+	// with a smaller constant.
+	frameOverhead := 0
+	if decision.tool.Lane == protocol.LaneThirdParty {
+		frameOverhead = len(frameLaneBOutput(decision.tool.Server, ""))
+	}
+	renderCap := cap - frameOverhead
+	if renderCap < 0 {
+		renderCap = 0
+	}
+	rendered, kinds, emitted := renderToolResult(result.Content, renderCap, s.noScrub(), result.PreNeutralized)
+	if decision.tool.Lane == protocol.LaneThirdParty {
+		rendered = frameLaneBOutput(decision.tool.Server, rendered)
+		emitted = len(rendered)
+	}
 
 	// THE REPEATED-CALL STALL.
 	//

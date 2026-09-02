@@ -185,11 +185,21 @@ func (s *Server) builtinWebSearch(ctx context.Context, raw json.RawMessage) (mcp
 		b.WriteString(fmt.Sprintf("[a secret-shaped value (%s) was removed from this query before it was sent]\n\n",
 			strings.Join(kinds, ", ")))
 	}
-	b.WriteString(fmt.Sprintf("Search results for %q (via %s):\n", query, servedBy))
+	// EVERY UNTRUSTED FIELD IS DEFUSED HERE, at the point it is written.
+	//
+	// This result is returned PreNeutralized (see the mcp.Result below), which
+	// switches off the loop's own neutralisation pass -- so anything this
+	// function writes raw would reach the model raw. A title, a URL and a
+	// snippet all come from the search engine, which is reporting what a page
+	// author chose to put there; ranking a page with a crafted title is cheap
+	// and this text is read before any page is fetched. The query is echoed
+	// back too, and it is the MODEL's text rather than the user's, so it can
+	// carry whatever the model was talked into writing.
+	b.WriteString(fmt.Sprintf("Search results for %q (via %s):\n", neutralizeDelimiters(query), servedBy))
 	for i, r := range results {
-		b.WriteString(fmt.Sprintf("\n%d. %s\n   %s\n", i+1, r.Title, r.URL))
+		b.WriteString(fmt.Sprintf("\n%d. %s\n   %s\n", i+1, neutralizeDelimiters(r.Title), neutralizeDelimiters(r.URL)))
 		if r.Snippet != "" {
-			b.WriteString("   " + r.Snippet + "\n")
+			b.WriteString("   " + neutralizeDelimiters(r.Snippet) + "\n")
 		}
 	}
 
@@ -210,7 +220,10 @@ func (s *Server) builtinWebSearch(ctx context.Context, raw json.RawMessage) (mcp
 	fetched := 0
 	for _, p := range pages {
 		if p.err != nil {
-			b.WriteString(fmt.Sprintf("\n[could not read %s: %v]\n", p.url, p.err))
+			// p.url is model-supplied and p.err quotes it back; same reason as
+			// the loop above.
+			b.WriteString(fmt.Sprintf("\n[could not read %s: %v]\n",
+				neutralizeDelimiters(p.url), neutralizeDelimiters(p.err.Error())))
 			continue
 		}
 		p.page.Text = clipChars(p.page.Text, perPageChars)
@@ -221,7 +234,11 @@ func (s *Server) builtinWebSearch(ctx context.Context, raw json.RawMessage) (mcp
 		b.WriteString("\n[none of these pages could be read; the titles, URLs and snippets above are all that is available]\n")
 	}
 
-	return mcp.Result{Content: b.String()}, nil
+	// PreNeutralized: every untrusted field above was defused as it was
+	// written, and webContentEnvelope defused each page before wrapping it. The
+	// loop must not run a second pass, which would dismantle the <web_content>
+	// fences this just built rather than an attacker's.
+	return mcp.Result{Content: b.String(), PreNeutralized: true}, nil
 }
 
 // fetchedOrNot is one page attempt, kept in the order the engine ranked it.
@@ -350,7 +367,10 @@ func (s *Server) builtinWebFetch(ctx context.Context, raw json.RawMessage) (mcp.
 	if err != nil {
 		return toolError("%v", err)
 	}
-	return mcp.Result{Content: webContentEnvelope(page)}, nil
+	// PreNeutralized for the same reason as web_search: webContentEnvelope
+	// defuses the page before wrapping it, so a second pass here would strip
+	// the daemon's own fence.
+	return mcp.Result{Content: webContentEnvelope(page), PreNeutralized: true}, nil
 }
 
 // hostOfURLAllowed applies the configured allow-list to a URL.

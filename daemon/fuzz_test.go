@@ -66,7 +66,7 @@ func FuzzRenderToolResult(f *testing.F) {
 			t.Skip()
 		}
 
-		rendered, kinds, emitted := renderToolResult(content, maxBytes, false)
+		rendered, kinds, emitted := renderToolResult(content, maxBytes, false, false)
 
 		// THE CAP HOLDS. emitted is what the caller charges against the turn's
 		// byte budget, so a mismatch would let a tool spend budget it was not

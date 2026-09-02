@@ -329,7 +329,7 @@ func TestToolOutputIsScrubbedOnTheEgressPath(t *testing.T) {
 
 func TestToolResultIsTruncatedAndSaysSo(t *testing.T) {
 	big := strings.Repeat("A", 5000)
-	rendered, _, emitted := renderToolResult(big, 1000, false)
+	rendered, _, emitted := renderToolResult(big, 1000, false, false)
 
 	if emitted > 1200 {
 		t.Errorf("emitted %d bytes with a 1000-byte cap", emitted)
@@ -348,7 +348,7 @@ func TestToolResultIsTruncatedAndSaysSo(t *testing.T) {
 // its own tool output.
 func TestTruncationDoesNotSplitRunes(t *testing.T) {
 	// Each "é" is two bytes, so a 5-byte cap lands mid-rune.
-	rendered, _, _ := renderToolResult(strings.Repeat("é", 10), 5, false)
+	rendered, _, _ := renderToolResult(strings.Repeat("é", 10), 5, false, false)
 	for _, r := range rendered {
 		if r == '\uFFFD' {
 			t.Fatalf("truncation split a rune, producing U+FFFD: %q", rendered)

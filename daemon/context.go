@@ -50,10 +50,98 @@ func buildTagVariantPattern(letters string) string {
 	return "(?i)" + b.String()
 }
 
-var (
-	retrievedContextTagPattern = regexp.MustCompile(buildTagVariantPattern("retrievedcontext"))
-	userRequestTagPattern      = regexp.MustCompile(buildTagVariantPattern("userrequest"))
-)
+// protectedTagFamilies IS THE REGISTRY, and it is a registry rather than a
+// hand-written list of two because the hand-written list of two was wrong.
+//
+// WHAT WENT WRONG. webContentEnvelope (websearch.go) documented, as one of the
+// three things that make its fence hold, that "renderToolResult runs
+// neutralizeDelimiters over this on the way out, so a page that writes
+// </web_content> cannot close its own envelope and continue as though it were
+// the daemon talking". That was false for as long as the envelope existed:
+// neutralizeDelimiters knew "retrievedcontext" and "userrequest" and had never
+// heard of "webcontent". A fetched page -- text written by anyone on the open
+// internet, at a URL the model can be talked into visiting -- could close the
+// fence the system prompt tells the model to trust, and continue outside it.
+//
+// The defect is not that someone forgot a line. It is that the set of protected
+// families was expressed as two `var` declarations and a two-line function, so
+// ADDING A THIRD ENVELOPE ANYWHERE ELSE IN THE DAEMON did not require touching
+// this file, did not fail to compile, and did not fail a test. The fence was
+// opt-in and nothing said so.
+//
+// So: every delimiter family this daemon writes around untrusted text is named
+// here, neutralizeDelimiters loops over all of them, and
+// TestEveryEnvelopeTagIsNeutralized walks the real tag constants and fails if
+// any one of them survives a round trip. Adding an envelope without registering
+// it is now a red build rather than a silent hole.
+var protectedTagFamilies = []string{
+	// The prompt-level fence: retrieved workspace content, and the boundary
+	// that separates it from what the user actually asked for.
+	"retrievedcontext",
+	"userrequest",
+	// A page fetched from the open internet. The most exposed of the four --
+	// its content has no relationship to the user at all.
+	"webcontent",
+	// Output from a third-party MCP server (see toolresult.go). Written by
+	// whoever wrote the server, which the user configured but did not audit.
+	"laneboutput",
+}
+
+var protectedTagPatterns = compileProtectedTagPatterns()
+
+func compileProtectedTagPatterns() []*regexp.Regexp {
+	out := make([]*regexp.Regexp, 0, len(protectedTagFamilies))
+	for _, family := range protectedTagFamilies {
+		out = append(out, regexp.MustCompile(buildTagVariantPattern(family)))
+	}
+	return out
+}
+
+// protectedTagPattern returns the compiled pattern for one registered family,
+// so a caller asking "does this text carry retrieved-context markup?" reads the
+// registry rather than compiling a second copy that could drift from it.
+// Panics on an unregistered family: the argument is always a literal in this
+// package, so a wrong one is a programming error and should not be reachable at
+// runtime.
+func protectedTagPattern(family string) *regexp.Regexp {
+	for i, registered := range protectedTagFamilies {
+		if registered == family {
+			return protectedTagPatterns[i]
+		}
+	}
+	panic("no protected tag family named " + family)
+}
+
+// envelopeTagsInUse holds one COMPLETE example of every delimiter this daemon
+// writes around untrusted text.
+//
+// TestEveryEnvelopeTagIsNeutralized drives each one through
+// neutralizeDelimiters and fails if it survives. That is a BEHAVIOURAL check
+// rather than a membership check on purpose: it does not ask "is this family in
+// the registry", it asks "could a hostile document forge this exact tag", which
+// is the question that was answered wrongly for <web_content>. A new envelope
+// added without a registry entry fails here even if its author never read
+// protectedTagFamilies.
+//
+// COMPLETE, and the word is load-bearing. The two opening tags that carry
+// attributes are stored as PREFIXES elsewhere (webContentOpenTagPrefix ends at
+// the quote, because the URL comes next), and a prefix is not a tag:
+// buildTagVariantPattern requires a closing '>', so a bare prefix cannot match
+// and a test asserting on one would fail for a reason that has nothing to do
+// with the defence. Each entry below is therefore the prefix plus a minimal
+// attribute value and terminator -- still derived from the constants, so a
+// renamed tag still moves this list, but now shaped like something an attacker
+// would actually have to write.
+var envelopeTagsInUse = []string{
+	retrievedContextOpenTag,
+	retrievedContextCloseTag,
+	userRequestOpenTag,
+	userRequestCloseTag,
+	webContentOpenTagPrefix + `https://example.invalid/">`,
+	webContentCloseTag,
+	laneBOutputOpenTagPrefix + `some-server">`,
+	laneBOutputCloseTag,
+}
 
 // neutralizeDelimiters defuses any tag-like text inside untrusted retrieved
 // content that could otherwise be mistaken for one of our real delimiter
@@ -67,8 +155,9 @@ var (
 // check (or a sufficiently literal-minded reader) would still count as a
 // real closing tag.
 func neutralizeDelimiters(s string) string {
-	s = retrievedContextTagPattern.ReplaceAllStringFunc(s, neutralizeMatch)
-	s = userRequestTagPattern.ReplaceAllStringFunc(s, neutralizeMatch)
+	for _, pattern := range protectedTagPatterns {
+		s = pattern.ReplaceAllStringFunc(s, neutralizeMatch)
+	}
 	return s
 }
 

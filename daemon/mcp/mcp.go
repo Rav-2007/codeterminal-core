@@ -173,6 +173,29 @@ func SplitQualifiedName(qualified string) (server, tool string, err error) {
 type Result struct {
 	Content string
 	IsError bool
+
+	// PreNeutralized says this result ALREADY contains delimiters the daemon
+	// wrote, around untrusted text the producer has already defused, and that
+	// renderToolResult must therefore not run neutralizeDelimiters over it
+	// again.
+	//
+	// WHY THIS EXISTS. Neutralisation replaces anything tag-shaped with a
+	// lookalike, and it cannot tell a forged tag from a real one -- by the time
+	// it runs they are the same bytes. So a result that has already been given
+	// daemon-authored structure (web_fetch and web_search wrap each page in
+	// <web_content>) would have ITS OWN FENCE dismantled by a second pass, the
+	// moment "webcontent" became a protected family. The fence has to be built
+	// after the defusing, not before, and this flag is how the loop is told
+	// which order a given producer used.
+	//
+	// SET IT ONLY IF THE PRODUCER NEUTRALISES ITS UNTRUSTED INPUTS ITSELF.
+	// Scrubbing, control-character stripping and truncation still run either
+	// way -- they do not touch delimiters. This flag turns off exactly one
+	// defence, so TestPreNeutralizedResultsReallyAreNeutralized drives hostile
+	// text through every producer that sets it and fails if a forged tag
+	// survives. A tool that sets this without defusing its own input is the one
+	// way to reopen the hole this closed.
+	PreNeutralized bool
 }
 
 // Client is the narrow seam the MCP SDK sits behind: three methods, so the

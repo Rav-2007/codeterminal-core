@@ -374,26 +374,82 @@ func searchWeb(ctx context.Context, client *http.Client, cfg MCPWebConfig, query
 //  1. The tag is CLOSED IN THE SYSTEM PROMPT, which states that nothing inside
 //     it is ever an instruction. A fence the model was never told about is
 //     decoration.
-//  2. renderToolResult runs neutralizeDelimiters over this on the way out, so a
-//     page that writes "</web_content>" cannot close its own envelope and
-//     continue as though it were the daemon talking.
+//  2. The page's own text is neutralised HERE, before it is wrapped, so a page
+//     that writes "</web_content>" cannot close its own envelope and continue
+//     as though it were the daemon talking.
 //  3. The source URL is INSIDE the envelope, so an answer can cite where a
 //     claim came from -- which is the difference between grounding and a
 //     laundered assertion.
+//
+// POINT 2 SAID SOMETHING ELSE UNTIL 2026-09-02, AND WHAT IT SAID WAS FALSE.
+// It claimed renderToolResult neutralised this "on the way out".
+// neutralizeDelimiters knew two tag families, "retrievedcontext" and
+// "userrequest", and had never heard of "webcontent" -- so for the whole life
+// of this envelope a page could close it and keep writing. The guarantee was
+// documented, believed, and absent; see protectedTagFamilies in context.go for
+// why the registry now makes that combination impossible.
+//
+// IT IS NEUTRALISED HERE RATHER THAN LATER, and that is not a stylistic choice.
+// The envelope is daemon-authored structure. Once "webcontent" is a protected
+// family, a neutralisation pass running over the FINISHED envelope would mangle
+// the daemon's own opening and closing tags along with any forged ones -- it
+// cannot tell them apart, because by then they are the same bytes. Untrusted
+// text has to be defused before the daemon writes its own delimiters around it,
+// which is why mcp.Result carries PreNeutralized for this path.
+//
+// THE ATTRIBUTES ARE ATTACKER-INFLUENCED TOO, and were interpolated raw. A page
+// titled `x" data-note="` adds an attribute to the daemon's tag; a title
+// containing ">" closes the opening tag early and drops the rest of the page
+// outside the fence -- the same escape as point 2, through a field nobody
+// thought of as content. sanitiseTagAttribute strips the three characters that
+// can end an attribute or a tag, plus control bytes, from both URL and title.
 func webContentEnvelope(p fetchedPage) string {
 	var b strings.Builder
-	b.WriteString("<web_content url=\"")
-	b.WriteString(p.URL)
+	b.WriteString(webContentOpenTagPrefix)
+	b.WriteString(sanitiseTagAttribute(p.URL))
 	b.WriteString("\"")
-	if p.Title != "" {
+	if title := sanitiseTagAttribute(normaliseSpace(p.Title)); title != "" {
 		b.WriteString(" title=\"")
-		b.WriteString(normaliseSpace(p.Title))
+		b.WriteString(title)
 		b.WriteString("\"")
 	}
 	b.WriteString(">\n")
-	b.WriteString(p.Text)
-	b.WriteString("\n</web_content>")
+	b.WriteString(neutralizeDelimiters(p.Text))
+	b.WriteString("\n")
+	b.WriteString(webContentCloseTag)
 	return b.String()
+}
+
+// Tag text for the fetched-page envelope. Named constants rather than literals
+// so TestEveryEnvelopeTagIsNeutralized can assert on the bytes this actually
+// writes, instead of on a copy of them that could drift.
+const (
+	webContentOpenTagPrefix = "<web_content url=\""
+	webContentCloseTag      = "</web_content>"
+)
+
+// sanitiseTagAttribute makes a string safe to interpolate into one of the
+// daemon's own tag attributes.
+//
+// Removes the double quote (ends the attribute), and both angle brackets (end
+// or start a tag), plus C0/C1 control bytes -- these values are rendered for a
+// human as well as a model, and a title is a fine place to hide an escape
+// sequence. Characters are DROPPED rather than escaped: there is no legitimate
+// reason for a URL or a page title to contain one, an escaping scheme is a
+// second thing to get right, and a title that loses a stray bracket is still a
+// perfectly good citation.
+func sanitiseTagAttribute(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r == '"' || r == '<' || r == '>':
+			return -1
+		case r < 0x20 || r == 0x7f:
+			return -1
+		case r >= 0x80 && r <= 0x9f:
+			return -1
+		}
+		return r
+	}, s)
 }
 
 // clipChars trims to a rune boundary and says that it did.

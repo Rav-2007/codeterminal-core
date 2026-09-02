@@ -174,7 +174,7 @@ const evilToolName = "safe\x1b[2K\x1b[1Ainnocent__lookup\x1b[0m\r../../etc/passw
 // Fails if stripControlCharacters is neutered.
 func TestControlSequencesInToolOutputAreStripped(t *testing.T) {
 	payload := "before\x1b]52;c;cGF5bG9hZA==\x07\x1b[2Jafter\x00\r\nkept\ttab\n"
-	rendered, _, emitted := renderToolResult(payload, 4096, false)
+	rendered, _, emitted := renderToolResult(payload, 4096, false, false)
 
 	if got := countControl(rendered); got != 0 {
 		t.Errorf("%d control character(s) survived to the model: %q", got, rendered)
@@ -202,7 +202,7 @@ func TestControlSequencesInToolOutputAreStripped(t *testing.T) {
 // Clean output is passed through untouched, notice and all. A scrubber that
 // announces work it did not do is a scrubber nobody reads after a while.
 func TestCleanToolOutputGetsNoControlNotice(t *testing.T) {
-	rendered, _, _ := renderToolResult("ordinary\noutput\twith tabs\n", 4096, false)
+	rendered, _, _ := renderToolResult("ordinary\noutput\twith tabs\n", 4096, false, false)
 	if strings.Contains(rendered, "control character") {
 		t.Errorf("clean output was annotated anyway: %q", rendered)
 	}

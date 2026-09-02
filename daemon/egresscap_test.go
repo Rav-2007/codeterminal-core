@@ -46,7 +46,7 @@ func TestNoAmountAlreadySpentTurnsOffTruncation(t *testing.T) {
 		if capped <= 0 {
 			continue // the withheld branch: nothing is rendered at all
 		}
-		_, _, emitted := renderToolResult(huge, capped, false)
+		_, _, emitted := renderToolResult(huge, capped, false, false)
 		if emitted > maxResult+truncationNoticeSlack {
 			t.Errorf("spent=%d: emitted %d bytes against a per-result cap of %d",
 				spent, emitted, maxResult)

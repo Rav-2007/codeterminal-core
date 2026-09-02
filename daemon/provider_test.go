@@ -87,7 +87,7 @@ func TestBuildChatMessages_OrdersSystemThenHistoryThenCurrentUser(t *testing.T) 
 		t.Fatal("system message content changed — retrieved context or history must never alter it")
 	}
 	for i, m := range got[1:3] {
-		if retrievedContextTagPattern.MatchString(m.Content) {
+		if protectedTagPattern("retrievedcontext").MatchString(m.Content) {
 			t.Errorf("history message %d unexpectedly contains retrieved-context markup: %q", i+1, m.Content)
 		}
 	}
