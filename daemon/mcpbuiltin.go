@@ -127,6 +127,10 @@ func (s *Server) builtinTools(proposals *proposalSink, mode string) []mcp.Builti
 					"additionalProperties":false
 				}`),
 				ReadOnlyHint: true,
+				// Starts a language server (LSPBridge -> exec.Command). That file
+				// calls a language server UNTRUSTED INPUT: project config can load
+				// plugins, so this is not the plain read it reads as.
+				LaunchesSubprocess: true,
 			},
 			Handler: s.builtinLSPDefinition,
 		},
@@ -146,6 +150,10 @@ func (s *Server) builtinTools(proposals *proposalSink, mode string) []mcp.Builti
 					"additionalProperties":false
 				}`),
 				ReadOnlyHint: true,
+				// Starts a language server (LSPBridge -> exec.Command). That file
+				// calls a language server UNTRUSTED INPUT: project config can load
+				// plugins, so this is not the plain read it reads as.
+				LaunchesSubprocess: true,
 			},
 			Handler: s.builtinLSPReferences,
 		},
@@ -252,6 +260,12 @@ func (s *Server) builtinTools(proposals *proposalSink, mode string) []mcp.Builti
 					"additionalProperties":false
 				}`),
 					ReadOnlyHint: true,
+					// Reaches lspServerForFile to find the node, so it starts a
+					// language server exactly as query_compiler_* does. Found by
+					// TestNoBuiltinSpawnsWithoutDeclaringIt, not by reading: its
+					// description says "using the native compiler" and nobody had
+					// connected that phrase to exec.Command.
+					LaunchesSubprocess: true,
 				},
 				Handler: func(ctx context.Context, raw json.RawMessage) (mcp.Result, error) {
 					return s.builtinProposeASTEdit(ctx, raw, proposals)

@@ -307,10 +307,16 @@ func TestBuiltinsAreConfinedAndReadOnly(t *testing.T) {
 		// same shape of miss RegisterBuiltin made about sandbox_exec: the flags
 		// that describe LOCAL effects all say "harmless", and the honest answer
 		// to "where does this go" is not among them.
-		if tool.ReachesNetwork {
+		//
+		// LaunchesSubprocess was added to this branch after the query_compiler_*
+		// pair was found doing exactly that with neither flag set: they read as
+		// harmless by every clause here, and the honest answer to "what does this
+		// start" was not among them either.
+		if tool.ReachesNetwork || tool.LaunchesSubprocess {
 			if tool.Confined {
-				t.Errorf("built-in %q reaches the network and still reports itself confined; "+
-					"the approval prompt would tell the user their query is governed by the edit-review pipeline", tool.Name)
+				t.Errorf("built-in %q reaches the network or starts a subprocess and still reports "+
+					"itself confined; the approval prompt would tell the user this is governed by the "+
+					"edit-review pipeline", tool.Name)
 			}
 		} else if !tool.Confined && !hostCannotConfine(t, s, tool.Name) {
 			t.Errorf("built-in %q is not confined", tool.Name)

@@ -77,11 +77,22 @@ func isPlanMode(mode string) bool {
 // anything kept both network egress and the indirect-injection intake that
 // comes back with it.
 //
-// A tool added later that sets either flag is withheld without anyone editing
-// this function, which is the entire reason to branch on the flags rather than
-// on a list of names.
+// A tool added later that sets any of these flags is withheld without anyone
+// editing this function, which is the entire reason to branch on the flags
+// rather than on a list of names.
+//
+// THE SET GREW ONCE ALREADY AND THAT IS THE WARNING. This function shipped
+// reading ExecutesCode alone while its comment claimed to be keyed on
+// capability; adding ReachesNetwork fixed that instance and left the same
+// assumption in place. LaunchesSubprocess is the third, found on
+// query_compiler_definition and query_compiler_references -- tools that declare
+// only ReadOnlyHint and start a language server the daemon does not control.
+// The flags are not the property; they are the properties someone has named so
+// far. A built-in that acts in a way none of them describes is withheld by
+// nothing here, which is why builtinCapabilityAudit enumerates handlers rather
+// than trusting this list to be finished.
 func planModeDenies(t mcp.Tool) bool {
-	return t.ExecutesCode || t.ReachesNetwork
+	return t.ExecutesCode || t.ReachesNetwork || t.LaunchesSubprocess
 }
 
 // planModeWithholdEdits drops edit blocks parsed out of the model's prose in

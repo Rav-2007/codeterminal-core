@@ -66,6 +66,15 @@ func TestSandboxExecReportsUnconfinedWhenTheHostHasNoBackend(t *testing.T) {
 // host, and this loop would have demanded the opposite. It was never reached,
 // because those two were also missing from allBuiltinNames -- two gaps that
 // concealed each other. Asking the tool what it IS survives the next arrival.
+//
+// AND THEN IT DID NOT SURVIVE THE NEXT ARRIVAL, which is the correction here.
+// The exemption asked about two properties, so query_compiler_definition and
+// query_compiler_references -- which declare only ReadOnlyHint and start a
+// language server through exec.Command -- fell into the "must be confined"
+// branch, and this test DEMANDED the false stamp. The comment above was right
+// about names versus properties and still enumerated the properties by hand,
+// which is the same failure one level up. TestNoBuiltinSpawnsWithoutDeclaringIt
+// exists because this list cannot be trusted to be finished.
 func TestTheReadAndProposeBuiltinsAreStillConfined(t *testing.T) {
 	restore := stubNoSandboxBackend(t)
 	defer restore()
@@ -73,8 +82,8 @@ func TestTheReadAndProposeBuiltinsAreStillConfined(t *testing.T) {
 	s := builtinTestServer(t)
 	for _, name := range allBuiltinNames {
 		spec := builtinSpec(t, s, name)
-		if spec.ExecutesCode || spec.ReachesNetwork {
-			continue // exempt by construction; the two tests below pin who qualifies
+		if spec.ExecutesCode || spec.ReachesNetwork || spec.LaunchesSubprocess {
+			continue // exempt by construction; the tests below pin who qualifies
 		}
 		if !spec.Confined {
 			t.Errorf("%s reports unconfined; it is this daemon's own code behind the same gates", name)

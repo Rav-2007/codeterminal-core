@@ -121,7 +121,7 @@ func (r *Registry) RegisterBuiltin(b Builtin) error {
 	// you use for edits" over a call that ships the user's query to a third
 	// party and pulls an attacker-controlled page into the model's context.
 	// See Tool.ReachesNetwork for why that sentence is worse than false.
-	if !b.Tool.ExecutesCode && !b.Tool.ReachesNetwork {
+	if !b.Tool.ExecutesCode && !b.Tool.ReachesNetwork && !b.Tool.LaunchesSubprocess {
 		b.Tool.Confined = true
 	}
 

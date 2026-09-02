@@ -100,6 +100,38 @@ type Tool struct {
 	// remote end, and the prompt says that too.
 	ReachesNetwork bool
 
+	// LaunchesSubprocess marks a tool that starts another program on this
+	// machine as a side effect of being called.
+	//
+	// THIRD FLAG, SAME LESSON, AND THE LESSON IS NOW THE POINT. ExecutesCode
+	// named the tool whose effects escape sideways into the host.
+	// ReachesNetwork named the tool whose effects escape outward onto the wire.
+	// This names the tool that starts a program it does not control -- which is
+	// neither of those and was therefore invisible to both.
+	//
+	// query_compiler_definition and query_compiler_references are the pair that
+	// found it. They declared only ReadOnlyHint, because a go-to-definition
+	// lookup reads like the most harmless thing in the menu. Their handlers
+	// reach exec.Command in daemon/lsp_bridge.go, which starts gopls,
+	// typescript-language-server or pyright-langserver with cmd.Dir set to the
+	// user's workspace -- and that file's own header calls a language server
+	// UNTRUSTED INPUT, because tsconfig.json can load plugins and
+	// pyrightconfig.json can name an interpreter, so a hostile repository can
+	// execute code inside the process on the far end of the pipe.
+	//
+	// Two things were wrong and neither was reachable from the other two flags.
+	// RegisterBuiltin stamped them Confined, so the approval prompt would have
+	// promised review over a call that spawns an unconfined binary. And plan
+	// mode, whose whole promise is that nothing is started, registered them --
+	// while withholding Lane B servers for precisely this reason, one file over.
+	//
+	// NOT FOLDED INTO ExecutesCode, deliberately. That flag also binds the
+	// per-turn grant to the call's arguments, which is right for sandbox_exec
+	// and wrong here: it would re-prompt for every symbol looked up in a turn,
+	// and a prompt that fires on every navigation is one people learn to click
+	// through. Keeping the flags distinct means one approval covers the turn.
+	LaunchesSubprocess bool
+
 	// ReadOnlyHint and Destructive are the SERVER'S OWN claims about its tool,
 	// carried for display so a client can style the prompt.
 	//

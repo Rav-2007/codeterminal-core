@@ -215,6 +215,11 @@ func TestPlanModeRegistryWithholdsEveryActingTool(t *testing.T) {
 				"ExecutesCode alone while calling itself capability-keyed, and mcp.Tool "+
 				"declares two such flags", tool.Name)
 		}
+		if tool.LaunchesSubprocess {
+			t.Errorf("plan mode advertises %q, which starts a program. Lane B servers are "+
+				"withheld from plan mode precisely because connecting spawns a subprocess; a "+
+				"first-party built-in doing the same thing was not", tool.Name)
+		}
 	}
 
 	// ANTI-VACUITY, and it has to be here: a buildRegistry that returned an
@@ -235,7 +240,14 @@ func TestPlanModeRegistryWithholdsEveryActingTool(t *testing.T) {
 	if !got["repo_map"] {
 		t.Error("repo_map is read-only and was filtered as collateral")
 	}
-	for _, unwanted := range []string{"sandbox_exec", "web_search", "web_fetch", "propose_edit", "propose_ast_edit"} {
+	// query_compiler_* named explicitly as well as covered by the flag loop
+	// above: they are the pair that shipped through three controls with no
+	// capability declared, and a regression that silently drops the flag would
+	// otherwise only be caught by a loop that reads it.
+	for _, unwanted := range []string{
+		"sandbox_exec", "web_search", "web_fetch", "propose_edit", "propose_ast_edit",
+		"query_compiler_definition", "query_compiler_references",
+	} {
 		if got[unwanted] {
 			t.Errorf("plan mode advertises %q", unwanted)
 		}
