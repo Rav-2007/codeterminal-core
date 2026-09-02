@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"slices"
@@ -513,6 +514,9 @@ func (c *Config) ResolvedSlug() string {
 	return c.Tiers[c.DefaultTier].Slug
 }
 
+// maxModelStatusBytes bounds the /models/status response the daemon will read.
+const maxModelStatusBytes = 1 << 20 // 1 MiB
+
 // ReconcileWithProxy fetches the allowed models from the proxy and disables
 // any tiers in this config that the proxy will refuse, proactively aligning
 // the UI's capabilities with the backend's policy (b5).
@@ -540,7 +544,16 @@ func (c *Config) ReconcileWithProxy(ctx context.Context, apiBase, apiKey string)
 		AllowedModels []string `json:"allowed_models"`
 		Unrestricted  bool     `json:"unrestricted"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+	// CAPPED, like every other network read in this daemon. provider.go reads
+	// an error body under io.LimitReader, webfetch.go caps at maxBytes, and the
+	// proxy has decodeCappedJSON; this was the one that decoded straight from
+	// the wire. The 5s context bounds how LONG a hostile or compromised proxy
+	// can hold the connection, not how much it can send, so an unbounded body
+	// went into daemon heap at startup with nothing to stop it.
+	//
+	// 1 MiB is far above any real allow-list -- the response is a string slice
+	// and a bool -- and far below a size that matters to the process.
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxModelStatusBytes)).Decode(&status); err != nil {
 		return err
 	}
 
