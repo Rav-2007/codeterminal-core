@@ -8,10 +8,11 @@
 
 MODULES := daemon editapply proxy helper protocol clients/tui
 
-.PHONY: help hooks test race fmt vet crossvet lint ratchet errcheck fuzz check docs drill soak eval evalguard
+.PHONY: help hooks hookcheck test race fmt vet crossvet lint ratchet errcheck fuzz check docs drill soak eval evalguard
 
 help:
 	@echo "make hooks    install the tracked git hooks (.githooks/) -- do this once"
+	@echo "make hookcheck verify that install actually happened (also runs inside check)"
 	@echo "make check    everything CI runs: build, fmt, vet, race, lint, ratchet, docs"
 	@echo "make docs     every relative link in a tracked .md resolves"
 	@echo "make race     go test -race across all six modules"
@@ -32,6 +33,32 @@ hooks:
 	@chmod +x .githooks/*
 	@echo "hooks installed: core.hooksPath -> .githooks"
 	@echo "note: 'git push --no-verify' still bypasses them; see .githooks/pre-push"
+
+# And the half that checks the second half happened.
+#
+# `make hooks` was documented in the help text and asserted by nothing. A clone
+# that skipped it ran no pre-push hook at all -- and the pre-push hook is the
+# only enforcement point several gates have ever had -- while `make check` went
+# green and told the developer everything was wired. A gate whose installation
+# is optional and unverified is a gate you find out about from the incident.
+#
+# Hard failure, not a warning: this session has now corrected four separate
+# controls that were written, believed, and enforcing nothing, and a warning
+# printed above a green `check: all gates green` is the fifth.
+hookcheck:
+	@configured=$$(git config --get core.hooksPath 2>/dev/null || true); \
+	if [ "$$configured" != ".githooks" ]; then \
+		echo "hookcheck: core.hooksPath is $${configured:-unset}, expected .githooks." >&2; \
+		echo "           The tracked hooks in .githooks/ are not running. Fix: make hooks" >&2; \
+		exit 1; \
+	fi; \
+	for h in .githooks/*; do \
+		if [ ! -x "$$h" ]; then \
+			echo "hookcheck: $$h is not executable -- git will skip it. Fix: make hooks" >&2; \
+			exit 1; \
+		fi; \
+	done; \
+	echo "hookcheck: core.hooksPath -> .githooks, all hooks executable"
 
 fmt:
 	@for m in $(MODULES); do \
@@ -134,7 +161,7 @@ evalguard:
 # docs is last and costs ~1s. It is in `check` rather than in a docs-only job
 # because a rename breaks links in the same commit that makes it, and that is
 # the only moment anyone can fix it cheaply.
-check: fmt vet crossvet race lint ratchet errcheck evalguard supplychain docs
+check: hookcheck fmt vet crossvet race lint ratchet errcheck evalguard supplychain docs
 	@echo "check: all gates green"
 
 # Two supply-chain gates. actions-pinned is sub-second and offline;

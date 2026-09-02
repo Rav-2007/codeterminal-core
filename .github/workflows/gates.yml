@@ -1,0 +1,111 @@
+name: gates
+
+# THE OFFLINE GATES, AND A SEPARATE WORKFLOW ON PURPOSE.
+#
+# docs-links, docs-claims, actions-pinned and go-toolchain-pinned had exactly one
+# enforcement point between them: .githooks/pre-push. `core.hooksPath` is set by
+# `make hooks` (Makefile) and asserted NOWHERE -- no test, no CI step -- so a
+# clone that skipped one make target ran none of them, anywhere. Four gates whose
+# protection depended on a human remembering, which is the failure this repo has
+# now corrected four times in other places.
+#
+# WHY NOT A JOB IN build.yml. That workflow carries `paths-ignore: ["**.md"]`,
+# and paths-ignore is workflow-level rather than per-job. A job there would
+# inherit the skip, so a MARKDOWN-ONLY push -- which today starts no CI at all --
+# would still run none of these. That push is precisely the commit shape that
+# breaks a doc link or drifts a register, and docs-links and docs-claims are
+# precisely the two gates that catch it. Putting them behind the filter that
+# hides their own use case is how the previous version failed.
+#
+# WHY IT IS WORTH CI TIME AT ALL, beyond the missing hook: docs-claims and
+# go-toolchain-pinned check CROSS-FILE invariants that a diff-shaped review
+# structurally cannot see. A diff that bumps go.work and forgets one go.mod looks
+# correct to a reviewer reading it hunk by hunk.
+#
+# Measured at 2.8s for all four including both self-tests: pure shell, no Go
+# toolchain, no network. Against ~60 billable minutes for build.yml's matrix this
+# is free, which is the other reason it can afford to run on every push.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  gates:
+    name: offline gates
+    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # Each gate is its own step so a red run names which invariant broke in the
+      # job list, without anyone opening the log.
+      #
+      # The self-tests run FIRST and separately, following `make docs`: a checker
+      # that cannot demonstrate it still detects a violation is not evidence that
+      # there is none. Both of these have been caught lying by their own
+      # self-tests during development.
+      - name: Self-tests (the checkers must still be able to fail)
+        run: |
+          ./scripts/docs-claims.sh --self-test
+          ./scripts/go-toolchain-pinned.sh --self-test
+
+      - name: Doc links resolve
+        run: ./scripts/docs-links.sh
+
+      - name: Registers agree
+        run: ./scripts/docs-claims.sh
+
+      - name: GitHub Actions pinned to commit SHAs
+        run: ./scripts/actions-pinned.sh
+
+      - name: Go toolchain floor agrees across every module
+        run: ./scripts/go-toolchain-pinned.sh
+
+  corpus:
+    name: corpus holds no answer key
+    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 10
+    # A SEPARATE JOB, AND RE-ANCHORED ONTO THE RIGHT AXIS.
+    #
+    # TestNoIndexedFileEchoesAnEvalQuery fails when a committed file contains a
+    # retrieval-eval query verbatim -- the corpus then holds the eval's own
+    # answer key and every recall number computed from it is inflated. That is
+    # what happened between 2026-08-11 and 2026-08-28, when a captured `go test`
+    # transcript sat in the indexed corpus for seventeen days.
+    #
+    # Its only automatic enforcement point was retrieval-eval.yml, whose trigger
+    # is path-filtered to retrieval SOURCE files (chunker.go, rerank.go,
+    # embedder.go, ...). But the event this test guards is COMMITTING A FILE --
+    # any file, and in the incident it actually caught, a pasted transcript.
+    # A transcript lands in plans/ or docs/ and touches not one path on that
+    # list, so the guard did not run on the commit shape it exists for. The
+    # filter was on the wrong axis: it was scoped to what changes the RANKER
+    # when the hazard is what changes the CORPUS, which is every file in the
+    # repository.
+    #
+    # Here it is anchored to every push instead, which is the axis that matches.
+    # It needs the Go toolchain but neither the model nor the network, and runs
+    # in ~0.6s once built; retrieval-eval.yml keeps its own copy of this step as
+    # a fast pre-check before it spends fifteen minutes on numbers.
+    #
+    # Kept out of the `gates` job above so that job stays pure shell: a broken
+    # Go setup must not take the four offline checkers down with it.
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: "1.25.x"
+          cache-dependency-path: "**/go.sum"
+
+      - name: No committed file echoes a retrieval-eval query
+        run: go test -tags eval -count=1 -run 'TestNoIndexedFileEchoesAnEvalQuery' -v ./
+        working-directory: daemon
