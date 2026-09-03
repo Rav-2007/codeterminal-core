@@ -50,6 +50,10 @@ func detectWarnModeSecrets(text string) []warnDetection {
 // carry enough bits to be a credential and are skipped by the length floor.
 var entropyTokenPattern = regexp.MustCompile(`[A-Za-z0-9+/=_\-]{20,}`)
 
+// entropyMinTokenLen is the {20,} in entropyTokenPattern, named so the scanner
+// in entropyTokens and the pattern it mirrors cannot drift apart silently.
+const entropyMinTokenLen = 20
+
 // entropyWarnThresholdBitsPerChar is a deliberately provisional starting
 // threshold. It is NOT tuned — the whole point of warn-mode is to gather the
 // data needed to tune (or reject) it. bits_per_char is logged on every hit so
@@ -59,9 +63,65 @@ var entropyTokenPattern = regexp.MustCompile(`[A-Za-z0-9+/=_\-]{20,}`)
 const entropyWarnThresholdBitsPerChar = 4.0
 
 // detectHighEntropy flags long, high-Shannon-entropy tokens. Log-only.
+// isEntropyTokenByte reports membership of entropyTokenPattern's character
+// class. Kept adjacent to that pattern because the two MUST agree; the pattern
+// is still the specification, and TestEntropyScanMatchesTheRegexp holds them
+// to each other on real repository content.
+func isEntropyTokenByte(c byte) bool {
+	switch {
+	case c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z', c >= '0' && c <= '9':
+		return true
+	case c == '+', c == '/', c == '=', c == '_', c == '-':
+		return true
+	}
+	return false
+}
+
+// entropyTokens returns the maximal runs of the token class that are at least
+// entropyMinTokenLen long -- the same set entropyTokenPattern.FindAllString
+// returns, by a single byte scan instead of the regexp engine.
+//
+// WHY THIS IS HAND-ROLLED, which is normally the wrong instinct. detectHighEntropy
+// is the slowest per-byte operation on the retrieval path: benchmarked at
+// 15.9 MB/s against the structural scrubber's 232 MB/s on the same input, ~14x
+// slower per byte for a scan of one character class. It runs over EVERY chunk of
+// EVERY turn (context.go, logChunkScrub) and it is LOG-ONLY -- it never changes
+// what is sent to the model. The product was paying its largest per-byte cost
+// on the critical path to gather a measurement.
+//
+// A greedy {20,} over a character class is a run-length scan, and RE2 is simply
+// a slow way to express one. The obvious alternatives were worse: SAMPLING
+// 1-in-N would bias the very fire-rate data D5 is to be decided from, and moving
+// the work off-thread would trade a latency problem for a shutdown-ordering and
+// test-determinism problem. This changes NOTHING observable -- same tokens, same
+// entropies, same log lines -- so the D5 data is untouched and no ruling is
+// needed to take the speedup.
+//
+// The returned strings share text's backing array; Go substrings do not copy.
+func entropyTokens(text string) []string {
+	var out []string
+	start := -1
+	for i := 0; i < len(text); i++ {
+		if isEntropyTokenByte(text[i]) {
+			if start < 0 {
+				start = i
+			}
+			continue
+		}
+		if start >= 0 && i-start >= entropyMinTokenLen {
+			out = append(out, text[start:i])
+		}
+		start = -1
+	}
+	if start >= 0 && len(text)-start >= entropyMinTokenLen {
+		out = append(out, text[start:])
+	}
+	return out
+}
+
 func detectHighEntropy(text string) []warnDetection {
 	var out []warnDetection
-	for _, tok := range entropyTokenPattern.FindAllString(text, -1) {
+	for _, tok := range entropyTokens(text) {
 		bits := shannonEntropy(tok)
 		if bits < entropyWarnThresholdBitsPerChar {
 			continue

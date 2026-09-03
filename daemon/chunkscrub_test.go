@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -526,5 +528,69 @@ func TestDetectKeywordSecrets_DoesNotFireOnNonSecrets(t *testing.T) {
 		if got := detectKeywordSecrets(text); len(got) != 0 {
 			t.Errorf("detectKeywordSecrets(%q) fired %d time(s); it is not a literal credential", text, len(got))
 		}
+	}
+}
+
+// TestEntropyScanMatchesTheRegexp holds entropyTokens to entropyTokenPattern,
+// which remains the specification of what an entropy token IS.
+//
+// The scanner replaced the regexp for speed (see entropyTokens). A hand-rolled
+// character-class scan is the kind of optimisation that is correct on the cases
+// its author thought of and wrong on a boundary they did not, so this asserts
+// equivalence rather than asserting a hand-written expectation -- on adversarial
+// literals AND on this repository's own source, which is the corpus the detector
+// actually runs against.
+func TestEntropyScanMatchesTheRegexp(t *testing.T) {
+	literals := []string{
+		"",
+		"short",
+		strings.Repeat("a", 19), // one below the floor
+		strings.Repeat("a", 20), // exactly the floor
+		strings.Repeat("a", 21), // one above
+		strings.Repeat("a", 19) + " " + strings.Repeat("b", 20),
+		strings.Repeat("a", 20) + "!" + strings.Repeat("b", 20), // separated runs
+		"+/=_-" + strings.Repeat("Z", 20),                       // every class member
+		strings.Repeat("a", 20) + "\n" + strings.Repeat("b", 25),
+		"tab\tseparated" + strings.Repeat("c", 30),
+		strings.Repeat("é", 30),       // multi-byte, entirely outside the class
+		"é" + strings.Repeat("d", 25), // multi-byte boundary then a run
+		strings.Repeat("d", 25) + "é", // run then a multi-byte boundary
+		"sk_live_" + strings.Repeat("4aB7", 6),
+	}
+
+	check := func(t *testing.T, name, text string) {
+		t.Helper()
+		want := entropyTokenPattern.FindAllString(text, -1)
+		got := entropyTokens(text)
+		if len(want) != len(got) {
+			t.Fatalf("%s: regexp found %d token(s), scanner found %d", name, len(want), len(got))
+		}
+		for i := range want {
+			if want[i] != got[i] {
+				t.Fatalf("%s: token %d: regexp %q, scanner %q", name, i, want[i], got[i])
+			}
+		}
+	}
+
+	for i, text := range literals {
+		check(t, fmt.Sprintf("literal[%d]", i), text)
+	}
+
+	// The real corpus. Every .go file in this module is content the detector is
+	// genuinely run over, and it carries long identifiers, import paths, base64
+	// blobs and hashes -- exactly the shapes a run-length scan can get wrong.
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatalf("globbing this package: %v", err)
+	}
+	if len(files) < 50 {
+		t.Fatalf("expected this package to have many .go files, found %d", len(files))
+	}
+	for _, f := range files {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatalf("reading %s: %v", f, err)
+		}
+		check(t, f, string(b))
 	}
 }

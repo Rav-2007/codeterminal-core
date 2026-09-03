@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 )
@@ -269,4 +270,32 @@ func BenchmarkLooksTestSeeking(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		_ = looksTestSeeking(queries[i%len(queries)])
 	}
+}
+
+// BenchmarkEntropyTokenScan prices the scanner against the regexp it replaced,
+// in one process on one input, because the two were originally compared across
+// separate runs on a loaded machine and that is not a measurement.
+//
+// entropyTokenPattern is still the specification (see
+// TestEntropyScanMatchesTheRegexp); this is the evidence for preferring the
+// scanner at the call site.
+func BenchmarkEntropyTokenScan(b *testing.B) {
+	src, err := os.ReadFile("chunkscrub.go")
+	if err != nil {
+		b.Fatalf("reading the corpus file: %v", err)
+	}
+	text := string(src)
+
+	b.Run("regexp", func(b *testing.B) {
+		b.SetBytes(int64(len(text)))
+		for i := 0; i < b.N; i++ {
+			_ = entropyTokenPattern.FindAllString(text, -1)
+		}
+	})
+	b.Run("byte_scan", func(b *testing.B) {
+		b.SetBytes(int64(len(text)))
+		for i := 0; i < b.N; i++ {
+			_ = entropyTokens(text)
+		}
+	})
 }
