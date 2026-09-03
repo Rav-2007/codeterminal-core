@@ -105,6 +105,19 @@ type chatModel struct {
 	state chatState
 	turns []turn
 
+	// sanAnswer and sanReasoning strip terminal escapes from the two streams
+	// the daemon sends (see sanitize.go). They are stateful, so they live here
+	// rather than being created per token: a sequence split across two tokens
+	// is the bypass they exist to close.
+	//
+	// TWO PARSERS, NOT ONE, because answer text and reasoning are separate
+	// streams interleaved on a single channel. Sharing one would let a
+	// half-finished sequence in the answer be completed by the next reasoning
+	// chunk -- a bypass built out of our own multiplexing. Both are released
+	// by endStream.
+	sanAnswer    escSanitizer
+	sanReasoning escSanitizer
+
 	viewport viewport.Model
 	input    textinput.Model
 	spinner  spinner.Model
@@ -266,14 +279,19 @@ func newChatModel(clientName, workspace, workspaceRoot string, initialHistory []
 // same injection defense prepareHistory applies on the wire), but this
 // conversion still only ever maps exactly "user"/"assistant" rather than
 // trusting the daemon blindly a second time.
+//
+// The text is sanitized for the same reason (see sanitize.go): these are model
+// words that were written to disk by a previous session and read back, so they
+// are untrusted twice over, and hydration puts them on screen before the user
+// has typed anything at all.
 func turnsFromProtocol(protoTurns []protocol.Turn) []turn {
 	var turns []turn
 	for _, t := range protoTurns {
 		switch t.Role {
 		case "user":
-			turns = append(turns, turn{role: roleUser, text: t.Content})
+			turns = append(turns, turn{role: roleUser, text: sanitizeText(t.Content)})
 		case "assistant":
-			turns = append(turns, turn{role: roleAssistant, text: t.Content})
+			turns = append(turns, turn{role: roleAssistant, text: sanitizeText(t.Content)})
 		}
 	}
 	return turns
@@ -451,7 +469,7 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.streamCh == nil {
 			return m, nil // a stray message from an already-abandoned stream
 		}
-		m.lastRedactions = msg.kinds
+		m.lastRedactions = sanitizeAll(msg.kinds)
 		m.resizeViewport()
 		return m, waitForNext(m.streamCh)
 
@@ -459,7 +477,7 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.streamCh == nil {
 			return m, nil // a stray message from an already-abandoned stream
 		}
-		m.lastDegraded = msg.items
+		m.lastDegraded = sanitizeDegradations(msg.items)
 		m.resizeViewport()
 		return m, waitForNext(m.streamCh)
 
@@ -467,7 +485,7 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.streamCh == nil {
 			return m, nil // a stray message from an already-abandoned stream
 		}
-		m.lastProvider = msg.provider
+		m.lastProvider = sanitizeText(msg.provider)
 		m.resizeViewport()
 		return m, waitForNext(m.streamCh)
 
@@ -482,7 +500,7 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.state == stateSending {
 			m.state = stateStreaming
 		}
-		m.turns[m.ensureAssistantTurn()].reasoning += msg.text
+		m.turns[m.ensureAssistantTurn()].reasoning += m.sanReasoning.Write(msg.text)
 		m.refreshViewport()
 		return m, waitForNext(m.streamCh)
 
@@ -588,10 +606,10 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// header is one line that the next identical failure overwrites;
 			// this puts the failure UNDER THE MESSAGE THAT CAUSED IT, where a
 			// reader looking for their answer is already looking.
-			m.turns = append(m.turns, turn{role: roleSevered, text: msg.err.Error()})
+			m.turns = append(m.turns, turn{role: roleSevered, text: sanitizeText(msg.err.Error())})
 		}
 		m.state = stateError
-		m.statusErr = msg.err.Error()
+		m.statusErr = sanitizeText(msg.err.Error())
 		m.endStream()
 		return m, m.input.Focus()
 
@@ -601,7 +619,7 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// a transcript note rather than statusErr/stateError, since the
 		// user's chat is not actually in an error state — they can keep
 		// typing normally.
-		m.turns = append(m.turns, turn{role: roleSystem, text: fmt.Sprintf("(local chat cleared, but clearing it on the daemon failed: %v)", msg.err)})
+		m.turns = append(m.turns, turn{role: roleSystem, text: sanitizeText(fmt.Sprintf("(local chat cleared, but clearing it on the daemon failed: %v)", msg.err))})
 		m.refreshViewport()
 		return m, nil
 
@@ -813,6 +831,12 @@ func (m chatModel) startTurn() (tea.Model, tea.Cmd) {
 	// daemon reads it as the ordinary full menu.
 	mode := ""
 
+	// PASTED TEXT IS UNTRUSTED. A prompt can be pasted from a web page, a log,
+	// or another model's answer, and it is echoed straight back into the
+	// transcript. Sanitized once here, before the turn is built, so the bytes
+	// shown on screen and the bytes sent to the daemon are the same bytes.
+	prompt = sanitizeText(prompt)
+
 	// Built from the transcript BEFORE the current prompt is appended below,
 	// so the not-yet-answered prompt can never end up in its own History.
 	history := buildHistory(m.turns)
@@ -862,7 +886,7 @@ func (m chatModel) handleSlash(sp slashParse) (tea.Model, tea.Cmd) {
 		mode := sp.Def.Mode
 		var pipeline []string // steered slash commands do not choose a shape
 		history := buildHistory(m.turns)
-		m.turns = append(m.turns, turn{role: roleUser, text: "/" + sp.Def.Name + " " + sp.Args})
+		m.turns = append(m.turns, turn{role: roleUser, text: sanitizeText("/" + sp.Def.Name + " " + sp.Args)})
 		m.input.Blur()
 		m.state = stateSending
 		m.statusErr = ""
@@ -1048,6 +1072,21 @@ func (m chatModel) handleModelCommand(arg string) (tea.Model, tea.Cmd) {
 // afterwards still matters, so a later ctrl+c cannot fire cancel against a turn
 // that is already over.
 func (m *chatModel) endStream() {
+	// RELEASE THE ESCAPE FILTERS FIRST, before anything reads the turn. A
+	// stream that stops mid-sequence leaves bytes held inside the parser, and
+	// they are the tail of the user's answer -- dropping them would be silent
+	// data loss on every interrupted turn. Both callers that inspect the turn
+	// afterwards (streamErrMsg's "did anything stream" check, and
+	// checkForEditBlocks) run after this, so both see the complete text.
+	if m.streamAssistant >= 0 && m.streamAssistant < len(m.turns) {
+		m.turns[m.streamAssistant].text += m.sanAnswer.Flush()
+		m.turns[m.streamAssistant].reasoning += m.sanReasoning.Flush()
+	} else {
+		// No turn to append to, but the parsers must still be reset or the
+		// next stream inherits a half-read sequence from this one.
+		m.sanAnswer.Flush()
+		m.sanReasoning.Flush()
+	}
 	if m.streamCancel != nil {
 		m.streamCancel()
 		m.streamCancel = nil
@@ -1253,7 +1292,7 @@ func (m chatModel) handleToken(msg tokenMsg) (tea.Model, tea.Cmd) {
 	if m.state == stateSending {
 		m.state = stateStreaming
 	}
-	m.turns[m.ensureAssistantTurn()].text += string(msg)
+	m.turns[m.ensureAssistantTurn()].text += m.sanAnswer.Write(string(msg))
 	m.refreshViewport()
 	return m, waitForNext(m.streamCh)
 }
@@ -1497,7 +1536,9 @@ func approvalOutcomeLine(req protocol.ToolApprovalRequest, decision string) stri
 // them is noise. What earns a line is the call actually running, and how it
 // ended.
 func (m *chatModel) noteToolActivity(a protocol.ToolActivity) {
-	line := toolActivityLine(a)
+	// Tool names and results are chosen by the server on the other end of an
+	// MCP connection, not by us.
+	line := sanitizeText(toolActivityLine(a))
 	if line == "" {
 		return
 	}
@@ -1771,22 +1812,31 @@ func severedRail(width int) (dense, sparse string) {
 // as removed lines, the whole REPLACE block as added lines, plus the
 // syntax-check note — mirroring the CLI's printEditDiff (daemon/apply_cmd.go)
 // so both surfaces present the same information about the same edit.
+// SANITIZED HERE, AT RENDER, AND NOT AT INGEST -- the one place in this
+// client that deviates from "clean the bytes on the way in".
+//
+// The reason is that these exact bytes are also what gets WRITTEN TO DISK if
+// the user approves. A file may legitimately contain escape sequences (a
+// terminal test fixture is the obvious case, and this repo has one), so
+// cleaning the block on the way in would silently corrupt the edit it is
+// about to apply. The block therefore stays byte-exact for the writer, and
+// only the copy going to the screen is filtered.
 func renderReviewPanel(index, total int, p *editapply.PreparedEdit) string {
 	var b strings.Builder
-	b.WriteString(brandStyle.Render(fmt.Sprintf("--- edit %d/%d: %s (lines %d-%d) ---", index+1, total, p.Block.FilePath, p.StartLine, p.EndLine)))
-	for _, l := range strings.Split(p.Block.Search, "\n") {
+	b.WriteString(brandStyle.Render(fmt.Sprintf("--- edit %d/%d: %s (lines %d-%d) ---", index+1, total, sanitizeText(p.Block.FilePath), p.StartLine, p.EndLine)))
+	for _, l := range strings.Split(sanitizeText(p.Block.Search), "\n") {
 		b.WriteString("\n" + diffRemovedStyle.Render("- "+l))
 	}
-	for _, l := range strings.Split(p.Block.Replace, "\n") {
+	for _, l := range strings.Split(sanitizeText(p.Block.Replace), "\n") {
 		b.WriteString("\n" + diffAddedStyle.Render("+ "+l))
 	}
 	// Surfaced next to the diff for the same reason the CLI does it: the user is
 	// about to approve this write, and a match that needed whitespace/encoding
 	// tolerance is something they should see before they do.
 	if p.MatchNote != "" {
-		b.WriteString("\n" + helpStyle.Render("match: "+p.MatchNote))
+		b.WriteString("\n" + helpStyle.Render("match: "+sanitizeText(p.MatchNote)))
 	}
-	b.WriteString("\n" + helpStyle.Render("syntax check: "+p.SyntaxNote))
+	b.WriteString("\n" + helpStyle.Render("syntax check: "+sanitizeText(p.SyntaxNote)))
 	return b.String()
 }
 
@@ -1806,10 +1856,16 @@ func renderReviewPanel(index, total int, p *editapply.PreparedEdit) string {
 func renderApprovalPanel(req protocol.ToolApprovalRequest) string {
 	var b strings.Builder
 	b.WriteString(brandStyle.Render(fmt.Sprintf("--- run %s__%s? (step %d of at most %d) ---",
-		req.Server, req.Tool, req.Iteration, req.MaxIterations)))
+		sanitizeText(req.Server), sanitizeText(req.Tool), req.Iteration, req.MaxIterations)))
 
+	// SANITIZED, and this is the screen where it matters most. The arguments
+	// are written by the model; the daemon binds its approval to a digest of
+	// exactly these bytes, so the request itself must stay untouched and only
+	// the rendering is filtered. An escape sequence here could repaint the
+	// question the user is answering -- which is not a display bug, it is
+	// forged consent.
 	b.WriteString("\n" + helpStyle.Render("arguments:"))
-	for _, line := range strings.Split(req.Arguments, "\n") {
+	for _, line := range strings.Split(sanitizeText(req.Arguments), "\n") {
 		b.WriteString("\n" + diffAddedStyle.Render("  "+line))
 	}
 
@@ -1867,10 +1923,10 @@ func (m chatModel) View() string {
 
 	var bottomLine, help string
 	if m.state == stateEditReview && m.reviewPrepared != nil {
-		bottomLine = accentStyle.Render(fmt.Sprintf("edit %d/%d: %s", m.reviewIndex+1, len(m.reviewBlocks), m.reviewPrepared.Block.FilePath))
+		bottomLine = accentStyle.Render(fmt.Sprintf("edit %d/%d: %s", m.reviewIndex+1, len(m.reviewBlocks), sanitizeText(m.reviewPrepared.Block.FilePath)))
 		help = helpStyle.Render(reviewHelpText)
 	} else if m.state == stateToolApproval && m.pendingApproval != nil {
-		bottomLine = accentStyle.Render(fmt.Sprintf("approve %s__%s?", m.pendingApproval.Server, m.pendingApproval.Tool))
+		bottomLine = accentStyle.Render(fmt.Sprintf("approve %s__%s?", sanitizeText(m.pendingApproval.Server), sanitizeText(m.pendingApproval.Tool)))
 		help = helpStyle.Render(approvalHelpText)
 	} else {
 		popupStr, _ := m.renderSlashPopup()
@@ -1998,6 +2054,37 @@ func (m chatModel) renderHeader() string {
 // nothing is hidden. A long notice on a narrow terminal now costs header rows,
 // which is the correct trade -- resizeViewport floors the viewport at one row,
 // so it can shrink the transcript but never break the layout.
+// sanitizeAll and sanitizeDegradations clean the short free-text labels the
+// daemon puts in the header. They are small and they are not the model's
+// words, but they are still bytes from off this machine -- the provider name
+// comes back from the provider's own API, and a degradation detail is written
+// by whichever subsystem reduced itself. The header is one of the few places
+// that draws OUTSIDE the viewport, so an escape here is not even bounded by
+// the transcript.
+func sanitizeAll(ss []string) []string {
+	if ss == nil {
+		return nil
+	}
+	out := make([]string, len(ss))
+	for i, s := range ss {
+		out[i] = sanitizeText(s)
+	}
+	return out
+}
+
+func sanitizeDegradations(items []protocol.Degradation) []protocol.Degradation {
+	if items == nil {
+		return nil
+	}
+	out := make([]protocol.Degradation, len(items))
+	for i, d := range items {
+		d.Component = sanitizeText(d.Component)
+		d.Detail = sanitizeText(d.Detail)
+		out[i] = d
+	}
+	return out
+}
+
 func (m chatModel) noticeLines() []string {
 	var lines []string
 	add := func(s string) {

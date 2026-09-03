@@ -62,6 +62,17 @@ func runOneShotPrompt(clientName, prompt string, env oneShotIO) int {
 	}
 
 	reader := bufio.NewReader(env.in)
+	// ONE-SHOT WRITES TO A TERMINAL TOO. `codeterminal-tui --prompt ...` run at
+	// a shell prompt puts model bytes straight on the screen with no viewport
+	// in between, so it needs the same filter the chat UI has (sanitize.go).
+	// Stateful and hoisted out of the loop for the same reason it is in the
+	// chat model: one token can end mid-sequence and the next completes it.
+	//
+	// This does change the bytes a caller piping stdout receives, which the
+	// note below used to promise it would not. The promise was worth less than
+	// the hole: what changes is only control sequences, never the text of the
+	// answer, and a pipeline reading an answer wants the text.
+	var sani escSanitizer
 	for {
 		var tok protocol.TokenResponse
 		if err := sess.dec.Decode(&tok); err != nil {
@@ -72,7 +83,7 @@ func runOneShotPrompt(clientName, prompt string, env oneShotIO) int {
 			return 1
 		}
 		if tok.Error != "" {
-			say(env.err, "\nerror from daemon: %s\n", tok.Error)
+			say(env.err, "\nerror from daemon: %s\n", sanitizeText(tok.Error))
 			return 1
 		}
 		// Activity and approvals go to STDERR, never stdout. Stdout is the
@@ -80,7 +91,7 @@ func runOneShotPrompt(clientName, prompt string, env oneShotIO) int {
 		// what it got before this feature existed.
 		if tok.ToolActivity != nil {
 			if line := oneShotActivityLine(*tok.ToolActivity); line != "" {
-				say(env.err, "%s\n", line)
+				say(env.err, "%s\n", sanitizeText(line))
 			}
 		}
 		if tok.ToolApproval != nil {
@@ -97,15 +108,17 @@ func runOneShotPrompt(clientName, prompt string, env oneShotIO) int {
 			}
 		}
 		if tok.Token != "" {
-			say(env.out, "%s", tok.Token) // unbuffered, so streaming stays visible
+			say(env.out, "%s", sani.Write(tok.Token)) // unbuffered, so streaming stays visible
 		}
 		if tok.Done {
 			if tok.Incomplete != nil {
-				say(env.err, "\nnote: %s\n", tok.Incomplete.Detail)
+				say(env.err, "\nnote: %s\n", sanitizeText(tok.Incomplete.Detail))
 			}
 			break
 		}
 	}
+	// Whatever the filter was still holding, before the trailing newline.
+	say(env.out, "%s", sani.Flush())
 	say(env.out, "\n")
 	return 0
 }
@@ -119,8 +132,11 @@ func runOneShotPrompt(clientName, prompt string, env oneShotIO) int {
 // the same way, and the safe way.
 func askOneShotApproval(req protocol.ToolApprovalRequest, reader *bufio.Reader, out io.Writer) string {
 	say(out, "\n--- run %s__%s? (step %d of at most %d) ---\n",
-		req.Server, req.Tool, req.Iteration, req.MaxIterations)
-	say(out, "arguments: %s\n", req.Arguments)
+		sanitizeText(req.Server), sanitizeText(req.Tool), req.Iteration, req.MaxIterations)
+	// The consent surface, same as the chat UI's approval panel: the request
+	// stays byte-exact because the daemon binds approval to a digest of it,
+	// and only what reaches the screen is filtered.
+	say(out, "arguments: %s\n", sanitizeText(req.Arguments))
 	switch {
 	case req.ReachesNetwork:
 		// CHECKED FIRST, because BOTH of the other branches are wrong for a
