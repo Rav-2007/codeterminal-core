@@ -147,3 +147,55 @@ suite('the extension can start the daemon it ships', function () {
     assert.strictEqual(spawnedAgain, false, 'the second window started a redundant daemon');
   });
 });
+
+// THE FIRST-RUN DEFECT, and the reason the suite above supplies an env.
+//
+// The daemon requires CODETERMINAL_API_BASE from the ENVIRONMENT
+// (daemon/main.go: `apiBase := os.Getenv(...)`, then logger.Fatal). The
+// extension's spawnDaemon passes no env, so the child inherits the extension
+// host's -- and a VS Code launched from a desktop icon does not carry a shell's
+// exports. There is no setting to supply it (package.json contributes only
+// commands), no config field, and no .env read by the daemon.
+//
+// So on an ordinary install the daemon exits 1 five times. What the user was
+// told was "Mochiii daemon exited 1 5 times and will not be restarted again":
+// an exit code, for a problem that is one line to fix, with the actual reason
+// sitting in a log file they were not pointed at.
+//
+// This asserts the daemon still writes that reason where the extension can find
+// it, which is what extension.ts's lastDaemonLogLines now attaches to the error.
+suite('a daemon that cannot start says why, somewhere the extension can read it', function () {
+  this.timeout(30000);
+
+  test('the failure reason reaches the daemon log file', async () => {
+    assert.ok(fs.existsSync(daemonBin), `run \`npm run compile\` first (${daemonBin})`);
+    const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'mochiii-nobase-'));
+    const log = path.join(ws, 'daemon.log');
+    try {
+      const env = { ...process.env };
+      delete env.CODETERMINAL_API_BASE;
+
+      await new Promise<void>((resolve) => {
+        const child = cp.spawn(daemonBin, ['--workspace', ws, '-log-file', log], {
+          cwd: ws,
+          env,
+          stdio: 'ignore',
+        });
+        child.on('exit', () => resolve());
+        child.on('error', () => resolve());
+      });
+
+      assert.ok(fs.existsSync(log), 'the daemon died without writing a log file at all');
+      const text = fs.readFileSync(log, 'utf8');
+      assert.match(
+        text,
+        /CODETERMINAL_API_BASE must be set/,
+        `the daemon exited without recording why. The extension can only tell a user ` +
+          `what the daemon wrote, so a silent failure here is an unactionable error there. Log:\n${text}`,
+      );
+    } finally {
+      fs.rmSync(ws, { recursive: true, force: true });
+    }
+  });
+});
+

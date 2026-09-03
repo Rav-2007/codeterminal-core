@@ -92,7 +92,17 @@ export function activate(context: vscode.ExtensionContext): void {
       probe: probeDaemon,
       spawn: () => spawnDaemon(binaryPath, root, daemonLogPath),
       warn: (m) => vscode.window.showWarningMessage(m),
-      error: (m) => vscode.window.showErrorMessage(m),
+      // The daemon's own last words, appended to any error about it. See
+      // lastDaemonLogLines: without this the user is told an exit code and
+      // nothing else, for failures that are usually one line to fix.
+      error: (m) => {
+        const detail = lastDaemonLogLines(daemonLogPath);
+        output?.appendLine(`[daemon] ${m}`);
+        if (detail) {
+          output?.appendLine(`[daemon] last log lines:\n${detail}`);
+        }
+        void vscode.window.showErrorMessage(detail ? `${m} The daemon reported: ${detail}` : m);
+      },
       // Adoption is the ordinary case and must be SILENT. It goes to the output
       // channel, where someone debugging can find it, and nowhere a user who did
       // nothing wrong has to dismiss it.
@@ -173,6 +183,36 @@ export function activate(context: vscode.ExtensionContext): void {
 // spawnDaemon starts one daemon process and adapts it to the supervisor's
 // DaemonHandle. It contains no policy: whether to spawn at all, and what a
 // given exit means, are decisions that live in DaemonSupervisor.
+
+// lastDaemonLogLines returns the tail of the daemon's own log, for attaching to
+// an error the user would otherwise be unable to act on.
+//
+// THE MESSAGE WITHOUT THIS IS A DEAD END. When the daemon cannot start, the
+// supervisor knows only an exit code, so the user was told "Mochiii daemon
+// exited 1 5 times and will not be restarted again" -- which names neither the
+// cause nor the cure. The daemon meanwhile wrote the exact reason to its log
+// one line before dying, e.g. "CODETERMINAL_API_BASE must be set". That is a
+// problem the user can fix in a minute and could not previously see.
+//
+// Bounded and defensive on purpose: this runs on a path that is ALREADY
+// failing, so it must not add a second failure. Any error reading the log is
+// swallowed and the original message is shown alone.
+function lastDaemonLogLines(logPath: string, max = 3): string {
+  if (!logPath) {
+    return '';
+  }
+  try {
+    const text = fs.readFileSync(logPath, 'utf8');
+    const lines = text.split('\n').filter((l) => l.trim() !== '');
+    if (lines.length === 0) {
+      return '';
+    }
+    return lines.slice(-max).join('\n');
+  } catch {
+    return '';
+  }
+}
+
 function spawnDaemon(binaryPath: string, workspacePath: string, logPath: string): DaemonHandle {
   try {
     // Ensure binary is executable on Unix-like systems
