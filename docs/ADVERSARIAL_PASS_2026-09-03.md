@@ -41,8 +41,11 @@ The two findings worth acting on first:
 | 1 | `go clean -testcache`, `-count=1` | 6m07s | **green** |
 | 2 | cache cleared, `GOFLAGS=-shuffle=on` | 5m54s | **green** |
 | 3 | cache cleared, `-shuffle=on`, fresh seed | 21m24s* | **green** |
+| final | cache cleared, `-shuffle=on`, **after every fix** | 5m48s | **green** |
 
-*Run 3 overlapped my e2e work; wall time is not a clean measurement, the result is.
+*Run 3 overlapped my e2e work; wall time is not a clean measurement, the result
+is. The final run is on the finished tree with all six commits in, on an
+otherwise idle machine, and is the one to quote.
 
 Shuffle was **proven to engage**, not assumed: same package run twice produced
 different test order and printed `-test.shuffle 1788403042335419286`.
@@ -61,6 +64,31 @@ different test order and printed `-test.shuffle 1788403042335419286`.
 initially recorded it as "prints FAIL but exits 0". That was my measurement
 error — I captured `$?` after a pipe through `tail`, so I was reading `tail`'s
 exit code. Re-run without the pipe: exit 1.
+
+### Fuzz and soak — the two long runs
+
+Both were killed mid-flight when the session that started them exited, and are
+recorded here from the completed re-runs rather than the partial first attempts.
+
+**Fuzz: 15/15 targets, 0 failures, 144.4M executions, 31 minutes** at
+`FUZZTIME=2m`. Includes the two gates whose failure would matter most:
+`FuzzZDRRoutingEnforced` (the F1 gate, 8.2M execs) and `FuzzFindSearch`
+(15.0M execs — it returns byte offsets a caller slices file content with, so an
+off-by-one there is a corrupt write to a user's source, not a parse bug).
+
+**Soak: PASS**, 118 samples over 30 minutes against the real proxy binary:
+
+| | start → end | threshold |
+|---|---|---|
+| RSS | 15,488 → 16,864 kB (+8.9%) | 25% |
+| fds | 10 → 10 | 10% |
+| goroutines | 14 → 14 | 15% |
+| limiter buckets | 10,324 → 14,675 (peak 16,075) | 50% |
+
+**Nine bucket reclamations were observed.** That is the number the whole
+30-minute duration exists to produce: the limiters hold one bucket per distinct
+`api_keys.id`, reclaimed only after a 10-minute idle TTL, so a run shorter than
+~12 minutes cannot distinguish a working sweep from an absent one. It works.
 
 ## Chunk 2 — Credentials and data on the wire
 
