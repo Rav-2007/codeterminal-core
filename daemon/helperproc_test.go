@@ -28,6 +28,33 @@ func TestMain(m *testing.M) {
 	// teardown path in this package instead of two that have to agree.
 	registerProcessCleanup(func() { _ = os.RemoveAll(tmpDir) })
 
+	// THE SAME LEAK AS THE ONE DOCUMENTED BELOW, IN A SECOND DIRECTORY.
+	//
+	// sandboxExecHome (mcp_exec.go) derives the sandbox_exec HOME from
+	// os.UserCacheDir, which on Linux resolves XDG_CACHE_HOME and otherwise
+	// $HOME/.cache. Every test that reaches the sandbox_exec handler creates
+	// one directory there, named from sha256(workspace) -- and a t.TempDir()
+	// workspace hashes to a fresh name on every single run. Nothing removes
+	// them, so each `go test ./daemon` left a permanent directory in the
+	// developer's real cache: measured at 1,709 directories and 232 MB on this
+	// machine over eight days, 24 of them from one `make check`.
+	//
+	// That is the identical shape as the fakehelper-build leak recorded below
+	// (379 directories, 1.5 GB), and it wants the identical answer: keep the
+	// test's writes inside the test's own temp dir. Redirecting the cache root
+	// for the whole package is one line in one place, and it covers every test
+	// that reaches the handler rather than each remembering to do it.
+	//
+	// This bounds the TESTS only. Production reclamation of that directory is a
+	// separate, still-open question -- see docs/OPEN_ITEMS.md.
+	cacheDir, err := os.MkdirTemp("", "daemon-test-cache")
+	if err != nil {
+		runProcessCleanups()
+		panic("creating the test cache dir: " + err.Error())
+	}
+	registerProcessCleanup(func() { _ = os.RemoveAll(cacheDir) })
+	os.Setenv("XDG_CACHE_HOME", cacheDir)
+
 	fakeHelperBinPath = filepath.Join(tmpDir, exeName("fakehelper"))
 	cmd := exec.Command("go", "build", "-o", fakeHelperBinPath, "./testdata/fakehelper")
 	if out, err := cmd.CombinedOutput(); err != nil {
