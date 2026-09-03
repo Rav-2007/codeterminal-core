@@ -84,10 +84,26 @@ const (
 // It is a value type with no reference fields, so copying a chatModel (Bubble
 // Tea passes the model by value through every Update) copies the parser state
 // rather than sharing it.
+// A FIXED ARRAY, NOT A SLICE OR A STRING. An array is copied by value with
+// the model, so no two copies of a chatModel can ever share held bytes; and
+// appending a byte to it does not allocate, which the streaming path does once
+// per byte of every escape sequence.
 type escSanitizer struct {
 	state sanState
-	pend  string // raw bytes of the sequence in progress; bounded by sanMaxCSI
-	strN  int    // bytes seen in a string payload; counted, never retained
+	pend  [sanMaxCSI]byte // raw bytes of the sequence in progress
+	pendN int             // how many of them are live
+	strN  int             // bytes seen in a string payload; counted, never retained
+}
+
+// hold appends one byte to the pending sequence, reporting false when the
+// ceiling is reached and the caller must abandon it.
+func (z *escSanitizer) hold(c byte) bool {
+	if z.pendN >= len(z.pend) {
+		return false
+	}
+	z.pend[z.pendN] = c
+	z.pendN++
+	return true
 }
 
 // Write filters one chunk, returning the text that is safe to display now.
@@ -96,12 +112,12 @@ func (z *escSanitizer) Write(s string) string {
 	// A rune split across chunks is resolved by putting it back in front of the
 	// new chunk. At most three bytes, so this is not a copy worth avoiding.
 	if z.state == sanUTF8 {
-		s = z.pend + s
-		z.state, z.pend = sanText, ""
+		s = string(z.pend[:z.pendN]) + s
+		z.state, z.pendN = sanText, 0
 	}
 	// The common case is a token with nothing to sanitize, on the hot streaming
 	// path, so it returns the input unchanged and allocates nothing.
-	if z.state == sanText && z.pend == "" && !sanNeedsWork(s) {
+	if z.state == sanText && z.pendN == 0 && !sanNeedsWork(s) {
 		return s
 	}
 
@@ -115,7 +131,8 @@ func (z *escSanitizer) Write(s string) string {
 		case sanText:
 			switch {
 			case c == 0x1b:
-				z.state, z.pend = sanEsc, "\x1b"
+				z.state, z.pendN = sanEsc, 0
+				z.hold(0x1b)
 				i++
 			case c < utf8.RuneSelf:
 				// C0 controls are dropped except the two that are layout:
@@ -133,7 +150,10 @@ func (z *escSanitizer) Write(s string) string {
 					// chunk boundary cut in half. Holding the second case is
 					// what keeps chunk-invariance true for non-ASCII text.
 					if n := sanTruncatedRune(s[i:]); n > 0 {
-						z.state, z.pend = sanUTF8, s[i:]
+						z.state, z.pendN = sanUTF8, 0
+						for k := 0; k < n; k++ {
+							z.hold(s[i+k])
+						}
 						i = len(s)
 						continue
 					}
@@ -157,11 +177,11 @@ func (z *escSanitizer) Write(s string) string {
 		case sanEsc:
 			switch c {
 			case '[':
-				z.pend += "["
+				z.hold('[')
 				z.state = sanCSI
 				i++
 			case ']', 'P', '_', '^', 'X': // OSC, DCS, APC, PM, SOS
-				z.state, z.pend, z.strN = sanStr, "", 0
+				z.state, z.pendN, z.strN = sanStr, 0, 0
 				i++
 			case 0x1b:
 				i++ // a second ESC restarts the sequence
@@ -169,31 +189,30 @@ func (z *escSanitizer) Write(s string) string {
 				// Two-byte escapes: ESC c (full reset), ESC 7/8 (save and
 				// restore cursor), ESC N/O (single shifts), and the rest.
 				// None are display, so the pair is dropped whole.
-				z.state, z.pend = sanText, ""
+				z.state, z.pendN = sanText, 0
 				i++
 			}
 
 		case sanCSI:
 			switch {
 			case (c >= 0x30 && c <= 0x3f) || (c >= 0x20 && c <= 0x2f):
-				if len(z.pend) >= sanMaxCSI {
-					z.state, z.pend = sanText, ""
+				if !z.hold(c) {
+					z.state, z.pendN = sanText, 0
 					continue // reprocess this byte as text; see the ceilings above
 				}
-				z.pend += string(c)
 				i++
 			case c >= 0x40 && c <= 0x7e: // final byte: the sequence ends here
-				body := z.pend[2:]
+				body := z.pend[2:z.pendN]
 				if c == 'm' && sanIsParams(body) && sanSGRAllowed(body) {
-					b.WriteString(z.pend)
+					b.Write(z.pend[:z.pendN])
 					b.WriteByte(c)
 				}
-				z.state, z.pend = sanText, ""
+				z.state, z.pendN = sanText, 0
 				i++
 			default:
 				// Malformed (a control byte inside the sequence). Abandon it
 				// and read this byte as text.
-				z.state, z.pend = sanText, ""
+				z.state, z.pendN = sanText, 0
 			}
 
 		case sanStr:
@@ -236,16 +255,17 @@ func (z *escSanitizer) Write(s string) string {
 // remainder with the ESC removed -- literal text, not a command. String
 // payloads (OSC and friends) are never displayed and so return nothing.
 func (z *escSanitizer) Flush() string {
-	state, pend := z.state, z.pend
-	z.state, z.pend, z.strN = sanText, "", 0
+	state, n := z.state, z.pendN
+	pend := z.pend
+	z.state, z.pendN, z.strN = sanText, 0, 0
 	switch state {
 	case sanUTF8:
 		// One replacement per held byte, which is exactly what the text path
 		// does for an invalid byte -- so a one-shot sanitize of the whole
 		// input and a streamed one still agree.
-		return strings.Repeat(string(utf8.RuneError), len(pend))
+		return strings.Repeat(string(utf8.RuneError), n)
 	case sanEsc, sanCSI:
-		return sanLiteral(pend)
+		return sanLiteral(pend[:n])
 	default:
 		return ""
 	}
@@ -312,10 +332,10 @@ func sanTruncatedRune(s string) int {
 
 // sanLiteral strips every control rune, leaving text that is safe to print and
 // that re-sanitizes to itself.
-func sanLiteral(s string) string {
+func sanLiteral(b0 []byte) string {
 	var b strings.Builder
-	b.Grow(len(s))
-	for _, r := range s {
+	b.Grow(len(b0))
+	for _, r := range string(b0) {
 		if r == 0x1b || r == 0x7f || (r < 0x20 && r != '\n' && r != '\t') || (r >= 0x80 && r <= 0x9f) {
 			continue
 		}
@@ -328,9 +348,9 @@ func sanLiteral(s string) string {
 // separators. It rejects the private-marker bytes (< = > ?), the colon
 // sub-parameter form, and the intermediate bytes -- none of which appear in
 // the SGR forms this allowlist names, so none are recognized.
-func sanIsParams(body string) bool {
-	for i := 0; i < len(body); i++ {
-		if c := body[i]; (c < '0' || c > '9') && c != ';' {
+func sanIsParams(body []byte) bool {
+	for _, c := range body {
+		if (c < '0' || c > '9') && c != ';' {
 			return false
 		}
 	}
@@ -344,50 +364,57 @@ func sanIsParams(body string) bool {
 // default means the question is "is this whole sequence one we recognize", and
 // a filter that edits parameters mid-sequence is a far easier thing to get
 // subtly wrong than one that says no.
-func sanSGRAllowed(body string) bool {
-	if body == "" {
+func sanSGRAllowed(body []byte) bool {
+	if len(body) == 0 {
 		return true // ESC[m is ESC[0m, a plain reset
 	}
-	parts := strings.Split(body, ";")
-	if len(parts) > 24 {
-		return false
-	}
-	for i := 0; i < len(parts); i++ {
-		n, ok := sanParam(parts[i])
-		if !ok {
+	// PARSED IN PLACE, into a fixed array. This runs once per escape sequence
+	// on the streaming path, and splitting on ";" allocated a slice of strings
+	// per token of syntax-highlighted output.
+	var p [24]int
+	n, val, digits := 0, 0, 0
+	for i := 0; i <= len(body); i++ {
+		if i == len(body) || body[i] == ';' {
+			if digits > 3 || n == len(p) {
+				return false
+			}
+			p[n] = val // an empty parameter is zero, which is what a terminal does
+			n++
+			val, digits = 0, 0
+			continue
+		}
+		c := body[i]
+		if c < '0' || c > '9' {
 			return false
 		}
-		switch {
-		case n == 0, n == 1, n == 2, n == 3, n == 4, n == 7, n == 9, // set
-			n == 22, n == 23, n == 24, n == 27, n == 29, // their resets
-			n >= 30 && n <= 37, n == 39, // foreground, default
-			n >= 40 && n <= 47, n == 49, // background, default
-			n >= 90 && n <= 97, n >= 100 && n <= 107: // bright
+		val = val*10 + int(c-'0')
+		digits++
+	}
+	for i := 0; i < n; i++ {
+		switch v := p[i]; {
+		case v == 0, v == 1, v == 2, v == 3, v == 4, v == 7, v == 9, // set
+			v == 22, v == 23, v == 24, v == 27, v == 29, // their resets
+			v >= 30 && v <= 37, v == 39, // foreground, default
+			v >= 40 && v <= 47, v == 49, // background, default
+			v >= 90 && v <= 97, v >= 100 && v <= 107: // bright
 			// allowed on its own
 
-		case n == 38 || n == 48: // extended colour, and only in two forms
-			if i+1 >= len(parts) {
+		case v == 38 || v == 48: // extended colour, and only in two forms
+			if i+1 >= n {
 				return false
 			}
-			mode, ok := sanParam(parts[i+1])
-			if !ok {
-				return false
-			}
-			switch mode {
+			switch p[i+1] {
 			case 5: // 256-colour: 38;5;N
-				if i+2 >= len(parts) {
-					return false
-				}
-				if v, ok := sanParam(parts[i+2]); !ok || v > 255 {
+				if i+2 >= n || p[i+2] > 255 {
 					return false
 				}
 				i += 2
 			case 2: // truecolour: 38;2;R;G;B
-				if i+4 >= len(parts) {
+				if i+4 >= n {
 					return false
 				}
 				for k := i + 2; k <= i+4; k++ {
-					if v, ok := sanParam(parts[k]); !ok || v > 255 {
+					if p[k] > 255 {
 						return false
 					}
 				}
@@ -403,23 +430,4 @@ func sanSGRAllowed(body string) bool {
 		}
 	}
 	return true
-}
-
-// sanParam parses one SGR parameter. An empty parameter means zero, which is
-// what a terminal does with ESC[;m.
-func sanParam(s string) (int, bool) {
-	if s == "" {
-		return 0, true
-	}
-	if len(s) > 3 {
-		return 0, false
-	}
-	n := 0
-	for i := 0; i < len(s); i++ {
-		if s[i] < '0' || s[i] > '9' {
-			return 0, false
-		}
-		n = n*10 + int(s[i]-'0')
-	}
-	return n, true
 }

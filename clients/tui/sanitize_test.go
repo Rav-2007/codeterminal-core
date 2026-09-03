@@ -171,7 +171,7 @@ func sanEscapeViolation(s string) string {
 		if j >= len(s) || s[j] != 'm' {
 			return "CSI sequence is not SGR"
 		}
-		if !sanSGRAllowed(s[i+2 : j]) {
+		if !sanSGRAllowed([]byte(s[i+2 : j])) {
 			return "SGR parameters outside the allowlist: " + s[i+2:j]
 		}
 		i = j
@@ -219,8 +219,8 @@ func TestUnterminatedStringIsBounded(t *testing.T) {
 func TestUnterminatedCSIIsBounded(t *testing.T) {
 	var z escSanitizer
 	z.Write("\x1b[" + strings.Repeat("1;", sanMaxCSI*4))
-	if len(z.pend) > sanMaxCSI {
-		t.Fatalf("held %d bytes mid-CSI, ceiling is %d", len(z.pend), sanMaxCSI)
+	if z.pendN > sanMaxCSI {
+		t.Fatalf("held %d bytes mid-CSI, ceiling is %d", z.pendN, sanMaxCSI)
 	}
 	out := z.Write("m") + z.Flush()
 	if strings.Contains(out, "\x1b") {
@@ -249,8 +249,8 @@ func TestFlushReleasesHeldText(t *testing.T) {
 	if got := z.Flush(); got != "[3" {
 		t.Fatalf("Flush = %q, want %q", got, "[3")
 	}
-	if z.state != sanText || z.pend != "" {
-		t.Fatalf("Flush left state %v pend %q", z.state, z.pend)
+	if z.state != sanText || z.pendN != 0 {
+		t.Fatalf("Flush left state %v pendN %d", z.state, z.pendN)
 	}
 }
 
