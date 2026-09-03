@@ -204,6 +204,78 @@ function scanForSecrets(buf, entries) {
 // -- the credential filename patterns and the secret content patterns -- not
 // the zip plumbing, which every real invocation already exercises. The point is
 // that neutering either list turns this red.
+
+// THE TOOLCHAIN THAT BUILT THE BUNDLED BINARY, read out of the binary itself.
+//
+// The size and magic-byte checks below answer "is this an executable of roughly
+// the right shape". They do not answer "was it built with the toolchain this
+// repository pins", and on 2026-09-03 that gap had a concrete instance: the
+// .vsix tracked in out-vsix/ carried a daemon built with go1.25.12 against a
+// floor of go1.25.13, which `govulncheck -mode=binary` scored at four reachable
+// standard-library vulnerabilities (GO-2026-6218 net/url, GO-2026-6090
+// crypto/tls, GO-2026-5972 encoding/asn1, GO-2026-5026 net/http).
+//
+// This is the same shape scripts/go-toolchain-pinned.sh and
+// scripts/govulncheck.sh already guard against on the SOURCE side, and which
+// govulncheck.sh's own header calls "a geography lottery": CI floats above the
+// pinned line and a developer machine sits exactly on it, so the two scan
+// different standard libraries. A release is built somewhere, and the artifact
+// is the only place that records which.
+//
+// Go stamps the version into the binary as a "go<major>.<minor>.<patch>" string
+// inside a runtime marker. Reading it needs no toolchain on the packaging
+// machine, which matters because this gate runs under node in a job that has
+// already discarded the Go setup.
+const GO_VERSION_IN_BINARY = /go1\.\d+(?:\.\d+)?/g;
+
+function goFloorFromWorkspace() {
+  // The `go` directive is the HARD floor -- `toolchain` is only a hint, which
+  // is the distinction go-toolchain-pinned.sh exists to enforce.
+  const workPath = path.join(__dirname, '..', '..', '..', 'go.work');
+  if (!fs.existsSync(workPath)) return null;
+  const m = fs.readFileSync(workPath, 'utf8').match(/^go\s+(\d+\.\d+(?:\.\d+)?)\s*$/m);
+  return m ? m[1] : null;
+}
+
+// Returns the highest go1.x.y stamped in the binary, which is the one the
+// toolchain wrote; dependency strings never exceed it.
+function goVersionOfBinary(buf) {
+  const text = buf.toString('latin1');
+  const found = text.match(GO_VERSION_IN_BINARY);
+  if (!found) return null;
+  const cmp = (a, b) => {
+    const pa = a.slice(2).split('.').map(Number);
+    const pb = b.slice(2).split('.').map(Number);
+    for (let i = 0; i < 3; i++) {
+      if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) - (pb[i] || 0);
+    }
+    return 0;
+  };
+  return found.reduce((hi, v) => (cmp(v, hi) > 0 ? v : hi), found[0]);
+}
+
+function checkBinaryToolchain(label, buf, floor, failures) {
+  if (!floor) return;
+  const got = goVersionOfBinary(buf);
+  if (!got) {
+    failures.push(`UNKNOWN  ${label}: no Go version string found; cannot prove it meets the go${floor} floor`);
+    return;
+  }
+  const pa = got.slice(2).split('.').map(Number);
+  const pb = floor.split('.').map(Number);
+  for (let i = 0; i < 3; i++) {
+    const a = pa[i] || 0;
+    const b = pb[i] || 0;
+    if (a > b) return;
+    if (a < b) {
+      failures.push(`STALE    ${label} was built with ${got}, below this repo's go${floor} floor. ` +
+        `Rebuild with the pinned toolchain -- a binary below the floor ships the ` +
+        `vulnerabilities that floor was raised to escape`);
+      return;
+    }
+  }
+}
+
 function selfTest() {
   const failures = [];
 
@@ -268,6 +340,40 @@ function selfTest() {
     }
   }
 
+  // (e) the toolchain check must reject a below-floor binary and accept an
+  // at-or-above one. Synthetic buffers: the checker reads a version string, so
+  // a Buffer containing one is a faithful stand-in for a real ELF and needs no
+  // Go toolchain on the machine running the gate.
+  const floorProbe = '1.25.13';
+  const toolchainCases = [
+    ['go1.25.12', true, 'a patch below the floor'],
+    ['go1.24.0', true, 'a minor below the floor'],
+    ['go1.25.13', false, 'exactly the floor'],
+    ['go1.25.14', false, 'a patch above the floor'],
+    ['go1.26.0', false, 'a minor above the floor'],
+  ];
+  for (const [stamp, shouldFail, why] of toolchainCases) {
+    const probe = [];
+    checkBinaryToolchain('probe', Buffer.from(`\x00${stamp}\x00`, 'latin1'), floorProbe, probe);
+    if (shouldFail && probe.length === 0) {
+      failures.push(`SELF-TEST: ${stamp} (${why}) was accepted against go${floorProbe}`);
+    }
+    if (!shouldFail && probe.length > 0) {
+      failures.push(`SELF-TEST: ${stamp} (${why}) was rejected against go${floorProbe}`);
+    }
+  }
+  // A binary with no version string at all must be reported, not passed over.
+  const blind = [];
+  checkBinaryToolchain('probe', Buffer.from('no version here', 'latin1'), floorProbe, blind);
+  if (blind.length === 0) {
+    failures.push('SELF-TEST: a binary with no Go version string was silently accepted');
+  }
+  // And the floor must actually be readable from go.work, or every check above
+  // is a no-op in production while the self-test passes on its own constant.
+  if (!goFloorFromWorkspace()) {
+    failures.push('SELF-TEST: could not read the go directive from go.work; the toolchain check would no-op');
+  }
+
   if (failures.length > 0) {
     console.error('verify-vsix: SELF-TEST FAILED');
     for (const f of failures) console.error('  ' + f);
@@ -275,7 +381,8 @@ function selfTest() {
   }
   console.log(`verify-vsix: self-test ok (${mustReject.length} credential names refused, ` +
     `${mustAccept.length} shipped paths accepted, ${secrets.length} secret shapes detected, ` +
-    `${innocent.length} innocent strings ignored)`);
+    `${innocent.length} innocent strings ignored, ` +
+    `${toolchainCases.length} toolchain versions judged against go${goFloorFromWorkspace()})`);
   process.exit(0);
 }
 
@@ -337,7 +444,9 @@ function main() {
     if (daemonEntry.size < 1000000) { // < 1MB
       failures.push(`CORRUPT  daemon binary size is suspiciously small: ${(daemonEntry.size / 1024 / 1024).toFixed(2)} MB`);
     } else {
-      const header = readEntry(buf, daemonEntry).subarray(0, 4);
+      const bin = readEntry(buf, daemonEntry);
+      checkBinaryToolchain('daemon binary', bin, goFloorFromWorkspace(), failures);
+      const header = bin.subarray(0, 4);
       const isElf = header[0] === 0x7f && header[1] === 0x45 && header[2] === 0x4c && header[3] === 0x46;
       const isPE = header[0] === 0x4d && header[1] === 0x5a;
       const isMachO = (header[0] === 0xcf && header[1] === 0xfa && header[2] === 0xed && header[3] === 0xfe) ||
@@ -353,7 +462,9 @@ function main() {
     if (helperEntry.size < 1000000) { // < 1MB
       failures.push(`CORRUPT  helper binary size is suspiciously small: ${(helperEntry.size / 1024 / 1024).toFixed(2)} MB`);
     } else {
-      const header = readEntry(buf, helperEntry).subarray(0, 4);
+      const bin = readEntry(buf, helperEntry);
+      checkBinaryToolchain('helper binary', bin, goFloorFromWorkspace(), failures);
+      const header = bin.subarray(0, 4);
       const isElf = header[0] === 0x7f && header[1] === 0x45 && header[2] === 0x4c && header[3] === 0x46;
       const isPE = header[0] === 0x4d && header[1] === 0x5a;
       const isMachO = (header[0] === 0xcf && header[1] === 0xfa && header[2] === 0xed && header[3] === 0xfe) ||

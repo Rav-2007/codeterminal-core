@@ -5,6 +5,17 @@
 node_modules/
 out/
 
+# The release job's OUTPUT directory (.github/workflows/release.yml writes the
+# per-target .vsix and SHA256SUMS here). `out/` above did not cover it, so a
+# local release build committed its own artifact: a 15 MB
+# codeterminal-vscode-linux-x64-0.0.1.vsix from 2026-08-12 sat tracked at the
+# release path, and the daemon inside it had been built with go1.25.12 against
+# an enforced floor of go1.25.13 -- four reachable stdlib vulnerabilities by
+# `govulncheck -mode=binary`. CI rebuilds from fresh binaries so it never
+# reached a user, but a clone shipped one to anyone who looked in the obvious
+# place.
+out-vsix/
+
 daemon/codeterminal-daemon
 clients/tui/codeterminal-tui
 daemon/daemon
