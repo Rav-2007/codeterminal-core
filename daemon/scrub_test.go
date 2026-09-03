@@ -18,6 +18,7 @@ var fakeSecrets = map[string]string{
 	"supabase_secret":      "sb_secret_" + strings.Repeat("z7", 12),
 	"supabase_publishable": "sb_publishable_" + strings.Repeat("z7", 12),
 	"mochiii_key":          "mochi_" + strings.Repeat("0a1b2c3d4e", 3), // 30 hex chars
+	"stripe_secret_key":    "sk_live_" + strings.Repeat("4aB7", 6),
 	"private_key_block":    "-----BEGIN PRIVATE KEY-----\nMIIBVwIBADANBgkqhkiG9w0BAQEFAASCAT\n-----END PRIVATE KEY-----",
 }
 

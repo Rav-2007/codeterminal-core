@@ -102,8 +102,31 @@ func shannonEntropy(s string) float64 {
 // credential (password/secret/api_key/token/...) and captures the VALUE token
 // only (group 2), so span-scoped measurement is possible without ever touching
 // the surrounding line. Log-only; it never redacts.
+//
+// THE TRAILING \b USED TO MAKE THIS BLIND TO THE COMMONEST FORM THERE IS.
+// "_" is a word character, so in SECRET_KEY there is no boundary between
+// SECRET and _KEY, and the pattern did not match. Nor did stripe_secret_key,
+// nor dbPassword. It DID match apiKey, authToken and clientSecret -- which is
+// why the gap survived: every positive case in chunkscrub_test.go used a bare
+// credential word as the whole identifier (`token =`, `password:`,
+// `api_key =`, `client_secret:`), so the suite passed while the detector
+// missed snake_case, SCREAMING_SNAKE and most camelCase compounds. A test
+// that only asks the question the code already answers.
+//
+// The credential word may now sit anywhere inside the identifier, with the
+// surrounding segments matched but not captured. GROUP 1 IS STILL THE FIXED
+// VOCABULARY WORD, never the identifier, because the Note built from it is
+// logged and this file's contract is that only a fixed label, a secret-free
+// note and a one-way indicator ever reach a log line.
+//
+// Widening it lets through things like `my_token_bucket_size = 10`, which the
+// old pattern's boundary excluded by accident. isNonSecretValue drops those on
+// the value side, where the decision belongs: 10 is four characters short of
+// the floor. Over-reporting and then filtering is what warn-mode is FOR -- it
+// is a fire-rate measurement, and a detector that silently misses the dominant
+// naming convention biases the very data D5 is to be decided from.
 var keywordAssignmentPattern = regexp.MustCompile(
-	`(?i)\b(passwords?|passwd|pwd|secrets?|api[_-]?keys?|apikey|access[_-]?tokens?|auth[_-]?tokens?|tokens?|client[_-]?secret|private[_-]?keys?)\b\s*[:=]\s*["']?([^\s"',;)]+)`)
+	`(?i)\b[A-Za-z0-9.\-]*_?(passwords?|passwd|pwd|secrets?|api[_-]?keys?|apikey|access[_-]?tokens?|auth[_-]?tokens?|tokens?|client[_-]?secret|private[_-]?keys?)[A-Za-z0-9_.\-]*\s*[:=]\s*["']?([^\s"',;)]+)`)
 
 // detectKeywordSecrets flags credential-named assignments with a plausible
 // literal value. Log-only.

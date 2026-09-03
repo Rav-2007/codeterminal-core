@@ -41,6 +41,26 @@ var scrubPatterns = []struct {
 	re   *regexp.Regexp
 }{
 	{"openai_key", regexp.MustCompile(`sk-[A-Za-z0-9]{20,}`)},
+	// Stripe. THE UNDERSCORE IS THE WHOLE REASON THIS LINE IS SEPARATE from the
+	// openai_key pattern above: that one is `sk-`, this one is `sk_`, and a
+	// Stripe live key therefore matched nothing here at all. Caught end to end --
+	// a canary `sk_live_...` in an indexed file travelled verbatim inside
+	// <retrieved_context> to the provider, and warn-mode's entropy detector did
+	// not catch it either, because a key with low character diversity is
+	// low-entropy. Two layers, both blind to one of the most common secrets a
+	// repository actually contains.
+	//
+	// This is NOT the Design B/C question D5 ruled on. That ruling rejected
+	// ENTROPY/KEYWORD redaction, measured at 33% of chunks with zero precision.
+	// This is a prefixed structural shape of exactly the kind the eight patterns
+	// around it already are, and it carries their false-positive cost: none
+	// measured, because `sk_live_` followed by 16+ base62 characters is not a
+	// shape that occurs by accident.
+	//
+	// rk_ (restricted keys) is included with sk_ because it is equally secret.
+	// pk_ (publishable) is deliberately NOT: it is public by design, and
+	// redacting it would corrupt working code for no gain.
+	{"stripe_secret_key", regexp.MustCompile(`\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}`)},
 	{"aws_access_key", regexp.MustCompile(`AKIA[0-9A-Z]{16}`)},
 	{"github_token", regexp.MustCompile(`gh[pousr]_[A-Za-z0-9]{20,}`)},
 	{"slack_token", regexp.MustCompile(`xox[baprs]-[A-Za-z0-9-]{10,}`)},

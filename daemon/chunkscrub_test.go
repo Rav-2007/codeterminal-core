@@ -462,3 +462,69 @@ func TestDetectWarnModeSecrets_EmptyAndBenignInputs(t *testing.T) {
 		}
 	}
 }
+
+// TestDetectKeywordSecrets_IdentifierConventions pins the KEYWORD detector
+// specifically, and it exists because putting these cases in mustDetect proved
+// nothing at all.
+//
+// mustDetect asserts that detectWarnModeSecrets -- entropy OR keyword -- fires,
+// and measures an aggregate RATE rather than each case. Every realistic
+// credential value is high-entropy, so the entropy detector answers for all of
+// them and the keyword detector could be deleted outright without moving that
+// number. That is precisely how the trailing-\b bug survived: the table was
+// green, and it was green for a reason unrelated to the thing under test.
+//
+// So this calls detectKeywordSecrets DIRECTLY, and it is written to fail if the
+// old pattern comes back.
+func TestDetectKeywordSecrets_IdentifierConventions(t *testing.T) {
+	// Values are deliberately dull and low-entropy where possible: the point is
+	// the IDENTIFIER on the left, not the value on the right.
+	cases := []struct {
+		name        string
+		text        string
+		wantKeyword string
+	}{
+		{"SCREAMING_SNAKE compound", `SECRET_KEY = "aaaaaaaaaaaaaaaaaaaa"`, "secret"},
+		{"snake_case compound", `stripe_secret_key = "aaaaaaaaaaaaaaaaaaaa"`, "secret"},
+		{"camelCase compound", `dbPassword = "aaaaaaaaaaaaaaaaaaaa"`, "password"},
+		{"PascalCase compound", `StripeSecretKey = "aaaaaaaaaaaaaaaaaaaa"`, "secret"},
+		{"bare word still works", `password = "aaaaaaaaaaaaaaaaaaaa"`, "password"},
+		{"camelCase whole identifier still works", `apiKey = "aaaaaaaaaaaaaaaaaaaa"`, "apikey"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := detectKeywordSecrets(tc.text)
+			if len(got) == 0 {
+				t.Fatalf("detectKeywordSecrets(%q) fired nothing; the identifier names a "+
+					"credential and the value is a plausible literal", tc.text)
+			}
+			if !strings.Contains(got[0].Note, "keyword="+tc.wantKeyword) {
+				t.Errorf("Note = %q, want it to carry keyword=%s", got[0].Note, tc.wantKeyword)
+			}
+			// The log contract: the NOTE carries a fixed-vocabulary word, never
+			// the identifier it was found inside, and never the value.
+			if strings.Contains(got[0].Note, "aaaaaaaaaaaaaaaaaaaa") {
+				t.Errorf("Note leaked the value: %q", got[0].Note)
+			}
+		})
+	}
+}
+
+// TestDetectKeywordSecrets_DoesNotFireOnNonSecrets keeps the widened pattern
+// honest. Letting the credential word sit anywhere inside an identifier admits
+// things like my_token_bucket_size, and the value-side filter is what has to
+// reject them.
+func TestDetectKeywordSecrets_DoesNotFireOnNonSecrets(t *testing.T) {
+	for _, text := range []string{
+		`my_token_bucket_size = 10`,
+		`maxTokens = 4096`,
+		`api_key = os.environ["OPENROUTER_API_KEY"]`,
+		`password: ${DB_PASSWORD}`,
+		`secret_name = "abc"`,
+	} {
+		if got := detectKeywordSecrets(text); len(got) != 0 {
+			t.Errorf("detectKeywordSecrets(%q) fired %d time(s); it is not a literal credential", text, len(got))
+		}
+	}
+}
