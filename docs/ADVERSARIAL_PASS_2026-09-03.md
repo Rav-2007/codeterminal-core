@@ -1,6 +1,7 @@
 # Adversarial re-verification pass — 2026-09-03
 
-Branch `audit/adversarial-pass` at `d1a82a5`, 43 commits ahead of `main`.
+Branch `audit/adversarial-pass`, audited at `d1a82a5` (43 commits ahead of
+`main`; this pass added two more).
 Four chunks. Three runs of everything where a second and third run could say
 something a first could not.
 
@@ -16,8 +17,13 @@ provider requests.** The real-model retrieval eval **passed** with top-3 recall
 14/15 = 0.93 against a 0.80 threshold.
 
 Four new register rows (**37–40**), one of them part-fixed in this pass. No auth
-bypass, no credential leak, no exposed endpoint, no orphaned process, no
-unbounded memory growth in the daemon.
+bypass, no credential leak, no exposed endpoint, and no orphaned process.
+
+On memory, stated to the limit of what was measured: the daemon's RSS was flat
+across three cold end-to-end runs (15.3 → 17.5 MB, 17–18 fds, 9 threads, every
+run). That is a short-run plateau, not a soak — the 30-minute soak in this pass
+exercises the **proxy**, and no equivalent long-run measurement of the daemon
+exists here.
 
 The two findings worth acting on first:
 
@@ -129,6 +135,10 @@ real agent loop, canned-SSE provider:
   requested → running → succeeded, reply streamed back.
 - Resource profile flat: RSS 15.3→17.5 MB, 17–18 fds, 9 threads, every pass.
 - **No orphans** after graceful shutdown.
+
+- **VS Code surface verified against a real editor**, not just the offline gates:
+  the EDH suite runs **99 passing, 1 pending**, and `make webview` is green
+  (0 undefined symbols, 36 type findings against a ceiling of 36).
 
 **One thing I got wrong and then disproved.** I read `"processId": nil` in the
 LSP initialize request plus the absence of `SysProcAttr` (which this repo's own
