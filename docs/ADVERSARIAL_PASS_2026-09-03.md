@@ -196,14 +196,31 @@ numbers as indicative and the *ratios* as the finding):
 | **`DetectHighEntropy`** | **60,496** | **15.9 MB/s** | 11 |
 | `TurnScrubWork` (whole turn) | 2,362,182 | 4.09 MB/s | 120 |
 
-**`DetectHighEntropy` is the slowest per-byte operation on the retrieval path —
+**`DetectHighEntropy` was the slowest per-byte operation on the retrieval path —
 14.5× slower per byte than the scrubber it runs alongside — and it is
-log-only.** It runs on every chunk of every turn purely to gather the fire-rate
-data D5 will be decided from. Combined with the keyword-detector gap above, the
-product is paying its single largest per-byte cost to collect a measurement that
-is itself skewed. **Recommendation:** sample it (say 1 chunk in N) rather than
-running it on every chunk, or gate it behind a config flag. This is the highest-
-value optimization available and it is not a correctness change.
+log-only**, running on every chunk of every turn purely to gather the fire-rate
+data D5 will be decided from.
+
+**FIXED.** The cost was not the entropy arithmetic (`shannonEntropy` is already
+one O(n) pass over a 256-entry array) but `entropyTokenPattern.FindAllString` —
+a greedy `{20,}` over a single character class, which is a run-length scan
+expressed as a regexp. Replaced with a byte scan. Measured **in one process, on
+one input, under one load**, because the original figures were taken across
+separate runs on a loaded machine and that is not a measurement:
+
+| | ns/op | throughput | allocs |
+|---|---|---|---|
+| `regexp` | 2,097,873 | 5.52 MB/s | 19 |
+| `byte_scan` | 33,959 | **341.09 MB/s** | 6 |
+
+**61.8× faster, 3× fewer allocations**, and *nothing observable changes* — same
+tokens, same entropies, same log lines — so the D5 data is untouched and the
+speedup needed no ruling. The two obvious alternatives were both worse:
+sampling 1-in-N would bias the very data D5 is to be decided from, and moving
+the work off-thread would trade a latency problem for a shutdown-ordering and
+test-determinism one. `entropyTokenPattern` remains in the file as the
+specification, and `TestEntropyScanMatchesTheRegexp` holds the scanner to it on
+adversarial literals and on all 274 `.go` files in the package.
 
 Second: `TurnScrubWork/as_shipped_double_scrub` (2.362 ms) benchmarks *faster*
 than `single_scrub_shared` (2.413 ms) — the obvious "scrub once and share"
@@ -246,18 +263,31 @@ a laptop sits on it" gap the repo already documents for `govulncheck`.
 
 ## What was fixed here, and what was only written down
 
-**Fixed** (one commit, with a neuter proving it does work):
+**Fixed**, each with a neuter proving the test bites:
 
 - Item 37(a) — `daemon/helperproc_test.go` now redirects `XDG_CACHE_HOME` to a
   temp dir for the whole package. Measured: 3 stray directories without it from
-  one small test subset, 0 with it.
+  one small test subset, 0 with it; 0 across a full `go test ./...` where it was
+  24.
 
-**Written down, not fixed** — items 38, 39, 40 and 37(b) in
-[`OPEN_ITEMS.md`](OPEN_ITEMS.md), each with severity, `file:line` and how it was
-reproduced. Under this pass's fix-P0/P1-report-the-rest policy none of them is a
-P0 or P1: 38 and 39 sit inside a scrubbing posture the founder has already ruled
-on once (D5) and deserve that ruling rather than a unilateral patch, and 40 does
-not reach users.
+- Item 38 — `sk_/rk_(live|test)` added to the structural allow-list. The canary
+  that caught it now scrubs to `[{stripe_secret_key}]`.
+- Item 39 — the trailing `\b` removed so the credential word may sit anywhere
+  in the identifier, with group 1 still the fixed vocabulary word so the
+  log contract is unchanged.
+- Item 40 — `out-vsix/` gitignored, the 15 MB artifact untracked (recoverable at
+  `5453ba8`), and the packaging gate taught to read the Go version stamped in
+  the bundled binaries and fail below the `go.work` floor.
+- The `DetectHighEntropy` optimization — 61.8×, nothing observable changed.
+
+All were **initially** reported rather than fixed, under this pass's
+fix-P0/P1-report-the-rest policy: none is a P0 or P1, and 38 and 39 sit inside a
+scrubbing posture the founder has ruled on once already (D5). That policy was
+then explicitly overridden, so they were fixed.
+
+**Still open**: 37(b), production reclamation of the sandbox cache. Deleting
+directories on a live user's machine needs a retention policy, not a temp dir,
+and that is a design decision rather than a patch.
 
 ## Negative results, recorded so they are not mistaken for gaps
 
