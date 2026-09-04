@@ -21,6 +21,12 @@ import (
 )
 
 func main() {
+	// FIRST, before flags, before anything can draw. See renderprofile.go: the
+	// colour profile is otherwise decided by whatever the environment happens to
+	// say at the moment of the first Style.Render, wherever in the program that
+	// turns out to be. Resolving it here makes rendering a function of state.
+	pinColorProfile()
+
 	promptFlag := flag.String("prompt", "", "prompt text to send (reads stdin if omitted); with this flag (or piped stdin), runs one-shot instead of launching the chat UI")
 	workspaceFlag := flag.String("workspace", ".", "workspace to ground chat against; sent to the daemon so it can confirm this matches its own configured grounding workspace (one-shot mode ignores this — it predates grounding and stays unchanged)")
 	flag.Parse()
