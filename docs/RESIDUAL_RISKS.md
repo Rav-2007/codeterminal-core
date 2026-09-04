@@ -458,6 +458,20 @@ turns — streaming tool activity without a cap, or a sub-agent whose every step
 becomes a turn. At that point the eviction has to move inside the turn and the
 two index fields have to be rebased with it.
 
+**The memory numbers this ceiling is anchored to, and a superseded figure.**
+The ceiling derives from measurements taken on this tree: **8.6 MB idle,
+13.7 MB at 120 turns** (consistent before and after the render cache — peak RSS
+was not what the cache changed), and **30 MB at 2,000 unbounded turns** against
+3.1 MB of heap in use once the bound is applied.
+
+An earlier baseline figure was supplied for 120 turns and **could not be
+reproduced across two attempts**, including varying the per-turn answer size
+from 1.2 KB to 8 KB. It is deliberately not repeated in this register or in the
+readiness statement, so that a reader who encounters it in older text — a
+commit message, a superseded report — does not re-derive a ceiling from it.
+**If a memory bound is ever recomputed, recompute it; do not inherit a number
+from prose.**
+
 ---
 
 ## R1.12 — Repainting a deep transcript costs real CPU while streaming

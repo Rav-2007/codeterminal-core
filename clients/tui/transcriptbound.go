@@ -17,6 +17,14 @@ import (
 // it is a slope, not a cliff, and the machine it eventually hurts is somebody
 // else's.
 //
+// THOSE NUMBERS WERE TAKEN ON THIS TREE and are the ones of record: 8.6MB idle,
+// 13.7MB at 120 turns (identical before and after the render cache -- peak RSS
+// is not what the cache changed), 30MB at 2000 unbounded turns. An earlier
+// baseline figure for 120 turns could not be reproduced across two attempts,
+// including varying the per-turn answer size, and is deliberately not repeated
+// anywhere -- see R1.11 in docs/RESIDUAL_RISKS.md. Recompute rather than
+// inherit a number from prose.
+//
 // TWO CEILINGS, NOT ONE, because either alone leaves a hole. A count-only bound
 // lets a model that answers in 50KB blocks hold 25MB inside a "500 turn" limit.
 // A byte-only bound lets thousands of one-line tool-activity turns accumulate

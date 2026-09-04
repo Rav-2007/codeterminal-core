@@ -24,12 +24,39 @@ decides whether the first is worth anything.
 | Absolute build paths in a binary | 678 | 0 | `scripts/supply-chain.sh`, `-trimpath` on releases |
 | Rendering determinism | 3 different byte strings for the same state | 1 | 14-environment × 4-profile subprocess matrix |
 
+## Provenance of the numbers above
+
+Added after an audit of this document's own figures, because one of them turned
+out not to be reproducible.
+
+**Deterministic — these reproduce exactly on any machine.** Allocation counts
+(2,234 → 29; 30,452 vs 24,314), the growth ratios (97× → 1.6×; 1.25×), embedded
+build paths (678 → 0), unchecked errors (5 → 0), distinct render outputs (3 → 1),
+turns and bytes retained by the soak, file-descriptor counts, coverage
+percentages, and every code constant (4,000 chars; 500 turns / 2 MiB).
+
+**Wall-clock — these vary run to run and are reported, not gated.** Per S1 every
+timing gate in the tree asserts allocations and reports wall-clock at a wide
+multiple. Observed spreads on the reference machine: the 1 MB paste median moved
+between 15.1 ms and 17.1 ms across runs *before* the fix, which is why its gate
+is a rune count and not a stopwatch; the resize-storm and repaint figures carry
+the same caveat.
+
+**Not reproducible as stated, and corrected.** An earlier draft of this document
+claimed "1.2 million fuzz executions". Fuzz execution counts are time-boxed and
+scale with machine load: two runs of the same gate at `FUZZTIME=10s` produced
+899,373 and 1,827,117 executions across the three TUI targets — a 2× spread. The
+claim has been replaced with what is actually stable, which is that the targets
+are registered in the gate and clean.
+
+**Memory:** see item 4 under *What was NOT verified*.
+
 ## What is verified, and by what
 
 - **Correctness of the render cache.** `cache.render == renderTranscript`
   byte-for-byte over 200 seeded mutation sequences, four colour profiles, widths
-  0–200, and **1.2 million fuzz executions** across the three TUI fuzz targets.
-  Twelve mutation shapes enumerated and each asserted individually.
+  0–200, and the three TUI fuzz targets clean under the gate. Twelve mutation
+  shapes enumerated and each asserted individually.
 - **The gates are load-bearing.** Every fix in this batch was neutered and the
   guarding test observed to fail. Four separate instrument errors were caught
   this way and are listed below.
@@ -53,12 +80,14 @@ decides whether the first is worth anything.
 3. **Not run in CI.** Everything above was measured on one developer machine.
    The CI workflow changes in this batch — the supply-chain gate, the three
    newly registered fuzz targets — have never executed on a runner.
-4. **The 39.3 MB RSS baseline could not be reproduced.** The bound was declared
-   against numbers I measured myself (8.6 MB idle, 13.7 MB at 120 turns, both
-   before and after the render cache) after two attempts at reproducing the
-   figure I was given, including varying answer size. If that number came from a
-   different harness, the memory ceiling in this document is anchored to the
-   wrong baseline.
+4. **The memory ceiling is anchored to my own measurement, and supersedes an
+   earlier figure that could not be reproduced.** The numbers of record are
+   **8.6 MB idle and 13.7 MB at 120 turns**, measured on this tree and identical
+   before and after the render cache. An earlier baseline given to me could not
+   be reproduced across two attempts, including varying the answer size from
+   1.2 KB to 8 KB per turn; the superseded figure is deliberately not repeated
+   here so it cannot be picked up again by a reader who finds it in older text.
+   See R1.11 in the residual-risk register for the same note.
 5. **Two dependency surfaces are scanned by nothing** — the onnxruntime native
    library and the extension's npm tree (R1.13).
 6. **The terminal client is not built by the release workflow** (R1.14), so none
@@ -79,13 +108,21 @@ decides whether the first is worth anything.
 | **Edit-review and approval buffers hold raw bytes** (R1.4) | Deliberate: edit bytes go to disk and approval bytes carry the daemon's digest, so both must stay byte-exact. Sanitized at render instead. Risk is a *new* reader rendering them raw. | Structural — an AST guard names every function allowed to touch them. | `TestRawByteStructuresHaveNoNewReaders`. **It fired during 3.7**: the decomposition moved the reader out of `Update` and the test failed until the reviewed list moved with it. |
 | **`git status` failures echo git's output** (R1.7) | A remote URL with an embedded credential appears in an error line. | None. | None. |
 | **Terminal escape injection** (closed earlier in this pass) | Model or MCP output repaints the approval prompt — forged consent. | Allowlist sanitizer, one ingest door. | 43-entry corpus + 14 CSI shapes + 2 fuzzers + a real-pty test, all now registered in the fuzz gate for the first time. |
+| **C1 introducer in a model-authored edit path** (closed in this pass, task 2.2) | `editapply.RejectUnprintablePath` refuses `r < 0x20`, DEL and a named set of Unicode direction/zero-width characters — **but not C1 (U+0080–U+009F)**. U+009B is the CSI introducer in 8-bit mode. A model names a file whose path carries one; the path parses cleanly, survives every upstream check, and reaches a `%s` in the review summary's refusal reason, where the terminal executes it as a control sequence. | Sanitization at the `appendTurn` door, which is now the only route into `m.turns`. | `TestC1InAnEditPathCannotReachTheTranscript` (`clients/tui/sanitize_wiring_test.go:438`). **Re-verified 2026-09-04**: it exists, it passes, and it **runs rather than skips** — the gap is still open upstream. It self-skips only if `editapply` ever closes it. Neutering `appendTurn`'s sanitization fails it immediately, with the C1 byte visible in the transcript. |
 
-**One item I could not place.** The brief asked to include "the C1 edit-path
-finding". Nothing in this pass's record carries that label, and I have not
-invented one to fill the row. The nearest candidates are R1.4 above and the
-earlier `editapply` axis findings (FAIL-1 case-folding, FAIL-2 undo writer),
-which are recorded elsewhere and were not re-verified here. **Please confirm
-which is meant** rather than reading this table as complete on that point.
+### The C1 finding, verified rather than transcribed
+
+The upstream gap was re-probed directly on 2026-09-04 rather than taken from the
+earlier report. `editapply.RejectUnprintablePath` returns:
+
+| Input | Result |
+|---|---|
+| `U+009B` (CSI introducer) | **accepted** |
+| `U+0080`, `U+009F` (C1 range ends) | **accepted** |
+| `0x1B` (ESC), `0x01` (SOH), `0x7F` (DEL) | refused — "contains a control character" |
+
+So the description is exact: C0 and DEL are refused, the entire C1 range is not.
+The client-side fix stands on its own and does not depend on editapply changing.
 
 ## Instrument errors caught, and why they are listed here
 
