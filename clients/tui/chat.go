@@ -105,6 +105,13 @@ type chatModel struct {
 	state chatState
 	turns []turn
 
+	// transcript caches the rendered form of each turn so a streamed token
+	// re-renders one turn instead of the whole conversation. It validates each
+	// block against the turn it claims to render rather than relying on
+	// invalidation hooks -- see rendercache.go for why that distinction is the
+	// whole design.
+	transcript transcriptCache
+
 	// sanAnswer and sanReasoning strip terminal escapes from the two streams
 	// the daemon sends (see sanitize.go). They are stateful, so they live here
 	// rather than being created per token: a sequence split across two tokens
@@ -1680,7 +1687,7 @@ func (m chatModel) finishReview() (tea.Model, tea.Cmd) {
 }
 
 func (m *chatModel) refreshViewport() {
-	content := renderTranscript(m.turns, m.viewport.Width)
+	content := m.transcript.render(m.turns, m.viewport.Width)
 	if m.state == stateEditReview && m.reviewPrepared != nil {
 		content += "\n\n" + renderReviewPanel(m.reviewIndex, len(m.reviewBlocks), m.reviewPrepared)
 	}

@@ -38,22 +38,44 @@ import (
 // regression detector from the day it lands rather than an aspiration. 3.2
 // tightens them; they may only ever be tightened.
 
-// Measured 2026-09-04, before any render cache, on the reference machine
-// (13th Gen i5-1340P). Update(tokenMsg) with a 1200-char answer per prior turn:
+// Measured 2026-09-04 on the reference machine (13th Gen i5-1340P).
+// Update(tokenMsg) with a 1200-char answer per prior turn, allocations per
+// token, BEFORE the render cache and after it:
 //
-//	prior turns    ns/op      B/op       allocs/op
-//	  0             31,766     4,415         16
-//	 30            694,516   248,572        195
-//	120          2,916,689 1,060,595        697
-//	240          5,269,589 2,047,958      1,360
+//	prior turns    before    after
+//	  0                23       18
+//	 30               195       25
+//	120               692       27
+//	240             1,353       28
+//	400             2,234       29
 //
-// The growth is linear in transcript size, per token, which is quadratic per
-// answer. These ceilings sit above those numbers with room for noise.
+// Before: linear in transcript size, per token, which is quadratic per answer.
+// After: flat. The "before" column is not history -- it is what this file
+// measures again whenever the cache is neutered, which is how the cache was
+// checked to be load-bearing rather than merely green.
+//
+// Wall-clock at 240 prior turns went from p50 5.2ms to p50 3.4ms, which is an
+// improvement and still ~7x over D-1's 0.5ms. That gap is NOT the render's any
+// more. Measured per stage at 240 turns with the cache warm:
+//
+//	cache.render          11µs   <- was ~2.9ms
+//	wrapToWidth          2.69ms  <- 80% of what is left
+//	viewport.SetContent  0.61ms
+//
+// Both remaining stages are already allocation-flat and both are linear in
+// TOTAL BYTES, not in turn count, so no amount of render caching reaches them.
+// Task 3.3 does: driving the refresh from a tick instead of from every token
+// makes that work happen at frame rate rather than per token.
 const (
-	// allocsCeiling240 is what 3.2 must demolish. The acceptance signal is not
-	// "smaller" but "flat": allocs at 240 prior turns within a small constant
-	// factor of allocs at 0.
-	allocsCeiling240 = 1500
+	// allocsCeiling240 is the flatness gate. It sits just above the measured 28
+	// rather than at a round number far above it, because the defect being
+	// guarded is growth with conversation length: a ceiling with room for 50x
+	// growth would not notice the defect coming back.
+	//
+	// The stronger statement -- a RATIO between 0 and 400 prior turns, which
+	// needs no machine-specific constant at all -- is
+	// TestPerTokenAllocationsAreFlatInTranscriptLength in rendercache_test.go.
+	allocsCeiling240 = 45
 
 	// updateCeilingAnyInput is D-1's hard ceiling and applies to every input,
 	// not only tokens. Unlike the per-token budget this one is already met, so
@@ -196,9 +218,13 @@ func TestPerTokenUpdateLatencyAgainstBudget(t *testing.T) {
 	t.Logf("per-token Update at 240 prior turns: p50=%v p99=%v (D-1 wants p50<=%v p99<=%v)",
 		p50.Round(time.Microsecond), p99.Round(time.Microsecond), wantP50, wantP99)
 	if p50 > wantP50 || p99 > wantP99 {
-		t.Logf("BUDGET NOT MET: p50 is %.1fx and p99 is %.1fx the target. This is "+
-			"reported, not failed, because the render cache that closes it is "+
-			"task 3.2. When 3.2 lands, this becomes an assertion.",
+		t.Logf("BUDGET NOT MET: p50 is %.1fx and p99 is %.1fx the target. Reported, "+
+			"not failed. The render cache (3.2) has landed and took p50 from 5.2ms "+
+			"to 3.4ms; what remains is NOT rendering. Measured per stage at 240 "+
+			"turns with the cache warm: cache.render 11µs, wrapToWidth 2.69ms, "+
+			"viewport.SetContent 0.61ms. Both of those are linear in total BYTES "+
+			"rather than in turn count, so no render cache reaches them -- "+
+			"coalescing the refresh onto a tick (3.3) is what does.",
 			float64(p50)/float64(wantP50), float64(p99)/float64(wantP99))
 	}
 }
