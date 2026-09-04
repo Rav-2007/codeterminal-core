@@ -75,6 +75,11 @@
 # numbers because Go had CACHED runs 2 and 3; a cached result is one
 # measurement wearing three hats, and would have hidden the swing entirely.)
 
+# 2026-09-04, clients/tui 83.0 -> 84.0. The render-cache, transcript-bound,
+# paste-bound and coalescing work (tasks 3.2-3.10) added the determinism,
+# equivalence, eviction, soak, goroutine-leak, mouse-toggle and acceptance
+# suites. Measured 84.5 twice, uncached; floored half a point below.
+#
 # 2026-09-03, clients/tui 82.0 -> 83.0. The escape-sanitization work
 # (sanitize.go and its four test files) took this package from 82.2 to 83.3.
 # Measured THREE TIMES UNCACHED with the test cache cleared before each run:
@@ -103,4 +108,4 @@ codeterminal/proxy/testharness    0.0
 codeterminal/helper              22.0
 codeterminal/helper/helperproto  75.0
 codeterminal/protocol            89.5
-codeterminal/clients/tui         83.0
+codeterminal/clients/tui 84.0
