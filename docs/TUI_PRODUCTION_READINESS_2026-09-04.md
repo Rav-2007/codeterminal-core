@@ -153,9 +153,78 @@ been resting on less evidence than they appeared to.
   that builds it **fails the test if it did not reach the ceiling**, so the
   measurement cannot quietly run at half scale.
 - **Repo-wide green.** vet (linux + windows), staticcheck/ineffassign/bodyclose,
-  `-race` (376 s), coverage ratchet on all nine modules with the TUI floor
-  raised 83.0 → 84.0, errcheck 0, govulncheck 0 reachable, fuzz gate, docs
-  links and registers, supply chain.
+  `-race` (**154 s**, re-measured after the soak fix; the earlier 376 s was
+  taken before the soak's cost was understood and is superseded), coverage
+  ratchet on all nine modules with the TUI floor raised 83.0 → 84.0 and now
+  measuring **84.5%**, errcheck 0, govulncheck 0 reachable, fuzz gate 18/18
+  targets, docs links (318), docs code references (15 enforced), registers,
+  debt markers (156 files, 0), supply chain.
+
+## CI, on a real runner, for the first time
+
+P4.2. Everything in this document up to here was measured on one developer
+machine. This section is what happened when it met a runner, and the answer is
+the one the instruction predicted: **three things broke, and all three were real.**
+
+None of them was a product defect. All three were the same shape — a check that
+had only ever run in one environment, meeting a second one.
+
+### 1. A leak gate counted the test fixture's own listener (Windows)
+
+`cross (windows-latest, clients/tui)` failed on
+`TestACompletedTurnLeavesNoGoroutineBehind`. The goroutine-leak gate landed in
+`51747b3` and had only ever run on Linux. go-winio's named-pipe listener keeps
+one pipe pending for the next client; the fake daemon starts before the
+snapshot, the client connects and consumes that pipe, and the listener creates a
+**replacement** that did not exist at snapshot time. Every connection looks like
+one leaked goroutine — deterministically, and only on Windows, because a Unix
+socket listener has no equivalent.
+
+Fixed by matching on the **creator** line, never on the stack. The TUI dials and
+never listens, so a goroutine created by a pipe *listener* cannot be the
+product's; a leaked *client* goroutine shows the same `asyncIO` frame — matching
+on that would hide real leaks — but has a different creator.
+`TestHarnessFilterIsNarrowerThanTheLibrary` proves the distinction on every
+platform.
+
+### 2. The soak timed out the package under `-race` (Linux)
+
+`go (clients/tui)` panicked with *"test timed out after 10m0s, running tests:
+TestTwoThousandTurnSoakStaysWithinItsBounds (7m38s)"*.
+
+The soak drives 2,000 exchanges through `Update` in **one goroutine** — there is
+no concurrency in it for the detector to examine — and instrumenting it costs
+**9×**: 29.9 s unraced, **270.9 s** under `-race` locally, 7m38s on the runner.
+
+Shortening it under `-race` would have been weakening the gate if that were all,
+so it is not all. The `go` job gained a **second, unraced, full-length run** of
+this one test (~40 s), and the raced run does 400 exchanges — 150 past the point
+the turn ceiling engages, taking 270.9 s to 36.9 s. Both lengths run in CI on
+every push, and the 2,000-turn figure quoted in this document is now reproduced
+**on a runner** rather than only on my machine. The "nothing was evicted"
+assertion applies to both lengths, so a shortened soak that stopped reaching the
+ceiling fails rather than passing quietly.
+
+### 3. The extension's real-spawn test staged a binary but not its config
+
+`vscode extension` failed with the daemon exiting 1 three times: *"reading config
+./models.json: no such file or directory"*. `npm run compile` is
+`build:daemon + tsc`; only `build:runtime` runs `stage-runtime.js`, which is what
+copies the repo-root `models.json` next to the executable. `resolveConfigPath`
+then falls back to `./models.json` relative to CWD — a fresh temp workspace.
+
+**Green locally, red on a runner, for the oldest reason there is:** a developer
+tree has a `models.json` left beside the daemon from an earlier `build:runtime`,
+and a clean checkout does not. Reproduced rather than reasoned — running the
+shipped daemon from a temp CWD with that file removed gives the identical CI
+line — and fixed in the test's own setup.
+
+### One process finding worth recording
+
+`workflow_dispatch` and `push` share the workflow's concurrency group, so
+dispatching a run to get macOS **cancelled the in-flight push run**. Nothing was
+lost (the dispatch is a superset), but it costs a full re-run of the Linux and
+Windows matrix. Dispatch first or wait; do not do both.
 
 ## Per-platform status
 
@@ -221,9 +290,16 @@ slash catalogue, history construction — compiles and runs on all three.
    are the pty-backed suites and, on Windows, the signal contract that platform
    does not have. **This is now stated by a test rather than by this paragraph**,
    which is the part that changed at P4.3.
-3. **Not run in CI.** Everything above was measured on one developer machine.
-   The CI workflow changes in this batch — the supply-chain gate, the three
-   newly registered fuzz targets — have never executed on a runner.
+3. ~~**Not run in CI.**~~ **Resolved 2026-09-04 at P4.2** — see *CI, on a real
+   runner* above. Three things broke on first contact and all three were real;
+   none was a product defect. What remains unverified here is narrower and worth
+   stating precisely: the **release** workflow (`release.yml`) is tag- and
+   dispatch-triggered, so the terminal-client build, the staging assertion and
+   the macOS signing step added at P4.1 have **still never executed**. They are
+   syntax-checked, their shell loops were run locally against a simulated
+   artifact tree in all four cases (present, missing, `.exe`, and the
+   three-in-three-out count), and the packaging assertion is covered by
+   `verify-vsix.js --self-test`. That is not the same as having run.
 4. **The memory ceiling is anchored to my own measurement, and supersedes an
    earlier figure that could not be reproduced.** The numbers of record are
    **8.6 MB idle and 13.7 MB at 120 turns**, measured on this tree and identical
@@ -301,6 +377,47 @@ above should know how the numbers were checked.
    this reason — that the paste reaches the input before the clock starts. The
    delta 3.6 reported still stands; the absolute number is now 389 µs, and it is
    the same at 0 bytes as at the 2 MiB ceiling.
+
+## The hand-test that has not happened, written out so it can
+
+The release gate requires a person to drive the client. Nobody has. This is not
+a substitute — it is the shortest path to doing it, written by the person who
+knows where the harness is blind.
+
+**The point is what you notice that the tests did not.** Every line below has a
+passing assertion behind it already; if the assertions were the answer, the
+gate would not exist. Write down anything that felt wrong even where the
+behaviour was technically correct.
+
+| # | Do this | The harness asserts | What only a person can see |
+|---|---|---|---|
+| 1 | Hold a long session — 60+ exchanges | turn counts, bytes, allocations | whether the eviction marker, when it appears, reads as *the product bounding itself* or as *the product losing your conversation* |
+| 2 | Scroll back **while an answer is streaming**, then scroll to the bottom again | `AtBottom()` is read before `SetContent`; three tests | whether following resumes when you expect it to, and whether the text you were reading stayed still |
+| 3 | Paste something over 4,000 characters | 4,000 runes kept, a notice is set | whether the notice is *seen*. It goes to `statusErr`, one line of chrome, at the moment attention is on the prompt box |
+| 4 | Type while an answer is streaming | nothing — this is undocumented behaviour, found at P3.3 | keystrokes are **discarded**: `startTurn` blurs the input. A paste is among them. Nobody has judged whether that is right |
+| 5 | Drive an approval prompt to both answers | the panel is filtered, focus lands on Deny | whether "unconfined" reads as a warning at the size and colour it actually renders |
+| 6 | Reach the transcript ceiling (~250 exchanges, or set `CODETERMINAL_MAX_TURNS=30`) | 502 turns, 2 MiB, marker accumulates | whether a repaint at the bound *feels* slow. It is 22 ms (R1.12), which is under the threshold most people notice and over the one some do |
+| 7 | Quit by each path: `/exit`, ctrl+c twice, `SIGTERM`, `SIGHUP`, closing the terminal | terminal restored on every path except a destroyed pty (R1.1) | whether the shell you come back to is actually usable — no stuck colour, no hidden cursor, no wrapped-off prompt |
+| 8 | Do 1–7 on **macOS** | the suite runs there, but 14 tests do not — every pty-backed one | this is the largest hole in the document. The terminal is verified on Linux and on no other platform |
+
+Set `CODETERMINAL_MAX_TURNS` and `CODETERMINAL_MAX_TRANSCRIPT_BYTES` to reach the
+ceiling in minutes rather than hours; both have floors (8 turns, 64 KB) so a
+typo cannot disable the bound.
+
+## Release gate status
+
+The four conditions the gate names, and where each stands:
+
+| Condition | Status |
+|---|---|
+| Phases 1–4 complete | **Met.** P3 measured and disposed R1.12; P4.1 closed R1.14; P4.2 ran CI on a runner and fixed what broke; P4.3 produced the per-platform status. |
+| P5 has a **recorded decision** | **NOT MET, and it blocks.** The memo exists and recommends one course for each row, but a recommendation is not a decision. R1.5 (fix), R1.6 (accept) and the history/persistence leak (fix) are all awaiting the daemon's owner. |
+| A human has driven the client | **NOT MET, and it blocks.** See the table above. |
+| "What I did not verify" matches reality | **Met**, as of this revision. |
+
+**Two of four are open, and both are open on somebody else's action rather than
+on more work here.** That is the honest state: the engineering is finished and
+the release is not.
 
 ## Conditions on the release decision
 
