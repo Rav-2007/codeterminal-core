@@ -51,6 +51,35 @@ are registered in the gate and clean.
 
 **Memory:** see item 4 under *What was NOT verified*.
 
+## The gates themselves were audited, and three were fail-open
+
+Added 2026-09-04. Every "gates green" line in every report about this work was
+reported *through* these scripts, so their trustworthiness is a precondition for
+everything above, not a tidy-up. All twelve were probed against four questions:
+what they report when the target set is empty, when the module does not build,
+when a tool they shell out to is missing, and whether they distinguish
+"inspected N, found 0" from "inspected 0".
+
+**Nine were already sound.** `coverage-ratchet` refuses to pass with no floors
+parsed and detects a floor whose package vanished; `govulncheck` asserts it
+scanned all six modules; `docs-links`, `docs-claims`, `actions-pinned` and
+`go-toolchain-pinned` each carry an explicit count floor; `lint`, `go vet` and
+`errcheck-ceiling` fail closed on every probe.
+
+**Three were not, and are now fixed and neutered:**
+
+| Gate | What it concealed |
+|---|---|
+| `scripts/fuzz.sh` | A fuzz target that does not exist reported `ok` — `go test -fuzz` with no match exits 0. This is the hole that let **both TUI sanitizer fuzzers go unrun from task 2.1 until they were noticed**, and it was still live. It also reported the daemon's four targets as plain `ok` when they only replay their seed corpus and generate nothing at short `FUZZTIME`. |
+| `scripts/supply-chain.sh` | Written earlier in this pass. Treated "this is a library" and "`go list` failed" as the same answer, so **a module with no Go files produced a silent skip and the gate exited 0**. Concealed nothing yet — it is new — but would have concealed a module that stopped producing a binary. |
+| debt markers | **The gate did not exist.** "Zero TODO/FIXME/HACK in non-test code" was a standing baseline invariant enforced by a manual grep over a hardcoded `clients/tui/*.go` — one module of six. Re-run properly across all six: **156 non-test files, 0 markers**, so the claim was true, but it had never been checked outside the TUI. |
+
+**Consequence for the claims in this document.** The fuzz-gate line is
+re-verified under the fixed script (18 of 18 targets ran; the three TUI targets
+produce real execution counts). The debt-marker line is re-verified repo-wide
+for the first time. No claim above was found to be false; two were found to have
+been resting on less evidence than they appeared to.
+
 ## What is verified, and by what
 
 - **Correctness of the render cache.** `cache.render == renderTranscript`
