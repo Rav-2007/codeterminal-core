@@ -534,9 +534,13 @@ above should know how the numbers were checked.
 
 ## The hand-test that has not happened, written out so it can
 
-The release gate requires a person to drive the client. Nobody has. This is not
-a substitute — it is the shortest path to doing it, written by the person who
-knows where the harness is blind.
+The release gate requires a person to drive the client. Nobody has.
+
+**The script to hand a tester is [docs/MANUAL_SESSION_2026-09-04.md](MANUAL_SESSION_2026-09-04.md)**
+— a standalone document that assumes no knowledge of this one. What follows is
+the summary for a reader of *this* document: the same steps, paired with what the
+harness already asserts, so the gap between the two is visible. If the two ever
+disagree, the standalone script is the one that gets used and the one to trust.
 
 **The point is what you notice that the tests did not.** Every line below has a
 passing assertion behind it already; if the assertions were the answer, the
