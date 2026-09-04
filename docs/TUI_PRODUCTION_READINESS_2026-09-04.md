@@ -169,8 +169,10 @@ the one the instruction predicted: **three things broke, and all three were real
 None of them was a product defect. All three were the same shape — a check that
 had only ever run in one environment, meeting a second one.
 
-**After the fixes, every `clients/tui` job is green on all three platforms**
-(run `33896704671`, `workflow_dispatch` so macOS was in the matrix):
+**After the fixes the whole workflow went green: run `33896704671`, 30 of 30 jobs
+success**, dispatched so macOS was in the matrix. Taken at commit `3ecd0a6`; the
+commits after it are this document, the register, and one workflow step that adds
+`-v` to the platform-coverage report. The `clients/tui` jobs specifically:
 
 | Job | Result |
 |---|---|
@@ -427,7 +429,7 @@ The four conditions the gate names, and where each stands:
 
 | Condition | Status |
 |---|---|
-| Phases 1–4 complete | **Met.** P3 measured and disposed R1.12; P4.1 closed R1.14; P4.2 ran CI on a runner and fixed what broke; P4.3 produced the per-platform status. |
+| Phases 1–4 complete | **Met.** P3 measured and disposed R1.12; P4.1 closed R1.14; P4.2 ran CI on a runner — **30 of 30 jobs green** after fixing what broke; P4.3 produced the per-platform status. |
 | P5 has a **recorded decision** | **NOT MET, and it blocks.** The memo exists and recommends one course for each row, but a recommendation is not a decision. R1.5 (fix), R1.6 (accept) and the history/persistence leak (fix) are all awaiting the daemon's owner. |
 | A human has driven the client | **NOT MET, and it blocks.** See the table above. |
 | "What I did not verify" matches reality | **Met**, as of this revision. |
