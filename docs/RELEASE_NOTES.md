@@ -85,6 +85,41 @@ If you were relying on stdout to carry control sequences through to another
 program, that no longer works, and it was never safe. Nothing that reads the
 answer as text is affected.
 
+### Pasting more than fits now tells you
+
+**What changed.** The prompt box holds 4,000 characters and always has. Anything
+past that was dropped without a word — paste a 40KB file meaning to ask about
+it, and the model was asked about its first 4,000 characters instead, with
+nothing on screen to say so and an answer that came back confident and about the
+wrong input.
+
+It now says how many characters arrived, how many were kept and how many were
+dropped. A very large paste is also no longer slow: 1MB used to take about a
+frame and a half to process, and now takes a fiftieth of that.
+
+### Long sessions trim themselves, and say when they do
+
+**What changed.** A session that ran long used to keep every byte of every
+answer it had ever received. It now drops its oldest turns once it passes 500
+turns or 2 MB of text, and leaves a line at the top of the transcript saying how
+many turns and how many bytes went.
+
+`/compact` is unchanged and is still the deliberate version — it keeps the last
+8 turns, immediately. The automatic trim is a safety net that keeps hundreds.
+Both ceilings can be changed with `CODETERMINAL_MAX_TURNS` and
+`CODETERMINAL_MAX_TRANSCRIPT_BYTES`.
+
+### `/mouse` — you can select text with the mouse again
+
+**What changed.** The client captures mouse events so the wheel scrolls the
+transcript. The cost, which was never mentioned anywhere, is that your terminal
+stops handling click-drag selection: copying anything out required holding
+Shift, and nothing on screen said so.
+
+`/mouse` turns capture off and on. With it off, select and copy exactly as you
+would in any other terminal program, and use `pgup`/`pgdown` to scroll. The
+default is unchanged.
+
 ### You can scroll back through an answer while it is still arriving
 
 **What changed.** Scrolling up during a reply used to be impossible. The view

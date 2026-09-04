@@ -21,6 +21,52 @@ finished:
 
 ---
 
+## Reconciliation — 2026-09-04, after tasks 3.5 through 3.10
+
+Every row re-read against the finished tree. **Status is one of: OPEN (still
+true, still unfixed), CLOSED (the situation no longer exists), or SUPERSEDED
+(replaced by a different row).**
+
+| Row | Status | Note |
+|---|---|---|
+| R1.1 pty destruction delivers no SIGHUP | **OPEN** | Unchanged. Still pinned by a test that fails if the gap closes. |
+| R1.2 over-long CSI leaks parameter bytes | **OPEN** | Unchanged. Bounded, measured, pinned at 14 shapes. |
+| R1.3 one-shot stdout not byte-stable | **OPEN by decision** | A deliberate trade, in the release notes. Not a defect awaiting a fix. |
+| R1.4 review/approval buffers hold raw bytes | **OPEN by design** | Its AST guard did its job during 3.7: the decomposition moved the reader out of `Update` and the guard failed until the reviewed list moved with it. |
+| R1.5 `/mcp-server` stderr unredacted | **OPEN, and UNFIXED BY DECISION** | See below. |
+| R1.6 model-emitted secrets not redacted | **OPEN, and UNFIXED BY DECISION** | See below. |
+| R1.7 `git status` echoes git's output | **OPEN** | Unchanged. No work in this batch touched it. |
+| R1.8 `ModelError.detail` safe by field privacy | **OPEN (forward guard)** | Unchanged. Still a property, not a redactor. |
+| R1.9 1 MB paste costs most of a frame | **CLOSED** | Task 3.6. Measured 15.6 ms → 0.30 ms median, at both 0 and 240 prior turns. Details in the row. |
+| R1.10 locale reaches the input line | **OPEN** | Unchanged, still pinned both ways. |
+| R1.11 the transcript ceiling can be overshot within one turn | **OPEN (new)** | The price of index safety; bounded to one exchange and asserted. |
+| R1.12 repainting a deep transcript costs real CPU | **OPEN (new)** | Coalescing capped the RATE; a repaint is still linear in bytes. |
+| R1.13 onnxruntime and npm are scanned by nothing | **OPEN (new)** | A coverage gap in the supply-chain story, stated as one. |
+| R1.14 the terminal client is not a release artifact | **OPEN (new)** | Found while adding `-trimpath`; a packaging decision, not a defect. |
+
+### R1.5 and R1.6 are unfixed BY DECISION, not unexamined
+
+Stated separately because the difference matters to whoever reads this next, and
+a register cannot show it in a status column.
+
+Both were **enumerated in full** during task 2.3a — every sink, whether it is
+reachable, what could reach it, and its current state — and the enumeration was
+reported. What did not happen is the fix, because **no go-ahead was given for
+2.3c**, the structural redaction helper. That is the whole reason they are open.
+
+So: someone who finds these rows later is not looking at something nobody
+noticed. They are looking at a decision to defer, taken with the sinks known.
+The constraint recorded for whoever does the work is that redaction must be
+**structural** — a property of how the type is built — and not a pattern match
+on the value, because a helper that greps for things that look like keys will
+miss the one that does not. `ModelError` (R1.8) already has that shape and is
+the model to copy.
+
+Neither has a test pinning it. That is stated in each row and is not an
+oversight: there is nothing yet to pin.
+
+---
+
 ## R1.1 — Destroying the pty delivers no SIGHUP; the client outlives its terminal
 
 **What it is.** When the controlling terminal is destroyed outright rather than
@@ -290,7 +336,7 @@ built.
 
 ---
 
-## R1.9 — A 1 MB paste costs most of a frame, and 3.2 will not fix it
+## R1.9 — A 1 MB paste costs most of a frame, and 3.2 will not fix it — **CLOSED 2026-09-04**
 
 *(Opened by the 3.1 benchmark harness, 2026-09-04.)*
 
@@ -325,6 +371,21 @@ this path is `TestPerTokenAllocationsAreBounded`.
 validation on the input path, both of which multiply per-rune cost; or the 3×
 assertion firing, which would mean the cost has grown past anything noise
 explains.
+
+**CLOSED 2026-09-04 by task 3.6.** Measured at 1 MB: **15.6 ms → 0.30 ms**
+median, 2% of a frame, at 0 and at 240 prior turns. The row's own prediction
+held — the render cache did not touch it, because the cost was linear in the
+paste and independent of the transcript. The cost was not where it was assumed
+to be either: the key handler called `msg.String()` twice before the input saw
+anything, building a megabyte string each time, and bounding the paste after
+that point measured no improvement at all.
+
+It also closed a **second, more serious defect that was not in this row**: the
+prompt box had silently dropped everything past 4,000 characters since it was
+written. The header now says how many characters arrived, were kept and were
+dropped. The gate is deterministic — no more runes reach the input than can be
+kept — because neutering proved a timing assertion would not reliably catch its
+own removal at a 15.6 ms median against a 16 ms ceiling.
 
 ---
 
@@ -366,3 +427,112 @@ the win taken.
 anything starting to cache, diff or compare the **input** line the way 3.2
 caches the transcript; or `bubbles` changing how `textinput` measures width,
 which would show up as the pinning test failing in either direction.
+
+---
+
+## R1.11 — The transcript ceiling can be exceeded within a single turn
+
+**What it is.** `enforceTranscriptBound` runs at the START of a turn, not inside
+`appendTurn`. Between two turns the transcript can therefore exceed both
+ceilings by whatever one exchange produces — one user turn, one assistant answer
+and any tool-activity turns alongside them.
+
+**Why deferred.** It is not a deferral so much as the price of correctness.
+`streamAssistant` and every value in `activityTurns` are **indexes into
+`m.turns`**, so evicting from the front shifts what they point at. Evicting from
+inside `appendTurn` was the obvious placement and would have silently repointed
+the streaming turn at somebody else's answer — a wrong-content bug, which is
+strictly worse than a transient overshoot. The start of a turn is the one moment
+no live index exists.
+
+**Blast radius.** Bounded and small: the ceiling is a bound on SESSIONS, and a
+single answer is bounded by the daemon and the model. A 2 MiB ceiling overshot
+by one 50 KB answer is a 2.5% excursion that the next turn corrects.
+
+**Pinned by.** `TestTwoThousandTurnSoakStaysWithinItsBounds`
+(`clients/tui/transcriptbound_test.go`) allows exactly `defaultMaxTurns + 2` and
+would fail if the overshoot grew beyond one exchange.
+
+**Trigger.** Any change that makes a single turn able to produce unbounded
+turns — streaming tool activity without a cap, or a sub-agent whose every step
+becomes a turn. At that point the eviction has to move inside the turn and the
+two index fields have to be rebased with it.
+
+---
+
+## R1.12 — Repainting a deep transcript costs real CPU while streaming
+
+**What it is.** Coalescing capped repaints at one per `refreshInterval` (16 ms),
+but did not make a repaint cheaper. At 240 prior turns one repaint is ~3.3 ms
+(wrap 2.69 ms, viewport `SetContent` 0.61 ms), and at the 500-turn ceiling it is
+larger. Sustained streaming can therefore spend up to roughly a third of one
+core on repainting alone.
+
+**Why deferred.** Both remaining stages are linear in TOTAL BYTES and neither is
+ours: `ansi.Wrap` re-parses the whole transcript, and `bubbles`' viewport
+re-splits it and re-measures every line, with `m.lines` unexported so there is no
+way to hand it an incremental update. Fixing it means either caching the wrapped
+output per block — measured byte-identical to whole-string wrapping at widths 1,
+2, 20, 40, 80 and 200, so it is available — or replacing the viewport. Both are
+larger than this pass.
+
+**Blast radius.** CPU and battery during streaming in a long session, not
+correctness. The event loop stays responsive: a repaint is 3–6 ms, well inside a
+frame, so keystrokes are never queued behind more than one.
+
+**Pinned by.** `TestPerTokenUpdateLatencyAgainstBudget` reports the per-stage
+split on every run, and `TestAResizeStormStaysWithinTheFrameBudget` bounds the
+worst case. Neither fails on this — it is reported, not gated.
+
+**Trigger.** A report of fan noise or battery drain during long sessions; or
+raising `refreshInterval` from 16 ms to 33 ms, which halves this at a cost
+nobody is likely to see in streaming text, and is the cheap move if it matters.
+
+---
+
+## R1.13 — Two dependency surfaces are scanned by nothing
+
+**What it is.** `govulncheck` covers the six Go modules and nothing else. Two
+things ship or run alongside them and are scanned by no gate in this repository:
+the **onnxruntime native library** the embedder helper links against via CGO,
+and the **VS Code extension's npm dependencies**.
+
+**Why deferred.** Both need a different tool from the one in place, and picking
+one is a decision about what the project intends to promise. Recorded here
+rather than hidden inside `docs/ADR-002-vendoring-and-sbom.md`, which recommends
+against an SBOM today partly *because* an SBOM covering only the Go modules
+would omit precisely the component an auditor would care most about — and a
+partial claim presented as complete is worse than no claim.
+
+**Blast radius.** Unknown, which is the point: a reachable flaw in either is
+invisible to every gate that currently reports green.
+
+**Pinned by.** Nothing. This row is a coverage gap, stated as one.
+
+**Trigger.** Shipping to anyone who performs a supply-chain review; a published
+onnxruntime advisory; or adding any npm dependency to the extension that
+handles untrusted input.
+
+---
+
+## R1.14 — The terminal client is not built by the release workflow
+
+**What it is.** `.github/workflows/release.yml` builds `codeterminal-daemon` and
+`codeterminal-embedder-helper`. It does not build `clients/tui`. The terminal
+client is compiled by CI (`go build ./...`) and tested there, but it is not
+produced as a release artifact by any pipeline.
+
+**Why deferred.** Found while adding `-trimpath` to the release builds, and it
+is a packaging decision rather than a defect — the client may be intended to
+ship through the extension bundle or to be built from source. Adding it to the
+release matrix on my own judgment would be inventing a distribution channel.
+
+**Blast radius.** None today. It matters the moment someone expects a downloadable
+terminal client: there is nothing to download, and the `-trimpath` and signing
+steps this pass touched would not apply to it.
+
+**Pinned by.** Nothing. `scripts/supply-chain.sh` does check `clients/tui` for
+embedded build paths, so if it is ever added to the release it starts out
+compliant.
+
+**Trigger.** Any decision to distribute the terminal client as a binary.
