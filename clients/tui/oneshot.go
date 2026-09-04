@@ -18,9 +18,11 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
+	"syscall"
 
 	"codeterminal/protocol"
 )
@@ -35,6 +37,32 @@ type oneShotIO struct {
 	// at. It gates the capability declaration, so nothing else in here has to
 	// re-derive "can we actually ask?".
 	interactive bool
+}
+
+// brokenPipeWriter notices the far end of stdout going away.
+//
+// MEASURED before this existed: `codeterminal-tui --prompt ... | head` exited
+// 141 -- the Go runtime kills a process that writes to a closed fd 1 unless
+// SIGPIPE is handled. Someone reading the first few lines of an answer is
+// doing an ordinary thing, and being killed by a signal for it is not a clean
+// exit.
+//
+// Once the pipe is broken every later write is swallowed rather than retried:
+// the loop is on its way out, and a second EPIPE has nothing to add.
+type brokenPipeWriter struct {
+	w      io.Writer
+	broken bool
+}
+
+func (b *brokenPipeWriter) Write(p []byte) (int, error) {
+	if b.broken {
+		return len(p), nil
+	}
+	n, err := b.w.Write(p)
+	if errors.Is(err, syscall.EPIPE) {
+		b.broken = true
+	}
+	return n, err
 }
 
 // runOneShotPrompt sends one prompt and prints the streamed answer, answering
@@ -60,6 +88,13 @@ func runOneShotPrompt(clientName, prompt string, env oneShotIO) int {
 		say(env.err, "error: sending prompt: %v\n", err)
 		return 1
 	}
+
+	// The reader going away is normal for a pipeline, so it must not be fatal
+	// and must not be a signal death. See ignoreSIGPIPE.
+	restoreSIGPIPE := ignoreSIGPIPE()
+	defer restoreSIGPIPE()
+	stdout := &brokenPipeWriter{w: env.out}
+	env.out = stdout
 
 	reader := bufio.NewReader(env.in)
 	// ONE-SHOT WRITES TO A TERMINAL TOO. `codeterminal-tui --prompt ...` run at
@@ -122,6 +157,11 @@ func runOneShotPrompt(clientName, prompt string, env oneShotIO) int {
 		}
 		if tok.Token != "" {
 			say(env.out, "%s", sani.Write(tok.Token)) // unbuffered, so streaming stays visible
+		}
+		if stdout.broken {
+			// Nobody is reading any more. Exit 0: `| head` is a request for
+			// part of the answer, not an error to report.
+			return 0
 		}
 		if tok.Done {
 			if tok.Incomplete != nil {
