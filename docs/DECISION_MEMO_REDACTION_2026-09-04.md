@@ -1,5 +1,7 @@
 # Decision memo — R1.5 and R1.6, secret redaction across the daemon/client seam
 
+<!-- coderefs: enforced -->
+
 **Date:** 2026-09-04
 **From:** the TUI production-hardening pass (`audit/adversarial-pass`)
 **To:** whoever owns `daemon/`
@@ -83,7 +85,7 @@ Three call sites, each individually reasonable:
    `turns_fts` full-text index.
 3. `daemon/history.go:136` `prepareHistory` validates, annotates, caps by count
    and caps by bytes. **It does not scrub.** Its output goes straight into
-   `buildChatMessages(…, historyOutcome.Messages, …)` at `server.go:595` and out
+   `buildChatMessages(…, historyOutcome.Messages, …)` at `daemon/server.go:595` and out
    to the provider.
 
 So the round trip is: **redacted on turn 1 → stored raw → re-hydrated into the
@@ -115,7 +117,7 @@ through.
 
 | Part | Change | Cost | New judgment required? |
 |---|---|---|---|
-| A1 — persistence | `persistTurn(cleanPrompt, …)` at `server.go:687` | one identifier | **None.** Applies a decision already taken about that exact string. |
+| A1 — persistence | `persistTurn(cleanPrompt, …)` at `daemon/server.go:687` | one identifier | **None.** Applies a decision already taken about that exact string. |
 | A2 — history, user turns | scrub `Content` for `t.Role == "user"` in `prepareHistory`, before the byte budget | ~10 lines | **None.** Same argument. Before the budget, so the budget accounts for what is actually sent. |
 | A3 — history, assistant turns | scrub those too | ~2 lines | **Yes** — this is C, below. Strictly stronger, and it is your call, not mine. |
 

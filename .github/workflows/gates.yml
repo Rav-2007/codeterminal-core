@@ -61,6 +61,14 @@ jobs:
       - name: Doc links resolve
         run: ./scripts/docs-links.sh
 
+      # A LINK that resolves says nothing about a `file.go:123` beside it.
+      # Two of the residual-risk register's four code references had drifted by
+      # 2026-09-04 -- pointing at unrelated code in files still long enough that
+      # nothing noticed. Opt-in per document; the count of references it did NOT
+      # check is printed, so the unenforced remainder stays visible.
+      - name: Code references in enforced docs resolve
+        run: ./scripts/docs-coderefs.sh
+
       - name: Registers agree
         run: ./scripts/docs-claims.sh
 

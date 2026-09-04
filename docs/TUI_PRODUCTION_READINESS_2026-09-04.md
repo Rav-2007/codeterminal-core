@@ -1,5 +1,7 @@
 # Terminal client — production readiness
 
+<!-- coderefs: enforced -->
+
 **Date:** 2026-09-04. **Branch:** `audit/adversarial-pass`. **Scope:** `clients/tui`.
 **Verdict:** ship-ready on the axes measured below, with four named conditions
 and **one performance budget knowingly unmet** — a repaint at the transcript

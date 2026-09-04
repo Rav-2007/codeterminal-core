@@ -192,5 +192,6 @@ webview:
 
 docs:
 	@./scripts/docs-links.sh
+	@./scripts/docs-coderefs.sh
 	@./scripts/docs-claims.sh --self-test
 	@./scripts/docs-claims.sh

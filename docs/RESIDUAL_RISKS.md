@@ -1,5 +1,7 @@
 # Residual risk register — clients/tui
 
+<!-- coderefs: enforced -->
+
 Opened 2026-09-04 during the production-hardening pass on the TUI.
 
 Every entry here is something **known, measured, and deliberately not fixed**.
@@ -234,8 +236,9 @@ second client rendering the same buffers.
 
 *(From the 2.3a enumeration. No fix was authorised; recorded rather than dropped.)*
 
-**What it is.** `clients/tui/slash.go:396-397` runs `codeterminal-daemon mcp
-list` with `CombinedOutput()` and displays the result. That captures the
+**What it is.** `runMCPServerList` (`clients/tui/slash.go:381`) runs
+`codeterminal-daemon mcp list` with `CombinedOutput()` at
+`clients/tui/slash.go:411` and displays the result. That captures the
 daemon's **stderr**, and `mcp list` starts the configured MCP servers —
 `daemon/mcpruntime.go:111` wires each server's own stderr into the same stream.
 A third-party MCP server that prints its API key at startup surfaces it on the
@@ -322,8 +325,9 @@ treats it separately and recommends fixing it.
 
 *(From the 2.3a enumeration. Lowest severity row here.)*
 
-**What it is.** `clients/tui/slash.go:299-305` runs `git status -sb` and, on
-failure, prints `git status failed: %v` plus the combined output. A git error
+**What it is.** `runGitStatus` (`clients/tui/slash.go:305`) runs `git status
+-sb` and, on failure, prints `git status failed: %v` plus the combined output at
+`clients/tui/slash.go:319`. A git error
 can name a remote URL, and a URL with embedded credentials
 (`https://user:token@host`) would be echoed verbatim.
 

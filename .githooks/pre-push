@@ -159,6 +159,20 @@ fi
 # cell touches no code. Wiring this into `make docs` alone would have left it
 # inert for its own use case: the drift it exists to catch would sail past the
 # hook, never reach CI, and be found the next time somebody read both files
+
+# scripts/docs-coderefs.sh rides with docs-links for the same reason: it is pure
+# grep over markdown, it costs milliseconds, and the thing it catches -- a
+# register row pointing at code that has moved -- is invisible to every other
+# gate here.
+if [ -x "$repo_root/scripts/docs-coderefs.sh" ]; then
+  if ! out="$("$repo_root/scripts/docs-coderefs.sh" 2>&1)"; then
+    echo "pre-push: BLOCKED -- a code reference in an enforced document does not resolve" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
+  echo "pre-push: ok coderefs ($(printf '%s' "$out" | tail -1))"
+fi
+
 # carefully, which last time took nineteen days.
 if [ -x "$repo_root/scripts/docs-claims.sh" ]; then
   if ! out="$("$repo_root/scripts/docs-claims.sh" --self-test 2>&1)" \
