@@ -196,11 +196,23 @@ func TestRawByteStructuresHaveNoNewReaders(t *testing.T) {
 // decoration. This checks the detector itself against synthetic source rather
 // than against the real package, so it cannot pass by accident.
 func TestGuardsDetectAViolation(t *testing.T) {
-	const bad = `package main
-func somethingNew(m *chatModel) {
-	m.turns = append(m.turns, turn{role: roleSystem, text: "unfiltered"})
-	_ = m.pendingApproval.Arguments
-}`
+	// INDENTED, AND CONCATENATED RATHER THAN A RAW STRING, ON PURPOSE.
+	//
+	// This snippet is Go source to the parser below, but the file it lives in is
+	// also scanned AS TEXT by the daemon's chunking heuristic (see
+	// TestTheHeuristicAgreesWithTheCompiler in codeterminal/daemon). A `func` at
+	// column 0 inside a raw string is indistinguishable from a real top-level
+	// declaration to any line-based scanner, and go/parser correctly disagrees.
+	// The first version of this test was written as a raw string and turned two
+	// daemon tests red -- "the heuristic invents 1 boundary" and "constructExtents
+	// stops SHORT" -- for a function that does not exist.
+	//
+	// Go ignores the indentation; the scanner does not.
+	const bad = "package main\n" +
+		"\tfunc somethingNew(m *chatModel) {\n" +
+		"\t\tm.turns = append(m.turns, turn{role: roleSystem, text: \"unfiltered\"})\n" +
+		"\t\t_ = m.pendingApproval.Arguments\n" +
+		"\t}\n"
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, "synthetic.go", bad, 0)
 	if err != nil {
