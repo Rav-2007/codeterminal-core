@@ -85,9 +85,29 @@ If you were relying on stdout to carry control sequences through to another
 program, that no longer works, and it was never safe. Nothing that reads the
 answer as text is affected.
 
-### Long sessions are unaffected in what they show, but not yet in what they cost
+### You can scroll back through an answer while it is still arriving
 
-No change here yet — recorded so it is not mistaken for one. Redrawing the
-transcript still costs time proportional to the length of the conversation on
-every streamed token, so a very long session gets slower to draw. The
-transcript is still only trimmed by `/compact`. Both are being worked on.
+**What changed.** Scrolling up during a reply used to be impossible. The view
+snapped back to the bottom on every streamed token — within milliseconds, every
+time — so whatever you had scrolled up to read was gone before you could read
+it.
+
+The view now follows the newest text only when you are already at the bottom,
+which is where you normally are. Scroll up and it stays where you put it;
+scroll back down and it starts following again.
+
+### Long sessions draw faster, and the transcript is still unbounded
+
+**What changed.** Drawing the transcript used to cost time proportional to the
+whole conversation, on *every* streamed token — so the longer a session ran, the
+more the answer stuttered as it arrived. Two things changed: the rendered form
+of each turn is now kept and reused instead of being rebuilt from scratch, and
+the screen is redrawn at most once per frame rather than once per token.
+
+Measured on a 240-turn conversation, the work done per token dropped by roughly
+fifty times. Nothing about what is displayed has changed — the same bytes, in
+the same order.
+
+**What has not changed, stated plainly.** The transcript is still only trimmed
+by `/compact`, so a long enough session still grows without limit in memory.
+That is a separate piece of work and it has not been done.
