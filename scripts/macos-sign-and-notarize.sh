@@ -42,9 +42,15 @@ if [ ! -d "$DIST_DIR" ]; then
   mkdir -p "$DIST_DIR"
 fi
 
-# Check for binaries to sign
+# Check for binaries to sign.
+#
+# codeterminal-tui joined this list on 2026-09-04 (R1.14). It is a standalone
+# binary a user downloads and runs from a terminal, which is exactly the path
+# that attaches com.apple.quarantine -- an unsigned one is killed by Gatekeeper
+# with no explanation, the same failure the daemon has. Shipping it unsigned
+# would be shipping the defect this script exists to prevent, one binary over.
 TARGET_BINARIES=()
-for bin in "$DIST_DIR/codeterminal-daemon" "$DIST_DIR/codeterminal-embedder-helper"; do
+for bin in "$DIST_DIR/codeterminal-daemon" "$DIST_DIR/codeterminal-embedder-helper" "$DIST_DIR/codeterminal-tui"; do
   if [ -f "$bin" ]; then
     TARGET_BINARIES+=("$bin")
   fi

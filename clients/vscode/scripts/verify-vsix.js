@@ -134,6 +134,14 @@ const MUST_NOT_MATCH = [
   [/^extension\/media\/logo\.jpg$/, 'ships an unreferenced 147 KB image'],
   [/^extension\/scripts\//, 'ships our build/verify tooling, which runs before packaging'],
 
+  // The terminal client. Added 2026-09-04, when the release workflow started
+  // building it (R1.14) into the same dist/ this package is staged from. The
+  // extension neither references nor launches it, so three copies of a 7.5 MB
+  // binary would be 22 MB of package for nothing -- and the staging loop that
+  // excludes it is a loop someone can edit. This is the assertion on the
+  // artifact itself, which is the half that cannot be edited by accident.
+  [/^extension\/daemon\/codeterminal-tui/, 'ships the standalone terminal client, which the extension does not launch'],
+
   // --- CREDENTIALS, by name. Added 2026-09-02. ---
   //
   // Every pattern above this point is filename HYGIENE -- source, maps, tests,
@@ -289,6 +297,10 @@ function selfTest() {
     'extension/id_rsa',
     'extension/certs/server.pem',
     'extension/credentials.json',
+    // The terminal client, which the release now builds into the same dist/
+    // this package is staged from (R1.14, 2026-09-04).
+    'extension/daemon/codeterminal-tui',
+    'extension/daemon/codeterminal-tui.exe',
   ];
   for (const name of mustReject) {
     if (!MUST_NOT_MATCH.some(([re]) => re.test(name))) {

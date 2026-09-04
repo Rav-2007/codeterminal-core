@@ -178,9 +178,13 @@ been resting on less evidence than they appeared to.
    See R1.11 in the residual-risk register for the same note.
 5. **Two dependency surfaces are scanned by nothing** — the onnxruntime native
    library and the extension's npm tree (R1.13).
-6. **The terminal client is not built by the release workflow** (R1.14), so none
-   of the release hardening in this batch — `-trimpath`, signing — currently
-   applies to it.
+6. ~~**The terminal client is not built by the release workflow** (R1.14)~~
+   **Closed 2026-09-04 at P4.1.** It now builds on all three release runners with
+   `-trimpath`, is in the macOS signing list, and ships as a standalone download
+   with checksums. It is asserted *out* of the `.vsix` by the packaging gate. What
+   remains unverified is that the release workflow **has never been run** with
+   these steps in it — it is tag- and dispatch-triggered, so nothing on an
+   ordinary push exercises it.
 7. **No performance measurement under memory pressure, on a slow disk, or on a
    shared CI runner.** Every wall-clock figure is from an idle laptop.
 8. **Security posture was not re-audited.** This batch was performance,
@@ -246,7 +250,10 @@ above should know how the numbers were checked.
 1. **Somebody drives the client by hand** before this ships. Item 1 above is the
    largest gap in this document and no amount of test coverage substitutes.
 2. **CI runs green once** with the new workflow steps — they have never
-   executed on a runner.
+   executed on a runner. This condition was **unsatisfiable until P4.1**: the
+   release workflow did not build the terminal client at all, so "green for this
+   target" named nothing. That is why R1.14 was promoted out of the risk register
+   and fixed rather than accepted.
 3. **Decide R1.5/R1.6**: authorise the structural redactor, or accept both in
    writing. They are currently open with no test and no owner.
 4. **Confirm the memory baseline** in item 4, or re-derive the ceiling.

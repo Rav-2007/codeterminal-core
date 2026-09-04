@@ -79,6 +79,22 @@ jobs:
         env:
           CGO_ENABLED: 1
 
+      # THE TERMINAL CLIENT, added 2026-09-04. It was absent from this workflow
+      # entirely -- recorded as R1.14, and the reason that row is now closed
+      # rather than accepted: "CI goes green once before release" is not a
+      # condition anything can satisfy for a target the release does not build.
+      #
+      # Pure Go, verified: CGO_ENABLED=0 builds it clean. It is NOT bundled into
+      # the .vsix -- the extension neither references nor launches it, and three
+      # copies of a 7.5 MB binary nothing runs is 22 MB of package for nothing.
+      # It ships as a standalone download, attached to the Release below, which
+      # is why it is also in the macOS signing list.
+      - name: Build terminal client (pure Go)
+        run: go build -trimpath -o "${{ github.workspace }}/dist/codeterminal-tui${{ matrix.target == 'win32-x64' && '.exe' || '' }}" .
+        working-directory: clients/tui
+        env:
+          CGO_ENABLED: 0
+
       # SIGNING GOES HERE, and its absence is recorded rather than skipped.
       #
       # macOS: unsigned Mach-O binaries inside a .vsix are quarantined by
@@ -155,7 +171,23 @@ jobs:
           for TARGET in linux-x64 darwin-arm64 win32-x64; do
             echo "::group::$TARGET"
             rm -rf daemon && mkdir -p daemon
-            cp -a "../../artifacts/binaries-$TARGET/." daemon/
+            # NAMED, NOT `cp -a .`, since 2026-09-04. The build artifact now
+            # also carries codeterminal-tui, which the extension does not launch
+            # and must not ship: a wildcard copy would have silently added 7.5 MB
+            # to every package, and verify-vsix.js asserts what MUST be present
+            # and what MUST NOT -- it does not assert that nothing else is.
+            #
+            # No `ls a b | head -1` here, and that is not style: this script
+            # runs under `set -euo pipefail`, `ls` exits 2 when one of its
+            # arguments does not exist, and pipefail propagates that through
+            # head -- so the assignment failed and the job died silently before
+            # reaching its own error message. Caught by running the loop.
+            for BIN in codeterminal-daemon codeterminal-embedder-helper; do
+              SRC="../../artifacts/binaries-$TARGET/$BIN"
+              [ -f "$SRC" ] || SRC="$SRC.exe"
+              [ -f "$SRC" ] || { echo "::error::$BIN missing from binaries-$TARGET"; exit 1; }
+              cp -a "$SRC" daemon/
+            done
             chmod +x daemon/codeterminal-daemon* daemon/codeterminal-embedder-helper* 2>/dev/null || true
 
             # Stages models.json and the LICENSE, and FAILS if either binary is
@@ -170,6 +202,36 @@ jobs:
             node scripts/verify-vsix.js "$OUT" "$TARGET"
             echo "::endgroup::"
           done
+
+      # The terminal client as a standalone download, one per platform.
+      #
+      # THE COUNT IS ASSERTED. A staging loop that quietly found nothing would
+      # publish a release with no terminal client in it and exit 0 -- the
+      # fail-open shape the gate audit spent a day removing from this repo's
+      # scripts. Three targets in, three files out, or the release fails.
+      - name: Stage the terminal client
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out-bin
+          for TARGET in linux-x64 darwin-arm64 win32-x64; do
+            EXE=""
+            [ "$TARGET" = "win32-x64" ] && EXE=".exe"
+            SRC="artifacts/binaries-$TARGET/codeterminal-tui$EXE"
+            [ -f "$SRC" ] || { echo "::error::no terminal client built for $TARGET"; exit 1; }
+            cp -a "$SRC" "out-bin/codeterminal-tui-$TARGET$EXE"
+          done
+          N=$(find out-bin -type f | wc -l)
+          [ "$N" -eq 3 ] || { echo "::error::staged $N terminal-client binaries, expected 3"; exit 1; }
+          echo "staged $N terminal-client binaries"
+          (cd out-bin && sha256sum * | tee SHA256SUMS-tui)
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: terminal-client
+          path: out-bin/
+          retention-days: 30
+          if-no-files-found: error
 
       - name: Checksums
         shell: bash
@@ -195,6 +257,8 @@ jobs:
           files: |
             out-vsix/*.vsix
             out-vsix/SHA256SUMS
+            out-bin/codeterminal-tui-*
+            out-bin/SHA256SUMS-tui
           draft: true # a human decides when it is public
           generate_release_notes: true
 

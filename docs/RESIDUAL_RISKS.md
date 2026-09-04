@@ -42,7 +42,7 @@ true, still unfixed), CLOSED (the situation no longer exists), or SUPERSEDED
 | R1.11 the transcript ceiling can be overshot within one turn | **OPEN (new)** | The price of index safety; bounded to one exchange and asserted. |
 | R1.12 repainting a deep transcript costs real CPU | **OPEN, re-measured at the ceiling** | Was an extrapolation from 240 turns; now 22.4 ms p50 measured at the bound, over both the 8 ms repaint budget and D-1's 16 ms hard ceiling. Bounded, and over budget. |
 | R1.13 onnxruntime and npm are scanned by nothing | **OPEN (new)** | A coverage gap in the supply-chain story, stated as one. |
-| R1.14 the terminal client is not a release artifact | **OPEN (new)** | Found while adding `-trimpath`; a packaging decision, not a defect. |
+| R1.14 the terminal client is not a release artifact | **CLOSED 2026-09-04** | P4.1. It builds on all three release runners, ships as a signed standalone download, and is asserted *out* of the `.vsix`. It was not a residual risk: it made this document's own "CI green once" condition unsatisfiable. |
 
 ### R1.5 and R1.6 are unfixed BY DECISION, not unexamined
 
@@ -607,24 +607,51 @@ handles untrusted input.
 
 ---
 
-## R1.14 — The terminal client is not built by the release workflow
+## R1.14 — The terminal client is not built by the release workflow — **CLOSED 2026-09-04**
 
-**What it is.** `.github/workflows/release.yml` builds `codeterminal-daemon` and
-`codeterminal-embedder-helper`. It does not build `clients/tui`. The terminal
-client is compiled by CI (`go build ./...`) and tested there, but it is not
-produced as a release artifact by any pipeline.
+**What it was.** `.github/workflows/release.yml` built `codeterminal-daemon` and
+`codeterminal-embedder-helper`. It did not build `clients/tui`. The terminal
+client was compiled and tested by CI but produced as a release artifact by
+nothing.
 
-**Why deferred.** Found while adding `-trimpath` to the release builds, and it
-is a packaging decision rather than a defect — the client may be intended to
-ship through the extension bundle or to be built from source. Adding it to the
-release matrix on my own judgment would be inventing a distribution channel.
+**Why it was recorded as a risk and is now closed as a blocker instead.** The row
+called this "a packaging decision rather than a defect" and declined to invent a
+distribution channel. That reading was too generous, and the thing that exposed
+it was one of this document's own release conditions: *"CI runs green once before
+release."* That condition cannot be met for a target the release does not build.
+A risk that makes a release condition unsatisfiable is not a residual risk; it
+sits underneath the conditions.
 
-**Blast radius.** None today. It matters the moment someone expects a downloadable
-terminal client: there is nothing to download, and the `-trimpath` and signing
-steps this pass touched would not apply to it.
+**What was done.** `clients/tui` now builds on all three release runners —
+`CGO_ENABLED=0`, verified pure Go, `-trimpath` like the other two — and ships as
+a **standalone download** attached to the GitHub Release with a SHA256SUMS file,
+not inside the `.vsix`. The extension neither references nor launches it, and
+three copies of a 7.5 MB binary nothing runs would have added 22 MB of package
+for nothing.
 
-**Pinned by.** Nothing. `scripts/supply-chain.sh` does check `clients/tui` for
-embedded build paths, so if it is ever added to the release it starts out
-compliant.
+It is also in `scripts/macos-sign-and-notarize.sh`'s binary list. A standalone
+binary a user downloads and runs from a terminal is precisely what gets
+`com.apple.quarantine` attached; unsigned, Gatekeeper kills it with no
+explanation — the same failure that made signing a hard gate for the daemon.
 
-**Trigger.** Any decision to distribute the terminal client as a binary.
+**Two gates, because one of them is editable by hand.** The staging loop asserts
+**three targets in, three files out** and fails the release rather than
+publishing a version with no terminal client in it. And `verify-vsix.js` now
+lists `codeterminal-tui` under MUST_NOT_MATCH, so the "it is not in the package"
+half is asserted against the archive itself rather than trusted to a `cp` line —
+the packaging self-test refuses it, and neutering the pattern turns the
+self-test red.
+
+**One real defect found while doing it.** The vsix staging used
+`cp -a "artifacts/binaries-$TARGET/." daemon/`, a wildcard that would have
+silently swept the new binary into every package. Replacing it with a named copy
+introduced a second: `ls a b | head -1` under `set -euo pipefail` dies on the
+missing `.exe` candidate — `ls` exits 2 and pipefail propagates it — so the job
+would have failed *before reaching its own error message*. Both found by running
+the loop rather than by reading it.
+
+**Superseded fields.** *Blast radius* and *Trigger* no longer apply; the trigger
+("any decision to distribute the terminal client as a binary") has fired and been
+answered.
+
+---
