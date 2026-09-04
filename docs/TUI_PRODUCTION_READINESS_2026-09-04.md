@@ -466,8 +466,12 @@ slash catalogue, history construction — compiles and runs on all three.
    fuzz worker process pays (`go test -run XXXNOSUCHTEST ./daemon` takes 5.68 s
    with no tests). They are regression replay of a cached corpus, not fuzzing.
    The three `clients/tui` targets are unaffected — 545,016 / 567,455 / 114,448
-   execs. Measured, and handed to the daemon's owner as item 4 of
-   [the decision memo](DECISION_MEMO_2026-09-04.md).
+   execs. **The cause is found and the fix is measured**: deferring that build
+   out of `TestMain` takes the same four targets, at the same 30-second budget,
+   from 0 execs to 853,943 / 696,950 / 778,931 / 1,102,402 and **40 new
+   interesting inputs**. Handed to the daemon's owner as item 4 of
+   [the decision memo](DECISION_MEMO_2026-09-04.md); not landed, because it is
+   their module.
 10. **Neither handoff has been acted on.** The manual session
     ([docs/MANUAL_SESSION_2026-09-04.md](MANUAL_SESSION_2026-09-04.md)) has not
     been run by anyone, and the daemon memo has no reply. Both are release-gate

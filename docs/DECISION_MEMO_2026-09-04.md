@@ -37,7 +37,7 @@ and have been removed; any of them can be reproduced on request.
 | 1 | The outbound secret scrub is bypassed by one turn | **FIX** | **Highest.** A secret the daemon redacts still reaches the provider. |
 | 2 | R1.5 — `/mcp-server` puts MCP-server stderr on screen unredacted | **FIX** | Moderate. Disclosure to the credential's owner. |
 | 3 | R1.6 — inbound model text is not redacted | **ACCEPT, in writing** | Low, once (1) is fixed. |
-| 4 | Four `daemon/` fuzz targets never generate an input | **FIX** (cheap), or accept | Low, but it means the daemon has never actually been fuzzed. |
+| 4 | Four `daemon/` fuzz targets never generate an input in CI | **FIX** — cause found, fix measured | Low, but CI's fuzz job contributes nothing for them. |
 
 ---
 
@@ -276,12 +276,12 @@ than a full inbound redactor.
 Four targets are registered in `scripts/fuzz.sh` and run in CI. At CI's budget
 (`FUZZTIME=30s`) **all four generate zero new inputs**:
 
-| Target | Budget | Execs reported | New inputs | What it actually did |
-|---|---|---|---|---|
-| `FuzzRenderToolResult` | 30 s | **none** | **0** | `gathering baseline coverage: 0/…`, elapsed 39 s |
-| `FuzzVerifyApproval` | 30 s | **none** | **0** | same, elapsed 38 s |
-| `FuzzToolCallAccumulator` | 30 s | **none** | **0** | same, elapsed 38 s |
-| `FuzzSplitQualifiedName` | 30 s | **none** | **0** | `gathering baseline coverage: 0/160 completed`, elapsed 38 s |
+| Target | At `FUZZTIME=30s`, as the tree stands | What it actually did |
+|---|---|---|
+| `FuzzRenderToolResult` | **0 execs, 0 new inputs** | `gathering baseline coverage: 0/…`, elapsed 39 s |
+| `FuzzVerifyApproval` | **0 execs, 0 new inputs** | same, elapsed 38 s |
+| `FuzzToolCallAccumulator` | **0 execs, 0 new inputs** | same, elapsed 38 s |
+| `FuzzSplitQualifiedName` | **0 execs, 0 new inputs** | `gathering baseline coverage: 0/160 completed`, elapsed 38 s |
 
 Note the shape of that last figure: **0 of 160 completed in 38 seconds.** Not
 slow — *zero*. Nothing finished at all.
@@ -290,11 +290,16 @@ For contrast, the other twelve targets in the same gate at the same budget:
 `editapply/FuzzParseUnifiedDiff` 1,660,054 execs, `proxy/FuzzStreamRequested`
 615,320, `clients/tui/FuzzSanitizeChunkInvariance` 567,455.
 
+**The targets themselves are fine.** Left running unmodified for 300 s,
+`FuzzSplitQualifiedName` reaches **10,649,397 execs and 22 new interesting
+inputs**. It is not saturated and it is not slow; it simply never starts inside
+30 seconds.
+
 ### The cause, and a correction to my own earlier note
 
-`scripts/fuzz.sh`'s comment currently attributes this to the budget going on
-"replaying the seed corpus". **That is wrong**, and I wrote it. The on-disk seed
-corpora are one file and zero files:
+`scripts/fuzz.sh`'s comment used to attribute this to the budget going on
+"replaying the seed corpus". **That was a guess and it was wrong**, and I wrote
+it. The on-disk seed corpora are one file and zero files:
 
 ```
 FuzzRenderToolResult       1 seed file
@@ -303,45 +308,58 @@ FuzzVerifyApproval         0
 FuzzSplitQualifiedName     0
 ```
 
-The real cause is **package startup**, paid by every fuzz worker process:
+The real cause is **package startup, paid by every fuzz worker process**:
 
 ```go
 // daemon/helperproc_test.go, in TestMain, before m.Run()
 cmd := exec.Command("go", "build", "-o", fakeHelperBinPath, "./testdata/fakehelper")
 ```
 
-Measured: `go test -run 'XXXNOSUCHTEST' .` on `daemon` takes **5.68 s** with
-**zero tests run** — that is the fake-helper build, and `user` time of 27.6 s
-shows it compiling in parallel. Go's fuzzing engine gathers baseline coverage
-using **worker processes, each a fresh exec of the test binary**, so every worker
-pays that ~5.7 s before it can execute a single input. At a 30-second budget the
-coordinator never gets a baseline, so fuzzing never starts.
+Measured: `go test -run 'XXXNOSUCHTEST' ./daemon` takes **5.68 s with zero tests
+run** — that is the fake-helper build, and a `user` time of 27.6 s shows it
+compiling in parallel. Go gathers baseline coverage using **worker processes,
+each a fresh exec of the test binary**, so every worker pays that before it can
+execute a single input. At a 30-second budget the coordinator never gets a
+baseline and fuzzing never begins.
 
 So of the three plausible causes — slow seed corpus, expensive setup, genuinely
 saturated — it is **expensive setup**, and specifically a `go build` in
 `TestMain`.
 
-### What this means
+### What this does and does not mean
 
-**The daemon has never actually been fuzzed.** The four targets are useful
-regression *replay* of their cached corpora and nothing more. That is not a
-crisis — they are small, pure functions — but the gate has been reporting
-coverage the project does not have.
+**It does not mean the daemon has never been fuzzed.** The cached corpora date
+from 2026-08-30 (188, 384, 370 and 177 inputs), so somebody has run these at a
+longer budget locally. What it means is narrower and still worth fixing: **CI's
+fuzz job has contributed nothing to these four**, and the gate reported `ok` for
+work that did not happen until it was changed to say otherwise.
 
-### The fix
+### The fix — and it is validated, not just recommended
 
 Build `fakeHelperBinPath` **lazily, on first use**, behind a `sync.Once`, instead
 of unconditionally in `TestMain`. A fuzz worker then never builds it; ordinary
 tests pay the same cost they pay now, once. That is a handful of lines in
 `daemon/helperproc_test.go` and touches no production code.
 
-**Then re-measure at `FUZZTIME=30s`** and see whether the targets generate
-anything. If they still do not, the answer is genuinely "saturated" and the right
-move is to note it and move on.
+**I made that change temporarily and measured it, then reverted it** — the code
+is yours and I am not landing changes in your module. Same targets, same
+`FUZZTIME=30s`, same machine:
+
+| Target | Before | After deferring the build |
+|---|---|---|
+| `FuzzRenderToolResult` | 0 execs, 0 new | **853,943 execs, 1 new input** |
+| `FuzzVerifyApproval` | 0 execs, 0 new | **696,950 execs, 25 new inputs** |
+| `FuzzToolCallAccumulator` | 0 execs, 0 new | **778,931 execs, 10 new inputs** |
+| `FuzzSplitQualifiedName` | 0 execs, 0 new | **1,102,402 execs, 4 new inputs** |
+
+**Forty new interesting inputs in two minutes of fuzzing that CI has never been
+able to do.** Package startup also drops from 5.68 s to ~3.2 s, which every
+`go test ./daemon` pays.
 
 ### If you would rather accept it
 
-Reasonable, with a trigger written down: **revisit when any of these four
+Harder to defend now that the fix is measured at a handful of lines, but
+reasonable with a trigger written down: **revisit when any of these four
 functions stops being a small pure function** — `renderToolResult`,
 `verifyApproval`, the tool-call accumulator and `splitQualifiedName` are all
 parsers of untrusted input, and the moment one grows state or allocation the
@@ -365,7 +383,7 @@ If it helps, the shortest reply that unblocks everything looks like:
 
 > 1 — fix, I'll take it. 2 — fix, low priority, ticket raised.
 > 3 — accepted; revisit on transcript export or telemetry.
-> 4 — accepted; revisit if any of those four functions grows state.
+> 4 — fix, take the lazy build.
 
 Cross-references: `docs/RESIDUAL_RISKS.md` (rows R1.5, R1.6),
 `docs/TUI_PRODUCTION_READINESS_2026-09-04.md` (the release gate this blocks).
