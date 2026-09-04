@@ -213,6 +213,43 @@ hitting is a second copy of the truth that drifts from the first.
 Broken links now fail a build (`23550e4`, `scripts/docs-links.sh`, 265 links),
 since documentation-only pushes start no CI at all.
 
+### 12. A performance gate asserts allocations, and only reports wall-clock
+
+**The bug that produced this rule.** A test asserting that no single `Update`
+exceeds one 16 ms frame was written against a measured 6.3 ms. It then failed in
+CI. It was retuned, and failed again — in the other direction, passing where it
+should have caught a regression. Four samplings of *the same input, same machine,
+same commit* gave medians of **6.3 ms, 13.6 ms, 14.5 ms and 16.6 ms**: a 2.6×
+run-to-run spread straddling the line the test was drawn on. Under `-race`, which
+is how the repository's own gate runs, the same measurements are 5–20× slower
+again.
+
+A wall-clock threshold on a shared machine cannot resolve a 2.6× spread. A gate
+that flaps gets waived, and a waived gate is worse than no gate, because it is
+still on the list of things believed to be checked.
+
+**The rule.**
+
+- **Allocations are what a performance test fails on.** `allocs/op` is
+  deterministic, identical in CI and on a laptop, and independent of load. It is
+  also the better signal: a render cache is doing its job when allocations per
+  token go *flat* with respect to transcript length, and a cache can be quietly
+  wrong while wall-clock improves.
+- **Wall-clock is measured, printed with its distance to the budget, and
+  asserted only at a wide multiple** of that budget — wide enough that firing
+  means the cost grew past anything noise explains.
+- **Timing tests do not run under `-race`.** `raceEnabled`
+  (`clients/tui/raceflag_race_test.go`, set by build tag) is what they skip on.
+
+**Enforced, not just written down.** `TestTimingBudgetsAreGuardedAgainstTheRaceDetector`
+(`clients/tui/testpolicy_guard_test.go`) parses the package's own test sources,
+finds every declared `time.Duration` budget, and fails if the file declaring one
+does not reference `raceEnabled`. It is structural rather than name-driven: it
+keys on the declaration's *type*, so a new budget constant in a new file is
+caught whatever it is called. What it does **not** catch is a timing assertion
+written inline with no named constant — stated here because a gate whose limits
+are undocumented gets trusted past them.
+
 ---
 
 ## The failure taxonomy underneath all of it
