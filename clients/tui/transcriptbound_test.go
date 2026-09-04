@@ -213,9 +213,42 @@ func TestABadCeilingFromTheEnvironmentIsIgnored(t *testing.T) {
 
 // 3.5e: THE SOAK. Two thousand turns of realistic size, driven through the real
 // turn path, with the bound doing its job.
+// soakExchanges is how long the soak runs, and it is SHORTER UNDER -race.
+//
+// MEASURED, and this is why: the loop is single-goroutine -- it drives Update
+// directly and starts nothing -- so the race detector has no concurrency to
+// examine here and finds nothing by construction. What it does is cost 9x. The
+// full 2000 exchanges take 29.9s on the reference machine and 270.9s under
+// -race; on a CI runner that became 7m38s, and the package hit `go test`'s 10
+// minute timeout with this test still running.
+//
+// SHORTENING IT UNDER -race WOULD BE WEAKENING THE GATE IF THAT WERE ALL, so it
+// is not all. build.yml's `go` job gains a second, UNRACED run of this one test
+// for clients/tui, which is ~40s and executes the full 2000. The race build runs
+// the reduced form for the memory-safety coverage it does add; the full length
+// still runs on every push, in CI, where the number in the readiness statement
+// can be reproduced.
+//
+// 400 rather than a round fraction: the turn ceiling is 500 turns = 250
+// exchanges, so 400 spends 150 exchanges in sustained eviction. The assertion
+// that eviction actually happened is at the bottom of this test and applies to
+// both lengths, so a reduced count that stopped exercising the bound fails
+// rather than passes quietly.
+func soakExchanges() int {
+	if raceEnabled {
+		return 400
+	}
+	return 2000
+}
+
 func TestTwoThousandTurnSoakStaysWithinItsBounds(t *testing.T) {
 	if testing.Short() {
 		t.Skip("soak")
+	}
+	n := soakExchanges()
+	if raceEnabled {
+		t.Logf("REDUCED FORM: %d exchanges, not 2000, because -race costs 9x on a loop with "+
+			"no concurrency in it. build.yml runs this same test unraced at full length.", n)
 	}
 	m := soakModel(t, 0, 0)
 
@@ -224,7 +257,7 @@ func TestTwoThousandTurnSoakStaysWithinItsBounds(t *testing.T) {
 	runtime.ReadMemStats(&before)
 
 	allocsEarly, allocsLate := 0.0, 0.0
-	for i := 0; i < 2000; i++ {
+	for i := 0; i < n; i++ {
 		m = typeText(m, fmt.Sprintf("question number %d about the code", i))
 		m, _ = pressEnter(m)
 		body := strings.Repeat(fmt.Sprintf("answer %d chunk. ", i), 70) // ~1.2KB
@@ -235,7 +268,7 @@ func TestTwoThousandTurnSoakStaysWithinItsBounds(t *testing.T) {
 		u, _ = m.Update(streamDoneMsg{})
 		m = u.(chatModel)
 
-		if !raceEnabled && (i == 100 || i == 1900) {
+		if !raceEnabled && (i == 100 || i == n-100) {
 			// MID-STREAM, on a fork of the model. A tokenMsg arriving after
 			// streamDoneMsg is discarded as a stray -- an earlier version of
 			// this measurement sampled exactly that and reported 3 allocations
@@ -258,11 +291,11 @@ func TestTwoThousandTurnSoakStaysWithinItsBounds(t *testing.T) {
 
 	// The declared bounds.
 	if len(m.turns) > defaultMaxTurns+2 {
-		t.Errorf("after 2000 exchanges the transcript holds %d turns, ceiling %d", len(m.turns), defaultMaxTurns)
+		t.Errorf("after %d exchanges the transcript holds %d turns, ceiling %d", n, len(m.turns), defaultMaxTurns)
 	}
 	if got := transcriptBytes(m.turns); got > defaultMaxTranscriptBytes {
-		t.Errorf("after 2000 exchanges the transcript holds %s, ceiling %s",
-			humanBytes(got), humanBytes(defaultMaxTranscriptBytes))
+		t.Errorf("after %d exchanges the transcript holds %s, ceiling %s",
+			n, humanBytes(got), humanBytes(defaultMaxTranscriptBytes))
 	}
 	if len(m.transcript.blocks) > len(m.turns) {
 		t.Errorf("the render cache holds %d blocks for %d turns", len(m.transcript.blocks), len(m.turns))
@@ -271,15 +304,18 @@ func TestTwoThousandTurnSoakStaysWithinItsBounds(t *testing.T) {
 	var after runtime.MemStats
 	runtime.GC()
 	runtime.ReadMemStats(&after)
-	t.Logf("2000 turns: %d turns kept, %s of text, %d cache blocks, heap-in-use %.1f MB, evicted %d turns / %s",
-		len(m.turns), humanBytes(transcriptBytes(m.turns)), len(m.transcript.blocks),
+	t.Logf("%d exchanges: %d turns kept, %s of text, %d cache blocks, heap-in-use %.1f MB, evicted %d turns / %s",
+		n, len(m.turns), humanBytes(transcriptBytes(m.turns)), len(m.transcript.blocks),
 		float64(after.HeapInuse)/(1<<20), m.evictedTurns, humanBytes(m.evictedBytes))
 
+	// APPLIES TO BOTH LENGTHS, which is what makes the reduced form safe: a
+	// shortened soak that no longer reaches the ceiling fails here rather than
+	// passing quietly on an assertion it never exercised.
 	if m.evictedTurns == 0 {
-		t.Fatal("2000 exchanges evicted nothing; the soak is not exercising the bound")
+		t.Fatalf("%d exchanges evicted nothing; the soak is not exercising the bound", n)
 	}
 	if !raceEnabled {
-		t.Logf("allocs per token: %.0f at turn 100, %.0f at turn 1900", allocsEarly, allocsLate)
+		t.Logf("allocs per token: %.0f at turn 100, %.0f at turn %d", allocsEarly, allocsLate, n-100)
 		if allocsLate > allocsEarly*2 {
 			t.Errorf("allocations per token grew from %.0f to %.0f over the soak; "+
 				"something is still proportional to session length", allocsEarly, allocsLate)

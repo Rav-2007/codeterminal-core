@@ -274,6 +274,26 @@ jobs:
         run: go test -race ./...
         working-directory: ${{ matrix.module }}
 
+      # THE SOAK AT FULL LENGTH, UNRACED, and this step is the other half of a
+      # deliberate split rather than a duplicate run.
+      #
+      # TestTwoThousandTurnSoakStaysWithinItsBounds drives 2000 exchanges through
+      # Update in ONE goroutine. There is no concurrency in it for the race
+      # detector to examine, and instrumenting it costs 9x: 29.9s becomes 270.9s
+      # locally and 7m38s on this runner, which is how the clients/tui package
+      # first hit `go test`'s 10-minute timeout.
+      #
+      # So the raced run above executes a reduced 400 exchanges -- still 150 past
+      # the point the turn ceiling engages, and the test FAILS if nothing was
+      # evicted -- and this step runs the full 2000 without the detector, in ~40s.
+      # Both lengths run in CI on every push. Neither is a silent skip, and the
+      # 2000-turn figure quoted in docs/TUI_PRODUCTION_READINESS_2026-09-04.md is
+      # reproduced here rather than only on a developer machine.
+      - name: Transcript soak at full length (unraced)
+        if: matrix.module == 'clients/tui'
+        run: go test -run TestTwoThousandTurnSoakStaysWithinItsBounds -count=1 -v .
+        working-directory: ${{ matrix.module }}
+
       # Deliberately a SEPARATE step from Test, and deliberately without -race.
       # Separate, because "tests failed" and "coverage regressed" are different
       # problems and a single red step would not say which. Without -race,
