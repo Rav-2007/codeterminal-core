@@ -7,6 +7,34 @@ performance changes are not listed here unless you can observe them.
 
 ## Unreleased
 
+### Your terminal is restored when the session ends, not just when you quit
+
+**What changed.** Closing a terminal window or dropping an ssh connection
+sends the client SIGHUP. It used to die on the spot without putting the
+terminal back: the alternate screen stayed up, the cursor stayed hidden, and
+mouse tracking stayed on. If the shell underneath survived, you were left
+typing blind into something you could not see, usually needing `reset`.
+
+SIGHUP now goes through the same clean shutdown as `kill` and Ctrl-C, and so
+does SIGQUIT. Nothing about quitting normally has changed.
+
+**SIGQUIT still dumps.** `kill -QUIT` on the client prints every goroutine's
+stack, the way it always did — the difference is that your terminal is put back
+first, so you can actually read it. The exit status is 131 (128+3), as before.
+
+**One known limitation, stated plainly.** If the terminal is destroyed outright
+rather than sending a hangup — which happens in some terminal emulators and
+multiplexers — the client is not notified at all and keeps running in the
+background. It costs nothing but memory, and `pkill codeterminal-tui` clears
+it. This is not new, and it is being worked on.
+
+### `--prompt` piped into `head` no longer dies by signal
+
+Running one-shot into a reader that stops early (`| head`, `| grep -m1`, or
+closing a pager) used to kill the client with SIGPIPE — exit status 141. It
+now exits 0 quietly. A reader taking only part of the answer is a normal thing
+to do, not an error.
+
 ### Terminal control sequences are stripped from untrusted text
 
 **What changed.** Everything CodeTerminal displays that it did not write
