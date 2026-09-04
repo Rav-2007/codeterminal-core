@@ -38,8 +38,8 @@ longer exists), or SUPERSEDED (replaced by a different row).**
 | R1.2 over-long CSI leaks parameter bytes | **OPEN** | `TestOverLongCSIBoundary` and `TestHeldBytesNeverExceedTheCeiling` both PASS. 14 shapes, boundary still exactly 65/66. |
 | R1.3 one-shot stdout not byte-stable | **OPEN by decision** | `TestOneShotOutputIsFiltered` PASSES on every platform; `TestRealBinaryPipedIntoAnEarlyReaderExitsCleanly` PASSES on Linux only. |
 | R1.4 review/approval buffers hold raw bytes | **OPEN by design** | All three guards PASS. Re-checked the row's load-bearing clause: **still no copy, export or clipboard sink in the client** — no `clipboard`, no OSC 52, no write path outside the terminal. `/mouse` does not create one; it hands selection back to the terminal, which copies already-filtered text. |
-| R1.5 `/mcp-server` stderr unredacted | **OPEN, unfixed by decision — now with a recommendation** | Chain re-traced end to end and both line references corrected (they had drifted). [Decision memo](DECISION_MEMO_REDACTION_2026-09-04.md) recommends **FIX**, in the daemon, ~40 lines. Still nothing pinning it. |
-| R1.6 model-emitted secrets not redacted | **OPEN, unfixed by decision — and it understated itself** | P5.1 answered: the daemon matches on **shapes**, so the asymmetry is permanent and the memo recommends **accepting** it. But the row's own "sent back as history" clause turned out to hide a defect: nothing scrubs it on the way back out. Verified by execution. |
+| R1.5 `/mcp-server` stderr unredacted | **OPEN — UNFIXED BY DECISION, PENDING THE DAEMON OWNER** | Chain re-traced end to end and both line references corrected (they had drifted). [Decision memo](DECISION_MEMO_2026-09-04.md) recommends **FIX**, in the daemon, ~40 lines. Still nothing pinning it. |
+| R1.6 model-emitted secrets not redacted | **OPEN — UNFIXED BY DECISION, PENDING THE DAEMON OWNER** | P5.1 answered: the daemon matches on **shapes**, so the asymmetry is permanent and the memo recommends **accepting** it. But the row's own "sent back as history" clause turned out to hide a defect: nothing scrubs it on the way back out. Verified by execution. |
 | R1.7 `git status` echoes git's output | **OPEN** | Unchanged in substance. Its code reference had drifted by 14 lines and is corrected; it now names `runGitStatus` as well. Still nothing pinning it. |
 | R1.8 `ModelError.detail` safe by field privacy | **OPEN (forward guard)** | `daemon/modelerror.go:204` re-read today and still builds `detail` exactly as the row describes. Still a property, still no AST guard. |
 | R1.9 1 MB paste costs most of a frame | **CLOSED** | Stays closed, on a **corrected figure**: the 3.6 number was measured with the input blurred, so the paste was discarded. Re-taken where it lands: **389 µs, identical at 0 bytes and at the 2 MiB ceiling**, spread 1.1×. |
@@ -74,7 +74,16 @@ the decision memo on its first run.
 
 ---
 
-### R1.5 and R1.6 are unfixed BY DECISION, not unexamined
+### R1.5 and R1.6 are unfixed BY DECISION, and now PENDING AN OWNER
+
+**The distinction that matters for the release gate: these are no longer waiting
+on analysis. They are waiting on a person to write down a decision.**
+[docs/DECISION_MEMO_2026-09-04.md](DECISION_MEMO_2026-09-04.md) is addressed to
+whoever owns `daemon/`, states a recommendation on each, and needs only a reply.
+**A recorded deferral with a trigger closes the release gate exactly as well as a
+fix does** — what does not close it is silence.
+
+### Why they were unfixed in the first place
 
 Stated separately because the difference matters to whoever reads this next, and
 a register cannot show it in a status column.
@@ -96,7 +105,7 @@ Neither has a test pinning it. That is stated in each row and is not an
 oversight: there is nothing yet to pin.
 
 **A decision memo now exists for both:**
-[docs/DECISION_MEMO_REDACTION_2026-09-04.md](DECISION_MEMO_REDACTION_2026-09-04.md).
+[docs/DECISION_MEMO_2026-09-04.md](DECISION_MEMO_2026-09-04.md).
 It answers the question that gates them — `redactionsMsg` matches on **shapes**,
 not on values the daemon provisioned, so R1.6 stays outbound-only and the
 asymmetry is permanent — recommends **fixing R1.5** in the daemon by exact-match
@@ -290,7 +299,7 @@ exactly when someone runs `/mcp-server`.
 behaviour**, and that is stated plainly rather than implied.
 
 **Decision memo, 2026-09-04.** The full chain is traced end to end in
-[the memo](DECISION_MEMO_REDACTION_2026-09-04.md), which recommends FIXING this
+[the memo](DECISION_MEMO_2026-09-04.md), which recommends FIXING this
 one: `mcp.Connect` already computes `ServerEnv(cfg.EnvAllow)` and therefore holds
 the literal bytes it handed the subprocess, so exact-match stripping is available
 there and nowhere else. ~40 lines. The memo also records what such a fix cannot
@@ -331,7 +340,7 @@ first, which required a tool call the user approved.
 process; transcript export; or telemetry that samples conversation content.
 
 **Decision memo, 2026-09-04 — and this row understated its own blast radius.**
-[The memo](DECISION_MEMO_REDACTION_2026-09-04.md) recommends REJECTING an inbound
+[The memo](DECISION_MEMO_2026-09-04.md) recommends REJECTING an inbound
 redactor and accepting this row in writing: `redactionsMsg` matches on shapes, so
 "apply the same set inbound" means running ten regexes over prose — which the
 brief rules out, which decision D5 already refused on measured data (33% of

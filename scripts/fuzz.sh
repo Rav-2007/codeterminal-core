@@ -143,12 +143,25 @@ for entry in "${TARGETS[@]}"; do
     if [ -n "$execs" ]; then
       echo "ok    $module/$target ($execs)"
     else
-      # RAN, BUT DID NOT FUZZ. Go prints no "execs:" line when the whole budget
-      # went on replaying the seed corpus -- measured on daemon/FuzzRenderToolResult,
-      # which spends 40s "gathering baseline coverage: 0/197" at FUZZTIME=3s and
-      # never generates an input of its own. That is still a useful regression
-      # replay and it is NOT a failure, but reporting it as plain "ok" reads as
-      # fuzzing that happened and did not.
+      # RAN, BUT DID NOT FUZZ. Go prints no "execs:" line when the budget ends
+      # before fuzzing begins -- measured on all four daemon targets, each of
+      # which sits at "gathering baseline coverage: 0/160 completed" for the
+      # whole 30s and generates nothing.
+      #
+      # THE CAUSE, CORRECTED 2026-09-04. This comment used to say the budget
+      # "went on replaying the seed corpus". That was a guess and it was wrong:
+      # the on-disk corpora are one file and zero files. The real cause is
+      # PACKAGE STARTUP, paid by every fuzz WORKER PROCESS -- daemon's TestMain
+      # runs `go build ./testdata/fakehelper` before m.Run(), and
+      # `go test -run XXXNOSUCHTEST ./daemon` therefore takes 5.68s with zero
+      # tests. Go gathers baseline coverage using workers that each re-exec the
+      # test binary, so none of them reaches a single input inside 30s.
+      #
+      # Still a useful regression replay of the cached corpus, and still NOT a
+      # failure -- but reporting it as plain "ok" reads as fuzzing that happened
+      # and did not. Recorded for the daemon's owner in
+      # docs/DECISION_MEMO_2026-09-04.md, item 4, with the fix (build the fake
+      # helper lazily) and the alternative (accept, with a trigger).
       echo "ok    $module/$target (seed corpus only, no new inputs generated at FUZZTIME=$fuzztime)"
     fi
   fi

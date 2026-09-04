@@ -157,8 +157,9 @@ been resting on less evidence than they appeared to.
   taken before the soak's cost was understood and is superseded), coverage
   ratchet on all nine modules with the TUI floor raised 83.0 → 84.0 and now
   measuring **84.5%**, errcheck 0, govulncheck 0 reachable, fuzz gate 18/18
-  targets, docs links (318), docs code references (15 enforced), registers,
-  debt markers (156 files, 0), supply chain.
+  targets **ran** (four of them generate nothing — item 9 below), docs links
+  (319), docs code references (16 enforced), registers, debt markers (156 files,
+  0), supply chain.
 
 ## CI, on a real runner, for the first time
 
@@ -411,12 +412,18 @@ slash catalogue, history construction — compiles and runs on all three.
    these changes landed. The scroll fix, the eviction marker, the paste notice
    and `/mouse` are all judged by assertions about what the model contains, not
    by anyone looking at a screen.
-2. **The terminal is verified on Linux only** — see *Per-platform status* above
-   for the exact figures. macOS and Windows compile, link and run 312 and 306 of
-   the 326 tests respectively; the 14 (macOS) and 20 (Windows) they do not run
-   are the pty-backed suites and, on Windows, the signal contract that platform
-   does not have. **This is now stated by a test rather than by this paragraph**,
-   which is the part that changed at P4.3.
+2. **The terminal is verified on Linux only, and that did NOT change when macOS
+   joined every push.** macOS and Windows compile, link and run 313 and 307 of
+   the 327 tests; the 14 (macOS) and 20 (Windows) they do not run are the
+   pty-backed suites and, on Windows, the signal contract that platform does not
+   have. **Terminal restore and the 57-byte sequence are tested on Linux and
+   nowhere else** — that is a build-tag gap, not a trigger gap, and no scheduling
+   change touches it. Adding `macos (clients/tui, every push)` bought build, vet
+   and the 313 tests on a branch instead of only on `main`; it bought nothing on
+   the restore path. Closing that means writing a darwin pty helper. **Stated by
+   a test rather than by this paragraph** — `TestPlatformCoverageIsStated` prints
+   it in the failing platform's own CI log — and by the header of
+   `exitsignals_unix.go`, where the person editing signal code will meet it.
 3. ~~**Not run in CI.**~~ **Resolved 2026-09-04 at P4.2** — see *CI, on a real
    runner* above. Three things broke on first contact and all three were real;
    none was a product defect. What remains unverified here is narrower and worth
@@ -444,11 +451,27 @@ slash catalogue, history construction — compiles and runs on all three.
    remains unverified is that the release workflow **has never been run** with
    these steps in it — it is tag- and dispatch-triggered, so nothing on an
    ordinary push exercises it.
-7. **No performance measurement under memory pressure, on a slow disk, or on a
-   shared CI runner.** Every wall-clock figure is from an idle laptop.
+7. **No performance measurement under memory pressure or on a slow disk**, and
+   only one on a shared runner. Every wall-clock figure here is from an idle
+   laptop, with one exception now: the 2,000-turn soak runs unraced in CI and
+   reproduced its figures there (502 turns, 335 KB, 2.9 MB heap, 37.18 s). The
+   repaint and paste medians have **not** been re-taken on a runner, and a
+   shared runner is exactly where the 22 ms repaint would look worst.
 8. **Security posture was not re-audited.** This batch was performance,
    correctness and operability. The security findings below are carried
    forward from earlier passes, not re-verified here.
+9. **"Fuzz gate 18/18 targets" overstates four of them.** All eighteen *run*;
+   four — every target in `daemon/` — generate **zero new inputs** at CI's
+   30-second budget, because `daemon`'s `TestMain` runs a `go build` that every
+   fuzz worker process pays (`go test -run XXXNOSUCHTEST ./daemon` takes 5.68 s
+   with no tests). They are regression replay of a cached corpus, not fuzzing.
+   The three `clients/tui` targets are unaffected — 545,016 / 567,455 / 114,448
+   execs. Measured, and handed to the daemon's owner as item 4 of
+   [the decision memo](DECISION_MEMO_2026-09-04.md).
+10. **Neither handoff has been acted on.** The manual session
+    ([docs/MANUAL_SESSION_2026-09-04.md](MANUAL_SESSION_2026-09-04.md)) has not
+    been run by anyone, and the daemon memo has no reply. Both are release-gate
+    conditions and both are somebody else's action.
 
 ## Security findings carried forward
 
@@ -533,18 +556,28 @@ typo cannot disable the bound.
 
 ## Release gate status
 
-The four conditions the gate names, and where each stands:
+| # | Condition | Status | Blocked on whom |
+|---|---|---|---|
+| 1 | **Phases 1–4 complete** | **MET** | — |
+| 2 | **P5 decision recorded** | **OPEN** | **The `daemon/` owner.** [The memo](DECISION_MEMO_2026-09-04.md) states a recommendation on each of four items and needs a written reply, not implementation time. |
+| 3 | **Manual session done** | **OPEN** | **A tester, ideally on macOS.** Script: [docs/MANUAL_SESSION_2026-09-04.md](MANUAL_SESSION_2026-09-04.md). |
+| 4 | **Readiness statement current** | **MET** | — |
 
-| Condition | Status |
-|---|---|
-| Phases 1–4 complete | **Met.** P3 measured and disposed R1.12; P4.1 closed R1.14; P4.2 ran CI on a runner — **30 of 30 jobs green** after fixing what broke; P4.3 produced the per-platform status. |
-| P5 has a **recorded decision** | **NOT MET, and it blocks.** The memo exists and recommends one course for each row, but a recommendation is not a decision. R1.5 (fix), R1.6 (accept) and the history/persistence leak (fix) are all awaiting the daemon's owner. |
-| A human has driven the client | **NOT MET, and it blocks.** See the table above. |
-| "What I did not verify" matches reality | **Met**, as of this revision. |
+**Row 1, in detail.** P3 measured the repaint at the transcript ceiling and
+disposed of R1.12 (22.4 ms p50 — over budget, stays open, deliberately not
+optimized). P4.1 closed R1.14. P4.2 ran CI on real runners: 30/30 green across
+three platforms on `33896704671`, after fixing three first-contact breaks. P4.3
+produced the per-platform table and added `macos (clients/tui, every push)`,
+proved on push run `33901690615` — 26/27, macOS green.
 
-**Two of four are open, and both are open on somebody else's action rather than
-on more work here.** That is the honest state: the engineering is finished and
-the release is not.
+**Row 2 is ten minutes of somebody's attention, not a work item.** A recorded
+deferral with a trigger closes this row exactly as well as a fix does. The memo
+says so on its first page, because the failure mode is this row sitting open
+while everyone waits for implementation time that was never required.
+
+**Row 4 means the section above is current, not that it is short.** *What was NOT
+verified* grew during Items 1 and 2 rather than shrinking; that is the intended
+direction as work closes.
 
 ## Conditions on the release decision
 
@@ -562,7 +595,7 @@ the release is not.
    never executed. A `workflow_dispatch` of `release.yml` would settle it and
    costs one release matrix.
 3. **Decide R1.5/R1.6.** A decision memo now exists —
-   [docs/DECISION_MEMO_REDACTION_2026-09-04.md](DECISION_MEMO_REDACTION_2026-09-04.md)
+   [docs/DECISION_MEMO_2026-09-04.md](DECISION_MEMO_2026-09-04.md)
    — with a recommendation on each: **fix R1.5** in the daemon (exact-match
    stripping of provisioned env values, ~40 lines, available because
    `mcp.ServerEnv` holds the literal bytes), **reject R1.6** and accept it in
