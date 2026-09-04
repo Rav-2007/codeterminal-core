@@ -397,8 +397,30 @@ gate audit removed from this repo's scripts, wearing a different hat.
 jobs: on Linux it is a **gate** (every listed suite must carry the tag, and no
 tagged suite may go unlisted, so a sixth cannot appear without landing in this
 table), and elsewhere it is a **report** that names, in that platform's own test
-output, exactly what did not run there. It asserts on the count of files
-inspected — 73 — so a version that reads nothing fails rather than passes.
+output, exactly what did not run there.
+
+**Corrected 2026-09-05 — this paragraph previously said the test "asserts on the
+count of files inspected — 73".** It does not. The assertion is
+`if inspected < 20` (`clients/tui/platformcoverage_test.go:80`), and 73 is what
+the test *reports*, not what it enforces. The correction matters less than the
+misattribution it hid: **the anti-drift property is real and does not come from
+the count at all.** It comes from the two bidirectional loops — every listed
+suite must carry the tag, and every `//go:build linux` file must be listed — so
+a sixth pty suite fails the second loop whatever `inspected` happens to be. The
+count is only a **vacuity floor**, stopping a version that reads nothing (a wrong
+working directory, an empty listing) from passing every assertion below it by
+vacuum. The test file's own header comment states exactly that and was never
+wrong; this document was.
+
+**The residual, stated rather than papered over.** A floor of 20 would let a
+degraded inspection loop read 21 files and miss a newly added linux-tagged suite.
+That needs two independent faults at once — a change to the file filter *and* a
+new suite landing in the window — because dropping any of the five listed files
+fails the first loop loudly. Raising the floor to today's 73 would close it and
+buy a chore: every new `.go` file in the package would fail an unrelated test,
+and a floor that fails for the wrong reason is one that gets waived. Left at 20,
+with the reasoning recorded here, which is the register's own standard applied to
+a test.
 
 **The honest one-line summary: the terminal is verified on Linux and on no other
 platform.** Everything that is not the terminal — the render cache, the
@@ -465,11 +487,27 @@ slash catalogue, history construction — compiles and runs on all three.
    30-second budget, because `daemon`'s `TestMain` runs a `go build` that every
    fuzz worker process pays (`go test -run XXXNOSUCHTEST ./daemon` takes 5.68 s
    with no tests). They are regression replay of a cached corpus, not fuzzing.
-   The three `clients/tui` targets are unaffected — 545,016 / 567,455 / 114,448
-   execs. **The cause is found and the fix is measured**: deferring that build
-   out of `TestMain` takes the same four targets, at the same 30-second budget,
-   from 0 execs to 853,943 / 696,950 / 778,931 / 1,102,402 and **40 new
-   interesting inputs**. Handed to the daemon's owner as item 4 of
+   The three `clients/tui` targets are unaffected and do real work.
+
+   **Every execution count in this item is ONE SAMPLE, at one budget, on one
+   machine — not a property.** Softened 2026-09-05. The `clients/tui` figures
+   first recorded here were 545,016 / 567,455 / 114,448; a later run of the same
+   gate at the same `FUZZTIME=30s` gave 2,544,259 / 2,657,305 / 286,414 — about
+   4.7× apart, which exceeds the 2× spread *Provenance of the numbers above*
+   already warns of. This document deleted a "1.2 million fuzz executions" claim
+   for exactly that reason and this item partially re-introduced the shape. What
+   is stable, and all that should be quoted, is the **zero**: the four `daemon/`
+   targets generate no new inputs at CI's budget, which is a structural fact
+   about `TestMain` rather than a measurement of throughput.
+
+   **The cause is found and the fix is measured**: deferring that build out of
+   `TestMain` takes the same four targets, at the same 30-second budget, from
+   **0 execs — reproducibly zero, in every run** — to figures in the high
+   hundreds of thousands to low millions (one run: 853,943 / 696,950 / 778,931 /
+   1,102,402), together with **40 new interesting inputs**. The exec counts there
+   carry the same one-sample caveat; the transition from zero does not.
+
+   Handed to the daemon's owner as item 4 of
    [the decision memo](DECISION_MEMO_2026-09-04.md); not landed, because it is
    their module.
 10. **Neither handoff has been acted on.** The manual session
@@ -479,15 +517,33 @@ slash catalogue, history construction — compiles and runs on all three.
 
 ## Security findings carried forward
 
-| Issue | Exploit scenario | Fix | Verifying test |
-|---|---|---|---|
-| **`/mcp-server` shows daemon + MCP stderr unredacted** (R1.5) | A third-party MCP server prints its API key at startup; `mcp list` runs it with `CombinedOutput()` and the key lands on the user's screen and in their scrollback. Only path in the client that puts daemon stderr in front of a user. | **None. Unfixed by decision** — enumerated in 2.3a, no go-ahead for the structural redactor. | **None.** Stated as a coverage gap. |
-| **Model-emitted secrets in the transcript** (R1.6) | A model echoes a credential it read from a file; it is rendered and persisted like any other answer. | **None. Unfixed by decision**, same reason. Memo recommends accepting it: the daemon matches on shapes, so the asymmetry is permanent. | **None.** |
-| **The outbound scrub is bypassed by one turn** (found 2026-09-04 at P5.1, in `daemon/`, not previously recorded anywhere) | The daemon redacts `sk-…` from the prompt and tells the user so. `persistTurn` then writes the RAW prompt to `memory.db` and its `turns_fts` index, and `prepareHistory` sends it to the provider verbatim as history on the next turn. The redaction notice makes it *worse* than never scrubbing: the user reasonably concludes the key did not leave. | **None yet — not mine to make.** The fix is `cleanPrompt` at one call site plus a scrub in `prepareHistory`, and needs no new detector. Recommended in the memo. | **None.** Verified by execution, twice, with the probes removed afterwards. |
-| **Edit-review and approval buffers hold raw bytes** (R1.4) | Deliberate: edit bytes go to disk and approval bytes carry the daemon's digest, so both must stay byte-exact. Sanitized at render instead. Risk is a *new* reader rendering them raw. | Structural — an AST guard names every function allowed to touch them. | `TestRawByteStructuresHaveNoNewReaders`. **It fired during 3.7**: the decomposition moved the reader out of `Update` and the test failed until the reviewed list moved with it. |
-| **`git status` failures echo git's output** (R1.7) | A remote URL with an embedded credential appears in an error line. | None. | None. |
-| **Terminal escape injection** (closed earlier in this pass) | Model or MCP output repaints the approval prompt — forged consent. | Allowlist sanitizer, one ingest door. | 43-entry corpus + 14 CSI shapes + 2 fuzzers + a real-pty test, all now registered in the fuzz gate for the first time. |
-| **C1 introducer in a model-authored edit path** (closed in this pass, task 2.2) | `editapply.RejectUnprintablePath` refuses `r < 0x20`, DEL and a named set of Unicode direction/zero-width characters — **but not C1 (U+0080–U+009F)**. U+009B is the CSI introducer in 8-bit mode. A model names a file whose path carries one; the path parses cleanly, survives every upstream check, and reaches a `%s` in the review summary's refusal reason, where the terminal executes it as a control sequence. | Sanitization at the `appendTurn` door, which is now the only route into `m.turns`. | `TestC1InAnEditPathCannotReachTheTranscript` (`clients/tui/sanitize_wiring_test.go:438`). **Re-verified 2026-09-04**: it exists, it passes, and it **runs rather than skips** — the gap is still open upstream. It self-skips only if `editapply` ever closes it. Neutering `appendTurn`'s sanitization fails it immediately, with the C1 byte visible in the transcript. |
+**Three states, and they are different objects. Collapsing them misleads.**
+Added 2026-09-05, because until then this table's Fix column said *"None.
+Unfixed by decision"* for R1.5 and R1.6 — **the same phrase the register uses for
+R1.3, which really is a closed decision with its reasoning recorded.** Nobody has
+decided R1.5 or R1.6. A reader of this document on its own would sort the two
+rows that actually block the release gate into the "already decided" bucket and
+conclude nothing is outstanding. Only the register carried the distinction, in
+prose, under a heading a decision-maker reading this file would never reach. It
+is now the first column here.
+
+- **FIXED** — a change landed and a test fails without it.
+- **OPEN BY DECISION** — somebody decided not to fix it, the reasoning is
+  recorded, and a trigger says what reopens it. **Nothing is outstanding.**
+- **PENDING SOMEONE ELSE'S DECISION** — nobody has decided yet. The analysis is
+  done and a recommendation exists; a named person has to write a sentence.
+  **These are the only rows that block anything**, and they are release-gate
+  row 2.
+
+| State | Issue | Exploit scenario | Fix | Verifying test |
+|---|---|---|---|---|
+| **PENDING THE `daemon/` OWNER** | **`/mcp-server` shows daemon + MCP stderr unredacted** (R1.5) | A third-party MCP server prints its API key at startup; `mcp list` runs it with `CombinedOutput()` and the key lands on the user's screen and in their scrollback. Only path in the client that puts daemon stderr in front of a user. | **None. NOT YET DECIDED** — enumerated in 2.3a, no go-ahead for the structural redactor. The memo recommends **FIX**, in the daemon, ~40 lines. Awaiting a written reply. | **None.** Stated as a coverage gap. |
+| **PENDING THE `daemon/` OWNER** | **Model-emitted secrets in the transcript** (R1.6) | A model echoes a credential it read from a file; it is rendered and persisted like any other answer. | **None. NOT YET DECIDED**, same reason. The memo recommends **ACCEPT, in writing, with a trigger**: the daemon matches on shapes, so the asymmetry is permanent. Awaiting a written reply. | **None.** |
+| **PENDING THE `daemon/` OWNER** — and a **defect**, not a design question | **The outbound scrub is bypassed by one turn** (found 2026-09-04 at P5.1, in `daemon/`, not previously recorded anywhere) | The daemon redacts `sk-…` from the prompt and tells the user so. `persistTurn` then writes the RAW prompt to `memory.db` and its `turns_fts` index, and `prepareHistory` sends it to the provider verbatim as history on the next turn. The redaction notice makes it *worse* than never scrubbing: the user reasonably concludes the key did not leave. | **None yet — not mine to make.** The fix is `cleanPrompt` at one call site plus a scrub in `prepareHistory`, and needs no new detector. Recommended in the memo. | **None.** Verified by execution, twice, with the probes removed afterwards. |
+| **OPEN BY DESIGN** | **Edit-review and approval buffers hold raw bytes** (R1.4) | Deliberate: edit bytes go to disk and approval bytes carry the daemon's digest, so both must stay byte-exact. Sanitized at render instead. Risk is a *new* reader rendering them raw. | Structural — an AST guard names every function allowed to touch them. | `TestRawByteStructuresHaveNoNewReaders`. **It fired during 3.7**: the decomposition moved the reader out of `Update` and the test failed until the reviewed list moved with it. |
+| **OPEN** — no decision taken either way | **`git status` failures echo git's output** (R1.7) | A remote URL with an embedded credential appears in an error line. | None. | None. |
+| **FIXED** | **Terminal escape injection** (closed earlier in this pass) | Model or MCP output repaints the approval prompt — forged consent. | Allowlist sanitizer, one ingest door. | 43-entry corpus + 14 CSI shapes + 2 fuzzers + a real-pty test, all now registered in the fuzz gate for the first time. |
+| **FIXED** client-side; upstream gap open | **C1 introducer in a model-authored edit path** (closed in this pass, task 2.2) | `editapply.RejectUnprintablePath` refuses `r < 0x20`, DEL and a named set of Unicode direction/zero-width characters — **but not C1 (U+0080–U+009F)**. U+009B is the CSI introducer in 8-bit mode. A model names a file whose path carries one; the path parses cleanly, survives every upstream check, and reaches a `%s` in the review summary's refusal reason, where the terminal executes it as a control sequence. | Sanitization at the `appendTurn` door, which is now the only route into `m.turns`. | `TestC1InAnEditPathCannotReachTheTranscript` (`clients/tui/sanitize_wiring_test.go:438`). **Re-verified 2026-09-04**: it exists, it passes, and it **runs rather than skips** — the gap is still open upstream. It self-skips only if `editapply` ever closes it. Neutering `appendTurn`'s sanitization fails it immediately, with the C1 byte visible in the transcript. |
 
 ### The C1 finding, verified rather than transcribed
 
@@ -576,7 +632,11 @@ disposed of R1.12 (22.4 ms p50 — over budget, stays open, deliberately not
 optimized). P4.1 closed R1.14. P4.2 ran CI on real runners: 30/30 green across
 three platforms on `33896704671`, after fixing three first-contact breaks. P4.3
 produced the per-platform table and added `macos (clients/tui, every push)`,
-proved on push run `33901690615` — 26/27, macOS green.
+proved on push run `33901690615` — **27 jobs, 26 success, 0 failed, 1 skipped**,
+macOS green. (Written as "26/27" until 2026-09-05, which reads as a failure in a
+document that elsewhere insists a skip is never a pass. The skip is
+`retrieval eval (scheduled)`, a schedule-triggered job that does not run on a
+push. The same is true of the run at HEAD.)
 
 **Row 2 is ten minutes of somebody's attention, not a work item.** A recorded
 deferral with a trigger closes this row exactly as well as a fix does. The memo

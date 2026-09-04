@@ -290,6 +290,14 @@ For contrast, the other twelve targets in the same gate at the same budget:
 `editapply/FuzzParseUnifiedDiff` 1,660,054 execs, `proxy/FuzzStreamRequested`
 615,320, `clients/tui/FuzzSanitizeChunkInvariance` 567,455.
 
+**Read every non-zero count in this memo as one sample, at one budget, on one
+machine.** (Added 2026-09-05.) Fuzz throughput is time-boxed and scales with
+machine load: a later run of this same gate at the same `FUZZTIME=30s` put
+`FuzzSanitizeChunkInvariance` at 2,657,305 rather than 567,455 — about 4.7×
+apart. **Nothing in this item's argument rests on a throughput figure.** It rests
+on the zero, which is reproducible in every run and is a structural fact about
+`TestMain` rather than a measurement.
+
 **The targets themselves are fine.** Left running unmodified for 300 s,
 `FuzzSplitQualifiedName` reaches **10,649,397 execs and 22 new interesting
 inputs**. It is not saturated and it is not slow; it simply never starts inside
