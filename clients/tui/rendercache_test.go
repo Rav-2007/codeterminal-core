@@ -240,8 +240,9 @@ func TestPerTokenAllocationsAreFlatInTranscriptLength(t *testing.T) {
 	for i, prior := range []int{0, 400} {
 		m := benchTranscript(prior, 1200)
 		at[i] = testing.AllocsPerRun(50, func() {
-			u, _ := m.Update(tokenMsg("tok "))
-			m = u.(chatModel)
+			// deliverToken, not a bare Update: since 3.3 a token does not draw,
+			// and measuring it without its repaint measures nothing.
+			m = deliverToken(m, "tok ")
 		})
 	}
 	t.Logf("allocs per token: %.0f at 0 prior turns, %.0f at 400", at[0], at[1])

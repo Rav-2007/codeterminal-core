@@ -126,13 +126,35 @@ func benchTranscript(priorTurns, answerChars int) chatModel {
 	return m
 }
 
+// deliverToken sends one token AND the repaint it asks for.
+//
+// SINCE 3.3 A TOKEN DOES NOT DRAW. It appends to the turn and arms a tick, and
+// the tick is what repaints. A test that sends only the token therefore
+// measures a model that has not drawn anything -- and every allocation and
+// latency gate in this package was silently reduced to that when coalescing
+// landed, passing with the render cache neutered. This helper is what keeps
+// them honest: it forces the repaint the token asked for, so the cost measured
+// per token is the WORST case, one repaint per token, which is exactly what the
+// code did before coalescing existed.
+//
+// The saving coalescing actually buys is measured separately, as a count of
+// repaints per token, by TestManyTokensBetweenTicksProduceOneRepaint.
+func deliverToken(m chatModel, text string) chatModel {
+	u, _ := m.Update(tokenMsg(text))
+	m = u.(chatModel)
+	if m.refreshScheduled {
+		u, _ = m.Update(refreshTickMsg{})
+		m = u.(chatModel)
+	}
+	return m
+}
+
 func benchTokenUpdate(b *testing.B, priorTurns int) {
 	m := benchTranscript(priorTurns, 1200)
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		updated, _ := m.Update(tokenMsg("tok "))
-		m = updated.(chatModel)
+		m = deliverToken(m, "tok ")
 	}
 }
 
@@ -147,8 +169,7 @@ func BenchmarkTokenUpdate240Turns(b *testing.B) { benchTokenUpdate(b, 240) }
 func allocsPerTokenUpdate(priorTurns int) float64 {
 	m := benchTranscript(priorTurns, 1200)
 	return testing.AllocsPerRun(50, func() {
-		updated, _ := m.Update(tokenMsg("tok "))
-		m = updated.(chatModel)
+		m = deliverToken(m, "tok ")
 	})
 }
 
@@ -211,11 +232,29 @@ func TestPerTokenUpdateLatencyAgainstBudget(t *testing.T) {
 		wantP50 = 500 * time.Microsecond
 		wantP99 = 2 * time.Millisecond
 	)
+	// BOTH HALVES ARE REPORTED, because reporting only the first would let
+	// work that was DEFERRED read as work that was removed. A token no longer
+	// draws (3.3), so Update alone is cheap by construction; what a reader of
+	// this number wants to know is what a token costs including the repaint it
+	// causes, which is the second measurement and the pessimistic one -- it
+	// forces a repaint per token, where the running client does at most one per
+	// refreshInterval however fast tokens arrive.
+	bare := benchTranscript(240, 1200)
+	bareDs, _ := measureUpdates(bare, 400, func(int) tea.Msg { return tokenMsg("tok ") })
+	t.Logf("token Update alone, no repaint: p50=%v p99=%v",
+		percentile(bareDs, 50).Round(time.Microsecond), percentile(bareDs, 99).Round(time.Microsecond))
+
 	m := benchTranscript(240, 1200)
-	ds, _ := measureUpdates(m, 400, func(int) tea.Msg { return tokenMsg("tok ") })
+	ds := make([]time.Duration, 400)
+	for i := range ds {
+		start := time.Now()
+		m = deliverToken(m, "tok ")
+		ds[i] = time.Since(start)
+	}
+	sort.Slice(ds, func(i, j int) bool { return ds[i] < ds[j] })
 
 	p50, p99 := percentile(ds, 50), percentile(ds, 99)
-	t.Logf("per-token Update at 240 prior turns: p50=%v p99=%v (D-1 wants p50<=%v p99<=%v)",
+	t.Logf("token + the repaint it causes, at 240 prior turns: p50=%v p99=%v (D-1 wants p50<=%v p99<=%v)",
 		p50.Round(time.Microsecond), p99.Round(time.Microsecond), wantP50, wantP99)
 	if p50 > wantP50 || p99 > wantP99 {
 		t.Logf("BUDGET NOT MET: p50 is %.1fx and p99 is %.1fx the target. Reported, "+

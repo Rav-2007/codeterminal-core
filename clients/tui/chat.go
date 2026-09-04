@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -111,6 +112,11 @@ type chatModel struct {
 	// invalidation hooks -- see rendercache.go for why that distinction is the
 	// whole design.
 	transcript transcriptCache
+
+	// refreshPending and refreshScheduled coalesce repaints while a stream is
+	// running: see refreshSoon.
+	refreshPending   bool
+	refreshScheduled bool
 
 	// sanAnswer and sanReasoning strip terminal escapes from the two streams
 	// the daemon sends (see sanitize.go). They are stateful, so they live here
@@ -508,8 +514,7 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.state = stateStreaming
 		}
 		m.turns[m.ensureAssistantTurn()].reasoning += m.sanReasoning.Write(msg.text)
-		m.refreshViewport()
-		return m, waitForNext(m.streamCh)
+		return m, tea.Batch(m.refreshSoon(), waitForNext(m.streamCh))
 
 	case historyMsg:
 		if m.streamCh == nil {
@@ -547,6 +552,17 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tokenMsg:
 		return m.handleToken(msg)
+
+	case refreshTickMsg:
+		// One repaint, if anything asked for one. Nothing re-arms the tick
+		// here: refreshSoon does that when the next token arrives, so a stream
+		// that has gone quiet stops ticking instead of waking the process
+		// sixty times a second to do nothing.
+		m.refreshScheduled = false
+		if m.refreshPending {
+			m.refreshViewport()
+		}
+		return m, nil
 
 	case incompleteMsg:
 		if m.streamCh == nil {
@@ -1101,6 +1117,17 @@ func (m *chatModel) endStream() {
 		m.streamCancel = nil
 	}
 	m.streamCh = nil
+
+	// THE GUARANTEED FINAL REPAINT. Token repaints are coalesced onto a tick
+	// (see refreshSoon), so the last few tokens of an answer and the sanitizer
+	// tail flushed just above are, at this instant, in the model and not on the
+	// screen. Nothing else is obliged to draw them: the ordinary end of an
+	// ordinary answer runs streamDoneMsg -> checkForEditBlocks, which returns
+	// without a refresh when the answer contains no edit blocks, and that is
+	// the common case. Without this line the visible answer would stop up to
+	// one tick short of what the model actually said, and stay that way until
+	// the user happened to type something.
+	m.refreshViewport()
 }
 
 // handleCtrlC answers every ctrl+c in the program, in every state.
@@ -1302,8 +1329,7 @@ func (m chatModel) handleToken(msg tokenMsg) (tea.Model, tea.Cmd) {
 		m.state = stateStreaming
 	}
 	m.turns[m.ensureAssistantTurn()].text += m.sanAnswer.Write(string(msg))
-	m.refreshViewport()
-	return m, waitForNext(m.streamCh)
+	return m, tea.Batch(m.refreshSoon(), waitForNext(m.streamCh))
 }
 
 // appendTurn is THE ONLY WAY A TURN ENTERS THE TRANSCRIPT, and it sanitizes.
@@ -1699,6 +1725,7 @@ func (m *chatModel) refreshViewport() {
 	// starts following again, which is why this is a question asked every time
 	// rather than a flag set once.
 	follow := m.viewport.AtBottom()
+	m.refreshPending = false
 
 	content := m.transcript.render(m.turns, m.viewport.Width)
 	if m.state == stateEditReview && m.reviewPrepared != nil {
@@ -2344,4 +2371,52 @@ func (m chatModel) stateLabel() string {
 	default:
 		return helpStyle.Render("idle")
 	}
+}
+
+// COALESCED REPAINTS.
+//
+// THE DEFECT: refreshViewport ran on every streamed token. Even with the render
+// cache in place that is a wrap of the whole transcript plus a viewport
+// SetContent, both linear in total bytes -- MEASURED at 240 prior turns, 2.69ms
+// and 0.61ms, against a 0.5ms budget for the whole Update. Tokens arrive far
+// faster than a terminal can show them, and Bubble Tea does not coalesce
+// Updates, so most of that work was being done to produce frames nobody ever
+// saw: the renderer only flushes at its own frame rate.
+//
+// So a token now marks the transcript dirty and asks for a repaint SOON rather
+// than performing one. At most one repaint per refreshInterval, and at most one
+// tick outstanding at a time.
+//
+// THE TRAILING-TOKEN HAZARD, which is the reason this is written as
+// "pending plus scheduled" rather than a plain ticker: a stream that ends
+// between two ticks must still show its last tokens. Two things prevent that
+// loss. Every token that finds no tick scheduled arms one, so there is always a
+// repaint after the final token; and endStream repaints unconditionally, which
+// covers the ordinary ending, the error ending and the interrupt.
+//
+// WHAT HAPPENS WHEN TOKENS OUTPACE THE RENDERER -- the backpressure question,
+// answered in one place so it is not left to be inferred. Nothing queues.
+// Repaint requests are not events, they are a single bit: an arbitrary number
+// of tokens between two ticks collapse into the one bit, and the repaint that
+// follows draws the transcript as it is at that moment. No token is dropped
+// (they are appended to the turn as they arrive, which is not throttled) and no
+// unbounded structure grows (there is nothing to grow -- the bit is either set
+// or not). The only thing discarded is intermediate FRAMES, which is the whole
+// intent, and the daemon connection provides the real backpressure: it is a
+// synchronous socket read, so a client that cannot keep up stops reading and
+// the sender blocks.
+const refreshInterval = 16 * time.Millisecond
+
+// refreshTickMsg asks Update to repaint if anything has changed.
+type refreshTickMsg struct{}
+
+// refreshSoon records that the transcript has changed and returns a Cmd that
+// will repaint, or nil when a repaint is already on its way.
+func (m *chatModel) refreshSoon() tea.Cmd {
+	m.refreshPending = true
+	if m.refreshScheduled {
+		return nil
+	}
+	m.refreshScheduled = true
+	return tea.Tick(refreshInterval, func(time.Time) tea.Msg { return refreshTickMsg{} })
 }

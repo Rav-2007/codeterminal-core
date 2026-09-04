@@ -32,11 +32,6 @@ func streamingModelWithBacklog(t *testing.T) chatModel {
 	return m
 }
 
-func sendToken(m chatModel, text string) chatModel {
-	u, _ := m.Update(tokenMsg(text))
-	return u.(chatModel)
-}
-
 // A user who has scrolled back must not be yanked to the bottom by the next
 // token to arrive.
 func TestAStreamDoesNotYankAScrolledUserToTheBottom(t *testing.T) {
@@ -53,7 +48,7 @@ func TestAStreamDoesNotYankAScrolledUserToTheBottom(t *testing.T) {
 		t.Fatalf("the wheel did not scroll: still at the bottom, YOffset %d", scrolled)
 	}
 
-	m = sendToken(m, "one more token ")
+	m = deliverToken(m, "one more token ")
 
 	if m.viewport.AtBottom() {
 		t.Errorf("a streamed token yanked the view from YOffset %d back to the bottom. "+
@@ -73,7 +68,7 @@ func TestAStreamKeepsFollowingForAUserAtTheBottom(t *testing.T) {
 	}
 
 	for i := 0; i < 20; i++ {
-		m = sendToken(m, strings.Repeat("more text ", 12))
+		m = deliverToken(m, strings.Repeat("more text ", 12))
 	}
 
 	if !m.viewport.AtBottom() {
@@ -98,7 +93,7 @@ func TestReturningToTheBottomResumesFollowing(t *testing.T) {
 	m.viewport.GotoBottom()
 
 	for i := 0; i < 10; i++ {
-		m = sendToken(m, strings.Repeat("more text ", 12))
+		m = deliverToken(m, strings.Repeat("more text ", 12))
 	}
 	if !m.viewport.AtBottom() {
 		t.Errorf("following did not resume after the user scrolled back to the bottom: "+
