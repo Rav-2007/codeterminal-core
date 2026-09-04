@@ -3,7 +3,7 @@
 <!-- coderefs: enforced -->
 
 **Date:** 2026-09-04. **Branch:** `audit/adversarial-pass`. **Scope:** `clients/tui`.
-**Verdict:** ship-ready on the axes measured below, with four named conditions
+**Verdict:** ship-ready on the axes measured below, with **five named conditions**
 and **one performance budget knowingly unmet** — a repaint at the transcript
 ceiling costs 22.4 ms against an 8 ms budget and against D-1's 16 ms hard
 per-Update ceiling. Measured, not extrapolated; recorded as R1.12; not fixed.
@@ -423,11 +423,17 @@ the release is not.
 
 1. **Somebody drives the client by hand** before this ships. Item 1 above is the
    largest gap in this document and no amount of test coverage substitutes.
-2. **CI runs green once** with the new workflow steps — they have never
-   executed on a runner. This condition was **unsatisfiable until P4.1**: the
-   release workflow did not build the terminal client at all, so "green for this
-   target" named nothing. That is why R1.14 was promoted out of the risk register
-   and fixed rather than accepted.
+2. **CI runs green once** with the new workflow steps. This condition was
+   **unsatisfiable until P4.1**: the release workflow did not build the terminal
+   client at all, so "green for this target" named nothing — which is why R1.14
+   was promoted out of the risk register and fixed rather than accepted.
+
+   **`build.yml` is done** — see *CI, on a real runner* above; it ran on all
+   three platforms, broke three ways, and the fixes are in. **`release.yml` is
+   not**: it is tag- and dispatch-triggered, so the terminal-client build, the
+   three-in-three-out staging assertion and the macOS signing step have still
+   never executed. A `workflow_dispatch` of `release.yml` would settle it and
+   costs one release matrix.
 3. **Decide R1.5/R1.6.** A decision memo now exists —
    [docs/DECISION_MEMO_REDACTION_2026-09-04.md](DECISION_MEMO_REDACTION_2026-09-04.md)
    — with a recommendation on each: **fix R1.5** in the daemon (exact-match
