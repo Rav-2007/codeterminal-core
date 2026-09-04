@@ -27,6 +27,10 @@ set -uo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 modules="${*:-daemon editapply proxy protocol helper clients/tui}"
 status=0
+tidied=0
+
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
 
 # ---------------------------------------------------------------- tidy
 
@@ -63,20 +67,35 @@ for m in $modules; do
     status=1
   else
     echo "ok    $m — go.mod is tidy"
+    tidied=$((tidied + 1))
   fi
 done
 
 # ------------------------------------------------------------ trimpath
 
-tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
-
+binaries=0
 for m in $modules; do
   dir="$repo_root/$m"
-  # Only a main package produces a binary to inspect.
-  if ! (cd "$dir" && go list -f '{{.Name}}' . 2>/dev/null | grep -q '^main$'); then
+
+  # A MODULE THAT CANNOT BE ASKED WHAT IT IS MUST NOT BE SKIPPED IN SILENCE.
+  #
+  # The first version of this loop asked `go list` for the package name and
+  # `continue`d on anything that was not "main". That treats "this is a library"
+  # and "go list failed" as the same answer, so a module with no Go files at all
+  # produced a silent skip and the whole gate exited 0 -- measured.
+  name="$( (cd "$dir" && go list -f '{{.Name}}' . 2>"$tmp/listerr") )"
+  if [ $? -ne 0 ]; then
+    echo "FAIL  $m — could not determine the package (go list failed). Not a skip."
+    sed 's/^/      /' "$tmp/listerr"
+    status=1
     continue
   fi
+  # Only a main package produces a binary to inspect. A library is a legitimate
+  # nothing-to-do, and is now distinguished from a failure.
+  if [ "$name" != "main" ]; then
+    continue
+  fi
+  binaries=$((binaries + 1))
   bin="$tmp/$(echo "$m" | tr / -)"
   if ! (cd "$dir" && go build -trimpath -o "$bin" . 2>"$tmp/err"); then
     echo "FAIL  $m — could not build with -trimpath"
@@ -105,8 +124,24 @@ for m in $modules; do
   fi
 done
 
+# INSPECTED-COUNT ASSERTIONS. Both halves of this gate iterate a module list,
+# and a list that resolves to nothing would otherwise exit 0 having checked
+# nothing at all.
+if [ "$tidied" -eq 0 ]; then
+  echo "FAIL  no module was checked for tidiness. The module list resolved to nothing."
+  status=1
+fi
+if [ "$binaries" -eq 0 ]; then
+  echo "FAIL  no binary was inspected for embedded build paths. Every module in the"
+  echo "      list is a library, or none could be identified -- either way this gate"
+  echo "      verified nothing about shipped artifacts."
+  status=1
+fi
+
 if [ "$status" -ne 0 ]; then
   echo
   echo "supply-chain: FAILED"
+else
+  echo "supply-chain: $tidied module(s) tidy, $binaries binary(ies) clean under -trimpath"
 fi
 exit "$status"

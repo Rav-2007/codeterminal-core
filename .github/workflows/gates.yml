@@ -70,6 +70,12 @@ jobs:
       - name: Go toolchain floor agrees across every module
         run: ./scripts/go-toolchain-pinned.sh
 
+      # "Zero debt markers in non-test code" was a standing baseline invariant
+      # that NOTHING enforced -- it was a manual grep over one module's flat
+      # glob. Pure find/grep, so it lives in this shell-only job.
+      - name: No debt markers in non-test code
+        run: ./scripts/debt-markers.sh
+
   corpus:
     name: corpus holds no answer key
     runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}

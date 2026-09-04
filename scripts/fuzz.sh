@@ -80,13 +80,35 @@ TARGETS=(
 )
 
 status=0
+ran=0
 for entry in "${TARGETS[@]}"; do
   module="${entry%%:*}"
   target="${entry##*:}"
 
+  # THE TARGET MUST EXIST BEFORE IT CAN BE CLEAN.
+  #
+  # `go test -run ^X$ -fuzz ^X$` with no matching target prints "no tests to
+  # run" and EXITS 0. This script reported that as `ok X (no exec count)` --
+  # indistinguishable from a target that ran. That is not hypothetical: from
+  # task 2.1 until 2026-09-04 the two TUI sanitizer fuzzers existed and were
+  # not in TARGETS at all, and this gate reported green the whole time. The
+  # same hole swallows a target that is renamed or deleted.
+  #
+  # `go test -list` prints the names it matched, so an empty match is a
+  # missing target and is now a failure rather than a pass.
+  listed="$( (cd "$repo_root/$module" && go test -list "^${target}\$" . 2>/dev/null) | grep -c "^${target}\$" )"
+  if [ "$listed" -eq 0 ]; then
+    echo "FAIL  $module/$target — no such fuzz target." >&2
+    echo "      It was renamed, deleted, or moved to another module. A target listed" >&2
+    echo "      here and absent from the code is a gate reporting on nothing." >&2
+    status=1
+    continue
+  fi
+
   out="$(cd "$repo_root/$module" && go test -run "^${target}\$" -fuzz "^${target}\$" \
     -fuzztime="$fuzztime" . 2>&1)"
   rc=$?
+  ran=$((ran + 1))
 
   if [ $rc -ne 0 ]; then
     echo "FAIL  $module/$target" >&2
@@ -118,8 +140,27 @@ for entry in "${TARGETS[@]}"; do
     status=1
   else
     execs="$(grep -oE 'execs: [0-9]+' <<<"$out" | tail -1)"
-    echo "ok    $module/$target (${execs:-no exec count})"
+    if [ -n "$execs" ]; then
+      echo "ok    $module/$target ($execs)"
+    else
+      # RAN, BUT DID NOT FUZZ. Go prints no "execs:" line when the whole budget
+      # went on replaying the seed corpus -- measured on daemon/FuzzRenderToolResult,
+      # which spends 40s "gathering baseline coverage: 0/197" at FUZZTIME=3s and
+      # never generates an input of its own. That is still a useful regression
+      # replay and it is NOT a failure, but reporting it as plain "ok" reads as
+      # fuzzing that happened and did not.
+      echo "ok    $module/$target (seed corpus only, no new inputs generated at FUZZTIME=$fuzztime)"
+    fi
   fi
 done
 
+# A LIST THAT RAN NOTHING IS NOT A PASS. TARGETS is edited by hand, and an
+# editing accident that empties it would otherwise exit 0 in silence.
+if [ "$ran" -eq 0 ]; then
+  echo "FAIL  no fuzz target ran. TARGETS has ${#TARGETS[@]} entr(ies); none of them" >&2
+  echo "      resolved to a target that exists. This is not a clean run." >&2
+  exit 1
+fi
+
+echo "fuzz: $ran of ${#TARGETS[@]} target(s) ran at FUZZTIME=$fuzztime"
 exit $status
