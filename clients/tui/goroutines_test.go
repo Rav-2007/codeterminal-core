@@ -139,13 +139,105 @@ func newGoroutinesSince(before goroutineSnapshot) []string {
 	return leaked
 }
 
+// harnessCreators are goroutines this LEAK CHECK must not count because the
+// product cannot have started them. Matched against the "created by" line only,
+// never anywhere in the block, and that distinction is the whole safety
+// argument -- see below.
+//
+// FOUND BY WINDOWS, ON THIS GATE'S FIRST CONTACT WITH IT (2026-09-04). The
+// goroutine check landed in 51747b3 and had only ever run on Linux.
+// TestACompletedTurnLeavesNoGoroutineBehind failed on windows-latest with:
+//
+//	goroutine 477 [select]:
+//	github.com/Microsoft/go-winio.(*win32File).asyncIO(...)
+//	github.com/Microsoft/go-winio.connectPipe(...)
+//	created by ...(*win32PipeListener).makeConnectedServerPipe in goroutine 473
+//
+// go-winio's named-pipe listener keeps exactly one pipe pending for the next
+// client. The fake daemon starts before the snapshot, so its FIRST pending pipe
+// is counted as pre-existing; the client then connects, consumes it, and the
+// listener creates a REPLACEMENT that did not exist at snapshot time. Every
+// connection therefore looks like one leaked goroutine, deterministically, and
+// only on Windows -- a Unix socket listener has no equivalent.
+//
+// WHY THIS CANNOT HIDE A PRODUCT LEAK, which is the only question that matters
+// when adding anything to a leak checker's ignore list:
+//
+//   - The TUI is a client. It dials the daemon and never listens. The only
+//     listener that can exist in this package's address space is the fake
+//     daemon in stream_test.go.
+//   - The match is on the CREATOR, not on the stack. A leaked CLIENT-side
+//     goroutine blocked in go-winio shows the same `asyncIO` frame -- matching
+//     on that would hide real leaks -- but it is never created by
+//     makeConnectedServerPipe. TestHarnessFilterIsNarrowerThanTheLibrary proves
+//     exactly that distinction, and it runs on every platform.
+//
+// Closing the listener before asserting was the other option and is worse: a
+// product goroutine blocked on that socket would be unblocked by the close and
+// exit, so the gate would stop seeing the leak it exists to see.
+var harnessCreators = []string{
+	"github.com/Microsoft/go-winio.(*win32PipeListener).makeConnectedServerPipe",
+}
+
 func ignoredGoroutine(block string) bool {
 	for _, frame := range ignoredGoroutines {
 		if strings.Contains(block, frame) {
 			return true
 		}
 	}
+	return startedByTheHarness(block)
+}
+
+// startedByTheHarness reports whether the block's "created by" line names a
+// listener that only the test fixture can own.
+func startedByTheHarness(block string) bool {
+	for _, line := range strings.Split(block, "\n") {
+		if !strings.HasPrefix(strings.TrimSpace(line), "created by ") {
+			continue
+		}
+		for _, creator := range harnessCreators {
+			if strings.Contains(line, creator) {
+				return true
+			}
+		}
+	}
 	return false
+}
+
+// The filter must be narrower than "anything mentioning go-winio", or it hides
+// the client-side leak it was never meant to cover. Runs on every platform,
+// because the string logic is what is being tested, not the platform.
+func TestHarnessFilterIsNarrowerThanTheLibrary(t *testing.T) {
+	listener := `goroutine 477 [select]:
+github.com/Microsoft/go-winio.(*win32File).asyncIO(0x0, 0x0, 0x0, 0x0, {0x0, 0x0})
+	file.go:191 +0x15b
+github.com/Microsoft/go-winio.connectPipe(0x0)
+	pipe.go:548 +0x99
+created by github.com/Microsoft/go-winio.(*win32PipeListener).makeConnectedServerPipe in goroutine 473
+	pipe.go:437 +0xed`
+
+	// The same library, the same blocking frame, a DIFFERENT creator: this is
+	// what a leaked client connection looks like and it must still be reported.
+	client := `goroutine 478 [select]:
+github.com/Microsoft/go-winio.(*win32File).asyncIO(0x0, 0x0, 0x0, 0x0, {0x0, 0x0})
+	file.go:191 +0x15b
+codeterminal/clients/tui.streamPrompt(0x0)
+	stream.go:200 +0x99
+created by codeterminal/clients/tui.TestSomething in goroutine 12
+	stream_test.go:1 +0xed`
+
+	if !startedByTheHarness(listener) {
+		t.Error("the fake daemon's pending-pipe goroutine is not recognised as the harness's, " +
+			"so this gate is red on Windows for a goroutine the product cannot have started")
+	}
+	if startedByTheHarness(client) {
+		t.Error("a goroutine merely BLOCKED in go-winio was treated as the harness's. That is " +
+			"the client side of the same library, and ignoring it would hide exactly the " +
+			"leak this gate exists to catch")
+	}
+	if ignoredGoroutine(client) {
+		t.Error("ignoredGoroutine hides a client-side go-winio leak")
+	}
 }
 
 // THE DETECTOR ITSELF IS TESTED, because a leak checker that cannot see a leak
