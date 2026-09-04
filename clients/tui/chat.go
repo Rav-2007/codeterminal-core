@@ -1730,28 +1730,43 @@ func renderTranscript(turns []turn, width int) string {
 	var b strings.Builder
 	for i, t := range turns {
 		if i > 0 {
-			b.WriteString("\n\n")
+			b.WriteString(turnSeparator)
 		}
-		switch t.role {
-		case roleUser:
-			b.WriteString(userStyle.Render("You: " + t.text))
-		case roleAssistant:
-			// Thinking (if any) renders first, dimmed and labelled, so it is
-			// visibly SEPARATE from the answer and never mistaken for it -- the
-			// answer text is what carries back as history and gets parsed for edit
-			// blocks; the reasoning never does.
-			if t.reasoning != "" {
-				b.WriteString(helpStyle.Render("💭 thinking: " + t.reasoning))
-				b.WriteString("\n")
-			}
-			b.WriteString(assistantStyle.Render("Mochiii: " + t.text))
-		case roleSystem:
-			b.WriteString(helpStyle.Render(t.text))
-		case roleSevered:
-			b.WriteString(renderSevered(t.text, width))
-		}
+		b.WriteString(renderTurnBlock(t, width))
 	}
 	return b.String()
+}
+
+// turnSeparator is the blank line between turns. Named because the render cache
+// concatenates blocks itself and has to write the identical separator.
+const turnSeparator = "\n\n"
+
+// renderTurnBlock renders ONE turn, with no dependence on the turns around it.
+//
+// Split out of renderTranscript so a block can be rendered and reused on its
+// own. That independence is a real property and not just a convenience: it is
+// what makes a per-turn cache correct, and what makes renderTranscript equal to
+// the concatenation of its parts. Nothing here may consult a neighbouring turn.
+func renderTurnBlock(t turn, width int) string {
+	switch t.role {
+	case roleUser:
+		return userStyle.Render("You: " + t.text)
+	case roleAssistant:
+		// Thinking (if any) renders first, dimmed and labelled, so it is
+		// visibly SEPARATE from the answer and never mistaken for it -- the
+		// answer text is what carries back as history and gets parsed for edit
+		// blocks; the reasoning never does.
+		if t.reasoning != "" {
+			return helpStyle.Render("💭 thinking: "+t.reasoning) + "\n" +
+				assistantStyle.Render("Mochiii: "+t.text)
+		}
+		return assistantStyle.Render("Mochiii: " + t.text)
+	case roleSystem:
+		return helpStyle.Render(t.text)
+	case roleSevered:
+		return renderSevered(t.text, width)
+	}
+	return ""
 }
 
 // severedDecay is the fade the rail is drawn from: dense to sparse, left to
