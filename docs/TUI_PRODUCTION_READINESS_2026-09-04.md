@@ -1,7 +1,10 @@
 # Terminal client — production readiness
 
 **Date:** 2026-09-04. **Branch:** `audit/adversarial-pass`. **Scope:** `clients/tui`.
-**Verdict:** ship-ready on the axes measured below, with four named conditions.
+**Verdict:** ship-ready on the axes measured below, with four named conditions
+and **one performance budget knowingly unmet** — a repaint at the transcript
+ceiling costs 22.4 ms against an 8 ms budget and against D-1's 16 ms hard
+per-Update ceiling. Measured, not extrapolated; recorded as R1.12; not fixed.
 
 This is written to be read before a release decision. **What was not verified is
 stated as prominently as what was**, because the second list is the one that
@@ -15,7 +18,7 @@ decides whether the first is worth anything.
 |---|---|---|---|
 | Allocations per streamed token, 400 prior turns | 2,234 | 29 | `TestPerTokenAllocationsAreFlatInTranscriptLength` — a ratio, not a constant |
 | Growth of that number with conversation length | 97× | 1.6× | same |
-| 1 MB paste, worst input measured | 15.6 ms median | 0.30 ms | `TestNoMoreRunesReachTheInputThanCanBeKept` (deterministic) |
+| 1 MB paste, worst input measured | 15.6 ms median | **389 µs**, the same at 0 bytes and at the 2 MiB ceiling | `TestNoMoreRunesReachTheInputThanCanBeKept` (deterministic); `TestOneMegabytePasteIntoACeilingTranscript` |
 | Oversized paste | silently truncated at 4,000 chars | reported | `TestAnOversizedPasteSaysWhatItDropped` |
 | Transcript memory | unbounded | 500 turns / 2 MiB, with a visible marker | 2,000-turn soak |
 | Scrolling back during a stream | impossible — snapped to bottom every token | works | three separate tests |
@@ -23,6 +26,53 @@ decides whether the first is worth anything.
 | Unchecked errors | 5 | 0 | ceiling lowered, and the gate no longer fails open |
 | Absolute build paths in a binary | 678 | 0 | `scripts/supply-chain.sh`, `-trimpath` on releases |
 | Rendering determinism | 3 different byte strings for the same state | 1 | 14-environment × 4-profile subprocess matrix |
+
+## What a repaint costs at the bound, and it is over budget
+
+Taken at P3.1, and it is the one measurement in this document that changed a
+verdict rather than confirming one.
+
+Every other performance figure here was taken at 240 prior turns of 1.2 KB —
+about 300 KB, one seventh of what the transcript bound actually permits.
+Multiplying by seven would have been arithmetic. Measured instead, at a
+transcript sitting at **both** ceilings at once (490 turns, 2,096,839 bytes,
+after 512 evictions), one repaint costs:
+
+| | value | against the 8 ms repaint budget | against D-1's 16 ms hard ceiling |
+|---|---|---|---|
+| p50 | **22.4 ms** | 2.8× — no headroom, −14.4 ms | **1.4× — breached** |
+| p99 | **29.9 ms** | 3.7× — −21.9 ms | 1.9× — breached |
+| min / max | 21.9 ms / 42.3 ms | spread 1.9× | |
+
+**The spread is reported because the median alone would mislead.** A 1.9× spread
+that sits entirely above both lines is a different result from one that straddles
+them — the paste measurement straddled 16 ms at 2.6× and was correctly recorded
+as "no reliable headroom" rather than as a breach. This one does not straddle.
+Every one of the 200 samples was over the 8 ms budget, and the minimum was over
+D-1's 16 ms.
+
+Where it goes, medians, cache warm: **`wrapToWidth` 17.6 ms (79 %)**,
+`viewport.SetContent` 4.5 ms (20 %), `transcriptCache.render` 334 µs (1.5 %).
+Neither of the first two is ours and neither takes an incremental update. A cold
+repaint — cache empty, as after a resize — is 31–47 ms.
+
+**What this does and does not mean.** It is one repaint, not a queue: coalescing
+means the next cannot begin until 16 ms after this one ends, so nothing
+accumulates and the loop stays responsive. The cost is input latency at the
+bound — a keystroke arriving mid-repaint waits up to 22 ms rather than the 3 ms
+it waits at 240 turns — plus CPU and battery in a session that has run that long.
+It is not correctness and it is not a stall.
+
+**It was not fixed, deliberately.** The instruction at P3.2 was to report before
+optimizing, and the two available fixes — per-block wrap caching, or replacing
+the viewport — are each larger than this pass. Two cheap trades exist and neither
+was taken on my own judgment: `refreshInterval` 16 ms → 33 ms halves the
+sustained cost, and lowering the 2 MiB byte ceiling moves this figure
+proportionally. Both are in R1.12's trigger.
+
+**The deterministic half**, per the standing rule: **39 allocations** for a token
+plus its repaint at the bound, against **2,734** with the render cache neutered.
+That number is machine-independent and is what actually gates this path.
 
 ## Provenance of the numbers above
 
@@ -40,7 +90,12 @@ timing gate in the tree asserts allocations and reports wall-clock at a wide
 multiple. Observed spreads on the reference machine: the 1 MB paste median moved
 between 15.1 ms and 17.1 ms across runs *before* the fix, which is why its gate
 is a rune count and not a stopwatch; the resize-storm and repaint figures carry
-the same caveat.
+the same caveat. The repaint-at-the-ceiling figures (22.4 ms p50 / 29.9 ms p99)
+are wall-clock and have a measured 1.9× spread — reported with min and max
+alongside, because a median on its own cannot show whether a result straddles a
+budget or clears it entirely. This one clears it entirely, in the wrong
+direction: every sample was over. The paste-at-depth figures (389 µs) have a
+1.1× spread.
 
 **Not reproducible as stated, and corrected.** An earlier draft of this document
 claimed "1.2 million fuzz executions". Fuzz execution counts are time-boxed and
@@ -91,6 +146,10 @@ been resting on less evidence than they appeared to.
   this way and are listed below.
 - **No leaks.** Goroutines flat across completed, interrupted and reset turns;
   file descriptors flat across 25 turns; 2,000-turn soak at 3.1 MB heap.
+- **The worst case the bound permits.** Repaint and paste both measured at a
+  transcript at both ceilings, not extrapolated from a seventh of it. The helper
+  that builds it **fails the test if it did not reach the ceiling**, so the
+  measurement cannot quietly run at half scale.
 - **Repo-wide green.** vet (linux + windows), staticcheck/ineffassign/bodyclose,
   `-race` (376 s), coverage ratchet on all nine modules with the TUI floor
   raised 83.0 → 84.0, errcheck 0, govulncheck 0 reachable, fuzz gate, docs
@@ -155,7 +214,7 @@ The client-side fix stands on its own and does not depend on editapply changing.
 
 ## Instrument errors caught, and why they are listed here
 
-Four of this batch's findings were errors in my own measurements, not in the
+Five of this batch's findings were errors in my own measurements, not in the
 code. They are listed because a reader deciding whether to trust the numbers
 above should know how the numbers were checked.
 
@@ -174,6 +233,13 @@ above should know how the numbers were checked.
    The second time it exposed a real defect: `scripts/errcheck-ceiling.sh`
    counted lines with stderr discarded, so a module that would not build scored
    a perfect zero. That gate now fails closed.
+5. **The 3.6 paste measurement was taken with the input blurred.** `startTurn`
+   blurs the prompt box, so a paste arriving mid-stream is bounded, reported to
+   the user, and then discarded by `textinput`. The "0.30 ms" figure was the cost
+   of a paste that never landed. Found at P3.3 by an assertion added for exactly
+   this reason — that the paste reaches the input before the clock starts. The
+   delta 3.6 reported still stands; the absolute number is now 389 µs, and it is
+   the same at 0 bytes as at the 2 MiB ceiling.
 
 ## Conditions on the release decision
 
@@ -184,3 +250,8 @@ above should know how the numbers were checked.
 3. **Decide R1.5/R1.6**: authorise the structural redactor, or accept both in
    writing. They are currently open with no test and no owner.
 4. **Confirm the memory baseline** in item 4, or re-derive the ceiling.
+5. **Accept R1.12 in writing, or take one of its cheap trades.** A repaint at the
+   transcript ceiling breaches D-1's hard per-Update ceiling. It is bounded,
+   measured and recorded, and it is the one place in this document where a stated
+   budget is knowingly not met. Shipping over it is defensible; shipping without
+   someone having decided to is not.

@@ -37,10 +37,10 @@ true, still unfixed), CLOSED (the situation no longer exists), or SUPERSEDED
 | R1.6 model-emitted secrets not redacted | **OPEN, and UNFIXED BY DECISION** | See below. |
 | R1.7 `git status` echoes git's output | **OPEN** | Unchanged. No work in this batch touched it. |
 | R1.8 `ModelError.detail` safe by field privacy | **OPEN (forward guard)** | Unchanged. Still a property, not a redactor. |
-| R1.9 1 MB paste costs most of a frame | **CLOSED** | Task 3.6. Measured 15.6 ms → 0.30 ms median, at both 0 and 240 prior turns. Details in the row. |
+| R1.9 1 MB paste costs most of a frame | **CLOSED** | Task 3.6. **Figure corrected at P3.3:** the 3.6 number was measured with the input blurred, so the paste was dropped. Re-taken where it lands: **389 µs, identical at 0 bytes and at the 2 MiB ceiling.** Details in the row. |
 | R1.10 locale reaches the input line | **OPEN** | Unchanged, still pinned both ways. |
 | R1.11 the transcript ceiling can be overshot within one turn | **OPEN (new)** | The price of index safety; bounded to one exchange and asserted. |
-| R1.12 repainting a deep transcript costs real CPU | **OPEN (new)** | Coalescing capped the RATE; a repaint is still linear in bytes. |
+| R1.12 repainting a deep transcript costs real CPU | **OPEN, re-measured at the ceiling** | Was an extrapolation from 240 turns; now 22.4 ms p50 measured at the bound, over both the 8 ms repaint budget and D-1's 16 ms hard ceiling. Bounded, and over budget. |
 | R1.13 onnxruntime and npm are scanned by nothing | **OPEN (new)** | A coverage gap in the supply-chain story, stated as one. |
 | R1.14 the terminal client is not a release artifact | **OPEN (new)** | Found while adding `-trimpath`; a packaging decision, not a defect. |
 
@@ -387,6 +387,35 @@ dropped. The gate is deterministic — no more runes reach the input than can be
 kept — because neutering proved a timing assertion would not reliably catch its
 own removal at a 15.6 ms median against a 16 ms ceiling.
 
+**Corrected 2026-09-04 at P3.3, and the correction is not cosmetic.** The 3.6
+measurement above was taken mid-stream, and `startTurn` **blurs the input** — so
+`textinput` ignored the keys and that "0.30 ms" is the cost of a paste that was
+bounded, reported to the user, and then dropped on the floor. The delta stands
+(both halves were measured in the same state, and the cost removed —
+stringifying a megabyte twice — was paid regardless of focus), but the absolute
+figure was not the cost of a paste that lands.
+
+Re-taken in the state where a paste is accepted, and at depth as well as empty:
+
+| State | median | spread |
+|---|---|---|
+| Idle, transcript at the ceiling (accepted, 4,000 of 1,048,560 runes kept) | **389 µs** | 1.1× |
+| Idle, empty transcript (the 3.6 comparison, re-taken) | **389 µs** | 1.1× |
+| Streaming, at the ceiling (input blurred, paste dropped) | 28 µs | 1.6× |
+
+**2% of a frame, and identical at 0 bytes and at 2 MiB** — the paste cost is
+independent of transcript depth, which is what the row predicted and what the
+bound guarantees: nothing about a paste touches the transcript render. The row
+stays CLOSED, now on a number that describes the case a user is actually in, and
+the spread is 1.1× rather than the 2.6× that made the original measurement
+unusable as a gate. Pinned by `TestOneMegabytePasteIntoACeilingTranscript`, which
+**fails if the paste does not land** — that assertion is what found the blurred
+input.
+
+That blur is a real product behaviour and is not a defect being recorded here:
+keystrokes typed while an answer streams are discarded, deliberately. It is
+worth knowing that a paste is among them.
+
 ---
 
 ## R1.10 — The input line still follows the locale; the transcript does not
@@ -474,33 +503,82 @@ from prose.**
 
 ---
 
-## R1.12 — Repainting a deep transcript costs real CPU while streaming
+## R1.12 — Repainting a transcript at the bound costs 22 ms, over budget
 
-**What it is.** Coalescing capped repaints at one per `refreshInterval` (16 ms),
-but did not make a repaint cheaper. At 240 prior turns one repaint is ~3.3 ms
-(wrap 2.69 ms, viewport `SetContent` 0.61 ms), and at the 500-turn ceiling it is
-larger. Sustained streaming can therefore spend up to roughly a third of one
-core on repainting alone.
+**Status: OPEN. Re-measured 2026-09-04 at the ceiling; the number below replaces
+an extrapolation.** The row previously said the cost was unbounded and merely
+rate-limited. That was written before task 3.5 put a ceiling on the transcript,
+and linear-in-bytes with bytes bounded is bounded — so the risk had changed shape
+and nobody had measured it. It is now bounded **and over budget**, which is a
+different row from the one this was.
 
-**Why deferred.** Both remaining stages are linear in TOTAL BYTES and neither is
-ours: `ansi.Wrap` re-parses the whole transcript, and `bubbles`' viewport
-re-splits it and re-measures every line, with `m.lines` unexported so there is no
-way to hand it an incremental update. Fixing it means either caching the wrapped
-output per block — measured byte-identical to whole-string wrapping at widths 1,
-2, 20, 40, 80 and 200, so it is available — or replacing the viewport. Both are
-larger than this pass.
+**What it is.** Coalescing (3.3) capped repaints at one per `refreshInterval`
+(16 ms) but did not make a repaint cheaper. At the transcript ceiling —
+**490 turns, 2,096,839 bytes, after 512 evictions**, both ceilings binding at
+once — one repaint measures:
 
-**Blast radius.** CPU and battery during streaming in a long session, not
-correctness. The event loop stays responsive: a repaint is 3–6 ms, well inside a
-frame, so keystrokes are never queued behind more than one.
+| | value |
+|---|---|
+| p50 | **22.4 ms** |
+| p99 | **29.9 ms** |
+| min / max | 21.9 ms / 42.3 ms |
+| spread (max/min) | 1.9× |
+| against the 8 ms repaint budget | p50 **2.8×**, p99 **3.7×** |
+| against D-1's 16 ms hard per-Update ceiling | p50 **1.4×** |
 
-**Pinned by.** `TestPerTokenUpdateLatencyAgainstBudget` reports the per-stage
-split on every run, and `TestAResizeStormStaysWithinTheFrameBudget` bounds the
-worst case. Neither fails on this — it is reported, not gated.
+**Both lines are exceeded, and the second one matters more.** 8 ms is the budget
+for a repaint specifically — half a frame, leaving the other half for the input
+that shares it. 16 ms is D-1's hard ceiling on *any single Update*, and a repaint
+is an Update. **At the transcript bound the client breaches D-1's hard ceiling.**
+That is stated here rather than softened: it was not true at the 240 prior turns
+everything else in this pass was measured at, and it is true at the bound the
+product actually permits.
 
-**Trigger.** A report of fan noise or battery drain during long sessions; or
-raising `refreshInterval` from 16 ms to 33 ms, which halves this at a cost
-nobody is likely to see in streaming text, and is the cheap move if it matters.
+**Where it goes**, medians at the ceiling, cache warm:
+
+| Stage | Cost | Share | At 240 turns / ~300 KB, for comparison |
+|---|---|---|---|
+| `transcriptCache.render` | 334 µs | 1.5 % | 11 µs |
+| `wrapToWidth` (`ansi.Wrap`) | **17.6 ms** | **79 %** | 2.69 ms |
+| `viewport.SetContent` | 4.5 ms | 20 % | 0.61 ms |
+
+The wrap and the viewport are both linear in total bytes to within 8 % over a 7×
+range, so the shape was right — what needed measuring was which side of the
+budget it lands on, and it lands on the wrong side. A **cold** repaint, cache
+empty, as after a resize, is 31–47 ms.
+
+**Why still deferred.** Neither remaining stage is ours. `ansi.Wrap` re-parses
+the whole transcript; `bubbles`' viewport re-splits it and re-measures every
+line, with `m.lines` unexported so there is no way to hand it an incremental
+update. The two available fixes — caching the wrapped output per block, measured
+byte-identical to whole-string wrapping at widths 1, 2, 20, 40, 80 and 200 so it
+is available; or replacing the viewport — are both larger than this pass, and
+this measurement was explicitly taken to inform that decision rather than to
+start it.
+
+**Blast radius.** CPU and battery during streaming in a session that has run to
+the bound, plus **one frame of input latency at the bound**: a keystroke arriving
+during a repaint waits up to 22 ms rather than the 3 ms it waits at 240 turns.
+Not correctness, and not a stall — it is one repaint, not a queue, because
+coalescing means the next repaint cannot start until 16 ms after this one
+finishes. Nothing accumulates.
+
+**Pinned by.** `TestRepaintCostAtTheTranscriptCeiling`
+(`clients/tui/repaintceiling_test.go`) reports all of the above on every run with
+the distance to the budget printed, and fails only on a 3× regression against
+today's cost — the budget is knowingly unmet, and a permanently red gate is
+indistinguishable from no gate within a week. The deterministic half is
+`TestRepaintAllocationsAtTheCeilingAreBounded`: **39 allocations** per token plus
+its repaint at the bound, against **2,734** with the render cache neutered.
+`ceilingTranscript` fails the test if the transcript it built is not actually at
+the ceiling, so the measurement cannot quietly run at half scale.
+
+**Trigger.** A report of fan noise, battery drain, or laggy typing in a long
+session. Two cheap moves exist and neither has been made: raising
+`refreshInterval` from 16 ms to 33 ms halves the sustained CPU at a cost nobody
+is likely to see in streaming text, and lowering the byte ceiling from 2 MiB
+moves this figure proportionally. The expensive move — per-block wrap caching —
+is the one that fixes it rather than trading against it.
 
 ---
 
