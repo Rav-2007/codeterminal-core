@@ -155,6 +155,57 @@ been resting on less evidence than they appeared to.
   raised 83.0 → 84.0, errcheck 0, govulncheck 0 reachable, fuzz gate, docs
   links and registers, supply chain.
 
+## Per-platform status
+
+Added at P4.3. Every number here is deterministic — it comes from `go list`
+under each `GOOS`, not from a stopwatch — and it is reproducible with
+`GOOS=<os> go list -f '{{.TestGoFiles}}' ./clients/tui`.
+
+| | Linux | macOS | Windows |
+|---|---|---|---|
+| Test files compiled | **57** | 52 | 51 |
+| `Test` functions compiled | **326** | **312** | **306** |
+| Fuzz targets | 3 | 3 | 3 |
+| Test binary links (`go test -c`) | yes | **yes** | **yes** |
+| `go vet ./...` | yes | **yes** | **yes** |
+| Suite actually executed | yes, incl. `-race` | CI `cross` job, main/dispatch only | CI `cross` job, every push |
+
+**What macOS does not run — 14 tests, all of them about the terminal itself:**
+
+| File | Tests | What is therefore unverified there |
+|---|---|---|
+| `ptysmoke_test.go` | 2 | the real binary in a real terminal on a real socket |
+| `exitsignals_pty_test.go` | 6 | terminal restored on every exit path; the SIGHUP gap (R1.1) |
+| `renderprofile_pty_test.go` | 4 | the 14-environment × 4-profile determinism matrix |
+| `sanitize_pty_test.go` | 1 | escape filtering measured at an actual terminal |
+| `brokenpipe_pty_test.go` | 1 | an early reader closing the pipe underneath |
+
+**Windows does not run those 14 either, plus `exitsignals_test.go` (6 more) —
+20 fewer in total.** That file is `//go:build !windows` because **Windows has no
+SIGHUP and no SIGTERM in the POSIX sense**, so the signal contract it asserts
+does not exist there. Windows gains `testaddr_windows_test.go` in exchange.
+
+**Why they are Linux-only, and why that is defensible.** Allocating a pty is
+per-kernel — Linux uses `TIOCSPTLCK`/`TIOCGPTN`, the BSDs `TIOCPTYUNLK`/
+`TIOCPTYGNAME`. A portable second implementation is one nobody runs. One platform
+that actually executes beats two that are skipped.
+
+**What is NOT defensible, and was fixed here.** A build tag is a silent skip. On
+macOS `go test ./...` printed `ok` while five files' worth of terminal behaviour
+was never compiled, and nothing anywhere said so — the same fail-open shape the
+gate audit removed from this repo's scripts, wearing a different hat.
+`TestPlatformCoverageIsStated` now runs on all three platforms and does opposite
+jobs: on Linux it is a **gate** (every listed suite must carry the tag, and no
+tagged suite may go unlisted, so a sixth cannot appear without landing in this
+table), and elsewhere it is a **report** that names, in that platform's own test
+output, exactly what did not run there. It asserts on the count of files
+inspected — 73 — so a version that reads nothing fails rather than passes.
+
+**The honest one-line summary: the terminal is verified on Linux and on no other
+platform.** Everything that is not the terminal — the render cache, the
+sanitizer's logic, the transcript bound, the paste bound, scroll semantics, the
+slash catalogue, history construction — compiles and runs on all three.
+
 ## What was NOT verified — read this part
 
 1. **No human has used any of this.** Every measurement here is from a test
@@ -162,9 +213,12 @@ been resting on less evidence than they appeared to.
    these changes landed. The scroll fix, the eviction marker, the paste notice
    and `/mouse` are all judged by assertions about what the model contains, not
    by anyone looking at a screen.
-2. **Linux only.** The pty tests, `LOCAL_PEERCRED`-adjacent paths, the signal
-   handling and the file-descriptor test are all Linux. Windows gets `go vet`
-   and nothing else in this batch. macOS was not exercised at all.
+2. **The terminal is verified on Linux only** — see *Per-platform status* above
+   for the exact figures. macOS and Windows compile, link and run 312 and 306 of
+   the 326 tests respectively; the 14 (macOS) and 20 (Windows) they do not run
+   are the pty-backed suites and, on Windows, the signal contract that platform
+   does not have. **This is now stated by a test rather than by this paragraph**,
+   which is the part that changed at P4.3.
 3. **Not run in CI.** Everything above was measured on one developer machine.
    The CI workflow changes in this batch — the supply-chain gate, the three
    newly registered fuzz targets — have never executed on a runner.
