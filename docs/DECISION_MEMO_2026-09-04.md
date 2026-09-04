@@ -4,8 +4,16 @@
 
 **Date:** 2026-09-04
 **From:** the `clients/tui` production-hardening pass (branch `audit/adversarial-pass`)
-**To:** whoever owns `daemon/`
+**To:** whoever owns `daemon/` — **an addressee slot, not a recipient.**
 **What I need:** a decision, in writing, on each of the four items below.
+
+> **Delivery status, added 2026-09-05: COMMITTED; RECIPIENT NOT YET IDENTIFIED.**
+> This memo was committed to `audit/adversarial-pass` on 2026-09-04 and **handed
+> to nobody.** Nobody has been named as the `daemon/` owner and nobody has been
+> asked to read it. Other documents in this pass described it as "handed to the
+> daemon's owner"; that was wrong and is corrected. If you are reading this, you
+> are the first — which means the four items below have had no answer because the
+> question had not been put, not because anyone declined to answer it.
 
 ---
 

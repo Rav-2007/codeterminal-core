@@ -507,13 +507,23 @@ slash catalogue, history construction — compiles and runs on all three.
    1,102,402), together with **40 new interesting inputs**. The exec counts there
    carry the same one-sample caveat; the transition from zero does not.
 
-   Handed to the daemon's owner as item 4 of
-   [the decision memo](DECISION_MEMO_2026-09-04.md); not landed, because it is
-   their module.
-10. **Neither handoff has been acted on.** The manual session
-    ([docs/MANUAL_SESSION_2026-09-04.md](MANUAL_SESSION_2026-09-04.md)) has not
-    been run by anyone, and the daemon memo has no reply. Both are release-gate
-    conditions and both are somebody else's action.
+   Written up as item 4 of
+   [the decision memo](DECISION_MEMO_2026-09-04.md) and **committed there on
+   2026-09-04; not handed to anyone.** (Corrected 2026-09-05 — this line
+   previously said "handed to the daemon's owner", which asserts a delivery that
+   never happened.) Not landed, because it is not this client's module.
+10. **Neither handoff has been DELIVERED, which is a different problem from
+    neither having been acted on.** Corrected 2026-09-05. Both
+    [the manual session](MANUAL_SESSION_2026-09-04.md) and
+    [the decision memo](DECISION_MEMO_2026-09-04.md) were **committed to this
+    branch and given to nobody.** No recipient has been identified for either; no
+    tester has been asked; the `daemon/` owner has not been named, let alone
+    contacted. **A document nobody was told about is indistinguishable from one
+    that does not exist**, and that — not anyone's inattention — is the most
+    likely reason the memo has no reply. The two states have different fixes:
+    *awaiting a response* needs someone to spend ten minutes; *awaiting delivery*
+    needs someone to supply two names. Only the second is true today, and it is
+    the one nobody has been asked for.
 
 ## Security findings carried forward
 
@@ -531,15 +541,21 @@ is now the first column here.
 - **OPEN BY DECISION** — somebody decided not to fix it, the reasoning is
   recorded, and a trigger says what reopens it. **Nothing is outstanding.**
 - **PENDING SOMEONE ELSE'S DECISION** — nobody has decided yet. The analysis is
-  done and a recommendation exists; a named person has to write a sentence.
+  done and a recommendation exists; a person has to write a sentence.
   **These are the only rows that block anything**, and they are release-gate
   row 2.
 
+**And as of 2026-09-05 they are one step further back than that.** These rows
+said "PENDING THE `daemon/` OWNER", which asserts an owner was told. **Nobody was.**
+The memo was committed to this branch and handed to no one, and no recipient has
+been identified. They are **pending delivery**, not pending a reply — a different
+problem with a different fix, and the reason there is no answer to point at.
+
 | State | Issue | Exploit scenario | Fix | Verifying test |
 |---|---|---|---|---|
-| **PENDING THE `daemon/` OWNER** | **`/mcp-server` shows daemon + MCP stderr unredacted** (R1.5) | A third-party MCP server prints its API key at startup; `mcp list` runs it with `CombinedOutput()` and the key lands on the user's screen and in their scrollback. Only path in the client that puts daemon stderr in front of a user. | **None. NOT YET DECIDED** — enumerated in 2.3a, no go-ahead for the structural redactor. The memo recommends **FIX**, in the daemon, ~40 lines. Awaiting a written reply. | **None.** Stated as a coverage gap. |
-| **PENDING THE `daemon/` OWNER** | **Model-emitted secrets in the transcript** (R1.6) | A model echoes a credential it read from a file; it is rendered and persisted like any other answer. | **None. NOT YET DECIDED**, same reason. The memo recommends **ACCEPT, in writing, with a trigger**: the daemon matches on shapes, so the asymmetry is permanent. Awaiting a written reply. | **None.** |
-| **PENDING THE `daemon/` OWNER** — and a **defect**, not a design question | **The outbound scrub is bypassed by one turn** (found 2026-09-04 at P5.1, in `daemon/`, not previously recorded anywhere) | The daemon redacts `sk-…` from the prompt and tells the user so. `persistTurn` then writes the RAW prompt to `memory.db` and its `turns_fts` index, and `prepareHistory` sends it to the provider verbatim as history on the next turn. The redaction notice makes it *worse* than never scrubbing: the user reasonably concludes the key did not leave. | **None yet — not mine to make.** The fix is `cleanPrompt` at one call site plus a scrub in `prepareHistory`, and needs no new detector. Recommended in the memo. | **None.** Verified by execution, twice, with the probes removed afterwards. |
+| **PENDING DELIVERY — no recipient identified** | **`/mcp-server` shows daemon + MCP stderr unredacted** (R1.5) | A third-party MCP server prints its API key at startup; `mcp list` runs it with `CombinedOutput()` and the key lands on the user's screen and in their scrollback. Only path in the client that puts daemon stderr in front of a user. | **None. NOT YET DECIDED** — enumerated in 2.3a, no go-ahead for the structural redactor. The memo recommends **FIX**, in the daemon, ~40 lines. Awaiting a written reply. | **None.** Stated as a coverage gap. |
+| **PENDING DELIVERY — no recipient identified** | **Model-emitted secrets in the transcript** (R1.6) | A model echoes a credential it read from a file; it is rendered and persisted like any other answer. | **None. NOT YET DECIDED**, same reason. The memo recommends **ACCEPT, in writing, with a trigger**: the daemon matches on shapes, so the asymmetry is permanent. Awaiting a written reply. | **None.** |
+| **PENDING DELIVERY — no recipient identified** — and a **defect**, not a design question | **The outbound scrub is bypassed by one turn** (found 2026-09-04 at P5.1, in `daemon/`, not previously recorded anywhere) | The daemon redacts `sk-…` from the prompt and tells the user so. `persistTurn` then writes the RAW prompt to `memory.db` and its `turns_fts` index, and `prepareHistory` sends it to the provider verbatim as history on the next turn. The redaction notice makes it *worse* than never scrubbing: the user reasonably concludes the key did not leave. | **None yet — not mine to make.** The fix is `cleanPrompt` at one call site plus a scrub in `prepareHistory`, and needs no new detector. Recommended in the memo. | **None.** Verified by execution, twice, with the probes removed afterwards. |
 | **OPEN BY DESIGN** | **Edit-review and approval buffers hold raw bytes** (R1.4) | Deliberate: edit bytes go to disk and approval bytes carry the daemon's digest, so both must stay byte-exact. Sanitized at render instead. Risk is a *new* reader rendering them raw. | Structural — an AST guard names every function allowed to touch them. | `TestRawByteStructuresHaveNoNewReaders`. **It fired during 3.7**: the decomposition moved the reader out of `Update` and the test failed until the reviewed list moved with it. |
 | **OPEN** — no decision taken either way | **`git status` failures echo git's output** (R1.7) | A remote URL with an embedded credential appears in an error line. | None. | None. |
 | **FIXED** | **Terminal escape injection** (closed earlier in this pass) | Model or MCP output repaints the approval prompt — forged consent. | Allowlist sanitizer, one ingest door. | 43-entry corpus + 14 CSI shapes + 2 fuzzers + a real-pty test, all now registered in the fuzz gate for the first time. |
@@ -623,7 +639,7 @@ typo cannot disable the bound.
 | # | Condition | Status | Blocked on whom |
 |---|---|---|---|
 | 1 | **Phases 1–4 complete** | **MET** | — |
-| 2 | **P5 decision recorded** | **OPEN** | **The `daemon/` owner.** [The memo](DECISION_MEMO_2026-09-04.md) states a recommendation on each of four items and needs a written reply, not implementation time. |
+| 2 | **P5 decision recorded** | **OPEN — blocked on DELIVERY, not on a reply** | **Nobody. No recipient has been identified.** [The memo](DECISION_MEMO_2026-09-04.md) was committed 2026-09-04 and handed to no one; the `daemon/` owner has not been named. It states a recommendation on each of four items and needs a written reply — *from someone who knows it exists.* **Corrected 2026-09-05: this column previously named "the `daemon/` owner", which blamed a person who has never been told.** |
 | 3 | **Manual session done** | **OPEN** | **A tester, ideally on macOS.** Script: [docs/MANUAL_SESSION_2026-09-04.md](MANUAL_SESSION_2026-09-04.md). |
 | 4 | **Readiness statement current** | **MET** | — |
 
@@ -638,7 +654,8 @@ document that elsewhere insists a skip is never a pass. The skip is
 `retrieval eval (scheduled)`, a schedule-triggered job that does not run on a
 push. The same is true of the run at HEAD.)
 
-**Row 2 is ten minutes of somebody's attention, not a work item.** A recorded
+**Row 2 is ten minutes of somebody's attention — once somebody has been asked.**
+It is currently blocked one step earlier than that: no recipient exists. A recorded
 deferral with a trigger closes this row exactly as well as a fix does. The memo
 says so on its first page, because the failure mode is this row sitting open
 while everyone waits for implementation time that was never required.
@@ -662,7 +679,9 @@ direction as work closes.
    three-in-three-out staging assertion and the macOS signing step have still
    never executed. A `workflow_dispatch` of `release.yml` would settle it and
    costs one release matrix.
-3. **Decide R1.5/R1.6.** A decision memo now exists —
+3. **Decide R1.5/R1.6 — but first, give the memo a recipient.** It has been
+   committed since 2026-09-04 and shown to nobody, so "no decision yet" measures
+   nothing about anyone's priorities. A decision memo exists —
    [docs/DECISION_MEMO_2026-09-04.md](DECISION_MEMO_2026-09-04.md)
    — with a recommendation on each: **fix R1.5** in the daemon (exact-match
    stripping of provisioned env values, ~40 lines, available because

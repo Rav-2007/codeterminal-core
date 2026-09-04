@@ -38,8 +38,8 @@ longer exists), or SUPERSEDED (replaced by a different row).**
 | R1.2 over-long CSI leaks parameter bytes | **OPEN** | `TestOverLongCSIBoundary` and `TestHeldBytesNeverExceedTheCeiling` both PASS. 14 shapes, boundary still exactly 65/66. |
 | R1.3 one-shot stdout not byte-stable | **OPEN by decision** | `TestOneShotOutputIsFiltered` PASSES on every platform; `TestRealBinaryPipedIntoAnEarlyReaderExitsCleanly` PASSES on Linux only. |
 | R1.4 review/approval buffers hold raw bytes | **OPEN by design** | All three guards PASS. Re-checked the row's load-bearing clause: **still no copy, export or clipboard sink in the client** — no `clipboard`, no OSC 52, no write path outside the terminal. `/mouse` does not create one; it hands selection back to the terminal, which copies already-filtered text. |
-| R1.5 `/mcp-server` stderr unredacted | **OPEN — UNFIXED BY DECISION, PENDING THE DAEMON OWNER** | Chain re-traced end to end and both line references corrected (they had drifted). [Decision memo](DECISION_MEMO_2026-09-04.md) recommends **FIX**, in the daemon, ~40 lines. Still nothing pinning it. |
-| R1.6 model-emitted secrets not redacted | **OPEN — UNFIXED BY DECISION, PENDING THE DAEMON OWNER** | P5.1 answered: the daemon matches on **shapes**, so the asymmetry is permanent and the memo recommends **accepting** it. But the row's own "sent back as history" clause turned out to hide a defect: nothing scrubs it on the way back out. Verified by execution. |
+| R1.5 `/mcp-server` stderr unredacted | **OPEN — UNFIXED BY DECISION. PENDING DELIVERY: no recipient has been identified** | Chain re-traced end to end and both line references corrected (they had drifted). [Decision memo](DECISION_MEMO_2026-09-04.md) recommends **FIX**, in the daemon, ~40 lines. Still nothing pinning it. |
+| R1.6 model-emitted secrets not redacted | **OPEN — UNFIXED BY DECISION. PENDING DELIVERY: no recipient has been identified** | P5.1 answered: the daemon matches on **shapes**, so the asymmetry is permanent and the memo recommends **accepting** it. But the row's own "sent back as history" clause turned out to hide a defect: nothing scrubs it on the way back out. Verified by execution. |
 | R1.7 `git status` echoes git's output | **OPEN** | Unchanged in substance. Its code reference had drifted by 14 lines and is corrected; it now names `runGitStatus` as well. Still nothing pinning it. |
 | R1.8 `ModelError.detail` safe by field privacy | **OPEN (forward guard)** | `daemon/modelerror.go:204` re-read today and still builds `detail` exactly as the row describes. Still a property, still no AST guard. |
 | R1.9 1 MB paste costs most of a frame | **CLOSED** | Stays closed, on a **corrected figure**: the 3.6 number was measured with the input blurred, so the paste was discarded. Re-taken where it lands: **389 µs, identical at 0 bytes and at the 2 MiB ceiling**, spread 1.1×. |
@@ -48,6 +48,7 @@ longer exists), or SUPERSEDED (replaced by a different row).**
 | R1.12 repainting a deep transcript costs real CPU | **OPEN — re-measured, and the row changed shape** | Was an extrapolation from a seventh of the bound. Now **22.4 ms p50 / 29.9 ms p99 at the ceiling**, over the 8 ms repaint budget at 2.8× **and over D-1's 16 ms hard per-Update ceiling at 1.4×**. Bounded, and over budget. |
 | R1.13 onnxruntime and npm are scanned by nothing | **OPEN** | Re-verified: `scripts/govulncheck.sh` names six Go modules and nothing else; no gate anywhere runs `npm audit` or scans onnxruntime. |
 | R1.14 the terminal client is not a release artifact | **CLOSED 2026-09-04** | P4.1. Builds on all three release runners, in the macOS signing list, ships as a standalone download with checksums, and asserted *out* of the `.vsix` by the packaging gate. It was never a residual risk: it made this document's own "CI green once" condition unsatisfiable. |
+| R1.15 the release signs nothing — macOS secrets absent | **OPEN — NEW 2026-09-05** | Found by the first-ever dispatch of `release.yml` (run `33922431985`). The signing step is a no-op without the five `MACOS_*` secrets, so darwin binaries ship **unsigned** and Gatekeeper kills them. **The run is green either way** — fail-open, one layer up from the gate scripts. Blocks publishing `darwin-arm64`; Linux and Windows unaffected. |
 
 ### Three of these rows are pinned only on Linux
 
@@ -83,14 +84,27 @@ the decision memo on its first run.
 
 ---
 
-### R1.5 and R1.6 are unfixed BY DECISION, and now PENDING AN OWNER
+### R1.5 and R1.6 are unfixed BY DECISION, and PENDING DELIVERY
 
-**The distinction that matters for the release gate: these are no longer waiting
-on analysis. They are waiting on a person to write down a decision.**
-[docs/DECISION_MEMO_2026-09-04.md](DECISION_MEMO_2026-09-04.md) is addressed to
-whoever owns `daemon/`, states a recommendation on each, and needs only a reply.
+**Corrected 2026-09-05, and the correction is the whole point of these two rows.**
+They previously read "PENDING THE DAEMON OWNER", which asserts that an owner was
+told and has not answered. **That was never true.**
+[docs/DECISION_MEMO_2026-09-04.md](DECISION_MEMO_2026-09-04.md) was **committed**
+on 2026-09-04 and **handed to nobody**. No recipient has been identified, nobody
+has been asked, and no one outside this branch knows the file exists.
+
+**"Committed" and "handed to" are different states and must never share a
+phrase.** A document nobody was told about is indistinguishable from one that
+does not exist, so the honest status is not *awaiting a reply* but **awaiting
+delivery** — and the two have different fixes. Awaiting a reply is solved by
+someone finding ten minutes. Awaiting delivery is solved by somebody naming a
+recipient, which nobody has been asked to do.
+
+The memo is *written for* whoever owns `daemon/`, states a recommendation on
+each item, and needs only a reply **once it reaches them**.
 **A recorded deferral with a trigger closes the release gate exactly as well as a
-fix does** — what does not close it is silence.
+fix does** — what does not close it is silence, and silence is currently
+guaranteed, because the question has not been put to anyone.
 
 ### Why they were unfixed in the first place
 
@@ -741,5 +755,86 @@ the loop rather than by reading it.
 **Superseded fields.** *Blast radius* and *Trigger* no longer apply; the trigger
 ("any decision to distribute the terminal client as a binary") has fired and been
 answered.
+
+---
+
+## R1.15 — The release signs nothing: the macOS signing secrets do not exist
+
+*(Opened 2026-09-05, by the first dispatch of `release.yml` in the workflow's
+existence. It could not have been found by reading anything.)*
+
+**What it is.** `.github/workflows/release.yml`'s **Sign & Notarize (macOS)**
+step runs `scripts/macos-sign-and-notarize.sh`, which is written to be a **no-op
+when the five `MACOS_*` secrets are absent**. They are absent. The step takes its
+dry-run branch, the job goes green, and the release produces **unsigned
+darwin-arm64 binaries**. Gatekeeper attaches `com.apple.quarantine` to a
+downloaded unsigned Mach-O and kills it, so the daemon never starts and the user
+sees an unexplained "daemon not running".
+
+Measured, not inferred — run `33922431985`, job `binaries (darwin-arm64)`:
+
+```
+[macos-sign] WARNING: No MACOS_CERT_P12 or MACOS_CERT_P12_BASE64 secret supplied.
+[macos-sign] Signing step completed in DRY-RUN mode (unsigned).
+[macos-sign] WARNING: darwin-arm64 binaries will remain UNSIGNED.
+##[warning] darwin-arm64 binaries are UNSIGNED. Gatekeeper will quarantine them
+and the daemon will not start. Do not publish this target.
+```
+
+The step's own env block shows all five secrets resolving empty.
+
+**Why unfixed.** The secrets are **repository-admin scope**, not this branch's
+and not this pass's. Nothing in the tree can supply them, and inventing a
+signing identity is not a change a code branch gets to make. The workflow half is
+already correct: the script, the signing list and the warning all exist and all
+behave as designed. What is missing is a credential somebody has to install.
+
+**Blast radius.** A **published macOS artifact that does not run at all** — the
+worst shape available, because it fails after download with no diagnostic the
+user can act on. The workflow's own comment states the trade in as many words:
+*"shipping an unsigned macOS package is worse than shipping none."* **Linux and
+Windows are unaffected**; their binaries are unsigned by design and only
+SmartScreen warns.
+
+**Pinned by.** The workflow's **own warning**, which fires on every release run
+until the secrets exist — both from the script and from the `Record signing
+status` step, which emits a GitHub `::warning` naming the consequence.
+
+**And the reason this went unnoticed until today is worth more than the row.**
+**The run is green either way.** A step written to be a no-op reports *success*
+for the state in which it did nothing, so every reading of `release.yml` — and
+there were several during P4.1 — saw a signing step present, correct and wired
+into the binary list, and concluded signing was handled. It is the **fail-open
+pattern the gate audit removed twelve instances of**, appearing one layer up, in
+the release pipeline rather than in a gate script: *inspected nothing, reported
+ok*. The audit checked `scripts/`; nobody had pointed the same four questions at
+a workflow step. **A warning is not a gate.** Making this fail closed — refusing
+to produce a darwin artifact at all without the secrets — is the obvious
+mechanism and is deliberately not built here, because it would turn every branch
+dispatch of `release.yml` red and that is the release owner's call, not this
+branch's.
+
+**Trigger — self-detecting, which is the one virtue of the situation.** This row
+closes when the five `MACOS_*` secrets are added and the warning stops firing on
+a release run. No judgement is required and nothing has to be re-derived: the
+workflow says which state it is in, on every run, in its own log. **Until then it
+blocks publishing `darwin-arm64` and nothing else.**
+
+### What a dispatch still did NOT exercise
+
+Recorded here because "release.yml is green" is now true and is easy to
+over-read.
+
+**A dispatch is not a tag.** The `Attach to the GitHub Release` step is gated on
+`startsWith(github.ref, 'refs/tags/v')` and did not run, so **release creation,
+asset upload and the draft flag have still never executed**. The `publish` job is
+`if: false` and was skipped by design. Signing and notarization are unexercised
+**in substance** — the step ran and took the branch in which it does nothing.
+
+What the run *did* verify, on real runners: the terminal client builds with
+`-trimpath` on all three platforms; `verify-vsix.js` passes on all three
+(`package gate PASSED` ×3); the three-in-three-out staging assertion executes and
+passes — *"staged 3 terminal-client binaries"*, with SHA-256 sums, including
+`codeterminal-tui-win32-x64.exe`; and `.vsix` checksums are produced.
 
 ---
