@@ -51,15 +51,32 @@ From the repository root:
 ./daemon/codeterminal-daemon index .            # once per repo
 ```
 
-Then two terminals, direct mode:
+**You need an inference key before any of this answers anything.** Two paths,
+and either is fine — ask whoever sent you this document for whichever they have:
 
 ```bash
+# Direct mode: your own provider key, straight from this machine.
 export CODETERMINAL_API_BASE="https://api.together.xyz/v1"
 export CODETERMINAL_API_KEY="sk-..."
 
 ./daemon/codeterminal-daemon --workspace .          # terminal 1
 ./clients/tui/codeterminal-tui                      # terminal 2
 ```
+
+```bash
+# Managed proxy mode: one Mochiii key, provider key held server-side.
+cp .env.example .env && $EDITOR .env    # set CODETERMINAL_MOCHIII_KEY=mochi_...
+
+./run-proxy.sh --workspace .                        # terminal 1
+./clients/tui/codeterminal-tui                      # terminal 2
+```
+
+Which one you use does not matter for anything in this document — every step
+below is about the screen, not the model.
+
+**If the daemon exits immediately**, it is almost always a missing key or a
+missing `models.json`; the daemon prints the reason and `--log-file <path>`
+captures it.
 
 **Make the ceiling reachable in minutes rather than hours.** The transcript
 bound defaults to 500 turns / 2 MiB, which is a long afternoon. Start the client
@@ -246,3 +263,19 @@ Less useful:
 
 If nothing felt wrong, say that too — but say it as *"I did steps 1–6 on macOS
 and noticed nothing"*, so we know which platform the silence came from.
+
+**Send it to whoever handed you this document.** There is no form and no
+template. Forty minutes and a paragraph is the whole ask.
+
+---
+
+## Where the rest of the detail lives, if you want it
+
+You do not need any of this to do the session. It is here so the document does
+not depend on asking anyone a question.
+
+- `docs/TUI_PRODUCTION_READINESS_2026-09-04.md` — what was measured, what was
+  not, and the per-platform table behind the *Platforms* section above.
+- `docs/RESIDUAL_RISKS.md` — the known-and-accepted list, including R1.1 (the
+  destroyed-terminal orphan in step 6d) and R1.12 (the 22 ms repaint in step 5).
+- `docs/ADR-001-mouse-capture.md` — why Shift is needed to select text.
