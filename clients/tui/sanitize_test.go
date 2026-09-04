@@ -259,6 +259,14 @@ func FuzzSanitizeNoEscapeSurvives(f *testing.F) {
 		f.Add(tc.in)
 	}
 	f.Add("\x1b[38;2;1;2;3m\x1b]8;;x\x07\x1b[?1049h2J")
+	// The length-ceiling shapes, seeded so the fuzzer starts at the boundary
+	// rather than having to build a 66-byte sequence by chance.
+	for _, n := range []int{65, 66, 67} {
+		f.Add(sgrOfLength(n))
+		f.Add(sgrOfLength(n) + "\x1b[31mx")
+		f.Add(sgrOfLength(n) + "\x1b[2Jvisible")
+		f.Add(sgrOfLength(n) + sgrOfLength(n) + "tail")
+	}
 	f.Fuzz(func(t *testing.T, in string) {
 		out := sanitizeText(in)
 		if v := sanEscapeViolation(out); v != "" {
@@ -279,6 +287,13 @@ func FuzzSanitizeChunkInvariance(f *testing.F) {
 		f.Add(tc.in, 1)
 	}
 	f.Add("\x1b[2J", 2)
+	// Cut points AT the ceiling are where a resume offset one byte late would
+	// show up, so the boundary shapes are seeded here too.
+	for _, n := range []int{65, 66, 67} {
+		f.Add(sgrOfLength(n)+"\x1b[2Jvisible", 64)
+		f.Add(sgrOfLength(n)+"\x1b[31mx", 65)
+		f.Add(sgrOfLength(n)+sgrOfLength(n)+"tail", 66)
+	}
 	f.Fuzz(func(t *testing.T, in string, cut int) {
 		if len(in) == 0 {
 			return
@@ -293,4 +308,147 @@ func FuzzSanitizeChunkInvariance(f *testing.F) {
 			t.Fatalf("cut %d of %q\n got %q\nwant %q", c, in, got, want)
 		}
 	})
+}
+
+// THE OVER-LONG CSI BOUNDARY, PINNED BY SHAPE RATHER THAN LEFT TO RANDOM
+// SEARCH.
+//
+// On overflow the parser drops what it held and REPROCESSES the offending byte
+// as text (see the ceilings in sanitize.go). The failure mode that trade
+// invites is a resume offset one byte off: land late and the stream is
+// re-entered in the middle of an escape, which is the bypass the ceiling was
+// supposed to prevent. Random fuzzing would need a long time to build a
+// 66-byte sequence with an ESC at exactly the resume point, so the shapes are
+// written down here and seeded into the fuzzers.
+//
+// sanMaxCSI counts from the ESC, so "\x1b[" occupies two of it: 62 parameter
+// bytes fit (65 total with the final byte), 63 overflow.
+// sgrOfLength builds a VALID, fully-allowlisted SGR sequence of exactly total
+// bytes, so a test can walk the length ceiling without tripping any other
+// rule. Getting this wrong is how the first version of this test failed: it
+// emitted thirty-odd parameters and hit the 24-parameter cap, which looked
+// like a length failure and was not.
+func sgrOfLength(total int) string {
+	p := total - 3 // "\x1b[" and the final "m"
+	if p < 1 {
+		p = 1
+	}
+	// Widths are 1, 2 or 3 digits; n parameters cost sum(widths) + n-1
+	// separators. Take the fewest parameters that can reach p.
+	n := (p + 4) / 4
+	if n < 1 {
+		n = 1
+	}
+	widths := make([]int, n)
+	for i := range widths {
+		widths[i] = 1
+	}
+	for i, extra := 0, (p-(n-1))-n; i < n && extra > 0; i++ {
+		add := 2
+		if extra < 2 {
+			add = extra
+		}
+		widths[i] += add
+		extra -= add
+	}
+	// One allowed parameter per width: reset, default-foreground, bright-bg.
+	byWidth := map[int]string{1: "0", 2: "39", 3: "100"}
+	parts := make([]string, n)
+	for i, w := range widths {
+		parts[i] = byWidth[w]
+	}
+	return "\x1b[" + strings.Join(parts, ";") + "m"
+}
+
+// The generator is load-bearing, so it is checked rather than trusted.
+func TestSGROfLengthGeneratesWhatItClaims(t *testing.T) {
+	for total := 8; total <= 70; total++ {
+		s := sgrOfLength(total)
+		if len(s) != total {
+			t.Fatalf("sgrOfLength(%d) is %d bytes: %q", total, len(s), s)
+		}
+		if !sanIsParams([]byte(s[2:len(s)-1])) || !sanSGRAllowed([]byte(s[2:len(s)-1])) {
+			t.Fatalf("sgrOfLength(%d) is not an allowed SGR: %q", total, s)
+		}
+	}
+}
+
+func TestOverLongCSIBoundary(t *testing.T) {
+	const validSGR = "\x1b[31m"
+	cases := []struct {
+		name    string
+		in      string
+		survive string // a substring the output must contain, "" for none
+	}{
+		{"63 bytes, fits", sgrOfLength(63), sgrOfLength(63)},
+		{"64 bytes, fits", sgrOfLength(64), sgrOfLength(64)},
+		{"65 bytes, the last that fits", sgrOfLength(65), sgrOfLength(65)},
+		{"66 bytes, the first that overflows", sgrOfLength(66), ""},
+		{"67 bytes, overflows", sgrOfLength(67), ""},
+
+		// The recovery case: whatever follows an over-long sequence must be
+		// read as a fresh sequence, not as a continuation of the dead one.
+		{"valid SGR immediately after an over-long CSI", sgrOfLength(66) + validSGR + "x", validSGR},
+		{"valid SGR after an over-long CSI with no final byte", "\x1b[" + strings.Repeat("1;", 60) + validSGR + "x", validSGR},
+
+		// ESC exactly at the resume point, by both routes into it: a control
+		// byte inside the sequence (the malformed branch) and the length
+		// ceiling (the overflow branch).
+		{"ESC arrives mid-CSI, before the ceiling", "\x1b[1;2;3\x1b[2Jvisible", ""},
+		{"ESC arrives mid-CSI, at the ceiling", "\x1b[" + strings.Repeat("1;", 31) + "\x1b[2Jvisible", ""},
+		{"ESC is the byte after an over-long CSI ends", sgrOfLength(66) + "\x1b[2Jvisible", ""},
+
+		{"two over-long sequences back to back", sgrOfLength(66) + sgrOfLength(66) + "tail", ""},
+		{"two over-long sequences then a valid one", sgrOfLength(70) + sgrOfLength(70) + validSGR + "tail", validSGR},
+		{"over-long CSI then an OSC", sgrOfLength(66) + "\x1b]0;title\x07tail", ""},
+		{"over-long OSC then a valid SGR", "\x1b]0;" + strings.Repeat("A", sanMaxStr*2) + "\x07" + validSGR + "x", validSGR},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out := sanitizeText(tc.in)
+			if v := sanEscapeViolation(out); v != "" {
+				t.Fatalf("%s\nin  %q\nout %q", v, tc.in, out)
+			}
+			if tc.survive != "" && !strings.Contains(out, tc.survive) {
+				t.Fatalf("the sequence after the over-long one was lost\nin  %q\nout %q", tc.in, out)
+			}
+			// The recovery must not eat later text either.
+			if strings.Contains(tc.in, "visible") && !strings.Contains(out, "visible") {
+				t.Fatalf("an over-long sequence swallowed later output: %q", out)
+			}
+			if strings.Contains(tc.in, "tail") && !strings.Contains(out, "tail") {
+				t.Fatalf("an over-long sequence swallowed later output: %q", out)
+			}
+			// And the boundary must behave identically however it is chunked,
+			// which is where a one-byte-late resume would show up.
+			for i := 0; i <= len(tc.in); i++ {
+				chunkInvariant(t, tc.in, []int{i})
+			}
+			all := make([]int, 0, len(tc.in)+1)
+			for i := 0; i <= len(tc.in); i++ {
+				all = append(all, i)
+			}
+			chunkInvariant(t, tc.in, all)
+		})
+	}
+}
+
+// The held buffer must never exceed its ceiling at any point during any of the
+// boundary shapes, whatever the chunking.
+func TestHeldBytesNeverExceedTheCeiling(t *testing.T) {
+	for _, n := range []int{63, 64, 65, 66, 67, 200} {
+		in := sgrOfLength(n) + "\x1b]0;" + strings.Repeat("A", 600) + "\x07tail"
+		var z escSanitizer
+		for i := 0; i < len(in); i++ {
+			z.Write(in[i : i+1])
+			if z.pendN > sanMaxCSI {
+				t.Fatalf("n=%d: held %d bytes, ceiling is %d", n, z.pendN, sanMaxCSI)
+			}
+			if z.strN > sanMaxStr {
+				t.Fatalf("n=%d: string payload %d bytes, ceiling is %d", n, z.strN, sanMaxStr)
+			}
+		}
+		z.Flush()
+	}
 }
