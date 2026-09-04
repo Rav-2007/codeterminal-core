@@ -196,7 +196,8 @@ been resting on less evidence than they appeared to.
 | Issue | Exploit scenario | Fix | Verifying test |
 |---|---|---|---|
 | **`/mcp-server` shows daemon + MCP stderr unredacted** (R1.5) | A third-party MCP server prints its API key at startup; `mcp list` runs it with `CombinedOutput()` and the key lands on the user's screen and in their scrollback. Only path in the client that puts daemon stderr in front of a user. | **None. Unfixed by decision** — enumerated in 2.3a, no go-ahead for the structural redactor. | **None.** Stated as a coverage gap. |
-| **Model-emitted secrets in the transcript** (R1.6) | A model echoes a credential it read from a file; it is rendered and persisted like any other answer. | **None. Unfixed by decision**, same reason. | **None.** |
+| **Model-emitted secrets in the transcript** (R1.6) | A model echoes a credential it read from a file; it is rendered and persisted like any other answer. | **None. Unfixed by decision**, same reason. Memo recommends accepting it: the daemon matches on shapes, so the asymmetry is permanent. | **None.** |
+| **The outbound scrub is bypassed by one turn** (found 2026-09-04 at P5.1, in `daemon/`, not previously recorded anywhere) | The daemon redacts `sk-…` from the prompt and tells the user so. `persistTurn` then writes the RAW prompt to `memory.db` and its `turns_fts` index, and `prepareHistory` sends it to the provider verbatim as history on the next turn. The redaction notice makes it *worse* than never scrubbing: the user reasonably concludes the key did not leave. | **None yet — not mine to make.** The fix is `cleanPrompt` at one call site plus a scrub in `prepareHistory`, and needs no new detector. Recommended in the memo. | **None.** Verified by execution, twice, with the probes removed afterwards. |
 | **Edit-review and approval buffers hold raw bytes** (R1.4) | Deliberate: edit bytes go to disk and approval bytes carry the daemon's digest, so both must stay byte-exact. Sanitized at render instead. Risk is a *new* reader rendering them raw. | Structural — an AST guard names every function allowed to touch them. | `TestRawByteStructuresHaveNoNewReaders`. **It fired during 3.7**: the decomposition moved the reader out of `Update` and the test failed until the reviewed list moved with it. |
 | **`git status` failures echo git's output** (R1.7) | A remote URL with an embedded credential appears in an error line. | None. | None. |
 | **Terminal escape injection** (closed earlier in this pass) | Model or MCP output repaints the approval prompt — forged consent. | Allowlist sanitizer, one ingest door. | 43-entry corpus + 14 CSI shapes + 2 fuzzers + a real-pty test, all now registered in the fuzz gate for the first time. |
@@ -254,8 +255,22 @@ above should know how the numbers were checked.
    release workflow did not build the terminal client at all, so "green for this
    target" named nothing. That is why R1.14 was promoted out of the risk register
    and fixed rather than accepted.
-3. **Decide R1.5/R1.6**: authorise the structural redactor, or accept both in
-   writing. They are currently open with no test and no owner.
+3. **Decide R1.5/R1.6.** A decision memo now exists —
+   [docs/DECISION_MEMO_REDACTION_2026-09-04.md](DECISION_MEMO_REDACTION_2026-09-04.md)
+   — with a recommendation on each: **fix R1.5** in the daemon (exact-match
+   stripping of provisioned env values, ~40 lines, available because
+   `mcp.ServerEnv` holds the literal bytes), **reject R1.6** and accept it in
+   writing (the daemon matches on shapes, so the asymmetry is permanent).
+
+   It also carries a **third item that was in neither row and is a defect rather
+   than a design question**: the outbound scrub is bypassed by one turn. A secret
+   the daemon redacts from the prompt is persisted RAW to `memory.db`, copied
+   into the `turns_fts` index, and sent to the provider verbatim inside the next
+   turn's history — `persistTurn` stores `promptReq.Prompt` rather than
+   `cleanPrompt`, and `prepareHistory` does not scrub. Verified by execution.
+   The user is shown a redaction notice and the key leaves anyway, one turn late.
+   Fixing it needs no new detector and no new judgment about what a secret looks
+   like; it applies a decision the product already made.
 4. **Confirm the memory baseline** in item 4, or re-derive the ceiling.
 5. **Accept R1.12 in writing, or take one of its cheap trades.** A repaint at the
    transcript ceiling breaches D-1's hard per-Update ceiling. It is bounded,

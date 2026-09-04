@@ -65,6 +65,18 @@ the model to copy.
 Neither has a test pinning it. That is stated in each row and is not an
 oversight: there is nothing yet to pin.
 
+**A decision memo now exists for both:**
+[docs/DECISION_MEMO_REDACTION_2026-09-04.md](DECISION_MEMO_REDACTION_2026-09-04.md).
+It answers the question that gates them — `redactionsMsg` matches on **shapes**,
+not on values the daemon provisioned, so R1.6 stays outbound-only and the
+asymmetry is permanent — recommends **fixing R1.5** in the daemon by exact-match
+stripping of provisioned env values, and records a **third finding neither row
+contained**: the outbound scrub is bypassed by one turn. A secret the daemon
+redacts from the prompt is persisted raw to `memory.db`, indexed in `turns_fts`,
+and sent to the provider verbatim in the next turn's history. Verified by
+execution. That one is a defect in an existing control rather than a request for
+a new one.
+
 ---
 
 ## R1.1 — Destroying the pty delivers no SIGHUP; the client outlives its terminal
@@ -246,6 +258,15 @@ exactly when someone runs `/mcp-server`.
 **Pinned by.** Nothing yet. **This row is a gap in coverage, not just in
 behaviour**, and that is stated plainly rather than implied.
 
+**Decision memo, 2026-09-04.** The full chain is traced end to end in
+[the memo](DECISION_MEMO_REDACTION_2026-09-04.md), which recommends FIXING this
+one: `mcp.Connect` already computes `ServerEnv(cfg.EnvAllow)` and therefore holds
+the literal bytes it handed the subprocess, so exact-match stripping is available
+there and nowhere else. ~40 lines. The memo also records what such a fix cannot
+catch — a credential the server reads from its own config, and the 23 variables a
+launcher like npx adds on top — because a partiality you can enumerate is a
+different object from a shape matcher's.
+
 **Trigger.** Any of: shipping a default MCP server configuration that carries a
 credential; a support flow that asks users to paste `/mcp-server` output;
 or the daemon's own `ModelError.Detail()` becoming reachable from a subcommand
@@ -277,6 +298,23 @@ first, which required a tool call the user approved.
 
 **Trigger.** Transcript persistence to disk becoming readable by another user or
 process; transcript export; or telemetry that samples conversation content.
+
+**Decision memo, 2026-09-04 — and this row understated its own blast radius.**
+[The memo](DECISION_MEMO_REDACTION_2026-09-04.md) recommends REJECTING an inbound
+redactor and accepting this row in writing: `redactionsMsg` matches on shapes, so
+"apply the same set inbound" means running ten regexes over prose — which the
+brief rules out, which decision D5 already refused on measured data (33% of
+chunks, zero precision), and which would stop a coding assistant from being able
+to show you what an API key looks like.
+
+The row says a model-emitted secret "is sent back to the daemon as history on the
+next turn". What it does not say, and what was verified by execution on
+2026-09-04, is that **nothing scrubs it on the way back out**: `prepareHistory`
+caps and annotates but does not scrub, and `persistTurn` writes the RAW prompt —
+not `cleanPrompt` — to `memory.db` and its `turns_fts` index. So a secret the
+daemon redacted on turn 1 goes to the provider verbatim on turn 2. That is a hole
+in the control that exists, not the absence of one that does not, and the memo
+treats it separately and recommends fixing it.
 
 ---
 
