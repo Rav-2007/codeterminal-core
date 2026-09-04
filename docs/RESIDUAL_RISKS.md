@@ -325,3 +325,44 @@ this path is `TestPerTokenAllocationsAreBounded`.
 validation on the input path, both of which multiply per-rune cost; or the 3×
 assertion firing, which would mean the cost has grown past anything noise
 explains.
+
+---
+
+## R1.10 — The input line still follows the locale; the transcript does not
+
+**What it is.** `go-runewidth` decides the display width of **ambiguous** runes
+(`→`, `±`, `·`, `※`, and the rest of Unicode's East Asian Ambiguous class) from
+the locale, in a package-level variable set in `init()` from `RUNEWIDTH_EASTASIAN`
+or, failing that, `LC_ALL` / `LC_CTYPE` / `LANG`. `bubbles`' `textinput` uses it
+to decide how far to scroll an input line that overflows its width. So two
+clients with identical state, identical width and identical terminal draw
+**different bytes** if their locales disagree. Measured on the full `View()` with
+an overflowing line of ambiguous runes: **892 bytes at `EastAsianWidth=0`, 865 at
+`1`**.
+
+**Why deferred.** It is genuinely ambiguous which answer is right — that is what
+the Unicode class is called. Forcing the variable to a constant would make the
+input line scroll *wrongly* for CJK users, who are the people the East Asian
+width rules exist for, in exchange for determinism on a line that nothing caches
+and nothing compares. That is a bad trade made on no evidence, and it would be a
+behaviour regression in a locale this pass has no way to test properly.
+
+**Blast radius.** Cosmetic, and confined to the input line: how far the text
+scrolls when you type past the right edge. It does not reach the transcript.
+`renderTranscript` resolves widths through `ansi.Wrap` and `lipgloss.Width`,
+both of which use `x/ansi`'s `GraphemeWidth` method and **never call
+`runewidth`** — verified by reading the call path and confirmed by measurement.
+That matters more than the cosmetic part: the transcript is what task 3.2 caches
+and what 3.4 compares byte-for-byte, and it is locale-independent.
+
+**Pinned by.** `TestKnownGapTheInputLineFollowsTheLocale`
+(`clients/tui/renderprofile_test.go`), which asserts **both** halves: that the
+transcript renders identically under `RUNEWIDTH_EASTASIAN=0` and `=1`, and that
+the full `View()` does not. The second assertion fails if the gap ever closes —
+at which point this row and the note in `renderprofile.go` should be deleted and
+the win taken.
+
+**Trigger.** Any of: a CJK user reporting the input line scrolling wrongly;
+anything starting to cache, diff or compare the **input** line the way 3.2
+caches the transcript; or `bubbles` changing how `textinput` measures width,
+which would show up as the pinning test failing in either direction.
