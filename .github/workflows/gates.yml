@@ -109,3 +109,12 @@ jobs:
       - name: No committed file echoes a retrieval-eval query
         run: go test -tags eval -count=1 -run 'TestNoIndexedFileEchoesAnEvalQuery' -v ./
         working-directory: daemon
+
+      # Supply chain: go.mod tidy across every module, and no shipped binary
+      # carrying the path it was built at. Here rather than in build.yml's
+      # matrix because both are whole-repo invariants that would otherwise be
+      # checked six times, and because a release artifact leaking the build
+      # host is not a per-module fact. Needs the Go toolchain and the module
+      # cache; no network beyond what setup-go already warmed.
+      - name: Supply chain (tidy, trimpath)
+        run: ./scripts/supply-chain.sh

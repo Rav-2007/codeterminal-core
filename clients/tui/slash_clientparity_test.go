@@ -246,6 +246,16 @@ var summaryMayDiffer = map[string]string{
 		"process, the extension closes a panel and leaves the editor running",
 }
 
+// tuiOnlyCommands are commands that exist in the terminal client and MUST NOT
+// exist in the VS Code one, with the reason. This is a narrow list on purpose:
+// the default is parity, and every entry here is a claim that the command is
+// meaningless in the other client rather than merely unimplemented.
+var tuiOnlyCommands = map[string]string{
+	"mouse": "it toggles terminal mouse reporting, which decides whether the " +
+		"terminal handles click-drag selection itself. The extension is a " +
+		"webview: the editor owns selection there and there is nothing to trade",
+}
+
 func TestSlashCatalogsAgreeAcrossClients(t *testing.T) {
 	ts := parseVSCodeCatalog(t)
 
@@ -255,13 +265,29 @@ func TestSlashCatalogsAgreeAcrossClients(t *testing.T) {
 		t.Fatalf("parsed only %d entries from %s; the parser is not reading the "+
 			"catalog and every comparison below is vacuous", len(ts), vscodeSlashCommands)
 	}
-	if len(ts) != len(slashCatalog) {
-		t.Errorf("catalog size differs: Go has %d, VS Code has %d", len(slashCatalog), len(ts))
+	if len(ts) != len(slashCatalog)-len(tuiOnlyCommands) {
+		t.Errorf("catalog size differs: Go has %d (%d of them TUI-only), VS Code has %d",
+			len(slashCatalog), len(tuiOnlyCommands), len(ts))
+	}
+
+	// A command listed as TUI-only must actually be absent over there. Without
+	// this the list would be a way to silence the gate rather than to record a
+	// decision: adding /mouse to the extension later would leave this entry
+	// claiming a difference that no longer exists.
+	for name, why := range tuiOnlyCommands {
+		if _, present := ts[name]; present {
+			t.Errorf("/%s is listed as TUI-only (%s) but the VS Code client now has it. "+
+				"Remove the exception and mirror the summary.", name, why)
+		}
 	}
 
 	for _, g := range slashCatalog {
 		v, ok := ts[g.Name]
 		if !ok {
+			if why, allowed := tuiOnlyCommands[g.Name]; allowed {
+				t.Logf("/%s is TUI-only on purpose: %s", g.Name, why)
+				continue
+			}
 			t.Errorf("/%s exists in the TUI but not in the VS Code client", g.Name)
 			continue
 		}

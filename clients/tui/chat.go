@@ -82,7 +82,10 @@ type turn struct {
 // PromptRequest.History (see buildHistory), so follow-ups can build on
 // earlier turns. ctrl+n clears the transcript to start a fresh conversation
 // with no carried-over history.
-const helpText = "enter to send · ctrl+n new conversation · ctrl+c to quit"
+// helpText names /mouse because the thing it toggles is invisible until it
+// bites: with capture on, dragging to select text does nothing and there is no
+// error to search for.
+const helpText = "enter to send · ctrl+n new conversation · /mouse to select text · ctrl+c to quit"
 
 // reviewHelpText is shown instead of helpText while reviewing edit blocks.
 const reviewHelpText = "y apply · n skip · q cancel remaining"
@@ -118,6 +121,10 @@ type chatModel struct {
 	// running: see refreshSoon.
 	refreshPending   bool
 	refreshScheduled bool
+
+	// mouseCaptured mirrors whether the terminal is reporting mouse events to
+	// us rather than handling selection itself. See handleMouseToggle.
+	mouseCaptured bool
 
 	// limits bounds the transcript; evictedTurns and evictedBytes are the
 	// running totals the eviction marker reports. See transcriptbound.go.
@@ -282,6 +289,7 @@ func newChatModel(clientName, workspace, workspaceRoot string, initialHistory []
 	return chatModel{
 		state:           stateSplash,
 		streamAssistant: -1,
+		mouseCaptured:   true, // main.go starts the program with WithMouseCellMotion
 		limits:          loadTranscriptLimits(),
 		input:           ti,
 		spinner:         sp,
@@ -1039,6 +1047,8 @@ func (m chatModel) handleLocalSlash(name, args string) (tea.Model, tea.Cmd) {
 		m.lastDegraded = nil
 		m.lastProvider = ""
 		reply = "transcript cleared"
+	case "mouse":
+		return m.handleMouseToggle()
 	case "compact":
 		const keep = 8
 		if len(m.turns) > keep {
@@ -2584,4 +2594,39 @@ func withThousands(n int) string {
 		b.WriteString(s[i : i+3])
 	}
 	return b.String()
+}
+
+// MOUSE CAPTURE IS A TRADE, AND IT USED TO BE MADE SILENTLY.
+//
+// tea.WithMouseCellMotion (main.go) tells the terminal to report mouse events to
+// this program. It buys exactly one thing: wheel scrolling in the transcript
+// viewport. It costs the terminal's own click-drag text selection, so copying
+// anything out of the client requires holding Shift -- a convention that is
+// real, but is not written anywhere the user can see and does not behave
+// identically across terminals.
+//
+// That trade is a bad one to make silently for a CODING assistant, where
+// copying the code the model just wrote is among the most common things anyone
+// does with the output. Someone who does not know about Shift does not conclude
+// "mouse reporting is on"; they conclude "I cannot copy from this program".
+//
+// So it is now a toggle with a name, reachable as /mouse, reported in /help and
+// named in the idle hint. See docs/ADR-001-mouse-capture.md for the argument
+// that the DEFAULT should also change, which is a product decision rather than
+// an engineering one and is left explicitly open there.
+func (m chatModel) handleMouseToggle() (tea.Model, tea.Cmd) {
+	m.mouseCaptured = !m.mouseCaptured
+	var cmd tea.Cmd
+	var reply string
+	if m.mouseCaptured {
+		cmd = tea.EnableMouseCellMotion
+		reply = "mouse capture ON — the wheel scrolls the transcript; hold shift to select text"
+	} else {
+		cmd = tea.DisableMouse
+		reply = "mouse capture OFF — select and copy with the mouse as usual; pgup/pgdown scroll"
+	}
+	m.appendTurn(turn{role: roleSystem, text: reply})
+	m.resizeViewport()
+	m.refreshViewport()
+	return m, cmd
 }

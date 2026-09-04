@@ -59,14 +59,22 @@ jobs:
       # CGO_ENABLED is explicit on both, in opposite directions, because the
       # difference is the entire reason the helper is a separate process:
       # the daemon must stay pure Go, and CGO is confined to the helper.
+      #
+      # -trimpath on both. MEASURED without it on this tree: a plain build
+      # embedded 678 absolute paths, starting with the build machine's home
+      # directory and its Go installation -- the builder's username and
+      # directory layout, handed to anyone who runs `strings` on a release
+      # artifact. It also makes the build reproducible from a different
+      # checkout path. scripts/supply-chain.sh fails if any main package
+      # produces a binary carrying one.
       - name: Build daemon (pure Go)
-        run: go build -o "${{ github.workspace }}/dist/codeterminal-daemon${{ matrix.target == 'win32-x64' && '.exe' || '' }}" .
+        run: go build -trimpath -o "${{ github.workspace }}/dist/codeterminal-daemon${{ matrix.target == 'win32-x64' && '.exe' || '' }}" .
         working-directory: daemon
         env:
           CGO_ENABLED: 0
 
       - name: Build embedder helper (CGO)
-        run: go build -o "${{ github.workspace }}/dist/codeterminal-embedder-helper${{ matrix.target == 'win32-x64' && '.exe' || '' }}" .
+        run: go build -trimpath -o "${{ github.workspace }}/dist/codeterminal-embedder-helper${{ matrix.target == 'win32-x64' && '.exe' || '' }}" .
         working-directory: helper
         env:
           CGO_ENABLED: 1

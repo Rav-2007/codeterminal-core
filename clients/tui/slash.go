@@ -54,6 +54,7 @@ var slashCatalog = []slashDef{
 	{Name: "mcp-server", Kind: slashLocal, Summary: "show configured MCP servers and tool policy"},
 	{Name: "clear", Kind: slashLocal, Summary: "clear the on-screen transcript"},
 	{Name: "compact", Kind: slashLocal, Summary: "keep only the last 8 turns, now"},
+	{Name: "mouse", Kind: slashLocal, Summary: "toggle mouse capture: on scrolls with the wheel, off lets you select text"},
 	{Name: "context", Kind: slashLocal, Summary: "show workspace, model tier, and last grounding"},
 	{Name: "git", Kind: slashLocal, Summary: "show git status for the workspace"},
 	{Name: "init", Kind: slashLocal, Summary: "quick start checklist for this workspace"},
