@@ -563,7 +563,7 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.info != nil && m.streamAssistant >= 0 && m.streamAssistant < len(m.turns) {
 			m.turns[m.streamAssistant].incomplete = msg.info.Reason
 		}
-		m.turns = append(m.turns, turn{role: roleSystem, text: "⚠ answer cut off: " + incompleteText(msg.info)})
+		m.appendTurn(turn{role: roleSystem, text: "⚠ answer cut off: " + incompleteText(msg.info)})
 		m.refreshViewport()
 		return m, waitForNext(m.streamCh)
 
@@ -606,7 +606,7 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// header is one line that the next identical failure overwrites;
 			// this puts the failure UNDER THE MESSAGE THAT CAUSED IT, where a
 			// reader looking for their answer is already looking.
-			m.turns = append(m.turns, turn{role: roleSevered, text: sanitizeText(msg.err.Error())})
+			m.appendTurn(turn{role: roleSevered, text: sanitizeText(msg.err.Error())})
 		}
 		m.state = stateError
 		m.statusErr = sanitizeText(msg.err.Error())
@@ -619,7 +619,7 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// a transcript note rather than statusErr/stateError, since the
 		// user's chat is not actually in an error state — they can keep
 		// typing normally.
-		m.turns = append(m.turns, turn{role: roleSystem, text: sanitizeText(fmt.Sprintf("(local chat cleared, but clearing it on the daemon failed: %v)", msg.err))})
+		m.appendTurn(turn{role: roleSystem, text: sanitizeText(fmt.Sprintf("(local chat cleared, but clearing it on the daemon failed: %v)", msg.err))})
 		m.refreshViewport()
 		return m, nil
 
@@ -841,7 +841,7 @@ func (m chatModel) startTurn() (tea.Model, tea.Cmd) {
 	// so the not-yet-answered prompt can never end up in its own History.
 	history := buildHistory(m.turns)
 
-	m.turns = append(m.turns, turn{role: roleUser, text: prompt})
+	m.appendTurn(turn{role: roleUser, text: prompt})
 	m.input.SetValue("")
 	m.input.Blur()
 	m.state = stateSending
@@ -872,7 +872,7 @@ func (m chatModel) handleSlash(sp slashParse) (tea.Model, tea.Cmd) {
 	}
 	if sp.UsageOnly {
 		msg := fmt.Sprintf("usage: /%s <args…>", sp.Def.Name)
-		m.turns = append(m.turns, turn{role: roleAssistant, text: msg})
+		m.appendTurn(turn{role: roleAssistant, text: msg})
 		m.resizeViewport()
 		m.refreshViewport()
 		return m, nil
@@ -886,7 +886,7 @@ func (m chatModel) handleSlash(sp slashParse) (tea.Model, tea.Cmd) {
 		mode := sp.Def.Mode
 		var pipeline []string // steered slash commands do not choose a shape
 		history := buildHistory(m.turns)
-		m.turns = append(m.turns, turn{role: roleUser, text: sanitizeText("/" + sp.Def.Name + " " + sp.Args)})
+		m.appendTurn(turn{role: roleUser, text: sanitizeText("/" + sp.Def.Name + " " + sp.Args)})
 		m.input.Blur()
 		m.state = stateSending
 		m.statusErr = ""
@@ -925,6 +925,8 @@ func (m chatModel) handleLocalSlash(name, args string) (tea.Model, tea.Cmd) {
 	case "compact":
 		const keep = 8
 		if len(m.turns) > keep {
+			// A re-slice of turns that appendTurn already sanitized; nothing
+			// new enters the transcript here.
 			m.turns = append([]turn(nil), m.turns[len(m.turns)-keep:]...)
 			reply = fmt.Sprintf("kept last %d turns", keep)
 		} else {
@@ -980,7 +982,7 @@ func (m chatModel) handleLocalSlash(name, args string) (tea.Model, tea.Cmd) {
 	default:
 		reply = "unknown local command"
 	}
-	m.turns = append(m.turns, turn{role: roleAssistant, text: reply})
+	m.appendTurn(turn{role: roleAssistant, text: reply})
 	m.resizeViewport()
 	m.refreshViewport()
 	return m, nil
@@ -1014,14 +1016,14 @@ func (m chatModel) handleModelCommand(arg string) (tea.Model, tea.Cmd) {
 			}
 			fmt.Fprintf(&b, "%s%s  %s%s\n", mark, t.Name, t.Slug, status)
 		}
-		m.turns = append(m.turns, turn{role: roleAssistant, text: strings.TrimRight(b.String(), "\n")})
+		m.appendTurn(turn{role: roleAssistant, text: strings.TrimRight(b.String(), "\n")})
 		m.resizeViewport()
 		m.refreshViewport()
 		return m, nil
 	}
 	if arg == "clear" || arg == "default" {
 		m.preferredTier = ""
-		m.turns = append(m.turns, turn{role: roleAssistant, text: "model reset to default tier (models.json default_tier)"})
+		m.appendTurn(turn{role: roleAssistant, text: "model reset to default tier (models.json default_tier)"})
 		m.resizeViewport()
 		m.refreshViewport()
 		return m, nil
@@ -1039,19 +1041,19 @@ func (m chatModel) handleModelCommand(arg string) (tea.Model, tea.Cmd) {
 		}
 	}
 	if found == nil {
-		m.turns = append(m.turns, turn{role: roleAssistant, text: fmt.Sprintf("unknown model tier %q — try /model for the list", arg)})
+		m.appendTurn(turn{role: roleAssistant, text: fmt.Sprintf("unknown model tier %q — try /model for the list", arg)})
 		m.resizeViewport()
 		m.refreshViewport()
 		return m, nil
 	}
 	if !found.Active {
-		m.turns = append(m.turns, turn{role: roleAssistant, text: fmt.Sprintf("tier %q is inactive in models.json", arg)})
+		m.appendTurn(turn{role: roleAssistant, text: fmt.Sprintf("tier %q is inactive in models.json", arg)})
 		m.resizeViewport()
 		m.refreshViewport()
 		return m, nil
 	}
 	m.preferredTier = found.Name
-	m.turns = append(m.turns, turn{role: roleAssistant, text: fmt.Sprintf("model set to %s (%s)", found.Name, found.Slug)})
+	m.appendTurn(turn{role: roleAssistant, text: fmt.Sprintf("model set to %s (%s)", found.Name, found.Slug)})
 	m.resizeViewport()
 	m.refreshViewport()
 	return m, nil
@@ -1194,7 +1196,7 @@ func (m chatModel) interruptTurn() (tea.Model, tea.Cmd) {
 	// up; the daemon stops on its next write (see agentturn.go), and a tool
 	// already dispatched may still be finishing as this line is drawn. "nothing
 	// further ran" would be a claim about the far end that this side cannot make.
-	m.turns = append(m.turns, turn{role: roleSystem, text: "⏹ stopped — you interrupted this turn"})
+	m.appendTurn(turn{role: roleSystem, text: "⏹ stopped — you interrupted this turn"})
 
 	m.state = stateIdle
 	m.statusErr = ""
@@ -1297,6 +1299,30 @@ func (m chatModel) handleToken(msg tokenMsg) (tea.Model, tea.Cmd) {
 	return m, waitForNext(m.streamCh)
 }
 
+// appendTurn is THE ONLY WAY A TURN ENTERS THE TRANSCRIPT, and it sanitizes.
+//
+// WHY THIS IS A FUNCTION AND NOT A CONVENTION. The first pass at this filtered
+// every ingest point it could find and left `m.turns = append(...)` as an
+// ordinary statement anyone could write. Reviewing that same commit turned up
+// FOUR appends it had missed -- the approval outcome line (an MCP server picks
+// its own name), the daemon's incomplete-answer Detail, an edit-block refusal
+// quoting the model's own markup, and the review summary's refusal reasons.
+// Four misses in the commit that was paying attention is the measurement that
+// says a convention does not hold here. The escape-hatch is now one function,
+// and TestOnlyAppendTurnWritesTheTranscript fails on any new statement that
+// goes around it.
+//
+// Sanitizing is idempotent and its clean path allocates nothing (sanitize.go),
+// so text already filtered at its source passes through unchanged and the
+// double pass costs nothing worth measuring. Appends are per-turn, never
+// per-token.
+func (m *chatModel) appendTurn(t turn) int {
+	t.text = sanitizeText(t.text)
+	t.reasoning = sanitizeText(t.reasoning)
+	m.turns = append(m.turns, t)
+	return len(m.turns) - 1
+}
+
 // ensureAssistantTurn returns the index of this stream's assistant turn,
 // creating it if the stream has not spoken yet. Wherever the tool-activity
 // notices happen to have landed, the answer keeps going to the same place.
@@ -1304,8 +1330,7 @@ func (m *chatModel) ensureAssistantTurn() int {
 	if m.streamAssistant >= 0 && m.streamAssistant < len(m.turns) {
 		return m.streamAssistant
 	}
-	m.streamAssistant = len(m.turns)
-	m.turns = append(m.turns, turn{role: roleAssistant})
+	m.streamAssistant = m.appendTurn(turn{role: roleAssistant})
 	return m.streamAssistant
 }
 
@@ -1354,7 +1379,7 @@ func (m chatModel) checkForEditBlocks() (tea.Model, tea.Cmd) {
 		// then watched the client behave as though a question had been
 		// answered.
 		if payload.Format == editapply.FormatUnrecognised {
-			m.turns = append(m.turns, turn{role: roleSystem,
+			m.appendTurn(turn{role: roleSystem,
 				text: fmt.Sprintf("(no edits offered — line %d of the answer %s)", payload.Hint.Line, payload.Hint.Advice)})
 			m.refreshViewport()
 			return m, m.input.Focus()
@@ -1369,7 +1394,7 @@ func (m chatModel) checkForEditBlocks() (tea.Model, tea.Cmd) {
 	// where before a single bad block sent the whole reply to this message and
 	// nothing was offered.
 	for _, bad := range rejected {
-		m.turns = append(m.turns, turn{role: roleSystem, text: fmt.Sprintf("(edit block at line %d refused: %v)", bad.Line, bad.Reason)})
+		m.appendTurn(turn{role: roleSystem, text: fmt.Sprintf("(edit block at line %d refused: %v)", bad.Line, bad.Reason)})
 	}
 	if len(rejected) > 0 {
 		m.refreshViewport()
@@ -1503,7 +1528,7 @@ func (m chatModel) answerApproval(decision string) (tea.Model, tea.Cmd) {
 	}
 	m.approvalReply <- decision
 
-	m.turns = append(m.turns, turn{role: roleSystem, text: approvalOutcomeLine(*m.pendingApproval, decision)})
+	m.appendTurn(turn{role: roleSystem, text: approvalOutcomeLine(*m.pendingApproval, decision)})
 	m.pendingApproval = nil
 	m.approvalReply = nil
 	m.state = stateStreaming
@@ -1558,7 +1583,7 @@ func (m *chatModel) noteToolActivity(a protocol.ToolActivity) {
 		}
 		m.activityTurns[a.CallID] = len(m.turns)
 	}
-	m.turns = append(m.turns, turn{role: roleSystem, text: line})
+	m.appendTurn(turn{role: roleSystem, text: line})
 }
 
 func toolActivityLine(a protocol.ToolActivity) string {
@@ -1644,7 +1669,7 @@ func (m chatModel) finishReview() (tea.Model, tea.Cmd) {
 	if m.reviewApplied > 0 {
 		lines = append(lines, fmt.Sprintf("  backups: %s (restore with: edits undo)", m.reviewBackupDir))
 	}
-	m.turns = append(m.turns, turn{role: roleSystem, text: strings.Join(lines, "\n")})
+	m.appendTurn(turn{role: roleSystem, text: strings.Join(lines, "\n")})
 
 	m.reviewBlocks = nil
 	m.reviewPrepared = nil

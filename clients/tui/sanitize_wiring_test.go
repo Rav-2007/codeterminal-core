@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+
+	tea "github.com/charmbracelet/bubbletea"
 	"os"
 	"path/filepath"
 	"strings"
@@ -345,3 +347,130 @@ func oneShotPayloadDaemon(t *testing.T, payload string) {
 type errString string
 
 func (e errString) Error() string { return string(e) }
+
+// THE FOUR APPENDS THE FIRST PASS MISSED. Each of these carries text chosen by
+// something that is not the user into the transcript, and each went in raw
+// until appendTurn became the only door. They are separate tests rather than a
+// table so a failure names which door was left open.
+
+func TestApprovalOutcomeLineIsFiltered(t *testing.T) {
+	m := newTestModel()
+	m = typeText(m, "hi")
+	m, _ = pressEnter(m)
+	reply := make(chan string, 1)
+	updated, _ := m.Update(toolApprovalMsg{
+		req:   protocol.ToolApprovalRequest{Server: "srv\x1b]0;PWN\x07", Tool: "t\x1b[2J"},
+		reply: reply,
+	})
+	m = updated.(chatModel)
+	// "n" denies, which is what writes the outcome line into the transcript.
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	m = updated.(chatModel)
+
+	for _, tn := range m.turns {
+		if strings.Contains(tn.text, "\x1b") {
+			t.Fatalf("the approval outcome line carried a raw escape: %q", tn.text)
+		}
+	}
+	if v := viewViolation(t, m.View()); v != "" {
+		t.Fatalf("%s", v)
+	}
+}
+
+func TestIncompleteNoticeIsFiltered(t *testing.T) {
+	m := newTestModel()
+	m = typeText(m, "hi")
+	m, _ = pressEnter(m)
+	m = streamTokens(m, "partial")
+	updated, _ := m.Update(incompleteMsg{info: &protocol.IncompleteInfo{
+		Reason: "length", Detail: "cut off\x1b]0;PWN\x07\x1b[2J",
+	}})
+	m = updated.(chatModel)
+	for _, tn := range m.turns {
+		if strings.Contains(tn.text, "\x1b") {
+			t.Fatalf("the incomplete notice carried a raw escape: %q", tn.text)
+		}
+	}
+	if v := viewViolation(t, m.View()); v != "" {
+		t.Fatalf("%s", v)
+	}
+}
+
+// A refused edit block puts the parser's reason in the transcript. This one
+// is a FORWARD guard, not a closed hole: editapply formats the offending path
+// with %q, which escapes control bytes, so the notice is clean today for a
+// reason that has nothing to do with this filter. appendTurn is what keeps it
+// clean if that verb ever becomes %s. The assertion that the notice actually
+// appears is what stops the test going vacuous, which is how it was written
+// the first time.
+func TestRefusedEditBlockNoticeIsFiltered(t *testing.T) {
+	m := newTestModelWithRoot(realTempDir(t))
+	m = typeText(m, "hi")
+	m, _ = pressEnter(m)
+	// A SEARCH marker alone on its line with no "path:" line before it is
+	// refused by ParseEditBlocks.
+	m = streamTokens(m, "<<<<<<< SEARCH\nbroken\n")
+	updated, _ := m.Update(streamDoneMsg{})
+	m = updated.(chatModel)
+
+	var sawRefusal bool
+	for _, tn := range m.turns {
+		if strings.Contains(tn.text, "refused") {
+			sawRefusal = true
+		}
+		if strings.Contains(tn.text, "\x1b") {
+			t.Fatalf("a refusal notice carried a raw escape: %q", tn.text)
+		}
+	}
+	if !sawRefusal {
+		t.Fatal("no refusal notice was produced, so this test asserted nothing")
+	}
+}
+
+// THE C1 ROUTE, which is a live hole rather than a forward guard.
+//
+// editapply.RejectUnprintablePath refuses r < 0x20, DEL, and a named set of
+// Unicode direction and zero-width characters. It does NOT refuse C1
+// (U+0080-U+009F), and U+009B is a CSI introducer on a terminal in 8-bit
+// mode. So a model-authored path carrying one parses cleanly, survives every
+// upstream check, and lands in the review summary's refusal line -- which
+// formats it with %s, raw.
+func TestC1InAnEditPathCannotReachTheTranscript(t *testing.T) {
+	const hostilePath = "a\u009b2Jb.go"
+	if err := editapply.RejectUnprintablePath(hostilePath); err != nil {
+		t.Skipf("editapply now refuses C1 as well, closing this route upstream: %v", err)
+	}
+	m := newTestModel()
+	m.reviewRefusals = []string{hostilePath + ": no such file"}
+	updated, _ := m.finishReview()
+	m = updated.(chatModel)
+	last := m.turns[len(m.turns)-1]
+	if strings.ContainsRune(last.text, '\u009b') {
+		t.Fatalf("a C1 introducer reached the transcript: %q", last.text)
+	}
+}
+
+// The review summary lists refusal reasons, which name model-authored paths.
+func TestReviewSummaryIsFiltered(t *testing.T) {
+	m := newTestModel()
+	m.reviewRefusals = []string{"a\x1b[2Jb", "c\x1b]0;PWN\x07d"}
+	m.reviewBackupDir = "/tmp/x\x1b[2J"
+	updated, _ := m.finishReview()
+	m = updated.(chatModel)
+	last := m.turns[len(m.turns)-1]
+	if strings.Contains(last.text, "\x1b") {
+		t.Fatalf("the review summary carried a raw escape: %q", last.text)
+	}
+}
+
+// appendTurn is the door; this is the assertion that it actually closes.
+func TestAppendTurnSanitizes(t *testing.T) {
+	var m chatModel
+	i := m.appendTurn(turn{role: roleAssistant, text: "a\x1b[2Jb", reasoning: "r\x1b]0;t\x07s"})
+	if got := m.turns[i].text; got != "ab" {
+		t.Errorf("text = %q, want %q", got, "ab")
+	}
+	if got := m.turns[i].reasoning; got != "rs" {
+		t.Errorf("reasoning = %q, want %q", got, "rs")
+	}
+}
