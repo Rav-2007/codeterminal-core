@@ -23,28 +23,56 @@ finished:
 
 ---
 
-## Reconciliation — 2026-09-04, after tasks 3.5 through 3.10
+## Reconciliation — 2026-09-04, end of the pass
 
-Every row re-read against the finished tree. **Status is one of: OPEN (still
-true, still unfixed), CLOSED (the situation no longer exists), or SUPERSEDED
-(replaced by a different row).**
+**Read end to end against the tree, and every pinning test re-run today.** The
+earlier reconciliation (after tasks 3.5–3.10) is superseded by this one; where a
+row changed since, the note says how.
 
-| Row | Status | Note |
+**Status is one of: OPEN (still true, still unfixed), CLOSED (the situation no
+longer exists), or SUPERSEDED (replaced by a different row).**
+
+| Row | Status | Evidence today |
 |---|---|---|
-| R1.1 pty destruction delivers no SIGHUP | **OPEN** | Unchanged. Still pinned by a test that fails if the gap closes. |
-| R1.2 over-long CSI leaks parameter bytes | **OPEN** | Unchanged. Bounded, measured, pinned at 14 shapes. |
-| R1.3 one-shot stdout not byte-stable | **OPEN by decision** | A deliberate trade, in the release notes. Not a defect awaiting a fix. |
-| R1.4 review/approval buffers hold raw bytes | **OPEN by design** | Its AST guard did its job during 3.7: the decomposition moved the reader out of `Update` and the guard failed until the reviewed list moved with it. |
-| R1.5 `/mcp-server` stderr unredacted | **OPEN, and UNFIXED BY DECISION** | See below. |
-| R1.6 model-emitted secrets not redacted | **OPEN, and UNFIXED BY DECISION** | See below. |
-| R1.7 `git status` echoes git's output | **OPEN** | Unchanged. No work in this batch touched it. |
-| R1.8 `ModelError.detail` safe by field privacy | **OPEN (forward guard)** | Unchanged. Still a property, not a redactor. |
-| R1.9 1 MB paste costs most of a frame | **CLOSED** | Task 3.6. **Figure corrected at P3.3:** the 3.6 number was measured with the input blurred, so the paste was dropped. Re-taken where it lands: **389 µs, identical at 0 bytes and at the 2 MiB ceiling.** Details in the row. |
-| R1.10 locale reaches the input line | **OPEN** | Unchanged, still pinned both ways. |
-| R1.11 the transcript ceiling can be overshot within one turn | **OPEN (new)** | The price of index safety; bounded to one exchange and asserted. |
-| R1.12 repainting a deep transcript costs real CPU | **OPEN, re-measured at the ceiling** | Was an extrapolation from 240 turns; now 22.4 ms p50 measured at the bound, over both the 8 ms repaint budget and D-1's 16 ms hard ceiling. Bounded, and over budget. |
-| R1.13 onnxruntime and npm are scanned by nothing | **OPEN (new)** | A coverage gap in the supply-chain story, stated as one. |
-| R1.14 the terminal client is not a release artifact | **CLOSED 2026-09-04** | P4.1. It builds on all three release runners, ships as a signed standalone download, and is asserted *out* of the `.vsix`. It was not a residual risk: it made this document's own "CI green once" condition unsatisfiable. |
+| R1.1 pty destruction delivers no SIGHUP | **OPEN** | `TestKnownGapClientOutlivesADestroyedPTY` PASSES (2.05 s), so the gap is still open. **Linux-only** — see the note below. |
+| R1.2 over-long CSI leaks parameter bytes | **OPEN** | `TestOverLongCSIBoundary` and `TestHeldBytesNeverExceedTheCeiling` both PASS. 14 shapes, boundary still exactly 65/66. |
+| R1.3 one-shot stdout not byte-stable | **OPEN by decision** | `TestOneShotOutputIsFiltered` PASSES on every platform; `TestRealBinaryPipedIntoAnEarlyReaderExitsCleanly` PASSES on Linux only. |
+| R1.4 review/approval buffers hold raw bytes | **OPEN by design** | All three guards PASS. Re-checked the row's load-bearing clause: **still no copy, export or clipboard sink in the client** — no `clipboard`, no OSC 52, no write path outside the terminal. `/mouse` does not create one; it hands selection back to the terminal, which copies already-filtered text. |
+| R1.5 `/mcp-server` stderr unredacted | **OPEN, unfixed by decision — now with a recommendation** | Chain re-traced end to end and both line references corrected (they had drifted). [Decision memo](DECISION_MEMO_REDACTION_2026-09-04.md) recommends **FIX**, in the daemon, ~40 lines. Still nothing pinning it. |
+| R1.6 model-emitted secrets not redacted | **OPEN, unfixed by decision — and it understated itself** | P5.1 answered: the daemon matches on **shapes**, so the asymmetry is permanent and the memo recommends **accepting** it. But the row's own "sent back as history" clause turned out to hide a defect: nothing scrubs it on the way back out. Verified by execution. |
+| R1.7 `git status` echoes git's output | **OPEN** | Unchanged in substance. Its code reference had drifted by 14 lines and is corrected; it now names `runGitStatus` as well. Still nothing pinning it. |
+| R1.8 `ModelError.detail` safe by field privacy | **OPEN (forward guard)** | `daemon/modelerror.go:204` re-read today and still builds `detail` exactly as the row describes. Still a property, still no AST guard. |
+| R1.9 1 MB paste costs most of a frame | **CLOSED** | Stays closed, on a **corrected figure**: the 3.6 number was measured with the input blurred, so the paste was discarded. Re-taken where it lands: **389 µs, identical at 0 bytes and at the 2 MiB ceiling**, spread 1.1×. |
+| R1.10 locale reaches the input line | **OPEN** | `TestKnownGapTheInputLineFollowsTheLocale` PASSES, so the gap is still open. **Linux-only.** |
+| R1.11 the ceiling can be overshot within one turn | **OPEN** | Still true and still bounded to one exchange; the soak asserts `len(m.turns) <= 500+2` and passes at both lengths. |
+| R1.12 repainting a deep transcript costs real CPU | **OPEN — re-measured, and the row changed shape** | Was an extrapolation from a seventh of the bound. Now **22.4 ms p50 / 29.9 ms p99 at the ceiling**, over the 8 ms repaint budget at 2.8× **and over D-1's 16 ms hard per-Update ceiling at 1.4×**. Bounded, and over budget. |
+| R1.13 onnxruntime and npm are scanned by nothing | **OPEN** | Re-verified: `scripts/govulncheck.sh` names six Go modules and nothing else; no gate anywhere runs `npm audit` or scans onnxruntime. |
+| R1.14 the terminal client is not a release artifact | **CLOSED 2026-09-04** | P4.1. Builds on all three release runners, in the macOS signing list, ships as a standalone download with checksums, and asserted *out* of the `.vsix` by the packaging gate. It was never a residual risk: it made this document's own "CI green once" condition unsatisfiable. |
+
+### Three of these rows are pinned only on Linux
+
+`TestKnownGapClientOutlivesADestroyedPTY` (R1.1),
+`TestKnownGapTheInputLineFollowsTheLocale` (R1.10) and
+`TestRealBinaryPipedIntoAnEarlyReaderExitsCleanly` (R1.3) live in
+`//go:build linux` files, because allocating a pty is per-kernel. **On macOS and
+Windows those three rows have no guard at all** — if any of the three gaps
+closed on one of those platforms, or opened wider, nothing here would notice.
+
+That is now said out loud rather than left implicit: `TestPlatformCoverageIsStated`
+runs everywhere and prints, in the failing platform's own test output, which
+suites did not run there. See *Per-platform status* in
+[the readiness statement](TUI_PRODUCTION_READINESS_2026-09-04.md).
+
+### What this re-read found in the register itself
+
+**Two of its four code references had drifted** — R1.7's by 14 lines, R1.5's by
+15 — pointing at unrelated code in files still long enough that nothing noticed.
+Both are fixed, both now name their function as well as their line, and
+`scripts/docs-coderefs.sh` fails the build if a reference in this document points
+at a line that does not exist. That gate found two more ambiguous references in
+the decision memo on its first run.
+
+---
 
 ### R1.5 and R1.6 are unfixed BY DECISION, not unexamined
 
