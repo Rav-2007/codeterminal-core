@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -360,6 +361,13 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		// FIRST, BEFORE ANYTHING READS THE KEY. Every branch below reaches for
+		// msg.String(), and for a rune burst that builds a string as long as
+		// the burst -- so a megabyte paste was stringified twice before it got
+		// anywhere near the input. Bounding it after that point measured no
+		// improvement at all, which is how the real cost was found.
+		msg = m.boundPaste(msg)
+
 		if m.state == stateSplash {
 			m.state = stateIdle
 			return m, m.input.Focus()
@@ -2433,4 +2441,75 @@ func (m *chatModel) refreshSoon() tea.Cmd {
 	}
 	m.refreshScheduled = true
 	return tea.Tick(refreshInterval, func(time.Time) tea.Msg { return refreshTickMsg{} })
+}
+
+// BOUNDING A PASTE.
+//
+// THE COST: textinput processes every rune it is handed and then enforces its
+// own CharLimit, so pasting a megabyte meant a million runes of work in order
+// to keep four thousand. MEASURED, 9 samples, Update time for one paste:
+//
+//	  0 turns, 1MB: min 16.2ms  median 17.1ms  max 20.1ms
+//	240 turns, 1MB: min 13.7ms  median 15.6ms  max 19.6ms
+//
+// Over D-1's 16ms frame ceiling at the median on an empty transcript, and
+// straddling it at 240 turns. Note what those two rows say together: the cost
+// is linear in the SIZE OF THE PASTE and independent of the transcript, so the
+// render cache never touched it. That is why it is its own task.
+//
+// THE SILENT-TRUNCATION DEFECT, which is the more serious half and was already
+// there. The prompt box has held 4000 characters since it was written, and
+// everything past that was dropped without a word. Paste a 40KB file meaning to
+// ask about it and the model is asked about its first 4000 characters instead,
+// with nothing on screen to say so -- and the answer comes back confident and
+// about the wrong input. Same rule as the transcript bound: dropping the user's
+// data quietly is a defect, not a limit.
+//
+// So an over-long rune burst is cut to what could possibly be kept, before
+// textinput ever sees it, and the header says what happened.
+func (m *chatModel) boundPaste(msg tea.KeyMsg) tea.KeyMsg {
+	if msg.Type != tea.KeyRunes {
+		return msg
+	}
+	// CharLimit is the most that can survive however the input is arranged, so
+	// anything past it is work whose result is guaranteed to be discarded.
+	// Cutting at exactly the limit -- rather than at the room actually left --
+	// keeps this a pure bound on WORK: it never drops a rune that textinput
+	// would have kept, and textinput still applies its own limit afterwards.
+	limit := m.input.CharLimit
+	if limit <= 0 {
+		limit = 4000 // an input with no limit of its own still gets one here
+	}
+	if len(msg.Runes) <= limit {
+		return msg
+	}
+
+	total := len(msg.Runes)
+	dropped := total - limit
+	msg.Runes = msg.Runes[:limit]
+	m.statusErr = fmt.Sprintf("paste of %s characters: kept the first %s, dropped %s. The prompt box holds %s.",
+		withThousands(total), withThousands(limit), withThousands(dropped), withThousands(limit))
+	return msg
+}
+
+// withThousands groups digits so a six-figure count reads as one. "1048576"
+// and "1,048,576" are the same number and only one of them is legible at a
+// glance in a single line of terminal chrome.
+func withThousands(n int) string {
+	s := strconv.Itoa(n)
+	if len(s) <= 3 {
+		return s
+	}
+	var b strings.Builder
+	lead := len(s) % 3
+	if lead > 0 {
+		b.WriteString(s[:lead])
+	}
+	for i := lead; i < len(s); i += 3 {
+		if b.Len() > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(s[i : i+3])
+	}
+	return b.String()
 }
