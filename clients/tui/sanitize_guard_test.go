@@ -154,7 +154,11 @@ func TestRawByteStructuresHaveNoNewReaders(t *testing.T) {
 		"finishReview":           true, // clears; the summary goes via appendTurn
 		"applyCurrentReviewEdit": true, // writes to disk, deliberately unfiltered
 		"answerApproval":         true, // sends the decision; line goes via appendTurn
-		"Update":                 true, // stores the request; renders nothing
+		// Was "Update" until the message switch was decomposed into one handler
+		// per message type (3.7). The guard caught the move, which is what it is
+		// for: the function that stores the raw approval request is now named,
+		// and it still only stores it.
+		"handleToolApproval": true, // stores the request; renders nothing
 	}
 	fset, files := parsePackageSource(t)
 	seen := map[string]string{}

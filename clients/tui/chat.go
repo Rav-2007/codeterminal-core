@@ -351,326 +351,398 @@ func (m chatModel) Init() tea.Cmd {
 func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.width = msg.Width
-		m.height = msg.Height
-		m.ready = true
-		m.viewport.Width = m.width
-		m.resizeViewport()
-		m.input.Width = inputWidthFor(m.width, m.input.Prompt)
-		m.refreshViewport()
-		return m, nil
+		return m.handleWindowSize(msg)
 
 	case tea.KeyMsg:
-		// FIRST, BEFORE ANYTHING READS THE KEY. Every branch below reaches for
-		// msg.String(), and for a rune burst that builds a string as long as
-		// the burst -- so a megabyte paste was stringified twice before it got
-		// anywhere near the input. Bounding it after that point measured no
-		// improvement at all, which is how the real cost was found.
-		msg = m.boundPaste(msg)
-
-		if m.state == stateSplash {
-			m.state = stateIdle
-			return m, m.input.Focus()
-		}
-		// ctrl+c is answered in ONE place for every state, above the per-state
-		// handlers, so the key cannot mean "quit" in one corner of the UI and
-		// "stop" in another. That split is what made it feel like a trapdoor.
-		if msg.String() == "ctrl+c" {
-			return m.handleCtrlC()
-		}
-		m.quitArmed = false
-		if m.state == stateEditReview {
-			return m.handleReviewKey(msg)
-		}
-		if m.state == stateToolApproval {
-			return m.handleApprovalKey(msg)
-		}
-		switch msg.String() {
-		case "esc":
-			// ESC NEVER QUITS THE PROGRAM. It means "stop what is happening
-			// now", and that is the only reading of it that is safe to press by
-			// reflex: a user who hits esc a beat after the answer finished must
-			// not lose their session for it. With nothing in flight it does
-			// nothing at all.
-			return m.interruptTurn()
-		case "enter":
-			// Enter SUBMITS. It accepts a completion only when the user has
-			// actively chosen one with the arrow keys, which is the convention
-			// every editor popup follows.
-			//
-			// This used to be a byte-for-byte copy of the "tab" arm below, so
-			// Enter on "/help" only rewrote the input to "/help " and ran
-			// nothing. Every no-argument command -- /help, /clear, /git,
-			// /init, /context, /exit -- needed two Enters, and the two tests
-			// that assert otherwise were failing on main.
-			if m.state == stateIdle && m.autocompletePicked {
-				matches := m.slashMatches()
-				if len(matches) > 0 {
-					idx := m.autocompleteIdx
-					if idx >= 0 && idx < len(matches) {
-						m.input.SetValue("/" + matches[idx].Name + " ")
-						m.input.SetCursor(len(m.input.Value()))
-						m.autocompleteIdx = 0
-						m.autocompletePicked = false
-						m.resizeViewport()
-						return m, nil
-					}
-				}
-			}
-			m.autocompletePicked = false
-			return m.startTurn()
-		case "tab":
-			if m.state == stateIdle {
-				matches := m.slashMatches()
-				if len(matches) > 0 {
-					idx := m.autocompleteIdx
-					if idx >= 0 && idx < len(matches) {
-						m.input.SetValue("/" + matches[idx].Name + " ")
-						m.input.SetCursor(len(m.input.Value()))
-						m.autocompleteIdx = 0
-						m.resizeViewport()
-						return m, nil
-					}
-				}
-			}
-		case "up", "down":
-			if m.state == stateIdle {
-				matches := m.slashMatches()
-				if len(matches) > 0 {
-					if msg.String() == "up" {
-						m.autocompleteIdx--
-						if m.autocompleteIdx < 0 {
-							m.autocompleteIdx = len(matches) - 1
-						}
-					} else {
-						m.autocompleteIdx++
-						if m.autocompleteIdx >= len(matches) {
-							m.autocompleteIdx = 0
-						}
-					}
-					m.autocompletePicked = true
-					return m, nil
-				}
-			}
-		case "ctrl+n":
-			return m.clearConversation()
-		case "pgup":
-			m.viewport.PageUp()
-			return m, nil
-		case "pgdown":
-			m.viewport.PageDown()
-			return m, nil
-		}
-		var cmd tea.Cmd
-		oldPopupLines := 0
-		if m.state == stateIdle {
-			_, oldPopupLines = m.renderSlashPopup()
-		}
-		m.input, cmd = m.input.Update(msg)
-		newPopupLines := 0
-		if m.state == stateIdle {
-			_, newPopupLines = m.renderSlashPopup()
-		}
-		if oldPopupLines != newPopupLines {
-			m.resizeViewport()
-		}
-		if newPopupLines == 0 {
-			m.autocompleteIdx = 0
-			m.autocompletePicked = false
-		}
-		return m, cmd
+		return m.handleKey(msg)
 
 	case tea.MouseMsg:
-		var cmd tea.Cmd
-		m.viewport, cmd = m.viewport.Update(msg)
-		return m, cmd
+		return m.handleMouse(msg)
 
 	case groundingMsg:
-		if m.streamCh == nil {
-			return m, nil // a stray message from an already-abandoned stream
-		}
-		m.lastGrounding = msg.info
-		m.resizeViewport()
-		return m, waitForNext(m.streamCh)
+		return m.handleGrounding(msg)
 
 	case redactionsMsg:
-		if m.streamCh == nil {
-			return m, nil // a stray message from an already-abandoned stream
-		}
-		m.lastRedactions = sanitizeAll(msg.kinds)
-		m.resizeViewport()
-		return m, waitForNext(m.streamCh)
+		return m.handleRedactions(msg)
 
 	case degradedMsg:
-		if m.streamCh == nil {
-			return m, nil // a stray message from an already-abandoned stream
-		}
-		m.lastDegraded = sanitizeDegradations(msg.items)
-		m.resizeViewport()
-		return m, waitForNext(m.streamCh)
+		return m.handleDegraded(msg)
 
 	case providerMsg:
-		if m.streamCh == nil {
-			return m, nil // a stray message from an already-abandoned stream
-		}
-		m.lastProvider = sanitizeText(msg.provider)
-		m.resizeViewport()
-		return m, waitForNext(m.streamCh)
+		return m.handleProvider(msg)
 
 	case reasoningMsg:
-		if m.streamCh == nil {
-			return m, nil // a stray message from an already-abandoned stream
-		}
-		// Thinking arrives before (and among) the content tokens; start the
-		// assistant turn on the first reasoning chunk if no token has yet, so the
-		// dead air fills with visible thinking instead of a blank screen. Kept in
-		// the turn's SEPARATE reasoning field, never appended to text.
-		if m.state == stateSending {
-			m.state = stateStreaming
-		}
-		m.turns[m.ensureAssistantTurn()].reasoning += m.sanReasoning.Write(msg.text)
-		return m, tea.Batch(m.refreshSoon(), waitForNext(m.streamCh))
+		return m.handleReasoning(msg)
 
 	case historyMsg:
-		if m.streamCh == nil {
-			return m, nil // a stray message from an already-abandoned stream
-		}
-		m.lastHistoryTruncated = msg.info != nil && msg.info.Truncated
-		m.resizeViewport()
-		return m, waitForNext(m.streamCh)
+		return m.handleHistory(msg)
 
 	case toolActivityMsg:
-		if m.streamCh == nil {
-			return m, nil // a stray message from an already-abandoned stream
-		}
-		m.noteToolActivity(msg.activity)
-		m.refreshViewport()
-		return m, waitForNext(m.streamCh)
+		return m.handleToolActivity(msg)
 
 	case toolApprovalMsg:
-		if m.streamCh == nil {
-			// The stream was abandoned while the daemon was asking. Answer
-			// anyway, on the safe side, so nothing is left waiting on a
-			// question whose asker has gone.
-			msg.reply <- protocol.ApprovalCancelTurn
-			return m, nil
-		}
-		req := msg.req
-		m.pendingApproval = &req
-		m.approvalReply = msg.reply
-		m.state = stateToolApproval
-		m.refreshViewport()
-		// Keep draining: the stream goroutine is blocked on the reply, so
-		// nothing arrives until the user answers, and this wait is what picks up
-		// the stream again when they do.
-		return m, waitForNext(m.streamCh)
+		return m.handleToolApproval(msg)
 
 	case tokenMsg:
 		return m.handleToken(msg)
 
 	case refreshTickMsg:
-		// One repaint, if anything asked for one. Nothing re-arms the tick
-		// here: refreshSoon does that when the next token arrives, so a stream
-		// that has gone quiet stops ticking instead of waking the process
-		// sixty times a second to do nothing.
-		m.refreshScheduled = false
-		if m.refreshPending {
-			m.refreshViewport()
-		}
-		return m, nil
+		return m.handleRefreshTick()
 
 	case incompleteMsg:
-		if m.streamCh == nil {
-			return m, nil // a stray message from an already-abandoned stream
-		}
-		// TWO RECORDS, ONE EVENT, because the screen and the model are
-		// different audiences.
-		//
-		// For the model: the reason slug goes on the assistant turn itself, so
-		// buildHistory can carry it into the next request. Without this the
-		// notice below was the ONLY record, and buildHistory drops roleSystem
-		// -- so the next turn re-showed the model its own truncated answer
-		// with nothing to say it had been cut short, and it would build on a
-		// conclusion it never actually reached.
-		//
-		// For the user: a persistent scrollback notice (TUI-only chrome)
-		// appended right after the partial answer, not a header notice that
-		// clears on the next turn.
-		//
-		// streamDoneMsg follows, so keep draining the channel.
-		if msg.info != nil && m.streamAssistant >= 0 && m.streamAssistant < len(m.turns) {
-			m.turns[m.streamAssistant].incomplete = msg.info.Reason
-		}
-		m.appendTurn(turn{role: roleSystem, text: "⚠ answer cut off: " + incompleteText(msg.info)})
-		m.refreshViewport()
-		return m, waitForNext(m.streamCh)
+		return m.handleIncomplete(msg)
 
 	case editProposalsMsg:
-		if m.streamCh == nil {
-			return m, nil // a stray message from an already-abandoned stream
-		}
-		// Recorded, not acted on: streamDoneMsg follows immediately and is what
-		// starts the review. Keep draining.
-		m.daemonProposals = msg.blocks
-		m.gotDaemonProposals = true
-		return m, waitForNext(m.streamCh)
+		return m.handleEditProposals(msg)
 
 	case streamDoneMsg:
-		m.endStream()
-		return m.checkForEditBlocks()
+		return m.handleStreamDone()
 
 	case streamErrMsg:
-		// THE SAME LOSS, THROUGH THE ERROR DOOR (register item L2's first half).
-		// A stream that fails PARTWAY leaves whatever streamed sitting in
-		// m.turns as an ordinary assistant turn, and buildHistory sends it on
-		// the next prompt as a finished answer -- so the model is re-shown a
-		// reply that stops mid-sentence with nothing to say it was interrupted.
-		//
-		// The daemon cannot mark this one: its error path sends Done+Error with
-		// no Incomplete, and a transport drop has no daemon left to annotate it
-		// (protocol.go says exactly this -- a connection drop "remains the
-		// client's to distinguish"). This is the client doing that.
-		//
-		// Only when something actually streamed. An empty assistant turn is not
-		// a partial answer, carries no risk of being read as one, and is dropped
-		// by validTurn server-side anyway.
-		if m.streamAssistant >= 0 && m.streamAssistant < len(m.turns) &&
-			strings.TrimSpace(m.turns[m.streamAssistant].text) != "" {
-			m.turns[m.streamAssistant].incomplete = protocol.IncompleteProviderError
-		} else {
-			// NOTHING STREAMED, so the branch above has no partial answer to
-			// mark -- and until this existed that meant the transcript recorded
-			// the failure nowhere. The header still carries the error, but a
-			// header is one line that the next identical failure overwrites;
-			// this puts the failure UNDER THE MESSAGE THAT CAUSED IT, where a
-			// reader looking for their answer is already looking.
-			m.appendTurn(turn{role: roleSevered, text: sanitizeText(msg.err.Error())})
-		}
-		m.state = stateError
-		m.statusErr = sanitizeText(msg.err.Error())
-		m.endStream()
-		return m, m.input.Focus()
+		return m.handleStreamErr(msg)
 
 	case resetErrMsg:
-		// The live transcript was already cleared synchronously in
-		// clearConversation; only the daemon-side half failed. Reported as
-		// a transcript note rather than statusErr/stateError, since the
-		// user's chat is not actually in an error state — they can keep
-		// typing normally.
-		m.appendTurn(turn{role: roleSystem, text: sanitizeText(fmt.Sprintf("(local chat cleared, but clearing it on the daemon failed: %v)", msg.err))})
-		m.refreshViewport()
-		return m, nil
+		return m.handleResetErr(msg)
 
 	case spinner.TickMsg:
-		if m.state != stateSending && m.state != stateStreaming {
-			return m, nil
-		}
-		var cmd tea.Cmd
-		m.spinner, cmd = m.spinner.Update(msg)
-		return m, cmd
+		return m.handleSpinnerTick(msg)
 	}
 
 	return m, nil
+}
+
+func (m chatModel) handleWindowSize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
+	m.width = msg.Width
+	m.height = msg.Height
+	m.ready = true
+	m.viewport.Width = m.width
+	m.resizeViewport()
+	m.input.Width = inputWidthFor(m.width, m.input.Prompt)
+	m.refreshViewport()
+	return m, nil
+}
+
+func (m chatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// FIRST, BEFORE ANYTHING READS THE KEY. Every branch below reaches for
+	// msg.String(), and for a rune burst that builds a string as long as
+	// the burst -- so a megabyte paste was stringified twice before it got
+	// anywhere near the input. Bounding it after that point measured no
+	// improvement at all, which is how the real cost was found.
+	msg = m.boundPaste(msg)
+
+	if m.state == stateSplash {
+		m.state = stateIdle
+		return m, m.input.Focus()
+	}
+	// ctrl+c is answered in ONE place for every state, above the per-state
+	// handlers, so the key cannot mean "quit" in one corner of the UI and
+	// "stop" in another. That split is what made it feel like a trapdoor.
+	if msg.String() == "ctrl+c" {
+		return m.handleCtrlC()
+	}
+	m.quitArmed = false
+	if m.state == stateEditReview {
+		return m.handleReviewKey(msg)
+	}
+	if m.state == stateToolApproval {
+		return m.handleApprovalKey(msg)
+	}
+	switch msg.String() {
+	case "esc":
+		// ESC NEVER QUITS THE PROGRAM. It means "stop what is happening
+		// now", and that is the only reading of it that is safe to press by
+		// reflex: a user who hits esc a beat after the answer finished must
+		// not lose their session for it. With nothing in flight it does
+		// nothing at all.
+		return m.interruptTurn()
+	case "enter":
+		// Enter SUBMITS. It accepts a completion only when the user has
+		// actively chosen one with the arrow keys, which is the convention
+		// every editor popup follows.
+		//
+		// This used to be a byte-for-byte copy of the "tab" arm below, so
+		// Enter on "/help" only rewrote the input to "/help " and ran
+		// nothing. Every no-argument command -- /help, /clear, /git,
+		// /init, /context, /exit -- needed two Enters, and the two tests
+		// that assert otherwise were failing on main.
+		if m.state == stateIdle && m.autocompletePicked {
+			matches := m.slashMatches()
+			if len(matches) > 0 {
+				idx := m.autocompleteIdx
+				if idx >= 0 && idx < len(matches) {
+					m.input.SetValue("/" + matches[idx].Name + " ")
+					m.input.SetCursor(len(m.input.Value()))
+					m.autocompleteIdx = 0
+					m.autocompletePicked = false
+					m.resizeViewport()
+					return m, nil
+				}
+			}
+		}
+		m.autocompletePicked = false
+		return m.startTurn()
+	case "tab":
+		if m.state == stateIdle {
+			matches := m.slashMatches()
+			if len(matches) > 0 {
+				idx := m.autocompleteIdx
+				if idx >= 0 && idx < len(matches) {
+					m.input.SetValue("/" + matches[idx].Name + " ")
+					m.input.SetCursor(len(m.input.Value()))
+					m.autocompleteIdx = 0
+					m.resizeViewport()
+					return m, nil
+				}
+			}
+		}
+	case "up", "down":
+		if m.state == stateIdle {
+			matches := m.slashMatches()
+			if len(matches) > 0 {
+				if msg.String() == "up" {
+					m.autocompleteIdx--
+					if m.autocompleteIdx < 0 {
+						m.autocompleteIdx = len(matches) - 1
+					}
+				} else {
+					m.autocompleteIdx++
+					if m.autocompleteIdx >= len(matches) {
+						m.autocompleteIdx = 0
+					}
+				}
+				m.autocompletePicked = true
+				return m, nil
+			}
+		}
+	case "ctrl+n":
+		return m.clearConversation()
+	case "pgup":
+		m.viewport.PageUp()
+		return m, nil
+	case "pgdown":
+		m.viewport.PageDown()
+		return m, nil
+	}
+	var cmd tea.Cmd
+	oldPopupLines := 0
+	if m.state == stateIdle {
+		_, oldPopupLines = m.renderSlashPopup()
+	}
+	m.input, cmd = m.input.Update(msg)
+	newPopupLines := 0
+	if m.state == stateIdle {
+		_, newPopupLines = m.renderSlashPopup()
+	}
+	if oldPopupLines != newPopupLines {
+		m.resizeViewport()
+	}
+	if newPopupLines == 0 {
+		m.autocompleteIdx = 0
+		m.autocompletePicked = false
+	}
+	return m, cmd
+}
+
+func (m chatModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	m.viewport, cmd = m.viewport.Update(msg)
+	return m, cmd
+}
+
+func (m chatModel) handleGrounding(msg groundingMsg) (tea.Model, tea.Cmd) {
+	if m.streamCh == nil {
+		return m, nil // a stray message from an already-abandoned stream
+	}
+	m.lastGrounding = msg.info
+	m.resizeViewport()
+	return m, waitForNext(m.streamCh)
+}
+
+func (m chatModel) handleRedactions(msg redactionsMsg) (tea.Model, tea.Cmd) {
+	if m.streamCh == nil {
+		return m, nil // a stray message from an already-abandoned stream
+	}
+	m.lastRedactions = sanitizeAll(msg.kinds)
+	m.resizeViewport()
+	return m, waitForNext(m.streamCh)
+}
+
+func (m chatModel) handleDegraded(msg degradedMsg) (tea.Model, tea.Cmd) {
+	if m.streamCh == nil {
+		return m, nil // a stray message from an already-abandoned stream
+	}
+	m.lastDegraded = sanitizeDegradations(msg.items)
+	m.resizeViewport()
+	return m, waitForNext(m.streamCh)
+}
+
+func (m chatModel) handleProvider(msg providerMsg) (tea.Model, tea.Cmd) {
+	if m.streamCh == nil {
+		return m, nil // a stray message from an already-abandoned stream
+	}
+	m.lastProvider = sanitizeText(msg.provider)
+	m.resizeViewport()
+	return m, waitForNext(m.streamCh)
+}
+
+func (m chatModel) handleReasoning(msg reasoningMsg) (tea.Model, tea.Cmd) {
+	if m.streamCh == nil {
+		return m, nil // a stray message from an already-abandoned stream
+	}
+	// Thinking arrives before (and among) the content tokens; start the
+	// assistant turn on the first reasoning chunk if no token has yet, so the
+	// dead air fills with visible thinking instead of a blank screen. Kept in
+	// the turn's SEPARATE reasoning field, never appended to text.
+	if m.state == stateSending {
+		m.state = stateStreaming
+	}
+	m.turns[m.ensureAssistantTurn()].reasoning += m.sanReasoning.Write(msg.text)
+	return m, tea.Batch(m.refreshSoon(), waitForNext(m.streamCh))
+}
+
+func (m chatModel) handleHistory(msg historyMsg) (tea.Model, tea.Cmd) {
+	if m.streamCh == nil {
+		return m, nil // a stray message from an already-abandoned stream
+	}
+	m.lastHistoryTruncated = msg.info != nil && msg.info.Truncated
+	m.resizeViewport()
+	return m, waitForNext(m.streamCh)
+}
+
+func (m chatModel) handleToolActivity(msg toolActivityMsg) (tea.Model, tea.Cmd) {
+	if m.streamCh == nil {
+		return m, nil // a stray message from an already-abandoned stream
+	}
+	m.noteToolActivity(msg.activity)
+	m.refreshViewport()
+	return m, waitForNext(m.streamCh)
+}
+
+func (m chatModel) handleToolApproval(msg toolApprovalMsg) (tea.Model, tea.Cmd) {
+	if m.streamCh == nil {
+		// The stream was abandoned while the daemon was asking. Answer
+		// anyway, on the safe side, so nothing is left waiting on a
+		// question whose asker has gone.
+		msg.reply <- protocol.ApprovalCancelTurn
+		return m, nil
+	}
+	req := msg.req
+	m.pendingApproval = &req
+	m.approvalReply = msg.reply
+	m.state = stateToolApproval
+	m.refreshViewport()
+	// Keep draining: the stream goroutine is blocked on the reply, so
+	// nothing arrives until the user answers, and this wait is what picks up
+	// the stream again when they do.
+	return m, waitForNext(m.streamCh)
+}
+
+func (m chatModel) handleRefreshTick() (tea.Model, tea.Cmd) {
+	// One repaint, if anything asked for one. Nothing re-arms the tick
+	// here: refreshSoon does that when the next token arrives, so a stream
+	// that has gone quiet stops ticking instead of waking the process
+	// sixty times a second to do nothing.
+	m.refreshScheduled = false
+	if m.refreshPending {
+		m.refreshViewport()
+	}
+	return m, nil
+}
+
+func (m chatModel) handleIncomplete(msg incompleteMsg) (tea.Model, tea.Cmd) {
+	if m.streamCh == nil {
+		return m, nil // a stray message from an already-abandoned stream
+	}
+	// TWO RECORDS, ONE EVENT, because the screen and the model are
+	// different audiences.
+	//
+	// For the model: the reason slug goes on the assistant turn itself, so
+	// buildHistory can carry it into the next request. Without this the
+	// notice below was the ONLY record, and buildHistory drops roleSystem
+	// -- so the next turn re-showed the model its own truncated answer
+	// with nothing to say it had been cut short, and it would build on a
+	// conclusion it never actually reached.
+	//
+	// For the user: a persistent scrollback notice (TUI-only chrome)
+	// appended right after the partial answer, not a header notice that
+	// clears on the next turn.
+	//
+	// streamDoneMsg follows, so keep draining the channel.
+	if msg.info != nil && m.streamAssistant >= 0 && m.streamAssistant < len(m.turns) {
+		m.turns[m.streamAssistant].incomplete = msg.info.Reason
+	}
+	m.appendTurn(turn{role: roleSystem, text: "⚠ answer cut off: " + incompleteText(msg.info)})
+	m.refreshViewport()
+	return m, waitForNext(m.streamCh)
+}
+
+func (m chatModel) handleEditProposals(msg editProposalsMsg) (tea.Model, tea.Cmd) {
+	if m.streamCh == nil {
+		return m, nil // a stray message from an already-abandoned stream
+	}
+	// Recorded, not acted on: streamDoneMsg follows immediately and is what
+	// starts the review. Keep draining.
+	m.daemonProposals = msg.blocks
+	m.gotDaemonProposals = true
+	return m, waitForNext(m.streamCh)
+}
+
+func (m chatModel) handleStreamDone() (tea.Model, tea.Cmd) {
+	m.endStream()
+	return m.checkForEditBlocks()
+}
+
+func (m chatModel) handleStreamErr(msg streamErrMsg) (tea.Model, tea.Cmd) {
+	// THE SAME LOSS, THROUGH THE ERROR DOOR (register item L2's first half).
+	// A stream that fails PARTWAY leaves whatever streamed sitting in
+	// m.turns as an ordinary assistant turn, and buildHistory sends it on
+	// the next prompt as a finished answer -- so the model is re-shown a
+	// reply that stops mid-sentence with nothing to say it was interrupted.
+	//
+	// The daemon cannot mark this one: its error path sends Done+Error with
+	// no Incomplete, and a transport drop has no daemon left to annotate it
+	// (protocol.go says exactly this -- a connection drop "remains the
+	// client's to distinguish"). This is the client doing that.
+	//
+	// Only when something actually streamed. An empty assistant turn is not
+	// a partial answer, carries no risk of being read as one, and is dropped
+	// by validTurn server-side anyway.
+	if m.streamAssistant >= 0 && m.streamAssistant < len(m.turns) &&
+		strings.TrimSpace(m.turns[m.streamAssistant].text) != "" {
+		m.turns[m.streamAssistant].incomplete = protocol.IncompleteProviderError
+	} else {
+		// NOTHING STREAMED, so the branch above has no partial answer to
+		// mark -- and until this existed that meant the transcript recorded
+		// the failure nowhere. The header still carries the error, but a
+		// header is one line that the next identical failure overwrites;
+		// this puts the failure UNDER THE MESSAGE THAT CAUSED IT, where a
+		// reader looking for their answer is already looking.
+		m.appendTurn(turn{role: roleSevered, text: sanitizeText(msg.err.Error())})
+	}
+	m.state = stateError
+	m.statusErr = sanitizeText(msg.err.Error())
+	m.endStream()
+	return m, m.input.Focus()
+}
+
+func (m chatModel) handleResetErr(msg resetErrMsg) (tea.Model, tea.Cmd) {
+	// The live transcript was already cleared synchronously in
+	// clearConversation; only the daemon-side half failed. Reported as
+	// a transcript note rather than statusErr/stateError, since the
+	// user's chat is not actually in an error state — they can keep
+	// typing normally.
+	m.appendTurn(turn{role: roleSystem, text: sanitizeText(fmt.Sprintf("(local chat cleared, but clearing it on the daemon failed: %v)", msg.err))})
+	m.refreshViewport()
+	return m, nil
+}
+
+func (m chatModel) handleSpinnerTick(msg spinner.TickMsg) (tea.Model, tea.Cmd) {
+	if m.state != stateSending && m.state != stateStreaming {
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.spinner, cmd = m.spinner.Update(msg)
+	return m, cmd
 }
 
 // commandReason and commandRefactor are the exact, case-sensitive slash-
