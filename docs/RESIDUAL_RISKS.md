@@ -287,3 +287,41 @@ measured that a convention fails inside the commit that establishes it.
 types. An AST guard on `Detail()`'s callers — the same shape as
 `TestRawByteStructuresHaveNoNewReaders` — is the obvious mechanism and is not
 built.
+
+---
+
+## R1.9 — A 1 MB paste costs most of a frame, and 3.2 will not fix it
+
+*(Opened by the 3.1 benchmark harness, 2026-09-04.)*
+
+**What it is.** `Update` handling a 1 MB paste runs at **40–100% of D-1's 16 ms
+frame budget**, measured on the reference machine (13th Gen i5-1340P). It is the
+most expensive single input the client accepts.
+
+**Why it is a register row and not a filed violation.** It does not reproduce as
+a breach. Four samplings of the same input, same machine, same code gave medians
+of **6.3 ms, 13.6 ms, 14.5 ms and 16.6 ms** — a 2.6× run-to-run spread that
+straddles the ceiling. Stating it as "over budget" would be as wrong as stating
+it as "within budget"; what is true is that it has no reliable headroom.
+
+**The part that matters for planning:** this was measured on an **empty
+transcript**. The cost is in handling a million runes of input, not in the
+transcript render. **Task 3.2's render cache will not close it.** Closing it
+needs its own bound on pasted input — truncation with a visible notice, or
+moving the work off the event loop.
+
+**Blast radius.** One dropped frame on paste. Input latency, not correctness. On
+a slower machine — a CI runner, an older laptop — it is over budget rather than
+near it.
+
+**Pinned by.** `TestNoUpdateExceedsOneFrame/1MB_paste`
+(`clients/tui/renderbench_test.go`). D-1's 16 ms is **reported with the distance
+printed on every run**; what is asserted is 3× the budget, because the
+measurement cannot resolve finer than its own noise and two earlier versions of
+this test flapped — once in each direction — trying. The deterministic gate on
+this path is `TestPerTokenAllocationsAreBounded`.
+
+**Trigger.** Any of: a report of paste lag; adding syntax highlighting or
+validation on the input path, both of which multiply per-rune cost; or the 3×
+assertion firing, which would mean the cost has grown past anything noise
+explains.
