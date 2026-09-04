@@ -511,6 +511,81 @@ jobs:
         run: go test -run TestPlatformCoverageIsStated -v -count=1 .
         working-directory: ${{ matrix.module }}
 
+  # ---------------------------------------------------------------------------
+  # THE TERMINAL CLIENT ON macOS, ON EVERY PUSH. The narrow half of `cross`.
+  #
+  # WHAT WAS ACTUALLY WRONG, stated precisely, because the obvious reading is
+  # wrong in two directions. macOS is NOT held by memory: the `cross` matrix
+  # expands to include macos-latest whenever github.ref is refs/heads/main, so
+  # every commit that reaches the mainline gets all four macOS jobs
+  # automatically -- verified on run 33620636112, a main push, four macOS jobs
+  # green. And adding macOS everywhere would NOT buy what it looks like it buys:
+  # the pty-backed suites are `//go:build linux`, so terminal restore and the
+  # 57-byte sequence are not tested on macOS at any trigger. That is a build-tag
+  # gap, not a trigger gap, and no scheduling change touches it.
+  #
+  # The real gap is narrower and still worth closing: a BRANCH goes green without
+  # macOS, so a macOS break is found after the merge rather than before it, on
+  # the one module a user actually runs in a terminal.
+  #
+  # WHY A WHOLE JOB RATHER THAN A PATH FILTER. A filter naming the signal, pty
+  # and terminal files is an ENUMERATION, and this repository has been burned by
+  # that exact shape twice -- the debt-marker "gate" that checked one module of
+  # six, and the 09-01 register checker that missed a fourth register. New signal
+  # code in a filename nobody added to the list means macOS silently does not run
+  # and the push is green. This is the property instead: every push verifies the
+  # terminal client on all three platforms.
+  #
+  # WHAT IT COSTS, MEASURED on run 33896704671 rather than estimated. Billing is
+  # wall-clock per job, rounded up to the minute, at Linux 1x / Windows 2x /
+  # macOS 10x. That run: 22 Linux jobs = 74 min, 4 Windows = 18, 4 macOS = 70,
+  # total 162. A push run without macOS is 92. Adding all four macOS jobs to
+  # every push would take the free plan's 2,000 minutes from ~21 pushes a month
+  # to ~12. Adding THIS ONE is 20 minutes -- 2 minutes at 10x -- for ~17 pushes
+  # a month. It buys the platform coverage where the platform risk is, at 29% of
+  # the price of buying it everywhere.
+  #
+  # SKIPPED where `cross` already covers it, so main and workflow_dispatch do not
+  # pay for macos-latest twice.
+  # ---------------------------------------------------------------------------
+  macos-tui:
+    name: macos (clients/tui, every push)
+    if: >-
+      vars.HOSTED_RUNNERS_DISABLED != 'true' &&
+      github.ref != 'refs/heads/main' &&
+      github.event_name != 'workflow_dispatch' &&
+      (github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name != github.repository)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: "**/go.sum"
+
+      - name: Build
+        run: go build ./...
+        working-directory: clients/tui
+
+      # Vet compiles the TEST files too, which build alone does not.
+      - name: Vet
+        run: go vet ./...
+        working-directory: clients/tui
+
+      # No -race: same narrowing as `cross`. The race detector's question is not
+      # platform-specific and this job exists to ask a platform-specific one.
+      - name: Test
+        run: go test ./...
+        working-directory: clients/tui
+
+      # WHAT THIS PLATFORM DID NOT RUN, in this platform's own log. Five files
+      # are `//go:build linux`; without this the step above prints `ok` and
+      # nothing says the terminal-restore path was never compiled here.
+      - name: What this platform does not run
+        run: go test -run TestPlatformCoverageIsStated -v -count=1 .
+        working-directory: clients/tui
+
   govulncheck:
     name: govulncheck (${{ matrix.module }})
     # A same-repo PR would otherwise run twice: once for the branch push and
