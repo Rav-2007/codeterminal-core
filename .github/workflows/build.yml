@@ -495,6 +495,22 @@ jobs:
         run: go test ./...
         working-directory: ${{ matrix.module }}
 
+      # THE POINT OF THE PREVIOUS STEP'S SILENCE, MADE AUDIBLE.
+      #
+      # Five of clients/tui's test files are `//go:build linux`, because
+      # allocating a pty is per-kernel. On this runner they are not compiled, the
+      # step above prints `ok`, and nothing says that the terminal-restore path,
+      # the signal handling, the real-binary sanitizer wiring and the
+      # render-determinism matrix were never exercised here.
+      #
+      # TestPlatformCoverageIsStated names them -- but through t.Logf, which
+      # `go test` swallows without -v. Run explicitly, with -v, so the report
+      # lands in the log of the platform that is missing them. One second.
+      - name: What this platform does not run
+        if: matrix.module == 'clients/tui'
+        run: go test -run TestPlatformCoverageIsStated -v -count=1 .
+        working-directory: ${{ matrix.module }}
+
   govulncheck:
     name: govulncheck (${{ matrix.module }})
     # A same-repo PR would otherwise run twice: once for the branch push and
