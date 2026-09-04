@@ -169,6 +169,23 @@ the one the instruction predicted: **three things broke, and all three were real
 None of them was a product defect. All three were the same shape — a check that
 had only ever run in one environment, meeting a second one.
 
+**After the fixes, every `clients/tui` job is green on all three platforms**
+(run `33896704671`, `workflow_dispatch` so macOS was in the matrix):
+
+| Job | Result |
+|---|---|
+| `go (clients/tui)` — Linux, `-race` | **success**, 188.8 s |
+| `cross (windows-latest, clients/tui)` | **success** |
+| `cross (macos-latest, clients/tui)` | **success** |
+| `lint (clients/tui)` | **success** |
+| `govulncheck (clients/tui)` | **success** |
+| coverage ratchet | **84.5%** against a floor of 84.0 |
+
+And the figure this document quotes for the transcript bound is now **produced by
+a runner rather than by my machine**, which is the whole point of the unraced
+soak step: *"2000 exchanges: 502 turns kept, 335 KB of text, 502 cache blocks,
+heap-in-use 2.9 MB, evicted 3499 turns / 2.2 MB"*, in 37.18 s.
+
 ### 1. A leak gate counted the test fixture's own listener (Windows)
 
 `cross (windows-latest, clients/tui)` failed on
