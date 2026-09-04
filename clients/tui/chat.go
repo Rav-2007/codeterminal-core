@@ -1687,6 +1687,19 @@ func (m chatModel) finishReview() (tea.Model, tea.Cmd) {
 }
 
 func (m *chatModel) refreshViewport() {
+	// FOLLOW THE STREAM ONLY FOR SOMEONE WHO IS ALREADY AT THE BOTTOM.
+	//
+	// This used to be an unconditional GotoBottom, and refreshViewport runs on
+	// every streamed token, so scrolling back through an answer while it was
+	// still arriving was not awkward but impossible: the view snapped to the
+	// bottom within milliseconds and the text being read was gone.
+	//
+	// Read BEFORE SetContent, because SetContent changes the line count and
+	// therefore what "the bottom" means. Someone who scrolls back to the bottom
+	// starts following again, which is why this is a question asked every time
+	// rather than a flag set once.
+	follow := m.viewport.AtBottom()
+
 	content := m.transcript.render(m.turns, m.viewport.Width)
 	if m.state == stateEditReview && m.reviewPrepared != nil {
 		content += "\n\n" + renderReviewPanel(m.reviewIndex, len(m.reviewBlocks), m.reviewPrepared)
@@ -1695,7 +1708,9 @@ func (m *chatModel) refreshViewport() {
 		content += "\n\n" + renderApprovalPanel(*m.pendingApproval)
 	}
 	m.viewport.SetContent(wrapToWidth(content, m.viewport.Width))
-	m.viewport.GotoBottom()
+	if follow {
+		m.viewport.GotoBottom()
+	}
 }
 
 // wrapToWidth reflows transcript content to the viewport's width.
