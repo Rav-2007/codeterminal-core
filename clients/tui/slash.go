@@ -53,7 +53,7 @@ var slashCatalog = []slashDef{
 	{Name: "model", Kind: slashLocal, Summary: "list or select a models.json tier (/model <name>)"},
 	{Name: "mcp-server", Kind: slashLocal, Summary: "show configured MCP servers and tool policy"},
 	{Name: "clear", Kind: slashLocal, Summary: "clear the on-screen transcript"},
-	{Name: "compact", Kind: slashLocal, Summary: "drop older turns; keep the last few"},
+	{Name: "compact", Kind: slashLocal, Summary: "keep only the last 8 turns, now"},
 	{Name: "context", Kind: slashLocal, Summary: "show workspace, model tier, and last grounding"},
 	{Name: "git", Kind: slashLocal, Summary: "show git status for the workspace"},
 	{Name: "init", Kind: slashLocal, Summary: "quick start checklist for this workspace"},
@@ -237,6 +237,19 @@ func formatSlashHelp() string {
 	b.WriteString("  esc            stop the turn in flight; the transcript is kept\n")
 	b.WriteString("  ctrl+c         stop the turn in flight, or quit when nothing is running\n")
 	b.WriteString("  ctrl+n         start a new conversation\n")
+
+	// THE AUTOMATIC BOUND, said here because /help is where someone goes after
+	// seeing the eviction marker and wondering what took their transcript.
+	// This is a TUI-only paragraph rather than part of the shared catalog: the
+	// VS Code client has no such bound, and a mirrored summary that claimed it
+	// did would be a lie in the other client (slash_clientparity_test.go is
+	// what stops that happening by accident).
+	fmt.Fprintf(&b, "\ntranscript:\n"+
+		"  a long session trims its own oldest turns once it passes %d turns or %s\n"+
+		"  of text, and says so in the transcript when it does. /compact is the\n"+
+		"  deliberate version and keeps far less. Set %s or\n"+
+		"  %s to change the ceilings.\n",
+		defaultMaxTurns, humanBytes(defaultMaxTranscriptBytes), maxTurnsEnv, maxBytesEnv)
 	return strings.TrimRight(b.String(), "\n")
 }
 

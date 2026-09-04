@@ -236,7 +236,7 @@
     { name: 'model', summary: 'list or select a models.json tier' },
     { name: 'mcp-server', summary: 'show configured MCP servers and tool policy' },
     { name: 'clear', summary: 'clear the on-screen transcript' },
-    { name: 'compact', summary: 'drop older turns; keep the last few' },
+    { name: 'compact', summary: 'keep only the last 8 turns, now' },
     { name: 'context', summary: 'show workspace, model tier, and last grounding' },
     { name: 'git', summary: 'show git status for the workspace' },
     { name: 'init', summary: 'quick start checklist for this workspace' },

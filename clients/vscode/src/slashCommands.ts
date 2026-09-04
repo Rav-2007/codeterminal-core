@@ -50,7 +50,7 @@ export const SLASH_CATALOG: SlashDef[] = [
   },
   { name: 'mcp-server', kind: 'local', summary: 'show configured MCP servers and tool policy' },
   { name: 'clear', kind: 'local', summary: 'clear the on-screen transcript' },
-  { name: 'compact', kind: 'local', summary: 'drop older turns; keep the last few' },
+  { name: 'compact', kind: 'local', summary: 'keep only the last 8 turns, now' },
   { name: 'context', kind: 'local', summary: 'show workspace, model tier, and last grounding' },
   { name: 'git', kind: 'local', summary: 'show git status for the workspace' },
   { name: 'init', kind: 'local', summary: 'quick start checklist for this workspace' },

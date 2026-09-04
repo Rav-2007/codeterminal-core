@@ -118,6 +118,12 @@ type chatModel struct {
 	refreshPending   bool
 	refreshScheduled bool
 
+	// limits bounds the transcript; evictedTurns and evictedBytes are the
+	// running totals the eviction marker reports. See transcriptbound.go.
+	limits       transcriptLimits
+	evictedTurns int
+	evictedBytes int
+
 	// sanAnswer and sanReasoning strip terminal escapes from the two streams
 	// the daemon sends (see sanitize.go). They are stateful, so they live here
 	// rather than being created per token: a sequence split across two tokens
@@ -275,6 +281,7 @@ func newChatModel(clientName, workspace, workspaceRoot string, initialHistory []
 	return chatModel{
 		state:           stateSplash,
 		streamAssistant: -1,
+		limits:          loadTranscriptLimits(),
 		input:           ti,
 		spinner:         sp,
 		viewport:        vp,
@@ -859,6 +866,13 @@ func (m chatModel) startTurn() (tea.Model, tea.Cmd) {
 	// transcript. Sanitized once here, before the turn is built, so the bytes
 	// shown on screen and the bytes sent to the daemon are the same bytes.
 	prompt = sanitizeText(prompt)
+
+	// BOUND THE TRANSCRIPT FIRST, so that what is sent and what is shown are
+	// the same conversation. Running it after buildHistory would send the
+	// daemon turns the user can no longer see, which is the /compact
+	// inconsistency this deliberately avoids. See enforceTranscriptBound for
+	// why the start of a turn is the only index-safe place to do this.
+	m.enforceTranscriptBound()
 
 	// Built from the transcript BEFORE the current prompt is appended below,
 	// so the not-yet-answered prompt can never end up in its own History.
