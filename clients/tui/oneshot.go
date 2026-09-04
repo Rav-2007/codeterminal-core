@@ -68,10 +68,17 @@ func runOneShotPrompt(clientName, prompt string, env oneShotIO) int {
 	// Stateful and hoisted out of the loop for the same reason it is in the
 	// chat model: one token can end mid-sequence and the next completes it.
 	//
+	// UNCONDITIONAL, NOT GATED ON isatty, and that is the whole point. An
+	// escape written to a file is not defused, it is DEFERRED: it executes the
+	// moment anyone cats or lesses that file, and one-shot output landing in a
+	// log that someone later greps is exactly that path. Deciding by whether
+	// stdout happens to be a terminal today would leave the sequence armed for
+	// whoever reads it tomorrow.
+	//
 	// This does change the bytes a caller piping stdout receives, which the
-	// note below used to promise it would not. The promise was worth less than
-	// the hole: what changes is only control sequences, never the text of the
-	// answer, and a pipeline reading an answer wants the text.
+	// note below the loop used to promise it would not. The promise was wrong:
+	// what changes is only control sequences, never the text of the answer.
+	// See docs/RELEASE_NOTES.md.
 	var sani escSanitizer
 	for {
 		var tok protocol.TokenResponse
@@ -86,9 +93,15 @@ func runOneShotPrompt(clientName, prompt string, env oneShotIO) int {
 			say(env.err, "\nerror from daemon: %s\n", sanitizeText(tok.Error))
 			return 1
 		}
-		// Activity and approvals go to STDERR, never stdout. Stdout is the
-		// answer, and a caller piping it into something else must get exactly
-		// what it got before this feature existed.
+		// Activity and approvals go to STDERR, never stdout. Stdout carries
+		// the answer and nothing else.
+		//
+		// WHAT IS GUARANTEED ABOUT STDOUT, precisely, because this used to
+		// promise more than it should have: the TEXT of the answer is
+		// byte-stable -- every printable character, newline and tab the model
+		// produced, in order, unchanged. Terminal control sequences are
+		// removed (see sanitize.go), except colour, which is preserved. A
+		// pipeline reading an answer gets the answer.
 		if tok.ToolActivity != nil {
 			if line := oneShotActivityLine(*tok.ToolActivity); line != "" {
 				say(env.err, "%s\n", sanitizeText(line))
