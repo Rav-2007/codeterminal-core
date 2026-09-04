@@ -67,6 +67,16 @@ TARGETS=(
   "daemon:FuzzVerifyApproval"
   "daemon:FuzzToolCallAccumulator"
   "daemon:FuzzSplitQualifiedName"
+
+  # The TUI had targets and no entries here, so neither sanitizer fuzzer had
+  # ever been run by this gate -- a fuzz target nobody runs is a comment.
+  # FuzzIncrementalRenderMatchesFull is the render cache's equivalence gate:
+  # cache.render must equal renderTranscript byte for byte, seeded from the
+  # sanitizer corpus because those are the escapes that actually reach a
+  # transcript.
+  "clients/tui:FuzzSanitizeNoEscapeSurvives"
+  "clients/tui:FuzzSanitizeChunkInvariance"
+  "clients/tui:FuzzIncrementalRenderMatchesFull"
 )
 
 status=0
