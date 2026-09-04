@@ -101,7 +101,14 @@ func runChat(workspace string) {
 	}
 
 	p := tea.NewProgram(newChatModel("codeterminal-tui", absWorkspace, workspaceRoot, persistedHistory), tea.WithAltScreen(), tea.WithMouseCellMotion())
-	if _, err := p.Run(); err != nil {
+	// SIGHUP and SIGQUIT reach Bubble Tea's own shutdown through here; without
+	// it SIGHUP killed the process with the alternate screen still up. finish
+	// also re-raises a caught SIGQUIT, which is why it runs before the error
+	// check below -- see exitsignals_unix.go.
+	finish := installExitSignals(p.Quit)
+	_, err = p.Run()
+	finish()
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
