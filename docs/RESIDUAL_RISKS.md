@@ -63,6 +63,15 @@ runs everywhere and prints, in the failing platform's own test output, which
 suites did not run there. See *Per-platform status* in
 [the readiness statement](TUI_PRODUCTION_READINESS_2026-09-04.md).
 
+**Adding macOS to every push did not change this**, and the distinction matters
+if someone reads the CI matrix and concludes otherwise. Since 2026-09-04 a
+`macos (clients/tui, every push)` job builds, vets and runs the suite on darwin
+for every branch push — proved on run `33901690615` — but the five pty-backed
+files are `//go:build linux` and do not compile there at any trigger. **These
+three rows are pinned on Linux and nowhere else, before and after.** Closing that
+means a darwin pty helper, which is engineering rather than scheduling and is not
+done. `exitsignals_unix.go`'s header now says so at the point of edit.
+
 ### What this re-read found in the register itself
 
 **Two of its four code references had drifted** — R1.7's by 14 lines, R1.5's by
