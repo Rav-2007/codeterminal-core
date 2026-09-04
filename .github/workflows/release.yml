@@ -192,7 +192,12 @@ jobs:
 
             # Stages models.json and the LICENSE, and FAILS if either binary is
             # missing rather than packaging a broken runtime.
-            node scripts/stage-runtime.js
+            #
+            # TOLD WHICH TARGET, like verify-vsix.js below. This loop packages
+            # all three targets on ONE Linux runner, so the script cannot infer
+            # the binary suffix from the host it is running on -- doing so is
+            # what failed win32-x64 on the first real run of this workflow.
+            node scripts/stage-runtime.js "$TARGET"
 
             OUT="../../out-vsix/codeterminal-vscode-$TARGET-$VERSION.vsix"
             npx vsce package --no-dependencies --target "$TARGET" -o "$OUT"

@@ -25,7 +25,30 @@ const extRoot = path.resolve(__dirname, '..');
 const repoRoot = path.resolve(extRoot, '..', '..');
 const runtimeDir = path.join(extRoot, 'daemon');
 
-const exe = process.platform === 'win32' ? '.exe' : '';
+// THE TARGET IS NOT THE HOST, and assuming it was is what broke the first real
+// run of release.yml (run 33921667448, 2026-09-05). The release workflow builds
+// binaries natively on three runners and then assembles ALL THREE .vsix packages
+// on ONE Linux runner, so when it packages win32-x64 this script runs on linux
+// while the staged binaries are `.exe`. `process.platform` answered "linux",
+// the requireFile below looked for `codeterminal-daemon`, and the job failed
+// after two of three targets had already packaged cleanly.
+//
+// The defect predates this branch (4453825, on main). It survived because
+// release.yml is tag- and dispatch-triggered and had never been run: the two
+// targets whose suffix happens to match a Linux packaging host both pass, so
+// nothing local or in build.yml could see it.
+//
+// So the target is passed in, exactly as it already is to verify-vsix.js, and
+// the host is only a fallback -- which keeps `npm run build:runtime` working
+// unchanged for a developer staging for their own machine.
+const target = process.argv[2] || '';
+if (target && !/^(linux-x64|darwin-arm64|win32-x64)$/.test(target)) {
+  console.error(`\nstage-runtime: unknown target ${target}\n  expected one of linux-x64, darwin-arm64, win32-x64\n`);
+  process.exit(1);
+}
+const exe = target
+  ? (target === 'win32-x64' ? '.exe' : '')
+  : (process.platform === 'win32' ? '.exe' : '');
 
 function copy(from, to) {
   fs.mkdirSync(path.dirname(to), { recursive: true });
