@@ -75,6 +75,13 @@
 # numbers because Go had CACHED runs 2 and 3; a cached result is one
 # measurement wearing three hats, and would have hidden the swing entirely.)
 
+# 2026-09-03, clients/tui 82.0 -> 83.0. The escape-sanitization work
+# (sanitize.go and its four test files) took this package from 82.2 to 83.3.
+# Measured THREE TIMES UNCACHED with the test cache cleared before each run:
+# 83.3 x3. Floored a few tenths below, like every other entry here, so ordinary
+# variance is not a red build. A ratchet that is never raised is a ratchet that
+# only ever documents the past.
+#
 codeterminal/daemon              78.0
 codeterminal/editapply           88.0
 codeterminal/proxy               85.0
@@ -96,4 +103,4 @@ codeterminal/proxy/testharness    0.0
 codeterminal/helper              22.0
 codeterminal/helper/helperproto  75.0
 codeterminal/protocol            89.5
-codeterminal/clients/tui         82.0
+codeterminal/clients/tui         83.0
