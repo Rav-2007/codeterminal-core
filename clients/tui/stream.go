@@ -152,7 +152,7 @@ func resetHistoryOnDaemon(ctx context.Context, clientName string, ch chan tea.Ms
 		ch <- resetErrMsg{err}
 		return
 	}
-	defer sess.Close()
+	defer func() { _ = sess.Close() }() // see daemonSession.Close
 
 	if err := sess.enc.Encode(protocol.PromptRequest{
 		ProtocolVersion: protocol.ProtocolVersion,
@@ -301,14 +301,17 @@ func streamPrompt(ctx context.Context, clientName, workspace, prompt, promptKind
 		deliver(ctx, ch, streamErrMsg{err})
 		return
 	}
-	defer sess.Close()
+	defer func() { _ = sess.Close() }() // see daemonSession.Close
 
 	unblock := make(chan struct{})
 	defer close(unblock)
 	go func() {
 		select {
 		case <-ctx.Done():
-			sess.Close()
+			// Racing the read below on purpose: closing under it is what
+			// unblocks it. An error here is the expected outcome of that race,
+			// not information.
+			_ = sess.Close()
 		case <-unblock:
 		}
 	}()

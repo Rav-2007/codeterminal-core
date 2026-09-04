@@ -99,7 +99,9 @@ func runChat(workspace string) {
 	// The streaming path (stream.go) never reads this field, so a later
 	// per-prompt connection can't re-hydrate turns the TUI already has.
 	persistedHistory := preflight.handshake.PersistedHistory
-	preflight.Close()
+	// Ignored deliberately, and it is the same reasoning at all five close
+	// sites in this client -- see the note on daemonSession.Close.
+	_ = preflight.Close()
 
 	absWorkspace, err := filepath.Abs(workspace)
 	if err != nil {

@@ -27,6 +27,29 @@ type daemonSession struct {
 	handshake protocol.HandshakeResponse
 }
 
+// Close releases the connection.
+//
+// ITS ERROR IS IGNORED AT ALL FIVE CALL SITES IN THIS CLIENT, and that is a
+// decision rather than an oversight, so the reasoning lives here once instead
+// of five times.
+//
+// A close error on a socket can mean one of two things. On a WRITE path it can
+// mean buffered data was never flushed, which is real data loss and must be
+// reported. On a read path, or where everything written has already left, it
+// carries no information a caller could act on: the file descriptor is
+// released either way, and there is nothing left to retry.
+//
+// This client is only ever the second kind. sess.enc is a json.Encoder wrapped
+// directly around the connection with no bufio in between (see dialDaemon), so
+// every request is on the wire the moment Encode returns -- there is no buffer
+// left to lose at close. The five sites are a preflight connection whose
+// handshake has already been read, three deferred closes after the reply has
+// been consumed, and one deliberate close from another goroutine to unblock a
+// read, where an error is the expected outcome of the race.
+//
+// If a buffered writer is ever introduced between the encoder and the
+// connection, this stops being true and every one of those sites becomes a
+// place data can vanish silently.
 func (s *daemonSession) Close() error {
 	return s.conn.Close()
 }

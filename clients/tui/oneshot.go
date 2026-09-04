@@ -79,7 +79,7 @@ func runOneShotPrompt(clientName, prompt string, env oneShotIO) int {
 		say(env.err, "error: %v\n", err)
 		return 1
 	}
-	defer sess.Close()
+	defer func() { _ = sess.Close() }() // see daemonSession.Close
 
 	if err := sess.enc.Encode(protocol.PromptRequest{
 		ProtocolVersion: protocol.ProtocolVersion,

@@ -56,7 +56,25 @@ for m in $modules; do
     continue
   fi
 
-  count="$( (cd "$repo_root/$m" && errcheck -ignoretests ./... 2>/dev/null | wc -l) )"
+  # THE GATE USED TO FAIL OPEN, and it was found by a neuter check that did not
+  # compile. errcheck exits 2 and prints its complaint to STDERR when it cannot
+  # load a package -- a syntax error, a missing dependency, a broken build tag.
+  # With stderr discarded that produced zero lines, the count read as 0, and a
+  # module that would not even build was reported "at ceiling". A gate that
+  # reports success when it could not run is worse than no gate: it is a gate
+  # everyone believes in.
+  #
+  # errcheck exits 1 when it finds unchecked errors (the normal case here) and
+  # 2 when it could not run. Only 0 and 1 are results.
+  errout="$( (cd "$repo_root/$m" && errcheck -ignoretests ./... 2>&1) )"
+  rc=$?
+  if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then
+    echo "FAIL  $m — errcheck could not run (exit $rc). This is not a score of zero."
+    echo "$errout" | sed 's/^/      /' >&2
+    status=1
+    continue
+  fi
+  count="$(printf '%s' "$errout" | grep -c . || true)"
   count="${count//[[:space:]]/}"
 
   if [ "$count" -gt "$ceiling" ]; then
