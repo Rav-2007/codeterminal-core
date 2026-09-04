@@ -23,6 +23,22 @@ import (
 // ssh session drops and when a terminal window is closed -- the ordinary ways a
 // long-lived terminal client actually ends.
 //
+// THIS FILE COMPILES ON macOS AND ITS RESTORE TESTS DO NOT. Read that before
+// changing anything below. `//go:build !windows` means darwin runs this exact
+// code, but the six tests that assert the terminal is actually put back --
+// TestEveryExitSignalRestoresTheTerminal, the 57-byte measurement,
+// TestDoubleSIGHUPRestoresExactlyOnce, TestSIGHUPDuringStartupDoesNotHang,
+// TestSIGHUPAfterTheTerminalIsDestroyedStillExits and
+// TestKnownGapClientOutlivesADestroyedPTY -- live in exitsignals_pty_test.go,
+// which is `//go:build linux` because allocating a pty is per-kernel.
+//
+// So on macOS what is verified is the six in exitsignals_test.go: the signal
+// PLUMBING. What is NOT verified is the RESTORE, on a platform whose termios
+// and job-control behaviour is its own. A change here that breaks the restore
+// on darwin goes green on every runner. CI cannot help; the per-platform table
+// in docs/TUI_PRODUCTION_READINESS_2026-09-04.md records it, and closing it
+// means writing a darwin pty helper.
+//
 // WRAPPED, NOT FORKED. Nothing here reimplements the restore: every signal is
 // funnelled into the same graceful shutdown Bubble Tea already performs for
 // SIGTERM, so there is exactly one code path that puts a terminal back and it

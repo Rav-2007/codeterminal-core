@@ -238,6 +238,26 @@ and a clean checkout does not. Reproduced rather than reasoned — running the
 shipped daemon from a temp CWD with that file removed gives the identical CI
 line — and fixed in the test's own setup.
 
+### The markdown skip, verified in both directions
+
+`build.yml` carries `paths-ignore: ["**.md"]`; `gates.yml` carries none. That
+split is the design — `gates` is what checks the documentation — but
+`paths-ignore` on a multi-file push is commonly misread, so both directions were
+checked against this branch's own runs rather than reasoned about:
+
+| Push | Files changed | `build` | `gates` |
+|---|---|---|---|
+| `3ecd0a6..d210b56` | `build.yml` **+ two `.md`** | **ran** — `33898773089`, success | ran, success |
+| `d210b56..9fffadc` | one `.md` only | **no run exists** | **`33900470717`, success** |
+
+The filter is evaluated over **every file changed in the push**, not per commit —
+which is the half people get wrong. The `d210b56` push contained four
+markdown-only commits and one workflow commit, and `build` ran because the push
+as a whole touched a non-markdown file. A mixed push does not skip.
+
+So `9fffadc`, the last markdown-only commit on this branch, is verified by
+`gates` alone, and `gates` is **green**.
+
 ### One process finding worth recording
 
 `workflow_dispatch` and `push` share the workflow's concurrency group, so
@@ -247,18 +267,106 @@ Windows matrix. Dispatch first or wait; do not do both.
 
 ## Per-platform status
 
-Added at P4.3. Every number here is deterministic — it comes from `go list`
-under each `GOOS`, not from a stopwatch — and it is reproducible with
+Every number here is deterministic — it comes from `go list` under each `GOOS`,
+not from a stopwatch — and is reproducible with
 `GOOS=<os> go list -f '{{.TestGoFiles}}' ./clients/tui`.
+
+**The verification table. "Skipped" is never written as "passed".**
+
+| Platform | Builds | Test suite | pty-backed tests | Signal / terminal-restore tests | How triggered |
+|---|---|---|---|---|---|
+| **Linux** | pass | **327 pass**, under `-race` | **14 pass** | **12 pass** | every push (`go`) |
+| **macOS** | pass | **313 pass**, no `-race` | **0 run — 14 not compiled** | **6 pass, 6 not compiled** | **every push** (`macos-tui`) + main & dispatch (`cross`) |
+| **Windows** | pass | **307 pass**, no `-race` | **0 run — 14 not compiled** | **0 run — 12 not compiled** | every push (`cross`) |
+
+**Windows's zero is correct; macOS's six is the gap.** On Windows
+`exitsignals_windows.go` is two no-op stubs — `installExitSignals` and
+`ignoreSIGPIPE` both return empty closures — because the platform has no SIGHUP
+and no POSIX SIGTERM. There is no behaviour there to verify, which is why those
+tests are `//go:build !windows` rather than missing. macOS runs the **same**
+`exitsignals_unix.go` as Linux and gets **half** its tests: the six in
+`exitsignals_test.go` (SIGHUP reaching the quit function, repeated signals
+quitting exactly once, finish-during-signal, the goroutine dump, SIGPIPE
+install/restore) run there; the six in `exitsignals_pty_test.go` — every exit
+path restoring the terminal, the 57-byte sequence, double-SIGHUP, SIGHUP during
+startup, SIGHUP after the terminal is destroyed, and R1.1's known gap — do not.
+
+**That is a build-tag gap, not a trigger gap, and no scheduling change touches
+it.** Allocating a pty is per-kernel (Linux `TIOCSPTLCK`/`TIOCGPTN`, the BSDs
+`TIOCPTYUNLK`/`TIOCPTYGNAME`), so the helper is Linux-only and the five files
+that use it do not compile elsewhere. Closing it means a darwin pty helper —
+real work, not scheduling, and not done here.
+
+**They cannot hang, which is the strongest form of "skip cleanly":** the code is
+not in the binary at all. Nothing is deferred to runtime, so there is no timeout
+to misread as flake. What the binary *does* do on those platforms is say so —
+`TestPlatformCoverageIsStated` runs with `-v` in both the `cross` and `macos-tui`
+jobs and names the five absent suites in that platform's own log.
+
+### The other figures
 
 | | Linux | macOS | Windows |
 |---|---|---|---|
 | Test files compiled | **57** | 52 | 51 |
-| `Test` functions compiled | **326** | **312** | **306** |
 | Fuzz targets | 3 | 3 | 3 |
-| Test binary links (`go test -c`) | yes | **yes** | **yes** |
-| `go vet ./...` | yes | **yes** | **yes** |
-| Suite actually executed | yes, incl. `-race` | CI `cross` job, main/dispatch only | CI `cross` job, every push |
+| Test binary links (`go test -c`) | yes | yes | yes |
+| `go vet ./...` | yes | yes | yes |
+
+### What a green push run verifies now, versus before
+
+Adding a platform changes what "green" means, so the change is stated rather
+than left to be inferred.
+
+**Before:** Linux in full under `-race`, plus Windows build + vet + test for four
+modules. **macOS: nothing on a branch.** It ran automatically on `main` — the
+`cross` matrix expands to include `macos-latest` when `github.ref` is
+`refs/heads/main`, verified on run `33620636112`, a main push, four macOS jobs
+green — so the invariant was machinery, not memory. The gap was that a **branch**
+went green without it, and a macOS break surfaced *after* the merge.
+
+**Now:** the same, plus **`clients/tui` built, vetted and tested on macOS on
+every push**, with the platform-coverage report printed in the macOS log.
+
+**Proved on a plain branch push, not on an edited YAML file.** Run
+`33901690615`, commit `5bf497a`, `event: push`, no dispatch: **27 jobs** (26
+before, plus this one), and `macos (clients/tui, every push)` — **success**, on
+`darwin/arm64`. The suite ran there in **54.0 s**; nothing hung. Its log ends
+with the report the job exists to produce:
+
+```
+PLATFORM COVERAGE on darwin/arm64: 73 of 73 .go files inspected; the following
+suites are LINUX-ONLY and DID NOT RUN here:
+  NOT RUN  brokenpipe_pty_test.go     an early reader closing the pipe under it
+  NOT RUN  exitsignals_pty_test.go    terminal restored on every exit path, and the SIGHUP gap (R1.1)
+  NOT RUN  ptysmoke_test.go           the real binary in a real terminal on a real socket
+  NOT RUN  renderprofile_pty_test.go  the 14-environment x 4-profile determinism matrix (2.4)
+  NOT RUN  sanitize_pty_test.go       escape filtering measured at an actual terminal
+```
+
+**And the person who will hit that first is the person editing the code.**
+`exitsignals_unix.go`'s header now opens with it: this file compiles on macOS,
+its six restore tests do not, a change that breaks the restore on darwin goes
+green on every runner, and CI cannot help. A line in this document is not a
+control; a line at the top of the file being edited is closer to one.
+
+**Still not verified by a green push, on any platform:** terminal restore and the
+57-byte sequence anywhere but Linux (the build-tag gap above), and `daemon`,
+`protocol` and `editapply` on macOS, which remain main- and dispatch-only.
+
+**Why one job and not the whole matrix.** Measured on run `33896704671` rather
+than estimated — billing is wall-clock per job, rounded up, at Linux 1× /
+Windows 2× / macOS 10×: 22 Linux jobs = 74 billable minutes, 4 Windows = 18,
+4 macOS = **70**; 162 total against 92 for a push without macOS. Adding all four
+to every push takes the free plan's 2,000 minutes from **~21 pushes a month to
+~12**. Adding this one costs **20** — for ~17. It buys the platform coverage
+where the platform risk is, at 29% of the price of buying it everywhere.
+
+**Why not a path filter on the signal/pty/terminal files.** That is an
+enumeration, and this repository has been burned by that exact shape twice: the
+debt-marker "gate" that checked one module of six, and the register checker that
+missed a fourth register. New signal code in a filename nobody added to the list
+means macOS silently does not run and the push is green. A whole job is the
+property instead.
 
 **What macOS does not run — 14 tests, all of them about the terminal itself:**
 

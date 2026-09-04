@@ -95,7 +95,10 @@ func TestPlatformCoverageIsStated(t *testing.T) {
 			t.Logf("  NOT RUN  %-26s %s", n, linuxOnlySuites[n])
 		}
 		t.Logf("Everything else in this package DID run on %s. What is unverified here is "+
-			"the terminal itself: pty allocation, the restore sequence, and signal delivery.",
+			"THE TERMINAL, not the signals: pty allocation, and the restore sequence that "+
+			"exit paths are supposed to emit. Signal DELIVERY is covered here -- "+
+			"exitsignals_test.go is //go:build !windows, so its six tests ran. It is the "+
+			"six restore tests beside them, in exitsignals_pty_test.go, that did not.",
 			runtime.GOOS)
 		return
 	}
