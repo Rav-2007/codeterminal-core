@@ -92,6 +92,29 @@ suite('the extension can start the daemon it ships', function () {
       fs.existsSync(daemonBin),
       `the daemon binary is not at ${daemonBin}. Run \`npm run compile\` (or \`npm run build:daemon\`) first`,
     );
+    // AND ITS CONFIG, WHICH `npm run compile` DOES NOT STAGE.
+    //
+    // `compile` is build:daemon + tsc; only `build:runtime` runs
+    // stage-runtime.js, and that is what copies the repo-root models.json to
+    // <exedir>. resolveConfigPath looks beside the executable, one directory
+    // up, then falls back to ./models.json relative to CWD -- which here is a
+    // fresh temp workspace. So the daemon exited 1 with "reading config
+    // ./models.json: no such file or directory", three times, and the
+    // supervisor reported only that it kept restarting.
+    //
+    // IT PASSED LOCALLY AND FAILED ON A RUNNER for the oldest reason there is:
+    // a developer tree has a models.json left beside the binary from some
+    // earlier `build:runtime`, and a clean checkout does not. Staged here
+    // rather than in `pretest`, because adding build:runtime there would drag
+    // in build:helper, which needs CGO and onnxruntime and would trade this
+    // failure for a worse one.
+    const repoRoot = path.resolve(__dirname, '../../../../..');
+    const stagedConfig = path.join(path.dirname(daemonBin), 'models.json');
+    if (!fs.existsSync(stagedConfig)) {
+      const source = path.join(repoRoot, 'models.json');
+      assert.ok(fs.existsSync(source), `models.json is not at the repo root (${source})`);
+      fs.copyFileSync(source, stagedConfig);
+    }
     workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'mochiii-realspawn-'));
     logPath = path.join(workspace, 'daemon.log');
     setWorkspaceRoot(workspace);
