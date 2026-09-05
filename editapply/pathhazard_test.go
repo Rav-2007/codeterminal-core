@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode"
 )
 
 // Win32 path shapes that resolve to something other than what they read as.
@@ -223,6 +224,73 @@ func TestResolveSafeTargetPath_RefusesHazardsThroughTheRealEntryPoint(t *testing
 	} {
 		if _, err := ResolveSafeTargetPath(real, p); err == nil {
 			t.Errorf("ResolveSafeTargetPath allowed %q through the production entry point", p)
+		}
+	}
+}
+
+// TestRejectUnprintablePath_RefusesTheWholeControlClass asserts the PROPERTY
+// rather than a list of examples: every rune unicode.IsControl calls a control
+// character is refused, and every rune it does not is left to the other gates.
+//
+// Written as a sweep because the defect it pins was an ENUMERATED RANGE that
+// covered half its own class. A test naming U+009B would have passed the
+// moment someone added 0x9b to the predicate and gone on passing while the
+// other thirty-one C1 codes stayed open. The loop below cannot: it walks the
+// whole of Latin-1 plus the code points around it, so widening the class in
+// Unicode's tables and narrowing it in this package cannot both stay true.
+func TestRejectUnprintablePath_RefusesTheWholeControlClass(t *testing.T) {
+	var refusedControls, missedControls int
+	for r := rune(0); r <= 0x2100; r++ {
+		if !unicode.IsControl(r) {
+			continue
+		}
+		if err := RejectUnprintablePath("a" + string(r) + "b.txt"); err != nil {
+			refusedControls++
+			continue
+		}
+		missedControls++
+		t.Errorf("RejectUnprintablePath allowed U+%04X, which unicode.IsControl calls a control character", r)
+	}
+	// The vacuity floor. A predicate that refused nothing, or a loop that
+	// examined nothing, would reach the end of the sweep with zero errors.
+	// Unicode defines exactly 65 control characters in this span (C0's 32, DEL,
+	// and C1's 32); anything less means this test stopped checking.
+	if refusedControls+missedControls != 65 {
+		t.Fatalf("swept %d control characters, want 65; this test cannot have checked what it claims",
+			refusedControls+missedControls)
+	}
+}
+
+// TestRejectUnprintablePath_C1IsRefusedByName is the narrow companion: it names
+// the four C1 codes that actually do something to a terminal, so a failure
+// reads as "CSI is getting through" rather than as an arithmetic mismatch.
+func TestRejectUnprintablePath_C1IsRefusedByName(t *testing.T) {
+	for name, r := range map[string]rune{
+		"NEL (next line)":                   0x85,
+		"CSI (control sequence introducer)": 0x9b,
+		"OSC (operating system command)":    0x9d,
+		"APC (application program command)": 0x9f,
+	} {
+		if err := RejectUnprintablePath("tar" + string(r) + "get.txt"); err == nil {
+			t.Errorf("RejectUnprintablePath allowed %s (U+%04X) into a file path", name, r)
+		}
+	}
+}
+
+// TestRejectUnprintablePath_LeavesOrdinaryTextAlone guards the other direction:
+// widening the predicate to the whole control class must not start refusing
+// paths people really type. U+00A0 and the CJK/emoji ranges are NOT control
+// characters and must survive.
+func TestRejectUnprintablePath_LeavesOrdinaryTextAlone(t *testing.T) {
+	for _, p := range []string{
+		"src/main.go",
+		"docs/RÉSUMÉ.md",
+		"pkg/日本語.go",
+		"a b.txt", // NBSP: not a control character
+		"emoji/🙂.txt",
+	} {
+		if err := RejectUnprintablePath(p); err != nil {
+			t.Errorf("RejectUnprintablePath refused ordinary path %q: %v", p, err)
 		}
 	}
 }

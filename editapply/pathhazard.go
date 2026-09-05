@@ -3,6 +3,7 @@ package editapply
 import (
 	"fmt"
 	"strings"
+	"unicode"
 )
 
 // Path shapes that mean something different to Win32 than they read as.
@@ -185,6 +186,28 @@ func RejectPathHazards(rel string) error {
 // directional overrides, and invisible zero-width characters. They are used to
 // spoof file extensions and to slip past name-based gates.
 //
+// "CONTROL CHARACTER" MEANS THE WHOLE CLASS, and it did not used to. The test
+// was `r < 0x20 || r == 0x7f`, which is C0 and DEL: the C1 block
+// (U+0080-U+009F) is control characters by every definition including
+// unicode.IsControl, and all thirty-two of them passed a gate whose own doc
+// comment said it refused control characters. That is the worse half — a
+// stated strength wider than the code is what stops anyone re-checking.
+//
+// THIS IS THE FOURTH CALL SITE OF THE SAME PREDICATE AND THE ONLY ONE THAT WAS
+// WRONG. daemon/toolresult.go, daemon/mcp/mcp.go and daemon/websearch.go each
+// test `r >= 0x80 && r <= 0x9f` alongside their C0 test, because each of them
+// feeds a terminal. So did this one, by a route nobody had traced: a C1 rune
+// survives here, becomes a real EditBlock, and `edits apply` prints the path
+// with %s to os.Stdout (daemon/apply_cmd.go) before PrepareEdit has run, then
+// prints it a second time inside that gate's own error. Measured: the raw
+// c2 9b reaches stdout twice. Whether a given terminal ACTS on C1 depends on
+// the terminal and its mode and is not claimed here; the defect is that
+// untrusted text reaches a terminal raw through a gate that says it does not.
+//
+// unicode.IsControl rather than an open-coded range, so the fourth copy of this
+// predicate is the one that cannot drift: the class is defined by the Unicode
+// tables, not by a constant someone has to remember to widen.
+//
 // Split out of RejectPathHazards so the EDIT PARSERS can run it at the moment
 // they build an EditBlock, which is earlier than the confinement gates and for
 // a different reason. Confinement decides where a path may point;
@@ -197,7 +220,7 @@ func RejectPathHazards(rel string) error {
 // nothing: this is an earlier, narrower gate, not a replacement.
 func RejectUnprintablePath(rel string) error {
 	for _, r := range rel {
-		if r < 0x20 || r == 0x7f {
+		if unicode.IsControl(r) {
 			return fmt.Errorf("path %q contains a control character", rel)
 		}
 		switch r {
