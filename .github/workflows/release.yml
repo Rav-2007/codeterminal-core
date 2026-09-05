@@ -114,6 +114,10 @@ jobs:
           MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
           MACOS_NOTARY_KEY_BASE64: ${{ secrets.MACOS_NOTARY_KEY_BASE64 }}
           DIST_DIR: ${{ github.workspace }}/dist
+          # Names the SIGNED-<target> / UNSIGNED-<target> marker the release
+          # guard reads. Required, never defaulted: the marker's name decides
+          # what may ship, so a guess here is the worst place to be wrong.
+          SIGN_TARGET: ${{ matrix.target }}
         run: ./scripts/macos-sign-and-notarize.sh
 
       - name: Record signing status
@@ -254,6 +258,33 @@ jobs:
           path: out-vsix/
           retention-days: 30
           if-no-files-found: error
+
+      # ---------------------------------------------------------------------
+      # NOTHING UNSIGNED REACHES A RELEASE.
+      #
+      # Placed HERE deliberately -- after both upload-artifact steps and before
+      # the release attach. The guard controls what is RELEASED, not what is
+      # PRODUCED: darwin is still built, still packaged, still staged, and the
+      # `terminal-client` and `vsix-packages` artifacts above still contain it,
+      # because rehearsing the build is the point of a dispatch. Only the input
+      # to the release is pruned.
+      #
+      # On a dispatch an unsigned target is EXCLUDED and the job stays green.
+      # On a tag it FAILS, because a tag is a release and quietly shipping fewer
+      # platforms than the tag implies is its own fail-open.
+      #
+      # Logic lives in the script, not inline here, so it can be unit-tested and
+      # neutered: `scripts/release-signing-guard.sh --self-test` runs on every
+      # push. Six neuters were demonstrated failing before this was trusted.
+      # ---------------------------------------------------------------------
+      - name: Signing guard — nothing unsigned reaches a release
+        shell: bash
+        run: |
+          ./scripts/release-signing-guard.sh \
+            --ref "${{ github.ref }}" \
+            --artifacts artifacts \
+            --vsix-dir out-vsix \
+            --bin-dir out-bin
 
       - name: Attach to the GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')

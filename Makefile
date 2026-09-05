@@ -174,6 +174,7 @@ check: hookcheck fmt vet crossvet race lint ratchet errcheck evalguard supplycha
 # over, because the CI job alone was green while this repo's own machine had ten
 # reachable stdlib vulnerabilities on the same commit.
 supplychain:
+	@./scripts/release-signing-guard.sh --self-test
 	@./scripts/actions-pinned.sh
 	@./scripts/go-toolchain-pinned.sh --self-test
 	@./scripts/go-toolchain-pinned.sh

@@ -75,6 +75,13 @@ jobs:
       - name: GitHub Actions pinned to commit SHAs
         run: ./scripts/actions-pinned.sh
 
+      # The release guard's logic, exercised on every push rather than only when
+      # somebody cuts a release. A guard that is first run during a release is a
+      # guard nobody has tested -- which is exactly how R1.15 reached a green
+      # dispatch with unsigned binaries.
+      - name: Release signing guard (self-test)
+        run: ./scripts/release-signing-guard.sh --self-test
+
       - name: Go toolchain floor agrees across every module
         run: ./scripts/go-toolchain-pinned.sh
 
