@@ -48,7 +48,7 @@ longer exists), or SUPERSEDED (replaced by a different row).**
 | R1.12 repainting a deep transcript costs real CPU | **OPEN — re-measured, and the row changed shape** | Was an extrapolation from a seventh of the bound. Now **22.4 ms p50 / 29.9 ms p99 at the ceiling**, over the 8 ms repaint budget at 2.8× **and over D-1's 16 ms hard per-Update ceiling at 1.4×**. Bounded, and over budget. |
 | R1.13 onnxruntime and npm are scanned by nothing | **OPEN** | Re-verified: `scripts/govulncheck.sh` names six Go modules and nothing else; no gate anywhere runs `npm audit` or scans onnxruntime. |
 | R1.14 the terminal client is not a release artifact | **CLOSED 2026-09-04** | P4.1. Builds on all three release runners, in the macOS signing list, ships as a standalone download with checksums, and asserted *out* of the `.vsix` by the packaging gate. It was never a residual risk: it made this document's own "CI green once" condition unsatisfiable. |
-| R1.15 the release signs nothing — macOS secrets absent | **DEFERRED BY DECISION 2026-09-05 (founder)** | Found by the first-ever dispatch of `release.yml` (run `33922431985`): the signing step is a no-op without the five `MACOS_*` secrets, so darwin binaries are **unsigned** and Gatekeeper kills them. **The run is green either way** — fail-open, one layer up from the gate scripts. **Ruling: the first release ships Linux and Windows only; `darwin-arm64` is deferred until the secrets exist.** One sub-item remains open — the machinery does not yet match the ruling; see the row. |
+| R1.15 the release signs nothing — macOS secrets absent | **DEFERRED BY DECISION 2026-09-05 (founder)** | Found by the first-ever dispatch of `release.yml` (run `33922431985`): the signing step is a no-op without the five `MACOS_*` secrets, so darwin binaries are **unsigned** and Gatekeeper kills them. **The run is green either way** — fail-open, one layer up from the gate scripts. **Ruling: the first release ships Linux and Windows only; `darwin-arm64` is deferred until the secrets exist.** The machinery now enforces it — `scripts/release-signing-guard.sh`, keyed on **distributable**, verified on run `33938839311`. Three items remain **expected-unverified**; see the row. |
 
 ### Three of these rows are pinned only on Linux
 
@@ -836,16 +836,190 @@ shipped"** — the deferral and the technical gap close together, because the on
 thing standing between the current state and a shippable darwin artifact is the
 credential.
 
-**Still open under this row: the machinery does not match the ruling.** On a real
-tag, `release.yml` would today attach **two unsigned darwin assets** to the
-release — the `darwin-arm64` `.vsix` and the standalone
-`codeterminal-tui-darwin-arm64` — because the `files:` list globs
-`out-vsix/*.vsix` and `out-bin/codeterminal-tui-*`, and both sweep darwin in. The
-release is created as a **draft**, so a human still clicks publish, but a draft
-with the assets already named and checksummed is not a control. **A decision that
-the pipeline does not implement is a decision in one place only.** The fix is
-proposed and deliberately unbuilt pending the release owner's answer on its
-shape; see the analysis handed to them on 2026-09-05.
+### The machinery now matches the ruling — the signing guard, 2026-09-05
+
+**It did not, and that was the gap.** On a real tag `release.yml` would have
+attached **two unsigned darwin assets** — the `darwin-arm64` `.vsix` and the
+standalone `codeterminal-tui-darwin-arm64` — because the `files:` list globs
+`out-vsix/*.vsix` and `out-bin/codeterminal-tui-*`, and both swept darwin in,
+with **both checksum manifests naming them**. The release is a **draft**, so a
+human still clicks publish, but a draft with the assets already built, named and
+checksummed is not a control. **A decision the pipeline does not implement is a
+decision in one place only.**
+
+`scripts/release-signing-guard.sh` closes it, approved and built 2026-09-05.
+
+**The predicate is "was this signed?", not "is this darwin?"**, and that is the
+whole design. A hard exclusion was **rejected**: it would encode *"we do not ship
+macOS"* in the machinery when the ruling is that macOS is **deferred**, leaving a
+line somebody must find and revert the day the secrets land with nothing that
+notices if they do not — a second place the ruling lives, and this repository has
+been burned by that shape twice (the debt-marker "gate" that checked one module
+of six; the register checker that missed a fourth register).
+
+#### The marker asserts DISTRIBUTABLE, not CODESIGNED
+
+**This distinction is the row's most reusable sentence and is written down so a
+fifth path is judged against the right question.** `SIGNED-<target>` is written
+**only when the binaries are both codesigned AND notarized**, because
+**Gatekeeper blocks a signed but un-notarized download exactly as it blocks an
+unsigned one** — the user's failure is identical, so the release predicate must
+treat them identically. A marker meaning merely "codesign exited zero" would be
+technically accurate and operationally wrong, and a reader seeing
+`SIGNED-darwin-arm64` would reasonably conclude it ships.
+
+**Four paths end without that marker.** Enumerated so a fifth added later is
+visibly not covered:
+
+| # | Path | `reason=` |
+|---|---|---|
+| 1 | no target binaries found in `DIST_DIR` | `no-binaries` |
+| 2 | no signing certificate supplied | `no-certificate` |
+| 3 | host is not macOS | `not-macos` |
+| 4 | **signed, but notarization credentials incomplete** | `not-notarized` |
+
+Path 4 was **not** in the approved specification, which said the predicate was
+"signed". It was added because that branch previously fell through to
+*"completed successfully"*, so a marker written there would have said *signed*
+and reproduced this row's own blast radius one step further along. Flagged at
+the time rather than done silently, and confirmed by the founder the same day:
+**the marker's meaning is distributable.**
+
+**Fail closed.** The guard keys on the **presence of `SIGNED-<target>`**, never
+on the absence of `UNSIGNED-<target>`. Reject-by-default, the same rule as the
+terminal sanitizer: a path added later that forgets to write anything is treated
+as **unsigned**, which is the safe direction. `UNSIGNED-<target>` carries a
+machine-readable `reason=` for diagnostics only and the guard never needs it to
+reach the right answer. `SIGN_TARGET` is required and deliberately not defaulted
+— the marker's name decides what may ship, so a guess is worst there.
+
+**Two behaviours, split on the trigger**, and the split is what made this
+buildable at all:
+
+| Trigger | Marker absent |
+|---|---|
+| `workflow_dispatch` | **Exclude** that target's assets, warn loudly, job stays **green** — a dispatch is a rehearsal and must stay usable. A guard that turned every branch dispatch red is why this was left unbuilt before. |
+| tag `refs/tags/v*` | **Fail the job** — a tag is a release, and silently shipping fewer platforms than the tag implies is its own fail-open. |
+
+**Manifests are regenerated, not edited.** Both `SHA256SUMS` and `SHA256SUMS-tui`
+named the darwin assets; a manifest listing a file the release does not carry
+reads as a missing download rather than a deliberate omission, and hand-pruning
+lines is how a checksum and its file drift apart. Rebuilding from what is on disk
+cannot disagree with what is on disk.
+
+**The build and staging jobs are untouched.** Darwin is still built, packaged and
+staged, and both `upload-artifact` steps still carry it — rehearsing the build is
+the point of a dispatch. The guard runs after them and controls only what is
+**released**.
+
+#### What this buys the person who adds the secrets
+
+**`darwin-arm64` ships with ZERO EDITS the day the five `MACOS_*` secrets land.**
+No line to revert, no flag to flip, no second place the decision lives: the
+signing step produces the marker, the guard stops excluding, and the target is in
+the release. That property is the reason this shape was chosen over a hard
+exclusion, and it is recorded here because this row is where somebody adding
+those secrets will look.
+
+**And the same mechanism covers Windows Authenticode later without a second
+guard.** `win32-x64` moves from `NO_SIGNING_NEEDED` to `NEEDS_SIGNING`, its
+signing step writes `SIGNED-win32-x64`, and the release side already understands
+it. Every built target must appear in exactly one of those two lists; an
+unclassified target **fails** rather than defaulting to "no signing needed",
+which is the same rule `scripts/coverage-floors.txt` applies to packages.
+
+#### Neutered before it was trusted
+
+40 assertions pass, and **six neuters were each demonstrated RED** rather than
+reasoned about:
+
+| Neuter | Assertions that went red |
+|---|---|
+| A — `is_signed` always returns true | 13 |
+| **B — key on the ABSENCE of `UNSIGNED` instead of the PRESENCE of `SIGNED`** | **2** |
+| C — drop the manifest regeneration | 1 |
+| D — treat a tag like a dispatch | 9 |
+| E — signing path 2 forgets to write its marker | 4 |
+| F — signer defaults `SIGN_TARGET` instead of failing | 1 |
+
+**B is the one to notice.** It is the fail-open inversion the entire design turns
+on — the plausible, tidy-looking refactor a future reader might make, reasoning
+that "no UNSIGNED marker means it must be fine". It is not fine: a signing path
+that writes nothing at all then reads as signed. **That inversion was tested, not
+assumed**, and it fails two assertions including the reject-by-default case. Do
+not "simplify" it back.
+
+#### Verified on a real runner — dispatch branch
+
+**Run `33938839311`, commit `d48530d`, `event: workflow_dispatch`: success**, all
+four jobs, `publish` skipped by design. The guard's own log:
+
+```
+[signing-guard] ref=refs/heads/audit/adversarial-pass (tag release: no)
+[signing-guard] WARNING: EXCLUDING darwin-arm64 from the release: unsigned (no-certificate).
+[signing-guard] regenerated out-vsix/SHA256SUMS
+[signing-guard] regenerated out-bin/SHA256SUMS-tui
+[signing-guard] excluded from release: darwin-arm64
+[signing-guard] --- release input, after the guard ---
+[signing-guard]   WOULD ATTACH  codeterminal-vscode-linux-x64-0.0.1.vsix
+[signing-guard]   WOULD ATTACH  codeterminal-vscode-win32-x64-0.0.1.vsix
+[signing-guard]   WOULD ATTACH  SHA256SUMS
+[signing-guard]   WOULD ATTACH  codeterminal-tui-linux-x64
+[signing-guard]   WOULD ATTACH  codeterminal-tui-win32-x64.exe
+[signing-guard]   WOULD ATTACH  SHA256SUMS-tui
+```
+
+**Zero darwin assets reach the release. `linux-x64` and `win32-x64` are
+untouched** — both `.vsix` packages and both terminal-client binaries are still
+there, including the `.exe`. The run agrees with the local reproduction in every
+particular.
+
+**On the manifests, stated as the chain it actually is rather than as a direct
+observation.** The `regenerated` lines print only when `sha256sum` succeeded, and
+it regenerated from the very directories the listing then enumerates — which
+contain no darwin file. Zero darwin lines follows from those two facts. The
+assertion itself is made directly by the self-test (`SHA256SUMS drops darwin`,
+`SHA256SUMS-tui drops darwin`) and neuter C, which removes the regeneration,
+turns it red. The manifest *contents* are not echoed in this run's log.
+
+**And the run proved one thing the local test could not.** The
+`reason=no-certificate` in that warning was read from a marker written by
+`macos-sign-and-notarize.sh` **on a real macOS runner**, then carried through
+`upload-artifact` → `download-artifact` into the `package` job on Linux. The
+marker round-trip across jobs and platforms is the part a simulated staging tree
+cannot exercise, and it worked on first contact.
+
+#### Three things remain unverified, and all three are EXPECTED
+
+**Written down in advance so whoever cuts the first real tag meets them as
+foreseen rather than as surprises.** Unverified-and-anticipated is a different
+state from unverified-and-unnoticed, and only the first can be planned for.
+
+**(i) The tag branch has never run.** The guard's failing path — the one that
+blocks a release — is selected by `case "$ref" in refs/tags/v*)`. Reaching it
+needs a tag push, which was ruled out for this branch. **The self-test drives
+that branch by passing `refs/tags/v1.0.0` directly, and that is worth having, but
+it is not a tag-triggered run**: it proves the branch logic, not that GitHub sets
+`github.ref` to what the guard expects. *What will exercise it:* the first real
+`v*` tag. **Expect it to fail loudly if the `MACOS_*` secrets are still absent —
+that is the guard working, not a broken pipeline**, and the failure message says
+so in as many words.
+
+**(ii) Unsigned path 4 — signed but not notarized — has never run.** It needs a
+macOS runner **and** a valid signing certificate, with notarization credentials
+missing or incomplete. No run has ever had the first of those. *What will
+exercise it:* adding `MACOS_CERT_P12` without the three `MACOS_NOTARY_*` values —
+a plausible half-configuration, and exactly the state this path exists to catch.
+
+**(iii) The signed path itself has never run — nobody has ever produced a
+`SIGNED-<target>` marker outside a test.** Every release run to date, including
+`33921667448`, `33922431985` and `33938839311`, took an unsigned branch, because
+the secrets have never existed. The guard's handling *of* a signed marker is
+covered by the self-test using a marker the test writes; what has never happened
+is the signing script writing one. *What will exercise it:* the first run with
+all five secrets present. **Expect the first such run to be the real test of this
+whole mechanism** — and note that if it goes green and darwin appears in the
+release, that is the design working as intended, with no edit required.
 
 ### What a dispatch still did NOT exercise
 
