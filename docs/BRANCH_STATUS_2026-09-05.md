@@ -46,11 +46,22 @@ as a fix does.**
 costs 22.4 ms p50 against an 8 ms repaint budget and against a 16 ms hard
 per-Update ceiling. Measured, recorded as R1.12, deliberately not optimized.
 
-**And one blocker that is not in the gate table, found on 2026-09-05 by running
-`release.yml` for the first time: the macOS signing secrets do not exist.** The
-release workflow is green and produces **unsigned** darwin binaries, warning
-*"Do not publish this target."* Shipping a macOS artifact is not possible today;
-Linux and Windows are unaffected. See *The release rehearsal* in Section 5.
+**The first release ships `linux-x64` and `win32-x64` only.** Ruled 2026-09-05 by
+the founder. **`darwin-arm64` is deferred** until the five `MACOS_*` signing
+secrets exist — found on 2026-09-05 by running `release.yml` for the first time,
+which produces **unsigned** darwin binaries and warns *"Do not publish this
+target."* Recorded as R1.15, **deferred by decision rather than blocked**.
+
+**Two things to hold next to that platform set.** First, **the machinery does not
+yet implement it**: on a real tag the release would still attach two unsigned
+darwin assets, because the upload globs sweep them in. A fix is proposed and
+deliberately unbuilt, pending the release owner. Second, **the two platforms that
+ship are the two least directly tested at the terminal** — Windows ships with a
+signal contract that is two no-op stubs (correct: the platform has no SIGHUP or
+POSIX SIGTERM), and Linux is the only shipping platform whose terminal restore is
+tested at all. Deferring macOS removes this pass's largest coverage hole; it adds
+nothing to either platform that remains. See Section 4 and *The release
+rehearsal* in Section 5.
 
 ---
 

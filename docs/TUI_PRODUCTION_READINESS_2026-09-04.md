@@ -3,6 +3,23 @@
 <!-- coderefs: enforced -->
 
 **Date:** 2026-09-04. **Branch:** `audit/adversarial-pass`. **Scope:** `clients/tui`.
+**Shipping platform set, ruled 2026-09-05 by the founder: `linux-x64` and
+`win32-x64` only. `darwin-arm64` is DEFERRED** until the five `MACOS_*` signing
+secrets exist — unsigned darwin binaries are quarantined by Gatekeeper and the
+daemon never starts, so shipping them is worse than shipping none (R1.15).
+
+**Read that against the coverage table below before relying on it.** Two of the
+three shipping platforms are the two whose terminal behaviour is *least* directly
+tested. **Windows is shipped with a signal contract that is two no-op stubs** —
+`installExitSignals` and `ignoreSIGPIPE` both return empty closures, because the
+platform has no SIGHUP and no POSIX SIGTERM. That is correct and deliberate, not
+a gap: there is no behaviour there to verify, which is why those tests are
+`//go:build !windows` rather than missing. **Linux is the only shipping platform
+whose terminal restore is tested at all** — the pty-backed suites are
+`//go:build linux` and run nowhere else, at any trigger. Deferring macOS removes
+the platform this pass called its largest hole; it does not add coverage to
+either platform that remains.
+
 **Verdict:** ship-ready on the axes measured below, with **five named conditions**
 and **one performance budget knowingly unmet** — a repaint at the transcript
 ceiling costs 22.4 ms against an 8 ms budget and against D-1's 16 ms hard

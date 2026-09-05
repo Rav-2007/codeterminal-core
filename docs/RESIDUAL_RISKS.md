@@ -48,7 +48,7 @@ longer exists), or SUPERSEDED (replaced by a different row).**
 | R1.12 repainting a deep transcript costs real CPU | **OPEN — re-measured, and the row changed shape** | Was an extrapolation from a seventh of the bound. Now **22.4 ms p50 / 29.9 ms p99 at the ceiling**, over the 8 ms repaint budget at 2.8× **and over D-1's 16 ms hard per-Update ceiling at 1.4×**. Bounded, and over budget. |
 | R1.13 onnxruntime and npm are scanned by nothing | **OPEN** | Re-verified: `scripts/govulncheck.sh` names six Go modules and nothing else; no gate anywhere runs `npm audit` or scans onnxruntime. |
 | R1.14 the terminal client is not a release artifact | **CLOSED 2026-09-04** | P4.1. Builds on all three release runners, in the macOS signing list, ships as a standalone download with checksums, and asserted *out* of the `.vsix` by the packaging gate. It was never a residual risk: it made this document's own "CI green once" condition unsatisfiable. |
-| R1.15 the release signs nothing — macOS secrets absent | **OPEN — NEW 2026-09-05** | Found by the first-ever dispatch of `release.yml` (run `33922431985`). The signing step is a no-op without the five `MACOS_*` secrets, so darwin binaries ship **unsigned** and Gatekeeper kills them. **The run is green either way** — fail-open, one layer up from the gate scripts. Blocks publishing `darwin-arm64`; Linux and Windows unaffected. |
+| R1.15 the release signs nothing — macOS secrets absent | **DEFERRED BY DECISION 2026-09-05 (founder)** | Found by the first-ever dispatch of `release.yml` (run `33922431985`): the signing step is a no-op without the five `MACOS_*` secrets, so darwin binaries are **unsigned** and Gatekeeper kills them. **The run is green either way** — fail-open, one layer up from the gate scripts. **Ruling: the first release ships Linux and Windows only; `darwin-arm64` is deferred until the secrets exist.** One sub-item remains open — the machinery does not yet match the ruling; see the row. |
 
 ### Three of these rows are pinned only on Linux
 
@@ -758,7 +758,20 @@ answered.
 
 ---
 
-## R1.15 — The release signs nothing: the macOS signing secrets do not exist
+## R1.15 — macOS is deferred from the first release: nothing signs the darwin binaries
+
+**Status: DEFERRED BY DECISION. Ruled 2026-09-05 by the founder** (the role this
+repository's `docs/DECISION_PACK.md` uses for all eight prior rulings; no personal
+name was supplied and none is invented here). **The first release ships
+`linux-x64` and `win32-x64` only. `darwin-arm64` is deferred until the five
+`MACOS_*` signing secrets exist.**
+
+**Which state this row is in, stated once.** It is **deferred by decision** — it
+is **not** "blocked on secrets". Those are different objects and this row must not
+read as both, for the same reason R1.5 and R1.6 could not go on sharing a phrase
+with R1.3. Nothing about the first release is now waiting on the secrets: the
+platform set was decided and the release can proceed without them. What the
+secrets govern is *when macOS rejoins*, which is the trigger, not the blocker.
 
 *(Opened 2026-09-05, by the first dispatch of `release.yml` in the workflow's
 existence. It could not have been found by reading anything.)*
@@ -814,11 +827,25 @@ mechanism and is deliberately not built here, because it would turn every branch
 dispatch of `release.yml` red and that is the release owner's call, not this
 branch's.
 
-**Trigger — self-detecting, which is the one virtue of the situation.** This row
-closes when the five `MACOS_*` secrets are added and the warning stops firing on
-a release run. No judgement is required and nothing has to be re-derived: the
-workflow says which state it is in, on every run, in its own log. **Until then it
-blocks publishing `darwin-arm64` and nothing else.**
+**Trigger — unchanged by the deferral, and it now carries two meanings.** This
+row closes when the five `MACOS_*` secrets are added and the warning stops firing
+on a release run. No judgement is required and nothing has to be re-derived: the
+workflow says which state it is in, on every run, in its own log. **And since
+2026-09-05 the same condition also means "this reopens when someone wants macOS
+shipped"** — the deferral and the technical gap close together, because the only
+thing standing between the current state and a shippable darwin artifact is the
+credential.
+
+**Still open under this row: the machinery does not match the ruling.** On a real
+tag, `release.yml` would today attach **two unsigned darwin assets** to the
+release — the `darwin-arm64` `.vsix` and the standalone
+`codeterminal-tui-darwin-arm64` — because the `files:` list globs
+`out-vsix/*.vsix` and `out-bin/codeterminal-tui-*`, and both sweep darwin in. The
+release is created as a **draft**, so a human still clicks publish, but a draft
+with the assets already named and checksummed is not a control. **A decision that
+the pipeline does not implement is a decision in one place only.** The fix is
+proposed and deliberately unbuilt pending the release owner's answer on its
+shape; see the analysis handed to them on 2026-09-05.
 
 ### What a dispatch still did NOT exercise
 
