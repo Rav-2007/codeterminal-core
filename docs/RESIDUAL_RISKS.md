@@ -4,6 +4,13 @@
 
 Opened 2026-09-04 during the production-hardening pass on the TUI.
 
+**Its scope widened on 2026-09-05 and the title has not.** R1.15 is release
+machinery and R1.16/R1.17 are `daemon/`, `editapply/` and `scripts/`. The
+heading still says "clients/tui", which is now narrower than the contents.
+Recorded rather than silently retitled: a reader who came here for TUI risks
+needs to know the file grew, and renaming it would break every inbound
+reference. The next pass that touches the heading should widen it.
+
 Every entry here is something **known, measured, and deliberately not fixed**.
 That is the point of the file: a risk that was reasoned about and accepted is a
 different object from one nobody noticed, and only the first kind can be
@@ -49,6 +56,8 @@ longer exists), or SUPERSEDED (replaced by a different row).**
 | R1.13 onnxruntime and npm are scanned by nothing | **OPEN** | Re-verified: `scripts/govulncheck.sh` names six Go modules and nothing else; no gate anywhere runs `npm audit` or scans onnxruntime. |
 | R1.14 the terminal client is not a release artifact | **CLOSED 2026-09-04** | P4.1. Builds on all three release runners, in the macOS signing list, ships as a standalone download with checksums, and asserted *out* of the `.vsix` by the packaging gate. It was never a residual risk: it made this document's own "CI green once" condition unsatisfiable. |
 | R1.15 the release signs nothing — macOS secrets absent | **DEFERRED BY DECISION 2026-09-05 (founder)** | Found by the first-ever dispatch of `release.yml` (run `33922431985`): the signing step is a no-op without the five `MACOS_*` secrets, so darwin binaries are **unsigned** and Gatekeeper kills them. **The run is green either way** — fail-open, one layer up from the gate scripts. **Ruling: the first release ships Linux and Windows only; `darwin-arm64` is deferred until the secrets exist.** The machinery now enforces it — `scripts/release-signing-guard.sh`, keyed on **distributable**, verified on run `33938839311`. Three items remain **expected-unverified**; see the row. |
+| R1.16 a gate whose expected count comes from the list it validates | **OPEN — a CLASS, two instances** | Opened 2026-09-05. Not a coincidence: `platformcoverage_test.go` (floor 20, 73 suites) and `scripts/fuzz.sh` (`TARGETS` is its own source of truth) share one general form. The fuzz gate has no equivalent of the TUI test's bidirectional loops. |
+| R1.17 an ambiguous request body is refused with the wrong message | **OPEN — rough edge, deliberate** | Opened 2026-09-05 alongside the fix in `026fe48`. The refusal is correct; the message a client sees is `"prompt is empty"`, inherited from the duplicate-key precedent it was deliberately made to match. |
 
 ### Three of these rows are pinned only on Linux
 
@@ -1039,3 +1048,104 @@ passes — *"staged 3 terminal-client binaries"*, with SHA-256 sums, including
 `codeterminal-tui-win32-x64.exe`; and `.vsix` checksums are produced.
 
 ---
+
+---
+
+## R1.16 — A gate whose expected count is derived from the list it validates
+
+**What it is.** Two gates in this repository compute "how many things should I
+have inspected?" from the very list that decides what they inspect. Such a gate
+detects a *missing* member and cannot detect a *removed* one, because removing
+it changes the expectation by exactly as much as it changes the reality.
+
+The general form, stated once so a third instance is recognisable:
+
+> A vacuity floor derived from the target set is not a floor. It proves the
+> gate ran; it cannot prove the set is still the right set. A real floor is
+> either an independently-derived count, or a bidirectional correspondence
+> against a source the list does not control.
+
+Two instances, both measured:
+
+1. **`clients/tui/platformcoverage_test.go:80`** — the floor is `inspected < 20`
+   while 73 suites carry the tag. Two documents and commit `3c217f2` all
+   described it as asserting on 73. **The anti-drift property is real but comes
+   from somewhere else**: two bidirectional loops (every listed suite must carry
+   the tag; every `//go:build linux` file must be listed) check the list against
+   the source tree, which the list does not control. The count is nearly
+   decorative. Corrected in the documents on 2026-09-05.
+2. **`scripts/fuzz.sh`** — `TARGETS` is a hand-edited array of
+   `module:FuzzName` strings. A listed target that no longer exists **is**
+   caught (`status=1`, "no such fuzz target"), and I over-stated this gap once
+   before correcting it: the gate is stricter than I first said. What it cannot
+   catch is rows being *deleted from the array*, which shrinks
+   `${#TARGETS[@]}` so the run reports "N of N" and exits 0. Its only vacuity
+   floor is `ran == 0` — a floor of **one**. It has no equivalent of the TUI
+   test's bidirectional loops.
+
+**Why deferred.** The fix for the fuzz gate is known and small — derive
+`TARGETS` from the source (`grep -rn '^func Fuzz' <module>`) instead of hand
+editing it, which supplies exactly the missing property: the list stops being
+its own source of truth and starts being checked against the code. It is
+deferred because it is a **gate change during an audit that is using that gate**,
+and changing a measuring instrument mid-measurement costs more than it buys.
+The TUI instance needs no code change at all; its property is already sound and
+only its description was wrong.
+
+**Blast radius.** Bounded and specific, not general. For the fuzz gate: someone
+deleting targets from `TARGETS` — to quiet a flaky run, or during a refactor
+that moves a fuzz function — leaves CI reporting a clean fuzz pass over a
+smaller surface, with the reduction visible only in a number nobody compares
+across runs. The eighteen targets are the only thing fuzzing the parsers, the
+wire formats and the proxy's routing. For the TUI instance: none, today — the
+loops hold.
+
+**Pinned by.** **Nothing, for the class.** `platformcoverage_test.go`'s two
+bidirectional loops pin *that* instance's real property. No test anywhere
+asserts that `scripts/fuzz.sh` inspects the number of targets the source
+defines, and no test asserts the general form. This row is a coverage gap and
+says so.
+
+**Trigger.** Any of: a fuzz target being removed from `TARGETS` in a commit that
+does not also delete its `func Fuzz`; a third instance of the form being found;
+or the next change to `scripts/fuzz.sh` for any reason, at which point deriving
+the list costs a few lines and should just be done.
+
+---
+
+## R1.17 — An ambiguous request body is refused with a message about something else
+
+**What it is.** After `026fe48`, a request body naming two request types —
+`{"undo":true,"edit":{...}}` — is correctly refused instead of being dispatched
+by declaration order into the destructive handler. But the refusal it gets is
+the fall-through to the prompt path, so the client is told **`"prompt is
+empty"`**. That is true and useless. The client asked an ambiguous question and
+is told it asked no question at all.
+
+**Why deferred.** Deliberately, and the reasoning is the fixed file's own. The
+refusal was made *identical* to the one a duplicate-key body already receives,
+because both are the same judgement — "this body has no single meaning" — and
+`daemon/requestfields.go` warns in its own header that "two predicates claiming
+the same thing is how the two drift apart". Giving the new case a distinct
+error would put one rule in two places, which is the defect that file exists to
+prevent. **The improvement is real but it is not this fix's to make**: the fix
+that gives ambiguity a proper message must change the duplicate-key case too,
+so that one rule keeps one answer. That is a separate, wider change to the
+dispatch contract and it belongs in its own commit.
+
+**Blast radius.** Diagnostic only, and small. No wrong action is taken — the
+destructive path is closed, which was the defect. A client author debugging a
+malformed request is sent looking at their prompt field instead of at their
+duplicate discriminator. The shipped clients cannot produce this body: every
+message `protocol` defines carries exactly one discriminator, verified by
+`TestDispatch_OneDiscriminatorStillRoutes`.
+
+**Pinned by.** `daemon/dispatch_ambiguous_test.go` —
+`TestDispatch_TwoDiscriminatorsNeverReachTheDestructiveHandler` (7 rows) pins
+the *refusal*, asserting the file on disk is unchanged and no
+`"applied":true` is returned. **Nothing pins the message**, deliberately: a
+test asserting `"prompt is empty"` would make this rough edge a contract and
+make the eventual fix look like a regression.
+
+**Trigger.** A client author or user reporting confusion at the message; or any
+work on the duplicate-key refusal path, which must fix both together.
