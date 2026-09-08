@@ -431,6 +431,58 @@ var lexicalStopwords = map[string]bool{
 // fmt.Println survive as one token) -- from a natural-language query.
 var lexicalQueryTokenPattern = regexp.MustCompile(`[A-Za-z0-9_.]+`)
 
+// maxLexicalQueryChars bounds the text that may be turned into an FTS5 MATCH.
+//
+// DERIVED FROM A BUDGET AND A MEASURED CURVE, not chosen for roundness. All
+// three inputs are recorded so the number can be re-derived on another machine
+// rather than inherited on faith.
+//
+//	BUDGET  100 ms for the lexical tier. It sits on the critical path before the
+//	        first token of an answer, alongside embedding and the vector query,
+//	        and 100 ms is the threshold at which a wait stops reading as instant.
+//
+//	CURVE   cost = k*n^2 in the LENGTH OF THE QUERY. Measured x4.05 per doubling
+//	        (5.29, 3.95, 4.12 over 100k->200k->400k->800k). Near the bound,
+//	        where fixed overhead no longer dominates, k settles at
+//	        ~6.1e-8 ms/char^2: 32,000 chars -> 64 ms and 64,000 -> 249 ms.
+//
+//	CORPUS  IRRELEVANT, which is what makes one number portable across
+//	        workspaces. At a fixed 100k query: 50 turns -> 726 ms, 500 -> 672 ms,
+//	        5,000 -> 731 ms. The cost is in parsing and expanding the phrase, not
+//	        in scanning the index, so a large workspace does not need a smaller
+//	        bound.
+//
+// Solving k*n^2 = 100 ms gives n ~= 40,500. 32,768 is the largest power of two
+// under it and measures at 64 ms, 1.6x inside budget; the next one up, 65,536,
+// measures 249 ms, 2.5x over. The budget and the curve pick this number
+// between them -- it is not a preference.
+//
+// WHAT IT REMOVES. The only other bound on this input is the 16 MiB whole-request
+// cap, and at that length the same curve gives 6.1e-8 * (16,777,216)^2 ~= 4.8
+// HOURS of CPU in one handler. (An earlier estimate of ~7 hours in this pass
+// extrapolated from an 800k point on a smaller corpus; 4.8 hours is the figure
+// from the constant measured near the bound, and supersedes it.) Cancelling
+// cannot rescue that: sqlite3_interrupt is not polled inside an FTS5 phrase
+// match -- see serveConn and TestSQLiteCancellation_DoesNotReachAnFTS5PhraseMatch.
+// Not starting the work is the only lever there is.
+const maxLexicalQueryChars = 32768
+
+// errLexicalQueryTooLong is returned instead of running a MATCH whose cost is
+// unbounded. Callers treat it as "no lexical answer is possible for this input",
+// which the two of them do differently on purpose -- see lexicalQueryTooLong.
+var errLexicalQueryTooLong = errors.New("query exceeds the maximum searchable length")
+
+// lexicalQueryTooLong is the ONE predicate behind both the enforcement and the
+// reporting of this bound.
+//
+// It has two callers and they are not duplicates. FTSChunkStore.Search and
+// MemoryStore.SearchTurns ENFORCE it, so the cost can never be paid however the
+// query arrives; similarChunks (context.go) consults it only to SAY that the
+// keyword tier is being skipped this turn. Enforcement without reporting is a
+// silent degradation, and reporting without enforcement is a suggestion. Both
+// read the same function so the two cannot drift apart.
+func lexicalQueryTooLong(query string) bool { return len(query) > maxLexicalQueryChars }
+
 // buildLexicalQuery converts a natural-language question into an FTS5 MATCH
 // expression over the trigram-tokenized code index: split into tokens, drop
 // stopwords, quote each remaining token individually and OR them together.
@@ -475,6 +527,13 @@ func (s *FTSChunkStore) Search(ctx context.Context, query string, k int) ([]Chun
 	if k <= 0 {
 		return nil, nil
 	}
+	// Bounded BEFORE the phrase is built, so the cost is never started rather
+	// than started and abandoned -- abandoning it is not available (see
+	// maxLexicalQueryChars).
+	if lexicalQueryTooLong(query) {
+		return nil, errLexicalQueryTooLong
+	}
+
 	ftsQuery := buildLexicalQuery(query)
 	if ftsQuery == "" {
 		return nil, nil

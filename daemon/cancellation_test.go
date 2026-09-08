@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -24,6 +25,15 @@ import (
 // Both halves are asserted, in opposite directions, so the boundary between
 // them cannot move without a test noticing.
 //
+// THE RETRIEVAL BOUND SITS IN FRONT OF SearchTurns, so a test that wants to
+// observe ENGINE behaviour must go around it. When maxLexicalQueryChars landed,
+// all three tests below still used a 200,000-character query and two of them
+// went on PASSING -- for the wrong reason, because the bound refused the query
+// in 171 microseconds and no FTS5 match ever ran. One failed loudly and that is
+// the only reason the other two were looked at. Queries here are therefore
+// either deliberately UNDER the bound (when the point is cancellation) or issued
+// straight against the database (when the point is what SQLite does).
+//
 // EVERY DURATION HERE IS WALL-CLOCK and the bounds are deliberately loose:
 // each compares an interrupted run against a cancel point an order of magnitude
 // away, so machine speed cannot decide the outcome.
@@ -39,10 +49,17 @@ func TestSQLiteCancellation_ACancelledContextStopsASearchBeforeItRuns(t *testing
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
+	// UNDER the bound on purpose: an over-bound query is refused before the
+	// context is ever consulted, which would make this pass without the
+	// cancellation it claims to test.
 	start := time.Now()
-	_, err := mem.SearchTurns(ctx, "/ws", strings.Repeat("x", 200000), 5)
+	_, err := mem.SearchTurns(ctx, "/ws", strings.Repeat("x", maxLexicalQueryChars/2), 5)
 	elapsed := time.Since(start)
 
+	if errors.Is(err, errLexicalQueryTooLong) {
+		t.Fatal("this query is over the lexical bound, so it never reached the driver; " +
+			"the test is measuring the bound rather than cancellation")
+	}
 	if err == nil {
 		t.Fatal("a search on a cancelled context returned no error; the context is not reaching the driver")
 	}
@@ -88,16 +105,26 @@ func TestSQLiteCancellation_DoesNotReachAnFTS5PhraseMatch(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// ISSUED DIRECTLY AGAINST THE DATABASE, not through SearchTurns, because
+	// SearchTurns now refuses this length outright. What is characterised here is
+	// SQLite, not the daemon's policy in front of it, so the policy is bypassed
+	// rather than worked around. The phrase is built exactly as SearchTurns
+	// builds one.
+	//
 	// 200k measured at ~3.6 s uncancelled, so a cancel at 200 ms is unambiguous.
+	phrase := `"` + strings.Repeat("x", 200000) + `"`
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { time.Sleep(200 * time.Millisecond); cancel() }()
 
 	start := time.Now()
-	_, err := mem.SearchTurns(ctx, "/ws", strings.Repeat("x", 200000), 5)
+	var role string
+	err := mem.db.QueryRowContext(ctx,
+		`SELECT t.role FROM turns_fts JOIN turns t ON t.id = turns_fts.rowid
+		 WHERE turns_fts MATCH ? LIMIT 1`, phrase).Scan(&role)
 	elapsed := time.Since(start)
 
 	if err == nil {
-		t.Fatal("the search reported no error at all; database/sql is not observing the context")
+		t.Fatal("the query reported no error at all; database/sql is not observing the context")
 	}
 	if elapsed < 1500*time.Millisecond {
 		t.Errorf("cancelled at 200ms, the FTS5 match returned after %s -- it now HONOURS the interrupt.\n"+
@@ -118,10 +145,13 @@ func TestHandleSearch_UsesTheContextItIsGiven(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
+	// UNDER the bound, for the reason given at the top of this file: an
+	// over-bound query is refused before the context matters, and this test would
+	// then pass with no context threading at all.
 	var buf strings.Builder
 	start := time.Now()
 	srv.handleSearch(ctx, json.NewEncoder(&buf), protocol.SearchRequest{
-		Search: true, Query: strings.Repeat("x", 200000), Limit: 5,
+		Search: true, Query: strings.Repeat("x", maxLexicalQueryChars/2), Limit: 5,
 	})
 	elapsed := time.Since(start)
 

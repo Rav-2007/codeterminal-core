@@ -290,6 +290,24 @@ func (s *Server) similarChunks(ctx context.Context, prompt string) ([]Chunk, str
 		return nil, reason
 	}
 
+	// REPORTED, NOT REFUSED. A prompt over the lexical bound still gets a turn:
+	// retrieveTopK's lexical tier declines it and the answer is grounded by
+	// semantic similarity alone, which is strictly better than what this used to
+	// do -- a 400,000-character paste spent 12.5 s in the keyword tier and
+	// returned zero hits, because one enormous token matches nothing. Skipping
+	// it costs the user nothing and saves the wait. Said out loud because a
+	// reduced tier that says nothing is the exact failure degraded.go exists to
+	// stop; see maxLexicalQueryChars for where the number comes from.
+	//
+	// Guarded on the tier EXISTING. "Skipped because the prompt is too long" and
+	// "there is no keyword tier on this daemon" are different states, and a
+	// daemon with no lexical store announcing that it skipped one would be
+	// reporting a degradation it does not have.
+	if s.lexicalStore != nil && lexicalQueryTooLong(prompt) {
+		s.logger.Printf("retrieval: prompt is %d chars, over the %d-char lexical bound; the keyword tier is skipped for this turn and grounding is by semantic similarity alone",
+			len(prompt), maxLexicalQueryChars)
+	}
+
 	similar, err := retrieveTopK(ctx, prompt, s.retrievalTopK, s.embedder, s.store, s.lexicalStore, !s.rerankDisabled)
 	if err != nil {
 		return nil, fmt.Sprintf("retrieval error: %v", err)

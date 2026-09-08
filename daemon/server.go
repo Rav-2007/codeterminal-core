@@ -1007,7 +1007,7 @@ func (s *Server) handleSearch(ctx context.Context, enc *json.Encoder, req protoc
 	hits, err := s.memory.SearchTurns(ctx, s.workspace, req.Query, limit)
 	if err != nil {
 		s.logger.Printf("search: %v", err)
-		enc.Encode(protocol.SearchResponse{ProtocolVersion: protocol.ProtocolVersion, Error: err.Error()})
+		enc.Encode(protocol.SearchResponse{ProtocolVersion: protocol.ProtocolVersion, Error: s.searchClientError(err, len(req.Query))})
 		return
 	}
 
@@ -1017,6 +1017,33 @@ func (s *Server) handleSearch(ctx context.Context, enc *json.Encoder, req protoc
 	}
 	s.logger.Printf("search: %d result(s) for query (%d bytes)", len(results), len(req.Query))
 	enc.Encode(protocol.SearchResponse{ProtocolVersion: protocol.ProtocolVersion, Results: results})
+}
+
+// searchClientError turns a search failure into the string the client is shown.
+//
+// TWO FIXES MEET HERE. First, this handler was the ONLY one putting err.Error()
+// on the wire verbatim: handleApplyEdit and handleUndo both route through
+// socketSafeError, which scrubs absolute paths and unifies the
+// existence/permission oracle. Nothing leaked a path today, because
+// SearchTurns' errors happen not to carry one -- but "no path in today's error
+// set" is not a control, and the next error added here would have had one.
+//
+// Second, a refused query has to say WHAT HAPPENED AND WHAT TO DO. A bound the
+// user cannot see is indistinguishable from a broken search, and "query exceeds
+// the maximum searchable length" alone tells them nothing actionable. The two
+// refusals below name the limit, the actual length, and the next move.
+func (s *Server) searchClientError(err error, queryLen int) string {
+	switch {
+	case errors.Is(err, errLexicalQueryTooLong):
+		return fmt.Sprintf("search query is %d characters and the limit is %d. "+
+			"Search for a distinctive phrase from what you are looking for rather than pasting the whole text.",
+			queryLen, maxLexicalQueryChars)
+	case errors.Is(err, errQueryHasNUL):
+		return "search query contains a NUL byte, which the search index cannot represent. " +
+			"Remove it, or search for a phrase from the surrounding text."
+	default:
+		return s.socketSafeError(err)
+	}
 }
 
 // loadPersistedHistory returns this daemon's cross-session conversation

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -121,7 +122,37 @@ type SearchHit struct {
 // whatever punctuation a user happened to type -- the same "don't let
 // external input dictate query semantics" instinct as history.go's role
 // validation on conversation content.
+// errQueryHasNUL is returned for a query carrying a NUL byte. See SearchTurns.
+var errQueryHasNUL = errors.New("query contains a NUL byte")
+
 func (s *MemoryStore) SearchTurns(ctx context.Context, workspace, query string, limit int) ([]SearchHit, error) {
+	// Bounded before the phrase is built. Unlike the retrieval path, which
+	// silently drops to semantic-only, this is a search the USER asked for, so
+	// handleSearch turns this error into a message naming the limit rather than
+	// pretending an empty result set is an answer.
+	if lexicalQueryTooLong(query) {
+		return nil, errLexicalQueryTooLong
+	}
+
+	// A NUL DEFEATS THE QUOTING BELOW, so it is refused rather than quoted.
+	//
+	// This function's own doc comment says the query "is always wrapped as one
+	// literal double-quoted phrase". That claim exceeded the code. FTS5's
+	// expression parser reads the MATCH text with C-string semantics and stops
+	// at the first NUL, which discards the CLOSING quote -- so a query holding
+	// one produced `fts5: syntax error near ""`, surfaced verbatim to the
+	// client, and the wrapper the comment promised was simply not there.
+	//
+	// It is a DENIAL, NOT AN INJECTION, and the difference was checked rather
+	// than assumed: an attacker controls only the prefix before the NUL and
+	// cannot emit an unescaped quote, because doubling turns every one of theirs
+	// into a literal. So no operator can be smuggled in; the reachable effect is
+	// a failed search and a leaked engine error. Refused here so the doc comment
+	// becomes true again.
+	if strings.ContainsRune(query, 0) {
+		return nil, errQueryHasNUL
+	}
+
 	phrase := `"` + strings.ReplaceAll(query, `"`, `""`) + `"`
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT t.role, snippet(turns_fts, 0, '[', ']', '...', ?), t.created_at
