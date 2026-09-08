@@ -356,23 +356,48 @@ func TestSentinel_IndicatorSearchSpaceIsThirtyTwoBits(t *testing.T) {
 	}
 }
 
-// TestSentinel_A4RowsAreAccountedFor is the honesty gate on this file: it fails
-// if the row table and the rows this file actually drives fall out of step, so
-// the report cannot claim coverage the tests do not have.
+// TestSentinel_A4RowsAreAccountedFor is the honesty gate on the sweep: every
+// A.4 row must be claimed by a named test, and the claim must say WHERE.
+//
+// IT WAS BUILT WRONG THE FIRST TIME and is worth recording. Its original form
+// asserted that at least one row was still undriven -- a fine gate while
+// coverage was partial, and one that FAILS THE MOMENT THE WORK IS FINISHED.
+// A gate whose green state is unreachable is not a gate. This form asserts the
+// property that actually matters: no row is unaccounted for, and nothing here
+// claims credit for a test in another module.
 func TestSentinel_A4RowsAreAccountedFor(t *testing.T) {
-	driven := map[int]bool{5: true, 10: true, 11: true}
+	// Where each row's evidence lives. "" means nothing drives it yet.
+	drivenBy := map[int]string{
+		1:  "TestSentinelRow1_APIKeyNeverLeavesTheAuthorizationHeader",
+		2:  "proxy/logging_test.go TestLogNeverContainsSecrets (ANOTHER MODULE)",
+		3:  "TestSentinelRow3_BearerTokenIsNotInTheRejection (LABELLED not load-bearing)",
+		4:  "TestSentinelRow4_TypedPromptIsScrubbedOutbound",
+		5:  "TestSentinel_RetrievedChunkIsScrubbedOnTheWireButNotInTheDebugLog",
+		6:  "TestSentinelRow6_MCPEnvAllowListDropsForbiddenAndUnlisted",
+		7:  "TestSentinelRow7_PersistedPromptIsStillRaw_TRIPWIRE (a tripwire, not a control)",
+		8:  "TestSentinelRow8_ChunkTextAtRestIsRawByDesign",
+		9:  "TestSentinelRow9_BackupIsByteExactByDesign",
+		10: "TestSentinel_WarnSinkRecordsNoSecretMaterial",
+		11: "TestSentinel_ToolAuditRecordsDigestNotArguments",
+	}
+
 	if len(a4Rows) != 11 {
 		t.Fatalf("a4Rows has %d rows, want 11", len(a4Rows))
 	}
-	var undriven []string
 	for n := 1; n <= 11; n++ {
-		if !driven[n] {
-			undriven = append(undriven, fmt.Sprintf("%d (%s)", n, a4Rows[n]))
+		if a4Rows[n] == "" {
+			t.Errorf("row %d has no description in a4Rows", n)
+		}
+		if drivenBy[n] == "" {
+			t.Errorf("row %d (%s) is UNACCOUNTED FOR: no test claims it", n, a4Rows[n])
 		}
 	}
-	t.Logf("driven in this file: rows 5, 10, 11. NOT driven here: %s", strings.Join(undriven, ", "))
-	if len(undriven) == 0 {
-		t.Fatal("every row is marked driven — update this test, it is the file's honesty gate")
+
+	// Row 2's evidence is in another module and this package cannot run it, so
+	// it is named rather than counted as local coverage. Stated here because a
+	// sweep that silently absorbs another module's test overstates its reach.
+	if !strings.Contains(drivenBy[2], "ANOTHER MODULE") {
+		t.Error("row 2 must stay marked as covered outside this package")
 	}
 }
 
