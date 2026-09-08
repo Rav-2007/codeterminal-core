@@ -6,7 +6,7 @@ Opened 2026-09-04 during the production-hardening pass on the TUI.
 
 **Its scope widened on 2026-09-05, again on 2026-09-08, and the title has not.**
 R1.15 is release machinery, R1.16/R1.17 are `daemon/`, `editapply/` and
-`scripts/`, and R1.18-R1.21 are `daemon/` and `helper/`. The heading still says
+`scripts/`, and R1.18-R1.22 are `daemon/` and `helper/`. The heading still says
 "clients/tui", which is now narrower than the contents by two passes.
 Recorded rather than silently retitled: a reader who came here for TUI risks
 needs to know the file grew, and renaming it would break every inbound
@@ -63,6 +63,7 @@ longer exists), or SUPERSEDED (replaced by a different row).**
 | R1.19 two tripwires guard an incidental protection | **OPEN by design — one of them going RED is GOOD NEWS** | Opened 2026-09-05. The helper's liveness depended on an undocumented property of `encoding/json`; two tests now pin both ends of that dependency, and one of them fails when the risk disappears. |
 | R1.20 a model-supplied tool name reaches a client-facing string unbounded | **OPEN — pre-existing, flagged in code before this pass** | Opened 2026-09-08. `daemon/agentloop.go:674` already names it: the same name that is bounded for `ToolActivity.Tool` travels into `Detail` on the refusal path unbounded. The audit-log instance of the same class was fixed this pass; this one was not. |
 | R1.21 warn-mode's "secret-free" record confirms a guessed value | **OPEN — a claim narrower than it reads, not a leak** | Opened 2026-09-08. `daemon/chunkscrub.go:236` truncates SHA-256 to 32 bits; with the `value_len` in the note it accepts the true value and rejected 39 same-shape candidates in test. One-way is true; unverifiable is not. |
+| R1.22 the scrub protects turn N; turn N+1 sends the same bytes raw | **PENDING A DECISION — nobody has decided** | Opened 2026-09-08. `daemon/server.go:707` persists the RAW prompt; the handshake returns it and `daemon/history.go:136` puts it back on the wire unscrubbed. Measured end to end. The fix shape (scrub at ingest vs at each sink) is a design decision, not a patch. |
 
 ### Three of these rows are pinned only on Linux
 
@@ -1311,3 +1312,49 @@ with it. Or: any proposal to widen the note, ship these files off-box, or relax
 their permissions — any of which turns a local confirmation channel into a remote
 one. **This trigger is a strong one precisely because D5 is already scheduled;
 contrast R1.20's, which depends on someone noticing an oversized message.**
+
+
+## R1.22 — The scrub protects turn N, and turn N+1 sends the same bytes unscrubbed
+
+**What it is.** `scrub` runs on the typed prompt before it goes to the provider,
+so turn N is clean. The RAW prompt is then persisted by
+`daemon/server.go:707`, returned to the client in
+`HandshakeResponse.PersistedHistory`, sent back by the client on the next turn,
+and placed into the outbound messages by `daemon/history.go:136` — which does
+not scrub, because the control lives one layer up.
+
+Measured, not inferred: with a planted AWS key, `PersistedHistory` carried it
+(2 turns), the provider-bound messages carried it (4 messages), and `turns` and
+`turns_fts` each held one row containing it.
+
+**THIS IS NOT A FOURTH LEAK. IT IS THE PREDICTION PER-SINK PLACEMENT MAKES.**
+Scrubbing at the point of egress means every new consumer of the raw prompt is a
+new place to remember, and the one that gets forgotten is the one nobody
+enumerated. That is what happened.
+
+**Why it is PENDING and not deferred.** Nobody has decided. There is a real
+trade behind it and it is not mine to settle: scrubbing at ingest means
+retrieval cannot match on a secret the user pasted. My reading, recorded so the
+decision has something to push against — the lexical tier is the only one that
+genuinely loses, the workflow it serves ("find where I pasted this key") is
+better served by grep than by an index that persists the key, and the common
+case (a pasted config block where the key's SHAPE matters and its VALUE does
+not) survives, because `[REDACTED:aws_access_key]` preserves the shape. The
+carve-out I would argue for is the in-process retrieval query, which never
+leaves the machine and is never stored.
+
+**Blast radius.** Every persisted turn containing a secret-shaped string reaches
+the provider on the following turn, indefinitely, until the workspace history is
+cleared. This is the only row in this register whose blast radius includes
+egress.
+
+**Pinned by.** `TestSentinelRow7_PersistedPromptIsStillRaw_TRIPWIRE`, which
+asserts TODAY's behaviour and **goes red when the fix lands**. Its failure
+message says so, because a tripwire that reads as a regression gets reverted.
+
+**Trigger.** Any decision on ingest-vs-sink scrubbing; any new consumer of
+`PersistedHistory`; or a fifth consumer of the raw prompt appearing. **Also
+unresolved and deliberately not guessed: whether existing `memory.db` files need
+migrating.** Every already-persisted secret keeps returning through history
+until the workspace is cleared, and that is a data decision with user-visible
+consequences.
