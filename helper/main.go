@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"runtime/debug"
 	"syscall"
 	"time"
 
@@ -159,6 +160,39 @@ const (
 
 func (s *server) handleConn(conn net.Conn) {
 	defer conn.Close()
+
+	// A panic below used to end THIS PROCESS, not this connection, and the
+	// daemon has had the mirror of this defer since server.go:289. The
+	// asymmetry was the defect: the parent hardened itself and the subprocess it
+	// spawns kept the original behaviour.
+	//
+	// IT IS NOT HYPOTHETICAL. sugarme/tokenizer v0.3.0 panics on invalid UTF-8
+	// rather than returning an error -- measured, four shapes, two signatures
+	// ("slice bounds out of range", "index out of range") -- and tokenize is
+	// reached by every embed. The daemon's only content filter before that point
+	// is sniffBinary (daemon/chunker.go:290), a NUL sniff over the first 8 KiB,
+	// which calls Windows-1252 punctuation and truncated sequences TEXT.
+	//
+	// WHAT WAS ACTUALLY HOLDING IT CLOSED, and why that is not good enough:
+	// encoding/json replaces invalid UTF-8 with U+FFFD at MARSHAL time,
+	// silently, with a nil error, so those bytes never survive the trip across
+	// this socket. That is a real protection and an entirely incidental one --
+	// nothing said the wire format was load-bearing for process liveness, and a
+	// length-prefixed framing or a protobuf would remove it with nothing behind
+	// it. This defer is what makes the crash survivable regardless of how text
+	// arrives, which is why it is worth having even though no input can reach
+	// the panic today.
+	//
+	// Defense in depth, not a substitute for the upstream bug: the blast radius
+	// becomes one connection, the daemon sees a closed connection and retries,
+	// and the helper goes on serving. See helper/embedleak_test.go for the
+	// measurements and for the two tripwires that fire if either dependency
+	// changes.
+	defer func() {
+		if r := recover(); r != nil {
+			s.logger.Printf("recovered from panic while handling a connection: %v\n%s", r, debug.Stack())
+		}
+	}()
 
 	if err := protocol.AuthorizePeer(conn); err != nil {
 		s.logger.Printf("connection refused: %v", err)
