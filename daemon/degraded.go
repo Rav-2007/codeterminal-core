@@ -3,6 +3,7 @@ package main
 import (
 	"codeterminal/protocol"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -68,11 +69,7 @@ func (s *Server) degradations() []protocol.Degradation {
 
 	out = append(out, s.routingDegradations()...)
 
-	if payload, err := os.ReadFile(filepath.Join(s.workspace, ".codeterminal/index/TOO_LARGE")); err == nil {
-		var meta map[string]any
-		if len(payload) > 0 {
-			_ = json.Unmarshal(payload, &meta)
-		}
+	if present, meta := s.workspaceTooLargeMarker(); present {
 		out = append(out, protocol.Degradation{
 			Component: protocol.DegradedWorkspaceTooLarge,
 			Detail:    detailWorkspaceTooLarge,
@@ -167,4 +164,111 @@ func (s *Server) statusDegradations(now time.Time) []protocol.Degradation {
 		out = append(out, *d)
 	}
 	return out
+}
+
+// maxTooLargeMarkerBytes caps how much of the workspace-too-large marker is
+// read, and the number is DERIVED FROM ITS ONLY WRITER rather than picked.
+//
+// index_cmd.go writes the marker with one fmt.Sprintf carrying four fields:
+//
+//	{"file_count": %d, "limit_exceeded": true, "time_ms": %d, "mem_mb": %d}
+//
+// The literal text is 65 bytes and the three integers are at most 19 digits
+// each even at int64 maxima, so the largest payload the writer can produce is
+// 122 bytes. 4 KiB is 33x that, and one filesystem block, so it cannot become a
+// real limit through ordinary growth -- another field of the same kind costs
+// about 25 bytes and there is room for a hundred and sixty of them.
+//
+// Against what it is actually for, it is 65,536x smaller: the measured probe
+// used a 256 MiB marker.
+const maxTooLargeMarkerBytes = 4096
+
+// workspaceTooLargeMarker reports whether the indexer left its
+// workspace-too-large marker, and what metadata it carries.
+//
+// THE MARKER IS WORKSPACE CONTENT, WHICH MEANS IT IS UNTRUSTED. It lives at
+// .codeterminal/index/TOO_LARGE inside the workspace, so a cloned repository can
+// ship one, and degradations() runs on EVERY prompt. The previous
+// implementation was one os.ReadFile plus a json.Unmarshal into map[string]any,
+// with no cap, no link check, and no test of what the path even pointed at.
+// Three things followed from that one read, and one cap plus one fstat closes
+// all three:
+//
+//  1. MEMORY. Measured: a 256 MiB marker cost 512 MiB of heap -- 2x, because
+//     the bytes are read and then the JSON is decoded into a second structure --
+//     in 1.20 s, on every turn.
+//  2. WIRE INFLATION. The decoded map goes into TokenResponse.Degraded, so the
+//     same 256 MiB marker produced a 268,435,598-byte message sent to the client
+//     at the start of every turn. Same root cause, same fix: bytes that are
+//     never read cannot be forwarded.
+//  3. BLOCKING, which is the worst of the three and was not what the size
+//     framing predicted. On POSIX, open(2) on a FIFO with no writer waits
+//     forever. Measured: os.ReadFile on a FIFO planted at that path was still
+//     parked after three seconds with no path to return. A 512 MiB allocation is
+//     recoverable; a handler blocked forever holds one of 128 connection slots
+//     and hangs every turn that follows. See platform.go for openNonBlock.
+//
+// BEHAVIOUR AT THE CAP IS DEFINED AND VISIBLE, never silent. The marker's
+// EXISTENCE is the signal -- the workspace is too large, semantic search is off
+// -- and its content is optional detail. So an oversized, malformed, or
+// not-a-regular-file marker still reports the degradation and drops only the
+// metadata, and says so in the daemon log. Suppressing the degradation instead
+// would let anyone who can write one byte into the workspace hide the fact that
+// retrieval is disabled, which is the wrong direction for an honesty signal.
+//
+// The log line is written on every affected turn rather than once, deliberately:
+// the alternative is per-Server state, and this function's doc comment promises
+// it can be computed per-request "without cost and without racing anything".
+// A repeated line about a pathological marker is cheaper than making that
+// promise false.
+func (s *Server) workspaceTooLargeMarker() (present bool, meta map[string]any) {
+	path := filepath.Join(s.workspace, ".codeterminal", "index", "TOO_LARGE")
+
+	// O_NOFOLLOW: a symlink at the leaf is refused rather than followed, so the
+	// marker cannot be aimed at /dev/zero or at a file outside the workspace.
+	// O_NONBLOCK: see above -- this is what stops a FIFO parking the turn.
+	f, err := openNoFollow(path, os.O_RDONLY|openNonBlock, 0)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			// Not "absent" -- present and unreadable, which is a different
+			// state and must not be reported as the same one. A symlink at the
+			// leaf lands here.
+			s.logger.Printf("degraded: workspace-too-large marker exists but could not be opened: %v", err)
+		}
+		return false, nil
+	}
+	defer f.Close()
+
+	// fstat on the DESCRIPTOR, not stat on the path: a stat-then-open pair has a
+	// window in which the thing that was checked is not the thing that was
+	// opened, and the marker sits in a directory the workspace controls.
+	info, err := f.Stat()
+	switch {
+	case err != nil:
+		s.logger.Printf("degraded: workspace-too-large marker could not be stat'd; reporting the degradation without its metadata: %v", err)
+		return true, nil
+	case !info.Mode().IsRegular():
+		s.logger.Printf("degraded: workspace-too-large marker is not a regular file (mode %s); reporting the degradation without its metadata", info.Mode())
+		return true, nil
+	}
+
+	// One byte past the cap, so "exactly at the cap" and "over it" are
+	// distinguishable without reading any further.
+	payload, err := io.ReadAll(io.LimitReader(f, maxTooLargeMarkerBytes+1))
+	if err != nil {
+		s.logger.Printf("degraded: workspace-too-large marker could not be read; reporting the degradation without its metadata: %v", err)
+		return true, nil
+	}
+	if len(payload) > maxTooLargeMarkerBytes {
+		s.logger.Printf("degraded: workspace-too-large marker exceeds %d bytes; reporting the degradation without its metadata", maxTooLargeMarkerBytes)
+		return true, nil
+	}
+	if len(payload) == 0 {
+		return true, nil
+	}
+	if err := json.Unmarshal(payload, &meta); err != nil {
+		s.logger.Printf("degraded: workspace-too-large marker is not valid JSON; reporting the degradation without its metadata: %v", err)
+		return true, nil
+	}
+	return true, meta
 }

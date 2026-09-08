@@ -62,6 +62,15 @@ import (
 // read-only attribute. Callers relying on 0600 to mean "only this user" are
 // relying on the containing directory's ACL, not on this argument — see
 // SocketDir and the state directory, which is where that is enforced.
+// openNonBlock is 0 on Windows, and that is the whole implementation rather
+// than an omission. The POSIX constant exists to stop an open on a FIFO
+// blocking forever; Windows has no filesystem FIFO, since its named pipes live
+// under \\.\pipe\ and are not reachable by a workspace-relative path. The
+// property the flag buys on POSIX -- "this open returns" -- already holds here,
+// and the fstat that follows it is the half that decides what the file is, on
+// both platforms.
+const openNonBlock = 0
+
 func openNoFollow(path string, flag int, perm os.FileMode) (*os.File, error) {
 	p, err := windows.UTF16PtrFromString(path)
 	if err != nil {
