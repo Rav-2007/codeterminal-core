@@ -4,9 +4,10 @@
 
 Opened 2026-09-04 during the production-hardening pass on the TUI.
 
-**Its scope widened on 2026-09-05 and the title has not.** R1.15 is release
-machinery and R1.16/R1.17 are `daemon/`, `editapply/` and `scripts/`. The
-heading still says "clients/tui", which is now narrower than the contents.
+**Its scope widened on 2026-09-05, again on 2026-09-08, and the title has not.**
+R1.15 is release machinery, R1.16/R1.17 are `daemon/`, `editapply/` and
+`scripts/`, and R1.18-R1.21 are `daemon/` and `helper/`. The heading still says
+"clients/tui", which is now narrower than the contents by two passes.
 Recorded rather than silently retitled: a reader who came here for TUI risks
 needs to know the file grew, and renaming it would break every inbound
 reference. The next pass that touches the heading should widen it.
@@ -60,6 +61,8 @@ longer exists), or SUPERSEDED (replaced by a different row).**
 | R1.17 an ambiguous request body is refused with the wrong message | **OPEN — rough edge, deliberate** | Opened 2026-09-05 alongside the fix in `026fe48`. The refusal is correct; the message a client sees is `"prompt is empty"`, inherited from the duplicate-key precedent it was deliberately made to match. |
 | R1.18 non-UTF-8 source files are embedded with U+FFFD, silently | **OPEN — NOT IMPLEMENTED, quality not security** | Opened 2026-09-05. `encoding/json` substitutes U+FFFD for every invalid byte in both directions, so a Windows-1252 file is vectorised with replacement characters where its punctuation was. Nothing reports it. |
 | R1.19 two tripwires guard an incidental protection | **OPEN by design — one of them going RED is GOOD NEWS** | Opened 2026-09-05. The helper's liveness depended on an undocumented property of `encoding/json`; two tests now pin both ends of that dependency, and one of them fails when the risk disappears. |
+| R1.20 a model-supplied tool name reaches a client-facing string unbounded | **OPEN — pre-existing, flagged in code before this pass** | Opened 2026-09-08. `daemon/agentloop.go:674` already names it: the same name that is bounded for `ToolActivity.Tool` travels into `Detail` on the refusal path unbounded. The audit-log instance of the same class was fixed this pass; this one was not. |
+| R1.21 warn-mode's "secret-free" record confirms a guessed value | **OPEN — a claim narrower than it reads, not a leak** | Opened 2026-09-08. `daemon/chunkscrub.go:236` truncates SHA-256 to 32 bits; with the `value_len` in the note it accepts the true value and rejected 39 same-shape candidates in test. One-way is true; unverifiable is not. |
 
 ### Three of these rows are pinned only on Linux
 
@@ -1235,3 +1238,76 @@ puts in front of you.
 **Trigger.** A `sugarme/tokenizer` upgrade; a Go release changing
 `encoding/json`'s invalid-UTF-8 handling; or any change to `helperproto`'s wire
 format. On any of those: re-measure, then simplify rather than delete.
+
+
+## R1.20 — A model-supplied tool name reaches a client-facing string unbounded
+
+**What it is.** When the model asks for a tool by a name that does not parse as
+`<server>__<tool>`, the raw name is echoed back to the user so the refusal names
+what was refused. `daemon/agentloop.go:678` bounds it for `ToolActivity.Tool`
+via `truncateForClient`. The same string also travels into `decision.reason` and
+from there into the refusal `Detail`, where nothing bounds it.
+
+**This row exists because the code said so first.** The comment at
+`daemon/agentloop.go:674` names this exact gap and calls it "a pre-existing
+exposure noted rather than widened". It had never reached the register, so it
+was a fact known to one file. A third instance of the same class — the audit
+log's `server` field — was found this pass by measurement, not by reading that
+comment, which is the argument for the row.
+
+**Why deferred.** The fix is a one-line bound, but the right bound is a question
+about `decision.reason`'s other callers, which carry text that is not a tool
+name and for which 128 bytes may truncate something a user needs. Bounding the
+wrong string is how a refusal stops explaining itself.
+
+**Blast radius.** A pathological name inflates one refusal message to the client.
+It is not durable, does not egress, and the client renders it through
+`sanitizeText`. Low.
+
+**Pinned by.** **NOTHING. This row has no test.** The audit-log sibling is pinned
+by `TestSentinel_ToolAuditBoundsAnUnparseableToolName`; this instance is not, and
+saying so is the point of the field.
+
+**Trigger.** Any change to `decision.reason`'s construction, or any report of an
+oversized refusal message. Also: if a fourth instance of the class turns up, the
+class is the defect and the three sites should be fixed together.
+
+## R1.21 — Warn mode's "secret-free" record confirms a guessed value
+
+**What it is.** `warnmode.jsonl` records, per fire, a note (`len=41
+bits_per_char=5.11`, or `keyword=api_key value_len=20`) and an indicator —
+`daemon/chunkscrub.go:236` returns `"sha256:" + hex[:8]`, a 32-bit prefix.
+
+Measured: given only that record and a candidate, the true value is accepted and
+39 same-shape candidates are rejected. That is an oracle by definition.
+
+**THE DISTINCTION IS THE FINDING, AND COLLAPSING IT WOULD BE WRONG.** The file
+does **not** disclose the secret. `valueIndicator`'s doc says "the value is not
+recoverable from it" and that is **true**. What is narrower than it reads is
+"secret-free note": not recoverable and not verifiable are different properties,
+and the record provides the second while the phrase suggests neither. Filing this
+as "warnmode.jsonl leaks secrets" would be false, and would get a real finding
+dismissed.
+
+**Why deferred.** It only bites where the value is guessable — a small space, a
+known format, an enumerable set — and it needs read access to a file that is
+0600 inside a 0700 directory. The realistic paths are backup exfiltration, log
+shipping, or a shared host. Against that, the indicator is what makes the
+fire-rate data usable: it is how the same value is recognised across lines, which
+is the entire measurement warn mode exists to produce. Removing it would end the
+measurement to close a channel that needs a prior guess.
+
+**Blast radius.** Confirmation of an already-held candidate, per fire, locally.
+No disclosure, no egress.
+
+**Pinned by.** `TestSentinel_WarnNoteAndIndicatorConfirmAGuessedValue` (the
+oracle, with 39 rejected candidates as its floor) and
+`TestSentinel_IndicatorSearchSpaceIsThirtyTwoBits` (the 32 bits, so the severity
+argument rests on a measured number). `TestSentinel_WarnSinkRecordsNoSecretMaterial`
+holds the separate no-plaintext claim.
+
+**Trigger.** The Design B/C decision, which ends warn mode and takes this record
+with it. Or: any proposal to widen the note, ship these files off-box, or relax
+their permissions — any of which turns a local confirmation channel into a remote
+one. **This trigger is a strong one precisely because D5 is already scheduled;
+contrast R1.20's, which depends on someone noticing an oversized message.**
