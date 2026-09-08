@@ -16,7 +16,7 @@ import (
 func searchViaHandler(t *testing.T, srv *Server, req protocol.SearchRequest) protocol.SearchResponse {
 	t.Helper()
 	var buf bytes.Buffer
-	srv.handleSearch(json.NewEncoder(&buf), req)
+	srv.handleSearch(t.Context(), json.NewEncoder(&buf), req)
 	var resp protocol.SearchResponse
 	if err := json.Unmarshal(buf.Bytes(), &resp); err != nil {
 		t.Fatalf("decoding SearchResponse: %v (raw: %s)", err, buf.String())

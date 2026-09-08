@@ -309,6 +309,26 @@ func (s *Server) handleConn(conn net.Conn) {
 func (s *Server) serveConn(conn net.Conn) {
 	s.logger.Print("client connected")
 
+	// THE CONNECTION'S CANCELLATION SIGNAL, derived from the daemon's so that a
+	// shutdown reaches work that was previously started on context.Background()
+	// and therefore could not be reached at all. Every cancellable thing this
+	// connection starts hangs off this; the two things that must finish anyway
+	// are named at their call sites and say why.
+	//
+	// WHAT THIS BUYS AND WHAT IT DOES NOT, measured rather than assumed, because
+	// the obvious reading of it is wrong. A cancelled context reaches SQLite:
+	// modernc.org/sqlite wires sqlite3_interrupt to ctx.Done (interruptOnDone,
+	// sqlite.go:800), and it works -- a recursive CTE cancelled at 500 ms
+	// returned at 511 ms. It does NOT stop the query that motivated this work.
+	// An FTS5 trigram MATCH over a huge quoted phrase, cancelled at 500 ms,
+	// returned after 51.32 s: sqlite3_interrupt is polled in the VDBE loop, and
+	// that workload does its time somewhere that never polls it. So cancellation
+	// here is correct plumbing that is INEFFECTIVE FOR EXACTLY ONE QUERY SHAPE,
+	// and the only thing that stops that shape is not starting it. Both figures
+	// are pinned by TestSQLiteCancellation_* so this stays a measurement.
+	ctx, cancelConn := context.WithCancel(s.shutdownContext())
+	defer cancelConn()
+
 	// Bound how much this connection can make the daemon buffer, and how long
 	// any single read/write may block, before the request is even decoded
 	// (FAIL-3, Gate 5). Auth-independent: this caps resource use, not access.
@@ -362,7 +382,7 @@ func (s *Server) serveConn(conn net.Conn) {
 		ProtocolVersion:  protocol.ProtocolVersion,
 		Ok:               true,
 		DaemonVersion:    daemonVersion,
-		PersistedHistory: s.loadPersistedHistory(),
+		PersistedHistory: s.loadPersistedHistory(ctx),
 	}); err != nil {
 		s.logger.Printf("handshake write error: %v", err)
 		return
@@ -427,7 +447,7 @@ func (s *Server) serveConn(conn net.Conn) {
 			return
 		}
 		s.count(func(c *counters) { c.searches.Add(1) })
-		s.handleSearch(enc, searchReq)
+		s.handleSearch(ctx, enc, searchReq)
 		return
 	}
 
@@ -504,7 +524,7 @@ func (s *Server) serveConn(conn net.Conn) {
 	historyOutcome := prepareHistory(promptReq.History)
 	s.logHistory(historyOutcome)
 
-	outcome := s.gatherContext(context.Background(), promptReq.Prompt)
+	outcome := s.gatherContext(ctx, promptReq.Prompt)
 	s.logRetrieval(outcome)
 
 	grounding := buildGroundingInfo(outcome, s.workspace, promptReq.Workspace)
@@ -604,13 +624,13 @@ func (s *Server) serveConn(conn net.Conn) {
 		// from the client AFTER its request: an approval answer comes back on
 		// this same connection, needs this same decoder, and needs lc to widen
 		// the idle deadline to human scale for the duration of the ask.
-		s.runAgentTurn(s.shutdownContext(), enc, dec, lc, promptReq, decision.Slug, messages, routing, &full)
+		s.runAgentTurn(ctx, enc, dec, lc, promptReq, decision.Slug, messages, routing, &full)
 		return
 	}
 
 	// No tools on this path. Agent mode has its own entry point; passing nil
 	// here is what keeps the request body byte-identical to the pre-tools one.
-	_, err := streamWithRetry(context.Background(), s.apiBase, s.apiKey, decision.Slug, messages, nil, routing,
+	_, err := streamWithRetry(ctx, s.apiBase, s.apiKey, decision.Slug, messages, nil, routing,
 		func(token string) error {
 			full.WriteString(token)
 			return enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Token: token})
@@ -970,7 +990,7 @@ const defaultSearchLimit = 20
 // own no-match-is-not-an-error contract), never "couldn't search at all" —
 // the same "never let two different outcomes look identical" instinct
 // UndoResponse.Guarded exists for.
-func (s *Server) handleSearch(enc *json.Encoder, req protocol.SearchRequest) {
+func (s *Server) handleSearch(ctx context.Context, enc *json.Encoder, req protocol.SearchRequest) {
 	if s.memory == nil {
 		enc.Encode(protocol.SearchResponse{
 			ProtocolVersion: protocol.ProtocolVersion,
@@ -984,7 +1004,7 @@ func (s *Server) handleSearch(enc *json.Encoder, req protocol.SearchRequest) {
 		limit = defaultSearchLimit
 	}
 
-	hits, err := s.memory.SearchTurns(context.Background(), s.workspace, req.Query, limit)
+	hits, err := s.memory.SearchTurns(ctx, s.workspace, req.Query, limit)
 	if err != nil {
 		s.logger.Printf("search: %v", err)
 		enc.Encode(protocol.SearchResponse{ProtocolVersion: protocol.ProtocolVersion, Error: err.Error()})
@@ -1011,11 +1031,11 @@ func (s *Server) handleSearch(enc *json.Encoder, req protocol.SearchRequest) {
 // zero-content upstream response — can't re-hydrate a client's transcript and
 // ride back in as history. prepareHistory would refuse it again on the return
 // trip; filtering here means the client never displays it either.
-func (s *Server) loadPersistedHistory() []protocol.Turn {
+func (s *Server) loadPersistedHistory(ctx context.Context) []protocol.Turn {
 	if s.memory == nil {
 		return nil
 	}
-	turns, err := s.memory.LoadRecentTurns(context.Background(), s.workspace, maxHistoryTurns)
+	turns, err := s.memory.LoadRecentTurns(ctx, s.workspace, maxHistoryTurns)
 	if err != nil {
 		s.logger.Printf("loading persisted history: %v", err)
 		return nil
@@ -1083,6 +1103,13 @@ func (s *Server) persistTurn(prompt, answer string, incomplete *protocol.Incompl
 			answer += note
 		}
 	}
+	// DELIBERATELY NOT THE CONNECTION'S CONTEXT. This runs after the answer is
+	// complete, and the commonest way to reach it is a turn the user interrupted
+	// -- which is precisely when the connection's context is already cancelled.
+	// Threading it here would mean that pressing stop silently discarded the
+	// exchange from cross-session memory. "Work this client asked for" and "work
+	// that must finish once started" are different states and must not share a
+	// cancellation signal.
 	ctx := context.Background()
 	if err := s.memory.AppendTurn(ctx, s.workspace, "user", prompt); err != nil {
 		s.logger.Printf("persisting user turn: %v", err)
@@ -1099,6 +1126,8 @@ func (s *Server) resetPersistedHistory() {
 	if s.memory == nil {
 		return
 	}
+	// Not the connection's context, for persistTurn's reason: this is a completed
+	// user action (ctrl+n), and a half-cleared history is worse than a slow one.
 	if err := s.memory.ClearWorkspace(context.Background(), s.workspace); err != nil {
 		s.logger.Printf("clearing persisted history: %v", err)
 		return

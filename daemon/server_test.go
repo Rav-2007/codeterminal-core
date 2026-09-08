@@ -14,7 +14,7 @@ import (
 func TestServer_MemoryHelpersAreNoOpsWhenMemoryIsNil(t *testing.T) {
 	srv := &Server{logger: discardLogger(), workspace: "/workspace/x"}
 
-	if got := srv.loadPersistedHistory(); got != nil {
+	if got := srv.loadPersistedHistory(t.Context()); got != nil {
 		t.Errorf("loadPersistedHistory() = %+v, want nil when s.memory is nil", got)
 	}
 	srv.persistTurn("q", "a", nil) // must not panic
@@ -57,7 +57,7 @@ func TestServer_LoadPersistedHistoryReflectsWhatWasPersisted(t *testing.T) {
 	}
 
 	srv := &Server{logger: discardLogger(), workspace: ws, memory: memStore}
-	got := srv.loadPersistedHistory()
+	got := srv.loadPersistedHistory(t.Context())
 	if len(got) != 2 || got[0].Content != "q1" || got[1].Content != "a1" {
 		t.Errorf("loadPersistedHistory() = %+v, want the 2 persisted turns in order", got)
 	}
