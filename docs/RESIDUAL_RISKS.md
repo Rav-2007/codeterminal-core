@@ -58,6 +58,8 @@ longer exists), or SUPERSEDED (replaced by a different row).**
 | R1.15 the release signs nothing — macOS secrets absent | **DEFERRED BY DECISION 2026-09-05 (founder)** | Found by the first-ever dispatch of `release.yml` (run `33922431985`): the signing step is a no-op without the five `MACOS_*` secrets, so darwin binaries are **unsigned** and Gatekeeper kills them. **The run is green either way** — fail-open, one layer up from the gate scripts. **Ruling: the first release ships Linux and Windows only; `darwin-arm64` is deferred until the secrets exist.** The machinery now enforces it — `scripts/release-signing-guard.sh`, keyed on **distributable**, verified on run `33938839311`. Three items remain **expected-unverified**; see the row. |
 | R1.16 a gate whose expected count comes from the list it validates | **OPEN — a CLASS, two instances** | Opened 2026-09-05. Not a coincidence: `platformcoverage_test.go` (floor 20, 73 suites) and `scripts/fuzz.sh` (`TARGETS` is its own source of truth) share one general form. The fuzz gate has no equivalent of the TUI test's bidirectional loops. |
 | R1.17 an ambiguous request body is refused with the wrong message | **OPEN — rough edge, deliberate** | Opened 2026-09-05 alongside the fix in `026fe48`. The refusal is correct; the message a client sees is `"prompt is empty"`, inherited from the duplicate-key precedent it was deliberately made to match. |
+| R1.18 non-UTF-8 source files are embedded with U+FFFD, silently | **OPEN — NOT IMPLEMENTED, quality not security** | Opened 2026-09-05. `encoding/json` substitutes U+FFFD for every invalid byte in both directions, so a Windows-1252 file is vectorised with replacement characters where its punctuation was. Nothing reports it. |
+| R1.19 two tripwires guard an incidental protection | **OPEN by design — one of them going RED is GOOD NEWS** | Opened 2026-09-05. The helper's liveness depended on an undocumented property of `encoding/json`; two tests now pin both ends of that dependency, and one of them fails when the risk disappears. |
 
 ### Three of these rows are pinned only on Linux
 
@@ -1149,3 +1151,87 @@ make the eventual fix look like a regression.
 
 **Trigger.** A client author or user reporting confusion at the message; or any
 work on the duplicate-key refusal path, which must fix both together.
+
+---
+
+## R1.18 — Non-UTF-8 source files are embedded with U+FFFD, and nothing says so
+
+**What it is.** Text on its way from the daemon to the embedder helper crosses a
+JSON socket, and `encoding/json` replaces every invalid UTF-8 byte with U+FFFD —
+in **both** directions, silently, returning a nil error every time. Measured:
+raw `0x93`/`0x94` in the wire body, a raw truncated `e2 82`, a raw lone
+surrogate `ed a0 80`, and an escaped `\ud800` all arrive as U+FFFD.
+
+The daemon's only content filter before that point is `sniffBinary`
+(`daemon/chunker.go:290`), a NUL-byte sniff over the first 8 KiB. A
+Windows-1252 or Latin-1 source file contains no NUL, so it is not "binary": it
+is indexed, chunked, and embedded — with replacement characters where its
+punctuation and accented letters used to be. The vectors are computed from text
+the file does not contain.
+
+**Why deferred.** The fix — reject invalid UTF-8 in `Embed`, or transcode it —
+is five to twenty lines, and neither variant is obviously right. Rejecting turns
+a currently-indexed file into an unindexed one, which is a **retrieval-coverage
+regression** for exactly the users this affects. Transcoding requires guessing an
+encoding, and a wrong guess produces confidently wrong text rather than visible
+mojibake. Both change what gets embedded for real workspaces, so both need their
+own measurement against the retrieval evals rather than a patch. Recorded now
+because the alternative is that it stays invisible.
+
+**Blast radius.** Quality, not security, and bounded to non-UTF-8 files. No
+secret is exposed and no process is harmed; retrieval is simply worse on those
+files than the index implies, and **the degradation is invisible from every
+side** — no warning, no degradation notice, no log line. It surfaces as "search
+is bad on this one repository" with nothing to attribute it to. Most likely on
+codebases with a long history, vendored third-party text, or non-English
+comments written before the project moved to UTF-8.
+
+**Pinned by.** Nothing asserts the corruption is absent, because it is present.
+`helper/embedleak_test.go`'s
+`TestEmbed_TheWireEncodingIsWhatStopsTheTokenizerPanic` pins the *substitution
+itself*, since the same behaviour is what keeps the tokenizer alive (R1.19) —
+so the mechanism is characterised even though the consequence is unguarded.
+`TestEmbed_InvalidUTF8WithoutNULIsNotFilteredAsBinary` records that the daemon's
+filter does not stop these bytes.
+
+**Trigger.** Any change to the wire encoding between daemon and helper (which
+would change or remove the substitution); or any report of degraded retrieval on
+a codebase that is not uniformly UTF-8. The second is the one to watch for,
+because it will not arrive labelled as this.
+
+---
+
+## R1.19 — Two tripwires guard a protection nobody designed, and one goes red on good news
+
+**What it is.** The helper process stayed alive on invalid UTF-8 only because
+`encoding/json` substitutes U+FFFD. `sugarme/tokenizer` v0.3.0 **panics** on
+those bytes — four of ten hostile inputs, two signatures, zero errors returned —
+and until `2a1c948` nothing in `helper/` recovered from a panic, so reaching
+that code would have ended the process rather than the connection.
+
+`2a1c948` added the recover, so the crash is now survivable regardless. But the
+underlying pair of facts is still load-bearing for *how much* that matters, and
+both ends are now pinned:
+
+| test | fails when | what that means |
+|---|---|---|
+| `TestEmbed_TheWireEncodingIsWhatStopsTheTokenizerPanic` | `encoding/json` stops substituting | The recover becomes the **only** guard; R1.18's corruption also disappears |
+| `TestHandleConn_NoWirePathDeliversInvalidUTF8` | any wire path delivers raw invalid UTF-8 | Same, from the helper's side |
+| `TestEmbed_TokenizerPanicsRatherThanErroringOnInvalidUTF8` | the tokenizer **stops** panicking | **GOOD NEWS** — the dependency can be dropped |
+
+**Why deferred.** There is nothing to fix. This row exists so the third test's
+failure is not misread.
+
+**Blast radius.** None directly. The risk this row manages is **a correct test
+being deleted by whoever it inconveniences.** A red test whose message says
+"this is an improvement" is still a red test in someone's CI at 6pm, and the
+cheapest way to make it green is to delete it — which would also delete the
+record of why the recover exists.
+
+**Pinned by.** The three tests above. Each carries its explanation in its own
+failure message, not only here, because the register is not what a failing build
+puts in front of you.
+
+**Trigger.** A `sugarme/tokenizer` upgrade; a Go release changing
+`encoding/json`'s invalid-UTF-8 handling; or any change to `helperproto`'s wire
+format. On any of those: re-measure, then simplify rather than delete.
