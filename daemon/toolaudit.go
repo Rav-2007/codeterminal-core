@@ -127,10 +127,22 @@ func (s *toolAuditSink) record(ev toolAuditEvent) {
 func auditFor(iteration int, mode string, qualified string, tool mcp.Tool, policy mcp.Policy, arguments string) toolAuditEvent {
 	server, name, err := mcp.SplitQualifiedName(qualified)
 	if err != nil {
-		// Not a name this daemon would ever generate. Recorded whole, in the
-		// server field, rather than dropped: an unparseable tool name is a
-		// finding, not a formatting problem.
-		server, name = qualified, ""
+		// Not a name this daemon would ever generate. Recorded rather than
+		// dropped -- an unparseable tool name is a finding, not a formatting
+		// problem -- but BOUNDED, which it was not.
+		//
+		// qualified is model-supplied and arrives unvalidated on this path
+		// (mcp.ValidateToolName guards names a SERVER advertises, at list time;
+		// this is a name the MODEL asked for). Measured: a 1,048,596-byte name
+		// produced a 1,048,851-byte audit line. Rotation bounds the FILE, not
+		// the record, so one call could write a megabyte line into a log whose
+		// whole design premise is that it holds no bulk model output.
+		//
+		// maxReportedToolName is the same bound agentloop.go already applies to
+		// this exact string on the client-facing path, and reusing it is the
+		// point: one number for "how much of a model-supplied name is worth
+		// keeping", not two that can drift.
+		server, name = truncateForClient(qualified, maxReportedToolName), ""
 	}
 	if tool.Server != "" {
 		server, name = tool.Server, tool.Name

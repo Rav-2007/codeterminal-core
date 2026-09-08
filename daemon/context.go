@@ -546,8 +546,22 @@ func (s *Server) logRetrieval(o retrievalOutcome) {
 
 	if s.debugContext {
 		for i, c := range o.Chunks {
+			// SCRUBBED, like the wire path, and through the same scrub() with the
+			// same --no-scrub escape hatch.
+			//
+			// This line used to format c.Content directly. renderChunk's doc calls
+			// itself "the single retrieval-time choke point" for chunk secret
+			// scrubbing, and that was true of the prompt and false here: Content
+			// reached two consumers and only one went through the choke point, so
+			// --debug-context wrote secrets that scrub() would have caught into the
+			// daemon log -- and --log-file makes that log durable on disk.
+			//
+			// Scrubbing here also makes the debug output MORE faithful, not less:
+			// what an operator wants from this flag is what was SENT, and what is
+			// sent is redacted. The file on disk is still the file on disk.
+			cleaned, _ := scrub(c.Content, s.noScrub())
 			s.logger.Printf("retrieval debug: chunk %d (%s:%d-%d) class=%s score=%.4f weighted=%.4f:\n%s",
-				i+1, c.FilePath, c.StartLine, c.EndLine, c.Class, c.RawScore, c.Score, neutralizeDelimiters(c.Content))
+				i+1, c.FilePath, c.StartLine, c.EndLine, c.Class, c.RawScore, c.Score, neutralizeDelimiters(cleaned))
 		}
 	}
 }
