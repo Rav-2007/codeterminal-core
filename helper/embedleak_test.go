@@ -100,6 +100,25 @@ func fullEmbedder(t *testing.T) *OnnxEmbedder {
 // TestEmbed_TheWireEncodingIsWhatStopsTheTokenizerPanic. A permanently-red test
 // over an unreachable crash would be noise; a green characterisation that fails
 // when the library changes is a tripwire.
+// hugeInputChars is the largest text the QUERY path can hand the tokenizer:
+// daemon/lexicalstore.go's maxLexicalQueryChars. DERIVED, not chosen.
+//
+// It was 2,000,000 -- a round number picked for bigness -- and that made this
+// test exceed the race gate's 600s timeout, because sugarme/tokenizer's
+// BertNormalizer transforms per rune and the race detector instruments every
+// one of those accesses. `make check` could not finish while it stood.
+//
+// WHAT THIS NO LONGER COVERS, stated rather than quietly dropped: a single text
+// between 32 KiB and the 16 MiB wire cap (helper/main.go:154), which a client
+// that is not the daemon could still send. That case is now untested here.
+//
+// Worth recording separately: maxSequenceLength (512) truncates the tokenizer's
+// OUTPUT, in tokenize() at onnxembedder.go:117, AFTER EncodeSingle has already
+// walked the whole input. The cap bounds what the model sees, not what the
+// tokenizer does -- the same "capped bytes, nothing caps work" shape the
+// lexical-query bound was added to close.
+const hugeInputChars = 32768
+
 func TestEmbed_TokenizerPanicsRatherThanErroringOnInvalidUTF8(t *testing.T) {
 	e := tokenizerOnly(t)
 
@@ -110,7 +129,7 @@ func TestEmbed_TokenizerPanicsRatherThanErroringOnInvalidUTF8(t *testing.T) {
 		"invalid-utf8":     embedSentinel + string([]byte{0xff, 0xfe}),
 		"overlong-utf8":    embedSentinel + string([]byte{0xc0, 0xaf}),
 		"truncated-utf8":   embedSentinel + string([]byte{0xe2, 0x82}),
-		"huge":             embedSentinel + strings.Repeat("x", 2_000_000),
+		"huge":             embedSentinel + strings.Repeat("x", hugeInputChars),
 		"control-soup":     embedSentinel + string(rune(0x1b)) + string(rune(0x9b)) + string(rune(0x7f)),
 		"combining-bomb":   embedSentinel + strings.Repeat(string(rune(0x0301)), 10000),
 		"single-codepoint": embedSentinel + strings.Repeat(string(rune(0x10FFFF)), 100),
