@@ -6,7 +6,7 @@ Opened 2026-09-04 during the production-hardening pass on the TUI.
 
 **Its scope widened on 2026-09-05, again on 2026-09-08, and the title has not.**
 R1.15 is release machinery, R1.16/R1.17 are `daemon/`, `editapply/` and
-`scripts/`, and R1.18-R1.25 are `daemon/`, `helper/` and one dependency. The heading still says
+`scripts/`, and R1.18-R1.26 are `daemon/`, `helper/`, build tooling and one dependency. The heading still says
 "clients/tui", which is now narrower than the contents by two passes.
 Recorded rather than silently retitled: a reader who came here for TUI risks
 needs to know the file grew, and renaming it would break every inbound
@@ -67,6 +67,7 @@ longer exists), or SUPERSEDED (replaced by a different row).**
 | R1.23 five goroutine layers parse untrusted process output with no `recover` | **OPEN — measured, not fixed; NOT a design question** | Opened 2026-09-09. `daemon/mcpruntime.go:206` plus four inside `modelcontextprotocol/go-sdk@v1.7.0`, which contains **zero** `recover()` calls anywhere. A panic in any kills the daemon and drops every client. |
 | R1.24 the LSP header read is unbounded | **OPEN — the one validation gap on either boundary** | Opened 2026-09-09. `daemon/lsp_bridge.go:491` `ReadString('\n')` bounds neither a single header line nor their number, while the BODY is bounded at 8 MiB. Same shape as the `prefixWriter` flood that was already fixed. |
 | R1.25 LSP teardown kills the process, not the group | **OPEN — asymmetry with MCP, consequence UNMEASURED** | Opened 2026-09-09. `daemon/lsp_bridge.go:530` calls `Process.Kill()` with no grace period; `daemon/mcp/stdioclient.go` kills the whole group unconditionally and is tested for orphans. gopls spawns `go` subprocesses. |
+| R1.26 helper is outside every cross-platform check, and cannot join one | **OPEN — structural, nothing can catch it** | Opened 2026-09-09. `helper` links `onnxruntime_go`, which is CGO-only, so `GOOS=windows go vet` reports "build constraints exclude all Go files". It is absent from `CROSSVET_MODULES` and from CI's `cross` matrix, and no gate can be added that would genuinely cover it. |
 
 ### Three of these rows are pinned only on Linux
 
@@ -1527,3 +1528,43 @@ test would look like and the reason this row is cheap to close.
 correlates a stray process with a daemon that exited an hour ago, and no gate
 watches for it. If this row is ever closed it will be closed by someone doing
 the work, not by the trigger firing.
+
+
+## R1.26 — helper is outside every cross-platform check, and cannot join one
+
+**What it is.** `make crossvet` compiles five modules for `windows` and `darwin`;
+CI's `cross` matrix runs four on a real Windows runner. **`helper` is in
+neither**, and unlike `proxy` — which was simply left out for no stated reason
+and joined on 2026-09-09 at zero cost — helper cannot be added.
+
+It links `onnxruntime_go`, which is CGO-only and build-constraint-gated. A
+cross-target vet reports `build constraints exclude all Go files`: a message
+about the ONNX bindings, not about our code, and one that no amount of care in
+`helper/` changes.
+
+**The consequence, stated plainly.** A platform-specific symbol in a helper test
+— the exact defect that broke `cross (windows-latest, daemon)` on 2026-09-09,
+where `syscall.Mkfifo` sat behind a `runtime.GOOS` skip that cannot save a
+compile-time symbol — **would be caught by nothing, anywhere.** Not `crossvet`,
+not CI, not a developer.
+
+**Why deferred.** There is no fix that is not a lie. Adding helper to
+`CROSSVET_MODULES` produces a failure about ONNX on every run, which trains
+people to ignore it. A CGO cross-toolchain for two platforms nobody here can
+test on buys a compile check at a maintenance cost far above what it returns.
+Building helper natively on a Windows runner is possible in principle and needs
+an ONNX Runtime for Windows plus a working CGO setup there — real work, for a
+module whose platform surface is small.
+
+**Blast radius.** Bounded by how little platform-specific code helper has: it is
+a socket server and a tokenizer, with no `//go:build windows` files at all
+today. The risk is that the number is small **and unwatched**, so it can grow
+without anyone noticing.
+
+**Pinned by.** **NOTHING, and nothing can be.** This row exists in place of a
+gate, which is the honest option rather than one that appears to cover it.
+
+**Trigger.** Any `//go:build` line appearing under `helper/`, or any use of
+`syscall.` in a helper test. **Both are greppable in one command and neither is
+gated**, which is the weakness of this trigger and is stated rather than dressed
+up: it fires when somebody thinks to look.

@@ -99,6 +99,45 @@ toolpins.sh|lib|Sourced by lint.sh, errcheck-ceiling.sh and govulncheck.sh to re
 MANIFEST
 }
 
+# --- --what-ci-adds: the banner `make check` prints when it finishes ----------
+#
+# THE DURABLE ANSWER TO "IT WAS COVERED AND NOBODY RAN IT". Three of the four CI
+# failures on 2026-09-09 were already in `make check`; the developer ran a
+# subset. The other half of that problem is the opposite: finishing `make check`
+# green and not knowing what it did NOT cover. A line at the moment it matters
+# beats a document nobody opens -- the same reasoning as the platform-coverage
+# banner, which exists because `go test` prints "ok" for files it never built.
+#
+# The SCRIPT half is derived from the manifest below, so a gate that moves to
+# CI-only starts appearing here with no edit. The CAPABILITY half cannot be
+# derived -- "this laptop has no Windows runner" is not written anywhere in the
+# repo -- and is listed, with that limitation stated rather than hidden.
+if [ "${1:-}" = "--what-ci-adds" ]; then
+  echo ""
+  echo "make check is green. CI STILL CHECKS THINGS THIS RUN DID NOT:"
+  echo ""
+  echo "  Steps and gates that run only in CI (derived from this script's manifest):"
+  manifest | while IFS='|' read -r name want why; do
+    [ "${want:-}" = "ci" ] || continue
+    echo "    $name"
+    echo "        ${why%%.*}."
+  done
+  echo ""
+  echo "  Capabilities a developer machine does not have (NOT derived -- see above):"
+  echo "    real Windows execution    cross (windows-latest) BUILDS, VETS and RUNS the tests."
+  echo "                              \`make crossvet\` only COMPILES. Every runtime"
+  echo "                              platform defect is invisible here, by construction."
+  echo "    real macOS execution      macos-latest, and only on main."
+  echo "    the VS Code extension     tsc + a real Extension Development Host."
+  echo "    the proxy container       docker build."
+  echo "    the 2000-turn soak        run unraced at full length in CI; the local"
+  echo "                              gate runs the reduced raced version."
+  echo ""
+  echo "  Nothing above is a reason not to push. It is what a green local run does"
+  echo "  NOT promise, stated where it is cheap to act on."
+  exit 0
+fi
+
 # --- derive the two sides, never hand-list them -------------------------------
 
 local_set="$(make -n check 2>/dev/null | grep -oE "scripts/[a-z0-9-]+\.sh" | sed 's|scripts/||' | sort -u)"

@@ -99,7 +99,17 @@ vet:
 # CGO-only, so a cross-target vet reports "build constraints exclude all Go
 # files" for reasons that have nothing to do with our code. CI's cross matrix
 # omits it too, and builds it natively per-runner instead.
-CROSSVET_MODULES := daemon editapply protocol clients/tui
+# proxy joined on 2026-09-09. It has no platform-split files, so it cost nothing
+# and had been left out for no stated reason -- which is how a module ends up
+# outside every cross-platform check by accident rather than by decision.
+#
+# helper is still absent and CANNOT join: it links onnxruntime_go, which is
+# CGO-only, so GOOS=windows reports "build constraints exclude all Go files" for
+# reasons unrelated to our code. CI's cross matrix omits it for the same reason.
+# That leaves a real blind spot -- a platform-specific symbol in a helper test is
+# caught by nothing, anywhere -- recorded as R1.26 rather than papered over with
+# a check that appears to cover it.
+CROSSVET_MODULES := daemon editapply protocol clients/tui proxy
 
 crossvet:
 	@for os in windows darwin; do \
@@ -169,6 +179,7 @@ evalguard:
 # the only moment anyone can fix it cheaply.
 check: hookcheck fmt vet crossvet race lint ratchet errcheck evalguard supplychain webview docs debtmarkers parity
 	@echo "check: all gates green"
+	@./scripts/gate-parity.sh --what-ci-adds
 
 # Two supply-chain gates. actions-pinned is sub-second and offline;
 # govulncheck is ~17s warm and needs the vulnerability database.

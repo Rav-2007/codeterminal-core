@@ -561,8 +561,11 @@ jobs:
       # TestPlatformCoverageIsStated names them -- but through t.Logf, which
       # `go test` swallows without -v. Run explicitly, with -v, so the report
       # lands in the log of the platform that is missing them. One second.
+      # EVERY module in the matrix, not just clients/tui. Until 2026-09-09 only
+      # clients/tui had this banner, so daemon (-2 test files on Windows),
+      # editapply (-1) and protocol (-3) lost coverage in silence and the step
+      # above printed `ok`. Skips must never read as passes.
       - name: What this platform does not run
-        if: matrix.module == 'clients/tui'
         run: go test -run TestPlatformCoverageIsStated -v -count=1 .
         working-directory: ${{ matrix.module }}
 
