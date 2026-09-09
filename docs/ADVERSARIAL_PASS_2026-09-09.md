@@ -165,7 +165,19 @@ right direction.
 13. Coverage floors **not raised**: helper 61.5 % is environment-dependent (the
     tests load the real cached model and skip without it; CI would measure
     ~22 %), and daemon 78.8 % was measured once where the ratchet requires three.
-14. **CI unverified** — no `gh` auth, and `gh` resolves to the wrong repo here.
+14. **CI HAS NEVER SEEN ANY OF THIS PASS, and the blocker is BILLING.** All 23
+    commits are unverified by CI. The last CI-verified commit on this branch is
+    `9d34fb4` (2026-09-05) — the commit this pass was pushed *from*. Today's
+    three runs (`gates` 34310862517, `build` 34310862518, `retrieval eval`
+    34310862519) all failed in 5–13 s with *"The job was not started because
+    recent account payments have failed or your spending limit needs to be
+    increased."* **The jobs did not run.** `make check` green locally is the
+    only verification these commits have.
+
+    Two of my own standing notes were stale and are corrected: `gh` **does**
+    resolve to the right repo (`Rav-i24/Mochiii`), and `gates.yml` **does** fire
+    on this branch (`push: branches: ["**"]`). I had recorded both the other way
+    and would have reported "CI cannot be checked here" without looking.
 15. Row 3 of the credential sweep is not driven end to end; nothing selects
     `protocol.TransportTCP`.
 16. The three `MACOS_*`-blocked items, if macOS ever rejoins.
@@ -293,7 +305,7 @@ needs implementation time today.**
 | **R1.22** — the ingest-vs-sink ruling, **and** whether existing `memory.db` files are migrated | **daemon owner — UNIDENTIFIED** | Cross-module design decision with user-visible data consequences. The migration question is deliberately not guessed. |
 | Memo items 2–5, incl. the `mcpruntime.go:206` recover | **same, still unidentified** | Item 5's SDK half is a dependency-policy call |
 | Raising coverage floors | anyone with CI access | Needs three uncached runs on `main`; helper's number is environment-dependent |
-| CI verification | someone with `gh` auth to the right repo | `gh` resolves to the wrong repo here |
+| **CI — blocked on BILLING** | someone with GitHub **account/billing** access | Jobs do not start: *"recent account payments have failed or your spending limit needs to be increased"*. Not a code problem, not fixable from here, and it silently leaves every commit unverified. |
 | The three `MACOS_*`-blocked items | whoever restores macOS CI | No macOS runner |
 
 ### The ranking, stated because it will otherwise be got wrong
