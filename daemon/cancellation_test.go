@@ -111,10 +111,18 @@ func TestSQLiteCancellation_DoesNotReachAnFTS5PhraseMatch(t *testing.T) {
 	// rather than worked around. The phrase is built exactly as SearchTurns
 	// builds one.
 	//
-	// 200k measured at ~3.6 s uncancelled, so a cancel at 200 ms is unambiguous.
+	// 200k measured at ~3.6 s uncancelled ON THIS LINUX BOX, which is a
+	// wall-clock number about one machine and not a property of SQLite.
+	const cancelAfter = 200 * time.Millisecond
+	// DERIVED FROM cancelAfter, not chosen. If the interrupt were honoured the
+	// query would return within a small multiple of the cancel; requiring 5x
+	// separates "ignored the interrupt" from "honoured it slowly" without
+	// asserting anything about how fast this particular machine is. The previous
+	// form compared against a flat 1500 ms, and that is what broke on Windows.
+	const honouredWithin = 5 * cancelAfter
 	phrase := `"` + strings.Repeat("x", 200000) + `"`
 	ctx, cancel := context.WithCancel(context.Background())
-	go func() { time.Sleep(200 * time.Millisecond); cancel() }()
+	go func() { time.Sleep(cancelAfter); cancel() }()
 
 	start := time.Now()
 	var role string
@@ -126,10 +134,31 @@ func TestSQLiteCancellation_DoesNotReachAnFTS5PhraseMatch(t *testing.T) {
 	if err == nil {
 		t.Fatal("the query reported no error at all; database/sql is not observing the context")
 	}
-	if elapsed < 1500*time.Millisecond {
-		t.Errorf("cancelled at 200ms, the FTS5 match returned after %s -- it now HONOURS the interrupt.\n"+
-			"This is an improvement, not a failure. Re-measure, then update serveConn's cancellation "+
-			"comment and reconsider whether the retrieval bound still needs to be a bound.", elapsed)
+	// THE ERROR MUST BE CANCELLATION BEFORE ELAPSED TIME MEANS ANYTHING.
+	//
+	// This check did not exist, and its absence is what made this test wrong
+	// rather than merely fragile. It asserted only that SOME error came back
+	// quickly, then concluded SQLite had started honouring the interrupt.
+	//
+	// Measured on windows-latest in CI 2026-09-09: the query returned an error
+	// after 120.2 ms -- BEFORE the 200 ms cancel had even fired, so the error
+	// could not possibly have been the interrupt. That platform refuses a
+	// 200,000-character phrase for its own reasons, and the test read it as a
+	// change in SQLite's behaviour and advised acting on it.
+	if !errors.Is(err, context.Canceled) {
+		t.Skipf("the query failed after %s for a reason that is not cancellation (%v).\n"+
+			"This platform refuses the phrase before the interrupt is relevant, so there is nothing "+
+			"to characterise here -- it is NOT evidence that SQLite's interrupt behaviour changed.", elapsed, err)
+	}
+
+	if elapsed < honouredWithin {
+		t.Errorf("cancelled at %s, the FTS5 match returned after %s (under the %s bar) with a genuine "+
+			"context.Canceled -- SQLite now HONOURS the interrupt inside a phrase match.\n"+
+			"This is an improvement, not a failure. Re-measure, then update serveConn's cancellation comment.\n"+
+			"IT DOES NOT ON ITS OWN JUSTIFY REMOVING THE LEXICAL BOUND, and the previous wording of this "+
+			"message said it might. Cancellation only helps a client that actually disconnects; the bound "+
+			"also covers the caller that waits, and gatherContext, which is not cancelled mid-turn.",
+			cancelAfter, elapsed, honouredWithin)
 	}
 }
 
