@@ -201,6 +201,27 @@ jobs:
           # the second environment in a row where the sandbox is never
           # exercised -- and a sandbox nobody executes is how --nosuid survived
           # two green campaigns.
+          #
+          # REVIEWED 2026-09-09 against CI-2 ("a gate that passes by configuring
+          # the host rather than by the code being correct lies to developers"),
+          # and KEPT, with the scope of the lie narrowed and stated.
+          #
+          # What was a lie and is now fixed: the REFUSAL path.
+          # TestEveryUnrunnableSandboxRefusesWithAReason asserted the
+          # WorkspaceRoot message unconditionally, so it was green here -- on a
+          # relaxed host -- and RED for every developer on a stock Ubuntu 24.04,
+          # where userns restriction is the default. It now selects its
+          # expectation from BwrapUsable(), and the unusable-host refusal is
+          # asserted deterministically by TestBubblewrapRefusalOnAnUnusableHost,
+          # which stubs the probe and therefore runs identically everywhere.
+          #
+          # WHAT IS STILL TRUE, AND IS NOT FIXED BY THAT: the CONFINEMENT tests
+          # -- the ones that check bwrap actually isolates anything -- need a
+          # real user namespace and cannot be stubbed. Their only execution
+          # anywhere is on this host, after this line. That is a real reason,
+          # not a convenience, and it is why the relaxation stays. It also means
+          # the sandbox's confinement claims rest on an environment CI
+          # configures for itself, which no developer reproduces by default.
           # `|| true` and the -n: on a self-hosted runner sudo would block for a
           # password forever rather than fail, and the probe below is what
           # actually decides whether the sandbox tests can run. Relaxing this is

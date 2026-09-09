@@ -266,6 +266,23 @@ func TestConfinesAndLimitsApplyAreIndependent(t *testing.T) {
 	}
 }
 
+// bwrapRefusalFor reports which of WrapCommand's two bubblewrap refusals this
+// host will actually produce, so the test asserts the reachable one.
+//
+// VALIDATED BY READING WrapCommand, NOT BY OBSERVING THE FAILING BRANCH. The
+// machine this was written on reports
+// kernel.apparmor_restrict_unprivileged_userns=0 -- already relaxed -- so the
+// unusable-host path could not be exercised here. The person on a stock Ubuntu
+// 24.04 is the one who confirms it, and the string below is taken from
+// sandbox.go's own message rather than paraphrased, so a reword there fails
+// this rather than silently loosening it.
+func bwrapRefusalFor() string {
+	if BwrapUsable() {
+		return "WorkspaceRoot"
+	}
+	return "user namespace"
+}
+
 // Every refusal names what to do about it. These are the paths a user reaches
 // by misconfiguring, and "unknown sandbox mode" with no further detail is how a
 // support question becomes an afternoon.
@@ -291,7 +308,22 @@ func TestEveryUnrunnableSandboxRefusesWithAReason(t *testing.T) {
 		// check runs first by design, so with no bwrap installed the error says
 		// "not installed on PATH" and never reaches the WorkspaceRoot branch
 		// this row is about.
-		{"bwrap with no workspace", SandboxConfig{Mode: SandboxBubblewrap}, "WorkspaceRoot", false, true},
+		//
+		// THE EXPECTATION FOLLOWS THE HOST, because WrapCommand's does. It runs
+		// THREE checks in order -- installed? usable? configured? -- and this
+		// row previously asserted the third unconditionally, so it passed only
+		// where bwrap could unshare. On a stock Ubuntu 24.04 desktop, where
+		// kernel.apparmor_restrict_unprivileged_userns=1 is the DEFAULT, the
+		// second check fires first and the row failed for every such developer
+		// while staying green in CI -- because build.yml relaxes that sysctl for
+		// itself. A gate that passes only on a host CI reconfigured is a gate
+		// that lies to developers.
+		//
+		// Selecting the expectation rather than skipping keeps the assertion
+		// live on BOTH host types. The unusable-host refusal itself is asserted
+		// deterministically by TestBubblewrapRefusalOnAnUnusableHost below,
+		// which stubs the probe instead of depending on the machine.
+		{"bwrap with no workspace", SandboxConfig{Mode: SandboxBubblewrap}, bwrapRefusalFor(), false, true},
 		{"a mode that does not exist", SandboxConfig{Mode: SandboxMode("chroot")}, "unknown sandbox mode", false, false},
 	} {
 		if tc.needsDocker && dockerErr != nil {
@@ -503,5 +535,62 @@ func TestASystemToolchainIsNotBoundRedundantly(t *testing.T) {
 	}
 	if coveredBy("/home/user/.local/go", []string{"/usr", "/bin"}) {
 		t.Error("a per-user toolchain must not be treated as already covered")
+	}
+}
+
+// TestBubblewrapRefusalOnAnUnusableHost asserts the message a stock Ubuntu
+// 24.04 desktop actually gets, ON EVERY HOST, by stubbing the capability probe.
+//
+// WHY THIS EXISTS SEPARATELY FROM THE TABLE ROW ABOVE. The row follows the
+// host: it asserts whichever of WrapCommand's two bubblewrap refusals this
+// machine can reach. That keeps it honest but means the unusable-host branch is
+// asserted only where bwrap cannot unshare -- never in CI, which relaxes the
+// sysctl for itself, and not on the machine this was written on, which reports
+// kernel.apparmor_restrict_unprivileged_userns=0. Stubbing removes the
+// dependence entirely.
+//
+// I FIRST WROTE THAT NOTHING ASSERTED THIS ANYWHERE. That was too strong:
+// TestWrapCommandAuto_SkipsDockerWithoutAnImage already covers the AUTO path
+// with bwrap unusable. What had no coverage is the EXPLICIT-mode refusal -- the
+// message a user sees after asking for bubblewrap by name and being told no.
+//
+// BwrapUsable is a package-level var precisely so it can be stubbed; that is
+// the pattern sandbox_test.go already uses, reused here rather than reinvented.
+func TestBubblewrapRefusalOnAnUnusableHost(t *testing.T) {
+	origUsable := BwrapUsable
+	origLookPath := lookPath
+	t.Cleanup(func() { BwrapUsable = origUsable; lookPath = origLookPath })
+
+	// Installed, and unable to unshare: the Ubuntu 24.04 default, exactly.
+	lookPath = func(file string) (string, error) { return "/usr/bin/" + file, nil }
+	BwrapUsable = func() bool { return false }
+
+	_, _, err := WrapCommand("go", []string{"build"}, SandboxConfig{
+		Mode:          SandboxBubblewrap,
+		WorkspaceRoot: t.TempDir(),
+	})
+	if err == nil {
+		t.Fatal("an explicitly requested bubblewrap sandbox ran on a host that cannot create a user namespace")
+	}
+
+	// Each of these is a thing the user needs, and the reason the refusal is a
+	// paragraph rather than "permission denied": what failed, the exact knob,
+	// and a way out that does not require the knob.
+	for _, want := range []string{
+		"user namespace", // what failed
+		"kernel.apparmor_restrict_unprivileged_userns", // the exact setting
+		"sysctl -w", // how to change it
+		"docker",    // the way out without changing it
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not mention %q, which a user on this host needs:\n  %v", want, err)
+		}
+	}
+
+	// And it must NOT be the WorkspaceRoot refusal: a WorkspaceRoot is set, so
+	// reaching that message would mean the usability check ran in the wrong
+	// order and the user was told to fix something that is not wrong.
+	if strings.Contains(err.Error(), "WorkspaceRoot") {
+		t.Errorf("got the WorkspaceRoot refusal on an unusable host; the capability check must run first:\n  %v", err)
 	}
 }
