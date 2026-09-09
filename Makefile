@@ -109,13 +109,19 @@ crossvet:
 	done
 	@echo "crossvet: clean (windows + darwin, $(words $(CROSSVET_MODULES)) modules)"
 
+# -count=1 DISABLES THE TEST CACHE, and it is not tidiness.
+#
+# `go test` serves a cached PASS when the inputs look unchanged, and this repo
+# has already been bitten: a neuter check reported green because the result came
+# from cache rather than from the neutered code. A gate whose answer can predate
+# the change it is gating is not a gate.
 test:
-	@for m in $(MODULES); do (cd $$m && go test ./...) || exit 1; done
+	@for m in $(MODULES); do (cd $$m && go test -count=1 ./...) || exit 1; done
 
 # -race, not a bare `go test`: the Gate 6 apply/undo locking is only defended by
 # the race detector.
 race:
-	@for m in $(MODULES); do (cd $$m && go test -race ./...) || exit 1; done
+	@for m in $(MODULES); do (cd $$m && go test -race -count=1 ./...) || exit 1; done
 
 lint:
 	@./scripts/lint.sh

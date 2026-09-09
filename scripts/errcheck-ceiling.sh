@@ -34,7 +34,9 @@ ceilings="$repo_root/scripts/errcheck-ceilings.txt"
 
 if ! command -v errcheck >/dev/null 2>&1; then
   echo "errcheck-ceiling: errcheck not found on PATH"
-  echo "  go install github.com/kisielk/errcheck@latest"
+  . "$(dirname "$0")/toolpins.sh"
+  echo "  $(tool_install_cmd errcheck)"
+  echo "  (or: ./scripts/install-tools.sh)"
   exit 1
 fi
 

@@ -74,7 +74,7 @@ concurrency:
 # go.work"). Every Go step below therefore names its module explicitly. Do not
 # "simplify" these to a root-level ./... ; it does not work.
 env:
-  GO_VERSION: "1.25.x"
+  GO_VERSION: "1.25.13"
 
 # WHERE THE LINUX JOBS RUN, and why it is a variable rather than a literal.
 #
@@ -271,7 +271,10 @@ jobs:
         # so it gets a tripwire rather than a comment.
         env:
           CODETERMINAL_REQUIRE_SANDBOX: ${{ matrix.module == 'daemon' && '1' || '' }}
-        run: go test -race ./...
+        # -count=1: setup-go restores the build cache between runs, so without
+        # it `go test` can serve a PASS computed before the commit under test.
+        # The local gate carries the same flag for the same reason.
+        run: go test -race -count=1 ./...
         working-directory: ${{ matrix.module }}
 
       # THE SOAK AT FULL LENGTH, UNRACED, and this step is the other half of a
@@ -358,14 +361,14 @@ jobs:
       # Building a linter with a newer toolchain does not touch the product: these
       # are separate analysis binaries, and go-toolchain-pinned.sh gates go.mod
       # and go.work, which this does not change.
+      # ONE LIST, THREE READERS. The versions live in scripts/tool-pins.txt and
+      # are installed by scripts/install-tools.sh, which scripts/lint.sh also
+      # reads to CHECK the binary a developer actually has. Spelling `go install`
+      # lines out here again would recreate the split that let CI pin one version
+      # while a laptop linted with another -- staticcheck v0.8.1 against v0.7.0
+      # on 2026-09-09, with the gate reporting green.
       - name: Install linters
-        env:
-          GOTOOLCHAIN: go1.26.0+auto
-        run: |
-          go install honnef.co/go/tools/cmd/staticcheck@v0.8.1
-          go install github.com/gordonklaus/ineffassign@v0.2.0
-          go install github.com/timakin/bodyclose@v0.0.0-20260723120731-857993a2939c
-          go install github.com/kisielk/errcheck@v1.20.0
+        run: ./scripts/install-tools.sh
 
       - name: Lint
         run: ./scripts/lint.sh ${{ matrix.module }}
@@ -523,7 +526,7 @@ jobs:
       # paying 2x on Windows to re-ask a question that is not platform-specific
       # would buy noise. Platform-specific FAILURES are what this job is for.
       - name: Test
-        run: go test ./...
+        run: go test -count=1 ./...
         working-directory: ${{ matrix.module }}
 
       # THE POINT OF THE PREVIOUS STEP'S SILENCE, MADE AUDIBLE.
@@ -637,8 +640,12 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: "**/go.sum"
+      # PINNED, from the same list as every other tool. This was the last
+      # @latest in CI, and @latest is exactly how the six lint jobs died on
+      # 2026-09-09: upstream moved, nothing here changed, and the install step
+      # failed before the tool ever ran.
       - name: Install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+        run: ./scripts/install-tools.sh
       - name: Scan
         run: govulncheck ./...
         working-directory: ${{ matrix.module }}
@@ -661,6 +668,15 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
+          # MAJOR ONLY, DELIBERATELY, and the reasoning differs from Go's.
+          #
+          # Go's patch version had to be pinned because it changed dependency
+          # RESOLUTION and which stdlib govulncheck scanned. Node's does not:
+          # `npm ci` installs from package-lock.json, which pins the entire tree
+          # including typescript, so the compiler and every gate input are fixed
+          # regardless of which 20.x runs them. Pinning the patch here would buy
+          # reproducibility that the lockfile already provides, and cost a manual
+          # bump for every Node security release.
           node-version: "20"
           cache: npm
           cache-dependency-path: clients/vscode/package-lock.json

@@ -58,33 +58,31 @@ STATICCHECK_CHECKS='all,-ST1000,-ST1003,-ST1016,-ST1020,-ST1021,-ST1022,-ST1023,
 # install hint below, where the problem actually is.
 
 missing=0
+# shellcheck source=scripts/toolpins.sh
+. "$(dirname "$0")/toolpins.sh"
+
+# PRESENCE AND VERSION, not presence alone.
+#
+# This checked `command -v` and nothing else until 2026-09-09, and on that day
+# it reported six modules green using binaries installed 2026-08-04 -- five
+# weeks stale, and staticcheck a whole minor behind what CI pins. The gate was
+# also UN-BOOTSTRAPPABLE: the commands it printed as the remedy did not work,
+# which is only possible because nobody had ever run them.
+wrong=0
 for tool in staticcheck ineffassign bodyclose; do
-  if ! command -v "$tool" >/dev/null 2>&1; then
-    echo "lint: $tool not found on PATH" >&2
-    missing=1
-  fi
+  check_tool "$tool"
+  case $? in
+    1) missing=1 ;;
+    2) wrong=1 ;;
+  esac
 done
-if [ $missing -ne 0 ]; then
+if [ $missing -ne 0 ] || [ $wrong -ne 0 ]; then
   echo "" >&2
-  # PINNED AND WITH A TOOLCHAIN FLOOR, matching .github/workflows/build.yml.
-  #
-  # The previous text here printed `GOTOOLCHAIN=go1.25.13 go install
-  # github.com/timakin/bodyclose@latest`, and MEASURED 2026-09-09 that command
-  # FAILS: bodyclose imports golang.org/x/sys/execabs without listing x/sys in
-  # its go.mod, so the missing package resolves at @latest to x/sys v0.48.0,
-  # which needs go >= 1.26. Pinning the toolchain DOWN is precisely what stops
-  # it working. So did a bare install and GOTOOLCHAIN=auto -- Go will not switch
-  # toolchains while resolving a missing import.
-  #
-  # This mattered more than a wrong hint usually does: nobody here had installed
-  # these tools since 2026-08-04, so the gate passed locally on five-week-old
-  # binaries while being un-bootstrappable from a clean machine. The check above
-  # tests PRESENCE; it cannot test that a newcomer could ever get there.
-  echo "Install them with:" >&2
-  echo "  GOTOOLCHAIN=go1.26.0+auto go install honnef.co/go/tools/cmd/staticcheck@v0.8.1" >&2
-  echo "  GOTOOLCHAIN=go1.26.0+auto go install github.com/gordonklaus/ineffassign@v0.2.0" >&2
-  echo "  GOTOOLCHAIN=go1.26.0+auto go install github.com/timakin/bodyclose@v0.0.0-20260723120731-857993a2939c" >&2
-  echo "  GOTOOLCHAIN=go1.26.0+auto go install github.com/kisielk/errcheck@v1.20.0" >&2
+  echo "Install the pinned versions with:" >&2
+  for tool in staticcheck ineffassign bodyclose errcheck; do
+    echo "  $(tool_install_cmd "$tool")" >&2
+  done
+  echo "  (or: ./scripts/install-tools.sh)" >&2
   exit 2
 fi
 

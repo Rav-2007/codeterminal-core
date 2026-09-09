@@ -25,7 +25,9 @@ MODULES=(daemon proxy helper editapply protocol clients/tui)
 
 if ! command -v govulncheck >/dev/null 2>&1; then
   echo "FAIL  govulncheck is not on PATH."
-  echo "      go install golang.org/x/vuln/cmd/govulncheck@latest"
+  . "$(dirname "$0")/toolpins.sh"
+  echo "      $(tool_install_cmd govulncheck)"
+  echo "      (or: ./scripts/install-tools.sh)"
   echo "      (and make sure \$(go env GOPATH)/bin is on your PATH -- scripts/lint.sh"
   echo "       records the same trap, which hid a real lint failure once)"
   exit 1

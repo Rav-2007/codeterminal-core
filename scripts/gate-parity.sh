@@ -67,6 +67,9 @@ cd "$repo_root"
 #   local     in `make check` only, deliberately
 #   ci        in a workflow only, deliberately
 #   manual    in NEITHER: a make target or tool run on purpose, not a gate
+#   lib       in NEITHER because it is SOURCED, not executed. Distinct from
+#             'manual' on purpose (M5): "nobody runs it as a gate" and "it is
+#             not a program" are different facts and must not share a phrase.
 #
 # A blank reason is not allowed for local/ci/manual.
 manifest() {
@@ -91,6 +94,8 @@ agent-cost-bench.sh|manual|Benchmark. Costs real model tokens.
 latency-bench.sh|manual|Benchmark. Reports numbers, asserts nothing.
 wire-drill.sh|manual|Diagnostic for the wire protocol, run by hand when something is wrong.
 gate-parity.sh|both|
+install-tools.sh|ci|Installs the pinned analysis tools. CI runs it; locally `make check` does not, because it would reinstall four binaries on every gate run. scripts/lint.sh CHECKS the versions instead and prints this script as the remedy.
+toolpins.sh|lib|Sourced by lint.sh, errcheck-ceiling.sh and govulncheck.sh to read scripts/tool-pins.txt. Not executable as a gate and has no exit status of its own.
 MANIFEST
 }
 
@@ -165,7 +170,7 @@ for s in $all_set; do
     yes/yes) got=both ;;
     yes/no)  got=local ;;
     no/yes)  got=ci ;;
-    no/no)   got=manual ;;
+    no/no)   got=manual; [ "$want" = "lib" ] && got=lib ;;
   esac
 
   if [ "$got" != "$want" ]; then
@@ -200,7 +205,7 @@ n_both=0; n_local=0; n_ci=0; n_manual=0
 for s in $all_set; do
   case "${expect[$s]}" in
     both) n_both=$((n_both+1)) ;; local) n_local=$((n_local+1)) ;;
-    ci) n_ci=$((n_ci+1)) ;; manual) n_manual=$((n_manual+1)) ;;
+    ci) n_ci=$((n_ci+1)) ;; manual|lib) n_manual=$((n_manual+1)) ;;
   esac
 done
 echo "gate-parity: $n_all script(s) accounted for -- $n_both both, $n_local local-only, $n_ci CI-only, $n_manual manual (each asymmetry carries a reason)"

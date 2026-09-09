@@ -1,0 +1,28 @@
+# Pinned analysis tools. ONE source of truth, read by three consumers:
+#
+#   scripts/lint.sh          checks the installed binary MATCHES these
+#   scripts/install-tools.sh installs exactly these
+#   .github/workflows        runs install-tools.sh
+#
+# WHY A FILE AND NOT THREE LISTS. Pinning the versions in lint.sh's message, in
+# build.yml's install step, and in a doc would be three enumerations of one fact
+# -- which is the drift this repository has now found six times (R1.16). One
+# file, three readers, and gate-parity.sh keeps the readers honest.
+#
+# GOTOOLCHAIN. bodyclose imports golang.org/x/sys/execabs and does not list
+# x/sys in its go.mod, so `go install` resolves that MISSING package at @latest
+# and lands on a version needing go >= 1.26. Pinning bodyclose cannot fix that;
+# only a toolchain floor can. Measured 2026-09-09: a bare install,
+# GOTOOLCHAIN=auto, and GOTOOLCHAIN=go1.25.13 ALL fail; go1.26.0+auto works.
+# A floor rather than an exact version so a future dependency bump does not
+# need a second constant changed here.
+#
+# TO BUMP: change a line, run scripts/install-tools.sh, run `make lint`.
+#
+# format: <binary> <module path>@<version>
+GOTOOLCHAIN go1.26.0+auto
+staticcheck honnef.co/go/tools/cmd/staticcheck@v0.8.1
+ineffassign github.com/gordonklaus/ineffassign@v0.2.0
+bodyclose github.com/timakin/bodyclose@v0.0.0-20260723120731-857993a2939c
+errcheck github.com/kisielk/errcheck@v1.20.0
+govulncheck golang.org/x/vuln/cmd/govulncheck@v1.6.0

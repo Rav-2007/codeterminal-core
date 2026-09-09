@@ -115,7 +115,28 @@ if [ "${1:-}" = "--self-test" ]; then
     exit 1
   fi
 
-  echo "go-toolchain-pinned: self-test ok (rejects a low go line and a low toolchain line, accepts a tidied one; parses $real real sites)"
+  # (f) THE RUNNER CHECK MUST STILL DETECT A FLOATING VERSION, and a missing
+  # workflow directory must FAIL rather than skip. Both are new on 2026-09-09
+  # and both were wrong in their first draft -- the missing-directory case
+  # passed, which is why it is pinned here rather than trusted.
+  mkdir -p "$tmp/wf"
+  printf 'jobs:\n  x:\n    steps:\n      - uses: actions/setup-go@v5\n        with:\n          go-version: "1.25.x"\n' > "$tmp/wf/a.yml"
+  if GO_PINS_WORKFLOWS="$tmp/wf" run >/dev/null 2>&1; then
+    echo "go-toolchain-pinned: SELF-TEST FAIL -- a floating '1.25.x' runner version was accepted."
+    exit 1
+  fi
+  printf 'jobs:\n  x:\n    steps:\n      - uses: actions/setup-go@v5\n        with:\n          go-version: "1.25.13"\n' > "$tmp/wf/a.yml"
+  if ! GO_PINS_WORKFLOWS="$tmp/wf" run >/dev/null 2>&1; then
+    echo "go-toolchain-pinned: SELF-TEST FAIL -- a correctly pinned runner version was rejected."
+    exit 1
+  fi
+  if GO_PINS_WORKFLOWS="$tmp/nonexistent" run >/dev/null 2>&1; then
+    echo "go-toolchain-pinned: SELF-TEST FAIL -- a MISSING workflow directory was accepted."
+    echo "  The runner check would vanish silently if the workflows moved."
+    exit 1
+  fi
+
+  echo "go-toolchain-pinned: self-test ok (rejects a low go line, a low toolchain line and a floating runner version; accepts a tidied module; fails closed on a missing workflow dir; parses $real real sites)"
   exit 0
 fi
 
@@ -172,6 +193,76 @@ for m in $MODULES; do
     fi
   fi
 done
+
+# --- THE MACHINE THAT BUILDS MUST BE ONE OF THE SITES ------------------------
+#
+# Until 2026-09-09 this script checked go.work and six go.mod files, printed
+# "7 pin site(s) agree on go1.25.13", and was BLIND TO THE ONLY VERSION THAT
+# ACTUALLY COMPILED ANYTHING. The workflows asked setup-go for "1.25.x", so CI
+# ran go1.25.14 while every file said 1.25.13 -- and the gate reported agreement.
+#
+# It was not hypothetical. `go install` in CI failed with "running go 1.25.14"
+# on a dependency floor, a version no file in the repo names, and no gate could
+# have said where 1.25.14 came from.
+#
+# It also matters for what CI MEASURES, not just what it builds: govulncheck.sh's
+# own header records CI floating above the floor and finding nothing while the
+# same commit on a machine sitting exactly on the floor had ten reachable stdlib
+# vulnerabilities. A floating runner makes CI's vulnerability scan answer a
+# question about a stdlib nobody ships.
+#
+# EXACT MATCH, not a floor comparison. "1.25.x" is not below the floor -- it is
+# unpredictable, which is worse, because it changes under you with no diff.
+wf_dir="${GO_PINS_WORKFLOWS:-.github/workflows}"
+wf_found=0
+
+# A MISSING WORKFLOW DIRECTORY IS A FAILURE, NOT A SKIP.
+#
+# This was `if [ -d "$wf_dir" ]`, and neutering it by pointing GO_PINS_WORKFLOWS
+# at a nonexistent path made the entire runner check disappear and the script
+# print "7 pin site(s) agree" -- a PASS, from a gate that had just stopped
+# checking the thing it was extended to check. Caught by the neuter, minutes
+# after being written, in the same commit that exists to stop gates going blind.
+if [ ! -d "$wf_dir" ]; then
+  echo "FAIL  $wf_dir does not exist, so the version the BUILD MACHINE uses was not checked."
+  echo "      Renaming or moving the workflows must not silently shrink this gate back to"
+  echo "      the seven in-repo files -- that is the blindness this section was added to fix."
+  fail=1
+else
+  while IFS= read -r entry; do
+    [ -z "$entry" ] && continue
+    wf_file="${entry%%:*}"
+    wf_ver="${entry#*:}"
+    wf_ver="$(printf '%s' "$wf_ver" | sed -E "s/.*(go-version|GO_VERSION)[[:space:]]*:[[:space:]]*//; s/[\"']//g; s/[[:space:]]*#.*$//; s/[[:space:]]*$//")"
+    [ -z "$wf_ver" ] && continue
+
+    # An expression like ${{ env.GO_VERSION }} is an INDIRECTION, not a version.
+    # Skipped rather than flagged: it resolves to the GO_VERSION line in the same
+    # file, which this loop checks as a literal. Flagging both would report one
+    # pin as ten failures and train people to ignore the message -- which is how
+    # a gate red for a reason nobody reads gets waived.
+    case "$wf_ver" in *'${{'*) continue ;; esac
+
+    wf_found=$((wf_found + 1))
+    found=$((found + 1))
+    if [ "$wf_ver" != "$floor_go" ]; then
+      echo "FAIL  $wf_file -- asks setup-go for '$wf_ver', the floor is '$floor_go'"
+      echo "      A floating patch ('1.25.x') is not a pin. It resolved to go1.25.14 on"
+      echo "      2026-09-09 while all seven in-repo sites said 1.25.13, and the gate that"
+      echo "      exists to catch exactly that could not see it. Set: $floor_go"
+      fail=1
+    fi
+  done < <(grep -rnE "^[[:space:]]*(go-version|GO_VERSION)[[:space:]]*:" "$wf_dir" 2>/dev/null | sed 's/:[0-9]*:/:/')
+
+  # A parser that matches nothing reports perfect agreement. Same vacuity floor
+  # the module loop gets from its own existence check.
+  if [ "$wf_found" -eq 0 ]; then
+    echo "FAIL  no LITERAL go-version/GO_VERSION value found under $wf_dir."
+    echo "      Either the workflows stopped pinning Go, or this parser went blind."
+    echo "      Both are reported the same way on purpose: neither is agreement."
+    fail=1
+  fi
+fi
 
 # ANTI-VACUITY. A moved directory or a broken parse would print agreement over an
 # empty set, which is the most convincing wrong answer this script could give.
