@@ -138,7 +138,7 @@ func TestEmbed_TokenizerPanicsRatherThanErroringOnInvalidUTF8(t *testing.T) {
 	var errored, ok, panics int
 	for name, text := range hostile {
 		t.Run(name, func(t *testing.T) {
-			err, panicked := tokenizeCatchingPanic(e, text)
+			panicked, err := tokenizeCatchingPanic(e, text)
 			switch {
 			case panicked != nil:
 				panics++
@@ -312,14 +312,14 @@ func truncateLeak(s string) string {
 // tokenizeCatchingPanic runs tokenize and reports an error and a panic
 // separately, because they are different failures with different blast radii:
 // an error is returned to the caller, a panic ends the process.
-func tokenizeCatchingPanic(e *OnnxEmbedder, text string) (err error, panicked any) {
+func tokenizeCatchingPanic(e *OnnxEmbedder, text string) (panicked any, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			panicked = r
 		}
 	}()
 	_, err = e.tokenize(text)
-	return err, nil
+	return nil, err
 }
 
 // WHAT THE PANIC COSTS, AND WHAT IS ACTUALLY HOLDING IT CLOSED.
@@ -351,7 +351,7 @@ func TestEmbed_TheWireEncodingIsWhatStopsTheTokenizerPanic(t *testing.T) {
 	raw := "he said " + string([]byte{0x93}) + "hi" + string([]byte{0x94})
 
 	// 1. The payload really does panic when handed to the tokenizer directly.
-	if _, panicked := tokenizeCatchingPanic(e, raw); panicked == nil {
+	if panicked, _ := tokenizeCatchingPanic(e, raw); panicked == nil {
 		t.Fatal("the chosen payload no longer panics the tokenizer; this test would prove nothing " +
 			"about what the wire encoding is protecting")
 	}
@@ -436,7 +436,7 @@ func TestEmbed_InvalidUTF8WithoutNULIsNotFilteredAsBinary(t *testing.T) {
 			if sniffBinaryEquivalent(content) {
 				t.Skip("this content IS filtered as binary, so it never reaches the tokenizer")
 			}
-			_, panicked := tokenizeCatchingPanic(e, string(content))
+			panicked, _ := tokenizeCatchingPanic(e, string(content))
 			t.Logf("not classified as binary; tokenizer panics on it: %v (bytes % x)", panicked != nil, content)
 			if panicked == nil {
 				return
