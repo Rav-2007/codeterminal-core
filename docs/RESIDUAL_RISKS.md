@@ -6,7 +6,7 @@ Opened 2026-09-04 during the production-hardening pass on the TUI.
 
 **Its scope widened on 2026-09-05, again on 2026-09-08, and the title has not.**
 R1.15 is release machinery, R1.16/R1.17 are `daemon/`, `editapply/` and
-`scripts/`, and R1.18-R1.22 are `daemon/` and `helper/`. The heading still says
+`scripts/`, and R1.18-R1.25 are `daemon/`, `helper/` and one dependency. The heading still says
 "clients/tui", which is now narrower than the contents by two passes.
 Recorded rather than silently retitled: a reader who came here for TUI risks
 needs to know the file grew, and renaming it would break every inbound
@@ -57,13 +57,16 @@ longer exists), or SUPERSEDED (replaced by a different row).**
 | R1.13 onnxruntime and npm are scanned by nothing | **OPEN** | Re-verified: `scripts/govulncheck.sh` names six Go modules and nothing else; no gate anywhere runs `npm audit` or scans onnxruntime. |
 | R1.14 the terminal client is not a release artifact | **CLOSED 2026-09-04** | P4.1. Builds on all three release runners, in the macOS signing list, ships as a standalone download with checksums, and asserted *out* of the `.vsix` by the packaging gate. It was never a residual risk: it made this document's own "CI green once" condition unsatisfiable. |
 | R1.15 the release signs nothing — macOS secrets absent | **DEFERRED BY DECISION 2026-09-05 (founder)** | Found by the first-ever dispatch of `release.yml` (run `33922431985`): the signing step is a no-op without the five `MACOS_*` secrets, so darwin binaries are **unsigned** and Gatekeeper kills them. **The run is green either way** — fail-open, one layer up from the gate scripts. **Ruling: the first release ships Linux and Windows only; `darwin-arm64` is deferred until the secrets exist.** The machinery now enforces it — `scripts/release-signing-guard.sh`, keyed on **distributable**, verified on run `33938839311`. Three items remain **expected-unverified**; see the row. |
-| R1.16 a gate whose expected count comes from the list it validates | **OPEN — a CLASS, two instances** | Opened 2026-09-05. Not a coincidence: `platformcoverage_test.go` (floor 20, 73 suites) and `scripts/fuzz.sh` (`TARGETS` is its own source of truth) share one general form. The fuzz gate has no equivalent of the TUI test's bidirectional loops. |
+| R1.16 a gate whose expected count comes from the list it validates | **OPEN — a CLASS, FIVE instances across five gates** | Opened 2026-09-05. Not a coincidence: `platformcoverage_test.go` (floor 20, 73 suites) and `scripts/fuzz.sh` (`TARGETS` is its own source of truth) share one general form. The fuzz gate has no equivalent of the TUI test's bidirectional loops. |
 | R1.17 an ambiguous request body is refused with the wrong message | **OPEN — rough edge, deliberate** | Opened 2026-09-05 alongside the fix in `026fe48`. The refusal is correct; the message a client sees is `"prompt is empty"`, inherited from the duplicate-key precedent it was deliberately made to match. |
 | R1.18 non-UTF-8 source files are embedded with U+FFFD, silently | **OPEN — NOT IMPLEMENTED, quality not security** | Opened 2026-09-05. `encoding/json` substitutes U+FFFD for every invalid byte in both directions, so a Windows-1252 file is vectorised with replacement characters where its punctuation was. Nothing reports it. |
 | R1.19 two tripwires guard an incidental protection | **OPEN by design — one of them going RED is GOOD NEWS** | Opened 2026-09-05. The helper's liveness depended on an undocumented property of `encoding/json`; two tests now pin both ends of that dependency, and one of them fails when the risk disappears. |
 | R1.20 a model-supplied tool name reaches a client-facing string unbounded | **OPEN — pre-existing, flagged in code before this pass** | Opened 2026-09-08. `daemon/agentloop.go:674` already names it: the same name that is bounded for `ToolActivity.Tool` travels into `Detail` on the refusal path unbounded. The audit-log instance of the same class was fixed this pass; this one was not. |
 | R1.21 warn-mode's "secret-free" record confirms a guessed value | **OPEN — a claim narrower than it reads, not a leak** | Opened 2026-09-08. `daemon/chunkscrub.go:236` truncates SHA-256 to 32 bits; with the `value_len` in the note it accepts the true value and rejected 39 same-shape candidates in test. One-way is true; unverifiable is not. |
-| R1.22 the scrub protects turn N; turn N+1 sends the same bytes raw | **PENDING A DECISION — nobody has decided** | Opened 2026-09-08. `daemon/server.go:707` persists the RAW prompt; the handshake returns it and `daemon/history.go:136` puts it back on the wire unscrubbed. Measured end to end. The fix shape (scrub at ingest vs at each sink) is a design decision, not a patch. |
+| R1.22 the scrub protects turn N; turn N+1 sends the same bytes raw | **PENDING A DECISION — nobody has been ASKED** | **Opened 2026-09-04**, as item 1 of `docs/DECISION_MEMO_2026-09-04.md`; re-derived independently 2026-09-08 and only then noticed to be a duplicate. `daemon/server.go:707` persists the RAW prompt; `daemon/history.go:136` puts it back on the wire unscrubbed. The memo argues this is **not** a design question and RECOMMENDS FIX. |
+| R1.23 five goroutine layers parse untrusted process output with no `recover` | **OPEN — measured, not fixed; NOT a design question** | Opened 2026-09-09. `daemon/mcpruntime.go:206` plus four inside `modelcontextprotocol/go-sdk@v1.7.0`, which contains **zero** `recover()` calls anywhere. A panic in any kills the daemon and drops every client. |
+| R1.24 the LSP header read is unbounded | **OPEN — the one validation gap on either boundary** | Opened 2026-09-09. `daemon/lsp_bridge.go:491` `ReadString('\n')` bounds neither a single header line nor their number, while the BODY is bounded at 8 MiB. Same shape as the `prefixWriter` flood that was already fixed. |
+| R1.25 LSP teardown kills the process, not the group | **OPEN — asymmetry with MCP, consequence UNMEASURED** | Opened 2026-09-09. `daemon/lsp_bridge.go:530` calls `Process.Kill()` with no grace period; `daemon/mcp/stdioclient.go` kills the whole group unconditionally and is tested for orphans. gopls spawns `go` subprocesses. |
 
 ### Three of these rows are pinned only on Linux
 
@@ -1059,10 +1062,14 @@ passes — *"staged 3 terminal-client binaries"*, with SHA-256 sums, including
 
 ## R1.16 — A gate whose expected count is derived from the list it validates
 
-**What it is.** Two gates in this repository compute "how many things should I
+**What it is.** FIVE gates in this repository compute "how many things should I
 have inspected?" from the very list that decides what they inspect. Such a gate
 detects a *missing* member and cannot detect a *removed* one, because removing
 it changes the expectation by exactly as much as it changes the reality.
+
+**Widened 2026-09-09 from two instances to five.** The three added are the two
+adversarial harnesses and one documentation gate; all three were found while
+looking for something else, which is how the first two were found as well.
 
 The general form, stated once so a third instance is recognisable:
 
@@ -1071,7 +1078,16 @@ The general form, stated once so a third instance is recognisable:
 > either an independently-derived count, or a bidirectional correspondence
 > against a source the list does not control.
 
-Two instances, both measured:
+**THIS CODEBASE HAS BEEN FINDING THIS CLASS REPEATEDLY WITHOUT NAMING IT.**
+Each of the five was fixed or noted locally, in its own file, by whoever hit it
+— and none of them referred to any other. `scripts/coverage-ratchet.sh` even
+carries the CURE (its vanished-floor sweep: "a floor whose package vanished is a
+gate that silently stopped gating") without anyone generalising it to the other
+four. A class rediscovered five times at five sites is not five bugs; it is one
+missing abstraction, and the cost of not naming it is that the sixth instance
+will also be found by accident.
+
+Five instances:
 
 1. **`clients/tui/platformcoverage_test.go:80`** — the floor is `inspected < 20`
    while 73 suites carry the tag. Two documents and commit `3c217f2` all
@@ -1118,6 +1134,37 @@ or the next change to `scripts/fuzz.sh` for any reason, at which point deriving
 the list costs a few lines and should just be done.
 
 ---
+
+### Instances 3 and 4 — the two adversarial harnesses (added 2026-09-09)
+
+`daemon/mcp/testdata/badserver/main.go:65` and `daemon/testdata/fakelsp/main.go`
+each dispatch on a mode string in a `switch` that is its own source of truth.
+`log.Fatalf("badserver: unknown mode %q", mode)` **fails closed on a typo** —
+the good half — but **deleting a case deletes that adversarial scenario's
+coverage silently**, because the only thing that knows the mode existed is the
+test that names it, and a deleted mode is normally deleted alongside its test.
+
+These two matter more than their size suggests: they are the instruments that
+drive boundaries 6 and 7 (11 and 12 modes, 40 tests). A gate that measures the
+product is one thing; a *measuring instrument* that can lose a scenario without
+saying so silently narrows every conclusion drawn from it.
+
+### Instance 5 — the coderefs opt-in marker (added 2026-09-09, PARTIALLY MITIGATED)
+
+`scripts/docs-coderefs.sh` enforces only documents carrying
+`<!-- coderefs: enforced -->`. A document that DROPS the marker leaves the gate
+with no error. Listed as an instance and as **partially mitigated**, because the
+gate prints its own scope every run ("37 reference(s) resolve, across 4 enforced
+document(s); 162 reference(s) in 15 unenforced document(s) NOT checked") — so
+the loss is visible to anyone comparing two runs, and invisible to anyone
+reading one. That is better than the other four and still not a check.
+
+**Its known blind spot bit on 2026-09-09 and is worth recording**, since it is
+the reason instance 5 is only partial: the gate cannot catch a reference whose
+line MOVED inside a file that is still long enough. Three references in
+`docs/DECISION_MEMO_2026-09-04.md` had drifted (547→567, 687→707, 595→615) and
+the gate was green throughout. Fixed the same day; the gate did not find them, a
+reconciliation did.
 
 ## R1.17 — An ambiguous request body is refused with a message about something else
 
@@ -1332,8 +1379,30 @@ Scrubbing at the point of egress means every new consumer of the raw prompt is a
 new place to remember, and the one that gets forgotten is the one nobody
 enumerated. That is what happened.
 
-**Why it is PENDING and not deferred.** Nobody has decided. There is a real
-trade behind it and it is not mine to settle: scrubbing at ingest means
+**CORRECTION, 2026-09-09: THIS ROW WAS OPENED FIVE DAYS BEFORE I FILED IT, AND
+I FILED IT AS THOUGH IT WERE NEW.** It is item 1 of
+`docs/DECISION_MEMO_2026-09-04.md`, written 2026-09-04, in more detail than this
+row had, with worked before/after transcripts and a stated recommendation. I
+re-derived it from scratch on 2026-09-08 and noticed the duplication only on
+2026-09-09 while reconciling. Two further corrections follow from that:
+
+- The original "Opened 2026-09-08" was wrong and is fixed above.
+- I characterised the fix shape as "a design decision, not a patch". **The memo
+  argues the opposite and recommends FIX**, on the ground that the daemon has
+  ALREADY decided this string does not go to the provider — sending the same
+  bytes a minute later is "the same policy, not applied", not a second policy
+  question. That argument is better than mine and it is five days older.
+
+**THIS IS THE THIRD TIME IN THIS PASS I HAVE REBUILT SOMETHING THAT EXISTED.**
+The others: `proxy/logging_test.go` (a better secret-scan than the one I started
+writing) and `mcp/testdata/badserver` + `testdata/fakelsp` (two hostile harnesses
+and 40 adversarial tests, which I had recorded as "no adversarial input has ever
+been constructed"). Nothing in my method looks for prior art first, and three
+instances in one pass is a method defect, not three coincidences.
+
+**Why it is PENDING and not deferred.** Nobody has decided, and more precisely
+**nobody has been asked** — see the memo's own delivery-status note. There is a
+real trade behind it and it is not mine to settle: scrubbing at ingest means
 retrieval cannot match on a secret the user pasted. My reading, recorded so the
 decision has something to push against — the lexical tier is the only one that
 genuinely loses, the workflow it serves ("find where I pasted this key") is
@@ -1358,3 +1427,103 @@ unresolved and deliberately not guessed: whether existing `memory.db` files need
 migrating.** Every already-persisted secret keeps returning through history
 until the workspace is cleared, and that is a data decision with user-visible
 consequences.
+
+
+## R1.23 — Five goroutine layers parse untrusted process output with no recover
+
+**What it is.** `recover()` is per-goroutine. `handleConn`'s backstop
+(`daemon/server.go:289`) covers only what runs on the connection goroutine. Five
+layers that read or decode bytes from an untrusted subprocess do not:
+
+| Layer | Location |
+|---|---|
+| Lane B connect fan-out | `daemon/mcpruntime.go:206` |
+| SDK stdio decoder loop | `go-sdk@v1.7.0/mcp/transport.go:461` |
+| SDK `readIncoming` | `go-sdk@v1.7.0/internal/jsonrpc2/conn.go:259` |
+| SDK per-request async handler | `go-sdk@v1.7.0/internal/jsonrpc2/conn.go:683` |
+| os/exec stderr copier | `daemon/mcp/stdioclient.go:166` |
+
+**Measured: `grep -rn "recover()"` over the SDK's `mcp/` returns nothing.** The
+dependency has no panic containment anywhere.
+
+**THIS CORRECTS A CLAIM I PUBLISHED.** The process-asymmetry table said Lane B
+`CallTool`/`ListTools` were "covered transitively by `handleConn` — same
+goroutine". They are not. The SDK decodes the hostile server's stdout on its own
+goroutines; `CallTool` only *awaits* what a different goroutine produced. The
+error was in the safe-sounding direction, which is the worse one.
+
+**Why deferred.** The daemon half (`mcpruntime.go:206`) is ~5 lines and needs no
+pass. The four SDK layers cannot be fixed from outside the dependency; the
+honest options are a vendored patch, an upstream issue, or acceptance.
+
+**Blast radius.** Daemon process death, dropping every connected client. Bounded
+in likelihood by input validation that is genuinely good on both boundaries —
+message caps, name validation, description sanitisation, timeouts — so this is a
+containment gap, not an input gap.
+
+**Pinned by.** **NOTHING pins the SDK layers.** Nothing can, without an input
+that panics them, which is R1.23's own open question.
+
+**Trigger.** An SDK upgrade; any unexplained daemon exit with a Lane B server
+configured; or a fuzz campaign finding a panicking input. **The middle one is
+weak** — an unexplained exit is exactly the event least likely to be reported
+with enough detail to reach this row.
+
+## R1.24 — The LSP header read is unbounded
+
+**What it is.** `readHeaders` (`daemon/lsp_bridge.go:488`) validates
+`Content-Length` — absent, negative, or over `maxLSPMessageBytes` ends the
+stream — so the BODY is bounded at 8 MiB. The header block is not.
+`daemon/lsp_bridge.go:491` calls `out.ReadString('\n')`, which grows a buffer
+until it finds a newline or EOF. A server emitting megabytes with no newline
+grows it without limit; a server emitting endless short header lines never
+reaches the blank line that ends the block.
+
+**Same shape as a bug this repo already fixed.** `prefixWriter` was capped for
+exactly this reason, and its comment says so: "megabytes with no newline in
+them — and a buffer that only drains on a newline would grow without limit".
+That reasoning was applied to MCP stderr and not to LSP headers.
+
+**Why deferred.** Read-only reconnaissance; constructing the input would have
+meant writing a `fakelsp` mode, which was out of scope. It is one mode and one
+test.
+
+**Blast radius.** Unbounded allocation in the daemon, driven by a language
+server. **Reachability is the open question**: gopls is trusted-by-selection
+(`serverCommand` is a typed switch over three fixed binaries), so this needs a
+compromised or buggy gopls rather than a hostile repo.
+
+**Pinned by.** **NOTHING.** Not measured, not tested; predicted from a read.
+
+**Trigger.** Any work on `lsp_bridge.go`'s framing; an LSP server upgrade; or
+the boundary-7 pass if it is scheduled. **Strong** — the first two are ordinary
+maintenance that will happen.
+
+## R1.25 — LSP teardown kills the process, not the process group
+
+**What it is.** `LSPServer.Close` (`daemon/lsp_bridge.go:530`) closes stdin and
+immediately calls `Process.Kill()`. There is no grace period and no group
+signal. `daemon/mcp/stdioclient.go` does the opposite deliberately: close stdin,
+wait `stopGrace`, kill, re-wait, then `group.killAll(pid)` **unconditionally** —
+with a comment explaining that a server can hand a child its stdout and exit,
+and that waiting for the parent then stopping "reports success while the child
+it left behind keeps running".
+
+gopls spawns `go` subprocesses. The same orphan argument appears to apply and
+the same defence is absent.
+
+**Why deferred.** The consequence is **UNMEASURED**. Establishing it needs a
+process-tree observation under a real gopls call, which is a writing probe.
+
+**Blast radius.** Orphaned toolchain subprocesses surviving daemon shutdown.
+Resource leak, not a privilege or data issue. Lower than R1.23 and R1.24.
+
+**Pinned by.** **NOTHING for LSP.** The MCP sibling is pinned by
+`TestTeardownReachesWhatTheServerSpawned`, which is the model for what the LSP
+test would look like and the reason this row is cheap to close.
+
+**Trigger.** Any report of stray `gopls` or `go` processes after a daemon exit.
+**FLAGGED WEAK, for the same reason as R1.23's middle trigger:** nobody
+correlates a stray process with a daemon that exited an hour ago, and no gate
+watches for it. If this row is ever closed it will be closed by someone doing
+the work, not by the trigger firing.
