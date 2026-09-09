@@ -66,10 +66,25 @@ for tool in staticcheck ineffassign bodyclose; do
 done
 if [ $missing -ne 0 ]; then
   echo "" >&2
+  # PINNED AND WITH A TOOLCHAIN FLOOR, matching .github/workflows/build.yml.
+  #
+  # The previous text here printed `GOTOOLCHAIN=go1.25.13 go install
+  # github.com/timakin/bodyclose@latest`, and MEASURED 2026-09-09 that command
+  # FAILS: bodyclose imports golang.org/x/sys/execabs without listing x/sys in
+  # its go.mod, so the missing package resolves at @latest to x/sys v0.48.0,
+  # which needs go >= 1.26. Pinning the toolchain DOWN is precisely what stops
+  # it working. So did a bare install and GOTOOLCHAIN=auto -- Go will not switch
+  # toolchains while resolving a missing import.
+  #
+  # This mattered more than a wrong hint usually does: nobody here had installed
+  # these tools since 2026-08-04, so the gate passed locally on five-week-old
+  # binaries while being un-bootstrappable from a clean machine. The check above
+  # tests PRESENCE; it cannot test that a newcomer could ever get there.
   echo "Install them with:" >&2
-  echo "  go install honnef.co/go/tools/cmd/staticcheck@latest" >&2
-  echo "  go install github.com/gordonklaus/ineffassign@latest" >&2
-  echo "  GOTOOLCHAIN=go1.25.13 go install github.com/timakin/bodyclose@latest" >&2
+  echo "  GOTOOLCHAIN=go1.26.0+auto go install honnef.co/go/tools/cmd/staticcheck@v0.8.1" >&2
+  echo "  GOTOOLCHAIN=go1.26.0+auto go install github.com/gordonklaus/ineffassign@v0.2.0" >&2
+  echo "  GOTOOLCHAIN=go1.26.0+auto go install github.com/timakin/bodyclose@v0.0.0-20260723120731-857993a2939c" >&2
+  echo "  GOTOOLCHAIN=go1.26.0+auto go install github.com/kisielk/errcheck@v1.20.0" >&2
   exit 2
 fi
 

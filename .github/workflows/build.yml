@@ -332,15 +332,40 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: "**/go.sum"
 
-      # bodyclose builds with the BASE toolchain and its x/sys dependency needs
-      # >= 1.25, so this step depends on setup-go having installed 1.25.x above.
-      # On an older base it fails to install at all -- see scripts/lint.sh.
+      # PINNED, and with a toolchain FLOOR, because @latest on four tools was the
+      # one unpinned surface left in a repo that pins its actions to commit SHAs
+      # and its Go toolchain to a single version in seven places. It broke on
+      # 2026-09-09 exactly the way unpinned surfaces break: upstream moved and
+      # nothing here changed. Six lint jobs went red, the `Lint` step never ran,
+      # and the job name said "lint" -- which is how a gate gets waived.
+      #
+      # WHAT ACTUALLY BROKE, since the previous comment here described a
+      # different and now-wrong mechanism ("its x/sys dependency needs >= 1.25"):
+      # bodyclose imports golang.org/x/sys/execabs and does NOT list x/sys in its
+      # go.mod, so `go install` resolves that MISSING package at @latest, lands
+      # on x/sys v0.48.0, and that requires go >= 1.26.
+      #
+      # Pinning bodyclose alone cannot fix it -- a missing import is resolved at
+      # latest whatever version of bodyclose is named -- so the toolchain floor
+      # is doing the load-bearing work and the pins stop the OTHER three drifting.
+      #
+      # go1.26.0+auto rather than a hard go1.26.8: a floor that still upgrades if
+      # a future dependency needs more, so this does not become a second constant
+      # that goes stale. Measured 2026-09-09: bare install, GOTOOLCHAIN=auto, and
+      # the GOTOOLCHAIN=go1.25.13 form that scripts/lint.sh used to print ALL
+      # fail; go1.26.0+auto and an explicit go1.26.8 both install cleanly.
+      #
+      # Building a linter with a newer toolchain does not touch the product: these
+      # are separate analysis binaries, and go-toolchain-pinned.sh gates go.mod
+      # and go.work, which this does not change.
       - name: Install linters
+        env:
+          GOTOOLCHAIN: go1.26.0+auto
         run: |
-          go install honnef.co/go/tools/cmd/staticcheck@latest
-          go install github.com/gordonklaus/ineffassign@latest
-          go install github.com/timakin/bodyclose@latest
-          go install github.com/kisielk/errcheck@latest
+          go install honnef.co/go/tools/cmd/staticcheck@v0.8.1
+          go install github.com/gordonklaus/ineffassign@v0.2.0
+          go install github.com/timakin/bodyclose@v0.0.0-20260723120731-857993a2939c
+          go install github.com/kisielk/errcheck@v1.20.0
 
       - name: Lint
         run: ./scripts/lint.sh ${{ matrix.module }}
