@@ -1,4 +1,4 @@
-# Decision memo — four items in `daemon/`, from the terminal-client hardening pass
+# Decision memo — five items in `daemon/`, from the terminal-client hardening pass
 
 <!-- coderefs: enforced -->
 
@@ -7,6 +7,15 @@
 **To:** whoever owns `daemon/` — **an addressee slot, not a recipient.**
 **What I need:** a decision, in writing, on each of the four items below.
 
+> **Delivery status, updated 2026-09-09: STILL COMMITTED; STILL HANDED TO
+> NOBODY. Five days, one re-derivation, no reader.**
+>
+> On 2026-09-08 a later pass independently re-derived item 1 from scratch,
+> measured it end to end, and filed it as a new register row (R1.22) — because
+> nothing pointed at this memo. That is the cost of an undelivered document
+> stated in hours: the same finding, found twice. The duplicate row now
+> defers to this one.
+>
 > **Delivery status, added 2026-09-05: COMMITTED; RECIPIENT NOT YET IDENTIFIED.**
 > This memo was committed to `audit/adversarial-pass` on 2026-09-04 and **handed
 > to nobody.** Nobody has been named as the `daemon/` owner and nobody has been
@@ -16,6 +25,14 @@
 > question had not been put, not because anyone declined to answer it.
 
 ---
+
+## Correction, 2026-09-09 — three of this memo's code references had drifted
+
+`daemon/server.go:547`, `:687` and `:595` now read `:567`, `:707` and `:615`.
+The three cited lines had moved and pointed at unrelated code. **The coderefs
+gate was green the whole time**, and correctly so: its own header says it cannot
+catch a line that moved inside a file that is still long enough, which is
+exactly what happened. A reconciliation found them, not a gate.
 
 ## Read this first
 
@@ -74,15 +91,15 @@ prompt path, same string:      "here is my key: [REDACTED:openai_key]"
 
 ### Why it happens — three call sites, each individually reasonable
 
-1. `daemon/server.go:547` computes `cleanPrompt, redactions := scrub(promptReq.Prompt, …)`
+1. `daemon/server.go:567` computes `cleanPrompt, redactions := scrub(promptReq.Prompt, …)`
    and sends `cleanPrompt`. **Correct.**
-2. `daemon/server.go:687` calls `s.persistTurn(promptReq.Prompt, full.String(), …)`
+2. `daemon/server.go:707` calls `s.persistTurn(promptReq.Prompt, full.String(), …)`
    — **`promptReq.Prompt`, not `cleanPrompt`.** The raw string is written to
    `memory.db`, and `daemon/search.go:42`'s INSERT trigger copies it into the
    `turns_fts` full-text index.
 3. `daemon/history.go:136` `prepareHistory` validates, annotates, caps by count
    and caps by bytes. **It does not scrub.** Its output goes straight into
-   `buildChatMessages(…, historyOutcome.Messages, …)` at `daemon/server.go:595`
+   `buildChatMessages(…, historyOutcome.Messages, …)` at `daemon/server.go:615`
    and out to the provider.
 
 So the round trip is: **redacted on turn 1 → stored raw → re-hydrated into the
@@ -389,17 +406,69 @@ here.
 
 ---
 
+## 5. Panic containment stops at the connection goroutine — **RECOMMEND FIX (the daemon half only)**
+
+*Added 2026-09-09 from the boundaries 6/7 reconnaissance. Ranked LAST on
+purpose — see the note under "What I need from you".*
+
+`recover()` is per-goroutine. `handleConn`'s backstop (`daemon/server.go:289`)
+covers the connection goroutine and nothing else. Five layers that decode bytes
+from an untrusted subprocess run outside it:
+
+| Layer | Location | Ours? |
+|---|---|---|
+| Lane B connect fan-out | `daemon/mcpruntime.go:206` | **yes** |
+| SDK stdio decoder | `go-sdk@v1.7.0/mcp/transport.go:461` | no |
+| SDK `readIncoming` | `go-sdk@v1.7.0/internal/jsonrpc2/conn.go:259` | no |
+| SDK async handler | `go-sdk@v1.7.0/internal/jsonrpc2/conn.go:683` | no |
+| os/exec stderr copier | `daemon/mcp/stdioclient.go:166` | ours by wiring |
+
+Measured: `go-sdk@v1.7.0/mcp/` contains **zero** `recover()` calls.
+
+**What I got wrong, since it changes the recommendation.** I first reported that
+Lane B tool calls were covered transitively by `handleConn` because they run on
+the connection goroutine. That is true of `CallTool`'s *await* and false of the
+decoding — the SDK reads the subprocess on goroutines of its own. The
+correction runs from "covered" to "not covered", which is the direction that
+matters.
+
+**Recommendation: fix the one line that is ours** — a `recover` on
+`mcpruntime.go:206`, about five lines with a log. **Do not chase the SDK's four
+from here.** They cannot be fixed from outside the dependency, and the choice
+between vendoring a patch, filing upstream, and accepting is a dependency-policy
+call, not a daemon call.
+
+**What decides the urgency is unknown and I could not establish it read-only:**
+whether any input actually panics the SDK. That needs fuzzing a third-party
+parser. Until someone runs it, this is a real gap of unmeasured likelihood, and
+saying otherwise in either direction would be inventing evidence.
+
+**Register:** R1.23. Related: R1.24 (the LSP header read is unbounded, the one
+validation gap found on either boundary) and R1.25 (LSP teardown kills the
+process, not the group).
+
+---
+
 ## What I need from you
 
-A written answer on each of the four. `Fixed`, `accepted with this trigger`, or
-`deferred until X` are all complete answers. Recording the decision is what
-closes the release gate; the shape of the decision is yours.
+A written answer on each of the **five**. `Fixed`, `accepted with this trigger`,
+or `deferred until X` are all complete answers. **A recorded deferral with a
+trigger closes a row exactly as well as a fix does.** Recording the decision is
+what closes the release gate; the shape of the decision is yours.
+
+**Item 1 outranks the other four, including the new one.** Its blast radius is
+the only one here that leaves the machine, it is confirmed by measurement rather
+than predicted, and it is unblocked by everything except this reply. Item 5 is
+newer and will read as more urgent; it is not. The boundaries item 5 describes
+are, on measurement, better defended than the path item 1 describes — 40
+adversarial tests and two purpose-built hostile harnesses against a control that
+is simply not applied on the second turn.
 
 If it helps, the shortest reply that unblocks everything looks like:
 
 > 1 — fix, I'll take it. 2 — fix, low priority, ticket raised.
 > 3 — accepted; revisit on transcript export or telemetry.
-> 4 — fix, take the lazy build.
+> 4 — fix, take the lazy build. 5 — fix ours, accept the SDK's, revisit on upgrade.
 
-Cross-references: `docs/RESIDUAL_RISKS.md` (rows R1.5, R1.6),
+Cross-references: `docs/RESIDUAL_RISKS.md` (rows R1.5, R1.6, R1.22-R1.25),
 `docs/TUI_PRODUCTION_READINESS_2026-09-04.md` (the release gate this blocks).
