@@ -154,7 +154,10 @@ func TestSentinelRow7_PersistedPromptIsStillRaw_TRIPWIRE(t *testing.T) {
 	if err != nil {
 		t.Fatalf("opening memory store: %v", err)
 	}
-	defer store.Close()
+	// Close's error is dropped deliberately: this is a t.TempDir() database that
+	// the test framework removes either way, and a close failure here would mask
+	// the assertion below rather than tell anyone anything.
+	defer func() { _ = store.Close() }()
 
 	ws := "/tmp/sentinel-ws"
 	if err := store.AppendTurn(ctx, ws, "user", "my key is "+secret); err != nil {

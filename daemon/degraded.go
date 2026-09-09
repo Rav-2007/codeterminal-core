@@ -237,7 +237,11 @@ func (s *Server) workspaceTooLargeMarker() (present bool, meta map[string]any) {
 		}
 		return false, nil
 	}
-	defer f.Close()
+	// Read-only descriptor: a Close error carries no information a caller could
+	// act on, and this runs on the prompt path where a spurious failure would
+	// degrade a turn over nothing. Dropped explicitly rather than implicitly, so
+	// the errcheck ceiling counts a decision instead of an oversight.
+	defer func() { _ = f.Close() }()
 
 	// fstat on the DESCRIPTOR, not stat on the path: a stat-then-open pair has a
 	// window in which the thing that was checked is not the thing that was
