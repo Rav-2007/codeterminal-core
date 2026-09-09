@@ -470,4 +470,3 @@ func TestSentinel_AuditDigestSurvivesTheArmsThatCouldFallBack(t *testing.T) {
 		}
 	}
 }
-
