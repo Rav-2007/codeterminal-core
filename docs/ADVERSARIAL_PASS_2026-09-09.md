@@ -137,8 +137,8 @@ question.
 
 ## C.4 — What I did not verify
 
-It has grown every time it was written: 8 → 10 → 12 → **16**. That is the right
-direction.
+It has grown every time it was written: 8 → 10 → 12 → 16 → **19**. That is the
+right direction.
 
 1. **Whether any input panics the SDK.** Needs fuzzing a third-party parser.
    **This is the unknown that decides how urgent the missing recovers are**, and
@@ -169,6 +169,16 @@ direction.
 15. Row 3 of the credential sweep is not driven end to end; nothing selects
     `protocol.TransportTCP`.
 16. The three `MACOS_*`-blocked items, if macOS ever rejoins.
+17. **A single embedder text between 32 KiB and the 16 MiB wire cap.** The
+    `huge` arm was reduced from 2 MB to `maxLexicalQueryChars` to fit inside the
+    race gate; a non-daemon client can still send more, and that range is now
+    untested.
+18. **Whether `maxSequenceLength` (512) bounds tokenizer WORK.** It does not —
+    `tokenize` truncates the OUTPUT after `EncodeSingle` has walked the whole
+    input. The consequence of that on a large text is unmeasured.
+19. **The signed macOS release path**, which `release-signing-guard` states it
+    does not cover and does not claim to: unsigned path 4 and the signed path
+    both need a macOS runner and real Apple credentials.
 
 ---
 
@@ -199,6 +209,47 @@ the same lock. **I was two lines short of the answer when I formed the theory.**
 **4. R1.22 was five days old and I filed it as new** — and characterised it as
 needing a design ruling where the existing memo argues it is not a design
 question and recommends FIX.
+
+### The largest entry: five defects I shipped, five gates I did not run
+
+`make check` was run **six times** to reach green. Every failure was in code I
+had committed, and **not one was reachable by the checks I actually ran** — my
+sequence was `go vet ./...`, the package tests, and the coverage ratchet.
+
+| Run | Gate | Position | What it caught |
+|---|---|---|---|
+| 1 | `gofmt` | 2 of 13 | trailing blank line in `sentinel_secrets_test.go` |
+| 2 | `crossvet` | 4 of 13 | `syscall.Mkfifo` undefined on Windows — the daemon package **did not build** there |
+| 3 | `race` | 6 of 13 | `helper` timed out at **600.166s**; a 2 MB tokenizer input under race instrumentation |
+| 4 | `lint` | 7 of 13 | staticcheck ST1008, error returned first |
+| 5 | `errcheck` | 9 of 13 | daemon 93 vs ceiling 92 — a `defer f.Close()` I added in the F4 fix |
+
+**The second is the one to learn from.** The test carried
+`if runtime.GOOS == "windows" { t.Skip(...) }`, which reads like adequate
+protection and is not: **a runtime skip cannot save a compile-time symbol.** It
+shipped with `go vet` and the full package suite green on Linux.
+
+**The third is the one that would have hurt most.** It did not fail — it *hung*,
+for ten minutes, and a gate that takes ten minutes to say nothing is one people
+stop running.
+
+**None of these are subtle, and that is the point.** They are the ordinary
+output of verifying with the tools I reached for instead of the gate set that
+exists. The gate set was there the whole time; I ran a subset and called it
+verification. That is the same defect as the prior-art one — not looking at what
+already exists before acting — in a different costume, which now makes **five
+instances in one pass**.
+
+Two smaller notes from the same runs, both worth keeping:
+
+- I first "fixed" the errcheck failure in a **test** file. It changed nothing:
+  the gate runs `errcheck -ignoretests`. Believing for a minute that I had
+  fixed it is exactly how a vacuous fix gets written up as a real one.
+- A bare `staticcheck ./...` also flags ST1005 at `helper/main.go:102`
+  ("Intel Mac…"), which `scripts/lint.sh` excludes deliberately and documents.
+  Running the default set and fixing what it says would have edited code the
+  gate intentionally does not flag — **a gate's own configuration is part of the
+  gate.**
 
 ### The standing entries
 
