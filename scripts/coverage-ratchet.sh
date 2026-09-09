@@ -149,15 +149,42 @@ done
 
 # --- a floor whose package vanished is a gate that silently stopped gating -----
 #
-# Only checkable on a full run; a partial run legitimately does not visit them.
-if [ $# -eq 0 ]; then
-  for pkg in "${!floor[@]}"; do
-    if [ -z "${seen[$pkg]:-}" ]; then
-      echo "FAIL  $pkg — has a floor but was never measured (renamed or deleted?)." >&2
+# THIS USED TO RUN ONLY ON A FULL INVOCATION, AND CI NEVER MAKES ONE.
+# build.yml calls this script as `coverage-ratchet.sh ${{ matrix.module }}`, one
+# module per matrix job, so `$# -eq 0` was false in every CI run this repository
+# has ever had. The sweep existed, was tested, and gated nothing outside a
+# developer's laptop -- found on 2026-09-09 while comparing the two gate lists.
+#
+# The old comment said a partial run "legitimately does not visit them", which
+# was true only because the check was written whole-repo. A partial run cannot
+# speak for OTHER modules' floors; it can speak for its own, and that is the
+# scope applied here. Each module's floors are now swept by the job that owns
+# them, so the union of CI's six jobs covers exactly what a full local run does.
+belongs_to_module() {
+  # floor keys are import paths (codeterminal/daemon/mcp); modules are
+  # directories (daemon, clients/tui). Strip the module path prefix and ask
+  # whether what remains is the module itself or something beneath it.
+  local pkg="${1#codeterminal/}" m="$2"
+  [ "$pkg" = "$m" ] || [ "${pkg#"$m"/}" != "$pkg" ]
+}
+
+for pkg in "${!floor[@]}"; do
+  [ -n "${seen[$pkg]:-}" ] && continue
+  if [ $# -eq 0 ]; then
+    echo "FAIL  $pkg — has a floor but was never measured (renamed or deleted?)." >&2
+    status=1
+    continue
+  fi
+  for m in "${MODULES[@]}"; do
+    if belongs_to_module "$pkg" "$m"; then
+      echo "FAIL  $pkg — has a floor, belongs to module '$m' which WAS measured, and was never seen" >&2
+      echo "      (renamed or deleted?). A floor for a package that no longer exists is a gate" >&2
+      echo "      that silently stopped gating." >&2
       status=1
+      break
     fi
   done
-fi
+done
 
 if [ $status -ne 0 ]; then
   echo "" >&2

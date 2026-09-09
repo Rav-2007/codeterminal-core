@@ -91,6 +91,19 @@ jobs:
       - name: No debt markers in non-test code
         run: ./scripts/debt-markers.sh
 
+      # THE GATE ON THE GATES, and it must run on BOTH sides or it is itself the
+      # asymmetry it exists to detect -- which is what its own first run
+      # reported about itself.
+      #
+      # `make check` and these workflows are two independently maintained
+      # enumerations of what gets checked. Nothing compared them until
+      # 2026-09-09, and three checks had drifted: debt-markers.sh and
+      # supply-chain.sh ran only here (so nobody could run them before pushing),
+      # and the coverage ratchet's vanished-floor sweep ran only locally (so it
+      # could not gate a merge).
+      - name: make check and CI check the same things
+        run: ./scripts/gate-parity.sh
+
   corpus:
     name: corpus holds no answer key
     runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}

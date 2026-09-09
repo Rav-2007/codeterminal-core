@@ -8,7 +8,7 @@
 
 MODULES := daemon editapply proxy helper protocol clients/tui
 
-.PHONY: help hooks hookcheck test race fmt vet crossvet lint ratchet errcheck fuzz check docs webview drill soak eval evalguard
+.PHONY: help hooks hookcheck test race fmt vet crossvet lint ratchet errcheck fuzz check docs webview drill soak eval evalguard debtmarkers parity supplychain
 
 help:
 	@echo "make hooks    install the tracked git hooks (.githooks/) -- do this once"
@@ -161,7 +161,7 @@ evalguard:
 # docs is last and costs ~1s. It is in `check` rather than in a docs-only job
 # because a rename breaks links in the same commit that makes it, and that is
 # the only moment anyone can fix it cheaply.
-check: hookcheck fmt vet crossvet race lint ratchet errcheck evalguard supplychain webview docs
+check: hookcheck fmt vet crossvet race lint ratchet errcheck evalguard supplychain webview docs debtmarkers parity
 	@echo "check: all gates green"
 
 # Two supply-chain gates. actions-pinned is sub-second and offline;
@@ -178,6 +178,11 @@ supplychain:
 	@./scripts/actions-pinned.sh
 	@./scripts/go-toolchain-pinned.sh --self-test
 	@./scripts/go-toolchain-pinned.sh
+# Whole-repo supply-chain invariants: `go mod tidy` produces no diff, and no
+# shipped binary embeds the path it was built at. Ran ONLY in CI (gates.yml)
+# until 2026-09-09, so a developer could not check either before pushing --
+# found by scripts/gate-parity.sh on its first run.
+	@./scripts/supply-chain.sh
 	@./scripts/govulncheck.sh
 
 # The VS Code extension's two offline gates. Node only, no VS Code download, so
@@ -190,6 +195,17 @@ supplychain:
 webview:
 	@cd clients/vscode && node scripts/verify-vsix.js --self-test
 	@cd clients/vscode && node scripts/webview-check.js
+
+# Ran ONLY in CI until 2026-09-09 and had no make target at all, so running it
+# before a push required knowing the script path. Found by gate-parity.sh.
+debtmarkers:
+	@./scripts/debt-markers.sh
+
+# THE GATE ON THE GATES. `make check` and .github/workflows/*.yml are two
+# enumerations of what gets checked; this asserts they still agree, and that
+# every difference between them is deliberate and carries a reason.
+parity:
+	@./scripts/gate-parity.sh
 
 docs:
 	@./scripts/docs-links.sh
