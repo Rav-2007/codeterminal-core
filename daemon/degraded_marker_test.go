@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -131,7 +130,7 @@ func TestTooLargeMarker_FIFODoesNotHangTheTurn(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows has no filesystem FIFO; its named pipes are not reachable by a workspace path")
 	}
-	srv, logbuf := markerServer(t, func(p string) error { return syscall.Mkfifo(p, 0o644) })
+	srv, logbuf := markerServer(t, mkfifoForTest)
 
 	done := make(chan []protocol.Degradation, 1)
 	go func() { done <- srv.degradations() }()
