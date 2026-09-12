@@ -50,6 +50,13 @@ and nothing in the sentence said which. It is the same defect as reporting
 upstream.** Its full history there is two `build` runs: `34314941707` (failure,
 `4c782df`, 2026-09-09) and `34678287938` (success, `a0635bf`, 2026-09-12).
 
+**THERE IS NO `build` RUN AT HEAD, AND THAT IS NOT A PASS.** The paragraph this
+replaced carried that caveat and an earlier version of this edit dropped it,
+which would have been a worse error than the one being fixed. `build.yml` carries
+`paths-ignore: ["**.md"]`, so a markdown-only commit does not run it. `gates`
+does fire on every push — `34679958977`, success, at `d0735e1` — and the last
+`build` run is at `a0635bf`, the last commit carrying code.
+
 ### What a green CI run promises now, and what it still does not
 
 *(Added 2026-09-12. The previous answer to this question was an impression; this
