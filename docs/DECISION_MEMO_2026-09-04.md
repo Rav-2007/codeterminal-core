@@ -130,11 +130,48 @@ carried through.
 
 | Part | Change | Cost | New judgement required? |
 |---|---|---|---|
-| **1a** — persistence | `persistTurn(cleanPrompt, …)` at `daemon/server.go:687` | one identifier | **None.** Applies a decision already taken about that exact string. |
+| **1a** — persistence | `persistTurn(cleanPrompt, …)` at `daemon/server.go:707` | one identifier | **None.** Applies a decision already taken about that exact string. |
 | **1b** — history, user turns | scrub `Content` where `t.Role == "user"` in `prepareHistory`, **before** the byte budget | ~10 lines | **None.** Same argument. Before the budget, so the budget accounts for what is actually sent. |
 | **1c** — history, assistant turns | scrub those too | ~2 lines | **Yes** — that is item 3. Strictly stronger, and your call. |
 
 **Recommend 1a + 1b now**; 1c only if you also reject my recommendation on item 3.
+
+### What 1a + 1b do NOT close — added 2026-09-12, by the third pass to re-derive this
+
+**1b closes the provider path. It does not close the handshake payload, and
+those are different states (M5).**
+
+`prepareHistory` runs on history travelling TO the model, so scrubbing there
+stops the secret reaching the provider — which is the boundary crossing that
+matters and the one you cannot undo. But the daemon also hands stored turns
+back to the CLIENT, at `HandshakeResponse.PersistedHistory`
+(`daemon/server.go:385`, via `loadPersistedHistory`), on every connection. That
+path does not go through `prepareHistory` on its way out.
+
+So after 1a + 1b:
+
+| Path | State |
+|---|---|
+| turn N+1 to the provider | **closed** by 1b |
+| already-stored rows written before 1a | **still raw** — this is the migration question below |
+| handshake payload to the client's transcript | **unscrubbed**, and untouched by either part |
+
+Whether the third row is a defect is a real question and not a rhetorical one:
+the client is the user's own process on the same machine, rendering the user's
+own prompt, and a transcript that silently differed from what the user typed
+would be its own surprise. It may well be correct as it stands. **It must not be
+recorded as "fixed" by 1a + 1b, because it is not.**
+
+A note on this memo's own history, which is the argument for reading it rather
+than re-deriving it a fourth time: the delivery status above predicted its own
+re-derivation and was right. Item 1 was found independently on 2026-09-08
+(filed as R1.22) and again on 2026-09-12 (filed as F-1). **The same finding,
+found three times, because nothing pointed at this file.** The 2026-09-12 pass
+also confirmed that `daemon/sentinel_rows_test.go`'s ROW 7 tripwire is still
+green and still correct, and that this memo's claim about `loadPersistedHistory`
+re-running `prepareHistory` is TRUE — it happens one layer down, inside
+`LoadRecentTurns` (`daemon/memory.go:330`). That pass initially reported the
+claim as wrong and retracted it.
 
 **One consequence to weigh, so it is not a surprise.** Scrubbing history changes
 what the model sees in later turns. If a user legitimately discusses a key-shaped
