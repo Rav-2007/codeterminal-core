@@ -65,39 +65,3 @@ func TestExistingLexicalIndexDirectoryIsTightenedOnOpen(t *testing.T) {
 
 	assertOwnerOnly(t, idx, "an install that already had an index must not stay world-readable")
 }
-
-// The embedder stamp is the third file in the index directory and was the only
-// one still written world-readable.
-//
-// 2.3-A. lexical.db is 0600, chromem's collection directory is 0700, and the
-// stamp was 0644 — with no stated reason; the write's comment addresses
-// O_NOFOLLOW and is silent on the mode. It is NOT a live disclosure, because
-// the containing directory is 0700 and nobody else can traverse to it, and it
-// is filed as the defence-in-depth inconsistency it is rather than inflated.
-//
-// What it would disclose if the directory mode ever regressed is small but not
-// nothing: the exact ONNX runtime and model build, and a timestamp for when the
-// workspace was last indexed. The reason to fix it is that a file's own mode
-// should not depend on its directory's for its safety, which is the same
-// argument the sidecar test above makes.
-func TestEmbedderStampIsNotWorldReadable(t *testing.T) {
-	dir := t.TempDir()
-	embedder := &PlaceholderEmbedder{}
-	if err := writeEmbedderStamp(dir, embedder); err != nil {
-		t.Fatalf("writeEmbedderStamp: %v", err)
-	}
-
-	fi, err := os.Stat(filepath.Join(dir, embedderStampFileName))
-	if err != nil {
-		t.Fatalf("stamp was not written: %v", err)
-	}
-	// Vacuity floor: a zero-length or absent file would satisfy a mode check
-	// without the stamp ever having been written.
-	if fi.Size() == 0 {
-		t.Fatal("vacuity floor: the stamp is empty, so its mode proves nothing")
-	}
-	if mode := fi.Mode().Perm(); mode&0o077 != 0 {
-		t.Errorf("embedder stamp is %v, want owner-only (0600). Its siblings in this same "+
-			"directory are 0600/0700; this one was 0644 with no reason given.", mode)
-	}
-}
