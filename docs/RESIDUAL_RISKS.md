@@ -6,7 +6,7 @@ Opened 2026-09-04 during the production-hardening pass on the TUI.
 
 **Its scope widened on 2026-09-05, again on 2026-09-08, and the title has not.**
 R1.15 is release machinery, R1.16/R1.17 are `daemon/`, `editapply/` and
-`scripts/`, and R1.18-R1.26 are `daemon/`, `helper/`, build tooling and one dependency. The heading still says
+`scripts/`, and R1.18-R1.28 are `daemon/`, `helper/`, build tooling and one dependency. The heading still says
 "clients/tui", which is now narrower than the contents by two passes.
 Recorded rather than silently retitled: a reader who came here for TUI risks
 needs to know the file grew, and renaming it would break every inbound
@@ -57,7 +57,7 @@ longer exists), or SUPERSEDED (replaced by a different row).**
 | R1.13 onnxruntime and npm are scanned by nothing | **OPEN** | Re-verified: `scripts/govulncheck.sh` names six Go modules and nothing else; no gate anywhere runs `npm audit` or scans onnxruntime. |
 | R1.14 the terminal client is not a release artifact | **CLOSED 2026-09-04** | P4.1. Builds on all three release runners, in the macOS signing list, ships as a standalone download with checksums, and asserted *out* of the `.vsix` by the packaging gate. It was never a residual risk: it made this document's own "CI green once" condition unsatisfiable. |
 | R1.15 the release signs nothing — macOS secrets absent | **DEFERRED BY DECISION 2026-09-05 (founder)** | Found by the first-ever dispatch of `release.yml` (run `33922431985`): the signing step is a no-op without the five `MACOS_*` secrets, so darwin binaries are **unsigned** and Gatekeeper kills them. **The run is green either way** — fail-open, one layer up from the gate scripts. **Ruling: the first release ships Linux and Windows only; `darwin-arm64` is deferred until the secrets exist.** The machinery now enforces it — `scripts/release-signing-guard.sh`, keyed on **distributable**, verified on run `33938839311`. Three items remain **expected-unverified**; see the row. |
-| R1.16 a gate whose expected count comes from the list it validates | **OPEN — a CLASS, FIVE instances across five gates** | Opened 2026-09-05. Not a coincidence: `platformcoverage_test.go` (floor 20, 73 suites) and `scripts/fuzz.sh` (`TARGETS` is its own source of truth) share one general form. The fuzz gate has no equivalent of the TUI test's bidirectional loops. |
+| R1.16 a gate whose expected count comes from the list it validates | **OPEN — a CLASS, SEVEN instances** | Opened 2026-09-05, widened 2026-09-09 and 2026-09-12. The seventh is the sharpest: the ratchet's vanished-floor sweep was false in **every CI run this repository has ever had**, and a correct-sounding comment was what concealed it. |
 | R1.17 an ambiguous request body is refused with the wrong message | **OPEN — rough edge, deliberate** | Opened 2026-09-05 alongside the fix in `026fe48`. The refusal is correct; the message a client sees is `"prompt is empty"`, inherited from the duplicate-key precedent it was deliberately made to match. |
 | R1.18 non-UTF-8 source files are embedded with U+FFFD, silently | **OPEN — NOT IMPLEMENTED, quality not security** | Opened 2026-09-05. `encoding/json` substitutes U+FFFD for every invalid byte in both directions, so a Windows-1252 file is vectorised with replacement characters where its punctuation was. Nothing reports it. |
 | R1.19 two tripwires guard an incidental protection | **OPEN by design — one of them going RED is GOOD NEWS** | Opened 2026-09-05. The helper's liveness depended on an undocumented property of `encoding/json`; two tests now pin both ends of that dependency, and one of them fails when the risk disappears. |
@@ -68,6 +68,8 @@ longer exists), or SUPERSEDED (replaced by a different row).**
 | R1.24 the LSP header read is unbounded | **OPEN — the one validation gap on either boundary** | Opened 2026-09-09. `daemon/lsp_bridge.go:491` `ReadString('\n')` bounds neither a single header line nor their number, while the BODY is bounded at 8 MiB. Same shape as the `prefixWriter` flood that was already fixed. |
 | R1.25 LSP teardown kills the process, not the group | **OPEN — asymmetry with MCP, consequence UNMEASURED** | Opened 2026-09-09. `daemon/lsp_bridge.go:530` calls `Process.Kill()` with no grace period; `daemon/mcp/stdioclient.go` kills the whole group unconditionally and is tested for orphans. gopls spawns `go` subprocesses. |
 | R1.26 helper is outside every cross-platform check, and cannot join one | **OPEN — structural, nothing can catch it** | Opened 2026-09-09. `helper` links `onnxruntime_go`, which is CGO-only, so `GOOS=windows go vet` reports "build constraints exclude all Go files". It is absent from `CROSSVET_MODULES` and from CI's `cross` matrix, and no gate can be added that would genuinely cover it. |
+| R1.27 the sandbox's confinement tests run only where CI relaxed the host | **OPEN — a real reason, stated rather than removed** | Opened 2026-09-12. `build.yml` sets `kernel.apparmor_restrict_unprivileged_userns=0` on its throwaway VM. The REFUSAL path no longer depends on that; the tests that check bwrap actually isolates anything still do, and cannot be stubbed. |
+| R1.28 daemon's timing assertions are inline literals with no guard | **OPEN — Task 6, not started** | Opened 2026-09-12. `clients/tui/testpolicy_guard_test.go` enforces the timing policy structurally but scans its own package only, and its own doc says it cannot catch an inline literal — which is the shape of all ~15 daemon instances. |
 
 ### Three of these rows are pinned only on Linux
 
@@ -1063,14 +1065,53 @@ passes — *"staged 3 terminal-client binaries"*, with SHA-256 sums, including
 
 ## R1.16 — A gate whose expected count is derived from the list it validates
 
-**What it is.** FIVE gates in this repository compute "how many things should I
+**What it is.** SEVEN gates in this repository compute "how many things should I
 have inspected?" from the very list that decides what they inspect. Such a gate
 detects a *missing* member and cannot detect a *removed* one, because removing
 it changes the expectation by exactly as much as it changes the reality.
 
-**Widened 2026-09-09 from two instances to five.** The three added are the two
-adversarial harnesses and one documentation gate; all three were found while
-looking for something else, which is how the first two were found as well.
+**Widened 2026-09-05 → 2026-09-09 → 2026-09-12, two to five to seven.** The
+seven:
+
+| # | Instance | What it cannot see |
+|---|---|---|
+| 1 | `platformcoverage_test.go`'s floor of 20 against 73 suites | a deleted suite |
+| 2 | `scripts/fuzz.sh`'s `TARGETS` | a row deleted from `TARGETS` |
+| 3 | the ratchet's empty-floors abort | fail-closed by luck (`set -u`), not design |
+| 4 | the ratchet's partial output-shape parser | a third `go test -cover` output shape |
+| 5 | `badserver` / `fakelsp` mode switches | a deleted mode takes its coverage with it |
+| 6 | **`make check` vs CI as two unreconciled enumerations** | a check present on one side only |
+| 7 | **the ratchet's vanished-floor sweep** | **anything, in CI — it never ran there** |
+
+**#7 IS THE FIRST INSTANCE WHERE A CORRECT-SOUNDING COMMENT WAS THE CONCEALMENT.**
+The sweep sat behind `if [ $# -eq 0 ]` with the note *"Only checkable on a full
+run; a partial run legitimately does not visit them."* Every word of that is
+defensible and the conclusion was wrong: CI invokes the script as
+`coverage-ratchet.sh ${{ matrix.module }}`, so the guard was false in every CI
+run this repository has ever produced. The other six were found by noticing a
+number; this one could only be found by comparing an invocation against its own
+justification. A comment that explains why a gap is acceptable is harder to
+audit than a gap with no comment at all, because it answers the question before
+it is asked.
+
+**#6 is the structural one**, and it is the reason the other instances kept
+appearing: `make check` and the workflows were two hand-maintained lists of what
+to check with nothing comparing them, so a check could exist on one side and be
+believed to exist on both. `scripts/gate-parity.sh` now derives both sides and,
+critically, **fails when a manifest entry names a script that no longer exists**
+— the deletion case, without which it would be instance #8.
+
+**THE ADJACENT CLASS, AND ITS SHARPEST INSTANCE: a gate whose own printed remedy
+does not work.** `scripts/lint.sh` printed
+`GOTOOLCHAIN=go1.25.13 go install github.com/timakin/bodyclose@latest` as the fix
+for a missing linter. Measured 2026-09-09: **that command fails**, and so does a
+bare install, and so does `GOTOOLCHAIN=auto`. The gate was therefore
+**un-bootstrappable from a clean machine** — and it passed locally anyway,
+because the binaries had been installed on 2026-08-04 and `command -v` cannot
+tell a five-week-old tool from a current one. A remedy that has never been run
+is not a remedy; it is a guess in an error message. Every printed remediation in
+`lint.sh`, `errcheck-ceiling.sh` and `govulncheck.sh` has now been executed and
+verified.
 
 The general form, stated once so a third instance is recognisable:
 
@@ -1568,3 +1609,73 @@ gate, which is the honest option rather than one that appears to cover it.
 `syscall.` in a helper test. **Both are greppable in one command and neither is
 gated**, which is the weakness of this trigger and is stated rather than dressed
 up: it fires when somebody thinks to look.
+
+
+## R1.27 — The sandbox's confinement tests run only on a host CI relaxed for itself
+
+**What it is.** `.github/workflows/build.yml` runs
+`sudo -n sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` before the
+daemon tests. Without it `bwrap` cannot create a user namespace on
+`ubuntu-latest`, the confinement tests skip, and `daemon/mcp` coverage falls
+through its 91.0 floor — which the workflow already records.
+
+**What changed on 2026-09-12, and what did not.** The REFUSAL path is fixed:
+`TestEveryUnrunnableSandboxRefusesWithAReason` used to assert the WorkspaceRoot
+message unconditionally, so it was green here and **red for every developer on a
+stock Ubuntu 24.04**, where the restriction is the default. It now selects its
+expectation from `BwrapUsable()`, and `TestBubblewrapRefusalOnAnUnusableHost`
+stubs the probe to assert the unusable-host refusal deterministically everywhere.
+
+**What did not change:** the tests that check bwrap *actually confines* need a
+real user namespace. A stub cannot answer "did this process see the host's
+`/proc`". Their only execution anywhere is on that runner, after that line.
+
+**Why deferred.** The alternative is no execution at all. Skipping them in CI
+would make CI the second environment in a row where the sandbox is never
+exercised, which is how `--nosuid` survived two green campaigns marked
+CONFIRMED. Relaxing a sysctl on a VM destroyed minutes later is the cheaper risk.
+
+**Blast radius.** The sandbox's confinement claims rest on one environment that
+no developer reproduces by default. If the relaxation silently stopped working,
+`CODETERMINAL_REQUIRE_SANDBOX=1` turns the skip into a failure — that tripwire is
+the thing standing between this row and a silent loss of all confinement
+coverage.
+
+**Pinned by.** `requireBwrap`'s `CODETERMINAL_REQUIRE_SANDBOX` branch, set for
+daemon in `build.yml`. Not a test of the sandbox — a test that the *sandbox tests
+ran*.
+
+**Trigger.** Any change to that workflow step; a runner image that blocks the
+sysctl; or a decision to test confinement in a container that does not need it.
+**This trigger is reasonably strong** — the tripwire fires automatically rather
+than waiting for someone to notice.
+
+## R1.28 — daemon's timing assertions are inline literals, guarded by nothing
+
+**What it is.** `clients/tui/testpolicy_guard_test.go` enforces this project's
+timing policy structurally: any `time.Duration` const or var in that package's
+tests must be guarded against the race detector. It scans `os.ReadDir(".")` —
+**its own package only**. `daemon` has roughly fifteen timing assertions and no
+equivalent.
+
+Worse, the guard's own doc states what it cannot catch: *"a timing assertion
+written inline with no named constant (`if elapsed > 16*time.Millisecond`)"*.
+**Every daemon instance is exactly that shape**, so extending the existing gate
+verbatim would cover none of them.
+
+**Why deferred.** Task 6 was ordered after Tasks 1-5 and is not started. The work
+is understood: convert inline absolutes to bounds derived from a measured
+baseline, lower bounds first because they fail on a *faster* machine, which is
+the direction nobody expects.
+
+**Blast radius.** A CI failure diagnosed as flake. That is the expensive
+outcome — not the red run, but the habit of re-running it.
+
+**Pinned by.** **NOTHING for daemon.** `clients/tui` is covered for the named
+-constant shape only.
+
+**Trigger.** Task 6, or the first daemon timing failure on a loaded runner. The
+prediction on record names `lexicalbound_test.go:71/100/174` (`elapsed > time.Second`)
+and `retry_test.go:194` (`elapsed < 2*time.Second`, a lower bound) as the
+likeliest. **This trigger is weak in one direction**: if the first failure is
+read as flake and re-run, it fires and nobody notices.

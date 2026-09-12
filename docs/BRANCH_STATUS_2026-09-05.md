@@ -26,12 +26,67 @@ the register, or by the release-gate table. If you are deciding whether to
 release the whole branch rather than the terminal client, that earlier report is
 a separate read and is not summarized here.
 
-**CI is green.** `gates` run `33923375561` at HEAD — success, both jobs, no
-skips. The last commit carrying **code** is `0925a3d`: `build` run `33922411677`
-— 27 jobs, 26 success, **0 failed**, 1 skipped (`retrieval eval (scheduled)`,
-schedule-triggered). **There is no `build` run at HEAD and that is not a pass** —
-the commits after `0925a3d` are markdown-only and `build.yml` carries
-`paths-ignore: ["**.md"]`, so the workflow did not run at all.
+**CI is green — ON THE UPSTREAM, AS OF 2026-09-12.** `build` run
+**`34678287938`** on **`Rav-2007/codeterminal-core`** at **`a0635bf`**: 27 jobs,
+26 success, 0 failed, 1 skipped (`retrieval eval (scheduled)`,
+schedule-triggered). `gates` run **`34678287922`**, same remote, same commit —
+both jobs success.
+
+**EVERY CI CLAIM NOW NAMES ITS REMOTE, AND THIS PARAGRAPH DID NOT.** *(Corrected
+2026-09-12.)* It previously read "CI is green. `gates` run `33923375561` at HEAD
+… `build` run `33922411677`". Both of those runs are real and both were green —
+**on `Rav-i24/Mochiii`, the fork**, which is a different repository from the one
+this project's CI is read from. Verified by asking each remote for the run id:
+`33923375561` and `33922411677` do not exist on `Rav-2007/codeterminal-core`,
+and `34314941707` — the run that was red — does not exist on the fork.
+
+Both remotes carry the same workflows, so both produce runs called `build` and
+`gates`, and a run id alone cannot tell them apart. "CI is green" therefore meant
+two different things in this session depending on which remote was being read,
+and nothing in the sentence said which. It is the same defect as reporting
+"ratchet exit 0" without saying which invocation produced it.
+
+**Before 2026-09-12, `audit/adversarial-pass` had never been green on the
+upstream.** Its full history there is two `build` runs: `34314941707` (failure,
+`4c782df`, 2026-09-09) and `34678287938` (success, `a0635bf`, 2026-09-12).
+
+### What a green CI run promises now, and what it still does not
+
+*(Added 2026-09-12. The previous answer to this question was an impression; this
+one is the matrix.)*
+
+**It now promises**, which it did not before:
+
+- The **linters actually ran.** Six red `lint` jobs on `34314941707` reported
+  nothing about lint — the `Install linters` step failed and `Lint` never
+  executed. Pinned versions and a toolchain floor fixed it; the `Lint` step on
+  `34678287938` is `success`, not `-`.
+- **The same tool versions a developer has.** `scripts/tool-pins.txt` is read by
+  the installer CI runs *and* by `lint.sh`, which now checks the binary on PATH
+  rather than only its presence.
+- **The same Go patch version.** `GO_VERSION` was `1.25.x` and resolved to
+  `go1.25.14` against seven files pinning `1.25.13`; it is now exact, and
+  `go-toolchain-pinned.sh` checks the runner as an eleventh pin site.
+- **A result computed from this commit.** `-count=1` on both sides.
+- **That `make check` and CI check the same things**, or that every difference is
+  stated in code — `gate-parity.sh`, which fails on a deletion, not only an
+  addition.
+- **What each platform did not compile.** daemon reported
+  `153 of 178 test files compiled; 25 DID NOT RUN` on `windows/amd64` in this
+  run. That block was silent before.
+
+**It still does not promise:**
+
+- **That the sandbox confines anything on a normal host.** The confinement tests
+  need a user namespace CI enables for itself (R1.27).
+- **Anything about `helper` on Windows or macOS.** CGO makes it uncompilable
+  there by any gate (R1.26).
+- **macOS beyond `clients/tui`**, and the full `cross` matrix only on `main`.
+- **That timing assertions are stable.** daemon's are inline literals with no
+  guard (R1.28).
+- **That a green run reproduces on a developer's machine** — `make check` still
+  cannot run Windows, macOS, docker or the Extension Development Host, which is
+  why it now prints what it did not cover.
 
 **Two release-gate rows are open, and both are blocked on something smaller than
 they look: nobody has been told they exist.** *(Corrected 2026-09-05.)* The
