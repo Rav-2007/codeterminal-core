@@ -26,11 +26,17 @@ the register, or by the release-gate table. If you are deciding whether to
 release the whole branch rather than the terminal client, that earlier report is
 a separate read and is not summarized here.
 
-**CI is green — ON THE UPSTREAM, AS OF 2026-09-12.** `build` run
-**`34678287938`** on **`Rav-2007/codeterminal-core`** at **`a0635bf`**: 27 jobs,
+**CI is green — ON THE UPSTREAM, AT HEAD, AS OF 2026-09-12.** `build` run
+**`34684019860`** on **`Rav-2007/codeterminal-core`** at **`8340022`**: 27 jobs,
 26 success, 0 failed, 1 skipped (`retrieval eval (scheduled)`,
-schedule-triggered). `gates` run **`34678287922`**, same remote, same commit —
-both jobs success.
+schedule-triggered — **a skip, named as one**). `gates` run **`34684019845`**,
+same remote, same commit — both jobs success. This run is the first to cover the
+timing work; **what it does and does not establish about that particular gate is
+set out in `docs/HANDBACK_2026-09-12.md` section 8**, because a green job is
+weaker evidence for a gate that failed its own first neuter.
+
+The previous green run, **`34678287938`** at **`a0635bf`**, is superseded by this
+one and was the first time this branch had ever been green on the upstream.
 
 **EVERY CI CLAIM NOW NAMES ITS REMOTE, AND THIS PARAGRAPH DID NOT.** *(Corrected
 2026-09-12.)* It previously read "CI is green. `gates` run `33923375561` at HEAD
@@ -50,12 +56,22 @@ and nothing in the sentence said which. It is the same defect as reporting
 upstream.** Its full history there is two `build` runs: `34314941707` (failure,
 `4c782df`, 2026-09-09) and `34678287938` (success, `a0635bf`, 2026-09-12).
 
-**THERE IS NO `build` RUN AT HEAD, AND THAT IS NOT A PASS.** The paragraph this
-replaced carried that caveat and an earlier version of this edit dropped it,
-which would have been a worse error than the one being fixed. `build.yml` carries
-`paths-ignore: ["**.md"]`, so a markdown-only commit does not run it. `gates`
-does fire on every push — `34679958977`, success, at `d0735e1` — and the last
-`build` run is at `a0635bf`, the last commit carrying code.
+**THERE IS NO `build` RUN AT HEAD, AND THAT IS NOT A PASS.** — **ANSWERED
+2026-09-12, and the caveat is kept rather than deleted because it will recur.**
+The paragraph this replaced carried that caveat and an earlier version of this
+edit dropped it, which would have been a worse error than the one being fixed.
+
+`build.yml` carries `paths-ignore: ["**.md"]`, so a push of markdown alone does
+not run it — which is why `d0735e1` and `3d6ea63` were covered by `gates` only,
+and **those two commits were never built.** The next push carried `3dd472a`, a
+code commit, so `build` fired and checked out **`8340022`**, which *is* HEAD:
+run **`34684019860`** on **`Rav-2007/codeterminal-core`**, 27 jobs, 26 success,
+0 failed, 1 skipped (`retrieval eval (scheduled)`). `gates` **`34684019845`**,
+same remote, same commit, both jobs success.
+
+**The rule that produced the original caveat is unchanged**, so the sentence
+becomes true again the moment somebody pushes only markdown. Read it as a
+standing property of this workflow, not as a resolved incident.
 
 ### What a green CI run promises now, and what it still does not
 
