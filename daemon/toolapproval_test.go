@@ -15,6 +15,13 @@ import (
 
 // A request whose digest is genuinely the digest of its arguments, so a test
 // that wants to break the binding has to break it on purpose.
+// The two deadlines these tests build their pipes with, named so the assertions
+// below can be fractions of them instead of independently chosen numbers.
+const (
+	deadAskDeadline = 50 * time.Millisecond
+	humanDeadline   = time.Minute
+)
+
 func approvalRequest(callID, args string) protocol.ToolApprovalRequest {
 	return protocol.ToolApprovalRequest{
 		CallID:          callID,
@@ -178,7 +185,7 @@ func TestConnApproverRoundTrip(t *testing.T) {
 // deadline again -- one user walking away turning into a daemon blocked for the
 // rest of the iteration budget.
 func TestSilenceDeniesAndTheChannelStopsAsking(t *testing.T) {
-	appr, client := approvalPipe(t, 50*time.Millisecond)
+	appr, client := approvalPipe(t, deadAskDeadline)
 
 	// The client reads the question and then says nothing at all.
 	go func() {
@@ -203,7 +210,11 @@ func TestSilenceDeniesAndTheChannelStopsAsking(t *testing.T) {
 	if second.approved() {
 		t.Fatal("the second ask on a dead channel was treated as a yes")
 	}
-	if elapsed := time.Since(started); elapsed > 20*time.Millisecond {
+	// HALF THE DEADLINE, derived from the pipe this test built. The property --
+	// that the ask never consulted the dead channel -- is asserted directly by
+	// second.Cause below; this catches the specific failure of waiting the whole
+	// human deadline again, and half of it is enough to prove that.
+	if elapsed := time.Since(started); elapsed > deadAskDeadline/2 {
 		t.Errorf("the second ask waited %s on a channel that can never answer", elapsed)
 	}
 	if second.Cause != denyByNoChannel {
@@ -253,7 +264,7 @@ func TestCancelledContextDeniesWithoutAsking(t *testing.T) {
 func TestShutdownDuringAnApprovalDoesNotWaitOutTheHumanDeadline(t *testing.T) {
 	// A deliberately long human deadline, so the only thing that can end this
 	// wait quickly is the cancellation itself.
-	appr, client := approvalPipe(t, time.Minute)
+	appr, client := approvalPipe(t, humanDeadline)
 
 	go func() {
 		var msg protocol.TokenResponse
@@ -274,7 +285,11 @@ func TestShutdownDuringAnApprovalDoesNotWaitOutTheHumanDeadline(t *testing.T) {
 	if got.approved() {
 		t.Fatal("a cancelled approval was treated as a yes")
 	}
-	if elapsed > 5*time.Second {
-		t.Errorf("the ask took %s to notice a shutdown; the daemon drains in seconds", elapsed)
+	// A tenth of the deliberately long human deadline. The property -- that the
+	// ask was denied rather than answered -- is asserted directly above; this
+	// catches the ask sitting out the deadline instead of noticing cancellation.
+	if elapsed > humanDeadline/10 {
+		t.Errorf("the ask took %s to notice a shutdown against a %s deadline; the daemon drains in seconds",
+			elapsed, humanDeadline)
 	}
 }

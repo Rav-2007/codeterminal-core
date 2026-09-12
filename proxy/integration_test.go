@@ -188,7 +188,8 @@ func TestIntegration_UpstreamHangsPastDeadline(t *testing.T) {
 	p := newTestProxy(supabase.URL, upstream.URL)
 
 	req := newAuthorizedRequest(zdrBody(""))
-	ctx, cancel := context.WithTimeout(req.Context(), 400*time.Millisecond)
+	const requestBudget = 400 * time.Millisecond
+	ctx, cancel := context.WithTimeout(req.Context(), requestBudget)
 	defer cancel()
 	req = req.WithContext(ctx)
 
@@ -197,8 +198,12 @@ func TestIntegration_UpstreamHangsPastDeadline(t *testing.T) {
 	p.handleChatCompletions(rec, req)
 	elapsed := time.Since(start)
 
-	if elapsed > 30*time.Second {
-		t.Fatalf("the request took %v: the upstream call is not bounded at all", elapsed)
+	// 25x the budget the request was given. The upstream under test never
+	// answers, so an unbounded call does not take 10 s -- it hangs. The multiple
+	// is room for a loaded runner, not a tolerance on the bound.
+	if elapsed > 25*requestBudget {
+		t.Fatalf("the request took %v against a %s budget: the upstream call is not bounded at all",
+			elapsed, requestBudget)
 	}
 
 	waitForLedgerSettled(t, store, 3*time.Second)

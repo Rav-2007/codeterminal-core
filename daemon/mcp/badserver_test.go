@@ -443,14 +443,18 @@ func TestASlowToolIsBoundedByTheCallersContext(t *testing.T) {
 		t.Fatalf("Connect: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	const callBudget = 300 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), callBudget)
 	defer cancel()
 
 	start := time.Now()
 	if _, err := client.CallTool(ctx, "molasses", nil); err == nil {
-		t.Fatal("a tool that sleeps for ten minutes returned inside 300ms")
+		t.Fatalf("a tool that sleeps for ten minutes returned inside %s", callBudget)
 	}
-	if elapsed := time.Since(start); elapsed > 5*time.Second {
+	// 16x the budget the context was given. The server sleeps for ten minutes,
+	// so anything short of that proves the context bounded the call; the
+	// multiple exists so a loaded runner is not mistaken for an unbounded one.
+	if elapsed := time.Since(start); elapsed > 16*callBudget {
 		t.Errorf("cancellation took %s; the context did not bound the call", elapsed)
 	}
 }

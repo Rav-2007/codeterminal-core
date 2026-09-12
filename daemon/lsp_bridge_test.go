@@ -200,8 +200,11 @@ func TestLSPServer_SilentServerTimesOutRatherThanHanging(t *testing.T) {
 	if !strings.Contains(err.Error(), "timed out") {
 		t.Errorf("got %v, want a timeout", err)
 	}
-	if elapsed := time.Since(start); elapsed > 10*time.Second {
-		t.Errorf("took %s to give up", elapsed)
+	// 2x the timeout under test, matching the derivation this file already uses
+	// at TestLSPServer_DeadServerFailsCallersImmediately rather than inventing a
+	// second shape.
+	if elapsed := time.Since(start); elapsed > 2*lspCallTimeout {
+		t.Errorf("took %s to give up against a %s timeout", elapsed, lspCallTimeout)
 	}
 
 	// The pending entry must be gone, or every timed-out request leaks a

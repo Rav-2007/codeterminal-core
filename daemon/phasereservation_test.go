@@ -19,6 +19,13 @@ import (
 // A pre-answer share of ZERO does not mean "unlimited", but turnLedger reads it
 // that way -- so the reservation would switch itself off at exactly the budgets
 // where the answering phase can least afford to be starved.
+// The turn ceiling this test configures, named once so the config and the
+// assertion cannot drift apart.
+const (
+	turnCeilingSeconds = 1
+	turnCeiling        = turnCeilingSeconds * time.Second
+)
+
 func TestThePreAnswerByteShareIsNeverZero(t *testing.T) {
 	// Zero is absent deliberately: resolvedMaxTotalToolBytes never returns it,
 	// and a share of zero out of a budget of zero is arithmetic, not a hole.
@@ -154,7 +161,7 @@ func TestThePhaseDeadlineCanOnlyTightenTheTurnDeadline(t *testing.T) {
 	s := loopServer(t, base, MCPConfig{
 		Enabled: true,
 		Builtin: MCPBuiltinConfig{Tools: map[string]string{"list_directory": "allow"}},
-		Budget:  MCPBudgetConfig{MaxIterations: 20, MaxTurnIterations: 40, TurnTimeoutSeconds: 1},
+		Budget:  MCPBudgetConfig{MaxIterations: 20, MaxTurnIterations: 40, TurnTimeoutSeconds: turnCeilingSeconds},
 	})
 
 	registry, _ := s.buildRegistry(context.Background(), s.logger, &proposalSink{}, "")
@@ -174,8 +181,11 @@ func TestThePhaseDeadlineCanOnlyTightenTheTurnDeadline(t *testing.T) {
 		t.Fatalf("a phase deadline an hour out overrode turn_timeout_seconds=1: the turn ran to "+
 			"completion after %v", time.Since(start))
 	}
-	if elapsed := time.Since(start); elapsed > 5*time.Second {
-		t.Errorf("the turn ran %v against a 1s ceiling", elapsed)
+	// 5x the 1 s turn ceiling this test configures. The property -- that the turn
+	// was cut short -- is asserted directly by res.Incomplete above; this only
+	// catches a ceiling that fires far too late to be the thing that fired.
+	if elapsed := time.Since(start); elapsed > 5*turnCeiling {
+		t.Errorf("the turn ran %v against a %s ceiling", elapsed, turnCeiling)
 	}
 }
 

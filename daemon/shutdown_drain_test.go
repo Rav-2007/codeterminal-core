@@ -125,11 +125,15 @@ func TestWaitForDrain_WaitsForInFlightRequests(t *testing.T) {
 func TestWaitForDrain_ReturnsImmediatelyWhenIdle(t *testing.T) {
 	srv := &Server{logger: discardLogger(), workspace: t.TempDir()}
 
+	// The grace is named so the assertion can be a FRACTION of it. That is the
+	// whole property: an idle drain must return promptly rather than waiting the
+	// grace out, and a fifth of it proves that without asserting a machine speed.
+	const grace = 5 * time.Second
 	start := time.Now()
-	if !srv.WaitForDrain(5 * time.Second) {
+	if !srv.WaitForDrain(grace) {
 		t.Fatal("an idle server reported an incomplete drain")
 	}
-	if elapsed := time.Since(start); elapsed > time.Second {
+	if elapsed := time.Since(start); elapsed > grace/5 {
 		t.Errorf("draining an idle server took %s; it must return promptly rather than "+
 			"waiting out the grace period, or Ctrl-C on an unused daemon reads as a hang", elapsed)
 	}
@@ -156,11 +160,15 @@ func TestWaitForDrain_UpgradesTheGraceOnlyWhileAToolIsExecuting(t *testing.T) {
 	defer srv.inFlight.Done()
 
 	t.Run("no tool running: the caller's timeout stands", func(t *testing.T) {
+		const callerTimeout = 100 * time.Millisecond
 		started := time.Now()
-		if srv.WaitForDrain(100 * time.Millisecond) {
+		if srv.WaitForDrain(callerTimeout) {
 			t.Fatal("reported a clean drain with a connection still in flight")
 		}
-		if elapsed := time.Since(started); elapsed > 5*time.Second {
+		// 50x the caller's own timeout: comfortably above it, and far below
+		// toolDrainGrace, which is the timeout this test exists to prove was NOT
+		// used.
+		if elapsed := time.Since(started); elapsed > 50*callerTimeout {
 			t.Errorf("an ordinary drain waited %s; Ctrl-C on a daemon with no tool "+
 				"running must not sit out the tool grace", elapsed)
 		}

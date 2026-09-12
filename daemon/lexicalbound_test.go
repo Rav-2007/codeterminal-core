@@ -22,6 +22,23 @@ import (
 // cannot decide an outcome. The DETERMINISTIC facts -- which error is returned,
 // whether the tier ran, what the client is told -- are asserted exactly.
 
+// DERIVED FROM THE BOUND ITSELF, not tuned on this machine.
+//
+// maxLexicalQueryChars was chosen so a query sitting exactly at it costs about
+// 100 ms; measured 64 ms on the box it was derived on. Every ceiling below is a
+// multiple of that budget, so re-deriving the bound moves these with it instead
+// of leaving numbers calibrated against the old one.
+const (
+	lexicalBoundBudget = 100 * time.Millisecond
+	// 10x the budget. Far enough above the measurement that a loaded runner
+	// cannot fail it; far enough below the 12.47 s an unbounded 400k query cost
+	// that a regression cannot hide under it.
+	lexicalRefusalCeiling = 10 * lexicalBoundBudget
+	// gatherContext runs the semantic tier as well as the lexical one, so it is
+	// allowed twice the room for work that is not what this test is about.
+	lexicalGatherCeiling = 2 * lexicalRefusalCeiling
+)
+
 func boundTestChunks(n int) []Chunk {
 	chunks := make([]Chunk, n)
 	for i := range chunks {
@@ -66,9 +83,9 @@ func TestLexicalBound_AtTheBoundTheCostIsInsideBudget(t *testing.T) {
 		t.Fatalf("a query exactly at the bound was refused: %v", err)
 	}
 	elapsed := time.Since(start)
-	// Budget is 100 ms; measured 64 ms. 1 s is 10x the measurement, so this
-	// fails only if the curve has genuinely changed, not because a runner is slow.
-	if elapsed > time.Second {
+	// 10x the budget maxLexicalQueryChars was derived FROM, so this fails only if
+	// the cost curve has genuinely changed -- not because a runner is slow.
+	if elapsed > lexicalRefusalCeiling {
 		t.Errorf("a query at the bound took %s; the 100 ms budget the bound was derived from no "+
 			"longer holds, so the bound needs re-deriving", elapsed)
 	}
@@ -96,8 +113,9 @@ func TestLexicalBound_OverTheBoundTheTierDeclinesImmediately(t *testing.T) {
 	if hits != nil {
 		t.Errorf("a refused query returned %d hits", len(hits))
 	}
-	// This measured 12.47 s before the bound.
-	if elapsed > time.Second {
+	// This measured 12.47 s before the bound -- two orders of magnitude above the
+	// ceiling, so the margin below can be generous without weakening the test.
+	if elapsed > lexicalRefusalCeiling {
 		t.Errorf("refusing a 400k query took %s; the phrase is still being built and matched", elapsed)
 	}
 }
@@ -131,8 +149,9 @@ func TestLexicalBound_ThePromptPathDoesNotPayTheCostEither(t *testing.T) {
 	outcome := srv.gatherContext(t.Context(), strings.Repeat("x", 400000))
 	elapsed := time.Since(start)
 
-	// Measured 12.47 s in the lexical tier alone before the bound.
-	if elapsed > 2*time.Second {
+	// Measured 12.47 s in the lexical tier alone before the bound. Twice the
+	// refusal ceiling because gatherContext also runs the semantic tier.
+	if elapsed > lexicalGatherCeiling {
 		t.Errorf("gatherContext on a 400k prompt took %s; the bound is not on this path and the cost "+
 			"has only moved", elapsed)
 	}
@@ -171,7 +190,7 @@ func TestSearchRequest_OverTheBoundIsRefusedActionably(t *testing.T) {
 	if err := json.Unmarshal([]byte(buf.String()), &resp); err != nil {
 		t.Fatalf("decoding: %v (raw %q)", err, buf.String())
 	}
-	if elapsed > time.Second {
+	if elapsed > lexicalRefusalCeiling {
 		t.Errorf("refusing a 400k search took %s; the query ran before being refused", elapsed)
 	}
 	for _, want := range []string{"400000", fmt.Sprint(maxLexicalQueryChars), "distinctive phrase"} {

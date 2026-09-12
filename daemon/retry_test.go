@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -167,11 +169,21 @@ func TestRetry_NeverRetriesOnceTokensHaveStreamed(t *testing.T) {
 
 // TestRetry_HonoursRetryAfter confirms an upstream's own requested delay is
 // respected rather than ignored in favour of our own backoff.
+// retryAfterDelay drives BOTH the header the upstream sends and the bound the
+// test asserts, so there is one number and it cannot drift into two.
+//
+// THIS IS A LOWER BOUND, AND LOWER BOUNDS FAIL ON A FASTER MACHINE -- the
+// direction nobody expects and nobody diagnoses correctly. Written as a literal
+// `2*time.Second` it read as a constant someone had tuned; it is in fact the
+// value on the wire, and saying so is the difference between an assertion that
+// can be audited and one that has to be re-derived by reading the handler.
+const retryAfterDelay = 2 * time.Second
+
 func TestRetry_HonoursRetryAfter(t *testing.T) {
 	var requests atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		if requests.Add(1) == 1 {
-			w.Header().Set("Retry-After", "2")
+			w.Header().Set("Retry-After", strconv.Itoa(int(retryAfterDelay.Seconds())))
 			w.WriteHeader(http.StatusTooManyRequests)
 			w.Write([]byte(`{"error":{"message":"slow down"}}`))
 			return
@@ -190,9 +202,9 @@ func TestRetry_HonoursRetryAfter(t *testing.T) {
 		t.Fatalf("want recovery, got: %v", err)
 	}
 	// Our own first backoff is well under a second; only Retry-After explains a
-	// wait of two.
-	if elapsed := time.Since(start); elapsed < 2*time.Second {
-		t.Errorf("waited %s, want at least the 2s the upstream asked for", elapsed)
+	// wait this long. Compared against the delay the server actually sent.
+	if elapsed := time.Since(start); elapsed < retryAfterDelay {
+		t.Errorf("waited %s, want at least the %s the upstream asked for", elapsed, retryAfterDelay)
 	}
 }
 
@@ -201,9 +213,10 @@ func TestRetry_HonoursRetryAfter(t *testing.T) {
 func TestRetry_CancelledContextAbortsImmediately(t *testing.T) {
 	srv, _ := flakyUpstream(t, 1000, http.StatusBadGateway, "down")
 
+	const cancelAfter = 50 * time.Millisecond
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(cancelAfter)
 		cancel()
 	}()
 
@@ -214,7 +227,15 @@ func TestRetry_CancelledContextAbortsImmediately(t *testing.T) {
 	if err == nil {
 		t.Fatal("want an error")
 	}
-	if elapsed := time.Since(start); elapsed > 5*time.Second {
+	// THE PROPERTY IS THE ERROR, NOT THE CLOCK. A cancelled context must surface
+	// as cancellation; "it returned quickly" is satisfied equally by a crash.
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want context.Canceled -- the abort must come from the context, "+
+			"not from the upstream failing on its own", err)
+	}
+	// 100x the cancel, which leaves the full retry backoff (seconds) unreachable
+	// while giving a loaded runner room the measurement never needs.
+	if elapsed := time.Since(start); elapsed > 100*cancelAfter {
 		t.Errorf("took %s; a cancelled context must not wait out the backoff", elapsed)
 	}
 }

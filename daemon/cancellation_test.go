@@ -41,6 +41,22 @@ import (
 // The plumbing half. An already-cancelled context must stop a search before it
 // starts, which is what makes daemon shutdown able to reach this work at all --
 // it previously ran on context.Background() and could not be reached.
+// alreadyCancelledCeiling bounds a call made with a context that was cancelled
+// BEFORE it started. There is no work to interrupt: the driver should observe
+// the dead context and return, so anything approaching a second means it ran
+// the query first and checked afterwards.
+//
+// A stated constant rather than a derivation, because there is nothing to derive
+// from -- no timeout, no delay, no server. What it protects is the difference
+// between "checked the context" and "ran, then noticed", and two seconds is
+// roughly 30x the measured return while staying far below the multi-second cost
+// of actually executing these queries.
+const alreadyCancelledCeiling = 2 * time.Second
+
+// cteCancelAfter is when the recursive-CTE test cancels; the ceiling below is a
+// multiple of it, so moving one moves the other.
+const cteCancelAfter = 500 * time.Millisecond
+
 func TestSQLiteCancellation_ACancelledContextStopsASearchBeforeItRuns(t *testing.T) {
 	mem, _ := openTestMemoryStore(t)
 	if err := mem.AppendTurn(t.Context(), "/ws", "user", "hello goroutines"); err != nil {
@@ -63,7 +79,13 @@ func TestSQLiteCancellation_ACancelledContextStopsASearchBeforeItRuns(t *testing
 	if err == nil {
 		t.Fatal("a search on a cancelled context returned no error; the context is not reaching the driver")
 	}
-	if elapsed > 2*time.Second {
+	// THE PROPERTY, NOT THE CLOCK. "It returned fast" is satisfied by a driver
+	// that failed for an unrelated reason. Only the error identity says the
+	// cancellation is what stopped it.
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want context.Canceled -- something other than the context ended this query", err)
+	}
+	if elapsed > alreadyCancelledCeiling {
 		t.Errorf("a search on an already-cancelled context still took %s; the query ran anyway", elapsed)
 	}
 }
@@ -73,7 +95,7 @@ func TestSQLiteCancellation_ACancelledContextStopsASearchBeforeItRuns(t *testing
 func TestSQLiteCancellation_ReachesTheVDBELoop(t *testing.T) {
 	mem, _ := openTestMemoryStore(t)
 	ctx, cancel := context.WithCancel(context.Background())
-	go func() { time.Sleep(500 * time.Millisecond); cancel() }()
+	go func() { time.Sleep(cteCancelAfter); cancel() }()
 
 	start := time.Now()
 	var n int
@@ -85,8 +107,10 @@ func TestSQLiteCancellation_ReachesTheVDBELoop(t *testing.T) {
 	if err == nil {
 		t.Fatal("a two-billion-row recursive CTE completed; it was supposed to be cancelled")
 	}
-	// Uncancelled this runs for minutes. Measured 511 ms when cancelled at 500 ms.
-	if elapsed > 10*time.Second {
+	// Uncancelled this runs for minutes. Measured 511 ms when cancelled at 500 ms,
+	// so 20x the cancel point separates "the interrupt worked" from "it did not"
+	// without asserting how fast any particular machine is.
+	if elapsed > 20*cteCancelAfter {
 		t.Errorf("cancelled at 500ms, the CTE ran for %s; sqlite3_interrupt is no longer reaching "+
 			"the VDBE loop, and every claim about cancellation in serveConn depends on it", elapsed)
 	}
@@ -191,7 +215,7 @@ func TestHandleSearch_UsesTheContextItIsGiven(t *testing.T) {
 	if resp.Error == "" {
 		t.Error("a search on a cancelled context answered as though it had succeeded")
 	}
-	if elapsed > 2*time.Second {
+	if elapsed > alreadyCancelledCeiling {
 		t.Errorf("handleSearch ran for %s on an already-cancelled context; it is not using the "+
 			"context it was given", elapsed)
 	}
