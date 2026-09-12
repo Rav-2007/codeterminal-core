@@ -129,7 +129,7 @@ func runEditsApplyCommand(args []string, logger *log.Logger) error {
 // tests can feed scripted confirmation input and capture prompts. This is
 // the CLI's confirm loop; the Mochiii TUI drives the same PrepareEdit/
 // backup calls through its own Bubble Tea state machine (see
-// clients/tui/editreview.go) instead of a blocking stdin read, but both
+// clients/tui/chat.go) instead of a blocking stdin read, but both
 // call the identical editapply core.
 //
 // rejected carries the blocks the parser refused (Fix B). They are reported

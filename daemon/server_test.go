@@ -127,7 +127,7 @@ func TestHandleConn_ResetNeverCallsModelAndClearsPersistedHistory(t *testing.T) 
 	go func() {
 		// serveConn is handleConn's post-authentication half. A net.Pipe conn
 		// carries no kernel peer credentials for handleConn's authorizePeer gate
-		// (covered in peercred_test.go), so these control-flow tests drive the
+		// (covered in peerauth_test.go), so these control-flow tests drive the
 		// post-auth path directly — which is what executes for an authorized peer.
 		srv.serveConn(serverConn)
 		serverConn.Close()

@@ -31,7 +31,7 @@ type peerCred struct {
 // authentication rather than a self-asserted claim.
 //
 // WHY THIS FILE EXISTS. Until now every non-Linux build fell through to
-// peercred_other.go, whose readPeerCred errors unconditionally, and
+// peerauth_other.go, whose readPeerCred errors unconditionally, and
 // authorizePeer correctly treats an error as a refusal. Fail-closed is the
 // right rule and it was doing its job — but on macOS it meant the daemon
 // refused EVERY connection, so no Mac user could use the product at all. That

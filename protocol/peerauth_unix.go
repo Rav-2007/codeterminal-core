@@ -24,12 +24,12 @@ import (
 // LOCAL_PEERCRED on macOS), fixed at connect() time — not from anything the
 // client sends — so a peer cannot forge a different UID on the wire. This
 // FAILS CLOSED: any error retrieving or comparing the credential (unsupported
-// platform — see peercred_other.go — a conn that exposes no peer credentials,
+// platform — see peerauth_other.go — a conn that exposes no peer credentials,
 // or a syscall failure) is returned as a refusal, never a silent pass. The
 // returned error is for the daemon's own log only; the caller never sends it
 // back to the rejected peer, so this adds no new information-leakage surface.
 //
-// The Windows counterpart is in server_auth_windows.go. It compares SIDs
+// The Windows counterpart is in peerauth_windows.go. It compares SIDs
 // rather than uids, because that is what identity is there — see its header
 // for why the two could not share one implementation honestly.
 func AuthorizePeer(conn net.Conn) error {

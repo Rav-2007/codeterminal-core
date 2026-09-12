@@ -32,7 +32,7 @@ type tokenOwner struct {
 // an elevated token — Windows sets that GROUP as the owner of everything the
 // token creates. So the daemon created the directory, then refused to use it,
 // for every administrator on Windows. An availability outage, and the same shape
-// as the macOS peer-auth outage peercred_darwin.go exists to fix.
+// as the macOS peer-auth outage peerauth_darwin.go exists to fix.
 //
 // TokenOwner is the right question because Win32 defines it as "the default
 // owner SID applied to objects created by this token". Comparing against it asks

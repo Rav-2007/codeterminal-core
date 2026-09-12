@@ -17,7 +17,7 @@ import (
 //
 // NOT RUN ON HARDWARE. Compile-verified for windows/amd64 and reasoned against
 // the Win32 documentation and go-winio's source; no Windows machine has
-// executed it. Labelled the way peercred_darwin.go is, until CI has a Windows
+// executed it. Labelled the way peerauth_darwin.go is, until CI has a Windows
 // runner (launch plan Stage 2.3).
 //
 // A pipe is not a file, and three of the Unix backend's assumptions do not

@@ -172,7 +172,7 @@ held to safety-critical engineering standards.
   Windows — peer-authenticated by kernel-supplied credentials: `SO_PEERCRED` on
   Linux, `LOCAL_PEERCRED` on macOS (**run on hardware**, run `31204152210`), and
   on Windows the pipe's DACL plus `GetNamedPipeClientProcessId`
-  (`peercred_windows.go`, **NOT RUN on hardware**). Its header records why
+  (`protocol/peerauth_windows.go`, **NOT RUN on hardware**). Its header records why
   `ImpersonateNamedPipeClient` — the obvious answer — is the wrong one: every
   go-winio dial connects at `PipeImpLevelAnonymous`, so an impersonation check
   would refuse this product's own clients every time. Only platforms that are
@@ -231,7 +231,7 @@ asset — this is what makes the local-model claim true).
 
 **Socket / daemon** — `daemon/main.go` (listen, lockfile, `reclaimStaleSocket`,
 drain), `daemon/server.go` (dispatch by presence-of-key, not a type
-discriminator — deliberate, see the comment), `server_auth.go` (Gate 3),
+discriminator — deliberate, see the comment), `protocol/peerauth.go` (Gate 3),
 `server_limits.go` (Gate 5), `server_workspace_lock.go` (Gate 6),
 `server_errors.go` (Gate 7, path scrubbing), `daemon/degraded.go` (five
 degradation components with prewritten user-facing prose),

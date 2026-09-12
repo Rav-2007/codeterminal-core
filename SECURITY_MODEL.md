@@ -786,7 +786,7 @@ implementation without the answer ever being written down as a model.
 The daemon listens on a Unix socket at `protocol.SocketPath()`, under a per-user
 runtime directory, chmod 0600. **File permissions are not the access control** —
 they narrow who can reach the socket, but they do not identify who did. The
-access control is `authorizePeer` (`daemon/server_auth.go`): the kernel reports
+access control is `AuthorizePeer` (`protocol/peerauth.go`): the kernel reports
 the connecting process's UID via `SO_PEERCRED`, and a peer whose UID differs from
 the daemon's own is refused before the handshake is read, before any request is
 decoded, and before anything is dispatched. Every legitimate client runs as the
@@ -810,7 +810,7 @@ Every failure path refuses:
 | Peer UID ≠ daemon UID | refused |
 | Connection exposes no peer credentials (`syscall.Conn` type assertion fails) | refused |
 | `getsockopt` itself fails | refused |
-| Non-Linux build (`peercred_other.go`) | refused — there is no `SO_PEERCRED` equivalent wired up, and the daemon declines rather than degrading to trust-everyone |
+| Non-Linux build (`protocol/peerauth_other.go`) | refused — there is no `SO_PEERCRED` equivalent wired up, and the daemon declines rather than degrading to trust-everyone |
 | `os.Getuid()` reports −1 (no UID concept) | refused — the daemon never trusts a peer it cannot meaningfully compare against |
 
 The refusal reason goes to the daemon's own log and is never returned to the

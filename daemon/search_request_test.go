@@ -223,7 +223,7 @@ func TestHandleConn_SearchRequestRoutesThroughRealDispatchNotPromptPath(t *testi
 		// serveConn is handleConn's post-authentication half. These tests drive
 		// it directly because a net.Pipe conn carries no kernel peer credentials
 		// for handleConn's authorizePeer gate (proven separately in
-		// peercred_test.go); the dispatch behavior under test is what runs once
+		// peerauth_test.go); the dispatch behavior under test is what runs once
 		// a peer is authorized.
 		srv.serveConn(serverConn)
 		serverConn.Close()
@@ -284,7 +284,7 @@ func TestHandleConn_PlainPromptRequestStillRoutesNormally(t *testing.T) {
 		// serveConn is handleConn's post-authentication half. These tests drive
 		// it directly because a net.Pipe conn carries no kernel peer credentials
 		// for handleConn's authorizePeer gate (proven separately in
-		// peercred_test.go); the dispatch behavior under test is what runs once
+		// peerauth_test.go); the dispatch behavior under test is what runs once
 		// a peer is authorized.
 		srv.serveConn(serverConn)
 		serverConn.Close()

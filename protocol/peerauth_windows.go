@@ -12,7 +12,7 @@ import (
 //
 // NOT RUN ON HARDWARE. Compile-verified for windows/amd64 and reasoned against
 // the Win32 documentation and go-winio's source; no Windows machine has
-// executed it. Labelled the way peercred_darwin.go is, until CI has a Windows
+// executed it. Labelled the way peerauth_darwin.go is, until CI has a Windows
 // runner (launch plan Stage 2.3).
 //
 // TWO LAYERS, AND THE FIRST ONE IS THE LOAD-BEARING ONE.
@@ -34,7 +34,7 @@ import (
 // server that impersonates an anonymous client gets an anonymous token and no
 // usable SID — so an impersonation-based check would refuse THIS PRODUCT'S OWN
 // clients, every time. That is the same shape as the macOS outage
-// peercred_darwin.go was written to fix, and it is not worth repeating.
+// peerauth_darwin.go was written to fix, and it is not worth repeating.
 //
 // GetNamedPipeClientProcessId sidesteps it entirely: the kernel records which
 // process opened the pipe, independently of impersonation level and of anything

@@ -208,3 +208,75 @@ func TestPrepareHistory_ByteBudgetIsIndependentOfRetrievalBudget(t *testing.T) {
 			out.SentBytes, defaultContextBudgetChars)
 	}
 }
+
+// TestLoadPersistedHistory_BoundsTotalBytes pins the OTHER HALF of
+// TestPrepareHistory_BoundsTotalBytes above: the hydration path is byte-bounded
+// too. THIS IS A CONTROL THAT HOLDS, not a leak -- stated in the test name's
+// neighbours' convention (sentinel_rows_test.go), where a control, a
+// present-by-design fact and a finding must never read alike.
+//
+// WHY IT IS WORTH PINNING, given that it passes. The control is not where a
+// reader of the calling function would look for it. loadPersistedHistory
+// (server.go) shows only validTurn and a turn limit passed to LoadRecentTurns;
+// nothing on that screen mentions a byte budget. The ceiling is applied one
+// layer deeper, at memory.go's LoadRecentTurns, which runs the loaded rows
+// through prepareHistory before returning them -- so BOTH ceilings (turns, then
+// bytes) are enforced on the way out, exactly as they are on the way in.
+//
+// That indirection is the reason for this test. A refactor that inlined
+// LoadRecentTurns, or that "simplified" it to return its rows directly, would
+// remove the byte ceiling from the hydration path while every line of
+// loadPersistedHistory still looked correct. Neutering it that way is what this
+// test was verified against: the assertion fails with 1,228,800 bytes against a
+// 262,144 ceiling, so the guard is load-bearing rather than decorative.
+//
+// The handshake payload (HandshakeResponse.PersistedHistory) is what this
+// bounds in practice: clients/tui/daemonconn.go decodes it with a bare
+// json.NewDecoder and applies no cap of its own, so the daemon's ceiling is the
+// only one on that path.
+func TestLoadPersistedHistory_BoundsTotalBytes(t *testing.T) {
+	memStore, _ := openTestMemoryStore(t)
+	ctx := t.Context()
+	const ws = "/workspace/hydration-bytes"
+
+	// Under the TURN cap, so only a byte budget can bound this -- the same
+	// premise the inbound test states, for the same reason.
+	const turnSize = 200 * 1024
+	const turnCount = 6
+	for i := range turnCount {
+		turn := bigTurn("user", "PERSISTED", turnSize)
+		if err := memStore.AppendTurn(ctx, ws, turn.Role, turn.Content); err != nil {
+			t.Fatalf("AppendTurn %d: %v", i, err)
+		}
+	}
+	if turnCount > maxHistoryTurns {
+		t.Fatalf("premise broken: %d turns exceeds the turn cap", turnCount)
+	}
+
+	srv := &Server{logger: discardLogger(), workspace: ws, memory: memStore}
+	got := srv.loadPersistedHistory(t.Context())
+
+	// VACUITY FLOOR, both directions. An empty result would satisfy the byte
+	// assertion while proving nothing, and a result that was never oversized in
+	// the first place would make the assertion pass for the wrong reason.
+	if len(got) == 0 {
+		t.Fatal("vacuity floor: nothing was hydrated, so this bounds nothing")
+	}
+	unbounded := turnCount * turnSize
+	if unbounded <= maxHistoryBytes {
+		t.Fatalf("vacuity floor: the persisted set is %d bytes, already under maxHistoryBytes=%d; "+
+			"this test cannot detect a missing ceiling", unbounded, maxHistoryBytes)
+	}
+
+	sent := 0
+	for _, turn := range got {
+		sent += len(turn.Content)
+	}
+	if sent > maxHistoryBytes {
+		t.Errorf("loadPersistedHistory hydrated %d bytes, want at most maxHistoryBytes=%d.\n"+
+			"The byte ceiling on this path is applied inside LoadRecentTurns (memory.go), which "+
+			"runs loaded rows through prepareHistory. If that call was removed or inlined away, "+
+			"restore it: loadPersistedHistory itself applies no byte budget, and the handshake "+
+			"payload has no other cap.", sent, maxHistoryBytes)
+	}
+}

@@ -8,7 +8,7 @@ import "fmt"
 // platform, so it refuses rather than pretending to have checked.
 //
 // This matches the daemon's peer-authentication posture exactly (see
-// daemon/peercred_other.go): where the OS mechanism a security property depends
+// protocol/peerauth_other.go): where the OS mechanism a security property depends
 // on is not wired up, the answer is to fail closed and say so, not to return
 // nil and let the caller believe a check ran.
 //

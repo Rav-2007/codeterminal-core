@@ -24,8 +24,8 @@ type peerCred struct {
 //
 // BE CLEAR ABOUT WHAT FAILING CLOSED COSTS HERE: it does not degrade the
 // daemon on such a platform, it refuses every connection, so the product does
-// not run at all. That was the state on macOS until peercred_darwin.go and on
-// Windows until peercred_windows.go — correct, and not the same thing as
+// not run at all. That was the state on macOS until peerauth_darwin.go and on
+// Windows until peerauth_windows.go — correct, and not the same thing as
 // supported.
 // See the PEERCRED note on authorizePeer in server.go.
 func readPeerCred(conn syscall.Conn) (peerCred, error) {

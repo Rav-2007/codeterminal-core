@@ -12,7 +12,7 @@ import (
 //
 // NOT RUN ON HARDWARE. Compile-verified for windows/amd64 and reasoned against
 // go-winio's source and the Win32 error mapping; labelled the way
-// protocol/transport_windows.go and peercred_darwin.go are.
+// protocol/transport_windows.go and peerauth_darwin.go are.
 //
 // WHY THIS CANNOT BE THE UNIX ONE. syscall.EADDRINUSE exists on Windows but is
 // SYNTHETIC -- the syscall package defines the POSIX errno names above

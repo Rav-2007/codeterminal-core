@@ -16,7 +16,7 @@ import (
 //
 // NOT RUN ON HARDWARE. Compile-verified for windows/amd64 and reasoned against
 // the Win32 documentation; no Windows machine has executed it. Labelled the way
-// peercred_darwin.go is, until CI has a Windows runner (launch plan Stage 2.3).
+// peerauth_darwin.go is, until CI has a Windows runner (launch plan Stage 2.3).
 
 // openNoFollow opens path, refusing a reparse point at the final component
 // rather than following it — the O_NOFOLLOW equivalent.

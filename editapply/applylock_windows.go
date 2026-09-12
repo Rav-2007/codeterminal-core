@@ -16,7 +16,7 @@ import (
 //
 // NOT RUN ON HARDWARE. This is compile-verified for windows/amd64 and reasoned
 // against the Win32 documentation; no Windows machine has executed it. Treated
-// the same way peercred_darwin.go was, and it stays labelled this way until CI
+// the same way peerauth_darwin.go was, and it stays labelled this way until CI
 // has a Windows runner (launch plan Stage 2.3).
 
 // openApplyLockFile opens the lock file, refusing a reparse point at the leaf

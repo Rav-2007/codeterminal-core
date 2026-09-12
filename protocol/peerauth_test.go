@@ -15,7 +15,7 @@ import (
 // (checkPeerUID) and the fail-closed / refuse-before-dispatch behavior is
 // proven live against handleConn with a connection that exposes no peer
 // credentials. The same-UID happy path is proven live on Linux in
-// peercred_linux_test.go and, end to end through Serve, by the existing
+// peerauth_linux_test.go and, end to end through Serve, by the existing
 // server_limits_test.go round-trips (which now also pass authorizePeer).
 
 // TestCheckPeerUID exercises the security-critical comparison directly: a

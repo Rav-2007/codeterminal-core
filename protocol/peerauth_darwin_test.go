@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-// The macOS mirror of peercred_linux_test.go, deliberately asserting the same
+// The macOS mirror of peerauth_linux_test.go, deliberately asserting the same
 // things about the same function so "peer authentication works" means one thing
 // on both platforms rather than two.
 //
@@ -100,7 +100,7 @@ func TestReadPeerCred_Darwin_ReturnsCurrentProcessCreds(t *testing.T) {
 }
 
 // The end of authorizePeer that matters for availability: a same-uid peer —
-// every real client — must be ACCEPTED. Before peercred_darwin.go this failed
+// every real client — must be ACCEPTED. Before peerauth_darwin.go this failed
 // on macOS, refusing every connection, which is why the item was an
 // availability bug rather than a hardening one.
 func TestAuthorizePeer_Darwin_SameUIDAllows(t *testing.T) {

@@ -15,7 +15,7 @@ import (
 //
 // NOT RUN ON HARDWARE. Compile-verified for windows/amd64 and reasoned against
 // the Win32 documentation; no Windows machine has executed it. Labelled the way
-// peercred_darwin.go is, and it stays labelled until CI has a Windows runner
+// peerauth_darwin.go is, and it stays labelled until CI has a Windows runner
 // (launch plan Stage 2.3).
 //
 // WHY A JOB OBJECT AND NOT A PROCESS GROUP. Windows has process groups, but they

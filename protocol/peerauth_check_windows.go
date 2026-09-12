@@ -11,7 +11,7 @@ import (
 // connection runs as the same USER as this daemon, and returns an error (which
 // the caller turns into an immediate refusal) otherwise.
 //
-// NOT RUN ON HARDWARE — see peercred_windows.go.
+// NOT RUN ON HARDWARE — see peerauth_windows.go.
 //
 // WHY THIS IS NOT THE SAME FUNCTION AS THE POSIX ONE. Identity on Windows is a
 // SID, not a uid. There is no number to compare, os.Getuid() reports -1, and a
