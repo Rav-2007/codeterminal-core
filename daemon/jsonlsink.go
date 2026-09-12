@@ -16,12 +16,20 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 )
 
 type jsonlSink struct {
 	mu       sync.Mutex
 	path     string
 	maxBytes int64
+
+	// droppedForBound counts records refused because the file was at its size
+	// bound and rotation would not succeed. It exists so that state is
+	// OBSERVABLE rather than merely swallowed: every other error on this path
+	// is discarded by design, which is precisely why a standing rotation
+	// failure could remove the size bound with nothing to show for it.
+	droppedForBound atomic.Uint64
 }
 
 // newJSONLSink returns a sink writing to path, or nil (a valid no-op) if path
@@ -52,7 +60,21 @@ func (s *jsonlSink) append(v any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.rotateIfNeededLocked(int64(len(line)))
+	// REFUSE, RATHER THAN APPEND PAST THE BOUND. If the file is over its limit
+	// and rotation will not succeed, this record is dropped.
+	//
+	// The argument, because it trades one loss for another: this sink ALREADY
+	// drops records silently when it cannot open the file (below), so losing a
+	// record is inside its contract. Growing without limit is not. The package
+	// comment says the sink exists so that "a full disk must never break a
+	// retrieval request" -- and an unbounded log is a way to CAUSE a full disk,
+	// so appending past the bound defeats the property it was protecting.
+	// Between losing telemetry and removing the only bound on a log's growth,
+	// losing telemetry is the smaller harm and the one already accepted here.
+	if !s.rotateIfNeededLocked(int64(len(line))) {
+		s.droppedForBound.Add(1)
+		return
+	}
 	// O_NOFOLLOW: the path is a fixed workspace log path, not client input, but
 	// these files are sensitive enough that appending through a symlink planted
 	// at the log name must be refused (ELOOP joins the other swallowed errors,
@@ -69,16 +91,45 @@ func (s *jsonlSink) append(v any) {
 
 // rotateIfNeededLocked renames the active file to <path>.1 (replacing any prior
 // backup) once appending incoming bytes would push it past maxBytes, bounding
-// total on-disk size to ~2x maxBytes. Caller holds mu. Any error leaves the
+// total on-disk size to ~2x maxBytes. Caller holds mu.
+//
+// Reports whether it is SAFE TO APPEND: true when no rotation was needed or the
+// rotation succeeded, false when the file is over its bound and still there.
+//
+// THIS USED TO RETURN NOTHING, and its comment read: "Any error leaves the
 // current file in place -- worst case it grows slightly past the bound, which
-// is still failure-safe.
-func (s *jsonlSink) rotateIfNeededLocked(incoming int64) {
+// is still failure-safe." That is true for ONE transient failure and wrong for
+// a standing one. The rename was best-effort and append wrote regardless, so
+// every later write re-stat'ed, re-failed and appended anyway: growth became
+// unbounded and permanent, with every error swallowed so nothing could notice.
+//
+// Measured on the shape that produces it -- a writable log inside a
+// non-writable directory, since rename(2) needs the DIRECTORY and O_APPEND on
+// an existing file needs only the FILE -- a 4 KiB bound reached 620,013 bytes
+// and was still climbing: 151x, not "slightly past".
+func (s *jsonlSink) rotateIfNeededLocked(incoming int64) bool {
 	fi, err := os.Stat(s.path)
 	if err != nil {
-		return // no file yet (first write), or unstattable; nothing to rotate
+		return true // no file yet (first write), or unstattable; nothing to rotate
 	}
 	if fi.Size()+incoming <= s.maxBytes {
-		return
+		return true
 	}
-	_ = os.Rename(s.path, s.path+".1")
+	if err := os.Rename(s.path, s.path+".1"); err != nil {
+		// The file is over its bound and could not be rotated away. Appending
+		// here is what removed the bound; the caller drops the record instead.
+		return false
+	}
+	return true
+}
+
+// droppedForBoundCount reports how many records this sink refused because it
+// was at its size bound and could not rotate. Zero is the normal answer; a
+// rising number means the log directory is not writable and the operator is
+// losing telemetry rather than disk.
+func (s *jsonlSink) droppedForBoundCount() uint64 {
+	if s == nil {
+		return 0
+	}
+	return s.droppedForBound.Load()
 }

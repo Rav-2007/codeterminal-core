@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -40,13 +41,31 @@ import (
 // the check runs again on the symlink-resolved path so an in-tree symlink
 // cannot launder a read.
 
-// maxBuiltinReadBytes bounds one read_file result before the loop's own
+// maxBuiltinReadBytes bounds THE READ, and therefore also the result, of one
+// read_file. It used to bound only the result: the whole file was materialised
+// with os.ReadFile and then sliced, so a 32 MiB file cost 32 MiB of daemon RSS
+// to return 64 KiB (measured: 33,715,296 bytes allocated for 65,609 returned).
+// Whether a cap bounds the READ or the RESULT is the distinction that hid that,
+// so every cap in this file now says which. Bounds one read_file result before the loop's own
 // per-result cap applies. A tool that can return a 400 MB file into a model
 // request is a denial-of-wallet, not a feature.
 const maxBuiltinReadBytes = 64 * 1024
 
-// maxBuiltinListEntries bounds a directory listing.
+// maxBuiltinListEntries bounds the RESULT of a directory listing -- how many
+// names are shown. maxBuiltinListScan bounds the READ that feeds it.
+//
+// TWO CONSTANTS BECAUSE THERE ARE TWO LIMITS, and collapsing them is what the
+// bug was. Selecting the alphabetically-first N requires seeing every name, so
+// the scan cannot simply stop at N without changing which entries are shown.
+// It can stop at a bound far above any real source directory, which keeps the
+// listing identical everywhere it matters and bounds the allocation everywhere
+// it does not. Exceeding it is announced, not silent.
 const maxBuiltinListEntries = 500
+
+// maxBuiltinListScan bounds how many directory entries are materialised. At
+// ~120 bytes per entry this is a few megabytes; os.ReadDir on an unbounded
+// directory is unbounded (measured: 9,694,832 bytes to list 500 of 40,000).
+const maxBuiltinListScan = 10000
 
 // proposalSink collects the edits propose_edit produced during one turn, so
 // they can be emitted on the final Done message exactly like the blocks parsed
@@ -334,6 +353,41 @@ func toolError(format string, args ...any) (mcp.Result, error) {
 	return mcp.Result{Content: fmt.Sprintf(format, args...), IsError: true}, nil
 }
 
+// readBoundedFile reads at most max bytes from path and reports the file's FULL
+// size, so a caller can announce truncation honestly without having read the
+// rest.
+//
+// THE CAP IS ON THE READ. os.ReadFile has no bounded form, so every caller that
+// "capped" a file read in this package did it by slicing afterwards -- which
+// bounds the result and not the allocation. Three handlers did that; this is
+// the one place that does not.
+//
+// It stats through the OPEN FILE DESCRIPTOR rather than the path, so the size
+// reported and the bytes read come from the same inode. A path-based os.Stat
+// followed by a read is a TOCTOU window, and this package already refuses that
+// shape elsewhere: chunker.go's readEligibleFile re-runs its eligibility gate
+// immediately before reading for exactly this reason.
+//
+// Symlink semantics are os.ReadFile's, deliberately unchanged: callers reach
+// here only through ResolveSafeTargetPath, which has already resolved and
+// re-checked the real target.
+func readBoundedFile(path string, max int64) (data []byte, fullSize int64, err error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer func() { _ = f.Close() }()
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, 0, err
+	}
+	data, err = io.ReadAll(io.LimitReader(f, max))
+	if err != nil {
+		return nil, 0, err
+	}
+	return data, fi.Size(), nil
+}
+
 func (s *Server) builtinReadFile(_ context.Context, raw json.RawMessage) (mcp.Result, error) {
 	var args struct {
 		Path string `json:"path"`
@@ -364,18 +418,19 @@ func (s *Server) builtinReadFile(_ context.Context, raw json.RawMessage) (mcp.Re
 		return toolError("%s is a directory; use list_directory", args.Path)
 	}
 
-	data, err := os.ReadFile(full)
+	data, fullSize, err := readBoundedFile(full, maxBuiltinReadBytes)
 	if err != nil {
 		return toolError("cannot read %s", args.Path)
 	}
 
 	truncated := ""
-	if len(data) > maxBuiltinReadBytes {
+	if fullSize > maxBuiltinReadBytes {
 		// Truncation is ANNOUNCED. A model given a silently clipped file will
-		// reason about the part it cannot see as if it were absent.
+		// reason about the part it cannot see as if it were absent. fullSize,
+		// not len(data): the whole point of readBoundedFile is that the rest
+		// was never read, so the honest number comes from the stat.
 		truncated = fmt.Sprintf("\n\n[... truncated: %s is %d bytes, showing the first %d ...]",
-			args.Path, len(data), maxBuiltinReadBytes)
-		data = data[:maxBuiltinReadBytes]
+			args.Path, fullSize, maxBuiltinReadBytes)
 	}
 	return mcp.Result{Content: string(data) + truncated}, nil
 }
@@ -400,9 +455,21 @@ func (s *Server) builtinListDirectory(_ context.Context, raw json.RawMessage) (m
 		return toolError("cannot list %s: %v", args.Path, err)
 	}
 
-	entries, err := os.ReadDir(full)
+	dir, err := os.Open(full)
 	if err != nil {
 		return toolError("cannot list %s", args.Path)
+	}
+	// ReadDir on the HANDLE, with a count: os.ReadDir's convenience form reads
+	// every entry before returning. Asking for one more than the scan cap is
+	// what distinguishes "exactly at the cap" from "more than we looked at".
+	entries, err := dir.ReadDir(maxBuiltinListScan + 1)
+	_ = dir.Close()
+	if err != nil && err != io.EOF {
+		return toolError("cannot list %s", args.Path)
+	}
+	scanTruncated := len(entries) > maxBuiltinListScan
+	if scanTruncated {
+		entries = entries[:maxBuiltinListScan]
 	}
 
 	var lines []string
@@ -429,6 +496,15 @@ func (s *Server) builtinListDirectory(_ context.Context, raw json.RawMessage) (m
 	if len(lines) > maxBuiltinListEntries {
 		truncated = fmt.Sprintf("\n[... truncated: %d more entries ...]", len(lines)-maxBuiltinListEntries)
 		lines = lines[:maxBuiltinListEntries]
+	}
+	// Stated separately from the result cap above, because they mean different
+	// things (M5): one says "more names exist and were counted", the other says
+	// "this directory is larger than we were willing to look at, so the names
+	// shown are the first %d scanned rather than the first alphabetically".
+	if scanTruncated {
+		truncated += fmt.Sprintf("\n[... this directory holds more than %d entries; "+
+			"only the first %d were examined, so this listing may not be alphabetically complete ...]",
+			maxBuiltinListScan, maxBuiltinListScan)
 	}
 	if len(lines) == 0 {
 		return mcp.Result{Content: fmt.Sprintf("%s is empty", filepath.Clean(args.Path))}, nil

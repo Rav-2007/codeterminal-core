@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 
 	"codeterminal/daemon/mcp"
@@ -138,9 +137,25 @@ func (s *Server) builtinProposeASTEdit(_ context.Context, raw json.RawMessage, p
 		return toolError("symbol %q not found in %s", args.Symbol, args.Path)
 	}
 
-	contentBytes, err := os.ReadFile(full)
+	// REFUSED, NOT TRUNCATED, and that is the difference from read_file.
+	//
+	// This handler does not display the file; it slices a symbol's range out of
+	// it and uses that text as an edit's Search string. Truncating the content
+	// would not merely show the model less -- extractLSPRange would slice
+	// against a shortened buffer and produce the WRONG search text, which then
+	// either fails to match or matches somewhere unintended. A memory bound
+	// must not become a correctness bug, so an oversized file is refused.
+	//
+	// maxFileSize is the indexer's own ceiling (chunker.go), reused rather than
+	// invented: fileref.go's readReferencedSpan takes the same position, that a
+	// file the indexer will not read is not one this surface should read either.
+	contentBytes, fullSize, err := readBoundedFile(full, maxFileSize)
 	if err != nil {
 		return toolError("failed to read file %s: %v", args.Path, err)
+	}
+	if fullSize > maxFileSize {
+		return toolError("cannot edit %s: it is %d bytes, above the %d-byte limit for "+
+			"symbol-level edits; edit it with propose_edit instead", args.Path, fullSize, maxFileSize)
 	}
 
 	extractedText := extractLSPRange(string(contentBytes), sym.Range)

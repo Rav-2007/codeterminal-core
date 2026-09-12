@@ -90,7 +90,13 @@ func writeEmbedderStamp(indexDir string, embedder Embedder) error {
 	// O_NOFOLLOW: the stamp path is derived from indexDir (config, not client
 	// input), but refuse to write through a symlink pre-planted at the stamp
 	// name rather than following it out of the index dir.
-	return writeFileNoFollow(filepath.Join(indexDir, embedderStampFileName), data, 0644)
+	//
+	// 0600, not 0644. It was 0644 with no reason recorded, alone among the
+	// files in this directory -- lexical.db is 0600 and chromem's collection
+	// directory is 0700. Not a live disclosure, since the index directory is
+	// 0700 and nobody else can traverse into it, but a file should not depend
+	// on its directory's mode for its own safety.
+	return writeFileNoFollow(filepath.Join(indexDir, embedderStampFileName), data, 0600)
 }
 
 // checkEmbedderStamp refuses to proceed if indexDir's stamp doesn't match

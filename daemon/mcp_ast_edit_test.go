@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -327,5 +328,70 @@ func TestLSPQuery_UnsupportedLanguageIsAToolError(t *testing.T) {
 	}
 	if res.Content == "" {
 		t.Error("an unsupported file type produced no tool result")
+	}
+}
+
+// CLASS III, instance 3: propose_ast_edit.
+//
+// builtinProposeASTEdit calls os.ReadFile on the resolved path with no size
+// check and, unlike read_file, no output truncation either -- the full contents
+// become a string, and extractLSPRange slices a range out of it.
+//
+// Measured by ALLOCATION rather than by result size, for the reason
+// builtinreadalloc_test.go states: the result was always small, and that is
+// what kept this invisible. The fixture is padded with a comment block so the
+// file is large while the symbol tree the fake returns still matches.
+func TestProposeASTEdit_DoesNotMaterialiseTheWholeFile(t *testing.T) {
+	s := newLSPServer(t, "symbols")
+
+	// Same shape astFixture writes, padded. The padding is a trailing comment
+	// so the file stays valid Go and the symbol ranges are unchanged.
+	const head = "package main\n\ntype Outer struct{}\n\nfunc (o Outer) Target() {\n\treturn\n}\n"
+	padding := make([]byte, 32<<20)
+	for i := range padding {
+		padding[i] = 'x'
+	}
+	src := head + "\n// " + string(padding) + "\n"
+	if err := os.WriteFile(filepath.Join(s.workspace, "main.go"), []byte(src), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if len(src) < 8<<20 {
+		t.Fatalf("vacuity floor: fixture is only %d bytes", len(src))
+	}
+
+	sink := &proposalSink{}
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	res, err := s.builtinProposeASTEdit(context.Background(),
+		astArgs(t, "main.go", "Target", "func (o Outer) Target() error {\n\treturn nil\n}"), sink)
+	runtime.ReadMemStats(&after)
+	if err != nil {
+		t.Fatalf("transport error: %v", err)
+	}
+	if res.Content == "" {
+		t.Fatal("vacuity floor: the handler returned nothing, so this measures nothing")
+	}
+
+	// REFUSAL is the designed answer here, not truncation: a shortened buffer
+	// would make extractLSPRange produce the wrong Search text. Assert the
+	// behaviour, not just the number.
+	if !res.IsError {
+		t.Errorf("an oversized file was accepted; want a refusal, since truncating it "+
+			"would yield a wrong edit rather than a smaller one. Got: %s", res.Content)
+	}
+	if !strings.Contains(res.Content, "propose_edit") {
+		t.Errorf("the refusal does not tell the model what to do instead: %s", res.Content)
+	}
+
+	allocated := after.TotalAlloc - before.TotalAlloc
+	// Bounded by maxFileSize and the LSP round trip, NOT by the file's size --
+	// that is the property. Measured before the fix: 503,440,408 bytes for this
+	// same 32 MiB fixture. Measured after: 5,286,648.
+	const budget = 16 << 20
+	if allocated > budget {
+		t.Errorf("builtinProposeASTEdit allocated %d bytes for a %d-byte file; "+
+			"allocation must track maxFileSize=%d, not the file.",
+			allocated, len(src), maxFileSize)
 	}
 }
