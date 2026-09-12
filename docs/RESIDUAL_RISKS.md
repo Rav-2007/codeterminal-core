@@ -69,7 +69,7 @@ longer exists), or SUPERSEDED (replaced by a different row).**
 | R1.25 LSP teardown kills the process, not the group | **OPEN — asymmetry with MCP, consequence UNMEASURED** | Opened 2026-09-09. `daemon/lsp_bridge.go:530` calls `Process.Kill()` with no grace period; `daemon/mcp/stdioclient.go` kills the whole group unconditionally and is tested for orphans. gopls spawns `go` subprocesses. |
 | R1.26 helper is outside every cross-platform check, and cannot join one | **OPEN — structural, nothing can catch it** | Opened 2026-09-09. `helper` links `onnxruntime_go`, which is CGO-only, so `GOOS=windows go vet` reports "build constraints exclude all Go files". It is absent from `CROSSVET_MODULES` and from CI's `cross` matrix, and no gate can be added that would genuinely cover it. |
 | R1.27 the sandbox's confinement tests run only where CI relaxed the host | **OPEN — a real reason, stated rather than removed** | Opened 2026-09-12. `build.yml` sets `kernel.apparmor_restrict_unprivileged_userns=0` on its throwaway VM. The REFUSAL path no longer depends on that; the tests that check bwrap actually isolates anything still do, and cannot be stubbed. |
-| R1.28 daemon's timing assertions are inline literals with no guard | **OPEN — Task 6, not started** | Opened 2026-09-12. `clients/tui/testpolicy_guard_test.go` enforces the timing policy structurally but scans its own package only, and its own doc says it cannot catch an inline literal — which is the shape of all ~15 daemon instances. |
+| R1.28 daemon's timing assertions were inline literals with no guard | **NARROWED 2026-09-12 — not closed** | Task 6 landed: `daemon/timingliterals_test.go` scans the whole workspace and all **17** comparison sites are now derived bounds. What remains is the larger half — the guard checks that a bound *names* something, not that the derivation is right, and it does not make any existing assertion stable. Four residuals stated in the row. |
 
 ### Three of these rows are pinned only on Linux
 
@@ -1650,32 +1650,71 @@ sysctl; or a decision to test confinement in a container that does not need it.
 **This trigger is reasonably strong** — the tripwire fires automatically rather
 than waiting for someone to notice.
 
-## R1.28 — daemon's timing assertions are inline literals, guarded by nothing
+## R1.28 — daemon's timing assertions were inline literals — **NARROWED 2026-09-12, NOT CLOSED**
 
-**What it is.** `clients/tui/testpolicy_guard_test.go` enforces this project's
-timing policy structurally: any `time.Duration` const or var in that package's
-tests must be guarded against the race detector. It scans `os.ReadDir(".")` —
-**its own package only**. `daemon` has roughly fifteen timing assertions and no
-equivalent.
+**What it was.** `clients/tui/testpolicy_guard_test.go` enforced this project's
+timing policy structurally, but scanned `os.ReadDir(".")` — its own package only
+— and its own doc named what it could not catch: *"a timing assertion written
+inline with no named constant (`if elapsed > 16*time.Millisecond`)"*. Every
+`daemon` instance was exactly that shape.
 
-Worse, the guard's own doc states what it cannot catch: *"a timing assertion
-written inline with no named constant (`if elapsed > 16*time.Millisecond`)"*.
-**Every daemon instance is exactly that shape**, so extending the existing gate
-verbatim would cover none of them.
+**What changed (Task 6).** `daemon/timingliterals_test.go` is a second guard,
+repo-wide rather than package-local. Its rule: in a comparison where one side is
+a measured duration (`elapsed`, or `time.Since(...)`), the bound must reference
+at least one identifier. `2*timeout`, `grace/5` and `lspCallTimeout` pass;
+`2*time.Second` does not. **An identifier has a definition to read and a
+derivation to audit; a literal has neither.** All **17** comparison sites it
+found were converted, across `daemon`, `daemon/mcp` and `proxy`.
 
-**Why deferred.** Task 6 was ordered after Tasks 1-5 and is not started. The work
-is understood: convert inline absolutes to bounds derived from a measured
-baseline, lower bounds first because they fail on a *faster* machine, which is
-the direction nobody expects.
+**WHAT THE ROW NO LONGER CLAIMS.** "Guarded by nothing" is now false, and
+"roughly fifteen inline literals" is now zero. The guard is **static**: it
+parses source and reaches the same verdict on every machine, so unlike the
+failure mode this row was opened about, it **cannot be re-run into green**.
 
-**Blast radius.** A CI failure diagnosed as flake. That is the expensive
-outcome — not the red run, but the habit of re-running it.
+**WHAT REMAINS OPEN, and it is the larger half:**
 
-**Pinned by.** **NOTHING for daemon.** `clients/tui` is covered for the named
--constant shape only.
+1. **A derived bound is auditable, not correct.** The guard checks that a bound
+   names something. It cannot check that the something is the right thing, or
+   that the multiple is defensible. `16*callBudget` and `1600*callBudget` are
+   equally acceptable to it.
+2. **One converted bound is stated, not derived, and the guard cannot tell.**
+   `alreadyCancelledCeiling` (`daemon/cancellation_test.go:54`) is a named
+   `2 * time.Second` with a paragraph explaining that there is nothing to derive
+   it from. That reasoning is recorded and, I think, right — but the guard
+   passes it for the same reason it passes a genuinely derived bound, so the
+   distinction lives only in a comment.
+3. **The guard does not make an existing assertion stable.** It prevents the
+   class from growing. Seventeen bounds that were arbitrary are now seventeen
+   bounds that are derived, which is better evidence and not a stability
+   measurement — none of them has been run on a loaded shared runner.
+4. **Sleeps are out of scope.** `time.Sleep(cteCancelAfter)` is a
+   synchronisation device, not an assertion, and the guard deliberately does not
+   look at it. A test that synchronises by sleeping is still fragile in the way
+   this row describes.
 
-**Trigger.** Task 6, or the first daemon timing failure on a loaded runner. The
-prediction on record names `lexicalbound_test.go:71/100/174` (`elapsed > time.Second`)
-and `retry_test.go:194` (`elapsed < 2*time.Second`, a lower bound) as the
-likeliest. **This trigger is weak in one direction**: if the first failure is
-read as flake and re-run, it fires and nobody notices.
+**Pinned by.** `daemon/timingliterals_test.go`, plus `TestTimingGuardCanStillFail`
+in the same file — a fixture with a known answer, added **because the guard
+initially passed green with its detector blinded**. Both vacuity floors (321
+files, 25 comparisons) count what was *inspected*, and a blinded detector still
+inspects everything. This is the third instance in this pass of a gate whose
+floor proves it ran rather than that it works.
+
+**Blast radius, revised.** Was "a CI failure diagnosed as flake". Now: a bound
+whose derivation is wrong reads as audited, because it names an identifier. That
+is a smaller radius and a quieter one.
+
+**Trigger.** The first daemon timing failure on a shared runner — which has now
+become *informative* rather than a coin toss, because every bound names the
+quantity it was derived from and the failure message prints it. If that failure
+arrives and the named derivation turns out not to justify the multiple, revisit
+residuals 1 and 2 together.
+
+**A prediction on record, and how it scored.** This row predicted
+`lexicalbound_test.go` (three `elapsed > time.Second` sites) and
+`retry_test.go`'s lower bound as the likeliest to fail first. **All four were
+real**, and the lower bound was the sharpest call — it is the one that fails on a
+*faster* machine. **The prediction also said "roughly fifteen" and named two
+files; the measurement found 17 sites across seven files**, including
+`proxy/integration_test.go`, which is a different module and was not considered.
+Right about the instances it named, wrong about the extent, which is the ordinary
+failure of predicting from the files one happens to have read.

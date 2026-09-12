@@ -89,8 +89,15 @@ one is the matrix.)*
 - **Anything about `helper` on Windows or macOS.** CGO makes it uncompilable
   there by any gate (R1.26).
 - **macOS beyond `clients/tui`**, and the full `cross` matrix only on `main`.
-- **That timing assertions are stable.** daemon's are inline literals with no
-  guard (R1.28).
+- **That timing assertions are stable.** *(Revised 2026-09-12, deliberately
+  conservatively.)* What changed is that daemon's 17 timing bounds are no longer
+  inline literals — each names the quantity it was derived from, and
+  `daemon/timingliterals_test.go` fails statically if a new bare literal appears.
+  **That is an auditability guarantee, not a stability one.** A guard against new
+  inline literals does not make the existing seventeen stable: none has been run
+  on a loaded shared runner, and the guard cannot check whether a derivation is
+  the *right* one, only that one is named. R1.28 is narrowed, not closed, and
+  states four residuals.
 - **That a green run reproduces on a developer's machine** — `make check` still
   cannot run Windows, macOS, docker or the Extension Development Host, which is
   why it now prints what it did not cover.
