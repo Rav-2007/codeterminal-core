@@ -1,4 +1,15 @@
 # Adversarial pass — daemon, editapply, helper, proxy — 2026-09-09
+
+> **RESOLVED 2026-09-13.** Every row below reading "PENDING DELIVERY", "no
+> recipient identified", "nobody has been ASKED" or "daemon owner — UNIDENTIFIED"
+> was answered on 2026-09-13, when Ravi Kiran was named `daemon/` owner. Items 1,
+> 2, 4 and 5 are FIXED; item 3 is ACCEPTED IN WRITING; the migration decision is
+> PURGE. See [`RESIDUAL_RISKS.md`](RESIDUAL_RISKS.md).
+>
+> **The rows are left as written.** This is a dated pass report, and it recorded
+> what was true on its date. Rewriting it would destroy the evidence that the
+> blocker was an unassigned role rather than an unresponsive person — which is
+> the most useful thing either document contains.
 # **UPDATED 2026-09-12 — the CI root-cause pass and Task 6 are folded in**
 
 <!-- coderefs: enforced -->

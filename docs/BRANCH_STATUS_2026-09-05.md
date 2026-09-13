@@ -1,5 +1,16 @@
 # `audit/adversarial-pass` — release status
 
+> **RESOLVED 2026-09-13.** Every row below reading "PENDING DELIVERY", "no
+> recipient identified", "nobody has been ASKED" or "daemon owner — UNIDENTIFIED"
+> was answered on 2026-09-13, when Ravi Kiran was named `daemon/` owner. Items 1,
+> 2, 4 and 5 are FIXED; item 3 is ACCEPTED IN WRITING; the migration decision is
+> PURGE. See [`RESIDUAL_RISKS.md`](RESIDUAL_RISKS.md).
+>
+> **The rows are left as written.** This is a dated pass report, and it recorded
+> what was true on its date. Rewriting it would destroy the evidence that the
+> blocker was an unassigned role rather than an unresponsive person — which is
+> the most useful thing either document contains.
+
 <!-- coderefs: enforced -->
 
 **Written 2026-09-05. Branch `audit/adversarial-pass`, at `a959945`. Working tree clean.**
@@ -758,7 +769,7 @@ change this** — the pty files do not compile there at any trigger.
 | # | Condition | Status | Owner | What is needed | Decision or implementation? |
 |---|---|---|---|---|---|
 | 1 | **Phases 1–4 complete** | **MET** | — | — | — |
-| 2 | **P5 decision recorded** | **OPEN — blocked on DELIVERY** | **Nobody — no recipient has been identified** | Somebody to **name** the `daemon/` owner. The memo was committed 2026-09-04 and handed to no one, so there is nobody to chase. Once delivered: a written reply to its four items, each with a recommendation already stated | **Neither, yet.** It is not waiting on a decision; it is waiting on a name. *Corrected 2026-09-05: this row previously named "whoever owns `daemon/`", which blamed a person who has never been told the memo exists* |
+| 2 | **P5 decision recorded** | **CLOSED 2026-09-13** | **Ravi Kiran, `daemon/` owner.** All five memo items answered in writing; see [`RESIDUAL_RISKS.md`](RESIDUAL_RISKS.md) for the verdicts, triggers and root cause. Items 1, 2, 4 and 5 FIXED; item 3 ACCEPTED IN WRITING with a trigger; migration PURGE; 1c DECLINED; fuzz gate stays loud-but-non-fatal. **The blocker was never a reply — it was a NAME.** The role was UNASSIGNED, not unresponsive, and assigning it is what closed this row. |
 | 3 | **Manual session done** | **OPEN — blocked on DELIVERY** | **Nobody — no tester has been asked** | A name. The script has been committed since 2026-09-04 and handed to no one. Once delivered: someone runs `docs/MANUAL_SESSION_2026-09-04.md` — six steps, ~1 hour — and writes down what felt off; macOS is worth the most | **Neither.** An hour of a person's attention, from a person who has not been approached |
 | 4 | **Readiness statement current** | **MET** | — | — | — |
 

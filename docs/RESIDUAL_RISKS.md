@@ -31,6 +31,48 @@ finished:
 
 ---
 
+## Decisions recorded — 2026-09-13, by Ravi Kiran, `daemon/` owner
+
+All five items of [`DECISION_MEMO_2026-09-04.md`](DECISION_MEMO_2026-09-04.md)
+have a written verdict. The release gate they blocked is closed.
+
+| Item | Verdict | Trigger |
+|---|---|---|
+| 1 — outbound scrub bypassed by one turn (R1.22 / F-1) | **FIXED** (1a + 1b) | n/a |
+| 1 — migration of pre-fix rows | **PURGE** (schema v4) | n/a |
+| 1c — scrub assistant turns | **DECLINED** | **TRIGGER: NONE STATED** |
+| 2 — `/mcp-server` stderr (R1.5) | **FIXED** at `mcp.Connect` | n/a |
+| 3 — inbound model text (R1.6) | **ACCEPTED IN WRITING** | transcript export, multi-user transcript access, or telemetry sampling conversation content |
+| 4 — four fuzz targets generate nothing | **FIXED** (lazy build) | n/a |
+| 4 — fuzz gate fatal? | **STAYS LOUD-BUT-NON-FATAL** | **TRIGGER: NONE STATED** |
+| 5 — panic containment (R1.23) | **FIXED, ours only**; the SDK's four stay OPEN | the next `go-sdk` upgrade, or the first unexplained daemon exit with an MCP server configured |
+| `backup_log.txt` personal email | **DELETE FROM HEAD**, history left | **TRIGGER: NONE STATED** |
+
+Where no trigger was stated, this register says **TRIGGER: NONE STATED** rather
+than inventing a plausible one. An accepted or deferred row without a concrete
+reopening condition is a postponement, and saying so is the only honest way to
+record it.
+
+### The root cause, recorded because it is the finding
+
+**The `daemon/` owner was an UNASSIGNED ROLE, not an unresponsive PERSON.** Those
+are different failures and must never share a phrase (M5). Nobody declined to
+read the memo. Nobody was asked, because nobody had been named.
+
+The cost, stated in findings rather than in weeks: **the same defect was derived
+three times independently** — as item 1 on 2026-09-04 (by execution), as R1.22 on
+2026-09-08, and as F-1 on 2026-09-12 — by three passes that each measured it from
+scratch because nothing pointed at the document that already had it.
+
+The memo predicted this, and was right twice. Its delivery status recorded the
+first duplicate and named the cause: *"That is the cost of an undelivered
+document stated in hours: the same finding, found twice."* It became three.
+
+**Assigning the role is what fixed this, not any of the five patches.** A register
+whose owner column reads "UNIDENTIFIED" produces re-derivation indefinitely, and
+no amount of analysis inside the document substitutes for someone being
+accountable for reading it.
+
 ## Reconciliation — 2026-09-04, end of the pass
 
 **Read end to end against the tree, and every pinning test re-run today.** The
@@ -46,8 +88,8 @@ longer exists), or SUPERSEDED (replaced by a different row).**
 | R1.2 over-long CSI leaks parameter bytes | **OPEN** | `TestOverLongCSIBoundary` and `TestHeldBytesNeverExceedTheCeiling` both PASS. 14 shapes, boundary still exactly 65/66. |
 | R1.3 one-shot stdout not byte-stable | **OPEN by decision** | `TestOneShotOutputIsFiltered` PASSES on every platform; `TestRealBinaryPipedIntoAnEarlyReaderExitsCleanly` PASSES on Linux only. |
 | R1.4 review/approval buffers hold raw bytes | **OPEN by design** | All three guards PASS. Re-checked the row's load-bearing clause: **still no copy, export or clipboard sink in the client** — no `clipboard`, no OSC 52, no write path outside the terminal. `/mouse` does not create one; it hands selection back to the terminal, which copies already-filtered text. |
-| R1.5 `/mcp-server` stderr unredacted | **OPEN — UNFIXED BY DECISION. PENDING DELIVERY: no recipient has been identified** | Chain re-traced end to end and both line references corrected (they had drifted). [Decision memo](DECISION_MEMO_2026-09-04.md) recommends **FIX**, in the daemon, ~40 lines. Still nothing pinning it. |
-| R1.6 model-emitted secrets not redacted | **OPEN — UNFIXED BY DECISION. PENDING DELIVERY: no recipient has been identified** | P5.1 answered: the daemon matches on **shapes**, so the asymmetry is permanent and the memo recommends **accepting** it. But the row's own "sent back as history" clause turned out to hide a defect: nothing scrubs it on the way back out. Verified by execution. |
+| R1.5 `/mcp-server` stderr unredacted | **CLOSED — FIXED. Decided by **Ravi Kiran, 2026-09-13**** | Chain re-traced end to end and both line references corrected (they had drifted). [Decision memo](DECISION_MEMO_2026-09-04.md) recommends **FIX**, in the daemon, ~40 lines. Still nothing pinning it. |
+| R1.6 model-emitted secrets not redacted | **CLOSED — ACCEPTED IN WRITING. Decided by **Ravi Kiran, 2026-09-13**. TRIGGER: transcript export, multi-user transcript access, or telemetry sampling conversation content** | P5.1 answered: the daemon matches on **shapes**, so the asymmetry is permanent and the memo recommends **accepting** it. But the row's own "sent back as history" clause turned out to hide a defect: nothing scrubs it on the way back out. Verified by execution. |
 | R1.7 `git status` echoes git's output | **OPEN** | Unchanged in substance. Its code reference had drifted by 14 lines and is corrected; it now names `runGitStatus` as well. Still nothing pinning it. |
 | R1.8 `ModelError.detail` safe by field privacy | **OPEN (forward guard)** | `daemon/modelerror.go:204` re-read today and still builds `detail` exactly as the row describes. Still a property, still no AST guard. |
 | R1.9 1 MB paste costs most of a frame | **CLOSED** | Stays closed, on a **corrected figure**: the 3.6 number was measured with the input blurred, so the paste was discarded. Re-taken where it lands: **389 µs, identical at 0 bytes and at the 2 MiB ceiling**, spread 1.1×. |
@@ -63,8 +105,8 @@ longer exists), or SUPERSEDED (replaced by a different row).**
 | R1.19 two tripwires guard an incidental protection | **OPEN by design — one of them going RED is GOOD NEWS** | Opened 2026-09-05. The helper's liveness depended on an undocumented property of `encoding/json`; two tests now pin both ends of that dependency, and one of them fails when the risk disappears. |
 | R1.20 a model-supplied tool name reaches a client-facing string unbounded | **OPEN — pre-existing, flagged in code before this pass** | Opened 2026-09-08. `daemon/agentloop.go:674` already names it: the same name that is bounded for `ToolActivity.Tool` travels into `Detail` on the refusal path unbounded. The audit-log instance of the same class was fixed this pass; this one was not. |
 | R1.21 warn-mode's "secret-free" record confirms a guessed value | **OPEN — a claim narrower than it reads, not a leak** | Opened 2026-09-08. `daemon/chunkscrub.go:236` truncates SHA-256 to 32 bits; with the `value_len` in the note it accepts the true value and rejected 39 same-shape candidates in test. One-way is true; unverifiable is not. |
-| R1.22 the scrub protects turn N; turn N+1 sends the same bytes raw | **PENDING A DECISION — nobody has been ASKED** | **Opened 2026-09-04**, as item 1 of `docs/DECISION_MEMO_2026-09-04.md`; re-derived independently 2026-09-08 and only then noticed to be a duplicate. `daemon/server.go:707` persists the RAW prompt; `daemon/history.go:136` puts it back on the wire unscrubbed. The memo argues this is **not** a design question and RECOMMENDS FIX. |
-| R1.23 five goroutine layers parse untrusted process output with no `recover` | **OPEN — measured, not fixed; NOT a design question** | Opened 2026-09-09. `daemon/mcpruntime.go:206` plus four inside `modelcontextprotocol/go-sdk@v1.7.0`, which contains **zero** `recover()` calls anywhere. A panic in any kills the daemon and drops every client. |
+| R1.22 the scrub protects turn N; turn N+1 sends the same bytes raw | **CLOSED — FIXED. Decided by **Ravi Kiran, 2026-09-13**. Migration: PURGE** | **Opened 2026-09-04**, as item 1 of `docs/DECISION_MEMO_2026-09-04.md`; re-derived independently 2026-09-08 and only then noticed to be a duplicate. `daemon/server.go:707` persists the RAW prompt; `daemon/history.go:136` puts it back on the wire unscrubbed. The memo argues this is **not** a design question and RECOMMENDS FIX. |
+| R1.23 five goroutine layers parse untrusted process output with no `recover` | **PARTIALLY CLOSED — ours FIXED, the SDK's four remain OPEN as a dependency-policy row. Decided by **Ravi Kiran, 2026-09-13**. TRIGGER for the SDK half: the next go-sdk upgrade, or the first unexplained daemon exit with an MCP server configured** | Opened 2026-09-09. `daemon/mcpruntime.go:206` plus four inside `modelcontextprotocol/go-sdk@v1.7.0`, which contains **zero** `recover()` calls anywhere. A panic in any kills the daemon and drops every client. |
 | R1.24 the LSP header read is unbounded | **OPEN — the one validation gap on either boundary** | Opened 2026-09-09. `daemon/lsp_bridge.go:491` `ReadString('\n')` bounds neither a single header line nor their number, while the BODY is bounded at 8 MiB. Same shape as the `prefixWriter` flood that was already fixed. |
 | R1.25 LSP teardown kills the process, not the group | **OPEN — asymmetry with MCP, consequence UNMEASURED** | Opened 2026-09-09. `daemon/lsp_bridge.go:530` calls `Process.Kill()` with no grace period; `daemon/mcp/stdioclient.go` kills the whole group unconditionally and is tested for orphans. gopls spawns `go` subprocesses. |
 | R1.26 helper is outside every cross-platform check, and cannot join one | **OPEN — structural, nothing can catch it** | Opened 2026-09-09. `helper` links `onnxruntime_go`, which is CGO-only, so `GOOS=windows go vet` reports "build constraints exclude all Go files". It is absent from `CROSSVET_MODULES` and from CI's `cross` matrix, and no gate can be added that would genuinely cover it. |
@@ -105,7 +147,16 @@ the decision memo on its first run.
 
 ---
 
-### R1.5 and R1.6 are unfixed BY DECISION, and PENDING DELIVERY
+### R1.5 and R1.6 — RESOLVED 2026-09-13
+
+> **This section is superseded and kept for the record.** R1.5 is FIXED and R1.6
+> is ACCEPTED IN WRITING with a trigger, both decided by Ravi Kiran on
+> 2026-09-13. What follows described the five weeks in which the memo existed
+> and had no reader; it is left standing because the reason it was true is the
+> finding, and deleting it would erase the evidence for the root cause recorded
+> above.
+
+### (superseded) R1.5 and R1.6 are unfixed BY DECISION, and PENDING DELIVERY
 
 **Corrected 2026-09-05, and the correction is the whole point of these two rows.**
 They previously read "PENDING THE DAEMON OWNER", which asserts that an owner was

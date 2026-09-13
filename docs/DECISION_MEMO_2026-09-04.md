@@ -4,8 +4,28 @@
 
 **Date:** 2026-09-04
 **From:** the `clients/tui` production-hardening pass (branch `audit/adversarial-pass`)
-**To:** whoever owns `daemon/` — **an addressee slot, not a recipient.**
+**To:** Ravi Kiran, `daemon/` owner — **named 2026-09-13. This was an addressee slot and not a recipient for five weeks, which is why the same defect was derived three times.**
 **What I need:** a decision, in writing, on each of the **five** items below.
+
+> ## ANSWERED — 2026-09-13, by Ravi Kiran, `daemon/` owner
+>
+> The addressee slot has a name. All five items have a written verdict:
+>
+> | Item | Verdict |
+> |---|---|
+> | 1 — outbound scrub bypassed by one turn | **FIXED** (1a + 1b) |
+> | 1 — migration of existing `memory.db` rows | **PURGE** (schema v4) |
+> | 1c — scrub assistant turns | **DECLINED** |
+> | 2 — `/mcp-server` stderr | **FIXED** at `mcp.Connect` |
+> | 3 — inbound model text | **ACCEPTED IN WRITING**; trigger: transcript export, multi-user transcript access, or telemetry sampling conversation content |
+> | 4 — four fuzz targets | **FIXED** (lazy build); the gate **stays loud-but-non-fatal** |
+> | 5 — panic containment | **FIXED, ours only**; the SDK's four remain a dependency-policy row |
+>
+> Item 3's acceptance is cleanly defensible because item 1 was FIXED. Had item 1
+> been deferred, this record would say so and flag the combination.
+>
+> Full record, with triggers and the root cause, in
+> [`RESIDUAL_RISKS.md`](RESIDUAL_RISKS.md).
 
 > **Count corrected 2026-09-13.** This line and the summary table said FOUR from
 > 2026-09-04 until today, while item 5 has been in the body since 2026-09-09 and
