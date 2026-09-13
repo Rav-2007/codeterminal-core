@@ -163,7 +163,16 @@ func Connect(ctx context.Context, cfg LaunchConfig) (*StdioClient, error) {
 	// semicolon.
 	cmd := exec.Command(execCmd, execArgs...)
 	cmd.Env = ServerEnv(cfg.EnvAllow)
-	cmd.Stderr = cfg.Stderr
+	// MEMO ITEM 2 (R1.5). `/mcp-server` renders this stream on the user's
+	// screen, so a server that prints a provisioned credential at startup used
+	// to disclose it. The redactor is built from cmd.Env -- the literal
+	// NAME=value pairs THIS daemon just handed THIS subprocess -- which is why
+	// it belongs here and not in the client: the TUI sees opaque text and could
+	// only match shapes, mangling the assistant's own key-format examples while
+	// still missing the credential that does not look like one.
+	//
+	// Every launch goes through Connect, so a new call site cannot skip it.
+	cmd.Stderr = newRedactingStderr(cfg.Stderr, cmd.Env, cfg.EnvAllow)
 
 	// ITS OWN PROCESS TREE CONTAINER, so teardown can reach what it spawned.
 	//

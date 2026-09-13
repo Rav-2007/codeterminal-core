@@ -8,6 +8,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"sort"
@@ -37,6 +38,16 @@ func main() {
 	// Reports the environment variable NAMES this process can see. This is how
 	// the test proves ServerEnv's allow-list reaches a real subprocess rather
 	// than merely producing the right []string in memory.
+	// STARTUP STDERR, for the R1.5 redaction test. A real MCP server that
+	// echoes its own configuration at startup is the shape that put a
+	// credential on the user's screen via `/mcp-server`; this reproduces it on
+	// demand rather than hoping a third-party server does it during a test.
+	// Named variable only, so this fixture never prints an environment it was
+	// not asked to.
+	if name := os.Getenv("ECHOSERVER_PRINT_ENV"); name != "" {
+		fmt.Fprintf(os.Stderr, "startup: %s=%s\n", name, os.Getenv(name))
+	}
+
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "env_names",
 		Description: "Report the environment variable names visible to this server.",
