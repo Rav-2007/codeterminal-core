@@ -468,13 +468,38 @@ func TestMemoryStore_MigratesV1AllTheWayToCurrent(t *testing.T) {
 			"a migration step was skipped while the version was still bumped")
 	}
 
-	// And the v2 step must still have run, with its backfill.
+	// The v2 step must still have run: turns_fts must EXIST. Its being queryable
+	// at all is the assertion -- the count below is deliberately zero.
 	var fts int
 	if err := s.db.QueryRow(`SELECT COUNT(*) FROM turns_fts`).Scan(&fts); err != nil {
-		t.Fatalf("counting fts rows: %v", err)
+		t.Fatalf("counting fts rows (turns_fts must exist -- the v2 step creates it): %v", err)
 	}
-	if fts != 1 {
-		t.Errorf("turns_fts holds %d rows, want the 1 pre-existing turn backfilled", fts)
+
+	// THIS ASSERTION WAS INVERTED ON 2026-09-13, and the inversion is the point.
+	//
+	// It used to require the one pre-existing turn to survive as a backfilled
+	// fts row. The v4 migration PURGES every turn written before the prompt
+	// scrub existed (memo item 1, migration decision: PURGE, taken by the
+	// daemon/ owner), so a v1 database arrives here with its rows deliberately
+	// destroyed. Data loss is the DECIDED BEHAVIOUR here, not a regression, and
+	// a test that still demanded survival would have to be made green by
+	// weakening the purge.
+	//
+	// The backfill mechanism itself is still covered, by
+	// TestBackfillSearchIndex_IdempotentAcrossReopens and by the trigger path
+	// every AppendTurn exercises. What is no longer covered, because it no
+	// longer exists, is pre-fix rows reaching the index.
+	if fts != 0 {
+		t.Errorf("turns_fts holds %d row(s) after a v1 upgrade, want 0: the v4 purge must "+
+			"delete pre-scrub turns, and the AFTER DELETE trigger must clear the index with them", fts)
+	}
+
+	var remaining int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM turns`).Scan(&remaining); err != nil {
+		t.Fatalf("counting turns: %v", err)
+	}
+	if remaining != 0 {
+		t.Errorf("turns holds %d row(s) after a v1 upgrade, want 0 (v4 purge)", remaining)
 	}
 }
 

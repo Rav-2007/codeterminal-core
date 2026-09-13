@@ -168,12 +168,24 @@ func TestBackfillSearchIndex_IndexesPreExistingRows(t *testing.T) {
 	}
 	defer store.Close()
 
+	// INVERTED ON 2026-09-13, deliberately. This asserted that a pre-existing
+	// v1 turn became searchable via the backfill. The v4 migration now PURGES
+	// every turn written before the prompt scrub existed (memo item 1,
+	// migration decision: PURGE), so the row is gone before any search can
+	// reach it.
+	//
+	// /search is precisely why the purge was chosen over LEAVE: SearchTurns
+	// reads the raw content column through turns_fts, passing through neither
+	// scrub nor prepareHistory, so an unscrubbed pre-fix prompt was retrievable
+	// here by the exact string that matched it. This test now pins that it is
+	// not.
 	hits, err := store.SearchTurns(context.Background(), "/workspace/pre-existing", "written before search", 10)
 	if err != nil {
 		t.Fatalf("SearchTurns: %v", err)
 	}
-	if len(hits) != 1 {
-		t.Fatalf("got %d hits, want 1 (the backfilled pre-existing turn): %+v", len(hits), hits)
+	if len(hits) != 0 {
+		t.Fatalf("got %d hit(s), want 0: pre-scrub turns are purged at v4 and must not be "+
+			"reachable through /search: %+v", len(hits), hits)
 	}
 }
 
