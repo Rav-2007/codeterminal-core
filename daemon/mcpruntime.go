@@ -205,6 +205,19 @@ func (s *Server) buildRegistry(ctx context.Context, logger *log.Logger, proposal
 		wg.Add(1)
 		go func(name string, srv MCPServerConfig) {
 			defer wg.Done()
+			// MEMO ITEM 5. recover() is per-goroutine, and this is a goroutine
+			// handleConn's backstop cannot see. Without this, a panic while
+			// decoding an untrusted subprocess's first bytes takes the whole
+			// DAEMON down rather than the one connection that asked -- every
+			// other workspace and every in-flight turn with it.
+			//
+			// OURS ONLY, and the limit is deliberate. go-sdk@v1.7.0/mcp has
+			// zero recover() calls across its stdio decoder, readIncoming and
+			// async handler; those goroutines are still uncovered and cannot be
+			// covered from here. That remains open as a dependency-policy
+			// decision, with the honest unknown attached: nobody has
+			// established whether any input actually panics the SDK.
+			defer recoverLaneBConnect(name, logger.Printf)
 			client, err := mcp.Connect(ctx, laneBLaunchConfig(name, srv, cfg, serverStderr(name, logger), logger.Printf))
 			mu.Lock()
 			results = append(results, connectResult{name: name, client: client, err: err})
@@ -292,3 +305,21 @@ func (w *prefixWriter) Write(p []byte) (int, error) {
 	}
 	return len(p), nil
 }
+
+// recoverLaneBConnect contains a panic raised while connecting one Lane B
+// server, so one misbehaving subprocess cannot end the daemon.
+//
+// It LOGS rather than swallowing silently: a contained panic that says nothing
+// is indistinguishable from a server that simply did not connect, and those are
+// different facts (M5). The server is left absent from the registry, which is
+// the same outcome as a failed connection and is already handled downstream.
+func recoverLaneBConnect(name string, logf func(string, ...any)) {
+	if r := recover(); r != nil {
+		logf("mcp: server %s PANICKED during connect and was contained: %v — "+
+			"the server is unavailable; the daemon is still running", name, r)
+	}
+}
+
+// sprintfLike is the formatting a logf-shaped callback applies, extracted so a
+// test can capture what would have been logged without installing a logger.
+func sprintfLike(format string, args ...any) string { return fmt.Sprintf(format, args...) }
