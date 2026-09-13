@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // MEMO ITEM 2 (R1.5). VERDICT: FIX, by the daemon/ owner, 2026-09-13.
@@ -126,9 +127,27 @@ func TestConnect_RedactsProvisionedValuesFromServerStderr(t *testing.T) {
 	}
 	defer func() { _ = client.Close() }()
 
-	// The server prints at startup; Connect has completed the handshake by the
-	// time it returns, so the line has been written and copied.
-	got := sink.String()
+	// WAIT FOR THE LINE, DO NOT ASSUME IT HAS ARRIVED.
+	//
+	// The first version of this test read the sink immediately after Connect
+	// returned, on the assumption that a completed handshake meant the startup
+	// line had been copied. It had not: os/exec copies cmd.Stderr on a
+	// goroutine of its own, with no ordering against the handshake. That
+	// assumption held on a developer machine and FAILED on CI's first run --
+	// the vacuity floor fired with Got: "", which is the floor doing exactly
+	// its job and refusing to report a pass for a fixture that said nothing.
+	//
+	// A test that is green because it won a race is not evidence, and this
+	// repository has paid for that lesson elsewhere. So: poll to a deadline.
+	deadline := time.Now().Add(10 * time.Second)
+	var got string
+	for time.Now().Before(deadline) {
+		got = sink.String()
+		if strings.Contains(got, "startup:") {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 
 	// Vacuity floor: if the fixture printed nothing, a clean result would mean
 	// "no stderr" rather than "redacted stderr", and this test would pass for
