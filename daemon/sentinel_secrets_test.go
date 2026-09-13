@@ -374,7 +374,7 @@ func TestSentinel_A4RowsAreAccountedFor(t *testing.T) {
 		4:  "TestSentinelRow4_TypedPromptIsScrubbedOutbound",
 		5:  "TestSentinel_RetrievedChunkIsScrubbedOnTheWireButNotInTheDebugLog",
 		6:  "TestSentinelRow6_MCPEnvAllowListDropsForbiddenAndUnlisted",
-		7:  "TestSentinelRow7_PersistedPromptIsStillRaw_TRIPWIRE (a tripwire, not a control)",
+		7:  "TestSentinelRow7_PersistedPromptIsScrubbed (was a tripwire until 2026-09-13; now a control)",
 		8:  "TestSentinelRow8_ChunkTextAtRestIsRawByDesign",
 		9:  "TestSentinelRow9_BackupIsByteExactByDesign",
 		10: "TestSentinel_WarnSinkRecordsNoSecretMaterial",

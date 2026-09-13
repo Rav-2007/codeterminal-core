@@ -16,7 +16,7 @@ import (
 
 // memorySchemaVersion is the schema version this binary knows how to read
 // and write (schema_meta table, single migration point for future version bumps).
-const memorySchemaVersion = 3
+const memorySchemaVersion = 4
 
 // maxTurnsPerWorkspace caps retained history PER WORKSPACE (debt item (h):
 // the turns table had no cap or prune and grew forever).
@@ -203,6 +203,33 @@ func ensureMemorySchema(db *sql.DB) error {
 			return fmt.Errorf("creating turns workspace index: %w", err)
 		}
 	}
+	// v4 -- THE PURGE. Decided by the daemon/ owner on 2026-09-13, memo item 1,
+	// migration question: PURGE.
+	//
+	// Every row written by a binary before this version holds the user's prompt
+	// UNSCRUBBED, because persistTurn stored promptReq.Prompt verbatim. 1a and
+	// 1b close that for new turns and for anything on the way to the model, but
+	// neither reaches bytes already on disk -- and SearchTurns (search.go)
+	// reads the raw content column through turns_fts, passing through neither
+	// scrub nor prepareHistory. A pre-fix secret is therefore retrievable by
+	// /search, by the exact string that matches it, for as long as the row
+	// lives.
+	//
+	// DELETE, NOT REWRITE. Rewriting rows through scrub in place (MIGRATE) was
+	// offered and not chosen. The cost of what was chosen is real: cross-session
+	// history predating the fix is destroyed, once, with no undo and no backup.
+	// A backup is deliberately NOT taken -- it would write to disk exactly the
+	// plaintext this exists to remove.
+	//
+	// The DELETE fires search.go's AFTER DELETE trigger per row, which is what
+	// clears turns_fts. That coupling is asserted by a test, because the table
+	// the user can see and the index /search actually queries are different
+	// objects and only one of them is named here.
+	if version < 4 {
+		if _, err := db.Exec(`DELETE FROM turns`); err != nil {
+			return fmt.Errorf("purging pre-scrub turns: %w", err)
+		}
+	}
 	if version < memorySchemaVersion {
 		if _, err := db.Exec(`UPDATE schema_meta SET version = ?`, memorySchemaVersion); err != nil {
 			return fmt.Errorf("recording schema version: %w", err)
@@ -300,7 +327,7 @@ func (s *MemoryStore) pruneWorkspace(ctx context.Context, workspace string, now 
 // client-supplied History on the wire. A row whose role isn't exactly
 // "user" or "assistant" is dropped rather than passed through: the same
 // injection defense, extended to cover on-disk data.
-func (s *MemoryStore) LoadRecentTurns(ctx context.Context, workspace string, limit int) ([]protocol.Turn, error) {
+func (s *MemoryStore) LoadRecentTurns(ctx context.Context, workspace string, limit int, scrubDisabled bool) ([]protocol.Turn, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT role, content FROM turns WHERE workspace = ? ORDER BY id DESC LIMIT ?`,
 		workspace, limit,
@@ -327,7 +354,7 @@ func (s *MemoryStore) LoadRecentTurns(ctx context.Context, workspace string, lim
 		chronological[len(reversed)-1-i] = t
 	}
 
-	outcome := prepareHistory(chronological)
+	outcome := prepareHistory(chronological, scrubDisabled)
 	turns := make([]protocol.Turn, len(outcome.Messages))
 	for i, m := range outcome.Messages {
 		turns[i] = protocol.Turn{Role: m.Role, Content: m.Content}

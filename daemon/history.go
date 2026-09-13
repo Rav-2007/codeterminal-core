@@ -47,6 +47,12 @@ type historyOutcome struct {
 	SentBytes       int  // total content bytes of Messages, after both caps
 	DroppedByBytes  int  // turns dropped by the byte budget specifically
 	AnnotatedCutOff int  // assistant turns marked as cut off (see incompleteHistoryNote)
+
+	// ScrubbedTurns counts prior USER turns that carried a structural secret
+	// shape and were redacted on the way to the model (item 1b). Counted rather
+	// than logged with content, for the reason scrub.go states: kinds, never the
+	// matched text.
+	ScrubbedTurns int
 }
 
 // incompleteHistoryNote is the ONE place a cut-off prior answer is described to
@@ -133,7 +139,7 @@ func validTurn(t protocol.Turn) bool {
 // (defaultMaxRequestBytes, server_limits.go) already bounds how large any
 // single turn can be in the first place. That residual is named rather than
 // hidden — one enormous final turn can still exceed maxHistoryBytes.
-func prepareHistory(turns []protocol.Turn) historyOutcome {
+func prepareHistory(turns []protocol.Turn, scrubDisabled bool) historyOutcome {
 	outcome := historyOutcome{ReceivedTurns: len(turns)}
 	if len(turns) == 0 {
 		return outcome
@@ -157,6 +163,23 @@ func prepareHistory(turns []protocol.Turn) historyOutcome {
 			if note := incompleteHistoryNote(t.Incomplete); note != "" {
 				t.Content += note
 				outcome.AnnotatedCutOff++
+			}
+		}
+		// ITEM 1b. Scrub the USER's prior turns, here and BEFORE both caps, for
+		// the same reason the cut-off note is applied here: the budget must
+		// account for what is actually sent, not for a longer string that never
+		// leaves. `t` is a range copy, so the caller's slice is untouched.
+		//
+		// USER TURNS ONLY. Scrubbing assistant turns is item 1c, DECLINED by the
+		// daemon/ owner on 2026-09-13 -- a prior answer that legitimately
+		// contained a key-shaped string would return to the model redacted, and
+		// the model would then be confused about its own earlier reply. The
+		// boundary is pinned by a test; it is not an accident of where the
+		// branch happens to sit.
+		if t.Role == "user" {
+			if cleaned, reds := scrub(t.Content, scrubDisabled); len(reds) > 0 {
+				t.Content = cleaned
+				outcome.ScrubbedTurns++
 			}
 		}
 		valid = append(valid, t)

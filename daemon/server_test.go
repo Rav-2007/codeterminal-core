@@ -27,7 +27,7 @@ func TestServer_PersistTurnAppendsUserThenAssistant(t *testing.T) {
 
 	srv.persistTurn("what is a goroutine?", "a lightweight thread", nil)
 
-	got, err := memStore.LoadRecentTurns(context.Background(), "/workspace/persist", 12)
+	got, err := memStore.LoadRecentTurns(context.Background(), "/workspace/persist", 12, false)
 	if err != nil {
 		t.Fatalf("LoadRecentTurns: %v", err)
 	}
@@ -76,14 +76,14 @@ func TestServer_ResetPersistedHistoryClearsOnlyThisWorkspace(t *testing.T) {
 	srv := &Server{logger: discardLogger(), workspace: "/workspace/x", memory: memStore}
 	srv.resetPersistedHistory()
 
-	gotX, err := memStore.LoadRecentTurns(ctx, "/workspace/x", 12)
+	gotX, err := memStore.LoadRecentTurns(ctx, "/workspace/x", 12, false)
 	if err != nil {
 		t.Fatalf("LoadRecentTurns x: %v", err)
 	}
 	if len(gotX) != 0 {
 		t.Errorf("workspace x = %+v, want empty after reset", gotX)
 	}
-	gotY, err := memStore.LoadRecentTurns(ctx, "/workspace/y", 12)
+	gotY, err := memStore.LoadRecentTurns(ctx, "/workspace/y", 12, false)
 	if err != nil {
 		t.Fatalf("LoadRecentTurns y: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestHandleConn_ResetNeverCallsModelAndClearsPersistedHistory(t *testing.T) 
 
 	<-done
 
-	remaining, err := memStore.LoadRecentTurns(ctx, ws, 12)
+	remaining, err := memStore.LoadRecentTurns(ctx, ws, 12, false)
 	if err != nil {
 		t.Fatalf("LoadRecentTurns after reset: %v", err)
 	}

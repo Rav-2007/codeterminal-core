@@ -33,7 +33,7 @@ func TestMemoryStore_AppendAndLoadRoundTrip(t *testing.T) {
 		t.Fatalf("AppendTurn: %v", err)
 	}
 
-	got, err := store.LoadRecentTurns(ctx, ws, 12)
+	got, err := store.LoadRecentTurns(ctx, ws, 12, false)
 	if err != nil {
 		t.Fatalf("LoadRecentTurns: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestMemoryStore_OrdersByInsertionNotTimestamp(t *testing.T) {
 		t.Fatalf("inserting second turn: %v", err)
 	}
 
-	got, err := store.LoadRecentTurns(ctx, ws, 12)
+	got, err := store.LoadRecentTurns(ctx, ws, 12, false)
 	if err != nil {
 		t.Fatalf("LoadRecentTurns: %v", err)
 	}
@@ -101,7 +101,7 @@ func TestMemoryStore_LoadCapsAtLimit(t *testing.T) {
 	}
 
 	const limit = 12
-	got, err := store.LoadRecentTurns(ctx, ws, limit)
+	got, err := store.LoadRecentTurns(ctx, ws, limit, false)
 	if err != nil {
 		t.Fatalf("LoadRecentTurns: %v", err)
 	}
@@ -142,7 +142,7 @@ func TestMemoryStore_LoadDropsInvalidRolesFoundOnDisk(t *testing.T) {
 		t.Fatalf("AppendTurn: %v", err)
 	}
 
-	got, err := store.LoadRecentTurns(ctx, ws, 12)
+	got, err := store.LoadRecentTurns(ctx, ws, 12, false)
 	if err != nil {
 		t.Fatalf("LoadRecentTurns: %v", err)
 	}
@@ -174,7 +174,7 @@ func TestMemoryStore_ClearWorkspaceRemovesOnlyThatWorkspace(t *testing.T) {
 		t.Fatalf("ClearWorkspace: %v", err)
 	}
 
-	gotA, err := store.LoadRecentTurns(ctx, "/workspace/a", 12)
+	gotA, err := store.LoadRecentTurns(ctx, "/workspace/a", 12, false)
 	if err != nil {
 		t.Fatalf("LoadRecentTurns a: %v", err)
 	}
@@ -182,7 +182,7 @@ func TestMemoryStore_ClearWorkspaceRemovesOnlyThatWorkspace(t *testing.T) {
 		t.Errorf("workspace a = %+v, want empty after ClearWorkspace", gotA)
 	}
 
-	gotB, err := store.LoadRecentTurns(ctx, "/workspace/b", 12)
+	gotB, err := store.LoadRecentTurns(ctx, "/workspace/b", 12, false)
 	if err != nil {
 		t.Fatalf("LoadRecentTurns b: %v", err)
 	}
@@ -206,7 +206,7 @@ func TestMemoryStore_ClearThenAppendStartsFreshNoOldRowsReappear(t *testing.T) {
 		t.Fatalf("AppendTurn: %v", err)
 	}
 
-	got, err := store.LoadRecentTurns(ctx, ws, 12)
+	got, err := store.LoadRecentTurns(ctx, ws, 12, false)
 	if err != nil {
 		t.Fatalf("LoadRecentTurns: %v", err)
 	}
@@ -338,7 +338,7 @@ func TestMemoryStore_PruneKeepsNewestAndDropsOldest(t *testing.T) {
 		}
 	}
 
-	turns, err := s.LoadRecentTurns(ctx, "/w", 5)
+	turns, err := s.LoadRecentTurns(ctx, "/w", 5, false)
 	if err != nil {
 		t.Fatalf("loading: %v", err)
 	}
@@ -495,7 +495,7 @@ func TestMemoryStore_PrunesOldTurnsByAge(t *testing.T) {
 		t.Fatalf("AppendTurn: %v", err)
 	}
 
-	turns, err := s.LoadRecentTurns(ctx, ws, 10)
+	turns, err := s.LoadRecentTurns(ctx, ws, 10, false)
 	if err != nil {
 		t.Fatalf("LoadRecentTurns: %v", err)
 	}

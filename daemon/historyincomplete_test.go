@@ -35,7 +35,7 @@ func TestACutOffPriorAnswerReachesTheModelMarkedAsCutOff(t *testing.T) {
 	out := prepareHistory([]protocol.Turn{
 		{Role: "user", Content: "explain goroutines"},
 		{Role: "assistant", Content: partial, Incomplete: protocol.IncompleteLength},
-	})
+	}, false)
 
 	if len(out.Messages) != 2 {
 		t.Fatalf("kept %d messages, want 2", len(out.Messages))
@@ -63,7 +63,7 @@ func TestAFinishedAnswerIsNotAnnotated(t *testing.T) {
 	out := prepareHistory([]protocol.Turn{
 		{Role: "user", Content: "explain goroutines"},
 		{Role: "assistant", Content: whole},
-	})
+	}, false)
 
 	if out.Messages[1].Content != whole {
 		t.Errorf("a completed answer was modified on its way to the model:\n%q", out.Messages[1].Content)
@@ -95,7 +95,7 @@ func TestAClientCannotAuthorTextInTheModelsContext(t *testing.T) {
 	for _, slug := range hostile {
 		out := prepareHistory([]protocol.Turn{
 			{Role: "assistant", Content: answer, Incomplete: slug},
-		})
+		}, false)
 		got := out.Messages[0].Content
 
 		if got != answer {
@@ -120,7 +120,7 @@ func TestAUserTurnCannotClaimItWasCutOff(t *testing.T) {
 
 	out := prepareHistory([]protocol.Turn{
 		{Role: "user", Content: asked, Incomplete: protocol.IncompleteLength},
-	})
+	}, false)
 
 	if out.Messages[0].Content != asked {
 		t.Errorf("a user turn was annotated as cut off:\n%q", out.Messages[0].Content)
@@ -137,10 +137,10 @@ func TestAUserTurnCannotClaimItWasCutOff(t *testing.T) {
 func TestTheCutOffNoteIsCountedAgainstTheByteBudget(t *testing.T) {
 	const partial = "partial"
 
-	plain := prepareHistory([]protocol.Turn{{Role: "assistant", Content: partial}})
+	plain := prepareHistory([]protocol.Turn{{Role: "assistant", Content: partial}}, false)
 	marked := prepareHistory([]protocol.Turn{
 		{Role: "assistant", Content: partial, Incomplete: protocol.IncompleteLength},
-	})
+	}, false)
 
 	if marked.SentBytes <= plain.SentBytes {
 		t.Errorf("SentBytes = %d annotated vs %d plain; the note's bytes are not being counted",
@@ -226,7 +226,7 @@ func TestACutOffAnswerIsPersistedAsCutOff(t *testing.T) {
 	srv.persistTurn("explain goroutines", "A goroutine is a lightweight",
 		&protocol.IncompleteInfo{Reason: protocol.IncompleteLength, Detail: "hit the output limit"})
 
-	got, err := memStore.LoadRecentTurns(t.Context(), "/workspace/cutoff", 12)
+	got, err := memStore.LoadRecentTurns(t.Context(), "/workspace/cutoff", 12, false)
 	if err != nil {
 		t.Fatalf("LoadRecentTurns: %v", err)
 	}
@@ -259,12 +259,12 @@ func TestAHydratedCutOffTurnIsNotAnnotatedTwice(t *testing.T) {
 
 	srv.persistTurn("q", "partial", &protocol.IncompleteInfo{Reason: protocol.IncompleteLength})
 
-	hydrated, err := memStore.LoadRecentTurns(t.Context(), "/workspace/twice", 12)
+	hydrated, err := memStore.LoadRecentTurns(t.Context(), "/workspace/twice", 12, false)
 	if err != nil {
 		t.Fatalf("LoadRecentTurns: %v", err)
 	}
 
-	out := prepareHistory(hydrated)
+	out := prepareHistory(hydrated, false)
 	if n := strings.Count(out.Messages[1].Content, "cut off"); n != 1 {
 		t.Errorf("the note appears %d times after a round trip through memory, want 1:\n%q",
 			n, out.Messages[1].Content)

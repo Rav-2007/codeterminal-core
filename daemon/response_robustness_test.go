@@ -150,7 +150,7 @@ func TestEmptyPrompt_IsRejectedWithoutCallingTheModel(t *testing.T) {
 	}
 
 	// Nothing was persisted either.
-	turns, err := memStore.LoadRecentTurns(context.Background(), "/workspace/empty-prompt", maxHistoryTurns)
+	turns, err := memStore.LoadRecentTurns(context.Background(), "/workspace/empty-prompt", maxHistoryTurns, false)
 	if err != nil {
 		t.Fatalf("LoadRecentTurns: %v", err)
 	}
@@ -186,7 +186,7 @@ func TestEmptyAnswer_IsNotPersisted(t *testing.T) {
 
 	runPromptTurn(t, srv, protocol.PromptRequest{Prompt: "a question that gets no answer"})
 
-	turns, err := memStore.LoadRecentTurns(context.Background(), ws, maxHistoryTurns)
+	turns, err := memStore.LoadRecentTurns(context.Background(), ws, maxHistoryTurns, false)
 	if err != nil {
 		t.Fatalf("LoadRecentTurns: %v", err)
 	}
@@ -334,7 +334,7 @@ func TestReasoningTokens_AreReadAndSurfacedSeparately(t *testing.T) {
 	}
 
 	// And memory holds the answer only.
-	turns, err := memStore.LoadRecentTurns(context.Background(), ws, maxHistoryTurns)
+	turns, err := memStore.LoadRecentTurns(context.Background(), ws, maxHistoryTurns, false)
 	if err != nil {
 		t.Fatalf("LoadRecentTurns: %v", err)
 	}

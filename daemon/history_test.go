@@ -9,7 +9,7 @@ import (
 )
 
 func TestPrepareHistory_NilHistoryIsANoOp(t *testing.T) {
-	o := prepareHistory(nil)
+	o := prepareHistory(nil, false)
 	if len(o.Messages) != 0 {
 		t.Errorf("Messages = %+v, want empty", o.Messages)
 	}
@@ -23,7 +23,7 @@ func TestPrepareHistory_ValidTurnsPassThroughInOrder(t *testing.T) {
 		{Role: "user", Content: "hi"},
 		{Role: "assistant", Content: "hello, how can I help?"},
 	}
-	o := prepareHistory(turns)
+	o := prepareHistory(turns, false)
 
 	if o.KeptTurns != 2 || o.DroppedInvalid != 0 || o.Truncated {
 		t.Fatalf("unexpected outcome: %+v", o)
@@ -58,7 +58,7 @@ func TestPrepareHistory_RejectsSystemAndUnknownRoles(t *testing.T) {
 		{Role: "developer", Content: "made-up privileged-sounding role"},
 		{Role: "assistant", Content: "real answer"},
 	}
-	o := prepareHistory(turns)
+	o := prepareHistory(turns, false)
 
 	if o.DroppedInvalid != 4 {
 		t.Errorf("DroppedInvalid = %d, want 4 (system, System, empty, developer)", o.DroppedInvalid)
@@ -90,7 +90,7 @@ func TestPrepareHistory_CapsToMaxTurnsDroppingOldestFirst(t *testing.T) {
 		turns[i] = protocol.Turn{Role: role, Content: fmt.Sprintf("turn-%d", i)}
 	}
 
-	o := prepareHistory(turns)
+	o := prepareHistory(turns, false)
 
 	if !o.Truncated {
 		t.Fatal("Truncated = false, want true when supplied turns exceed maxHistoryTurns")
@@ -118,7 +118,7 @@ func TestPrepareHistory_ExactlyMaxTurnsIsNotTruncated(t *testing.T) {
 	for i := range turns {
 		turns[i] = protocol.Turn{Role: "user", Content: fmt.Sprintf("t%d", i)}
 	}
-	o := prepareHistory(turns)
+	o := prepareHistory(turns, false)
 	if o.Truncated {
 		t.Error("Truncated = true, want false when supplied turns exactly equal the cap")
 	}
@@ -139,7 +139,7 @@ func TestPrepareHistory_InvalidTurnsDoNotCountTowardTheCap(t *testing.T) {
 		turns = append(turns, protocol.Turn{Role: "user", Content: fmt.Sprintf("t%d", i)})
 	}
 
-	o := prepareHistory(turns)
+	o := prepareHistory(turns, false)
 	if o.DroppedInvalid != 1 {
 		t.Errorf("DroppedInvalid = %d, want 1", o.DroppedInvalid)
 	}

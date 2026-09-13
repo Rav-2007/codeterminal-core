@@ -248,7 +248,7 @@ func TestAppendTurn_WorksEvenWithoutSearchIndexOrTriggers(t *testing.T) {
 		t.Fatalf("AppendTurn without a search index present: %v", err)
 	}
 
-	got, err := store.LoadRecentTurns(ctx, "/workspace/no-search", 12)
+	got, err := store.LoadRecentTurns(ctx, "/workspace/no-search", 12, false)
 	if err != nil {
 		t.Fatalf("LoadRecentTurns: %v", err)
 	}

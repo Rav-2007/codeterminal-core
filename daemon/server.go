@@ -521,7 +521,7 @@ func (s *Server) serveConn(conn net.Conn) {
 	decision := s.route(promptReq.PromptKind, promptReq.Tier)
 	s.logger.Printf("route tier=%s slug=%s reason=%s", decision.Tier, decision.Slug, decision.Reason)
 
-	historyOutcome := prepareHistory(promptReq.History)
+	historyOutcome := prepareHistory(promptReq.History, s.noScrub())
 	s.logHistory(historyOutcome)
 
 	outcome := s.gatherContext(ctx, promptReq.Prompt)
@@ -583,6 +583,21 @@ func (s *Server) serveConn(conn net.Conn) {
 		// client immediately, don't wait for the stream to finish" pattern
 		// as the Grounding message just above. Kinds only, never the
 		// matched text (see protocol.TokenResponse.Redactions).
+		//
+		// THIS NOTICE IS NOW TRUE, and it was not before 2026-09-13. A user
+		// shown "redacted 1 secret" reasonably concludes the value did not
+		// leave. Until item 1 landed, that conclusion was wrong from the next
+		// turn onward: the raw prompt was persisted, re-hydrated at the next
+		// handshake, and sent to the provider in full. The assurance was part
+		// of the defect rather than a report of it -- worse than never having
+		// scrubbed, because it bought silence.
+		//
+		// What makes it true is three controls, and the notice is only as good
+		// as the weakest: persistTurn stores the scrubbed prompt (1a),
+		// prepareHistory scrubs prior user turns on both the client-supplied
+		// and hydration paths (1b), and the v4 migration purged rows written
+		// before either existed (memory.go). Remove any one and this line goes
+		// back to claiming more than it can deliver.
 		if err := enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Redactions: kinds}); err != nil {
 			s.logger.Printf("redaction notice write error: %v", err)
 			return
@@ -1062,7 +1077,7 @@ func (s *Server) loadPersistedHistory(ctx context.Context) []protocol.Turn {
 	if s.memory == nil {
 		return nil
 	}
-	turns, err := s.memory.LoadRecentTurns(ctx, s.workspace, maxHistoryTurns)
+	turns, err := s.memory.LoadRecentTurns(ctx, s.workspace, maxHistoryTurns, s.noScrub())
 	if err != nil {
 		s.logger.Printf("loading persisted history: %v", err)
 		return nil
@@ -1082,10 +1097,23 @@ func (s *Server) loadPersistedHistory(ctx context.Context) []protocol.Turn {
 	return kept
 }
 
-// persistTurn appends the just-completed exchange (the user's raw prompt —
-// never the grounding-augmented version, since retrieved context is
-// re-derived fresh every turn, not something to remember — and the
-// assistant's full answer) to cross-session memory, write-through. Called
+// persistTurn appends the just-completed exchange to cross-session memory,
+// write-through: the user's prompt SCRUBBED, and the assistant's full answer.
+//
+// "Raw" used to appear in this sentence and it did two jobs, only one of which
+// was ever argued. RAW-VS-AUGMENTED is the justified one: the grounding-
+// augmented prompt is not stored, because retrieved context is re-derived fresh
+// every turn and is not something to remember. RAW-VS-SCRUBBED was never
+// mentioned, and the prompt was stored with its secrets intact -- so a reader
+// checking what this function keeps met a considered-sounding decision about
+// one question and silence on the other (memo item 1, F-2).
+//
+// THE SCRUB IS HERE RATHER THAN AT THE CALL SITE, and that is not tidiness.
+// The memo's fix said "one identifier at server.go:707". There are TWO callers:
+// the single-turn path there and the AGENT path at agentturn.go:284, both
+// passing promptReq.Prompt. Changing the one the memo named would have left
+// every agent turn storing secrets verbatim. A control that each caller has to
+// remember is a control that the next caller forgets. Called
 // only after streamCompletion has already returned successfully, so a
 // mid-stream failure (including a client disconnecting before the answer
 // finished) never persists a truncated answer as if it were complete.
@@ -1130,6 +1158,20 @@ func (s *Server) persistTurn(prompt, answer string, incomplete *protocol.Incompl
 			answer += note
 		}
 	}
+	// Item 1a. The same scrub() the wire path runs, with the same --no-scrub
+	// escape hatch, so what is remembered matches what was sent. Only the
+	// user's prompt: scrubbing the ASSISTANT's answer is item 1c, which the
+	// daemon/ owner declined on 2026-09-13 -- a prior answer that legitimately
+	// contained a key-shaped string would come back redacted and the model
+	// would be confused about its own earlier reply.
+	//
+	// s.noScrub(), NOT `s.cfg == nil || s.cfg.NoScrub`. The first draft of this
+	// line wrote the latter, which FAILS OPEN: a nil config would have disabled
+	// scrubbing rather than enabling it. s.noScrub() is `s.cfg != nil &&
+	// s.cfg.NoScrub`, so an absent config scrubs. Reusing the accessor instead of
+	// re-deriving the condition is the point -- the re-derivation is where the
+	// polarity got inverted.
+	prompt, _ = scrub(prompt, s.noScrub())
 	// DELIBERATELY NOT THE CONNECTION'S CONTEXT. This runs after the answer is
 	// complete, and the commonest way to reach it is a turn the user interrupted
 	// -- which is precisely when the connection's context is already cancelled.

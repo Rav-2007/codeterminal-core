@@ -459,7 +459,7 @@ func TestToolMessagesNeverReachPersistedHistory(t *testing.T) {
 
 	// And the role a tool message uses is one prepareHistory refuses.
 	turns := []protocol.Turn{{Role: "tool", Content: "secret tool output"}}
-	outcome := prepareHistory(turns)
+	outcome := prepareHistory(turns, false)
 	for _, m := range outcome.Messages {
 		if m.Role == "tool" || strings.Contains(m.Content, "secret tool output") {
 			t.Errorf("a tool-role turn survived prepareHistory: %+v", m)

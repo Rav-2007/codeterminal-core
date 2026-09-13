@@ -137,48 +137,57 @@ func TestSentinelRow6_MCPEnvAllowListDropsForbiddenAndUnlisted(t *testing.T) {
 	}
 }
 
-// ROW 7 -- persisted prompts. TRIPWIRE, NOT A CONTROL.
+// ROW 7 -- persisted prompts. NOW A CONTROL. Was a tripwire until 2026-09-13.
 //
-// This test asserts the CURRENT behaviour: the raw prompt is persisted and
-// comes back out. B2.1 measured that this is what returns an unscrubbed secret
-// to the provider on turn N+1. It is pinned here so the behaviour cannot change
-// silently in either direction.
+// THE TRIPWIRE FIRED AND HAS BEEN REPLACED, which is what it asked for. Its
+// text read: "WHEN THE INGEST-SCRUB DECISION LANDS, THIS TEST GOES RED, AND
+// THAT IS THE FIX ARRIVING, NOT A REGRESSION. Whoever sees it red should delete
+// it and say so in the commit, not restore the raw persist to make it green."
+// The decision landed -- memo item 1, FIXED by the daemon/ owner on 2026-09-13
+// -- the tripwire went red on the first run, and this is its replacement.
 //
-// WHEN THE INGEST-SCRUB DECISION LANDS, THIS TEST GOES RED, AND THAT IS THE
-// FIX ARRIVING, NOT A REGRESSION. Whoever sees it red should delete it and say
-// so in the commit, not restore the raw persist to make it green.
-func TestSentinelRow7_PersistedPromptIsStillRaw_TRIPWIRE(t *testing.T) {
+// The row moves from "present, and we know" to "absent, and it is enforced",
+// which is a different state and must not share a phrase with the old one (M5).
+// It is asserted here at the STORAGE boundary; the scrub that produces it lives
+// in persistTurn, and prepareHistory scrubs the read path independently
+// (scrubpersist_test.go covers both, and covers them separately -- an earlier
+// draft could not tell the two apart).
+//
+// READ BACK WITH SCRUBBING DISABLED so this asserts what is ON DISK. Reading
+// with it enabled would let the read-path control satisfy an assertion about
+// the write-path one.
+func TestSentinelRow7_PersistedPromptIsScrubbed(t *testing.T) {
 	secret := sentinelFor(7)
 	ctx := context.Background()
 	store, err := OpenMemoryStore(filepath.Join(t.TempDir(), "memory.db"))
 	if err != nil {
 		t.Fatalf("opening memory store: %v", err)
 	}
-	// Close's error is dropped deliberately: this is a t.TempDir() database that
-	// the test framework removes either way, and a close failure here would mask
-	// the assertion below rather than tell anyone anything.
 	defer func() { _ = store.Close() }()
 
 	ws := "/tmp/sentinel-ws"
-	if err := store.AppendTurn(ctx, ws, "user", "my key is "+secret); err != nil {
-		t.Fatalf("appending turn: %v", err)
-	}
-	turns, err := store.LoadRecentTurns(ctx, ws, 10)
+	srv := &Server{logger: discardLogger(), workspace: ws, memory: store, cfg: &Config{}}
+	srv.persistTurn("my key is "+secret, "noted", nil)
+
+	turns, err := store.LoadRecentTurns(ctx, ws, 10, true)
 	if err != nil {
 		t.Fatalf("loading turns: %v", err)
 	}
 	if len(turns) == 0 {
-		t.Fatal("vacuity floor: nothing was persisted, so this pins nothing")
+		t.Fatal("vacuity floor: nothing was persisted, so this asserts nothing")
 	}
-	var found bool
+	var sawPlaceholder bool
 	for _, turn := range turns {
 		if strings.Contains(turn.Content, secret) {
-			found = true
+			t.Errorf("row 7: the raw sentinel is at rest in memory.db: %q", turn.Content)
+		}
+		if turn.Role == "user" && strings.Contains(turn.Content, "[REDACTED:aws_access_key]") {
+			sawPlaceholder = true
 		}
 	}
-	if !found {
-		t.Errorf("TRIPWIRE FIRED (this is good news): the persisted prompt no longer carries the raw secret. " +
-			"The ingest-scrub decision has landed. Delete this test rather than restoring the raw persist.")
+	if !sawPlaceholder {
+		t.Error("vacuity floor: no redaction placeholder in the stored user turn, so a clean " +
+			"result would not show that scrub() ran")
 	}
 }
 
