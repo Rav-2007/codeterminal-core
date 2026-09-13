@@ -5,7 +5,13 @@
 **Date:** 2026-09-04
 **From:** the `clients/tui` production-hardening pass (branch `audit/adversarial-pass`)
 **To:** whoever owns `daemon/` — **an addressee slot, not a recipient.**
-**What I need:** a decision, in writing, on each of the four items below.
+**What I need:** a decision, in writing, on each of the **five** items below.
+
+> **Count corrected 2026-09-13.** This line and the summary table said FOUR from
+> 2026-09-04 until today, while item 5 has been in the body since 2026-09-09 and
+> "What I need from you" has asked for five since the same day. A document whose
+> header contradicts its own body is how a reader stops at item 4, and three
+> readers did.
 
 > **Delivery status, updated 2026-09-09: STILL COMMITTED; STILL HANDED TO
 > NOBODY. Five days, one re-derivation, no reader.**
@@ -21,7 +27,7 @@
 > to nobody.** Nobody has been named as the `daemon/` owner and nobody has been
 > asked to read it. Other documents in this pass described it as "handed to the
 > daemon's owner"; that was wrong and is corrected. If you are reading this, you
-> are the first — which means the four items below have had no answer because the
+> are the first — which means the five items below have had no answer because the
 > question had not been put, not because anyone declined to answer it.
 
 ---
@@ -55,7 +61,7 @@ choose from a list.
 Where a number appears, it was measured on this tree. The probes were temporary
 and have been removed; any of them can be reproduced on request.
 
-### The four, and what I am asking
+### The five, and what I am asking
 
 | # | Item | Recommendation | Severity |
 |---|---|---|---|
@@ -63,6 +69,7 @@ and have been removed; any of them can be reproduced on request.
 | 2 | R1.5 — `/mcp-server` puts MCP-server stderr on screen unredacted | **FIX** | Moderate. Disclosure to the credential's owner. |
 | 3 | R1.6 — inbound model text is not redacted | **ACCEPT, in writing** | Low, once (1) is fixed. |
 | 4 | Four `daemon/` fuzz targets never generate an input in CI | **FIX** — cause found, fix measured | Low, but CI's fuzz job contributes nothing for them. |
+| 5 | Panic containment stops at the connection goroutine | **FIX the half that is ours** | Unmeasured likelihood; a panic takes the daemon, not the connection. Added 2026-09-09. |
 
 ---
 
@@ -136,54 +143,77 @@ carried through.
 
 **Recommend 1a + 1b now**; 1c only if you also reject my recommendation on item 3.
 
-### What 1a + 1b do NOT close — added 2026-09-12, by the third pass to re-derive this
+### What 1a + 1b do NOT close — corrected 2026-09-13
 
-**1b closes the provider path. It does not close the handshake payload, and
-those are different states (M5).**
+> **RETRACTION. The version of this section added on 2026-09-12 (commit
+> `d732c34`) was WRONG, and it was wrong in the direction that would have made
+> your decision harder than it is.**
+>
+> It claimed 1b does not cover the handshake payload, because
+> `HandshakeResponse.PersistedHistory` "does not go through `prepareHistory` on
+> its way out". **It does.** `loadPersistedHistory` calls
+> `MemoryStore.LoadRecentTurns`, and that function runs its rows through
+> `prepareHistory` before returning them (`daemon/memory.go:330`). Scrubbing
+> inside `prepareHistory` therefore covers the handshake payload as well as the
+> outbound message list — **1b is cheaper and broader than that note claimed.**
 
-`prepareHistory` runs on history travelling TO the model, so scrubbing there
-stops the secret reaching the provider — which is the boundary crossing that
-matters and the one you cannot undo. But the daemon also hands stored turns
-back to the CLIENT, at `HandshakeResponse.PersistedHistory`
-(`daemon/server.go:385`, via `loadPersistedHistory`), on every connection. That
-path does not go through `prepareHistory` on its way out.
+**A METHOD FINDING, recorded here rather than as an errata line, because the
+pattern is the durable part.**
 
-So after 1a + 1b:
+This was the SECOND shallow trace of the SAME call chain. The first was filed as
+finding F-1.6 — "`loadPersistedHistory` caps turns but not bytes" — which was
+retracted when its own test passed, for the identical reason: the byte ceiling
+is also applied inside `LoadRecentTurns`, one layer below the function being
+read. **The second error was made while writing the retraction of the first.**
 
-| Path | State |
+The diagnosis is not "insufficient care". It is a specific and repeatable habit:
+**stopping at the first function that looks like the owner of a property.**
+`loadPersistedHistory` reads like the place history-loading policy lives — it
+has the name, it applies `validTurn`, it caps turns — so both times the trace
+stopped there, and both times the actual policy sat one call deeper in a
+function named after storage rather than after policy. A reviewer checking
+either claim by reading the same function would have agreed.
+
+The general form, for anyone auditing this daemon: **a function that applies
+SOME of a policy is the most misleading possible place to stop**, because
+partial application reads exactly like complete application. Trace to the end of
+the call chain, not to the first plausible owner.
+
+### The path that IS outside 1b, found by tracing properly
+
+`MemoryStore.SearchTurns` (`daemon/search.go:128`), reached from the `/search`
+command at `daemon/server.go:1007`, returns `snippet(turns_fts, …)` — a fragment
+of the raw stored `content` column. It passes through **neither** `prepareHistory`
+**nor** `scrub`.
+
+**This SHARPENS THE MIGRATION QUESTION rather than adding a new defect**, and the
+distinction matters for what you are deciding:
+
+- After **1a**, newly written rows are scrubbed at rest, so `/search` returns
+  scrubbed snippets of them. No further work is needed for new conversations.
+- Rows written **before** 1a keep their raw content in `turns` and in the
+  `turns_fts` index. 1b does not touch them, because 1b acts on the read path
+  into the model and `/search` is a different read path.
+- So without a migration, **a secret pasted before the fix stays retrievable by
+  `/search`, on that machine, indefinitely** — and it is retrievable by the
+  string that matches it, which is the one query an attacker with access would
+  run.
+
+**Three states, which must never be collapsed into the single word "fixed" (M5):**
+
+| Path | After 1a + 1b, with no migration |
 |---|---|
-| turn N+1 to the provider | **closed** by 1b |
-| already-stored rows written before 1a | **still raw** — this is the migration question below |
-| handshake payload to the client's transcript | **unscrubbed**, and untouched by either part |
-
-Whether the third row is a defect is a real question and not a rhetorical one:
-the client is the user's own process on the same machine, rendering the user's
-own prompt, and a transcript that silently differed from what the user typed
-would be its own surprise. It may well be correct as it stands. **It must not be
-recorded as "fixed" by 1a + 1b, because it is not.**
+| turn N+1 to the provider | **closed** — this is the boundary crossing that leaves the machine |
+| handshake payload to the client transcript | **closed**, via `LoadRecentTurns` → `prepareHistory` |
+| rows written before the fix, at rest and via `/search` | **STILL RAW** — this is the migration decision, and it is the whole residual |
 
 A note on this memo's own history, which is the argument for reading it rather
 than re-deriving it a fourth time: the delivery status above predicted its own
-re-derivation and was right. Item 1 was found independently on 2026-09-08
-(filed as R1.22) and again on 2026-09-12 (filed as F-1). **The same finding,
-found three times, because nothing pointed at this file.** The 2026-09-12 pass
-also confirmed that `daemon/sentinel_rows_test.go`'s ROW 7 tripwire is still
-green and still correct, and that this memo's claim about `loadPersistedHistory`
-re-running `prepareHistory` is TRUE — it happens one layer down, inside
-`LoadRecentTurns` (`daemon/memory.go:330`). That pass initially reported the
-claim as wrong and retracted it.
-
-**One consequence to weigh, so it is not a surprise.** Scrubbing history changes
-what the model sees in later turns. If a user legitimately discusses a key-shaped
-identifier, they already lost it on turn 1 — the prompt path redacted it — so
-1a/1b make later turns *consistent* with the first rather than newly lossy.
-`scrub` is precision-first by design and its false-positive rate on prefixed
-shapes is recorded as none measured.
-
-**I did not implement this.** It is your module, it changes what the model
-receives on every multi-turn conversation, and the byte-budget interaction in
-`prepareHistory` is a real design point rather than a mechanical edit. Say the
-word and I will do 1a+1b with tests.
+re-derivation and was right twice. Item 1 was found by execution on 2026-09-04,
+independently re-derived as R1.22 on 2026-09-08, and independently re-derived
+again as F-1 on 2026-09-12. **The same finding, found three times, because the
+`daemon/` owner was an unassigned ROLE rather than an unresponsive PERSON** —
+nobody declined to read this; nobody had been asked.
 
 ---
 
