@@ -2,16 +2,18 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
 
-// fakeHelperBinPath is built once (by TestMain) into a temp dir and reused
+// fakeHelperBinPath is built LAZILY, on first use, and reused
 // by every test in this file — it's an on-disk binary because
 // HelperProcess.Start execs a path, not an in-process function.
 var fakeHelperBinPath string
@@ -56,11 +58,6 @@ func TestMain(m *testing.M) {
 	os.Setenv("XDG_CACHE_HOME", cacheDir)
 
 	fakeHelperBinPath = filepath.Join(tmpDir, exeName("fakehelper"))
-	cmd := exec.Command("go", "build", "-o", fakeHelperBinPath, "./testdata/fakehelper")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		runProcessCleanups()
-		panic("building fakehelper fixture: " + err.Error() + "\n" + string(out))
-	}
 
 	code := m.Run()
 
@@ -84,7 +81,7 @@ func TestMain(m *testing.M) {
 // run quickly instead of waiting on production-sized delays.
 func fastHelperProcess(t *testing.T) *HelperProcess {
 	t.Helper()
-	h := NewHelperProcess(fakeHelperBinPath, "", "", discardLogger())
+	h := NewHelperProcess(buildFakeHelperOnce(t), "", "", discardLogger())
 	h.maxRestarts = 2
 	h.restartDelay = 20 * time.Millisecond
 	h.readyTimeout = 500 * time.Millisecond
@@ -322,7 +319,7 @@ func TestEmbedDeadlineScalesWithTheBatch(t *testing.T) {
 
 	newHelper := func(t *testing.T) *HelperProcess {
 		t.Helper()
-		h := NewHelperProcess(fakeHelperBinPath, "", "", discardLogger())
+		h := NewHelperProcess(buildFakeHelperOnce(t), "", "", discardLogger())
 		h.readyTimeout = 5 * time.Second
 		h.readyPollStep = 10 * time.Millisecond
 		h.stopGrace = 300 * time.Millisecond
@@ -408,3 +405,45 @@ func TestEmbedDeadlineArithmetic(t *testing.T) {
 		}
 	}
 }
+
+// buildFakeHelperOnce compiles the fakehelper fixture the first time a test
+// actually needs it.
+//
+// MEMO ITEM 4. This build used to run unconditionally in TestMain, and that made
+// CI's fuzz job contribute NOTHING to four targets. Go gathers baseline coverage
+// using worker processes, each a fresh exec of the test binary, so every worker
+// paid the build before it could execute a single input. Measured on this tree
+// at FUZZTIME=30s, the CI budget: FuzzSplitQualifiedName reported
+// "gathering baseline coverage: 0/188 completed" at 38 seconds elapsed. Not
+// slow -- ZERO. Nothing finished at all, in any of the four.
+//
+// The gate was honest about it the whole time, printing "seed corpus only, no
+// new inputs generated at FUZZTIME=30s" rather than a bare ok, which is how it
+// was found. Being loud is not the same as being fixed.
+//
+// Deferring it costs ordinary tests nothing: they pay the same single build they
+// paid before, just later. A fuzz worker pays it never, because no fuzz target
+// touches the helper.
+//
+// sync.Once rather than a nil check: TestMain no longer serialises this, so
+// parallel tests can reach it at the same moment, and two concurrent `go build`
+// invocations writing one output path is a corrupt binary rather than a race the
+// detector would name.
+func buildFakeHelperOnce(tb testing.TB) string {
+	tb.Helper()
+	fakeHelperBuildOnce.Do(func() {
+		cmd := exec.Command("go", "build", "-o", fakeHelperBinPath, "./testdata/fakehelper")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			fakeHelperBuildErr = fmt.Errorf("building fakehelper fixture: %w\n%s", err, out)
+		}
+	})
+	if fakeHelperBuildErr != nil {
+		tb.Fatal(fakeHelperBuildErr)
+	}
+	return fakeHelperBinPath
+}
+
+var (
+	fakeHelperBuildOnce sync.Once
+	fakeHelperBuildErr  error
+)
