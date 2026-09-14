@@ -11,6 +11,37 @@ is unchanged. Probe instruments are preserved outside the repo (see
 
 ---
 
+> ## ⚠️ SCOPE NOTICE — added 2026-09-14. Read before citing anything below.
+>
+> **This document audits `efc611d`, which is `upstream/main`.** As of 2026-09-14 that is
+> **216 commits behind** `audit/adversarial-pass`. It is therefore **not** stale in the usual
+> sense — it is the audit of record for the branch that would actually ship — but **none of its
+> findings, line numbers, or verdicts describe the working branch.** Anything cited from here
+> about current code must be re-measured at HEAD first.
+>
+> **This document contains two different four-item lists, both labelled "TRUST BOUNDARY 1–4",
+> and their members do not correspond:**
+>
+> | | Location | Shape | Item 1 is |
+> |---|---|---|---|
+> | List A | the ASCII diagram, `:56-73` | **crossings** — where data moves | unix socket / SO_PEERCRED |
+> | List B | the section at `:91-104` | **transitions** — where untrusted becomes privileged | model output → tool dispatch |
+>
+> They are two views of one system, not one list counted twice, and **neither is a subset of the
+> other**. Because a partition into four bundles far more than a finer one, neither list can
+> settle questions about how many boundaries there are: List A's item 1 bundles a socket with its
+> authorization check, and its item 4 bundles the entire proxy network surface in both directions.
+>
+> **The current enumeration is [`docs/TRUST_BOUNDARIES.md`](docs/TRUST_BOUNDARIES.md) — twelve
+> boundaries, `TB1`–`TB12`, with a verified `file:line` for each.** Use that for any question
+> about boundary identity or numbering. Prose in this repository refers to boundaries unprefixed
+> ("boundary 6"); `B<n>` means four other things here and is not the boundary namespace.
+>
+> **Nothing below this notice has been renumbered, edited, or removed.** This repository
+> deliberately leaves dated records unfixed; this is a header, not a correction.
+
+---
+
 ## 1. Executive summary
 
 CodeTerminal is a **substantially better-engineered agent than most**. The consent
