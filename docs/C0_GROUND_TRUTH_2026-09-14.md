@@ -36,7 +36,7 @@ before this green is treated as evidence** — see §6.
 | # | Fact as stated | Verdict | Evidence |
 |---|---|---|---|
 | 1 | "`1e48e3c` is cited in it as the commit for three decision-table rows, and exists here" | **PARTIAL** | `git cat-file -t 1e48e3c` → `commit`; it exists and is *"docs: five verdicts recorded, and the role that was never assigned"*. But `git grep -n '1e48e3c' -- '*.md'` returns **zero hits**: nothing in this repository cites it at all. `(M)` |
-| 2 | "12 of 12 of its code anchors resolved at HEAD" | **MATCH** | Established in the recon pass; all twelve land on role-consistent code, one off-by-one (`server.go:707` is blank, statement at `:708`). `(M)` |
+| 2 | "12 of 12 of its code anchors resolved at HEAD" | **MATCH** | Established in the recon pass; all twelve land on role-consistent code, one off-by-one (`daemon/server.go:707` is blank, statement at `:708`). `(M)` |
 | 3 | "`9fae051` modified the vanished-floor sweep" | **MATCH** | `9fae051` = *"ci: gate the two gate lists against each other, and make the sweep work in CI"*, touches `scripts/coverage-ratchet.sh` (+39/−8), and the diff adds `belongs_to_module()` plus both unconditional `FAIL … was never measured` / `… was never seen` paths. `(M)` |
 
 ### 2.2 Fact 1's second clause is circular, and that matters
