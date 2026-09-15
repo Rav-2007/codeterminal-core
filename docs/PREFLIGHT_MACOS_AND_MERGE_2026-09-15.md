@@ -151,3 +151,34 @@ C1d, so the mistake and its correction both stay legible.
 | The merge still waits on C7's verdict, which is the review boundary | repo owner, after C7 | — |
 
 Nobody above has been contacted.
+
+---
+
+## 8. §6.2 resolved, same session: `cross` **tests** on macOS
+
+`build.yml:549-551` — `- name: Test` / `run: go test -count=1 ./...` /
+`working-directory: ${{ matrix.module }}`. **Unconditional**, applying to both arms of the OS matrix.
+`(M)`
+
+So the lean in §6.2 was wrong and the true position is stronger than the one I declined the dispatch
+on:
+
+| module | macOS build+vet+test | when |
+|---|---|---|
+| `clients/tui` | **yes** | **every push** (`macos (clients/tui, every push)`) **and** `cross` on `main`/dispatch |
+| `daemon` | **yes** | `cross`, on `main` or dispatch |
+| `protocol` | **yes** | `cross`, on `main` or dispatch |
+| `editapply` | **yes** | `cross`, on `main` or dispatch |
+| `proxy` | **no** — not in the `cross` matrix | never |
+| `helper` | **no** — not in the matrix, and CGO/onnxruntime makes it untestable cross-platform (R1.26) | never |
+
+**So the four macOS `cross` jobs that were 8/8 green on `efc611d` in the last eight days were running
+the full test suites of daemon, protocol, editapply and clients/tui on macOS — not merely compiling
+them.** The dispatch is unnecessary by a wider margin than §3 claimed.
+
+**What remains genuinely untested on macOS is `proxy` and `helper`**, neither of which the `cross`
+matrix includes and neither of which the granted dispatch would have touched. `helper` is already
+recorded as unable to join a cross-platform check (R1.26); **`proxy`'s absence is not, and is the real
+gap this pre-flight surfaced.** Whether that matters is a C7 question — the proxy ships by Dockerfile
+on Linux, so macOS may be irrelevant to it by design. Stated, not resolved. `(U)` — what would settle
+it: whether any supported deployment runs the proxy on darwin.
