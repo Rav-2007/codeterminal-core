@@ -38,6 +38,7 @@ cd "$(dirname "$0")/.."
 
 checked=0
 failures=0
+exts=""
 enforced_docs=0
 unenforced_refs=0
 unenforced_docs=0
@@ -70,7 +71,25 @@ fi
 shopt -s nullglob
 for doc in docs/*.md docs/**/*.md *.md; do
   [ -f "$doc" ] || continue
-  refs=$(grep -ohE '`[A-Za-z0-9_./-]+\.go:[0-9]+(-[0-9]+)?`' "$doc" 2>/dev/null | tr -d '`' | sort -u)
+  # THE EXTENSION SET IS DERIVED FROM THE CITATIONS, NOT LISTED HERE.
+  #
+  # This used to end in `\.go:`, so it silently checked ONE file extension.
+  # Measured on 2026-09-15: a document carrying references to line 99999 of the
+  # extension's .ts, the build .yml and a .sh script passed at exit 0, while a
+  # single bad .go reference failed. Every .ts, .yml, .js, .sh and .md citation
+  # in this repository's enforced documents had never been checked -- including
+  # TRUST_BOUNDARIES.md, whose enforcement was therefore partial and nobody knew.
+  #
+  # Naming the extensions to add would repeat the defect one generation later:
+  # the next document to cite a .toml or a .sql would be unchecked again, and
+  # the gap would be invisible exactly as this one was. So the pattern matches
+  # ANY extension and the set that gets checked is whatever the documents
+  # actually cite. The banner prints that set, so a surprise is visible rather
+  # than silent.
+  #
+  # The extension must START WITH A LETTER, which is what keeps `10.0.0.1:8080`
+  # and `v1.2.3:4` out. Resolution is unchanged: tracked files only.
+  refs=$(grep -ohE '`[A-Za-z0-9_./-]+\.[A-Za-z][A-Za-z0-9]*:[0-9]+(-[0-9]+)?`' "$doc" 2>/dev/null | tr -d '`' | sort -u)
   [ -n "$refs" ] || continue
 
   if ! grep -q '<!-- coderefs: enforced -->' "$doc"; then
@@ -117,6 +136,7 @@ for doc in docs/*.md docs/**/*.md *.md; do
       continue
     fi
     checked=$((checked + 1))
+    exts="$exts ${path##*.}"
   done <<< "$refs"
 done
 
@@ -133,4 +153,9 @@ if [ "$failures" -gt 0 ]; then
   exit 1
 fi
 
+ext_list=$(printf '%s\n' $exts | sort -u | paste -sd, -)
 echo "docs-coderefs: $checked reference(s) resolve, across $enforced_docs enforced document(s); $unenforced_refs reference(s) in $unenforced_docs unenforced document(s) NOT checked"
+# The extension set is DERIVED, so print it: a gate whose scope is invisible is
+# how this one checked only .go for its whole life without anyone noticing.
+echo "docs-coderefs: extensions checked (derived from the citations themselves): ${ext_list:-none}"
+echo "docs-coderefs: NOT checked -- prose, anchors, section numbers, and any citation written without a :line suffix"
