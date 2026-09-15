@@ -1,6 +1,9 @@
 package main
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -215,6 +218,136 @@ func TestBuiltinToolSurfaceFilesAllExist(t *testing.T) {
 			t.Errorf("builtinToolSurface lists %s, which does not exist: %v\n"+
 				"A tool file was renamed or removed and this list was not updated, which "+
 				"is how a guard quietly stops covering the thing it names.", name, err)
+		}
+	}
+}
+
+// daemonFuncDeclFiles maps every function and method declared in this package to
+// the file declaring it. Same parse as daemonCallGraph (builtincapability_test.go),
+// which deliberately records call edges and not locations.
+func daemonFuncDeclFiles(t *testing.T) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("reading package dir: %v", err)
+	}
+	fset := token.NewFileSet()
+	for _, e := range entries {
+		name := e.Name()
+		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, filepath.Join(".", name), nil, 0)
+		if err != nil {
+			continue // a build-tagged file this configuration does not compile
+		}
+		for _, decl := range file.Decls {
+			if fd, ok := decl.(*ast.FuncDecl); ok && fd.Body != nil {
+				out[fd.Name.Name] = name
+			}
+		}
+	}
+	return out
+}
+
+// TestBuiltinToolSurfaceListIsComplete is the OTHER direction of the anti-rot
+// guard, and the one that was missing.
+//
+// TestBuiltinToolSurfaceFilesAllExist stops builtinToolSurface naming files that
+// are gone. NOTHING stopped a file that holds a live handler from never being
+// added -- and the comment above the list says the hand-list is safe because
+// "adding a new tool file is a decision someone makes, not something a pattern
+// silently absorbs." True, and unenforced: three files already hold registered
+// handlers and are absent from it.
+//
+// DERIVED FROM THE REGISTRY, NOT FROM FILENAMES, and not by globbing. The shape
+// is gate-parity.sh's: derive both sides mechanically and compare them, so a new
+// arrival is red until someone decides about it.
+//
+// THE TRAP THAT MAKES THE NAIVE DERIVATION WRONG. Deriving from `Handler: s.X`
+// lines alone MISSES mcp_ast_edit.go, which is already on the list. Three
+// handlers are registered through an inline closure rather than a method value
+// -- builtinRepoMap, builtinProposeEdit and builtinProposeASTEdit -- so a
+// registration-shaped grep would have DROPPED a file the hand-list got right.
+// Closures are resolved here through daemonCallGraph, which keys func literals
+// the way the runtime names them.
+func TestBuiltinToolSurfaceListIsComplete(t *testing.T) {
+	calls, _ := daemonCallGraph(t)
+	declFile := daemonFuncDeclFiles(t)
+
+	// Anti-vacuity, before any loop that passes trivially on an empty parse.
+	if len(declFile) < 50 {
+		t.Fatalf("vacuity floor: parsed only %d function declarations from this package; "+
+			"the walk found almost nothing, so its verdict is meaningless", len(declFile))
+	}
+	if len(builtinToolSurface) == 0 {
+		t.Fatal("vacuity floor: builtinToolSurface is empty")
+	}
+
+	s := builtinTestServer(t)
+	tools := s.builtinTools(&proposalSink{}, "")
+	if len(tools) == 0 {
+		t.Fatal("vacuity floor: no built-ins registered, so nothing was derived")
+	}
+
+	derived := map[string]bool{}
+	for _, b := range tools {
+		fn := handlerFuncName(b.Handler)
+		if fn == "" {
+			t.Errorf("could not resolve a handler function name for %q, so its file was not derived",
+				b.Tool.Name)
+			continue
+		}
+		hit := false
+		if strings.Contains(fn, ".") {
+			// A func literal, named outer.funcN. Resolve to the builtin* method
+			// it calls -- the literal itself lives in the registration file and
+			// would otherwise hide the implementation's real home.
+			for _, callee := range calls[fn] {
+				if !strings.HasPrefix(callee, "builtin") {
+					continue
+				}
+				if f, ok := declFile[callee]; ok {
+					derived[f] = true
+					hit = true
+				}
+			}
+		} else if f, ok := declFile[fn]; ok {
+			derived[f] = true
+			hit = true
+		}
+		if !hit {
+			t.Errorf("built-in %q resolved to handler %q, which maps to no declaring file in "+
+				"this package.\nThe derivation is broken, which means this guard is reporting on "+
+				"fewer tools than exist -- fix the resolution before trusting a pass.",
+				b.Tool.Name, fn)
+		}
+	}
+	if len(derived) == 0 {
+		t.Fatal("vacuity floor: derived no handler files at all; the comparison below would pass " +
+			"against an empty set")
+	}
+
+	listed := map[string]bool{}
+	for _, n := range builtinToolSurface {
+		listed[n] = true
+	}
+
+	for f := range derived {
+		if !listed[f] {
+			t.Errorf("%s implements a registered built-in handler and is NOT in builtinToolSurface.\n"+
+				"TestBuiltinToolSurfaceBoundsItsReads therefore does not read it, so an unbounded "+
+				"os.ReadFile/os.ReadDir added there is not caught by the class guard.\n"+
+				"Add it to the list deliberately, or move the handler.", f)
+		}
+	}
+	for f := range listed {
+		if !derived[f] {
+			t.Errorf("builtinToolSurface lists %s, but no registered built-in handler resolves to "+
+				"it.\nEither the file no longer implements a tool the model can call -- in which "+
+				"case drop it, and say so -- or the derivation stopped seeing it, which is worse "+
+				"because the guard would then be silently narrower than its list.", f)
 		}
 	}
 }
