@@ -191,8 +191,13 @@ export function activate(context: vscode.ExtensionContext): void {
 // supervisor knows only an exit code, so the user was told "Mochiii daemon
 // exited 1 5 times and will not be restarted again" -- which names neither the
 // cause nor the cure. The daemon meanwhile wrote the exact reason to its log
-// one line before dying, e.g. "CODETERMINAL_API_BASE must be set". That is a
-// problem the user can fix in a minute and could not previously see.
+// one line before dying, e.g. `CODETERMINAL_API_BASE "not-a-url" has no
+// scheme`. That is a problem the user can fix in a minute and could not
+// previously see.
+//
+// The example used to be "CODETERMINAL_API_BASE must be set", which no longer
+// happens: an ABSENT base now takes a default rather than killing the daemon.
+// A typo'd one is still fatal, by startup_validate.go's design.
 //
 // Bounded and defensive on purpose: this runs on a path that is ALREADY
 // failing, so it must not add a second failure. Any error reading the log is
@@ -211,6 +216,31 @@ function lastDaemonLogLines(logPath: string, max = 3): string {
   } catch {
     return '';
   }
+}
+
+// daemonEnvironment is the environment the daemon is STARTED with, rather than
+// whatever the extension host happened to inherit.
+//
+// THE FIRST-RUN DEFECT LIVED IN THE ABSENCE OF THIS FUNCTION. spawnDaemon passed
+// no env, so the child got the host's; a VS Code launched from a desktop icon
+// has no CODETERMINAL_API_BASE in it, the daemon called Fatal, and the
+// supervisor reported "exited 1 5 times and will not be restarted again". Every
+// test supplied the variable by hand, so nothing ever saw what an install sees.
+//
+// The daemon now defaults its own API base, so this function's job is narrower
+// and worth stating: it DELIVERS the user's setting when there is one. A
+// setting nobody passes to the process that needs it is not a setting.
+//
+// `machine` scope on the contributed setting is what stops a workspace's
+// .vscode/settings.json supplying this value; see package.json, and
+// daemonBinary.test.ts for the same boundary on the config file.
+function daemonEnvironment(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  const configured = vscode.workspace.getConfiguration('codeterminal').get<string>('apiBase');
+  if (typeof configured === 'string' && configured.trim() !== '') {
+    env.CODETERMINAL_API_BASE = configured.trim();
+  }
+  return env;
 }
 
 function spawnDaemon(binaryPath: string, workspacePath: string, logPath: string): DaemonHandle {
@@ -235,6 +265,10 @@ function spawnDaemon(binaryPath: string, workspacePath: string, logPath: string)
   const child = cp.spawn(binaryPath, args, {
     cwd: workspacePath,
     detached: true,
+    // EXPLICIT, because inheriting was the first-run defect. See
+    // daemonEnvironment: process.env alone is whatever launched VS Code, and a
+    // desktop icon carries none of a login shell's exports.
+    env: daemonEnvironment(),
     // NOT a pipe. See daemonLogPath in activate(): a detached child that
     // outlives this host would block on a full pipe nobody is draining. The
     // -log-file above is the durable channel, and it works for an adopting

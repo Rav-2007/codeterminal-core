@@ -35,6 +35,27 @@ import (
 // The distinction is the point. "This will never work" is a startup error;
 // "this is not working at the moment" is a degraded state.
 
+// defaultAPIBase is where the daemon talks when nobody has said otherwise.
+//
+// THE THIRD CATEGORY THIS FILE DID NOT HAVE. The split above is structural
+// error versus runtime state, and an ABSENT base is neither: it is "not
+// configured yet". It was treated as the first -- logger.Fatal, exit 1 -- and
+// that made the VS Code extension dead on arrival for 72 days, because
+// spawnDaemon inherits an extension host's environment and a VS Code started
+// from a desktop icon carries no shell exports. Every test supplied the
+// variable; no install did.
+//
+// The value is not invented here: proxy/main.go has carried exactly this
+// constant as defaultUpstreamBase since it was written. The daemon lacking the
+// default its own proxy already had IS the defect, stated in one line.
+//
+// A default endpoint is not a default credential. With no key the daemon starts,
+// serves retrieval, apply, undo and search -- which this file's own reasoning
+// says work fine offline -- and reports the provider outcome per request, which
+// is the degraded state the split above is for. That is strictly better than
+// refusing to start, which told the user only "exited 1 5 times".
+const defaultAPIBase = "https://openrouter.ai/api/v1"
+
 // validateAPIBase checks that base is a usable absolute HTTP(S) endpoint.
 //
 // It exists because a malformed base was previously indistinguishable, from

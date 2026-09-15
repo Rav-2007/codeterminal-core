@@ -25,6 +25,17 @@
   ],
   "main": "./out/extension.js",
   "contributes": {
+    "configuration": {
+      "title": "Mochiii",
+      "properties": {
+        "codeterminal.apiBase": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "markdownDescription": "Model API base URL the daemon talks to, e.g. `https://openrouter.ai/api/v1`. Leave empty to use the daemon's default. Overrides `CODETERMINAL_API_BASE` in the environment.\n\nThis setting is **machine-scoped on purpose**: a workspace `.vscode/settings.json` must not be able to redirect your prompts to a host the repository chooses."
+        }
+      }
+    },
     "commands": [
       {
         "command": "codeterminal.openChat",

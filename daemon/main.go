@@ -109,7 +109,19 @@ func main() {
 	// direct-to-OpenRouter deployment keeps behaving exactly as before.
 	useProxy := os.Getenv("CODETERMINAL_USE_PROXY") == "true"
 	if apiBase == "" {
-		logger.Fatal("CODETERMINAL_API_BASE must be set")
+		// PROXY MODE IS THE EXCEPTION, AND THE REASON IS A CREDENTIAL.
+		//
+		// In proxy mode apiKey comes from CODETERMINAL_MOCHIII_KEY, and the
+		// proxy's address is deployment-specific -- there is no public default
+		// to guess. Falling back to defaultAPIBase here would send a Mochiii
+		// key to OpenRouter, which is a credential going to a host it was not
+		// issued for. "This will never work" is the right verdict for an
+		// unaddressed proxy, so this half stays fatal.
+		if useProxy {
+			logger.Fatal("CODETERMINAL_USE_PROXY is set but CODETERMINAL_API_BASE is empty; the proxy's address cannot be guessed")
+		}
+		apiBase = defaultAPIBase
+		logger.Printf("CODETERMINAL_API_BASE is unset; defaulting to %s (set it, or the Mochiii: API Base setting, to change it)", apiBase)
 	}
 	// Structural validity, checked before the daemon claims to be ready. An
 	// unparseable base can never serve a request, so failing here — naming the
