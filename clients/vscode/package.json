@@ -46,12 +46,13 @@
     "build:runtime": "npm run build:daemon && npm run build:helper && node scripts/stage-runtime.js",
     "compile": "npm run build:daemon && tsc -p ./",
     "watch": "tsc -w -p ./",
-    "pretest": "tsc -p ./ && npm run check:webview",
+    "pretest": "tsc -p ./ && npm run check:webview && npm run check:installpath",
     "test": "node ./out/test/runTest.js",
     "package": "npm run verify:vsix:selftest && npm run build:runtime && tsc -p ./ && vsce package --no-dependencies -o codeterminal-vscode-$npm_package_version.vsix && node scripts/verify-vsix.js codeterminal-vscode-$npm_package_version.vsix",
     "verify:vsix": "node scripts/verify-vsix.js",
     "verify:vsix:selftest": "node scripts/verify-vsix.js --self-test",
     "check:webview": "node scripts/webview-check.js",
+    "check:installpath": "node scripts/install-path-check.js",
     "test:e3-pilot": "node scripts/e3-pilot-test.js"
   },
   "devDependencies": {

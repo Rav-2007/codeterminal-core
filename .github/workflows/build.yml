@@ -736,6 +736,15 @@ jobs:
         run: npm run check:webview
         working-directory: clients/vscode
 
+      # The install path, which nothing checked. The EDH suite below covers the
+      # daemon seam but needs a display, and the two halves of the first-run
+      # defect that live in TypeScript and JSON had no instrument at all: a
+      # spawn with no env, and a setting that was never contributed. Plain node,
+      # like the webview check above, so it runs before the expensive host boot.
+      - name: Install-path static analysis
+        run: npm run check:installpath
+        working-directory: clients/vscode
+
       - name: Compile (tsc)
         run: npm run compile
         working-directory: clients/vscode
