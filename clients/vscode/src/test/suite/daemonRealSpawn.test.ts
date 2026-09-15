@@ -171,32 +171,45 @@ suite('the extension can start the daemon it ships', function () {
   });
 });
 
-// THE FIRST-RUN DEFECT, and the reason the suite above supplies an env.
+// THE FIRST-RUN DEFECT, AND WHY THIS SUITE USED TO PIN IT.
 //
-// The daemon requires CODETERMINAL_API_BASE from the ENVIRONMENT
-// (daemon/main.go: `apiBase := os.Getenv(...)`, then logger.Fatal). The
-// extension's spawnDaemon passes no env, so the child inherits the extension
-// host's -- and a VS Code launched from a desktop icon does not carry a shell's
-// exports. There is no setting to supply it (package.json contributes only
-// commands), no config field, and no .env read by the daemon.
+// Until the commit that inverted it, the test below deleted
+// CODETERMINAL_API_BASE from the environment and asserted the daemon logged
+// "CODETERMINAL_API_BASE must be set". It passed in CI on every branch push,
+// and it had never once been seen to fail -- because the thing it asserted was
+// the product being dead on arrival.
 //
-// So on an ordinary install the daemon exits 1 five times. What the user was
-// told was "Mochiii daemon exited 1 5 times and will not be restarted again":
-// an exit code, for a problem that is one line to fix, with the actual reason
-// sitting in a log file they were not pointed at.
+// The defect: the daemon read that variable from the environment and called
+// logger.Fatal when it was absent (daemon/main.go). The extension's spawnDaemon
+// passed no env, so the child inherited the extension host's -- and a VS Code
+// launched from a desktop icon carries none of a login shell's exports. There
+// was no setting to supply one either; package.json contributed only commands.
+// So on an ordinary install the daemon exited 1 five times and the user was
+// told "Mochiii daemon exited 1 5 times and will not be restarted again": an
+// exit code, for a problem that was one line to fix.
 //
-// This asserts the daemon still writes that reason where the extension can find
-// it, which is what extension.ts's lastDaemonLogLines now attaches to the error.
+// SCOPE SOUND, JUDGEMENT INVERTED. The property this suite names -- a daemon
+// that cannot start says why, somewhere the extension can read it -- is worth
+// keeping, and extension.ts's lastDaemonLogLines depends on it. What was wrong
+// was the FIXTURE: it used the first-run defect as its way of making a daemon
+// fail, so fixing the defect would have turned this test red.
+//
+// The fixture is now a structurally invalid base. validateAPIBase refuses that
+// by design and always will -- startup_validate.go's whole thesis is that "this
+// will never work" is a startup error while "this is not working at the moment"
+// is a degraded state. A typo'd URL is the first kind. An ABSENT one is neither:
+// it is "not configured yet", and it now takes the default.
 suite('a daemon that cannot start says why, somewhere the extension can read it', function () {
   this.timeout(30000);
 
   test('the failure reason reaches the daemon log file', async () => {
     assert.ok(fs.existsSync(daemonBin), `run \`npm run compile\` first (${daemonBin})`);
-    const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'mochiii-nobase-'));
+    const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'mochiii-badbase-'));
     const log = path.join(ws, 'daemon.log');
     try {
-      const env = { ...process.env };
-      delete env.CODETERMINAL_API_BASE;
+      // A base with no scheme. Fatal by design, and independent of the
+      // first-run defect this suite no longer pins.
+      const env = { ...process.env, CODETERMINAL_API_BASE: 'not-a-url' };
 
       await new Promise<void>((resolve) => {
         const child = cp.spawn(daemonBin, ['--workspace', ws, '-log-file', log], {
@@ -212,7 +225,7 @@ suite('a daemon that cannot start says why, somewhere the extension can read it'
       const text = fs.readFileSync(log, 'utf8');
       assert.match(
         text,
-        /CODETERMINAL_API_BASE must be set/,
+        /CODETERMINAL_API_BASE "not-a-url" has no scheme/,
         `the daemon exited without recording why. The extension can only tell a user ` +
           `what the daemon wrote, so a silent failure here is an unactionable error there. Log:\n${text}`,
       );
@@ -220,5 +233,59 @@ suite('a daemon that cannot start says why, somewhere the extension can read it'
       fs.rmSync(ws, { recursive: true, force: true });
     }
   });
-});
 
+  // THE INVERSION ITSELF. This is the assertion the old test made backwards.
+  test('an environment with nothing exported is not a fatal condition', async () => {
+    assert.ok(fs.existsSync(daemonBin), `run \`npm run compile\` first (${daemonBin})`);
+    const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'mochiii-nobase-'));
+    const log = path.join(ws, 'daemon.log');
+    try {
+      const env = { ...process.env };
+      for (const k of Object.keys(env)) {
+        if (k.startsWith('CODETERMINAL_')) delete env[k];
+      }
+      // Vacuity floor: if one leaked in, a pass here would prove nothing.
+      assert.ok(
+        !Object.keys(env).some((k) => k.startsWith('CODETERMINAL_')),
+        'the install environment still holds a CODETERMINAL_ variable, so this asserts nothing',
+      );
+
+      const code = await new Promise<number | null>((resolve) => {
+        const child = cp.spawn(daemonBin, ['--workspace', ws, '-log-file', log], {
+          cwd: ws,
+          env,
+          stdio: 'ignore',
+        });
+        // It must still be alive after a moment. Killing it is the pass: the
+        // question is whether it DIES on its own for want of a variable.
+        const timer = setTimeout(() => {
+          child.kill('SIGTERM');
+          resolve(null);
+        }, 4000);
+        child.on('exit', (c) => {
+          clearTimeout(timer);
+          resolve(c);
+        });
+        child.on('error', () => {
+          clearTimeout(timer);
+          resolve(-1);
+        });
+      });
+
+      const text = fs.existsSync(log) ? fs.readFileSync(log, 'utf8') : '';
+      assert.doesNotMatch(
+        text,
+        /CODETERMINAL_API_BASE must be set/,
+        `the daemon still refuses to start without a shell export, which is what every ` +
+          `install has. Log:\n${text}`,
+      );
+      assert.strictEqual(
+        code,
+        null,
+        `the daemon exited ${code} from an ordinary install environment instead of staying up. Log:\n${text}`,
+      );
+    } finally {
+      fs.rmSync(ws, { recursive: true, force: true });
+    }
+  });
+});
