@@ -64,6 +64,9 @@ checked=0
 allowed_count=0
 allowed_report=""
 allowed_seen="|"
+covered_count=0
+covered_cites=0
+covered_branches="|"
 
 fail() {
   echo "reach: FAIL $1" >&2
@@ -258,7 +261,18 @@ check_pipeline_fixes() {
     checked=$((checked + 1))
     short="$(git rev-parse --short "$sha")"
     is_allowed "$short" && continue
-    covering_branch "$sha" >/dev/null && continue
+    # COVERED IS NOT INVISIBLE. Skipping silently here would mean the allowlist
+    # suppressed DETECTION rather than the exit status -- and a gate that stops
+    # seeing what it excuses is a way to forget. Counted per covering branch and
+    # summarised below, because one line per commit is the 213-failures mistake.
+    if cover="$(covering_branch "$sha")"; then
+      covered_count=$((covered_count + 1))
+      case "$covered_branches" in
+        *"|$cover|"*) ;;
+        *) covered_branches="${covered_branches}$cover|" ;;
+      esac
+      continue
+    fi
     fail "$short touches .github/ or scripts/ and is not on $MAIN_REF -- the pipeline fix has not reached the pipeline: $subject"
   done < <(git log --no-merges --cherry-pick --right-only --format='%H %s' "${MAIN_REF}...HEAD" -- .github scripts)
 }
@@ -283,7 +297,14 @@ check_doc_shas() {
       short="$(git rev-parse --short "$sha")"
       git merge-base --is-ancestor "$sha" "$MAIN_REF" 2>/dev/null && continue
       is_allowed "$short" && continue
-      covering_branch "$sha" >/dev/null && continue
+      if cover="$(covering_branch "$sha")"; then
+        covered_cites=$((covered_cites + 1))
+        case "$covered_branches" in
+          *"|$cover|"*) ;;
+          *) covered_branches="${covered_branches}$cover|" ;;
+        esac
+        continue
+      fi
       fail "$doc cites $short, which is not on $MAIN_REF. A reader following that citation reaches nothing."
     done < <(grep -ohE '`[0-9a-f]{7,40}`' "$doc" 2>/dev/null | tr -d '`' | sort -u)
   done
@@ -299,6 +320,12 @@ check_doc_shas
 # An allowlist that silences DETECTION is a way to forget. An allowlist that
 # silences only the EXIT STATUS is a record of decisions you still have to read
 # past. Every exemption is printed, with the event that retires it, on every run.
+if [ "$covered_count" -gt 0 ] || [ "$covered_cites" -gt 0 ]; then
+  echo "reach: COVERED $covered_count pipeline commit(s) and $covered_cites document citation(s) are undelivered,"
+  echo "reach:         accounted for by the allowlisted branch(es):${covered_branches//|/ }"
+  echo "reach:         They are DETECTED, not silenced. When that branch's entry retires, these become failures."
+fi
+
 if [ "$allowed_count" -gt 0 ]; then
   printf '%s\n' "${allowed_report# }"
   echo "reach: $allowed_count exemption(s) above are DETECTED and not fatal. Each names the event that retires it."
