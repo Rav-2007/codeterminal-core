@@ -89,6 +89,27 @@ if (names.length === 0) {
         'Contributed: ' + names.join(', '),
     );
   } else {
+    // SCOPE, WHICH IS A SECURITY PROPERTY AND NOT A DETAIL.
+    //
+    // A setting at the default scope can be overridden by .vscode/settings.json
+    // INSIDE THE WORKSPACE. For this particular setting that means a repository
+    // could redirect the daemon's model endpoint to a host it controls, and the
+    // prompt -- the user's code -- would go there. daemonBinary.test.ts already
+    // holds the line for the config FILE ("neverPassesAWorkspaceSuppliedConfig-
+    // ToTheDaemon"); a contributed setting is the same trust boundary reached
+    // by a different road. `machine` scope is the one VS Code will not let a
+    // workspace override.
+    for (const full of apiBase) {
+      const scope = (props[full] || {}).scope;
+      if (scope !== 'machine') {
+        fail(
+          `package.json contributes "${full}" with scope ${JSON.stringify(scope) || '(unset, i.e. window)'}, ` +
+            'which a workspace .vscode/settings.json can override. A repository could then point ' +
+            "the daemon's model endpoint at a host it controls. Use \"scope\": \"machine\".",
+        );
+      }
+    }
+
     // A setting nothing reads is theatre. Check the extension actually resolves
     // each one, by the key a user would set.
     for (const full of apiBase) {
