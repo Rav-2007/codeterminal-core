@@ -182,3 +182,105 @@ recorded as unable to join a cross-platform check (R1.26); **`proxy`'s absence i
 gap this pre-flight surfaced.** Whether that matters is a C7 question — the proxy ships by Dockerfile
 on Linux, so macOS may be irrelevant to it by design. Stated, not resolved. `(U)` — what would settle
 it: whether any supported deployment runs the proxy on darwin.
+
+---
+
+## 5. Appendix — `main`'s eval red, measured, and two corrections to my own record
+
+Added 2026-09-15 after the owner supplied run `34837230165`'s summary page. Everything below is
+measured from that run's logs. **Remote: `Rav-2007/codeterminal-core`. Run `34837230165`. Commit
+`efc611d`. Event: schedule.**
+
+### 5.1 The per-job picture, which corroborates §3–§4
+
+| Group | Result | |
+|---|---|---|
+| `go` ×6 | all success, 36–299 s | **(M)** |
+| `lint` ×6 | **all failure**, 70–77 s each | **(M)** |
+| `cross` windows ×4 | all success | **(M)** |
+| `cross` macos ×4 | **all success**, 10–87 s | **(M)** |
+| `govulncheck` ×6, `fuzz`, `vscode extension`, `proxy-image` | all success | **(M)** |
+| `retrieval eval (scheduled)` | **failure**, 900 s | **(M)** |
+
+The six `lint` failures at 70–77 s are **real durations, not the sub-15 s billing signal** — they are
+the lint break `ca96966` fixes, doing real work and then failing. The four macOS `cross` successes at
+10–87 s are likewise real. §3's conclusion stands on this run's own numbers.
+
+### 5.2 The 900 s was not a timeout, and I nearly reported that it was
+
+The eval job's duration is exactly `15m 0s`, which is a timeout-shaped number. It is not one.
+
+```
+FAIL	codeterminal/daemon	847.941s
+```
+
+**(M)** The Go test ran 847.9 s of its own accord; the job's `-timeout` is **60m**, set explicitly
+and with a comment in `.github/workflows/build.yml` explaining that an earlier default 10-minute
+timeout had killed this job twice. 900 s is setup + 847.9 s + teardown, rounded for display.
+
+**M5 pair, new:** *a duration that looks like a round number* ≠ *a duration that is a limit*.
+
+### 5.3 `main`'s eval failure is ONE query, and the test exempts it
+
+One test failed in the whole suite **(M)**:
+
+```
+--- FAIL: TestRerankEvalRetrievalRanking (417.07s)
+    rerank_eval_test.go:512: hybrid retrieval REGRESSED 1 quer(ies) that passed semantic-only:
+        [where does the daemon open the unix socket]
+    rerank_eval_test.go:570: KNOWN GAP (not gated, pre-existing, out of scope): query 1
+        ("where does the daemon open the unix socket") still misses -- see comment above mustHit
+```
+
+Recall was **8/9 semantic-only and 8/9 hybrid** — not a collapse. The gated assertion fired because
+hybrid lost query 1 while gaining query 7.
+
+**The two lines are about the same query.** `:512` fails the build on a query that `:570`, 58 lines
+later, declares *"not gated, pre-existing, out of scope."* My earlier record listed these as two
+separate observations about the file; they are one contradiction. **The test exempts a query in one
+check and fails on it in another** — which means `main`'s eval red is, at this commit, a
+disagreement inside the eval rather than a retrieval regression.
+
+That is a C7 input and a merge input, and it is **not** a licence to skip anything: it changes what
+the red *means*, not whether it is red.
+
+**Every line number in §5.3 and §5.4 is in `efc611d`'s frame, not HEAD's.** That file is 585 lines at
+`efc611d` and 1,627 at HEAD, and line 474 holds different code in each — `exact := resolveExactChunks(...)`
+there, a rate-limiter shape row here. The line numbers above are quoted CI output and are correct
+**for the revision that produced them**; they are meaningless against a working tree.
+
+`scripts/docs-coderefs.sh` cannot catch that, and did not: it resolves every reference against HEAD,
+so a citation to another revision is silently "validated" against the wrong file. It also only
+extracts backticked `.go:line` references. Measured both ways on 2026-09-15 with a throwaway
+document, since a broken reference written out here would become a real one: three references to
+line 99999 of the extension's `.ts`, the build `.yml` and a `.sh` script passed at **exit 0**, while
+a single reference to line 99999 of a `.go` file failed at **exit 1**, naming the true line count.
+So every `.ts`, `.yml`, `.js`, `.sh` and `.md` citation in this pass's documents is unchecked.
+Filed for C4.
+
+### 5.4 The junk files are in the eval's ground truth
+
+The diagnostics at line 474 of `daemon/rerank_eval_test.go` **as that file stood at `efc611d`** name
+`test.log` and `test_output.txt` as places the anchors leak to, on four queries **(M)**. Those are two of the files the merge deletes. They are
+diagnostics, not assertions, so they are not why the job is red — but **the eval's anchor resolution
+is reading repo-root junk on `main` today**, and the merge changes that input.
+
+Whether the merge's eval fix repairs `:512` specifically is **(U)**. What would settle it: the
+branch's own eval runs green (`34703641095`, `34678287935`, both success **(M)**), but the branch's
+`daemon/rerank_eval_test.go` differs from `main`'s by more than a thousand lines, so *green on the
+branch* is not *this assertion fixed*. The comparison that would settle it is the merge result's
+first scheduled eval.
+
+### 5.5 Two corrections to `docs/C1d_DIVERGENCE_2026-09-15.md`
+
+Both are mine, both were reported with more confidence than they were measured with.
+
+1. That report said runs `32002184546` / `32698022729` failed *"8 jobs, scattered across platforms."*
+   **All 30 failed, each in 3–5 s.** The "8" was my own `head -8` reported as a cardinality.
+2. That report said *"the last scheduled run that exercised those [macOS] jobs had three of them
+   failing."* Wrong three ways: **four** jobs, **4-second billing** failures rather than code, and
+   **not the last** — two later runs were 4/4 green. §3 of this document retracts it in full.
+
+The second is the one worth carrying: **I hedged that claim instead of checking it, and the hedge
+did the work the measurement should have done.** The sub-15 s billing filter was applied to the runs
+I was *counting* and not to the run I was *reasoning from*.
