@@ -42,6 +42,31 @@ enforced_docs=0
 unenforced_refs=0
 unenforced_docs=0
 
+# RESOLVED AGAINST TRACKED FILES, NOT THE WORKING TREE.
+#
+# This used to be `find .`, which walks whatever happens to be on the machine
+# running it. `.codeterminal/` is a local runtime directory -- backups, index,
+# logs -- that .gitignore excludes and a CI checkout never has. So a bare
+# basename resolved to ONE file in CI and to TWO on any machine that had applied
+# an edit, and the gate's VERDICT depended on the operator's working directory.
+# Measured on 2026-09-15: copying one file into .codeterminal/backups/ took this
+# gate from exit 0 to exit 1 with no change to any document or any source file.
+#
+# That is the same family as an environment-dependent coverage floor, and this
+# repository has already been burned by that once.
+#
+# EXCLUDING `.codeterminal/` BY NAME WOULD FIX THE INSTANCE AND KEEP THE CLASS.
+# `.vscode-test/` holds 6,200 files; there are build outputs, a daemon.exe, and
+# whatever the next tool writes. Each would need its own -not -path, added after
+# it had already produced a wrong answer once. Asking git what is in the
+# repository closes all of them at once and makes a local run answer the same
+# question CI's run answers -- which is the only reason to run it locally.
+tracked_files=$(git ls-files)
+if [ -z "$tracked_files" ]; then
+  echo "docs-coderefs: FAIL -- git ls-files returned nothing; this gate cannot resolve anything"
+  exit 1
+fi
+
 shopt -s nullglob
 for doc in docs/*.md docs/**/*.md *.md; do
   [ -f "$doc" ] || continue
@@ -63,8 +88,15 @@ for doc in docs/*.md docs/**/*.md *.md; do
 
     if [[ "$path" == */* ]]; then
       file="$path"
+      # A reference to an untracked file passes here and fails in CI, which is
+      # the same working-directory dependence in its other form.
+      if ! grep -qxF -- "$path" <<< "$tracked_files"; then
+        echo "docs-coderefs: FAIL $doc -> $ref -- $path is not a tracked file; CI cannot resolve it"
+        failures=$((failures + 1))
+        continue
+      fi
     else
-      mapfile -t hits < <(find . -name "$path" -not -path './.git/*' -not -path '*/node_modules/*' | sort)
+      mapfile -t hits < <(awk -F/ -v b="$path" '$NF == b' <<< "$tracked_files" | sort)
       if [ "${#hits[@]}" -ne 1 ]; then
         echo "docs-coderefs: FAIL $doc -> $ref -- $path resolves to ${#hits[@]} files; write the path from the repo root"
         failures=$((failures + 1))
