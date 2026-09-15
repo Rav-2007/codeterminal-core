@@ -177,9 +177,30 @@ evalguard:
 # docs is last and costs ~1s. It is in `check` rather than in a docs-only job
 # because a rename breaks links in the same commit that makes it, and that is
 # the only moment anyone can fix it cheaply.
-check: hookcheck fmt vet crossvet race lint ratchet errcheck evalguard supplychain webview docs debtmarkers parity
+check: hookcheck fmt vet crossvet race lint ratchet errcheck evalguard supplychain webview docs debtmarkers parity reach
 	@echo "check: all gates green"
 	@./scripts/gate-parity.sh --what-ci-adds
+
+# THE GATE ON REACH, and it is deliberately LOCAL-ONLY.
+#
+# Every other gate here asks "is this work right?" and all of them pass on a
+# branch nobody has pushed. This one asks whether the work ARRIVED. Seven
+# delivery-gap instances say that question needed an owner.
+#
+# In `check` and not in CI, and the reason is not cost. A CI runner's clone has
+# no local branches at all, so checks 1 and 2 would examine nothing and pass by
+# being irrelevant -- the exact failure hookcheck's exclusion names. The person
+# who has an undelivered fix is at a terminal, which is where this has to fire.
+#
+# BLOCKING, not advisory. It was `manual` for one commit, and the tension was
+# recorded there rather than hidden: a gate nobody runs is the delivery gap
+# applied to the delivery-gap gate. Every one of its ten findings now carries an
+# allowlist entry with a reason AND a trigger, so the gate is green on facts
+# rather than on silence, and it self-clears -- most triggers are "the remote
+# rename" or "the merge lands", and it goes red again the moment either happens
+# and the entry is not removed.
+reach:
+	@./scripts/reach.sh
 
 # Two supply-chain gates. actions-pinned is sub-second and offline;
 # govulncheck is ~17s warm and needs the vulnerability database.

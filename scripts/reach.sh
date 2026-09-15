@@ -34,10 +34,36 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-MAIN_REF="${REACH_MAIN_REF:-upstream/main}"
+# WHICH REMOTE IS CANONICAL, resolved rather than assumed.
+#
+# Today `upstream` is Rav-2007/codeterminal-core (where CI runs) and `origin` is
+# a fork. That is backwards from the convention, and C5b recommends renaming
+# them -- at which point a script hardcoding `upstream/main` would silently
+# start measuring against nothing, or worse, against the fork.
+#
+# So the ref is resolved from what actually exists, in preference order, and the
+# banner NAMES the one it used. Hardcoding either name would be the enumerated-
+# scope defect this repository keeps finding; asking git which refs exist is the
+# derivation.
+MAIN_REF="${REACH_MAIN_REF:-}"
+if [ -z "$MAIN_REF" ]; then
+  for candidate in upstream/main origin/main; do
+    if git rev-parse --verify --quiet "$candidate" >/dev/null; then
+      MAIN_REF="$candidate"
+      break
+    fi
+  done
+fi
+if [ -z "$MAIN_REF" ]; then
+  echo "reach: FAIL -- no canonical main ref found (tried upstream/main, origin/main). Set REACH_MAIN_REF." >&2
+  exit 1
+fi
 
 failures=0
 checked=0
+allowed_count=0
+allowed_report=""
+allowed_seen="|"
 
 fail() {
   echo "reach: FAIL $1" >&2
@@ -51,17 +77,35 @@ fail() {
 # is what stops it becoming a place to hide things. A blank reason is a failure,
 # exactly as gate-parity.sh treats a blank reason for an asymmetry.
 #
-# Format: key|reason. The key is a branch name or a commit sha (any length that
-# `git rev-parse` accepts).
+# Format: key|trigger|reason. BOTH the trigger and the reason are mandatory; an
+# entry missing either fails the gate.
+#
+# THE TRIGGER IS THE HALF THAT KEEPS THIS HONEST. A reason explains why the gap
+# is acceptable today. A trigger says what event makes it unacceptable -- and
+# without one, an exemption written for a week-long situation silently becomes
+# permanent, which is how every stale record in this repository started.
+#
+# The key is a branch name, `remote:<branch>`, or a commit sha of any length
+# `git rev-parse` accepts.
 allowlist() {
   cat <<'ALLOW'
-ca96966|HELD BY OWNER DECISION, 2026-09-15. It reduces main from two failure causes to one but does not green it, so pushing it would break the fast-forward for no gain. The merge is the vehicle instead. Re-examine when the merge lands or when the decision changes.
-ci/main-lint-pin|The branch holding ca96966. Same decision, same reason: held as a fallback, not delivered, by owner decision on 2026-09-15.
-audit/adversarial-pass|IN FLIGHT, and the merge is its delivery. upstream/main is a strict ancestor of this branch, so everything on it arrives in one fast-forward once C7 returns a verdict -- C7 is the review boundary. This entry is the ONE decision that accounts for the pipeline fixes and document citations on this branch; remove it the moment the merge lands, or this gate stops measuring the thing it exists for.
+ca96966|the merge lands, or the owner reverses the hold|HELD BY OWNER DECISION, 2026-09-15. It reduces main from two failure causes to one but does not green it, so pushing it would break the fast-forward for no gain. The merge is the vehicle instead.
+ci/main-lint-pin|the merge lands and ca96966 is confirmed redundant|The branch holding ca96966, and the ONLY ref in this repository with a commit that is not an ancestor of HEAD. Same decision, same reason: held as a fallback, not delivered.
+audit/adversarial-pass|the merge lands|IN FLIGHT, and the merge is its delivery. The canonical main is a strict ancestor of this branch, so everything on it arrives in one fast-forward once C7 returns a verdict. This entry is the ONE decision that accounts for the pipeline fixes and document citations on this branch; remove it the moment the merge lands, or this gate stops measuring the thing it exists for.
+remote:audit/adversarial-pass|the remote rename in C5b Part 1 (owner action)|Tracks the fork because every branch here does; the topology is backwards repo-wide, not a mistake on this branch. Measured 2026-09-15: nothing in scripts/, .github/ or the Makefile is keyed to the remote NAME, so the rename is safe.
+remote:main|the remote rename in C5b Part 1 (owner action)|The most consequential of the eight. Local main tracks the FORK, whose main is 79 commits ahead of the canonical main. A bare `git push` from main delivers to a repository CI does not watch.
+remote:ci/cross-go-test|the remote rename, or deletion of this branch|Dormant since 2026-08-08 and 51 behind the canonical main. Tracks the fork like every other branch.
+remote:docs/readme-rewrite|the remote rename, or deletion of this branch|Dormant since 2026-08-08 and 48 behind. Tracks the fork like every other branch.
+remote:feat/web-grounding|the remote rename, or deletion of this branch|Dormant since 2026-08-29. Fully contained in HEAD, so it holds nothing undelivered.
+remote:fix/ci-limiter-probe-and-interrupt-race|the remote rename, or deletion of this branch|Dormant since 2026-09-02. Fully contained in HEAD.
+remote:sec/untrusted-text-channels|the remote rename, or deletion of this branch|Dormant since 2026-09-02. Fully contained in HEAD.
+remote:security/ultra-vuln-pass-2026-08-06|the remote rename, or deletion of this branch|Dormant since 2026-08-06 and 101 behind. Fully contained in HEAD.
+feat/canonical-language-table|deletion of this branch, or repointing it at a remote|MEASURED SAFE, 2026-09-15: 0 commits unreachable from HEAD and 0 unique patches by `git cherry`. A stale pointer into HEAD's own history, not 487 commits of lost work -- which is what the gate's first message made it look like.
+feat/edit-payload-ingestion|deletion of this branch, or repointing it at a remote|MEASURED SAFE, 2026-09-15: 0 commits unreachable from HEAD and 0 unique patches. Same stale-pointer shape as its sibling.
 ALLOW
 }
 
-allow_reason() {
+allow_entry() {
   local key="$1" line
   while IFS= read -r line; do
     [ -n "$line" ] || continue
@@ -72,18 +116,39 @@ allow_reason() {
   return 1
 }
 
+# Kept as a name so covering_branch reads the same way; returns success when the
+# key has an entry at all, sound or not.
+allow_reason() { allow_entry "$1" >/dev/null; }
+
 # is_allowed prints nothing and returns 0 if key is allowlisted WITH a reason.
 # An entry with an empty reason fails the gate rather than silencing it.
 is_allowed() {
-  local key="$1" reason
-  if reason="$(allow_reason "$key")"; then
-    if [ -z "$reason" ]; then
-      fail "allowlist entry '$key' has no reason. An exemption without a reason is a place to hide things; gate-parity.sh refuses these for the same cause."
-      return 1
-    fi
-    return 0
+  local key="$1" entry trigger reason
+  entry="$(allow_entry "$key")" || return 1
+  trigger="${entry%%|*}"
+  reason="${entry#*|}"
+  [ "$reason" = "$entry" ] && reason=""
+  if [ -z "$trigger" ]; then
+    fail "allowlist entry '$key' has no TRIGGER. An exemption with no event that retires it becomes permanent by default, which is how stale records start."
+    return 1
   fi
-  return 1
+  if [ -z "$reason" ]; then
+    fail "allowlist entry '$key' has no reason. An exemption without a reason is a place to hide things; gate-parity.sh refuses these for the same cause."
+    return 1
+  fi
+  # One line per EXEMPTION, not per hit. A sha cited by four documents is one
+  # decision, and printing it four times is the 213-failures mistake in
+  # miniature.
+  case "$allowed_seen" in
+    *"|$key|"*) ;;
+    *)
+      allowed_seen="${allowed_seen}$key|"
+      allowed_count=$((allowed_count + 1))
+      allowed_report="${allowed_report}
+reach: ALLOWED $key -- retires when: $trigger"
+      ;;
+  esac
+  return 0
 }
 
 # covering_branch prints the name of an ALLOWLISTED local branch that contains
@@ -155,10 +220,20 @@ check_no_upstream() {
     [ -n "$ref" ] || continue
     [ -n "$up" ] && continue
     checked=$((checked + 1))
-    n="$(git rev-list --count "$ref" 2>/dev/null || echo 0)"
+    # WHAT TO COUNT, and the first version got this wrong in a way that
+    # mattered. It printed the TOTAL commits on the ref, so two stale pointers
+    # into HEAD's own history were reported as "487 commit(s)" and "486
+    # commit(s)" -- which reads as half a year of lost work and is nothing of
+    # the kind. What matters is how much is NOT already reachable elsewhere.
+    ahead="$(git rev-list --count "${MAIN_REF}..${ref}" 2>/dev/null || echo 0)"
+    unreachable="$(git rev-list --count "HEAD..${ref}" 2>/dev/null || echo 0)"
     is_allowed "$ref" && continue
     if is_allowed "$(git rev-parse --short "$ref")"; then continue; fi
-    fail "branch '$ref' ($n commit(s)) has NO upstream. Nothing tracks it, so nothing can report it as undelivered."
+    if [ "$unreachable" -eq 0 ]; then
+      fail "branch '$ref' has NO upstream, but every one of its commits is already reachable from HEAD ($ahead ahead of $MAIN_REF). A stale pointer, not undelivered work -- but nothing tracks it, so nothing would have told you either way."
+    else
+      fail "branch '$ref' has NO upstream and holds $unreachable commit(s) reachable from nowhere else ($ahead ahead of $MAIN_REF). Nothing tracks it, so nothing can report it as undelivered."
+    fi
   done < <(git for-each-ref --format='%(refname:short)|%(upstream:short)' refs/heads)
 }
 
@@ -218,6 +293,16 @@ check_unpushed
 check_no_upstream
 check_pipeline_fixes
 check_doc_shas
+
+# ALLOWLISTED IS NOT INVISIBLE, and that distinction is the whole design.
+#
+# An allowlist that silences DETECTION is a way to forget. An allowlist that
+# silences only the EXIT STATUS is a record of decisions you still have to read
+# past. Every exemption is printed, with the event that retires it, on every run.
+if [ "$allowed_count" -gt 0 ]; then
+  printf '%s\n' "${allowed_report# }"
+  echo "reach: $allowed_count exemption(s) above are DETECTED and not fatal. Each names the event that retires it."
+fi
 
 echo
 echo "reach: NOT checked -- whether delivered work is CORRECT, whether any run went green,"
