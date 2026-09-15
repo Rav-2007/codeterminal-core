@@ -281,3 +281,230 @@ and the write path edits a user's files, that has been worth paying.
 **What it does not buy.** None of this makes the product *installable*, and no
 amount more of it will. See [`../BACKLOG.md`](../BACKLOG.md) — the engineering
 board and the readiness board are scored separately, on purpose.
+
+---
+
+# Addendum, 2026-09-15 — the method for auditing, and its ten rules
+
+**Annotated, not rewritten**, per technique 10. Everything above describes how code
+is made robust. This section describes how *an audit of that code* is kept honest,
+and it exists because a six-chunk adversarial pass produced more instrument
+failures than code failures.
+
+**Every rule below is followed by the instance that earned it.** A rule without its
+instance decays into a slogan, and a slogan is what people skip.
+
+## H1 — No circular evidence
+
+An artifact's presence in the repository is evidence about **the work**, never about
+**the documentation of the work**.
+
+> *Instance:* §13 of the 2026-09-13 checkpoint is a list of what was never verified.
+> Citing the list as evidence that those things were never verified is circular: the
+> list is a claim, not a measurement. Checked against the workflows instead, **three
+> of its 27 rows are false** and a fourth is partly false.
+
+## H2 — Anything you use to interpret evidence is untested until tested
+
+Not only extractors. **An exit status, a reference frame, a truncation, a gate's
+scope, and your own shell loop are all instruments.**
+
+> *Seven instances, all in one pass:* a 7-hex regex matching the decimal `1734900`;
+> `$?` after a pipe returning `tail`'s status; a `for` loop reporting 1 after six
+> clean lints; CI line numbers read against a working-branch copy of a file 1,266
+> lines different; `head -8` reported as a cardinality; **a gate that silently
+> checked one file extension**, which "validated" a line number from one commit
+> against a file 1,627 lines long where it was 585; and a neuter harness whose inner
+> loop shadowed its outer loop variable, mislabelling six rows that were themselves
+> correct.
+
+**The generalisation that costs the most to learn:** when you interpret output
+produced at commit X, **check out commit X or name the revision you read**.
+
+## H3 — Retract before you report
+
+State what would falsify each finding, and whether you looked.
+
+> *Instance:* "32 dangling citations" was reported and the true answer was **zero** —
+> the extractor had split shell flags and counted a gate's own self-test fixtures.
+
+## H4 — A dissolved premise is a first-class result
+
+> *Instance:* C2's stated premise was *"the 13 Extension-Development-Host suites have
+> never run."* They run on every push. **The falsehood was the finding**: the suites
+> ran, and the one that touched the defect *asserted* it.
+
+## H5 — Name the recipient
+
+A finding with no addressee is a finding nobody owns.
+
+> *Instance:* whether `daemon/CHUNK_SCRUB_DESIGN.md` is a decision record or a
+> scoping note is the owner's call; the audit's job was to put both halves of the
+> contradiction on one page and stop.
+
+## H6 — Evidence must be at the resolution of the question
+
+> *Instance:* "macOS `cross` is green" does not answer "did macOS run the tests".
+> The job log does: `go test -count=1 ./...` runs unconditionally, so the green was
+> test coverage and not compilation.
+
+## H7 — Enumerate incumbents before claiming a name
+
+> *Instance:* `B<n>` already meant four different things, so the trust boundaries
+> became `TB<n>`. **And `M5` is currently two things** — the phrase-pair rule below,
+> and a Lane B threat-model row for a lying `readOnlyHint`. That collision is
+> recorded here rather than resolved, because renaming either costs more than it
+> returns today.
+
+## H8 — Destructive neuter arms run from a committed tree
+
+> *Instance, twice:* an arm's `git checkout` discarded an **uncommitted** fix, so the
+> following arms ran against the unfixed tree. **The restore check caught it both
+> times.** Now mechanical: `git status --porcelain` must be empty before the first
+> arm, edits are anchored to a line rather than a pattern, and the restore check
+> stays even though the precondition is now enforced.
+
+## H9 — A hedge is not a measurement
+
+If you write "possibly" or "likely", either run the check or write `(U)` with what
+would settle it. **Apply every filter you have to the evidence you reason FROM, not
+only to the evidence you tabulate.**
+
+> *Instance:* a report hedged that "the last scheduled run had three macOS jobs
+> failing." Wrong three ways — four jobs, four-second billing failures rather than
+> code, and not the last run. The sub-15-second billing filter had been applied to
+> the runs being *counted* and not to the run being *reasoned from*.
+
+## H10 — Derive from a source of truth; do not enumerate
+
+**This binds whoever writes the instruction, not only whoever runs it.**
+
+> *Instance, twice:* an instruction specified *"exclude `.codeterminal/` by name"*
+> and another specified *"grep `Handler: s.X`"* — in a repository whose recurring
+> defect is enumerated scope. Both times the derivation was better: `git ls-files`
+> closed `.vscode-test/` and build outputs at once, and a call graph kept three
+> inline-closure handlers a grep would have dropped. **An instruction that names
+> paths is a smell.**
+
+---
+
+## The mandatory report header
+
+Every audit report opens with this table, because every one of these was wrong in
+some report during this pass:
+
+| Field | Why |
+|---|---|
+| branch | reports were written about the wrong branch |
+| HEAD sha | line numbers are a property of a revision |
+| tree state (clean / dirty) | a dirty tree invalidates every neuter below it |
+| local vs upstream, both directions | "pushed" and "delivered" are different |
+| latest `build` and `gates` run ids, with SHAs | a run id without a SHA is unverifiable |
+| **the remote, named** | `gh` here resolves to a fork where CI does not run |
+
+And one sentence that is not optional: **"no build run at HEAD" is a distinct state
+from "build passed."**
+
+## The M5 pair list
+
+M5 is the rule that **two states meaning different things never share a phrase**.
+Every pair below was found by something going wrong.
+
+| | |
+|---|---|
+| *written* | ≠ *committed* ≠ *delivered* |
+| *bounded by count* | ≠ *bounded in size* |
+| *972 lines* | ≠ *972 newlines* |
+| *`B<n>` as a boundary* | ≠ *`B<n>` as an item id* |
+| *the command printed FAIL* | ≠ *the command failed* |
+| *the push build on `main` is green* | ≠ *`main` is green* |
+| *green on a branch* | ≠ *green on `main`* |
+| *a duration that looks like a round number* | ≠ *a duration that is a limit* |
+| *certifying a defect* | ≠ *accommodating one* |
+| *a reference is checked* | ≠ *a reference of this extension is checked* |
+| *a stated count* | ≠ *a counted count* |
+
+Two deserve expansion because they cost the most:
+
+- **A duration that looks like a limit.** A scheduled job displayed `15m 0s`, which
+  is timeout-shaped. The Go test inside it ran **847.941 s** under an explicit
+  `-timeout 60m`. Nothing timed out.
+- **Certifying a defect ≠ accommodating one.** A test that asserts a daemon dies
+  without an environment variable, and a test that supplies the variable so the
+  daemon lives, are the same failure in different clothes: both make the defect a
+  fixture. **The accommodating form looks like ordinary setup and does not grep.**
+
+## A sixth failure shape: the DELIVERY GAP
+
+The taxonomy above has five shapes. This pass produced a sixth, seven times:
+
+> **6. Delivery gap** — the artifact exists and the delivery does not. An audit of
+> the *work* passes every time, because the work is fine.
+
+*Instances:* a memo committed with nobody told; a checkpoint written and never
+committed; a lint pin fixed on a branch and never merged while `main` stayed red;
+a cherry-pick verified and never pushed; 40 commits on a stale local ref; an eval
+fix green across three runs and never delivered; and a release fix repairing the
+failure that killed the only release run this repository has ever had, still not on
+`main`.
+
+`scripts/reach.sh` is the gate for this shape. **It catches five of the seven** —
+the two it cannot see are "nobody was told" and "never committed", and its closing
+banner says so rather than implying coverage it does not have.
+
+## A technique worth naming: commit the requirement before the implementation
+
+When a fix needs a property that could be quietly dropped, **commit the check
+first, while there is nothing for it to check.**
+
+> *Instance:* adding a configuration surface to the VS Code extension needed
+> `"scope": "machine"`, because a default-scope setting is overridable by a
+> workspace's `.vscode/settings.json`. The requirement was committed **before the
+> setting existed**, with its commit message stating plainly that the assertion was
+> *"NOT yet evidence of anything"* because the branch was unreachable. It became
+> evidence in the neuter. A requirement written afterwards is a requirement fitted
+> to what was built.
+
+## A candidate trust boundary — filed, not added
+
+`docs/TRUST_BOUNDARIES.md` has twelve rows and does not name this crossing:
+
+> **A VS Code workspace's `.vscode/settings.json` is attacker-authored content in
+> exactly the sense repository source is.** A contributed setting at default scope
+> would let a repository redirect the daemon's model endpoint, and the prompt is the
+> user's own code. The mitigation is already in place — the setting is
+> `"scope": "machine"`, and `clients/vscode/scripts/install-path-check.js` fails if
+> that ever changes.
+
+**Adding a thirteenth row is a taxonomy decision and it is the owner's.** Filed with
+the evidence and the mitigation; not taken.
+
+## What of this can be enforced mechanically, stated plainly
+
+**Most of it cannot, and calling a convention a gate is the exact M5 error this
+repository keeps finding.**
+
+| Rule | Mechanical? |
+|---|---|
+| H8's committed-tree precondition | **Yes** — `git status --porcelain` before the first arm |
+| The delivery gap (H-adjacent) | **Yes** — `scripts/reach.sh`, five of seven shapes |
+| Document citations resolving | **Yes** — `scripts/docs-coderefs.sh`, now across every extension its documents cite |
+| H1, H3, H4, H5, H6, H9 | **No.** These are judgements about evidence. No gate can ask whether you looked |
+| H2 | **Partly.** A gate can print its own scope — `docs-coderefs` now names the extension set it checked and what it did not. It cannot test *your* instrument |
+| H7 | **No**, and a grep is not a substitute: `M5` collided and nobody noticed for weeks |
+| H10 | **No.** "Is this list derived or enumerated?" is not decidable from the list |
+
+**Two structural limits worth stating once.** The documentation gates are `.md`-only,
+so a rule written in a Go doc comment is checked by nothing. And `docs-coderefs`
+resolves every citation against `HEAD`, so a citation to another revision's line
+numbers is silently "validated" against the wrong file — **name the revision in
+prose, because no gate will catch it.**
+
+---
+
+**A closing note on the section above this addendum.** It ends: *"None of this makes
+the product installable, and no amount more of it will."* On 2026-09-15 that turned
+out to be literally true — the VS Code extension could not start the daemon it ships
+on any ordinary install, from the initial commit onward, and every test passed over
+it for seventy-two days because every test supplied by hand the one thing no install
+has. The sentence was written as a caveat. It was a finding.
