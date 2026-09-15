@@ -159,6 +159,30 @@ var unboundedReaders = []string{"os.ReadFile(", "os.ReadDir(", "ReadDir(-1)"}
 var builtinToolSurface = []string{
 	"mcpbuiltin.go",
 	"mcp_ast_edit.go",
+	// Added 2026-09-15, after TestBuiltinToolSurfaceListIsComplete derived the
+	// set from the registry and found these three absent. Each was traced to the
+	// end of its allocation chain before being added, and each is clean -- but
+	// clean for a DIFFERENT reason, and one of them only at file level:
+	//
+	//   mcp_exec.go   caps AT SOURCE. execMaxOutputBytes feeds a tailBuffer used
+	//                 as cmd.Stdout/Stderr, so the bytes are never all resident;
+	//                 its own comment distinguishes that from the downstream
+	//                 egress cap, which is the Class III distinction exactly.
+	//                 builtinRepoMap takes no model-chosen path, and repomap.go
+	//                 re-runs shouldSkipFile before reading.
+	//   webtools.go   bounds BEFORE the allocation -- webfetch.go's
+	//                 io.ReadAll(io.LimitReader(resp.Body, maxBytes)), chosen
+	//                 over Content-Length because a hostile server can lie.
+	//   mcp_lsp.go    has NO read of its own. Its handlers' only outward call is
+	//                 srv.Call, and the unbounded read in that chain is
+	//                 readHeaders' ReadString in lsp_bridge.go -- one file
+	//                 deeper, where a guard that reads FILES cannot see it.
+	//                 Listing mcp_lsp.go is therefore necessary and NOT
+	//                 sufficient: the risk it actually carries is R1.24/TB7,
+	//                 which no file-scoped guard can reach.
+	"mcp_exec.go",
+	"mcp_lsp.go",
+	"webtools.go",
 }
 
 // TestBuiltinToolSurfaceBoundsItsReads is the CLASS guard, and it exists
