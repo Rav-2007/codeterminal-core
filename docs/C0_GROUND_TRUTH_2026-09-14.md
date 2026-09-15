@@ -133,7 +133,7 @@ rather than by category:
   `daemon/create_end_to_end_test.go:50`), `NOTES.md` (`daemon/repomap_test.go:592`),
   `implementation_plan.md` (`daemon/planmode.go:182`, inside a prompt string).
 - **A template placeholder, deliberately not a file** — `docs/ENTERPRISE_QA_REPORT_YYYY-MM-DD.md`
-  (`docs/ENTERPRISE_QA_MASTER.md:93`, `.cursor/skills/.../SKILL.md:29`).
+  (`docs/ENTERPRISE_QA_MASTER.md:93`, `.cursor/skills/enterprise-qa-master/SKILL.md:29`).
 - **Correct pointers to files outside the repo** — `MEMORY.md`, `p3-security-review.md`,
   `~/.claude/plans/*.md` (`docs/ARCHIVE/BACKLOG_2026-07.md:785-786,1539`,
   `docs/HANDOFF.md:276,288`). `HANDOFF.md:288` is explicitly self-aware about being an external
