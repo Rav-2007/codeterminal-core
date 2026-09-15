@@ -564,10 +564,10 @@ func (s *Server) serveConn(conn net.Conn) {
 	// gets. Chunk scrubbing is PARTIAL: structural signatures only; opaque/novel
 	// secrets are not yet closed (they await the warn-mode measurement below —
 	// see logChunkScrub).
-	cleanPrompt, redactions := scrub(promptReq.Prompt, s.cfg.NoScrub)
+	cleanPrompt, redactions := scrub(promptReq.Prompt, s.noScrub())
 	augmentedPrompt := cleanPrompt
 	if !outcome.Skipped {
-		augmentedPrompt = buildAugmentedUserMessage(cleanPrompt, outcome.Chunks, s.cfg.NoScrub)
+		augmentedPrompt = buildAugmentedUserMessage(cleanPrompt, outcome.Chunks, s.noScrub())
 		// Measurement/notice pass over the exact chunks folded in above:
 		// logs the structural redactions that renderChunk applied (kinds
 		// only) and runs the deferred entropy/keyword detectors in log-only

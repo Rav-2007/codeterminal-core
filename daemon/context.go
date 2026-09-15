@@ -432,7 +432,7 @@ func (s *Server) logChunkScrub(chunks []Chunk) {
 	var structuralKinds []string
 	warnHits := 0
 	for _, c := range chunks {
-		cleaned, reds := scrub(c.Content, s.cfg.NoScrub)
+		cleaned, reds := scrub(c.Content, s.noScrub())
 		structuralKinds = append(structuralKinds, redactionKinds(reds)...)
 
 		ref := fmt.Sprintf("%s:%d-%d", c.FilePath, c.StartLine, c.EndLine)
