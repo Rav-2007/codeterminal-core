@@ -345,3 +345,160 @@ Longer than the verdict, deliberately.
 
 Nobody above has been contacted. This document is in the repository; that is not the same as being
 delivered.
+
+---
+
+# C1b — Docs enforcement scope
+
+Same session, after C1's report. `docs-coderefs` at the start of this section:
+**98 references across 10 enforced documents; 213 references in 17 unenforced documents NOT
+checked.** That counter is the honesty mechanism working: it grew because documents were added, not
+because anything regressed.
+
+## 11. How the glob decides
+
+`scripts/docs-coderefs.sh:45-55`. Two independent filters, and a document must pass both:
+
+1. **In-glob** — `shopt -s nullglob` then `for doc in docs/*.md docs/**/*.md *.md`. **`globstar` is
+   not set** (only `nullglob`, `:45`), so `docs/**/*.md` degrades to one level, `docs/*/*.md`. The
+   reachable set is therefore: `docs/` at depth 1, `docs/<dir>/` at depth 2, and the repository
+   root. Anything else is invisible to this gate.
+2. **Marked** — `:51`, `grep -q '<!-- coderefs: enforced -->'`. Opt-in. An in-glob document with
+   code references but no marker is counted and skipped, never checked.
+
+## 12. Where the documents landed
+
+Every tracked `.md` carrying at least one backticked `file.go:NNN` reference. `(M)`
+
+**Enforced — 10 documents, 98 references, all resolving:**
+
+| doc | refs |
+|---|---|
+| `docs/RESIDUAL_RISKS.md` | 30 |
+| `docs/DECISION_MEMO_2026-09-04.md` | 18 |
+| `docs/BRANCH_STATUS_2026-09-05.md` | 16 |
+| **`docs/TRUST_BOUNDARIES.md`** | **15** |
+| `docs/C1_CI_DETERMINISM_2026-09-15.md` | 10 |
+| `docs/C0_GROUND_TRUTH_2026-09-14.md` | 9 |
+| `docs/ADVERSARIAL_PASS_2026-09-09.md` | 7 |
+| `docs/C0b_DELIVERY_2026-09-14.md` | 5 |
+| `docs/HANDBACK_2026-09-12.md` | 3 |
+| `docs/TUI_PRODUCTION_READINESS_2026-09-04.md` | 2 |
+
+**Unenforced, in-glob (marker absent) — the 213:** `docs/PROJECT_CHECKPOINT_2026-09-13.md` (40) ·
+`docs/OPEN_ITEMS.md` (30) · `docs/ARCHIVE/BACKLOG_2026-07.md` (88, reachable because
+`docs/*/*.md` matches) · **`docs/NEXT_ACTIONS_2026-09-14.md` (17)** ·
+`AGENT_SECURITY_AND_CAPABILITY_AUDIT.md` (18, root) · `docs/QA_LAUNCH_GATE_2026-07-30.md` (14) ·
+`docs/ADVERSARIAL_PASS_2026-09-03.md` (11) · `docs/MASTER_PLAN_2026-08-07.md` (8) ·
+`docs/ENTERPRISE_QA_REPORT_2026-08-05.md` (3) · `SIGNAL_ESCALATION_DESIGN.md` (3, root) ·
+and seven more with 1–2 each.
+
+**Out of glob entirely — not counted in either figure, invisible to the gate:**
+
+| doc | refs | why unreachable |
+|---|---|---|
+| **`daemon/CHUNK_SCRUB_DESIGN.md`** | **29** | `daemon/` is neither `docs/*`, `docs/*/*`, nor root. `globstar` unset |
+| `proxy/F1_ENFORCEMENT_DESIGN.md` | 22 (unbackticked) | same, **and** its references are not in backticks, so `:48`'s pattern would miss them even if the glob reached it |
+
+`daemon/CHUNK_SCRUB_DESIGN.md` carrying 29 unreachable code references is the mechanism behind the
+open Q1 row: five Go files cite it as the decision it disclaims, and no gate can see either side.
+
+## 13. The neuter — 2/2 red, restored green `(M)`
+
+`docs/TRUST_BOUNDARIES.md` was already enforced; the marker went in when the file was created at
+`bb7e166`, so C1b's "add it" was already satisfied. What was missing was evidence that enforcement
+*bites*. Both arms were run against the real gate:
+
+| arm | change | gate output | exit |
+|---|---|---|---|
+| baseline | none | `98 reference(s) resolve, across 10 enforced document(s)` | **0** |
+| **line out of range** | TB7 `daemon/lsp_bridge.go:257` → line `99999` | `FAIL docs/TRUST_BOUNDARIES.md -> daemon/lsp_bridge.go` line `99999` `-- daemon/lsp_bridge.go has only 534 lines` | **1** |
+| **nonexistent file** | TB6 `daemon/mcp/stdioclient.go:164` → a renamed file | `FAIL docs/TRUST_BOUNDARIES.md -> daemon/mcp/stdioclientXX.go` line `164` `-- ... does not exist` | **1** |
+| restored | `git checkout` | `98 reference(s) resolve` | **0** |
+
+Tree clean after restore. The gate also carries two vacuity floors of its own (`exit 1` if no
+document bears the marker; `exit 1` if enforced documents exist but zero references resolved), so it
+cannot pass by inspecting nothing.
+
+## 14. `PROJECT_CHECKPOINT_2026-09-13.md` stays unenforced, and here is the reason
+
+It holds **40** code references — the largest unenforced count of any live document, and exactly the
+kind that rots. It is nonetheless left unenforced deliberately:
+
+It was committed at `06158f0` **byte-identical**, with *"Contents unaltered"* asserted in the commit
+message. Enforcing it would eventually require editing it — the moment any of its 40 anchors moves —
+and the first such edit would make that commit message false. A dated record and an enforced live
+document are incompatible requirements on one file.
+
+**Proposed policy, for C6 to adopt rather than for this chunk to impose: dated records unenforced,
+live documents enforced.** `docs/TRUST_BOUNDARIES.md` exists precisely so the boundary enumeration
+has a live, enforced home while §1.3 remains a dated record. The same reasoning covers
+`docs/ARCHIVE/BACKLOG_2026-07.md` (88 refs) and the 2026-08/09 report series.
+
+**One live document does not fit that policy and should be enforced:**
+`docs/NEXT_ACTIONS_2026-09-14.md`, 17 references, the active queue. It is not a dated record — it is
+the working list. Flagged rather than changed, because adding a marker to a document is what the last
+four commits already did enough of, and a fifth should be somebody's decision.
+
+## 15. Self-correction — H2's third live catch, and the one that would have been worst
+
+**I nearly reported that `docs-coderefs.sh` prints FAIL and exits 0 — "a gate that does not gate."**
+That would have been a severe false finding about the repository's own enforcement.
+
+Cause: I captured the exit status as `./scripts/docs-coderefs.sh 2>&1 | tail -1; echo "exit=$?"`.
+After a pipeline, `$?` is **`tail`'s** status, not the script's. Every arm reported `exit=0`,
+including the two that had just printed `FAIL`.
+
+Re-measured with the status captured before any pipe: **exit 1 on both neuters, exit 0 on baseline
+and restore.** The gate is sound, and its tail also shows two explicit `exit 1` vacuity guards.
+
+This is the same trap C7's Step 7 warns about for `make check` — *"Do not pipe it through `tail`. A
+prior run did and destroyed its own per-gate output; exit 0 was authoritative and everything else was
+lost"* — committed here on a smaller scale, by someone who had read that warning earlier in the same
+session. **New M5 pair: `the command printed FAIL` ≠ `the command failed`.**
+
+## 16. C1b — what I did not verify
+
+1. **I did not read the 213 unenforced references.** They are counted, not checked — which is what
+   the gate's own message says, and the reason the count is printed at all.
+2. **I did not test whether `shopt -s globstar` would fix the out-of-glob set safely.** Adding it
+   would pull `docs/` at every depth into scope and change which documents the gate reaches; whether
+   that is desirable is a scoping decision, not a bug fix. `(U)` — what would settle it: run the gate
+   with `globstar` set and diff the enforced/unenforced counts.
+3. **`proxy/F1_ENFORCEMENT_DESIGN.md`'s 22 references were counted by a different pattern than the
+   gate's** (mine did not require backticks). The gate's own pattern at `:48` requires them, so the
+   real figure the gate would see even inside the glob is `(U)`.
+4. **The neuter covered two failure modes** — bad line, missing file. I did **not** test an
+   ambiguous bare basename, which is the third mode the gate handles (`:67-69`) and the one that
+   fired on a bare `server.go` basename plus a line number in C0b. Its behaviour there is `(R)` from that incident, not `(M)`.
+
+## 17. A property of the gate, found by tripping it three times
+
+Writing this very section broke the gate twice more, and C0b's report broke it once. All three were
+the gate working correctly, and together they describe a real constraint worth knowing:
+
+**An enforced document cannot quote the gate's own failure output, or any deliberately-invalid
+reference, in backticks.** `:48`'s pattern matches on shape, not on intent, so a pasted
+`FAIL … -> daemon/lsp_bridge.go:99999` in an enforced document *is* a broken reference as far as the
+gate is concerned. The three trips:
+
+| what was written | verdict |
+|---|---|
+| C0b quoting a bare `server.go` basename with a line number | ambiguous — resolves to 3 files, two of them copies under `.codeterminal/backups/` |
+| this section quoting the neuter's out-of-range failure line | line out of range, correctly |
+| this section quoting the neuter's missing-file failure line | file does not exist, correctly |
+
+All three are now written so the shape does not match, with the meaning preserved. **The gate is not
+wrong and needs no change** — but a reviewer who sees a `FAIL` on a document that is *describing*
+failures should check for this before hunting a real stale reference.
+
+**A second-order finding, recorded because it affects the gate's own reliability:** the ambiguity
+arm resolves basenames with `find .` excluding only `.git` and `node_modules`
+(`scripts/docs-coderefs.sh:67`). That includes **`.codeterminal/backups/`**, which is runtime state —
+the two extra `server.go` files were backup copies from a 2026-07-10 apply run. So a bare basename
+can resolve to 1 file in CI and 3 on a developer machine that has ever applied an edit. `(M)`
+**The ambiguity check is environment-dependent, and in the direction that makes CI more permissive
+than a developer's machine** — the inverse of the usual failure. Writing paths from the repository
+root, which the gate's own message demands, avoids it entirely; a `--exclude` for
+`.codeterminal/` would make the check host-independent. **Not changed here** — it is a gate
+behaviour change and belongs to whoever owns the gate.
