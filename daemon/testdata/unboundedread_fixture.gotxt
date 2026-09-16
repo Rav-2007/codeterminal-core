@@ -1,0 +1,45 @@
+package x
+
+func unboundedFile()    { data, _ := os.ReadFile(p); _ = data }
+func unboundedDir()     { es, _ := os.ReadDir(p); _ = es }
+func unboundedAll()     { b, _ := io.ReadAll(r); _ = b }
+func unboundedDelim()   { line, _ := out.ReadString('\n'); _ = line }
+func unboundedBytes()   { line, _ := out.ReadBytes('\n'); _ = line }
+func unboundedHandle()  { es, _ := dir.ReadDir(-1); _ = es }
+
+func boundedLimit()     { b, _ := io.ReadAll(io.LimitReader(resp.Body, maxBytes)); _ = b }
+func boundedLimitBare() { b, _ := io.ReadAll(LimitReader(r, n)); _ = b }
+func boundedHandle()    { es, _ := dir.ReadDir(n); _ = es }
+func boundedFull()      { _, _ = io.ReadFull(out, body) }
+func boundedByte()      { c, _ := out.ReadByte(); _ = c }
+func boundedScan()      { for sc.Scan() { _ = sc.Text() } }
+
+func boundedByGate() {
+	if _, skip, err := shouldSkipFile(abs, rel, ig); err != nil || skip {
+		return
+	}
+	content, _ := os.ReadFile(abs)
+	_ = content
+}
+
+func gateResultIgnored() {
+	shouldSkipFile(abs, rel, ig)
+	content, _ := os.ReadFile(abs)
+	_ = content
+}
+
+func gateBodyDoesNotReturn() {
+	if _, skip, _ := shouldSkipFile(abs, rel, ig); skip {
+		_ = skip
+	}
+	content, _ := os.ReadFile(abs)
+	_ = content
+}
+
+func gateAfterTheRead() {
+	content, _ := os.ReadFile(abs)
+	if _, skip, err := shouldSkipFile(abs, rel, ig); err != nil || skip {
+		return
+	}
+	_ = content
+}

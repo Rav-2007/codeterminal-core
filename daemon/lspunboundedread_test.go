@@ -360,69 +360,55 @@ func reachesUnboundedRead(fn string, calls map[string][]string, readers map[stri
 	}
 }
 
-// knownAnswerFixture holds every shape the detector must classify, with the
-// right answer written beside each. Synthetic on purpose: see
-// unboundedReadsInSource for why a known-answer test must not be anchored on a
-// live defect.
+// knownAnswerFixtureFile holds every shape the detector must classify, with the
+// right answer asserted below. Synthetic on purpose: see unboundedReadsInSource
+// for why a known-answer test must not be anchored on a live defect.
 //
-// Each shape here is a real spelling that occurs, or occurred, in this
+// Each shape in it is a real spelling that occurs, or occurred, in this
 // repository -- not an invented case. The two LimitReader arms are webfetch.go's
 // exact form; the ReadDir(-1) arm is the spelling that NEUTERING
 // builtinreadalloc_test.go's guard found missing; io.ReadFull is lsp_bridge.go's
-// body read, which is bounded by its caller's slice and must never fire.
-const knownAnswerFixture = `package x
+// body read, which is bounded by its caller's slice and must never fire; the four
+// gate arms are readReferencedSpan's and regionsOnDisk's pattern and three ways
+// of getting it wrong.
+//
+// IN testdata/ AND NOT IN A RAW STRING IN THIS FILE, and that is not tidiness.
+// It WAS a raw string here, and it broke two unrelated guards:
+// TestTheHeuristicAgreesWithTheCompiler reported "the heuristic invents 16
+// boundaries the compiler does not recognise" and
+// TestConstructExtentsNeverStopShortOfTheCompiler reported its first
+// stop-short construct since 2026-08-28. chunkcontext's heuristic finds top-level
+// declarations by scanning lines, so `func unboundedDir() {...}` inside a string
+// literal reads to it as a real declaration while go/parser correctly sees string
+// contents. A .gotxt file is not a Go file to either of them.
+//
+// THAT IS ALSO A MEASURED LIMITATION OF THE HEURISTIC, worth recording rather
+// than just routing around: any file embedding Go source in a raw string
+// over-counts its declarations and can make constructExtents over-extend. Rare,
+// low impact, and now demonstrated.
+const knownAnswerFixtureFile = "testdata/unboundedread_fixture.gotxt"
 
-func unboundedFile()    { data, _ := os.ReadFile(p); _ = data }
-func unboundedDir()     { es, _ := os.ReadDir(p); _ = es }
-func unboundedAll()     { b, _ := io.ReadAll(r); _ = b }
-func unboundedDelim()   { line, _ := out.ReadString('\n'); _ = line }
-func unboundedBytes()   { line, _ := out.ReadBytes('\n'); _ = line }
-func unboundedHandle()  { es, _ := dir.ReadDir(-1); _ = es }
-
-func boundedLimit()     { b, _ := io.ReadAll(io.LimitReader(resp.Body, maxBytes)); _ = b }
-func boundedLimitBare() { b, _ := io.ReadAll(LimitReader(r, n)); _ = b }
-func boundedHandle()    { es, _ := dir.ReadDir(n); _ = es }
-func boundedFull()      { _, _ = io.ReadFull(out, body) }
-func boundedByte()      { c, _ := out.ReadByte(); _ = c }
-func boundedScan()      { for sc.Scan() { _ = sc.Text() } }
-
-func boundedByGate() {
-	if _, skip, err := shouldSkipFile(abs, rel, ig); err != nil || skip {
-		return
+func knownAnswerFixture(t *testing.T) string {
+	t.Helper()
+	src, err := os.ReadFile(knownAnswerFixtureFile)
+	if err != nil {
+		t.Fatalf("reading the known-answer fixture: %v", err)
 	}
-	content, _ := os.ReadFile(abs)
-	_ = content
-}
-
-func gateResultIgnored() {
-	shouldSkipFile(abs, rel, ig)
-	content, _ := os.ReadFile(abs)
-	_ = content
-}
-
-func gateBodyDoesNotReturn() {
-	if _, skip, _ := shouldSkipFile(abs, rel, ig); skip {
-		_ = skip
+	// Vacuity floor: an empty or truncated fixture makes every "must not fire"
+	// assertion below pass for free.
+	if len(src) < 400 {
+		t.Fatalf("known-answer fixture is %d bytes; it holds sixteen declarations and cannot be "+
+			"that small. A truncated fixture would pass every negative assertion.", len(src))
 	}
-	content, _ := os.ReadFile(abs)
-	_ = content
+	return string(src)
 }
-
-func gateAfterTheRead() {
-	content, _ := os.ReadFile(abs)
-	if _, skip, err := shouldSkipFile(abs, rel, ig); err != nil || skip {
-		return
-	}
-	_ = content
-}
-`
 
 // TestUnboundedReadDetectorKnowsTheAnswers is the HARD GATE, and nothing
 // downstream is reportable if it fails (H2: a detector is untested until it has
 // been shown to find the thing it is for and to leave alone the things it is
 // not).
 func TestUnboundedReadDetectorKnowsTheAnswers(t *testing.T) {
-	sites := unboundedReadsInSource("fixture.go", knownAnswerFixture, true)
+	sites := unboundedReadsInSource("fixture.go", knownAnswerFixture(t), true)
 
 	// Vacuity floor: a fixture that failed to parse yields an empty map, and
 	// every "must not fire" assertion below then passes for free.
@@ -475,7 +461,7 @@ func TestUnboundedReadDetectorKnowsTheAnswers(t *testing.T) {
 	// exception ignored, both bounded-ReadAll arms MUST appear -- otherwise they
 	// are excluded for some other reason and the assertions above are evidence of
 	// nothing. Modelled on detectorSeesTheAccessor in noscrubaccessor_test.go.
-	strict := unboundedReadsInSource("fixture.go", knownAnswerFixture, false)
+	strict := unboundedReadsInSource("fixture.go", knownAnswerFixture(t), false)
 	for _, fn := range []string{"boundedLimit", "boundedLimitBare"} {
 		if _, ok := strict[fn]; !ok {
 			t.Errorf("the LimitReader exception is not what excludes %s: with the exception "+
