@@ -24,6 +24,58 @@ env:
 
 jobs:
   # ---------------------------------------------------------------------------
+  # A v* TAG ONLY RELEASES FROM THE RELEASE LINE, and this job is the one
+  # ordering error C7 found in this repository.
+  #
+  # BEFORE THIS EXISTED: `binaries` carried no `if:` and `package` carried none
+  # either, so the condition for running a full three-platform release was
+  # exactly `push` + a tag matching `v*` -- and nothing else. Expanded for a tag
+  # `v0.0.2` pushed on `audit/adversarial-pass`: the trigger matches, `binaries`
+  # has no gate so it runs on all three runners, `package` needs only `binaries`
+  # so it runs, and "Attach to the GitHub Release" is gated on
+  # `startsWith(github.ref, 'refs/tags/v')` -- true for a tag on ANY ref. A
+  # draft Release with binaries built from an unreviewed branch is one `git push
+  # --tags` away.
+  #
+  # WHAT IS STOPPING THAT TODAY, measured 2026-09-16 on
+  # Rav-2007/codeterminal-core: `gh api .../actions/secrets` returns
+  # `{"total_count":0}`. With no MACOS_CERT_P12 the darwin marker is UNSIGNED,
+  # and on a tag the signing guard fails the whole `package` job before the
+  # attach step -- so zero assets publish, on every platform. A MISSING
+  # CREDENTIAL IS DOING AN ACCESS-CONTROL JOB, and it stops the moment the five
+  # MACOS_* secrets land. This guard exists so that ordering cannot bite.
+  #
+  # THE RELEASE LINE IS DERIVED, NOT HARDCODED. No branch name appears here or
+  # in the script: `github.event.repository.default_branch` is the repository's
+  # own declaration of its release line, read out of the event payload. Change
+  # the default branch and the guard follows with no edit.
+  # ---------------------------------------------------------------------------
+  guard:
+    name: release line
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # THE WHOLE JOB DEPENDS ON THIS. A default checkout fetches the tagged
+          # commit and nothing to compare it against, and the guard fails closed
+          # rather than guessing -- which would turn a legitimate release red.
+          # Full history is the cheap half of this job.
+          fetch-depth: 0
+
+      # Runs on workflow_dispatch too, and that is deliberate. The script's own
+      # scope check short-circuits a non-tag ref, so ancestry is NOT asserted on
+      # a rehearsal -- but a missing or empty release line still fails here, on
+      # every event. That means a wiring error is caught by the next dispatch
+      # instead of by the next release, which is the whole lesson of R1.15: a
+      # guard first exercised during a release is a guard nobody has tested.
+      - name: The tag must be on the release line
+        run: |
+          ./scripts/release-branch-guard.sh \
+            --ref "${{ github.ref }}" \
+            --commit "${{ github.sha }}" \
+            --release-line "${{ github.event.repository.default_branch }}"
+
+  # ---------------------------------------------------------------------------
   # Binaries are built on the OS they run on. NOT cross-compiled, and that is a
   # decision rather than an omission.
   #
@@ -38,6 +90,10 @@ jobs:
   # ---------------------------------------------------------------------------
   binaries:
     name: binaries (${{ matrix.target }})
+    # NOTHING IS BUILT UNTIL THE RELEASE LINE IS CONFIRMED. `needs` and not a
+    # per-job `if:`, so the guard's verdict gates every downstream job through
+    # one edge rather than being restated in three places that can drift.
+    needs: guard
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false

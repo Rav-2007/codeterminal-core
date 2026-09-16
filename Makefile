@@ -213,6 +213,7 @@ reach:
 # reachable stdlib vulnerabilities on the same commit.
 supplychain:
 	@./scripts/release-signing-guard.sh --self-test
+	@./scripts/release-branch-guard.sh --self-test
 	@./scripts/actions-pinned.sh
 	@./scripts/go-toolchain-pinned.sh --self-test
 	@./scripts/go-toolchain-pinned.sh

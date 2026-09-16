@@ -82,6 +82,15 @@ jobs:
       - name: Release signing guard (self-test)
         run: ./scripts/release-signing-guard.sh --self-test
 
+      # The OTHER release guard, and for the same reason. This one decides
+      # whether a v* tag may release at all, by asking whether the tagged commit
+      # is on the repository's default branch. It cannot be exercised by tagging
+      # something, so its self-test builds a real throwaway repository with the
+      # three ancestry shapes -- on the line, ahead of it, diverged from it --
+      # and asserts the guard's verdict on each.
+      - name: Release branch guard (self-test)
+        run: ./scripts/release-branch-guard.sh --self-test
+
       - name: Go toolchain floor agrees across every module
         run: ./scripts/go-toolchain-pinned.sh
 
