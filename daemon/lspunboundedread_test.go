@@ -89,6 +89,76 @@ func readerIsBounded(call *ast.CallExpr) bool {
 	return false
 }
 
+// eligibilityGateName is this repository's own read-side gate. shouldSkipFile
+// enforces maxFileSize (and the secret-name and binary checks), and the rule
+// planmode.go states in general is that the read side must not assume the write
+// side ran -- so a read preceded by a re-run of this gate IS bounded, at
+// maxFileSize.
+//
+// NAMED, and asserted to exist. TestEligibilityGateStillExists fails if this
+// function is renamed or deleted, because a recogniser keyed on a name that no
+// longer resolves silently stops recognising anything and every bounded read in
+// the indexer starts failing -- or, worse, the name survives on something that no
+// longer bounds.
+const eligibilityGateName = "shouldSkipFile"
+
+// gateGuardEnds returns the end position of every `if ... shouldSkipFile(...) ...
+// { ... return ... }` in a body.
+//
+// THREE CONDITIONS, AND EACH ONE IS LOAD-BEARING. The call must appear in an
+// if statement's init or condition, that if's body must return, and -- at the
+// call site below -- it must come BEFORE the read. Presence alone is not enough:
+// a function that calls the gate and ignores its result reads exactly as far as a
+// function that never called it, and "the gate was mentioned" is not "the gate
+// was obeyed".
+func gateGuardEnds(body *ast.BlockStmt) []token.Pos {
+	var ends []token.Pos
+	ast.Inspect(body, func(n ast.Node) bool {
+		ifs, ok := n.(*ast.IfStmt)
+		if !ok {
+			return true
+		}
+		mentions := false
+		for _, part := range []ast.Node{ifs.Init, ifs.Cond} {
+			if part == nil {
+				continue
+			}
+			ast.Inspect(part, func(m ast.Node) bool {
+				call, ok := m.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				switch f := call.Fun.(type) {
+				case *ast.Ident:
+					if f.Name == eligibilityGateName {
+						mentions = true
+					}
+				case *ast.SelectorExpr:
+					if f.Sel.Name == eligibilityGateName {
+						mentions = true
+					}
+				}
+				return true
+			})
+		}
+		if !mentions {
+			return true
+		}
+		returns := false
+		ast.Inspect(ifs.Body, func(m ast.Node) bool {
+			if _, ok := m.(*ast.ReturnStmt); ok {
+				returns = true
+			}
+			return true
+		})
+		if returns {
+			ends = append(ends, ifs.End())
+		}
+		return true
+	})
+	return ends
+}
+
 // isUnboundedRead classifies one call expression. `honourBounds` is the switch
 // the known-answer test flips: with it false the LimitReader exception is
 // ignored, which is how that test proves the exception is what excludes
@@ -184,19 +254,32 @@ func unboundedReadsInSource(name, src string, honourBounds bool) map[string][]un
 		return out // a build-tagged file this configuration does not compile
 	}
 	scan := func(key string, body *ast.BlockStmt) {
+		gates := gateGuardEnds(body)
 		ast.Inspect(body, func(n ast.Node) bool {
 			call, ok := n.(*ast.CallExpr)
 			if !ok {
 				return true
 			}
-			if text, bad := isUnboundedRead(call, honourBounds); bad {
-				out[key] = append(out[key], unboundedReadSite{
-					fn:   key,
-					call: text,
-					file: name,
-					line: fset.Position(call.Pos()).Line,
-				})
+			text, bad := isUnboundedRead(call, honourBounds)
+			if !bad {
+				return true
 			}
+			// BOUNDED BY THE GATE, if one of them closed before this read.
+			// Order matters and is checked: a gate AFTER the read bounds
+			// nothing, and the AST is where that is visible.
+			if honourBounds {
+				for _, end := range gates {
+					if end < call.Pos() {
+						return true
+					}
+				}
+			}
+			out[key] = append(out[key], unboundedReadSite{
+				fn:   key,
+				call: text,
+				file: name,
+				line: fset.Position(call.Pos()).Line,
+			})
 			return true
 		})
 	}
@@ -241,27 +324,40 @@ func reachesFunc(from, want string, calls map[string][]string, seen map[string]b
 	return false
 }
 
-// reachesUnboundedRead is reachesSpawn's shape, with one difference that is not
-// cosmetic: it returns the PATH it took. "This handler can reach an unbounded
-// read" is not actionable; "it reaches it through GetServer and readLoop" is,
-// and a chain property whose report names only its endpoints sends the reader
-// back to do the walk by hand.
+// reachedSite is one unbounded read a handler can reach, with the path taken to
+// it. The path is not decoration: "this handler can reach an unbounded read" is
+// not actionable, "it reaches it through GetServer and readLoop" is, and a chain
+// property whose report names only its endpoints sends the reader back to do the
+// walk by hand.
+type reachedSite struct {
+	site unboundedReadSite
+	path []string
+}
+
+// reachesUnboundedRead is reachesSpawn's shape, with one difference that matters:
+// it collects EVERY site reachable, not the first.
+//
+// THE FIRST VERSION RETURNED ONE, AND THAT WAS A HOLE. Paired with an exemption
+// keyed on the handler alone, one recorded decision silenced every other site
+// under the same tool -- and it did: search_code's exemption for
+// parseGitignoreLayer hid readReferencedSpan completely, and that site only
+// appeared once the first was fixed and the exemption removed. A gate that stops
+// looking after one hit is a gate whose coverage shrinks every time you use it.
 func reachesUnboundedRead(fn string, calls map[string][]string, readers map[string][]unboundedReadSite,
-	seen map[string]bool, path []string) ([]string, unboundedReadSite, bool) {
+	seen map[string]bool, path []string, out map[string]reachedSite) {
 	if seen[fn] {
-		return nil, unboundedReadSite{}, false
+		return
 	}
 	seen[fn] = true
-	path = append(path, fn)
-	if sites := readers[fn]; len(sites) > 0 {
-		return path, sites[0], true
-	}
-	for _, callee := range calls[fn] {
-		if p, site, ok := reachesUnboundedRead(callee, calls, readers, seen, path); ok {
-			return p, site, true
+	path = append(append([]string{}, path...), fn)
+	for _, site := range readers[fn] {
+		if _, dup := out[site.fn]; !dup {
+			out[site.fn] = reachedSite{site: site, path: path}
 		}
 	}
-	return nil, unboundedReadSite{}, false
+	for _, callee := range calls[fn] {
+		reachesUnboundedRead(callee, calls, readers, seen, path, out)
+	}
 }
 
 // knownAnswerFixture holds every shape the detector must classify, with the
@@ -289,6 +385,36 @@ func boundedHandle()    { es, _ := dir.ReadDir(n); _ = es }
 func boundedFull()      { _, _ = io.ReadFull(out, body) }
 func boundedByte()      { c, _ := out.ReadByte(); _ = c }
 func boundedScan()      { for sc.Scan() { _ = sc.Text() } }
+
+func boundedByGate() {
+	if _, skip, err := shouldSkipFile(abs, rel, ig); err != nil || skip {
+		return
+	}
+	content, _ := os.ReadFile(abs)
+	_ = content
+}
+
+func gateResultIgnored() {
+	shouldSkipFile(abs, rel, ig)
+	content, _ := os.ReadFile(abs)
+	_ = content
+}
+
+func gateBodyDoesNotReturn() {
+	if _, skip, _ := shouldSkipFile(abs, rel, ig); skip {
+		_ = skip
+	}
+	content, _ := os.ReadFile(abs)
+	_ = content
+}
+
+func gateAfterTheRead() {
+	content, _ := os.ReadFile(abs)
+	if _, skip, err := shouldSkipFile(abs, rel, ig); err != nil || skip {
+		return
+	}
+	_ = content
+}
 `
 
 // TestUnboundedReadDetectorKnowsTheAnswers is the HARD GATE, and nothing
@@ -306,12 +432,15 @@ func TestUnboundedReadDetectorKnowsTheAnswers(t *testing.T) {
 	}
 
 	mustFire := map[string]string{
-		"unboundedFile":   "os.ReadFile",
-		"unboundedDir":    "os.ReadDir",
-		"unboundedAll":    "io.ReadAll",
-		"unboundedDelim":  "out.ReadString",
-		"unboundedBytes":  "out.ReadBytes",
-		"unboundedHandle": "dir.ReadDir(-1)",
+		"gateResultIgnored":     "os.ReadFile",
+		"gateBodyDoesNotReturn": "os.ReadFile",
+		"gateAfterTheRead":      "os.ReadFile",
+		"unboundedFile":         "os.ReadFile",
+		"unboundedDir":          "os.ReadDir",
+		"unboundedAll":          "io.ReadAll",
+		"unboundedDelim":        "out.ReadString",
+		"unboundedBytes":        "out.ReadBytes",
+		"unboundedHandle":       "dir.ReadDir(-1)",
 	}
 	for fn, want := range mustFire {
 		got, ok := sites[fn]
@@ -331,6 +460,9 @@ func TestUnboundedReadDetectorKnowsTheAnswers(t *testing.T) {
 		"boundedFull":      "io.ReadFull's length is the CALLER's slice -- lsp_bridge.go's body read",
 		"boundedByte":      "one byte is bounded by construction; this is what a bounded line reader is built from",
 		"boundedScan":      "bufio.Scanner is bounded by MaxScanTokenSize and errors rather than growing",
+		"boundedByGate": "shouldSkipFile enforces maxFileSize and is re-run, with its result " +
+			"obeyed, one statement before the read -- the antidote readReferencedSpan and " +
+			"regionsOnDisk both apply and builtinreadalloc_test.go names as the correct pattern",
 	}
 	for fn, why := range mustNotFire {
 		if got, ok := sites[fn]; ok {
@@ -395,6 +527,15 @@ func TestUnboundedReadDetectorLeavesTheCleanSitesAlone(t *testing.T) {
 	}
 }
 
+func sortedSiteKeys(m map[string]reachedSite) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
 func sortedReaderKeys(m map[string][]unboundedReadSite) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
@@ -416,23 +557,25 @@ func sortedReaderKeys(m map[string][]unboundedReadSite) []string {
 // Keyed on the HANDLER, not on the site: one handler reaching one class of read
 // is one decision. A handler reaching a NEW site still fails, because the
 // message names the site and the reader has to come back here.
+// KEYED "<tool>|<site function>", NOT ON THE TOOL. One handler reaching one site
+// is one decision; the same handler reaching a DIFFERENT site is a different one
+// and must still fail. The first version of this map was keyed on the tool alone
+// and search_code's entry for parseGitignoreLayer silenced readReferencedSpan
+// entirely -- which is the two-states-one-phrase error this repository keeps
+// finding, committed here by the person writing the guard against it.
+//
+// readReferencedSpan and regionsOnDisk are NOT in here, and that is the point:
+// they are recognised by gateGuardEnds instead, because "the read re-runs the
+// indexer's gate and obeys it" is a property and an exemption is not.
 var unboundedReadExemptions = map[string]struct{ trigger, reason string }{
-	// --- SITE 2: parseGitignoreLayer's os.ReadFile, chunker.go. NEW, found here.
-	//
-	// The one read in chunker.go that does NOT re-run the gate. readEligibleFile
-	// in the same file re-runs shouldSkipFile immediately before reading, and
-	// planmode.go states the rule: the read side must not assume the write side
-	// ran. Lower severity than site 1 and filed that way rather than inflated to
-	// match -- the path comes from a directory walk, not from the model -- but
-	// the SIZE is decided by a file in the workspace.
-	"search_code": {
+	"search_code|parseGitignoreLayer": {
 		trigger: "parseGitignoreLayer bounds its read",
 		reason: "Chain: builtinSearchCode -> gatherContext -> resolveFileLineRefs -> resolveRefs " +
 			"-> findFilesBySuffix -> matchDir -> matches -> layerFor -> parseGitignoreLayer. " +
-			"MEASURED: 90,333,064 bytes allocated for a 33.5 MB .gitignore, against maxFileSize " +
-			"of 1 MiB.",
+			"MEASURED 2026-09-16: 90,333,064 bytes allocated for a 33.5 MB .gitignore, against a " +
+			"maxFileSize of 1 MiB. The one read in chunker.go that does NOT re-run the gate.",
 	},
-	"repo_map": {
+	"repo_map|parseGitignoreLayer": {
 		trigger: "parseGitignoreLayer bounds its read",
 		reason: "Same site: builtinTools.func1 -> builtinRepoMap -> buildRepoMap -> matchDir -> " +
 			"matches -> layerFor -> parseGitignoreLayer.",
@@ -501,27 +644,72 @@ func TestNoBuiltinReachesAnUnboundedRead(t *testing.T) {
 				b.Tool.Name)
 			continue
 		}
-		path, site, ok := reachesUnboundedRead(fn, calls, readers, map[string]bool{}, nil)
-		if !ok {
-			continue
-		}
-		if ex, allowed := unboundedReadExemptions[b.Tool.Name]; allowed {
-			if ex.trigger == "" || ex.reason == "" {
-				t.Errorf("exemption for %q is missing a %s. An exemption without both is a place "+
-					"to hide things; reach.sh and gate-parity.sh refuse these for the same cause.",
-					b.Tool.Name, map[bool]string{true: "trigger", false: "reason"}[ex.trigger == ""])
+		reached := map[string]reachedSite{}
+		reachesUnboundedRead(fn, calls, readers, map[string]bool{}, nil, reached)
+		for _, siteFn := range sortedSiteKeys(reached) {
+			r := reached[siteFn]
+			key := b.Tool.Name + "|" + siteFn
+			if ex, allowed := unboundedReadExemptions[key]; allowed {
+				if ex.trigger == "" || ex.reason == "" {
+					t.Errorf("exemption %q is missing a %s. An exemption without both is a place "+
+						"to hide things; reach.sh and gate-parity.sh refuse these for the same "+
+						"cause.", key,
+						map[bool]string{true: "trigger", false: "reason"}[ex.trigger == ""])
+				}
+				t.Logf("ALLOWED: %q reaches %s -- retires when: %s", b.Tool.Name, r.site, ex.trigger)
+				continue
 			}
-			t.Logf("ALLOWED: %q reaches %s -- retires when: %s", b.Tool.Name, site, ex.trigger)
-			continue
+			t.Errorf("built-in %q can reach an unbounded read.\n"+
+				"  site:  %s\n"+
+				"  chain: %s\n"+
+				"The number of bytes that read may allocate is decided by the thing being read, "+
+				"not by this process. A cap applied to the RESULT does not help: that is Class "+
+				"III, and it is the distinction maxBuiltinReadBytes got wrong for months.\n"+
+				"Bound it at the source, or add an entry to unboundedReadExemptions keyed %q "+
+				"with a reason AND the event that retires it.",
+				b.Tool.Name, r.site, strings.Join(r.path, " -> "), key)
 		}
-		t.Errorf("built-in %q can reach an unbounded read.\n"+
-			"  site:  %s\n"+
-			"  chain: %s\n"+
-			"The number of bytes that read may allocate is decided by the thing being read, not "+
-			"by this process. A cap applied to the RESULT does not help: that is Class III, and "+
-			"it is the distinction maxBuiltinReadBytes got wrong for months.\n"+
-			"Bound it at the source, or add an entry to unboundedReadExemptions with a reason AND "+
-			"the event that retires it.",
-			b.Tool.Name, site, strings.Join(path, " -> "))
+	}
+}
+
+// TestEligibilityGateStillExists is the anti-rot half, and it is the failure mode
+// a name-keyed recogniser has: gateGuardEnds looks for calls to
+// eligibilityGateName, so if that function is renamed or deleted the recogniser
+// stops recognising anything and every correctly-gated read in the indexer starts
+// reading as a defect. Worse in the other direction: the name could survive on
+// something that no longer enforces a size cap, and the recogniser would keep
+// excusing reads on the strength of a function that stopped bounding them.
+//
+// The first half is mechanical and is here. The second is not: that
+// shouldSkipFile still enforces maxFileSize is asserted by
+// TestParseGitignoreLayer_BoundIsTheBoundary's sibling coverage in chunker_test
+// and by shouldSkipFile's own tests, not by this one, and this comment says so
+// rather than implying it.
+func TestEligibilityGateStillExists(t *testing.T) {
+	declFile := daemonFuncDeclFiles(t)
+	if len(declFile) < 50 {
+		t.Fatalf("vacuity floor: parsed only %d declarations", len(declFile))
+	}
+	if _, ok := declFile[eligibilityGateName]; !ok {
+		t.Fatalf("gateGuardEnds recognises reads bounded by %q, and no function of that name is "+
+			"declared in this package. The recogniser is keyed on a name that does not resolve, "+
+			"so it excuses nothing and every gated read in the indexer now reads as a defect. "+
+			"Point eligibilityGateName at the gate's new name.", eligibilityGateName)
+	}
+	// And the recogniser must actually fire on a real use of it, or the constant
+	// is right and the matcher is broken -- two different failures.
+	src, err := os.ReadFile("chunkexpand.go")
+	if err != nil {
+		t.Fatalf("reading chunkexpand.go: %v", err)
+	}
+	if sites := unboundedReadsInSource("chunkexpand.go", string(src), true); len(sites) > 0 {
+		t.Errorf("regionsOnDisk re-runs %s and obeys it one statement before its os.ReadFile, so "+
+			"chunkexpand.go should hold no unbounded read site. Got: %v",
+			eligibilityGateName, sites)
+	}
+	if strict := unboundedReadsInSource("chunkexpand.go", string(src), false); len(strict) == 0 {
+		t.Errorf("with bound recognition disabled, chunkexpand.go's os.ReadFile STILL does not " +
+			"fire -- so the gate recogniser is not what excludes it and the assertion above is " +
+			"evidence of nothing.")
 	}
 }
