@@ -67,6 +67,8 @@ allowed_seen="|"
 covered_count=0
 covered_cites=0
 covered_branches="|"
+arrived_count=0
+arrived_report=""
 
 fail() {
   echo "reach: FAIL $1" >&2
@@ -186,7 +188,7 @@ covering_branch() {
 # --- 1. unpushed commits ------------------------------------------------------
 # A local branch ahead of its upstream. Instance 5, and instance 6's shape.
 check_unpushed() {
-  local ref up track ahead unreachable
+  local ref up track ahead unreachable ci_copy ci_ahead
   while IFS='|' read -r ref up track; do
     [ -n "$ref" ] || continue
     [ -n "$up" ] || continue # no upstream at all is check 2's business
@@ -208,7 +210,43 @@ check_unpushed() {
     if [ "${up%%/*}" != "$ci_remote" ]; then
       is_allowed "remote:$ref" || fail "branch '$ref' tracks '${up}', but $MAIN_REF lives on remote '$ci_remote'. A bare 'git push' delivers it to a remote the pipeline does not watch."
     fi
+    # WHERE THE PIPELINE WATCHES, and not only where the branch is configured to
+    # push. This is the same reference-frame defect as check 1's stale-pointer
+    # blindness, one layer further in, and it was found the only way it could be:
+    # by pushing.
+    #
+    # MEASURED 2026-09-16. This branch was pushed to the canonical remote --
+    # upstream/audit/adversarial-pass and HEAD both at aa81555 -- and this gate
+    # went on reporting it as in flight, plus 57 pipeline commits and 178
+    # document citations as undelivered. Every one of those had arrived. The
+    # branch tracks the FORK, `ahead` was measured against the fork's copy, and
+    # the question "has this work reached the pipeline?" was being answered about
+    # a repository the pipeline does not read.
+    #
+    # A gate for the delivery gap that cannot see a delivery is worse than no
+    # gate: it teaches you to ignore it. So `ahead` is now asked of the canonical
+    # remote's copy of the same branch whenever one exists.
+    #
+    # THE WRONG-REMOTE FACT IS NOT SWALLOWED BY THIS. The `remote:<branch>` check
+    # above still fires, because "your tracking ref points at a fork" and "your
+    # work has not arrived" are two facts and this script's own comment says they
+    # must not share a phrase. What changes is that arrival is no longer reported
+    # as its absence.
+    ci_copy=""; ci_ahead=""
+    if git rev-parse --verify --quiet "refs/remotes/${ci_remote}/${ref}" >/dev/null 2>&1; then
+      ci_copy="${ci_remote}/${ref}"
+      ci_ahead="$(git rev-list --count "${ci_copy}..${ref}" 2>/dev/null || echo 0)"
+    fi
+
     [ "$ahead" -gt 0 ] || continue
+
+    if [ -n "$ci_copy" ] && [ "$ci_ahead" = "0" ]; then
+      arrived_count=$((arrived_count + 1))
+      arrived_report="${arrived_report}
+reach:         $ref -- $ahead ahead of '$up', 0 ahead of '$ci_copy'"
+      continue
+    fi
+
     is_allowed "$ref" && continue
     # WHICH OF TWO STATES, because "ahead of its upstream" covers both a branch
     # holding work that exists nowhere else and a stale pointer whose every
@@ -338,15 +376,35 @@ check_no_upstream
 check_pipeline_fixes
 check_doc_shas
 
+# MARK THE COVERING BRANCHES CONSULTED, AND DO IT HERE RATHER THAN IN
+# covering_branch. That function runs inside a `cover="$(...)"` command
+# substitution, so anything it marks is marked in a SUBSHELL and discarded --
+# which is how the first version of the unconsulted-entry report said
+# `audit/adversarial-pass` matched nothing, two lines below a line saying that
+# same entry accounted for 57 commits and 178 citations. One run contradicting
+# itself, from a subshell, which is the second time a subshell or a shadowed
+# variable has produced a wrong row in this pass.
+for cb in ${covered_branches//|/ }; do
+  [ -n "$cb" ] || continue
+  is_allowed "$cb" >/dev/null 2>&1 || true
+done
+
 # ALLOWLISTED IS NOT INVISIBLE, and that distinction is the whole design.
 #
 # An allowlist that silences DETECTION is a way to forget. An allowlist that
 # silences only the EXIT STATUS is a record of decisions you still have to read
 # past. Every exemption is printed, with the event that retires it, on every run.
 if [ "$covered_count" -gt 0 ] || [ "$covered_cites" -gt 0 ]; then
-  echo "reach: COVERED $covered_count pipeline commit(s) and $covered_cites document citation(s) are undelivered,"
+  echo "reach: COVERED $covered_count pipeline commit(s) and $covered_cites document citation(s) have not reached $MAIN_REF,"
   echo "reach:         accounted for by the allowlisted branch(es):${covered_branches//|/ }"
   echo "reach:         They are DETECTED, not silenced. When that branch's entry retires, these become failures."
+fi
+
+if [ "$arrived_count" -gt 0 ]; then
+  echo
+  echo "reach: $arrived_count branch(es) have ARRIVED where the pipeline watches, while their"
+  echo "reach:       tracking ref still says otherwise. NOT a delivery failure; the"
+  echo "reach:       wrong-remote fact is reported separately:${arrived_report}"
 fi
 
 if [ "$allowed_count" -gt 0 ]; then
