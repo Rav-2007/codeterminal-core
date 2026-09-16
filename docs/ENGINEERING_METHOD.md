@@ -508,3 +508,100 @@ out to be literally true — the VS Code extension could not start the daemon it
 on any ordinary install, from the initial commit onward, and every test passed over
 it for seventy-two days because every test supplied by hand the one thing no install
 has. The sentence was written as a caveat. It was a finding.
+
+---
+
+# Second addendum, 2026-09-16 — three more rules, and the two that grew
+
+Annotated, not rewritten. The ten rules above stand exactly as written; these are
+what Phase 4 and the closing chunks earned, and each carries the instance that
+earned it.
+
+## H11 — A wall-clock gate runs alone, and the report says what else was running
+
+> *Instance:* I reported a release-blocking gate failure I had created.
+> `TestRepaintCostAtTheTranscriptCeiling` measured p50 **71.675 ms** against a 64 ms
+> threshold and failed, while `make check` was backgrounded next to `gh` API calls,
+> `npm audit` and several `go build` runs. Idle, the same commit measures p50
+> **48.674 ms** and passes. The number was real; the verdict was about the machine.
+>
+> Mechanical form: every `make check` transcript in this pass opens with a
+> `WHAT ELSE WAS RUNNING` line, and it says *nothing* or it says what.
+
+**The corollary is sharper than the rule.** `make check` exit 0 is a statement about
+the host as much as about the code. Idle p99 is **61.737 ms** against 64 ms — inside
+5% — so the gate set this repository cites as the scope of a release verdict **is not
+reproducible**, and a report that cites it owes the reader that sentence.
+
+## H12 — An undelivered artifact does not merely withhold value; it suppresses the checks that would have run on it
+
+> *Instance:* `evalguard` had been red since `21a0854` because two reports I wrote
+> quote an eval query verbatim. `evalguard` runs in `gates.yml` with `-v`, and
+> `gates.yml` carries **no `paths-ignore`**, so one push would have turned it red
+> within a minute with a readable message. It stayed hidden for a session because
+> the branch had not been pushed since `1013e1b`.
+
+This reframes the delivery gap from bookkeeping to a defect class. `reach.sh`'s
+unpushed-commit findings are not a filing convention: **each one is a set of checks
+that has not run.**
+
+> *Second instance, in the gate itself:* `reach.sh` measured "ahead" against the
+> branch's configured upstream, which points at a fork. After the branch was pushed
+> to the canonical remote — `upstream/audit/adversarial-pass` and `HEAD` both at
+> `aa81555` — it went on reporting the branch as in flight, plus 57 pipeline commits
+> and 178 citations as undelivered. Every one had arrived. **A gate for the delivery
+> gap that cannot see a delivery is worse than no gate: it teaches you to ignore it.**
+
+## H13 — A derivation that produces right answers on some inputs is still wrong on all of them. Check the derivation, not the outcomes.
+
+> *Instance:* `stage-runtime`'s derivation was wrong for all three release targets
+> and the answer was wrong for one. Linux and darwin packaged clean, each reading
+> from its own per-target artifact directory, and their passes were **correct by
+> accident**. Only win32 made the reason visible, and only the third target's failure
+> got the derivation read.
+>
+> *Second instance, and it is the cleaner one:* a known-answer test asserted that
+> `readHeaders` **is** an unbounded-read site. True on the day it was written, and it
+> would have gone red the moment the defect it names was fixed — **a guard that is an
+> argument against its own remedy.** Right answers today, wrong as a derivation. Now
+> a synthetic fixture, so the detector's proof does not depend on a defect surviving.
+
+## The delivery gap's seventh instance, and what `reach.sh` now sees
+
+The section above records seven instances and says the gate catches five. Both halves
+have moved:
+
+| | |
+|---|---|
+| The seventh | `0925a3d` repairs the failure that killed the only release run this repository has ever had, and was not on `main`. **It is now, via the merge.** |
+| What the gate could not see | "nobody was told" and "never committed" — still true, still in its banner |
+| What the gate could not see and nobody knew | **a delivery.** Fixed 2026-09-16: `ahead` is now asked of the canonical remote's copy of the branch, and a branch 0 ahead of it is reported as **ARRIVED** rather than as its absence |
+
+Two further defects in that gate, both found by using it rather than reading it, and
+both recorded here because the shapes recur:
+
+- **Check 1 described a stale pointer in the words of lost work.** Check 2 measures
+  `HEAD..ref` for exactly this reason — its first version made two stale pointers read
+  as "487 commit(s)" of lost work — and the correction went into check 2 and not into
+  check 1, in the same commit. Simulating the remote rename in a throwaway clone made
+  local `main` read as "40 commit(s) ahead", which is forty commits every one of which
+  is already on `HEAD`.
+- **An allowlist entry that matched nothing printed nothing.** Every exemption that
+  *fires* is printed with the event that retires it — that was the design — so the one
+  thing the allowlist could still hide was itself. Unconsulted entries are now listed,
+  and not as a failure: an entry written ahead of an event is a legitimate recorded
+  decision, and telling that from a dead one is a judgement no gate can make.
+
+## One more shape, for the checkers: a gate that discards its own evidence
+
+Three instances now, and it is worth naming because each cost a debugging cycle:
+
+| | |
+|---|---|
+| `tail -12` | destroyed a `make check` run's per-gate output. Standing rule since: never pipe `make check` |
+| `evalguard`'s `>/dev/null` | the gate failed printing only `Error 1`. The identical CI step runs `-v` and names every offending file — **a developer got a strictly worse report than CI from the same assertion.** Fixed |
+| the coverage ratchet's `go test` without `-v` | a *passing* run prints no repaint measurement at all, so the one wall-clock number this repository argues about cannot be trended. **Recommended, not implemented** |
+
+The third is the interesting one: the first two hide a failure, the third hides a
+**measurement**. A wall-clock gate whose number is visible only when it breaches can
+be argued about but not tracked.
