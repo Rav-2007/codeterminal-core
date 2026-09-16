@@ -417,31 +417,6 @@ func sortedReaderKeys(m map[string][]unboundedReadSite) []string {
 // is one decision. A handler reaching a NEW site still fails, because the
 // message names the site and the reader has to come back here.
 var unboundedReadExemptions = map[string]struct{ trigger, reason string }{
-	// --- SITE 1: readHeaders' ReadString, lsp_bridge.go. TB7 / R1.24.
-	//
-	// THREE handlers, not the two C4 row 4 named. propose_ast_edit reaches
-	// lspServerForFile directly, without going through handleLSPQuery, so the
-	// row's enumeration of entry points was short by one -- found by the walk,
-	// which is the difference between a chain property and a traced example.
-	"query_compiler_definition": {
-		trigger: "readHeaders bounds its header line length AND its header count",
-		reason: "Chain: builtinLSPDefinition -> handleLSPQuery -> lspServerForFile -> GetServer " +
-			"-> readLoop -> readHeaders, whose out.ReadString('\n') accumulates until a newline " +
-			"the language server may never send. MEASURED: 135,962,168 bytes allocated over a " +
-			"64 MiB newline-free stream. Reachability is low -- serverCommand returns one of " +
-			"three hardcoded names on an inherited PATH -- but low is not bounded.",
-	},
-	"query_compiler_references": {
-		trigger: "readHeaders bounds its header line length AND its header count",
-		reason:  "Same chain as query_compiler_definition, through builtinLSPReferences.",
-	},
-	"propose_ast_edit": {
-		trigger: "readHeaders bounds its header line length AND its header count",
-		reason: "Same site, a DIFFERENT chain: builtinTools.func3 -> builtinProposeASTEdit -> " +
-			"lspServerForFile, skipping handleLSPQuery. This entry point was not named in C4 " +
-			"row 4 and was found by this walk.",
-	},
-
 	// --- SITE 2: parseGitignoreLayer's os.ReadFile, chunker.go. NEW, found here.
 	//
 	// The one read in chunker.go that does NOT re-run the gate. readEligibleFile

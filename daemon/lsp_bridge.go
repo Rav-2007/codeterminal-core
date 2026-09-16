@@ -57,6 +57,34 @@ const (
 	// request rather than a dead machine.
 	maxLSPMessageBytes = 8 * 1024 * 1024
 
+	// THE HEADER BLOCK, AND THE THIRD CATEGORY THIS FILE DID NOT HAVE.
+	//
+	// maxLSPMessageBytes above bounds the BODY: readHeaders returns a length,
+	// readLoop refuses one over the cap, and io.ReadFull then reads into a slice
+	// of exactly that size -- bounded by the caller, which is why the body was
+	// never the problem.
+	//
+	// Nothing bounded the HEADER. readHeaders looped on out.ReadString('\n'),
+	// and bufio.Reader.ReadString accumulates fragments until the delimiter
+	// arrives. MEASURED 2026-09-16: 135,962,152 bytes allocated over a 64 MiB
+	// newline-free stream -- twice the input, sixteen times the body cap, and a
+	// number the language server chose. This file's own header calls that server
+	// UNTRUSTED INPUT, because project config can load plugins.
+	//
+	// TWO DIMENSIONS, TWO CONSTANTS, and they are not interchangeable. A line cap
+	// does not bound how MANY lines arrive, and a count cap does not bound how
+	// long one line is. Measured separately: an endless run of well-formed
+	// "X-Pad: y\r\n" headers held readHeaders in its loop past a 10s deadline
+	// with no allocation growth at all -- a hang, not an OOM, and the goroutine
+	// it hangs is readLoop, which every LSP caller waits behind.
+	//
+	// The values are generous rather than tuned. LSP in practice sends two
+	// headers, Content-Length and optionally Content-Type, neither over ~40
+	// bytes. 8 KiB and 64 lines are both far past any legitimate server and far
+	// short of anything that matters to this process.
+	maxLSPHeaderLineBytes = 8 * 1024
+	maxLSPHeaderLines     = 64
+
 	// lspCallTimeout bounds one request/response exchange.
 	//
 	// Without it Call blocked on an unbuffered receive with no other case: a
@@ -487,8 +515,12 @@ func (s *LSPServer) readLoop() {
 // just rejected.
 func readHeaders(out *bufio.Reader) (int, error) {
 	length := -1
-	for {
-		line, err := out.ReadString('\n')
+	for lines := 0; ; lines++ {
+		if lines >= maxLSPHeaderLines {
+			return 0, fmt.Errorf("header block reached %d lines with no terminating blank line",
+				maxLSPHeaderLines)
+		}
+		line, err := readBoundedLine(out, maxLSPHeaderLineBytes)
 		if err != nil {
 			return 0, err
 		}
@@ -511,6 +543,34 @@ func readHeaders(out *bufio.Reader) (int, error) {
 		return 0, fmt.Errorf("message of %d bytes exceeds the %d byte limit", length, maxLSPMessageBytes)
 	}
 	return length, nil
+}
+
+// readBoundedLine reads up to and including the next '\n', allocating at most
+// max bytes, and refuses rather than growing past it.
+//
+// ReadByte rather than ReadString, and that is the entire fix. ReadString's
+// length is whatever arrives before the delimiter; this one's is max. The reads
+// are still buffered -- bufio.Reader fills 4 KiB at a time underneath -- so the
+// syscall count is unchanged and only the allocation is bounded.
+//
+// The newline is consumed and not returned, matching what the caller did with
+// ReadString's result: it TrimSpace'd it, so "\r\n" and "\n" were already
+// equivalent here.
+func readBoundedLine(out *bufio.Reader, max int) (string, error) {
+	var b strings.Builder
+	for {
+		c, err := out.ReadByte()
+		if err != nil {
+			return "", err
+		}
+		if c == '\n' {
+			return b.String(), nil
+		}
+		if b.Len() >= max {
+			return "", fmt.Errorf("header line reached %d bytes with no newline", max)
+		}
+		b.WriteByte(c)
+	}
 }
 
 // shutdown closes done exactly once, releasing every blocked caller.
