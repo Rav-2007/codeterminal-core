@@ -184,7 +184,7 @@ covering_branch() {
 # --- 1. unpushed commits ------------------------------------------------------
 # A local branch ahead of its upstream. Instance 5, and instance 6's shape.
 check_unpushed() {
-  local ref up track ahead
+  local ref up track ahead unreachable
   while IFS='|' read -r ref up track; do
     [ -n "$ref" ] || continue
     [ -n "$up" ] || continue # no upstream at all is check 2's business
@@ -208,7 +208,28 @@ check_unpushed() {
     fi
     [ "$ahead" -gt 0 ] || continue
     is_allowed "$ref" && continue
-    fail "branch '$ref' is $ahead commit(s) ahead of '$up'. The work exists; it has not been delivered."
+    # WHICH OF TWO STATES, because "ahead of its upstream" covers both a branch
+    # holding work that exists nowhere else and a stale pointer whose every
+    # commit is already on HEAD. Those need opposite responses and they were
+    # sharing one sentence.
+    #
+    # CHECK 2 LEARNED THIS AND CHECK 1 DID NOT. Check 2 measures HEAD..ref for
+    # exactly this reason -- its first version printed the total on the ref and
+    # made two stale pointers read as "487 commit(s)" of lost work. Check 1
+    # shipped in the same commit without the same correction.
+    #
+    # FOUND 2026-09-16 by simulating the C5b remote rename in a throwaway clone:
+    # re-pointed at the canonical remote, local `main` became "40 commit(s)
+    # ahead", which reads as forty lost commits and is forty commits every one of
+    # which is already on HEAD. Instance 5 in this script's own header is that
+    # very ref -- so the header named a delivery-gap instance that check 1, as
+    # written, described in the words of a different one.
+    unreachable="$(git rev-list --count "HEAD..${ref}" 2>/dev/null || echo 0)"
+    if [ "$unreachable" -eq 0 ]; then
+      fail "branch '$ref' is $ahead commit(s) ahead of '$up', and NOT ONE of them is unreachable from HEAD. A stale pointer, not lost work: those commits arrive wherever HEAD arrives. Delete the branch or move it forward -- nothing is at risk either way, which is why this must not read like forty lost commits."
+    else
+      fail "branch '$ref' is $ahead commit(s) ahead of '$up', $unreachable of them reachable from nowhere else. The work exists; it has not been delivered."
+    fi
   done < <(git for-each-ref --format='%(refname:short)|%(upstream:short)|%(upstream:track)' refs/heads)
 }
 
@@ -329,6 +350,36 @@ fi
 if [ "$allowed_count" -gt 0 ]; then
   printf '%s\n' "${allowed_report# }"
   echo "reach: $allowed_count exemption(s) above are DETECTED and not fatal. Each names the event that retires it."
+fi
+
+# AN ENTRY NOTHING CONSULTED IS THE ONE KIND OF EXEMPTION THIS GATE COULD STILL
+# HIDE. Everything above prints the exemptions that FIRED. An entry that matches
+# nothing prints nothing at all -- so an obsolete one survives forever unread,
+# and one written ahead of an event (two were, on 2026-09-16, for the remote
+# rename) is invisible until the event happens. Either way the allowlist stops
+# being a record you have to read past, which is its entire justification.
+#
+# NOT a failure. An entry written for a future event is a legitimate recorded
+# decision, and so is one whose situation has just resolved. Both want saying out
+# loud, and the difference between them is a judgement no gate can make.
+unconsulted=""
+unconsulted_count=0
+while IFS='|' read -r key trigger reason; do
+  [ -n "${key:-}" ] || continue
+  case "$allowed_seen" in
+    *"|$key|"*) ;;
+    *)
+      unconsulted_count=$((unconsulted_count + 1))
+      unconsulted="${unconsulted}
+reach:         $key -- retires when: ${trigger:-(none)}"
+      ;;
+  esac
+done < <(allowlist)
+if [ "$unconsulted_count" -gt 0 ]; then
+  echo
+  echo "reach: $unconsulted_count allowlist entry(ies) matched NOTHING on this run. Either the"
+  echo "reach:       situation has resolved and the entry should go, or it was written"
+  echo "reach:       ahead of an event that has not happened yet:${unconsulted}"
 fi
 
 echo
