@@ -170,8 +170,20 @@ soak:
 # a captured `go test` transcript sat in the indexed corpus from 2026-08-11 to
 # 2026-08-28, handing the eval its own answer key. That is a corpus problem, it
 # is introduced by committing a file, and `check` is the moment to catch it.
+#
+# THE OUTPUT IS KEPT ON FAILURE, and the earlier `>/dev/null` is why. On
+# 2026-09-15 this gate went red and printed nothing but `make: *** [Makefile:174:
+# evalguard] Error 1` -- no file name, no query, no remedy. The diagnostic had to
+# be recovered by running the test by hand. The same test in gates.yml runs with
+# -v and would have named both offending files in one line, so a developer got a
+# strictly worse report than CI from the same assertion: the local/CI divergence
+# class this pass has now found four times, in the shape where local runs the
+# same check and says less about it.
+#
+# -v matches gates.yml exactly. Discarded on success so the banner stays one
+# line; printed in full on failure, which is the only run where anyone wants it.
 evalguard:
-	@(cd daemon && go test -tags eval -count=1 -run 'TestNoIndexedFileEchoesAnEvalQuery' ./ >/dev/null) || exit 1
+	@out="$$(cd daemon && go test -tags eval -count=1 -run 'TestNoIndexedFileEchoesAnEvalQuery' -v ./ 2>&1)" || { printf '%s\n' "$$out" >&2; exit 1; }
 	@echo "evalguard: no committed file echoes a retrieval-eval query"
 
 # docs is last and costs ~1s. It is in `check` rather than in a docs-only job
