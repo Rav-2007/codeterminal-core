@@ -708,6 +708,22 @@ var evalSelfReferenceFiles = map[string]bool{
 	"daemon/token_efficiency_eval_test.go": true,
 	"BACKLOG.md":                           true,
 
+	// FOUND 2026-09-15 BY THIS GUARD, during C7, and self-inflicted: both files
+	// are reports written in this pass that quote the eval's own failure output
+	// verbatim, which is how the locate#1 query text entered the corpus twice in
+	// one afternoon.
+	//
+	// REWORDING WAS THE WRONG REMEDY HERE, and the distinction is the one this
+	// map's header already draws. Rewording is mandatory for PRODUCT SOURCE that
+	// a query declares as an answer -- excluding that would delete a real answer.
+	// These are write-ups, and the quoted string is a verbatim CI transcript
+	// line: paraphrasing it would falsify a quotation to satisfy a lexical
+	// check, which is a worse outcome than a listed exemption. No query in
+	// either set declares a .md file as its answer, so nothing real leaves the
+	// corpus.
+	"docs/PREFLIGHT_MACOS_AND_MERGE_2026-09-15.md": true,
+	"docs/C7_RELEASE_READINESS_2026-09-15.md":      true,
+
 	// FOUND 2026-08-30, the first time this guard was run against the
 	// token-efficiency query set as well as the locate set. It had been in the
 	// corpus since 2026-07-17 -- six weeks -- and nothing could see it, because
