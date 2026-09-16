@@ -522,15 +522,6 @@ func sortedSiteKeys(m map[string]reachedSite) []string {
 	return out
 }
 
-func sortedReaderKeys(m map[string][]unboundedReadSite) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
-}
-
 // unboundedReadExemptions records model-facing handlers that MAY reach an
 // unbounded read, with a reason and the event that retires the exemption.
 //
