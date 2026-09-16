@@ -543,9 +543,65 @@ func (g *gitignoreMatcher) layerFor(relDir string) *gitignoreLayer {
 	return layer
 }
 
+// maxGitignoreBytes bounds ONE .gitignore file.
+//
+// IT IS maxFileSize AND NOT A NEW NUMBER, deliberately. This indexer already
+// refuses to read any ordinary source file over that size; a .gitignore past the
+// bound at which the same indexer skips source is out of scope by the indexer's
+// own rule, and inventing a second constant here would be inventing a second
+// policy.
+//
+// WHY THIS EXISTS. parseGitignoreLayer called os.ReadFile on a path found while
+// walking, with no size check anywhere in its chain -- the one read in this file
+// that does not re-run the gate. readEligibleFile below re-runs shouldSkipFile
+// immediately before reading, and planmode.go states the rule in general: the
+// read side must not assume the write side ran.
+//
+// MEASURED 2026-09-16: 90,333,064 bytes allocated for a 33.5 MB .gitignore,
+// against a maxFileSize of 1 MiB. Reached from search_code and repo_map -- both
+// model-facing -- though the PATH comes from the directory walk rather than from
+// the model, which is why this is filed as the lower-severity of the two sites
+// this pass found rather than inflated to match the other.
+const maxGitignoreBytes = maxFileSize
+
 func parseGitignoreLayer(path string) *gitignoreLayer {
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
+		return &gitignoreLayer{}
+	}
+	defer func() { _ = f.Close() }()
+
+	// STAT FIRST, so an oversized file costs no read at all. io.ReadAll over a
+	// LimitReader was the first version of this fix and it still allocated 5.2 MB
+	// for a 33.5 MB file: ReadAll grows by doubling, so the intermediate buffers
+	// sum to about twice the final one even when the final one is bounded. Reading
+	// into a slice sized here spends exactly what the file needs, which is the
+	// property this whole guard is about -- io.ReadFull's length is the CALLER's.
+	info, err := f.Stat()
+	if err != nil || info.Size() > maxGitignoreBytes {
+		return &gitignoreLayer{}
+	}
+
+	// +1, AND THE STAT IS A HINT RATHER THAN THE BOUND. The file can grow between
+	// the stat and the read, so the buffer carries one spare byte: if it fills,
+	// more arrived than was announced and this refuses rather than truncating.
+	//
+	// TRUNCATION IS THE WRONG FAILURE HERE, and worse than not reading at all: a
+	// rule cut mid-line becomes a DIFFERENT rule -- "build/secr" for
+	// "build/secret/" -- so a truncating parse invents an ignore pattern nobody
+	// wrote.
+	buf := make([]byte, info.Size()+1)
+	n, err := io.ReadFull(f, buf)
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return &gitignoreLayer{}
+	}
+	data := buf[:n]
+	if int64(n) > info.Size() {
+		// Same empty layer this function already returned for an unreadable file,
+		// and the same consequence: no rules from this directory. That loses
+		// precision, not secrecy -- shouldSkipFile checks
+		// editapply.MatchesSecretName and isNoiseFile independently of any
+		// .gitignore, so a secret-named file is skipped either way.
 		return &gitignoreLayer{}
 	}
 	var rules []gitignoreRule

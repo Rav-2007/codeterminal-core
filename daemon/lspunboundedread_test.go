@@ -564,23 +564,11 @@ func sortedReaderKeys(m map[string][]unboundedReadSite) []string {
 // entirely -- which is the two-states-one-phrase error this repository keeps
 // finding, committed here by the person writing the guard against it.
 //
-// readReferencedSpan and regionsOnDisk are NOT in here, and that is the point:
-// they are recognised by gateGuardEnds instead, because "the read re-runs the
+// EMPTY, and that is the point: this guard is green on facts, not on silence.
+// Both live sites were BOUNDED rather than exempted, and readReferencedSpan and
+// regionsOnDisk are recognised by gateGuardEnds, because "the read re-runs the
 // indexer's gate and obeys it" is a property and an exemption is not.
-var unboundedReadExemptions = map[string]struct{ trigger, reason string }{
-	"search_code|parseGitignoreLayer": {
-		trigger: "parseGitignoreLayer bounds its read",
-		reason: "Chain: builtinSearchCode -> gatherContext -> resolveFileLineRefs -> resolveRefs " +
-			"-> findFilesBySuffix -> matchDir -> matches -> layerFor -> parseGitignoreLayer. " +
-			"MEASURED 2026-09-16: 90,333,064 bytes allocated for a 33.5 MB .gitignore, against a " +
-			"maxFileSize of 1 MiB. The one read in chunker.go that does NOT re-run the gate.",
-	},
-	"repo_map|parseGitignoreLayer": {
-		trigger: "parseGitignoreLayer bounds its read",
-		reason: "Same site: builtinTools.func1 -> builtinRepoMap -> buildRepoMap -> matchDir -> " +
-			"matches -> layerFor -> parseGitignoreLayer.",
-	},
-}
+var unboundedReadExemptions = map[string]struct{ trigger, reason string }{}
 
 // TestNoBuiltinReachesAnUnboundedRead is the class guard: not "are these four
 // sites fixed" but "can a model-facing tool reach a read whose size the thing
