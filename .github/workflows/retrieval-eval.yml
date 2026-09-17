@@ -148,7 +148,7 @@ jobs:
       # answer key, every number below is inflated, and knowing that before
       # spending fifteen minutes on those numbers is worth its own step.
       - name: Corpus contains no copy of the answer key
-        run: go test -tags eval -count=1 -run 'TestNoIndexedFileEchoesAnEvalQuery' -v ./
+        run: go test -tags eval -count=1 -run 'TestNoIndexedFileEchoesAnEvalQuery|TestEvalGroundTruthResolvesWithoutTheModel' -v ./
         working-directory: daemon
 
       # Scoped to the two retrieval-QUALITY evals.

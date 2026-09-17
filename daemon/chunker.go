@@ -599,9 +599,18 @@ func parseGitignoreLayer(path string) *gitignoreLayer {
 	if int64(n) > info.Size() {
 		// Same empty layer this function already returned for an unreadable file,
 		// and the same consequence: no rules from this directory. That loses
-		// precision, not secrecy -- shouldSkipFile checks
-		// editapply.MatchesSecretName and isNoiseFile independently of any
-		// .gitignore, so a secret-named file is skipped either way.
+		// precision, not secrecy -- shouldSkipFile applies the secret-name and
+		// noise-file checks independently of any .gitignore, so a secret-named
+		// file is skipped either way.
+		//
+		// NAMED IN PROSE RATHER THAN BY SYMBOL, on purpose. This comment
+		// originally spelled the qualified symbol, which made it the SECOND
+		// occurrence of an eval anchor in this file -- and the locate eval's
+		// anchor-ambiguity check went red: "resolves to 4 chunks, past the 3
+		// ceiling". A comment about a symbol is not an answer to a query about
+		// it, and the eval cannot tell those apart, so the ground truth pays for
+		// the explanation. See the pass's addendum; this is the second time a
+		// thing I wrote to explain something broke a measurement of it.
 		return &gitignoreLayer{}
 	}
 	var rules []gitignoreRule

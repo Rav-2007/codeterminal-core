@@ -149,8 +149,13 @@ jobs:
           go-version: "1.25.13"
           cache-dependency-path: "**/go.sum"
 
-      - name: No committed file echoes a retrieval-eval query
-        run: go test -tags eval -count=1 -run 'TestNoIndexedFileEchoesAnEvalQuery' -v ./
+      # Two assertions: no committed file echoes a query, AND the eval's ground
+      # truth still resolves -- no anchor past the 3-chunk ambiguity ceiling and
+      # none resolving to zero. The second needs the chunker and neither the model
+      # nor the index, and was nevertheless only ever run behind twenty-two minutes
+      # of BGE embedding in a path-triggered workflow.
+      - name: Corpus holds no answer key, and the ground truth still resolves
+        run: go test -tags eval -count=1 -run 'TestNoIndexedFileEchoesAnEvalQuery|TestEvalGroundTruthResolvesWithoutTheModel' -v ./
         working-directory: daemon
 
       # Supply chain: go.mod tidy across every module, and no shipped binary

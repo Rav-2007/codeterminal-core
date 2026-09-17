@@ -171,6 +171,13 @@ soak:
 # 2026-08-28, handing the eval its own answer key. That is a corpus problem, it
 # is introduced by committing a file, and `check` is the moment to catch it.
 #
+# TWO ASSERTIONS NOW, and the second was being run twenty-three minutes too late.
+# resolveExactChunks refuses an eval anchor that resolves to more than three
+# chunks, or to none -- both properties of the CORPUS, needing the chunker and
+# neither the model nor the index. Only the full BGE eval ran it, so a comment
+# added to chunker.go on 2026-09-16 widened an anchor to four chunks and the first
+# thing to notice was a red 23-minute CI job. It now runs here, in 0.4s.
+#
 # THE OUTPUT IS KEPT ON FAILURE, and the earlier `>/dev/null` is why. On
 # 2026-09-15 this gate went red and printed nothing but `make: *** [Makefile:174:
 # evalguard] Error 1` -- no file name, no query, no remedy. The diagnostic had to
@@ -183,8 +190,8 @@ soak:
 # -v matches gates.yml exactly. Discarded on success so the banner stays one
 # line; printed in full on failure, which is the only run where anyone wants it.
 evalguard:
-	@out="$$(cd daemon && go test -tags eval -count=1 -run 'TestNoIndexedFileEchoesAnEvalQuery' -v ./ 2>&1)" || { printf '%s\n' "$$out" >&2; exit 1; }
-	@echo "evalguard: no committed file echoes a retrieval-eval query"
+	@out="$$(cd daemon && go test -tags eval -count=1 -run 'TestNoIndexedFileEchoesAnEvalQuery|TestEvalGroundTruthResolvesWithoutTheModel' -v ./ 2>&1)" || { printf '%s\n' "$$out" >&2; exit 1; }
+	@echo "evalguard: no committed file echoes a retrieval-eval query, and the eval's ground truth still resolves"
 
 # docs is last and costs ~1s. It is in `check` rather than in a docs-only job
 # because a rename breaks links in the same commit that makes it, and that is
