@@ -142,6 +142,30 @@ var fts5InterruptHonoured = map[string]bool{
 	// errors.Is check below skips it and this map is never consulted there.
 }
 
+// A VACUITY FLOOR ON THE BASELINE MAP ITSELF.
+//
+// The skip in the phrase-match test is the right answer for a GOOS nobody has
+// measured. It is the WRONG answer to somebody deleting a measurement, and the
+// two are indistinguishable at the point of the skip. Found by this test's own
+// neuter arm: deleting the linux entry took the phrase-match test from PASS to
+// SKIP at exit 0 -- green, and characterising nothing.
+//
+// These two platforms have been measured on this repository's CI, so a missing
+// entry is a LOST MEASUREMENT rather than an unmeasured platform. That is a
+// statement about recorded facts, not an enumeration of policy: it says what has
+// been observed, and observations are exactly the thing that may be enumerated.
+func TestFTS5InterruptBaselineHasNotBeenEmptied(t *testing.T) {
+	for _, goos := range []string{"linux", "darwin"} {
+		if _, ok := fts5InterruptHonoured[goos]; !ok {
+			t.Errorf("fts5InterruptHonoured has no entry for %q. Both platforms were measured on this "+
+				"repository's own CI, so a missing entry is a DELETED measurement and not an unmeasured "+
+				"platform -- and the phrase-match test would SKIP at exit 0 rather than fail, which is "+
+				"how a characterisation quietly stops characterising. If a platform genuinely stopped "+
+				"being built, drop it from this floor in the same commit and say why.", goos)
+		}
+	}
+}
+
 // The half that does not work, asserted so it cannot quietly stop being true.
 //
 // A FAILURE HERE IS GOOD NEWS, not a regression: it means a newer SQLite or
