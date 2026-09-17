@@ -90,24 +90,34 @@ fail() {
 # without one, an exemption written for a week-long situation silently becomes
 # permanent, which is how every stale record in this repository started.
 #
+# AND A TRIGGER MUST NAME A REF OPERATION, NEVER AN OWNER INTENTION. Audited
+# 2026-09-17, after the merge landed and two entries kept firing: ten of fifteen
+# triggers named something this script cannot observe. "The remote rename" was
+# the worst, because it looks observable and is not -- MEASURED in a throwaway
+# repository the same day, `git remote rename` REWRITES branch.<name>.remote to
+# follow the remote object, so a branch tracking the fork still tracks the fork
+# afterwards and `git branch -u` is what actually retires the entry. "ca96966 is
+# confirmed redundant" and "the owner reverses the hold" are judgements with no
+# ref to look at. The five well-authored triggers all named an operation on a
+# ref: merged, deleted, re-pointed, pushed. That is the distinction.
+#
 # The key is a branch name, `remote:<branch>`, or a commit sha of any length
 # `git rev-parse` accepts.
 allowlist() {
   cat <<'ALLOW'
-ca96966|the merge lands, or the owner reverses the hold|HELD BY OWNER DECISION, 2026-09-15. It reduces main from two failure causes to one but does not green it, so pushing it would break the fast-forward for no gain. The merge is the vehicle instead.
-ci/main-lint-pin|the merge lands and ca96966 is confirmed redundant|The branch holding ca96966, and the ONLY ref in this repository with a commit that is not an ancestor of HEAD. Same decision, same reason: held as a fallback, not delivered.
-audit/adversarial-pass|the merge lands|IN FLIGHT, and the merge is its delivery. The canonical main is a strict ancestor of this branch, so everything on it arrives in one fast-forward once C7 returns a verdict. This entry is the ONE decision that accounts for the pipeline fixes and document citations on this branch; remove it the moment the merge lands, or this gate stops measuring the thing it exists for.
-remote:audit/adversarial-pass|the remote rename in C5b Part 1 (owner action)|Tracks the fork because every branch here does; the topology is backwards repo-wide, not a mistake on this branch. Measured 2026-09-15: nothing in scripts/, .github/ or the Makefile is keyed to the remote NAME, so the rename is safe.
-remote:main|the remote rename in C5b Part 1 (owner action)|The most consequential of the eight. Local main tracks the FORK, whose main is 79 commits ahead of the canonical main. A bare `git push` from main delivers to a repository CI does not watch.
-remote:ci/cross-go-test|the remote rename, or deletion of this branch|Dormant since 2026-08-08 and 51 behind the canonical main. Tracks the fork like every other branch.
-remote:docs/readme-rewrite|the remote rename, or deletion of this branch|Dormant since 2026-08-08 and 48 behind. Tracks the fork like every other branch.
-remote:feat/web-grounding|the remote rename, or deletion of this branch|Dormant since 2026-08-29. Fully contained in HEAD, so it holds nothing undelivered.
-remote:fix/ci-limiter-probe-and-interrupt-race|the remote rename, or deletion of this branch|Dormant since 2026-09-02. Fully contained in HEAD.
-remote:sec/untrusted-text-channels|the remote rename, or deletion of this branch|Dormant since 2026-09-02. Fully contained in HEAD.
-remote:security/ultra-vuln-pass-2026-08-06|the remote rename, or deletion of this branch|Dormant since 2026-08-06 and 101 behind. Fully contained in HEAD.
+ca96966|this commit becoming reachable from the canonical main, or deletion of the branch that holds it|HELD BY OWNER DECISION, 2026-09-15. It reduces main from two failure causes to one but does not green it, so pushing it would break the fast-forward for no gain. The merge is the vehicle instead.
+ci/main-lint-pin|this branch's commits becoming reachable from the canonical main, or deletion of this branch|The branch holding ca96966, and the ONLY ref in this repository with a commit that is not an ancestor of HEAD. Same decision, same reason: held as a fallback, not delivered.
+audit/adversarial-pass|re-pointing this branch at the canonical remote with `git branch -u`, or updating or deleting the fork's stale copy|MEASURED 2026-09-17, AFTER THE MERGE: 77 commit(s) ahead of the FORK's copy with 0 of them unreachable from HEAD, and 2 ahead of the CANONICAL copy -- the macOS baseline fix awaiting a verification run. A stale pointer at the fork, not lost work. This entry replaces one keyed to "the merge lands", and removing that one is how this was found: it was covering TWO facts under one key -- the DELIVERY fact, which the merge retired, and the WRONG-REMOTE fact, which the merge does not touch. They were sharing a phrase, which this script's own header forbids.
+remote:audit/adversarial-pass|re-pointing this branch at the canonical remote with `git branch -u` after the rename|Tracks the fork because every branch here does; the topology is backwards repo-wide, not a mistake on this branch. Measured 2026-09-15: nothing in scripts/, .github/ or the Makefile is keyed to the remote NAME, so the rename is safe.
+remote:main|re-pointing this branch at the canonical remote with `git branch -u` after the rename|The most consequential of the eight. Local main tracks the FORK, whose main is 79 commits ahead of the canonical main. A bare `git push` from main delivers to a repository CI does not watch.
+remote:ci/cross-go-test|re-pointing this branch at the canonical remote with `git branch -u`, or deletion of this branch|Dormant since 2026-08-08 and 51 behind the canonical main. Tracks the fork like every other branch.
+remote:docs/readme-rewrite|re-pointing this branch at the canonical remote with `git branch -u`, or deletion of this branch|Dormant since 2026-08-08 and 48 behind. Tracks the fork like every other branch.
+remote:feat/web-grounding|re-pointing this branch at the canonical remote with `git branch -u`, or deletion of this branch|Dormant since 2026-08-29. Fully contained in HEAD, so it holds nothing undelivered.
+remote:fix/ci-limiter-probe-and-interrupt-race|re-pointing this branch at the canonical remote with `git branch -u`, or deletion of this branch|Dormant since 2026-09-02. Fully contained in HEAD.
+remote:sec/untrusted-text-channels|re-pointing this branch at the canonical remote with `git branch -u`, or deletion of this branch|Dormant since 2026-09-02. Fully contained in HEAD.
+remote:security/ultra-vuln-pass-2026-08-06|re-pointing this branch at the canonical remote with `git branch -u`, or deletion of this branch|Dormant since 2026-08-06 and 101 behind. Fully contained in HEAD.
 feat/canonical-language-table|deletion of this branch, or repointing it at a remote|MEASURED SAFE, 2026-09-15: 0 commits unreachable from HEAD and 0 unique patches by `git cherry`. A stale pointer into HEAD's own history, not 487 commits of lost work -- which is what the gate's first message made it look like.
 feat/edit-payload-ingestion|deletion of this branch, or repointing it at a remote|MEASURED SAFE, 2026-09-15: 0 commits unreachable from HEAD and 0 unique patches. Same stale-pointer shape as its sibling.
-main|the merge lands|PRE-PLACED FOR THE REMOTE RENAME, and inert until it happens -- today local main tracks the FORK and is BEHIND it, so check 1 says nothing at all. Measured 2026-09-16 in a throwaway clone with the remotes renamed and main re-pointed: 40 commit(s) ahead of the canonical main, 0 of them unreachable from HEAD. Instance 5 in this script's own header, and a stale pointer rather than lost work. The merge makes the canonical main a descendant of e881bbd, at which point "ahead" is 0 and this entry must go.
 docs/readme-rewrite|deletion of this branch, or pushing it to the canonical remote|PRE-PLACED, same clone, same measurement: 1 commit ahead of the canonical branch and 0 unreachable from HEAD. The canonical remote holds this branch at aa0e755 and the fork holds it at 9c9ec50 -- one commit that exists on the fork and on HEAD but not on the canonical remote. NOT retired by the merge: check 1 compares against the BRANCH's own upstream, which the merge does not touch. remote:docs/readme-rewrite above covers the wrong-remote fact; this covers the ahead-of-canonical fact underneath it, which only becomes measurable once the branch is re-pointed.
 ALLOW
 }
