@@ -424,6 +424,7 @@ Every pair below was found by something going wrong.
 | *a reference is checked* | ≠ *a reference of this extension is checked* |
 | *a stated count* | ≠ *a counted count* |
 | *green on a dispatch* | ≠ *green on a schedule* |
+| *the run is green* | ≠ *the run passed on its first attempt* |
 
 Two deserve expansion because they cost the most:
 
