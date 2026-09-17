@@ -94,6 +94,22 @@ jobs:
       - name: Go toolchain floor agrees across every module
         run: ./scripts/go-toolchain-pinned.sh
 
+      # THE FUZZ GATE'S CLASSIFIER, exercised without running a fuzzer.
+      #
+      # fuzz.sh decides whether a non-zero `go test -fuzz` exit is a finding. It
+      # used to print "this is not a fuzzing FINDING" and then fail the build
+      # four lines later, because the classification and the consequence were
+      # written in two places. The verdict is now one function, and this asserts
+      # it against recorded outputs -- including the real output of the fuzz job
+      # in run 35179379541, which took `main` down for a Go coordinator race.
+      #
+      # IT HAS TO BE A SELF-TEST rather than a CI run, because the condition is
+      # intermittent: a green fuzz job means the race did not fire, not that the
+      # handling is right. Measured at 4 failures in 15 attempts, so a run
+      # confirms nothing either way. Pure shell, no Go, no network.
+      - name: Fuzz outcome classifier (self-test)
+        run: ./scripts/fuzz.sh --self-test
+
       # "Zero debt markers in non-test code" was a standing baseline invariant
       # that NOTHING enforced -- it was a manual grep over one module's flat
       # glob. Pure find/grep, so it lives in this shell-only job.

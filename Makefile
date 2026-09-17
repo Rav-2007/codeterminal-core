@@ -193,10 +193,25 @@ evalguard:
 	@out="$$(cd daemon && go test -tags eval -count=1 -run 'TestNoIndexedFileEchoesAnEvalQuery|TestEvalGroundTruthResolvesWithoutTheModel' -v ./ 2>&1)" || { printf '%s\n' "$$out" >&2; exit 1; }
 	@echo "evalguard: no committed file echoes a retrieval-eval query, and the eval's ground truth still resolves"
 
+# THE FUZZ GATE'S CLASSIFIER, and the full fuzz run stays out of `check`.
+#
+# scripts/fuzz.sh is CI-only on a costed decision -- 30s per target across 19
+# targets is too slow for the gate people run before every push, and a gate
+# people route around is worse than one that only runs in CI. That reasoning is
+# about the RUN. It says nothing about the classifier, which is pure shell over
+# recorded strings and costs milliseconds.
+#
+# So the self-test runs here and the fuzz run does not, and gate-parity's
+# manifest records fuzz.sh as `both` for exactly that reason. Leaving it `ci`
+# while `check` invokes it would make the gate on the gates wrong.
+fuzzguard:
+	@out="$$(./scripts/fuzz.sh --self-test 2>&1)" || { printf '%s\n' "$$out" >&2; exit 1; }
+	@echo "fuzzguard: the fuzz gate still tells a crashing input, a dead worker and the Go deadline race apart"
+
 # docs is last and costs ~1s. It is in `check` rather than in a docs-only job
 # because a rename breaks links in the same commit that makes it, and that is
 # the only moment anyone can fix it cheaply.
-check: hookcheck fmt vet crossvet race lint ratchet errcheck evalguard supplychain webview docs debtmarkers parity reach
+check: hookcheck fmt vet crossvet race lint ratchet errcheck evalguard fuzzguard supplychain webview docs debtmarkers parity reach
 	@echo "check: all gates green"
 	@./scripts/gate-parity.sh --what-ci-adds
 
