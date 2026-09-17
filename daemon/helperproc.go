@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"net"
 	"os"
 	"os/exec"
 	"strconv"
@@ -15,6 +14,7 @@ import (
 	"time"
 
 	"codeterminal/helper/helperproto"
+	"codeterminal/protocol"
 )
 
 // Lifecycle tuning. Exported as fields (with these as defaults) rather than
@@ -95,12 +95,12 @@ type HelperProcess struct {
 	// perTextTimeout is added per text beyond the first on a batched Embed.
 	perTextTimeout time.Duration
 
-	mu         sync.Mutex
-	cmd        *exec.Cmd
-	socketPath string
-	stopping   bool
-	restarts   int
-	doneCh     chan struct{} // closed by monitor() when it returns for good
+	mu       sync.Mutex
+	cmd      *exec.Cmd
+	addr     protocol.Address
+	stopping bool
+	restarts int
+	doneCh   chan struct{} // closed by monitor() when it returns for good
 
 	// stopSignal is closed exactly once, by Stop, so that a waitReady call
 	// blocked mid-poll for an in-flight restart notices immediately instead
@@ -145,13 +145,13 @@ func (h *HelperProcess) Restarts() int {
 // monitoring it in the background for unexpected exits (see monitor). It
 // returns once the helper is confirmed ready to accept calls.
 func (h *HelperProcess) Start() error {
-	socketPath, err := helperproto.SocketPath(os.Getpid())
+	addr, err := helperproto.Address(os.Getpid())
 	if err != nil {
-		return fmt.Errorf("resolving embedder helper socket path: %w", err)
+		return fmt.Errorf("resolving embedder helper address: %w", err)
 	}
 
 	h.mu.Lock()
-	h.socketPath = socketPath
+	h.addr = addr
 	if err := h.spawnLocked(); err != nil {
 		h.mu.Unlock()
 		return err
@@ -184,9 +184,9 @@ func (h *HelperProcess) Start() error {
 		h.mu.Lock()
 		h.cmd = nil
 		h.mu.Unlock()
-		// The helper may have bound its socket before dying. Stop does this on
+		// The helper may have bound its endpoint before dying. Stop does this on
 		// the path we are deliberately no longer taking, so do it here.
-		_ = os.Remove(socketPath)
+		removeStaleEndpoint(addr)
 		return err
 	}
 
@@ -199,7 +199,10 @@ func (h *HelperProcess) Start() error {
 // h.mu and must arrange for the resulting h.cmd's Wait() to be read exactly
 // once (by the caller for the first spawn, by monitor for every restart).
 func (h *HelperProcess) spawnLocked() error {
-	args := []string{"--socket", h.socketPath}
+	// BOTH PARTS, because --socket alone cannot say what it is. The helper used
+	// to pair this flag with a hardcoded protocol.TransportUnix on its side,
+	// which made the pair unrepresentable on Windows -- see helperproto.Address.
+	args := []string{"--socket", h.addr.Address, "--transport", h.addr.Transport}
 	if h.modelDir != "" {
 		args = append(args, "--model-dir", h.modelDir)
 	}
@@ -402,7 +405,7 @@ func (h *HelperProcess) embedDeadline(n int) time.Duration {
 // decode, close. There is no persistent connection to manage.
 func (h *HelperProcess) call(ctx context.Context, req helperproto.Request) (helperproto.Response, error) {
 	h.mu.Lock()
-	socketPath := h.socketPath
+	addr := h.addr
 	h.mu.Unlock()
 
 	if _, ok := ctx.Deadline(); !ok {
@@ -411,8 +414,18 @@ func (h *HelperProcess) call(ctx context.Context, req helperproto.Request) (help
 		defer cancel()
 	}
 
-	var d net.Dialer
-	conn, err := d.DialContext(ctx, "unix", socketPath)
+	// protocol.DialTimeout rather than a bare net.Dialer, because "unix" was
+	// hardcoded here and is not a transport that exists on every platform this
+	// ships on. The deadline is carried across by hand: the context still owns
+	// cancellation for everything after the dial.
+	timeout := h.callTimeout
+	if dl, ok := ctx.Deadline(); ok {
+		timeout = time.Until(dl)
+	}
+	if timeout <= 0 {
+		return helperproto.Response{}, fmt.Errorf("dialing embedder helper: %w", context.DeadlineExceeded)
+	}
+	conn, err := protocol.DialTimeout(addr, timeout)
 	if err != nil {
 		return helperproto.Response{}, fmt.Errorf("dialing embedder helper: %w", err)
 	}
@@ -449,7 +462,7 @@ func (h *HelperProcess) Stop() error {
 	h.stopping = true
 	close(h.stopSignal)
 	cmd := h.cmd
-	socketPath := h.socketPath
+	addr := h.addr
 	doneCh := h.doneCh
 	h.mu.Unlock()
 
@@ -466,7 +479,7 @@ func (h *HelperProcess) Stop() error {
 		<-doneCh
 	}
 
-	os.Remove(socketPath)
+	removeStaleEndpoint(addr)
 	return nil
 }
 
@@ -516,4 +529,18 @@ func (w *prefixedWriter) Write(p []byte) (int, error) {
 		w.buf = w.buf[:0]
 	}
 	return len(p), nil
+}
+
+// removeStaleEndpoint unlinks a leftover helper endpoint, where the endpoint is
+// a file.
+//
+// Keyed on the TRANSPORT, not on runtime.GOOS: the question is whether this
+// address names something in the filesystem, and the transport answers that
+// directly. A Unix socket left by a killed helper blocks the next bind; a
+// Windows named pipe cannot outlive its owner, so there is nothing to remove
+// and its name is not a path to hand to os.Remove.
+func removeStaleEndpoint(a protocol.Address) {
+	if a.Transport == "" || a.Transport == protocol.TransportUnix {
+		_ = os.Remove(a.Address)
+	}
 }

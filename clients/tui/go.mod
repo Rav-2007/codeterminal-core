@@ -11,7 +11,7 @@ require (
 	github.com/charmbracelet/x/ansi v0.8.0
 	github.com/mattn/go-isatty v0.0.20
 	github.com/muesli/termenv v0.16.0
-	golang.org/x/sys v0.41.0
+	golang.org/x/sys v0.47.0
 )
 
 require (

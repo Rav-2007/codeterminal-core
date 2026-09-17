@@ -1,6 +1,7 @@
 package helperproto
 
 import (
+	"codeterminal/protocol"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -144,36 +145,61 @@ func TestMethodConstants(t *testing.T) {
 	}
 }
 
-// The socket path is scoped by the daemon's PID precisely so a socket left
+// The endpoint is scoped by the daemon's PID precisely so an endpoint left
 // behind by a previous or unrelated daemon can never be dialled by this one.
-func TestSocketPathIsScopedByDaemonPID(t *testing.T) {
+//
+// SPLIT INTO A PORTABLE HALF AND A UNIX HALF when SocketPath became Address.
+// The old test asserted a filesystem path and a 0700 directory mode, which are
+// not properties of the endpoint -- they are properties of the endpoint ON
+// UNIX. Asserting them unconditionally is what made the signature Unix-only in
+// the first place, so the portable properties (PID scoping, the PID appearing
+// in the name, a usable transport) are now checked everywhere and the
+// filesystem ones only where there is a filesystem object to check.
+func TestHelperAddressIsScopedByDaemonPID(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("XDG_RUNTIME_DIR", tmp)
 
-	first, err := SocketPath(4242)
+	first, err := Address(4242)
 	if err != nil {
-		t.Fatalf("SocketPath: %v", err)
+		t.Fatalf("Address: %v", err)
 	}
-	second, err := SocketPath(4243)
+	second, err := Address(4243)
 	if err != nil {
-		t.Fatalf("SocketPath: %v", err)
+		t.Fatalf("Address: %v", err)
 	}
 
-	if first == second {
-		t.Error("two different daemon PIDs produced the same socket path -- a stale socket from " +
+	if first.Address == second.Address {
+		t.Error("two different daemon PIDs produced the same endpoint -- a stale endpoint from " +
 			"a dead daemon could be dialled by a new one")
 	}
-	if want := filepath.Join(tmp, "codeterminal", "embedder-helper-4242.sock"); first != want {
-		t.Errorf("SocketPath(4242) = %q, want %q", first, want)
+	if !strings.Contains(first.Address, fmt.Sprintf("%d", 4242)) {
+		t.Errorf("Address(4242) = %q, want the PID in the name", first.Address)
 	}
-	if !strings.Contains(first, fmt.Sprintf("%d", 4242)) {
-		t.Errorf("SocketPath(4242) = %q, want the PID in the name", first)
+	// An empty transport is legal and means "this platform's default", but the
+	// whole point of this function is that it commits to one, so that the
+	// daemon and the helper cannot each resolve the default differently.
+	if first.Transport == "" {
+		t.Error("Address returned an empty transport; both sides derive from this " +
+			"and an unstated transport is how they drift apart")
+	}
+
+	if first.Transport != protocol.TransportUnix {
+		// Windows: a named pipe. There is no path to join, no directory to
+		// stat, and nothing left behind when the owner dies.
+		if !strings.HasPrefix(first.Address, `\.\pipe\`) {
+			t.Errorf("Address(4242) = %q, want a named pipe name", first.Address)
+		}
+		return
+	}
+
+	if want := filepath.Join(tmp, "codeterminal", "embedder-helper-4242.sock"); first.Address != want {
+		t.Errorf("Address(4242) = %q, want %q", first.Address, want)
 	}
 
 	// It shares the daemon's own runtime directory, and that directory is
 	// created owner-only (protocol.SocketDir) -- the helper socket is an
 	// unauthenticated local endpoint, so the directory mode is what confines it.
-	info, err := os.Stat(filepath.Dir(first))
+	info, err := os.Stat(filepath.Dir(first.Address))
 	if err != nil {
 		t.Fatalf("stat socket dir: %v", err)
 	}

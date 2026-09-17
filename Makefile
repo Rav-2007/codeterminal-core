@@ -8,7 +8,7 @@
 
 MODULES := daemon editapply proxy helper protocol clients/tui
 
-.PHONY: help hooks hookcheck test race fmt vet crossvet lint ratchet errcheck fuzz check docs webview drill soak eval evalguard debtmarkers parity supplychain
+.PHONY: help hooks hookcheck test race fmt vet crossvet standalone lint ratchet errcheck fuzz check docs webview drill soak eval evalguard debtmarkers parity supplychain
 
 help:
 	@echo "make hooks    install the tracked git hooks (.githooks/) -- do this once"
@@ -119,6 +119,40 @@ crossvet:
 	done
 	@echo "crossvet: clean (windows + darwin, $(words $(CROSSVET_MODULES)) modules)"
 
+# STANDALONE, and this asks a different question from crossvet above.
+#
+# crossvet runs INSIDE the workspace, where go.work's minimum version selection
+# raises every module to the highest version any module requires. A module whose
+# own go.mod under-declares a dependency still builds there -- and then fails for
+# anyone who builds it on its own.
+#
+# MEASURED 2026-09-17: protocol/go.mod required golang.org/x/sys v0.10.0 while
+# protocol/peerauth_windows.go calls windows.GetNamedPipeClientProcessId, which
+# does not exist before v0.47.0. It compiled only because daemon/go.mod pulled
+# v0.47.0 into the workspace. The module holding the WINDOWS SECURITY BOUNDARY
+# could not be built for Windows on its own, and nothing said so.
+#
+# WHY supply-chain.sh CANNOT SEE IT. That gate runs `GOWORK=off go mod tidy` and
+# asserts no diff -- but tidy resolves PACKAGES, not SYMBOLS.
+# golang.org/x/sys/windows exists in v0.10.0; it is merely missing the function.
+# Only a compile finds this, which is why this target compiles.
+#
+# helper is on the linux arm but not the windows one: it is cgo against
+# onnxruntime, so a cross-build without a C toolchain fails on build constraints
+# rather than on anything this gate is asking about. CI builds it natively on
+# windows-latest instead (.github/workflows/release.yml's binaries job).
+STANDALONE_LINUX   := protocol daemon editapply clients/tui proxy helper
+STANDALONE_WINDOWS := protocol daemon editapply clients/tui proxy
+
+standalone:
+	@for m in $(STANDALONE_LINUX); do \
+		(cd $$m && GOWORK=off GOOS=linux go build ./...) || { echo "standalone: FAILED GOOS=linux $$m -- this module cannot be built outside the workspace"; exit 1; }; \
+	done
+	@for m in $(STANDALONE_WINDOWS); do \
+		(cd $$m && GOWORK=off GOOS=windows go build ./...) || { echo "standalone: FAILED GOOS=windows $$m -- this module cannot be built outside the workspace"; exit 1; }; \
+	done
+	@echo "standalone: clean -- linux $(words $(STANDALONE_LINUX)) module(s), windows $(words $(STANDALONE_WINDOWS)) (helper is cgo; CI builds it natively)"
+
 # -count=1 DISABLES THE TEST CACHE, and it is not tidiness.
 #
 # `go test` serves a cached PASS when the inputs look unchanged, and this repo
@@ -211,7 +245,7 @@ fuzzguard:
 # docs is last and costs ~1s. It is in `check` rather than in a docs-only job
 # because a rename breaks links in the same commit that makes it, and that is
 # the only moment anyone can fix it cheaply.
-check: hookcheck fmt vet crossvet race lint ratchet errcheck evalguard fuzzguard supplychain webview docs debtmarkers parity reach
+check: hookcheck fmt vet crossvet standalone race lint ratchet errcheck evalguard fuzzguard supplychain webview docs debtmarkers parity reach
 	@echo "check: all gates green"
 	@./scripts/gate-parity.sh --what-ci-adds
 

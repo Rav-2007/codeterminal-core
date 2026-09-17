@@ -58,11 +58,7 @@ func defaultAddressFor(realRoot string) Address {
 // outcome than a name that collides only in the multi-user case, and the DACL
 // still refuses the other user.
 func pipeName(realRoot string) string {
-	suffix := "default"
-	if sid, err := currentUserSID(); err == nil {
-		sum := sha256.Sum256([]byte(sid))
-		suffix = hex.EncodeToString(sum[:])[:16]
-	}
+	suffix := userDiscriminator()
 	// The workspace tag comes AFTER the user discriminator, so the name still
 	// scopes to this user first: the pipe namespace is machine-global, and the
 	// DACL is what enforces that, but a name that reads user-then-workspace is
@@ -71,6 +67,37 @@ func pipeName(realRoot string) string {
 		suffix += "-" + WorkspaceTag(realRoot)
 	}
 	return pipePrefix + serviceDirName + "-" + suffix
+}
+
+// userDiscriminator is the per-user half of every pipe name this package hands
+// out. Factored out of pipeName when localAddressFor arrived: two endpoints
+// deriving the same discriminator by two copies of the same four lines is how
+// they drift apart, and the DACL below is only per-user because this is.
+func userDiscriminator() string {
+	if sid, err := currentUserSID(); err == nil {
+		sum := sha256.Sum256([]byte(sid))
+		return hex.EncodeToString(sum[:])[:16]
+	}
+	return "default"
+}
+
+// localAddressFor names a non-daemon endpoint in the machine-global pipe
+// namespace.
+//
+// NOT a filesystem path, and callers must not treat it as one: there is nothing
+// to stat, nothing to chmod, and nothing to unlink when the owner dies. The
+// daemon's stale-socket cleanup is Unix-only for this reason, and the same is
+// true of the helper's.
+//
+// Access control is the pipe's DACL, applied by listen() at creation time and
+// enforced by the object manager before any of this process's code runs — so
+// the helper gets the same protection the daemon socket has, which the Unix
+// 0600-plus-SO_PEERCRED arrangement has to assemble from two parts.
+func localAddressFor(name string) (Address, error) {
+	return Address{
+		Transport: TransportNamedPipe,
+		Address:   pipePrefix + serviceDirName + "-" + userDiscriminator() + "-" + name,
+	}, nil
 }
 
 // currentUserSID returns this process's user SID in string form.

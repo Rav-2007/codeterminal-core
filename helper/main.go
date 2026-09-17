@@ -36,7 +36,17 @@ import (
 func main() {
 	logger := log.New(os.Stderr, "codeterminal-embedder-helper: ", log.LstdFlags)
 
-	socketPath := flag.String("socket", "", "Unix domain socket path to listen on (required; the daemon supplies this)")
+	socketPath := flag.String("socket", "", "address to listen on -- a socket path on Unix, a named pipe on Windows (required; the daemon supplies this)")
+	// SUPPLIED BY THE DAEMON, not derived here, and empty is a valid value.
+	//
+	// protocol.Listen reads an empty transport as "this platform's local
+	// transport", so an old daemon invoking this binary without the flag still
+	// gets the right listener. What it must NOT do again is name a transport
+	// that only one platform has: --socket used to be paired with a hardcoded
+	// protocol.TransportUnix here, and on Windows that is rejected outright
+	// rather than degraded, so the next line was logger.Fatalf and the helper
+	// never started. Both sides now derive this from helperproto.Address.
+	transport := flag.String("transport", "", "transport for --socket (unix|npipe; empty means this platform's default)")
 	modelDir := flag.String("model-dir", "", "directory containing model_int8.onnx + tokenizer files (required; the daemon supplies this after `download-model`)")
 	onnxRuntimeLib := flag.String("onnxruntime-lib", "", "path to the onnxruntime shared library (required; the daemon supplies this after `download-model`)")
 	// A FLAG rather than an environment variable, deliberately: helperEnv() in
@@ -59,14 +69,21 @@ func main() {
 	defer embedder.Close()
 	defer ort.DestroyEnvironment()
 
+	addr := protocol.Address{Transport: *transport, Address: *socketPath}
+
 	// A stale file from a previous, uncleanly-killed instance would block
 	// net.Listen; since the daemon scopes this path by its own PID before
 	// spawning us, a leftover here can only be our own dead predecessor.
-	os.Remove(*socketPath)
+	//
+	// UNIX ONLY, because only there is the endpoint a file. A named pipe leaves
+	// no residue when its owner dies -- there is nothing to unlink and nothing
+	// to collide with -- so removing one is not merely unnecessary, it is a
+	// filesystem call against a string that is not a path.
+	removeStale(addr)
 
-	ln, err := protocol.Listen(protocol.Address{Transport: protocol.TransportUnix, Address: *socketPath})
+	ln, err := protocol.Listen(addr)
 	if err != nil {
-		logger.Fatalf("listening on %s: %v", *socketPath, err)
+		logger.Fatalf("listening on %s: %v", addr, err)
 	}
 
 	sigCh := make(chan os.Signal, 1)
@@ -75,11 +92,11 @@ func main() {
 		sig := <-sigCh
 		logger.Printf("received %s, shutting down", sig)
 		ln.Close()
-		os.Remove(*socketPath)
+		removeStale(addr)
 		os.Exit(0)
 	}()
 
-	logger.Printf("ready, listening on %s", *socketPath)
+	logger.Printf("ready, listening on %s", addr)
 
 	srv := &server{embedder: embedder, logger: logger}
 	for {
@@ -234,5 +251,17 @@ func (s *server) dispatch(req helperproto.Request) helperproto.Response {
 		return helperproto.Response{OK: true, Vectors: vecs}
 	default:
 		return helperproto.Response{OK: false, Error: "unknown method: " + req.Method}
+	}
+}
+
+// removeStale unlinks a leftover endpoint, where the endpoint is a file.
+//
+// Keyed on the TRANSPORT rather than on runtime.GOOS: the question is "does this
+// address name something in the filesystem", and the transport answers it
+// directly, where the platform only implies it. A Unix socket left by a dead
+// predecessor blocks bind and must go; a named pipe cannot outlive its owner.
+func removeStale(a protocol.Address) {
+	if a.Transport == "" || a.Transport == protocol.TransportUnix {
+		os.Remove(a.Address)
 	}
 }

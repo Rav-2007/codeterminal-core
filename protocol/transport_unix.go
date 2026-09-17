@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"syscall"
 	"time"
 )
@@ -34,6 +35,28 @@ func defaultAddressFor(realRoot string) Address {
 // The named-pipe backend has no equivalent step, which is exactly why this
 // belongs behind the seam rather than in daemon/main.go where both platforms
 // would have to reason about it.
+// localAddressFor puts a non-daemon endpoint beside the daemon socket, in the
+// same per-user directory, with the same 0700 ownership story SocketDir applies.
+//
+// The .sock suffix is kept because these ARE filesystem objects here: something
+// has to unlink a stale one, and a reader who greps the runtime dir should be
+// able to tell what they are looking at. On Windows there is no file and no
+// suffix, which is exactly the asymmetry this seam exists to absorb.
+func localAddressFor(name string) (Address, error) {
+	dir, err := SocketDir()
+	if err != nil {
+		return Address{}, err
+	}
+	p := filepath.Join(dir, name+".sock")
+	// Checked HERE rather than at listen() so the caller fails while it still
+	// has a useful error to give, and so the daemon does not spawn a helper
+	// that is guaranteed to die on bind.
+	if err := checkSocketPathLength(p); err != nil {
+		return Address{}, err
+	}
+	return Address{Transport: TransportUnix, Address: p}, nil
+}
+
 func listen(a Address) (net.Listener, error) {
 	if a.Transport != "" && a.Transport != TransportUnix && a.Transport != TransportTCP {
 		return nil, fmt.Errorf("transport %q is not supported on this platform", a.Transport)

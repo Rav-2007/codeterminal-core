@@ -1,6 +1,7 @@
 package main
 
 import (
+	"codeterminal/protocol"
 	"context"
 	"fmt"
 	"io"
@@ -230,8 +231,14 @@ func TestHelperProcess_StopLeavesNoOrphanProcess(t *testing.T) {
 		t.Fatalf("helper pid %d is still alive after Stop; orphaned process", pid)
 	}
 
-	if _, err := os.Stat(h.socketPath); !os.IsNotExist(err) {
-		t.Fatalf("socket file %s should be removed after Stop, stat err = %v", h.socketPath, err)
+	// Only where the endpoint IS a file. A Windows named pipe leaves no
+	// residue when its owner dies, so there is nothing to stat and its name is
+	// not a path -- asserting otherwise here is the same Unix-only assumption
+	// that kept the helper from starting on Windows at all.
+	if h.addr.Transport == "" || h.addr.Transport == protocol.TransportUnix {
+		if _, err := os.Stat(h.addr.Address); !os.IsNotExist(err) {
+			t.Fatalf("socket file %s should be removed after Stop, stat err = %v", h.addr.Address, err)
+		}
 	}
 }
 

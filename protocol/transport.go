@@ -103,6 +103,32 @@ func DialTimeout(a Address, d time.Duration) (net.Conn, error) { return dial(a, 
 // workspaces, which is the defect daemon/twoworkspaces_test.go reproduces.
 func DefaultAddress() Address { return defaultAddress() }
 
+// LocalAddressFor is the address of a NON-DAEMON local endpoint owned by this
+// user — today, the embedder helper.
+//
+// WHY THIS EXISTS RATHER THAN A PATH. The helper used to be handed a filesystem
+// path and told to listen on a Unix socket, hardcoded on both sides:
+// helper/main.go passed TransportUnix and daemon/helperproc.go dialled "unix".
+// On Windows that is not a degraded path, it is a dead one — listen() rejects
+// TransportUnix outright and the helper's next line is logger.Fatalf, so `index`
+// and `retrieve` failed on the platform entirely.
+//
+// It went unseen because daemon/testdata/fakehelper stood in for the helper in
+// every Windows test and called net.Listen("unix", …) directly. Go supports
+// AF_UNIX on Windows 10 1803+, so the FIXTURE worked where production could not:
+// the test took a different code path than the code it was standing in for, and
+// a green cross (windows-latest, daemon) meant nothing about the helper.
+//
+// So the derivation lives here, beside DefaultAddressFor, for the reason stated
+// at the top of this file: what a local endpoint IS differs by platform, and
+// that difference must be stated once. Callers pass a name and get whatever this
+// platform's local transport is — a socket under SocketDir on Unix, a named pipe
+// in the machine-global namespace on Windows.
+//
+// name must be a stable identifier unique among this user's endpoints; the
+// caller owns uniqueness (helperproto scopes it by the daemon's PID).
+func LocalAddressFor(name string) (Address, error) { return localAddressFor(name) }
+
 // DefaultAddressFor is DefaultAddress scoped to one workspace, so two
 // workspaces get two daemons instead of the second failing to start.
 //

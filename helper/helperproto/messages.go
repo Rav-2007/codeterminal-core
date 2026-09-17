@@ -16,7 +16,6 @@ package helperproto
 
 import (
 	"fmt"
-	"path/filepath"
 
 	"codeterminal/protocol"
 )
@@ -69,15 +68,21 @@ const (
 // longest input and a search query is nowhere near either cap.
 const MaxSequenceLength = 512
 
-// SocketPath returns the Unix domain socket path the embedder helper spawned
-// by the daemon process daemonPID should bind. It lives in the same runtime
-// directory as the daemon's own client-facing socket (protocol.SocketDir),
-// and is scoped by daemonPID so a socket left behind by an unrelated or
-// previous daemon process can never collide with it.
-func SocketPath(daemonPID int) (string, error) {
-	dir, err := protocol.SocketDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, fmt.Sprintf("embedder-helper-%d.sock", daemonPID)), nil
+// Address returns the endpoint the embedder helper spawned by daemon process
+// daemonPID should bind, and that that daemon should dial.
+//
+// BOTH SIDES CALL THIS, which is the point. It replaced SocketPath, which
+// returned a filesystem path and named a Unix socket in its own signature --
+// and so could only ever describe one of the two platforms this ships on. The
+// helper hardcoded protocol.TransportUnix against it and the daemon hardcoded
+// net.Dial("unix", ...), so on Windows the helper died on its first bind with
+// `transport "unix" is not supported on this platform` and local retrieval was
+// simply absent there.
+//
+// The PID scope is unchanged and still load-bearing: an endpoint left behind by
+// an unrelated or previous daemon can never collide with this one. What changed
+// is that the platform decides what an endpoint IS -- see
+// protocol.LocalAddressFor.
+func Address(daemonPID int) (protocol.Address, error) {
+	return protocol.LocalAddressFor(fmt.Sprintf("embedder-helper-%d", daemonPID))
 }

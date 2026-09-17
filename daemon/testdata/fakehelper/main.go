@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"codeterminal/helper/helperproto"
+	"codeterminal/protocol"
 )
 
 const fakeDim = 384
@@ -25,7 +26,19 @@ const fakeDim = 384
 func main() {
 	logger := log.New(os.Stderr, "fakehelper: ", log.LstdFlags)
 
-	socketPath := flag.String("socket", "", "socket to listen on")
+	socketPath := flag.String("socket", "", "address to listen on")
+	// TAKES THE SAME FLAG PAIR AS THE REAL HELPER, and that is the whole point.
+	//
+	// This fixture used to call net.Listen("unix", ...) directly while the real
+	// helper called protocol.Listen. Go supports AF_UNIX on Windows 10 1803+, so
+	// the fixture WORKED on Windows where the real helper could not bind at all
+	// -- protocol.Listen rejects TransportUnix there and the helper's next line
+	// is a Fatalf. Every Windows daemon test went green against a stand-in that
+	// took a different code path than the code it was standing in for, and the
+	// one defect that mattered on the platform was invisible.
+	//
+	// A fixture that cannot fail the way production fails is not a fixture.
+	transport := flag.String("transport", "", "transport for --socket (unix|npipe; empty means this platform's default)")
 	flag.Parse()
 	if *socketPath == "" {
 		logger.Fatal("--socket is required")
@@ -39,10 +52,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	os.Remove(*socketPath)
-	ln, err := net.Listen("unix", *socketPath)
+	addr := protocol.Address{Transport: *transport, Address: *socketPath}
+	removeStale(addr)
+	ln, err := protocol.Listen(addr)
 	if err != nil {
-		logger.Fatalf("listening on %s: %v", *socketPath, err)
+		logger.Fatalf("listening on %s: %v", addr, err)
 	}
 
 	sigCh := make(chan os.Signal, 1)
@@ -50,7 +64,7 @@ func main() {
 	go func() {
 		<-sigCh
 		ln.Close()
-		os.Remove(*socketPath)
+		removeStale(addr)
 		os.Exit(0)
 	}()
 
@@ -118,4 +132,12 @@ func handleConn(conn net.Conn) {
 	}
 
 	_ = json.NewEncoder(conn).Encode(resp)
+}
+
+// removeStale mirrors the real helper's cleanup: unlink only where the endpoint
+// is a file. See helper/main.go.
+func removeStale(a protocol.Address) {
+	if a.Transport == "" || a.Transport == protocol.TransportUnix {
+		os.Remove(a.Address)
+	}
 }
