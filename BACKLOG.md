@@ -68,8 +68,17 @@ verification transcripts is in
 
 The ordering is real: each tier is blocked by the one above it.
 
-### Tier 0 — blocked on the founder. One item, and it gates macOS only.
+### Tier 0 — EMPTY as of 2026-09-17. Nothing is blocked on the founder.
 
+> **Corrected 2026-09-17. Nothing is left.** B3 — the last row standing, and the
+> one the heading above used to name — stopped being a blocker when
+> `darwin-arm64` left the target set. It gated *shipping* only while the release
+> built a platform it could not sign; a tag now declares two platforms and ships
+> two, and waits on no credential. B3 survives as the cost of a macOS **return**,
+> which is a different question from what blocks the first release. **Do not read
+> this tier as "waiting on a signature" — that is the exact failure the 2026-09-02
+> correction below was written about, one row later.**
+>
 > **Corrected 2026-09-02. Only B3 is left.** B2 (D1+D2+D3) and B4 (D5–D8) were
 > **taken on 2026-08-12** and this table went on listing them as blockers for
 > three weeks, under a heading that said *"nothing else moves until these do"*. `DECISION_PACK.md`
@@ -87,7 +96,7 @@ The ordering is real: each tier is blocked by the one above it.
 |---|---|---|
 | ~~**B1**~~ | ~~**GitHub Actions billing**~~ | ~~Every job refuses to start. **18 commits have no CI signal**, and the gap widens with each one.~~ **RESOLVED 2026-08-30.** CI ran eight times that day; dispatch `33311677642` was **30/30 green including all four macOS jobs**, and a 39-commit stack fast-forwarded onto `main`, which now runs its own matrix. **Tier 0's critical path changes with this row: the top blocker is gone and B2/B3/B4 are what Tier 0 now means.** This row mattered more than a stale row usually does — it told a reader there was no CI signal, and CI is where `govulncheck` and the confinement conformance suites run, so believing it means not looking at a security gate's output. |
 | ~~**B2**~~ | ~~**D1 + D2 + D3**~~ ([`docs/DECISION_PACK.md`](docs/DECISION_PACK.md)) | ~~These *are* the P3 gate, which blocks all capability work.~~ **TAKEN 2026-08-12.** D1 accepted same-uid, D2 ruled Gate 6 closed, D3 rejected error unification. **The P3 security gate is formally CLOSED and all capability work is unblocked.** |
-| **B3** | **Apple Developer enrolment** | Gates signing/notarisation, therefore macOS shipping. Unsigned binaries in a `.vsix` are quarantined by Gatekeeper and read to a user as "daemon not running". |
+| ~~**B3**~~ | ~~**Apple Developer enrolment**~~ | ~~Gates signing/notarisation, therefore macOS shipping. Unsigned binaries in a `.vsix` are quarantined by Gatekeeper and read to a user as "daemon not running".~~ **NO LONGER A BLOCKER as of 2026-09-17.** It blocked *the first release* only while the release built a target it could not sign. `darwin-arm64` is now out of `scripts/release-targets.txt` entirely, so a tag declares two platforms and ships two — **Tier 0 is empty and the first release is not waiting on any credential.** B3 is now a **prerequisite for a macOS RETURN**, not a blocker on shipping: the cost of that return is enrolment, the five `MACOS_*` secrets, and one line in the targets file. See `docs/RESIDUAL_RISKS.md` R1.15's closure section. |
 | ~~**B4**~~ | ~~**D5 – D8**~~ | **TAKEN 2026-08-12.** D5 rejected Design B and deferred C; D6 maintained the default model pending a spend eval; D7 ruled the shared confinement package not-yet; D8 approved the skills subsystem for deletion. D8's deletion is engineering work that is now unblocked, not a blocker. |
 
 ### Tier 1 — distribution. **Packaging itself is done**; shipping it is not.
@@ -103,7 +112,7 @@ The ordering is real: each tier is blocked by the one above it.
 
 | # | Item | State |
 |---|---|---|
-| **E1** | macOS **signing + notarisation** | Blocked on **B3**. `release.yml` already emits a build warning that darwin-arm64 binaries are unsigned and must not be published — so the gap is guarded, not silent. `linux-x64` and `win32-x64` are shippable today. |
+| **E1** | macOS **signing + notarisation** | **Out of scope for the shipping product as of 2026-09-17**, not blocked. The build warning this row described is gone with the target: `release.yml` no longer builds `darwin-arm64`, so there is nothing unsigned to warn about. `linux-x64` and `win32-x64` are shippable today **and a tag now actually publishes them** — before this change a tag published zero assets on every platform, because the signing guard correctly refused a release carrying an unsigned target. Re-entry cost is in **B3**. |
 | ~~**E2**~~ | ~~`release.yml` has **never fired**~~ | ~~CONFIRMED: it triggers on `tags: ["v*"]` and the repo has 12 tags, **none** matching `v*`. Its `publish` job is additionally `if: false` by design — "flip this on deliberately, never as a side effect". Firing it is a founder action.~~ (Completed 2026-08-11: fired `v0.0.1`) |
 | ~~**E3**~~ | ~~Clean-VM install per platform~~ | ~~The end-to-end proof: install the `.vsix`, open a repo, ask a question, apply an edit, undo it — with no Go toolchain, no compiler, no terminal.~~ (Completed 2026-08-11: verified hermetically via `scripts/e3-pilot-test.js`) |
 

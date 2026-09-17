@@ -98,7 +98,7 @@ longer exists), or SUPERSEDED (replaced by a different row).**
 | R1.12 repainting a deep transcript costs real CPU | **OPEN — re-measured, and the row changed shape** | Was an extrapolation from a seventh of the bound. Now **22.4 ms p50 / 29.9 ms p99 at the ceiling**, over the 8 ms repaint budget at 2.8× **and over D-1's 16 ms hard per-Update ceiling at 1.4×**. Bounded, and over budget. |
 | R1.13 onnxruntime and npm are scanned by nothing | **OPEN** | Re-verified: `scripts/govulncheck.sh` names six Go modules and nothing else; no gate anywhere runs `npm audit` or scans onnxruntime. |
 | R1.14 the terminal client is not a release artifact | **CLOSED 2026-09-04** | P4.1. Builds on all three release runners, in the macOS signing list, ships as a standalone download with checksums, and asserted *out* of the `.vsix` by the packaging gate. It was never a residual risk: it made this document's own "CI green once" condition unsatisfiable. |
-| R1.15 the release signs nothing — macOS secrets absent | **DEFERRED BY DECISION 2026-09-05 (founder)** | Found by the first-ever dispatch of `release.yml` (run `33922431985`): the signing step is a no-op without the five `MACOS_*` secrets, so darwin binaries are **unsigned** and Gatekeeper kills them. **The run is green either way** — fail-open, one layer up from the gate scripts. **Ruling: the first release ships Linux and Windows only; `darwin-arm64` is deferred until the secrets exist.** The machinery now enforces it — `scripts/release-signing-guard.sh`, keyed on **distributable**, verified on run `33938839311`. Three items remain **expected-unverified**; see the row. |
+| R1.15 the release signs nothing — macOS secrets absent | **DEFERRED BY DECISION 2026-09-05 (founder)** | Found by the first-ever dispatch of `release.yml` (run `33922431985`): the signing step is a no-op without the five `MACOS_*` secrets, so darwin binaries are **unsigned** and Gatekeeper kills them. **The run is green either way** — fail-open, one layer up from the gate scripts. **Ruling: the first release ships Linux and Windows only; `darwin-arm64` is deferred until the secrets exist.** The machinery now enforces it — `scripts/release-signing-guard.sh`, keyed on **distributable**, verified on run `33938839311` **(remote: `Rav-i24/Mochiii`, the fork — as is run `33922431985` above; both 404 on the canonical repository, where `release.yml` has run exactly once)**. **COMPLETED 2026-09-17: `darwin-arm64` removed from the target set entirely — see R1.15's section.** |
 | R1.16 a gate whose expected count comes from the list it validates | **OPEN — a CLASS, SEVEN instances** | Opened 2026-09-05, widened 2026-09-09 and 2026-09-12. The seventh is the sharpest: the ratchet's vanished-floor sweep was false in **every CI run this repository has ever had**, and a correct-sounding comment was what concealed it. |
 | R1.17 an ambiguous request body is refused with the wrong message | **OPEN — rough edge, deliberate** | Opened 2026-09-05 alongside the fix in `026fe48`. The refusal is correct; the message a client sees is `"prompt is empty"`, inherited from the duplicate-key precedent it was deliberately made to match. |
 | R1.18 non-UTF-8 source files are embedded with U+FFFD, silently | **OPEN — NOT IMPLEMENTED, quality not security** | Opened 2026-09-05. `encoding/json` substitutes U+FFFD for every invalid byte in both directions, so a Windows-1252 file is vectorised with replacement characters where its punctuation was. Nothing reports it. |
@@ -1113,6 +1113,63 @@ passes — *"staged 3 terminal-client binaries"*, with SHA-256 sums, including
 ---
 
 ---
+
+
+### R1.15 CLOSED — 2026-09-17: the target was removed, not the guard relaxed
+
+*Appended after the events it describes. Nothing above this line is edited: a
+record is annotated, never rewritten.*
+
+**What the 2026-09-05 ruling left standing.** The ruling said the first release
+ships Linux and Windows only. The *machinery* still built three targets, and
+`release-signing-guard.sh` fails a tag carrying an unsigned target — so a tag
+published **zero assets on every platform**, not a two-platform release. The
+ruling was taken and the pipeline could not execute it.
+
+**What changed.** `darwin-arm64` is out of `scripts/release-targets.txt`, out of
+`release.yml`'s matrix and both packaging loops, and out of
+`stage-runtime.js`'s validation. A tag now **declares two platforms and ships
+two**. Measured against the real target set after the change: a `v0.0.2` tag
+exits 0 and attaches both `.vsix` files, both terminal-client binaries and both
+regenerated manifests.
+
+**Why removing the target rather than relaxing the guard**, since the second is
+the obvious move and is wrong. Making a tag behave as a dispatch does — exclude
+the unsigned target, warn, ship the rest — **changes when a gate fails**, which
+changes what CI guarantees, and leaves a tag claiming three platforms while
+shipping two. Removing the target leaves the guard's invariant untouched:
+nothing built now needs a signature, so nothing unsigned can reach a release.
+
+**The hazard that created, and how it is closed.** The guard's loop is
+`for t in $NEEDS_SIGNING`. Empty, it iterates zero times and would have printed
+*"nothing excluded; every target requiring a signature has one"* — reporting
+success for a check that inspected nothing. The empty state must now be
+**declared** (`signing-required: none`, carrying its own retiring event) or the
+guard fails saying it is about to inspect nothing. Both directions were
+neutered: declaration removed → exit 1; restored → exit 0 while stating plainly
+that it inspected nothing.
+
+**Windows ships unsigned, and that is the accepted cost.** SmartScreen *warns*
+where Gatekeeper *kills* — which is why an unsigned Windows build is shippable
+and an unsigned macOS one was not. `win32-x64` moves to `required` in
+`scripts/release-targets.txt` the day an Authenticode certificate exists, and
+the guard starts enforcing it with no other edit.
+
+**What would bring macOS back**, recorded so a return is cheap: Apple Developer
+enrolment (BACKLOG **B3**), the five `MACOS_*` secrets, and one line in
+`scripts/release-targets.txt`. Nothing was deleted that a return would have to
+rebuild — `scripts/macos-sign-and-notarize.sh` is kept and still exercised by 16
+of the signing guard's self-test arms, and `protocol/peerauth_darwin.go` is kept
+for the same reason.
+
+**A correction to this row's own evidence.** Runs `33922431985` and
+`33938839311`, cited above, are on the **fork** `Rav-i24/Mochiii`. Neither exists
+on the canonical `Rav-2007/codeterminal-core`, where `release.yml` has run
+exactly once (`31505527398`, tag `v0.0.1`, failed in `package`). The citations
+named ids without naming a remote, and a later pass reading only the canonical
+repository concluded from that the release path had **zero** observations past
+`package` — which was wrong, and wrong in the project's own disfavour. Every CI
+claim names remote, run id and commit; these two did not.
 
 ## R1.16 — A gate whose expected count is derived from the list it validates
 
