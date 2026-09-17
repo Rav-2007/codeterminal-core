@@ -605,3 +605,103 @@ Three instances now, and it is worth naming because each cost a debugging cycle:
 The third is the interesting one: the first two hide a failure, the third hides a
 **measurement**. A wall-clock gate whose number is visible only when it breaches can
 be argued about but not tracked.
+
+---
+
+# Third addendum, 2026-09-17 — two rules the closing sequence earned, and the index that makes all of them checkable
+
+H11–H13 were written from work that was still in flight. These two come from work
+that closed, and they are about the audit's own output rather than the code's: one
+about proposing gates, one about describing anything by counting it. The index at the
+end exists because **this document had itself begun to describe itself by counting** —
+which is precisely the failure H15 names.
+
+## H14 — A gate that needs exemptions at birth is miscalibrated
+
+Exemptions granted before a gate has ever run are indistinguishable, in the
+allowlist, from exemptions earned by real asymmetries later: both are a line with a
+reason. **Measure coverage and false-positive rate before proposing a gate, and
+report both even when the verdict is to reject.**
+
+> *Instance:* a proposed gate — *no eval anchor may appear in a source comment* —
+> designed in direct response to a real defect, where a comment added to
+> `daemon/chunker.go` widened an anchor from one occurrence to two and broke the
+> eval's ground truth. The gate would have caught that exact commit. It was measured
+> before it was written, and rejected.
+
+The measurements are the reusable part:
+
+| | |
+|---|---|
+| Coverage | **5 of 101** eval anchors are qualified symbols; the remaining 96 are prose a comment-scanner cannot tell from prose. The gate would not have covered the defect class, only one member of it |
+| False positives, unnarrowed | anchors that are ordinary English words fired on sentences mentioning neither retrieval nor the eval |
+| False positives, narrowed to qualified symbols | **four pre-existing legitimate hits** in correct code, each needing an exemption before the gate had run once |
+
+A gate needing four birth-defect exemptions is one the next person switches off, and
+a switched-off gate is worse than no gate, because it still reads as protection in
+the workflow list.
+
+**The verdict is not the durable half — the numbers are.** A rejected design with
+measurements tells the next person what to build instead. A rejected design without
+them gets re-proposed by whoever next has the same idea, and the measurement is paid
+for twice. What replaced it was not a cheaper gate but a *relocation*: the assertion
+that already covered the whole class was lifted out of a twenty-two-minute host and
+now runs in under a second on every push.
+
+## H15 — List, do not count. A stated count is not a counted count.
+
+A count in prose is a claim about an enumeration that lives somewhere else, and
+nothing fails when the two disagree. **Enumerate the members. If a number must
+appear, derive it from the enumeration in the same breath, so they cannot drift.**
+
+> *Three instances, listed:*
+
+| | |
+|---|---|
+| the delivery gap | prose said **213**; measuring it said **222**. The standing correction since is to name it as *everything between the canonical main and HEAD* and never as a number — the quantity was never what the finding was about |
+| §13 of the 2026-09-13 checkpoint | prose said **31 rows**; the register holds **27** |
+| this document | the H2 instance count drifted once, inside the same pass that wrote H2 |
+
+The third is the one to sit with. H2's section opens "seven instances, all in one
+pass", and the list beneath it is the authority — so when an eighth instrument was
+caught lying, the sentence above it became false and **nothing could fail.** The
+count and the list were two registers for one fact, which is technique 11's
+violation in miniature, committed by the document that states technique 11.
+
+## The rule index — every rule with its instance, listed and not counted
+
+H15 applied to this document. This table is the authority on which rules exist; any
+sentence elsewhere that totals them is derived from here and not the other way round.
+
+| Rule | In one line | Its instance |
+|---|---|---|
+| H1 | No circular evidence | §13 of the 2026-09-13 checkpoint is a list of what was never verified; its presence in the repository evidenced the documentation, not the work |
+| H2 | Anything you use to interpret evidence is untested until tested | a 7-hex regex matching a decimal, an exit status, a reference frame, a truncation, a gate's scope, a shell loop — and in this pass a restore check whose predicate was the whole tree, and a neuter arm defeated by a `+1` |
+| H3 | Retract before you report | "32 dangling citations" was reported; the true answer was **zero** |
+| H4 | A dissolved premise is a first-class result | "the 13 Extension-Development-Host suites have never run" — they run on every push, and the one touching the defect *asserted* it |
+| H5 | Name the recipient | whether `daemon/CHUNK_SCRUB_DESIGN.md` is a decision record or a scoping note is the owner's call, not the audit's |
+| H6 | Evidence at the resolution of the question | "macOS `cross` is green" does not answer "did macOS run the tests"; the job log does |
+| H7 | Enumerate incumbents before claiming a name | `B<n>` already meant four things, so the boundaries became `TB<n>` — and `M5` is still two things |
+| H8 | Destructive neuter arms run from a committed tree | an arm's `git checkout` discarded an uncommitted fix, twice; `git status --porcelain` must be empty first |
+| H9 | A hedge is not a measurement | "three macOS jobs failing" was wrong three ways; the billing filter had been applied to the runs counted and not to the run reasoned from |
+| H10 | Derive from a source of truth; do not enumerate | *"exclude `.codeterminal/` by name"* and *"grep `Handler: s.X`"* — both times the derivation was better, and both instructions were written by the auditor |
+| H11 | A wall-clock gate runs alone, and the report says what else was running | a release-blocking repaint failure at p50 **71.675 ms** against 64 ms, measured while `make check` ran beside `gh` API calls |
+| H12 | An undelivered artifact suppresses the checks that would have run on it | `evalguard` had been red since `21a0854` and nothing had run it, because the branch had not been pushed |
+| H13 | A derivation that is right on some inputs is wrong on all of them | `stage-runtime`'s derivation was wrong for all three release targets and the *answer* wrong for one; and a known-answer test that asserted its own subject's defect would have gone red on the fix |
+| H14 | A gate that needs exemptions at birth is miscalibrated | the anchor-in-comment gate: 5 of 101 anchors covered, four pre-existing legitimate hits, rejected on measurement before it shipped |
+| H15 | List, do not count | 213 against 222, 31 against 27, and this document's own H2 count |
+
+## What the closing sequence added to the taxonomy
+
+Two shapes that were not visible until the pass tried to finish:
+
+- **A check whose dependencies are a strict subset of its host's can be lifted out
+  and run cheaply.** The eval's ground-truth assertion needed the chunker and neither
+  the model nor the index, and was nevertheless reachable only behind twenty-two
+  minutes of embedding in a path-filtered workflow. It hid a real defect for the
+  length of a session because nobody had asked what it actually needed. **Ask that of
+  every slow gate.**
+- **An exemption is right when the quoted text *is* the finding; an elision is right
+  when it is not.** These two had been collapsing into each other. The distinction is
+  as sharp as any M5 pair, and it decides whether a document about a corpus defect
+  becomes an instance of it.
