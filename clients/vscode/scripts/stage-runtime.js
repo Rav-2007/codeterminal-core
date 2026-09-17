@@ -42,8 +42,8 @@ const runtimeDir = path.join(extRoot, 'daemon');
 // the host is only a fallback -- which keeps `npm run build:runtime` working
 // unchanged for a developer staging for their own machine.
 const target = process.argv[2] || '';
-if (target && !/^(linux-x64|darwin-arm64|win32-x64)$/.test(target)) {
-  console.error(`\nstage-runtime: unknown target ${target}\n  expected one of linux-x64, darwin-arm64, win32-x64\n`);
+if (target && !/^(linux-x64|win32-x64)$/.test(target)) {
+  console.error(`\nstage-runtime: unknown target ${target}\n  expected one of linux-x64, win32-x64\n`);
   process.exit(1);
 }
 const exe = target

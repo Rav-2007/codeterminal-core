@@ -1,0 +1,76 @@
+# THE TARGET SET. The one place that decides what a release builds and ships.
+#
+# WHY A FILE. Before this existed the set was written out in FIVE places --
+# release.yml's binaries matrix, its two `for TARGET in ...` loops,
+# release-signing-guard.sh's three lists, and stage-runtime.js's validation
+# regex -- and nothing checked that they agreed. Dropping a target meant five
+# edits, and missing one left CI green while the release was wrong: the matrix
+# would build a binary that no loop packaged, or a loop would package one the
+# matrix never built. scripts/target-parity.sh now asserts every mirror of this
+# file matches it.
+#
+# THE WORKFLOW CANNOT READ THIS. GitHub Actions has no include directive, so the
+# matrix must stay a literal. That is precisely why the parity gate exists:
+# a mirror that cannot be eliminated has to be checked instead.
+#
+# FORMAT:  <vsce-target>  <signing>  <runner>
+#
+# signing is `required` or `none`, and there is no default. A target with an
+# unrecognised or missing value is a FAILURE rather than an assumption -- adding
+# a platform means deciding whether it must be signed, even if the decision is
+# "no". One field per target, so a target cannot be in two lists or in neither,
+# which is the failure the previous two-list arrangement could express.
+
+linux-x64    none    ubuntu-latest
+win32-x64    none    windows-latest
+
+# ------------------------------------------------------------------------------
+# darwin-arm64 IS DELIBERATELY ABSENT, and this paragraph is the record.
+#
+# REMOVED 2026-09-17, finishing the founder ruling of 2026-09-05 recorded at
+# docs/RESIDUAL_RISKS.md R1.15: "the first release ships Linux and Windows only;
+# darwin-arm64 is deferred until the secrets exist."
+#
+# It was BUILT but never shippable. `gh secret list` returns zero rows, so
+# macos-sign-and-notarize.sh wrote UNSIGNED-darwin-arm64 every time, and the
+# signing guard failed any tag before the attach step -- meaning a tag published
+# nothing on ANY platform. A missing credential was doing an access-control job.
+#
+# WHY REMOVING THE TARGET RATHER THAN RELAXING THE GUARD. Making a tag behave as
+# a dispatch does -- exclude the unsigned target, warn, ship the rest -- changes
+# WHEN A GATE FAILS, which changes what CI guarantees, and leaves a tag claiming
+# three platforms while shipping two. Removing the target means a tag DECLARES
+# two and SHIPS two: the guard's invariant ("nothing unsigned reaches a release")
+# is untouched, because nothing built now needs signing.
+#
+# WHAT IT WOULD TAKE TO BRING IT BACK: Apple Developer enrolment (BACKLOG B3),
+# then the five MACOS_* secrets, then one line here --
+#
+#     darwin-arm64    required    macos-latest
+#
+# -- plus the mirrors target-parity.sh names. The guard, the signing script and
+# the packaging loops all still understand `required`; nothing was deleted that
+# a return would have to be rebuilt.
+# ------------------------------------------------------------------------------
+
+# NO TARGET ON THIS RELEASE REQUIRES A SIGNATURE, and that is declared here
+# rather than inferred from an empty list.
+#
+# THE HAZARD THIS CLOSES. release-signing-guard.sh's main loop is
+# `for t in $NEEDS_SIGNING`. With darwin gone that list is empty, so the loop
+# iterates zero times -- and the guard would then print "nothing excluded; every
+# target requiring a signature has one" and exit 0. A guard that inspects
+# nothing while reporting success is worse than no guard, because it answers a
+# question nobody re-asks.
+#
+# So the empty state must be DECLARED. Without this line the guard fails and
+# says it is inspecting nothing; with it, the guard still says it inspected
+# nothing but treats that as intended. Same shape as reach.sh's allowlist: an
+# exemption is allowed, silence is not, and every exemption names the event that
+# retires it.
+#
+# RETIRES WHEN: any target above is classified `required` -- which today means
+# darwin-arm64 returning, or win32-x64 moving to `required` when an Authenticode
+# certificate exists. Windows binaries ship unsigned today and SmartScreen warns
+# on them; that is a known, accepted cost and not an oversight.
+signing-required: none

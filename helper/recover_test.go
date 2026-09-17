@@ -2,10 +2,9 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
-	"net"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -33,18 +32,33 @@ import (
 // inside dispatch, which is a real panic on the real path, and is the same
 // panic that escaped serveConn uncaught while this file was being written.
 func TestHandleConn_ContainsAPanicToOneConnection(t *testing.T) {
-	// A short socket path: sun_path is 108 bytes on Linux and 104 on macOS, and
-	// t.TempDir() under a long test name has overrun it before.
+	// A short runtime dir: sun_path is 108 bytes on Linux and 104 on macOS, and
+	// t.TempDir() under a long test name has overrun it before. Set as
+	// XDG_RUNTIME_DIR rather than joined by hand, so the address comes from the
+	// same derivation production uses.
 	dir, err := os.MkdirTemp("", "hp")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer os.RemoveAll(dir)
-	sock := filepath.Join(dir, "h.sock")
+	t.Setenv("XDG_RUNTIME_DIR", dir)
 
-	ln, err := protocol.Listen(protocol.Address{Transport: protocol.TransportUnix, Address: sock})
+	// PLATFORM-DERIVED, and NOT a skip on failure.
+	//
+	// This used to hardcode protocol.TransportUnix and t.Skipf when Listen
+	// returned an error. On Windows that combination is a permanent, silent
+	// skip: TransportUnix is rejected outright there, so the panic-containment
+	// property this test exists to prove would have gone unverified on the
+	// platform forever while the suite stayed green.
+	//
+	// A listener that will not bind IS the finding. t.Fatal.
+	addr, err := protocol.LocalAddressFor(fmt.Sprintf("helper-recover-test-%d", os.Getpid()))
 	if err != nil {
-		t.Skipf("listening on %s: %v", sock, err)
+		t.Fatalf("deriving a helper address: %v", err)
+	}
+	ln, err := protocol.Listen(addr)
+	if err != nil {
+		t.Fatalf("listening on %s: %v", addr, err)
 	}
 	defer ln.Close()
 
@@ -69,7 +83,10 @@ func TestHandleConn_ContainsAPanicToOneConnection(t *testing.T) {
 
 	embedOnce := func(t *testing.T) {
 		t.Helper()
-		c, err := net.DialTimeout("unix", sock, 5*time.Second)
+		// protocol.DialTimeout, matching the listener above: a test that dials
+		// "unix" while production dials whatever the platform uses is the same
+		// divergence that let the Windows defect hide in fakehelper.
+		c, err := protocol.DialTimeout(addr, 5*time.Second)
 		if err != nil {
 			t.Fatalf("dial: %v", err)
 		}

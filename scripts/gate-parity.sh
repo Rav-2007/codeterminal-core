@@ -85,11 +85,12 @@ lint.sh|both|
 release-signing-guard.sh|both|
 release-branch-guard.sh|both|
 release-version-guard.sh|both|
+target-parity.sh|both|
 debt-markers.sh|both|
 supply-chain.sh|both|
 govulncheck.sh|local|CI runs govulncheck inline per module instead. Deliberate and NOT a duplicate: the script's own header records why -- CI installs whatever 1.25.x resolves to and finds nothing, while the same commit scanned on a developer machine sitting exactly on the toolchain floor found TEN reachable stdlib vulnerabilities. The two scan different standard libraries and both answers are wanted.
 fuzz.sh|both|TWO INVOCATIONS, and the costed decision only ever covered one of them. The fuzz RUN is CI-only: 30s per target across 19 targets is too slow for the gate people run before every push, and a gate they route around is worse than one that runs in CI -- `make fuzz` exists for running it deliberately. Its CLASSIFIER is a different thing: `fuzz.sh --self-test` is pure shell over recorded outputs, costs milliseconds, and runs in BOTH as `make fuzzguard` and a gates.yml step. It has to be a self-test rather than a run, because the outcome it classifies is a Go coordinator race that fires intermittently -- a green fuzz job means the race did not fire, not that the handling is right.
-macos-sign-and-notarize.sh|ci|Release-only, and needs Apple credentials plus a macOS runner. Nothing a developer can run.
+macos-sign-and-notarize.sh|manual|NOT WIRED TO ANYTHING as of 2026-09-17, when darwin-arm64 left scripts/release-targets.txt and release.yml's Sign & Notarize step went with it. KEPT, and the reason is not sentiment: 16 of release-signing-guard.sh's self-test arms EXECUTE this script to prove it writes UNSIGNED-<target> markers on all three reachable no-credential paths, and those arms run in both places. So its logic is still gated even though the script itself is no longer a gate -- which is exactly the state `manual` exists to name. Returns to `ci` when a target is classified `required` again.
 reach.sh|local|In `make check` and deliberately NOT in CI, and the reason is not cost. A CI runner's clone has no local branches, so checks 1 and 2 would examine nothing and pass by being irrelevant -- the exact failure hookcheck's exclusion names, and a gate that passes by being irrelevant is worse than no gate. The person who has an undelivered fix is at a terminal. It was `manual` for one commit while its ten findings were unresolved; each now carries an allowlist entry with a reason and a trigger, so it is green on facts rather than on silence.
 soak.sh|manual|A 30-minute sustained-load run. `make soak` exists; it is a measurement, not a gate.
 sigterm-drill.sh|manual|`make drill`. Drives real signals at a real daemon; deliberate, not per-push.
@@ -127,10 +128,12 @@ if [ "${1:-}" = "--what-ci-adds" ]; then
   done
   echo ""
   echo "  Capabilities a developer machine does not have (NOT derived -- see above):"
-  echo "    real Windows execution    cross (windows-latest) BUILDS, VETS and RUNS the tests."
-  echo "                              \`make crossvet\` only COMPILES. Every runtime"
-  echo "                              platform defect is invisible here, by construction."
-  echo "    real macOS execution      macos-latest, and only on main."
+  echo "    real Windows execution    cross (windows-latest) BUILDS, VETS and RUNS the tests"
+  echo "                              for five modules including helper, whose cgo build"
+  echo "                              cannot be cross-compiled here at all. \`make crossvet\`"
+  echo "                              only COMPILES, and \`make standalone\` only builds."
+  echo "                              Every runtime platform defect is invisible on this"
+  echo "                              machine, by construction."
   echo "    the VS Code extension     tsc + a real Extension Development Host."
   echo "    the proxy container       docker build."
   echo "    the 2000-turn soak        run unraced at full length in CI; the local"

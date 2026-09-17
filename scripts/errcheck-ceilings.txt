@@ -71,9 +71,17 @@
 # `defer tx.Rollback()` that Upsert inherited was converted with them, on this
 # file's own rule that half a function marking its discards and half not is worse
 # than either. Net -3, claimed here rather than left as slack.
-daemon         92
+# 2026-09-17: daemon 92 -> 91, helper 11 -> 10. The Windows helper-transport
+# fix collapsed duplicated stale-endpoint cleanup into one function per side --
+# helper/main.go's removeStale and daemon/helperproc.go's removeStaleEndpoint --
+# each keyed on the TRANSPORT rather than repeating `os.Remove(socketPath)` at
+# two call sites. Two sites became one in each module, so the count fell without
+# anything being suppressed. Tightened rather than left slack, which is what the
+# FAIL-below-ceiling rule is for.
+#
+daemon         91
 editapply       9
 proxy          25
 protocol        0
-helper         11
+helper         10
 clients/tui     0

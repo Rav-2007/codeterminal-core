@@ -8,7 +8,7 @@
 
 MODULES := daemon editapply proxy helper protocol clients/tui
 
-.PHONY: help hooks hookcheck test race fmt vet crossvet standalone lint ratchet errcheck fuzz check docs webview drill soak eval evalguard debtmarkers parity supplychain
+.PHONY: help hooks hookcheck test race fmt vet crossvet standalone targetparity lint ratchet errcheck fuzz check docs webview drill soak eval evalguard debtmarkers parity supplychain
 
 help:
 	@echo "make hooks    install the tracked git hooks (.githooks/) -- do this once"
@@ -16,7 +16,7 @@ help:
 	@echo "make check    everything CI runs: build, fmt, vet, race, lint, ratchet, docs"
 	@echo "make docs     every relative link in a tracked .md resolves"
 	@echo "make race     go test -race across all six modules"
-	@echo "make crossvet compile the windows& darwin files this machine never sees"
+	@echo "make crossvet compile the windows files this machine never sees"
 	@echo "make lint     staticcheck + ineffassign + bodyclose"
 	@echo "make ratchet  per-package coverage floors"
 	@echo "make errcheck per-module unchecked-error ceilings (a ratchet, not a gate)"
@@ -112,12 +112,12 @@ vet:
 CROSSVET_MODULES := daemon editapply protocol clients/tui proxy
 
 crossvet:
-	@for os in windows darwin; do \
+	@for os in windows; do \
 		for m in $(CROSSVET_MODULES); do \
 			(cd $$m && GOOS=$$os go vet ./...) || { echo "crossvet: FAILED GOOS=$$os $$m"; exit 1; }; \
 		done; \
 	done
-	@echo "crossvet: clean (windows + darwin, $(words $(CROSSVET_MODULES)) modules)"
+	@echo "crossvet: clean (windows, $(words $(CROSSVET_MODULES)) modules)"
 
 # STANDALONE, and this asks a different question from crossvet above.
 #
@@ -245,7 +245,7 @@ fuzzguard:
 # docs is last and costs ~1s. It is in `check` rather than in a docs-only job
 # because a rename breaks links in the same commit that makes it, and that is
 # the only moment anyone can fix it cheaply.
-check: hookcheck fmt vet crossvet standalone race lint ratchet errcheck evalguard fuzzguard supplychain webview docs debtmarkers parity reach
+check: hookcheck fmt vet crossvet standalone race lint ratchet errcheck evalguard fuzzguard supplychain webview docs debtmarkers targetparity parity reach
 	@echo "check: all gates green"
 	@./scripts/gate-parity.sh --what-ci-adds
 
@@ -312,6 +312,10 @@ debtmarkers:
 # THE GATE ON THE GATES. `make check` and .github/workflows/*.yml are two
 # enumerations of what gets checked; this asserts they still agree, and that
 # every difference between them is deliberate and carries a reason.
+targetparity:
+	@./scripts/target-parity.sh --self-test >/dev/null
+	@./scripts/target-parity.sh
+
 parity:
 	@./scripts/gate-parity.sh
 

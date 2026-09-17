@@ -54,9 +54,69 @@ set -uo pipefail
 # scripts/coverage-floors.txt: adding a target means deciding, even if the
 # decision is "none".
 # ------------------------------------------------------------------------------
-ALL_TARGETS="linux-x64 darwin-arm64 win32-x64"
-NEEDS_SIGNING="darwin-arm64"           # Gatekeeper quarantines unsigned Mach-O.
-NO_SIGNING_NEEDED="linux-x64 win32-x64" # win32-x64 moves left when Authenticode lands.
+# LOADED, not hardcoded. These three lists were literals here, and the same set
+# was written out in four other places that nothing compared -- see
+# scripts/release-targets.txt and scripts/target-parity.sh.
+#
+# One field per target in that file, rather than two lists here, because two
+# lists can express a target that is in BOTH or in NEITHER. The classification
+# check below survives anyway: it is now about an unrecognised value rather than
+# a set-membership mistake, and it still refuses to guess.
+ALL_TARGETS=""
+NEEDS_SIGNING=""
+NO_SIGNING_NEEDED=""
+SIGNING_NONE_DECLARED="no"
+# The file actually loaded, which is NOT always TARGETS_FILE: the self-test
+# drives this guard with its own fixtures. Error messages must name the file the
+# reader has to edit, not the one the default happens to point at.
+LOADED_TARGETS_FILE=""
+
+# RELEASE_TARGETS_FILE is overridable so the self-test can drive this guard with
+# its OWN target set. That is deliberate and is what keeps the self-test honest:
+# the arms below exercise the guard's LOGIC -- a target that needs signing and
+# has it, needs it and lacks it, and one that never needed it -- rather than
+# whatever the product happens to ship this month. When darwin-arm64 was removed
+# from the shipping set, 38 of the 40 arms would otherwise have gone with it.
+TARGETS_FILE="${RELEASE_TARGETS_FILE:-$(dirname "$0")/release-targets.txt}"
+
+load_targets() { # load_targets <file>
+  local f="$1" name signing rest
+  ALL_TARGETS=""; NEEDS_SIGNING=""; NO_SIGNING_NEEDED=""; SIGNING_NONE_DECLARED="no"
+  LOADED_TARGETS_FILE="$f"
+
+  if [ ! -f "$f" ]; then
+    err "FAIL: target file $f does not exist. A guard that cannot read the set"
+    err "      it is guarding cannot clear it."
+    return 2
+  fi
+
+  while read -r name signing rest; do
+    case "$name" in "" | \#*) continue ;; esac
+    if [ "$name" = "signing-required:" ]; then
+      [ "$signing" = "none" ] && SIGNING_NONE_DECLARED="yes"
+      continue
+    fi
+    case "$signing" in
+      required) NEEDS_SIGNING="$NEEDS_SIGNING $name" ;;
+      none)     NO_SIGNING_NEEDED="$NO_SIGNING_NEEDED $name" ;;
+      *)
+        err "FAIL: target '$name' has signing value '${signing:-<missing>}' in $f."
+        err "      Expected 'required' or 'none'. Adding a target means deciding"
+        err "      whether it must be signed, even if the decision is 'no'."
+        err "      Refusing to guess."
+        return 2
+        ;;
+    esac
+    ALL_TARGETS="$ALL_TARGETS $name"
+  done < "$f"
+
+  if [ -z "$ALL_TARGETS" ]; then
+    err "FAIL: $f declares no targets at all. A release that builds nothing is"
+    err "      not something this guard should wave through."
+    return 2
+  fi
+  return 0
+}
 
 fail_count=0
 excluded=""
@@ -165,6 +225,43 @@ run_guard() {
   done
   [ "$fail_count" -gt 0 ] && return 1
 
+  # ---------------------------------------------------------------------------
+  # THE VACUITY TRIPWIRE. The loop below is `for t in $NEEDS_SIGNING`, so when
+  # that list is empty it iterates ZERO TIMES -- and without this, the guard
+  # would fall straight through to "nothing excluded; every target requiring a
+  # signature has one" and exit 0. That sentence is true and useless: it reports
+  # success for a check that inspected nothing, which is worse than no guard,
+  # because it answers a question nobody then re-asks.
+  #
+  # This became reachable the moment darwin-arm64 left the target set. Every
+  # other target ships unsigned today, so the empty list is CORRECT -- and that
+  # is exactly why it has to be declared rather than inferred. An empty list
+  # that is intended and an empty list that is an editing mistake look
+  # identical from here.
+  #
+  # Same shape as reach.sh's allowlist: an exemption is allowed, silence is not,
+  # and the declaration names the event that retires it.
+  # ---------------------------------------------------------------------------
+  if [ -z "$NEEDS_SIGNING" ]; then
+    if [ "$SIGNING_NONE_DECLARED" != "yes" ]; then
+      err "FAIL: no target requires a signature, and nothing says that is intended."
+      err ""
+      err "  This guard is about to inspect NOTHING and report success. If every"
+      err "  target really does ship unsigned, say so in $LOADED_TARGETS_FILE:"
+      err ""
+      err "      signing-required: none"
+      err ""
+      err "  and record what would retire that line. If a target was meant to be"
+      err "  signed, its signing value in that file is 'none' and should be"
+      err "  'required'."
+      return 1
+    fi
+    say "NO TARGET REQUIRES A SIGNATURE -- this guard inspected nothing, and"
+    say "  $LOADED_TARGETS_FILE declares that as intended ('signing-required: none')."
+    say "  Targets shipping unsigned:$NO_SIGNING_NEEDED"
+    say "  NOT a pass in the usual sense: there was no signature to verify."
+  fi
+
   for t in $NEEDS_SIGNING; do
     if is_signed "$artifacts" "$t"; then
       say "$t: SIGNED marker present -- releasable."
@@ -212,8 +309,8 @@ run_guard() {
       warn "no terminal-client binaries remain; removed SHA256SUMS-tui"
     fi
     say "excluded from release:$excluded"
-  else
-    say "nothing excluded; every target requiring a signature has one."
+  elif [ -n "$NEEDS_SIGNING" ]; then
+    say "nothing excluded; every target requiring a signature has one:$NEEDS_SIGNING"
   fi
 
   # THE RUN LOG IS THE EVIDENCE. On a dispatch no release is created, so there is
@@ -273,6 +370,24 @@ self_test() {
   ngreps() { if grep -q "$2" "$3" 2>/dev/null; then printf '  FAIL  %s (/%s/ still in %s)\n' "$1" "$2" "$3"; fail=$((fail+1)); else printf '  ok    %s\n' "$1"; pass=$((pass+1)); fi; }
 
   echo "release-signing-guard self-test"
+
+  # THE SELF-TEST OWNS ITS TARGET SET, and that is the point of the fixture
+  # below rather than an oversight.
+  #
+  # These arms used to run against the production lists, which meant 38 of the
+  # 40 named darwin-arm64 -- so removing that target from the shipping set would
+  # have deleted the guard's entire contract along with it. What is being tested
+  # is the LOGIC: a target that needs a signature and has one, needs one and
+  # lacks it, and one that never needed it. That logic is unchanged by what the
+  # product ships, so the fixture states all three shapes explicitly and keeps
+  # every arm alive. The SHIPPING set is checked separately, by
+  # scripts/target-parity.sh.
+  cat > "$tmp/targets.txt" <<'''FIXTURE'''
+linux-x64       none       ubuntu-latest
+darwin-arm64    required   macos-latest
+win32-x64       none       windows-latest
+FIXTURE
+  load_targets "$tmp/targets.txt" || { echo "  FAIL  self-test fixture did not load"; return 1; }
 
   # --- 1. dispatch, darwin unsigned: excluded, green, manifests rebuilt.
   local d="$tmp/a"; mk_tree "$d"; unsign "$d" darwin-arm64 no-certificate
@@ -407,6 +522,56 @@ self_test() {
   absent  "  and not darwin's"                           "$m/UNSIGNED-darwin-arm64"
 
   echo
+  # --- THE TRIPWIRE AND THE LOADER, which are new behaviour and get their own
+  # arms rather than riding on the ones above.
+  local lt
+  loadcheck() { # loadcheck <desc> <expected:pass|fail> <file-body>
+    printf '%s\n' "$3" > "$tmp/lt.txt"
+    load_targets "$tmp/lt.txt" >/dev/null 2>&1
+    check "$1" "$2" $?
+  }
+
+  loadcheck "an unrecognised signing value -> FAILS"  fail 'linux-x64  mabye  ubuntu-latest'
+  loadcheck "a MISSING signing value -> FAILS"        fail 'linux-x64'
+  loadcheck "a file with no targets -> FAILS"         fail '# only a comment'
+  loadcheck "a well-formed file loads"                pass 'linux-x64  none  ubuntu-latest'
+
+  load_targets "$tmp/nonexistent-file.txt" >/dev/null 2>&1
+  check "a missing target file -> FAILS" fail $?
+
+  # Zero targets requiring a signature, WITHOUT the declaration: the guard must
+  # refuse rather than inspect nothing and report success.
+  printf 'linux-x64  none  ubuntu-latest\nwin32-x64  none  windows-latest\n' > "$tmp/nosign.txt"
+  load_targets "$tmp/nosign.txt" >/dev/null 2>&1
+  local e="$tmp/empty"; mk_tree "$e"
+  fail_count=0; excluded=""
+  run_guard "refs/tags/v1.0.0" "$e/artifacts" "$e/out-vsix" "$e/out-bin" >"$tmp/vac.log" 2>&1
+  check "nothing to sign + NO declaration -> FAILS (vacuity tripwire)" fail $?
+  greps "  says it would inspect nothing"  "inspect NOTHING" "$tmp/vac.log"
+  greps "  names the declaration to add"   "signing-required: none" "$tmp/vac.log"
+  greps "  names the file to add it to"    "$tmp/nosign.txt" "$tmp/vac.log"
+
+  # And WITH the declaration: green, but it must SAY it checked nothing rather
+  # than print the ordinary pass line.
+  printf 'linux-x64  none  ubuntu-latest\nwin32-x64  none  windows-latest\nsigning-required: none\n' > "$tmp/declared.txt"
+  load_targets "$tmp/declared.txt" >/dev/null 2>&1
+  local f2="$tmp/declared"; mk_tree "$f2"
+
+  fail_count=0; excluded=""
+  run_guard "refs/tags/v1.0.0" "$f2/artifacts" "$f2/out-vsix" "$f2/out-bin" >"$tmp/dec.log" 2>&1
+  check "nothing to sign + declaration -> green" pass $?
+  greps  "  and SAYS it inspected nothing"     "inspected nothing" "$tmp/dec.log"
+  ngreps "  does NOT claim every target has a signature" "every target requiring a signature has one" "$tmp/dec.log"
+  greps  "  still attaches the unsigned targets" "WOULD ATTACH" "$tmp/dec.log"
+
+  # A tag with a real signing requirement must still fail when it is unmet --
+  # the tripwire must not have turned the guard into a no-op.
+  load_targets "$tmp/targets.txt" >/dev/null 2>&1
+  local g="$tmp/still"; mk_tree "$g"; unsign "$g" darwin-arm64 no-certificate
+  fail_count=0; excluded=""
+  run_guard "refs/tags/v1.0.0" "$g/artifacts" "$g/out-vsix" "$g/out-bin" >/dev/null 2>&1
+  check "a real unmet signing requirement still FAILS a tag" fail $?
+
   echo "release-signing-guard: $pass passed, $fail failed"
   echo "NOT COVERED HERE, and not claimed: unsigned path 4 (signed but not"
   echo "  notarized) and the signed path itself. Both need a macOS runner and"
@@ -434,5 +599,6 @@ if [ -z "$REF" ] || [ -z "$ARTIFACTS" ] || [ -z "$VSIX_DIR" ] || [ -z "$BIN_DIR"
   err "   or: $0 --self-test"
   exit 2
 fi
+load_targets "$TARGETS_FILE" || exit $?
 run_guard "$REF" "$ARTIFACTS" "$VSIX_DIR" "$BIN_DIR"
 exit $?

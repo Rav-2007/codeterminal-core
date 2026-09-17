@@ -100,6 +100,15 @@ jobs:
       - name: Release version guard (self-test)
         run: ./scripts/release-version-guard.sh --self-test
 
+      # THE TARGET SET, asserted across the five places that state it. Dropping
+      # darwin-arm64 on 2026-09-17 meant editing all five, and nothing had ever
+      # checked that they agreed -- a miss leaves CI green while the release
+      # builds a binary no loop packages, or packages one no matrix built.
+      - name: Release target parity (self-test)
+        run: ./scripts/target-parity.sh --self-test
+      - name: Release target parity
+        run: ./scripts/target-parity.sh
+
       - name: Go toolchain floor agrees across every module
         run: ./scripts/go-toolchain-pinned.sh
 

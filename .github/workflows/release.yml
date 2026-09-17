@@ -116,8 +116,6 @@ jobs:
         include:
           - os: ubuntu-latest
             target: linux-x64
-          - os: macos-latest
-            target: darwin-arm64
           - os: windows-latest
             target: win32-x64
     steps:
@@ -195,37 +193,24 @@ jobs:
         env:
           CGO_ENABLED: 0
 
-      # SIGNING GOES HERE, and its absence is recorded rather than skipped.
+      # NO SIGNING STEP, and its absence is a decision rather than an omission.
       #
-      # macOS: unsigned Mach-O binaries inside a .vsix are quarantined by
-      # Gatekeeper and killed, so the daemon never starts and the user sees an
-      # unexplained "daemon not running". That makes signing a HARD gate for
-      # darwin-arm64 specifically -- shipping an unsigned macOS package is worse
-      # than shipping none. Windows SmartScreen only warns.
+      # Every target in scripts/release-targets.txt is classified `none`, so
+      # there is nothing here to sign. darwin-arm64 was the only target that
+      # ever required it, and it left the set on 2026-09-17 -- see that file's
+      # own record, and docs/RESIDUAL_RISKS.md R1.15.
       #
-      # Both are no-ops until the secrets exist, so this workflow is runnable
-      # today and gains signing without restructuring.
-      - name: Sign & Notarize (macOS)
-        if: matrix.target == 'darwin-arm64'
-        env:
-          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
-          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
-          MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
-          MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
-          MACOS_NOTARY_KEY_BASE64: ${{ secrets.MACOS_NOTARY_KEY_BASE64 }}
-          DIST_DIR: ${{ github.workspace }}/dist
-          # Names the SIGNED-<target> / UNSIGNED-<target> marker the release
-          # guard reads. Required, never defaulted: the marker's name decides
-          # what may ship, so a guess here is the worst place to be wrong.
-          SIGN_TARGET: ${{ matrix.target }}
-        run: ./scripts/macos-sign-and-notarize.sh
-
-      - name: Record signing status
-        shell: bash
-        run: |
-          if [ "${{ matrix.target }}" = "darwin-arm64" ] && [ -z "${{ secrets.MACOS_CERT_P12 }}" ]; then
-            echo "::warning title=Unsigned macOS binaries::darwin-arm64 binaries are UNSIGNED. Gatekeeper will quarantine them and the daemon will not start. Do not publish this target."
-          fi
+      # WINDOWS IS NOT SIGNED EITHER, and that is the live cost of this shape:
+      # SmartScreen warns on an unsigned .exe. It WARNS, where Gatekeeper
+      # KILLS -- which is why an unsigned Windows build is shippable and an
+      # unsigned macOS one was not. When an Authenticode certificate exists,
+      # win32-x64 moves to `required` in that file and the signing guard starts
+      # enforcing it with no change here.
+      #
+      # release-signing-guard.sh still runs in the `package` job. It now reports
+      # that it inspected nothing, loudly, and fails if that state is ever
+      # reached WITHOUT being declared -- a guard silently guarding nothing is
+      # the failure this repository has corrected before.
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -272,7 +257,7 @@ jobs:
           VERSION=$(node -p "require('./package.json').version")
           mkdir -p ../../out-vsix
 
-          for TARGET in linux-x64 darwin-arm64 win32-x64; do
+          for TARGET in linux-x64 win32-x64; do
             echo "::group::$TARGET"
             rm -rf daemon && mkdir -p daemon
             # NAMED, NOT `cp -a .`, since 2026-09-04. The build artifact now
@@ -323,7 +308,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p out-bin
-          for TARGET in linux-x64 darwin-arm64 win32-x64; do
+          for TARGET in linux-x64 win32-x64; do
             EXE=""
             [ "$TARGET" = "win32-x64" ] && EXE=".exe"
             SRC="artifacts/binaries-$TARGET/codeterminal-tui$EXE"
