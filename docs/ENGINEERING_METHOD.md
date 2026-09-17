@@ -692,6 +692,7 @@ sentence elsewhere that totals them is derived from here and not the other way r
 | H13 | A derivation that is right on some inputs is wrong on all of them | `stage-runtime`'s derivation was wrong for all three release targets and the *answer* wrong for one; and a known-answer test that asserted its own subject's defect would have gone red on the fix |
 | H14 | A gate that needs exemptions at birth is miscalibrated | the anchor-in-comment gate: 5 of 101 anchors covered, four pre-existing legitimate hits, rejected on measurement before it shipped |
 | H15 | List, do not count | 213 against 222, 31 against 27, and this document's own H2 count |
+| H16 | A trigger names a ref operation, never an owner intention | ten of fifteen `reach.sh` allowlist triggers named an intention; `git remote rename` was **measured** to rewrite `branch.<name>.remote`, so "the remote rename" retires nothing. The five that worked named merged, deleted, re-pointed, pushed |
 
 ## What the closing sequence added to the taxonomy
 
@@ -728,3 +729,71 @@ green dispatch is exactly the condition under which the scheduled check gets
 forgotten**, because the question feels answered. That is why the Monday check
 carries a named recipient rather than a note, and why it is on the handover list and
 not in a conclusion.
+
+---
+
+# Fourth addendum, 2026-09-17 — H16, and the merge that measured five rules at once
+
+## H16 — A trigger names a ref operation, never an owner intention
+
+The older form of this was *"a trigger that cannot fire is not a trigger."* That is
+true and too weak to act on, because the triggers that fail this are the ones that
+*look* observable. **A trigger must name an event the firing mechanism can itself
+evaluate**, and for a gate that reads refs, that means an operation on a ref.
+
+> *Instance, audited after the merge landed and two exemptions kept firing:* **ten of
+> the fifteen** triggers in `reach.sh`'s allowlist named something the gate cannot
+> observe. Listed, because a count is not a counted count:
+
+| What it named | Why the gate cannot see it |
+|---|---|
+| *"the remote rename"* — **eight entries** | **Measured the same day in a throwaway repository:** `git remote rename` **rewrites** `branch.<name>.remote` to follow the remote *object*, so a branch tracking the fork still tracks the fork after the rename. The trigger looks observable and does the opposite of what it appears to. `git branch -u` is what retires these |
+| *"ca96966 is confirmed redundant"* | a judgement about significance, with no ref to look at |
+| *"the owner reverses the hold"* | likewise |
+
+| What worked | Why |
+|---|---|
+| *"the merge lands"* — two entries | a ref becoming an ancestor. **Both retired exactly when they said they would**, and both reasons went further and said *remove this entry when it happens* |
+| *"deletion of this branch, or repointing it at a remote"* — two entries | ref operations, either of which the gate sees |
+| *"deletion, or pushing it to the canonical remote"* | likewise — and its reason states outright *"NOT retired by the merge"*, which is the discipline working |
+
+**The five that worked named an operation on a ref: merged, deleted, re-pointed,
+pushed. The ten that failed named an intention.** That is the whole rule, and it is
+mechanically checkable by a human in one pass over an allowlist.
+
+### The part that makes this H16 and not a footnote
+
+An earlier session in this same pass recorded that the eight `remote:*` triggers **had
+been corrected** — that the rename alone does not retire them and `git branch -u`
+does. `git log -S` over the script finds **no commit that ever wrote that wording.**
+The correction was reasoned, believed, written into a report, and never delivered.
+
+**That is this pass's own subject, committed by the work auditing for it.** It is H12
+exactly — an undelivered artifact suppresses the checks that would have run on it —
+and the artifact here was a correction to a gate's honesty. It survived because
+nothing compares a report's claims against the file it describes.
+
+### A second thing the audit surfaced, which no audit was looking for
+
+Removing the entry whose trigger had correctly fired made the gate **fail**. The entry
+had been covering **two facts under one key**: *this work has not reached the canonical
+remote*, which the merge retired, and *this branch's tracking ref points at a fork*,
+which the merge does not touch. They shared an exemption, and the delivery half was
+load-bearing for the wrong-remote half.
+
+**A phrase pair hiding inside an allowlist key** — the same M5 failure the script's own
+header forbids, one level down from where anyone was reading for it. Found only by
+retiring a trigger correctly and watching what broke.
+
+## What the merge measured about five existing rules
+
+The merge was the pass's largest single act, and several rules were exercised rather
+than restated:
+
+| Rule | What the merge did to it |
+|---|---|
+| H9 | the branch's green was `(R)`, a prediction from a diff. The merge measured it: **six lint jobs green**, closing the recurring cause of five red scheduled runs — and one macOS job red, which no prediction had |
+| H12 | `reach.sh`'s ARRIVED report fired for both refs, the case where the previous version reported a delivery **as its absence**. The fix was exercised by the event it was built for |
+| H13 | a test asserting an FTS5 interrupt is *not* honoured was right on Linux and wrong on darwin. **The derivation was global for a per-platform fact**, and it produced right answers for a year |
+| M5 | *green on a dispatch* ≠ *green on a schedule*, and *the run is green* ≠ *the run passed on its first attempt* — the second discovered when a re-run **overwrote** a run's conclusion and hid a flake |
+| H15 | "red for seven consecutive scheduled runs" was seven observations over **three commits and four causes**, three of which this repository does not control |
