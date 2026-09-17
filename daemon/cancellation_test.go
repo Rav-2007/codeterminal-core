@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -116,6 +117,31 @@ func TestSQLiteCancellation_ReachesTheVDBELoop(t *testing.T) {
 	}
 }
 
+// WHAT EACH PLATFORM WAS MEASURED TO DO -- not what SQLite is assumed to do.
+//
+// The comment below says a failure here is good news, and it was written with
+// TIME in mind: a newer SQLite or driver would start polling the interrupt, the
+// test would fire ONCE, and somebody would reconcile it. That is right, and the
+// baseline it compared against was global when the behaviour is PER PLATFORM.
+// On a platform axis an unconditional assertion does not fire once -- it fires
+// on every run of the platform where the premise is false, forever, and nobody
+// can "fix" SQLite being better.
+//
+// Measured on CI run 35179379541, 2026-09-17, the first macOS execution this
+// line of work ever had: darwin returned a genuine context.Canceled after
+// 227.709625 ms against a 1 s bar. Linux returns after seconds and does not.
+//
+// A GOOS that is ABSENT skips with instructions rather than borrowing a
+// default. An unmeasured platform is not evidence for either behaviour, and
+// picking one would reintroduce exactly the error this map fixes.
+var fts5InterruptHonoured = map[string]bool{
+	"linux":  false, // ~3.6 s uncancelled; the VDBE loop never polls inside the phrase match
+	"darwin": true,  // 227.709625 ms, a genuine context.Canceled
+	// windows is deliberately absent rather than false: it refuses a
+	// 200,000-character phrase before the interrupt is relevant at all, so the
+	// errors.Is check below skips it and this map is never consulted there.
+}
+
 // The half that does not work, asserted so it cannot quietly stop being true.
 //
 // A FAILURE HERE IS GOOD NEWS, not a regression: it means a newer SQLite or
@@ -175,14 +201,38 @@ func TestSQLiteCancellation_DoesNotReachAnFTS5PhraseMatch(t *testing.T) {
 			"to characterise here -- it is NOT evidence that SQLite's interrupt behaviour changed.", elapsed, err)
 	}
 
-	if elapsed < honouredWithin {
+	// COMPARED AGAINST THIS PLATFORM'S MEASUREMENT, in both directions, so the
+	// boundary cannot move on any platform without a test noticing -- which is
+	// what the file header claims of every pair in it.
+	honoured := elapsed < honouredWithin
+	want, haveBaseline := fts5InterruptHonoured[runtime.GOOS]
+	if !haveBaseline {
+		t.Skipf("no measured baseline for GOOS=%s: the query returned a genuine context.Canceled after "+
+			"%s against a %s bar, so honoured=%v here. Measure it, then add the entry to "+
+			"fts5InterruptHonoured. An unmeasured platform must not borrow another platform's baseline.",
+			runtime.GOOS, elapsed, honouredWithin, honoured)
+	}
+	switch {
+	case honoured == want:
+		// The recorded behaviour. Nothing to report.
+	case honoured:
 		t.Errorf("cancelled at %s, the FTS5 match returned after %s (under the %s bar) with a genuine "+
-			"context.Canceled -- SQLite now HONOURS the interrupt inside a phrase match.\n"+
-			"This is an improvement, not a failure. Re-measure, then update serveConn's cancellation comment.\n"+
-			"IT DOES NOT ON ITS OWN JUSTIFY REMOVING THE LEXICAL BOUND, and the previous wording of this "+
+			"context.Canceled -- SQLite now HONOURS the interrupt inside a phrase match on %s, where the "+
+			"recorded baseline says it does not.\n"+
+			"This is an improvement, not a failure. Re-measure, then update serveConn's cancellation "+
+			"comment AND this platform's entry in fts5InterruptHonoured.\n"+
+			"IT DOES NOT ON ITS OWN JUSTIFY REMOVING THE LEXICAL BOUND, and an earlier wording of this "+
 			"message said it might. Cancellation only helps a client that actually disconnects; the bound "+
-			"also covers the caller that waits, and gatherContext, which is not cancelled mid-turn.",
-			cancelAfter, elapsed, honouredWithin)
+			"also covers the caller that waits, and gatherContext, which is not cancelled mid-turn. The "+
+			"bound's own assertions live in lexicalbound_test.go and do not depend on this test at all.",
+			cancelAfter, elapsed, honouredWithin, runtime.GOOS)
+	default:
+		t.Errorf("cancelled at %s, the FTS5 match ran for %s (past the %s bar) on %s, where the recorded "+
+			"baseline says the interrupt IS honoured. Either cancellation has regressed, or this runner is "+
+			"slow enough to cross a bar set at 5x the cancel point. DISTINGUISH THOSE BEFORE EDITING THE "+
+			"BASELINE: the first is a real loss of a defence, the second is a wall-clock artefact and "+
+			"editing the baseline would bury it.",
+			cancelAfter, elapsed, honouredWithin, runtime.GOOS)
 	}
 }
 
