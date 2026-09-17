@@ -21,8 +21,23 @@ import (
 	"codeterminal/protocol"
 )
 
-// daemonVersion is reported to clients in the handshake response.
-const daemonVersion = "0.1.0-skeleton"
+// daemonVersion is reported to clients in the handshake response, and printed
+// by `codeterminal status`.
+//
+// A VAR, NOT A CONST, because the release build stamps it:
+//
+//	go build -ldflags "-X main.daemonVersion=$VERSION"
+//
+// It was a const reading "0.1.0-skeleton", and release.yml contained zero
+// -ldflags -- so a v0.0.2 release would have reported itself to every client,
+// and in every support question, as a skeleton build from before the product
+// had a version. Three version sources disagreed (the tag, package.json, and
+// this) and nothing compared them; scripts/release-version-guard.sh now does.
+//
+// "dev" is the honest default for an unstamped build rather than a plausible
+// number: a developer build IS a developer build, and a version string that
+// looks like a release when it is not is how the old value misled.
+var daemonVersion = "dev"
 
 // Server accepts client connections on the UDS listener, performs the
 // version handshake, and proxies one prompt per connection to the model API.

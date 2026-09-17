@@ -84,6 +84,7 @@ go-toolchain-pinned.sh|both|
 lint.sh|both|
 release-signing-guard.sh|both|
 release-branch-guard.sh|both|
+release-version-guard.sh|both|
 debt-markers.sh|both|
 supply-chain.sh|both|
 govulncheck.sh|local|CI runs govulncheck inline per module instead. Deliberate and NOT a duplicate: the script's own header records why -- CI installs whatever 1.25.x resolves to and finds nothing, while the same commit scanned on a developer machine sitting exactly on the toolchain floor found TEN reachable stdlib vulnerabilities. The two scan different standard libraries and both answers are wanted.

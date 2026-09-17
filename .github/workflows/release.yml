@@ -75,6 +75,21 @@ jobs:
             --commit "${{ github.sha }}" \
             --release-line "${{ github.event.repository.default_branch }}"
 
+      # AND IT MUST BE THE VERSION IT SAYS IT IS. In the same job as the branch
+      # guard, and before `binaries` (which `needs: guard`), so a version
+      # mismatch costs nothing: no runner is spent building artifacts that are
+      # mislabelled before the first one starts.
+      #
+      # Runs on workflow_dispatch too, and short-circuits there -- a dispatch has
+      # no tag to compare against and says so rather than printing a pass. Same
+      # reasoning as the branch guard above: a wiring error is then caught by the
+      # next dispatch instead of by the next release.
+      - name: The tag must match the version it ships
+        run: |
+          ./scripts/release-version-guard.sh \
+            --ref "${{ github.ref }}" \
+            --package-json clients/vscode/package.json
+
   # ---------------------------------------------------------------------------
   # Binaries are built on the OS they run on. NOT cross-compiled, and that is a
   # decision rather than an omission.
@@ -112,6 +127,35 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: "**/go.sum"
 
+      # THE VERSION THAT GETS STAMPED INTO THE BINARIES.
+      #
+      # daemon/server.go's daemonVersion was a const reading "0.1.0-skeleton"
+      # and this workflow contained zero -ldflags, so every release would have
+      # reported itself to clients -- and in `codeterminal status` -- as a
+      # pre-release skeleton. Three version sources disagreed and nothing
+      # compared them.
+      #
+      # ON A TAG the tag IS the version, and scripts/release-version-guard.sh
+      # (in the guard job) has already refused the run if package.json disagrees
+      # with it -- so reading it from either place gives the same answer and the
+      # tag is the one that cannot be stale.
+      #
+      # ON A DISPATCH there is no tag, and inventing a plausible number is the
+      # failure this whole step exists to fix. A dispatch build says so in its
+      # own version string and carries the commit that produced it.
+      - name: Resolve the version to stamp
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            V="${GITHUB_REF#refs/tags/v}"
+          else
+            V="0.0.0-dev.${GITHUB_SHA::7}"
+          fi
+          echo "value=$V" >> "$GITHUB_OUTPUT"
+          echo "stamping version: $V"
+
       # CGO_ENABLED is explicit on both, in opposite directions, because the
       # difference is the entire reason the helper is a separate process:
       # the daemon must stay pure Go, and CGO is confined to the helper.
@@ -124,7 +168,7 @@ jobs:
       # checkout path. scripts/supply-chain.sh fails if any main package
       # produces a binary carrying one.
       - name: Build daemon (pure Go)
-        run: go build -trimpath -o "${{ github.workspace }}/dist/codeterminal-daemon${{ matrix.target == 'win32-x64' && '.exe' || '' }}" .
+        run: go build -trimpath -ldflags "-X main.daemonVersion=${{ steps.version.outputs.value }}" -o "${{ github.workspace }}/dist/codeterminal-daemon${{ matrix.target == 'win32-x64' && '.exe' || '' }}" .
         working-directory: daemon
         env:
           CGO_ENABLED: 0

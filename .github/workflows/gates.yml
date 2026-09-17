@@ -91,6 +91,15 @@ jobs:
       - name: Release branch guard (self-test)
         run: ./scripts/release-branch-guard.sh --self-test
 
+      # THE THIRD RELEASE GUARD, added 2026-09-17 with the version stamping.
+      # It asks the one question the other two do not: does the version this
+      # release CLAIMS match the version it IS. Before it existed the tag,
+      # package.json and daemon/server.go could all say different things and
+      # nothing compared them -- and the daemon's was a const reading
+      # "0.1.0-skeleton" that no build had ever overwritten.
+      - name: Release version guard (self-test)
+        run: ./scripts/release-version-guard.sh --self-test
+
       - name: Go toolchain floor agrees across every module
         run: ./scripts/go-toolchain-pinned.sh
 

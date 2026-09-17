@@ -282,6 +282,7 @@ reach:
 supplychain:
 	@./scripts/release-signing-guard.sh --self-test
 	@./scripts/release-branch-guard.sh --self-test
+	@./scripts/release-version-guard.sh --self-test
 	@./scripts/actions-pinned.sh
 	@./scripts/go-toolchain-pinned.sh --self-test
 	@./scripts/go-toolchain-pinned.sh
