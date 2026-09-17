@@ -423,6 +423,7 @@ Every pair below was found by something going wrong.
 | *certifying a defect* | ≠ *accommodating one* |
 | *a reference is checked* | ≠ *a reference of this extension is checked* |
 | *a stated count* | ≠ *a counted count* |
+| *green on a dispatch* | ≠ *green on a schedule* |
 
 Two deserve expansion because they cost the most:
 
@@ -705,3 +706,24 @@ Two shapes that were not visible until the pass tried to finish:
   when it is not.** These two had been collapsing into each other. The distinction is
   as sharp as any M5 pair, and it decides whether a document about a corpus defect
   becomes an instance of it.
+
+## The M5 pair this chunk added: *green on a dispatch* ≠ *green on a schedule*
+
+The pass's closing criterion is a **scheduled** run of `main` going green, and the
+word is load-bearing. Seven consecutive scheduled runs are what has been red, every
+Monday since 2026-08-03 under `0 6 * * 1`. A `workflow_dispatch` runs the same job
+set — derived by reading each job's conditions, not assumed — and therefore answers
+the question, but it does not make the *same observation*:
+
+| | |
+|---|---|
+| a dispatch | runs now, from a ref chosen by hand, with the actor's own permissions |
+| a schedule | runs unattended, from the default branch, on the identity the cron has — and is the thing that has been failing |
+
+So the closure is recorded as **two states, not one**: *provisional* on the dispatch
+result and *formal* on the scheduled run. Collapsing them would be the M5 failure in
+its ordinary form — one phrase for two states — and here it has a specific cost. **A
+green dispatch is exactly the condition under which the scheduled check gets
+forgotten**, because the question feels answered. That is why the Monday check
+carries a named recipient rather than a note, and why it is on the handover list and
+not in a conclusion.
