@@ -1053,3 +1053,89 @@ twice during this pass — first up, on four consecutive scheduled failures, the
 down on finding those were a month-stale commit and that the eval job is green at
 `7454202`. What remains is `fuzz`, a macOS flake, and the fact that **no cell in this
 ledger reads `OBSERVED` on a `schedule` event.**
+
+
+---
+
+# ADDENDUM — 2026-09-17, later the same day: what this report got wrong, and what changed under it
+
+*Appended after the work it describes. Nothing above this line is edited: a
+record is annotated, never rewritten. **The ledger in §3 is now stale in its
+macOS rows and in five `NEVER RUN` cells**; this section says which, so a reader
+does not act on a table that has moved.*
+
+## Two claims in this report were WRONG
+
+**"`release.yml` has run exactly once."** It has run **four** times, listed in
+full because counting is what went wrong here:
+
+| Remote | Run | Commit | Event | Result |
+|---|---|---|---|---|
+| canonical `Rav-2007/codeterminal-core` | `31505527398` | `bd1bc69` (tag `v0.0.1`) | push | **failure in `package`** |
+| fork `Rav-i24/Mochiii` | `33921667448` | `a959945` | dispatch | **failure in `package`** |
+| fork `Rav-i24/Mochiii` | `33922431985` | `0925a3d` | dispatch | success |
+| fork `Rav-i24/Mochiii` | `33938839311` | `d48530d` | dispatch | success |
+
+They are cited in `docs/RESIDUAL_RISKS.md` R1.15 by id without a remote, and the
+fork ones 404 on the canonical repository — which is where I looked. §4/P1 of
+this very report records that the remote names are inverted, and I was caught by
+it two sections later.
+
+**This paragraph was itself wrong on first writing, and the error was the same
+one.** It said "three times", because I had queried the fork for the two run ids
+R1.15 happened to cite rather than asking the fork what it held. `33921667448`
+is the one nobody had named. **A document correcting a miscount miscounted**,
+and the only reason it did not ship that way is that the closing instruction —
+check a document against the thing it is about — was applied to it before
+commit.
+
+**The run nobody had named is the most useful of the four.** It failed in
+`package` at `a959945`, ten minutes before `0925a3d` passed. That is a
+before/after bracket on the fix, which is strictly better evidence than the
+"succeeded twice" this section originally claimed: `0925a3d` is not merely
+*present* in a green run, it is the commit that turned a red one green.
+
+**"Everything downstream of `package` is at zero observations."** False, and
+false in the project's favour. `package` has run four times and succeeded twice,
+and run `33938839311`'s log shows the signing guard excluding `darwin-arm64` and
+naming the exact Linux+Windows asset set it would attach. §2.2, §2.4, §6.1 and
+§6.15 all rest on that wrong claim and should be read with it removed. In
+particular §6.15's "`0925a3d` is a commit I did not read" is now settled by
+measurement in both directions: `package` failed at `a959945` and succeeded at
+`0925a3d`.
+
+## What the follow-up work changed
+
+- **`darwin-arm64` is removed from the target set.** A tag now declares two
+  platforms and ships two; §2.3's Route C was taken, Route B rejected.
+  §3's ledger rows for darwin are therefore **`N/A — the platform is no longer
+  built`**, not `NEVER RUN`.
+- **The `helper` Windows defect this report never found.** `helper/main.go`
+  asked `protocol.Listen` for a Unix socket; Windows rejects that outright, so
+  the helper could not start and `index`/`retrieve` failed on the platform
+  entirely. §6.3 called `helper` off-Linux "the sharpest gap in the ledger" and
+  was right about the gap while understating it: the cell was not merely
+  unobserved, the code was broken. `daemon/testdata/fakehelper` hid it by
+  calling `net.Listen("unix", …)` directly, which works on Windows — a fixture
+  taking a different code path than the code it stood in for.
+- **`protocol` could not build standalone for Windows** (`x/sys` under-declared
+  by 37 minor versions; `go.work` masked it). `make standalone` is the new gate;
+  `supply-chain.sh` structurally cannot see it, demonstrated by neuter.
+- **§2.5(c) version consistency is closed.** `daemonVersion` is stamped from the
+  tag; `scripts/release-version-guard.sh` refuses a tag that disagrees with
+  `package.json`.
+- **§2.5(f) — the gate I said I would build first — is partly superseded.** The
+  canonical dispatch is still unrun and still worth running, but it converts
+  fewer cells than claimed, because the fork had already observed that path.
+- **H-10's `docs-coderefs` 24/20 gap and H-4's macOS SQLite flake are
+  untouched.** H-7 (`helper` into `cross`) is **done**. H-6's route decision is
+  **taken**. H-12 (the fork's billing) is unchanged and no longer blocking
+  anything, since the rehearsal it blocked is superseded.
+
+## What is still true and still unaddressed
+
+§6's list of unverified things stands except where named above. In particular
+**the manual session (H-1) has still never been performed by anyone**, the
+`publish` job is still a single `echo` with no marketplace publication code
+behind it, and **no cell in the ledger reads `OBSERVED` on a `schedule`
+event** — the Monday 2026-09-21 check is not closed by any of this.

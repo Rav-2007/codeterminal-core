@@ -98,7 +98,7 @@ longer exists), or SUPERSEDED (replaced by a different row).**
 | R1.12 repainting a deep transcript costs real CPU | **OPEN — re-measured, and the row changed shape** | Was an extrapolation from a seventh of the bound. Now **22.4 ms p50 / 29.9 ms p99 at the ceiling**, over the 8 ms repaint budget at 2.8× **and over D-1's 16 ms hard per-Update ceiling at 1.4×**. Bounded, and over budget. |
 | R1.13 onnxruntime and npm are scanned by nothing | **OPEN** | Re-verified: `scripts/govulncheck.sh` names six Go modules and nothing else; no gate anywhere runs `npm audit` or scans onnxruntime. |
 | R1.14 the terminal client is not a release artifact | **CLOSED 2026-09-04** | P4.1. Builds on all three release runners, in the macOS signing list, ships as a standalone download with checksums, and asserted *out* of the `.vsix` by the packaging gate. It was never a residual risk: it made this document's own "CI green once" condition unsatisfiable. |
-| R1.15 the release signs nothing — macOS secrets absent | **DEFERRED BY DECISION 2026-09-05 (founder)** | Found by the first-ever dispatch of `release.yml` (run `33922431985`): the signing step is a no-op without the five `MACOS_*` secrets, so darwin binaries are **unsigned** and Gatekeeper kills them. **The run is green either way** — fail-open, one layer up from the gate scripts. **Ruling: the first release ships Linux and Windows only; `darwin-arm64` is deferred until the secrets exist.** The machinery now enforces it — `scripts/release-signing-guard.sh`, keyed on **distributable**, verified on run `33938839311` **(remote: `Rav-i24/Mochiii`, the fork — as is run `33922431985` above; both 404 on the canonical repository, where `release.yml` has run exactly once)**. **COMPLETED 2026-09-17: `darwin-arm64` removed from the target set entirely — see R1.15's section.** |
+| R1.15 the release signs nothing — macOS secrets absent | **DEFERRED BY DECISION 2026-09-05 (founder)** | Found by an early dispatch of `release.yml` (run `33922431985`; **not the first — `33921667448` ran ten minutes earlier and failed in `package`**, and this row said "first-ever" until 2026-09-18): the signing step is a no-op without the five `MACOS_*` secrets, so darwin binaries are **unsigned** and Gatekeeper kills them. **The run is green either way** — fail-open, one layer up from the gate scripts. **Ruling: the first release ships Linux and Windows only; `darwin-arm64` is deferred until the secrets exist.** The machinery now enforces it — `scripts/release-signing-guard.sh`, keyed on **distributable**, verified on run `33938839311` **(remote: `Rav-i24/Mochiii`, the fork — as is run `33922431985` above; both 404 on the canonical repository, where `release.yml` has run exactly once)**. **COMPLETED 2026-09-17: `darwin-arm64` removed from the target set entirely — see R1.15's section.** |
 | R1.16 a gate whose expected count comes from the list it validates | **OPEN — a CLASS, SEVEN instances** | Opened 2026-09-05, widened 2026-09-09 and 2026-09-12. The seventh is the sharpest: the ratchet's vanished-floor sweep was false in **every CI run this repository has ever had**, and a correct-sounding comment was what concealed it. |
 | R1.17 an ambiguous request body is refused with the wrong message | **OPEN — rough edge, deliberate** | Opened 2026-09-05 alongside the fix in `026fe48`. The refusal is correct; the message a client sees is `"prompt is empty"`, inherited from the duplicate-key precedent it was deliberately made to match. |
 | R1.18 non-UTF-8 source files are embedded with U+FFFD, silently | **OPEN — NOT IMPLEMENTED, quality not security** | Opened 2026-09-05. `encoding/json` substitutes U+FFFD for every invalid byte in both directions, so a Windows-1252 file is vectorised with replacement characters where its punctuation was. Nothing reports it. |
@@ -1162,14 +1162,30 @@ rebuild — `scripts/macos-sign-and-notarize.sh` is kept and still exercised by 
 of the signing guard's self-test arms, and `protocol/peerauth_darwin.go` is kept
 for the same reason.
 
-**A correction to this row's own evidence.** Runs `33922431985` and
-`33938839311`, cited above, are on the **fork** `Rav-i24/Mochiii`. Neither exists
+**A correction to this row's own evidence.** Runs `33921667448`, `33922431985`
+and `33938839311` are all on the **fork** `Rav-i24/Mochiii`. None exists
 on the canonical `Rav-2007/codeterminal-core`, where `release.yml` has run
-exactly once (`31505527398`, tag `v0.0.1`, failed in `package`). The citations
-named ids without naming a remote, and a later pass reading only the canonical
-repository concluded from that the release path had **zero** observations past
-`package` — which was wrong, and wrong in the project's own disfavour. Every CI
-claim names remote, run id and commit; these two did not.
+exactly once (`31505527398`, tag `v0.0.1`, failed in `package`) — **four runs in
+total across both remotes, two of them red.** The citations named ids without
+naming a remote, and a later pass reading only the canonical repository concluded
+from that the release path had **zero** observations past `package` — which was
+wrong, and wrong in the project's own disfavour. Every CI claim names remote, run
+id and commit; these did not, and now do.
+
+**A correction to the correction, 2026-09-18.** This paragraph originally named
+only `33922431985` and `33938839311`, and the report that prompted it said
+`release.yml` had run **three** times. Both omitted `33921667448` — which is
+named eleven hundred lines up **this very file**, at (iii) of the
+expected-unverified list. The omission happened because the fork was queried for
+the two ids this row already cited, rather than asked what it held: a search
+shaped by the answer it expected to confirm. And `33922431985` was never the
+"first-ever dispatch" this row called it for thirteen days.
+
+The gain from the missed run is substantive rather than bookkeeping.
+`33921667448` failed in `package` at `a959945`; `33922431985` passed at
+`0925a3d` ten minutes later. That **brackets** the fix — `0925a3d` is not merely
+present in a green run, it is the commit that turned a red one green. "Succeeded
+twice" was the weaker claim, and it was the one written down.
 
 ## R1.16 — A gate whose expected count is derived from the list it validates
 
