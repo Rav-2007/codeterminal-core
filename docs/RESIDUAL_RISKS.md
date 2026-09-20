@@ -98,7 +98,7 @@ longer exists), or SUPERSEDED (replaced by a different row).**
 | R1.12 repainting a deep transcript costs real CPU | **OPEN — re-measured, and the row changed shape** | Was an extrapolation from a seventh of the bound. Now **22.4 ms p50 / 29.9 ms p99 at the ceiling**, over the 8 ms repaint budget at 2.8× **and over D-1's 16 ms hard per-Update ceiling at 1.4×**. Bounded, and over budget. |
 | R1.13 onnxruntime and npm are scanned by nothing | **OPEN** | Re-verified: `scripts/govulncheck.sh` names six Go modules and nothing else; no gate anywhere runs `npm audit` or scans onnxruntime. |
 | R1.14 the terminal client is not a release artifact | **CLOSED 2026-09-04** | P4.1. Builds on all three release runners, in the macOS signing list, ships as a standalone download with checksums, and asserted *out* of the `.vsix` by the packaging gate. It was never a residual risk: it made this document's own "CI green once" condition unsatisfiable. |
-| R1.15 the release signs nothing — macOS secrets absent | **DEFERRED BY DECISION 2026-09-05 (founder)** | Found by an early dispatch of `release.yml` (run `33922431985`; **not the first — `33921667448` ran ten minutes earlier and failed in `package`**, and this row said "first-ever" until 2026-09-18): the signing step is a no-op without the five `MACOS_*` secrets, so darwin binaries are **unsigned** and Gatekeeper kills them. **The run is green either way** — fail-open, one layer up from the gate scripts. **Ruling: the first release ships Linux and Windows only; `darwin-arm64` is deferred until the secrets exist.** The machinery now enforces it — `scripts/release-signing-guard.sh`, keyed on **distributable**, verified on run `33938839311` **(remote: `Rav-i24/Mochiii`, the fork — as is run `33922431985` above; both 404 on the canonical repository, where `release.yml` has run exactly once)**. **COMPLETED 2026-09-17: `darwin-arm64` removed from the target set entirely — see R1.15's section.** |
+| R1.15 the release signs nothing — macOS secrets absent | **DEFERRED BY DECISION 2026-09-05 (founder)** | Found by an early dispatch of `release.yml` — **run `33921667448` on the fork `Rav-i24/Mochiii`**, whose `binaries (darwin-arm64)` job printed the dry-run warning at 21:34:48Z and whose `package` job then failed. This row cited `33922431985` instead (same fork, ten minutes later, same warning) and called it "first-ever" until 2026-09-18; it stopped being named as the opener on 2026-09-20. In either run: the signing step is a no-op without the five `MACOS_*` secrets, so darwin binaries are **unsigned** and Gatekeeper kills them. **The run is green either way** — fail-open, one layer up from the gate scripts. **Ruling: the first release ships Linux and Windows only; `darwin-arm64` is deferred until the secrets exist.** The machinery now enforces it — `scripts/release-signing-guard.sh`, keyed on **distributable**, verified on run `33938839311` **(remote: `Rav-i24/Mochiii`, the fork — as is run `33922431985` above; all three 404 on the canonical repository, where `release.yml` has run exactly once)**. **COMPLETED 2026-09-17: `darwin-arm64` removed from the target set entirely — see R1.15's section.** |
 | R1.16 a gate whose expected count comes from the list it validates | **OPEN — a CLASS, SEVEN instances** | Opened 2026-09-05, widened 2026-09-09 and 2026-09-12. The seventh is the sharpest: the ratchet's vanished-floor sweep was false in **every CI run this repository has ever had**, and a correct-sounding comment was what concealed it. |
 | R1.17 an ambiguous request body is refused with the wrong message | **OPEN — rough edge, deliberate** | Opened 2026-09-05 alongside the fix in `026fe48`. The refusal is correct; the message a client sees is `"prompt is empty"`, inherited from the duplicate-key precedent it was deliberately made to match. |
 | R1.18 non-UTF-8 source files are embedded with U+FFFD, silently | **OPEN — NOT IMPLEMENTED, quality not security** | Opened 2026-09-05. `encoding/json` substitutes U+FFFD for every invalid byte in both directions, so a Windows-1252 file is vectorised with replacement characters where its punctuation was. Nothing reports it. |
@@ -130,7 +130,8 @@ suites did not run there. See *Per-platform status* in
 **Adding macOS to every push did not change this**, and the distinction matters
 if someone reads the CI matrix and concludes otherwise. Since 2026-09-04 a
 `macos (clients/tui, every push)` job builds, vets and runs the suite on darwin
-for every branch push — proved on run `33901690615` — but the five pty-backed
+for every branch push — proved on run `33901690615`, on the fork
+`Rav-i24/Mochiii` (it 404s on canonical) — but the five pty-backed
 files are `//go:build linux` and do not compile there at any trigger. **These
 three rows are pinned on Linux and nowhere else, before and after.** Closing that
 means a darwin pty helper, which is engineering rather than scheduling and is not
@@ -845,8 +846,13 @@ with R1.3. Nothing about the first release is now waiting on the secrets: the
 platform set was decided and the release can proceed without them. What the
 secrets govern is *when macOS rejoins*, which is the trigger, not the blocker.
 
-*(Opened 2026-09-05, by the first dispatch of `release.yml` in the workflow's
-existence. It could not have been found by reading anything.)*
+*(Opened 2026-09-05 by `release.yml`'s **second** dispatch — `33922431985` on the
+fork `Rav-i24/Mochiii` — and already visible in its **first**, `33921667448`, ten
+minutes earlier. This parenthesis read "the first dispatch of `release.yml` in the
+workflow's existence" until 2026-09-20: the 2026-09-18 correction removed that
+superlative from the register row and named it in this section's closing
+paragraph, and **did not sweep the rest of the section for it**. It could not have
+been found by reading anything.)*
 
 **What it is.** `.github/workflows/release.yml`'s **Sign & Notarize (macOS)**
 step runs `scripts/macos-sign-and-notarize.sh`, which is written to be a **no-op
@@ -856,7 +862,9 @@ darwin-arm64 binaries**. Gatekeeper attaches `com.apple.quarantine` to a
 downloaded unsigned Mach-O and kills it, so the daemon never starts and the user
 sees an unexplained "daemon not running".
 
-Measured, not inferred — run `33922431985`, job `binaries (darwin-arm64)`:
+Measured, not inferred — run `33922431985` on the fork `Rav-i24/Mochiii`, job
+`binaries (darwin-arm64)`. The identical four lines appear in `33921667448` ten
+minutes earlier, at `2026-09-04T21:34:48Z`:
 
 ```
 [macos-sign] WARNING: No MACOS_CERT_P12 or MACOS_CERT_P12_BASE64 secret supplied.
@@ -1023,7 +1031,8 @@ not "simplify" it back.
 
 #### Verified on a real runner — dispatch branch
 
-**Run `33938839311`, commit `d48530d`, `event: workflow_dispatch`: success**, all
+**Run `33938839311` on the fork `Rav-i24/Mochiii`, commit `d48530d`,
+`event: workflow_dispatch`: success**, all
 four jobs, `publish` skipped by design. The guard's own log:
 
 ```
@@ -1186,6 +1195,39 @@ The gain from the missed run is substantive rather than bookkeeping.
 `0925a3d` ten minutes later. That **brackets** the fix — `0925a3d` is not merely
 present in a green run, it is the commit that turned a red one green. "Succeeded
 twice" was the weaker claim, and it was the one written down.
+
+**A third correction, 2026-09-20 — the sweep the second correction did not do.**
+The 2026-09-18 pass removed "first-ever" from the register row and wrote a
+paragraph about having been wrong. It did not `rg` the rest of this section for
+the same superlative, and the same superlative was there: the parenthesis at the
+top of R1.15 said this row was "Opened 2026-09-05, by the first dispatch of
+`release.yml` in the workflow's existence." Correcting a claim in the place it
+was noticed, and not in the places it was repeated, is the same failure one
+level down.
+
+Worse, it was wrong about more than order. `33921667448`'s
+`binaries (darwin-arm64)` job **succeeded**, and its log carries the four
+warning lines this row quotes as its evidence:
+
+```
+$ gh run view 33921667448 --repo Rav-i24/Mochiii --log | grep -i 'macos-sign'
+binaries (darwin-arm64)  Sign & Notarize (macOS)  2026-09-04T21:34:48.7640910Z [macos-sign] WARNING: No MACOS_CERT_P12 or MACOS_CERT_P12_BASE64 secret supplied.
+binaries (darwin-arm64)  Sign & Notarize (macOS)  2026-09-04T21:34:48.7642160Z [macos-sign] Signing step completed in DRY-RUN mode (unsigned).
+binaries (darwin-arm64)  Sign & Notarize (macOS)  2026-09-04T21:34:48.7644090Z [macos-sign] WARNING: darwin-arm64 binaries will remain UNSIGNED.
+```
+
+So this row was not merely *cited* to the wrong run — it was **findable ten
+minutes before the run it credits**, and the reason it was credited to the later
+one is that the later one is the id somebody wrote down first.
+
+**One thing that log shows which nothing in this register recorded.** `Record
+signing status` was not conditioned on the target: the same
+`darwin-arm64 binaries are UNSIGNED` warning is echoed by the `binaries
+(win32-x64)` and `binaries (linux-x64)` jobs as well. Any count of that warning
+in an archived log is **three times the number of targets affected**, which is
+one. The step is gone at HEAD — `43e17bc` replaced it with a comment block when
+`darwin-arm64` left the target set — so this is a note for anyone reading the
+three archived fork runs, not a live defect.
 
 ## R1.16 — A gate whose expected count is derived from the list it validates
 

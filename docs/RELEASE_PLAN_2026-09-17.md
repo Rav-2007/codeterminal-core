@@ -1139,3 +1139,98 @@ measurement in both directions: `package` failed at `a959945` and succeeded at
 `publish` job is still a single `echo` with no marketplace publication code
 behind it, and **no cell in the ledger reads `OBSERVED` on a `schedule`
 event** — the Monday 2026-09-21 check is not closed by any of this.
+
+---
+
+# ADDENDUM 2 — 2026-09-20: the scheduled-run count was wrong the same way the release-run count was
+
+**This does not edit §1.1, §5.2, §6.7 or P11 in place.** What those sections
+believed is part of the evidence. What follows is what the canonical repository
+answers when it is asked for its whole scheduled history rather than for the runs
+a document already cited.
+
+**§1.1 says "the four consecutive scheduled failures".** Measured:
+
+```
+$ gh run list --repo Rav-2007/codeterminal-core --limit 1000 \
+    --json databaseId,workflowName,headSha,event,conclusion,createdAt \
+    --jq '.[] | select(.event=="schedule")'
+```
+
+| Run | Date | Commit | Jobs | Failed | Longest failing job |
+|---|---|---|---|---|---|
+| `30801081242` | 2026-08-03 | `6729017` | 15 | 1 | 54 s |
+| `31364806807` | 2026-08-10 | `8ccc591` | 30 | **30** | 39 s |
+| `32002184546` | 2026-08-17 | `efc611d` | 30 | **30** | **5 s** |
+| `32698022729` | 2026-08-24 | `efc611d` | 30 | **30** | **5 s** |
+| `33390351465` | 2026-08-31 | `efc611d` | 30 | **30** | **5 s** |
+| `34114544830` | 2026-09-07 | `efc611d` | 30 | 1 | 872 s |
+| `34837230165` | 2026-09-14 | `efc611d` | 30 | 7 | 900 s |
+
+**Seven scheduled runs. Seven failures. Zero successes, ever.** All on canonical
+`Rav-2007/codeterminal-core`.
+
+**Three things this changes.**
+
+**(a) The count and the streak.** Not four — seven, and the streak is not a
+streak inside a longer history, it is the *entire* history. `build` on
+`schedule` has never once gone green on this repository. Exit criterion 1 asks
+for an event with a base rate of **0 in 7**, which is a different sentence from
+"the four red ones were stale".
+
+**(b) "All four ran at `efc611d`" undercounts its own argument.** Five ran at
+`efc611d`, not four — 2026-08-17 (`32002184546`) was omitted. The staleness
+argument is *stronger* than §1.1 made it, not weaker.
+
+**(c) One cause was asserted for runs that measurably have three.** §1.1 says
+"The failures were six `lint` jobs plus `--- FAIL: TestRerankEvalRetrievalRanking
+(417.07s)`." That describes exactly **one** of the seven:
+
+- `32002184546`, `32698022729`, `33390351465` — **all 30 jobs failed in 3–5 s.**
+  Nothing ran. That is the billing signature already recorded independently in
+  `docs/PREFLIGHT_MACOS_AND_MERGE_2026-09-15.md:60-62`, which this report did not
+  reconcile against.
+- `34114544830` — **one** job failed: `retrieval eval (scheduled)`, 872 s. No
+  `lint` job failed in this run at all.
+- `34837230165` — **seven**: six `lint` plus `retrieval eval (scheduled)` at
+  900 s. This is the run §1.1 actually describes.
+- `31364806807` (08-10, 30/30 at 39 s) and `30801081242` (08-03, 1 of 15 at 54 s)
+  predate `efc611d` entirely and are outside the staleness argument's reach.
+
+**The `lint` cause, named exactly**, from the run itself rather than from
+inference:
+
+```
+$ gh run view 34837230165 --repo Rav-2007/codeterminal-core --log-failed | grep 'lint (daemon)'
+...
+go: toolchain upgrade needed to resolve golang.org/x/sys/execabs
+go: golang.org/x/sys@v0.48.0 requires go >= 1.26.0 (running go 1.25.14)
+##[error]Process completed with exit code 1.
+```
+
+That is the unpinned-tool-past-the-toolchain-floor failure, and
+`scripts/tool-pins.txt`'s own header says it was measured on 2026-09-09.
+**`scripts/install-tools.sh` and `scripts/tool-pins.txt` do not exist at
+`efc611d` and do exist at canonical `main` `0ee8c19`** (`git show
+efc611d:scripts/install-tools.sh` → error; `git show 0ee8c19:scripts/tool-pins.txt`
+→ the file). A `schedule` run takes its workflow from the default branch, which
+is `main`, which is `0ee8c19`. So the specific `lint` cause of 2026-09-14 is
+fixed **on the branch Monday will actually run**.
+
+That is a statement about a mechanism, still not an observation. §6.7's
+"*dispatch green ≠ scheduled green ≠ push green*" stands, and **no ledger cell
+reads `OBSERVED` on a `schedule` event.**
+
+**(d) The fork has had a green scheduled run and canonical has not.**
+`34119559516`, 2026-09-07, `4b8c53e`, `build`, **success**, on
+`Rav-i24/Mochiii`. It is on a branch head on the wrong remote and establishes
+nothing about canonical `main`; it is recorded here only so that nobody finds it
+later and reads it as one.
+
+**How this error was made, which is the point of recording it.** The count of
+four came from the four runs already named in documents I had read. The
+repository was never asked for its scheduled history. That is the third instance
+in this pass of a search shaped by the answer it expected to confirm — after the
+canonical-vs-fork frame error and the three-versus-four release-run miscount —
+and the second one to land inside a section whose subject is the danger of
+exactly that. The command that settles it is one line and is pasted above.
