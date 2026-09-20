@@ -186,7 +186,28 @@ func TestHelperAddressIsScopedByDaemonPID(t *testing.T) {
 	if first.Transport != protocol.TransportUnix {
 		// Windows: a named pipe. There is no path to join, no directory to
 		// stat, and nothing left behind when the owner dies.
-		if !strings.HasPrefix(first.Address, `\.\pipe\`) {
+		//
+		// THIS LITERAL WAS WRONG BY ONE BACKSLASH until 2026-09-20, and the
+		// first run of `cross (windows-latest, helper)` -- run 35488437797 on
+		// Rav-2007/codeterminal-core, commit be7b982 -- is what found it. It
+		// read `\.\pipe\` where the namespace is `\\.\pipe\`, so the
+		// assertion could not pass on the only platform that reaches it:
+		//
+		//   messages_test.go:190: Address(4242) = "\\\\.\\pipe\\codeterminal-...-embedder-helper-4242",
+		//                         want a named pipe name
+		//
+		// The ADDRESS was correct. The expectation was not. A test written for
+		// a platform and never executed on it asserts whatever its author
+		// believed, and this one was excluded from the Windows matrix as cgo
+		// until the commit that added it there.
+		//
+		// It is a second spelling of protocol's own unexported pipePrefix
+		// (protocol/transport_windows.go:38), which is the drift shape this
+		// repository keeps finding. Left as a literal rather than exported,
+		// because widening protocol's API for one assertion trades a smaller
+		// problem for a permanent one -- but recorded here so the next reader
+		// knows there are two copies and which one is authoritative.
+		if !strings.HasPrefix(first.Address, `\\.\pipe\`) {
 			t.Errorf("Address(4242) = %q, want a named pipe name", first.Address)
 		}
 		return

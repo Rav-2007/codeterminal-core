@@ -36,10 +36,20 @@ cd "$repo_root"
 
 # WHICH REMOTE IS CANONICAL, resolved rather than assumed.
 #
-# Today `upstream` is Rav-2007/codeterminal-core (where CI runs) and `origin` is
-# a fork. That is backwards from the convention, and C5b recommends renaming
-# them -- at which point a script hardcoding `upstream/main` would silently
-# start measuring against nothing, or worse, against the fork.
+# THE RENAME HAPPENED, 2026-09-20. `origin` is now Rav-2007/codeterminal-core
+# (where CI runs) and the fork Rav-i24/Mochiii is `fork`. Until that day the two
+# were inverted, C5b recommended the rename, and this block existed because a
+# script hardcoding `upstream/main` would have silently started measuring
+# against nothing, or worse, against the fork.
+#
+# THE PREFERENCE ORDER BELOW IS NOW BACKWARDS AND IS LEFT THAT WAY ON PURPOSE.
+# It tries `upstream/main` first, which no longer exists, and falls through to
+# `origin/main`, which is canonical -- so it resolves correctly today. It would
+# resolve to the WRONG repository only if someone re-added an `upstream` remote
+# pointing at the fork. Flipping the order to `origin/main upstream/main` is
+# the fix and it is RECOMMENDED, NOT TAKEN: it changes which ref this gate
+# measures against in a topology that does not currently exist, and changing
+# what a gate does is an owner decision, not a side effect of a rename.
 #
 # So the ref is resolved from what actually exists, in preference order, and the
 # banner NAMES the one it used. Hardcoding either name would be the enumerated-
@@ -107,15 +117,9 @@ allowlist() {
   cat <<'ALLOW'
 ca96966|this commit becoming reachable from the canonical main, or deletion of the branch that holds it|HELD BY OWNER DECISION, 2026-09-15. It reduces main from two failure causes to one but does not green it, so pushing it would break the fast-forward for no gain. The merge is the vehicle instead.
 ci/main-lint-pin|this branch's commits becoming reachable from the canonical main, or deletion of this branch|The branch holding ca96966, and the ONLY ref in this repository with a commit that is not an ancestor of HEAD. Same decision, same reason: held as a fallback, not delivered.
-audit/adversarial-pass|re-pointing this branch at the canonical remote with `git branch -u`, or updating or deleting the fork's stale copy|MEASURED 2026-09-17, AFTER THE MERGE: 77 commit(s) ahead of the FORK's copy with 0 of them unreachable from HEAD, and 2 ahead of the CANONICAL copy -- the macOS baseline fix awaiting a verification run. A stale pointer at the fork, not lost work. This entry replaces one keyed to "the merge lands", and removing that one is how this was found: it was covering TWO facts under one key -- the DELIVERY fact, which the merge retired, and the WRONG-REMOTE fact, which the merge does not touch. They were sharing a phrase, which this script's own header forbids.
-remote:audit/adversarial-pass|re-pointing this branch at the canonical remote with `git branch -u` after the rename|Tracks the fork because every branch here does; the topology is backwards repo-wide, not a mistake on this branch. Measured 2026-09-15: nothing in scripts/, .github/ or the Makefile is keyed to the remote NAME, so the rename is safe.
-remote:main|re-pointing this branch at the canonical remote with `git branch -u` after the rename|The most consequential of the eight. Local main tracks the FORK, whose main is 79 commits ahead of the canonical main. A bare `git push` from main delivers to a repository CI does not watch.
-remote:ci/cross-go-test|re-pointing this branch at the canonical remote with `git branch -u`, or deletion of this branch|Dormant since 2026-08-08 and 51 behind the canonical main. Tracks the fork like every other branch.
-remote:docs/readme-rewrite|re-pointing this branch at the canonical remote with `git branch -u`, or deletion of this branch|Dormant since 2026-08-08 and 48 behind. Tracks the fork like every other branch.
-remote:feat/web-grounding|re-pointing this branch at the canonical remote with `git branch -u`, or deletion of this branch|Dormant since 2026-08-29. Fully contained in HEAD, so it holds nothing undelivered.
-remote:fix/ci-limiter-probe-and-interrupt-race|re-pointing this branch at the canonical remote with `git branch -u`, or deletion of this branch|Dormant since 2026-09-02. Fully contained in HEAD.
-remote:sec/untrusted-text-channels|re-pointing this branch at the canonical remote with `git branch -u`, or deletion of this branch|Dormant since 2026-09-02. Fully contained in HEAD.
-remote:security/ultra-vuln-pass-2026-08-06|re-pointing this branch at the canonical remote with `git branch -u`, or deletion of this branch|Dormant since 2026-08-06 and 101 behind. Fully contained in HEAD.
+audit/adversarial-pass|this branch's commits becoming reachable from the canonical main, or deletion of this branch|RE-TRIGGERED 2026-09-20, AND THE ENTRY DID IT AGAIN. Its own reason below records being split out of an entry that was covering two facts under one key; its TRIGGER then named the wrong one of the two. This key is check 1 -- commits not reachable from the canonical main -- but the trigger it carried named the wrong-remote fact, which `remote:audit/adversarial-pass` covered and which the rename retired. So on 2026-09-20 the trigger fired while the situation it was written for persisted: the branch is now pushed to canonical and tracking it, and its commits are still not in canonical main. The trigger now names the merge, which is the event that actually retires this. Original text follows. MEASURED 2026-09-17, AFTER THE MERGE: 77 commit(s) ahead of the FORK's copy with 0 of them unreachable from HEAD, and 2 ahead of the CANONICAL copy -- the macOS baseline fix awaiting a verification run. A stale pointer at the fork, not lost work. This entry replaces one keyed to "the merge lands", and removing that one is how this was found: it was covering TWO facts under one key -- the DELIVERY fact, which the merge retired, and the WRONG-REMOTE fact, which the merge does not touch. They were sharing a phrase, which this script's own header forbids.
+remote:fix/ci-limiter-probe-and-interrupt-race|pushing this branch to the canonical remote, or deletion of this branch|Dormant since 2026-09-02. Fully contained in HEAD. AFTER THE 2026-09-20 RENAME this is one of only two branches still tracking the fork, and NOT by oversight: the canonical remote does not hold a branch of this name, so `git branch -u origin/...` has nothing to point at. The trigger was re-worded on that date for exactly that reason -- `git branch -u` had become an event that could never happen, which is the permanent-by-default shape this file's header forbids.
+remote:sec/untrusted-text-channels|pushing this branch to the canonical remote, or deletion of this branch|Dormant since 2026-09-02. Fully contained in HEAD. Same as its sibling above: the canonical remote holds no branch of this name, so re-pointing is not an available operation and the trigger was re-worded on 2026-09-20.
 feat/canonical-language-table|deletion of this branch, or repointing it at a remote|MEASURED SAFE, 2026-09-15: 0 commits unreachable from HEAD and 0 unique patches by `git cherry`. A stale pointer into HEAD's own history, not 487 commits of lost work -- which is what the gate's first message made it look like.
 feat/edit-payload-ingestion|deletion of this branch, or repointing it at a remote|MEASURED SAFE, 2026-09-15: 0 commits unreachable from HEAD and 0 unique patches. Same stale-pointer shape as its sibling.
 docs/readme-rewrite|deletion of this branch, or pushing it to the canonical remote|PRE-PLACED, same clone, same measurement: 1 commit ahead of the canonical branch and 0 unreachable from HEAD. The canonical remote holds this branch at aa0e755 and the fork holds it at 9c9ec50 -- one commit that exists on the fork and on HEAD but not on the canonical remote. NOT retired by the merge: check 1 compares against the BRANCH's own upstream, which the merge does not touch. remote:docs/readme-rewrite above covers the wrong-remote fact; this covers the ahead-of-canonical fact underneath it, which only becomes measurable once the branch is re-pointed.

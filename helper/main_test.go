@@ -3,8 +3,10 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -13,6 +15,7 @@ import (
 	"time"
 
 	"codeterminal/helper/helperproto"
+	"codeterminal/protocol"
 )
 
 type safeBuffer struct {
@@ -163,26 +166,58 @@ func TestLoadEmbedderRejectsNegativeThreadCount(t *testing.T) {
 	}
 }
 
-// TestHandleConnAuthorizesThenServes drives handleConn over a REAL Unix socket.
+// TestHandleConnAuthorizesThenServes drives handleConn over THIS PLATFORM'S
+// REAL local transport.
 //
-// WHY A REAL SOCKET. handleConn's whole body is protocol.AuthorizePeer followed
-// by serveConn, and AuthorizePeer reads the peer's credentials out of the
-// kernel (SO_PEERCRED on Linux, LOCAL_PEERCRED on the BSDs). A net.Pipe has no
-// peer credentials to read, so a piped test would exercise the error path and
-// call it coverage of the success path.
+// WHY A REAL ENDPOINT. handleConn's whole body is protocol.AuthorizePeer
+// followed by serveConn, and AuthorizePeer reads the peer's identity out of the
+// kernel -- SO_PEERCRED on Linux, LOCAL_PEERCRED on the BSDs,
+// GetNamedPipeClientProcessId plus a SID comparison on Windows. A net.Pipe has
+// no peer to read, so a piped test would exercise the error path and call it
+// coverage of the success path.
 //
-// WHAT IT PINS. This socket is the one L7 was about: the helper listened without
-// authorising its peer until peerauth moved into protocol/ so both sockets could
-// share it. serveConn has had tests since; handleConn -- the function that
-// actually calls the guard -- had none, so nothing failed if the guard were
-// deleted. A same-uid connection must be served, and that is exactly what the
-// daemon's connection is.
+// WHY NOT net.Listen("unix", ...), WHICH IS WHAT THIS TEST DID UNTIL
+// 2026-09-20. Go supports AF_UNIX on Windows 10 1803+, so that call SUCCEEDS
+// there -- and then the test drives a transport production never uses, against
+// a peer-auth path that has no credentials to read on that socket type. The
+// first run of `cross (windows-latest, helper)` (run 35488437797 on
+// Rav-2007/codeterminal-core, commit be7b982) reported it as:
+//
+//	main_test.go:215: reading response: read unix @->...\h.sock:
+//	                  wsarecv: An existing connection was forcibly closed by the remote host
+//
+// That is the ACCOMMODATION SHAPE this repository already has a name for, and
+// this was the third instance of it -- surviving TWO commits that each removed
+// another. 666ae2d took it out of daemon/testdata/fakehelper/main.go. 43e17bc
+// took it out of helper/recover_test.go, IN THIS DIRECTORY, in the same commit
+// that put helper into the Windows matrix. Neither swept for the rest, and this
+// file was the rest: thirty lines from recover_test.go, in a package being
+// rewritten for exactly this reason, in a commit whose stated purpose was to
+// make Windows first-class. Fixing a shape where it is seen rather than where
+// it recurs is the failure this pass keeps repeating.
+//
+// Going through protocol.LocalAddressFor means the test exercises a Unix socket
+// on Unix and a named pipe on Windows, which is what the helper actually does,
+// and the peer-auth implementation it exercises is whichever one ships.
+//
+// WHAT IT PINS. This endpoint is the one L7 was about: the helper listened
+// without authorising its peer until peerauth moved into protocol/ so both
+// sockets could share it. serveConn has had tests since; handleConn -- the
+// function that actually calls the guard -- had none, so nothing failed if the
+// guard were deleted. A same-uid connection must be served, and that is exactly
+// what the daemon's connection is.
 func TestHandleConnAuthorizesThenServes(t *testing.T) {
-	dir := t.TempDir()
-	sockPath := filepath.Join(dir, "h.sock")
-	ln, err := net.Listen("unix", sockPath)
+	// PID-scoped like helper/recover_test.go's, because LocalAddressFor puts a
+	// Unix socket in the shared runtime directory rather than in t.TempDir():
+	// two packages' tests running at once must not collide on one name.
+	addr, err := protocol.LocalAddressFor(fmt.Sprintf("helper-handleconn-test-%d", os.Getpid()))
 	if err != nil {
-		t.Fatalf("listening on %s: %v", sockPath, err)
+		t.Fatalf("deriving a helper address: %v", err)
+	}
+	// A listener that will not bind IS the finding, on any platform. No skip.
+	ln, err := protocol.Listen(addr)
+	if err != nil {
+		t.Fatalf("listening on %s: %v", addr, err)
 	}
 	defer ln.Close()
 
@@ -199,9 +234,9 @@ func TestHandleConnAuthorizesThenServes(t *testing.T) {
 		srv.handleConn(conn)
 	}()
 
-	client, err := net.Dial("unix", sockPath)
+	client, err := protocol.DialTimeout(addr, 5*time.Second)
 	if err != nil {
-		t.Fatalf("dialling: %v", err)
+		t.Fatalf("dialling %s: %v", addr, err)
 	}
 	defer client.Close()
 
