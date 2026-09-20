@@ -12,12 +12,28 @@ network.**
 
 > ### Project status — read before you start
 >
-> **A `.vsix` now builds, and nothing is published yet.** `npm run package` in
-> [`clients/vscode/`](clients/vscode/) produces an installable extension
-> carrying the daemon, the embedder helper and `models.json` — verified by a
-> gate that asserts on the archive's contents. It is **not on any marketplace**,
-> and macOS packages are **unsigned**, which means Gatekeeper will quarantine
-> them. See [Installing](#installing).
+> **A `.vsix` builds, and the shipping targets are `linux-x64` and `win32-x64`.**
+> `npm run package` in [`clients/vscode/`](clients/vscode/) produces an
+> installable extension carrying the daemon, the embedder helper and
+> `models.json` — verified by a gate that asserts on the archive's contents. It
+> is **not on any marketplace**; releases are GitHub Releases you install from a
+> file. See [Installing](#installing).
+>
+> **`darwin-arm64` is not built.** It was removed from the target set on
+> 2026-09-17 by founder ruling — see [`scripts/release-targets.txt`](scripts/release-targets.txt),
+> which is the single source of truth four other places are checked against.
+> This banner said "macOS packages are unsigned, which means Gatekeeper will
+> quarantine them" until 2026-09-20; there are no macOS packages to quarantine.
+>
+> **Windows binaries are not Authenticode-signed.** On first run Windows
+> SmartScreen shows *"Windows protected your PC"* — choose **More info → Run
+> anyway**. This is a stated decision, not an oversight:
+> `scripts/release-targets.txt` declares `signing-required: none`, and
+> `scripts/release-signing-guard.sh` carries a vacuity tripwire that **fails**
+> if the set of targets needing a signature is empty without that declaration —
+> so no target is being skipped silently. Verify your download against
+> `SHA256SUMS` in the release if you want the integrity check a signature would
+> have given you.
 >
 > Building from source still needs Go 1.25+ and a C compiler. Installing the
 > `.vsix` needs neither.
@@ -57,7 +73,7 @@ no second terminal, no `index` command, no daemon started by hand.
 cd clients/vscode
 npm ci
 npm run package        # builds daemon + helper, stages them, packages, verifies
-code --install-extension codeterminal-vscode-0.0.1.vsix
+code --install-extension codeterminal-vscode-0.0.2.vsix
 ```
 
 `npm run package` needs the Go toolchain because it builds the binaries it
@@ -633,9 +649,11 @@ a new unchecked error is fixed rather than grandfathered.
 **Stated plainly: `git push --no-verify` bypasses the pre-push hook, and nothing
 in it can prevent that.** It guards against forgetting, not against deciding. It
 exists as a compensating control because branch protection is unavailable on a
-private free-plan repo, so CI reports but cannot block. Some jobs — the macOS
-matrix and the retrieval eval — run only on `main` or by dispatch, because they
-are the expensive ones.
+private free-plan repo, so CI reports but cannot block. The retrieval eval runs
+only on `schedule`, on dispatch, or when a retrieval-path file changes, because
+it is the expensive one — roughly 26 minutes. *(This paragraph also named "the
+macOS matrix" until 2026-09-20. There is no macOS matrix: `cross` is
+`os: [windows-latest]`, a literal one-element list.)*
 
 ### Retrieval eval set
 
@@ -658,13 +676,16 @@ constant (`0.80`) — tune it there, never by hand-picking queries.
 
 **Engineering and readiness are not the same axis, and this project is
 deliberately lopsided.** The code is heavily tested, race-clean, ratcheted and
-cross-platform-green; the product is installable from a locally built `.vsix` but
-is on no marketplace, unsigned on macOS, and has not yet been run by anyone
-outside this machine.
+cross-platform-green; the product is installable from a `.vsix` but is on no
+marketplace, unsigned on Windows, and has not yet been run by anyone outside
+this machine.
 
-That gap does not close with more hardening. What remains is a set of founder
-decisions, a billing account and an Apple enrolment —
-[`BACKLOG.md`](BACKLOG.md) lists them in the order they unblock each other.
+That gap does not close with more hardening. **What used to remain was "a set of
+founder decisions, a billing account and an Apple enrolment" — all three are
+gone.** The decisions were taken (D1–D8, 2026-08-12), Actions billing resolved
+2026-08-30, and Apple enrolment stopped being a blocker on 2026-09-17 when
+`darwin-arm64` left the target set: it is now the cost of a macOS **return**, not
+of the first release. [`BACKLOG.md`](BACKLOG.md) Tier 0 is empty.
 
 **How the engineering side was built** — the verification discipline, the ratchets,
 the parity tests, and the specific bug behind each — is
@@ -683,12 +704,19 @@ building onnxruntime from source. `linux/arm64` is unpinned but not committed
 anywhere; adding it follows the same pattern as the three pinned platforms
 ([`daemon/onnxruntimefetch.go`](daemon/onnxruntimefetch.go)).
 
-**Nothing is published.** A `.vsix` builds and installs, but it is not on any
-marketplace, and the macOS package is **unsigned** — Gatekeeper quarantines
-unsigned binaries inside an extension, so the daemon will not start and the
-failure reads as an unexplained "daemon not running". Signing and notarisation
-are the remaining work; until they are done, `linux-x64` and `win32-x64` are the
-shippable targets.
+**Not on a marketplace.** A `.vsix` builds and installs, and a `v*` tag attaches
+both platforms' packages to a **draft** GitHub Release
+(`.github/workflows/release.yml` — `draft: true`, "a human decides when it is
+public"). The VS Code Marketplace is a separate step that does not exist yet:
+the `publish` job is a single `echo` behind `if: false`, with **no marketplace
+publication code behind it**. It is unimplemented, not untested, and no
+successful tag closes it.
+
+*This paragraph said "the macOS package is unsigned — Gatekeeper quarantines
+unsigned binaries… Signing and notarisation are the remaining work" until
+2026-09-20. `darwin-arm64` is not built, so there is no macOS package; and the
+remaining work is marketplace publication, not signing. The Windows signing gap
+is real and is stated in the banner at the top of this file.*
 
 ### Out of scope, on purpose
 
