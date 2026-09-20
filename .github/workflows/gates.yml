@@ -200,3 +200,49 @@ jobs:
       # cache; no network beyond what setup-go already warmed.
       - name: Supply chain (tidy, trimpath)
         run: ./scripts/supply-chain.sh
+
+      # STANDALONE: every module must build OUTSIDE the workspace.
+      #
+      # ADDED 2026-09-20, and it belongs immediately after supply-chain.sh
+      # because the argument for it is an argument about supply-chain.sh.
+      # That gate runs `GOWORK=off go mod tidy` and asserts no diff -- but tidy
+      # resolves PACKAGES, not SYMBOLS. protocol/go.mod required
+      # golang.org/x/sys v0.10.0 while protocol/peerauth_windows.go calls
+      # windows.GetNamedPipeClientProcessId, which does not exist before
+      # v0.47.0. golang.org/x/sys/windows exists in v0.10.0; it is merely
+      # missing the function. So supply-chain.sh passed at exit 0 on a module
+      # that could not be built for Windows on its own -- the module holding
+      # the Windows security boundary -- and only a compile finds that.
+      #
+      # WHY IT IS HERE AT ALL. `make standalone` was added on 2026-09-17 to
+      # catch exactly the defect that had just shipped, and it was wired into
+      # `make check` and nowhere else. A gate that runs only on one developer's
+      # machine cannot block a merge, so the gate written in response to a
+      # defect reaching main could not have stopped that defect reaching main.
+      # gate-parity.sh did not report the asymmetry because it enumerates
+      # scripts/*.sh and this one is a Makefile recipe -- the enumerated-scope
+      # class, inside the gate whose job is catching enumerated scope.
+      #
+      # THIS TIGHTENS CI AND DOES NOT RELAX IT. The standing rule is that when
+      # a gate fails must not change as a side effect of other work. Adding a
+      # gate that is already green in `make check` adds a failure condition
+      # that did not exist in CI; it removes none. Stated here because the
+      # distinction is easy to lose later.
+      - name: Every module builds outside the workspace
+        run: make standalone
+
+      # CROSSVET: the Windows files this Linux runner never executes still have
+      # to compile and vet, including the _test.go files.
+      #
+      # PARTLY REDUNDANT WITH build.yml's `cross` matrix, and deliberately
+      # kept anyway. That matrix natively builds, vets and TESTS the same five
+      # modules on windows-latest, which is strictly stronger -- but it is also
+      # the part of CI that can be switched off: the hosted-runner skip switch
+      # exists precisely so those jobs can be disabled during a billing
+      # outage, and three of this repository's four historical scheduled reds
+      # were infrastructure rather than code. This step costs seconds on the
+      # Linux runner and survives that. helper is excluded for the reason
+      # CROSSVET_MODULES records: cgo against onnxruntime fails on build
+      # constraints rather than on anything this gate asks about.
+      - name: Windows files compile and vet from here
+        run: make crossvet

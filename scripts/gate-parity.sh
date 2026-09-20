@@ -44,6 +44,24 @@
 #   local — `make -n check`, the actual dry-run expansion of the real target
 #   ci    — every scripts/*.sh named in .github/workflows/
 #
+# AND SINCE 2026-09-20, THE SAME FOR MAKEFILE TARGETS, because the version above
+# could not see its own blind spot. It enumerated scripts/*.sh. `make standalone`
+# and `make crossvet` are Makefile RECIPES, not scripts, so both ran in
+# `make check` and in no workflow at all and this gate reported "26 script(s)
+# accounted for" with no asymmetry -- while the gate written on 2026-09-17 to
+# catch the defect that had just reached main was running nowhere that could
+# block a merge. That is the enumerated-scope class, inside the gate whose whole
+# purpose is catching enumerated scope, which makes it R1.16's shape for the
+# eighth time and the first time inside R1.16's own remedy.
+#
+#   targets     — the PREREQUISITES OF `check:`, read out of the Makefile
+#   ci targets  — every `run: make <target>` in .github/workflows/
+#
+# A target may also be 'covered': it runs no recipe of its own beyond scripts
+# that the script manifest already places in CI. That is VERIFIED, not asserted
+# -- every script the target expands to must actually be in the CI set, or the
+# claim is red.
+#
 # The manifest below records only the EXPECTED RELATIONSHIP, and it is checked
 # in both directions:
 #
@@ -101,6 +119,47 @@ gate-parity.sh|both|
 install-tools.sh|ci|Installs the pinned analysis tools. CI runs it; locally `make check` does not, because it would reinstall four binaries on every gate run. scripts/lint.sh CHECKS the versions instead and prints this script as the remedy.
 toolpins.sh|lib|Sourced by lint.sh, errcheck-ceiling.sh and govulncheck.sh to read scripts/tool-pins.txt. Not executable as a gate and has no exit status of its own.
 MANIFEST
+}
+
+# --- the target manifest: the same question, asked of Makefile recipes --------
+#
+# STATES:
+#   both      the target itself is named in a workflow `run: make <target>`
+#   covered   the target expands ONLY to scripts the manifest above puts in CI,
+#             so the INVARIANT gates a merge even though the target name does
+#             not. Verified against the script CI set, never taken on trust.
+#   mixed     SOME of its scripts are in CI and the rest are declared 'local'
+#             in the script manifest above, each with its own reason there. The
+#             reason here must name which. Added 2026-09-20 because the first
+#             version of this check declared `make supplychain` 'covered' and
+#             the check refused it: govulncheck.sh is local-only on purpose.
+#             Widening 'covered' to accept that would have made 'covered' mean
+#             nothing, since every script is in the manifest by construction.
+#   local     in `make check` and nowhere else, deliberately, with a reason.
+#
+# 'covered' and 'both' are kept apart on purpose (M5): "the invariant runs in CI"
+# and "this target runs in CI" are different facts and must not share a phrase.
+target_manifest() {
+  cat <<'TARGETS'
+crossvet|both|
+standalone|both|
+docs|covered|
+lint|covered|
+ratchet|covered|
+errcheck|covered|
+fuzzguard|covered|
+supplychain|mixed|govulncheck.sh is local-only by its own entry in the script manifest above -- CI runs govulncheck inline per module instead. Every other script this target runs is in CI.
+debtmarkers|covered|
+targetparity|covered|
+parity|covered|
+fmt|local|CI checks formatting inside build.yml's lint job rather than by this target; the target is the developer-facing spelling of the same invariant.
+vet|local|CI runs `go vet ./...` per module in build.yml's go and cross jobs, which is strictly more coverage than this target; the target exists so a developer gets it before pushing.
+race|local|CI runs `go test -race` per module in build.yml's go job. Same invariant, per-module rather than whole-tree, so the target name never appears in a workflow.
+hookcheck|local|It verifies that this clone's git hooks are installed. There are no hooks on a CI runner and nothing for it to assert there; running it in CI would be a check that cannot fail.
+evalguard|local|CI asserts the same two properties directly in gates.yml's `corpus holds no answer key` job, by running the tests rather than the target.
+webview|local|It checks the VS Code webview bundle; build.yml's `vscode extension` job builds and tests the extension itself, which subsumes it.
+reach|local|In `make check` and deliberately NOT in CI -- a CI runner's clone has no local branches, so its checks would examine almost nothing. The scripts/reach.sh entry above carries the full reason.
+TARGETS
 }
 
 # --- --what-ci-adds: the banner `make check` prints when it finishes ----------
@@ -239,6 +298,145 @@ for s in $all_set; do
   fi
 done
 
+# --- THE SAME THREE CHECKS, FOR MAKEFILE TARGETS ------------------------------
+
+# DERIVED, not listed: the prerequisites of the real `check` target.
+all_targets="$(awk '/^check:/{sub(/^check:[[:space:]]*/,""); print; exit}' Makefile \
+  | tr ' ' '\n' | grep -v '^$' | sort -u)"
+# DERIVED: only an actual `run: make <target>`, never a word in a comment.
+ci_targets="$(grep -rhoE 'run: *make +[a-z][a-z0-9-]*' .github/workflows/ 2>/dev/null \
+  | sed -E 's/.*make +//' | sort -u)"
+
+if [ -z "$all_targets" ]; then
+  echo "gate-parity: could not read \`check\`'s prerequisites from the Makefile -- refusing to compare nothing." >&2
+  echo "             This is a broken derivation, not agreement." >&2
+  exit 2
+fi
+
+declare -A texpect treason
+while IFS='|' read -r name want why; do
+  [ -z "${name:-}" ] && continue
+  texpect["$name"]="$want"
+  treason["$name"]="$why"
+done < <(target_manifest)
+
+# (a) every prerequisite of `check` must be accounted for.
+for t in $all_targets; do
+  if [ -z "${texpect[$t]:-}" ]; then
+    echo "FAIL  \`make $t\` is a prerequisite of \`check\` but has no entry in gate-parity.sh's target manifest." >&2
+    echo "      Add one: both | covered | local <reason>." >&2
+    echo "      A gate added to \`make check\` and nowhere else is exactly how standalone and" >&2
+    echo "      crossvet ran on one developer's machine for three days." >&2
+    fail=1
+  fi
+done
+
+# (b) THE ANTI-R1.16 CHECK, for targets: an entry for something `check` no
+#     longer runs. Removing a gate from `check` must be as red as adding one.
+for t in "${!texpect[@]}"; do
+  if ! in_set "$t" "$all_targets"; then
+    echo "FAIL  the target manifest lists \`make $t\`, which \`check\` no longer depends on." >&2
+    echo "      Either the target left \`check\` and its entry did not, or it was renamed." >&2
+    fail=1
+  fi
+done
+
+# (c) observed must equal declared -- and 'covered' is VERIFIED, not believed.
+for t in $all_targets; do
+  want="${texpect[$t]:-}"
+  [ -z "$want" ] && continue
+
+  t_in_ci=no
+  in_set "$t" "$ci_targets" && t_in_ci=yes
+
+  if [ "$want" = "both" ]; then
+    if [ "$t_in_ci" = "no" ]; then
+      echo "FAIL  \`make $t\` is declared 'both' but no workflow runs it." >&2
+      echo "      It left CI. It can no longer gate a merge." >&2
+      fail=1
+    fi
+    continue
+  fi
+
+  if [ "$t_in_ci" = "yes" ]; then
+    echo "FAIL  \`make $t\` is declared '$want' but a workflow runs it. Change the manifest to 'both'." >&2
+    fail=1
+    continue
+  fi
+
+  if [ "$want" = "covered" ]; then
+    # The claim is that this target's invariants reach CI through scripts the
+    # manifest above already places there. Check every one of them.
+    t_scripts="$(make -n "$t" 2>/dev/null | grep -oE "scripts/[a-z0-9-]+\.sh" | sed 's|scripts/||' | sort -u)"
+    if [ -z "$t_scripts" ]; then
+      echo "FAIL  \`make $t\` is declared 'covered' but expands to no scripts at all," >&2
+      echo "      so there is nothing for the claim to be true of. It is 'local' with a reason," >&2
+      echo "      or it belongs in CI." >&2
+      fail=1
+    fi
+    for ts in $t_scripts; do
+      if ! in_set "$ts" "$ci_set"; then
+        echo "FAIL  \`make $t\` is declared 'covered', but it runs scripts/$ts, which no workflow runs." >&2
+        echo "      'covered' means the INVARIANT gates a merge. This one does not." >&2
+        fail=1
+      fi
+    done
+    continue
+  fi
+
+  if [ "$want" = "mixed" ]; then
+    t_scripts="$(make -n "$t" 2>/dev/null | grep -oE "scripts/[a-z0-9-]+\\.sh" | sed 's|scripts/||' | sort -u)"
+    any_ci=no
+    for ts in $t_scripts; do
+      if in_set "$ts" "$ci_set"; then any_ci=yes; continue; fi
+      # Not in CI: the script manifest must already declare it local, with a reason.
+      case "${expect[$ts]:-}" in
+        local) [ -n "${reason[$ts]:-}" ] || { echo "FAIL  \`make $t\` is 'mixed' and scripts/$ts is 'local' with no reason." >&2; fail=1; } ;;
+        *)     echo "FAIL  \`make $t\` is declared 'mixed', but scripts/$ts is neither in CI nor declared 'local'." >&2
+               echo "      'mixed' accounts for a KNOWN local script, not an unexplained one." >&2
+               fail=1 ;;
+      esac
+    done
+    if [ "$any_ci" = "no" ]; then
+      echo "FAIL  \`make $t\` is declared 'mixed' but NONE of its scripts runs in CI. That is 'local'." >&2
+      fail=1
+    fi
+    [ -n "${treason[$t]:-}" ] || { echo "FAIL  \`make $t\` is declared 'mixed' with no reason naming which script is local." >&2; fail=1; }
+    continue
+  fi
+
+  if [ "$want" = "local" ]; then
+    if [ -z "${treason[$t]:-}" ]; then
+      echo "FAIL  \`make $t\` is declared 'local' with no reason. An asymmetry without a stated reason is drift." >&2
+      fail=1
+    fi
+    # 'local' MUST NOT BE AN ESCAPE HATCH. If every script this target runs is
+    # already in CI, the honest state is 'covered' and calling it 'local' is a
+    # false statement about the world -- and the exact edit someone would make
+    # to silence a real gap rather than close it. Measured 2026-09-20: the first
+    # version of this check let `docs|local|a reason` pass while all four of its
+    # scripts ran in CI.
+    #
+    # A target with NO scripts (fmt, vet, race, hookcheck, evalguard, webview)
+    # is not caught by this and must not be: "all of an empty set is in CI" is
+    # vacuously true, which is the vacuity shape this repository keeps finding.
+    t_scripts="$(make -n "$t" 2>/dev/null | grep -oE "scripts/[a-z0-9-]+\.sh" | sed 's|scripts/||' | sort -u)"
+    if [ -n "$t_scripts" ]; then
+      all_in_ci=yes
+      for ts in $t_scripts; do
+        in_set "$ts" "$ci_set" || { all_in_ci=no; break; }
+      done
+      if [ "$all_in_ci" = "yes" ]; then
+        echo "FAIL  \`make $t\` is declared 'local', but every script it runs is in CI:" >&2
+        printf '%s\n' "$t_scripts" | sed 's|^|        scripts/|' >&2
+        echo "      That is 'covered'. Declaring it 'local' understates what gates a merge," >&2
+        echo "      and is the edit that would hide a real asymmetry rather than close one." >&2
+        fail=1
+      fi
+    fi
+  fi
+done
+
 if [ $fail -ne 0 ]; then
   echo "" >&2
   echo "gate-parity: FAILED. \`make check\` and CI disagree about what is checked." >&2
@@ -254,3 +452,13 @@ for s in $all_set; do
   esac
 done
 echo "gate-parity: $n_all script(s) accounted for -- $n_both both, $n_local local-only, $n_ci CI-only, $n_manual manual (each asymmetry carries a reason)"
+
+n_tall=$(printf '%s\n' "$all_targets" | grep -c .)
+t_both=0; t_covered=0; t_mixed=0; t_local=0
+for t in $all_targets; do
+  case "${texpect[$t]}" in
+    both) t_both=$((t_both+1)) ;; covered) t_covered=$((t_covered+1)) ;;
+    mixed) t_mixed=$((t_mixed+1)) ;; local) t_local=$((t_local+1)) ;;
+  esac
+done
+echo "gate-parity: $n_tall \`check\` target(s) accounted for -- $t_both run in CI by name, $t_covered covered by scripts CI runs, $t_mixed mixed, $t_local local-only with a reason"

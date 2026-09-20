@@ -268,6 +268,7 @@ check: hookcheck fmt vet crossvet standalone race lint ratchet errcheck evalguar
 # rename" or "the merge lands", and it goes red again the moment either happens
 # and the entry is not removed.
 reach:
+	@./scripts/reach.sh --self-test >/dev/null
 	@./scripts/reach.sh
 
 # Two supply-chain gates. actions-pinned is sub-second and offline;

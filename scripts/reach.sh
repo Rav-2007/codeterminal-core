@@ -34,39 +34,200 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-# WHICH REMOTE IS CANONICAL, resolved rather than assumed.
+# WHICH REMOTE IS CANONICAL, DERIVED FROM THE REPOSITORY IT NAMES.
 #
-# THE RENAME HAPPENED, 2026-09-20. `origin` is now Rav-2007/codeterminal-core
-# (where CI runs) and the fork Rav-i24/Mochiii is `fork`. Until that day the two
-# were inverted, C5b recommended the rename, and this block existed because a
-# script hardcoding `upstream/main` would have silently started measuring
-# against nothing, or worse, against the fork.
+# A LOCAL REMOTE NAME IS NOT A FACT ABOUT THE PROJECT. It is a fact about one
+# clone, and this repository has already paid for treating it as the former: for
+# months `origin` here was the FORK and `upstream` was canonical, which is
+# backwards from the convention every reader assumes. The rename happened
+# 2026-09-20 and made `origin` canonical -- in ONE clone. Anyone else's still has
+# the old mapping, and nothing stops a future clone having a third.
 #
-# THE PREFERENCE ORDER BELOW IS NOW BACKWARDS AND IS LEFT THAT WAY ON PURPOSE.
-# It tries `upstream/main` first, which no longer exists, and falls through to
-# `origin/main`, which is canonical -- so it resolves correctly today. It would
-# resolve to the WRONG repository only if someone re-added an `upstream` remote
-# pointing at the fork. Flipping the order to `origin/main upstream/main` is
-# the fix and it is RECOMMENDED, NOT TAKEN: it changes which ref this gate
-# measures against in a topology that does not currently exist, and changing
-# what a gate does is an owner decision, not a side effect of a rename.
+# WHAT THIS BLOCK USED TO DO, and why it was not good enough. It tried
+# `upstream/main` then `origin/main` and took the first that resolved. After the
+# rename `upstream` stopped existing, so it fell through to `origin/main` and was
+# CORRECT -- by the ordering's luck, not its design. Re-add an `upstream` remote
+# pointing at the fork and this delivery gate silently begins measuring delivery
+# against the fork, which is the exact failure it was written to catch.
 #
-# So the ref is resolved from what actually exists, in preference order, and the
-# banner NAMES the one it used. Hardcoding either name would be the enumerated-
-# scope defect this repository keeps finding; asking git which refs exist is the
-# derivation.
-MAIN_REF="${REACH_MAIN_REF:-}"
-if [ -z "$MAIN_REF" ]; then
-  for candidate in upstream/main origin/main; do
-    if git rev-parse --verify --quiet "$candidate" >/dev/null; then
-      MAIN_REF="$candidate"
-      break
+# THE DERIVATION. The canonical repository's PATH is a project constant; which
+# local name points at it is not. So: ask git which remotes exist, find the one
+# whose URL names the canonical repository, and use its main. Zero matches or
+# more than one is a REFUSAL, not a fallback -- a delivery gate that guesses
+# which repository it is measuring against is worse than no delivery gate.
+#
+# AND THE REF MUST RESOLVE. Measured 2026-09-20 on the version above:
+#
+#   $ REACH_MAIN_REF=refs/heads/no-such-ref-at-all bash scripts/reach.sh
+#   reach: 6 reach failure(s) of 11 item(s) examined, against refs/heads/no-such-ref-at-all
+#
+# It exited 1, so it was not silent -- but it reported the WORK as unreached
+# rather than the REF as absent, and the number of items examined collapsed from
+# 297 to 11 with nothing saying so. A bogus ref must be refused before anything
+# is measured against it, not diagnosed afterwards from a number nobody is
+# watching.
+CANONICAL_REPO="Rav-2007/codeterminal-core"
+
+resolve_main_ref() {
+  # Honour the override, but hold it to the same standard: it must resolve.
+  if [ -n "${REACH_MAIN_REF:-}" ]; then
+    if ! git rev-parse --verify --quiet "${REACH_MAIN_REF}^{commit}" >/dev/null; then
+      echo "reach: FAIL -- REACH_MAIN_REF=${REACH_MAIN_REF} does not resolve to a commit." >&2
+      echo "reach:       Refusing to measure delivery against a ref that is not there." >&2
+      return 2
     fi
+    printf '%s' "${REACH_MAIN_REF}"
+    return 0
+  fi
+
+  local matched count name
+  matched="$(git remote -v \
+    | awk '$3 == "(fetch)" { print $1 "\t" $2 }' \
+    | grep -F "$CANONICAL_REPO" \
+    | cut -f1 | sort -u)"
+  count="$(printf '%s' "$matched" | grep -c . || true)"
+
+  if [ "$count" -eq 0 ]; then
+    echo "reach: FAIL -- no remote points at $CANONICAL_REPO." >&2
+    echo "reach:       Remotes here:" >&2
+    git remote -v | sed 's/^/reach:         /' >&2
+    echo "reach:       This gate measures delivery TO that repository; with no remote for" >&2
+    echo "reach:       it there is nothing to measure against. Add one, or set REACH_MAIN_REF." >&2
+    return 2
+  fi
+  if [ "$count" -gt 1 ]; then
+    echo "reach: FAIL -- $count remotes point at $CANONICAL_REPO:" >&2
+    printf '%s\n' "$matched" | sed 's/^/reach:         /' >&2
+    echo "reach:       Which one is authoritative is a judgement this script will not make." >&2
+    echo "reach:       Remove the duplicate, or set REACH_MAIN_REF." >&2
+    return 2
+  fi
+
+  name="$matched"
+  if ! git rev-parse --verify --quiet "$name/main^{commit}" >/dev/null; then
+    echo "reach: FAIL -- remote '$name' points at $CANONICAL_REPO but $name/main does not resolve." >&2
+    echo "reach:       Run 'git fetch $name' and try again." >&2
+    return 2
+  fi
+  printf '%s' "$name/main"
+}
+
+if [ "${1:-}" = "--self-test" ]; then
+  # Five arms. Each NEUTERS the derivation in one specific way and asserts the
+  # refusal, because a gate not demonstrated failing is not demonstrated.
+  pass=0; fail=0
+  check() { # name expected_rc actual_rc
+    if [ "$2" = "$3" ]; then pass=$((pass+1)); else
+      fail=$((fail+1)); echo "reach-self-test: FAIL $1 (want rc=$2, got rc=$3)" >&2
+    fi
+  }
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' EXIT
+
+  # THE SCRIPT UNDER TEST IS THE ONE RUNNING, NOT THE ONE AT ITS USUAL PATH.
+  #
+  # The first draft of this harness copied "$repo_root/scripts/reach.sh" into
+  # each fixture -- the real file, always, whatever file was actually driving
+  # the self-test. So a deliberately NEUTERED copy, run to prove these arms can
+  # fail, passed all six: every fixture was quietly exercising the good code.
+  # Measured 2026-09-20, and it is the "a gate not demonstrated failing is not
+  # demonstrated" rule catching the demonstration itself.
+  self="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+
+  # A copy of THIS script inside the fixture, because the script resolves its
+  # own repository root from its own path: running the real one from elsewhere
+  # would cd straight back into the real repository and test nothing. The first
+  # draft of this self-test did exactly that, and three arms passed vacuously.
+  mk() { # mk <dir> -- a repo with one commit and a copy of this gate in it
+    git init -q "$1"
+    git -C "$1" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+    mkdir -p "$1/scripts"
+    cp "$self" "$1/scripts/reach.sh"
+  }
+
+  # 1. No remote at all names the canonical repository.
+  mk "$tmp/none"
+  rc=0; ( unset REACH_MAIN_REF; bash "$tmp/none/scripts/reach.sh" ) >/dev/null 2>&1 || rc=$?
+  check "no remote for the canonical repository refuses" 2 "$rc"
+
+  # 2. TWO remotes name it. Ambiguous, and it must not pick one.
+  mk "$tmp/two"
+  git -C "$tmp/two" remote add a "https://github.com/$CANONICAL_REPO.git"
+  git -C "$tmp/two" remote add b "git@github.com:$CANONICAL_REPO.git"
+  rc=0; ( unset REACH_MAIN_REF; bash "$tmp/two/scripts/reach.sh" ) >/dev/null 2>&1 || rc=$?
+  check "two remotes for the canonical repository refuses" 2 "$rc"
+
+  # 3. A remote names it, but nothing has been fetched, so <name>/main is absent.
+  #    Also the arm that proves the derivation does not care what the remote is
+  #    CALLED: this one is called `somename`.
+  mk "$tmp/unfetched"
+  git -C "$tmp/unfetched" remote add somename "https://github.com/$CANONICAL_REPO.git"
+  rc=0; ( unset REACH_MAIN_REF; bash "$tmp/unfetched/scripts/reach.sh" ) >/dev/null 2>&1 || rc=$?
+  check "a remote with no fetched main refuses" 2 "$rc"
+
+  # 4. The override must be held to the same standard as the derivation. This is
+  #    the arm that the pre-2026-09-20 version FAILED: it took the override on
+  #    trust and measured 11 items against a ref that was not there.
+  rc=0; ( REACH_MAIN_REF=refs/heads/no-such-ref-at-all bash "$self" ) >/dev/null 2>&1 || rc=$?
+  check "a nonexistent REACH_MAIN_REF refuses before measuring" 2 "$rc"
+
+  # 6. THE DECISIVE ARM, and the only one the previous version would have failed
+  #    silently rather than loudly. A clone where `origin` is the FORK and some
+  #    other name is canonical -- the exact topology this repository had for
+  #    months. The old code took the first of `upstream/main`, `origin/main` that
+  #    resolved, so it picked the FORK and measured delivery against it, exit 0,
+  #    banner naming a repository nobody ships to. The derivation must pick the
+  #    canonical one by the repository it names, whatever it is called locally.
+  #
+  #    The fixture paths literally contain the two repository paths, because
+  #    matching is on the URL and a local directory is a URL git accepts.
+  mkdir -p "$tmp/remotes/$CANONICAL_REPO" "$tmp/remotes/Rav-i24"
+  canon_url="$tmp/remotes/$CANONICAL_REPO.git"
+  fork_url="$tmp/remotes/Rav-i24/Mochiii.git"
+  for u in "$canon_url" "$fork_url"; do
+    git init -q --bare "$u"
+    seed="$tmp/seed-$(basename "$u")"
+    git init -q "$seed"
+    git -C "$seed" -c user.email=t@t -c user.name=t commit -q --allow-empty -m seed
+    git -C "$seed" branch -M main
+    git -C "$seed" push -q "$u" main
   done
+  mk "$tmp/inverted"
+  git -C "$tmp/inverted" remote add origin "$fork_url"
+  git -C "$tmp/inverted" remote add elsewhere "$canon_url"
+  git -C "$tmp/inverted" fetch -q --all
+  out="$( { unset REACH_MAIN_REF; bash "$tmp/inverted/scripts/reach.sh"; } 2>&1 || true )"
+  case "$out" in
+    *"elsewhere/main"*) pass=$((pass+1)) ;;
+    *)
+      fail=$((fail+1))
+      echo "reach-self-test: FAIL the derivation prefers the canonical remote over one named origin" >&2
+      echo "reach-self-test:      it resolved: $(printf '%s' "$out" | grep -o 'against [^,]*' | head -1)" >&2
+      ;;
+  esac
+
+  # 5. THE POSITIVE ARM, and it is not decoration: the derivation must find the
+  #    canonical remote when it is NOT called origin, which is the whole point.
+  want="$(git remote -v \
+    | awk '$3 == "(fetch)" { print $1 "\t" $2 }' \
+    | grep -F "$CANONICAL_REPO" | cut -f1 | sort -u)"
+  out="$( { unset REACH_MAIN_REF; bash "$self"; } 2>&1 || true )"
+  case "$out" in
+    *"against $want/main"*) pass=$((pass+1)) ;;
+    *)
+      fail=$((fail+1))
+      echo "reach-self-test: FAIL this clone's canonical remote is '$want' but the gate" >&2
+      echo "reach-self-test:      reported: $(printf '%s' "$out" | grep -o 'against [^,]*' | head -1)" >&2
+      ;;
+  esac
+
+  echo "reach-self-test: $pass passed, $fail failed"
+  [ "$fail" -eq 0 ] || exit 1
+  exit 0
 fi
-if [ -z "$MAIN_REF" ]; then
-  echo "reach: FAIL -- no canonical main ref found (tried upstream/main, origin/main). Set REACH_MAIN_REF." >&2
-  exit 1
+
+if ! MAIN_REF="$(resolve_main_ref)"; then
+  exit 2
 fi
 
 failures=0
