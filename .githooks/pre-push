@@ -8,17 +8,25 @@
 #
 # WHY THIS EXISTS
 #
-# Branch protection is unavailable on this repo -- private, free plan, so
-# `GET /repos/:owner/:repo/branches/main/protection` answers 403 Upgrade
-# (checked 2026-07-30). CI runs on every push and PR to main but cannot BLOCK a
-# merge. This hook is the compensating control: it moves the gate to the one
-# place that still has a veto, which is the moment before code leaves the
-# machine.
+# CI runs on every push and PR to main but does not BLOCK a merge. This hook is
+# the compensating control: it moves the gate to the one place that still has a
+# veto, which is the moment before code leaves the machine.
+#
+# WHY IT WAS UNAVOIDABLE, AND WHAT CHANGED 2026-09-20. Branch protection used to
+# be impossible here: the repo was private on a free plan, and
+# `GET /repos/:owner/:repo/branches/main/protection` answered 403 Upgrade
+# (checked 2026-07-30). The repository is now PUBLIC, and the same endpoint
+# answers 404 Not Found (checked 2026-09-20) -- which is the "no rule
+# configured" answer, not the "not allowed" one. So the remedy this comment used
+# to name as out of reach is now one owner action away.
+#
+# IT IS NOT CONFIGURED, and this hook is therefore still the only gate. Nothing
+# below assumes otherwise. Configuring required status checks on main is an
+# owner decision, and until it is taken the sentence above stays true.
 #
 # RESIDUAL, stated rather than hidden: `git push --no-verify` skips this
 # entirely, and nothing here can prevent that. It is a guard against forgetting,
-# not against deciding. The real fix is branch protection, which needs the repo
-# to go public or onto Pro.
+# not against deciding.
 #
 # WHAT IT RUNS
 #
@@ -43,7 +51,7 @@ repo_root="$(git rev-parse --show-toplevel)"
 #
 # That is not a cosmetic problem. A hook that always fails for a reason
 # unrelated to the code is a hook everyone learns to --no-verify, which quietly
-# removes the only gate this repo has (branch protection being unavailable).
+# removes the only gate this repo actually has configured today.
 # Found the first time this hook ran on a real push.
 if ! command -v go >/dev/null 2>&1; then
   for candidate in "$HOME/.local/go/bin" /usr/local/go/bin "$HOME/go/bin" /usr/lib/go/bin; do

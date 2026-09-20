@@ -289,9 +289,13 @@ plus per-topic files.
   dangling from a checkout. All eight are transcribed into `OPEN_ITEMS.md` §2.
 - **`.codeterminal/index/` in this repo is months stale** and the product will
   still report `grounded ✓` against it. That is the bug, not a local accident.
-- **CI cannot block.** Branch protection is unavailable on a private free-plan
-  repo, so a red run is a signal someone has to read. `.githooks/pre-push` is
-  the compensating control, and `--no-verify` bypasses it.
+- **CI does not block.** No branch protection is configured, so a red run is a
+  signal someone has to read. `.githooks/pre-push` is the compensating control,
+  and `--no-verify` bypasses it. **Changed 2026-09-20:** this used to say
+  protection was *unavailable* (private, free plan, endpoint answered 403
+  Upgrade). The repo is now public and the endpoint answers 404 "no rule
+  configured", so protection is available and simply not set up -- an owner
+  action, not a platform limit.
 - **`gh` resolves to the wrong repo from this directory.** Check before trusting
   any `gh` output.
 - **JSON `null` → `bool` unmarshals with a nil error**, and hex caps Shannon

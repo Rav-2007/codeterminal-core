@@ -648,8 +648,12 @@ a new unchecked error is fixed rather than grandfathered.
 
 **Stated plainly: `git push --no-verify` bypasses the pre-push hook, and nothing
 in it can prevent that.** It guards against forgetting, not against deciding. It
-exists as a compensating control because branch protection is unavailable on a
-private free-plan repo, so CI reports but cannot block. The retrieval eval runs
+exists as a compensating control because no branch protection is configured, so
+CI reports but does not block. *(Until 2026-09-20 this said branch protection
+was "unavailable on a private free-plan repo". The repository is now public and
+the protection endpoint answers 404 "no rule configured" rather than 403
+"upgrade" -- so it is available and unconfigured, which is a different thing and
+an owner decision.)* The retrieval eval runs
 only on `schedule`, on dispatch, or when a retrieval-path file changes, because
 it is the expensive one — roughly 26 minutes. *(This paragraph also named "the
 macOS matrix" until 2026-09-20. There is no macOS matrix: `cross` is
