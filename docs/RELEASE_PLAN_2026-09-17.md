@@ -770,10 +770,17 @@ different inputs under a different allocator or scheduler.
   p50/p99 from the log. *What would settle it:* re-run that single test alone and read
   the percentiles. **H11 applies: it must run alone**, which is why I did not fold it
   into an already-running batch.
-- **`TestTokenEfficiencyEval`, 30-minute alarm at 11m43s (C).** The workflow at HEAD
-  now passes `-timeout 60m`; the version that ran in the four stale scheduled failures
-  passed `-timeout 30m`. I verified the *timeout change* by reading both command lines.
-  I did **not** verify the test's current runtime.
+- **`TestTokenEfficiencyEval`, 30-minute alarm at 11m43s (C → M, closed 2026-09-20).**
+  The workflow at HEAD now passes `-timeout 60m`; the version that ran in the stale
+  scheduled failures passed `-timeout 30m`. I verified the *timeout change* by reading
+  both command lines. I did **not** verify the test's current runtime — and it was
+  already verified, in a document this section did not consult.
+  `docs/C6_CLOSING_2026-09-17.md:503` records run `35183141505`'s
+  `retrieval eval (scheduled)` as **1624 s, success, "including
+  `TestTokenEfficiencyEval`"**. Its log gives the per-test figure: **1.03 s.** The
+  11m43s belongs to the `defaultContextBudgetChars` 32000 era that `build.yml`'s own
+  step comment documents, not to this tree. **This is no longer a flaky surface and
+  should not be carried as one.** See `docs/A_DELIVER_2026-09-20.md` §A7.2.
 - **`TestSQLiteCancellation_DoesNotReachAnFTS5PhraseMatch` (M, new).** 1 failure in 3
   macOS observations. **No rate; the sample is too small to have one.** I am labelling
   it flaky on 1/3, which is weak, and saying so.
