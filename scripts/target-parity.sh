@@ -10,22 +10,41 @@
 #   2. release.yml's packaging loop      -- `for TARGET in ...`
 #   3. release.yml's staging loop        -- `for TARGET in ...`
 #   4. stage-runtime.js's validation     -- a regex of the legal target names
+#   5. any COUNT of targets in release.yml -- see below; checked by absence.
 #
 # WHY THIS GATE EXISTS. Dropping darwin-arm64 on 2026-09-17 meant editing all
-# five. Miss one and CI stays green while the release is wrong, and the failure
+# six. Miss one and CI stays green while the release is wrong, and the failure
 # is silent in both directions: the matrix builds a binary no loop packages, or
 # a loop packages one the matrix never built and `cp` fails halfway through a
 # release. Neither is caught by any existing gate -- release.yml is only
 # exercised by a release.
 #
+# MIRROR 5 IS A DIFFERENT SHAPE, and it was added on 2026-09-20 because this
+# gate was green while the release was broken. Mirrors 1-4 are LISTS of target
+# names, and this script compares lists. release.yml also contained a NUMBER --
+# `[ "$N" -eq 3 ]`, asserting three staged terminal-client binaries. 43e17bc
+# edited both loops from three names to two and left the 3, because a 3 is not
+# a target name and nothing here was looking for one. Two files staged, three
+# demanded: `package` would have died before the signing guard and before the
+# attach, so the tag would have published nothing.
+#
+# A count cannot be compared against the source of truth the way a list can --
+# a correct count and a stale count are both just integers. So mirror 5 is
+# enforced by ABSENCE: release.yml must contain no literal count threshold at
+# all, and must derive one from the loop it is counting. `-eq 0` and `-ne 0`
+# stay legal, because a zero is an exit-status check, not a tally.
+#
 # clients/vscode/scripts/verify-vsix.js is deliberately NOT in this list. It
 # asks `target.startsWith('win32')` rather than enumerating, so it has nothing
 # to drift from. That is the pattern the other four should eventually adopt;
-# until they can, this gate stands in for it.
+# until they can, this gate stands in for it. Mirror 5 IS that pattern, applied
+# to counts: the fix was not to check the number but to stop writing one down.
 #
 # NOT CHECKED, and not claimed: that the targets are the RIGHT ones, that the
 # runners exist, or that anything builds. This gate asks one question -- do the
-# five places agree -- and a green result means only that.
+# six places agree -- and a green result means only that. In particular mirror 5
+# proves release.yml hard-codes no count; it does NOT prove the derived count is
+# the right one, which only a release run can show.
 #
 #   target-parity.sh              check the working tree
 #   target-parity.sh --self-test  prove the check can fail
@@ -91,7 +110,7 @@ run_check() { # run_check <root>
   want="$(expected_targets "$tfile")"
   want_pairs="$(expected_runners "$tfile")"
   if [ -z "$want" ]; then
-    err "FAIL: $tfile declares no targets; refusing to assert that four mirrors"
+    err "FAIL: $tfile declares no targets; refusing to assert that five mirrors"
     err "      agree with nothing, which they trivially would"
     return 1
   fi
@@ -106,12 +125,19 @@ run_check() { # run_check <root>
 
   # 2 and 3. every `for TARGET in ...` loop, each checked separately so a gate
   # failure names WHICH loop drifted rather than just "a loop did".
+  #
+  # COMMENT LINES ARE SKIPPED, since 2026-09-20. This scanner matched any line
+  # CONTAINING `for TARGET in`, so the first comment in release.yml's history to
+  # mention the loops -- one written to explain the bug mirror 5 now catches --
+  # was parsed as a third loop and failed the gate with a mismatch listing the
+  # comment's own words as target names. A gate that cannot be described in
+  # prose next to the thing it guards gets worked around, not fixed.
   local n=0 line loop
   while IFS= read -r line; do
     n=$((n + 1))
     loop="$(echo "$line" | sed 's/.*for TARGET in //; s/;.*//' | tr ' ' '\n' | grep -v '^$')"
     compare "release.yml \`for TARGET in\` loop #$n" "$want" "$loop"
-  done < <(grep -h 'for TARGET in' "$rel")
+  done < <(grep -h 'for TARGET in' "$rel" | grep -v '^[[:space:]]*#')
   if [ "$n" -eq 0 ]; then
     err "FAIL: found no \`for TARGET in\` loop in release.yml. Either the"
     err "      packaging loops were restructured and this gate needs updating,"
@@ -126,6 +152,34 @@ run_check() { # run_check <root>
     err "      stopping a typo'd --target from packaging silently."
   else
     compare "stage-runtime.js target regex" "$want" "$re"
+  fi
+
+  # 5. NO LITERAL COUNT OF TARGETS ANYWHERE IN release.yml.
+  #
+  # Checked by absence rather than by comparison -- see this script's header for
+  # why a count cannot be compared. `-eq 0` / `-ne 0` are exempt: a zero is an
+  # exit-status or emptiness check, never a tally of targets.
+  #
+  # Whole-line comments are skipped, for the reason given at the loop scanner
+  # above. NOT covered, and deliberately not attempted: a trailing comment on a
+  # code line. Stripping those means deciding whether a `#` is a comment or a
+  # character in a string, and guessing wrong would make this gate fail on
+  # correct code -- the one thing that would get it deleted.
+  local counts
+  counts="$(awk '$0 !~ /^[[:space:]]*#/ { print FNR": "$0 }' "$rel" \
+    | grep -E '\-(eq|ne)[[:space:]]+[1-9][0-9]*([^0-9]|$)' || true)"
+  if [ -n "$counts" ]; then
+    err "FAIL: release.yml hard-codes a count. Derive it from the loop instead."
+    echo "$counts" | sed 's/^/    /' >&2
+    err "  A count is a mirror of the target set that this gate cannot compare"
+    err "  against scripts/release-targets.txt: a stale 3 and a correct 2 are"
+    err "  both just integers. On 2026-09-20 exactly this shape would have made"
+    err "  a v0.0.2 tag publish nothing -- two binaries staged, three demanded."
+    err "  Count in the loop body (EXPECT=\$((EXPECT + 1))) so the tally cannot"
+    err "  drift from the enumeration, because it IS the enumeration."
+    failures=$((failures + 1))
+  else
+    say "ok -- release.yml hard-codes no target count (mirror 5, by absence)"
   fi
 
   [ "$failures" -eq 0 ]
@@ -173,10 +227,10 @@ YAML
   echo "target-parity self-test"
 
   local d="$tmp/ok"; mkfixture "$d"
-  run_check "$d" >/dev/null 2>&1; check "a tree where all five agree -> green" pass $?
+  run_check "$d" >/dev/null 2>&1; check "a tree where all six agree -> green" pass $?
 
   # EACH MIRROR NEUTERED SEPARATELY. A gate that only catches one kind of drift
-  # is a gate that will miss the other three on the day it matters.
+  # is a gate that will miss the other four on the day it matters.
   d="$tmp/n1"; mkfixture "$d"
   sed -i 's/target: win32-x64/target: darwin-arm64/' "$d/.github/workflows/release.yml"
   run_check "$d" >/dev/null 2>&1; check "matrix drifts from the file -> FAILS" fail $?
@@ -217,10 +271,40 @@ YAML
   rm -f "$d/clients/vscode/scripts/stage-runtime.js"
   run_check "$d" >/dev/null 2>&1; check "a missing mirror file -> FAILS" fail $?
 
+  # MIRROR 5. The literal below is the real one, verbatim: it stood in
+  # release.yml from the day the staging step was written until 2026-09-20, and
+  # every one of the nine arms above was green the whole time.
+  d="$tmp/n10"; mkfixture "$d"
+  printf '      - run: |\n          [ "$N" -eq 3 ] || exit 1\n' \
+    >> "$d/.github/workflows/release.yml"
+  run_check "$d" >/dev/null 2>&1; check "a hard-coded count in release.yml -> FAILS" fail $?
+
+  # AND THE EXEMPTION IS REAL, not an accident of the regex. A zero threshold is
+  # an exit-status check and must stay legal, or this gate becomes a tax on
+  # every `|| exit` in the file and gets deleted by the first person it annoys.
+  d="$tmp/n11"; mkfixture "$d"
+  printf '      - run: |\n          [ "$rc" -eq 0 ] || exit 1\n          [ "$found" -ne 0 ] || exit 1\n' \
+    >> "$d/.github/workflows/release.yml"
+  run_check "$d" >/dev/null 2>&1; check "a zero threshold stays legal -> green" pass $?
+
+  # PROSE IS NOT A MIRROR. Both arms below failed before 2026-09-20, which is
+  # how they got written: the comment added to release.yml explaining mirror 5
+  # tripped mirror 2 AND mirror 5 on its own text.
+  d="$tmp/n12"; mkfixture "$d"
+  printf '      # a comment saying for TARGET in linux-x64 darwin-arm64 win32-x64\n' \
+    >> "$d/.github/workflows/release.yml"
+  run_check "$d" >/dev/null 2>&1; check "a COMMENT naming a stale loop -> green" pass $?
+
+  d="$tmp/n13"; mkfixture "$d"
+  printf '      # this assertion used to read -eq 3 and nothing noticed\n' \
+    >> "$d/.github/workflows/release.yml"
+  run_check "$d" >/dev/null 2>&1; check "a COMMENT naming a stale count -> green" pass $?
+
   echo "target-parity: $pass passed, $fail failed"
   echo "NOT COVERED HERE: whether the targets are the right ones, whether the"
   echo "  runners exist, or whether anything builds. This gate asks only whether"
-  echo "  the five places agree."
+  echo "  the six places agree -- and for mirror 5, only that no count is written"
+  echo "  down, never that the derived one is correct."
   [ "$fail" -eq 0 ]
 }
 

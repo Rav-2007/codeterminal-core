@@ -31,7 +31,7 @@ jobs:
   # either, so the condition for running a full three-platform release was
   # exactly `push` + a tag matching `v*` -- and nothing else. Expanded for a tag
   # `v0.0.2` pushed on `audit/adversarial-pass`: the trigger matches, `binaries`
-  # has no gate so it runs on all three runners, `package` needs only `binaries`
+  # has no gate so it runs on both runners, `package` needs only `binaries`
   # so it runs, and "Attach to the GitHub Release" is gated on
   # `startsWith(github.ref, 'refs/tags/v')` -- true for a tag on ANY ref. A
   # draft Release with binaries built from an unreviewed branch is one `git push
@@ -101,7 +101,7 @@ jobs:
   # would genuinely work for Windows. macOS is where it stops: cross-building
   # needs an Apple SDK whose redistribution is constrained, and the signing and
   # notarisation steps must run on macOS regardless. Native everywhere is one
-  # rule instead of two, and CI already has all three runners green.
+  # rule instead of two, and CI already has both runners green.
   # ---------------------------------------------------------------------------
   binaries:
     name: binaries (${{ matrix.target }})
@@ -183,8 +183,9 @@ jobs:
       # condition anything can satisfy for a target the release does not build.
       #
       # Pure Go, verified: CGO_ENABLED=0 builds it clean. It is NOT bundled into
-      # the .vsix -- the extension neither references nor launches it, and three
-      # copies of a 7.5 MB binary nothing runs is 22 MB of package for nothing.
+      # the .vsix -- the extension neither references nor launches it, and a
+      # copy of a 7.5 MB binary nothing runs in every package is 7.5 MB per
+      # target for nothing.
       # It ships as a standalone download, attached to the Release below, which
       # is why it is also in the macOS signing list.
       - name: Build terminal client (pure Go)
@@ -220,7 +221,7 @@ jobs:
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
-  # One Linux runner assembles all three packages. vsce --target only LABELS the
+  # One Linux runner assembles every package. vsce --target only LABELS the
   # package; the contents come from what is staged, so each target gets its own
   # platform's binaries staged before packaging, and the gate is told which
   # target it is checking.
@@ -249,7 +250,7 @@ jobs:
         with:
           path: artifacts
 
-      - name: Package all three targets
+      - name: Package every target
         shell: bash
         working-directory: clients/vscode
         run: |
@@ -283,7 +284,7 @@ jobs:
             # missing rather than packaging a broken runtime.
             #
             # TOLD WHICH TARGET, like verify-vsix.js below. This loop packages
-            # all three targets on ONE Linux runner, so the script cannot infer
+            # every target on ONE Linux runner, so the script cannot infer
             # the binary suffix from the host it is running on -- doing so is
             # what failed win32-x64 on the first real run of this workflow.
             node scripts/stage-runtime.js "$TARGET"
@@ -302,22 +303,47 @@ jobs:
       # THE COUNT IS ASSERTED. A staging loop that quietly found nothing would
       # publish a release with no terminal client in it and exit 0 -- the
       # fail-open shape the gate audit spent a day removing from this repo's
-      # scripts. Three targets in, three files out, or the release fails.
+      # scripts. As many files out as targets in, or the release fails.
+      #
+      # THE EXPECTED COUNT IS DERIVED FROM THE LOOP, NOT WRITTEN DOWN, and that
+      # is the whole lesson of 2026-09-20. This assertion read `-eq 3` from the
+      # day it was written until that morning. 43e17bc removed darwin-arm64 and
+      # edited BOTH `for TARGET in` loops from three names to two -- and left
+      # the 3 here, because it is a number and not a target name. Every mirror
+      # target-parity.sh checks is a LIST; a count is a mirror it cannot see.
+      #
+      # The effect was total: two files staged, three demanded, the step exits
+      # 1, `package` dies BEFORE the signing guard and BEFORE the attach. A tag
+      # would have published nothing at all -- the exact failure 43e17bc's own
+      # subject line claims to have fixed ("a tag now publishes instead of
+      # nothing"). It was never caught because release.yml has run exactly once
+      # on canonical in its existence (31505527398, 2026-08-11, at bd1bc69,
+      # red), and every green rehearsal predates the removal.
+      #
+      # Counting in the loop body cannot drift from the loop, because it IS the
+      # loop. The literal names stay so target-parity.sh still ties them to
+      # scripts/release-targets.txt; the two gates compose -- parity binds the
+      # loop to the source of truth, and this binds the count to the loop.
       - name: Stage the terminal client
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p out-bin
+          EXPECT=0
           for TARGET in linux-x64 win32-x64; do
             EXE=""
             [ "$TARGET" = "win32-x64" ] && EXE=".exe"
             SRC="artifacts/binaries-$TARGET/codeterminal-tui$EXE"
             [ -f "$SRC" ] || { echo "::error::no terminal client built for $TARGET"; exit 1; }
             cp -a "$SRC" "out-bin/codeterminal-tui-$TARGET$EXE"
+            # Assignment form, not ((EXPECT++)): the latter returns 1 when the
+            # old value is 0, which `set -e` turns into a dead job on the first
+            # iteration.
+            EXPECT=$((EXPECT + 1))
           done
           N=$(find out-bin -type f | wc -l)
-          [ "$N" -eq 3 ] || { echo "::error::staged $N terminal-client binaries, expected 3"; exit 1; }
-          echo "staged $N terminal-client binaries"
+          [ "$N" -eq "$EXPECT" ] || { echo "::error::staged $N terminal-client binaries, expected $EXPECT"; exit 1; }
+          echo "staged $N terminal-client binaries (one per target in the loop)"
           (cd out-bin && sha256sum * | tee SHA256SUMS-tui)
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
