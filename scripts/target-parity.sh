@@ -10,10 +10,15 @@
 #   2. release.yml's packaging loop      -- `for TARGET in ...`
 #   3. release.yml's staging loop        -- `for TARGET in ...`
 #   4. stage-runtime.js's validation     -- a regex of the legal target names
-#   5. any COUNT of targets in release.yml -- see below; checked by absence.
+#
+# AND ONE CHECK THAT IS NOT A MIRROR: check 5 below asserts that release.yml
+# holds no COUNT of targets. It is not a fifth place the list is written; it is
+# the absence of one. FIVE places hold the list, FOUR of them mirrors, and this
+# script makes FIVE checks. Those three numbers are different on purpose.
 #
 # WHY THIS GATE EXISTS. Dropping darwin-arm64 on 2026-09-17 meant editing all
-# six. Miss one and CI stays green while the release is wrong, and the failure
+# five -- and a sixth thing that is not a place at all, the count, which is the
+# one nobody edited. Miss one and CI stays green while the release is wrong, and the failure
 # is silent in both directions: the matrix builds a binary no loop packages, or
 # a loop packages one the matrix never built and `cp` fails halfway through a
 # release. Neither is caught by any existing gate -- release.yml is only
@@ -29,7 +34,7 @@
 # attach, so the tag would have published nothing.
 #
 # A count cannot be compared against the source of truth the way a list can --
-# a correct count and a stale count are both just integers. So mirror 5 is
+# a correct count and a stale count are both just integers. So check 5 is
 # enforced by ABSENCE: release.yml must contain no literal count threshold at
 # all, and must derive one from the loop it is counting. `-eq 0` and `-ne 0`
 # stay legal, because a zero is an exit-status check, not a tally.
@@ -37,14 +42,15 @@
 # clients/vscode/scripts/verify-vsix.js is deliberately NOT in this list. It
 # asks `target.startsWith('win32')` rather than enumerating, so it has nothing
 # to drift from. That is the pattern the other four should eventually adopt;
-# until they can, this gate stands in for it. Mirror 5 IS that pattern, applied
+# until they can, this gate stands in for it. Check 5 IS that pattern, applied
 # to counts: the fix was not to check the number but to stop writing one down.
 #
 # NOT CHECKED, and not claimed: that the targets are the RIGHT ones, that the
 # runners exist, or that anything builds. This gate asks one question -- do the
-# six places agree -- and a green result means only that. In particular mirror 5
-# proves release.yml hard-codes no count; it does NOT prove the derived count is
-# the right one, which only a release run can show.
+# five places agree and that no count is written down -- and a green result
+# means only that. In particular check 5 proves release.yml hard-codes no count;
+# it does NOT prove the derived count is the right one. Only a release run can
+# show that, and one now has: run 35517802280, tag v0.0.2, "staged 2".
 #
 #   target-parity.sh              check the working tree
 #   target-parity.sh --self-test  prove the check can fail
@@ -110,7 +116,7 @@ run_check() { # run_check <root>
   want="$(expected_targets "$tfile")"
   want_pairs="$(expected_runners "$tfile")"
   if [ -z "$want" ]; then
-    err "FAIL: $tfile declares no targets; refusing to assert that five mirrors"
+    err "FAIL: $tfile declares no targets; refusing to assert that four mirrors"
     err "      agree with nothing, which they trivially would"
     return 1
   fi
@@ -154,7 +160,8 @@ run_check() { # run_check <root>
     compare "stage-runtime.js target regex" "$want" "$re"
   fi
 
-  # 5. NO LITERAL COUNT OF TARGETS ANYWHERE IN release.yml.
+  # 5. NO LITERAL COUNT OF TARGETS ANYWHERE IN release.yml. Not a mirror -- the
+  #    absence of one. See the header for why the two are counted separately.
   #
   # Checked by absence rather than by comparison -- see this script's header for
   # why a count cannot be compared. `-eq 0` / `-ne 0` are exempt: a zero is an
@@ -179,7 +186,7 @@ run_check() { # run_check <root>
     err "  drift from the enumeration, because it IS the enumeration."
     failures=$((failures + 1))
   else
-    say "ok -- release.yml hard-codes no target count (mirror 5, by absence)"
+    say "ok -- release.yml hard-codes no target count (check 5, by absence)"
   fi
 
   [ "$failures" -eq 0 ]
@@ -227,7 +234,7 @@ YAML
   echo "target-parity self-test"
 
   local d="$tmp/ok"; mkfixture "$d"
-  run_check "$d" >/dev/null 2>&1; check "a tree where all six agree -> green" pass $?
+  run_check "$d" >/dev/null 2>&1; check "a tree where all five agree -> green" pass $?
 
   # EACH MIRROR NEUTERED SEPARATELY. A gate that only catches one kind of drift
   # is a gate that will miss the other four on the day it matters.
@@ -271,7 +278,7 @@ YAML
   rm -f "$d/clients/vscode/scripts/stage-runtime.js"
   run_check "$d" >/dev/null 2>&1; check "a missing mirror file -> FAILS" fail $?
 
-  # MIRROR 5. The literal below is the real one, verbatim: it stood in
+  # CHECK 5. The literal below is the real one, verbatim: it stood in
   # release.yml from the day the staging step was written until 2026-09-20, and
   # every one of the nine arms above was green the whole time.
   d="$tmp/n10"; mkfixture "$d"
@@ -288,8 +295,8 @@ YAML
   run_check "$d" >/dev/null 2>&1; check "a zero threshold stays legal -> green" pass $?
 
   # PROSE IS NOT A MIRROR. Both arms below failed before 2026-09-20, which is
-  # how they got written: the comment added to release.yml explaining mirror 5
-  # tripped mirror 2 AND mirror 5 on its own text.
+  # how they got written: the comment added to release.yml explaining check 5
+  # tripped mirror 2 AND check 5 on its own text.
   d="$tmp/n12"; mkfixture "$d"
   printf '      # a comment saying for TARGET in linux-x64 darwin-arm64 win32-x64\n' \
     >> "$d/.github/workflows/release.yml"
@@ -303,7 +310,7 @@ YAML
   echo "target-parity: $pass passed, $fail failed"
   echo "NOT COVERED HERE: whether the targets are the right ones, whether the"
   echo "  runners exist, or whether anything builds. This gate asks only whether"
-  echo "  the six places agree -- and for mirror 5, only that no count is written"
+  echo "  the five places agree -- and for check 5, only that no count is written"
   echo "  down, never that the derived one is correct."
   [ "$fail" -eq 0 ]
 }
