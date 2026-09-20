@@ -201,48 +201,58 @@ jobs:
       - name: Supply chain (tidy, trimpath)
         run: ./scripts/supply-chain.sh
 
-      # STANDALONE: every module must build OUTSIDE the workspace.
+  # ---------------------------------------------------------------------------
+  # THE BUILD GATES `make check` HAD AND CI DID NOT.
+  #
+  # ADDED 2026-09-20. Both of these were prerequisites of `make check` and named
+  # in no workflow at all, so neither could block a merge -- and gate-parity.sh
+  # did not report the asymmetry because it enumerated scripts/*.sh and these
+  # are Makefile recipes. That is the enumerated-scope class inside the gate
+  # whose job is catching enumerated scope; gate-parity.sh now derives a second
+  # axis from `check`'s prerequisites so this cannot recur silently.
+  #
+  # ITS OWN JOB, not appended to `corpus holds no answer key`. That job is named
+  # for the claim it makes and carries `timeout-minutes: 10` sized for two eval
+  # tests; hanging two whole-repo build gates off it would make its name stop
+  # describing it and put them under a budget chosen for something else. This
+  # repository has a standing objection to a name that no longer describes the
+  # thing.
+  #
+  # THIS TIGHTENS CI AND DOES NOT RELAX IT. The standing rule is that when a
+  # gate fails must not change as a side effect of other work. Adding a gate
+  # already green in `make check` adds a failure condition that did not exist in
+  # CI and removes none.
+  buildgates:
+    name: builds outside the workspace
+    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: "1.25.13"
+          cache-dependency-path: "**/go.sum"
+
+      # STANDALONE asks what supply-chain.sh structurally cannot.
       #
-      # ADDED 2026-09-20, and it belongs immediately after supply-chain.sh
-      # because the argument for it is an argument about supply-chain.sh.
       # That gate runs `GOWORK=off go mod tidy` and asserts no diff -- but tidy
       # resolves PACKAGES, not SYMBOLS. protocol/go.mod required
       # golang.org/x/sys v0.10.0 while protocol/peerauth_windows.go calls
-      # windows.GetNamedPipeClientProcessId, which does not exist before
-      # v0.47.0. golang.org/x/sys/windows exists in v0.10.0; it is merely
-      # missing the function. So supply-chain.sh passed at exit 0 on a module
-      # that could not be built for Windows on its own -- the module holding
-      # the Windows security boundary -- and only a compile finds that.
-      #
-      # WHY IT IS HERE AT ALL. `make standalone` was added on 2026-09-17 to
-      # catch exactly the defect that had just shipped, and it was wired into
-      # `make check` and nowhere else. A gate that runs only on one developer's
-      # machine cannot block a merge, so the gate written in response to a
-      # defect reaching main could not have stopped that defect reaching main.
-      # gate-parity.sh did not report the asymmetry because it enumerates
-      # scripts/*.sh and this one is a Makefile recipe -- the enumerated-scope
-      # class, inside the gate whose job is catching enumerated scope.
-      #
-      # THIS TIGHTENS CI AND DOES NOT RELAX IT. The standing rule is that when
-      # a gate fails must not change as a side effect of other work. Adding a
-      # gate that is already green in `make check` adds a failure condition
-      # that did not exist in CI; it removes none. Stated here because the
-      # distinction is easy to lose later.
+      # windows.GetNamedPipeClientProcessId, added in v0.47.0.
+      # golang.org/x/sys/windows exists in v0.10.0; it is merely missing the
+      # function. So supply-chain.sh passed at exit 0 on the module holding the
+      # Windows security boundary, which could not be built for Windows on its
+      # own. Only a compile finds that, which is why this target compiles.
       - name: Every module builds outside the workspace
         run: make standalone
 
-      # CROSSVET: the Windows files this Linux runner never executes still have
-      # to compile and vet, including the _test.go files.
-      #
-      # PARTLY REDUNDANT WITH build.yml's `cross` matrix, and deliberately
-      # kept anyway. That matrix natively builds, vets and TESTS the same five
-      # modules on windows-latest, which is strictly stronger -- but it is also
-      # the part of CI that can be switched off: the hosted-runner skip switch
-      # exists precisely so those jobs can be disabled during a billing
-      # outage, and three of this repository's four historical scheduled reds
-      # were infrastructure rather than code. This step costs seconds on the
-      # Linux runner and survives that. helper is excluded for the reason
-      # CROSSVET_MODULES records: cgo against onnxruntime fails on build
+      # CROSSVET is partly redundant with build.yml's `cross` matrix, which
+      # natively builds, vets and TESTS the same five modules on windows-latest.
+      # Kept anyway: that matrix is the part of CI the hosted-runner skip switch
+      # can disable, and three of this repository's historical scheduled reds
+      # were infrastructure rather than code. Seconds on a Linux runner, and it
+      # survives a billing outage. helper is excluded for the reason
+      # CROSSVET_MODULES records -- cgo against onnxruntime fails on build
       # constraints rather than on anything this gate asks about.
       - name: Windows files compile and vet from here
         run: make crossvet
