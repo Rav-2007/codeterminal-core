@@ -1,6 +1,6 @@
 # MCP Master — agent-mode readiness
 
-**Front door for CodeTerminal MCP.** Start here; follow links for evidence.
+**Front door for Mochiii MCP.** Start here; follow links for evidence.
 
 | | |
 |---|---|

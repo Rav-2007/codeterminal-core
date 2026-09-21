@@ -6,7 +6,7 @@ Phase 4.5 of the MCP / agentic-loop plan, and the gate that unblocks Phases 5–
 Harness: `daemon/agentloop_eval_test.go` (`//go:build eval`).
 
 ```
-export CODETERMINAL_API_BASE=https://openrouter.ai/api/v1 CODETERMINAL_API_KEY=...
+export MOCHIII_API_BASE=https://openrouter.ai/api/v1 MOCHIII_API_KEY=...
 go test -tags eval -run TestAgentLoopReliability -v ./daemon
 ```
 

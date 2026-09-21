@@ -1036,7 +1036,7 @@ all is a denial. **Silence is never consent**, and the code has no path on which
 
 A spawned server's environment is built from scratch, not inherited: it gets
 `PATH` and `HOME`, plus any variable the user explicitly allow-listed. Three
-names — `OPENROUTER_API_KEY`, `CODETERMINAL_API_KEY`, `CODETERMINAL_MOCHIII_KEY`
+names — `OPENROUTER_API_KEY`, `MOCHIII_API_KEY`, `MOCHIII_PROXY_KEY`
 — are **ungrantable**: a config that asks for one is refused outright rather than
 spawning and filtering.
 
@@ -1058,7 +1058,7 @@ activity stream reports the post-scrub figure per call.
 
 ## The audit log
 
-`.codeterminal/logs/toolcalls.jsonl` — local file only, append-only, `O_NOFOLLOW`,
+`.mochiii/logs/toolcalls.jsonl` — local file only, append-only, `O_NOFOLLOW`,
 size-rotated, `0600`. There is deliberately no `io.Writer` seam and no network
 path; it shares its substrate with the warn-mode sink for exactly that reason.
 

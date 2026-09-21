@@ -43,12 +43,12 @@ tells us nothing we did not already have.
 From the repository root:
 
 ```bash
-(cd helper      && go build -o codeterminal-embedder-helper .)
-(cd daemon      && go build -o codeterminal-daemon .)
-(cd clients/tui && go build -o codeterminal-tui .)
+(cd helper      && go build -o mochiii-embedder-helper .)
+(cd daemon      && go build -o mochiii-daemon .)
+(cd clients/tui && go build -o mochiii-tui .)
 
-./daemon/codeterminal-daemon download-model     # once per machine
-./daemon/codeterminal-daemon index .            # once per repo
+./daemon/mochiii-daemon download-model     # once per machine
+./daemon/mochiii-daemon index .            # once per repo
 ```
 
 **You need an inference key before any of this answers anything.** Two paths,
@@ -56,19 +56,19 @@ and either is fine — ask whoever sent you this document for whichever they hav
 
 ```bash
 # Direct mode: your own provider key, straight from this machine.
-export CODETERMINAL_API_BASE="https://api.together.xyz/v1"
-export CODETERMINAL_API_KEY="sk-..."
+export MOCHIII_API_BASE="https://api.together.xyz/v1"
+export MOCHIII_API_KEY="sk-..."
 
-./daemon/codeterminal-daemon --workspace .          # terminal 1
-./clients/tui/codeterminal-tui                      # terminal 2
+./daemon/mochiii-daemon --workspace .          # terminal 1
+./clients/tui/mochiii-tui                      # terminal 2
 ```
 
 ```bash
 # Managed proxy mode: one Mochiii key, provider key held server-side.
-cp .env.example .env && $EDITOR .env    # set CODETERMINAL_MOCHIII_KEY=mochi_...
+cp .env.example .env && $EDITOR .env    # set MOCHIII_PROXY_KEY=mochi_...
 
 ./run-proxy.sh --workspace .                        # terminal 1
-./clients/tui/codeterminal-tui                      # terminal 2
+./clients/tui/mochiii-tui                      # terminal 2
 ```
 
 Which one you use does not matter for anything in this document — every step
@@ -83,10 +83,10 @@ bound defaults to 500 turns / 2 MiB, which is a long afternoon. Start the client
 with a small one instead:
 
 ```bash
-CODETERMINAL_MAX_TURNS=30 ./clients/tui/codeterminal-tui
+MOCHIII_MAX_TURNS=30 ./clients/tui/mochiii-tui
 ```
 
-Both `CODETERMINAL_MAX_TURNS` and `CODETERMINAL_MAX_TRANSCRIPT_BYTES` have
+Both `MOCHIII_MAX_TURNS` and `MOCHIII_MAX_TRANSCRIPT_BYTES` have
 floors (8 turns, 64 KB), so a typo cannot switch the bound off. **Do step 5 with
 the default ceiling too if you have the patience** — a 2 MiB transcript is where
 the repaint is slowest, and that is a step 5 question.
@@ -101,7 +101,7 @@ five minutes.
 
 ### 1. A long session, past the ceiling
 
-With `CODETERMINAL_MAX_TURNS=30`, ask about twenty-five questions. Anything real
+With `MOCHIII_MAX_TURNS=30`, ask about twenty-five questions. Anything real
 — ask it about this codebase. Let each answer finish.
 
 Somewhere past turn fifteen a line appears at the top of the transcript saying
@@ -167,8 +167,8 @@ summarise it", or ask it to edit a file. An approval panel appears.
 ### 5. The ceiling, felt rather than measured
 
 Get the transcript to the **default** ceiling if you can (restart without
-`CODETERMINAL_MAX_TURNS`, ~250 exchanges), or use a large
-`CODETERMINAL_MAX_TRANSCRIPT_BYTES` and long answers.
+`MOCHIII_MAX_TURNS`, ~250 exchanges), or use a large
+`MOCHIII_MAX_TRANSCRIPT_BYTES` and long answers.
 
 At that size one repaint costs about 22 ms, which is over our own budget and
 under the threshold most people consciously notice.
@@ -188,8 +188,8 @@ each one look hard at the shell you land back in.
 | # | How | Command |
 |---|---|---|
 | a | Ctrl-C | press it twice, note what the first press does |
-| b | SIGTERM | `pkill -TERM codeterminal-tui` from another terminal |
-| c | SIGHUP | `pkill -HUP codeterminal-tui` |
+| b | SIGTERM | `pkill -TERM mochiii-tui` from another terminal |
+| c | SIGHUP | `pkill -HUP mochiii-tui` |
 | d | Close the terminal window | just close it, then open a new one |
 
 After each, in the shell you get back:
@@ -198,12 +198,12 @@ After each, in the shell you get back:
 - Is the text colour normal, or is everything now bold/blue/inverted?
 - Does the prompt wrap correctly at the right edge?
 - Run `reset`. If that visibly changed anything, the client did not clean up.
-- For (d): is the process actually gone? `pgrep -a codeterminal-tui`.
+- For (d): is the process actually gone? `pgrep -a mochiii-tui`.
 
 **(d) is a known gap and we want your observation anyway.** Closing the terminal
 window in a way that destroys the pseudo-terminal outright delivers no signal,
 so the client keeps running with nothing attached — about 8 MB, cleaned up with
-`pkill codeterminal-tui`. Tell us if you hit it, how you closed the window when
+`pkill mochiii-tui`. Tell us if you hit it, how you closed the window when
 you did, and whether anything else looked wrong; the failure mode is recorded
 but its edges are not.
 
@@ -222,7 +222,7 @@ goes to the unknown.
 2. **The transcript drops old turns at the ceiling and says so.** That is the
    bound working. What we want is your reaction to *how* it says it (step 1), not
    a report that it happened.
-3. **`codeterminal-tui --prompt "..."` strips control sequences from its
+3. **`mochiii-tui --prompt "..."` strips control sequences from its
    stdout.** Piping it no longer preserves colour. Deliberate — an escape written
    to a file executes when someone later `cat`s it.
 

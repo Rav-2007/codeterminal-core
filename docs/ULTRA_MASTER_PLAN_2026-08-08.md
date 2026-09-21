@@ -30,13 +30,13 @@ saw.
 ### 1.1 A `.vsix` already exists — and it is evidence, not progress
 
 Every plan and register says "no `.vsix`". There is one:
-`clients/vscode/codeterminal-vscode-0.0.1.vsix`, 11.3 MB, built 2026-08-05,
+`clients/vscode/mochiii-vscode-0.0.1.vsix`, 11.3 MB, built 2026-08-05,
 gitignored. It is **unshippable**, and cataloguing exactly how is the cheapest
 requirements document available:
 
 | Defect | Detail |
 |---|---|
-| **No embedder helper** | The package ships `codeterminal-daemon` and no `codeterminal-embedder-helper`. Retrieval is dead on arrival — the product's whole thesis, silently degraded to `reasonEmbedderUnavailable` |
+| **No embedder helper** | The package ships `mochiii-daemon` and no `mochiii-embedder-helper`. Retrieval is dead on arrival — the product's whole thesis, silently degraded to `reasonEmbedderUnavailable` |
 | **Predates daemon management** | No `daemonSupervisor.ts`. It carries the pre-2026-08-07 architecture where the user starts a daemon by hand |
 | **Ships its own source** | `src/`, `src/test/`, `tsconfig.json`, `.vscode/`, `.gitignore` — no `.vscodeignore` exists, so vsce packaged the directory |
 | **Ships both logos** | `logo.png` (276 KB) *and* `logo.jpg` (147 KB) |
@@ -57,16 +57,16 @@ different times for different reasons:
 
 | Resolver | First/relevant candidate |
 |---|---|
-| `activate` in [`extension.ts`](../clients/vscode/src/extension.ts) | `<extensionPath>/daemon/codeterminal-daemon[.exe]` |
-| `resolveHelperBinPath` in [`daemon/helperpath.go`](../daemon/helperpath.go) | `<exedir>/codeterminal-embedder-helper` — its comment literally says *"installed side by side (release layout)"* |
+| `activate` in [`extension.ts`](../clients/vscode/src/extension.ts) | `<extensionPath>/daemon/mochiii-daemon[.exe]` |
+| `resolveHelperBinPath` in [`daemon/helperpath.go`](../daemon/helperpath.go) | `<exedir>/mochiii-embedder-helper` — its comment literally says *"installed side by side (release layout)"* |
 | `resolveConfigPath` in [`daemon/configpath.go`](../daemon/configpath.go) | `<exedir>/models.json` |
 
 So the shipping layout is fixed, and **requires zero Go changes**:
 
 ```
 <extensionPath>/daemon/
-    codeterminal-daemon[.exe]
-    codeterminal-embedder-helper[.exe]
+    mochiii-daemon[.exe]
+    mochiii-embedder-helper[.exe]
     models.json
 ```
 
@@ -83,16 +83,16 @@ resolves its binary like this:
 
 ```ts
 const candidates = [
-  path.join(workspace, 'daemon', 'codeterminal-daemon'),
-  path.join(workspace, 'codeterminal-daemon'),
-  'codeterminal-daemon',
+  path.join(workspace, 'daemon', 'mochiii-daemon'),
+  path.join(workspace, 'mochiii-daemon'),
+  'mochiii-daemon',
 ];
 const bin = candidates.find(/* first that exists */);
 // ... execFileAsync(bin, args, { cwd: workspace })
 ```
 
 `workspace` is the folder the user opened. **A repository that ships a file at
-`daemon/codeterminal-daemon` gets it executed when the user types
+`daemon/mochiii-daemon` gets it executed when the user types
 `/mcp-server`.** Clone a repo, open it, type one slash command, run their code.
 
 This is not a novel class here. **The TUI had the identical bug and it was fixed
@@ -142,8 +142,8 @@ any kind. Stage 3.3 builds one.
 
 | Component | Size | Ships in the `.vsix`? |
 |---|---|---|
-| `codeterminal-daemon` | ~19.7 MB | **Yes** |
-| `codeterminal-embedder-helper` | ~7.6 MB | **Yes** |
+| `mochiii-daemon` | ~19.7 MB | **Yes** |
+| `mochiii-embedder-helper` | ~7.6 MB | **Yes** |
 | `models.json` + extension JS + one logo | < 1 MB | **Yes** |
 | BGE model + tokenizer | **34.7 MB** | **No** — first-run download |
 | onnxruntime shared library | **8.6 MB** linux · **31.7 MB** darwin · **75.7 MB** windows | **No** — first-run download |
@@ -199,7 +199,7 @@ job build-binaries   matrix: [ubuntu-latest, macos-latest, windows-latest]
 job package         needs: build-binaries       runs-on: ubuntu-latest
   └── download all three artifacts
   └── per target: stage daemon/ + helper + models.json, then
-      vsce package --target <t> -o codeterminal-<t>-<version>.vsix
+      vsce package --target <t> -o mochiii-<t>-<version>.vsix
   └── assert package contents (§6 Gate 3)
   └── upload .vsix files + SHA256SUMS to the GitHub Release
 
@@ -246,7 +246,7 @@ enrolment, which is calendar time nobody controls.
 > now the one implementation and `extension.ts` shares its layout helpers.
 
 Fix `runMCPServerList`. **Write the failing test first**: a fixture workspace
-containing a fake `daemon/codeterminal-daemon` that writes a sentinel file when
+containing a fake `daemon/mochiii-daemon` that writes a sentinel file when
 executed; assert the sentinel never appears. Watch it fail against today's code,
 then land the fix.
 

@@ -70,7 +70,7 @@ plan without one, it is the current plan.
   (unsigned macOS binaries are quarantined by Gatekeeper, so the daemon never
   starts) and a marketplace listing, which is a founder action.
 - **macOS HAS now executed on hardware** — macos-latest, run `31204152210`,
-  `ok codeterminal/daemon 53.019s`. `LOCAL_PEERCRED` had never run anywhere
+  `ok mochiii/daemon 53.019s`. `LOCAL_PEERCRED` had never run anywhere
   before that. Four macOS runs were needed to get there, and three product bugs
   unreachable from a Linux desk fell out of the first three: a socket path over
   the 103-byte `sun_path` budget, a workspace grounded against an unresolved
@@ -287,7 +287,7 @@ plus per-topic files.
 - **The eight LOWs live outside the repo**, at
   `~/.claude/plans/what-can-we-improve-snappy-music.md`, so the pointer looks
   dangling from a checkout. All eight are transcribed into `OPEN_ITEMS.md` §2.
-- **`.codeterminal/index/` in this repo is months stale** and the product will
+- **`.mochiii/index/` in this repo is months stale** and the product will
   still report `grounded ✓` against it. That is the bug, not a local accident.
 - **CI does not block.** No branch protection is configured, so a red run is a
   signal someone has to read. `.githooks/pre-push` is the compensating control,

@@ -25,7 +25,7 @@ first, so you can actually read it. The exit status is 131 (128+3), as before.
 **One known limitation, stated plainly.** If the terminal is destroyed outright
 rather than sending a hangup — which happens in some terminal emulators and
 multiplexers — the client is not notified at all and keeps running in the
-background. It costs nothing but memory, and `pkill codeterminal-tui` clears
+background. It costs nothing but memory, and `pkill mochiii-tui` clears
 it. This is not new, and it is being worked on.
 
 ### `--prompt` piped into `head` no longer dies by signal
@@ -37,7 +37,7 @@ to do, not an error.
 
 ### Terminal control sequences are stripped from untrusted text
 
-**What changed.** Everything CodeTerminal displays that it did not write
+**What changed.** Everything Mochiii displays that it did not write
 itself — model answers and reasoning, tool output, tool-call arguments on the
 approval screen, proposed edits, daemon error messages, and conversation
 history restored from a previous session — is now filtered before it reaches
@@ -65,7 +65,7 @@ out of it, which on an approval screen is the attack rather than a style.
 ### `--prompt` and piped stdin: what stdout guarantees
 
 **This is a behaviour change you can observe outside the terminal.** One-shot
-runs (`codeterminal-tui --prompt "..."`, or text piped on stdin) now filter
+runs (`mochiii-tui --prompt "..."`, or text piped on stdin) now filter
 stdout the same way. That output previously promised to be byte-for-byte
 whatever the model sent; it no longer is.
 
@@ -106,8 +106,8 @@ many turns and how many bytes went.
 
 `/compact` is unchanged and is still the deliberate version — it keeps the last
 8 turns, immediately. The automatic trim is a safety net that keeps hundreds.
-Both ceilings can be changed with `CODETERMINAL_MAX_TURNS` and
-`CODETERMINAL_MAX_TRANSCRIPT_BYTES`.
+Both ceilings can be changed with `MOCHIII_MAX_TURNS` and
+`MOCHIII_MAX_TRANSCRIPT_BYTES`.
 
 ### `/mouse` — you can select text with the mouse again
 

@@ -231,7 +231,7 @@ behaviour change inside a commit series about escape filtering. Neither belongs
 there.
 
 **Blast radius.** Resource waste, not compromise. An orphaned process holding
-about 8 MB, with no terminal to find it from. `pkill codeterminal-tui` clears
+about 8 MB, with no terminal to find it from. `pkill mochiii-tui` clears
 it. It holds no lock, no lease, and no network subscription while orphaned, and
 that is the only reason this is a low-severity row rather than a high one.
 
@@ -291,7 +291,7 @@ model.
 
 ## R1.3 — One-shot stdout is no longer byte-stable for control sequences
 
-**What it is.** `codeterminal-tui --prompt ...` filters its stdout
+**What it is.** `mochiii-tui --prompt ...` filters its stdout
 unconditionally. A caller piping that output no longer receives the exact bytes
 the model sent. A comment in `oneshot.go` previously promised it would.
 
@@ -370,7 +370,7 @@ second client rendering the same buffers.
 *(From the 2.3a enumeration. No fix was authorised; recorded rather than dropped.)*
 
 **What it is.** `runMCPServerList` (`clients/tui/slash.go:381`) runs
-`codeterminal-daemon mcp list` with `CombinedOutput()` at
+`mochiii-daemon mcp list` with `CombinedOutput()` at
 `clients/tui/slash.go:411` and displays the result. That captures the
 daemon's **stderr**, and `mcp list` starts the configured MCP servers —
 `daemon/mcpruntime.go:111` wires each server's own stderr into the same stream.
@@ -784,8 +784,8 @@ handles untrusted input.
 
 ## R1.14 — The terminal client is not built by the release workflow — **CLOSED 2026-09-04**
 
-**What it was.** `.github/workflows/release.yml` built `codeterminal-daemon` and
-`codeterminal-embedder-helper`. It did not build `clients/tui`. The terminal
+**What it was.** `.github/workflows/release.yml` built `mochiii-daemon` and
+`mochiii-embedder-helper`. It did not build `clients/tui`. The terminal
 client was compiled and tested by CI but produced as a release artifact by
 nothing.
 
@@ -812,7 +812,7 @@ explanation — the same failure that made signing a hard gate for the daemon.
 **Two gates, because one of them is editable by hand.** The staging loop asserts
 **three targets in, three files out** and fails the release rather than
 publishing a version with no terminal client in it. And `verify-vsix.js` now
-lists `codeterminal-tui` under MUST_NOT_MATCH, so the "it is not in the package"
+lists `mochiii-tui` under MUST_NOT_MATCH, so the "it is not in the package"
 half is asserted against the archive itself rather than trusted to a `cp` line —
 the packaging self-test refuses it, and neutering the pattern turns the
 self-test red.
@@ -920,8 +920,8 @@ credential.
 
 **It did not, and that was the gap.** On a real tag `release.yml` would have
 attached **two unsigned darwin assets** — the `darwin-arm64` `.vsix` and the
-standalone `codeterminal-tui-darwin-arm64` — because the `files:` list globs
-`out-vsix/*.vsix` and `out-bin/codeterminal-tui-*`, and both swept darwin in,
+standalone `mochiii-tui-darwin-arm64` — because the `files:` list globs
+`out-vsix/*.vsix` and `out-bin/mochiii-tui-*`, and both swept darwin in,
 with **both checksum manifests naming them**. The release is a **draft**, so a
 human still clicks publish, but a draft with the assets already built, named and
 checksummed is not a control. **A decision the pipeline does not implement is a
@@ -1042,11 +1042,11 @@ four jobs, `publish` skipped by design. The guard's own log:
 [signing-guard] regenerated out-bin/SHA256SUMS-tui
 [signing-guard] excluded from release: darwin-arm64
 [signing-guard] --- release input, after the guard ---
-[signing-guard]   WOULD ATTACH  codeterminal-vscode-linux-x64-0.0.1.vsix
-[signing-guard]   WOULD ATTACH  codeterminal-vscode-win32-x64-0.0.1.vsix
+[signing-guard]   WOULD ATTACH  mochiii-vscode-linux-x64-0.0.1.vsix
+[signing-guard]   WOULD ATTACH  mochiii-vscode-win32-x64-0.0.1.vsix
 [signing-guard]   WOULD ATTACH  SHA256SUMS
-[signing-guard]   WOULD ATTACH  codeterminal-tui-linux-x64
-[signing-guard]   WOULD ATTACH  codeterminal-tui-win32-x64.exe
+[signing-guard]   WOULD ATTACH  mochiii-tui-linux-x64
+[signing-guard]   WOULD ATTACH  mochiii-tui-win32-x64.exe
 [signing-guard]   WOULD ATTACH  SHA256SUMS-tui
 ```
 
@@ -1117,7 +1117,7 @@ What the run *did* verify, on real runners: the terminal client builds with
 `-trimpath` on all three platforms; `verify-vsix.js` passes on all three
 (`package gate PASSED` ×3); the three-in-three-out staging assertion executes and
 passes — *"staged 3 terminal-client binaries"*, with SHA-256 sums, including
-`codeterminal-tui-win32-x64.exe`; and `.vsix` checksums are produced.
+`mochiii-tui-win32-x64.exe`; and `.vsix` checksums are produced.
 
 ---
 
@@ -1803,11 +1803,11 @@ CONFIRMED. Relaxing a sysctl on a VM destroyed minutes later is the cheaper risk
 
 **Blast radius.** The sandbox's confinement claims rest on one environment that
 no developer reproduces by default. If the relaxation silently stopped working,
-`CODETERMINAL_REQUIRE_SANDBOX=1` turns the skip into a failure — that tripwire is
+`MOCHIII_REQUIRE_SANDBOX=1` turns the skip into a failure — that tripwire is
 the thing standing between this row and a silent loss of all confinement
 coverage.
 
-**Pinned by.** `requireBwrap`'s `CODETERMINAL_REQUIRE_SANDBOX` branch, set for
+**Pinned by.** `requireBwrap`'s `MOCHIII_REQUIRE_SANDBOX` branch, set for
 daemon in `build.yml`. Not a test of the sandbox — a test that the *sandbox tests
 ran*.
 

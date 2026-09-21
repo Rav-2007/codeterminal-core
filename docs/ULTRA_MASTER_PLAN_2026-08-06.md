@@ -113,7 +113,7 @@ itself*. Every untrusted peer deserves one:
 
 That last row is the gap. P0-5 and P0-6 were both *hostile repository* attacks,
 found by hand. A reusable fixture — a workspace that ships symlinks out, a
-`daemon/codeterminal-daemon`, a `helper/`, an ADS-shaped name, a 4 GiB sparse
+`daemon/mochiii-daemon`, a `helper/`, an ADS-shaped name, a 4 GiB sparse
 file — turns that class from "found if someone thinks of it" into a suite.
 
 **B2 — Bound-the-untrusted audit.** Rule 5 as a checklist, run over every reader

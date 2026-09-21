@@ -55,9 +55,9 @@ from a host with the model cached.**
 
 | Binary | Entry | Started by | Stopped by |
 |---|---|---|---|
-| `codeterminal-daemon` | `daemon/main.go:29` | VS Code supervisor, TUI, CLI | SIGTERM drain; exit 3 lifecycle contract |
-| `codeterminal-embedder-helper` | `helper/main.go:36` | daemon `helperproc.go:202` | daemon shutdown |
-| `codeterminal-tui` | `clients/tui/main.go:23` | user | esc / ctrl+c |
+| `mochiii-daemon` | `daemon/main.go:29` | VS Code supervisor, TUI, CLI | SIGTERM drain; exit 3 lifecycle contract |
+| `mochiii-embedder-helper` | `helper/main.go:36` | daemon `helperproc.go:202` | daemon shutdown |
+| `mochiii-tui` | `clients/tui/main.go:23` | user | esc / ctrl+c |
 | `proxy` | `proxy/main.go:417` | Docker/Railway | SIGTERM |
 | VS Code extension | `src/extension.ts` | VS Code host | host |
 
@@ -95,12 +95,12 @@ pin sites, model tiers, neuters). Do not repeat it.
 
 | Store | Size (measured) | Mode | Growth bound | Removal |
 |---|---|---|---|---|
-| `.codeterminal/index/lexical.db` | 56.7 MB | 0600 | file count (10,000), **not bytes** | `pruneOrphanedChunks` |
-| `.codeterminal/index/<hash>/` | ~26 MB | 0700 | same | same |
+| `.mochiii/index/lexical.db` | 56.7 MB | 0600 | file count (10,000), **not bytes** | `pruneOrphanedChunks` |
+| `.mochiii/index/<hash>/` | ~26 MB | 0700 | same | same |
 | `embedder_stamp.json` | 154 B | **0600** (was 0644, fixed) | n/a | reindex |
-| `.codeterminal/logs/toolcalls.jsonl` | 17,639 B | 0600 | size-rotated | rotation to `.1` |
-| `.codeterminal/logs/warnmode.jsonl` | 6,160 B | 0600 | same | same |
-| `.codeterminal/backups/` | 164 KB | 0700 | **(U) no cap found** | **(U) no sweep found** |
+| `.mochiii/logs/toolcalls.jsonl` | 17,639 B | 0600 | size-rotated | rotation to `.1` |
+| `.mochiii/logs/warnmode.jsonl` | 6,160 B | 0600 | same | same |
+| `.mochiii/backups/` | 164 KB | 0700 | **(U) no cap found** | **(U) no sweep found** |
 | `memory.db` | — | 0600 in 0700 | `maxTurnsPerWorkspace`, 30 days | eviction |
 
 **Idle RSS 8.6 MB; 13.7 MB at 120 turns.** An earlier figure of 39.3 MB could not be reproduced
@@ -540,7 +540,7 @@ Five fields per row: what it is, why deferred, blast radius, the pinning test, t
 | R1.20 | Unbounded refusal `Detail` | **Waits on someone noticing an oversized message** | **Weak, flagged. No pinning test** |
 | R1.21 | Warn-mode oracle (§10.2) | D5 is already scheduled and ends warn mode | **Strong** |
 | R1.26 | `helper` cannot join any cross-platform check — CGO `onnxruntime_go` makes `GOOS=windows` report "build constraints exclude all Go files". **A platform-specific symbol in a helper test is caught by nothing, anywhere** | — | **Weak, flagged; the row exists in place of a gate** |
-| R1.27 | Confinement tests' only execution anywhere is on a host CI relaxes for itself. Cannot be stubbed — they need a real user namespace | `CODETERMINAL_REQUIRE_SANDBOX` fires automatically | Reasonably strong |
+| R1.27 | Confinement tests' only execution anywhere is on a host CI relaxes for itself. Cannot be stubbed — they need a real user namespace | `MOCHIII_REQUIRE_SANDBOX` fires automatically | Reasonably strong |
 | R1.28 | daemon timing literals — **NARROWED**, not closed. Four residuals stated | A timing failure read as flake and re-run | Weak in one direction |
 | Class III guard scope | Covers **two enumerated files**. A tool handler in a third file is uncovered until someone adds it. `TestBuiltinToolSurfaceFilesAllExist` catches deletion, not omission | **This is Class I's shape in the author's own gate**; could not be closed without globbing, which would absorb new files silently | **Flagged** |
 | Class IV #2 | Sandbox confinement — `Confines()` reports "confined" without probing; `WrapCommand` re-probes and fails closed. Consent wording, not a bypass | — | LOW |

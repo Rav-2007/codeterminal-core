@@ -1,4 +1,4 @@
-# Enterprise QA Master — CodeTerminal
+# Enterprise QA Master — Mochiii
 
 **Whole-product campaign** for an outperforming local-first AI coding assistant.
 Roles: CEO · CTO · Security Patcher · Security Improver · Tester.

@@ -8,7 +8,7 @@ whole feature change.
 Harness: `daemon/toolcall_eval_test.go` (`//go:build eval`).
 
 ```
-export CODETERMINAL_API_BASE=https://openrouter.ai/api/v1 CODETERMINAL_API_KEY=...
+export MOCHIII_API_BASE=https://openrouter.ai/api/v1 MOCHIII_API_KEY=...
 go test -tags eval -run TestToolCallReliability -v ./daemon
 ```
 

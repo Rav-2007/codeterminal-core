@@ -60,7 +60,7 @@
 >   Both earlier green runs were `pull_request`.
 > - **The scheduled `eval` job — the last unverifiable item, now GREEN.** Run
 >   `30510976622` via `workflow_dispatch` (impossible until `build.yml` reached
->   the default branch): `ok codeterminal/daemon 211.715s`, job 4m16s. The
+>   the default branch): `ok mochiii/daemon 211.715s`, job 4m16s. The
 >   pre-registered risk — the embedding model and ONNX runtime are fetched at test
 >   time and only cached locally — did not fire. Package-level pass, not per-test:
 >   the job does not pass `-v`.
@@ -296,7 +296,7 @@ stream parser.
 
 **Status: CONFIRMED** · `.github/workflows/build.yml`
 
-The entire pipeline is one job: `docker build -t codeterminal-proxy:ci ./proxy`.
+The entire pipeline is one job: `docker build -t mochiii-proxy:ci ./proxy`.
 
 **584 Go tests, 6 extension E2E tests, 4 gated eval tests, `gofmt`, `go vet`,
 `govulncheck` and `tsc` exist in this repo and not one of them gates a merge.**
@@ -336,7 +336,7 @@ download). Keep the existing image build.
 > `build.yml` reached `main`.** `workflow_dispatch` only lists workflows present on
 > the default branch, which is exactly why this had to wait for the merge. Run
 > `30510976622`, all 15 jobs green including `retrieval eval (scheduled)`:
-> `ok codeterminal/daemon 211.715s`, job 4m16s. Two notes for whoever reads the
+> `ok mochiii/daemon 211.715s`, job 4m16s. Two notes for whoever reads the
 > next scheduled run: a dispatch runs **every** job, not just `eval` (the others
 > carry no `if:` guard), and the embedding model plus ONNX runtime are fetched at
 > test time — ~211s in CI against ~148s locally, the difference being that fetch.

@@ -211,7 +211,7 @@ the lint break `ca96966` fixes, doing real work and then failing. The four macOS
 The eval job's duration is exactly `15m 0s`, which is a timeout-shaped number. It is not one.
 
 ```
-FAIL	codeterminal/daemon	847.941s
+FAIL	mochiii/daemon	847.941s
 ```
 
 **(M)** The Go test ran 847.9 s of its own accord; the job's `-timeout` is **60m**, set explicitly

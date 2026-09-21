@@ -15,7 +15,7 @@ choice between **Design B** (entropy redaction) and **Design C** (keyword redact
 and makes that choice conditional on fire-rate data from warn-mode. Warn-mode has been
 wired and durable since `064a00a`.
 
-**It had recorded zero events.** `.codeterminal/logs/` on this machine was created
+**It had recorded zero events.** `.mochiii/logs/` on this machine was created
 2026-07-27 and contains no `warnmode.jsonl`; no such file exists anywhere on the box.
 The sink is not broken — it is correctly constructed at `daemon/main.go:247` and
 correctly called at `daemon/context.go:269` — it has simply never been reached, because

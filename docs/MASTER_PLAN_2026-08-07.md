@@ -232,7 +232,7 @@ because `syscall.EADDRINUSE` on Windows is synthetic and never matches).
   **DONE `69dc2d3`.** It had become advice to start a *second* daemon that could
   only lose the bind. Replaced by `RESTART_HINT`, which names a Command Palette
   entry — and that turned up a second defect: the hint said "Mochiii: Restart
-  Daemon" while `package.json` contributed "CodeTerminal: Restart Daemon", so
+  Daemon" while `package.json` contributed "Mochiii: Restart Daemon", so
   searching the palette found nothing at exactly the moment the message was the
   user's only way out. Both now pinned by a test that reads `package.json`.
 - **Shared-daemon lifetime**, surfaced by adoption and *not* fixed by it: closing
@@ -285,7 +285,7 @@ lexical-retrieval, memory, workspace-too-large and provider-routing).
 The gap the watcher cannot close is the one that matters: **files that change
 while the daemon is not running.** `git pull`, a branch switch, an edit from
 another editor. The proof is in this repository right now —
-`.codeterminal/index/` is dated **Jul 10**, HEAD is **Aug 6**: a **27-day-stale**
+`.mochiii/index/` is dated **Jul 10**, HEAD is **Aug 6**: a **27-day-stale**
 index the product will still report `grounded ✓` against.
 
 Add `BuiltAt` to `embedderStamp` (a zero value means *unknown* and must suppress
@@ -313,7 +313,7 @@ remembers it.
 **One more ruling, from the 08-06 report §5 and still untaken:**
 `resolveHelperBinPath`'s CWD-relative last candidate. Same class as P0-6. Medium,
 not critical — it is the *last* candidate. Recommendation: drop it and have the
-error name `CODETERMINAL_HELPER_BIN`.
+error name `MOCHIII_HELPER_BIN`.
 
 Then 10–25 pilot users with hand-inserted keys.
 
@@ -362,7 +362,7 @@ at peak — a 100k quota fits three worst-case turns.
    Those two remain NOT RUN; the rest of this risk is discharged.
 2. ~~**macOS has never run at all.** Not "probably fine" — unrun.~~
    **DISCHARGED 2026-08-07.** macos-latest, run `31204152210`,
-   `ok codeterminal/daemon 53.019s`. `peercred_darwin_test.go` carries no
+   `ok mochiii/daemon 53.019s`. `peercred_darwin_test.go` carries no
    `t.Skip` and no `testing.Short` guard and is `//go:build darwin`, so green
    admits no third state: it ran. It took four macOS runs, and the three
    failures before it were all real product bugs — `sun_path` 104 vs 108, an

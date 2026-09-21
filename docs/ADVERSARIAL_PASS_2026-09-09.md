@@ -246,7 +246,7 @@ derived from WALL-CLOCK points.
 | Bounds already derived before Task 6 (prior art) | **7** | DETERMINISTIC |
 | `errors.Is(err, context.Canceled)` assertions that did not exist and now do | **3** | DETERMINISTIC |
 | Neuters run on the timing guard / that it survived | **3 / 2** — neuter A passed green until the self-test was added | DETERMINISTIC |
-| daemon suite, full, with Task 6 applied | `ok codeterminal/daemon 109.936s`, `ok codeterminal/daemon/mcp 12.536s` | WALL-CLOCK |
+| daemon suite, full, with Task 6 applied | `ok mochiii/daemon 109.936s`, `ok mochiii/daemon/mcp 12.536s` | WALL-CLOCK |
 | Upstream `build` run at `a0635bf` | **27 jobs, 26 success, 0 failed, 1 skipped**, first attempt | DETERMINISTIC — read from GitHub |
 
 **The 7/10 split is the deliverable of Task 6; the conversions are its

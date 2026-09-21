@@ -107,7 +107,7 @@ The ordering is real: each tier is blocked by the one above it.
 > failure this file's history keeps recording. Verified against source: `package.json`
 > declares `publisher`, `license`, `icon` and `repository`, depends on `@vscode/vsce`,
 > and its `package` script builds a `.vsix` *and* runs `scripts/verify-vsix.js` against
-> the archive's contents. A built `codeterminal-vscode-0.0.1.vsix` is in the tree.
+> the archive's contents. A built `mochiii-vscode-0.0.1.vsix` is in the tree.
 > [`README.md`](README.md) had it right; this file did not.
 
 | # | Item | State |
@@ -644,7 +644,7 @@ OpenRouter. What follows is the cost half.
 ## Phase 1 — Distribution & Launch Gate (Release Phase) — COMPLETED & VERIFIED (2026-08-12)
 
 - **E1: macOS Signing & Notarization (Stage 3.5)** — `scripts/macos-sign-and-notarize.sh` created and executable; handles macOS keychain setup, `codesign --deep --force --options runtime --timestamp`, `notarytool submit`, and `stapler staple`. Handles dry-run fallback gracefully when credentials are absent. Wired into `.github/workflows/release.yml`.
-- **E7: Pilot Distribution (First Contact)** — Multi-target VSIX packaging verified for `linux-x64`, `win32-x64`, and `darwin-arm64`. Staging scripts bundle `codeterminal-daemon`, `codeterminal-embedder-helper`, `models.json`, and `LICENSE.txt`. Structural integrity gate `verify-vsix.js` passed. Verified end-to-end via clean-VM harness `scripts/e3-pilot-test.js` (unpacks `.vsix`, spawns daemon in hermetic environment without Go compiler, executes protocol handshake, exits cleanly).
+- **E7: Pilot Distribution (First Contact)** — Multi-target VSIX packaging verified for `linux-x64`, `win32-x64`, and `darwin-arm64`. Staging scripts bundle `mochiii-daemon`, `mochiii-embedder-helper`, `models.json`, and `LICENSE.txt`. Structural integrity gate `verify-vsix.js` passed. Verified end-to-end via clean-VM harness `scripts/e3-pilot-test.js` (unpacks `.vsix`, spawns daemon in hermetic environment without Go compiler, executes protocol handshake, exits cleanly).
 
 ## Phase 2 — Product Integrity & Retrieval Hardening — COMPLETED & VERIFIED (2026-08-12)
 
@@ -1172,7 +1172,7 @@ comment on this query for why it's out of scope here).
   there's a concrete need for the model to query its own past runs.
 - **Self-learning loop (autonomous skill capture)** — the skill store itself is built
   (`daemon/skills.go`: `AddSkill`/`GetSkill`/`ListSkills`/`DeleteSkill`, per-user SQLite at
-  `~/.codeterminal/skills.db`), but nothing yet decides *on its own*, after a successful
+  `~/.mochiii/skills.db`), but nothing yet decides *on its own*, after a successful
   multi-step fix, to mine that session and call `AddSkill` without a human curating it. That
   autonomous capture loop is what's deferred — same shape of risk as the autonomous agent
   loop above (less human oversight of what gets written/remembered), so gate it behind the

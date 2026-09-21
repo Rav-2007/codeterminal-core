@@ -49,7 +49,7 @@ asked for 31 classifications; there are 27. *M5: a stated count ≠ a counted co
 
 | # | §13 says | Verdict | Evidence |
 |---|---|---|---|
-| **5** | macOS `LOCAL_PEERCRED`, `sun_path` 104, sockbuf, EEXIST unverified | **FALSE** | `protocol/peerauth_darwin_test.go` is `//go:build darwin` with **no `t.Skip` and no `testing.Short`** — its own comment says *"there is no third state: these tests ran and passed."* `cross (macos-latest, protocol)` runs `go test ./...` unconditionally → **`ok codeterminal/protocol 0.078s`**, run `34837230165`, job `103953714746`, commit `efc611d`, remote `Rav-2007/codeterminal-core` **(M)** |
+| **5** | macOS `LOCAL_PEERCRED`, `sun_path` 104, sockbuf, EEXIST unverified | **FALSE** | `protocol/peerauth_darwin_test.go` is `//go:build darwin` with **no `t.Skip` and no `testing.Short`** — its own comment says *"there is no third state: these tests ran and passed."* `cross (macos-latest, protocol)` runs `go test ./...` unconditionally → **`ok mochiii/protocol 0.078s`**, run `34837230165`, job `103953714746`, commit `efc611d`, remote `Rav-2007/codeterminal-core` **(M)** |
 | **14** | the 13 EDH suites and `tsc` over 27 `.ts` files unverified | **FALSE** | `build.yml` runs `xvfb-run -a npm test` on **every push to every branch**. **77 passing** at `efc611d` (job `103953714579`); **102 passing, 1 pending** on this branch at `1013e1b` (job `103677181014`). `tsc` runs twice — the `Compile (tsc)` step and `pretest`. The file count is **26**, not 27 **(M)** |
 | **22** | `gate-parity`'s three vacuity floors reasoned sound, never tested | **FALSE** | `9fae051`'s own message records them neutered three ways with three distinct messages: dropping `debt-markers` from `make check` reports `ci`; stubbing `docs-links` out of `gates.yml` reports `local`; deleting the script reports the manifest entry pointing at nothing **(M)** |
 | **3** | Windows peer auth (DACL + `GetNamedPipeClientProcessId`) — `crossvet` only compiles | **PARTLY FALSE** | `protocol/peerauth_check_windows_test.go` is `//go:build windows`, holds **four tests, no skips**, and `cross (windows-latest, protocol)` runs `go test ./...` on every push — so the **SID-comparison half executes**. `GetNamedPipeClientProcessId` appears in **no test anywhere** **(M)**, so that half stands |
@@ -130,7 +130,7 @@ The failure, verbatim:
 ```
 ##[group]win32-x64
 staging runtime into clients/vscode/daemon
-stage-runtime: missing .../clients/vscode/daemon/codeterminal-daemon
+stage-runtime: missing .../clients/vscode/daemon/mochiii-daemon
   run: npm run build:daemon
 ##[error]Process completed with exit code 1.
 ```
@@ -180,23 +180,23 @@ to prove it does not travel**. The test would be worthless without it.
 
 | Site | What it supplies | Would a user have it? | Defect it accommodates |
 |---|---|---|---|
-| `daemon/twoworkspaces_test.go:179` | `CODETERMINAL_API_BASE` via `daemonEnv` | **No** | **item 41** — fixed in C2 |
+| `daemon/twoworkspaces_test.go:179` | `MOCHIII_API_BASE` via `daemonEnv` | **No** | **item 41** — fixed in C2 |
 | `daemon/startuprace_test.go:242` | same helper | **No** | **item 41** — *not named in C2's report* |
 | `daemon/startuprace_test.go:310` | same helper | **No** | **item 41** — *not named in C2's report* |
-| `clients/vscode/src/test/suite/daemonRealSpawn.test.ts:47` | `CODETERMINAL_API_BASE` + `_API_KEY` inline | **No** | **item 41** — its comment names the defect |
-| `clients/vscode/scripts/e3-pilot-test.js:147` | `CODETERMINAL_API_BASE` | **No** | **item 41** |
-| `.github/workflows/build.yml:294` | `CODETERMINAL_REQUIRE_SANDBOX=1`, daemon only | **No** | **inverse** — see below |
+| `clients/vscode/src/test/suite/daemonRealSpawn.test.ts:47` | `MOCHIII_API_BASE` + `_API_KEY` inline | **No** | **item 41** — its comment names the defect |
+| `clients/vscode/scripts/e3-pilot-test.js:147` | `MOCHIII_API_BASE` | **No** | **item 41** |
+| `.github/workflows/build.yml:294` | `MOCHIII_REQUIRE_SANDBOX=1`, daemon only | **No** | **inverse** — see below |
 | `daemon/proxy_seam_test.go:175` | `OPENROUTER_API_KEY`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `ALLOWED_MODELS`, `PORT` | **Yes** | none — the proxy is a deployed service configured by environment; requiring it is correct |
 | `clients/tui/*_pty_test.go` | `TERM=xterm-256color` | **Yes** | none |
 | `clients/vscode/src/test/stubDaemon.ts` | `XDG_RUNTIME_DIR` | **Yes** | none — test isolation |
 | `clients/vscode/src/test/suite/localCommandsHostile.test.ts:247` | a fake daemon dir prepended to `PATH` | n/a | none — hostile-input fixture |
-| 6 eval tests (`daemon/*_eval_test.go`) | **skip unless** `CODETERMINAL_API_BASE`/`KEY` are set | **No** | none — a deliberate spend decision, but **those six functions have never executed in CI** **(M)** |
+| 6 eval tests (`daemon/*_eval_test.go`) | **skip unless** `MOCHIII_API_BASE`/`KEY` are set | **No** | none — a deliberate spend decision, but **those six functions have never executed in CI** **(M)** |
 
 **C2 reported three item-41 accommodation sites. There are six.** `daemon/startuprace_test.go` uses the
 same `daemonEnv` helper at two more call sites, and C2's report did not name them. Correcting my own
 count: **six (M)**, all now benign because the daemon defaults.
 
-**`build.yml:294` is the inverse and worth its own line.** `CODETERMINAL_REQUIRE_SANDBOX=1` is set for
+**`build.yml:294` is the inverse and worth its own line.** `MOCHIII_REQUIRE_SANDBOX=1` is set for
 the `daemon` module **only**, and no user sets it. It exists because the bubblewrap sandbox tests
 **skip themselves**, so a green run looked identical to one where they never executed — the failure
 shape `protocol/peerauth_darwin_test.go`'s comment cites by name. So CI is *stricter* than reality
@@ -207,7 +207,7 @@ one**, and the flag is applied to one module out of six.
 
 The obvious candidate was the TUI, left as **(U)** in C2's report. Settled here:
 
-> **`clients/tui` does not spawn the daemon at all** and never reads `CODETERMINAL_API_BASE` **(M)**.
+> **`clients/tui` does not spawn the daemon at all** and never reads `MOCHIII_API_BASE` **(M)**.
 > It connects to an already-running daemon, and a TUI user is in a shell where exports exist. The one
 > binary it does spawn — the daemon, for `/mcp list` at `clients/tui/slash.go:410` — inherits the
 > environment, and before C2 that call would have failed for a GUI-launched user for the same reason.

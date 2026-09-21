@@ -73,13 +73,13 @@ verbatim, so the gate would have failed the v0.0.2 release had it existed.
 Element 4 asked *"is the API key delivered?"* — one more literal, which would
 have missed the third value exactly as elements 3 and 4 missed each other.
 Element 5 asks *"is every value delivered?"* and takes its set from the daemon's
-own source: every `os.Getenv`/`os.LookupEnv` of a `CODETERMINAL_*` name in
+own source: every `os.Getenv`/`os.LookupEnv` of a `MOCHIII_*` name in
 non-test daemon code. Each member must be **delivered** by the extension or
 **declared** with a reason it needs none, and declarations are checked in both
 directions so a retired name cannot linger and silently excuse a future gap.
 
 Measured at this HEAD: **4 variables, 2 delivered, 2 declared.** The two
-declarations — `CODETERMINAL_USE_PROXY` and `CODETERMINAL_MOCHIII_KEY` — were
+declarations — `MOCHIII_USE_PROXY` and `MOCHIII_PROXY_KEY` — were
 *true but accidental* until element 5 existed. Proxy mode is off unless set to
 exactly `"true"`, the Mochiii key is read only in proxy mode, and the extension
 can enable neither; nothing had ever said so, and nothing enforced the coupling.
@@ -248,6 +248,24 @@ Seven floors sit within 1.6 points of measured — a regression that deletes rea
 coverage turns the gate red. Two do not: **`helper` could lose 38 points and stay
 green.** Named here and deliberately not changed, because raising a coverage floor
 is this repository's standing prohibition; it is the owner's call.
+
+> **THAT STOPPED BEING HYPOTHETICAL THE SAME DAY.** The `codeterminal` ->
+> `mochiii` rename moved the embedder model cache from `~/.codeterminal/models/`
+> to `~/.mochiii/models/`. Five `helper` tests skip when the model is absent —
+> tokenizer-panic handling, prompt-leak observability, invalid-UTF-8 paths — so
+> they stopped running. **`helper` coverage fell 60.1% -> 28.7%, a 31-point drop,
+> and `make check` printed `check: all gates green` and exited 0**, because 28.7
+> still clears the 22.0 floor.
+>
+> Two things failed at once and only one of them is the floor. The tests skip
+> *silently*: a `t.Skip` on a missing 65 MB fixture is defensible, but nothing
+> reports how many tests skipped, so the only signal that five had stopped
+> running was a coverage number nobody was required to look at. **A gate whose
+> threshold is 38 points below measured is not measuring the thing it names.**
+>
+> Recorded, not fixed: raising the floor is the standing prohibition and the
+> owner's call. What this adds is evidence — the headroom absorbed a real
+> regression on the day it was written down.
 
 Every `errcheck` ceiling is **at** ceiling — daemon 91, proxy 25, helper 10,
 editapply 9, protocol 0, tui 0 — which is the right shape: zero headroom means

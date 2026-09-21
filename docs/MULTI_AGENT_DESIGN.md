@@ -254,7 +254,7 @@ Option A, as designed. `mcp.pipeline` names the phases; **unset means
 unorchestrated**, so every existing turn behaves exactly as before.
 
 ```jsonc
-// ~/.codeterminal/config.json
+// ~/.mochiii/config.json
 "mcp": { "enabled": true, "pipeline": ["planner", "coder"] }
 ```
 
@@ -523,9 +523,9 @@ the first run in the same discipline as the loop gate. It skips without credenti
 because it makes real billed calls.
 
 ```
-export CODETERMINAL_API_BASE=... CODETERMINAL_API_KEY=...
-export CODETERMINAL_HELPER_BIN=$PWD/dist/codeterminal-helper
-./dist/codeterminal-daemon index .          # the Researcher needs search_code
+export MOCHIII_API_BASE=... MOCHIII_API_KEY=...
+export MOCHIII_HELPER_BIN=$PWD/dist/mochiii-helper
+./dist/mochiii-daemon index .          # the Researcher needs search_code
 go test -tags eval -run TestOrchestrationLive -v -timeout 40m ./daemon
 ```
 

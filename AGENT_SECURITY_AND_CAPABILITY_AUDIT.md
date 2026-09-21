@@ -1,4 +1,4 @@
-# Agent Security & Capability Assessment — CodeTerminal / Mochiii
+# Agent Security & Capability Assessment — Mochiii / Mochiii
 
 **Audit date:** 2026-08-26
 **Target commit:** `efc611d` (branch `main`, clean tree)
@@ -44,7 +44,7 @@ is unchanged. Probe instruments are preserved outside the repo (see
 
 ## 1. Executive summary
 
-CodeTerminal is a **substantially better-engineered agent than most**. The consent
+Mochiii is a **substantially better-engineered agent than most**. The consent
 channel, the default-deny policy resolution, the argument-digest binding between what a
 human sees and what runs, the two-lane tool model, and the retrieval delimiter defence
 are all real, structural, and verified working. Several of the things this audit went
@@ -87,7 +87,7 @@ The single most important sentence in this report:
 CLIENTS                      TRUST BOUNDARY 1: unix socket, SO_PEERCRED (uid-checked, fails closed)
   TUI / VS Code / CLI  ─────────────┐
                                     ▼
-                            DAEMON (codeterminal/daemon)
+                            DAEMON (mochiii/daemon)
                               ├─ server.go        prompt assembly, scrub, retrieval
                               ├─ agentloop.go     the loop; 4 budget ceilings
                               ├─ toolapproval.go  consent channel (digest-bound)
@@ -705,7 +705,7 @@ cannot shadow it. The **root**, not the `bin` directory: neutering that distinct
 GOROOT's `lib` and `pkg` sit beside `bin`.
 
 Verified through the real handler: `go version` → `go1.25.12`, and `go env GOMODCACHE` →
-`~/.cache/codeterminal/sandbox-home/<tag>/go/pkg/mod` — the toolchain runs, and its cache
+`~/.cache/mochiii/sandbox-home/<tag>/go/pkg/mod` — the toolchain runs, and its cache
 lands on disk in the persistent home rather than in RAM.
 
 **Two parts deliberately NOT built, and they remain open:**

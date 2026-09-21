@@ -352,7 +352,7 @@ flowchart LR
 | **① Advertised set** | The model can only ask for tools that were offered this turn. A tool your config denies is never even advertised, and an invented name is refused with a readable reason rather than guessed at. |
 | **② Policy** | Every tool resolves to `deny`, `ask`, or `allow` from **your** `models.json`. Anything you have not written a policy for resolves to `ask` — the default is a question, never a yes. |
 | **③ Your approval** | You see the tool, the **complete** arguments (never a summary), and which trust lane it belongs to. Only an explicit yes runs it. A timeout, a garbled answer, an answer to a different question, and a closed panel are all *no*. |
-| **④ Bounded, scrubbed, recorded** | Four per-turn ceilings (steps, wall clock, per-result bytes, total tool bytes) and every ceiling says which one stopped the turn. Tool output goes through the same secret scrubber as everything else before the model sees it. Every decision — including the ones you were never prompted about — is appended to `.codeterminal/logs/toolcalls.jsonl`. |
+| **④ Bounded, scrubbed, recorded** | Four per-turn ceilings (steps, wall clock, per-result bytes, total tool bytes) and every ceiling says which one stopped the turn. Tool output goes through the same secret scrubber as everything else before the model sees it. Every decision — including the ones you were never prompted about — is appended to `.mochiii/logs/toolcalls.jsonl`. |
 
 **The approval is bound to the bytes, not to the moment.** The prompt carries a
 SHA-256 of the exact argument object, your client echoes it back, and the daemon

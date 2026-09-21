@@ -242,7 +242,7 @@ nobody declined to read this; nobody had been asked.
 ### The chain, end to end
 
 1. `runMCPServerList` (`clients/tui/slash.go:381`) runs
-   `codeterminal-daemon mcp list` with `CombinedOutput()` at
+   `mochiii-daemon mcp list` with `CombinedOutput()` at
    `clients/tui/slash.go:411` and puts the result in a system turn **on the
    user's screen**.
 2. `mcp list` **starts the configured servers** — that is how it enumerates

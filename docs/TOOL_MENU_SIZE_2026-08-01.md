@@ -7,7 +7,7 @@ moves as a result.
 Register item 27 / P2-2. Reproduce with:
 
 ```sh
-export CODETERMINAL_API_BASE=... CODETERMINAL_API_KEY=...
+export MOCHIII_API_BASE=... MOCHIII_API_KEY=...
 go test -tags eval -run TestToolMenuSizeCurve -v -timeout 60m ./daemon
 ```
 

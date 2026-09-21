@@ -1,6 +1,6 @@
 # Mochiii VS Code Extension
 
-A chat panel inside VS Code that talks to the local `codeterminal-daemon` over
+A chat panel inside VS Code that talks to the local `mochiii-daemon` over
 its existing newline-delimited JSON socket protocol (see `protocol/protocol.go`),
 plus in-editor diff-apply: a model-proposed edit renders as a red/green diff with
 Apply/Skip, and Apply routes through the same `editapply` engine (all five safety
@@ -19,7 +19,7 @@ is presented for Apply/Skip in turn, and block *i+1* is only ever matched
 against what is actually on disk after block *i* has been applied or
 skipped (see `startEditReview` in `src/chatPanel.ts`). An applied batch
 gets a native **Undo this apply** button that runs the same backup restore
-`codeterminal-daemon edits undo` does.
+`mochiii-daemon edits undo` does.
 
 Not in this slice: a native VS Code diff view/inline decorations, ghost
 text, error interceptor, MCP, reset/ctrl+n, or any remote-host
@@ -61,7 +61,7 @@ idle timeout plus a shutdown RPC, both scoped and neither built.
 # Terminal 1: start the daemon as usual (see repo root README)
 cd /path/to/repo
 set -a && source .env && set +a
-./daemon/codeterminal-daemon
+./daemon/mochiii-daemon
 
 # In this directory:
 npm install

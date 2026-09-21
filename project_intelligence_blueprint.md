@@ -75,7 +75,7 @@ Mochiii (codeterminal-core) is a hyper-secure, local-first AI coding assistant t
 ## 11. Developer Capabilities
 * Hackable CLI for scripting.
 * Extensible via MCP servers.
-* Transparent audit logs (`.codeterminal/logs/toolcalls.jsonl`).
+* Transparent audit logs (`.mochiii/logs/toolcalls.jsonl`).
 
 ## 12. Technical Architecture
 * **Frontend:** Go TUI (Bubble Tea) / VS Code Extension (TypeScript/Webviews)

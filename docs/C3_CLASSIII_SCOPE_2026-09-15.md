@@ -66,7 +66,7 @@ empty derived set each **fail** rather than pass.
         Add it to the list deliberately, or move the handler.
     builtinreadalloc_test.go:339: mcp_exec.go implements a registered built-in handler and is NOT in builtinToolSurface.
     builtinreadalloc_test.go:339: webtools.go implements a registered built-in handler and is NOT in builtinToolSurface.
-FAIL	codeterminal/daemon	0.127s
+FAIL	mochiii/daemon	0.127s
 ```
 
 Three errors, not four: it did **not** flag `mcp_ast_edit.go`, which is the closure resolution
@@ -112,11 +112,11 @@ C3 asks for two arms. The third exists because it is what justifies §2's design
 
 | arm | what was changed | result |
 |---|---|---|
-| baseline | — | `ok codeterminal/daemon 0.123s` |
+| baseline | — | `ok mochiii/daemon 0.123s` |
 | **1 — a listed file removed** | dropped `"webtools.go"` from the enumeration | **FAIL** — `:362: webtools.go implements a registered built-in handler and is NOT in builtinToolSurface` |
 | **2 — a decoy handler file** | new `daemon/zz_decoy_neuter.go` with `builtinDecoyNeuter`, registered in `builtinTools` | **FAIL** — `:363: zz_decoy_neuter.go implements a registered built-in handler and is NOT in builtinToolSurface` |
 | **3 — closure resolution disabled** | `if false && strings.Contains(fn, ".")` | **FAIL** — `:371: builtinToolSurface lists mcp_ast_edit.go, but no registered built-in handler resolves to it` |
-| restore | `git checkout` + `rm` | `ok codeterminal/daemon 0.112s`, tree clean |
+| restore | `git checkout` + `rm` | `ok mochiii/daemon 0.112s`, tree clean |
 
 **Arm 3 is the measured proof of §2's claim.** With closure resolution off, `repo_map`,
 `propose_edit` and `propose_ast_edit` resolve to `builtinTools.func1/2/3`, map to no declaring file,
@@ -150,7 +150,7 @@ list.
 
 ## 7. The C1d carry-in: is this guard environment-dependent?
 
-C1d flagged that `docs-coderefs`'s ambiguity check reads local working state — `.codeterminal/backups/`
+C1d flagged that `docs-coderefs`'s ambiguity check reads local working state — `.mochiii/backups/`
 makes a bare basename resolve to 1 file in CI and 3 on a developer machine — and asked whether the
 Class III guard has the same property.
 

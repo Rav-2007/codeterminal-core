@@ -1,4 +1,4 @@
-# Release notes — v0.0.3
+# Release notes — v0.0.4
 
 The body to publish on the GitHub Release, kept here so it has a source of
 truth: the release body is an editable field on GitHub and this file is not. If
@@ -6,9 +6,19 @@ you change one, change the other.
 
 ---
 
-**v0.0.3 supersedes v0.0.2, which was never published.** Two defects made the
-v0.0.2 artifacts unusable by anyone who downloaded them; both are fixed here.
-**Linux and Windows, x64.**
+**This is the first published release.** v0.0.1, v0.0.2 and v0.0.3 were tagged
+and built but never published, so nothing before this has ever been installed by
+anyone. **Linux and Windows, x64.**
+
+**Everything is now named Mochiii.** The product was called Mochiii already —
+what carried the old `codeterminal` name were the identifiers: the binaries, the
+environment variables, the settings, the command IDs and the state directory.
+They match the product now. Because no release was ever published, this renames
+nothing anyone had installed. If you built from source before, see *Renamed*
+below.
+
+Two defects in the unpublished v0.0.2 made its artifacts unusable by anyone who
+downloaded them. Both are fixed here.
 
 A VS Code extension with a local daemon: repository-aware retrieval, an agent
 loop, and edits you can undo. The `.vsix` carries its own daemon and embedder
@@ -18,7 +28,7 @@ anything for the extension to start its daemon.
 ## What changed since v0.0.2
 
 **You can now set an API key.** There was no way to. The daemon reads
-`CODETERMINAL_API_KEY` from its environment and nothing put it there: the
+`MOCHIII_API_KEY` from its environment and nothing put it there: the
 extension bridged only the API *base* from settings, contributed no key setting,
 and a VS Code launched from a desktop icon inherits no shell. So a packaged
 install could never authenticate and every answer failed with "the configured
@@ -30,19 +40,46 @@ and a commit can leak.
 **The daemon and embedder helper are now published.** v0.0.2 shipped a
 standalone terminal client with nothing to talk to: the client looks for a
 running daemon and exits with *"daemon not found … start it with:
-codeterminal-daemon"*, and no daemon was published anywhere — it existed only
+mochiii-daemon"*, and no daemon was published anywhere — it existed only
 inside the `.vsix`. All three binaries now ship per platform. The checksum
 manifest for them is `SHA256SUMS-bin` (it was `SHA256SUMS-tui`).
+
+## Renamed, if you built from source
+
+| Was | Now |
+|---|---|
+| `CODETERMINAL_API_KEY` | `MOCHIII_API_KEY` |
+| `CODETERMINAL_API_BASE` | `MOCHIII_API_BASE` |
+| `CODETERMINAL_USE_PROXY` | `MOCHIII_USE_PROXY` |
+| `CODETERMINAL_MOCHIII_KEY` | `MOCHIII_PROXY_KEY` |
+| `codeterminal-daemon`, `-tui`, `-embedder-helper` | `mochiii-daemon`, `mochiii-tui`, `mochiii-embedder-helper` |
+| `codeterminal.apiBase` setting, `codeterminal.*` commands | `mochiii.apiBase`, `mochiii.*` |
+| `.codeterminal/` workspace state | `.mochiii/` |
+
+**There are no compatibility shims, deliberately.** Nothing was ever published,
+so there is no installed base to keep working, and a shim that reads both names
+is a second source of truth for a credential. Update your shell exports.
+
+**Your workspace will re-index once.** The state directory moved, so the old
+index and undo history at `.codeterminal/` are not read. Delete it if you like.
+
+**The model cache moved too**, from `~/.codeterminal/models/` to
+`~/.mochiii/models/`. Left alone, the extension re-downloads the embedding model
+(~41 MB on Linux, 104 MB on Windows) on first use. To keep the copy you have:
+
+```
+mv ~/.codeterminal ~/.mochiii
+```
 
 ## Install
 
 Download the `.vsix` for your platform, then:
 
 ```
-code --install-extension codeterminal-vscode-linux-x64-0.0.3.vsix
+code --install-extension mochiii-vscode-linux-x64-0.0.4.vsix
 ```
 ```
-code --install-extension codeterminal-vscode-win32-x64-0.0.3.vsix
+code --install-extension mochiii-vscode-win32-x64-0.0.4.vsix
 ```
 
 Then run **`Mochiii: Set API Key`**. Without it nothing can be answered.
@@ -52,7 +89,7 @@ The key is for whatever endpoint the daemon talks to — by default
 setting.
 
 **Standalone binaries** (optional, for the two-process terminal workflow):
-`codeterminal-tui`, `codeterminal-daemon` and `codeterminal-embedder-helper`,
+`mochiii-tui`, `mochiii-daemon` and `mochiii-embedder-helper`,
 per platform. On Linux, `chmod +x` them. Start the daemon first, pointed at a
 workspace, then the client.
 
@@ -103,8 +140,8 @@ On Windows: `certutil -hashfile <file> SHA256` and compare by eye.
 
 ## Provenance
 
-Built by `release.yml` from the `v0.0.3` tag. Binaries are built natively on the
+Built by `release.yml` from the `v0.0.4` tag. Binaries are built natively on the
 OS they target — not cross-compiled — and stamped with the tag, so the daemon
-reports `0.0.3`. Every build is `-trimpath`ed: a plain build embedded 678
+reports `0.0.4`. Every build is `-trimpath`ed: a plain build embedded 678
 absolute paths including the builder's home directory, and a supply-chain gate
 fails any binary carrying one.

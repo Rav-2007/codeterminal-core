@@ -4,7 +4,7 @@ The body published on [the GitHub Release](https://github.com/Rav-2007/codetermi
 
 ---
 
-The first release of CodeTerminal that attaches anything. **Linux and Windows, x64.**
+The first release of Mochiii that attaches anything. **Linux and Windows, x64.**
 
 A VS Code extension with a local daemon: repository-aware retrieval, an agent loop, and edits you can undo. The `.vsix` carries its own daemon and embedder helper — you do not install them separately, and you do not need to export anything for the extension to start its daemon.
 
@@ -13,13 +13,13 @@ A VS Code extension with a local daemon: repository-aware retrieval, an agent lo
 **VS Code extension** — download the `.vsix` for your platform, then:
 
 ```
-code --install-extension codeterminal-vscode-linux-x64-0.0.2.vsix
+code --install-extension mochiii-vscode-linux-x64-0.0.2.vsix
 ```
 ```
-code --install-extension codeterminal-vscode-win32-x64-0.0.2.vsix
+code --install-extension mochiii-vscode-win32-x64-0.0.2.vsix
 ```
 
-**Terminal client** (optional, standalone) — `codeterminal-tui-linux-x64` or `codeterminal-tui-win32-x64.exe`. On Linux, `chmod +x` it first.
+**Terminal client** (optional, standalone) — `mochiii-tui-linux-x64` or `mochiii-tui-win32-x64.exe`. On Linux, `chmod +x` it first.
 
 ## Windows: you will see "Windows protected your PC"
 

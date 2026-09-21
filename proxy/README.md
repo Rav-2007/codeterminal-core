@@ -1,4 +1,4 @@
-# codeterminal-proxy
+# mochiii-proxy
 
 The managed-tier proxy in front of OpenRouter.
 
@@ -251,11 +251,11 @@ cd proxy && go build .
 
 ```bash
 cd proxy
-docker build -t codeterminal-proxy .
+docker build -t mochiii-proxy .
 docker run -p 8080:8080 \
   -e OPENROUTER_API_KEY=sk-or-v1-... \
   -e SUPABASE_URL=... -e SUPABASE_SERVICE_ROLE_KEY=... \
-  codeterminal-proxy
+  mochiii-proxy
 ```
 
 The image runs as a **non-root user**. The proxy binds a high port, reads config
@@ -267,27 +267,27 @@ environment variables (never commit them). Railway provides `PORT`.
 ### Pointing the daemon at it
 
 ```bash
-CODETERMINAL_API_BASE=http://localhost:8080/v1
-CODETERMINAL_USE_PROXY=true
-CODETERMINAL_MOCHIII_KEY=mochi_...
-# CODETERMINAL_API_KEY left unset -- the proxy adds its own key
+MOCHIII_API_BASE=http://localhost:8080/v1
+MOCHIII_USE_PROXY=true
+MOCHIII_PROXY_KEY=mochi_...
+# MOCHIII_API_KEY left unset -- the proxy adds its own key
 ```
 
-`CODETERMINAL_USE_PROXY` is **required** and is not cosmetic: it is the switch
-that makes the daemon take its credential from `CODETERMINAL_MOCHIII_KEY` instead
-of `CODETERMINAL_API_KEY`, and the daemon refuses to start if the Mochiii key is
+`MOCHIII_USE_PROXY` is **required** and is not cosmetic: it is the switch
+that makes the daemon take its credential from `MOCHIII_PROXY_KEY` instead
+of `MOCHIII_API_KEY`, and the daemon refuses to start if the Mochiii key is
 then empty. Without it the daemon sends no `Authorization` header at all and the
 proxy rejects every request `401`. It also changes the startup log line to an
 explicit "proxy mode" message, so an operator can tell *intentionally proxied*
 from *forgot to set the key* at a glance.
 
-Setting `CODETERMINAL_API_KEY` as well is a misconfiguration the daemon warns
+Setting `MOCHIII_API_KEY` as well is a misconfiguration the daemon warns
 about — the key would be sent to the proxy needlessly, and the proxy neither
 wants nor uses it.
 
-**Direct mode is unaffected.** Leaving `CODETERMINAL_API_BASE` pointed at
-OpenRouter with `CODETERMINAL_API_KEY` set works exactly as before;
-`CODETERMINAL_USE_PROXY` unset is a no-op.
+**Direct mode is unaffected.** Leaving `MOCHIII_API_BASE` pointed at
+OpenRouter with `MOCHIII_API_KEY` set works exactly as before;
+`MOCHIII_USE_PROXY` unset is a no-op.
 
 From the repo root, [`run-proxy.sh`](../run-proxy.sh) does all of the above,
 including defaulting to the production proxy and refusing to start on a missing

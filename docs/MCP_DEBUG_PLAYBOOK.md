@@ -1,6 +1,6 @@
 # MCP Server Debugging Playbook (QA + CTO + Security)
 
-**Status 2026-08-03.** Operational playbook for CodeTerminal agent-mode MCP.
+**Status 2026-08-03.** Operational playbook for Mochiii agent-mode MCP.
 **Front door:** [`MCP_MASTER.md`](MCP_MASTER.md) (merge readiness + scorecard).
 Threat model of record: [`MCP_LANE_B_THREAT_MODEL.md`](MCP_LANE_B_THREAT_MODEL.md).
 Robustness numbers: [`MCP_ROBUSTNESS_REPORT_2026-08-03.md`](MCP_ROBUSTNESS_REPORT_2026-08-03.md).
@@ -206,7 +206,7 @@ Command:
 go test ./daemon/mcp/ -run 'Flooded|Hanging|ExitingMidCall|Teardown|Lying|Control|Injected' -count=1
 ```
 
-Result: `ok  codeterminal/daemon/mcp  8.169s`
+Result: `ok  mochiii/daemon/mcp  8.169s`
 
 | Test | Result | Maps to |
 |---|---|---|
@@ -228,7 +228,7 @@ Command:
 go test ./daemon/ -run 'ToolName|ControlSequences|ForgedApproval|HungServers|ServerDying|PrefixWriterBounds|PrefixWriterStill' -count=1
 ```
 
-Result: `ok  codeterminal/daemon  3.156s`
+Result: `ok  mochiii/daemon  3.156s`
 
 | Test | Result | Maps to |
 |---|---|---|

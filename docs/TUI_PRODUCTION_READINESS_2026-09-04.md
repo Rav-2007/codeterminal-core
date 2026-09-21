@@ -643,11 +643,11 @@ behaviour was technically correct.
 | 3 | Paste something over 4,000 characters | 4,000 runes kept, a notice is set | whether the notice is *seen*. It goes to `statusErr`, one line of chrome, at the moment attention is on the prompt box |
 | 4 | Type while an answer is streaming | nothing — this is undocumented behaviour, found at P3.3 | keystrokes are **discarded**: `startTurn` blurs the input. A paste is among them. Nobody has judged whether that is right |
 | 5 | Drive an approval prompt to both answers | the panel is filtered, focus lands on Deny | whether "unconfined" reads as a warning at the size and colour it actually renders |
-| 6 | Reach the transcript ceiling (~250 exchanges, or set `CODETERMINAL_MAX_TURNS=30`) | 502 turns, 2 MiB, marker accumulates | whether a repaint at the bound *feels* slow. It is 22 ms (R1.12), which is under the threshold most people notice and over the one some do |
+| 6 | Reach the transcript ceiling (~250 exchanges, or set `MOCHIII_MAX_TURNS=30`) | 502 turns, 2 MiB, marker accumulates | whether a repaint at the bound *feels* slow. It is 22 ms (R1.12), which is under the threshold most people notice and over the one some do |
 | 7 | Quit by each path: `/exit`, ctrl+c twice, `SIGTERM`, `SIGHUP`, closing the terminal | terminal restored on every path except a destroyed pty (R1.1) | whether the shell you come back to is actually usable — no stuck colour, no hidden cursor, no wrapped-off prompt |
 | 8 | Do 1–7 on **macOS** | the suite runs there, but 14 tests do not — every pty-backed one | this is the largest hole in the document. The terminal is verified on Linux and on no other platform |
 
-Set `CODETERMINAL_MAX_TURNS` and `CODETERMINAL_MAX_TRANSCRIPT_BYTES` to reach the
+Set `MOCHIII_MAX_TURNS` and `MOCHIII_MAX_TRANSCRIPT_BYTES` to reach the
 ceiling in minutes rather than hours; both have floors (8 turns, 64 KB) so a
 typo cannot disable the bound.
 

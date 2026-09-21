@@ -48,8 +48,8 @@ shipping — wrong by omission — and stayed that way through the discovery bel
 on edit-shaped prompts, the product's core query class.** `testSeekingWords`
 (`\b(tests?|tested|testing|specs?)\b`) matches the word-bounded "test" inside Go's own
 `go test`/`go vet` tool-output noise — most reliably the `.test` compiled-test-binary suffix
-these tools print in a build failure (`codeterminal/daemon [codeterminal/daemon.test]`,
-`FAIL codeterminal/editapply [build failed]`) — not just a literal "go test" command
+these tools print in a build failure (`mochiii/daemon [mochiii/daemon.test]`,
+`FAIL mochiii/editapply [build failed]`) — not just a literal "go test" command
 substring. A query built from a real captured build/test failure (exactly what a
 fix-this-failure prompt looks like) was therefore misread as "the user is asking about test
 files," which disabled the down-weight and let `_test.go` chunks bury the implementation
@@ -178,14 +178,14 @@ Still deferred, and unchanged by this: the Phase-4 session-buffer-compression
 note it was paired with.
 
 ### (i) DONE: Bounded backups + multi-run undo
-Backup session dirs under `<workspace>/.codeterminal/backups/` are now
+Backup session dirs under `<workspace>/.mochiii/backups/` are now
 self-pruning: each new apply run keeps only the newest 5 sessions (fixed
 default, not configurable this slice). Pruning lives in ONE place --
 `editapply.NewBackupSessionDir` calls `pruneBackupSessions` right after
 minting a new session dir -- so all 3 callers (CLI, TUI, daemon) get bounded
 retention for free with no per-call-site changes. Confinement is safe by
 construction (backupsRoot is always the locally-computed
-`<realWorkspaceRoot>/.codeterminal/backups`, and candidate names always come
+`<realWorkspaceRoot>/.mochiii/backups`, and candidate names always come
 from `os.ReadDir`, which can never yield `.`/`..`/path-separator-bearing
 names) plus a defense-in-depth `filepath.Dir(candidate) == backupsRoot`
 assertion before every `RemoveAll`, deliberately NOT reusing the daemon's
@@ -203,7 +203,7 @@ an honest `"no longer undoable (backup pruned)"` instead (reactive, not
 proactive, since retention is workspace-global and prunable by any of the
 3 clients). Verified live end-to-end: 6 separate apply runs left exactly
 the newest 5 backup session dirs on disk (oldest pruned, confirmed via
-`ls`); a canary file placed outside `.codeterminal/backups` survived
+`ls`); a canary file placed outside `.mochiii/backups` survived
 pruning untouched; undoing a past (not-latest) run correctly reverted the
 file on disk; undoing a run whose file had changed since correctly reported
 "0 restored, left as-is" instead of clobbering later edits; undoing a
@@ -320,7 +320,7 @@ tool is still deferred.
   fix `702101c`) — minimal pass-through proxy deployed on Railway
   (`codeterminal-core-production.up.railway.app`), OpenRouter key held server-side only.
   Verified live: daemon→proxy→OpenRouter→back streams real completions with the daemon's local
-  key stripped (`env -u CODETERMINAL_API_KEY`), proving inference runs off-machine; proxy logs
+  key stripped (`env -u MOCHIII_API_KEY`), proving inference runs off-machine; proxy logs
   are content-free (path/status/provider only — retains nothing); ZDR held on the wire
   (`data_collection:"deny"` + `allow_fallbacks:false` sent and unit-tested, request served by
   Morph rather than refused → provider is ZDR-eligible by construction). Route fix `702101c`
@@ -439,7 +439,7 @@ side: opaque/novel secrets in chunk text, awaiting the founder's Design-B-vs-C d
     accumulated NOTHING (audit Gate 8), and its lines lacked the context to separate true fires from
     false positives like SHAs/UUIDs/lockfile hashes (audit Gate 5). Both now fixed:
     - **Follow-up A** (commit 064a00a, `daemon/warnsink.go`): a durable, append-only, size-rotated,
-      local-only JSON-lines sink at `<workspace>/.codeterminal/logs/warnmode.jsonl` that survives
+      local-only JSON-lines sink at `<workspace>/.mochiii/logs/warnmode.jsonl` that survives
       daemon restarts, is failure-safe on the request path (a sink error never fails/delays a request),
       and adds no network egress (verified — Gates 3 & 7 re-checked against the new path).
     - **Follow-up B** (commit 6028d96): each fire now records the chunk's `FileClass` (threaded from
@@ -447,7 +447,7 @@ side: opaque/novel secrets in chunk text, awaiting the founder's Design-B-vs-C d
       (hex/base64/uuid-like/mixed/unknown), for true-vs-false-positive triage without re-opening source.
   - **~~Status: fire-rate data now durably accumulating as of 2026-07-18~~ — CORRECTED 2026-07-30.**
     The sink was wired and durable (064a00a, 6028d96) and **recorded exactly zero events**:
-    `.codeterminal/logs/` on the dev box was created 2026-07-27 and held no `warnmode.jsonl`, and no
+    `.mochiii/logs/` on the dev box was created 2026-07-27 and held no `warnmode.jsonl`, and no
     such file existed anywhere on the machine. Not a broken wire — `newWarnSink` (`daemon/main.go:247`)
     and the `s.warnSink.write` call (`daemon/context.go:269`) are both correct, now proven by
     `TestLogChunkScrub_WritesFiresToTheDurableSink`, which fails when that call is deleted while the
@@ -805,7 +805,7 @@ reading error-construction code alone.
     paths. The nested case additionally disclosed the *deepest existing ancestor*, a directory-depth
     oracle.
   - **Undo** — unknown session dir (`backup session "…" not found under <BK>`), empty-session
-    "no backups found at <BK>", restore-time I/O — all disclosing `<BK>` = `<WS>/.codeterminal/backups`.
+    "no backups found at <BK>", restore-time I/O — all disclosing `<BK>` = `<WS>/.mochiii/backups`.
   - **Gate 5 (out-of-original-scope find)** — the model-API failure path returned `err.Error()`
     verbatim, leaking the upstream provider **base URL** + raw transport text. `ErrZDRRefused` was
     already rewritten to a generic string; every *other* model error passed through raw. No credential
@@ -819,7 +819,7 @@ reading error-construction code alone.
 - **Severity re-assessment (Gate 4) — Informational/Low, verified not asserted.** Post-Gate-3 the only
   party that can reach this surface is an authenticated same-uid peer, and such a peer already holds
   every disclosed fact independently: the daemon PID is in the 0600 lockfile, `/proc/<pid>/cmdline`
-  shows `--workspace <WS>` verbatim, `/proc/<pid>/environ` carries `CODETERMINAL_API_BASE`, the prompt
+  shows `--workspace <WS>` verbatim, `/proc/<pid>/environ` carries `MOCHIII_API_BASE`, the prompt
   *success* path returns `grounding.workspace = <WS>` by design, and every existence/permission/symlink
   answer is one `lstat` away. All confirmed live on the box. So the "compromised dependency that
   doesn't know the layout" scenario does **not** survive Gate 3 (a dependency running as you *is* you to
@@ -1074,7 +1074,7 @@ root is not itself a module, so the six `go.work` paths must be named explicitly
 ### Spot-check at merge time: all four Tier 3 fixes are reachable through a real production path
 The 2026-07-21 merge's most valuable output was noticing that Fix 7 passed its tests while being
 unreachable from every shipped client. The same suspicion was applied here, against a **live daemon**
-— the real `codeterminal-daemon` binary, a real BGE index over a 32-file workspace (65 chunks,
+— the real `mochiii-daemon` binary, a real BGE index over a 32-file workspace (65 chunks,
 `top_k=5`), the real Unix socket and wire protocol, with only the model API replaced by a local
 capture server so the assembled request body could be read. Not the test harness.
 
@@ -1192,7 +1192,7 @@ reading code.
 
 | Item | Reproduction | Observed on current `main` |
 |---|---|---|
-| C1-a `API_BASE` validity | `CODETERMINAL_API_BASE=':::not a url'`, real prompt | Starts clean; burns 3 retries with backoff on an unparseable URL; reports `"unreachable or failing right now — this is usually temporary"` / `upstream_unavailable`. Not temporary — a typo. (Truly-unset base *does* already fail fast; only validity was unchecked.) |
+| C1-a `API_BASE` validity | `MOCHIII_API_BASE=':::not a url'`, real prompt | Starts clean; burns 3 retries with backoff on an unparseable URL; reports `"unreachable or failing right now — this is usually temporary"` / `upstream_unavailable`. Not temporary — a typo. (Truly-unset base *does* already fail fast; only validity was unchecked.) |
 | C1-b nonexistent `--workspace` | `--workspace /nonexistent`, and a path naming a file | **Reproduces differently than catalogued** — not "silent" but actively *wrong*: wire says `"no index has been built for this workspace yet (run \`index\`…)"`. The path doesn't exist; indexing it fails too. Recorded as found, not as described. |
 | C1-c version / unknown keys / ranges | 5 crafted `models.json` | `config_version` 0 and 99 accepted mutely; `"retreival"` (typo) silently discarded so a deliberate `top_k` never applied; negatives silently defaulted; `top_k:100000` + `context_budget_chars:100000000` applied verbatim. |
 | C2-a lexical tier down | symlinked `lexical.db` (constructor refuses it); semantic healthy | stderr `lexical=false`; wire `{"grounded":true,"chunks":3}` — **byte-identical to healthy apart from the workspace label.** TUI rendered `grounded ✓ 3 chunk(s)`. The purest instance. |
@@ -1634,7 +1634,7 @@ nonetheless worth fixing, on their own merits and independent of shape #2's reac
   `TestWriteFileAtomicNoFollow_RefusesSymlinkAndPreservesVictim` (the writer unit refuses a symlinked
   destination pointing at an existing outside file, leaving it byte-intact — this case is caught
   upstream by VerifyUnchanged at the Apply level, so the writer is exercised directly);
-  `TestApply_ForwardWriteIsAtomicRename` (the target's inode changes on edit and no `.codeterminal-
+  `TestApply_ForwardWriteIsAtomicRename` (the target's inode changes on edit and no `.mochiii-
   apply-*` temp is left — proof the commit is a temp+rename, not an in-place rewrite). All
   fail-when-neutered against the former plain `os.WriteFile`.
 - Atomicity's rollback edge stays covered by the existing `TestApply_WriteFailureRollsBackAfter
@@ -1807,7 +1807,7 @@ into `isPrunedDir` = case-INsensitive protected dirs (via `IsProtectedDirName`) 
 `noiseDirNames`. Noise dirs (`build`, `vendor`, …) are deliberately left case-sensitive: they are not
 a security boundary, and folding them would over-prune a legitimately-cased source dir that merely
 shares a name (a Go package literally named `Build`). Grepped for other security-relevant literal
-path-segment compares (`.git`/`.ssh`/`.aws`/`.codeterminal` equality/lookup/prefix) across all six
+path-segment compares (`.git`/`.ssh`/`.aws`/`.mochiii` equality/lookup/prefix) across all six
 Go modules — **these two choke points were the only ones**; no siblings left as follow-ons.
 
 **Verify.** Re-ran Step 0 post-fix against both doors: `.GIT`/`.Git`/`.SSH` variants are pruned by
@@ -1832,7 +1832,7 @@ shipped module) in VS Code's own Node runtime over a real socket, which is a gen
 report's hand-driven stubs.
 
 **Proof the tool works (the required deliverable).** `smoke.test.ts`, in a real EDH: the real
-extension **activates**; `codeterminal.openChat` renders a real **"CodeTerminal Chat" webview panel**
+extension **activates**; `mochiii.openChat` renders a real **"Mochiii Chat" webview panel**
 (the real `ChatPanel` + `media/main.js` in a real VS Code webview); the command is idempotent (one
 panel, reveal not duplicate). Not "written", *run* — 3/3 passing.
 
@@ -1983,13 +1983,13 @@ itself named as the reason those races mattered. The audit fixed it for two *soc
 
 ### The fix (`2a389c7`)
 New `editapply.LockWorkspaceApply(realRoot)` — an exclusive **`flock(2)`** on
-`<realRoot>/.codeterminal/apply.lock`, returning a release func.
+`<realRoot>/.mochiii/apply.lock`, returning a release func.
 - **Why `flock`, not an `O_EXCL` lockfile:** flock is released by the kernel when the fd closes,
   *including on process death*, so a killed CLI cannot wedge the workspace forever. An `O_EXCL`
   lockfile would need a lock-breaking heuristic and would strand on `SIGKILL`. The lock file is
   created once and **never deleted** on release (unlink-on-release lets a second process lock an
   already-unlinked inode and both "hold" it).
-- **Where the lock lives:** `.codeterminal/` is already pruned by the indexer and refused by the edit
+- **Where the lock lives:** `.mochiii/` is already pruned by the indexer and refused by the edit
   writer (`ProtectedDirNames`) and covered by the RAG `.gitignore` entry, so the lock file is never
   indexed, never sent to a model, and not writable by an edit block. Opened `O_NOFOLLOW`, 0600.
 - **Taken INSIDE the three mutation primitives, not at call sites** — deliberately, because the bug
@@ -3057,7 +3057,7 @@ convention here.
 | `push` trigger path (both earlier greens were `pull_request`) | `30510849208` | 14 green, `eval` skipped |
 | **scheduled `eval` job** — undispatchable until `build.yml` reached the default branch | `30510976622` | **15/15 green**, incl. `retrieval eval (scheduled)` |
 
-The eval job: `ok codeterminal/daemon 211.715s`, job 4m16s. The pre-registered
+The eval job: `ok mochiii/daemon 211.715s`, job 4m16s. The pre-registered
 risk did **not** fire — the embedding model and ONNX runtime are fetched at test
 time (`daemon/modelfetch.go`, `daemon/onnxruntimefetch.go`) and were only ever
 cached on the dev box; a bare `ubuntu-latest` fetched both. ~211s vs ~148s locally

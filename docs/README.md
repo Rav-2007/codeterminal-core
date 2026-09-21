@@ -1,6 +1,6 @@
 # Documentation index
 
-**69 markdown files and 27,347 lines in `docs/`, plus 1 more in `docs/ARCHIVE/`.
+**69 markdown files and 27,527 lines in `docs/`, plus 1 more in `docs/ARCHIVE/`.
 This page says which four you need first.**
 
 > **This index is INCOMPLETE, and saying so is better than the count that hid
@@ -19,6 +19,16 @@ This page says which four you need first.**
 > check. That is R1.16's shape — a gate whose expected set is derived from the
 > list it validates cannot detect a member that was never added. Completing the
 > index is tracked work; until it is done, `ls docs/` is the only complete list.
+
+> **EVERY IDENTIFIER WAS RENAMED `codeterminal` -> `mochiii` on 2026-09-21**,
+> and the historical documents in this directory were renamed with everything
+> else. So a dated record describing a pre-rename artifact now names it with the
+> post-rename name: the v0.0.2 draft really held `codeterminal-tui-linux-x64`,
+> and the record of it here says `mochiii-tui-linux-x64`. Nothing was published
+> before the rename, so no artifact a reader can obtain carries the old name —
+> but the records are approximations of their own past, and saying so is better
+> than letting someone discover it against a checksum. The repository itself is
+> still `Rav-2007/codeterminal-core`, deliberately: that name is a live URL.
 
 Written 2026-08-07, because the seven stale claims corrected that day were not
 seven mistakes — they were one missing page. There was no way to tell a live plan

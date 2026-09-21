@@ -379,7 +379,7 @@ only to the evidence you tabulate.**
 
 **This binds whoever writes the instruction, not only whoever runs it.**
 
-> *Instance, twice:* an instruction specified *"exclude `.codeterminal/` by name"*
+> *Instance, twice:* an instruction specified *"exclude `.mochiii/` by name"*
 > and another specified *"grep `Handler: s.X`"* — in a repository whose recurring
 > defect is enumerated scope. Both times the derivation was better: `git ls-files`
 > closed `.vscode-test/` and build outputs at once, and a call graph kept three
@@ -686,7 +686,7 @@ sentence elsewhere that totals them is derived from here and not the other way r
 | H7 | Enumerate incumbents before claiming a name | `B<n>` already meant four things, so the boundaries became `TB<n>` — and `M5` is still two things |
 | H8 | Destructive neuter arms run from a committed tree | an arm's `git checkout` discarded an uncommitted fix, twice; `git status --porcelain` must be empty first |
 | H9 | A hedge is not a measurement | "three macOS jobs failing" was wrong three ways; the billing filter had been applied to the runs counted and not to the run reasoned from |
-| H10 | Derive from a source of truth; do not enumerate | *"exclude `.codeterminal/` by name"* and *"grep `Handler: s.X`"* — both times the derivation was better, and both instructions were written by the auditor |
+| H10 | Derive from a source of truth; do not enumerate | *"exclude `.mochiii/` by name"* and *"grep `Handler: s.X`"* — both times the derivation was better, and both instructions were written by the auditor |
 | H11 | A wall-clock gate runs alone, and the report says what else was running | a release-blocking repaint failure at p50 **71.675 ms** against 64 ms, measured while `make check` ran beside `gh` API calls |
 | H12 | An undelivered artifact suppresses the checks that would have run on it | `evalguard` had been red since `21a0854` and nothing had run it, because the branch had not been pushed |
 | H13 | A derivation that is right on some inputs is wrong on all of them | `stage-runtime`'s derivation was wrong for all three release targets and the *answer* wrong for one; and a known-answer test that asserted its own subject's defect would have gone red on the fix |

@@ -159,9 +159,9 @@ Four artifacts. Three binaries from `.github/workflows/release.yml`; the proxy f
 
 | Artifact | Built by | Runner | Flags | Uploaded to | Verified by |
 |---|---|---|---|---|---|
-| `codeterminal-daemon` | `release.yml:126` | native ×3 | `-trimpath`, `CGO_ENABLED=0` | `binaries-<target>` artifact | `verify-vsix.js` (in-`.vsix` presence + Go toolchain floor) |
-| `codeterminal-embedder-helper` | `release.yml:132` | native ×3 | `-trimpath`, `CGO_ENABLED=1` | `binaries-<target>` artifact | same |
-| `codeterminal-tui` | `release.yml:148` | native ×3 | `-trimpath` | `out-bin/`, `terminal-client` artifact | `verify-vsix.js` asserts it is **absent** from the `.vsix` |
+| `mochiii-daemon` | `release.yml:126` | native ×3 | `-trimpath`, `CGO_ENABLED=0` | `binaries-<target>` artifact | `verify-vsix.js` (in-`.vsix` presence + Go toolchain floor) |
+| `mochiii-embedder-helper` | `release.yml:132` | native ×3 | `-trimpath`, `CGO_ENABLED=1` | `binaries-<target>` artifact | same |
+| `mochiii-tui` | `release.yml:148` | native ×3 | `-trimpath` | `out-bin/`, `terminal-client` artifact | `verify-vsix.js` asserts it is **absent** from the `.vsix` |
 | proxy image | `proxy/Dockerfile` | `proxy-image` job, ubuntu | `docker build` | **nowhere** — built, never pushed by CI | build success only |
 
 Targets are `linux-x64` (ubuntu-latest), `darwin-arm64` (macos-latest), `win32-x64`
@@ -344,9 +344,9 @@ Six candidates. **Two of the prompt's five already exist**, which is itself the 
 
 **(a) `.vsix` asserts the TUI is out — GATE ALREADY EXISTS. No proposal.**
 `clients/vscode/scripts/verify-vsix.js:143` carries
-`[/^extension\/daemon\/codeterminal-tui/, 'ships the standalone terminal client, which the extension does not launch']`
+`[/^extension\/daemon\/mochiii-tui/, 'ships the standalone terminal client, which the extension does not launch']`
 in `MUST_NOT_MATCH`, and its self-test's `mustReject` list includes both
-`extension/daemon/codeterminal-tui` and `...-tui.exe` — so deleting the rule fails the
+`extension/daemon/mochiii-tui` and `...-tui.exe` — so deleting the rule fails the
 self-test rather than silently widening the package. It runs in CI as
 `npm run verify:vsix:selftest` (`build.yml`, `vscode extension` job) and the job is
 green in **B** and **D**.
@@ -700,7 +700,7 @@ a guard nobody has tested** — the workflow's own comment says so, about a diff
 guard. *What would settle it:* the same single dispatch.
 
 **`softprops/action-gh-release` attaching anything.** Zero observations. Whether the
-four globs (`out-vsix/*.vsix`, `out-vsix/SHA256SUMS`, `out-bin/codeterminal-tui-*`,
+four globs (`out-vsix/*.vsix`, `out-vsix/SHA256SUMS`, `out-bin/mochiii-tui-*`,
 `out-bin/SHA256SUMS-tui`) match the files actually on disk at that point is **read, not
 measured**. A glob that matches nothing is not an error for that action.
 

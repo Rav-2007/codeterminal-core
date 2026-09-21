@@ -151,8 +151,8 @@ producing a draft release** — see §6.3.
 | **vsix** | one `ubuntu-latest` host packages all three targets | `vsce package --no-dependencies --target <target>` | `vsix-packages`, `terminal-client` artifacts → release assets |
 | **proxy** | `docker build ./proxy` in `build.yml` | the same Dockerfile Railway uses | not a release asset — deploys separately |
 
-**Three binaries** per target: `codeterminal-daemon`, `codeterminal-embedder-helper`,
-`codeterminal-tui`. The TUI is **asserted out of the vsix** by `clients/vscode/scripts/verify-vsix.js`
+**Three binaries** per target: `mochiii-daemon`, `mochiii-embedder-helper`,
+`mochiii-tui`. The TUI is **asserted out of the vsix** by `clients/vscode/scripts/verify-vsix.js`
 **(M)** — it is a separate download, not part of the extension.
 
 ## 2.3 `-trimpath` holds, measured both ways
@@ -300,7 +300,7 @@ The repository is **PRIVATE** today **(M)**, and the decision is **hold, with a 
 
 ```
 $ env -i PATH=$PATH HOME=$HOME go test -count=1 -run TestInstallPath .
-ok  	codeterminal/daemon	19.210s
+ok  	mochiii/daemon	19.210s
 
 $ node clients/vscode/scripts/install-path-check.js
 install-path-check: ok — spawnDaemon passes an env, and 1 setting(s) are contributed and read
@@ -313,7 +313,7 @@ any commit, from 2026-07-05 until `22b3021`.
 
 ## 6.2 Packaging
 
-The vsix gate asserts contents both ways — what must be present and what must not. `codeterminal-tui`
+The vsix gate asserts contents both ways — what must be present and what must not. `mochiii-tui`
 is explicitly refused: *"ships the standalone terminal client, which the extension does not launch"*
 **(M)**. `stage-runtime.js` keys on the **target**, verified at both revisions in §1.2.
 
@@ -810,7 +810,7 @@ path has been exercised as far as "package two of three targets" and no further,
 | Terminal restore on macOS / Windows | **CONFIRMED unverified** | all five `clients/tui/*_pty_test.go` are `//go:build linux` **(M)**. Needs a darwin pty helper |
 | Windows named-pipe peer auth (`GetNamedPipeClientProcessId`) | **CONFIRMED unverified** | appears in no test anywhere **(M)**. The *SID comparison* half does run on every push — §13 row 3 misdescribed the mechanism |
 | Windows subprocess reaping | **CONFIRMED unverified** | `daemon/mcp/procgroup_windows.go` has no test referencing it **(M)** |
-| macOS `LOCAL_PEERCRED` | **VERIFIED — §13 row 5 is false** | ran green: `ok codeterminal/protocol 0.078s`, run `34837230165`, job `103953714746` **(M)** |
+| macOS `LOCAL_PEERCRED` | **VERIFIED — §13 row 5 is false** | ran green: `ok mochiii/protocol 0.078s`, run `34837230165`, job `103953714746` **(M)** |
 | The Extension Development Host | **runs in CI, 77/102 passing** — but **not at HEAD** | C2's inverted test has never executed anywhere. This is the single largest untested change in this report |
 | `proxy` and `helper` on macOS | **not in any matrix** | `helper` is CGO/onnxruntime (R1.26); **`proxy`'s absence is unrecorded** |
 

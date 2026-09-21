@@ -163,7 +163,7 @@ Target: `npx -y @modelcontextprotocol/server-everything stdio` (Node v20.20.2 / 
 
 Cold handshake at 3.2 s (warm cache) remains inside `DefaultConnectTimeout` (20 s); the 120 s interop override is still justified for cold npm.
 
-Package result: `ok  codeterminal/daemon/mcp  8.757s`
+Package result: `ok  mochiii/daemon/mcp  8.757s`
 
 ---
 

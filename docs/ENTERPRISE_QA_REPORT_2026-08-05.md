@@ -50,8 +50,8 @@ implies:
 - It called `exec.CommandContext` directly. It never touched
   `daemon/mcp/sandbox.go`, the sandbox this same campaign had added.
 - `cmd.Env` was never set, so the child inherited the daemon's **entire**
-  environment — `OPENROUTER_API_KEY`, `CODETERMINAL_MOCHIII_KEY`,
-  `CODETERMINAL_API_KEY`.
+  environment — `OPENROUTER_API_KEY`, `MOCHIII_PROXY_KEY`,
+  `MOCHIII_API_KEY`.
 
 Its "strict whitelist for allowed binaries to prevent RCE sandbox escape" was
 `go`, `npm`, `make`, `cargo` — every one of which runs project-supplied shell by
@@ -164,8 +164,8 @@ Both executed.
 **ratchet is red**:
 
 ```
-FAIL  codeterminal/daemon     — 70.6% below the 73.6% floor (down 3.0)
-FAIL  codeterminal/clients/tui — 73.4% below the 74.5% floor (down 1.1)
+FAIL  mochiii/daemon     — 70.6% below the 73.6% floor (down 3.0)
+FAIL  mochiii/clients/tui — 73.4% below the 74.5% floor (down 1.1)
 ```
 
 Cause: **~561 lines shipped with zero test coverage.** `lsp_bridge.go` (7

@@ -179,7 +179,7 @@ on. The protection is incidental rather than designed, but it is real.
 ### The one new resource defect: an unbounded cache, and tests writing into the user's real one
 
 `sandboxExecHome()` (`daemon/mcp_exec.go:126`) returns
-`~/.cache/codeterminal/sandbox-home/<sha256(workspace)[:16]>`, created at
+`~/.cache/mochiii/sandbox-home/<sha256(workspace)[:16]>`, created at
 `mcp_exec.go:260`. **Nothing ever removes it** — a grep for
 remove/clean/prune/sweep on that path returns nothing.
 

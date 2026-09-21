@@ -210,10 +210,10 @@ The authoritative test is not a grep; it is the two AST guards, and **both pass*
 
 - `daemon/timingliterals_test.go` — walks from its module root (`:62`, `:336`), scans for **bare
   literals** in timing bounds. `go test -run 'TestTimingLiterals|TestTimingGuardCanStillFail'` →
-  `ok codeterminal/daemon 0.022s`. `(M)`
+  `ok mochiii/daemon 0.022s`. `(M)`
 - `clients/tui/testpolicy_guard_test.go:40` — `TestTimingBudgetsAreGuardedAgainstTheRaceDetector`,
   reads `"."` (`:42`), scans **package-level `time.Duration` declarations** for `raceEnabled`.
-  → `ok codeterminal/clients/tui 93.301s`. `(M)`
+  → `ok mochiii/clients/tui 93.301s`. `(M)`
 
 The two guards have **deliberately different policies**, with an M8 justification written into
 `daemon/timingliterals_test.go` for not merging them: tui's skips timing under the race detector
@@ -484,7 +484,7 @@ gate is concerned. The three trips:
 
 | what was written | verdict |
 |---|---|
-| C0b quoting a bare `server.go` basename with a line number | ambiguous — resolves to 3 files, two of them copies under `.codeterminal/backups/` |
+| C0b quoting a bare `server.go` basename with a line number | ambiguous — resolves to 3 files, two of them copies under `.mochiii/backups/` |
 | this section quoting the neuter's out-of-range failure line | line out of range, correctly |
 | this section quoting the neuter's missing-file failure line | file does not exist, correctly |
 
@@ -494,11 +494,11 @@ failures should check for this before hunting a real stale reference.
 
 **A second-order finding, recorded because it affects the gate's own reliability:** the ambiguity
 arm resolves basenames with `find .` excluding only `.git` and `node_modules`
-(`scripts/docs-coderefs.sh:67`). That includes **`.codeterminal/backups/`**, which is runtime state —
+(`scripts/docs-coderefs.sh:67`). That includes **`.mochiii/backups/`**, which is runtime state —
 the two extra `server.go` files were backup copies from a 2026-07-10 apply run. So a bare basename
 can resolve to 1 file in CI and 3 on a developer machine that has ever applied an edit. `(M)`
 **The ambiguity check is environment-dependent, and in the direction that makes CI more permissive
 than a developer's machine** — the inverse of the usual failure. Writing paths from the repository
 root, which the gate's own message demands, avoids it entirely; a `--exclude` for
-`.codeterminal/` would make the check host-independent. **Not changed here** — it is a gate
+`.mochiii/` would make the check host-independent. **Not changed here** — it is a gate
 behaviour change and belongs to whoever owns the gate.

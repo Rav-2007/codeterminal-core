@@ -75,7 +75,7 @@ Download the `.vsix` for your platform from the
 [latest release](https://github.com/Rav-2007/codeterminal-core/releases), then:
 
 ```bash
-code --install-extension codeterminal-vscode-linux-x64-0.0.3.vsix   # or win32-x64
+code --install-extension mochiii-vscode-linux-x64-0.0.3.vsix   # or win32-x64
 ```
 
 **Then set your API key**, or nothing can be answered: run **`Mochiii: Set API
@@ -101,13 +101,13 @@ otherwise have given you.
 cd clients/vscode
 npm ci
 npm run package        # builds daemon + helper, stages them, packages, verifies
-code --install-extension codeterminal-vscode-0.0.3.vsix
+code --install-extension mochiii-vscode-0.0.3.vsix
 ```
 
 `npm run package` needs the Go toolchain because it builds the binaries it
 bundles. **Installing the resulting `.vsix` does not** — that is the point of it.
 
-A key exported in your shell (`CODETERMINAL_API_KEY`) is used as-is and the
+A key exported in your shell (`MOCHIII_API_KEY`) is used as-is and the
 extension will not prompt — but note that a VS Code started from a desktop icon
 inherits no shell, which is why the command above exists.
 
@@ -139,25 +139,25 @@ The helper is **not** optional — the daemon spawns it to compute embeddings
 locally, and retrieval is disabled without it.
 
 ```bash
-(cd helper      && go build -o codeterminal-embedder-helper .)
-(cd daemon      && go build -o codeterminal-daemon .)
-(cd clients/tui && go build -o codeterminal-tui .)
+(cd helper      && go build -o mochiii-embedder-helper .)
+(cd daemon      && go build -o mochiii-daemon .)
+(cd clients/tui && go build -o mochiii-tui .)
 ```
 
 ### 2. Fetch the model — once per machine
 
 Downloads the pinned BGE model and the onnxruntime shared library into
-`~/.codeterminal/models/`, verifying every file's size and SHA-256. A second run
+`~/.mochiii/models/`, verifying every file's size and SHA-256. A second run
 with everything present makes no network requests.
 
 ```bash
-./daemon/codeterminal-daemon download-model
+./daemon/mochiii-daemon download-model
 ```
 
 ### 3. Index — once per repo
 
 ```bash
-./daemon/codeterminal-daemon index .
+./daemon/mochiii-daemon index .
 ```
 
 Skipping this is not fatal: the daemon starts and answers **ungrounded**, using
@@ -176,15 +176,15 @@ Pick one of the two inference paths.
 <summary><b>Direct mode</b> — your provider key goes from this machine to the provider</summary>
 
 ```bash
-export CODETERMINAL_API_BASE="https://api.together.xyz/v1"
-export CODETERMINAL_API_KEY="sk-..."
+export MOCHIII_API_BASE="https://api.together.xyz/v1"
+export MOCHIII_API_KEY="sk-..."
 
 # ...or keep them in .env (gitignored, never commit it):
 cp .env.example .env && $EDITOR .env
 set -a && source .env && set +a
 
-./daemon/codeterminal-daemon --workspace .    # terminal 1
-./clients/tui/codeterminal-tui                # terminal 2
+./daemon/mochiii-daemon --workspace .    # terminal 1
+./clients/tui/mochiii-tui                # terminal 2
 ```
 
 </details>
@@ -197,21 +197,21 @@ provider key server-side, meters usage per user, and enforces zero-data-retentio
 routing before anything reaches the provider.
 
 [`run-proxy.sh`](run-proxy.sh) is the whole path: it sources `.env`, points
-`CODETERMINAL_API_BASE` at the production proxy, sets `CODETERMINAL_USE_PROXY=true`,
-**unsets `CODETERMINAL_API_KEY`** so a provider key can never reach the proxy by
+`MOCHIII_API_BASE` at the production proxy, sets `MOCHIII_USE_PROXY=true`,
+**unsets `MOCHIII_API_KEY`** so a provider key can never reach the proxy by
 accident, refuses to start without a Mochiii key, and then `exec`s the daemon — so
 every daemon flag passes straight through.
 
 ```bash
-cp .env.example .env && $EDITOR .env    # set CODETERMINAL_MOCHIII_KEY=mochi_...
+cp .env.example .env && $EDITOR .env    # set MOCHIII_PROXY_KEY=mochi_...
 
 ./run-proxy.sh --workspace ~/some/repo               # terminal 1
-./clients/tui/codeterminal-tui --workspace ~/some/repo   # terminal 2
+./clients/tui/mochiii-tui --workspace ~/some/repo   # terminal 2
 ```
 
 Startup logs `proxy mode: forwarding inference through …` — that line is how you
 confirm the pilot path is in use. Point at a different proxy with
-`CODETERMINAL_PROXY_BASE=http://localhost:8080/v1`; `CODETERMINAL_API_BASE`
+`MOCHIII_PROXY_BASE=http://localhost:8080/v1`; `MOCHIII_API_BASE`
 deliberately cannot do this, because the script sets it authoritatively so that
 `source .env` stays safe to combine with proxy mode.
 
@@ -229,7 +229,7 @@ on the leftover socket, removes it, and binds a fresh one.
 
 # Commands
 
-All commands are subcommands of the `codeterminal-daemon` binary.
+All commands are subcommands of the `mochiii-daemon` binary.
 
 | Command | Purpose |
 |---|---|
@@ -269,14 +269,14 @@ The daemon reads plain environment variables and never parses `.env` itself.
 
 | Variable | Meaning |
 |---|---|
-| `CODETERMINAL_API_BASE` | Base URL of an OpenAI-compatible API. **Optional** — unset, the daemon defaults to `https://openrouter.ai/api/v1` and logs that it did (`daemon/main.go:124`). A malformed value is still fatal. *Required in proxy mode*, where the address cannot be guessed. *(This row read "**Required** — the daemon refuses to start without it" until 2026-09-21. That stopped being true on 2026-09-15, when `22b3021` gave the daemon a default — the fix for the item-41 first-run outage.)* |
-| `CODETERMINAL_API_KEY` | Sent as `Authorization: Bearer`. May be unset for local servers that need no key |
-| `CODETERMINAL_USE_PROXY` | `true` selects proxy mode |
-| `CODETERMINAL_MOCHIII_KEY` | Per-user Mochiii key; required in proxy mode |
+| `MOCHIII_API_BASE` | Base URL of an OpenAI-compatible API. **Optional** — unset, the daemon defaults to `https://openrouter.ai/api/v1` and logs that it did (`daemon/main.go:124`). A malformed value is still fatal. *Required in proxy mode*, where the address cannot be guessed. *(This row read "**Required** — the daemon refuses to start without it" until 2026-09-21. That stopped being true on 2026-09-15, when `22b3021` gave the daemon a default — the fix for the item-41 first-run outage.)* |
+| `MOCHIII_API_KEY` | Sent as `Authorization: Bearer`. May be unset for local servers that need no key |
+| `MOCHIII_USE_PROXY` | `true` selects proxy mode |
+| `MOCHIII_PROXY_KEY` | Per-user Mochiii key; required in proxy mode |
 
-`CODETERMINAL_USE_PROXY` is load-bearing, not cosmetic: it is what makes the
+`MOCHIII_USE_PROXY` is load-bearing, not cosmetic: it is what makes the
 daemon authenticate with the Mochiii key instead of the provider key, and startup
-fails if the Mochiii key is empty. **In proxy mode, leave `CODETERMINAL_API_KEY`
+fails if the Mochiii key is empty. **In proxy mode, leave `MOCHIII_API_KEY`
 unset** — with both set the daemon warns, because it would otherwise send a
 provider key to a proxy that neither wants nor can use it.
 
@@ -419,7 +419,7 @@ until one carries `done`. Exact structs: [`protocol/protocol.go`](protocol/proto
 `index` walks the workspace **confined to its root**, never following symlinks,
 and chunks eligible files into overlapping ~40-line windows. Each chunk is
 embedded locally and written to **two** stores under
-`<workspace>/.codeterminal/index/`: a [chromem-go](https://github.com/philippgille/chromem-go)
+`<workspace>/.mochiii/index/`: a [chromem-go](https://github.com/philippgille/chromem-go)
 vector collection and a SQLite FTS5 table.
 
 **Retrieval is hybrid, in three stages** ([`daemon/rerank.go`](daemon/rerank.go)):
@@ -487,7 +487,7 @@ order:
 | 2 | **Exact match** | `SEARCH` text not found, or found more than once — ambiguous is a refusal, never a guess |
 | 3 | **Syntax** | A `.go` edit that **breaks a file which parsed before it**. Judged on the delta, not the result — an edit to an *already*-broken file is allowed, and the note says the file did not parse beforehand either, so a syntax error stays fixable through edit blocks. Creating a file is judged absolutely, because there is no “before”. **Go is the only language with a parser in this binary** — every other file type is written unchecked, and the note beside the diff says so verbatim. On a non-Go repository this gate does not fire, so the list below is four gates, not five |
 | 4 | **Confirm** | Everything except a literal `y` at the diff prompt |
-| 5 | **Backup** | Nothing — it records pre- and post-edit content under `.codeterminal/backups/<ts>/{before,after}/` before the real write |
+| 5 | **Backup** | Nothing — it records pre- and post-edit content under `.mochiii/backups/<ts>/{before,after}/` before the real write |
 
 **Nothing is applied without a human decision.** In the CLI and the TUI that is an
 explicit `y` per edit. The VS Code panel additionally offers a session-scoped
@@ -556,7 +556,7 @@ Per-turn budgets, all configurable, shown here at their defaults:
 ```
 
 Every decision — including `allow` calls you were never prompted about — is
-appended to `.codeterminal/logs/toolcalls.jsonl` (local, `0600`, rotated at
+appended to `.mochiii/logs/toolcalls.jsonl` (local, `0600`, rotated at
 5 MiB). It records the **SHA-256 of the arguments and their length, never the
 arguments themselves**: those are unscrubbed model output, and the digest is the
 one your approval was bound to.

@@ -34,7 +34,7 @@ go test -tags eval -timeout 30m \
 --- PASS: TestEvalRetrievalQuality        (1.51s)
 --- PASS: TestRerankEvalRetrievalRanking  (128.78s)
 --- PASS: TestTokenEfficiencyEval         (134.74s)
-ok      codeterminal/daemon               265.287s
+ok      mochiii/daemon               265.287s
 ```
 
 | Test | Headline | Against |

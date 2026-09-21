@@ -33,7 +33,7 @@ A prior session ran an Enterprise QA campaign and recorded **PASS** on SHA
 |---|---|
 | **The bwrap sandbox had never run.** It passed `--nosuid`, which is a `mount(2)` option and not a bwrap flag. Real bwrap answers `Unknown option --nosuid` and refuses the whole invocation. | Every sandboxed command failed 100% of the time |
 | **All six sandbox tests stub `lookPath` and assert on the argument *list*.** None executes bwrap. | The suite reports `ok` against a totally broken sandbox — verified by restoring the flag |
-| **`sandbox_exec` was named for a sandbox it never used.** It called `exec.CommandContext` directly with `cmd.Env` nil, inheriting `OPENROUTER_API_KEY` and `CODETERMINAL_MOCHIII_KEY`. | One approved call against a repo with a hostile `Makefile` exfiltrates the user's inference credentials |
+| **`sandbox_exec` was named for a sandbox it never used.** It called `exec.CommandContext` directly with `cmd.Env` nil, inheriting `OPENROUTER_API_KEY` and `MOCHIII_PROXY_KEY`. | One approved call against a repo with a hostile `Makefile` exfiltrates the user's inference credentials |
 
 None of this is a criticism of ambition — the sandbox design is genuinely good.
 It is a criticism of **evidence**. The campaign measured argument lists and

@@ -1,10 +1,10 @@
 ---
 name: enterprise-qa-master
-description: Runs CodeTerminal whole-product enterprise QA as CEO/CTO/Security Patcher/Security Improver/Tester — phase gates, evidence labels, security neuter-verify, and structured change/improvement reports. Use when the user asks for enterprise QA, launch gate, whole-product debug, security patch campaign, CEO/CTO ship verdict, or to outperform as an AI coding assistant QA loop.
+description: Runs Mochiii whole-product enterprise QA as CEO/CTO/Security Patcher/Security Improver/Tester — phase gates, evidence labels, security neuter-verify, and structured change/improvement reports. Use when the user asks for enterprise QA, launch gate, whole-product debug, security patch campaign, CEO/CTO ship verdict, or to outperform as an AI coding assistant QA loop.
 disable-model-invocation: true
 ---
 
-# Enterprise QA Master (CodeTerminal)
+# Enterprise QA Master (Mochiii)
 
 ## Role
 
