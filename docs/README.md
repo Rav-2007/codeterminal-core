@@ -1,11 +1,15 @@
 # Documentation index
 
-**67 markdown files, ~26,900 lines in `docs/` (plus `docs/ARCHIVE/`).
+**69 markdown files and 27,347 lines in `docs/`, plus 1 more in `docs/ARCHIVE/`.
 This page says which four you need first.**
 
 > **This index is INCOMPLETE, and saying so is better than the count that hid
 > it.** The header read *"44 markdown files, ~16600 lines … and what every other
-> one is for"* until 2026-09-21, while `docs/` held 67. Roughly a third of
+> one is for"* until 2026-09-21, while `docs/` held 68. **The correction was
+> itself off by one** — it was written as 67 without re-counting, on the same
+> day, in the commit that corrected the stale number. A count typed from memory
+> is not a count, which is what `docs/ENGINEERING_METHOD.md:408` means by *a
+> stated count ≠ a counted count*. Roughly a third of
 > the directory is not listed below — including `RESIDUAL_RISKS.md` and
 > `TRUST_BOUNDARIES.md`, both of which are live, coderefs-enforced registers,
 > and the whole C0–C7 closing series that leads into `A_DELIVER_2026-09-20.md`.
@@ -76,6 +80,7 @@ a refactor or fails loudly; a line number silently points at something else.
 |---|---|
 | [`HANDOFF.md`](HANDOFF.md) | Entry point. Architecture, working discipline, where things live. |
 | [`ENGINEERING_METHOD.md`](ENGINEERING_METHOD.md) | **How this codebase is made robust.** Each technique, the bug that made it necessary, and what it costs. |
+| [`PRODUCTION_READINESS_2026-09-21.md`](PRODUCTION_READINESS_2026-09-21.md) | **Is this shippable?** One verdict per surface across the gate system, the security model, the agent loop and the QA surface — plus what the gates structurally cannot see. Written at `v0.0.3`. |
 | [`ULTRA_MASTER_PLAN_2026-08-08.md`](ULTRA_MASTER_PLAN_2026-08-08.md) | **The current plan.** Packaging, with Stages 4–5 carried forward. |
 | [`OPEN_ITEMS.md`](OPEN_ITEMS.md) | The bug register, statuses resolved in place. |
 | [`DECISION_PACK.md`](DECISION_PACK.md) | D1–D8 founder rulings, one page each. |
