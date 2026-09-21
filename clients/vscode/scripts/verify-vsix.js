@@ -119,6 +119,26 @@ const MUST_CONTAIN = [
   'extension/daemon/models.json',
 ];
 
+// THE ONE DIRECTORY NOTHING FILTERS, asserted as a property rather than a list.
+//
+// .vscodeignore excludes `src/**`, tests, node_modules and the rest by name,
+// and its own header records that `daemon/` is deliberately NOT excluded --
+// that directory IS the runtime and is the whole point of the package. So it is
+// the only place where whatever happens to be sitting on disk gets copied into
+// the archive, and the only place where a stale file becomes a shipped file.
+//
+// MUST_NOT_MATCH below cannot cover this. It is a list of things somebody
+// thought of, and it passes on everything nobody thought of. It names
+// `mochiii-tui` because that binary once appeared here; before the rename it
+// would have had to name `codeterminal-tui` too, and after the next rename
+// something else again. A list of what must be ABSENT is unbounded. The set of
+// what may be PRESENT is three files.
+//
+// DERIVED FROM MUST_CONTAIN, not written out a second time, so a runtime file
+// added there is allowed here automatically and the two cannot drift apart.
+const DAEMON_DIR = 'extension/daemon/';
+const DAEMON_ALLOWED = new Set(MUST_CONTAIN.filter((n) => n.startsWith(DAEMON_DIR)));
+
 // Absent, each with the reason it matters.
 const MUST_NOT_MATCH = [
   [/^extension\/src\//, 'ships our TypeScript source'],
@@ -386,6 +406,44 @@ function selfTest() {
     failures.push('SELF-TEST: could not read the go directive from go.work; the toolchain check would no-op');
   }
 
+  // (f) the runtime directory allows exactly the runtime, and nothing else.
+  //
+  // THIS IS THE CASE THAT WOULD HAVE CAUGHT TODAY'S. After the rename to
+  // Mochiii, clients/vscode/daemon/ still held a 19 MB `codeterminal-daemon`
+  // and a 7.4 MB `codeterminal-embedder-helper` from an earlier build. Both are
+  // gitignored, so `git status` showed a clean tree and the cleanup never
+  // listed them. Package with the new binaries written alongside the old and
+  // every MUST_CONTAIN entry is satisfied, no MUST_NOT_MATCH pattern matches,
+  // and 27 MB of dead weight ships in a passing package.
+  //
+  // The stale names below are the REAL ones found on disk, not invented
+  // examples, and none of them is special: the check rejects them for not being
+  // on the derived list rather than for being called anything in particular.
+  if (DAEMON_ALLOWED.size < 3) {
+    failures.push(
+      `SELF-TEST: the daemon allowlist derived only ${DAEMON_ALLOWED.size} entr(ies) from ` +
+        'MUST_CONTAIN, so the runtime-directory check would allow everything',
+    );
+  }
+  const staleInRuntime = [
+    'extension/daemon/codeterminal-daemon',
+    'extension/daemon/codeterminal-embedder-helper',
+    'extension/daemon/mochiii-daemon.old',
+    'extension/daemon/models.json.bak',
+    'extension/daemon/.DS_Store',
+  ];
+  for (const name of staleInRuntime) {
+    if (DAEMON_ALLOWED.has(name)) {
+      failures.push(`SELF-TEST: ${name} would ship in the runtime directory`);
+    }
+  }
+  // And the real runtime must still be allowed, or no package can ever ship.
+  for (const name of ['extension/daemon/mochiii-daemon', 'extension/daemon/models.json']) {
+    if (!DAEMON_ALLOWED.has(name)) {
+      failures.push(`SELF-TEST: ${name} is part of the runtime and would be refused`);
+    }
+  }
+
   if (failures.length > 0) {
     console.error('verify-vsix: SELF-TEST FAILED');
     for (const f of failures) console.error('  ' + f);
@@ -394,7 +452,8 @@ function selfTest() {
   console.log(`verify-vsix: self-test ok (${mustReject.length} credential names refused, ` +
     `${mustAccept.length} shipped paths accepted, ${secrets.length} secret shapes detected, ` +
     `${innocent.length} innocent strings ignored, ` +
-    `${toolchainCases.length} toolchain versions judged against go${goFloorFromWorkspace()})`);
+    `${toolchainCases.length} toolchain versions judged against go${goFloorFromWorkspace()}, ` +
+    `${staleInRuntime.length} stale files kept out of the ${DAEMON_ALLOWED.size}-file runtime directory)`);
   process.exit(0);
 }
 
@@ -420,6 +479,24 @@ function main() {
     if (!names.includes(required)) {
       failures.push(`MISSING  ${required}`);
     }
+  }
+
+  // ANTI-VACUITY. If the derivation above ever matches nothing, every entry in
+  // daemon/ becomes "allowed" and this check silently stops existing.
+  if (DAEMON_ALLOWED.size < 3) {
+    failures.push(
+      `VACUOUS  the daemon allowlist derived ${DAEMON_ALLOWED.size} entr(ies) from MUST_CONTAIN; ` +
+        'expected at least 3 (daemon, embedder helper, models.json). The derivation is broken, ' +
+        'and passing here would mean nothing.',
+    );
+  }
+  for (const name of names) {
+    if (!name.startsWith(DAEMON_DIR) || name.endsWith('/')) continue;
+    if (DAEMON_ALLOWED.has(name)) continue;
+    failures.push(
+      `UNEXPECTED ${name} is in the runtime directory and is not part of the runtime. ` +
+        'daemon/ ships verbatim, so anything left there by an earlier build ships too.',
+    );
   }
 
   for (const [re, why] of MUST_NOT_MATCH) {
