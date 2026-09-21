@@ -67,10 +67,34 @@ The case study was paid for this week, at a cost of one unusable release:
 
 That is an enumeration gate wearing a property gate's name. A fourth element now
 covers the credential, and its neuter reproduces the pre-fix command list
-verbatim, so the gate would have failed the v0.0.2 release had it existed. **But
-the class is not closed**: the next value the daemon needs and nobody can supply
-will be missed the same way, because the gate still enumerates values rather than
-deriving them from what the daemon reads.
+verbatim, so the gate would have failed the v0.0.2 release had it existed.
+
+**The class is now closed too, and it was closed by changing the question.**
+Element 4 asked *"is the API key delivered?"* — one more literal, which would
+have missed the third value exactly as elements 3 and 4 missed each other.
+Element 5 asks *"is every value delivered?"* and takes its set from the daemon's
+own source: every `os.Getenv`/`os.LookupEnv` of a `CODETERMINAL_*` name in
+non-test daemon code. Each member must be **delivered** by the extension or
+**declared** with a reason it needs none, and declarations are checked in both
+directions so a retired name cannot linger and silently excuse a future gap.
+
+Measured at this HEAD: **4 variables, 2 delivered, 2 declared.** The two
+declarations — `CODETERMINAL_USE_PROXY` and `CODETERMINAL_MOCHIII_KEY` — were
+*true but accidental* until element 5 existed. Proxy mode is off unless set to
+exactly `"true"`, the Mochiii key is read only in proxy mode, and the extension
+can enable neither; nothing had ever said so, and nothing enforced the coupling.
+It is enforced now: setting `USE_PROXY` without `MOCHIII_KEY` fails, because the
+daemon calls `logger.Fatal` without the key.
+
+Five neuters, all demonstrated failing from a committed tree — a new unsupplied
+variable, a stale declaration, a removed delivery, a broken scan hitting the
+vacuity floor, and the proxy coupling.
+
+**What element 5 still cannot see, stated rather than discovered later:** a
+variable read through a constant or a computed string is invisible to a source
+scan, as is anything read by the helper or the TUI rather than the daemon. The
+daemon is the process the extension spawns, which is what this check is about;
+`helperEnv()` (`daemon/helperproc.go:237`) passes `PATH` and `HOME` only.
 
 ### What the gate system does unusually well
 
