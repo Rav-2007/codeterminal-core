@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"mochiii/editapply"
 	"mochiii/protocol"
 )
 
@@ -694,16 +695,22 @@ func (c *Config) warnMCPPolicySurface() {
 	// something local. They have authorised unattended requests to the open
 	// internet. So the network tools get their own line, with the fact the
 	// other line cannot carry.
+	//
+	// AND THEN IT HAPPENED AGAIN, one class over, because the split was by NAME
+	// (isWebToolName) rather than by what a tool does. Everything not named
+	// web_search or web_fetch landed in the "confined and do not write to your
+	// files" line -- including the three tools that start a language server
+	// (register item 32) and sandbox_exec, which runs build commands with the
+	// user's full privileges when no sandbox is installed. So the split is now
+	// by capability class (builtinToolClass), and a table that could drift from
+	// the tools is checked against them (TestBuiltinClassTableMatchesTheTools).
 	if !c.MCP.Builtin.Disabled {
-		allowed := allowedTools(c.MCP.Builtin.Tools)
-		var local, network []string
-		for _, name := range allowed {
-			if isWebToolName(name) {
-				network = append(network, name)
-			} else {
-				local = append(local, name)
-			}
+		byClass := map[builtinClass][]string{}
+		for _, name := range allowedTools(c.MCP.Builtin.Tools) {
+			class := builtinToolClass(name)
+			byClass[class] = append(byClass[class], name)
 		}
+		local, network := byClass[classConfined], byClass[classNetwork]
 		if len(local) > 0 {
 			c.warnf("mcp.builtin: %d built-in tool(s) will run WITHOUT asking you: %s (these are confined and do not write to your files)",
 				len(local), strings.Join(local, ", "))
@@ -714,6 +721,22 @@ func (c *Config) warnMCPPolicySurface() {
 				"Secrets are stripped on the way out and returned pages are treated as untrusted data, "+
 				"but nothing here can vouch for the far end — set these to %q to see each one first",
 				len(network), strings.Join(network, ", "), PolicyAsk)
+		}
+		if launches := byClass[classLaunches]; len(launches) > 0 {
+			c.warnf("mcp.builtin: %d built-in tool(s) will run without a per-call prompt: %s. "+
+				"Each can start a language server from your PATH (%s) that reads this project's configuration "+
+				"— and starting one always asks you first, whatever this setting says",
+				len(launches), strings.Join(launches, ", "), strings.Join(languageServerNames(), ", "))
+		}
+		if executes := byClass[classExecutes]; len(executes) > 0 {
+			c.warnf("mcp.builtin: %d built-in tool(s) will RUN COMMANDS without asking you: %s. "+
+				"A build or test command runs whatever this project's build files say, confined by bwrap or docker "+
+				"only when one is installed and otherwise with your full privileges — set these to %q to see each command first",
+				len(executes), strings.Join(executes, ", "), PolicyAsk)
+		}
+		if unknown := byClass[classUnknown]; len(unknown) > 0 {
+			c.warnf("mcp.builtin: %s set to %q, but no built-in tool has that name, so the setting does nothing",
+				strings.Join(unknown, ", "), PolicyAllow)
 		}
 	}
 
@@ -733,6 +756,65 @@ func (c *Config) warnMCPPolicySurface() {
 				name, len(srv.Env), strings.Join(srv.Env, ", "))
 		}
 	}
+}
+
+// builtinClass is what a built-in tool can do beyond this daemon's own code --
+// the one fact the startup warning must get right about a tool it is telling
+// the user will run unattended.
+type builtinClass int
+
+const (
+	classUnknown  builtinClass = iota // not the name of any built-in
+	classConfined                     // our code, behind the same gates as everything else
+	classNetwork                      // sends data to a third party over the internet
+	classLaunches                     // can start a language server (register item 32)
+	classExecutes                     // runs commands the project's build files define
+)
+
+// builtinToolClasses names every built-in the daemon can register.
+//
+// A TABLE, SO IT IS CHECKED. This runs at config load, before any Server
+// exists, and builtinTools() cannot be called here: it resolves sandbox_exec's
+// confinement from the host as it builds the list. So the classes are written
+// out -- and TestBuiltinClassTableMatchesTheTools builds a real Server, derives
+// every tool's class from the flags builtinTools() actually declares, and fails
+// on a disagreement, a missing tool or a name no tool has. A new built-in that
+// is not added here fails that test before it can be misdescribed.
+var builtinToolClasses = map[string]builtinClass{
+	"read_file":                 classConfined,
+	"list_directory":            classConfined,
+	"search_code":               classConfined,
+	"repo_map":                  classConfined,
+	"propose_edit":              classConfined,
+	"query_compiler_definition": classLaunches,
+	"query_compiler_references": classLaunches,
+	"propose_ast_edit":          classLaunches,
+	"sandbox_exec":              classExecutes,
+	"web_search":                classNetwork,
+	"web_fetch":                 classNetwork,
+}
+
+// builtinToolClass classifies a configured built-in name. An unknown name is
+// classUnknown, never classConfined: a misspelled "allow" used to be reported
+// as a confined tool that would run without asking, which described a tool
+// that does not exist.
+func builtinToolClass(name string) builtinClass {
+	return builtinToolClasses[name]
+}
+
+// languageServerNames lists the programs a classLaunches tool can start,
+// derived from the language table and serverCommand -- the same two things the
+// bridge uses to choose one -- so the warning cannot name a different set.
+func languageServerNames() []string {
+	var names []string
+	seen := map[string]bool{}
+	for _, lang := range editapply.KnownLanguages() {
+		if cmd, err := serverCommand(lang); err == nil && !seen[cmd] {
+			seen[cmd] = true
+			names = append(names, cmd)
+		}
+	}
+	return names
 }
 
 func allowedTools(tools map[string]string) []string {
