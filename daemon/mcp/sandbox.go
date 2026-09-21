@@ -32,6 +32,13 @@ const (
 
 	// SandboxDocker runs the process inside a transient Docker container.
 	SandboxDocker SandboxMode = "docker"
+
+	// SandboxLandlock confines the process with Landlock and a seccomp filter,
+	// both unprivileged and neither needing a user namespace -- so it works on
+	// hosts where bwrap is installed and forbidden (see BwrapUsable). It is
+	// weaker than bubblewrap in stated ways (see LandlockLimits) and is only
+	// ever chosen automatically for a caller that sets LandlockFallback.
+	SandboxLandlock SandboxMode = "landlock"
 )
 
 // SandboxConfig specifies the runtime confinement rules for launching an MCP server.
@@ -86,6 +93,28 @@ type SandboxConfig struct {
 	// nearly everywhere -- so the branch was effectively dead until the bwrap
 	// capability probe started routing real traffic to it.
 	Image string
+
+	// LandlockFallback lets SandboxAuto choose the landlock backend when
+	// neither bwrap nor docker can run.
+	//
+	// OPT-IN, AND ONLY sandbox_exec OPTS IN. The landlock policy grants the
+	// system directories, the command's toolchain, the workspace and HomeDir --
+	// and deliberately not the user's real home. A third-party MCP server
+	// (stdioclient.go) usually lives in exactly that real home: an npx cache
+	// under ~/.npm, a venv under ~/.local. Choosing landlock for it
+	// automatically would break servers that run today, on precisely the
+	// hosts where they have always run unconfined. Lane B keeps its behaviour
+	// until that is a decision someone makes on purpose.
+	LandlockFallback bool
+}
+
+// sandboxSystemPaths is what every confining backend lets a command read: the
+// system binaries and libraries, and what TLS and DNS need. ONE LIST, read by
+// both the bwrap binds and the landlock policy, so the two backends cannot
+// quietly come to disagree about what "the system" is.
+var sandboxSystemPaths = []string{
+	"/usr", "/lib", "/lib64", "/bin", "/sbin",
+	"/etc/ssl", "/etc/ca-certificates", "/etc/pki", "/etc/resolv.conf",
 }
 
 // DockerUsable reports whether the docker backend can actually run cfg.
@@ -385,9 +414,51 @@ func ResolveMode(cfg SandboxConfig) SandboxMode {
 		return SandboxBubblewrap
 	case DockerUsable(cfg):
 		return SandboxDocker
+	case cfg.LandlockFallback && cfg.AllowNetwork && LandlockUsable():
+		// LAST OF THE THREE, so every host that gets bwrap or docker today
+		// still does. And only with the network allowed: Landlock can refuse
+		// TCP but not UDP, so it cannot keep a "no network" promise, and a
+		// backend that cannot keep the caller's promise must not be chosen
+		// for it.
+		return SandboxLandlock
 	default:
 		return SandboxNone
 	}
+}
+
+// PassedOver says why SandboxAuto did not choose each backend ranked above the
+// one it did choose, in ResolveMode's order -- from the same probes ResolveMode
+// just used, so the explanation cannot describe a different host from the one
+// the command runs on. Nil for an explicit mode, and for bwrap, which is first.
+func PassedOver(cfg SandboxConfig) []string {
+	if (cfg.Mode != SandboxAuto && cfg.Mode != "") || cfg.WorkspaceRoot == "" {
+		return nil
+	}
+	mode := ResolveMode(cfg)
+	if mode == SandboxBubblewrap {
+		return nil
+	}
+	var reasons []string
+	if _, err := lookPath("bwrap"); err != nil {
+		reasons = append(reasons, "bwrap is not installed")
+	} else {
+		reasons = append(reasons, "bwrap is installed but cannot start a sandbox here")
+	}
+	if mode == SandboxDocker {
+		return reasons
+	}
+	if _, err := lookPath("docker"); err != nil {
+		reasons = append(reasons, "Docker is not installed")
+	} else {
+		reasons = append(reasons, "Docker has no image configured for this")
+	}
+	if mode == SandboxLandlock || !cfg.LandlockFallback {
+		return reasons
+	}
+	if !cfg.AllowNetwork {
+		return append(reasons, "Landlock cannot keep this command off the network")
+	}
+	return append(reasons, "Landlock is unavailable")
 }
 
 // Confines reports whether cfg would actually put a command inside something.
@@ -450,10 +521,7 @@ func WrapCommand(command string, args []string, cfg SandboxConfig) (string, []st
 		}
 
 		// Read-only system binary and SSL certificate mounts
-		systemMounts := []string{
-			"/usr", "/lib", "/lib64", "/bin", "/sbin",
-			"/etc/ssl", "/etc/ca-certificates", "/etc/pki", "/etc/resolv.conf",
-		}
+		systemMounts := sandboxSystemPaths
 		for _, m := range systemMounts {
 			if _, err := os.Stat(m); err == nil {
 				bwrapArgs = append(bwrapArgs, "--ro-bind", m, m)
@@ -493,6 +561,19 @@ func WrapCommand(command string, args []string, cfg SandboxConfig) (string, []st
 		bwrapArgs = append(bwrapArgs, args...)
 
 		return withLimiter("bwrap", bwrapArgs, cfg)
+
+	case SandboxLandlock:
+		if !LandlockUsable() {
+			return "", nil, fmt.Errorf("landlock sandbox requested, but this host cannot enforce it " +
+				"(needs Linux with Landlock enabled, on amd64 or arm64)")
+		}
+		if cfg.WorkspaceRoot == "" {
+			return "", nil, fmt.Errorf("landlock sandbox requires a non-empty WorkspaceRoot")
+		}
+		// The limiter wraps the OUTSIDE, exactly as for bwrap: the scope holds
+		// the helper and everything the command it becomes goes on to start.
+		helperArgs := append(landlockPolicyFor(command, cfg).args(), "--", command)
+		return withLimiter(selfExecutable(), append([]string{SandboxHelperArg}, append(helperArgs, args...)...), cfg)
 
 	case SandboxDocker:
 		if _, err := lookPath("docker"); err != nil {

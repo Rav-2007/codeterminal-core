@@ -283,9 +283,14 @@ func builtinSpec(t *testing.T, s *Server, name string) mcp.Tool {
 // one this machine is NOT in, so it cannot be reached by observation.
 func stubNoSandboxBackend(t *testing.T) func() {
 	t.Helper()
-	orig := mcp.BwrapUsable
+	// EVERY backend sandbox_exec can reach. Docker is already out (no image,
+	// see sandboxExecImage); bwrap and landlock are the two a host decides.
+	// Before landlock existed, stubbing bwrap alone was the whole of "no
+	// backend", and on any Landlock kernel it stopped being so.
+	origBwrap, origLandlock := mcp.BwrapUsable, mcp.LandlockUsable
 	mcp.BwrapUsable = func() bool { return false }
-	return func() { mcp.BwrapUsable = orig }
+	mcp.LandlockUsable = func() bool { return false }
+	return func() { mcp.BwrapUsable, mcp.LandlockUsable = origBwrap, origLandlock }
 }
 
 // ---------------------------------------------------------------------------

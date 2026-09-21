@@ -18,6 +18,7 @@ import (
 
 	"crypto/rand"
 	"encoding/hex"
+	"mochiii/daemon/mcp"
 	"mochiii/editapply"
 	"mochiii/protocol"
 )
@@ -27,6 +28,11 @@ import (
 const staleSocketProbeTimeout = 500 * time.Millisecond
 
 func main() {
+	// FIRST, before anything else runs: when this binary was started as the
+	// sandbox_exec landlock helper it restricts itself and becomes the command,
+	// and nothing below may have happened in it. See mcp.MaybeRunSandboxHelper.
+	mcp.MaybeRunSandboxHelper()
+
 	logger := log.New(os.Stderr, "mochiii-daemon: ", log.LstdFlags)
 
 	// "index", "retrieve", "download-model", "helper-smoketest",
@@ -438,6 +444,9 @@ func main() {
 	srv.lspBridge.logf = logger.Printf
 
 	srv.startWorkspaceWatcher()
+	// Which sandbox sandbox_exec will get, and why -- in the background, because
+	// finding out runs a probe or two and startup waits for neither.
+	go srv.logSandboxExecBackend()
 	// Housekeeping for the sandbox_exec cache (register item 37): once, in the
 	// background, and never allowed to delay or fail startup.
 	go srv.reclaimSandboxHomes()

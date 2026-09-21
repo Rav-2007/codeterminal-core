@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mochiii/daemon/mcp"
 	"mochiii/protocol"
 	"os"
 	"os/exec"
@@ -20,6 +21,12 @@ import (
 var fakeHelperBinPath string
 
 func TestMain(m *testing.M) {
+	// FIRST: under `go test` the landlock sandbox helper is THIS binary
+	// re-executed (mcp.selfExecutable), so it must dispatch the helper before
+	// it does anything a test binary does -- or a sandbox_exec test would run
+	// this whole suite again inside the sandbox instead of the command.
+	mcp.MaybeRunSandboxHelper()
+
 	tmpDir, err := os.MkdirTemp("", "fakehelper-build")
 	if err != nil {
 		panic(err)

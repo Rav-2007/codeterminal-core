@@ -96,8 +96,15 @@ func requireWorkingSandbox(t *testing.T) {
 	if mcp.DockerUsable(mcp.SandboxConfig{Image: sandboxExecImage()}) {
 		return
 	}
+	// LANDLOCK IS THE BACKEND FOR EXACTLY THAT HOST. It needs no user
+	// namespace, so the runner these tests always skipped on can now run them
+	// -- and confinement there stops being unverified.
+	if mcp.LandlockUsable() {
+		return
+	}
 	t.Skip("NOT RUN: no sandbox backend on this host can execute (bwrap cannot create a user " +
-		"namespace and no docker image is configured); sandbox_exec confinement is UNVERIFIED here")
+		"namespace, Landlock is unavailable, and no docker image is configured); sandbox_exec " +
+		"confinement is UNVERIFIED here")
 }
 
 func TestSandboxExec_DoesNotLeakInferenceCredentials(t *testing.T) {

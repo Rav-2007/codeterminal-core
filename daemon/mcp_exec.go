@@ -135,12 +135,17 @@ func (s *Server) sandboxExecConfig() mcp.SandboxConfig {
 		MemoryLimitMB: execMemoryLimitMB,
 		PidsLimit:     execPidsLimit,
 		HomeDir:       s.sandboxExecHome(),
-		// Auto: bwrap preferred, docker as fallback, neither installed degrades
-		// to host execution rather than failing the call -- and the approval
-		// prompt now SAYS SO when it degrades.
+		// Auto: bwrap preferred, docker next, then landlock; none of the three
+		// degrades to host execution rather than failing the call -- and the
+		// approval prompt SAYS SO when it degrades.
 		Mode:          mcp.SandboxAuto,
 		WorkspaceRoot: s.workspace,
 		Image:         sandboxExecImage(),
+		// This tool's commands need only the system, their toolchain, the
+		// workspace and HomeDir -- exactly what the landlock policy grants -- so
+		// it is the one caller that opts in. See mcp.SandboxConfig.LandlockFallback
+		// for why third-party MCP servers do not.
+		LandlockFallback: true,
 		// A build writes: compiled artifacts, node_modules, target/. Read-only
 		// would refuse the tool's whole purpose.
 		ReadOnlyWorkspace: false,
@@ -171,11 +176,7 @@ func (s *Server) sandboxExecConfined() bool { return mcp.Confines(s.sandboxExecC
 // inside a namespace and able to exhaust the host, or bounded and unconfined.
 func (s *Server) sandboxExecDescription() string {
 	cfg := s.sandboxExecConfig()
-
-	confinement := "NOT confined on this host: no usable bwrap or docker, so it runs with your full privileges."
-	if mcp.Confines(cfg) {
-		confinement = "Confined to this workspace on this host."
-	}
+	confinement := sandboxConfinementSentence(cfg)
 
 	limits := fmt.Sprintf("Capped at %d MiB of memory and %d processes.", cfg.MemoryLimitMB, cfg.PidsLimit)
 	if !mcp.LimitsApply(cfg) {
@@ -187,6 +188,58 @@ func (s *Server) sandboxExecDescription() string {
 		"These tools execute project-supplied scripts (Makefile recipes, package.json scripts, build.rs), " +
 		"so approving a call approves whatever the project's build files do. " +
 		"This daemon's API credentials are never passed to it."
+}
+
+// sandboxConfinementSentence says what the backend ResolveMode chose will and
+// will not hold, and -- when it chose nothing -- why, in the words a person
+// deciding whether to approve needs.
+//
+// "Confined to this workspace" opens every confined sentence and no other, so
+// the phrase keeps meaning exactly mcp.Confines (sandboxconsent_test.go and
+// sandboxlimits_test.go hold it to that).
+//
+// THE LANDLOCK SENTENCE STATES ITS LIMITS. It is a real boundary for files and
+// for local services, and it is not a private machine: without a PID namespace
+// the command can see the user's other programs, and before Landlock ABI 6 it
+// can signal them too. Saying so is what keeps "confined" from overclaiming.
+func sandboxConfinementSentence(cfg mcp.SandboxConfig) string {
+	switch mcp.ResolveMode(cfg) {
+	case mcp.SandboxNone:
+		why := "nothing here can confine it"
+		if reasons := mcp.PassedOver(cfg); len(reasons) > 0 {
+			why = strings.Join(reasons, "; ")
+		}
+		return "NOT confined on this host (" + why + "), so it runs with your full privileges."
+	case mcp.SandboxLandlock:
+		sentence := "Confined to this workspace by Landlock on this host: it can read the system and its " +
+			"toolchain, and write only this workspace and its own cache, not your home folder or /tmp. " +
+			"It cannot open Unix sockets, so it cannot reach your desktop session, ssh-agent or this daemon. " +
+			"Unlike a full sandbox, it can see your other running programs"
+		if mcp.LandlockABI() < 6 {
+			sentence += ", and send them signals"
+		}
+		return sentence + "."
+	default:
+		return "Confined to this workspace on this host."
+	}
+}
+
+// sandboxExecBackendSummary is the startup log's one line about sandbox_exec:
+// which backend it will use, and why each one ranked above it was passed over.
+// The same daemon can land on different backends depending on what launched it
+// (an AppArmor profile is inherited), and this is where that becomes visible
+// before anyone is asked to approve anything.
+func (s *Server) sandboxExecBackendSummary() string {
+	cfg := s.sandboxExecConfig()
+	mode := mcp.ResolveMode(cfg)
+	head := "confined by " + string(mode)
+	if mode == mcp.SandboxNone {
+		head = "NOT confined"
+	}
+	if reasons := mcp.PassedOver(cfg); len(reasons) > 0 {
+		return head + " (" + strings.Join(reasons, "; ") + ")"
+	}
+	return head
 }
 
 // builtinRepoMap answers the repo_map tool.
@@ -299,6 +352,19 @@ func (s *Server) builtinSandboxExec(ctx context.Context, raw json.RawMessage) (m
 	if cfg.HomeDir != "" {
 		cmd.Env = append(cmd.Env, "HOME="+cfg.HomeDir)
 	}
+	// LANDLOCK HAS NO PRIVATE /tmp. bwrap mounts a fresh tmpfs there; landlock
+	// cannot, and the shared /tmp holds other programs' files and sockets, so
+	// the policy does not grant it. The command gets a directory of its own
+	// inside HomeDir instead, gone when it finishes -- the lifetime bwrap's
+	// tmpfs has. Go, npm and cargo all take it from TMPDIR.
+	if cfg.HomeDir != "" && mcp.ResolveMode(cfg) == mcp.SandboxLandlock {
+		tmp, err := sandboxCallTempDir(cfg.HomeDir)
+		if err != nil {
+			return toolError("preparing a temporary directory for %q: %v", bin, err)
+		}
+		defer func() { _ = os.RemoveAll(tmp) }()
+		cmd.Env = append(cmd.Env, "TMPDIR="+tmp, "TMP="+tmp, "TEMP="+tmp)
+	}
 
 	// Bounded at source. See execMaxOutputBytes.
 	var buf tailBuffer
@@ -322,6 +388,17 @@ func (s *Server) builtinSandboxExec(ctx context.Context, raw json.RawMessage) (m
 		result = "(no output)"
 	}
 	return mcp.Result{Content: result}, nil
+}
+
+// sandboxCallTempDir makes one command's private temporary directory, under
+// <home>/.tmp so the landlock policy's grant of home covers it and the
+// sandbox-home reclaim takes any a crash leaves behind.
+func sandboxCallTempDir(home string) (string, error) {
+	parent := filepath.Join(home, ".tmp")
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		return "", err
+	}
+	return os.MkdirTemp(parent, "call-")
 }
 
 // tailBuffer keeps at most max bytes, discarding from the FRONT.
@@ -364,4 +441,14 @@ func (b *tailBuffer) String() string {
 	}
 	return fmt.Sprintf("[... %d earlier byte(s) of output dropped; this daemon keeps the last %d ...]\n%s",
 		b.lost, b.max, string(b.buf))
+}
+
+// logSandboxExecBackend logs sandboxExecBackendSummary once at startup, when
+// sandbox_exec can be called at all.
+func (s *Server) logSandboxExecBackend() {
+	if s.cfg == nil || !s.cfg.MCP.Enabled || s.cfg.MCP.Builtin.Disabled ||
+		s.cfg.MCP.Builtin.policyFor("sandbox_exec") == PolicyDeny {
+		return
+	}
+	s.logger.Printf("sandbox_exec: %s", s.sandboxExecBackendSummary())
 }
