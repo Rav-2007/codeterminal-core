@@ -432,6 +432,11 @@ func main() {
 	// is degraded from the moment the daemon starts serving.
 	srv.logDegradations()
 
+	// Set before Serve, so the idle janitor -- started by the first language
+	// server spawn, which only a served request can cause -- can only ever see
+	// it already assigned.
+	srv.lspBridge.logf = logger.Printf
+
 	srv.startWorkspaceWatcher()
 	go srv.Serve(ln)
 

@@ -97,6 +97,20 @@ const (
 	// lspInitTimeout bounds the startup handshake, which happens under the
 	// bridge lock and so is kept tighter than a steady-state call.
 	lspInitTimeout = 15 * time.Second
+
+	// lspIdleTimeout is how long a language server may sit unused before the
+	// bridge stops it (register item 35).
+	//
+	// A server was kept for the daemon's whole lifetime: a live gopls measured
+	// 295 MB RSS, and a project with Go, TypeScript and Python code could hold
+	// three at once, indefinitely, after a single lookup each. Ten minutes is
+	// long enough that a working session never meets it -- every call resets
+	// the clock -- and short enough that a break gives the memory back.
+	//
+	// Stopping one is cheap in consent terms because of item 32: the next call
+	// sees no running server, and asks "STARTS gopls" again at the moment it
+	// actually starts, rather than restarting it silently.
+	lspIdleTimeout = 10 * time.Minute
 )
 
 // errServerGone reports that the language server exited, or that its stream was
@@ -187,23 +201,125 @@ type LSPBridge struct {
 	workspace string
 	servers   map[editapply.Language]*LSPServer
 	mu        sync.Mutex
+
+	// idleTimeout overrides lspIdleTimeout. Zero means the default -- the same
+	// "0 => default" convention connApprover.idleTimeout uses. Production leaves
+	// it zero; tests set milliseconds.
+	idleTimeout time.Duration
+
+	// logf, when set, reports each server stopped for being idle. main.go sets
+	// it; everything else may leave it nil.
+	logf func(format string, args ...any)
+
+	// The janitor that stops idle servers (register item 35). Started on the
+	// first successful spawn, so a daemon that never starts a language server
+	// runs no goroutine for it; ended by Close.
+	janitorOnce sync.Once
+	stop        chan struct{}
+	stopOnce    sync.Once
+	janitorDone chan struct{} // closed when the janitor has exited
 }
 
 func NewLSPBridge(workspace string) *LSPBridge {
 	return &LSPBridge{
-		workspace: workspace,
-		servers:   make(map[editapply.Language]*LSPServer),
+		workspace:   workspace,
+		servers:     make(map[editapply.Language]*LSPServer),
+		stop:        make(chan struct{}),
+		janitorDone: make(chan struct{}),
 	}
 }
 
-// Close shuts down all managed language servers.
+// Close shuts down all managed language servers, and the janitor with them.
+// Idempotent: it is reached from shutdown and from every test's cleanup.
 func (b *LSPBridge) Close() {
+	if b.stop != nil {
+		b.stopOnce.Do(func() { close(b.stop) })
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	for _, srv := range b.servers {
 		srv.Close()
 	}
 	b.servers = make(map[editapply.Language]*LSPServer)
+}
+
+func (b *LSPBridge) resolvedIdleTimeout() time.Duration {
+	if b.idleTimeout > 0 {
+		return b.idleTimeout
+	}
+	return lspIdleTimeout
+}
+
+// evictIdle stops every language server that has been idle for the timeout at
+// now, and returns the programs it stopped.
+//
+// IDLE MEANS BOTH: no request in flight AND no use for the timeout. A server
+// answering a slow request is busy however long ago it was handed out, and one
+// handed out a moment ago is in use however quiet its pipe is -- so neither
+// condition alone is safe to act on. See LSPServer.retireIfIdle for how the
+// decision and the shutdown are made atomic against a new request.
+//
+// Lock order is b.mu then s.mu, the same order GetServer takes them in during
+// the initialize handshake, so the two cannot deadlock against each other.
+func (b *LSPBridge) evictIdle(now time.Time) []string {
+	timeout := b.resolvedIdleTimeout()
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	var stopped []string
+	for lang, srv := range b.servers {
+		if !srv.alive() {
+			// Already dead: drop the entry so Running stops reporting it.
+			delete(b.servers, lang)
+			continue
+		}
+		if !srv.retireIfIdle(now, timeout) {
+			continue
+		}
+		delete(b.servers, lang)
+		srv.Close()
+		program, _ := serverCommand(lang)
+		stopped = append(stopped, program)
+	}
+	return stopped
+}
+
+// startJanitor runs the idle check in the background, once per bridge.
+func (b *LSPBridge) startJanitor() {
+	if b.stop == nil || b.janitorDone == nil {
+		return // a bridge not built by NewLSPBridge has nothing to stop it with
+	}
+	b.janitorOnce.Do(func() { go b.janitor() })
+}
+
+func (b *LSPBridge) janitor() {
+	defer close(b.janitorDone)
+
+	timeout := b.resolvedIdleTimeout()
+	// A quarter of the timeout, so a server is stopped within 25% of the
+	// deadline, and never less often than once a minute.
+	interval := timeout / 4
+	if interval > time.Minute {
+		interval = time.Minute
+	}
+	if interval <= 0 {
+		interval = time.Millisecond
+	}
+	tick := time.NewTicker(interval)
+	defer tick.Stop()
+
+	for {
+		select {
+		case <-b.stop:
+			return
+		case now := <-tick.C:
+			for _, program := range b.evictIdle(now) {
+				if b.logf != nil {
+					b.logf("lsp: stopped %s after %s idle; the next lookup will ask to start it again", program, timeout)
+				}
+			}
+		}
+	}
 }
 
 // serverCommand maps a language to the binary that serves it.
@@ -381,6 +497,9 @@ func (b *LSPBridge) GetServer(ctx context.Context, lang editapply.Language) (*LS
 		// A server that has since died must not be handed out again, or every
 		// caller gets errServerGone forever and the language never recovers.
 		if srv.alive() {
+			// Handing it out is a use, so a caller holding a pointer returned a
+			// moment ago can never find it stopped for idleness underneath them.
+			srv.touch()
 			return srv, nil
 		}
 		delete(b.servers, lang)
@@ -451,7 +570,9 @@ func (b *LSPBridge) GetServer(ctx context.Context, lang editapply.Language) (*LS
 		return nil, fmt.Errorf("initialized notification failed: %w", err)
 	}
 
+	srv.touch()
 	b.servers[lang] = srv
+	b.startJanitor()
 	return srv, nil
 }
 
@@ -478,6 +599,37 @@ type LSPServer struct {
 	// dead-server replacement), so "called twice" is the normal case, not an
 	// edge one.
 	closeOnce sync.Once
+
+	// lastUsed is when this server was last handed out or talked to, in unix
+	// nanoseconds. The janitor stops a server whose lastUsed is older than the
+	// idle timeout and which has nothing in flight (register item 35).
+	lastUsed atomic.Int64
+}
+
+// touch records a use.
+func (s *LSPServer) touch() { s.lastUsed.Store(time.Now().UnixNano()) }
+
+// retireIfIdle reports whether the server is idle at now -- nothing in flight,
+// and unused for timeout -- and if so marks it closed IN THE SAME CRITICAL
+// SECTION.
+//
+// That atomicity is the point. Checking "nothing pending" and then closing as
+// two steps leaves a window in which a caller registers a request against a
+// server that is about to be killed. CallContext refuses a closed server under
+// this same lock, so once this returns true no new request can be admitted:
+// a caller arriving later gets errServerGone at once, not a request written to
+// a dying process.
+func (s *LSPServer) retireIfIdle(now time.Time, timeout time.Duration) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.pending) > 0 {
+		return false
+	}
+	if now.Sub(time.Unix(0, s.lastUsed.Load())) < timeout {
+		return false
+	}
+	s.closed.Store(true)
+	return true
 }
 
 // Call issues a request bounded by lspCallTimeout.
@@ -504,7 +656,19 @@ func (s *LSPServer) CallContext(ctx context.Context, method string, params any) 
 
 	ch := make(chan []byte, 1)
 
+	// A call is a use, and so is its end: a long request that finishes resets
+	// the idle clock from when it finished, not from when it began.
+	s.touch()
+	defer s.touch()
+
 	s.mu.Lock()
+	// Retired by the janitor (retireIfIdle), or closed: refuse under the same
+	// lock the retirement decision was made under, so nothing is admitted to a
+	// server being shut down.
+	if s.closed.Load() {
+		s.mu.Unlock()
+		return nil, errServerGone
+	}
 	select {
 	case <-s.done:
 		s.mu.Unlock()
@@ -566,6 +730,7 @@ func (s *LSPServer) Notify(method string, params any) error {
 		return err
 	}
 
+	s.touch()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_, err = fmt.Fprintf(s.in, "Content-Length: %d\r\n\r\n%s", len(body), body)
