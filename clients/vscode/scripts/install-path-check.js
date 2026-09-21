@@ -14,6 +14,8 @@
 //   2. spawnDaemon passes an explicit env        -> here
 //   3. the setting is contributed AND READ       -> here
 //   4. the API KEY is collectable AND DELIVERED  -> here
+//   5. EVERY value the daemon reads is delivered
+//      or declared -- the set DERIVED, not listed -> here
 //
 // (3) is two assertions on purpose. A `contributes.configuration` block that
 // nothing reads is a setting the user can change with no effect -- the shape
@@ -31,6 +33,13 @@
 // -- the artifact exists and the delivery does not -- applied to the one value
 // without which the product does nothing, and this check missed it by asking
 // about settings rather than about credentials.
+//
+// (5) WAS ADDED THE SAME DAY, BECAUSE (4) CLOSED AN INSTANCE AND LEFT THE CLASS
+// OPEN. Elements 3 and 4 each name one variable as a literal, so the next value
+// the daemon needs would go missing exactly as the first two did -- twice is a
+// pattern, not an accident. Element 5 takes its set from the daemon's own
+// source instead of from a list here, which is the difference between asking
+// "is this value delivered?" and "is every value delivered?".
 
 'use strict';
 
@@ -182,6 +191,126 @@ if (!/\benv\.CODETERMINAL_API_KEY\s*=/.test(extCode)) {
   );
 }
 
+
+// --- element 5: the set is DERIVED from the daemon, not listed here ---------
+//
+// ELEMENTS 3 AND 4 EACH CLOSE ONE INSTANCE OF A CLASS THEY CANNOT CLOSE.
+//
+// Element 3 asks about the API base. Element 4 asks about the API key. Both
+// were written after the value in question had already shipped unusable, and
+// neither could have caught the other: element 3 is built around
+// `contributes.configuration` and structurally cannot see a credential, and
+// element 4 names CODETERMINAL_API_KEY as a literal. A check that enumerates
+// the values it knows about passes on every value its author did not list.
+//
+// So this element does not list anything. It DERIVES the set of values the
+// daemon needs by reading what the daemon actually reads -- every
+// os.Getenv/os.LookupEnv of a CODETERMINAL_* name in non-test daemon source --
+// and requires each one to be either DELIVERED by the extension or DECLARED
+// here with a reason it needs no delivery.
+//
+// A new `os.Getenv("CODETERMINAL_ANYTHING")` in the daemon therefore fails this
+// check until someone does one of those two things. That is the property
+// elements 3 and 4 assert one value at a time.
+//
+// THE DECLARATIONS ARE CHECKED IN BOTH DIRECTIONS. A declaration naming a
+// variable the daemon no longer reads is stale and fails too -- otherwise the
+// table becomes a place where retired names accumulate and a future variable
+// could be silently covered by an entry that means nothing.
+//
+// WHAT THIS CANNOT SEE, stated rather than discovered later: a variable read
+// through a non-literal name (a const or a computed string) is invisible to a
+// source scan, and so is one read by the helper or the TUI rather than the
+// daemon. The daemon is the process the extension spawns, which is what this
+// file is about; `helperEnv()` passes PATH and HOME only, by construction.
+
+const daemonDir = path.resolve(root, '..', '..', 'daemon');
+if (!fs.existsSync(daemonDir)) {
+  fail(`vacuity floor: no daemon source at ${daemonDir} -- element 5 derived nothing`);
+}
+
+// Every value the daemon reads that has no path from a user, with the reason.
+// Keyed by name so a stale entry is detectable against the derived set.
+const UNSUPPLIED = {
+  CODETERMINAL_USE_PROXY:
+    'opt-in advanced mode, off unless set to exactly "true" (daemon/main.go). The extension ' +
+    'deliberately offers no way to turn it on, so an ordinary install talks to the provider ' +
+    'directly and never reaches the proxy path.',
+  CODETERMINAL_MOCHIII_KEY:
+    'read ONLY in proxy mode (daemon/main.go), which the extension cannot enable -- see ' +
+    'CODETERMINAL_USE_PROXY. Unreachable from a packaged install by construction, not by accident.',
+};
+
+function goFiles(dir) {
+  const out = [];
+  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+    const p = path.join(dir, e.name);
+    if (e.isDirectory()) out.push(...goFiles(p));
+    else if (e.name.endsWith('.go') && !e.name.endsWith('_test.go')) out.push(p);
+  }
+  return out;
+}
+
+const derived = new Set();
+if (fs.existsSync(daemonDir)) {
+  for (const f of goFiles(daemonDir)) {
+    const src = fs.readFileSync(f, 'utf8');
+    for (const m of src.matchAll(/os\.(?:Getenv|LookupEnv)\(\s*"(CODETERMINAL_[A-Z0-9_]+)"\s*\)/g)) {
+      derived.add(m[1]);
+    }
+  }
+}
+
+// Vacuity floor. The daemon demonstrably reads at least the API base and key;
+// a scan returning fewer than two has broken, and a broken scan that reports
+// "ok" is the exact failure this element exists to prevent.
+if (derived.size < 2) {
+  fail(
+    `vacuity floor: element 5 derived ${derived.size} CODETERMINAL_* variable(s) from ${daemonDir}. ` +
+      'The daemon reads at least the API base and the API key, so this scan is broken and its ' +
+      'verdict is meaningless.',
+  );
+}
+
+const undeliverable = [];
+for (const name of [...derived].sort()) {
+  const delivered = new RegExp(`\\benv\\.${name}\\s*=`).test(extCode);
+  if (delivered) continue;
+  if (Object.prototype.hasOwnProperty.call(UNSUPPLIED, name)) {
+    undeliverable.push(name);
+    continue;
+  }
+  fail(
+    `the daemon reads ${name} and nothing supplies it. src/extension.ts never assigns ` +
+      `env.${name}, and it is not declared in this check's UNSUPPLIED table. Either deliver it ` +
+      '(a setting, a command, or a computed value) or declare why a packaged install does not ' +
+      'need it. This is the defect that shipped twice: a value the daemon needs with no path ' +
+      'from a user to the process that needs it.',
+  );
+}
+
+// Stale declarations, the other direction.
+for (const name of Object.keys(UNSUPPLIED)) {
+  if (!derived.has(name)) {
+    fail(
+      `UNSUPPLIED declares ${name}, but no non-test daemon source reads it. A declaration for a ` +
+        'variable nothing reads is dead weight that could later excuse a real gap; remove it.',
+    );
+  }
+}
+
+// The coupling that makes the two current declarations safe. If the extension
+// ever learns to turn proxy mode on, it must also learn to supply the key that
+// mode requires -- the daemon calls logger.Fatal without it, so half the pair
+// is a daemon that cannot start.
+if (/\benv\.CODETERMINAL_USE_PROXY\s*=/.test(extCode) && !/\benv\.CODETERMINAL_MOCHIII_KEY\s*=/.test(extCode)) {
+  fail(
+    'src/extension.ts sets env.CODETERMINAL_USE_PROXY but not env.CODETERMINAL_MOCHIII_KEY. ' +
+      'In proxy mode the daemon requires the Mochiii key and calls logger.Fatal without it, so ' +
+      'enabling the mode without supplying the key ships a daemon that cannot start.',
+  );
+}
+
 // --- report ----------------------------------------------------------------
 
 if (failures.length > 0) {
@@ -191,5 +320,8 @@ if (failures.length > 0) {
 }
 console.log(
   `install-path-check: ok — spawnDaemon passes an env, ${names.length} setting(s) are contributed ` +
-    `and read, and the API key is collectable (${keyCommands.length} command(s)) and delivered`,
+    `and read, the API key is collectable (${keyCommands.length} command(s)) and delivered, and ` +
+    `all ${derived.size} CODETERMINAL_* value(s) the daemon reads are accounted for ` +
+    `(${derived.size - undeliverable.length} delivered, ${undeliverable.length} declared unsupplied: ` +
+    `${undeliverable.join(', ') || 'none'})`,
 );
