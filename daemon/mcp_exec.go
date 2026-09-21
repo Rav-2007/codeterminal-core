@@ -123,11 +123,11 @@ const (
 // Returns "" if the cache directory cannot be determined, which simply means no
 // HomeDir is set and behaviour is what it was before -- never a failed turn.
 func (s *Server) sandboxExecHome() string {
-	base, err := os.UserCacheDir()
+	root, err := sandboxHomeRoot()
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(base, "mochiii", "sandbox-home", protocol.WorkspaceTag(s.workspace))
+	return filepath.Join(root, protocol.WorkspaceTag(s.workspace))
 }
 
 func (s *Server) sandboxExecConfig() mcp.SandboxConfig {
@@ -265,6 +265,12 @@ func (s *Server) builtinSandboxExec(ctx context.Context, raw json.RawMessage) (m
 			}
 			cmd = exec.CommandContext(execCtx, execBin, execArgs...)
 			cmd.Dir = s.workspace
+		} else if err := recordSandboxHomeUse(cfg.HomeDir, s.workspace); err != nil {
+			// Whose folder this is, and that it was just used (register item
+			// 37), so the reclaim pass can tell a live project's cache from an
+			// abandoned one. Not fatal: without the record the folder is still
+			// reclaimed, just by age alone.
+			s.logger.Printf("mcp: recording sandbox home use for %s: %v", cfg.HomeDir, err)
 		}
 	}
 

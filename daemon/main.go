@@ -438,6 +438,9 @@ func main() {
 	srv.lspBridge.logf = logger.Printf
 
 	srv.startWorkspaceWatcher()
+	// Housekeeping for the sandbox_exec cache (register item 37): once, in the
+	// background, and never allowed to delay or fail startup.
+	go srv.reclaimSandboxHomes()
 	go srv.Serve(ln)
 
 	// Block here so cleanup runs exactly once, in this goroutine, instead of
