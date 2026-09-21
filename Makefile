@@ -304,6 +304,11 @@ supplychain:
 webview:
 	@cd clients/vscode && node scripts/verify-vsix.js --self-test
 	@cd clients/vscode && node scripts/webview-check.js
+# The install-path check ran in CI and under `npm test`'s pretest, but not from
+# `make check` -- so the one gate written to catch "the extension cannot start
+# the daemon it ships" was absent from the suite a developer runs before pushing.
+# It is plain node and costs milliseconds.
+	@cd clients/vscode && node scripts/install-path-check.js
 
 # Ran ONLY in CI until 2026-09-09 and had no make target at all, so running it
 # before a push required knowing the script path. Found by gate-parity.sh.

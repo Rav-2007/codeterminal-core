@@ -13,11 +13,24 @@
 //   1. the daemon defaults its API base          -> daemon/installpath_test.go
 //   2. spawnDaemon passes an explicit env        -> here
 //   3. the setting is contributed AND READ       -> here
+//   4. the API KEY is collectable AND DELIVERED  -> here
 //
 // (3) is two assertions on purpose. A `contributes.configuration` block that
 // nothing reads is a setting the user can change with no effect -- the shape
 // this codebase keeps finding, where the artifact exists and the delivery does
 // not.
+//
+// (4) WAS ADDED 2026-09-21, BECAUSE THIS CHECK WAS GREEN WHILE THE PRODUCT WAS
+// UNUSABLE. Elements 2 and 3 cover the API BASE exhaustively -- contributed,
+// machine-scoped, actually read -- and say nothing about the credential,
+// because the credential is not a setting and a check written around
+// `contributes.configuration` cannot see one. So the extension shipped with no
+// way for a user to supply an API key at all: the daemon reads
+// CODETERMINAL_API_KEY from its environment, nothing put it there, and every
+// answer failed with "credentials rejected". That is element 3's own principle
+// -- the artifact exists and the delivery does not -- applied to the one value
+// without which the product does nothing, and this check missed it by asking
+// about settings rather than about credentials.
 
 'use strict';
 
@@ -124,6 +137,51 @@ if (names.length === 0) {
   }
 }
 
+// --- element 4: the API key must be collectable, and must be delivered -----
+//
+// Two assertions, for the same reason element 3 is two: a command that collects
+// a key but never reaches the daemon's environment is the delivery half
+// missing, and an environment variable set from a value no user can ever supply
+// is the collection half missing. Either alone is a product that cannot answer.
+
+// Comments are stripped before the delivery test. A file that merely DISCUSSES
+// CODETERMINAL_API_KEY -- and this one's source does, at length -- must not be
+// able to satisfy a check about whether it SETS it.
+const extCode = ext.replace(/^\s*\/\/.*$/gm, '');
+
+const commandIds = (contributes.commands || []).map((c) => (c && c.command) || '');
+const keyCommands = commandIds.filter((c) => /apikey|api_key|credential/i.test(c));
+
+if (keyCommands.length === 0) {
+  fail(
+    'package.json contributes no command for supplying an API key, so a packaged install has ' +
+      'no way to provide one: the daemon reads CODETERMINAL_API_KEY from its environment, and a ' +
+      'VS Code launched from a desktop icon inherits no shell. Contributed commands: ' +
+      (commandIds.join(', ') || '(none)'),
+  );
+} else {
+  // Contributed but never registered is the same theatre as a setting nothing
+  // reads -- the palette offers it and invoking it errors.
+  for (const id of keyCommands) {
+    if (!extCode.includes(`registerCommand('${id}'`) && !extCode.includes(`registerCommand("${id}"`)) {
+      fail(
+        `package.json contributes "${id}" but src/extension.ts never registers it. The command ` +
+          'appears in the palette and fails when invoked.',
+      );
+    }
+  }
+}
+
+// Delivery. The key must be written into the environment the daemon is spawned
+// with -- an assignment, not a mention.
+if (!/\benv\.CODETERMINAL_API_KEY\s*=/.test(extCode)) {
+  fail(
+    'src/extension.ts never assigns env.CODETERMINAL_API_KEY, so nothing a user supplies ' +
+      'reaches the daemon. The daemon reads that variable and nothing else for its credential ' +
+      '(daemon/config.go: models.json holds "model slugs and metadata only -- never credentials").',
+  );
+}
+
 // --- report ----------------------------------------------------------------
 
 if (failures.length > 0) {
@@ -131,4 +189,7 @@ if (failures.length > 0) {
   for (const f of failures) console.error('  * ' + f);
   process.exit(1);
 }
-console.log(`install-path-check: ok — spawnDaemon passes an env, and ${names.length} setting(s) are contributed and read`);
+console.log(
+  `install-path-check: ok — spawnDaemon passes an env, ${names.length} setting(s) are contributed ` +
+    `and read, and the API key is collectable (${keyCommands.length} command(s)) and delivered`,
+);
