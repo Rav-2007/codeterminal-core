@@ -75,3 +75,65 @@ func TestSubprocessBranchDoesNotShadowTheOthers(t *testing.T) {
 		t.Errorf("a third-party call lost its warning:\n%s", p)
 	}
 }
+
+// REGISTER ITEM 32, as the user sees it. The daemon now sets LaunchesSubprocess
+// only when approving THIS call starts the program, and names it in Program.
+// The two prompts a user meets for one language server must therefore read
+// differently: the first says it starts gopls, every later one says gopls is
+// already running and nothing new starts.
+func TestTheLaunchPromptNamesTheProgramItStarts(t *testing.T) {
+	panel := renderApprovalPanel(protocol.ToolApprovalRequest{
+		Tool: "query_compiler_definition", Lane: protocol.LaneFirstParty,
+		LaunchesSubprocess: true, Program: "gopls", Iteration: 1, MaxIterations: 8,
+	})
+	if !strings.Contains(panel, "STARTS gopls") {
+		t.Errorf("the launch prompt does not say it starts gopls by name:\n%s", panel)
+	}
+	if !strings.Contains(panel, "until the daemon exits") {
+		t.Errorf("the launch prompt does not say gopls keeps running afterwards:\n%s", panel)
+	}
+	if strings.Contains(panel, "ALREADY RUNNING") {
+		t.Errorf("the launch prompt claims gopls is already running:\n%s", panel)
+	}
+}
+
+// Neuter check: delete the Program case. A running-server prompt (Confined
+// false) then falls to the default and prints the third-party-server sentence,
+// which this test forbids. Moving the case below `default` would prove nothing:
+// in Go the default runs only when no case matches, wherever it sits.
+func TestARunningServerPromptSaysNothingNewStarts(t *testing.T) {
+	panel := renderApprovalPanel(protocol.ToolApprovalRequest{
+		Tool: "query_compiler_definition", Lane: protocol.LaneFirstParty, Confined: false,
+		LaunchesSubprocess: false, Program: "gopls", Iteration: 2, MaxIterations: 8,
+	})
+	if !strings.Contains(panel, "ASKS gopls, WHICH IS ALREADY RUNNING") {
+		t.Fatalf("the prompt for a running server does not say so:\n%s", panel)
+	}
+	if !strings.Contains(panel, "starts nothing new") {
+		t.Errorf("the prompt does not say this call starts nothing:\n%s", panel)
+	}
+	for _, forbidden := range []string{
+		"STARTS gopls", "STARTS ANOTHER PROGRAM", // item 32's false sentence
+		"NOT SANDBOXED: this is a separate program",        // reads as a third-party server
+		"anything it changes goes through the same review", // this tool is not confined
+	} {
+		if strings.Contains(panel, forbidden) {
+			t.Errorf("the prompt for an already-running server says %q:\n%s", forbidden, panel)
+		}
+	}
+}
+
+// Program arrives from the daemon and is printed on the one screen where a
+// repainted line is forged consent, so it is filtered like every other field
+// there. A clear-screen sequence must not survive into the panel.
+func TestTheProgramNameCannotRepaintTheConsentScreen(t *testing.T) {
+	for _, launches := range []bool{true, false} {
+		panel := renderApprovalPanel(protocol.ToolApprovalRequest{
+			Tool: "query_compiler_definition", Lane: protocol.LaneFirstParty,
+			LaunchesSubprocess: launches, Program: "gopls\x1b[2J\x1b[H", Iteration: 1, MaxIterations: 8,
+		})
+		if strings.Contains(panel, "\x1b[2J") || strings.Contains(panel, "\x1b[H") {
+			t.Errorf("launches=%t: a control sequence in Program reached the consent screen", launches)
+		}
+	}
+}

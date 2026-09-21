@@ -1158,11 +1158,29 @@
         'and brings a reply back into the conversation. Mochiii strips secrets on the way out ' +
         'and treats whatever comes back as untrusted data — but it cannot vouch for the far end.';
     } else if (req.launches_subprocess) {
+      // TRUE OF THIS CALL, not of the tool (register item 32): the daemon sets
+      // it only when approving this call starts the program, and names it. The
+      // same two sentences, in the same order, as clients/tui/chat.go.
+      lane.className = 'approval-lane unconfined';
+      const starts = req.program
+        ? 'STARTS ' + req.program + ': approving this runs ' + req.program + ' from your PATH against this ' +
+          'repository. It keeps running, and reading this project, until the daemon exits. '
+        : 'STARTS ANOTHER PROGRAM: this runs a language server from your PATH against this repository — ' +
+          'gopls, tsserver or pyright. ';
+      lane.textContent =
+        starts +
+        'Mochiii ships the tool but not that program. It reads ' +
+        'configuration out of the project you have open, so a repository you do not trust can influence it.';
+    } else if (req.program) {
+      // Without this branch a running-server prompt -- confined is false for
+      // these tools -- reaches the final else, whose third-party-server
+      // sentence would send the user looking for a server they never
+      // configured. The program is running because they approved it; this call
+      // only asks it a question.
       lane.className = 'approval-lane unconfined';
       lane.textContent =
-        'STARTS ANOTHER PROGRAM: this runs a language server from your PATH against this repository — ' +
-        'gopls, tsserver or pyright. Mochiii ships the tool but not that program. It reads ' +
-        'configuration out of the project you have open, so a repository you do not trust can influence it.';
+        'ASKS ' + req.program + ', WHICH IS ALREADY RUNNING: you approved starting it earlier in this ' +
+        'session. This call starts nothing new.';
     } else if (req.confined) {
       lane.className = 'approval-lane confined';
       lane.textContent =

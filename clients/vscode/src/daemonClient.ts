@@ -276,7 +276,14 @@ export interface ToolApprovalRequest {
   lane: string;
   confined: boolean;
   reaches_network?: boolean;
+  // launches_subprocess describes THIS CALL, not the tool: true only when
+  // approving it starts `program`. It used to be the tool's static flag, so
+  // every prompt after the first said a language server was being started when
+  // it was already running (register item 32).
   launches_subprocess?: boolean;
+  // program names what this call starts, or -- with launches_subprocess false --
+  // the already-running program it talks to. Absent from an older daemon.
+  program?: string;
   read_only_hint?: boolean;
   destructive?: boolean;
   iteration: number;

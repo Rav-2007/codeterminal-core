@@ -2081,10 +2081,34 @@ func renderApprovalPanel(req protocol.ToolApprovalRequest) string {
 		// also true, and reads as though a third-party MCP server were being
 		// approved, which sends the user looking for a server they never
 		// configured.
-		b.WriteString("\n" + diffRemovedStyle.Render("STARTS ANOTHER PROGRAM: this runs a language server from your "+
-			"PATH against this repository — gopls, tsserver or pyright."))
+		//
+		// TRUE OF THIS CALL, not of the tool (register item 32). A language
+		// server is started once and kept, and this case used to fire on every
+		// prompt because the flag was the tool's -- so "STARTS" was printed
+		// about a server already running, and the one approval that really
+		// started it looked like all the rest. The daemon now sets the flag only
+		// when approving THIS call starts the program, and names it.
+		if program := sanitizeText(req.Program); program != "" {
+			b.WriteString("\n" + diffRemovedStyle.Render("STARTS "+program+": approving this runs "+program+
+				" from your PATH against this repository. It keeps running, and reading this project, until the daemon exits."))
+		} else {
+			// An older daemon, or a call whose program could not be determined:
+			// the generic sentence, which over-states rather than hides.
+			b.WriteString("\n" + diffRemovedStyle.Render("STARTS ANOTHER PROGRAM: this runs a language server from your "+
+				"PATH against this repository — gopls, tsserver or pyright."))
+		}
 		b.WriteString("\n" + helpStyle.Render("Mochiii ships the tool but not that program. It reads configuration out of the "+
 			"project you have open (a tsconfig.json can load plugins), so a repository you do not trust can influence it."))
+	case req.Program != "":
+		// THE OTHER HALF OF THE SAME TRUTH. Without this case a running-server
+		// prompt -- Confined is false for these tools -- falls to the default,
+		// whose "a separate program running with your full access" reads as a
+		// third-party server being approved. What is true is narrower: the
+		// program was started with the user's approval, and this call only asks
+		// it a question.
+		program := sanitizeText(req.Program)
+		b.WriteString("\n" + helpStyle.Render("ASKS "+program+", WHICH IS ALREADY RUNNING: you approved starting it "+
+			"earlier in this session. This call starts nothing new."))
 	case req.Confined:
 		b.WriteString("\n" + helpStyle.Render("this tool ships with Mochiii; anything it changes goes through the same review you use for edits"))
 	default:
