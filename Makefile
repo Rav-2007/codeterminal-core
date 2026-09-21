@@ -327,6 +327,7 @@ parity:
 
 docs:
 	@./scripts/docs-links.sh
+	@./scripts/docs-index.sh
 	@./scripts/docs-coderefs.sh
 	@./scripts/docs-claims.sh --self-test
 	@./scripts/docs-claims.sh

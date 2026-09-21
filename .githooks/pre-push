@@ -159,6 +159,20 @@ if [ -x "$repo_root/scripts/docs-links.sh" ]; then
   fi
 fi
 
+# Index completeness rides with the link checker, for the same reason and
+# against the opposite failure: docs-links asks whether the index's members are
+# real, this asks whether the directory's members are indexed. A documentation
+# push is exactly when a new file appears with nothing pointing at it.
+if [ -x "$repo_root/scripts/docs-index.sh" ]; then
+  if ! out="$("$repo_root/scripts/docs-index.sh" 2>&1)"; then
+    echo "pre-push: DOCUMENTS MISSING FROM THE INDEX" >&2
+    echo "$out" >&2
+    status=1
+  else
+    echo "pre-push: ok index ($(printf '%s' "$out" | head -1))"
+  fi
+fi
+
 # The cross-register claim check, here for exactly the reason stated above and
 # with more force than the link checker needs it.
 #

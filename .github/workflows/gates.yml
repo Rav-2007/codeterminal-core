@@ -61,6 +61,14 @@ jobs:
       - name: Doc links resolve
         run: ./scripts/docs-links.sh
 
+      # The opposite question to the one above, and the one a link checker
+      # structurally cannot answer: docs-links asks whether the index's entries
+      # are real, this asks whether the directory's files are indexed. When it
+      # was written the index listed 33 of 69 documents while claiming "roughly
+      # a third" was missing.
+      - name: Every document is in the index
+        run: ./scripts/docs-index.sh
+
       # A LINK that resolves says nothing about a `file.go:123` beside it.
       # Two of the residual-risk register's four code references had drifted by
       # 2026-09-04 -- pointing at unrelated code in files still long enough that

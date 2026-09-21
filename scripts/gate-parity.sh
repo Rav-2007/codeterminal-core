@@ -96,6 +96,7 @@ actions-pinned.sh|both|
 coverage-ratchet.sh|both|
 docs-claims.sh|both|
 docs-coderefs.sh|both|
+docs-index.sh|both|
 docs-links.sh|both|
 errcheck-ceiling.sh|both|
 go-toolchain-pinned.sh|both|

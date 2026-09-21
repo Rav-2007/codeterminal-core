@@ -135,7 +135,7 @@ Mochiii (codeterminal-core) is a hyper-secure, local-first AI coding assistant t
 ## 1. Hero
 * **Headline:** Intelligence of the Cloud. Privacy of Localhost.
 * **Subtitle:** The AI pair programmer that indexes your code locally, enforces Zero Data Retention by architecture, and never writes a line without passing a 5-gate safety pipeline.
-* **Primary CTA:** Download for Linux / macOS
+* **Primary CTA:** Download for Linux / Windows
 * **Secondary CTA:** Read the Security Model
 * **Visual:** A highly dynamic, 2.5D interactive terminal floating above a glowing local CPU, showing a direct, guarded beam to a cloud proxy.
 
