@@ -71,11 +71,17 @@ no second terminal, no `index` command, no daemon started by hand.
 
 ### From a release — the normal path
 
+> **No release has been published yet.** `v0.0.4` is built, verified and sitting
+> as a **draft**, so the releases page shows nothing to download until someone
+> publishes it. Until then, use [From source](#from-source). This note is here
+> rather than in a status banner because this is the paragraph that stops
+> working without it.
+
 Download the `.vsix` for your platform from the
 [latest release](https://github.com/Rav-2007/codeterminal-core/releases), then:
 
 ```bash
-code --install-extension mochiii-vscode-linux-x64-0.0.3.vsix   # or win32-x64
+code --install-extension mochiii-vscode-linux-x64-0.0.4.vsix   # or win32-x64
 ```
 
 **Then set your API key**, or nothing can be answered: run **`Mochiii: Set API
@@ -101,7 +107,7 @@ otherwise have given you.
 cd clients/vscode
 npm ci
 npm run package        # builds daemon + helper, stages them, packages, verifies
-code --install-extension mochiii-vscode-0.0.3.vsix
+code --install-extension mochiii-vscode-0.0.4.vsix
 ```
 
 `npm run package` needs the Go toolchain because it builds the binaries it
