@@ -1,6 +1,17 @@
 # Release notes — v0.0.2
 
-The body published on [the GitHub Release](https://github.com/Rav-2007/codeterminal-core/releases/tag/v0.0.2), kept here so it has a source of truth: the release body is an editable field on GitHub and this file is not. If you change one, change the other.
+**v0.0.2 WAS NEVER PUBLISHED, and its GitHub Release was deleted on 2026-09-21.**
+This sentence used to read *"the body published on the GitHub Release"*, which
+was never true: the release was created `draft: true`, `publishedAt` was always
+`null`, and it was removed once v0.0.3 superseded it. The `v0.0.2` **tag**
+survives at `52bd128` as a true record of a green build, so
+[the URL that sentence linked](https://github.com/Rav-2007/codeterminal-core/releases/tag/v0.0.2)
+still returns 200 — it resolves to the *tag* page, there being no release. That
+is exactly how a false claim survives a link check.
+
+Kept as a record of what that draft said. Two defects made its artifacts
+unusable by anyone who had downloaded them — no way to supply an API key, and a
+terminal client with no daemon published — and both are fixed in v0.0.4.
 
 ---
 

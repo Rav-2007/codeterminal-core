@@ -7,6 +7,46 @@ performance changes are not listed here unless you can observe them.
 
 ## Unreleased
 
+*Nothing yet.*
+
+---
+
+## v0.0.4 — 2026-09-21
+
+**The first release intended to be published.** v0.0.1, v0.0.2 and v0.0.3 were
+tagged and built and never published, so everything below ships to a user for
+the first time here.
+
+### Everything is named Mochiii
+
+The product was already called Mochiii; the identifiers were not. Binaries are
+now `mochiii-daemon`, `mochiii-tui` and `mochiii-embedder-helper`; the
+environment variables are `MOCHIII_API_KEY`, `MOCHIII_API_BASE`,
+`MOCHIII_USE_PROXY` and `MOCHIII_PROXY_KEY`; the setting is `mochiii.apiBase`;
+the workspace state directory is `.mochiii/` and the model cache is
+`~/.mochiii/models/`.
+
+**No compatibility shims, deliberately.** Nothing was ever published, so there
+is no installed base to keep working. If you built from source, update your
+exports; `mv ~/.codeterminal ~/.mochiii` keeps the embedding model you already
+downloaded instead of fetching it again.
+
+### You can set an API key
+
+There was previously no way to. The daemon reads its credential from the
+environment and nothing put it there, so a packaged install could never
+authenticate and every answer failed with *"the configured API credentials were
+rejected"*. Run **`Mochiii: Set API Key`** from the command palette. The key is
+stored in VS Code's SecretStorage — not `settings.json`, which Settings Sync
+replicates and a commit can leak.
+
+### The daemon and embedder helper are published
+
+The standalone terminal client previously shipped with nothing to talk to: it
+looks for a running daemon and exits telling you to start one, and no daemon was
+published anywhere. All three binaries now ship per platform, with checksums in
+`SHA256SUMS-bin`.
+
 ### Your terminal is restored when the session ends, not just when you quit
 
 **What changed.** Closing a terminal window or dropping an ssh connection
