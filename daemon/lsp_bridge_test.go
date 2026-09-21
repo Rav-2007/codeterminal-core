@@ -59,6 +59,14 @@ func buildFakeLSP(t *testing.T) string {
 	return fakeLSPOnce.dir
 }
 
+// approvedLaunch is the context the agent loop hands a tool whose launch the
+// user approved. Every test here that means to START a server says so with it,
+// because the bridge now refuses to start one without it (errLaunchNotApproved);
+// that refusal is tested on its own, in lsplaunchconsent_test.go.
+func approvedLaunch(lang editapply.Language) context.Context {
+	return withApprovedLaunch(context.Background(), string(lang))
+}
+
 // newFakeBridge returns a bridge whose "go" server is the fake, running in the
 // given mode, with HOME pointed at a scratch directory the fake uses for its
 // mode file and environment dump.
@@ -98,7 +106,7 @@ func newFakeBridge(t *testing.T, mode string) (*LSPBridge, string) {
 func TestLSPServer_NegativeContentLengthDoesNotPanicTheDaemon(t *testing.T) {
 	b, _ := newFakeBridge(t, "negative-length")
 
-	srv, err := b.GetServer("go")
+	srv, err := b.GetServer(approvedLaunch("go"), "go")
 	if err != nil {
 		t.Fatalf("handshake should still succeed in this mode: %v", err)
 	}
@@ -129,7 +137,7 @@ func TestLSPServer_NegativeContentLengthDoesNotPanicTheDaemon(t *testing.T) {
 func TestLSPServer_HugeContentLengthIsRefusedBeforeAllocating(t *testing.T) {
 	b, _ := newFakeBridge(t, "huge-length")
 
-	srv, err := b.GetServer("go")
+	srv, err := b.GetServer(approvedLaunch("go"), "go")
 	if err != nil {
 		t.Fatalf("handshake: %v", err)
 	}
@@ -153,7 +161,7 @@ func TestLSPServer_HugeContentLengthIsRefusedBeforeAllocating(t *testing.T) {
 func TestLSPServer_MessageCapBoundary(t *testing.T) {
 	t.Run("oversize body is refused", func(t *testing.T) {
 		b, _ := newFakeBridge(t, "oversize-body")
-		srv, err := b.GetServer("go")
+		srv, err := b.GetServer(approvedLaunch("go"), "go")
 		if err != nil {
 			t.Fatalf("handshake: %v", err)
 		}
@@ -164,7 +172,7 @@ func TestLSPServer_MessageCapBoundary(t *testing.T) {
 
 	t.Run("large but legal body is delivered", func(t *testing.T) {
 		b, _ := newFakeBridge(t, "atcap-body")
-		srv, err := b.GetServer("go")
+		srv, err := b.GetServer(approvedLaunch("go"), "go")
 		if err != nil {
 			t.Fatalf("handshake: %v", err)
 		}
@@ -184,7 +192,7 @@ func TestLSPServer_MessageCapBoundary(t *testing.T) {
 func TestLSPServer_SilentServerTimesOutRatherThanHanging(t *testing.T) {
 	b, _ := newFakeBridge(t, "silent")
 
-	srv, err := b.GetServer("go")
+	srv, err := b.GetServer(approvedLaunch("go"), "go")
 	if err != nil {
 		t.Fatalf("handshake: %v", err)
 	}
@@ -231,14 +239,14 @@ func TestLSPBridge_UnresponsiveServerDoesNotDeadlockOtherLanguages(t *testing.T)
 	first := make(chan struct{})
 	go func() {
 		defer close(first)
-		_, _ = b.GetServer("go")
+		_, _ = b.GetServer(approvedLaunch("go"), "go")
 	}()
 
 	// Second caller wants an entirely different language. It must not be held
 	// hostage indefinitely by the first.
 	second := make(chan error, 1)
 	go func() {
-		_, err := b.GetServer("nonexistent-language")
+		_, err := b.GetServer(context.Background(), "nonexistent-language")
 		second <- err
 	}()
 
@@ -258,7 +266,7 @@ func TestLSPBridge_UnresponsiveServerDoesNotDeadlockOtherLanguages(t *testing.T)
 func TestLSPServer_DeadServerFailsCallersImmediately(t *testing.T) {
 	b, _ := newFakeBridge(t, "die")
 
-	srv, err := b.GetServer("go")
+	srv, err := b.GetServer(approvedLaunch("go"), "go")
 	if err != nil {
 		t.Fatalf("handshake: %v", err)
 	}
@@ -286,7 +294,7 @@ func TestLSPServer_ChildProcessNeverReceivesCredentials(t *testing.T) {
 	t.Setenv("MOCHIII_API_KEY", "CANARY-must-not-leak")
 
 	b, home := newFakeBridge(t, "ok")
-	if _, err := b.GetServer("go"); err != nil {
+	if _, err := b.GetServer(approvedLaunch("go"), "go"); err != nil {
 		t.Fatalf("handshake: %v", err)
 	}
 
@@ -405,7 +413,7 @@ func TestLSPBridge_MissingBinaryIsAClearError(t *testing.T) {
 	b := NewLSPBridge(t.TempDir())
 	defer b.Close()
 
-	_, err := b.GetServer("go")
+	_, err := b.GetServer(approvedLaunch("go"), "go")
 	if err == nil {
 		t.Fatal("a server was returned with no binary on PATH")
 	}
@@ -424,7 +432,7 @@ func TestLSPServer_CloseIsSafeAndIdempotent(t *testing.T) {
 	s.Close() // doneOnce must absorb the second close, not panic on a closed channel
 
 	b, _ := newFakeBridge(t, "ok")
-	srv, err := b.GetServer("go")
+	srv, err := b.GetServer(approvedLaunch("go"), "go")
 	if err != nil {
 		t.Fatalf("handshake: %v", err)
 	}
@@ -439,13 +447,13 @@ func TestLSPServer_CloseIsSafeAndIdempotent(t *testing.T) {
 func TestLSPBridge_ReplacesADeadCachedServer(t *testing.T) {
 	b, _ := newFakeBridge(t, "ok")
 
-	first, err := b.GetServer("go")
+	first, err := b.GetServer(approvedLaunch("go"), "go")
 	if err != nil {
 		t.Fatalf("handshake: %v", err)
 	}
 	first.Close()
 
-	second, err := b.GetServer("go")
+	second, err := b.GetServer(approvedLaunch("go"), "go")
 	if err != nil {
 		t.Fatalf("second GetServer: %v", err)
 	}

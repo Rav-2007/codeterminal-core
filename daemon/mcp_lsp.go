@@ -9,14 +9,14 @@ import (
 )
 
 func (s *Server) builtinLSPDefinition(ctx context.Context, raw json.RawMessage) (mcp.Result, error) {
-	return s.handleLSPQuery("textDocument/definition", raw)
+	return s.handleLSPQuery(ctx, "textDocument/definition", raw)
 }
 
 func (s *Server) builtinLSPReferences(ctx context.Context, raw json.RawMessage) (mcp.Result, error) {
-	return s.handleLSPQuery("textDocument/references", raw)
+	return s.handleLSPQuery(ctx, "textDocument/references", raw)
 }
 
-func (s *Server) handleLSPQuery(method string, raw json.RawMessage) (mcp.Result, error) {
+func (s *Server) handleLSPQuery(ctx context.Context, method string, raw json.RawMessage) (mcp.Result, error) {
 	var args struct {
 		Path      string `json:"path"`
 		Line      int    `json:"line"`
@@ -39,7 +39,7 @@ func (s *Server) handleLSPQuery(method string, raw json.RawMessage) (mcp.Result,
 	// switch that used to sit here -- byte-identical to the one in its sibling
 	// file, and defaulting an unknown extension to Go -- is gone; see
 	// lspServerForFile.
-	srv, err := s.lspServerForFile(full)
+	srv, err := s.lspServerForFile(ctx, full)
 	if err != nil {
 		return toolError("%v", err)
 	}

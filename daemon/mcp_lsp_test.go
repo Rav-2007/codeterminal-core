@@ -59,7 +59,7 @@ func TestLSPQuery_PathGatesRunBeforeTheLanguageServer(t *testing.T) {
 				return mcpResult{r.Content}, err
 			},
 		} {
-			res, err := call(context.Background(), lspArgs(t, tc.path, 1, 1))
+			res, err := call(approvedLaunch("go"), lspArgs(t, tc.path, 1, 1))
 			if err != nil {
 				t.Fatalf("%s(%q): transport error, want a tool error: %v", name, tc.path, err)
 			}
@@ -78,7 +78,7 @@ type mcpResult struct{ content string }
 func TestLSPQuery_RejectsMalformedArguments(t *testing.T) {
 	s := &Server{logger: discardLogger(), workspace: t.TempDir()}
 
-	res, err := s.builtinLSPDefinition(context.Background(), json.RawMessage(`{"path":`))
+	res, err := s.builtinLSPDefinition(approvedLaunch("go"), json.RawMessage(`{"path":`))
 	if err != nil {
 		t.Fatalf("malformed JSON should be a tool error, not a transport error: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestLSPQuery_RejectsMalformedArguments(t *testing.T) {
 	// it resolves to the workspace root. That is not an escape, so it is not a
 	// confinement bug -- but it used to reach a nil lspBridge and PANIC the
 	// daemon's goroutine. It must now be a tool error like any other.
-	res, err = s.builtinLSPReferences(context.Background(), lspArgs(t, "", 0, 0))
+	res, err = s.builtinLSPReferences(approvedLaunch("go"), lspArgs(t, "", 0, 0))
 	if err != nil {
 		t.Fatalf("unexpected transport error: %v", err)
 	}

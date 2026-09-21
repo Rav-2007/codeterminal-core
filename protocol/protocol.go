@@ -528,12 +528,25 @@ type ToolApprovalRequest struct {
 	// call and had no way to say WHY. Clients must render it as plainly as they
 	// render the other two: a user is entitled to know that approving a lookup
 	// starts gopls or tsserver against this repository.
-	LaunchesSubprocess bool   `json:"launches_subprocess,omitempty"`
-	ReadOnlyHint       bool   `json:"read_only_hint,omitempty"`
-	Destructive        bool   `json:"destructive,omitempty"`
-	Iteration          int    `json:"iteration"`
-	MaxIterations      int    `json:"max_iterations"`
-	Detail             string `json:"detail,omitempty"`
+	//
+	// IT DESCRIBES THIS CALL, NOT THE TOOL. It was first copied from the tool's
+	// static declaration, and a language server is started once and then kept
+	// for the daemon's lifetime -- so every prompt after the first said "STARTS
+	// ANOTHER PROGRAM" about a server already running, and the one approval
+	// that actually started it was indistinguishable from all the rest
+	// (register item 32). It is now true exactly when approving this call
+	// starts Program.
+	LaunchesSubprocess bool `json:"launches_subprocess,omitempty"`
+	// Program names the program this call starts, or -- with
+	// LaunchesSubprocess false -- the one already running that it talks to.
+	// Empty when the call involves no such program, or the daemon predates the
+	// field; clients then fall back to the generic wording they always used.
+	Program       string `json:"program,omitempty"`
+	ReadOnlyHint  bool   `json:"read_only_hint,omitempty"`
+	Destructive   bool   `json:"destructive,omitempty"`
+	Iteration     int    `json:"iteration"`
+	MaxIterations int    `json:"max_iterations"`
+	Detail        string `json:"detail,omitempty"`
 }
 
 // Phases reported on ToolActivity.Phase.

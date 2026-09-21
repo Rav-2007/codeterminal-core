@@ -80,6 +80,13 @@ type toolAuditEvent struct {
 	// of sub-second approvals is evidence of a user clicking through prompts
 	// without reading them, which is a thing worth being able to notice.
 	WaitedMS int64 `json:"waited_ms,omitempty"`
+	// Launch names the program this call was approved to START, when it was
+	// one (register item 32). Empty for a call that started nothing -- which is
+	// most of them, including every later call to a server already running.
+	// Without it the log could say a lookup was approved and never that gopls
+	// began running in this workspace at that moment, which is the event an
+	// incident review would actually be looking for.
+	Launch string `json:"launch,omitempty"`
 }
 
 // toolAuditMaxBytes bounds the active file before rotation; one rotation keeps

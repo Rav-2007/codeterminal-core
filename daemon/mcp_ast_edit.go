@@ -85,7 +85,7 @@ func extractLSPRange(content string, r lspRange) string {
 	return b.String()
 }
 
-func (s *Server) builtinProposeASTEdit(_ context.Context, raw json.RawMessage, proposals *proposalSink) (mcp.Result, error) {
+func (s *Server) builtinProposeASTEdit(ctx context.Context, raw json.RawMessage, proposals *proposalSink) (mcp.Result, error) {
 	var args struct {
 		Path    string `json:"path"`
 		Symbol  string `json:"symbol"`
@@ -114,7 +114,7 @@ func (s *Server) builtinProposeASTEdit(_ context.Context, raw json.RawMessage, p
 	// switch that used to sit here -- byte-identical to the one in its sibling
 	// file, and defaulting an unknown extension to Go -- is gone; see
 	// lspServerForFile.
-	srv, err := s.lspServerForFile(full)
+	srv, err := s.lspServerForFile(ctx, full)
 	if err != nil {
 		return toolError("%v", err)
 	}

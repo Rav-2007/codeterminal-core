@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,7 +25,7 @@ func TestRustFileIsNotRoutedToGopls(t *testing.T) {
 	s := newLSPServer(t, "symbols")
 	writeWorkspaceFile(t, s.workspace, "lib.rs", "fn main() {}\n")
 
-	res, err := s.builtinProposeASTEdit(context.Background(),
+	res, err := s.builtinProposeASTEdit(approvedLaunch("go"),
 		astArgs(t, "lib.rs", "main", "fn main() { todo!() }"), &proposalSink{})
 	if err != nil {
 		t.Fatalf("transport error: %v", err)
@@ -63,7 +62,7 @@ func TestUnidentifiableFileReachesNoLanguageServer(t *testing.T) {
 			s := newLSPServer(t, "ok")
 			writeWorkspaceFile(t, s.workspace, name, "content\n")
 
-			res, err := s.builtinLSPDefinition(context.Background(), lspArgs(t, name, 0, 0))
+			res, err := s.builtinLSPDefinition(approvedLaunch("go"), lspArgs(t, name, 0, 0))
 			if err != nil {
 				t.Fatalf("transport error: %v", err)
 			}
@@ -85,7 +84,7 @@ func TestAGoFileStillReachesItsLanguageServer(t *testing.T) {
 	s := newLSPServer(t, "symbols")
 	astFixture(t, s.workspace)
 
-	res, err := s.builtinProposeASTEdit(context.Background(),
+	res, err := s.builtinProposeASTEdit(approvedLaunch("go"),
 		astArgs(t, "main.go", "Target", "func (o Outer) Target() error {\n\treturn nil\n}"), &proposalSink{})
 	if err != nil {
 		t.Fatalf("transport error: %v", err)

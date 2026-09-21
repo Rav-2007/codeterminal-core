@@ -20,6 +20,40 @@ type Handler func(ctx context.Context, args json.RawMessage) (Result, error)
 type Builtin struct {
 	Tool    Tool
 	Handler Handler
+
+	// Launch says, BEFORE the call runs, whether running it would start a
+	// program -- and which. Required of every tool that declares
+	// LaunchesSubprocess, and refused on any tool that does not (see
+	// RegisterBuiltin), so the flag and the probe cannot come apart.
+	//
+	// WHY A PROBE AND NOT JUST THE FLAG. LaunchesSubprocess is a fact about the
+	// TOOL: it can start a language server. Whether THIS CALL starts one is a
+	// fact about the moment, because the server is cached for the daemon's
+	// lifetime. The consent prompt used to be built from the flag alone, so it
+	// said "STARTS ANOTHER PROGRAM" on every call -- true for the first and
+	// false for every one after (register item 32). The launch, the act that
+	// actually carries the risk, was never asked about as such.
+	//
+	// It must have no side effects. It is consulted before consent exists, so
+	// anything it did would be done without it.
+	Launch func(args json.RawMessage) LaunchPlan
+}
+
+// LaunchPlan is what one call would start, determined before it runs.
+//
+// The zero value means "starts nothing", which is also what an unparseable or
+// unsupported call resolves to: the handler reports its own error, and a probe
+// that guessed would be a second, divergent copy of that handler's validation.
+type LaunchPlan struct {
+	// Needed is true when running this call would start Program now.
+	Needed bool
+	// Program names the binary the call talks to, whether or not it is
+	// already running -- so the prompt can say "asks gopls" about a server
+	// that exists as plainly as "starts gopls" about one that does not.
+	Program string
+	// Key identifies the launch the daemon will perform, and is what an
+	// approval for it is recorded under. Opaque to this package.
+	Key string
 }
 
 // Policy is the resolved decision for one tool: deny, ask, or allow. The
@@ -87,6 +121,21 @@ func (r *Registry) RegisterBuiltin(b Builtin) error {
 	}
 	if b.Tool.Name == "" {
 		return fmt.Errorf("builtin has no name")
+	}
+
+	// A TOOL THAT CAN START A PROGRAM MUST SAY WHEN IT WILL, AND ONLY SUCH A
+	// TOOL MAY. Checked here, at the one door every built-in passes through,
+	// rather than left to whoever writes the next language-server tool: without
+	// a probe the loop cannot ask about the launch, and the only consent the
+	// user gives is to a call -- the defect this field exists to remove. The
+	// reverse is refused too, because a probe on a tool that declares no
+	// launch is a launch the Confined stamp below knows nothing about.
+	if b.Tool.LaunchesSubprocess && b.Launch == nil {
+		return fmt.Errorf("builtin %q declares LaunchesSubprocess but no Launch probe, "+
+			"so its launch could never be asked about", b.Tool.Name)
+	}
+	if b.Launch != nil && !b.Tool.LaunchesSubprocess {
+		return fmt.Errorf("builtin %q has a Launch probe but does not declare LaunchesSubprocess", b.Tool.Name)
 	}
 
 	b.Tool.Server = BuiltinServerName
@@ -358,6 +407,24 @@ func (r *Registry) Lookup(ctx context.Context, qualified string) (Tool, Policy, 
 		}
 	}
 	return Tool{}, PolicyDeny, fmt.Errorf("server %q offers no tool named %q", server, name)
+}
+
+// LaunchPlan reports what calling qualified with args would start, before
+// anything runs. Only built-ins can answer: a Lane B server is a process this
+// daemon already started when it connected, and what it does after that is
+// its own business, stated to the user as "unconfined" rather than probed.
+func (r *Registry) LaunchPlan(qualified string, args json.RawMessage) LaunchPlan {
+	server, name, err := SplitQualifiedName(qualified)
+	if err != nil || server != BuiltinServerName {
+		return LaunchPlan{}
+	}
+	r.mu.RLock()
+	builtin, ok := r.builtins[name]
+	r.mu.RUnlock()
+	if !ok || builtin.Launch == nil {
+		return LaunchPlan{}
+	}
+	return builtin.Launch(args)
 }
 
 // Call dispatches an APPROVED tool call. It never consults consent -- the

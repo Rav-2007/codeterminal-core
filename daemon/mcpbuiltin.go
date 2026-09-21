@@ -152,6 +152,9 @@ func (s *Server) builtinTools(proposals *proposalSink, mode string) []mcp.Builti
 				LaunchesSubprocess: true,
 			},
 			Handler: s.builtinLSPDefinition,
+			// Says whether THIS call would start the server, so the prompt can
+			// ask about the launch rather than about a lookup (register item 32).
+			Launch: s.lspLaunchPlan,
 		},
 		{
 			Tool: mcp.Tool{
@@ -175,6 +178,9 @@ func (s *Server) builtinTools(proposals *proposalSink, mode string) []mcp.Builti
 				LaunchesSubprocess: true,
 			},
 			Handler: s.builtinLSPReferences,
+			// Says whether THIS call would start the server, so the prompt can
+			// ask about the launch rather than about a lookup (register item 32).
+			Launch: s.lspLaunchPlan,
 		},
 		{
 			Tool: mcp.Tool{
@@ -289,6 +295,8 @@ func (s *Server) builtinTools(proposals *proposalSink, mode string) []mcp.Builti
 				Handler: func(ctx context.Context, raw json.RawMessage) (mcp.Result, error) {
 					return s.builtinProposeASTEdit(ctx, raw, proposals)
 				},
+				// The same probe as query_compiler_*: it reaches the same server.
+				Launch: s.lspLaunchPlan,
 			})
 	}
 

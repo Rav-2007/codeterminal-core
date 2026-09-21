@@ -103,6 +103,43 @@ const (
 // abandoned because it violated the framing rules above.
 var errServerGone = errors.New("language server is no longer running")
 
+// errLaunchNotApproved reports that no language server was running for the
+// language and nobody approved starting one.
+//
+// THE BRIDGE FAILS CLOSED, and this is the whole of register item 32's fix at
+// the one place a server starts. It used to spawn whenever asked, and the only
+// consent anywhere was to the tool CALL, three frames up -- so the first
+// approved lookup started gopls without the user ever being asked about gopls,
+// and every later prompt asked about a process already running. Now GetServer
+// starts nothing unless the context carries an approval for exactly this launch
+// (withApprovedLaunch), which only the agent loop grants, and only from the
+// answer to a prompt that said "STARTS <program>".
+//
+// The bridge never asks. Asking means waiting on a human, possibly for minutes,
+// and every other connection's language-server calls would wait with it behind
+// b.mu. It refuses instead, and the question is asked from the one place that
+// already asks every other question (resolveExecutable).
+var errLaunchNotApproved = errors.New("the language server is not running, and starting it was not approved")
+
+// approvedLaunchKey is the context key an approved launch travels under.
+type approvedLaunchKey struct{}
+
+// withApprovedLaunch records that the user approved starting the language
+// server identified by key (an editapply.Language) for the call ctx is for.
+//
+// One key per context: a call is about one file, so it can start at most one
+// server, and a set would only be a place for a second approval to hide.
+func withApprovedLaunch(ctx context.Context, key string) context.Context {
+	return context.WithValue(ctx, approvedLaunchKey{}, key)
+}
+
+// launchApproved reports whether ctx carries an approval to start the server
+// for key.
+func launchApproved(ctx context.Context, key string) bool {
+	got, ok := ctx.Value(approvedLaunchKey{}).(string)
+	return ok && key != "" && got == key
+}
+
 // lspToolchainEnv names the environment variables each language server needs to
 // find its own toolchain, and nothing else.
 //
@@ -203,7 +240,11 @@ func serverCommand(lang editapply.Language) (string, error) {
 // were identical down to the byte. One function now, so the next tool that needs
 // a language server inherits the LangUnknown refusal rather than reinventing the
 // default that caused the bug.
-func (s *Server) lspServerForFile(full string) (*LSPServer, error) {
+//
+// ctx is the tool call's own context, and it matters: it is what carries an
+// approval to START a server (withApprovedLaunch). A server already running
+// needs none.
+func (s *Server) lspServerForFile(ctx context.Context, full string) (*LSPServer, error) {
 	lang := editapply.LanguageOf(full)
 	if lang == editapply.LangUnknown {
 		// NAMED, NOT DEFAULTED. The old code sent this file to gopls, which
@@ -224,11 +265,63 @@ func (s *Server) lspServerForFile(full string) (*LSPServer, error) {
 		return nil, fmt.Errorf("language-server support is not available in this daemon")
 	}
 
-	srv, err := s.lspBridge.GetServer(lang)
+	srv, err := s.lspBridge.GetServer(ctx, lang)
+	if errors.Is(err, errLaunchNotApproved) {
+		// Reachable in one ordinary way: the loop saw the server running when
+		// it decided not to ask, and it exited before this call reached it. The
+		// model is told what happened and what the next attempt will do, rather
+		// than "failed to get language server", which reads like a broken
+		// install.
+		program, _ := serverCommand(lang)
+		return nil, fmt.Errorf("%s is not running and was not approved to start for this call; "+
+			"calling the tool again will ask the user to start it", program)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to get language server for %s: %v", lang, err)
 	}
 	return srv, nil
+}
+
+// lspLaunchPlan is the Launch probe for every tool that reaches
+// lspServerForFile: it says, before the call runs, which language server the
+// call would talk to and whether it would have to start it.
+//
+// It RESOLVES THE PATH EXACTLY AS THE HANDLERS DO -- realWorkspaceRoot, then
+// editapply.ResolveSafeTargetPath, then editapply.LanguageOf -- so the program
+// the user is asked about is the program the handler will reach. Anything the
+// handler would refuse (bad JSON, a path outside the workspace, an unsupported
+// extension, no bridge) is a zero plan here: the call starts nothing, and the
+// handler reports its own error in its own words.
+//
+// No side effects, by contract: this runs before consent exists.
+func (s *Server) lspLaunchPlan(raw json.RawMessage) mcp.LaunchPlan {
+	var args struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal(raw, &args); err != nil || strings.TrimSpace(args.Path) == "" {
+		return mcp.LaunchPlan{}
+	}
+	if s.lspBridge == nil {
+		return mcp.LaunchPlan{}
+	}
+	realRoot, err := s.realWorkspaceRoot()
+	if err != nil {
+		return mcp.LaunchPlan{}
+	}
+	full, err := editapply.ResolveSafeTargetPath(realRoot, args.Path)
+	if err != nil {
+		return mcp.LaunchPlan{}
+	}
+	lang := editapply.LanguageOf(full)
+	program, err := serverCommand(lang)
+	if err != nil {
+		return mcp.LaunchPlan{}
+	}
+	return mcp.LaunchPlan{
+		Needed:  !s.lspBridge.Running(lang),
+		Program: program,
+		Key:     string(lang),
+	}
 }
 
 // describeFileExt names a path's extension for a refusal message, in the same
@@ -263,8 +356,24 @@ func englishList(names []string) string {
 	}
 }
 
-// GetServer spins up and initializes a language server if one doesn't exist.
-func (b *LSPBridge) GetServer(lang editapply.Language) (*LSPServer, error) {
+// Running reports whether a live language server for lang exists right now,
+// without starting one. It is how the loop learns, before asking, whether a call
+// would launch anything (see lspLaunchPlan).
+func (b *LSPBridge) Running(lang editapply.Language) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	srv, ok := b.servers[lang]
+	return ok && srv.alive()
+}
+
+// GetServer returns the running language server for lang, or starts one -- but
+// ONLY IF ctx carries an approval for that launch (withApprovedLaunch). Without
+// one it returns errLaunchNotApproved and starts nothing. See that error for why
+// the bridge refuses rather than asks.
+//
+// A server already running needs no approval: the user consented when it
+// started, and handing it out again launches nothing.
+func (b *LSPBridge) GetServer(ctx context.Context, lang editapply.Language) (*LSPServer, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -277,9 +386,18 @@ func (b *LSPBridge) GetServer(lang editapply.Language) (*LSPServer, error) {
 		delete(b.servers, lang)
 	}
 
+	// Unsupported first, so an unknown language is still reported as unknown
+	// rather than as a launch nobody approved.
 	cmdName, err := serverCommand(lang)
 	if err != nil {
 		return nil, err
+	}
+
+	// THE GATE. Everything below this line starts a third-party process that
+	// reads project-supplied configuration, and nothing below it may run on
+	// behalf of a caller who was not told that is what would happen.
+	if !launchApproved(ctx, string(lang)) {
+		return nil, errLaunchNotApproved
 	}
 
 	cmd := exec.Command(cmdName)

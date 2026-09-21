@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -57,7 +56,7 @@ func TestProposeASTEdit_PathGatesRunBeforeAnythingElse(t *testing.T) {
 		{"NUL", "reserved device name"},
 		{`.git\hooks\evil`, "backslash-separated protected directory"},
 	} {
-		res, err := s.builtinProposeASTEdit(context.Background(), astArgs(t, tc.path, "Foo", "x"), sink)
+		res, err := s.builtinProposeASTEdit(approvedLaunch("go"), astArgs(t, tc.path, "Foo", "x"), sink)
 		if err != nil {
 			t.Fatalf("%s: transport error, want a tool error: %v", tc.path, err)
 		}
@@ -75,7 +74,7 @@ func TestProposeASTEdit_RejectsMalformedArguments(t *testing.T) {
 	s := &Server{logger: discardLogger(), workspace: t.TempDir()}
 	sink := &proposalSink{}
 
-	res, err := s.builtinProposeASTEdit(context.Background(), json.RawMessage(`{"path":`), sink)
+	res, err := s.builtinProposeASTEdit(approvedLaunch("go"), json.RawMessage(`{"path":`), sink)
 	if err != nil {
 		t.Fatalf("malformed JSON should be a tool error, not a transport error: %v", err)
 	}
@@ -89,7 +88,7 @@ func TestProposeASTEdit_RejectsMalformedArguments(t *testing.T) {
 		{"main.go", "", "no symbol was supplied"},
 		{"main.go", "  ", "no symbol was supplied"},
 	} {
-		res, err := s.builtinProposeASTEdit(context.Background(), astArgs(t, tc.path, tc.symbol, "x"), sink)
+		res, err := s.builtinProposeASTEdit(approvedLaunch("go"), astArgs(t, tc.path, tc.symbol, "x"), sink)
 		if err != nil {
 			t.Fatalf("unexpected transport error: %v", err)
 		}
@@ -209,7 +208,7 @@ func TestProposeASTEdit_ProducesAProposalThroughARealLanguageServer(t *testing.T
 	astFixture(t, s.workspace)
 	sink := &proposalSink{}
 
-	res, err := s.builtinProposeASTEdit(context.Background(), astArgs(t, "main.go", "Target", "func (o Outer) Target() error {\n\treturn nil\n}"), sink)
+	res, err := s.builtinProposeASTEdit(approvedLaunch("go"), astArgs(t, "main.go", "Target", "func (o Outer) Target() error {\n\treturn nil\n}"), sink)
 	if err != nil {
 		t.Fatalf("transport error: %v", err)
 	}
@@ -233,7 +232,7 @@ func TestProposeASTEdit_UnknownSymbolIsAToolError(t *testing.T) {
 	astFixture(t, s.workspace)
 	sink := &proposalSink{}
 
-	res, err := s.builtinProposeASTEdit(context.Background(), astArgs(t, "main.go", "NoSuchSymbol", "x"), sink)
+	res, err := s.builtinProposeASTEdit(approvedLaunch("go"), astArgs(t, "main.go", "NoSuchSymbol", "x"), sink)
 	if err != nil {
 		t.Fatalf("transport error: %v", err)
 	}
@@ -252,7 +251,7 @@ func TestProposeASTEdit_MalformedServerReplyIsAToolError(t *testing.T) {
 	astFixture(t, s.workspace)
 	sink := &proposalSink{}
 
-	res, err := s.builtinProposeASTEdit(context.Background(), astArgs(t, "main.go", "Target", "x"), sink)
+	res, err := s.builtinProposeASTEdit(approvedLaunch("go"), astArgs(t, "main.go", "Target", "x"), sink)
 	if err != nil {
 		t.Fatalf("transport error: %v", err)
 	}
@@ -267,7 +266,7 @@ func TestProposeASTEdit_MissingFileIsAToolError(t *testing.T) {
 	s := newLSPServer(t, "symbols")
 	sink := &proposalSink{}
 
-	res, err := s.builtinProposeASTEdit(context.Background(), astArgs(t, "absent.go", "Target", "x"), sink)
+	res, err := s.builtinProposeASTEdit(approvedLaunch("go"), astArgs(t, "absent.go", "Target", "x"), sink)
 	if err != nil {
 		t.Fatalf("transport error: %v", err)
 	}
@@ -282,7 +281,7 @@ func TestLSPQuery_ServerErrorSurfacesToTheModel(t *testing.T) {
 	s := newLSPServer(t, "lsp-error")
 	astFixture(t, s.workspace)
 
-	res, err := s.builtinLSPDefinition(context.Background(), lspArgs(t, "main.go", 3, 6))
+	res, err := s.builtinLSPDefinition(approvedLaunch("go"), lspArgs(t, "main.go", 3, 6))
 	if err != nil {
 		t.Fatalf("transport error: %v", err)
 	}
@@ -298,18 +297,24 @@ func TestLSPQuery_ReturnsTheServerResult(t *testing.T) {
 
 	for name, call := range map[string]func() (mcp.Result, error){
 		"definition": func() (mcp.Result, error) {
-			return s.builtinLSPDefinition(context.Background(), lspArgs(t, "main.go", 3, 6))
+			return s.builtinLSPDefinition(approvedLaunch("go"), lspArgs(t, "main.go", 3, 6))
 		},
 		"references": func() (mcp.Result, error) {
-			return s.builtinLSPReferences(context.Background(), lspArgs(t, "main.go", 3, 6))
+			return s.builtinLSPReferences(approvedLaunch("go"), lspArgs(t, "main.go", 3, 6))
 		},
 	} {
 		res, err := call()
 		if err != nil {
 			t.Fatalf("%s: transport error: %v", name, err)
 		}
-		if strings.Contains(res.Content, "failed") {
-			t.Errorf("%s: unexpected failure: %q", name, res.Content)
+		// THE SERVER'S OWN REPLY, byte for byte. This test used to assert only
+		// that the content did not contain "failed" -- and when the bridge
+		// began refusing unapproved launches (register item 32), both calls
+		// came back refused and the test PASSED, because the refusal never
+		// uses that word. A happy-path test that a refusal satisfies proves
+		// nothing about the happy path. The fake answers [] in "ok" mode.
+		if res.Content != "[]" {
+			t.Errorf("%s: got %q, want the server's result []", name, res.Content)
 		}
 	}
 }
@@ -322,7 +327,7 @@ func TestLSPQuery_UnsupportedLanguageIsAToolError(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, err := s.builtinLSPDefinition(context.Background(), lspArgs(t, "notes.txt", 0, 0))
+	res, err := s.builtinLSPDefinition(approvedLaunch("go"), lspArgs(t, "notes.txt", 0, 0))
 	if err != nil {
 		t.Fatalf("transport error: %v", err)
 	}
@@ -363,7 +368,7 @@ func TestProposeASTEdit_DoesNotMaterialiseTheWholeFile(t *testing.T) {
 	var before, after runtime.MemStats
 	runtime.GC()
 	runtime.ReadMemStats(&before)
-	res, err := s.builtinProposeASTEdit(context.Background(),
+	res, err := s.builtinProposeASTEdit(approvedLaunch("go"),
 		astArgs(t, "main.go", "Target", "func (o Outer) Target() error {\n\treturn nil\n}"), sink)
 	runtime.ReadMemStats(&after)
 	if err != nil {

@@ -742,7 +742,15 @@ func (s *Server) dispatchToolCall(
 	// built-in name actually RUNS: the call resolved for policy, was approved,
 	// reported "running", and then failed in dispatch with "not a qualified
 	// tool name". It failed closed, but it failed.
-	result, err := registry.Call(ctx, decision.tool.QualifiedName(), json.RawMessage(arguments))
+	//
+	// An approved launch travels to the tool on its context and nowhere else:
+	// scoped to this one call, gone when it returns.
+	callCtx := ctx
+	if decision.launchKey != "" {
+		callCtx = withApprovedLaunch(ctx, decision.launchKey)
+		audit.Launch = decision.launchProgram
+	}
+	result, err := registry.Call(callCtx, decision.tool.QualifiedName(), json.RawMessage(arguments))
 	elapsed := time.Since(started)
 	s.toolsInFlight.Add(-1)
 	audit.DurationMS = elapsed.Milliseconds()
@@ -909,6 +917,16 @@ type toolDecision struct {
 	run    bool
 	cancel bool          // the user abandoned the whole turn
 	waited time.Duration // human deliberation, excluded from the turn deadline
+
+	// launchKey is set only when a human approved a prompt that said this call
+	// would START a program, and names that launch. Dispatch hands it to the
+	// tool as withApprovedLaunch; without it the language-server bridge refuses
+	// to start anything (errLaunchNotApproved). Empty for every other call,
+	// including every call permitted by config or by a turn grant -- neither of
+	// those is an answer to a question about a launch.
+	launchKey string
+	// launchProgram is the program that approval named, for the audit record.
+	launchProgram string
 }
 
 // resolveExecutable decides whether one requested call may run.
@@ -1010,10 +1028,7 @@ func (s *Server) resolveExecutable(
 		}
 	}
 
-	if policy == mcp.PolicyAllow {
-		return toolDecision{tool: spec, policy: policy, source: auditConfigAllow, run: true}
-	}
-	if policy != mcp.PolicyAsk {
+	if policy != mcp.PolicyAsk && policy != mcp.PolicyAllow {
 		return toolDecision{
 			tool:   spec,
 			policy: mcp.PolicyDeny,
@@ -1024,14 +1039,52 @@ func (s *Server) resolveExecutable(
 	}
 
 	// Hoisted above the grant check: for a tool that executes code the grant is
-	// keyed on these bytes, so they have to exist before it is consulted.
+	// keyed on these bytes, so they have to exist before it is consulted. The
+	// launch probe reads them too.
 	arguments := call.Function.Arguments
+
+	// WHAT THIS CALL WOULD START, decided before anyone is asked (register item
+	// 32). A language server is started once and then cached for the daemon's
+	// lifetime, so "this tool can start gopls" and "this call will start gopls"
+	// are different facts -- and the prompt used to be built from the first, so
+	// it said STARTS ANOTHER PROGRAM on every call and the launch itself, the
+	// act that carries the risk, was never the thing a user approved.
+	//
+	// The probe decides only what the user is TOLD and whether a launch is
+	// approved. It cannot cause one: the bridge refuses to start anything
+	// without the approval this function grants (errLaunchNotApproved), so a
+	// probe that is wrong -- the server exits between here and dispatch -- ends
+	// in a refused call, never in an unapproved launch.
+	launch := registry.LaunchPlan(qualified, json.RawMessage(arguments))
+
+	// Config "allow" skips the per-call prompt. It never skips a launch: a
+	// user who allowed a lookup did not thereby agree to start a third-party
+	// program that reads their project's configuration, and the startup warning
+	// says so in these words.
+	if policy == mcp.PolicyAllow && !launch.Needed {
+		return toolDecision{tool: spec, policy: policy, source: auditConfigAllow, run: true}
+	}
 
 	// A grant given earlier in THIS turn. It skips the prompt and nothing else:
 	// the call is still counted, still narrated, still audited.
-	if turn.grants[grantKey(spec, qualified, arguments)] {
+	//
+	// It never skips a LAUNCH. A grant is an answer to "may this tool run for
+	// the rest of the turn?", which is not a question about starting a program;
+	// the server a grant was given against can exit mid-turn, and restarting it
+	// on the strength of that answer is exactly the launch-without-a-question
+	// this change removes.
+	if !launch.Needed && turn.grants[grantKey(spec, qualified, arguments)] {
 		return toolDecision{tool: spec, policy: policy, source: auditTurnGrant, run: true}
 	}
+
+	// PER-CALL TRUTH, with one conservative exception. When the probe could
+	// resolve no program at all -- a path it could not resolve, an extension no
+	// server covers -- the call will start nothing (there is no launch to
+	// approve, so the bridge would refuse) and will fail in its handler. The
+	// prompt then keeps the generic warning the tool always showed rather than
+	// saying nothing: a warning that over-states an undeterminable call cannot
+	// hide a launch, and silence could.
+	startsProgram := launch.Needed || (spec.LaunchesSubprocess && launch.Program == "")
 
 	answer := askApproval(ctx, appr, protocol.ToolApprovalRequest{
 		CallID:    call.ID,
@@ -1048,11 +1101,17 @@ func (s *Server) resolveExecutable(
 		// plan-mode denial from the day it was added and reached no client, so
 		// the prompt could say "not sandboxed" about a go-to-definition call
 		// and not say why.
-		LaunchesSubprocess: spec.LaunchesSubprocess,
-		ReadOnlyHint:       spec.ReadOnlyHint,
-		Destructive:        spec.Destructive,
-		Iteration:          turn.iteration,
-		MaxIterations:      bud.maxIterations,
+		//
+		// Now PER CALL rather than per tool: true when THIS call starts the
+		// program, false when it asks one already running. See startsProgram.
+		LaunchesSubprocess: startsProgram,
+		// Which program, so "STARTS gopls" and "ASKS gopls, already running"
+		// can both be said by name instead of "gopls, tsserver or pyright".
+		Program:       launch.Program,
+		ReadOnlyHint:  spec.ReadOnlyHint,
+		Destructive:   spec.Destructive,
+		Iteration:     turn.iteration,
+		MaxIterations: bud.maxIterations,
 		// THE TOOL'S OWN DESCRIPTION, at the moment of consent.
 		//
 		// It was written and never shown. sandbox_exec's description is the one
@@ -1081,9 +1140,24 @@ func (s *Server) resolveExecutable(
 		decision.reason = "the user stopped this task rather than approving the call"
 	case answer.approved():
 		decision.run = true
+		// The ONLY place a launch is approved: a verified answer to this call's
+		// own prompt, which said it would start launch.Program. The existing
+		// CallID and digest checks in the approver apply unchanged, so a stale
+		// duplicate answer to some earlier question cannot reach this line.
+		if launch.Needed {
+			decision.launchKey = launch.Key
+			decision.launchProgram = launch.Program
+		}
+		// An approve-for-turn here covers the tool's later calls in this turn,
+		// which launch nothing -- and never a relaunch, which the grant check
+		// above refuses to skip.
 		if answer.Decision == protocol.ApprovalApproveForTurn {
 			turn.grant(grantKey(spec, qualified, arguments))
 		}
+	case answer.Cause == denyByUser && launch.Needed:
+		decision.reason = fmt.Sprintf("the user declined to start %s, so %q did not run and nothing was started. "+
+			"Do not ask again for the same thing — answer without it, or take a different route.",
+			launch.Program, qualified)
 	case answer.Cause == denyByUser:
 		decision.reason = fmt.Sprintf("the user declined to run %q. Do not ask again for the same thing — "+
 			"explain what you would have done, or take a different route.", qualified)
