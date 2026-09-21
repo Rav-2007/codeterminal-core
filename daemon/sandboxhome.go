@@ -280,10 +280,26 @@ func (s *Server) reclaimSandboxHomes() {
 	case rep.Refused != "":
 		s.logger.Printf("sandbox-home: %s", rep.Refused)
 	case rep.Reclaimed > 0:
-		s.logger.Printf("sandbox-home: reclaimed %d folder(s), %.1f MB (unused 30+ days, or their project is gone); kept %d",
-			rep.Reclaimed, float64(rep.Bytes)/(1<<20), rep.Kept)
+		s.logger.Printf("sandbox-home: reclaimed %d folder(s), %s (unused 30+ days, or their project is gone); kept %d",
+			rep.Reclaimed, humanBytes(rep.Bytes), rep.Kept)
 	}
 	for _, err := range rep.Errors {
 		s.logger.Printf("sandbox-home: %v", err)
+	}
+}
+
+// humanBytes renders a size a reader can use. Most reclaimed homes are empty or
+// nearly so -- 1,107 of the 1,712 first measured were -- and "0.0 MB" for a
+// few kilobytes is true and tells the reader nothing.
+func humanBytes(n int64) string {
+	switch {
+	case n >= 1<<30:
+		return fmt.Sprintf("%.1f GB", float64(n)/(1<<30))
+	case n >= 1<<20:
+		return fmt.Sprintf("%.1f MB", float64(n)/(1<<20))
+	case n >= 1<<10:
+		return fmt.Sprintf("%.1f KB", float64(n)/(1<<10))
+	default:
+		return fmt.Sprintf("%d B", n)
 	}
 }

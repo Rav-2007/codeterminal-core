@@ -1,12 +1,17 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	"mochiii/protocol"
 )
 
 // REGISTER ITEM 37, the production half: sandbox homes are reclaimed.
@@ -261,8 +266,13 @@ func TestSandboxExecRecordsWhoseHomeItIs(t *testing.T) {
 	if home == "" {
 		t.Skip("no user cache directory on this host; NOT RUN")
 	}
-	if !strings.HasPrefix(home, os.Getenv("XDG_CACHE_HOME")) {
-		t.Fatalf("vacuity/safety: the sandbox home %q is not under the test's redirected cache", home)
+	// SAFETY BEFORE COVERAGE. TestMain redirects XDG_CACHE_HOME, which
+	// os.UserCacheDir honours on Linux and ignores on Windows and macOS; there
+	// the home would be in the developer's (or the runner's) real cache. That is
+	// a reason not to run, not a failure -- the rule is only that this test
+	// never writes outside its own temp tree.
+	if cache := os.Getenv("XDG_CACHE_HOME"); cache == "" || !strings.HasPrefix(home, cache) {
+		t.Skipf("os.UserCacheDir ignores XDG_CACHE_HOME on %s, so %q is a real cache; NOT RUN", runtime.GOOS, home)
 	}
 
 	_ = runExecTool(t, s, "make leak") // whether the command runs depends on the host's sandbox
@@ -279,5 +289,57 @@ func TestSandboxExecRecordsWhoseHomeItIs(t *testing.T) {
 	}
 	if exists(filepath.Join(home, ".json")) || exists(filepath.Join(home, filepath.Base(home)+".json")) {
 		t.Error("a record was written INSIDE the sandboxed HOME, where the command can rewrite it")
+	}
+}
+
+// THE STARTUP PASS IS WIRED, not just written. main.go calls the Server method,
+// which resolves the real root and this daemon's own tag; a function that is
+// correct and a wrapper that aims it at the wrong directory would pass every
+// test above. This drives the wrapper against the root sandbox_exec actually
+// uses -- under the test's redirected cache, or not at all.
+//
+// Neuter check: have the wrapper pass anything but sandboxHomeRoot()'s root and
+// the stale folder survives.
+func TestTheStartupPassReclaimsUnderTheRealRoot(t *testing.T) {
+	// ITS OWN CACHE, not the package's. The package-wide redirect is shared, and
+	// the first run of this test found another test's leftovers in it -- a
+	// sandbox home whose t.TempDir() workspace had been deleted, which the pass
+	// correctly reclaimed. Right behaviour, wrong fixture for counting.
+	cache := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", cache)
+	root, err := sandboxHomeRoot()
+	if err != nil {
+		t.Skipf("no user cache directory on this host (%v); NOT RUN", err)
+	}
+	if !strings.HasPrefix(root, cache) {
+		t.Skipf("os.UserCacheDir ignores XDG_CACHE_HOME on %s, so %q is a real cache; NOT RUN", runtime.GOOS, root)
+	}
+
+	ancient := time.Now().Add(-365 * 24 * time.Hour)
+	ws := t.TempDir()
+	own := mkHome(t, root, protocol.WorkspaceTag(ws), ancient)
+	stale := mkHome(t, root, protocol.WorkspaceTag(t.TempDir()), ancient)
+	t.Cleanup(func() { _ = os.RemoveAll(own); _ = os.RemoveAll(stale) })
+
+	var logs bytes.Buffer
+	s := &Server{logger: log.New(&logs, "", 0), workspace: ws}
+	s.reclaimSandboxHomes()
+
+	if exists(stale) {
+		t.Error("the startup pass left a year-old sandbox home in place")
+	}
+	if !exists(own) {
+		t.Error("the startup pass reclaimed this daemon's own sandbox home")
+	}
+	if !strings.Contains(logs.String(), "sandbox-home: reclaimed 1 folder(s), 4.0 KB") {
+		t.Errorf("the reclaim was not logged: %q", logs.String())
+	}
+}
+
+func TestHumanBytesPicksAReadableUnit(t *testing.T) {
+	for n, want := range map[int64]string{0: "0 B", 512: "512 B", 4096: "4.0 KB", 3 << 20: "3.0 MB", 232 << 20: "232.0 MB", 5 << 30: "5.0 GB"} {
+		if got := humanBytes(n); got != want {
+			t.Errorf("humanBytes(%d) = %q, want %q", n, got, want)
+		}
 	}
 }
