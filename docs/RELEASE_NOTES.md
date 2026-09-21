@@ -7,7 +7,41 @@ performance changes are not listed here unless you can observe them.
 
 ## Unreleased
 
-*Nothing yet.*
+### The approval prompt says which program starts, and only when it does
+
+**What changed.** Finding a definition or its references, or proposing an edit
+by symbol, can start a language server: `gopls`, `typescript-language-server`
+or `pyright-langserver`, from your PATH. That program reads your project's
+configuration, and a `tsconfig.json` can load plugins. It then keeps running
+until the daemon exits.
+
+The prompt used to say *"STARTS ANOTHER PROGRAM"* every time one of these tools
+was used, including every time after the server was already running. The one
+prompt that actually started it looked the same as all the others.
+
+Now the first prompt says **STARTS gopls**, naming the program, and approving it
+is what starts it. Later prompts say **ASKS gopls, WHICH IS ALREADY RUNNING**,
+because those calls start nothing new. An "approve for the rest of this task"
+answer never covers starting it again if the server has stopped: that asks
+again.
+
+### Starting a language server asks you first, even when the tool is set to `allow`
+
+**A behaviour change you will notice.** If your configuration sets one of these
+tools to `"allow"`, it still runs without a per-call prompt, but the call that
+would start its language server now asks first, once per server. Before this
+the server started without anyone being asked. Allowing a lookup is not the
+same as agreeing to start a program that reads your project's configuration.
+
+### The startup warning describes each tool by what it does
+
+When built-in tools are set to `"allow"`, the daemon lists them at startup. It
+used to put everything except the two web tools under *"these are confined and
+do not write to your files"*. That was false for the language-server tools, and
+false for `sandbox_exec`, which runs build and test commands with your full
+privileges when neither bwrap nor docker is installed. Each kind of tool now
+gets its own accurate sentence. A tool name that matches no built-in, such as a
+typo, is now reported as doing nothing instead of being described as a tool.
 
 ---
 
