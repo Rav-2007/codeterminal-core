@@ -76,9 +76,15 @@ if [ "$broken" -gt 0 ]; then
   exit 1
 fi
 
+# SCOPE FIRST, RESULT LAST, and the order is load-bearing rather than stylistic:
+# .githooks/pre-push:158 summarises this gate as `tail -1` of its output. A
+# multi-line note printed after the count therefore replaced "334 links resolve"
+# with whatever fragment happened to land last -- observed once, as
+# `pre-push: ok docs (            claims it says.)`. Every line is also prefixed
+# with the gate name so that no line of it is orphaned by a tail, a grep or a
+# log excerpt.
+echo "docs-links: NOT checked -- ${ext} external URL(s) (http, https, protocol-relative, mailto)"
+echo "docs-links: NOT checked -- ${anchor} pure-anchor link(s), and the #anchor on every link below"
+echo "docs-links: NOT checked -- the :NN of a line citation, nor whether any target says"
+echo "docs-links:                what the link claims it says. This gate proves a FILE exists."
 echo "docs-links: ${checked} links resolve"
-echo "docs-links: NOT checked -- ${ext} external URL(s) (http, https, protocol-relative,"
-echo "            mailto), ${anchor} pure-anchor link(s), the #anchor on any link above, and"
-echo "            the :NN of a line citation. This gate proves a FILE exists. It cannot"
-echo "            tell you that a URL resolves, or that any target says what the link"
-echo "            claims it says."
