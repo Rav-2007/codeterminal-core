@@ -7,7 +7,7 @@
 # its existence. The run was GREEN and the darwin-arm64 binaries were UNSIGNED:
 # the signing step is written to be a no-op until the MACOS_* secrets exist, so
 # it reports success for the state in which it did nothing (R1.15). On a real tag
-# the `files:` globs -- out-vsix/*.vsix and out-bin/codeterminal-tui-* -- would
+# the `files:` globs -- out-vsix/*.vsix and out-bin/codeterminal-* -- would
 # have swept two unsigned darwin assets into the release, with two checksum
 # manifests naming them.
 #
@@ -284,8 +284,16 @@ run_guard() {
     excluded="$excluded $t"
 
     # Assets. Both directories, because both feed the release `files:` list.
+    #
+    # PRUNED BY TARGET SUFFIX, not by a list of binary names. out-bin held only
+    # codeterminal-tui-<target> until 2026-09-21; it now also holds the daemon
+    # and the embedder helper, because publishing a terminal client with no
+    # daemon to talk to made two of six assets unusable. Keying on `-<target>`
+    # means a fourth binary added to release.yml's staging loop is pruned here
+    # automatically -- a list of names would be a mirror of that loop, and a
+    # mirror nobody updates is how an UNSIGNED binary survives an exclusion.
     rm -fv "$vsix_dir"/*"$t"*.vsix 2>/dev/null || true
-    rm -fv "$bin_dir"/codeterminal-tui-"$t" "$bin_dir"/codeterminal-tui-"$t".exe 2>/dev/null || true
+    rm -fv "$bin_dir"/*-"$t" "$bin_dir"/*-"$t".exe 2>/dev/null || true
   done
 
   [ "$fail_count" -gt 0 ] && return 1
@@ -302,11 +310,11 @@ run_guard() {
       rm -f "$vsix_dir/SHA256SUMS"
       warn "no .vsix packages remain; removed SHA256SUMS rather than leaving an empty one"
     fi
-    if [ -d "$bin_dir" ] && ls "$bin_dir"/codeterminal-tui-* >/dev/null 2>&1; then
-      ( cd "$bin_dir" && sha256sum codeterminal-tui-* > SHA256SUMS-tui ) && say "regenerated $bin_dir/SHA256SUMS-tui"
+    if [ -d "$bin_dir" ] && ls "$bin_dir"/codeterminal-* >/dev/null 2>&1; then
+      ( cd "$bin_dir" && sha256sum codeterminal-* > SHA256SUMS-bin ) && say "regenerated $bin_dir/SHA256SUMS-bin"
     else
-      rm -f "$bin_dir/SHA256SUMS-tui"
-      warn "no terminal-client binaries remain; removed SHA256SUMS-tui"
+      rm -f "$bin_dir/SHA256SUMS-bin"
+      warn "no standalone binaries remain; removed SHA256SUMS-bin"
     fi
     say "excluded from release:$excluded"
   elif [ -n "$NEEDS_SIGNING" ]; then
@@ -320,7 +328,7 @@ run_guard() {
   # see rather than infer.
   say "--- release input, after the guard ---"
   local f found=0
-  for f in "$vsix_dir"/*.vsix "$vsix_dir"/SHA256SUMS "$bin_dir"/codeterminal-tui-* "$bin_dir"/SHA256SUMS-tui; do
+  for f in "$vsix_dir"/*.vsix "$vsix_dir"/SHA256SUMS "$bin_dir"/codeterminal-* "$bin_dir"/SHA256SUMS-bin; do
     [ -e "$f" ] || continue
     say "  WOULD ATTACH  $(basename "$f")"
     found=$((found + 1))
@@ -346,14 +354,19 @@ self_test() {
     for t in $ALL_TARGETS; do
       mkdir -p "$d/artifacts/binaries-$t"
       echo "vsix-$t" > "$d/out-vsix/codeterminal-vscode-$t-0.0.1.vsix"
-      if [ "$t" = "win32-x64" ]; then
-        echo "tui-$t" > "$d/out-bin/codeterminal-tui-$t.exe"
-      else
-        echo "tui-$t" > "$d/out-bin/codeterminal-tui-$t"
-      fi
+      # EVERY BINARY release.yml STAGES, not just the client. A fixture that
+      # holds less than the real tree cannot prove the guard prunes the real
+      # tree -- and from 2026-09-21 the real out-bin carries three binaries per
+      # target, so an exclusion that removed only the client would leave an
+      # unsigned daemon in the release and this self-test would still pass.
+      local b ext=""
+      [ "$t" = "win32-x64" ] && ext=".exe"
+      for b in codeterminal-tui codeterminal-daemon codeterminal-embedder-helper; do
+        echo "$b-$t" > "$d/out-bin/$b-$t$ext"
+      done
     done
     ( cd "$d/out-vsix" && sha256sum ./*.vsix > SHA256SUMS )
-    ( cd "$d/out-bin" && sha256sum codeterminal-tui-* > SHA256SUMS-tui )
+    ( cd "$d/out-bin" && sha256sum codeterminal-* > SHA256SUMS-bin )
   }
   sign() { printf 'target=%s\nsigned=yes\nnotarized=yes\n' "$2" > "$1/artifacts/binaries-$2/SIGNED-$2"; }
   unsign() { printf 'target=%s\nsigned=no\nreason=%s\n' "$2" "$3" > "$1/artifacts/binaries-$2/UNSIGNED-$2"; }
@@ -396,12 +409,21 @@ FIXTURE
   check "dispatch + unsigned darwin -> green" pass $?
   absent  "  darwin vsix removed"            "$d/out-vsix/codeterminal-vscode-darwin-arm64-0.0.1.vsix"
   absent  "  darwin tui binary removed"      "$d/out-bin/codeterminal-tui-darwin-arm64"
+  # THE DAEMON AND HELPER TOO, and these two arms are the ones that would have
+  # failed on 2026-09-21 before the guard stopped keying on the `codeterminal-tui-`
+  # prefix. An excluded target whose DAEMON survived the prune would ship an
+  # unsigned binary under a release that claims nothing unsigned reaches it --
+  # a worse outcome than the missing client this change set out to fix.
+  absent  "  darwin daemon removed"          "$d/out-bin/codeterminal-daemon-darwin-arm64"
+  absent  "  darwin helper removed"          "$d/out-bin/codeterminal-embedder-helper-darwin-arm64"
   ngreps  "  SHA256SUMS drops darwin"        "darwin-arm64" "$d/out-vsix/SHA256SUMS"
-  ngreps  "  SHA256SUMS-tui drops darwin"    "darwin-arm64" "$d/out-bin/SHA256SUMS-tui"
+  ngreps  "  SHA256SUMS-bin drops darwin"    "darwin-arm64" "$d/out-bin/SHA256SUMS-bin"
   present "  linux vsix untouched"           "$d/out-vsix/codeterminal-vscode-linux-x64-0.0.1.vsix"
   present "  windows tui untouched"          "$d/out-bin/codeterminal-tui-win32-x64.exe"
+  present "  windows daemon untouched"       "$d/out-bin/codeterminal-daemon-win32-x64.exe"
   greps   "  SHA256SUMS still names linux"   "linux-x64"   "$d/out-vsix/SHA256SUMS"
-  greps   "  SHA256SUMS-tui names windows"   "win32-x64"   "$d/out-bin/SHA256SUMS-tui"
+  greps   "  SHA256SUMS-bin names windows"   "win32-x64"   "$d/out-bin/SHA256SUMS-bin"
+  greps   "  SHA256SUMS-bin names the daemon" "codeterminal-daemon" "$d/out-bin/SHA256SUMS-bin"
 
   # --- 2. tag, darwin unsigned: fails.
   d="$tmp/b"; mk_tree "$d"; unsign "$d" darwin-arm64 no-certificate
