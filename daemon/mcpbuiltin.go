@@ -10,8 +10,8 @@ import (
 	"sort"
 	"strings"
 
-	"codeterminal/daemon/mcp"
-	"codeterminal/editapply"
+	"mochiii/daemon/mcp"
+	"mochiii/editapply"
 )
 
 // Lane A: the built-in tools. Go functions in this daemon, not subprocesses.

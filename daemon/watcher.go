@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"codeterminal/editapply"
+	"mochiii/editapply"
 
 	"github.com/fsnotify/fsnotify"
 )

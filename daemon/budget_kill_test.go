@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // proxyBudgetKillChunk is the EXACT byte sequence proxy/main.go's

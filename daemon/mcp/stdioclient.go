@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -227,7 +227,7 @@ func Connect(ctx context.Context, cfg LaunchConfig) (*StdioClient, error) {
 	bounded := &messageLimitReader{r: stdout, max: limit, server: cfg.Name}
 
 	client := sdk.NewClient(&sdk.Implementation{
-		Name:    "codeterminal",
+		Name:    "mochiii",
 		Version: "v1",
 	}, nil)
 

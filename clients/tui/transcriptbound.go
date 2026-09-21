@@ -59,8 +59,8 @@ const (
 	minMaxTurns           = 8
 	minMaxTranscriptBytes = 64 << 10
 
-	maxTurnsEnv = "CODETERMINAL_MAX_TURNS"
-	maxBytesEnv = "CODETERMINAL_MAX_TRANSCRIPT_BYTES"
+	maxTurnsEnv = "MOCHIII_MAX_TURNS"
+	maxBytesEnv = "MOCHIII_MAX_TRANSCRIPT_BYTES"
 )
 
 // evictionMarkerPrefix identifies the marker turn. Matched as a prefix rather

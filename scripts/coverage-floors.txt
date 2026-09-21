@@ -87,16 +87,16 @@
 # variance is not a red build. A ratchet that is never raised is a ratchet that
 # only ever documents the past.
 #
-codeterminal/daemon              78.0
-codeterminal/editapply           88.0
-codeterminal/proxy               85.0
+mochiii/daemon              78.0
+mochiii/editapply           88.0
+mochiii/proxy               85.0
 
 # The MCP tool surface. Floored high on purpose: this is the package that
 # decides what a third-party subprocess may see and do, and its own tests are
 # the only thing standing between an env-allowlist bug and every MCP server the
 # user runs holding their inference credentials. Measured 87.3 on the commit
 # that introduced it; floored at 86.0 to leave ordinary run-to-run variance.
-codeterminal/daemon/mcp          91.0
+mochiii/daemon/mcp          91.0
 
 # 0.0 is the honest floor, not an oversight. testharness is a test-support
 # BINARY (fake Supabase + fake OpenRouter) whose whole purpose is to be driven
@@ -104,8 +104,8 @@ codeterminal/daemon/mcp          91.0
 # unit-test in it, and testing it would test the fake rather than the proxy.
 # Listed explicitly because the ratchet fails on any package it has no floor
 # for, so the decision has to be made rather than defaulted into.
-codeterminal/proxy/testharness    0.0
-codeterminal/helper              22.0
-codeterminal/helper/helperproto  75.0
-codeterminal/protocol            89.5
-codeterminal/clients/tui 84.0
+mochiii/proxy/testharness    0.0
+mochiii/helper              22.0
+mochiii/helper/helperproto  75.0
+mochiii/protocol            89.5
+mochiii/clients/tui 84.0

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"codeterminal/editapply"
+	"mochiii/editapply"
 )
 
 // runEditsApply drives the real `edits apply <file>` entry point against a

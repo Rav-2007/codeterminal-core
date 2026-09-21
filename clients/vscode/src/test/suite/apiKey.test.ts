@@ -12,7 +12,7 @@ import { daemonEnvironment } from '../../extension';
 // THE TEST THAT WAS MISSING.
 //
 // The packaged extension shipped with no path from a user to
-// CODETERMINAL_API_KEY: the daemon reads it from its environment and nothing
+// MOCHIII_API_KEY: the daemon reads it from its environment and nothing
 // put it there, so a .vsix install could never authenticate and every answer
 // failed. Item 41 was the identical shape one value over -- a thing the daemon
 // needs, with no way for a user to supply it -- and it survived 72 days because
@@ -83,33 +83,33 @@ suite('api key — the credential reaches the daemon', () => {
   // daemonEnvironment() builds the child environment FROM this process's, so
   // these two cases have to state this process's. Plain object mutation,
   // restored in teardown -- not a module-namespace reassignment.
-  const realEnvKey = process.env.CODETERMINAL_API_KEY;
+  const realEnvKey = process.env.MOCHIII_API_KEY;
   teardown(() => {
     if (realEnvKey === undefined) {
-      delete process.env.CODETERMINAL_API_KEY;
+      delete process.env.MOCHIII_API_KEY;
     } else {
-      process.env.CODETERMINAL_API_KEY = realEnvKey;
+      process.env.MOCHIII_API_KEY = realEnvKey;
     }
   });
 
   // THE ONE THAT MATTERS. Everything else is about when to prompt; this is
   // about whether the key ever arrives.
   test('daemonEnvironmentCarriesTheKey', () => {
-    delete process.env.CODETERMINAL_API_KEY;
-    assert.strictEqual(daemonEnvironment('sk-test-12345').CODETERMINAL_API_KEY, 'sk-test-12345');
+    delete process.env.MOCHIII_API_KEY;
+    assert.strictEqual(daemonEnvironment('sk-test-12345').MOCHIII_API_KEY, 'sk-test-12345');
   });
 
   test('daemonEnvironmentTrimsTheKey', () => {
-    delete process.env.CODETERMINAL_API_KEY;
-    assert.strictEqual(daemonEnvironment('  sk-padded  ').CODETERMINAL_API_KEY, 'sk-padded');
+    delete process.env.MOCHIII_API_KEY;
+    assert.strictEqual(daemonEnvironment('  sk-padded  ').MOCHIII_API_KEY, 'sk-padded');
   });
 
   // Whitespace stores fine, reaches the provider as an empty bearer token and
   // comes back "credentials rejected" -- which sends the user hunting a wrong
   // key rather than an absent one.
   test('aWhitespaceKeyIsNotTreatedAsAKey', async () => {
-    delete process.env.CODETERMINAL_API_KEY;
-    assert.strictEqual(daemonEnvironment('   ').CODETERMINAL_API_KEY, undefined);
+    delete process.env.MOCHIII_API_KEY;
+    assert.strictEqual(daemonEnvironment('   ').MOCHIII_API_KEY, undefined);
     assert.strictEqual(await getApiKey(fakeContext({ stored: '   ' })), undefined);
   });
 
@@ -117,8 +117,8 @@ suite('api key — the credential reaches the daemon', () => {
   // shell. Storing nothing must not blank it out -- that would break a setup
   // that worked before this feature existed.
   test('anInheritedKeySurvivesWhenNothingIsStored', () => {
-    process.env.CODETERMINAL_API_KEY = 'sk-from-the-shell';
-    assert.strictEqual(daemonEnvironment(undefined).CODETERMINAL_API_KEY, 'sk-from-the-shell');
+    process.env.MOCHIII_API_KEY = 'sk-from-the-shell';
+    assert.strictEqual(daemonEnvironment(undefined).MOCHIII_API_KEY, 'sk-from-the-shell');
   });
 
   test('getApiKeyReadsAndTrimsWhatWasStored', async () => {
@@ -158,13 +158,13 @@ suite('api key — the credential reaches the daemon', () => {
     });
 
     test('anEnvironmentKeyMeansNoPrompt', async () => {
-      const d = await apiKeyPromptDecision(fakeContext(), { CODETERMINAL_API_KEY: 'sk-shell' });
+      const d = await apiKeyPromptDecision(fakeContext(), { MOCHIII_API_KEY: 'sk-shell' });
       assert.strictEqual(d, 'from-env');
     });
 
     test('aStoredKeyWinsOverTheEnvironment', async () => {
       const d = await apiKeyPromptDecision(fakeContext({ stored: 'sk-stored' }), {
-        CODETERMINAL_API_KEY: 'sk-shell',
+        MOCHIII_API_KEY: 'sk-shell',
       });
       assert.strictEqual(d, 'have-key');
     });
@@ -181,7 +181,7 @@ suite('api key — the credential reaches the daemon', () => {
     // A variable that is set but blank is not a key, and treating it as one
     // would silently suppress the prompt for a user who has no key at all.
     test('aBlankEnvironmentVariableIsNotAKey', async () => {
-      const d = await apiKeyPromptDecision(fakeContext(), { CODETERMINAL_API_KEY: '   ' });
+      const d = await apiKeyPromptDecision(fakeContext(), { MOCHIII_API_KEY: '   ' });
       assert.strictEqual(d, 'ask');
     });
   });

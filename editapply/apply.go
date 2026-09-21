@@ -448,7 +448,7 @@ func describeExt(relPath string) string {
 // internals, this product's own backups and logs, credential dirs — and the
 // writer must refuse to write into the same set, or model output can reach
 // state that is executed (.git/hooks/*), trusted (.git/config), or relied on
-// for recovery (.codeterminal/backups/.../before/*). See ProtectedDirNames.
+// for recovery (.mochiii/backups/.../before/*). See ProtectedDirNames.
 //
 // That check runs TWICE, deliberately. Once on the path as written, so the
 // refusal is clear and reason-bearing whether or not the target exists; and

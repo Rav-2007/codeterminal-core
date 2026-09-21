@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // testAddress returns a unique address on the platform's REAL transport.

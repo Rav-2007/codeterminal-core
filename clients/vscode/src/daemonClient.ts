@@ -1,4 +1,4 @@
-// daemonClient speaks the CodeTerminal daemon's wire protocol (see
+// daemonClient speaks the Mochiii daemon's wire protocol (see
 // protocol/protocol.go) from the extension host. Framing is newline-
 // delimited JSON, one message per line, exactly as the daemon and the TUI
 // client (clients/tui/daemonconn.go, stream.go) already do it -- this is a
@@ -21,7 +21,7 @@ export const PROTOCOL_VERSION = 1;
 // first-run text (see chatPanel.ts) use this exact string, so they cannot drift.
 //
 // IT NAMES A COMMAND PALETTE ENTRY, NOT A SHELL COMMAND. It used to be
-// `./daemon/codeterminal-daemon`, from when the extension genuinely did not
+// `./daemon/mochiii-daemon`, from when the extension genuinely did not
 // start the daemon and a user had to run one by hand in a terminal. The
 // extension has managed the daemon since it gained a supervisor
 // (daemonSupervisor.ts), so that instruction became advice to start a SECOND
@@ -30,7 +30,7 @@ export const PROTOCOL_VERSION = 1;
 //
 // The title must stay byte-identical to contributes.commands in package.json,
 // or this sends the user to a palette entry that does not exist. That is not
-// hypothetical: the titles read "CodeTerminal: ..." while every message in the
+// hypothetical: the titles read "Mochiii: ..." while every message in the
 // UI said "Mochiii", so searching the palette for the name in the error found
 // nothing. They now agree.
 export const RESTART_HINT = 'run "Mochiii: Restart Daemon" from the Command Palette';
@@ -476,7 +476,7 @@ export function setWorkspaceRoot(root: string): void {
   // directory as its workspace and INDEXED it, so a VS Code launched from $HOME
   // read the home directory into the retrieval index -- and index content
   // becomes prompt context, which leaves the machine. It also created
-  // .codeterminal/logs/ there, outside any project.
+  // .mochiii/logs/ there, outside any project.
   //
   // The guard is here rather than only in activate() because every caller wants
   // the same thing: a root the daemon and this client can BOTH derive, and a
@@ -527,7 +527,7 @@ function workspaceTag(realRoot: string): string {
 // and its client was answered by the first window's daemon about the first
 // window's code. See daemon/twoworkspaces_test.go.
 function lockPath(): string {
-  const dir = path.join(runtimeDir(), 'codeterminal');
+  const dir = path.join(runtimeDir(), 'mochiii');
   return workspaceRoot
     ? path.join(dir, `daemon-${workspaceTag(workspaceRoot)}.lock`)
     : path.join(dir, 'daemon.lock');
@@ -740,7 +740,7 @@ export async function probeDaemon(): Promise<boolean> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
   try {
-    const { socket } = await connectToDaemon('codeterminal-vscode-probe', controller.signal);
+    const { socket } = await connectToDaemon('mochiii-vscode-probe', controller.signal);
     socket.destroy();
     return true;
   } catch {

@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"codeterminal/daemon/mcp"
-	"codeterminal/protocol"
+	"mochiii/daemon/mcp"
+	"mochiii/protocol"
 )
 
 // The orchestrator: runs a pipeline of specialists, one at a time, threading

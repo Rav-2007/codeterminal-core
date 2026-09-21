@@ -7,7 +7,7 @@ import (
 )
 
 // applyLockName is the per-workspace lock file backing LockWorkspaceApply. It
-// lives beside backups/ under .codeterminal — a directory the indexer already
+// lives beside backups/ under .mochiii — a directory the indexer already
 // prunes and the edit writer already refuses to target (ProtectedDirNames), so
 // the lock file is never indexed, never sent to a model, and never writable by
 // an edit block.
@@ -86,7 +86,7 @@ const applyLockName = "apply.lock"
 // symlink-resolved root (see ResolveRealWorkspaceRoot), so two clients naming the
 // same workspace by different paths land on the same lock file.
 func LockWorkspaceApply(realWorkspaceRoot string) (release func(), err error) {
-	dir := filepath.Join(realWorkspaceRoot, ".codeterminal")
+	dir := filepath.Join(realWorkspaceRoot, ".mochiii")
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, fmt.Errorf("creating %s: %w", dir, err)
 	}

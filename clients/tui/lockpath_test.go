@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // THE TEST THAT WOULD HAVE CAUGHT IT.

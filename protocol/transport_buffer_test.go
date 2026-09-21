@@ -21,7 +21,7 @@ func localTestAddress(t *testing.T) Address {
 	if runtime.GOOS == "windows" {
 		return Address{
 			Transport: TransportNamedPipe,
-			Address:   fmt.Sprintf(`\\.\pipe\codeterminal-buftest-%d-%d`, os.Getpid(), bufTestSeq.Add(1)),
+			Address:   fmt.Sprintf(`\\.\pipe\mochiii-buftest-%d-%d`, os.Getpid(), bufTestSeq.Add(1)),
 		}
 	}
 	return Address{Transport: TransportUnix, Address: filepath.Join(shortTempDir(t), "d.sock")}

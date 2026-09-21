@@ -19,17 +19,17 @@ func defaultHelperBinPath() string {
 }
 
 // runHelperSmoketestCommand implements
-// `codeterminal-daemon helper-smoketest [--helper-bin path] [text...]`: a
+// `mochiii-daemon helper-smoketest [--helper-bin path] [text...]`: a
 // one-shot manual check. It starts the helper (requires `download-model` to
 // have already fetched the model + onnxruntime lib), waits for it to become
 // healthy, sends exactly one real embedding request, prints the resulting
 // vector's length and first few values, and shuts the helper down cleanly.
 func runHelperSmoketestCommand(args []string, logger *log.Logger) error {
 	fset := flag.NewFlagSet("helper-smoketest", flag.ExitOnError)
-	helperBin := fset.String("helper-bin", defaultHelperBinPath(), "path to the codeterminal-embedder-helper binary")
+	helperBin := fset.String("helper-bin", defaultHelperBinPath(), "path to the mochiii-embedder-helper binary")
 	fset.Parse(args)
 
-	text := "hello from the codeterminal daemon"
+	text := "hello from the mochiii daemon"
 	if fset.NArg() > 0 {
 		text = strings.Join(fset.Args(), " ")
 	}
@@ -42,7 +42,7 @@ func runHelperSmoketestCommand(args []string, logger *log.Logger) error {
 	h := NewHelperProcess(*helperBin, modelDir, onnxRuntimeLib, logger)
 	logger.Printf("helper-smoketest: starting helper %s", *helperBin)
 	if err := h.Start(); err != nil {
-		return fmt.Errorf("starting embedder helper (build it first with: cd helper && go build -o codeterminal-embedder-helper .): %w", err)
+		return fmt.Errorf("starting embedder helper (build it first with: cd helper && go build -o mochiii-embedder-helper .): %w", err)
 	}
 
 	vecs, embedErr := h.Embed(context.Background(), []string{text})

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"codeterminal/daemon/mcp"
+	"mochiii/daemon/mcp"
 )
 
 // THE CLAIM AND THE BEHAVIOUR MUST BE ONE COMPUTATION -- F-01's lesson, applied

@@ -1,5 +1,5 @@
 // stubDaemon stands up a real Unix-domain-socket server that speaks the
-// CodeTerminal wire protocol (newline-delimited JSON, one message per line,
+// Mochiii wire protocol (newline-delimited JSON, one message per line,
 // one prompt/apply/undo/search per connection -- see protocol/protocol.go and
 // daemon/server.go's handleConn) and writes the lockfile the real daemonClient
 // reads to find it. It exists so the E2E suite can drive the ACTUAL compiled
@@ -50,7 +50,7 @@ export class StubDaemon {
   // caller can restore/clean it.
   async start(behavior: Behavior): Promise<void> {
     this.runtimeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-e2e-'));
-    const dir = path.join(this.runtimeDir, 'codeterminal');
+    const dir = path.join(this.runtimeDir, 'mochiii');
     fs.mkdirSync(dir, { recursive: true });
     // Keep the socket path short: some platforms cap sun_path at ~104 bytes.
     this.socketPath = path.join(this.runtimeDir, 's.sock');

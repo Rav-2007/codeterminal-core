@@ -10,13 +10,13 @@ import (
 	"os"
 	"time"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // statusDialTimeout bounds the connect to a daemon that may not be running.
 const statusDialTimeout = 2 * time.Second
 
-// runStatusCommand implements `codeterminal-daemon status`: it connects to a
+// runStatusCommand implements `mochiii-daemon status`: it connects to a
 // RUNNING daemon over the same socket every client uses, asks for its state,
 // and prints it.
 //

@@ -7,7 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // tokenMsg is one streamed token from the model.

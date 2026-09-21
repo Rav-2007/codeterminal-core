@@ -39,7 +39,7 @@ import (
 //
 // With this set, a run where bwrap becomes unusable goes RED and names the
 // reason, instead of quietly returning to the state that let --nosuid survive.
-const requireSandboxEnv = "CODETERMINAL_REQUIRE_SANDBOX"
+const requireSandboxEnv = "MOCHIII_REQUIRE_SANDBOX"
 
 // requireBwrap is the single gate for every test in this file that needs a real
 // sandbox. It replaced a presence-only exec.LookPath check that had become

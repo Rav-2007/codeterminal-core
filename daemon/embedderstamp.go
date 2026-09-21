@@ -56,7 +56,7 @@ type embedderStamp struct {
 	// index had NO freshness concept at all -- no mtime, no timestamp, no
 	// watcher -- so a daemon answered from a snapshot of unknown age and
 	// reported `grounded ✓` with total confidence either way. This repository
-	// demonstrated it: `.codeterminal/index/` was dated 22 days behind HEAD
+	// demonstrated it: `.mochiii/index/` was dated 22 days behind HEAD
 	// while the product cheerfully cited it.
 	//
 	// A ZERO VALUE MEANS "UNKNOWN", NOT "OLD". Every index built before this

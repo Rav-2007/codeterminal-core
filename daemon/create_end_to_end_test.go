@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"codeterminal/editapply"
+	"mochiii/editapply"
 )
 
 // TestEndToEnd_EditAndCreateApplyThenUndo is the test whose absence let Fix 7
@@ -82,7 +82,7 @@ func TestEndToEnd_EditAndCreateApplyThenUndo(t *testing.T) {
 		t.Errorf("apply report = %q, want 2 applied", applyOut.String())
 	}
 
-	sessionDir, err := resolveBackupSession(filepath.Join(root, ".codeterminal", "backups"), "")
+	sessionDir, err := resolveBackupSession(filepath.Join(root, ".mochiii", "backups"), "")
 	if err != nil {
 		t.Fatalf("resolveBackupSession: %v", err)
 	}
@@ -167,7 +167,7 @@ func TestEndToEnd_CreateRefusedDoesNotCostTheEdit(t *testing.T) {
 		t.Errorf("apply report = %q, want 1 applied and 1 refused", applyOut.String())
 	}
 
-	sessionDir, err := resolveBackupSession(filepath.Join(root, ".codeterminal", "backups"), "")
+	sessionDir, err := resolveBackupSession(filepath.Join(root, ".mochiii", "backups"), "")
 	if err != nil {
 		t.Fatalf("resolveBackupSession: %v", err)
 	}

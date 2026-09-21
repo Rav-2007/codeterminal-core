@@ -204,7 +204,7 @@ func TestGuardsDetectAViolation(t *testing.T) {
 	//
 	// This snippet is Go source to the parser below, but the file it lives in is
 	// also scanned AS TEXT by the daemon's chunking heuristic (see
-	// TestTheHeuristicAgreesWithTheCompiler in codeterminal/daemon). A `func` at
+	// TestTheHeuristicAgreesWithTheCompiler in mochiii/daemon). A `func` at
 	// column 0 inside a raw string is indistinguishable from a real top-level
 	// declaration to any line-based scanner, and go/parser correctly disagrees.
 	// The first version of this test was written as a raw string and turned two

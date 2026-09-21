@@ -10,7 +10,7 @@ import (
 	"testing"
 	"unicode"
 
-	"codeterminal/editapply"
+	"mochiii/editapply"
 )
 
 // The terminal is a sink for model output, and `edits apply` writes to it

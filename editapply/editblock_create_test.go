@@ -152,7 +152,7 @@ func TestParseCreate_ProtectedTargetsStillRefusedFromTheParser(t *testing.T) {
 	for _, tc := range []struct{ name, path, wantIn string }{
 		{"git hook", ".git/hooks/pre-commit", "refusing"},
 		{"git config", ".git/config", "refusing"},
-		{"codeterminal backup", ".codeterminal/backups/x/before/f.txt", "refusing"},
+		{"mochiii backup", ".mochiii/backups/x/before/f.txt", "refusing"},
 		{"ssh dir", ".ssh/authorized_keys", "refusing"},
 		{"secret name", ".env", "secret-file"},
 		{"absolute path", "/tmp/evil.txt", "absolute"},

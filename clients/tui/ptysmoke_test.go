@@ -22,7 +22,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // THE TWO BUGS THIS CLASS SHIPPED, AND WHY 185 TESTS MISSED BOTH.
@@ -111,7 +111,7 @@ func fakeDaemonForPTY(t *testing.T, workspace string) {
 	t.Cleanup(func() { _ = os.RemoveAll(runtimeDir) })
 	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
 
-	sockDir := filepath.Join(runtimeDir, "codeterminal")
+	sockDir := filepath.Join(runtimeDir, "mochiii")
 	if err := os.MkdirAll(sockDir, 0o700); err != nil {
 		t.Fatalf("socket dir: %v", err)
 	}

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"codeterminal/daemon/mcp"
+	"mochiii/daemon/mcp"
 )
 
 // propose_ast_edit shipped with zero test coverage — every function in the file

@@ -14,7 +14,7 @@ import (
 
 // THE REAL BINARY, A REAL PIPE, A READER THAT STOPS EARLY.
 //
-// MEASURED before ignoreSIGPIPE existed: `codeterminal-tui --prompt ... | head`
+// MEASURED before ignoreSIGPIPE existed: `mochiii-tui --prompt ... | head`
 // exited 141 -- 128+13, killed by SIGPIPE. Someone reading the first few lines
 // of an answer is doing an ordinary thing, and dying by signal for it is not a
 // clean exit. The in-process test beside this one drives the same path with a

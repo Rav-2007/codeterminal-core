@@ -33,7 +33,7 @@ import {
 import { parseModelCommand, parseSlash, parseTeamCommand, steeredPrompt } from './slashCommands';
 
 export class DiffContentProvider implements vscode.TextDocumentContentProvider {
-  static scheme = 'codeterminal-diff';
+  static scheme = 'mochiii-diff';
   private static contents = new Map<string, string>();
 
   static register(context: vscode.ExtensionContext) {
@@ -55,8 +55,8 @@ export class DiffContentProvider implements vscode.TextDocumentContentProvider {
   }
 }
 
-const CLIENT_NAME = 'codeterminal-vscode';
-const VIEW_TYPE = 'codeterminalChat';
+const CLIENT_NAME = 'mochiii-vscode';
+const VIEW_TYPE = 'mochiiiChat';
 
 // turnsFromWire keeps only "user"/"assistant" roles, mirroring
 // clients/tui/chat.go's turnsFromProtocol -- defense in depth even though
@@ -139,7 +139,7 @@ export class ChatPanel {
       return;
     }
 
-    const panel = vscode.window.createWebviewPanel(VIEW_TYPE, 'CodeTerminal Chat', vscode.ViewColumn.Beside, {
+    const panel = vscode.window.createWebviewPanel(VIEW_TYPE, 'Mochiii Chat', vscode.ViewColumn.Beside, {
       enableScripts: true,
       retainContextWhenHidden: true,
       localResourceRoots: [vscode.Uri.joinPath(extensionUri, 'media')],
@@ -779,7 +779,7 @@ export class ChatPanel {
 <head>
 <meta charset="UTF-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} https: data:; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
-<title>CodeTerminal Chat</title>
+<title>Mochiii Chat</title>
 <style>
 ${chatPanelStyles()}
 </style>
@@ -1732,7 +1732,7 @@ export function chatPanelBodyMarkup(logoUri: string = ''): string {
        as a real conversation turn is added (restored history included).
 
        THIS USED TO TELL THE USER TO START THE DAEMON BY HAND, in a <pre> block
-       naming ./daemon/codeterminal-daemon. That was true when written and is
+       naming ./daemon/mochiii-daemon. That was true when written and is
        now the opposite of the truth: the extension starts and supervises the
        daemon (daemonSupervisor.ts), so following the old instruction started a
        SECOND daemon which could only lose the bind and exit. The recovery hint

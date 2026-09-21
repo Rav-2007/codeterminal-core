@@ -105,7 +105,7 @@ func defaultONNXRuntimeCacheDir() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolving home directory: %w", err)
 	}
-	return filepath.Join(home, ".codeterminal", "models", "onnxruntime-"+onnxRuntimeVersion), nil
+	return filepath.Join(home, ".mochiii", "models", "onnxruntime-"+onnxRuntimeVersion), nil
 }
 
 // EnsureONNXRuntimeLib makes sure the onnxruntime shared library for the

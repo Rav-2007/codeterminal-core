@@ -19,7 +19,7 @@ import (
 	"testing"
 	"time"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // g6Server runs srv.Serve on a fresh unix socket for workspace ws.
@@ -141,7 +141,7 @@ func TestGate6_NoBackupSessionCollapse(t *testing.T) {
 	const iters = 60
 	ws := t.TempDir()
 	target := filepath.Join(ws, "conf.txt")
-	backupsRoot := filepath.Join(ws, ".codeterminal", "backups")
+	backupsRoot := filepath.Join(ws, ".mochiii", "backups")
 	addr := g6Server(t, ws)
 
 	shared := 0

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"codeterminal/editapply"
+	"mochiii/editapply"
 )
 
 // This file tests file creation and parser recovery THROUGH THE PRODUCTION
@@ -88,7 +88,7 @@ func TestCLI_CreateOfProtectedTargetRefused(t *testing.T) {
 	for _, tc := range []struct{ name, path string }{
 		{"git hook", ".git/hooks/pre-commit"},
 		{"git config", ".git/config"},
-		{"backup dir", ".codeterminal/backups/x/before/f.txt"},
+		{"backup dir", ".mochiii/backups/x/before/f.txt"},
 		{"ssh dir", ".ssh/authorized_keys"},
 		{"secret name", ".env"},
 	} {

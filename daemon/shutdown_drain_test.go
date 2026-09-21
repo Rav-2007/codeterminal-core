@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // P1.4's evidence. Shutdown used to be `ln.Close(); os.Remove(socket)` and then

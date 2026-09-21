@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // runAgentTurn is serveConn's agent-mode branch: it owns the registry's

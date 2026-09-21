@@ -46,7 +46,7 @@ func containsString(names []string, s string) bool {
 // the 4 newest of the 6 pre-existing ones), pruning the oldest 2.
 func TestNewBackupSessionDir_PrunesOldestWhenOverLimit(t *testing.T) {
 	root := realTempDir(t)
-	backupsRoot := filepath.Join(root, ".codeterminal", "backups")
+	backupsRoot := filepath.Join(root, ".mochiii", "backups")
 
 	old := []string{
 		"20200101-000001",
@@ -91,7 +91,7 @@ func TestNewBackupSessionDir_PrunesOldestWhenOverLimit(t *testing.T) {
 // keep the new one and drop exactly the single oldest pre-existing dir.
 func TestNewBackupSessionDir_JustCreatedDirNeverPruned(t *testing.T) {
 	root := realTempDir(t)
-	backupsRoot := filepath.Join(root, ".codeterminal", "backups")
+	backupsRoot := filepath.Join(root, ".mochiii", "backups")
 
 	old := []string{
 		"20200101-000001",
@@ -127,7 +127,7 @@ func TestNewBackupSessionDir_JustCreatedDirNeverPruned(t *testing.T) {
 // pruning.
 func TestPruneBackupSessions_StraySkippedNotDeleted(t *testing.T) {
 	root := realTempDir(t)
-	backupsRoot := filepath.Join(root, ".codeterminal", "backups")
+	backupsRoot := filepath.Join(root, ".mochiii", "backups")
 
 	for i := 1; i <= 6; i++ {
 		mkBackupSessionDir(t, backupsRoot, fmt.Sprintf("session-%02d", i))
@@ -160,7 +160,7 @@ func TestPruneBackupSessions_StraySkippedNotDeleted(t *testing.T) {
 // with fewer than `keep` session dirs is left completely alone.
 func TestPruneBackupSessions_FewerThanKeepDoesNothing(t *testing.T) {
 	root := realTempDir(t)
-	backupsRoot := filepath.Join(root, ".codeterminal", "backups")
+	backupsRoot := filepath.Join(root, ".mochiii", "backups")
 
 	names := []string{"20200101-000001", "20200101-000002", "20200101-000003"}
 	for _, name := range names {
@@ -177,12 +177,12 @@ func TestPruneBackupSessions_FewerThanKeepDoesNothing(t *testing.T) {
 
 // TestPruneBackupSessions_ConfinedToBackupsRoot proves pruning never
 // touches anything outside backupsRoot: a sibling directory (a stand-in for
-// the rest of the user's workspace, at the same level as .codeterminal)
+// the rest of the user's workspace, at the same level as .mochiii)
 // must survive untouched even while backupsRoot itself is pruned down from
 // 6 sessions to the newest 5.
 func TestPruneBackupSessions_ConfinedToBackupsRoot(t *testing.T) {
 	root := realTempDir(t)
-	backupsRoot := filepath.Join(root, ".codeterminal", "backups")
+	backupsRoot := filepath.Join(root, ".mochiii", "backups")
 
 	sibling := filepath.Join(root, "src")
 	siblingFile := filepath.Join(sibling, "main.go")

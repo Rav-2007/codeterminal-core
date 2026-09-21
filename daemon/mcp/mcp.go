@@ -234,14 +234,14 @@ const QualifiedNameSeparator = "__"
 // The allow-list exists so a server can be given a credential of its own
 // (GITHUB_TOKEN for a GitHub server, say). These are different: they are THIS
 // PRODUCT'S credentials for the inference path. A server holding
-// CODETERMINAL_MOCHIII_KEY can spend the user's quota; one holding
+// MOCHIII_PROXY_KEY can spend the user's quota; one holding
 // OPENROUTER_API_KEY can spend their money directly. No legitimate MCP server
 // needs either, so the allow-list is not permitted to grant them and a config
 // that asks is refused rather than quietly obeyed.
 var ForbiddenEnvNames = []string{
 	"OPENROUTER_API_KEY",
-	"CODETERMINAL_API_KEY",
-	"CODETERMINAL_MOCHIII_KEY",
+	"MOCHIII_API_KEY",
+	"MOCHIII_PROXY_KEY",
 }
 
 // IsForbiddenEnvName reports whether name is one this daemon refuses to pass to

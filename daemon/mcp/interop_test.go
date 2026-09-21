@@ -152,7 +152,7 @@ func TestInteropServerEnvironmentCarriesNoCredentials(t *testing.T) {
 	cfg := interopLaunch(t)
 
 	t.Setenv("OPENROUTER_API_KEY", "sk-or-v1-must-not-reach-the-child")
-	t.Setenv("CODETERMINAL_MOCHIII_KEY", "mochi_must-not-reach-the-child")
+	t.Setenv("MOCHIII_PROXY_KEY", "mochi_must-not-reach-the-child")
 
 	env := ServerEnv(cfg.EnvAllow)
 	for _, kv := range env {

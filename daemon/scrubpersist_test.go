@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // ITEM 1a -- the prompt is PERSISTED SCRUBBED.

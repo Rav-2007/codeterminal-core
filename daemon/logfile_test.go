@@ -9,7 +9,7 @@ import (
 // A -log-file whose directory does not exist yet must still produce a log.
 //
 // Not hypothetical: the VS Code extension now passes -log-file unconditionally,
-// pointing at <workspace>/.codeterminal/logs/daemon.log, and on a workspace that
+// pointing at <workspace>/.mochiii/logs/daemon.log, and on a workspace that
 // has never been indexed that directory does not exist. openRotatingFile
 // returned ENOENT, newLogWriter fell back to stderr, and a detached daemon's
 // stderr goes nowhere -- so the one window that most needs a log (an ADOPTING
@@ -17,7 +17,7 @@ import (
 //
 // Neuter: drop the MkdirAll in openRotatingFile and this fails with ENOENT.
 func TestOpenRotatingFile_CreatesItsParentDirectory(t *testing.T) {
-	path := filepath.Join(t.TempDir(), ".codeterminal", "logs", "daemon.log")
+	path := filepath.Join(t.TempDir(), ".mochiii", "logs", "daemon.log")
 
 	rf, err := openRotatingFile(path, logFileMaxBytes)
 	if err != nil {

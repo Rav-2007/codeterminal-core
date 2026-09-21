@@ -11,7 +11,7 @@
 //
 // Run it the same way as its neighbour:
 //
-//	export CODETERMINAL_API_BASE=... CODETERMINAL_MOCHIII_KEY=... CODETERMINAL_USE_PROXY=true
+//	export MOCHIII_API_BASE=... MOCHIII_PROXY_KEY=... MOCHIII_USE_PROXY=true
 //	go test -tags eval -run TestToolMenuSizeCurve -v ./daemon
 //
 // METHOD, and the two things it holds fixed.
@@ -161,13 +161,13 @@ func TestToolMenuSizeCurve(t *testing.T) {
 		t.Skip("skipping live model eval in -short mode")
 	}
 
-	apiBase := os.Getenv("CODETERMINAL_API_BASE")
-	apiKey := os.Getenv("CODETERMINAL_API_KEY")
-	if v := os.Getenv("CODETERMINAL_MOCHIII_KEY"); v != "" && os.Getenv("CODETERMINAL_USE_PROXY") == "true" {
+	apiBase := os.Getenv("MOCHIII_API_BASE")
+	apiKey := os.Getenv("MOCHIII_API_KEY")
+	if v := os.Getenv("MOCHIII_PROXY_KEY"); v != "" && os.Getenv("MOCHIII_USE_PROXY") == "true" {
 		apiKey = v
 	}
 	if apiBase == "" {
-		t.Skip("CODETERMINAL_API_BASE is unset -- this eval makes real billed calls and will not guess an endpoint")
+		t.Skip("MOCHIII_API_BASE is unset -- this eval makes real billed calls and will not guess an endpoint")
 	}
 
 	cfg, err := LoadConfig("../models.json")

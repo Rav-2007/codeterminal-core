@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 
-	"codeterminal/daemon/mcp"
-	"codeterminal/editapply"
+	"mochiii/daemon/mcp"
+	"mochiii/editapply"
 )
 
 func (s *Server) builtinLSPDefinition(ctx context.Context, raw json.RawMessage) (mcp.Result, error) {

@@ -12,7 +12,7 @@ import { DAEMON_BIN_ENV, daemonBinaryName, resolveDaemonBin } from '../../daemon
 // it. `/mcp-server` in the TUI resolved its binary against the working
 // directory, which for the TUI is the repository you opened; that was fixed in
 // d56e425 and its comment records the measured exploit -- attacker code ran and
-// read CODETERMINAL_API_KEY out of the inherited environment. resolveHelperBinPath
+// read MOCHIII_API_KEY out of the inherited environment. resolveHelperBinPath
 // had the same shape and closed it with runningFromGoRun.
 //
 // The VS Code extension was not carried along by either fix. Its copy was
@@ -20,7 +20,7 @@ import { DAEMON_BIN_ENV, daemonBinaryName, resolveDaemonBin } from '../../daemon
 // the workspace, while runMCPServerList was PASSED the opened folder and joined
 // onto it directly:
 //
-//     path.join(workspace, 'daemon', 'codeterminal-daemon')
+//     path.join(workspace, 'daemon', 'mochiii-daemon')
 //
 // Open a repository that ships that file, type one slash command, and it runs.
 // No approval prompt stands in front of a local slash command.
@@ -31,7 +31,7 @@ import { DAEMON_BIN_ENV, daemonBinaryName, resolveDaemonBin } from '../../daemon
 // the code expresses it (resolveDaemonBin), so a fourth surface cannot quietly
 // reintroduce it.
 //
-// NEUTER CHECK. Put `path.join(workspace, 'daemon', 'codeterminal-daemon')` back
+// NEUTER CHECK. Put `path.join(workspace, 'daemon', 'mochiii-daemon')` back
 // at the front of resolveDaemonBin's candidate list and
 // `refusesToRunABinaryShippedByTheWorkspace` FAILS by writing the sentinel --
 // measured, not asserted.
@@ -40,7 +40,7 @@ function makeTempDir(t: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), t));
 }
 
-// plantHostileDaemon writes an executable at <root>/daemon/codeterminal-daemon
+// plantHostileDaemon writes an executable at <root>/daemon/mochiii-daemon
 // that records the fact it ran. On Windows a .cmd is what actually executes, so
 // the fixture matches the platform rather than pretending every runner is POSIX.
 function plantHostileDaemon(root: string, sentinel: string): void {
@@ -48,14 +48,14 @@ function plantHostileDaemon(root: string, sentinel: string): void {
   fs.mkdirSync(dir, { recursive: true });
 
   if (process.platform === 'win32') {
-    const p = path.join(dir, 'codeterminal-daemon.cmd');
+    const p = path.join(dir, 'mochiii-daemon.cmd');
     fs.writeFileSync(p, `@echo off\r\necho pwned > "${sentinel}"\r\n`);
     // The vulnerable code looked for the extension-less name too.
-    fs.writeFileSync(path.join(dir, 'codeterminal-daemon'), `@echo off\r\necho pwned > "${sentinel}"\r\n`);
+    fs.writeFileSync(path.join(dir, 'mochiii-daemon'), `@echo off\r\necho pwned > "${sentinel}"\r\n`);
     return;
   }
 
-  const p = path.join(dir, 'codeterminal-daemon');
+  const p = path.join(dir, 'mochiii-daemon');
   fs.writeFileSync(p, `#!/bin/sh\necho pwned > "${sentinel}"\n`);
   fs.chmodSync(p, 0o755);
 }
@@ -214,7 +214,7 @@ suite('daemon binary resolution — workspace content is never executable', () =
   });
 
   // An explicit environment variable IS a trusted input: the user set it. This
-  // mirrors the TUI's CODETERMINAL_DAEMON_BIN so one sentence describes both.
+  // mirrors the TUI's MOCHIII_DAEMON_BIN so one sentence describes both.
   test('honoursTheExplicitEnvironmentOverride', () => {
     const extensionPath = makeTempDir('ct-ext5-');
     const elsewhere = path.join(makeTempDir('ct-override-'), 'my-daemon');

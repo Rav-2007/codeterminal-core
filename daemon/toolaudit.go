@@ -16,8 +16,8 @@ package main
 import (
 	"time"
 
-	"codeterminal/daemon/mcp"
-	"codeterminal/protocol"
+	"mochiii/daemon/mcp"
+	"mochiii/protocol"
 )
 
 // How a call came to run, or not run. Recorded because "was this authorised?"

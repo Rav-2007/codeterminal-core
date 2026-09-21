@@ -9,8 +9,8 @@ import * as vscode from 'vscode';
 
 import { pointAtEmptyRuntimeDir } from '../stubDaemon';
 
-const EXT_ID = 'codeterminal.codeterminal-vscode';
-const PANEL_TITLE = 'CodeTerminal Chat';
+const EXT_ID = 'mochiii.mochiii-vscode';
+const PANEL_TITLE = 'Mochiii Chat';
 
 function chatTabOpen(): boolean {
   return vscode.window.tabGroups.all.some((g) => g.tabs.some((t) => t.label === PANEL_TITLE));
@@ -34,14 +34,14 @@ suite('E2E smoke', () => {
 
   test('openChat command renders the webview panel', async () => {
     assert.ok(!chatTabOpen(), 'no chat panel should be open before the command runs');
-    await vscode.commands.executeCommand('codeterminal.openChat');
+    await vscode.commands.executeCommand('mochiii.openChat');
     // Give VS Code a tick to register the newly created webview tab.
     await new Promise((r) => setTimeout(r, 300));
-    assert.ok(chatTabOpen(), 'openChat did not produce a "CodeTerminal Chat" webview tab');
+    assert.ok(chatTabOpen(), 'openChat did not produce a "Mochiii Chat" webview tab');
   });
 
   test('openChat is idempotent (reveals the one panel, no duplicate)', async () => {
-    await vscode.commands.executeCommand('codeterminal.openChat');
+    await vscode.commands.executeCommand('mochiii.openChat');
     await new Promise((r) => setTimeout(r, 200));
     const count = vscode.window.tabGroups.all
       .flatMap((g) => g.tabs)

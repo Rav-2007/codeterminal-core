@@ -113,7 +113,7 @@ func TestScanWorkspace_PrunesIgnoredDirs(t *testing.T) {
 	writeFile(t, filepath.Join(dir, "node_modules", "pkg", "index.js"), "SHOULD_NOT_BE_INDEXED\n")
 	writeFile(t, filepath.Join(dir, "vendor", "lib", "file.go"), "SHOULD_NOT_BE_INDEXED\n")
 	writeFile(t, filepath.Join(dir, ".git", "HEAD"), "SHOULD_NOT_BE_INDEXED\n")
-	writeFile(t, filepath.Join(dir, ".codeterminal", "index", "junk.gob"), "SHOULD_NOT_BE_INDEXED\n")
+	writeFile(t, filepath.Join(dir, ".mochiii", "index", "junk.gob"), "SHOULD_NOT_BE_INDEXED\n")
 
 	res, err := ScanWorkspace(dir)
 	if err != nil {

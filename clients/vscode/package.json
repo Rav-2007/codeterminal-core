@@ -1,9 +1,9 @@
 {
-  "name": "codeterminal-vscode",
+  "name": "mochiii-vscode",
   "displayName": "Mochiii",
   "description": "A local-first AI coding assistant. Your code is indexed, embedded and retrieved on your own machine.",
-  "version": "0.0.3",
-  "publisher": "codeterminal",
+  "version": "0.0.4",
+  "publisher": "mochiii",
   "license": "SEE LICENSE IN LICENSE",
   "icon": "media/icon.png",
   "repository": {
@@ -28,42 +28,42 @@
     "configuration": {
       "title": "Mochiii",
       "properties": {
-        "codeterminal.apiBase": {
+        "mochiii.apiBase": {
           "type": "string",
           "default": "",
           "scope": "machine",
-          "markdownDescription": "Model API base URL the daemon talks to, e.g. `https://openrouter.ai/api/v1`. Leave empty to use the daemon's default. Overrides `CODETERMINAL_API_BASE` in the environment.\n\nThis setting is **machine-scoped on purpose**: a workspace `.vscode/settings.json` must not be able to redirect your prompts to a host the repository chooses."
+          "markdownDescription": "Model API base URL the daemon talks to, e.g. `https://openrouter.ai/api/v1`. Leave empty to use the daemon's default. Overrides `MOCHIII_API_BASE` in the environment.\n\nThis setting is **machine-scoped on purpose**: a workspace `.vscode/settings.json` must not be able to redirect your prompts to a host the repository chooses."
         }
       }
     },
     "commands": [
       {
-        "command": "codeterminal.openChat",
+        "command": "mochiii.openChat",
         "title": "Mochiii: Open Chat"
       },
       {
-        "command": "codeterminal.restartDaemon",
+        "command": "mochiii.restartDaemon",
         "title": "Mochiii: Restart Daemon"
       },
       {
-        "command": "codeterminal.showDaemonLog",
+        "command": "mochiii.showDaemonLog",
         "title": "Mochiii: Show Daemon Log"
       },
       {
-        "command": "codeterminal.setApiKey",
+        "command": "mochiii.setApiKey",
         "title": "Mochiii: Set API Key"
       }
     ]
   },
   "scripts": {
-    "build:daemon": "cd ../../ && go build -o clients/vscode/daemon/codeterminal-daemon ./daemon",
-    "build:helper": "cd ../../helper && go build -o ../clients/vscode/daemon/codeterminal-embedder-helper .",
+    "build:daemon": "cd ../../ && go build -o clients/vscode/daemon/mochiii-daemon ./daemon",
+    "build:helper": "cd ../../helper && go build -o ../clients/vscode/daemon/mochiii-embedder-helper .",
     "build:runtime": "npm run build:daemon && npm run build:helper && node scripts/stage-runtime.js",
     "compile": "npm run build:daemon && tsc -p ./",
     "watch": "tsc -w -p ./",
     "pretest": "tsc -p ./ && npm run check:webview && npm run check:installpath",
     "test": "node ./out/test/runTest.js",
-    "package": "npm run verify:vsix:selftest && npm run build:runtime && tsc -p ./ && vsce package --no-dependencies -o codeterminal-vscode-$npm_package_version.vsix && node scripts/verify-vsix.js codeterminal-vscode-$npm_package_version.vsix",
+    "package": "npm run verify:vsix:selftest && npm run build:runtime && tsc -p ./ && vsce package --no-dependencies -o mochiii-vscode-$npm_package_version.vsix && node scripts/verify-vsix.js mochiii-vscode-$npm_package_version.vsix",
     "verify:vsix": "node scripts/verify-vsix.js",
     "verify:vsix:selftest": "node scripts/verify-vsix.js --self-test",
     "check:webview": "node scripts/webview-check.js",

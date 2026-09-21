@@ -56,7 +56,7 @@ var testFuncPattern = regexp.MustCompile(`\bTest[A-Z]\w*`)
 // test file: the "go test" command name (e.g. in a failure the user pasted
 // alongside its output) and the ".test" suffix `go test`/`go vet` print for
 // a package's compiled test binary in a build failure (e.g.
-// "codeterminal/daemon [codeterminal/daemon.test]", "FAIL codeterminal/
+// "mochiii/daemon [mochiii/daemon.test]", "FAIL mochiii/
 // editapply [build failed]"). Measured live: an edit-shaped prompt built
 // from a real captured build/test failure hits this on nearly every case
 // (see edit_eval_test.go), inverting testClassWeight's down-weight for a

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // M3 + folded render-parity guards for the TUI. The daemon already streams

@@ -1,4 +1,4 @@
-module codeterminal/protocol
+module mochiii/protocol
 
 go 1.25.13
 

@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"codeterminal/editapply"
+	"mochiii/editapply"
 )
 
 // lsp_bridge.go shipped with every function at 0.0% coverage, and it is not a
@@ -282,8 +282,8 @@ func TestLSPServer_ChildProcessNeverReceivesCredentials(t *testing.T) {
 	// Set the real credential names in the parent, exactly as a running daemon
 	// holds them, then prove none crosses the exec boundary.
 	t.Setenv("OPENROUTER_API_KEY", "sk-or-v1-CANARY-must-not-leak")
-	t.Setenv("CODETERMINAL_MOCHIII_KEY", "mochi_CANARY-must-not-leak")
-	t.Setenv("CODETERMINAL_API_KEY", "CANARY-must-not-leak")
+	t.Setenv("MOCHIII_PROXY_KEY", "mochi_CANARY-must-not-leak")
+	t.Setenv("MOCHIII_API_KEY", "CANARY-must-not-leak")
 
 	b, home := newFakeBridge(t, "ok")
 	if _, err := b.GetServer("go"); err != nil {
@@ -296,7 +296,7 @@ func TestLSPServer_ChildProcessNeverReceivesCredentials(t *testing.T) {
 	}
 	got := string(dump)
 
-	for _, name := range []string{"OPENROUTER_API_KEY", "CODETERMINAL_MOCHIII_KEY", "CODETERMINAL_API_KEY"} {
+	for _, name := range []string{"OPENROUTER_API_KEY", "MOCHIII_PROXY_KEY", "MOCHIII_API_KEY"} {
 		if strings.Contains(got, name) {
 			t.Errorf("%s crossed into the language server process", name)
 		}

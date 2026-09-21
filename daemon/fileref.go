@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"strings"
 
-	"codeterminal/editapply"
+	"mochiii/editapply"
 )
 
 // Fix 12: resolve the exact pointers a pasted build/test failure already

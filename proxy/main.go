@@ -1,4 +1,4 @@
-// Command codeterminal-proxy is the smallest possible managed-tier proxy in
+// Command mochiii-proxy is the smallest possible managed-tier proxy in
 // front of OpenRouter. It exists to hold the OpenRouter API key server-side
 // so it never ships to end users. It adds the key and forwards the request
 // body byte-for-byte (buffered once, to allow the quota reservation below --
@@ -415,7 +415,7 @@ func stripAccountMetadata(body []byte) []byte {
 }
 
 func main() {
-	logger := log.New(os.Stderr, "codeterminal-proxy: ", log.LstdFlags)
+	logger := log.New(os.Stderr, "mochiii-proxy: ", log.LstdFlags)
 	// Startup and shutdown records. logger itself is kept for the Fatal calls
 	// below -- slog has no Fatal, and a misconfiguration must still kill the
 	// process rather than log at Error and carry on serving.

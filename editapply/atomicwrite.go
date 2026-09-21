@@ -51,7 +51,7 @@ func writeFileAtomicNoFollow(path string, data []byte, perm os.FileMode) error {
 	}
 
 	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, ".codeterminal-apply-*")
+	tmp, err := os.CreateTemp(dir, ".mochiii-apply-*")
 	if err != nil {
 		return err
 	}

@@ -29,7 +29,7 @@ import (
 // nothing about the thing under test.
 
 const (
-	sinkHelperEnv   = "CODETERMINAL_JSONL_SINK_HELPER"
+	sinkHelperEnv   = "MOCHIII_JSONL_SINK_HELPER"
 	sinkHelperLines = 400
 )
 

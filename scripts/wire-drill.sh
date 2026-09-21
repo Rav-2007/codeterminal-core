@@ -176,13 +176,13 @@ say "wire-drill: fake provider on 127.0.0.1:$PORT"
 
 # ------------------------------------------------------------------- the daemon
 say "wire-drill: building the daemon"
-DAEMON_BIN="$WORKDIR/codeterminal-daemon"
+DAEMON_BIN="$WORKDIR/mochiii-daemon"
 (cd "$REPO_ROOT/daemon" && "$GO" build -o "$DAEMON_BIN" .)
 
 # --no-context: retrieval needs a built index, and this drill is about the edit
 # wire, not about what gets retrieved. Nothing below depends on context.
-CODETERMINAL_API_BASE="http://127.0.0.1:$PORT" \
-CODETERMINAL_API_KEY="drill" \
+MOCHIII_API_BASE="http://127.0.0.1:$PORT" \
+MOCHIII_API_KEY="drill" \
   "$DAEMON_BIN" --workspace "$WS" --config "$WS/models.json" --no-context \
   > "$WORKDIR/daemon.log" 2>&1 &
 DAEMON_PID=$!

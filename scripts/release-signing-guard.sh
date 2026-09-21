@@ -7,7 +7,7 @@
 # its existence. The run was GREEN and the darwin-arm64 binaries were UNSIGNED:
 # the signing step is written to be a no-op until the MACOS_* secrets exist, so
 # it reports success for the state in which it did nothing (R1.15). On a real tag
-# the `files:` globs -- out-vsix/*.vsix and out-bin/codeterminal-* -- would
+# the `files:` globs -- out-vsix/*.vsix and out-bin/mochiii-* -- would
 # have swept two unsigned darwin assets into the release, with two checksum
 # manifests naming them.
 #
@@ -286,7 +286,7 @@ run_guard() {
     # Assets. Both directories, because both feed the release `files:` list.
     #
     # PRUNED BY TARGET SUFFIX, not by a list of binary names. out-bin held only
-    # codeterminal-tui-<target> until 2026-09-21; it now also holds the daemon
+    # mochiii-tui-<target> until 2026-09-21; it now also holds the daemon
     # and the embedder helper, because publishing a terminal client with no
     # daemon to talk to made two of six assets unusable. Keying on `-<target>`
     # means a fourth binary added to release.yml's staging loop is pruned here
@@ -310,8 +310,8 @@ run_guard() {
       rm -f "$vsix_dir/SHA256SUMS"
       warn "no .vsix packages remain; removed SHA256SUMS rather than leaving an empty one"
     fi
-    if [ -d "$bin_dir" ] && ls "$bin_dir"/codeterminal-* >/dev/null 2>&1; then
-      ( cd "$bin_dir" && sha256sum codeterminal-* > SHA256SUMS-bin ) && say "regenerated $bin_dir/SHA256SUMS-bin"
+    if [ -d "$bin_dir" ] && ls "$bin_dir"/mochiii-* >/dev/null 2>&1; then
+      ( cd "$bin_dir" && sha256sum mochiii-* > SHA256SUMS-bin ) && say "regenerated $bin_dir/SHA256SUMS-bin"
     else
       rm -f "$bin_dir/SHA256SUMS-bin"
       warn "no standalone binaries remain; removed SHA256SUMS-bin"
@@ -328,7 +328,7 @@ run_guard() {
   # see rather than infer.
   say "--- release input, after the guard ---"
   local f found=0
-  for f in "$vsix_dir"/*.vsix "$vsix_dir"/SHA256SUMS "$bin_dir"/codeterminal-* "$bin_dir"/SHA256SUMS-bin; do
+  for f in "$vsix_dir"/*.vsix "$vsix_dir"/SHA256SUMS "$bin_dir"/mochiii-* "$bin_dir"/SHA256SUMS-bin; do
     [ -e "$f" ] || continue
     say "  WOULD ATTACH  $(basename "$f")"
     found=$((found + 1))
@@ -353,7 +353,7 @@ self_test() {
     local t
     for t in $ALL_TARGETS; do
       mkdir -p "$d/artifacts/binaries-$t"
-      echo "vsix-$t" > "$d/out-vsix/codeterminal-vscode-$t-0.0.1.vsix"
+      echo "vsix-$t" > "$d/out-vsix/mochiii-vscode-$t-0.0.1.vsix"
       # EVERY BINARY release.yml STAGES, not just the client. A fixture that
       # holds less than the real tree cannot prove the guard prunes the real
       # tree -- and from 2026-09-21 the real out-bin carries three binaries per
@@ -361,12 +361,12 @@ self_test() {
       # unsigned daemon in the release and this self-test would still pass.
       local b ext=""
       [ "$t" = "win32-x64" ] && ext=".exe"
-      for b in codeterminal-tui codeterminal-daemon codeterminal-embedder-helper; do
+      for b in mochiii-tui mochiii-daemon mochiii-embedder-helper; do
         echo "$b-$t" > "$d/out-bin/$b-$t$ext"
       done
     done
     ( cd "$d/out-vsix" && sha256sum ./*.vsix > SHA256SUMS )
-    ( cd "$d/out-bin" && sha256sum codeterminal-* > SHA256SUMS-bin )
+    ( cd "$d/out-bin" && sha256sum mochiii-* > SHA256SUMS-bin )
   }
   sign() { printf 'target=%s\nsigned=yes\nnotarized=yes\n' "$2" > "$1/artifacts/binaries-$2/SIGNED-$2"; }
   unsign() { printf 'target=%s\nsigned=no\nreason=%s\n' "$2" "$3" > "$1/artifacts/binaries-$2/UNSIGNED-$2"; }
@@ -407,37 +407,37 @@ FIXTURE
   fail_count=0; excluded=""
   run_guard "refs/heads/some-branch" "$d/artifacts" "$d/out-vsix" "$d/out-bin" >/dev/null 2>&1
   check "dispatch + unsigned darwin -> green" pass $?
-  absent  "  darwin vsix removed"            "$d/out-vsix/codeterminal-vscode-darwin-arm64-0.0.1.vsix"
-  absent  "  darwin tui binary removed"      "$d/out-bin/codeterminal-tui-darwin-arm64"
+  absent  "  darwin vsix removed"            "$d/out-vsix/mochiii-vscode-darwin-arm64-0.0.1.vsix"
+  absent  "  darwin tui binary removed"      "$d/out-bin/mochiii-tui-darwin-arm64"
   # THE DAEMON AND HELPER TOO, and these two arms are the ones that would have
-  # failed on 2026-09-21 before the guard stopped keying on the `codeterminal-tui-`
+  # failed on 2026-09-21 before the guard stopped keying on the `mochiii-tui-`
   # prefix. An excluded target whose DAEMON survived the prune would ship an
   # unsigned binary under a release that claims nothing unsigned reaches it --
   # a worse outcome than the missing client this change set out to fix.
-  absent  "  darwin daemon removed"          "$d/out-bin/codeterminal-daemon-darwin-arm64"
-  absent  "  darwin helper removed"          "$d/out-bin/codeterminal-embedder-helper-darwin-arm64"
+  absent  "  darwin daemon removed"          "$d/out-bin/mochiii-daemon-darwin-arm64"
+  absent  "  darwin helper removed"          "$d/out-bin/mochiii-embedder-helper-darwin-arm64"
   ngreps  "  SHA256SUMS drops darwin"        "darwin-arm64" "$d/out-vsix/SHA256SUMS"
   ngreps  "  SHA256SUMS-bin drops darwin"    "darwin-arm64" "$d/out-bin/SHA256SUMS-bin"
-  present "  linux vsix untouched"           "$d/out-vsix/codeterminal-vscode-linux-x64-0.0.1.vsix"
-  present "  windows tui untouched"          "$d/out-bin/codeterminal-tui-win32-x64.exe"
-  present "  windows daemon untouched"       "$d/out-bin/codeterminal-daemon-win32-x64.exe"
+  present "  linux vsix untouched"           "$d/out-vsix/mochiii-vscode-linux-x64-0.0.1.vsix"
+  present "  windows tui untouched"          "$d/out-bin/mochiii-tui-win32-x64.exe"
+  present "  windows daemon untouched"       "$d/out-bin/mochiii-daemon-win32-x64.exe"
   greps   "  SHA256SUMS still names linux"   "linux-x64"   "$d/out-vsix/SHA256SUMS"
   greps   "  SHA256SUMS-bin names windows"   "win32-x64"   "$d/out-bin/SHA256SUMS-bin"
-  greps   "  SHA256SUMS-bin names the daemon" "codeterminal-daemon" "$d/out-bin/SHA256SUMS-bin"
+  greps   "  SHA256SUMS-bin names the daemon" "mochiii-daemon" "$d/out-bin/SHA256SUMS-bin"
 
   # --- 2. tag, darwin unsigned: fails.
   d="$tmp/b"; mk_tree "$d"; unsign "$d" darwin-arm64 no-certificate
   fail_count=0; excluded=""
   run_guard "refs/tags/v1.0.0" "$d/artifacts" "$d/out-vsix" "$d/out-bin" >/dev/null 2>&1
   check "tag + unsigned darwin -> FAILS" fail $?
-  present "  tag failure leaves assets alone" "$d/out-vsix/codeterminal-vscode-darwin-arm64-0.0.1.vsix"
+  present "  tag failure leaves assets alone" "$d/out-vsix/mochiii-vscode-darwin-arm64-0.0.1.vsix"
 
   # --- 3. tag, darwin signed: passes, nothing removed.
   d="$tmp/c"; mk_tree "$d"; sign "$d" darwin-arm64
   fail_count=0; excluded=""
   run_guard "refs/tags/v1.0.0" "$d/artifacts" "$d/out-vsix" "$d/out-bin" >/dev/null 2>&1
   check "tag + signed darwin -> green" pass $?
-  present "  darwin vsix kept"   "$d/out-vsix/codeterminal-vscode-darwin-arm64-0.0.1.vsix"
+  present "  darwin vsix kept"   "$d/out-vsix/mochiii-vscode-darwin-arm64-0.0.1.vsix"
   greps   "  manifest keeps darwin" "darwin-arm64" "$d/out-vsix/SHA256SUMS"
 
   # --- 4. NO MARKER AT ALL is read as unsigned (reject-by-default).
@@ -506,7 +506,7 @@ FIXTURE
   greps   "  reason=no-binaries"          "reason=no-binaries" "$m/UNSIGNED-darwin-arm64"
 
   # PATH 2 -- binaries present, no certificate.
-  m="$tmp/m2"; mkdir -p "$m"; : > "$m/codeterminal-daemon"; : > "$m/codeterminal-tui"
+  m="$tmp/m2"; mkdir -p "$m"; : > "$m/mochiii-daemon"; : > "$m/mochiii-tui"
   run_signer "$m" darwin-arm64
   check   "path 2 (no certificate) exits 0" pass $?
   present "  wrote UNSIGNED-darwin-arm64"   "$m/UNSIGNED-darwin-arm64"
@@ -515,7 +515,7 @@ FIXTURE
 
   # PATH 3 -- certificate present but the host is not macOS. On a Linux runner
   # this is the branch a cert actually reaches, which is why it is testable here.
-  m="$tmp/m3"; mkdir -p "$m"; : > "$m/codeterminal-daemon"
+  m="$tmp/m3"; mkdir -p "$m"; : > "$m/mochiii-daemon"
   if [ "$(uname -s)" != "Darwin" ]; then
     run_signer "$m" darwin-arm64 MACOS_CERT_P12=ZmFrZQ==
     check   "path 3 (not macOS) exits 0"  pass $?
@@ -527,18 +527,18 @@ FIXTURE
   fi
 
   # SIGN_TARGET is required, not guessed: the marker's name decides what ships.
-  m="$tmp/m4"; mkdir -p "$m"; : > "$m/codeterminal-daemon"
+  m="$tmp/m4"; mkdir -p "$m"; : > "$m/mochiii-daemon"
   ( env -u MACOS_CERT_P12 DIST_DIR="$m" SIGN_TARGET="" bash "$signer" >/dev/null 2>&1 )
   check "missing SIGN_TARGET fails loudly rather than defaulting" fail $?
 
   # A stale SIGNED marker must not survive a later unsigned run.
-  m="$tmp/m5"; mkdir -p "$m"; : > "$m/codeterminal-daemon"
+  m="$tmp/m5"; mkdir -p "$m"; : > "$m/mochiii-daemon"
   printf 'target=darwin-arm64\nsigned=yes\n' > "$m/SIGNED-darwin-arm64"
   run_signer "$m" darwin-arm64
   absent "a stale SIGNED marker is cleared by an unsigned run" "$m/SIGNED-darwin-arm64"
 
   # Per-target isolation at the WRITING end as well as the reading end.
-  m="$tmp/m6"; mkdir -p "$m"; : > "$m/codeterminal-daemon"
+  m="$tmp/m6"; mkdir -p "$m"; : > "$m/mochiii-daemon"
   run_signer "$m" win32-x64
   present "signing win32-x64 writes only its own marker" "$m/UNSIGNED-win32-x64"
   absent  "  and not darwin's"                           "$m/UNSIGNED-darwin-arm64"

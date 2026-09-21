@@ -263,7 +263,7 @@ func BenchmarkFuseRRF(b *testing.B) {
 func BenchmarkLooksTestSeeking(b *testing.B) {
 	queries := []string{
 		"how does the chunker split files",
-		"FAIL codeterminal/editapply [build failed]\ncodeterminal/daemon [codeterminal/daemon.test]",
+		"FAIL mochiii/editapply [build failed]\nmochiii/daemon [mochiii/daemon.test]",
 		"--- FAIL: TestIsZDRRoutingRefusal_RejectsNonZDR (0.00s)",
 	}
 	b.ReportAllocs()

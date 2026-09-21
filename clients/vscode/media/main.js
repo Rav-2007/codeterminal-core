@@ -555,7 +555,7 @@
     if (role === 'error') {
       return 'Error';
     }
-    return 'CodeTerminal';
+    return 'Mochiii';
   }
 
   function addBubble(role, text) {
@@ -986,7 +986,7 @@
     } else if (result.applied) {
       resultEl.className = 'result ok';
       const prefix = currentRunAuto ? 'auto-applied' : 'applied';
-      resultEl.textContent = `${prefix} — backup: ${result.backupDir} (restore with: codeterminal-daemon edits undo)`;
+      resultEl.textContent = `${prefix} — backup: ${result.backupDir} (restore with: mochiii-daemon edits undo)`;
     } else {
       resultEl.className = 'result refused';
       const prefix = currentRunAuto ? 'auto-refused' : 'refused';
@@ -1155,18 +1155,18 @@
       lane.className = 'approval-lane unconfined';
       lane.textContent =
         'LEAVES YOUR MACHINE: this sends the arguments above to a third party over the internet ' +
-        'and brings a reply back into the conversation. CodeTerminal strips secrets on the way out ' +
+        'and brings a reply back into the conversation. Mochiii strips secrets on the way out ' +
         'and treats whatever comes back as untrusted data — but it cannot vouch for the far end.';
     } else if (req.launches_subprocess) {
       lane.className = 'approval-lane unconfined';
       lane.textContent =
         'STARTS ANOTHER PROGRAM: this runs a language server from your PATH against this repository — ' +
-        'gopls, tsserver or pyright. CodeTerminal ships the tool but not that program. It reads ' +
+        'gopls, tsserver or pyright. Mochiii ships the tool but not that program. It reads ' +
         'configuration out of the project you have open, so a repository you do not trust can influence it.';
     } else if (req.confined) {
       lane.className = 'approval-lane confined';
       lane.textContent =
-        'This tool ships with CodeTerminal. Anything it changes goes through the same review you use for edits.';
+        'This tool ships with Mochiii. Anything it changes goes through the same review you use for edits.';
     } else {
       // NEVER SOFTENED. A third-party MCP server is an ordinary subprocess with
       // the user's full access; this approval is the only thing in front of it.
@@ -1175,7 +1175,7 @@
       lane.className = 'approval-lane unconfined';
       lane.textContent =
         'NOT SANDBOXED: this is a separate program running with your full access. ' +
-        'CodeTerminal cannot limit what it reads or changes — your approval is the only thing in its way.';
+        'Mochiii cannot limit what it reads or changes — your approval is the only thing in its way.';
     }
     container.appendChild(lane);
 
@@ -1315,7 +1315,7 @@
     if (summary.applied > 0 && summary.backupDir) {
       const b = document.createElement('div');
       b.className = 'summary-backup';
-      b.textContent = `backups: ${summary.backupDir} (restore with: codeterminal-daemon edits undo)`;
+      b.textContent = `backups: ${summary.backupDir} (restore with: mochiii-daemon edits undo)`;
       container.appendChild(b);
 
       const undoBtn = document.createElement('button');
@@ -1443,7 +1443,7 @@
 
       const meta = document.createElement('div');
       meta.className = 'search-result-meta';
-      const role = result.role === 'user' ? 'you' : 'codeterminal';
+      const role = result.role === 'user' ? 'you' : 'mochiii';
       const when = new Date(result.created_at).toLocaleString();
       meta.textContent = `${role} · ${when}`;
       card.appendChild(meta);

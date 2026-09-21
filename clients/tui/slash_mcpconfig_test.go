@@ -35,10 +35,10 @@ func fakeDaemonEchoingArgv(t *testing.T) string {
 	dir := t.TempDir()
 	var p, body string
 	if runtime.GOOS == "windows" {
-		p = filepath.Join(dir, "codeterminal-daemon.exe.cmd")
+		p = filepath.Join(dir, "mochiii-daemon.exe.cmd")
 		body = "@echo off\r\necho ARGV %*\r\n"
 	} else {
-		p = filepath.Join(dir, "codeterminal-daemon")
+		p = filepath.Join(dir, "mochiii-daemon")
 		body = "#!/bin/sh\necho \"ARGV $@\"\n"
 	}
 	if err := os.WriteFile(p, []byte(body), 0o755); err != nil {
@@ -78,7 +78,7 @@ func TestRunMCPServerList_PassesNoConfigByDefault(t *testing.T) {
 }
 
 // The capability survives: an ABSOLUTE path is a developer naming a config they
-// chose, which is a trusted input in the same way CODETERMINAL_DAEMON_BIN is.
+// chose, which is a trusted input in the same way MOCHIII_DAEMON_BIN is.
 // Refusing it too would break a real workflow to fix a different problem.
 func TestRunMCPServerList_StillHonoursAnAbsoluteConfigPath(t *testing.T) {
 	t.Setenv(daemonBinEnvVar, fakeDaemonEchoingArgv(t))

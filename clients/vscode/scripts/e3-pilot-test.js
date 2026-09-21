@@ -110,7 +110,7 @@ async function runPilot() {
   logStep(`Found packaged VSIX: ${vsixFiles[0]}`);
 
   // Create isolated temp runtime and workspace environments
-  const tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), 'codeterminal-e3-'));
+  const tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), 'mochiii-e3-'));
   const stagingDir = path.join(tmpBase, 'staging');
   const workspaceDir = path.join(tmpBase, 'workspace');
   const runtimeDir = path.join(tmpBase, 'runtime');
@@ -124,8 +124,8 @@ async function runPilot() {
   logStep('Unpacking .vsix archive into staging directory...');
   extractZip(vsixPath, stagingDir);
 
-  const daemonExe = path.join(stagingDir, 'extension', 'daemon', process.platform === 'win32' ? 'codeterminal-daemon.exe' : 'codeterminal-daemon');
-  const helperExe = path.join(stagingDir, 'extension', 'daemon', process.platform === 'win32' ? 'codeterminal-embedder-helper.exe' : 'codeterminal-embedder-helper');
+  const daemonExe = path.join(stagingDir, 'extension', 'daemon', process.platform === 'win32' ? 'mochiii-daemon.exe' : 'mochiii-daemon');
+  const helperExe = path.join(stagingDir, 'extension', 'daemon', process.platform === 'win32' ? 'mochiii-embedder-helper.exe' : 'mochiii-embedder-helper');
   const modelsJson = path.join(stagingDir, 'extension', 'daemon', 'models.json');
 
   logStep('Asserting bundled runtime components...');
@@ -144,7 +144,7 @@ async function runPilot() {
   // Strip Go from PATH to prove zero dependency on dev toolchain
   const cleanEnv = Object.assign({}, process.env, {
     XDG_RUNTIME_DIR: runtimeDir,
-    CODETERMINAL_API_BASE: 'http://127.0.0.1:1/v1',
+    MOCHIII_API_BASE: 'http://127.0.0.1:1/v1',
     PATH: '/usr/bin:/bin',
   });
 
@@ -159,7 +159,7 @@ async function runPilot() {
 
   // Wait for lockfile to be written
   const tag = workspaceTag(realWorkspace);
-  const lockFilePath = path.join(runtimeDir, 'codeterminal', `daemon-${tag}.lock`);
+  const lockFilePath = path.join(runtimeDir, 'mochiii', `daemon-${tag}.lock`);
 
   logStep(`Waiting for daemon lockfile at ${lockFilePath}...`);
   let lockData = null;

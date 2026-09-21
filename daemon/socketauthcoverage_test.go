@@ -133,7 +133,7 @@ func findAcceptSites(t *testing.T) []string {
 				return nil
 			}
 			// Dot-directories are never product source. This is not only .git:
-			// .codeterminal/backups/ holds the edit-undo system's COPIES of real
+			// .mochiii/backups/ holds the edit-undo system's COPIES of real
 			// source files, so a scan that walked it found `daemon/server.go`
 			// three times -- once as code, twice as a snapshot of code -- and
 			// demanded a security classification for a backup. Measured.

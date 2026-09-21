@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // The repo's first proxy<->daemon integration test.
@@ -37,8 +37,8 @@ import (
 // workspace and returns the binary path.
 func buildProxyBinary(t *testing.T) string {
 	t.Helper()
-	bin := filepath.Join(t.TempDir(), exeName("codeterminal-proxy"))
-	cmd := exec.Command("go", "build", "-o", bin, "codeterminal/proxy")
+	bin := filepath.Join(t.TempDir(), exeName("mochiii-proxy"))
+	cmd := exec.Command("go", "build", "-o", bin, "mochiii/proxy")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("building the proxy binary: %v\n%s", err, out)
 	}
@@ -166,7 +166,7 @@ func TestSeam_ProxyBudgetKillReachesTheUser(t *testing.T) {
 
 // startProxy runs the compiled proxy against the stub Supabase and stub upstream,
 // waits for /health, and returns the base URL the daemon should be pointed at
-// (the CODETERMINAL_PROXY_BASE shape: ".../v1").
+// (the MOCHIII_PROXY_BASE shape: ".../v1").
 func startProxy(t *testing.T, bin, supabaseURL, upstreamURL, allowedModel string) string {
 	t.Helper()
 
@@ -263,7 +263,7 @@ func TestSeam_BudgetKillReachesTheClientOverTheSocket(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	// The daemon pointed at the real proxy: the CODETERMINAL_PROXY_BASE shape a
+	// The daemon pointed at the real proxy: the MOCHIII_PROXY_BASE shape a
 	// pilot user actually runs.
 	srv := &Server{
 		apiBase:       startProxy(t, buildProxyBinary(t), supabase.URL, upstream.URL, model),

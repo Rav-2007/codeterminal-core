@@ -19,9 +19,9 @@ func TestParseFileLineRefs_RecognizesRealToolOutputShapes(t *testing.T) {
 	}{
 		{
 			name: "go build failure, package-relative with column",
-			input: "# codeterminal/daemon [codeterminal/daemon.test]\n" +
+			input: "# mochiii/daemon [mochiii/daemon.test]\n" +
 				"./helperproc_test.go:136:4: h.extraEnv undefined (type *HelperProcess has no field or method extraEnv)\n" +
-				"FAIL\tcodeterminal/daemon [build failed]",
+				"FAIL\tmochiii/daemon [build failed]",
 			want: []fileLineRef{{Path: "helperproc_test.go", Line: 136}},
 		},
 		{
@@ -355,7 +355,7 @@ func TestGatherContext_DirectReferenceReachesThePrompt(t *testing.T) {
 		cfg:                &Config{},
 	}
 
-	prompt := "# codeterminal/daemon [codeterminal/daemon.test]\n./target.go:100:2: undefined: thing\nFAIL"
+	prompt := "# mochiii/daemon [mochiii/daemon.test]\n./target.go:100:2: undefined: thing\nFAIL"
 	out := s.gatherContext(context.Background(), prompt)
 
 	if out.Skipped {
@@ -426,7 +426,7 @@ func TestGatherContext_DirectReferenceWorksWithoutRetrieval(t *testing.T) {
 		cfg:                     &Config{},
 	}
 
-	prompt := "# codeterminal/daemon [codeterminal/daemon.test]\n./target.go:100:2: undefined: thing\nFAIL"
+	prompt := "# mochiii/daemon [mochiii/daemon.test]\n./target.go:100:2: undefined: thing\nFAIL"
 	out := s.gatherContext(context.Background(), prompt)
 
 	if out.Skipped {

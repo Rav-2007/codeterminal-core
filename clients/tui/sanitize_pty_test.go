@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // THE END-TO-END PROOF, AND THE ONLY ONE THAT READS REAL TERMINAL BYTES.
@@ -38,7 +38,7 @@ func hostileDaemonForPTY(t *testing.T, workspace, payload string) {
 	t.Cleanup(func() { _ = os.RemoveAll(runtimeDir) })
 	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
 
-	sockDir := filepath.Join(runtimeDir, "codeterminal")
+	sockDir := filepath.Join(runtimeDir, "mochiii")
 	if err := os.MkdirAll(sockDir, 0o700); err != nil {
 		t.Fatalf("socket dir: %v", err)
 	}

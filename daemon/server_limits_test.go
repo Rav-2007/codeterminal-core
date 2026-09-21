@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // These tests are the regression cover for FAIL-3's Gate 5 (DoS hardening).

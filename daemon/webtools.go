@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"codeterminal/daemon/mcp"
+	"mochiii/daemon/mcp"
 )
 
 // The two Lane A tools that leave the machine, and the honest descriptions the

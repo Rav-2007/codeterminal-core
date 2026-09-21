@@ -41,14 +41,14 @@ func requireCaseSensitiveFS(t *testing.T, dir string) {
 }
 
 // S2 through the real indexing door: a case-varied protected directory (.GIT,
-// .SSH, .CodeTerminal) must be pruned exactly like its lowercase form, so real
+// .SSH, .Mochiii) must be pruned exactly like its lowercase form, so real
 // VCS/credential/undo internals are never read into the index on a
 // case-insensitive filesystem (where ".GIT" resolves to the real .git). Fails
 // when neutered: revert isPrunedDir/IsProtectedDirName to the case-sensitive map
 // lookup and these variant dirs get indexed.
 func TestCaseFoldPrune_ProtectedDirsPruned(t *testing.T) {
 	root := t.TempDir()
-	variants := []string{".git", ".GIT", ".Git", ".SSH", ".AWS", ".CodeTerminal", ".hg", ".HG"}
+	variants := []string{".git", ".GIT", ".Git", ".SSH", ".AWS", ".Mochiii", ".hg", ".HG"}
 	for _, v := range variants {
 		writeFile(t, filepath.Join(root, v, "internal", "data.txt"), "MARKER internal state\n")
 	}
@@ -58,7 +58,7 @@ func TestCaseFoldPrune_ProtectedDirsPruned(t *testing.T) {
 	for p := range got {
 		first := strings.Split(p, string(filepath.Separator))[0]
 		if strings.EqualFold(first, ".git") || strings.EqualFold(first, ".ssh") ||
-			strings.EqualFold(first, ".aws") || strings.EqualFold(first, ".codeterminal") ||
+			strings.EqualFold(first, ".aws") || strings.EqualFold(first, ".mochiii") ||
 			strings.EqualFold(first, ".hg") {
 			t.Errorf("indexed a protected-dir case variant: %s", p)
 		}

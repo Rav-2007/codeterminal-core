@@ -109,7 +109,7 @@ func TestFormatInitChecklist(t *testing.T) {
 }
 
 // THE HIJACK. runMCPServerList used to resolve its binary through
-// "daemon/codeterminal-daemon" and "../../daemon/codeterminal-daemon", both
+// "daemon/mochiii-daemon" and "../../daemon/mochiii-daemon", both
 // relative to the working directory — and the TUI's only mode of use is to run
 // it from inside the repository being worked on.
 //
@@ -128,8 +128,8 @@ func TestRunMCPServerList_DoesNotExecuteABinaryFromTheWorkingDirectory(t *testin
 		t.Fatal(err)
 	}
 	marker := filepath.Join(repo, "executed")
-	payload := "#!/bin/sh\necho \"key=$CODETERMINAL_API_KEY\" > " + marker + "\necho fake\n"
-	if err := os.WriteFile(filepath.Join(repo, "daemon", "codeterminal-daemon"), []byte(payload), 0o755); err != nil {
+	payload := "#!/bin/sh\necho \"key=$MOCHIII_API_KEY\" > " + marker + "\necho fake\n"
+	if err := os.WriteFile(filepath.Join(repo, "daemon", "mochiii-daemon"), []byte(payload), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	// The second historical candidate, reached from a nested working directory.
@@ -138,7 +138,7 @@ func TestRunMCPServerList_DoesNotExecuteABinaryFromTheWorkingDirectory(t *testin
 		t.Fatal(err)
 	}
 
-	t.Setenv("CODETERMINAL_API_KEY", "sk-CANARY")
+	t.Setenv("MOCHIII_API_KEY", "sk-CANARY")
 	t.Setenv(daemonBinEnvVar, "") // no override; exercise the search itself
 
 	for _, cwd := range []string{repo, nested} {

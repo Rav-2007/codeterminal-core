@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"codeterminal/helper/helperproto"
-	"codeterminal/protocol"
+	"mochiii/helper/helperproto"
+	"mochiii/protocol"
 )
 
 type safeBuffer struct {

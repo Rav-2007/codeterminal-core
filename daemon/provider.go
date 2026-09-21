@@ -13,14 +13,14 @@ import (
 	"strings"
 	"time"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // requestTimeout bounds a single prompt's total call to the model API so a
 // stalled upstream can't hang a connection (and its goroutine) forever.
 const requestTimeout = 5 * time.Minute
 
-// chatCompletionsPath is appended to CODETERMINAL_API_BASE for every call.
+// chatCompletionsPath is appended to MOCHIII_API_BASE for every call.
 const chatCompletionsPath = "/chat/completions"
 
 // SSE lines are almost always small; the scanner starts with a modest

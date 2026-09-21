@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 func baseStatus() protocol.StatusResponse {

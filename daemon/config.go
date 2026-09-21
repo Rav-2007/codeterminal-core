@@ -21,7 +21,7 @@ type ModelTier struct {
 
 // Config is the parsed form of models.json. It contains model slugs and
 // metadata only — never credentials. Those still come from
-// CODETERMINAL_API_BASE / CODETERMINAL_API_KEY.
+// MOCHIII_API_BASE / MOCHIII_API_KEY.
 //
 // warnings holds non-fatal problems found while loading (unknown/misspelled
 // keys, an unrecognized config_version, out-of-range values that were

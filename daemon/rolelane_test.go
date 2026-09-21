@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"codeterminal/daemon/mcp"
-	"codeterminal/protocol"
+	"mochiii/daemon/mcp"
+	"mochiii/protocol"
 )
 
 // laneBClient is a third-party MCP server under this test's control, so a tool

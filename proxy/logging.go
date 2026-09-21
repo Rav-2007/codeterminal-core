@@ -116,7 +116,7 @@ const logLevelEnv = "PROXY_LOG_LEVEL"
 //     SECOND mutex over the same writer, and two independently-locked writers on
 //     one destination is a data race -- immediately visible under `go test -race`
 //     with the bytes.Buffer the tests inject.
-//  2. Format. log.Logger contributes the "codeterminal-proxy: " prefix and the
+//  2. Format. log.Logger contributes the "mochiii-proxy: " prefix and the
 //     timestamp, so a slog line is indistinguishable in shape from the startup
 //     lines main still writes directly, and slog's own time attr is dropped as
 //     redundant (see slogFromLogger).

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // THE CONSENT PROMPT IS WHERE THE PRIVACY CLAIM IS EITHER KEPT OR BROKEN.

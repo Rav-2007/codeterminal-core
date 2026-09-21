@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"codeterminal/daemon/mcp"
-	"codeterminal/protocol"
+	"mochiii/daemon/mcp"
+	"mochiii/protocol"
 )
 
 // The agentic loop.

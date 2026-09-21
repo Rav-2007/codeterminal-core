@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // This file is the before/after evidence for C1's panic-backstop half. It

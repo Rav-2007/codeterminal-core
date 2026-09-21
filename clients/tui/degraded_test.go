@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // The Tier 2.5 / Fix 13 lesson applied to this cluster: a degraded-state

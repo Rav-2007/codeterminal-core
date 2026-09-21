@@ -14,8 +14,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
-	"codeterminal/editapply"
-	"codeterminal/protocol"
+	"mochiii/editapply"
+	"mochiii/protocol"
 )
 
 // chatState is where the chat model is in one request/response cycle.
@@ -1767,7 +1767,7 @@ func detailSuffix(detail string) string {
 
 // applyCurrentReviewEdit backs up and writes m.reviewPrepared using the same
 // editapply backup+write calls the CLI's applyEditBlocks uses — the same
-// .codeterminal/backups/<session>/{before,after}/ layout, restorable via
+// .mochiii/backups/<session>/{before,after}/ layout, restorable via
 // the CLI's `edits undo`. A backup or write failure is treated as a refusal
 // for that block (recorded with its reason) rather than aborting the whole
 // review, since later blocks may still be perfectly applicable.

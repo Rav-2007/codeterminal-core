@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"codeterminal/editapply"
-	"codeterminal/protocol"
+	"mochiii/editapply"
+	"mochiii/protocol"
 )
 
 // 2.2d: THE PANIC PATH IS A SECURITY SURFACE, NOT A TIDINESS ONE.

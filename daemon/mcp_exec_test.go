@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"codeterminal/daemon/mcp"
+	"mochiii/daemon/mcp"
 )
 
 // P0, found 2026-08-05 and reproduced before it was fixed.
@@ -16,7 +16,7 @@ import (
 // sandbox_exec was named for a sandbox it never used. It called
 // exec.CommandContext directly, with cmd.Env left nil — which inherits the
 // daemon's ENTIRE environment, where OPENROUTER_API_KEY and
-// CODETERMINAL_MOCHIII_KEY live. Its "strict whitelist" of go/npm/make/cargo
+// MOCHIII_PROXY_KEY live. Its "strict whitelist" of go/npm/make/cargo
 // was described in its own source as preventing "RCE sandbox escape", but every
 // entry on it runs project-supplied shell by design: a Makefile recipe IS
 // shell.
@@ -41,15 +41,15 @@ func execToolFixture(t *testing.T) *Server {
 	if err != nil {
 		t.Fatal(err)
 	}
-	makefile := "leak:\n\t@echo \"OR=$$OPENROUTER_API_KEY MOCHI=$$CODETERMINAL_MOCHIII_KEY CT=$$CODETERMINAL_API_KEY\"\n"
+	makefile := "leak:\n\t@echo \"OR=$$OPENROUTER_API_KEY MOCHI=$$MOCHIII_PROXY_KEY CT=$$MOCHIII_API_KEY\"\n"
 	if err := os.WriteFile(filepath.Join(real, "Makefile"), []byte(makefile), 0600); err != nil {
 		t.Fatal(err)
 	}
 
 	// The daemon holds these for the inference path. t.Setenv restores them.
 	t.Setenv("OPENROUTER_API_KEY", "sk-or-v1-CANARY-must-not-escape")
-	t.Setenv("CODETERMINAL_MOCHIII_KEY", "mochi_CANARY-must-not-escape")
-	t.Setenv("CODETERMINAL_API_KEY", "sk-CANARY-must-not-escape")
+	t.Setenv("MOCHIII_PROXY_KEY", "mochi_CANARY-must-not-escape")
+	t.Setenv("MOCHIII_API_KEY", "sk-CANARY-must-not-escape")
 
 	return &Server{logger: discardLogger(), workspace: real}
 }

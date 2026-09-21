@@ -25,7 +25,7 @@ func TestLocalAddressFor_LivesBesideTheDaemonSocket(t *testing.T) {
 		t.Fatalf("transport = %q, want %q on unix", a.Transport, TransportUnix)
 	}
 
-	want := filepath.Join(tmp, "codeterminal", "embedder-helper-4242.sock")
+	want := filepath.Join(tmp, "mochiii", "embedder-helper-4242.sock")
 	if a.Address != want {
 		t.Errorf("Address = %q, want %q", a.Address, want)
 	}

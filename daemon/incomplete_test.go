@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // sseServerWithFinish emits a minimal chat-completions SSE stream whose terminal

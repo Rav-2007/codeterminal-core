@@ -279,7 +279,7 @@ jobs:
       # -race, not a bare `go test`: this repo's concurrency work (the Gate 6
       # apply/undo locking in particular) is only defended by the race detector.
       - name: Test
-        # CODETERMINAL_REQUIRE_SANDBOX makes the bubblewrap confinement tests
+        # MOCHIII_REQUIRE_SANDBOX makes the bubblewrap confinement tests
         # FAIL instead of skip when bwrap cannot create a user namespace.
         #
         # Set only for daemon, which is the module that owns them, and set
@@ -291,7 +291,7 @@ jobs:
         # failure mode that let --nosuid survive two campaigns marked CONFIRMED,
         # so it gets a tripwire rather than a comment.
         env:
-          CODETERMINAL_REQUIRE_SANDBOX: ${{ matrix.module == 'daemon' && '1' || '' }}
+          MOCHIII_REQUIRE_SANDBOX: ${{ matrix.module == 'daemon' && '1' || '' }}
         # -count=1: setup-go restores the build cache between runs, so without
         # it `go test` can serve a PASS computed before the commit under test.
         # The local gate carries the same flag for the same reason.
@@ -734,7 +734,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Build proxy image
-        run: docker build -t codeterminal-proxy:ci ./proxy
+        run: docker build -t mochiii-proxy:ci ./proxy
 
   eval:
     # NOT per-PR. The -tags eval suite downloads a real embedding model and
@@ -891,7 +891,7 @@ jobs:
         #
         # WHY -v. THIS IS THE DEFECT THAT MADE ALL OF THE ABOVE ARCHAEOLOGY.
         # `go test` discards a passing package's output. The 37m43s run
-        # therefore emitted, in 38 minutes, one line: "ok codeterminal/daemon
+        # therefore emitted, in 38 minutes, one line: "ok mochiii/daemon
         # 2219.578s". Which test, which phase, how many chunks -- none of it
         # survived, and the only reason the cause is known is that a DIFFERENT
         # run crashed and dumped a stack. A job whose whole purpose is to

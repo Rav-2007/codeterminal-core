@@ -30,9 +30,9 @@ export async function runMCPServerList(workspace: string, extensionPath: string)
   const bin = resolveDaemonBin(extensionPath);
   if (!bin) {
     return (
-      'codeterminal-daemon binary not found.\n' +
+      'mochiii-daemon binary not found.\n' +
       'It ships inside this extension; a development checkout needs it built:\n' +
-      '  (cd daemon && go build -o codeterminal-daemon .)\n' +
+      '  (cd daemon && go build -o mochiii-daemon .)\n' +
       `then put it on PATH, or set ${DAEMON_BIN_ENV} to its path, and retry /mcp-server`
     );
   }

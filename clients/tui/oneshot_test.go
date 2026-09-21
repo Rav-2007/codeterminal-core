@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // oneShotApprovalDaemon stands up a fake daemon that asks for approval of one

@@ -149,7 +149,7 @@ func goroutineDump() []byte {
 // broken-pipe failure for a handler to prevent -- adding one would be a
 // mechanism guarding nothing.
 //
-// One-shot mode does, because `codeterminal-tui --prompt ... | head` is an
+// One-shot mode does, because `mochiii-tui --prompt ... | head` is an
 // ordinary thing to type and MEASURED, before this existed, it exited 141:
 // killed by SIGPIPE. The reader closing the pipe early is normal pipeline
 // behaviour, not a failure of ours, so the correct answer is a quiet exit 0 --

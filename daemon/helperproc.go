@@ -13,8 +13,8 @@ import (
 	"syscall"
 	"time"
 
-	"codeterminal/helper/helperproto"
-	"codeterminal/protocol"
+	"mochiii/helper/helperproto"
+	"mochiii/protocol"
 )
 
 // Lifecycle tuning. Exported as fields (with these as defaults) rather than
@@ -229,8 +229,8 @@ func (h *HelperProcess) spawnLocked() error {
 // (--socket, --model-dir, --onnxruntime-lib -- see helper/main.go) and reads
 // no environment variables itself, so this deliberately does NOT inherit the
 // daemon's full environment (exec.Cmd's default when Env is left nil): that
-// would hand the helper OPENROUTER_API_KEY / CODETERMINAL_API_KEY /
-// CODETERMINAL_MOCHIII_KEY for no reason -- it never touches any of them.
+// would hand the helper OPENROUTER_API_KEY / MOCHIII_API_KEY /
+// MOCHIII_PROXY_KEY for no reason -- it never touches any of them.
 // Only PATH and HOME are passed through, and only if the daemon itself has
 // them set: standard baseline vars a Unix subprocess (and the Go runtime /
 // cgo / dynamic linker underneath it) can reasonably expect.

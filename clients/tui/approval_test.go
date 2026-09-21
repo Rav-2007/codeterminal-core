@@ -13,7 +13,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 func pendingApprovalModel(t *testing.T, req protocol.ToolApprovalRequest) (chatModel, chan string) {

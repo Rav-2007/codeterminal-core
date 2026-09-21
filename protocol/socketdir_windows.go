@@ -24,7 +24,7 @@ type tokenOwner struct {
 // THIS DISTINCTION IS THE BUG. ensureOwnerOnlyDir compared the directory's owner
 // against GetTokenUser, and CI's first Windows test run refused to start:
 //
-//	runtime directory C:\Users\runneradmin\AppData\Local\codeterminal is owned
+//	runtime directory C:\Users\runneradmin\AppData\Local\mochiii is owned
 //	by S-1-5-32-544, not by this user (S-1-5-21-...-500)
 //
 // S-1-5-32-544 is BUILTIN\Administrators. When a token carries the

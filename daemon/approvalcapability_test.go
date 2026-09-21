@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"codeterminal/daemon/mcp"
-	"codeterminal/protocol"
+	"mochiii/daemon/mcp"
+	"mochiii/protocol"
 )
 
 // THE LINK NEUTERING FOUND MISSING.

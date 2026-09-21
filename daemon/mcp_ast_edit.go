@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"codeterminal/daemon/mcp"
-	"codeterminal/editapply"
+	"mochiii/daemon/mcp"
+	"mochiii/editapply"
 )
 
 type lspRange struct {

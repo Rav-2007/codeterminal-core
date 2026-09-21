@@ -31,7 +31,7 @@ import { DaemonHandle, DaemonSupervisor, SupervisorDeps } from '../../daemonSupe
 // real daemon holding a real lockfile it is the behaviour a second VS Code
 // window actually gets.
 
-const daemonBin = path.resolve(__dirname, '../../../daemon/codeterminal-daemon');
+const daemonBin = path.resolve(__dirname, '../../../daemon/mochiii-daemon');
 
 function spawnRealDaemon(workspace: string, logPath: string): DaemonHandle {
   fs.chmodSync(daemonBin, 0o755);
@@ -44,7 +44,7 @@ function spawnRealDaemon(workspace: string, logPath: string): DaemonHandle {
     cwd: workspace,
     detached: true,
     stdio: 'ignore',
-    env: { ...process.env, CODETERMINAL_API_BASE: 'http://127.0.0.1:9', CODETERMINAL_API_KEY: 'test' },
+    env: { ...process.env, MOCHIII_API_BASE: 'http://127.0.0.1:9', MOCHIII_API_KEY: 'test' },
   });
   child.unref();
   return {
@@ -174,8 +174,8 @@ suite('the extension can start the daemon it ships', function () {
 // THE FIRST-RUN DEFECT, AND WHY THIS SUITE USED TO PIN IT.
 //
 // Until the commit that inverted it, the test below deleted
-// CODETERMINAL_API_BASE from the environment and asserted the daemon logged
-// "CODETERMINAL_API_BASE must be set". It passed in CI on every branch push,
+// MOCHIII_API_BASE from the environment and asserted the daemon logged
+// "MOCHIII_API_BASE must be set". It passed in CI on every branch push,
 // and it had never once been seen to fail -- because the thing it asserted was
 // the product being dead on arrival.
 //
@@ -209,7 +209,7 @@ suite('a daemon that cannot start says why, somewhere the extension can read it'
     try {
       // A base with no scheme. Fatal by design, and independent of the
       // first-run defect this suite no longer pins.
-      const env = { ...process.env, CODETERMINAL_API_BASE: 'not-a-url' };
+      const env = { ...process.env, MOCHIII_API_BASE: 'not-a-url' };
 
       await new Promise<void>((resolve) => {
         const child = cp.spawn(daemonBin, ['--workspace', ws, '-log-file', log], {
@@ -225,7 +225,7 @@ suite('a daemon that cannot start says why, somewhere the extension can read it'
       const text = fs.readFileSync(log, 'utf8');
       assert.match(
         text,
-        /CODETERMINAL_API_BASE "not-a-url" has no scheme/,
+        /MOCHIII_API_BASE "not-a-url" has no scheme/,
         `the daemon exited without recording why. The extension can only tell a user ` +
           `what the daemon wrote, so a silent failure here is an unactionable error there. Log:\n${text}`,
       );
@@ -242,12 +242,12 @@ suite('a daemon that cannot start says why, somewhere the extension can read it'
     try {
       const env = { ...process.env };
       for (const k of Object.keys(env)) {
-        if (k.startsWith('CODETERMINAL_')) delete env[k];
+        if (k.startsWith('MOCHIII_')) delete env[k];
       }
       // Vacuity floor: if one leaked in, a pass here would prove nothing.
       assert.ok(
-        !Object.keys(env).some((k) => k.startsWith('CODETERMINAL_')),
-        'the install environment still holds a CODETERMINAL_ variable, so this asserts nothing',
+        !Object.keys(env).some((k) => k.startsWith('MOCHIII_')),
+        'the install environment still holds a MOCHIII_ variable, so this asserts nothing',
       );
 
       const code = await new Promise<number | null>((resolve) => {
@@ -275,7 +275,7 @@ suite('a daemon that cannot start says why, somewhere the extension can read it'
       const text = fs.existsSync(log) ? fs.readFileSync(log, 'utf8') : '';
       assert.doesNotMatch(
         text,
-        /CODETERMINAL_API_BASE must be set/,
+        /MOCHIII_API_BASE must be set/,
         `the daemon still refuses to start without a shell export, which is what every ` +
           `install has. Log:\n${text}`,
       );

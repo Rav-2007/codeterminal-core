@@ -28,7 +28,7 @@
 // because the credential is not a setting and a check written around
 // `contributes.configuration` cannot see one. So the extension shipped with no
 // way for a user to supply an API key at all: the daemon reads
-// CODETERMINAL_API_KEY from its environment, nothing put it there, and every
+// MOCHIII_API_KEY from its environment, nothing put it there, and every
 // answer failed with "credentials rejected". That is element 3's own principle
 // -- the artifact exists and the delivery does not -- applied to the one value
 // without which the product does nothing, and this check missed it by asking
@@ -154,7 +154,7 @@ if (names.length === 0) {
 // is the collection half missing. Either alone is a product that cannot answer.
 
 // Comments are stripped before the delivery test. A file that merely DISCUSSES
-// CODETERMINAL_API_KEY -- and this one's source does, at length -- must not be
+// MOCHIII_API_KEY -- and this one's source does, at length -- must not be
 // able to satisfy a check about whether it SETS it.
 const extCode = ext.replace(/^\s*\/\/.*$/gm, '');
 
@@ -164,7 +164,7 @@ const keyCommands = commandIds.filter((c) => /apikey|api_key|credential/i.test(c
 if (keyCommands.length === 0) {
   fail(
     'package.json contributes no command for supplying an API key, so a packaged install has ' +
-      'no way to provide one: the daemon reads CODETERMINAL_API_KEY from its environment, and a ' +
+      'no way to provide one: the daemon reads MOCHIII_API_KEY from its environment, and a ' +
       'VS Code launched from a desktop icon inherits no shell. Contributed commands: ' +
       (commandIds.join(', ') || '(none)'),
   );
@@ -183,9 +183,9 @@ if (keyCommands.length === 0) {
 
 // Delivery. The key must be written into the environment the daemon is spawned
 // with -- an assignment, not a mention.
-if (!/\benv\.CODETERMINAL_API_KEY\s*=/.test(extCode)) {
+if (!/\benv\.MOCHIII_API_KEY\s*=/.test(extCode)) {
   fail(
-    'src/extension.ts never assigns env.CODETERMINAL_API_KEY, so nothing a user supplies ' +
+    'src/extension.ts never assigns env.MOCHIII_API_KEY, so nothing a user supplies ' +
       'reaches the daemon. The daemon reads that variable and nothing else for its credential ' +
       '(daemon/config.go: models.json holds "model slugs and metadata only -- never credentials").',
   );
@@ -200,16 +200,16 @@ if (!/\benv\.CODETERMINAL_API_KEY\s*=/.test(extCode)) {
 // were written after the value in question had already shipped unusable, and
 // neither could have caught the other: element 3 is built around
 // `contributes.configuration` and structurally cannot see a credential, and
-// element 4 names CODETERMINAL_API_KEY as a literal. A check that enumerates
+// element 4 names MOCHIII_API_KEY as a literal. A check that enumerates
 // the values it knows about passes on every value its author did not list.
 //
 // So this element does not list anything. It DERIVES the set of values the
 // daemon needs by reading what the daemon actually reads -- every
-// os.Getenv/os.LookupEnv of a CODETERMINAL_* name in non-test daemon source --
+// os.Getenv/os.LookupEnv of a MOCHIII_* name in non-test daemon source --
 // and requires each one to be either DELIVERED by the extension or DECLARED
 // here with a reason it needs no delivery.
 //
-// A new `os.Getenv("CODETERMINAL_ANYTHING")` in the daemon therefore fails this
+// A new `os.Getenv("MOCHIII_ANYTHING")` in the daemon therefore fails this
 // check until someone does one of those two things. That is the property
 // elements 3 and 4 assert one value at a time.
 //
@@ -232,13 +232,13 @@ if (!fs.existsSync(daemonDir)) {
 // Every value the daemon reads that has no path from a user, with the reason.
 // Keyed by name so a stale entry is detectable against the derived set.
 const UNSUPPLIED = {
-  CODETERMINAL_USE_PROXY:
+  MOCHIII_USE_PROXY:
     'opt-in advanced mode, off unless set to exactly "true" (daemon/main.go). The extension ' +
     'deliberately offers no way to turn it on, so an ordinary install talks to the provider ' +
     'directly and never reaches the proxy path.',
-  CODETERMINAL_MOCHIII_KEY:
+  MOCHIII_PROXY_KEY:
     'read ONLY in proxy mode (daemon/main.go), which the extension cannot enable -- see ' +
-    'CODETERMINAL_USE_PROXY. Unreachable from a packaged install by construction, not by accident.',
+    'MOCHIII_USE_PROXY. Unreachable from a packaged install by construction, not by accident.',
 };
 
 function goFiles(dir) {
@@ -255,7 +255,7 @@ const derived = new Set();
 if (fs.existsSync(daemonDir)) {
   for (const f of goFiles(daemonDir)) {
     const src = fs.readFileSync(f, 'utf8');
-    for (const m of src.matchAll(/os\.(?:Getenv|LookupEnv)\(\s*"(CODETERMINAL_[A-Z0-9_]+)"\s*\)/g)) {
+    for (const m of src.matchAll(/os\.(?:Getenv|LookupEnv)\(\s*"(MOCHIII_[A-Z0-9_]+)"\s*\)/g)) {
       derived.add(m[1]);
     }
   }
@@ -266,7 +266,7 @@ if (fs.existsSync(daemonDir)) {
 // "ok" is the exact failure this element exists to prevent.
 if (derived.size < 2) {
   fail(
-    `vacuity floor: element 5 derived ${derived.size} CODETERMINAL_* variable(s) from ${daemonDir}. ` +
+    `vacuity floor: element 5 derived ${derived.size} MOCHIII_* variable(s) from ${daemonDir}. ` +
       'The daemon reads at least the API base and the API key, so this scan is broken and its ' +
       'verdict is meaningless.',
   );
@@ -303,9 +303,9 @@ for (const name of Object.keys(UNSUPPLIED)) {
 // ever learns to turn proxy mode on, it must also learn to supply the key that
 // mode requires -- the daemon calls logger.Fatal without it, so half the pair
 // is a daemon that cannot start.
-if (/\benv\.CODETERMINAL_USE_PROXY\s*=/.test(extCode) && !/\benv\.CODETERMINAL_MOCHIII_KEY\s*=/.test(extCode)) {
+if (/\benv\.MOCHIII_USE_PROXY\s*=/.test(extCode) && !/\benv\.MOCHIII_PROXY_KEY\s*=/.test(extCode)) {
   fail(
-    'src/extension.ts sets env.CODETERMINAL_USE_PROXY but not env.CODETERMINAL_MOCHIII_KEY. ' +
+    'src/extension.ts sets env.MOCHIII_USE_PROXY but not env.MOCHIII_PROXY_KEY. ' +
       'In proxy mode the daemon requires the Mochiii key and calls logger.Fatal without it, so ' +
       'enabling the mode without supplying the key ships a daemon that cannot start.',
   );
@@ -321,7 +321,7 @@ if (failures.length > 0) {
 console.log(
   `install-path-check: ok — spawnDaemon passes an env, ${names.length} setting(s) are contributed ` +
     `and read, the API key is collectable (${keyCommands.length} command(s)) and delivered, and ` +
-    `all ${derived.size} CODETERMINAL_* value(s) the daemon reads are accounted for ` +
+    `all ${derived.size} MOCHIII_* value(s) the daemon reads are accounted for ` +
     `(${derived.size - undeliverable.length} delivered, ${undeliverable.length} declared unsupplied: ` +
     `${undeliverable.join(', ') || 'none'})`,
 );

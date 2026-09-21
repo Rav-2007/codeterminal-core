@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"codeterminal/daemon/mcp"
-	"codeterminal/protocol"
+	"mochiii/daemon/mcp"
+	"mochiii/protocol"
 )
 
 // execAllowedBinaries is a first, cheap filter — NOT a security boundary, and
@@ -127,7 +127,7 @@ func (s *Server) sandboxExecHome() string {
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(base, "codeterminal", "sandbox-home", protocol.WorkspaceTag(s.workspace))
+	return filepath.Join(base, "mochiii", "sandbox-home", protocol.WorkspaceTag(s.workspace))
 }
 
 func (s *Server) sandboxExecConfig() mcp.SandboxConfig {
@@ -269,7 +269,7 @@ func (s *Server) builtinSandboxExec(ctx context.Context, raw json.RawMessage) (m
 	}
 
 	// NEVER nil. A nil Env inherits everything this daemon holds, which is where
-	// OPENROUTER_API_KEY and CODETERMINAL_MOCHIII_KEY live — a key that can
+	// OPENROUTER_API_KEY and MOCHIII_PROXY_KEY live — a key that can
 	// spend the user's money and one that can spend their quota. ServerEnv is
 	// the same scrubber Lane B subprocesses get: PATH and HOME pass through,
 	// ForbiddenEnvNames can never be granted, and nothing else is passed at all.

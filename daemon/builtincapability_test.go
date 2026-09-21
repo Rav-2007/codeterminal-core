@@ -180,7 +180,7 @@ func reachesSpawn(fn string, calls map[string][]string, spawners map[string]bool
 }
 
 // handlerFuncName turns a handler value into the bare name the parser above
-// uses: "codeterminal/daemon.(*Server).builtinLSPDefinition-fm" -> "builtinLSPDefinition".
+// uses: "mochiii/daemon.(*Server).builtinLSPDefinition-fm" -> "builtinLSPDefinition".
 func handlerFuncName(h any) string {
 	if h == nil {
 		return ""

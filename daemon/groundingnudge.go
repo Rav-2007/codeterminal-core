@@ -3,7 +3,7 @@ package main
 import (
 	"strings"
 
-	"codeterminal/daemon/mcp"
+	"mochiii/daemon/mcp"
 )
 
 // Two mechanisms that stop the assistant answering a changeable fact out of a

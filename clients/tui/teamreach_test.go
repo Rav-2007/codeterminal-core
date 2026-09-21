@@ -8,7 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // THE TRAP THIS FEATURE WALKS INTO, pinned so it cannot be walked into again.

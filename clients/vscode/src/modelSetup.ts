@@ -189,7 +189,7 @@ export async function ensureModelAvailable(
         RESTART,
       );
       if (pick === RESTART) {
-        await vscode.commands.executeCommand('codeterminal.restartDaemon');
+        await vscode.commands.executeCommand('mochiii.restartDaemon');
       }
       return;
     }

@@ -16,8 +16,8 @@
 //
 // Run:
 //
-//	export CODETERMINAL_API_BASE=https://openrouter.ai/api/v1 CODETERMINAL_API_KEY=...
-//	export CODETERMINAL_HELPER_BIN=$PWD/dist/codeterminal-helper
+//	export MOCHIII_API_BASE=https://openrouter.ai/api/v1 MOCHIII_API_KEY=...
+//	export MOCHIII_HELPER_BIN=$PWD/dist/mochiii-helper
 //	go test -tags eval -run TestOrchestrationLive -v -timeout 30m ./daemon
 //
 // Direct to the provider, not the managed proxy: a four-phase turn is roughly
@@ -34,7 +34,7 @@ import (
 	"testing"
 	"time"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // ---------------------------------------------------------------------------
@@ -183,10 +183,10 @@ func TestOrchestrationLive(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping live orchestration eval in -short mode")
 	}
-	apiBase := os.Getenv("CODETERMINAL_API_BASE")
-	apiKey := os.Getenv("CODETERMINAL_API_KEY")
+	apiBase := os.Getenv("MOCHIII_API_BASE")
+	apiKey := os.Getenv("MOCHIII_API_KEY")
 	if apiBase == "" || apiKey == "" {
-		t.Skip("CODETERMINAL_API_BASE/KEY unset -- this eval makes real billed calls and will not guess")
+		t.Skip("MOCHIII_API_BASE/KEY unset -- this eval makes real billed calls and will not guess")
 	}
 
 	cfg, err := LoadConfig("../models.json")

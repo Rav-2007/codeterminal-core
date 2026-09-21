@@ -7,7 +7,7 @@
 //	go test -tags eval -run TestRerankEvalRetrievalRanking -v ./...
 //
 // This is the acceptance test for retrieval RANKING specifically: it indexes
-// the actual CodeTerminal repo (not a curated testdata/ subset — the
+// the actual Mochiii repo (not a curated testdata/ subset — the
 // measured failures this fixes were found against this real repo, and
 // expected files/chunks are real repo-relative paths/line ranges) and runs
 // 49 queries against it.

@@ -8,13 +8,13 @@ import (
 )
 
 // helperBinName is the embedder helper's binary name, as produced by
-// `cd helper && go build -o codeterminal-embedder-helper .`.
-const helperBinName = "codeterminal-embedder-helper"
+// `cd helper && go build -o mochiii-embedder-helper .`.
+const helperBinName = "mochiii-embedder-helper"
 
 // helperBinEnvVar names an explicit override for the helper binary's location,
 // for deployments whose layout none of the candidates below describe (a package
 // manager splitting bin/ and libexec/, a container mounting it elsewhere).
-const helperBinEnvVar = "CODETERMINAL_HELPER_BIN"
+const helperBinEnvVar = "MOCHIII_HELPER_BIN"
 
 // legacyHelperBinPath is the path this used to be: a bare relative path, which
 // resolves against the CURRENT WORKING DIRECTORY. That silently disabled
@@ -35,7 +35,7 @@ const legacyHelperBinPath = "helper/" + helperBinName
 // This gates the one candidate that resolves against the WORKING DIRECTORY, and
 // it exists because that candidate is otherwise a code-execution primitive: the
 // daemon's working directory is the workspace it was asked to serve, so a
-// repository shipping helper/codeterminal-embedder-helper could have it started
+// repository shipping helper/mochiii-embedder-helper could have it started
 // as this daemon's embedder. Same defect class as the TUI's /mcp-server binary
 // hijack, which was CONFIRMED by execution; this one is narrower only because
 // it is the LAST candidate and so needs a real helper to be absent first.
@@ -95,8 +95,8 @@ func pathIsUnder(path, dir string) bool {
 // directory, by looking relative to the daemon's OWN binary. The candidates
 // cover the layouts this ships in:
 //
-//	$CODETERMINAL_HELPER_BIN        explicit override, used as given
-//	<exedir>/codeterminal-…-helper  installed side by side (release layout)
+//	$MOCHIII_HELPER_BIN        explicit override, used as given
+//	<exedir>/mochiii-…-helper  installed side by side (release layout)
 //	<exedir>/helper/…               built at the repo root (go build ./daemon)
 //	<exedir>/../helper/…            built in-package (cd daemon && go build)
 //	helper/…                        legacy CWD-relative, for `go run`
@@ -116,7 +116,7 @@ func resolveHelperBinPath() (string, error) {
 	// to `helper-smoketest` as the binary to run. When it was
 	// legacyHelperBinPath, that meant a failed resolution inside a hostile
 	// repository handed the smoketest that repository's own
-	// helper/codeterminal-embedder-helper to execute -- the error path was the
+	// helper/mochiii-embedder-helper to execute -- the error path was the
 	// vulnerability. It is now anchored next to this binary, which is also what
 	// the error message below claims to have checked.
 	fallback := legacyHelperBinPath

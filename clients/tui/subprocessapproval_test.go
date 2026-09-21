@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // A go-to-definition call starts gopls, tsserver or pyright from the user's

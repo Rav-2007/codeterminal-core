@@ -3,8 +3,8 @@ package main
 import (
 	"fmt"
 
-	"codeterminal/daemon/mcp"
-	"codeterminal/protocol"
+	"mochiii/daemon/mcp"
+	"mochiii/protocol"
 )
 
 // Specialist roles for the orchestrated agent.

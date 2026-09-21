@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // The retrieval bound: what it removes, what it deliberately does not change,

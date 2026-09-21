@@ -7,7 +7,7 @@ import (
 	"regexp"
 	"strings"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // Delimiter tags wrapping retrieved context and the user's own request in

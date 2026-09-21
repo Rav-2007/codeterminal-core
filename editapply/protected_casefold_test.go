@@ -19,7 +19,7 @@ func TestProtectedDirComponent_CaseFold(t *testing.T) {
 		".SSH/id_rsa",
 		".Ssh/authorized_keys",
 		".AWS/credentials",
-		".CodeTerminal/backups/x",
+		".Mochiii/backups/x",
 	}
 	for _, p := range refused {
 		if got := ProtectedDirComponent(p); got == "" {

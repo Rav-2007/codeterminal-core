@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // IS THE INDEX STILL TRUE?
@@ -16,7 +16,7 @@ import (
 // The index had no freshness concept whatsoever -- no mtime, no timestamp, no
 // watcher. A daemon answered from whatever snapshot existed and reported
 // `grounded ✓` with the same confidence whether the index was built a minute
-// ago or a month ago. This repository was the live proof: `.codeterminal/index/`
+// ago or a month ago. This repository was the live proof: `.mochiii/index/`
 // sat 22 days behind HEAD while the product cited it as ground truth.
 //
 // That is the most trust-destroying bug shape a retrieval product has. A wrong

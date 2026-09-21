@@ -17,7 +17,7 @@ import (
 	"strings"
 	"testing"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // The tax is actually recovered: a bare name runs instead of being refused.

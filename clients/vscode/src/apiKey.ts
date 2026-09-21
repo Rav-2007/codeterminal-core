@@ -3,7 +3,7 @@ import * as vscode from 'vscode';
 // THE CREDENTIAL THE PACKAGED EXTENSION COULD NOT RECEIVE.
 //
 // The daemon reads its model-provider key from exactly one place --
-// CODETERMINAL_API_KEY in its environment (daemon/main.go:100) -- and
+// MOCHIII_API_KEY in its environment (daemon/main.go:100) -- and
 // daemon/config.go:23 states the rule that keeps it there: models.json holds
 // "model slugs and metadata only -- never credentials".
 //
@@ -46,7 +46,7 @@ import * as vscode from 'vscode';
 // protected is the key at rest, and the specific, likely ways a credential in
 // settings.json gets away from you -- a sync, a screen-share, a commit.
 
-export const API_KEY_SECRET = 'codeterminal.apiKey';
+export const API_KEY_SECRET = 'mochiii.apiKey';
 const DISMISSED_KEY = 'mochiii.apiKeyPrompt.dismissed';
 
 // THE NARROWEST CONTEXT THESE FUNCTIONS ACTUALLY USE.
@@ -171,10 +171,10 @@ export async function apiKeyPromptDecision(
     return 'have-key';
   }
   // An environment that already carries the key is the from-source workflow the
-  // README documents (`export CODETERMINAL_API_KEY=...`). Prompting there would
+  // README documents (`export MOCHIII_API_KEY=...`). Prompting there would
   // offer to fix something that is not broken, and storing a second copy would
   // create two sources of truth for one credential.
-  if ((env.CODETERMINAL_API_KEY ?? '').trim() !== '') {
+  if ((env.MOCHIII_API_KEY ?? '').trim() !== '') {
     return 'from-env';
   }
   if (context.globalState.get<boolean>(DISMISSED_KEY)) {

@@ -3,7 +3,7 @@ package main
 import (
 	"strings"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // maxHistoryTurns caps how many prior turns of a conversation are sent to

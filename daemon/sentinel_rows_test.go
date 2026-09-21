@@ -20,9 +20,9 @@ import (
 	"strings"
 	"testing"
 
-	"codeterminal/daemon/mcp"
-	"codeterminal/editapply"
-	"codeterminal/protocol"
+	"mochiii/daemon/mcp"
+	"mochiii/editapply"
+	"mochiii/protocol"
 )
 
 // ROW 1 -- daemon env keys. The API key is held on Server and must reach

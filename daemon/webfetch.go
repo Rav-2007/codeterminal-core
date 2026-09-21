@@ -58,7 +58,7 @@ const (
 	// is a cost bound, not a safety one.
 	maxWebRedirects = 5
 
-	webUserAgent = "Mochiii/1.0 (+https://github.com/codeterminal; local coding assistant)"
+	webUserAgent = "Mochiii/1.0 (+https://github.com/Rav-2007/codeterminal-core; local coding assistant)"
 )
 
 // errBlockedAddress is returned when a request resolved to an address the

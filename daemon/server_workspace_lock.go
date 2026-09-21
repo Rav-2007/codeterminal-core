@@ -39,7 +39,7 @@ import (
 // of those overlapped a daemon operation.
 //
 // Cross-process serialization is now provided separately and underneath this,
-// by editapply.LockWorkspaceApply — a flock(2) on <root>/.codeterminal/apply.lock
+// by editapply.LockWorkspaceApply — a flock(2) on <root>/.mochiii/apply.lock
 // taken inside the three mutation primitives themselves (editapply.Apply,
 // editapply.NewBackupSessionDir, runUndoSession) so no caller can omit it. This
 // mutex is kept as the in-process fast path: it serializes the daemon's own

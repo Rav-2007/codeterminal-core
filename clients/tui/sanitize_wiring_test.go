@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"codeterminal/editapply"
-	"codeterminal/protocol"
+	"mochiii/editapply"
+	"mochiii/protocol"
 )
 
 // ASSERTED AT THE OUTPUT WRITER, NOT AT THE FILTER.

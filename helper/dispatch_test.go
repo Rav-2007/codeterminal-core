@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"codeterminal/helper/helperproto"
+	"mochiii/helper/helperproto"
 )
 
 // Model-independent coverage for the helper's request handling. The embed path

@@ -152,7 +152,7 @@ func TestApply_ForwardWriteIsAtomicRename(t *testing.T) {
 		t.Fatalf("ReadDir: %v", err)
 	}
 	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), ".codeterminal-apply-") {
+		if strings.HasPrefix(e.Name(), ".mochiii-apply-") {
 			t.Errorf("leftover staging temp file %q after a successful atomic write", e.Name())
 		}
 	}

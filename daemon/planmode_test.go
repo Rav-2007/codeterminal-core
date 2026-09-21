@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"codeterminal/daemon/mcp"
-	"codeterminal/protocol"
+	"mochiii/daemon/mcp"
+	"mochiii/protocol"
 )
 
 // TestPlanModeOffersNoToolThatExecutesCode is the security assertion this file

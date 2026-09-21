@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // M1 client-render guard for the TUI: the daemon reports a cut-off answer via

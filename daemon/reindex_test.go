@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // This file is the before/after evidence for Fix 5: nothing re-indexed an

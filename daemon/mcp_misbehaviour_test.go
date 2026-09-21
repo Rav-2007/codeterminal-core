@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // Lane B misbehaviour, end to end.

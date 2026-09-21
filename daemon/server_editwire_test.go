@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // The wire half of the syntax gate and the block parser.

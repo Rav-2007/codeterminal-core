@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // Chunk keys (Chunk.FilePath, and the Chunk.ID derived from it) are index keys

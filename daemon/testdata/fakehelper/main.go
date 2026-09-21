@@ -1,5 +1,5 @@
 // Command fakehelper is a test-only fixture that speaks the exact same wire
-// protocol as the real embedder helper (codeterminal/helper), used by
+// protocol as the real embedder helper (mochiii/helper), used by
 // helperproc_test.go to exercise HelperProcess's spawn/health/restart/
 // shutdown logic without needing to build the real helper binary or touch
 // ONNX/CGO at all. It is not part of the daemon build — go tooling ignores
@@ -17,8 +17,8 @@ import (
 	"syscall"
 	"time"
 
-	"codeterminal/helper/helperproto"
-	"codeterminal/protocol"
+	"mochiii/helper/helperproto"
+	"mochiii/protocol"
 )
 
 const fakeDim = 384

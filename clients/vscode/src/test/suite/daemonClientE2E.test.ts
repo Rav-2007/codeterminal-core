@@ -20,7 +20,7 @@ import { StreamHandlers, applyEdit, streamPrompt } from '../../daemonClient';
 import { parseTeamCommand } from '../../slashCommands';
 import { Behavior, StubDaemon, writeLine } from '../stubDaemon';
 
-const CLIENT = 'codeterminal-vscode-test';
+const CLIENT = 'mochiii-vscode-test';
 const PV = 1;
 
 // streamToCompletion runs streamPrompt and resolves only once the stream has

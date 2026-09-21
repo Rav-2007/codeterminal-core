@@ -208,7 +208,7 @@ fuzz: elapsed: 31s, execs: 302618 (0/sec), new interesting: 179 (total: 186)
 --- FAIL: FuzzStreamRequested (31.00s)
     context deadline exceeded
 FAIL
-FAIL	codeterminal/proxy	31.008s'
+FAIL	mochiii/proxy	31.008s'
 
 run_self_test() {
   echo "fuzz: self-test -- classify_fuzz_outcome against known answers"
@@ -267,11 +267,11 @@ FAIL'
   arm "clean pass" OK 0 30s \
 'fuzz: elapsed: 30s, execs: 314446 (10481/sec), new interesting: 12 (total: 40)
 PASS
-ok  	codeterminal/proxy	30.100s'
+ok  	mochiii/proxy	30.100s'
   arm "ran but never fuzzed" NO_EXECS 0 30s \
 'fuzz: elapsed: 0s, gathering baseline coverage: 0/160 completed
 PASS
-ok  	codeterminal/daemon	30.050s'
+ok  	mochiii/daemon	30.050s'
 
   # A FLOOR ON THE TABLE ITSELF. A self-test that lost its failing arms would
   # pass while proving only that nothing fails, which is the shape this gate

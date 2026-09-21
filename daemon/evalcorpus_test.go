@@ -163,7 +163,7 @@ func buildSharedEvalCorpus() (*evalCorpus, error) {
 	// The real helper module, compiled fresh -- same reason
 	// buildRealHelperBinary gives: a prebuilt binary can be stale, and a stale
 	// embedder scores the wrong product.
-	helperBin := filepath.Join(tmpDir, exeName("codeterminal-embedder-helper"))
+	helperBin := filepath.Join(tmpDir, exeName("mochiii-embedder-helper"))
 	build := exec.Command("go", "build", "-o", helperBin, ".")
 	build.Dir = "../helper"
 	if out, err := build.CombinedOutput(); err != nil {

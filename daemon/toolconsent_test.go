@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // scriptedApprover answers a fixed sequence of decisions and records every

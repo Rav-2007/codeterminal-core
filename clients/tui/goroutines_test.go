@@ -10,7 +10,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // NOTHING OUTLIVES THE SESSION (I5), CHECKED RATHER THAN ASSERTED IN A COMMENT.
@@ -221,9 +221,9 @@ created by github.com/Microsoft/go-winio.(*win32PipeListener).makeConnectedServe
 	client := `goroutine 478 [select]:
 github.com/Microsoft/go-winio.(*win32File).asyncIO(0x0, 0x0, 0x0, 0x0, {0x0, 0x0})
 	file.go:191 +0x15b
-codeterminal/clients/tui.streamPrompt(0x0)
+mochiii/clients/tui.streamPrompt(0x0)
 	stream.go:200 +0x99
-created by codeterminal/clients/tui.TestSomething in goroutine 12
+created by mochiii/clients/tui.TestSomething in goroutine 12
 	stream_test.go:1 +0xed`
 
 	if !startedByTheHarness(listener) {

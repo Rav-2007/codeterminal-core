@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"codeterminal/daemon/mcp"
-	"codeterminal/protocol"
+	"mochiii/daemon/mcp"
+	"mochiii/protocol"
 )
 
 // S1 / F-01: CONSENT MUST NOT BE OBTAINED UNDER FALSE PRETENCES.

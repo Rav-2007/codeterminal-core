@@ -50,7 +50,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // directory VS Code was launched from. The daemon was then started with that
   // as its workspace and indexed it, so a VS Code launched from $HOME read the
   // home directory into the retrieval index, and index content becomes prompt
-  // context. It also wrote .codeterminal/logs/ there, outside any project.
+  // context. It also wrote .mochiii/logs/ there, outside any project.
   // setWorkspaceRoot refuses a relative path for the same reason.
   const workspacePath = workspaceFolders && workspaceFolders.length > 0 ? workspaceFolders[0].uri.fsPath : '';
 
@@ -88,7 +88,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // the extension host happened to be started. Better to pass nothing and say so
   // than to write somewhere nobody will find.
   const root = resolvedWorkspaceRoot();
-  const daemonLogPath = root ? path.join(root, '.codeterminal', 'logs', 'daemon.log') : '';
+  const daemonLogPath = root ? path.join(root, '.mochiii', 'logs', 'daemon.log') : '';
 
   // NO FOLDER, NO DAEMON.
   //
@@ -153,7 +153,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     // need the model -- it just cannot answer, which is what the prompt says.
     void ensureApiKey(context, output, async (key) => {
       cachedApiKey = key;
-      await vscode.commands.executeCommand('codeterminal.restartDaemon');
+      await vscode.commands.executeCommand('mochiii.restartDaemon');
     });
 
     // A key set in ANOTHER window is a key this window's daemon does not have.
@@ -167,7 +167,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     // is picked up by the next spawn.
     context.subscriptions.push(
       context.secrets.onDidChange(async (e) => {
-        if (e.key === 'codeterminal.apiKey') {
+        if (e.key === 'mochiii.apiKey') {
           cachedApiKey = await getApiKey(context);
         }
       })
@@ -186,7 +186,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     'Open a folder or workspace, then try again.';
 
   context.subscriptions.push(
-    vscode.commands.registerCommand('codeterminal.openChat', () => {
+    vscode.commands.registerCommand('mochiii.openChat', () => {
       if (!root) {
         vscode.window.showInformationMessage(NO_WORKSPACE);
         return;
@@ -196,7 +196,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand('codeterminal.restartDaemon', async () => {
+    vscode.commands.registerCommand('mochiii.restartDaemon', async () => {
       if (!supervisor) {
         vscode.window.showInformationMessage(NO_WORKSPACE);
         return;
@@ -213,7 +213,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // window -- including the empty one a user lands in right after installing,
   // which is exactly when they have the key in their clipboard.
   context.subscriptions.push(
-    vscode.commands.registerCommand('codeterminal.setApiKey', async () => {
+    vscode.commands.registerCommand('mochiii.setApiKey', async () => {
       const existing = await getApiKey(context);
 
       if (existing) {
@@ -263,7 +263,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // whatever the daemon wrote, size-rotated by the daemon, and this command is
   // only a way to look at it.
   context.subscriptions.push(
-    vscode.commands.registerCommand('codeterminal.showDaemonLog', async () => {
+    vscode.commands.registerCommand('mochiii.showDaemonLog', async () => {
       if (!daemonLogPath) {
         vscode.window.showInformationMessage(NO_WORKSPACE);
         return;
@@ -293,11 +293,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 // supervisor knows only an exit code, so the user was told "Mochiii daemon
 // exited 1 5 times and will not be restarted again" -- which names neither the
 // cause nor the cure. The daemon meanwhile wrote the exact reason to its log
-// one line before dying, e.g. `CODETERMINAL_API_BASE "not-a-url" has no
+// one line before dying, e.g. `MOCHIII_API_BASE "not-a-url" has no
 // scheme`. That is a problem the user can fix in a minute and could not
 // previously see.
 //
-// The example used to be "CODETERMINAL_API_BASE must be set", which no longer
+// The example used to be "MOCHIII_API_BASE must be set", which no longer
 // happens: an ABSENT base now takes a default rather than killing the daemon.
 // A typo'd one is still fatal, by startup_validate.go's design.
 //
@@ -325,7 +325,7 @@ function lastDaemonLogLines(logPath: string, max = 3): string {
 //
 // THE FIRST-RUN DEFECT LIVED IN THE ABSENCE OF THIS FUNCTION. spawnDaemon passed
 // no env, so the child got the host's; a VS Code launched from a desktop icon
-// has no CODETERMINAL_API_BASE in it, the daemon called Fatal, and the
+// has no MOCHIII_API_BASE in it, the daemon called Fatal, and the
 // supervisor reported "exited 1 5 times and will not be restarted again". Every
 // test supplied the variable by hand, so nothing ever saw what an install sees.
 //
@@ -346,23 +346,23 @@ function lastDaemonLogLines(logPath: string, max = 3): string {
 // thing that was missing: given a key, the environment carries it.
 export function daemonEnvironment(apiKey?: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
-  const configured = vscode.workspace.getConfiguration('codeterminal').get<string>('apiBase');
+  const configured = vscode.workspace.getConfiguration('mochiii').get<string>('apiBase');
   if (typeof configured === 'string' && configured.trim() !== '') {
-    env.CODETERMINAL_API_BASE = configured.trim();
+    env.MOCHIII_API_BASE = configured.trim();
   }
   // THE KEY, for exactly the reason stated above about the base: the daemon
-  // reads CODETERMINAL_API_KEY from its environment (daemon/main.go:100) and
+  // reads MOCHIII_API_KEY from its environment (daemon/main.go:100) and
   // has no other interface for one. Without this line a packaged install could
   // never authenticate, because a desktop-launched VS Code inherits no shell.
   //
   // It comes from SecretStorage via cachedApiKey, never from configuration --
   // see apiKey.ts for why a credential must not live in settings.json.
   //
-  // An inherited CODETERMINAL_API_KEY is left alone when nothing is stored:
+  // An inherited MOCHIII_API_KEY is left alone when nothing is stored:
   // that is the from-source workflow the README documents, and overwriting it
   // with an empty value would break a setup that was working.
   if (apiKey && apiKey.trim() !== '') {
-    env.CODETERMINAL_API_KEY = apiKey.trim();
+    env.MOCHIII_API_KEY = apiKey.trim();
   }
   return env;
 }

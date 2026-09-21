@@ -129,7 +129,7 @@ jobs:
       #
       # daemon/server.go's daemonVersion was a const reading "0.1.0-skeleton"
       # and this workflow contained zero -ldflags, so every release would have
-      # reported itself to clients -- and in `codeterminal status` -- as a
+      # reported itself to clients -- and in `mochiii status` -- as a
       # pre-release skeleton. Three version sources disagreed and nothing
       # compared them.
       #
@@ -166,13 +166,13 @@ jobs:
       # checkout path. scripts/supply-chain.sh fails if any main package
       # produces a binary carrying one.
       - name: Build daemon (pure Go)
-        run: go build -trimpath -ldflags "-X main.daemonVersion=${{ steps.version.outputs.value }}" -o "${{ github.workspace }}/dist/codeterminal-daemon${{ matrix.target == 'win32-x64' && '.exe' || '' }}" .
+        run: go build -trimpath -ldflags "-X main.daemonVersion=${{ steps.version.outputs.value }}" -o "${{ github.workspace }}/dist/mochiii-daemon${{ matrix.target == 'win32-x64' && '.exe' || '' }}" .
         working-directory: daemon
         env:
           CGO_ENABLED: 0
 
       - name: Build embedder helper (CGO)
-        run: go build -trimpath -o "${{ github.workspace }}/dist/codeterminal-embedder-helper${{ matrix.target == 'win32-x64' && '.exe' || '' }}" .
+        run: go build -trimpath -o "${{ github.workspace }}/dist/mochiii-embedder-helper${{ matrix.target == 'win32-x64' && '.exe' || '' }}" .
         working-directory: helper
         env:
           CGO_ENABLED: 1
@@ -189,7 +189,7 @@ jobs:
       # It ships as a standalone download, attached to the Release below, which
       # is why it is also in the macOS signing list.
       - name: Build terminal client (pure Go)
-        run: go build -trimpath -o "${{ github.workspace }}/dist/codeterminal-tui${{ matrix.target == 'win32-x64' && '.exe' || '' }}" .
+        run: go build -trimpath -o "${{ github.workspace }}/dist/mochiii-tui${{ matrix.target == 'win32-x64' && '.exe' || '' }}" .
         working-directory: clients/tui
         env:
           CGO_ENABLED: 0
@@ -262,7 +262,7 @@ jobs:
             echo "::group::$TARGET"
             rm -rf daemon && mkdir -p daemon
             # NAMED, NOT `cp -a .`, since 2026-09-04. The build artifact now
-            # also carries codeterminal-tui, which the extension does not launch
+            # also carries mochiii-tui, which the extension does not launch
             # and must not ship: a wildcard copy would have silently added 7.5 MB
             # to every package, and verify-vsix.js asserts what MUST be present
             # and what MUST NOT -- it does not assert that nothing else is.
@@ -272,13 +272,13 @@ jobs:
             # arguments does not exist, and pipefail propagates that through
             # head -- so the assignment failed and the job died silently before
             # reaching its own error message. Caught by running the loop.
-            for BIN in codeterminal-daemon codeterminal-embedder-helper; do
+            for BIN in mochiii-daemon mochiii-embedder-helper; do
               SRC="../../artifacts/binaries-$TARGET/$BIN"
               [ -f "$SRC" ] || SRC="$SRC.exe"
               [ -f "$SRC" ] || { echo "::error::$BIN missing from binaries-$TARGET"; exit 1; }
               cp -a "$SRC" daemon/
             done
-            chmod +x daemon/codeterminal-daemon* daemon/codeterminal-embedder-helper* 2>/dev/null || true
+            chmod +x daemon/mochiii-daemon* daemon/mochiii-embedder-helper* 2>/dev/null || true
 
             # Stages models.json and the LICENSE, and FAILS if either binary is
             # missing rather than packaging a broken runtime.
@@ -289,7 +289,7 @@ jobs:
             # what failed win32-x64 on the first real run of this workflow.
             node scripts/stage-runtime.js "$TARGET"
 
-            OUT="../../out-vsix/codeterminal-vscode-$TARGET-$VERSION.vsix"
+            OUT="../../out-vsix/mochiii-vscode-$TARGET-$VERSION.vsix"
             npx vsce package --no-dependencies --target "$TARGET" -o "$OUT"
 
             # THE GATE. Asserts on archive contents, told which target it is
@@ -301,10 +301,10 @@ jobs:
       # The standalone command-line binaries, one set per platform.
       #
       # ALL THREE, NOT JUST THE CLIENT, since 2026-09-21. This step staged only
-      # codeterminal-tui, and the release therefore published a terminal client
+      # mochiii-tui, and the release therefore published a terminal client
       # with nothing to talk to: clients/tui/daemonconn.go looks for a daemon
       # lockfile and fails with "daemon not found ... start it with:
-      # codeterminal-daemon", and no daemon was published anywhere. The daemon
+      # mochiii-daemon", and no daemon was published anywhere. The daemon
       # existed only INSIDE the .vsix, so the two TUI downloads on the v0.0.2
       # release could not be used by anyone who downloaded them.
       #
@@ -336,7 +336,7 @@ jobs:
           for TARGET in linux-x64 win32-x64; do
             EXE=""
             [ "$TARGET" = "win32-x64" ] && EXE=".exe"
-            for BIN in codeterminal-tui codeterminal-daemon codeterminal-embedder-helper; do
+            for BIN in mochiii-tui mochiii-daemon mochiii-embedder-helper; do
               SRC="artifacts/binaries-$TARGET/$BIN$EXE"
               [ -f "$SRC" ] || { echo "::error::no $BIN built for $TARGET"; exit 1; }
               # <binary>-<target>[.exe] is the naming contract the signing guard
@@ -412,7 +412,7 @@ jobs:
           files: |
             out-vsix/*.vsix
             out-vsix/SHA256SUMS
-            out-bin/codeterminal-*
+            out-bin/mochiii-*
             out-bin/SHA256SUMS-bin
           draft: true # a human decides when it is public
           generate_release_notes: true

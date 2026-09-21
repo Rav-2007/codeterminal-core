@@ -14,7 +14,7 @@ import (
 // THE INSTALL PATH: what a user who has only ever double-clicked an icon gets.
 //
 // Every other test in this package that starts a real daemon hands it
-// CODETERMINAL_API_BASE (see daemonEnv in twoworkspaces_test.go, whose own
+// MOCHIII_API_BASE (see daemonEnv in twoworkspaces_test.go, whose own
 // comment says "The daemon requires the variable to be set at all, which is why
 // it is here"). The VS Code extension does not, and cannot: spawnDaemon in
 // clients/vscode/src/extension.ts passes no env, so the daemon inherits the
@@ -26,7 +26,7 @@ import (
 // measuring a configuration no user has.
 //
 // This spawns the shipped binary the way an install does -- a minimal
-// environment with no CODETERMINAL_* in it at all -- and asserts it reaches the
+// environment with no MOCHIII_* in it at all -- and asserts it reaches the
 // state a client probes for. The daemon is ready when it has written its
 // lockfile; that is the same signal probeDaemon and the supervisor key on, not
 // a proxy invented here.
@@ -46,16 +46,16 @@ func TestInstallPathDaemonStartsWithNoShellEnvironment(t *testing.T) {
 	// cannot be started here even WITH the variable, a failure below says
 	// nothing about the install path.
 	if out, err := startForInstallTest(t, bin, installEnv(runtimeDir, true), workspace); err != nil {
-		t.Fatalf("CONTROL ARM FAILED: a daemon would not start even with CODETERMINAL_API_BASE set, "+
+		t.Fatalf("CONTROL ARM FAILED: a daemon would not start even with MOCHIII_API_BASE set, "+
 			"so this harness cannot measure the install path at all: %v\nDaemon output:\n%s", err, out)
 	}
 
 	env := installEnv(runtimeDir, false)
-	// Vacuity floor. The whole point is an environment with no CODETERMINAL_*
+	// Vacuity floor. The whole point is an environment with no MOCHIII_*
 	// in it; if one leaked in from the developer's shell the test would pass by
 	// being handed the very thing it is supposed to prove is unnecessary.
 	for _, kv := range env {
-		if strings.HasPrefix(kv, "CODETERMINAL_") {
+		if strings.HasPrefix(kv, "MOCHIII_") {
 			t.Fatalf("vacuity floor: the install environment contains %q, so this asserts nothing", kv)
 		}
 	}
@@ -82,7 +82,7 @@ func installEnv(runtimeDir string, withAPIBase bool) []string {
 		"XDG_RUNTIME_DIR=" + runtimeDir,
 	}
 	if withAPIBase {
-		env = append(env, "CODETERMINAL_API_BASE=http://127.0.0.1:1")
+		env = append(env, "MOCHIII_API_BASE=http://127.0.0.1:1")
 	}
 	return env
 }

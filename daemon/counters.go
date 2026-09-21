@@ -3,7 +3,7 @@ package main
 import (
 	"sync/atomic"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // The daemon's counters.

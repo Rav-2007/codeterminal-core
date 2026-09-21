@@ -24,7 +24,7 @@ import (
 	"strings"
 	"syscall"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // oneShotIO is the one-shot run's environment, injected so the whole path
@@ -41,7 +41,7 @@ type oneShotIO struct {
 
 // brokenPipeWriter notices the far end of stdout going away.
 //
-// MEASURED before this existed: `codeterminal-tui --prompt ... | head` exited
+// MEASURED before this existed: `mochiii-tui --prompt ... | head` exited
 // 141 -- the Go runtime kills a process that writes to a closed fd 1 unless
 // SIGPIPE is handled. Someone reading the first few lines of an answer is
 // doing an ordinary thing, and being killed by a signal for it is not a clean
@@ -97,7 +97,7 @@ func runOneShotPrompt(clientName, prompt string, env oneShotIO) int {
 	env.out = stdout
 
 	reader := bufio.NewReader(env.in)
-	// ONE-SHOT WRITES TO A TERMINAL TOO. `codeterminal-tui --prompt ...` run at
+	// ONE-SHOT WRITES TO A TERMINAL TOO. `mochiii-tui --prompt ...` run at
 	// a shell prompt puts model bytes straight on the screen with no viewport
 	// in between, so it needs the same filter the chat UI has (sanitize.go).
 	// Stateful and hoisted out of the loop for the same reason it is in the

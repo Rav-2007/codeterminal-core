@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"log"
 
-	"codeterminal/helper/helperproto"
+	"mochiii/helper/helperproto"
 )
 
 // bgeEmbedderID is stamped into every index BgeEmbedder builds, and checked

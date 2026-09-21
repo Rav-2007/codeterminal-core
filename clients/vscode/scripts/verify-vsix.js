@@ -86,7 +86,7 @@ function readEntry(buf, entry) {
 // The expected binary names follow the TARGET, not the machine doing the
 // packaging. The release job assembles all three .vsix files on one Linux
 // runner, so deriving this from process.platform would check for
-// `codeterminal-daemon` inside the win32-x64 package and pass on a package that
+// `mochiii-daemon` inside the win32-x64 package and pass on a package that
 // cannot start.
 //
 //   verify-vsix.js <file.vsix> [vsce-target]
@@ -112,10 +112,10 @@ const MUST_CONTAIN = [
   // `LICENSE.txt`. Found by this gate on its first run, which is the argument
   // for asserting on contents rather than on an exit code.
   'extension/LICENSE.txt',
-  `extension/daemon/codeterminal-daemon${exe}`,
+  `extension/daemon/mochiii-daemon${exe}`,
   // The one the last package omitted. Without it retrieval silently degrades
   // and the product answers ungrounded while appearing to work.
-  `extension/daemon/codeterminal-embedder-helper${exe}`,
+  `extension/daemon/mochiii-embedder-helper${exe}`,
   'extension/daemon/models.json',
 ];
 
@@ -140,7 +140,7 @@ const MUST_NOT_MATCH = [
   // binary would be 22 MB of package for nothing -- and the staging loop that
   // excludes it is a loop someone can edit. This is the assertion on the
   // artifact itself, which is the half that cannot be edited by accident.
-  [/^extension\/daemon\/codeterminal-tui/, 'ships the standalone terminal client, which the extension does not launch'],
+  [/^extension\/daemon\/mochiii-tui/, 'ships the standalone terminal client, which the extension does not launch'],
 
   // --- CREDENTIALS, by name. Added 2026-09-02. ---
   //
@@ -299,8 +299,8 @@ function selfTest() {
     'extension/credentials.json',
     // The terminal client, which the release now builds into the same dist/
     // this package is staged from (R1.14, 2026-09-04).
-    'extension/daemon/codeterminal-tui',
-    'extension/daemon/codeterminal-tui.exe',
+    'extension/daemon/mochiii-tui',
+    'extension/daemon/mochiii-tui.exe',
   ];
   for (const name of mustReject) {
     if (!MUST_NOT_MATCH.some(([re]) => re.test(name))) {
@@ -313,7 +313,7 @@ function selfTest() {
   const mustAccept = [
     'extension/out/extension.js',
     'extension/media/main.js',
-    'extension/daemon/codeterminal-daemon',
+    'extension/daemon/mochiii-daemon',
     'extension/daemon/models.json',
     'extension/package.json',
   ];
@@ -451,7 +451,7 @@ function main() {
   }
 
   // Verify bundled daemon & helper binary sizes & header magic bytes
-  const daemonEntry = entries.find((e) => e.name === `extension/daemon/codeterminal-daemon${exe}`);
+  const daemonEntry = entries.find((e) => e.name === `extension/daemon/mochiii-daemon${exe}`);
   if (daemonEntry) {
     if (daemonEntry.size < 1000000) { // < 1MB
       failures.push(`CORRUPT  daemon binary size is suspiciously small: ${(daemonEntry.size / 1024 / 1024).toFixed(2)} MB`);
@@ -469,7 +469,7 @@ function main() {
     }
   }
 
-  const helperEntry = entries.find((e) => e.name === `extension/daemon/codeterminal-embedder-helper${exe}`);
+  const helperEntry = entries.find((e) => e.name === `extension/daemon/mochiii-embedder-helper${exe}`);
   if (helperEntry) {
     if (helperEntry.size < 1000000) { // < 1MB
       failures.push(`CORRUPT  helper binary size is suspiciously small: ${(helperEntry.size / 1024 / 1024).toFixed(2)} MB`);

@@ -34,10 +34,10 @@ func TestRuntimePaths(t *testing.T) {
 	if got := RuntimeDir(); got != base {
 		t.Errorf("RuntimeDir() = %q, want the %s value %q", got, runtimeDirEnvVar, base)
 	}
-	if got, want := SocketPath(), filepath.Join(base, "codeterminal", "daemon.sock"); got != want {
+	if got, want := SocketPath(), filepath.Join(base, "mochiii", "daemon.sock"); got != want {
 		t.Errorf("SocketPath() = %q, want %q", got, want)
 	}
-	if got, want := LockPath(), filepath.Join(base, "codeterminal", "daemon.lock"); got != want {
+	if got, want := LockPath(), filepath.Join(base, "mochiii", "daemon.lock"); got != want {
 		t.Errorf("LockPath() = %q, want %q", got, want)
 	}
 
@@ -63,7 +63,7 @@ func TestSocketDir_IsCreatedWhereClientsLookAndIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SocketDir: %v", err)
 	}
-	if want := filepath.Join(base, "codeterminal"); dir != want {
+	if want := filepath.Join(base, "mochiii"); dir != want {
 		t.Errorf("SocketDir() = %q, want %q", dir, want)
 	}
 	if _, err := SocketDir(); err != nil {

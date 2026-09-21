@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"codeterminal/daemon/mcp"
+	"mochiii/daemon/mcp"
 )
 
 // `mcp list` is the other place a confinement claim is printed, and it had the

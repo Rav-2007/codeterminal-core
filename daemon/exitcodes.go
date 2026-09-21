@@ -20,7 +20,7 @@ var errAlreadyRunning = errors.New("another daemon already serves this workspace
 // user cannot act on -- so the daemon has to say which it was.
 //
 // Before these existed everything went through logger.Fatal, which is os.Exit(1)
-// for every cause: an unreadable models.json, an unset CODETERMINAL_API_BASE, a
+// for every cause: an unreadable models.json, an unset MOCHIII_API_BASE, a
 // workspace that is not a directory, and "another window already started a
 // daemon for this exact repository, and it is healthy, and you should simply use
 // it". A supervisor seeing 1 cannot distinguish those, so it must guess.

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // fakeDaemonForSearch is a minimal fake daemon that answers a handshake and then a SearchRequest.

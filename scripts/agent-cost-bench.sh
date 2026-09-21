@@ -160,14 +160,14 @@ fi
 export XDG_RUNTIME_DIR="$work/run"
 mkdir -p "$XDG_RUNTIME_DIR"
 
-CODETERMINAL_API_BASE="http://127.0.0.1:$PROXY_PORT/v1" \
-CODETERMINAL_API_KEY=mochi_fake \
+MOCHIII_API_BASE="http://127.0.0.1:$PROXY_PORT/v1" \
+MOCHIII_API_KEY=mochi_fake \
   "$work/daemon-bin" -config "$work/models.json" -workspace "$ws" \
   -system-prompt "$work/system.txt" > "$work/daemon.log" 2>&1 &
 daemon_pid=$!
 sleep 2
 
-if [ ! -f "$XDG_RUNTIME_DIR/codeterminal/daemon.lock" ]; then
+if [ ! -f "$XDG_RUNTIME_DIR/mochiii/daemon.lock" ]; then
   echo "daemon did not come up; see $work/daemon.log" >&2
   tail -20 "$work/daemon.log" >&2
   exit 1

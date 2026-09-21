@@ -1,11 +1,11 @@
-module codeterminal/helper
+module mochiii/helper
 
 go 1.25.13
 
 require (
-	codeterminal/protocol v0.0.0
 	github.com/sugarme/tokenizer v0.3.0
 	github.com/yalue/onnxruntime_go v1.31.0
+	mochiii/protocol v0.0.0
 )
 
 require (
@@ -21,4 +21,4 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace codeterminal/protocol => ../protocol
+replace mochiii/protocol => ../protocol

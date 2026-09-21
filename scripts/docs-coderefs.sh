@@ -46,17 +46,17 @@ unenforced_docs=0
 # RESOLVED AGAINST TRACKED FILES, NOT THE WORKING TREE.
 #
 # This used to be `find .`, which walks whatever happens to be on the machine
-# running it. `.codeterminal/` is a local runtime directory -- backups, index,
+# running it. `.mochiii/` is a local runtime directory -- backups, index,
 # logs -- that .gitignore excludes and a CI checkout never has. So a bare
 # basename resolved to ONE file in CI and to TWO on any machine that had applied
 # an edit, and the gate's VERDICT depended on the operator's working directory.
-# Measured on 2026-09-15: copying one file into .codeterminal/backups/ took this
+# Measured on 2026-09-15: copying one file into .mochiii/backups/ took this
 # gate from exit 0 to exit 1 with no change to any document or any source file.
 #
 # That is the same family as an environment-dependent coverage floor, and this
 # repository has already been burned by that once.
 #
-# EXCLUDING `.codeterminal/` BY NAME WOULD FIX THE INSTANCE AND KEEP THE CLASS.
+# EXCLUDING `.mochiii/` BY NAME WOULD FIX THE INSTANCE AND KEEP THE CLASS.
 # `.vscode-test/` holds 6,200 files; there are build outputs, a daemon.exe, and
 # whatever the next tool writes. Each would need its own -not -path, added after
 # it had already produced a wrong answer once. Asking git what is in the

@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"codeterminal/daemon/mcp"
-	"codeterminal/protocol"
+	"mochiii/daemon/mcp"
+	"mochiii/protocol"
 )
 
 // loopServer builds a Server wired for agent mode against a scripted upstream.

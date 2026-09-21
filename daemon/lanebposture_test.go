@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"codeterminal/daemon/mcp"
+	"mochiii/daemon/mcp"
 )
 
 // THE DECISION NOBODY COULD SEE.
@@ -96,7 +96,7 @@ func TestLaneBLaunchesUnconfinedOnPurpose(t *testing.T) {
 	// So: hand laneBLaunchConfig a server configured to receive exactly that,
 	// and require the gate in front of the launch to refuse it.
 	credentialed := srv
-	credentialed.Env = []string{"HOME", "CODETERMINAL_API_KEY"}
+	credentialed.Env = []string{"HOME", "MOCHIII_API_KEY"}
 	withCred := laneBLaunchConfig("thirdparty", credentialed, cfg, io.Discard, log.New(io.Discard, "", 0).Printf)
 	if len(withCred.EnvAllow) != 2 {
 		t.Fatalf("the configured env list did not reach the launch config (%v), so the gate below "+

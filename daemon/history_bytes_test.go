@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // bigTurn builds a turn whose content is n bytes of filler, tagged with a

@@ -1,5 +1,5 @@
 // Package protocol defines the wire messages exchanged between the
-// CodeTerminal CLI client and the local daemon over a Unix domain socket.
+// Mochiii CLI client and the local daemon over a Unix domain socket.
 //
 // Framing: newline-delimited JSON. Each message is one JSON object followed
 // by "\n". This keeps both sides to stdlib bufio/json with no extra
@@ -21,7 +21,7 @@ const ProtocolVersion = 1
 // every client (which must derive the identical paths to find it). Defined
 // once here so the two sides can't drift out of sync.
 const (
-	serviceDirName = "codeterminal"
+	serviceDirName = "mochiii"
 	socketFileName = "daemon.sock"
 	lockFileName   = "daemon.lock"
 )
@@ -898,7 +898,7 @@ type ApplyEditResponse struct {
 }
 
 // UndoRequest asks the daemon to revert a backup session -- the same
-// restore the CLI's `codeterminal-daemon edits undo` already performs (see
+// restore the CLI's `mochiii-daemon edits undo` already performs (see
 // daemon/apply_cmd.go's runUndoSession), reached over the socket instead of
 // a terminal. Sent on its own fresh connection (after a HandshakeRequest,
 // same as PromptRequest/ApplyEditRequest).
@@ -913,7 +913,7 @@ type ApplyEditResponse struct {
 //
 // BackupSessionDir is optional: a full path to a backup session directory
 // (typically one a prior ApplyEditResponse.BackupDir already returned to
-// this same client), confined to <workspace>/.codeterminal/backups and
+// this same client), confined to <workspace>/.mochiii/backups and
 // still existing on disk. When empty, the daemon reverts the MOST RECENT
 // session instead (mirroring `edits undo`'s no --session default) -- but a
 // client that already knows its own session dir (like the VS Code panel,

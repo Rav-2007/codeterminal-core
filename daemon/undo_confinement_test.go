@@ -30,7 +30,7 @@ func TestRestoreOne_RefusesFinalComponentSymlinkEscape(t *testing.T) {
 	root := realTempDir(t)
 	outside := realTempDir(t) // sibling of root, NOT under it
 
-	sessionDir := filepath.Join(root, ".codeterminal", "backups", "20260719-000000")
+	sessionDir := filepath.Join(root, ".mochiii", "backups", "20260719-000000")
 	writeAt(t, filepath.Join(sessionDir, "before", "foo.txt"), "ORIGINAL-SECRET-BYTES")
 	writeAt(t, filepath.Join(sessionDir, "after", "foo.txt"), "EDITED")
 
@@ -58,7 +58,7 @@ func TestRestoreOne_RefusesIntermediateDirSymlinkEscape(t *testing.T) {
 	root := realTempDir(t)
 	outside := realTempDir(t)
 
-	sessionDir := filepath.Join(root, ".codeterminal", "backups", "20260719-000001")
+	sessionDir := filepath.Join(root, ".mochiii", "backups", "20260719-000001")
 	writeAt(t, filepath.Join(sessionDir, "before", "sub", "pwn.txt"), "ATTACKER-CHOSEN-PAYLOAD")
 	// no after/ snapshot -> guarded -> only reached under force
 
@@ -85,7 +85,7 @@ func TestRestoreOne_RefusesIntermediateDirSymlinkEscape(t *testing.T) {
 func TestRestoreOne_RestoresDeletedFileWithinRoot(t *testing.T) {
 	root := realTempDir(t)
 
-	sessionDir := filepath.Join(root, ".codeterminal", "backups", "20260719-000002")
+	sessionDir := filepath.Join(root, ".mochiii", "backups", "20260719-000002")
 	// Deleted file whose parent directory is also gone since the apply run.
 	writeAt(t, filepath.Join(sessionDir, "before", "pkg", "gone.txt"), "RESTORED-CONTENT")
 	// no after/ snapshot + file absent on disk -> guarded -> restore under force
@@ -108,7 +108,7 @@ func TestRestoreOne_OrdinaryUndoUnchanged(t *testing.T) {
 	root := realTempDir(t)
 	writeAt(t, filepath.Join(root, "foo.txt"), "EDITED")
 
-	sessionDir := filepath.Join(root, ".codeterminal", "backups", "20260719-000003")
+	sessionDir := filepath.Join(root, ".mochiii", "backups", "20260719-000003")
 	writeAt(t, filepath.Join(sessionDir, "before", "foo.txt"), "ORIGINAL")
 	writeAt(t, filepath.Join(sessionDir, "after", "foo.txt"), "EDITED")
 
@@ -131,7 +131,7 @@ func TestRestoreOne_RefusesSecretNamedFile(t *testing.T) {
 	root := realTempDir(t)
 	writeAt(t, filepath.Join(root, ".env"), "SECRET=v2")
 
-	sessionDir := filepath.Join(root, ".codeterminal", "backups", "20260719-000004")
+	sessionDir := filepath.Join(root, ".mochiii", "backups", "20260719-000004")
 	writeAt(t, filepath.Join(sessionDir, "before", ".env"), "SECRET=v1")
 	writeAt(t, filepath.Join(sessionDir, "after", ".env"), "SECRET=v2")
 

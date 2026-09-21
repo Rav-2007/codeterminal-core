@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // What threading a context into the request path actually buys, pinned as

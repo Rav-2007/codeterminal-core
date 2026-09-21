@@ -1,16 +1,16 @@
-module codeterminal/daemon
+module mochiii/daemon
 
 go 1.25.13
 
-require codeterminal/protocol v0.0.0
+require mochiii/protocol v0.0.0
 
 require (
-	codeterminal/editapply v0.0.0
-	codeterminal/helper v0.0.0
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/modelcontextprotocol/go-sdk v1.7.0
 	github.com/philippgille/chromem-go v0.7.0
 	golang.org/x/sys v0.47.0
+	mochiii/editapply v0.0.0
+	mochiii/helper v0.0.0
 	modernc.org/sqlite v1.39.0
 )
 
@@ -36,8 +36,8 @@ require (
 	modernc.org/memory v1.11.0 // indirect
 )
 
-replace codeterminal/protocol => ../protocol
+replace mochiii/protocol => ../protocol
 
-replace codeterminal/helper => ../helper
+replace mochiii/helper => ../helper
 
-replace codeterminal/editapply => ../editapply
+replace mochiii/editapply => ../editapply

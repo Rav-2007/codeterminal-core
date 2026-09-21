@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"codeterminal/editapply"
+	"mochiii/editapply"
 )
 
 func readFileString(t *testing.T, path string) string {
@@ -153,14 +153,14 @@ func TestApplyEditBlocks_BackupRecoverable(t *testing.T) {
 		t.Fatalf("applyEditBlocks: %v", err)
 	}
 
-	entries, err := os.ReadDir(filepath.Join(root, ".codeterminal", "backups"))
+	entries, err := os.ReadDir(filepath.Join(root, ".mochiii", "backups"))
 	if err != nil {
 		t.Fatalf("reading backups dir: %v", err)
 	}
 	if len(entries) != 1 {
 		t.Fatalf("expected exactly 1 backup session dir, got %d", len(entries))
 	}
-	sessionDir := filepath.Join(root, ".codeterminal", "backups", entries[0].Name())
+	sessionDir := filepath.Join(root, ".mochiii", "backups", entries[0].Name())
 
 	backedUp := readFileString(t, filepath.Join(sessionDir, "before", "foo.go"))
 	if backedUp != original {
@@ -257,7 +257,7 @@ func TestEditsUndo_ModifiedFileIsGuardedNotClobbered(t *testing.T) {
 
 func latestBackupSession(t *testing.T, root string) string {
 	t.Helper()
-	backupsRoot := filepath.Join(root, ".codeterminal", "backups")
+	backupsRoot := filepath.Join(root, ".mochiii", "backups")
 	sessionDir, err := resolveBackupSession(backupsRoot, "")
 	if err != nil {
 		t.Fatalf("resolveBackupSession: %v", err)

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"codeterminal/helper/helperproto"
+	"mochiii/helper/helperproto"
 )
 
 func TestEmbedderStamp_RoundTripMatches(t *testing.T) {

@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 type allowAll struct{}

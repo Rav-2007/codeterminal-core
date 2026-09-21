@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // testPipeSeq makes each pipe name unique within a process. The PID handles
@@ -30,6 +30,6 @@ func testAddress(t *testing.T) protocol.Address {
 	t.Helper()
 	return protocol.Address{
 		Transport: protocol.TransportNamedPipe,
-		Address:   fmt.Sprintf(`\\.\pipe\codeterminal-test-%d-%d`, os.Getpid(), testPipeSeq.Add(1)),
+		Address:   fmt.Sprintf(`\\.\pipe\mochiii-test-%d-%d`, os.Getpid(), testPipeSeq.Add(1)),
 	}
 }

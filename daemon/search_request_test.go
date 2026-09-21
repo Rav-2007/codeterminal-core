@@ -7,7 +7,7 @@ import (
 	"net"
 	"testing"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // searchViaHandler drives handleSearch exactly like handleConn does --

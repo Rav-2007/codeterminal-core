@@ -7,7 +7,7 @@ import (
 	"os"
 	"strings"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // daemonSession is an established, handshake-verified connection to the
@@ -110,7 +110,7 @@ func connectToDaemon(clientName string, capabilities ...string) (*daemonSession,
 	lockPath := lockPathFunc()
 	lock, err := readLockFile(lockPath)
 	if err != nil {
-		return nil, fmt.Errorf("daemon not found (expected a lockfile at %s; start it with: codeterminal-daemon): %w", lockPath, err)
+		return nil, fmt.Errorf("daemon not found (expected a lockfile at %s; start it with: mochiii-daemon): %w", lockPath, err)
 	}
 
 	// The lockfile carries the address, transport and all, so this dials what

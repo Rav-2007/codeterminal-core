@@ -1,7 +1,7 @@
 Third-party licenses
 ====================
 
-This file lists third-party software vendored into CodeTerminal as Go
+This file lists third-party software vendored into Mochiii as Go
 module dependencies, along with each one's license text as required by its
 terms.
 
@@ -1119,7 +1119,7 @@ License: BSD-3-Clause
 Source:  https://github.com/google/uuid
 
 Pulled in transitively by modernc.org/libc (via modernc.org/sqlite). Not
-used directly by CodeTerminal's own code: skill IDs are generated with
+used directly by Mochiii's own code: skill IDs are generated with
 crypto/rand + encoding/hex instead of adding this as a direct dependency.
 The license text below is reproduced verbatim from this module's own
 LICENSE file (github.com/google/uuid@v1.6.0/LICENSE, as vendored via the Go

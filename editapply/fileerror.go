@@ -19,7 +19,7 @@ import (
 // that reach the filesystem:
 //
 //	reading adir: read <workspace>\adir: Incorrect function.
-//	writing unreadable.go: rename <workspace>\.codeterminal-apply-… : Access is denied.
+//	writing unreadable.go: rename <workspace>\.mochiii-apply-… : Access is denied.
 //
 // "Incorrect function." is what ERROR_INVALID_FUNCTION renders as when you call
 // ReadFile on a directory handle. It is not wrong; it is simply not something a

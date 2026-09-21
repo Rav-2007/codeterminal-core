@@ -17,12 +17,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"codeterminal/editapply"
-	"codeterminal/protocol"
+	"mochiii/editapply"
+	"mochiii/protocol"
 )
 
 // daemonVersion is reported to clients in the handshake response, and printed
-// by `codeterminal status`.
+// by `mochiii status`.
 //
 // A VAR, NOT A CONST, because the release build stamps it:
 //
@@ -852,13 +852,13 @@ func resolveBackupSessionDir(realWorkspaceRoot, existing string) (string, error)
 }
 
 // isWorkspaceBackupSessionDir reports whether dir is an existing directory
-// confined to realWorkspaceRoot/.codeterminal/backups. A well-behaved
+// confined to realWorkspaceRoot/.mochiii/backups. A well-behaved
 // client only ever echoes back a path this daemon itself issued, but this
 // check is still applied so a stale, malformed, or crafted value can never
 // redirect backup writes outside the intended tree — the same confinement
 // discipline ResolveSafeTargetPath applies to edit targets.
 func isWorkspaceBackupSessionDir(realWorkspaceRoot, dir string) bool {
-	backupsRoot := filepath.Join(realWorkspaceRoot, ".codeterminal", "backups")
+	backupsRoot := filepath.Join(realWorkspaceRoot, ".mochiii", "backups")
 	rel, err := filepath.Rel(backupsRoot, dir)
 	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
 		return false
@@ -922,7 +922,7 @@ func (s *Server) handleUndo(enc *json.Encoder, req protocol.UndoRequest) (revert
 	// "unchanged since apply" guard. Released on every return path via defer.
 	defer s.lockWorkspace(realRoot)()
 
-	backupsRoot := filepath.Join(realRoot, ".codeterminal", "backups")
+	backupsRoot := filepath.Join(realRoot, ".mochiii", "backups")
 
 	var sessionDir string
 	if req.BackupSessionDir != "" {

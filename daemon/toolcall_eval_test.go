@@ -9,7 +9,7 @@
 // REAL, BILLED calls to the live model API. It is the first eval in the repo
 // that does. Run it explicitly with credentials in the environment:
 //
-//	export CODETERMINAL_API_BASE=... CODETERMINAL_API_KEY=...
+//	export MOCHIII_API_BASE=... MOCHIII_API_KEY=...
 //	go test -tags eval -run TestToolCallReliability -v ./daemon
 //
 // It skips (does not fail) when credentials are absent, so `make check` and
@@ -675,13 +675,13 @@ func TestToolCallReliability(t *testing.T) {
 		t.Skip("skipping live model eval in -short mode")
 	}
 
-	apiBase := os.Getenv("CODETERMINAL_API_BASE")
-	apiKey := os.Getenv("CODETERMINAL_API_KEY")
-	if v := os.Getenv("CODETERMINAL_MOCHIII_KEY"); v != "" && os.Getenv("CODETERMINAL_USE_PROXY") == "true" {
+	apiBase := os.Getenv("MOCHIII_API_BASE")
+	apiKey := os.Getenv("MOCHIII_API_KEY")
+	if v := os.Getenv("MOCHIII_PROXY_KEY"); v != "" && os.Getenv("MOCHIII_USE_PROXY") == "true" {
 		apiKey = v
 	}
 	if apiBase == "" {
-		t.Skip("CODETERMINAL_API_BASE is unset -- this eval makes real billed calls and will not guess an endpoint")
+		t.Skip("MOCHIII_API_BASE is unset -- this eval makes real billed calls and will not guess an endpoint")
 	}
 
 	// The slug and the ZDR routing both come from the real config, so this

@@ -98,7 +98,7 @@ func TestApply_WriteFailureRollsBackAfterSnapshot(t *testing.T) {
 	// final write -- fails, after both snapshot steps have already succeeded. The
 	// atomic writer creates its temp file in this directory, so removing write
 	// permission there fails the write itself while leaving the already-created
-	// backup session dir (under .codeterminal/backups, whose parents stay
+	// backup session dir (under .mochiii/backups, whose parents stay
 	// writable) reachable. Injecting via a read-only FILE no longer works: the
 	// atomic rename needs directory-write, not file-write, and would succeed.
 	target := filepath.Join(root, "foo.txt")

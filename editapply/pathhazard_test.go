@@ -128,7 +128,7 @@ func TestProtectedDirComponent_BackslashSeparatorIsNotAHidingPlace(t *testing.T)
 		`.git\hooks\evil`,
 		`.ssh\authorized_keys`,
 		`src\..\.git\config`,
-		`.codeterminal\backups\x`,
+		`.mochiii\backups\x`,
 	} {
 		if got := ProtectedDirComponent(p); got == "" {
 			t.Errorf("ProtectedDirComponent(%q) = \"\" — a backslash-separated path hid a protected directory", p)
@@ -142,7 +142,7 @@ func TestIsProtectedDirName_TrailingDotsAndSpaces(t *testing.T) {
 	for _, name := range []string{
 		".git", ".GIT", ".Git",
 		".git.", ".git ", ".GIT.", ".Git . ",
-		".ssh.", ".AWS ", ".codeterminal.",
+		".ssh.", ".AWS ", ".mochiii.",
 	} {
 		if !IsProtectedDirName(name) {
 			t.Errorf("IsProtectedDirName(%q) = false — Win32 strips trailing dots and spaces, so this opens the protected directory", name)

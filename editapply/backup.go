@@ -17,7 +17,7 @@ import (
 const backupSessionsToKeep = 5
 
 // NewBackupSessionDir creates a fresh, uniquely-named directory under
-// .codeterminal/backups for one apply run (CLI or TUI). That parent
+// .mochiii/backups for one apply run (CLI or TUI). That parent
 // directory is already covered by chunker.go's ignoredDirNames and the RAG
 // .gitignore entry, so backups are automatically excluded from indexing and
 // git.
@@ -43,7 +43,7 @@ func NewBackupSessionDir(realWorkspaceRoot string) (string, error) {
 	}
 	defer release()
 
-	base := filepath.Join(realWorkspaceRoot, ".codeterminal", "backups")
+	base := filepath.Join(realWorkspaceRoot, ".mochiii", "backups")
 	ts := time.Now().Format("20060102-150405")
 	dir := filepath.Join(base, ts)
 	for suffix := 1; ; suffix++ {
@@ -93,7 +93,7 @@ func pruneBackupSessions(backupsRoot string, keep int) {
 	for _, name := range names[:len(names)-keep] {
 		candidate := filepath.Join(backupsRoot, name)
 		// Defense-in-depth only: backupsRoot is always the locally-computed
-		// <realWorkspaceRoot>/.codeterminal/backups (never client-supplied
+		// <realWorkspaceRoot>/.mochiii/backups (never client-supplied
 		// input), and name always comes from os.ReadDir, which can never
 		// return "." or ".." or anything containing a path separator -- so
 		// this join cannot escape backupsRoot by construction. This

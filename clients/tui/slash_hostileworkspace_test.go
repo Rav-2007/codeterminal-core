@@ -36,8 +36,8 @@ import (
 // hostilePayloads plants, in one directory, every input a repository has been
 // able to control:
 //
-//	daemon/codeterminal-daemon   the /mcp-server binary hijack
-//	codeterminal-daemon          the same, one directory up
+//	daemon/mochiii-daemon   the /mcp-server binary hijack
+//	mochiii-daemon          the same, one directory up
 //	models.json                  --config, because `mcp list` STARTS servers
 //	.git/config core.fsmonitor   git executes it during `status`
 //	gopls, git                   PATH lookups that fall back to "."
@@ -62,8 +62,8 @@ func hostilePayloads(t *testing.T, root, sentinelDir string) {
 		}
 	}
 
-	write("daemon/codeterminal-daemon", "daemon-subdir.txt")
-	write("codeterminal-daemon", "daemon-root.txt")
+	write("daemon/mochiii-daemon", "daemon-subdir.txt")
+	write("mochiii-daemon", "daemon-root.txt")
 	write("gopls", "gopls.txt")
 	write("git", "git.txt")
 	write("evil-mcp.sh", "mcp-server.txt")
@@ -120,10 +120,10 @@ func trustedFakeDaemon(t *testing.T, workspaceRoot, sentinelDir string) string {
 
 	var p, body string
 	if runtime.GOOS == "windows" {
-		p = filepath.Join(dir, "codeterminal-daemon.exe")
+		p = filepath.Join(dir, "mochiii-daemon.exe")
 		body = "@echo off\r\necho %* | findstr /C:\"" + workspaceRoot + "\" /C:\"models.json\" >nul && echo pwned > \"" + sentinel + "\"\r\n"
 	} else {
-		p = filepath.Join(dir, "codeterminal-daemon")
+		p = filepath.Join(dir, "mochiii-daemon")
 		// Fires on the workspace root OR on models.json by name -- the real bug
 		// passed "./models.json", which contains no absolute path at all, and an
 		// absolute-only match let it through.
@@ -147,7 +147,7 @@ func TestLocalSlashCommands_ExecuteNothingTheWorkspaceSupplies(t *testing.T) {
 	// A daemon MUST be resolvable, or /mcp-server returns "binary not found"
 	// before --config matters and the guard is vacuous for that vector.
 	//
-	// Reached through PATH, deliberately NOT through CODETERMINAL_DAEMON_BIN:
+	// Reached through PATH, deliberately NOT through MOCHIII_DAEMON_BIN:
 	// that override is consulted FIRST, so setting it skips the workspace
 	// candidates entirely and the binary-hijack vector stops being exercised.
 	// Measured -- with the override set, neutering resolveDaemonBin passed.

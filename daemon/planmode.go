@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"strings"
 
-	"codeterminal/daemon/mcp"
-	"codeterminal/editapply"
-	"codeterminal/protocol"
+	"mochiii/daemon/mcp"
+	"mochiii/editapply"
+	"mochiii/protocol"
 )
 
 // The values PromptRequest.Mode may carry.

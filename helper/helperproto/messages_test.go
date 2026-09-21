@@ -1,9 +1,9 @@
 package helperproto
 
 import (
-	"codeterminal/protocol"
 	"encoding/json"
 	"fmt"
+	"mochiii/protocol"
 	"os"
 	"path/filepath"
 	"strings"
@@ -193,7 +193,7 @@ func TestHelperAddressIsScopedByDaemonPID(t *testing.T) {
 		// read `\.\pipe\` where the namespace is `\\.\pipe\`, so the
 		// assertion could not pass on the only platform that reaches it:
 		//
-		//   messages_test.go:190: Address(4242) = "\\\\.\\pipe\\codeterminal-...-embedder-helper-4242",
+		//   messages_test.go:190: Address(4242) = "\\\\.\\pipe\\mochiii-...-embedder-helper-4242",
 		//                         want a named pipe name
 		//
 		// The ADDRESS was correct. The expectation was not. A test written for
@@ -213,7 +213,7 @@ func TestHelperAddressIsScopedByDaemonPID(t *testing.T) {
 		return
 	}
 
-	if want := filepath.Join(tmp, "codeterminal", "embedder-helper-4242.sock"); first.Address != want {
+	if want := filepath.Join(tmp, "mochiii", "embedder-helper-4242.sock"); first.Address != want {
 		t.Errorf("Address(4242) = %q, want %q", first.Address, want)
 	}
 

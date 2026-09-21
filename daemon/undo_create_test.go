@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"codeterminal/editapply"
+	"mochiii/editapply"
 )
 
 // This file is the before/after evidence for Fix C: undoing a CREATED file
@@ -238,7 +238,7 @@ func TestUndoCreate_RemovalStillRefusesUnsafePaths(t *testing.T) {
 			victim := writeTempFile(t, root, tc.rel, "important\n")
 
 			// Fabricate a session that claims the run created the victim.
-			sessionDir := filepath.Join(root, ".codeterminal", "backups", "20200101-000000")
+			sessionDir := filepath.Join(root, ".mochiii", "backups", "20200101-000000")
 			if err := os.MkdirAll(filepath.Join(sessionDir, "before", filepath.Dir(tc.rel)), 0755); err != nil {
 				t.Fatalf("MkdirAll: %v", err)
 			}

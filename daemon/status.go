@@ -6,7 +6,7 @@ import (
 	"sort"
 	"time"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // The daemon's health surface.

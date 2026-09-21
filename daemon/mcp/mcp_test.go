@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // THE ENVIRONMENT DISCIPLINE.
@@ -23,8 +23,8 @@ func TestServerEnvNeverLeaksCredentials(t *testing.T) {
 	// The daemon's own environment, as it really is at the moment a server is
 	// spawned: full of things a server must not see.
 	t.Setenv("OPENROUTER_API_KEY", "sk-or-v1-must-not-leak")
-	t.Setenv("CODETERMINAL_API_KEY", "must-not-leak")
-	t.Setenv("CODETERMINAL_MOCHIII_KEY", "mochi_must-not-leak")
+	t.Setenv("MOCHIII_API_KEY", "must-not-leak")
+	t.Setenv("MOCHIII_PROXY_KEY", "mochi_must-not-leak")
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "unrelated-but-also-not-asked-for")
 	t.Setenv("PATH", "/usr/bin")
 	t.Setenv("HOME", "/home/someone")
@@ -73,7 +73,7 @@ func TestServerEnvNeverLeaksCredentials(t *testing.T) {
 		// exists so a server can have a credential OF ITS OWN; it is not a
 		// mechanism for handing over ours, and asking loudly does not change
 		// that.
-		asked := []string{"OPENROUTER_API_KEY", "CODETERMINAL_MOCHIII_KEY", "CODETERMINAL_API_KEY"}
+		asked := []string{"OPENROUTER_API_KEY", "MOCHIII_PROXY_KEY", "MOCHIII_API_KEY"}
 		env := ServerEnv(asked)
 
 		// The property is that ASKING DOES NOT GRANT -- stated directly, rather

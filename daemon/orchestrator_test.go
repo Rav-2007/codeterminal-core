@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // runPipeline drives an orchestrated turn against a scripted upstream.

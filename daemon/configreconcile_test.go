@@ -11,7 +11,7 @@ import (
 )
 
 // ReconcileWithProxy runs at daemon startup against whatever answers
-// CODETERMINAL_API_BASE, and until this test it decoded that answer straight
+// MOCHIII_API_BASE, and until this test it decoded that answer straight
 // off the wire with no size bound. Every other network read in this process is
 // capped -- provider.go reads error bodies under io.LimitReader, webfetch.go
 // caps at maxBytes, the proxy has decodeCappedJSON -- and this one was missed

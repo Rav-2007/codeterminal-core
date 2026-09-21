@@ -345,8 +345,8 @@ export function formatInitChecklist(workspace: string): string {
   return `workspace init checklist:
   workspace: ${workspace}
   1. Daemon running (it finds models.json beside its own binary)
-  2. CODETERMINAL_API_KEY set (OpenRouter) OR run-proxy.sh for managed proxy
-  3. Optional: ./daemon/codeterminal-daemon index ${workspace}
+  2. MOCHIII_API_KEY set (OpenRouter) OR run-proxy.sh for managed proxy
+  3. Optional: ./daemon/mochiii-daemon index ${workspace}
   4. /model to pick a model; /mcp-server to see agent tools
   5. /help for all slash commands`;
 }

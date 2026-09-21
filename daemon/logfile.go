@@ -54,7 +54,7 @@ type rotatingFile struct {
 func openRotatingFile(path string, maxBytes int64) (*rotatingFile, error) {
 	// The parent directory is created rather than required, matching
 	// jsonlsink.go -- the warn sink and the tool audit log write into the same
-	// .codeterminal/logs/ and both create it on the way.
+	// .mochiii/logs/ and both create it on the way.
 	//
 	// This mattered the moment the VS Code extension started passing -log-file
 	// unconditionally: on a workspace that has never been indexed, that

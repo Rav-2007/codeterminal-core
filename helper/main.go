@@ -1,4 +1,4 @@
-// Command codeterminal-embedder-helper is a small subprocess spawned by the
+// Command mochiii-embedder-helper is a small subprocess spawned by the
 // daemon to run the local embedding model. It exists as a separate process
 // (rather than a package inside the daemon) so that CGO — needed by the
 // ONNX Runtime binding this binary uses — never has to touch the daemon
@@ -29,12 +29,12 @@ import (
 
 	ort "github.com/yalue/onnxruntime_go"
 
-	"codeterminal/helper/helperproto"
-	"codeterminal/protocol"
+	"mochiii/helper/helperproto"
+	"mochiii/protocol"
 )
 
 func main() {
-	logger := log.New(os.Stderr, "codeterminal-embedder-helper: ", log.LstdFlags)
+	logger := log.New(os.Stderr, "mochiii-embedder-helper: ", log.LstdFlags)
 
 	socketPath := flag.String("socket", "", "address to listen on -- a socket path on Unix, a named pipe on Windows (required; the daemon supplies this)")
 	// SUPPLIED BY THE DAEMON, not derived here, and empty is a valid value.
@@ -129,10 +129,10 @@ func loadEmbedder(modelDir, onnxRuntimeLib string, intraOpThreads int) (*OnnxEmb
 	}
 
 	if modelDir == "" || onnxRuntimeLib == "" {
-		return nil, fmt.Errorf("--model-dir and --onnxruntime-lib are required (run `codeterminal-daemon download-model` first, then let the daemon supply these paths)")
+		return nil, fmt.Errorf("--model-dir and --onnxruntime-lib are required (run `mochiii-daemon download-model` first, then let the daemon supply these paths)")
 	}
 	if _, err := os.Stat(onnxRuntimeLib); err != nil {
-		return nil, fmt.Errorf("onnxruntime shared library not found at %s (run `codeterminal-daemon download-model` first): %w", onnxRuntimeLib, err)
+		return nil, fmt.Errorf("onnxruntime shared library not found at %s (run `mochiii-daemon download-model` first): %w", onnxRuntimeLib, err)
 	}
 
 	ort.SetSharedLibraryPath(onnxRuntimeLib)
@@ -143,7 +143,7 @@ func loadEmbedder(modelDir, onnxRuntimeLib string, intraOpThreads int) (*OnnxEmb
 	embedder, err := NewOnnxEmbedder(modelDir, intraOpThreads)
 	if err != nil {
 		ort.DestroyEnvironment()
-		return nil, fmt.Errorf("loading BGE model from %s (run `codeterminal-daemon download-model` first): %w", modelDir, err)
+		return nil, fmt.Errorf("loading BGE model from %s (run `mochiii-daemon download-model` first): %w", modelDir, err)
 	}
 	return embedder, nil
 }

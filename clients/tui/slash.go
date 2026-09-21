@@ -328,19 +328,19 @@ func runGitStatus(workspace string) string {
 // daemonBinEnvVar lets a developer point /mcp-server at a daemon built
 // somewhere else. An explicit variable the USER sets is a trusted input; the
 // working directory is not.
-const daemonBinEnvVar = "CODETERMINAL_DAEMON_BIN"
+const daemonBinEnvVar = "MOCHIII_DAEMON_BIN"
 
 // resolveDaemonBin finds the daemon binary WITHOUT ever trusting the working
 // directory.
 //
-// This used to try "daemon/codeterminal-daemon" and
-// "../../daemon/codeterminal-daemon" first, both relative to the CWD. The TUI's
+// This used to try "daemon/mochiii-daemon" and
+// "../../daemon/mochiii-daemon" first, both relative to the CWD. The TUI's
 // only mode of use is to run it from inside the repository you are working on,
 // so those two candidates meant: a repository that ships an executable at
-// daemon/codeterminal-daemon gets it EXECUTED when the user types /mcp-server.
+// daemon/mochiii-daemon gets it EXECUTED when the user types /mcp-server.
 //
 // Measured before this change: a temp repo containing that file ran attacker
-// code and read CODETERMINAL_API_KEY out of the inherited environment. No
+// code and read MOCHIII_API_KEY out of the inherited environment. No
 // approval prompt stands in front of a slash command.
 //
 // Every candidate below is anchored to something the user controls — an
@@ -362,8 +362,8 @@ func resolveDaemonBin() string {
 		}
 		dir := filepath.Dir(exe)
 		candidates = append(candidates,
-			filepath.Join(dir, "codeterminal-daemon"),
-			filepath.Join(dir, "..", "daemon", "codeterminal-daemon"),
+			filepath.Join(dir, "mochiii-daemon"),
+			filepath.Join(dir, "..", "daemon", "mochiii-daemon"),
 		)
 	}
 	for _, c := range candidates {
@@ -372,7 +372,7 @@ func resolveDaemonBin() string {
 		}
 	}
 
-	if p, err := exec.LookPath("codeterminal-daemon"); err == nil {
+	if p, err := exec.LookPath("mochiii-daemon"); err == nil {
 		return p
 	}
 	return ""
@@ -381,8 +381,8 @@ func resolveDaemonBin() string {
 func runMCPServerList(configPath string) string {
 	bin := resolveDaemonBin()
 	if bin == "" {
-		return "codeterminal-daemon binary not found — build it with:\n" +
-			"  (cd daemon && go build -o codeterminal-daemon .)\n" +
+		return "mochiii-daemon binary not found — build it with:\n" +
+			"  (cd daemon && go build -o mochiii-daemon .)\n" +
 			"then put it next to this binary or on PATH, or set " + daemonBinEnvVar +
 			" to its path, and retry /mcp-server"
 	}
@@ -397,7 +397,7 @@ func runMCPServerList(configPath string) string {
 	//
 	// An ABSOLUTE path is still honoured: that is a developer pointing at a
 	// config they chose, which is a trusted input in the same way
-	// CODETERMINAL_DAEMON_BIN is. Empty means "let the daemon resolve its own",
+	// MOCHIII_DAEMON_BIN is. Empty means "let the daemon resolve its own",
 	// which is what every ordinary caller now passes.
 	if configPath != "" {
 		if !filepath.IsAbs(configPath) {
@@ -423,8 +423,8 @@ func formatInitChecklist(workspace string) string {
 	return strings.TrimSpace(fmt.Sprintf(`workspace init checklist:
   workspace: %s
   1. Daemon running (it finds models.json beside its own binary)
-  2. CODETERMINAL_API_KEY set (OpenRouter) OR run-proxy.sh for managed proxy
-  3. Optional: ./daemon/codeterminal-daemon index %s
+  2. MOCHIII_API_KEY set (OpenRouter) OR run-proxy.sh for managed proxy
+  3. Optional: ./daemon/mochiii-daemon index %s
   4. /model to pick a model; /mcp-server to see agent tools
   5. /help for all slash commands`, workspace, workspace))
 }

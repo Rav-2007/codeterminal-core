@@ -11,10 +11,10 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"codeterminal/editapply"
 	"github.com/charmbracelet/x/ansi"
+	"mochiii/editapply"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 func newTestModel() chatModel {
@@ -660,13 +660,13 @@ func TestChat_ReviewApplyWritesFileAndCLICompatibleBackup(t *testing.T) {
 		t.Errorf("summary = %q, want 1 applied", summary)
 	}
 
-	// Backup compatibility: the same .codeterminal/backups/<session>/{before,after}
+	// Backup compatibility: the same .mochiii/backups/<session>/{before,after}
 	// layout the CLI's applyEditBlocks writes, so `edits undo` can restore it.
-	entries, err := os.ReadDir(filepath.Join(root, ".codeterminal", "backups"))
+	entries, err := os.ReadDir(filepath.Join(root, ".mochiii", "backups"))
 	if err != nil || len(entries) != 1 {
 		t.Fatalf("expected exactly one backup session dir, got %v (err=%v)", entries, err)
 	}
-	sessionDir := filepath.Join(root, ".codeterminal", "backups", entries[0].Name())
+	sessionDir := filepath.Join(root, ".mochiii", "backups", entries[0].Name())
 	before := readFileString(t, filepath.Join(sessionDir, "before", "foo.go"))
 	if before != original {
 		t.Errorf("backup before/foo.go = %q, want the pre-edit original %q", before, original)

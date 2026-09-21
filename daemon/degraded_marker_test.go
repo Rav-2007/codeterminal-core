@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // The workspace-too-large marker is workspace content, so it is untrusted, and
@@ -23,7 +23,7 @@ import (
 func markerServer(t *testing.T, contents func(path string) error) (*Server, *bytes.Buffer) {
 	t.Helper()
 	ws := t.TempDir()
-	dir := filepath.Join(ws, ".codeterminal", "index")
+	dir := filepath.Join(ws, ".mochiii", "index")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}

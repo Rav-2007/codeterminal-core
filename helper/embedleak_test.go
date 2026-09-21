@@ -14,7 +14,7 @@ import (
 	"github.com/sugarme/tokenizer/pretrained"
 	ort "github.com/yalue/onnxruntime_go"
 
-	"codeterminal/helper/helperproto"
+	"mochiii/helper/helperproto"
 )
 
 // H.1 -- can a secret in a prompt become observable outside the daemon?
@@ -43,7 +43,7 @@ func modelDirForLeakTest(t *testing.T) string {
 	if err != nil {
 		t.Skipf("no home dir: %v", err)
 	}
-	dir := filepath.Join(home, ".codeterminal", "models", "bge-small-en-v1.5-int8")
+	dir := filepath.Join(home, ".mochiii", "models", "bge-small-en-v1.5-int8")
 	if _, err := os.Stat(filepath.Join(dir, "tokenizer.json")); err != nil {
 		t.Skipf("model not cached at %s: %v", dir, err)
 	}
@@ -69,7 +69,7 @@ var ortOnce sync.Once
 func fullEmbedder(t *testing.T) *OnnxEmbedder {
 	t.Helper()
 	home, _ := os.UserHomeDir()
-	lib := filepath.Join(home, ".codeterminal", "models", "onnxruntime-1.26.0", "libonnxruntime.so")
+	lib := filepath.Join(home, ".mochiii", "models", "onnxruntime-1.26.0", "libonnxruntime.so")
 	if _, err := os.Stat(lib); err != nil {
 		t.Skipf("onnxruntime not cached: %v", err)
 	}

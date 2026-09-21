@@ -1,4 +1,4 @@
-// Command codeterminal-daemon is the long-running background process that
+// Command mochiii-daemon is the long-running background process that
 // holds the model API credentials and proxies prompts to it over a Unix
 // domain socket. It never listens on a network port.
 package main
@@ -16,10 +16,10 @@ import (
 	"syscall"
 	"time"
 
-	"codeterminal/editapply"
-	"codeterminal/protocol"
 	"crypto/rand"
 	"encoding/hex"
+	"mochiii/editapply"
+	"mochiii/protocol"
 )
 
 // staleSocketProbeTimeout bounds how long startup waits when checking
@@ -27,7 +27,7 @@ import (
 const staleSocketProbeTimeout = 500 * time.Millisecond
 
 func main() {
-	logger := log.New(os.Stderr, "codeterminal-daemon: ", log.LstdFlags)
+	logger := log.New(os.Stderr, "mochiii-daemon: ", log.LstdFlags)
 
 	// "index", "retrieve", "download-model", "helper-smoketest",
 	// "status", and "edits" are one-shot subcommands, not flags: they run and exit,
@@ -78,7 +78,7 @@ func main() {
 	configPath := flag.String("config", "", "path to models.json (default: next to the daemon binary, then ./models.json)")
 	modelOverride := flag.String("model", "", "override the resolved model slug (testing only; config is the source of truth)")
 	systemPromptPath := flag.String("system-prompt", "", "path to a system prompt file (default: the copy compiled into this binary)")
-	workspace := flag.String("workspace", ".", "workspace root containing an existing .codeterminal/index for retrieval-augmented context")
+	workspace := flag.String("workspace", ".", "workspace root containing an existing .mochiii/index for retrieval-augmented context")
 	noContext := flag.Bool("no-context", false, "disable automatic retrieval-augmented context injection (default: enabled)")
 	debugContext := flag.Bool("debug-context", false, "additionally log the full content of every retrieved chunk (verbose)")
 	noRerank := flag.Bool("no-rerank", false, "bypass file-class re-ranking; use raw vector-similarity order (A/B comparison, default: re-ranking enabled)")
@@ -93,35 +93,35 @@ func main() {
 		logger.Printf("warning: could not open --log-file %s (%v); continuing with stderr only", *logFile, err)
 	} else {
 		defer closeLog()
-		logger = log.New(logWriter, "codeterminal-daemon: ", log.LstdFlags)
+		logger = log.New(logWriter, "mochiii-daemon: ", log.LstdFlags)
 	}
 
-	apiBase := os.Getenv("CODETERMINAL_API_BASE")
-	apiKey := os.Getenv("CODETERMINAL_API_KEY")
-	// CODETERMINAL_USE_PROXY names the "point apiBase at the managed proxy"
+	apiBase := os.Getenv("MOCHIII_API_BASE")
+	apiKey := os.Getenv("MOCHIII_API_KEY")
+	// MOCHIII_USE_PROXY names the "point apiBase at the managed proxy"
 	// mode explicitly. In this mode apiKey is populated from
-	// CODETERMINAL_MOCHIII_KEY (below) instead of CODETERMINAL_API_KEY, since
+	// MOCHIII_PROXY_KEY (below) instead of MOCHIII_API_KEY, since
 	// the proxy authenticates callers by a per-user Mochiii key and holds its
 	// own OpenRouter key server-side. streamCompletion in provider.go is
 	// unchanged: it already sends whatever apiKey it's given as
 	// "Authorization: Bearer <apiKey>" and omits the header when apiKey == "".
-	// Unset (the default), CODETERMINAL_USE_PROXY is a no-op: every existing
+	// Unset (the default), MOCHIII_USE_PROXY is a no-op: every existing
 	// direct-to-OpenRouter deployment keeps behaving exactly as before.
-	useProxy := os.Getenv("CODETERMINAL_USE_PROXY") == "true"
+	useProxy := os.Getenv("MOCHIII_USE_PROXY") == "true"
 	if apiBase == "" {
 		// PROXY MODE IS THE EXCEPTION, AND THE REASON IS A CREDENTIAL.
 		//
-		// In proxy mode apiKey comes from CODETERMINAL_MOCHIII_KEY, and the
+		// In proxy mode apiKey comes from MOCHIII_PROXY_KEY, and the
 		// proxy's address is deployment-specific -- there is no public default
 		// to guess. Falling back to defaultAPIBase here would send a Mochiii
 		// key to OpenRouter, which is a credential going to a host it was not
 		// issued for. "This will never work" is the right verdict for an
 		// unaddressed proxy, so this half stays fatal.
 		if useProxy {
-			logger.Fatal("CODETERMINAL_USE_PROXY is set but CODETERMINAL_API_BASE is empty; the proxy's address cannot be guessed")
+			logger.Fatal("MOCHIII_USE_PROXY is set but MOCHIII_API_BASE is empty; the proxy's address cannot be guessed")
 		}
 		apiBase = defaultAPIBase
-		logger.Printf("CODETERMINAL_API_BASE is unset; defaulting to %s (set it, or the Mochiii: API Base setting, to change it)", apiBase)
+		logger.Printf("MOCHIII_API_BASE is unset; defaulting to %s (set it, or the Mochiii: API Base setting, to change it)", apiBase)
 	}
 	// Structural validity, checked before the daemon claims to be ready. An
 	// unparseable base can never serve a request, so failing here — naming the
@@ -133,15 +133,15 @@ func main() {
 	}
 	switch {
 	case useProxy && apiKey != "":
-		logger.Print("warning: CODETERMINAL_USE_PROXY is set but CODETERMINAL_API_KEY is also set; the key will still be sent to the proxy needlessly -- the proxy holds its own OpenRouter key. Unset CODETERMINAL_API_KEY when using a proxy.")
+		logger.Print("warning: MOCHIII_USE_PROXY is set but MOCHIII_API_KEY is also set; the key will still be sent to the proxy needlessly -- the proxy holds its own OpenRouter key. Unset MOCHIII_API_KEY when using a proxy.")
 	case useProxy:
-		apiKey = os.Getenv("CODETERMINAL_MOCHIII_KEY")
+		apiKey = os.Getenv("MOCHIII_PROXY_KEY")
 		if apiKey == "" {
-			logger.Fatal("CODETERMINAL_USE_PROXY is set but CODETERMINAL_MOCHIII_KEY is empty; the proxy requires a Mochiii key")
+			logger.Fatal("MOCHIII_USE_PROXY is set but MOCHIII_PROXY_KEY is empty; the proxy requires a Mochiii key")
 		}
 		logger.Printf("proxy mode: forwarding inference through %s with a Mochiii key", apiBase)
 	case apiKey == "":
-		logger.Print("warning: CODETERMINAL_API_KEY is not set; requests will be sent without an Authorization header")
+		logger.Print("warning: MOCHIII_API_KEY is not set; requests will be sent without an Authorization header")
 	}
 
 	// An explicit -config is used as given; otherwise it is found relative to
@@ -412,16 +412,16 @@ func main() {
 		// again sees the new answer rather than a cached complaint.
 		freshness: newFreshnessCache(30 * time.Second),
 		// Durable warn-mode sink under the workspace's already-gitignored
-		// .codeterminal state dir (same convention as index/ and backups/), so
+		// .mochiii state dir (same convention as index/ and backups/), so
 		// the log-only fire-rate data survives daemon restarts instead of
 		// vanishing with stderr. Local file only — no network egress.
-		warnSink: newWarnSink(filepath.Join(groundedRoot, ".codeterminal", "logs", "warnmode.jsonl")),
+		warnSink: newWarnSink(filepath.Join(groundedRoot, ".mochiii", "logs", "warnmode.jsonl")),
 		// The tool-call audit log, alongside it and under the same discipline:
 		// local file only, no network seam. Always constructed, not just when
 		// mcp.enabled -- a daemon that starts with agent mode off and has it
 		// turned on later must not be the one daemon whose calls went
 		// unrecorded, and an unused sink writes nothing.
-		toolAudit: newToolAuditSink(filepath.Join(groundedRoot, ".codeterminal", "logs", "toolcalls.jsonl")),
+		toolAudit: newToolAuditSink(filepath.Join(groundedRoot, ".mochiii", "logs", "toolcalls.jsonl")),
 		// Activity counters, reported through the existing status surface (see
 		// counters.go). Built here rather than lazily so production always has
 		// them; a nil set is valid and simply counts nothing.
@@ -461,7 +461,7 @@ func main() {
 	// broken; a cut prompt mutates nothing and costs the user a re-ask, so it is
 	// the right thing to abandon.
 	if !srv.WaitForDrain(shutdownGrace) {
-		logger.Printf("drain INCOMPLETE after %s -- a request was still running and is being cut. If it was an edit apply, the batch may be partly written; the backup session under .codeterminal/backups is still there and `undo` can revert it", shutdownGrace)
+		logger.Printf("drain INCOMPLETE after %s -- a request was still running and is being cut. If it was an edit apply, the batch may be partly written; the backup session under .mochiii/backups is still there and `undo` can revert it", shutdownGrace)
 	} else {
 		logger.Print("drain complete, no requests in flight")
 	}

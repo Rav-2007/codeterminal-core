@@ -15,7 +15,7 @@ import (
 // on both platforms rather than two.
 //
 // RUN ON HARDWARE, at last: macos-latest, GitHub Actions run 31204152210,
-// 2026-08-07, `ok codeterminal/daemon 53.019s`. LOCAL_PEERCRED had never
+// 2026-08-07, `ok mochiii/daemon 53.019s`. LOCAL_PEERCRED had never
 // executed on any machine anywhere before that.
 //
 // This comment used to read "NOT RUN on the machine this was written on — there

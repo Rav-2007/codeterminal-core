@@ -12,7 +12,7 @@ import (
 
 // MEMO ITEM 2 (R1.5). VERDICT: FIX, by the daemon/ owner, 2026-09-13.
 //
-// `/mcp-server` runs `codeterminal-daemon mcp list`, which STARTS the configured
+// `/mcp-server` runs `mochiii-daemon mcp list`, which STARTS the configured
 // servers -- that is how it enumerates tools -- and puts the combined output in
 // a system turn ON THE USER'S SCREEN. A third-party server that prints a
 // credential at startup therefore reached a person. It is the only path in the

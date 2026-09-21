@@ -19,7 +19,7 @@
 // consent UX for three clients on top of an unmeasured loop is the expensive
 // version of the mistake Phase 0 exists to prevent.
 //
-//	export CODETERMINAL_API_BASE=https://openrouter.ai/api/v1 CODETERMINAL_API_KEY=...
+//	export MOCHIII_API_BASE=https://openrouter.ai/api/v1 MOCHIII_API_KEY=...
 //	go test -tags eval -run TestAgentLoopReliability -v ./daemon
 //
 // Direct to OpenRouter, not through the managed proxy: Phase 0's first run was
@@ -38,8 +38,8 @@ import (
 	"testing"
 	"time"
 
-	"codeterminal/editapply"
-	"codeterminal/protocol"
+	"mochiii/editapply"
+	"mochiii/protocol"
 )
 
 // ---------------------------------------------------------------------------
@@ -226,10 +226,10 @@ func TestAgentLoopReliability(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping live loop eval in -short mode")
 	}
-	apiBase := os.Getenv("CODETERMINAL_API_BASE")
-	apiKey := os.Getenv("CODETERMINAL_API_KEY")
+	apiBase := os.Getenv("MOCHIII_API_BASE")
+	apiKey := os.Getenv("MOCHIII_API_KEY")
 	if apiBase == "" || apiKey == "" {
-		t.Skip("CODETERMINAL_API_BASE/KEY unset -- this eval makes real billed calls and will not guess")
+		t.Skip("MOCHIII_API_BASE/KEY unset -- this eval makes real billed calls and will not guess")
 	}
 
 	cfg, err := LoadConfig("../models.json")

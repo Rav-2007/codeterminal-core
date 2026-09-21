@@ -6,7 +6,7 @@ import (
 	"net"
 	"testing"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // --- Server memory helpers: direct unit tests -------------------------

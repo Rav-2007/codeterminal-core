@@ -27,7 +27,7 @@ readonly LOG="${TMPDIR:-/tmp}/mochiii-daemon.log"
 die() { printf 'run-tui: %s\n' "$*" >&2; exit 1; }
 
 if [[ "${1:-}" == "--stop" ]]; then
-	pkill -f "$BIN/codeterminal-daemon" && echo "daemon stopped" || echo "no daemon running"
+	pkill -f "$BIN/mochiii-daemon" && echo "daemon stopped" || echo "no daemon running"
 	exit 0
 fi
 
@@ -41,7 +41,7 @@ CONFIG="models.agent.json"
 
 mkdir -p "$BIN"
 echo "building…"
-(cd daemon && go build -o "$BIN/codeterminal-daemon" .)
+(cd daemon && go build -o "$BIN/mochiii-daemon" .)
 (cd clients/tui && go build -o "$BIN/mochiii" .)
 
 # The daemon reads its credential from the environment. .env is the documented
@@ -49,23 +49,23 @@ echo "building…"
 if [[ -f .env ]]; then
 	set -a; . ./.env; set +a
 fi
-[[ -n "${CODETERMINAL_API_KEY:-}${CODETERMINAL_MOCHIII_KEY:-}" ]] || \
+[[ -n "${MOCHIII_API_KEY:-}${MOCHIII_PROXY_KEY:-}" ]] || \
 	echo "run-tui: warning: no API key in the environment; prompts will fail" >&2
 
 # The workspace both halves must agree on. Anything the caller passes wins.
 ARGS=("$@")
 [[ " ${ARGS[*]} " == *" --workspace "* ]] || ARGS+=(--workspace .)
 
-if pgrep -f "$BIN/codeterminal-daemon" >/dev/null 2>&1; then
+if pgrep -f "$BIN/mochiii-daemon" >/dev/null 2>&1; then
 	echo "daemon already running (./run-tui.sh --stop to restart it)"
 else
 	echo "starting daemon -> $LOG"
-	nohup "$BIN/codeterminal-daemon" --config "$CONFIG" "${ARGS[@]}" >"$LOG" 2>&1 &
+	nohup "$BIN/mochiii-daemon" --config "$CONFIG" "${ARGS[@]}" >"$LOG" 2>&1 &
 	for _ in $(seq 1 30); do
-		compgen -G "${XDG_RUNTIME_DIR:-/tmp}/codeterminal/daemon-*.lock" >/dev/null && break
+		compgen -G "${XDG_RUNTIME_DIR:-/tmp}/mochiii/daemon-*.lock" >/dev/null && break
 		sleep 1
 	done
-	compgen -G "${XDG_RUNTIME_DIR:-/tmp}/codeterminal/daemon-*.lock" >/dev/null \
+	compgen -G "${XDG_RUNTIME_DIR:-/tmp}/mochiii/daemon-*.lock" >/dev/null \
 		|| die "daemon did not come up; see $LOG"
 fi
 

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // This file is the before/after evidence for Fix 2 of the atomic-write family:
@@ -66,7 +66,7 @@ func assertAllStillEdited(t *testing.T, root string) {
 // every file exactly as it found it, and say so.
 func TestRunUndoSession_MidWalkFailureRevertsNothing(t *testing.T) {
 	root := realTempDir(t)
-	sessionDir := filepath.Join(root, ".codeterminal", "backups", "20260721-000000")
+	sessionDir := filepath.Join(root, ".mochiii", "backups", "20260721-000000")
 	stageThreeFileSession(t, root, sessionDir)
 	breakMiddleFile(t, sessionDir)
 
@@ -86,7 +86,7 @@ func TestRunUndoSession_MidWalkFailureRevertsNothing(t *testing.T) {
 // on disk may have been reverted.
 func TestHandleUndo_MidWalkFailureReportsWhatIsActuallyOnDisk(t *testing.T) {
 	root := realTempDir(t)
-	sessionDir := filepath.Join(root, ".codeterminal", "backups", "20260721-000001")
+	sessionDir := filepath.Join(root, ".mochiii", "backups", "20260721-000001")
 	stageThreeFileSession(t, root, sessionDir)
 	breakMiddleFile(t, sessionDir)
 
@@ -107,7 +107,7 @@ func TestHandleUndo_MidWalkFailureReportsWhatIsActuallyOnDisk(t *testing.T) {
 // files, nothing broken, all three revert.
 func TestRunUndoSession_AllRestorableStillRevertsEveryFile(t *testing.T) {
 	root := realTempDir(t)
-	sessionDir := filepath.Join(root, ".codeterminal", "backups", "20260721-000002")
+	sessionDir := filepath.Join(root, ".mochiii", "backups", "20260721-000002")
 	stageThreeFileSession(t, root, sessionDir)
 
 	restored, _, guarded, err := runUndoSession(root, sessionDir, false, strings.NewReader(""), io.Discard, discardLogger())
@@ -134,7 +134,7 @@ func TestRunUndoSession_AllRestorableStillRevertsEveryFile(t *testing.T) {
 // a batch failure.
 func TestRunUndoSession_GuardedFileStillBlocksOnlyItself(t *testing.T) {
 	root := realTempDir(t)
-	sessionDir := filepath.Join(root, ".codeterminal", "backups", "20260721-000003")
+	sessionDir := filepath.Join(root, ".mochiii", "backups", "20260721-000003")
 	stageThreeFileSession(t, root, sessionDir)
 	writeAt(t, filepath.Join(root, "b.txt"), "HAND-EDITED-SINCE-APPLY")
 
@@ -164,7 +164,7 @@ func TestRunUndoSession_GuardedFileStillBlocksOnlyItself(t *testing.T) {
 // member must still leave the whole workspace untouched.
 func TestRunUndoSession_ForcedBatchWithUnrestorableGuardedFileRevertsNothing(t *testing.T) {
 	root := realTempDir(t)
-	sessionDir := filepath.Join(root, ".codeterminal", "backups", "20260721-000004")
+	sessionDir := filepath.Join(root, ".mochiii", "backups", "20260721-000004")
 	stageThreeFileSession(t, root, sessionDir)
 	// b.txt changed since the apply -> guarded; its backup is also unrestorable,
 	// so forcing the overwrite must fail the batch rather than half-apply it.
@@ -190,7 +190,7 @@ func TestRunUndoSession_ForcedBatchWithUnrestorableGuardedFileRevertsNothing(t *
 // half-reverted content.
 func TestRunUndoSession_LeavesNoStagingResidue(t *testing.T) {
 	root := realTempDir(t)
-	sessionDir := filepath.Join(root, ".codeterminal", "backups", "20260721-000005")
+	sessionDir := filepath.Join(root, ".mochiii", "backups", "20260721-000005")
 	stageThreeFileSession(t, root, sessionDir)
 	breakMiddleFile(t, sessionDir)
 

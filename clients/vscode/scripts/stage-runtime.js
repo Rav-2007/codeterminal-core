@@ -5,8 +5,8 @@
 // THE LAYOUT IS NOT A PACKAGING INVENTION. Three resolvers written separately
 // already agree on it, which is why bundling needs no Go changes at all:
 //
-//   extension.ts          -> <extensionPath>/daemon/codeterminal-daemon
-//   resolveHelperBinPath  -> <exedir>/codeterminal-embedder-helper
+//   extension.ts          -> <extensionPath>/daemon/mochiii-daemon
+//   resolveHelperBinPath  -> <exedir>/mochiii-embedder-helper
 //                            ("installed side by side (release layout)")
 //   resolveConfigPath     -> <exedir>/models.json
 //
@@ -30,7 +30,7 @@ const runtimeDir = path.join(extRoot, 'daemon');
 // binaries natively on three runners and then assembles ALL THREE .vsix packages
 // on ONE Linux runner, so when it packages win32-x64 this script runs on linux
 // while the staged binaries are `.exe`. `process.platform` answered "linux",
-// the requireFile below looked for `codeterminal-daemon`, and the job failed
+// the requireFile below looked for `mochiii-daemon`, and the job failed
 // after two of three targets had already packaged cleanly.
 //
 // The defect predates this branch (4453825, on main). It survived because
@@ -70,11 +70,11 @@ console.log('staging runtime into', path.relative(repoRoot, runtimeDir));
 // write straight into runtimeDir. Assert rather than assume -- a silent absence
 // here is the exact defect that shipped last time.
 requireFile(
-  path.join(runtimeDir, `codeterminal-daemon${exe}`),
+  path.join(runtimeDir, `mochiii-daemon${exe}`),
   'run: npm run build:daemon',
 );
 requireFile(
-  path.join(runtimeDir, `codeterminal-embedder-helper${exe}`),
+  path.join(runtimeDir, `mochiii-embedder-helper${exe}`),
   'run: npm run build:helper   (needs CGO — onnxruntime_go excludes every file without it)',
 );
 

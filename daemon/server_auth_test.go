@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // TestHandleConn_RefusesUnverifiablePeerBeforeDispatch is the live

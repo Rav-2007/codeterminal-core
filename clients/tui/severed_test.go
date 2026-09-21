@@ -16,7 +16,7 @@ import (
 // identical text, so it read as a stale line from earlier rather than as five
 // fresh refusals. The transcript, which is where a reader looking for their
 // answer is actually looking, said nothing at all.
-const severedDetail = "daemon not found (expected a lockfile at /run/user/1000/codeterminal/daemon-e06123af88966937.lock)"
+const severedDetail = "daemon not found (expected a lockfile at /run/user/1000/mochiii/daemon-e06123af88966937.lock)"
 
 func TestAPromptThatNeverLeftIsRecordedInTheTranscript(t *testing.T) {
 	m := newTestModel()

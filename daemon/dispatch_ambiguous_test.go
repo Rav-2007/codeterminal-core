@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // A body naming two request types is ambiguous, and ambiguity must not be

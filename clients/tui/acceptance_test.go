@@ -10,7 +10,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // THE ACCEPTANCE TARGETS THAT NOTHING ELSE IN THIS PACKAGE ASSERTS.

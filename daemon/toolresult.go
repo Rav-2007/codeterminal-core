@@ -39,7 +39,7 @@ import (
 // silent because a model given a silently truncated result reasons about the
 // missing part as though it were absent rather than hidden -- and may call the
 // same tool again to get "the rest", burning an iteration.
-const truncationMarker = "\n\n[... truncated by codeterminal: %d of %d bytes shown ...]"
+const truncationMarker = "\n\n[... truncated by mochiii: %d of %d bytes shown ...]"
 
 // renderToolResult prepares one tool's output for the model.
 //
@@ -94,7 +94,7 @@ func renderToolResult(content string, maxBytes int, scrubDisabled bool, preNeutr
 // controlMarker is appended when control characters were removed, for the same
 // reason truncationMarker exists: a silent edit leaves the model reasoning
 // about text nobody sent.
-const controlMarker = "\n\n[... %d control character(s) removed by codeterminal ...]"
+const controlMarker = "\n\n[... %d control character(s) removed by mochiii ...]"
 
 // stripControlCharacters removes terminal control codes from tool output.
 //

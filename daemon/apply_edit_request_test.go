@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // applyEditViaHandler drives handleApplyEdit exactly like handleConn does —
@@ -55,7 +55,7 @@ func TestHandleApplyEdit_EmptyBackupSessionDirCreatesFreshDirPerRequest(t *testi
 		t.Errorf("both requests got backup dir %q, want two distinct dirs when BackupSessionDir is never sent", resp1.BackupDir)
 	}
 
-	entries, err := os.ReadDir(filepath.Join(root, ".codeterminal", "backups"))
+	entries, err := os.ReadDir(filepath.Join(root, ".mochiii", "backups"))
 	if err != nil || len(entries) != 2 {
 		t.Fatalf("backups dir entries = %v (err=%v), want exactly 2 session dirs", entries, err)
 	}
@@ -94,12 +94,12 @@ func TestHandleApplyEdit_SharedBackupSessionDirReusesSameSessionAcrossBlocks(t *
 		t.Errorf("second apply backup dir = %q, want it to match the first apply's %q", resp2.BackupDir, resp1.BackupDir)
 	}
 
-	entries, err := os.ReadDir(filepath.Join(root, ".codeterminal", "backups"))
+	entries, err := os.ReadDir(filepath.Join(root, ".mochiii", "backups"))
 	if err != nil || len(entries) != 1 {
 		t.Fatalf("backups dir entries = %v (err=%v), want exactly ONE shared session dir", entries, err)
 	}
 
-	sessionDir := filepath.Join(root, ".codeterminal", "backups", entries[0].Name())
+	sessionDir := filepath.Join(root, ".mochiii", "backups", entries[0].Name())
 	if got := readFileString(t, filepath.Join(sessionDir, "before", "foo.go")); got != fooOriginal {
 		t.Errorf("before/foo.go = %q, want the pre-edit original %q", got, fooOriginal)
 	}
@@ -151,7 +151,7 @@ func TestHandleApplyEdit_UnrecognizedBackupSessionDirFallsBackToFreshDir(t *test
 	if resp.BackupDir == "/tmp/not-a-real-session-dir-daemon-never-issued" {
 		t.Errorf("BackupDir = %q, want a fresh workspace-confined dir, not the untrusted input echoed back", resp.BackupDir)
 	}
-	if !strings.HasPrefix(resp.BackupDir, filepath.Join(root, ".codeterminal", "backups")) {
-		t.Errorf("BackupDir = %q, want it confined under %s", resp.BackupDir, filepath.Join(root, ".codeterminal", "backups"))
+	if !strings.HasPrefix(resp.BackupDir, filepath.Join(root, ".mochiii", "backups")) {
+		t.Errorf("BackupDir = %q, want it confined under %s", resp.BackupDir, filepath.Join(root, ".mochiii", "backups"))
 	}
 }

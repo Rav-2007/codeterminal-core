@@ -1,9 +1,9 @@
 package main
 
 import (
-	"codeterminal/protocol"
 	"encoding/json"
 	"io"
+	"mochiii/protocol"
 	"os"
 	"path/filepath"
 	"time"
@@ -187,7 +187,7 @@ const maxTooLargeMarkerBytes = 4096
 // workspace-too-large marker, and what metadata it carries.
 //
 // THE MARKER IS WORKSPACE CONTENT, WHICH MEANS IT IS UNTRUSTED. It lives at
-// .codeterminal/index/TOO_LARGE inside the workspace, so a cloned repository can
+// .mochiii/index/TOO_LARGE inside the workspace, so a cloned repository can
 // ship one, and degradations() runs on EVERY prompt. The previous
 // implementation was one os.ReadFile plus a json.Unmarshal into map[string]any,
 // with no cap, no link check, and no test of what the path even pointed at.
@@ -222,7 +222,7 @@ const maxTooLargeMarkerBytes = 4096
 // A repeated line about a pathological marker is cheaper than making that
 // promise false.
 func (s *Server) workspaceTooLargeMarker() (present bool, meta map[string]any) {
-	path := filepath.Join(s.workspace, ".codeterminal", "index", "TOO_LARGE")
+	path := filepath.Join(s.workspace, ".mochiii", "index", "TOO_LARGE")
 
 	// O_NOFOLLOW: a symlink at the leaf is refused rather than followed, so the
 	// marker cannot be aimed at /dev/zero or at a file outside the workspace.

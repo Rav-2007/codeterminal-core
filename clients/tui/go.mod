@@ -1,10 +1,8 @@
-module codeterminal/clients/tui
+module mochiii/clients/tui
 
 go 1.25.13
 
 require (
-	codeterminal/editapply v0.0.0
-	codeterminal/protocol v0.0.0
 	github.com/charmbracelet/bubbles v0.21.0
 	github.com/charmbracelet/bubbletea v1.3.4
 	github.com/charmbracelet/lipgloss v1.1.0
@@ -12,6 +10,8 @@ require (
 	github.com/mattn/go-isatty v0.0.20
 	github.com/muesli/termenv v0.16.0
 	golang.org/x/sys v0.47.0
+	mochiii/editapply v0.0.0
+	mochiii/protocol v0.0.0
 )
 
 require (
@@ -34,6 +34,6 @@ require (
 	golang.org/x/text v0.39.0 // indirect
 )
 
-replace codeterminal/protocol => ../../protocol
+replace mochiii/protocol => ../../protocol
 
-replace codeterminal/editapply => ../../editapply
+replace mochiii/editapply => ../../editapply

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // THE CUT-OFF NOTICE REACHED THE SCREEN AND NOT THE MODEL.

@@ -88,8 +88,8 @@ function writeScript(file: string, sentinelDir: string, sentinel: string): void 
 // hostileWorkspace plants, in one directory, every input a repository has been
 // able to control:
 //
-//	daemon/codeterminal-daemon   the /mcp-server binary hijack
-//	codeterminal-daemon          the same, one directory up
+//	daemon/mochiii-daemon   the /mcp-server binary hijack
+//	mochiii-daemon          the same, one directory up
 //	models.json                  --config, because `mcp list` STARTS servers
 //	.git/config core.fsmonitor   git executes it during `status`
 //	git                          a PATH lookup that falls back to "."
@@ -100,8 +100,8 @@ function hostileWorkspace(): Fixture | undefined {
   const sentinelDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-hostile-sent-'));
 
   const exe = process.platform === 'win32' ? '.exe' : '';
-  writeScript(path.join(root, 'daemon', `codeterminal-daemon${exe}`), sentinelDir, sentinelName.daemonSubdir);
-  writeScript(path.join(root, `codeterminal-daemon${exe}`), sentinelDir, sentinelName.daemonRoot);
+  writeScript(path.join(root, 'daemon', `mochiii-daemon${exe}`), sentinelDir, sentinelName.daemonSubdir);
+  writeScript(path.join(root, `mochiii-daemon${exe}`), sentinelDir, sentinelName.daemonRoot);
   writeScript(path.join(root, process.platform === 'win32' ? 'git.exe' : 'git'), sentinelDir, sentinelName.git);
   writeScript(path.join(root, 'evil-mcp.sh'), sentinelDir, sentinelName.mcpServer);
 
@@ -147,13 +147,13 @@ function hostileWorkspace(): Fixture | undefined {
   // "binary not found" before --config could ever matter and the guard is
   // vacuous for that vector.
   //
-  // It is reached through PATH, deliberately NOT through CODETERMINAL_DAEMON_BIN:
+  // It is reached through PATH, deliberately NOT through MOCHIII_DAEMON_BIN:
   // that override is consulted FIRST, so setting it skips the workspace
   // candidates entirely and stops exercising the binary-hijack vector at all.
   // Measured on the TUI side -- with the override set, neutering the resolver
   // still passed.
   const fakeDaemonDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-hostile-bin-'));
-  const trusted = path.join(fakeDaemonDir, `codeterminal-daemon${exe}`);
+  const trusted = path.join(fakeDaemonDir, `mochiii-daemon${exe}`);
   const mcpSentinel = path.join(sentinelDir, sentinelName.mcpServer + '.txt');
 
   // WHAT THIS FIRES ON, and what it deliberately does NOT.

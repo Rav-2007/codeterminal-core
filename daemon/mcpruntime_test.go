@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"codeterminal/daemon/mcp"
-	"codeterminal/editapply"
+	"mochiii/daemon/mcp"
+	"mochiii/editapply"
 )
 
 // THE DENY MATRIX.

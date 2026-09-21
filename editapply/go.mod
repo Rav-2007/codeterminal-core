@@ -1,4 +1,4 @@
-module codeterminal/editapply
+module mochiii/editapply
 
 go 1.25.13
 

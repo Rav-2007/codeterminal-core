@@ -13,11 +13,11 @@ import (
 )
 
 // indexDirName is where a workspace's index lives, relative to its root.
-const indexDirName = ".codeterminal/index"
+const indexDirName = ".mochiii/index"
 
 // gitignoreEntry is appended to a workspace's .gitignore so the index is
 // never committed.
-const gitignoreEntry = ".codeterminal/"
+const gitignoreEntry = ".mochiii/"
 
 // defaultK is how many chunks "retrieve" returns when --k isn't given, and --
 // via RetrievalConfig.resolvedTopK -- how many the daemon injects per prompt.
@@ -44,7 +44,7 @@ const gitignoreEntry = ".codeterminal/"
 const defaultK = 10
 
 // indexEmbedBatchSize caps how many chunks go into a single Embed() RPC call
-// to the embedder helper. The full CodeTerminal repo is ~334 chunks;
+// to the embedder helper. The full Mochiii repo is ~334 chunks;
 // embedding them all in one call exceeds the helper's fixed
 // defaultHelperCallTimeout (helperproc.go) — a batch of 40 was proven safe
 // against the real repo and the real helper by the rerank eval test before
@@ -531,7 +531,7 @@ func retrieveTopK(ctx context.Context, query string, k int, embedder Embedder, s
 	return rerankChunks(fused, k, query), nil
 }
 
-// runIndexCommand implements `codeterminal-daemon index [path]`. It builds
+// runIndexCommand implements `mochiii-daemon index [path]`. It builds
 // (or replaces) the index for the workspace rooted at path (default ".")
 // and logs a scan summary. This only runs when explicitly invoked — never
 // on daemon start, never per-prompt.
@@ -597,13 +597,13 @@ func runIndexCommand(args []string, logger *log.Logger) error {
 }
 
 // runRetrieveCommand implements
-// `codeterminal-daemon retrieve [--workspace path] [--k n] <query...>`. It
+// `mochiii-daemon retrieve [--workspace path] [--k n] <query...>`. It
 // embeds query with the active embedder (see newActiveEmbedder) and logs
 // the top-k hits. It does not feed results into any model prompt — that
 // wire-in is a later step.
 func runRetrieveCommand(args []string, logger *log.Logger) error {
 	fset := flag.NewFlagSet("retrieve", flag.ExitOnError)
-	workspace := fset.String("workspace", ".", "workspace root containing an existing .codeterminal/index")
+	workspace := fset.String("workspace", ".", "workspace root containing an existing .mochiii/index")
 	k := fset.Int("k", defaultK, "number of results to return")
 	raw := fset.Bool("raw", false, "bypass file-class re-ranking and show raw vector-similarity order (A/B comparison)")
 	fset.Parse(args)

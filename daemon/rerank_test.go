@@ -138,8 +138,8 @@ func TestLooksTestSeeking(t *testing.T) {
 // this file is indexed by that eval harness.
 func TestLooksTestSeeking_IgnoresGoToolFailureNoise(t *testing.T) {
 	notSeeking := []string{
-		"# codeterminal/daemon [codeterminal/daemon.test]\n./foo_test.go:12:4: x undefined\nFAIL\tcodeterminal/daemon [build failed]",
-		"FAIL\tcodeterminal/widget [build failed]\n# codeterminal/widget [codeterminal/widget.test]\n./bar_test.go:9:2: undefined: Baz",
+		"# mochiii/daemon [mochiii/daemon.test]\n./foo_test.go:12:4: x undefined\nFAIL\tmochiii/daemon [build failed]",
+		"FAIL\tmochiii/widget [build failed]\n# mochiii/widget [mochiii/widget.test]\n./bar_test.go:9:2: undefined: Baz",
 		"$ go test ./daemon/...\nfoo.go:20:4: undefined: Bar",
 	}
 	for _, q := range notSeeking {
@@ -167,8 +167,8 @@ func TestLooksTestSeeking_IgnoresGoToolFailureNoise(t *testing.T) {
 // intact.
 func TestLooksTestSeeking_IgnoresCapturedAssertionFailureAndPanic(t *testing.T) {
 	notSeeking := []string{
-		"--- FAIL: TestSomethingUnrelated (0.00s)\n    foo_test.go:20: got 1, want 2\nFAIL\tcodeterminal/daemon\t0.10s",
-		"panic: runtime error: invalid memory address or nil pointer dereference\n\ngoroutine 19 [running]:\ncodeterminal/daemon.TestWidgetSpawn(0x0)\n\t/src/widget_test.go:42 +0x1a4",
+		"--- FAIL: TestSomethingUnrelated (0.00s)\n    foo_test.go:20: got 1, want 2\nFAIL\tmochiii/daemon\t0.10s",
+		"panic: runtime error: invalid memory address or nil pointer dereference\n\ngoroutine 19 [running]:\nmochiii/daemon.TestWidgetSpawn(0x0)\n\t/src/widget_test.go:42 +0x1a4",
 	}
 	for _, q := range notSeeking {
 		if looksTestSeeking(q) {

@@ -56,7 +56,7 @@ func TestBuildChatMessages_EmptyHistorySliceMatchesNil(t *testing.T) {
 // then the current user turn (already augmented with retrieved context by
 // the caller) last.
 func TestBuildChatMessages_OrdersSystemThenHistoryThenCurrentUser(t *testing.T) {
-	systemPrompt := "You are CodeTerminal."
+	systemPrompt := "You are Mochiii."
 	history := []chatMessage{
 		{Role: "user", Content: "what does this repo do?"},
 		{Role: "assistant", Content: "it's a local coding assistant."},

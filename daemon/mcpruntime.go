@@ -10,7 +10,7 @@ import (
 	"strings"
 	"sync"
 
-	"codeterminal/daemon/mcp"
+	"mochiii/daemon/mcp"
 )
 
 // The bridge between the daemon's config and the tool registry.

@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"codeterminal/editapply"
-	"codeterminal/protocol"
+	"mochiii/editapply"
+	"mochiii/protocol"
 )
 
 // LOSING THE STARTUP RACE, AND WHAT IT COSTS.

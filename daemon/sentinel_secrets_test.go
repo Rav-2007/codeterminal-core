@@ -29,7 +29,7 @@ import (
 	"strings"
 	"testing"
 
-	"codeterminal/daemon/mcp"
+	"mochiii/daemon/mcp"
 )
 
 // sentinelFor returns row n's sentinel: AKIA + exactly 16 chars from [0-9A-Z],

@@ -13,7 +13,7 @@ import (
 	"sort"
 	"strings"
 
-	"codeterminal/editapply"
+	"mochiii/editapply"
 )
 
 // displayRel spells a workspace-relative path the way the rest of this product
@@ -32,7 +32,7 @@ import (
 // which is why this is applied at the Fprintf and not at the source.
 func displayRel(rel string) string { return filepath.ToSlash(rel) }
 
-// runEditsCommand implements `codeterminal-daemon edits <apply|undo> ...`.
+// runEditsCommand implements `mochiii-daemon edits <apply|undo> ...`.
 func runEditsCommand(args []string, logger *log.Logger) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage: edits <apply|undo> ...")
@@ -49,7 +49,7 @@ func runEditsCommand(args []string, logger *log.Logger) error {
 }
 
 // runEditsApplyCommand implements
-// `codeterminal-daemon edits apply [--workspace path] [<response-file>|-]`.
+// `mochiii-daemon edits apply [--workspace path] [<response-file>|-]`.
 // The model response is read from the given file, or from stdin if omitted
 // or given as "-". When the response itself comes from stdin, confirmation
 // prompts are read from the controlling terminal (/dev/tty) instead, since
@@ -225,7 +225,7 @@ func printEditDiff(out io.Writer, p *editapply.PreparedEdit) {
 }
 
 // runEditsUndoCommand implements
-// `codeterminal-daemon edits undo [--workspace path] [--session ts] [--force]`.
+// `mochiii-daemon edits undo [--workspace path] [--session ts] [--force]`.
 func runEditsUndoCommand(args []string, logger *log.Logger) error {
 	fset := flag.NewFlagSet("edits undo", flag.ExitOnError)
 	workspace := fset.String("workspace", ".", "workspace root")
@@ -238,7 +238,7 @@ func runEditsUndoCommand(args []string, logger *log.Logger) error {
 		return err
 	}
 
-	backupsRoot := filepath.Join(realRoot, ".codeterminal", "backups")
+	backupsRoot := filepath.Join(realRoot, ".mochiii", "backups")
 	sessionDir, err := resolveBackupSession(backupsRoot, *session)
 	if err != nil {
 		return err
@@ -529,7 +529,7 @@ func removeCreatedSessionDirs(realWorkspaceRoot, sessionDir string, logger *log.
 // undoStagingPrefix names the temporary files restoreBatch writes beside each
 // destination while staging. Dot-prefixed so it is hidden, and carrying the
 // product name so a file left behind by a crashed run is identifiable.
-const undoStagingPrefix = ".codeterminal-undo-"
+const undoStagingPrefix = ".mochiii-undo-"
 
 // stagedRestore is one file's revert after it has passed every check and had
 // its content written to a temp file beside its destination — everything done,

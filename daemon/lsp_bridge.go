@@ -16,8 +16,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"codeterminal/daemon/mcp"
-	"codeterminal/editapply"
+	"mochiii/daemon/mcp"
+	"mochiii/editapply"
 )
 
 // A language server is UNTRUSTED INPUT, and this file treats it that way.
@@ -289,7 +289,7 @@ func (b *LSPBridge) GetServer(lang editapply.Language) (*LSPServer, error) {
 
 	cmd.Dir = b.workspace
 	// NEVER nil. A nil Env hands this third-party subprocess the daemon's whole
-	// environment, including OPENROUTER_API_KEY and CODETERMINAL_MOCHIII_KEY.
+	// environment, including OPENROUTER_API_KEY and MOCHIII_PROXY_KEY.
 	// See lspToolchainEnv for why a language server is not a trusted peer.
 	cmd.Env = mcp.ServerEnv(lspToolchainEnv[cmdName])
 	in, err := cmd.StdinPipe()

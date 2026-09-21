@@ -93,7 +93,7 @@ func TestStatusCountersAreAdditive(t *testing.T) {
 
 // TestUpstreamRequestIDRejectsAnythingItCannotTrust is the log-injection guard.
 //
-// The value comes from whatever host CODETERMINAL_API_BASE points at and is
+// The value comes from whatever host MOCHIII_API_BASE points at and is
 // written straight into the daemon's log file, so a header carrying a newline
 // would let an upstream forge lines in it.
 func TestUpstreamRequestIDRejectsAnythingItCannotTrust(t *testing.T) {

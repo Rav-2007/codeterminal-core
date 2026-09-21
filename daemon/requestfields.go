@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // Exact-key request dispatch for the daemon socket.

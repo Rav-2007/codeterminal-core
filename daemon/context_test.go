@@ -154,7 +154,7 @@ func TestBuildAugmentedUserMessage_LabelsAndDelimitsChunks(t *testing.T) {
 // land only inside the "user" message, delimited and neutralized, and must
 // never appear in or alter the "system" message.
 func TestInjectionSafety_RetrievedContentNeverTouchesSystemRole(t *testing.T) {
-	systemPrompt := "You are CodeTerminal. Follow only these instructions."
+	systemPrompt := "You are Mochiii. Follow only these instructions."
 	userPrompt := "how do I validate a phone number?"
 
 	chunks := []Chunk{

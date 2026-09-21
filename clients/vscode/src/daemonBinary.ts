@@ -5,7 +5,7 @@ import * as path from 'path';
 //
 // This is the VS Code mirror of resolveDaemonBin in clients/tui/slash.go, and
 // it exists for the reason that file's comment gives: a repository that ships
-// an executable at daemon/codeterminal-daemon must never be able to get it run.
+// an executable at daemon/mochiii-daemon must never be able to get it run.
 //
 // The TUI closed that hole in d56e425 and daemon/helperpath.go closed the same
 // shape with runningFromGoRun. The extension's copy was missed by both, and was
@@ -24,10 +24,10 @@ import * as path from 'path';
 // somewhere else. An explicit variable the user sets is a trusted input; the
 // workspace is not. Same name as the TUI's, deliberately -- one override for
 // both clients.
-export const DAEMON_BIN_ENV = 'CODETERMINAL_DAEMON_BIN';
+export const DAEMON_BIN_ENV = 'MOCHIII_DAEMON_BIN';
 
 export function daemonBinaryName(): string {
-  return process.platform === 'win32' ? 'codeterminal-daemon.exe' : 'codeterminal-daemon';
+  return process.platform === 'win32' ? 'mochiii-daemon.exe' : 'mochiii-daemon';
 }
 
 // bundledDaemonDir is where a packaged extension keeps its runtime: the daemon,
@@ -35,7 +35,7 @@ export function daemonBinaryName(): string {
 //
 // That layout is not a new convention invented for packaging -- three resolvers
 // written separately already agree on it. resolveHelperBinPath's second
-// candidate is <exedir>/codeterminal-embedder-helper, whose comment calls it
+// candidate is <exedir>/mochiii-embedder-helper, whose comment calls it
 // "installed side by side (release layout)", and resolveConfigPath's first is
 // <exedir>/models.json. Putting the daemon here is what makes the helper and
 // the config discoverable with no Go changes at all.
@@ -54,8 +54,8 @@ function isExecutableFile(p: string): boolean {
 // lookPath resolves a bare name through PATH, rather than handing the bare name
 // to execFile and hoping.
 //
-// Node makes the naive version a trap: fs.existsSync('codeterminal-daemon')
-// consults the CURRENT DIRECTORY, while execFile('codeterminal-daemon')
+// Node makes the naive version a trap: fs.existsSync('mochiii-daemon')
+// consults the CURRENT DIRECTORY, while execFile('mochiii-daemon')
 // consults PATH. Code that checks with one and runs with the other can verify a
 // file in the workspace and then execute a different file entirely -- or, worse,
 // verify the workspace's copy and run it. Resolving here makes the check and

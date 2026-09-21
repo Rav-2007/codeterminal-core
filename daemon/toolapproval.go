@@ -18,7 +18,7 @@ import (
 	"strings"
 	"time"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // Why one approval was refused. The OUTCOME is identical in every case, and the

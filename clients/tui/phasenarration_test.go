@@ -16,7 +16,7 @@ import (
 	"strings"
 	"testing"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // phaseMarker is what daemon/orchestrator.go's narratePhase sends: no CallID,

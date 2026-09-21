@@ -12,7 +12,7 @@ import (
 // collectionName is the single chromem-go collection every workspace index
 // uses. Each workspace gets its own on-disk DB (a separate directory), so
 // there's no need for more than one collection name per DB.
-const collectionName = "codeterminal-chunks"
+const collectionName = "mochiii-chunks"
 
 // Chunk is one indexed slice of a source file: the text itself, where it
 // came from, and (once embedded) its vector. Score is populated only on

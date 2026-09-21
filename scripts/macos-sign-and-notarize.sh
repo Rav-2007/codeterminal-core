@@ -4,7 +4,7 @@
 # ==============================================================================
 #
 # Encapsulates code signing and Apple Notary Service submission for darwin-arm64
-# binaries (codeterminal-daemon and codeterminal-embedder-helper).
+# binaries (mochiii-daemon and mochiii-embedder-helper).
 #
 # ENVIRONMENT VARIABLES:
 #   MACOS_CERT_P12_BASE64     Base64-encoded Developer ID Application .p12 certificate
@@ -127,13 +127,13 @@ fi
 
 # Check for binaries to sign.
 #
-# codeterminal-tui joined this list on 2026-09-04 (R1.14). It is a standalone
+# mochiii-tui joined this list on 2026-09-04 (R1.14). It is a standalone
 # binary a user downloads and runs from a terminal, which is exactly the path
 # that attaches com.apple.quarantine -- an unsigned one is killed by Gatekeeper
 # with no explanation, the same failure the daemon has. Shipping it unsigned
 # would be shipping the defect this script exists to prevent, one binary over.
 TARGET_BINARIES=()
-for bin in "$DIST_DIR/codeterminal-daemon" "$DIST_DIR/codeterminal-embedder-helper" "$DIST_DIR/codeterminal-tui"; do
+for bin in "$DIST_DIR/mochiii-daemon" "$DIST_DIR/mochiii-embedder-helper" "$DIST_DIR/mochiii-tui"; do
   if [ -f "$bin" ]; then
     TARGET_BINARIES+=("$bin")
   fi
@@ -219,7 +219,7 @@ if [ -n "${MACOS_NOTARY_KEY_ID:-}" ] && [ -n "${MACOS_NOTARY_ISSUER_ID:-}" ] && 
   log "Submitting signed binaries to Apple Notary Service..."
   echo "$MACOS_NOTARY_KEY_BASE64" | base64 --decode > /tmp/notary_key.p8
   
-  (cd "$DIST_DIR" && zip -r /tmp/binaries_to_notarize.zip . -i "codeterminal-*")
+  (cd "$DIST_DIR" && zip -r /tmp/binaries_to_notarize.zip . -i "mochiii-*")
 
   log "  Submitting zip archive to notarytool..."
   xcrun notarytool submit /tmp/binaries_to_notarize.zip \

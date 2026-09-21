@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"codeterminal/editapply"
-	"codeterminal/protocol"
+	"mochiii/editapply"
+	"mochiii/protocol"
 )
 
 // TWO VS CODE WINDOWS ON TWO REPOSITORIES MUST BOTH WORK.
@@ -25,7 +25,7 @@ import (
 //
 // The chain, and every link is deliberate behaviour:
 //
-//  1. protocol.LockPath() is RuntimeDir()/codeterminal/daemon.lock. PER USER.
+//  1. protocol.LockPath() is RuntimeDir()/mochiii/daemon.lock. PER USER.
 //     There is no workspace in that path.
 //  2. clients/vscode/src/extension.ts spawns a daemon unconditionally on
 //     activate(). It never probes the lockfile and never adopts a running
@@ -141,7 +141,7 @@ func TestTwoWorkspaces_EachClientReachesItsOwnDaemon(t *testing.T) {
 func buildDaemonBinary(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	bin := filepath.Join(dir, exeName("codeterminal-daemon"))
+	bin := filepath.Join(dir, exeName("mochiii-daemon"))
 	cmd := exec.Command("go", "build", "-o", bin, ".")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("building the daemon: %v\n%s", err, out)
@@ -167,10 +167,10 @@ func buildDaemonBinary(t *testing.T) string {
 func daemonEnv(runtimeDir string) []string {
 	env := append(os.Environ(),
 		"XDG_RUNTIME_DIR="+runtimeDir,
-		"CODETERMINAL_API_BASE=http://127.0.0.1:1",
+		"MOCHIII_API_BASE=http://127.0.0.1:1",
 	)
 	// Whatever the developer's shell holds must not reach a test daemon.
-	return append(env, "CODETERMINAL_API_KEY=", "CODETERMINAL_MOCHIII_KEY=", "OPENROUTER_API_KEY=")
+	return append(env, "MOCHIII_API_KEY=", "MOCHIII_PROXY_KEY=", "OPENROUTER_API_KEY=")
 }
 
 func startDaemon(t *testing.T, bin, runtimeDir, workspace string) (stop func()) {

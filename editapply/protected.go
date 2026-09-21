@@ -18,7 +18,7 @@ import (
 //	                       on the next commit, and config carries hooksPath and
 //	                       filter/diff commands it also executes — a writable
 //	                       .git/ is arbitrary code execution from model output.
-//	.codeterminal          This product's own state: backups/ holds the pre-edit
+//	.mochiii          This product's own state: backups/ holds the pre-edit
 //	                       copies undo restores from, so an edit that can rewrite
 //	                       them defeats the safety net that makes every other
 //	                       edit recoverable; logs/ is the operational record.
@@ -32,13 +32,13 @@ import (
 // code is unusual but legitimate, and refusing it would cost a real capability
 // to prevent nothing. The indexer keeps pruning them; see chunker.go.
 var ProtectedDirNames = map[string]bool{
-	".git":          true,
-	".hg":           true,
-	".svn":          true,
-	".bzr":          true,
-	".codeterminal": true,
-	".ssh":          true,
-	".aws":          true,
+	".git":     true,
+	".hg":      true,
+	".svn":     true,
+	".bzr":     true,
+	".mochiii": true,
+	".ssh":     true,
+	".aws":     true,
 }
 
 // IsProtectedDirName reports whether name (a single path component) is a

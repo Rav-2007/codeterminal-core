@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // STOPPING A TURN HAS TO STOP THE WORK, not just the watching.

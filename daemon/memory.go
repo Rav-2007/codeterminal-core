@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 
 	_ "modernc.org/sqlite"
 )
@@ -181,7 +181,7 @@ func ensureMemorySchema(db *sql.DB) error {
 	case err != nil:
 		return fmt.Errorf("reading schema version: %w", err)
 	case version > memorySchemaVersion:
-		return fmt.Errorf("memory db schema version %d is newer than this binary supports (%d); upgrade codeterminal-daemon", version, memorySchemaVersion)
+		return fmt.Errorf("memory db schema version %d is newer than this binary supports (%d); upgrade mochiii-daemon", version, memorySchemaVersion)
 	}
 
 	// Migrations are SEQUENTIAL ifs, not switch cases, and that is the whole

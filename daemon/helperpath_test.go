@@ -229,7 +229,7 @@ func TestGatherContext_SurfacesTheConfiguredReason(t *testing.T) {
 
 // THE HIJACK VARIANT. legacyHelperBinPath resolves against the WORKING
 // DIRECTORY, and the daemon's working directory is the workspace it was asked
-// to serve. So a repository shipping helper/codeterminal-embedder-helper could
+// to serve. So a repository shipping helper/mochiii-embedder-helper could
 // have it started as this daemon's embedder — the same defect class as the
 // TUI's /mcp-server hijack, narrower only because it is the last candidate and
 // needs the real helper to be absent first.
@@ -317,7 +317,7 @@ func TestPathIsUnder(t *testing.T) {
 	}{
 		{"/tmp/go-build123/b001/exe/daemon", "/tmp", true},
 		{"/tmp", "/tmp", true},
-		{"/usr/local/bin/codeterminal-daemon", "/tmp", false},
+		{"/usr/local/bin/mochiii-daemon", "/tmp", false},
 		{"/home/u/repo/daemon", "/tmp", false},
 		// The one a strings.HasPrefix implementation gets WRONG: a sibling
 		// directory sharing a textual prefix.

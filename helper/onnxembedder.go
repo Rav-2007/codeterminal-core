@@ -9,7 +9,7 @@ import (
 	"github.com/sugarme/tokenizer/pretrained"
 	ort "github.com/yalue/onnxruntime_go"
 
-	"codeterminal/helper/helperproto"
+	"mochiii/helper/helperproto"
 )
 
 // embedDim is the real model's output width: BGE-small's hidden size.

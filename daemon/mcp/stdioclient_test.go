@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // These tests spawn a REAL MCP server subprocess and speak the real protocol
@@ -53,8 +53,8 @@ func connectEcho(t *testing.T, envAllow []string) *StdioClient {
 // anyone "helpfully" makes the allow-list additive over os.Environ().
 func TestRealServerNeverSeesCredentials(t *testing.T) {
 	t.Setenv("OPENROUTER_API_KEY", "sk-or-v1-must-not-reach-the-child")
-	t.Setenv("CODETERMINAL_MOCHIII_KEY", "mochi_must-not-reach-the-child")
-	t.Setenv("CODETERMINAL_API_KEY", "must-not-reach-the-child")
+	t.Setenv("MOCHIII_PROXY_KEY", "mochi_must-not-reach-the-child")
+	t.Setenv("MOCHIII_API_KEY", "must-not-reach-the-child")
 	t.Setenv("A_SERVERS_OWN_TOKEN", "this one is legitimately its own")
 
 	client := connectEcho(t, []string{"A_SERVERS_OWN_TOKEN"})

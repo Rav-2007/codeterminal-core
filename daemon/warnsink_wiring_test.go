@@ -17,7 +17,7 @@ import (
 // says nothing about whether anything ever hands it one. A correct writer that
 // is never called is indistinguishable from a correct writer that is, right up
 // until you go looking for the data and find an empty directory, which is
-// exactly what happened here: `.codeterminal/logs/` existed with no
+// exactly what happened here: `.mochiii/logs/` existed with no
 // `warnmode.jsonl` in it for twelve days while the record said fire-rate data
 // was accumulating (see docs/CHUNK_SCRUB_FIRE_RATE.md). The cause turned out to
 // be no grounded traffic rather than a broken wire, but nothing in the suite

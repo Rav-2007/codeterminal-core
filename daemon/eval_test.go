@@ -60,7 +60,7 @@ func loadEvalQueries(t *testing.T) []evalQuery {
 // fakehelper fixture instead) since a package may only have one TestMain.
 func buildRealHelperBinary(t *testing.T) string {
 	t.Helper()
-	binPath := filepath.Join(t.TempDir(), exeName("codeterminal-embedder-helper"))
+	binPath := filepath.Join(t.TempDir(), exeName("mochiii-embedder-helper"))
 
 	cmd := exec.Command("go", "build", "-o", binPath, ".")
 	cmd.Dir = "../helper"

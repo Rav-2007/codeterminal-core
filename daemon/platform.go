@@ -35,7 +35,7 @@ package main
 // openNonBlock exists because O_NOFOLLOW is not the only way a path can betray
 // a reader. On POSIX, open(2) on a FIFO with no writer BLOCKS FOREVER, and
 // os.ReadFile offers no way to say otherwise. Measured: a FIFO planted at
-// .codeterminal/index/TOO_LARGE left os.ReadFile parked past a three-second
+// .mochiii/index/TOO_LARGE left os.ReadFile parked past a three-second
 // deadline with no path to return, and degradations() is on the prompt path, so
 // every turn hangs. O_NONBLOCK makes the open return immediately and an fstat on
 // the resulting descriptor say what the thing actually is. Windows has no

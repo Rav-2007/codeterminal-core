@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"codeterminal/editapply"
-	"codeterminal/protocol"
+	"mochiii/editapply"
+	"mochiii/protocol"
 )
 
 // THE SEAM THE UNIT TESTS DO NOT COVER.

@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // This file is the before/after evidence for Fix 9: every upstream failure

@@ -1,4 +1,4 @@
-// Command codeterminal-tui is CodeTerminal's terminal client, branded
+// Command mochiii-tui is Mochiii's terminal client, branded
 // "Mochiii". Run with no arguments (and no piped stdin) from an actual
 // terminal to launch the interactive chat UI. Pass --prompt, or pipe text
 // on stdin, to keep the original one-shot behavior instead: connect, send
@@ -17,7 +17,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/mattn/go-isatty"
 
-	"codeterminal/editapply"
+	"mochiii/editapply"
 )
 
 func main() {
@@ -58,7 +58,7 @@ func main() {
 	if realRoot, err := editapply.ResolveRealWorkspaceRoot(*workspaceFlag); err == nil {
 		setDaemonWorkspaceRoot(realRoot)
 	}
-	os.Exit(runOneShotPrompt("codeterminal-tui", prompt, oneShotIO{
+	os.Exit(runOneShotPrompt("mochiii-tui", prompt, oneShotIO{
 		in: os.Stdin, out: os.Stdout, err: os.Stderr, interactive: interactive,
 	}))
 }
@@ -88,7 +88,7 @@ func runChat(workspace string) {
 	}
 	setDaemonWorkspaceRoot(workspaceRoot)
 
-	preflight, err := connectToDaemon("codeterminal-tui")
+	preflight, err := connectToDaemon("mochiii-tui")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
@@ -108,7 +108,7 @@ func runChat(workspace string) {
 		absWorkspace = workspace // best-effort label; still sent as-is
 	}
 
-	p := tea.NewProgram(newChatModel("codeterminal-tui", absWorkspace, workspaceRoot, persistedHistory), tea.WithAltScreen(), tea.WithMouseCellMotion())
+	p := tea.NewProgram(newChatModel("mochiii-tui", absWorkspace, workspaceRoot, persistedHistory), tea.WithAltScreen(), tea.WithMouseCellMotion())
 	// SIGHUP and SIGQUIT reach Bubble Tea's own shutdown through here; without
 	// it SIGHUP killed the process with the alternate screen still up. finish
 	// also re-raises a caught SIGQUIT, which is why it runs before the error

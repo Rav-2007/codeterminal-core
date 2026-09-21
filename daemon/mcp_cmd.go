@@ -10,8 +10,8 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"codeterminal/daemon/mcp"
-	"codeterminal/editapply"
+	"mochiii/daemon/mcp"
+	"mochiii/editapply"
 )
 
 // `mcp list` -- the whole tool path, proved without the model.

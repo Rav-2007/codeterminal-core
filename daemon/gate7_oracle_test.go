@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // Gate 7's existence-oracle finding, measured rather than asserted.

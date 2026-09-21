@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // fakeClient is a Lane B server without a subprocess. The whole point of the

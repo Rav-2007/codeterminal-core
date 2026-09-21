@@ -99,9 +99,9 @@ for module in "${MODULES[@]}"; do
   # `go test -cover` emits the package name in one of two columns depending on
   # whether the package had tests:
   #
-  #   ok  \tcodeterminal/proxy\t8.4s\tcoverage: 83.6% of statements
-  #       \tcodeterminal/proxy/testharness\t\tcoverage: 0.0% of statements
-  #   ?   \tcodeterminal/foo\t[no test files]
+  #   ok  \tmochiii/proxy\t8.4s\tcoverage: 83.6% of statements
+  #       \tmochiii/proxy/testharness\t\tcoverage: 0.0% of statements
+  #   ?   \tmochiii/foo\t[no test files]
   #
   # The second shape -- leading TAB, no "ok" -- is what a package with no test
   # files looks like under -cover, and an earlier version of this parser matched
@@ -161,10 +161,10 @@ done
 # scope applied here. Each module's floors are now swept by the job that owns
 # them, so the union of CI's six jobs covers exactly what a full local run does.
 belongs_to_module() {
-  # floor keys are import paths (codeterminal/daemon/mcp); modules are
+  # floor keys are import paths (mochiii/daemon/mcp); modules are
   # directories (daemon, clients/tui). Strip the module path prefix and ask
   # whether what remains is the module itself or something beneath it.
-  local pkg="${1#codeterminal/}" m="$2"
+  local pkg="${1#mochiii/}" m="$2"
   [ "$pkg" = "$m" ] || [ "${pkg#"$m"/}" != "$pkg" ]
 }
 

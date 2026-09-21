@@ -64,7 +64,7 @@ func TestSetupRetrieval_ConfigDisabledShortCircuits(t *testing.T) {
 func TestSetupRetrieval_NoIndexDegradesGracefully(t *testing.T) {
 	var stopped bool
 	cfg := baseTestConfig()
-	workspace := t.TempDir() // no .codeterminal/index here at all
+	workspace := t.TempDir() // no .mochiii/index here at all
 
 	rs := setupRetrieval(cfg, workspace, false, discardLogger(), fakeEmbedderFactory(&stopped))
 	embedder, store, stop := rs.Embedder, rs.Store, rs.Stop

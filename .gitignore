@@ -8,7 +8,7 @@ out/
 # The release job's OUTPUT directory (.github/workflows/release.yml writes the
 # per-target .vsix and SHA256SUMS here). `out/` above did not cover it, so a
 # local release build committed its own artifact: a 15 MB
-# codeterminal-vscode-linux-x64-0.0.1.vsix from 2026-08-12 sat tracked at the
+# mochiii-vscode-linux-x64-0.0.1.vsix from 2026-08-12 sat tracked at the
 # release path, and the daemon inside it had been built with go1.25.12 against
 # an enforced floor of go1.25.13 -- four reachable stdlib vulnerabilities by
 # `govulncheck -mode=binary`. CI rebuilds from fresh binaries so it never
@@ -16,17 +16,17 @@ out/
 # place.
 out-vsix/
 
-daemon/codeterminal-daemon
-clients/tui/codeterminal-tui
+daemon/mochiii-daemon
+clients/tui/mochiii-tui
 daemon/daemon
 clients/tui/tui
 
 # Windows build outputs (cross-compiled locally when checking the port).
 *.exe
-helper/codeterminal-embedder-helper
-proxy/codeterminal-proxy
+helper/mochiii-embedder-helper
+proxy/mochiii-proxy
 proxy/proxy
-.codeterminal/
+.mochiii/
 /mochiii
 
 *.db
@@ -53,3 +53,12 @@ test.log
 test_out.txt
 test_output.txt
 *.testlog
+
+# LEGACY, PRE-RENAME. Everything was renamed codeterminal -> mochiii on
+# 2026-09-21, and these paths stopped being covered by the entries above the
+# moment those entries took the new names. They are ignored rather than deleted
+# because .codeterminal/ holds `backups/` -- real undo history, 83 MB of it --
+# and a rename is not a reason to destroy a user's undo stack. The daemon reads
+# .mochiii/ now, so nothing here is reachable; deleting it is an owner's call.
+.codeterminal/
+daemon/.codeterminal/

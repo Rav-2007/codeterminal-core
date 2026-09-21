@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // Configuration for agent mode: the built-in tools, the external MCP servers,

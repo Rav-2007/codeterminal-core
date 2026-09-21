@@ -30,8 +30,8 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"codeterminal/daemon/mcp"
-	"codeterminal/protocol"
+	"mochiii/daemon/mcp"
+	"mochiii/protocol"
 )
 
 // FuzzRenderToolResult — THE EGRESS BOUNDARY.

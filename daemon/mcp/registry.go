@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // Handler is a built-in (Lane A) tool's implementation: a Go function in the

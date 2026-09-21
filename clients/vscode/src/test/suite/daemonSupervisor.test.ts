@@ -633,7 +633,7 @@ suite('daemon supervisor', () => {
         `a message tells the user to run "${hint}", but package.json contributes ` +
           `[${titles.join(', ')}]. Searching the palette for that name finds NOTHING — and this ` +
           `message is shown at exactly the moment it is the user's only way out. ` +
-          `(This really happened: titles said "CodeTerminal: ..." while every toast said "Mochiii".)`
+          `(This really happened: titles said "Mochiii: ..." while every toast said "Mochiii".)`
       );
     }
   });
@@ -659,7 +659,7 @@ suite('daemon supervisor', () => {
 
     const logPathFor = (root: string): string => {
       setWorkspaceRoot(root);
-      return path.join(resolvedWorkspaceRoot(), '.codeterminal', 'logs', 'daemon.log');
+      return path.join(resolvedWorkspaceRoot(), '.mochiii', 'logs', 'daemon.log');
     };
 
     assert.strictEqual(
@@ -680,7 +680,7 @@ suite('daemon supervisor', () => {
   // So with no folder open the daemon was started with the user's home
   // directory (or /) as its workspace and INDEXED it -- and index content
   // becomes prompt context, which leaves the machine. It also created
-  // .codeterminal/logs/ there, outside any project. The test one layer below
+  // .mochiii/logs/ there, outside any project. The test one layer below
   // the product reported that none of this was happening.
   //
   // Every input activate() can actually produce is checked here now.
@@ -693,7 +693,7 @@ suite('daemon supervisor', () => {
         `setWorkspaceRoot(${JSON.stringify(input)}) resolved to ` +
           `${JSON.stringify(resolvedWorkspaceRoot())}. A relative path resolves against the ` +
           `extension host's cwd -- a directory the user never chose -- and the daemon then ` +
-          `indexes it and writes .codeterminal/ into it`
+          `indexes it and writes .mochiii/ into it`
       );
     }
   });
@@ -741,7 +741,7 @@ suite('daemon supervisor', () => {
     );
     assert.match(
       src,
-      /codeterminal\.showDaemonLog/,
+      /mochiii\.showDaemonLog/,
       'and there must be a way to read it from a window that has no child process at all'
     );
   });

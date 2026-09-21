@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"codeterminal/editapply"
-	"codeterminal/protocol"
+	"mochiii/editapply"
+	"mochiii/protocol"
 )
 
 // Gate 7 (FAIL-3) response-hygiene regression tests. They pin the socket

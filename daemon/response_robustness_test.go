@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // --- a real, scriptable upstream ---------------------------------------------

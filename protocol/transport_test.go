@@ -15,7 +15,7 @@ import (
 // A lockfile written by a daemon built BEFORE Address existed carries only
 // socket_path. A current client must still find that daemon.
 func TestAddressFromLock_LegacyLockfileStillResolves(t *testing.T) {
-	legacy := LockFile{SocketPath: "/run/user/1000/codeterminal/daemon.sock", PID: 42}
+	legacy := LockFile{SocketPath: "/run/user/1000/mochiii/daemon.sock", PID: 42}
 
 	got := AddressFromLock(legacy)
 	if got.Transport != TransportUnix {
@@ -32,10 +32,10 @@ func TestAddressFromLock_LegacyLockfileStillResolves(t *testing.T) {
 func TestAddressFromLock_AddressWinsOverSocketPath(t *testing.T) {
 	l := LockFile{
 		SocketPath: "/stale/path.sock",
-		Address:    Address{Transport: TransportNamedPipe, Address: `\\.\pipe\codeterminal-abc`},
+		Address:    Address{Transport: TransportNamedPipe, Address: `\\.\pipe\mochiii-abc`},
 	}
 	got := AddressFromLock(l)
-	if got.Transport != TransportNamedPipe || got.Address != `\\.\pipe\codeterminal-abc` {
+	if got.Transport != TransportNamedPipe || got.Address != `\\.\pipe\mochiii-abc` {
 		t.Errorf("got %+v, want the explicit address, not the legacy socket_path", got)
 	}
 }
@@ -61,7 +61,7 @@ func TestNewLockFile_UnixKeepsWritingSocketPathForOldClients(t *testing.T) {
 // A named pipe has no path, so socket_path stays empty rather than carrying
 // something a Unix-shaped client would try to open as a file.
 func TestNewLockFile_NamedPipeLeavesSocketPathEmpty(t *testing.T) {
-	addr := Address{Transport: TransportNamedPipe, Address: `\\.\pipe\codeterminal-abc`}
+	addr := Address{Transport: TransportNamedPipe, Address: `\\.\pipe\mochiii-abc`}
 	l := NewLockFile(addr, 7)
 
 	if l.SocketPath != "" {
@@ -115,8 +115,8 @@ func TestAddress_String(t *testing.T) {
 		t.Errorf("got %q, want the bare path", got)
 	}
 	// A pipe is qualified, because a bare pipe name in a log looks like a typo.
-	want := `npipe:\\.\pipe\codeterminal-abc`
-	if got := (Address{Transport: TransportNamedPipe, Address: `\\.\pipe\codeterminal-abc`}).String(); got != want {
+	want := `npipe:\\.\pipe\mochiii-abc`
+	if got := (Address{Transport: TransportNamedPipe, Address: `\\.\pipe\mochiii-abc`}).String(); got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
 }

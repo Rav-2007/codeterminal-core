@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"codeterminal/daemon/mcp"
+	"mochiii/daemon/mcp"
 )
 
 // DOES THE CAPABILITY ACTUALLY REACH THE MODEL, IN THE CONFIG THE USER RUNS?

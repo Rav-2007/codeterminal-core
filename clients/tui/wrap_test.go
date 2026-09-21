@@ -7,7 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // LONG ANSWERS MUST NOT BE INVISIBLE PAST THE RIGHT EDGE.

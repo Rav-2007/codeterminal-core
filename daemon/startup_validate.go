@@ -70,25 +70,25 @@ func validateAPIBase(base string) error {
 	if trimmed == "" {
 		// Distinguished from the caller's own unset check: a whitespace-only
 		// value passes a `== ""` test but is no more usable than an empty one.
-		return fmt.Errorf("CODETERMINAL_API_BASE is blank")
+		return fmt.Errorf("MOCHIII_API_BASE is blank")
 	}
 	if trimmed != base {
-		return fmt.Errorf("CODETERMINAL_API_BASE %q has leading or trailing whitespace", base)
+		return fmt.Errorf("MOCHIII_API_BASE %q has leading or trailing whitespace", base)
 	}
 
 	u, err := url.Parse(base)
 	if err != nil {
-		return fmt.Errorf("CODETERMINAL_API_BASE %q is not a valid URL: %w", base, err)
+		return fmt.Errorf("MOCHIII_API_BASE %q is not a valid URL: %w", base, err)
 	}
 	switch u.Scheme {
 	case "http", "https":
 	case "":
-		return fmt.Errorf("CODETERMINAL_API_BASE %q has no scheme (expected an absolute URL such as https://openrouter.ai/api/v1)", base)
+		return fmt.Errorf("MOCHIII_API_BASE %q has no scheme (expected an absolute URL such as https://openrouter.ai/api/v1)", base)
 	default:
-		return fmt.Errorf("CODETERMINAL_API_BASE %q uses unsupported scheme %q (expected http or https)", base, u.Scheme)
+		return fmt.Errorf("MOCHIII_API_BASE %q uses unsupported scheme %q (expected http or https)", base, u.Scheme)
 	}
 	if u.Host == "" {
-		return fmt.Errorf("CODETERMINAL_API_BASE %q has no host", base)
+		return fmt.Errorf("MOCHIII_API_BASE %q has no host", base)
 	}
 	return nil
 }

@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"testing"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 func TestPrepareHistory_NilHistoryIsANoOp(t *testing.T) {

@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"codeterminal/helper/helperproto"
-	"codeterminal/protocol"
+	"mochiii/helper/helperproto"
+	"mochiii/protocol"
 )
 
 // handleConn must contain a panic to one connection, the way the daemon's

@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // statusOverSocket drives a real Server over a real socketpair through the

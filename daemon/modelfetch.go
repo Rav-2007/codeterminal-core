@@ -78,7 +78,7 @@ func defaultModelCacheDir() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolving home directory: %w", err)
 	}
-	return filepath.Join(home, ".codeterminal", "models", "bge-small-en-v1.5-int8"), nil
+	return filepath.Join(home, ".mochiii", "models", "bge-small-en-v1.5-int8"), nil
 }
 
 // EnsureModelFiles makes sure every asset in assets is present under
@@ -222,7 +222,7 @@ func sha256File(path string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// runDownloadModelCommand implements `codeterminal-daemon download-model`:
+// runDownloadModelCommand implements `mochiii-daemon download-model`:
 // an explicit, manual trigger for EnsureModelFiles against the real pinned
 // bgeModelAssets, plus the onnxruntime shared library the helper needs to
 // run them. It is never invoked automatically.

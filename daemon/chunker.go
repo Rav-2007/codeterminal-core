@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"codeterminal/editapply"
+	"mochiii/editapply"
 )
 
 // Chunking parameters. Kept as simple line-based windows — no language-aware
@@ -52,7 +52,7 @@ const (
 //
 // Two sets feed this, with different reasons and different matching rules:
 //
-//   - The dangerous ones (VCS internals, .codeterminal, credential dirs) are
+//   - The dangerous ones (VCS internals, .mochiii, credential dirs) are
 //     editapply.ProtectedDirNames — the same list the edit WRITER refuses to
 //     write into. That shared source of truth is the point: the two lists once
 //     drifted so the indexer pruned .git while the writer wrote into it (Fix 3).

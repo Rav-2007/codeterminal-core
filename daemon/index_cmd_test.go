@@ -66,11 +66,11 @@ func TestIndexing_SecretsNeverStored(t *testing.T) {
 	}
 }
 
-// TestIndexing_CodeterminalPrunedAndGitignoreAppendedIdempotently proves
-// requirement 2: .codeterminal/ is pruned from indexing (never indexes its
+// TestIndexing_MochiiiPrunedAndGitignoreAppendedIdempotently proves
+// requirement 2: .mochiii/ is pruned from indexing (never indexes its
 // own index directory) and is appended to the workspace .gitignore exactly
 // once even across repeated runs.
-func TestIndexing_CodeterminalPrunedAndGitignoreAppendedIdempotently(t *testing.T) {
+func TestIndexing_MochiiiPrunedAndGitignoreAppendedIdempotently(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "main.go"), "package main\n")
 
@@ -91,22 +91,22 @@ func TestIndexing_CodeterminalPrunedAndGitignoreAppendedIdempotently(t *testing.
 
 	scan1 := runOnce()
 	for _, c := range scan1.Chunks {
-		if strings.HasPrefix(c.FilePath, ".codeterminal") {
+		if strings.HasPrefix(c.FilePath, ".mochiii") {
 			t.Fatalf("run 1: index directory was itself indexed: %s", c.FilePath)
 		}
 	}
 
-	// Run again: .codeterminal/index now has real content on disk (gob
+	// Run again: .mochiii/index now has real content on disk (gob
 	// files from run 1). This is the sharper version of the same assertion
 	// — the prune must hold even once there's something in there to prune.
 	scan2 := runOnce()
 	for _, c := range scan2.Chunks {
-		if strings.HasPrefix(c.FilePath, ".codeterminal") {
+		if strings.HasPrefix(c.FilePath, ".mochiii") {
 			t.Fatalf("run 2: index directory was itself indexed: %s", c.FilePath)
 		}
 	}
 	if scan2.Skipped[SkipIgnoredDir] == 0 {
-		t.Error("run 2: expected .codeterminal to be counted as a pruned ignored_dir")
+		t.Error("run 2: expected .mochiii to be counted as a pruned ignored_dir")
 	}
 
 	data, err := os.ReadFile(filepath.Join(dir, ".gitignore"))
@@ -115,7 +115,7 @@ func TestIndexing_CodeterminalPrunedAndGitignoreAppendedIdempotently(t *testing.
 	}
 	count := strings.Count(string(data), gitignoreEntry)
 	if count != 1 {
-		t.Fatalf(".codeterminal/ appears %d time(s) in .gitignore after two index runs, want exactly 1", count)
+		t.Fatalf(".mochiii/ appears %d time(s) in .gitignore after two index runs, want exactly 1", count)
 	}
 }
 
@@ -153,7 +153,7 @@ func TestEnsureGitignoreEntry_AppendsWithoutDuplicating(t *testing.T) {
 		t.Error("existing .gitignore content was clobbered")
 	}
 	if strings.Count(content, gitignoreEntry) != 1 {
-		t.Fatalf(".codeterminal/ appears %d time(s), want exactly 1: %q", strings.Count(content, gitignoreEntry), content)
+		t.Fatalf(".mochiii/ appears %d time(s), want exactly 1: %q", strings.Count(content, gitignoreEntry), content)
 	}
 }
 

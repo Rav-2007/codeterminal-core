@@ -1,5 +1,5 @@
 // Package helperproto defines the wire messages exchanged between the
-// CodeTerminal daemon and its embedder helper subprocess, plus the
+// Mochiii daemon and its embedder helper subprocess, plus the
 // convention for locating the helper's socket.
 //
 // Framing: one JSON object per Unix domain socket connection. The daemon
@@ -17,7 +17,7 @@ package helperproto
 import (
 	"fmt"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // Request is sent by the daemon to the helper. Method selects the

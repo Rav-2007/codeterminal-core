@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"codeterminal/protocol"
+	"mochiii/protocol"
 )
 
 // A request whose digest is genuinely the digest of its arguments, so a test

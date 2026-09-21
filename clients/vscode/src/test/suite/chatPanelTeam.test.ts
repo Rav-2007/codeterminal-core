@@ -6,7 +6,7 @@ import { ChatPanel } from '../../chatPanel';
 import { setWorkspaceRoot } from '../../daemonClient';
 import { Behavior, StubDaemon, writeLine } from '../stubDaemon';
 
-const EXT_ID = 'codeterminal.codeterminal-vscode';
+const EXT_ID = 'mochiii.mochiii-vscode';
 const PV = 1;
 
 // CT_E2E_REAL_MODEL=1 opts into the one case that spends money. Default OFF, so
