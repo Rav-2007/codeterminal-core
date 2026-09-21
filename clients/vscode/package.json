@@ -2,7 +2,7 @@
   "name": "codeterminal-vscode",
   "displayName": "Mochiii",
   "description": "A local-first AI coding assistant. Your code is indexed, embedded and retrieved on your own machine.",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "publisher": "codeterminal",
   "license": "SEE LICENSE IN LICENSE",
   "icon": "media/icon.png",

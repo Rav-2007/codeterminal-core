@@ -1,7 +1,20 @@
 # Documentation index
 
-**44 markdown files, ~16600 lines. This page says which four you need and what
-every other one is for.**
+**67 markdown files, ~26,900 lines in `docs/` (plus `docs/ARCHIVE/`).
+This page says which four you need first.**
+
+> **This index is INCOMPLETE, and saying so is better than the count that hid
+> it.** The header read *"44 markdown files, ~16600 lines … and what every other
+> one is for"* until 2026-09-21, while `docs/` held 67. Roughly a third of
+> the directory is not listed below — including `RESIDUAL_RISKS.md` and
+> `TRUST_BOUNDARIES.md`, both of which are live, coderefs-enforced registers,
+> and the whole C0–C7 closing series that leads into `A_DELIVER_2026-09-20.md`.
+>
+> Nothing caught it because nothing can: `scripts/docs-links.sh` verifies that
+> links which *exist* resolve, and a file that was never linked has no link to
+> check. That is R1.16's shape — a gate whose expected set is derived from the
+> list it validates cannot detect a member that was never added. Completing the
+> index is tracked work; until it is done, `ls docs/` is the only complete list.
 
 Written 2026-08-07, because the seven stale claims corrected that day were not
 seven mistakes — they were one missing page. There was no way to tell a live plan

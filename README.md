@@ -69,15 +69,47 @@ network.**
 The VS Code extension is the packaged path, and it manages the daemon for you —
 no second terminal, no `index` command, no daemon started by hand.
 
+### From a release — the normal path
+
+Download the `.vsix` for your platform from the
+[latest release](https://github.com/Rav-2007/codeterminal-core/releases), then:
+
+```bash
+code --install-extension codeterminal-vscode-linux-x64-0.0.3.vsix   # or win32-x64
+```
+
+**Then set your API key**, or nothing can be answered: run **`Mochiii: Set API
+Key`** from the command palette. The key is held in VS Code's SecretStorage —
+not in `settings.json`, which Settings Sync would replicate and a commit could
+leak — and the daemon restarts to pick it up. The extension also offers this on
+first activation if no key is set.
+
+The key is for whatever endpoint the daemon talks to, which by default is
+`https://openrouter.ai/api/v1`. Point it elsewhere with the **Mochiii: API
+Base** setting.
+
+The release also publishes the daemon, the embedder helper and the terminal
+client as standalone binaries per platform, for the two-process workflow in
+[Quick start](#quick-start--from-source). Verify any download against
+`SHA256SUMS` (packages) or `SHA256SUMS-bin` (binaries) — **the Windows binaries
+are not signed**, so that checksum is the integrity check a signature would
+otherwise have given you.
+
+### From source
+
 ```bash
 cd clients/vscode
 npm ci
 npm run package        # builds daemon + helper, stages them, packages, verifies
-code --install-extension codeterminal-vscode-0.0.2.vsix
+code --install-extension codeterminal-vscode-0.0.3.vsix
 ```
 
 `npm run package` needs the Go toolchain because it builds the binaries it
 bundles. **Installing the resulting `.vsix` does not** — that is the point of it.
+
+A key exported in your shell (`CODETERMINAL_API_KEY`) is used as-is and the
+extension will not prompt — but note that a VS Code started from a desktop icon
+inherits no shell, which is why the command above exists.
 
 The package carries the daemon, the embedder helper and `models.json` side by
 side in `daemon/`, which is where the daemon looks for its helper and config.
@@ -237,7 +269,7 @@ The daemon reads plain environment variables and never parses `.env` itself.
 
 | Variable | Meaning |
 |---|---|
-| `CODETERMINAL_API_BASE` | Base URL of an OpenAI-compatible API. **Required** — the daemon refuses to start without it |
+| `CODETERMINAL_API_BASE` | Base URL of an OpenAI-compatible API. **Optional** — unset, the daemon defaults to `https://openrouter.ai/api/v1` and logs that it did (`daemon/main.go:124`). A malformed value is still fatal. *Required in proxy mode*, where the address cannot be guessed. *(This row read "**Required** — the daemon refuses to start without it" until 2026-09-21. That stopped being true on 2026-09-15, when `22b3021` gave the daemon a default — the fix for the item-41 first-run outage.)* |
 | `CODETERMINAL_API_KEY` | Sent as `Authorization: Bearer`. May be unset for local servers that need no key |
 | `CODETERMINAL_USE_PROXY` | `true` selects proxy mode |
 | `CODETERMINAL_MOCHIII_KEY` | Per-user Mochiii key; required in proxy mode |
@@ -686,8 +718,12 @@ this machine.
 
 That gap does not close with more hardening. **What used to remain was "a set of
 founder decisions, a billing account and an Apple enrolment" — all three are
-gone.** The decisions were taken (D1–D8, 2026-08-12), Actions billing resolved
-2026-08-30, and Apple enrolment stopped being a blocker on 2026-09-17 when
+gone.** The decisions were taken (D1–D8, 2026-08-12); Actions billing was
+resolved on 2026-08-30 and **recurred on 2026-09-20**, when a release job was
+refused a runner with *"recent account payments have failed or your spending
+limit needs to be increased"* — cleared that day by making the repository
+public, which is not metered for standard runners. Apple enrolment stopped
+being a blocker on 2026-09-17 when
 `darwin-arm64` left the target set: it is now the cost of a macOS **return**, not
 of the first release. [`BACKLOG.md`](BACKLOG.md) Tier 0 is empty.
 
@@ -729,7 +765,7 @@ is real and is stated in the banner at the top of this file.*
 | **Retrieval** | No *full* index build on start or per request — the running daemon's watcher does keep it current per file; no query rewriting; no multi-hop. Re-running `index` rebuilds chunk-by-chunk keyed by a deterministic ID rather than diffing |
 | **Editing** | No *scored or approximate* `SEARCH` matching — the matcher normalizes (line endings, trailing space, indentation, unicode) and then matches exactly, and **ambiguous is always a refusal**, never a guess ([`match.go`](editapply/match.go)). The replacement is then written back in the file's own line-ending convention, so an LF patch never leaves a CRLF file mixed ([`lineendings.go`](editapply/lineendings.go)). No mid-stream parsing: edits are read from the completed response. A unified diff **is** read — each hunk becomes one SEARCH/REPLACE block and goes through the same gates — but it is never what the model is instructed to produce. File *creation* **is** supported — see [Editing](#editing) |
 | **Agent mode** | No OS sandboxing of third-party servers — consent and audit are the protection, and the docs say so; stdio only, so no remote MCP and no new egress; tools only, no resources or prompts; no hot-reload; tool results never persist into history |
-| **Skills** | Storage plumbing only: no auto-capture, no injection into prompts, no vector search, no sync |
+| **Skills** | **Removed.** `daemon/skills.go` and its CLI were deleted by `5453ba8` under decision D8 — the store had no callers. This row described the surviving plumbing until 2026-09-21; there is none |
 | **Routing** | `ghost_text` and `reasoning` stay inactive; VS Code has no model picker UI yet |
 
 ---
