@@ -48,6 +48,10 @@
       {
         "command": "codeterminal.showDaemonLog",
         "title": "Mochiii: Show Daemon Log"
+      },
+      {
+        "command": "codeterminal.setApiKey",
+        "title": "Mochiii: Set API Key"
       }
     ]
   },

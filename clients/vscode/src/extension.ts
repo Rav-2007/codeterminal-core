@@ -8,12 +8,27 @@ import { ChatPanel, DiffContentProvider } from './chatPanel';
 import { bundledDaemonDir, daemonBinaryName } from './daemonBinary';
 import { probeDaemon, resolvedWorkspaceRoot, setWorkspaceRoot } from './daemonClient';
 import { ensureModelAvailable } from './modelSetup';
+import { clearApiKey, ensureApiKey, getApiKey, promptForApiKey } from './apiKey';
 import { DaemonHandle, DaemonSupervisor } from './daemonSupervisor';
 
 let supervisor: DaemonSupervisor | undefined;
 let output: vscode.OutputChannel | undefined;
 
-export function activate(context: vscode.ExtensionContext): void {
+// The API key, read once from SecretStorage and held for daemonEnvironment().
+//
+// A CACHE, AND IT HAS TO BE ONE. context.secrets.get() is async; spawnDaemon --
+// and therefore daemonEnvironment() -- is called synchronously by the
+// supervisor, which owns when a spawn happens and cannot be made to await a
+// keychain. So the key is read before the first ensure() and refreshed whenever
+// it changes, rather than fetched at spawn time.
+//
+// Every write to this is followed by a daemon restart, because the daemon reads
+// its environment once, at exec. A key stored without a restart is a key the
+// running daemon will never see, which would look exactly like the key not
+// working.
+let cachedApiKey: string | undefined;
+
+export async function activate(context: vscode.ExtensionContext): Promise<void> {
   DiffContentProvider.register(context);
 
   // The bundled location, defined once in daemonBinary.ts so the spawn path and
@@ -88,6 +103,16 @@ export function activate(context: vscode.ExtensionContext): void {
   // "daemon not found (expected a lockfile at ...)" a connection attempt would
   // otherwise produce.
   if (root) {
+    // BEFORE the first spawn, not after. The daemon takes its environment at
+    // exec, so a key read later would mean the first daemon of every session
+    // starts without one and has to be restarted to pick it up -- a restart the
+    // user did not ask for, to fix a problem that did not need to exist.
+    //
+    // Awaited, and activation is async for this one read. A keychain lookup is
+    // milliseconds, and it is the difference between the daemon being able to
+    // answer the first question and not.
+    cachedApiKey = await getApiKey(context);
+
     supervisor = new DaemonSupervisor({
       probe: probeDaemon,
       spawn: () => spawnDaemon(binaryPath, root, daemonLogPath),
@@ -121,6 +146,32 @@ export function activate(context: vscode.ExtensionContext): void {
     // on a user answering a dialog -- would trade a working product for a
     // prompt. This only ever tells the user something true and offers to fix it.
     void ensureModelAvailable(binaryPath, context, output);
+
+    // Same rule, same reason: tell the user something true and offer to fix it,
+    // without making the daemon's start wait on an answer. A daemon with no key
+    // still starts, still indexes, and still serves everything that does not
+    // need the model -- it just cannot answer, which is what the prompt says.
+    void ensureApiKey(context, output, async (key) => {
+      cachedApiKey = key;
+      await vscode.commands.executeCommand('codeterminal.restartDaemon');
+    });
+
+    // A key set in ANOTHER window is a key this window's daemon does not have.
+    // Both windows supervise a daemon for their own workspace, and SecretStorage
+    // is shared between them, so without this the second window keeps a stale
+    // cache until it is reloaded.
+    //
+    // The cache is refreshed but NO restart is triggered here: the window that
+    // set the key restarts its own daemon, and a change notification is not a
+    // reason to interrupt a turn in progress somewhere else. The refreshed value
+    // is picked up by the next spawn.
+    context.subscriptions.push(
+      context.secrets.onDidChange(async (e) => {
+        if (e.key === 'codeterminal.apiKey') {
+          cachedApiKey = await getApiKey(context);
+        }
+      })
+    );
   } else {
     output.appendLine(
       '[daemon] no folder is open, so there is no workspace to ground answers in and no daemon was started'
@@ -152,6 +203,57 @@ export function activate(context: vscode.ExtensionContext): void {
       }
       vscode.window.showInformationMessage('Restarting Mochiii daemon...');
       await supervisor.restart();
+    })
+  );
+
+  // DELIBERATELY NOT GATED ON A WORKSPACE, unlike the three commands around it.
+  //
+  // Those three act on a daemon, and there is no daemon without a folder. This
+  // one stores a credential for the machine, which is worth doing from any
+  // window -- including the empty one a user lands in right after installing,
+  // which is exactly when they have the key in their clipboard.
+  context.subscriptions.push(
+    vscode.commands.registerCommand('codeterminal.setApiKey', async () => {
+      const existing = await getApiKey(context);
+
+      if (existing) {
+        const REPLACE = 'Replace';
+        const REMOVE = 'Remove';
+        const pick = await vscode.window.showQuickPick([REPLACE, REMOVE], {
+          title: 'Mochiii: a key is already stored',
+          placeHolder: 'Replace it with a new one, or remove it.',
+        });
+        if (pick === undefined) {
+          return;
+        }
+        if (pick === REMOVE) {
+          await clearApiKey(context);
+          cachedApiKey = undefined;
+          // Restarted for the same reason a new key is: the running daemon still
+          // holds the old one in its environment, so "removed" would otherwise
+          // be untrue until the next restart.
+          if (supervisor) {
+            await supervisor.restart();
+          }
+          vscode.window.showInformationMessage('Mochiii: API key removed.');
+          return;
+        }
+      }
+
+      const key = await promptForApiKey(context);
+      if (!key) {
+        return; // cancelled
+      }
+      cachedApiKey = key;
+
+      if (supervisor) {
+        vscode.window.showInformationMessage('Mochiii: API key saved. Restarting the daemon to use it...');
+        await supervisor.restart();
+        return;
+      }
+      // No workspace, so no daemon to restart -- the key is stored and the next
+      // window that opens a folder will start its daemon with it.
+      vscode.window.showInformationMessage('Mochiii: API key saved. Open a folder to start asking questions.');
     })
   );
 
@@ -234,11 +336,33 @@ function lastDaemonLogLines(logPath: string, max = 3): string {
 // `machine` scope on the contributed setting is what stops a workspace's
 // .vscode/settings.json supplying this value; see package.json, and
 // daemonBinary.test.ts for the same boundary on the config file.
-function daemonEnvironment(): NodeJS.ProcessEnv {
+// EXPORTED, AND TAKING THE KEY AS AN ARGUMENT, so it can be tested.
+//
+// This function is the one place the defect of 2026-09-21 could live: a value a
+// user supplied that never reaches the process needing it. Reading the module's
+// cachedApiKey directly would make that untestable without activating the whole
+// extension, so the key is a parameter and this is a pure function of its
+// inputs, process.env and configuration. apiKey.test.ts asserts exactly the
+// thing that was missing: given a key, the environment carries it.
+export function daemonEnvironment(apiKey?: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
   const configured = vscode.workspace.getConfiguration('codeterminal').get<string>('apiBase');
   if (typeof configured === 'string' && configured.trim() !== '') {
     env.CODETERMINAL_API_BASE = configured.trim();
+  }
+  // THE KEY, for exactly the reason stated above about the base: the daemon
+  // reads CODETERMINAL_API_KEY from its environment (daemon/main.go:100) and
+  // has no other interface for one. Without this line a packaged install could
+  // never authenticate, because a desktop-launched VS Code inherits no shell.
+  //
+  // It comes from SecretStorage via cachedApiKey, never from configuration --
+  // see apiKey.ts for why a credential must not live in settings.json.
+  //
+  // An inherited CODETERMINAL_API_KEY is left alone when nothing is stored:
+  // that is the from-source workflow the README documents, and overwriting it
+  // with an empty value would break a setup that was working.
+  if (apiKey && apiKey.trim() !== '') {
+    env.CODETERMINAL_API_KEY = apiKey.trim();
   }
   return env;
 }
@@ -268,7 +392,7 @@ function spawnDaemon(binaryPath: string, workspacePath: string, logPath: string)
     // EXPLICIT, because inheriting was the first-run defect. See
     // daemonEnvironment: process.env alone is whatever launched VS Code, and a
     // desktop icon carries none of a login shell's exports.
-    env: daemonEnvironment(),
+    env: daemonEnvironment(cachedApiKey),
     // NOT a pipe. See daemonLogPath in activate(): a detached child that
     // outlives this host would block on a full pipe nobody is draining. The
     // -log-file above is the durable channel, and it works for an adopting
