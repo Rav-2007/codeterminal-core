@@ -1,6 +1,6 @@
 # Documentation index
 
-**69 markdown files and 27,527 lines in `docs/`, plus 1 more in `docs/ARCHIVE/`.
+**69 markdown files and 27,545 lines in `docs/`, plus 1 more in `docs/ARCHIVE/`.
 This page says which four you need first.**
 
 > **This index is INCOMPLETE, and saying so is better than the count that hid

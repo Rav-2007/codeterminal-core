@@ -37,6 +37,7 @@ So: at a checkpoint, or after any run that moved a number, paste the line.
 | 2026-08-30 | `3ada6ea` | main | 4757 | 558 | 32/49 | 33/49 | 0 | 42/49 | *not recorded* | green |
 | 2026-08-30 | `44a2ed9` | branch | 4771 | 560 | 31/49 | 33/49 | 1 | 39/49 | *not recorded* | green |
 | 2026-08-30 | `44a2ed9` | main | 4771 | 560 | 31/49 | 33/49 | 1 | 39/49 | *not recorded* | green |
+| 2026-09-21 | `c0f3a0d` | main | 6194 | 696 | 31/49 | 33/49 | 2 | 38/49 | `0f3838c92c6738c9` | green — first run after the `codeterminal` -> `mochiii` rename, run `35594537792` |
 
 Floors in force across all four rows: DELIVERED ≥ 75% (36.75/49), RETRIEVED ≥ 61%
 (29.9/49), budgeted out ≤ 4.
@@ -75,3 +76,20 @@ that size meets the floor.
 - **Numbers moved, fingerprint changed, corpus identical** → the runner. Check the
   `Record what machine this ran on` step in the same job before touching anything.
 - **Fingerprint identical, numbers moved** → real. Something in the code did it.
+
+### 2026-09-21 — the rename did not move retrieval; the corpus did
+
+`semantic=31` and `retrieved=33` are **identical** to the `44a2ed9` baseline,
+digit for digit, across a change that renamed the vector collection
+(`codeterminal-chunks` -> `mochiii-chunks`) and the model cache path. Retrieval
+is untouched.
+
+`delivered` fell 39 -> 38 and `budgeted_out` rose 1 -> 2, on a corpus that grew
+**4771 -> 6194 chunks and 560 -> 696 files** in the three weeks since that
+baseline. The loss is at the BUDGET stage, not the retrieval stage: one more
+chunk was squeezed out of the same 32,000-char budget by a bigger corpus.
+
+Worth naming because it is a cost nobody bills: **documentation dilutes
+retrieval.** Some of those 1,423 new chunks are the readiness report and the
+findings written the same day. Each document added to this repository competes
+with code for the prompt budget, and this table is where that shows up.
