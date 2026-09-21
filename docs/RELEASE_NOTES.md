@@ -33,6 +33,32 @@ would start its language server now asks first, once per server. Before this
 the server started without anyone being asked. Allowing a lookup is not the
 same as agreeing to start a program that reads your project's configuration.
 
+### Idle language servers are stopped after ten minutes
+
+**What changed.** A language server started for a lookup used to keep running
+until the daemon exited. A single `gopls` measured 295 MB of memory, and a
+project with Go, TypeScript and Python code could keep three running.
+
+Now a server that has not been used for ten minutes is stopped. A server
+answering a request is never stopped, however long the request takes, and every
+lookup resets the clock, so a working session never runs into it.
+
+**What you will notice.** After a break, the next lookup asks again:
+**STARTS gopls**. That is the consent prompt doing its job. Starting a program
+is asked about every time it happens, including a restart. The server then
+reloads your project, so that first lookup takes a little longer.
+
+### Old sandbox caches are cleaned up
+
+Each project that runs a build or test command gets its own cache folder, and
+those folders were never deleted. They stayed after the project was gone, and
+one measured machine had 1,712 of them.
+
+The daemon now removes, when it starts, any of these folders whose project no
+longer exists or that nothing has used for 30 days. It only removes folders it
+created: anything else in that directory, and anything a link points to, is
+left alone. The folder for the project you have open is never removed.
+
 ### The startup warning describes each tool by what it does
 
 When built-in tools are set to `"allow"`, the daemon lists them at startup. It
