@@ -59,6 +59,30 @@ longer exists or that nothing has used for 30 days. It only removes folders it
 created: anything else in that directory, and anything a link points to, is
 left alone. The folder for the project you have open is never removed.
 
+### Build and test commands are sandboxed on Ubuntu 24.04 and later
+
+**What changed.** `sandbox_exec` runs `go`, `npm`, `make` and `cargo` commands
+the model asks for. It confines them with bubblewrap or Docker, and Ubuntu 24.04
+and later block bubblewrap by default. On those machines, without Docker, every
+approved command ran with your full privileges. The prompt said
+**NOT SANDBOXED**, but that was the normal case, not an exception. Whether a
+command was confined also depended on what started the daemon: VS Code could,
+a terminal could not.
+
+These commands are now confined there with Landlock, which is built into the
+Linux kernel and needs no setup. A command can read the system and its
+toolchain, and read and write only your project and its own cache folder. It
+cannot read your home folder, cannot use `/tmp`, and cannot open Unix sockets,
+so it cannot reach your desktop session, your `ssh-agent` or the daemon.
+Machines where bubblewrap or Docker already worked are unchanged.
+
+**What you will notice.** The approval prompt says *Confined to this workspace
+by Landlock* instead of **NOT SANDBOXED**, and it states the two things
+Landlock does not hide: the command can see your other running programs, and
+on kernels older than 6.12 it can send them signals. A build or test that opens
+a Unix socket of its own fails with a permission error. Temporary files go to a
+folder of the command's own, which is removed when the command ends.
+
 ### The startup warning describes each tool by what it does
 
 When built-in tools are set to `"allow"`, the daemon lists them at startup. It
