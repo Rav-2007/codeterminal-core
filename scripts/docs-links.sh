@@ -22,6 +22,8 @@ cd "$(dirname "$0")/.."
 
 broken=0
 checked=0
+ext=0
+anchor=0
 
 while IFS= read -r doc; do
   dir=$(dirname "$doc")
@@ -31,8 +33,13 @@ while IFS= read -r doc; do
     [ -z "$target" ] && continue
 
     # External, protocol-relative, mail, and pure-anchor links are out of scope.
+    # COUNTED, NOT JUST SKIPPED. The scope of this gate was stated only in the
+    # comment above, where nobody reading a CI log sees it -- so "N links
+    # resolve" read as though every link had been checked. These counters make
+    # the reported scope derived from the run rather than asserted by a header.
     case "$target" in
-      http://*|https://*|//*|mailto:*|\#*) continue ;;
+      http://*|https://*|//*|mailto:*) ext=$((ext + 1)); continue ;;
+      \#*)                             anchor=$((anchor + 1)); continue ;;
     esac
 
     # Strip the anchor, then a trailing :NN line citation.
@@ -70,3 +77,8 @@ if [ "$broken" -gt 0 ]; then
 fi
 
 echo "docs-links: ${checked} links resolve"
+echo "docs-links: NOT checked -- ${ext} external URL(s) (http, https, protocol-relative,"
+echo "            mailto), ${anchor} pure-anchor link(s), the #anchor on any link above, and"
+echo "            the :NN of a line citation. This gate proves a FILE exists. It cannot"
+echo "            tell you that a URL resolves, or that any target says what the link"
+echo "            claims it says."
