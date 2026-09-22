@@ -18,6 +18,19 @@ import (
 	"mochiii/daemon/mcp"
 )
 
+// systemctlPath resolves the reaper's binary once, to an absolute path where
+// systemctl exists, so a later change to the daemon's PATH cannot redirect the
+// teardown. The bare-name fallback keeps a host without systemd a no-op. (F2)
+func TestSystemctlPathIsResolvedOnce(t *testing.T) {
+	p := systemctlPath()
+	if p == "" {
+		t.Fatal("systemctlPath returned empty")
+	}
+	if _, err := exec.LookPath("systemctl"); err == nil && !filepath.IsAbs(p) {
+		t.Errorf("systemctl is on PATH but systemctlPath returned a non-absolute %q", p)
+	}
+}
+
 // A PROCESS THE COMMAND BACKGROUNDS DOES NOT OUTLIVE THE CALL. bwrap gets this
 // from its PID namespace; landlock has none, so the handler names the limiter's
 // scope and kills the whole cgroup when the call returns. Here a recipe

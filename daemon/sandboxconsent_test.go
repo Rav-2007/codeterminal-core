@@ -167,6 +167,13 @@ func TestTheApprovalPromptCarriesTheToolsOwnDescription(t *testing.T) {
 		t.Errorf("the description reaching the user does not say that approving a call approves "+
 			"whatever the project's build files do: %q", req.Detail)
 	}
+	// And that what the command writes in the workspace outlives the sandbox: a
+	// planted .git/hooks or Makefile runs unsandboxed the next time the repo is
+	// used. The confinement is real, but it does not reach forward in time, and
+	// the person consenting is not told that unless the sentence says so.
+	if !strings.Contains(req.Detail, "runs unsandboxed the next time") {
+		t.Errorf("the description does not disclose that workspace writes run unsandboxed later: %q", req.Detail)
+	}
 
 	// THE SENTENCE MUST BE THE RIGHT ONE FOR THIS HOST, not merely present.
 	//

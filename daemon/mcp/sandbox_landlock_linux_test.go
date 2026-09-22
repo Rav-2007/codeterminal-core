@@ -247,6 +247,18 @@ func TestOtherProcessesAreOutOfReach(t *testing.T) {
 		if data, err := os.ReadFile(fmt.Sprintf("/proc/%d/environ", pid)); err == nil {
 			return fmt.Errorf("read another process's environment: %q", data)
 		}
+		// process_vm_readv is the other way into a process's memory. Landlock's
+		// ptrace hook denies it across the domain, the same as the environ read
+		// above; the permission check fires before the address is touched, so a
+		// fixed address is fine.
+		localBuf := []byte{0}
+		local := []unix.Iovec{{Base: &localBuf[0], Len: 1}}
+		remote := []unix.RemoteIovec{{Base: 0x1000, Len: 1}}
+		if n, err := unix.ProcessVMReadv(pid, local, remote, 0); err == nil {
+			return fmt.Errorf("read another process's memory with process_vm_readv (%d bytes)", n)
+		} else if !errors.Is(err, unix.EPERM) {
+			return fmt.Errorf("process_vm_readv on an outside process: want EPERM, got %v", err)
+		}
 		if _, err := os.ReadFile("/proc/self/status"); err != nil {
 			return fmt.Errorf("its own /proc entry, which runtimes need, is unreadable: %w", err)
 		}

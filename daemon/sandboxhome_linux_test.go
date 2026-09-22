@@ -40,6 +40,18 @@ func TestWorkspaceExposesRealHome(t *testing.T) {
 			t.Errorf("workspaceExposesRealHome(%q) = %v, want %v", c.ws, got, c.want)
 		}
 	}
+
+	// A workspace that is a SYMLINK to the home is exposed too: Landlock grants
+	// the resolved inode, so the check must resolve the link rather than trust
+	// its path. Without EvalSymlinks this returned false and the prompt would
+	// have denied home access it actually grants. (F3)
+	link := filepath.Join(t.TempDir(), "proj-link")
+	if err := os.Symlink(home, link); err != nil {
+		t.Fatal(err)
+	}
+	if !workspaceExposesRealHome(link) {
+		t.Error("a workspace symlinked to the home was not detected as exposing it")
+	}
 }
 
 // THE PROMPT DOES NOT DENY WHAT IT CANNOT DENY. When the workspace is the user's

@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -197,6 +198,8 @@ func (s *Server) sandboxExecDescription() string {
 		confinement + " " + limits + " It can reach the network, which its purpose requires. " +
 		"These tools execute project-supplied scripts (Makefile recipes, package.json scripts, build.rs), " +
 		"so approving a call approves whatever the project's build files do. " +
+		"Anything it writes in the workspace -- build scripts, .git/hooks -- then runs unsandboxed the " +
+		"next time you use the repo. " +
 		"This daemon's API credentials are never passed to it."
 }
 
@@ -259,12 +262,25 @@ func workspaceExposesRealHome(workspace string) bool {
 	if err != nil || home == "" {
 		return false
 	}
-	ws := filepath.Clean(workspace)
-	home = filepath.Clean(home)
+	// Through symlinks, because Landlock grants the RESOLVED inode: a workspace
+	// that is a symlink to the home would otherwise pass the check by its link
+	// path while the policy hands over the real home. resolvePath falls back to
+	// Clean, so a link that cannot be resolved is still compared, never dropped.
+	ws := resolvePath(workspace)
+	home = resolvePath(home)
 	if ws == string(filepath.Separator) {
 		return true
 	}
 	return home == ws || strings.HasPrefix(home, ws+string(filepath.Separator))
+}
+
+// resolvePath is filepath.EvalSymlinks with a Clean fallback, so it always
+// returns a usable absolute-ish path rather than an error.
+func resolvePath(p string) string {
+	if real, err := filepath.EvalSymlinks(p); err == nil {
+		return real
+	}
+	return filepath.Clean(p)
 }
 
 // sandboxExecBackendSummary is the startup log's one line about sandbox_exec:
@@ -475,6 +491,18 @@ func sandboxCallTempDir(home string) (string, error) {
 // daemon, so two concurrent calls never name the same scope and reap each other.
 var sandboxScopeSeq uint64
 
+// systemctlPath is the reaper's systemctl, resolved once. An absolute path
+// rather than a bare name so the teardown cannot be redirected by a later change
+// to the daemon's PATH; the bare name is the fallback, which simply means the
+// exec fails and the reap no-ops -- the same best-effort outcome as a host with
+// no systemd at all.
+var systemctlPath = sync.OnceValue(func() string {
+	if p, err := exec.LookPath("systemctl"); err == nil {
+		return p
+	}
+	return "systemctl"
+})
+
 // reapSandboxScope kills everything still alive in the named transient scope,
 // standing in for the PID-namespace reaping the landlock backend cannot do (see
 // mcp.ScopeTeardownArgs). Best effort: on the common path the command left
@@ -483,7 +511,7 @@ var sandboxScopeSeq uint64
 func reapSandboxScope(unit string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "systemctl", mcp.ScopeTeardownArgs(unit)...)
+	cmd := exec.CommandContext(ctx, systemctlPath(), mcp.ScopeTeardownArgs(unit)...)
 	// The session bus, same as systemd-run needs to create the scope; Limiter
 	// is what put us on this path, so its environment is what reaches the unit.
 	cmd.Env = mcp.LimiterEnv(nil)
