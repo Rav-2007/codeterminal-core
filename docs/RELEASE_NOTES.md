@@ -72,16 +72,20 @@ a terminal could not.
 These commands are now confined there with Landlock, which is built into the
 Linux kernel and needs no setup. A command can read the system and its
 toolchain, and read and write only your project and its own cache folder. It
-cannot read your home folder, cannot use `/tmp`, and cannot open Unix sockets,
-so it cannot reach your desktop session, your `ssh-agent` or the daemon.
-Machines where bubblewrap or Docker already worked are unchanged.
+cannot read your home folder, cannot use `/tmp`, cannot open Unix sockets (so it
+cannot reach your desktop session, your `ssh-agent` or the daemon), and cannot
+share memory or message queues with your other programs. A process it starts in
+the background is stopped when the command finishes, rather than being left
+running. Machines where bubblewrap or Docker already worked are unchanged.
 
 **What you will notice.** The approval prompt says *Confined to this workspace
 by Landlock* instead of **NOT SANDBOXED**, and it states the two things
 Landlock does not hide: the command can see your other running programs, and
 on kernels older than 6.12 it can send them signals. A build or test that opens
 a Unix socket of its own fails with a permission error. Temporary files go to a
-folder of the command's own, which is removed when the command ends.
+folder of the command's own, which is removed when the command ends. If the
+folder you opened *is* your home folder, the prompt says so plainly instead of
+claiming your home is protected, because in that case it is not.
 
 ### The startup warning describes each tool by what it does
 
