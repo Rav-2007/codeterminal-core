@@ -1,3 +1,10 @@
+//go:build linux
+
+// Linux-only: these exercise the Landlock/bwrap policy, whose rules are unix
+// paths (`/usr`, an absolute WorkspaceRoot). filepath treats those differently
+// on Windows (`filepath.IsAbs("/usr")` is false, Clean rewrites separators), and
+// the backend itself is Linux-only, so the assertions belong here. Selection
+// logic that is genuinely cross-platform is covered by sandbox_test.go.
 package mcp
 
 import (

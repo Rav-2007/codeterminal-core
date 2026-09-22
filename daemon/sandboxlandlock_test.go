@@ -80,68 +80,9 @@ func TestTheSandboxExecPromptDescribesTheBackendItGets(t *testing.T) {
 	}
 }
 
-// workspaceExposesRealHome is true exactly when confining a command to the
-// workspace would still leave the real home inside it: the workspace IS the
-// home, contains it, or is the filesystem root. An ordinary ~/projects/foo is
-// not that -- only its own subtree is granted.
-func TestWorkspaceExposesRealHome(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	cases := []struct {
-		ws   string
-		want bool
-	}{
-		{home, true},               // the workspace IS the home
-		{filepath.Dir(home), true}, // the workspace CONTAINS the home
-		{"/", true},                // the filesystem root
-		{filepath.Join(home, "projects", "foo"), false}, // an ordinary project under home
-		{"/opt/build", false},                           // unrelated
-	}
-	for _, c := range cases {
-		if got := workspaceExposesRealHome(c.ws); got != c.want {
-			t.Errorf("workspaceExposesRealHome(%q) = %v, want %v", c.ws, got, c.want)
-		}
-	}
-}
-
-// THE PROMPT DOES NOT DENY WHAT IT CANNOT DENY. When the workspace is the user's
-// home folder, the landlock policy grants that home read+write, so the sentence
-// must not claim "not your home folder" -- it must say the home is exposed. A
-// workspace inside the home keeps the plain, true wording.
-//
-// Neuter check: drop the workspaceExposesRealHome branch in
-// sandboxConfinementSentence, and the home-as-workspace case keeps claiming
-// "not your home folder".
-func TestThePromptIsHonestWhenTheWorkspaceIsYourHome(t *testing.T) {
-	forceBwrap(t, false)
-	forceLandlock(t, true)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-
-	cfg := mcp.SandboxConfig{
-		Mode: mcp.SandboxAuto, WorkspaceRoot: home, AllowNetwork: true,
-		LandlockFallback: true, MemoryLimitMB: 2048, PidsLimit: 512,
-	}
-	if mcp.ResolveMode(cfg) != mcp.SandboxLandlock {
-		t.Fatalf("test setup: cfg resolved to %v, not landlock", mcp.ResolveMode(cfg))
-	}
-	sentence := sandboxConfinementSentence(cfg)
-	if strings.Contains(sentence, "not your home folder") {
-		t.Errorf("the workspace IS the home, but the prompt still denies home access:\n%s", sentence)
-	}
-	if !strings.Contains(sentence, "CAN read and write your home folder") {
-		t.Errorf("the prompt does not disclose that the home folder is exposed:\n%s", sentence)
-	}
-
-	projects := filepath.Join(home, "projects", "foo")
-	if err := os.MkdirAll(projects, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	cfg.WorkspaceRoot = projects
-	if normal := sandboxConfinementSentence(cfg); !strings.Contains(normal, "not your home folder") {
-		t.Errorf("an ordinary ~/projects workspace lost the accurate wording:\n%s", normal)
-	}
-}
+// The two home-exposure tests live in sandboxhome_linux_test.go: they depend on
+// os.UserHomeDir following $HOME, which is a unix property (Windows reads
+// %USERPROFILE%), and the feature they cover is Landlock, which is Linux-only.
 
 // THE HANDLER, UNDER LANDLOCK, FOR REAL -- the failing case from 2026-09-21,
 // reproduced on any Landlock kernel by forcing bwrap out of the way. Through

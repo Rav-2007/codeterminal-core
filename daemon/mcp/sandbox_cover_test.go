@@ -1,3 +1,8 @@
+//go:build linux
+
+// Linux-only for the same reason as sandbox_landlock_test.go (which defines the
+// stubBackends helper these use): the backend selection and argument assertions
+// are built from unix paths that filepath rewrites on Windows.
 package mcp
 
 import (
