@@ -10,3 +10,9 @@ const (
 	seccompAuditArch   = 0
 	seccompX32Possible = false
 )
+
+// seccompBlockedSyscalls is empty here: the filter is never installed on an
+// architecture with no seccomp support, and referencing per-arch syscall numbers
+// that may not exist would not compile. Present so socketFilterProgram builds on
+// every linux GOARCH.
+var seccompBlockedSyscalls []uint32

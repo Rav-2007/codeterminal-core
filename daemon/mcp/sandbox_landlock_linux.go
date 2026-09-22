@@ -341,6 +341,12 @@ func socketFilterProgram() ([]unix.SockFilter, error) {
 	if seccompX32Possible {
 		steps = append(steps, bpfStep{code: jge, k: x32SyscallBit, jt: "eperm"})
 	}
+	// System V IPC and POSIX message queues: refused with EPERM. Each only jumps
+	// on a match and falls through otherwise, so the io_uring line below stays
+	// the single terminal fallthrough to "allow". See seccompBlockedSyscalls.
+	for _, nr := range seccompBlockedSyscalls {
+		steps = append(steps, bpfStep{code: jeq, k: nr, jt: "eperm"})
+	}
 	steps = append(steps,
 		bpfStep{code: jeq, k: uint32(unix.SYS_SOCKET), jt: "socket"},
 		bpfStep{code: jeq, k: uint32(unix.SYS_SOCKETPAIR), jt: "socketpair"},

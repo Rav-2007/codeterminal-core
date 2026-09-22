@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"mochiii/daemon/mcp"
@@ -37,6 +38,15 @@ var execAllowedBinaries = map[string]bool{
 }
 
 const execTimeout = 30 * time.Second
+
+// execReapDrainDelay bounds how long Run waits, after the foreground command has
+// exited, for a process the command backgrounded to close the stdout/stderr it
+// inherited. Under landlock (no PID namespace) such a process would otherwise
+// keep the pipe open and block Run until it exits on its own -- so the deferred
+// reap could never run. WaitDelay closes the pipe after this delay, Run returns,
+// and the reap then kills the cgroup. Only builds that leave something running
+// pay it; an ordinary build closes the pipe the instant it exits.
+const execReapDrainDelay = 2 * time.Second
 
 // execMaxOutputBytes bounds what one command may produce, AT SOURCE.
 //
@@ -211,8 +221,17 @@ func sandboxConfinementSentence(cfg mcp.SandboxConfig) string {
 		}
 		return "NOT confined on this host (" + why + "), so it runs with your full privileges."
 	case mcp.SandboxLandlock:
+		// The "not your home folder" clause is only true when the workspace is
+		// not, and does not contain, the real home. When it is (someone opened ~
+		// or / as their project), the policy grants the whole home read+write,
+		// and the honest sentence says so rather than denying it.
+		scope := "and write only this workspace and its own cache, not your home folder or /tmp. "
+		if workspaceExposesRealHome(cfg.WorkspaceRoot) {
+			scope = "and write this workspace and its own cache, but not /tmp. This workspace is (or " +
+				"contains) your home folder, so it CAN read and write your home folder, including ~/.ssh. "
+		}
 		sentence := "Confined to this workspace by Landlock on this host: it can read the system and its " +
-			"toolchain, and write only this workspace and its own cache, not your home folder or /tmp. " +
+			"toolchain, " + scope +
 			"It cannot open Unix sockets, so it cannot reach your desktop session, ssh-agent or this daemon. " +
 			"Unlike a full sandbox, it can see your other running programs"
 		if mcp.LandlockABI() < 6 {
@@ -220,8 +239,32 @@ func sandboxConfinementSentence(cfg mcp.SandboxConfig) string {
 		}
 		return sentence + "."
 	default:
+		if workspaceExposesRealHome(cfg.WorkspaceRoot) {
+			return "Confined to this workspace on this host. This workspace is (or contains) your home " +
+				"folder, so the command can read and write it, including ~/.ssh."
+		}
 		return "Confined to this workspace on this host."
 	}
+}
+
+// workspaceExposesRealHome reports whether confining a command to workspace would
+// still leave the user's real home folder inside the sandbox -- because the
+// workspace IS that home, contains it, or is the filesystem root.
+//
+// A workspace INSIDE the home (the ordinary ~/projects/foo) is not this: only
+// that one subtree is granted, not the home around it. Returns false when the
+// home cannot be determined, so an uncertain case never turns into a claim.
+func workspaceExposesRealHome(workspace string) bool {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return false
+	}
+	ws := filepath.Clean(workspace)
+	home = filepath.Clean(home)
+	if ws == string(filepath.Separator) {
+		return true
+	}
+	return home == ws || strings.HasPrefix(home, ws+string(filepath.Separator))
 }
 
 // sandboxExecBackendSummary is the startup log's one line about sandbox_exec:
@@ -291,6 +334,20 @@ func (s *Server) builtinSandboxExec(ctx context.Context, raw json.RawMessage) (m
 	// half-configured -- which is what produced `docker run ... make` asking
 	// Docker for an image named "make".
 	cfg := s.sandboxExecConfig()
+
+	// LEFTOVER PROCESSES, REAPED. bwrap runs the command as pid 1 of a PID
+	// namespace, so anything it backgrounds is killed by the kernel when it
+	// exits. Landlock has no namespace, so a process the command leaves running
+	// would outlive the call -- still fully sandboxed, but holding workspace and
+	// network access. Give the limiter's scope a name and kill its whole cgroup
+	// once the call returns. Only when the scope actually exists (landlock with
+	// the limiter active); the other backends are untouched.
+	if mcp.ResolveMode(cfg) == mcp.SandboxLandlock && mcp.LimitsApply(cfg) {
+		unit := fmt.Sprintf("mochiii-sandbox-%d-%d.scope", os.Getpid(), atomic.AddUint64(&sandboxScopeSeq, 1))
+		cfg.ScopeUnit = unit
+		defer reapSandboxScope(unit)
+	}
+
 	execBin, execArgs, err := mcp.WrapCommand(bin, parts[1:], cfg)
 	if err != nil {
 		return toolError("preparing a sandbox for %q: %v", bin, err)
@@ -371,17 +428,30 @@ func (s *Server) builtinSandboxExec(ctx context.Context, raw json.RawMessage) (m
 	buf.max = execMaxOutputBytes
 	cmd.Stdout = &buf
 	cmd.Stderr = &buf
+	// Only on the reaping path (ScopeUnit set == landlock with a scope): without
+	// it a backgrounded process holding the inherited pipe blocks Run past the
+	// point where the reap could help. See execReapDrainDelay.
+	if cfg.ScopeUnit != "" {
+		cmd.WaitDelay = execReapDrainDelay
+	}
 	err = cmd.Run()
 	result := buf.String()
 
 	if err != nil {
-		if execCtx.Err() == context.DeadlineExceeded {
+		switch {
+		case execCtx.Err() == context.DeadlineExceeded:
 			return mcp.Result{Content: fmt.Sprintf("Command timed out after %s. Output so far:\n%s", execTimeout, result)}, nil
+		case cmd.ProcessState != nil && cmd.ProcessState.Success():
+			// The command exited 0; the only reason Run returned an error is
+			// WaitDelay closing pipes a backgrounded process held open past that
+			// exit (the reaping path). The command succeeded and its leftover is
+			// being reaped, so this is not a failure -- fall through to success.
+		default:
+			// A compiler error or a failing test is a RESULT, not a tool failure:
+			// the whole point is to hand the output back so the model can read it
+			// and fix what it wrote.
+			return mcp.Result{Content: fmt.Sprintf("Command exited with error: %v\nOutput:\n%s", err, result)}, nil
 		}
-		// A compiler error or a failing test is a RESULT, not a tool failure:
-		// the whole point is to hand the output back so the model can read it
-		// and fix what it wrote.
-		return mcp.Result{Content: fmt.Sprintf("Command exited with error: %v\nOutput:\n%s", err, result)}, nil
 	}
 
 	if result == "" {
@@ -399,6 +469,25 @@ func sandboxCallTempDir(home string) (string, error) {
 		return "", err
 	}
 	return os.MkdirTemp(parent, "call-")
+}
+
+// sandboxScopeSeq makes each landlock scope's unit name unique within this
+// daemon, so two concurrent calls never name the same scope and reap each other.
+var sandboxScopeSeq uint64
+
+// reapSandboxScope kills everything still alive in the named transient scope,
+// standing in for the PID-namespace reaping the landlock backend cannot do (see
+// mcp.ScopeTeardownArgs). Best effort: on the common path the command left
+// nothing running, the scope has already been collected, and `systemctl kill`
+// fails with "unit not loaded", which is exactly the state we wanted.
+func reapSandboxScope(unit string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "systemctl", mcp.ScopeTeardownArgs(unit)...)
+	// The session bus, same as systemd-run needs to create the scope; Limiter
+	// is what put us on this path, so its environment is what reaches the unit.
+	cmd.Env = mcp.LimiterEnv(nil)
+	_ = cmd.Run()
 }
 
 // tailBuffer keeps at most max bytes, discarding from the FRONT.

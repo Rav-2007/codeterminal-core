@@ -135,6 +135,37 @@ func TestTheScopeWrapsTheSandboxAndCarriesEveryBound(t *testing.T) {
 	}
 }
 
+// ScopeUnit names the scope so it can be reaped by name, and ONLY when set --
+// so every backend but landlock keeps the auto-generated name and the exact
+// argv it had before the field existed.
+//
+// Neuter check: append "--unit=" unconditionally in limiterPrefix, and the
+// no-ScopeUnit case grows a --unit it should not have.
+func TestScopeUnitNamesTheScopeOnlyWhenSet(t *testing.T) {
+	withUnit := joined(limiterPrefix(SandboxConfig{MemoryLimitMB: 256, ScopeUnit: "mochiii-sandbox-1-2.scope"}))
+	if !strings.Contains(withUnit, "--unit=mochiii-sandbox-1-2.scope") {
+		t.Errorf("a set ScopeUnit did not name the scope: %s", withUnit)
+	}
+	withoutUnit := joined(limiterPrefix(SandboxConfig{MemoryLimitMB: 256}))
+	if strings.Contains(withoutUnit, "--unit") {
+		t.Errorf("an empty ScopeUnit still named the scope, changing the other backends: %s", withoutUnit)
+	}
+}
+
+// The teardown kills the whole cgroup at once and does not wait, so a leftover
+// process that ignores SIGTERM cannot hang the call.
+//
+// Neuter check: drop "--signal=KILL", and this fails -- a plain `systemctl kill`
+// sends SIGTERM, which waits.
+func TestScopeTeardownArgsSIGKILLsTheCgroup(t *testing.T) {
+	got := joined(ScopeTeardownArgs("mochiii-sandbox-7-8.scope"))
+	for _, want := range []string{"--user", "kill", "--signal=KILL", "mochiii-sandbox-7-8.scope"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("teardown argv missing %q: %s", want, got)
+		}
+	}
+}
+
 // An omitted bound must not be sent as a zero, which systemd would read as
 // "allow nothing" rather than "no limit".
 func TestAnOmittedBoundIsAbsentRatherThanZero(t *testing.T) {

@@ -106,6 +106,18 @@ type SandboxConfig struct {
 	// hosts where they have always run unconfined. Lane B keeps its behaviour
 	// until that is a decision someone makes on purpose.
 	LandlockFallback bool
+
+	// ScopeUnit names the transient systemd scope the limiter puts the command
+	// in, so it can be torn down by name afterwards.
+	//
+	// EMPTY MEANS TODAY'S BEHAVIOUR: an auto-generated unit name and no
+	// teardown, which is what bwrap, docker and the none backend keep. Only the
+	// landlock backend sets it, because only landlock lacks bwrap's PID
+	// namespace -- where a process the command backgrounds is killed when the
+	// command (pid 1 in the namespace) exits. With no namespace, a named scope
+	// plus `systemctl --user kill` on it is how the same processes get reaped.
+	// See ScopeTeardownArgs.
+	ScopeUnit string
 }
 
 // sandboxSystemPaths is what every confining backend lets a command read: the
@@ -356,6 +368,13 @@ func LimitsApply(cfg SandboxConfig) bool {
 // reads as the command's own.
 func limiterPrefix(cfg SandboxConfig) []string {
 	args := []string{"--user", "--scope", "--quiet", "--collect"}
+	if cfg.ScopeUnit != "" {
+		// A name so the scope's whole cgroup can be killed afterwards by that
+		// name (ScopeTeardownArgs). Empty for every caller but landlock, so the
+		// other backends' argv is byte-for-byte what it was before this field
+		// existed.
+		args = append(args, "--unit="+cfg.ScopeUnit)
+	}
 	if cfg.MemoryLimitMB > 0 {
 		// BOTH, ALWAYS. MemoryMax alone is memory.max, which caps RESIDENT
 		// memory and lets the cgroup push the rest to swap: on any host with
@@ -383,6 +402,25 @@ func limiterPrefix(cfg SandboxConfig) []string {
 		args = append(args, "-u", name)
 	}
 	return args
+}
+
+// ScopeTeardownArgs is the `systemctl` argv that reaps everything still alive in
+// the named transient scope: build servers, watchers, anything a command left
+// running in the background.
+//
+// WHY KILL, NOT STOP. `systemctl --user stop` sends SIGTERM and then waits up to
+// the unit's TimeoutStopSec (90 s by default) for SIGKILL -- so a process that
+// ignores SIGTERM would hang the tool call for a minute and a half. `kill
+// --signal=KILL` sends SIGKILL to the whole cgroup at once and returns without
+// waiting. `--kill-whom` defaults to `all`, so it needs no version-specific
+// flag. On the common path there is nothing left to kill and the unit is already
+// collected, so this fails with "unit not loaded" and the caller ignores it.
+//
+// This is landlock's stand-in for bwrap's PID-namespace reaping and
+// --die-with-parent: the same cgroup-wide kill, asked for explicitly because
+// there is no namespace to do it for us.
+func ScopeTeardownArgs(unit string) []string {
+	return []string{"--user", "kill", "--signal=KILL", unit}
 }
 
 // ResolveMode reports which backend WrapCommand would actually select for cfg.

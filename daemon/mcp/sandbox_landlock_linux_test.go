@@ -197,6 +197,36 @@ func TestIOURingIsRefused(t *testing.T) {
 	}
 }
 
+// SYSTEM V IPC AND POSIX MESSAGE QUEUES ARE REFUSED, so a command cannot attach
+// to another of the user's processes' shared memory, semaphores or queues the
+// way it could without bwrap's --unshare-ipc. None of these is path-based or
+// covered by a landlock scope, so the seccomp filter is the only thing that can
+// close them. The probes use a fixed key with no IPC_CREAT, so nothing is ever
+// created: unsandboxed they return ENOENT, and the filter turns that into EPERM.
+//
+// Neuter check: drop the seccompBlockedSyscalls loop in socketFilterProgram,
+// and shmget returns ENOENT instead of EPERM.
+func TestSysVIPCAndMessageQueuesAreRefused(t *testing.T) {
+	requireLandlock(t)
+	f := newFixture(t)
+	const probeKey = 0x6d6f6368 // "moch"; not IPC_PRIVATE, so no segment is made
+	err := inSandbox(t, f.policy, func() error {
+		if _, _, errno := unix.Syscall(unix.SYS_SHMGET, probeKey, 4096, 0); errno != unix.EPERM {
+			return fmt.Errorf("shmget: want EPERM, got %v", errno)
+		}
+		if _, _, errno := unix.Syscall(unix.SYS_MSGGET, probeKey, 0, 0); errno != unix.EPERM {
+			return fmt.Errorf("msgget: want EPERM, got %v", errno)
+		}
+		if _, _, errno := unix.Syscall(unix.SYS_SEMGET, probeKey, 0, 0); errno != unix.EPERM {
+			return fmt.Errorf("semget: want EPERM, got %v", errno)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 // OTHER PROCESSES ARE OUT OF REACH: their environment (where secrets live) is
 // unreadable, and -- from ABI 6 -- they cannot be signalled.
 //
@@ -391,6 +421,11 @@ func TestTheSocketFilterDecidesEveryCaseCorrectly(t *testing.T) {
 		{"socketpair(dgram)", seccompAuditArch, uint32(unix.SYS_SOCKETPAIR), unix.AF_UNIX, unix.SOCK_DGRAM, errno(unix.EACCES)},
 		{"socketpair(seqpacket)", seccompAuditArch, uint32(unix.SYS_SOCKETPAIR), unix.AF_UNIX, unix.SOCK_SEQPACKET, errno(unix.EACCES)},
 		{"io_uring_setup", seccompAuditArch, uint32(unix.SYS_IO_URING_SETUP), 1, 0, errno(unix.ENOSYS)},
+		{"shmget (SysV shared memory)", seccompAuditArch, uint32(unix.SYS_SHMGET), 0, 0, errno(unix.EPERM)},
+		{"shmat (SysV shared memory)", seccompAuditArch, uint32(unix.SYS_SHMAT), 0, 0, errno(unix.EPERM)},
+		{"semget (SysV semaphores)", seccompAuditArch, uint32(unix.SYS_SEMGET), 0, 0, errno(unix.EPERM)},
+		{"msgget (SysV message queue)", seccompAuditArch, uint32(unix.SYS_MSGGET), 0, 0, errno(unix.EPERM)},
+		{"mq_open (POSIX message queue)", seccompAuditArch, uint32(unix.SYS_MQ_OPEN), 0, 0, errno(unix.EPERM)},
 		{"read", seccompAuditArch, uint32(unix.SYS_READ), 0, 0, unix.SECCOMP_RET_ALLOW},
 		{"a foreign ABI (i386 socketcall)", foreignArch, 102, 1, 0, errno(unix.EPERM)},
 		{"a foreign ABI, any syscall", foreignArch, 3, 0, 0, errno(unix.EPERM)},
