@@ -85,7 +85,17 @@ on kernels older than 6.12 it can send them signals. A build or test that opens
 a Unix socket of its own fails with a permission error. Temporary files go to a
 folder of the command's own, which is removed when the command ends. If the
 folder you opened *is* your home folder, the prompt says so plainly instead of
-claiming your home is protected, because in that case it is not.
+claiming your home is protected, because in that case it is not. The prompt also
+notes what the sandbox cannot undo: anything a build writes in your project —
+a `Makefile`, a `.git/hooks` script — runs with your full privileges the next
+time you use the project, outside any sandbox.
+
+**What it does not cover.** The confinement holds while the command runs. It does
+not stop a build from reaching the network its purpose needs, so on a cloud
+machine a command can still reach the instance metadata endpoint, the same as
+with bubblewrap. And if the daemon is force-killed while a command is running, a
+process that command left in the background keeps running (still confined) rather
+than being stopped — a normal shutdown does stop it.
 
 ### The startup warning describes each tool by what it does
 
