@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -421,6 +422,59 @@ func limiterPrefix(cfg SandboxConfig) []string {
 // there is no namespace to do it for us.
 func ScopeTeardownArgs(unit string) []string {
 	return []string{"--user", "kill", "--signal=KILL", unit}
+}
+
+// ScopeListArgs is the `systemctl` argv that lists this daemon family's transient
+// sandbox scopes, still loaded, whatever their state. It is how a fresh daemon
+// finds scopes an EARLIER one left behind when it was force-killed mid-command:
+// clean shutdown reaps its own (ScopeTeardownArgs, deferred), but a SIGKILL or
+// crash runs no deferred code, so the scope -- and any process the build
+// backgrounded in it -- outlives the daemon. bwrap gets this for free from
+// --die-with-parent; landlock has no such tie, so the next daemon sweeps.
+//
+// --all so a scope whose processes have exited but that has not yet been
+// collected is still seen; --plain --no-legend so the first whitespace field of
+// every line is the unit name and nothing else (no tree glyphs, no header).
+func ScopeListArgs() []string {
+	return []string{"--user", "list-units", "--all", "--plain", "--no-legend", "--type=scope", "mochiii-sandbox-*.scope"}
+}
+
+// SandboxScopeUnit is one transient scope named by limiterPrefix: its unit name
+// and the pid of the daemon that created it, parsed back out of that name.
+type SandboxScopeUnit struct {
+	Name string
+	PID  int
+}
+
+// sandboxScopeUnitRE matches the names limiterPrefix mints,
+// mochiii-sandbox-<pid>-<seq>.scope, and captures the creating daemon's pid. The
+// seq keeps two concurrent calls in one daemon from colliding; only the pid
+// decides whether a scope is an orphan, so only it is captured.
+var sandboxScopeUnitRE = regexp.MustCompile(`^mochiii-sandbox-(\d+)-\d+\.scope$`)
+
+// ParseSandboxScopeUnits reads `systemctl list-units` output (ScopeListArgs) and
+// returns the sandbox scopes in it, each with the pid of the daemon that made
+// it. The first whitespace field of a line is the unit name; a line whose name
+// does not match the mint pattern -- a header that slipped through, a blank line,
+// an unrelated scope -- is skipped rather than guessed at.
+func ParseSandboxScopeUnits(listOutput string) []SandboxScopeUnit {
+	var units []SandboxScopeUnit
+	for _, line := range strings.Split(listOutput, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		m := sandboxScopeUnitRE.FindStringSubmatch(fields[0])
+		if m == nil {
+			continue
+		}
+		pid, err := strconv.Atoi(m[1])
+		if err != nil || pid <= 0 {
+			continue
+		}
+		units = append(units, SandboxScopeUnit{Name: fields[0], PID: pid})
+	}
+	return units
 }
 
 // ResolveMode reports which backend WrapCommand would actually select for cfg.

@@ -450,6 +450,9 @@ func main() {
 	// Housekeeping for the sandbox_exec cache (register item 37): once, in the
 	// background, and never allowed to delay or fail startup.
 	go srv.reclaimSandboxHomes()
+	// Reap any landlock sandbox scope a force-killed earlier daemon left running
+	// (register item 42): also once, in the background, also never fatal.
+	go srv.reapOrphanedSandboxScopes()
 	go srv.Serve(ln)
 
 	// Block here so cleanup runs exactly once, in this goroutine, instead of

@@ -240,7 +240,20 @@ func sandboxConfinementSentence(cfg mcp.SandboxConfig) string {
 		if mcp.LandlockABI() < 6 {
 			sentence += ", and send them signals"
 		}
-		return sentence + "."
+		sentence += "."
+		// THE NETWORK IS NOT CONFINED, AND SAYING SO IS THE ONLY HONEST OPTION.
+		// A build needs the network to fetch its dependencies, so the sandbox
+		// allows it -- and nothing on this path can allow the registry while
+		// denying an IP: the unprivileged user manager cannot attach an egress
+		// filter, Landlock's network control is by port not address, and a netns
+		// needs the user namespaces this host blocks. So the command can reach
+		// localhost services and a cloud metadata endpoint too, the same as bwrap
+		// with a network. The prompt states it rather than leave it to be found.
+		if cfg.AllowNetwork {
+			sentence += " It can still reach the network your build needs, so it can also reach " +
+				"services on localhost and, on a cloud machine, the instance metadata endpoint."
+		}
+		return sentence
 	default:
 		if workspaceExposesRealHome(cfg.WorkspaceRoot) {
 			return "Confined to this workspace on this host. This workspace is (or contains) your home " +
@@ -516,6 +529,26 @@ func reapSandboxScope(unit string) {
 	// is what put us on this path, so its environment is what reaches the unit.
 	cmd.Env = mcp.LimiterEnv(nil)
 	_ = cmd.Run()
+}
+
+// selectOrphanScopes returns, from the scopes currently loaded, the names a fresh
+// daemon should reap: those whose CREATING daemon is gone. This is the decision
+// reapOrphanedSandboxScopes makes, split out so it can be tested without a
+// systemd on the host -- alive is syscall.Kill in production, a stub in a test.
+//
+// Two scopes are never chosen: our own (self), whose calls may still be running,
+// and any whose pid is still alive -- a concurrent daemon's in-flight call. Only
+// a dead pid marks an orphan, so pid reuse can at worst make us SKIP one (its
+// number now names a live, unrelated process), never kill a scope we should not.
+func selectOrphanScopes(units []mcp.SandboxScopeUnit, self int, alive func(int) bool) []string {
+	var orphans []string
+	for _, u := range units {
+		if u.PID == self || alive(u.PID) {
+			continue
+		}
+		orphans = append(orphans, u.Name)
+	}
+	return orphans
 }
 
 // tailBuffer keeps at most max bytes, discarding from the FRONT.

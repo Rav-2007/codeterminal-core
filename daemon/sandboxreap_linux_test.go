@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -89,4 +90,96 @@ func TestABackgroundedProcessIsReapedWhenTheCallEnds(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Errorf("a process the command backgrounded (pid %d) survived the call", pid)
+}
+
+// AN ORPHAN A FORCE-KILLED DAEMON LEFT IS REAPED AT THE NEXT STARTUP. This is
+// the F1 residual closed: clean shutdown reaps its own scopes, but a SIGKILL or
+// crash runs no deferred code, so a scope -- and any process the build
+// backgrounded in it -- would otherwise run until the machine is rebooted. The
+// next daemon's startup sweep finds it by the dead pid in its name and kills the
+// cgroup. Here a scope is named as a now-dead process would have named it, made
+// to hold a backgrounded sleep, and the sweep must leave the sleep gone.
+//
+// The self-skip and alive-skip halves of the decision are proven deterministically
+// by TestSelectOrphanScopesReapsOnlyDeadDaemonsScopes; this proves the end-to-end
+// list-parse-kill path on a host that actually has the limiter.
+//
+// Neuter check: empty out reapOrphanedSandboxScopes, and the sleep survives.
+func TestAnOrphanedScopeFromADeadDaemonIsReapedAtStartup(t *testing.T) {
+	if !mcp.LandlockUsable() {
+		t.Skip("NOT RUN: Landlock cannot be enforced on this host")
+	}
+	if !mcp.LimiterUsable() {
+		t.Skip("NOT RUN: no usable systemd user limiter here, so no sandbox scope is ever created")
+	}
+	systemctl, err := exec.LookPath("systemctl")
+	if err != nil {
+		t.Skip("NOT RUN: no systemctl on PATH")
+	}
+	systemdRun, err := exec.LookPath("systemd-run")
+	if err != nil {
+		t.Skip("NOT RUN: no systemd-run on PATH")
+	}
+
+	// A pid that is DEAD by construction: run a trivial command and wait for it to
+	// exit. That stands in for the daemon that created the scope and was then
+	// force-killed. Tiny pid-reuse window -- if the number was taken by a live
+	// process before we could use it, skip rather than flake.
+	throwaway := exec.Command("true")
+	if err := throwaway.Run(); err != nil {
+		t.Fatalf("spawning a throwaway process: %v", err)
+	}
+	deadPID := throwaway.Process.Pid
+	if processAlive(deadPID) {
+		t.Skip("NOT RUN: the throwaway pid was reused before the test could use it")
+	}
+
+	// A scope named as that dead daemon would have named it, holding a BACKGROUNDED
+	// sleep. The foreground shell backgrounds the sleep, records its pid and exits,
+	// so systemd-run returns and the sleep is reparented to a subreaper (the user
+	// manager) -- exactly the orphan a build leaves behind, and, crucially, one
+	// that is truly reaped rather than left a zombie when the cgroup is killed.
+	// (This mirrors TestABackgroundedProcessIsReapedWhenTheCallEnds; an `exec
+	// sleep` here would leave systemd-run its parent, and kill(pid,0) reports a
+	// zombie as alive.)
+	dir := t.TempDir()
+	pidfile := filepath.Join(dir, "inner.pid")
+	unit := fmt.Sprintf("mochiii-sandbox-%d-1.scope", deadPID)
+	scope := exec.Command(systemdRun, "--user", "--scope", "--quiet", "--collect",
+		"--unit="+unit, "--", "sh", "-c", "sleep 120 & echo $! > "+pidfile)
+	scope.Env = mcp.LimiterEnv(nil)
+	if err := scope.Run(); err != nil {
+		t.Fatalf("creating the orphan scope: %v", err)
+	}
+	t.Cleanup(func() {
+		teardown := exec.Command(systemctl, mcp.ScopeTeardownArgs(unit)...)
+		teardown.Env = mcp.LimiterEnv(nil)
+		_ = teardown.Run()
+	})
+
+	var innerPID int
+	for i := 0; i < 200; i++ {
+		if data, err := os.ReadFile(pidfile); err == nil {
+			if p, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil && p > 0 {
+				innerPID = p
+				break
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if innerPID == 0 || !processAlive(innerPID) {
+		t.Fatalf("the orphan scope's backgrounded process never came up (pidfile %q)", pidfile)
+	}
+	t.Cleanup(func() { _ = syscall.Kill(innerPID, syscall.SIGKILL) })
+
+	// The sweep a fresh daemon runs at startup.
+	builtinTestServer(t).reapOrphanedSandboxScopes()
+
+	for i := 0; i < 200; i++ {
+		if !processAlive(innerPID) {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Errorf("a process left in an orphaned scope (pid %d) survived the startup sweep", innerPID)
 }

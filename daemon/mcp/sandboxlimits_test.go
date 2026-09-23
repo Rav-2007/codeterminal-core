@@ -166,6 +166,56 @@ func TestScopeTeardownArgsSIGKILLsTheCgroup(t *testing.T) {
 	}
 }
 
+// The listing asks the manager for exactly this daemon family's scopes, in the
+// plain form whose first field is the unit name -- --all so a scope not yet
+// collected is still seen, --no-legend and --plain so no header or tree glyph
+// gets in front of the name.
+//
+// Neuter check: drop --plain or --no-legend and the parser starts trying to read
+// header rows and indent glyphs as unit names.
+func TestScopeListArgsAsksForThisFamilyPlainly(t *testing.T) {
+	got := joined(ScopeListArgs())
+	for _, want := range []string{"--user", "list-units", "--all", "--plain", "--no-legend", "--type=scope", "mochiii-sandbox-*.scope"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("list argv missing %q: %s", want, got)
+		}
+	}
+}
+
+// The parser reads a scope's creating-daemon pid back out of its name and skips
+// everything that is not one of our scopes: a stray header, a blank line, an
+// unrelated scope, a name whose pid field is not a number.
+//
+// The pid is what decides an orphan, so a name we cannot read a pid from is
+// dropped rather than reaped blindly.
+func TestParseSandboxScopeUnitsReadsPidsAndSkipsTheRest(t *testing.T) {
+	// A realistic --plain --no-legend listing, plus lines that must be ignored.
+	out := strings.Join([]string{
+		"mochiii-sandbox-12345-1.scope   loaded active running Mochiii sandbox",
+		"mochiii-sandbox-12345-2.scope   loaded active running Mochiii sandbox",
+		"mochiii-sandbox-9-40.scope      loaded active running Mochiii sandbox",
+		"", // blank
+		"unrelated.scope                 loaded active running Something else",
+		"mochiii-sandbox-nope-1.scope    loaded active running Bad pid",
+		"mochiii-sandbox-12345.scope     loaded active running Missing seq",
+	}, "\n")
+
+	got := ParseSandboxScopeUnits(out)
+	want := []SandboxScopeUnit{
+		{Name: "mochiii-sandbox-12345-1.scope", PID: 12345},
+		{Name: "mochiii-sandbox-12345-2.scope", PID: 12345},
+		{Name: "mochiii-sandbox-9-40.scope", PID: 9},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("parsed %d units, want %d: %+v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("unit %d = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
 // An omitted bound must not be sent as a zero, which systemd would read as
 // "allow nothing" rather than "no limit".
 func TestAnOmittedBoundIsAbsentRatherThanZero(t *testing.T) {

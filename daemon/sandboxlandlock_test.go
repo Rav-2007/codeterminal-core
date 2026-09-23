@@ -80,6 +80,44 @@ func TestTheSandboxExecPromptDescribesTheBackendItGets(t *testing.T) {
 	}
 }
 
+// THE LANDLOCK PROMPT DOES NOT HIDE THAT THE NETWORK IS OPEN (F5). A build needs
+// the network for its dependencies, and nothing on this path can allow the
+// registry while denying an IP, so localhost services and a cloud metadata
+// endpoint are reachable too -- the same as bwrap with a network. That fact is
+// stated in the prompt, not left to the release notes; and it is scoped to the
+// backend that has it, so the plain bwrap sentence does not carry it.
+//
+// This is pure sentence logic, so it runs on every platform (the landlock/none
+// backends are forced, not really entered): sandboxConfinementSentence reads the
+// overridable LandlockUsable/LandlockABI, never a real syscall.
+//
+// Neuter check: drop the AllowNetwork clause in sandboxConfinementSentence and
+// the landlock row loses the disclosure.
+func TestTheLandlockPromptDisclosesNetworkReach(t *testing.T) {
+	forceBwrap(t, false)
+	forceLandlock(t, true)
+	cfg := mcp.SandboxConfig{
+		Mode: mcp.SandboxAuto, WorkspaceRoot: filepath.Join(t.TempDir(), "proj"),
+		AllowNetwork: true, LandlockFallback: true, MemoryLimitMB: 2048, PidsLimit: 512,
+	}
+	if mcp.ResolveMode(cfg) != mcp.SandboxLandlock {
+		t.Fatalf("test setup: cfg resolved to %v, not landlock", mcp.ResolveMode(cfg))
+	}
+	sentence := sandboxConfinementSentence(cfg)
+	for _, want := range []string{"reach the network", "localhost", "metadata endpoint"} {
+		if !strings.Contains(sentence, want) {
+			t.Errorf("the landlock prompt does not disclose %q:\n%s", want, sentence)
+		}
+	}
+
+	// Scoped to landlock: bwrap's plain sentence must not claim to know about the
+	// network, since this residual and its wording are the landlock path's.
+	forceBwrap(t, true)
+	if s := sandboxConfinementSentence(cfg); strings.Contains(s, "metadata endpoint") {
+		t.Errorf("the network clause leaked onto the bwrap sentence:\n%s", s)
+	}
+}
+
 // The two home-exposure tests live in sandboxhome_linux_test.go: they depend on
 // os.UserHomeDir following $HOME, which is a unix property (Windows reads
 // %USERPROFILE%), and the feature they cover is Landlock, which is Linux-only.
