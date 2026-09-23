@@ -216,7 +216,8 @@ func (s *Server) sandboxExecDescription() string {
 // the command can see the user's other programs, and before Landlock ABI 6 it
 // can signal them too. Saying so is what keeps "confined" from overclaiming.
 func sandboxConfinementSentence(cfg mcp.SandboxConfig) string {
-	switch mcp.ResolveMode(cfg) {
+	mode := mcp.ResolveMode(cfg)
+	switch mode {
 	case mcp.SandboxNone:
 		why := "nothing here can confine it"
 		if reasons := mcp.PassedOver(cfg); len(reasons) > 0 {
@@ -241,26 +242,37 @@ func sandboxConfinementSentence(cfg mcp.SandboxConfig) string {
 			sentence += ", and send them signals"
 		}
 		sentence += "."
-		// THE NETWORK IS NOT CONFINED, AND SAYING SO IS THE ONLY HONEST OPTION.
-		// A build needs the network to fetch its dependencies, so the sandbox
-		// allows it -- and nothing on this path can allow the registry while
-		// denying an IP: the unprivileged user manager cannot attach an egress
-		// filter, Landlock's network control is by port not address, and a netns
-		// needs the user namespaces this host blocks. So the command can reach
-		// localhost services and a cloud metadata endpoint too, the same as bwrap
-		// with a network. The prompt states it rather than leave it to be found.
-		if cfg.AllowNetwork {
-			sentence += " It can still reach the network your build needs, so it can also reach " +
-				"services on localhost and, on a cloud machine, the instance metadata endpoint."
-		}
-		return sentence
+		return sentence + networkReachClause(cfg)
 	default:
+		sentence := "Confined to this workspace on this host."
 		if workspaceExposesRealHome(cfg.WorkspaceRoot) {
-			return "Confined to this workspace on this host. This workspace is (or contains) your home " +
+			sentence = "Confined to this workspace on this host. This workspace is (or contains) your home " +
 				"folder, so the command can read and write it, including ~/.ssh."
 		}
-		return "Confined to this workspace on this host."
+		// bwrap shares the host's network when the network is allowed (no
+		// --unshare-net), so the same localhost/metadata reach as Landlock is
+		// real and is disclosed here too. Docker is NOT included: it runs in its
+		// own network namespace, so host-localhost is unreachable through it, and
+		// claiming otherwise would be the false statement this exists to avoid.
+		if mode == mcp.SandboxBubblewrap {
+			sentence += networkReachClause(cfg)
+		}
+		return sentence
 	}
+}
+
+// networkReachClause is the one honest sentence about an ALLOWED network: it is
+// not confined to the registry, so localhost services and a cloud metadata
+// endpoint are reachable too. Empty when no network is allowed, or for a backend
+// that does not share the host network. Shared by the Landlock and bwrap
+// branches so the two cannot drift; see sandboxConfinementSentence for why
+// nothing on these paths can allow the registry while denying an IP.
+func networkReachClause(cfg mcp.SandboxConfig) string {
+	if !cfg.AllowNetwork {
+		return ""
+	}
+	return " It can still reach the network your build needs, so it can also reach " +
+		"services on localhost and, on a cloud machine, the instance metadata endpoint."
 }
 
 // workspaceExposesRealHome reports whether confining a command to workspace would

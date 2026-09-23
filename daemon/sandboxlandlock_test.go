@@ -80,41 +80,58 @@ func TestTheSandboxExecPromptDescribesTheBackendItGets(t *testing.T) {
 	}
 }
 
-// THE LANDLOCK PROMPT DOES NOT HIDE THAT THE NETWORK IS OPEN (F5). A build needs
-// the network for its dependencies, and nothing on this path can allow the
-// registry while denying an IP, so localhost services and a cloud metadata
-// endpoint are reachable too -- the same as bwrap with a network. That fact is
-// stated in the prompt, not left to the release notes; and it is scoped to the
-// backend that has it, so the plain bwrap sentence does not carry it.
+// A CONFINED PROMPT DOES NOT HIDE THAT THE NETWORK IS OPEN (F5). A build needs
+// the network for its dependencies, and on a backend that shares the host
+// network -- Landlock, and bwrap without --unshare-net -- localhost services and
+// a cloud metadata endpoint are reachable too. Both confined backends disclose
+// it, because both really have it: scoping the sentence to Landlock left the
+// bwrap path (the default on machines where bwrap works, including VS Code's)
+// silent about the same exposure. The unconfined prompt does not carry the
+// clause -- it already says the command runs with full privileges.
 //
-// This is pure sentence logic, so it runs on every platform (the landlock/none
-// backends are forced, not really entered): sandboxConfinementSentence reads the
-// overridable LandlockUsable/LandlockABI, never a real syscall.
+// This is pure sentence logic, so it runs on every platform (the backends are
+// forced, not really entered): sandboxConfinementSentence reads the overridable
+// LandlockUsable/LandlockABI, never a real syscall.
 //
-// Neuter check: drop the AllowNetwork clause in sandboxConfinementSentence and
-// the landlock row loses the disclosure.
-func TestTheLandlockPromptDisclosesNetworkReach(t *testing.T) {
-	forceBwrap(t, false)
-	forceLandlock(t, true)
+// Neuter check: drop the networkReachClause append in either the landlock or the
+// bwrap branch of sandboxConfinementSentence and that backend loses the disclosure.
+func TestAConfinedPromptDisclosesNetworkReach(t *testing.T) {
 	cfg := mcp.SandboxConfig{
 		Mode: mcp.SandboxAuto, WorkspaceRoot: filepath.Join(t.TempDir(), "proj"),
 		AllowNetwork: true, LandlockFallback: true, MemoryLimitMB: 2048, PidsLimit: 512,
 	}
+	disclosures := []string{"reach the network", "localhost", "metadata endpoint"}
+
+	// Landlock.
+	forceBwrap(t, false)
+	forceLandlock(t, true)
 	if mcp.ResolveMode(cfg) != mcp.SandboxLandlock {
 		t.Fatalf("test setup: cfg resolved to %v, not landlock", mcp.ResolveMode(cfg))
 	}
-	sentence := sandboxConfinementSentence(cfg)
-	for _, want := range []string{"reach the network", "localhost", "metadata endpoint"} {
-		if !strings.Contains(sentence, want) {
-			t.Errorf("the landlock prompt does not disclose %q:\n%s", want, sentence)
+	land := sandboxConfinementSentence(cfg)
+	for _, want := range disclosures {
+		if !strings.Contains(land, want) {
+			t.Errorf("the landlock prompt does not disclose %q:\n%s", want, land)
 		}
 	}
 
-	// Scoped to landlock: bwrap's plain sentence must not claim to know about the
-	// network, since this residual and its wording are the landlock path's.
+	// bwrap-with-network: the same exposure, so the same disclosure.
 	forceBwrap(t, true)
-	if s := sandboxConfinementSentence(cfg); strings.Contains(s, "metadata endpoint") {
-		t.Errorf("the network clause leaked onto the bwrap sentence:\n%s", s)
+	if mcp.ResolveMode(cfg) != mcp.SandboxBubblewrap {
+		t.Fatalf("test setup: cfg resolved to %v, not bubblewrap", mcp.ResolveMode(cfg))
+	}
+	bw := sandboxConfinementSentence(cfg)
+	for _, want := range disclosures {
+		if !strings.Contains(bw, want) {
+			t.Errorf("the bwrap prompt does not disclose %q:\n%s", want, bw)
+		}
+	}
+
+	// Unconfined: no clause -- it already says full privileges, which is stronger.
+	forceBwrap(t, false)
+	forceLandlock(t, false)
+	if none := sandboxConfinementSentence(cfg); strings.Contains(none, "metadata endpoint") {
+		t.Errorf("the unconfined prompt carried the network clause:\n%s", none)
 	}
 }
 
