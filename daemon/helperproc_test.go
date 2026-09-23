@@ -26,6 +26,11 @@ func TestMain(m *testing.M) {
 	// it does anything a test binary does -- or a sandbox_exec test would run
 	// this whole suite again inside the sandbox instead of the command.
 	mcp.MaybeRunSandboxHelper()
+	// Same reason for the instant-reaper: it is this binary re-executed, so it
+	// must dispatch before any test code runs. See sandboxreaper_linux.go.
+	if len(os.Args) > 1 && os.Args[1] == sandboxReaperArg {
+		os.Exit(sandboxReaperMain(os.Args[2:]))
+	}
 
 	tmpDir, err := os.MkdirTemp("", "fakehelper-build")
 	if err != nil {

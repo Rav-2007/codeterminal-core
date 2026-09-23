@@ -32,6 +32,12 @@ func main() {
 	// sandbox_exec landlock helper it restricts itself and becomes the command,
 	// and nothing below may have happened in it. See mcp.MaybeRunSandboxHelper.
 	mcp.MaybeRunSandboxHelper()
+	// Likewise first: when started as the instant-reaper it watches the death pipe
+	// and kills its scope when the daemon dies -- it must never fall through into
+	// the daemon's own startup. See sandboxreaper_linux.go.
+	if len(os.Args) > 1 && os.Args[1] == sandboxReaperArg {
+		os.Exit(sandboxReaperMain(os.Args[2:]))
+	}
 
 	logger := log.New(os.Stderr, "mochiii-daemon: ", log.LstdFlags)
 

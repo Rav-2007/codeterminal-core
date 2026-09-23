@@ -387,6 +387,15 @@ func (s *Server) builtinSandboxExec(ctx context.Context, raw json.RawMessage) (m
 		unit := fmt.Sprintf("mochiii-sandbox-%d-%d.scope", os.Getpid(), atomic.AddUint64(&sandboxScopeSeq, 1))
 		cfg.ScopeUnit = unit
 		defer reapSandboxScope(unit)
+		// INSTANT reaping if the daemon is hard-killed mid-command: a reaper
+		// process watches the daemon's death pipe and kills this scope the moment
+		// the daemon dies, rather than leaving it to the next startup sweep. On the
+		// normal path stopSandboxReaper ends it after the deferred reap above.
+		if nanny, err := spawnSandboxReaper(unit); err != nil {
+			s.logger.Printf("mcp: sandbox reaper for %s: %v (falling back to the startup sweep)", unit, err)
+		} else if nanny != nil {
+			defer stopSandboxReaper(nanny)
+		}
 	}
 
 	execBin, execArgs, err := mcp.WrapCommand(bin, parts[1:], cfg)
@@ -515,6 +524,11 @@ func sandboxCallTempDir(home string) (string, error) {
 // sandboxScopeSeq makes each landlock scope's unit name unique within this
 // daemon, so two concurrent calls never name the same scope and reap each other.
 var sandboxScopeSeq uint64
+
+// sandboxReaperArg is argv[1] that turns this binary into the instant-reaper (the
+// process that kills a scope the moment the daemon dies -- see
+// sandboxreaper_linux.go). Dispatched in main, next to the sandbox helper.
+const sandboxReaperArg = "__sandbox-reaper"
 
 // systemctlPath is the reaper's systemctl, resolved once. An absolute path
 // rather than a bare name so the teardown cannot be redirected by a later change

@@ -183,3 +183,84 @@ func TestAnOrphanedScopeFromADeadDaemonIsReapedAtStartup(t *testing.T) {
 	}
 	t.Errorf("a process left in an orphaned scope (pid %d) survived the startup sweep", innerPID)
 }
+
+// THE INSTANT REAPER KILLS THE SCOPE THE MOMENT THE DAEMON DIES (P1, the residual
+// the startup sweep only bounded). A real scope holds a backgrounded sleep; a
+// reaper watches a pipe standing in for the daemon's death pipe. While the write
+// end is open (the daemon "lives") the reaper must not fire; closing it (the
+// daemon "dies") must reap the scope within milliseconds -- bwrap's
+// --die-with-parent, without a PID namespace.
+//
+// Neuter check: make sandboxReaperMain return before reapSandboxScope, and the
+// sleep survives the simulated death.
+func TestTheInstantReaperKillsTheScopeWhenTheDaemonDies(t *testing.T) {
+	if !mcp.LandlockUsable() || !mcp.LimiterUsable() {
+		t.Skip("NOT RUN: no usable systemd user limiter, so no scope is created")
+	}
+	systemctl, err := exec.LookPath("systemctl")
+	if err != nil {
+		t.Skip("NOT RUN: no systemctl")
+	}
+	systemdRun, err := exec.LookPath("systemd-run")
+	if err != nil {
+		t.Skip("NOT RUN: no systemd-run")
+	}
+
+	dir := t.TempDir()
+	pidfile := filepath.Join(dir, "inner.pid")
+	unit := fmt.Sprintf("mochiii-sandbox-%d-%d.scope", os.Getpid(), 900000+time.Now().UnixNano()%100000)
+	scope := exec.Command(systemdRun, "--user", "--scope", "--quiet", "--collect",
+		"--unit="+unit, "--", "sh", "-c", "sleep 120 & echo $! > "+pidfile)
+	scope.Env = mcp.LimiterEnv(nil)
+	if err := scope.Run(); err != nil {
+		t.Fatalf("creating the scope: %v", err)
+	}
+	t.Cleanup(func() {
+		td := exec.Command(systemctl, mcp.ScopeTeardownArgs(unit)...)
+		td.Env = mcp.LimiterEnv(nil)
+		_ = td.Run()
+	})
+
+	var innerPID int
+	for i := 0; i < 200; i++ {
+		if b, err := os.ReadFile(pidfile); err == nil {
+			if p, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && p > 0 {
+				innerPID = p
+				break
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if innerPID == 0 || !processAlive(innerPID) {
+		t.Fatalf("the scope's process never came up (pidfile %q)", pidfile)
+	}
+	t.Cleanup(func() { _ = syscall.Kill(innerPID, syscall.SIGKILL) })
+
+	// The daemon's death pipe, driven by the test.
+	deathR, deathW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	reaper, err := spawnSandboxReaperWith(unit, deathR)
+	if err != nil {
+		t.Fatalf("spawning the reaper: %v", err)
+	}
+	_ = deathR.Close() // the reaper holds its own dup; the parent copy is not needed
+	t.Cleanup(func() { _ = reaper.Process.Kill(); _, _ = reaper.Process.Wait() })
+
+	// The daemon still lives: the reaper must NOT fire.
+	time.Sleep(300 * time.Millisecond)
+	if !processAlive(innerPID) {
+		t.Fatal("the reaper killed the scope while the daemon was still alive (death pipe open)")
+	}
+
+	// The daemon dies: closing the write end is the EOF the reaper waits for.
+	_ = deathW.Close()
+	for i := 0; i < 200; i++ {
+		if !processAlive(innerPID) {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Errorf("the scope's process (pid %d) survived the daemon's simulated death", innerPID)
+}
