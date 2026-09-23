@@ -90,13 +90,40 @@ notes what the sandbox cannot undo: anything a build writes in your project —
 a `Makefile`, a `.git/hooks` script — runs with your full privileges the next
 time you use the project, outside any sandbox.
 
-**What it does not cover.** The confinement holds while the command runs. It does
-not stop a build from reaching the network its purpose needs, so on a cloud
-machine a command can still reach the instance metadata endpoint, the same as
-with bubblewrap. And if the daemon is force-killed while a command is running, a
-process that command left in the background keeps running (still confined) until
-the next time the daemon starts, which cleans it up — so it no longer runs
-indefinitely, and a normal shutdown stops it at once.
+### A sandboxed build can no longer reach the cloud metadata endpoint
+
+**What changed.** A build needs the network to fetch its dependencies, so the
+sandbox allows it — and that allowed every confined command to reach
+`169.254.169.254`, the address cloud machines serve their instance credentials
+from. A malicious dependency or a build script could read those credentials on
+any cloud build machine.
+
+Commands confined by Landlock now have that blocked. The sandbox watches the
+connections a build opens and refuses the cloud metadata address and the other
+link-local ranges, while everything the build legitimately needs — package
+registries, module proxies, DNS — is untouched. Services on your own machine
+(`localhost`) stay reachable, because builds and tests legitimately use them.
+
+**It is proven before it is claimed.** The prompt only says the endpoint is
+blocked on a machine where Mochiii has just demonstrated the block working; where
+it cannot, the prompt keeps saying the endpoint is reachable rather than claiming
+a protection you do not have. Machines confined by bubblewrap are unchanged and
+still say so.
+
+**What it does not cover.** The confinement holds while the command runs. On a
+machine confined by bubblewrap rather than Landlock, a command can still reach
+the instance metadata endpoint, and the prompt says so.
+
+### A force-killed daemon no longer leaves a build process running
+
+If Mochiii's daemon was force-killed (or crashed) while a sandboxed command was
+running, a process that command had left in the background kept running. It was
+still confined, but it kept the workspace and the network until you noticed it.
+
+Such a process is now stopped the moment the daemon dies, rather than lingering —
+the same thing bubblewrap does for its own sandboxes. As a backstop, anything
+that does survive is cleaned up the next time the daemon starts. A normal
+shutdown stops it immediately, as before.
 
 ### The startup warning describes each tool by what it does
 
