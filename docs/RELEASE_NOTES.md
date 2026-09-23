@@ -94,8 +94,9 @@ time you use the project, outside any sandbox.
 not stop a build from reaching the network its purpose needs, so on a cloud
 machine a command can still reach the instance metadata endpoint, the same as
 with bubblewrap. And if the daemon is force-killed while a command is running, a
-process that command left in the background keeps running (still confined) rather
-than being stopped — a normal shutdown does stop it.
+process that command left in the background keeps running (still confined) until
+the next time the daemon starts, which cleans it up — so it no longer runs
+indefinitely, and a normal shutdown stops it at once.
 
 ### The startup warning describes each tool by what it does
 
