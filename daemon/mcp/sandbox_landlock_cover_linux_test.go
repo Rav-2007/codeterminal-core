@@ -42,7 +42,7 @@ func TestRightsForCoversEveryClass(t *testing.T) {
 // applySandbox refuses to pretend on a kernel with no Landlock, rather than
 // installing half a sandbox and reporting success.
 func TestApplySandboxRefusesWithoutLandlock(t *testing.T) {
-	if err := applySandbox(landlockPolicy{}, 0); err == nil {
+	if err := applySandbox(landlockPolicy{}, 0, helperEgress{}); err == nil {
 		t.Error("applySandbox accepted ABI 0")
 	}
 }

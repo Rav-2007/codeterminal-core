@@ -119,6 +119,14 @@ type SandboxConfig struct {
 	// plus `systemctl --user kill` on it is how the same processes get reaped.
 	// See ScopeTeardownArgs.
 	ScopeUnit string
+
+	// EgressFilter turns on the seccomp-notify egress firewall for a landlock
+	// command: the helper traps connect(2) to a listener the daemon supervises,
+	// which refuses the cloud metadata / link-local ranges. EMPTY MEANS TODAY'S
+	// BEHAVIOUR (network reachable, disclosed). Only the landlock backend honours
+	// it, and only when EgressFilterUsable; the handler passes the socketpair as
+	// the command's single ExtraFile, so the helper finds it at fd 3.
+	EgressFilter bool
 }
 
 // sandboxSystemPaths is what every confining backend lets a command read: the
@@ -664,7 +672,14 @@ func WrapCommand(command string, args []string, cfg SandboxConfig) (string, []st
 		}
 		// The limiter wraps the OUTSIDE, exactly as for bwrap: the scope holds
 		// the helper and everything the command it becomes goes on to start.
-		helperArgs := append(landlockPolicyFor(command, cfg).args(), "--", command)
+		helperArgs := landlockPolicyFor(command, cfg).args()
+		// The egress firewall, when the handler has wired the socketpair (fd 3)
+		// and a supervisor: the helper hands its connect-trapping listener back on
+		// fd 3 and grants this daemon the ptrace access the supervisor needs.
+		if cfg.EgressFilter {
+			helperArgs = append(helperArgs, egressFdFlag, "3", daemonPidFlag, strconv.Itoa(os.Getpid()))
+		}
+		helperArgs = append(helperArgs, "--", command)
 		return withLimiter(selfExecutable(), append([]string{SandboxHelperArg}, append(helperArgs, args...)...), cfg)
 
 	case SandboxDocker:

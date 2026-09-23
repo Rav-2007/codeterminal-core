@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -44,7 +45,26 @@ const (
 	helperErrorPrefix     = "mochiii sandbox: "
 	selfCheckFlag         = "--self-check"
 	landlockArgsSeparator = "--"
+
+	// Egress firewall (sandbox_egress_linux.go): the helper installs a
+	// connect(2)-trapping listener, hands its fd to the daemon over the socketpair
+	// at egressFdFlag, and grants the daemon (daemonPidFlag) the ptrace access the
+	// supervisor needs. egressSelfCheckFlag carries "<denied>,<allowed>" host:port
+	// pairs for the EgressFilterUsable probe.
+	egressFdFlag        = "--egress-fd"
+	daemonPidFlag       = "--daemon-pid"
+	egressSelfCheckFlag = "--self-check-egress"
 )
+
+// helperEgress is the egress-firewall half of a helper invocation: whether it is
+// on, the socketpair fd to hand the listener back on, the daemon pid to grant
+// ptrace access, and the probe's self-check addresses (empty for a real run).
+type helperEgress struct {
+	enabled   bool
+	fd        int
+	daemonPid int
+	selfCheck string
+}
 
 // helperRegistered is set by MaybeRunSandboxHelper. Nothing re-executes this
 // binary as a helper unless it has been, because a binary that does not
@@ -175,32 +195,46 @@ func (p landlockPolicy) args() []string {
 
 // parseHelperArgs is the helper's side of args: rules, then an optional
 // --self-check path, then "--" and the command.
-func parseHelperArgs(args []string) (policy landlockPolicy, selfCheck string, argv []string, err error) {
+func parseHelperArgs(args []string) (policy landlockPolicy, selfCheck string, egress helperEgress, argv []string, err error) {
 	for i := 0; i < len(args); i++ {
 		flag := args[i]
 		if flag == landlockArgsSeparator {
 			argv = args[i+1:]
 			if len(argv) == 0 {
-				return policy, "", nil, fmt.Errorf("no command after %q", landlockArgsSeparator)
+				return policy, "", egress, nil, fmt.Errorf("no command after %q", landlockArgsSeparator)
 			}
-			return policy, selfCheck, argv, nil
+			return policy, selfCheck, egress, argv, nil
 		}
 		if i+1 >= len(args) {
-			return policy, "", nil, fmt.Errorf("%s has no value", flag)
+			return policy, "", egress, nil, fmt.Errorf("%s has no value", flag)
 		}
 		value := args[i+1]
 		i++
 		switch flag {
 		case "--" + accessReadExec, "--" + accessRead, "--" + accessReadWrite, "--" + accessDevice:
 			if !filepath.IsAbs(value) {
-				return policy, "", nil, fmt.Errorf("%s %q is not an absolute path", flag, value)
+				return policy, "", egress, nil, fmt.Errorf("%s %q is not an absolute path", flag, value)
 			}
 			policy.add(strings.TrimPrefix(flag, "--"), value)
 		case selfCheckFlag:
 			selfCheck = value
+		case egressFdFlag:
+			n, convErr := strconv.Atoi(value)
+			if convErr != nil || n < 0 {
+				return policy, "", egress, nil, fmt.Errorf("%s %q is not a valid fd", flag, value)
+			}
+			egress.enabled, egress.fd = true, n
+		case daemonPidFlag:
+			n, convErr := strconv.Atoi(value)
+			if convErr != nil || n <= 0 {
+				return policy, "", egress, nil, fmt.Errorf("%s %q is not a valid pid", flag, value)
+			}
+			egress.daemonPid = n
+		case egressSelfCheckFlag:
+			egress.selfCheck = value
 		default:
-			return policy, "", nil, fmt.Errorf("unknown flag %q", flag)
+			return policy, "", egress, nil, fmt.Errorf("unknown flag %q", flag)
 		}
 	}
-	return policy, "", nil, fmt.Errorf("no %q before the command", landlockArgsSeparator)
+	return policy, "", egress, nil, fmt.Errorf("no %q before the command", landlockArgsSeparator)
 }

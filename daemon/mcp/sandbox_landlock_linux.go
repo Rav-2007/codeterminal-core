@@ -78,17 +78,21 @@ var LandlockUsable = sync.OnceValue(func() bool {
 
 // sandboxExecMain is the helper: restrict this thread, then become the command.
 func sandboxExecMain(args []string) int {
-	policy, selfCheck, argv, err := parseHelperArgs(args)
+	policy, selfCheck, egress, argv, err := parseHelperArgs(args)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s%v\n", helperErrorPrefix, err)
 		return exitSandboxSetup
 	}
 	// Resolved BEFORE restricting: looking the command up needs nothing the
-	// policy withholds, but failing here gives the shell's own exit status.
-	path, err := exec.LookPath(argv[0])
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "%s%v\n", helperErrorPrefix, err)
-		return exitSandboxNotFound
+	// policy withholds, but failing here gives the shell's own exit status. The
+	// egress self-check never execs a command (it does the connects itself), so
+	// its placeholder argv is not resolved.
+	var path string
+	if egress.selfCheck == "" {
+		if path, err = exec.LookPath(argv[0]); err != nil {
+			fmt.Fprintf(os.Stderr, "%s%v\n", helperErrorPrefix, err)
+			return exitSandboxNotFound
+		}
 	}
 
 	// ONE THREAD, START TO FINISH. no_new_privs, the seccomp filter and the
@@ -103,9 +107,16 @@ func sandboxExecMain(args []string) int {
 	// leader, which is harmless; /dev/tty is outside the policy regardless.
 	_, _ = unix.Setsid()
 
-	if err := applySandbox(policy, LandlockABI()); err != nil {
+	if err := applySandbox(policy, LandlockABI(), egress); err != nil {
 		fmt.Fprintf(os.Stderr, "%s%v\n", helperErrorPrefix, err)
 		return exitSandboxSetup
+	}
+	if egress.selfCheck != "" {
+		if err := egressSelfCheck(egress.selfCheck); err != nil {
+			fmt.Fprintf(os.Stderr, "%segress self-check: %v\n", helperErrorPrefix, err)
+			return exitSandboxSelfCheck
+		}
+		return 0
 	}
 	if selfCheck != "" {
 		if err := checkEnforced(selfCheck); err != nil {
@@ -121,7 +132,7 @@ func sandboxExecMain(args []string) int {
 // applySandbox restricts the CALLING THREAD: no_new_privs, then the seccomp
 // filter, then the Landlock domain. It cannot be undone, which is the point;
 // callers lock the thread first.
-func applySandbox(policy landlockPolicy, abi int) error {
+func applySandbox(policy landlockPolicy, abi int, egress helperEgress) error {
 	if abi < 1 {
 		return errors.New("this kernel has no Landlock")
 	}
@@ -133,10 +144,54 @@ func applySandbox(policy landlockPolicy, abi int) error {
 	if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
 		return fmt.Errorf("no_new_privs: %w", err)
 	}
-	if err := installSocketFilter(); err != nil {
+	// With egress filtering the seccomp filter also traps connect to a listener
+	// the daemon owns; without it, the plain socket filter via PR_SET_SECCOMP.
+	if egress.enabled {
+		if err := applyEgressFilter(egress); err != nil {
+			return err
+		}
+	} else if err := installSocketFilter(); err != nil {
 		return err
 	}
 	return restrictLandlock(policy, abi)
+}
+
+// applyEgressFilter installs the connect-trapping listener, hands its fd to the
+// daemon over the socketpair, marks the helper's copy close-on-exec so the
+// command it becomes never holds a seccomp listener (which would let it answer
+// its own connects), and grants the daemon the ptrace access the supervisor
+// needs to read the destination and act on the target's socket.
+func applyEgressFilter(egress helperEgress) error {
+	lfd, err := installEgressListener()
+	if err != nil {
+		return fmt.Errorf("egress listener: %w", err)
+	}
+	return publishEgressListener(lfd, egress)
+}
+
+// publishEgressListener is everything applyEgressFilter does AFTER the
+// irreversible seccomp install: hand the listener to the daemon, keep the
+// command from inheriting it, and grant the supervisor ptrace access.
+//
+// SPLIT OUT SO IT CAN BE TESTED. Installing the filter cannot be done in a shared
+// test binary (the trap is inherited by cloned threads and deadlocks whoever
+// connects next -- see sandbox_egress_supervisor_linux_test.go), but these steps
+// work on any descriptor, so they are proven with an ordinary socketpair.
+func publishEgressListener(lfd int, egress helperEgress) error {
+	if err := sendListenerFD(egress.fd, lfd); err != nil {
+		return fmt.Errorf("handing back the egress listener: %w", err)
+	}
+	// Close-on-exec so the command the helper becomes never holds a seccomp
+	// listener -- with one it could answer its own trapped connects.
+	if _, err := unix.FcntlInt(uintptr(lfd), unix.F_SETFD, unix.FD_CLOEXEC); err != nil {
+		return fmt.Errorf("egress listener cloexec: %w", err)
+	}
+	if egress.daemonPid > 0 {
+		if err := unix.Prctl(unix.PR_SET_PTRACER, uintptr(egress.daemonPid), 0, 0, 0); err != nil {
+			return fmt.Errorf("granting the egress supervisor ptrace access: %w", err)
+		}
+	}
+	return nil
 }
 
 // Landlock rights, by what they apply to.
@@ -325,7 +380,12 @@ func assembleBPF(steps []bpfStep) ([]unix.SockFilter, error) {
 	return out, nil
 }
 
-func socketFilterProgram() ([]unix.SockFilter, error) {
+// socketFilterProgram builds the seccomp program. With egress true it also traps
+// connect(2) to a user-notification, so the daemon's supervisor can judge the
+// destination (the egress firewall); a program with that verdict MUST be
+// installed via seccomp(2) with a new listener, never PR_SET_SECCOMP, or the
+// kernel turns the un-listened notification into ENOSYS.
+func socketFilterProgram(egress bool) ([]unix.SockFilter, error) {
 	const (
 		ld  = unix.BPF_LD | unix.BPF_W | unix.BPF_ABS
 		jeq = unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K
@@ -347,6 +407,11 @@ func socketFilterProgram() ([]unix.SockFilter, error) {
 	for _, nr := range seccompBlockedSyscalls {
 		steps = append(steps, bpfStep{code: jeq, k: nr, jt: "eperm"})
 	}
+	if egress {
+		// connect -> the supervisor decides. Falls through when not connect, so
+		// the socket/socketpair/io_uring dispatch below is unchanged.
+		steps = append(steps, bpfStep{code: jeq, k: uint32(unix.SYS_CONNECT), jt: "usernotif"})
+	}
 	steps = append(steps,
 		bpfStep{code: jeq, k: uint32(unix.SYS_SOCKET), jt: "socket"},
 		bpfStep{code: jeq, k: uint32(unix.SYS_SOCKETPAIR), jt: "socketpair"},
@@ -364,12 +429,15 @@ func socketFilterProgram() ([]unix.SockFilter, error) {
 		bpfStep{label: "eacces", code: ret, k: unix.SECCOMP_RET_ERRNO | uint32(unix.EACCES)},
 		bpfStep{label: "enosys", code: ret, k: unix.SECCOMP_RET_ERRNO | uint32(unix.ENOSYS)},
 	)
+	if egress {
+		steps = append(steps, bpfStep{label: "usernotif", code: ret, k: seccompRetUserNotif})
+	}
 	return assembleBPF(steps)
 }
 
 // installSocketFilter installs the filter on the calling thread.
 func installSocketFilter() error {
-	filter, err := socketFilterProgram()
+	filter, err := socketFilterProgram(false)
 	if err != nil {
 		return err
 	}

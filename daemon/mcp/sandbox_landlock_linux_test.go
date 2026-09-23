@@ -44,7 +44,7 @@ func inSandbox(t *testing.T, policy landlockPolicy, fn func() error) error {
 	done := make(chan error, 1)
 	go func() {
 		runtime.LockOSThread() // never unlocked, deliberately: see above
-		if err := applySandbox(policy, LandlockABI()); err != nil {
+		if err := applySandbox(policy, LandlockABI(), helperEgress{}); err != nil {
 			done <- fmt.Errorf("applying the sandbox: %w", err)
 			return
 		}
@@ -414,7 +414,7 @@ func TestTheSocketFilterDecidesEveryCaseCorrectly(t *testing.T) {
 	if !seccompSupported {
 		t.Skipf("NOT RUN: no seccomp filter for %s", runtime.GOARCH)
 	}
-	prog, err := socketFilterProgram()
+	prog, err := socketFilterProgram(false)
 	if err != nil {
 		t.Fatal(err)
 	}

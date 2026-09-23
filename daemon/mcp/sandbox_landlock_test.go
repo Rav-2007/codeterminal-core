@@ -182,7 +182,7 @@ func TestBwrapAndLandlockShareTheSystemPaths(t *testing.T) {
 func TestHelperArgsRoundTripAndRefuseNonsense(t *testing.T) {
 	p := landlockPolicyFor("", SandboxConfig{WorkspaceRoot: "/work", HomeDir: "/home/cache"})
 	args := append(p.args(), selfCheckFlag, "/tmp/outside", "--", "go", "test", "./...")
-	got, check, argv, err := parseHelperArgs(args)
+	got, check, _, argv, err := parseHelperArgs(args)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +197,7 @@ func TestHelperArgsRoundTripAndRefuseNonsense(t *testing.T) {
 		{"--wx", "/usr", "--", "x"},     // unknown access
 		{"--rx"},                        // flag with no value
 	} {
-		if _, _, _, err := parseHelperArgs(bad); err == nil {
+		if _, _, _, _, err := parseHelperArgs(bad); err == nil {
 			t.Errorf("parseHelperArgs(%q) accepted it", bad)
 		}
 	}

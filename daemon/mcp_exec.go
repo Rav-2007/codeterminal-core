@@ -242,7 +242,7 @@ func sandboxConfinementSentence(cfg mcp.SandboxConfig) string {
 			sentence += ", and send them signals"
 		}
 		sentence += "."
-		return sentence + networkReachClause(cfg)
+		return sentence + networkReachClause(cfg, egressFilterUsable())
 	default:
 		sentence := "Confined to this workspace on this host."
 		if workspaceExposesRealHome(cfg.WorkspaceRoot) {
@@ -255,7 +255,7 @@ func sandboxConfinementSentence(cfg mcp.SandboxConfig) string {
 		// own network namespace, so host-localhost is unreachable through it, and
 		// claiming otherwise would be the false statement this exists to avoid.
 		if mode == mcp.SandboxBubblewrap {
-			sentence += networkReachClause(cfg)
+			sentence += networkReachClause(cfg, false)
 		}
 		return sentence
 	}
@@ -267,9 +267,17 @@ func sandboxConfinementSentence(cfg mcp.SandboxConfig) string {
 // that does not share the host network. Shared by the Landlock and bwrap
 // branches so the two cannot drift; see sandboxConfinementSentence for why
 // nothing on these paths can allow the registry while denying an IP.
-func networkReachClause(cfg mcp.SandboxConfig) string {
+func networkReachClause(cfg mcp.SandboxConfig, egressFiltered bool) string {
 	if !cfg.AllowNetwork {
 		return ""
+	}
+	// Only the backend whose commands are actually egress-filtered may say so, and
+	// only when the filter was PROVEN to enforce here (EgressFilterUsable runs the
+	// real helper). Everything else keeps the open-network disclosure.
+	if egressFiltered {
+		return " It can still reach the network your build needs, but not the cloud metadata " +
+			"endpoint or other link-local addresses, which are blocked. Services on localhost " +
+			"are still reachable."
 	}
 	return " It can still reach the network your build needs, so it can also reach " +
 		"services on localhost and, on a cloud machine, the instance metadata endpoint."
@@ -398,6 +406,13 @@ func (s *Server) builtinSandboxExec(ctx context.Context, raw json.RawMessage) (m
 		}
 	}
 
+	// EGRESS FIREWALL: for a landlock command on a host where it enforces, trap
+	// connect(2) so the metadata endpoint and link-local ranges are refused while
+	// the build's real network still works. Sets cfg.EgressFilter (so WrapCommand
+	// adds the helper flags) and starts the supervisor; a no-op everywhere else.
+	egress := maybeSetupEgress(&cfg, s.logger)
+	defer egress.close()
+
 	execBin, execArgs, err := mcp.WrapCommand(bin, parts[1:], cfg)
 	if err != nil {
 		return toolError("preparing a sandbox for %q: %v", bin, err)
@@ -483,6 +498,11 @@ func (s *Server) builtinSandboxExec(ctx context.Context, raw json.RawMessage) (m
 	// point where the reap could help. See execReapDrainDelay.
 	if cfg.ScopeUnit != "" {
 		cmd.WaitDelay = execReapDrainDelay
+	}
+	// The egress helper end travels as the command's single ExtraFile (fd 3), the
+	// number WrapCommand told the helper to hand its listener back on.
+	if f := egress.extraFile(); f != nil {
+		cmd.ExtraFiles = append(cmd.ExtraFiles, f)
 	}
 	err = cmd.Run()
 	result := buf.String()

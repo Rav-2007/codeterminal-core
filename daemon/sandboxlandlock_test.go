@@ -108,11 +108,36 @@ func TestAConfinedPromptDisclosesNetworkReach(t *testing.T) {
 	if mcp.ResolveMode(cfg) != mcp.SandboxLandlock {
 		t.Fatalf("test setup: cfg resolved to %v, not landlock", mcp.ResolveMode(cfg))
 	}
+	// The landlock sentence says one of two things, and WHICH is decided by
+	// whether the egress firewall was proven to enforce here -- never by hope.
 	land := sandboxConfinementSentence(cfg)
-	for _, want := range disclosures {
-		if !strings.Contains(land, want) {
-			t.Errorf("the landlock prompt does not disclose %q:\n%s", want, land)
+	if egressFilterUsable() {
+		for _, want := range []string{"not the cloud metadata", "blocked", "localhost"} {
+			if !strings.Contains(land, want) {
+				t.Errorf("the egress-filtered landlock prompt does not say %q:\n%s", want, land)
+			}
 		}
+	} else {
+		for _, want := range disclosures {
+			if !strings.Contains(land, want) {
+				t.Errorf("the landlock prompt does not disclose %q:\n%s", want, land)
+			}
+		}
+	}
+
+	// The two wordings, asserted directly so both are covered on every host: with
+	// the firewall the metadata endpoint is BLOCKED, without it it is REACHABLE.
+	// Getting these backwards is the exact lie this whole effort exists to prevent.
+	filtered := networkReachClause(cfg, true)
+	if !strings.Contains(filtered, "not the cloud metadata") || !strings.Contains(filtered, "blocked") {
+		t.Errorf("the egress-filtered clause does not say the metadata endpoint is blocked: %s", filtered)
+	}
+	open := networkReachClause(cfg, false)
+	if !strings.Contains(open, "can also reach") || !strings.Contains(open, "metadata endpoint") {
+		t.Errorf("the unfiltered clause does not disclose that the metadata endpoint is reachable: %s", open)
+	}
+	if strings.Contains(open, "blocked") {
+		t.Errorf("the unfiltered clause claims something is blocked: %s", open)
 	}
 
 	// bwrap-with-network: the same exposure, so the same disclosure.
