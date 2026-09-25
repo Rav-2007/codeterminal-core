@@ -242,7 +242,7 @@ func sandboxConfinementSentence(cfg mcp.SandboxConfig) string {
 			sentence += ", and send them signals"
 		}
 		sentence += "."
-		return sentence + networkReachClause(cfg, egressFilterUsable())
+		return sentence + networkReachClause(cfg, egressFilterUsable(mode))
 	default:
 		sentence := "Confined to this workspace on this host."
 		if workspaceExposesRealHome(cfg.WorkspaceRoot) {
@@ -251,11 +251,13 @@ func sandboxConfinementSentence(cfg mcp.SandboxConfig) string {
 		}
 		// bwrap shares the host's network when the network is allowed (no
 		// --unshare-net), so the same localhost/metadata reach as Landlock is
-		// real and is disclosed here too. Docker is NOT included: it runs in its
-		// own network namespace, so host-localhost is unreachable through it, and
-		// claiming otherwise would be the false statement this exists to avoid.
+		// real -- and, now that the egress firewall runs under bwrap too, so is
+		// the same block when egressFilterUsable proves it here. Docker is NOT
+		// included: it runs in its own network namespace, so host-localhost is
+		// unreachable through it, and claiming otherwise would be the false
+		// statement this exists to avoid.
 		if mode == mcp.SandboxBubblewrap {
-			sentence += networkReachClause(cfg, false)
+			sentence += networkReachClause(cfg, egressFilterUsable(mode))
 		}
 		return sentence
 	}

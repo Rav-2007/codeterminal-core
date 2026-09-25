@@ -532,6 +532,17 @@ func TestPublishEgressListenerHandsItOverAndSealsIt(t *testing.T) {
 		t.Error("the listener is not close-on-exec: the sandboxed command would inherit it and could answer its own connects")
 	}
 
+	// And so is the socketpair end. An untrusted command that inherited THAT
+	// would hold an open channel into the daemon -- able to write to it, and to
+	// pass it descriptors of its own -- long after it had served its only purpose.
+	sockFlags, err := unix.FcntlInt(uintptr(pair[1]), unix.F_GETFD, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sockFlags&unix.FD_CLOEXEC == 0 {
+		t.Error("the handoff socketpair is not close-on-exec: the sandboxed command would inherit a live channel to the daemon")
+	}
+
 	// A bad socketpair fd is reported, not ignored -- the helper must fail the
 	// invocation rather than run with a firewall nobody is supervising.
 	if err := publishEgressListener(lfd, helperEgress{enabled: true, fd: -1}); err == nil {

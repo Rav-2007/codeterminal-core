@@ -120,12 +120,15 @@ type SandboxConfig struct {
 	// See ScopeTeardownArgs.
 	ScopeUnit string
 
-	// EgressFilter turns on the seccomp-notify egress firewall for a landlock
-	// command: the helper traps connect(2) to a listener the daemon supervises,
-	// which refuses the cloud metadata / link-local ranges. EMPTY MEANS TODAY'S
-	// BEHAVIOUR (network reachable, disclosed). Only the landlock backend honours
-	// it, and only when EgressFilterUsable; the handler passes the socketpair as
-	// the command's single ExtraFile, so the helper finds it at fd 3.
+	// EgressFilter turns on the seccomp-notify egress firewall: the helper traps
+	// connect(2) to a listener the daemon supervises, which refuses the cloud
+	// metadata / link-local ranges. EMPTY MEANS TODAY'S BEHAVIOUR (network
+	// reachable, disclosed). The landlock and bubblewrap backends honour it --
+	// landlock when EgressFilterUsable, bwrap when BwrapEgressUsable, each of
+	// which proves the block by running the real helper. Docker does not: it has
+	// its own network namespace, so the claim would not be about anything. The
+	// handler passes the socketpair as the command's single ExtraFile, so the
+	// helper finds it at fd 3 under either backend.
 	EgressFilter bool
 }
 
@@ -153,6 +156,31 @@ func DockerUsable(cfg SandboxConfig) bool {
 var lookPath = exec.LookPath
 var getUID = os.Getuid
 var getGID = os.Getgid
+
+// bwrapBaseArgs is the isolation every bubblewrap invocation gets, before any
+// bind. Shared with the BwrapEgressUsable probe so the flags the probe proves the
+// egress firewall under cannot drift from the flags it runs under -- the
+// namespaces here are exactly what the supervisor has to reach across.
+func bwrapBaseArgs() []string {
+	return []string{
+		// Hardened Security & Isolation Flags
+		"--new-session",     // Prevent TIOCSTI terminal ioctl injection attacks
+		"--die-with-parent", // Terminate immediately if host daemon dies
+		"--cap-drop", "ALL", // Drop all Linux POSIX capabilities
+		// NOTE: there is deliberately no --nosuid here. It was present and
+		// bwrap REJECTED THE WHOLE INVOCATION with "Unknown option
+		// --nosuid" -- it is a mount(2) option, not a bwrap flag -- so
+		// every sandboxed command failed before running. Nothing is lost by
+		// its absence: bubblewrap mounts its binds MS_NOSUID inherently,
+		// which is the property the flag was reaching for.
+		"--unshare-pid", // PID namespace isolation (cannot see host processes)
+		"--unshare-uts", // Hostname/domain isolation
+		"--unshare-ipc", // Shared memory / SysV IPC isolation
+		"--proc", "/proc",
+		"--dev", "/dev",
+		"--tmpfs", "/tmp",
+	}
+}
 
 // BwrapUsable reports whether bwrap can actually create a user namespace on
 // this host, by running one.
@@ -601,24 +629,7 @@ func WrapCommand(command string, args []string, cfg SandboxConfig) (string, []st
 		}
 
 		cleanWs := filepath.Clean(cfg.WorkspaceRoot)
-		bwrapArgs := []string{
-			// Hardened Security & Isolation Flags
-			"--new-session",     // Prevent TIOCSTI terminal ioctl injection attacks
-			"--die-with-parent", // Terminate immediately if host daemon dies
-			"--cap-drop", "ALL", // Drop all Linux POSIX capabilities
-			// NOTE: there is deliberately no --nosuid here. It was present and
-			// bwrap REJECTED THE WHOLE INVOCATION with "Unknown option
-			// --nosuid" -- it is a mount(2) option, not a bwrap flag -- so
-			// every sandboxed command failed before running. Nothing is lost by
-			// its absence: bubblewrap mounts its binds MS_NOSUID inherently,
-			// which is the property the flag was reaching for.
-			"--unshare-pid", // PID namespace isolation (cannot see host processes)
-			"--unshare-uts", // Hostname/domain isolation
-			"--unshare-ipc", // Shared memory / SysV IPC isolation
-			"--proc", "/proc",
-			"--dev", "/dev",
-			"--tmpfs", "/tmp",
-		}
+		bwrapArgs := bwrapBaseArgs()
 
 		// Read-only system binary and SSL certificate mounts
 		systemMounts := sandboxSystemPaths
@@ -656,8 +667,44 @@ func WrapCommand(command string, args []string, cfg SandboxConfig) (string, []st
 			bwrapArgs = append(bwrapArgs, "--unshare-net")
 		}
 
-		bwrapArgs = append(bwrapArgs, "--chdir", cleanWs)
-		bwrapArgs = append(bwrapArgs, "--", command)
+		// THE EGRESS FIREWALL, when the handler wired a socketpair and a supervisor
+		// (see SandboxConfig.EgressFilter). The command bwrap runs becomes our own
+		// helper, which installs the connect-trapping listener inside the sandbox,
+		// hands the listener back on fd 3 -- inherited fds pass through
+		// systemd-run, env and bwrap untouched -- and then execve's the real
+		// command, so bwrap still reaps exactly what it reaps today.
+		//
+		// The bind goes LAST, after every other bind and after the /tmp tmpfs,
+		// because the helper binary is otherwise invisible in bwrap's mount
+		// namespace, and under `go test` it lives in /tmp, which the tmpfs hides.
+		//
+		// No --daemon-pid, unlike the Landlock path: inside bwrap's PID namespace
+		// the daemon's pid does not resolve, and PR_SET_PTRACER is not needed
+		// anyway -- the supervisor's ptrace access comes from the daemon being an
+		// ancestor of the whole tree, which holds across the namespace.
+		//
+		// A binary that cannot serve as its own helper CANNOT install the filter,
+		// and must say so rather than quietly running without one: by the time
+		// EgressFilter is set the handler has started a supervisor and the approval
+		// prompt has already told the user the metadata endpoint is blocked. Running
+		// unfiltered under that sentence is the exact divergence this whole
+		// mechanism exists to prevent, so it is an error, not a fallback.
+		// (Unreachable in practice -- BwrapEgressUsable checks the same thing before
+		// anything turns the filter on -- which is why it is cheap to be strict.)
+		self := selfExecutable()
+		filtered := cfg.EgressFilter
+		if filtered && self == "" {
+			return "", nil, fmt.Errorf("the egress firewall was requested for this command, but this binary " +
+				"cannot re-execute itself as the sandbox helper, so the filter cannot be installed")
+		}
+		if filtered {
+			bwrapArgs = append(bwrapArgs, "--ro-bind", self, self)
+		}
+		bwrapArgs = append(bwrapArgs, "--chdir", cleanWs, "--")
+		if filtered {
+			bwrapArgs = append(bwrapArgs, self, SandboxHelperArg, egressOnlyFlag, egressFdFlag, "3", landlockArgsSeparator)
+		}
+		bwrapArgs = append(bwrapArgs, command)
 		bwrapArgs = append(bwrapArgs, args...)
 
 		return withLimiter("bwrap", bwrapArgs, cfg)

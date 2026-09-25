@@ -142,7 +142,12 @@ func connectExpect(hostport string, wantDenied bool) error {
 //
 // It rides on LandlockUsable: the egress helper IS the landlock helper with one
 // more filter, so a host that cannot enforce Landlock cannot enforce this either.
-var EgressFilterUsable = sync.OnceValue(func() bool {
+var EgressFilterUsable = sync.OnceValue(landlockEgressUsable)
+
+// landlockEgressUsable is EgressFilterUsable's body, named so its refusals can be
+// tested: a OnceValue answers once per process, so a test can never watch it say
+// no to a host that cannot enforce.
+func landlockEgressUsable() bool {
 	if !LandlockUsable() {
 		return false
 	}
@@ -153,14 +158,6 @@ var EgressFilterUsable = sync.OnceValue(func() bool {
 	if _, err := lookPath("true"); err != nil {
 		return false
 	}
-	// An allowed destination: a real loopback listener (loopback is not denied).
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return false
-	}
-	defer func() { _ = ln.Close() }()
-	port := ln.Addr().(*net.TCPAddr).Port
-
 	dir, err := os.MkdirTemp("", "mochiii-egress-probe-")
 	if err != nil {
 		return false
@@ -170,6 +167,72 @@ var EgressFilterUsable = sync.OnceValue(func() bool {
 	if os.Mkdir(workspace, 0o700) != nil {
 		return false
 	}
+	return egressProbe(func(spec string) (string, []string) {
+		policy := landlockPolicyFor("", SandboxConfig{WorkspaceRoot: workspace})
+		args := append([]string{SandboxHelperArg}, policy.args()...)
+		args = append(args, egressFdFlag, "3", daemonPidFlag, strconv.Itoa(os.Getpid()),
+			egressSelfCheckFlag, spec, landlockArgsSeparator, "true")
+		return self, args
+	})
+}
+
+// BwrapEgressUsable is the same proof for the bubblewrap backend, and it is a
+// separate probe rather than a flag on the other one because the two rest on
+// different mechanisms. Under bwrap the trapped process sits inside a PID and
+// user namespace, and the supervisor has to reach across both: the kernel must
+// report the notification's pid in the SUPERVISOR's namespace, and
+// process_vm_readv and pidfd_getfd must still be permitted -- by the daemon being
+// an ancestor of the tree, since PR_SET_PTRACER cannot name a pid that does not
+// exist inside the namespace. Running the real helper inside real bwrap is the
+// only thing that proves all of that, so that is what this does.
+//
+// It deliberately does NOT call LandlockUsable: a bwrap host need not have
+// Landlock, and requiring it is exactly what kept this block Landlock-only.
+var BwrapEgressUsable = sync.OnceValue(bwrapEgressUsable)
+
+// bwrapEgressUsable is BwrapEgressUsable's body; see landlockEgressUsable.
+func bwrapEgressUsable() bool {
+	if !BwrapUsable() {
+		return false
+	}
+	self := selfExecutable()
+	if self == "" {
+		return false
+	}
+	if _, err := lookPath("bwrap"); err != nil {
+		return false
+	}
+	return egressProbe(func(spec string) (string, []string) {
+		args := bwrapBaseArgs()
+		for _, m := range sandboxSystemPaths {
+			if _, err := os.Stat(m); err == nil {
+				args = append(args, "--ro-bind", m, m)
+			}
+		}
+		// Last, so nothing shadows it -- the same ordering the real invocation uses.
+		args = append(args, "--ro-bind", self, self, "--chdir", "/", "--")
+		args = append(args, self, SandboxHelperArg, egressOnlyFlag, egressFdFlag, "3",
+			egressSelfCheckFlag, spec, landlockArgsSeparator, "true")
+		return "bwrap", args
+	})
+}
+
+// egressProbe is the scaffolding both probes share: a real loopback listener as
+// the ALLOWED destination, a socketpair for the listener handoff, a real
+// supervisor, and one real helper invocation that must find the metadata endpoint
+// refused and the loopback listener reachable. build returns the binary and argv
+// to run, given the self-check spec.
+//
+// Presence is not capability, the lesson every neighbour of this file learned the
+// hard way; only a connect that was really trapped and really answered is proof.
+func egressProbe(build func(spec string) (string, []string)) bool {
+	// An allowed destination: a real loopback listener (loopback is not denied).
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return false
+	}
+	defer func() { _ = ln.Close() }()
+	port := ln.Addr().(*net.TCPAddr).Port
 
 	pair, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM, 0)
 	if err != nil {
@@ -179,15 +242,11 @@ var EgressFilterUsable = sync.OnceValue(func() bool {
 	helperEnd := os.NewFile(uintptr(pair[1]), "egress-helper")
 	defer func() { _ = daemonEnd.Close() }()
 
-	policy := landlockPolicyFor("", SandboxConfig{WorkspaceRoot: workspace})
-	spec := fmt.Sprintf("169.254.169.254:80,127.0.0.1:%d", port)
-	args := append([]string{SandboxHelperArg}, policy.args()...)
-	args = append(args, egressFdFlag, "3", daemonPidFlag, strconv.Itoa(os.Getpid()),
-		egressSelfCheckFlag, spec, landlockArgsSeparator, "true")
+	bin, args := build(fmt.Sprintf("169.254.169.254:80,127.0.0.1:%d", port))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	probe := exec.CommandContext(ctx, self, args...)
+	probe := exec.CommandContext(ctx, bin, args...)
 	probe.Env = ServerEnv(nil)
 	probe.ExtraFiles = []*os.File{helperEnd} // becomes fd 3 in the helper
 
@@ -210,4 +269,4 @@ var EgressFilterUsable = sync.OnceValue(func() bool {
 	}()
 
 	return probe.Wait() == nil
-})
+}

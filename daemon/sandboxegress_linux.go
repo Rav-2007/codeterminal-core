@@ -26,11 +26,12 @@ type egressWiring struct {
 	lfdCh     chan int // the listener fd the goroutine received, for teardown
 }
 
-// maybeSetupEgress turns egress filtering on for cfg when the backend is Landlock
-// and the firewall actually enforces here, and starts the supervisor. It returns
-// nil (and leaves cfg untouched) otherwise -- today's disclosed-but-open network.
+// maybeSetupEgress turns egress filtering on for cfg when the backend supports
+// the firewall AND it actually enforces here, and starts the supervisor. It
+// returns nil (and leaves cfg untouched) otherwise -- today's disclosed-but-open
+// network.
 func maybeSetupEgress(cfg *mcp.SandboxConfig, logger *log.Logger) *egressWiring {
-	if mcp.ResolveMode(*cfg) != mcp.SandboxLandlock || !mcp.EgressFilterUsable() {
+	if !egressFilterUsable(mcp.ResolveMode(*cfg)) {
 		return nil
 	}
 	sp, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
@@ -58,10 +59,26 @@ func maybeSetupEgress(cfg *mcp.SandboxConfig, logger *log.Logger) *egressWiring 
 	return w
 }
 
-// egressFilterUsable reports whether the firewall enforces on this host. The
-// prompt asks through here rather than mcp directly, because the whole mechanism
-// is Linux-only and the prompt is built on every platform.
-func egressFilterUsable() bool { return mcp.EgressFilterUsable() }
+// egressFilterUsable reports whether the firewall enforces for this backend on
+// this host. The prompt and the wiring both ask through here rather than mcp
+// directly, because the whole mechanism is Linux-only and the prompt is built on
+// every platform -- and because asking ONE question keeps what the prompt claims
+// and what the handler installs from ever disagreeing.
+//
+// Each backend has its own probe: they rest on different mechanisms (bwrap's
+// supervisor reaches across a PID and user namespace; Landlock's does not), so
+// one proving out says nothing about the other. Docker is absent deliberately --
+// its own network namespace makes the claim meaningless there.
+func egressFilterUsable(mode mcp.SandboxMode) bool {
+	switch mode {
+	case mcp.SandboxLandlock:
+		return mcp.EgressFilterUsable()
+	case mcp.SandboxBubblewrap:
+		return mcp.BwrapEgressUsable()
+	default:
+		return false
+	}
+}
 
 // extraFile is the helper end to add to the command's ExtraFiles, or nil.
 func (w *egressWiring) extraFile() *os.File {

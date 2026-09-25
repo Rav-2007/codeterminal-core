@@ -111,7 +111,7 @@ func TestAConfinedPromptDisclosesNetworkReach(t *testing.T) {
 	// The landlock sentence says one of two things, and WHICH is decided by
 	// whether the egress firewall was proven to enforce here -- never by hope.
 	land := sandboxConfinementSentence(cfg)
-	if egressFilterUsable() {
+	if egressFilterUsable(mcp.SandboxLandlock) {
 		for _, want := range []string{"not the cloud metadata", "blocked", "localhost"} {
 			if !strings.Contains(land, want) {
 				t.Errorf("the egress-filtered landlock prompt does not say %q:\n%s", want, land)
@@ -140,15 +140,25 @@ func TestAConfinedPromptDisclosesNetworkReach(t *testing.T) {
 		t.Errorf("the unfiltered clause claims something is blocked: %s", open)
 	}
 
-	// bwrap-with-network: the same exposure, so the same disclosure.
+	// bwrap-with-network: the same exposure, and now the same firewall -- so the
+	// same rule decides the wording. Whichever branch this host takes, the prompt
+	// must match what is actually installed, never what would be nicer to say.
 	forceBwrap(t, true)
 	if mcp.ResolveMode(cfg) != mcp.SandboxBubblewrap {
 		t.Fatalf("test setup: cfg resolved to %v, not bubblewrap", mcp.ResolveMode(cfg))
 	}
 	bw := sandboxConfinementSentence(cfg)
-	for _, want := range disclosures {
-		if !strings.Contains(bw, want) {
-			t.Errorf("the bwrap prompt does not disclose %q:\n%s", want, bw)
+	if egressFilterUsable(mcp.SandboxBubblewrap) {
+		for _, want := range []string{"not the cloud metadata", "blocked", "localhost"} {
+			if !strings.Contains(bw, want) {
+				t.Errorf("the egress-filtered bwrap prompt does not say %q:\n%s", want, bw)
+			}
+		}
+	} else {
+		for _, want := range disclosures {
+			if !strings.Contains(bw, want) {
+				t.Errorf("the bwrap prompt does not disclose %q:\n%s", want, bw)
+			}
 		}
 	}
 

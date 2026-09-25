@@ -98,21 +98,32 @@ sandbox allows it — and that allowed every confined command to reach
 from. A malicious dependency or a build script could read those credentials on
 any cloud build machine.
 
-Commands confined by Landlock now have that blocked. The sandbox watches the
-connections a build opens and refuses the cloud metadata address and the other
-link-local ranges, while everything the build legitimately needs — package
-registries, module proxies, DNS — is untouched. Services on your own machine
-(`localhost`) stay reachable, because builds and tests legitimately use them.
+Confined commands now have that blocked — **on both sandboxes, bubblewrap and
+Landlock**. The sandbox watches the connections a build opens and refuses the
+cloud metadata address and the other link-local ranges, while everything the
+build legitimately needs — package registries, module proxies, DNS — is
+untouched. Services on your own machine (`localhost`) stay reachable, because
+builds and tests legitimately use them. Bubblewrap is the sandbox most machines
+actually use, so this is the change that makes the protection real for most
+people rather than for a minority of hosts.
 
 **It is proven before it is claimed.** The prompt only says the endpoint is
-blocked on a machine where Mochiii has just demonstrated the block working; where
-it cannot, the prompt keeps saying the endpoint is reachable rather than claiming
-a protection you do not have. Machines confined by bubblewrap are unchanged and
-still say so.
+blocked on a machine where Mochiii has just demonstrated the block working, and
+each sandbox is demonstrated separately — one working proves nothing about the
+other. Where it cannot be demonstrated, the prompt keeps saying the endpoint is
+reachable rather than claiming a protection you do not have.
 
-**What it does not cover.** The confinement holds while the command runs. On a
-machine confined by bubblewrap rather than Landlock, a command can still reach
-the instance metadata endpoint, and the prompt says so.
+**It does not get in the way of your build.** Real builds fetch over the network
+from processes they start — `make` runs a shell, the shell runs `curl`. Those are
+allowed exactly as before; only the metadata and link-local addresses are
+refused. That is covered by a test that would fail if a build's own network ever
+started being denied.
+
+**What it does not cover.** The confinement holds while the command runs. Docker
+is unchanged and does not need this: it already runs on its own network. A build
+process that detaches itself completely from Mochiii loses its network rather
+than slipping past the block, and a 32-bit program run inside bubblewrap will no
+longer start — both are the safe direction, and both are deliberate.
 
 ### A force-killed daemon no longer leaves a build process running
 

@@ -1,0 +1,24 @@
+# FUNCTIONS THE COVERAGE GATE CANNOT SEE, AND WHAT PROVES THEM INSTEAD.
+#
+# The sandbox helper runs in a re-exec'd subprocess and ends in execve(2), which
+# replaces the process image -- so Go's coverage counters for everything the
+# helper does are never written, and `go test -cover` reports those functions at
+# 0.0% however well they are tested. That is a property of how the helper works,
+# not a gap to be closed by writing more unit tests: a test that could cover
+# these in-process would be testing an arrangement the product does not have.
+# (The one that tried deadlocked the package for ten minutes; see
+# sandbox_egress_supervisor_linux_test.go.)
+#
+# What this file exists to stop is the NEXT one arriving unnoticed. Every 0.0%
+# function in the sandbox files must be listed here beside the cross-process
+# proof that exercises it, and scripts/subprocess-coverage-ledger.sh fails when
+# an unlisted one appears -- or when a listed one becomes coverable and the line
+# should go. The proof named must exist in the package; a name invented to quiet
+# the gate does not pass it.
+#
+# It records the blind spot. It does not remove it.
+#
+# Format:  <file>:<function>  <proof>[, <proof>...]
+
+sandbox_egress_supervisor_linux.go:installEgressListener  BwrapEgressUsable, EgressFilterUsable
+sandbox_landlock_linux.go:applyEgressFilter               BwrapEgressUsable, EgressFilterUsable

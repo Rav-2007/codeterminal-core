@@ -19,13 +19,21 @@ import (
 // racing thread could swap in afterwards. That is what makes the block
 // TOCTOU-safe rather than best-effort.
 
-// installEgressListener installs the combined socket+connect filter on the
-// calling (already no_new_privs, locked) thread via seccomp(2) with a new
-// listener, and returns the listener fd. Unlike installSocketFilter's
-// PR_SET_SECCOMP, this form can carry a SECCOMP_RET_USER_NOTIF verdict and hands
-// back the fd the supervisor listens on.
-func installEgressListener() (int, error) {
-	filter, err := socketFilterProgram(true)
+// installEgressListener installs the connect-trapping filter on the calling
+// (already no_new_privs, locked) thread via seccomp(2) with a new listener, and
+// returns the listener fd. Unlike installSocketFilter's PR_SET_SECCOMP, this form
+// can carry a SECCOMP_RET_USER_NOTIF verdict and hands back the fd the supervisor
+// listens on.
+//
+// only picks the program: the connect-only one for the bwrap backend, where the
+// namespaces have already done the rest, and the combined socket+connect one for
+// Landlock, where this filter is the only syscall confinement there is.
+func installEgressListener(only bool) (int, error) {
+	program := func() ([]unix.SockFilter, error) { return socketFilterProgram(true) }
+	if only {
+		program = egressOnlyFilterProgram
+	}
+	filter, err := program()
 	if err != nil {
 		return -1, err
 	}

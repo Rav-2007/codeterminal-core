@@ -94,6 +94,7 @@ manifest() {
   cat <<'MANIFEST'
 actions-pinned.sh|both|
 coverage-ratchet.sh|both|
+subprocess-coverage-ledger.sh|local|The ledger it enforces can only be judged where the sandbox actually runs. On a runner where bwrap cannot unshare, the sandbox tests skip and EVERY function in those files reads 0.0%, so the comparison has nothing to say and the gate would pass by being irrelevant -- the same failure reach.sh is local for. Its own sentinel check reports NOT RUN in exactly that case rather than pretending to have looked, so running it in CI would add a step that is either silent or misleading. The blind spot it guards is a property of execve in the helper, which is identical on every host, so one place that judges it honestly is enough.
 docs-claims.sh|both|
 docs-coderefs.sh|both|
 docs-index.sh|both|
@@ -147,6 +148,7 @@ standalone|both|
 docs|covered|
 lint|covered|
 ratchet|covered|
+ledger|local|Its one script, subprocess-coverage-ledger.sh, is declared local in the script manifest above with the full reason: the blind spot it guards can only be judged on a host where the sandbox really runs, and on a CI runner that cannot unshare it would pass by being irrelevant.
 errcheck|covered|
 fuzzguard|covered|
 supplychain|mixed|govulncheck.sh is local-only by its own entry in the script manifest above -- CI runs govulncheck inline per module instead. Every other script this target runs is in CI.

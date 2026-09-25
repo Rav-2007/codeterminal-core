@@ -8,7 +8,7 @@
 
 MODULES := daemon editapply proxy helper protocol clients/tui
 
-.PHONY: help hooks hookcheck test race fmt vet crossvet standalone targetparity lint ratchet errcheck fuzz check docs webview drill soak eval evalguard debtmarkers parity supplychain
+.PHONY: help hooks hookcheck test race fmt vet crossvet standalone targetparity lint ratchet ledger errcheck fuzz check docs webview drill soak eval evalguard debtmarkers parity supplychain
 
 help:
 	@echo "make hooks    install the tracked git hooks (.githooks/) -- do this once"
@@ -173,6 +173,9 @@ lint:
 ratchet:
 	@./scripts/coverage-ratchet.sh
 
+ledger:
+	@./scripts/subprocess-coverage-ledger.sh
+
 errcheck:
 	@./scripts/errcheck-ceiling.sh
 
@@ -245,7 +248,7 @@ fuzzguard:
 # docs is last and costs ~1s. It is in `check` rather than in a docs-only job
 # because a rename breaks links in the same commit that makes it, and that is
 # the only moment anyone can fix it cheaply.
-check: hookcheck fmt vet crossvet standalone race lint ratchet errcheck evalguard fuzzguard supplychain webview docs debtmarkers targetparity parity reach
+check: hookcheck fmt vet crossvet standalone race lint ratchet ledger errcheck evalguard fuzzguard supplychain webview docs debtmarkers targetparity parity reach
 	@echo "check: all gates green"
 	@./scripts/gate-parity.sh --what-ci-adds
 

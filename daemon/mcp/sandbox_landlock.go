@@ -54,16 +54,43 @@ const (
 	egressFdFlag        = "--egress-fd"
 	daemonPidFlag       = "--daemon-pid"
 	egressSelfCheckFlag = "--self-check-egress"
+
+	// egressOnlyFlag is the bwrap backend's mode: install the egress firewall and
+	// NOTHING else -- no Landlock domain, no socket filter. bwrap has already
+	// confined the filesystem by the time this helper runs, and a bwrap host need
+	// not have Landlock at all. Takes no value.
+	egressOnlyFlag = "--egress-only"
 )
 
 // helperEgress is the egress-firewall half of a helper invocation: whether it is
 // on, the socketpair fd to hand the listener back on, the daemon pid to grant
-// ptrace access, and the probe's self-check addresses (empty for a real run).
+// ptrace access, the probe's self-check addresses (empty for a real run), and
+// whether the firewall is the ONLY thing this helper applies (the bwrap mode).
 type helperEgress struct {
 	enabled   bool
 	fd        int
 	daemonPid int
 	selfCheck string
+	only      bool
+}
+
+// validate refuses a half-applied egress-only invocation. The bwrap mode applies
+// the firewall and nothing else, so it MUST carry a listener fd, and it must NOT
+// carry a Landlock policy: an empty policy applied as if it were real would
+// confine the command to nothing at all, and a policy carried but skipped would
+// be a confinement claimed and never enforced. Either is worse than refusing.
+func (e helperEgress) validate(policy landlockPolicy) error {
+	if !e.only {
+		return nil
+	}
+	if !e.enabled {
+		return fmt.Errorf("%s needs %s", egressOnlyFlag, egressFdFlag)
+	}
+	if len(policy.Rules) > 0 {
+		return fmt.Errorf("%s cannot be combined with a landlock policy (%d rules given)",
+			egressOnlyFlag, len(policy.Rules))
+	}
+	return nil
 }
 
 // helperRegistered is set by MaybeRunSandboxHelper. Nothing re-executes this
@@ -203,7 +230,15 @@ func parseHelperArgs(args []string) (policy landlockPolicy, selfCheck string, eg
 			if len(argv) == 0 {
 				return policy, "", egress, nil, fmt.Errorf("no command after %q", landlockArgsSeparator)
 			}
+			if vErr := egress.validate(policy); vErr != nil {
+				return policy, "", egress, nil, vErr
+			}
 			return policy, selfCheck, egress, argv, nil
+		}
+		// The one flag that takes no value, checked before the value lookup below.
+		if flag == egressOnlyFlag {
+			egress.only = true
+			continue
 		}
 		if i+1 >= len(args) {
 			return policy, "", egress, nil, fmt.Errorf("%s has no value", flag)

@@ -133,11 +133,22 @@ func sandboxExecMain(args []string) int {
 // filter, then the Landlock domain. It cannot be undone, which is the point;
 // callers lock the thread first.
 func applySandbox(policy landlockPolicy, abi int, egress helperEgress) error {
-	if abi < 1 {
-		return errors.New("this kernel has no Landlock")
-	}
 	if !seccompSupported {
 		return fmt.Errorf("no seccomp filter for %s", runtime.GOARCH)
+	}
+	// THE BWRAP MODE: the egress firewall and nothing else. bwrap has already
+	// taken the filesystem, the PID namespace and the capabilities by the time
+	// this helper runs, so there is no Landlock domain to add -- and a bwrap host
+	// need not have Landlock at all, which is why the ABI check below is reached
+	// only on the Landlock path.
+	if egress.only {
+		if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
+			return fmt.Errorf("no_new_privs: %w", err)
+		}
+		return applyEgressFilter(egress)
+	}
+	if abi < 1 {
+		return errors.New("this kernel has no Landlock")
 	}
 	// Required for an unprivileged process to install either of the two, and
 	// wanted anyway: a setuid binary run inside cannot gain what we took away.
@@ -162,7 +173,7 @@ func applySandbox(policy landlockPolicy, abi int, egress helperEgress) error {
 // its own connects), and grants the daemon the ptrace access the supervisor
 // needs to read the destination and act on the target's socket.
 func applyEgressFilter(egress helperEgress) error {
-	lfd, err := installEgressListener()
+	lfd, err := installEgressListener(egress.only)
 	if err != nil {
 		return fmt.Errorf("egress listener: %w", err)
 	}
@@ -185,6 +196,15 @@ func publishEgressListener(lfd int, egress helperEgress) error {
 	// listener -- with one it could answer its own trapped connects.
 	if _, err := unix.FcntlInt(uintptr(lfd), unix.F_SETFD, unix.FD_CLOEXEC); err != nil {
 		return fmt.Errorf("egress listener cloexec: %w", err)
+	}
+	// And the socketpair itself, for the same reason one step further out. It has
+	// done its only job -- carrying the listener out of the sandbox -- and if the
+	// command inherited it, an untrusted build would hold an open channel straight
+	// into the daemon, able to send it bytes and file descriptors of its own.
+	// Nothing reads it again: the daemon received the listener before the exec,
+	// and the supervisor works on the listener, not on this.
+	if _, err := unix.FcntlInt(uintptr(egress.fd), unix.F_SETFD, unix.FD_CLOEXEC); err != nil {
+		return fmt.Errorf("egress socketpair cloexec: %w", err)
 	}
 	if egress.daemonPid > 0 {
 		if err := unix.Prctl(unix.PR_SET_PTRACER, uintptr(egress.daemonPid), 0, 0, 0); err != nil {
@@ -432,6 +452,44 @@ func socketFilterProgram(egress bool) ([]unix.SockFilter, error) {
 	if egress {
 		steps = append(steps, bpfStep{label: "usernotif", code: ret, k: seccompRetUserNotif})
 	}
+	return assembleBPF(steps)
+}
+
+// egressOnlyFilterProgram is the bwrap backend's filter: trap connect(2) to the
+// supervisor, allow everything else.
+//
+// DELIBERATELY NOT socketFilterProgram(true). That one also refuses
+// socket(AF_UNIX) with EACCES, non-stream socketpairs, System V IPC and
+// io_uring -- all of which work under bwrap today. Reusing it would break builds
+// for restrictions the bwrap prompt never claims, in the name of shipping one it
+// does. The Landlock path keeps the wider filter because there it is the only
+// confinement there is; under bwrap the namespaces already did that job.
+//
+// The arch guard stays, and it is not decoration: without it a process could
+// issue connect(2) under a foreign architecture's syscall number and walk
+// straight past the trap, which would make the metadata block -- and the
+// sentence in the prompt claiming it -- false.
+func egressOnlyFilterProgram() ([]unix.SockFilter, error) {
+	const (
+		ld  = unix.BPF_LD | unix.BPF_W | unix.BPF_ABS
+		jeq = unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K
+		jge = unix.BPF_JMP | unix.BPF_JGE | unix.BPF_K
+		ret = unix.BPF_RET | unix.BPF_K
+	)
+	steps := []bpfStep{
+		{code: ld, k: seccompDataArch},
+		{code: jeq, k: seccompAuditArch, jf: "eperm"},
+		{code: ld, k: seccompDataNr},
+	}
+	if seccompX32Possible {
+		steps = append(steps, bpfStep{code: jge, k: x32SyscallBit, jt: "eperm"})
+	}
+	steps = append(steps,
+		bpfStep{code: jeq, k: uint32(unix.SYS_CONNECT), jt: "usernotif"},
+		bpfStep{code: ret, k: unix.SECCOMP_RET_ALLOW},
+		bpfStep{label: "usernotif", code: ret, k: seccompRetUserNotif},
+		bpfStep{label: "eperm", code: ret, k: unix.SECCOMP_RET_ERRNO | uint32(unix.EPERM)},
+	)
 	return assembleBPF(steps)
 }
 
