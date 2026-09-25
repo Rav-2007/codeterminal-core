@@ -347,6 +347,14 @@ export class ChatPanel {
         void this.panel.webview.postMessage({ type: 'clearTranscript' });
       },
       close: () => this.panel.dispose(),
+      // Delegates to the command that already owns this: it prompts with a
+      // masked input box, stores the key in SecretStorage, and restarts the
+      // daemon so the new key is actually in use. Reimplementing any of that
+      // here would be a second credential path to keep correct.
+      connectApiKey: async () => {
+        await vscode.commands.executeCommand('mochiii.setApiKey');
+        return 'API key prompt opened. If you entered a key, the daemon was restarted to use it.';
+      },
     };
   }
 

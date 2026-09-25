@@ -62,6 +62,17 @@ export interface LocalCommandHost {
   clearScreen(): void;
   /** Close the panel (/exit). */
   close(): void;
+  /**
+   * Prompt for the provider API key, store it, and restart the daemon so it is
+   * used (/connect).
+   *
+   * A HOST METHOD RATHER THAN A CALL FROM HERE, for the reason this interface
+   * exists: what a local command can reach is written down in one place, and a
+   * command that prompts for a credential and restarts a process is exactly the
+   * kind of reach that should be visible in that list rather than buried in a
+   * switch case.
+   */
+  connectApiKey(): Promise<string>;
 }
 
 // COMPACT_KEEP is how many turns /compact retains. Mirrors the TUI's.
@@ -91,6 +102,19 @@ export async function runLocalCommand(
   switch (name) {
     case 'help':
       return formatSlashHelp();
+
+    case 'connect':
+      // NO ARGUMENT, for the same reason the terminal client refuses one: a key
+      // typed as "/connect sk-..." is already in the transcript -- and in the
+      // history sent with the next prompt -- by the time anyone reads a warning
+      // about it. The key is collected by a masked input box instead.
+      if (args.trim() !== '') {
+        return (
+          '/connect takes no argument: a key typed on the command line would be left in this ' +
+          'transcript and sent with your next prompt. Run /connect on its own and enter it at the prompt.'
+        );
+      }
+      return host.connectApiKey();
 
     case 'clear':
       host.replaceTranscript([]);

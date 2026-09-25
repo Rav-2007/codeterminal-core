@@ -429,7 +429,8 @@ func (s *Server) runAgentLoop(
 		turn.calls++
 
 		finishReason := ""
-		calls, err := streamWithRetry(ctx, s.apiBase, s.apiKey, model, turn.messages, tools, routing,
+		apiKey, apiBase := s.credentials()
+		calls, err := streamWithRetry(ctx, apiBase, apiKey, model, turn.messages, tools, routing,
 			func(token string) error {
 				full.WriteString(token)
 				return onToken(token)

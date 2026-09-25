@@ -221,3 +221,25 @@ func runSearch(clientName, workspace, query string) string {
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
+
+// sendConnect hands the daemon a ConnectRequest and returns its answer.
+//
+// NOTHING HERE LOGS THE REQUEST. It carries a provider key, and the one thing
+// that must never happen to it is being written down -- so errors below name the
+// step that failed and never the payload.
+func sendConnect(clientName string, req protocol.ConnectRequest) (protocol.ConnectResponse, error) {
+	sess, err := connectToDaemon(clientName)
+	if err != nil {
+		return protocol.ConnectResponse{}, err
+	}
+	defer func() { _ = sess.Close() }()
+
+	if err := sess.enc.Encode(req); err != nil {
+		return protocol.ConnectResponse{}, fmt.Errorf("sending the request: %w", err)
+	}
+	var resp protocol.ConnectResponse
+	if err := sess.dec.Decode(&resp); err != nil {
+		return protocol.ConnectResponse{}, fmt.Errorf("reading the answer: %w", err)
+	}
+	return resp, nil
+}

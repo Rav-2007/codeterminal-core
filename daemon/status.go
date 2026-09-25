@@ -79,7 +79,7 @@ func (s *Server) handleStatus(enc *json.Encoder) {
 		AvailableTiers:   availableTiers(s.cfg),
 		Retrieval:        s.statusRetrieval(),
 		MemoryAvailable:  s.memory != nil,
-		APIKeyConfigured: s.apiKey != "",
+		APIKeyConfigured: func() bool { k, _ := s.credentials(); return k != "" }(),
 		// statusDegradations, not degradations: this is the ONE surface that
 		// reports index staleness, which is not constant for the daemon's
 		// lifetime and costs a stat-only sweep. The prompt path keeps the cheap,

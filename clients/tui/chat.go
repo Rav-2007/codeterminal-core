@@ -30,6 +30,7 @@ const (
 	stateError                         // last turn failed; shown in the header, input re-enabled
 	stateEditReview                    // the last answer contained edit blocks; reviewing them one at a time
 	stateToolApproval                  // an agent turn is paused on a tool-call approval
+	stateConnect                       // entering a provider API key, masked; see connect.go
 )
 
 type turnRole int
@@ -273,7 +274,7 @@ type chatModel struct {
 
 func newChatModel(clientName, workspace, workspaceRoot string, initialHistory []protocol.Turn) chatModel {
 	ti := textinput.New()
-	ti.Placeholder = "ask something…"
+	ti.Placeholder = defaultInputPlaceholder
 	ti.Prompt = "> "
 	ti.PromptStyle = accentStyle
 	ti.TextStyle = userStyle
@@ -388,6 +389,9 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case toolActivityMsg:
 		return m.handleToolActivity(msg)
 
+	case connectResultMsg:
+		return m.handleConnectResult(msg)
+
 	case toolApprovalMsg:
 		return m.handleToolApproval(msg)
 
@@ -454,6 +458,11 @@ func (m chatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	if m.state == stateToolApproval {
 		return m.handleApprovalKey(msg)
+	}
+	// Before every ordinary key path: what is being typed is a credential, and
+	// falling through to the prompt path would send it to the model as a question.
+	if m.state == stateConnect {
+		return m.handleConnectKey(msg)
 	}
 	switch msg.String() {
 	case "esc":
@@ -1049,6 +1058,16 @@ func (m chatModel) handleLocalSlash(name, args string) (tea.Model, tea.Cmd) {
 		reply = "transcript cleared"
 	case "mouse":
 		return m.handleMouseToggle()
+	case "connect":
+		// Takes no argument on purpose: a key given as one would land in the
+		// transcript and in the next request's history. See connect.go.
+		if strings.TrimSpace(args) != "" {
+			reply = "/connect takes no argument: a key typed on the command line would be left in this " +
+				"transcript and sent with your next prompt. Run /connect on its own and paste it at the " +
+				"masked prompt."
+			break
+		}
+		return m.beginConnect()
 	case "compact":
 		const keep = 8
 		if len(m.turns) > keep {

@@ -198,7 +198,7 @@ function firedSentinels(sentinelDir: string): string[] {
 // fakeHost is a LocalCommandHost pointed at the hostile workspace. Using the
 // real interface rather than a real ChatPanel is what makes this test possible
 // at all -- and every field it supplies is one a real panel supplies too.
-function fakeHost(root: string, extensionPath: string): LocalCommandHost & { closed: boolean } {
+function fakeHost(root: string, extensionPath: string): LocalCommandHost & { closed: boolean; connectCalls: number } {
   const transcript: Turn[] = [
     { role: 'user', content: 'hello' },
     { role: 'assistant', content: 'hi' },
@@ -211,11 +211,20 @@ function fakeHost(root: string, extensionPath: string): LocalCommandHost & { clo
     preferredTier: '',
     lastGrounding: grounding,
     closed: false,
+    connectCalls: 0,
     replaceTranscript: () => undefined,
     forgetGrounding: () => undefined,
     clearScreen: () => undefined,
     close: () => {
       host.closed = true;
+    },
+    // Records the call instead of prompting. The hostile-workspace suite drives
+    // every local command, and /connect's real implementation opens a modal
+    // input box and restarts the daemon -- neither of which a test that is
+    // checking path handling should be made to sit through.
+    connectApiKey: async () => {
+      host.connectCalls += 1;
+      return 'api key prompt (stubbed)';
     },
   };
   return host;

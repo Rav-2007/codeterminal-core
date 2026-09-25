@@ -55,6 +55,11 @@ export const SLASH_CATALOG: SlashDef[] = [
   { name: 'git', kind: 'local', summary: 'show git status for the workspace' },
   { name: 'init', kind: 'local', summary: 'quick start checklist for this workspace' },
   { name: 'search', kind: 'local', summary: 'search past conversation turns (/search <query>)', needsArgs: true },
+  {
+    name: 'connect',
+    kind: 'local',
+    summary: 'set the provider API key for inference (prompts for it; never shown)',
+  },
   { name: 'exit', kind: 'local', summary: 'close the chat panel' },
 
   // /team is in the catalog to be FOUND, and parsed elsewhere -- see

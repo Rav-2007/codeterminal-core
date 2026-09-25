@@ -59,6 +59,7 @@ var slashCatalog = []slashDef{
 	{Name: "git", Kind: slashLocal, Summary: "show git status for the workspace"},
 	{Name: "init", Kind: slashLocal, Summary: "quick start checklist for this workspace"},
 	{Name: "search", Kind: slashLocal, Summary: "search past conversation turns (/search <query>)", NeedsArgs: true},
+	{Name: "connect", Kind: slashLocal, Summary: "set the provider API key for inference (prompts for it; never shown)"},
 	{Name: "exit", Kind: slashLocal, Summary: "quit the TUI"},
 
 	// /team is in the catalog to be FOUND, and parsed elsewhere.

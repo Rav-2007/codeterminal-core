@@ -1076,6 +1076,94 @@ type StatusRequest struct {
 	Status          bool `json:"status"`
 }
 
+// ConnectRequest hands the daemon a provider API key so it can be verified,
+// stored and put into use WITHOUT A RESTART. It is what the terminal client's
+// /connect sends, and the daemon-side twin of `mochiii-daemon connect`.
+//
+// THE KEY CROSSES THE SOCKET, AND THAT IS THE POINT: the daemon is the process
+// that holds credentials and talks to the provider, so it is the one that should
+// verify and store them -- one implementation rather than one per client. The
+// socket is a local Unix socket owned by the user and peer-authenticated, the
+// same trust boundary as the 0600 file the key is written to.
+//
+// NOTHING HERE MAY BE LOGGED OR ECHOED. A client must not put APIKey into its
+// transcript, its history, or anything it later sends as a prompt, and the daemon
+// must not write it to its log; every report about it goes through a mask.
+type ConnectRequest struct {
+	ProtocolVersion int `json:"protocol_version"`
+
+	// Connect is the discriminator, matching StatusRequest.Status. A bool key
+	// rather than a string kind, because that is how every other typed request
+	// on this socket is told apart (see the daemon's requestFields/hasBoolKey).
+	Connect bool `json:"connect"`
+
+	// APIKey is the provider key to adopt. Empty with Show or Forget set.
+	APIKey string `json:"api_key,omitempty"`
+
+	// APIBase optionally replaces the base the key is used against.
+	APIBase string `json:"api_base,omitempty"`
+
+	// NoVerify stores without asking the provider. The response still says the
+	// key is unverified -- the flag skips the check, never the honesty about it.
+	NoVerify bool `json:"no_verify,omitempty"`
+
+	// Show asks what is stored, changing nothing. Forget removes it.
+	Show   bool `json:"show,omitempty"`
+	Forget bool `json:"forget,omitempty"`
+}
+
+// ConnectOutcome is what actually happened, as a value a client can branch on
+// rather than a sentence it has to parse.
+type ConnectOutcome string
+
+const (
+	// ConnectAccepted: the provider authenticated the key. It is stored and in use.
+	ConnectAccepted ConnectOutcome = "accepted"
+	// ConnectRejected: the provider refused the key. NOTHING was stored, and
+	// whatever the daemon was using before is untouched.
+	ConnectRejected ConnectOutcome = "rejected"
+	// ConnectUnverified: stored and in use, but nothing confirmed it works --
+	// the base could not be reached, or it authenticates nothing. Deliberately
+	// distinct from ConnectAccepted so no client can render the two the same.
+	ConnectUnverified ConnectOutcome = "unverified"
+	// ConnectRemoved: the stored key was deleted.
+	ConnectRemoved ConnectOutcome = "removed"
+	// ConnectShown: nothing changed; the response describes what is stored.
+	ConnectShown ConnectOutcome = "shown"
+)
+
+// ConnectResponse reports what happened, in terms safe to print.
+//
+// MaskedKey is the ONLY representation of the key that crosses back, and it is
+// masked by the daemon rather than the client so no client can be the one that
+// gets it wrong.
+type ConnectResponse struct {
+	ProtocolVersion int            `json:"protocol_version"`
+	Ok              bool           `json:"ok"`
+	Outcome         ConnectOutcome `json:"outcome"`
+
+	// Detail is one sentence for a human: what the provider said, or why the
+	// key could not be proven.
+	Detail string `json:"detail"`
+
+	// MaskedKey identifies the key without being usable as one.
+	MaskedKey string `json:"masked_key,omitempty"`
+	APIBase   string `json:"api_base,omitempty"`
+
+	// InUse reports whether the daemon is now sending this key. False when a
+	// key in the daemon's ENVIRONMENT takes precedence over the stored one, which
+	// is otherwise invisible and is the first thing to check when a freshly
+	// connected key appears not to have taken effect.
+	InUse bool `json:"in_use"`
+
+	// EnvOverride is set when the environment is what the daemon is using, so a
+	// client can say which key is really in force rather than implying the one
+	// just stored.
+	EnvOverride bool `json:"env_override,omitempty"`
+
+	Error string `json:"error,omitempty"`
+}
+
 // StatusRetrieval is the retrieval half of a StatusResponse. It reports the
 // two tiers SEPARATELY, which is the entire point: the semantic tier being up
 // while the lexical tier is down was the state that used to be invisible, and

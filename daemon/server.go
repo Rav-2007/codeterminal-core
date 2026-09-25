@@ -42,8 +42,14 @@ var daemonVersion = "dev"
 // Server accepts client connections on the UDS listener, performs the
 // version handshake, and proxies one prompt per connection to the model API.
 type Server struct {
-	apiBase       string
-	apiKey        string
+	// apiBase and apiKey are guarded by credMu: they are fixed at startup for
+	// the life of most daemons, but a ConnectRequest can replace them while
+	// turns are in flight (see connect_handler.go), and the goroutines serving
+	// those turns read them. Take them with s.credentials(), never directly.
+	credMu  sync.RWMutex
+	apiBase string
+	apiKey  string
+
 	cfg           *Config
 	modelOverride string // optional testing override; bypasses the router when set
 	systemPrompt  string
@@ -454,6 +460,20 @@ func (s *Server) serveConn(conn net.Conn) {
 		return
 	}
 
+	// Before the prompt path like the rest, and deliberately NOT logged with its
+	// payload: a ConnectRequest carries a provider key, and the one thing that
+	// must never happen to it is being written down. See connect_handler.go.
+	if isConnectRequest(raw) {
+		var connectReq protocol.ConnectRequest
+		if err := json.Unmarshal(raw, &connectReq); err != nil {
+			s.count(func(c *counters) { c.malformed.Add(1) })
+			s.logger.Print("connect request decode error")
+			return
+		}
+		s.handleConnect(ctx, enc, connectReq)
+		return
+	}
+
 	if isSearchRequest(raw) {
 		var searchReq protocol.SearchRequest
 		if err := json.Unmarshal(raw, &searchReq); err != nil {
@@ -660,7 +680,8 @@ func (s *Server) serveConn(conn net.Conn) {
 
 	// No tools on this path. Agent mode has its own entry point; passing nil
 	// here is what keeps the request body byte-identical to the pre-tools one.
-	_, err := streamWithRetry(ctx, s.apiBase, s.apiKey, decision.Slug, messages, nil, routing,
+	apiKey, apiBase := s.credentials()
+	_, err := streamWithRetry(ctx, apiBase, apiKey, decision.Slug, messages, nil, routing,
 		func(token string) error {
 			full.WriteString(token)
 			return enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Token: token})

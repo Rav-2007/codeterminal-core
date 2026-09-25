@@ -16,6 +16,10 @@
 #   ./run-tui.sh --workspace ~/some/repo  # any daemon flag passes through
 #   PLAIN=1 ./run-tui.sh                  # models.json instead: no agent mode
 #
+# The key can come from the environment (.env) or be stored once with
+#   mochiii-daemon connect
+# The environment wins; this script says which one it found.
+#
 # Stop the daemon it started with:  ./run-tui.sh --stop
 
 set -euo pipefail
@@ -44,13 +48,30 @@ echo "building…"
 (cd daemon && go build -o "$BIN/mochiii-daemon" .)
 (cd clients/tui && go build -o "$BIN/mochiii" .)
 
-# The daemon reads its credential from the environment. .env is the documented
-# place for it (see .env.example); sourcing it never echoes a value.
+# The daemon takes its credential from the environment, or from the one
+# `mochiii-daemon connect` stored. .env is the documented place for the
+# environment form (see .env.example); sourcing it never echoes a value.
 if [[ -f .env ]]; then
 	set -a; . ./.env; set +a
 fi
-[[ -n "${MOCHIII_API_KEY:-}${MOCHIII_PROXY_KEY:-}" ]] || \
-	echo "run-tui: warning: no API key in the environment; prompts will fail" >&2
+
+# WHICH KEY IS IN FORCE, SAID OUT LOUD. The environment wins over a stored
+# credential, and .env above is part of the environment -- so someone who has just
+# run `connect` and still has a key in .env would otherwise watch the daemon use
+# the old one with nothing saying so. Naming it is the difference between a
+# surprising result and an explained one. No value is ever printed.
+readonly STORED="${HOME}/.mochiii/credentials.json"
+if [[ -n "${MOCHIII_API_KEY:-}${MOCHIII_PROXY_KEY:-}" ]]; then
+	if [[ -f "$STORED" ]]; then
+		echo "run-tui: a key is set in the environment (.env?), so it is used and the key stored by" >&2
+		echo "run-tui: \`mochiii-daemon connect\` is NOT. Unset MOCHIII_API_KEY to use the stored one." >&2
+	fi
+elif [[ -f "$STORED" ]]; then
+	echo "run-tui: no key in the environment; using the one stored by \`mochiii-daemon connect\`"
+else
+	echo "run-tui: warning: no API key in the environment, and none stored." >&2
+	echo "run-tui: run \`$BIN/mochiii-daemon connect\` or set MOCHIII_API_KEY; prompts will fail." >&2
+fi
 
 # The workspace both halves must agree on. Anything the caller passes wins.
 ARGS=("$@")

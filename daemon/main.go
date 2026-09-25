@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -42,7 +43,8 @@ func main() {
 	logger := log.New(os.Stderr, "mochiii-daemon: ", log.LstdFlags)
 
 	// "index", "retrieve", "download-model", "helper-smoketest",
-	// "status", and "edits" are one-shot subcommands, not flags: they run and exit,
+	// "status", "edits", "mcp" and "connect" are one-shot subcommands, not flags:
+	// they run and exit,
 	// deliberately separate from the long-running serve path below (which
 	// they leave entirely untouched — none of them is invoked automatically
 	// on daemon start or per-prompt). Checked before flag.Parse() because
@@ -84,6 +86,11 @@ func main() {
 				logger.Fatal(err)
 			}
 			return
+		case "connect":
+			if err := runConnectCommand(os.Args[2:], logger); err != nil {
+				logger.Fatal(err)
+			}
+			return
 		}
 	}
 
@@ -120,6 +127,43 @@ func main() {
 	// Unset (the default), MOCHIII_USE_PROXY is a no-op: every existing
 	// direct-to-OpenRouter deployment keeps behaving exactly as before.
 	useProxy := os.Getenv("MOCHIII_USE_PROXY") == "true"
+
+	// THE STORED CREDENTIAL FILLS WHAT THE ENVIRONMENT DID NOT SAY, AND NEVER
+	// OVERRIDES IT. `mochiii-daemon connect` writes a key so a user does not have
+	// to export one; an existing deployment that exports MOCHIII_API_KEY must keep
+	// behaving exactly as it did, so the environment wins every time.
+	//
+	// NOT CONSULTED IN PROXY MODE, and that is a credential boundary rather than a
+	// tidiness rule: what connect stores is a PROVIDER key, and proxy mode sends
+	// its key to the proxy. Filling the proxy's key in from this file would send a
+	// provider credential to a host it was not issued for -- the same mistake the
+	// fatal guard below exists to prevent, arrived at from the other direction.
+	if !useProxy && (apiKey == "" || apiBase == "") {
+		if path, err := credentialsPath(); err == nil {
+			stored, warn, loadErr := loadCredential(path)
+			if loadErr != nil {
+				logger.Printf("warning: %v", loadErr)
+			}
+			if warn != "" {
+				logger.Printf("warning: %s", warn)
+			}
+			if apiKey == "" && stored.configured() {
+				apiKey = stored.APIKey
+				verified := "unverified"
+				if stored.Verified {
+					verified = "verified when saved"
+				}
+				// Masked, always: the daemon log is tee'd to --log-file and read
+				// over shoulders, and a key that reaches it has left the file.
+				logger.Printf("using the key stored by `connect` (%s, %s); set MOCHIII_API_KEY to override",
+					maskKey(stored.APIKey), verified)
+			}
+			if apiBase == "" && strings.TrimSpace(stored.APIBase) != "" {
+				apiBase = stored.APIBase
+			}
+		}
+	}
+
 	if apiBase == "" {
 		// PROXY MODE IS THE EXCEPTION, AND THE REASON IS A CREDENTIAL.
 		//

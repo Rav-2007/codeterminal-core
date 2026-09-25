@@ -182,13 +182,33 @@ Pick one of the two inference paths.
 <summary><b>Direct mode</b> — your provider key goes from this machine to the provider</summary>
 
 ```bash
+# Hand the daemon your key once. It checks the key with the provider before
+# storing it, and writes it 0600 to ~/.mochiii/credentials.json:
+./daemon/mochiii-daemon connect --api-base "https://api.together.xyz/v1"
+# Paste your provider API key (it will not be shown): ...
+#   Verified: the provider accepted it: key "laptop", credit limit 12.50
+```
+
+`connect` refuses a key the provider rejects rather than storing it, and says
+plainly when it could **not** verify one instead of implying it did. Use
+`connect --show` to see which key is in force (never the key itself),
+`connect --forget` to remove it, and `--no-verify` on a machine with no network.
+A key is deliberately **not** accepted as a command-line argument: in `argv` it is
+visible to other processes through `ps` and is written to your shell history.
+
+Environment variables still work and still take precedence, so nothing about an
+existing deployment changes:
+
+```bash
 export MOCHIII_API_BASE="https://api.together.xyz/v1"
 export MOCHIII_API_KEY="sk-..."
 
 # ...or keep them in .env (gitignored, never commit it):
 cp .env.example .env && $EDITOR .env
 set -a && source .env && set +a
+```
 
+```bash
 ./daemon/mochiii-daemon --workspace .    # terminal 1
 ./clients/tui/mochiii-tui                # terminal 2
 ```
@@ -276,9 +296,15 @@ The daemon reads plain environment variables and never parses `.env` itself.
 | Variable | Meaning |
 |---|---|
 | `MOCHIII_API_BASE` | Base URL of an OpenAI-compatible API. **Optional** — unset, the daemon defaults to `https://openrouter.ai/api/v1` and logs that it did (`daemon/main.go:124`). A malformed value is still fatal. *Required in proxy mode*, where the address cannot be guessed. *(This row read "**Required** — the daemon refuses to start without it" until 2026-09-21. That stopped being true on 2026-09-15, when `22b3021` gave the daemon a default — the fix for the item-41 first-run outage.)* |
-| `MOCHIII_API_KEY` | Sent as `Authorization: Bearer`. May be unset for local servers that need no key |
+| `MOCHIII_API_KEY` | Sent as `Authorization: Bearer`. May be unset for local servers that need no key, or when a key has been stored by `mochiii-daemon connect` — this variable **takes precedence** over the stored one |
 | `MOCHIII_USE_PROXY` | `true` selects proxy mode |
 | `MOCHIII_PROXY_KEY` | Per-user Mochiii key; required in proxy mode |
+
+A stored credential (`mochiii-daemon connect`) fills in only what the
+environment did not say, and is deliberately **ignored in proxy mode**: what
+`connect` stores is a *provider* key, and proxy mode authenticates with a
+*Mochiii* key, so filling one in from the other would send a credential to a host
+it was not issued for.
 
 `MOCHIII_USE_PROXY` is load-bearing, not cosmetic: it is what makes the
 daemon authenticate with the Mochiii key instead of the provider key, and startup
