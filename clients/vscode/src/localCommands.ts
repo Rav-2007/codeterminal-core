@@ -73,6 +73,17 @@ export interface LocalCommandHost {
    * switch case.
    */
   connectApiKey(): Promise<string>;
+  /**
+   * Report which key is in force, MASKED (/connect show), and remove the stored
+   * one (/connect forget).
+   *
+   * Separate host methods rather than one with a flag, so that "read a
+   * credential" and "destroy a credential" are two entries in this list. They are
+   * different acts and the interface that records what a local command may reach
+   * should not blur them into one.
+   */
+  showApiKey(): Promise<string>;
+  forgetApiKey(): Promise<string>;
 }
 
 // COMPACT_KEEP is how many turns /compact retains. Mirrors the TUI's.
@@ -103,18 +114,25 @@ export async function runLocalCommand(
     case 'help':
       return formatSlashHelp();
 
+    // TWO LITERAL SUBCOMMANDS, AND NOTHING ELSE -- the same rule as the terminal
+    // client. What must never be typed here is a KEY: "/connect sk-..." is
+    // already in the transcript, and in the history sent with the next prompt, by
+    // the time anyone reads a warning about it. "show" and "forget" are not keys.
     case 'connect':
-      // NO ARGUMENT, for the same reason the terminal client refuses one: a key
-      // typed as "/connect sk-..." is already in the transcript -- and in the
-      // history sent with the next prompt -- by the time anyone reads a warning
-      // about it. The key is collected by a masked input box instead.
-      if (args.trim() !== '') {
-        return (
-          '/connect takes no argument: a key typed on the command line would be left in this ' +
-          'transcript and sent with your next prompt. Run /connect on its own and enter it at the prompt.'
-        );
+      switch (args.trim()) {
+        case '':
+          return host.connectApiKey();
+        case 'show':
+          return host.showApiKey();
+        case 'forget':
+          return host.forgetApiKey();
+        default:
+          return (
+            '/connect takes no key as an argument: one typed on the command line would be left in this ' +
+            'transcript and sent with your next prompt. Run /connect on its own and enter it at the ' +
+            'prompt. The only arguments are `show` and `forget`.'
+          );
       }
-      return host.connectApiKey();
 
     case 'clear':
       host.replaceTranscript([]);

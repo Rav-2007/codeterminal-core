@@ -226,6 +226,14 @@ function fakeHost(root: string, extensionPath: string): LocalCommandHost & { clo
       host.connectCalls += 1;
       return 'api key prompt (stubbed)';
     },
+    showApiKey: async () => {
+      host.connectCalls += 1;
+      return 'stored key (stubbed)';
+    },
+    forgetApiKey: async () => {
+      host.connectCalls += 1;
+      return 'key removed (stubbed)';
+    },
   };
   return host;
 }

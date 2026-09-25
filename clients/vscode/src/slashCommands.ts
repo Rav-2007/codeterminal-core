@@ -58,7 +58,7 @@ export const SLASH_CATALOG: SlashDef[] = [
   {
     name: 'connect',
     kind: 'local',
-    summary: 'set the provider API key for inference (prompts for it; never shown)',
+    summary: 'set the provider API key (/connect show, /connect forget)',
   },
   { name: 'exit', kind: 'local', summary: 'close the chat panel' },
 

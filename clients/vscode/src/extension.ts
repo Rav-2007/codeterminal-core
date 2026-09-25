@@ -206,6 +206,49 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     })
   );
 
+  // The two halves of /connect that are not "set a key": report which key is in
+  // force, and remove the stored one. They return the sentence to show rather
+  // than popping a notification, because their caller is a slash command that
+  // prints into the chat transcript -- and they live here, beside setApiKey,
+  // because this is where the ExtensionContext (and therefore SecretStorage) is.
+  // ChatPanel stays free of credential access entirely.
+  context.subscriptions.push(
+    vscode.commands.registerCommand('mochiii.showApiKey', async (): Promise<string> => {
+      const stored = await getApiKey(context);
+      // MASKED, never printed. The last four characters identify a key without
+      // being usable as one, which is the whole job of this command.
+      const shown = stored ? `...${stored.slice(-4)} (${stored.length} characters)` : undefined;
+      const fromEnv = process.env.MOCHIII_API_KEY;
+      if (!shown) {
+        return fromEnv
+          ? 'No key is stored by the extension, but MOCHIII_API_KEY is set in its environment and is what the daemon uses.'
+          : 'No key is stored, and MOCHIII_API_KEY is not set: requests would go out with no Authorization header.';
+      }
+      return fromEnv
+        ? `Stored key ${shown}. NOTE: MOCHIII_API_KEY is also set in this environment and takes precedence, so the stored key is NOT what the daemon is sending.`
+        : `Stored key ${shown}, in use by the daemon.`;
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('mochiii.forgetApiKey', async (): Promise<string> => {
+      const existing = await getApiKey(context);
+      if (!existing) {
+        return 'No key was stored, so there was nothing to remove.';
+      }
+      await clearApiKey(context);
+      cachedApiKey = undefined;
+      // Restarted for the same reason the setApiKey command restarts on removal:
+      // the running daemon still holds the old key in its environment, so
+      // "removed" would otherwise be untrue until the next restart.
+      if (supervisor) {
+        await supervisor.restart();
+        return 'Stored key removed, and the daemon was restarted so it is no longer using it.';
+      }
+      return 'Stored key removed.';
+    })
+  );
+
   // DELIBERATELY NOT GATED ON A WORKSPACE, unlike the three commands around it.
   //
   // Those three act on a daemon, and there is no daemon without a folder. This

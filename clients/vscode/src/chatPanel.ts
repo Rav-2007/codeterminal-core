@@ -355,6 +355,10 @@ export class ChatPanel {
         await vscode.commands.executeCommand('mochiii.setApiKey');
         return 'API key prompt opened. If you entered a key, the daemon was restarted to use it.';
       },
+      // Both return the sentence to print. The panel never reads or deletes a
+      // credential itself -- it asks the extension, which owns SecretStorage.
+      showApiKey: async () => vscode.commands.executeCommand<string>('mochiii.showApiKey'),
+      forgetApiKey: async () => vscode.commands.executeCommand<string>('mochiii.forgetApiKey'),
     };
   }
 

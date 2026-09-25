@@ -117,21 +117,6 @@ func TestConnectWithNoKeyEnteredSendsNothing(t *testing.T) {
 	}
 }
 
-// A key passed as an argument is refused for the same reason the CLI refuses one
-// in argv: "/connect sk-..." is already in the transcript by the time it is read.
-func TestConnectRefusesAKeyAsAnArgument(t *testing.T) {
-	m := newTestChatModel(t)
-	out, _ := m.handleLocalSlash("connect", tuiTestKey)
-	got := out.(chatModel)
-	if got.state == stateConnect {
-		t.Error("an argument was accepted as a key")
-	}
-	last := got.turns[len(got.turns)-1].text
-	if !strings.Contains(last, "no argument") {
-		t.Errorf("the refusal does not explain itself: %q", last)
-	}
-}
-
 // THE FOUR OUTCOMES MUST NOT READ ALIKE. "Stored and proven" and "stored but
 // unproven" are different facts, and blurring them wastes the entire point of
 // verifying; "refused" must say plainly that nothing changed.
@@ -333,4 +318,75 @@ func maskForTest(s string) string {
 		return "(short)"
 	}
 	return "..." + s[len(s)-4:]
+}
+
+// THE SUBCOMMANDS MUST REACH THE DAEMON, and reach it as a ConnectRequest.
+//
+// Without the discriminator the daemon reads the request as a prompt and answers
+// "prompt is empty" -- the failure the typed-request dispatch exists to prevent,
+// and one that only shows up against a real daemon.
+func TestConnectShowAndForgetReachTheDaemon(t *testing.T) {
+	for _, tc := range []struct {
+		args       string
+		wantShow   bool
+		wantForget bool
+	}{
+		{"show", true, false},
+		{"forget", false, true},
+		{"  show  ", true, false}, // surrounding space is not a different command
+	} {
+		t.Run(tc.args, func(t *testing.T) {
+			lockPath, got, cleanup := fakeDaemonForConnect(t, protocol.ConnectResponse{
+				Ok: true, Outcome: protocol.ConnectShown, MaskedKey: "...CRET", Detail: "stored",
+			})
+			defer cleanup()
+			original := lockPathFunc
+			lockPathFunc = func() string { return lockPath }
+			defer func() { lockPathFunc = original }()
+
+			m := newTestChatModel(t)
+			out, cmd := m.handleLocalSlash("connect", tc.args)
+			if cmd == nil {
+				t.Fatalf("/connect %q produced no request", tc.args)
+			}
+			if out.(chatModel).state == stateConnect {
+				t.Errorf("/connect %q opened the masked key prompt instead of running", tc.args)
+			}
+			cmd() // performs the round trip
+
+			if got.Show != tc.wantShow || got.Forget != tc.wantForget {
+				t.Errorf("daemon received Show=%v Forget=%v, want Show=%v Forget=%v",
+					got.Show, got.Forget, tc.wantShow, tc.wantForget)
+			}
+			if !got.Connect {
+				t.Error("the discriminator was not set, so the daemon would read this as a prompt")
+			}
+			if got.APIKey != "" {
+				t.Error("a subcommand sent a key field it has no business carrying")
+			}
+		})
+	}
+}
+
+// Anything that is not one of the two literals is still refused, because the
+// thing being guarded against is a KEY typed where the transcript can keep it.
+func TestConnectStillRefusesAnythingThatCouldBeAKey(t *testing.T) {
+	for _, arg := range []string{tuiTestKey, "sk-anything", "SHOW", "show me", "--forget"} {
+		m := newTestChatModel(t)
+		out, cmd := m.handleLocalSlash("connect", arg)
+		if cmd != nil {
+			t.Errorf("/connect %q was sent to the daemon", arg)
+		}
+		got := out.(chatModel)
+		if got.state == stateConnect {
+			t.Errorf("/connect %q opened the key prompt", arg)
+		}
+		last := got.turns[len(got.turns)-1].text
+		if !strings.Contains(last, "no key as an argument") {
+			t.Errorf("/connect %q was not refused with a reason: %q", arg, last)
+		}
+		if strings.Contains(last, tuiTestKey) {
+			t.Errorf("the refusal echoed the key back into the transcript: %q", last)
+		}
+	}
 }

@@ -1059,15 +1059,27 @@ func (m chatModel) handleLocalSlash(name, args string) (tea.Model, tea.Cmd) {
 	case "mouse":
 		return m.handleMouseToggle()
 	case "connect":
-		// Takes no argument on purpose: a key given as one would land in the
-		// transcript and in the next request's history. See connect.go.
-		if strings.TrimSpace(args) != "" {
-			reply = "/connect takes no argument: a key typed on the command line would be left in this " +
-				"transcript and sent with your next prompt. Run /connect on its own and paste it at the " +
-				"masked prompt."
-			break
+		// TWO LITERAL SUBCOMMANDS, AND NOTHING ELSE. The rule was never "no
+		// arguments" -- it is that a KEY must not be typed here, because it would
+		// be left in the transcript and sent on with the next prompt. "show" and
+		// "forget" are not keys, so they are allowed; anything else is refused on
+		// the assumption that it is one. See connect.go.
+		switch strings.TrimSpace(args) {
+		case "":
+			return m.beginConnect()
+		case "show":
+			return m, submitConnect(m.clientName, protocol.ConnectRequest{
+				ProtocolVersion: protocol.ProtocolVersion, Connect: true, Show: true,
+			})
+		case "forget":
+			return m, submitConnect(m.clientName, protocol.ConnectRequest{
+				ProtocolVersion: protocol.ProtocolVersion, Connect: true, Forget: true,
+			})
+		default:
+			reply = "/connect takes no key as an argument: one typed on the command line would be left in " +
+				"this transcript and sent with your next prompt. Run /connect on its own and paste it at " +
+				"the masked prompt. The only arguments are `show` and `forget`."
 		}
-		return m.beginConnect()
 	case "compact":
 		const keep = 8
 		if len(m.turns) > keep {

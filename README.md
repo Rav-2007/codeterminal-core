@@ -378,9 +378,21 @@ client; steered commands send a task preamble to the model.
 /model minimax_m3      # select one for this session
 /model clear           # back to default_tier
 
+/connect               # set the provider API key: masked prompt, checked, live
+/connect show          # which key is in force (masked — never the key itself)
+/connect forget        # remove the stored key
+
 /help /mcp-server /explain /fix /test /refactor /doc /security
 /review /plan /run /clear /compact /context /git /init /search /exit
 ```
+
+`/connect` is the in-client half of [`mochiii-daemon connect`](#4-run). It
+takes the key at a masked prompt rather than as an argument, because an argument
+would be left in the transcript and sent on with your next prompt. In the TUI the
+daemon verifies the key and starts using it **without a restart**; in VS Code it
+goes to SecretStorage and the daemon is restarted to pick it up. A key in the
+environment (`MOCHIII_API_KEY`) still wins over a stored one, and `/connect show`
+says so when that is what is happening.
 
 ---
 

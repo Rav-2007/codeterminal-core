@@ -90,6 +90,46 @@ notes what the sandbox cannot undo: anything a build writes in your project —
 a `Makefile`, a `.git/hooks` script — runs with your full privileges the next
 time you use the project, outside any sandbox.
 
+### Giving Mochiii your API key no longer means setting an environment variable
+
+**What changed.** Mochiii needs a key for the model provider it talks to, and
+until now there was exactly one way to supply it: export `MOCHIII_API_KEY` in the
+shell before starting the daemon. If you did not know the variable's name,
+nothing worked and nothing told you why.
+
+There is now a command for it, in three places:
+
+```
+mochiii-daemon connect     # from a shell
+/connect                   # in the terminal client
+/connect                   # in the VS Code chat
+```
+
+Each asks for the key at a masked prompt — it is not shown as you type, and it is
+not left in your terminal history or in the chat transcript. Deliberately, a key
+is **not** accepted as an argument: on a command line it is readable by other
+programs on the machine and is written to your shell history, and in a chat it
+would be kept in the transcript and sent along with your next question.
+
+**It checks the key before telling you it worked.** Mochiii asks your provider
+whether the key is valid. If the provider refuses it, nothing is stored and
+whatever key you were using before is left alone — so a typo cannot take away a
+key that was working. If your provider has no way to answer the question, or the
+machine is offline, the key is stored and Mochiii says plainly that it could
+**not** verify it, rather than implying it did.
+
+**In the terminal client it takes effect immediately.** No restart: the next
+question you ask uses the new key. In VS Code the key goes to the editor's
+credential storage and the daemon restarts to pick it up.
+
+`/connect show` tells you which key is in force, showing only its last four
+characters. `/connect forget` removes it.
+
+**If you already set `MOCHIII_API_KEY`, nothing changes for you.** A key in the
+environment still takes precedence over a stored one, so existing setups keep
+working exactly as before — and `/connect show` tells you when that is what is
+happening, which is otherwise invisible.
+
 ### A sandboxed build can no longer reach the cloud metadata endpoint
 
 **What changed.** A build needs the network to fetch its dependencies, so the
