@@ -156,6 +156,7 @@ func (s *Server) runOrchestrated(
 			ledger.toolByteCap = 0
 			ledger.deadlineCap = time.Time{}
 		}
+		ledger.preAnswer = i < answerAt
 
 		// EVERY PHASE FROM THE ANSWERING ONE ONWARD REACHES THE USER, not just
 		// the answering one itself.

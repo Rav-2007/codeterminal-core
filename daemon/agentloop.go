@@ -218,6 +218,10 @@ type turnLedger struct {
 	// only when it is EARLIER than the configured deadline, for the same reason
 	// the byte cap is taken as a minimum.
 	deadlineCap time.Time
+	// preAnswer marks a pipeline phase BEFORE the answering one. Hitting a
+	// limit there ends the phase, not the turn -- the next phase answers --
+	// so it gets no wrap-up call (see wrapUpAtLimit).
+	preAnswer bool
 }
 
 func newTurnLedger() *turnLedger {
@@ -415,7 +419,16 @@ func (s *Server) runAgentLoop(
 
 	for turn.iteration = 1; ; turn.iteration++ {
 		if stop := s.budgetStop(turn, bud); stop != nil {
-
+			// END WITH AN ANSWER, NOT MID-THOUGHT. A limit used to stop the turn
+			// on whatever the model last said -- typically "let me read one more
+			// file" -- so the user got five tool lines and no conclusion from
+			// everything that was read. One more model call, told to answer
+			// from what it already has, turns that into a summary and a next
+			// step. It sends no new tool output (the byte cap is untouched) and
+			// is skipped when the turn is out of time.
+			if turn.calls > 0 && !ledger.preAnswer && !time.Now().After(bud.deadline) {
+				s.wrapUpAtLimit(ctx, turn, model, tools, routing, &full, onToken, onProvider, onReasoning)
+			}
 			return agentResult{
 				FinalText: full.String(), Incomplete: stop, ToolNames: turn.toolNames,
 				ToolSignatures: turn.toolSignatures, Iterations: turn.iteration - 1,
@@ -1279,4 +1292,50 @@ func truncateForClient(s string, max int) string {
 		return s
 	}
 	return s[:max] + "…"
+}
+
+// wrapUpNote is the one instruction the wrap-up call adds.
+const wrapUpNote = "You have reached this task's limit for this turn and cannot call any more tools. " +
+	"Using only what you have already read, answer the user now: what you found, what you did, " +
+	"and exactly what remains to be done next. Do not call a tool."
+
+// wrapUpAtLimit makes the one final, tool-free model call described at its
+// call site. Tool calls in its reply are ignored rather than run. Its failure
+// changes nothing: the turn ends exactly as it would have without it.
+func (s *Server) wrapUpAtLimit(
+	ctx context.Context,
+	turn *agentTurn,
+	model string,
+	tools []toolSpec,
+	routing providerRouting,
+	full *strings.Builder,
+	onToken func(string) error,
+	onProvider func(string),
+	onReasoning func(string),
+) {
+	messages := append(append([]chatMessage(nil), turn.messages...),
+		chatMessage{Role: "user", Content: wrapUpNote})
+	separated := full.Len() == 0
+	apiKey, apiBase := s.credentials()
+	// The same tools are offered so the request stays valid for a provider
+	// that rejects tool results with no tool definitions; any call the model
+	// makes anyway is dropped on the floor.
+	_, err := streamWithRetry(ctx, apiBase, apiKey, model, messages, tools, routing,
+		func(token string) error {
+			if !separated {
+				separated = true
+				full.WriteString("\n\n")
+				if err := onToken("\n\n"); err != nil {
+					return err
+				}
+			}
+			full.WriteString(token)
+			return onToken(token)
+		},
+		onProvider, onReasoning, func(string) {}, s.logger)
+	if err != nil {
+		s.logger.Printf("agent: the wrap-up call at the limit failed; ending without it: %s", asModelError(err).Detail())
+		return
+	}
+	s.logger.Print("agent: answered from what it had read after reaching a limit")
 }
