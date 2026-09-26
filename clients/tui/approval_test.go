@@ -12,6 +12,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 
 	"mochiii/protocol"
 )
@@ -144,9 +145,6 @@ func TestTheApprovalPanelIsCompleteAndHonestAboutTheLane(t *testing.T) {
 	}
 	if !strings.Contains(panel, "NOT SANDBOXED") {
 		t.Errorf("an unconfined third-party tool was not described as unconfined:\n%s", panel)
-	}
-	if !strings.Contains(panel, "2") || !strings.Contains(panel, "8") {
-		t.Errorf("the panel gives no sense of how far into a loop this is:\n%s", panel)
 	}
 
 	// A first-party tool must NOT carry the warning -- an alarm on everything is
@@ -433,5 +431,49 @@ func TestTheDecisionIsRecordedInTheTranscript(t *testing.T) {
 		if !strings.Contains(transcript, "read_anything") {
 			t.Errorf("%q recorded a decision without naming the tool:\n%s", decision, transcript)
 		}
+	}
+}
+
+// An outside read is stated as what it is: one named path, read by a built-in.
+// Not "confined" (it is not) and not "NOT SANDBOXED: a separate program" (it is
+// not that either -- the fallthrough it hit before outside_path existed).
+func TestApprovalPanelNamesAnOutsideRead(t *testing.T) {
+	out := ansi.Strip(renderApprovalPanel(protocol.ToolApprovalRequest{
+		Server: "builtin", Tool: "list_directory", Arguments: `{"path":"~/Desktop"}`,
+		OutsidePath: "/home/u/Desktop", ReadOnlyHint: true,
+	}))
+	if !strings.Contains(out, "Read outside this project: /home/u/Desktop") {
+		t.Errorf("panel does not name the outside path:\n%s", out)
+	}
+	for _, wrong := range []string{"NOT SANDBOXED", "anything it changes goes through the same review"} {
+		if strings.Contains(out, wrong) {
+			t.Errorf("panel says %q about a built-in outside read:\n%s", wrong, out)
+		}
+	}
+}
+
+// The reported screen: a command prompt is one question line, the command in
+// full, and no description paragraph -- and it never claims a command goes
+// through edit review (it runs at once).
+func TestACommandPromptIsOneLine(t *testing.T) {
+	panel := ansi.Strip(renderApprovalPanel(protocol.ToolApprovalRequest{
+		Server: "builtin", Tool: "sandbox_exec", Arguments: `{"command": "mkdir -p Go_chii"}`,
+		Lane: protocol.LaneFirstParty, Confined: true,
+		Detail: "Run a build or test command (go, npm, make, cargo) in the workspace root, with a 30s timeout.",
+	}))
+	if panel != "Run command: mkdir -p Go_chii ?" {
+		t.Errorf("panel = %q, want the one question line", panel)
+	}
+}
+
+// The short form never hides an argument: extra fields fall back to the
+// full text, because the approval binds to all of it.
+func TestTheShortFormNeverHidesAnArgument(t *testing.T) {
+	panel := ansi.Strip(renderApprovalPanel(protocol.ToolApprovalRequest{
+		Server: "builtin", Tool: "sandbox_exec", Confined: true,
+		Arguments: `{"command":"ls","env":{"LD_PRELOAD":"/tmp/x.so"}}`,
+	}))
+	if !strings.Contains(panel, "LD_PRELOAD") {
+		t.Errorf("an extra argument was hidden behind the short form: %q", panel)
 	}
 }

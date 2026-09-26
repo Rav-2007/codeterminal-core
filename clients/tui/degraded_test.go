@@ -40,58 +40,34 @@ func TestChat_DegradedMsgSetsStateAndKeepsWaiting(t *testing.T) {
 }
 
 // The regression that matters most: a half-working daemon must not render
-// identically to a healthy one.
+// identically to a healthy one. The header no longer carries notices (see
+// renderHeader), so the place it must reach is /context -- the component and
+// the daemon's own detail, verbatim.
 func TestChat_DegradedNoticeIsActuallyRendered(t *testing.T) {
-	m := newTestModel()
-	m = typeText(m, "hi")
-	m, _ = pressEnter(m)
+	m := finishTurnWith(t, degradedMsg{degradedFixture()})
 
-	updated, _ := m.Update(groundingMsg{&protocol.GroundingInfo{Grounded: true, Chunks: 3}})
-	m = updated.(chatModel)
-	healthyHeader := m.renderHeader()
-
-	updated, _ = m.Update(degradedMsg{degradedFixture()})
-	m = updated.(chatModel)
-	degradedHeader := m.renderHeader()
-
-	if degradedHeader == healthyHeader {
-		t.Fatal("header is byte-identical with and without a degradation reported; the signal reaches the client and is not rendered")
+	ctx := contextReply(t, m)
+	if !strings.Contains(ctx, protocol.DegradedLexicalRetrieval) {
+		t.Errorf("/context = %q, want it to name the degraded component", ctx)
 	}
-	if !strings.Contains(degradedHeader, protocol.DegradedLexicalRetrieval) {
-		t.Errorf("renderHeader = %q, want it to name the degraded component", degradedHeader)
-	}
-	// The rendered header line is truncated to the terminal width on purpose
-	// (see noticeLines), so the full detail is asserted on the untruncated
-	// label rather than on the header — the daemon's own wording must reach
-	// the client verbatim, not be paraphrased here.
-	labels := m.degradedLabels()
-	if len(labels) != 1 || !strings.Contains(labels[0], "semantic similarity alone") {
-		t.Errorf("degradedLabels = %q, want the daemon's detail text rendered verbatim", labels)
+	if !strings.Contains(ctx, "semantic similarity alone") {
+		t.Errorf("/context = %q, want the daemon's detail text verbatim", ctx)
 	}
 }
 
-// Each degradation gets its own guaranteed row, for the reason renderHeader
-// documents: a joined line can overflow the terminal, soft-wrap, and desync
-// the row count the viewport height is computed from — which would let a
-// notice hide itself.
-func TestChat_EachDegradationGetsItsOwnHeaderLine(t *testing.T) {
-	m := newTestModel()
-	m = typeText(m, "hi")
-	m, _ = pressEnter(m)
-
-	updated, _ := m.Update(degradedMsg{[]protocol.Degradation{
+// Every degradation reaches /context, not just the first.
+func TestChat_EachDegradationReachesContext(t *testing.T) {
+	m := finishTurnWith(t, degradedMsg{[]protocol.Degradation{
 		{Component: protocol.DegradedLexicalRetrieval, Detail: "lexical detail"},
 		{Component: protocol.DegradedMemory, Detail: "memory detail"},
 		{Component: protocol.DegradedProviderRouting, Detail: "routing detail"},
 	}})
-	m = updated.(chatModel)
 
-	lines := strings.Split(m.renderHeader(), "\n")
-	if len(lines) != 4 {
-		t.Fatalf("renderHeader produced %d line(s), want 4 (brand/state + one per degradation): %q", len(lines), m.renderHeader())
-	}
-	if got := m.headerLineCount(); got != 4 {
-		t.Errorf("headerLineCount = %d, want 4 — the viewport height would desync from what is actually rendered", got)
+	ctx := contextReply(t, m)
+	for _, want := range []string{"lexical detail", "memory detail", "routing detail"} {
+		if !strings.Contains(ctx, want) {
+			t.Errorf("/context = %q, missing %q", ctx, want)
+		}
 	}
 }
 

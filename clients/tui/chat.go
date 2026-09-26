@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -104,7 +105,7 @@ const interruptHelpText = "esc or ctrl+c to stop this turn"
 // approvalHelpText is shown while an agent turn is paused on a tool call.
 // Worded in the same shape as reviewHelpText because it is the same kind of
 // moment: the product has stopped and is waiting for a person to decide.
-const approvalHelpText = "y run once · a allow this tool for the turn · n deny · q stop the task"
+const approvalHelpText = "y yes · a yes for this turn · n no"
 
 // chatModel is the Bubble Tea model for Mochiii's interactive chat.
 type chatModel struct {
@@ -159,6 +160,12 @@ type chatModel struct {
 	viewport viewport.Model
 	input    textinput.Model
 	spinner  spinner.Model
+
+	// thinkingFrame drives the "💭 thinking" dots while a turn has no answer
+	// text yet; thinkingGen tags each turn's tick loop so a loop left over from
+	// the previous turn stops instead of doubling the animation speed.
+	thinkingFrame int
+	thinkingGen   int
 
 	statusErr string
 
@@ -428,6 +435,9 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case spinner.TickMsg:
 		return m.handleSpinnerTick(msg)
+
+	case thinkingTickMsg:
+		return m.handleThinkingTick(msg)
 	}
 
 	return m, nil
@@ -492,18 +502,28 @@ func (m chatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// nothing. Every no-argument command -- /help, /clear, /git,
 		// /init, /context, /exit -- needed two Enters, and the two tests
 		// that assert otherwise were failing on main.
-		if m.state == stateIdle && m.autocompletePicked {
+		//
+		// A PARTIAL NAME TAKES THE HIGHLIGHTED MATCH. "/clea" with "/clear"
+		// highlighted in the popup was sent to the model as the literal text
+		// "/clea": the popup offered a command that Enter then ignored. Now the
+		// highlighted row is what Enter means whenever the typed text is not
+		// already a command name of its own. A command that needs arguments
+		// is filled in and waits for them; one that does not runs at once.
+		if m.state == stateIdle {
 			matches := m.slashMatches()
-			if len(matches) > 0 {
-				idx := m.autocompleteIdx
-				if idx >= 0 && idx < len(matches) {
-					m.input.SetValue("/" + matches[idx].Name + " ")
+			idx := m.autocompleteIdx
+			exact := lookupSlash(strings.ToLower(strings.TrimPrefix(m.input.Value(), "/"))) != nil
+			if len(matches) > 0 && idx >= 0 && idx < len(matches) && (m.autocompletePicked || !exact) {
+				chosen := matches[idx]
+				m.autocompleteIdx = 0
+				m.autocompletePicked = false
+				if chosen.NeedsArgs {
+					m.input.SetValue("/" + chosen.Name + " ")
 					m.input.SetCursor(len(m.input.Value()))
-					m.autocompleteIdx = 0
-					m.autocompletePicked = false
 					m.resizeViewport()
 					return m, nil
 				}
+				m.input.SetValue("/" + chosen.Name)
 			}
 		}
 		m.autocompletePicked = false
@@ -763,6 +783,60 @@ func (m chatModel) handleResetErr(msg resetErrMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// THE WAIT SHOWS ONE LINE, NOT THE MODEL'S THINKING. Until the first word of
+// the answer arrives, the transcript ends in "💭 thinking" with dots cycling
+// "", ".", "..", "..." -- and nothing else: the reasoning tokens a thinking
+// model streams are still received and kept on the turn, but no longer drawn.
+// The moment answer text arrives the line is gone and the answer streams in
+// its place, token by token.
+const thinkingInterval = 400 * time.Millisecond
+
+var thinkingDots = [...]string{"", ".", "..", "..."}
+
+type thinkingTickMsg struct{ gen int }
+
+func thinkingTick(gen int) tea.Cmd {
+	return tea.Tick(thinkingInterval, func(time.Time) tea.Msg { return thinkingTickMsg{gen} })
+}
+
+// startThinking begins a fresh indicator loop for the turn being started.
+func (m *chatModel) startThinking() tea.Cmd {
+	m.thinkingGen++
+	m.thinkingFrame = 0
+	return thinkingTick(m.thinkingGen)
+}
+
+// awaitingAnswer reports whether a turn is in flight with no answer text yet.
+func (m chatModel) awaitingAnswer() bool {
+	if m.state != stateSending && m.state != stateStreaming {
+		return false
+	}
+	i := m.streamAssistant
+	return i < 0 || i >= len(m.turns) || m.turns[i].text == ""
+}
+
+// thinkingLine is the indicator as drawn for the current frame.
+func (m chatModel) thinkingLine() string {
+	return helpStyle.Render("💭 thinking" + thinkingDots[m.thinkingFrame%len(thinkingDots)])
+}
+
+func (m chatModel) handleThinkingTick(msg thinkingTickMsg) (tea.Model, tea.Cmd) {
+	if msg.gen != m.thinkingGen || m.streamCh == nil {
+		return m, nil // a previous turn's loop, or the turn has ended
+	}
+	if m.state == stateToolApproval {
+		// Waiting on the user, not the model: keep the loop alive for when
+		// the turn resumes, but draw nothing over the approval panel.
+		return m, thinkingTick(msg.gen)
+	}
+	if !m.awaitingAnswer() {
+		return m, nil // the answer has started; the indicator is done
+	}
+	m.thinkingFrame++
+	m.refreshViewport()
+	return m, thinkingTick(msg.gen)
+}
+
 func (m chatModel) handleSpinnerTick(msg spinner.TickMsg) (tea.Model, tea.Cmd) {
 	if m.state != stateSending && m.state != stateStreaming {
 		return m, nil
@@ -1014,7 +1088,7 @@ func (m chatModel) startTurn() (tea.Model, tea.Cmd) {
 	ch := make(chan tea.Msg)
 	m.streamCh = ch
 
-	return m, tea.Batch(m.spinner.Tick, startStream(ctx, m.clientName, m.workspace, prompt, promptKind, mode, m.preferredTier, pipeline, history, ch))
+	return m, tea.Batch(m.spinner.Tick, m.startThinking(), startStream(ctx, m.clientName, m.workspace, prompt, promptKind, mode, m.preferredTier, pipeline, history, ch))
 }
 
 func (m chatModel) handleSlash(sp slashParse) (tea.Model, tea.Cmd) {
@@ -1056,7 +1130,7 @@ func (m chatModel) handleSlash(sp slashParse) (tea.Model, tea.Cmd) {
 		m.streamCancel = cancel
 		ch := make(chan tea.Msg)
 		m.streamCh = ch
-		return m, tea.Batch(m.spinner.Tick, startStream(ctx, m.clientName, m.workspace, prompt, promptKind, mode, m.preferredTier, pipeline, history, ch))
+		return m, tea.Batch(m.spinner.Tick, m.startThinking(), startStream(ctx, m.clientName, m.workspace, prompt, promptKind, mode, m.preferredTier, pipeline, history, ch))
 	}
 	return m, nil
 }
@@ -1072,7 +1146,8 @@ func (m chatModel) handleLocalSlash(name, args string) (tea.Model, tea.Cmd) {
 		m.lastRedactions = nil
 		m.lastDegraded = nil
 		m.lastProvider = ""
-		reply = "transcript cleared"
+		// No reply: a cleared screen is the confirmation. Replying would put a
+		// line straight back on the screen the user just asked to empty.
 	case "mouse":
 		return m.handleMouseToggle()
 	case "connect":
@@ -1120,6 +1195,14 @@ func (m chatModel) handleLocalSlash(name, args string) (tea.Model, tea.Cmd) {
 			g = "(none this turn)"
 		}
 		reply = fmt.Sprintf("workspace: %s\nmodel tier: %s\ngrounding: %s", m.workspace, tier, g)
+		if mem := m.historyLabel(); mem != "" {
+			reply += "\nmemory: " + strings.TrimPrefix(ansi.Strip(mem), "mem: ")
+		}
+		// The last turn's notices -- provider, redactions, degradations --
+		// which the header no longer shows (see renderHeader).
+		if notices := m.noticeLines(); len(notices) > 0 {
+			reply += "\n\nlast turn:\n" + ansi.Strip(strings.Join(notices, "\n"))
+		}
 	case "git":
 		reply = runGitStatus(m.workspaceRoot)
 		if reply == "(git status: empty)" || strings.HasPrefix(reply, "git status failed") {
@@ -1157,7 +1240,9 @@ func (m chatModel) handleLocalSlash(name, args string) (tea.Model, tea.Cmd) {
 	default:
 		reply = "unknown local command"
 	}
-	m.appendTurn(turn{role: roleAssistant, text: reply})
+	if reply != "" {
+		m.appendTurn(turn{role: roleAssistant, text: reply})
+	}
 	m.resizeViewport()
 	m.refreshViewport()
 	return m, nil
@@ -1879,7 +1964,20 @@ func (m *chatModel) refreshViewport() {
 	follow := m.viewport.AtBottom()
 	m.refreshPending = false
 
-	content := m.transcript.render(m.turns, m.viewport.Width)
+	turns := m.turns
+	waiting := m.awaitingAnswer()
+	if waiting && m.streamAssistant >= 0 && m.streamAssistant < len(turns) {
+		// The answer's turn exists (reasoning opened it) but holds no text:
+		// drawing it would put an empty "Mochiii:" above the indicator.
+		turns = append(append([]turn(nil), turns[:m.streamAssistant]...), turns[m.streamAssistant+1:]...)
+	}
+	content := m.transcript.render(turns, m.viewport.Width)
+	if waiting {
+		if content != "" {
+			content += turnSeparator
+		}
+		content += m.thinkingLine()
+	}
 	if m.state == stateEditReview && m.reviewPrepared != nil {
 		content += "\n\n" + renderReviewPanel(m.reviewIndex, len(m.reviewBlocks), m.reviewPrepared)
 	}
@@ -1953,14 +2051,9 @@ func renderTurnBlock(t turn, width int) string {
 	case roleUser:
 		return userStyle.Render("You: " + t.text)
 	case roleAssistant:
-		// Thinking (if any) renders first, dimmed and labelled, so it is
-		// visibly SEPARATE from the answer and never mistaken for it -- the
-		// answer text is what carries back as history and gets parsed for edit
-		// blocks; the reasoning never does.
-		if t.reasoning != "" {
-			return helpStyle.Render("💭 thinking: "+t.reasoning) + "\n" +
-				assistantStyle.Render("Mochiii: "+t.text)
-		}
+		// The answer only. A thinking model's reasoning is kept on the turn but
+		// not drawn -- while it streams, refreshViewport shows the one-line
+		// "💭 thinking" indicator instead (see awaitingAnswer).
 		return assistantStyle.Render("Mochiii: " + t.text)
 	case roleSystem:
 		return helpStyle.Render(t.text)
@@ -2095,81 +2188,91 @@ func renderReviewPanel(index, total int, p *editapply.PreparedEdit) string {
 // running with the user's own privileges, and dressing it up as "sandboxed"
 // would be the single most damaging sentence this product could print.
 func renderApprovalPanel(req protocol.ToolApprovalRequest) string {
+	// ONE QUESTION, ONE LINE -- plus a second only when there is a real risk to
+	// name. This used to print a header, the raw JSON arguments, a lane
+	// sentence and the tool's full description: a dozen lines for "mkdir -p
+	// Go_chii", which buried the question, and whose "anything it changes goes
+	// through the same review you use for edits" was FALSE for sandbox_exec (a
+	// command runs at once; there is no review). The user asked for the
+	// question and the keys, nothing else.
+	//
+	// SANITIZED throughout, and this is the screen where it matters most: the
+	// arguments are written by the model, and an escape sequence here could
+	// repaint the question being answered -- forged consent. Nothing is
+	// TRUNCATED either: the approval binds to a digest of all of it, so all of
+	// it is shown.
 	var b strings.Builder
-	b.WriteString(brandStyle.Render(fmt.Sprintf("--- run %s__%s? (step %d of at most %d) ---",
-		sanitizeText(req.Server), sanitizeText(req.Tool), req.Iteration, req.MaxIterations)))
+	b.WriteString(accentStyle.Render(approvalQuestion(req)))
 
-	// SANITIZED, and this is the screen where it matters most. The arguments
-	// are written by the model; the daemon binds its approval to a digest of
-	// exactly these bytes, so the request itself must stay untouched and only
-	// the rendering is filtered. An escape sequence here could repaint the
-	// question the user is answering -- which is not a display bug, it is
-	// forged consent.
-	b.WriteString("\n" + helpStyle.Render("arguments:"))
-	for _, line := range strings.Split(sanitizeText(req.Arguments), "\n") {
-		b.WriteString("\n" + diffAddedStyle.Render("  "+line))
-	}
-
-	switch {
-	case req.ReachesNetwork:
-		// CHECKED BEFORE Confined, because for a network tool the confinement
-		// line is not the sentence the user needs. "Anything it changes goes
-		// through the same review you use for edits" is TRUE of web_search --
-		// it changes nothing -- and it is the wrong answer to the question
-		// actually being asked, which is where the words above are about to go.
-		b.WriteString("\n" + diffRemovedStyle.Render("LEAVES YOUR MACHINE: this sends the text above to a third party "+
-			"over the internet and brings a reply back into the conversation."))
-		b.WriteString("\n" + helpStyle.Render("Mochiii strips secrets on the way out and treats whatever comes back as untrusted data, "+
-			"never as instructions — but it cannot vouch for the far end."))
-	case req.LaunchesSubprocess:
-		// BEFORE Confined and before the default, because neither of those
-		// sentences is the one this user needs. "Ships with Mochiii" is true
-		// and irrelevant -- the risk is not our code, it is the program our
-		// code starts. "A separate program running with your full access" is
-		// also true, and reads as though a third-party MCP server were being
-		// approved, which sends the user looking for a server they never
-		// configured.
-		//
-		// TRUE OF THIS CALL, not of the tool (register item 32). A language
-		// server is started once and kept, and this case used to fire on every
-		// prompt because the flag was the tool's -- so "STARTS" was printed
-		// about a server already running, and the one approval that really
-		// started it looked like all the rest. The daemon now sets the flag only
-		// when approving THIS call starts the program, and names it.
-		if program := sanitizeText(req.Program); program != "" {
-			b.WriteString("\n" + diffRemovedStyle.Render("STARTS "+program+": approving this runs "+program+
-				" from your PATH against this repository. It keeps running, and reading this project, until the daemon exits."))
-		} else {
-			// An older daemon, or a call whose program could not be determined:
-			// the generic sentence, which over-states rather than hides.
-			b.WriteString("\n" + diffRemovedStyle.Render("STARTS ANOTHER PROGRAM: this runs a language server from your "+
-				"PATH against this repository — gopls, tsserver or pyright."))
-		}
-		b.WriteString("\n" + helpStyle.Render("Mochiii ships the tool but not that program. It reads configuration out of the "+
-			"project you have open (a tsconfig.json can load plugins), so a repository you do not trust can influence it."))
-	case req.Program != "":
-		// THE OTHER HALF OF THE SAME TRUTH. Without this case a running-server
-		// prompt -- Confined is false for these tools -- falls to the default,
-		// whose "a separate program running with your full access" reads as a
-		// third-party server being approved. What is true is narrower: the
-		// program was started with the user's approval, and this call only asks
-		// it a question.
-		program := sanitizeText(req.Program)
-		b.WriteString("\n" + helpStyle.Render("ASKS "+program+", WHICH IS ALREADY RUNNING: you approved starting it "+
-			"earlier in this session. This call starts nothing new."))
-	case req.Confined:
-		b.WriteString("\n" + helpStyle.Render("this tool ships with Mochiii; anything it changes goes through the same review you use for edits"))
-	default:
-		b.WriteString("\n" + diffRemovedStyle.Render("NOT SANDBOXED: this is a separate program running with your full access. "+
-			"Mochiii cannot limit what it reads or changes — your approval is the only thing in its way."))
-	}
-	if req.Destructive {
-		b.WriteString("\n" + diffRemovedStyle.Render("the server describes this tool as destructive"))
-	}
-	if req.Detail != "" {
-		b.WriteString("\n" + helpStyle.Render(req.Detail))
+	if risks := approvalRisks(req); len(risks) > 0 {
+		b.WriteString("\n" + diffRemovedStyle.Render(strings.Join(risks, " · ")))
 	}
 	return b.String()
+}
+
+// approvalRisks is the short warning under the question, empty when there is
+// nothing to warn about. Shared by the chat panel and the one-shot prompt so
+// the two cannot drift apart again.
+func approvalRisks(req protocol.ToolApprovalRequest) []string {
+	var risks []string
+	switch {
+	case req.ReachesNetwork:
+		risks = append(risks, "LEAVES YOUR MACHINE: sent to a third party over the internet")
+	case req.LaunchesSubprocess:
+		if program := sanitizeText(req.Program); program != "" {
+			risks = append(risks, "STARTS "+program+", which keeps running until the daemon exits")
+		} else {
+			risks = append(risks, "STARTS ANOTHER PROGRAM: a language server (gopls, tsserver or pyright)")
+		}
+	case req.Program != "":
+		risks = append(risks, "ASKS "+sanitizeText(req.Program)+", WHICH IS ALREADY RUNNING: starts nothing new")
+	case req.OutsidePath != "" || req.Confined:
+		// The question already says it all.
+	default:
+		risks = append(risks, "NOT SANDBOXED: a separate program with your full access")
+	}
+	if req.Destructive {
+		risks = append(risks, "marked destructive")
+	}
+	return risks
+}
+
+// approvalQuestion is the one line the user is asked: what will happen, in
+// words, with the model's own argument text shown in full.
+func approvalQuestion(req protocol.ToolApprovalRequest) string {
+	var args map[string]any
+	_ = json.Unmarshal([]byte(req.Arguments), &args)
+	// The short form is used only when that field is the WHOLE of the
+	// arguments. Anything else present falls through to the full text below:
+	// "Run command: ls" must not stand in for {"command":"ls","env":{...}}.
+	str := func(k string) string {
+		if len(args) != 1 {
+			return ""
+		}
+		v, _ := args[k].(string)
+		return sanitizeText(v)
+	}
+	switch {
+	case req.OutsidePath != "":
+		return "Read outside this project: " + sanitizeText(req.OutsidePath) + " ?"
+	case str("command") != "":
+		return "Run command: " + str("command") + " ?"
+	case req.ReachesNetwork && str("query") != "":
+		return "Search the web for: " + str("query") + " ?"
+	case req.ReachesNetwork && str("url") != "":
+		return "Open web page: " + str("url") + " ?"
+	}
+	// A third-party tool is named WITH its server: which program is being
+	// trusted is the question.
+	name := sanitizeText(req.Tool)
+	if req.Server != "" && req.Server != "builtin" {
+		name = sanitizeText(req.Server) + "/" + name
+	}
+	compact := strings.Join(strings.Fields(sanitizeText(req.Arguments)), " ")
+	if compact == "" || compact == "{}" {
+		return "Allow " + name + " ?"
+	}
+	return "Allow " + name + ": " + compact + " ?"
 }
 
 func (m chatModel) View() string {
@@ -2191,8 +2294,8 @@ func (m chatModel) View() string {
 		bottomLine = accentStyle.Render(fmt.Sprintf("edit %d/%d: %s", m.reviewIndex+1, len(m.reviewBlocks), sanitizeText(m.reviewPrepared.Block.FilePath)))
 		help = helpStyle.Render(reviewHelpText)
 	} else if m.state == stateToolApproval && m.pendingApproval != nil {
-		bottomLine = accentStyle.Render(fmt.Sprintf("approve %s__%s?", sanitizeText(m.pendingApproval.Server), sanitizeText(m.pendingApproval.Tool)))
-		help = helpStyle.Render(approvalHelpText)
+		// The keys, and only the keys: the question is already on screen.
+		bottomLine = accentStyle.Render(approvalHelpText)
 	} else {
 		popupStr, _ := m.renderSlashPopup()
 		if popupStr != "" {
@@ -2275,26 +2378,24 @@ func (m chatModel) renderSlashPopup() (string, int) {
 	return box, len(lines) + 2
 }
 
-// renderHeader renders the brand/state/history line, followed by zero or
-// more notice lines (see noticeLines) -- one per line, never joined onto
-// the same line as each other or as the brand line. That separation is
-// deliberate: grounding and redactions used to be joined into ONE line via
-// strings.Join, which meant a sufficiently long combination (e.g. a
-// workspace-mismatch warning plus a redaction notice, both active on the
-// same turn) could exceed the terminal's width and soft-wrap -- silently
-// desyncing the fixed 1-row header assumption the viewport's height was
-// computed from, which pushed content off-screen and could hide a notice
-// entirely with no visible sign anything was wrong. See headerLineCount /
-// resizeViewport, which this must always stay consistent with: every line
-// this returns must be counted there, or the same class of bug recurs.
+// renderHeader renders ONE line: the brand, plus a state only when there is one
+// worth reading (see stateLabel). Nothing else.
+//
+// THE NOTICES LIVE IN /context NOW. Grounding, truncation, redactions, the
+// serving provider and every degradation used to stack under the brand line,
+// one row each -- up to four coloured rows above the transcript on an ordinary
+// turn, appearing and disappearing as turns went by so the transcript jumped
+// up and down. The user asked for a clean screen with only the prompt, so the
+// header is a single fixed row and noticeLines is shown on demand by /context.
+// Nothing was dropped: it is the same text, one command away.
 func (m chatModel) renderHeader() string {
 	brand := brandStyle.Render(lotusGlyph + " " + brandName)
-	parts := []string{brand, m.stateLabel()}
-	if history := m.historyLabel(); history != "" {
-		parts = append(parts, history)
+	// Only a state worth reading is shown -- an error, an approval, a review.
+	// Memory ("mem: N turn(s)") moved to /context with the notices.
+	if state := m.stateLabel(); state != "" {
+		return brand + "  " + state
 	}
-	lines := append([]string{strings.Join(parts, "  ")}, m.noticeLines()...)
-	return strings.Join(lines, "\n")
+	return brand
 }
 
 // noticeLines returns grounding/redactions each on their own line, so two
@@ -2388,12 +2489,10 @@ func truncateToWidth(s string, width int) string {
 }
 
 // headerLineCount is exactly how many terminal rows renderHeader's output
-// occupies: the brand/state/history line, plus one more for each currently
-// active notice (see noticeLines). resizeViewport MUST use this, not a
-// hardcoded constant, so the viewport's height always accounts for
-// whatever the header is actually rendering right now.
+// occupies -- always one, since the notices moved to /context. resizeViewport
+// still goes through here so the two cannot drift apart again.
 func (m chatModel) headerLineCount() int {
-	return 1 + len(m.noticeLines())
+	return 1
 }
 
 // resizeViewport recomputes the viewport's height from the current
@@ -2545,7 +2644,8 @@ func (m chatModel) stateLabel() string {
 	case stateToolApproval:
 		return accentStyle.Render("waiting for your approval…")
 	default:
-		return helpStyle.Render("idle")
+		// Idle says nothing: an empty prompt already means "ready".
+		return ""
 	}
 }
 

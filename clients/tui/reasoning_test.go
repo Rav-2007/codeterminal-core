@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/x/ansi"
+
 	"mochiii/protocol"
 )
 
@@ -46,10 +48,99 @@ func TestChat_ReasoningRendersSeparatelyAndNotInAnswer(t *testing.T) {
 		t.Errorf("answer text = %q, want only the content tokens", last.text)
 	}
 
-	// And it must actually render (visibly), labelled as thinking.
+	// The reasoning is kept but not drawn: the screen shows the answer only.
 	rendered := renderTranscript(m.turns, 80)
-	if !strings.Contains(rendered, "thinking") || !strings.Contains(rendered, "Let me think") {
-		t.Errorf("transcript render does not show the thinking block:\n%s", rendered)
+	if strings.Contains(rendered, "Let me think") || strings.Contains(rendered, "thinking") {
+		t.Errorf("transcript draws the model's reasoning; want the answer only:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "The actual answer.") {
+		t.Errorf("transcript is missing the answer:\n%s", rendered)
+	}
+}
+
+// While no answer text has arrived, the transcript ends in ONE line --
+// "💭 thinking" plus cycling dots -- and never the reasoning itself.
+func TestChat_WaitShowsOnlyTheThinkingIndicator(t *testing.T) {
+	m := newTestModel()
+	m = typeText(m, "what is today's date?")
+	m, _ = pressEnter(m)
+
+	updated, _ := m.Update(reasoningMsg{"The user is asking for the date. Let me search."})
+	m = updated.(chatModel)
+
+	view := ansi.Strip(m.viewport.View())
+	if !strings.Contains(view, "💭 thinking") {
+		t.Fatalf("no thinking indicator while waiting:\n%s", view)
+	}
+	if strings.Contains(view, "Let me search") {
+		t.Errorf("the model's reasoning is on screen; want only the indicator:\n%s", view)
+	}
+	if strings.Contains(view, "Mochiii:") {
+		t.Errorf("an empty \"Mochiii:\" is drawn above the indicator:\n%s", view)
+	}
+
+	// The dots cycle "", ".", "..", "..." and back.
+	var seen []string
+	for i := 0; i < 5; i++ {
+		line := ""
+		for _, l := range strings.Split(ansi.Strip(m.viewport.View()), "\n") {
+			if strings.Contains(l, "💭 thinking") {
+				line = strings.TrimSpace(l)
+			}
+		}
+		seen = append(seen, strings.TrimPrefix(line, "💭 thinking"))
+		updated, _ = m.Update(thinkingTickMsg{m.thinkingGen})
+		m = updated.(chatModel)
+	}
+	if want := []string{"", ".", "..", "...", ""}; strings.Join(seen, "|") != strings.Join(want, "|") {
+		t.Errorf("dots went %q, want %q", seen, want)
+	}
+}
+
+// The first word of the answer replaces the indicator, and the answer is on
+// screen as it arrives -- not held until the turn ends.
+func TestChat_AnswerStreamsInPlaceOfTheIndicator(t *testing.T) {
+	m := newTestModel()
+	m = typeText(m, "hi")
+	m, _ = pressEnter(m)
+
+	updated, _ := m.Update(tokenMsg("Today is "))
+	m = updated.(chatModel)
+	updated, _ = m.Update(refreshTickMsg{})
+	m = updated.(chatModel)
+
+	view := ansi.Strip(m.viewport.View())
+	if strings.Contains(view, "thinking") {
+		t.Errorf("indicator still drawn after the answer started:\n%s", view)
+	}
+	if !strings.Contains(view, "Mochiii: Today is") {
+		t.Fatalf("partial answer not on screen mid-stream:\n%s", view)
+	}
+
+	updated, _ = m.Update(tokenMsg("Saturday."))
+	m = updated.(chatModel)
+	updated, _ = m.Update(refreshTickMsg{})
+	m = updated.(chatModel)
+	if view := ansi.Strip(m.viewport.View()); !strings.Contains(view, "Today is Saturday.") {
+		t.Errorf("second token not on screen mid-stream:\n%s", view)
+	}
+
+	// And the indicator's loop stops rather than ticking forever.
+	if _, cmd := m.Update(thinkingTickMsg{m.thinkingGen}); cmd != nil {
+		t.Error("thinking tick re-armed after the answer started")
+	}
+}
+
+// A loop left over from the previous turn must not advance this turn's dots.
+func TestChat_StaleThinkingTickIsIgnored(t *testing.T) {
+	m := newTestModel()
+	m = typeText(m, "hi")
+	m, _ = pressEnter(m)
+	before := m.thinkingFrame
+	updated, cmd := m.Update(thinkingTickMsg{m.thinkingGen - 1})
+	m = updated.(chatModel)
+	if m.thinkingFrame != before || cmd != nil {
+		t.Errorf("stale tick advanced the frame (%d -> %d) or re-armed", before, m.thinkingFrame)
 	}
 }
 

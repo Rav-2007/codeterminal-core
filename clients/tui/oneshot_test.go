@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/x/ansi"
+
 	"mochiii/protocol"
 )
 
@@ -148,7 +150,7 @@ func TestOneShotKeepsStdoutClean(t *testing.T) {
 		t.Errorf("stdout carried more than the answer: %q", got)
 	}
 	prompt := errOut.String()
-	for _, want := range []string{req.Arguments, "read_anything", "NOT SANDBOXED", "[y]es"} {
+	for _, want := range []string{req.Arguments, "read_anything", "NOT SANDBOXED", "y yes"} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("the prompt on stderr is missing %q:\n%s", want, prompt)
 		}
@@ -197,5 +199,27 @@ func TestOneShotActivityLine(t *testing.T) {
 	act.Phase = protocol.ToolPhaseDenied
 	if line := oneShotActivityLine(act); !strings.Contains(line, "not run: bad input") {
 		t.Errorf("unexpected denied line: %s", line)
+	}
+}
+
+// The one-shot prompt and the chat panel ask the SAME question with the SAME
+// warning. They were written separately once and drifted: the one-shot kept
+// the long wording, and never learned the outside-read or language-server
+// cases at all.
+func TestTheOneShotPromptMatchesTheChatPanel(t *testing.T) {
+	for _, req := range []protocol.ToolApprovalRequest{
+		{Server: "builtin", Tool: "sandbox_exec", Confined: true, Arguments: `{"command":"mkdir -p Go_chii"}`},
+		{Server: "builtin", Tool: "list_directory", OutsidePath: "/home/u/Desktop", Arguments: `{"path":"~/Desktop"}`},
+		{Server: "builtin", Tool: "web_search", ReachesNetwork: true, Arguments: `{"query":"go 1.26"}`},
+		{Server: "builtin", Tool: "query_compiler_definition", LaunchesSubprocess: true, Program: "gopls"},
+		{Server: "srv", Tool: "t", Lane: protocol.LaneThirdParty, Arguments: `{"x":1}`},
+	} {
+		var out strings.Builder
+		askOneShotApproval(req, bufio.NewReader(strings.NewReader("n\n")), &out)
+		panel := ansi.Strip(renderApprovalPanel(req))
+		if !strings.Contains(out.String(), panel) {
+			t.Errorf("%s: one-shot prompt differs from the chat panel\n panel:    %q\n one-shot: %q",
+				req.Tool, panel, out.String())
+		}
 	}
 }

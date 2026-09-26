@@ -204,7 +204,14 @@ suite('Webview accessibility structure', () => {
     );
     // A consent prompt that shows less than what will run is not consent, so the
     // whole argument string is written, never a slice or an ellipsis of it.
-    assert.match(code, /args\.textContent = req\.arguments;/, 'the arguments must be rendered whole');
+    // The question line carries them now (approvalQuestion). Its short form is
+    // allowed only when its field is the WHOLE of the arguments; anything else
+    // falls back to the full text, and nothing is sliced.
+    assert.match(code, /Object\.keys\(args\)\.length === 1/, 'the short form must require the field to be the only argument');
+    const fn = code.slice(code.indexOf('function approvalQuestion('), code.indexOf('function approvalButton('));
+    assert.ok(fn.length > 0, 'approvalQuestion is missing');
+    assert.ok(!/\.slice\(|\.substring\(|\u2026|\.\.\./.test(fn), 'the arguments must be rendered whole, never cut');
+    assert.match(fn, /req\.arguments/, 'the full arguments must be the fallback');
     assert.ok(
       !/req\.arguments\.slice|req\.arguments\.substring/.test(code),
       'the arguments are being truncated for display; the user would approve less than what runs'

@@ -36,24 +36,13 @@ func TestChat_ProviderMsgSetsStateAndKeepsWaiting(t *testing.T) {
 	}
 }
 
-// The Fix-13 regression: a turn served by a named provider must not render
-// identically to one with none reported.
+// The Fix-13 regression: a turn served by a named provider must not look
+// identical to one with none reported -- now in /context, not the header.
 func TestChat_ProviderNoticeIsActuallyRendered(t *testing.T) {
-	m := newTestModel()
-	m = typeText(m, "hi")
-	m, _ = pressEnter(m)
+	m := finishTurnWith(t, providerMsg{"DeepInfra"})
 
-	noProviderHeader := m.renderHeader()
-
-	updated, _ := m.Update(providerMsg{"DeepInfra"})
-	m = updated.(chatModel)
-	providerHeader := m.renderHeader()
-
-	if providerHeader == noProviderHeader {
-		t.Fatal("header is byte-identical with and without a provider reported; the signal reaches the client and is not rendered")
-	}
-	if label := m.providerLabel(); !strings.Contains(label, "served by: DeepInfra") {
-		t.Errorf("providerLabel = %q, want it to name the serving provider", label)
+	if ctx := contextReply(t, m); !strings.Contains(ctx, "served by: DeepInfra") {
+		t.Errorf("/context = %q, want it to name the serving provider", ctx)
 	}
 	// It is a fact, not a warning: no ⚠ marker, and nothing implying fallback.
 	if label := m.providerLabel(); strings.ContainsAny(label, "⚠") || strings.Contains(strings.ToLower(label), "fallback") {

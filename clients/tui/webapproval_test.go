@@ -45,13 +45,9 @@ func TestTheApprovalPanelSaysPlainlyWhenACallLeavesTheMachine(t *testing.T) {
 	if !strings.Contains(panel, "who is the pm of india") {
 		t.Error("the panel hid the text that is about to be transmitted")
 	}
-	// What the daemon does and does not promise, both stated.
-	lower := strings.ToLower(panel)
-	if !strings.Contains(lower, "untrusted") {
-		t.Error("the panel does not say returned content is treated as untrusted data")
-	}
-	if !strings.Contains(lower, "cannot vouch") {
-		t.Error("the panel overstates the guarantee; it must say what it cannot promise about the far end")
+	// Short, but it still says where the text goes.
+	if !strings.Contains(panel, "third party over the internet") {
+		t.Error("the panel does not say who receives the text")
 	}
 }
 
@@ -61,8 +57,10 @@ func TestTheOtherApprovalBranchesAreUnchanged(t *testing.T) {
 	local := protocol.ToolApprovalRequest{
 		Server: "builtin", Tool: "read_file", Lane: protocol.LaneFirstParty, Confined: true,
 	}
-	if panel := renderApprovalPanel(local); !strings.Contains(panel, "anything it changes goes through the same review") {
-		t.Errorf("a confined built-in lost its reassurance line:\n%s", panel)
+	// A confined built-in carries no warning line at all -- and never the old
+	// "goes through the same review" line, which was false for a command.
+	if panel := renderApprovalPanel(local); strings.Contains(panel, "\n") || strings.Contains(panel, "same review") {
+		t.Errorf("a confined built-in shows more than its question:\n%s", panel)
 	}
 
 	laneB := protocol.ToolApprovalRequest{
@@ -118,8 +116,10 @@ func TestTheOneShotPromptKeepsItsOtherTwoBranches(t *testing.T) {
 	askOneShotApproval(
 		protocol.ToolApprovalRequest{Server: "builtin", Tool: "read_file", Confined: true},
 		bufio.NewReader(strings.NewReader("n\n")), &confined)
-	if !strings.Contains(confined.String(), "anything it changes goes through the same review") {
-		t.Errorf("a confined built-in lost its line:\n%s", confined.String())
+	// A confined built-in gets its question and no warning -- and never the
+	// old "goes through the same review" line, which was false for a command.
+	if strings.Contains(confined.String(), "NOT SANDBOXED") || strings.Contains(confined.String(), "same review") {
+		t.Errorf("a confined built-in got a warning it should not:\n%s", confined.String())
 	}
 
 	askOneShotApproval(

@@ -45,7 +45,7 @@ func TestSubprocessApprovalSaysWhatItStarts(t *testing.T) {
 	// Name the actual programs: "a language server" is not actionable, "gopls"
 	// is something a user can look for.
 	lower := strings.ToLower(panel)
-	for _, want := range []string{"gopls", "language server", "configuration"} {
+	for _, want := range []string{"gopls", "language server"} {
 		if !strings.Contains(lower, want) {
 			t.Errorf("the panel never mentions %q, so the user cannot tell what is being started:\n%s", want, panel)
 		}
@@ -64,8 +64,8 @@ func TestSubprocessBranchDoesNotShadowTheOthers(t *testing.T) {
 	confined := protocol.ToolApprovalRequest{
 		Tool: "read_file", Lane: protocol.LaneFirstParty, Confined: true,
 	}
-	if p := renderApprovalPanel(confined); !strings.Contains(p, "anything it changes goes through the same review") {
-		t.Errorf("a confined call lost its line:\n%s", p)
+	if p := renderApprovalPanel(confined); strings.Contains(p, "NOT SANDBOXED") || strings.Contains(p, "STARTS") {
+		t.Errorf("a confined call picked up another branch's warning:\n%s", p)
 	}
 
 	laneB := protocol.ToolApprovalRequest{

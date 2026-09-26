@@ -1107,110 +1107,60 @@
     container.setAttribute('role', 'alertdialog');
     container.setAttribute('aria-modal', 'true');
     container.setAttribute('aria-live', 'assertive');
-    container.setAttribute(
-      'aria-label',
-      'Approval needed to run ' + req.server + '__' + req.tool +
-        ', step ' + req.iteration + ' of at most ' + req.max_iterations
-    );
+    const question = approvalQuestion(req);
+    container.setAttribute('aria-label', 'Approval needed: ' + question);
     container.setAttribute('aria-describedby', argsId + ' ' + laneId);
 
+    // ONE QUESTION, then a warning only when there is a real risk -- the same
+    // two lines, in the same words, as the terminal (clients/tui/chat.go
+    // renderApprovalPanel). The heading carries the arguments IN FULL: the
+    // daemon binds approval to a digest of all of them, so none is hidden.
     const heading = document.createElement('div');
+    heading.id = argsId;
     heading.className = 'approval-heading';
-    heading.textContent =
-      'Run ' + req.server + '__' + req.tool + '? (step ' + req.iteration +
-      ' of at most ' + req.max_iterations + ')';
+    heading.setAttribute('role', 'region');
+    heading.setAttribute('aria-label', 'Arguments this tool will receive');
+    heading.textContent = question;
     container.appendChild(heading);
-
-    // THE FULL ARGUMENTS, never a summary: a consent prompt that shows less
-    // than what will run is not consent, and the daemon binds its approval to a
-    // digest of exactly these bytes.
-    const argsLabel = document.createElement('div');
-    argsLabel.className = 'approval-args-label';
-    argsLabel.textContent = 'Arguments:';
-    container.appendChild(argsLabel);
-
-    const args = document.createElement('pre');
-    args.id = argsId;
-    args.className = 'approval-args';
-    args.setAttribute('role', 'region');
-    args.setAttribute('aria-label', 'Arguments this tool will receive');
-    args.textContent = req.arguments;
-    container.appendChild(args);
 
     const lane = document.createElement('div');
     lane.id = laneId;
-    // THREE QUESTIONS, THREE FIELDS, IN THE ORDER THE TUI ASKS THEM.
-    //
-    // This panel branched on `confined` alone until 2026-09-02, so it answered
-    // one of the three. protocol.go has said since ReachesNetwork was added
-    // that "clients must render it as plainly as they render Confined: a user
-    // deciding about a search has to be told a search is leaving" -- and this
-    // client never did. A VS Code user approving web_search was shown "NOT
-    // SANDBOXED: this is a separate program running with your full access",
-    // which is wrong twice over: web_search is first-party and changes nothing
-    // locally, and the one thing that actually happens -- their words going to
-    // a third party over the internet -- was not mentioned at all. The TUI got
-    // this right and the panel drifted from it.
+    lane.className = 'approval-lane unconfined';
+    const risks = [];
     if (req.reaches_network) {
-      lane.className = 'approval-lane unconfined';
-      lane.textContent =
-        'LEAVES YOUR MACHINE: this sends the arguments above to a third party over the internet ' +
-        'and brings a reply back into the conversation. Mochiii strips secrets on the way out ' +
-        'and treats whatever comes back as untrusted data — but it cannot vouch for the far end.';
+      risks.push('LEAVES YOUR MACHINE: sent to a third party over the internet');
     } else if (req.launches_subprocess) {
-      // TRUE OF THIS CALL, not of the tool (register item 32): the daemon sets
-      // it only when approving this call starts the program, and names it. The
-      // same two sentences, in the same order, as clients/tui/chat.go.
-      lane.className = 'approval-lane unconfined';
-      const starts = req.program
-        ? 'STARTS ' + req.program + ': approving this runs ' + req.program + ' from your PATH against this ' +
-          'repository. It keeps running, and reading this project, until the daemon exits. '
-        : 'STARTS ANOTHER PROGRAM: this runs a language server from your PATH against this repository — ' +
-          'gopls, tsserver or pyright. ';
-      lane.textContent =
-        starts +
-        'Mochiii ships the tool but not that program. It reads ' +
-        'configuration out of the project you have open, so a repository you do not trust can influence it.';
+      risks.push(req.program
+        ? 'STARTS ' + req.program + ', which keeps running until the daemon exits'
+        : 'STARTS ANOTHER PROGRAM: a language server (gopls, tsserver or pyright)');
     } else if (req.program) {
-      // Without this branch a running-server prompt -- confined is false for
-      // these tools -- reaches the final else, whose third-party-server
-      // sentence would send the user looking for a server they never
-      // configured. The program is running because they approved it; this call
-      // only asks it a question.
-      lane.className = 'approval-lane unconfined';
-      lane.textContent =
-        'ASKS ' + req.program + ', WHICH IS ALREADY RUNNING: you approved starting it earlier in this ' +
-        'session. This call starts nothing new.';
+      risks.push('ASKS ' + req.program + ', WHICH IS ALREADY RUNNING: starts nothing new');
+    } else if (req.outside_path) {
+      // The question already names the path; nothing to add.
     } else if (req.confined) {
-      lane.className = 'approval-lane confined';
-      lane.textContent =
-        'This tool ships with Mochiii. Anything it changes goes through the same review you use for edits.';
+      // A confined built-in: no warning -- an alarm on everything is an alarm
+      // on nothing.
     } else {
-      // NEVER SOFTENED. A third-party MCP server is an ordinary subprocess with
-      // the user's full access; this approval is the only thing in front of it.
-      // Saying "sandboxed" here would be the single most damaging sentence this
-      // panel could print.
-      lane.className = 'approval-lane unconfined';
-      lane.textContent =
-        'NOT SANDBOXED: this is a separate program running with your full access. ' +
-        'Mochiii cannot limit what it reads or changes — your approval is the only thing in its way.';
+      // NEVER SOFTENED: a third-party MCP server is an ordinary subprocess
+      // with the user's full access, and this approval is all that stands in
+      // front of it.
+      risks.push('NOT SANDBOXED: a separate program with your full access');
     }
-    container.appendChild(lane);
-
     if (req.destructive) {
-      const warn = document.createElement('div');
-      warn.className = 'approval-lane unconfined';
-      warn.textContent = 'The server describes this tool as destructive.';
-      container.appendChild(warn);
+      risks.push('marked destructive');
+    }
+    if (risks.length > 0) {
+      lane.textContent = risks.join(' · ');
+      container.appendChild(lane);
     }
 
     const actions = document.createElement('div');
     actions.className = 'approval-actions';
 
-    const deny = approvalButton('Deny', 'deny', req, 'Do not run this tool call');
-    const approve = approvalButton('Run once', 'approve', req, 'Run this tool call with these exact arguments');
+    const deny = approvalButton('No', 'deny', req, 'Do not run this tool call');
+    const approve = approvalButton('Yes', 'approve', req, 'Run this tool call with these exact arguments');
     const forTurn = approvalButton(
-      'Allow for this task',
+      'Yes for this task',
       'approve_for_turn',
       req,
       'Run this call and any later call to the same tool for the rest of this task'
@@ -1231,6 +1181,41 @@
     currentApprovalEl = container;
     currentApprovalCallId = req.call_id;
     deny.focus();
+  }
+
+  // approvalQuestion mirrors clients/tui/chat.go approvalQuestion: what will
+  // happen, in words. A short form is used only when its field is the WHOLE
+  // of the arguments; otherwise every argument is shown.
+  function approvalQuestion(req) {
+    let args = {};
+    try {
+      args = JSON.parse(req.arguments || '{}') || {};
+    } catch (e) {
+      args = {};
+    }
+    const only = (k) =>
+      Object.keys(args).length === 1 && typeof args[k] === 'string' ? args[k] : '';
+    if (req.outside_path) {
+      return 'Read outside this project: ' + req.outside_path + ' ?';
+    }
+    if (only('command')) {
+      return 'Run command: ' + only('command') + ' ?';
+    }
+    if (req.reaches_network && only('query')) {
+      return 'Search the web for: ' + only('query') + ' ?';
+    }
+    if (req.reaches_network && only('url')) {
+      return 'Open web page: ' + only('url') + ' ?';
+    }
+    let name = req.tool;
+    if (req.server && req.server !== 'builtin') {
+      name = req.server + '/' + name;
+    }
+    const compact = (req.arguments || '').split(/\s+/).join(' ').trim();
+    if (!compact || compact === '{}') {
+      return 'Allow ' + name + ' ?';
+    }
+    return 'Allow ' + name + ': ' + compact + ' ?';
   }
 
   function approvalButton(label, decision, req, description) {

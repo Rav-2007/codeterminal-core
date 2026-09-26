@@ -312,85 +312,74 @@ func TestChat_NoRedactionsLabelBeforeFirstReport(t *testing.T) {
 	}
 }
 
-// --- regression: grounding + redactions concurrently active (bug found in
-// live testing after commit 36e4c53 -- a workspace-mismatch warning and a
-// redaction notice used to be joined onto ONE header line via
-// strings.Join, silently overflowing the terminal width and desyncing the
-// hardcoded 1-row header assumption the viewport's height was computed
-// from. The redaction notice would disappear entirely with no visible
-// sign anything was wrong.) ---------------------------------------------
+// --- the header is ONE fixed row --------------------------------------------
+//
+// Notices used to stack under the brand line, one row each, and the
+// transcript jumped as they came and went. They moved to /context (see
+// renderHeader); these pin both halves: nothing reaches the header, and
+// nothing is lost on the way to /context.
 
-func TestChat_HeaderShowsBothGroundingAndRedactionsOnSeparateLines(t *testing.T) {
+// finishTurnWith runs one turn, delivers msgs mid-stream, and ends it.
+func finishTurnWith(t *testing.T, msgs ...tea.Msg) chatModel {
+	t.Helper()
+	m := newTestModel()
+	m = typeText(m, "hi")
+	m, _ = pressEnter(m)
+	for _, msg := range append(msgs, streamDoneMsg{}) {
+		updated, _ := m.Update(msg)
+		m = updated.(chatModel)
+	}
+	return m
+}
+
+// contextReply runs /context and returns its reply, ANSI stripped.
+func contextReply(t *testing.T, m chatModel) string {
+	t.Helper()
+	m = typeText(m, "/context")
+	m, _ = pressEnter(m)
+	if len(m.turns) == 0 || m.turns[len(m.turns)-1].role != roleAssistant {
+		t.Fatalf("/context produced no reply: %+v", m.turns)
+	}
+	return ansi.Strip(m.turns[len(m.turns)-1].text)
+}
+
+func TestChat_HeaderStaysOneRowWhateverIsActive(t *testing.T) {
 	m := newTestModel()
 	m = typeText(m, "here is my key: sk-FAKETESTKEY1234567890abcdef")
 	m, _ = pressEnter(m)
-
-	updated, _ := m.Update(groundingMsg{&protocol.GroundingInfo{Grounded: true, WorkspaceMismatch: true, Workspace: "/other/repo"}})
-	m = updated.(chatModel)
-	updated, _ = m.Update(redactionsMsg{[]string{"openai_key"}})
-	m = updated.(chatModel)
-
-	header := m.renderHeader()
-	lines := strings.Split(header, "\n")
-	if len(lines) != 3 {
-		t.Fatalf("renderHeader produced %d line(s): %q, want 3 (brand/state line + grounding + redactions, each on its own line)", len(lines), header)
-	}
-	if !strings.Contains(lines[1], "/other/repo") {
-		t.Errorf("line 1 = %q, want the grounding/workspace-mismatch notice", lines[1])
-	}
-	if !strings.Contains(lines[2], "openai_key") {
-		t.Errorf("line 2 = %q, want the redactions notice", lines[2])
-	}
-	// The actual bug: both notices must be genuinely present in the
-	// rendered output at once, not just structurally separate strings that
-	// never both get returned.
-	if !strings.Contains(header, "/other/repo") || !strings.Contains(header, "openai_key") {
-		t.Fatalf("renderHeader = %q, want BOTH the grounding and redactions notices present simultaneously", header)
-	}
-}
-
-func TestChat_HeaderLineCountTracksActiveNotices(t *testing.T) {
-	m := newTestModel()
-	m = typeText(m, "hi")
-	m, _ = pressEnter(m)
-
-	if got := m.headerLineCount(); got != 1 {
-		t.Errorf("headerLineCount = %d, want 1 with no notices active", got)
-	}
-
-	updated, _ := m.Update(groundingMsg{&protocol.GroundingInfo{Grounded: true, WorkspaceMismatch: true, Workspace: "/other/repo"}})
-	m = updated.(chatModel)
-	if got := m.headerLineCount(); got != 2 {
-		t.Errorf("headerLineCount = %d, want 2 with only grounding active", got)
-	}
-
-	updated, _ = m.Update(redactionsMsg{[]string{"openai_key"}})
-	m = updated.(chatModel)
-	if got := m.headerLineCount(); got != 3 {
-		t.Errorf("headerLineCount = %d, want 3 with both grounding and redactions active", got)
-	}
-}
-
-// TestChat_ViewportShrinksWhenNoticeLinesGrow is the other half of the
-// regression: headerLineCount growing is only useful if resizeViewport
-// actually consumes it. Before the fix, the viewport's height was computed
-// once from a hardcoded headerLines=1 and never revisited, so it never
-// shrank to make room for extra notice lines -- which is exactly what let
-// a second notice line silently overdraw/get overdrawn.
-func TestChat_ViewportShrinksWhenNoticeLinesGrow(t *testing.T) {
-	m := newTestModel()
-	m = typeText(m, "hi")
-	m, _ = pressEnter(m)
-
 	baseline := m.viewport.Height
 
-	updated, _ := m.Update(groundingMsg{&protocol.GroundingInfo{Grounded: true, WorkspaceMismatch: true, Workspace: "/other/repo"}})
-	m = updated.(chatModel)
-	updated, _ = m.Update(redactionsMsg{[]string{"openai_key"}})
-	m = updated.(chatModel)
+	for _, msg := range []tea.Msg{
+		groundingMsg{&protocol.GroundingInfo{Grounded: true, Truncated: true, WorkspaceMismatch: true, Workspace: "/other/repo"}},
+		redactionsMsg{[]string{"openai_key"}},
+		providerMsg{"Relace"},
+		degradedMsg{[]protocol.Degradation{{Component: protocol.DegradedProviderRouting, Detail: "routing detail"}}},
+	} {
+		updated, _ := m.Update(msg)
+		m = updated.(chatModel)
+	}
 
-	if m.viewport.Height != baseline-2 {
-		t.Errorf("viewport.Height = %d, want %d (baseline %d minus 2 new notice lines)", m.viewport.Height, baseline-2, baseline)
+	if header := m.renderHeader(); strings.Contains(header, "\n") {
+		t.Errorf("renderHeader = %q, want a single row", header)
+	}
+	if got := m.headerLineCount(); got != 1 {
+		t.Errorf("headerLineCount = %d, want 1", got)
+	}
+	if m.viewport.Height != baseline {
+		t.Errorf("viewport.Height = %d, want %d: the transcript moved when notices arrived", m.viewport.Height, baseline)
+	}
+}
+
+// The regression the old separate-lines test guarded -- a redaction notice
+// vanishing when a grounding notice was also active -- now applies to /context.
+func TestChat_ContextShowsGroundingAndRedactionsTogether(t *testing.T) {
+	m := finishTurnWith(t,
+		groundingMsg{&protocol.GroundingInfo{Grounded: true, WorkspaceMismatch: true, Workspace: "/other/repo"}},
+		redactionsMsg{[]string{"openai_key"}},
+	)
+	ctx := contextReply(t, m)
+	if !strings.Contains(ctx, "/other/repo") || !strings.Contains(ctx, "openai_key") {
+		t.Errorf("/context = %q, want BOTH the grounding and redactions notices", ctx)
 	}
 }
 
@@ -1426,8 +1415,8 @@ func TestChat_HandleLocalSlashCommands(t *testing.T) {
 		updated, _ := m.handleLocalSlash(c, "query")
 		res := updated.(chatModel)
 		if c == "clear" {
-			if len(res.turns) != 1 {
-				t.Fatalf("expected clear to reset turns except assistant reply, got %d", len(res.turns))
+			if len(res.turns) != 0 {
+				t.Fatalf("expected clear to leave no turns (it no longer replies), got %d", len(res.turns))
 			}
 		} else if c == "exit" {
 			// exit returns tea.Quit
@@ -1504,8 +1493,8 @@ func TestChat_ViewRendersAllStates(t *testing.T) {
 	}
 
 	m.state = stateIdle
-	if v := m.View(); !strings.Contains(v, "idle") && !strings.Contains(v, "/ws") {
-		t.Fatalf("expected idle View, got: %s", v)
+	if v := m.View(); !strings.Contains(v, brandName) || strings.Contains(v, "idle") {
+		t.Fatalf("expected idle View with the brand and no \"idle\" label, got: %s", v)
 	}
 
 	m.ready = false
@@ -1524,7 +1513,7 @@ func TestChat_ViewRendersAllStates(t *testing.T) {
 	m.state = stateToolApproval
 	req := protocol.ToolApprovalRequest{Server: "test", Tool: "tool"}
 	m.pendingApproval = &req
-	if v := m.View(); !strings.Contains(v, "approve test__tool?") {
+	if v := m.View(); !strings.Contains(v, "y yes · a yes for this turn · n no") {
 		t.Fatalf("expected approval View, got: %s", v)
 	}
 
@@ -1601,5 +1590,72 @@ func TestChat_ApplyCurrentReviewEdit(t *testing.T) {
 	data, err := os.ReadFile(targetFile)
 	if err != nil || string(data) != "hello universe\n" {
 		t.Fatalf("expected updated file content 'hello universe\\n', got %q (err: %v)", string(data), err)
+	}
+}
+
+// TestChat_EnterOnPartialSlashRunsTheHighlightedCommand is the reported bug:
+// "/clea" with "/clear" highlighted in the popup was sent to the model as the
+// literal text "/clea" instead of running /clear.
+func TestChat_EnterOnPartialSlashRunsTheHighlightedCommand(t *testing.T) {
+	m := newTestModel()
+	m.turns = []turn{{role: roleUser, text: "hello"}, {role: roleAssistant, text: "hi"}}
+
+	m = typeText(m, "/clea")
+	m, _ = pressEnter(m)
+
+	if m.state == stateSending || m.state == stateStreaming {
+		t.Fatalf("state = %v: \"/clea\" was sent to the model instead of running /clear", m.state)
+	}
+	for _, turn := range m.turns {
+		if turn.role == roleUser && strings.Contains(turn.text, "/clea") {
+			t.Fatalf("\"/clea\" became a user turn: %+v", m.turns)
+		}
+	}
+	for _, turn := range m.turns {
+		if turn.text == "hello" || turn.text == "hi" {
+			t.Errorf("turns = %+v, want the transcript cleared by /clear", m.turns)
+		}
+	}
+}
+
+// A partial name for a command that needs arguments is completed, not run:
+// running it bare would only print its usage line.
+func TestChat_EnterOnPartialSlashNeedingArgsCompletesIt(t *testing.T) {
+	m := newTestModel()
+	m = typeText(m, "/sear")
+	m, _ = pressEnter(m)
+
+	if got := m.input.Value(); got != "/search " {
+		t.Errorf("input = %q, want %q waiting for the query", got, "/search ")
+	}
+	if len(m.turns) != 0 || m.state != stateIdle {
+		t.Errorf("state=%v turns=%+v, want nothing run yet", m.state, m.turns)
+	}
+}
+
+// The header is the brand alone at rest: no "idle", no "mem: N turn(s)".
+// Memory is still one command away, in /context.
+func TestChat_IdleHeaderIsTheBrandAlone(t *testing.T) {
+	m := finishTurnWith(t, providerMsg{"X"})
+	if h := ansi.Strip(m.renderHeader()); h != lotusGlyph+" "+brandName {
+		t.Errorf("idle header = %q, want just %q", h, lotusGlyph+" "+brandName)
+	}
+	if ctx := contextReply(t, m); !strings.Contains(ctx, "memory: ") {
+		t.Errorf("/context = %q, want the memory count that left the header", ctx)
+	}
+	m.state, m.statusErr = stateError, "boom"
+	if h := ansi.Strip(m.renderHeader()); !strings.Contains(h, "boom") {
+		t.Errorf("error header = %q, want the error still shown", h)
+	}
+}
+
+// /clear leaves an empty screen, not a "transcript cleared" line.
+func TestChat_ClearLeavesNothingOnScreen(t *testing.T) {
+	m := newTestModel()
+	m.turns = []turn{{role: roleUser, text: "hello"}, {role: roleAssistant, text: "hi"}}
+	m = typeText(m, "/clear")
+	m, _ = pressEnter(m)
+	if len(m.turns) != 0 {
+		t.Errorf("turns after /clear = %+v, want none", m.turns)
 	}
 }
