@@ -25,6 +25,8 @@ func TestHedgeDetectionOnAnswersThatShouldAndShouldNotTrigger(t *testing.T) {
 		"That said, my knowledge cutoff means this may be out of date.",
 		"As of my last update, the current version was 3.2.",
 		"I cannot browse the web, so please verify with a current source.",
+		"I can't browse the internet, so this may be out of date.",
+		"I'm unable to browse online for the latest figures.",
 		"This information might have changed since my training data was collected.",
 	}
 	for _, h := range hedges {
@@ -47,6 +49,13 @@ func TestHedgeDetectionOnAnswersThatShouldAndShouldNotTrigger(t *testing.T) {
 		"A model's knowledge cutoff is the date its training data ends. " +
 			strings.Repeat("Here is how you would store that date in your config and surface it in the UI. ", 12),
 		"The retry loop gives up after three attempts and logs the failure.",
+		// The live misfire: a statement about FILESYSTEM confinement, answering
+		// "what folders are on my desktop", was read as a staleness hedge and
+		// the turn was sent to web_search.
+		"But I can't browse your machine's filesystem (home directory, desktop, /tmp, etc.) " +
+			"-- only the project directory I'm confined to.",
+		"I cannot browse files outside the workspace.",
+		"I'm unable to browse directories above the project root.",
 	}
 	for _, f := range fine {
 		if looksLikeStalenessHedge(f) {

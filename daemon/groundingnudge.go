@@ -82,11 +82,16 @@ var stalenessHedges = []string{
 	"as of my last update",
 	"as of my knowledge",
 	"my last update",
-	"i cannot browse",
-	"i can't browse",
-	"cannot browse the web",
-	"unable to browse",
-	"no browsing",
+	// BROWSE IS ONLY A HEDGE ABOUT THE WEB. The bare "i can't browse" matched
+	// "I can't browse your machine's filesystem" -- a true statement about
+	// the workspace confinement, not about staleness -- and sent a question
+	// about the user's own desktop off to web_search. Each form now names
+	// what cannot be browsed.
+	"browse the web",
+	"browse the internet",
+	"browse online",
+	"no web browsing",
+	"no internet access",
 	"may have changed since",
 	"might have changed since",
 	"could have changed since",
