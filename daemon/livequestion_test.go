@@ -254,3 +254,28 @@ func TestTheUncheckedNudgeAddressesConfidenceRatherThanHedging(t *testing.T) {
 		t.Error("the unchecked nudge gives the model no way to decline a false positive")
 	}
 }
+
+// The reported misfire: a file to create, with "Today" in the text to write,
+// was classified as a question about current events and nudged to web_search.
+func TestFileRequestsAndQuotedTextAreNotLiveQuestions(t *testing.T) {
+	for _, q := range []string{
+		`No, create a file in my documents ,the name of the file is testing_mo, and writee "Today is amzing day ,and testing our agent"`,
+		"create a folder name as tester in my destop...",
+		"make a new directory called today_notes",
+		`put "the latest build is green" at the top of my todo list`,
+		"what does 'current version' mean in semver?",
+	} {
+		if looksLikeLiveWorldQuestion(q) {
+			t.Errorf("looksLikeLiveWorldQuestion(%q) = true, want false", q)
+		}
+	}
+	for _, q := range []string{
+		"who is the current cm of tamil nadu",
+		"what is today's news",
+		"what's the latest go version",
+	} {
+		if !looksLikeLiveWorldQuestion(q) {
+			t.Errorf("looksLikeLiveWorldQuestion(%q) = false, want true (a real live question)", q)
+		}
+	}
+}

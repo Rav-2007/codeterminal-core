@@ -91,7 +91,15 @@ var workspaceSignals = []string{
 // which IS a lookup. The code noun is what separates them.
 var codingIntent = regexp.MustCompile(`(?i)\b(?:write|implement|add|create|generate|refactor|rewrite|build|make)\b` +
 	`.{0,40}?\b(?:function|func|method|class|struct|interface|script|handler|test|endpoint|` +
-	`component|module|package|helper|wrapper|parser|type|field|flag|command|migration)\b`)
+	`component|module|package|helper|wrapper|parser|type|field|flag|command|migration|` +
+	// A file or folder to make on the user's machine is an action, not a
+	// question about the world -- "create a file ... write 'Today is ...'"
+	// was sent off to web_search.
+	`file|folder|directory|document|note|notes)\b`)
+
+// quotedText is text the user put in quotes: content to write or use, not a
+// question. "write \"Today is an amazing day\"" asks nothing about today.
+var quotedText = regexp.MustCompile("\"[^\"]*\"|\u201c[^\u201d]*\u201d|'[^']{2,}'|`[^`]*`")
 
 // filePathish matches a token that looks like a source file, which is the
 // strongest single signal that a question is about the workspace.
@@ -117,6 +125,9 @@ func looksLikeLiveWorldQuestion(q string) bool {
 	if filePathish.MatchString(q) || codingIntent.MatchString(q) {
 		return false
 	}
+	// Everything below reads the request WITHOUT its quoted text.
+	q = quotedText.ReplaceAllString(q, " ")
+	lower = strings.ToLower(q)
 	for _, sig := range workspaceSignals {
 		if strings.Contains(lower, sig) {
 			return false
