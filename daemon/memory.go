@@ -16,7 +16,7 @@ import (
 
 // memorySchemaVersion is the schema version this binary knows how to read
 // and write (schema_meta table, single migration point for future version bumps).
-const memorySchemaVersion = 4
+const memorySchemaVersion = 5
 
 // maxTurnsPerWorkspace caps retained history PER WORKSPACE (debt item (h):
 // the turns table had no cap or prune and grew forever).
@@ -113,6 +113,10 @@ func OpenMemoryStore(path string) (*MemoryStore, error) {
 	}
 
 	if err := ensureMemorySchema(db); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := compactMemory(db); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -230,6 +234,26 @@ func ensureMemorySchema(db *sql.DB) error {
 			return fmt.Errorf("purging pre-scrub turns: %w", err)
 		}
 	}
+	if version >= 2 && version < 5 {
+		// v5: turns_fts stops keeping its own copy of the text (see
+		// turnsFTSTableDDL). Dropped and rebuilt from turns; nothing is lost,
+		// because turns always held the text.
+		for _, stmt := range []string{
+			`DROP TRIGGER IF EXISTS turns_ai`,
+			`DROP TRIGGER IF EXISTS turns_ad`,
+			`DROP TABLE IF EXISTS turns_fts`,
+		} {
+			if _, err := db.Exec(stmt); err != nil {
+				return fmt.Errorf("migrating the search index: %w", err)
+			}
+		}
+		if err := createSearchIndex(db); err != nil {
+			return err
+		}
+		if err := backfillSearchIndex(db); err != nil {
+			return err
+		}
+	}
 	if version < memorySchemaVersion {
 		if _, err := db.Exec(`UPDATE schema_meta SET version = ?`, memorySchemaVersion); err != nil {
 			return fmt.Errorf("recording schema version: %w", err)
@@ -314,7 +338,7 @@ func (s *MemoryStore) pruneWorkspace(ctx context.Context, workspace string, now 
 	if err != nil {
 		return fmt.Errorf("pruning workspace history: %w", err)
 	}
-	return nil
+	return reclaimFreePages(ctx, s.db)
 }
 
 // LoadRecentTurns returns the most recent turns for workspace, oldest
@@ -370,7 +394,7 @@ func (s *MemoryStore) ClearWorkspace(ctx context.Context, workspace string) erro
 	if err != nil {
 		return fmt.Errorf("clearing workspace history: %w", err)
 	}
-	return nil
+	return reclaimFreePages(ctx, s.db)
 }
 
 // setupMemoryStore opens the cross-session conversation-memory database at

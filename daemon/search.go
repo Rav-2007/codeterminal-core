@@ -29,8 +29,18 @@ const turnsFTSTableDDL = `
 CREATE VIRTUAL TABLE IF NOT EXISTS turns_fts USING fts5(
 	content,
 	workspace UNINDEXED,
-	tokenize='trigram'
+	tokenize='trigram',
+	content='turns',
+	content_rowid='id'
 )`
+
+// EXTERNAL CONTENT (schema v5). turns_fts used to keep its OWN copy of every
+// turn's text beside the index -- a second copy of the conversation in the
+// same file. It now reads the text from turns itself (content='turns'), so
+// the text is stored once; snippet() and MATCH work exactly as before. The
+// cost is the delete trigger's shape: an external-content index cannot look
+// up what it indexed, so a deletion must hand it the old row (the 'delete'
+// command below) rather than DELETE FROM turns_fts.
 
 // turnsFTSInsertTriggerDDL keeps turns_fts in sync with turns at the
 // database level. AppendTurn's own SQL (memory.go) never mentions turns_fts
@@ -51,7 +61,7 @@ END`
 // deletes) -- add one if that ever changes.
 const turnsFTSDeleteTriggerDDL = `
 CREATE TRIGGER IF NOT EXISTS turns_ad AFTER DELETE ON turns BEGIN
-	DELETE FROM turns_fts WHERE rowid = old.id;
+	INSERT INTO turns_fts(turns_fts, rowid, content, workspace) VALUES ('delete', old.id, old.content, old.workspace);
 END`
 
 // createSearchIndex creates turns_fts and its sync triggers if they don't
@@ -78,7 +88,7 @@ func createSearchIndex(db *sql.DB) error {
 // runs once per database (guarded by schema_meta.version) -- so this needs no
 // separate "already ran" check of its own.
 func backfillSearchIndex(db *sql.DB) error {
-	if _, err := db.Exec(`INSERT INTO turns_fts(rowid, content, workspace) SELECT id, content, workspace FROM turns`); err != nil {
+	if _, err := db.Exec(`INSERT INTO turns_fts(turns_fts) VALUES ('rebuild')`); err != nil {
 		return fmt.Errorf("backfilling turns_fts: %w", err)
 	}
 	return nil
