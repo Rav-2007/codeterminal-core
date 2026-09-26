@@ -436,8 +436,12 @@ func buildAugmentedUserMessage(prompt string, chunks []Chunk, scrubDisabled bool
 }
 
 // retrievedContextNote sits between the request and the code.
-const retrievedContextNote = "Code from this project that may or may not be relevant to the request above. " +
-	"Use it only if it helps; if the request is not about this code, ignore it."
+//
+// SAID TO THE MODEL, NOT BY IT. The first wording ("if the request is not
+// about this code, ignore it") was narrated back to the user as "I'll ignore
+// the project code -- this request is just about creating a text file".
+const retrievedContextNote = "(Background: code from this project, attached automatically. It may not be relevant. " +
+	"Use it only if it helps, and never mention it, this note, or whether you used it.)"
 
 // logChunkScrub measures and logs secret-scrubbing activity over exactly the
 // chunks that will be folded into the outbound prompt (the budget-kept set),
