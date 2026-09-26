@@ -3,6 +3,9 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // mirrorChar returns c's left-right mirror image for the glyph set used in
@@ -65,5 +68,39 @@ func TestLotusLogo_RowsAreSymmetric(t *testing.T) {
 func TestLotusLogo_NoTabsOrCarriageReturns(t *testing.T) {
 	if strings.ContainsAny(lotusLogo, "\t\r") {
 		t.Error("lotusLogo contains a tab or carriage return, which will misalign it in a terminal")
+	}
+}
+
+// TestRenderSplash_LogoRowsShareOneCenter guards the on-screen bloom, not just
+// the source. Each row mirroring around its own center is not enough:
+// lipgloss.Place centers every row on its own width, so rows of unequal width
+// (the raw string has no trailing padding) each shifted by half their indent
+// and the lotus came out skewed although TestLotusLogo_RowsAreSymmetric passed.
+func TestRenderSplash_LogoRowsShareOneCenter(t *testing.T) {
+	const width = 120
+	placed := lipgloss.Place(width, 30, lipgloss.Center, lipgloss.Center, renderSplash())
+	rows := strings.Split(ansi.Strip(placed), "\n")
+
+	logoRows := len(strings.Split(lotusLogo, "\n"))
+	var centers2x []int
+	for _, row := range rows {
+		trimmed := strings.TrimSpace(row)
+		if trimmed == "" {
+			continue
+		}
+		start := lipgloss.Width(row) - lipgloss.Width(strings.TrimLeft(row, " "))
+		centers2x = append(centers2x, 2*start+lipgloss.Width(trimmed)-1)
+		if len(centers2x) == logoRows {
+			break
+		}
+	}
+	if len(centers2x) != logoRows {
+		t.Fatalf("found %d logo rows on screen, want %d", len(centers2x), logoRows)
+	}
+	for i, c := range centers2x {
+		if c != centers2x[0] {
+			t.Errorf("logo row %d is centered at column %.1f, row 1 at %.1f: the bloom is skewed",
+				i+1, float64(c)/2, float64(centers2x[0])/2)
+		}
 	}
 }

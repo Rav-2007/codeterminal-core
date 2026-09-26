@@ -44,7 +44,13 @@ func renderSplash() string {
 	lines := strings.Split(lotusLogo, "\n")
 	styledLines := make([]string, len(lines))
 	for i, line := range lines {
-		styledLines[i] = logoStyle.Render(line)
+		// MIRROR THE INDENT ON THE RIGHT. The raw string carries only leading
+		// padding (editors strip trailing), so rows come out 36-41 columns wide,
+		// and lipgloss.Place centers each row on its own width -- which shifted
+		// every row by half its indent and skewed the bloom. Equal trailing
+		// padding makes every row the same width with its content centered.
+		indent := len(line) - len(strings.TrimLeft(line, " "))
+		styledLines[i] = logoStyle.Render(line + strings.Repeat(" ", indent))
 	}
 	logo := strings.Join(styledLines, "\n")
 
