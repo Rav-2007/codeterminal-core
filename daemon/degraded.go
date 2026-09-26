@@ -28,7 +28,6 @@ import (
 const (
 	detailLexicalDown       = "keyword (lexical) search is unavailable, so answers are grounded by semantic similarity alone; exact identifier matches may be missed"
 	detailMemoryDown        = "cross-session conversation memory is unavailable; this conversation works normally but will not be remembered after the client closes"
-	detailFallbacks         = "provider routing permits fallbacks outside the configured zero-data-retention constraints, so a request may be served by a non-ZDR endpoint"
 	detailNonZDR            = "zero-data-retention routing is not enforced for this daemon"
 	detailCollection        = "providers that may store or train on request data are permitted for this daemon"
 	detailWorkspaceTooLarge = "workspace is too large (> 10,000 files), semantic search is disabled"
@@ -102,9 +101,14 @@ func (s *Server) routingDegradations() []protocol.Degradation {
 	if s.cfg.ZDR.AllowDataCollection {
 		out = append(out, protocol.Degradation{Component: protocol.DegradedProviderRouting, Detail: detailCollection})
 	}
-	if s.cfg.ZDR.AllowFallbacks {
-		out = append(out, protocol.Degradation{Component: protocol.DegradedProviderRouting, Detail: detailFallbacks})
-	}
+	// ALLOW_FALLBACKS IS NOT A DEGRADATION, and reporting it as one was false.
+	// It said "a request may be served by a non-ZDR endpoint" on every turn,
+	// in red. OpenRouter's zdr / data_collection filters decide pool
+	// MEMBERSHIP; allow_fallbacks only lets routing move WITHIN the filtered
+	// pool. Verified live twice with allow_fallbacks=true: 2026-07-10, and
+	// again 2026-09-26 -- two ordinary models with no ZDR endpoint were both
+	// refused at "Filter by Data Policy" (404). When ZDR itself is off, the
+	// real weakening is AllowNonZDR, which reports above.
 	return out
 }
 

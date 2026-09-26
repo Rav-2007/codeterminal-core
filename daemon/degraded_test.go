@@ -93,7 +93,6 @@ func TestRoutingDegradationsFollowConfig(t *testing.T) {
 		zdr        ZDRConfig
 		wantDetail string
 	}{
-		{"fallbacks allowed", ZDRConfig{AllowFallbacks: true}, "fallbacks"},
 		{"non-zdr allowed", ZDRConfig{AllowNonZDR: true}, "zero-data-retention routing is not enforced"},
 		{"collection allowed", ZDRConfig{AllowDataCollection: true}, "store or train"},
 	}
@@ -113,6 +112,18 @@ func TestRoutingDegradationsFollowConfig(t *testing.T) {
 				t.Errorf("detail = %q, want it to mention %q", got[0].Detail, tc.wantDetail)
 			}
 		})
+	}
+}
+
+// allow_fallbacks keeps routing inside the ZDR-filtered pool (verified live;
+// see routingDegradations), so it is not a weakening and must not be
+// reported as one. It is the shipped configuration: a warning here fired, in
+// red, on every turn a user ever took.
+func TestFallbacksAloneAreNotADegradation(t *testing.T) {
+	s := quietServer()
+	s.cfg = &Config{ZDR: ZDRConfig{AllowFallbacks: true, ProviderIgnoreList: []string{"DeepInfra"}}}
+	if got := s.routingDegradations(); len(got) != 0 {
+		t.Errorf("routingDegradations() = %v for allow_fallbacks alone, want none", got)
 	}
 }
 
@@ -138,7 +149,7 @@ func TestRoutingDegradationsToleratesNilConfig(t *testing.T) {
 // Client-facing strings follow the Fix 8 / Gate 7 discipline: they name what
 // is reduced and what it costs, never where anything lives.
 func TestDegradationDetailsCarryNoPathsOrHosts(t *testing.T) {
-	for _, detail := range []string{detailLexicalDown, detailMemoryDown, detailFallbacks, detailNonZDR, detailCollection} {
+	for _, detail := range []string{detailLexicalDown, detailMemoryDown, detailNonZDR, detailCollection} {
 		if strings.Contains(detail, "/") || strings.Contains(detail, "\\") {
 			t.Errorf("detail %q contains a path separator; client-facing text must carry no paths", detail)
 		}
