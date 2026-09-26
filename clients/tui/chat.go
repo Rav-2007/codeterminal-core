@@ -87,7 +87,7 @@ type turn struct {
 // helpText names /mouse because the thing it toggles is invisible until it
 // bites: with capture on, dragging to select text does nothing and there is no
 // error to search for.
-const helpText = "enter to send · ctrl+shift+c / ctrl+shift+v copy & paste · ctrl+n new conversation · ctrl+c to quit"
+const helpText = "enter send · ↑↓ history · shift+drag to select · ctrl+n new · ctrl+c quit"
 
 // reviewHelpText is shown instead of helpText while reviewing edit blocks.
 const reviewHelpText = "y apply · n skip · q cancel remaining"
@@ -129,6 +129,11 @@ type chatModel struct {
 	mouseCaptured bool
 	// pasteHintShown keeps the ctrl+v hint to once per session.
 	pasteHintShown bool
+
+	// Prompt history for up/down (see prompthistory.go).
+	promptHistory []string
+	historyIdx    int    // index into promptHistory while browsing; -1 when not
+	historyDraft  string // what was being typed when browsing began
 
 	// needsAPIKey is the daemon's answer to "would a prompt sent now have no
 	// credential?", taken from the handshake (protocol.HandshakeResponse.
@@ -309,11 +314,10 @@ func newChatModel(clientName, workspace, workspaceRoot string, initialHistory []
 	return chatModel{
 		state:           stateSplash,
 		streamAssistant: -1,
-		// OFF, matching main.go. The user could not copy anything out of the
-		// chat with capture on (it takes the terminal's click-drag selection),
-		// which is what ADR-001 left open; the wheel still scrolls, because
-		// with capture off the terminal sends it as up/down keys (see "up").
-		mouseCaptured: false,
+		// ON, matching main.go: the wheel must arrive as MOUSE events, because
+		// with capture off the terminal sends it as up/down keys -- and those
+		// are prompt history. Copying is shift+drag, named in helpText.
+		mouseCaptured: true,
 		limits:        loadTranscriptLimits(),
 		input:         ti,
 		spinner:       sp,
@@ -322,6 +326,8 @@ func newChatModel(clientName, workspace, workspaceRoot string, initialHistory []
 		workspace:     workspace,
 		workspaceRoot: workspaceRoot,
 		turns:         turnsFromProtocol(initialHistory),
+		promptHistory: promptsFrom(initialHistory),
+		historyIdx:    -1,
 	}
 }
 
@@ -549,6 +555,17 @@ func (m chatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case "up", "down":
+		// ALREADY BROWSING HISTORY: stay in it. A recalled "/clear" opens the
+		// slash popup, and without this the next up would walk the popup
+		// instead of going further back.
+		if m.state == stateIdle && m.historyIdx != -1 {
+			if msg.String() == "up" {
+				m.historyUp()
+			} else {
+				m.historyDown()
+			}
+			return m, nil
+		}
 		if m.state == stateIdle {
 			matches := m.slashMatches()
 			if len(matches) > 0 {
@@ -567,15 +584,15 @@ func (m chatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
-		// No popup: up/down scroll the transcript. This is also what the mouse
-		// WHEEL arrives as when capture is off -- the terminal's alternate-
-		// scroll mode turns each notch into arrow keys on the alternate screen.
-		if msg.String() == "up" {
-			m.viewport.LineUp(1)
-		} else {
-			m.viewport.LineDown(1)
+		// No popup: up/down walk the prompts sent before, like a shell.
+		if m.state == stateIdle {
+			if msg.String() == "up" {
+				m.historyUp()
+			} else {
+				m.historyDown()
+			}
+			return m, nil
 		}
-		return m, nil
 	case "ctrl+v":
 		// ctrl+v reads the system clipboard through a helper program (xclip,
 		// xsel or wl-paste), and with none installed it did nothing at all.
@@ -1053,6 +1070,7 @@ func (m chatModel) startTurn() (tea.Model, tea.Cmd) {
 	if raw == "" {
 		return m, nil
 	}
+	m.rememberPrompt(raw)
 	if arg, isModel := parseModelCommand(raw); isModel {
 		m.input.SetValue("")
 		return m.handleModelCommand(arg)

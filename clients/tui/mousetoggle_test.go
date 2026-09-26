@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 // /mouse must actually change the terminal's mode, not merely say so. The Cmd
@@ -14,28 +15,28 @@ import (
 // UI claiming one thing and the terminal doing another.
 func TestMouseToggleSwitchesTheTerminalMode(t *testing.T) {
 	m := newTestModel()
-	if m.mouseCaptured {
-		t.Fatal("the model starts with capture ON; main.go starts without it so text can be selected")
+	if !m.mouseCaptured {
+		t.Fatal("the model does not start matching main.go, which starts with WithMouseCellMotion")
 	}
 
 	m = typeText(m, "/mouse")
 	updated, cmd := pressEnter(m)
 	m = updated
-	if !m.mouseCaptured {
-		t.Error("/mouse did not turn capture on")
+	if m.mouseCaptured {
+		t.Error("/mouse did not turn capture off")
 	}
 	if cmd == nil {
 		t.Fatal("/mouse changed the flag but sent nothing to the terminal")
 	}
-	assertMouseCmd(t, cmd, "enable")
+	assertMouseCmd(t, cmd, "disable")
 
 	m = typeText(m, "/mouse")
 	updated, cmd = pressEnter(m)
 	m = updated
-	if m.mouseCaptured {
-		t.Error("/mouse did not turn capture back off")
+	if !m.mouseCaptured {
+		t.Error("/mouse did not turn capture back on")
 	}
-	assertMouseCmd(t, cmd, "disable")
+	assertMouseCmd(t, cmd, "enable")
 }
 
 // assertMouseCmd runs the Cmd and checks which Bubble Tea mouse message it
@@ -62,18 +63,18 @@ func TestMouseToggleSaysWhatItDidInPlainTerms(t *testing.T) {
 	m = typeText(m, "/mouse")
 	m, _ = pressEnter(m)
 	last := m.turns[len(m.turns)-1].text
-	for _, want := range []string{"wheel", "shift", "ON"} {
-		if !strings.Contains(strings.ToLower(last), strings.ToLower(want)) {
-			t.Errorf("turning capture on did not mention %q: %q", want, last)
+	for _, want := range []string{"select", "OFF"} {
+		if !strings.Contains(last, want) {
+			t.Errorf("turning capture off did not mention %q: %q", want, last)
 		}
 	}
 
 	m = typeText(m, "/mouse")
 	m, _ = pressEnter(m)
 	last = m.turns[len(m.turns)-1].text
-	for _, want := range []string{"select", "OFF"} {
-		if !strings.Contains(last, want) {
-			t.Errorf("turning capture off did not mention %q: %q", want, last)
+	for _, want := range []string{"wheel", "shift", "ON"} {
+		if !strings.Contains(strings.ToLower(last), strings.ToLower(want)) {
+			t.Errorf("turning capture on did not mention %q: %q", want, last)
 		}
 	}
 }
@@ -83,12 +84,11 @@ func TestMouseToggleSaysWhatItDidInPlainTerms(t *testing.T) {
 // only way to find /mouse were to read the source, the toggle would not have
 // fixed anything.
 //
-// Capture now starts OFF, so selecting text needs no toggle at all; the idle
-// hint spends its room on copy and paste instead, and /mouse stays findable
-// through /help.
+// With capture on, selecting is shift+drag -- which the idle hint must say,
+// since that is the one thing a user who cannot select will look for.
 func TestTheMouseToggleIsDiscoverable(t *testing.T) {
-	if !strings.Contains(helpText, "copy") || !strings.Contains(helpText, "paste") {
-		t.Errorf("the idle hint does not say how to copy and paste: %q", helpText)
+	if !strings.Contains(helpText, "shift+drag") {
+		t.Errorf("the idle hint does not say how to select text: %q", helpText)
 	}
 	help := formatSlashHelp()
 	if !strings.Contains(help, "/mouse") {
@@ -97,29 +97,6 @@ func TestTheMouseToggleIsDiscoverable(t *testing.T) {
 	if !strings.Contains(help, "select text") {
 		t.Error("/help lists /mouse but does not say it is about selecting text, " +
 			"which is the symptom someone will be searching for")
-	}
-}
-
-// With capture off the wheel arrives as up/down keys, so those must scroll the
-// transcript -- otherwise turning capture off would have cost scrolling.
-func TestArrowKeysScrollTheTranscriptWhenNoPopupIsOpen(t *testing.T) {
-	m := newTestModel()
-	for i := 0; i < 80; i++ {
-		m.turns = append(m.turns, turn{role: roleAssistant, text: fmt.Sprintf("line %d", i)})
-	}
-	m.refreshViewport()
-	m.viewport.GotoBottom()
-	bottom := m.viewport.YOffset
-
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyUp})
-	m = updated.(chatModel)
-	if m.viewport.YOffset != bottom-1 {
-		t.Fatalf("up: YOffset %d -> %d, want one line up", bottom, m.viewport.YOffset)
-	}
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
-	m = updated.(chatModel)
-	if m.viewport.YOffset != bottom {
-		t.Errorf("down: YOffset = %d, want back at %d", m.viewport.YOffset, bottom)
 	}
 }
 
@@ -143,5 +120,14 @@ func TestCtrlVWithoutAClipboardToolSaysHowToPaste(t *testing.T) {
 	}
 	if hints != 1 {
 		t.Errorf("%d paste hint(s) after two ctrl+v presses, want exactly 1", hints)
+	}
+}
+
+// The hint is ONE row, and the layout counts it as one: longer than a standard
+// 80-column terminal and it wraps, desyncing the row count -- and the PTY tests,
+// which wait for it on a 100-column screen, never see it whole.
+func TestTheIdleHintFitsEightyColumns(t *testing.T) {
+	if w := lipgloss.Width(helpText); w > 80 {
+		t.Errorf("helpText is %d columns wide, want at most 80: %q", w, helpText)
 	}
 }

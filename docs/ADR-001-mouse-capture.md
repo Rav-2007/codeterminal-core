@@ -1,6 +1,6 @@
 # ADR-001 — Mouse capture in the terminal client
 
-**Status:** accepted (toggle shipped); **default decided 2026-09-27: capture OFF** (see "Default decided" below).
+**Status:** accepted (toggle shipped); **default decided 2026-09-27: capture ON, with up/down as prompt history** (see "Default decided" and "Revised the same day" below).
 **Date:** 2026-09-04.
 **Scope:** `clients/tui` only. The VS Code client is a webview and has no such trade.
 
@@ -78,6 +78,17 @@ to copy and paste instead of naming `/mouse`.
 Pasting had a second, separate cause: `ctrl+v` reads the clipboard through a
 helper (`wl-paste`, `xclip` or `xsel`), and with none installed it did nothing.
 It now says once to use the terminal's `ctrl+shift+v`, which always works.
+
+## Revised the same day: back to ON
+
+Within hours the user asked for shell-style prompt history on up/down. With
+capture OFF that cannot coexist with wheel scrolling: the terminal sends each
+wheel notch as up/down keys, indistinguishable from a real arrow press, so the
+wheel would scroll through old prompts. Offered the three-way trade (history +
+wheel with shift+drag select / history + plain select with no wheel / history on
+ctrl+up/down), the user chose the first. Capture is ON again; up/down walk the
+prompt history; the idle hint now names "shift+drag to select", which is the
+discoverability gap this ADR was about in the first place.
 
 ## What would change this decision
 
