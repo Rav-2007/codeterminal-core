@@ -14,6 +14,41 @@ import * as path from 'path';
 
 import { runTests } from '@vscode/test-electron';
 
+// cachedVersion picks the newest VS Code build already under .vscode-test, so
+// a local run does not download ~330 MB whenever a new stable ships -- measured:
+// a run that should take 20s sat on "Downloading (326.00 MB)" with five builds
+// already cached. MOCHIII_VSCODE_TEST_VERSION overrides it ("stable" for the
+// latest release, or an exact version). With nothing cached -- a fresh
+// checkout, CI -- the default is left to @vscode/test-electron, as before.
+// Read before the VSCODE_* scrub below; the name avoids that prefix anyway.
+function cachedVersion(root: string): string | undefined {
+  const wanted = process.env.MOCHIII_VSCODE_TEST_VERSION;
+  if (wanted) {
+    return wanted;
+  }
+  const prefix = 'vscode-' + (process.platform === 'darwin' ? 'darwin' : process.platform) + '-';
+  let names: string[] = [];
+  try {
+    // is-complete is @vscode/test-electron's own marker, written once an
+    // install has fully unpacked. An interrupted download leaves a folder
+    // without it -- measured: 355 MB, no bin/, unusable.
+    names = fs
+      .readdirSync(path.join(root, '.vscode-test'))
+      .filter((n) => n.startsWith(prefix) && fs.existsSync(path.join(root, '.vscode-test', n, 'is-complete')));
+  } catch {
+    return undefined;
+  }
+  const versions = names
+    .map((n) => n.slice(n.lastIndexOf('-') + 1))
+    .filter((v) => /^\d+\.\d+\.\d+$/.test(v))
+    .sort((a, b) => {
+      const pa = a.split('.').map(Number);
+      const pb = b.split('.').map(Number);
+      return pa[0] - pb[0] || pa[1] - pb[1] || pa[2] - pb[2];
+    });
+  return versions.length > 0 ? versions[versions.length - 1] : undefined;
+}
+
 async function main(): Promise<void> {
   try {
     // Running this harness from inside VS Code's integrated terminal (or the
@@ -33,6 +68,10 @@ async function main(): Promise<void> {
     }
 
     const extensionDevelopmentPath = path.resolve(__dirname, '../../');
+    const version = cachedVersion(extensionDevelopmentPath);
+    if (version) {
+      console.log('runTest: using VS Code ' + version + ' (set MOCHIII_VSCODE_TEST_VERSION=stable for the latest)');
+    }
     const extensionTestsPath = path.resolve(__dirname, './suite/index');
 
     // A throwaway workspace (NOT the extension dir itself) and a fresh user-data
@@ -43,6 +82,7 @@ async function main(): Promise<void> {
 
     try {
       await runTests({
+        version,
         extensionDevelopmentPath,
         extensionTestsPath,
         launchArgs: [workspace, '--user-data-dir', userDataDir, '--disable-gpu'],

@@ -594,7 +594,7 @@ Per-turn budgets, all configurable, shown here at their defaults:
   "max_iterations": 8,             // model calls per turn
   "turn_timeout_seconds": 600,     // MACHINE time; your thinking time is added back
   "max_tool_result_bytes": 32768,  // per result, after scrubbing
-  "max_total_tool_bytes": 131072,  // per turn, after scrubbing
+  "max_total_tool_bytes": 131072,  // per turn, after scrubbing (models.agent.json ships 524288)
   "max_advertised_tools": 12       // cap on the menu the model sees
 }
 ```
