@@ -43,6 +43,11 @@ CONFIG="models.agent.json"
 [[ -n "${PLAIN:-}" ]] && CONFIG="models.json"
 [[ -f "$CONFIG" ]] || die "$CONFIG is missing"
 
+# The Go toolchain lives outside the default PATH on this machine; find it
+# rather than make every run start with an export.
+command -v go >/dev/null 2>&1 || PATH="$HOME/.local/go/bin:$PATH"
+command -v go >/dev/null 2>&1 || die "go not found; install it or add it to PATH"
+
 mkdir -p "$BIN"
 echo "building…"
 (cd daemon && go build -o "$BIN/mochiii-daemon" .)
@@ -69,8 +74,13 @@ if [[ -n "${MOCHIII_API_KEY:-}${MOCHIII_PROXY_KEY:-}" ]]; then
 elif [[ -f "$STORED" ]]; then
 	echo "run-tui: no key in the environment; using the one stored by \`mochiii-daemon connect\`"
 else
-	echo "run-tui: warning: no API key in the environment, and none stored." >&2
-	echo "run-tui: run \`$BIN/mochiii-daemon connect\` or set MOCHIII_API_KEY; prompts will fail." >&2
+	# NO KEY ANYWHERE, AND THIS SCRIPT DOES NOT ASK FOR ONE. Opening the client is
+	# not the moment: a new user should meet the prompt, not a credential form. The
+	# client asks for the key when it is actually needed -- when a question is
+	# submitted and there is nothing to authenticate it with -- and `/connect` is
+	# there before that for anyone who wants to set it up first.
+	echo "run-tui: no API key in the environment, and none stored -- the client will ask" >&2
+	echo "run-tui: for one when you send your first question, or run /connect before then." >&2
 fi
 
 # The workspace both halves must agree on. Anything the caller passes wins.

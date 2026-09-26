@@ -180,6 +180,21 @@ type HandshakeResponse struct {
 	Error            string `json:"error,omitempty"`
 	DaemonVersion    string `json:"daemon_version,omitempty"`
 	PersistedHistory []Turn `json:"persisted_history,omitempty"`
+
+	// NeedsAPIKey reports that a prompt sent now would go out with no credential
+	// and be refused by the provider. A client should ask for a key at the moment
+	// a question is submitted rather than when it starts up: opening a client is
+	// not the moment to meet a credential form, and a prompt that fails with a
+	// provider's 401 teaches the user nothing about what to do next.
+	//
+	// THE DAEMON OWNS THIS JUDGEMENT because only the daemon knows all three
+	// inputs. It is false when a key is configured, false in proxy mode (where the
+	// proxy key authenticates and is checked separately), and false for a LOOPBACK
+	// api_base -- a local OpenAI-compatible server that wants no Authorization
+	// header is a supported setup, and nagging it would be wrong.
+	//
+	// Additive: a client that ignores this field behaves exactly as before.
+	NeedsAPIKey bool `json:"needs_api_key,omitempty"`
 }
 
 // PromptRequest carries a single user prompt. Sent by the client only after

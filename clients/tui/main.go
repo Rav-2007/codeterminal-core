@@ -99,6 +99,8 @@ func runChat(workspace string) {
 	// The streaming path (stream.go) never reads this field, so a later
 	// per-prompt connection can't re-hydrate turns the TUI already has.
 	persistedHistory := preflight.handshake.PersistedHistory
+	// Read here, beside the other handshake field, rather than after Close below.
+	needsAPIKey := preflight.handshake.NeedsAPIKey
 	// Ignored deliberately, and it is the same reasoning at all five close
 	// sites in this client -- see the note on daemonSession.Close.
 	_ = preflight.Close()
@@ -108,7 +110,13 @@ func runChat(workspace string) {
 		absWorkspace = workspace // best-effort label; still sent as-is
 	}
 
-	p := tea.NewProgram(newChatModel("mochiii-tui", absWorkspace, workspaceRoot, persistedHistory), tea.WithAltScreen(), tea.WithMouseCellMotion())
+	model := newChatModel("mochiii-tui", absWorkspace, workspaceRoot, persistedHistory)
+	// Carried from the handshake rather than asked for here: the client opens on the
+	// prompt, and asks for a key only when a question actually needs one. See
+	// beginConnectForPrompt in connect.go.
+	model.needsAPIKey = needsAPIKey
+
+	p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	// SIGHUP and SIGQUIT reach Bubble Tea's own shutdown through here; without
 	// it SIGHUP killed the process with the alternate screen still up. finish
 	// also re-raises a caught SIGQUIT, which is why it runs before the error

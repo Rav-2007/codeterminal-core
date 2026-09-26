@@ -38,6 +38,51 @@ const (
 	defaultInputPlaceholder = "ask something…"
 )
 
+// beginConnectForPrompt asks for a key BECAUSE a question is waiting on one, and
+// remembers the question so the user does not have to type it twice.
+//
+// THIS IS WHY THE CLIENT DOES NOT ASK AT STARTUP. Someone opening Mochiii for the
+// first time should meet the prompt, not a credential form; the key is only
+// actually needed at the moment a question is submitted. Sending it anyway would
+// spend a round trip to earn a provider's 401, which tells the user nothing about
+// what to do -- so the question is held here instead, and sent the moment the
+// provider accepts the key.
+//
+// The held prompt is restored to the input on every path that does not send it
+// (cancel, empty entry, a refused key), so no question is ever lost.
+func (m chatModel) beginConnectForPrompt(prompt string) (tea.Model, tea.Cmd) {
+	m.pendingPrompt = prompt
+	m.appendTurn(turn{role: roleAssistant, text: "This needs your provider API key before it can ask anything.\n\n" +
+		"Paste it below and your question is sent as soon as the provider accepts it — " +
+		"nothing is stored if the key is refused, and the key is not shown as you type."})
+	return m.beginConnect()
+}
+
+// resumePendingPrompt sends the question that was waiting on a key, if there is
+// one and the daemon is now actually using that key.
+//
+// Gated on InUse rather than on "accepted": a key stored while one in the
+// environment takes precedence has NOT taken effect, and sending the question
+// then would repeat the failure that held it back in the first place.
+func (m chatModel) resumePendingPrompt() (tea.Model, tea.Cmd) {
+	prompt := m.pendingPrompt
+	m.pendingPrompt = ""
+	m.input.SetValue(prompt)
+	m.input.SetCursor(len(prompt))
+	return m.startTurn()
+}
+
+// restorePendingPrompt puts a held question back where the user typed it, for
+// every path that ends without sending it.
+func (m *chatModel) restorePendingPrompt() {
+	if m.pendingPrompt == "" {
+		return
+	}
+	m.input.SetValue(m.pendingPrompt)
+	m.input.SetCursor(len(m.pendingPrompt))
+	m.pendingPrompt = ""
+}
+
 // beginConnect switches the client into masked key entry.
 func (m chatModel) beginConnect() (tea.Model, tea.Cmd) {
 	m.state = stateConnect
@@ -72,6 +117,7 @@ func (m chatModel) handleConnectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
 		m.endConnect()
+		m.restorePendingPrompt()
 		m.appendTurn(turn{role: roleAssistant, text: "connect cancelled; nothing was sent or stored"})
 		m.resizeViewport()
 		m.refreshViewport()
@@ -83,6 +129,7 @@ func (m chatModel) handleConnectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// only in the local variable and in the request about to be sent.
 		m.endConnect()
 		if key == "" {
+			m.restorePendingPrompt()
 			m.appendTurn(turn{role: roleAssistant, text: "no key entered; nothing was sent or stored"})
 			m.resizeViewport()
 			m.refreshViewport()
@@ -103,9 +150,28 @@ func (m chatModel) handleConnectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// handleConnectResult renders what the daemon said.
+// handleConnectResult renders what the daemon said, and releases a question that
+// was waiting on the key.
 func (m chatModel) handleConnectResult(msg connectResultMsg) (tea.Model, tea.Cmd) {
 	m.appendTurn(turn{role: roleAssistant, text: formatConnectResult(msg)})
+	m.resizeViewport()
+	m.refreshViewport()
+
+	// The daemon is now sending this key, so stop holding prompts back. Taken from
+	// InUse rather than from the outcome: a key stored behind an environment
+	// override has not taken effect, and pretending otherwise would send the held
+	// question straight into the same failure.
+	if msg.err == nil && msg.resp.InUse {
+		m.needsAPIKey = false
+		if m.pendingPrompt != "" {
+			return m.resumePendingPrompt()
+		}
+		return m, nil
+	}
+
+	// Refused, unreachable, or overridden: give the question back rather than
+	// dropping it or sending it into a failure.
+	m.restorePendingPrompt()
 	m.resizeViewport()
 	m.refreshViewport()
 	return m, nil
@@ -128,10 +194,22 @@ func formatConnectResult(msg connectResultMsg) string {
 	var b strings.Builder
 	switch r.Outcome {
 	case protocol.ConnectAccepted:
-		fmt.Fprintf(&b, "Connected. %s\nKey %s is in use now — no restart needed.", r.Detail, r.MaskedKey)
+		// "in use now" IS THE CLAIM THAT CAN BE FALSE. The daemon reports InUse,
+		// and it is false whenever a key in the daemon's environment wins. Saying
+		// it anyway produced a message that contradicted its own closing note.
+		fmt.Fprintf(&b, "Connected. %s\n", r.Detail)
+		if r.InUse {
+			fmt.Fprintf(&b, "Key %s is in use now — no restart needed.", r.MaskedKey)
+		} else {
+			fmt.Fprintf(&b, "Key %s is stored, but it is NOT what this daemon is sending.", r.MaskedKey)
+		}
 	case protocol.ConnectUnverified:
-		fmt.Fprintf(&b, "Saved %s, but NOT verified: %s\nIt is in use now; if prompts fail, the key is the first thing to suspect.",
-			r.MaskedKey, r.Detail)
+		fmt.Fprintf(&b, "Saved %s, but NOT verified: %s\n", r.MaskedKey, r.Detail)
+		if r.InUse {
+			b.WriteString("It is in use now; if prompts fail, the key is the first thing to suspect.")
+		} else {
+			b.WriteString("It is stored, but it is NOT what this daemon is sending.")
+		}
 	case protocol.ConnectRejected:
 		fmt.Fprintf(&b, "The provider refused that key: %s\nNothing was stored, and the key this daemon was already using is unchanged.",
 			r.Detail)

@@ -127,6 +127,16 @@ type chatModel struct {
 	// us rather than handling selection itself. See handleMouseToggle.
 	mouseCaptured bool
 
+	// needsAPIKey is the daemon's answer to "would a prompt sent now have no
+	// credential?", taken from the handshake (protocol.HandshakeResponse.
+	// NeedsAPIKey). It gates the FIRST submitted question rather than startup:
+	// see beginConnectForPrompt in connect.go for why that is the right moment.
+	needsAPIKey bool
+
+	// pendingPrompt holds a question that was typed before a key existed, so the
+	// user types it once. Empty except while the key prompt is open on its behalf.
+	pendingPrompt string
+
 	// limits bounds the transcript; evictedTurns and evictedBytes are the
 	// running totals the eviction marker reports. See transcriptbound.go.
 	limits       transcriptLimits
@@ -948,6 +958,13 @@ func (m chatModel) startTurn() (tea.Model, tea.Cmd) {
 	if sp := parseSlash(raw); !sp.RawPassthrough {
 		m.input.SetValue("")
 		return m.handleSlash(sp)
+	}
+	// A QUESTION IS THE MOMENT A KEY IS ACTUALLY NEEDED -- and this is below the
+	// slash handling deliberately, so /connect, /help and everything else still
+	// work on a client that has no credential yet. Only a real prompt is held.
+	if m.needsAPIKey {
+		m.input.SetValue("")
+		return m.beginConnectForPrompt(raw)
 	}
 	pipeline, prompt, isTeam := parseTeamCommand(raw)
 	promptKind := ""

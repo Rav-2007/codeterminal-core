@@ -97,6 +97,10 @@ until now there was exactly one way to supply it: export `MOCHIII_API_KEY` in th
 shell before starting the daemon. If you did not know the variable's name,
 nothing worked and nothing told you why.
 
+`mochiii-daemon --help` now also lists the subcommands it accepts, `connect`
+among them, instead of printing only flags — the reason the command was reported
+missing after it had shipped was that nothing named it.
+
 There is now a command for it, in three places:
 
 ```
@@ -111,6 +115,20 @@ is **not** accepted as an argument: on a command line it is readable by other
 programs on the machine and is written to your shell history, and in a chat it
 would be kept in the transcript and sent along with your next question.
 
+**It asks you at the moment it needs the key, not when you open the client.**
+Starting the terminal client no longer greets a new user with a credential form:
+you get the prompt. The key is only actually needed when you ask something, so
+that is when it asks — your question is held, the masked key prompt opens, and the
+moment your provider accepts the key the question you already typed is sent. You
+never type it twice. Cancel, type nothing, or give a key the provider refuses, and
+your question is handed straight back to the input rather than lost or sent into a
+failure.
+
+One exception, deliberately: if your `api_base` points at a **local** server
+(`localhost` or a loopback address), nothing asks for a key at all. A local
+OpenAI-compatible server that wants no `Authorization` header is a supported
+setup, and nagging it for a credential it does not use would be wrong.
+
 **It checks the key before telling you it worked.** Mochiii asks your provider
 whether the key is valid. If the provider refuses it, nothing is stored and
 whatever key you were using before is left alone — so a typo cannot take away a
@@ -119,11 +137,16 @@ machine is offline, the key is stored and Mochiii says plainly that it could
 **not** verify it, rather than implying it did.
 
 **In the terminal client it takes effect immediately.** No restart: the next
-question you ask uses the new key. In VS Code the key goes to the editor's
-credential storage and the daemon restarts to pick it up.
+question you ask uses the new key — unless a key is set in the daemon's
+environment, which still wins. In that one case the client says so rather than
+reporting the key as in use, because a message claiming the key was in force
+while the daemon kept sending a different one is worse than no message. In VS
+Code the key goes to the editor's credential storage and the daemon restarts to
+pick it up.
 
 `/connect show` tells you which key is in force, showing only its last four
-characters. `/connect forget` removes it.
+characters. `/connect forget` removes it, and says so only when there was one to
+remove.
 
 **If you already set `MOCHIII_API_KEY`, nothing changes for you.** A key in the
 environment still takes precedence over a stored one, so existing setups keep

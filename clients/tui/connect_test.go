@@ -16,6 +16,9 @@ import (
 
 const tuiTestKey = "sk-test-0123456789abcdefSECRET"
 
+// errTestConnect stands in for a failed round trip to the daemon.
+var errTestConnect = errors.New("daemon unreachable")
+
 // newTestChatModel builds a model the way main does, minus the terminal.
 func newTestChatModel(t *testing.T) chatModel {
 	t.Helper()
@@ -388,5 +391,211 @@ func TestConnectStillRefusesAnythingThatCouldBeAKey(t *testing.T) {
 		if strings.Contains(last, tuiTestKey) {
 			t.Errorf("the refusal echoed the key back into the transcript: %q", last)
 		}
+	}
+}
+
+// THE MESSAGE MUST NOT CONTRADICT ITSELF.
+//
+// The daemon reports InUse, and it is false whenever a key in the daemon's
+// ENVIRONMENT beats the one just stored. The renderer used to say "is in use now
+// — no restart needed" unconditionally, so under an environment override the
+// same message told the user their key was in use and, two lines later, that it
+// was "NOT what it is sending". Both sentences cannot be true, and the one that
+// was wrong is the one a user reads first and acts on.
+//
+// This is the same class of defect as claiming a sandbox confines something it
+// does not: the state is already on the wire, and the text ignored it.
+func TestTheRenderNeverClaimsAKeyIsInUseWhenTheDaemonSaysItIsNot(t *testing.T) {
+	accepted := func(inUse, envOverride bool) protocol.ConnectResponse {
+		return protocol.ConnectResponse{
+			Ok: true, Outcome: protocol.ConnectAccepted,
+			Detail:    "the provider accepted it",
+			MaskedKey: "...ijkl (24 characters)",
+			InUse:     inUse, EnvOverride: envOverride,
+		}
+	}
+
+	overridden := formatConnectResult(connectResultMsg{resp: accepted(false, true)})
+	if strings.Contains(overridden, "is in use now") {
+		t.Errorf("claimed the key is in use while the daemon reported in_use=false:\n%s", overridden)
+	}
+	if !strings.Contains(overridden, "NOT what this daemon is sending") {
+		t.Errorf("did not say the stored key is not the one being sent:\n%s", overridden)
+	}
+
+	// The ordinary case must still read as plainly as it did before.
+	inUse := formatConnectResult(connectResultMsg{resp: accepted(true, false)})
+	if !strings.Contains(inUse, "is in use now — no restart needed") {
+		t.Errorf("the normal success message lost its point:\n%s", inUse)
+	}
+
+	// Unverified carries the same claim and needs the same restraint.
+	unverified := formatConnectResult(connectResultMsg{resp: protocol.ConnectResponse{
+		Ok: true, Outcome: protocol.ConnectUnverified,
+		Detail: "the provider did not answer", MaskedKey: "...ijkl (24 characters)",
+		InUse: false, EnvOverride: true,
+	}})
+	if strings.Contains(unverified, "It is in use now") {
+		t.Errorf("unverified claimed in-use against in_use=false:\n%s", unverified)
+	}
+}
+
+// THE KEY IS ASKED FOR WHEN A QUESTION NEEDS IT, NOT WHEN THE CLIENT OPENS.
+//
+// Someone opening Mochiii for the first time should meet the prompt, not a
+// credential form. So nothing asks at startup; the first submitted QUESTION opens
+// the masked key prompt, and the question is held rather than spent earning a
+// provider's 401. These tests hold that whole contract, including the part that
+// matters most to a user: the question they typed is never lost.
+func TestAQuestionWithNoKeyOpensTheKeyPromptAndIsHeld(t *testing.T) {
+	m := newTestChatModel(t)
+	m.needsAPIKey = true
+
+	m.input.SetValue("what does this repo do?")
+	out, cmd := m.startTurn()
+	got := out.(chatModel)
+
+	if got.state != stateConnect {
+		t.Fatalf("a question with no key did not open the key prompt (state %v)", got.state)
+	}
+	if cmd == nil {
+		t.Error("the key prompt opened without focusing the input, so typing would go nowhere")
+	}
+	if got.pendingPrompt != "what does this repo do?" {
+		t.Errorf("the question was not held: %q", got.pendingPrompt)
+	}
+	// It must NOT have been sent, and must not sit in the transcript as if it had.
+	for _, turn := range got.turns {
+		if turn.role == roleUser {
+			t.Errorf("the question was added as a sent user turn: %q", turn.text)
+		}
+	}
+	if got.input.EchoMode != textinput.EchoPassword {
+		t.Error("the key prompt is not masked; the key would be typed in the clear")
+	}
+	last := got.turns[len(got.turns)-1].text
+	if !strings.Contains(last, "provider API key") {
+		t.Errorf("nothing explained why the prompt appeared: %q", last)
+	}
+}
+
+// Slash commands must still work with no key -- /connect above all, or the client
+// would be unable to accept the very thing it is asking for.
+func TestSlashCommandsStillWorkWithNoKey(t *testing.T) {
+	for _, cmd := range []string{"/connect", "/help"} {
+		m := newTestChatModel(t)
+		m.needsAPIKey = true
+		m.input.SetValue(cmd)
+		out, _ := m.startTurn()
+		got := out.(chatModel)
+		if got.pendingPrompt != "" {
+			t.Errorf("%s was held as if it were a question: %q", cmd, got.pendingPrompt)
+		}
+		if cmd == "/help" && got.state == stateConnect {
+			t.Error("/help opened the key prompt instead of printing help")
+		}
+	}
+}
+
+// Every path that does NOT send the question must give it back.
+func TestAHeldQuestionIsGivenBackWheneverItIsNotSent(t *testing.T) {
+	const question = "explain the sandbox"
+
+	held := func(t *testing.T) chatModel {
+		t.Helper()
+		m := newTestChatModel(t)
+		m.needsAPIKey = true
+		m.input.SetValue(question)
+		out, _ := m.startTurn()
+		return out.(chatModel)
+	}
+
+	t.Run("esc cancels", func(t *testing.T) {
+		out, _ := held(t).handleConnectKey(tea.KeyMsg{Type: tea.KeyEsc})
+		got := out.(chatModel)
+		if got.input.Value() != question {
+			t.Errorf("cancelling lost the question: input is %q", got.input.Value())
+		}
+		if got.pendingPrompt != "" {
+			t.Error("the question is still held after being returned, so it could be sent twice")
+		}
+	})
+
+	t.Run("empty entry", func(t *testing.T) {
+		out, _ := held(t).handleConnectKey(tea.KeyMsg{Type: tea.KeyEnter})
+		got := out.(chatModel)
+		if got.input.Value() != question {
+			t.Errorf("submitting nothing lost the question: input is %q", got.input.Value())
+		}
+	})
+
+	t.Run("the provider refuses the key", func(t *testing.T) {
+		out, _ := held(t).handleConnectResult(connectResultMsg{resp: protocol.ConnectResponse{
+			Ok: false, Outcome: protocol.ConnectRejected, Detail: "the provider refused it (HTTP 401)",
+		}})
+		got := out.(chatModel)
+		if got.input.Value() != question {
+			t.Errorf("a refused key lost the question: input is %q", got.input.Value())
+		}
+		if !got.needsAPIKey {
+			t.Error("a refused key cleared needsAPIKey, so the next question would be sent with no credential")
+		}
+	})
+
+	t.Run("stored but overridden by the environment", func(t *testing.T) {
+		out, _ := held(t).handleConnectResult(connectResultMsg{resp: protocol.ConnectResponse{
+			Ok: true, Outcome: protocol.ConnectAccepted, MaskedKey: "...ijkl (24 characters)",
+			InUse: false, EnvOverride: true,
+		}})
+		got := out.(chatModel)
+		if got.input.Value() != question {
+			t.Errorf("a key that did not take effect lost the question: input is %q", got.input.Value())
+		}
+		if !got.needsAPIKey {
+			t.Error("a key the daemon is NOT using cleared needsAPIKey")
+		}
+	})
+
+	t.Run("the round trip fails", func(t *testing.T) {
+		out, _ := held(t).handleConnectResult(connectResultMsg{err: errTestConnect})
+		got := out.(chatModel)
+		if got.input.Value() != question {
+			t.Errorf("a failed round trip lost the question: input is %q", got.input.Value())
+		}
+	})
+}
+
+// And the path that DOES send it: an accepted key the daemon is actually using
+// releases the question without the user retyping it.
+func TestAnAcceptedKeyReleasesTheHeldQuestion(t *testing.T) {
+	m := newTestChatModel(t)
+	m.needsAPIKey = true
+	m.input.SetValue("why is this slow?")
+	out, _ := m.startTurn()
+	held := out.(chatModel)
+
+	out, cmd := held.handleConnectResult(connectResultMsg{resp: protocol.ConnectResponse{
+		Ok: true, Outcome: protocol.ConnectAccepted, MaskedKey: "...ijkl (24 characters)", InUse: true,
+	}})
+	got := out.(chatModel)
+
+	if got.needsAPIKey {
+		t.Error("the daemon is using the key but the client still thinks it needs one")
+	}
+	if got.pendingPrompt != "" {
+		t.Errorf("the question is still held after being released: %q", got.pendingPrompt)
+	}
+	if cmd == nil {
+		t.Fatal("the held question was not sent after the key was accepted")
+	}
+	// startTurn appends the user's turn as it sends it.
+	var sent bool
+	for _, turn := range got.turns {
+		if turn.role == roleUser && strings.Contains(turn.text, "why is this slow?") {
+			sent = true
+		}
+	}
+	if !sent {
+		t.Error("the released question never reached the transcript as a sent turn")
 	}
 }

@@ -42,52 +42,15 @@ func main() {
 
 	logger := log.New(os.Stderr, "mochiii-daemon: ", log.LstdFlags)
 
-	// "index", "retrieve", "download-model", "helper-smoketest",
-	// "status", "edits", "mcp" and "connect" are one-shot subcommands, not flags:
-	// they run and exit,
-	// deliberately separate from the long-running serve path below (which
-	// they leave entirely untouched — none of them is invoked automatically
-	// on daemon start or per-prompt). Checked before flag.Parse() because
-	// the daemon's own flags (e.g. --config) don't apply to them.
+	// THE ONE-SHOT SUBCOMMANDS run and exit, deliberately separate from the
+	// long-running serve path below (which they leave entirely untouched -- none of
+	// them is invoked automatically on daemon start or per-prompt). Checked before
+	// flag.Parse() because the daemon's own flags (e.g. --config) don't apply to
+	// them. The set lives in subcommands.go, which --help reads from the same
+	// table, so a subcommand cannot be dispatched without being documented.
 	if len(os.Args) > 1 {
-		switch os.Args[1] {
-		case "index":
-			if err := runIndexCommand(os.Args[2:], logger); err != nil {
-				logger.Fatal(err)
-			}
-			return
-		case "retrieve":
-			if err := runRetrieveCommand(os.Args[2:], logger); err != nil {
-				logger.Fatal(err)
-			}
-			return
-		case "download-model":
-			if err := runDownloadModelCommand(os.Args[2:], logger); err != nil {
-				logger.Fatal(err)
-			}
-			return
-		case "helper-smoketest":
-			if err := runHelperSmoketestCommand(os.Args[2:], logger); err != nil {
-				logger.Fatal(err)
-			}
-			return
-		case "status":
-			if err := runStatusCommand(os.Args[2:], logger); err != nil {
-				logger.Fatal(err)
-			}
-			return
-		case "edits":
-			if err := runEditsCommand(os.Args[2:], logger); err != nil {
-				logger.Fatal(err)
-			}
-			return
-		case "mcp":
-			if err := runMCPCommand(os.Args[2:], logger); err != nil {
-				logger.Fatal(err)
-			}
-			return
-		case "connect":
-			if err := runConnectCommand(os.Args[2:], logger); err != nil {
+		if sc, ok := findSubcommand(os.Args[1]); ok {
+			if err := sc.run(os.Args[2:], logger); err != nil {
 				logger.Fatal(err)
 			}
 			return
@@ -103,6 +66,11 @@ func main() {
 	noRerank := flag.Bool("no-rerank", false, "bypass file-class re-ranking; use raw vector-similarity order (A/B comparison, default: re-ranking enabled)")
 	noScrub := flag.Bool("no-scrub", false, "disable heuristic scrubbing of secret-shaped text from the prompt before it's sent to the model API (default: scrubbing enabled)")
 	logFile := flag.String("log-file", "", "additionally append the daemon log to this file (size-rotated at 5 MiB, one .1 backup); stderr is always written too")
+
+	// --help NAMES THE SUBCOMMANDS, not just the flags. See subcommands.go for
+	// why: the default flag usage listed flags only, so someone running --help to
+	// find out how to supply an API key learned that no such thing existed.
+	flag.Usage = func() { writeUsage(flag.CommandLine.Output(), filepath.Base(os.Args[0])) }
 	flag.Parse()
 
 	// Swapped in before anything else is logged, so a --log-file run captures

@@ -404,6 +404,7 @@ func (s *Server) serveConn(conn net.Conn) {
 		Ok:               true,
 		DaemonVersion:    daemonVersion,
 		PersistedHistory: s.loadPersistedHistory(ctx),
+		NeedsAPIKey:      s.needsAPIKey(),
 	}); err != nil {
 		s.logger.Printf("handshake write error: %v", err)
 		return

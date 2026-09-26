@@ -77,10 +77,15 @@ func runConnectCommand(args []string, logger *log.Logger) error {
 	case *show:
 		return showCredential(path)
 	case *forget:
-		if err := forgetCredential(path); err != nil {
+		removed, err := forgetCredential(path)
+		if err != nil {
 			return fmt.Errorf("removing %s: %w", path, err)
 		}
-		_, _ = fmt.Fprintf(connectOut, "Stored key removed (%s).\n", path)
+		if removed {
+			_, _ = fmt.Fprintf(connectOut, "Stored key removed (%s).\n", path)
+		} else {
+			_, _ = fmt.Fprintf(connectOut, "No key was stored (%s), so there was nothing to remove.\n", path)
+		}
 		_, _ = fmt.Fprintln(connectOut, "Inference will use MOCHIII_API_KEY from the environment, if it is set.")
 		return nil
 	}

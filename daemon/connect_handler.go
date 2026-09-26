@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 
@@ -55,6 +57,52 @@ func (s *Server) credentials() (key, base string) {
 	return s.apiKey, s.apiBase
 }
 
+// needsAPIKey reports whether a prompt sent now would go out with no credential
+// and be refused by the provider.
+//
+// See protocol.HandshakeResponse.NeedsAPIKey for why the daemon decides this and
+// not each client: the three inputs live here. Read fresh on every handshake, so
+// a client that reconnects after `connect` sees the new answer.
+func (s *Server) needsAPIKey() bool {
+	// PROXY MODE AUTHENTICATES WITH A DIFFERENT CREDENTIAL. main.go already
+	// refuses to start in proxy mode without an address, and the proxy key is not
+	// interchangeable with a provider key -- asking for one here would be asking
+	// for the wrong secret.
+	if os.Getenv("MOCHIII_USE_PROXY") == "true" {
+		return false
+	}
+	key, base := s.credentials()
+	if strings.TrimSpace(key) != "" {
+		return false
+	}
+	// A LOOPBACK BASE IS A SUPPORTED KEYLESS SETUP -- a local OpenAI-compatible
+	// server that wants no Authorization header, which .env.example documents as
+	// legitimate. Asking that user for a provider key would be nagging them for
+	// something they deliberately do not have.
+	return !isLoopbackBase(base)
+}
+
+// isLoopbackBase reports whether an api_base addresses this machine. An
+// unparseable or host-less base is NOT treated as loopback: the safe default is
+// to assume a remote provider that will want a credential.
+func isLoopbackBase(base string) bool {
+	u, err := url.Parse(strings.TrimSpace(base))
+	if err != nil {
+		return false
+	}
+	host := u.Hostname()
+	switch {
+	case host == "":
+		return false
+	case strings.EqualFold(host, "localhost"):
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
+}
+
 // handleConnect answers a ConnectRequest.
 func (s *Server) handleConnect(ctx context.Context, enc *json.Encoder, req protocol.ConnectRequest) {
 	resp := s.connectResult(ctx, req)
@@ -81,15 +129,20 @@ func (s *Server) connectResult(ctx context.Context, req protocol.ConnectRequest)
 
 	switch {
 	case req.Forget:
-		if err := forgetCredential(path); err != nil {
+		removed, err := forgetCredential(path)
+		if err != nil {
 			return protocol.ConnectResponse{Error: err.Error()}
 		}
 		// The in-memory key is deliberately NOT cleared: this daemon is serving
 		// turns, and silently cutting its credential mid-session would turn a
 		// tidy-up into an outage. The removal takes effect at the next start.
+		detail := "the stored key was removed; this daemon keeps the key it is already running with until it restarts"
+		if !removed {
+			detail = "no key was stored, so there was nothing to remove"
+		}
 		return protocol.ConnectResponse{
 			Ok: true, Outcome: protocol.ConnectRemoved, EnvOverride: envOverride,
-			Detail: "the stored key was removed; this daemon keeps the key it is already running with until it restarts",
+			Detail: detail,
 		}
 
 	case req.Show:

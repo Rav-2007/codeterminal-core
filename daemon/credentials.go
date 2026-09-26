@@ -142,14 +142,23 @@ func saveCredential(path string, cred storedCredential) error {
 	return nil
 }
 
-// forgetCredential removes the stored credential. Removing one that is not there
-// succeeds: `connect --forget` means "there must be no stored key afterwards",
-// and that is already true.
-func forgetCredential(path string) error {
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return err
+// forgetCredential removes the stored credential, reporting whether there was
+// one to remove. Removing one that is not there SUCCEEDS: `connect --forget`
+// means "there must be no stored key afterwards", and that is already true.
+//
+// The bool exists so the caller can say which of those two happened. Reporting
+// "stored key removed" to someone who had none is a small lie that teaches them
+// the command did something it did not, and it hides the real answer when they
+// ran it because a key they expected to be stored was not being used.
+func forgetCredential(path string) (removed bool, err error) {
+	err = os.Remove(path)
+	if os.IsNotExist(err) {
+		return false, nil
 	}
-	return nil
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // maskKey renders a key for a human to RECOGNISE but not to use.
