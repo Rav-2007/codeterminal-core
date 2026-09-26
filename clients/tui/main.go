@@ -116,7 +116,9 @@ func runChat(workspace string) {
 	// beginConnectForPrompt in connect.go.
 	model.needsAPIKey = needsAPIKey
 
-	p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	// No mouse capture at start: the terminal keeps its own click-drag
+	// selection, so copying out of the chat just works. See chatModel.mouseCaptured.
+	p := tea.NewProgram(model, tea.WithAltScreen())
 	// SIGHUP and SIGQUIT reach Bubble Tea's own shutdown through here; without
 	// it SIGHUP killed the process with the alternate screen still up. finish
 	// also re-raises a caught SIGQUIT, which is why it runs before the error

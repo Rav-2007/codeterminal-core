@@ -87,7 +87,7 @@ type turn struct {
 // helpText names /mouse because the thing it toggles is invisible until it
 // bites: with capture on, dragging to select text does nothing and there is no
 // error to search for.
-const helpText = "enter to send · ctrl+n new conversation · /mouse to select text · ctrl+c to quit"
+const helpText = "enter to send · ctrl+shift+c / ctrl+shift+v copy & paste · ctrl+n new conversation · ctrl+c to quit"
 
 // reviewHelpText is shown instead of helpText while reviewing edit blocks.
 const reviewHelpText = "y apply · n skip · q cancel remaining"
@@ -127,6 +127,8 @@ type chatModel struct {
 	// mouseCaptured mirrors whether the terminal is reporting mouse events to
 	// us rather than handling selection itself. See handleMouseToggle.
 	mouseCaptured bool
+	// pasteHintShown keeps the ctrl+v hint to once per session.
+	pasteHintShown bool
 
 	// needsAPIKey is the daemon's answer to "would a prompt sent now have no
 	// credential?", taken from the handshake (protocol.HandshakeResponse.
@@ -307,15 +309,19 @@ func newChatModel(clientName, workspace, workspaceRoot string, initialHistory []
 	return chatModel{
 		state:           stateSplash,
 		streamAssistant: -1,
-		mouseCaptured:   true, // main.go starts the program with WithMouseCellMotion
-		limits:          loadTranscriptLimits(),
-		input:           ti,
-		spinner:         sp,
-		viewport:        vp,
-		clientName:      clientName,
-		workspace:       workspace,
-		workspaceRoot:   workspaceRoot,
-		turns:           turnsFromProtocol(initialHistory),
+		// OFF, matching main.go. The user could not copy anything out of the
+		// chat with capture on (it takes the terminal's click-drag selection),
+		// which is what ADR-001 left open; the wheel still scrolls, because
+		// with capture off the terminal sends it as up/down keys (see "up").
+		mouseCaptured: false,
+		limits:        loadTranscriptLimits(),
+		input:         ti,
+		spinner:       sp,
+		viewport:      vp,
+		clientName:    clientName,
+		workspace:     workspace,
+		workspaceRoot: workspaceRoot,
+		turns:         turnsFromProtocol(initialHistory),
 	}
 }
 
@@ -560,6 +566,28 @@ func (m chatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.autocompletePicked = true
 				return m, nil
 			}
+		}
+		// No popup: up/down scroll the transcript. This is also what the mouse
+		// WHEEL arrives as when capture is off -- the terminal's alternate-
+		// scroll mode turns each notch into arrow keys on the alternate screen.
+		if msg.String() == "up" {
+			m.viewport.LineUp(1)
+		} else {
+			m.viewport.LineDown(1)
+		}
+		return m, nil
+	case "ctrl+v":
+		// ctrl+v reads the system clipboard through a helper program (xclip,
+		// xsel or wl-paste), and with none installed it did nothing at all.
+		// Say how to paste instead -- the terminal's own ctrl+shift+v always
+		// works, because it arrives as typed text.
+		if !clipboardToolAvailable() {
+			if !m.pasteHintShown {
+				m.pasteHintShown = true
+				m.appendTurn(turn{role: roleSystem, text: "to paste, use ctrl+shift+v (ctrl+v needs a clipboard tool such as wl-clipboard or xclip)"})
+				m.refreshViewport()
+			}
+			return m, nil
 		}
 	case "ctrl+n":
 		return m.clearConversation()

@@ -1,6 +1,6 @@
 # ADR-001 — Mouse capture in the terminal client
 
-**Status:** accepted (toggle shipped); the default is an open product decision.
+**Status:** accepted (toggle shipped); **default decided 2026-09-27: capture OFF** (see "Default decided" below).
 **Date:** 2026-09-04.
 **Scope:** `clients/tui` only. The VS Code client is a webview and has no such trade.
 
@@ -63,6 +63,21 @@ I have not made that change, because it is a product judgment about which
 gesture a majority of users reach for first, and I have no usage data. It is one
 line in `main.go` plus the initial value of `mouseCaptured`, and the tests do
 not depend on which way it points.
+
+## Default decided (2026-09-27)
+
+Capture now starts **OFF**. The deciding report was the one this ADR predicted:
+a user said they "can't copy inside this interface" — not that mouse reporting
+was on. With capture off the terminal keeps click-drag selection and
+`ctrl+shift+c`, and the wheel still scrolls: on the alternate screen the
+terminal's alternate-scroll mode sends each wheel notch as up/down keys, which
+now scroll the transcript whenever the slash popup is closed. `/mouse` turns
+capture back on for terminals that do not do that. The idle hint now says how
+to copy and paste instead of naming `/mouse`.
+
+Pasting had a second, separate cause: `ctrl+v` reads the clipboard through a
+helper (`wl-paste`, `xclip` or `xsel`), and with none installed it did nothing.
+It now says once to use the terminal's `ctrl+shift+v`, which always works.
 
 ## What would change this decision
 
