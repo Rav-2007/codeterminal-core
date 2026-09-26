@@ -63,7 +63,8 @@
     "allow_data_collection": false,
     "allow_fallbacks": true,
     "provider_ignore_list": [
-      "DeepInfra"
+      "DeepInfra",
+      "Relace"
     ],
     "provider_sort": "price"
   },
