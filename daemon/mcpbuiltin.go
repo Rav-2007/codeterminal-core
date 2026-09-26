@@ -254,13 +254,16 @@ func (s *Server) builtinTools(proposals *proposalSink, mode string) []mcp.Builti
 		tools = append(tools, mcp.Builtin{
 			Tool: mcp.Tool{
 				Name: "propose_edit",
-				Description: "Propose an edit to a workspace file. The edit is NOT applied: it is shown " +
+				Description: "Propose an edit to a file, or create one (empty search). The edit is NOT applied: it is shown " +
 					"to the user as a reviewable diff, which they accept or reject. Give the exact " +
-					"existing text to replace and the text to replace it with.",
+					"existing text to replace and the text to replace it with. A workspace-relative path edits the " +
+					"project; a ~/ path (for example ~/Desktop/notes/todo.md) edits or creates a file anywhere in the " +
+					"user's home folder, creating folders as needed -- except hidden files and folders, ~/bin and " +
+					".desktop files, which are always refused.",
 				Schema: schema(`{
 					"type":"object",
 					"properties":{
-						"path":{"type":"string","description":"Workspace-relative path to edit."},
+						"path":{"type":"string","description":"Workspace-relative path, or a ~/ path in the user's home folder."},
 						"search":{"type":"string","description":"The exact existing text to replace. Must appear exactly once in the file."},
 						"replace":{"type":"string","description":"The text to put in its place."}
 					},
@@ -616,7 +619,7 @@ func (s *Server) builtinProposeEdit(_ context.Context, raw json.RawMessage, prop
 	if err != nil {
 		return toolError("that edit cannot be applied: %v", err)
 	}
-	prepared, err := editapply.PrepareEdit(realRoot, block)
+	prepared, err := editapply.PrepareEditAnywhere(realRoot, block)
 	if err != nil {
 		// The refusal text is already written for a human and names no absolute
 		// path -- it is the same message the edit pipeline shows. Handing it

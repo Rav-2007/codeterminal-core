@@ -160,7 +160,7 @@ func applyEditBlocks(realWorkspaceRoot string, blocks []editapply.EditBlock, rej
 	for i, block := range blocks {
 		fmt.Fprintf(out, "\n--- edit %d/%d: %s ---\n", i+1, len(blocks), block.FilePath)
 
-		prepared, prepErr := editapply.PrepareEdit(realWorkspaceRoot, block)
+		prepared, prepErr := editapply.PrepareEditAnywhere(realWorkspaceRoot, block)
 		if prepErr != nil {
 			fmt.Fprintf(out, "REFUSED: %v\n", prepErr)
 			logger.Printf("edits apply: refused %s: %v", block.FilePath, prepErr)
@@ -328,7 +328,45 @@ func runUndoSession(realWorkspaceRoot, sessionDir string, force bool, in io.Read
 	}
 	defer release()
 
+	// THE PROJECT PART, then THE HOME PART. An edit outside the project (in
+	// the user's home folder, see editapply.PrepareEditAnywhere) is backed up
+	// into the same session under editapply.OutsideBackupSubdir, relative to
+	// home -- so one undo reverts everything that run did, both under the one
+	// lock taken above.
+	homeSession := filepath.Join(sessionDir, editapply.OutsideBackupSubdir)
+	info, statErr := os.Stat(homeSession)
+	hasHome := statErr == nil && info.IsDir()
+	// A session holding ONLY outside edits has no project before/; the
+	// project part is skipped rather than failing on it. Every other session
+	// runs the project part exactly as undo always has.
+	if _, beforeErr := os.Stat(filepath.Join(sessionDir, "before")); beforeErr == nil || !hasHome {
+		restored, removed, guarded, err = undoSessionPart(realWorkspaceRoot, sessionDir, "", force, in, out, logger)
+		if err != nil {
+			return restored, removed, guarded, err
+		}
+	}
+	if hasHome {
+		home, homeErr := editapply.RealHomeDir()
+		if homeErr != nil {
+			return restored, removed, guarded, homeErr
+		}
+		r, rm, g, homeErr := undoSessionPart(home, homeSession, "~/", force, in, out, logger)
+		restored, removed, guarded = restored+r, removed+rm, append(guarded, g...)
+		if homeErr != nil {
+			return restored, removed, guarded, homeErr
+		}
+	}
+	return restored, removed, guarded, nil
+}
+
+// undoSessionPart reverts one root's share of a backup session. The caller
+// holds the workspace apply lock. display prefixes the paths it reports ("~/"
+// for the home part). A part with no before/ directory has nothing to revert.
+func undoSessionPart(realWorkspaceRoot, sessionDir, display string, force bool, in io.Reader, out io.Writer, logger *log.Logger) (restored, removed int, guarded []string, err error) {
 	beforeDir := filepath.Join(sessionDir, "before")
+	if _, statErr := os.Stat(beforeDir); os.IsNotExist(statErr) && display != "" {
+		return 0, 0, nil, nil
+	}
 
 	var relPaths []string
 	err = filepath.WalkDir(beforeDir, func(path string, d fs.DirEntry, err error) error {
@@ -347,6 +385,16 @@ func runUndoSession(realWorkspaceRoot, sessionDir string, force bool, in io.Read
 	})
 	if err != nil {
 		return 0, 0, nil, fmt.Errorf("reading backup session %s: %w", sessionDir, err)
+	}
+	// THE HOME PART RE-CHECKS EVERY PATH before restoring it. The session is
+	// the project's own bookkeeping, but a restore is a write, and a write
+	// outside the project is only ever allowed where an edit would have been.
+	if display != "" {
+		for _, rel := range relPaths {
+			if why := editapply.OutsideWriteRefusal(rel); why != "" {
+				return 0, 0, nil, fmt.Errorf("refusing to restore %s%s: %s", display, displayRel(rel), why)
+			}
+		}
 	}
 	if len(relPaths) == 0 {
 		safeFprintf(out, "no backed-up files in %s\n", sessionDir)
@@ -394,7 +442,7 @@ func runUndoSession(realWorkspaceRoot, sessionDir string, force bool, in io.Read
 	if len(guarded) > 0 {
 		fmt.Fprintf(out, "\n%d file(s) changed since this apply run and were NOT restored automatically:\n", len(guarded))
 		for _, rel := range guarded {
-			fmt.Fprintf(out, "  - %s\n", displayRel(rel))
+			fmt.Fprintf(out, "  - %s\n", displayRel(display+rel))
 		}
 
 		proceed := force
@@ -413,6 +461,11 @@ func runUndoSession(realWorkspaceRoot, sessionDir string, force bool, in io.Read
 		}
 	}
 
+	if display != "" {
+		for i := range guarded {
+			guarded[i] = display + guarded[i]
+		}
+	}
 	revertedFiles, err := restoreBatch(realWorkspaceRoot, beforeDir, batch, created)
 	// Say what actually happened to each file. A created file that undo deleted
 	// is reported as removed, never as "restored" — the honesty invariant is
@@ -420,9 +473,9 @@ func runUndoSession(realWorkspaceRoot, sessionDir string, force bool, in io.Read
 	for _, f := range revertedFiles {
 		if f.removed {
 			removed++
-			fmt.Fprintf(out, "removed %s (created by this apply run)\n", displayRel(f.rel))
+			fmt.Fprintf(out, "removed %s (created by this apply run)\n", displayRel(display+f.rel))
 		} else {
-			fmt.Fprintf(out, "restored %s\n", displayRel(f.rel))
+			fmt.Fprintf(out, "restored %s\n", displayRel(display+f.rel))
 		}
 	}
 	restored = len(revertedFiles)

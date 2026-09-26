@@ -94,6 +94,10 @@ var fileKindSites = map[string]struct {
 
 	// .tgz / .tar.gz / .zip, picking how to unpack a downloaded runtime.
 	"daemon/onnxruntimefetch.go": {nonSourceFormat, 3},
+
+	// .desktop, refusing app launchers as a write target outside the project
+	// (outsideWriteRefusal). A safety refusal, not a language decision.
+	"editapply/outside.go": {nonSourceFormat, 1},
 }
 
 // scanRoots are the module directories whose production code could route on a

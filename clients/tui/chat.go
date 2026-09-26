@@ -1719,7 +1719,7 @@ func lastAssistantText(turns []turn) string {
 func (m chatModel) advanceReview() (tea.Model, tea.Cmd) {
 	for m.reviewIndex < len(m.reviewBlocks) {
 		block := m.reviewBlocks[m.reviewIndex]
-		prepared, err := editapply.PrepareEdit(m.workspaceRoot, block)
+		prepared, err := editapply.PrepareEditAnywhere(m.workspaceRoot, block)
 		if err != nil {
 			m.reviewRefused++
 			m.reviewRefusals = append(m.reviewRefusals, fmt.Sprintf("%s: %v", block.FilePath, err))
@@ -2158,6 +2158,10 @@ func severedRail(width int) (dense, sparse string) {
 func renderReviewPanel(index, total int, p *editapply.PreparedEdit) string {
 	var b strings.Builder
 	b.WriteString(brandStyle.Render(fmt.Sprintf("--- edit %d/%d: %s (lines %d-%d) ---", index+1, total, sanitizeText(p.Block.FilePath), p.StartLine, p.EndLine)))
+	// The one kind of edit that leaves the project says so before the diff.
+	if p.OutsideRoot != "" {
+		b.WriteString("\n" + diffRemovedStyle.Render("WRITES OUTSIDE THIS PROJECT: "+sanitizeText(p.Block.FilePath)))
+	}
 	for _, l := range strings.Split(sanitizeText(p.Block.Search), "\n") {
 		b.WriteString("\n" + diffRemovedStyle.Render("- "+l))
 	}

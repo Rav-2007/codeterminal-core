@@ -811,7 +811,7 @@ func (s *Server) handleApplyEdit(enc *json.Encoder, req protocol.ApplyEditReques
 	defer s.lockWorkspace(realRoot)()
 
 	block := editapply.EditBlock{FilePath: req.Edit.FilePath, Search: req.Edit.Search, Replace: req.Edit.Replace}
-	prepared, err := editapply.PrepareEdit(realRoot, block)
+	prepared, err := editapply.PrepareEditAnywhere(realRoot, block)
 	if err != nil {
 		s.logger.Printf("apply-edit: refused %s: %v", block.FilePath, err)
 		enc.Encode(protocol.ApplyEditResponse{ProtocolVersion: protocol.ProtocolVersion, Applied: false, Error: s.socketSafeError(err, realRoot)})

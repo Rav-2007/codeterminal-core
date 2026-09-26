@@ -24,6 +24,12 @@ type PreparedEdit struct {
 	Tier       MatchTier
 	MatchNote  string // human-readable note on what normalization the match needed; "" when exact
 	Creates    bool   // true when this edit brings a new file into existence (see IsEmptySearch)
+	// OutsideRoot is the (resolved) home folder when this edit writes OUTSIDE
+	// the workspace, and "" otherwise. Set only by PrepareEditAnywhere; Apply
+	// then locks on the workspace but backs up relative to this root, into
+	// the session's OutsideBackupSubdir. Clients show such an edit with a
+	// banner: it is the one kind of edit that leaves the project.
+	OutsideRoot string
 }
 
 // syntaxTier is how strongly this binary can judge one language, and therefore
@@ -368,6 +374,9 @@ func Apply(realWorkspaceRoot string, prepared *PreparedEdit, backupDir string) e
 	if err := VerifyUnchanged(prepared); err != nil {
 		return err
 	}
+	// The LOCK stays the workspace's (above); only the bookkeeping moves for
+	// an edit outside it -- see PreparedEdit.OutsideRoot.
+	realWorkspaceRoot, backupDir = outsideApplyTarget(realWorkspaceRoot, backupDir, prepared)
 	if err := BackupOriginal(backupDir, realWorkspaceRoot, prepared); err != nil {
 		return fmt.Errorf("backing up %s: %w", prepared.Block.FilePath, err)
 	}
