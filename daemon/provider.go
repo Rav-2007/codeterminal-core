@@ -20,6 +20,29 @@ import (
 // stalled upstream can't hang a connection (and its goroutine) forever.
 const requestTimeout = 5 * time.Minute
 
+// streamStallTimeout is how long the model API may send nothing at all --
+// not a token, not a keep-alive -- before the attempt is abandoned as stalled.
+// A var so tests can shorten it.
+var streamStallTimeout = 60 * time.Second
+
+// errStreamStalled is the watchdog's cancellation cause.
+var errStreamStalled = errors.New("model API stream stalled")
+
+// stallResetReader re-arms the stall watchdog on every read that returns
+// bytes.
+type stallResetReader struct {
+	r     io.Reader
+	reset func()
+}
+
+func (s stallResetReader) Read(p []byte) (int, error) {
+	n, err := s.r.Read(p)
+	if n > 0 {
+		s.reset()
+	}
+	return n, err
+}
+
 // chatCompletionsPath is appended to MOCHIII_API_BASE for every call.
 const chatCompletionsPath = "/chat/completions"
 
@@ -563,6 +586,25 @@ func streamCompletion(ctx context.Context, apiBase, apiKey, model string, messag
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 
+	// THE STALL WATCHDOG. requestTimeout bounds the whole call, but a provider
+	// that goes silent mid-answer kept the turn hanging for all five minutes of
+	// it with nothing on screen -- MEASURED live: a stream from "Relace" stopped
+	// mid-turn and the daemon sat until "context deadline exceeded", by which
+	// time the user had pressed esc twice. Any byte at all re-arms the timer
+	// (SSE keep-alive comments included), so a slow model that is still
+	// talking is never cut; only silence is.
+	stallCtx, stall := context.WithCancelCause(ctx)
+	defer stall(nil)
+	watchdog := time.AfterFunc(streamStallTimeout, func() { stall(errStreamStalled) })
+	defer watchdog.Stop()
+	stalledErr := func(err error) error {
+		if errors.Is(context.Cause(stallCtx), errStreamStalled) {
+			return &ModelError{Class: ClassUpstreamUnavailable, stalled: true,
+				detail: fmt.Sprintf("the model API sent nothing for %s, so the provider was treated as stalled", streamStallTimeout)}
+		}
+		return err
+	}
+
 	reqBody, err := json.Marshal(chatCompletionRequest{
 		Model:         model,
 		Messages:      messages,
@@ -576,7 +618,7 @@ func streamCompletion(ctx context.Context, apiBase, apiKey, model string, messag
 	}
 
 	url := strings.TrimRight(apiBase, "/") + chatCompletionsPath
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(reqBody))
+	httpReq, err := http.NewRequestWithContext(stallCtx, http.MethodPost, url, bytes.NewReader(reqBody))
 	if err != nil {
 		return nil, fmt.Errorf("building request: %w", err)
 	}
@@ -588,7 +630,7 @@ func streamCompletion(ctx context.Context, apiBase, apiKey, model string, messag
 
 	resp, err := http.DefaultClient.Do(httpReq)
 	if err != nil {
-		return nil, classifyTransportError(err)
+		return nil, stalledErr(classifyTransportError(err))
 	}
 	defer resp.Body.Close()
 
@@ -608,7 +650,7 @@ func streamCompletion(ctx context.Context, apiBase, apiKey, model string, messag
 		return nil, modelErr.withUpstreamRequestID(upstreamRequestID(resp.Header))
 	}
 
-	scanner := bufio.NewScanner(resp.Body)
+	scanner := bufio.NewScanner(stallResetReader{resp.Body, func() { watchdog.Reset(streamStallTimeout) }})
 	scanner.Buffer(make([]byte, 0, sseInitialBufferSize), sseMaxLineSize)
 
 	providerSeen := false
@@ -679,7 +721,7 @@ func streamCompletion(ctx context.Context, apiBase, apiKey, model string, messag
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, &ModelError{Class: ClassUpstreamUnavailable, detail: "reading model API stream: " + err.Error()}
+		return nil, stalledErr(&ModelError{Class: ClassUpstreamUnavailable, detail: "reading model API stream: " + err.Error()})
 	}
 	// Stream ended without an explicit "[DONE]" sentinel (some providers just
 	// close the body). Still a successful, complete read as far as we can tell,

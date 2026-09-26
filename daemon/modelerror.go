@@ -94,6 +94,9 @@ type ModelError struct {
 	detail string
 	// modelName is populated for tier refusal to display which model was denied.
 	modelName string
+	// stalled marks an attempt the stall watchdog abandoned: the provider went
+	// silent rather than failing. See streamStallTimeout.
+	stalled bool
 }
 
 func (e *ModelError) Error() string {

@@ -106,6 +106,13 @@ func streamWithRetry(
 ) ([]toolCall, error) {
 	start := time.Now()
 	var lastErr error
+	// ONE STALL GETS ONE RETRY, whatever the budget says. The watchdog only
+	// fires after streamStallTimeout of silence, which alone is longer than
+	// totalRetryBudget -- so without this a stall could never be retried, and
+	// a stall is the failure a second attempt (possibly routed to another
+	// provider) fixes most often. One, so two stalls in a row still end the
+	// turn in bounded time.
+	stallRetried := false
 
 	for attempt := 1; attempt <= maxStreamAttempts; attempt++ {
 		streamed := false
@@ -142,7 +149,11 @@ func streamWithRetry(
 		}
 
 		delay := backoffFor(attempt, modelErr.RetryAfter)
-		if time.Since(start)+delay > totalRetryBudget {
+		retryStall := modelErr.stalled && !stallRetried
+		if retryStall {
+			stallRetried = true
+		}
+		if time.Since(start)+delay > totalRetryBudget && !retryStall {
 			if logger != nil {
 				logger.Printf("model API: giving up after %s (retry budget); last error: %s", time.Since(start).Round(time.Millisecond), modelErr.Detail())
 			}
