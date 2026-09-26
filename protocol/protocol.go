@@ -556,7 +556,12 @@ type ToolApprovalRequest struct {
 	// LaunchesSubprocess false -- the one already running that it talks to.
 	// Empty when the call involves no such program, or the daemon predates the
 	// field; clients then fall back to the generic wording they always used.
-	Program       string `json:"program,omitempty"`
+	Program string `json:"program,omitempty"`
+	// OutsidePath is the resolved absolute path a built-in read tool is asking
+	// to read OUTSIDE the workspace. Set only for such a call, which config
+	// "allow" never covers; clients state it as the thing being approved.
+	// Empty for everything else, and from a daemon that predates the field.
+	OutsidePath   string `json:"outside_path,omitempty"`
 	ReadOnlyHint  bool   `json:"read_only_hint,omitempty"`
 	Destructive   bool   `json:"destructive,omitempty"`
 	Iteration     int    `json:"iteration"`

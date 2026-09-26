@@ -284,6 +284,9 @@ export interface ToolApprovalRequest {
   // program names what this call starts, or -- with launches_subprocess false --
   // the already-running program it talks to. Absent from an older daemon.
   program?: string;
+  // outside_path is the resolved absolute path a built-in read tool asks to
+  // read outside the workspace. Absent for every other call.
+  outside_path?: string;
   read_only_hint?: boolean;
   destructive?: boolean;
   iteration: number;

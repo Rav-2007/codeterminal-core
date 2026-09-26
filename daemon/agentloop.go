@@ -751,6 +751,9 @@ func (s *Server) dispatchToolCall(
 		callCtx = withApprovedLaunch(ctx, decision.launchKey)
 		audit.Launch = decision.launchProgram
 	}
+	if decision.outsideRead != "" {
+		callCtx = withApprovedOutsideRead(callCtx, decision.outsideRead)
+	}
 	result, err := registry.Call(callCtx, decision.tool.QualifiedName(), json.RawMessage(arguments))
 	elapsed := time.Since(started)
 	s.toolsInFlight.Add(-1)
@@ -928,6 +931,12 @@ type toolDecision struct {
 	launchKey string
 	// launchProgram is the program that approval named, for the audit record.
 	launchProgram string
+
+	// outsideRead is set only when a human approved reading this resolved
+	// absolute path outside the workspace. Dispatch hands it to the tool as
+	// withApprovedOutsideRead; without it the read tools refuse any path
+	// outside the workspace. See outsideread.go.
+	outsideRead string
 }
 
 // resolveExecutable decides whether one requested call may run.
@@ -1058,11 +1067,31 @@ func (s *Server) resolveExecutable(
 	// in a refused call, never in an unapproved launch.
 	launch := registry.LaunchPlan(qualified, json.RawMessage(arguments))
 
+	// A READ OUTSIDE THE WORKSPACE IS ALWAYS ASKED ABOUT (outsideread.go). Config
+	// "allow" on read_file was written about the project; it is not an answer
+	// to "may it read ~/Documents". Some places are refused before anyone is
+	// asked, because a yes there is exactly what an injected instruction wants.
+	outside := s.outsideReadTarget(spec, arguments)
+	if outside != "" {
+		if why := outsideReadRefusal(outside); why != "" {
+			return toolDecision{
+				tool:   spec,
+				policy: mcp.PolicyDeny,
+				source: auditDeniedConfig,
+				cause:  denyByNoChannel,
+				reason: fmt.Sprintf("refused: %s. Do not try another route to it.", why),
+			}
+		}
+		if turn.grants[outsideGrantKey(qualified, outside)] {
+			return toolDecision{tool: spec, policy: policy, source: auditTurnGrant, run: true, outsideRead: outside}
+		}
+	}
+
 	// Config "allow" skips the per-call prompt. It never skips a launch: a
 	// user who allowed a lookup did not thereby agree to start a third-party
 	// program that reads their project's configuration, and the startup warning
 	// says so in these words.
-	if policy == mcp.PolicyAllow && !launch.Needed {
+	if policy == mcp.PolicyAllow && !launch.Needed && outside == "" {
 		return toolDecision{tool: spec, policy: policy, source: auditConfigAllow, run: true}
 	}
 
@@ -1074,7 +1103,7 @@ func (s *Server) resolveExecutable(
 	// the server a grant was given against can exit mid-turn, and restarting it
 	// on the strength of that answer is exactly the launch-without-a-question
 	// this change removes.
-	if !launch.Needed && turn.grants[grantKey(spec, qualified, arguments)] {
+	if !launch.Needed && outside == "" && turn.grants[grantKey(spec, qualified, arguments)] {
 		return toolDecision{tool: spec, policy: policy, source: auditTurnGrant, run: true}
 	}
 
@@ -1096,8 +1125,10 @@ func (s *Server) resolveExecutable(
 		// the client's echo before anything is dispatched.
 		ArgumentsSHA256: argumentsDigest(arguments),
 		Lane:            spec.Lane,
-		Confined:        spec.Confined,
-		ReachesNetwork:  spec.ReachesNetwork,
+		// An outside read is by definition not confined to the workspace, and
+		// the prompt must not say it is.
+		Confined:       spec.Confined && outside == "",
+		ReachesNetwork: spec.ReachesNetwork,
 		// The third capability question. It drove the Confined stamp and
 		// plan-mode denial from the day it was added and reached no client, so
 		// the prompt could say "not sandboxed" about a go-to-definition call
@@ -1123,7 +1154,8 @@ func (s *Server) resolveExecutable(
 		// sentence was unreachable exactly where it mattered. A Lane B server's
 		// description arrives here too; it is untrusted text and the clients
 		// render it as the server's claim, which is what Detail already means.
-		Detail: spec.Description,
+		OutsidePath: outside,
+		Detail:      spec.Description,
 	})
 
 	source, _ := auditSourceFor(answer)
@@ -1148,6 +1180,15 @@ func (s *Server) resolveExecutable(
 		if launch.Needed {
 			decision.launchKey = launch.Key
 			decision.launchProgram = launch.Program
+		}
+		decision.outsideRead = outside
+		if outside != "" {
+			// "For this turn" on an outside read covers THIS PATH for the
+			// turn, not every path: approving ~/Desktop is not approving ~.
+			if answer.Decision == protocol.ApprovalApproveForTurn {
+				turn.grant(outsideGrantKey(qualified, outside))
+			}
+			break
 		}
 		// An approve-for-turn here covers the tool's later calls in this turn,
 		// which launch nothing -- and never a relaunch, which the grant check

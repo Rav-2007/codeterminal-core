@@ -88,11 +88,13 @@ func (s *Server) builtinTools(proposals *proposalSink, mode string) []mcp.Builti
 	tools := []mcp.Builtin{
 		{
 			Tool: mcp.Tool{
-				Name:        "read_file",
-				Description: "Read a UTF-8 text file from the workspace. The path must be workspace-relative.",
+				Name: "read_file",
+				Description: "Read a UTF-8 text file. A workspace-relative path reads from the workspace. " +
+					"An absolute or ~/ path reads anywhere else on the user's machine: the user is asked first, " +
+					"and private keys and credential stores are always refused.",
 				Schema: schema(`{
 					"type":"object",
-					"properties":{"path":{"type":"string","description":"Workspace-relative path."}},
+					"properties":{"path":{"type":"string","description":"Workspace-relative path, or an absolute or ~/ path outside the workspace."}},
 					"required":["path"],
 					"additionalProperties":false
 				}`),
@@ -103,11 +105,12 @@ func (s *Server) builtinTools(proposals *proposalSink, mode string) []mcp.Builti
 		{
 			Tool: mcp.Tool{
 				Name: "list_directory",
-				Description: "List file and subdirectory names in a workspace directory. " +
-					"Does not execute tests, builds, or other commands. The path must be workspace-relative.",
+				Description: "List file and subdirectory names in a directory. " +
+					"Does not execute tests, builds, or other commands. A workspace-relative path lists the workspace; " +
+					"an absolute or ~/ path (for example ~/Desktop) lists anywhere else on the user's machine after the user approves.",
 				Schema: schema(`{
 					"type":"object",
-					"properties":{"path":{"type":"string","description":"Workspace-relative directory, or \".\" for the root."}},
+					"properties":{"path":{"type":"string","description":"Workspace-relative directory, \".\" for the root, or an absolute or ~/ path outside the workspace."}},
 					"required":["path"],
 					"additionalProperties":false
 				}`),
@@ -396,7 +399,7 @@ func readBoundedFile(path string, max int64) (data []byte, fullSize int64, err e
 	return data, fi.Size(), nil
 }
 
-func (s *Server) builtinReadFile(_ context.Context, raw json.RawMessage) (mcp.Result, error) {
+func (s *Server) builtinReadFile(ctx context.Context, raw json.RawMessage) (mcp.Result, error) {
 	var args struct {
 		Path string `json:"path"`
 	}
@@ -407,11 +410,9 @@ func (s *Server) builtinReadFile(_ context.Context, raw json.RawMessage) (mcp.Re
 		return toolError("no path was supplied")
 	}
 
-	realRoot, err := s.realWorkspaceRoot()
-	if err != nil {
-		return toolError("cannot read %s: %v", args.Path, err)
-	}
-	full, err := editapply.ResolveSafeTargetPath(realRoot, args.Path)
+	// Workspace paths as before; an outside path only with this call's
+	// approval (see outsideread.go).
+	full, err := s.resolveToolPath(ctx, args.Path)
 	if err != nil {
 		// The resolver's message is already written for a human and carries no
 		// absolute path -- it is the same text the edit pipeline shows.
@@ -443,7 +444,7 @@ func (s *Server) builtinReadFile(_ context.Context, raw json.RawMessage) (mcp.Re
 	return mcp.Result{Content: string(data) + truncated}, nil
 }
 
-func (s *Server) builtinListDirectory(_ context.Context, raw json.RawMessage) (mcp.Result, error) {
+func (s *Server) builtinListDirectory(ctx context.Context, raw json.RawMessage) (mcp.Result, error) {
 	var args struct {
 		Path string `json:"path"`
 	}
@@ -454,11 +455,7 @@ func (s *Server) builtinListDirectory(_ context.Context, raw json.RawMessage) (m
 		args.Path = "."
 	}
 
-	realRoot, err := s.realWorkspaceRoot()
-	if err != nil {
-		return toolError("cannot list %s: %v", args.Path, err)
-	}
-	full, err := editapply.ResolveSafeTargetPath(realRoot, args.Path)
+	full, err := s.resolveToolPath(ctx, args.Path)
 	if err != nil {
 		return toolError("cannot list %s: %v", args.Path, err)
 	}
