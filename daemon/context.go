@@ -403,7 +403,27 @@ func buildAugmentedUserMessage(prompt string, chunks []Chunk, scrubDisabled bool
 		return prompt
 	}
 
+	// THE REQUEST GOES FIRST, AND AGAIN LAST. It used to come only after the
+	// code, and a short request drowned: MEASURED on the shipped model with the
+	// real system prompt and tools, "create a folder name as tester in my
+	// destop" wrapped this way got "Hi! How can I help you today?" 4 times in
+	// 4 -- answering the previous turn's "hi" -- while the same request with
+	// the code omitted called a tool 4/4. Request-first-and-last also acted
+	// 4/4. Last is kept too because that is where a long-context model reads a
+	// question about the code best. The note between says the code may not
+	// be relevant, because similarity search always finds something.
 	var b strings.Builder
+	writeRequest := func() {
+		b.WriteString(userRequestOpenTag)
+		b.WriteString("\n")
+		b.WriteString(prompt)
+		b.WriteString("\n")
+		b.WriteString(userRequestCloseTag)
+	}
+	writeRequest()
+	b.WriteString("\n\n")
+	b.WriteString(retrievedContextNote)
+	b.WriteString("\n\n")
 	b.WriteString(retrievedContextOpenTag)
 	b.WriteString("\n")
 	for i, c := range chunks {
@@ -411,13 +431,13 @@ func buildAugmentedUserMessage(prompt string, chunks []Chunk, scrubDisabled bool
 	}
 	b.WriteString(retrievedContextCloseTag)
 	b.WriteString("\n\n")
-	b.WriteString(userRequestOpenTag)
-	b.WriteString("\n")
-	b.WriteString(prompt)
-	b.WriteString("\n")
-	b.WriteString(userRequestCloseTag)
+	writeRequest()
 	return b.String()
 }
+
+// retrievedContextNote sits between the request and the code.
+const retrievedContextNote = "Code from this project that may or may not be relevant to the request above. " +
+	"Use it only if it helps; if the request is not about this code, ignore it."
 
 // logChunkScrub measures and logs secret-scrubbing activity over exactly the
 // chunks that will be folded into the outbound prompt (the budget-kept set),

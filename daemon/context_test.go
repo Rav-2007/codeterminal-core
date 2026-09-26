@@ -135,13 +135,18 @@ func TestBuildAugmentedUserMessage_LabelsAndDelimitsChunks(t *testing.T) {
 		}
 	}
 
-	// The user prompt must appear inside <user_request>, not inside
-	// <retrieved_context> — check ordering, not just presence.
-	ctxIdx := strings.Index(got, retrievedContextCloseTag)
-	reqIdx := strings.Index(got, userRequestOpenTag)
-	promptIdx := strings.Index(got, prompt)
-	if !(ctxIdx < reqIdx && reqIdx < promptIdx) {
-		t.Errorf("expected order: </retrieved_context> ... <user_request> ... prompt; got indices ctx_close=%d req_open=%d prompt=%d", ctxIdx, reqIdx, promptIdx)
+	// The request comes FIRST and LAST, each time inside <user_request> and
+	// outside <retrieved_context> -- see buildAugmentedUserMessage for the
+	// measurement. Check ordering, not just presence.
+	ctxOpen := strings.Index(got, retrievedContextOpenTag)
+	ctxClose := strings.Index(got, retrievedContextCloseTag)
+	firstReq, lastReq := strings.Index(got, userRequestOpenTag), strings.LastIndex(got, userRequestOpenTag)
+	firstPrompt, lastPrompt := strings.Index(got, prompt), strings.LastIndex(got, prompt)
+	if !(firstReq < firstPrompt && firstPrompt < ctxOpen && ctxClose < lastReq && lastReq < lastPrompt) {
+		t.Errorf("expected <user_request>prompt ... <retrieved_context>...</retrieved_context> ... <user_request>prompt; got\n%s", got)
+	}
+	if !strings.HasPrefix(got, userRequestOpenTag) {
+		t.Errorf("the request is not the first thing in the message:\n%s", got)
 	}
 }
 
@@ -197,8 +202,10 @@ func TestInjectionSafety_RetrievedContentNeverTouchesSystemRole(t *testing.T) {
 	if strings.Count(userContent, retrievedContextCloseTag) != 1 {
 		t.Errorf("expected exactly 1 real %q, forged one(s) should have been neutralized; got %d", retrievedContextCloseTag, strings.Count(userContent, retrievedContextCloseTag))
 	}
-	if strings.Count(userContent, userRequestOpenTag) != 1 || strings.Count(userContent, userRequestCloseTag) != 1 {
-		t.Error("expected exactly one real <user_request>/</user_request> pair, forged one(s) should have been neutralized")
+	// Two genuine pairs (the request before and after the code); a forged
+	// third from the chunk must have been neutralized.
+	if strings.Count(userContent, userRequestOpenTag) != 2 || strings.Count(userContent, userRequestCloseTag) != 2 {
+		t.Error("expected exactly the two real <user_request>/</user_request> pairs, forged one(s) should have been neutralized")
 	}
 
 	// Above all: none of this may have reached the system message.
