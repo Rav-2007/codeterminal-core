@@ -233,6 +233,16 @@ func (s *Server) gatherContext(ctx context.Context, prompt string) retrievalOutc
 	// read.
 	direct := resolveFileLineRefs(prompt, s.workspace, s.logger)
 
+	// SMALL TALK GETS NO CODE. "hi" used to arrive at the model wrapped in
+	// four chunks of daemon/config.go -- ~32 KB around a 2-byte request --
+	// and the model answered the code: "I don't see a question, just a block
+	// of retrieved code comments". A greeting or an acknowledgement is not
+	// about the codebase, and similarity search will always find SOMETHING to
+	// attach to it. Exact file:line references above still resolve.
+	if len(direct) == 0 && isSmallTalk(prompt) {
+		return retrievalOutcome{Skipped: true, Reason: "a conversational message; no code search"}
+	}
+
 	similar, reason := s.similarChunks(ctx, prompt)
 	if reason != "" && len(direct) == 0 {
 		// Nothing resolved and similarity could not run: this is the same
