@@ -87,6 +87,8 @@ type agentTurn struct {
 
 	// request is the user's own words for this turn (lastUserQuestion).
 	request string
+	// retriedEmpty records that an empty model reply was already asked again.
+	retriedEmpty bool
 
 	// nudgedForGrounding records that the loop already asked this turn's model
 	// to look something up instead of hedging about it.
@@ -457,6 +459,9 @@ func (s *Server) runAgentLoop(
 		// either way, and a ceiling that only counts successes is one a failing
 		// loop can spend past.
 		turn.calls++
+		// What the answer held before this call, so a reply that adds nothing
+		// at all can be told apart from one that finished the answer.
+		textBefore := full.Len()
 
 		finishReason := ""
 		apiKey, apiBase := s.credentials()
@@ -508,6 +513,32 @@ func (s *Server) runAgentLoop(
 
 		// No tool calls means the model is done talking. This is the ONLY
 		// normal exit, and it is the model's decision rather than ours.
+		// AN EMPTY REPLY IS NOT AN ANSWER. MEASURED (docs/AGENT_WORKFLOW_EVAL.md):
+		// twice in sixteen trials a provider sent back no text and no tool call
+		// -- once as the very first reply -- and the loop, reading "no tool
+		// calls" as "done", ended the turn with nothing on screen. It is a
+		// provider hiccup, and the same request usually succeeds: asked once
+		// more. Twice empty is reported, never passed off as a finished turn.
+		if len(calls) == 0 && full.Len() == textBefore {
+			if !turn.retriedEmpty {
+				turn.retriedEmpty = true
+				s.logger.Printf("agent: the model sent an empty reply at step %d; asking again", turn.iteration)
+				continue
+			}
+			s.logger.Printf("agent: the model sent an empty reply twice; stopping at step %d", turn.iteration)
+			return agentResult{
+				FinalText: full.String(),
+				Incomplete: &protocol.IncompleteInfo{
+					Reason: protocol.IncompleteProviderError,
+					Detail: "the model sent back an empty answer twice in a row, so this task stopped — " +
+						"what you see above is everything that was done. Ask again, or pick another model with /model.",
+				},
+				ToolNames:      turn.toolNames,
+				ToolSignatures: turn.toolSignatures,
+				Iterations:     turn.iteration,
+			}, nil
+		}
+
 		if len(calls) == 0 {
 			// ONE EXCEPTION, AND IT IS NARROW. If the model just answered a
 			// live-fact question out of a frozen memory and said so, while a

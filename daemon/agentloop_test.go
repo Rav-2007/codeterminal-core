@@ -566,3 +566,35 @@ func TestConnectTimeIsChargedToTheTurnBudget(t *testing.T) {
 		t.Errorf("Iterations = %d, want 0 — the budget was gone before the first model call", res.Iterations)
 	}
 }
+
+// emptySSE is a reply with no text and no tool call -- measured from a real
+// provider, twice in sixteen trials.
+func emptySSE() []string {
+	return []string{`data: {"choices":[{"delta":{},"finish_reason":"stop"}]}`, `data: [DONE]`}
+}
+
+// An empty reply is asked again once, not taken as the end of the turn.
+func TestAnEmptyReplyIsAskedAgain(t *testing.T) {
+	base, requests, _ := agentUpstream(t, emptySSE(), textSSE("the answer"))
+	s := loopServer(t, base, MCPConfig{Enabled: true})
+	res, _, err := runLoop(t, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.FinalText != "the answer" || res.Incomplete != nil || requests.Load() != 2 {
+		t.Errorf("after an empty reply: text %q, incomplete %+v, %d request(s)", res.FinalText, res.Incomplete, requests.Load())
+	}
+}
+
+// Twice empty is reported as an incomplete turn, never as a finished one.
+func TestTwoEmptyRepliesAreReported(t *testing.T) {
+	base, requests, _ := agentUpstream(t, emptySSE(), emptySSE(), textSSE("never reached"))
+	s := loopServer(t, base, MCPConfig{Enabled: true})
+	res, _, err := runLoop(t, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Incomplete == nil || !strings.Contains(res.Incomplete.Detail, "empty answer") || requests.Load() != 2 {
+		t.Errorf("two empty replies: incomplete %+v, %d request(s)", res.Incomplete, requests.Load())
+	}
+}
