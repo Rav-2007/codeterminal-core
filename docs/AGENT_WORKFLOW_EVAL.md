@@ -113,6 +113,33 @@ Arm **C**: working copy, 16 calls, the nudge and the `sandbox_exec` wording. Com
 median tokens**; otherwise it is removed. The `sandbox_exec` wording stays either way: its
 old description was false.
 
+**Result: C = 10/16 (45.8k median tokens) against B = 11/16 (44.9k). The nudge is
+removed**, as the rule says. Within noise it did nothing measurable — and the traces show
+one reason: it counted *running a command* as having acted, so a turn that ran `go test`
+early and then re-read the same file four times without editing was never nudged. The
+`sandbox_exec` wording stays.
+
+## The model — the biggest lever (2026-09-27)
+
+Same configuration as arm C (working copy, 16 calls), only the tier changed:
+
+| tier | pass | median calls | median tokens | median seconds | ≈ $ / trial |
+|---|---|---|---|---|---|
+| `primary` — deepseek-v4-flash (arm C) | 10/16 (62%) | 8 | 45.8k | 297 | 0.003 |
+| **`deepseek_v4_pro`** | **14/16 (88%)** | **4** | **17.6k** | **40** | **0.007** |
+| `gemini_36_flash` | 14/16 (88%) | 9 | 31.3k | 25 | 0.03 |
+
+Prices from OpenRouter's public model list on the day (flash $0.047/M in, v4-pro $0.348/M,
+gemini $0.75/M). **`deepseek_v4_pro` passes 88% at a quarter of flash's calls and 7× the
+speed, for about two and a half times the cost per task** — and about a quarter of
+gemini's. Changing the default tier is a cost decision, so it is left to the owner.
+
+`gemini_36_flash`'s two failures were one bug, since fixed (`c1abc3d`): it made a change
+with `propose_edit`, then restated it as a SEARCH/REPLACE block in its answer, and the turn
+offered both, so the function was added twice. Answer-text edits now go into the working
+copy first, and a restatement of an edit already made is dropped. `deepseek_v4_pro`'s two
+failures were turns that ended after 0–2 model calls with no edit; not yet explained.
+
 ## M3 — the spec arms (4 tasks with a `spec.md` × 2 trials)
 
 | arm | pass | median tokens | median seconds |
