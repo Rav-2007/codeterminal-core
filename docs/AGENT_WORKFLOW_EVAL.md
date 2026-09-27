@@ -181,3 +181,22 @@ shape passes strictly more trials than the single agent.
 build. `/spec build` is recommended over an ordinary turn with a spec **only if** it passes
 strictly more trials at no more than 2.5× the median tokens; otherwise it stays opt-in and
 unrecommended, as now.
+
+### Result: VOID — the key's spending limit ran out mid-run
+
+All five runs above stopped part-way: the provider began refusing every request with HTTP 403
+"Key limit exceeded (total limit)". The key used for these evals has a **$1.00 total
+limit**, and this day's runs spent it ($1.02). The trials that completed before that —
+single 2/2, researcher→coder 1/1, planner→coder 2/2, build 0/3, anchored 0/0 — are far too
+few to decide anything, so **no decision is taken: `/team` stays researcher→coder and
+`/spec build` stays opt-in and unrecommended**, exactly as before. The rules above stand
+for when the runs can be repeated.
+
+Two product bugs came out of it, both fixed:
+
+- the 403 read as "the configured API credentials were rejected — check the API key",
+  sending the user to replace a key that was valid, only spent (`54b69c1`: it is now "your
+  credit or spending limit is used up", and not retried);
+- a provider reply with no text and no tool call ended the turn silently — the two
+  unexplained `deepseek_v4_pro` failures above were exactly this (`b861b89`: asked once
+  more; twice empty is reported as incomplete).
