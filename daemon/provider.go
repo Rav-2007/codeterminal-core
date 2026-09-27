@@ -25,6 +25,23 @@ const requestTimeout = 5 * time.Minute
 // A var so tests can shorten it.
 var streamStallTimeout = 60 * time.Second
 
+// localStallTimeout is streamStallTimeout for a model server on this machine
+// (see stallTimeoutFor). A var so tests, whose servers are all on 127.0.0.1,
+// can shorten it.
+var localStallTimeout = requestTimeout
+
+// stallTimeoutFor is streamStallTimeout, except for a model server on this
+// machine: one running on a CPU can read a long prompt for well over a minute
+// before its first token, sending nothing meanwhile, and it is not an upstream
+// that can go silent in the way the watchdog exists for. requestTimeout still
+// bounds it.
+func stallTimeoutFor(apiBase string) time.Duration {
+	if isLoopbackBase(apiBase) {
+		return localStallTimeout
+	}
+	return streamStallTimeout
+}
+
 // errStreamStalled is the watchdog's cancellation cause.
 var errStreamStalled = errors.New("model API stream stalled")
 
@@ -593,14 +610,15 @@ func streamCompletion(ctx context.Context, apiBase, apiKey, model string, messag
 	// time the user had pressed esc twice. Any byte at all re-arms the timer
 	// (SSE keep-alive comments included), so a slow model that is still
 	// talking is never cut; only silence is.
+	stallTimeout := stallTimeoutFor(apiBase)
 	stallCtx, stall := context.WithCancelCause(ctx)
 	defer stall(nil)
-	watchdog := time.AfterFunc(streamStallTimeout, func() { stall(errStreamStalled) })
+	watchdog := time.AfterFunc(stallTimeout, func() { stall(errStreamStalled) })
 	defer watchdog.Stop()
 	stalledErr := func(err error) error {
 		if errors.Is(context.Cause(stallCtx), errStreamStalled) {
 			return &ModelError{Class: ClassUpstreamUnavailable, stalled: true,
-				detail: fmt.Sprintf("the model API sent nothing for %s, so the provider was treated as stalled", streamStallTimeout)}
+				detail: fmt.Sprintf("the model API sent nothing for %s, so the provider was treated as stalled", stallTimeout)}
 		}
 		return err
 	}
@@ -650,7 +668,7 @@ func streamCompletion(ctx context.Context, apiBase, apiKey, model string, messag
 		return nil, modelErr.withUpstreamRequestID(upstreamRequestID(resp.Header))
 	}
 
-	scanner := bufio.NewScanner(stallResetReader{resp.Body, func() { watchdog.Reset(streamStallTimeout) }})
+	scanner := bufio.NewScanner(stallResetReader{resp.Body, func() { watchdog.Reset(stallTimeout) }})
 	scanner.Buffer(make([]byte, 0, sseInitialBufferSize), sseMaxLineSize)
 
 	providerSeen := false

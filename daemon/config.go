@@ -514,6 +514,20 @@ func (c *Config) ResolvedSlug() string {
 	return c.Tiers[c.DefaultTier].Slug
 }
 
+// customTier is the tier UseOnlyModel installs.
+const customTier = "custom"
+
+// UseOnlyModel replaces every tier with one: slug, as the default. It is how a
+// model the file does not list is used -- MOCHIII_MODEL or -model -- which a
+// local server needs, since it knows its models by its own names
+// ("qwen2.5-coder:7b") and none of the provider names in models.json. The
+// other tiers go rather than stay selectable: every one of them names a model
+// that server does not have, so /model would offer nothing but failures.
+func (c *Config) UseOnlyModel(slug, source string) {
+	c.Tiers = map[string]ModelTier{customTier: {Slug: slug, Active: true, Note: "set by " + source}}
+	c.DefaultTier = customTier
+}
+
 // maxModelStatusBytes bounds the /models/status response the daemon will read.
 const maxModelStatusBytes = 1 << 20 // 1 MiB
 

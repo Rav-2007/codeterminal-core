@@ -115,20 +115,7 @@ func main() {
 			if warn != "" {
 				logger.Printf("warning: %s", warn)
 			}
-			if apiKey == "" && stored.configured() {
-				apiKey = stored.APIKey
-				verified := "unverified"
-				if stored.Verified {
-					verified = "verified when saved"
-				}
-				// Masked, always: the daemon log is tee'd to --log-file and read
-				// over shoulders, and a key that reaches it has left the file.
-				logger.Printf("using the key stored by `connect` (%s, %s); set MOCHIII_API_KEY to override",
-					maskKey(stored.APIKey), verified)
-			}
-			if apiBase == "" && strings.TrimSpace(stored.APIBase) != "" {
-				apiBase = stored.APIBase
-			}
+			apiKey, apiBase = fillFromStored(apiKey, apiBase, stored, logger.Printf)
 		}
 	}
 
@@ -214,10 +201,15 @@ func main() {
 		logger.Fatal(err)
 	}
 
-	model := cfg.ResolvedSlug()
-	if *modelOverride != "" {
-		model = *modelOverride
+	// ONE MODEL NAMED OUTSIDE models.json -- a local server's, typically. The
+	// flag used to change only the name logged below, never the model called.
+	switch {
+	case strings.TrimSpace(*modelOverride) != "":
+		cfg.UseOnlyModel(strings.TrimSpace(*modelOverride), "-model")
+	case strings.TrimSpace(os.Getenv("MOCHIII_MODEL")) != "":
+		cfg.UseOnlyModel(strings.TrimSpace(os.Getenv("MOCHIII_MODEL")), "MOCHIII_MODEL")
 	}
+	model := cfg.ResolvedSlug()
 
 	// --no-scrub OR's in on top of whatever models.json already says, same
 	// combining convention as --no-rerank above cfg.Retrieval.RerankDisabled:

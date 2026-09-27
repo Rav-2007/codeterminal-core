@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -42,6 +43,63 @@ type storedCredential struct {
 
 // configured reports whether there is a key here at all.
 func (c storedCredential) configured() bool { return strings.TrimSpace(c.APIKey) != "" }
+
+// issuedFor reports whether this key was saved for apiBase.
+//
+// A KEY GOES ONLY TO THE ADDRESS IT WAS SAVED FOR. The stored key used to fill
+// in whenever the environment named no key, whatever address it named -- so
+// pointing MOCHIII_API_BASE at a local model server sent the OpenRouter key to
+// whatever was listening on that port. A file saved before api_base was
+// recorded holds a key for the default address, which is what connect used.
+func (c storedCredential) issuedFor(apiBase string) bool {
+	saved := c.APIBase
+	if strings.TrimSpace(saved) == "" {
+		saved = defaultAPIBase
+	}
+	return sameAPIBase(saved, apiBase)
+}
+
+// fillFromStored fills whichever of key and base the environment left empty
+// from the stored credential -- the key only if it was saved for the base in
+// use (see issuedFor).
+func fillFromStored(apiKey, apiBase string, stored storedCredential, logf func(string, ...any)) (string, string) {
+	if apiBase == "" && strings.TrimSpace(stored.APIBase) != "" {
+		apiBase = stored.APIBase
+	}
+	if apiKey != "" || !stored.configured() {
+		return apiKey, apiBase
+	}
+	if !stored.issuedFor(firstNonEmpty(apiBase, defaultAPIBase)) {
+		logf("not using the key stored by `connect`: it was saved for %s, and MOCHIII_API_BASE is %s",
+			firstNonEmpty(stored.APIBase, defaultAPIBase), apiBase)
+		return apiKey, apiBase
+	}
+	verified := "unverified"
+	if stored.Verified {
+		verified = "verified when saved"
+	}
+	// Masked, always: the daemon log is tee'd to --log-file and read over
+	// shoulders, and a key that reaches it has left the file.
+	logf("using the key stored by `connect` (%s, %s); set MOCHIII_API_KEY to override",
+		maskKey(stored.APIKey), verified)
+	return stored.APIKey, apiBase
+}
+
+// sameAPIBase compares two API bases the way a person would: scheme and host
+// ignore case, and a trailing slash is not a different address.
+func sameAPIBase(a, b string) bool {
+	norm := func(s string) string {
+		s = strings.TrimRight(strings.TrimSpace(s), "/")
+		u, err := url.Parse(s)
+		if err != nil || u.Host == "" {
+			return s
+		}
+		u.Scheme = strings.ToLower(u.Scheme)
+		u.Host = strings.ToLower(u.Host)
+		return u.String()
+	}
+	return norm(a) == norm(b)
+}
 
 // credentialsPath is where the credential lives. It follows the same per-user
 // directory as the model cache (defaultModelCacheDir), so a user has one Mochiii

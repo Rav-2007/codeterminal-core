@@ -18,9 +18,10 @@ import (
 // shortStall shrinks the watchdog for one test.
 func shortStall(t *testing.T, d time.Duration) {
 	t.Helper()
-	prev := streamStallTimeout
-	streamStallTimeout = d
-	t.Cleanup(func() { streamStallTimeout = prev })
+	prev, prevLocal := streamStallTimeout, localStallTimeout
+	// Both: these tests' servers are on 127.0.0.1, which is a local server.
+	streamStallTimeout, localStallTimeout = d, d
+	t.Cleanup(func() { streamStallTimeout, localStallTimeout = prev, prevLocal })
 }
 
 // stallServer serves requests with the given behaviours, in order; the last
