@@ -421,3 +421,36 @@ func TestABuildMaySpendTheWholeTurnButNoMore(t *testing.T) {
 		t.Errorf("a whole-turn ceiling below max_iterations LOWERED a build to %d; it only ever widens to a user-set bound", got)
 	}
 }
+
+// MEASURED: the model called sandbox_exec as a shell -- "cat -n units/units.go
+// && echo ..." -- because its argument was described as "the shell command to
+// execute". Every such call is refused and costs a model call. The schema now
+// names the programs it runs (all of them, from the allowlist itself) and says
+// it is not a shell.
+func TestSandboxExecSaysItIsNotAShell(t *testing.T) {
+	s := builtinTestServer(t)
+	var desc string
+	for _, b := range s.builtinTools(&proposalSink{}, "") {
+		if b.Tool.Name == "sandbox_exec" {
+			var sch struct {
+				Properties struct {
+					Command struct {
+						Description string `json:"description"`
+					} `json:"command"`
+				} `json:"properties"`
+			}
+			if err := json.Unmarshal(b.Tool.Schema, &sch); err != nil {
+				t.Fatal(err)
+			}
+			desc = sch.Properties.Command.Description
+		}
+	}
+	if !strings.Contains(desc, "NOT a shell") || !strings.Contains(desc, "read_file") {
+		t.Errorf("sandbox_exec's command is described as %q", desc)
+	}
+	for bin := range execAllowedBinaries {
+		if !strings.Contains(desc, bin) {
+			t.Errorf("the description does not name %s, which it runs", bin)
+		}
+	}
+}

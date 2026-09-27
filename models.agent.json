@@ -89,7 +89,7 @@
       }
     },
     "budget": {
-      "max_iterations": 8,
+      "max_iterations": 16,
       "max_turn_iterations": 24,
       "turn_timeout_seconds": 600,
       "max_total_tool_bytes": 524288

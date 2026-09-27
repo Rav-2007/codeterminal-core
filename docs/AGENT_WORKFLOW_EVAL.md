@@ -72,3 +72,50 @@ least 3 trials **and** B's median tokens are within 2× A's; otherwise it stays 
 the budget question moves to the prompting that decides when the agent edits.
 
 A tie at materially higher cost counts as a loss.
+
+---
+
+## M1 — the working copy (2026-09-27)
+
+| arm | pass | median tokens | median calls | budget stops |
+|---|---|---|---|---|
+| M0 baseline (no working copy, 8 calls) | 5/16 (31%) | 35.8k | 8 | 10 |
+| **A** — working copy, 8 calls | **6/16 (38%)** | 36.3k | 8 | 12 |
+| **B** — working copy, 16 calls | **11/16 (69%)** | 44.9k | 8 | 6 |
+
+The baseline's `rename_across_files` was re-run after the grader fix: still 0/2 (one trial
+missed `cart_test.go`, one ran out of budget), so the baseline stands at 5/16.
+
+**Decisions, by the rules above.** A ≥ baseline, so the working copy **stays on by
+default**. B beats A by 5 trials at 1.24× the median tokens, so `models.agent.json`'s
+`max_iterations` goes **8 → 16**. The median trial still makes 8 calls — the extra budget
+is spent by the trials that need it, which is the shape a budget increase should have.
+
+Per task, B vs baseline: fix_failing_test 2/2 (was 0/2), edge_case_bug 2/2 (0/2),
+needs_iteration 1/2 (0/2) — the three tasks that need the test run against the change,
+which only the working copy makes possible. feature_from_spec is 0/2 in every arm.
+
+**What the traces show** (failing trials now log every call with its arguments). The agent
+re-reads files it already has — the same file three times in one turn, `repo_map` twice —
+and calls `sandbox_exec` as if it were a shell (`cat -n units/units.go && echo …`), which is
+refused and costs a call. Two changes follow, measured next:
+
+- **`sandbox_exec` says it is not a shell** — its argument was described as "the shell
+  command to execute". Now it names the four programs it runs and says to use `read_file`.
+- **The act nudge** (`daemon/actnudge.go`) — once, at half the turn's calls, a turn that
+  was asked for a change and has neither edited nor run anything is told so, and told that
+  what it read is already in front of it. Never in plan or check mode, never on a question.
+
+## M1b — decision rule, written before the run
+
+Arm **C**: working copy, 16 calls, the nudge and the `sandbox_exec` wording. Compared with
+**B** (11/16, 44.9k median tokens). The **nudge stays only if C > B, or C = B at lower
+median tokens**; otherwise it is removed. The `sandbox_exec` wording stays either way: its
+old description was false.
+
+## M3 — the spec arms (4 tasks with a `spec.md` × 2 trials)
+
+| arm | pass |
+|---|---|
+| anchored — an ordinary turn (8 calls), spec active | 1/8 |
+| build — `/spec build`, spec active | *(running)* |

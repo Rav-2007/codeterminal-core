@@ -195,6 +195,7 @@ func (s *Server) sandboxExecDescription() string {
 	}
 
 	return "Run a build or test command (go, npm, make, cargo) in the workspace root, with a 30s timeout. " +
+		"It is not a shell: one program and its arguments, no pipes or &&. " +
 		confinement + " " + limits + " It can reach the network, which its purpose requires. " +
 		"These tools execute project-supplied scripts (Makefile recipes, package.json scripts, build.rs), " +
 		"so approving a call approves whatever the project's build files do. " +

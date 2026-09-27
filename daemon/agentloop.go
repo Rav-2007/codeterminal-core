@@ -85,6 +85,11 @@ type agentTurn struct {
 	// than the one that was classified.
 	liveQuestion bool
 
+	// request is the user's own words for this turn (lastUserQuestion), and
+	// nudgedToAct records that actNudge (actnudge.go) has already fired.
+	request     string
+	nudgedToAct bool
+
 	// nudgedForGrounding records that the loop already asked this turn's model
 	// to look something up instead of hedging about it.
 	//
@@ -417,7 +422,8 @@ func (s *Server) runAgentLoop(
 	// Classified BEFORE the system message is augmented, so the classifier sees
 	// the conversation the user actually sent.
 	webAvailable := webToolOffered(tools)
-	turn.liveQuestion = webAvailable && looksLikeLiveWorldQuestion(lastUserQuestion(turn.messages))
+	turn.request = lastUserQuestion(turn.messages)
+	turn.liveQuestion = webAvailable && looksLikeLiveWorldQuestion(turn.request)
 
 	// The date always; the lookup directive only when the question calls for
 	// one. turnStart rather than time.Now() so a turn that waited on an MCP
@@ -598,6 +604,12 @@ func (s *Server) runAgentLoop(
 			}
 		}
 
+		// Half the budget gone on reading, asked for a change, nothing changed
+		// or run: say so, once. See actnudge.go.
+		if note := actNudge(turn, bud); note != "" {
+			s.logger.Printf("agent: %d of %d steps used without an edit or a command; nudging to act", turn.iteration, bud.maxIterations)
+			turn.messages = append(turn.messages, chatMessage{Role: "user", Content: note})
+		}
 	}
 }
 

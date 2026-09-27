@@ -348,7 +348,7 @@ func (s *Server) builtinTools(proposals *proposalSink, mode string) []mcp.Builti
 				Schema: schema(`{
 					"type":"object",
 					"properties":{
-						"command":{"type":"string","description":"The shell command to execute."}
+						"command":{"type":"string","description":"One build or test command: go, npm, make or cargo and its arguments, e.g. go test ./... -- NOT a shell: no pipes, &&, cat or echo. To see a file, use read_file."}
 					},
 					"required":["command"],
 					"additionalProperties":false
