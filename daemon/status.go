@@ -115,10 +115,11 @@ func availableTiers(cfg *Config) []protocol.StatusTier {
 	for _, name := range names {
 		t := cfg.Tiers[name]
 		out = append(out, protocol.StatusTier{
-			Name:   name,
-			Slug:   t.Slug,
-			Active: t.Active,
-			Note:   t.Note,
+			Name:    name,
+			Slug:    t.Slug,
+			Active:  t.Active,
+			Note:    t.Note,
+			Default: name == cfg.DefaultTier,
 		})
 	}
 	return out

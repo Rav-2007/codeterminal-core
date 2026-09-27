@@ -172,6 +172,8 @@ export interface StatusTier {
   name: string;
   slug: string;
   active: boolean;
+  // default marks models.json's default_tier (protocol.StatusTier.Default).
+  default?: boolean;
 }
 
 export interface StatusResponse {

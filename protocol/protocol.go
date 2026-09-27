@@ -1341,6 +1341,9 @@ type StatusTier struct {
 	Slug   string `json:"slug"`
 	Active bool   `json:"active"`
 	Note   string `json:"note,omitempty"`
+	// Default marks the config's default_tier: the model a turn uses when the
+	// client names none. Clients mark it rather than assume it is "primary".
+	Default bool `json:"default,omitempty"`
 }
 
 type StatusResponse struct {

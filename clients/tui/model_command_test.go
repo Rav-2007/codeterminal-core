@@ -77,7 +77,7 @@ func fakeDaemonServingTiers(t *testing.T, tiers []protocol.StatusTier) string {
 
 func tierFixture() []protocol.StatusTier {
 	return []protocol.StatusTier{
-		{Name: "primary", Slug: "anthropic/claude-opus-4", Active: true},
+		{Name: "primary", Slug: "anthropic/claude-opus-4", Active: true, Default: true},
 		{Name: "fast", Slug: "anthropic/claude-haiku-4.5", Active: true},
 		{Name: "retired", Slug: "old/model", Active: false},
 	}
@@ -134,6 +134,20 @@ func TestHandleModelCommand_MarksPrimaryWhenNoPreferenceIsSet(t *testing.T) {
 	}
 	if !strings.Contains(text, "current: (default)") {
 		t.Errorf("the default state was not stated:\n%s", text)
+	}
+}
+
+// The mark follows the daemon's default_tier, whatever it is called: a config
+// whose default is not "primary" must not show "primary" as in use.
+func TestHandleModelCommand_MarksTheConfiguredDefaultNotPrimary(t *testing.T) {
+	tiers := tierFixture()
+	tiers[0].Default, tiers[1].Default = false, true // default_tier: fast
+	fakeDaemonServingTiers(t, tiers)
+
+	got, _ := newTestModel().handleModelCommand("list")
+	text := lastTurn(t, got)
+	if !strings.Contains(text, "* fast") || strings.Contains(text, "* primary") {
+		t.Errorf("the configured default was not the one marked:\n%s", text)
 	}
 }
 

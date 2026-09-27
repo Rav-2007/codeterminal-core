@@ -331,7 +331,7 @@ export class ChatPanel {
         ];
         for (const t of tiers) {
           const mark =
-            t.name === this.preferredTier || (!this.preferredTier && t.name === 'primary')
+            t.name === this.preferredTier || (!this.preferredTier && t.default === true)
               ? '* '
               : '  ';
           const status = t.active ? '' : ' [inactive]';

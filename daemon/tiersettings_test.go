@@ -120,3 +120,22 @@ func TestTierSettingsAreParsedAndABadEffortIsDropped(t *testing.T) {
 		t.Errorf("no warning for the dropped effort; warnings: %v", cfg.Warnings())
 	}
 }
+
+// The status surface says which tier is the default, so a client marks the
+// configured default rather than assuming it is named "primary".
+func TestTheStatusSurfaceNamesTheDefaultTier(t *testing.T) {
+	cfg := tierConfig()
+	cfg.DefaultTier = "thinker"
+	defaults := 0
+	for _, tier := range availableTiers(cfg) {
+		if tier.Default {
+			defaults++
+			if tier.Name != "thinker" {
+				t.Errorf("%q is marked default, want thinker", tier.Name)
+			}
+		}
+	}
+	if defaults != 1 {
+		t.Errorf("%d tiers marked default, want exactly 1", defaults)
+	}
+}

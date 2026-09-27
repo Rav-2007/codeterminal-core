@@ -1462,7 +1462,9 @@ func (m chatModel) handleModelCommand(arg string) (tea.Model, tea.Cmd) {
 		fmt.Fprintf(&b, "current: %s\n", current)
 		for _, t := range tiers {
 			mark := "  "
-			if t.Name == m.preferredTier || (m.preferredTier == "" && t.Name == "primary") {
+			// With no preference the daemon's default_tier answers, and it says
+			// which one that is -- the default is configuration, not a name.
+			if t.Name == m.preferredTier || (m.preferredTier == "" && t.Default) {
 				mark = "* "
 			}
 			status := ""
