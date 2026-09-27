@@ -37,7 +37,8 @@
 // TASK_EVAL_MAX_ITERATIONS (override the per-turn model-call ceiling),
 // TASK_EVAL_NO_WORKING_COPY (run without the working copy, as before M1),
 // TASK_EVAL_PIPELINE (e.g. "planner,coder": run the trials through those
-// specialist phases, as /team:planner,coder does).
+// specialist phases, as /team:planner,coder does), TASK_EVAL_SPEC=1 (only the
+// tasks with a spec.md, that spec active), TASK_EVAL_MODE (e.g. build).
 package main
 
 import (
@@ -445,6 +446,14 @@ func TestTaskSuccess(t *testing.T) {
 		}
 	}
 
+	// TASK_EVAL_SPEC=1 runs only the tasks with a spec.md, with that spec
+	// active; TASK_EVAL_MODE=build runs them as /spec build does.
+	withSpec := os.Getenv("TASK_EVAL_SPEC") != ""
+	mode := envOr("TASK_EVAL_MODE", "auto")
+	if isBuildMode(mode) && !withSpec {
+		t.Fatal("TASK_EVAL_MODE=build needs TASK_EVAL_SPEC=1: a build builds a spec")
+	}
+
 	rec := newCostRecorder(t, apiBase)
 	logger := log.New(io.Discard, "", 0)
 	t.Logf("model=%s  budget=%+v  trials=%d", model, mcpCfg.Budget, trials)
@@ -459,6 +468,15 @@ func TestTaskSuccess(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		// THE SPEC ARMS (M3): only tasks that have a spec.md, which is placed
+		// in the project as specs/task.md and made the active spec -- so both
+		// arms see the same spec and only the build process differs.
+		specFixture := filepath.Join(taskFixtureRoot, spec.name, "spec.md")
+		if withSpec {
+			if _, err := os.Stat(specFixture); err != nil {
+				continue
+			}
+		}
 		for trial := 1; trial <= trials; trial++ {
 			if totalTokens > maxTokens {
 				t.Logf("STOPPING: %d tokens spent, over TASK_EVAL_MAX_TOKENS=%d", totalTokens, maxTokens)
@@ -471,9 +489,26 @@ func TestTaskSuccess(t *testing.T) {
 			// working copy is measured exactly as it ships. TASK_EVAL_NO_WORKING_COPY
 			// runs the pre-working-copy behaviour for comparison.
 			srv.cfg.MCP.NoWorkingCopy = os.Getenv("TASK_EVAL_NO_WORKING_COPY") != ""
-			sink, messages := srv.newTurnSink("auto", nil,
-				buildChatMessages(defaultSystemPrompt, nil, strings.TrimSpace(string(prompt))))
-			registry, _ := srv.buildRegistry(context.Background(), logger, sink, "")
+			system, userPrompt := planModeSystemPrompt(defaultSystemPrompt, mode), strings.TrimSpace(string(prompt))
+			var active *activeSpec
+			if withSpec {
+				if err := os.MkdirAll(filepath.Join(dir, "specs"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				data, _ := os.ReadFile(specFixture)
+				if err := os.WriteFile(filepath.Join(dir, "specs", "task.md"), data, 0o644); err != nil {
+					t.Fatal(err)
+				}
+				if active, err = loadSpec(dir, "specs/task.md"); err != nil {
+					t.Fatal(err)
+				}
+				system += "\n\n" + specAnchor(active)
+				if isBuildMode(mode) {
+					userPrompt = "Build what the spec specs/task.md describes." // what /spec build sends
+				}
+			}
+			sink, messages := srv.newTurnSink(mode, active, buildChatMessages(system, nil, userPrompt))
+			registry, _ := srv.buildRegistry(context.Background(), logger, sink, mode)
 			appr := &approveAll{}
 
 			rec.reset()
@@ -481,11 +516,11 @@ func TestTaskSuccess(t *testing.T) {
 			var res agentResult
 			var err error
 			if len(phases) == 0 {
-				res, err = srv.runAgentLoop(context.Background(), start, registry, model, "auto",
+				res, err = srv.runAgentLoop(context.Background(), start, registry, model, mode,
 					messages, routing, appr,
 					func(string) error { return nil }, nil, nil, nil, nil, nil, nil)
 			} else {
-				res, err = srv.runOrchestrated(context.Background(), start, registry, model, "auto",
+				res, err = srv.runOrchestrated(context.Background(), start, registry, model, mode,
 					messages, routing, appr,
 					func(string) error { return nil }, nil, nil, nil, nil, phases)
 			}

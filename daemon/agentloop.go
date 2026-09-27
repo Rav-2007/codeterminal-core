@@ -252,6 +252,19 @@ func resolveBudget(cfg MCPBudgetConfig, now time.Time) budget {
 	}
 }
 
+// budgetForMode adjusts a turn's budget for its mode. A /spec build is a whole
+// task in one turn -- plan, tests first, implement, run, fix, record every
+// criterion -- which cannot fit in max_iterations (8 by default): it gets the
+// WHOLE-TURN ceiling instead, max_turn_iterations, the most the user allows any
+// turn to spend. Never more: this spends up to a bound the user set, it does
+// not raise one.
+func budgetForMode(b budget, mode string) budget {
+	if isBuildMode(mode) && b.maxTurnIterations > b.maxIterations {
+		b.maxIterations = b.maxTurnIterations
+	}
+	return b
+}
+
 // agentResult is what the loop hands back to serveConn.
 type agentResult struct {
 	// FinalText is everything the model said across every iteration, which is
@@ -304,7 +317,7 @@ func (s *Server) runAgentLoop(
 	role *agentRole,
 	ledger *turnLedger,
 ) (agentResult, error) {
-	bud := resolveBudget(s.cfg.MCP.Budget, turnStart)
+	bud := budgetForMode(resolveBudget(s.cfg.MCP.Budget, turnStart), mode)
 	// A role may tighten its own iteration ceiling but never loosen the turn's:
 	// a Planner that cannot call tools has no reason to loop, and a role config
 	// that could RAISE the ceiling would be a way to spend past a budget the

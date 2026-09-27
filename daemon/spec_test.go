@@ -406,3 +406,18 @@ func TestABuildNeedsASpec(t *testing.T) {
 		t.Errorf("a build without a spec: %q", last.Error)
 	}
 }
+
+// A build gets the whole-turn ceiling the user set, and never more.
+func TestABuildMaySpendTheWholeTurnButNoMore(t *testing.T) {
+	b := budget{maxIterations: 8, maxTurnIterations: 24}
+	if got := budgetForMode(b, modeBuild).maxIterations; got != 24 {
+		t.Errorf("a build may make %d model calls, want the whole-turn 24", got)
+	}
+	if got := budgetForMode(b, "auto").maxIterations; got != 8 {
+		t.Errorf("an ordinary turn may make %d, want 8", got)
+	}
+	small := budget{maxIterations: 8, maxTurnIterations: 5}
+	if got := budgetForMode(small, modeBuild).maxIterations; got != 8 {
+		t.Errorf("a whole-turn ceiling below max_iterations LOWERED a build to %d; it only ever widens to a user-set bound", got)
+	}
+}
