@@ -599,3 +599,28 @@ func TestAnAcceptedKeyReleasesTheHeldQuestion(t *testing.T) {
 		t.Error("the released question never reached the transcript as a sent turn")
 	}
 }
+
+// The reported gap: "Connected." never said which platform the key was for.
+func TestConnectSaysWhichProvider(t *testing.T) {
+	got := formatConnectResult(connectResultMsg{resp: protocol.ConnectResponse{
+		Ok: true, Outcome: protocol.ConnectAccepted, APIBase: "https://openrouter.ai/api/v1",
+		Detail: "the provider accepted it: credit limit 1.00", MaskedKey: "...901c (73 characters)", InUse: true,
+	}})
+	if !strings.Contains(got, "Connected to OpenRouter (https://openrouter.ai/api/v1).") {
+		t.Errorf("connect result does not name the provider:\n%s", got)
+	}
+	if !strings.Contains(got, "The provider accepted it") {
+		t.Errorf("the detail sentence is not capitalized on its own line:\n%s", got)
+	}
+
+	for base, want := range map[string]string{
+		"https://api.openai.com/v1":  "OpenAI (https://api.openai.com/v1)",
+		"http://localhost:11434/v1":  "a model server on this machine (http://localhost:11434/v1)",
+		"https://llm.example.com/v1": "llm.example.com (https://llm.example.com/v1)",
+		"":                           "the model provider",
+	} {
+		if got := providerLabel(base); got != want {
+			t.Errorf("providerLabel(%q) = %q, want %q", base, got, want)
+		}
+	}
+}

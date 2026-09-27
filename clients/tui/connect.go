@@ -2,7 +2,9 @@ package main
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
+	"unicode"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -197,7 +199,9 @@ func formatConnectResult(msg connectResultMsg) string {
 		// "in use now" IS THE CLAIM THAT CAN BE FALSE. The daemon reports InUse,
 		// and it is false whenever a key in the daemon's environment wins. Saying
 		// it anyway produced a message that contradicted its own closing note.
-		fmt.Fprintf(&b, "Connected. %s\n", r.Detail)
+		// SAY WHERE. "Connected." alone left the user asking which platform the
+		// key was for; the daemon has always sent the base it verified against.
+		fmt.Fprintf(&b, "Connected to %s.\n%s\n", providerLabel(r.APIBase), capitalize(sanitizeText(r.Detail)))
 		if r.InUse {
 			fmt.Fprintf(&b, "Key %s is in use now — no restart needed.", r.MaskedKey)
 		} else {
@@ -245,4 +249,48 @@ func submitConnect(clientName string, req protocol.ConnectRequest) tea.Cmd {
 		resp, err := sendConnect(clientName, req)
 		return connectResultMsg{resp: resp, err: err}
 	}
+}
+
+// knownProviders names the hosts people actually point Mochiii at.
+var knownProviders = map[string]string{
+	"openrouter.ai":                     "OpenRouter",
+	"api.openai.com":                    "OpenAI",
+	"api.anthropic.com":                 "Anthropic",
+	"api.deepseek.com":                  "DeepSeek",
+	"api.groq.com":                      "Groq",
+	"api.together.xyz":                  "Together AI",
+	"api.mistral.ai":                    "Mistral",
+	"api.fireworks.ai":                  "Fireworks AI",
+	"generativelanguage.googleapis.com": "Google Gemini",
+}
+
+// providerLabel turns an API base into "OpenRouter (https://openrouter.ai/api/v1)"
+// -- a name when the host is a known one, and always the address itself, since
+// the address is what the key will actually be sent to.
+func providerLabel(apiBase string) string {
+	base := sanitizeText(strings.TrimSpace(apiBase))
+	if base == "" {
+		return "the model provider"
+	}
+	u, err := url.Parse(base)
+	if err != nil || u.Hostname() == "" {
+		return base
+	}
+	host := strings.ToLower(u.Hostname())
+	if name, ok := knownProviders[strings.TrimPrefix(host, "www.")]; ok {
+		return name + " (" + base + ")"
+	}
+	switch host {
+	case "localhost", "127.0.0.1", "::1":
+		return "a model server on this machine (" + base + ")"
+	}
+	return host + " (" + base + ")"
+}
+
+// capitalize upper-cases the first letter of a sentence.
+func capitalize(s string) string {
+	for i, r := range s {
+		return string(unicode.ToUpper(r)) + s[i+len(string(r)):]
+	}
+	return s
 }
