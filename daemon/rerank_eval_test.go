@@ -447,9 +447,13 @@ var rerankEvalQueries = []rerankEvalQuery{
 		[]string{"daemon/scrub.go", "daemon/context.go"},
 		[]string{"func scrub(text string", "scrub(c.Content, scrubDisabled)"}, shapeImpl},
 
+	// Narrowed 2026-09-27 from the bare field name, which a build-mode budget
+	// line (budgetForMode) spread over a fourth chunk -- past the 3-chunk
+	// ceiling, i.e. "somewhere in the file". The stop itself is this check.
+	// The pre-correction number is still reported -- see supersededGroundTruth.
 	{"where does the agent loop stop iterating",
 		[]string{"daemon/agentloop.go"},
-		[]string{"maxTurnIterations"}, shapeDefUse},
+		[]string{"turn.priorIterations+turn.calls >= bud.maxTurnIterations"}, shapeDefUse},
 
 	{"how does the daemon notice the client disappeared in the middle of a turn",
 		[]string{"daemon/agentturn.go"},
@@ -652,6 +656,11 @@ var supersededGroundTruth = map[int]struct {
 		[]string{"daemon/scrub.go"}, []string{"func scrub(text string"},
 		"declared only the generic scrub() primitive; the query asks about retrieved code, " +
 			"whose scrub choke point is renderChunk in context.go",
+	},
+	12: {
+		[]string{"daemon/agentloop.go"}, []string{"maxTurnIterations"},
+		"named the budget field, which now appears in four chunks (its definition, its " +
+			"resolution, the build-mode budget, the stop); the stop is the answer",
 	},
 	41: {
 		[]string{"daemon/degraded.go"}, []string{"detailMemoryDown"},
