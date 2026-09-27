@@ -166,6 +166,19 @@ type providerRouting struct {
 	Order []string `json:"order,omitempty"`
 	// Sort specifies the provider property to sort by ("price" or "throughput").
 	Sort string `json:"sort,omitempty"`
+
+	// reasoningEffort is not part of the "provider" object -- it is unexported,
+	// so encoding/json never writes it there. It rides on this value because
+	// this is the one per-request value already handed to every model call of a
+	// turn (every phase, every iteration, the wrap-up call), and the tier's
+	// reasoning effort must reach all of them the same way. streamCompletion
+	// lifts it into the request's top-level "reasoning" field.
+	reasoningEffort string
+}
+
+// reasoningParam is OpenRouter's "reasoning" request object.
+type reasoningParam struct {
+	Effort string `json:"effort"`
 }
 
 // streamOptions is OpenRouter's "stream_options" request object. Setting
@@ -187,6 +200,9 @@ type chatCompletionRequest struct {
 	Stream        bool            `json:"stream"`
 	Provider      providerRouting `json:"provider"`
 	StreamOptions streamOptions   `json:"stream_options"`
+	// Reasoning is omitempty, like Tools: a tier with no reasoning_effort sends
+	// the body it always sent.
+	Reasoning *reasoningParam `json:"reasoning,omitempty"`
 }
 
 type chatCompletionChunk struct {
@@ -623,6 +639,10 @@ func streamCompletion(ctx context.Context, apiBase, apiKey, model string, messag
 		return err
 	}
 
+	var reasoning *reasoningParam
+	if routing.reasoningEffort != "" {
+		reasoning = &reasoningParam{Effort: routing.reasoningEffort}
+	}
 	reqBody, err := json.Marshal(chatCompletionRequest{
 		Model:         model,
 		Messages:      messages,
@@ -630,6 +650,7 @@ func streamCompletion(ctx context.Context, apiBase, apiKey, model string, messag
 		Stream:        true,
 		Provider:      routing,
 		StreamOptions: streamOptions{IncludeUsage: true},
+		Reasoning:     reasoning,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("encoding request: %w", err)

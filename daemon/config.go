@@ -17,6 +17,37 @@ type ModelTier struct {
 	Slug   string `json:"slug"`
 	Active bool   `json:"active"`
 	Note   string `json:"note,omitempty"`
+	// ReasoningEffort asks this tier's model to think before it answers
+	// ("low", "medium" or "high"; sent as the request's reasoning.effort).
+	// Empty sends no reasoning field at all, so the request body is exactly
+	// what it was before the field existed and the provider's default holds.
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+	// ProviderSort overrides zdr.provider_sort for this tier only. A cheap
+	// model's cheapest host can be the slowest one by several times, and the
+	// right trade differs per model, so it is a per-tier choice. Empty keeps
+	// zdr.provider_sort. It narrows nothing: the ZDR flags and the ignore list
+	// still apply exactly as for every other tier.
+	ProviderSort string `json:"provider_sort,omitempty"`
+}
+
+// reasoningEfforts are the ReasoningEffort values OpenRouter accepts.
+var reasoningEfforts = []string{"low", "medium", "high"}
+
+// routingFor returns the per-call settings for a request routed to tier: the
+// ZDR routing every request carries, with that tier's own sort and reasoning
+// effort applied. A tier that is not in the config (a -model override, a test
+// config with no tiers) gets the ZDR routing unchanged.
+func (c *Config) routingFor(tier string) providerRouting {
+	routing := c.ZDR.resolvedProviderRouting()
+	t, ok := c.Tiers[tier]
+	if !ok {
+		return routing
+	}
+	if t.ProviderSort != "" {
+		routing.Sort = t.ProviderSort
+	}
+	routing.reasoningEffort = t.ReasoningEffort
+	return routing
 }
 
 // Config is the parsed form of models.json. It contains model slugs and
@@ -313,7 +344,7 @@ var (
 	knownConfigKeys    = []string{"config_version", "default_tier", "tiers", "retrieval", "zdr", "no_scrub", "mcp"}
 	knownRetrievalKeys = []string{"disabled", "rerank_disabled", "top_k", "context_budget_chars"}
 	knownZDRKeys       = []string{"allow_non_zdr", "allow_data_collection", "allow_fallbacks", "provider_ignore_list", "provider_order", "provider_sort"}
-	knownTierKeys      = []string{"slug", "active", "note"}
+	knownTierKeys      = []string{"slug", "active", "note", "reasoning_effort", "provider_sort"}
 )
 
 // LoadConfig reads and validates a models.json file at path.
@@ -475,6 +506,26 @@ func (c *Config) clampRanges() {
 
 	c.clampMCPRanges()
 	c.warnMCPPolicySurface()
+	c.clampTierSettings()
+}
+
+// clampTierSettings drops a tier's reasoning_effort that OpenRouter would not
+// accept, saying so, rather than send a value that fails every request to it.
+func (c *Config) clampTierSettings() {
+	names := make([]string, 0, len(c.Tiers))
+	for name := range c.Tiers {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	for _, name := range names {
+		t := c.Tiers[name]
+		if t.ReasoningEffort != "" && !slices.Contains(reasoningEfforts, t.ReasoningEffort) {
+			c.warnf("tiers.%s.reasoning_effort %q is not one of %s; no reasoning effort is sent",
+				name, t.ReasoningEffort, strings.Join(reasoningEfforts, ", "))
+			t.ReasoningEffort = ""
+			c.Tiers[name] = t
+		}
+	}
 }
 
 // Validate checks that the config is internally consistent: the default

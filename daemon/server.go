@@ -673,7 +673,7 @@ func (s *Server) serveConn(conn net.Conn) {
 	// (on success) and read back at the next connection's handshake (see
 	// loadPersistedHistory). Merging it in here too would double the
 	// conversation the model sees.
-	routing := s.cfg.ZDR.resolvedProviderRouting()
+	routing := s.cfg.routingFor(decision.Tier)
 	var full strings.Builder
 	reasoningBytes := 0
 	// finishReason is captured from the stream's terminal SSE finish_reason via
