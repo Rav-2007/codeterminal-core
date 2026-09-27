@@ -80,18 +80,18 @@ func TestBareNameDoesNotBypassAConfigDeny(t *testing.T) {
 	}
 }
 
-// ROLE SCOPING IS DECIDED ON THE RESOLVED NAME. The Planner has an empty tool
-// list, so a bare name must be refused by the allowlist exactly as a qualified
-// one is.
+// ROLE SCOPING IS DECIDED ON THE RESOLVED NAME. The Planner may read but not
+// edit, so a bare propose_edit must be refused by the allowlist exactly as a
+// qualified one is.
 func TestBareNameDoesNotBypassRoleScoping(t *testing.T) {
 	base, _, _ := agentUpstream(t,
-		toolCallSSE("c1", "read_file", `{"path":"go.mod"}`),
+		toolCallSSE("c1", "propose_edit", `{"path":"x.md","search":"","replace":"y"}`),
 		textSSE("plan"),
 	)
 	s := loopServer(t, base, MCPConfig{
 		Enabled: true,
 		// allow, so ONLY role scoping can refuse it
-		Builtin: MCPBuiltinConfig{Tools: map[string]string{"read_file": "allow"}},
+		Builtin: MCPBuiltinConfig{Tools: map[string]string{"propose_edit": "allow"}},
 	})
 
 	_, activity, _, err := runPipeline(t, s, []*agentRole{&rolePlanner})

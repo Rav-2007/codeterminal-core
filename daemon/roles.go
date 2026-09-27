@@ -159,25 +159,27 @@ const (
 var rolePlanner = agentRole{
 	Name:          roleNamePlanner,
 	Display:       "Planner",
-	MaxIterations: 1,
-	Tools:         []string{}, // no tools at all: planning is reasoning over the request
-	// THE ONE ROLE THAT CANNOT GO LOOK, so it is the one that gets shown.
+	MaxIterations: 3,
+	// READ TOOLS, AND NOTHING THAT CHANGES OR RUNS ANYTHING.
 	//
-	// A tool-less specialist asked to name the files involved has exactly two
-	// options, and MEASURED it took the wrong one: it invented
-	// `src/agent/agent.ts` in a Go repository and the later phases carried the
-	// invention forward as fact (see orchestrator.go's handoff note and
-	// repomap.go). The role prompt already tells it to say when it does not
-	// know. Telling a model not to guess is a control that works until it does
-	// not; giving it the answer is a control that does not depend on the model
-	// choosing to obey.
+	// It began with none: "planning is reasoning over the request". MEASURED,
+	// that lost -- asked to name the files involved, a specialist that cannot
+	// look has two options and took the wrong one, inventing
+	// `src/agent/agent.ts` in a Go repository; the later phases carried the
+	// invention forward as fact, and the judge blamed both of the four-phase
+	// pipeline's losses on exactly that (docs/MULTI_AGENT_DESIGN.md §14). The
+	// repo map in its context narrowed the guessing; being able to open the
+	// file ends it. Three model calls: enough to look, not enough to start
+	// doing the Researcher's job.
+	Tools:        []string{"repo_map", "search_code", "read_file", "list_directory"},
 	WantsRepoMap: true,
 	Prompt: "You are the PLANNER for this task. Produce a short, ordered plan and nothing else.\n\n" +
 		"Do NOT write code, do not produce edit blocks, and do not attempt to solve the task -- " +
 		"a later specialist does that, and it will have your plan.\n\n" +
-		"State each step as one line. Name the files or symbols you believe are involved, and say " +
-		"plainly when you do not know one rather than inventing a plausible path. If the request is " +
-		"already a single obvious step, say so in one line instead of padding it into several.",
+		"You can look at the code (repo_map, search_code, read_file, list_directory): check every file " +
+		"and symbol you name before you name it, and say plainly when you could not find one. State each " +
+		"step as one line. If the request is already a single obvious step, say so in one line instead " +
+		"of padding it into several.",
 }
 
 var roleResearcher = agentRole{

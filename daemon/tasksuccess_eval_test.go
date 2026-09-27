@@ -35,7 +35,9 @@
 // default 4,000,000), TASK_EVAL_TIER (models.json tier, default primary),
 // TASK_EVAL_OUT (append a JSON summary line to this file), TASK_EVAL_LABEL,
 // TASK_EVAL_MAX_ITERATIONS (override the per-turn model-call ceiling),
-// TASK_EVAL_NO_WORKING_COPY (run without the working copy, as before M1).
+// TASK_EVAL_NO_WORKING_COPY (run without the working copy, as before M1),
+// TASK_EVAL_PIPELINE (e.g. "planner,coder": run the trials through those
+// specialist phases, as /team:planner,coder does).
 package main
 
 import (
@@ -432,6 +434,17 @@ func TestTaskSuccess(t *testing.T) {
 		}
 	}
 
+	// TASK_EVAL_PIPELINE runs every trial through the named specialist phases
+	// (as /team:a,b does) instead of the single agent.
+	var phases []*agentRole
+	if names := strings.TrimSpace(os.Getenv("TASK_EVAL_PIPELINE")); names != "" {
+		var unknown []string
+		phases, unknown = resolvePipeline(strings.Split(names, ","))
+		if len(unknown) > 0 || len(phases) == 0 {
+			t.Fatalf("TASK_EVAL_PIPELINE=%q: unknown phase(s) %v", names, unknown)
+		}
+	}
+
 	rec := newCostRecorder(t, apiBase)
 	logger := log.New(io.Discard, "", 0)
 	t.Logf("model=%s  budget=%+v  trials=%d", model, mcpCfg.Budget, trials)
@@ -465,9 +478,17 @@ func TestTaskSuccess(t *testing.T) {
 
 			rec.reset()
 			start := time.Now()
-			res, err := srv.runAgentLoop(context.Background(), start, registry, model, "auto",
-				messages, routing, appr,
-				func(string) error { return nil }, nil, nil, nil, nil, nil, nil)
+			var res agentResult
+			var err error
+			if len(phases) == 0 {
+				res, err = srv.runAgentLoop(context.Background(), start, registry, model, "auto",
+					messages, routing, appr,
+					func(string) error { return nil }, nil, nil, nil, nil, nil, nil)
+			} else {
+				res, err = srv.runOrchestrated(context.Background(), start, registry, model, "auto",
+					messages, routing, appr,
+					func(string) error { return nil }, nil, nil, nil, nil, phases)
+			}
 			elapsed := time.Since(start)
 			_ = registry.Close()
 			calls, pt, ct := rec.snapshot()
@@ -498,6 +519,13 @@ func TestTaskSuccess(t *testing.T) {
 				spec.name, trial, passWord(tr.Pass), tr.Calls, tr.ToolCalls, tr.Refused, tr.Proposed,
 				tr.Seconds, tr.Why)
 			t.Logf("    tools: %s", strings.Join(tr.Tools, " "))
+			if !tr.Pass {
+				// The arguments too, on a failure: "read the same file five times"
+				// and "guessed five paths that do not exist" look identical as names.
+				for _, sig := range res.ToolSignatures {
+					t.Logf("      %s", truncateForLog(strings.TrimPrefix(sig, "builtin__")))
+				}
+			}
 		}
 	}
 	reportTaskSuccess(t, model, results)

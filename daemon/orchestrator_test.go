@@ -73,17 +73,17 @@ func TestPipelineSkipsUnknownRolesWithoutFailing(t *testing.T) {
 // would. The allowlist has to be enforced when the call arrives, or role
 // scoping is decoration.
 func TestRoleScopingIsEnforcedNotJustAdvertised(t *testing.T) {
-	// The planner has NO tools. Script it calling one anyway.
+	// The planner may read, not edit. Script it editing anyway.
 	base, _, _ := agentUpstream(t,
 		// The REAL qualified name (separator is "__"): a wrong name would be
 		// refused by Lookup, and the test would pass without enforcement running.
-		toolCallSSE("c1", "builtin__read_file", `{"path":"go.mod"}`),
+		toolCallSSE("c1", "builtin__propose_edit", `{"path":"x.md","search":"","replace":"y"}`),
 		textSSE("plan: step one"),
 	)
 	s := loopServer(t, base, MCPConfig{
 		Enabled: true,
 		// allow, so ONLY the role scoping can be what refuses it
-		Builtin: MCPBuiltinConfig{Tools: map[string]string{"read_file": "allow"}},
+		Builtin: MCPBuiltinConfig{Tools: map[string]string{"propose_edit": "allow"}},
 	})
 
 	_, activity, _, err := runPipeline(t, s, []*agentRole{&rolePlanner})
@@ -97,7 +97,7 @@ func TestRoleScopingIsEnforcedNotJustAdvertised(t *testing.T) {
 	// running/succeeded vs denied is where that is recorded.
 	var denied, ran bool
 	for _, a := range activity {
-		if !strings.Contains(a.Tool, "read_file") {
+		if !strings.Contains(a.Tool, "propose_edit") {
 			continue
 		}
 		switch a.Phase {
@@ -108,7 +108,7 @@ func TestRoleScopingIsEnforcedNotJustAdvertised(t *testing.T) {
 		}
 	}
 	if ran {
-		t.Error("the planner RAN read_file, a tool its role does not permit, even though config " +
+		t.Error("the planner RAN propose_edit, a tool its role does not permit, even though config " +
 			"said allow — role scoping is not being enforced at dispatch")
 	}
 	if !denied {
@@ -161,8 +161,10 @@ func TestNilRoleIsUnrestrictedAndEmptyListIsNothing(t *testing.T) {
 	if none.allowsBuiltinName("read_file") {
 		t.Error("a role with an EMPTY allowlist must allow nothing; empty is not a wildcard")
 	}
-	if rolePlanner.allowsBuiltinName("read_file") {
-		t.Error("the planner has no tools by design and must not be allowed one")
+	for _, acting := range []string{"propose_edit", "propose_ast_edit", "sandbox_exec", "web_fetch"} {
+		if rolePlanner.allowsBuiltinName(acting) {
+			t.Errorf("the planner may look, never act, and was allowed %s", acting)
+		}
 	}
 	narrow := &agentRole{Name: "narrow", Tools: []string{"read_file"}}
 	if narrow.allowsBuiltinName("sandbox_exec") {
@@ -1080,7 +1082,10 @@ func TestThePhaseReservationCanOnlyTightenTheToolBudget(t *testing.T) {
 // invention into the answer as though it were a finding. Both of the four-phase
 // pipeline's losses on that scenario were attributed to those paths.
 func TestAToollessPhasesHandoffIsMarkedUnverified(t *testing.T) {
-	prior := []phaseOutcome{{role: &rolePlanner, text: "look at src/agent/agent.ts"}}
+	// No built-in role is tool-less any more (the Planner can now look), but a
+	// configured or future one may be, and the label is what contains it.
+	thinker := &agentRole{Name: "thinker", Display: "Thinker", Tools: []string{}}
+	prior := []phaseOutcome{{role: thinker, text: "look at src/agent/agent.ts"}}
 	messages := buildPhaseMessages("BASE", nil, "trace the approval path", &roleCoder, prior, 0, "")
 
 	var user string
@@ -1090,7 +1095,7 @@ func TestAToollessPhasesHandoffIsMarkedUnverified(t *testing.T) {
 		}
 	}
 	if !strings.Contains(user, "NO TOOLS") {
-		t.Errorf("the Planner's handoff was passed on unlabelled, so the next specialist cannot tell "+
+		t.Errorf("a tool-less phase's handoff was passed on unlabelled, so the next specialist cannot tell "+
 			"a guess from a finding:\n%s", user)
 	}
 

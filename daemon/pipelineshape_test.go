@@ -15,15 +15,20 @@ import (
 // run without being told. Refusing the config would be overreach; saying
 // nothing is how a measured loser stays in somebody's config for a year.
 func TestPipelineWarningsNameTheMeasuredLosers(t *testing.T) {
-	toolless, _ := resolvePipeline([]string{"planner", "coder"})
+	// No built-in role is tool-less any more; the warning still guards one.
+	toolless := []*agentRole{{Name: "thinker", Tools: []string{}}, &roleCoder}
 	if w := pipelineWarnings(toolless, "mcp.pipeline"); len(w) != 1 || !strings.Contains(w[0], "no tools") {
 		t.Errorf("a tool-less first phase produced %v", w)
 	}
+	// The Planner can look now, so leading with it is not the measured loser.
+	grounded, _ := resolvePipeline([]string{"planner", "coder"})
+	if w := pipelineWarnings(grounded, "mcp.pipeline"); len(w) != 0 {
+		t.Errorf("a planner that can read its files was warned about as tool-less: %v", w)
+	}
 
 	four, _ := resolvePipeline([]string{"planner", "researcher", "coder", "tester"})
-	if w := pipelineWarnings(four, "mcp.pipeline"); len(w) != 2 {
-		t.Errorf("the four-phase shape produced %d warnings, want both the tool-less "+
-			"and the phase-count one: %v", len(w), w)
+	if w := pipelineWarnings(four, "mcp.pipeline"); len(w) != 1 || !strings.Contains(w[0], "4 phases") {
+		t.Errorf("the four-phase shape produced %v, want the phase-count warning", w)
 	}
 
 	winner, _ := resolvePipeline([]string{"researcher", "coder"})

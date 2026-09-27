@@ -1025,3 +1025,21 @@ The last one was a defect in the new parser, found by its own test before it shi
 `strings.Cut(rest, " ")` reads `/team:researcher, coder why` as the shape `researcher,`
 and swallows `coder` as the first word of the question. The shape now ends at the first
 space that does not follow a comma.
+
+## 18. The Planner can look (2026-09-27)
+
+§14 traced both of the four-phase pipeline's losses to one cause: the Planner had no tools,
+so every file it named was a guess, and it guessed `src/agent/agent.ts` in a Go repository.
+§14's fix labelled the guess; it did not stop it. The Planner now has the read tools --
+`repo_map`, `search_code`, `read_file`, `list_directory` -- and three model calls: enough to
+open the files it is about to name, not enough to do the Researcher's job. It still cannot
+edit, run or reach the network, at the menu or at dispatch.
+
+`pipelineWarnings` and `unverifiedNote` key on a phase having no tools, so neither fires for
+the Planner any more; both still guard any tool-less role a config or a future change adds.
+
+**Re-measured on task success, not on a judge.** The task-success eval
+([AGENT_WORKFLOW_EVAL.md](AGENT_WORKFLOW_EVAL.md)) now takes `TASK_EVAL_PIPELINE`, so a
+shape is graded by whether the hidden tests pass after its edits are applied. The decision
+rule stands: a shape becomes what a bare `/team` runs only if it beats `researcher → coder`
+there.
