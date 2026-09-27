@@ -1,11 +1,11 @@
 {
   "config_version": 1,
-  "default_tier": "primary",
+  "default_tier": "deepseek_v4_pro",
   "tiers": {
     "primary": {
       "slug": "deepseek/deepseek-v4-flash",
       "active": true,
-      "note": "Default: ~90% of tasks \u2014 edits, generation, diffs (DeepSeek V4 Flash)"
+      "note": "DeepSeek V4 Flash \u2014 cheapest (~1/5 of pro per task), but 16/34 vs pro's 50/56 on the task eval; select with /model primary"
     },
     "laguna_s_21": {
       "slug": "poolside/laguna-s-2.1",
@@ -40,7 +40,7 @@
     "deepseek_v4_pro": {
       "slug": "deepseek/deepseek-v4-pro",
       "active": true,
-      "note": "DeepSeek V4 Pro \u2014 select with /model deepseek_v4_pro"
+      "note": "Default: DeepSeek V4 Pro \u2014 50/56 on the task eval, ~51 s a task (docs/AGENT_WORKFLOW_EVAL.md)"
     },
     "gemini_36_flash": {
       "slug": "google/gemini-3.6-flash",

@@ -32,7 +32,7 @@
 //
 // Knobs: TASK_EVAL_TRIALS (default 2), TASK_EVAL_ONLY (comma-separated task
 // names), TASK_EVAL_MAX_TOKENS (stop starting trials past this many tokens,
-// default 4,000,000), TASK_EVAL_TIER (models.json tier, default primary),
+// default 4,000,000), TASK_EVAL_TIER (models.json tier, default: its default_tier),
 // TASK_EVAL_OUT (append a JSON summary line to this file), TASK_EVAL_LABEL,
 // TASK_EVAL_MAX_ITERATIONS (override the per-turn model-call ceiling),
 // TASK_EVAL_NO_WORKING_COPY (run without the working copy, as before M1),
@@ -476,7 +476,9 @@ func TestTaskSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loading models.agent.json: %v", err)
 	}
-	tier := envOr("TASK_EVAL_TIER", "primary")
+	// The shipped default unless an arm names another tier: an eval of "the
+	// product" measures the model a user gets without choosing.
+	tier := envOr("TASK_EVAL_TIER", cfg.DefaultTier)
 	model := cfg.Tiers[tier].Slug
 	if model == "" {
 		t.Fatalf("no tier %q in models.agent.json", tier)

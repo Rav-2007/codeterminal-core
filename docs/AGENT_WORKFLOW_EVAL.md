@@ -341,3 +341,62 @@ Flash-best is therefore flash with `reasoning_effort: medium`.
 
 Pro fails `bug_hunt_medium` too. It passes `semver_from_spec`, `signature_change` and
 `refactor_keep_behaviour`.
+
+### Stage B result: **pro becomes the default** (2026-09-28)
+
+Both finalists ran on the fixed loop, 4 trials per task.
+
+| task | pro | flash-best |
+|---|---|---|
+| create_file | 4/4 | 4/4 |
+| fix_failing_test | 4/4 | 3/4 |
+| add_function_with_test | 3/4 | 2/4 |
+| two_edits_one_file | 4/4 | 4/4 |
+| rename_across_files | 4/4 | 2/4 |
+| edge_case_bug | 4/4 | 1/3 |
+| feature_from_spec | 4/4 | 0/2 |
+| needs_iteration | 4/4 | 0/2 |
+| npm_no_deps | 3/4 | 0/2 |
+| bug_hunt_medium | 1/4 | 0/1 |
+| signature_change | 4/4 | 0/1 |
+| multi_package_feature | 4/4 | 0/2 |
+| semver_from_spec | 3/4 | 0/1 |
+| refactor_keep_behaviour | 4/4 | — |
+| **total** | **50/56 (89%)** | **16/34, at most 38/56** |
+| median seconds | ~51 | 234 |
+| billed $ per trial | ~0.022 | ~0.004 |
+
+**How pro's 56 trials ran.** Pro's run reached its dollar cap after 50 trials, one of
+them a transport error. With the owner's approval, the 7 missing graded trials were run
+separately, on the same code and tier, and merged: 3 of `semver_from_spec` (2 passed)
+and 4 of `refactor_keep_behaviour` (4 passed). None of pro's Stage B trials ended on an
+empty reply; that failure was 5 of 28 in Stage A, before `dc77b85`.
+
+**How flash-best ran.** It ran one trial at a time, at 2–8 minutes a trial.
+
+- **Split for speed.** After 20 trials, its 9 remaining tasks were split into parallel
+  runs with the same settings and code.
+- **One extra trial.** One `edge_case_bug` trial finished in the sequential run before it
+  was stopped. Trials were counted in time order, 4 per task, which is a rule about
+  order, not outcome.
+- **Stopped early.** The runs were stopped once the rule's outcome could no longer
+  change. At that point flash-best could reach at most 38/56, even by passing every
+  remaining trial.
+
+**By the rule,** two clauses each decide it:
+
+- pro passes at least 12 more trials of 56, and the rule needs 5;
+- flash-best's median is 4.6× pro's, over the owner's 3× limit.
+
+**`default_tier` is now `deepseek_v4_pro`** in `models.json` and `models.agent.json`.
+Flash stays selectable with `/model primary`, at about a fifth of the cost.
+
+**Spend.** Round 2 cost $2.64 of the approved $3.00, all on the owner's key.
+
+**Stages C and D (`/team` shape, `/spec build`) did not run.** The $0.37 left on the key
+cannot cover them on the new default. Until they run:
+
+- `/team` stays researcher → coder;
+- `/spec build` stays opt-in and unrecommended.
+
+Their rules above still stand.

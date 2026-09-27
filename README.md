@@ -329,7 +329,7 @@ variable, since it is not a secret and is useful under version control.
 ```json
 {
   "config_version": 1,
-  "default_tier": "primary",
+  "default_tier": "deepseek_v4_pro",
   "tiers": {
     "primary":         { "slug": "deepseek/deepseek-v4-flash", "active": true },
     "minimax_m3":      { "slug": "minimax/minimax-m3",         "active": true },
@@ -338,7 +338,11 @@ variable, since it is not a secret and is useful under version control.
 }
 ```
 
-Nine tiers ship active, defaulting to `primary` (DeepSeek V4 Flash);
+Nine tiers ship active, defaulting to `deepseek_v4_pro` (DeepSeek V4 Pro). It was
+chosen by measurement, not by price: on the 14-task eval it passed 50 of 56 trials at a
+median of 51 seconds a task. DeepSeek V4 Flash (`/model primary`) costs about a fifth as
+much per task, but could reach at most 38 of 56 and took 4–5 times as long. See
+[`docs/AGENT_WORKFLOW_EVAL.md`](docs/AGENT_WORKFLOW_EVAL.md).
 `ghost_text` and `reasoning` ship inactive. Startup fails fast, with a specific
 error, if the config is missing or malformed, or if any tier marked `active` has
 a missing or empty slug.
