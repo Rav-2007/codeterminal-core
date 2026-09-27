@@ -58,7 +58,7 @@ const (
 // carry it.
 var clientMessages = map[ModelErrorClass]string{
 	ClassRateLimited:         "the model provider is rate-limiting requests right now — wait a few seconds and try again",
-	ClassQuotaExceeded:       "your inference quota is exhausted — further requests will keep failing until it resets or is topped up",
+	ClassQuotaExceeded:       "your credit or spending limit is used up — top it up or raise the limit with your provider, or connect another key with /connect; every request will fail until then",
 	ClassContextTooLarge:     "this conversation is too large for the model's context window — start a new session or shorten the request",
 	ClassAuth:                "the configured API credentials were rejected — check the API key this daemon was started with",
 	ClassUpstreamUnavailable: "the model provider is unreachable or failing right now — this is usually temporary",
@@ -198,6 +198,15 @@ var quotaPhrases = []string{
 	"insufficient credit",
 	"out of credit",
 	"billing",
+	// A key that has reached the spending limit its owner set. MEASURED from a
+	// real provider: HTTP 403 "Key limit exceeded (total limit)" -- a 403, so
+	// without this it read as "the credentials were rejected" and sent the
+	// user to re-enter a key that was perfectly valid. Specific phrases only:
+	// a bare "limit exceeded" would also match "rate limit exceeded", which is
+	// temporary and must stay retryable.
+	"key limit exceeded",
+	"spending limit",
+	"insufficient credits",
 }
 
 // classifyHTTPError maps an upstream non-200 response to a class. Body text is

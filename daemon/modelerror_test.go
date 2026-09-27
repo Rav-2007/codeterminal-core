@@ -69,6 +69,15 @@ func TestModelError_ClassifiesEachFailureMode(t *testing.T) {
 			wantClass: ClassQuotaExceeded, retryable: false,
 		},
 		{
+			// MEASURED from a real provider when a key reached the limit its
+			// owner set: a 403, which the status rule alone read as "the
+			// credentials were rejected" -- sending the user to replace a key
+			// that was perfectly valid, just spent.
+			name: "403 key spending limit reached", status: http.StatusForbidden,
+			body:      `{"error":{"message":"Key limit exceeded (total limit). Manage it using https://example.invalid/keys","code":403}}`,
+			wantClass: ClassQuotaExceeded, retryable: false,
+		},
+		{
 			name: "401 bad key", status: http.StatusUnauthorized,
 			body:      `{"error":{"message":"Invalid API key"}}`,
 			wantClass: ClassAuth, retryable: false,
