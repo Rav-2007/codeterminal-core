@@ -549,6 +549,7 @@ func (s *Server) newTurnSink(mode string, spec *activeSpec, messages []chatMessa
 		spec:      spec,
 		specOnly:  isSpecMode(mode),
 		checking:  isCheckMode(mode),
+		building:  isBuildMode(mode),
 	}
 	// Not in a check: it edits nothing, and its own directive already says its
 	// commands run in a throwaway copy.

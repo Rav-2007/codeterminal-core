@@ -22,6 +22,8 @@ import (
 //	/spec off          no active spec
 //	/spec show         (or bare /spec) the active spec and the specs there are
 //	/spec check        check the project against the active spec
+//	/spec build        build the active spec: tests first, then the code,
+//	                   with a live task list; run again to continue
 //
 // The active spec rides on every prompt (PromptRequest.Spec) until switched
 // off, and is remembered per workspace across restarts.
@@ -29,6 +31,7 @@ import (
 const (
 	modeSpec  = "spec"
 	modeCheck = "check"
+	modeBuild = "build"
 	specsDir  = "specs"
 )
 
@@ -155,6 +158,12 @@ func (m chatModel) handleSpecCommand(args string) (tea.Model, tea.Cmd) {
 			break
 		}
 		return m.beginTurn("/spec check", "Check the project against the spec "+m.activeSpec+".", "", modeCheck, nil)
+	case "build":
+		if m.activeSpec == "" {
+			reply = "no active spec to build: /spec use <file>, or write one with /spec <goal>"
+			break
+		}
+		return m.beginTurn("/spec build", "Build what the spec "+m.activeSpec+" describes.", "", modeBuild, nil)
 	default:
 		return m.beginTurn("/spec "+args, args, "", modeSpec, nil)
 	}
@@ -167,7 +176,8 @@ func (m chatModel) handleSpecCommand(args string) (tea.Model, tea.Cmd) {
 // activateSpec makes rel the active spec and says what that means.
 func (m *chatModel) activateSpec(rel string) string {
 	m.activeSpec = rel
-	msg := "active spec: " + rel + " -- every prompt now works to it. /spec check grades the project against it; /spec off stops."
+	msg := "active spec: " + rel + " -- every prompt now works to it. /spec build builds it, " +
+		"/spec check grades the project against it; /spec off stops."
 	if err := saveActiveSpec(m.workspaceRoot, rel); err != nil {
 		msg += " (could not remember it for next time: " + err.Error() + ")"
 	}
@@ -187,7 +197,7 @@ func (m chatModel) specStatus() string {
 			b.WriteString("\n  " + s)
 		}
 	}
-	b.WriteString("\n\n/spec <goal> writes a new one · /spec use <file> · /spec check · /spec off")
+	b.WriteString("\n\n/spec <goal> writes a new one · /spec use <file> · /spec build · /spec check · /spec off")
 	return b.String()
 }
 
@@ -239,4 +249,28 @@ func specReportText(rep *protocol.SpecReport) string {
 		}
 	}
 	return b.String()
+}
+
+// renderTaskList draws a build's plan: one line per task, the active one
+// marked, so "what is it doing, and what is left" is answered on screen.
+func renderTaskList(tasks []protocol.TaskItem) string {
+	if len(tasks) == 0 {
+		return ""
+	}
+	done := 0
+	var b strings.Builder
+	for _, t := range tasks {
+		mark := "☐"
+		switch t.Status {
+		case protocol.TaskDone:
+			mark = "☑"
+			done++
+		case protocol.TaskActive:
+			mark = "▸"
+		case protocol.TaskBlocked:
+			mark = "✗"
+		}
+		fmt.Fprintf(&b, "\n%s %s", mark, sanitizeText(t.Title))
+	}
+	return fmt.Sprintf("tasks: %d of %d done", done, len(tasks)) + b.String()
 }

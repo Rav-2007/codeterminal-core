@@ -80,6 +80,9 @@ type editProposalsMsg struct{ blocks []protocol.EditBlockWire }
 // how that went, and any changes it is not offering. Rides the Done message.
 type workingCopyMsg struct{ info *protocol.WorkingCopyInfo }
 
+// tasksMsg carries a /spec build's whole task list, each time it changes.
+type tasksMsg struct{ tasks []protocol.TaskItem }
+
 // specReportMsg carries a /spec check's verdicts (protocol.SpecReport).
 type specReportMsg struct{ report *protocol.SpecReport }
 
@@ -383,6 +386,9 @@ func streamPromptWith(ctx context.Context, clientName, workspace, prompt, prompt
 			return
 		}
 		if tok.ToolActivity != nil && !deliver(ctx, ch, toolActivityMsg{*tok.ToolActivity}) {
+			return
+		}
+		if tok.Tasks != nil && !deliver(ctx, ch, tasksMsg{tok.Tasks}) {
 			return
 		}
 		if tok.ToolApproval != nil {

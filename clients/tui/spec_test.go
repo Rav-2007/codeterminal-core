@@ -31,8 +31,8 @@ func specWorkspace(t *testing.T) (chatModel, string) {
 		}
 	}
 	m := newChatModel("test", root, root, nil)
-	m.width, m.height = 100, 30
-	return m, root
+	sized, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	return sized.(chatModel), root
 }
 
 func TestASpecCanBeNamedTheWayAPersonWould(t *testing.T) {
@@ -168,4 +168,53 @@ func TestTheActiveSpecTravelsWithThePrompt(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("no request reached the daemon")
 	}
+}
+
+// /spec build needs a spec, and runs as a build turn.
+func TestSpecBuildStartsABuild(t *testing.T) {
+	m, _ := specWorkspace(t)
+	if model, _ := m.handleSpecCommand("build"); model.(chatModel).state == stateSending {
+		t.Error("/spec build with no active spec started a turn")
+	}
+	model, _ := m.handleSpecCommand("use verbose-flag")
+	m = model.(chatModel)
+	model, cmd := m.handleSpecCommand("build")
+	if got := model.(chatModel); got.state != stateSending || got.turnMode != modeBuild || cmd == nil {
+		t.Errorf("/spec build: state=%v mode=%q", got.state, got.turnMode)
+	}
+}
+
+// The task list is on screen while the build runs, and stays in the
+// transcript when it ends.
+func TestTheTaskListIsShownWhileTheBuildRuns(t *testing.T) {
+	m, _ := specWorkspace(t)
+	m.state = stateStreaming
+	m.streamCh = make(chan tea.Msg, 1)
+	tasks := []protocol.TaskItem{
+		{ID: "1", Title: "write TestVerbose", Status: protocol.TaskDone},
+		{ID: "2", Title: "add the flag", Status: protocol.TaskActive},
+		{ID: "3", Title: "document it", Status: protocol.TaskPending},
+	}
+	model, _ := m.Update(tasksMsg{tasks})
+	m = model.(chatModel)
+	view := m.viewport.View()
+	for _, want := range []string{"tasks: 1 of 3 done", "☑ write TestVerbose", "▸ add the flag", "☐ document it"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("the screen lacks %q while the build runs:\n%s", want, view)
+		}
+	}
+	model, _ = m.handleStreamDone()
+	m = model.(chatModel)
+	if len(m.tasks) != 0 || !strings.Contains(lastTurnText(m), "tasks: 1 of 3 done") {
+		t.Errorf("the final task list did not stay in the transcript: %q", lastTurnText(m))
+	}
+}
+
+func lastTurnText(m chatModel) string {
+	for i := len(m.turns) - 1; i >= 0; i-- {
+		if strings.Contains(m.turns[i].text, "tasks:") {
+			return m.turns[i].text
+		}
+	}
+	return ""
 }

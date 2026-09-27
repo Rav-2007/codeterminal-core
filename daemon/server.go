@@ -530,13 +530,13 @@ func (s *Server) serveConn(conn net.Conn) {
 	// request names but that cannot be read refuses the turn rather than
 	// running unanchored: the user believes the work is being held to it.
 	var spec *activeSpec
-	if promptReq.Spec != "" || isCheckMode(promptReq.Mode) {
+	if promptReq.Spec != "" || needsSpec(promptReq.Mode) {
 		var specErr error
 		switch realRoot, err := s.realWorkspaceRoot(); {
 		case err != nil:
 			specErr = err
 		case promptReq.Spec == "":
-			specErr = errors.New("there is no active spec to check against; choose one with /spec use <file>")
+			specErr = errors.New("there is no active spec to work from; choose one with /spec use <file>")
 		default:
 			spec, specErr = loadSpec(realRoot, promptReq.Spec)
 		}
@@ -698,7 +698,7 @@ func (s *Server) serveConn(conn net.Conn) {
 	// Writing and checking specs are agent work: /spec needs propose_edit held
 	// to specs/, and /spec check needs record_criterion. Without agent mode
 	// neither exists, and a plain answer would look like one that worked.
-	if (isSpecMode(promptReq.Mode) || isCheckMode(promptReq.Mode)) && !s.agentModeEngaged(hsReq) {
+	if (isSpecMode(promptReq.Mode) || needsSpec(promptReq.Mode)) && !s.agentModeEngaged(hsReq) {
 		_ = enc.Encode(protocol.TokenResponse{
 			ProtocolVersion: protocol.ProtocolVersion,
 			Done:            true,

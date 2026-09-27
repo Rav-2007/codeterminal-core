@@ -37,10 +37,15 @@ import (
 const (
 	modeSpec  = "spec"
 	modeCheck = "check"
+	modeBuild = "build"
 )
 
 func isSpecMode(mode string) bool  { return strings.ToLower(strings.TrimSpace(mode)) == modeSpec }
 func isCheckMode(mode string) bool { return strings.ToLower(strings.TrimSpace(mode)) == modeCheck }
+func isBuildMode(mode string) bool { return strings.ToLower(strings.TrimSpace(mode)) == modeBuild }
+
+// needsSpec reports whether a mode cannot run without an active spec.
+func needsSpec(mode string) bool { return isCheckMode(mode) || isBuildMode(mode) }
 
 // modeWithholds reports whether a mode withholds a built-in tool. Plan and spec
 // modes run nothing and reach nothing (planModeDenies: every capability flag);
@@ -197,6 +202,138 @@ const checkModeDirective = "THE USER WANTS THE WORK CHECKED AGAINST THE SPEC. Do
 	"command you ran this turn that passed, or a file:line in the project that shows it. Record every " +
 	"criterion, then summarise in a few lines what is met and what is not."
 
+// buildModeDirective is what /spec build adds to the system message: the
+// spec-as-source order, tests before code, and a visible task list.
+const buildModeDirective = "THE USER WANTS THE SPEC BUILT. Work through it in this order, and keep the user " +
+	"informed with update_tasks (it replaces the whole list each time; mark one task active while you " +
+	"work on it and done when it is):\n" +
+	"1. Call update_tasks with the plan: the spec's Tasks, or tasks you derive from its success criteria. " +
+	"Tasks already ticked in the spec's Tasks section were done in an earlier turn: mark them done and " +
+	"continue from the first one that is not.\n" +
+	"2. Write the tests for the success criteria FIRST, and run them with sandbox_exec; they should fail.\n" +
+	"3. Implement the change.\n" +
+	"4. Run the tests again, read what they say, and fix what fails, until they pass.\n" +
+	"5. Tick the tasks you finished in the spec's Tasks section (- [x]) with propose_edit.\n" +
+	"6. For EACH success criterion call record_criterion -- met only with the command that passed or a " +
+	"file:line as evidence.\n" +
+	"Then say briefly what you built, what you ran, and anything left undone."
+
+// maxTasks bounds the task list one update may carry.
+const maxTasks = 30
+
+func (s *Server) builtinUpdateTasks(raw json.RawMessage, proposals *proposalSink) (mcp.Result, error) {
+	var args struct {
+		Tasks []protocol.TaskItem `json:"tasks"`
+	}
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return toolError("the arguments were not a valid JSON object: %v", err)
+	}
+	if len(args.Tasks) == 0 || len(args.Tasks) > maxTasks {
+		return toolError("give between 1 and %d tasks", maxTasks)
+	}
+	done := 0
+	for i := range args.Tasks {
+		t := &args.Tasks[i]
+		t.ID = truncateRunes(strings.TrimSpace(t.ID), 16)
+		t.Title = truncateRunes(strings.TrimSpace(t.Title), 160)
+		if t.ID == "" {
+			t.ID = strconv.Itoa(i + 1)
+		}
+		switch t.Status = strings.ToLower(strings.TrimSpace(t.Status)); t.Status {
+		case protocol.TaskPending, protocol.TaskActive, protocol.TaskDone, protocol.TaskBlocked:
+		default:
+			return toolError("task %s: status must be pending, active, done or blocked, not %q", t.ID, t.Status)
+		}
+		if t.Status == protocol.TaskDone {
+			done++
+		}
+	}
+	if proposals != nil {
+		proposals.tasks = args.Tasks
+		if proposals.onTasks != nil {
+			proposals.onTasks(args.Tasks)
+		}
+	}
+	return mcp.Result{Content: fmt.Sprintf("Task list updated: %d of %d done.", done, len(args.Tasks))}, nil
+}
+
+func truncateRunes(s string, n int) string {
+	if r := []rune(s); len(r) > n {
+		return string(r[:n-1]) + "…"
+	}
+	return s
+}
+
+// updateTasksTool is the built-in, offered only in build mode.
+func (s *Server) updateTasksTool(proposals *proposalSink) mcp.Builtin {
+	return mcp.Builtin{
+		Tool: mcp.Tool{
+			Name: "update_tasks",
+			Description: "Show the user your plan and your progress through it. Pass the WHOLE task list " +
+				"every time (it replaces the previous one): each task has an id, a short title and a " +
+				"status of pending, active, done or blocked.",
+			Schema: schema(`{
+				"type":"object",
+				"properties":{
+					"tasks":{"type":"array","items":{"type":"object","properties":{
+						"id":{"type":"string"},
+						"title":{"type":"string"},
+						"status":{"type":"string","enum":["pending","active","done","blocked"]}
+					},"required":["id","title","status"],"additionalProperties":false}}
+				},
+				"required":["tasks"],
+				"additionalProperties":false
+			}`),
+			// It changes nothing but what the user sees.
+			ReadOnlyHint: true,
+		},
+		Handler: func(_ context.Context, raw json.RawMessage) (mcp.Result, error) {
+			return s.builtinUpdateTasks(raw, proposals)
+		},
+	}
+}
+
+// tickSpecInCopy writes the verdicts' ticks into the working copy's spec, so
+// a build offers ONE reviewed change to the spec -- its own task ticks and the
+// criteria together -- rather than two edits to the same file that collide.
+// Criteria are found by ID, not by line: the build may have edited the spec.
+func tickSpecInCopy(st *stagedWorkspace, sp *activeSpec, verdicts map[string]specVerdict) {
+	if st == nil || sp == nil || len(verdicts) == 0 {
+		return
+	}
+	rel := filepath.FromSlash(sp.Path)
+	path := filepath.Join(st.root, rel)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	lines := strings.Split(string(data), "\n")
+	changed := false
+	for i, line := range lines {
+		m := criterionLine.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		v, ok := verdicts[strings.ToUpper(m[2])]
+		if !ok || v.Status == protocol.SpecUnknown {
+			continue
+		}
+		if next := setCheckbox(line, v.Status == protocol.SpecMet); next != line {
+			lines[i] = next
+			changed = true
+		}
+	}
+	if !changed {
+		return
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o644); err == nil {
+		if !st.touched[rel] {
+			st.touched[rel] = true
+			st.order = append(st.order, rel)
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // record_criterion: the check's verdicts, and what makes "met" believable.
 // ---------------------------------------------------------------------------
@@ -300,7 +437,7 @@ func criterionIDs(sp *activeSpec) string {
 // an edit to the spec that ticks what is met and unticks what is not -- the
 // spec stays connected to the code, through the ordinary review.
 func (p *proposalSink) specReport() (*protocol.SpecReport, []editapply.EditBlock) {
-	if p == nil || p.spec == nil || !p.checking {
+	if p == nil || p.spec == nil || (!p.checking && !p.building) {
 		return nil, nil
 	}
 	rep := &protocol.SpecReport{Spec: p.spec.Path}

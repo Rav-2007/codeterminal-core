@@ -296,6 +296,9 @@ type chatModel struct {
 	activeSpec         string
 	turnMode           string
 	reviewAppliedPaths []string
+	// tasks is the in-flight build's task list (update_tasks), drawn under
+	// the transcript while the turn runs and kept in it when the turn ends.
+	tasks []protocol.TaskItem
 	// preferredTier is the models.json tier name chosen via /model <name>.
 	// Empty means default routing. Sent as PromptRequest.Tier on every turn.
 	preferredTier string
@@ -447,6 +450,14 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case workingCopyMsg:
 		return m.handleWorkingCopy(msg)
+
+	case tasksMsg:
+		if m.streamCh == nil {
+			return m, nil
+		}
+		m.tasks = msg.tasks
+		m.refreshViewport()
+		return m, waitForNext(m.streamCh)
 
 	case specReportMsg:
 		if m.streamCh == nil {
@@ -848,6 +859,11 @@ func (m chatModel) handleEditProposals(msg editProposalsMsg) (tea.Model, tea.Cmd
 
 func (m chatModel) handleStreamDone() (tea.Model, tea.Cmd) {
 	m.endStream()
+	// The build's final task list stays in the transcript: where it got to.
+	if len(m.tasks) > 0 {
+		m.appendTurn(turn{role: roleSystem, text: renderTaskList(m.tasks)})
+		m.tasks = nil
+	}
 	return m.checkForEditBlocks()
 }
 
@@ -1202,6 +1218,7 @@ func (m chatModel) startTurn() (tea.Model, tea.Cmd) {
 	m.streamCh = ch
 
 	m.turnMode = mode
+	m.tasks = nil
 	return m, tea.Batch(m.spinner.Tick, m.startThinking(), startStream(ctx, m.clientName, m.workspace, prompt, promptKind, mode, m.preferredTier, m.activeSpec, pipeline, history, ch))
 }
 
@@ -1245,6 +1262,7 @@ func (m chatModel) beginTurn(shown, prompt, promptKind, mode string, pipeline []
 	m.daemonProposals = nil
 	m.gotDaemonProposals = false
 	m.turnMode = mode
+	m.tasks = nil
 	m.resizeViewport()
 	m.refreshViewport()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -2104,6 +2122,9 @@ func (m *chatModel) refreshViewport() {
 			content += turnSeparator
 		}
 		content += m.thinkingLine()
+	}
+	if m.turnInFlight() && len(m.tasks) > 0 {
+		content += "\n\n" + renderTaskList(m.tasks)
 	}
 	if m.state == stateEditReview && m.reviewPrepared != nil {
 		content += "\n\n" + renderReviewPanel(m.reviewIndex, len(m.reviewBlocks), m.reviewPrepared)

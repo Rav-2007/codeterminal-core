@@ -86,6 +86,11 @@ func (s *Server) runAgentTurn(
 	// One sink per turn: propose_edit files its validated edits here, and they
 	// join whatever the assistant text itself produced on the Done message.
 	proposals, messages := s.newTurnSink(promptReq.Mode, spec, messages)
+	// A build's task list goes to the client the moment it changes. Best
+	// effort, like every other optional notice: it must not fail the turn.
+	proposals.onTasks = func(tasks []protocol.TaskItem) {
+		_ = writeToClient(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Tasks: tasks})
+	}
 	// Removed on every path out; finish below has already removed it on the
 	// one path that offers its edits.
 	defer proposals.discard()

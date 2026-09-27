@@ -97,8 +97,13 @@ type proposalSink struct {
 	spec     *activeSpec
 	specOnly bool
 	checking bool
+	building bool
 	verdicts map[string]specVerdict
 	report   *protocol.SpecReport
+
+	// The build's task list (update_tasks), and how it reaches the client.
+	tasks   []protocol.TaskItem
+	onTasks func([]protocol.TaskItem)
 }
 
 // ranCheck is one command a turn ran and whether it passed.
@@ -174,6 +179,12 @@ func (p *proposalSink) finish() (blocks []editapply.EditBlock, info *protocol.Wo
 			p.stage = nil
 		}
 		return ticks, nil, degraded
+	}
+	// A BUILD offers its changes like any turn, with the criteria's verdicts
+	// ticked into the spec in the same working copy first.
+	if p.building {
+		p.report, _ = p.specReport()
+		tickSpecInCopy(p.stage, p.spec, p.verdicts)
 	}
 	if p.stage == nil {
 		return p.blocks, nil, degraded
@@ -388,8 +399,11 @@ func (s *Server) builtinTools(proposals *proposalSink, mode string) []mcp.Builti
 		},
 	})
 
-	if isCheckMode(mode) {
+	if isCheckMode(mode) || isBuildMode(mode) {
 		tools = append(tools, s.recordCriterionTool(proposals))
+	}
+	if isBuildMode(mode) {
+		tools = append(tools, s.updateTasksTool(proposals))
 	}
 
 	// propose_edit in every mode that edits: not plan, not check. In spec mode

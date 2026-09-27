@@ -300,3 +300,109 @@ func TestSpecRequestsAreRefusedWhenTheyCannotWork(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// /spec build (M3)
+// ---------------------------------------------------------------------------
+
+// The task list is validated, kept, and sent to the client as it changes.
+func TestUpdateTasksReachesTheClient(t *testing.T) {
+	s, _ := stageProject(t, map[string]string{"a.go": "package a\n"})
+	var sent [][]protocol.TaskItem
+	sink := &proposalSink{building: true, onTasks: func(ts []protocol.TaskItem) { sent = append(sent, ts) }}
+	call := func(v any) (string, bool) {
+		raw, _ := json.Marshal(v)
+		res, err := s.builtinUpdateTasks(raw, sink)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res.Content, res.IsError
+	}
+	good := map[string]any{"tasks": []map[string]string{
+		{"id": "1", "title": "write TestVerbose", "status": "done"},
+		{"id": "2", "title": "add the flag", "status": "ACTIVE"},
+		{"id": "3", "title": strings.Repeat("long ", 100), "status": "pending"},
+	}}
+	if out, isErr := call(good); isErr || !strings.Contains(out, "1 of 3 done") {
+		t.Fatalf("update_tasks: %s", out)
+	}
+	if len(sent) != 1 || sent[0][1].Status != protocol.TaskActive || len([]rune(sent[0][2].Title)) > 160 {
+		t.Errorf("sent %+v", sent)
+	}
+	for _, bad := range []any{
+		map[string]any{"tasks": []map[string]string{}},
+		map[string]any{"tasks": []map[string]string{{"id": "1", "title": "x", "status": "maybe"}}},
+		map[string]any{"tasks": make([]map[string]string, maxTasks+1)},
+	} {
+		if _, isErr := call(bad); !isErr {
+			t.Errorf("accepted %v", bad)
+		}
+	}
+	if len(sent) != 1 {
+		t.Error("a refused update reached the client")
+	}
+}
+
+// A build turn has the full toolbox plus the two spec tools, and its directive
+// names only tools it has.
+func TestABuildHasTheToolsItsDirectiveNames(t *testing.T) {
+	s, _ := stageProject(t, map[string]string{"a.go": "package a\n"})
+	s.cfg = &Config{MCP: MCPConfig{Enabled: true}}
+	tools := modeTools(t, s, modeBuild, &proposalSink{building: true})
+	for _, want := range []string{"propose_edit", "sandbox_exec", "read_file", "update_tasks", "record_criterion"} {
+		if !tools[want] {
+			t.Errorf("build mode lacks %s", want)
+		}
+		if !strings.Contains(buildModeDirective, want) && want != "read_file" {
+			t.Errorf("the build directive never mentions %s", want)
+		}
+	}
+	if auto := modeTools(t, s, "auto", &proposalSink{}); auto["update_tasks"] {
+		t.Error("an ordinary turn offers update_tasks")
+	}
+}
+
+// A build offers its work like any turn, with the criteria's verdicts ticked
+// into the spec in the same copy -- one change to the spec, not two that
+// collide -- and reports on every criterion.
+func TestABuildOffersItsWorkWithTheSpecTicked(t *testing.T) {
+	s, dir := stageProject(t, map[string]string{"specs/v.md": sampleSpec, "cmd/v.go": "package cmd\n"})
+	sp, _ := loadSpec(dir, "specs/v.md")
+	sink, _ := s.newTurnSink(modeBuild, sp, nil)
+	t.Cleanup(sink.discard)
+	propose(t, s, sink, "cmd/v.go", "package cmd\n", "package cmd\n\nfunc Verbose() {}\n")
+	// The build ticked a task in the spec itself.
+	propose(t, s, sink, "specs/v.md", "- [ ] write TestVerbose", "- [x] write TestVerbose")
+	sink.verdicts = map[string]specVerdict{"C1": {Status: protocol.SpecMet, Evidence: "go test passed"}}
+
+	blocks, info, _ := sink.finish()
+	if info == nil || sink.report == nil || len(sink.report.Criteria) != 3 {
+		t.Fatalf("info=%+v report=%+v", info, sink.report)
+	}
+	after := map[string]string{"cmd/v.go": "package cmd\n", "specs/v.md": sampleSpec}
+	for _, b := range blocks {
+		cur := after[b.FilePath]
+		if strings.Count(cur, b.Search) != 1 {
+			t.Fatalf("block for %s does not apply in order: %+v", b.FilePath, b)
+		}
+		after[b.FilePath] = strings.Replace(cur, b.Search, b.Replace, 1)
+	}
+	if !strings.Contains(after["cmd/v.go"], "func Verbose") {
+		t.Error("the code change was not offered")
+	}
+	for _, want := range []string{"- [x] C1:", "- [x] write TestVerbose"} {
+		if !strings.Contains(after["specs/v.md"], want) {
+			t.Errorf("after review the spec lacks %q:\n%s", want, after["specs/v.md"])
+		}
+	}
+}
+
+func TestABuildNeedsASpec(t *testing.T) {
+	srv := &Server{apiBase: "http://127.0.0.1:1", apiKey: "k", cfg: &Config{}, modelOverride: "m",
+		logger: discardLogger(), workspace: t.TempDir()}
+	_, responses := runPromptTurn(t, srv, protocol.PromptRequest{ProtocolVersion: protocol.ProtocolVersion,
+		Prompt: "build it", Mode: modeBuild})
+	if last := responses[len(responses)-1]; !strings.Contains(last.Error, "no active spec") {
+		t.Errorf("a build without a spec: %q", last.Error)
+	}
+}

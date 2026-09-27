@@ -281,8 +281,8 @@ type PromptRequest struct {
 	// Spec names the ACTIVE SPEC for this turn: a Markdown file under the
 	// project's specs/ folder that the user accepted. The daemon reads it (only
 	// from there, and bounded) and puts it in the system message, so the work
-	// stays anchored to what was agreed. Required by Mode "check", which grades
-	// the project against it.
+	// stays anchored to what was agreed. Required by Modes "check", which
+	// grades the project against it, and "build", which builds it.
 	Spec string `json:"spec,omitempty"`
 }
 
@@ -454,7 +454,25 @@ type TokenResponse struct {
 	ToolActivity    *ToolActivity        `json:"tool_activity,omitempty"`
 	WorkingCopy     *WorkingCopyInfo     `json:"working_copy,omitempty"`
 	SpecReport      *SpecReport          `json:"spec_report,omitempty"`
+	Tasks           []TaskItem           `json:"tasks,omitempty"`
 }
+
+// TaskItem is one step of the plan a /spec build turn is working through,
+// sent whenever the agent updates the list (TokenResponse.Tasks carries the
+// WHOLE list each time), so the user sees what it is doing and what is left.
+type TaskItem struct {
+	ID     string `json:"id"`
+	Title  string `json:"title"`
+	Status string `json:"status"`
+}
+
+// TaskItem.Status values.
+const (
+	TaskPending = "pending"
+	TaskActive  = "active"
+	TaskDone    = "done"
+	TaskBlocked = "blocked"
+)
 
 // Trust lanes for an MCP server, reported on ToolApprovalRequest.Lane. The
 // distinction is the honest one, not a marketing one -- see Confined.

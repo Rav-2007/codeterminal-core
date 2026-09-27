@@ -47,10 +47,10 @@ const (
 func normalizeMode(raw string) (string, error) {
 	m := strings.ToLower(strings.TrimSpace(raw))
 	switch m {
-	case "", modeAuto, modeManual, modePlan, modeSpec, modeCheck:
+	case "", modeAuto, modeManual, modePlan, modeSpec, modeCheck, modeBuild:
 		return m, nil
 	default:
-		return "", fmt.Errorf("unknown mode %q (want one of: auto, manual, plan, spec, check)", raw)
+		return "", fmt.Errorf("unknown mode %q (want one of: auto, manual, plan, spec, check, build)", raw)
 	}
 }
 
@@ -197,6 +197,8 @@ func planModeSystemPrompt(base, mode string) string {
 		directive = specModeDirective
 	case isCheckMode(mode):
 		directive = checkModeDirective
+	case isBuildMode(mode):
+		directive = buildModeDirective
 	default:
 		return base
 	}
