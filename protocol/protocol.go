@@ -371,6 +371,14 @@ type Turn struct {
 // name, status line or raw error text rides along. Older clients that don't
 // know this field simply ignore it and keep showing Error, exactly like
 // Grounding.
+// KeyReplaceable is set only beside ErrorClass "auth" or "quota_exceeded", and
+// says a key handed over with a ConnectRequest would be the one the very next
+// request uses -- so a client can ask for a new key there and then, instead of
+// leaving the user to find /connect behind an error that will repeat on every
+// prompt. False in proxy mode (the proxy key is a different secret) and when a
+// key in the daemon's environment outranks a stored one. The daemon owns this
+// judgement for the same reason it owns HandshakeResponse.NeedsAPIKey. Additive:
+// older clients ignore it and show Error, as before.
 // History, when set, rides on the same pre-token message as Grounding and
 // reports what the daemon did to the conversation turns the client sent (see
 // HistoryInfo). Additive: older clients that don't know this field ignore it.
@@ -447,6 +455,7 @@ type TokenResponse struct {
 	Done            bool                 `json:"done"`
 	Error           string               `json:"error,omitempty"`
 	ErrorClass      string               `json:"error_class,omitempty"`
+	KeyReplaceable  bool                 `json:"key_replaceable,omitempty"`
 	Reasoning       string               `json:"reasoning,omitempty"`
 	Grounding       *GroundingInfo       `json:"grounding,omitempty"`
 	History         *HistoryInfo         `json:"history,omitempty"`

@@ -782,6 +782,7 @@ func (s *Server) serveConn(conn net.Conn) {
 			Done:            true,
 			Error:           modelErr.Error(),
 			ErrorClass:      string(modelErr.Class),
+			KeyReplaceable:  keyReplaceable(modelErr.Class),
 		})
 		return
 	}

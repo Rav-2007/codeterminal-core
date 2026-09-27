@@ -82,6 +82,24 @@ func (s *Server) needsAPIKey() bool {
 	return !isLoopbackBase(base)
 }
 
+// envKeyWins reports whether this daemon's credential comes from its
+// environment -- MOCHIII_API_KEY, or proxy mode -- which outranks any key stored
+// through Connect.
+func envKeyWins() bool {
+	return strings.TrimSpace(os.Getenv("MOCHIII_API_KEY")) != "" ||
+		os.Getenv("MOCHIII_USE_PROXY") == "true"
+}
+
+// keyReplaceable reports whether a failure of this class is the key's, AND a key
+// given through Connect would be used from the next request on. See
+// protocol.TokenResponse.KeyReplaceable.
+func keyReplaceable(class ModelErrorClass) bool {
+	if class != ClassAuth && class != ClassQuotaExceeded {
+		return false
+	}
+	return !envKeyWins()
+}
+
 // isLoopbackBase reports whether an api_base addresses this machine. An
 // unparseable or host-less base is NOT treated as loopback: the safe default is
 // to assume a remote provider that will want a credential.
@@ -124,8 +142,7 @@ func (s *Server) connectResult(ctx context.Context, req protocol.ConnectRequest)
 	// this request arrived. Saying so is the difference between a user seeing
 	// "connected" and then watching the old key still be used, and a user being
 	// told why.
-	envOverride := strings.TrimSpace(os.Getenv("MOCHIII_API_KEY")) != "" ||
-		os.Getenv("MOCHIII_USE_PROXY") == "true"
+	envOverride := envKeyWins()
 
 	switch {
 	case req.Forget:

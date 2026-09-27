@@ -256,6 +256,7 @@ func (s *Server) runAgentTurn(
 			Done:            true,
 			Error:           modelErr.Error(),
 			ErrorClass:      string(modelErr.Class),
+			KeyReplaceable:  keyReplaceable(modelErr.Class),
 		})
 		return
 	}

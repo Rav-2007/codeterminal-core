@@ -56,6 +56,13 @@ const (
 	// and buildHistory drops it -- a message that never left must never reach
 	// the model as though it had.
 	roleSevered
+	// roleUnanswered is a prompt that DID reach the daemon and got no answer: the
+	// daemon reported an error (a refused key, an exhausted quota), or the link
+	// dropped mid-turn. Drawn like roleSevered, but it must not repeat
+	// roleSevered's "nothing was sent" -- for a provider's refusal that line was
+	// a false statement about what left the machine. Display-only, like
+	// roleSevered.
+	roleUnanswered
 )
 
 type turn struct {
@@ -148,6 +155,10 @@ type chatModel struct {
 	// pendingPrompt holds a question that was typed before a key existed, so the
 	// user types it once. Empty except while the key prompt is open on its behalf.
 	pendingPrompt string
+	// turnInput is exactly what was typed to start the turn in flight, slash
+	// command and all -- what a refused key hands to pendingPrompt so the same
+	// question can be asked again once a working key is in.
+	turnInput string
 
 	// limits bounds the transcript; evictedTurns and evictedBytes are the
 	// running totals the eviction marker reports. See transcriptbound.go.
@@ -268,6 +279,9 @@ type chatModel struct {
 	// appended to. One call, one line: an agent turn that emitted four lines per
 	// tool would bury the answer it produced.
 	activityTurns map[string]int
+	// turnActed is set once the turn in flight has made a tool call. Not read
+	// off activityTurns: a call the model sent with no id never enters it.
+	turnActed bool
 
 	// streamAssistant is the index of the assistant turn the in-flight stream
 	// is writing into, or -1 when none exists yet. Before agent mode the last
@@ -504,6 +518,20 @@ func (m chatModel) handleWindowSize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) 
 	return m, nil
 }
 
+// promptLive reports whether the input line is the ordinary prompt: idle, or
+// idle after a failed turn.
+//
+// stateError IS IDLE WITH AN ERROR IN THE HEADER, not a mode of its own, and
+// gating the keyboard on stateIdle alone left the slash popup, Tab and history
+// dead from the first failure until the next success. The popup still DREW, so
+// a user whose key had just been refused typed "/conn", saw "/connect"
+// highlighted, pressed Enter -- and "/conn" went to the model as a question and
+// failed on the same key. With a dead key there is no next success, so the only
+// way out was typing every letter of the command.
+func (m chatModel) promptLive() bool {
+	return m.state == stateIdle || m.state == stateError
+}
+
 func (m chatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// FIRST, BEFORE ANYTHING READS THE KEY. Every branch below reaches for
 	// msg.String(), and for a rune burst that builds a string as long as
@@ -559,7 +587,7 @@ func (m chatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// highlighted row is what Enter means whenever the typed text is not
 		// already a command name of its own. A command that needs arguments
 		// is filled in and waits for them; one that does not runs at once.
-		if m.state == stateIdle {
+		if m.promptLive() {
 			matches := m.slashMatches()
 			idx := m.autocompleteIdx
 			exact := lookupSlash(strings.ToLower(strings.TrimPrefix(m.input.Value(), "/"))) != nil
@@ -579,7 +607,7 @@ func (m chatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.autocompletePicked = false
 		return m.startTurn()
 	case "tab":
-		if m.state == stateIdle {
+		if m.promptLive() {
 			matches := m.slashMatches()
 			if len(matches) > 0 {
 				idx := m.autocompleteIdx
@@ -596,7 +624,7 @@ func (m chatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// ALREADY BROWSING HISTORY: stay in it. A recalled "/clear" opens the
 		// slash popup, and without this the next up would walk the popup
 		// instead of going further back.
-		if m.state == stateIdle && m.historyIdx != -1 {
+		if m.promptLive() && m.historyIdx != -1 {
 			if msg.String() == "up" {
 				m.historyUp()
 			} else {
@@ -604,7 +632,7 @@ func (m chatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-		if m.state == stateIdle {
+		if m.promptLive() {
 			matches := m.slashMatches()
 			if len(matches) > 0 {
 				if msg.String() == "up" {
@@ -623,7 +651,7 @@ func (m chatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		// No popup: up/down walk the prompts sent before, like a shell.
-		if m.state == stateIdle {
+		if m.promptLive() {
 			if msg.String() == "up" {
 				m.historyUp()
 			} else {
@@ -655,12 +683,12 @@ func (m chatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	var cmd tea.Cmd
 	oldPopupLines := 0
-	if m.state == stateIdle {
+	if m.promptLive() {
 		_, oldPopupLines = m.renderSlashPopup()
 	}
 	m.input, cmd = m.input.Update(msg)
 	newPopupLines := 0
-	if m.state == stateIdle {
+	if m.promptLive() {
 		_, newPopupLines = m.renderSlashPopup()
 	}
 	if oldPopupLines != newPopupLines {
@@ -899,12 +927,30 @@ func (m chatModel) handleStreamErr(msg streamErrMsg) (tea.Model, tea.Cmd) {
 		// header is one line that the next identical failure overwrites;
 		// this puts the failure UNDER THE MESSAGE THAT CAUSED IT, where a
 		// reader looking for their answer is already looking.
-		m.appendTurn(turn{role: roleSevered, text: sanitizeText(msg.err.Error())})
+		role := roleSevered
+		if msg.sent {
+			role = roleUnanswered
+		}
+		m.appendTurn(turn{role: role, text: sanitizeText(msg.err.Error())})
 	}
 	m.state = stateError
 	m.statusErr = sanitizeText(msg.err.Error())
 	m.endStream()
+	if msg.keyReplaceable {
+		return m.beginConnectForRefusedKey(msg.class, m.turnProducedNothing())
+	}
 	return m, m.input.Focus()
+}
+
+// turnProducedNothing reports whether the turn in flight has so far streamed
+// no answer text and called no tool: asking it again repeats nothing but the
+// question.
+func (m chatModel) turnProducedNothing() bool {
+	if m.turnActed {
+		return false
+	}
+	return m.streamAssistant < 0 || m.streamAssistant >= len(m.turns) ||
+		strings.TrimSpace(m.turns[m.streamAssistant].text) == ""
 }
 
 func (m chatModel) handleResetErr(msg resetErrMsg) (tea.Model, tea.Cmd) {
@@ -1161,6 +1207,7 @@ func (m chatModel) startTurn() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.rememberPrompt(raw)
+	m.turnInput = raw
 	if arg, isModel := parseModelCommand(raw); isModel {
 		m.input.SetValue("")
 		return m.handleModelCommand(arg)
@@ -1214,6 +1261,7 @@ func (m chatModel) startTurn() (tea.Model, tea.Cmd) {
 	m.lastHistoryTruncated = false
 	m.streamAssistant = -1
 	m.activityTurns = nil
+	m.turnActed = false
 	m.daemonProposals = nil
 	m.gotDaemonProposals = false
 	m.resizeViewport()
@@ -1266,6 +1314,7 @@ func (m chatModel) beginTurn(shown, prompt, promptKind, mode string, pipeline []
 	m.lastHistoryTruncated = false
 	m.streamAssistant = -1
 	m.activityTurns = nil
+	m.turnActed = false
 	m.daemonProposals = nil
 	m.gotDaemonProposals = false
 	m.turnMode = mode
@@ -1994,6 +2043,9 @@ func (m *chatModel) noteToolActivity(a protocol.ToolActivity) {
 	if line == "" {
 		return
 	}
+	if a.Phase != protocol.ToolPhaseStep {
+		m.turnActed = true
+	}
 	if m.activityTurns == nil {
 		m.activityTurns = map[string]int{}
 	}
@@ -2223,7 +2275,9 @@ func renderTurnBlock(t turn, width int) string {
 	case roleSystem:
 		return helpStyle.Render(t.text)
 	case roleSevered:
-		return renderSevered(t.text, width)
+		return renderSevered(t.text, width, severedNotSent)
+	case roleUnanswered:
+		return renderSevered(t.text, width, severedUnanswered)
 	}
 	return ""
 }
@@ -2241,7 +2295,16 @@ const severedDecay = "▓▒░·"
 // answer notice -- two different failures should not open with the same mark.
 const severedLabel = "▚▚ LINK SEVERED "
 
-// renderSevered draws a prompt that never left the machine.
+// The line under the rail: what happened to the prompt. Two, because the two
+// failures are not the same event, and "nothing was sent" under a provider's
+// refusal was a false statement about what left the machine.
+const (
+	severedNotSent    = "↳ nothing was sent — this prompt never reached the daemon"
+	severedUnanswered = "↳ the prompt was sent, but no answer came back"
+)
+
+// renderSevered draws a prompt that got no answer: footnote says whether it
+// ever left the machine.
 //
 // THE SHAPE IS THE MESSAGE. A boxed red error is what every program prints and
 // is therefore what a reader's eye has learned to skip; this is a transmission
@@ -2250,7 +2313,7 @@ const severedLabel = "▚▚ LINK SEVERED "
 // anything that could obscure it, the daemon's own words -- because a marker
 // that looks striking and hides the actual error would be a worse bug than the
 // silence it replaced.
-func renderSevered(detail string, width int) string {
+func renderSevered(detail string, width int, footnote string) string {
 	var b strings.Builder
 
 	// The rail fills whatever is left. Skipped entirely when there is no room:
@@ -2272,7 +2335,7 @@ func renderSevered(detail string, width int) string {
 	// in the error colour rather than faint: this is the part the user actually
 	// needs to read.
 	b.WriteString("\n" + errorStyle.Render("  "+detail))
-	b.WriteString("\n" + helpStyle.Render("  ↳ nothing was sent — this prompt never reached the daemon"))
+	b.WriteString("\n" + helpStyle.Render("  "+footnote))
 	return b.String()
 }
 

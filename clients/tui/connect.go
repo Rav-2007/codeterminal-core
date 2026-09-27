@@ -60,6 +60,34 @@ func (m chatModel) beginConnectForPrompt(prompt string) (tea.Model, tea.Cmd) {
 	return m.beginConnect()
 }
 
+// beginConnectForRefusedKey asks for a key BECAUSE the provider just refused the
+// one in use -- the same moment of need as a first question with no key at all.
+// Before this, a spent or revoked key failed every prompt, and the only way out
+// was to already know that /connect exists and type it past the error.
+//
+// Called only when the daemon says a pasted key would actually be used
+// (TokenResponse.KeyReplaceable): in proxy mode, or with a key in the daemon's
+// environment, it could not take effect, and asking would be asking for the
+// wrong thing.
+//
+// The question is held and asked again only when the failed turn did nothing but
+// ask -- no answer text, no tool run. A turn that failed partway is not re-run on
+// the user's behalf; it is one up-arrow away.
+func (m chatModel) beginConnectForRefusedKey(class string, askAgain bool) (tea.Model, tea.Cmd) {
+	why := "The provider refused the API key."
+	if class == "quota_exceeded" {
+		why = "The API key's credit or spending limit is used up."
+	}
+	then := "Paste a working key below to switch to it"
+	if askAgain && m.turnInput != "" {
+		m.pendingPrompt = m.turnInput
+		then += ", and your question is asked again as soon as the provider accepts it"
+	}
+	m.appendTurn(turn{role: roleAssistant, text: why + "\n\n" + then +
+		" — nothing is stored if the key is refused, and the key is not shown as you type. Esc keeps the current key."})
+	return m.beginConnect()
+}
+
 // resumePendingPrompt sends the question that was waiting on a key, if there is
 // one and the daemon is now actually using that key.
 //

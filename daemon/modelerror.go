@@ -60,7 +60,7 @@ var clientMessages = map[ModelErrorClass]string{
 	ClassRateLimited:         "the model provider is rate-limiting requests right now — wait a few seconds and try again",
 	ClassQuotaExceeded:       "your credit or spending limit is used up — top it up or raise the limit with your provider, or connect another key with /connect; every request will fail until then",
 	ClassContextTooLarge:     "this conversation is too large for the model's context window — start a new session or shorten the request",
-	ClassAuth:                "the configured API credentials were rejected — check the API key this daemon was started with",
+	ClassAuth:                "the provider rejected the API key — connect a working one with /connect, or check the key this daemon was started with",
 	ClassUpstreamUnavailable: "the model provider is unreachable or failing right now — this is usually temporary",
 	ClassPrivacyRefused:      "inference refused: no zero-data-retention endpoint available",
 	ClassInvalidRequest:      "the request was rejected before it was sent: the prompt is empty",

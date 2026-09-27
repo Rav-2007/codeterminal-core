@@ -124,7 +124,17 @@ type streamDoneMsg struct{}
 // daemon-side error, or a malformed response). A deliberate cancellation
 // (the user quitting mid-stream) does NOT produce this message — see
 // streamPrompt.
-type streamErrMsg struct{ err error }
+type streamErrMsg struct {
+	err error
+	// sent is true once the prompt was written to the daemon. The transcript
+	// used to say "nothing was sent" under every failure, including a
+	// provider's refusal of a prompt that had plainly gone out.
+	sent bool
+	// class and keyReplaceable are the daemon's own TokenResponse.ErrorClass
+	// and KeyReplaceable, empty for a failure that never got an answer.
+	class          string
+	keyReplaceable bool
+}
 
 // resetErrMsg signals that clearing conversation memory on the daemon (the
 // network half of ctrl+n — see clearConversation in chat.go) failed. There
@@ -262,7 +272,7 @@ func askForApproval(ctx context.Context, sess *daemonSession, req protocol.ToolA
 		if ctx.Err() != nil {
 			return false
 		}
-		deliver(ctx, ch, streamErrMsg{err})
+		deliver(ctx, ch, streamErrMsg{err: err, sent: true})
 		return false
 	}
 	return true
@@ -318,7 +328,7 @@ func streamPromptWith(ctx context.Context, clientName, workspace, prompt, prompt
 		if ctx.Err() != nil {
 			return
 		}
-		deliver(ctx, ch, streamErrMsg{err})
+		deliver(ctx, ch, streamErrMsg{err: err})
 		return
 	}
 	defer func() { _ = sess.Close() }() // see daemonSession.Close
@@ -351,7 +361,7 @@ func streamPromptWith(ctx context.Context, clientName, workspace, prompt, prompt
 		if ctx.Err() != nil {
 			return
 		}
-		deliver(ctx, ch, streamErrMsg{err})
+		deliver(ctx, ch, streamErrMsg{err: err})
 		return
 	}
 
@@ -365,11 +375,12 @@ func streamPromptWith(ctx context.Context, clientName, workspace, prompt, prompt
 				deliver(ctx, ch, streamDoneMsg{})
 				return
 			}
-			deliver(ctx, ch, streamErrMsg{err})
+			deliver(ctx, ch, streamErrMsg{err: err, sent: true})
 			return
 		}
 		if tok.Error != "" {
-			deliver(ctx, ch, streamErrMsg{errors.New(tok.Error)})
+			deliver(ctx, ch, streamErrMsg{err: errors.New(tok.Error), sent: true,
+				class: tok.ErrorClass, keyReplaceable: tok.KeyReplaceable})
 			return
 		}
 		if tok.Grounding != nil && !deliver(ctx, ch, groundingMsg{tok.Grounding}) {

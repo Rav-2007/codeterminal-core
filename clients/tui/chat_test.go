@@ -459,7 +459,7 @@ func TestChat_StreamErrShowsErrorStateAndReenablesInput(t *testing.T) {
 	m = typeText(m, "hi")
 	m, _ = pressEnter(m)
 
-	updated, _ := m.Update(streamErrMsg{errors.New("boom")})
+	updated, _ := m.Update(streamErrMsg{err: errors.New("boom")})
 	m = updated.(chatModel)
 
 	if m.state != stateError {
@@ -477,7 +477,7 @@ func TestChat_EnterAfterErrorStartsANewTurn(t *testing.T) {
 	m := newTestModel()
 	m = typeText(m, "first")
 	m, _ = pressEnter(m)
-	updated, _ := m.Update(streamErrMsg{errors.New("boom")})
+	updated, _ := m.Update(streamErrMsg{err: errors.New("boom")})
 	m = updated.(chatModel)
 
 	m = typeText(m, "second")
