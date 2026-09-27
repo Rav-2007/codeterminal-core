@@ -62,8 +62,8 @@ func TestReplyIsEmptyMatchesTheLoopsIdea(t *testing.T) {
 	cases := map[string]bool{
 		`data: {"choices":[{"delta":{"reasoning":"hmm"}}]}` + "\n\n" +
 			`data: {"choices":[],"usage":{"prompt_tokens":5}}` + "\n\ndata: [DONE]\n": true,
-		`data: {"choices":[{"delta":{"content":"  "}}]}` + "\n\n": true,
-		`data: {"choices":[{"delta":{"content":"hi"}}]}` + "\n\n": false,
+		`data: {"choices":[{"delta":{"content":"  "}}]}` + "\n\n":                       true,
+		`data: {"choices":[{"delta":{"content":"hi"}}]}` + "\n\n":                       false,
 		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1"}]}}]}` + "\n\n": false,
 	}
 	for stream, want := range cases {
