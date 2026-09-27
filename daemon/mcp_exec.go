@@ -347,16 +347,51 @@ func (s *Server) builtinRepoMap(ctx context.Context) (mcp.Result, error) {
 	if s.workspace == "" {
 		return toolError("this daemon has no workspace to map")
 	}
-	m, err := buildRepoMap(ctx, s.workspace)
+	root := s.workspace
+	st := stageFromCtx(ctx)
+	if st != nil {
+		root = st.root
+	}
+	m, err := buildRepoMap(ctx, root)
 	if err != nil {
 		// Client-safe by construction: buildRepoMap's errors name the workspace
 		// root, which the caller already knows.
 		return toolError("could not read the workspace: %v", err)
 	}
+	if st != nil {
+		return mcp.Result{Content: st.toReal(m.Render())}, nil
+	}
 	return mcp.Result{Content: m.Render()}, nil
 }
 
 func (s *Server) builtinSandboxExec(ctx context.Context, raw json.RawMessage) (mcp.Result, error) {
+	return s.builtinSandboxExecIn(ctx, raw, s.workspace)
+}
+
+// builtinSandboxExecStaged runs the command in the turn's working copy when
+// the turn has one (stage.go) -- so the tests it runs are the tests of the
+// code the agent just wrote -- and in the project otherwise. The copy's path
+// is rewritten to the project's in the output.
+func (s *Server) builtinSandboxExecStaged(ctx context.Context, raw json.RawMessage, proposals *proposalSink) (mcp.Result, error) {
+	st, _ := proposals.workingCopy()
+	if st == nil {
+		return s.builtinSandboxExec(ctx, raw)
+	}
+	res, err := s.builtinSandboxExecIn(ctx, raw, st.root)
+	res.Content = st.toReal(res.Content)
+	var args struct {
+		Command string `json:"command"`
+	}
+	if json.Unmarshal(raw, &args) == nil {
+		proposals.recordCheck(strings.TrimSpace(args.Command), res)
+	}
+	return res, err
+}
+
+// builtinSandboxExecIn runs one command with root as its workspace: the
+// directory it starts in and the one the sandbox lets it write. Its HOME (and
+// so its build caches) stays the project's, so a working copy builds warm.
+func (s *Server) builtinSandboxExecIn(ctx context.Context, raw json.RawMessage, root string) (mcp.Result, error) {
 	var args struct {
 		Command string `json:"command"`
 	}
@@ -385,6 +420,7 @@ func (s *Server) builtinSandboxExec(ctx context.Context, raw json.RawMessage) (m
 	// half-configured -- which is what produced `docker run ... make` asking
 	// Docker for an image named "make".
 	cfg := s.sandboxExecConfig()
+	cfg.WorkspaceRoot = root
 
 	// LEFTOVER PROCESSES, REAPED. bwrap runs the command as pid 1 of a PID
 	// namespace, so anything it backgrounds is killed by the kernel when it
@@ -424,7 +460,7 @@ func (s *Server) builtinSandboxExec(ctx context.Context, raw json.RawMessage) (m
 	defer cancel()
 
 	cmd := exec.CommandContext(execCtx, execBin, execArgs...)
-	cmd.Dir = s.workspace
+	cmd.Dir = root
 
 	// Created here rather than in sandboxExecConfig, because that function is
 	// also what the APPROVAL PROMPT is built from and asking "will this be
@@ -441,7 +477,7 @@ func (s *Server) builtinSandboxExec(ctx context.Context, raw json.RawMessage) (m
 				return toolError("preparing a sandbox for %q: %v", bin, err)
 			}
 			cmd = exec.CommandContext(execCtx, execBin, execArgs...)
-			cmd.Dir = s.workspace
+			cmd.Dir = root
 		} else if err := recordSandboxHomeUse(cfg.HomeDir, s.workspace); err != nil {
 			// Whose folder this is, and that it was just used (register item
 			// 37), so the reclaim pass can tell a live project's cache from an

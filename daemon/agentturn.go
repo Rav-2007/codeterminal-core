@@ -84,7 +84,10 @@ func (s *Server) runAgentTurn(
 
 	// One sink per turn: propose_edit files its validated edits here, and they
 	// join whatever the assistant text itself produced on the Done message.
-	proposals := &proposalSink{}
+	proposals, messages := s.newTurnSink(promptReq.Mode, messages)
+	// Removed on every path out; finish below has already removed it on the
+	// one path that offers its edits.
+	defer proposals.discard()
 
 	registry, connectErrs := s.buildRegistry(ctx, s.logger, proposals, promptReq.Mode)
 	defer func() {
@@ -258,7 +261,10 @@ func (s *Server) runAgentTurn(
 	// block parser, so it has nothing to be rejected by -- if it is bad, it is
 	// bad at a gate, and the gate answers on the ApplyEditResponse.
 	textBlocks, rejections := s.parseAndLogEditBlocks(result.FinalText)
-	blocks := append(textBlocks, proposals.blocks...)
+	// The working copy's net difference from the project (or, with no copy,
+	// the proposals as filed), then any edits written as text.
+	filed, workingCopy, copyDegraded := proposals.finish()
+	blocks := append(filed, textBlocks...)
 	// Plan mode withholds the TEXT write path too. The tool filter took away
 	// propose_edit; without this, a SEARCH/REPLACE block in the model's prose
 	// still reached the client as a proposal, and an auto-apply client still
@@ -274,6 +280,8 @@ func (s *Server) runAgentTurn(
 		EditProposals:   editProposalsFromBlocks(blocks),
 		EditRejections:  rejections,
 		Incomplete:      result.Incomplete,
+		WorkingCopy:     workingCopy,
+		Degraded:        copyDegraded,
 	})
 	s.logger.Printf("agent: turn complete after %d tool call(s)", len(result.ToolNames))
 

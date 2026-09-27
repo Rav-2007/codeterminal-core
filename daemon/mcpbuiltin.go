@@ -12,6 +12,7 @@ import (
 
 	"mochiii/daemon/mcp"
 	"mochiii/editapply"
+	"mochiii/protocol"
 )
 
 // Lane A: the built-in tools. Go functions in this daemon, not subprocesses.
@@ -67,12 +68,108 @@ const maxBuiltinListEntries = 500
 // directory is unbounded (measured: 9,694,832 bytes to list 500 of 40,000).
 const maxBuiltinListScan = 10000
 
-// proposalSink collects the edits propose_edit produced during one turn, so
-// they can be emitted on the final Done message exactly like the blocks parsed
-// out of assistant text. Per-turn rather than per-Server: proposals belong to
-// the turn that made them.
+// proposalSink is one turn's edits: collected so they can be emitted on the
+// final Done message exactly like the blocks parsed out of assistant text.
+// Per-turn rather than per-Server: proposals belong to the turn that made them.
+//
+// It also owns the turn's WORKING COPY (stage.go) when the turn has one:
+// stageFrom names the real workspace to copy, and the copy is made on first
+// use. A sink with stageFrom == "" -- every test that builds &proposalSink{},
+// and plan mode -- proposes against the real files exactly as before.
 type proposalSink struct {
+	// blocks are proposals nothing has applied: every edit when there is no
+	// working copy, and edits outside the project (~/...) when there is.
 	blocks []editapply.EditBlock
+
+	stageFrom string
+	stage     *stagedWorkspace
+	stageErr  error
+
+	// The last command run in the working copy, for WorkingCopyInfo.
+	checked, checkOutput string
+	checkPassed          bool
+}
+
+// workingCopy returns the turn's private copy of the project, making it on
+// first use. nil with a nil error means this turn has no working copy; nil
+// with an error means making it failed, and the turn carries on without one.
+func (p *proposalSink) workingCopy() (*stagedWorkspace, error) {
+	if p == nil || p.stageFrom == "" {
+		return nil, nil
+	}
+	if p.stage != nil || p.stageErr != nil {
+		return p.stage, p.stageErr
+	}
+	p.stage, p.stageErr = newStagedWorkspace(p.stageFrom)
+	return p.stage, p.stageErr
+}
+
+// readCtx carries the working copy, if one exists yet, to the read tools. A
+// read never MAKES the copy: until an edit or a command, the copy and the
+// project are the same files.
+func (p *proposalSink) readCtx(ctx context.Context) context.Context {
+	if p == nil || p.stage == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, stageCtxKey{}, p.stage)
+}
+
+type stageCtxKey struct{}
+
+func stageFromCtx(ctx context.Context) *stagedWorkspace {
+	st, _ := ctx.Value(stageCtxKey{}).(*stagedWorkspace)
+	return st
+}
+
+// recordCheck remembers a command that ran in the working copy.
+func (p *proposalSink) recordCheck(command string, res mcp.Result) {
+	if p == nil || res.IsError {
+		return
+	}
+	p.checked = command
+	p.checkPassed = !strings.HasPrefix(res.Content, "Command exited with error") &&
+		!strings.HasPrefix(res.Content, "Command timed out")
+	p.checkOutput = lastNLines(res.Content, 12)
+}
+
+// finish ends the turn's use of the working copy: the edits to offer, what
+// the user should be told about the copy, and a degradation if the copy could
+// not be made. The copy is removed.
+func (p *proposalSink) finish() (blocks []editapply.EditBlock, info *protocol.WorkingCopyInfo, degraded []protocol.Degradation) {
+	if p == nil {
+		return nil, nil, nil
+	}
+	if p.stageErr != nil {
+		degraded = append(degraded, describeStageRefusal(p.stageErr))
+	}
+	if p.stage == nil {
+		return p.blocks, nil, degraded
+	}
+	net, notOffered := p.stage.netChanges()
+	p.stage.close()
+	p.stage = nil
+	info = &protocol.WorkingCopyInfo{Checked: p.checked, Passed: p.checkPassed, NotOffered: notOffered}
+	if p.checked != "" && !p.checkPassed {
+		info.Output = p.checkOutput
+	}
+	return append(net, p.blocks...), info, degraded
+}
+
+// discard removes the working copy without computing anything: the turn is
+// not going to offer its edits (an error, an interrupt).
+func (p *proposalSink) discard() {
+	if p != nil && p.stage != nil {
+		p.stage.close()
+		p.stage = nil
+	}
+}
+
+func lastNLines(s string, n int) string {
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (p *proposalSink) add(b editapply.EditBlock) {
@@ -100,7 +197,9 @@ func (s *Server) builtinTools(proposals *proposalSink, mode string) []mcp.Builti
 				}`),
 				ReadOnlyHint: true,
 			},
-			Handler: s.builtinReadFile,
+			Handler: func(ctx context.Context, raw json.RawMessage) (mcp.Result, error) {
+				return s.builtinReadFile(proposals.readCtx(ctx), raw)
+			},
 		},
 		{
 			Tool: mcp.Tool{
@@ -116,7 +215,9 @@ func (s *Server) builtinTools(proposals *proposalSink, mode string) []mcp.Builti
 				}`),
 				ReadOnlyHint: true,
 			},
-			Handler: s.builtinListDirectory,
+			Handler: func(ctx context.Context, raw json.RawMessage) (mcp.Result, error) {
+				return s.builtinListDirectory(proposals.readCtx(ctx), raw)
+			},
 		},
 		{
 			Tool: mcp.Tool{
@@ -131,7 +232,9 @@ func (s *Server) builtinTools(proposals *proposalSink, mode string) []mcp.Builti
 				}`),
 				ReadOnlyHint: true,
 			},
-			Handler: s.builtinSearchCode,
+			Handler: func(ctx context.Context, raw json.RawMessage) (mcp.Result, error) {
+				return s.builtinSearchCode(proposals.readCtx(ctx), raw)
+			},
 		},
 		{
 			Tool: mcp.Tool{
@@ -218,7 +321,9 @@ func (s *Server) builtinTools(proposals *proposalSink, mode string) []mcp.Builti
 				// cannot describe a sandbox the command does not get.
 				Confined: s.sandboxExecConfined(),
 			},
-			Handler: s.builtinSandboxExec,
+			Handler: func(ctx context.Context, raw json.RawMessage) (mcp.Result, error) {
+				return s.builtinSandboxExecStaged(ctx, raw, proposals)
+			},
 		},
 	}
 
@@ -246,7 +351,7 @@ func (s *Server) builtinTools(proposals *proposalSink, mode string) []mcp.Builti
 			ReadOnlyHint: true,
 		},
 		Handler: func(ctx context.Context, _ json.RawMessage) (mcp.Result, error) {
-			return s.builtinRepoMap(ctx)
+			return s.builtinRepoMap(proposals.readCtx(ctx))
 		},
 	})
 
@@ -550,11 +655,28 @@ func (s *Server) builtinSearchCode(ctx context.Context, raw json.RawMessage) (mc
 	// content already goes through on the prompt path -- so a secret-shaped
 	// string in an indexed file is redacted here exactly as it is there.
 	var b strings.Builder
+	stale := map[string]bool{}
+	st := stageFromCtx(ctx)
 	for i, chunk := range outcome.Chunks {
 		if b.Len() > 0 {
 			b.WriteString("\n\n")
 		}
 		b.WriteString(renderChunk(i, chunk, s.noScrub()))
+		if st != nil && st.touched[filepath.FromSlash(chunk.FilePath)] {
+			stale[chunk.FilePath] = true
+		}
+	}
+	// THE INDEX DESCRIBES THE PROJECT, NOT THE WORKING COPY. A hit in a file
+	// this turn changed shows the text as it was; said, so the model re-reads
+	// rather than edits against lines that are gone.
+	if len(stale) > 0 {
+		names := make([]string, 0, len(stale))
+		for n := range stale {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		fmt.Fprintf(&b, "\n\n(You changed %s this turn; the results above show it as it was before. "+
+			"read_file shows it as it is now.)", strings.Join(names, ", "))
 	}
 	return mcp.Result{Content: b.String()}, nil
 }
@@ -576,6 +698,38 @@ func (s *Server) builtinSearchCode(ctx context.Context, raw json.RawMessage) (mc
 // out immediately that its SEARCH text does not match, while it still has the
 // file in context and can correct itself -- instead of the user discovering it
 // at review time, one round trip too late.
+// applyInWorkingCopy makes one edit in the turn's working copy. ok is false
+// when it did not take the edit -- no working copy, or a path outside the
+// project, which stays a proposal against the real file as before.
+func applyInWorkingCopy(proposals *proposalSink, block editapply.EditBlock) (mcp.Result, bool) {
+	st, _ := proposals.workingCopy()
+	if st == nil {
+		return mcp.Result{}, false
+	}
+	rel, inside := st.relFor(block.FilePath)
+	if !inside {
+		return mcp.Result{}, false
+	}
+	shown := block.FilePath
+	block.FilePath = rel
+	prepared, err := st.apply(block)
+	if err != nil {
+		res, _ := toolError("that edit cannot be applied: %s", st.toReal(err.Error()))
+		return res, true
+	}
+	what := fmt.Sprintf("changed lines %d-%d of %s", prepared.StartLine, prepared.EndLine, shown)
+	if prepared.Creates {
+		what = "created " + shown
+	}
+	if prepared.MatchNote != "" {
+		what += " (" + prepared.MatchNote + ")"
+	}
+	return mcp.Result{Content: "Done: " + what + " in this turn's working copy of the project. " +
+		"read_file now shows the file as it is, and sandbox_exec runs against it. Nothing reaches the " +
+		"user's real files until they review all of this turn's changes when you finish -- so do not " +
+		"repeat this edit; build on it."}, true
+}
+
 // realWorkspaceRoot resolves s.workspace to the symlink-free form the
 // confinement gates require.
 //
@@ -614,6 +768,12 @@ func (s *Server) builtinProposeEdit(_ context.Context, raw json.RawMessage, prop
 	}
 
 	block := editapply.EditBlock{FilePath: args.Path, Search: args.Search, Replace: args.Replace}
+
+	// IN THE WORKING COPY when the turn has one: the edit is made there, so
+	// the next read shows it and the next command builds it.
+	if res, ok := applyInWorkingCopy(proposals, block); ok {
+		return res, nil
+	}
 
 	realRoot, err := s.realWorkspaceRoot()
 	if err != nil {

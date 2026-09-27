@@ -75,6 +75,11 @@ type historyMsg struct{ info *protocol.HistoryInfo }
 // That invariant was true of the wire and false of this client.
 type editProposalsMsg struct{ blocks []protocol.EditBlockWire }
 
+// workingCopyMsg carries the daemon's report on the turn's working copy (see
+// protocol.WorkingCopyInfo): what the agent last ran against its changes and
+// how that went, and any changes it is not offering. Rides the Done message.
+type workingCopyMsg struct{ info *protocol.WorkingCopyInfo }
+
 // incompleteMsg carries the daemon's report that the model's answer was cut
 // off rather than finishing on its own (see protocol.TokenResponse.Incomplete).
 // It rides on the final Done message, so it is emitted immediately before
@@ -384,6 +389,11 @@ func streamPrompt(ctx context.Context, clientName, workspace, prompt, promptKind
 			// the "answer cut off" notice lands right under the just-finished
 			// (partial) answer, ahead of any edit-review chrome.
 			if tok.Incomplete != nil && !deliver(ctx, ch, incompleteMsg{tok.Incomplete}) {
+				return
+			}
+			// What the agent checked in its working copy, above the review of
+			// what it changed there.
+			if tok.WorkingCopy != nil && !deliver(ctx, ch, workingCopyMsg{tok.WorkingCopy}) {
 				return
 			}
 			// Before streamDoneMsg, which is what starts the review: the

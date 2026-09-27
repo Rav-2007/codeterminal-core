@@ -120,6 +120,12 @@ type MCPConfig struct {
 	// they just asked. §15 records the two attempts to work that out
 	// automatically and why both failed.
 	Pipeline []string `json:"pipeline,omitempty"`
+
+	// NoWorkingCopy turns off the per-turn working copy (stage.go): edits are
+	// then proposals against the real files, as before it existed, and commands
+	// run in the project itself. Off by default because the copy is what lets
+	// the agent test its own changes before the user reviews them.
+	NoWorkingCopy bool `json:"no_working_copy,omitempty"`
 }
 
 // resolvedPipeline returns the configured phases, or nil for the unorchestrated
@@ -445,7 +451,7 @@ const (
 )
 
 var (
-	knownMCPKeys        = []string{"enabled", "builtin", "servers", "budget", "pipeline"}
+	knownMCPKeys        = []string{"enabled", "builtin", "servers", "budget", "pipeline", "no_working_copy"}
 	knownMCPBuiltinKeys = []string{"disabled", "tools"}
 	knownMCPServerKeys  = []string{"command", "args", "env", "tools", "acknowledged_unconfined", "disabled"}
 	knownMCPBudgetKeys  = []string{"max_iterations", "turn_timeout_seconds", "max_tool_result_bytes",

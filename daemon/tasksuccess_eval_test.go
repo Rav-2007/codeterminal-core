@@ -317,6 +317,22 @@ type taskTrial struct {
 	Tokens     int     `json:"tokens"`
 	Seconds    float64 `json:"seconds"`
 	BudgetStop bool    `json:"budget_stop"`
+	// What the agent last ran in its working copy, and the tools it called in
+	// order -- so a failure can be read, not only counted.
+	Checked     string   `json:"checked,omitempty"`
+	CheckPassed bool     `json:"check_passed,omitempty"`
+	Tools       []string `json:"tools,omitempty"`
+}
+
+// toolNames reduces call signatures (name + arguments) to names.
+func toolNames(sigs []string) []string {
+	out := make([]string, 0, len(sigs))
+	for _, sig := range sigs {
+		name, _, _ := strings.Cut(sig, "(")
+		name, _, _ = strings.Cut(name, " ")
+		out = append(out, name)
+	}
+	return out
 }
 
 // applyProposals applies every block in order, as a user pressing y on each,
@@ -405,14 +421,19 @@ func TestTaskSuccess(t *testing.T) {
 			dir := freshTaskWorkspace(t, spec.name)
 			srv := &Server{apiBase: rec.base(), apiKey: apiKey, workspace: dir, logger: logger,
 				cfg: &Config{MCP: mcpCfg}}
-			sink := &proposalSink{}
+			// The same sink and messages a real turn gets (newTurnSink), so the
+			// working copy is measured exactly as it ships. TASK_EVAL_NO_WORKING_COPY
+			// runs the pre-working-copy behaviour for comparison.
+			srv.cfg.MCP.NoWorkingCopy = os.Getenv("TASK_EVAL_NO_WORKING_COPY") != ""
+			sink, messages := srv.newTurnSink("auto",
+				buildChatMessages(defaultSystemPrompt, nil, strings.TrimSpace(string(prompt))))
 			registry, _ := srv.buildRegistry(context.Background(), logger, sink, "")
 			appr := &approveAll{}
 
 			rec.reset()
 			start := time.Now()
 			res, err := srv.runAgentLoop(context.Background(), start, registry, model, "auto",
-				buildChatMessages(defaultSystemPrompt, nil, strings.TrimSpace(string(prompt))), routing, appr,
+				messages, routing, appr,
 				func(string) error { return nil }, nil, nil, nil, nil, nil, nil)
 			elapsed := time.Since(start)
 			_ = registry.Close()
@@ -421,12 +442,18 @@ func TestTaskSuccess(t *testing.T) {
 
 			tr := taskTrial{Task: spec.name, Calls: calls, Tokens: pt + ct, Seconds: elapsed.Seconds(), Asked: appr.asked}
 			if err != nil {
+				sink.discard()
 				tr.Why = "TRANSPORT: " + err.Error()
 				results = append(results, tr)
 				continue
 			}
 			textBlocks, _ := srv.parseAndLogEditBlocks(res.FinalText)
-			blocks := append(textBlocks, sink.blocks...)
+			filed, wc, _ := sink.finish()
+			blocks := append(filed, textBlocks...)
+			if wc != nil {
+				tr.Checked, tr.CheckPassed = wc.Checked, wc.Passed
+			}
+			tr.Tools = toolNames(res.ToolSignatures)
 			tr.ToolCalls = len(res.ToolSignatures)
 			tr.Proposed = len(blocks)
 			tr.BudgetStop = res.Incomplete != nil
@@ -437,6 +464,7 @@ func TestTaskSuccess(t *testing.T) {
 			t.Logf("%-24s trial %d  %-4s  calls=%2d tools=%2d edits=%d/%d refused  %5.0fs  %s",
 				spec.name, trial, passWord(tr.Pass), tr.Calls, tr.ToolCalls, tr.Refused, tr.Proposed,
 				tr.Seconds, tr.Why)
+			t.Logf("    tools: %s", strings.Join(tr.Tools, " "))
 		}
 	}
 	reportTaskSuccess(t, model, results)

@@ -113,7 +113,7 @@ var slashCatalog = []slashDef{
 		Preamble: "Explain exactly which commands to run, from which directory, and what success looks like.\n\n"},
 
 	{Name: "implement", Kind: slashSteered, NeedsArgs: true, Summary: "implement a new feature from end-to-end",
-		Preamble: "Implement the following feature from end-to-end. Break down the work into logical steps and execute them. Do not hesitate to use tools like `propose_edit` and `run_command`.\n\n"},
+		Preamble: "Implement the following feature from end-to-end. Break down the work into logical steps and execute them. Use `propose_edit` to make the changes and `sandbox_exec` to build and test them.\n\n"},
 	{Name: "debug", Kind: slashSteered, NeedsArgs: true, Summary: "deeply debug an issue, error, or failing test",
 		Preamble: "You are an expert debugger. Investigate the following issue deeply. Run tests, add logging, and examine state until the root cause is found, then propose a fix.\n\n"},
 	{Name: "explore", Kind: slashSteered, NeedsArgs: true, Summary: "explore the codebase to gather context",

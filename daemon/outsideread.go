@@ -192,6 +192,19 @@ func outsideReadApproved(ctx context.Context, abs string) bool {
 // the same. Anything else is read only with an approval for that exact
 // resolved path on ctx, and never from a refused place.
 func (s *Server) resolveToolPath(ctx context.Context, path string) (string, error) {
+	// THE WORKING COPY, when the turn has made one: a project path reads the
+	// agent's own edits. See stage.go.
+	// A path the copy cannot resolve (one inside a linked dependency folder,
+	// which leads back to the project) is read from the project, where it is
+	// the same file.
+	if st := stageFromCtx(ctx); st != nil {
+		if rel, ok := st.relFor(path); ok {
+			if full, err := editapply.ResolveSafeTargetPath(st.root, rel); err == nil {
+				return full, nil
+			}
+			path = rel
+		}
+	}
 	realRoot, err := s.realWorkspaceRoot()
 	if err != nil {
 		return "", err

@@ -445,6 +445,7 @@ type TokenResponse struct {
 	Incomplete      *IncompleteInfo      `json:"incomplete,omitempty"`
 	ToolApproval    *ToolApprovalRequest `json:"tool_approval,omitempty"`
 	ToolActivity    *ToolActivity        `json:"tool_activity,omitempty"`
+	WorkingCopy     *WorkingCopyInfo     `json:"working_copy,omitempty"`
 }
 
 // Trust lanes for an MCP server, reported on ToolApprovalRequest.Lane. The
@@ -798,7 +799,31 @@ const (
 	// a warning nobody reads is a comment with extra steps, and the person who
 	// typed the command is not the person tailing the log.
 	DegradedPipelineShape = "pipeline_shape"
+
+	// DegradedWorkingCopy: this turn could not make its private working copy
+	// of the project (see WorkingCopyInfo), so its edits are proposals the
+	// agent could not run or test before the user reviews them -- the way
+	// every turn worked before the working copy existed.
+	DegradedWorkingCopy = "working_copy"
 )
+
+// WorkingCopyInfo reports on a turn whose edits were made in a private copy of
+// the project: the agent could read its own changes and run commands against
+// them, and EditProposals is the copy's net difference from the project.
+//
+// Checked is the last command the agent ran in the copy, and Passed whether it
+// succeeded -- so the user sees, before reviewing, whether the change was ever
+// built or tested, and how that went. Empty Checked means nothing was run.
+//
+// NotOffered lists changes in the copy that are NOT among the proposals, each
+// with why (a command's build output, a file the user changed meanwhile). The
+// paths are workspace-relative: the user's own project, told to the user.
+type WorkingCopyInfo struct {
+	Checked    string   `json:"checked,omitempty"`
+	Passed     bool     `json:"passed,omitempty"`
+	Output     string   `json:"output,omitempty"`
+	NotOffered []string `json:"not_offered,omitempty"`
+}
 
 // Degradation names one subsystem running in a reduced mode, in the same
 // report-a-decision-already-made spirit as GroundingInfo and HistoryInfo: it

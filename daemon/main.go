@@ -337,6 +337,12 @@ func main() {
 		logger.Fatalf("listening on %s: %v", addr, err)
 	}
 
+	// Working copies a killed daemon left behind (stage.go). Only now: the
+	// address is held, so no other daemon for this workspace can be using one.
+	if realRoot != "" {
+		sweepStaleStages(realRoot)
+	}
+
 	// EXPENSIVE SETUP STARTS HERE, and only here, because the address is now
 	// held: from this point on losing the race is impossible, so every resource
 	// below is acquired by the daemon that will actually use it.

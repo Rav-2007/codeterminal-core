@@ -101,6 +101,15 @@ func (s *Server) builtinProposeASTEdit(ctx context.Context, raw json.RawMessage,
 		return toolError("no symbol was supplied")
 	}
 
+	// The language server reads the REAL file, so a file this turn already
+	// changed in its working copy would be sliced at the wrong lines.
+	if st, _ := proposals.workingCopy(); st != nil {
+		if rel, ok := st.relFor(args.Path); ok && st.touched[rel] {
+			return toolError("%s was already changed this turn; use propose_edit, taking the search "+
+				"text from read_file", args.Path)
+		}
+	}
+
 	realRoot, err := s.realWorkspaceRoot()
 	if err != nil {
 		return toolError("invalid path: %v", err)
@@ -164,6 +173,10 @@ func (s *Server) builtinProposeASTEdit(ctx context.Context, raw json.RawMessage,
 	// Resolved, not s.workspace: see realWorkspaceRoot. Passing the unresolved
 	// root refuses every edit whenever the workspace is reached through a
 	// symlink or an 8.3 short name.
+
+	if res, ok := applyInWorkingCopy(proposals, block); ok {
+		return res, nil
+	}
 
 	prepared, err := editapply.PrepareEdit(realRoot, block)
 	if err != nil {

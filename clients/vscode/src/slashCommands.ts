@@ -146,7 +146,7 @@ export const SLASH_CATALOG: SlashDef[] = [
     kind: 'steered',
     needsArgs: true,
     summary: 'implement a new feature from end-to-end',
-    preamble: 'Implement the following feature from end-to-end. Break down the work into logical steps and execute them. Do not hesitate to use tools like `propose_edit` and `run_command`.\n\n',
+    preamble: 'Implement the following feature from end-to-end. Break down the work into logical steps and execute them. Use `propose_edit` to make the changes and `sandbox_exec` to build and test them.\n\n',
   },
   {
     name: 'debug',

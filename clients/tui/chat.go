@@ -436,6 +436,9 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case editProposalsMsg:
 		return m.handleEditProposals(msg)
 
+	case workingCopyMsg:
+		return m.handleWorkingCopy(msg)
+
 	case streamDoneMsg:
 		return m.handleStreamDone()
 
@@ -664,6 +667,14 @@ func (m chatModel) handleDegraded(msg degradedMsg) (tea.Model, tea.Cmd) {
 		return m, nil // a stray message from an already-abandoned stream
 	}
 	m.lastDegraded = sanitizeDegradations(msg.items)
+	// A turn that could not make its working copy says so in the transcript:
+	// its edits were never tested, which matters at the review that follows.
+	for _, d := range m.lastDegraded {
+		if d.Component == protocol.DegradedWorkingCopy {
+			m.appendTurn(turn{role: roleSystem, text: d.Detail})
+			m.refreshViewport()
+		}
+	}
 	m.resizeViewport()
 	return m, waitForNext(m.streamCh)
 }
@@ -766,6 +777,45 @@ func (m chatModel) handleIncomplete(msg incompleteMsg) (tea.Model, tea.Cmd) {
 	m.appendTurn(turn{role: roleSystem, text: "⚠ answer cut off: " + incompleteText(msg.info)})
 	m.refreshViewport()
 	return m, waitForNext(m.streamCh)
+}
+
+// handleWorkingCopy shows, above the review, whether the agent ever built or
+// tested what it is about to offer -- the line that makes "review these
+// changes" an informed decision.
+func (m chatModel) handleWorkingCopy(msg workingCopyMsg) (tea.Model, tea.Cmd) {
+	if m.streamCh == nil {
+		return m, nil
+	}
+	if text := workingCopyText(msg.info); text != "" {
+		m.appendTurn(turn{role: roleSystem, text: text})
+		m.refreshViewport()
+	}
+	return m, waitForNext(m.streamCh)
+}
+
+// workingCopyText renders a WorkingCopyInfo; "" when there is nothing to say.
+func workingCopyText(info *protocol.WorkingCopyInfo) string {
+	if info == nil {
+		return ""
+	}
+	var lines []string
+	switch {
+	case info.Checked == "":
+		lines = append(lines, "not checked: the agent did not build or test these changes")
+	case info.Passed:
+		lines = append(lines, "✓ checked: "+sanitizeText(info.Checked)+" passed")
+	default:
+		lines = append(lines, "✗ checked: "+sanitizeText(info.Checked)+" FAILED")
+		for _, l := range strings.Split(sanitizeText(info.Output), "\n") {
+			if strings.TrimSpace(l) != "" {
+				lines = append(lines, "  "+l)
+			}
+		}
+	}
+	for _, n := range info.NotOffered {
+		lines = append(lines, "not offered: "+sanitizeText(n))
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m chatModel) handleEditProposals(msg editProposalsMsg) (tea.Model, tea.Cmd) {
