@@ -1,0 +1,1 @@
+In config/config.go, add a Timeout field of type time.Duration to Config. Default() should set it to 30 seconds, and String() should render it like `localhost:8080 (timeout 30s)`.

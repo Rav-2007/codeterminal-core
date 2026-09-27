@@ -1,0 +1,1 @@
+Add a function IsPalindrome(s string) bool to the strutil package. It should ignore letter case and spaces, so "Never odd or even" is a palindrome. Add a test for it too.

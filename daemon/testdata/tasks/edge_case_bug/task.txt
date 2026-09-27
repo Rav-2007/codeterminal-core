@@ -1,0 +1,1 @@
+Users report that Average sometimes returns NaN. Fix it so that can't happen, and add a test that covers the case.

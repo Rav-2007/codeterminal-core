@@ -1,0 +1,1 @@
+Create a new file docs/todo.md in this project. Its only line should be exactly: Ship the release notes
