@@ -45,6 +45,26 @@ not offered: out/app: created by a command, not offered
 not offered: main.go: changed on disk while the agent worked, so its version is not offered (it would undo yours)
 ```
 
+### Approving commands during a build
+
+A build runs the tests, fixes, and runs them again, often over several `/spec build`
+turns. When the agent asks to run a command, you have three ways to say yes:
+
+| key (TUI) · button (VS Code) | covers |
+|---|---|
+| `y` · **Yes** | this one call |
+| `a` · **Yes for this task** | the same command again, until this turn ends |
+| `s` · **Yes while this spec is active** | the same command again, in this turn and later ones, until you `/spec off`, switch spec, or quit |
+
+`s` appears only when a spec is active and the command runs inside a real sandbox, in the
+private working copy, so what it runs cannot change your files. It covers that one exact
+command: a different command still asks.
+
+The grant is kept in the client's memory only. It is never written to disk, and the
+daemon keeps nothing between turns. `/spec show` lists what you have approved this way.
+One thing it does not stop: like any `sandbox_exec` command, it can reach the network,
+because builds fetch dependencies.
+
 Plan mode and `/spec` (writing a spec) have no working copy — they run nothing.
 `mcp.no_working_copy: true` switches it off; a project over 50 000 files or 500 MB falls
 back to the old behaviour and says so.

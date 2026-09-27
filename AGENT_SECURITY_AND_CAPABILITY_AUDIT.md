@@ -278,6 +278,34 @@ legitimate use case, while closing the escalation.
 **Validation.** Approve `sandbox_exec` for-turn, then issue a *different* command in the
 same turn; assert a second `ToolApprovalRequest` is raised.
 
+**Update 2026-09-27: a grant that outlives the turn, still exact-command.** `/spec build`
+repeats "run the tests, fix, run again" over several turns. So the daemon now offers
+`approve_for_spec` ("yes while this spec is active"; `daemon/specgrant.go`). It keeps
+every property this fix established, and it is narrower in four ways:
+
+- **Exact command.** It covers one command: the tool plus its arguments in canonical
+  form. A different command asks again.
+- **Offered only where the command is contained.** It is offered, and honoured, only for
+  an `ExecutesCode` tool that is really sandboxed on this host (`Confined`, resolved per
+  host as F-01 requires), in a turn whose commands run in the private working copy.
+- **Only with the spec.** It works only in a turn that names a spec. The clients send only
+  the active spec's grants.
+- **Stored nowhere but client memory.** The daemon stores nothing. The client keeps the
+  grant in memory and forgets it on `/spec off`, a different spec, or exit. It never
+  writes it to disk.
+
+Launches and outside paths are never covered, a config `deny` still wins, and an
+`approve_for_spec` sent in reply to a prompt that did not offer it is refused.
+
+**One residual, stated plainly: the command can still reach the network.** `sandbox_exec`
+allows the network because builds fetch dependencies, so a granted `go test ./...` running
+test code the model wrote in a later turn can reach it too. This is the same exposure a
+turn grant has within its turn, extended across the spec's turns.
+
+Twelve neuter checks cover these bounds (`daemon/specgrant_test.go`,
+`clients/tui/specgrant_test.go`). Also added: the test that a turn grant does *not*
+survive into the next turn.
+
 ---
 
 ### F-03 — The tool-egress budget stops being enforced exactly when it is exceeded

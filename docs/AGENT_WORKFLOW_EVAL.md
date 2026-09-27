@@ -267,3 +267,23 @@ Cost per solved task and median seconds are reported either way.
 
 **Stages C and D** repeat the M4 (`/team` shape) and M3 (`/spec build`) rules written
 above, unchanged, on whichever model is the default after Stage B.
+
+### Status: not yet run (2026-09-27)
+
+Everything the runs need is built and committed:
+
+- the six new tasks;
+- cost read from the provider's bill;
+- the per-tier settings;
+- the rules above.
+
+None of the runs has started. The key they would spend had used up its $1.00 limit
+earlier the same day. Later that day it stopped authenticating (HTTP 401 from the key
+endpoint). The runs start when a funded key is connected, within the $3.00 cap, in
+stage order.
+
+**Until then nothing changes:**
+
+- the default stays `primary` (deepseek-v4-flash);
+- `/team` stays researcher → coder;
+- `/spec build` stays opt-in.

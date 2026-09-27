@@ -343,6 +343,23 @@ Nine tiers ship active, defaulting to `primary` (DeepSeek V4 Flash);
 error, if the config is missing or malformed, or if any tier marked `active` has
 a missing or empty slug.
 
+A tier can also carry two settings of its own:
+
+```json
+"primary": { "slug": "deepseek/deepseek-v4-flash", "active": true,
+             "reasoning_effort": "medium", "provider_sort": "throughput" }
+```
+
+- `reasoning_effort` (`low` · `medium` · `high`) asks that tier's model to think before it
+  answers.
+- `provider_sort` overrides `zdr.provider_sort` for that tier: `price` picks the cheapest
+  host, `throughput` the fastest.
+
+Both are left out by default, and the request is then byte-for-byte what it was before.
+An unsupported effort is dropped with a warning. The managed proxy refuses any
+`provider.sort`, so `provider_sort` is for your-own-key mode. Which settings actually help
+is measured, not assumed: see [`docs/AGENT_WORKFLOW_EVAL.md`](docs/AGENT_WORKFLOW_EVAL.md).
+
 The `zdr` block resolves to the provider-routing object sent on every request and
 is **secure by default**: an absent or legacy block resolves to `zdr: true`,
 `data_collection: "deny"`. Also configurable here: `retrieval.disabled`,
