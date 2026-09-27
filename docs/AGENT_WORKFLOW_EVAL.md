@@ -287,3 +287,29 @@ stage order.
 - the default stays `primary` (deepseek-v4-flash);
 - `/team` stays researcher → coder;
 - `/spec build` stays opt-in.
+
+### Amendment before Stage B (2026-09-28)
+
+The owner connected a new key and raised its limit to $3.00. Eval spending stops at
+**$2.50**, keeping $0.50 for the owner's own use.
+
+**What Stage A's pro arm showed.** It passed 21 of 28 trials for $0.47. Five of its
+seven failures had nothing to do with the task:
+
+- **The failure:** the turn ended after 2–3 calls on an empty reply, twice in a row.
+- **The captured streams** (`TASK_EVAL_DUMP_EMPTY`) show the model deciding to call a
+  tool. The bill counts 48–113 output tokens past its thinking.
+- **The host,** DigitalOcean, delivered neither the call nor any text, and the retry
+  went back to it.
+
+`dc77b85` fixes this: the retry and the rest of the turn avoid the host that sent the
+empty reply. No flash trial was served by that host.
+
+**So Stage B runs both finalists fresh, 56 trials each (4 per task), on the fixed
+code,** instead of adding 28 trials to Stage A's. Otherwise pro's number would mix
+two versions of the loop. The rules above are unchanged. Stage A's numbers stay
+reported as they are.
+
+**Budget consequence:** Stage B costs about $1.20 of what is left. Stages C and D
+run only if the remainder covers them; they are not squeezed into a smaller,
+undecidable form.
