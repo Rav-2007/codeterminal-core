@@ -12,6 +12,7 @@ import * as vscode from 'vscode';
 import { LocalCommandHost, runLocalCommand } from './localCommands';
 
 import {
+  APPROVAL_APPROVE_FOR_SPEC,
   APPROVAL_DENY,
   RESTART_HINT,
   Degradation,
@@ -32,6 +33,7 @@ import {
 } from './daemonClient';
 import { parseModelCommand, parseSlash, parseTeamCommand, steeredPrompt } from './slashCommands';
 import {
+  SpecGrants,
   activatedText,
   appliedSpec,
   getActiveSpec,
@@ -101,7 +103,21 @@ export class ChatPanel {
   // together with the callback that answers it. Non-undefined ONLY while a turn
   // is suspended on a question, which is also the only time the webview has an
   // approval panel on screen.
-  private pendingApproval: { callId: string; respond: (decision: string) => void } | undefined;
+  private pendingApproval:
+    | {
+        callId: string;
+        respond: (decision: string) => void;
+        // The spec grant this call offers, and the spec it would be held
+        // under -- '' when it offers none (see onToolApprovalDecision).
+        specGrant: string;
+        spec: string;
+        label: string;
+      }
+    | undefined;
+
+  // specGrants are the commands approved "while this spec is active": in
+  // memory, for one spec, and gone with the panel (specWorkflow.SpecGrants).
+  private readonly specGrants = new SpecGrants();
 
   // Sequential edit-review state: set from the most recent response's
   // edit_proposals (the FULL list -- the daemon already sends all parsed
@@ -390,8 +406,12 @@ export class ChatPanel {
 
   private async handleSpecCommand(args: string, autoApply: boolean): Promise<void> {
     const root = workspacePath();
-    const action = specAction(root, getActiveSpec(root), args);
+    const active = getActiveSpec(root);
+    const action = specAction(root, active, args, this.specGrants.labelsFor(active));
     if (action.activate !== undefined) {
+      if (action.activate !== active) {
+        this.specGrants.clear(); // given under the old spec, not this one
+      }
       await setActiveSpec(action.activate);
       this.postActiveSpec();
     }
@@ -450,6 +470,7 @@ export class ChatPanel {
     // user's eye and never comes back; this is the model's copy.
     let incompleteReason = '';
 
+    const activeSpec = getActiveSpec(workspacePath());
     streamPrompt(
       CLIENT_NAME,
       wirePrompt,
@@ -520,8 +541,16 @@ export class ChatPanel {
         // turn here, so the respond callback must eventually be called; it is
         // held until the webview reports what the user clicked.
         onToolApproval: (req: ToolApprovalRequest, respond: (decision: string) => void) => {
-          this.pendingApproval = { callId: req.call_id, respond };
-          this.panel.webview.postMessage({ type: 'toolApproval', request: req });
+          // The spec answer is offered only where the daemon offered it AND a
+          // spec is active to hold it; otherwise the webview never shows it.
+          const spec = getActiveSpec(workspacePath());
+          const specGrant = req.spec_grant && spec ? req.spec_grant : '';
+          const label = `${req.server}__${req.tool} ${clip(req.arguments, 120)}`;
+          this.pendingApproval = { callId: req.call_id, respond, specGrant, spec, label };
+          this.panel.webview.postMessage({
+            type: 'toolApproval',
+            request: specGrant ? req : { ...req, spec_grant: undefined },
+          });
         },
         onDone: () => {
           this.transcript.push(
@@ -563,7 +592,8 @@ export class ChatPanel {
         tier: this.preferredTier || undefined,
         mode,
         pipeline,
-        spec: getActiveSpec(workspacePath()) || undefined,
+        spec: activeSpec || undefined,
+        specGrants: this.specGrants.digestsFor(activeSpec),
       }
     );
   }
@@ -581,6 +611,14 @@ export class ChatPanel {
     const pending = this.pendingApproval;
     if (!pending || (callId !== undefined && callId !== pending.callId)) {
       return;
+    }
+    if (decision === APPROVAL_APPROVE_FOR_SPEC) {
+      // Not offered: a message claiming this answer answers nothing -- the
+      // same as a stray key in the TUI -- and the question stays open.
+      if (!pending.specGrant) {
+        return;
+      }
+      this.specGrants.remember(pending.spec, pending.specGrant, pending.label);
     }
     this.pendingApproval = undefined;
     pending.respond(decision);
@@ -1943,4 +1981,9 @@ export function chatPanelBodyMarkup(logoUri: string = ''): string {
       </div>
     </div>
   </div>`;
+}
+
+// clip shortens s to at most n characters for a label, marking the cut.
+function clip(s: string, n: number): string {
+  return s.length <= n ? s : s.slice(0, n) + '…';
 }

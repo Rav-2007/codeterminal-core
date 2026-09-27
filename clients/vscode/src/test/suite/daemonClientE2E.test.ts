@@ -33,7 +33,7 @@ const PV = 1;
 function streamToCompletion(
   prompt: string,
   handlers: StreamHandlers,
-  opts?: { promptKind?: string; tier?: string; mode?: string; pipeline?: string[]; spec?: string }
+  opts?: { promptKind?: string; tier?: string; mode?: string; pipeline?: string[]; spec?: string; specGrants?: string[] }
 ): Promise<void> {
   const ctrl = new AbortController();
   return new Promise<void>((resolve) => {
@@ -309,6 +309,7 @@ suite('Tool approval over the real client', () => {
     for (const [decision, approval] of [
       ['approve', true],
       ['approve_for_turn', true],
+      ['approve_for_spec', true],
       ['deny', false],
       ['cancel_turn', false],
     ] as [string, boolean][]) {
@@ -556,6 +557,24 @@ suite('E2E daemonClient — edit rejections and gate notes', () => {
 });
 
 suite('E2E daemonClient — the spec workflow on the wire', () => {
+  // Grants approved "while this spec is active" go out with that spec, and
+  // never without one.
+  test('spec grants travel with their spec and only with it', async () => {
+    const grant = 'ab'.repeat(32);
+    const sent: { spec?: unknown; spec_grants?: unknown }[] = [];
+    const behavior: Behavior = (req, socket) => {
+      sent.push({ spec: req.spec, spec_grants: req.spec_grants });
+      writeLine(socket, { protocol_version: PV, done: true });
+      socket.end();
+    };
+    await withStub(behavior, async () => {
+      await streamToCompletion('build', {}, { spec: 'specs/v.md', mode: 'build', specGrants: [grant] });
+      await streamToCompletion('plain', {}, { specGrants: [grant] });
+    });
+    assert.deepStrictEqual(sent[0], { spec: 'specs/v.md', spec_grants: [grant] });
+    assert.deepStrictEqual(sent[1], { spec: undefined, spec_grants: undefined }, 'grants went out without a spec');
+  });
+
   // The active spec and the mode leave the process; the build's task list, the
   // working-copy report and a check's verdicts come back to their handlers --
   // the reports BEFORE the edit review they are context for.

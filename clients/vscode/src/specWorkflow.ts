@@ -56,6 +56,61 @@ export async function setActiveSpec(rel: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// "Yes while this spec is active": grants for one exact command each.
+// ---------------------------------------------------------------------------
+
+/** How many grants one spec keeps; the daemon accepts no more per turn. */
+export const MAX_SPEC_GRANTS = 32;
+
+/**
+ * SpecGrants holds the commands the user approved while a spec is active --
+ * the twin of the TUI's chatModel.specGrants (clients/tui/specgrant.go).
+ *
+ * IN MEMORY ONLY, and only for the spec they were given under: grants() for
+ * any other spec is empty, so switching specs forgets them by construction,
+ * and nothing here is ever written to workspaceState or anywhere else. The
+ * daemon keeps nothing between turns; this is the only place a grant lives,
+ * and it dies with the panel.
+ */
+export class SpecGrants {
+  private spec = '';
+  private held: { digest: string; label: string }[] = [];
+
+  /** remember keeps one grant for spec, replacing another spec's. */
+  remember(spec: string, digest: string, label: string): void {
+    if (!spec || !digest) {
+      return;
+    }
+    if (spec !== this.spec) {
+      this.spec = spec;
+      this.held = [];
+    }
+    if (this.held.some((g) => g.digest === digest)) {
+      return;
+    }
+    this.held.push({ digest, label });
+    if (this.held.length > MAX_SPEC_GRANTS) {
+      this.held = this.held.slice(this.held.length - MAX_SPEC_GRANTS);
+    }
+  }
+
+  /** digestsFor is what goes on the wire with a turn under spec. */
+  digestsFor(spec: string): string[] {
+    return spec && spec === this.spec ? this.held.map((g) => g.digest) : [];
+  }
+
+  /** labelsFor is what /spec show lists. */
+  labelsFor(spec: string): string[] {
+    return spec && spec === this.spec ? this.held.map((g) => g.label) : [];
+  }
+
+  clear(): void {
+    this.spec = '';
+    this.held = [];
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Paths.
 // ---------------------------------------------------------------------------
 
@@ -142,13 +197,13 @@ export interface SpecAction {
   turn?: { shown: string; prompt: string; mode: string };
 }
 
-export function specAction(workspaceRoot: string, activeSpec: string, args: string): SpecAction {
+export function specAction(workspaceRoot: string, activeSpec: string, args: string, grantLabels: string[] = []): SpecAction {
   const [sub, ...restParts] = args.split(/\s+/);
   const rest = restParts.join(' ');
   switch ((sub ?? '').toLowerCase()) {
     case '':
     case 'show':
-      return { reply: specStatus(workspaceRoot, activeSpec) };
+      return { reply: specStatus(workspaceRoot, activeSpec, grantLabels) };
     case 'use': {
       const r = resolveSpecArg(workspaceRoot, rest);
       if (r.error || !r.rel) {
@@ -180,8 +235,12 @@ export function activatedText(rel: string): string {
   );
 }
 
-function specStatus(workspaceRoot: string, activeSpec: string): string {
+function specStatus(workspaceRoot: string, activeSpec: string, grantLabels: string[] = []): string {
   const lines = [activeSpec ? `active spec: ${activeSpec}` : 'no active spec'];
+  if (activeSpec && grantLabels.length > 0) {
+    lines.push('approved while it is active (until /spec off, another spec, or closing the panel):');
+    lines.push(...grantLabels.map((l) => '  ' + l));
+  }
   const specs = listSpecs(workspaceRoot);
   if (specs.length > 0) {
     lines.push('specs in this project:', ...specs.map((s) => '  ' + s));

@@ -83,6 +83,10 @@ export const APPROVAL_APPROVE = 'approve';
 export const APPROVAL_DENY = 'deny';
 export const APPROVAL_APPROVE_FOR_TURN = 'approve_for_turn';
 export const APPROVAL_CANCEL_TURN = 'cancel_turn';
+// APPROVAL_APPROVE_FOR_SPEC: this exact command, in this turn and later ones,
+// while the same spec stays active. Only an answer to a request carrying
+// spec_grant; the daemon refuses it anywhere else.
+export const APPROVAL_APPROVE_FOR_SPEC = 'approve_for_spec';
 
 // Trust lanes, mirroring protocol.Lane*. LANE_THIRD_PARTY is an ordinary
 // subprocess running with the user's full privileges and nothing in this
@@ -122,6 +126,12 @@ export interface PromptRequest {
    * by modes "check" and "build".
    */
   spec?: string;
+  /**
+   * spec_grants are the commands the user approved "while this spec is
+   * active", for `spec` only (protocol.PromptRequest.SpecGrants). Sent with the
+   * spec they belong to and never without it.
+   */
+  spec_grants?: string[];
 }
 
 // WorkingCopyInfo mirrors protocol.WorkingCopyInfo: what the agent last ran
@@ -337,6 +347,10 @@ export interface ToolApprovalRequest {
   iteration: number;
   max_iterations: number;
   detail?: string;
+  // spec_grant, when present, offers APPROVAL_APPROVE_FOR_SPEC for this call
+  // and is the grant to keep and send back with the spec's later turns
+  // (PromptRequest.spec_grants). It names this exact command only.
+  spec_grant?: string;
 }
 
 // ToolApprovalResponse mirrors protocol.ToolApprovalResponse. It is the only
@@ -858,7 +872,14 @@ export async function streamPrompt(
   history: Turn[],
   signal: AbortSignal,
   handlers: StreamHandlers,
-  opts?: { promptKind?: string; tier?: string; mode?: string; pipeline?: string[]; spec?: string }
+  opts?: {
+    promptKind?: string;
+    tier?: string;
+    mode?: string;
+    pipeline?: string[];
+    spec?: string;
+    specGrants?: string[];
+  }
 ): Promise<void> {
   // The capability is derived from the handler, not passed in: a caller that
   // can render an approval provides one, and a caller that cannot does not, so
@@ -999,6 +1020,9 @@ export async function streamPrompt(
   }
   if (opts?.spec) {
     req.spec = opts.spec;
+    if (opts.specGrants && opts.specGrants.length > 0) {
+      req.spec_grants = opts.specGrants;
+    }
   }
   writeLine(socket, req);
 }
@@ -1067,7 +1091,10 @@ function askForApproval(
     answered = true;
     const resp: ToolApprovalResponse = {
       protocol_version: PROTOCOL_VERSION,
-      approval: decision === APPROVAL_APPROVE || decision === APPROVAL_APPROVE_FOR_TURN,
+      approval:
+        decision === APPROVAL_APPROVE ||
+        decision === APPROVAL_APPROVE_FOR_TURN ||
+        decision === APPROVAL_APPROVE_FOR_SPEC,
       // Echoed from the request, never recomputed here -- see
       // ToolApprovalRequest.arguments_sha256.
       call_id: req.call_id,

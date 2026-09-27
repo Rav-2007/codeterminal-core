@@ -7,6 +7,8 @@ import {
   MODE_BUILD,
   MODE_CHECK,
   MODE_SPEC,
+  MAX_SPEC_GRANTS,
+  SpecGrants,
   appliedSpec,
   getActiveSpec,
   listSpecs,
@@ -85,6 +87,33 @@ suite('spec workflow', () => {
     assert.strictEqual(goal?.mode, MODE_SPEC);
     assert.strictEqual(goal?.prompt, 'add a --verbose flag');
     assert.ok(specAction(root, 'specs/verbose-flag.md', 'show').reply?.includes('active spec: specs/verbose-flag.md'));
+  });
+
+  // The TUI's twin: clients/tui/specgrant_test.go.
+  test('spec grants are held for one spec, in memory, and forgotten with it', () => {
+    const g = new SpecGrants();
+    g.remember('specs/a.md', 'd1', 'builtin__sandbox_exec {"command":"go test ./..."}');
+    g.remember('specs/a.md', 'd1', 'again');
+    assert.deepStrictEqual(g.digestsFor('specs/a.md'), ['d1'], 'the same grant was kept twice');
+    assert.deepStrictEqual(g.digestsFor('specs/b.md'), [], 'another spec saw the grant');
+    assert.deepStrictEqual(g.digestsFor(''), [], 'no spec saw the grant');
+
+    g.remember('specs/b.md', 'd2', 'x');
+    assert.deepStrictEqual(g.digestsFor('specs/a.md'), [], 'switching specs kept the old grants');
+    assert.deepStrictEqual(g.digestsFor('specs/b.md'), ['d2']);
+
+    for (let i = 0; i < MAX_SPEC_GRANTS + 5; i++) {
+      g.remember('specs/b.md', 'n' + i, 'x');
+    }
+    assert.strictEqual(g.digestsFor('specs/b.md').length, MAX_SPEC_GRANTS);
+
+    g.clear();
+    assert.deepStrictEqual(g.digestsFor('specs/b.md'), []);
+
+    const root = workspace();
+    const reply = specAction(root, 'specs/verbose-flag.md', 'show', ['builtin__sandbox_exec go test']).reply ?? '';
+    assert.ok(reply.includes('approved while it is active'), reply);
+    assert.ok(reply.includes('builtin__sandbox_exec go test'), reply);
   });
 
   test('an accepted spec becomes active only after a /spec turn', () => {

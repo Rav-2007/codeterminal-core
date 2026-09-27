@@ -1207,8 +1207,19 @@
       'Yes for this task',
       'approve_for_turn',
       req,
-      'Run this call and any later call to the same tool for the rest of this task'
+      // For a tool that runs commands the daemon covers only this exact
+      // command; the old wording promised "any later call to the same tool".
+      'Run this call, and the same call again, for the rest of this task (a different command still asks)'
     );
+    // Offered only where the daemon offered it and a spec is active.
+    const forSpec = req.spec_grant
+      ? approvalButton(
+          'Yes while this spec is active',
+          'approve_for_spec',
+          req,
+          'Run this exact command now, and again without asking while the active spec stays on; any other command still asks'
+        )
+      : null;
     const cancel = approvalButton('Stop the task', 'cancel_turn', req, 'Deny this call and abandon the whole task');
 
     // Deny first in DOM order as well as focus order: tab order should reach
@@ -1216,6 +1227,9 @@
     actions.appendChild(deny);
     actions.appendChild(approve);
     actions.appendChild(forTurn);
+    if (forSpec) {
+      actions.appendChild(forSpec);
+    }
     actions.appendChild(cancel);
     container.appendChild(actions);
 
