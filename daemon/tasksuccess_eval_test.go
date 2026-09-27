@@ -40,7 +40,10 @@
 // specialist phases, as /team:planner,coder does), TASK_EVAL_SPEC=1 (only the
 // tasks with a spec.md, that spec active), TASK_EVAL_MODE (e.g. build),
 // TASK_EVAL_REASONING (low|medium|high: the tier's reasoning_effort for this
-// run), TASK_EVAL_PROVIDER_SORT (e.g. throughput: the tier's provider_sort).
+// run), TASK_EVAL_PROVIDER_SORT (e.g. throughput: the tier's provider_sort),
+// TASK_EVAL_MAX_USD (stop starting trials once the run's measured bill passes
+// this many dollars -- the budget is money, and tokens are a poor proxy for it
+// across models priced 7x apart).
 //
 // Cost is the provider's own bill, not a price list: each call's usage chunk
 // carries its dollar cost, and on OpenRouter the key's total usage is read
@@ -509,6 +512,12 @@ func TestTaskSuccess(t *testing.T) {
 
 	trials := envInt(t, "TASK_EVAL_TRIALS", 2)
 	maxTokens := envInt(t, "TASK_EVAL_MAX_TOKENS", 4_000_000)
+	maxUSD := 0.0
+	if v := strings.TrimSpace(os.Getenv("TASK_EVAL_MAX_USD")); v != "" {
+		if maxUSD, err = strconv.ParseFloat(v, 64); err != nil || maxUSD <= 0 {
+			t.Fatalf("TASK_EVAL_MAX_USD=%q is not a positive number of dollars", v)
+		}
+	}
 	only := map[string]bool{}
 	for _, n := range strings.Split(os.Getenv("TASK_EVAL_ONLY"), ",") {
 		if n = strings.TrimSpace(n); n != "" {
@@ -543,6 +552,7 @@ func TestTaskSuccess(t *testing.T) {
 
 	var results []taskTrial
 	totalTokens := 0
+	spentUSD := 0.0
 	for _, spec := range taskSpecs {
 		if len(only) > 0 && !only[spec.name] {
 			continue
@@ -563,6 +573,10 @@ func TestTaskSuccess(t *testing.T) {
 		for trial := 1; trial <= trials; trial++ {
 			if totalTokens > maxTokens {
 				t.Logf("STOPPING: %d tokens spent, over TASK_EVAL_MAX_TOKENS=%d", totalTokens, maxTokens)
+				break
+			}
+			if maxUSD > 0 && spentUSD >= maxUSD {
+				t.Logf("STOPPING: $%.4f spent, at TASK_EVAL_MAX_USD=%.2f", spentUSD, maxUSD)
 				break
 			}
 			dir := freshTaskWorkspace(t, spec.name)
@@ -611,6 +625,7 @@ func TestTaskSuccess(t *testing.T) {
 			_ = registry.Close()
 			got := rec.detail()
 			totalTokens += got.prompt + got.completion
+			spentUSD += got.costUSD
 
 			tr := taskTrial{Task: spec.name, Calls: got.calls, Tokens: got.prompt + got.completion,
 				Seconds: elapsed.Seconds(), Asked: appr.asked, CostUSD: got.costUSD,
