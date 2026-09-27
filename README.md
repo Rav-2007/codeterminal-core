@@ -297,11 +297,20 @@ The daemon reads plain environment variables and never parses `.env` itself.
 |---|---|
 | `MOCHIII_API_BASE` | Base URL of an OpenAI-compatible API. **Optional** — unset, the daemon defaults to `https://openrouter.ai/api/v1` and logs that it did (`daemon/main.go:124`). A malformed value is still fatal. *Required in proxy mode*, where the address cannot be guessed. *(This row read "**Required** — the daemon refuses to start without it" until 2026-09-21. That stopped being true on 2026-09-15, when `22b3021` gave the daemon a default — the fix for the item-41 first-run outage.)* |
 | `MOCHIII_API_KEY` | Sent as `Authorization: Bearer`. May be unset for local servers that need no key, or when a key has been stored by `mochiii-daemon connect` — this variable **takes precedence** over the stored one |
+| `MOCHIII_MODEL` | One model, named the way the server at `MOCHIII_API_BASE` names it (e.g. `qwen2.5-coder:7b` for Ollama). **Replaces every tier in `models.json`** — for a local server, which knows none of those names. VS Code: the `mochiii.model` setting |
 | `MOCHIII_USE_PROXY` | `true` selects proxy mode |
 | `MOCHIII_PROXY_KEY` | Per-user Mochiii key; required in proxy mode |
 
+**A model server on your own machine** (Ollama, LM Studio, llama.cpp, vLLM) needs
+no key: `MOCHIII_API_BASE=http://localhost:11434/v1` and
+`MOCHIII_MODEL=qwen2.5-coder:7b`. A local server also gets five minutes, not
+sixty seconds, before its first token — a CPU model reading a long prompt is
+silent, not stalled.
+
 A stored credential (`mochiii-daemon connect`) fills in only what the
-environment did not say, and is deliberately **ignored in proxy mode**: what
+environment did not say, **and only for the address it was saved for** — a
+stored OpenRouter key is never sent to a local server. It is deliberately
+**ignored in proxy mode**: what
 `connect` stores is a *provider* key, and proxy mode authenticates with a
 *Mochiii* key, so filling one in from the other would send a credential to a host
 it was not issued for.
@@ -382,9 +391,19 @@ client; steered commands send a task preamble to the model.
 /connect show          # which key is in force (masked — never the key itself)
 /connect forget        # remove the stored key
 
+/spec add a --verbose flag   # write a spec (specs/<name>.md) and review it
+/spec build            # build the active spec: tests first, live task list
+/spec check            # grade the project against every success criterion
+/spec use <name>       # /spec off, /spec show -- choose the active spec
+
+/team <question>       # researcher -> coder specialists (/team:planner,coder …)
+
 /help /mcp-server /explain /fix /test /refactor /doc /security
 /review /plan /run /clear /compact /context /git /init /search /exit
 ```
+
+The `/spec` family is the spec-driven workflow — decide what to build, build to it,
+check the result against it: [`docs/SPEC_WORKFLOW.md`](docs/SPEC_WORKFLOW.md).
 
 `/connect` is the in-client half of [`mochiii-daemon connect`](#4-run). It
 takes the key at a masked prompt rather than as an argument, because an argument
@@ -580,6 +599,14 @@ Two trust lanes, and **which map a server sits in *is* its lane** — there is n
 - **`mcp.servers`** — MCP servers you configure, spawned as stdio subprocesses.
   Ordinary programs with your full access. **Not sandboxed**, and each needs
   `acknowledged_unconfined: true` before it resolves to anything runnable.
+
+**The working copy.** A turn that edits or runs something does it in a private
+copy of the project: its edits land there, `read_file` shows them and
+`sandbox_exec` tests them, so the agent can fix what fails before you see
+anything. When the turn ends, the copy's net difference becomes ordinary edit
+proposals — your files change only when you accept them — and the client shows
+whether the change was ever built or tested. See
+[`docs/SPEC_WORKFLOW.md`](docs/SPEC_WORKFLOW.md#the-working-copy--why-the-agent-can-test-its-own-work).
 
 A tool you do not list resolves to `ask` — the default is a question. `ask`
 suspends the turn and shows you the tool, the **complete** arguments, its lane,
