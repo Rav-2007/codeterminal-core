@@ -313,3 +313,31 @@ reported as they are.
 **Budget consequence:** Stage B costs about $1.20 of what is left. Stages C and D
 run only if the remainder covers them; they are not squeezed into a smaller,
 undecidable form.
+
+### Stage A result (14 tasks × 2 trials, run in parallel, 2026-09-28)
+
+| arm | pass | median s | median calls | $ / trial (billed) | budget stops |
+|---|---|---|---|---|---|
+| **P** — pro as shipped | **21/28 (75%)** | **46** | 6 | 0.0169 | 5 (all empty replies — see the amendment) |
+| F0 — flash as shipped | 9/28 (32%) | 342 | 11 | 0.0049 | 16 |
+| F-think — flash, `reasoning_effort: medium` | 10/28 (36%) | 412 | 11 | 0.0066 | 17 |
+| F-fast — flash, `provider_sort: throughput` | 8/28 (29%) | 384 | 13 | 0.0060 | 18 |
+
+**By the rule:**
+
+- **F-think joins flash-best.** It passes strictly more than F0, 10 against 9, at 1.35×
+  F0's cost, within the 2× limit. The margin is one trial, which is noise, but the rule was
+  written first and it decides.
+- **F-fast does not join.** It passes fewer trials than F0, and the faster host did not make
+  the turn faster: it made more calls and took longer.
+
+Flash-best is therefore flash with `reasoning_effort: medium`.
+
+**What the flash trials show.** Flash's failures are the ones measured in round 1:
+
+- a turn spends its 16 calls reading and running, and never edits (16–18 budget stops per
+  arm);
+- five of the six harder tasks are 0/2 in every flash arm.
+
+Pro fails `bug_hunt_medium` too. It passes `semver_from_spec`, `signature_change` and
+`refactor_keep_behaviour`.
