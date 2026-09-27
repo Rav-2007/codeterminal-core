@@ -55,7 +55,7 @@ func reclaimFreePages(ctx context.Context, db *sql.DB) error {
 	for rows.Next() {
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
+		_ = rows.Close() // rows.Err is the failure worth reporting
 		return fmt.Errorf("reclaiming free pages: %w", err)
 	}
 	return rows.Close()

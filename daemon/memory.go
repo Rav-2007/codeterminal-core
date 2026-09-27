@@ -117,7 +117,7 @@ func OpenMemoryStore(path string) (*MemoryStore, error) {
 		return nil, err
 	}
 	if err := compactMemory(db); err != nil {
-		db.Close()
+		_ = db.Close() // the compaction failure is the error worth reporting
 		return nil, err
 	}
 
