@@ -164,8 +164,8 @@ func (s *Server) buildRegistry(ctx context.Context, logger *log.Logger, proposal
 	// and a turn that promised not to act should not cause one -- so plan mode
 	// must not reach the launch, rather than launch and then decline to
 	// advertise.
-	if isPlanMode(mode) {
-		logger.Printf("mcp: plan mode -- %d third-party server(s) not connected", eligibleLaneBServers(cfg))
+	if modeWithholdsLaneB(mode) {
+		logger.Printf("mcp: %s mode -- %d third-party server(s) not connected", mode, eligibleLaneBServers(cfg))
 		return registry, nil
 	}
 

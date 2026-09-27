@@ -277,6 +277,13 @@ type PromptRequest struct {
 	// iterations, no extra time and no extra bytes. Unknown names are dropped
 	// with a log line, and the count is capped (see maxRequestedPhases).
 	Pipeline []string `json:"pipeline,omitempty"`
+
+	// Spec names the ACTIVE SPEC for this turn: a Markdown file under the
+	// project's specs/ folder that the user accepted. The daemon reads it (only
+	// from there, and bounded) and puts it in the system message, so the work
+	// stays anchored to what was agreed. Required by Mode "check", which grades
+	// the project against it.
+	Spec string `json:"spec,omitempty"`
 }
 
 // Turn is one prior message in a conversation, supplied by the client so
@@ -446,6 +453,7 @@ type TokenResponse struct {
 	ToolApproval    *ToolApprovalRequest `json:"tool_approval,omitempty"`
 	ToolActivity    *ToolActivity        `json:"tool_activity,omitempty"`
 	WorkingCopy     *WorkingCopyInfo     `json:"working_copy,omitempty"`
+	SpecReport      *SpecReport          `json:"spec_report,omitempty"`
 }
 
 // Trust lanes for an MCP server, reported on ToolApprovalRequest.Lane. The
@@ -805,6 +813,34 @@ const (
 	// agent could not run or test before the user reviews them -- the way
 	// every turn worked before the working copy existed.
 	DegradedWorkingCopy = "working_copy"
+)
+
+// SpecReport is the result of checking the project against its active spec
+// (Mode "check"): one entry per success criterion, in the spec's order.
+//
+// Status is SpecMet, SpecUnmet or SpecUnknown. "met" is the daemon's word, not
+// the model's: a claim of met without verifiable evidence (a command that
+// passed in this turn, or a file:line that exists) is recorded as unknown, and
+// Note says why. A criterion the check never recorded is unknown, "not checked".
+type SpecReport struct {
+	Spec     string                `json:"spec"`
+	Criteria []SpecCriterionResult `json:"criteria"`
+}
+
+// SpecCriterionResult is one criterion's verdict.
+type SpecCriterionResult struct {
+	ID       string `json:"id"`
+	Text     string `json:"text"`
+	Status   string `json:"status"`
+	Evidence string `json:"evidence,omitempty"`
+	Note     string `json:"note,omitempty"`
+}
+
+// SpecCriterionResult.Status values.
+const (
+	SpecMet     = "met"
+	SpecUnmet   = "unmet"
+	SpecUnknown = "unknown"
 )
 
 // WorkingCopyInfo reports on a turn whose edits were made in a private copy of

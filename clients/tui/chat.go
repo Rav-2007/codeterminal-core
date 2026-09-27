@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -288,6 +289,13 @@ type chatModel struct {
 	clientName    string
 	workspace     string // sent to the daemon so it can flag a workspace mismatch
 	workspaceRoot string // real (symlink-resolved) workspace root edits are confined to
+
+	// activeSpec is the spec every prompt works to (spec.go), "" for none.
+	// turnMode is the mode of the latest turn; reviewAppliedPaths the files its
+	// review applied -- so a /spec turn's accepted spec becomes active.
+	activeSpec         string
+	turnMode           string
+	reviewAppliedPaths []string
 	// preferredTier is the models.json tier name chosen via /model <name>.
 	// Empty means default routing. Sent as PromptRequest.Tier on every turn.
 	preferredTier string
@@ -327,6 +335,7 @@ func newChatModel(clientName, workspace, workspaceRoot string, initialHistory []
 		workspaceRoot: workspaceRoot,
 		turns:         turnsFromProtocol(initialHistory),
 		promptHistory: promptsFrom(initialHistory),
+		activeSpec:    loadActiveSpec(workspaceRoot),
 		historyIdx:    -1,
 	}
 }
@@ -438,6 +447,14 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case workingCopyMsg:
 		return m.handleWorkingCopy(msg)
+
+	case specReportMsg:
+		if m.streamCh == nil {
+			return m, nil
+		}
+		m.appendTurn(turn{role: roleSystem, text: specReportText(msg.report)})
+		m.refreshViewport()
+		return m, waitForNext(m.streamCh)
 
 	case streamDoneMsg:
 		return m.handleStreamDone()
@@ -1184,7 +1201,8 @@ func (m chatModel) startTurn() (tea.Model, tea.Cmd) {
 	ch := make(chan tea.Msg)
 	m.streamCh = ch
 
-	return m, tea.Batch(m.spinner.Tick, m.startThinking(), startStream(ctx, m.clientName, m.workspace, prompt, promptKind, mode, m.preferredTier, pipeline, history, ch))
+	m.turnMode = mode
+	return m, tea.Batch(m.spinner.Tick, m.startThinking(), startStream(ctx, m.clientName, m.workspace, prompt, promptKind, mode, m.preferredTier, m.activeSpec, pipeline, history, ch))
 }
 
 func (m chatModel) handleSlash(sp slashParse) (tea.Model, tea.Cmd) {
@@ -1202,33 +1220,38 @@ func (m chatModel) handleSlash(sp slashParse) (tea.Model, tea.Cmd) {
 	case slashLocal:
 		return m.handleLocalSlash(sp.Def.Name, sp.Args)
 	case slashSteered:
-		prompt := steeredPrompt(sp.Def, sp.Args)
-		promptKind := sp.Def.PromptKind
-		mode := sp.Def.Mode
-		var pipeline []string // steered slash commands do not choose a shape
-		history := buildHistory(m.turns)
-		m.appendTurn(turn{role: roleUser, text: sanitizeText("/" + sp.Def.Name + " " + sp.Args)})
-		m.input.Blur()
-		m.state = stateSending
-		m.statusErr = ""
-		m.lastGrounding = nil
-		m.lastRedactions = nil
-		m.lastDegraded = nil
-		m.lastProvider = ""
-		m.lastHistoryTruncated = false
-		m.streamAssistant = -1
-		m.activityTurns = nil
-		m.daemonProposals = nil
-		m.gotDaemonProposals = false
-		m.resizeViewport()
-		m.refreshViewport()
-		ctx, cancel := context.WithCancel(context.Background())
-		m.streamCancel = cancel
-		ch := make(chan tea.Msg)
-		m.streamCh = ch
-		return m, tea.Batch(m.spinner.Tick, m.startThinking(), startStream(ctx, m.clientName, m.workspace, prompt, promptKind, mode, m.preferredTier, pipeline, history, ch))
+		// Steered slash commands do not choose a pipeline shape.
+		return m.beginTurn("/"+sp.Def.Name+" "+sp.Args, steeredPrompt(sp.Def, sp.Args), sp.Def.PromptKind, sp.Def.Mode, nil)
 	}
 	return m, nil
+}
+
+// beginTurn starts a turn whose transcript line (shown) differs from what is
+// sent (prompt): a slash command, or /spec. Shared so every such turn resets
+// the same state and carries the active spec.
+func (m chatModel) beginTurn(shown, prompt, promptKind, mode string, pipeline []string) (tea.Model, tea.Cmd) {
+	history := buildHistory(m.turns)
+	m.appendTurn(turn{role: roleUser, text: sanitizeText(shown)})
+	m.input.Blur()
+	m.state = stateSending
+	m.statusErr = ""
+	m.lastGrounding = nil
+	m.lastRedactions = nil
+	m.lastDegraded = nil
+	m.lastProvider = ""
+	m.lastHistoryTruncated = false
+	m.streamAssistant = -1
+	m.activityTurns = nil
+	m.daemonProposals = nil
+	m.gotDaemonProposals = false
+	m.turnMode = mode
+	m.resizeViewport()
+	m.refreshViewport()
+	ctx, cancel := context.WithCancel(context.Background())
+	m.streamCancel = cancel
+	ch := make(chan tea.Msg)
+	m.streamCh = ch
+	return m, tea.Batch(m.spinner.Tick, m.startThinking(), startStream(ctx, m.clientName, m.workspace, prompt, promptKind, mode, m.preferredTier, m.activeSpec, pipeline, history, ch))
 }
 
 func (m chatModel) handleLocalSlash(name, args string) (tea.Model, tea.Cmd) {
@@ -1331,6 +1354,8 @@ func (m chatModel) handleLocalSlash(name, args string) (tea.Model, tea.Cmd) {
 		reply = runMCPServerList("")
 	case "search":
 		reply = runSearch(m.clientName, m.workspaceRoot, args)
+	case "spec":
+		return m.handleSpecCommand(args)
 	case "exit":
 		return m, tea.Quit
 	default:
@@ -1772,6 +1797,7 @@ func (m chatModel) checkForEditBlocks() (tea.Model, tea.Cmd) {
 	m.reviewBlocks = blocks
 	m.reviewIndex = 0
 	m.reviewApplied = 0
+	m.reviewAppliedPaths = nil
 	m.reviewSkipped = 0
 	m.reviewRefused = 0
 	m.reviewRefusals = nil
@@ -2021,6 +2047,7 @@ func (m chatModel) applyCurrentReviewEdit() (tea.Model, tea.Cmd) {
 	}
 
 	m.reviewApplied++
+	m.reviewAppliedPaths = append(m.reviewAppliedPaths, p.Block.FilePath)
 	m.reviewIndex++
 	return m.advanceReview()
 }
@@ -2036,6 +2063,10 @@ func (m chatModel) finishReview() (tea.Model, tea.Cmd) {
 		lines = append(lines, fmt.Sprintf("  backups: %s (restore with: edits undo)", m.reviewBackupDir))
 	}
 	m.appendTurn(turn{role: roleSystem, text: strings.Join(lines, "\n")})
+	// A spec the user just accepted becomes the one they are working to.
+	if msg := m.activateAppliedSpec(); msg != "" {
+		m.appendTurn(turn{role: roleSystem, text: msg})
+	}
 
 	m.reviewBlocks = nil
 	m.reviewPrepared = nil
@@ -2490,6 +2521,10 @@ func (m chatModel) renderSlashPopup() (string, int) {
 // Nothing was dropped: it is the same text, one command away.
 func (m chatModel) renderHeader() string {
 	brand := brandStyle.Render(lotusGlyph + " " + brandName)
+	// The active spec is shown: it changes what every prompt does.
+	if m.activeSpec != "" {
+		brand += "  " + helpStyle.Render("spec: "+sanitizeText(strings.TrimSuffix(path.Base(m.activeSpec), ".md")))
+	}
 	// Only a state worth reading is shown -- an error, an approval, a review.
 	// Memory ("mem: N turn(s)") moved to /context with the notices.
 	if state := m.stateLabel(); state != "" {

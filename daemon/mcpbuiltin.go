@@ -88,6 +88,23 @@ type proposalSink struct {
 	// The last command run in the working copy, for WorkingCopyInfo.
 	checked, checkOutput string
 	checkPassed          bool
+	// Every command this turn ran, for record_criterion's evidence check.
+	checks []ranCheck
+
+	// The active spec (spec.go), when the turn has one. specOnly limits
+	// propose_edit to files under specs/ (/spec); checking marks a /spec check
+	// turn, whose working copy is thrown away and whose verdicts are reported.
+	spec     *activeSpec
+	specOnly bool
+	checking bool
+	verdicts map[string]specVerdict
+	report   *protocol.SpecReport
+}
+
+// ranCheck is one command a turn ran and whether it passed.
+type ranCheck struct {
+	command string
+	passed  bool
 }
 
 // workingCopy returns the turn's private copy of the project, making it on
@@ -130,6 +147,7 @@ func (p *proposalSink) recordCheck(command string, res mcp.Result) {
 	p.checkPassed = !strings.HasPrefix(res.Content, "Command exited with error") &&
 		!strings.HasPrefix(res.Content, "Command timed out")
 	p.checkOutput = lastNLines(res.Content, 12)
+	p.checks = append(p.checks, ranCheck{command: command, passed: p.checkPassed})
 }
 
 // finish ends the turn's use of the working copy: the edits to offer, what
@@ -141,6 +159,21 @@ func (p *proposalSink) finish() (blocks []editapply.EditBlock, info *protocol.Wo
 	}
 	if p.stageErr != nil {
 		degraded = append(degraded, describeStageRefusal(p.stageErr))
+	}
+	// A CHECK CHANGES NOTHING: its working copy is where its commands ran, and
+	// all it offers is the spec's ticked boxes.
+	if p.checking {
+		var ticks []editapply.EditBlock
+		p.report, ticks = p.specReport()
+		if p.stage != nil {
+			if net, _ := p.stage.netChanges(); len(net) > 0 {
+				degraded = append(degraded, protocol.Degradation{Component: protocol.DegradedWorkingCopy,
+					Detail: "the check changed files in its throwaway copy of the project; none of that was kept"})
+			}
+			p.stage.close()
+			p.stage = nil
+		}
+		return ticks, nil, degraded
 	}
 	if p.stage == nil {
 		return p.blocks, nil, degraded
@@ -355,7 +388,13 @@ func (s *Server) builtinTools(proposals *proposalSink, mode string) []mcp.Builti
 		},
 	})
 
-	if !isPlanMode(mode) {
+	if isCheckMode(mode) {
+		tools = append(tools, s.recordCriterionTool(proposals))
+	}
+
+	// propose_edit in every mode that edits: not plan, not check. In spec mode
+	// it is limited to specs/ by the handler (proposalSink.specOnly).
+	if !isPlanMode(mode) && !isCheckMode(mode) {
 		tools = append(tools, mcp.Builtin{
 			Tool: mcp.Tool{
 				Name: "propose_edit",
@@ -434,10 +473,15 @@ func (s *Server) builtinTools(proposals *proposalSink, mode string) []mcp.Builti
 	// of it reads as complete to every later reviewer. planModeDenies exists so
 	// there is exactly one place where the set of withheld capabilities is
 	// written down.
-	if isPlanMode(mode) {
+	if isPlanMode(mode) || isSpecMode(mode) || isCheckMode(mode) {
 		kept := tools[:0]
 		for _, b := range tools {
-			if planModeDenies(b.Tool) {
+			if modeWithholds(mode, b.Tool) {
+				continue
+			}
+			// A spec is written with propose_edit alone; a symbol-level edit
+			// has no business in a Markdown file.
+			if isSpecMode(mode) && b.Tool.Name == "propose_ast_edit" {
 				continue
 			}
 			kept = append(kept, b)
@@ -765,6 +809,15 @@ func (s *Server) builtinProposeEdit(_ context.Context, raw json.RawMessage, prop
 	}
 	if strings.TrimSpace(args.Path) == "" {
 		return toolError("no path was supplied")
+	}
+
+	// /spec writes a spec and nothing else. The only control that matters is
+	// this one: the handler is the only way propose_edit writes.
+	if proposals != nil && proposals.specOnly {
+		if _, ok := specRelPath(args.Path); !ok {
+			return toolError("in /spec mode the only file you can write is the spec itself, a .md file "+
+				"under %s/; %s is not one", specsDir, args.Path)
+		}
 	}
 
 	block := editapply.EditBlock{FilePath: args.Path, Search: args.Search, Replace: args.Replace}

@@ -80,6 +80,9 @@ type editProposalsMsg struct{ blocks []protocol.EditBlockWire }
 // how that went, and any changes it is not offering. Rides the Done message.
 type workingCopyMsg struct{ info *protocol.WorkingCopyInfo }
 
+// specReportMsg carries a /spec check's verdicts (protocol.SpecReport).
+type specReportMsg struct{ report *protocol.SpecReport }
+
 // incompleteMsg carries the daemon's report that the model's answer was cut
 // off rather than finishing on its own (see protocol.TokenResponse.Incomplete).
 // It rides on the final Done message, so it is emitted immediately before
@@ -205,9 +208,9 @@ func resetHistoryOnDaemon(ctx context.Context, clientName string, ch chan tea.Ms
 // set from an explicit command and never inferred from what the question looks
 // like; see protocol.PromptRequest.Pipeline for why that is a measured decision
 // rather than caution.
-func startStream(ctx context.Context, clientName, workspace, prompt, promptKind, mode, preferredTier string, pipeline []string, history []protocol.Turn, ch chan tea.Msg) tea.Cmd {
+func startStream(ctx context.Context, clientName, workspace, prompt, promptKind, mode, preferredTier, spec string, pipeline []string, history []protocol.Turn, ch chan tea.Msg) tea.Cmd {
 	return func() tea.Msg {
-		go streamPrompt(ctx, clientName, workspace, prompt, promptKind, mode, preferredTier, pipeline, history, ch)
+		go streamPromptWith(ctx, clientName, workspace, prompt, promptKind, mode, preferredTier, spec, pipeline, history, ch)
 		return <-ch
 	}
 }
@@ -298,6 +301,11 @@ func deliver(ctx context.Context, ch chan tea.Msg, msg tea.Msg) bool {
 // quietly (no streamErrMsg): the user chose to quit, that's not a failure,
 // and it leaves nothing behind reading a dead socket.
 func streamPrompt(ctx context.Context, clientName, workspace, prompt, promptKind, mode, preferredTier string, pipeline []string, history []protocol.Turn, ch chan tea.Msg) {
+	streamPromptWith(ctx, clientName, workspace, prompt, promptKind, mode, preferredTier, "", pipeline, history, ch)
+}
+
+// streamPromptWith is streamPrompt with the active spec (PromptRequest.Spec).
+func streamPromptWith(ctx context.Context, clientName, workspace, prompt, promptKind, mode, preferredTier, spec string, pipeline []string, history []protocol.Turn, ch chan tea.Msg) {
 	sess, err := connectToDaemon(clientName, protocol.CapToolApproval)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -330,6 +338,7 @@ func streamPrompt(ctx context.Context, clientName, workspace, prompt, promptKind
 		Mode:            mode,
 		Tier:            preferredTier,
 		Pipeline:        pipeline,
+		Spec:            spec,
 	}); err != nil {
 		if ctx.Err() != nil {
 			return
@@ -394,6 +403,9 @@ func streamPrompt(ctx context.Context, clientName, workspace, prompt, promptKind
 			// What the agent checked in its working copy, above the review of
 			// what it changed there.
 			if tok.WorkingCopy != nil && !deliver(ctx, ch, workingCopyMsg{tok.WorkingCopy}) {
+				return
+			}
+			if tok.SpecReport != nil && !deliver(ctx, ch, specReportMsg{tok.SpecReport}) {
 				return
 			}
 			// Before streamDoneMsg, which is what starts the review: the

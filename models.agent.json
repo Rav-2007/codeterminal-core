@@ -83,7 +83,8 @@
         "propose_ast_edit": "ask",
         "sandbox_exec": "ask",
         "web_search": "allow",
-        "web_fetch": "allow"
+        "web_fetch": "allow",
+        "record_criterion": "allow"
       }
     },
     "budget": {

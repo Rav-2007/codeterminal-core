@@ -521,10 +521,11 @@ func lineHunks(a, b []string) []lineHunk {
 }
 
 // workingCopySource is the project a turn in this mode copies, or "" for a
-// turn with no working copy: plan mode, which edits and runs nothing, and a
-// config that switched it off.
+// turn with no working copy: plan and spec modes, which run nothing (spec mode
+// writes one new Markdown file, reviewed as a proposal), and a config that
+// switched it off.
 func (s *Server) workingCopySource(mode string) string {
-	if isPlanMode(mode) || s.cfg == nil || s.cfg.MCP.NoWorkingCopy {
+	if isPlanMode(mode) || isSpecMode(mode) || s.cfg == nil || s.cfg.MCP.NoWorkingCopy {
 		return ""
 	}
 	root, err := s.realWorkspaceRoot()
@@ -539,9 +540,19 @@ func (s *Server) workingCopySource(mode string) string {
 // agent can read back and test, and the user reviews the net diff at the end.
 // Shared by runAgentTurn and the task-success eval, so the eval measures the
 // turn the product runs.
-func (s *Server) newTurnSink(mode string, messages []chatMessage) (*proposalSink, []chatMessage) {
-	sink := &proposalSink{stageFrom: s.workingCopySource(mode)}
-	if sink.stageFrom != "" {
+//
+// spec is the turn's active spec, or nil. A /spec turn may write only under
+// specs/; a /spec check turn grades against spec and keeps nothing it changed.
+func (s *Server) newTurnSink(mode string, spec *activeSpec, messages []chatMessage) (*proposalSink, []chatMessage) {
+	sink := &proposalSink{
+		stageFrom: s.workingCopySource(mode),
+		spec:      spec,
+		specOnly:  isSpecMode(mode),
+		checking:  isCheckMode(mode),
+	}
+	// Not in a check: it edits nothing, and its own directive already says its
+	// commands run in a throwaway copy.
+	if sink.stageFrom != "" && !sink.checking {
 		messages = withSystemNote(messages, workingCopyDirective)
 	}
 	return sink, messages

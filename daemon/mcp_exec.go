@@ -373,12 +373,15 @@ func (s *Server) builtinSandboxExec(ctx context.Context, raw json.RawMessage) (m
 // code the agent just wrote -- and in the project otherwise. The copy's path
 // is rewritten to the project's in the output.
 func (s *Server) builtinSandboxExecStaged(ctx context.Context, raw json.RawMessage, proposals *proposalSink) (mcp.Result, error) {
+	root := s.workspace
 	st, _ := proposals.workingCopy()
-	if st == nil {
-		return s.builtinSandboxExec(ctx, raw)
+	if st != nil {
+		root = st.root
 	}
-	res, err := s.builtinSandboxExecIn(ctx, raw, st.root)
-	res.Content = st.toReal(res.Content)
+	res, err := s.builtinSandboxExecIn(ctx, raw, root)
+	if st != nil {
+		res.Content = st.toReal(res.Content)
+	}
 	var args struct {
 		Command string `json:"command"`
 	}

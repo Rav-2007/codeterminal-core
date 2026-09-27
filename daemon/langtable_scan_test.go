@@ -98,6 +98,9 @@ var fileKindSites = map[string]struct {
 	// .desktop, refusing app launchers as a write target outside the project
 	// (outsideWriteRefusal). A safety refusal, not a language decision.
 	"editapply/outside.go": {nonSourceFormat, 1},
+	// A spec is a Markdown file under specs/: a document format, not source.
+	"daemon/spec.go": {nonSourceFormat, 1},
+	"tui/spec.go":    {nonSourceFormat, 3},
 }
 
 // scanRoots are the module directories whose production code could route on a

@@ -85,6 +85,9 @@ var protectedTagFamilies = []string{
 	// Output from a third-party MCP server (see toolresult.go). Written by
 	// whoever wrote the server, which the user configured but did not audit.
 	"laneboutput",
+	// The active spec (spec.go). The user accepted it, but it is a file in the
+	// project that anything with write access can change.
+	"activespec",
 }
 
 var protectedTagPatterns = compileProtectedTagPatterns()
@@ -141,6 +144,8 @@ var envelopeTagsInUse = []string{
 	webContentCloseTag,
 	laneBOutputOpenTagPrefix + `some-server">`,
 	laneBOutputCloseTag,
+	activeSpecOpenTagPrefix + `specs/x.md">`,
+	activeSpecCloseTag,
 }
 
 // neutralizeDelimiters defuses any tag-like text inside untrusted retrieved

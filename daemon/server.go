@@ -526,6 +526,32 @@ func (s *Server) serveConn(conn net.Conn) {
 	}
 	promptReq.Mode = normalizedMode
 
+	// THE ACTIVE SPEC (spec.go), read once for the whole turn. A spec the
+	// request names but that cannot be read refuses the turn rather than
+	// running unanchored: the user believes the work is being held to it.
+	var spec *activeSpec
+	if promptReq.Spec != "" || isCheckMode(promptReq.Mode) {
+		var specErr error
+		switch realRoot, err := s.realWorkspaceRoot(); {
+		case err != nil:
+			specErr = err
+		case promptReq.Spec == "":
+			specErr = errors.New("there is no active spec to check against; choose one with /spec use <file>")
+		default:
+			spec, specErr = loadSpec(realRoot, promptReq.Spec)
+		}
+		if specErr != nil {
+			s.logger.Printf("rejecting prompt: spec: %v", specErr)
+			_ = enc.Encode(protocol.TokenResponse{
+				ProtocolVersion: protocol.ProtocolVersion,
+				Done:            true,
+				Error:           "spec: " + specErr.Error(),
+				ErrorClass:      string(ClassInvalidRequest),
+			})
+			return
+		}
+	}
+
 	if promptReq.Reset {
 		s.count(func(c *counters) { c.resets.Add(1) })
 		s.resetPersistedHistory()
@@ -663,7 +689,25 @@ func (s *Server) serveConn(conn net.Conn) {
 	// loop must append to one across iterations rather than have it rebuilt from
 	// (systemPrompt, history, prompt) on every call. This single-turn path
 	// builds exactly the list it always did.
-	messages := buildChatMessages(planModeSystemPrompt(s.systemPrompt, promptReq.Mode), historyOutcome.Messages, augmentedPrompt)
+	systemPrompt := planModeSystemPrompt(s.systemPrompt, promptReq.Mode)
+	if spec != nil {
+		systemPrompt += "\n\n" + specAnchor(spec)
+	}
+	messages := buildChatMessages(systemPrompt, historyOutcome.Messages, augmentedPrompt)
+
+	// Writing and checking specs are agent work: /spec needs propose_edit held
+	// to specs/, and /spec check needs record_criterion. Without agent mode
+	// neither exists, and a plain answer would look like one that worked.
+	if (isSpecMode(promptReq.Mode) || isCheckMode(promptReq.Mode)) && !s.agentModeEngaged(hsReq) {
+		_ = enc.Encode(protocol.TokenResponse{
+			ProtocolVersion: protocol.ProtocolVersion,
+			Done:            true,
+			Error: "writing and checking specs needs agent mode (tools); start the daemon with " +
+				"models.agent.json, as ./run-tui.sh does",
+			ErrorClass: string(ClassInvalidRequest),
+		})
+		return
+	}
 
 	// AGENT MODE FORK. Three conditions, all required (see agentModeEngaged):
 	// the config enables it, and this client declared it can answer a mid-turn
@@ -675,7 +719,7 @@ func (s *Server) serveConn(conn net.Conn) {
 		// from the client AFTER its request: an approval answer comes back on
 		// this same connection, needs this same decoder, and needs lc to widen
 		// the idle deadline to human scale for the duration of the ask.
-		s.runAgentTurn(ctx, enc, dec, lc, promptReq, decision.Slug, messages, routing, &full)
+		s.runAgentTurn(ctx, enc, dec, lc, promptReq, decision.Slug, messages, routing, &full, spec)
 		return
 	}
 

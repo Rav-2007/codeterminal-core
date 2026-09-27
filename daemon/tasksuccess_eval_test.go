@@ -243,11 +243,21 @@ func ownTestsChanged(dir, pkg, original string) error {
 	return fmt.Errorf("no test was added or changed in %s/; the task asked for one", pkg)
 }
 
-// noGoFileContains fails if any .go file still contains s.
+// noGoFileContains fails if any .go file of the project still contains s.
+//
+// NOT .mochiii/: applying an edit backs the original up there, so the old name
+// is always in a backup -- a grader that counted it failed a correct rename
+// (it did, in the first baseline run).
 func noGoFileContains(dir, s string) error {
 	var found []string
 	_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".go") {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() && editapply.IsProtectedDirName(d.Name()) {
+			return fs.SkipDir
+		}
+		if d.IsDir() || !strings.HasSuffix(path, ".go") {
 			return nil
 		}
 		if data, _ := os.ReadFile(path); strings.Contains(string(data), s) {
@@ -281,9 +291,25 @@ func TestTaskFixturesAreValid(t *testing.T) {
 				t.Fatal("the untouched project already passes; this task measures nothing")
 			}
 			t.Logf("untouched fails as it should: %s", why)
+			// The solution goes in THROUGH THE EDIT PATH the eval uses, backups
+			// and all -- the first grader failed a correct rename because it
+			// read the backup of the original, which copying files never makes.
 			dir = freshTaskWorkspace(t, spec.name)
-			if err := copyTree(filepath.Join(taskFixtureRoot, spec.name, "solution"), dir); err != nil {
-				t.Fatal(err)
+			solution := filepath.Join(taskFixtureRoot, spec.name, "solution")
+			var blocks []editapply.EditBlock
+			_ = filepath.WalkDir(solution, func(path string, d fs.DirEntry, err error) error {
+				if err != nil || d.IsDir() {
+					return err
+				}
+				rel, _ := filepath.Rel(solution, path)
+				after, _ := os.ReadFile(path)
+				before, _ := os.ReadFile(filepath.Join(dir, rel))
+				blocks = append(blocks, editapply.EditBlock{FilePath: filepath.ToSlash(rel),
+					Search: string(before), Replace: string(after)})
+				return nil
+			})
+			if refused := applyProposals(dir, blocks); refused != 0 {
+				t.Fatalf("%d of the solution's edits were refused", refused)
 			}
 			if why := gradeTask(spec, dir); why != "" {
 				t.Fatalf("the reference solution fails: %s", why)
@@ -425,7 +451,7 @@ func TestTaskSuccess(t *testing.T) {
 			// working copy is measured exactly as it ships. TASK_EVAL_NO_WORKING_COPY
 			// runs the pre-working-copy behaviour for comparison.
 			srv.cfg.MCP.NoWorkingCopy = os.Getenv("TASK_EVAL_NO_WORKING_COPY") != ""
-			sink, messages := srv.newTurnSink("auto",
+			sink, messages := srv.newTurnSink("auto", nil,
 				buildChatMessages(defaultSystemPrompt, nil, strings.TrimSpace(string(prompt))))
 			registry, _ := srv.buildRegistry(context.Background(), logger, sink, "")
 			appr := &approveAll{}

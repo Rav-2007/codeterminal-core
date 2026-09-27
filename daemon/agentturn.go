@@ -29,6 +29,7 @@ func (s *Server) runAgentTurn(
 	messages []chatMessage,
 	routing providerRouting,
 	full *strings.Builder,
+	spec *activeSpec,
 ) {
 	s.count(func(c *counters) { c.agentTurns.Add(1) })
 
@@ -84,7 +85,7 @@ func (s *Server) runAgentTurn(
 
 	// One sink per turn: propose_edit files its validated edits here, and they
 	// join whatever the assistant text itself produced on the Done message.
-	proposals, messages := s.newTurnSink(promptReq.Mode, messages)
+	proposals, messages := s.newTurnSink(promptReq.Mode, spec, messages)
 	// Removed on every path out; finish below has already removed it on the
 	// one path that offers its edits.
 	defer proposals.discard()
@@ -272,6 +273,12 @@ func (s *Server) runAgentTurn(
 	if isPlanMode(promptReq.Mode) {
 		blocks, rejections = planModeWithholdEdits(blocks, rejections)
 	}
+	// The spec modes withhold text edits the same way: /spec writes only its
+	// spec, and /spec check writes nothing but the spec's ticks (already in
+	// filed, from finish).
+	if isSpecMode(promptReq.Mode) || isCheckMode(promptReq.Mode) {
+		blocks, rejections = specModeWithholdEdits(promptReq.Mode, filed, textBlocks, rejections)
+	}
 	// A failed terminal write means the client has gone; the turn's real work
 	// (the edit proposals, the persisted history below) is unaffected.
 	_ = enc.Encode(protocol.TokenResponse{
@@ -281,6 +288,7 @@ func (s *Server) runAgentTurn(
 		EditRejections:  rejections,
 		Incomplete:      result.Incomplete,
 		WorkingCopy:     workingCopy,
+		SpecReport:      proposals.report,
 		Degraded:        copyDegraded,
 	})
 	s.logger.Printf("agent: turn complete after %d tool call(s)", len(result.ToolNames))

@@ -1026,13 +1026,13 @@ func (s *Server) resolveExecutable(
 	// and was read in exactly one place, to stamp the audit record: the daemon
 	// recorded which mode a tool ran under without ever letting the mode decide
 	// whether it could.
-	if isPlanMode(turn.mode) && (planModeDenies(spec) || spec.Lane != protocol.LaneFirstParty) {
+	if modeWithholds(turn.mode, spec) || (modeWithholdsLaneB(turn.mode) && spec.Lane != protocol.LaneFirstParty) {
 		return toolDecision{
 			tool:   spec,
 			policy: mcp.PolicyDeny,
 			source: auditDeniedConfig,
 			cause:  denyByNoChannel,
-			reason: fmt.Sprintf("%q is not available in plan mode", qualified),
+			reason: fmt.Sprintf("%q is not available in %s mode", qualified, turn.mode),
 		}
 	}
 

@@ -47,10 +47,10 @@ const (
 func normalizeMode(raw string) (string, error) {
 	m := strings.ToLower(strings.TrimSpace(raw))
 	switch m {
-	case "", modeAuto, modeManual, modePlan:
+	case "", modeAuto, modeManual, modePlan, modeSpec, modeCheck:
 		return m, nil
 	default:
-		return "", fmt.Errorf("unknown mode %q (want one of: auto, manual, plan)", raw)
+		return "", fmt.Errorf("unknown mode %q (want one of: auto, manual, plan, spec, check)", raw)
 	}
 }
 
@@ -189,11 +189,19 @@ const planModeDirective = "The user has requested an implementation plan. DO NOT
 //
 // Returns base unchanged for every other mode, so no non-plan turn changes.
 func planModeSystemPrompt(base, mode string) string {
-	if !isPlanMode(mode) {
+	directive := ""
+	switch {
+	case isPlanMode(mode):
+		directive = planModeDirective
+	case isSpecMode(mode):
+		directive = specModeDirective
+	case isCheckMode(mode):
+		directive = checkModeDirective
+	default:
 		return base
 	}
 	if strings.TrimSpace(base) == "" {
-		return planModeDirective
+		return directive
 	}
-	return base + "\n\n" + planModeDirective
+	return base + "\n\n" + directive
 }

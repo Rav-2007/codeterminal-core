@@ -256,6 +256,15 @@ var tuiOnlyCommands = map[string]string{
 		"webview: the editor owns selection there and there is nothing to trade",
 }
 
+// notYetPorted are commands the VS Code client WILL have and does not yet --
+// unlike tuiOnlyCommands, which it must never have. Each entry names where the
+// port is scheduled, so the list reads as a debt with a due date rather than
+// a design decision.
+var notYetPorted = map[string]string{
+	"spec": "the spec workflow ships in the terminal first; the extension port is " +
+		"milestone M5 of the agent-workflow plan",
+}
+
 func TestSlashCatalogsAgreeAcrossClients(t *testing.T) {
 	ts := parseVSCodeCatalog(t)
 
@@ -265,9 +274,14 @@ func TestSlashCatalogsAgreeAcrossClients(t *testing.T) {
 		t.Fatalf("parsed only %d entries from %s; the parser is not reading the "+
 			"catalog and every comparison below is vacuous", len(ts), vscodeSlashCommands)
 	}
-	if len(ts) != len(slashCatalog)-len(tuiOnlyCommands) {
-		t.Errorf("catalog size differs: Go has %d (%d of them TUI-only), VS Code has %d",
-			len(slashCatalog), len(tuiOnlyCommands), len(ts))
+	if len(ts) != len(slashCatalog)-len(tuiOnlyCommands)-len(notYetPorted) {
+		t.Errorf("catalog size differs: Go has %d (%d of them TUI-only, %d not yet ported), VS Code has %d",
+			len(slashCatalog), len(tuiOnlyCommands), len(notYetPorted), len(ts))
+	}
+	for name := range notYetPorted {
+		if _, present := ts[name]; present {
+			t.Errorf("/%s is listed as not yet ported but the VS Code client now has it; remove the entry", name)
+		}
 	}
 
 	// A command listed as TUI-only must actually be absent over there. Without
@@ -286,6 +300,10 @@ func TestSlashCatalogsAgreeAcrossClients(t *testing.T) {
 		if !ok {
 			if why, allowed := tuiOnlyCommands[g.Name]; allowed {
 				t.Logf("/%s is TUI-only on purpose: %s", g.Name, why)
+				continue
+			}
+			if why, pending := notYetPorted[g.Name]; pending {
+				t.Logf("/%s is not in the VS Code client YET: %s", g.Name, why)
 				continue
 			}
 			t.Errorf("/%s exists in the TUI but not in the VS Code client", g.Name)
