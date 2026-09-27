@@ -10,6 +10,7 @@ import { probeDaemon, resolvedWorkspaceRoot, setWorkspaceRoot } from './daemonCl
 import { ensureModelAvailable } from './modelSetup';
 import { clearApiKey, ensureApiKey, getApiKey, promptForApiKey } from './apiKey';
 import { DaemonHandle, DaemonSupervisor } from './daemonSupervisor';
+import { useSpecStore } from './specWorkflow';
 
 let supervisor: DaemonSupervisor | undefined;
 let output: vscode.OutputChannel | undefined;
@@ -29,6 +30,8 @@ let output: vscode.OutputChannel | undefined;
 let cachedApiKey: string | undefined;
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
+  // The active spec (/spec use) is remembered per workspace.
+  useSpecStore(context.workspaceState);
   DiffContentProvider.register(context);
 
   // The bundled location, defined once in daemonBinary.ts so the spawn path and
@@ -392,6 +395,14 @@ export function daemonEnvironment(apiKey?: string): NodeJS.ProcessEnv {
   const configured = vscode.workspace.getConfiguration('mochiii').get<string>('apiBase');
   if (typeof configured === 'string' && configured.trim() !== '') {
     env.MOCHIII_API_BASE = configured.trim();
+  }
+  // THE MODEL, when one is named: a local server (Ollama, LM Studio) knows its
+  // models by its own names, none of which are in models.json. Same delivery
+  // path as the base, for the same reason -- a setting that never reached the
+  // daemon would look configured and change nothing.
+  const model = vscode.workspace.getConfiguration('mochiii').get<string>('model');
+  if (typeof model === 'string' && model.trim() !== '') {
+    env.MOCHIII_MODEL = model.trim();
   }
   // THE KEY, for exactly the reason stated above about the base: the daemon
   // reads MOCHIII_API_KEY from its environment (daemon/main.go:100) and

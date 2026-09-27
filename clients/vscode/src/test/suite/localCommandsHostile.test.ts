@@ -290,9 +290,15 @@ suite('local commands against a hostile workspace', () => {
     // A new one cannot be waved through by adding the flag: this assertion
     // fails until someone edits it, which is the point at which they have to
     // justify that the command takes no path-shaped input.
+    // /spec DOES take a path-shaped argument (/spec use <file>), and the
+    // reason it is safe is specific: specWorkflow.resolveSpecArg confines it to
+    // specs/*.md under the workspace, refuses "..", and only STATS the file --
+    // nothing is read, run or passed to a program. The rest of /spec starts a
+    // turn, and the daemon re-checks the spec path itself (daemon/spec.go
+    // loadSpec). specWorkflow.test.ts covers the confinement.
     assert.deepStrictEqual(
       locals.filter((d) => d.panelDispatched).map((d) => d.name),
-      ['model'],
+      ['model', 'spec'],
       'a local command is dispatched outside runLocalCommand, so it is NOT covered by this ' +
         'guard. Either route it through runLocalCommand, or add it here and state why it ' +
         'takes no path-shaped input',

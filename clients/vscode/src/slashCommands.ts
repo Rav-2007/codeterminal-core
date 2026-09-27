@@ -56,6 +56,14 @@ export const SLASH_CATALOG: SlashDef[] = [
   { name: 'init', kind: 'local', summary: 'quick start checklist for this workspace' },
   { name: 'search', kind: 'local', summary: 'search past conversation turns (/search <query>)', needsArgs: true },
   {
+    name: 'spec',
+    kind: 'local',
+    summary: 'write a spec (/spec <goal>), then /spec build|check|use|off|show',
+    // onPrompt intercepts it (specWorkflow.ts): some subcommands are local,
+    // the rest start a turn in their own mode.
+    panelDispatched: true,
+  },
+  {
     name: 'connect',
     kind: 'local',
     summary: 'set the provider API key (/connect show, /connect forget)',

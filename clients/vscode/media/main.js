@@ -20,6 +20,7 @@
   const slashMenuEl = document.getElementById('slashMenu');
   const modelChipEl = document.getElementById('modelChip');
   const modelChipLabelEl = document.getElementById('modelChipLabel');
+  const specChipEl = document.getElementById('specChip');
   const newChatBtn = document.getElementById('newChatBtn');
   const historyBtn = document.getElementById('historyBtn');
   const settingsBtn = document.getElementById('settingsBtn');
@@ -1057,6 +1058,49 @@
     transcriptEl.scrollTop = transcriptEl.scrollHeight;
   }
 
+  // The spec workflow's reports -- whether the change was built or tested, a
+  // check's verdicts, an accepted spec. PLAIN TEXT through textContent only:
+  // the text carries the model's words and file names, and none of it is
+  // markup.
+  function showSpecNotice(kind, text) {
+    if (!text) {
+      return;
+    }
+    const el = document.createElement('div');
+    el.className = 'spec-notice spec-notice-' + String(kind || '').replace(/[^a-z-]/g, '');
+    el.setAttribute('role', 'status');
+    el.textContent = text;
+    transcriptEl.appendChild(el);
+    transcriptEl.scrollTop = transcriptEl.scrollHeight;
+  }
+
+  // A build's task list, updated IN PLACE while the turn runs, so the user
+  // sees what it is doing and what is left; the last version stays in the
+  // transcript when the turn ends.
+  /** @type {HTMLDivElement | null} */
+  let currentTasksEl = null;
+  function showTasks(text) {
+    if (!currentTasksEl) {
+      currentTasksEl = document.createElement('div');
+      currentTasksEl.className = 'spec-notice spec-notice-tasks';
+      currentTasksEl.setAttribute('role', 'status');
+      currentTasksEl.setAttribute('aria-live', 'polite');
+      transcriptEl.appendChild(currentTasksEl);
+    }
+    currentTasksEl.textContent = String(text || '');
+    transcriptEl.scrollTop = transcriptEl.scrollHeight;
+  }
+
+  // setActiveSpec shows the spec every prompt now works to, or hides the chip.
+  function setActiveSpec(spec) {
+    if (!specChipEl) {
+      return;
+    }
+    const name = String(spec || '').split('/').pop().replace(/\.md$/i, '');
+    specChipEl.hidden = !name;
+    specChipEl.textContent = name ? 'spec: ' + name : '';
+  }
+
   // clearEditProposal removes a still-pending (not yet applied/skipped)
   // proposal panel when a new prompt is sent -- a lagging Apply click must
   // never be able to target a stale block from a previous turn.
@@ -1719,6 +1763,7 @@
         transcriptEl.scrollTop = transcriptEl.scrollHeight;
         break;
       case 'done':
+        currentTasksEl = null;
         finalizeAssistant();
         // Nothing should still be pending -- the daemon does not send done
         // while it is waiting for an answer -- but a panel left on screen with
@@ -1729,6 +1774,7 @@
         inputEl.focus();
         break;
       case 'error':
+        currentTasksEl = null;
         if (currentAssistantBubble && currentAssistantRaw === '') {
           const card = currentAssistantBubble.parentElement;
           const msgEl = card && card.parentElement;
@@ -1768,6 +1814,15 @@
         break;
       case 'editRejections':
         showEditRejections(msg.rejections);
+        break;
+      case 'specNotice':
+        showSpecNotice(msg.kind, msg.text);
+        break;
+      case 'tasks':
+        showTasks(msg.text);
+        break;
+      case 'activeSpec':
+        setActiveSpec(msg.spec);
         break;
       case 'editSummary':
         showEditSummary(msg);

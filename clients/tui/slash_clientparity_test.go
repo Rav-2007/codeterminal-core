@@ -260,10 +260,7 @@ var tuiOnlyCommands = map[string]string{
 // unlike tuiOnlyCommands, which it must never have. Each entry names where the
 // port is scheduled, so the list reads as a debt with a due date rather than
 // a design decision.
-var notYetPorted = map[string]string{
-	"spec": "the spec workflow ships in the terminal first; the extension port is " +
-		"milestone M5 of the agent-workflow plan",
-}
+var notYetPorted = map[string]string{}
 
 func TestSlashCatalogsAgreeAcrossClients(t *testing.T) {
 	ts := parseVSCodeCatalog(t)

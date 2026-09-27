@@ -33,6 +33,12 @@
           "default": "",
           "scope": "machine",
           "markdownDescription": "Model API base URL the daemon talks to, e.g. `https://openrouter.ai/api/v1`. Leave empty to use the daemon's default. Overrides `MOCHIII_API_BASE` in the environment.\n\nThis setting is **machine-scoped on purpose**: a workspace `.vscode/settings.json` must not be able to redirect your prompts to a host the repository chooses."
+        },
+        "mochiii.model": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "markdownDescription": "The one model to use, named the way the server at `mochiii.apiBase` names it -- for a local server such as Ollama or LM Studio, e.g. `qwen2.5-coder:7b`. It replaces every model in `models.json`. Leave empty to use `models.json`. Sets `MOCHIII_MODEL` for the daemon.\n\n**Machine-scoped** for the same reason as `mochiii.apiBase`: a repository must not choose which model your prompts go to."
         }
       }
     },

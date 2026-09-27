@@ -1,4 +1,5 @@
 import * as assert from 'assert';
+import * as vscode from 'vscode';
 
 import {
   API_KEY_SECRET,
@@ -184,5 +185,33 @@ suite('api key — the credential reaches the daemon', () => {
       const d = await apiKeyPromptDecision(fakeContext(), { MOCHIII_API_KEY: '   ' });
       assert.strictEqual(d, 'ask');
     });
+  });
+});
+
+// The same delivery property, for the model a local server knows: a
+// mochiii.model setting that never reached the daemon would look configured
+// and change nothing.
+suite('local model — the setting reaches the daemon', () => {
+  const config = () => vscode.workspace.getConfiguration('mochiii');
+  teardown(async () => {
+    await config().update('model', undefined, vscode.ConfigurationTarget.Global);
+  });
+
+  test('daemonEnvironmentCarriesTheModel', async () => {
+    await config().update('model', '  qwen2.5-coder:7b ', vscode.ConfigurationTarget.Global);
+    assert.strictEqual(daemonEnvironment('k').MOCHIII_MODEL, 'qwen2.5-coder:7b');
+  });
+
+  test('anEmptyModelSettingSendsNothing', async () => {
+    await config().update('model', '', vscode.ConfigurationTarget.Global);
+    const saved = process.env.MOCHIII_MODEL;
+    delete process.env.MOCHIII_MODEL;
+    try {
+      assert.strictEqual(daemonEnvironment('k').MOCHIII_MODEL, undefined);
+    } finally {
+      if (saved !== undefined) {
+        process.env.MOCHIII_MODEL = saved;
+      }
+    }
   });
 });

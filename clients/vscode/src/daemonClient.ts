@@ -116,6 +116,46 @@ export interface PromptRequest {
    * express it -- so an entire subsystem was reachable from one of two clients.
    */
   pipeline?: string[];
+  /**
+   * spec names the ACTIVE SPEC (protocol.PromptRequest.Spec): a Markdown file
+   * under the project's specs/ folder that every turn is anchored to. Required
+   * by modes "check" and "build".
+   */
+  spec?: string;
+}
+
+// WorkingCopyInfo mirrors protocol.WorkingCopyInfo: what the agent last ran
+// against its changes in the turn's private working copy, and changes it is
+// not offering (build output, files the user changed meanwhile).
+export interface WorkingCopyInfo {
+  checked?: string;
+  passed?: boolean;
+  output?: string;
+  not_offered?: string[];
+}
+
+// SpecCriterionResult / SpecReport mirror protocol's: a /spec check's (or
+// /spec build's) verdict on each success criterion. status is met, unmet or
+// unknown; the daemon records "met" only with evidence it could verify.
+export interface SpecCriterionResult {
+  id: string;
+  text: string;
+  status: string;
+  evidence?: string;
+  note?: string;
+}
+
+export interface SpecReport {
+  spec: string;
+  criteria: SpecCriterionResult[];
+}
+
+// TaskItem mirrors protocol.TaskItem: one step of a /spec build's plan. The
+// daemon sends the WHOLE list each time it changes.
+export interface TaskItem {
+  id: string;
+  title: string;
+  status: string;
 }
 
 export interface StatusTier {
@@ -189,6 +229,11 @@ export interface TokenResponse {
   // with no way to find out why. line is 1-indexed into the model's response
   // text, not into any file.
   edit_rejections?: EditRejectionWire[];
+  // working_copy, spec_report ride the final (done) message; tasks arrives on
+  // its own message whenever a /spec build updates its plan.
+  working_copy?: WorkingCopyInfo;
+  spec_report?: SpecReport;
+  tasks?: TaskItem[];
   // redactions mirrors protocol.TokenResponse.Redactions: the kinds of
   // secret-shaped text the daemon's heuristic scrubber (daemon/scrub.go)
   // redacted from the prompt before sending it to the model, e.g.
@@ -775,6 +820,12 @@ export interface StreamHandlers {
   // owed an explanation and previously got silence.
   onEditRejections?: (rejections: EditRejectionWire[]) => void;
   onIncomplete?: (info: IncompleteInfo) => void;
+  // The spec workflow: the working copy's report and a check's verdicts ride
+  // the done message (before the review starts); a build's task list arrives
+  // whenever it changes. Observational only.
+  onWorkingCopy?: (info: WorkingCopyInfo) => void;
+  onSpecReport?: (report: SpecReport) => void;
+  onTasks?: (tasks: TaskItem[]) => void;
   // onToolActivity narrates one step of an agent turn. Observational only.
   onToolActivity?: (activity: ToolActivity) => void;
   // onToolApproval is the one handler that OWES AN ANSWER. The daemon has
@@ -807,7 +858,7 @@ export async function streamPrompt(
   history: Turn[],
   signal: AbortSignal,
   handlers: StreamHandlers,
-  opts?: { promptKind?: string; tier?: string; mode?: string; pipeline?: string[] }
+  opts?: { promptKind?: string; tier?: string; mode?: string; pipeline?: string[]; spec?: string }
 ): Promise<void> {
   // The capability is derived from the handler, not passed in: a caller that
   // can render an approval provides one, and a caller that cannot does not, so
@@ -864,6 +915,9 @@ export async function streamPrompt(
     if (tok.tool_activity) {
       handlers.onToolActivity?.(tok.tool_activity);
     }
+    if (tok.tasks) {
+      handlers.onTasks?.(tok.tasks);
+    }
     if (tok.tool_approval) {
       askForApproval(socket, tok.tool_approval, handlers, () => finished);
     }
@@ -884,6 +938,14 @@ export async function streamPrompt(
       // was unreadable" is context for that review, not a footnote to it.
       if (tok.edit_rejections && tok.edit_rejections.length > 0) {
         handlers.onEditRejections?.(tok.edit_rejections);
+      }
+      // Whether the change was ever built or tested, and a check's verdicts:
+      // context for the review that follows, so delivered before it.
+      if (tok.working_copy) {
+        handlers.onWorkingCopy?.(tok.working_copy);
+      }
+      if (tok.spec_report) {
+        handlers.onSpecReport?.(tok.spec_report);
       }
       if (tok.edit_proposals && tok.edit_proposals.length > 0) {
         handlers.onEditProposals?.(tok.edit_proposals);
@@ -934,6 +996,9 @@ export async function streamPrompt(
   }
   if (opts?.mode) {
     req.mode = opts.mode;
+  }
+  if (opts?.spec) {
+    req.spec = opts.spec;
   }
   writeLine(socket, req);
 }

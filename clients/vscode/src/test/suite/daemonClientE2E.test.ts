@@ -33,7 +33,7 @@ const PV = 1;
 function streamToCompletion(
   prompt: string,
   handlers: StreamHandlers,
-  opts?: { promptKind?: string; tier?: string; mode?: string; pipeline?: string[] }
+  opts?: { promptKind?: string; tier?: string; mode?: string; pipeline?: string[]; spec?: string }
 ): Promise<void> {
   const ctrl = new AbortController();
   return new Promise<void>((resolve) => {
@@ -552,5 +552,46 @@ suite('E2E daemonClient — edit rejections and gate notes', () => {
       assert.strictEqual(res.syntax_note, undefined);
       assert.strictEqual(res.match_note, undefined);
     });
+  });
+});
+
+suite('E2E daemonClient — the spec workflow on the wire', () => {
+  // The active spec and the mode leave the process; the build's task list, the
+  // working-copy report and a check's verdicts come back to their handlers --
+  // the reports BEFORE the edit review they are context for.
+  test('the spec goes out and the reports come back, in order', async () => {
+    let seen: { spec?: unknown; mode?: unknown } = {};
+    const behavior: Behavior = (req, socket) => {
+      seen = { spec: req.spec, mode: req.mode };
+      writeLine(socket, { protocol_version: PV, tasks: [{ id: '1', title: 'write the test', status: 'active' }] });
+      writeLine(socket, {
+        protocol_version: PV,
+        done: true,
+        working_copy: { checked: 'go test ./...', passed: true },
+        spec_report: { spec: 'specs/v.md', criteria: [{ id: 'C1', text: 'works', status: 'met' }] },
+        edit_proposals: [{ file_path: 'a.go', search: 'a', replace: 'b' }],
+      });
+      socket.end();
+    };
+    const order: string[] = [];
+    await withStub(behavior, async () => {
+      await streamToCompletion(
+        'check',
+        {
+          onTasks: (t) => order.push(`tasks:${t[0].status}`),
+          onWorkingCopy: (w) => order.push(`working_copy:${w.checked}`),
+          onSpecReport: (r) => order.push(`spec_report:${r.criteria[0].status}`),
+          onEditProposals: () => order.push('edit_proposals'),
+        },
+        { spec: 'specs/v.md', mode: 'check' },
+      );
+    });
+    assert.deepStrictEqual(seen, { spec: 'specs/v.md', mode: 'check' });
+    assert.deepStrictEqual(order, [
+      'tasks:active',
+      'working_copy:go test ./...',
+      'spec_report:met',
+      'edit_proposals',
+    ]);
   });
 });

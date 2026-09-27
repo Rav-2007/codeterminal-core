@@ -31,6 +31,17 @@ import {
   undoEdits,
 } from './daemonClient';
 import { parseModelCommand, parseSlash, parseTeamCommand, steeredPrompt } from './slashCommands';
+import {
+  activatedText,
+  appliedSpec,
+  getActiveSpec,
+  parseSpecCommand,
+  setActiveSpec,
+  specAction,
+  specReportText,
+  taskListText,
+  workingCopyText,
+} from './specWorkflow';
 
 export class DiffContentProvider implements vscode.TextDocumentContentProvider {
   static scheme = 'mochiii-diff';
@@ -113,6 +124,12 @@ export class ChatPanel {
   private undoInFlight = false;
   private searchInFlight = false;
 
+  // turnMode is the latest turn's wire mode, and appliedPaths the files its
+  // review applied -- so the spec a /spec turn wrote becomes active once the
+  // user accepts it (specWorkflow.appliedSpec).
+  private turnMode: string | undefined;
+  private appliedPaths: string[] = [];
+
   // currentRunAutoApply is captured ONCE, from the 'prompt' message's
   // autoApply field, at the moment a prompt is sent -- mirroring the
   // webview's own autoApplyEnabled, which is read at that same instant (see
@@ -173,6 +190,7 @@ export class ChatPanel {
       const persisted = turnsFromWire(await preflightHandshake(CLIENT_NAME));
       this.transcript = persisted;
       this.panel.webview.postMessage({ type: 'history', turns: persisted });
+      this.postActiveSpec();
       this.postModelTier();
     } catch (err) {
       this.panel.webview.postMessage({
@@ -249,6 +267,14 @@ export class ChatPanel {
     const team = parseTeamCommand(text);
     if (team.ok) {
       this.startModelTurn(text, team.prompt, undefined, autoApply, mode, team.pipeline);
+      return;
+    }
+
+    // Also before parseSlash: /spec is local for some subcommands and a turn
+    // (in its own mode) for others.
+    const spec = parseSpecCommand(text);
+    if (spec.ok) {
+      void this.handleSpecCommand(spec.args, autoApply);
       return;
     }
 
@@ -362,6 +388,28 @@ export class ChatPanel {
     };
   }
 
+  private async handleSpecCommand(args: string, autoApply: boolean): Promise<void> {
+    const root = workspacePath();
+    const action = specAction(root, getActiveSpec(root), args);
+    if (action.activate !== undefined) {
+      await setActiveSpec(action.activate);
+      this.postActiveSpec();
+    }
+    if (action.turn) {
+      this.startModelTurn(action.turn.shown, action.turn.prompt, undefined, autoApply, action.turn.mode);
+      return;
+    }
+    if (action.reply) {
+      this.replyLocal(action.reply);
+    }
+  }
+
+  // postActiveSpec tells the webview which spec every prompt now carries, for
+  // the header chip.
+  private postActiveSpec(): void {
+    this.panel.webview.postMessage({ type: 'activeSpec', spec: getActiveSpec(workspacePath()) });
+  }
+
   private async handleLocalSlash(name: string, args: string): Promise<void> {
     const reply = await runLocalCommand(this.localHost(), name, args);
     if (reply !== '') {
@@ -395,6 +443,7 @@ export class ChatPanel {
 
     const controller = new AbortController();
     this.inFlight = controller;
+    this.turnMode = mode;
     let answer = '';
     // The reason slug for a cut-off answer, held here so onDone can attach it
     // to the transcript turn. The webview message onIncomplete posts is for the
@@ -455,6 +504,16 @@ export class ChatPanel {
         onToolActivity: (activity: ToolActivity) => {
           this.panel.webview.postMessage({ type: 'toolActivity', activity });
         },
+        // The spec workflow's reports, rendered as plain text by the webview.
+        onWorkingCopy: (info) => {
+          this.panel.webview.postMessage({ type: 'specNotice', kind: 'working-copy', text: workingCopyText(info) });
+        },
+        onSpecReport: (report) => {
+          this.panel.webview.postMessage({ type: 'specNotice', kind: 'spec-report', text: specReportText(report) });
+        },
+        onTasks: (tasks) => {
+          this.panel.webview.postMessage({ type: 'tasks', text: taskListText(tasks) });
+        },
         // Providing this handler is what makes streamPrompt declare
         // CAP_TOOL_APPROVAL, and therefore what turns agent mode on for this
         // client -- see StreamHandlers.onToolApproval. The daemon suspends the
@@ -499,7 +558,13 @@ export class ChatPanel {
           this.panel.webview.postMessage({ type: 'error', message: err.message });
         },
       },
-      { promptKind, tier: this.preferredTier || undefined, mode, pipeline }
+      {
+        promptKind,
+        tier: this.preferredTier || undefined,
+        mode,
+        pipeline,
+        spec: getActiveSpec(workspacePath()) || undefined,
+      }
     );
   }
 
@@ -545,6 +610,7 @@ export class ChatPanel {
     this.skipped = 0;
     this.refused = 0;
     this.refusalReasons = [];
+    this.appliedPaths = [];
   }
 
   // startEditReview begins reviewing every block the daemon parsed out of
@@ -624,6 +690,12 @@ export class ChatPanel {
       refusalReasons: this.refusalReasons,
       backupDir: this.runBackupDir,
     });
+    // A spec the user just accepted becomes the one they are working to.
+    const accepted = appliedSpec(this.turnMode, this.appliedPaths);
+    if (accepted) {
+      void setActiveSpec(accepted).then(() => this.postActiveSpec());
+      this.panel.webview.postMessage({ type: 'specNotice', kind: 'spec-active', text: activatedText(accepted) });
+    }
     this.clearPendingReview();
   }
 
@@ -653,6 +725,7 @@ export class ChatPanel {
           this.runBackupDir = result.backup_dir;
         }
         this.applied++;
+        this.appliedPaths.push(edit.file_path);
       } else {
         this.refused++;
         this.refusalReasons.push(`${edit.file_path}: ${result.error ?? 'refused'}`);
@@ -1634,6 +1707,17 @@ export function chatPanelStyles(): string {
     font-size: 0.92em;
   }
   .edit-rejections-heading { font-weight: 600; margin-bottom: 4px; }
+  /* The spec workflow's reports: plain text, line breaks kept. */
+  .spec-notice {
+    margin: 4px 0 14px 38px;
+    padding: 10px 12px;
+    border-left: 3px solid var(--vscode-focusBorder, #3794ff);
+    background: var(--vscode-textBlockQuote-background, rgba(127, 127, 127, 0.08));
+    border-radius: 4px;
+    font-size: 0.92em;
+    white-space: pre-wrap;
+  }
+  .spec-chip { cursor: default; opacity: 0.9; }
   .edit-rejection { opacity: 0.85; font-family: var(--vscode-editor-font-family, monospace); }
   .tool-approval {
     margin: 4px 0 14px 38px;
@@ -1783,6 +1867,7 @@ export function chatPanelBodyMarkup(logoUri: string = ''): string {
           <button type="button" class="pill" id="modelChip" title="Choose model (/model)" aria-label="Choose model">
             <span id="modelChipLabel">Model</span><span class="chev" aria-hidden="true">▾</span>
           </button>
+          <span class="pill spec-chip" id="specChip" hidden title="Active spec: every prompt works to it (/spec show)"></span>
           <div id="effortMeter" role="slider" aria-valuemin="1" aria-valuemax="5" aria-valuenow="3" aria-label="Effort level" title="Effort">
             <span class="effort-label">Effort</span>
             <span class="dot" data-level="1"></span>
