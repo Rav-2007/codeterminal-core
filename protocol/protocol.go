@@ -284,6 +284,12 @@ type PromptRequest struct {
 	// stays anchored to what was agreed. Required by Modes "check", which
 	// grades the project against it, and "build", which builds it.
 	Spec string `json:"spec,omitempty"`
+
+	// SpecGrants are the ToolApprovalRequest.SpecGrant values the user
+	// answered ApprovalApproveForSpec to while Spec was active. Honoured only
+	// with Spec set, and only for the exact command each one names; ignored
+	// otherwise. The client sends them for the active spec and no other.
+	SpecGrants []string `json:"spec_grants,omitempty"`
 }
 
 // Turn is one prior message in a conversation, supplied by the client so
@@ -512,6 +518,15 @@ const (
 
 	// ApprovalCancelTurn: deny this call and abandon the whole turn.
 	ApprovalCancelTurn = "cancel_turn"
+
+	// ApprovalApproveForSpec: run this call, and the SAME command again -- in
+	// this turn and in later ones -- while the same spec stays active. Valid
+	// only as an answer to a request that offered it (ToolApprovalRequest.
+	// SpecGrant); anything else is refused as malformed. The daemon keeps
+	// nothing: the CLIENT holds the grant in memory, sends it back with each
+	// turn (PromptRequest.SpecGrants), and forgets it when the spec is switched
+	// off or changed, or the client exits.
+	ApprovalApproveForSpec = "approve_for_spec"
 )
 
 // ToolApprovalRequest asks the client to show a pending tool call to the user
@@ -594,6 +609,13 @@ type ToolApprovalRequest struct {
 	Iteration     int    `json:"iteration"`
 	MaxIterations int    `json:"max_iterations"`
 	Detail        string `json:"detail,omitempty"`
+	// SpecGrant, when set, offers ApprovalApproveForSpec for this call, and is
+	// the grant a client that takes it stores and sends back (PromptRequest.
+	// SpecGrants). It is offered only for a command-running tool that is really
+	// sandboxed, in a turn with an active spec whose commands run in the
+	// private working copy. It covers exactly this command, however its
+	// arguments are spaced or ordered, and nothing else. Empty: not offered.
+	SpecGrant string `json:"spec_grant,omitempty"`
 }
 
 // Phases reported on ToolActivity.Phase.

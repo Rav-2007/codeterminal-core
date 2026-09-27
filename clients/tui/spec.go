@@ -147,6 +147,7 @@ func (m chatModel) handleSpecCommand(args string) (tea.Model, tea.Cmd) {
 		reply = m.activateSpec(rel)
 	case "off":
 		m.activeSpec = ""
+		m.specGrants = nil
 		if err := saveActiveSpec(m.workspaceRoot, ""); err != nil {
 			reply = "no active spec (could not forget it for next time: " + err.Error() + ")"
 		} else {
@@ -175,6 +176,9 @@ func (m chatModel) handleSpecCommand(args string) (tea.Model, tea.Cmd) {
 
 // activateSpec makes rel the active spec and says what that means.
 func (m *chatModel) activateSpec(rel string) string {
+	if rel != m.activeSpec {
+		m.specGrants = nil // given under the old spec, not this one
+	}
 	m.activeSpec = rel
 	msg := "active spec: " + rel + " -- every prompt now works to it. /spec build builds it, " +
 		"/spec check grades the project against it; /spec off stops."
@@ -190,6 +194,12 @@ func (m chatModel) specStatus() string {
 		b.WriteString("no active spec")
 	} else {
 		b.WriteString("active spec: " + m.activeSpec)
+		if len(m.specGrants) > 0 {
+			b.WriteString("\napproved while it is active (until /spec off, another spec, or quitting):")
+			for _, g := range m.specGrants {
+				b.WriteString("\n  " + g.label)
+			}
+		}
 	}
 	if specs := listSpecs(m.workspaceRoot); len(specs) > 0 {
 		b.WriteString("\nspecs in this project:")

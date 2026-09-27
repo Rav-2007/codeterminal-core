@@ -211,9 +211,12 @@ func resetHistoryOnDaemon(ctx context.Context, clientName string, ch chan tea.Ms
 // set from an explicit command and never inferred from what the question looks
 // like; see protocol.PromptRequest.Pipeline for why that is a measured decision
 // rather than caution.
-func startStream(ctx context.Context, clientName, workspace, prompt, promptKind, mode, preferredTier, spec string, pipeline []string, history []protocol.Turn, ch chan tea.Msg) tea.Cmd {
+//
+// specGrants are the commands the user approved while spec is active (see
+// chatModel.specGrants); sent with spec and never without it.
+func startStream(ctx context.Context, clientName, workspace, prompt, promptKind, mode, preferredTier, spec string, specGrants []string, pipeline []string, history []protocol.Turn, ch chan tea.Msg) tea.Cmd {
 	return func() tea.Msg {
-		go streamPromptWith(ctx, clientName, workspace, prompt, promptKind, mode, preferredTier, spec, pipeline, history, ch)
+		go streamPromptWith(ctx, clientName, workspace, prompt, promptKind, mode, preferredTier, spec, specGrants, pipeline, history, ch)
 		return <-ch
 	}
 }
@@ -250,7 +253,8 @@ func askForApproval(ctx context.Context, sess *daemonSession, req protocol.ToolA
 	// rendering rather than to the daemon's bytes.
 	if err := sess.enc.Encode(protocol.ToolApprovalResponse{
 		ProtocolVersion: protocol.ProtocolVersion,
-		Approval:        decision == protocol.ApprovalApprove || decision == protocol.ApprovalApproveForTurn,
+		Approval: decision == protocol.ApprovalApprove || decision == protocol.ApprovalApproveForTurn ||
+			decision == protocol.ApprovalApproveForSpec,
 		CallID:          req.CallID,
 		ArgumentsSHA256: req.ArgumentsSHA256,
 		Decision:        decision,
@@ -304,11 +308,11 @@ func deliver(ctx context.Context, ch chan tea.Msg, msg tea.Msg) bool {
 // quietly (no streamErrMsg): the user chose to quit, that's not a failure,
 // and it leaves nothing behind reading a dead socket.
 func streamPrompt(ctx context.Context, clientName, workspace, prompt, promptKind, mode, preferredTier string, pipeline []string, history []protocol.Turn, ch chan tea.Msg) {
-	streamPromptWith(ctx, clientName, workspace, prompt, promptKind, mode, preferredTier, "", pipeline, history, ch)
+	streamPromptWith(ctx, clientName, workspace, prompt, promptKind, mode, preferredTier, "", nil, pipeline, history, ch)
 }
 
 // streamPromptWith is streamPrompt with the active spec (PromptRequest.Spec).
-func streamPromptWith(ctx context.Context, clientName, workspace, prompt, promptKind, mode, preferredTier, spec string, pipeline []string, history []protocol.Turn, ch chan tea.Msg) {
+func streamPromptWith(ctx context.Context, clientName, workspace, prompt, promptKind, mode, preferredTier, spec string, specGrants []string, pipeline []string, history []protocol.Turn, ch chan tea.Msg) {
 	sess, err := connectToDaemon(clientName, protocol.CapToolApproval)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -342,6 +346,7 @@ func streamPromptWith(ctx context.Context, clientName, workspace, prompt, prompt
 		Tier:            preferredTier,
 		Pipeline:        pipeline,
 		Spec:            spec,
+		SpecGrants:      grantsFor(spec, specGrants),
 	}); err != nil {
 		if ctx.Err() != nil {
 			return

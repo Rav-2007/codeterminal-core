@@ -294,6 +294,7 @@ func TestTheApprovalAnswerEchoesTheQuestionVerbatim(t *testing.T) {
 	}{
 		{protocol.ApprovalApprove, true},
 		{protocol.ApprovalApproveForTurn, true},
+		{protocol.ApprovalApproveForSpec, true},
 		{protocol.ApprovalDeny, false},
 		{protocol.ApprovalCancelTurn, false},
 	} {

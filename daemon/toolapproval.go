@@ -50,7 +50,8 @@ type approvalDecision struct {
 }
 
 func (d approvalDecision) approved() bool {
-	return d.Decision == protocol.ApprovalApprove || d.Decision == protocol.ApprovalApproveForTurn
+	return d.Decision == protocol.ApprovalApprove || d.Decision == protocol.ApprovalApproveForTurn ||
+		d.Decision == protocol.ApprovalApproveForSpec
 }
 
 // approver asks a human to authorise one tool call.
@@ -297,6 +298,13 @@ func verifyApproval(req protocol.ToolApprovalRequest, raw json.RawMessage) (deci
 	switch resp.Decision {
 	case protocol.ApprovalCancelTurn:
 		return protocol.ApprovalCancelTurn, denyByUser
+	case protocol.ApprovalApproveForSpec:
+		// An answer to an offer that was never made is not consent to anything:
+		// it is refused, not read as a plain yes.
+		if req.SpecGrant == "" || !resp.Approval {
+			return protocol.ApprovalDeny, denyByMalformed
+		}
+		return resp.Decision, ""
 	case protocol.ApprovalApprove, protocol.ApprovalApproveForTurn:
 		if !resp.Approval {
 			// The two fields disagree. Reading the permissive one would make the

@@ -30,6 +30,8 @@ const (
 	auditUserApprove  = "user_approve"          // the human said yes to this call
 	auditUserForTurn  = "user_approve_for_turn" // the human said yes and widened it to the turn
 	auditTurnGrant    = "turn_grant"            // covered by an earlier approve_for_turn
+	auditUserForSpec  = "user_approve_for_spec" // the human said yes while the spec is active
+	auditSpecGrant    = "spec_grant"            // covered by an approve_for_spec, this turn or an earlier one
 	auditDeniedConfig = "denied_config"         // policy deny, or a tool that does not exist
 	auditDeniedUser   = "denied_user"           // the human said no, or cancelled
 	auditDeniedAsk    = "denied_ask"            // nobody answered, or the answer did not verify
@@ -174,6 +176,8 @@ func auditSourceFor(d approvalDecision) (source, outcome string) {
 		return auditUserApprove, auditOutcomeOK
 	case protocol.ApprovalApproveForTurn:
 		return auditUserForTurn, auditOutcomeOK
+	case protocol.ApprovalApproveForSpec:
+		return auditUserForSpec, auditOutcomeOK
 	case protocol.ApprovalCancelTurn:
 		return auditDeniedUser, auditOutcomeCancel
 	}

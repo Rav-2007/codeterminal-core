@@ -159,6 +159,10 @@ func TestRawByteStructuresHaveNoNewReaders(t *testing.T) {
 		// for: the function that stores the raw approval request is now named,
 		// and it still only stores it.
 		"handleToolApproval": true, // stores the request; renders nothing
+		// Reviewed 2026-09-27 (the spec grant): reads SpecGrant to decide
+		// whether 's' answers, and hands the request to rememberSpecGrant,
+		// which runs everything it will later show through sanitizeText.
+		"handleApprovalKey": true,
 	}
 	fset, files := parsePackageSource(t)
 	seen := map[string]string{}

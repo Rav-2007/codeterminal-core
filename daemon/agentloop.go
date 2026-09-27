@@ -145,6 +145,21 @@ func grantKey(spec mcp.Tool, qualified, arguments string) string {
 	return qualified + "\x00" + argumentsDigest(arguments)
 }
 
+// specGrantFor returns the spec grant that would name this call, or "" when
+// none may be offered or honoured for it: no active spec, a tool that does not
+// run commands, a sandbox this host cannot provide, or a turn whose commands
+// would run in the real project rather than the working copy.
+func (s *Server) specGrantFor(ctx context.Context, turn *agentTurn, spec mcp.Tool, qualified, arguments string) string {
+	if specGrantsFrom(ctx) == nil || !spec.ExecutesCode || !spec.Confined || s.workingCopySource(turn.mode) == "" {
+		return ""
+	}
+	digest, ok := specGrantDigest(qualified, arguments)
+	if !ok {
+		return ""
+	}
+	return digest
+}
+
 // grant records an approve-for-turn decision.
 func (t *agentTurn) grant(key string) {
 	if t.grants == nil {
@@ -1167,6 +1182,17 @@ func (s *Server) resolveExecutable(
 		return toolDecision{tool: spec, policy: policy, source: auditTurnGrant, run: true}
 	}
 
+	// A grant for this exact command while the spec is active (specgrant.go).
+	// Same exclusions as a turn grant, and only where it could have been
+	// offered: see specGrantFor.
+	specGrant := s.specGrantFor(ctx, turn, spec, qualified, arguments)
+	if specGrant != "" && !launch.Needed && outside == "" && specGrantsFrom(ctx).has(specGrant) {
+		return toolDecision{tool: spec, policy: policy, source: auditSpecGrant, run: true}
+	}
+	if launch.Needed || outside != "" {
+		specGrant = "" // never offered for what it could never cover
+	}
+
 	// PER-CALL TRUTH, with one conservative exception. When the probe could
 	// resolve no program at all -- a path it could not resolve, an extension no
 	// server covers -- the call will start nothing (there is no launch to
@@ -1216,6 +1242,7 @@ func (s *Server) resolveExecutable(
 		// render it as the server's claim, which is what Detail already means.
 		OutsidePath: outside,
 		Detail:      spec.Description,
+		SpecGrant:   specGrant,
 	})
 
 	source, _ := auditSourceFor(answer)
@@ -1255,6 +1282,11 @@ func (s *Server) resolveExecutable(
 		// above refuses to skip.
 		if answer.Decision == protocol.ApprovalApproveForTurn {
 			turn.grant(grantKey(spec, qualified, arguments))
+		}
+		// The client now holds this grant for later turns; for the rest of
+		// this one the daemon honours it too.
+		if answer.Decision == protocol.ApprovalApproveForSpec {
+			specGrantsFrom(ctx).add(specGrant)
 		}
 	case answer.Cause == denyByUser && launch.Needed:
 		decision.reason = fmt.Sprintf("the user declined to start %s, so %q did not run and nothing was started. "+

@@ -108,6 +108,9 @@ const interruptHelpText = "esc or ctrl+c to stop this turn"
 // moment: the product has stopped and is waiting for a person to decide.
 const approvalHelpText = "y yes · a yes for this turn · n no"
 
+// approvalSpecHelpText adds the spec grant, for a call the daemon offered it on.
+const approvalSpecHelpText = "y yes · a yes for this turn · s yes while this spec is active · n no"
+
 // chatModel is the Bubble Tea model for Mochiii's interactive chat.
 type chatModel struct {
 	state chatState
@@ -296,6 +299,10 @@ type chatModel struct {
 	activeSpec         string
 	turnMode           string
 	reviewAppliedPaths []string
+	// specGrants are the commands the user answered "yes while this spec is
+	// active" to, for activeSpec only. In memory and nowhere else: changing or
+	// switching off the spec forgets them, and so does quitting (specgrant.go).
+	specGrants []specGrant
 	// tasks is the in-flight build's task list (update_tasks), drawn under
 	// the transcript while the turn runs and kept in it when the turn ends.
 	tasks []protocol.TaskItem
@@ -1219,7 +1226,7 @@ func (m chatModel) startTurn() (tea.Model, tea.Cmd) {
 
 	m.turnMode = mode
 	m.tasks = nil
-	return m, tea.Batch(m.spinner.Tick, m.startThinking(), startStream(ctx, m.clientName, m.workspace, prompt, promptKind, mode, m.preferredTier, m.activeSpec, pipeline, history, ch))
+	return m, tea.Batch(m.spinner.Tick, m.startThinking(), startStream(ctx, m.clientName, m.workspace, prompt, promptKind, mode, m.preferredTier, m.activeSpec, m.specGrantDigests(), pipeline, history, ch))
 }
 
 func (m chatModel) handleSlash(sp slashParse) (tea.Model, tea.Cmd) {
@@ -1269,7 +1276,7 @@ func (m chatModel) beginTurn(shown, prompt, promptKind, mode string, pipeline []
 	m.streamCancel = cancel
 	ch := make(chan tea.Msg)
 	m.streamCh = ch
-	return m, tea.Batch(m.spinner.Tick, m.startThinking(), startStream(ctx, m.clientName, m.workspace, prompt, promptKind, mode, m.preferredTier, m.activeSpec, pipeline, history, ch))
+	return m, tea.Batch(m.spinner.Tick, m.startThinking(), startStream(ctx, m.clientName, m.workspace, prompt, promptKind, mode, m.preferredTier, m.activeSpec, m.specGrantDigests(), pipeline, history, ch))
 }
 
 func (m chatModel) handleLocalSlash(name, args string) (tea.Model, tea.Cmd) {
@@ -1913,6 +1920,14 @@ func (m chatModel) handleApprovalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.answerApproval(protocol.ApprovalApprove)
 	case "a":
 		return m.answerApproval(protocol.ApprovalApproveForTurn)
+	case "s":
+		// Only where it was offered, and only with a spec to hold it under.
+		// Otherwise 's' is one more stray key, and does nothing.
+		if m.pendingApproval == nil || !m.canGrantForSpec(*m.pendingApproval) {
+			return m, nil
+		}
+		m.rememberSpecGrant(*m.pendingApproval)
+		return m.answerApproval(protocol.ApprovalApproveForSpec)
 	case "n":
 		return m.answerApproval(protocol.ApprovalDeny)
 	case "q", "esc":
@@ -1956,6 +1971,8 @@ func approvalOutcomeLine(req protocol.ToolApprovalRequest, decision string) stri
 		return "✓ approved " + name
 	case protocol.ApprovalApproveForTurn:
 		return "✓ approved " + name + " for the rest of this task"
+	case protocol.ApprovalApproveForSpec:
+		return "✓ approved " + name + " for this exact command while this spec is active"
 	case protocol.ApprovalCancelTurn:
 		return "✗ stopped the task at " + name
 	default:
@@ -2447,7 +2464,11 @@ func (m chatModel) View() string {
 		help = helpStyle.Render(reviewHelpText)
 	} else if m.state == stateToolApproval && m.pendingApproval != nil {
 		// The keys, and only the keys: the question is already on screen.
-		bottomLine = accentStyle.Render(approvalHelpText)
+		keys := approvalHelpText
+		if m.canGrantForSpec(*m.pendingApproval) {
+			keys = approvalSpecHelpText
+		}
+		bottomLine = accentStyle.Render(keys)
 	} else {
 		popupStr, _ := m.renderSlashPopup()
 		if popupStr != "" {

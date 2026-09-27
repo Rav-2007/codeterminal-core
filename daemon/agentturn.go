@@ -83,6 +83,15 @@ func (s *Server) runAgentTurn(
 	// it either -- that state lives on agentTurn, not here and not on Server.
 	appr := &connApprover{enc: enc, dec: dec, lc: lc, logger: s.logger}
 
+	// A turn with an active spec may offer and honour a grant for one exact
+	// command while that spec stays active (specgrant.go). The grants come
+	// from the client, which alone keeps them; without a spec they are ignored.
+	if spec != nil {
+		ctx = withSpecGrants(ctx, promptReq.SpecGrants)
+	} else if len(promptReq.SpecGrants) > 0 {
+		s.logger.Printf("agent: ignoring %d spec grant(s) sent without an active spec", len(promptReq.SpecGrants))
+	}
+
 	// One sink per turn: propose_edit files its validated edits here, and they
 	// join whatever the assistant text itself produced on the Done message.
 	proposals, messages := s.newTurnSink(promptReq.Mode, spec, messages)
