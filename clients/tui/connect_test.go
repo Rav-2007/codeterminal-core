@@ -624,3 +624,14 @@ func TestConnectSaysWhichProvider(t *testing.T) {
 		}
 	}
 }
+
+// "/connect show" answers "which platform am I on?" in the same words.
+func TestConnectShowNamesTheProvider(t *testing.T) {
+	got := formatConnectResult(connectResultMsg{resp: protocol.ConnectResponse{
+		Ok: true, Outcome: protocol.ConnectShown, APIBase: "https://openrouter.ai/api/v1",
+		MaskedKey: "...901c (73 characters)", Detail: "stored, and the provider accepted it when it was saved",
+	}})
+	if !strings.Contains(got, "Connected to OpenRouter (https://openrouter.ai/api/v1) with key ...901c") {
+		t.Errorf("/connect show does not name the provider:\n%s", got)
+	}
+}

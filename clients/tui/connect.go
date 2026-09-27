@@ -223,7 +223,7 @@ func formatConnectResult(msg connectResultMsg) string {
 		if r.MaskedKey == "" || r.MaskedKey == "(none)" {
 			b.WriteString("No key is stored.")
 		} else {
-			fmt.Fprintf(&b, "Stored key %s for %s — %s", r.MaskedKey, r.APIBase, r.Detail)
+			fmt.Fprintf(&b, "Connected to %s with key %s — %s", providerLabel(r.APIBase), r.MaskedKey, sanitizeText(r.Detail))
 		}
 	default:
 		fmt.Fprintf(&b, "connect: unrecognised outcome %q from the daemon", r.Outcome)
