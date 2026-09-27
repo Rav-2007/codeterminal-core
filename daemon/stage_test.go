@@ -360,3 +360,44 @@ func TestWorkingCopiesAreRemoved(t *testing.T) {
 		t.Errorf("a leftover working copy was not swept (err=%v)", err)
 	}
 }
+
+// MEASURED: the model made a change with propose_edit AND wrote the same
+// change as a text block in its answer; offered on top of the copy's diff it
+// applied twice ("IsPalindrome redeclared"). Answer-text edits now go into the
+// copy first: a duplicate is dropped, a new change joins the one diff, and one
+// that collides with the agent's own edits is not offered, and said so.
+func TestAnswerTextEditsJoinTheWorkingCopyOnce(t *testing.T) {
+	s, dir := stageProject(t, map[string]string{
+		"a.go": "package a\n\nfunc F() int { return 1 }\n",
+		"b.go": "package a\n\nfunc G() int { return 2 }\n",
+	})
+	sink := stagedSink(t, s)
+	propose(t, s, sink, "a.go", "return 1", "return 10")
+
+	rest := sink.absorbText([]editapply.EditBlock{
+		{FilePath: "a.go", Search: "return 1", Replace: "return 10"},     // the duplicate
+		{FilePath: "b.go", Search: "return 2", Replace: "return 20"},     // a new change
+		{FilePath: "a.go", Search: "return 1 }", Replace: "return 99 }"}, // collides: 1 is now 10
+	})
+	if len(rest) != 0 {
+		t.Errorf("%d block(s) were left to offer on top of the working copy: %+v", len(rest), rest)
+	}
+	blocks, info, _ := sink.finish()
+	after := map[string]string{"a.go": fileText(t, filepath.Join(dir, "a.go")), "b.go": fileText(t, filepath.Join(dir, "b.go"))}
+	for _, b := range blocks {
+		if strings.Count(after[b.FilePath], b.Search) != 1 {
+			t.Fatalf("offered block does not apply once: %+v", b)
+		}
+		after[b.FilePath] = strings.Replace(after[b.FilePath], b.Search, b.Replace, 1)
+	}
+	if !strings.Contains(after["a.go"], "return 10 }") || strings.Contains(after["a.go"], "return 99") ||
+		strings.Count(after["a.go"], "func F") != 1 {
+		t.Errorf("a.go after review:\n%s", after["a.go"])
+	}
+	if !strings.Contains(after["b.go"], "return 20") {
+		t.Errorf("the new change in the answer was lost:\n%s", after["b.go"])
+	}
+	if info == nil || !strings.Contains(strings.Join(info.NotOffered, "\n"), "a.go: an edit written in the answer did not apply") {
+		t.Errorf("the colliding edit was dropped without a word: %+v", info)
+	}
+}

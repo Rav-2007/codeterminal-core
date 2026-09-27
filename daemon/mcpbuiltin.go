@@ -104,6 +104,10 @@ type proposalSink struct {
 	// The build's task list (update_tasks), and how it reaches the client.
 	tasks   []protocol.TaskItem
 	onTasks func([]protocol.TaskItem)
+
+	// textNotes are answer-text edits absorbText could not bring into the
+	// working copy, reported with the copy's other not-offered changes.
+	textNotes []string
 }
 
 // ranCheck is one command a turn ran and whether it passed.
@@ -155,6 +159,58 @@ func (p *proposalSink) recordCheck(command string, res mcp.Result) {
 	p.checks = append(p.checks, ranCheck{command: command, passed: p.checkPassed})
 }
 
+// absorbText brings edit blocks the model wrote in its ANSWER into the working
+// copy, so they join the one net diff instead of being offered on top of it.
+//
+// MEASURED: a model made a change with propose_edit -- landing in the copy --
+// and then also wrote it out as a SEARCH/REPLACE block in its answer, as the
+// system prompt teaches. Offered on top of the copy's diff, it applied twice:
+// "IsPalindrome redeclared". A block whose replacement is already in the copy
+// is that duplicate and is dropped; one that applies to the copy is applied
+// there; one that does not apply to the copy (it collides with the agent's own
+// edits) is not offered, and said so -- offering it against the real file
+// would put back a state the agent never tested. Outside the project, and
+// with no working copy, blocks are returned untouched.
+func (p *proposalSink) absorbText(blocks []editapply.EditBlock) (rest []editapply.EditBlock) {
+	if p == nil || p.stage == nil || p.checking {
+		return blocks
+	}
+	st := p.stage
+	for _, b := range blocks {
+		rel, inside := st.relFor(b.FilePath)
+		if !inside {
+			rest = append(rest, b)
+			continue
+		}
+		inCopy := b
+		inCopy.FilePath = rel
+		// THE DUPLICATE: the same edit the agent already made with a tool,
+		// restated in its answer -- or, failing an exact match, a block whose
+		// replacement is in the copy and whose search text is gone from it.
+		duplicate := false
+		for _, done := range st.applied {
+			if sameEdit(done, inCopy) {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate && b.Replace != "" {
+			if current, err := os.ReadFile(filepath.Join(st.root, rel)); err == nil &&
+				strings.Contains(string(current), b.Replace) && (b.Search == "" || !strings.Contains(string(current), b.Search)) {
+				duplicate = true
+			}
+		}
+		if duplicate {
+			continue
+		}
+		if _, err := st.apply(inCopy); err != nil {
+			p.textNotes = append(p.textNotes, filepath.ToSlash(rel)+
+				": an edit written in the answer did not apply to the working copy, so it is not offered")
+		}
+	}
+	return rest
+}
+
 // finish ends the turn's use of the working copy: the edits to offer, what
 // the user should be told about the copy, and a degradation if the copy could
 // not be made. The copy is removed.
@@ -192,6 +248,7 @@ func (p *proposalSink) finish() (blocks []editapply.EditBlock, info *protocol.Wo
 	net, notOffered := p.stage.netChanges()
 	p.stage.close()
 	p.stage = nil
+	notOffered = append(notOffered, p.textNotes...)
 	info = &protocol.WorkingCopyInfo{Checked: p.checked, Passed: p.checkPassed, NotOffered: notOffered}
 	if p.checked != "" && !p.checkPassed {
 		info.Output = p.checkOutput

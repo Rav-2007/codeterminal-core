@@ -537,6 +537,7 @@ func TestTaskSuccess(t *testing.T) {
 				continue
 			}
 			textBlocks, _ := srv.parseAndLogEditBlocks(res.FinalText)
+			textBlocks = sink.absorbText(textBlocks) // as runAgentTurn does
 			filed, wc, _ := sink.finish()
 			blocks := append(filed, textBlocks...)
 			if wc != nil {

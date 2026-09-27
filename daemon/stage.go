@@ -72,6 +72,25 @@ type stagedWorkspace struct {
 	touched    map[string]bool       // files an edit tool changed this turn
 	order      []string              // touched, in first-touch order
 	backupDir  string
+	// applied is every edit made in the copy, so an answer that restates one
+	// word for word is recognised as the same edit (see absorbText).
+	applied []editapply.EditBlock
+}
+
+// sameEdit reports whether two edit blocks are the same edit to the same
+// file, ignoring the whitespace a restatement tends to change.
+func sameEdit(a, b editapply.EditBlock) bool {
+	norm := func(s string) string {
+		var lines []string
+		for _, l := range strings.Split(strings.ReplaceAll(s, "\r\n", "\n"), "\n") {
+			if l = strings.TrimSpace(l); l != "" {
+				lines = append(lines, l)
+			}
+		}
+		return strings.Join(lines, "\n")
+	}
+	return filepath.Clean(a.FilePath) == filepath.Clean(b.FilePath) &&
+		norm(a.Search) == norm(b.Search) && norm(a.Replace) == norm(b.Replace)
 }
 
 // stageParentDir is where every copy lives: under the user cache dir, never in
@@ -259,6 +278,7 @@ func (st *stagedWorkspace) apply(block editapply.EditBlock) (*editapply.Prepared
 	if err := editapply.Apply(st.root, prepared, st.backupDir); err != nil {
 		return nil, err
 	}
+	st.applied = append(st.applied, block)
 	if rel, err := filepath.Rel(st.root, prepared.TargetPath); err == nil && !st.touched[rel] {
 		st.touched[rel] = true
 		st.order = append(st.order, rel)

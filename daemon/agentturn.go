@@ -267,6 +267,9 @@ func (s *Server) runAgentTurn(
 	// block parser, so it has nothing to be rejected by -- if it is bad, it is
 	// bad at a gate, and the gate answers on the ApplyEditResponse.
 	textBlocks, rejections := s.parseAndLogEditBlocks(result.FinalText)
+	// Edits written in the answer go INTO the working copy first, so the turn
+	// offers one net diff rather than the same change twice (absorbText).
+	textBlocks = proposals.absorbText(textBlocks)
 	// The working copy's net difference from the project (or, with no copy,
 	// the proposals as filed), then any edits written as text.
 	filed, workingCopy, copyDegraded := proposals.finish()
