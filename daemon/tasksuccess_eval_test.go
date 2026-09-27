@@ -560,6 +560,9 @@ func TestTaskSuccess(t *testing.T) {
 				for _, sig := range res.ToolSignatures {
 					t.Logf("      %s", truncateForLog(strings.TrimPrefix(sig, "builtin__")))
 				}
+				// And how it ended: a turn that stops with budget left and no edit
+				// usually SAYS why, and that sentence is the diagnosis.
+				t.Logf("    final words: %q", lastRunes(res.FinalText, 400))
 			}
 		}
 	}
@@ -656,4 +659,12 @@ func envInt(t *testing.T, name string, def int) int {
 		t.Fatalf("%s=%q is not a positive integer", name, v)
 	}
 	return n
+}
+
+func lastRunes(s string, n int) string {
+	r := []rune(strings.TrimSpace(s))
+	if len(r) > n {
+		r = r[len(r)-n:]
+	}
+	return string(r)
 }
