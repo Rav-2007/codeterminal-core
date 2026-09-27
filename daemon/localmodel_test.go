@@ -113,7 +113,7 @@ func TestASlowLocalFirstTokenIsNotAStall(t *testing.T) {
 		sseContent(w, "hello from a local model")
 		sseDone(w)
 	})
-	got, err, _ := runStream(t, base)
+	got, _, err := runStream(t, base)
 	if err != nil || got != "hello from a local model" {
 		t.Fatalf("got %q, err %v", got, err)
 	}

@@ -58,7 +58,7 @@ func hang(w http.ResponseWriter, r *http.Request) {
 	<-r.Context().Done()
 }
 
-func runStream(t *testing.T, base string) (string, error, time.Duration) {
+func runStream(t *testing.T, base string) (string, time.Duration, error) {
 	t.Helper()
 	var got strings.Builder
 	started := time.Now()
@@ -66,7 +66,7 @@ func runStream(t *testing.T, base string) (string, error, time.Duration) {
 		[]chatMessage{{Role: "user", Content: "hi"}}, nil, providerRouting{},
 		func(tok string) error { got.WriteString(tok); return nil },
 		func(string) {}, func(string) {}, func(string) {}, nil)
-	return got.String(), err, time.Since(started)
+	return got.String(), time.Since(started), err
 }
 
 // Silent before any output: abandoned at the stall timeout and retried,
@@ -77,7 +77,7 @@ func TestASilentProviderIsRetriedNotWaitedOn(t *testing.T) {
 		hang,
 		func(w http.ResponseWriter, _ *http.Request) { sseContent(w, "recovered"); sseDone(w) },
 	)
-	got, err, took := runStream(t, base)
+	got, took, err := runStream(t, base)
 	if err != nil {
 		t.Fatalf("a stall followed by a healthy attempt failed: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestAProviderThatGoesSilentMidAnswerEndsPromptly(t *testing.T) {
 		sseContent(w, "partial ")
 		<-r.Context().Done()
 	})
-	got, err, took := runStream(t, base)
+	got, took, err := runStream(t, base)
 	if err == nil {
 		t.Fatal("a stalled stream was reported as a success")
 	}
@@ -125,7 +125,7 @@ func TestASlowButLiveStreamIsNotCut(t *testing.T) {
 		sseContent(w, "slow but fine")
 		sseDone(w)
 	})
-	got, err, _ := runStream(t, base)
+	got, _, err := runStream(t, base)
 	if err != nil || got != "slow but fine" || requests.Load() != 1 {
 		t.Errorf("got %q, err %v, %d request(s): a live stream was cut", got, err, requests.Load())
 	}
@@ -138,7 +138,7 @@ func TestASlowButLiveStreamIsNotCut(t *testing.T) {
 func TestRepeatedStallsEndTheTurnInBoundedTime(t *testing.T) {
 	shortStall(t, 300*time.Millisecond)
 	base, requests := stallServer(t, hang)
-	_, err, took := runStream(t, base)
+	_, took, err := runStream(t, base)
 	if err == nil || !asModelError(err).stalled {
 		t.Fatalf("err = %v, want a stall error", err)
 	}

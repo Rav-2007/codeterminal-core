@@ -118,8 +118,6 @@ func looksLikeLiveWorldQuestion(q string) bool {
 	if len(q) > 600 {
 		return false
 	}
-	lower := strings.ToLower(q)
-
 	// PRECISION FIRST: a workspace question is never a live-world question,
 	// however many currency words it contains.
 	if filePathish.MatchString(q) || codingIntent.MatchString(q) {
@@ -127,7 +125,7 @@ func looksLikeLiveWorldQuestion(q string) bool {
 	}
 	// Everything below reads the request WITHOUT its quoted text.
 	q = quotedText.ReplaceAllString(q, " ")
-	lower = strings.ToLower(q)
+	lower := strings.ToLower(q)
 	for _, sig := range workspaceSignals {
 		if strings.Contains(lower, sig) {
 			return false
