@@ -163,3 +163,21 @@ that re-reads more room to re-read.
 The loop does not drop earlier tool results — everything read stays in the conversation
 (checked: nothing trims them) — so the re-reading is the model's. That makes the model the
 next variable: see the tier arms below.
+
+---
+
+## Decision rules for the next runs — written before them (all on `deepseek_v4_pro`)
+
+The flash runs above were limited by the model; these repeat the open questions on the tier
+that passes 88%, at the current code (no nudge, answer-text edits absorbed).
+
+**M4 — the Planner that can look.** Arms: single agent, `researcher,coder` (what a bare
+`/team` runs), `planner,coder`. `planner,coder` becomes what a bare `/team` runs **only if**
+it passes strictly more trials than `researcher,coder` at no more than 1.5× its median
+tokens. `/team` itself earns a recommendation over the single agent only if its better
+shape passes strictly more trials than the single agent.
+
+**M3 again — `/spec build`.** Arms: anchored (an ordinary turn with the spec active) and
+build. `/spec build` is recommended over an ordinary turn with a spec **only if** it passes
+strictly more trials at no more than 2.5× the median tokens; otherwise it stays opt-in and
+unrecommended, as now.
