@@ -87,7 +87,9 @@ type agentTurn struct {
 
 	// request is the user's own words for this turn (lastUserQuestion).
 	request string
-	// retriedEmpty records that an empty model reply was already asked again.
+	// retriedEmpty records that the LAST reply was empty and has been asked
+	// again; a reply with anything in it clears it, so two empties apart are
+	// each asked again and only two in a row end the turn.
 	retriedEmpty bool
 
 	// nudgedForGrounding records that the loop already asked this turn's model
@@ -143,6 +145,25 @@ func grantKey(spec mcp.Tool, qualified, arguments string) string {
 		return qualified
 	}
 	return qualified + "\x00" + argumentsDigest(arguments)
+}
+
+// avoidProvider returns routing with provider added to its ignore list, for the
+// rest of a turn. A NEW slice every time: routing.Ignore may be the config's own
+// list, and appending in place would leak one turn's exclusion into the next.
+// An unknown provider (the stream did not name one) changes nothing.
+func avoidProvider(routing providerRouting, provider string) providerRouting {
+	if provider == "" {
+		return routing
+	}
+	for _, p := range routing.Ignore {
+		if strings.EqualFold(p, provider) {
+			return routing
+		}
+	}
+	ignore := make([]string, 0, len(routing.Ignore)+1)
+	ignore = append(ignore, routing.Ignore...)
+	routing.Ignore = append(ignore, provider)
+	return routing
 }
 
 // specGrantFor returns the spec grant that would name this call, or "" when
@@ -479,13 +500,21 @@ func (s *Server) runAgentLoop(
 		textBefore := full.Len()
 
 		finishReason := ""
+		// servedBy is the host that answered this call, as OpenRouter reports
+		// it -- kept so an empty reply can be routed around (below).
+		servedBy := ""
 		apiKey, apiBase := s.credentials()
 		calls, err := streamWithRetry(ctx, apiBase, apiKey, model, turn.messages, tools, routing,
 			func(token string) error {
 				full.WriteString(token)
 				return onToken(token)
 			},
-			onProvider,
+			func(provider string) {
+				servedBy = provider
+				if onProvider != nil {
+					onProvider(provider)
+				}
+			},
 			onReasoning,
 			func(reason string) { finishReason = reason },
 			s.logger,
@@ -534,10 +563,22 @@ func (s *Server) runAgentLoop(
 		// calls" as "done", ended the turn with nothing on screen. It is a
 		// provider hiccup, and the same request usually succeeds: asked once
 		// more. Twice empty is reported, never passed off as a finished turn.
+		//
+		// ASKED AGAIN SOMEWHERE ELSE. MEASURED 2026-09-28: deepseek-v4-pro served
+		// by DigitalOcean ended 5 of 28 turns this way -- every time the model
+		// had decided to call a tool (the bill counted 48-113 output tokens past
+		// its thinking) and the host delivered neither the call nor any text. The
+		// retry went back to the same host and failed the same way. So the host
+		// that sent an empty reply is avoided for the rest of this turn: the
+		// retry, and every call after it, go to the next host OpenRouter would
+		// pick. provider.ignore only ever NARROWS where a request may go, so the
+		// ZDR constraints are untouched.
 		if len(calls) == 0 && full.Len() == textBefore {
 			if !turn.retriedEmpty {
 				turn.retriedEmpty = true
-				s.logger.Printf("agent: the model sent an empty reply at step %d; asking again", turn.iteration)
+				routing = avoidProvider(routing, servedBy)
+				s.logger.Printf("agent: the model sent an empty reply at step %d (served by %q); asking again elsewhere",
+					turn.iteration, servedBy)
 				continue
 			}
 			s.logger.Printf("agent: the model sent an empty reply twice; stopping at step %d", turn.iteration)
@@ -553,6 +594,8 @@ func (s *Server) runAgentLoop(
 				Iterations:     turn.iteration,
 			}, nil
 		}
+
+		turn.retriedEmpty = false // this reply had something in it
 
 		if len(calls) == 0 {
 			// ONE EXCEPTION, AND IT IS NARROW. If the model just answered a

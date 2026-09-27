@@ -41,6 +41,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -195,6 +196,15 @@ func (r *costRecorder) handle(w http.ResponseWriter, req *http.Request) {
 	}
 
 	u := parseUsageDetail(seen.Bytes())
+	// TASK_EVAL_DUMP_EMPTY=<dir>: keep the raw request and response of a call
+	// that brought back neither text nor a tool call -- the reply the loop can
+	// only call empty -- so what the provider actually sent can be read.
+	if dir := os.Getenv("TASK_EVAL_DUMP_EMPTY"); dir != "" && replyIsEmpty(seen.Bytes()) {
+		n := time.Now().UnixNano()
+		_ = os.MkdirAll(dir, 0o700)
+		_ = os.WriteFile(filepath.Join(dir, fmt.Sprintf("empty-%d.request.json", n)), body, 0o600)
+		_ = os.WriteFile(filepath.Join(dir, fmt.Sprintf("empty-%d.response.sse", n)), seen.Bytes(), 0o600)
+	}
 	r.mu.Lock()
 	r.calls++
 	counted = true
@@ -207,6 +217,36 @@ func (r *costRecorder) handle(w http.ResponseWriter, req *http.Request) {
 		r.providers[u.provider]++
 	}
 	r.mu.Unlock()
+}
+
+// replyIsEmpty reports whether a stream carried no answer text and no tool
+// call in any chunk -- what the agent loop sees as an empty reply.
+func replyIsEmpty(stream []byte) bool {
+	sc := bufio.NewScanner(bytes.NewReader(stream))
+	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	for sc.Scan() {
+		payload, ok := strings.CutPrefix(strings.TrimSpace(sc.Text()), "data: ")
+		if !ok || payload == "[DONE]" {
+			continue
+		}
+		var chunk struct {
+			Choices []struct {
+				Delta struct {
+					Content   string            `json:"content"`
+					ToolCalls []json.RawMessage `json:"tool_calls"`
+				} `json:"delta"`
+			} `json:"choices"`
+		}
+		if json.Unmarshal([]byte(payload), &chunk) != nil {
+			continue
+		}
+		for _, c := range chunk.Choices {
+			if strings.TrimSpace(c.Delta.Content) != "" || len(c.Delta.ToolCalls) > 0 {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // parseUsageDetail reads the stream's usage chunk (the last one wins:

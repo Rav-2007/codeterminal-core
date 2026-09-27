@@ -55,3 +55,20 @@ func TestCostRecorderReadsTheBillAndMissesNoCall(t *testing.T) {
 		t.Errorf("reset left %+v", after)
 	}
 }
+
+// replyIsEmpty matches what the loop calls an empty reply: no answer text and
+// no tool call anywhere in the stream -- thinking and usage alone do not count.
+func TestReplyIsEmptyMatchesTheLoopsIdea(t *testing.T) {
+	cases := map[string]bool{
+		`data: {"choices":[{"delta":{"reasoning":"hmm"}}]}` + "\n\n" +
+			`data: {"choices":[],"usage":{"prompt_tokens":5}}` + "\n\ndata: [DONE]\n": true,
+		`data: {"choices":[{"delta":{"content":"  "}}]}` + "\n\n": true,
+		`data: {"choices":[{"delta":{"content":"hi"}}]}` + "\n\n": false,
+		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1"}]}}]}` + "\n\n": false,
+	}
+	for stream, want := range cases {
+		if got := replyIsEmpty([]byte(stream)); got != want {
+			t.Errorf("replyIsEmpty(%q) = %v, want %v", stream, got, want)
+		}
+	}
+}
