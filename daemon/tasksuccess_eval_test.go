@@ -33,7 +33,9 @@
 // Knobs: TASK_EVAL_TRIALS (default 2), TASK_EVAL_ONLY (comma-separated task
 // names), TASK_EVAL_MAX_TOKENS (stop starting trials past this many tokens,
 // default 4,000,000), TASK_EVAL_TIER (models.json tier, default primary),
-// TASK_EVAL_OUT (append a JSON summary line to this file).
+// TASK_EVAL_OUT (append a JSON summary line to this file), TASK_EVAL_LABEL,
+// TASK_EVAL_MAX_ITERATIONS (override the per-turn model-call ceiling),
+// TASK_EVAL_NO_WORKING_COPY (run without the working copy, as before M1).
 package main
 
 import (
@@ -415,6 +417,11 @@ func TestTaskSuccess(t *testing.T) {
 	// would measure the model spending calls on a tool that cannot answer here.
 	tools["search_code"] = PolicyDeny
 	mcpCfg.Builtin.Tools = tools
+	// TASK_EVAL_MAX_ITERATIONS overrides the per-turn model-call ceiling, to
+	// ask whether the budget is what a failure ran into.
+	if os.Getenv("TASK_EVAL_MAX_ITERATIONS") != "" {
+		mcpCfg.Budget.MaxIterations = envInt(t, "TASK_EVAL_MAX_ITERATIONS", mcpCfg.Budget.MaxIterations)
+	}
 
 	trials := envInt(t, "TASK_EVAL_TRIALS", 2)
 	maxTokens := envInt(t, "TASK_EVAL_MAX_TOKENS", 4_000_000)
