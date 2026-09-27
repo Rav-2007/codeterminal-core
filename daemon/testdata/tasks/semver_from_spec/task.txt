@@ -1,0 +1,1 @@
+Implement Compare in the semver package exactly as SPEC.md describes, with tests in semver/semver_test.go.

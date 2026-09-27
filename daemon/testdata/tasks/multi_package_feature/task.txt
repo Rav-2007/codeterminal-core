@@ -1,0 +1,8 @@
+Add a priority to tasks, through every layer:
+
+- model.Task gets a `Priority int` field: 0 means none, 1 low, 2 high, 3 urgent. Validate rejects any other value.
+- The file store saves and loads it, as "priority" in the JSON. Files written before this change have no priority; they load as 0.
+- Handler.Add takes it as a second argument: `Add(title string, priority int) (model.Task, error)`.
+- Handler.List returns tasks by priority, highest first, and by ID within the same priority.
+
+Add tests for the new behaviour, and keep `go test ./...` passing.

@@ -1,0 +1,5 @@
+The three table functions in report/tables.go (SalesTable, StockTable and StaffTable) each repeat the same code to lay out a table. Move that code into one function in the report package,
+
+    func formatTable(headers []string, rows [][]string) string
+
+and make all three call it instead of laying out the table themselves. Their output must stay exactly the same, byte for byte. Keep `go test ./...` passing.

@@ -90,13 +90,39 @@ type costRecorder struct {
 	calls            int
 	promptTokens     int
 	completionTokens int
-	upstream         string
-	srv              *httptest.Server
+	// What the provider itself reported, when it did: the dollar cost of each
+	// call, how much of the prompt was served from its cache, how many of the
+	// completion tokens were thinking, and who served it. A price list times a
+	// token count is an estimate; these are the bill.
+	costUSD         float64
+	cachedTokens    int
+	reasoningTokens int
+	providers       map[string]int
+	// inflight counts calls still being drained -- see snapshot.
+	inflight int
+	drained  *sync.Cond
+	upstream string
+	srv      *httptest.Server
+}
+
+// usageDetail is one call's usage chunk, as far as the provider filled it in.
+type usageDetail struct {
+	prompt, completion, cached, reasoning int
+	cost                                  float64
+	provider                              string
+}
+
+// recorded is everything the recorder has counted since the last reset.
+type recorded struct {
+	calls, prompt, completion, cached, reasoning int
+	costUSD                                      float64
+	providers                                    map[string]int
 }
 
 func newCostRecorder(t *testing.T, upstream string) *costRecorder {
 	t.Helper()
-	rec := &costRecorder{upstream: strings.TrimRight(upstream, "/")}
+	rec := &costRecorder{upstream: strings.TrimRight(upstream, "/"), providers: map[string]int{}}
+	rec.drained = sync.NewCond(&rec.mu)
 	rec.srv = httptest.NewServer(http.HandlerFunc(rec.handle))
 	t.Cleanup(rec.srv.Close)
 	return rec
@@ -105,6 +131,20 @@ func newCostRecorder(t *testing.T, upstream string) *costRecorder {
 func (r *costRecorder) base() string { return r.srv.URL }
 
 func (r *costRecorder) handle(w http.ResponseWriter, req *http.Request) {
+	r.mu.Lock()
+	r.inflight++
+	r.mu.Unlock()
+	counted := false
+	defer func() {
+		r.mu.Lock()
+		if !counted {
+			r.calls++ // a call that failed before a usage chunk still happened
+		}
+		r.inflight--
+		r.drained.Broadcast()
+		r.mu.Unlock()
+	}()
+
 	body, err := io.ReadAll(req.Body)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -154,16 +194,25 @@ func (r *costRecorder) handle(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 
-	prompt, completion := parseUsage(seen.Bytes())
+	u := parseUsageDetail(seen.Bytes())
 	r.mu.Lock()
 	r.calls++
-	r.promptTokens += prompt
-	r.completionTokens += completion
+	counted = true
+	r.promptTokens += u.prompt
+	r.completionTokens += u.completion
+	r.cachedTokens += u.cached
+	r.reasoningTokens += u.reasoning
+	r.costUSD += u.cost
+	if u.provider != "" {
+		r.providers[u.provider]++
+	}
 	r.mu.Unlock()
 }
 
-// parseUsage pulls the token counts out of the SSE stream's usage chunk.
-func parseUsage(stream []byte) (prompt, completion int) {
+// parseUsageDetail reads the stream's usage chunk (the last one wins:
+// providers report cumulatively) and the name of the provider that served it.
+func parseUsageDetail(stream []byte) usageDetail {
+	var u usageDetail
 	sc := bufio.NewScanner(bytes.NewReader(stream))
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	for sc.Scan() {
@@ -176,18 +225,41 @@ func parseUsage(stream []byte) (prompt, completion int) {
 			continue
 		}
 		var chunk struct {
-			Usage *struct {
-				PromptTokens     int `json:"prompt_tokens"`
-				CompletionTokens int `json:"completion_tokens"`
+			Provider string `json:"provider"`
+			Usage    *struct {
+				PromptTokens     int      `json:"prompt_tokens"`
+				CompletionTokens int      `json:"completion_tokens"`
+				Cost             *float64 `json:"cost"`
+				PromptDetails    *struct {
+					CachedTokens int `json:"cached_tokens"`
+				} `json:"prompt_tokens_details"`
+				CompletionDetails *struct {
+					ReasoningTokens int `json:"reasoning_tokens"`
+				} `json:"completion_tokens_details"`
 			} `json:"usage"`
 		}
-		if err := json.Unmarshal([]byte(payload), &chunk); err != nil || chunk.Usage == nil {
+		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
 			continue
 		}
-		// Last usage chunk wins: providers report cumulatively.
-		prompt, completion = chunk.Usage.PromptTokens, chunk.Usage.CompletionTokens
+		if chunk.Provider != "" {
+			u.provider = chunk.Provider
+		}
+		if chunk.Usage == nil {
+			continue
+		}
+		u.prompt, u.completion = chunk.Usage.PromptTokens, chunk.Usage.CompletionTokens
+		u.cost, u.cached, u.reasoning = 0, 0, 0
+		if chunk.Usage.Cost != nil {
+			u.cost = *chunk.Usage.Cost
+		}
+		if chunk.Usage.PromptDetails != nil {
+			u.cached = chunk.Usage.PromptDetails.CachedTokens
+		}
+		if chunk.Usage.CompletionDetails != nil {
+			u.reasoning = chunk.Usage.CompletionDetails.ReasoningTokens
+		}
 	}
-	return prompt, completion
+	return u
 }
 
 // snapshot reads the counters.
@@ -200,20 +272,49 @@ func parseUsage(stream []byte) (prompt, completion int) {
 // FIRST arm of each pair read 0 every time while the second read a full count,
 // which is this race, not a provider that declined to send usage.
 //
-// Left as-is here rather than fixed blind: the arms in THIS file each run many
-// model calls, so the effect is proportionally smaller and the recorded totals
-// may still be usable. It is flagged so the next person reading a cost table
-// knows the number can undercount, and does not spend a day re-deriving it.
+// FIXED 2026-09-27: handle counts itself in-flight until its accounting is
+// done, and snapshot waits (up to drainWait) for every call to be counted. The
+// task-success eval turned the tokens into dollars per trial, and a count that
+// could miss a trial's last call was no longer good enough.
 func (r *costRecorder) snapshot() (calls, prompt, completion int) {
+	got := r.detail()
+	return got.calls, got.prompt, got.completion
+}
+
+// drainWait bounds how long snapshot waits for a call still being drained. A
+// provider that keeps a finished stream open that long is counted as it
+// stands, rather than hanging the eval.
+const drainWait = 10 * time.Second
+
+// detail waits for in-flight calls to be counted, then returns every counter.
+func (r *costRecorder) detail() recorded {
+	deadline := time.Now().Add(drainWait)
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.calls, r.promptTokens, r.completionTokens
+	for r.inflight > 0 && time.Now().Before(deadline) {
+		// Cond has no timed wait; wake periodically to re-check the deadline.
+		timer := time.AfterFunc(100*time.Millisecond, func() {
+			r.mu.Lock()
+			r.drained.Broadcast()
+			r.mu.Unlock()
+		})
+		r.drained.Wait()
+		timer.Stop()
+	}
+	providers := make(map[string]int, len(r.providers))
+	for k, v := range r.providers {
+		providers[k] = v
+	}
+	return recorded{calls: r.calls, prompt: r.promptTokens, completion: r.completionTokens,
+		cached: r.cachedTokens, reasoning: r.reasoningTokens, costUSD: r.costUSD, providers: providers}
 }
 
 func (r *costRecorder) reset() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.calls, r.promptTokens, r.completionTokens = 0, 0, 0
+	r.cachedTokens, r.reasoningTokens, r.costUSD = 0, 0, 0
+	r.providers = map[string]int{}
 }
 
 // ---------------------------------------------------------------------------

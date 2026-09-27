@@ -200,3 +200,70 @@ Two product bugs came out of it, both fixed:
 - a provider reply with no text and no tool call ended the turn silently — the two
   unexplained `deepseek_v4_pro` failures above were exactly this (`b861b89`: asked once
   more; twice empty is reported as incomplete).
+
+---
+
+## Round 2 — which model is the default (rules written 2026-09-27, before the runs)
+
+**Why a second round.** The owner prefers `deepseek-v4-flash` because it is cheap, and wants
+`deepseek-v4-pro` as the default only if it is *really needed*. The eight tasks above cannot
+say: both strong models are at or near their ceiling. Pro's two failures there were
+empty replies, which are now retried (`b861b89`). Gemini's two failures were the
+double-applied edit, now fixed (`c1abc3d`).
+
+**What changed in the harness:**
+
+- **Six harder tasks**, each proved by `TestTaskFixturesAreValid`. On the untouched
+  project the hidden tests fail *on their own*, not only a side check. On the reference
+  solution, applied through the edit path, everything passes.
+
+  | task | what it asks |
+  |---|---|
+  | `bug_hunt_medium` | a 23-file shop library; the prompt gives only the symptom (a coupon ignored when typed in capitals); the cause is two packages away from where it shows |
+  | `signature_change` | add a `ctx` parameter to `store.Get` and pass it through 8 call sites in 4 packages |
+  | `multi_package_feature` | a priority field through model → file store → handler, with ordering and validation (has a `spec.md`) |
+  | `semver_from_spec` | semantic-version comparison from a written spec: pre-release ordering, build metadata, numbers wider than 64 bits, 16 invalid forms (has a `spec.md`) |
+  | `refactor_keep_behaviour` | pull three copies of table layout into one function; output byte-identical; the hidden test parses the code to check the copies are gone |
+  | `npm_no_deps` | RFC 4180 quoted fields in a Node project, graded by `npm test` in the sandbox |
+
+- **Cost is the provider's bill.** Each call's usage chunk gives its dollar cost, cached
+  tokens, reasoning tokens and serving provider. On OpenRouter, the key's total usage is
+  also read before and after each run. A race that could drop a trial's last call from
+  the count is fixed, with a test that fails without the fix.
+- **Per-tier settings, as the product sends them.** `reasoning_effort` and `provider_sort`
+  on a tier in `models.json`, and `TASK_EVAL_REASONING` / `TASK_EVAL_PROVIDER_SORT` for a
+  run.
+
+**Budget:** $3.00 in total for Stages A–D, approved by the owner. Before each run the
+key's remaining limit is checked. A run does not start unless its estimate plus a $0.50
+reserve for the owner's own use fits.
+
+**Stage A — what makes flash better** (14 tasks × 2 trials each):
+
+- **F0** flash as it ships;
+- **F-think** flash with `reasoning_effort: medium`;
+- **F-fast** flash with `provider_sort: throughput`;
+- **P** pro as it ships.
+
+A setting joins **flash-best** if either:
+
+- its arm passes strictly more trials than F0, at no more than 2× F0's measured cost per trial; or
+- for F-fast only: it passes at least as many as F0, with median seconds at most half of
+  F0's, at no more than 2× the cost.
+
+If flash-best is a combination that has not been run, it is run fresh.
+
+**Stage B — the default** (flash-best and P, taken to 4 trials per task, 56 each):
+
+- **Pro becomes the default** if any one of these holds:
+  - it passes **≥ 5 more trials of 56** than flash-best (about 9 points);
+  - on some task, pro passes **≥ 3 of 4** where flash-best passes **≤ 1 of 4** (a class of
+    task flash cannot do);
+  - the two pass rates are within noise, but flash-best's median seconds are **more than
+    3×** pro's (the owner's rule: cost first, but not at any speed).
+- **Otherwise flash-best stays the default**, with its winning settings on the `primary` tier.
+
+Cost per solved task and median seconds are reported either way.
+
+**Stages C and D** repeat the M4 (`/team` shape) and M3 (`/spec build`) rules written
+above, unchanged, on whichever model is the default after Stage B.

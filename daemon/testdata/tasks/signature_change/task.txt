@@ -1,0 +1,5 @@
+store.Get in store/store.go takes no context, so a cancelled request still waits on it. Change its signature to
+
+    func (s *Store) Get(ctx context.Context, key string) (string, error)
+
+Get must return ctx.Err() without doing anything else when the context is already cancelled. Update every caller: a caller that has a context passes its own; one that has none uses context.Background(). Keep the existing behaviour otherwise, and keep `go build ./...` and `go test ./...` passing.

@@ -38,7 +38,14 @@
 // TASK_EVAL_NO_WORKING_COPY (run without the working copy, as before M1),
 // TASK_EVAL_PIPELINE (e.g. "planner,coder": run the trials through those
 // specialist phases, as /team:planner,coder does), TASK_EVAL_SPEC=1 (only the
-// tasks with a spec.md, that spec active), TASK_EVAL_MODE (e.g. build).
+// tasks with a spec.md, that spec active), TASK_EVAL_MODE (e.g. build),
+// TASK_EVAL_REASONING (low|medium|high: the tier's reasoning_effort for this
+// run), TASK_EVAL_PROVIDER_SORT (e.g. throughput: the tier's provider_sort).
+//
+// Cost is the provider's own bill, not a price list: each call's usage chunk
+// carries its dollar cost, and on OpenRouter the key's total usage is read
+// before and after the run as a cross-check. Run arms one after another, or
+// the key's delta mixes them.
 package main
 
 import (
@@ -48,8 +55,10 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -67,6 +76,8 @@ type taskSpec struct {
 	name string
 	// goProject is false for a task whose result is not code (create_file).
 	goProject bool
+	// npmProject is graded by `npm test` instead of the go commands.
+	npmProject bool
 	// unchanged lists files the model must NOT edit -- the tests it was told to
 	// make pass. Editing them is the cheapest way to "pass", and not the task.
 	unchanged []string
@@ -100,6 +111,29 @@ var taskSpecs = []taskSpec{
 		return ownTestMentions(dir, "slug", "Slugify")
 	}},
 	{name: "needs_iteration", goProject: true, unchanged: []string{"units/units_test.go"}},
+	{name: "npm_no_deps", npmProject: true, extra: func(dir string) error {
+		return fileChanged(dir, "npm_no_deps", "test/csv.test.js")
+	}},
+	// The harder six (2026-09-27): the first eight stopped telling the strong
+	// models apart. These need finding code by its symptom, changing a
+	// signature everywhere it is used, threading a field through three layers,
+	// many edge cases from a spec, a refactor that must not change behaviour,
+	// and a language other than Go.
+	{name: "bug_hunt_medium", goProject: true,
+		unchanged: []string{"coupon/coupon_test.go", "pricing/pricing_test.go", "invoice/invoice_test.go"}},
+	{name: "signature_change", goProject: true},
+	{name: "multi_package_feature", goProject: true, extra: func(dir string) error {
+		for _, pkg := range []string{"model", "store", "handler"} {
+			if ownTestMentions(dir, pkg, "Priority") == nil || ownTestMentions(dir, pkg, "priority") == nil {
+				return nil
+			}
+		}
+		return fmt.Errorf("no test the agent wrote mentions the priority; the task asked for tests")
+	}},
+	{name: "semver_from_spec", goProject: true, extra: func(dir string) error {
+		return ownTestMentions(dir, "semver", "Compare")
+	}},
+	{name: "refactor_keep_behaviour", goProject: true},
 }
 
 // ---------------------------------------------------------------------------
@@ -185,7 +219,7 @@ func gradeTask(spec taskSpec, dir string) string {
 			return err.Error()
 		}
 	}
-	if !spec.goProject {
+	if !spec.goProject && !spec.npmProject {
 		return ""
 	}
 	if hidden := filepath.Join(fixture, "hidden"); dirExists(hidden) {
@@ -193,7 +227,11 @@ func gradeTask(spec taskSpec, dir string) string {
 			return "adding hidden tests: " + err.Error()
 		}
 	}
-	for _, cmd := range []string{"go build ./...", "go test ./..."} {
+	commands := []string{"go build ./...", "go test ./..."}
+	if spec.npmProject {
+		commands = []string{"npm test"}
+	}
+	for _, cmd := range commands {
 		if ok, out := sandboxGo(dir, cmd); !ok {
 			return cmd + " failed: " + lastLines(out, 6)
 		}
@@ -248,6 +286,20 @@ func ownTestsChanged(dir, pkg, original string) error {
 	return fmt.Errorf("no test was added or changed in %s/; the task asked for one", pkg)
 }
 
+// fileChanged requires the model to have changed rel from task's starting
+// project: the task asked it to add tests there.
+func fileChanged(dir, task, rel string) error {
+	want, _ := os.ReadFile(filepath.Join(taskFixtureRoot, task, "workspace", rel))
+	got, err := os.ReadFile(filepath.Join(dir, rel))
+	if err != nil {
+		return fmt.Errorf("%s: %v", rel, err)
+	}
+	if string(got) == string(want) {
+		return fmt.Errorf("%s is unchanged; the task asked for tests there", rel)
+	}
+	return nil
+}
+
 // noGoFileContains fails if any .go file of the project still contains s.
 //
 // NOT .mochiii/: applying an edit backs the original up there, so the old name
@@ -296,6 +348,17 @@ func TestTaskFixturesAreValid(t *testing.T) {
 				t.Fatal("the untouched project already passes; this task measures nothing")
 			}
 			t.Logf("untouched fails as it should: %s", why)
+			// And the hidden tests fail on their own, not only a side check: a
+			// task whose hidden tests pass untouched grades nothing but the side
+			// check (the first npm fixture did exactly that).
+			if dirExists(filepath.Join(taskFixtureRoot, spec.name, "hidden")) {
+				bare := taskSpec{name: spec.name, goProject: spec.goProject, npmProject: spec.npmProject}
+				if why := gradeTask(bare, freshTaskWorkspace(t, spec.name)); why == "" {
+					t.Fatal("the hidden tests pass on the untouched project; they test nothing")
+				} else {
+					t.Logf("hidden tests alone fail as they should: %s", why)
+				}
+			}
 			// The solution goes in THROUGH THE EDIT PATH the eval uses, backups
 			// and all -- the first grader failed a correct rename because it
 			// read the backup of the original, which copying files never makes.
@@ -353,6 +416,11 @@ type taskTrial struct {
 	Checked     string   `json:"checked,omitempty"`
 	CheckPassed bool     `json:"check_passed,omitempty"`
 	Tools       []string `json:"tools,omitempty"`
+	// The provider's own bill for the trial's calls, and what was in it.
+	CostUSD         float64        `json:"cost_usd"`
+	CachedTokens    int            `json:"cached_tokens,omitempty"`
+	ReasoningTokens int            `json:"reasoning_tokens,omitempty"`
+	Providers       map[string]int `json:"providers,omitempty"`
 }
 
 // toolNames reduces call signatures (name + arguments) to names.
@@ -410,7 +478,20 @@ func TestTaskSuccess(t *testing.T) {
 	if model == "" {
 		t.Fatalf("no tier %q in models.agent.json", tier)
 	}
-	routing := cfg.ZDR.resolvedProviderRouting()
+	// The tier's own settings, as the product sends them (routingFor), with
+	// this run's overrides: an arm is a setting, not an edit to the config.
+	tierCfg := cfg.Tiers[tier]
+	if v := os.Getenv("TASK_EVAL_REASONING"); v != "" {
+		if !slices.Contains(reasoningEfforts, v) {
+			t.Fatalf("TASK_EVAL_REASONING=%q: want one of %v", v, reasoningEfforts)
+		}
+		tierCfg.ReasoningEffort = v
+	}
+	if v := os.Getenv("TASK_EVAL_PROVIDER_SORT"); v != "" {
+		tierCfg.ProviderSort = v
+	}
+	cfg.Tiers[tier] = tierCfg
+	routing := cfg.routingFor(tier)
 	mcpCfg := cfg.MCP
 	tools := map[string]string{}
 	for k, v := range mcpCfg.Builtin.Tools {
@@ -456,7 +537,9 @@ func TestTaskSuccess(t *testing.T) {
 
 	rec := newCostRecorder(t, apiBase)
 	logger := log.New(io.Discard, "", 0)
-	t.Logf("model=%s  budget=%+v  trials=%d", model, mcpCfg.Budget, trials)
+	t.Logf("model=%s  reasoning=%q  sort=%q  budget=%+v  trials=%d", model, routing.reasoningEffort,
+		routing.Sort, mcpCfg.Budget, trials)
+	keyBefore, keyKnown := keyUsageUSD(apiBase, apiKey)
 
 	var results []taskTrial
 	totalTokens := 0
@@ -526,10 +609,12 @@ func TestTaskSuccess(t *testing.T) {
 			}
 			elapsed := time.Since(start)
 			_ = registry.Close()
-			calls, pt, ct := rec.snapshot()
-			totalTokens += pt + ct
+			got := rec.detail()
+			totalTokens += got.prompt + got.completion
 
-			tr := taskTrial{Task: spec.name, Calls: calls, Tokens: pt + ct, Seconds: elapsed.Seconds(), Asked: appr.asked}
+			tr := taskTrial{Task: spec.name, Calls: got.calls, Tokens: got.prompt + got.completion,
+				Seconds: elapsed.Seconds(), Asked: appr.asked, CostUSD: got.costUSD,
+				CachedTokens: got.cached, ReasoningTokens: got.reasoning, Providers: got.providers}
 			if err != nil {
 				sink.discard()
 				tr.Why = "TRANSPORT: " + err.Error()
@@ -551,9 +636,9 @@ func TestTaskSuccess(t *testing.T) {
 			tr.Why = gradeTask(spec, dir)
 			tr.Pass = tr.Why == ""
 			results = append(results, tr)
-			t.Logf("%-24s trial %d  %-4s  calls=%2d tools=%2d edits=%d/%d refused  %5.0fs  %s",
+			t.Logf("%-24s trial %d  %-4s  calls=%2d tools=%2d edits=%d/%d refused  %5.0fs  $%.4f  %s",
 				spec.name, trial, passWord(tr.Pass), tr.Calls, tr.ToolCalls, tr.Refused, tr.Proposed,
-				tr.Seconds, tr.Why)
+				tr.Seconds, tr.CostUSD, tr.Why)
 			t.Logf("    tools: %s", strings.Join(tr.Tools, " "))
 			if !tr.Pass {
 				// The arguments too, on a failure: "read the same file five times"
@@ -567,7 +652,49 @@ func TestTaskSuccess(t *testing.T) {
 			}
 		}
 	}
-	reportTaskSuccess(t, model, results)
+	run := runInfo{model: model, reasoning: routing.reasoningEffort, sort: routing.Sort}
+	if keyKnown {
+		if after, ok := keyUsageUSD(apiBase, apiKey); ok {
+			run.keyDelta, run.keyDeltaKnown = after-keyBefore, true
+		}
+	}
+	reportTaskSuccess(t, run, results)
+}
+
+// runInfo is what a run was, for its summary line.
+type runInfo struct {
+	model, reasoning, sort string
+	keyDelta               float64
+	keyDeltaKnown          bool
+}
+
+// keyUsageUSD reads the key's total spend from OpenRouter's key endpoint. Only
+// the number is kept; the key is sent to the provider it already belongs to.
+// Anything else (another provider, an error) is "not known", never a guess.
+func keyUsageUSD(apiBase, apiKey string) (float64, bool) {
+	if !strings.Contains(apiBase, "openrouter.ai") {
+		return 0, false
+	}
+	req, err := http.NewRequest(http.MethodGet, strings.TrimRight(apiBase, "/")+"/key", nil)
+	if err != nil {
+		return 0, false
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	client := &http.Client{Timeout: 20 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, false
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var body struct {
+		Data struct {
+			Usage *float64 `json:"usage"`
+		} `json:"data"`
+	}
+	if resp.StatusCode != http.StatusOK || json.NewDecoder(resp.Body).Decode(&body) != nil || body.Data.Usage == nil {
+		return 0, false
+	}
+	return *body.Data.Usage, true
 }
 
 func passWord(ok bool) string {
@@ -577,14 +704,15 @@ func passWord(ok bool) string {
 	return "FAIL"
 }
 
-func reportTaskSuccess(t *testing.T, model string, results []taskTrial) {
+func reportTaskSuccess(t *testing.T, run runInfo, results []taskTrial) {
 	t.Helper()
 	if len(results) == 0 {
 		t.Fatal("VOID: no trials ran")
 	}
 	passed, transport, budget := 0, 0, 0
 	var calls, tokens []int
-	var seconds []float64
+	var seconds, costs []float64
+	totalCost := 0.0
 	byTask := map[string][2]int{}
 	for _, r := range results {
 		if strings.HasPrefix(r.Why, "TRANSPORT") {
@@ -604,6 +732,10 @@ func reportTaskSuccess(t *testing.T, model string, results []taskTrial) {
 		calls = append(calls, r.Calls)
 		tokens = append(tokens, r.Tokens)
 		seconds = append(seconds, r.Seconds)
+		costs = append(costs, r.CostUSD)
+	}
+	for _, r := range results {
+		totalCost += r.CostUSD // transport failures cost money too
 	}
 	graded := len(results) - transport
 	t.Log("--- per task ---")
@@ -621,15 +753,28 @@ func reportTaskSuccess(t *testing.T, model string, results []taskTrial) {
 	sort.Ints(calls)
 	sort.Ints(tokens)
 	sort.Float64s(seconds)
+	sort.Float64s(costs)
 	summary := map[string]any{
-		"when": time.Now().Format(time.RFC3339), "label": os.Getenv("TASK_EVAL_LABEL"), "model": model,
+		"when": time.Now().Format(time.RFC3339), "label": os.Getenv("TASK_EVAL_LABEL"), "model": run.model,
+		"reasoning_effort": run.reasoning, "provider_sort": run.sort,
 		"passed": passed, "graded": graded, "transport_errors": transport, "budget_stops": budget,
 		"median_calls": calls[len(calls)/2], "median_tokens": tokens[len(tokens)/2],
-		"median_seconds": seconds[len(seconds)/2], "trials": results,
+		"median_seconds": seconds[len(seconds)/2],
+		"total_cost_usd": totalCost, "median_cost_usd": costs[len(costs)/2], "trials": results,
+	}
+	perSolved := "n/a"
+	if passed > 0 {
+		summary["cost_per_solved_usd"] = totalCost / float64(passed)
+		perSolved = fmt.Sprintf("$%.4f", totalCost/float64(passed))
+	}
+	if run.keyDeltaKnown {
+		summary["key_usage_delta_usd"] = run.keyDelta
 	}
 	t.Logf("=== TASK SUCCESS %d/%d (%.0f%%)  median calls %d, tokens %d, %.0fs  budget stops %d  transport errors %d ===",
 		passed, graded, 100*float64(passed)/float64(graded), calls[len(calls)/2], tokens[len(tokens)/2],
 		seconds[len(seconds)/2], budget, transport)
+	t.Logf("=== COST $%.4f total (key delta %v), $%.4f median per trial, %s per solved task ===",
+		totalCost, keyDeltaText(run), costs[len(costs)/2], perSolved)
 	if out := os.Getenv("TASK_EVAL_OUT"); out != "" {
 		line, _ := json.Marshal(summary)
 		f, err := os.OpenFile(out, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
@@ -641,6 +786,13 @@ func reportTaskSuccess(t *testing.T, model string, results []taskTrial) {
 	if float64(transport)/float64(len(results)) > 0.10 {
 		t.Fatalf("VOID: %d/%d trials failed at the transport layer", transport, len(results))
 	}
+}
+
+func keyDeltaText(run runInfo) string {
+	if !run.keyDeltaKnown {
+		return "unknown"
+	}
+	return fmt.Sprintf("$%.4f", run.keyDelta)
 }
 
 func envOr(name, def string) string {

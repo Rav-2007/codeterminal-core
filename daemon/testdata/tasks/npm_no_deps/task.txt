@@ -1,0 +1,9 @@
+parseLine in src/csv.js splits a CSV line on every comma, so a line with quoted fields comes out wrong: `a,"b,c",d` gives four fields instead of three.
+
+Make parseLine follow RFC 4180 for a single line:
+- a field may be wrapped in double quotes, and then it may contain commas;
+- inside a quoted field, two double quotes in a row stand for one double quote;
+- fields are not trimmed — spaces are part of the field;
+- an unterminated quoted field throws an Error.
+
+Keep the existing tests passing, and add tests for the quoted cases to test/csv.test.js. Run the tests with `npm test`.
