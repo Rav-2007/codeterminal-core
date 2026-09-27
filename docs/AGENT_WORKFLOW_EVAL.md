@@ -115,7 +115,24 @@ old description was false.
 
 ## M3 — the spec arms (4 tasks with a `spec.md` × 2 trials)
 
-| arm | pass |
-|---|---|
-| anchored — an ordinary turn (8 calls), spec active | 1/8 |
-| build — `/spec build`, spec active | *(running)* |
+| arm | pass | median tokens | median seconds |
+|---|---|---|---|
+| anchored — an ordinary turn (8 calls), spec active | 1/8 | 40.8k | 168 |
+| build — `/spec build` (24 calls), spec active | 1/8 | 104.1k | 640 |
+| *for reference:* M1 B on the same four tasks (16 calls, no spec) | 4/8 | — | — |
+
+**Not earned, on this model.** `/spec build` ties the anchored turn at 2.5× the tokens, and
+does worse than an ordinary 16-call turn with no spec at all. It stays what it already
+was — an explicit, opt-in command — and is not recommended over a plain request yet.
+
+**Why** — the traces are unambiguous, and it is not the build's own ceremony:
+`update_tasks` took 1–4 calls a trial and `record_criterion` was never reached. What took
+the budget was `read_file`: **10 to 18 reads per trial on projects of three or four
+files**, the same files again and again. With `deepseek-v4-flash` on the price-sorted
+zero-data-retention route, each model call took 25–50 s, so six of eight builds hit the
+10-minute turn deadline before finishing. A longer, more structured turn gives a model
+that re-reads more room to re-read.
+
+The loop does not drop earlier tool results — everything read stays in the conversation
+(checked: nothing trims them) — so the re-reading is the model's. That makes the model the
+next variable: see the tier arms below.
