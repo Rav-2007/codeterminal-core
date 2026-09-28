@@ -1100,7 +1100,9 @@ func parsePromptKind(raw string) (kind, prompt string) {
 // researcher-then-coder ahead 2 wins to 1 at 1.02x the tokens, and the
 // four-phase shape behind at 1 to 2 for the same tokens and three and a half
 // times the wall-clock. A command that offers a user "more specialists" and
-// hands them the measured loser is a worse command than none.
+// hands them the measured loser is a worse command than none. Re-measured on
+// task success once the Planner could read (docs/AGENT_WORKFLOW_EVAL.md, Stage
+// C): researcher,coder 24/28, planner,coder 22/28.
 var teamPipeline = []string{"researcher", "coder"}
 
 // parseTeamCommand checks raw (already trimmed) for "/team ".

@@ -420,3 +420,127 @@ and written here before either `/team` arm ran.
 
 - **anchored:** an ordinary turn with the spec active;
 - **build:** `/spec build`.
+
+### Stage C result: bare `/team` stays `researcher → coder`, and `/team` is recommended by one trial (2026-09-28)
+
+| task | single agent | researcher → coder | planner → coder |
+|---|---|---|---|
+| create_file | 2/2 | 2/2 | 2/2 |
+| fix_failing_test | 2/2 | 2/2 | 1/2 |
+| add_function_with_test | 1/2 | 2/2 | 2/2 |
+| two_edits_one_file | 2/2 | 2/2 | 2/2 |
+| rename_across_files | 2/2 | 2/2 | 2/2 |
+| edge_case_bug | 2/2 | 2/2 | 2/2 |
+| feature_from_spec | 2/2 | 2/2 | 1/2 |
+| needs_iteration | 2/2 | 2/2 | 2/2 |
+| npm_no_deps | 1/2 | 2/2 | 0/2 |
+| bug_hunt_medium | 0/2 | 0/2 | 1/2 |
+| signature_change | 2/2 | 2/2 | 2/2 |
+| multi_package_feature | 2/2 | 2/2 | 2/2 |
+| semver_from_spec | 1/2 | 1/2 | 2/2 |
+| refactor_keep_behaviour | 2/2 | 1/2 | 1/2 |
+| **total** | **23/28** | **24/28** | **22/28** |
+| median tokens | 36.3k | 53.2k | 58.5k |
+| median seconds | 63 | 148 | 122 |
+| billed $ per solved task | 0.030 | 0.050 | 0.047 |
+| trials that ran any command | 26/28 | **0/28** | **0/28** |
+
+**By the rule:**
+
+- **`planner,coder` does not replace `researcher,coder`.** It passes fewer trials, 22
+  against 24. Its tokens are inside the limit (58.5k against 1.5 × 53.2k = 79.8k), but the
+  rule needs both clauses. `teamPipeline` is unchanged.
+- **`/team` earns the recommendation over the single agent.** Its better shape passes
+  strictly more trials, 24 against 23. The margin is one trial, which is noise, as it was
+  for F-think in Stage A, but the rule was written first and it decides. The price is 1.5×
+  the tokens, 2.3× the median time and 1.7× the cost per solved task.
+
+**What the failures show: the Coder cannot run anything.** `roleCoder`
+([`daemon/roles.go`](../daemon/roles.go)) has read and edit tools and no `sandbox_exec`.
+Only the Tester runs commands, and it reports rather than fixes.
+
+- **No commands at all.** Neither `/team` arm ran a command in any of its 56 trials. The
+  single agent ran one in 26 of 28.
+- **`refactor_keep_behaviour`:** both `/team` failures are compile errors that `go build`
+  shows: `formatTable redeclared`, and `undefined: formatTable`.
+- **Planner → coder:** three failures (`npm_no_deps` ×2, `feature_from_spec`) end with the
+  Coder saying it could not run the tests, then asserting that they pass.
+
+**The other `/team` misses:**
+
+- **`fix_failing_test` (planner → coder).** The Coder wrote its fix as a SEARCH/REPLACE
+  block in its answer, not through `propose_edit`. The search text is the body of both
+  `Max` and `Min`, so the edit was refused as ambiguous. That refusal is correct, and the
+  turn was already over, so nothing asked again.
+- **`semver_from_spec` (researcher → coder).** The trial hit the call limit before writing
+  the test the task asked for.
+- **`bug_hunt_medium`** is the hardest task. It fails in every arm, except one planner →
+  coder trial.
+
+**The next candidate, not built:** give the Coder `sandbox_exec`, confined and approved as
+for the single agent. Under this harness it becomes what `/team` runs only if it passes
+strictly more trials than today's `researcher → coder`.
+
+### Stage D result: `/spec build` stays opt-in and unrecommended (2026-09-28)
+
+| task (has a `spec.md`) | anchored (spec active) | `/spec build` |
+|---|---|---|
+| add_function_with_test | 2/2 | 2/2 |
+| edge_case_bug | 2/2 | 2/2 |
+| feature_from_spec | 2/2 | **0/2** |
+| needs_iteration | 2/2 | 2/2 |
+| multi_package_feature | 2/2 | 2/2 |
+| semver_from_spec | 2/2 | 2/2 |
+| **total** | **12/12** | **10/12** |
+| median tokens | 46.3k | 68.2k |
+| median seconds | 96 | 132 |
+| billed $ per solved task | 0.036 | 0.064 |
+
+**By the rule:** build passes fewer trials than anchored, 10 against 12. Its tokens are
+inside the limit (68.2k against 2.5 × 46.3k = 115.8k), but the rule needs both clauses.
+`/spec build` stays opt-in, and an ordinary turn with the spec active remains the
+recommendation.
+
+**Both misses are `feature_from_spec`:**
+
+- **Trial 1.** It implemented `Slugify("Version 2.0")` as `"version-2-0"`, where the spec
+  says `"version-20"`. Its own tests did not cover that case.
+- **Trial 2 ended one step early.** It wrote the tests, ran them, and replied: "tests
+  compile but fail because `Slugify` doesn't exist yet. Now I'll implement it." That reply
+  had no tool call, so the turn ended, with "implement" still open on its own
+  `update_tasks` list. A reply with no tool call ends a turn in build mode, as everywhere.
+
+**A gap, not built:** build mode could send such a reply back once while `update_tasks` has
+open items. It would not change this verdict: had trial 2 passed, build would be 11/12
+against 12/12.
+
+### How Stages C and D ran
+
+- **Setup.** All four arms ran in parallel on `deepseek_v4_pro` at `2c88cfe`, 2 trials
+  per task.
+- **The laptop slept three times** during the runs: 10:13–10:48, 11:22–11:53, and
+  11:57–17:54 (the last was a lid close).
+  - Go's timers run on the monotonic clock, which stops while suspended, so the recorded
+    seconds leave the sleeps out.
+  - The two Stage C trials in flight across a sleep resumed and passed.
+  - No trial in any arm ended on a transport error.
+- **Budget stops:** 2 in each Stage C arm and 1 in each Stage D arm. All were the per-turn
+  call limit, not time. Three of the six trials still passed.
+- **Spend.**
+  - **Per-call bills:** $3.29 in all:
+
+    | arm | billed |
+    |---|---|
+    | researcher → coder | $1.19 |
+    | planner → coder | $1.03 |
+    | anchored | $0.44 |
+    | build | $0.64 |
+
+  - **The key:** usage rose $3.35 (from $2.71 to $6.06), inside the $3.90 cap. That is
+    $0.06 more than the bills add up to. The key's figure is the ground truth.
+  - **Per-arm caps** are checked before each trial, so an arm can pass its cap by one
+    trial. Anchored did, $0.44 against $0.40.
+- **Round 2 in all:** $2.64 (Stages A and B) + $3.35 = **$5.99**, all on the owner's key.
+
+The raw summaries are the four `R2 Stage C` / `R2 Stage D` lines in
+[`agent_workflow_eval.jsonl`](agent_workflow_eval.jsonl).

@@ -426,6 +426,14 @@ client; steered commands send a task preamble to the model.
 The `/spec` family is the spec-driven workflow — decide what to build, build to it,
 check the result against it: [`docs/SPEC_WORKFLOW.md`](docs/SPEC_WORKFLOW.md).
 
+**Which to use**, measured on the task-success eval with hidden tests
+([`docs/AGENT_WORKFLOW_EVAL.md`](docs/AGENT_WORKFLOW_EVAL.md)):
+
+- **With a spec active, just ask.** An ordinary turn passed 12/12 spec tasks, and
+  `/spec build` passed 10/12.
+- **`/team` when one more solved task is worth the price.** It passed 24/28 against a
+  single agent's 23/28: one trial ahead, at 1.5× the tokens and 2.3× the time.
+
 `/connect` is the in-client half of [`mochiii-daemon connect`](#4-run). It
 takes the key at a masked prompt rather than as an argument, because an argument
 would be left in the transcript and sent on with your next prompt. In the TUI the

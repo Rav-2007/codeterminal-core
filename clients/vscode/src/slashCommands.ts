@@ -268,7 +268,9 @@ export const TEAM_SHAPE_PREFIX = '/team:';
  * Two phases, not four: blind pairwise judging against a budget-matched single
  * agent (docs/MULTI_AGENT_DESIGN.md §14) put researcher-then-coder ahead 2-1 at
  * 1.02x the tokens, and the four-phase shape BEHIND at 1-2 for three and a half
- * times the wall clock.
+ * times the wall clock. Re-measured on task success once the Planner could read
+ * (docs/AGENT_WORKFLOW_EVAL.md, Stage C): researcher,coder 24/28, planner,coder
+ * 22/28.
  */
 export const TEAM_PIPELINE: readonly string[] = ['researcher', 'coder'];
 

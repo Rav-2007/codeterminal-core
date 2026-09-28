@@ -6,7 +6,9 @@ Status: **Option A built, measured, and now routed per turn.** Shipped switched 
   `researcher → coder`, the shape that won §14's A/B 2–1 at 1.02× the tokens, without
   touching a config file. The shape is a property of the question (§14), so it is chosen
   per question — by the person who asked it, because §15 tried twice to detect it
-  automatically and failed both times.
+  automatically and failed both times. Re-measured on task success (§18) it passed 24/28,
+  against 23/28 for a single agent and 22/28 for `planner → coder`: one trial ahead, at
+  1.5× the tokens and 2.3× the time.
 - **`/team:planner,coder <question>`** — names the phases explicitly. This is how the
   Planner and Tester, fully implemented since the pipeline was written, became reachable
   without editing a config file and restarting (§17).
@@ -1043,3 +1045,33 @@ the Planner any more; both still guard any tool-less role a config or a future c
 shape is graded by whether the hidden tests pass after its edits are applied. The decision
 rule stands: a shape becomes what a bare `/team` runs only if it beats `researcher → coder`
 there.
+
+**Result (2026-09-28): `researcher → coder` stays what a bare `/team` runs.** Run on
+`deepseek_v4_pro`, 14 tasks × 2 trials:
+
+| shape | passed | median tokens |
+|---|---|---|
+| `researcher → coder` | **24/28** | 53.2k |
+| `planner → coder` | 22/28 | 58.5k |
+| single agent | 23/28 | 36.3k |
+
+The Planner that can look no longer invents files, but it does not beat the Researcher,
+so `teamPipeline` is unchanged. By the same rule, written before the run, `/team` is
+recommended over the single agent. That rests on one trial, at 1.5× the tokens, 2.3× the
+median time and 1.7× the cost per solved task
+([AGENT_WORKFLOW_EVAL.md](AGENT_WORKFLOW_EVAL.md), Stage C).
+
+**What the measurement found instead: the Coder cannot run anything.** `roleCoder` has read
+and edit tools and no `sandbox_exec`. Only the Tester runs commands, and it reports rather
+than fixes.
+
+- **No commands.** Neither `/team` shape ran a command in any of its 56 trials. The single
+  agent ran one in 26 of its 28.
+- **Compile errors.** Both `/team` shapes failed `refactor_keep_behaviour` on a compile
+  error that `go build` shows.
+- **Unrun tests.** Three `planner → coder` failures end with the Coder saying it could not
+  run the tests, then asserting that they pass.
+
+Giving the Coder `sandbox_exec`, confined and approved as for the single agent, is the next
+candidate. It becomes what `/team` runs only if it passes strictly more trials than today's
+`researcher → coder` under the same harness.

@@ -105,3 +105,21 @@ Every step of this workflow is graded by the task-success eval: small projects,
 hidden tests the model never sees, every proposed edit applied as if you pressed `y`.
 Results and the decision rules written before each run are in
 [AGENT_WORKFLOW_EVAL.md](AGENT_WORKFLOW_EVAL.md).
+
+**`/spec build` against an ordinary turn with the spec active** (2026-09-28,
+`deepseek_v4_pro`, the 6 tasks that have a spec, 2 trials each):
+
+| | passed | median tokens | median seconds |
+|---|---|---|---|
+| ordinary turn, spec active | **12/12** | 46.3k | 96 |
+| `/spec build` | 10/12 | 68.2k | 132 |
+
+So **an ordinary turn with the spec active is the recommendation.** `/spec build` stays
+available and opt-in; it earns a recommendation only by passing strictly more trials than
+an ordinary turn, which it did not.
+
+Both of its misses were on one task:
+
+- in one trial the model got an edge case in the spec wrong;
+- in the other, the turn ended right after it wrote the tests, on a reply that said
+  "Now I'll implement it" with that step still open on its own task list.
