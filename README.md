@@ -419,9 +419,26 @@ client; steered commands send a task preamble to the model.
 
 /team <question>       # researcher -> coder specialists (/team:planner,coder …)
 
+/history               # past chats in this project; ⚠ marks work left half done
+/history 2             # read saved chat 2
+/history resume 2      # continue it (the chat on screen is saved first)
+/history delete 2      # delete it
+
 /help /mcp-server /explain /fix /test /refactor /doc /security
 /review /plan /run /clear /compact /context /git /init /search /exit
 ```
+
+**Chat history.** ctrl+n saves the chat on screen and starts a new one; relaunching
+continues where you left off. Everything stays on this machine:
+
+- **Where:** saved chats live in `~/.local/state/mochiii/history/`, one gzipped file per
+  chat, never inside the project.
+- **How much is kept:** at most 50 chats per project and 20 MiB for the whole folder.
+  The oldest go first.
+- **Half-done work:** `/history` flags it with ⚠: a last answer that did not finish, or a
+  spec that still has open criteria.
+- **Deleting:** `/history delete <n>` removes one chat. To remove all of them, delete the
+  folder.
 
 The `/spec` family is the spec-driven workflow — decide what to build, build to it,
 check the result against it: [`docs/SPEC_WORKFLOW.md`](docs/SPEC_WORKFLOW.md).

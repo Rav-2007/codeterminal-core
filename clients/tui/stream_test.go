@@ -412,7 +412,7 @@ func TestResetHistoryOnDaemon_SendsResetTrueWithEmptyPromptAndHistory(t *testing
 	defer restoreLockPath()
 
 	ch := make(chan tea.Msg, 1)
-	resetHistoryOnDaemon(context.Background(), "test-client", ch)
+	resetHistoryOnDaemon(context.Background(), "test-client", "specs/verbose.md", ch)
 
 	msg := <-ch
 	if _, ok := msg.(resetOkMsg); !ok {
@@ -429,6 +429,10 @@ func TestResetHistoryOnDaemon_SendsResetTrueWithEmptyPromptAndHistory(t *testing
 		}
 		if len(req.History) != 0 {
 			t.Errorf("History = %+v, want empty", req.History)
+		}
+		// The saved chat records its spec, so /history can show its open work.
+		if req.Spec != "specs/verbose.md" {
+			t.Errorf("Spec = %q, want the active spec sent with the reset", req.Spec)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("fake daemon never received a PromptRequest")
@@ -447,7 +451,7 @@ func TestResetHistoryOnDaemon_SurfacesDaemonSideError(t *testing.T) {
 	defer restoreLockPath()
 
 	ch := make(chan tea.Msg, 1)
-	resetHistoryOnDaemon(context.Background(), "test-client", ch)
+	resetHistoryOnDaemon(context.Background(), "test-client", "", ch)
 
 	msg := <-ch
 	errMsg, ok := msg.(resetErrMsg)

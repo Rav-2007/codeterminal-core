@@ -260,7 +260,13 @@ var tuiOnlyCommands = map[string]string{
 // unlike tuiOnlyCommands, which it must never have. Each entry names where the
 // port is scheduled, so the list reads as a debt with a due date rather than
 // a design decision.
-var notYetPorted = map[string]string{}
+var notYetPorted = map[string]string{
+	// The daemon side is client-neutral (protocol.HistoryRequest); the VS Code
+	// port is the next step of the /history plan. Until it lands, VS Code's own
+	// "new chat" still never sends a reset, so it neither deleted chats before
+	// nor saves them now.
+	"history": "VS Code port is the next step of the /history plan (README, /history)",
+}
 
 func TestSlashCatalogsAgreeAcrossClients(t *testing.T) {
 	ts := parseVSCodeCatalog(t)

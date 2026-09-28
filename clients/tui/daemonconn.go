@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -220,6 +221,30 @@ func runSearch(clientName, workspace, query string) string {
 		b.WriteString(fmt.Sprintf("%d. [%s] (%s)\n   %s\n", i+1, hit.Role, hit.CreatedAt, hit.Snippet))
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// sendHistory asks the daemon about past chats (history.go). The daemon's own
+// refusal comes back as the error, worded for the user.
+func sendHistory(clientName string, req protocol.HistoryRequest) (protocol.HistoryResponse, error) {
+	sess, err := connectToDaemon(clientName)
+	if err != nil {
+		return protocol.HistoryResponse{}, err
+	}
+	defer func() { _ = sess.Close() }()
+
+	req.ProtocolVersion = protocol.ProtocolVersion
+	req.Chats = true
+	if err := sess.enc.Encode(req); err != nil {
+		return protocol.HistoryResponse{}, fmt.Errorf("sending the request: %w", err)
+	}
+	var resp protocol.HistoryResponse
+	if err := sess.dec.Decode(&resp); err != nil {
+		return protocol.HistoryResponse{}, fmt.Errorf("reading the answer: %w", err)
+	}
+	if resp.Error != "" {
+		return resp, errors.New(resp.Error)
+	}
+	return resp, nil
 }
 
 // sendConnect hands the daemon a ConnectRequest and returns its answer.

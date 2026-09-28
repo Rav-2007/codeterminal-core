@@ -317,6 +317,13 @@ type chatModel struct {
 	// active" to, for activeSpec only. In memory and nowhere else: changing or
 	// switching off the spec forgets them, and so does quitting (specgrant.go).
 	specGrants []specGrant
+
+	// chatIDs are the saved chats the last /history list numbered, in order:
+	// "/history resume 2" means the chat that list showed as 2 (history.go).
+	chatIDs []string
+	// resetSavesChat is set by a ctrl+n that cleared a real exchange, so a
+	// successful reset can say the chat went to /history.
+	resetSavesChat bool
 	// tasks is the in-flight build's task list (update_tasks), drawn under
 	// the transcript while the turn runs and kept in it when the turn ends.
 	tasks []protocol.TaskItem
@@ -496,6 +503,16 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case resetErrMsg:
 		return m.handleResetErr(msg)
+
+	case resetOkMsg:
+		// The daemon saved the closed chat before clearing it (it keeps the
+		// chat, and says so, when it cannot) -- say where it went.
+		if m.resetSavesChat {
+			m.resetSavesChat = false
+			m.appendTurn(turn{role: roleSystem, text: "previous chat saved -- /history to go back to it"})
+			m.refreshViewport()
+		}
+		return m, nil
 
 	case spinner.TickMsg:
 		return m.handleSpinnerTick(msg)
@@ -959,7 +976,8 @@ func (m chatModel) handleResetErr(msg resetErrMsg) (tea.Model, tea.Cmd) {
 	// a transcript note rather than statusErr/stateError, since the
 	// user's chat is not actually in an error state — they can keep
 	// typing normally.
-	m.appendTurn(turn{role: roleSystem, text: sanitizeText(fmt.Sprintf("(local chat cleared, but clearing it on the daemon failed: %v)", msg.err))})
+	m.resetSavesChat = false
+	m.appendTurn(turn{role: roleSystem, text: sanitizeText(fmt.Sprintf("(the screen was cleared, but the daemon did not start a new chat: %v)", msg.err))})
 	m.refreshViewport()
 	return m, nil
 }
@@ -1430,6 +1448,8 @@ func (m chatModel) handleLocalSlash(name, args string) (tea.Model, tea.Cmd) {
 		reply = runMCPServerList("")
 	case "search":
 		reply = runSearch(m.clientName, m.workspaceRoot, args)
+	case "history":
+		return m.handleHistoryCommand(args)
 	case "spec":
 		return m.handleSpecCommand(args)
 	case "exit":
@@ -1739,7 +1759,15 @@ func (m chatModel) clearConversation() (tea.Model, tea.Cmd) {
 	if m.state == stateSending || m.state == stateStreaming {
 		return m, nil
 	}
+	m.resetSavesChat = false
+	for _, t := range m.turns {
+		if t.role == roleUser {
+			m.resetSavesChat = true
+			break
+		}
+	}
 	m.turns = nil
+	m.chatIDs = nil // the list's numbers move once this chat is saved
 	m.lastGrounding = nil
 	m.lastRedactions = nil
 	m.lastDegraded = nil
@@ -1751,7 +1779,7 @@ func (m chatModel) clearConversation() (tea.Model, tea.Cmd) {
 	m.refreshViewport()
 
 	ch := make(chan tea.Msg, 1)
-	return m, startReset(context.Background(), m.clientName, ch)
+	return m, startReset(context.Background(), m.clientName, m.activeSpec, ch)
 }
 
 // handleToken appends msg to the in-progress assistant turn (starting one
@@ -2571,9 +2599,6 @@ func (m chatModel) slashMatches() []slashDef {
 		if strings.HasPrefix(d.Name, prefix) {
 			matches = append(matches, d)
 		}
-	}
-	if strings.HasPrefix("model", prefix) && prefix != "model" {
-		matches = append(matches, slashDef{Name: "model", Summary: "list or select a models.json tier (/model <name>)"})
 	}
 	return matches
 }

@@ -153,9 +153,9 @@ type resetOkMsg struct{}
 // connection (the wire protocol is one prompt per connection, same as
 // startStream), in its own goroutine, returning a Cmd that reports only
 // failure via resetErrMsg.
-func startReset(ctx context.Context, clientName string, ch chan tea.Msg) tea.Cmd {
+func startReset(ctx context.Context, clientName, spec string, ch chan tea.Msg) tea.Cmd {
 	return func() tea.Msg {
-		go resetHistoryOnDaemon(ctx, clientName, ch)
+		go resetHistoryOnDaemon(ctx, clientName, spec, ch)
 		return <-ch
 	}
 }
@@ -164,7 +164,7 @@ func startReset(ctx context.Context, clientName string, ch chan tea.Msg) tea.Cmd
 // single TokenResponse. Mirrors streamPrompt's connect/encode/decode
 // pattern but without a streaming loop, since a reset gets exactly one
 // reply.
-func resetHistoryOnDaemon(ctx context.Context, clientName string, ch chan tea.Msg) {
+func resetHistoryOnDaemon(ctx context.Context, clientName, spec string, ch chan tea.Msg) {
 	sess, err := connectToDaemon(clientName)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -175,9 +175,12 @@ func resetHistoryOnDaemon(ctx context.Context, clientName string, ch chan tea.Ms
 	}
 	defer func() { _ = sess.Close() }() // see daemonSession.Close
 
+	// Spec rides along so the daemon records which spec the saved chat was
+	// working to (daemon/chatarchive.go); /history shows its open criteria.
 	if err := sess.enc.Encode(protocol.PromptRequest{
 		ProtocolVersion: protocol.ProtocolVersion,
 		Reset:           true,
+		Spec:            spec,
 	}); err != nil {
 		if ctx.Err() != nil {
 			return
