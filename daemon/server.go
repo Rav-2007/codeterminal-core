@@ -105,6 +105,12 @@ type Server struct {
 	// request, exactly like embedder/store above.
 	memory *MemoryStore
 
+	// historyMu serialises every change to WHICH CHAT IS CURRENT -- ctrl+n's
+	// save-and-clear, /history resume -- with persistTurn's two appends.
+	// Without it an exchange finishing during a ctrl+n could land half in the
+	// saved chat and half in the new one.
+	historyMu sync.Mutex
+
 	// freshness memoises "has the workspace changed since the index was built"
 	// for the status handler (see indexfreshness.go). nil disables the check
 	// entirely, which is what every test Server that does not opt in gets --
@@ -487,6 +493,20 @@ func (s *Server) serveConn(conn net.Conn) {
 		return
 	}
 
+	// Before the prompt path like the rest: resume and delete change which chat
+	// is current, so "chats" is a discriminator (requestfields.go).
+	if isHistoryRequest(raw) {
+		var historyReq protocol.HistoryRequest
+		if err := json.Unmarshal(raw, &historyReq); err != nil {
+			s.count(func(c *counters) { c.malformed.Add(1) })
+			s.logger.Printf("history request decode error: %v", err)
+			return
+		}
+		s.count(func(c *counters) { c.histories.Add(1) })
+		s.handleHistory(ctx, enc, historyReq)
+		return
+	}
+
 	var promptReq protocol.PromptRequest
 	if err := json.Unmarshal(raw, &promptReq); err != nil {
 		s.count(func(c *counters) { c.malformed.Add(1) })
@@ -526,6 +546,21 @@ func (s *Server) serveConn(conn net.Conn) {
 	}
 	promptReq.Mode = normalizedMode
 
+	// ctrl+n. Before the spec is read: a reset only RECORDS the active spec's
+	// path with the chat it saves (chatarchive.go validates it), so a spec file
+	// deleted since must not make starting a new chat fail.
+	if promptReq.Reset {
+		s.count(func(c *counters) { c.resets.Add(1) })
+		if err := s.resetPersistedHistory(promptReq.Spec); err != nil {
+			// One-shot reply on a connection about to close: a client that has
+			// gone cannot be told, and the daemon log already has the cause.
+			_ = enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Error: err.Error()})
+			return
+		}
+		enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Done: true})
+		return
+	}
+
 	// THE ACTIVE SPEC (spec.go), read once for the whole turn. A spec the
 	// request names but that cannot be read refuses the turn rather than
 	// running unanchored: the user believes the work is being held to it.
@@ -550,13 +585,6 @@ func (s *Server) serveConn(conn net.Conn) {
 			})
 			return
 		}
-	}
-
-	if promptReq.Reset {
-		s.count(func(c *counters) { c.resets.Add(1) })
-		s.resetPersistedHistory()
-		enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Done: true})
-		return
 	}
 
 	// Reject an empty prompt before anything is spent on it (Fix 14). Sending
@@ -1262,6 +1290,8 @@ func (s *Server) persistTurn(prompt, answer string, incomplete *protocol.Incompl
 	// that must finish once started" are different states and must not share a
 	// cancellation signal.
 	ctx := context.Background()
+	s.historyMu.Lock()
+	defer s.historyMu.Unlock()
 	if err := s.memory.AppendTurn(ctx, s.workspace, "user", prompt); err != nil {
 		s.logger.Printf("persisting user turn: %v", err)
 		return
@@ -1271,19 +1301,53 @@ func (s *Server) persistTurn(prompt, answer string, incomplete *protocol.Incompl
 	}
 }
 
-// resetPersistedHistory clears this daemon's cross-session memory for its
-// own workspace — the server-side half of ctrl+n (see PromptRequest.Reset).
-func (s *Server) resetPersistedHistory() {
+// resetPersistedHistory starts a fresh chat for this daemon's workspace — the
+// server-side half of ctrl+n (see PromptRequest.Reset). The chat being closed
+// is SAVED TO HISTORY first (chatarchive.go); this used to delete it.
+//
+// A chat that cannot be saved is NOT cleared, and the returned error says so:
+// ctrl+n must never be the way a chat is lost. spec is the client's active
+// spec, recorded with the saved chat.
+func (s *Server) resetPersistedHistory(spec string) error {
 	if s.memory == nil {
-		return
+		return nil
 	}
+	s.historyMu.Lock()
+	defer s.historyMu.Unlock()
 	// Not the connection's context, for persistTurn's reason: this is a completed
 	// user action (ctrl+n), and a half-cleared history is worse than a slow one.
-	if err := s.memory.ClearWorkspace(context.Background(), s.workspace); err != nil {
-		s.logger.Printf("clearing persisted history: %v", err)
-		return
+	ctx := context.Background()
+	if _, err := s.saveCurrentChatLocked(ctx, spec); err != nil {
+		s.logger.Printf("saving the chat to history: %v", err)
+		return errors.New("the chat could not be saved to history, so it was kept (see the daemon log)")
 	}
-	s.logger.Print("persisted history cleared")
+	if err := s.memory.ClearWorkspace(ctx, s.workspace); err != nil {
+		s.logger.Printf("clearing persisted history: %v", err)
+		return errors.New("the chat was saved to history but could not be cleared (see the daemon log)")
+	}
+	s.logger.Print("chat saved to history and cleared")
+	return nil
+}
+
+// saveCurrentChatLocked saves the workspace's current chat to history and
+// prunes the history folder, returning the new chat's id ("" when there was
+// nothing to save). The caller holds historyMu.
+func (s *Server) saveCurrentChatLocked(ctx context.Context, spec string) (string, error) {
+	turns, err := s.memory.LoadAllTurns(ctx, s.workspace)
+	if err != nil {
+		return "", err
+	}
+	root, err := historyRoot()
+	if err != nil {
+		return "", err
+	}
+	now := time.Now()
+	id, err := newChatArchive(root, s.workspace).save(turns, spec, now)
+	if err != nil || id == "" {
+		return id, err
+	}
+	pruneHistory(root, maxArchivesPerWorkspace, maxSavedChatBytes, now)
+	return id, nil
 }
 
 // parseAndLogEditBlocks parses the just-completed response for SEARCH/REPLACE

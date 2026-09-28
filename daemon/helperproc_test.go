@@ -70,6 +70,25 @@ func TestMain(m *testing.M) {
 	registerProcessCleanup(func() { _ = os.RemoveAll(cacheDir) })
 	os.Setenv("XDG_CACHE_HOME", cacheDir)
 
+	// THE STATE DIRECTORY TOO, for the same reason and before it leaks: ctrl+n
+	// now saves the closed chat under StateDir()/history (chatarchive.go), so
+	// every test that sends a reset would otherwise write chats into the
+	// developer's real ~/.local/state/mochiii/history -- beside their real
+	// memory.db. Tests that exercise StateDir's own resolution set
+	// XDG_STATE_HOME themselves with t.Setenv, which restores this afterwards.
+	stateDir, err := os.MkdirTemp("", "daemon-test-state")
+	if err != nil {
+		runProcessCleanups()
+		panic("creating the test state dir: " + err.Error())
+	}
+	registerProcessCleanup(func() { _ = os.RemoveAll(stateDir) })
+	if err := os.Setenv("XDG_STATE_HOME", stateDir); err != nil {
+		// Running on regardless would write into the real state directory,
+		// which is the leak this block exists to prevent.
+		runProcessCleanups()
+		panic("redirecting the test state dir: " + err.Error())
+	}
+
 	fakeHelperBinPath = filepath.Join(tmpDir, exeName("fakehelper"))
 
 	code := m.Run()

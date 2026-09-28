@@ -26,12 +26,13 @@ import (
 //     request, or change behaviour by being called, is worse than none.
 type counters struct {
 	// Requests, by the discriminator serveConn dispatched on.
-	prompts  atomic.Int64
-	applies  atomic.Int64
-	undos    atomic.Int64
-	searches atomic.Int64
-	statuses atomic.Int64
-	resets   atomic.Int64
+	prompts   atomic.Int64
+	applies   atomic.Int64
+	undos     atomic.Int64
+	searches  atomic.Int64
+	histories atomic.Int64
+	statuses  atomic.Int64
+	resets    atomic.Int64
 
 	// Outcomes of the two filesystem-mutating paths, which are the ones where a
 	// failure leaves state behind.
@@ -102,6 +103,7 @@ func (c *counters) snapshot() *protocol.StatusCounters {
 		Undos:             c.undos.Load(),
 		UndosFailed:       c.undosFailed.Load(),
 		Searches:          c.searches.Load(),
+		Histories:         c.histories.Load(),
 		Statuses:          c.statuses.Load(),
 		Resets:            c.resets.Load(),
 		PeerAuthRefused:   c.peerAuthRefused.Load(),

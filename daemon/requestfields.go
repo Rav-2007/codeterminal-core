@@ -39,13 +39,14 @@ import (
 // Every sniffer in this file and in status.go tests exactly one of them, and
 // every message protocol defines carries exactly one: ApplyEditRequest has
 // "edit", UndoRequest "undo", StatusRequest "status", SearchRequest "search",
-// ToolApprovalResponse "approval", and PromptRequest none at all -- its absence
+// ToolApprovalResponse "approval", ConnectRequest "connect", HistoryRequest
+// "chats", and PromptRequest none at all -- its absence
 // of a discriminator IS its discriminator.
 //
 // Named here rather than at the sniffers because the rule below is about the
 // SET, which no individual sniffer can see. A sniffer knows whether its own key
 // is present; only this list knows whether another one is too.
-var discriminatorKeys = [...]string{"edit", "undo", "status", "search", "approval"}
+var discriminatorKeys = [...]string{"edit", "undo", "status", "search", "approval", "connect", "chats"}
 
 // requestFields decodes raw's top-level object for exact-key inspection,
 // reporting false when it is not a JSON object, when any object in it repeats a

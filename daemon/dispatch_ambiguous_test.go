@@ -107,6 +107,8 @@ func TestDispatch_TwoDiscriminatorsNeverReachTheDestructiveHandler(t *testing.T)
 		{"status then edit", `"status":true,` + edit},
 		{"edit then search", edit + `,"search":true`},
 		{"edit then approval", edit + `,"approval":true`},
+		{"edit then connect", edit + `,"connect":true`},
+		{"chats then edit", `"chats":true,"action":"delete",` + edit},
 		{"every discriminator at once", `"status":true,"search":true,"undo":true,` + edit},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

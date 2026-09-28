@@ -17,8 +17,10 @@ func TestServer_MemoryHelpersAreNoOpsWhenMemoryIsNil(t *testing.T) {
 	if got := srv.loadPersistedHistory(t.Context()); got != nil {
 		t.Errorf("loadPersistedHistory() = %+v, want nil when s.memory is nil", got)
 	}
-	srv.persistTurn("q", "a", nil) // must not panic
-	srv.resetPersistedHistory()    // must not panic
+	srv.persistTurn("q", "a", nil)                        // must not panic
+	if err := srv.resetPersistedHistory(""); err != nil { // must not panic, and has nothing to save
+		t.Errorf("resetPersistedHistory with no memory = %v, want nil", err)
+	}
 }
 
 func TestServer_PersistTurnAppendsUserThenAssistant(t *testing.T) {
@@ -74,7 +76,9 @@ func TestServer_ResetPersistedHistoryClearsOnlyThisWorkspace(t *testing.T) {
 	}
 
 	srv := &Server{logger: discardLogger(), workspace: "/workspace/x", memory: memStore}
-	srv.resetPersistedHistory()
+	if err := srv.resetPersistedHistory(""); err != nil {
+		t.Fatalf("resetPersistedHistory: %v", err)
+	}
 
 	gotX, err := memStore.LoadRecentTurns(ctx, "/workspace/x", 12, false)
 	if err != nil {

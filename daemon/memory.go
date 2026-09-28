@@ -386,6 +386,67 @@ func (s *MemoryStore) LoadRecentTurns(ctx context.Context, workspace string, lim
 	return turns, nil
 }
 
+// storedTurn is one row as it is on disk, with the time it was written.
+type storedTurn struct {
+	Role, Content, CreatedAt string
+}
+
+// LoadAllTurns returns every persisted turn for workspace, oldest first --
+// the whole current chat, which ctrl+n saves to history before clearing it
+// (chatarchive.go). Unlike LoadRecentTurns it neither caps nor re-validates:
+// what it returns is archived as it is and re-validated when it is read back.
+func (s *MemoryStore) LoadAllTurns(ctx context.Context, workspace string) ([]storedTurn, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT role, content, created_at FROM turns WHERE workspace = ? ORDER BY id`, workspace)
+	if err != nil {
+		return nil, fmt.Errorf("loading turns: %w", err)
+	}
+	defer func() { _ = rows.Close() }() // read-only; rows.Err below reports failures
+	var out []storedTurn
+	for rows.Next() {
+		var t storedTurn
+		if err := rows.Scan(&t.Role, &t.Content, &t.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scanning turn: %w", err)
+		}
+		out = append(out, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("loading turns: %w", err)
+	}
+	return out, nil
+}
+
+// ReplaceWorkspace makes turns the workspace's whole conversation, in one
+// transaction -- how /history resume brings a saved chat back.
+//
+// THE TURNS ARE STAMPED WITH NOW, not the times they were first said.
+// pruneWorkspace drops turns older than maxTurnAge on every append, so a chat
+// resumed after a month would lose all of its old turns on its very first new
+// exchange. created_at is display-only (see turnsTableDDL); order is by id,
+// which insertion order preserves.
+func (s *MemoryStore) ReplaceWorkspace(ctx context.Context, workspace string, turns []protocol.Turn) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("replacing workspace history: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // a no-op once Commit has succeeded
+	if _, err := tx.ExecContext(ctx, `DELETE FROM turns WHERE workspace = ?`, workspace); err != nil {
+		return fmt.Errorf("replacing workspace history: %w", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	for _, t := range turns {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO turns (workspace, role, content, created_at) VALUES (?, ?, ?, ?)`,
+			workspace, t.Role, t.Content, now); err != nil {
+			return fmt.Errorf("replacing workspace history: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("replacing workspace history: %w", err)
+	}
+	return reclaimFreePages(ctx, s.db)
+}
+
 // ClearWorkspace deletes all persisted turns for workspace -- the
 // server-side half of ctrl+n's reset (see PromptRequest.Reset in
 // protocol.go and handleConn in server.go).

@@ -1180,6 +1180,69 @@ type SearchResponse struct {
 	Error           string         `json:"error,omitempty"`
 }
 
+// History actions (HistoryRequest.Action).
+const (
+	HistoryList   = "list"   // the current chat, then the saved ones, newest first
+	HistoryShow   = "show"   // one saved chat's turns, read-only
+	HistoryResume = "resume" // save the current chat, make the chosen one current
+	HistoryDelete = "delete" // remove one saved chat
+)
+
+// HistoryRequest asks the daemon about PAST CHATS in its own workspace: the
+// conversations ctrl+n closed, kept compressed under the daemon's state
+// directory (daemon/chatarchive.go). Sent on its own connection after a
+// HandshakeRequest, like SearchRequest.
+//
+// Chats is the discriminator, always serialized for SearchRequest.Search's
+// reason. It is NOT "history": PromptRequest already has a "history" field
+// (the turns sent with a prompt), and one key must not select two things. Workspace is ignored exactly as SearchRequest's is: the daemon only
+// ever reads its own workspace's chats. ID names a saved chat for show, resume
+// and delete; it is checked against the archive's file-name pattern, so it can
+// never name a path. Spec is the client's active spec, used only to label the
+// current chat in a list.
+type HistoryRequest struct {
+	ProtocolVersion int    `json:"protocol_version"`
+	Chats           bool   `json:"chats"`
+	Workspace       string `json:"workspace,omitempty"`
+	Action          string `json:"action"`
+	ID              string `json:"id,omitempty"`
+	Spec            string `json:"spec,omitempty"`
+}
+
+// HistoryEntry is one chat in a list. Current marks the live conversation,
+// which has no ID because it is not saved yet.
+//
+// The last three fields say whether the work was left HALF DONE:
+// Incomplete is the reason the chat's last answer was cut off (an
+// IncompleteInfo reason: "length", "user_cancelled", ...), and SpecOpen of
+// SpecTotal success criteria in the chat's spec were still unticked when the
+// list was made.
+type HistoryEntry struct {
+	ID         string `json:"id,omitempty"`
+	Current    bool   `json:"current,omitempty"`
+	Title      string `json:"title"`
+	LastPrompt string `json:"last_prompt,omitempty"`
+	Started    string `json:"started,omitempty"`
+	Ended      string `json:"ended,omitempty"`
+	Turns      int    `json:"turns"`
+	Incomplete string `json:"incomplete,omitempty"`
+	Spec       string `json:"spec,omitempty"`
+	SpecOpen   int    `json:"spec_open,omitempty"`
+	SpecTotal  int    `json:"spec_total,omitempty"`
+}
+
+// HistoryResponse answers a HistoryRequest. Entries answers list; Turns and
+// Entry answer show and resume (Entry says what was shown or resumed, Turns
+// is its conversation, oldest first). Error is set only when the action could
+// not be done -- an empty list is not an error.
+type HistoryResponse struct {
+	ProtocolVersion int            `json:"protocol_version"`
+	Entries         []HistoryEntry `json:"entries,omitempty"`
+	Entry           *HistoryEntry  `json:"entry,omitempty"`
+	Turns           []Turn         `json:"turns,omitempty"`
+	Error           string         `json:"error,omitempty"`
+}
+
 // StatusRequest asks the daemon to describe its own current state. It is the
 // operator-facing counterpart to the per-request Degraded signal: that one is
 // pushed to whoever happens to be prompting, this one can be pulled at any
@@ -1383,6 +1446,7 @@ type StatusCounters struct {
 	Undos         int64 `json:"undos"`
 	UndosFailed   int64 `json:"undos_failed"`
 	Searches      int64 `json:"searches"`
+	Histories     int64 `json:"histories"`
 	Statuses      int64 `json:"statuses"`
 	Resets        int64 `json:"resets"`
 
