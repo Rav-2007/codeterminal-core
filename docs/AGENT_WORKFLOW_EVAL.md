@@ -400,3 +400,23 @@ cannot cover them on the new default. Until they run:
 - `/spec build` stays opt-in and unrecommended.
 
 Their rules above still stand.
+
+### Stages C and D — amendment before they run (2026-09-28)
+
+The owner raised the key's limit to $7.00 for these two stages. Hard cap: **$3.90**
+across both, split into per-arm dollar caps. All arms run on the new default,
+`deepseek_v4_pro`, in parallel.
+
+**Stage C (`/team` shape, M4 rules unchanged)** runs 14 tasks × 2 trials each for
+`researcher,coder` and `planner,coder`.
+
+The single-agent arm is **not re-run**. It is Stage B's pro trials: the first two graded
+trials of each task, in time order. That is the same code, model and harness, and the
+choice depends only on order. It scored **23/28**, median 36.3k tokens. It was computed
+and written here before either `/team` arm ran.
+
+**Stage D (`/spec build`, M3 rules unchanged)** runs the 6 tasks that have a `spec.md`,
+2 trials each, as two arms:
+
+- **anchored:** an ordinary turn with the spec active;
+- **build:** `/spec build`.
