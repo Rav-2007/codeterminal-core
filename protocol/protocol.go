@@ -195,7 +195,18 @@ type HandshakeResponse struct {
 	//
 	// Additive: a client that ignores this field behaves exactly as before.
 	NeedsAPIKey bool `json:"needs_api_key,omitempty"`
+	// Features names what this daemon can do that an older one cannot, so a
+	// client can tell a daemon started before a feature existed -- run-tui.sh
+	// rebuilds both halves but keeps a daemon that is already running -- and
+	// say "restart it" instead of misbehaving. Additive: an older daemon omits
+	// it, which is exactly the signal.
+	Features []string `json:"features,omitempty"`
 }
+
+// FeatureChatHistory: ctrl+n SAVES the chat to history instead of deleting
+// it, and HistoryRequest is understood. A daemon without it deletes the chat on
+// a reset, so a client must not send one expecting it to be kept.
+const FeatureChatHistory = "chat_history"
 
 // PromptRequest carries a single user prompt. Sent by the client only after
 // a successful handshake. Workspace is optional and additive: when set,

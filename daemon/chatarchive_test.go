@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -594,5 +595,37 @@ func TestDispatch_ChatsRequestReachesHistory(t *testing.T) {
 	var resp protocol.HistoryResponse
 	if err := json.Unmarshal([]byte(replies[0]), &resp); err != nil || len(resp.Entries) != 1 || resp.Entries[0].Title != "over the wire" {
 		t.Errorf("reply = %q (err %v), want the current chat listed", replies[0], err)
+	}
+}
+
+// A client tells a daemon from before /history by this: without it, it must
+// not send a reset (an older daemon deletes the chat) or a history request.
+func TestHandshakeAdvertisesChatHistory(t *testing.T) {
+	srv := &Server{logger: discardLogger(), workspace: t.TempDir()}
+	clientConn, serverConn := net.Pipe()
+	done := make(chan struct{})
+	go func() {
+		srv.serveConn(serverConn)
+		_ = serverConn.Close()
+		close(done)
+	}()
+	defer func() { _ = clientConn.Close(); <-done }()
+
+	_ = clientConn.SetDeadline(time.Now().Add(5 * time.Second))
+	if err := json.NewEncoder(clientConn).Encode(protocol.HandshakeRequest{
+		ProtocolVersion: protocol.ProtocolVersion, ClientName: "features-test",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var hs protocol.HandshakeResponse
+	if err := json.NewDecoder(clientConn).Decode(&hs); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, f := range hs.Features {
+		found = found || f == protocol.FeatureChatHistory
+	}
+	if !hs.Ok || !found {
+		t.Errorf("handshake = %+v, want ok and Features to name %q", hs, protocol.FeatureChatHistory)
 	}
 }

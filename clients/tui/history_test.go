@@ -30,6 +30,13 @@ func (f *fakeHistoryDaemon) seen() []protocol.HistoryRequest {
 
 func serveHistory(t *testing.T, respond func(protocol.HistoryRequest) protocol.HistoryResponse) *fakeHistoryDaemon {
 	t.Helper()
+	return serveHistoryWith(t, []string{protocol.FeatureChatHistory}, respond)
+}
+
+// serveHistoryWith chooses the handshake's Features: nil plays a daemon from
+// before /history.
+func serveHistoryWith(t *testing.T, features []string, respond func(protocol.HistoryRequest) protocol.HistoryResponse) *fakeHistoryDaemon {
+	t.Helper()
 	f := &fakeHistoryDaemon{}
 	dir := t.TempDir()
 	addr := testAddress(t)
@@ -56,7 +63,7 @@ func serveHistory(t *testing.T, respond func(protocol.HistoryRequest) protocol.H
 				if dec.Decode(&hs) != nil {
 					return
 				}
-				_ = enc.Encode(protocol.HandshakeResponse{ProtocolVersion: protocol.ProtocolVersion, Ok: true})
+				_ = enc.Encode(protocol.HandshakeResponse{ProtocolVersion: protocol.ProtocolVersion, Ok: true, Features: features})
 				var req protocol.HistoryRequest
 				if dec.Decode(&req) != nil {
 					return
@@ -234,6 +241,22 @@ func TestHistory_ResumeWaitsForTheTurnInFlight(t *testing.T) {
 	}
 	if len(f.seen()) != 0 {
 		t.Errorf("resume during a turn reached the daemon: %+v", f.seen())
+	}
+}
+
+// A daemon started before /history answers a history request as an empty
+// prompt. The client must say "restart it", not show that confusion.
+func TestHistory_AnOlderDaemonIsToldApart(t *testing.T) {
+	f := serveHistoryWith(t, nil, func(protocol.HistoryRequest) protocol.HistoryResponse {
+		return protocol.HistoryResponse{Error: "prompt is empty"}
+	})
+	got, _ := newTestModel().handleHistoryCommand("")
+	note := lastNote(t, got)
+	if !strings.Contains(note.text, "older than /history") || !strings.Contains(note.text, "./run-tui.sh --stop") {
+		t.Errorf("/history against an older daemon = %q, want it to say restart it", note.text)
+	}
+	if len(f.seen()) != 0 {
+		t.Errorf("a history request was sent to a daemon that cannot answer it: %+v", f.seen())
 	}
 }
 

@@ -411,6 +411,7 @@ func (s *Server) serveConn(conn net.Conn) {
 		DaemonVersion:    daemonVersion,
 		PersistedHistory: s.loadPersistedHistory(ctx),
 		NeedsAPIKey:      s.needsAPIKey(),
+		Features:         []string{protocol.FeatureChatHistory},
 	}); err != nil {
 		s.logger.Printf("handshake write error: %v", err)
 		return

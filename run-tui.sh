@@ -21,6 +21,8 @@
 # The environment wins; this script says which one it found.
 #
 # Stop the daemon it started with:  ./run-tui.sh --stop
+# A daemon left running from an older build is restarted automatically (Linux),
+# so the client and the daemon are always the same version.
 
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
@@ -87,17 +89,63 @@ fi
 ARGS=("$@")
 [[ " ${ARGS[*]} " == *" --workspace "* ]] || ARGS+=(--workspace .)
 
+# A DAEMON OLDER THAN THIS BUILD IS RESTARTED, NOT REUSED. The build above
+# replaced the binary, but a daemon that is already running keeps executing the
+# old one -- and a new client on an old daemon is two versions of the product:
+# /history does not work, and a daemon from before 2f559ed DELETES the chat on
+# ctrl+n instead of saving it. `go build` rewrites the file only when the code
+# changed (measured: same source, same inode; changed source, a new one), so the
+# running executable being a different inode from the file on disk means exactly
+# "built from older code". Linux only (/proc); elsewhere nothing changes here,
+# and the client itself says "restart it".
+#
+# Restarting between turns is safe for a client in another terminal: it opens a
+# connection per prompt and finds the new daemon through the lock file. A turn
+# in flight there when this runs would end.
+stale=()
+for pid in $(pgrep -f "$BIN/mochiii-daemon" || true); do
+	running=$(stat -L -c %i "/proc/$pid/exe" 2>/dev/null) || continue
+	[[ "$running" == "$(stat -c %i "$BIN/mochiii-daemon")" ]] || stale+=("$pid")
+done
+if (( ${#stale[@]} )); then
+	echo "restarting the daemon: it is running an older build than the one just made"
+	kill "${stale[@]}" 2>/dev/null || true
+	for _ in $(seq 1 50); do
+		alive=()
+		for pid in "${stale[@]}"; do kill -0 "$pid" 2>/dev/null && alive+=("$pid"); done
+		(( ${#alive[@]} )) || break
+		sleep 0.1
+	done
+	(( ${#alive[@]} == 0 )) || die "the old daemon (pid ${alive[*]}) did not stop; run ./run-tui.sh --stop, then this again"
+fi
+
 if pgrep -f "$BIN/mochiii-daemon" >/dev/null 2>&1; then
 	echo "daemon already running (./run-tui.sh --stop to restart it)"
 else
 	echo "starting daemon -> $LOG"
 	nohup "$BIN/mochiii-daemon" --config "$CONFIG" "${ARGS[@]}" >"$LOG" 2>&1 &
+	dpid=$!
+	# Wait for THIS daemon's lock -- one naming its pid -- not any daemon's: a
+	# lock left by another workspace's daemon, or by the one just stopped, used
+	# to end the wait before this one was listening.
+	up=""
 	for _ in $(seq 1 30); do
-		compgen -G "${XDG_RUNTIME_DIR:-/tmp}/mochiii/daemon-*.lock" >/dev/null && break
+		if grep -Eqs "\"pid\": *$dpid[,} ]" "${XDG_RUNTIME_DIR:-/tmp}"/mochiii/daemon-*.lock; then
+			up=1
+			break
+		fi
+		if ! kill -0 "$dpid" 2>/dev/null; then
+			code=0
+			wait "$dpid" || code=$?
+			# exitAlreadyRunning (daemon/exitcodes.go): another daemon already
+			# serves this workspace -- one root, one daemon -- and the client
+			# will use it.
+			(( code == 3 )) && { echo "another daemon already serves this workspace; using it"; up=1; break; }
+			die "daemon exited at startup (code $code); see $LOG"
+		fi
 		sleep 1
 	done
-	compgen -G "${XDG_RUNTIME_DIR:-/tmp}/mochiii/daemon-*.lock" >/dev/null \
-		|| die "daemon did not come up; see $LOG"
+	[[ -n "$up" ]] || die "daemon did not come up; see $LOG"
 fi
 
 echo "config=$CONFIG   daemon log: tail -f $LOG"

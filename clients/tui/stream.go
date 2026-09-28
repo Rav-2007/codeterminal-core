@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -174,6 +175,14 @@ func resetHistoryOnDaemon(ctx context.Context, clientName, spec string, ch chan 
 		return
 	}
 	defer func() { _ = sess.Close() }() // see daemonSession.Close
+
+	// AN OLDER DAEMON DELETES THE CHAT ON A RESET. This client promises ctrl+n
+	// saves it, so to a daemon that cannot, the reset is not sent: the chat is
+	// kept, and the note says why and what to do.
+	if !hasFeature(sess.handshake, protocol.FeatureChatHistory) {
+		ch <- resetErrMsg{fmt.Errorf("it would have deleted this chat, so the chat was kept (%w)", errDaemonPredatesHistory)}
+		return
+	}
 
 	// Spec rides along so the daemon records which spec the saved chat was
 	// working to (daemon/chatarchive.go); /history shows its open criteria.

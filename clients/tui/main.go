@@ -18,6 +18,7 @@ import (
 	"github.com/mattn/go-isatty"
 
 	"mochiii/editapply"
+	"mochiii/protocol"
 )
 
 func main() {
@@ -101,6 +102,7 @@ func runChat(workspace string) {
 	persistedHistory := preflight.handshake.PersistedHistory
 	// Read here, beside the other handshake field, rather than after Close below.
 	needsAPIKey := preflight.handshake.NeedsAPIKey
+	daemonSavesChats := hasFeature(preflight.handshake, protocol.FeatureChatHistory)
 	// Ignored deliberately, and it is the same reasoning at all five close
 	// sites in this client -- see the note on daemonSession.Close.
 	_ = preflight.Close()
@@ -115,6 +117,12 @@ func runChat(workspace string) {
 	// prompt, and asks for a key only when a question actually needs one. See
 	// beginConnectForPrompt in connect.go.
 	model.needsAPIKey = needsAPIKey
+	// Said once, first thing: a daemon older than this client cannot keep
+	// chats, and the user should not find that out by losing one.
+	if !daemonSavesChats {
+		model.appendTurn(turn{role: roleSystem, text: "⚠ " + errDaemonPredatesHistory.Error() +
+			" (until then /history does not work, and ctrl+n clears only the screen)"})
+	}
 
 	// Mouse capture ON: the wheel scrolls the transcript as mouse events, which
 	// leaves up/down free for prompt history. Selection is shift+drag, and the

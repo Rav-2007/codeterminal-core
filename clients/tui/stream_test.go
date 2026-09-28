@@ -348,6 +348,13 @@ func TestStreamPrompt_ContextCancelUnblocksBlockedRead(t *testing.T) {
 // first. Captures the received PromptRequest for assertions.
 func fakeDaemonForReset(t *testing.T, failReason string, requests chan<- protocol.PromptRequest) (lockPath string, cleanup func()) {
 	t.Helper()
+	return fakeDaemonForResetWith(t, failReason, []string{protocol.FeatureChatHistory}, requests)
+}
+
+// fakeDaemonForResetWith is fakeDaemonForReset with the handshake's Features
+// chosen: nil plays a daemon from before /history.
+func fakeDaemonForResetWith(t *testing.T, failReason string, features []string, requests chan<- protocol.PromptRequest) (lockPath string, cleanup func()) {
+	t.Helper()
 	dir := t.TempDir()
 	addr := testAddress(t)
 	lockPath = filepath.Join(dir, "daemon.lock")
@@ -381,7 +388,7 @@ func fakeDaemonForReset(t *testing.T, failReason string, requests chan<- protoco
 		if err := dec.Decode(&hsReq); err != nil {
 			return
 		}
-		enc.Encode(protocol.HandshakeResponse{ProtocolVersion: protocol.ProtocolVersion, Ok: true}) //nolint:errcheck
+		enc.Encode(protocol.HandshakeResponse{ProtocolVersion: protocol.ProtocolVersion, Ok: true, Features: features}) //nolint:errcheck
 
 		var promptReq protocol.PromptRequest
 		if err := dec.Decode(&promptReq); err != nil {
@@ -436,6 +443,33 @@ func TestResetHistoryOnDaemon_SendsResetTrueWithEmptyPromptAndHistory(t *testing
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("fake daemon never received a PromptRequest")
+	}
+}
+
+// A daemon from before /history DELETES the chat on a reset. ctrl+n must not
+// send it one: the chat is kept, and the user is told to restart the daemon.
+func TestResetHistoryOnDaemon_AnOlderDaemonIsNotAskedToDeleteTheChat(t *testing.T) {
+	requests := make(chan protocol.PromptRequest, 1)
+	lockPath, cleanup := fakeDaemonForResetWith(t, "", nil, requests)
+	defer cleanup()
+	restoreLockPath := setLockPathForTest(t, lockPath)
+	defer restoreLockPath()
+
+	ch := make(chan tea.Msg, 1)
+	resetHistoryOnDaemon(context.Background(), "test-client", "", ch)
+
+	msg := <-ch
+	errMsg, ok := msg.(resetErrMsg)
+	if !ok {
+		t.Fatalf("got %#v, want resetErrMsg from a daemon that cannot keep the chat", msg)
+	}
+	if !strings.Contains(errMsg.err.Error(), "kept") || !strings.Contains(errMsg.err.Error(), "./run-tui.sh --stop") {
+		t.Errorf("err = %v, want it to say the chat was kept and how to restart", errMsg.err)
+	}
+	select {
+	case req := <-requests:
+		t.Errorf("a reset was sent to a daemon that deletes the chat: %+v", req)
+	case <-time.After(200 * time.Millisecond):
 	}
 }
 
