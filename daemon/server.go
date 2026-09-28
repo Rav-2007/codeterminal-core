@@ -1310,8 +1310,12 @@ func (s *Server) persistTurn(prompt, answer string, incomplete *protocol.Incompl
 // ctrl+n must never be the way a chat is lost. spec is the client's active
 // spec, recorded with the saved chat.
 func (s *Server) resetPersistedHistory(spec string) error {
+	// NO MEMORY, NOTHING SAVED -- and ctrl+n must not be told otherwise. The
+	// store is nil only when it failed to open (setupMemoryStore logged why),
+	// so nothing from this session was ever kept; saying "previous chat saved"
+	// would be a claim about a chat that exists nowhere.
 	if s.memory == nil {
-		return nil
+		return errors.New("conversation memory is not available (see the daemon log), so the chat was not saved")
 	}
 	s.historyMu.Lock()
 	defer s.historyMu.Unlock()

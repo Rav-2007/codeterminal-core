@@ -108,7 +108,10 @@ func roundTripPrompt(t *testing.T, addr protocol.Address, req protocol.PromptReq
 // large-payload bytes rather than a trivially small message.
 func TestServe_SizeCap_RejectsOversizeAdmitsLegit(t *testing.T) {
 	const cap = 8 << 20 // 8 MiB cap for a fast, deterministic test
-	srv := &Server{logger: discardLogger(), workspace: "/ws", maxRequestBytes: cap}
+	// A memory store, because the Reset used below as the model-free request
+	// reports "not saved" as an error on a daemon that has none.
+	mem, _ := openTestMemoryStore(t)
+	srv := &Server{logger: discardLogger(), workspace: "/ws", maxRequestBytes: cap, memory: mem}
 	addr := startTestServer(t, srv)
 
 	// Under the cap (~6 MiB): decodes and returns a bare Done:true (Reset path,

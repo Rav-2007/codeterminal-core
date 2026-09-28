@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net"
+	"strings"
 	"testing"
 
 	"mochiii/protocol"
@@ -17,9 +18,11 @@ func TestServer_MemoryHelpersAreNoOpsWhenMemoryIsNil(t *testing.T) {
 	if got := srv.loadPersistedHistory(t.Context()); got != nil {
 		t.Errorf("loadPersistedHistory() = %+v, want nil when s.memory is nil", got)
 	}
-	srv.persistTurn("q", "a", nil)                        // must not panic
-	if err := srv.resetPersistedHistory(""); err != nil { // must not panic, and has nothing to save
-		t.Errorf("resetPersistedHistory with no memory = %v, want nil", err)
+	srv.persistTurn("q", "a", nil) // must not panic
+	// Must not panic -- and must not claim a chat was saved when there is no
+	// memory to save it in: ctrl+n shows this error instead of "saved".
+	if err := srv.resetPersistedHistory(""); err == nil || !strings.Contains(err.Error(), "not saved") {
+		t.Errorf("resetPersistedHistory with no memory = %v, want an error saying the chat was not saved", err)
 	}
 }
 
