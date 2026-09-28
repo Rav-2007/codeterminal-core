@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -154,9 +153,9 @@ type resetOkMsg struct{}
 // connection (the wire protocol is one prompt per connection, same as
 // startStream), in its own goroutine, returning a Cmd that reports only
 // failure via resetErrMsg.
-func startReset(ctx context.Context, clientName, spec string, ch chan tea.Msg) tea.Cmd {
+func startReset(ctx context.Context, clientName string, ch chan tea.Msg) tea.Cmd {
 	return func() tea.Msg {
-		go resetHistoryOnDaemon(ctx, clientName, spec, ch)
+		go resetHistoryOnDaemon(ctx, clientName, ch)
 		return <-ch
 	}
 }
@@ -165,7 +164,7 @@ func startReset(ctx context.Context, clientName, spec string, ch chan tea.Msg) t
 // single TokenResponse. Mirrors streamPrompt's connect/encode/decode
 // pattern but without a streaming loop, since a reset gets exactly one
 // reply.
-func resetHistoryOnDaemon(ctx context.Context, clientName, spec string, ch chan tea.Msg) {
+func resetHistoryOnDaemon(ctx context.Context, clientName string, ch chan tea.Msg) {
 	sess, err := connectToDaemon(clientName)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -176,20 +175,9 @@ func resetHistoryOnDaemon(ctx context.Context, clientName, spec string, ch chan 
 	}
 	defer func() { _ = sess.Close() }() // see daemonSession.Close
 
-	// AN OLDER DAEMON DELETES THE CHAT ON A RESET. This client promises ctrl+n
-	// saves it, so to a daemon that cannot, the reset is not sent: the chat is
-	// kept, and the note says why and what to do.
-	if !hasFeature(sess.handshake, protocol.FeatureChatHistory) {
-		ch <- resetErrMsg{fmt.Errorf("it would have deleted this chat, so the chat was kept (%w)", errDaemonPredatesHistory)}
-		return
-	}
-
-	// Spec rides along so the daemon records which spec the saved chat was
-	// working to (daemon/chatarchive.go); /history shows its open criteria.
 	if err := sess.enc.Encode(protocol.PromptRequest{
 		ProtocolVersion: protocol.ProtocolVersion,
 		Reset:           true,
-		Spec:            spec,
 	}); err != nil {
 		if ctx.Err() != nil {
 			return

@@ -419,22 +419,28 @@ client; steered commands send a task preamble to the model.
 
 /team <question>       # researcher -> coder specialists (/team:planner,coder …)
 
-/history               # past chats in this project; ⚠ marks work left half done
+/history save [name]   # keep this chat; saving again later updates it
+/history               # saved chats in this project; ⚠ marks work left half done
 /history 2             # read saved chat 2
-/history resume 2      # continue it (the chat on screen is saved first)
+/history resume 2      # continue it
 /history delete 2      # delete it
 
 /help /mcp-server /explain /fix /test /refactor /doc /security
 /review /plan /run /clear /compact /context /git /init /search /exit
 ```
 
-**Chat history.** ctrl+n saves the chat on screen and starts a new one; relaunching
-continues where you left off. Everything stays on this machine:
+**Chat history.** A chat is kept only if you save it with `/history save`, so disk use
+stays your choice. ctrl+n starts a new chat and discards the current one, but on a chat
+that is not saved it only warns the first time: a second ctrl+n discards it.
+Relaunching continues where you left off. Everything stays on this machine:
 
 - **Where:** saved chats live in `~/.local/state/mochiii/history/`, one gzipped file per
   chat, never inside the project.
+- **Saving again:** after more work, `/history save` updates the chat's saved copy
+  instead of adding a new one. `/history resume` keeps the saved copy, and asks first
+  if the chat on screen is not saved.
 - **How much is kept:** at most 50 chats per project and 20 MiB for the whole folder.
-  The oldest go first.
+  If a save pushes out the oldest, it tells you.
 - **Half-done work:** `/history` flags it with ⚠: a last answer that did not finish, or a
   spec that still has open criteria.
 - **Deleting:** `/history delete <n>` removes one chat. To remove all of them, delete the

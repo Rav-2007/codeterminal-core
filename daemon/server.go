@@ -105,10 +105,10 @@ type Server struct {
 	// request, exactly like embedder/store above.
 	memory *MemoryStore
 
-	// historyMu serialises every change to WHICH CHAT IS CURRENT -- ctrl+n's
-	// save-and-clear, /history resume -- with persistTurn's two appends.
-	// Without it an exchange finishing during a ctrl+n could land half in the
-	// saved chat and half in the new one.
+	// historyMu serialises everything that reads or replaces the current chat
+	// as a whole -- /history save, /history resume, ctrl+n's clear -- with
+	// persistTurn's two appends. Without it a save taken while an exchange
+	// finishes could keep its question and not its answer.
 	historyMu sync.Mutex
 
 	// freshness memoises "has the workspace changed since the index was built"
@@ -411,7 +411,7 @@ func (s *Server) serveConn(conn net.Conn) {
 		DaemonVersion:    daemonVersion,
 		PersistedHistory: s.loadPersistedHistory(ctx),
 		NeedsAPIKey:      s.needsAPIKey(),
-		Features:         []string{protocol.FeatureChatHistory},
+		Features:         []string{protocol.FeatureSavedChats},
 	}); err != nil {
 		s.logger.Printf("handshake write error: %v", err)
 		return
@@ -547,17 +547,11 @@ func (s *Server) serveConn(conn net.Conn) {
 	}
 	promptReq.Mode = normalizedMode
 
-	// ctrl+n. Before the spec is read: a reset only RECORDS the active spec's
-	// path with the chat it saves (chatarchive.go validates it), so a spec file
+	// ctrl+n. Before the spec is read: a reset uses no spec, so a spec file
 	// deleted since must not make starting a new chat fail.
 	if promptReq.Reset {
 		s.count(func(c *counters) { c.resets.Add(1) })
-		if err := s.resetPersistedHistory(promptReq.Spec); err != nil {
-			// One-shot reply on a connection about to close: a client that has
-			// gone cannot be told, and the daemon log already has the cause.
-			_ = enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Error: err.Error()})
-			return
-		}
+		s.resetPersistedHistory()
 		enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Done: true})
 		return
 	}
@@ -1303,56 +1297,67 @@ func (s *Server) persistTurn(prompt, answer string, incomplete *protocol.Incompl
 }
 
 // resetPersistedHistory starts a fresh chat for this daemon's workspace — the
-// server-side half of ctrl+n (see PromptRequest.Reset). The chat being closed
-// is SAVED TO HISTORY first (chatarchive.go); this used to delete it.
-//
-// A chat that cannot be saved is NOT cleared, and the returned error says so:
-// ctrl+n must never be the way a chat is lost. spec is the client's active
-// spec, recorded with the saved chat.
-func (s *Server) resetPersistedHistory(spec string) error {
-	// NO MEMORY, NOTHING SAVED -- and ctrl+n must not be told otherwise. The
-	// store is nil only when it failed to open (setupMemoryStore logged why),
-	// so nothing from this session was ever kept; saying "previous chat saved"
-	// would be a claim about a chat that exists nowhere.
+// server-side half of ctrl+n (see PromptRequest.Reset). The chat is DISCARDED,
+// never written to history: only /history save keeps one (chatarchive.go), and
+// the client warns before discarding a chat that is not saved. The link to the
+// saved copy is forgotten with it -- the new chat is not that one.
+func (s *Server) resetPersistedHistory() {
 	if s.memory == nil {
-		return errors.New("conversation memory is not available (see the daemon log), so the chat was not saved")
+		return
 	}
 	s.historyMu.Lock()
 	defer s.historyMu.Unlock()
 	// Not the connection's context, for persistTurn's reason: this is a completed
 	// user action (ctrl+n), and a half-cleared history is worse than a slow one.
-	ctx := context.Background()
-	if _, err := s.saveCurrentChatLocked(ctx, spec); err != nil {
-		s.logger.Printf("saving the chat to history: %v", err)
-		return errors.New("the chat could not be saved to history, so it was kept (see the daemon log)")
-	}
-	if err := s.memory.ClearWorkspace(ctx, s.workspace); err != nil {
+	if err := s.memory.ClearWorkspace(context.Background(), s.workspace); err != nil {
 		s.logger.Printf("clearing persisted history: %v", err)
-		return errors.New("the chat was saved to history but could not be cleared (see the daemon log)")
+		return
 	}
-	s.logger.Print("chat saved to history and cleared")
-	return nil
+	if root, err := historyRoot(); err == nil {
+		newChatArchive(root, s.workspace).clearLink()
+	}
+	s.logger.Print("persisted history cleared")
 }
 
-// saveCurrentChatLocked saves the workspace's current chat to history and
-// prunes the history folder, returning the new chat's id ("" when there was
-// nothing to save). The caller holds historyMu.
-func (s *Server) saveCurrentChatLocked(ctx context.Context, spec string) (string, error) {
+// saveChatLocked saves the workspace's current chat -- /history save. A chat
+// saved before (or resumed from a saved copy) is UPDATED: the new copy replaces
+// the old one, and keeps its name unless a new one is given. It returns the
+// saved chat's id and header, and how many old chats pruning then removed. The
+// caller holds historyMu, so an exchange finishing now is saved whole or not
+// at all.
+func (s *Server) saveChatLocked(ctx context.Context, archive *chatArchive, spec, name string) (string, archiveHeader, int, error) {
 	turns, err := s.memory.LoadAllTurns(ctx, s.workspace)
 	if err != nil {
-		return "", err
+		return "", archiveHeader{}, 0, err
 	}
-	root, err := historyRoot()
-	if err != nil {
-		return "", err
+	link := archive.readLink()
+	if name == "" && link.ID != "" {
+		if h, _, err := archive.load(link.ID); err == nil {
+			name = h.Name
+		}
 	}
 	now := time.Now()
-	id, err := newChatArchive(root, s.workspace).save(turns, spec, now)
-	if err != nil || id == "" {
-		return id, err
+	id, err := archive.save(turns, spec, name, now)
+	if err != nil {
+		return "", archiveHeader{}, 0, err
 	}
-	pruneHistory(root, maxArchivesPerWorkspace, maxSavedChatBytes, now)
-	return id, nil
+	if id == "" {
+		return "", archiveHeader{}, 0, errNothingToSave
+	}
+	if link.ID != "" && link.ID != id {
+		// The updated copy replaces the old one; an old copy already gone
+		// (deleted, pruned) is not a failure of this save.
+		if err := archive.remove(link.ID); err != nil && !errors.Is(err, errArchiveNotFound) {
+			s.logger.Printf("history save: removing the previous copy: %v", err)
+		}
+	}
+	if err := archive.writeLink(id, len(turns)); err != nil {
+		s.logger.Printf("history save: %v", err)
+	}
+	h, _ := headerFor(turns, spec, now)
+	h.Name = clipRunes(oneLine(name), archiveTitleRunes)
+	pruned := pruneHistory(archive.root, maxArchivesPerWorkspace, maxSavedChatBytes, now)
+	return id, h, pruned, nil
 }
 
 // parseAndLogEditBlocks parses the just-completed response for SEARCH/REPLACE

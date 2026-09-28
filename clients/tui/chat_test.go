@@ -978,7 +978,15 @@ func TestChat_CtrlNClearsTranscript(t *testing.T) {
 	}
 	m.lastGrounding = &protocol.GroundingInfo{Grounded: true, Chunks: 3}
 	m.lastRedactions = []string{"openai_key"}
+	// No daemon to ask, so the exchange on screen counts as unsaved: the first
+	// ctrl+n only warns (history_test.go covers the saved case).
+	t.Cleanup(setLockPathForTest(t, filepath.Join(t.TempDir(), "absent.lock")))
 
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlN})
+	m = updated.(chatModel)
+	if len(m.turns) == 0 || !m.newChatArmed {
+		t.Fatalf("the first ctrl+n on an unsaved chat discarded it (turns %d, armed %v)", len(m.turns), m.newChatArmed)
+	}
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlN})
 	m = updated.(chatModel)
 
@@ -1096,10 +1104,15 @@ func TestChat_CtrlNReturnsNonNilCmdForBackgroundReset(t *testing.T) {
 	updated, _ = m.Update(streamDoneMsg{})
 	m = updated.(chatModel)
 
+	// Unsaved (no daemon to say otherwise), so the SECOND press is the one that
+	// clears -- and that press must fire the daemon-side reset.
+	t.Cleanup(setLockPathForTest(t, filepath.Join(t.TempDir(), "absent.lock")))
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlN})
+	m = updated.(chatModel)
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlN})
 	m = updated.(chatModel)
 	if len(m.turns) != 0 {
-		t.Fatalf("turns = %+v, want cleared immediately", m.turns)
+		t.Fatalf("turns = %+v, want cleared by the confirming press", m.turns)
 	}
 	if cmd == nil {
 		t.Error("expected a non-nil Cmd to fire the background daemon-side reset")

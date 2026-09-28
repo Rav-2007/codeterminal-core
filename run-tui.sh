@@ -92,8 +92,8 @@ ARGS=("$@")
 # A DAEMON OLDER THAN THIS BUILD IS RESTARTED, NOT REUSED. The build above
 # replaced the binary, but a daemon that is already running keeps executing the
 # old one -- and a new client on an old daemon is two versions of the product:
-# /history does not work, and a daemon from before 2f559ed DELETES the chat on
-# ctrl+n instead of saving it. `go build` rewrites the file only when the code
+# a daemon older than the client may not understand what it asks (/history,
+# for one). `go build` rewrites the file only when the code
 # changed (measured: same source, same inode; changed source, a new one), so the
 # running executable being a different inode from the file on disk means exactly
 # "built from older code". Linux only (/proc); elsewhere nothing changes here,

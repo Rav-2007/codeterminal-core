@@ -56,7 +56,7 @@ func writeRawArchive(t *testing.T, a *chatArchive, id string, h archiveHeader, b
 func TestChatArchive_SaveAndLoadRoundTrip(t *testing.T) {
 	a := testArchive(t, "/workspace/x")
 	turns := append(exchange("add a --verbose flag", "done: added it"), exchange("now test it", "tests pass")...)
-	id, err := a.save(turns, "specs/verbose.md", time.Date(2026, 9, 28, 19, 36, 0, 0, time.UTC))
+	id, err := a.save(turns, "specs/verbose.md", "", time.Date(2026, 9, 28, 19, 36, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatalf("save: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestChatArchive_NothingToSaveWritesNoFile(t *testing.T) {
 		"a prompt alone":  {{Role: "user", Content: "hello"}},
 		"an answer alone": {{Role: "assistant", Content: "hi"}},
 	} {
-		id, err := a.save(turns, "", time.Now())
+		id, err := a.save(turns, "", "", time.Now())
 		if err != nil || id != "" {
 			t.Errorf("%s: save = (%q, %v), want nothing saved", name, id, err)
 		}
@@ -130,7 +130,7 @@ func TestChatArchive_NothingToSaveWritesNoFile(t *testing.T) {
 func TestChatArchive_RecordsWhyTheLastAnswerWasCutOff(t *testing.T) {
 	a := testArchive(t, "/workspace/x")
 	turns := exchange("refactor the tables", "halfway there"+incompleteHistoryNote(protocol.IncompleteUserCancelled))
-	id, err := a.save(turns, "", time.Now())
+	id, err := a.save(turns, "", "", time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +155,7 @@ func TestChatArchive_ListIsNewestFirstAndReadsOnlyTheHeader(t *testing.T) {
 	a := testArchive(t, "/workspace/x")
 	base := time.Date(2026, 9, 28, 10, 0, 0, 0, time.UTC)
 	for i := 0; i < 3; i++ {
-		if _, err := a.save(exchange(fmt.Sprintf("chat %d", i), "ok"), "", base.Add(time.Duration(i)*time.Minute)); err != nil {
+		if _, err := a.save(exchange(fmt.Sprintf("chat %d", i), "ok"), "", "", base.Add(time.Duration(i)*time.Minute)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -184,7 +184,7 @@ func TestChatArchive_ListIsNewestFirstAndReadsOnlyTheHeader(t *testing.T) {
 
 func TestChatArchive_AnIDCanNeverNameAPath(t *testing.T) {
 	a := testArchive(t, "/workspace/x")
-	if _, err := a.save(exchange("q", "a"), "", time.Now()); err != nil {
+	if _, err := a.save(exchange("q", "a"), "", "", time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	outside := filepath.Join(a.root, "keep.jsonl.gz")
@@ -251,7 +251,7 @@ func TestChatArchive_RefusesSymlinks(t *testing.T) {
 		t.Skipf("cannot make a symlink here: %v", err)
 	}
 	a := newChatArchive(root, "/workspace/x")
-	if _, err := a.save(exchange("q", "a"), "", time.Now()); err == nil {
+	if _, err := a.save(exchange("q", "a"), "", "", time.Now()); err == nil {
 		t.Error("save through a symlinked history folder succeeded")
 	}
 	if _, err := a.list(); err == nil {
@@ -280,11 +280,13 @@ func TestPruneHistory_KeepsTheNewestChatsPerWorkspace(t *testing.T) {
 	a := testArchive(t, "/workspace/x")
 	base := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 	for i := 0; i < 5; i++ {
-		if _, err := a.save(exchange(fmt.Sprintf("chat %d", i), "ok"), "", base.Add(time.Duration(i)*time.Hour)); err != nil {
+		if _, err := a.save(exchange(fmt.Sprintf("chat %d", i), "ok"), "", "", base.Add(time.Duration(i)*time.Hour)); err != nil {
 			t.Fatal(err)
 		}
 	}
-	pruneHistory(a.root, 3, 1<<30, time.Now())
+	if n := pruneHistory(a.root, 3, 1<<30, time.Now()); n != 2 {
+		t.Errorf("pruneHistory removed %d, want 2 (so a save can say so)", n)
+	}
 	got, err := a.list()
 	if err != nil {
 		t.Fatal(err)
@@ -306,7 +308,7 @@ func TestPruneHistory_CapsTheWholeFolderOldestFirst(t *testing.T) {
 	base := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 	// x holds the oldest and the newest; y the middle one.
 	for i, a := range []*chatArchive{x, y, x} {
-		if _, err := a.save(exchange(fmt.Sprintf("chat %d", i), strings.Repeat("unique answer text ", 50)+fmt.Sprint(i)), "", base.Add(time.Duration(i)*time.Hour)); err != nil {
+		if _, err := a.save(exchange(fmt.Sprintf("chat %d", i), strings.Repeat("unique answer text ", 50)+fmt.Sprint(i)), "", "", base.Add(time.Duration(i)*time.Hour)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -333,7 +335,9 @@ func TestPruneHistory_CapsTheWholeFolderOldestFirst(t *testing.T) {
 		total += s
 	}
 	// Room for two of the three: only the oldest must go.
-	pruneHistory(root, 50, total-1, time.Now())
+	if n := pruneHistory(root, 50, total-1, time.Now()); n != 1 {
+		t.Errorf("pruneHistory removed %d, want 1", n)
+	}
 
 	xs, _ := x.list()
 	ys, _ := y.list()
@@ -345,7 +349,7 @@ func TestPruneHistory_CapsTheWholeFolderOldestFirst(t *testing.T) {
 	}
 }
 
-// --- The server: ctrl+n saves, /history lists, shows, resumes, deletes ---
+// --- The server: only /history save writes a chat; ctrl+n discards ---
 
 // historyServer is a Server with a memory store and a real workspace folder,
 // with its history under the package's temp XDG_STATE_HOME (see TestMain).
@@ -367,84 +371,121 @@ func askHistory(t *testing.T, srv *Server, req protocol.HistoryRequest) protocol
 	return resp
 }
 
-func TestServer_ResetSavesTheChatBeforeClearingIt(t *testing.T) {
+func saveNow(t *testing.T, srv *Server, name string) protocol.HistoryResponse {
+	t.Helper()
+	resp := askHistory(t, srv, protocol.HistoryRequest{Action: protocol.HistorySave, Name: name})
+	if resp.Error != "" || resp.Entry == nil {
+		t.Fatalf("save = %+v", resp)
+	}
+	return resp
+}
+
+func savedFiles(t *testing.T) []string {
+	t.Helper()
+	root, _ := historyRoot()
+	files, _ := filepath.Glob(filepath.Join(root, "*", "*"+archiveSuffix))
+	return files
+}
+
+// Nothing reaches disk unless the user saves it: ctrl+n discards.
+func TestServer_ResetDiscardsTheChatAndSavesNothing(t *testing.T) {
 	mem, _ := openTestMemoryStore(t)
 	srv := historyServer(t, mem)
 	srv.persistTurn("add a --verbose flag", "added", nil)
 
-	if err := srv.resetPersistedHistory(""); err != nil {
-		t.Fatalf("reset: %v", err)
-	}
+	srv.resetPersistedHistory()
 	if left, _ := mem.LoadAllTurns(context.Background(), srv.workspace); len(left) != 0 {
 		t.Errorf("the chat was not cleared: %+v", left)
 	}
-	resp := askHistory(t, srv, protocol.HistoryRequest{Action: protocol.HistoryList})
-	if resp.Error != "" || len(resp.Entries) != 1 || resp.Entries[0].Current || resp.Entries[0].Title != "add a --verbose flag" {
-		t.Errorf("list after ctrl+n = %+v, want the closed chat, saved", resp)
+	if files := savedFiles(t); len(files) != 0 {
+		t.Errorf("ctrl+n wrote a chat to history without being asked: %q", files)
+	}
+	if list := askHistory(t, srv, protocol.HistoryRequest{Action: protocol.HistoryList}); len(list.Entries) != 0 {
+		t.Errorf("list after ctrl+n = %+v, want nothing", list.Entries)
 	}
 }
 
-// ctrl+n must never be the way a chat is lost: when it cannot be saved, it
-// is kept.
-func TestServer_ResetKeepsTheChatWhenItCannotBeSaved(t *testing.T) {
+// /history save keeps the chat; saving again after more work UPDATES that
+// copy -- one entry, not two -- and keeps the name it was given.
+func TestServer_SaveKeepsTheChatAndUpdatesItLater(t *testing.T) {
 	mem, _ := openTestMemoryStore(t)
 	srv := historyServer(t, mem)
-	state := os.Getenv("XDG_STATE_HOME")
-	if err := os.MkdirAll(filepath.Join(state, "mochiii"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	// A FILE where the history folder should be: saving cannot succeed.
-	if err := os.WriteFile(filepath.Join(state, "mochiii", historyDirName), []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	srv.persistTurn("q", "a", nil)
+	srv.persistTurn("add a --verbose flag", "added", nil)
 
-	err := srv.resetPersistedHistory("")
-	if err == nil || !strings.Contains(err.Error(), "kept") {
-		t.Fatalf("reset = %v, want an error saying the chat was kept", err)
+	if before := askHistory(t, srv, protocol.HistoryRequest{Action: protocol.HistoryList}); len(before.Entries) != 1 || !before.Entries[0].Unsaved {
+		t.Fatalf("before any save = %+v, want the current chat, unsaved", before.Entries)
 	}
-	if strings.Contains(err.Error(), state) {
-		t.Errorf("the error sent to the client names a path: %v", err)
+	first := saveNow(t, srv, "verbose flag")
+	if first.Entry.Title != "verbose flag" || first.Entry.Turns != 2 {
+		t.Errorf("saved entry = %+v, want the given name and 2 turns", first.Entry)
 	}
-	if left, _ := mem.LoadAllTurns(context.Background(), srv.workspace); len(left) != 2 {
-		t.Errorf("an unsaved chat was cleared: %+v", left)
+	list := askHistory(t, srv, protocol.HistoryRequest{Action: protocol.HistoryList}).Entries
+	if len(list) != 2 || list[0].Unsaved || list[0].SavedAs != list[1].ID || list[0].Title != "verbose flag" {
+		t.Fatalf("after saving = %+v, want the current chat saved as the one saved entry", list)
+	}
+
+	srv.persistTurn("now document it", "documented", nil)
+	if l := askHistory(t, srv, protocol.HistoryRequest{Action: protocol.HistoryList}).Entries; !l[0].Unsaved {
+		t.Errorf("new turns after a save did not make the chat unsaved: %+v", l[0])
+	}
+	second := saveNow(t, srv, "")
+	list = askHistory(t, srv, protocol.HistoryRequest{Action: protocol.HistoryList}).Entries
+	if len(list) != 2 || list[1].Turns != 4 || list[1].Title != "verbose flag" || list[0].Unsaved {
+		t.Errorf("after saving again = %+v, want ONE saved copy, updated to 4 turns, still named", list)
+	}
+	if len(savedFiles(t)) != 1 || list[1].ID != list[0].SavedAs {
+		t.Errorf("saving again left %d files, want the old copy replaced", len(savedFiles(t)))
+	}
+	_ = second
+}
+
+func TestServer_SaveWithNothingToSaveSaysSo(t *testing.T) {
+	mem, _ := openTestMemoryStore(t)
+	srv := historyServer(t, mem)
+	resp := askHistory(t, srv, protocol.HistoryRequest{Action: protocol.HistorySave})
+	if !strings.Contains(resp.Error, "nothing to save") {
+		t.Errorf("save of an empty chat = %+v", resp)
+	}
+	if len(savedFiles(t)) != 0 {
+		t.Error("an empty chat was written")
 	}
 }
 
-func TestServer_HistoryResumeSwapsTheCurrentChat(t *testing.T) {
+// Resume replaces the current chat and KEEPS the saved copy; saving after
+// resuming updates that copy.
+func TestServer_HistoryResumeKeepsTheSavedCopy(t *testing.T) {
 	mem, _ := openTestMemoryStore(t)
 	srv := historyServer(t, mem)
 	ctx := context.Background()
 
 	srv.persistTurn("chat A", "answer A", nil)
-	if err := srv.resetPersistedHistory(""); err != nil {
-		t.Fatal(err)
-	}
+	saveNow(t, srv, "")
+	srv.resetPersistedHistory()
 	srv.persistTurn("chat B", "answer B", nil)
 
 	list := askHistory(t, srv, protocol.HistoryRequest{Action: protocol.HistoryList})
-	if len(list.Entries) != 2 || !list.Entries[0].Current || list.Entries[1].Title != "chat A" {
-		t.Fatalf("list = %+v, want current B then saved A", list.Entries)
+	if len(list.Entries) != 2 || !list.Entries[0].Current || !list.Entries[0].Unsaved || list.Entries[1].Title != "chat A" {
+		t.Fatalf("list = %+v, want current B (unsaved) then saved A", list.Entries)
 	}
 	idA := list.Entries[1].ID
 
 	resp := askHistory(t, srv, protocol.HistoryRequest{Action: protocol.HistoryResume, ID: idA})
-	if resp.Error != "" || len(resp.Turns) != 2 || resp.Turns[0].Content != "chat A" {
-		t.Fatalf("resume = %+v, want chat A's turns", resp)
+	if resp.Error != "" || len(resp.Turns) != 2 || resp.Turns[0].Content != "chat A" || resp.Entry.SavedAs != idA {
+		t.Fatalf("resume = %+v, want chat A's turns, marked as saved chat A", resp)
 	}
-	current, _ := mem.LoadAllTurns(ctx, srv.workspace)
-	if len(current) != 2 || current[0].Content != "chat A" {
+	if current, _ := mem.LoadAllTurns(ctx, srv.workspace); len(current) != 2 || current[0].Content != "chat A" {
 		t.Errorf("the current chat is %+v, want chat A", current)
 	}
-
-	after := askHistory(t, srv, protocol.HistoryRequest{Action: protocol.HistoryList})
-	if len(after.Entries) != 2 || after.Entries[0].Title != "chat A" || after.Entries[1].Title != "chat B" {
-		t.Errorf("list after resume = %+v, want current A then saved B -- and A not listed twice", after.Entries)
+	after := askHistory(t, srv, protocol.HistoryRequest{Action: protocol.HistoryList}).Entries
+	if len(after) != 2 || after[0].Title != "chat A" || after[0].Unsaved || after[1].ID != idA {
+		t.Errorf("after resume = %+v, want current A (saved) and its saved copy still listed", after)
 	}
-	for _, e := range after.Entries {
-		if e.ID == idA {
-			t.Errorf("the resumed chat's file is still listed")
-		}
+
+	srv.persistTurn("more on A", "more", nil)
+	saveNow(t, srv, "")
+	final := askHistory(t, srv, protocol.HistoryRequest{Action: protocol.HistoryList}).Entries
+	if len(final) != 2 || final[1].Turns != 4 || len(savedFiles(t)) != 1 {
+		t.Errorf("saving a resumed chat = %+v, want its one saved copy updated to 4 turns", final)
 	}
 }
 
@@ -461,9 +502,6 @@ func TestServer_HistoryResumeOfAMissingChatChangesNothing(t *testing.T) {
 	if len(current) != 2 || current[0].Content != "keep me" {
 		t.Errorf("a failed resume changed the current chat: %+v", current)
 	}
-	if list := askHistory(t, srv, protocol.HistoryRequest{Action: protocol.HistoryList}); len(list.Entries) != 1 {
-		t.Errorf("a failed resume saved the current chat anyway: %+v", list.Entries)
-	}
 }
 
 // Half done: the last answer was cut off, and the spec still has unticked
@@ -479,9 +517,10 @@ func TestServer_HistoryListMarksHalfDoneWork(t *testing.T) {
 		t.Fatal(err)
 	}
 	srv.persistTurn("build the verbose flag", "working on it", &protocol.IncompleteInfo{Reason: protocol.IncompleteAgentBudget})
-	if err := srv.resetPersistedHistory("specs/verbose.md"); err != nil {
-		t.Fatal(err)
+	if r := askHistory(t, srv, protocol.HistoryRequest{Action: protocol.HistorySave, Spec: "specs/verbose.md"}); r.Error != "" {
+		t.Fatal(r.Error)
 	}
+	srv.resetPersistedHistory()
 
 	resp := askHistory(t, srv, protocol.HistoryRequest{Action: protocol.HistoryList})
 	if len(resp.Entries) != 1 {
@@ -493,14 +532,12 @@ func TestServer_HistoryListMarksHalfDoneWork(t *testing.T) {
 	}
 }
 
+// Deleting the current chat's saved copy makes the current chat unsaved again.
 func TestServer_HistoryShowAndDelete(t *testing.T) {
 	mem, _ := openTestMemoryStore(t)
 	srv := historyServer(t, mem)
 	srv.persistTurn("q", "a", nil)
-	if err := srv.resetPersistedHistory(""); err != nil {
-		t.Fatal(err)
-	}
-	id := askHistory(t, srv, protocol.HistoryRequest{Action: protocol.HistoryList}).Entries[0].ID
+	id := saveNow(t, srv, "").Entry.ID
 
 	shown := askHistory(t, srv, protocol.HistoryRequest{Action: protocol.HistoryShow, ID: id})
 	if shown.Error != "" || len(shown.Turns) != 2 || shown.Entry == nil || shown.Entry.Title != "q" {
@@ -509,8 +546,9 @@ func TestServer_HistoryShowAndDelete(t *testing.T) {
 	if del := askHistory(t, srv, protocol.HistoryRequest{Action: protocol.HistoryDelete, ID: id}); del.Error != "" {
 		t.Errorf("delete = %+v", del)
 	}
-	if list := askHistory(t, srv, protocol.HistoryRequest{Action: protocol.HistoryList}); len(list.Entries) != 0 {
-		t.Errorf("a deleted chat is still listed: %+v", list.Entries)
+	list := askHistory(t, srv, protocol.HistoryRequest{Action: protocol.HistoryList}).Entries
+	if len(list) != 1 || !list[0].Current || !list[0].Unsaved || list[0].SavedAs != "" {
+		t.Errorf("after deleting its saved copy = %+v, want the current chat alone, unsaved", list)
 	}
 	if bad := askHistory(t, srv, protocol.HistoryRequest{Action: "rm -rf"}); bad.Error == "" {
 		t.Error("an unknown action was accepted")
@@ -522,61 +560,63 @@ func TestServer_HistoryIsPerWorkspace(t *testing.T) {
 	a := historyServer(t, mem)
 	b := &Server{logger: discardLogger(), workspace: t.TempDir(), memory: mem}
 	a.persistTurn("in A", "a", nil)
-	if err := a.resetPersistedHistory(""); err != nil {
-		t.Fatal(err)
-	}
+	saveNow(t, a, "")
 	if got := askHistory(t, b, protocol.HistoryRequest{Action: protocol.HistoryList, Workspace: a.workspace}); len(got.Entries) != 0 {
 		t.Errorf("workspace B listed A's chats (by naming A's workspace): %+v", got.Entries)
 	}
 }
 
-// An exchange finishing while ctrl+n runs must land wholly in one chat --
-// never its prompt in the saved chat and its answer in the new one.
-func TestServer_ResetNeverSplitsAnExchange(t *testing.T) {
+// A link file that cannot be trusted is ignored, never followed.
+func TestChatArchive_UntrustedLinkIsIgnored(t *testing.T) {
+	a := testArchive(t, "/workspace/x")
+	if err := a.ensureDir(); err != nil {
+		t.Fatal(err)
+	}
+	for _, body := range []string{`{"id":"../../memory","turns":2}`, `not json`, `{"id":"` + strings.Repeat("9", 4096) + `"}`} {
+		if err := os.WriteFile(filepath.Join(a.dir, currentLinkName), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if l := a.readLink(); l.ID != "" {
+			t.Errorf("link %q was trusted: %+v", body[:min(len(body), 40)], l)
+		}
+	}
+}
+
+// A save taken while an exchange finishes holds it whole or not at all.
+func TestServer_SaveNeverSplitsAnExchange(t *testing.T) {
 	mem, _ := openTestMemoryStore(t)
 	srv := historyServer(t, mem)
+	srv.persistTurn("q-first", "a-first", nil)
 	var wg sync.WaitGroup
 	for i := 0; i < 20; i++ {
 		wg.Add(2)
 		go func(i int) { defer wg.Done(); srv.persistTurn(fmt.Sprintf("q%d", i), fmt.Sprintf("a%d", i), nil) }(i)
 		go func() {
 			defer wg.Done()
-			if err := srv.resetPersistedHistory(""); err != nil {
-				t.Errorf("reset: %v", err)
+			if r := askHistory(t, srv, protocol.HistoryRequest{Action: protocol.HistorySave}); r.Error != "" {
+				t.Errorf("save: %s", r.Error)
 			}
 		}()
 	}
 	wg.Wait()
 
-	check := func(where string, turns []protocol.Turn) {
-		if len(turns)%2 != 0 {
-			t.Errorf("%s holds %d turns: an exchange was split", where, len(turns))
-			return
-		}
-		for i := 0; i < len(turns); i += 2 {
-			q, a := turns[i], turns[i+1]
-			if q.Role != "user" || a.Role != "assistant" || "a"+strings.TrimPrefix(q.Content, "q") != a.Content {
-				t.Errorf("%s: %+v then %+v is not one exchange", where, q, a)
-			}
-		}
-	}
-	current, _ := mem.LoadAllTurns(context.Background(), srv.workspace)
-	var cur []protocol.Turn
-	for _, t := range current {
-		cur = append(cur, protocol.Turn{Role: t.Role, Content: t.Content})
-	}
-	check("the current chat", cur)
 	root, _ := historyRoot()
 	saved, err := newChatArchive(root, srv.workspace).list()
+	if err != nil || len(saved) != 1 {
+		t.Fatalf("saved = %+v (err %v), want the one chat, updated in place", saved, err)
+	}
+	_, turns, err := newChatArchive(root, srv.workspace).load(saved[0].ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, c := range saved {
-		_, turns, err := newChatArchive(root, srv.workspace).load(c.ID)
-		if err != nil {
-			t.Fatal(err)
+	if len(turns)%2 != 0 {
+		t.Fatalf("the saved chat holds %d turns: an exchange was split", len(turns))
+	}
+	for i := 0; i < len(turns); i += 2 {
+		q, a := turns[i], turns[i+1]
+		if q.Role != "user" || a.Role != "assistant" || "a"+strings.TrimPrefix(q.Content, "q") != a.Content {
+			t.Errorf("%+v then %+v is not one exchange", q, a)
 		}
-		check("saved chat "+c.ID, turns)
 	}
 }
 
@@ -598,9 +638,9 @@ func TestDispatch_ChatsRequestReachesHistory(t *testing.T) {
 	}
 }
 
-// A client tells a daemon from before /history by this: without it, it must
-// not send a reset (an older daemon deletes the chat) or a history request.
-func TestHandshakeAdvertisesChatHistory(t *testing.T) {
+// A client tells a daemon from before /history by this, and does not send it a
+// history request it cannot answer.
+func TestHandshakeAdvertisesSavedChats(t *testing.T) {
 	srv := &Server{logger: discardLogger(), workspace: t.TempDir()}
 	clientConn, serverConn := net.Pipe()
 	done := make(chan struct{})
@@ -623,9 +663,9 @@ func TestHandshakeAdvertisesChatHistory(t *testing.T) {
 	}
 	found := false
 	for _, f := range hs.Features {
-		found = found || f == protocol.FeatureChatHistory
+		found = found || f == protocol.FeatureSavedChats
 	}
 	if !hs.Ok || !found {
-		t.Errorf("handshake = %+v, want ok and Features to name %q", hs, protocol.FeatureChatHistory)
+		t.Errorf("handshake = %+v, want ok and Features to name %q", hs, protocol.FeatureSavedChats)
 	}
 }

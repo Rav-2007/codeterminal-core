@@ -226,7 +226,7 @@ func runSearch(clientName, workspace, query string) string {
 // errDaemonPredatesHistory is what a client says to a daemon started before
 // /history existed. run-tui.sh rebuilds both halves but, until it learned to
 // restart one, kept a daemon that was already running -- and an older daemon
-// answers a history request as an empty prompt, and DELETES the chat on ctrl+n.
+// answers a history request as an empty prompt.
 var errDaemonPredatesHistory = errors.New("the running daemon is older than /history -- " +
 	"restart it: ./run-tui.sh --stop && ./run-tui.sh")
 
@@ -248,7 +248,7 @@ func sendHistory(clientName string, req protocol.HistoryRequest) (protocol.Histo
 		return protocol.HistoryResponse{}, err
 	}
 	defer func() { _ = sess.Close() }()
-	if !hasFeature(sess.handshake, protocol.FeatureChatHistory) {
+	if !hasFeature(sess.handshake, protocol.FeatureSavedChats) {
 		return protocol.HistoryResponse{}, errDaemonPredatesHistory
 	}
 

@@ -102,7 +102,7 @@ func runChat(workspace string) {
 	persistedHistory := preflight.handshake.PersistedHistory
 	// Read here, beside the other handshake field, rather than after Close below.
 	needsAPIKey := preflight.handshake.NeedsAPIKey
-	daemonSavesChats := hasFeature(preflight.handshake, protocol.FeatureChatHistory)
+	daemonSavesChats := hasFeature(preflight.handshake, protocol.FeatureSavedChats)
 	// Ignored deliberately, and it is the same reasoning at all five close
 	// sites in this client -- see the note on daemonSession.Close.
 	_ = preflight.Close()
@@ -117,11 +117,11 @@ func runChat(workspace string) {
 	// prompt, and asks for a key only when a question actually needs one. See
 	// beginConnectForPrompt in connect.go.
 	model.needsAPIKey = needsAPIKey
-	// Said once, first thing: a daemon older than this client cannot keep
-	// chats, and the user should not find that out by losing one.
+	// Said once, first thing: a daemon older than this client cannot save
+	// chats, and the user should hear it before /history refuses.
 	if !daemonSavesChats {
 		model.appendTurn(turn{role: roleSystem, text: "⚠ " + errDaemonPredatesHistory.Error() +
-			" (until then /history does not work, and ctrl+n clears only the screen)"})
+			" (until then /history does not work)"})
 	}
 
 	// Mouse capture ON: the wheel scrolls the transcript as mouse events, which

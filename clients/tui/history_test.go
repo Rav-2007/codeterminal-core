@@ -30,7 +30,7 @@ func (f *fakeHistoryDaemon) seen() []protocol.HistoryRequest {
 
 func serveHistory(t *testing.T, respond func(protocol.HistoryRequest) protocol.HistoryResponse) *fakeHistoryDaemon {
 	t.Helper()
-	return serveHistoryWith(t, []string{protocol.FeatureChatHistory}, respond)
+	return serveHistoryWith(t, []string{protocol.FeatureSavedChats}, respond)
 }
 
 // serveHistoryWith chooses the handshake's Features: nil plays a daemon from
@@ -82,7 +82,7 @@ func serveHistoryWith(t *testing.T, features []string, respond func(protocol.His
 func savedChats() []protocol.HistoryEntry {
 	ended := time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)
 	return []protocol.HistoryEntry{
-		{Current: true, Title: "what I am doing now", Turns: 4},
+		{Current: true, Title: "what I am doing now", Turns: 4, Unsaved: true},
 		{ID: "20260928T100000Z-0000aaaa", Title: "add a --verbose flag", LastPrompt: "now document it",
 			Ended: ended, Turns: 12, Incomplete: protocol.IncompleteUserCancelled,
 			Spec: "specs/verbose.md", SpecOpen: 2, SpecTotal: 5},
@@ -106,7 +106,7 @@ func TestHistory_ListShowsSavedChatsAndWhatWasLeftHalfDone(t *testing.T) {
 	got, _ := newTestModel().handleHistoryCommand("")
 	note := lastNote(t, got)
 	for _, want := range []string{
-		`*    now`, `"what I am doing now"`,
+		`*    now`, `"what I am doing now"`, `(not saved -- /history save keeps it)`,
 		`1    2h ago`, `"add a --verbose flag"`, "\n       ⚠ you stopped it mid-turn · spec specs/verbose.md: 2 of 5 open",
 		`last: "now document it"`,
 		`2`, `"fix the parser"`,
@@ -148,7 +148,9 @@ func TestHistory_ResumeUsesTheNumberTheListShowed(t *testing.T) {
 			e.Current, e.ID = true, ""
 			return protocol.HistoryResponse{Entry: &e, Turns: resumed}
 		}
-		return protocol.HistoryResponse{Entries: savedChats()}
+		entries := savedChats()
+		entries[0].Unsaved, entries[0].SavedAs = false, entries[2].ID // the chat on screen is saved
+		return protocol.HistoryResponse{Entries: entries}
 	})
 
 	m := newTestModelWithRoot(root)
@@ -165,7 +167,7 @@ func TestHistory_ResumeUsesTheNumberTheListShowed(t *testing.T) {
 		t.Fatalf("the transcript is %+v, want the resumed chat then one note", cm.turns)
 	}
 	note := cm.turns[4].text
-	for _, want := range []string{`you left off at: "now document it"`, "you stopped it mid-turn", "active spec: specs/verbose.md", "2 of 5"} {
+	for _, want := range []string{`you left off at: "now document it"`, "you stopped it mid-turn", "active spec: specs/verbose.md", "2 of 5", "/history save updates"} {
 		if !strings.Contains(note, want) {
 			t.Errorf("the resume note is missing %q:\n%s", want, note)
 		}
@@ -270,32 +272,116 @@ func TestHistory_DaemonRefusalIsShown(t *testing.T) {
 	}
 }
 
-// ctrl+n says where the chat went -- only when there was a chat to save.
-func TestCtrlN_SaysThePreviousChatWasSaved(t *testing.T) {
+// Only what the user saves is kept, so ctrl+n on an UNSAVED chat warns once:
+// the first press only arms, any other key disarms, a second press discards.
+func TestCtrlN_WarnsOnceBeforeDiscardingAnUnsavedChat(t *testing.T) {
+	serveHistory(t, func(protocol.HistoryRequest) protocol.HistoryResponse {
+		return protocol.HistoryResponse{Entries: savedChats()} // current: Unsaved
+	})
 	m := newTestModel()
 	m.appendTurn(turn{role: roleUser, text: "q"})
 	m.appendTurn(turn{role: roleAssistant, text: "a"})
-	cleared, _ := m.clearConversation()
-	got, _ := cleared.(chatModel).Update(resetOkMsg{})
-	if note := lastNote(t, got); !strings.Contains(note.text, "/history") {
-		t.Errorf("after ctrl+n the note is %q, want it to point at /history", note.text)
+
+	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlN})
+	cm := got.(chatModel)
+	if len(cm.turns) != 2 || !cm.newChatArmed {
+		t.Fatalf("the first ctrl+n discarded an unsaved chat (turns %d, armed %v)", len(cm.turns), cm.newChatArmed)
+	}
+	if !strings.Contains(cm.View(), "chat not saved: ctrl+n again discards it") || !strings.Contains(cm.View(), "/history save keeps it") {
+		t.Errorf("the footer does not say the chat is unsaved and how to keep it:\n%s", cm.View())
 	}
 
-	empty, _ := newTestModel().clearConversation()
-	after, _ := empty.(chatModel).Update(resetOkMsg{})
-	if n := len(after.(chatModel).turns); n != 0 {
-		t.Errorf("ctrl+n on an empty chat claimed something was saved: %+v", after.(chatModel).turns)
+	// Any other key cancels: the next ctrl+n warns again rather than discarding.
+	got, _ = cm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	cm = got.(chatModel)
+	if cm.newChatArmed {
+		t.Fatal("another key did not disarm ctrl+n")
 	}
+	got, _ = cm.Update(tea.KeyMsg{Type: tea.KeyCtrlN})
+	cm = got.(chatModel)
+	if len(cm.turns) != 2 {
+		t.Fatal("a ctrl+n after a cancelled warning discarded the chat")
+	}
+	got, _ = cm.Update(tea.KeyMsg{Type: tea.KeyCtrlN})
+	if n := len(got.(chatModel).turns); n != 0 {
+		t.Errorf("the second consecutive ctrl+n left %d turns, want the chat discarded", n)
+	}
+}
 
-	// Only command output on screen (a /help reply, a notice): no exchange
-	// was had, so the daemon saved nothing and the note must not claim it did.
+func TestCtrlN_ASavedChatClearsAtOnce(t *testing.T) {
+	serveHistory(t, func(protocol.HistoryRequest) protocol.HistoryResponse {
+		e := savedChats()
+		e[0].Unsaved, e[0].SavedAs = false, e[1].ID
+		return protocol.HistoryResponse{Entries: e}
+	})
+	m := newTestModel()
+	m.appendTurn(turn{role: roleUser, text: "q"})
+	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlN})
+	if cm := got.(chatModel); len(cm.turns) != 0 || cm.newChatArmed {
+		t.Errorf("ctrl+n on a saved chat did not clear at once (turns %d, armed %v)", len(cm.turns), cm.newChatArmed)
+	}
+}
+
+// With no daemon to ask, a chat with a question in it counts as unsaved; one
+// with only command output on screen has nothing to lose and clears at once.
+func TestCtrlN_WithoutADaemonGuessesOnTheSafeSide(t *testing.T) {
+	t.Cleanup(setLockPathForTest(t, filepath.Join(t.TempDir(), "absent.lock")))
+	asked := newTestModel()
+	asked.appendTurn(turn{role: roleUser, text: "q"})
+	if got, _ := asked.Update(tea.KeyMsg{Type: tea.KeyCtrlN}); !got.(chatModel).newChatArmed {
+		t.Error("a chat with a question was discarded on one ctrl+n with no daemon to ask")
+	}
 	local := newTestModel()
 	local.appendTurn(turn{role: roleAssistant, text: formatSlashHelp()})
-	local.appendTurn(turn{role: roleSystem, text: "a notice"})
-	clearedLocal, _ := local.clearConversation()
-	afterLocal, _ := clearedLocal.(chatModel).Update(resetOkMsg{})
-	if n := len(afterLocal.(chatModel).turns); n != 0 {
-		t.Errorf("ctrl+n after only command output claimed a chat was saved: %+v", afterLocal.(chatModel).turns)
+	if got, _ := local.Update(tea.KeyMsg{Type: tea.KeyCtrlN}); got.(chatModel).newChatArmed || len(got.(chatModel).turns) != 0 {
+		t.Error("only command output on screen still asked before clearing")
+	}
+}
+
+func TestHistory_SaveSendsTheNameAndSaysWhatWasSaved(t *testing.T) {
+	f := serveHistory(t, func(req protocol.HistoryRequest) protocol.HistoryResponse {
+		return protocol.HistoryResponse{Entry: &protocol.HistoryEntry{ID: "20260928T100000Z-0000aaaa", Title: "verbose flag", Turns: 4}, Pruned: 2}
+	})
+	m := newTestModel()
+	m.activeSpec = "specs/verbose.md"
+	got, _ := m.handleHistoryCommand("save   verbose flag ")
+	note := lastNote(t, got).text
+	reqs := f.seen()
+	if len(reqs) != 1 || reqs[0].Action != protocol.HistorySave || reqs[0].Name != "verbose flag" || reqs[0].Spec != "specs/verbose.md" {
+		t.Fatalf("save sent %+v, want the name and the active spec", reqs)
+	}
+	if !strings.Contains(note, `saved "verbose flag" (4 turns)`) || !strings.Contains(note, "oldest 2 saved chat") {
+		t.Errorf("the save note = %q, want what was saved and what was pruned", note)
+	}
+	if _, _ = newTestModel().handleHistoryCommand("save"); f.seen()[1].Name != "" {
+		t.Errorf("a bare /history save sent a name: %+v", f.seen()[1])
+	}
+}
+
+// Resuming REPLACES the chat on screen: when that chat is not saved, the first
+// resume only says so, and the same command again goes ahead.
+func TestHistory_ResumeAsksFirstWhenTheChatOnScreenIsUnsaved(t *testing.T) {
+	f := serveHistory(t, func(req protocol.HistoryRequest) protocol.HistoryResponse {
+		if req.Action == protocol.HistoryResume {
+			e := savedChats()[1]
+			return protocol.HistoryResponse{Entry: &e, Turns: []protocol.Turn{{Role: "user", Content: "old"}, {Role: "assistant", Content: "chat"}}}
+		}
+		return protocol.HistoryResponse{Entries: savedChats()} // current: Unsaved
+	})
+	m := newTestModel()
+	m.appendTurn(turn{role: roleUser, text: "unsaved work"})
+	first, _ := m.handleHistoryCommand("resume 1")
+	if note := lastNote(t, first).text; !strings.Contains(note, "not saved") || !strings.Contains(note, "/history resume 1 again") {
+		t.Errorf("the first resume over an unsaved chat = %q, want a warning", note)
+	}
+	for _, r := range f.seen() {
+		if r.Action == protocol.HistoryResume {
+			t.Fatal("the first resume replaced an unsaved chat without asking")
+		}
+	}
+	second, _ := first.(chatModel).handleHistoryCommand("resume 1")
+	if cm := second.(chatModel); cm.turns[0].text != "old" {
+		t.Errorf("the second resume did not go ahead: %+v", cm.turns)
 	}
 }
 

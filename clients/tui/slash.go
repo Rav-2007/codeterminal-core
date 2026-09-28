@@ -59,7 +59,7 @@ var slashCatalog = []slashDef{
 	{Name: "git", Kind: slashLocal, Summary: "show git status for the workspace"},
 	{Name: "init", Kind: slashLocal, Summary: "quick start checklist for this workspace"},
 	{Name: "search", Kind: slashLocal, Summary: "search past conversation turns (/search <query>)", NeedsArgs: true},
-	{Name: "history", Kind: slashLocal, Summary: "past chats in this project (/history <n>, /history resume <n>)"},
+	{Name: "history", Kind: slashLocal, Summary: "saved chats (/history save [name], /history resume <n>)"},
 	{Name: "spec", Kind: slashLocal, Summary: "write a spec (/spec <goal>), then /spec build|check|use|off|show"},
 	{Name: "connect", Kind: slashLocal, Summary: "set the provider API key (/connect show, /connect forget)"},
 	{Name: "exit", Kind: slashLocal, Summary: "quit the TUI"},

@@ -13,14 +13,17 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// /history: THE CHATS ctrl+n CLOSED, so work left half done can be found and
-// picked up again. The daemon keeps them (daemon/chatarchive.go: gzipped, one
-// file per chat, under ~/.local/state/mochiii/history, bounded); this file
-// only asks for them and draws them.
+// /history: THE CHATS THE USER CHOSE TO SAVE, so work left half done can be
+// found and picked up again. Nothing is saved unless the user asks -- that
+// keeps disk use their choice -- and ctrl+n warns before discarding a chat
+// that is not saved (handleCtrlN). The daemon keeps them (daemon/chatarchive.go:
+// gzipped, one file per chat, under ~/.local/state/mochiii/history, bounded);
+// this file only asks for them and draws them.
 //
 //	/history              list: the current chat, then saved ones, newest first
+//	/history save [name]  save the current chat; again later updates that copy
 //	/history <n>          read saved chat n
-//	/history resume <n>   make saved chat n the current one (this one is saved)
+//	/history resume <n>   make saved chat n the current one (its copy stays)
 //	/history delete <n>   delete saved chat n
 //
 // EVERYTHING HERE IS A roleSystem NOTE, never an assistant turn. buildHistory
@@ -35,7 +38,7 @@ const (
 	historyAnswerRunes = 600
 )
 
-const historyUsage = "usage: /history · /history <n> · /history resume <n> · /history delete <n>"
+const historyUsage = "usage: /history · /history save [name] · /history <n> · /history resume <n> · /history delete <n>"
 
 func (m chatModel) handleHistoryCommand(args string) (tea.Model, tea.Cmd) {
 	fields := strings.Fields(args)
@@ -43,6 +46,12 @@ func (m chatModel) handleHistoryCommand(args string) (tea.Model, tea.Cmd) {
 	switch {
 	case len(fields) == 0 || (len(fields) == 1 && fields[0] == "list"):
 		note = m.listChats()
+	case fields[0] == "save":
+		if m.state == stateSending || m.state == stateStreaming {
+			note = "wait for this turn to finish (or press esc), then save the chat"
+			break
+		}
+		note = m.saveChat(strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(args), "save")))
 	case len(fields) == 1:
 		note = m.showChat(fields[0])
 	case len(fields) == 2 && (fields[0] == "resume" || fields[0] == "delete"):
@@ -81,12 +90,18 @@ func (m *chatModel) listChats() string {
 		}
 	}
 	if saved == 0 {
-		b.WriteString("no saved chats in this project yet -- ctrl+n saves the current chat here and starts a new one")
+		b.WriteString("no saved chats in this project yet -- /history save [name] keeps the current chat")
 	} else {
 		b.WriteString("past chats -- /history <n> reads one, /history resume <n> continues it:")
 	}
 	now := time.Now()
 	shown := 0
+	number := map[string]int{} // saved chat id -> the number this list gives it
+	for _, e := range resp.Entries {
+		if !e.Current && len(number) < maxHistoryRows {
+			number[e.ID] = len(number) + 1
+		}
+	}
 	for _, e := range resp.Entries {
 		label := "*" // the current chat, marked the way /model marks the current tier
 		if !e.Current {
@@ -99,6 +114,9 @@ func (m *chatModel) listChats() string {
 			label = strconv.Itoa(shown)
 		}
 		fmt.Fprintf(&b, "\n  %-4s %-10s %3d turns  %q", label, chatWhen(e, now), e.Turns, e.Title)
+		if e.Current {
+			b.WriteString("  " + currentChatState(e, number))
+		}
 		// On a line of their own: beside the title they wrap mid-phrase in a
 		// narrow terminal, and they are the part of the row being looked for.
 		if marks := chatMarkers(e); marks != "" {
@@ -109,6 +127,64 @@ func (m *chatModel) listChats() string {
 		}
 	}
 	return b.String()
+}
+
+// currentChatState says whether the chat on screen is kept: saved, saved with
+// newer turns since, or not saved at all.
+func currentChatState(e protocol.HistoryEntry, number map[string]int) string {
+	switch {
+	case e.SavedAs != "" && !e.Unsaved:
+		if n, ok := number[e.SavedAs]; ok {
+			return fmt.Sprintf("(saved as %d)", n)
+		}
+		return "(saved)"
+	case e.SavedAs != "":
+		return "(changed since saved -- /history save updates it)"
+	}
+	return "(not saved -- /history save keeps it)"
+}
+
+// saveChat saves the chat on screen, or updates its saved copy.
+func (m *chatModel) saveChat(name string) string {
+	resp, err := sendHistory(m.clientName, protocol.HistoryRequest{
+		Action: protocol.HistorySave, Workspace: m.workspaceRoot, Spec: m.activeSpec, Name: name,
+	})
+	if err != nil {
+		return "history: " + err.Error()
+	}
+	m.chatIDs = nil // the list's numbers move with a new or updated save
+	msg := "saved"
+	if e := resp.Entry; e != nil {
+		msg = fmt.Sprintf("saved %q (%d turns) -- /history lists it; /history save again later updates it", e.Title, e.Turns)
+	}
+	if resp.Pruned > 0 {
+		msg += fmt.Sprintf("\n(the oldest %d saved chat(s) were removed to keep history within its size limit)", resp.Pruned)
+	}
+	return msg
+}
+
+// currentChatUnsaved asks the daemon whether the chat on screen holds anything
+// its saved copy does not. When the daemon cannot say, a chat with any question
+// in it counts as unsaved: warning once too often costs a keypress, warning
+// once too few costs the chat.
+func (m *chatModel) currentChatUnsaved() bool {
+	resp, err := sendHistory(m.clientName, protocol.HistoryRequest{
+		Action: protocol.HistoryList, Workspace: m.workspaceRoot, Spec: m.activeSpec,
+	})
+	if err == nil {
+		for _, e := range resp.Entries {
+			if e.Current {
+				return e.Unsaved
+			}
+		}
+		return false
+	}
+	for _, t := range m.turns {
+		if t.role == roleUser {
+			return true
+		}
+	}
+	return false
 }
 
 // chatIDFor turns the number the user typed into the saved chat it stood for
@@ -157,13 +233,20 @@ func (m *chatModel) showChat(arg string) string {
 	return b.String()
 }
 
-// resumeChat makes a saved chat the current one. The daemon saves the chat
-// on screen first, so nothing is lost; the screen then shows the resumed
-// chat, ↑↓ recalls its prompts, and its spec is active again if it still
-// exists.
+// resumeChat makes a saved chat the current one: the screen shows it, ↑↓
+// recalls its prompts, and its spec is active again if it still exists. Its
+// saved copy stays; /history save later updates it. The chat on screen is
+// REPLACED, so when it is not saved the first resume only says so -- the same
+// command again goes ahead, as a second ctrl+n does.
 func (m chatModel) resumeChat(arg string) (tea.Model, tea.Cmd) {
 	id, problem := m.chatIDFor(arg)
+	if problem == "" && m.resumeArmed != id && m.currentChatUnsaved() {
+		m.resumeArmed = id
+		problem = "the chat on screen is not saved -- /history save keeps it; " +
+			"/history resume " + arg + " again replaces it"
+	}
 	if problem == "" {
+		m.resumeArmed = ""
 		resp, err := sendHistory(m.clientName, protocol.HistoryRequest{
 			Action: protocol.HistoryResume, Workspace: m.workspaceRoot, ID: id, Spec: m.activeSpec,
 		})
@@ -194,7 +277,7 @@ func (m *chatModel) resumedNote(e *protocol.HistoryEntry, turns []protocol.Turn)
 		return fmt.Sprintf("resumed a saved chat (%d turns)", len(turns))
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "resumed %q (%d turns) -- the chat that was here is saved in /history", e.Title, e.Turns)
+	fmt.Fprintf(&b, "resumed %q (%d turns) -- /history save updates its saved copy", e.Title, e.Turns)
 	if e.LastPrompt != "" {
 		fmt.Fprintf(&b, "\nyou left off at: %q", e.LastPrompt)
 	}

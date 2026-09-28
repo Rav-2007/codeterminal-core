@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"net"
-	"strings"
 	"testing"
 
 	"mochiii/protocol"
@@ -19,11 +18,7 @@ func TestServer_MemoryHelpersAreNoOpsWhenMemoryIsNil(t *testing.T) {
 		t.Errorf("loadPersistedHistory() = %+v, want nil when s.memory is nil", got)
 	}
 	srv.persistTurn("q", "a", nil) // must not panic
-	// Must not panic -- and must not claim a chat was saved when there is no
-	// memory to save it in: ctrl+n shows this error instead of "saved".
-	if err := srv.resetPersistedHistory(""); err == nil || !strings.Contains(err.Error(), "not saved") {
-		t.Errorf("resetPersistedHistory with no memory = %v, want an error saying the chat was not saved", err)
-	}
+	srv.resetPersistedHistory()    // must not panic
 }
 
 func TestServer_PersistTurnAppendsUserThenAssistant(t *testing.T) {
@@ -79,9 +74,7 @@ func TestServer_ResetPersistedHistoryClearsOnlyThisWorkspace(t *testing.T) {
 	}
 
 	srv := &Server{logger: discardLogger(), workspace: "/workspace/x", memory: memStore}
-	if err := srv.resetPersistedHistory(""); err != nil {
-		t.Fatalf("resetPersistedHistory: %v", err)
-	}
+	srv.resetPersistedHistory()
 
 	gotX, err := memStore.LoadRecentTurns(ctx, "/workspace/x", 12, false)
 	if err != nil {

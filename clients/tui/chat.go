@@ -104,6 +104,14 @@ const reviewHelpText = "y apply · n skip · q cancel remaining"
 // nothing to stop. See handleCtrlC for why quitting asks first.
 const quitConfirmHelpText = "press ctrl+c again to quit · any other key cancels"
 
+// newChatConfirmHelpText is the footer while a ctrl+n on an unsaved chat
+// waits for its second press (handleCtrlN).
+//
+// SHORT ON PURPOSE: a footer longer than the terminal is cut at its width, and
+// what must survive is what a second ctrl+n does and how to avoid it. "Any
+// other key cancels" is true but is the part that can go.
+const newChatConfirmHelpText = "chat not saved: ctrl+n again discards it · /history save keeps it"
+
 // interruptHelpText replaces helpText while a turn is in flight. The hint
 // changes because the available action does: an interrupt nobody can find is
 // the same as not having one, and this is the moment the user is looking at
@@ -321,9 +329,14 @@ type chatModel struct {
 	// chatIDs are the saved chats the last /history list numbered, in order:
 	// "/history resume 2" means the chat that list showed as 2 (history.go).
 	chatIDs []string
-	// resetSavesChat is set by a ctrl+n that cleared a real exchange, so a
-	// successful reset can say the chat went to /history.
-	resetSavesChat bool
+	// newChatArmed is set by a ctrl+n pressed on a chat that is NOT SAVED,
+	// and cleared by any other key -- handleCtrlN, the same shape as
+	// quitArmed. Only a ctrl+n pressed while it is set discards the chat.
+	newChatArmed bool
+	// resumeArmed is the saved chat a "/history resume <n>" was refused for
+	// because the chat on screen is not saved: the same command again goes
+	// ahead (history.go).
+	resumeArmed string
 	// tasks is the in-flight build's task list (update_tasks), drawn under
 	// the transcript while the turn runs and kept in it when the turn ends.
 	tasks []protocol.TaskItem
@@ -504,16 +517,6 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case resetErrMsg:
 		return m.handleResetErr(msg)
 
-	case resetOkMsg:
-		// The daemon saved the closed chat before clearing it (it keeps the
-		// chat, and says so, when it cannot) -- say where it went.
-		if m.resetSavesChat {
-			m.resetSavesChat = false
-			m.appendTurn(turn{role: roleSystem, text: "previous chat saved -- /history to go back to it"})
-			m.refreshViewport()
-		}
-		return m, nil
-
 	case spinner.TickMsg:
 		return m.handleSpinnerTick(msg)
 
@@ -568,6 +571,9 @@ func (m chatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleCtrlC()
 	}
 	m.quitArmed = false
+	if msg.String() != "ctrl+n" {
+		m.newChatArmed = false
+	}
 	if m.state == stateEditReview {
 		return m.handleReviewKey(msg)
 	}
@@ -690,7 +696,7 @@ func (m chatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	case "ctrl+n":
-		return m.clearConversation()
+		return m.handleCtrlN()
 	case "pgup":
 		m.viewport.PageUp()
 		return m, nil
@@ -976,8 +982,7 @@ func (m chatModel) handleResetErr(msg resetErrMsg) (tea.Model, tea.Cmd) {
 	// a transcript note rather than statusErr/stateError, since the
 	// user's chat is not actually in an error state — they can keep
 	// typing normally.
-	m.resetSavesChat = false
-	m.appendTurn(turn{role: roleSystem, text: sanitizeText(fmt.Sprintf("(the screen was cleared, but the daemon did not start a new chat: %v)", msg.err))})
+	m.appendTurn(turn{role: roleSystem, text: sanitizeText(fmt.Sprintf("(local chat cleared, but clearing it on the daemon failed: %v)", msg.err))})
 	m.refreshViewport()
 	return m, nil
 }
@@ -1743,8 +1748,24 @@ func buildHistory(turns []turn) []protocol.Turn {
 	return history
 }
 
-// clearConversation handles ctrl+n: it starts a fresh conversation with no
-// carried-over history. A no-op while a request/stream is in flight (mid-
+// handleCtrlN is ctrl+n. A chat that is NOT SAVED is not discarded on the
+// first press: the footer says so and how to keep it (/history save), and only
+// a second consecutive ctrl+n discards it -- any other key cancels, exactly as
+// ctrl+c arms a quit. Only what the user saves is kept, so a chat must never be
+// lost to a single stray keystroke. A saved chat, or an empty one, clears at once.
+func (m chatModel) handleCtrlN() (tea.Model, tea.Cmd) {
+	if m.state == stateSending || m.state == stateStreaming {
+		return m, nil
+	}
+	if m.newChatArmed || !m.currentChatUnsaved() {
+		return m.clearConversation()
+	}
+	m.newChatArmed = true
+	return m, nil
+}
+
+// clearConversation discards the chat and starts a fresh one with no
+// carried-over history (handleCtrlN decides when). A no-op while a request/stream is in flight (mid-
 // stream review is unreachable here — stateEditReview routes to
 // handleReviewKey instead, which doesn't bind ctrl+n), matching the same
 // ignore-while-busy rule Enter follows.
@@ -1759,15 +1780,9 @@ func (m chatModel) clearConversation() (tea.Model, tea.Cmd) {
 	if m.state == stateSending || m.state == stateStreaming {
 		return m, nil
 	}
-	m.resetSavesChat = false
-	for _, t := range m.turns {
-		if t.role == roleUser {
-			m.resetSavesChat = true
-			break
-		}
-	}
+	m.newChatArmed = false
+	m.resumeArmed = ""
 	m.turns = nil
-	m.chatIDs = nil // the list's numbers move once this chat is saved
 	m.lastGrounding = nil
 	m.lastRedactions = nil
 	m.lastDegraded = nil
@@ -1779,7 +1794,7 @@ func (m chatModel) clearConversation() (tea.Model, tea.Cmd) {
 	m.refreshViewport()
 
 	ch := make(chan tea.Msg, 1)
-	return m, startReset(context.Background(), m.clientName, m.activeSpec, ch)
+	return m, startReset(context.Background(), m.clientName, ch)
 }
 
 // handleToken appends msg to the in-progress assistant turn (starting one
@@ -2583,6 +2598,9 @@ func (m chatModel) View() string {
 	// it is only on screen until the next keypress answers it.
 	if m.quitArmed {
 		help = helpStyle.Render(quitConfirmHelpText)
+	}
+	if m.newChatArmed {
+		help = helpStyle.Render(newChatConfirmHelpText)
 	}
 
 	return header + "\n" + m.viewport.View() + "\n" + bottomLine + "\n" + help

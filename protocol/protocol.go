@@ -203,10 +203,9 @@ type HandshakeResponse struct {
 	Features []string `json:"features,omitempty"`
 }
 
-// FeatureChatHistory: ctrl+n SAVES the chat to history instead of deleting
-// it, and HistoryRequest is understood. A daemon without it deletes the chat on
-// a reset, so a client must not send one expecting it to be kept.
-const FeatureChatHistory = "chat_history"
+// FeatureSavedChats: HistoryRequest is understood, including save -- the
+// user-chosen way a chat is kept. A daemon without it cannot run /history.
+const FeatureSavedChats = "saved_chats"
 
 // PromptRequest carries a single user prompt. Sent by the client only after
 // a successful handshake. Workspace is optional and additive: when set,
@@ -1194,14 +1193,16 @@ type SearchResponse struct {
 // History actions (HistoryRequest.Action).
 const (
 	HistoryList   = "list"   // the current chat, then the saved ones, newest first
+	HistorySave   = "save"   // save the current chat -- or update it, if it was saved before
 	HistoryShow   = "show"   // one saved chat's turns, read-only
-	HistoryResume = "resume" // save the current chat, make the chosen one current
+	HistoryResume = "resume" // make a saved chat the current one (its saved copy stays)
 	HistoryDelete = "delete" // remove one saved chat
 )
 
-// HistoryRequest asks the daemon about PAST CHATS in its own workspace: the
-// conversations ctrl+n closed, kept compressed under the daemon's state
-// directory (daemon/chatarchive.go). Sent on its own connection after a
+// HistoryRequest asks the daemon about SAVED CHATS in its own workspace: the
+// conversations the user chose to keep with /history save, kept compressed
+// under the daemon's state directory (daemon/chatarchive.go). Nothing is saved
+// unless the user asks -- ctrl+n discards. Sent on its own connection after a
 // HandshakeRequest, like SearchRequest.
 //
 // Chats is the discriminator, always serialized for SearchRequest.Search's
@@ -1209,8 +1210,10 @@ const (
 // (the turns sent with a prompt), and one key must not select two things. Workspace is ignored exactly as SearchRequest's is: the daemon only
 // ever reads its own workspace's chats. ID names a saved chat for show, resume
 // and delete; it is checked against the archive's file-name pattern, so it can
-// never name a path. Spec is the client's active spec, used only to label the
-// current chat in a list.
+// never name a path. Spec is the client's active spec: it labels the current
+// chat in a list and is recorded with a chat when it is saved. Name is the
+// optional name a save gives the chat; without one it is called by its first
+// prompt, or keeps the name it was saved under before.
 type HistoryRequest struct {
 	ProtocolVersion int    `json:"protocol_version"`
 	Chats           bool   `json:"chats"`
@@ -1218,10 +1221,14 @@ type HistoryRequest struct {
 	Action          string `json:"action"`
 	ID              string `json:"id,omitempty"`
 	Spec            string `json:"spec,omitempty"`
+	Name            string `json:"name,omitempty"`
 }
 
 // HistoryEntry is one chat in a list. Current marks the live conversation,
-// which has no ID because it is not saved yet.
+// which has no ID of its own: SavedAs names the saved chat it was saved as or
+// resumed from, and Unsaved says it holds turns that saved copy does not (or
+// that it was never saved at all). Title is the chat's name when it was given
+// one, else its first prompt.
 //
 // The last three fields say whether the work was left HALF DONE:
 // Incomplete is the reason the chat's last answer was cut off (an
@@ -1240,17 +1247,22 @@ type HistoryEntry struct {
 	Spec       string `json:"spec,omitempty"`
 	SpecOpen   int    `json:"spec_open,omitempty"`
 	SpecTotal  int    `json:"spec_total,omitempty"`
+	SavedAs    string `json:"saved_as,omitempty"`
+	Unsaved    bool   `json:"unsaved,omitempty"`
 }
 
 // HistoryResponse answers a HistoryRequest. Entries answers list; Turns and
 // Entry answer show and resume (Entry says what was shown or resumed, Turns
-// is its conversation, oldest first). Error is set only when the action could
-// not be done -- an empty list is not an error.
+// is its conversation, oldest first); Entry answers save, and Pruned says how
+// many of the oldest saved chats that save pushed past the folder's bounds.
+// Error is set only when the action could not be done -- an empty list is not
+// an error.
 type HistoryResponse struct {
 	ProtocolVersion int            `json:"protocol_version"`
 	Entries         []HistoryEntry `json:"entries,omitempty"`
 	Entry           *HistoryEntry  `json:"entry,omitempty"`
 	Turns           []Turn         `json:"turns,omitempty"`
+	Pruned          int            `json:"pruned,omitempty"`
 	Error           string         `json:"error,omitempty"`
 }
 

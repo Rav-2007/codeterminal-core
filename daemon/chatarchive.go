@@ -21,12 +21,16 @@ import (
 	"mochiii/protocol"
 )
 
-// CHAT HISTORY: the conversations ctrl+n closed, so /history can find work
-// that was left half done and bring it back.
+// SAVED CHATS: the conversations the user chose to keep, so /history can find
+// work that was left half done and bring it back.
 //
-// Until this existed ctrl+n DELETED the conversation (ClearWorkspace), so a
-// project had exactly one chat and every earlier one was gone. Now ctrl+n saves
-// it here first.
+// ONLY WHAT THE USER SAVES IS WRITTEN. /history save keeps the current chat;
+// ctrl+n discards (the client warns first when the chat is unsaved). Saving
+// every conversation would fill the folder with chats nobody asked for, and
+// the owner's requirement was that disk use stays the user's choice. Saving a
+// chat again after more work UPDATES its saved copy rather than adding one: the
+// workspace's link file (currentLinkName) records which saved chat the current
+// one is, and how many turns that copy holds.
 //
 // ONE GZIPPED JSONL FILE PER CHAT, under StateDir()/history/<workspace key>/ --
 // beside memory.db and never inside the project, so it cannot be committed.
@@ -35,10 +39,11 @@ import (
 // the header line, so a folder of hundreds of chats lists without loading any
 // of them.
 //
-// BOUNDED, so the folder stays small however long it is used: at most
-// maxArchivesPerWorkspace chats per project and maxSavedChatBytes for the whole
-// folder, oldest dropped first. No age limit, for memory.go's reason: "I came
-// back after a month and my chat was gone" is worse than a bounded folder.
+// BOUNDED as a backstop, so the folder stays small however long it is used: at
+// most maxArchivesPerWorkspace chats per project and maxSavedChatBytes for the
+// whole folder, oldest dropped first -- and a save that pushes any out says so.
+// No age limit, for memory.go's reason: "I came back after a month and my chat
+// was gone" is worse than a bounded folder.
 //
 // DISK IS UNTRUSTED on the way back in, exactly as memory.db is: reads are
 // bounded after decompression (a planted gzip bomb cannot exhaust memory), a
@@ -70,6 +75,13 @@ const (
 	// staleTempAge is how old a leftover temp file (a save interrupted by a
 	// crash) must be before pruning removes it.
 	staleTempAge = time.Hour
+
+	// currentLinkName is the workspace's link file: which saved chat the
+	// current one is (it was saved as it, or resumed from it). Not a saved
+	// chat itself, so it matches no archive pattern and pruning skips it.
+	currentLinkName = "current.json"
+	// maxLinkBytes bounds reading the link file.
+	maxLinkBytes = 1 << 10
 )
 
 // archiveIDPattern is the whole of a chat id: the UTC time it was saved and 8
@@ -80,9 +92,14 @@ const archiveIDTimeLayout = "20060102T150405Z"
 
 var errArchiveNotFound = errors.New("no saved chat with that id")
 
-// archiveHeader is line 1 of a saved chat.
+// errNothingToSave: the current chat has no question with an answer yet.
+var errNothingToSave = errors.New("nothing to save yet")
+
+// archiveHeader is line 1 of a saved chat. Name is what the user called it
+// when saving, if anything; Title is always its first prompt.
 type archiveHeader struct {
 	V          int    `json:"v"`
+	Name       string `json:"name,omitempty"`
 	Title      string `json:"title"`
 	LastPrompt string `json:"last_prompt,omitempty"`
 	Started    string `json:"started,omitempty"`
@@ -174,8 +191,9 @@ func (a *chatArchive) dirUsable() (bool, error) {
 
 // save writes turns as one saved chat and returns its id. A conversation with
 // no complete exchange saves nothing and returns "".
-func (a *chatArchive) save(turns []storedTurn, spec string, now time.Time) (string, error) {
+func (a *chatArchive) save(turns []storedTurn, spec, name string, now time.Time) (string, error) {
 	h, ok := headerFor(turns, spec, now)
+	h.Name = clipRunes(oneLine(name), archiveTitleRunes)
 	if !ok {
 		return "", nil
 	}
@@ -255,6 +273,79 @@ func headerFor(turns []storedTurn, spec string, now time.Time) (archiveHeader, b
 		h.Spec = rel
 	}
 	return h, answered
+}
+
+// displayTitle is what a chat is called in a list: its name, else its first
+// prompt.
+func (h archiveHeader) displayTitle() string {
+	if h.Name != "" {
+		return h.Name
+	}
+	return h.Title
+}
+
+// chatLink is the workspace's link file: the saved chat the current chat is,
+// and how many turns that saved copy holds -- more turns now means unsaved work.
+type chatLink struct {
+	ID    string `json:"id"`
+	Turns int    `json:"turns"`
+}
+
+// readLink returns the link, or a zero one when there is none or it cannot be
+// trusted (bounded read, and the id must be an id).
+func (a *chatArchive) readLink() chatLink {
+	if ok, err := a.dirUsable(); err != nil || !ok {
+		return chatLink{}
+	}
+	f, err := openArchive(filepath.Join(a.dir, currentLinkName))
+	if err != nil {
+		return chatLink{}
+	}
+	defer func() { _ = f.Close() }() // read-only
+	var l chatLink
+	if json.NewDecoder(io.LimitReader(f, maxLinkBytes)).Decode(&l) != nil || !archiveIDPattern.MatchString(l.ID) {
+		return chatLink{}
+	}
+	return l
+}
+
+// writeLink records that the current chat is saved chat id, holding turns.
+func (a *chatArchive) writeLink(id string, turns int) error {
+	if err := a.ensureDir(); err != nil {
+		return err
+	}
+	data, err := json.Marshal(chatLink{ID: id, Turns: turns})
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(a.dir, ".tmp-*")
+	if err != nil {
+		return fmt.Errorf("linking the current chat: %w", err)
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()        // the write already failed
+		_ = os.Remove(tmpName) // best effort; pruning removes stale temp files
+		return fmt.Errorf("linking the current chat: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName) // best effort, as above
+		return fmt.Errorf("linking the current chat: %w", err)
+	}
+	if err := os.Rename(tmpName, filepath.Join(a.dir, currentLinkName)); err != nil {
+		_ = os.Remove(tmpName) // best effort, as above
+		return fmt.Errorf("linking the current chat: %w", err)
+	}
+	return nil
+}
+
+// clearLink forgets which saved chat the current one is: ctrl+n started a new
+// chat, or the saved copy was deleted.
+func (a *chatArchive) clearLink() {
+	if ok, err := a.dirUsable(); err != nil || !ok {
+		return
+	}
+	_ = os.Remove(filepath.Join(a.dir, currentLinkName)) // absent is the goal either way
 }
 
 // incompleteReasonOf recovers why an answer was cut off from the note
@@ -432,16 +523,18 @@ func (a *chatArchive) pathFor(id string) (string, error) {
 // pruneHistory keeps the whole history folder bounded: at most keep chats
 // per workspace, then at most maxBytes across every workspace, oldest first
 // either way. It also removes temp files a crash left behind. Best effort:
-// a file that cannot be removed is left for the next prune.
-func pruneHistory(root string, keep int, maxBytes int64, now time.Time) {
+// a file that cannot be removed is left for the next prune. It returns how
+// many saved chats it removed, so the save that caused it can say so.
+func pruneHistory(root string, keep int, maxBytes int64, now time.Time) int {
 	fi, err := os.Lstat(root)
 	if err != nil || !fi.IsDir() || fi.Mode()&os.ModeSymlink != 0 {
-		return
+		return 0
 	}
 	dirs, err := os.ReadDir(root)
 	if err != nil {
-		return
+		return 0
 	}
+	removed := 0
 	type file struct {
 		id, path string
 		size     int64
@@ -476,7 +569,9 @@ func pruneHistory(root string, keep int, maxBytes int64, now time.Time) {
 		sort.Slice(files, func(i, j int) bool { return files[i].id > files[j].id })
 		for i, f := range files {
 			if i >= keep {
-				_ = os.Remove(f.path) // best effort
+				if os.Remove(f.path) == nil {
+					removed++
+				}
 				continue
 			}
 			all = append(all, f)
@@ -494,8 +589,10 @@ func pruneHistory(root string, keep int, maxBytes int64, now time.Time) {
 		}
 		if os.Remove(f.path) == nil {
 			total -= f.size
+			removed++
 		}
 	}
+	return removed
 }
 
 // oneLine collapses whitespace runs, newlines included, to single spaces.

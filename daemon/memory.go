@@ -392,7 +392,7 @@ type storedTurn struct {
 }
 
 // LoadAllTurns returns every persisted turn for workspace, oldest first --
-// the whole current chat, which ctrl+n saves to history before clearing it
+// the whole current chat, which /history save writes to history
 // (chatarchive.go). Unlike LoadRecentTurns it neither caps nor re-validates:
 // what it returns is archived as it is and re-validated when it is read back.
 func (s *MemoryStore) LoadAllTurns(ctx context.Context, workspace string) ([]storedTurn, error) {
