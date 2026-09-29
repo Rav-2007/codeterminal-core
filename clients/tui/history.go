@@ -253,7 +253,8 @@ func (m chatModel) resumeChat(arg string) (tea.Model, tea.Cmd) {
 		if err != nil {
 			problem = "history: " + err.Error()
 		} else {
-			m.chatIDs = nil // every number has moved
+			m.chatIDs = nil             // every number has moved
+			m.chatUsage = usageTotals{} // a different chat; the session's total carries on
 			m.turns = turnsFromProtocol(resp.Turns)
 			m.promptHistory = promptsFrom(resp.Turns)
 			m.historyIdx, m.historyDraft = -1, ""

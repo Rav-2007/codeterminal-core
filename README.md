@@ -419,6 +419,7 @@ client; steered commands send a task preamble to the model.
 
 /team <question>       # researcher -> coder specialists (/team:planner,coder …)
 
+/usage                 # tokens and cost this chat/session, and how full the context is
 /history save [name]   # keep this chat; saving again later updates it
 /history               # saved chats in this project; ⚠ marks work left half done
 /history 2             # read saved chat 2
@@ -428,6 +429,13 @@ client; steered commands send a task preamble to the model.
 /help /mcp-server /explain /fix /test /refactor /doc /security
 /review /plan /run /clear /compact /context /git /init /search /exit
 ```
+
+**Usage.** `/usage` answers from the provider's own bill, not an estimate. It shows
+tokens in (and how many were cached), tokens out, and dollars, for this chat and for
+the whole session. It also shows the size of the last context sent against the model's
+window, taken from `context_window` in `models.json`. It answers locally, so it costs
+no model call. A bare `/word` that is not a command is answered locally too, instead
+of being sent to the model.
 
 **Chat history.** A chat is kept only if you save it with `/history save`, so disk use
 stays your choice. ctrl+n starts a new chat and discards the current one, but on a chat

@@ -28,6 +28,12 @@ type ModelTier struct {
 	// zdr.provider_sort. It narrows nothing: the ZDR flags and the ignore list
 	// still apply exactly as for every other tier.
 	ProviderSort string `json:"provider_sort,omitempty"`
+	// ContextWindow is how many tokens this tier's model can take in one call
+	// (OpenRouter's context_length -- the smaller of the model's and its top
+	// host's, so it never overstates the room). It rides with each turn's
+	// usage, so /usage can say how full the context is. Zero means unknown:
+	// /usage then shows the size without a percentage.
+	ContextWindow int `json:"context_window,omitempty"`
 }
 
 // reasoningEfforts are the ReasoningEffort values OpenRouter accepts.
@@ -344,7 +350,7 @@ var (
 	knownConfigKeys    = []string{"config_version", "default_tier", "tiers", "retrieval", "zdr", "no_scrub", "mcp"}
 	knownRetrievalKeys = []string{"disabled", "rerank_disabled", "top_k", "context_budget_chars"}
 	knownZDRKeys       = []string{"allow_non_zdr", "allow_data_collection", "allow_fallbacks", "provider_ignore_list", "provider_order", "provider_sort"}
-	knownTierKeys      = []string{"slug", "active", "note", "reasoning_effort", "provider_sort"}
+	knownTierKeys      = []string{"slug", "active", "note", "reasoning_effort", "provider_sort", "context_window"}
 )
 
 // LoadConfig reads and validates a models.json file at path.
@@ -523,6 +529,11 @@ func (c *Config) clampTierSettings() {
 			c.warnf("tiers.%s.reasoning_effort %q is not one of %s; no reasoning effort is sent",
 				name, t.ReasoningEffort, strings.Join(reasoningEfforts, ", "))
 			t.ReasoningEffort = ""
+			c.Tiers[name] = t
+		}
+		if t.ContextWindow < 0 {
+			c.warnf("tiers.%s.context_window %d is negative; treated as unknown", name, t.ContextWindow)
+			t.ContextWindow = 0
 			c.Tiers[name] = t
 		}
 	}

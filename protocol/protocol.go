@@ -331,6 +331,29 @@ type Turn struct {
 	Incomplete string `json:"incomplete,omitempty"`
 }
 
+// TurnUsage is what one turn cost, AS THE PROVIDER BILLED IT: the usage report
+// every model call ends with, summed over the turn's calls -- an agent turn's
+// tool loop, a /team pipeline's phases and any retries included. Nothing here
+// is estimated. It rides on the turn's final Done message; a turn that never
+// reached the model carries none.
+//
+// ContextTokens is the prompt size of the turn's LAST call: how much context
+// the model was last given, which is what fills the window. ContextWindow is
+// that model's limit from models.json (0 when unknown). CostMissing says some
+// call reported no cost, so CostUSD is a lower bound.
+type TurnUsage struct {
+	Calls            int     `json:"calls"`
+	PromptTokens     int     `json:"prompt_tokens"`
+	CompletionTokens int     `json:"completion_tokens"`
+	CachedTokens     int     `json:"cached_tokens,omitempty"`
+	ReasoningTokens  int     `json:"reasoning_tokens,omitempty"`
+	CostUSD          float64 `json:"cost_usd,omitempty"`
+	CostMissing      bool    `json:"cost_missing,omitempty"`
+	ContextTokens    int     `json:"context_tokens,omitempty"`
+	ContextWindow    int     `json:"context_window,omitempty"`
+	Model            string  `json:"model,omitempty"`
+}
+
 // TokenResponse is one message in a streamed reply. The daemon sends, in
 // order: at most one message carrying Grounding (before any tokens, once
 // retrieval has been decided for this request), a sequence of messages
@@ -480,6 +503,9 @@ type TokenResponse struct {
 	WorkingCopy     *WorkingCopyInfo     `json:"working_copy,omitempty"`
 	SpecReport      *SpecReport          `json:"spec_report,omitempty"`
 	Tasks           []TaskItem           `json:"tasks,omitempty"`
+	// Usage is the turn's bill (TurnUsage), on the final Done message of a turn
+	// that reached the model. Additive: a client that ignores it is unaffected.
+	Usage *TurnUsage `json:"usage,omitempty"`
 }
 
 // TaskItem is one step of the plan a /spec build turn is working through,

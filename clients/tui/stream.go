@@ -120,6 +120,11 @@ type toolActivityMsg struct{ activity protocol.ToolActivity }
 // streamDoneMsg signals the stream finished successfully.
 type streamDoneMsg struct{}
 
+// usageMsg is a finished turn's bill (protocol.TurnUsage), from its final
+// message -- delivered just before streamDoneMsg or streamErrMsg, since a turn
+// that failed after calling the model was still billed. See usage.go.
+type usageMsg struct{ usage *protocol.TurnUsage }
+
 // streamErrMsg signals the stream failed (connect/handshake error, a
 // daemon-side error, or a malformed response). A deliberate cancellation
 // (the user quitting mid-stream) does NOT produce this message — see
@@ -379,6 +384,9 @@ func streamPromptWith(ctx context.Context, clientName, workspace, prompt, prompt
 			return
 		}
 		if tok.Error != "" {
+			if tok.Usage != nil && !deliver(ctx, ch, usageMsg{tok.Usage}) {
+				return
+			}
 			deliver(ctx, ch, streamErrMsg{err: errors.New(tok.Error), sent: true,
 				class: tok.ErrorClass, keyReplaceable: tok.KeyReplaceable})
 			return
@@ -433,6 +441,9 @@ func streamPromptWith(ctx context.Context, clientName, workspace, prompt, prompt
 			// Before streamDoneMsg, which is what starts the review: the
 			// proposals have to be in hand by the time it arrives.
 			if len(tok.EditProposals) > 0 && !deliver(ctx, ch, editProposalsMsg{tok.EditProposals}) {
+				return
+			}
+			if tok.Usage != nil && !deliver(ctx, ch, usageMsg{tok.Usage}) {
 				return
 			}
 			deliver(ctx, ch, streamDoneMsg{})

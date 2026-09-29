@@ -326,6 +326,13 @@ type chatModel struct {
 	// switching off the spec forgets them, and so does quitting (specgrant.go).
 	specGrants []specGrant
 
+	// chatUsage and sessionUsage add up the provider's bill for every turn of
+	// this chat (since ctrl+n or a resume) and of this whole session;
+	// lastUsage is the latest turn's, which says how full the context is.
+	// /usage shows them (usage.go).
+	chatUsage, sessionUsage usageTotals
+	lastUsage               *protocol.TurnUsage
+
 	// chatIDs are the saved chats the last /history list numbered, in order:
 	// "/history resume 2" means the chat that list showed as 2 (history.go).
 	chatIDs []string
@@ -461,6 +468,13 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case providerMsg:
 		return m.handleProvider(msg)
+
+	case usageMsg:
+		if m.streamCh == nil {
+			return m, nil // a stray message from an already-abandoned stream
+		}
+		m.recordUsage(msg.usage)
+		return m, waitForNext(m.streamCh)
 
 	case reasoningMsg:
 		return m.handleReasoning(msg)
@@ -1241,6 +1255,13 @@ func (m chatModel) startTurn() (tea.Model, tea.Cmd) {
 		m.input.SetValue("")
 		return m.handleSlash(sp)
 	}
+	if note := unknownCommandNote(raw); note != "" {
+		m.input.SetValue("")
+		m.appendTurn(turn{role: roleSystem, text: note})
+		m.resizeViewport()
+		m.refreshViewport()
+		return m, nil
+	}
 	// A QUESTION IS THE MOMENT A KEY IS ACTUALLY NEEDED -- and this is below the
 	// slash handling deliberately, so /connect, /help and everything else still
 	// work on a client that has no credential yet. Only a real prompt is held.
@@ -1455,6 +1476,11 @@ func (m chatModel) handleLocalSlash(name, args string) (tea.Model, tea.Cmd) {
 		reply = runSearch(m.clientName, m.workspaceRoot, args)
 	case "history":
 		return m.handleHistoryCommand(args)
+	case "usage":
+		m.appendTurn(turn{role: roleSystem, text: m.usageReport()})
+		m.resizeViewport()
+		m.refreshViewport()
+		return m, nil
 	case "spec":
 		return m.handleSpecCommand(args)
 	case "exit":
@@ -1782,6 +1808,7 @@ func (m chatModel) clearConversation() (tea.Model, tea.Cmd) {
 	}
 	m.newChatArmed = false
 	m.resumeArmed = ""
+	m.chatUsage = usageTotals{} // a new chat; the session's total carries on
 	m.turns = nil
 	m.lastGrounding = nil
 	m.lastRedactions = nil

@@ -266,6 +266,10 @@ var notYetPorted = map[string]string{
 	// "new chat" still never sends a reset, so it neither deleted chats before
 	// nor saves them now.
 	"history": "VS Code port is the next step of the /history plan (README, /history)",
+	// VS Code left as it is by the owner's decision (2026-09-28); its context
+	// ring is the nearest thing it has, and it estimates rather than reads the
+	// provider's bill.
+	"usage": "VS Code left as it is for now by the owner; the TUI's /usage reads the provider's bill",
 }
 
 func TestSlashCatalogsAgreeAcrossClients(t *testing.T) {

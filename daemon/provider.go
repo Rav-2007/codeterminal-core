@@ -185,8 +185,8 @@ type reasoningParam struct {
 // IncludeUsage is what makes OpenRouter emit a final SSE chunk carrying
 // token-usage counts; without it, streamed responses never include usage at
 // all. Consumed by the managed proxy for per-key metering (see
-// proxy/main.go's extractUsage) -- this daemon does not itself read the
-// usage chunk, it only requests it so the proxy sitting downstream can.
+// proxy/main.go's extractUsage), and by this daemon for /usage: each call's
+// usage chunk is added to the turn's tally (usage.go).
 type streamOptions struct {
 	IncludeUsage bool `json:"include_usage"`
 }
@@ -214,7 +214,10 @@ type chatCompletionChunk struct {
 	// are what OpenRouter itself filters routing by, before this response
 	// ever exists.
 	Provider string `json:"provider,omitempty"`
-	Choices  []struct {
+	// Usage is the provider's bill for this call, on the final chunk only --
+	// the one stream_options.include_usage asks for. See usage.go.
+	Usage   *chunkUsage `json:"usage,omitempty"`
+	Choices []struct {
 		Delta struct {
 			Content string `json:"content"`
 			// Reasoning carries a reasoning-tier model's thinking tokens,
@@ -719,6 +722,11 @@ func streamCompletion(ctx context.Context, apiBase, apiKey, model string, messag
 			if onProvider != nil {
 				onProvider(chunk.Provider)
 			}
+		}
+		// THE BILL. Before the zero-choices guard below, for the budget-kill
+		// chunk's reason: the usage chunk carries no choices at all.
+		if chunk.Usage != nil {
+			usageTallyFrom(ctx).add(*chunk.Usage)
 		}
 		// Checked BEFORE the zero-choices guard below, not after: the proxy's
 		// budget-kill chunk carries an `error` and NO choices, so a check placed

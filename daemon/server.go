@@ -697,6 +697,11 @@ func (s *Server) serveConn(conn net.Conn) {
 	// loadPersistedHistory). Merging it in here too would double the
 	// conversation the model sees.
 	routing := s.cfg.routingFor(decision.Tier)
+	// THE TURN'S BILL: every model call below -- the single call here, or an
+	// agent turn's whole loop -- adds its usage report to this tally, and the
+	// turn's final Done message carries the sum (usage.go; the TUI's /usage).
+	ctx, tally := withUsageTally(ctx)
+
 	var full strings.Builder
 	reasoningBytes := 0
 	// finishReason is captured from the stream's terminal SSE finish_reason via
@@ -806,6 +811,7 @@ func (s *Server) serveConn(conn net.Conn) {
 			Error:           modelErr.Error(),
 			ErrorClass:      string(modelErr.Class),
 			KeyReplaceable:  keyReplaceable(modelErr.Class),
+			Usage:           tally.report(decision.Slug, s.contextWindowFor(decision.Slug)),
 		})
 		return
 	}
@@ -821,7 +827,8 @@ func (s *Server) serveConn(conn net.Conn) {
 	if incomplete != nil {
 		s.logger.Printf("stream ended early: finish_reason=%q (answer cut off)", finishReason)
 	}
-	enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Done: true, EditProposals: editProposalsFromBlocks(blocks), EditRejections: rejections, Incomplete: incomplete})
+	enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Done: true, EditProposals: editProposalsFromBlocks(blocks), EditRejections: rejections, Incomplete: incomplete,
+		Usage: tally.report(decision.Slug, s.contextWindowFor(decision.Slug))})
 	s.logger.Print("stream complete")
 
 	s.persistTurn(promptReq.Prompt, full.String(), incomplete)
