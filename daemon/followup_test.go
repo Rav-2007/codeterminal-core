@@ -95,7 +95,7 @@ func TestAFollowUpOverTheSocket(t *testing.T) {
 		for n := 1; n <= 20; n++ {
 			lines = append(lines, fmt.Sprintf("config.go line %d", n))
 		}
-		if err := os.WriteFile(filepath.Join(root, "config.go"), []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(root, "config.go"), []byte(strings.Join(lines, "\n")), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		base, _, bodies := agentUpstream(t, textSSE("fixed"))

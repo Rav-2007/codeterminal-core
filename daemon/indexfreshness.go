@@ -103,9 +103,20 @@ type indexFreshnessResult struct {
 // for files the index was never going to cover, which is a false alarm that
 // cannot be fixed by re-indexing: the worst kind.
 func scanIndexFreshness(root string, builtAt time.Time) indexFreshnessResult {
-	res := indexFreshnessResult{State: freshnessUnknown, BuiltAt: builtAt}
+	res, _, _ := scanChangedFiles(root, builtAt, false)
+	return res
+}
+
+// scanChangedFiles is scanIndexFreshness's walk. With collect it also returns
+// the index key (workspace-relative, forward-slash) of every changed file, and
+// either way it reports whether the walk saw every eligible file: the startup
+// catch-up (catchUpIndex) may only call the index current when it did. ONE walk
+// for both, so the count /status reports and the files the catch-up re-indexes
+// can never disagree about what "changed" means.
+func scanChangedFiles(root string, builtAt time.Time, collect bool) (res indexFreshnessResult, changed []string, complete bool) {
+	res = indexFreshnessResult{State: freshnessUnknown, BuiltAt: builtAt}
 	if builtAt.IsZero() || root == "" {
-		return res
+		return res, nil, false
 	}
 
 	ignore := newGitignoreMatcher(root)
@@ -167,6 +178,9 @@ func scanIndexFreshness(root string, builtAt time.Time) indexFreshnessResult {
 		}
 		if mt := info.ModTime(); mt.After(builtAt) {
 			res.Changed++
+			if collect {
+				changed = append(changed, filepath.ToSlash(rel))
+			}
 			if mt.After(res.Newest) {
 				res.Newest = mt
 			}
@@ -179,10 +193,10 @@ func scanIndexFreshness(root string, builtAt time.Time) indexFreshnessResult {
 		// verdict. A partial walk that found none proves nothing.
 		if res.Changed > 0 {
 			res.State = freshnessStale
-			return res
+			return res, changed, false
 		}
 		res.State = freshnessUnknown
-		return res
+		return res, changed, false
 	}
 
 	if res.Changed > 0 {
@@ -190,7 +204,7 @@ func scanIndexFreshness(root string, builtAt time.Time) indexFreshnessResult {
 	} else {
 		res.State = freshnessCurrent
 	}
-	return res
+	return res, changed, true
 }
 
 // freshnessCache memoises one sweep for a short window.
@@ -213,6 +227,14 @@ func newFreshnessCache(ttl time.Duration) *freshnessCache {
 
 // get returns the cached sweep, refreshing it through compute when expired.
 // now is injected so the test does not sleep.
+// forget drops the cached answer, so the next /status measures again. The
+// startup catch-up (catchUpIndex) makes the answer it holds untrue.
+func (c *freshnessCache) forget() {
+	c.mu.Lock()
+	c.valid = false
+	c.mu.Unlock()
+}
+
 func (c *freshnessCache) get(now time.Time, compute func() indexFreshnessResult) indexFreshnessResult {
 	c.mu.Lock()
 	defer c.mu.Unlock()

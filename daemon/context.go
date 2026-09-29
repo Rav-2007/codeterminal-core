@@ -249,6 +249,13 @@ func (s *Server) gatherContext(ctx context.Context, prompt string) retrievalOutc
 	}
 
 	similar, reason := s.similarChunks(ctx, prompt)
+	// What the files say NOW, not what they said when indexed; a hit whose code
+	// is gone is dropped. See refreshHitsFromDisk.
+	similar, refreshed, dropped := refreshHitsFromDisk(similar, s.workspace)
+	if refreshed+dropped > 0 {
+		s.logger.Printf("retrieval: %d hit(s) had changed on disk since indexing and were re-read; %d no longer exist and were dropped",
+			refreshed, dropped)
+	}
 	if reason != "" && len(direct) == 0 {
 		// Nothing resolved and similarity could not run: this is the same
 		// Skipped outcome as before, with the same wording.

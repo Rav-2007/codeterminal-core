@@ -116,3 +116,67 @@ func (s *Server) reindexAfterApply(realRoot, relPath string) {
 	}
 	s.logger.Printf("apply-edit: re-indexed %s in %s", relPath, time.Since(started).Round(time.Millisecond))
 }
+
+// maxCatchUpFiles bounds the startup catch-up. Above it, re-embedding in the
+// background would hold the embedder for many minutes while the user is asking
+// questions of it; a full `index` is the right tool, and the log says so.
+const maxCatchUpFiles = 500
+
+// catchUpIndex re-indexes the files that changed while no daemon was running.
+//
+// The watcher keeps the index current from the moment it starts, and nothing
+// covered the time before: an edit between sessions, a checkout, a pull. Those
+// files kept their old chunks indefinitely -- the user's own index was eight
+// days and 338 files behind when this was written -- so retrieval ranked on,
+// and until refreshHitsFromDisk quoted, code that no longer existed.
+//
+// It runs ONCE, FIRST, inside the watcher's single worker goroutine, so it is
+// serialised with every live save and cannot race one. The list is the
+// freshness scan's own (scanChangedFiles): the files /status counts as changed
+// are exactly the files re-indexed here. When every one succeeded and the scan
+// saw the whole workspace, the stamp's BuiltAt moves to when this began -- files
+// saved since are the watcher's -- and /status stops reporting a staleness that
+// is no longer true. Deleted files leave chunks behind (the vector store cannot
+// list by file); refreshHitsFromDisk drops those at query time.
+func (s *Server) catchUpIndex() {
+	if s.embedder == nil || s.store == nil || s.workspace == "" {
+		return // retrieval not configured for this daemon; nothing to keep current
+	}
+	indexDir := filepath.Join(s.workspace, indexDirName)
+	builtAt := readStampBuiltAt(indexDir)
+	if builtAt.IsZero() {
+		return // an index from before stamps carried a time: when it was built is unknown
+	}
+	began := time.Now()
+	_, changed, complete := scanChangedFiles(s.workspace, builtAt, true)
+	if len(changed) == 0 {
+		return
+	}
+	if len(changed) > maxCatchUpFiles {
+		s.logger.Printf("index: %d file(s) changed since the index was built at %s -- too many to catch up in the background; "+
+			"run `mochiii-daemon index` to rebuild it", len(changed), builtAt.UTC().Format(time.RFC3339))
+		return
+	}
+	s.logger.Printf("index: re-indexing %d file(s) that changed while the daemon was not running", len(changed))
+	failed := 0
+	for _, rel := range changed {
+		ctx := s.shutdownContext()
+		if ctx.Err() != nil {
+			return
+		}
+		if err := s.reindexFile(ctx, s.workspace, rel); err != nil {
+			failed++
+			s.logger.Printf("index: catch-up re-index of %s failed: %v", rel, err)
+		}
+	}
+	if failed == 0 && complete {
+		if err := advanceStampBuiltAt(indexDir, began); err != nil {
+			s.logger.Printf("index: caught up, but recording when failed (the next start will check these files again): %v", err)
+		}
+		if s.freshness != nil {
+			s.freshness.forget()
+		}
+	}
+	s.logger.Printf("index: caught up %d file(s) in %s (%d failed)", len(changed)-failed,
+		time.Since(began).Round(time.Millisecond), failed)
+}

@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -270,6 +272,22 @@ func TestMergeAdjacentChunks_ReclaimsRenderedBudget(t *testing.T) {
 	}
 	t.Logf("rendered budget: before=%dB after=%dB reclaimed=%dB (%.1f%%)",
 		beforeBytes, afterBytes, saved, 100*float64(saved)/float64(beforeBytes))
+}
+
+// writeLineFile writes file under root so the chunker reads lineChunk(file, 1,
+// n) back from it -- retrieval checks every hit against the file on disk
+// (refreshHitsFromDisk), so a hit the test expects to keep must exist there.
+// No trailing newline: the chunker counts one as a line of its own. One window
+// only (n <= 40).
+func writeLineFile(t *testing.T, root, file string, n int) {
+	t.Helper()
+	path := filepath.Join(root, filepath.FromSlash(file))
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(lineChunk(file, 1, n).Content), 0o600); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // fixedStore is a VectorStore that always returns the same ranked chunk list,

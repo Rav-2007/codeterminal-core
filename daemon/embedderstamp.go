@@ -73,6 +73,31 @@ type embedderStamp struct {
 // writeEmbedderStamp stamps indexDir with embedder's identity and the
 // current index schema version, overwriting any previous stamp. Called
 // after a successful index build.
+// advanceStampBuiltAt moves an index's BuiltAt forward to t, keeping every
+// other field of its stamp. Called only once every file changed since the old
+// BuiltAt has been re-indexed (catchUpIndex), which is what makes the claim
+// "this index describes the workspace as of t" true. Never moves it back.
+func advanceStampBuiltAt(indexDir string, t time.Time) error {
+	path := filepath.Join(indexDir, embedderStampFileName)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var stamp embedderStamp
+	if err := json.Unmarshal(data, &stamp); err != nil {
+		return err
+	}
+	if !t.After(stamp.BuiltAt) {
+		return nil
+	}
+	stamp.BuiltAt = t.UTC()
+	out, err := json.MarshalIndent(stamp, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writeFileNoFollow(path, out, 0600)
+}
+
 func writeEmbedderStamp(indexDir string, embedder Embedder) error {
 	stamp := embedderStamp{
 		EmbedderID:         embedder.ID(),

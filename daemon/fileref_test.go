@@ -382,6 +382,7 @@ func TestGatherContext_DirectReferenceReachesThePrompt(t *testing.T) {
 // ordinary retrieval rather than failing or emptying the request.
 func TestGatherContext_BadReferenceStillGrounds(t *testing.T) {
 	root := refWorkspace(t)
+	writeLineFile(t, root, "daemon/unrelated.go", 40)
 	s := &Server{
 		logger:             discardLogger(),
 		embedder:           &fakeEmbedder{dim: embedDim},

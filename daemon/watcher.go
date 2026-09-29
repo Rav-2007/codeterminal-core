@@ -210,6 +210,9 @@ func (s *Server) startWorkspaceWatcher() {
 		// The single worker. Everything that touches the index goes through here,
 		// in order, one at a time.
 		go func() {
+			// First, what changed while no daemon was watching. Here, in the
+			// one worker, so it is serialised with the saves queued meanwhile.
+			s.catchUpIndex()
 			for {
 				select {
 				case <-s.shutdownContext().Done():

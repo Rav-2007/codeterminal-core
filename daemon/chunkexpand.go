@@ -246,6 +246,58 @@ func expandToNeighbours(hits []Chunk, workspaceRoot string, policy expandPolicy)
 	return out
 }
 
+// refreshHitsFromDisk makes every retrieved hit say what its file says NOW.
+//
+// A hit carries the text stored when its file was indexed. The watcher keeps
+// the index current while the daemon runs, but an edit made while it was not
+// running -- between sessions, a checkout, a pull -- left the stored copy in
+// place, and it reached the model as though it were the file. MEASURED
+// 2026-09-29: with maxStreamAttempts changed to 7 on disk, the model was shown
+// 3.
+//
+// Each hit's file is re-chunked through regionsOnDisk -- the indexer's own
+// eligibility gate and chunker -- and the hit matched by ID, which is
+// path:start-end (chunker.go). A match replaces the text and keeps the rank.
+// No match -- the file is gone, shrank past the range, or is no longer
+// eligible -- drops the hit: code that does not exist is not context. The
+// index itself catches up in the background (catchUpIndex).
+//
+// A daemon with no workspace (tests that hand gatherContext chunks directly)
+// has nothing to compare against and gets its hits back unchanged.
+func refreshHitsFromDisk(hits []Chunk, workspaceRoot string) (out []Chunk, refreshed, dropped int) {
+	if workspaceRoot == "" || len(hits) == 0 {
+		return hits, 0, 0
+	}
+	realRoot, err := filepath.EvalSymlinks(workspaceRoot)
+	if err != nil {
+		return hits, 0, 0
+	}
+	ignore := newGitignoreMatcher(realRoot)
+	onDisk := make(map[string]map[string]string) // file -> chunk ID -> its text now
+	out = make([]Chunk, 0, len(hits))
+	for _, h := range hits {
+		byID, ok := onDisk[h.FilePath]
+		if !ok {
+			byID = make(map[string]string)
+			for _, c := range regionsOnDisk(realRoot, h.FilePath, ignore).chunks {
+				byID[c.ID] = c.Content
+			}
+			onDisk[h.FilePath] = byID
+		}
+		now, ok := byID[h.ID]
+		if !ok {
+			dropped++
+			continue
+		}
+		if now != h.Content {
+			h.Content = now
+			refreshed++
+		}
+		out = append(out, h)
+	}
+	return out, refreshed, dropped
+}
+
 // fileRegions is one file's chunking and its construct extents, read together
 // because expansion needs both and the file should only be read once per query.
 type fileRegions struct {

@@ -136,9 +136,11 @@ func TestLexicalBound_ThePromptPathDoesNotPayTheCostEither(t *testing.T) {
 	}
 
 	var logbuf bytes.Buffer
+	// No workspace: these chunks exist only in the stores, and a daemon WITH a
+	// workspace drops hits whose files are not on disk (refreshHitsFromDisk).
+	// What this measures is the lexical bound, which has nothing to read there.
 	srv := &Server{
 		logger:        log.New(&logbuf, "", 0),
-		workspace:     t.TempDir(),
 		embedder:      &fakeEmbedder{dim: 8},
 		store:         fixedStore{chunks: chunks[:5]},
 		lexicalStore:  lexical,
