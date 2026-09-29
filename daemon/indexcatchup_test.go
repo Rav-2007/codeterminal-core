@@ -153,3 +153,57 @@ func TestTheWatcherCatchesUpWhenItStarts(t *testing.T) {
 	defer mu.Unlock()
 	t.Fatalf("the watcher started without catching up; log:\n%s", strings.Join(logged, "\n"))
 }
+
+// probeEmbedder reports, at the moment it is asked to embed, whether the file
+// being re-indexed is still in the store -- and can be told to fail.
+type probeEmbedder struct {
+	fakeEmbedder
+	store       *recordingStore
+	file        string
+	presentThen bool
+	fail        bool
+}
+
+func (p *probeEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	for _, c := range p.store.chunks {
+		if c.FilePath == p.file {
+			p.presentThen = true
+		}
+	}
+	if p.fail {
+		return nil, fmt.Errorf("embedder down")
+	}
+	return p.fakeEmbedder.Embed(ctx, texts)
+}
+
+// A file being re-indexed stays searchable while it is embedded: its old
+// chunks go only when the new ones are ready. Deleting first left it out of
+// search for the whole embed, which the startup catch-up made the common case.
+func TestAFileStaysSearchableWhileItIsReindexed(t *testing.T) {
+	root, err := editapply.ResolveRealWorkspaceRoot(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeLineFile(t, root, "a.go", 20)
+	for _, fail := range []bool{false, true} {
+		store := &recordingStore{chunks: []Chunk{lineChunk("a.go", 1, 20)}}
+		emb := &probeEmbedder{fakeEmbedder: fakeEmbedder{dim: embedDim}, store: store, file: "a.go", fail: fail}
+		s := &Server{logger: discardLogger(), workspace: root, embedder: emb, store: store}
+		err := s.reindexFile(context.Background(), root, "a.go")
+		if !emb.presentThen {
+			t.Errorf("fail=%v: a.go was out of the index while it was being embedded", fail)
+		}
+		kept := 0
+		for _, c := range store.chunks {
+			if c.FilePath == "a.go" {
+				kept++
+			}
+		}
+		if fail && (err == nil || kept == 0) {
+			t.Errorf("a failed embed: err=%v, %d chunk(s) of a.go left; want the error and the old chunks kept", err, kept)
+		}
+		if !fail && (err != nil || kept != 1) {
+			t.Errorf("a re-index: err=%v, %d chunk(s) of a.go; want exactly the new one", err, kept)
+		}
+	}
+}

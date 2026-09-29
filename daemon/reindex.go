@@ -41,13 +41,22 @@ func (s *Server) reindexFile(ctx context.Context, realRoot, relPath string) erro
 	ctx, cancel := context.WithTimeout(ctx, reindexTimeout)
 	defer cancel()
 
-	if err := s.store.DeleteByFilePath(ctx, relPath); err != nil {
-		return err
-	}
-	if s.lexicalStore != nil {
-		if err := s.lexicalStore.DeleteByFilePath(ctx, relPath); err != nil {
+	// THE OLD CHUNKS GO AS LATE AS POSSIBLE -- after the new ones are embedded,
+	// immediately before they are written. Deleting first left the file out of
+	// search for as long as embedding took, and the startup catch-up made that
+	// window the common case rather than a race: MEASURED 2026-09-29, a question
+	// about retry.go arriving while it was being caught up found no retry.go at
+	// all. The delete still covers the whole file, so a shrunk file's old tail
+	// goes too; and if embedding fails the old chunks stay searchable, their text
+	// kept current at query time by refreshHitsFromDisk.
+	drop := func() error {
+		if err := s.store.DeleteByFilePath(ctx, relPath); err != nil {
 			return err
 		}
+		if s.lexicalStore != nil {
+			return s.lexicalStore.DeleteByFilePath(ctx, relPath)
+		}
+		return nil
 	}
 
 	// relPath is an index key, so it is forward-slash on every platform (see the
@@ -60,15 +69,19 @@ func (s *Server) reindexFile(ctx context.Context, realRoot, relPath string) erro
 	// would skip is never admitted by this shorter path.
 	content, _, skip, err := readEligibleFile(filepath.Join(realRoot, nativeRel), nativeRel, newGitignoreMatcher(realRoot))
 	if err != nil {
+		// Gone or unreadable: nothing of it should stay searchable.
+		if dropErr := drop(); dropErr != nil {
+			return dropErr
+		}
 		return fmt.Errorf("re-reading %s: %w", relPath, err)
 	}
 	if skip {
-		return nil
+		return drop()
 	}
 
 	chunks := chunkContent(content, relPath)
 	if len(chunks) == 0 {
-		return nil
+		return drop()
 	}
 
 	vecs, err := s.embedder.Embed(ctx, embedTextsFor(chunks))
@@ -79,6 +92,9 @@ func (s *Server) reindexFile(ctx context.Context, realRoot, relPath string) erro
 		chunks[i].Vector = vecs[i]
 	}
 
+	if err := drop(); err != nil {
+		return err
+	}
 	if err := s.store.Upsert(ctx, chunks); err != nil {
 		return err
 	}
@@ -165,6 +181,9 @@ func (s *Server) catchUpIndex() {
 			return
 		}
 		if err := s.reindexFile(ctx, s.workspace, rel); err != nil {
+			if ctx.Err() != nil {
+				return // the daemon is stopping; the next start picks this up
+			}
 			failed++
 			s.logger.Printf("index: catch-up re-index of %s failed: %v", rel, err)
 		}
