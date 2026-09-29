@@ -35,7 +35,7 @@ var currencyMarkers = []string{
 	"current", "currently", "latest", "newest", "most recent", "right now",
 	"today", "tonight", "this week", "this month", "this year", "nowadays",
 	"these days", "at the moment", "as of now", "as of today", "up to date",
-	"up-to-date", "so far this", "at present", "present day", "recent",
+	"up-to-date", "so far this", "at present", "present day", "recent", "recently",
 	"still the", "these days", "this quarter",
 }
 
@@ -120,7 +120,7 @@ func looksLikeLiveWorldQuestion(q string) bool {
 	}
 	// PRECISION FIRST: a workspace question is never a live-world question,
 	// however many currency words it contains.
-	if filePathish.MatchString(q) || codingIntent.MatchString(q) {
+	if filePathish.MatchString(q) || codingIntent.MatchString(q) || codeIdentifier.MatchString(q) {
 		return false
 	}
 	// Everything below reads the request WITHOUT its quoted text.
@@ -137,13 +137,34 @@ func looksLikeLiveWorldQuestion(q string) bool {
 			return true
 		}
 	}
-	for _, m := range currencyMarkers {
-		if strings.Contains(lower, m) {
-			return true
-		}
-	}
-	return false
+	return currencyPattern.MatchString(lower)
 }
+
+// currencyPattern matches currencyMarkers as WHOLE WORDS.
+//
+// They were matched as substrings, so "concurrent" contained "current" (and
+// "recently" contained "recent", now a marker of its own). A question about the
+// code's concurrency got the live-question steering -- a changed system message,
+// so nothing after it could come from the provider's cache -- and then an extra
+// model call telling it to search the web: MEASURED 2026-09-29, "how does the
+// concurrent apply lock work?" cost 2 calls and 2.2x the bytes of the same
+// question without the word.
+var currencyPattern = compileCurrencyPattern()
+
+func compileCurrencyPattern() *regexp.Regexp {
+	quoted := make([]string, len(currencyMarkers))
+	for i, m := range currencyMarkers {
+		quoted[i] = regexp.QuoteMeta(m)
+	}
+	return regexp.MustCompile(`(?i)\b(?:` + strings.Join(quoted, "|") + `)\b`)
+}
+
+// codeIdentifier is a camelCase or snake_case name -- maxHistoryTurns,
+// stream_with_retry -- which only a question about code contains. The camelCase
+// form needs two lowercase letters before the capital and a lowercase one after
+// it, so product names a live question may carry (iPhone, macOS, openAI) do not
+// count.
+var codeIdentifier = regexp.MustCompile(`\b[a-z]{2,}[A-Z][a-z]+|\b[a-z][a-z0-9]*_[a-z0-9_]*[a-z0-9]\b`)
 
 // lastUserQuestion returns the user's own words from the message list.
 //

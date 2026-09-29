@@ -37,6 +37,10 @@ func TestLiveWorldQuestionsAreRecognised(t *testing.T) {
 		"what is the news today",
 		"most recent kubernetes release",
 		"who leads the project now",
+		// Product names are not code identifiers.
+		"what is the latest iPhone",
+		"what is the current macOS version",
+		"what did openAI announce recently",
 	}
 	for _, q := range live {
 		if !looksLikeLiveWorldQuestion(q) {
@@ -62,6 +66,13 @@ func TestCodebaseQuestionsAreNotClassifiedLive(t *testing.T) {
 		"refactor the current implementation of the scrubber",
 		"why is git status showing these files",
 		"write a function that returns the current time",
+		// "concurrent" contains "current": matched as a substring, these cost a
+		// second model call and a web search (measured 2026-09-29).
+		"how does the concurrent apply lock work?",
+		"is the history map safe for concurrent access",
+		// A code identifier names the workspace.
+		"what is the current value of maxHistoryTurns",
+		"is stream_with_retry still called anywhere",
 	}
 	for _, q := range notLive {
 		if looksLikeLiveWorldQuestion(q) {

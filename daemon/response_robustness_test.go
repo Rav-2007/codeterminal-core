@@ -280,8 +280,9 @@ func TestHistoryTruncation_IsVisibleOnTheWire(t *testing.T) {
 	if !info.Truncated {
 		t.Errorf("HistoryInfo = %+v, want Truncated:true", info)
 	}
-	if info.Turns != maxHistoryTurns {
-		t.Errorf("HistoryInfo.Turns = %d, want %d", info.Turns, maxHistoryTurns)
+	// 16 turns: one block of historyBlockTurns (6) is dropped.
+	if want := maxHistoryTurns + 4 - historyBlockTurns; info.Turns != want {
+		t.Errorf("HistoryInfo.Turns = %d, want %d", info.Turns, want)
 	}
 }
 

@@ -77,8 +77,9 @@ func TestPrepareHistory_RejectsSystemAndUnknownRoles(t *testing.T) {
 }
 
 // TestPrepareHistory_CapsToMaxTurnsDroppingOldestFirst proves the overflow
-// policy: when more than maxHistoryTurns valid turns are supplied, the
-// OLDEST are dropped, and the most recent maxHistoryTurns survive in order.
+// policy: when more than maxHistoryTurns valid turns are supplied, the OLDEST
+// are dropped -- in whole blocks of historyBlockTurns (see historyCut) -- and
+// the most recent survive in order.
 func TestPrepareHistory_CapsToMaxTurnsDroppingOldestFirst(t *testing.T) {
 	const total = maxHistoryTurns + 5
 	turns := make([]protocol.Turn, total)
@@ -95,16 +96,18 @@ func TestPrepareHistory_CapsToMaxTurnsDroppingOldestFirst(t *testing.T) {
 	if !o.Truncated {
 		t.Fatal("Truncated = false, want true when supplied turns exceed maxHistoryTurns")
 	}
-	if o.KeptTurns != maxHistoryTurns {
-		t.Fatalf("KeptTurns = %d, want %d", o.KeptTurns, maxHistoryTurns)
+	// 17 turns is 5 over the cap, so one block of 6 goes: 11 are kept.
+	const kept = 11
+	if o.KeptTurns != kept {
+		t.Fatalf("KeptTurns = %d, want %d", o.KeptTurns, kept)
 	}
-	if len(o.Messages) != maxHistoryTurns {
-		t.Fatalf("len(Messages) = %d, want %d", len(o.Messages), maxHistoryTurns)
+	if len(o.Messages) != kept {
+		t.Fatalf("len(Messages) = %d, want %d", len(o.Messages), kept)
 	}
 
 	// The kept turns must be exactly the most recent ones, oldest-of-the-
-	// kept-set first, i.e. turn-5..turn-16 when total=17 and cap=12.
-	firstKeptIndex := total - maxHistoryTurns
+	// kept-set first, i.e. turn-6..turn-16 when total=17.
+	firstKeptIndex := total - kept
 	for i, m := range o.Messages {
 		want := fmt.Sprintf("turn-%d", firstKeptIndex+i)
 		if m.Content != want {
@@ -148,5 +151,31 @@ func TestPrepareHistory_InvalidTurnsDoNotCountTowardTheCap(t *testing.T) {
 	}
 	if o.KeptTurns != maxHistoryTurns {
 		t.Errorf("KeptTurns = %d, want %d", o.KeptTurns, maxHistoryTurns)
+	}
+}
+
+// The window moves in blocks, so a growing chat keeps the same first history
+// message for historyBlockTurns turns at a time -- which is what lets the
+// provider serve the history from its prompt cache -- and never holds more than
+// maxHistoryTurns or fewer than maxHistoryTurns-historyBlockTurns+1.
+func TestPrepareHistory_TheWindowMovesInBlocks(t *testing.T) {
+	var turns []protocol.Turn
+	firstKept := map[string]int{}
+	for n := 1; n <= 4*maxHistoryTurns; n++ {
+		role := "user"
+		if n%2 == 0 {
+			role = "assistant"
+		}
+		turns = append(turns, protocol.Turn{Role: role, Content: fmt.Sprintf("turn-%d", n)})
+		o := prepareHistory(turns, false)
+		if o.KeptTurns > maxHistoryTurns || (n > maxHistoryTurns && o.KeptTurns <= maxHistoryTurns-historyBlockTurns) {
+			t.Fatalf("%d turns: kept %d", n, o.KeptTurns)
+		}
+		firstKept[o.Messages[0].Content]++
+	}
+	for first, turnsWithIt := range firstKept {
+		if first != "turn-1" && turnsWithIt != historyBlockTurns {
+			t.Errorf("the history began with %s for %d request(s), want %d", first, turnsWithIt, historyBlockTurns)
+		}
 	}
 }

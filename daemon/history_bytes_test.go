@@ -169,8 +169,9 @@ func TestBuildHistoryInfo_MakesTruncationVisible(t *testing.T) {
 	if !info.Truncated {
 		t.Error("Truncated = false, want true — turns beyond the cap were dropped")
 	}
-	if info.Turns != maxHistoryTurns {
-		t.Errorf("Turns = %d, want %d", info.Turns, maxHistoryTurns)
+	// 17 turns: one block of historyBlockTurns (6) is dropped.
+	if want := maxHistoryTurns + 5 - historyBlockTurns; info.Turns != want {
+		t.Errorf("Turns = %d, want %d", info.Turns, want)
 	}
 
 	// No history at all: the field should simply be absent.

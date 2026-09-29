@@ -709,6 +709,12 @@ func (s *Server) runAgentLoop(
 	}
 }
 
+// maxIdenticalRepeats is how many identical-call-identical-result repeats a turn
+// may make before budgetStop ends it. A legitimate re-run is not one: a test
+// run after an edit, or a file re-read after changing it, returns different
+// output and is never counted.
+const maxIdenticalRepeats = 3
+
 // budgetStop reports which ceiling, if any, ends the turn now.
 //
 // Hitting a budget is NOT an error. The assistant text so far is real work the
@@ -757,6 +763,22 @@ func (s *Server) budgetStop(turn *agentTurn, bud budget) *protocol.IncompleteInf
 			Reason: protocol.IncompleteAgentBudget,
 			Detail: "this task ran out of time before finishing — what you see above is everything " +
 				"that was done. Ask for a narrower step, or raise mcp.budget.turn_timeout_seconds.",
+		}
+	}
+	// A MODEL GOING IN CIRCLES STOPS HERE, not at the iteration ceiling. An
+	// identical call that returned identical output already gets a stall note
+	// instead of the payload (dispatchToolCall), but that shortened the repeat
+	// without ending it: MEASURED 2026-09-29, a model asking for the same file
+	// was detected repeating 15 times and billed 17 calls, each re-sending the
+	// whole context. After maxIdenticalRepeats the turn ends, and the wrap-up
+	// call answers from what was read.
+	if turn.repeats >= maxIdenticalRepeats {
+		s.logger.Printf("agent: stopping after %d identical repeated call(s)", turn.repeats)
+		return &protocol.IncompleteInfo{
+			Reason: protocol.IncompleteAgentBudget,
+			Detail: fmt.Sprintf("this task stopped because the model repeated the same step %d times with "+
+				"the same result — what you see above is everything that was done. Ask again with more "+
+				"detail, or try another model with /model.", maxIdenticalRepeats),
 		}
 	}
 	if turn.toolBytes >= bud.maxTotalToolByte {

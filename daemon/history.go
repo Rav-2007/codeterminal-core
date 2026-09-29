@@ -14,6 +14,30 @@ import (
 // bounded regardless of how long the client's session has run.
 const maxHistoryTurns = 12
 
+// historyBlockTurns is how many of the oldest turns are dropped at a time once
+// a conversation passes maxHistoryTurns. See historyCut.
+const historyBlockTurns = maxHistoryTurns / 2
+
+// historyCut is how many of n valid turns to drop from the front: none up to
+// maxHistoryTurns, then whole blocks of historyBlockTurns -- so 7 to 12 turns
+// are kept, never more than the cap.
+//
+// IN BLOCKS, NOT ONE EXCHANGE AT A TIME, because a provider bills the cached
+// PREFIX of a request at a fraction of the price, and a prefix survives only if
+// every byte before it is unchanged. Keeping exactly the last 12 slid the window
+// by two turns per exchange, so the first history message changed on every
+// request and nothing after the system prompt was ever cached: MEASURED
+// 2026-09-29, 11 KB of full-price history per turn where appending costs 1.8 KB.
+// Cut in blocks, the start stays put for three exchanges at a time, so the
+// history is re-sent at full price once per block rather than on every turn.
+func historyCut(n int) int {
+	if n <= maxHistoryTurns {
+		return 0
+	}
+	over := n - maxHistoryTurns
+	return (over + historyBlockTurns - 1) / historyBlockTurns * historyBlockTurns
+}
+
 // maxHistoryBytes caps the total CONTENT bytes of history sent to the model,
 // alongside the turn-count cap above (Fix 13).
 //
@@ -185,8 +209,8 @@ func prepareHistory(turns []protocol.Turn, scrubDisabled bool) historyOutcome {
 		valid = append(valid, t)
 	}
 
-	if len(valid) > maxHistoryTurns {
-		valid = valid[len(valid)-maxHistoryTurns:]
+	if cut := historyCut(len(valid)); cut > 0 {
+		valid = valid[cut:]
 		outcome.Truncated = true
 	}
 

@@ -471,8 +471,14 @@ func buildAugmentedUserMessage(prompt string, chunks []Chunk, scrubDisabled bool
 		b.WriteString("\n")
 		b.WriteString(userRequestCloseTag)
 	}
-	writeRequest()
-	b.WriteString("\n\n")
+	// A LONG request is written once, after the code. The measured failure was a
+	// SHORT request drowning under the code; a long one -- a pasted log, a spec
+	// -- is the bulk of the message and cannot drown, and writing it twice
+	// doubled its cost (a 6 KB paste went out as 12 KB).
+	if len(prompt) <= requestRepeatMaxBytes {
+		writeRequest()
+		b.WriteString("\n\n")
+	}
 	b.WriteString(retrievedContextNote)
 	b.WriteString("\n\n")
 	b.WriteString(retrievedContextOpenTag)
@@ -485,6 +491,10 @@ func buildAugmentedUserMessage(prompt string, chunks []Chunk, scrubDisabled bool
 	writeRequest()
 	return b.String()
 }
+
+// requestRepeatMaxBytes is the longest request buildAugmentedUserMessage writes
+// both before and after the code.
+const requestRepeatMaxBytes = 1000
 
 // retrievedContextNote sits between the request and the code.
 //

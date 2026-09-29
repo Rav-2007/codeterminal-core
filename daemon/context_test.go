@@ -150,6 +150,24 @@ func TestBuildAugmentedUserMessage_LabelsAndDelimitsChunks(t *testing.T) {
 	}
 }
 
+// A long request -- a pasted log -- goes once, AFTER the code: repeating it
+// doubled what a paste cost, and only a short request needs saying twice to
+// survive the code around it.
+func TestBuildAugmentedUserMessage_ALongRequestIsSentOnce(t *testing.T) {
+	chunks := []Chunk{{FilePath: "a.go", StartLine: 1, EndLine: 2, Content: "package a"}}
+	paste := "here is the log, what failed?\n" + strings.Repeat("FAIL TestX: boom\n", 400)
+	got := buildAugmentedUserMessage(paste, chunks, false)
+	if n := strings.Count(got, paste); n != 1 {
+		t.Fatalf("a %d-byte paste was sent %d times, want once", len(paste), n)
+	}
+	if strings.Index(got, paste) < strings.Index(got, retrievedContextCloseTag) {
+		t.Errorf("the long request is not after the code:\n%.300s", got)
+	}
+	if short := "why?"; strings.Count(buildAugmentedUserMessage(short, chunks, false), short) != 2 {
+		t.Error("a short request is no longer written both first and last")
+	}
+}
+
 // --- injection safety: structural request test ------------------------------
 
 // TestInjectionSafety_RetrievedContentNeverTouchesSystemRole is the

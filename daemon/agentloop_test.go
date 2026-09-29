@@ -652,3 +652,33 @@ func TestEachStepEchoesOnlyItsOwnWords(t *testing.T) {
 		t.Errorf("FinalText = %q, want the whole turn %q", res.FinalText, want)
 	}
 }
+
+// A model asking for the same thing over and over is stopped after
+// maxIdenticalRepeats, not at the iteration ceiling: measured before this, 15
+// detected repeats and 17 billed calls.
+func TestAModelGoingInCirclesIsStoppedEarly(t *testing.T) {
+	same := make([][]string, 0, 20)
+	for range 20 {
+		same = append(same, toolCallSSE("c", "builtin__read_file", `{"path":"inside.txt"}`))
+	}
+	base, requests, _ := agentUpstream(t, same...)
+	s := loopServer(t, base, MCPConfig{
+		Enabled: true,
+		Builtin: MCPBuiltinConfig{Tools: map[string]string{"read_file": PolicyAllow}},
+		Budget:  MCPBudgetConfig{MaxIterations: 16},
+	})
+	if err := os.WriteFile(s.workspace+"/inside.txt", []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	res, _, err := runLoop(t, s)
+	if err != nil {
+		t.Fatalf("runAgentLoop: %v", err)
+	}
+	// The first read, three identical repeats, then one wrap-up call.
+	if got := requests.Load(); got != 1+maxIdenticalRepeats+1 {
+		t.Errorf("made %d model calls, want %d", got, 1+maxIdenticalRepeats+1)
+	}
+	if res.Incomplete == nil || !strings.Contains(res.Incomplete.Detail, "repeated the same step") {
+		t.Errorf("Incomplete = %+v, want the repeat named as what stopped it", res.Incomplete)
+	}
+}
