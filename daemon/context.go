@@ -289,6 +289,45 @@ func (s *Server) gatherContext(ctx context.Context, prompt string) retrievalOutc
 	}
 }
 
+// followUpSkipReason is what a skipped follow-up reports as its grounding.
+const followUpSkipReason = "a follow-up; the agent reads the code it needs itself"
+
+// retrievalQueryFor decides what this turn's code search is keyed on, or that
+// there is none. Only the SEARCH changes: the message the model receives still
+// carries the user's own words.
+//
+// A follow-up ("continue", "yes do it", "ok fix it") names nothing to look up.
+// Searched on its own words it drew ~30 KB of unrelated code per turn, so:
+//
+//   - in agent mode it gets no code at all -- the agent has read_file and
+//     search_code, and reads the one file it needs instead of paying for
+//     thirty kilobytes it does not;
+//   - without tools it is searched together with the question it follows (the
+//     latest one that was not itself a follow-up), so the code attached is the
+//     code the conversation is about.
+//
+// Small talk keeps its own path (gatherContext skips it), and a follow-up with
+// nothing before it is searched as it stands -- there is nothing to follow.
+func retrievalQueryFor(prompt string, history []chatMessage, agentMode bool) (query, skipReason string) {
+	if isSmallTalk(prompt) || !isFollowUp(prompt) {
+		return prompt, ""
+	}
+	followed := ""
+	for i := len(history) - 1; i >= 0; i-- {
+		if c := history[i].Content; history[i].Role == "user" && !isFollowUp(c) && !isSmallTalk(c) {
+			followed = c
+			break
+		}
+	}
+	if followed == "" {
+		return prompt, ""
+	}
+	if agentMode {
+		return "", followUpSkipReason
+	}
+	return followed + "\n" + prompt, ""
+}
+
 // similarChunks runs similarity retrieval, returning a non-empty reason string
 // when it could not run or failed. It returns no error, deliberately: retrieval
 // must never prevent generation, so every failure is a reason the caller may

@@ -59,3 +59,56 @@ func foldStretched(w string) string {
 	}
 	return string(out)
 }
+
+// followUpWords are the words a short follow-up is made of: "continue", "yes
+// do it", "ok fix it", "try again", "now add a test for that". None of them
+// names anything in a codebase, so a prompt made ONLY of these (see isFollowUp)
+// says what to do next with the conversation, not what to look up.
+var followUpWords = map[string]bool{
+	"continue": true, "continuing": true, "go": true, "on": true, "ahead": true, "proceed": true,
+	"keep": true, "going": true, "carry": true, "yeah": true, "please": true, "pls": true,
+	"do": true, "it": true, "that": true, "this": true, "those": true, "these": true, "them": true,
+	"fix": true, "try": true, "redo": true, "why": true, "what": true, "now": true,
+	"add": true, "an": true, "the": true, "test": true, "tests": true, "for": true, "explain": true,
+	"more": true, "detail": true, "details": true, "elaborate": true, "expand": true, "show": true,
+	"me": true, "next": true, "same": true, "other": true, "one": true, "ones": true, "rest": true,
+	"finish": true, "complete": true, "done": true, "and": true, "then": true, "also": true,
+	"too": true, "just": true, "still": true, "it's": true, "that's": true, "is": true, "was": true,
+	"were": true, "can": true, "could": true, "would": true, "should": true, "we": true, "i": true,
+	"let's": true, "lets": true, "right": true, "correct": true, "wrong": true, "works": true,
+	"work": true, "working": true, "doesn't": true, "didn't": true, "isn't": true, "not": true,
+	"don't": true, "hmm": true, "well": true, "wait": true, "here": true, "apply": true, "use": true,
+	"change": true, "update": true, "looks": true, "look": true, "like": true, "with": true,
+	"to": true, "of": true, "in": true,
+}
+
+// maxFollowUpWords bounds a follow-up. Anything longer is a request in its own
+// right, whatever its words.
+const maxFollowUpWords = 8
+
+// isFollowUp reports whether prompt only moves the conversation along: short,
+// every word a follow-up or small-talk word, and nothing path- or code-shaped.
+// Any identifier or file name breaks it ("fix the retry bug" is a question).
+//
+// A code search keyed on such words finds whatever happens to say "continue"
+// or "try" -- MEASURED 2026-09-29 on this repository: each follow-up drew ~30
+// KB of unrelated files ("try again" drew retry.go), billed at full price
+// because it sits in the newest message.
+func isFollowUp(prompt string) bool {
+	if strings.ContainsRune(prompt, '`') || filePathish.MatchString(prompt) {
+		return false
+	}
+	words := strings.FieldsFunc(strings.ToLower(prompt), func(r rune) bool {
+		return !(unicode.IsLetter(r) || r == '\'')
+	})
+	if len(words) == 0 || len(words) > maxFollowUpWords {
+		return false
+	}
+	for _, w := range words {
+		folded := foldStretched(w)
+		if !followUpWords[w] && !followUpWords[folded] && !smallTalkWords[w] && !smallTalkWords[folded] {
+			return false
+		}
+	}
+	return true
+}

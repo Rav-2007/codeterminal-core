@@ -609,7 +609,15 @@ func (s *Server) serveConn(conn net.Conn) {
 	historyOutcome := prepareHistory(promptReq.History, s.noScrub())
 	s.logHistory(historyOutcome)
 
-	outcome := s.gatherContext(ctx, promptReq.Prompt)
+	// A follow-up ("continue", "ok fix it") is searched with the question it
+	// follows, or -- in agent mode, where the agent can read code itself -- not
+	// at all. See retrievalQueryFor.
+	var outcome retrievalOutcome
+	if query, skip := retrievalQueryFor(promptReq.Prompt, historyOutcome.Messages, s.agentModeEngaged(hsReq)); skip != "" {
+		outcome = retrievalOutcome{Skipped: true, Reason: skip}
+	} else {
+		outcome = s.gatherContext(ctx, query)
+	}
 	s.logRetrieval(outcome)
 
 	grounding := buildGroundingInfo(outcome, s.workspace, promptReq.Workspace)
