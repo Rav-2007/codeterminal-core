@@ -17,6 +17,7 @@ import (
 // usageTotals adds up turns' bills.
 type usageTotals struct {
 	turns, calls                        int
+	stopped                             int // turns the user stopped, counted in turns
 	prompt, completion, cached, reasons int
 	cost                                float64
 	costMissing                         bool
@@ -43,6 +44,29 @@ func (m *chatModel) recordUsage(u *protocol.TurnUsage) {
 	m.sessionUsage.add(*u)
 	last := *u
 	m.lastUsage = &last
+}
+
+// recordStoppedUsage adds the bills of turns the user stopped. A stopped turn
+// sends no final message, so the daemon keeps its bill and sends it on the next
+// turn's. They are in order, so the newest stopsInChat of them were stopped in
+// this chat; any older ones belong to a chat since left, and count for the
+// session only. The context line is left alone: it describes the newest call.
+func (m *chatModel) recordStoppedUsage(stopped []protocol.TurnUsage) {
+	here := min(m.stopsInChat, len(stopped))
+	for i, u := range stopped {
+		m.sessionUsage.addStopped(u)
+		if i >= len(stopped)-here {
+			m.chatUsage.addStopped(u)
+		}
+	}
+	if len(stopped) > 0 {
+		m.stopsInChat = 0
+	}
+}
+
+func (t *usageTotals) addStopped(u protocol.TurnUsage) {
+	t.add(u)
+	t.stopped++
 }
 
 // usageReport renders /usage.
@@ -76,7 +100,11 @@ func (m chatModel) usageReport() string {
 }
 
 func writeUsageRows(b *strings.Builder, label string, t usageTotals) {
-	fmt.Fprintf(b, "\n  %-13s %d turn%s · %d model call%s", label, t.turns, plural(t.turns), t.calls, plural(t.calls))
+	stopped := ""
+	if t.stopped > 0 {
+		stopped = fmt.Sprintf(" (%d stopped)", t.stopped)
+	}
+	fmt.Fprintf(b, "\n  %-13s %d turn%s%s · %d model call%s", label, t.turns, plural(t.turns), stopped, t.calls, plural(t.calls))
 	in := "in " + compactTokens(t.prompt)
 	if t.cached > 0 {
 		in += " (" + compactTokens(t.cached) + " cached)"

@@ -140,6 +140,10 @@ type Server struct {
 	connIdleTimeout time.Duration
 	maxConns        int
 
+	// stopped holds the bills of turns the user stopped until the next Done
+	// carries them (usage.go). The zero value is ready to use.
+	stopped stoppedUsage
+
 	// counters is what this daemon has done since it started (see counters.go).
 	// Never nil in production (main.go builds the Server literal with one) and
 	// nil-safe everywhere, so a test that builds a bare Server still works.
@@ -813,6 +817,7 @@ func (s *Server) serveConn(conn net.Conn) {
 		// send a Done to, and a turn the user stopped is not persisted.
 		s.logger.Printf("the client went away mid-answer; stopped after %d byte(s) of reasoning and %d of answer",
 			reasoningBytes, full.Len())
+		s.stopped.hold(tally.report(decision.Slug, s.contextWindowFor(decision.Slug)))
 		return
 	}
 	if err != nil {
@@ -826,7 +831,7 @@ func (s *Server) serveConn(conn net.Conn) {
 		// %v here cannot leak by accident.
 		modelErr := asModelError(err)
 		s.logger.Printf("model API error: %s", modelErr.Detail())
-		enc.Encode(protocol.TokenResponse{
+		_ = s.sendDone(enc, protocol.TokenResponse{
 			ProtocolVersion: protocol.ProtocolVersion,
 			Done:            true,
 			Error:           modelErr.Error(),
@@ -848,7 +853,7 @@ func (s *Server) serveConn(conn net.Conn) {
 	if incomplete != nil {
 		s.logger.Printf("stream ended early: finish_reason=%q (answer cut off)", finishReason)
 	}
-	enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Done: true, EditProposals: editProposalsFromBlocks(blocks), EditRejections: rejections, Incomplete: incomplete,
+	_ = s.sendDone(enc, protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Done: true, EditProposals: editProposalsFromBlocks(blocks), EditRejections: rejections, Incomplete: incomplete,
 		Usage: tally.report(decision.Slug, s.contextWindowFor(decision.Slug))})
 	s.logger.Print("stream complete")
 

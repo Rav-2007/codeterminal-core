@@ -332,6 +332,10 @@ type chatModel struct {
 	// /usage shows them (usage.go).
 	chatUsage, sessionUsage usageTotals
 	lastUsage               *protocol.TurnUsage
+	// stopsInChat counts the turns stopped in THIS chat whose bills the daemon
+	// has not sent yet, so a bill arriving after a new chat or a resume goes to
+	// the session only (recordStoppedUsage).
+	stopsInChat int
 
 	// chatIDs are the saved chats the last /history list numbered, in order:
 	// "/history resume 2" means the chat that list showed as 2 (history.go).
@@ -473,6 +477,7 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.streamCh == nil {
 			return m, nil // a stray message from an already-abandoned stream
 		}
+		m.recordStoppedUsage(msg.stopped)
 		m.recordUsage(msg.usage)
 		return m, waitForNext(m.streamCh)
 
@@ -1718,6 +1723,7 @@ func (m chatModel) interruptTurn() (tea.Model, tea.Cmd) {
 	// already dispatched may still be finishing as this line is drawn. "nothing
 	// further ran" would be a claim about the far end that this side cannot make.
 	m.appendTurn(turn{role: roleSystem, text: "⏹ stopped — you interrupted this turn"})
+	m.stopsInChat++ // its bill arrives on the next turn's final message
 
 	m.state = stateIdle
 	m.statusErr = ""
@@ -1809,6 +1815,7 @@ func (m chatModel) clearConversation() (tea.Model, tea.Cmd) {
 	m.newChatArmed = false
 	m.resumeArmed = ""
 	m.chatUsage = usageTotals{} // a new chat; the session's total carries on
+	m.stopsInChat = 0
 	m.turns = nil
 	m.lastGrounding = nil
 	m.lastRedactions = nil

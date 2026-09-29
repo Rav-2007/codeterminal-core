@@ -122,8 +122,13 @@ type streamDoneMsg struct{}
 
 // usageMsg is a finished turn's bill (protocol.TurnUsage), from its final
 // message -- delivered just before streamDoneMsg or streamErrMsg, since a turn
-// that failed after calling the model was still billed. See usage.go.
-type usageMsg struct{ usage *protocol.TurnUsage }
+// that failed after calling the model was still billed -- with the bills of any
+// turns the user stopped since the last one (protocol's StoppedUsage). See
+// usage.go.
+type usageMsg struct {
+	usage   *protocol.TurnUsage
+	stopped []protocol.TurnUsage
+}
 
 // streamErrMsg signals the stream failed (connect/handshake error, a
 // daemon-side error, or a malformed response). A deliberate cancellation
@@ -384,7 +389,7 @@ func streamPromptWith(ctx context.Context, clientName, workspace, prompt, prompt
 			return
 		}
 		if tok.Error != "" {
-			if tok.Usage != nil && !deliver(ctx, ch, usageMsg{tok.Usage}) {
+			if (tok.Usage != nil || len(tok.StoppedUsage) > 0) && !deliver(ctx, ch, usageMsg{tok.Usage, tok.StoppedUsage}) {
 				return
 			}
 			deliver(ctx, ch, streamErrMsg{err: errors.New(tok.Error), sent: true,
@@ -443,7 +448,7 @@ func streamPromptWith(ctx context.Context, clientName, workspace, prompt, prompt
 			if len(tok.EditProposals) > 0 && !deliver(ctx, ch, editProposalsMsg{tok.EditProposals}) {
 				return
 			}
-			if tok.Usage != nil && !deliver(ctx, ch, usageMsg{tok.Usage}) {
+			if (tok.Usage != nil || len(tok.StoppedUsage) > 0) && !deliver(ctx, ch, usageMsg{tok.Usage, tok.StoppedUsage}) {
 				return
 			}
 			deliver(ctx, ch, streamDoneMsg{})

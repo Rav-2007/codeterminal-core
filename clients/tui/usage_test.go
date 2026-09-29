@@ -182,3 +182,67 @@ func TestUnknownCommand_IsAnsweredLocallyNotSentToTheModel(t *testing.T) {
 		}
 	}
 }
+
+// A STOPPED TURN WAS BILLED TOO. It sends no final message, so the daemon keeps
+// its bill and sends it on the next turn's; /usage counts it there, in the chat
+// it was stopped in.
+//
+// Neuter check: drop the stopsInChat++ in interruptTurn and the chat total
+// misses the stopped turn; drop recordStoppedUsage's call in the usageMsg case
+// and both totals do.
+func TestUsage_AStoppedTurnIsCountedWhenItsBillArrives(t *testing.T) {
+	m, _ := startedTurn(t)
+	updated, _ := m.Update(tokenMsg("partial"))
+	updated, _ = updated.(chatModel).Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(chatModel)
+
+	// The next turn's final message, carrying the stopped turn's bill.
+	m.streamCh = make(chan tea.Msg)
+	stopped := []protocol.TurnUsage{{Calls: 2, PromptTokens: 1000, CompletionTokens: 20, CostUSD: 0.001, CostMissing: true}}
+	updated, _ = m.Update(usageMsg{usage: turnBill(1, 500, 10, 0, 0.0005, 500, 64000), stopped: stopped})
+	m = updated.(chatModel)
+
+	report := m.usageReport()
+	for _, want := range []string{
+		"this chat     2 turns (1 stopped) · 3 model calls",
+		"this session  2 turns (1 stopped) · 3 model calls",
+		"at least $0.0015",
+		"context       500 of 64.0K tokens", // the newest call's, not the stopped one's
+	} {
+		if !strings.Contains(report, want) {
+			t.Errorf("/usage is missing %q:\n%s", want, report)
+		}
+	}
+}
+
+// A bill for a turn stopped in a chat the user has since left belongs to the
+// session, not to the chat they are in now.
+func TestUsage_AStoppedTurnFromAnEarlierChatCountsForTheSessionOnly(t *testing.T) {
+	t.Cleanup(setLockPathForTest(t, filepath.Join(t.TempDir(), "absent.lock")))
+	m, _ := startedTurn(t)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	updated, _ = updated.(chatModel).clearConversation() // ctrl+n: a new chat
+	m = updated.(chatModel)
+
+	m.recordStoppedUsage([]protocol.TurnUsage{{Calls: 1, CostMissing: true}})
+	report := m.usageReport()
+	if !strings.Contains(report, "this chat     nothing yet") ||
+		!strings.Contains(report, "this session  1 turn (1 stopped) · 1 model call") {
+		t.Errorf("a stopped turn from the previous chat:\n%s", report)
+	}
+}
+
+// The stream reader passes stopped turns' bills on even when the final message
+// has no bill of its own (a turn answered before any model call).
+func TestStream_StoppedTurnsBillsArriveOnTheNextFinalMessage(t *testing.T) {
+	stopped := []protocol.TurnUsage{{Calls: 3, CostUSD: 0.002}}
+	fakeDaemonReplying(t, protocol.TokenResponse{Token: "hi"}, protocol.TokenResponse{Done: true, StoppedUsage: stopped})
+	msgs := collect(t)
+	if len(msgs) < 2 {
+		t.Fatalf("messages = %#v", msgs)
+	}
+	u, ok := msgs[len(msgs)-2].(usageMsg)
+	if !ok || u.usage != nil || len(u.stopped) != 1 || u.stopped[0].Calls != 3 {
+		t.Errorf("the message before the end is %#v, want the stopped turn's bill", msgs[len(msgs)-2])
+	}
+}

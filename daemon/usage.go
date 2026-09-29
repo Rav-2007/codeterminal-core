@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 
 	"mochiii/protocol"
@@ -77,6 +78,20 @@ func (t *usageTally) add(c chunkUsage) {
 	}
 }
 
+// addUnreported counts a call that ended before its bill arrived: cut off by a
+// stop, a stall or a broken stream. The provider may well have charged for it
+// and nothing says how much, so it makes the turn's cost a lower bound rather
+// than a guess.
+func (t *usageTally) addUnreported() {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.u.Calls++
+	t.u.CostMissing = true
+}
+
 // report is the turn's usage for its final message, or nil when no call
 // reported any -- a turn refused before the model, or a provider that sends
 // no usage.
@@ -106,4 +121,75 @@ func (s *Server) contextWindowFor(slug string) int {
 		}
 	}
 	return 0
+}
+
+// STOPPED TURNS ARE BILLED TOO. A turn the user stopped sends no Done -- the
+// client hung up -- so the bill for every call it had already made used to be
+// dropped, and in agent mode that can be many steps. stoppedUsage holds each
+// stopped turn's bill until the next Done this daemon sends, which carries it
+// (protocol.TokenResponse.StoppedUsage). It lives in memory only: a daemon
+// restart before the next turn loses it.
+type stoppedUsage struct {
+	mu    sync.Mutex
+	turns []protocol.TurnUsage
+}
+
+// maxStoppedUsage bounds what is held for a client that never finishes a turn.
+// Past it, bills are merged into the last entry: the money is kept, only the
+// count of stopped turns undercounts.
+const maxStoppedUsage = 64
+
+// hold keeps a stopped turn's bill. A nil bill -- stopped before any model call
+// -- is nothing to keep.
+func (h *stoppedUsage) hold(u *protocol.TurnUsage) {
+	if u == nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.turns) < maxStoppedUsage {
+		h.turns = append(h.turns, *u)
+		return
+	}
+	last := &h.turns[len(h.turns)-1]
+	last.Calls += u.Calls
+	last.PromptTokens += u.PromptTokens
+	last.CompletionTokens += u.CompletionTokens
+	last.CachedTokens += u.CachedTokens
+	last.ReasoningTokens += u.ReasoningTokens
+	last.CostUSD += u.CostUSD
+	last.CostMissing = last.CostMissing || u.CostMissing
+}
+
+// take hands every held bill to a Done about to be sent.
+func (h *stoppedUsage) take() []protocol.TurnUsage {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := h.turns
+	h.turns = nil
+	return out
+}
+
+// giveBack returns bills whose Done could not be written, ahead of any held
+// since, so the next Done still carries them in order.
+func (h *stoppedUsage) giveBack(us []protocol.TurnUsage) {
+	if len(us) == 0 {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.turns = append(append([]protocol.TurnUsage(nil), us...), h.turns...)
+}
+
+// sendDone writes a turn's final message with any stopped turns' bills on it.
+// If it cannot be written the client left at the very end, which is a stop
+// like any other: those bills, and this turn's own, wait for the next Done.
+func (s *Server) sendDone(enc *json.Encoder, resp protocol.TokenResponse) error {
+	resp.StoppedUsage = s.stopped.take()
+	err := enc.Encode(resp)
+	if err != nil {
+		s.stopped.giveBack(resp.StoppedUsage)
+		s.stopped.hold(resp.Usage)
+	}
+	return err
 }

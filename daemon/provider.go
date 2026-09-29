@@ -714,6 +714,18 @@ func streamCompletion(ctx context.Context, apiBase, apiKey, model string, messag
 	scanner := bufio.NewScanner(stallResetReader{resp.Body, func() { watchdog.Reset(stallTimeout) }})
 	scanner.Buffer(make([]byte, 0, sseInitialBufferSize), sseMaxLineSize)
 
+	// A CALL CUT OFF BEFORE ITS BILL ARRIVED STILL COUNTS (/usage). The usage
+	// chunk comes last, so a stop, a stall or a broken stream loses it, and the
+	// provider may have charged for the call all the same. It is counted with
+	// its cost unknown -- never estimated. A stream that ends normally with no
+	// usage (a local server that sends none) adds nothing, as before.
+	billed, ended := false, false
+	defer func() {
+		if !billed && !ended {
+			usageTallyFrom(ctx).addUnreported()
+		}
+	}()
+
 	providerSeen := false
 	accumulator := newToolCallAccumulator()
 	// finishReason is the most recent non-empty SSE finish_reason seen. The
@@ -729,6 +741,7 @@ func streamCompletion(ctx context.Context, apiBase, apiKey, model string, messag
 		}
 		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 		if data == "[DONE]" {
+			ended = true
 			return finishStream(accumulator, finishReason, onFinish)
 		}
 
@@ -745,6 +758,7 @@ func streamCompletion(ctx context.Context, apiBase, apiKey, model string, messag
 		// THE BILL. Before the zero-choices guard below, for the budget-kill
 		// chunk's reason: the usage chunk carries no choices at all.
 		if chunk.Usage != nil {
+			billed = true
 			usageTallyFrom(ctx).add(*chunk.Usage)
 		}
 		// Checked BEFORE the zero-choices guard below, not after: the proxy's
@@ -792,5 +806,6 @@ func streamCompletion(ctx context.Context, apiBase, apiKey, model string, messag
 	// Stream ended without an explicit "[DONE]" sentinel (some providers just
 	// close the body). Still a successful, complete read as far as we can tell,
 	// so report whatever terminal finish_reason we captured.
+	ended = true
 	return finishStream(accumulator, finishReason, onFinish)
 }

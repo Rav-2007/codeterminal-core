@@ -216,6 +216,8 @@ func (s *Server) runAgentTurn(
 		// prompt as though it had completed. The client keeps what it already
 		// received and marks it as stopped itself.
 		s.logger.Printf("agent: the client went away mid-turn; stopped after %s", time.Since(turnStart).Round(time.Millisecond))
+		// Its bill is kept for the next Done: every step it finished was charged.
+		s.stopped.hold(usageTallyFrom(ctx).report(model, s.contextWindowFor(model)))
 		return
 	}
 	if err != nil {
@@ -224,7 +226,7 @@ func (s *Server) runAgentTurn(
 		// The connection is already gone if this fails, and the local log above
 		// is the record that survives either way. There is nothing further to
 		// try and nobody left to tell.
-		_ = enc.Encode(protocol.TokenResponse{
+		_ = s.sendDone(enc, protocol.TokenResponse{
 			ProtocolVersion: protocol.ProtocolVersion,
 			Done:            true,
 			Error:           modelErr.Error(),
@@ -273,7 +275,7 @@ func (s *Server) runAgentTurn(
 	}
 	// A failed terminal write means the client has gone; the turn's real work
 	// (the edit proposals, the persisted history below) is unaffected.
-	_ = enc.Encode(protocol.TokenResponse{
+	_ = s.sendDone(enc, protocol.TokenResponse{
 		ProtocolVersion: protocol.ProtocolVersion,
 		Done:            true,
 		EditProposals:   editProposalsFromBlocks(blocks),

@@ -506,6 +506,10 @@ type TokenResponse struct {
 	// Usage is the turn's bill (TurnUsage), on the final Done message of a turn
 	// that reached the model. Additive: a client that ignores it is unaffected.
 	Usage *TurnUsage `json:"usage,omitempty"`
+	// StoppedUsage is the bill of each turn the user stopped since the last
+	// Done this daemon sent, oldest first. A stopped turn has nobody to send its
+	// own Done to, so what it cost rides on the next one. Additive.
+	StoppedUsage []TurnUsage `json:"stopped_usage,omitempty"`
 }
 
 // TaskItem is one step of the plan a /spec build turn is working through,
