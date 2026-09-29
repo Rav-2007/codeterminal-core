@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"log"
 	"net"
 	"os"
 	"path/filepath"
@@ -26,6 +27,13 @@ import (
 // side alone.
 func agentSocketServer(t *testing.T, apiBase string, cfg MCPConfig) (sockAddr protocol.Address, auditPath string, srv *Server) {
 	t.Helper()
+	return agentSocketServerLogged(t, apiBase, cfg, discardLogger())
+}
+
+// agentSocketServerLogged is agentSocketServer with the daemon's log going to
+// logger, set before Serve starts so a test can read it without a race.
+func agentSocketServerLogged(t *testing.T, apiBase string, cfg MCPConfig, logger *log.Logger) (sockAddr protocol.Address, auditPath string, srv *Server) {
+	t.Helper()
 
 	root, err := editapply.ResolveRealWorkspaceRoot(t.TempDir())
 	if err != nil {
@@ -37,7 +45,7 @@ func agentSocketServer(t *testing.T, apiBase string, cfg MCPConfig) (sockAddr pr
 
 	auditPath = filepath.Join(t.TempDir(), "toolcalls.jsonl")
 	srv = &Server{
-		logger:        discardLogger(),
+		logger:        logger,
 		workspace:     root,
 		modelOverride: "test-model",
 		apiBase:       apiBase,

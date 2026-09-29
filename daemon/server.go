@@ -759,13 +759,20 @@ func (s *Server) serveConn(conn net.Conn) {
 		return
 	}
 
+	// The turn's own context, cancelled by the first write that fails
+	// (turnwriter.go): a client that hung up while the model was still thinking
+	// used to be noticed only at the first answer token, after every thinking
+	// token had been generated and billed.
+	ctx, tw := newTurnWriter(ctx, enc)
+	defer tw.done()
+
 	// No tools on this path. Agent mode has its own entry point; passing nil
 	// here is what keeps the request body byte-identical to the pre-tools one.
 	apiKey, apiBase := s.credentials()
 	_, err := streamWithRetry(ctx, apiBase, apiKey, decision.Slug, messages, nil, routing,
 		func(token string) error {
 			full.WriteString(token)
-			return enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Token: token})
+			return tw.write(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Token: token})
 		},
 		func(provider string) {
 			s.logger.Printf("model API served by provider=%q (zdr=%t data_collection=%s allow_fallbacks=%t)", provider, routing.ZDR, routing.DataCollection, routing.AllowFallbacks)
@@ -773,23 +780,22 @@ func (s *Server) serveConn(conn net.Conn) {
 			// message (E1). It rides here rather than on the pre-token Grounding
 			// message because the provider is not known until the response
 			// stream starts — onProvider fires at most once, at or before the
-			// first token. A write error is dropped, exactly like the reasoning
-			// callback below: this is optional observability and must not fail a
-			// turn the token stream is otherwise completing. Never carries a
-			// fallback-vs-primary claim or a ZDR verdict — just "served by X".
-			enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Provider: provider})
+			// first token. A write error is not returned, exactly like the
+			// reasoning callback below: this is optional observability. Never
+			// carries a fallback-vs-primary claim or a ZDR verdict — just
+			// "served by X".
+			_ = tw.write(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Provider: provider})
 		},
 		// Reasoning tokens go out on their own field, NEVER into `full` (Fix 14).
 		// `full` is what gets parsed for SEARCH/REPLACE blocks and written to
 		// conversation memory, so folding thinking into it would let a model's
 		// musings about an edit be mistaken for the edit, and would persist
-		// commentary as if it were the answer. A write error here is dropped
-		// rather than returned: optional commentary must not fail a request the
-		// token stream is otherwise completing (the next Token encode will
-		// surface a genuinely broken connection anyway).
+		// commentary as if it were the answer. A write error here is not
+		// returned, but it still stops the turn: tw.write cancels the context,
+		// and a model that is only thinking writes nothing else to fail.
 		func(reasoning string) {
 			reasoningBytes += len(reasoning)
-			enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Reasoning: reasoning})
+			_ = tw.write(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Reasoning: reasoning})
 		},
 		// onFinish: record the terminal finish_reason so the final Done message can
 		// flag a cut-off answer (M1). Fires at most once, on success only; a plain
@@ -801,6 +807,13 @@ func (s *Server) serveConn(conn net.Conn) {
 	)
 	if reasoningBytes > 0 {
 		s.logger.Printf("model API: streamed %d byte(s) of reasoning alongside the answer", reasoningBytes)
+	}
+	if err != nil && tw.clientGone() {
+		// THE INTERRUPT PATH, as quiet as the agent turn's: nobody is left to
+		// send a Done to, and a turn the user stopped is not persisted.
+		s.logger.Printf("the client went away mid-answer; stopped after %d byte(s) of reasoning and %d of answer",
+			reasoningBytes, full.Len())
+		return
 	}
 	if err != nil {
 		// The Gate-7 split, now with a class attached (Fix 9). The full upstream

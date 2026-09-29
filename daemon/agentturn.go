@@ -33,42 +33,15 @@ func (s *Server) runAgentTurn(
 ) {
 	s.count(func(c *counters) { c.agentTurns.Add(1) })
 
-	// THE TURN'S OWN CANCELLABLE CONTEXT, and the reason it exists is the stop
-	// key the clients now have (interruptTurn in clients/tui/chat.go).
-	//
-	// An interrupt reaches the daemon as a closed connection -- there is no
-	// "cancel" message on this wire, and there could not usefully be one: the
-	// daemon is not reading from this connection except while it is asking an
-	// approval question. What it has instead is the write side, and a write that
-	// fails is proof the client is gone. Until now that proof was thrown away:
-	// the token callback returned the error and unwound the current model call,
-	// but a turn stopped BETWEEN calls -- during a tool that takes half a minute
-	// -- carried on regardless, ran the tool to completion, and paid for another
-	// model call to narrate it to nobody. Cancelling here is what turns "this
-	// write failed" into "stop the turn", because runAgentLoop already checks
-	// ctx.Err() between iterations and between every tool call, and
-	// dispatchToolCall passes it to the tool itself.
-	ctx, cancelTurn := context.WithCancel(ctx)
-	defer cancelTurn()
-
-	// clientGone latches the same fact for the LOG, so an interrupt is not
-	// reported as a turn that failed. "context canceled" is what shutdown looks
-	// like too, and an operator reading these lines should not have to guess
-	// which of the two happened.
-	clientGone := false
-
-	// writeToClient is the single write path for everything this turn streams.
-	// A failure here means the answer has nowhere left to go -- either the peer
-	// hung up, or it has not drained a byte for a full idle timeout, and neither
-	// is a state to keep working through.
-	writeToClient := func(resp protocol.TokenResponse) error {
-		if err := enc.Encode(resp); err != nil {
-			clientGone = true
-			cancelTurn()
-			return err
-		}
-		return nil
-	}
+	// THE TURN'S OWN CANCELLABLE CONTEXT: a write that fails cancels the turn,
+	// so the stop key stops the work and not just the watching (turnwriter.go).
+	// Cancelling is what turns "this write failed" into "stop the turn": a turn
+	// stopped BETWEEN calls -- during a tool that takes half a minute -- used to
+	// run the tool to completion and pay for another model call to narrate it to
+	// nobody.
+	ctx, tw := newTurnWriter(ctx, enc)
+	defer tw.done()
+	writeToClient := tw.write
 
 	// The turn's clock starts HERE, before any server is spawned, because this
 	// is when the user's wait starts. buildRegistry below can block for up to
@@ -234,7 +207,7 @@ func (s *Server) runAgentTurn(
 			})
 		},
 	)
-	if err != nil && clientGone && errors.Is(err, context.Canceled) {
+	if err != nil && tw.clientGone() && errors.Is(err, context.Canceled) {
 		// THE INTERRUPT PATH, and it ends here deliberately quietly. There is
 		// nobody to send a Done to (the write that proved it is why this branch
 		// ran at all), and the turn is not persisted: a turn the user stopped is

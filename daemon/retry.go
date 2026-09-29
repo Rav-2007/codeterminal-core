@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"math/rand/v2"
 	"time"
@@ -132,6 +133,14 @@ func streamWithRetry(
 			return calls, nil
 		}
 		lastErr = err
+		// A CANCELLED TURN IS NEVER RETRIED, and says so. The client hung up
+		// (turnwriter.go) or the daemon is stopping; either way nobody wants a
+		// second attempt. Without this, a stop after a long think reached the
+		// retry-budget break below and came back as the stream's own error, so
+		// the caller could not tell an interrupt from a failure.
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return nil, ctx.Err()
+		}
 		modelErr := asModelError(err)
 
 		if streamed {

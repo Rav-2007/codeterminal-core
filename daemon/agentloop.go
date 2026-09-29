@@ -520,6 +520,13 @@ func (s *Server) runAgentLoop(
 			s.logger,
 		)
 		if err != nil {
+			// A STOP IS NOT A PROVIDER FAILURE. The client hung up (a failed write
+			// cancelled the turn, turnwriter.go) or the daemon is shutting down.
+			// Dressing that up as "the provider failed part-way" below sent a Done
+			// to nobody and saved the stopped turn to memory as though it had run.
+			if errors.Is(err, context.Canceled) && ctx.Err() != nil {
+				return agentResult{FinalText: full.String(), Iterations: turn.iteration}, err
+			}
 			// A FAILURE PART-WAY THROUGH IS AN INCOMPLETE TURN, NOT A VOID ONE
 			// (QA gate 2026-08-01, P1-1).
 			//
