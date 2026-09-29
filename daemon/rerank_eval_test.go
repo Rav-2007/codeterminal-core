@@ -456,8 +456,8 @@ var rerankEvalQueries = []rerankEvalQuery{
 		[]string{"turn.priorIterations+turn.calls >= bud.maxTurnIterations"}, shapeDefUse},
 
 	{"how does the daemon notice the client disappeared in the middle of a turn",
-		[]string{"daemon/agentturn.go"},
-		[]string{"clientGone = true"}, shapeImpl},
+		[]string{"daemon/turnwriter.go"},
+		[]string{"w.gone = true"}, shapeImpl},
 
 	{"where are overlapping retrieved chunks folded into one span",
 		[]string{"daemon/chunkmerge.go"},
