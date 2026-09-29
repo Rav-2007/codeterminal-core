@@ -598,3 +598,57 @@ func TestTwoEmptyRepliesAreReported(t *testing.T) {
 		t.Errorf("two empty replies: incomplete %+v, %d request(s)", res.Incomplete, requests.Load())
 	}
 }
+
+// narratedToolCallSSE is a reply that says something AND calls a tool, the
+// shape DeepSeek sends on almost every step ("Let me read x.go.").
+func narratedToolCallSSE(text, id, name, args string) []string {
+	return append(textSSE(text)[:1], toolCallSSE(id, name, args)...)
+}
+
+// Each step's assistant message carries THAT step's words, not the whole turn's.
+//
+// It used to echo everything said so far, so step k repeated steps 1..k-1 and
+// the whole list was re-sent on every call after it -- measured at 3x the
+// assistant text after five steps, and 141 KB of a 16-step turn's 297 KB last
+// request. The user's answer (FinalText) is still the whole turn.
+func TestEachStepEchoesOnlyItsOwnWords(t *testing.T) {
+	steps := []string{"STEP-ONE reads a.", "STEP-TWO reads b.", "STEP-THREE reads c."}
+	base, _, bodies := agentUpstream(t,
+		narratedToolCallSSE(steps[0], "c1", "builtin__read_file", `{"path":"a.txt"}`),
+		narratedToolCallSSE(steps[1], "c2", "builtin__read_file", `{"path":"b.txt"}`),
+		narratedToolCallSSE(steps[2], "c3", "builtin__read_file", `{"path":"c.txt"}`),
+		textSSE("Done."),
+	)
+	s := loopServer(t, base, MCPConfig{
+		Enabled: true,
+		Builtin: MCPBuiltinConfig{Tools: map[string]string{"read_file": PolicyAllow}},
+	})
+	for _, f := range []string{"a.txt", "b.txt", "c.txt"} {
+		if err := os.WriteFile(s.workspace+"/"+f, []byte("x"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	res, _, err := runLoop(t, s)
+	if err != nil {
+		t.Fatalf("runAgentLoop: %v", err)
+	}
+	if len(*bodies) != 4 {
+		t.Fatalf("made %d model calls, want 4", len(*bodies))
+	}
+	var last chatCompletionRequest
+	if err := json.Unmarshal((*bodies)[3], &last); err != nil {
+		t.Fatal(err)
+	}
+	var said []string
+	for _, m := range last.Messages {
+		if m.Role == "assistant" {
+			said = append(said, m.Content)
+		}
+	}
+	if strings.Join(said, "|") != strings.Join(steps, "|") {
+		t.Errorf("the assistant messages re-sent to the model are %q, want each step's own words %q", said, steps)
+	}
+	if want := strings.Join(steps, "") + "Done."; res.FinalText != want {
+		t.Errorf("FinalText = %q, want the whole turn %q", res.FinalText, want)
+	}
+}

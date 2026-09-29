@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -32,7 +33,7 @@ func webCfg() MCPConfig {
 // access" note, and stops -- with web_search sitting unused on its menu. The
 // turn must not end there.
 func TestAHedgedAnswerWithAnUnusedWebToolIsSentBackOnce(t *testing.T) {
-	base, calls, _ := agentUpstream(t,
+	base, calls, bodies := agentUpstream(t,
 		textSSE(observedHedge),
 		textSSE("According to example.org, the office is held by A. Person."),
 	)
@@ -44,6 +45,15 @@ func TestAHedgedAnswerWithAnUnusedWebToolIsSentBackOnce(t *testing.T) {
 	}
 	if n := calls.Load(); n != 2 {
 		t.Fatalf("made %d model call(s), want 2 — the hedge was accepted as a finished answer", n)
+	}
+	// The model is shown ITS OWN words back, exactly: not the notice the user
+	// was shown, which is ours and would put words in the model's mouth.
+	var second chatCompletionRequest
+	if err := json.Unmarshal((*bodies)[1], &second); err != nil {
+		t.Fatal(err)
+	}
+	if echo := second.Messages[len(second.Messages)-2]; echo.Role != "assistant" || echo.Content != observedHedge {
+		t.Errorf("the nudge echoed %s %q back to the model, want the hedge exactly", echo.Role, echo.Content)
 	}
 	if !strings.Contains(res.FinalText, "A. Person") {
 		t.Errorf("final text does not contain the second answer: %q", res.FinalText)

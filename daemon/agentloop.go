@@ -634,6 +634,11 @@ func (s *Server) runAgentLoop(
 					s.logger.Print("agent: a question about current facts was answered without a lookup; asking it to check")
 				}
 
+				// This step's words, taken BEFORE the notice below joins `full`:
+				// the notice is ours, addressed to the user, and echoing it to
+				// the model would put it in the model's mouth.
+				stepText := full.String()[textBefore:]
+
 				// ANNOUNCED TO THE USER. They watched the hedge stream to their
 				// terminal a moment ago; text arriving after it with no
 				// explanation reads as a glitch. Streamed through the same
@@ -644,7 +649,7 @@ func (s *Server) runAgentLoop(
 				full.WriteString(nudgeNotice)
 
 				turn.messages = append(turn.messages,
-					assistantToolCallMessage(full.String(), nil),
+					assistantToolCallMessage(stepText, nil),
 					chatMessage{Role: "user", Content: nudgeTextFor(hedged)},
 				)
 				continue
@@ -661,7 +666,13 @@ func (s *Server) runAgentLoop(
 
 		// The provider requires the assistant's own request to precede the
 		// results; without it the tool messages have nothing to pair with.
-		turn.messages = append(turn.messages, assistantToolCallMessage(full.String(), calls))
+		//
+		// THIS STEP'S TEXT ONLY. `full` is the whole turn's answer, and echoing
+		// it here repeated every earlier step's narration inside every later
+		// assistant message -- MEASURED 2026-09-29: 3x the assistant text after
+		// five steps, and 141 KB of a 16-step turn's 297 KB last request, all of
+		// it re-sent (and re-billed) on every call after it.
+		turn.messages = append(turn.messages, assistantToolCallMessage(full.String()[textBefore:], calls))
 
 		for _, call := range calls {
 			// Checked between every call, not just between iterations: a
