@@ -78,8 +78,14 @@
 # two call sites. Two sites became one in each module, so the count fell without
 # anything being suppressed. Tightened rather than left slack, which is what the
 # FAIL-below-ceiling rule is for.
+# 2026-09-29: daemon 91 -> 87. The single-turn path's four bare enc.Encode
+# calls -- the provider notice, the reasoning tokens and both final messages --
+# now go through turnWriter.write and sendDone, whose results are discarded with
+# an explicit `_ =`: a failed write already cancels the turn (turnwriter.go) or
+# keeps the bills for the next Done (usage.go), so there is nothing left for the
+# caller to do with the error. Nothing was suppressed; the sites became explicit.
 #
-daemon         91
+daemon         87
 editapply       9
 proxy          25
 protocol        0
