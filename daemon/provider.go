@@ -174,6 +174,9 @@ type providerRouting struct {
 	// reasoning effort must reach all of them the same way. streamCompletion
 	// lifts it into the request's top-level "reasoning" field.
 	reasoningEffort string
+	// maxTokens rides here for the same reason, and becomes the request's
+	// top-level max_tokens (Config.routingFor sets it; zero sends none).
+	maxTokens int
 }
 
 // reasoningParam is OpenRouter's "reasoning" request object.
@@ -203,6 +206,10 @@ type chatCompletionRequest struct {
 	// Reasoning is omitempty, like Tools: a tier with no reasoning_effort sends
 	// the body it always sent.
 	Reasoning *reasoningParam `json:"reasoning,omitempty"`
+	// MaxTokens caps what this call may generate (see defaultMaxOutputTokens).
+	// A call that reaches it ends with finish_reason "length", which the turn
+	// already reports as a cut-off answer the user can ask to continue.
+	MaxTokens int `json:"max_tokens,omitempty"`
 }
 
 type chatCompletionChunk struct {
@@ -540,6 +547,17 @@ func (a *toolCallAccumulator) finish() ([]toolCall, error) {
 // stream completed normally.
 func finishStream(accumulator *toolCallAccumulator, finishReason string, onFinish func(string)) ([]toolCall, error) {
 	calls, err := accumulator.finish()
+	if err != nil && finishReason == protocol.IncompleteLength {
+		// THE OUTPUT CAP CUT A CALL SHORT (max_tokens, defaultMaxOutputTokens).
+		// Not a failure to retry: the same request would stop at the same place,
+		// three times over, each one billed. Nothing half-built runs -- the calls
+		// are dropped -- and the stream reports "length", which the turn already
+		// turns into an answer the user can ask to continue.
+		if onFinish != nil {
+			onFinish(finishReason)
+		}
+		return nil, nil
+	}
 	if err != nil {
 		return nil, &ModelError{Class: ClassUpstreamUnavailable, detail: err.Error()}
 	}
@@ -654,6 +672,7 @@ func streamCompletion(ctx context.Context, apiBase, apiKey, model string, messag
 		Provider:      routing,
 		StreamOptions: streamOptions{IncludeUsage: true},
 		Reasoning:     reasoning,
+		MaxTokens:     routing.maxTokens,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("encoding request: %w", err)

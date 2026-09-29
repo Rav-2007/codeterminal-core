@@ -34,7 +34,21 @@ type ModelTier struct {
 	// usage, so /usage can say how full the context is. Zero means unknown:
 	// /usage then shows the size without a percentage.
 	ContextWindow int `json:"context_window,omitempty"`
+	// MaxOutputTokens caps how much one model call may generate (sent as the
+	// request's max_tokens). Zero means defaultMaxOutputTokens: every call is
+	// capped, because an uncapped one is billed for whatever the provider
+	// allows -- 384,000 tokens on the host the default tier usually gets.
+	MaxOutputTokens int `json:"max_output_tokens,omitempty"`
 }
+
+// defaultMaxOutputTokens is every call's output cap unless a tier sets its
+// own, and also the most a tier may set: the managed proxy refuses a request
+// declaring more (proxy/main.go, maxReservationTokens). About 128 KB of text --
+// far past any real answer or edit, and it turns a model stuck repeating
+// itself into a bounded cost: MEASURED 2026-09-29, with no cap a 2.9 MB
+// repetition streamed through as a normal turn, and the next question re-sent
+// it.
+const defaultMaxOutputTokens = 32768
 
 // reasoningEfforts are the ReasoningEffort values OpenRouter accepts.
 var reasoningEfforts = []string{"low", "medium", "high"}
@@ -45,6 +59,7 @@ var reasoningEfforts = []string{"low", "medium", "high"}
 // config with no tiers) gets the ZDR routing unchanged.
 func (c *Config) routingFor(tier string) providerRouting {
 	routing := c.ZDR.resolvedProviderRouting()
+	routing.maxTokens = defaultMaxOutputTokens
 	t, ok := c.Tiers[tier]
 	if !ok {
 		return routing
@@ -53,6 +68,9 @@ func (c *Config) routingFor(tier string) providerRouting {
 		routing.Sort = t.ProviderSort
 	}
 	routing.reasoningEffort = t.ReasoningEffort
+	if t.MaxOutputTokens > 0 {
+		routing.maxTokens = t.MaxOutputTokens
+	}
 	return routing
 }
 
@@ -350,7 +368,7 @@ var (
 	knownConfigKeys    = []string{"config_version", "default_tier", "tiers", "retrieval", "zdr", "no_scrub", "mcp"}
 	knownRetrievalKeys = []string{"disabled", "rerank_disabled", "top_k", "context_budget_chars"}
 	knownZDRKeys       = []string{"allow_non_zdr", "allow_data_collection", "allow_fallbacks", "provider_ignore_list", "provider_order", "provider_sort"}
-	knownTierKeys      = []string{"slug", "active", "note", "reasoning_effort", "provider_sort", "context_window"}
+	knownTierKeys      = []string{"slug", "active", "note", "reasoning_effort", "provider_sort", "context_window", "max_output_tokens"}
 )
 
 // LoadConfig reads and validates a models.json file at path.
@@ -534,6 +552,16 @@ func (c *Config) clampTierSettings() {
 		if t.ContextWindow < 0 {
 			c.warnf("tiers.%s.context_window %d is negative; treated as unknown", name, t.ContextWindow)
 			t.ContextWindow = 0
+			c.Tiers[name] = t
+		}
+		if t.MaxOutputTokens < 0 {
+			c.warnf("tiers.%s.max_output_tokens %d is negative; using the default (%d)", name, t.MaxOutputTokens, defaultMaxOutputTokens)
+			t.MaxOutputTokens = 0
+			c.Tiers[name] = t
+		} else if t.MaxOutputTokens > defaultMaxOutputTokens {
+			c.warnf("tiers.%s.max_output_tokens %d is above %d, which the managed proxy refuses; using %d",
+				name, t.MaxOutputTokens, defaultMaxOutputTokens, defaultMaxOutputTokens)
+			t.MaxOutputTokens = defaultMaxOutputTokens
 			c.Tiers[name] = t
 		}
 	}

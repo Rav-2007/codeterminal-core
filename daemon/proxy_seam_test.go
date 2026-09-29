@@ -250,11 +250,16 @@ func TestSeam_BudgetKillReachesTheClientOverTheSocket(t *testing.T) {
 	supabase, _ := seamSupabase(t, keyID, reserved, headroom)
 	defer supabase.Close()
 
+	// Past the byte guard for what THIS request reserves. The daemon declares
+	// max_tokens (defaultMaxOutputTokens), and the proxy reserves exactly what is
+	// declared, so the ceiling is 32768+100 tokens and the guard ~16.8 MB --
+	// not the 2.1 MB an undeclared request's 4096-token default gave. 20 chunks
+	// of 900 KB cross it.
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		filler := strings.Repeat("A", 900_000)
-		for i := 0; i < 3; i++ {
+		for i := 0; i < 20; i++ {
 			fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":\"%s\"}}]}\n\n", filler)
 			if f, ok := w.(http.Flusher); ok {
 				f.Flush()

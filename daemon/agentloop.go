@@ -573,7 +573,12 @@ func (s *Server) runAgentLoop(
 		// retry, and every call after it, go to the next host OpenRouter would
 		// pick. provider.ignore only ever NARROWS where a request may go, so the
 		// ZDR constraints are untouched.
-		if len(calls) == 0 && full.Len() == textBefore {
+		//
+		// A reply the output cap cut off is NOT empty, even when it has no text:
+		// the model was mid-way through a tool call (finishStream drops it).
+		// Asking again elsewhere would stop at the same cap; it ends below as
+		// a cut-off answer instead.
+		if len(calls) == 0 && full.Len() == textBefore && finishReason != protocol.IncompleteLength {
 			if !turn.retriedEmpty {
 				turn.retriedEmpty = true
 				routing = avoidProvider(routing, servedBy)

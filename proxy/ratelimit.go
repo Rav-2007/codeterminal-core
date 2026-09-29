@@ -58,8 +58,8 @@ const (
 	// failure, and agent mode is off by default. Raising the burst to suit the
 	// most expensive shape of the least-used feature would weaken the bound for
 	// everyone else. Revisit if agent mode becomes the common path -- and note
-	// that the honest fix is probably for the daemon to declare max_tokens, which
-	// would also shrink the 8x quota reservation the same measurement found.
+	// that the daemon now declares max_tokens (2026-09-29, 32768 -- the reservation
+	// cap), so each request reserves that and the provider stops there.
 	keyRatePerSecond = 2.0
 	keyBurst         = 20.0
 

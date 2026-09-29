@@ -184,8 +184,9 @@ const (
 	maxNonStreamResponseBytes = 16 << 20 // 16MB
 
 	// defaultReservationTokens sizes a quota reservation when the
-	// incoming request doesn't declare max_tokens -- true for all of
-	// today's daemon traffic (it never sets the field). This is a
+	// incoming request doesn't declare max_tokens. The shipped daemon has
+	// declared one since 2026-09-29 (daemon/config.go, defaultMaxOutputTokens,
+	// equal to maxReservationTokens); older daemons and other callers do not. This is a
 	// typical-case admission-control size, not a worst-case bound: real
 	// per-provider ceilings for the active model (deepseek/deepseek-v4-flash)
 	// run up to 1,048,576 tokens (OpenRouter's own endpoint listing,
@@ -1095,8 +1096,9 @@ func (p *proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// admission: the proxy reserved 32768 and OpenRouter honoured 999999. Reject
 	// rather than rewrite, for the same reason F1 chose Reject over Stamp
 	// (proxy/F1_ENFORCEMENT_DESIGN.md) -- the accept path must still forward the
-	// caller's bytes unmodified. Cannot fire for the shipped daemon, which sends
-	// no max_tokens at all (daemon/provider.go).
+	// caller's bytes unmodified. Cannot fire for the shipped daemon, which declares
+	// at most maxReservationTokens (daemon/config.go clamps a tier's
+	// max_output_tokens to it).
 	reserved := defaultReservationTokens
 	if declared, ok := peekMaxTokens(bodyBytes); ok {
 		if declared > maxReservationTokens {
@@ -1609,7 +1611,7 @@ type reservation struct {
 // checked only at admission: a key with a sliver of quota left was admitted on a
 // maxReservationTokens-sized reservation and could then consume the provider's
 // own output ceiling, since the proxy forwards the body byte-for-byte and the
-// shipped daemon declares no max_tokens at all.
+// daemon declared no max_tokens until 2026-09-29 (older ones still do not).
 func requestTokenCeiling(reserved int, headroom int64) int {
 	ceiling := int64(reserved) + headroom
 	if ceiling > absoluteMaxRequestTokens {
@@ -1655,8 +1657,8 @@ func keyPrefix(key string) string {
 // STREAMING BUDGET ENFORCEMENT. ceiling is the hard token bound for this one
 // request (requestTokenCeiling). Crossing it kills the stream mid-flight rather
 // than letting it run to completion, which is the ONLY control that bounds spend
-// when a caller declares no max_tokens -- as the shipped daemon does not, leaving
-// the provider's own (far larger) default ceiling to apply. Enforcement is
+// when a caller declares no max_tokens -- as daemons before 2026-09-29 do not,
+// leaving the provider's own (far larger) default ceiling to apply. Enforcement is
 // deliberately an ESTIMATE, because a real token count only ever arrives in the
 // terminal usage chunk, i.e. after all the money has already been spent. Two
 // independent bounds are tracked, BOTH read only from the SSE envelope and never

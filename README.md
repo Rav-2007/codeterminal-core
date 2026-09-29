@@ -360,7 +360,12 @@ A tier can also carry two settings of its own:
   host, `throughput` the fastest.
 
 Both are left out by default, and the request is then byte-for-byte what it was before.
-An unsupported effort is dropped with a warning. The managed proxy refuses any
+An unsupported effort is dropped with a warning.
+
+Every request carries `max_tokens`, 32768 by default, so no single call can run away. At
+that cap an answer ends as "cut off", and you can ask the model to continue. A tier can
+lower it with `max_output_tokens`. Values above 32768 are clamped with a warning, because
+the managed proxy refuses them. The managed proxy refuses any
 `provider.sort`, so `provider_sort` is for your-own-key mode. Which settings actually help
 is measured, not assumed: see [`docs/AGENT_WORKFLOW_EVAL.md`](docs/AGENT_WORKFLOW_EVAL.md).
 
