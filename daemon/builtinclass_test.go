@@ -38,7 +38,11 @@ func classFromFlags(t mcp.Tool) builtinClass {
 // table, or delete sandbox_exec from it, and this fails naming the tool.
 func TestBuiltinClassTableMatchesTheTools(t *testing.T) {
 	s := builtinTestServer(t)
-	tools := s.builtinTools(&proposalSink{}, "") // not plan mode: the widest set
+	// Every mode's tools, not only the default's: record_criterion and
+	// update_tasks exist only in /spec check and build turns, so a table checked
+	// against the default set alone missed them, and the startup warning called
+	// the shipped config's "allow" on both a setting that "does nothing".
+	tools := append(s.builtinTools(&proposalSink{}, ""), s.builtinTools(&proposalSink{}, modeBuild)...)
 
 	// ANTI-VACUITY: a table checked against nothing agrees with everything.
 	if len(tools) < 10 {
@@ -136,5 +140,22 @@ func TestLanguageServerNamesAreTheBridgesOwn(t *testing.T) {
 	}
 	if strings.Count(got, "typescript-language-server") != 1 {
 		t.Errorf("typescript-language-server serves two languages and must be named once: %q", got)
+	}
+}
+
+// The shipped agent config sets record_criterion and update_tasks to allow.
+// Both are real built-ins, so its startup must not call either one a name no
+// tool has.
+//
+// Neuter check: remove either from builtinToolClasses.
+func TestTheShippedAgentConfigNamesOnlyRealBuiltins(t *testing.T) {
+	cfg, err := LoadConfig("../models.agent.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range cfg.Warnings() {
+		if strings.Contains(w, "no built-in tool has that name") {
+			t.Errorf("the shipped agent config warns about a real tool: %s", w)
+		}
 	}
 }

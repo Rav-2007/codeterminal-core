@@ -798,6 +798,10 @@ var builtinToolClasses = map[string]builtinClass{
 	"sandbox_exec":              classExecutes,
 	"web_search":                classNetwork,
 	"web_fetch":                 classNetwork,
+	// Registered only in /spec check and build turns (mcpbuiltin.go), which is
+	// how they were left out: they record a verdict and a task list.
+	"record_criterion": classConfined,
+	"update_tasks":     classConfined,
 }
 
 // builtinToolClass classifies a configured built-in name. An unknown name is
