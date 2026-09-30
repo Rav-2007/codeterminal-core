@@ -661,10 +661,11 @@ other shard, because they ran at the same time.
 **One stream cut, not changed here.**
 
 - **What happened.** `semver_from_spec` trial 2's Coder reasoned for five minutes without
-  answering: 39,046 characters, mostly test cases. DigitalOcean cut the stream at exactly
-  300 s. The daemon has no per-call limit; the host does.
+  answering: 39,046 characters, mostly test cases. The daemon's own per-request limit
+  (`requestTimeout`, 5 minutes, [`daemon/provider.go`](../daemon/provider.go)) cut the stream
+  at exactly 300 s, measured from the first chunk to the dump.
 - **Why it was not retried.** The attempt alone had used up the 45 s retry budget, and only
   a silent stall gets a retry past it. So the turn ended with "provider unreachable".
-- **A candidate for a later round.** Give a stream that the host cuts, after long reasoning
-  and no answer, the one retry a stall gets. It is a new behaviour, so it needs its own
-  measurement.
+- **A candidate for a later round.** Give a request that reaches the 5-minute limit, after
+  long reasoning and no answer, the one retry a stall gets. It is a new behaviour, so it
+  needs its own measurement.
