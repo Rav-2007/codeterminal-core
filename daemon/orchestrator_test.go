@@ -196,10 +196,11 @@ func TestLaterPhaseReceivesEarlierPhaseOutput(t *testing.T) {
 	}
 }
 
-// Each phase gets the BASE prompt plus its own, never its own alone: a role
-// that replaced the base prompt would drop every safety instruction in it for
-// exactly that phase.
-func TestRolePromptAppendsToBaseRatherThanReplacingIt(t *testing.T) {
+// Each phase keeps the BASE prompt and gets its own instructions as well, never
+// its own alone: a role that replaced the base prompt would drop every safety
+// instruction in it for exactly that phase. The role's instructions open the
+// phase's own message; the system message is the same in every phase.
+func TestEveryPhaseKeepsTheBasePromptAndGetsItsOwnRole(t *testing.T) {
 	msgs := buildPhaseMessages("BASE SAFETY RULES", nil, "go", &rolePlanner, nil, 0, "")
 
 	if msgs[0].Role != "system" {
@@ -208,8 +209,12 @@ func TestRolePromptAppendsToBaseRatherThanReplacingIt(t *testing.T) {
 	if !strings.Contains(msgs[0].Content, "BASE SAFETY RULES") {
 		t.Error("the base system prompt was dropped for this phase")
 	}
-	if !strings.Contains(msgs[0].Content, "PLANNER") {
-		t.Error("the role prompt is missing")
+	if !strings.Contains(msgs[0].Content, pipelineSystemNote) || strings.Contains(msgs[0].Content, "PLANNER") {
+		t.Error("the system message is not the pipeline's shared one")
+	}
+	user := msgs[len(msgs)-1]
+	if user.Role != "user" || !strings.HasPrefix(user.Content, stepRoleOpenTag) || !strings.Contains(user.Content, "PLANNER") {
+		t.Errorf("the role's instructions do not open the phase's message: %+v", user)
 	}
 }
 

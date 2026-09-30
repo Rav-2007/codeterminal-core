@@ -132,6 +132,12 @@ type phaseCall struct {
 	Prompt   int    `json:"prompt"`
 	Cached   int    `json:"cached"`
 	Provider string `json:"provider,omitempty"`
+	// OffRole counts the refusals of a tool outside the phase's role that this
+	// request carries back to the model ("... is not available to the X step of
+	// this task") -- cumulative within a phase, so a phase's last call holds
+	// its total. It measures what offering every phase the pipeline's tools
+	// costs in wasted calls.
+	OffRole int `json:"off_role,omitempty"`
 }
 
 // rolePromptMarker finds the specialist that made a request from its role
@@ -244,7 +250,8 @@ func (r *costRecorder) handle(w http.ResponseWriter, req *http.Request) {
 	if u.provider != "" {
 		r.providers[u.provider]++
 	}
-	r.perCall = append(r.perCall, phaseCall{Phase: phaseOfRequest(body), Prompt: u.prompt, Cached: u.cached, Provider: u.provider})
+	r.perCall = append(r.perCall, phaseCall{Phase: phaseOfRequest(body), Prompt: u.prompt, Cached: u.cached,
+		Provider: u.provider, OffRole: bytes.Count(body, []byte("step of this task"))})
 	r.mu.Unlock()
 }
 

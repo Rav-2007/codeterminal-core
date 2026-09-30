@@ -263,6 +263,10 @@ type turnLedger struct {
 	// limit there ends the phase, not the turn -- the next phase answers --
 	// so it gets no wrap-up call (see wrapUpAtLimit).
 	preAnswer bool
+	// menu is the tool list every phase of a pipeline is OFFERED (see
+	// pipelineMenu); nil offers a phase only its own. What a phase may CALL is
+	// still its own role's list, enforced in resolveExecutable.
+	menu *agentRole
 }
 
 func newTurnLedger() *turnLedger {
@@ -404,7 +408,13 @@ func (s *Server) runAgentLoop(
 		ledger.iterations = turn.priorIterations + turn.calls
 	}()
 
-	tools, excludedThirdParty, listErrs := s.advertisedToolSpecs(ctx, registry, role)
+	// The OFFER may be the pipeline's (ledger.menu), so every phase's request
+	// opens with the same tool list; what this phase may CALL is still role's.
+	offer := role
+	if ledger != nil && ledger.menu != nil {
+		offer = ledger.menu
+	}
+	tools, excludedThirdParty, listErrs := s.advertisedToolSpecs(ctx, registry, offer)
 	for _, err := range listErrs {
 		s.logger.Printf("agent: %v", err)
 	}
@@ -1203,11 +1213,12 @@ func (s *Server) resolveExecutable(
 		}
 	}
 
-	// THE ENFORCEMENT HALF of role scoping. The menu this phase was shown
-	// already excluded the tool, so reaching here means the model named
-	// something it was not offered -- which is precisely the shape a
-	// prompt-injected instruction takes, and precisely why a filtered menu
-	// alone would not be a control.
+	// THE ENFORCEMENT HALF of role scoping, and the half that is the control.
+	// A single agent's menu never offers what its role excludes; a pipeline
+	// phase is offered the whole pipeline's tools (pipelineMenu), so a call can
+	// reach here from a model that read its menu. Either way the phase's own
+	// list decides -- a model naming a tool it may not use is also precisely the
+	// shape a prompt-injected instruction takes.
 	if !role.allowsTool(spec) {
 		return toolDecision{
 			tool:   spec,

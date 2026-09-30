@@ -49,11 +49,14 @@ type agentRole struct {
 	// Display is what a human sees in the TUI's phase narration.
 	Display string
 
-	// Prompt is APPENDED to the daemon's system prompt rather than replacing it.
-	// The base prompt carries the things that are true of every phase -- how to
-	// format edits, what the workspace is, what it must not do -- and a role
-	// that replaced it would have to restate all of them, which is how a
-	// safety instruction goes missing in exactly one phase.
+	// Prompt is the step's own instructions. It opens the step's user message in
+	// a <step_role> block (buildPhaseMessages), and never replaces the daemon's
+	// system prompt: the base prompt carries the things that are true of every
+	// phase -- how to format edits, what the workspace is, what it must not do --
+	// and a role that replaced it would have to restate all of them, which is
+	// how a safety instruction goes missing in exactly one phase. It is not in
+	// the system message either, because that message must be the same in every
+	// phase for the provider's cache to carry from one phase to the next.
 	Prompt string
 
 	// Tools is the COMPLETE list of unqualified built-in tool names this role
@@ -66,10 +69,12 @@ type agentRole struct {
 	// not as an empty list on a real role. Keeping those two states in different
 	// types is what stops them being confused again.
 	//
-	// Enforced in TWO places on purpose (advertisedToolSpecs filters the menu,
-	// resolveExecutable refuses the call), because a filtered menu is a hint and
-	// this codebase does not let the model's cooperation be the control. The
-	// model can name a tool it was not shown; naming it must not run it.
+	// ENFORCED WHERE THE CALL RUNS: resolveExecutable refuses anything outside
+	// this list, because the model can name a tool it was not shown and this
+	// codebase does not let the model's cooperation be the control. The menu is
+	// only a hint -- and in a pipeline every phase is offered the whole
+	// pipeline's tools (pipelineMenu), so that each phase's request opens with
+	// the same bytes as the last one's.
 	Tools []string
 
 	// MaxIterations overrides the turn budget for this phase. Zero inherits.

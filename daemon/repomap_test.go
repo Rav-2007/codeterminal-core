@@ -230,34 +230,36 @@ func TestThePlannerIsGivenTheMapAndTheOthersAreNot(t *testing.T) {
 	}
 }
 
-// The map has to reach the model, not merely be built: it goes in the phase's
-// SYSTEM message, with the sentence that makes it usable -- that a path not
-// listed may not exist.
+// The map has to reach the model, not merely be built. It goes in the phase's
+// OWN message, after the request, as reference -- with the sentence that makes
+// it usable (a path not listed may not exist) in the step's instructions. It is
+// not in the system message, which must be the same in every phase so the
+// provider's cache carries from one phase to the next.
 func TestTheMapReachesThePhaseAsStandingContext(t *testing.T) {
 	root := mapWorkspace(t)
 	once := &repoMapOnce{root: root}
 
-	messages := buildPhaseMessages("base system", nil, "do the thing", &rolePlanner, nil, 4096,
-		repoMapFor(context.Background(), &rolePlanner, once))
-	if len(messages) == 0 {
-		t.Fatal("no messages built")
+	repoMap := repoMapFor(context.Background(), &rolePlanner, once)
+	messages := buildPhaseMessages("base system", nil, "do the thing", &rolePlanner, nil, 4096, repoMap)
+	if len(messages) < 2 {
+		t.Fatal("no phase message built")
 	}
-	if messages[0].Role != "system" {
-		t.Fatalf("first message is %q, want the system message", messages[0].Role)
+	if messages[0].Role != "system" || strings.Contains(messages[0].Content, "main.go") {
+		t.Errorf("the map leaked into the shared system message: %q", messages[0].Content)
 	}
-	system := messages[0].Content
-	for _, want := range []string{"base system", "PLANNER", "main.go", "may not exist"} {
-		if !strings.Contains(system, want) {
-			t.Errorf("the phase's system message is missing %q", want)
+	user := messages[len(messages)-1].Content
+	for _, want := range []string{"PLANNER", "main.go", "may not exist", "do the thing"} {
+		if !strings.Contains(user, want) {
+			t.Errorf("the phase's message is missing %q", want)
 		}
 	}
-	// It must not also be pasted into the user turn: the request is what the
-	// user asked, and duplicating the map there would make every handoff quote
-	// it back.
-	for _, m := range messages[1:] {
-		if strings.Contains(m.Content, "repository map") {
-			t.Errorf("the map was duplicated into a %s message", m.Role)
-		}
+	// Once, not twice: the map is standing context, not something to repeat.
+	all := ""
+	for _, m := range messages {
+		all += m.Content
+	}
+	if n := strings.Count(all, repoMap); n != 1 {
+		t.Errorf("the map appears %d times across the messages, want once", n)
 	}
 }
 

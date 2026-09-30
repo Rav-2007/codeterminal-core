@@ -544,3 +544,47 @@ against 12/12.
 
 The raw summaries are the four `R2 Stage C` / `R2 Stage D` lines in
 [`agent_workflow_eval.jsonl`](agent_workflow_eval.jsonl).
+
+## Round 3 — the `/team` phases share their opening (rules written 2026-09-30, before the run)
+
+**What changes.**
+
+- **The same opening in every phase:** the same system message (the base prompt plus one
+  paragraph about the pipeline), the same tool list (every tool any phase may use), and
+  the same history.
+  - Each phase's own instructions open its own message, in a `<step_role>` block.
+  - The user's words are fenced in `<user_request>`.
+  - Earlier phases' findings follow, as reference, defused like other untrusted text.
+  - What a phase may *call* is still its own role's list, refused at dispatch.
+- **The first empty reply goes back to the same host,** with a one-line note. Only a
+  second empty reply in a row moves the turn to another host; a third ends it.
+
+**Why.**
+
+- **Before** (2 trials at `55cc8d7`, $0.05 on the key): the Coder's first call on
+  DigitalOcean got 1,280 of 3,582 prompt tokens from the cache, the base prompt only.
+  Every later Coder call got 3,300–4,900.
+- **One empty reply was captured** and its exact request replayed to DigitalOcean four
+  times. Three came back as ordinary tool calls, one empty again (73 output tokens billed,
+  nothing delivered). The drop is intermittent, so leaving the host at the first one threw
+  its cache away for nothing.
+
+**The arm:**
+
+- `researcher,coder` on `deepseek_v4_pro`, 14 tasks × 2 trials, as Stage C;
+- two shards in parallel, `TASK_EVAL_MAX_USD` 0.65 each ($1.30 in all);
+- empty replies dumped.
+
+**Rules.**
+
+- **Quality:** the change stays at **23/28 or more**, the single agent's Stage C score.
+  Stage C's `researcher,coder` passed 24/28, and one trial either way is noise. At
+  **22/28 or fewer**, the phase layout is reverted.
+- **Mechanism:** over trials whose Coder opened on DigitalOcean, the median cached share of
+  its first call must be above the before-arm's 36% (1,280 of 3,582). Otherwise the layout
+  is reverted even if quality holds: it would carry the risk for nothing.
+- **Waste:** refused calls to a tool outside a phase's role are reported. They are what
+  offering every phase the pipeline's tools can cost.
+- **Cost per trial** is reported against Stage C's $0.0425 as context only. Other changes
+  since then also cut cost: each step now echoes only its own words, and a stuck loop stops.
+- **The same-host retry** stays unless a trial ends on three empty replies in a row.

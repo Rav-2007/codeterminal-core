@@ -21,6 +21,11 @@ const (
 	retrievedContextCloseTag = "</retrieved_context>"
 	userRequestOpenTag       = "<user_request>"
 	userRequestCloseTag      = "</user_request>"
+	// The step's own instructions in a /team pipeline (buildPhaseMessages):
+	// written by the daemon, declared by pipelineSystemNote, and protected like
+	// the other envelopes so no document or earlier step's output can forge one.
+	stepRoleOpenTag  = "<step_role>"
+	stepRoleCloseTag = "</step_role>"
 )
 
 // buildTagVariantPattern returns a regexp source matching any tag-like
@@ -88,6 +93,10 @@ var protectedTagFamilies = []string{
 	// The active spec (spec.go). The user accepted it, but it is a file in the
 	// project that anything with write access can change.
 	"activespec",
+	// A pipeline step's instructions (buildPhaseMessages). The system prompt
+	// tells the model to follow this block, so a forged one would be an
+	// instruction smuggled in by a file, a web page or an earlier step's prose.
+	"steprole",
 }
 
 var protectedTagPatterns = compileProtectedTagPatterns()
@@ -146,6 +155,8 @@ var envelopeTagsInUse = []string{
 	laneBOutputCloseTag,
 	activeSpecOpenTagPrefix + `specs/x.md">`,
 	activeSpecCloseTag,
+	stepRoleOpenTag,
+	stepRoleCloseTag,
 }
 
 // neutralizeDelimiters defuses any tag-like text inside untrusted retrieved
