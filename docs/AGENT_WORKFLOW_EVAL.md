@@ -588,3 +588,83 @@ The raw summaries are the four `R2 Stage C` / `R2 Stage D` lines in
 - **Cost per trial** is reported against Stage C's $0.0425 as context only. Other changes
   since then also cut cost: each step now echoes only its own words, and a stuck loop stops.
 - **The same-host retry** stays unless a trial ends on three empty replies in a row.
+
+### Round 3 result: the shared opening stays, and so does the same-host retry (2026-09-30)
+
+Run at `5d19d3a` as ruled above: $1.00 billed per the usage chunks. The key moved $0.9986,
+read before and after both shards. Each shard's own "key delta" in the JSONL includes the
+other shard, because they ran at the same time.
+
+| task | Stage C researcher → coder | Round 3 |
+|---|---|---|
+| create_file | 2/2 | 2/2 |
+| fix_failing_test | 2/2 | 2/2 |
+| add_function_with_test | 2/2 | 2/2 |
+| two_edits_one_file | 2/2 | 2/2 |
+| rename_across_files | 2/2 | 2/2 |
+| edge_case_bug | 2/2 | 2/2 |
+| feature_from_spec | 2/2 | 2/2 |
+| needs_iteration | 2/2 | 2/2 |
+| npm_no_deps | 2/2 | 2/2 |
+| bug_hunt_medium | 0/2 | 1/2 |
+| signature_change | 2/2 | 2/2 |
+| multi_package_feature | 2/2 | 2/2 |
+| semver_from_spec | 1/2 | 1/2 |
+| refactor_keep_behaviour | 1/2 | 2/2 |
+| **total** | **24/28** | **26/28** |
+| median tokens | 53.2k | 56.1k |
+| median seconds | 148 | 131 |
+| billed $ per trial | 0.0425 | 0.0357 |
+| billed $ per solved task | 0.050 | 0.038 |
+| Coder's first call cached on DigitalOcean (median) | 36% (before arm, 1 trial) | **77%** (26 trials) |
+
+**By the rules:**
+
+- **Quality holds: 26/28,** above the keep line of 23/28. The two misses:
+  - **`bug_hunt_medium` trial 1.** The Coder fixed the coupon bug but left the invoice test
+    failing. It said it could not run the tests: the Coder still has no `sandbox_exec`, and
+    no trial ran a command. Trial 2 passed; Stage C's `researcher → coder` failed both.
+  - **`semver_from_spec` trial 2** ended in a transport error, counted here as a failure.
+    See "One stream cut" below.
+- **The mechanism works.** The median cached share of the Coder's first call on
+  DigitalOcean was 77% across 26 trials (range 58–96%), against 36% before. 25 of the 26
+  cached exactly 3,072 tokens: the shared system message and tool list, in whole 256-token
+  blocks.
+  - **One caveat.** The before figure came from the first trial of its run, when nothing was
+    cached yet. Most Round 3 trials ran right after another trial, and the cache carries
+    across trials: the Researcher's first call was a median 92% cached. The old layout would
+    have had some of that warmth too.
+  - **The cold start is the clean comparison, and it holds.** Shard B's first trial was
+    `fix_failing_test`, the same task and position as the before arm's first trial, and its
+    Researcher's first call found only 256 tokens cached.
+    - Before, that Coder opened at 1,280 of 3,582.
+    - Now it opened at 3,072 of 3,826, reusing what its own Researcher had cached seconds
+      earlier.
+    - A user's `/team` question usually starts cold, so this is the case that matters.
+  - Over all calls, 73.4% of tokens were cached, against 67.2% in Stage C.
+- **Waste: 3 refused calls in 28 trials,** all by the Coder, in two trials that both passed.
+  - The Researcher's tools are a subset of the Coder's, so the Coder's menu is unchanged.
+    These calls named a tool that was in no phase's list.
+  - The Researcher is the only phase now offered more than before, and it made no refused
+    calls.
+  - A refused call is not in the trial's tool list, so the eval has the count but not the
+    tool's name.
+- **Cost: $0.0357 per trial,** against Stage C's $0.0425 (−16%), for about the same tokens.
+  This is context only: other changes since Stage C also cut cost.
+- **The same-host retry stays.** DigitalOcean sent 25 empty replies. Each was reasoning that
+  ended with `finish_reason: stop` and no text or tool call.
+  - After the 19 first empties, OpenRouter sent 18 retries back to DigitalOcean and 1 to
+    SiliconFlow. 12 of those 18 succeeded, keeping the host and its cache.
+  - The other 6 were empty again and moved on, and all 6 succeeded elsewhere.
+  - No trial saw three in a row. 12 of 28 trials still used more than one host.
+
+**One stream cut, not changed here.**
+
+- **What happened.** `semver_from_spec` trial 2's Coder reasoned for five minutes without
+  answering: 39,046 characters, mostly test cases. DigitalOcean cut the stream at exactly
+  300 s. The daemon has no per-call limit; the host does.
+- **Why it was not retried.** The attempt alone had used up the 45 s retry budget, and only
+  a silent stall gets a retry past it. So the turn ended with "provider unreachable".
+- **A candidate for a later round.** Give a stream that the host cuts, after long reasoning
+  and no answer, the one retry a stall gets. It is a new behaviour, so it needs its own
+  measurement.
