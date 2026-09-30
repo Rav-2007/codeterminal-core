@@ -586,16 +586,17 @@ func TestAnEmptyReplyIsAskedAgain(t *testing.T) {
 	}
 }
 
-// Twice empty is reported as an incomplete turn, never as a finished one.
-func TestTwoEmptyRepliesAreReported(t *testing.T) {
-	base, requests, _ := agentUpstream(t, emptySSE(), emptySSE(), textSSE("never reached"))
+// Three empty replies in a row are reported as an incomplete turn, never as a
+// finished one: the same host, another host, and then the turn stops.
+func TestThreeEmptyRepliesInARowAreReported(t *testing.T) {
+	base, requests, _ := agentUpstream(t, emptySSE(), emptySSE(), emptySSE(), textSSE("never reached"))
 	s := loopServer(t, base, MCPConfig{Enabled: true})
 	res, _, err := runLoop(t, s)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Incomplete == nil || !strings.Contains(res.Incomplete.Detail, "empty answer") || requests.Load() != 2 {
-		t.Errorf("two empty replies: incomplete %+v, %d request(s)", res.Incomplete, requests.Load())
+	if res.Incomplete == nil || !strings.Contains(res.Incomplete.Detail, "empty answer") || requests.Load() != 3 {
+		t.Errorf("three empty replies: incomplete %+v, %d request(s)", res.Incomplete, requests.Load())
 	}
 }
 

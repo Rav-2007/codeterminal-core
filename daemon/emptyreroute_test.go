@@ -28,10 +28,28 @@ func sentIgnore(t *testing.T, body []byte) []string {
 	return req.Provider.Ignore
 }
 
-// The retry after an empty reply avoids the host that sent it -- on top of the
-// configured ignore list, which is itself left untouched for the next turn.
-func TestAnEmptyReplyIsAskedAgainElsewhere(t *testing.T) {
-	base, requests, bodies := agentUpstream(t, emptyFromSSE("FlakyHost"), textSSE("the answer"))
+// sentMessages decodes the messages a captured request carried.
+func sentMessages(t *testing.T, body []byte) []chatMessage {
+	t.Helper()
+	var req struct {
+		Messages []chatMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatal(err)
+	}
+	return req.Messages
+}
+
+// The first retry after an empty reply goes back to the SAME host, with a note
+// -- the prompt is in that host's cache, and its drop is intermittent (measured:
+// one in four replays of a captured request). Only a second empty reply in a
+// row moves the turn to another host, on top of the configured ignore list,
+// which is itself left untouched for the next turn.
+//
+// Neuter check: route the first retry elsewhere (avoidProvider in case 1) and
+// the second request's ignore list gains the host.
+func TestAnEmptyReplyIsAskedAgainOnTheSameHostThenElsewhere(t *testing.T) {
+	base, requests, bodies := agentUpstream(t, emptyFromSSE("FlakyHost"), emptyFromSSE("FlakyHost"), textSSE("the answer"))
 	s := loopServer(t, base, MCPConfig{Enabled: true})
 	registry, _ := s.buildRegistry(context.Background(), s.logger, &proposalSink{}, "")
 	t.Cleanup(func() { _ = registry.Close() })
@@ -44,22 +62,25 @@ func TestAnEmptyReplyIsAskedAgainElsewhere(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.FinalText != "the answer" || res.Incomplete != nil || requests.Load() != 2 {
+	if res.FinalText != "the answer" || res.Incomplete != nil || requests.Load() != 3 {
 		t.Fatalf("text %q, incomplete %+v, %d request(s)", res.FinalText, res.Incomplete, requests.Load())
 	}
-	if got := sentIgnore(t, (*bodies)[0]); !reflect.DeepEqual(got, []string{"DeepInfra"}) {
-		t.Errorf("first request ignored %v, want only the configured list", got)
+	for i, want := range [][]string{{"DeepInfra"}, {"DeepInfra"}, {"DeepInfra", "FlakyHost"}} {
+		if got := sentIgnore(t, (*bodies)[i]); !reflect.DeepEqual(got, want) {
+			t.Errorf("request %d ignored %v, want %v", i+1, got, want)
+		}
 	}
-	if got := sentIgnore(t, (*bodies)[1]); !reflect.DeepEqual(got, []string{"DeepInfra", "FlakyHost"}) {
-		t.Errorf("the retry ignored %v, want the configured list plus the host that sent nothing", got)
+	retry := sentMessages(t, (*bodies)[1])
+	if last := retry[len(retry)-1]; last.Role != "user" || last.Content != emptyReplyNote {
+		t.Errorf("the same-host retry ended with %+v, want the empty-reply note", last)
 	}
 	if !reflect.DeepEqual(configured, []string{"DeepInfra"}) || !reflect.DeepEqual(routing.Ignore, []string{"DeepInfra"}) {
 		t.Errorf("the configured ignore list was changed in place: %v", configured)
 	}
 }
 
-// Two empty replies APART are each asked again; only two in a row end the
-// turn (which TestTwoEmptyRepliesAreReported covers).
+// Two empty replies APART are each asked again; only three in a row end the
+// turn (which TestThreeEmptyRepliesInARowAreReported covers).
 func TestEmptyRepliesApartAreEachAskedAgain(t *testing.T) {
 	base, requests, _ := agentUpstream(t,
 		emptyFromSSE("HostA"),

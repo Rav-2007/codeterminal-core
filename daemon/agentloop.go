@@ -87,10 +87,10 @@ type agentTurn struct {
 
 	// request is the user's own words for this turn (lastUserQuestion).
 	request string
-	// retriedEmpty records that the LAST reply was empty and has been asked
-	// again; a reply with anything in it clears it, so two empties apart are
-	// each asked again and only two in a row end the turn.
-	retriedEmpty bool
+	// emptyInARow counts empty replies in a row: the first is asked again on
+	// the same host, the second elsewhere, the third ends the turn. A reply with
+	// anything in it resets it, so empties apart are each asked again.
+	emptyInARow int
 
 	// nudgedForGrounding records that the loop already asked this turn's model
 	// to look something up instead of hedging about it.
@@ -568,37 +568,54 @@ func (s *Server) runAgentLoop(
 		// twice in sixteen trials a provider sent back no text and no tool call
 		// -- once as the very first reply -- and the loop, reading "no tool
 		// calls" as "done", ended the turn with nothing on screen. It is a
-		// provider hiccup, and the same request usually succeeds: asked once
-		// more. Twice empty is reported, never passed off as a finished turn.
+		// provider hiccup, and the same request usually succeeds: asked again.
+		// Three in a row is reported, never passed off as a finished turn.
 		//
-		// ASKED AGAIN SOMEWHERE ELSE. MEASURED 2026-09-28: deepseek-v4-pro served
-		// by DigitalOcean ended 5 of 28 turns this way -- every time the model
-		// had decided to call a tool (the bill counted 48-113 output tokens past
-		// its thinking) and the host delivered neither the call nor any text. The
-		// retry went back to the same host and failed the same way. So the host
-		// that sent an empty reply is avoided for the rest of this turn: the
-		// retry, and every call after it, go to the next host OpenRouter would
-		// pick. provider.ignore only ever NARROWS where a request may go, so the
-		// ZDR constraints are untouched.
+		// ASKED AGAIN ON THE SAME HOST FIRST, THEN ELSEWHERE.
+		//
+		// MEASURED 2026-09-28: deepseek-v4-pro served by DigitalOcean ended 5 of
+		// 28 turns this way -- every time the model had decided to call a tool
+		// (the bill counted 48-113 output tokens past its thinking) and the host
+		// delivered neither the call nor any text -- and a retry that went back
+		// once and failed the same way ended the turn. dc77b85 therefore moved
+		// the retry, and the rest of the turn, to another host at the first
+		// empty reply: the turn survived, but paid for a cold cache on a host
+		// with pricier tokens.
+		//
+		// MEASURED 2026-09-30: replaying one captured empty reply's exact
+		// request to DigitalOcean four times, three came back as ordinary tool
+		// calls and one empty again (73 output tokens billed, nothing
+		// delivered). The drop is intermittent, not a property of the request.
+		// So the first retry stays on the same host -- the prompt is already in
+		// its cache and its tokens are the cheapest -- with a short note, and
+		// only a second empty reply in a row moves the turn elsewhere.
+		// provider.ignore only ever NARROWS where a request may go, so the ZDR
+		// constraints are untouched.
 		//
 		// A reply the output cap cut off is NOT empty, even when it has no text:
 		// the model was mid-way through a tool call (finishStream drops it).
-		// Asking again elsewhere would stop at the same cap; it ends below as
-		// a cut-off answer instead.
+		// Asking again would stop at the same cap; it ends below as a cut-off
+		// answer instead.
 		if len(calls) == 0 && full.Len() == textBefore && finishReason != protocol.IncompleteLength {
-			if !turn.retriedEmpty {
-				turn.retriedEmpty = true
+			turn.emptyInARow++
+			switch turn.emptyInARow {
+			case 1:
+				turn.messages = append(turn.messages, chatMessage{Role: "user", Content: emptyReplyNote})
+				s.logger.Printf("agent: the model sent an empty reply at step %d (served by %q); asking the same host again",
+					turn.iteration, servedBy)
+				continue
+			case 2:
 				routing = avoidProvider(routing, servedBy)
-				s.logger.Printf("agent: the model sent an empty reply at step %d (served by %q); asking again elsewhere",
+				s.logger.Printf("agent: a second empty reply in a row at step %d (served by %q); asking again elsewhere",
 					turn.iteration, servedBy)
 				continue
 			}
-			s.logger.Printf("agent: the model sent an empty reply twice; stopping at step %d", turn.iteration)
+			s.logger.Printf("agent: the model sent an empty reply three times in a row; stopping at step %d", turn.iteration)
 			return agentResult{
 				FinalText: full.String(),
 				Incomplete: &protocol.IncompleteInfo{
 					Reason: protocol.IncompleteProviderError,
-					Detail: "the model sent back an empty answer twice in a row, so this task stopped — " +
+					Detail: "the model sent back an empty answer three times in a row, so this task stopped — " +
 						"what you see above is everything that was done. Ask again, or pick another model with /model.",
 				},
 				ToolNames:      turn.toolNames,
@@ -607,7 +624,7 @@ func (s *Server) runAgentLoop(
 			}, nil
 		}
 
-		turn.retriedEmpty = false // this reply had something in it
+		turn.emptyInARow = 0 // this reply had something in it
 
 		if len(calls) == 0 {
 			// ONE EXCEPTION, AND IT IS NARROW. If the model just answered a
@@ -1460,6 +1477,11 @@ func truncateForClient(s string, max int) string {
 	}
 	return s[:max] + "…"
 }
+
+// emptyReplyNote is what the loop adds before asking the same host again after
+// an empty reply (see the empty-reply comment in runAgentLoop).
+const emptyReplyNote = "Mochiii received your last reply empty: no text and no tool call. Continue from where " +
+	"you were: call one of the tools you were given, or answer in text."
 
 // wrapUpNote is the one instruction the wrap-up call adds.
 const wrapUpNote = "You have reached this task's limit for this turn and cannot call any more tools. " +
