@@ -613,14 +613,16 @@ func (s *Server) serveConn(conn net.Conn) {
 	historyOutcome := prepareHistory(promptReq.History, s.noScrub())
 	s.logHistory(historyOutcome)
 
-	// A follow-up ("continue", "ok fix it") is searched with the question it
-	// follows, or -- in agent mode, where the agent can read code itself -- not
-	// at all. See retrievalQueryFor.
+	// WHAT CODE GOES IN BEFORE THE MODEL STARTS. An agent turn gets only what
+	// the prompt points at exactly: it has search_code and searches when it
+	// needs to (gatherDirectRefs). A plain turn has no tools, so it is searched
+	// up front -- a follow-up together with the question it follows
+	// (retrievalQueryFor).
 	var outcome retrievalOutcome
-	if query, skip := retrievalQueryFor(promptReq.Prompt, historyOutcome.Messages, s.agentModeEngaged(hsReq)); skip != "" {
-		outcome = retrievalOutcome{Skipped: true, Reason: skip}
+	if s.agentModeEngaged(hsReq) {
+		outcome = s.gatherDirectRefs(promptReq.Prompt)
 	} else {
-		outcome = s.gatherContext(ctx, query)
+		outcome = s.gatherContext(ctx, retrievalQueryFor(promptReq.Prompt, historyOutcome.Messages))
 	}
 	s.logRetrieval(outcome)
 

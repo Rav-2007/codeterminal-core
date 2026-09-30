@@ -47,23 +47,26 @@ func TestRetrievalQueryForAFollowUp(t *testing.T) {
 		{Role: "user", Content: "continue"},
 		{Role: "assistant", Content: "And it backs off with jitter."},
 	}
+	// A question about Mochiii is not what a later follow-up is about.
+	afterAMetaQuestion := append(append([]chatMessage(nil), history...),
+		chatMessage{Role: "user", Content: "what is your name"},
+		chatMessage{Role: "assistant", Content: "Mochiii."})
 	cases := []struct {
 		name, prompt string
 		history      []chatMessage
-		agent        bool
-		query, skip  string
+		query        string
 	}{
-		{"agent mode: no code", "ok fix it", history, true, "", followUpSkipReason},
-		{"plain: searched with the question it follows", "ok fix it", history, false,
-			"how does the retry path decide to try again\nok fix it", ""},
-		{"nothing to follow", "continue", nil, true, "continue", ""},
-		{"a real question", "explain gatherContext", history, true, "explain gatherContext", ""},
-		{"small talk keeps its own path", "thanks", history, true, "thanks", ""},
+		{"searched with the question it follows", "ok fix it", history,
+			"how does the retry path decide to try again\nok fix it"},
+		{"past a question about Mochiii", "ok fix it", afterAMetaQuestion,
+			"how does the retry path decide to try again\nok fix it"},
+		{"nothing to follow", "continue", nil, "continue"},
+		{"a real question", "explain gatherContext", history, "explain gatherContext"},
+		{"small talk keeps its own path", "thanks", history, "thanks"},
 	}
 	for _, c := range cases {
-		q, skip := retrievalQueryFor(c.prompt, c.history, c.agent)
-		if q != c.query || skip != c.skip {
-			t.Errorf("%s: got (%q, %q), want (%q, %q)", c.name, q, skip, c.query, c.skip)
+		if q := retrievalQueryFor(c.prompt, c.history); q != c.query {
+			t.Errorf("%s: got %q, want %q", c.name, q, c.query)
 		}
 	}
 }
@@ -139,8 +142,8 @@ func TestAFollowUpOverTheSocket(t *testing.T) {
 		}
 		body := string((*bodies)[0])
 		if agent {
-			if grounding.Grounded || grounding.Reason != followUpSkipReason {
-				t.Errorf("agent mode: grounding %+v, want skipped with %q", grounding, followUpSkipReason)
+			if grounding.Grounded || grounding.Reason != agentSearchReason {
+				t.Errorf("agent mode: grounding %+v, want skipped with %q", grounding, agentSearchReason)
 			}
 			if strings.Contains(body, "retrieved_context") || len(rec.queries) != 0 {
 				t.Errorf("agent mode: code was searched (%q) or attached", rec.queries)

@@ -247,6 +247,11 @@ func (s *Server) gatherContext(ctx context.Context, prompt string) retrievalOutc
 	if len(direct) == 0 && isSmallTalk(prompt) {
 		return retrievalOutcome{Skipped: true, Reason: "a conversational message; no code search"}
 	}
+	// The same for a question about Mochiii itself: "what is your name" drew
+	// seven chunks of unrelated code (MEASURED live, 2026-09-30).
+	if len(direct) == 0 && isAboutAssistant(prompt) {
+		return retrievalOutcome{Skipped: true, Reason: "a question about Mochiii itself; no code search"}
+	}
 
 	similar, reason := s.similarChunks(ctx, prompt)
 	// What the files say NOW, not what they said when indexed; a hit whose code
@@ -296,43 +301,62 @@ func (s *Server) gatherContext(ctx context.Context, prompt string) retrievalOutc
 	}
 }
 
-// followUpSkipReason is what a skipped follow-up reports as its grounding.
-const followUpSkipReason = "a follow-up; the agent reads the code it needs itself"
+// agentSearchReason is what an agent turn reports as its grounding when its
+// prompt points at no exact file:line. See gatherDirectRefs.
+const agentSearchReason = "agent mode; the agent searches for the code it needs itself (search_code)"
 
-// retrievalQueryFor decides what this turn's code search is keyed on, or that
-// there is none. Only the SEARCH changes: the message the model receives still
+// gatherDirectRefs is an agent turn's up-front context: only what the prompt
+// points at exactly ("foo.go:142: undefined: bar"), and no similarity search.
+//
+// THE AGENT SEARCHES FOR ITSELF. It has search_code, which runs this same
+// retrieval (gatherContext) with a query the model chooses, and it calls it when
+// it needs code. Searching up front on the user's words attached ~8K tokens at
+// full price to every turn, needed or not. MEASURED live 2026-09-30: "what is
+// your name" drew seven chunks and "go through the files, find bugs" six --
+// about two-thirds of what those two turns cost -- and the agent called
+// repo_map anyway. The agent evals that set the default model ran with no
+// index at all, so this is the condition its quality was measured in.
+//
+// An exact reference stays: it is a lookup the user already did, not a search.
+func (s *Server) gatherDirectRefs(prompt string) retrievalOutcome {
+	direct := resolveFileLineRefs(prompt, s.workspace, s.logger)
+	if len(direct) == 0 {
+		return retrievalOutcome{Skipped: true, Reason: agentSearchReason}
+	}
+	fused := fuseDirectSpans(direct, nil, s.retrievalTopK, s.noScrub())
+	kept, truncated := truncateToBudget(fused.Chunks, s.contextBudgetChars, s.noScrub())
+	return retrievalOutcome{
+		Chunks:          kept,
+		Truncated:       truncated,
+		MergedFrom:      fused.InputCount,
+		MergeSavedBytes: fused.SavedBytes,
+		DirectRefSpans:  fused.DirectSpans,
+	}
+}
+
+// retrievalQueryFor decides what a plain (tool-less) turn's code search is
+// keyed on. Only the SEARCH changes: the message the model receives still
 // carries the user's own words.
 //
 // A follow-up ("continue", "yes do it", "ok fix it") names nothing to look up.
-// Searched on its own words it drew ~30 KB of unrelated code per turn, so:
-//
-//   - in agent mode it gets no code at all -- the agent has read_file and
-//     search_code, and reads the one file it needs instead of paying for
-//     thirty kilobytes it does not;
-//   - without tools it is searched together with the question it follows (the
-//     latest one that was not itself a follow-up), so the code attached is the
-//     code the conversation is about.
+// Searched on its own words it drew ~30 KB of unrelated code per turn, so it
+// is searched together with the question it follows -- the latest one that was
+// not itself a follow-up, small talk or a question about Mochiii -- and the code
+// attached is the code the conversation is about.
 //
 // Small talk keeps its own path (gatherContext skips it), and a follow-up with
 // nothing before it is searched as it stands -- there is nothing to follow.
-func retrievalQueryFor(prompt string, history []chatMessage, agentMode bool) (query, skipReason string) {
+// An agent turn never gets here: see gatherDirectRefs.
+func retrievalQueryFor(prompt string, history []chatMessage) string {
 	if isSmallTalk(prompt) || !isFollowUp(prompt) {
-		return prompt, ""
+		return prompt
 	}
-	followed := ""
 	for i := len(history) - 1; i >= 0; i-- {
-		if c := history[i].Content; history[i].Role == "user" && !isFollowUp(c) && !isSmallTalk(c) {
-			followed = c
-			break
+		if c := history[i].Content; history[i].Role == "user" && !isFollowUp(c) && !isSmallTalk(c) && !isAboutAssistant(c) {
+			return c + "\n" + prompt
 		}
 	}
-	if followed == "" {
-		return prompt, ""
-	}
-	if agentMode {
-		return "", followUpSkipReason
-	}
-	return followed + "\n" + prompt, ""
+	return prompt
 }
 
 // similarChunks runs similarity retrieval, returning a non-empty reason string

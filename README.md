@@ -591,6 +591,17 @@ message, never the system role, and capped by a character budget (default 8000).
 Chunk text is untrusted, so tag-like text inside it is neutralised before
 rendering — a file cannot forge an early close and inject instructions.
 
+**When code is attached before the model starts** depends on the mode:
+
+- **Plain mode (no tools)** is searched up front, except for greetings and
+  questions about Mochiii itself ("what is your name"). A short follow-up
+  ("continue", "ok fix it") is searched together with the question it follows.
+- **Agent mode** gets no code searched on its behalf. The agent has `search_code`,
+  which runs this same retrieval with a query it chooses, and calls it when it
+  needs code. Searching up front on the user's words attached about 8K tokens to
+  every turn at full price, whether or not the turn needed it. Only exact
+  `file:line` references in the prompt (`foo.go:142`) are attached up front.
+
 ### Editing
 
 The model is instructed to propose changes as SEARCH/REPLACE blocks:

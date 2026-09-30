@@ -112,3 +112,46 @@ func isFollowUp(prompt string) bool {
 	}
 	return true
 }
+
+// aboutAssistantWords are the words a question to Mochiii ABOUT ITSELF is made
+// of: "what is your name", "who are you", "what can you do", "who made you",
+// "what model are you". None names anything in a codebase.
+var aboutAssistantWords = map[string]bool{
+	"what": true, "what's": true, "whats": true, "who": true, "who's": true, "which": true,
+	"how": true, "is": true, "are": true, "am": true, "do": true, "does": true, "can": true,
+	"could": true, "will": true, "your": true, "you": true, "yourself": true, "u": true, "ur": true,
+	"r": true, "name": true, "named": true, "called": true, "made": true, "make": true,
+	"built": true, "created": true, "wrote": true, "trained": true, "model": true, "version": true,
+	"tell": true, "me": true, "about": true, "introduce": true, "help": true, "with": true,
+	"an": true, "a": true, "the": true, "ai": true, "llm": true, "bot": true, "assistant": true,
+	"work": true, "real": true, "by": true, "please": true, "exactly": true, "mochiii": true,
+}
+
+// secondPerson marks a question as addressed to the assistant rather than
+// about something else made of the same words ("what is the model").
+var secondPerson = map[string]bool{"you": true, "your": true, "yourself": true, "u": true, "ur": true, "mochiii": true}
+
+// isAboutAssistant reports whether prompt only asks Mochiii about itself:
+// short, addressed to it, every word from aboutAssistantWords or small talk,
+// and nothing path- or code-shaped ("what can you tell me about retry.go" is a
+// question about the code).
+func isAboutAssistant(prompt string) bool {
+	if strings.ContainsRune(prompt, '`') || filePathish.MatchString(prompt) {
+		return false
+	}
+	words := strings.FieldsFunc(strings.ToLower(prompt), func(r rune) bool {
+		return !(unicode.IsLetter(r) || r == '\'')
+	})
+	if len(words) == 0 || len(words) > maxFollowUpWords {
+		return false
+	}
+	addressed := false
+	for _, w := range words {
+		folded := foldStretched(w)
+		if !aboutAssistantWords[w] && !aboutAssistantWords[folded] && !smallTalkWords[w] && !smallTalkWords[folded] {
+			return false
+		}
+		addressed = addressed || secondPerson[w] || secondPerson[folded]
+	}
+	return addressed
+}
