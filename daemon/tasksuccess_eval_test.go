@@ -424,6 +424,21 @@ type taskTrial struct {
 	CachedTokens    int            `json:"cached_tokens,omitempty"`
 	ReasoningTokens int            `json:"reasoning_tokens,omitempty"`
 	Providers       map[string]int `json:"providers,omitempty"`
+	// Each call in order: which phase made it and how much of its prompt the
+	// provider served from its cache.
+	PhaseCalls []phaseCall `json:"phase_calls,omitempty"`
+}
+
+// phaseOpenings renders, for each phase after the first, its first call's
+// cached share -- the number the /team prefix change is about.
+func phaseOpenings(calls []phaseCall) string {
+	var parts []string
+	for i, c := range calls {
+		if i > 0 && c.Phase != calls[i-1].Phase {
+			parts = append(parts, fmt.Sprintf("%s opened %d/%d cached (%s)", c.Phase, c.Cached, c.Prompt, c.Provider))
+		}
+	}
+	return strings.Join(parts, "; ")
 }
 
 // toolNames reduces call signatures (name + arguments) to names.
@@ -631,7 +646,8 @@ func TestTaskSuccess(t *testing.T) {
 
 			tr := taskTrial{Task: spec.name, Calls: got.calls, Tokens: got.prompt + got.completion,
 				Seconds: elapsed.Seconds(), Asked: appr.asked, CostUSD: got.costUSD,
-				CachedTokens: got.cached, ReasoningTokens: got.reasoning, Providers: got.providers}
+				CachedTokens: got.cached, ReasoningTokens: got.reasoning, Providers: got.providers,
+				PhaseCalls: got.perCall}
 			if err != nil {
 				sink.discard()
 				tr.Why = "TRANSPORT: " + err.Error()
@@ -657,6 +673,9 @@ func TestTaskSuccess(t *testing.T) {
 				spec.name, trial, passWord(tr.Pass), tr.Calls, tr.ToolCalls, tr.Refused, tr.Proposed,
 				tr.Seconds, tr.CostUSD, tr.Why)
 			t.Logf("    tools: %s", strings.Join(tr.Tools, " "))
+			if o := phaseOpenings(tr.PhaseCalls); o != "" {
+				t.Logf("    cache: %s", o)
+			}
 			if !tr.Pass {
 				// The arguments too, on a failure: "read the same file five times"
 				// and "guessed five paths that do not exist" look identical as names.

@@ -42,6 +42,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -99,6 +100,10 @@ type costRecorder struct {
 	cachedTokens    int
 	reasoningTokens int
 	providers       map[string]int
+	// perCall is every call in order, with the pipeline phase that made it
+	// (phaseOfRequest) -- what shows whether a phase's FIRST call was served
+	// from the cache the previous phase warmed, which a trial's totals hide.
+	perCall []phaseCall
 	// inflight counts calls still being drained -- see snapshot.
 	inflight int
 	drained  *sync.Cond
@@ -118,6 +123,29 @@ type recorded struct {
 	calls, prompt, completion, cached, reasoning int
 	costUSD                                      float64
 	providers                                    map[string]int
+	perCall                                      []phaseCall
+}
+
+// phaseCall is one model call as the provider billed it.
+type phaseCall struct {
+	Phase    string `json:"phase,omitempty"`
+	Prompt   int    `json:"prompt"`
+	Cached   int    `json:"cached"`
+	Provider string `json:"provider,omitempty"`
+}
+
+// rolePromptMarker finds the specialist that made a request from its role
+// prompt ("You are the RESEARCHER for this task"), wherever the request
+// carries it -- the system message or the step's own message.
+var rolePromptMarker = regexp.MustCompile(`You are the (PLANNER|RESEARCHER|CODER|TESTER) for this task`)
+
+// phaseOfRequest names the pipeline phase a request body came from, or "" for
+// the single agent.
+func phaseOfRequest(body []byte) string {
+	if m := rolePromptMarker.FindSubmatch(body); m != nil {
+		return strings.ToLower(string(m[1]))
+	}
+	return ""
 }
 
 func newCostRecorder(t *testing.T, upstream string) *costRecorder {
@@ -216,6 +244,7 @@ func (r *costRecorder) handle(w http.ResponseWriter, req *http.Request) {
 	if u.provider != "" {
 		r.providers[u.provider]++
 	}
+	r.perCall = append(r.perCall, phaseCall{Phase: phaseOfRequest(body), Prompt: u.prompt, Cached: u.cached, Provider: u.provider})
 	r.mu.Unlock()
 }
 
@@ -346,7 +375,8 @@ func (r *costRecorder) detail() recorded {
 		providers[k] = v
 	}
 	return recorded{calls: r.calls, prompt: r.promptTokens, completion: r.completionTokens,
-		cached: r.cachedTokens, reasoning: r.reasoningTokens, costUSD: r.costUSD, providers: providers}
+		cached: r.cachedTokens, reasoning: r.reasoningTokens, costUSD: r.costUSD, providers: providers,
+		perCall: append([]phaseCall(nil), r.perCall...)}
 }
 
 func (r *costRecorder) reset() {
@@ -355,6 +385,7 @@ func (r *costRecorder) reset() {
 	r.calls, r.promptTokens, r.completionTokens = 0, 0, 0
 	r.cachedTokens, r.reasoningTokens, r.costUSD = 0, 0, 0
 	r.providers = map[string]int{}
+	r.perCall = nil
 }
 
 // ---------------------------------------------------------------------------
@@ -642,5 +673,25 @@ func TestOrchestrationEarnsItsCost(t *testing.T) {
 		t.Logf("VERDICT: the four-phase pipeline does NOT beat a budget-matched single agent "+
 			"(%d win / %d loss / %d tie). Per the rule above, the four-phase default is not earned.",
 			fullVsSingle.wins, fullVsSingle.losses, fullVsSingle.ties)
+	}
+}
+
+// The recorder must find the specialist wherever its role prompt sits -- the
+// system message or the step's own message -- or the per-phase cache numbers
+// would silently read as the single agent's.
+func TestPhaseOfRequestFindsTheRole(t *testing.T) {
+	for want, role := range map[string]*agentRole{"researcher": &roleResearcher, "coder": &roleCoder,
+		"planner": &rolePlanner, "tester": &roleTester} {
+		inSystem, _ := json.Marshal(chatCompletionRequest{Messages: []chatMessage{{Role: "system", Content: "base\n\n" + role.Prompt}}})
+		inUser, _ := json.Marshal(chatCompletionRequest{Messages: []chatMessage{{Role: "user", Content: role.Prompt + "\n\nthe task"}}})
+		if got := phaseOfRequest(inSystem); got != want {
+			t.Errorf("role prompt in the system message: phase %q, want %q", got, want)
+		}
+		if got := phaseOfRequest(inUser); got != want {
+			t.Errorf("role prompt in the user message: phase %q, want %q", got, want)
+		}
+	}
+	if got := phaseOfRequest([]byte(`{"messages":[{"role":"user","content":"fix it"}]}`)); got != "" {
+		t.Errorf("a single-agent request read as phase %q", got)
 	}
 }
