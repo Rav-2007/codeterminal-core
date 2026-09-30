@@ -113,14 +113,18 @@ func writeUsageRows(b *strings.Builder, label string, t usageTotals) {
 	if t.reasons > 0 {
 		out += " (" + compactTokens(t.reasons) + " reasoning)"
 	}
-	fmt.Fprintf(b, "\n  %-13s %s · %s · %s", "", in, out, dollars(t))
+	// The cost on a row of its own: on the in/out row it made the line 82
+	// columns, and an 80-column terminal wrapped "at least" away from its
+	// amount (seen live, 2026-09-30).
+	fmt.Fprintf(b, "\n  %-13s %s · %s", "", in, out)
+	fmt.Fprintf(b, "\n  %-13s cost %s", "", dollars(t))
 }
 
 // dollars is the cost as billed: a lower bound when some call reported none.
 func dollars(t usageTotals) string {
 	switch {
 	case t.costMissing && t.cost == 0:
-		return "cost not reported"
+		return "not reported"
 	case t.costMissing:
 		return fmt.Sprintf("at least $%.4f", t.cost)
 	}

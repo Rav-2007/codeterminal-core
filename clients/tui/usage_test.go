@@ -12,6 +12,7 @@ import (
 	"mochiii/protocol"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func turnBill(calls, in, out, cached int, dollars float64, context, window int) *protocol.TurnUsage {
@@ -36,7 +37,8 @@ func TestUsage_ReportsWhatTheProviderBilled(t *testing.T) {
 	}
 	for _, want := range []string{
 		"this chat     2 turns · 5 model calls",
-		"in 2.5K (800 cached) · out 100 · $0.0050",
+		"in 2.5K (800 cached) · out 100\n",
+		"cost $0.0050",
 		"this session  2 turns · 5 model calls",
 		"context       41.2K of 1.02M tokens (4%) · deepseek/deepseek-v4-pro",
 	} {
@@ -244,5 +246,32 @@ func TestStream_StoppedTurnsBillsArriveOnTheNextFinalMessage(t *testing.T) {
 	u, ok := msgs[len(msgs)-2].(usageMsg)
 	if !ok || u.usage != nil || len(u.stopped) != 1 || u.stopped[0].Calls != 3 {
 		t.Errorf("the message before the end is %#v, want the stopped turn's bill", msgs[len(msgs)-2])
+	}
+}
+
+// /usage FITS AN 80-COLUMN TERMINAL, whatever the numbers. The cost used to
+// share the in/out row, which reached 82 columns in a live session and wrapped
+// "at least" away from its amount.
+//
+// Neuter check: put the cost back on the in/out row.
+func TestUsage_EveryLineFitsEightyColumns(t *testing.T) {
+	m := newTestModel()
+	big := protocol.TurnUsage{Calls: 9999, PromptTokens: 999_990_000, CachedTokens: 999_990_000,
+		CompletionTokens: 999_990_000, ReasoningTokens: 999_990_000, CostUSD: 123.4567, CostMissing: true,
+		ContextTokens: 999_990_000, ContextWindow: 999_990_000, Model: "deepseek/deepseek-v4-pro"}
+	stopped := make([]protocol.TurnUsage, 99)
+	for i := range stopped {
+		stopped[i] = protocol.TurnUsage{Calls: 1, CostMissing: true}
+	}
+	m.recordStoppedUsage(stopped)
+	m.recordUsage(&big) // just under a billion tokens: about $1,000 of calls in one session
+	report := m.usageReport()
+	if !strings.Contains(report, "(99 stopped)") || !strings.Contains(report, "at least $") {
+		t.Fatalf("the worst case was not rendered:\n%s", report)
+	}
+	for _, line := range strings.Split(report, "\n") {
+		if w := ansi.StringWidth(line); w > 80 {
+			t.Errorf("a /usage line is %d columns, over 80:\n%q", w, line)
+		}
 	}
 }
