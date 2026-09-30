@@ -28,8 +28,8 @@ func TestUsageTally_SumsTheCallsAndKeepsTheLastContext(t *testing.T) {
 	second.CompletionTokensDetails = &struct {
 		ReasoningTokens int `json:"reasoning_tokens"`
 	}{ReasoningTokens: 40}
-	tally.add(first)
-	tally.add(second)
+	tally.add(first, "")
+	tally.add(second, "")
 
 	u := tally.report("a/model", 64000)
 	if u == nil || u.Calls != 2 || u.PromptTokens != 2500 || u.CompletionTokens != 170 ||
@@ -43,7 +43,7 @@ func TestUsageTally_SumsTheCallsAndKeepsTheLastContext(t *testing.T) {
 		t.Errorf("usage = %+v", u)
 	}
 
-	tally.add(chunkUsage{PromptTokens: 10}) // a call that reported no cost
+	tally.add(chunkUsage{PromptTokens: 10}, "") // a call that reported no cost
 	if u := tally.report("a/model", 0); !u.CostMissing {
 		t.Error("a call with no cost did not mark the total as a lower bound")
 	}
@@ -55,7 +55,7 @@ func TestUsageTally_NothingReportedIsNoUsage(t *testing.T) {
 		t.Errorf("a turn with no usage reports = %+v, want nil", u)
 	}
 	var none *usageTally // outside a turn
-	none.add(chunkUsage{PromptTokens: 1})
+	none.add(chunkUsage{PromptTokens: 1}, "")
 	if u := none.report("m", 0); u != nil {
 		t.Errorf("a nil tally reported %+v", u)
 	}

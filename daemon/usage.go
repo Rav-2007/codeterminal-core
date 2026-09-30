@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"log"
 	"sync"
 
 	"mochiii/protocol"
@@ -38,6 +40,12 @@ type chunkUsage struct {
 type usageTally struct {
 	mu sync.Mutex
 	u  protocol.TurnUsage
+	// logger, when set, gets one line per call: the host that served it and
+	// what it billed, cached tokens included. /usage shows a turn's sum; only
+	// this says WHICH call missed the cache. A live test on 2026-09-30 cached
+	// 512 of 23.2K tokens over three calls to one host, and nothing recorded
+	// which of them missed or why.
+	logger *log.Logger
 }
 
 type usageTallyKey struct{}
@@ -55,26 +63,39 @@ func usageTallyFrom(ctx context.Context) *usageTally {
 	return t
 }
 
-func (t *usageTally) add(c chunkUsage) {
+// add counts one call's bill; provider is the host that served it, if known.
+func (t *usageTally) add(c chunkUsage, provider string) {
 	if t == nil {
 		return
 	}
+	cached, reasoning := 0, 0
+	if d := c.PromptTokensDetails; d != nil {
+		cached = d.CachedTokens
+	}
+	if d := c.CompletionTokensDetails; d != nil {
+		reasoning = d.ReasoningTokens
+	}
 	t.mu.Lock()
-	defer t.mu.Unlock()
 	t.u.Calls++
 	t.u.PromptTokens += c.PromptTokens
 	t.u.CompletionTokens += c.CompletionTokens
 	t.u.ContextTokens = c.PromptTokens // the last call's prompt is what the model last saw
-	if d := c.PromptTokensDetails; d != nil {
-		t.u.CachedTokens += d.CachedTokens
-	}
-	if d := c.CompletionTokensDetails; d != nil {
-		t.u.ReasoningTokens += d.ReasoningTokens
-	}
+	t.u.CachedTokens += cached
+	t.u.ReasoningTokens += reasoning
 	if c.Cost != nil {
 		t.u.CostUSD += *c.Cost
 	} else {
 		t.u.CostMissing = true
+	}
+	t.mu.Unlock()
+
+	if t.logger != nil {
+		cost := "not reported"
+		if c.Cost != nil {
+			cost = fmt.Sprintf("$%.6f", *c.Cost)
+		}
+		t.logger.Printf("model API usage: provider=%q prompt=%d cached=%d completion=%d reasoning=%d cost=%s",
+			provider, c.PromptTokens, cached, c.CompletionTokens, reasoning, cost)
 	}
 }
 
@@ -82,14 +103,18 @@ func (t *usageTally) add(c chunkUsage) {
 // stop, a stall or a broken stream. The provider may well have charged for it
 // and nothing says how much, so it makes the turn's cost a lower bound rather
 // than a guess.
-func (t *usageTally) addUnreported() {
+func (t *usageTally) addUnreported(provider string) {
 	if t == nil {
 		return
 	}
 	t.mu.Lock()
-	defer t.mu.Unlock()
 	t.u.Calls++
 	t.u.CostMissing = true
+	t.mu.Unlock()
+
+	if t.logger != nil {
+		t.logger.Printf("model API usage: provider=%q -- the call ended before its usage arrived (cost unknown)", provider)
+	}
 }
 
 // report is the turn's usage for its final message, or nil when no call

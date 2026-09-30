@@ -34,6 +34,13 @@ func agentSocketServer(t *testing.T, apiBase string, cfg MCPConfig) (sockAddr pr
 // logger, set before Serve starts so a test can read it without a race.
 func agentSocketServerLogged(t *testing.T, apiBase string, cfg MCPConfig, logger *log.Logger) (sockAddr protocol.Address, auditPath string, srv *Server) {
 	t.Helper()
+	return agentSocketServerWith(t, apiBase, cfg, logger, "")
+}
+
+// agentSocketServerWith also sets the system prompt, before Serve starts. The
+// other helpers send none, so their requests open with the user's message.
+func agentSocketServerWith(t *testing.T, apiBase string, cfg MCPConfig, logger *log.Logger, systemPrompt string) (sockAddr protocol.Address, auditPath string, srv *Server) {
+	t.Helper()
 
 	root, err := editapply.ResolveRealWorkspaceRoot(t.TempDir())
 	if err != nil {
@@ -46,6 +53,7 @@ func agentSocketServerLogged(t *testing.T, apiBase string, cfg MCPConfig, logger
 	auditPath = filepath.Join(t.TempDir(), "toolcalls.jsonl")
 	srv = &Server{
 		logger:        logger,
+		systemPrompt:  systemPrompt,
 		workspace:     root,
 		modelOverride: "test-model",
 		apiBase:       apiBase,

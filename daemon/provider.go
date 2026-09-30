@@ -720,13 +720,14 @@ func streamCompletion(ctx context.Context, apiBase, apiKey, model string, messag
 	// its cost unknown -- never estimated. A stream that ends normally with no
 	// usage (a local server that sends none) adds nothing, as before.
 	billed, ended := false, false
+	// servedBy is the host that answered, once the stream names one.
+	servedBy := ""
 	defer func() {
 		if !billed && !ended {
-			usageTallyFrom(ctx).addUnreported()
+			usageTallyFrom(ctx).addUnreported(servedBy)
 		}
 	}()
 
-	providerSeen := false
 	accumulator := newToolCallAccumulator()
 	// finishReason is the most recent non-empty SSE finish_reason seen. The
 	// provider reports it on the terminal content chunk (before the "[DONE]"
@@ -749,8 +750,8 @@ func streamCompletion(ctx context.Context, apiBase, apiKey, model string, messag
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 			continue // skip malformed / keep-alive lines
 		}
-		if !providerSeen && chunk.Provider != "" {
-			providerSeen = true
+		if servedBy == "" && chunk.Provider != "" {
+			servedBy = chunk.Provider
 			if onProvider != nil {
 				onProvider(chunk.Provider)
 			}
@@ -759,7 +760,7 @@ func streamCompletion(ctx context.Context, apiBase, apiKey, model string, messag
 		// chunk's reason: the usage chunk carries no choices at all.
 		if chunk.Usage != nil {
 			billed = true
-			usageTallyFrom(ctx).add(*chunk.Usage)
+			usageTallyFrom(ctx).add(*chunk.Usage, servedBy)
 		}
 		// Checked BEFORE the zero-choices guard below, not after: the proxy's
 		// budget-kill chunk carries an `error` and NO choices, so a check placed

@@ -713,6 +713,7 @@ func (s *Server) serveConn(conn net.Conn) {
 	// agent turn's whole loop -- adds its usage report to this tally, and the
 	// turn's final Done message carries the sum (usage.go; the TUI's /usage).
 	ctx, tally := withUsageTally(ctx)
+	tally.logger = s.logger // one line per call: host, tokens, cached, cost
 
 	var full strings.Builder
 	reasoningBytes := 0
