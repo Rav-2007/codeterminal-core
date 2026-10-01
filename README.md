@@ -787,9 +787,12 @@ first three.
 ```
 
 **Not yet measured on the real model.** The engine is tested offline against a
-scripted provider. The long-task eval (Round 4 in
-[`docs/AGENT_WORKFLOW_EVAL.md`](docs/AGENT_WORKFLOW_EVAL.md)) runs before any
-number here is claimed.
+scripted provider. Round 4 in
+[`docs/AGENT_WORKFLOW_EVAL.md`](docs/AGENT_WORKFLOW_EVAL.md) compares long tasks
+with the ordinary agent plus a user who types "continue", under rules written
+before it runs. No number is claimed here until then. If long tasks do not win,
+`/debug`, `/fix` and `/refactor` go back to one-turn hints, and long tasks stay
+behind `/task` and `/hunt`.
 
 ### Conversation memory
 

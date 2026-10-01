@@ -1,0 +1,1 @@
+Five tests fail across this shop's packages: tax, discount, fees, split and invoice. Find out why and fix it. Do not change the tests.

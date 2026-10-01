@@ -60,6 +60,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -139,6 +140,59 @@ var taskSpecs = []taskSpec{
 	{name: "refactor_keep_behaviour", goProject: true},
 }
 
+// longTaskSpecs are ROUND 4's tasks (docs/AGENT_WORKFLOW_EVAL.md): work that
+// does not fit in one turn -- three bugs in three packages, five failures with
+// one cause and a red herring, a rename and a signature change across nine
+// files, a feature threaded through four packages, and a regression hidden in
+// a tidying commit. Kept apart from taskSpecs so the earlier rounds stay
+// comparable; TASK_EVAL_SET=long selects them, with bug_hunt_medium -- the
+// hardest of the first fourteen -- as the bridge between the two sets.
+var longTaskSpecs = []taskSpec{
+	{name: "multi_bug_hunt", goProject: true},
+	{name: "shared_root_cause", goProject: true, unchanged: []string{"tax/tax_test.go",
+		"discount/discount_test.go", "fees/fees_test.go", "split/split_test.go", "invoice/invoice_test.go"}},
+	{name: "cross_package_refactor", goProject: true, extra: noneLeft("UserRecord", "LoadUser(")},
+	{name: "feature_many_edits", goProject: true},
+	{name: "regression_from_history", goProject: true, extra: func(dir string) error {
+		// "keeping the rest of that commit's tidying": a fix that reverts the
+		// whole commit restores the old names.
+		data, _ := os.ReadFile(filepath.Join(dir, "pricing", "shipping.go"))
+		if !strings.Contains(string(data), "FreeShippingFrom") {
+			return fmt.Errorf("pricing/shipping.go lost the tidying commit's names; the task was to keep them")
+		}
+		return nil
+	}},
+	specNamed("bug_hunt_medium"),
+}
+
+func specNamed(name string) taskSpec {
+	for _, s := range taskSpecs {
+		if s.name == name {
+			return s
+		}
+	}
+	panic("no task spec " + name)
+}
+
+// noneLeft fails while any Go file still says one of words: a refactor that
+// left a caller on the old name is not done, even when that caller is dead.
+func noneLeft(words ...string) func(dir string) error {
+	return func(dir string) error {
+		// Through noGoFileContains, which knows to skip .mochiii/'s backups --
+		// a walk of its own did not, and failed the reference solution.
+		var left []string
+		for _, w := range words {
+			if err := noGoFileContains(dir, w); err != nil {
+				left = append(left, err.Error())
+			}
+		}
+		if len(left) > 0 {
+			return fmt.Errorf("the refactor is unfinished: %s", strings.Join(left, "; "))
+		}
+		return nil
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Fixture handling and grading -- shared by both tests in this file.
 // ---------------------------------------------------------------------------
@@ -183,6 +237,21 @@ func freshTaskWorkspace(t *testing.T, task string) string {
 	}
 	if err := copyTree(filepath.Join(taskFixtureRoot, task, "workspace"), dir); err != nil {
 		t.Fatalf("copying %s: %v", task, err)
+	}
+	// A fixture whose task needs more than files -- regression_from_history
+	// needs its git history -- builds it with its own prepare.sh, run in the
+	// fresh workspace with FIXTURE naming the fixture's folder.
+	if prepare := filepath.Join(taskFixtureRoot, task, "prepare.sh"); fileExists(prepare) {
+		fixture, err := filepath.Abs(filepath.Join(taskFixtureRoot, task))
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command("bash", filepath.Join(fixture, "prepare.sh"))
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "FIXTURE="+fixture)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("preparing %s: %v\n%s", task, err, out)
+		}
 	}
 	real, err := editapply.ResolveRealWorkspaceRoot(dir)
 	if err != nil {
@@ -245,6 +314,26 @@ func gradeTask(spec taskSpec, dir string) string {
 func dirExists(p string) bool {
 	st, err := os.Stat(p)
 	return err == nil && st.IsDir()
+}
+
+// visibleTestsPass is what a user can see before deciding to type "continue":
+// whether the project's own tests pass. Never the hidden ones, which are the
+// grade.
+func visibleTestsPass(spec taskSpec, dir string) bool {
+	switch {
+	case spec.npmProject:
+		ok, _ := sandboxGo(dir, "npm test")
+		return ok
+	case spec.goProject:
+		ok, _ := sandboxGo(dir, "go test ./...")
+		return ok
+	}
+	return true
+}
+
+func fileExists(p string) bool {
+	st, err := os.Stat(p)
+	return err == nil && st.Mode().IsRegular()
 }
 
 func lastLines(s string, n int) string {
@@ -340,7 +429,13 @@ func noGoFileContains(dir, s string) error {
 // solution. Without the first half a task can be passed by doing nothing;
 // without the second the check may be impossible.
 func TestTaskFixturesAreValid(t *testing.T) {
-	for _, spec := range taskSpecs {
+	// Both sets, each fixture once (bug_hunt_medium is in both).
+	seen := map[string]bool{}
+	for _, spec := range append(append([]taskSpec(nil), taskSpecs...), longTaskSpecs...) {
+		if seen[spec.name] {
+			continue
+		}
+		seen[spec.name] = true
 		t.Run(spec.name, func(t *testing.T) {
 			if _, err := os.Stat(filepath.Join(taskFixtureRoot, spec.name, "task.txt")); err != nil {
 				t.Fatalf("task.txt: %v", err)
@@ -403,7 +498,11 @@ func (a *approveAll) Ask(context.Context, protocol.ToolApprovalRequest) approval
 }
 
 type taskTrial struct {
-	Task       string  `json:"task"`
+	Task string `json:"task"`
+	// Turns is how many turns the trial took (TASK_EVAL_CONTINUES); one
+	// otherwise. TaskState is how a long task ended (TASK_EVAL_LONG).
+	Turns      int     `json:"turns,omitempty"`
+	TaskState  string  `json:"task_state,omitempty"`
 	Pass       bool    `json:"pass"`
 	Why        string  `json:"why,omitempty"`
 	Calls      int     `json:"model_calls"`
@@ -561,16 +660,49 @@ func TestTaskSuccess(t *testing.T) {
 		t.Fatal("TASK_EVAL_MODE=build needs TASK_EVAL_SPEC=1: a build builds a spec")
 	}
 
+	// ROUND 4's two arms (docs/AGENT_WORKFLOW_EVAL.md).
+	//
+	// TASK_EVAL_LONG=<mode> runs every trial as a LONG TASK (longtask.go) in
+	// that mode -- task, debug, fix, refactor or hunt -- on the configured task
+	// budget, with TASK_EVAL_TASK_CALLS / _MINUTES / _USD to change it.
+	longMode := strings.TrimSpace(os.Getenv("TASK_EVAL_LONG"))
+	if longMode != "" && !isLongTaskMode(longMode) {
+		t.Fatalf("TASK_EVAL_LONG=%q: want task, debug, fix, refactor or hunt", longMode)
+	}
+	if longMode != "" && (len(phases) > 0 || withSpec) {
+		t.Fatal("TASK_EVAL_LONG runs on its own: no pipeline, no spec")
+	}
+	taskBudgetReq := &protocol.TaskBudget{Calls: envInt(t, "TASK_EVAL_TASK_CALLS", 0),
+		Minutes: envInt(t, "TASK_EVAL_TASK_MINUTES", 0)}
+	if v := strings.TrimSpace(os.Getenv("TASK_EVAL_TASK_USD")); v != "" {
+		if taskBudgetReq.USD, err = strconv.ParseFloat(v, 64); err != nil || taskBudgetReq.USD <= 0 {
+			t.Fatalf("TASK_EVAL_TASK_USD=%q is not a positive number of dollars", v)
+		}
+	}
+	// TASK_EVAL_CONTINUES=N is the baseline a long task must beat: today's
+	// single agent with a PATIENT USER, who types "continue" -- up to N times --
+	// while a turn was cut short by a limit or the project's OWN tests fail.
+	// Only what a user can see decides it; the hidden tests never do. Each
+	// turn's edits are accepted before the next, as that user would.
+	continues := envInt(t, "TASK_EVAL_CONTINUES", 0)
+	if continues > 0 && (len(phases) > 0 || longMode != "") {
+		t.Fatal("TASK_EVAL_CONTINUES is for the single agent")
+	}
+	specs := taskSpecs
+	if os.Getenv("TASK_EVAL_SET") == "long" {
+		specs = longTaskSpecs
+	}
+
 	rec := newCostRecorder(t, apiBase)
 	logger := log.New(io.Discard, "", 0)
-	t.Logf("model=%s  reasoning=%q  sort=%q  budget=%+v  trials=%d", model, routing.reasoningEffort,
-		routing.Sort, mcpCfg.Budget, trials)
+	t.Logf("model=%s  reasoning=%q  sort=%q  budget=%+v  trials=%d  long=%q  continues=%d", model,
+		routing.reasoningEffort, routing.Sort, mcpCfg.Budget, trials, longMode, continues)
 	keyBefore, keyKnown := keyUsageUSD(apiBase, apiKey)
 
 	var results []taskTrial
 	totalTokens := 0
 	spentUSD := 0.0
-	for _, spec := range taskSpecs {
+	for _, spec := range specs {
 		if len(only) > 0 && !only[spec.name] {
 			continue
 		}
@@ -621,25 +753,77 @@ func TestTaskSuccess(t *testing.T) {
 					userPrompt = "Build what the spec specs/task.md describes." // what /spec build sends
 				}
 			}
-			sink, messages := srv.newTurnSink(mode, active, buildChatMessages(system, nil, userPrompt))
-			registry, _ := srv.buildRegistry(context.Background(), logger, sink, mode)
+			trialMode := mode
+			var run *taskRun
+			if longMode != "" {
+				trialMode = longMode
+				run = &taskRun{budget: resolveTaskBudget(mcpCfg.Budget.Task, taskBudgetReq)}
+				system += "\n\n" + longTaskDirective(longMode, run.budget.segmentCalls) // as server.go adds it
+			}
 			appr := &approveAll{}
 
 			rec.reset()
 			start := time.Now()
-			var res agentResult
-			var err error
-			if len(phases) == 0 {
-				res, err = srv.runAgentLoop(context.Background(), start, registry, model, mode,
-					messages, routing, appr,
-					func(string) error { return nil }, nil, nil, nil, nil, nil, nil)
-			} else {
-				res, err = srv.runOrchestrated(context.Background(), start, registry, model, mode,
-					messages, routing, appr,
-					func(string) error { return nil }, nil, nil, nil, nil, phases)
+			var (
+				res      agentResult
+				err      error
+				sigs     []string
+				wc       *protocol.WorkingCopyInfo
+				proposed int
+				refused  int
+				turns    int
+			)
+			// One turn, or -- with TASK_EVAL_CONTINUES -- as many as the patient
+			// user would ask for. Each turn's edits are accepted (applied) before
+			// the next, and the next carries the conversation as text, as the
+			// product does (history.go).
+			history, ask := []chatMessage(nil), userPrompt
+			for {
+				turns++
+				sink, messages := srv.newTurnSink(trialMode, active, buildChatMessages(system, history, ask))
+				registry, _ := srv.buildRegistry(context.Background(), logger, sink, trialMode)
+				// A tally, as serveConn gives every turn: a long task's dollar
+				// budget reads it.
+				ctx, _ := withUsageTally(context.Background())
+				switch {
+				case run != nil:
+					run.ledger = newTaskLedger(dir, longMode, userPrompt, start)
+					run.start, run.deadline = start, start.Add(run.budget.duration())
+					sink.task = run
+					res, err = srv.runLongTask(ctx, start, registry, model, messages, routing, appr, sink,
+						func(string) error { return nil }, nil, nil, nil, nil, func(protocol.TaskStatus) {})
+				case len(phases) == 0:
+					res, err = srv.runAgentLoop(ctx, start, registry, model, trialMode,
+						messages, routing, appr,
+						func(string) error { return nil }, nil, nil, nil, nil, nil, nil)
+				default:
+					res, err = srv.runOrchestrated(ctx, start, registry, model, trialMode,
+						messages, routing, appr,
+						func(string) error { return nil }, nil, nil, nil, nil, phases)
+				}
+				_ = registry.Close()
+				if err != nil {
+					sink.discard()
+					break
+				}
+				textBlocks, _ := srv.parseAndLogEditBlocks(res.FinalText)
+				textBlocks = sink.absorbText(textBlocks) // as runAgentTurn does
+				filed, turnWC, _ := sink.finish()
+				blocks := append(filed, textBlocks...)
+				if turnWC != nil {
+					wc = turnWC
+				}
+				sigs = append(sigs, res.ToolSignatures...)
+				proposed += len(blocks)
+				refused += applyProposals(dir, blocks)
+				if turns > continues || (res.Incomplete == nil && visibleTestsPass(spec, dir)) {
+					break
+				}
+				history = append(history, chatMessage{Role: "user", Content: ask},
+					chatMessage{Role: "assistant", Content: res.FinalText})
+				ask = "continue"
 			}
 			elapsed := time.Since(start)
-			_ = registry.Close()
 			got := rec.detail()
 			totalTokens += got.prompt + got.completion
 			spentUSD += got.costUSD
@@ -647,31 +831,32 @@ func TestTaskSuccess(t *testing.T) {
 			tr := taskTrial{Task: spec.name, Calls: got.calls, Tokens: got.prompt + got.completion,
 				Seconds: elapsed.Seconds(), Asked: appr.asked, CostUSD: got.costUSD,
 				CachedTokens: got.cached, ReasoningTokens: got.reasoning, Providers: got.providers,
-				PhaseCalls: got.perCall}
+				PhaseCalls: got.perCall, Turns: turns}
+			if run != nil {
+				tr.TaskState = run.ledger.State
+			}
 			if err != nil {
-				sink.discard()
 				tr.Why = "TRANSPORT: " + err.Error()
 				results = append(results, tr)
 				continue
 			}
-			textBlocks, _ := srv.parseAndLogEditBlocks(res.FinalText)
-			textBlocks = sink.absorbText(textBlocks) // as runAgentTurn does
-			filed, wc, _ := sink.finish()
-			blocks := append(filed, textBlocks...)
 			if wc != nil {
 				tr.Checked, tr.CheckPassed = wc.Checked, wc.Passed
 			}
-			tr.Tools = toolNames(res.ToolSignatures)
-			tr.ToolCalls = len(res.ToolSignatures)
-			tr.Proposed = len(blocks)
+			tr.Tools = toolNames(sigs)
+			tr.ToolCalls = len(sigs)
+			tr.Proposed = proposed
 			tr.BudgetStop = res.Incomplete != nil
-			tr.Refused = applyProposals(dir, blocks)
+			tr.Refused = refused
 			tr.Why = gradeTask(spec, dir)
 			tr.Pass = tr.Why == ""
 			results = append(results, tr)
 			t.Logf("%-24s trial %d  %-4s  calls=%2d tools=%2d edits=%d/%d refused  %5.0fs  $%.4f  %s",
 				spec.name, trial, passWord(tr.Pass), tr.Calls, tr.ToolCalls, tr.Refused, tr.Proposed,
 				tr.Seconds, tr.CostUSD, tr.Why)
+			if tr.Turns > 1 || tr.TaskState != "" {
+				t.Logf("    turns=%d  task=%s", tr.Turns, tr.TaskState)
+			}
 			t.Logf("    tools: %s", strings.Join(tr.Tools, " "))
 			if o := phaseOpenings(tr.PhaseCalls); o != "" {
 				t.Logf("    cache: %s", o)
@@ -679,7 +864,7 @@ func TestTaskSuccess(t *testing.T) {
 			if !tr.Pass {
 				// The arguments too, on a failure: "read the same file five times"
 				// and "guessed five paths that do not exist" look identical as names.
-				for _, sig := range res.ToolSignatures {
+				for _, sig := range sigs { // every turn's, with TASK_EVAL_CONTINUES
 					t.Logf("      %s", truncateForLog(strings.TrimPrefix(sig, "builtin__")))
 				}
 				// And how it ended: a turn that stops with budget left and no edit

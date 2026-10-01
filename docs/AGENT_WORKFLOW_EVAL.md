@@ -7,8 +7,8 @@ grounded planner). One number, graded without a model judge:
 > proposed (as a user pressing `y` on each), the task's *hidden* tests pass.
 
 Harness: [`daemon/tasksuccess_eval_test.go`](../daemon/tasksuccess_eval_test.go)
-(`-tags eval`). Eight small Go projects in
-[`daemon/testdata/tasks/`](../daemon/testdata/tasks/), each with a prompt, hidden tests
+(`-tags eval`). Small projects in [`daemon/testdata/tasks/`](../daemon/testdata/tasks/):
+14 in the default set, and the 6 of Round 4's long set. Each has a prompt, hidden tests
 the model never sees, and a reference solution. `TestTaskFixturesAreValid` (no model, no
 key) proves every check **fails** on the untouched project and **passes** on the solution
 applied through the real edit path — so no task can be passed by doing nothing, and no
@@ -27,6 +27,8 @@ MOCHIII_API_BASE=https://openrouter.ai/api/v1 MOCHIII_API_KEY=... \
 
 Knobs: `TASK_EVAL_TRIALS`, `TASK_EVAL_ONLY`, `TASK_EVAL_TIER`, `TASK_EVAL_MAX_TOKENS`,
 `TASK_EVAL_MAX_ITERATIONS`, `TASK_EVAL_NO_WORKING_COPY`, `TASK_EVAL_LABEL`, `TASK_EVAL_OUT`.
+Round 4 adds `TASK_EVAL_SET=long`, `TASK_EVAL_LONG=<mode>` (with
+`TASK_EVAL_TASK_CALLS`, `_MINUTES` and `_USD`) and `TASK_EVAL_CONTINUES`.
 
 ---
 
@@ -669,3 +671,136 @@ other shard, because they ran at the same time.
 - **A candidate for a later round.** Give a request that reaches the 5-minute limit, after
   long reasoning and no answer, the one retry a stall gets. It is a new behaviour, so it
   needs its own measurement.
+
+---
+
+## Round 4 — long tasks against a patient user (rules written 2026-10-01, before the run)
+
+**What is measured.** Long tasks (`/debug`, `/fix`, `/refactor` and `/task`, built in
+`9547bcd`–`194f265`) are compared with today's single agent. The question is whether they
+get more multi-step jobs done than the single agent with a patient user typing "continue",
+and at what price.
+
+**The tasks** (`TASK_EVAL_SET=long`): five new fixtures plus `bug_hunt_medium`, the hardest
+of Round 2.
+
+| task | what it takes | reference fix | mode in arm B |
+|---|---|---|---|
+| `multi_bug_hunt` | three unrelated bugs in three packages; the existing tests pass, so they do not show them | 3 files | `debug` |
+| `regression_from_history` | a boundary the last commit broke, in a real two-commit git history (`prepare.sh` builds it) | 1 line | `debug` |
+| `shared_root_cause` | five failing tests in five packages, one cause in a sixth, and a comment that invites a wrong fix | 1 file | `fix` |
+| `bug_hunt_medium` | a coupon honoured in one checkout path and not another | 1 file | `fix` |
+| `cross_package_refactor` | a type renamed, and a function replaced by one that takes a context, across six packages | 9 files, 19 hunks | `refactor` |
+| `feature_many_edits` | a currency threaded through four packages, with a new error and changed signatures | 7 files, 18 hunks | `task` |
+
+- **Every fixture passes the validity contract** of `TestTaskFixturesAreValid` (no model,
+  no key):
+  - the untouched project fails;
+  - the hidden tests fail on their own;
+  - the reference solution, applied through the real edit path, passes.
+- **Each arm-B mode is the one a user would pick from the task's words,** chosen before the
+  run:
+  - `debug` where the cause has to be found from symptoms or history;
+  - `fix` where the report hands over a failing case;
+  - `refactor` and `task` for the refactor and the feature.
+- **`hunt` is not measured.** It produces findings, and no fixture grades findings.
+
+**The arms.**
+
+- **Common setup.** Both arms run on `deepseek_v4_pro` with the shipped
+  `models.agent.json`, and `search_code` off as in every round (a fixture has no index).
+  2 trials per task, so 12 per arm.
+- **A: the single agent and a patient user** (`TASK_EVAL_CONTINUES=5`).
+  - Each turn is an ordinary turn. The eval accepts its edits, then types "continue", up to
+    5 times, while the turn was cut short by a limit or the project's own tests fail.
+  - It never looks at the hidden tests. Each new turn carries the conversation as text, as
+    the product does.
+- **B: a long task** (`TASK_EVAL_LONG=<mode>`). One request on the shipped task budget:
+  - 30 minutes, $0.50 and 150 model calls;
+  - segments of 20 calls;
+  - commands time out at 300 s instead of 30;
+  - the finish gate needs a passing test run after the last edit.
+- **Both arms are graded the same way.** Every edit a trial ends with is applied, as a user
+  pressing `y`, then the hidden tests run.
+- **What differs is the product.** B gets the long-task menu (`grep`, `git_history`,
+  `checkpoint`, `investigate`, `rename_symbol`, ranged reads), A the ordinary one. That
+  difference is what is being compared.
+
+**Rules.**
+
+- **B is recommended** only if it passes **strictly more** trials than A, at **no more than
+  1.5×** A's billed $ per solved task. A lead of one trial meets the rule, and is reported
+  as within noise.
+- **If B is recommended,** the README says so with the numbers, and `/debug`, `/fix` and
+  `/refactor` stay long tasks.
+- **If B is not recommended,** `/debug`, `/fix` and `/refactor` go back to being one-line
+  hints on an ordinary turn, as before `45db0dd`.
+  - Long tasks stay available behind `/task` and `/hunt`, described as not shown to beat
+    continuing by hand.
+  - Nothing else is removed.
+- **Defects, whatever the totals.** Each of these is fixed before any recommendation. The
+  round's numbers stand as measured.
+  - A B trial billed more than its $0.50 budget plus one call: the budget check failed.
+  - A B trial that ended `stuck` or `blocked` while its ledger shows the work going right:
+    the stuck rule or the finish gate stopped a trial it should not have.
+- **Reported, not ruled:**
+  - the pass count per task;
+  - median calls, seconds and $;
+  - the turns A used;
+  - B's segments and how its trials ended (`finished`, `budget`, `stuck`, `blocked`);
+  - the B trials that ended `finished` with the hidden tests failing. This shows what the
+    gate's passing run is worth.
+- **VOID:** an arm that stops on its $ cap before all 12 trials, or more than 10% transport
+  errors (the harness's own rule). A void round decides nothing.
+
+**Spend.**
+
+- **Expected:** about $4–8.
+- **Caps:**
+  - `TASK_EVAL_MAX_USD` 2.50 for each of A's two shards.
+  - For B, $0.50 per trial in each shard. Only a broken budget check can reach that.
+  - That is $11 at most, plus one trial's overshoot per shard. The cap is checked before
+    each trial starts.
+- **Before the run,** check the key's `limit_remaining`.
+
+**How to run.** Six shards run in parallel, with `MOCHIII_API_BASE` and `MOCHIII_API_KEY`
+set as above. Keep the machine awake: a closed lid suspends the shards.
+
+```
+export PATH=$HOME/.local/go/bin:$PATH
+run() { env TASK_EVAL_SET=long TASK_EVAL_TRIALS=2 TASK_EVAL_OUT=$PWD/docs/agent_workflow_eval.jsonl "$@" \
+  go test -tags eval -count=1 -run 'TestTaskSuccess$' -v -timeout 480m ./daemon; }
+# A
+run TASK_EVAL_CONTINUES=5 TASK_EVAL_MAX_USD=2.50 TASK_EVAL_LABEL=r4-A1 \
+  TASK_EVAL_ONLY=multi_bug_hunt,regression_from_history,shared_root_cause
+run TASK_EVAL_CONTINUES=5 TASK_EVAL_MAX_USD=2.50 TASK_EVAL_LABEL=r4-A2 \
+  TASK_EVAL_ONLY=bug_hunt_medium,cross_package_refactor,feature_many_edits
+# B
+run TASK_EVAL_LONG=debug    TASK_EVAL_MAX_USD=2.00 TASK_EVAL_LABEL=r4-B-debug \
+  TASK_EVAL_ONLY=multi_bug_hunt,regression_from_history
+run TASK_EVAL_LONG=fix      TASK_EVAL_MAX_USD=2.00 TASK_EVAL_LABEL=r4-B-fix \
+  TASK_EVAL_ONLY=shared_root_cause,bug_hunt_medium
+run TASK_EVAL_LONG=refactor TASK_EVAL_MAX_USD=1.00 TASK_EVAL_LABEL=r4-B-refactor \
+  TASK_EVAL_ONLY=cross_package_refactor
+run TASK_EVAL_LONG=task     TASK_EVAL_MAX_USD=1.00 TASK_EVAL_LABEL=r4-B-task \
+  TASK_EVAL_ONLY=feature_many_edits
+```
+
+**Dry run (no key, no spend).** Both arms ran on `regression_from_history` against a
+scripted loopback model.
+
+- **B** read the file, edited it, ran a real `go test ./...` in the sandbox, and called
+  `finish_task`, which the gate accepted; then it wrote the summary. That is 5 calls, it
+  ended `finished`, and it passed.
+- **A** had its turn cut to 2 calls. The eval typed "continue" once, and turn 2 fixed the
+  bug: 2 turns, and it passed.
+- **The dry run caught one defect before any spend.** The refactor check (no old names
+  left) counted the backups under `.mochiii/` and failed the reference solution. It now uses
+  `noGoFileContains`'s walk, which skips them; the M0 baseline had learned this once
+  already.
+
+This proves the harness works, not that a model can do the tasks.
+
+### Status: not yet run (2026-10-01)
+
+The key has $0.74 left of its $8 limit, and the run needs about $4–8.
