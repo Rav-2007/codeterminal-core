@@ -56,9 +56,12 @@ type taskRun struct {
 	// retries and the checkpoint call at each segment's end.
 	usage *usageTally
 	// doneCalls is the model calls of the segments already over, segCalls the
-	// running segment's. COUNTED here as well as billed by the tally: a
-	// provider that sends no usage must not make the call budget unlimited.
-	doneCalls, segCalls int
+	// running segment's, nested an investigation's inside it. COUNTED here as
+	// well as billed by the tally: a provider that sends no usage must not make
+	// the call budget unlimited.
+	doneCalls, segCalls, nested int
+	// investigate runs one investigation (investigate.go); set by runLongTask.
+	investigate func(ctx context.Context, question string) (string, error)
 	// budgetStop is the run's budget verdict once there is one; it sticks.
 	budgetStop *protocol.IncompleteInfo
 }
@@ -66,7 +69,7 @@ type taskRun struct {
 // spent is what this run has used so far.
 func (r *taskRun) spent() taskSpend {
 	billed, usd := r.usage.spent()
-	return taskSpend{Calls: max(billed, r.doneCalls+r.segCalls), USD: usd, Seconds: int(time.Since(r.start).Seconds())}
+	return taskSpend{Calls: max(billed, r.doneCalls+r.segCalls+r.nested), USD: usd, Seconds: int(time.Since(r.start).Seconds())}
 }
 
 // check is the run's budget, asked before every step of every segment with
@@ -267,6 +270,8 @@ func (s *Server) runLongTask(
 	// ONE approval map for the whole task, shared by reference with every
 	// segment: "allow for this turn" was said about the task.
 	grants := map[string]bool{}
+	run.investigate = s.newInvestigator(run, turnStart, registry, model, system, routing, appr, grants,
+		onActivity, onProvider)
 
 	closing := taskBeginNote
 	if run.resumed {

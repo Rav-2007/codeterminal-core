@@ -187,6 +187,27 @@ var lspToolchainEnv = map[string][]string{
 // path containing a space or a '#' produced something a server was entitled to
 // misparse. url.URL does the escaping; the leading-slash step is what turns
 // C:/src into the /C:/src that a file URI's path component requires.
+// lspInitializeParams is the bridge's half of the handshake.
+//
+// HIERARCHICAL SYMBOLS, DECLARED. Without it a server may answer
+// documentSymbol in the flat SymbolInformation shape -- gopls does -- whose
+// range sits under "location" while every caller here read "range". MEASURED
+// against real gopls: propose_ast_edit sliced an empty range, built an empty
+// search, and was refused on every call; its tests passed against a fake that
+// answered in the other shape. parseDocumentSymbols still reads both, for a
+// server that ignores this.
+func lspInitializeParams(root string) map[string]any {
+	return map[string]any{
+		"processId": nil,
+		"rootUri":   fileURI(root),
+		"capabilities": map[string]any{
+			"textDocument": map[string]any{
+				"documentSymbol": map[string]any{"hierarchicalDocumentSymbolSupport": true},
+			},
+		},
+	}
+}
+
 func fileURI(path string) string {
 	p := filepath.ToSlash(path)
 	if !strings.HasPrefix(p, "/") {
@@ -551,11 +572,7 @@ func (b *LSPBridge) GetServer(ctx context.Context, lang editapply.Language) (*LS
 	}
 	go srv.readLoop()
 
-	initReq := map[string]any{
-		"processId":    nil,
-		"rootUri":      fileURI(b.workspace),
-		"capabilities": map[string]any{},
-	}
+	initReq := lspInitializeParams(b.workspace)
 	// Bounded, and bounded tighter than a normal call, because this runs with
 	// b.mu held: an unbounded handshake here is a bridge-wide deadlock, not
 	// just a slow request.

@@ -115,6 +115,17 @@ const taskMethod = "THE USER WANTS THIS TASK DONE END TO END. Plan it with updat
 	"in order, and check each one with sandbox_exec before moving on. Finish when the plan is done and " +
 	"the checks pass."
 
+// longTaskOmits are built-ins a long task's menu leaves out. MENU ECONOMY, NOT
+// A SECURITY FILTER -- that is modeWithholds, and it is keyed on capability.
+// A long task's menu is capped (defaultTaskMaxAdvertisedTools) and its own
+// tools need the room; these are the two its work reaches for least, each with
+// a better tool on the same menu.
+var longTaskOmits = map[string]string{
+	"query_compiler_definition": "grep finds a definition by name, and read_file shows it",
+	"propose_ast_edit": "it refuses a file the task already changed -- most of them, in a long task -- " +
+		"and propose_edit does the same work",
+}
+
 // taskBudget is one run's resolved limits.
 type taskBudget struct {
 	minutes      int

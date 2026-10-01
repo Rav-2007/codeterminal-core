@@ -526,7 +526,8 @@ func (s *Server) builtinTools(proposals *proposalSink, mode string) []mcp.Builti
 	// menu -- the measured default -- is unchanged.
 	if isLongTaskMode(mode) {
 		tools = append(tools, s.recordFindingTool(proposals), s.finishTaskTool(proposals),
-			s.grepTool(proposals), s.gitHistoryTool())
+			s.grepTool(proposals), s.gitHistoryTool(), s.checkpointTool(proposals),
+			s.renameSymbolTool(proposals), s.investigateTool(proposals))
 	}
 
 	// propose_edit in every mode that edits: not plan, not check. In spec mode
@@ -624,6 +625,10 @@ func (s *Server) builtinTools(proposals *proposalSink, mode string) []mcp.Builti
 			// A spec is written with propose_edit alone; a symbol-level edit
 			// has no business in a Markdown file.
 			if isSpecMode(mode) && b.Tool.Name == "propose_ast_edit" {
+				continue
+			}
+			// A long task's menu is chosen, not just capped (longTaskOmits).
+			if _, omitted := longTaskOmits[b.Tool.Name]; omitted && isLongTaskMode(mode) {
 				continue
 			}
 			kept = append(kept, b)

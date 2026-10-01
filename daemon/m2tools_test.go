@@ -158,6 +158,15 @@ func TestALongTasksRegistryAdvertisesWhatItCanCall(t *testing.T) {
 			t.Errorf("a long task's menu offers %s, which it withholds: %v", absent, names)
 		}
 	}
+	// And leaves out what its menu economy chose to (longTaskOmits).
+	for name := range longTaskOmits {
+		if strings.Contains(got, " "+name+" ") {
+			t.Errorf("a long task's menu offers %s, which it omits: %v", name, names)
+		}
+	}
+	if len(longTaskOmits) != 2 {
+		t.Errorf("longTaskOmits has %d entries; this test was written for the two it names", len(longTaskOmits))
+	}
 	if dropped := registry.Dropped(); len(dropped) > 0 {
 		t.Errorf("the cap cut %v from a long task's menu", dropped)
 	}

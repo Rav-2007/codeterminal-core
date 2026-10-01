@@ -761,7 +761,18 @@ first three.
     repository's own config. It never compares the working tree, and it withholds
     files `read_file` would refuse;
   - `read_file` line ranges, for large files;
-  - commands that run up to 5 minutes (`exec_seconds`).
+  - commands that run up to 5 minutes (`exec_seconds`);
+  - `checkpoint`: save the working copy's state under a name, and restore it to
+    undo a hypothesis or a step that went wrong;
+  - `rename_symbol`: a rename through the language server (gopls, …), across
+    every file, all or nothing. It works from the project's own text, so rename
+    before editing those files;
+  - `investigate`: a short read-only sub-search that hands back only its answer
+    (15 lines, with `file:line`), not everything it read.
+
+  To make room under the menu cap of 16, long tasks leave out
+  `query_compiler_definition` and `propose_ast_edit`; `grep` and `propose_edit`
+  cover their work.
 - **Long command output keeps its failures.** Output past the result cap used to
   be cut to its first bytes. It is now digested in every mode: its start, every
   line that reports a failure, and its end.

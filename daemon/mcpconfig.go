@@ -921,6 +921,13 @@ var builtinToolClasses = map[string]builtinClass{
 	"grep":           classConfined,
 	// It starts git against config the repository supplies (githistory.go).
 	"git_history": classLaunches,
+	// It changes the working copy, never the project (checkpoint.go).
+	"checkpoint": classConfined,
+	// It starts the language server, as propose_ast_edit does (rename.go).
+	"rename_symbol": classLaunches,
+	// It runs a read-only sub-search; each tool call inside it is asked about
+	// on its own (investigate.go).
+	"investigate": classConfined,
 }
 
 // builtinToolClass classifies a configured built-in name. An unknown name is

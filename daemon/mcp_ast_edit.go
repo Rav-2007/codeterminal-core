@@ -22,9 +22,54 @@ type lspRange struct {
 }
 
 type documentSymbol struct {
-	Name     string           `json:"name"`
-	Range    lspRange         `json:"range"`
-	Children []documentSymbol `json:"children"`
+	Name  string   `json:"name"`
+	Range lspRange `json:"range"`
+	// SelectionRange is the symbol's NAME, where Range is its whole
+	// declaration; rename_symbol needs the name (rename.go).
+	SelectionRange lspRange         `json:"selectionRange"`
+	Children       []documentSymbol `json:"children"`
+}
+
+// parseDocumentSymbols reads a documentSymbol answer in either shape the
+// protocol allows: DocumentSymbol[] (hierarchical, with the name's own
+// selectionRange) or the flat SymbolInformation[], whose range sits under
+// "location" and covers the whole declaration. A server may send the flat one
+// even when told the client takes the other.
+func parseDocumentSymbols(raw []byte) ([]documentSymbol, error) {
+	var items []struct {
+		Name           string    `json:"name"`
+		Range          *lspRange `json:"range"`
+		SelectionRange *lspRange `json:"selectionRange"`
+		Location       *struct {
+			Range lspRange `json:"range"`
+		} `json:"location"`
+		Children json.RawMessage `json:"children"`
+	}
+	if err := json.Unmarshal(raw, &items); err != nil {
+		return nil, err
+	}
+	out := make([]documentSymbol, 0, len(items))
+	for _, it := range items {
+		sym := documentSymbol{Name: it.Name}
+		switch {
+		case it.Range != nil:
+			sym.Range = *it.Range
+			if it.SelectionRange != nil {
+				sym.SelectionRange = *it.SelectionRange
+			}
+		case it.Location != nil:
+			sym.Range = it.Location.Range
+		}
+		if len(it.Children) > 0 && string(it.Children) != "null" {
+			children, err := parseDocumentSymbols(it.Children)
+			if err != nil {
+				return nil, err
+			}
+			sym.Children = children
+		}
+		out = append(out, sym)
+	}
+	return out, nil
 }
 
 func findSymbol(symbols []documentSymbol, name string) *documentSymbol {
@@ -136,8 +181,8 @@ func (s *Server) builtinProposeASTEdit(ctx context.Context, raw json.RawMessage,
 		return toolError("LSP documentSymbol call failed: %v", err)
 	}
 
-	var symbols []documentSymbol
-	if err := json.Unmarshal(res, &symbols); err != nil {
+	symbols, err := parseDocumentSymbols(res)
+	if err != nil {
 		return toolError("failed to parse documentSymbol response: %v", err)
 	}
 

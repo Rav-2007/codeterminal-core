@@ -75,6 +75,8 @@ type stagedWorkspace struct {
 	// applied is every edit made in the copy, so an answer that restates one
 	// word for word is recognised as the same edit (see absorbText).
 	applied []editapply.EditBlock
+	// checkpoints are the long task's named snapshots (checkpoint.go).
+	checkpoints []*stageCheckpoint
 }
 
 // sameEdit reports whether two edit blocks are the same edit to the same

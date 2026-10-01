@@ -100,7 +100,10 @@
         "record_finding": "allow",
         "finish_task": "allow",
         "grep": "allow",
-        "git_history": "ask"
+        "git_history": "ask",
+        "checkpoint": "allow",
+        "rename_symbol": "ask",
+        "investigate": "allow"
       }
     },
     "budget": {
