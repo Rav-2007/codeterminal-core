@@ -790,8 +790,9 @@ run TASK_EVAL_LONG=task     TASK_EVAL_MAX_USD=1.00 TASK_EVAL_LABEL=r4-B-task \
 scripted loopback model.
 
 - **B** read the file, edited it, ran a real `go test ./...` in the sandbox, and called
-  `finish_task`, which the gate accepted; then it wrote the summary. That is 5 calls, it
-  ended `finished`, and it passed.
+  `finish_task`, which the gate accepted; its summary is the reply. That is 4 calls, it
+  ended `finished`, and it passed. It took 5 calls until the call that asked for the
+  summary a second time was removed (2026-10-01, before any paid run).
 - **A** had its turn cut to 2 calls. The eval typed "continue" once, and turn 2 fixed the
   bug: 2 turns, and it passed.
 - **The dry run caught one defect before any spend.** The refactor check (no old names

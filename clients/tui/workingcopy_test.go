@@ -32,6 +32,15 @@ func TestTheWorkingCopyReportSaysWhatWasChecked(t *testing.T) {
 	if workingCopyText(nil) != "" {
 		t.Error("no working copy should say nothing")
 	}
+	// A STALE CHECK ran before the last change: never a tick for what is
+	// offered. Neuter check: drop the Passed && Stale case.
+	stale := workingCopyText(&protocol.WorkingCopyInfo{Checked: "go test ./...", Passed: true, Stale: true})
+	if strings.Contains(stale, "✓") || !strings.Contains(stale, "the version offered was not run") {
+		t.Errorf("a stale passing check reads %q; want no tick, and that the version offered was not run", stale)
+	}
+	if failed := workingCopyText(&protocol.WorkingCopyInfo{Checked: "go test ./...", Stale: true}); !strings.Contains(failed, "FAILED, and the changes went on") {
+		t.Errorf("a stale failing check reads %q", failed)
+	}
 	// Model-chosen text is sanitized: an escape sequence cannot repaint the line.
 	if got := workingCopyText(&protocol.WorkingCopyInfo{Checked: "go test \x1b[2J./..."}); strings.Contains(got, "\x1b") {
 		t.Errorf("escape sequence reached the screen: %q", got)

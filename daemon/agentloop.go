@@ -296,8 +296,14 @@ type segmentBudget struct {
 	// call of its limit.
 	check func(segmentCalls int) *protocol.IncompleteInfo
 	// wrapUp is what the call at the segment's limit asks for: a handoff for the
-	// next segment, or a report when the run itself is out of budget.
+	// next segment, or a report when the run itself is out of budget. "" asks
+	// for nothing, and no call is made: a finished task already said it all
+	// in finish_task.
 	wrapUp func(stop *protocol.IncompleteInfo) string
+	// closed reports that the task has ended (its finish was accepted). From
+	// then on no tool runs -- not even one later in the same reply's batch,
+	// which would change the work after the gate passed it.
+	closed func() bool
 	// waited gives the run back time spent at an approval prompt.
 	waited func(time.Duration)
 }
@@ -322,6 +328,8 @@ type budget struct {
 	taskCheck func(segmentCalls int) *protocol.IncompleteInfo
 	// segment marks a long task's segment, whose call ceiling is its own.
 	segment bool
+	// taskClosed is segmentBudget.closed: once true, no further tool runs.
+	taskClosed func() bool
 	// onWaited gives a long task's run back the time a human spent at an
 	// approval prompt, as the turn's own deadline already is.
 	onWaited func(time.Duration)
@@ -421,7 +429,7 @@ func (s *Server) runAgentLoop(
 	if seg := ledger.segment; seg != nil {
 		bud.maxIterations, bud.maxTurnIterations = seg.calls, seg.calls
 		bud.deadline, bud.deadlineIsPhaseShare = seg.deadline, false
-		bud.taskCheck, bud.segment, bud.onWaited = seg.check, true, seg.waited
+		bud.taskCheck, bud.segment, bud.onWaited, bud.taskClosed = seg.check, true, seg.waited, seg.closed
 	}
 	// A phase reservation, like a role ceiling, may only TIGHTEN. Written as a
 	// minimum rather than an assignment so that neither a caller bug nor a
@@ -546,7 +554,9 @@ func (s *Server) runAgentLoop(
 				if ledger.segment != nil && ledger.segment.wrapUp != nil {
 					note = ledger.segment.wrapUp(stop)
 				}
-				s.wrapUpAtLimit(ctx, turn, model, tools, routing, &full, note, onToken, onProvider, onReasoning)
+				if note != "" {
+					s.wrapUpAtLimit(ctx, turn, model, tools, routing, &full, note, onToken, onProvider, onReasoning)
+				}
 			}
 			return agentResult{
 				FinalText: full.String(), Incomplete: stop, ToolNames: turn.toolNames,
@@ -772,6 +782,14 @@ func (s *Server) runAgentLoop(
 			// shutdown arriving mid-batch must not start the next tool.
 			if err := ctx.Err(); err != nil {
 				return agentResult{}, err
+			}
+			// AFTER AN ACCEPTED FINISH NOTHING RUNS, even later in this batch:
+			// [finish_task, propose_edit] would otherwise land an edit the
+			// gate never saw, in a task reported as checked and finished.
+			if bud.taskClosed != nil && bud.taskClosed() {
+				turn.messages = append(turn.messages, toolResultMessage(call,
+					"Not run: the task is finished, and no more tools can be called."))
+				continue
 			}
 			result, cancelled := s.dispatchToolCall(ctx, registry, turn, &bud, call, appr, onActivity, role)
 			turn.messages = append(turn.messages, result)

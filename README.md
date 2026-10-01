@@ -739,7 +739,9 @@ first three.
 - **Finishing is a gate.** `finish_task` is accepted only after a passing build or
   test run with no edit since. `/hunt` is the exception: its proof is failing
   runs, recorded as findings. A finding without verifiable evidence (a command the
-  task ran, or a `file:line` that exists) is refused.
+  task ran, or a `file:line` that exists) is refused. Once a finish is accepted,
+  nothing else runs, not even a later call in the same reply. The summary the
+  model gave `finish_task` is the reply you read, with no extra model call.
 - **It stops on its own:**
   - when it finishes, or needs you and says what;
   - when it reaches its budget: 30 minutes, $0.50 and 150 model calls by default,

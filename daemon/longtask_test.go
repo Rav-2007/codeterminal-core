@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -105,7 +106,6 @@ func TestALongTaskRunsSegmentsFromItsLedger(t *testing.T) {
 		toolCallSSE("c2", "builtin__record_finding", `{"claim":"the file says HELLO","evidence":"inside.txt:1"}`),
 		textSSE("HANDOFF-ONE: the file says HELLO; next, finish."),
 		toolCallSSE("c3", "builtin__finish_task", `{"status":"done","summary":"It says HELLO."}`),
-		textSSE("All done: the file says HELLO."),
 	)
 	cfg := taskPolicies()
 	cfg.Budget.Task = &MCPTaskBudgetConfig{SegmentCalls: 2}
@@ -120,8 +120,9 @@ func TestALongTaskRunsSegmentsFromItsLedger(t *testing.T) {
 	if st.State != protocol.TaskStateFinished || st.Segment != 2 || st.Findings != 1 {
 		t.Fatalf("final status = %+v, want finished after 2 segments with 1 finding", st)
 	}
-	if len(*bodies) != 5 {
-		t.Fatalf("model calls = %d, want 5 (two per segment and one checkpoint)", len(*bodies))
+	if len(*bodies) != 4 {
+		t.Fatalf("model calls = %d, want 4 (segment 1's two and its checkpoint, then the finish, whose "+
+			"summary is the reply)", len(*bodies))
 	}
 
 	seg2 := sentMessages(t, (*bodies)[3])
@@ -143,8 +144,8 @@ func TestALongTaskRunsSegmentsFromItsLedger(t *testing.T) {
 	// The opening every segment shares: system message and tool list.
 	sameHeads(t, headsOf(t, [][]byte{(*bodies)[0], (*bodies)[3]}), true)
 
-	if !strings.Contains(strings.Join(tokensOf(msgs), ""), "All done") {
-		t.Error("the model's closing summary did not reach the client")
+	if !strings.Contains(strings.Join(tokensOf(msgs), ""), "It says HELLO.") {
+		t.Error("the finish's summary did not reach the client as the reply")
 	}
 
 	// The ledger on disk says the same, beside conversation memory rather
@@ -480,15 +481,16 @@ func directTaskRun(t *testing.T, s *Server, mode string) (*taskRun, *proposalSin
 	return run, p, runIt
 }
 
-// FINISHED MEANS THE NEXT STEP IS THE SUMMARY, and nothing else runs. A model
-// that keeps calling tools after its finish was accepted -- here, a read --
-// gets the summary call instead, with tools no longer able to run. (Without
-// this, a finish on a segment's last call was also followed by a checkpoint
-// call asking for a handoff nobody would read.)
+// A FINISHED TASK ENDS ON ITS SUMMARY, AND NOTHING ELSE RUNS. The summary the
+// model wrote in finish_task is the reply: no call asks for it again, and a
+// model that would go on calling tools -- here, a read -- is not called at all.
+// MEASURED 2026-10-01 on the real binary: the call that used to ask was 1 of a
+// small fix's 5 calls, and 21% of the bytes it sent.
 //
-// Neuter check: drop the finished case from taskRun.check, and the read runs.
-func TestAFinishIsFollowedByTheSummaryAndNothingElse(t *testing.T) {
-	base, calls, bodies := agentUpstream(t,
+// Neuter checks: make wrapUpNote return a note for a closed task, and a second
+// call is made; drop the closed case from taskRun.check, and the read runs.
+func TestAFinishedTaskEndsOnItsSummaryAndNothingElse(t *testing.T) {
+	base, calls, _ := agentUpstream(t,
 		toolCallSSE("c1", "builtin__finish_task", `{"status":"done","summary":"Nothing needed changing."}`),
 		toolCallSSE("c2", "builtin__read_file", `{"path":"inside.txt"}`),
 		textSSE("Summary: nothing needed changing."),
@@ -497,15 +499,58 @@ func TestAFinishIsFollowedByTheSummaryAndNothingElse(t *testing.T) {
 	cfg.Budget.Task = &MCPTaskBudgetConfig{SegmentCalls: 3}
 	s := loopServer(t, base, cfg)
 	run, _, runIt := directTaskRun(t, s, modeTask)
-	if _, err := runIt(context.Background()); err != nil {
+	res, err := runIt(context.Background())
+	if err != nil {
 		t.Fatal(err)
 	}
-	if run.ledger.State != protocol.TaskStateFinished || calls.Load() != 2 {
-		t.Fatalf("state %q after %d calls; want finished after 2", run.ledger.State, calls.Load())
+	if run.ledger.State != protocol.TaskStateFinished || calls.Load() != 1 {
+		t.Fatalf("state %q after %d calls; want finished after 1", run.ledger.State, calls.Load())
 	}
-	msgs := sentMessages(t, (*bodies)[1])
-	if last := msgs[len(msgs)-1].Content; last != taskFinishedWrapUpNote {
-		t.Errorf("the call after the finish asked %q, want the summary note", last)
+	if !strings.HasSuffix(res.FinalText, "Nothing needed changing.") {
+		t.Errorf("the reply %q does not end on the finish's summary", res.FinalText)
+	}
+}
+
+// toolCallsSSE is one reply that calls several tools at once: {id, name, args}.
+func toolCallsSSE(calls ...[3]string) []string {
+	var parts []string
+	for i, c := range calls {
+		args, _ := json.Marshal(c[2])
+		parts = append(parts, fmt.Sprintf(`{"index":%d,"id":%q,"type":"function","function":{"name":%q,"arguments":%s}}`,
+			i, c[0], c[1], args))
+	}
+	return []string{
+		`data: {"choices":[{"delta":{"tool_calls":[` + strings.Join(parts, ",") + `]}}]}`,
+		`data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`,
+		`data: [DONE]`,
+	}
+}
+
+// NOTHING RUNS AFTER AN ACCEPTED FINISH, NOT EVEN LATER IN THE SAME REPLY. A
+// reply that calls [finish_task, propose_edit] used to run both: the edit
+// landed after the gate passed the work, in a task reported as finished. And
+// the user reads the summary, streamed as the reply.
+//
+// Neuter check: drop the taskClosed check in runAgentLoop's batch, and the
+// edit is offered.
+func TestNothingRunsAfterAFinishInTheSameReply(t *testing.T) {
+	base, calls, _ := agentUpstream(t, toolCallsSSE(
+		[3]string{"c1", "builtin__finish_task", `{"status":"done","summary":"FINISH-SUMMARY: nothing needed changing."}`},
+		[3]string{"c2", "builtin__propose_edit", `{"path":"late.txt","search":"","replace":"written after the finish\n"}`},
+	))
+	sockAddr, _, _ := agentSocketServer(t, base, taskPolicies())
+	msgs := taskRequest(t, sockAddr, protocol.PromptRequest{Prompt: "look", Mode: modeTask})
+	if st := lastTaskStatus(t, msgs); st.State != protocol.TaskStateFinished {
+		t.Fatalf("state = %q, want finished", st.State)
+	}
+	if n := len(lastDone(t, msgs).EditProposals); n != 0 {
+		t.Errorf("an edit made after the finish was offered (%d proposal(s))", n)
+	}
+	if calls.Load() != 1 {
+		t.Errorf("model calls = %d, want 1: nothing after the finish", calls.Load())
+	}
+	if !strings.Contains(strings.Join(tokensOf(msgs), ""), "FINISH-SUMMARY") {
+		t.Error("the finish's summary was not streamed to the user as the reply")
 	}
 }
 

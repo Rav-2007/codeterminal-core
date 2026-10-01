@@ -25,7 +25,6 @@ func TestAnInvestigationReturnsItsAnswerNotItsReading(t *testing.T) {
 		textSSE("ANSWER-7: the retry budget is set at budget.go:2."),
 		toolCallSSE("m2", "builtin__record_finding", `{"claim":"the budget is set once","evidence":"budget.go:2"}`),
 		toolCallSSE("m3", "builtin__finish_task", `{"status":"done","summary":"Found it."}`),
-		textSSE("Done."),
 	)
 	cfg := taskPolicies()
 	cfg.Builtin.Tools["investigate"] = PolicyAllow
@@ -40,8 +39,9 @@ func TestAnInvestigationReturnsItsAnswerNotItsReading(t *testing.T) {
 	if st := lastTaskStatus(t, msgs); st.State != protocol.TaskStateFinished {
 		t.Fatalf("state = %q, want finished", st.State)
 	}
-	if len(*bodies) != 6 {
-		t.Fatalf("model calls = %d, want 6 (main, two in the sub-run, three main)", len(*bodies))
+	if len(*bodies) != 5 {
+		t.Fatalf("model calls = %d, want 5 (main, two in the sub-run, two main; the finish's summary is the reply)",
+			len(*bodies))
 	}
 
 	sub := sentMessages(t, (*bodies)[1])

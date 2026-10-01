@@ -40,10 +40,15 @@ or tested:
 ```
 ✓ checked: go test ./... passed          ✗ checked: go test ./... FAILED
                                            --- FAIL: TestVerbose …
+! checked: go test ./... passed, and the changes went on after it; the version offered was not run
 not checked: the agent did not build or test these changes
 not offered: out/app: created by a command, not offered
 not offered: main.go: changed on disk while the agent worked, so its version is not offered (it would undo yours)
 ```
+
+A check vouches only for what it ran against. If the agent changed anything after its
+last command (with a tool, or by writing an edit into its answer), the line says so
+instead of showing a tick.
 
 ### Approving commands during a build
 

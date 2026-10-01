@@ -1010,12 +1010,17 @@ const (
 // succeeded -- so the user sees, before reviewing, whether the change was ever
 // built or tested, and how that went. Empty Checked means nothing was run.
 //
+// Stale says the changes on offer went on AFTER that command ran -- an edit
+// made with a tool, or written in the answer -- so its verdict is about an
+// earlier version of them, and what is offered was not run.
+//
 // NotOffered lists changes in the copy that are NOT among the proposals, each
 // with why (a command's build output, a file the user changed meanwhile). The
 // paths are workspace-relative: the user's own project, told to the user.
 type WorkingCopyInfo struct {
 	Checked    string   `json:"checked,omitempty"`
 	Passed     bool     `json:"passed,omitempty"`
+	Stale      bool     `json:"stale,omitempty"`
 	Output     string   `json:"output,omitempty"`
 	NotOffered []string `json:"not_offered,omitempty"`
 }

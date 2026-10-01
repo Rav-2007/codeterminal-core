@@ -79,8 +79,8 @@ func (r *taskRun) check(segmentCalls int) *protocol.IncompleteInfo {
 	// FINISHED MEANS THE NEXT STEP IS THE SUMMARY, whatever the segment's
 	// count: without this, a finish_task accepted on a segment's last call was
 	// followed by a checkpoint call asking for a handoff nobody would read.
-	if st := r.ledger.State; st == protocol.TaskStateFinished || st == protocol.TaskStateBlocked {
-		return &protocol.IncompleteInfo{Reason: protocol.IncompleteAgentBudget, Detail: "the task is " + st}
+	if r.closed() {
+		return &protocol.IncompleteInfo{Reason: protocol.IncompleteAgentBudget, Detail: "the task is " + r.ledger.State}
 	}
 	if r.budgetStop != nil {
 		return r.budgetStop
@@ -93,7 +93,10 @@ func (r *taskRun) check(segmentCalls int) *protocol.IncompleteInfo {
 	case spent.Calls >= r.budget.calls:
 		why = fmt.Sprintf("made %d model calls, its budget of %d", spent.Calls, r.budget.calls)
 	case time.Now().After(r.deadline):
-		why = fmt.Sprintf("ran for its %d minutes", r.budget.minutes)
+		why = fmt.Sprintf("ran for its %d minute", r.budget.minutes)
+		if r.budget.minutes != 1 {
+			why += "s"
+		}
 	default:
 		return nil
 	}
@@ -105,20 +108,27 @@ func (r *taskRun) check(segmentCalls int) *protocol.IncompleteInfo {
 	return r.budgetStop
 }
 
-// wrapUpNote is what the call at a segment's limit asks for.
+// closed reports that the task has ended: its finish_task was accepted, as
+// done or as blocked.
+func (r *taskRun) closed() bool {
+	st := r.ledger.State
+	return st == protocol.TaskStateFinished || st == protocol.TaskStateBlocked
+}
+
+// wrapUpNote is what the call at a segment's limit asks for. A FINISHED TASK
+// ASKS FOR NOTHING: its summary is already written, in finish_task, and is the
+// reply (runLongTask streams it). MEASURED 2026-10-01 on the real binary: the
+// call that used to ask for it again was 1 of a small fix's 5 calls, and 21%
+// of the bytes it sent.
 func (r *taskRun) wrapUpNote(*protocol.IncompleteInfo) string {
 	switch {
-	case r.ledger.State == protocol.TaskStateFinished || r.ledger.State == protocol.TaskStateBlocked:
-		return taskFinishedWrapUpNote
+	case r.closed():
+		return ""
 	case r.budgetStop != nil:
 		return taskBudgetWrapUpNote
 	}
 	return segmentCheckpointNote
 }
-
-// taskFinishedWrapUpNote asks for the summary a finished task ends on.
-const taskFinishedWrapUpNote = "The task is finished and no more tools can be called. Reply to the user with " +
-	"a short summary: what was wrong or what you did, what you changed, and what you ran."
 
 // segmentCheckpointNote asks for the handoff the next segment starts from.
 const segmentCheckpointNote = "This segment has reached its step limit and cannot call any more tools. Write " +
@@ -326,6 +336,7 @@ func (s *Server) runLongTask(
 
 		ledger := &turnLedger{grants: grants, segment: &segmentBudget{
 			calls: run.budget.segmentCalls, deadline: run.deadline, check: run.check, wrapUp: run.wrapUpNote,
+			closed: run.closed,
 			// Time at an approval prompt is the user's, not the run's.
 			waited: func(d time.Duration) { run.deadline = run.deadline.Add(d) },
 		}}
@@ -359,8 +370,17 @@ func (s *Server) runLongTask(
 		}
 
 		switch {
-		case run.ledger.State == protocol.TaskStateFinished || run.ledger.State == protocol.TaskStateBlocked:
-			// finish_task was accepted during this segment.
+		case run.closed():
+			// finish_task was accepted during this segment, and its summary IS
+			// the reply: nothing calls the model to say it again. A client that
+			// has gone misses the words, not the task -- it is saved below.
+			if sum := run.ledger.Summary; sum != "" {
+				if text.Len() > 0 {
+					sum = "\n\n" + sum
+				}
+				text.WriteString(sum)
+				_ = onToken(sum)
+			}
 		case res.Incomplete != nil && res.Incomplete.Reason == protocol.IncompleteUserCancelled:
 			finish(protocol.TaskStateStopped, res.Incomplete.Detail)
 		case res.Incomplete != nil && res.Incomplete.Reason == protocol.IncompleteProviderError:
@@ -654,8 +674,8 @@ func (s *Server) builtinFinishTask(raw json.RawMessage, p *proposalSink) (mcp.Re
 		l.State, l.Detail = protocol.TaskStateBlocked, "the task needs you: "+truncateRunes(summary, 300)
 	}
 	l.Summary = truncateRunes(summary, maxTaskHandoffRunes)
-	return mcp.Result{Content: "The task is marked " + l.State + ". Now reply to the user with a short summary " +
-		"-- what was wrong or what you did, what you changed, and what you ran -- and call no more tools."}, nil
+	return mcp.Result{Content: "The task is marked " + l.State + ". Your summary is the reply the user sees; " +
+		"nothing more runs."}, nil
 }
 
 // finishRefusal is THE GATE: why finish_task cannot be accepted yet, or "".
@@ -690,7 +710,9 @@ func finishRefusal(mode string, l *taskLedger, p *proposalSink) string {
 	c := p.lastCheck()
 	switch {
 	case c == nil:
-		return "you have not run anything since your changes: build or test with sandbox_exec, then call finish_task again"
+		return "you have not run anything since your changes: build or test with sandbox_exec, then call " +
+			"finish_task again. If nothing in this project can build or test this change, call finish_task " +
+			"with status blocked and say so"
 	case c.edits != edits:
 		return fmt.Sprintf("you edited after your last check (`%s`): build or test again", c.command)
 	case !c.passed:
@@ -735,7 +757,8 @@ func (s *Server) finishTaskTool(p *proposalSink) mcp.Builtin {
 			Name: "finish_task",
 			Description: "End the task. status done is accepted only after a sandbox_exec run that passed with no " +
 				"edit since (a hunt needs none: its findings are its proof). status blocked ends it when you " +
-				"cannot go on without the user; say exactly what you need.",
+				"cannot go on without the user; say exactly what you need. Your summary is the reply the user " +
+				"reads, and once the finish is accepted nothing else runs.",
 			Schema: schema(`{
 				"type":"object",
 				"properties":{

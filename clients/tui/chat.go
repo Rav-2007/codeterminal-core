@@ -913,13 +913,21 @@ func workingCopyText(info *protocol.WorkingCopyInfo) string {
 		return ""
 	}
 	var lines []string
+	// A STALE CHECK ran against an earlier version of the changes: its verdict
+	// is still worth showing, but never as a tick for what is offered.
+	stale := ""
+	if info.Stale {
+		stale = ", and the changes went on after it; the version offered was not run"
+	}
 	switch {
 	case info.Checked == "":
 		lines = append(lines, "not checked: the agent did not build or test these changes")
+	case info.Passed && info.Stale:
+		lines = append(lines, "! checked: "+sanitizeText(info.Checked)+" passed"+stale)
 	case info.Passed:
 		lines = append(lines, "✓ checked: "+sanitizeText(info.Checked)+" passed")
 	default:
-		lines = append(lines, "✗ checked: "+sanitizeText(info.Checked)+" FAILED")
+		lines = append(lines, "✗ checked: "+sanitizeText(info.Checked)+" FAILED"+stale)
 		for _, l := range strings.Split(sanitizeText(info.Output), "\n") {
 			if strings.TrimSpace(l) != "" {
 				lines = append(lines, "  "+l)

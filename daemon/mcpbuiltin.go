@@ -275,11 +275,19 @@ func (p *proposalSink) finish() (blocks []editapply.EditBlock, info *protocol.Wo
 	if p.stage == nil {
 		return p.blocks, nil, degraded
 	}
+	edits := p.editCount()
 	net, notOffered := p.stage.netChanges()
 	p.stage.close()
 	p.stage = nil
 	notOffered = append(notOffered, p.textNotes...)
 	info = &protocol.WorkingCopyInfo{Checked: p.checked, Passed: p.checkPassed, NotOffered: notOffered}
+	// A CHECK VOUCHES ONLY FOR WHAT IT RAN AGAINST. An edit after it -- with a
+	// tool, a restore, or written in the answer and absorbed above -- changed
+	// what is offered, and "checked: passed" alone would describe code that
+	// nobody ran.
+	if c := p.lastCheck(); c != nil && c.edits != edits {
+		info.Stale = true
+	}
 	if p.checked != "" && !p.checkPassed {
 		info.Output = p.checkOutput
 	}

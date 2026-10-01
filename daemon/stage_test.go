@@ -230,6 +230,51 @@ func TestSandboxExecTestsTheWorkingCopy(t *testing.T) {
 	}
 }
 
+// A CHECK VOUCHES ONLY FOR WHAT IT RAN AGAINST. The review line said
+// "checked: go test ./... passed" even when the changes went on after that run
+// -- with a tool, or written in the answer and absorbed -- so the version
+// offered was never run. The report now says the check is stale.
+//
+// Neuter check: drop the Stale assignment in proposalSink.finish.
+func TestACheckThatRanBeforeTheLastEditIsStale(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go is not on PATH")
+	}
+	project := map[string]string{
+		"go.mod":      "module example.com/m\n\ngo 1.22\n",
+		"m/m.go":      "package m\n\nfunc Two() int { return 2 }\n\nfunc Three() int { return 3 }\n",
+		"m/m_test.go": "package m\n\nimport \"testing\"\n\nfunc TestTwo(t *testing.T) {\n\tif Two() != 2 {\n\t\tt.Fatal(\"wrong\")\n\t}\n}\n",
+	}
+	for _, tc := range []struct {
+		name  string
+		after func(t *testing.T, s *Server, sink *proposalSink)
+		stale bool
+	}{
+		{"nothing after the check", func(*testing.T, *Server, *proposalSink) {}, false},
+		{"a tool edit after it", func(t *testing.T, s *Server, sink *proposalSink) {
+			propose(t, s, sink, "m/m.go", "return 3", "return 4")
+		}, true},
+		{"an edit written in the answer after it", func(_ *testing.T, _ *Server, sink *proposalSink) {
+			sink.absorbText([]editapply.EditBlock{{FilePath: "m/m.go", Search: "return 3", Replace: "return 5"}})
+		}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _ := stageProject(t, project)
+			sink := stagedSink(t, s)
+			propose(t, s, sink, "m/m.go", "return 2 }", "return 1 + 1 }")
+			res, err := s.builtinSandboxExecStaged(context.Background(), json.RawMessage(`{"command":"go test ./..."}`), sink)
+			if err != nil || res.IsError || strings.HasPrefix(res.Content, "Command exited with error") {
+				t.Fatalf("go test: %v %s", err, res.Content)
+			}
+			tc.after(t, s, sink)
+			_, info, _ := sink.finish()
+			if info == nil || info.Checked != "go test ./..." || !info.Passed || info.Stale != tc.stale {
+				t.Errorf("report = %+v; want the passing go test, stale=%v", info, tc.stale)
+			}
+		})
+	}
+}
+
 // .git, protected and ignored folders are not copied; dependency folders are
 // linked, not copied.
 func TestWhatTheWorkingCopyContains(t *testing.T) {
