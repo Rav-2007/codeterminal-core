@@ -83,6 +83,9 @@ type workingCopyMsg struct{ info *protocol.WorkingCopyInfo }
 // tasksMsg carries a /spec build's whole task list, each time it changes.
 type tasksMsg struct{ tasks []protocol.TaskItem }
 
+// taskStatusMsg carries a long task's progress (protocol.TaskStatus).
+type taskStatusMsg struct{ status protocol.TaskStatus }
+
 // specReportMsg carries a /spec check's verdicts (protocol.SpecReport).
 type specReportMsg struct{ report *protocol.SpecReport }
 
@@ -234,11 +237,20 @@ func resetHistoryOnDaemon(ctx context.Context, clientName string, ch chan tea.Ms
 //
 // specGrants are the commands the user approved while spec is active (see
 // chatModel.specGrants); sent with spec and never without it.
-func startStream(ctx context.Context, clientName, workspace, prompt, promptKind, mode, preferredTier, spec string, specGrants []string, pipeline []string, history []protocol.Turn, ch chan tea.Msg) tea.Cmd {
+func startStream(ctx context.Context, clientName, workspace, prompt, promptKind, mode, preferredTier, spec string, specGrants []string, pipeline []string, history []protocol.Turn, task taskFields, ch chan tea.Msg) tea.Cmd {
 	return func() tea.Msg {
-		go streamPromptWith(ctx, clientName, workspace, prompt, promptKind, mode, preferredTier, spec, specGrants, pipeline, history, ch)
+		go streamPromptWith(ctx, clientName, workspace, prompt, promptKind, mode, preferredTier, spec, specGrants, pipeline, history, task, ch)
 		return <-ch
 	}
+}
+
+// taskFields are a request's long-task fields (protocol.PromptRequest.Task,
+// TaskAction and TaskBudget): which saved task, what to do with it, and what
+// this run may spend. The zero value is an ordinary turn.
+type taskFields struct {
+	id     string
+	action string
+	budget *protocol.TaskBudget
 }
 
 // askForApproval hands the request to the UI and waits for the user's answer,
@@ -328,11 +340,12 @@ func deliver(ctx context.Context, ch chan tea.Msg, msg tea.Msg) bool {
 // quietly (no streamErrMsg): the user chose to quit, that's not a failure,
 // and it leaves nothing behind reading a dead socket.
 func streamPrompt(ctx context.Context, clientName, workspace, prompt, promptKind, mode, preferredTier string, pipeline []string, history []protocol.Turn, ch chan tea.Msg) {
-	streamPromptWith(ctx, clientName, workspace, prompt, promptKind, mode, preferredTier, "", nil, pipeline, history, ch)
+	streamPromptWith(ctx, clientName, workspace, prompt, promptKind, mode, preferredTier, "", nil, pipeline, history, taskFields{}, ch)
 }
 
-// streamPromptWith is streamPrompt with the active spec (PromptRequest.Spec).
-func streamPromptWith(ctx context.Context, clientName, workspace, prompt, promptKind, mode, preferredTier, spec string, specGrants []string, pipeline []string, history []protocol.Turn, ch chan tea.Msg) {
+// streamPromptWith is streamPrompt with the active spec (PromptRequest.Spec)
+// and a long task's fields.
+func streamPromptWith(ctx context.Context, clientName, workspace, prompt, promptKind, mode, preferredTier, spec string, specGrants []string, pipeline []string, history []protocol.Turn, task taskFields, ch chan tea.Msg) {
 	sess, err := connectToDaemon(clientName, protocol.CapToolApproval)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -367,6 +380,9 @@ func streamPromptWith(ctx context.Context, clientName, workspace, prompt, prompt
 		Pipeline:        pipeline,
 		Spec:            spec,
 		SpecGrants:      grantsFor(spec, specGrants),
+		Task:            task.id,
+		TaskAction:      task.action,
+		TaskBudget:      task.budget,
 	}); err != nil {
 		if ctx.Err() != nil {
 			return
@@ -418,6 +434,11 @@ func streamPromptWith(ctx context.Context, clientName, workspace, prompt, prompt
 			return
 		}
 		if tok.Tasks != nil && !deliver(ctx, ch, tasksMsg{tok.Tasks}) {
+			return
+		}
+		// A long task's progress, as each segment starts and once more at the
+		// end -- including on the Done of a /task review.
+		if tok.TaskStatus != nil && !deliver(ctx, ch, taskStatusMsg{*tok.TaskStatus}) {
 			return
 		}
 		if tok.ToolApproval != nil {

@@ -147,7 +147,7 @@ func TestSpecGrantsTravelWithTheirSpec(t *testing.T) {
 
 	ch := make(chan tea.Msg, 8)
 	streamPromptWith(context.Background(), "test-client", "", "go on", "", modeBuild, "", "specs/v.md",
-		[]string{testGrant}, nil, nil, ch)
+		[]string{testGrant}, nil, nil, taskFields{}, ch)
 	for msg := range ch {
 		if _, done := msg.(streamDoneMsg); done {
 			break

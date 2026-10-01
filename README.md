@@ -406,7 +406,8 @@ but never obey. It cannot vouch for the far end. See
 ### Slash commands
 
 Type `/` in the TUI or the VS Code chat for the menu. Local commands run in the
-client; steered commands send a task preamble to the model.
+client; steered commands send a task preamble to the model, and the long-task
+commands send a mode the daemon enforces ([Long tasks](#long-tasks)).
 
 ```text
 /model                 # list active tiers
@@ -424,6 +425,14 @@ client; steered commands send a task preamble to the model.
 
 /team <question>       # researcher -> coder specialists (/team:planner,coder …)
 
+/debug <issue>         # long task: reproduce, localize, fix at the root, verify
+/fix <bug>             # long task: reproduce, fix, verify
+/refactor <change>     # long task: green baseline, small steps, each built and tested
+/hunt <area>           # long task: real bugs only, each proved by a failing run
+/task <goal>           # any long task
+/task                  # where it stands · /task resume [note] · /task review · /task discard
+/task budget 45m $1 200  # this session's budget: minutes, dollars, model calls
+
 /usage                 # tokens and cost this chat/session, and how full the context is
 /history save [name]   # keep this chat; saving again later updates it
 /history               # saved chats in this project; ⚠ marks work left half done
@@ -431,7 +440,7 @@ client; steered commands send a task preamble to the model.
 /history resume 2      # continue it
 /history delete 2      # delete it
 
-/help /mcp-server /explain /fix /test /refactor /doc /security
+/help /mcp-server /explain /test /doc /security
 /review /plan /run /clear /compact /context /git /init /search /exit
 ```
 
@@ -710,6 +719,52 @@ one your approval was bound to.
 
 Full design and threat model: [`docs/MCP_MASTER.md`](docs/MCP_MASTER.md) and
 [`docs/MCP_LANE_B_THREAT_MODEL.md`](docs/MCP_LANE_B_THREAT_MODEL.md).
+
+### Long tasks
+
+For work that does not fit in one turn: a long debugging session, a bug hunt, a
+refactor across many files. `/debug`, `/fix`, `/refactor`, `/hunt` and `/task` run
+in the terminal as **long tasks**. VS Code still sends its one-turn form of the
+first three.
+
+- **One request, many segments.** A segment is an ordinary agent loop of up to
+  20 model calls. Each starts from a small fresh context: the same system message
+  and tools every time, so the provider's cache carries over, plus your request
+  and the task's **ledger**. The ledger holds the plan, the findings with their
+  evidence, the files changed, the last check and a handoff from the previous
+  segment. Files are simply read again when needed, so each call stays small
+  however long the task runs.
+- **One working copy for the whole task.** Later segments build on earlier ones'
+  edits. You review every change once, when the task ends.
+- **Finishing is a gate.** `finish_task` is accepted only after a passing build or
+  test run with no edit since. `/hunt` is the exception: its proof is failing
+  runs, recorded as findings. A finding without verifiable evidence (a command the
+  task ran, or a `file:line` that exists) is refused.
+- **It stops on its own:**
+  - when it finishes, or needs you and says what;
+  - when it reaches its budget: 30 minutes, $0.50 and 150 model calls by default,
+    changed per session with `/task budget` or in `mcp.budget.task`;
+  - when two segments in a row change nothing (it is stuck);
+  - when you press esc.
+- **Saved as it goes.** The ledger and the diff are saved after every segment,
+  under `~/.local/state/mochiii/tasks/`, never inside the project.
+  - `/task resume [note]` carries on from the last saved point. Anything you add
+    goes into the ledger.
+  - `/task review` offers the saved changes without calling the model.
+- **Narrower reach.** The web tools are withheld: an unattended run works on the
+  local project, and a web page is text anyone could have written. "Yes for this
+  turn" at an approval lasts the whole task.
+
+```jsonc
+"budget": {
+  "task": { "max_minutes": 30, "max_usd": 0.5, "max_calls": 150, "segment_calls": 20 }
+}
+```
+
+**Not yet measured on the real model.** The engine is tested offline against a
+scripted provider. The long-task eval (Round 4 in
+[`docs/AGENT_WORKFLOW_EVAL.md`](docs/AGENT_WORKFLOW_EVAL.md)) runs before any
+number here is claimed.
 
 ### Conversation memory
 

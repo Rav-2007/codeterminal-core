@@ -351,6 +351,12 @@ type chatModel struct {
 	// tasks is the in-flight build's task list (update_tasks), drawn under
 	// the transcript while the turn runs and kept in it when the turn ends.
 	tasks []protocol.TaskItem
+	// taskStatus is the last long task's progress (task.go): drawn as a meter
+	// under the transcript while it runs, and what /task shows after.
+	taskStatus *protocol.TaskStatus
+	// taskBudget is what /task budget set for this session's long tasks; nil
+	// uses the daemon's defaults.
+	taskBudget *protocol.TaskBudget
 	// preferredTier is the models.json tier name chosen via /model <name>.
 	// Empty means default routing. Sent as PromptRequest.Tier on every turn.
 	preferredTier string
@@ -518,6 +524,9 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.tasks = msg.tasks
 		m.refreshViewport()
 		return m, waitForNext(m.streamCh)
+
+	case taskStatusMsg:
+		return m.handleTaskStatus(msg)
 
 	case specReportMsg:
 		if m.streamCh == nil {
@@ -1325,7 +1334,7 @@ func (m chatModel) startTurn() (tea.Model, tea.Cmd) {
 
 	m.turnMode = mode
 	m.tasks = nil
-	return m, tea.Batch(m.spinner.Tick, m.startThinking(), startStream(ctx, m.clientName, m.workspace, prompt, promptKind, mode, m.preferredTier, m.activeSpec, m.specGrantDigests(), pipeline, history, ch))
+	return m, tea.Batch(m.spinner.Tick, m.startThinking(), startStream(ctx, m.clientName, m.workspace, prompt, promptKind, mode, m.preferredTier, m.activeSpec, m.specGrantDigests(), pipeline, history, taskFields{}, ch))
 }
 
 func (m chatModel) handleSlash(sp slashParse) (tea.Model, tea.Cmd) {
@@ -1343,6 +1352,10 @@ func (m chatModel) handleSlash(sp slashParse) (tea.Model, tea.Cmd) {
 	case slashLocal:
 		return m.handleLocalSlash(sp.Def.Name, sp.Args)
 	case slashSteered:
+		// A long-task command starts a new long task, on this session's budget.
+		if isLongTaskMode(sp.Def.Mode) {
+			return m.beginTaskTurn("/"+sp.Def.Name+" "+sp.Args, sp.Args, sp.Def.Mode, taskFields{budget: m.taskBudget})
+		}
 		// Steered slash commands do not choose a pipeline shape.
 		return m.beginTurn("/"+sp.Def.Name+" "+sp.Args, steeredPrompt(sp.Def, sp.Args), sp.Def.PromptKind, sp.Def.Mode, nil)
 	}
@@ -1353,6 +1366,17 @@ func (m chatModel) handleSlash(sp slashParse) (tea.Model, tea.Cmd) {
 // sent (prompt): a slash command, or /spec. Shared so every such turn resets
 // the same state and carries the active spec.
 func (m chatModel) beginTurn(shown, prompt, promptKind, mode string, pipeline []string) (tea.Model, tea.Cmd) {
+	return m.beginTurnWith(shown, prompt, promptKind, mode, pipeline, taskFields{})
+}
+
+// beginTaskTurn starts a long-task request (task.go): a new task, a resumed
+// one, or a review of one.
+func (m chatModel) beginTaskTurn(shown, prompt, mode string, task taskFields) (tea.Model, tea.Cmd) {
+	m.taskStatus = nil // the daemon's first TaskStatus says what this run is
+	return m.beginTurnWith(shown, prompt, "", mode, nil, task)
+}
+
+func (m chatModel) beginTurnWith(shown, prompt, promptKind, mode string, pipeline []string, task taskFields) (tea.Model, tea.Cmd) {
 	history := buildHistory(m.turns)
 	m.appendTurn(turn{role: roleUser, text: sanitizeText(shown)})
 	m.input.Blur()
@@ -1376,7 +1400,7 @@ func (m chatModel) beginTurn(shown, prompt, promptKind, mode string, pipeline []
 	m.streamCancel = cancel
 	ch := make(chan tea.Msg)
 	m.streamCh = ch
-	return m, tea.Batch(m.spinner.Tick, m.startThinking(), startStream(ctx, m.clientName, m.workspace, prompt, promptKind, mode, m.preferredTier, m.activeSpec, m.specGrantDigests(), pipeline, history, ch))
+	return m, tea.Batch(m.spinner.Tick, m.startThinking(), startStream(ctx, m.clientName, m.workspace, prompt, promptKind, mode, m.preferredTier, m.activeSpec, m.specGrantDigests(), pipeline, history, task, ch))
 }
 
 func (m chatModel) handleLocalSlash(name, args string) (tea.Model, tea.Cmd) {
@@ -1488,6 +1512,8 @@ func (m chatModel) handleLocalSlash(name, args string) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "spec":
 		return m.handleSpecCommand(args)
+	case "task":
+		return m.handleTaskCommand(args)
 	case "exit":
 		return m, tea.Quit
 	default:
@@ -1724,6 +1750,13 @@ func (m chatModel) interruptTurn() (tea.Model, tea.Cmd) {
 	// further ran" would be a claim about the far end that this side cannot make.
 	m.appendTurn(turn{role: roleSystem, text: "⏹ stopped — you interrupted this turn"})
 	m.stopsInChat++ // its bill arrives on the next turn's final message
+	// A long task saves itself when its connection goes (daemon/longtask.go),
+	// so stopping one loses nothing: say how to carry on.
+	if m.taskRunning() {
+		m.taskStatus.State = protocol.TaskStateStopped
+		m.appendTurn(turn{role: roleSystem, text: "the task is saved — /task resume carries on, " +
+			"/task review shows its changes so far"})
+	}
 
 	m.state = stateIdle
 	m.statusErr = ""
@@ -2276,6 +2309,9 @@ func (m *chatModel) refreshViewport() {
 	if m.turnInFlight() && len(m.tasks) > 0 {
 		content += "\n\n" + renderTaskList(m.tasks)
 	}
+	if m.turnInFlight() && m.taskRunning() {
+		content += "\n\n" + renderTaskMeter(*m.taskStatus)
+	}
 	if m.state == stateEditReview && m.reviewPrepared != nil {
 		content += "\n\n" + renderReviewPanel(m.reviewIndex, len(m.reviewBlocks), m.reviewPrepared)
 	}
@@ -2611,6 +2647,11 @@ func (m chatModel) View() string {
 		keys := approvalHelpText
 		if m.canGrantForSpec(*m.pendingApproval) {
 			keys = approvalSpecHelpText
+		}
+		// A long task is one turn, so "for this turn" lasts the whole task:
+		// said in the words the user is thinking in.
+		if m.taskRunning() {
+			keys = strings.Replace(keys, "for this turn", "for this whole task", 1)
 		}
 		bottomLine = accentStyle.Render(keys)
 	} else {

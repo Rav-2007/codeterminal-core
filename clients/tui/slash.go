@@ -15,14 +15,37 @@ import (
 //
 //   - local: handled entirely in the client (help, model, mcp-server, git, …)
 //   - steered: the user's remainder is sent to the model with a fixed task
-//     preamble so the model knows what job to do
+//     preamble so the model knows what job to do -- or, for /plan and the
+//     long-task commands (/fix, /debug, /refactor, /hunt), with a MODE the
+//     daemon enforces instead
 //
-// /reason and /refactor keep their existing PromptKind wire values (reasoning
-// tier escalation) and also apply a short steered preamble.
+// /reason keeps its PromptKind wire value (reasoning tier escalation) and also
+// applies a short steered preamble. /refactor no longer escalates: it runs as a
+// long task, which stays on one model.
 
 // modePlan is protocol.PromptRequest.Mode's plan value. Must equal the daemon's
 // modePlan; see slashDef.Mode.
 const modePlan = "plan"
+
+// The long-task modes (daemon/taskmodes.go). Each runs as a long task --
+// segments, a ledger, one working copy, a budget -- and must equal the
+// daemon's constant of the same name, the same contract modePlan carries.
+const (
+	modeTask     = "task"
+	modeDebug    = "debug"
+	modeFix      = "fix"
+	modeRefactor = "refactor"
+	modeHunt     = "hunt"
+)
+
+// isLongTaskMode mirrors the daemon's predicate of the same name.
+func isLongTaskMode(mode string) bool {
+	switch mode {
+	case modeTask, modeDebug, modeFix, modeRefactor, modeHunt:
+		return true
+	}
+	return false
+}
 
 type slashKind int
 
@@ -83,13 +106,19 @@ var slashCatalog = []slashDef{
 
 	{Name: "explain", Kind: slashSteered, NeedsArgs: true, Summary: "explain code or a concept",
 		Preamble: "Explain clearly and thoroughly. Use concrete references from the workspace when relevant.\n\n"},
-	{Name: "fix", Kind: slashSteered, NeedsArgs: true, Summary: "find and fix a bug",
-		Preamble: "You are fixing a bug. Diagnose first, then propose a minimal correct fix with edits.\n\n"},
+	// /fix, /debug and /refactor SEND A LONG-TASK MODE, as /plan sends its own:
+	// the daemon runs them as long tasks with a method, a budget and a finish
+	// gate (daemon/taskmodes.go), where they used to be one line of steering
+	// text in front of the user's words. VS Code keeps the old one-turn form
+	// until it is ported (slash_clientparity_test.go, longTaskAheadOfVSCode).
+	{Name: "fix", Kind: slashSteered, NeedsArgs: true, Mode: modeFix,
+		Summary: "find and fix a bug: a long task that reproduces, fixes and verifies it"},
 	{Name: "test", Kind: slashSteered, NeedsArgs: true, Summary: "add or improve tests",
 		Preamble: "Write or improve tests for the described code. Prefer existing test style in this repo.\n\n"},
-	{Name: "refactor", Kind: slashSteered, NeedsArgs: true, Summary: "refactor code (may escalate to reasoning tier)",
-		Preamble:   "Refactor for clarity and maintainability without changing behavior. Propose focused edits.\n\n",
-		PromptKind: promptKindRefactor},
+	// No reasoning-tier escalation any more: a long task stays on one model,
+	// and the reasoning tier's 64K window would not hold one.
+	{Name: "refactor", Kind: slashSteered, NeedsArgs: true, Mode: modeRefactor,
+		Summary: "refactor without changing behaviour: a long task, built and tested step by step"},
 	{Name: "doc", Kind: slashSteered, NeedsArgs: true, Summary: "write or improve documentation",
 		Preamble: "Write or improve documentation. Match the project's existing doc tone.\n\n"},
 	{Name: "security", Kind: slashSteered, NeedsArgs: true, Summary: "security review of the described code",
@@ -117,8 +146,12 @@ var slashCatalog = []slashDef{
 
 	{Name: "implement", Kind: slashSteered, NeedsArgs: true, Summary: "implement a new feature from end-to-end",
 		Preamble: "Implement the following feature from end-to-end. Break down the work into logical steps and execute them. Use `propose_edit` to make the changes and `sandbox_exec` to build and test them.\n\n"},
-	{Name: "debug", Kind: slashSteered, NeedsArgs: true, Summary: "deeply debug an issue, error, or failing test",
-		Preamble: "You are an expert debugger. Investigate the following issue deeply. Run tests, add logging, and examine state until the root cause is found, then propose a fix.\n\n"},
+	{Name: "debug", Kind: slashSteered, NeedsArgs: true, Mode: modeDebug,
+		Summary: "debug an issue to its root cause: a long task that reproduces, localizes, fixes and verifies"},
+	{Name: "hunt", Kind: slashSteered, NeedsArgs: true, Mode: modeHunt,
+		Summary: "hunt for real bugs, each proved by a failing run: a long task"},
+	{Name: "task", Kind: slashLocal,
+		Summary: "run a long task (/task <goal>); /task shows it · resume [note] · review · discard · budget"},
 	{Name: "explore", Kind: slashSteered, NeedsArgs: true, Summary: "explore the codebase to gather context",
 		Preamble: "Explore the codebase to understand the following concept or component. Read files, grep for usages, and build a comprehensive understanding before answering.\n\n"},
 	{Name: "research", Kind: slashSteered, NeedsArgs: true, Summary: "research a topic comprehensively",

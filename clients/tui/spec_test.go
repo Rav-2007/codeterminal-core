@@ -151,7 +151,7 @@ func TestTheActiveSpecTravelsWithThePrompt(t *testing.T) {
 	defer setLockPathForTest(t, lockPath)()
 
 	ch := make(chan tea.Msg, 8)
-	streamPromptWith(context.Background(), "test-client", "", "go on", "", modeCheck, "", "specs/v.md", nil, nil, nil, ch)
+	streamPromptWith(context.Background(), "test-client", "", "go on", "", modeCheck, "", "specs/v.md", nil, nil, nil, taskFields{}, ch)
 	for msg := range ch {
 		if _, done := msg.(streamDoneMsg); done {
 			break

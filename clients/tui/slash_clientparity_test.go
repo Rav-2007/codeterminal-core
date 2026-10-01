@@ -270,6 +270,25 @@ var notYetPorted = map[string]string{
 	// ring is the nearest thing it has, and it estimates rather than reads the
 	// provider's bill.
 	"usage": "VS Code left as it is for now by the owner; the TUI's /usage reads the provider's bill",
+	// Long tasks (daemon/longtask.go) are terminal-first by the owner's
+	// decision (2026-09-30): the daemon side is client-neutral, and VS Code has
+	// no task meter or /task review yet.
+	"task": "long tasks are terminal-first (owner, 2026-09-30); VS Code gets them when it is ported",
+	"hunt": "long tasks are terminal-first (owner, 2026-09-30); VS Code gets them when it is ported",
+}
+
+// longTaskAheadOfVSCode are commands both clients have, which the TUI now runs
+// as LONG TASKS (a daemon-enforced mode) while VS Code still sends its old
+// one-turn preamble. Narrow on purpose, and checked in both directions: the TUI
+// side must really send a long-task mode, the VS Code side must really still be
+// the old form -- so the exception retires itself the day VS Code is ported.
+//
+// Not a security gap in either direction: the mode adds a method, a budget and
+// a finish gate; it restricts nothing the other client's turn would reach.
+var longTaskAheadOfVSCode = map[string]string{
+	"fix":      "runs as a long task in the TUI; VS Code left as it is for now (owner, 2026-09-30)",
+	"debug":    "runs as a long task in the TUI; VS Code left as it is for now (owner, 2026-09-30)",
+	"refactor": "runs as a long task in the TUI; VS Code left as it is for now (owner, 2026-09-30)",
 }
 
 func TestSlashCatalogsAgreeAcrossClients(t *testing.T) {
@@ -325,6 +344,22 @@ func TestSlashCatalogsAgreeAcrossClients(t *testing.T) {
 		}
 		if v.needsArgs != g.NeedsArgs {
 			t.Errorf("/%s needsArgs differs: Go=%v VS Code=%v", g.Name, g.NeedsArgs, v.needsArgs)
+		}
+		if why, ahead := longTaskAheadOfVSCode[g.Name]; ahead {
+			switch {
+			case !isLongTaskMode(g.Mode):
+				t.Errorf("/%s is listed as a long task ahead of VS Code, but the TUI sends mode %q; "+
+					"remove the entry or restore the mode", g.Name, g.Mode)
+			case v.mode == g.Mode:
+				t.Errorf("/%s now sends the same long-task mode in VS Code; remove it from "+
+					"longTaskAheadOfVSCode and mirror the summary", g.Name)
+			case v.mode != "" || v.preamble == "":
+				t.Errorf("/%s in VS Code is neither the old one-turn preamble nor the TUI's mode "+
+					"(mode %q, preamble %q); the two clients have drifted some third way", g.Name, v.mode, v.preamble)
+			default:
+				t.Logf("/%s: %s", g.Name, why)
+			}
+			continue
 		}
 		if v.promptKind != g.PromptKind {
 			t.Errorf("/%s promptKind differs: Go=%q VS Code=%q", g.Name, g.PromptKind, v.promptKind)

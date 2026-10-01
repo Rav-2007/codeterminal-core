@@ -33,7 +33,8 @@ func TestParseSlash(t *testing.T) {
 		{raw: "/explain the router", wantName: "explain", wantArgs: "the router", wantKind: slashSteered},
 		{raw: "/fix the bug", wantName: "fix", wantArgs: "the bug", wantKind: slashSteered},
 		{raw: "/reason deep", wantName: "reason", wantArgs: "deep", wantKind: slashSteered, wantPromptKind: promptKindReason},
-		{raw: "/refactor clean", wantName: "refactor", wantArgs: "clean", wantKind: slashSteered, wantPromptKind: promptKindRefactor},
+		// No reasoning-tier escalation: /refactor runs as a long task on one model.
+		{raw: "/refactor clean", wantName: "refactor", wantArgs: "clean", wantKind: slashSteered},
 		{raw: "/REASON case", wantName: "reason", wantArgs: "case", wantKind: slashSteered, wantPromptKind: promptKindReason},
 	}
 	for _, tc := range cases {
