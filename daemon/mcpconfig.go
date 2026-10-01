@@ -366,6 +366,23 @@ type MCPBudgetConfig struct {
 	// rather than one per server, but it is still time the turn budget does not
 	// govern.
 	ConnectTimeoutSeconds int `json:"connect_timeout_seconds,omitempty"`
+
+	// Task bounds one run of a LONG TASK (longtask.go): /task, /debug, /fix,
+	// /refactor and /hunt. A long task runs as segments of segment_calls model
+	// calls each, under these limits instead of the turn's. A pointer so an
+	// unset section marshals to nothing, like its neighbours; nil means the
+	// defaults.
+	Task *MCPTaskBudgetConfig `json:"task,omitempty"`
+}
+
+// MCPTaskBudgetConfig is what one run of a long task may spend. Zero means the
+// default; a request may ask for more or less (PromptRequest.TaskBudget), never
+// past the ceilings below.
+type MCPTaskBudgetConfig struct {
+	MaxMinutes   int     `json:"max_minutes,omitempty"`
+	MaxUSD       float64 `json:"max_usd,omitempty"`
+	MaxCalls     int     `json:"max_calls,omitempty"`
+	SegmentCalls int     `json:"segment_calls,omitempty"`
 }
 
 // Tool policies. The vocabulary is closed: anything else in a config file is a
@@ -448,6 +465,17 @@ const (
 	// A handshake ceiling generous enough for a package manager's cold start
 	// and short enough that it cannot become an indefinite hang.
 	maxConnectTimeoutSeconds = 120
+
+	// A long task's run (mcp.budget.task). The defaults are what one unattended
+	// run spends before it stops and reports: half an hour, half a dollar. The
+	// ceilings stop a typo or a request from turning one run into a bill.
+	defaultTaskMinutes      = 30
+	maxTaskMinutes          = 240
+	defaultTaskUSD          = 0.50
+	maxTaskUSD              = 20.0
+	defaultTaskCalls        = 150
+	maxTaskCalls            = 1000
+	defaultTaskSegmentCalls = 20
 )
 
 var (
@@ -456,7 +484,8 @@ var (
 	knownMCPServerKeys  = []string{"command", "args", "env", "tools", "acknowledged_unconfined", "disabled"}
 	knownMCPBudgetKeys  = []string{"max_iterations", "turn_timeout_seconds", "max_tool_result_bytes",
 		"max_total_tool_bytes", "max_advertised_tools", "max_message_bytes",
-		"connect_timeout_seconds", "max_turn_iterations"}
+		"connect_timeout_seconds", "max_turn_iterations", "task"}
+	knownMCPTaskBudgetKeys = []string{"max_minutes", "max_usd", "max_calls", "segment_calls"}
 )
 
 // The resolved* accessors apply the "0 means default" convention. All are
@@ -656,6 +685,18 @@ func (c *Config) clampMCPRanges() {
 	clamp("max_turn_iterations", &b.MaxTurnIterations, maxMaxTurnIterations)
 	clamp("max_message_bytes", &b.MaxMessageBytes, maxMaxMessageBytes)
 	clamp("connect_timeout_seconds", &b.ConnectTimeoutSeconds, maxConnectTimeoutSeconds)
+	if t := b.Task; t != nil {
+		clamp("task.max_minutes", &t.MaxMinutes, maxTaskMinutes)
+		clamp("task.max_calls", &t.MaxCalls, maxTaskCalls)
+		clamp("task.segment_calls", &t.SegmentCalls, maxMaxIterations)
+		if usd := t.MaxUSD; usd < 0 {
+			c.warnf("mcp.budget.task.max_usd %.2f is negative; using the default", usd)
+			t.MaxUSD = 0
+		} else if usd > maxTaskUSD {
+			c.warnf("mcp.budget.task.max_usd %.2f exceeds the maximum %.2f; clamped to %.2f", usd, maxTaskUSD, maxTaskUSD)
+			t.MaxUSD = maxTaskUSD
+		}
+	}
 
 	// A per-result cap above the whole-turn cap is not wrong so much as
 	// meaningless -- the turn cap would always bite first -- and it usually
@@ -802,6 +843,10 @@ var builtinToolClasses = map[string]builtinClass{
 	// how they were left out: they record a verdict and a task list.
 	"record_criterion": classConfined,
 	"update_tasks":     classConfined,
+	// Registered only in the long-task modes (longtask.go): the task's own
+	// record of a finding, and its finish gate.
+	"record_finding": classConfined,
+	"finish_task":    classConfined,
 }
 
 // builtinToolClass classifies a configured built-in name. An unknown name is

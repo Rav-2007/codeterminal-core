@@ -108,12 +108,38 @@ type proposalSink struct {
 	// textNotes are answer-text edits absorbText could not bring into the
 	// working copy, reported with the copy's other not-offered changes.
 	textNotes []string
+
+	// task is the long task this request is running (longtask.go), or nil.
+	task *taskRun
 }
 
 // ranCheck is one command a turn ran and whether it passed.
 type ranCheck struct {
 	command string
 	passed  bool
+	// edits is how many edits the working copy had when it ran, so a pass can
+	// be told apart from a pass that predates the last change (finishRefusal).
+	edits int
+}
+
+// editCount is how many edits this turn has made: in the working copy, or
+// filed as proposals when there is none.
+func (p *proposalSink) editCount() int {
+	if p == nil {
+		return 0
+	}
+	if p.stage != nil {
+		return len(p.stage.applied)
+	}
+	return len(p.blocks)
+}
+
+// lastCheck is the last command this turn ran in its working copy, or nil.
+func (p *proposalSink) lastCheck() *ranCheck {
+	if p == nil || len(p.checks) == 0 {
+		return nil
+	}
+	return &p.checks[len(p.checks)-1]
 }
 
 // workingCopy returns the turn's private copy of the project, making it on
@@ -156,7 +182,7 @@ func (p *proposalSink) recordCheck(command string, res mcp.Result) {
 	p.checkPassed = !strings.HasPrefix(res.Content, "Command exited with error") &&
 		!strings.HasPrefix(res.Content, "Command timed out")
 	p.checkOutput = lastNLines(res.Content, 12)
-	p.checks = append(p.checks, ranCheck{command: command, passed: p.checkPassed})
+	p.checks = append(p.checks, ranCheck{command: command, passed: p.checkPassed, edits: p.editCount()})
 }
 
 // absorbText brings edit blocks the model wrote in its ANSWER into the working
@@ -462,8 +488,12 @@ func (s *Server) builtinTools(proposals *proposalSink, mode string) []mcp.Builti
 	if isCheckMode(mode) || isBuildMode(mode) {
 		tools = append(tools, s.recordCriterionTool(proposals))
 	}
-	if isBuildMode(mode) {
+	if isBuildMode(mode) || isLongTaskMode(mode) {
 		tools = append(tools, s.updateTasksTool(proposals))
+	}
+	// A long task's own record and its gate (longtask.go).
+	if isLongTaskMode(mode) {
+		tools = append(tools, s.recordFindingTool(proposals), s.finishTaskTool(proposals))
 	}
 
 	// propose_edit in every mode that edits: not plan, not check. In spec mode

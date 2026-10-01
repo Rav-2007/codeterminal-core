@@ -96,7 +96,9 @@
         "web_search": "allow",
         "web_fetch": "allow",
         "record_criterion": "allow",
-        "update_tasks": "allow"
+        "update_tasks": "allow",
+        "record_finding": "allow",
+        "finish_task": "allow"
       }
     },
     "budget": {

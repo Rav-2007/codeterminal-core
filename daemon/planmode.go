@@ -47,10 +47,12 @@ const (
 func normalizeMode(raw string) (string, error) {
 	m := strings.ToLower(strings.TrimSpace(raw))
 	switch m {
-	case "", modeAuto, modeManual, modePlan, modeSpec, modeCheck, modeBuild:
+	case "", modeAuto, modeManual, modePlan, modeSpec, modeCheck, modeBuild,
+		modeTask, modeDebug, modeFix, modeRefactor, modeHunt:
 		return m, nil
 	default:
-		return "", fmt.Errorf("unknown mode %q (want one of: auto, manual, plan, spec, check, build)", raw)
+		return "", fmt.Errorf("unknown mode %q (want one of: auto, manual, plan, spec, check, build, "+
+			"task, debug, fix, refactor, hunt)", raw)
 	}
 }
 

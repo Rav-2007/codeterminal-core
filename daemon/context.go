@@ -26,6 +26,11 @@ const (
 	// the other envelopes so no document or earlier step's output can forge one.
 	stepRoleOpenTag  = "<step_role>"
 	stepRoleCloseTag = "</step_role>"
+	// A long task's memory between segments (taskledger.go): reference the
+	// model reads back, holding text the model and its tools wrote, so it is
+	// protected like the other envelopes and nothing inside can close it.
+	taskStateOpenTag  = "<task_state>"
+	taskStateCloseTag = "</task_state>"
 )
 
 // buildTagVariantPattern returns a regexp source matching any tag-like
@@ -97,6 +102,9 @@ var protectedTagFamilies = []string{
 	// tells the model to follow this block, so a forged one would be an
 	// instruction smuggled in by a file, a web page or an earlier step's prose.
 	"steprole",
+	// A long task's ledger (taskledger.go). Its plan, findings and handoff are
+	// the model's own words and a command's output, read back every segment.
+	"taskstate",
 }
 
 var protectedTagPatterns = compileProtectedTagPatterns()
@@ -157,6 +165,8 @@ var envelopeTagsInUse = []string{
 	activeSpecCloseTag,
 	stepRoleOpenTag,
 	stepRoleCloseTag,
+	taskStateOpenTag,
+	taskStateCloseTag,
 }
 
 // neutralizeDelimiters defuses any tag-like text inside untrusted retrieved

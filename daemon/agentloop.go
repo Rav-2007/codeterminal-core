@@ -267,6 +267,32 @@ type turnLedger struct {
 	// pipelineMenu); nil offers a phase only its own. What a phase may CALL is
 	// still its own role's list, enforced in resolveExecutable.
 	menu *agentRole
+	// segment, when set, makes this loop one SEGMENT of a long task
+	// (longtask.go), bounded by the task's budget instead of the turn's.
+	segment *segmentBudget
+}
+
+// segmentBudget bounds one segment of a long task.
+//
+// IT REPLACES THE TURN'S LIMITS RATHER THAN TIGHTENING THEM, unlike every
+// other ledger field, and that is deliberate: max_iterations and
+// turn_timeout_seconds size a turn, and a long task is the user choosing a
+// different size for this work -- mcp.budget.task, with ceilings of its own,
+// per run. The per-segment byte bound still applies unchanged.
+type segmentBudget struct {
+	// calls is the segment's model-call ceiling (mcp.budget.task.segment_calls).
+	calls int
+	// deadline is the RUN's deadline, not the segment's.
+	deadline time.Time
+	// check is the run's own budget -- dollars, calls, minutes -- asked before
+	// every step with this segment's calls so far, so a run stops within one
+	// call of its limit.
+	check func(segmentCalls int) *protocol.IncompleteInfo
+	// wrapUp is what the call at the segment's limit asks for: a handoff for the
+	// next segment, or a report when the run itself is out of budget.
+	wrapUp func(stop *protocol.IncompleteInfo) string
+	// waited gives the run back time spent at an approval prompt.
+	waited func(time.Duration)
 }
 
 func newTurnLedger() *turnLedger {
@@ -285,6 +311,13 @@ type budget struct {
 	deadlineIsPhaseShare bool
 	maxResultBytes       int
 	maxTotalToolByte     int
+	// taskCheck is a long task's own budget (segmentBudget.check), asked first.
+	taskCheck func(segmentCalls int) *protocol.IncompleteInfo
+	// segment marks a long task's segment, whose call ceiling is its own.
+	segment bool
+	// onWaited gives a long task's run back the time a human spent at an
+	// approval prompt, as the turn's own deadline already is.
+	onWaited func(time.Duration)
 }
 
 func resolveBudget(cfg MCPBudgetConfig, now time.Time) budget {
@@ -324,6 +357,10 @@ type agentResult struct {
 	ToolSignatures []string
 	// Iterations is how many model calls the turn actually made.
 	Iterations int
+	// Persist, when set, is what conversation memory keeps of the turn instead
+	// of FinalText: a long task (longtask.go) is remembered by where it stands,
+	// not by every segment's narration.
+	Persist string
 }
 
 // runAgentLoop drives model call -> tool dispatch -> model call until the model
@@ -372,6 +409,12 @@ func (s *Server) runAgentLoop(
 	}
 	if ledger == nil {
 		ledger = newTurnLedger()
+	}
+	// A LONG TASK'S SEGMENT runs under the task's budget (see segmentBudget).
+	if seg := ledger.segment; seg != nil {
+		bud.maxIterations, bud.maxTurnIterations = seg.calls, seg.calls
+		bud.deadline, bud.deadlineIsPhaseShare = seg.deadline, false
+		bud.taskCheck, bud.segment, bud.onWaited = seg.check, true, seg.waited
 	}
 	// A phase reservation, like a role ceiling, may only TIGHTEN. Written as a
 	// minimum rather than an assignment so that neither a caller bug nor a
@@ -492,7 +535,11 @@ func (s *Server) runAgentLoop(
 			// step. It sends no new tool output (the byte cap is untouched) and
 			// is skipped when the turn is out of time.
 			if turn.calls > 0 && !ledger.preAnswer && !time.Now().After(bud.deadline) {
-				s.wrapUpAtLimit(ctx, turn, model, tools, routing, &full, onToken, onProvider, onReasoning)
+				note := wrapUpNote
+				if ledger.segment != nil && ledger.segment.wrapUp != nil {
+					note = ledger.segment.wrapUp(stop)
+				}
+				s.wrapUpAtLimit(ctx, turn, model, tools, routing, &full, note, onToken, onProvider, onReasoning)
 			}
 			return agentResult{
 				FinalText: full.String(), Incomplete: stop, ToolNames: turn.toolNames,
@@ -756,6 +803,23 @@ const maxIdenticalRepeats = 3
 // worse outcome. Each says which ceiling bit, so "it stopped early" is always
 // answerable.
 func (s *Server) budgetStop(turn *agentTurn, bud budget) *protocol.IncompleteInfo {
+	// A long task's own budget first: it is what the user set for this run, and
+	// naming it is what tells them which number to change.
+	if bud.taskCheck != nil {
+		if stop := bud.taskCheck(turn.calls); stop != nil {
+			s.logger.Printf("agent: stopping the task's run: %s", stop.Detail)
+			return stop
+		}
+	}
+	// A segment's end is the ordinary rhythm of a long task, not a ceiling the
+	// user hit: the next segment carries on from the handoff.
+	if bud.segment && turn.calls >= bud.maxIterations {
+		s.logger.Printf("agent: this segment made its %d model calls (mcp.budget.task.segment_calls)", bud.maxIterations)
+		return &protocol.IncompleteInfo{
+			Reason: protocol.IncompleteAgentBudget,
+			Detail: "this segment reached its step limit; the next one carries on from its handoff.",
+		}
+	}
 	// Checked before the per-phase ceiling: when a pipeline runs out of turn
 	// budget the honest message names the turn, not the phase. Reporting "this
 	// step reached its limit" would send the user to raise max_iterations, which
@@ -887,6 +951,10 @@ func (s *Server) dispatchToolCall(
 	// user who paused to actually read the arguments must not have their turn
 	// killed for taking the care this prompt exists to ask of them.
 	bud.deadline = bud.deadline.Add(decision.waited)
+	// A long task's run gets it back too: its deadline outlives this segment.
+	if bud.onWaited != nil && decision.waited > 0 {
+		bud.onWaited(decision.waited)
+	}
 
 	audit := auditFor(turn.iteration, turn.mode, name, decision.tool, decision.policy, arguments)
 	audit.Source, audit.DenyCause = decision.source, decision.cause
@@ -1509,12 +1577,13 @@ func (s *Server) wrapUpAtLimit(
 	tools []toolSpec,
 	routing providerRouting,
 	full *strings.Builder,
+	note string,
 	onToken func(string) error,
 	onProvider func(string),
 	onReasoning func(string),
 ) {
 	messages := append(append([]chatMessage(nil), turn.messages...),
-		chatMessage{Role: "user", Content: wrapUpNote})
+		chatMessage{Role: "user", Content: note})
 	separated := full.Len() == 0
 	apiKey, apiBase := s.credentials()
 	// The same tools are offered so the request stays valid for a provider

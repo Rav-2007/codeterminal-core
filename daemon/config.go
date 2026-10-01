@@ -455,6 +455,12 @@ func (c *Config) checkUnknownKeys(data []byte) {
 		if err := json.Unmarshal(sub, &mcp); err == nil {
 			if budget, ok := mcp["budget"]; ok {
 				c.warnNested(budget, knownMCPBudgetKeys, "mcp.budget")
+				var b map[string]json.RawMessage
+				if err := json.Unmarshal(budget, &b); err == nil {
+					if task, ok := b["task"]; ok {
+						c.warnNested(task, knownMCPTaskBudgetKeys, "mcp.budget.task")
+					}
+				}
 			}
 			if builtin, ok := mcp["builtin"]; ok {
 				c.warnNested(builtin, knownMCPBuiltinKeys, "mcp.builtin")

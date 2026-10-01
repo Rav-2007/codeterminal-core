@@ -159,6 +159,12 @@ type Server struct {
 	// literal gets correct serialization for free. See lockWorkspace.
 	applyLocks sync.Map
 
+	// runningTasks holds the ID of each long task a request is running
+	// (longtask.go), so a second run of the same task -- two terminals on one
+	// workspace -- is refused rather than racing the first for its ledger.
+	// The zero value is ready to use.
+	runningTasks sync.Map
+
 	// inFlight counts connections currently being handled, so shutdown can wait
 	// for them instead of exiting from under them. Serve adds before dispatching
 	// and the handler goroutine subtracts on the way out; WaitForDrain blocks on
@@ -550,6 +556,18 @@ func (s *Server) serveConn(conn net.Conn) {
 		return
 	}
 	promptReq.Mode = normalizedMode
+	// The long-task fields, fail-closed like the mode above.
+	if err := validTaskRequest(promptReq); err != nil {
+		s.count(func(c *counters) { c.malformed.Add(1) })
+		s.logger.Printf("rejecting prompt: %v", err)
+		_ = enc.Encode(protocol.TokenResponse{
+			ProtocolVersion: protocol.ProtocolVersion,
+			Done:            true,
+			Error:           err.Error(),
+			ErrorClass:      string(ClassInvalidRequest),
+		})
+		return
+	}
 
 	// ctrl+n. Before the spec is read: a reset uses no spec, so a spec file
 	// deleted since must not make starting a new chat fail.
@@ -557,6 +575,12 @@ func (s *Server) serveConn(conn net.Conn) {
 		s.count(func(c *counters) { c.resets.Add(1) })
 		s.resetPersistedHistory()
 		enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Done: true})
+		return
+	}
+
+	// /task review and /task discard read or delete a saved task and call no
+	// model, so they are answered before anything is routed or searched.
+	if s.serveTaskAction(enc, promptReq) {
 		return
 	}
 
@@ -703,6 +727,38 @@ func (s *Server) serveConn(conn net.Conn) {
 		}
 	}
 
+	// A LONG TASK (longtask.go): a new one for a long-task mode, or the saved
+	// one the request names. Opened before anything is spent, so a bad ID or a
+	// task that is already running refuses the request rather than starting
+	// work nobody asked for. Its goal is the SCRUBBED prompt: the ledger keeps
+	// it and sends it again in every segment.
+	var task *taskRun
+	if isLongTaskMode(promptReq.Mode) || promptReq.Task != "" {
+		refuse := func(msg string) {
+			_ = enc.Encode(protocol.TokenResponse{
+				ProtocolVersion: protocol.ProtocolVersion,
+				Done:            true,
+				Error:           msg,
+				ErrorClass:      string(ClassInvalidRequest),
+			})
+		}
+		if !s.agentModeEngaged(hsReq) {
+			refuse("long tasks need agent mode (tools); start the daemon with models.agent.json, as ./run-tui.sh does")
+			return
+		}
+		var taskErr error
+		if task, taskErr = s.openTaskRun(promptReq, cleanPrompt, time.Now()); taskErr != nil {
+			s.logger.Printf("rejecting prompt: task: %v", taskErr)
+			refuse("task: " + taskErr.Error())
+			return
+		}
+		defer s.releaseTask(task)
+		promptReq.Mode = task.ledger.Mode
+		s.logger.Printf("task %s: run %d, mode %s, budget %d min / $%.2f / %d calls in segments of %d",
+			task.ledger.ID, task.ledger.Runs, task.ledger.Mode, task.budget.minutes, task.budget.usd,
+			task.budget.calls, task.budget.segmentCalls)
+	}
+
 	// history/completion note: historyOutcome.Messages (built above from
 	// the CLIENT-sent promptReq.History) is the ONLY history fed to the
 	// model call. s.memory is a separate write-path-plus-hydration store —
@@ -736,6 +792,11 @@ func (s *Server) serveConn(conn net.Conn) {
 	if spec != nil {
 		systemPrompt += "\n\n" + specAnchor(spec)
 	}
+	// The long task's method and mechanics, in the SYSTEM message: the same
+	// words in every segment (taskmodes.go).
+	if task != nil {
+		systemPrompt += "\n\n" + longTaskDirective(task.ledger.Mode, task.budget.segmentCalls)
+	}
 	messages := buildChatMessages(systemPrompt, historyOutcome.Messages, augmentedPrompt)
 
 	// Writing and checking specs are agent work: /spec needs propose_edit held
@@ -762,7 +823,7 @@ func (s *Server) serveConn(conn net.Conn) {
 		// from the client AFTER its request: an approval answer comes back on
 		// this same connection, needs this same decoder, and needs lc to widen
 		// the idle deadline to human scale for the duration of the ask.
-		s.runAgentTurn(ctx, enc, dec, lc, promptReq, decision.Slug, messages, routing, &full, spec)
+		s.runAgentTurn(ctx, enc, dec, lc, promptReq, decision.Slug, messages, routing, &full, spec, task)
 		return
 	}
 

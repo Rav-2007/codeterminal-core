@@ -117,6 +117,19 @@ func (t *usageTally) addUnreported(provider string) {
 	}
 }
 
+// spent is what the turn has billed so far: its calls, and its dollars where
+// the provider reported them. A long task's budget reads it before every step
+// (longtask.go); a call with no reported cost counts as a call and as $0, so
+// the call budget is the backstop for a provider that sends no cost.
+func (t *usageTally) spent() (calls int, usd float64) {
+	if t == nil {
+		return 0, 0
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.u.Calls, t.u.CostUSD
+}
+
 // report is the turn's usage for its final message, or nil when no call
 // reported any -- a turn refused before the model, or a provider that sends
 // no usage.

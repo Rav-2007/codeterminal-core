@@ -57,6 +57,13 @@ func modeWithholds(mode string, t mcp.Tool) bool {
 		return planModeDenies(t)
 	case isCheckMode(mode):
 		return t.ReachesNetwork || t.LaunchesSubprocess
+	case isLongTaskMode(mode):
+		// A long task runs unattended for many segments, working on the local
+		// project: web pages are the one intake it does not need, and every
+		// page is text an attacker may have written. Withholding the network
+		// tools also keeps the menu inside max_advertised_tools once the task's
+		// own tools join it (longtask.go).
+		return t.ReachesNetwork
 	}
 	return false
 }
@@ -377,7 +384,7 @@ func (s *Server) builtinRecordCriterion(ctx context.Context, raw json.RawMessage
 	}
 	v := specVerdict{Status: status, Evidence: strings.TrimSpace(args.Evidence)}
 	if status == protocol.SpecMet {
-		if why := s.unverifiedEvidence(ctx, proposals, v.Evidence); why != "" {
+		if why := s.unverifiedEvidence(ctx, proposals, v.Evidence, true); why != "" {
 			v.Status = protocol.SpecUnknown
 			v.Note = "claimed met, but " + why
 		}
@@ -393,15 +400,20 @@ func (s *Server) builtinRecordCriterion(ctx context.Context, raw json.RawMessage
 	return mcp.Result{Content: fmt.Sprintf("Recorded %s as %s.", id, status)}, nil
 }
 
-// unverifiedEvidence returns why evidence for "met" cannot be verified, or ""
-// when it can: it names a command run this turn that passed, or a file:line
-// that exists in the project.
-func (s *Server) unverifiedEvidence(ctx context.Context, proposals *proposalSink, evidence string) string {
+// unverifiedEvidence returns why evidence cannot be verified, or "" when it
+// can: it names a command run this turn -- one that PASSED, when needPass --
+// or a file:line that exists in the project.
+//
+// needPass is the difference between the two callers. A criterion recorded as
+// met needs a run that passed; a long task's finding (longtask.go) is often
+// proved by a run that FAILED -- the failing test is the bug -- so any run it
+// actually made will do.
+func (s *Server) unverifiedEvidence(ctx context.Context, proposals *proposalSink, evidence string, needPass bool) string {
 	if evidence == "" {
 		return "no evidence was given"
 	}
 	for _, c := range proposals.checks {
-		if c.passed && strings.Contains(evidence, c.command) {
+		if (c.passed || !needPass) && strings.Contains(evidence, c.command) {
 			return ""
 		}
 	}
@@ -419,7 +431,10 @@ func (s *Server) unverifiedEvidence(ctx context.Context, proposals *proposalSink
 			return ""
 		}
 	}
-	return "the evidence names neither a command that passed this turn nor a file:line that exists"
+	if needPass {
+		return "the evidence names neither a command that passed this turn nor a file:line that exists"
+	}
+	return "the evidence names neither a command run in this task nor a file:line that exists"
 }
 
 func criterionIDs(sp *activeSpec) string {

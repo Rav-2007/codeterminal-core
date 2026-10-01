@@ -300,6 +300,38 @@ type PromptRequest struct {
 	// with Spec set, and only for the exact command each one names; ignored
 	// otherwise. The client sends them for the active spec and no other.
 	SpecGrants []string `json:"spec_grants,omitempty"`
+
+	// Task names a LONG TASK this request is about (daemon/longtask.go): the ID
+	// from an earlier TaskStatus, or TaskLatest for the most recent task in this
+	// workspace. Empty with a long-task Mode (task, debug, fix, refactor, hunt)
+	// starts a new task.
+	Task string `json:"task,omitempty"`
+
+	// TaskAction says what to do with Task: "" or TaskActionResume runs it on,
+	// TaskActionReview sends its saved changes for review without calling the
+	// model, and TaskActionDiscard deletes it. Unknown values are refused.
+	TaskAction string `json:"task_action,omitempty"`
+
+	// TaskBudget tightens or widens this run's budget within the daemon's caps
+	// (mcp.budget.task). Zero fields keep the configured value.
+	TaskBudget *TaskBudget `json:"task_budget,omitempty"`
+}
+
+// TaskLatest is the Task value that means "this workspace's most recent task".
+const TaskLatest = "latest"
+
+// PromptRequest.TaskAction values.
+const (
+	TaskActionResume  = "resume"
+	TaskActionReview  = "review"
+	TaskActionDiscard = "discard"
+)
+
+// TaskBudget is what one run of a long task may spend before it stops.
+type TaskBudget struct {
+	Minutes int     `json:"minutes,omitempty"`
+	USD     float64 `json:"usd,omitempty"`
+	Calls   int     `json:"calls,omitempty"`
 }
 
 // Turn is one prior message in a conversation, supplied by the client so
@@ -510,7 +542,45 @@ type TokenResponse struct {
 	// Done this daemon sent, oldest first. A stopped turn has nobody to send its
 	// own Done to, so what it cost rides on the next one. Additive.
 	StoppedUsage []TurnUsage `json:"stopped_usage,omitempty"`
+	// TaskStatus is a long task's progress: sent as each segment starts, and
+	// once more just before the Done. Additive.
+	TaskStatus *TaskStatus `json:"task_status,omitempty"`
 }
+
+// TaskStatus is where a long task stands: what it has spent against its
+// budget, what it last verified, and whether it is still running.
+type TaskStatus struct {
+	ID      string `json:"id"`
+	Mode    string `json:"mode"`
+	Goal    string `json:"goal,omitempty"`
+	State   string `json:"state"`
+	Segment int    `json:"segment"`
+
+	Calls      int     `json:"calls"`
+	MaxCalls   int     `json:"max_calls"`
+	USD        float64 `json:"usd"`
+	MaxUSD     float64 `json:"max_usd"`
+	Seconds    int     `json:"seconds"`
+	MaxSeconds int     `json:"max_seconds"`
+
+	FilesChanged    int    `json:"files_changed,omitempty"`
+	Findings        int    `json:"findings,omitempty"`
+	LastCheck       string `json:"last_check,omitempty"`
+	LastCheckPassed bool   `json:"last_check_passed,omitempty"`
+	// Detail says why a task that is no longer running stopped.
+	Detail string `json:"detail,omitempty"`
+}
+
+// TaskStatus.State values.
+const (
+	TaskStateRunning  = "running"
+	TaskStateFinished = "finished"
+	TaskStateBlocked  = "blocked"
+	TaskStateStuck    = "stuck"
+	TaskStateBudget   = "budget"
+	TaskStateStopped  = "stopped"
+	TaskStateFailed   = "failed"
+)
 
 // TaskItem is one step of the plan a /spec build turn is working through,
 // sent whenever the agent updates the list (TokenResponse.Tasks carries the

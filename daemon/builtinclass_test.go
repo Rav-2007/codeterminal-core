@@ -43,6 +43,9 @@ func TestBuiltinClassTableMatchesTheTools(t *testing.T) {
 	// against the default set alone missed them, and the startup warning called
 	// the shipped config's "allow" on both a setting that "does nothing".
 	tools := append(s.builtinTools(&proposalSink{}, ""), s.builtinTools(&proposalSink{}, modeBuild)...)
+	// And the long-task modes', whose record_finding and finish_task exist
+	// nowhere else.
+	tools = append(tools, s.builtinTools(&proposalSink{}, modeDebug)...)
 
 	// ANTI-VACUITY: a table checked against nothing agrees with everything.
 	if len(tools) < 10 {

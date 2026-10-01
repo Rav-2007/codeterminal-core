@@ -30,6 +30,7 @@ func (s *Server) runAgentTurn(
 	routing providerRouting,
 	full *strings.Builder,
 	spec *activeSpec,
+	task *taskRun,
 ) {
 	s.count(func(c *counters) { c.agentTurns.Add(1) })
 
@@ -73,6 +74,9 @@ func (s *Server) runAgentTurn(
 	proposals.onTasks = func(tasks []protocol.TaskItem) {
 		_ = writeToClient(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Tasks: tasks})
 	}
+	// A long task's run (longtask.go) lives in the sink, beside the working
+	// copy that spans its segments.
+	proposals.task = task
 	// Removed on every path out; finish below has already removed it on the
 	// one path that offers its edits.
 	defer proposals.discard()
@@ -161,6 +165,18 @@ func (s *Server) runAgentTurn(
 		onReasoning func(string),
 		onDegraded func(protocol.Degradation),
 	) (agentResult, error) {
+		if task != nil {
+			// A long task runs its own segments; a pipeline does not apply.
+			if len(phases) > 0 {
+				s.logger.Printf("agent: a long task runs as segments, not as a pipeline; ignoring the pipeline")
+			}
+			return s.runLongTask(ctx, turnStart, registry, model, messages, routing, appr, proposals,
+				onToken, onActivity, onProvider, onReasoning, onDegraded,
+				func(st protocol.TaskStatus) {
+					// Best effort, like every other progress notice.
+					_ = writeToClient(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, TaskStatus: &st})
+				})
+		}
 		if len(phases) == 0 {
 			// Unorchestrated: exactly the call this function has always made,
 			// with a nil role meaning "no scoping, no phase prompt".
@@ -292,5 +308,9 @@ func (s *Server) runAgentTurn(
 	// tools ran rather than what they returned. Tool output must not re-enter
 	// future requests through the history path (D11), and validTurn would
 	// reject a tool role anyway.
-	s.persistTurn(promptReq.Prompt, result.FinalText+summariseToolActivity(result.ToolNames), result.Incomplete)
+	remembered := result.FinalText
+	if result.Persist != "" {
+		remembered = result.Persist
+	}
+	s.persistTurn(promptReq.Prompt, remembered+summariseToolActivity(result.ToolNames), result.Incomplete)
 }
