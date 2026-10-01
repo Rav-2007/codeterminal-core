@@ -27,6 +27,12 @@ func taskPolicies() MCPConfig {
 // returns every message up to the Done, answering each ask "approve for turn".
 func taskRequest(t *testing.T, sockAddr protocol.Address, req protocol.PromptRequest) []protocol.TokenResponse {
 	t.Helper()
+	return taskRequestAnswering(t, sockAddr, req, protocol.ApprovalApproveForTurn)
+}
+
+// taskRequestAnswering is taskRequest with every ask answered by decision.
+func taskRequestAnswering(t *testing.T, sockAddr protocol.Address, req protocol.PromptRequest, decision string) []protocol.TokenResponse {
+	t.Helper()
 	conn, err := protocol.Dial(sockAddr)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
@@ -55,7 +61,7 @@ func taskRequest(t *testing.T, sockAddr protocol.Address, req protocol.PromptReq
 		got = append(got, tok)
 		if a := tok.ToolApproval; a != nil {
 			_ = enc.Encode(protocol.ToolApprovalResponse{ProtocolVersion: protocol.ProtocolVersion, Approval: true,
-				CallID: a.CallID, ArgumentsSHA256: a.ArgumentsSHA256, Decision: protocol.ApprovalApproveForTurn})
+				CallID: a.CallID, ArgumentsSHA256: a.ArgumentsSHA256, Decision: decision})
 		}
 		if tok.Done {
 			return got

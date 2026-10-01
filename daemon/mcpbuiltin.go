@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"mochiii/daemon/mcp"
@@ -312,19 +313,52 @@ func (p *proposalSink) add(b editapply.EditBlock) {
 // this turn's proposal sink. Registered by buildRegistry, which forces their
 // lane and confinement so a tool here cannot misreport itself.
 func (s *Server) builtinTools(proposals *proposalSink, mode string) []mcp.Builtin {
-	tools := []mcp.Builtin{
-		{
-			Tool: mcp.Tool{
-				Name: "read_file",
-				Description: "Read a UTF-8 text file. A workspace-relative path reads from the workspace. " +
-					"An absolute or ~/ path reads anywhere else on the user's machine: the user is asked first, " +
-					"and private keys and credential stores are always refused.",
-				Schema: schema(`{
+	// A LONG TASK READS BY RANGE AND RUNS COMMANDS LONGER (taskmodes.go). Both
+	// are offered in its modes only, so an ordinary turn's request -- the
+	// measured default -- stays byte-identical.
+	readDescription := "Read a UTF-8 text file. A workspace-relative path reads from the workspace. " +
+		"An absolute or ~/ path reads anywhere else on the user's machine: the user is asked first, " +
+		"and private keys and credential stores are always refused."
+	readSchema := `{
 					"type":"object",
 					"properties":{"path":{"type":"string","description":"Workspace-relative path, or an absolute or ~/ path outside the workspace."}},
 					"required":["path"],
 					"additionalProperties":false
-				}`),
+				}`
+	if isLongTaskMode(mode) {
+		readDescription += " start_line and end_line (1-based, inclusive) return just those lines, numbered: " +
+			"the way to read part of a file, or a file past 64 KB."
+		readSchema = `{
+					"type":"object",
+					"properties":{
+						"path":{"type":"string","description":"Workspace-relative path, or an absolute or ~/ path outside the workspace."},
+						"start_line":{"type":"integer","description":"First line to return, 1-based."},
+						"end_line":{"type":"integer","description":"Last line to return, inclusive. Omit for the end of the file."}
+					},
+					"required":["path"],
+					"additionalProperties":false
+				}`
+	}
+	// The same literal as always (schema() keeps its token order), with the
+	// program list widened only when extra_programs applies on this host.
+	execSchema := `{
+					"type":"object",
+					"properties":{
+						"command":{"type":"string","description":"One build or test command: go, npm, make or cargo and its arguments, e.g. go test ./... -- NOT a shell: no pipes, &&, cat or echo. To see a file, use read_file."}
+					},
+					"required":["command"],
+					"additionalProperties":false
+				}`
+	if programs := s.execPrograms(); len(programs) > 4 {
+		execSchema = strings.Replace(execSchema, "go, npm, make or cargo", strings.Join(programs, ", "), 1)
+	}
+
+	tools := []mcp.Builtin{
+		{
+			Tool: mcp.Tool{
+				Name:         "read_file",
+				Description:  readDescription,
+				Schema:       schema(readSchema),
 				ReadOnlyHint: true,
 			},
 			Handler: func(ctx context.Context, raw json.RawMessage) (mcp.Result, error) {
@@ -430,15 +464,10 @@ func (s *Server) builtinTools(proposals *proposalSink, mode string) []mcp.Builti
 				// resource-limit claim are derived from the same config the
 				// handler uses, because a description is consent and consent
 				// obtained for the wrong thing is not consent.
-				Description: s.sandboxExecDescription(),
-				Schema: schema(`{
-					"type":"object",
-					"properties":{
-						"command":{"type":"string","description":"One build or test command: go, npm, make or cargo and its arguments, e.g. go test ./... -- NOT a shell: no pipes, &&, cat or echo. To see a file, use read_file."}
-					},
-					"required":["command"],
-					"additionalProperties":false
-				}`),
+				// The timeout and the programs it states are the ones the
+				// handler uses (execTimeoutFor, execPrograms).
+				Description:  s.sandboxExecDescriptionFor(execTimeoutFor(proposals)),
+				Schema:       schema(execSchema),
 				ReadOnlyHint: false,
 				// RUNS ARBITRARY CODE BY DESIGN. This is what stops
 				// RegisterBuiltin asserting Confined, and what binds an
@@ -491,9 +520,13 @@ func (s *Server) builtinTools(proposals *proposalSink, mode string) []mcp.Builti
 	if isBuildMode(mode) || isLongTaskMode(mode) {
 		tools = append(tools, s.updateTasksTool(proposals))
 	}
-	// A long task's own record and its gate (longtask.go).
+	// A long task's own record and its gate (longtask.go), and the two tools
+	// its work leans on hardest: exact search, and the history a regression
+	// hunt needs. Offered in the long-task modes only, so an ordinary turn's
+	// menu -- the measured default -- is unchanged.
 	if isLongTaskMode(mode) {
-		tools = append(tools, s.recordFindingTool(proposals), s.finishTaskTool(proposals))
+		tools = append(tools, s.recordFindingTool(proposals), s.finishTaskTool(proposals),
+			s.grepTool(proposals), s.gitHistoryTool())
 	}
 
 	// propose_edit in every mode that edits: not plan, not check. In spec mode
@@ -577,7 +610,12 @@ func (s *Server) builtinTools(proposals *proposalSink, mode string) []mcp.Builti
 	// of it reads as complete to every later reviewer. planModeDenies exists so
 	// there is exactly one place where the set of withheld capabilities is
 	// written down.
-	if isPlanMode(mode) || isSpecMode(mode) || isCheckMode(mode) {
+	// The long-task modes too: they withhold the web tools (modeWithholds),
+	// and a tool withheld only at dispatch is still ON THE MENU -- offered,
+	// then refused, every time the model reaches for it. MEASURED on the real
+	// binary: a menu of 12 hid this by cutting the web tools off its
+	// alphabetical end; raised to 16, they were advertised and refused.
+	if isPlanMode(mode) || isSpecMode(mode) || isCheckMode(mode) || isLongTaskMode(mode) {
 		kept := tools[:0]
 		for _, b := range tools {
 			if modeWithholds(mode, b.Tool) {
@@ -657,7 +695,9 @@ func readBoundedFile(path string, max int64) (data []byte, fullSize int64, err e
 
 func (s *Server) builtinReadFile(ctx context.Context, raw json.RawMessage) (mcp.Result, error) {
 	var args struct {
-		Path string `json:"path"`
+		Path      string `json:"path"`
+		StartLine int    `json:"start_line"`
+		EndLine   int    `json:"end_line"`
 	}
 	if err := json.Unmarshal(raw, &args); err != nil {
 		return toolError("the arguments were not a valid JSON object: %v", err)
@@ -682,6 +722,9 @@ func (s *Server) builtinReadFile(ctx context.Context, raw json.RawMessage) (mcp.
 	if info.IsDir() {
 		return toolError("%s is a directory; use list_directory", args.Path)
 	}
+	if args.StartLine != 0 || args.EndLine != 0 {
+		return readFileLines(full, args.Path, args.StartLine, args.EndLine)
+	}
 
 	data, fullSize, err := readBoundedFile(full, maxBuiltinReadBytes)
 	if err != nil {
@@ -698,6 +741,52 @@ func (s *Server) builtinReadFile(ctx context.Context, raw json.RawMessage) (mcp.
 			args.Path, fullSize, maxBuiltinReadBytes)
 	}
 	return mcp.Result{Content: string(data) + truncated}, nil
+}
+
+// maxRangedReadBytes bounds the READ behind a ranged read_file. A file far
+// past maxBuiltinReadBytes can be read a slice at a time, which is the point;
+// what goes back is still bounded by maxBuiltinReadBytes.
+const maxRangedReadBytes = 8 << 20
+
+// readFileLines returns lines start..end (1-based, inclusive; end 0 is the
+// last line) numbered, so a finding or an edit can cite them -- the way a long
+// task reads a large file, or one part of it, without paying for the rest.
+func readFileLines(full, shown string, start, end int) (mcp.Result, error) {
+	if start < 1 {
+		start = 1
+	}
+	data, size, err := readBoundedFile(full, maxRangedReadBytes)
+	if err != nil {
+		return toolError("cannot read %s", shown)
+	}
+	if size > maxRangedReadBytes {
+		return toolError("%s is %d bytes; a ranged read opens files up to %d MB", shown, size, maxRangedReadBytes>>20)
+	}
+	lines := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
+	if start > len(lines) {
+		return toolError("%s has %d lines; start_line %d is past its end", shown, len(lines), start)
+	}
+	if end <= 0 || end > len(lines) {
+		end = len(lines)
+	}
+	if end < start {
+		return toolError("end_line %d is before start_line %d", end, start)
+	}
+	var b strings.Builder
+	width := len(strconv.Itoa(end))
+	last := start - 1
+	for i := start; i <= end; i++ {
+		line := fmt.Sprintf("%*d| %s\n", width, i, lines[i-1])
+		if b.Len()+len(line) > maxBuiltinReadBytes {
+			fmt.Fprintf(&b, "[... stopped at line %d: one read returns at most %d bytes; ask for the rest from line %d ...]\n",
+				last, maxBuiltinReadBytes, last+1)
+			break
+		}
+		b.WriteString(line)
+		last = i
+	}
+	fmt.Fprintf(&b, "[%s: lines %d-%d of %d]", shown, start, last, len(lines))
+	return mcp.Result{Content: b.String()}, nil
 }
 
 func (s *Server) builtinListDirectory(ctx context.Context, raw json.RawMessage) (mcp.Result, error) {

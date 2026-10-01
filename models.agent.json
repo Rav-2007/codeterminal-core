@@ -98,7 +98,9 @@
         "record_criterion": "allow",
         "update_tasks": "allow",
         "record_finding": "allow",
-        "finish_task": "allow"
+        "finish_task": "allow",
+        "grep": "allow",
+        "git_history": "ask"
       }
     },
     "budget": {

@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"net"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -187,6 +188,49 @@ type MCPBuiltinConfig struct {
 	// Tools maps a built-in tool name to "deny", "ask" or "allow". Unlisted is
 	// "ask".
 	Tools map[string]string `json:"tools,omitempty"`
+
+	// ExtraPrograms lets sandbox_exec run programs beyond go, npm, make and
+	// cargo -- pytest, python3, node, a project's own test runner -- and ONLY
+	// on a host that confines the command (bwrap or Landlock). Each is as able
+	// to run arbitrary code as `make` already is (a recipe IS shell); the
+	// sandbox, not this list, is what contains that, so without one these are
+	// refused. Plain program names only, and a shell or the like is refused at
+	// load: one would make the list mean nothing.
+	ExtraPrograms []string `json:"extra_programs,omitempty"`
+}
+
+// extraProgramName is a program extra_programs may name: no path, no shell
+// syntax, nothing that could be read as an option.
+var extraProgramName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$`)
+
+// deniedExtraPrograms are programs whose whole job is running other programs,
+// changing privileges, or reaching other machines: one of them would turn the
+// list into "anything". Not exhaustive -- the sandbox is the boundary -- but
+// these are the mistakes worth refusing by name.
+var deniedExtraPrograms = map[string]bool{
+	"sh": true, "bash": true, "zsh": true, "fish": true, "dash": true, "ksh": true, "csh": true, "tcsh": true,
+	"env": true, "sudo": true, "su": true, "doas": true, "pkexec": true, "nohup": true, "setsid": true,
+	"xargs": true, "timeout": true, "nice": true, "strace": true, "busybox": true,
+	"ssh": true, "scp": true, "sftp": true, "rsync": true, "curl": true, "wget": true, "nc": true, "ncat": true,
+	"socat": true, "telnet": true, "git": true, "docker": true, "podman": true, "kubectl": true,
+	"systemctl": true, "systemd-run": true, "crontab": true, "at": true,
+	"rm": true, "mv": true, "cp": true, "dd": true, "chmod": true, "chown": true, "mount": true,
+}
+
+// validateExtraPrograms refuses an extra_programs entry the daemon cannot
+// safely honour, as a hard error: the user believes it is in force.
+func validateExtraPrograms(names []string) error {
+	for _, name := range names {
+		switch {
+		case !extraProgramName.MatchString(name):
+			return fmt.Errorf("mcp.builtin.extra_programs: %q is not a plain program name (no paths, spaces "+
+				"or options)", name)
+		case deniedExtraPrograms[strings.ToLower(name)]:
+			return fmt.Errorf("mcp.builtin.extra_programs: %q is refused: it runs other programs, changes "+
+				"privileges or reaches other machines, which would make the list allow anything", name)
+		}
+	}
+	return nil
 }
 
 // MCPWebConfig configures the two tools that leave the machine.
@@ -383,6 +427,9 @@ type MCPTaskBudgetConfig struct {
 	MaxUSD       float64 `json:"max_usd,omitempty"`
 	MaxCalls     int     `json:"max_calls,omitempty"`
 	SegmentCalls int     `json:"segment_calls,omitempty"`
+	// ExecSeconds is how long one sandbox_exec command may run in a long task:
+	// a real test suite, not the 30 s an ordinary turn allows.
+	ExecSeconds int `json:"exec_seconds,omitempty"`
 }
 
 // Tool policies. The vocabulary is closed: anything else in a config file is a
@@ -476,16 +523,18 @@ const (
 	defaultTaskCalls        = 150
 	maxTaskCalls            = 1000
 	defaultTaskSegmentCalls = 20
+	defaultTaskExecSeconds  = 300
+	maxTaskExecSeconds      = 900
 )
 
 var (
 	knownMCPKeys        = []string{"enabled", "builtin", "servers", "budget", "pipeline", "no_working_copy"}
-	knownMCPBuiltinKeys = []string{"disabled", "tools"}
+	knownMCPBuiltinKeys = []string{"disabled", "tools", "extra_programs"}
 	knownMCPServerKeys  = []string{"command", "args", "env", "tools", "acknowledged_unconfined", "disabled"}
 	knownMCPBudgetKeys  = []string{"max_iterations", "turn_timeout_seconds", "max_tool_result_bytes",
 		"max_total_tool_bytes", "max_advertised_tools", "max_message_bytes",
 		"connect_timeout_seconds", "max_turn_iterations", "task"}
-	knownMCPTaskBudgetKeys = []string{"max_minutes", "max_usd", "max_calls", "segment_calls"}
+	knownMCPTaskBudgetKeys = []string{"max_minutes", "max_usd", "max_calls", "segment_calls", "exec_seconds"}
 )
 
 // The resolved* accessors apply the "0 means default" convention. All are
@@ -545,6 +594,24 @@ func (b MCPBudgetConfig) resolvedMaxAdvertisedTools() int {
 	return b.MaxAdvertisedTools
 }
 
+// defaultTaskMaxAdvertisedTools is a long task's menu cap when the user set
+// none. The cap's remaining reason is token cost (see the note on
+// defaultMaxAdvertisedTools: accuracy measured flat from 5 to 12), and a long
+// task's tool list sits in the opening every one of its segments shares, which
+// the provider bills at its cache price after the first call. Its own tools
+// -- the plan, findings, the gate, grep, history -- would otherwise push the
+// edit and test tools off a menu of 12.
+const defaultTaskMaxAdvertisedTools = 16
+
+// resolvedMaxAdvertisedToolsFor is the cap for a turn in mode: the user's own
+// setting whenever they made one, then the mode's default.
+func (b MCPBudgetConfig) resolvedMaxAdvertisedToolsFor(mode string) int {
+	if b.MaxAdvertisedTools <= 0 && isLongTaskMode(mode) {
+		return defaultTaskMaxAdvertisedTools
+	}
+	return b.resolvedMaxAdvertisedTools()
+}
+
 // resolvedMaxMessageBytes returns 0 for "unset", which mcp.Connect reads as
 // mcp.DefaultMaxMessageBytes. Deliberately NOT resolved to the default here:
 // the number belongs next to the measurement that justifies it, in the package
@@ -595,6 +662,9 @@ func (c *Config) validateMCP() error {
 	m := c.MCP
 
 	if err := validateToolPolicies("mcp.builtin", m.Builtin.Tools); err != nil {
+		return err
+	}
+	if err := validateExtraPrograms(m.Builtin.ExtraPrograms); err != nil {
 		return err
 	}
 
@@ -689,6 +759,7 @@ func (c *Config) clampMCPRanges() {
 		clamp("task.max_minutes", &t.MaxMinutes, maxTaskMinutes)
 		clamp("task.max_calls", &t.MaxCalls, maxTaskCalls)
 		clamp("task.segment_calls", &t.SegmentCalls, maxMaxIterations)
+		clamp("task.exec_seconds", &t.ExecSeconds, maxTaskExecSeconds)
 		if usd := t.MaxUSD; usd < 0 {
 			c.warnf("mcp.budget.task.max_usd %.2f is negative; using the default", usd)
 			t.MaxUSD = 0
@@ -847,6 +918,9 @@ var builtinToolClasses = map[string]builtinClass{
 	// record of a finding, and its finish gate.
 	"record_finding": classConfined,
 	"finish_task":    classConfined,
+	"grep":           classConfined,
+	// It starts git against config the repository supplies (githistory.go).
+	"git_history": classLaunches,
 }
 
 // builtinToolClass classifies a configured built-in name. An unknown name is

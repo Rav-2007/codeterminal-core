@@ -754,10 +754,24 @@ first three.
 - **Narrower reach.** The web tools are withheld: an unattended run works on the
   local project, and a web page is text anyone could have written. "Yes for this
   turn" at an approval lasts the whole task.
+- **Tools for the job,** in the long-task modes only, so an ordinary turn's tools
+  are unchanged:
+  - `grep`: exact or regex search, over only the files `read_file` could open;
+  - `git_history` (log, show, diff, blame): read-only and hardened against a
+    repository's own config. It never compares the working tree, and it withholds
+    files `read_file` would refuse;
+  - `read_file` line ranges, for large files;
+  - commands that run up to 5 minutes (`exec_seconds`).
+- **Long command output keeps its failures.** Output past the result cap used to
+  be cut to its first bytes. It is now digested in every mode: its start, every
+  line that reports a failure, and its end.
+- **More test runners, only where confined.** List them in
+  `mcp.builtin.extra_programs`, for example `["pytest", "node"]`. They run only
+  on a host whose commands are sandboxed. Shells and the like are refused.
 
 ```jsonc
 "budget": {
-  "task": { "max_minutes": 30, "max_usd": 0.5, "max_calls": 150, "segment_calls": 20 }
+  "task": { "max_minutes": 30, "max_usd": 0.5, "max_calls": 150, "segment_calls": 20, "exec_seconds": 300 }
 }
 ```
 

@@ -79,8 +79,9 @@ const debugMethod = "THE USER WANTS A BUG FOUND AND FIXED AT ITS ROOT.\n" +
 	"1. Reproduce: find or write the smallest command or test that shows the failure, run it, and record " +
 	"it.\n" +
 	"2. Localize: form one specific hypothesis at a time and test it, against the code and with runs (a " +
-	"focused test, a temporary print). Record what each test ruled in or out, and move on only with " +
-	"evidence.\n" +
+	"focused test, a temporary print). grep finds where an error message or a name comes from; if it " +
+	"used to work, git_history shows what changed since. Record what each test ruled in or out, and move " +
+	"on only with evidence.\n" +
 	"3. Fix the cause, not the symptom, with the smallest change that does it.\n" +
 	"4. Verify: the reproduction passes and the surrounding tests still pass. Remove anything temporary " +
 	"you added.\n" +
@@ -93,7 +94,7 @@ const fixMethod = "THE USER WANTS THIS FIXED. Reproduce the problem with a comma
 const refactorMethod = "THE USER WANTS A REFACTOR, AND BEHAVIOUR MUST NOT CHANGE.\n" +
 	"1. Baseline: before editing, build and run the tests, and record the result. A failure that was " +
 	"there before you started is not yours, but say so.\n" +
-	"2. Plan the change as small steps with update_tasks.\n" +
+	"2. Plan the change as small steps with update_tasks. grep finds every use of what you change.\n" +
 	"3. After every step, build and run the tests, and fix what broke before the next step.\n" +
 	"4. Keep public names and signatures unless the user asked you to change them, and list every one " +
 	"you did change.\n" +
@@ -120,6 +121,8 @@ type taskBudget struct {
 	usd          float64
 	calls        int
 	segmentCalls int
+	// execSeconds bounds one sandbox_exec command (mcp_exec.go).
+	execSeconds int
 }
 
 func (b taskBudget) duration() time.Duration { return time.Duration(b.minutes) * time.Minute }
@@ -139,6 +142,7 @@ func resolveTaskBudget(set *MCPTaskBudgetConfig, req *protocol.TaskBudget) taskB
 		usd:          cfg.MaxUSD,
 		calls:        orDefault(cfg.MaxCalls, defaultTaskCalls),
 		segmentCalls: orDefault(cfg.SegmentCalls, defaultTaskSegmentCalls),
+		execSeconds:  orDefault(cfg.ExecSeconds, defaultTaskExecSeconds),
 	}
 	if b.usd <= 0 {
 		b.usd = defaultTaskUSD

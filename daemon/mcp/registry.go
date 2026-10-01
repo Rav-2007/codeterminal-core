@@ -54,6 +54,13 @@ type LaunchPlan struct {
 	// Key identifies the launch the daemon will perform, and is what an
 	// approval for it is recorded under. Opaque to this package.
 	Key string
+	// Repeatable marks a launch that EVERY call makes afresh -- a short-lived
+	// process of the same program, run with the same hardening each time
+	// (git_history) -- rather than a server started once and kept. Only then
+	// may an approve-for-turn cover the turn's later launches under the same
+	// Key: the user was asked about exactly those. A server's launch is never
+	// Repeatable, so restarting one is still a question.
+	Repeatable bool
 }
 
 // Policy is the resolved decision for one tool: deny, ask, or allow. The

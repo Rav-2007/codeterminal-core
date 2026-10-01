@@ -130,6 +130,13 @@ type agentTurn struct {
 	mode   string
 }
 
+// repeatableLaunchGrantKey keys an approve-for-turn on a Repeatable launch:
+// the tool and the launch, never the arguments -- each call's arguments differ
+// and each call starts the same program.
+func repeatableLaunchGrantKey(qualified, key string) string {
+	return qualified + "\x00launch\x00" + key
+}
+
 // grantKey is what an approve-for-turn decision is remembered under.
 //
 // ONE FUNCTION FOR BOTH THE WRITE AND THE READ. A grant stored under one key and
@@ -493,13 +500,13 @@ func (s *Server) runAgentLoop(
 	// to be visible in ordinary use.
 	if dropped := registry.Dropped(); len(dropped) > 0 && onDegraded != nil {
 		s.logger.Printf("agent: max_advertised_tools (%d) left out %d tool(s): %s",
-			s.cfg.MCP.Budget.resolvedMaxAdvertisedTools(), len(dropped), strings.Join(dropped, ", "))
+			s.cfg.MCP.Budget.resolvedMaxAdvertisedToolsFor(mode), len(dropped), strings.Join(dropped, ", "))
 		onDegraded(protocol.Degradation{
 			Component: protocol.DegradedToolMenuTruncated,
 			Detail: fmt.Sprintf("%d configured tool(s) were not offered to the model this turn, "+
 				"because mcp.budget.max_advertised_tools is %d. A wider menu measurably makes the "+
 				"model choose worse, so the limit is deliberate — raise it if you need these tools.",
-				len(dropped), s.cfg.MCP.Budget.resolvedMaxAdvertisedTools()),
+				len(dropped), s.cfg.MCP.Budget.resolvedMaxAdvertisedToolsFor(mode)),
 		})
 	}
 
@@ -1365,6 +1372,15 @@ func (s *Server) resolveExecutable(
 	if !launch.Needed && outside == "" && turn.grants[grantKey(spec, qualified, arguments)] {
 		return toolDecision{tool: spec, policy: policy, source: auditTurnGrant, run: true}
 	}
+	// THE ONE LAUNCH A GRANT MAY COVER: a Repeatable one (mcp.LaunchPlan),
+	// approved for the turn. Every call of such a tool starts the same
+	// short-lived, hardened program, so "yes for this turn" was an answer about
+	// exactly these launches. A server's launch is never Repeatable, so the
+	// rule above -- a grant never covers a relaunch -- stands for it.
+	if launch.Needed && launch.Repeatable && outside == "" && turn.grants[repeatableLaunchGrantKey(qualified, launch.Key)] {
+		return toolDecision{tool: spec, policy: policy, source: auditTurnGrant, run: true,
+			launchKey: launch.Key, launchProgram: launch.Program}
+	}
 
 	// A grant for this exact command while the spec is active (specgrant.go).
 	// Same exclusions as a turn grant, and only where it could have been
@@ -1466,6 +1482,10 @@ func (s *Server) resolveExecutable(
 		// above refuses to skip.
 		if answer.Decision == protocol.ApprovalApproveForTurn {
 			turn.grant(grantKey(spec, qualified, arguments))
+			// And, for a Repeatable launch only, the launches themselves.
+			if launch.Needed && launch.Repeatable {
+				turn.grant(repeatableLaunchGrantKey(qualified, launch.Key))
+			}
 		}
 		// The client now holds this grant for later turns; for the rest of
 		// this one the daemon honours it too.

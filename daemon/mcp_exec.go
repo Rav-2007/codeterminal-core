@@ -40,6 +40,88 @@ var execAllowedBinaries = map[string]bool{
 
 const execTimeout = 30 * time.Second
 
+// execTimeoutFor is how long one command may run in this turn: a long task's
+// budget says (mcp.budget.task.exec_seconds), because a real test suite does
+// not fit in an ordinary turn's 30 s.
+func execTimeoutFor(p *proposalSink) time.Duration {
+	if p != nil && p.task != nil && p.task.budget.execSeconds > 0 {
+		return time.Duration(p.task.budget.execSeconds) * time.Second
+	}
+	return execTimeout
+}
+
+// execPrograms is every program sandbox_exec will run on this host: the four
+// always, and mcp.builtin.extra_programs when -- only when -- the host confines
+// the command.
+func (s *Server) execPrograms() []string {
+	extras := s.extraPrograms()
+	return execProgramsWith(extras, len(extras) > 0 && s.sandboxExecConfined())
+}
+
+// execRefusal says why bin may not run, or "" when it may.
+func (s *Server) execRefusal(bin string) string {
+	if execAllowedBinaries[bin] {
+		return ""
+	}
+	extras := s.extraPrograms()
+	return execRefusalWith(bin, extras, len(extras) > 0 && s.sandboxExecConfined())
+}
+
+func (s *Server) extraPrograms() []string {
+	if s.cfg == nil {
+		return nil
+	}
+	return s.cfg.MCP.Builtin.ExtraPrograms
+}
+
+// execProgramsWith and execRefusalWith are the rule itself, given whether this
+// host confines the command -- the one input a test cannot otherwise choose.
+func execProgramsWith(extras []string, confined bool) []string {
+	programs := []string{"go", "npm", "make", "cargo"}
+	if confined {
+		for _, p := range extras {
+			if !execAllowedBinaries[p] {
+				programs = append(programs, p)
+			}
+		}
+	}
+	return programs
+}
+
+func execRefusalWith(bin string, extras []string, confined bool) string {
+	if execAllowedBinaries[bin] {
+		return ""
+	}
+	for _, p := range extras {
+		if p != bin {
+			continue
+		}
+		if !confined {
+			return fmt.Sprintf("%q is in mcp.builtin.extra_programs, which applies only where commands run "+
+				"in a sandbox, and this host has none (install bubblewrap)", bin)
+		}
+		return ""
+	}
+	return fmt.Sprintf("this tool runs build and test commands only; %q is not one of %s",
+		bin, programList(execProgramsWith(extras, confined)))
+}
+
+// programList says a list the way a sentence does: "go, npm, make or cargo".
+func programList(programs []string) string {
+	if len(programs) < 2 {
+		return strings.Join(programs, "")
+	}
+	return strings.Join(programs[:len(programs)-1], ", ") + " or " + programs[len(programs)-1]
+}
+
+// humanDuration says a timeout the way the approval prompt should: 30s, 5 min.
+func humanDuration(d time.Duration) string {
+	if d >= time.Minute && d%time.Minute == 0 {
+		return fmt.Sprintf("%d min", int(d/time.Minute))
+	}
+	return fmt.Sprintf("%ds", int(d/time.Second))
+}
+
 // execReapDrainDelay bounds how long Run waits, after the foreground command has
 // exited, for a process the command backgrounded to close the stdout/stderr it
 // inherited. Under landlock (no PID namespace) such a process would otherwise
@@ -186,6 +268,14 @@ func (s *Server) sandboxExecConfined() bool { return mcp.Confines(s.sandboxExecC
 // The two are reported separately because they are separate: a command can be
 // inside a namespace and able to exhaust the host, or bounded and unconfined.
 func (s *Server) sandboxExecDescription() string {
+	return s.sandboxExecDescriptionFor(execTimeout)
+}
+
+// sandboxExecDescriptionFor is the description for a turn whose commands may
+// run for timeout -- a long task's are longer (taskmodes.go) -- naming every
+// program this host lets it run. Both are what the approving human is told,
+// so both come from the values the handler uses.
+func (s *Server) sandboxExecDescriptionFor(timeout time.Duration) string {
 	cfg := s.sandboxExecConfig()
 	confinement := sandboxConfinementSentence(cfg)
 
@@ -194,7 +284,8 @@ func (s *Server) sandboxExecDescription() string {
 		limits = "NO memory or process limit on this host, so a runaway build can exhaust it."
 	}
 
-	return "Run a build or test command (go, npm, make, cargo) in the workspace root, with a 30s timeout. " +
+	return "Run a build or test command (" + strings.Join(s.execPrograms(), ", ") + ") in the workspace root, " +
+		"with a " + humanDuration(timeout) + " timeout. " +
 		"It is not a shell: one program and its arguments, no pipes or &&. " +
 		confinement + " " + limits + " It can reach the network, which its purpose requires. " +
 		"These tools execute project-supplied scripts (Makefile recipes, package.json scripts, build.rs), " +
@@ -366,7 +457,7 @@ func (s *Server) builtinRepoMap(ctx context.Context) (mcp.Result, error) {
 }
 
 func (s *Server) builtinSandboxExec(ctx context.Context, raw json.RawMessage) (mcp.Result, error) {
-	return s.builtinSandboxExecIn(ctx, raw, s.workspace)
+	return s.builtinSandboxExecIn(ctx, raw, s.workspace, execTimeout)
 }
 
 // builtinSandboxExecStaged runs the command in the turn's working copy when
@@ -379,7 +470,7 @@ func (s *Server) builtinSandboxExecStaged(ctx context.Context, raw json.RawMessa
 	if st != nil {
 		root = st.root
 	}
-	res, err := s.builtinSandboxExecIn(ctx, raw, root)
+	res, err := s.builtinSandboxExecIn(ctx, raw, root, execTimeoutFor(proposals))
 	if st != nil {
 		res.Content = st.toReal(res.Content)
 	}
@@ -395,7 +486,7 @@ func (s *Server) builtinSandboxExecStaged(ctx context.Context, raw json.RawMessa
 // builtinSandboxExecIn runs one command with root as its workspace: the
 // directory it starts in and the one the sandbox lets it write. Its HOME (and
 // so its build caches) stays the project's, so a working copy builds warm.
-func (s *Server) builtinSandboxExecIn(ctx context.Context, raw json.RawMessage, root string) (mcp.Result, error) {
+func (s *Server) builtinSandboxExecIn(ctx context.Context, raw json.RawMessage, root string, timeout time.Duration) (mcp.Result, error) {
 	var args struct {
 		Command string `json:"command"`
 	}
@@ -409,8 +500,8 @@ func (s *Server) builtinSandboxExecIn(ctx context.Context, raw json.RawMessage, 
 	}
 
 	bin := parts[0]
-	if !execAllowedBinaries[bin] {
-		return toolError("this tool runs build and test commands only; %q is not one of go, npm, make or cargo", bin)
+	if why := s.execRefusal(bin); why != "" {
+		return toolError("%s", why)
 	}
 
 	// Ask for a sandbox; take what the host can give. The SAME cfg the approval
@@ -460,7 +551,7 @@ func (s *Server) builtinSandboxExecIn(ctx context.Context, raw json.RawMessage, 
 		return toolError("preparing a sandbox for %q: %v", bin, err)
 	}
 
-	execCtx, cancel := context.WithTimeout(ctx, execTimeout)
+	execCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(execCtx, execBin, execArgs...)
@@ -547,12 +638,14 @@ func (s *Server) builtinSandboxExecIn(ctx context.Context, raw json.RawMessage, 
 		cmd.ExtraFiles = append(cmd.ExtraFiles, f)
 	}
 	err = cmd.Run()
-	result := buf.String()
+	// A long output keeps its failures and its end (execdigest.go): clipped
+	// later to its first bytes, it would keep only the banner.
+	result := commandDigest(buf.String(), s.execDigestLimit())
 
 	if err != nil {
 		switch {
 		case execCtx.Err() == context.DeadlineExceeded:
-			return mcp.Result{Content: fmt.Sprintf("Command timed out after %s. Output so far:\n%s", execTimeout, result)}, nil
+			return mcp.Result{Content: fmt.Sprintf("Command timed out after %s. Output so far:\n%s", humanDuration(timeout), result)}, nil
 		case cmd.ProcessState != nil && cmd.ProcessState.Success():
 			// The command exited 0; the only reason Run returned an error is
 			// WaitDelay closing pipes a backgrounded process held open past that

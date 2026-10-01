@@ -130,7 +130,7 @@ func laneBLaunchConfig(name string, srv MCPServerConfig, cfg *Config, stderr io.
 // server's tools should cost the user those tools and not their turn.
 func (s *Server) buildRegistry(ctx context.Context, logger *log.Logger, proposals *proposalSink, mode string) (*mcp.Registry, []error) {
 	cfg := s.cfg
-	registry := mcp.NewRegistry(configPolicy{cfg: cfg}, cfg.MCP.Budget.resolvedMaxAdvertisedTools())
+	registry := mcp.NewRegistry(configPolicy{cfg: cfg}, cfg.MCP.Budget.resolvedMaxAdvertisedToolsFor(mode))
 
 	if !cfg.MCP.Builtin.Disabled {
 		for _, b := range s.builtinTools(proposals, mode) {
