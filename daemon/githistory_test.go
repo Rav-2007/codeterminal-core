@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -218,5 +219,81 @@ func TestGitHistoryNeutralisesWhatTheTUIDoes(t *testing.T) {
 		if !have[m[1]] {
 			t.Errorf("the TUI neutralises %q and git_history does not", m[1])
 		}
+	}
+}
+
+// A SECRET FILE IS WITHHELD HOWEVER GIT WRITES ITS NAME, ON EITHER SIDE. FOUND
+// 2026-10-01, both reproduced against a real repository before the fix: git
+// quotes a path holding a non-ASCII letter ("a/conf \303\251/server.pem"),
+// and that header went unrecognised; and only the a/ side was checked, so a
+// commit renaming notes.txt to .env showed the new file.
+//
+// Neuter checks: stop unquoteGitPath unquoting a quoted side, or check only
+// the first path diffSectionPaths returns.
+func TestGitHistoryWithholdsQuotedAndRenamedSecrets(t *testing.T) {
+	root := gitRepo(t, map[string]string{"conf é/server.pem": "MATERIAL-QUOTED-PATH\n", "notes.txt": "one\ntwo\nthree\nfour\nfive\nsix\n"})
+	s := builtinTestServer(t)
+	s.workspace = root
+	out, ok := gitHistory(t, s, map[string]any{"command": "show"})
+	if !ok || strings.Contains(out, "MATERIAL-QUOTED-PATH") || !strings.Contains(out, "withheld") {
+		t.Errorf("a secret file under a quoted path was not withheld:\n%s", out)
+	}
+
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", root}, args...)...)
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
+			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	if err := os.Remove(filepath.Join(root, "notes.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("one\ntwo\nthree\nfour\nfive\nTOKEN=RENAMED-SECRET\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git("add", "-A")
+	git("commit", "-q", "-m", "rename to a secret name")
+	for _, args := range []map[string]any{{"command": "show"}, {"command": "diff", "rev": "HEAD"}} {
+		out, ok := gitHistory(t, s, args)
+		if !ok || strings.Contains(out, "RENAMED-SECRET") {
+			t.Errorf("%v showed a file renamed TO a secret name:\n%s", args["command"], out)
+		}
+		if !strings.Contains(out, "notes.txt") {
+			t.Errorf("%v: the commit itself should still show (its stat names the files):\n%s", args["command"], out)
+		}
+	}
+}
+
+// The header parser, case by case: every name a section header can carry.
+func TestDiffSectionPathsReadsEveryHeaderShape(t *testing.T) {
+	cases := []struct {
+		line string
+		want []string // all must be among the paths found
+	}{
+		{"diff --git a/app.go b/app.go\n", []string{"app.go"}},
+		{"diff --git a/notes.txt b/.env\n", []string{"notes.txt", ".env"}},
+		{"diff --git \"a/conf \\303\\251/server.pem\" \"b/conf \\303\\251/server.pem\"\n", []string{"conf é/server.pem"}},
+		{"diff --git a/x.txt \"b/caf\\303\\251/.env\"\n", []string{"x.txt", "café/.env"}},
+		{"diff --git a/a b/c.txt b/a b/c.txt\n", []string{"a b/c.txt"}},
+		{"diff --cc \"conf \\303\\251/k.pem\"\n", []string{"conf é/k.pem"}},
+		{"diff --combined main.go\n", []string{"main.go"}},
+	}
+	for _, c := range cases {
+		got, ok := diffSectionPaths(c.line)
+		if !ok {
+			t.Errorf("%q was not read as a header", c.line)
+			continue
+		}
+		for _, w := range c.want {
+			if !slices.Contains(got, w) {
+				t.Errorf("%q: paths %q lack %q", c.line, got, w)
+			}
+		}
+	}
+	if _, ok := diffSectionPaths("index 1234567..89abcde 100644\n"); ok {
+		t.Error("an index line was read as a header")
 	}
 }

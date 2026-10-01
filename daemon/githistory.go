@@ -216,14 +216,20 @@ func gitHistoryEnv() []string {
 	return env
 }
 
-// withholdSecretFileSections drops each "diff --git" section of a patch whose
-// file read_file would refuse, and counts them.
+// withholdSecretFileSections drops each "diff --git" section of a patch that
+// names a file read_file would refuse -- on EITHER side, so a commit renaming
+// notes.txt to .env is withheld too -- and counts them.
 func withholdSecretFileSections(patch string) (string, int) {
 	var b strings.Builder
 	hiding, withheld := false, 0
 	for _, line := range strings.SplitAfter(patch, "\n") {
-		if p, ok := diffSectionPath(line); ok {
-			hiding = refusedHistoryPath(p)
+		if paths, ok := diffSectionPaths(line); ok {
+			hiding = false
+			for _, p := range paths {
+				if refusedHistoryPath(p) {
+					hiding = true
+				}
+			}
 			if hiding {
 				withheld++
 			}
@@ -235,19 +241,63 @@ func withholdSecretFileSections(patch string) (string, int) {
 	return b.String(), withheld
 }
 
-// diffSectionPath is the file a patch section header names.
-func diffSectionPath(line string) (string, bool) {
-	for _, prefix := range []string{"diff --git a/", "diff --cc ", "diff --combined "} {
-		if rest, ok := strings.CutPrefix(strings.TrimRight(line, "\n"), prefix); ok {
-			if prefix == "diff --git a/" {
-				if i := strings.Index(rest, " b/"); i >= 0 {
-					rest = rest[:i]
-				}
-			}
-			return rest, true
+// diffSectionPaths is every file a patch section header names, or false when
+// line is not a header.
+//
+// GIT QUOTES A PATH holding anything unusual -- a non-ASCII letter, a tab, a
+// quote -- as a C string: diff --git "a/conf \303\251/x.pem" "b/...". Such a
+// header used to go unrecognised, and its section through. FOUND 2026-10-01,
+// with only the a/ side checked as well: a rename TO .env showed the new file.
+func diffSectionPaths(line string) ([]string, bool) {
+	line = strings.TrimRight(line, "\n")
+	if rest, ok := strings.CutPrefix(line, "diff --git "); ok {
+		return diffGitPaths(rest), true
+	}
+	for _, prefix := range []string{"diff --cc ", "diff --combined "} {
+		if rest, ok := strings.CutPrefix(line, prefix); ok {
+			return []string{unquoteGitPath(rest)}, true
 		}
 	}
-	return "", false
+	return nil, false
+}
+
+// diffGitPaths splits a "diff --git" header's two sides. An unquoted side can
+// hold " b/" itself, so EVERY place the second side could begin gives a
+// candidate pair: withholding a section too many is safe, one too few is the
+// leak.
+func diffGitPaths(rest string) []string {
+	var out []string
+	if strings.HasPrefix(rest, `"`) {
+		if q, err := strconv.QuotedPrefix(rest); err == nil {
+			return []string{unquoteGitPath(q), unquoteGitPath(strings.TrimPrefix(rest[len(q):], " "))}
+		}
+	}
+	for i := 0; i < len(rest); i++ {
+		if strings.HasPrefix(rest[i:], ` "b/`) || strings.HasPrefix(rest[i:], " b/") {
+			out = append(out, unquoteGitPath(rest[:i]), unquoteGitPath(rest[i+1:]))
+		}
+	}
+	if len(out) == 0 {
+		out = append(out, unquoteGitPath(rest))
+	}
+	return out
+}
+
+// unquoteGitPath undoes git's quoting of one side (Go's string escapes are a
+// superset of git's: \t, \", \\, and \ooo octal bytes), then drops its a/ or
+// b/ prefix. A side that will not unquote is judged as written.
+func unquoteGitPath(side string) string {
+	if strings.HasPrefix(side, `"`) {
+		if u, err := strconv.Unquote(side); err == nil {
+			side = u
+		}
+	}
+	for _, prefix := range []string{"a/", "b/"} {
+		if p, ok := strings.CutPrefix(side, prefix); ok {
+			return p
+		}
+	}
+	return side
 }
 
 // refusedHistoryPath reports whether read_file would refuse this path by name.

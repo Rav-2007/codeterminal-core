@@ -196,3 +196,48 @@ func TestTaskLinesAreSanitised(t *testing.T) {
 		t.Errorf("a control sequence reached the terminal: %q", line)
 	}
 }
+
+// A STALE CHECK IS NEVER A TICK on the meter or in /task, and an unknown state
+// is text, never a format verb.
+//
+// Neuter checks: drop the LastCheckPassed && LastCheckStale case in
+// renderTaskMeter; or put the state back into taskEndLine's format string.
+func TestAStaleTaskCheckIsNeverATick(t *testing.T) {
+	st := protocol.TaskStatus{ID: "20261001-093501-5027", Mode: "fix", State: protocol.TaskStateRunning, Segment: 2,
+		LastCheck: "go test ./...", LastCheckPassed: true, LastCheckStale: true}
+	meter := renderTaskMeter(st)
+	if strings.Contains(meter, "✓") || !strings.Contains(meter, "before the last edit") {
+		t.Errorf("a stale passing check on the meter: %q", meter)
+	}
+	st.LastCheckStale = false
+	if meter := renderTaskMeter(st); !strings.Contains(meter, "✓") {
+		t.Errorf("a current passing check lost its tick: %q", meter)
+	}
+	odd := taskEndLine(protocol.TaskStatus{ID: "20261001-093501-5027", State: "weird%s%d", Segment: 1})
+	if strings.Contains(odd, "MISSING") || strings.Contains(odd, "%!") || !strings.Contains(odd, "weird%s%d") {
+		t.Errorf("an unknown state garbled the end line: %q", odd)
+	}
+}
+
+// A MISTYPED BUDGET STARTS NOTHING. "/task budget 1 hour" started a paid task
+// whose goal was "budget 1 hour"; it now says what a budget looks like. A goal
+// that merely begins with the word -- no number in it -- is still a goal
+// (TestTheTaskSubcommandsReachTheWire).
+//
+// Neuter check: drop the triesTaskBudget case from handleTaskCommand.
+func TestAMistypedTaskBudgetStartsNothing(t *testing.T) {
+	for _, args := range []string{"budget 1 hour", "budget 45 m", "budget $", "budget 30 minutes please"} {
+		next, cmd := newTestModel().handleTaskCommand(args)
+		if cmd != nil {
+			t.Errorf("/task %s started a turn", args)
+			continue
+		}
+		m := next.(chatModel)
+		if len(m.turns) == 0 || !strings.Contains(m.turns[len(m.turns)-1].text, "is not a budget") {
+			t.Errorf("/task %s did not say what a budget looks like", args)
+		}
+		if m.taskBudget != nil {
+			t.Errorf("/task %s set a budget: %+v", args, m.taskBudget)
+		}
+	}
+}

@@ -224,8 +224,8 @@ func (p *proposalSink) absorbText(blocks []editapply.EditBlock) (rest []editappl
 		if !duplicate && b.Replace != "" {
 			// Bounded like every read on this surface (builtinreadalloc_test.go);
 			// a file past the bound is simply not judged a duplicate.
-			if current, size, err := readBoundedFile(filepath.Join(st.root, rel), maxFileSize); err == nil &&
-				size <= maxFileSize && strings.Contains(string(current), b.Replace) &&
+			if current, exists, err := st.readCopyFile(rel, maxFileSize); err == nil && exists &&
+				strings.Contains(string(current), b.Replace) &&
 				(b.Search == "" || !strings.Contains(string(current), b.Search)) {
 				duplicate = true
 			}

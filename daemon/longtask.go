@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -452,7 +451,7 @@ func (s *Server) reapplyTaskDiff(run *taskRun, p *proposalSink) []string {
 	var notes []string
 	for _, b := range blocks {
 		rel := filepath.FromSlash(b.FilePath)
-		if current, err := os.ReadFile(filepath.Join(st.root, rel)); err == nil {
+		if current, exists, err := st.readCopyFile(rel, 0); err == nil && exists {
 			have := string(current)
 			if (b.Search == "" && have == b.Replace) ||
 				(b.Replace != "" && b.Search != "" && strings.Contains(have, b.Replace) && !strings.Contains(have, b.Search)) {
@@ -592,8 +591,10 @@ func (s *Server) serveTaskAction(enc *json.Encoder, req protocol.PromptRequest) 
 	// an informed decision.
 	var wc *protocol.WorkingCopyInfo
 	if c := l.LastCheck; c != nil {
-		wc = &protocol.WorkingCopyInfo{Checked: c.Command, Passed: c.Passed && c.AfterLastEdit}
-		if !wc.Passed {
+		// A run that passed BEFORE a later edit passed: it is stale, not failed.
+		// FOUND 2026-10-01: it was reported as "FAILED", over passing output.
+		wc = &protocol.WorkingCopyInfo{Checked: c.Command, Passed: c.Passed, Stale: !c.AfterLastEdit}
+		if !c.Passed {
 			wc.Output = c.Output
 		}
 	}

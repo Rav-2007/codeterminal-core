@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -254,7 +255,22 @@ func uriPath(uri string) (string, error) {
 	if err != nil || u.Scheme != "file" {
 		return "", fmt.Errorf("not a file URI")
 	}
-	return filepath.FromSlash(u.Path), nil
+	p := u.Path
+	if runtime.GOOS == "windows" {
+		p = trimDriveSlash(p)
+	}
+	return filepath.FromSlash(p), nil
+}
+
+// trimDriveSlash drops the slash a file URI puts before a Windows drive:
+// "/C:/x" is C:/x. FOUND 2026-10-01: fileURI writes it, uriPath kept it, and
+// "\C:\x" is outside every project -- so on Windows every rename was refused.
+func trimDriveSlash(p string) string {
+	if len(p) >= 3 && p[0] == '/' && p[2] == ':' &&
+		(('a' <= p[1] && p[1] <= 'z') || ('A' <= p[1] && p[1] <= 'Z')) {
+		return p[1:]
+	}
+	return p
 }
 
 // applyTextEdits splices edits into content at their exact UTF-16 positions,

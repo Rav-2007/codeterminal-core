@@ -49,7 +49,7 @@ network.**
 | **Inference** | Any OpenAI-compatible API, direct or through the managed proxy |
 | **Edit safety** | Five gates: path · exact-match · syntax · confirm · backup |
 | **Agent mode** | Off by default. Per-call approval, four per-turn budgets, local audit log |
-| **Platforms** | linux/amd64, darwin/arm64, windows/amd64 — [Intel Mac is an open gap](#known-platform-gaps) |
+| **Platforms** | linux/amd64, windows/amd64 — darwin/arm64 is not built (see above); [Intel Mac is an open gap](#known-platform-gaps) |
 
 ---
 

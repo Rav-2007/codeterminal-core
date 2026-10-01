@@ -412,7 +412,7 @@ func (l *taskLedger) status(b taskBudget, run taskSpend, segment int) protocol.T
 		FilesChanged: len(l.FilesChanged), Findings: len(l.Findings), Detail: l.Detail,
 	}
 	if c := l.LastCheck; c != nil {
-		st.LastCheck, st.LastCheckPassed = c.Command, c.Passed
+		st.LastCheck, st.LastCheckPassed, st.LastCheckStale = c.Command, c.Passed, !c.AfterLastEdit
 	}
 	return st
 }

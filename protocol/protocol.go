@@ -567,6 +567,9 @@ type TaskStatus struct {
 	Findings        int    `json:"findings,omitempty"`
 	LastCheck       string `json:"last_check,omitempty"`
 	LastCheckPassed bool   `json:"last_check_passed,omitempty"`
+	// LastCheckStale says the task edited after LastCheck ran, so its verdict
+	// is about an earlier version of the changes (WorkingCopyInfo.Stale).
+	LastCheckStale bool `json:"last_check_stale,omitempty"`
 	// Detail says why a task that is no longer running stopped.
 	Detail string `json:"detail,omitempty"`
 }

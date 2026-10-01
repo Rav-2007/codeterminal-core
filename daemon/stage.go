@@ -288,6 +288,65 @@ func (st *stagedWorkspace) apply(block editapply.EditBlock) (*editapply.Prepared
 	return prepared, nil
 }
 
+// BY NAME, INSIDE THE COPY ONLY. A command runs in the copy and can leave links
+// there -- a folder replaced by a link to ~/.kube, say -- and a path joined to
+// st.root follows a link at ANY depth, out of the copy. os.Root refuses every
+// path that escapes it. FOUND 2026-10-01: through a planted folder link a
+// checkpoint read a file outside the copy (and a restore brought its content
+// in, where read_file showed it), a restore DELETED one, and a spec tick wrote
+// one. Every by-name read, write and removal in the copy goes through these.
+
+// readCopyFile reads one regular file of the copy, refusing one larger than max
+// (0: no bound). exists is false when there is no such file.
+func (st *stagedWorkspace) readCopyFile(rel string, max int64) (data []byte, exists bool, err error) {
+	root, err := os.OpenRoot(st.root)
+	if err != nil {
+		return nil, false, err
+	}
+	defer func() { _ = root.Close() }() // read-only
+	info, err := root.Lstat(rel)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, false, fmt.Errorf("%s is no longer a regular file in the working copy", filepath.ToSlash(rel))
+	}
+	if max > 0 && info.Size() > max {
+		return nil, false, fmt.Errorf("%s is larger than %d bytes", filepath.ToSlash(rel), max)
+	}
+	data, err = root.ReadFile(rel)
+	return data, err == nil, err
+}
+
+// writeCopyFile replaces one file of the copy.
+func (st *stagedWorkspace) writeCopyFile(rel string, data []byte, perm os.FileMode) error {
+	root, err := os.OpenRoot(st.root)
+	if err != nil {
+		return err
+	}
+	if err := root.WriteFile(rel, data, perm); err != nil {
+		_ = root.Close() // the write's error is the one to report
+		return err
+	}
+	return root.Close()
+}
+
+// removeCopyFile removes one file of the copy.
+func (st *stagedWorkspace) removeCopyFile(rel string) error {
+	root, err := os.OpenRoot(st.root)
+	if err != nil {
+		return err
+	}
+	if err := root.Remove(rel); err != nil {
+		_ = root.Close() // the removal's error is the one to report
+		return err
+	}
+	return root.Close()
+}
+
 // toReal rewrites the copy's location as the project's in text a command
 // printed, so neither the model nor the user ever sees the private path: a
 // stack trace naming it would send the model off to read a file "outside the

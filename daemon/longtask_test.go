@@ -613,3 +613,38 @@ func TestTheTaskBudgetResolves(t *testing.T) {
 		t.Errorf("a request past the ceilings resolved to %+v", b)
 	}
 }
+
+// A CHECK THAT PASSED BEFORE A LATER EDIT IS STALE, NOT FAILED. /task review
+// reported it as Passed=false, and the TUI printed "✗ checked: go test ./...
+// FAILED" over passing output (FOUND 2026-10-01); the live meter and /task
+// showed it as a plain tick. Review, status and the TUI now say "stale".
+//
+// Neuter checks: report Passed as c.Passed && c.AfterLastEdit in
+// serveTaskAction's review; or drop LastCheckStale from taskLedger.status.
+func TestAStaleCheckIsReportedAsStaleNotFailed(t *testing.T) {
+	base, calls, _ := agentUpstream(t)
+	sockAddr, _, srv := agentSocketServer(t, base, taskPolicies())
+	root, err := editapply.ResolveRealWorkspaceRoot(srv.workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := newTaskLedger(root, modeFix, "fix it", time.Now())
+	l.State, l.Segments = protocol.TaskStateBudget, 2
+	l.LastCheck = &taskCheck{Command: "go test ./...", Passed: true, AfterLastEdit: false, Output: "ok  example.com/x"}
+	if err := l.save(nil); err != nil {
+		t.Fatal(err)
+	}
+
+	msgs := taskRequest(t, sockAddr, protocol.PromptRequest{Prompt: "review", Task: protocol.TaskLatest,
+		TaskAction: protocol.TaskActionReview})
+	wc := lastDone(t, msgs).WorkingCopy
+	if wc == nil || wc.Checked != "go test ./..." || !wc.Passed || !wc.Stale {
+		t.Fatalf("review reported the check as %+v; want passed and stale", wc)
+	}
+	if calls.Load() != 0 {
+		t.Errorf("a review made %d model call(s)", calls.Load())
+	}
+	if st := l.status(taskBudget{}, l.Spent, l.Segments); !st.LastCheckPassed || !st.LastCheckStale {
+		t.Errorf("status = passed %v, stale %v; want both true", st.LastCheckPassed, st.LastCheckStale)
+	}
+}

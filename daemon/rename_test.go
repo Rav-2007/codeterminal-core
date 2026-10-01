@@ -261,3 +261,21 @@ func TestRenameSymbolWithTheRealLanguageServer(t *testing.T) {
 		t.Error("the rename reached the project itself")
 	}
 }
+
+// A WINDOWS FILE URI KEEPS ITS DRIVE: file:///C:/x is C:/x, as fileURI writes
+// it. Pure, so it is checked here on every platform.
+//
+// Neuter check: return p unchanged from trimDriveSlash.
+func TestTrimDriveSlashGivesWindowsPathsTheirDrive(t *testing.T) {
+	for in, want := range map[string]string{
+		"/C:/Users/me/app/main.go": "C:/Users/me/app/main.go",
+		"/c:/x":                    "c:/x",
+		"/home/me/app/main.go":     "/home/me/app/main.go",
+		"/1:/x":                    "/1:/x",
+		"/C":                       "/C",
+	} {
+		if got := trimDriveSlash(in); got != want {
+			t.Errorf("trimDriveSlash(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

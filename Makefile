@@ -109,15 +109,18 @@ vet:
 # That leaves a real blind spot -- a platform-specific symbol in a helper test is
 # caught by nothing, anywhere -- recorded as R1.26 rather than papered over with
 # a check that appears to cover it.
+# darwin joined on 2026-10-01, after the daemon had gone a week not compiling
+# for macOS (termecho_unix.go named Linux's termios ioctls for every Unix) and
+# nothing here or in CI said so.
 CROSSVET_MODULES := daemon editapply protocol clients/tui proxy
 
 crossvet:
-	@for os in windows; do \
+	@for os in windows darwin; do \
 		for m in $(CROSSVET_MODULES); do \
 			(cd $$m && GOOS=$$os go vet ./...) || { echo "crossvet: FAILED GOOS=$$os $$m"; exit 1; }; \
 		done; \
 	done
-	@echo "crossvet: clean (windows, $(words $(CROSSVET_MODULES)) modules)"
+	@echo "crossvet: clean (windows and darwin, $(words $(CROSSVET_MODULES)) modules)"
 
 # STANDALONE, and this asks a different question from crossvet above.
 #

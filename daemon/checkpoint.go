@@ -3,10 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io/fs"
-	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -97,21 +94,11 @@ func (st *stagedWorkspace) checkpointNames() string {
 
 // readStageFile reads one file of the copy for a snapshot: its content, nil
 // when it does not exist, or an error for anything that is not a regular file
-// (a command can leave a link where a file was).
+// (a command can leave a link where a file was) or that lies past a link out
+// of the copy (readCopyFile).
 func (st *stagedWorkspace) readStageFile(rel string) (*string, error) {
-	full := filepath.Join(st.root, rel)
-	info, err := os.Lstat(full)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("%s is no longer a regular file in the working copy", filepath.ToSlash(rel))
-	}
-	data, err := os.ReadFile(full)
-	if err != nil {
+	data, exists, err := st.readCopyFile(rel, 0)
+	if err != nil || !exists {
 		return nil, err
 	}
 	content := string(data)
@@ -186,9 +173,9 @@ func (st *stagedWorkspace) restoreCheckpoint(cp *stageCheckpoint) (mcp.Result, e
 		case current == nil && want == nil, current != nil && want != nil && *current == *want:
 			continue
 		case want == nil:
-			// Created since: removed. Lstat above proved it a regular file, so
-			// this removes the file itself and follows nothing.
-			if err := os.Remove(filepath.Join(st.root, rel)); err != nil {
+			// Created since: removed -- inside the copy only, never past a
+			// link a command planted (removeCopyFile).
+			if err := st.removeCopyFile(rel); err != nil {
 				failed = append(failed, fmt.Sprintf("%s (%v)", filepath.ToSlash(rel), err))
 				continue
 			}

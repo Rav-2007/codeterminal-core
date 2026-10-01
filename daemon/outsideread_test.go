@@ -286,6 +286,13 @@ func TestOutsideReadRefusalCatalogue(t *testing.T) {
 		filepath.Join(home, "Desktop", "prod.pem"),
 		filepath.Join(home, "Desktop", ".env"),
 		filepath.Join(home, "code", ".git", "config"),
+		// Secrets typed in the clear (FOUND 2026-10-01: all were readable).
+		filepath.Join(home, ".bash_history"),
+		filepath.Join(home, ".zsh_history"),
+		filepath.Join(home, ".local", "share", "fish", "fish_history"),
+		filepath.Join(home, ".psql_history"),
+		filepath.Join(home, ".vault-token"),
+		filepath.Join(home, ".config", "hub"),
 	}
 	for _, p := range refused {
 		if outsideReadRefusal(p) == "" {
@@ -296,6 +303,7 @@ func TestOutsideReadRefusalCatalogue(t *testing.T) {
 		filepath.Join(home, "Desktop"),
 		filepath.Join(home, "Desktop", "notes.txt"),
 		filepath.Join(home, "Documents", "report.md"),
+		filepath.Join(home, "Documents", "history.md"), // a name that merely mentions history
 		"/tmp/build.log",
 		"/etc/hostname",
 	}

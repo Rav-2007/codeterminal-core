@@ -64,6 +64,11 @@ func (m chatModel) handleTaskCommand(args string) (tea.Model, tea.Cmd) {
 		return m.beginTaskTurn("/task "+args, "discard", "", taskFields{id: id, action: protocol.TaskActionDiscard})
 	case word == "budget" && (rest == "" || looksLikeTaskBudget(rest)):
 		reply = m.setTaskBudget(rest)
+	case word == "budget" && triesTaskBudget(rest):
+		// A BUDGET MISTYPED IS NOT A GOAL. "/task budget 1 hour" started a paid
+		// task whose goal was "budget 1 hour" (FOUND 2026-10-01). A goal about
+		// budgets has no number in it; one that does can be worded another way.
+		reply = m.setTaskBudget(rest) + "\n(for a task about budgets, word the goal another way)"
 	default:
 		return m.beginTaskTurn("/task "+args, args, modeTask, taskFields{budget: m.taskBudget})
 	}
@@ -120,6 +125,12 @@ func looksLikeTaskBudget(s string) bool {
 		}
 	}
 	return len(fields) > 0
+}
+
+// triesTaskBudget reports whether s was meant as a budget that did not parse:
+// it holds a number or a dollar sign.
+func triesTaskBudget(s string) bool {
+	return strings.ContainsAny(s, "0123456789$")
 }
 
 // parseTaskBudget reads "45m", "2h", "$1.50" or "1.5$", and a bare number (or
@@ -245,11 +256,14 @@ func taskEndLine(st protocol.TaskStatus) string {
 		protocol.TaskStateFailed:   "✗ task %s stopped: the provider failed",
 		protocol.TaskStateStopped:  "⏹ task %s stopped",
 	}[st.State]
-	if head == "" {
-		head = "task %s: " + sanitizeText(st.State)
-	}
 	var b strings.Builder
-	fmt.Fprintf(&b, head, st.ID)
+	if head == "" {
+		// An unknown state is text, never part of the format: a '%' in it
+		// would garble the line.
+		fmt.Fprintf(&b, "task %s: %s", st.ID, sanitizeText(st.State))
+	} else {
+		fmt.Fprintf(&b, head, st.ID)
+	}
 	fmt.Fprintf(&b, " after %d segment(s) · %s", st.Segment, taskSpentText(st))
 	if st.FilesChanged > 0 {
 		fmt.Fprintf(&b, " · %d file(s) changed", st.FilesChanged)
@@ -272,10 +286,16 @@ func renderTaskMeter(st protocol.TaskStatus) string {
 	fmt.Fprintf(&b, "task %s · %s · segment %d · %s", shortTaskID(st.ID), sanitizeText(st.Mode), st.Segment, taskSpentText(st))
 	if st.LastCheck != "" {
 		mark := "✗"
-		if st.LastCheckPassed {
+		switch {
+		case st.LastCheckPassed && st.LastCheckStale:
+			mark = "!" // it passed, but the changes went on after it
+		case st.LastCheckPassed:
 			mark = "✓"
 		}
 		fmt.Fprintf(&b, "\nlast check %s %s", mark, sanitizeText(st.LastCheck))
+		if st.LastCheckStale {
+			b.WriteString(" (before the last edit)")
+		}
 		if st.FilesChanged > 0 {
 			fmt.Fprintf(&b, " · %d file(s) changed", st.FilesChanged)
 		}
@@ -299,6 +319,9 @@ func (m chatModel) taskStatusText() string {
 			verdict := "failed"
 			if st.LastCheckPassed {
 				verdict = "passed"
+			}
+			if st.LastCheckStale {
+				verdict += ", before the last edit"
 			}
 			fmt.Fprintf(&b, "\n  last check: %s — %s", sanitizeText(st.LastCheck), verdict)
 		}

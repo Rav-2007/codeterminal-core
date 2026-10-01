@@ -74,6 +74,9 @@ func TestOutsideWritesToStartupAndCredentialPlacesAreRefused(t *testing.T) {
 		"~/.local/bin/ls",
 		"~/.ssh/authorized_keys",
 		"~/bin/ls",
+		"~/Library/LaunchAgents/com.example.agent.plist",                        // macOS login item
+		"~/library/launchagents/x.plist",                                        // case-insensitive volumes
+		"~/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup/x.bat", // Windows Startup folder
 		"~/Desktop/launch.desktop",
 		"~/Desktop/Neww2/.git/hooks/pre-commit",
 		"~/code/.github/workflows/ci.yml",

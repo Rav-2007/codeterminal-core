@@ -309,9 +309,8 @@ func tickSpecInCopy(st *stagedWorkspace, sp *activeSpec, verdicts map[string]spe
 		return
 	}
 	rel := filepath.FromSlash(sp.Path)
-	path := filepath.Join(st.root, rel)
-	data, err := os.ReadFile(path)
-	if err != nil {
+	data, exists, err := st.readCopyFile(rel, 0)
+	if err != nil || !exists {
 		return
 	}
 	lines := strings.Split(string(data), "\n")
@@ -333,7 +332,7 @@ func tickSpecInCopy(st *stagedWorkspace, sp *activeSpec, verdicts map[string]spe
 	if !changed {
 		return
 	}
-	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o644); err == nil {
+	if err := st.writeCopyFile(rel, []byte(strings.Join(lines, "\n")), 0o644); err == nil {
 		if !st.touched[rel] {
 			st.touched[rel] = true
 			st.order = append(st.order, rel)

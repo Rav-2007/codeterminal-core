@@ -70,12 +70,33 @@ var refusedOutsideDirNames = map[string]bool{
 	".mochiii":        true, // the key `connect` stores
 }
 
+// refusedOutsideFileNames are files whose content is, often enough, a secret
+// typed in the clear: shell and REPL histories (an `export TOKEN=...`, a
+// `mysql -p...`) and token files. Compared per path component,
+// case-insensitively. FOUND 2026-10-01: none of them was refused.
+var refusedOutsideFileNames = map[string]bool{
+	".bash_history":      true,
+	".zsh_history":       true,
+	".zhistory":          true,
+	".sh_history":        true,
+	".history":           true,
+	"fish_history":       true,
+	".python_history":    true,
+	".node_repl_history": true,
+	".psql_history":      true,
+	".mysql_history":     true,
+	".sqlite_history":    true,
+	".rediscli_history":  true,
+	".vault-token":       true,
+}
+
 // refusedOutsideHomePaths are home-relative trees refused as a whole.
 var refusedOutsideHomePaths = []string{
 	".local/state/mochiii", // conversation memory
 	".config/mochiii",
 	".config/gh",     // GitHub CLI token
 	".config/gcloud", // Google Cloud credentials
+	".config/hub",    // the older GitHub CLI's token
 	".netrc",
 	".git-credentials",
 	".npmrc",
@@ -140,6 +161,9 @@ func outsideReadRefusal(abs string) string {
 		}
 		if refusedOutsideDirNames[strings.ToLower(part)] || editapply.IsProtectedDirName(part) {
 			return fmt.Sprintf("%q holds credentials or repository internals and is never read", part)
+		}
+		if refusedOutsideFileNames[strings.ToLower(part)] {
+			return fmt.Sprintf("%q can hold secrets typed in the clear and is never read", part)
 		}
 		if editapply.MatchesSecretName(part) {
 			return fmt.Sprintf("%q looks like a secret (a key, token or credentials file) and is never read", part)

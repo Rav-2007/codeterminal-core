@@ -22,7 +22,8 @@ import (
 //     would make something RUN later, or reach a credential: any hidden
 //     component (~/.bashrc, ~/.profile, ~/.config/autostart, ~/.local/bin,
 //     ~/.ssh, a project's .git/hooks or .github/workflows), ~/bin (on PATH on
-//     most distributions), and *.desktop launchers. Checked on the path as
+//     most distributions), ~/Library (macOS login items) and ~/AppData (the
+//     Windows Startup folder), and *.desktop launchers. Checked on the path as
 //     written AND on the resolved path, so a symlink cannot launder it.
 //   - Nothing is written until the user approves the diff -- the same review
 //     every edit already goes through. Callers show OutsideRoot-bearing edits
@@ -79,8 +80,18 @@ func outsideWriteRefusal(relToHome string) string {
 			return fmt.Sprintf("%q is a hidden file or folder; Mochiii never writes those outside the project "+
 				"(they hold settings, credentials and start-up scripts)", part)
 		}
-		if i == 0 && NormalizeComponent(part) == "bin" {
-			return "~/bin holds programs on your PATH; Mochiii never writes there"
+		if i == 0 {
+			switch NormalizeComponent(part) {
+			case "bin":
+				return "~/bin holds programs on your PATH; Mochiii never writes there"
+			// The other platforms' start-up places, which hide behind no dot.
+			// FOUND 2026-10-01: a login item in ~/Library/LaunchAgents (macOS)
+			// or the Startup folder under ~/AppData (Windows) passed.
+			case "library":
+				return "~/Library holds app settings and login items; Mochiii never writes there"
+			case "appdata":
+				return "~/AppData holds app settings and the Startup folder; Mochiii never writes there"
+			}
 		}
 	}
 	if strings.EqualFold(filepath.Ext(relToHome), ".desktop") {

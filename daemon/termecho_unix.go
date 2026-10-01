@@ -18,7 +18,7 @@ import (
 // stdinIsTerminal reports whether stdin is a terminal, by asking for its terminal
 // attributes -- the same question, answered by whether the ioctl works.
 func stdinIsTerminal() bool {
-	_, err := unix.IoctlGetTermios(int(os.Stdin.Fd()), unix.TCGETS)
+	_, err := unix.IoctlGetTermios(int(os.Stdin.Fd()), ioctlReadTermios)
 	return err == nil
 }
 
@@ -30,20 +30,20 @@ func stdinIsTerminal() bool {
 // be told about, not one that is quietly allowed to happen.
 func withoutEcho(fn func()) (disabled bool) {
 	fd := int(os.Stdin.Fd())
-	before, err := unix.IoctlGetTermios(fd, unix.TCGETS)
+	before, err := unix.IoctlGetTermios(fd, ioctlReadTermios)
 	if err != nil {
 		fn()
 		return false
 	}
 	after := *before
 	after.Lflag &^= unix.ECHO
-	if err := unix.IoctlSetTermios(fd, unix.TCSETS, &after); err != nil {
+	if err := unix.IoctlSetTermios(fd, ioctlWriteTermios, &after); err != nil {
 		fn()
 		return false
 	}
 	// Restored on every exit from fn, panic included: leaving a terminal with echo
 	// off is a broken shell for the user afterwards.
-	defer func() { _ = unix.IoctlSetTermios(fd, unix.TCSETS, before) }()
+	defer func() { _ = unix.IoctlSetTermios(fd, ioctlWriteTermios, before) }()
 	fn()
 	return true
 }
