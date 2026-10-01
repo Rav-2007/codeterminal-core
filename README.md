@@ -792,9 +792,11 @@ first three.
 scripted provider. Round 4 in
 [`docs/AGENT_WORKFLOW_EVAL.md`](docs/AGENT_WORKFLOW_EVAL.md) compares long tasks
 with the ordinary agent plus a user who types "continue", under rules written
-before it runs. No number is claimed here until then. If long tasks do not win,
-`/debug`, `/fix` and `/refactor` go back to one-turn hints, and long tasks stay
-behind `/task` and `/hunt`.
+before it runs. No number is claimed here until then. `/debug`, `/fix` and
+`/refactor` are long tasks by design, whatever Round 4 finds: they are the
+commands for a complete job. For a quick one-line change, ask without a command:
+an ordinary turn costs less (3 model calls against 4 for the smallest fix,
+measured).
 
 ### Conversation memory
 

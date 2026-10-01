@@ -731,13 +731,13 @@ of Round 2.
 - **B is recommended** only if it passes **strictly more** trials than A, at **no more than
   1.5×** A's billed $ per solved task. A lead of one trial meets the rule, and is reported
   as within noise.
-- **If B is recommended,** the README says so with the numbers, and `/debug`, `/fix` and
-  `/refactor` stay long tasks.
-- **If B is not recommended,** `/debug`, `/fix` and `/refactor` go back to being one-line
-  hints on an ordinary turn, as before `45db0dd`.
-  - Long tasks stay available behind `/task` and `/hunt`, described as not shown to beat
-    continuing by hand.
-  - Nothing else is removed.
+- **`/debug`, `/fix` and `/refactor` stay long tasks whatever the result.** They are the
+  commands for a complete task, by the owner's decision (see the amendment below). Round 4
+  decides what may be claimed for them, not whether they stay.
+- **If B is recommended,** the README says so, with the numbers.
+- **If B is not recommended,** the README says plainly that long tasks have not yet been
+  shown to beat continuing by hand. Every task B lost is diagnosed from its saved ledger,
+  and the cause is fixed before the round runs again.
 - **Defects, whatever the totals.** Each of these is fixed before any recommendation. The
   round's numbers stand as measured.
   - A B trial billed more than its $0.50 budget plus one call: the budget check failed.
@@ -801,6 +801,18 @@ scripted loopback model.
   already.
 
 This proves the harness works, not that a model can do the tasks.
+
+### Amendment before the run (2026-10-01)
+
+The owner decided that `/debug`, `/fix` and `/refactor` are long-task commands by design:
+each is for a complete task, worked through to a verified finish.
+
+- **Withdrawn:** as first written, a loss in Round 4 would have turned these three back
+  into one-line hints on an ordinary turn.
+- **Unchanged:** the comparison, the recommendation rule, the defect rules, the arms and
+  the caps.
+- **What a loss now does:** it limits what the README may claim, and starts a diagnosis
+  instead of a revert.
 
 ### Status: not yet run (2026-10-01)
 
