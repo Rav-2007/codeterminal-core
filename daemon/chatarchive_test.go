@@ -669,3 +669,55 @@ func TestHandshakeAdvertisesSavedChats(t *testing.T) {
 		t.Errorf("handshake = %+v, want ok and Features to name %q", hs, protocol.FeatureSavedChats)
 	}
 }
+
+// A RESUMED CHAT KEEPS WHEN IT HAPPENED. Resume stamped every turn with the
+// moment of resuming, so the next save said the chat had started then (FOUND
+// 2026-10-01). Each turn now keeps its saved time -- and a saved time that is
+// not a time (disk is untrusted) is never stored.
+//
+// Neuter check: insert `now` for every turn in ReplaceWorkspace again.
+func TestAResumedChatKeepsWhenItHappened(t *testing.T) {
+	mem, _ := openTestMemoryStore(t)
+	srv := historyServer(t, mem)
+	ctx := context.Background()
+	root, err := historyRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := "2026-01-02T03:04:05Z"
+	id, err := newChatArchive(root, srv.workspace).save([]storedTurn{
+		{Role: "user", Content: "chat from January", CreatedAt: started},
+		{Role: "assistant", Content: "answered then", CreatedAt: "2026-01-02T03:04:09Z"},
+		{Role: "user", Content: "a turn with a planted time", CreatedAt: "not a time; DROP TABLE turns"},
+		{Role: "assistant", Content: "fine", CreatedAt: "2026-01-02T03:05:00Z"},
+	}, "", "", time.Now())
+	if err != nil || id == "" {
+		t.Fatalf("save: id %q, %v", id, err)
+	}
+
+	if resp := askHistory(t, srv, protocol.HistoryRequest{Action: protocol.HistoryResume, ID: id}); resp.Error != "" {
+		t.Fatalf("resume: %s", resp.Error)
+	}
+	current, err := mem.LoadAllTurns(ctx, srv.workspace)
+	if err != nil || len(current) != 4 {
+		t.Fatalf("current = %+v, %v", current, err)
+	}
+	if current[0].CreatedAt != "2026-01-02T03:04:05Z" || current[1].CreatedAt != "2026-01-02T03:04:09Z" {
+		t.Errorf("resumed turns lost their times: %q, %q", current[0].CreatedAt, current[1].CreatedAt)
+	}
+	if _, err := time.Parse(time.RFC3339Nano, current[2].CreatedAt); err != nil || strings.Contains(current[2].CreatedAt, "DROP") {
+		t.Errorf("a planted time was stored as %q", current[2].CreatedAt)
+	}
+	if current[0].Content != "chat from January" || current[3].Content != "fine" {
+		t.Errorf("resumed turns out of order: %+v", current)
+	}
+
+	resp := saveNow(t, srv, "")
+	h, _, err := newChatArchive(root, srv.workspace).loadStored(resp.Entry.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.Started != started {
+		t.Errorf("saved after resuming, the chat says it started %q, want %q", h.Started, started)
+	}
+}

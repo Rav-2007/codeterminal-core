@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"mochiii/protocol"
 )
@@ -320,5 +322,45 @@ func TestNeedsAPIKeyFlipsWhenAKeyIsAccepted(t *testing.T) {
 	s.setAPIKey("sk-accepted-over-the-socket", "https://openrouter.ai/api/v1")
 	if s.needsAPIKey() {
 		t.Error("the daemon took a key but still reports needing one; a held question would never be released")
+	}
+}
+
+// /CONNECT DOES NOT HANG ON A SILENT PROVIDER. The CLI bounded its check;
+// /connect over the socket did not, so a provider that took the connection and
+// never answered held the user's /connect open indefinitely (FOUND
+// 2026-10-01). It now gives up at connectVerifyTimeout and saves the key as
+// unverified, as it does for any provider it cannot reach.
+//
+// Neuter check: pass ctx itself to verifyKey in connectResult.
+func TestConnectDoesNotHangOnASilentProvider(t *testing.T) {
+	s, path := connectServer(t)
+	release := make(chan struct{})
+	silent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select { // takes the request, never answers
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	t.Cleanup(func() { close(release); silent.Close() })
+	orig := connectVerifyTimeout
+	connectVerifyTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { connectVerifyTimeout = orig })
+
+	done := make(chan protocol.ConnectResponse, 1)
+	go func() {
+		done <- s.connectResult(context.Background(), protocol.ConnectRequest{
+			Connect: true, APIKey: testProviderKey, APIBase: silent.URL,
+		})
+	}()
+	select {
+	case resp := <-done:
+		if resp.Outcome != protocol.ConnectUnverified {
+			t.Errorf("outcome = %q, want unverified (%s)", resp.Outcome, resp.Detail)
+		}
+		if stored, _, err := loadCredential(path); err != nil || stored.Verified || stored.APIKey != testProviderKey {
+			t.Errorf("stored = verified %v, key %s, err %v; want the key, unverified", stored.Verified, maskKey(stored.APIKey), err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("/connect hung on a provider that never answered")
 	}
 }

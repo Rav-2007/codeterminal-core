@@ -635,3 +635,34 @@ func TestConnectShowNamesTheProvider(t *testing.T) {
 		t.Errorf("/connect show does not name the provider:\n%s", got)
 	}
 }
+
+// A KEY TYPED AFTER /connect NEVER COMES BACK ON THE UP ARROW. The command
+// refuses it (a key on the command line), but the line had already been
+// recorded for recall, so one press of up showed the key in clear (FOUND
+// 2026-10-01). The subcommands are still recalled.
+//
+// Neuter check: call rememberPrompt for every line in startTurn again.
+func TestAKeyTypedAfterConnectIsNotRecalled(t *testing.T) {
+	m := newTestModel()
+	m = typeText(m, "/connect "+tuiTestKey)
+	m, _ = pressEnter(m)
+	for _, tr := range m.turns {
+		if strings.Contains(tr.text, tuiTestKey) {
+			t.Fatal("the refused key was written into the transcript")
+		}
+	}
+	m = press(m, tea.KeyUp)
+	if strings.Contains(m.input.Value(), tuiTestKey) {
+		t.Errorf("up recalled the refused key in clear: %q", m.input.Value())
+	}
+
+	for raw, want := range map[string]bool{
+		"/connect " + tuiTestKey: true, "/connect\t" + tuiTestKey: true,
+		"/connect": false, "/connect show": false, "/connect forget": false,
+		"/connected to the db?": false, "how do I /connect": false,
+	} {
+		if got := connectWithKey(raw); got != want {
+			t.Errorf("connectWithKey(%q) = %v, want %v", raw, got, want)
+		}
+	}
+}

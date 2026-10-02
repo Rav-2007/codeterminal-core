@@ -197,7 +197,12 @@ func (s *Server) connectResult(ctx context.Context, req protocol.ConnectRequest)
 
 	result := verification{Outcome: verifyInconclusive, Detail: "not checked, because the client asked for no verification"}
 	if !req.NoVerify {
-		result = verifyKey(ctx, http.DefaultClient, base, key)
+		// BOUNDED, as the CLI's check is: a provider that took the connection and
+		// never answered held /connect open for as long as the client waited
+		// (FOUND 2026-10-01 -- the CLI had the timeout, this path did not).
+		vctx, cancel := context.WithTimeout(ctx, connectVerifyTimeout)
+		result = verifyKey(vctx, http.DefaultClient, base, key)
+		cancel()
 	}
 
 	// A REFUSED KEY IS NOT STORED AND NOT ADOPTED. The daemon keeps serving with

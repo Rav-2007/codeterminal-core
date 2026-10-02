@@ -4,6 +4,8 @@ package main
 
 import (
 	"os"
+	"os/signal"
+	"syscall"
 
 	"golang.org/x/sys/unix"
 )
@@ -44,6 +46,29 @@ func withoutEcho(fn func()) (disabled bool) {
 	// Restored on every exit from fn, panic included: leaving a terminal with echo
 	// off is a broken shell for the user afterwards.
 	defer func() { _ = unix.IoctlSetTermios(fd, ioctlWriteTermios, before) }()
+
+	// AND ON A SIGNAL, which runs no deferred function: Ctrl+C at the key prompt
+	// killed the process and left the shell with echo off (FOUND 2026-10-01, on
+	// a real pty). The terminal is put back first; then the signal is let
+	// through, so the shell still sees an ordinary Ctrl+C.
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	done := make(chan struct{})
+	defer func() {
+		signal.Stop(sigs)
+		close(done)
+	}()
+	go func() {
+		select {
+		case sig := <-sigs:
+			_ = unix.IoctlSetTermios(fd, ioctlWriteTermios, before)
+			signal.Reset(sig)
+			if s, ok := sig.(syscall.Signal); ok {
+				_ = syscall.Kill(os.Getpid(), s)
+			}
+		case <-done:
+		}
+	}()
 	fn()
 	return true
 }

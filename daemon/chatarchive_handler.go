@@ -185,12 +185,16 @@ func (s *Server) entryFor(id string, h archiveHeader, current bool) protocol.His
 func (s *Server) resumeChat(ctx context.Context, archive *chatArchive, id string) (protocol.HistoryEntry, []protocol.Turn, error) {
 	s.historyMu.Lock()
 	defer s.historyMu.Unlock()
-	h, turns, err := archive.load(id)
+	h, stored, err := archive.loadStored(id)
 	if err != nil {
 		return protocol.HistoryEntry{}, nil, err
 	}
-	if err := s.memory.ReplaceWorkspace(ctx, s.workspace, turns); err != nil {
+	if err := s.memory.ReplaceWorkspace(ctx, s.workspace, stored); err != nil {
 		return protocol.HistoryEntry{}, nil, err
+	}
+	turns := make([]protocol.Turn, len(stored))
+	for i, t := range stored {
+		turns[i] = protocol.Turn{Role: t.Role, Content: t.Content}
 	}
 	if err := archive.writeLink(id, len(turns)); err != nil {
 		// Resumed, but a later save will add a copy instead of updating this

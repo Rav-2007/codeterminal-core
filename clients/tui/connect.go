@@ -322,3 +322,17 @@ func capitalize(s string) string {
 	}
 	return s
 }
+
+// connectWithKey reports whether raw is /connect with an argument that is not
+// one of its subcommands -- which the command refuses as a probable key.
+func connectWithKey(raw string) bool {
+	rest, ok := strings.CutPrefix(raw, "/connect")
+	if !ok || (rest != "" && rest[0] != ' ' && rest[0] != '\t') {
+		return false
+	}
+	switch strings.TrimSpace(rest) {
+	case "", "show", "forget":
+		return false
+	}
+	return true
+}

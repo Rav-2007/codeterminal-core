@@ -424,7 +424,7 @@ func (s *MemoryStore) LoadAllTurns(ctx context.Context, workspace string) ([]sto
 // resumed after a month would lose all of its old turns on its very first new
 // exchange. created_at is display-only (see turnsTableDDL); order is by id,
 // which insertion order preserves.
-func (s *MemoryStore) ReplaceWorkspace(ctx context.Context, workspace string, turns []protocol.Turn) error {
+func (s *MemoryStore) ReplaceWorkspace(ctx context.Context, workspace string, turns []storedTurn) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("replacing workspace history: %w", err)
@@ -435,9 +435,15 @@ func (s *MemoryStore) ReplaceWorkspace(ctx context.Context, workspace string, tu
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	for _, t := range turns {
+		// Each turn keeps its own time; one without (an older saved chat) is
+		// stamped now. Order is the insertion order (ORDER BY id), never time.
+		at := t.CreatedAt
+		if at == "" {
+			at = now
+		}
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO turns (workspace, role, content, created_at) VALUES (?, ?, ?, ?)`,
-			workspace, t.Role, t.Content, now); err != nil {
+			workspace, t.Role, t.Content, at); err != nil {
 			return fmt.Errorf("replacing workspace history: %w", err)
 		}
 	}

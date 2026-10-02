@@ -440,6 +440,22 @@ func readArchiveHeader(path string) (archiveHeader, error) {
 // that fail validTurn are dropped, as LoadRecentTurns drops them from
 // memory.db.
 func (a *chatArchive) load(id string) (archiveHeader, []protocol.Turn, error) {
+	h, stored, err := a.loadStored(id)
+	if err != nil {
+		return archiveHeader{}, nil, err
+	}
+	turns := make([]protocol.Turn, len(stored))
+	for i, t := range stored {
+		turns[i] = protocol.Turn{Role: t.Role, Content: t.Content}
+	}
+	return h, turns, nil
+}
+
+// loadStored is load with each turn's own time, so a resumed chat keeps WHEN
+// it happened. FOUND 2026-10-01: resume stamped every turn with the moment of
+// resuming, so the next save said the chat had started then. Disk is
+// untrusted: an At that is not a time is dropped, never stored.
+func (a *chatArchive) loadStored(id string) (archiveHeader, []storedTurn, error) {
 	path, err := a.pathFor(id)
 	if err != nil {
 		return archiveHeader{}, nil, err
@@ -468,7 +484,7 @@ func (a *chatArchive) load(id string) (archiveHeader, []protocol.Turn, error) {
 	if h.V != archiveVersion {
 		return archiveHeader{}, nil, fmt.Errorf("saved chat has format version %d; this daemon reads %d", h.V, archiveVersion)
 	}
-	var turns []protocol.Turn
+	var turns []storedTurn
 	for {
 		var l archiveLine
 		err := dec.Decode(&l)
@@ -481,14 +497,24 @@ func (a *chatArchive) load(id string) (archiveHeader, []protocol.Turn, error) {
 		if err != nil {
 			return archiveHeader{}, nil, fmt.Errorf("reading saved chat: %w", err)
 		}
-		if t := (protocol.Turn{Role: l.Role, Content: l.Content}); validTurn(t) {
-			turns = append(turns, t)
+		if validTurn(protocol.Turn{Role: l.Role, Content: l.Content}) {
+			turns = append(turns, storedTurn{Role: l.Role, Content: l.Content, CreatedAt: archiveTime(l.At)})
 		}
 	}
 	if limited.N <= 0 {
 		return archiveHeader{}, nil, fmt.Errorf("saved chat is larger than %d bytes; refusing to read it", maxArchiveBytes)
 	}
 	return h, turns, nil
+}
+
+// archiveTime is a saved turn's time as memory.db stores it, or "" when it is
+// not a time.
+func archiveTime(at string) string {
+	t, err := time.Parse(time.RFC3339Nano, at)
+	if err != nil {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339Nano)
 }
 
 // remove deletes one saved chat.

@@ -28,12 +28,13 @@ import (
 // guard is there for that mistake. Mixing them here would be the same bug with a
 // friendlier interface.
 
-const (
-	// connectVerifyTimeout bounds the one live check. Short, because this is a
-	// human waiting at a prompt, and an unreachable base is a legitimate answer
-	// ("saved, unverified") rather than something to hang on.
-	connectVerifyTimeout = 15 * time.Second
+// connectVerifyTimeout bounds the one live check, here and for /connect over the
+// socket. Short, because this is a human waiting at a prompt, and an unreachable
+// base is a legitimate answer ("saved, unverified") rather than something to
+// hang on. A var so a test can shorten it.
+var connectVerifyTimeout = 15 * time.Second
 
+const (
 	// maxKeyBytes bounds what is read as a key. Provider keys are under a hundred
 	// characters; this is far above any of them and far below a size that lets a
 	// misdirected pipe (a log file, a tarball) be read into memory as a "key".

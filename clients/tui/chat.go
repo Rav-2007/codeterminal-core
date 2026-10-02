@@ -1267,7 +1267,11 @@ func (m chatModel) startTurn() (tea.Model, tea.Cmd) {
 	if raw == "" {
 		return m, nil
 	}
-	m.rememberPrompt(raw)
+	// A key typed after /connect is refused below, and must not wait in the
+	// up-arrow recall to be shown again in clear (FOUND 2026-10-01).
+	if !connectWithKey(raw) {
+		m.rememberPrompt(raw)
+	}
 	m.turnInput = raw
 	if arg, isModel := parseModelCommand(raw); isModel {
 		m.input.SetValue("")
