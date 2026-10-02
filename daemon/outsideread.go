@@ -108,12 +108,12 @@ var refusedOutsideHomePaths = []string{
 // workspace, as it always has, and reports false.
 func expandOutsidePath(p string) (string, bool) {
 	p = strings.TrimSpace(p)
-	if p == "~" || strings.HasPrefix(p, "~/") {
+	if rest, ok := editapply.CutHomePrefix(p); ok {
 		home, err := os.UserHomeDir()
 		if err != nil || home == "" {
 			return "", false
 		}
-		return filepath.Join(home, strings.TrimPrefix(p, "~")), true
+		return filepath.Join(home, rest), true
 	}
 	if filepath.IsAbs(p) {
 		return filepath.Clean(p), true

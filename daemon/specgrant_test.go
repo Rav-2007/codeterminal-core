@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -52,10 +53,27 @@ const goVersion = `{"command":"go version"}`
 func grantFromATurn(t *testing.T) string {
 	t.Helper()
 	appr, _ := specTurn(t, withSpecGrants(context.Background(), nil), askConfig(), protocol.ApprovalApproveForSpec, goVersion)
+	requireConfinedCommands(t, appr)
 	if len(appr.requests) != 1 || appr.requests[0].SpecGrant == "" {
 		t.Fatalf("a sandboxed command in a spec turn was not offered a spec grant: %+v", appr.requests)
 	}
 	return appr.requests[0].SpecGrant
+}
+
+// requireConfinedCommands skips a test that needs this host to sandbox
+// commands -- a spec grant is offered only for a command that is -- unless
+// MOCHIII_REQUIRE_SANDBOX says the host must, as the egress tests do. FOUND
+// 2026-10-01: on Windows, which has no sandbox, these tests failed rather than
+// saying they could not run there.
+func requireConfinedCommands(t *testing.T, appr *recordingApprover) {
+	t.Helper()
+	if len(appr.requests) == 0 || appr.requests[0].Confined {
+		return
+	}
+	if os.Getenv("MOCHIII_REQUIRE_SANDBOX") != "" {
+		t.Fatal("MOCHIII_REQUIRE_SANDBOX is set, but this host does not confine sandbox_exec, so spec grants cannot be exercised")
+	}
+	t.Skip("NOT RUN: this host does not confine sandbox_exec, and a spec grant is only ever offered for a confined command")
 }
 
 // THE WORKFLOW: approve `go version` while the spec is active, and a later
@@ -77,6 +95,7 @@ func TestASpecGrantCoversTheSameCommandInALaterTurn(t *testing.T) {
 func TestASpecGrantCoversTheSameCommandLaterInItsOwnTurn(t *testing.T) {
 	appr, _ := specTurn(t, withSpecGrants(context.Background(), nil), askConfig(),
 		protocol.ApprovalApproveForSpec, goVersion, `{"command": "go version"}`)
+	requireConfinedCommands(t, appr)
 	if len(appr.requests) != 1 {
 		t.Fatalf("asked %d times for one command approved while the spec is active", len(appr.requests))
 	}

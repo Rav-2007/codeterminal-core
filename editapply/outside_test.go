@@ -12,6 +12,7 @@ func fakeHome(t *testing.T) (home, project string) {
 	t.Helper()
 	h := t.TempDir()
 	t.Setenv("HOME", h)
+	t.Setenv("USERPROFILE", h) // what os.UserHomeDir reads on Windows
 	home, err := RealHomeDir()
 	if err != nil {
 		t.Fatal(err)
@@ -39,6 +40,13 @@ func TestAnEditCanCreateAFolderOnTheDesktop(t *testing.T) {
 	}
 	if p.Block.FilePath != "~/Desktop/Go_chii/main.go" {
 		t.Errorf("shown as %q, want ~/Desktop/Go_chii/main.go", p.Block.FilePath)
+	}
+	// THE SHOWN PATH IS WHAT COMES BACK when the user accepts, and it must lead
+	// to the same file. FOUND 2026-10-01 on the Windows CI runner: it was shown
+	// as "~\Desktop\..." and read back as a PROJECT path -- a folder named "~".
+	again, err := PrepareEditAnywhere(project, create(p.Block.FilePath, "package main\n"))
+	if err != nil || again.TargetPath != p.TargetPath || again.OutsideRoot != home {
+		t.Fatalf("the shown path %q did not lead back to %q (err %v)", p.Block.FilePath, p.TargetPath, err)
 	}
 
 	session := filepath.Join(project, ".mochiii", "backups", "s1")

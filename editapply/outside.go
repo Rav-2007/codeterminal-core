@@ -56,13 +56,40 @@ func RealHomeDir() (string, error) {
 // true; a relative path reports false (it means the workspace, as always).
 func expandUserPath(p, home string) (string, bool) {
 	p = strings.TrimSpace(p)
-	if p == "~" || strings.HasPrefix(p, "~/") {
-		return filepath.Join(home, strings.TrimPrefix(p, "~")), true
+	if rest, ok := CutHomePrefix(p); ok {
+		return filepath.Join(home, rest), true
 	}
 	if filepath.IsAbs(p) {
 		return filepath.Clean(p), true
 	}
 	return "", false
+}
+
+// CutHomePrefix reports whether p names the home folder -- "~", "~/x", and on
+// Windows "~\x" too -- and returns what follows "~/". FOUND 2026-10-01 on the
+// Windows CI runner: an outside edit was SHOWN as "~\Desktop\x", and applying
+// it read that back as a project path, so the file would have landed in a
+// folder named "~" inside the project. The edit is now shown with "/"
+// everywhere, and "~\" is read as home where it is the separator.
+func CutHomePrefix(p string) (string, bool) {
+	if p == "~" {
+		return "", true
+	}
+	if rest, ok := strings.CutPrefix(p, "~/"); ok {
+		return rest, true
+	}
+	if filepath.Separator == '\\' {
+		if rest, ok := strings.CutPrefix(p, `~\`); ok {
+			return rest, true
+		}
+	}
+	return "", false
+}
+
+// HomeDisplayPath is how an edit in the home folder is shown and sent back:
+// "~/" and forward slashes on every platform, which CutHomePrefix reads.
+func HomeDisplayPath(relToHome string) string {
+	return "~/" + filepath.ToSlash(relToHome)
 }
 
 // within reports whether path is root or below it.
@@ -143,7 +170,7 @@ func PrepareEditAnywhere(realWorkspaceRoot string, block EditBlock) (*PreparedEd
 	if err != nil {
 		// PrepareEdit names the path relative to home ("Desktop/x.go"), which
 		// reads as a PROJECT path -- to the model most of all. Say which file.
-		return nil, fmt.Errorf("~%c%s: %w", filepath.Separator, rel, err)
+		return nil, fmt.Errorf("%s: %w", HomeDisplayPath(rel), err)
 	}
 	// THE RESOLVED PATH IS WHAT GETS WRITTEN, so it is judged again: a
 	// harmless-looking ~/Desktop/notes that is a symlink to ~/.bashrc is
@@ -159,7 +186,7 @@ func PrepareEditAnywhere(realWorkspaceRoot string, block EditBlock) (*PreparedEd
 		return nil, fmt.Errorf("%s leads into this project; name it by its path in the project instead", block.FilePath)
 	}
 	prepared.OutsideRoot = home
-	prepared.Block.FilePath = "~" + string(filepath.Separator) + rel
+	prepared.Block.FilePath = HomeDisplayPath(rel)
 	return prepared, nil
 }
 

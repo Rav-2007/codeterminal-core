@@ -187,6 +187,7 @@ func TestAnOutsideTurnGrantCoversOnlyThatPath(t *testing.T) {
 func TestListingTildeDesktopAfterApproval(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // what os.UserHomeDir reads on Windows
 	desktop := filepath.Join(home, "Desktop")
 	if err := os.MkdirAll(filepath.Join(desktop, "Projects"), 0o700); err != nil {
 		t.Fatal(err)

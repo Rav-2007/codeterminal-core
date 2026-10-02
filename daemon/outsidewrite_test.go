@@ -20,7 +20,9 @@ import (
 // machine (~/Desktop/Neww), and returns both resolved.
 func homeAndProject(t *testing.T) (home, project string) {
 	t.Helper()
-	t.Setenv("HOME", t.TempDir())
+	h := t.TempDir()
+	t.Setenv("HOME", h)
+	t.Setenv("USERPROFILE", h) // what os.UserHomeDir reads on Windows
 	home, err := editapply.RealHomeDir()
 	if err != nil {
 		t.Fatal(err)
