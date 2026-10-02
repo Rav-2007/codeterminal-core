@@ -40,6 +40,7 @@ So: at a checkpoint, or after any run that moved a number, paste the line.
 | 2026-09-21 | `c0f3a0d` | main | 6194 | 696 | 31/49 | 33/49 | 2 | 38/49 | `0f3838c92c6738c9` | green — first run after the `codeterminal` -> `mochiii` rename, run `35594537792` |
 | 2026-10-02 | `fe0fd00` | branch | 7664 | 1056 | 27/49 | 30/49 | 2 | 35/49 | `164ac48ac3fcdabd` | **RED** — run `37032917525`; see below |
 | 2026-10-02 | `fe0fd00` | local (i5, 16 threads) | 7664 | 1056 | 26/49 | 30/49 | 1 | 37/49 | `f1709c05a37bad71` | green — the same tree, exported from git; see below |
+| 2026-10-02 | `61d445d` | branch | 7665 | 1056 | 27/49 | 31/49 | 2 | 37/49 | `f1f421e0ced8d632` | green — run `37039395233`; **36/49 before ground-truth corrections**, so a pass on the floor, not above it |
 
 Floors in force across all four rows: DELIVERED ≥ 75% (36.75/49), RETRIEVED ≥ 61%
 (29.9/49), budgeted out ≤ 4.
