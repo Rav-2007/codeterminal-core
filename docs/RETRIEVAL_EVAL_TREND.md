@@ -38,6 +38,8 @@ So: at a checkpoint, or after any run that moved a number, paste the line.
 | 2026-08-30 | `44a2ed9` | branch | 4771 | 560 | 31/49 | 33/49 | 1 | 39/49 | *not recorded* | green |
 | 2026-08-30 | `44a2ed9` | main | 4771 | 560 | 31/49 | 33/49 | 1 | 39/49 | *not recorded* | green |
 | 2026-09-21 | `c0f3a0d` | main | 6194 | 696 | 31/49 | 33/49 | 2 | 38/49 | `0f3838c92c6738c9` | green — first run after the `codeterminal` -> `mochiii` rename, run `35594537792` |
+| 2026-10-02 | `fe0fd00` | branch | 7664 | 1056 | 27/49 | 30/49 | 2 | 35/49 | `164ac48ac3fcdabd` | **RED** — run `37032917525`; see below |
+| 2026-10-02 | `fe0fd00` | local (i5, 16 threads) | 7664 | 1056 | 26/49 | 30/49 | 1 | 37/49 | `f1709c05a37bad71` | green — the same tree, exported from git; see below |
 
 Floors in force across all four rows: DELIVERED ≥ 75% (36.75/49), RETRIEVED ≥ 61%
 (29.9/49), budgeted out ≤ 4.
@@ -93,3 +95,37 @@ Worth naming because it is a cost nobody bills: **documentation dilutes
 retrieval.** Some of those 1,423 new chunks are the readiness report and the
 findings written the same day. Each document added to this repository competes
 with code for the prompt budget, and this table is where that shows up.
+
+### 2026-10-02 — the headroom is gone, and the runner now decides
+
+**The same commit, the same corpus (7664 chunks, 1056 files), two machines, two
+verdicts**: 35/49 on the CI runner, 37/49 here, fingerprints `164ac48a` and
+`f1709c05`. The `3ada6ea` rows already showed the machine moving numbers by a few
+queries; what is new is that the floor (36.75) now sits between the two, so a red
+or green run on this corpus says more about the runner than the code.
+
+**What took the headroom**: the corpus grew **6194 -> 7664 chunks, 696 -> 1056
+files** (+24%) in eleven days — the long-task engine, its tests and fixtures, and
+the documents written alongside — and **retrieval**, not the budget, absorbed it:
+semantic 31 -> 26-27, retrieved 33 -> 30, budgeted out unchanged at 1-2. The
+queries lost (q13, q22, q25, q30, q45) are each answered by a file this branch
+grew, whose answer chunk now competes with more of its own neighbours
+(`agentloop.go`, `mcpbuiltin.go`, `orchestrator.go`) or by new code on the same
+subject.
+
+**The delivery sweep on the local index** (`TestDeliveryPolicySweep`, same tree):
+the shipped policy is the best arm at 37/49 and 29,837 mean chars, and **no budget
+helps** — 36,000 chars also delivers 37. Three cheaper arms tie it (`+-1 top5` at
+28,000: 37/49 on 23,188 chars, 22% fewer), which is worth a measured look and not
+a switch: a tie inside the runner's noise is not evidence.
+
+**One correction, made by the rule in `supersededGroundTruth`**: q40 ("how does
+the daemon count tokens it has spent in a turn") declared `counters.go`, which has
+never counted tokens — the word appears nowhere in it. The per-turn tally is
+`usage.go`'s `usageTally`, added with `/usage`. The pre-correction number keeps
+being printed.
+
+**Not done, deliberately**: moving the floor. Restoring the headroom means making
+retrieval rank the answer chunk above its own file's neighbours again, which is
+retrieval work with its own measurement, not a change to the gate.
+

@@ -564,9 +564,13 @@ var rerankEvalQueries = []rerankEvalQuery{
 		[]string{"daemon/context.go"},
 		[]string{"func buildAugmentedUserMessage"}, shapeImpl},
 
+	// Corrected 2026-10-02: counters.go never counted tokens (the word appears
+	// nowhere in it); the per-turn tally is usage.go's usageTally, which sums
+	// every call's billed tokens. The pre-correction number is still reported
+	// -- see supersededGroundTruth.
 	{"how does the daemon count tokens it has spent in a turn",
-		[]string{"daemon/counters.go"},
-		[]string{"func (c *counters)"}, shapeImpl},
+		[]string{"daemon/usage.go"},
+		[]string{"func (t *usageTally) add("}, shapeImpl},
 
 	{"where does the config get read off disk and defaulted",
 		[]string{"daemon/config.go"},
@@ -661,6 +665,11 @@ var supersededGroundTruth = map[int]struct {
 		[]string{"daemon/agentloop.go"}, []string{"maxTurnIterations"},
 		"named the budget field, which now appears in four chunks (its definition, its " +
 			"resolution, the build-mode budget, the stop); the stop is the answer",
+	},
+	39: {
+		[]string{"daemon/counters.go"}, []string{"func (c *counters)"},
+		"counted requests, tool calls, applies and searches -- never tokens, a word that appears nowhere in " +
+			"counters.go; it was the nearest thing before usage.go's per-turn tally, which is the answer",
 	},
 	41: {
 		[]string{"daemon/degraded.go"}, []string{"detailMemoryDown"},

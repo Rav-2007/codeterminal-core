@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -139,9 +140,13 @@ func TestGitHistoryRunsNothingAHostileRepositoryPlants(t *testing.T) {
 		map[string]string{"a.txt": "two\n"},
 	)
 	markers := realTempDir(t)
+	// FORWARD SLASHES, in the script and in the config: a git config value
+	// reads a backslash as an escape, so a Windows path planted there was mangled and
+	// nothing could run (FOUND 2026-10-01 on the Windows runner). Git for
+	// Windows runs these through its own sh, which reads C:/... paths.
 	plant := func(name string) string {
-		script := filepath.Join(markers, name+".sh")
-		body := "#!/bin/sh\ntouch " + filepath.Join(markers, name+".ran") + "\ncat \"$1\" 2>/dev/null\n"
+		script := filepath.ToSlash(filepath.Join(markers, name+".sh"))
+		body := "#!/bin/sh\ntouch " + filepath.ToSlash(filepath.Join(markers, name+".ran")) + "\ncat \"$1\" 2>/dev/null\n"
 		if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -171,6 +176,10 @@ func TestGitHistoryRunsNothingAHostileRepositoryPlants(t *testing.T) {
 	plain.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1")
 	_, _ = plain.CombinedOutput()
 	if got := ran(); len(got) == 0 {
+		if runtime.GOOS == "windows" {
+			t.Skip("NOT RUN: the planted shell scripts do not run under this platform's git, so nothing here " +
+				"could show git_history stopping them; the overrides are the same command line everywhere")
+		}
 		t.Fatalf("the planted commands never ran under plain git; this test would prove nothing")
 	}
 	for _, n := range []string{"fsmonitor", "pager", "external", "textconv"} {

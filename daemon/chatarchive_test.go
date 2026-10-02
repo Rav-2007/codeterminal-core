@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -73,6 +74,12 @@ func TestChatArchive_SaveAndLoadRoundTrip(t *testing.T) {
 		t.Errorf("the saved chat is not gzip")
 	}
 	for p, want := range map[string]os.FileMode{path: 0o600, a.dir: 0o700, a.root: 0o700} {
+		// Windows has no such bits: Go reports 0666/0777 whatever the ACL says,
+		// so they are not checked there -- loadCredential's rule, for the same
+		// reason (FOUND 2026-10-01 on the Windows runner).
+		if runtime.GOOS == "windows" {
+			break
+		}
 		fi, err := os.Stat(p)
 		if err != nil {
 			t.Fatal(err)
