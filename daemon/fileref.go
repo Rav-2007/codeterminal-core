@@ -411,15 +411,7 @@ func fuseDirectSpans(direct, similar []Chunk, k int, scrubDisabled bool) fusedRe
 	// first, the fourth reference would be discarded for no gain. Measured on
 	// the eval's tui case, this is the difference between 3/4 and 4/4
 	// referenced locations reaching the prompt.
-	direct = mergeAdjacentChunks(direct)
-
-	limit := maxDirectSpans
-	if k >= 2 && limit > k-1 {
-		limit = k - 1
-	}
-	if len(direct) > limit {
-		direct = direct[:limit]
-	}
+	direct = directSpansFor(direct, k)
 
 	fused := make([]Chunk, 0, len(direct)+len(similar))
 	fused = append(fused, direct...)
@@ -436,6 +428,22 @@ func fuseDirectSpans(direct, similar []Chunk, k int, scrubDisabled bool) fusedRe
 	}
 	out.Chunks = merged
 	return out
+}
+
+// directSpansFor folds the direct spans into each other and caps them, as
+// fuseDirectSpans does before fusing. It is idempotent, so a caller that packs
+// the spans itself (deliverWithinBudget) and then fuses them gets the same
+// spans twice over, not a second cut.
+func directSpansFor(direct []Chunk, k int) []Chunk {
+	direct = mergeAdjacentChunks(direct)
+	limit := maxDirectSpans
+	if k >= 2 && limit > k-1 {
+		limit = k - 1
+	}
+	if len(direct) > limit {
+		direct = direct[:limit]
+	}
+	return direct
 }
 
 // fusedRetrieval is what one request's retrieval produced, plus the numbers

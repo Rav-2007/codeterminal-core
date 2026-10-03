@@ -63,6 +63,20 @@ type expandPolicy struct {
 	// file out of the prompt, which is precisely why "+-2 on all" measured WORSE
 	// than no expansion at all.
 	ConstructCap int
+
+	// TwoPass changes the ORDER the character budget is spent in, and nothing
+	// else. Unset, each hit is widened as it is placed, so the declarations
+	// around hits 1-3 can spend the budget before hit 4 is reached -- q45 of the
+	// locate eval is retrieved at rank 4 and dropped exactly that way, behind a
+	// shell script, a TypeScript class and a watcher function. Set, every hit is
+	// placed first and the room left is then spent widening them in rank order,
+	// so a retrieved hit is never lost to a better-ranked hit's surroundings.
+	// See deliverWithinBudget.
+	TwoPass bool
+	// WidenFirst, under TwoPass, is how many of the top hits are still widened
+	// as they are placed, before the remaining hits are placed. Zero is the pure
+	// two-pass order.
+	WidenFirst int
 }
 
 // defaultExpandPolicy is what production uses.
@@ -162,12 +176,31 @@ func (s *Server) resolvedExpandPolicy() expandPolicy {
 // drops from the tail, so a widened top hit never costs the budget a
 // higher-ranked span.
 func expandToNeighbours(hits []Chunk, workspaceRoot string, policy expandPolicy) []Chunk {
-	if policy.TopN <= 0 || workspaceRoot == "" || len(hits) == 0 {
+	wid := widenHits(hits, workspaceRoot, policy)
+	if wid == nil {
 		return hits
+	}
+	out := make([]Chunk, 0, len(hits)*3)
+	for i, h := range hits {
+		out = append(out, h)
+		out = append(out, wid[i]...)
+	}
+	return out
+}
+
+// widenHits returns, for each hit, the chunks widening adds around it: every
+// chunk overlapping its enclosing construct when that is within the cap,
+// otherwise its two neighbours. Index i belongs to hits[i]; hits past TopN get
+// none. A chunk already present -- another hit, or an earlier hit's widening --
+// is never repeated, so the lists are disjoint and their union is exactly what
+// expandToNeighbours appends. nil means no widening is possible at all.
+func widenHits(hits []Chunk, workspaceRoot string, policy expandPolicy) [][]Chunk {
+	if policy.TopN <= 0 || workspaceRoot == "" || len(hits) == 0 {
+		return nil
 	}
 	realRoot, err := filepath.EvalSymlinks(workspaceRoot)
 	if err != nil {
-		return hits
+		return nil
 	}
 	ignore := newGitignoreMatcher(realRoot)
 
@@ -177,9 +210,8 @@ func expandToNeighbours(hits []Chunk, workspaceRoot string, policy expandPolicy)
 	}
 	regions := make(map[string]fileRegions)
 
-	out := make([]Chunk, 0, len(hits)*3)
+	wid := make([][]Chunk, len(hits))
 	for rank, h := range hits {
-		out = append(out, h)
 		if rank >= policy.TopN {
 			continue
 		}
@@ -223,7 +255,7 @@ func expandToNeighbours(hits []Chunk, workspaceRoot string, policy expandPolicy)
 					continue
 				}
 				seen[sibs[j].ID] = true
-				out = append(out, sibs[j])
+				wid[rank] = append(wid[rank], sibs[j])
 			}
 		}
 		if widened {
@@ -240,10 +272,10 @@ func expandToNeighbours(hits []Chunk, workspaceRoot string, policy expandPolicy)
 				continue
 			}
 			seen[sibs[j].ID] = true
-			out = append(out, sibs[j])
+			wid[rank] = append(wid[rank], sibs[j])
 		}
 	}
-	return out
+	return wid
 }
 
 // refreshHitsFromDisk makes every retrieved hit say what its file says NOW.

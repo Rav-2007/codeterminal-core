@@ -112,9 +112,7 @@ func TestDeliveryPolicySweep(t *testing.T) {
 		delivered, totalChars := 0, 0
 		shape := map[string][2]int{}
 		for i, q := range rerankEvalQueries {
-			expanded := expandToNeighbours(hits[i], repoRoot, arm.policy)
-			kept, _ := truncateToBudget(
-				fuseDirectSpans(nil, expanded, defaultK, false).Chunks, arm.budget, false)
+			kept := deliverWithinBudget(nil, hits[i], repoRoot, arm.policy, defaultK, arm.budget, false).Chunks
 			for _, c := range kept {
 				totalChars += len(renderChunk(1, c, false))
 			}

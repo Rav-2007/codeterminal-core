@@ -1037,10 +1037,10 @@ func runEvalPass(ctx context.Context, t *testing.T, embedder Embedder, store Vec
 		// change in what the model receives -- the same fault that let the
 		// character budget go unmeasured until 2026-08-28, and the reason
 		// displayK is read from defaultK rather than written as a literal.
-		expanded := expandToNeighbours(hits, repoRoot, defaultExpandPolicy)
-		delivered, _ := truncateToBudget(
-			fuseDirectSpans(nil, expanded, displayK, false).Chunks,
-			defaultContextBudgetChars, false)
+		// deliverWithinBudget IS that path -- gatherContext calls it -- so this
+		// eval measures production's delivery rather than a copy of it.
+		delivered := deliverWithinBudget(nil, hits, repoRoot, defaultExpandPolicy,
+			displayK, defaultContextBudgetChars, false).Chunks
 		deliveredHit := rankOfChunk(delivered, exact[i]) != 0
 		deliveredHits[i] = deliveredHit
 

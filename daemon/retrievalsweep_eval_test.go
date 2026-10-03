@@ -285,9 +285,7 @@ func TestRetrievalPolicySweep(t *testing.T) {
 			if rankOfChunk(hits, exact[i]) != 0 {
 				chunkLevel++
 			}
-			expanded := expandToNeighbours(hits, repoRoot, defaultExpandPolicy)
-			kept, _ := truncateToBudget(
-				fuseDirectSpans(nil, expanded, defaultK, false).Chunks, defaultContextBudgetChars, false)
+			kept := deliverWithinBudget(nil, hits, repoRoot, defaultExpandPolicy, defaultK, defaultContextBudgetChars, false).Chunks
 			ok := rankOfChunk(kept, exact[i]) != 0
 			s := shape[q.shape]
 			s[1]++

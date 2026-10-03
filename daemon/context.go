@@ -300,10 +300,13 @@ func (s *Server) gatherContext(ctx context.Context, prompt string) retrievalOutc
 	// mergeAdjacentChunks -- fuseDirectSpans is what folds a chunk and its new
 	// siblings into one contiguous span, and that fold is the whole mechanism.
 	// See chunkexpand.go for the measurement.
-	similar = expandToNeighbours(similar, s.workspace, s.resolvedExpandPolicy())
-
-	fused := fuseDirectSpans(direct, similar, s.retrievalTopK, s.noScrub())
-	if len(fused.Chunks) == 0 {
+	//
+	// deliverWithinBudget is that whole tail -- widen, fuse, budget -- as one
+	// function the locate eval calls too, so the eval measures this path and
+	// not a copy of it.
+	d := deliverWithinBudget(direct, similar, s.workspace, s.resolvedExpandPolicy(),
+		s.retrievalTopK, s.contextBudgetChars, s.noScrub())
+	if len(d.Chunks) == 0 {
 		// Prefer the specific cause when there is one. "No relevant chunks found
 		// in index" is a lie to a user who has no index.
 		if reason == "" {
@@ -311,14 +314,12 @@ func (s *Server) gatherContext(ctx context.Context, prompt string) retrievalOutc
 		}
 		return retrievalOutcome{Skipped: true, Reason: reason}
 	}
-
-	kept, truncated := truncateToBudget(fused.Chunks, s.contextBudgetChars, s.noScrub())
 	return retrievalOutcome{
-		Chunks:          kept,
-		Truncated:       truncated,
-		MergedFrom:      fused.InputCount,
-		MergeSavedBytes: fused.SavedBytes,
-		DirectRefSpans:  fused.DirectSpans,
+		Chunks:          d.Chunks,
+		Truncated:       d.Truncated,
+		MergedFrom:      d.InputCount,
+		MergeSavedBytes: d.SavedBytes,
+		DirectRefSpans:  d.DirectSpans,
 	}
 }
 
@@ -344,14 +345,14 @@ func (s *Server) gatherDirectRefs(prompt string) retrievalOutcome {
 	if len(direct) == 0 {
 		return retrievalOutcome{Skipped: true, Reason: agentSearchReason}
 	}
-	fused := fuseDirectSpans(direct, nil, s.retrievalTopK, s.noScrub())
-	kept, truncated := truncateToBudget(fused.Chunks, s.contextBudgetChars, s.noScrub())
+	d := deliverWithinBudget(direct, nil, s.workspace, s.resolvedExpandPolicy(),
+		s.retrievalTopK, s.contextBudgetChars, s.noScrub())
 	return retrievalOutcome{
-		Chunks:          kept,
-		Truncated:       truncated,
-		MergedFrom:      fused.InputCount,
-		MergeSavedBytes: fused.SavedBytes,
-		DirectRefSpans:  fused.DirectSpans,
+		Chunks:          d.Chunks,
+		Truncated:       d.Truncated,
+		MergedFrom:      d.InputCount,
+		MergeSavedBytes: d.SavedBytes,
+		DirectRefSpans:  d.DirectSpans,
 	}
 }
 
