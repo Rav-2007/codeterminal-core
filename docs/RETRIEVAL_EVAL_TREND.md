@@ -41,8 +41,12 @@ So: at a checkpoint, or after any run that moved a number, paste the line.
 | 2026-10-02 | `fe0fd00` | branch | 7664 | 1056 | 27/49 | 30/49 | 2 | 35/49 | `164ac48ac3fcdabd` | **RED** — run `37032917525`; see below |
 | 2026-10-02 | `fe0fd00` | local (i5, 16 threads) | 7664 | 1056 | 26/49 | 30/49 | 1 | 37/49 | `f1709c05a37bad71` | green — the same tree, exported from git; see below |
 | 2026-10-02 | `61d445d` | branch | 7665 | 1056 | 27/49 | 31/49 | 2 | 37/49 | `f1f421e0ced8d632` | green — run `37039395233`; **36/49 before ground-truth corrections**, so a pass on the floor, not above it |
+| 2026-10-03 | `6859e3b` | local (i5, 16 threads) | 7665 | 1057 | 26/49 | 31/49 | 2 | 37/49 | `334634b76584a870` | green — the pre-registered baseline; held-out set 21 retrieved / **23/28** delivered |
+| 2026-10-03 | `0d0ca5b` | local | 7701 | 1061 | 28/49 | 31/49 | 2 | 36/49 | `643086c59da2e912` | **RED, and not used** — a comment in `lexicalstore.go` quoted locate q29 verbatim (caught by evalguard, fixed in `2c5cbda`) |
+| 2026-10-03 | `2c5cbda` | local | 7702 | 1061 | 27/49 | 31/49 | 2 | 36/49 | `1652bf796196b224` | **RED** at 73.5% — old defaults on a corpus the round's own code had grown; the decision sweep ran on this build (below); held-out 22 / 23 |
+| 2026-10-03 | `3e74e4a` | local | 7718 | 1062 | 26/49 | 32/49 | **0** | **41/49** | `7afa9f886f31a9b4` | green — path column at weight 8 + two-pass packing; 38/49 before corrections; held-out 21 / **24/28** |
 
-Floors in force across all four rows: DELIVERED ≥ 75% (36.75/49), RETRIEVED ≥ 61%
+Floors in force across every row: DELIVERED ≥ 75% (36.75/49), RETRIEVED ≥ 61%
 (29.9/49), budgeted out ≤ 4.
 
 ### What these four rows already show
@@ -168,3 +172,39 @@ gaining q13, q18, q22 and q29 and losing none, on both runners' vectors. On
 the 2026-09-21 corpus the same arm is +3 -2. Delivery is not replicated, so
 lever (3) carries no prediction beyond its mechanism: "budgeted out" should
 reach zero.
+
+### 2026-10-03 — the keyword-tier round: what the rule decided
+
+**The decision run** (`TestKeywordAndPackingSweep` on `2c5cbda`, one index build,
+both query sets), against the shipped row of 36/49 delivered and 23/28 held-out:
+
+| arm | retrieved | DELIVERED | held-out | lost |
+|---|---|---|---|---|
+| path weight 8 | 34/49 | **42/49** | **24/28** | none, on either set |
+| path weight 8, two-pass | 34/49 | 42/49 | 24/28 | none |
+| path weight 4 | 34/49 | 41/49 | 24/28 | none |
+| two-pass alone | 31/49 | 38/49 | 24/28 | none |
+| path 4 + filler + stem | 35/49 | 40/49 | 23/28 | q25, a held-out answer |
+
+**The prediction held where it was made, and the rule overruled it anyway.** The
+offline replica put levers (1)+(2) at 35 retrieved, and the run measured 35. But
+the rule gates on DELIVERED, and the arm that won retrieval lost delivery: stemming
+and filler words, added to the path column, cost q25 on the 49 and an answer on the
+held-out set. Retrieval is not what reaches the model. They stay in the code,
+switched off, so a later sweep can ask again.
+
+**Shipped (`3e74e4a`): the path column at weight 8, and two-pass packing.** Two-pass
+ties path 8 alone on both sets. It ships for the property the pre-registration
+predicted: a retrieved hit can no longer be lost to the budget, and "budgeted out"
+went 2 -> 0 on the final tree.
+
+**On the final tree** the gated number is 41/49 against a floor of 36.75: four
+queries of headroom where there were none. The held-out set went 23 -> 24 and lost
+nothing. The decision run predicted 42; the one-query gap is corpus drift from the
+commits after it, which is the reason the decision was taken inside one build. The
+floor stays where it is.
+
+**Two notes on the instrument.** The `0d0ca5b` row carried an answer-key leak, and
+its numbers are not used. The final run's sweep also labelled its reference row
+"one-pass" after the default had become two-pass. That was fixed in the next commit,
+and the decision run predates the change.

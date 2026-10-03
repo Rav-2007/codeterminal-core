@@ -133,12 +133,18 @@ func TestKeywordAndPackingSweep(t *testing.T) {
 		{"path4+filler+stem", false, lexicalPolicy{PathWeight: 4, FillerStopwords: true, StemWords: true}},
 		{"path8+filler+stem", false, lexicalPolicy{PathWeight: 8, FillerStopwords: true, StemWords: true}},
 	}
-	two := defaultExpandPolicy
+	// Each packing arm states its order outright rather than inheriting it from
+	// defaultExpandPolicy: the default changed (3e74e4a), and an arm labelled
+	// "one-pass" that read the default would have quietly become two-pass.
+	one := defaultExpandPolicy
+	one.TwoPass, one.WidenFirst = false, 0
+	two := one
 	two.TwoPass = true
 	twoWide3 := two
 	twoWide3.WidenFirst = 3
 	packingArms := []packingArm{
-		{"one-pass", defaultExpandPolicy, defaultContextBudgetChars},
+		{"shipped", defaultExpandPolicy, defaultContextBudgetChars},
+		{"one-pass", one, defaultContextBudgetChars},
 		{"two-pass", two, defaultContextBudgetChars},
 		{"two-pass widen-top3", twoWide3, defaultContextBudgetChars},
 		{"two-pass b=28000", two, 28000},
@@ -222,18 +228,18 @@ func TestKeywordAndPackingSweep(t *testing.T) {
 		return m
 	}
 
-	// The SHIPPED row with today's packing is the reference every verdict is
-	// taken against: it is what production does on this tree.
-	ref := slices.IndexFunc(rows, func(r row) bool { return r.name == "SHIPPED | one-pass" })
+	// SHIPPED | shipped is the reference every verdict is taken against: both
+	// halves at production's defaults, which is what production does on this tree.
+	ref := slices.IndexFunc(rows, func(r row) bool { return r.name == "SHIPPED | shipped" })
 	if ref < 0 {
-		t.Fatal("no SHIPPED | one-pass row")
+		t.Fatal("no SHIPPED | shipped row")
 	}
 	refTune, refHeld := rows[ref].sets[0], rows[ref].sets[1]
 	refShapes := shapeCounts(sets[0], refTune.delivered)
 
 	fmt.Println("\n=== Keyword-tier and packing sweep (one index build, both query sets) ===")
 	fmt.Printf("%-42s %9s %9s %9s %9s %7s  %-8s %s\n",
-		"arm", "ret/49", "DEL/49", "ret/28", "DEL/28", "chars", "rule", "delivered vs SHIPPED|one-pass: tuning ; held-out")
+		"arm", "ret/49", "DEL/49", "ret/28", "DEL/28", "chars", "rule", "delivered vs SHIPPED|shipped: tuning ; held-out")
 	for _, r := range rows {
 		tune, held := r.sets[0], r.sets[1]
 		shapes := shapeCounts(sets[0], tune.delivered)
@@ -253,7 +259,7 @@ func TestKeywordAndPackingSweep(t *testing.T) {
 	}
 	fmt.Println("\nrule: DEL/49 >= SHIPPED+2, DEL/28 >= SHIPPED, no tuning shape down by more than 1 " +
 		"(and each lever no worse alone -- read the single-lever rows)")
-	fmt.Printf("SHIPPED | one-pass: retrieved %d/49, DELIVERED %d/49, held-out DELIVERED %d/28 -- "+
+	fmt.Printf("SHIPPED | shipped: retrieved %d/49, DELIVERED %d/49, held-out DELIVERED %d/28 -- "+
 		"must match TestRerankEvalRetrievalRanking on the same tree.\n",
 		count(refTune.retrieved), count(refTune.delivered), count(refHeld.delivered))
 	if count(refTune.delivered) < 20 {
