@@ -158,6 +158,8 @@ func (s *Server) catchUpIndex() {
 	if s.embedder == nil || s.store == nil || s.workspace == "" {
 		return // retrieval not configured for this daemon; nothing to keep current
 	}
+	s.purgePrunedFromIndex()
+
 	indexDir := filepath.Join(s.workspace, indexDirName)
 	builtAt := readStampBuiltAt(indexDir)
 	if builtAt.IsZero() {
@@ -198,4 +200,55 @@ func (s *Server) catchUpIndex() {
 	}
 	s.logger.Printf("index: caught up %d file(s) in %s (%d failed)", len(changed)-failed,
 		time.Since(began).Round(time.Millisecond), failed)
+}
+
+// purgePrunedFromIndex drops from the index every file the walk would never
+// have indexed: anything under a build-output or dependency directory
+// (underPrunedDir).
+//
+// The gate refuses those files now, but until 2026-10 the watcher and the
+// re-index after an edit admitted them -- this repository's own index held 62
+// files from clients/vscode/out -- and a refusal only stops new ones. Left
+// alone, the ones already there would keep taking result slots until the next
+// full `index`, which nothing prompts anyone to run. So once per start, before
+// catching up, the index is asked what it holds and those files are dropped.
+// Steady-state cost is one read of the chunk IDs and nothing else.
+func (s *Server) purgePrunedFromIndex() {
+	ctx, cancel := context.WithTimeout(s.shutdownContext(), reindexTimeout)
+	defer cancel()
+
+	var ids []string
+	var err error
+	if s.lexicalStore != nil {
+		ids, err = s.lexicalStore.AllIDs(ctx) // a column read; the vector store needs a probe query
+	} else {
+		ids, err = s.store.AllIDs(ctx, s.embedder.Dim())
+	}
+	if err != nil {
+		s.logger.Printf("index: could not list the index to drop build output from it: %v", err)
+		return
+	}
+	paths := map[string]bool{}
+	for _, id := range ids {
+		if p := filePathOfChunkID(id); p != "" && underPrunedDir(p) {
+			paths[p] = true
+		}
+	}
+	if len(paths) == 0 {
+		return
+	}
+	failed := 0
+	for p := range paths {
+		if err := s.store.DeleteByFilePath(ctx, p); err != nil {
+			failed++
+			continue
+		}
+		if s.lexicalStore != nil {
+			if err := s.lexicalStore.DeleteByFilePath(ctx, p); err != nil {
+				failed++
+			}
+		}
+	}
+	s.logger.Printf("index: dropped %d file(s) under build-output or dependency directories, which the index "+
+		"should never have held (%d failed)", len(paths)-failed, failed)
 }

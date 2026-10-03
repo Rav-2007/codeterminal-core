@@ -33,8 +33,13 @@ const maxWatchedDirs = 5000
 // own output tree. The walk skips those precisely because they churn, and a
 // watcher that agrees with the walk only until the workspace changes shape is
 // not a watcher that agrees with the walk.
+//
+// And it now agrees with the walk on build output too. It used to name only
+// node_modules and vendor, so dist, build, out, target and venv were watched --
+// and every file a build wrote there was handed to the indexer. isPrunedDir is
+// the walk's own list, so the two cannot drift again.
 func watchableDirName(name string) bool {
-	return !strings.HasPrefix(name, ".") && name != "node_modules" && name != "vendor"
+	return !strings.HasPrefix(name, ".") && !isPrunedDir(name)
 }
 
 // watcherDebounce coalesces the burst an editor produces around a single save

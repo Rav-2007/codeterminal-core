@@ -83,6 +83,19 @@ func isPrunedDir(name string) bool {
 	return editapply.IsProtectedDirName(name) || noiseDirNames[name]
 }
 
+// underPrunedDir reports whether any DIRECTORY on relPath's way down is one the
+// walk prunes. The file's own name is not checked: a source file named out.go
+// is not build output.
+func underPrunedDir(relPath string) bool {
+	parts := strings.Split(filepath.ToSlash(relPath), "/")
+	for _, dir := range parts[:len(parts)-1] {
+		if isPrunedDir(dir) {
+			return true
+		}
+	}
+	return false
+}
+
 // ScanResult is the outcome of walking a workspace: every chunk produced
 // (without vectors yet) plus counters for what was scanned and skipped.
 type ScanResult struct {
@@ -219,6 +232,21 @@ func shouldSkipFile(path, relPath string, ignore *gitignoreMatcher) (SkipReason,
 	}
 	if isNoiseFile(relPath) {
 		return SkipNoise, true, nil
+	}
+	// A FILE INSIDE A PRUNED DIRECTORY IS REFUSED HERE TOO, not only by the walk.
+	//
+	// The walk never descends into build output or dependency trees
+	// (isPrunedDir), but the incremental paths -- the workspace watcher, the
+	// re-index after an applied edit -- reach this gate one file at a time, with
+	// no walk around them. So a build that wrote clients/vscode/out/*.js was
+	// indexed the moment the watcher saw it: MEASURED 2026-10-03, this
+	// repository's own live index held 62 files and 334 chunks from that
+	// directory, compiled copies of the TypeScript sources and their .js.map
+	// files, none of which a full index would contain. A compiled
+	// daemonSupervisor.js then outranked the code a locate question was
+	// actually asking for.
+	if underPrunedDir(relPath) {
+		return SkipIgnoredDir, true, nil
 	}
 	if ignore.matchFile(relPath) {
 		return SkipGitignore, true, nil
