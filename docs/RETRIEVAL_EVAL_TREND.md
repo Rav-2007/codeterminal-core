@@ -45,6 +45,7 @@ So: at a checkpoint, or after any run that moved a number, paste the line.
 | 2026-10-03 | `0d0ca5b` | local | 7701 | 1061 | 28/49 | 31/49 | 2 | 36/49 | `643086c59da2e912` | **RED, and not used** — a comment in `lexicalstore.go` quoted locate q29 verbatim (caught by evalguard, fixed in `2c5cbda`) |
 | 2026-10-03 | `2c5cbda` | local | 7702 | 1061 | 27/49 | 31/49 | 2 | 36/49 | `1652bf796196b224` | **RED** at 73.5% — old defaults on a corpus the round's own code had grown; the decision sweep ran on this build (below); held-out 22 / 23 |
 | 2026-10-03 | `3e74e4a` | local | 7718 | 1062 | 26/49 | 32/49 | **0** | **41/49** | `7afa9f886f31a9b4` | green — path column at weight 8 + two-pass packing; 38/49 before corrections; held-out 21 / **24/28** |
+| 2026-10-03 | `9bae0ef` | branch | 7718 | 1062 | 27/49 | 32/49 | **0** | **41/49** | `44feda9b9902d224` | green — run `37105002648`; the same 41, 32 and 0 as the local run on different vectors, where the same code once split 35 against 37 across the floor; held-out 21 / **24/28** |
 
 Floors in force across every row: DELIVERED ≥ 75% (36.75/49), RETRIEVED ≥ 61%
 (29.9/49), budgeted out ≤ 4.
