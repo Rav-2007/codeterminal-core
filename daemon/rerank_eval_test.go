@@ -204,7 +204,7 @@ const (
 // breakdown is diffable between runs. A shape present on a query but missing
 // here is a compile-time-invisible mistake, so the summary counts what it
 // prints and fails if the totals do not add up.
-var evalQueryShapeOrder = []string{shapeImpl, shapeDefUse, shapeTest, shapeCross, shapeDoc, shapeMulti}
+var evalQueryShapeOrder = []string{shapeImpl, shapeDefUse, shapeTest, shapeCross, shapeDoc, shapeMulti, shapeAgent}
 
 // resolveExactChunks computes each query's chunk-level ground truth FROM THE
 // INDEX, rather than reading it from a list written by hand.
@@ -229,7 +229,11 @@ var evalQueryShapeOrder = []string{shapeImpl, shapeDefUse, shapeTest, shapeCross
 // point of this eval (file-level checking is what hid the original defect): the
 // derived set is the chunks that contain the anchor, not every chunk in the
 // file. The three guards below are what keep it that way.
-func resolveExactChunks(t *testing.T, chunks []Chunk) [][]string {
+//
+// queries is the set being resolved: the 49 the levers are chosen on, or the
+// held-out set (heldout_eval_test.go). Both are held to the same rule, so a
+// held-out answer cannot quietly become "somewhere in the file" either.
+func resolveExactChunks(t *testing.T, queries []rerankEvalQuery, chunks []Chunk) [][]string {
 	t.Helper()
 
 	// PER ANCHOR, not per query, because "is this anchor specific?" is the
@@ -243,8 +247,8 @@ func resolveExactChunks(t *testing.T, chunks []Chunk) [][]string {
 	// and mean nothing.
 	const maxChunksPerAnchor = 3
 
-	resolved := make([][]string, len(rerankEvalQueries))
-	for i, q := range rerankEvalQueries {
+	resolved := make([][]string, len(queries))
+	for i, q := range queries {
 		if len(q.anchors) == 0 {
 			t.Errorf("query %d (%q) declares no anchors, so it has no checkable "+
 				"chunk-level ground truth at all", i+1, q.query)
@@ -711,6 +715,9 @@ func resolveSupersededChunks(chunks []Chunk) map[int][]string {
 var evalSelfReferenceFiles = map[string]bool{
 	"daemon/rerank_eval_test.go":  true,
 	"daemon/lexicalstore_test.go": true,
+	// The held-out set's own file: it holds those queries and their answers,
+	// so indexing it would hand every one of them its answer key.
+	"daemon/heldout_eval_test.go": true,
 
 	// Found by TestNoIndexedFileEchoesAnEvalQuery on 2026-08-28, not by
 	// anybody noticing. Each of these quotes eval queries verbatim for a
@@ -824,6 +831,11 @@ func TestNoIndexedFileEchoesAnEvalQuery(t *testing.T) {
 	for _, q := range tokenEffQueries {
 		allQueries = append(allQueries, evalQueryRef{"token-efficiency", q.query})
 	}
+	// The held-out set too: a document that quoted one of those would turn a
+	// question nothing was tuned on into one the corpus answers verbatim.
+	for _, q := range heldOutEvalQueries {
+		allQueries = append(allQueries, evalQueryRef{"held-out", q.query})
+	}
 	// Anti-vacuity. An empty query list would make every file look clean, and
 	// this test's whole job is to report that nothing leaks -- the one shape of
 	// answer a broken scan produces for free.
@@ -846,9 +858,9 @@ func TestNoIndexedFileEchoesAnEvalQuery(t *testing.T) {
 	}
 	if len(leaks) == 0 {
 		t.Logf("clean: %d files / %d chunks scanned, no file outside evalSelfReferenceFiles "+
-			"echoes any of the %d eval queries (%d locate + %d token-efficiency)",
+			"echoes any of the %d eval queries (%d locate + %d token-efficiency + %d held-out)",
 			scan.FilesScanned, len(scan.Chunks), len(allQueries),
-			len(rerankEvalQueries), len(tokenEffQueries))
+			len(rerankEvalQueries), len(tokenEffQueries), len(heldOutEvalQueries))
 		return
 	}
 	for _, f := range sortedFileNames(func() map[string]bool {
@@ -949,14 +961,18 @@ func hitsExactChunk(hits []Chunk, n int, exactChunks []string) bool {
 	return false
 }
 
-// runEvalPass runs every query in rerankEvalQueries through retrieveTopK
+// runEvalPass runs every query in queries through retrieveTopK
 // with the given lexicalStore (nil for semantic-only, a real store for
 // hybrid) and returns, per query, whether the exact chunk containing the
 // relevant symbol/logic reached the final top-k (k=displayK=5, the real
 // production default — not an arbitrary top-3 subset of a wider fetch,
 // since what matters is whether the chunk actually gets injected into the
 // prompt).
-func runEvalPass(ctx context.Context, t *testing.T, embedder Embedder, store VectorStore, lexicalStore LexicalStore, exact [][]string, superseded map[int][]string, repoRoot, label string) (chunkHits, fileHits, deliveredHits, legacyDelivered, legacyFile []bool) {
+//
+// superseded is the pre-correction ground truth, keyed by index into queries.
+// Only the 49 have one (supersededGroundTruth); the held-out set passes nil,
+// and its legacy columns then simply repeat the live ones.
+func runEvalPass(ctx context.Context, t *testing.T, embedder Embedder, store VectorStore, lexicalStore LexicalStore, queries []rerankEvalQuery, exact [][]string, superseded map[int][]string, repoRoot, label string) (chunkHits, fileHits, deliveredHits, legacyDelivered, legacyFile []bool) {
 	t.Helper()
 	// BOUND TO PRODUCTION, not written as 5. It was `const displayK = 5`, and on
 	// 2026-08-28 production moved to 10 -- at which point a hardcoded 5 would
@@ -965,14 +981,14 @@ func runEvalPass(ctx context.Context, t *testing.T, embedder Embedder, store Vec
 	// documents: the instrument quietly stopping measuring the product.
 	displayK := defaultK
 
-	chunkHits = make([]bool, len(rerankEvalQueries))
-	fileHits = make([]bool, len(rerankEvalQueries))
-	deliveredHits = make([]bool, len(rerankEvalQueries))
-	legacyDelivered = make([]bool, len(rerankEvalQueries))
-	legacyFile = make([]bool, len(rerankEvalQueries))
+	chunkHits = make([]bool, len(queries))
+	fileHits = make([]bool, len(queries))
+	deliveredHits = make([]bool, len(queries))
+	legacyDelivered = make([]bool, len(queries))
+	legacyFile = make([]bool, len(queries))
 	fmt.Println()
 	fmt.Printf("=== Retrieval ranking eval: %s ===\n", label)
-	for i, q := range rerankEvalQueries {
+	for i, q := range queries {
 		hits, err := retrieveTopK(ctx, q.query, displayK, embedder, store, lexicalStore, true)
 		if err != nil {
 			t.Fatalf("retrieveTopK(%q): %v", q.query, err)
@@ -1033,7 +1049,7 @@ func runEvalPass(ctx context.Context, t *testing.T, embedder Embedder, store Vec
 		// costs nothing, and it is what makes a ground-truth correction
 		// impossible to pass off as a retrieval improvement.
 		legacyDelivered[i], legacyFile[i] = deliveredHit, fileHit
-		if old, ok := supersededGroundTruth[i]; ok {
+		if old, ok := supersededGroundTruth[i]; ok && superseded != nil {
 			legacyDelivered[i] = rankOfChunk(delivered, superseded[i]) != 0
 			lf := false
 			for _, h := range hits[:min(displayK, len(hits))] {
@@ -1079,11 +1095,11 @@ func TestRerankEvalRetrievalRanking(t *testing.T) {
 	// The chunk-level ground truth, computed from the index that was just built
 	// rather than read from a list of line ranges written weeks ago. See
 	// resolveExactChunks.
-	exact := resolveExactChunks(t, scan.Chunks)
+	exact := resolveExactChunks(t, rerankEvalQueries, scan.Chunks)
 
 	superseded := resolveSupersededChunks(scan.Chunks)
-	semanticOnlyHits, _, _, _, _ := runEvalPass(ctx, t, embedder, store, nil, exact, superseded, repoRoot, "SEMANTIC-ONLY (lexicalStore=nil, today's behavior)")
-	hybridHits, hybridFileHits, hybridDelivered, hybridLegacyDelivered, hybridLegacyFile := runEvalPass(ctx, t, embedder, store, lexicalStore, exact, superseded, repoRoot, "HYBRID (semantic + lexical, fused via RRF)")
+	semanticOnlyHits, _, _, _, _ := runEvalPass(ctx, t, embedder, store, nil, rerankEvalQueries, exact, superseded, repoRoot, "SEMANTIC-ONLY (lexicalStore=nil, today's behavior)")
+	hybridHits, hybridFileHits, hybridDelivered, hybridLegacyDelivered, hybridLegacyFile := runEvalPass(ctx, t, embedder, store, lexicalStore, rerankEvalQueries, exact, superseded, repoRoot, "HYBRID (semantic + lexical, fused via RRF)")
 
 	fmt.Println()
 	fmt.Println("=== Before/after summary (chunk-level hit = exact symbol-containing chunk reached top-5) ===")
@@ -1447,6 +1463,42 @@ func TestRerankEvalRetrievalRanking(t *testing.T) {
 	} else {
 		t.Logf("KNOWN GAP (not gated, pre-existing, out of scope): query 1 (%q) still misses — see comment above mustHit for why", rerankEvalQueries[0].query)
 	}
+
+	// THE HELD-OUT SET, scored by the same pass over the same index. Reported
+	// and never gated, because its job is to be the questions nothing was tuned
+	// on -- see heldout_eval_test.go for why it exists and the rule it is part
+	// of. Last in this test so no earlier gate can stop it printing.
+	heldExact := resolveExactChunks(t, heldOutEvalQueries, scan.Chunks)
+	heldHits, heldFile, heldDelivered, _, _ := runEvalPass(ctx, t, embedder, store, lexicalStore,
+		heldOutEvalQueries, heldExact, nil, repoRoot, "HELD-OUT (hybrid; never used to choose a policy)")
+	var heldRetrievedCount, heldDeliveredCount, heldFileCount int
+	heldShape := map[string][2]int{}
+	for i, q := range heldOutEvalQueries {
+		v := heldShape[q.shape]
+		v[1]++
+		if heldDelivered[i] {
+			heldDeliveredCount++
+			v[0]++
+		}
+		heldShape[q.shape] = v
+		if heldHits[i] {
+			heldRetrievedCount++
+		}
+		if heldFile[i] {
+			heldFileCount++
+		}
+	}
+	heldTotal := len(heldOutEvalQueries)
+	fmt.Printf("\nHELD-OUT, %d queries never used to choose a policy (reported, not gated):\n", heldTotal)
+	fmt.Printf("  retrieved %d/%d, DELIVERED %d/%d, file-level %d/%d\n",
+		heldRetrievedCount, heldTotal, heldDeliveredCount, heldTotal, heldFileCount, heldTotal)
+	for _, s := range evalQueryShapeOrder {
+		if v, ok := heldShape[s]; ok {
+			fmt.Printf("  %-8s %d/%d\n", s, v[0], v[1])
+		}
+	}
+	fmt.Printf("EVALHELDOUT retrieved=%d delivered=%d file=%d total=%d\n",
+		heldRetrievedCount, heldDeliveredCount, heldFileCount, heldTotal)
 }
 
 // evalChunkRecallFloor is the minimum chunk-level recall RATE

@@ -321,6 +321,11 @@ func TestSharedCorpusExclusionsAreNotAnswerFiles(t *testing.T) {
 			answers[f] = append(answers[f], "token-efficiency: "+q.query)
 		}
 	}
+	for _, q := range heldOutEvalQueries {
+		for _, f := range q.expectedFiles {
+			answers[f] = append(answers[f], "held-out: "+q.query)
+		}
+	}
 
 	// Anti-vacuity: if the query sets ever stop parsing into this map, an empty
 	// map would make every exclusion look fine.

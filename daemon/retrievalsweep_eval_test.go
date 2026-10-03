@@ -192,7 +192,7 @@ func TestRetrievalPolicySweep(t *testing.T) {
 	ctx := context.Background()
 	t.Logf("shared corpus at %s: scanned=%d chunks=%d", repoRoot, scan.FilesScanned, len(scan.Chunks))
 
-	exact := resolveExactChunks(t, scan.Chunks)
+	exact := resolveExactChunks(t, rerankEvalQueries, scan.Chunks)
 	if t.Failed() {
 		t.Fatal("ground truth did not resolve; every number below would be measured against nothing")
 	}

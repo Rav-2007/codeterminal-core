@@ -130,3 +130,41 @@ being printed.
 retrieval rank the answer chunk above its own file's neighbours again, which is
 retrieval work with its own measurement, not a change to the gate.
 
+
+## Pre-registered 2026-10-03: the keyword-tier round
+
+Written before any run of what it describes, so the result can be checked
+against it rather than explained after it.
+
+**The diagnosis it rests on.** In the three saved runs, the fused top ten
+splits 255 slots from the meaning tier and 235 from the keyword tier, and a
+keyword slot holds an answer chunk 6% of the time against 10%. The keyword query
+ORs raw substrings of every non-stopword word: the file path is not searchable
+(the meaning tier embeds it, and that was worth seven of its queries), nothing
+handles inflection ("iterating" never meets `Iterations`), and only 31 words are
+stopped. Separately, delivery widens hits to their declarations in rank order
+before the budget applies, so junk at ranks 1-3 can spend the budget a
+retrieved answer needed: q45 is retrieved at rank 4 and dropped.
+
+**The levers.** (1) The file path as a searchable column of the keyword index,
+weighted in BM25. (2) A query builder with general-English filler stopwords and
+light suffix stripping of plain lowercase words, leaving identifiers alone.
+(3) Delivery that places every retrieved hit before widening any of them.
+
+**A second query set.** 28 questions in `daemon/heldout_eval_test.go`, written
+before any of the above was run against them, about code none of the 49 ask
+about, held out of the index, quoted nowhere else, and never used to choose. The
+eval prints them as an `EVALHELDOUT` line beside `EVALTREND`.
+
+**The rule.** An arm ships only if DELIVERED on the 49 rises by at least 2 over
+the shipped row, DELIVERED on the held-out set does not fall, no shape of the 49
+falls by more than 1, it was measured inside one index build, and each lever in a
+combination does no harm on either set by itself.
+
+**The prediction.** An offline replica of the retrieval stage (it agrees with
+the real runs on 48 of 49 queries, and 49 of 49 on the older tree) puts
+RETRIEVED at 31 -> 35 on today's corpus for levers (1)+(2) at path weight 4,
+gaining q13, q18, q22 and q29 and losing none, on both runners' vectors. On
+the 2026-09-21 corpus the same arm is +3 -2. Delivery is not replicated, so
+lever (3) carries no prediction beyond its mechanism: "budgeted out" should
+reach zero.

@@ -73,9 +73,12 @@ func TestEvalGroundTruthResolvesWithoutTheModel(t *testing.T) {
 	// resolveExactChunks does the asserting; this is the driver that gives it a
 	// corpus. Its messages are the eval's own, so a failure here reads exactly as
 	// it would after twenty-three minutes.
-	resolveExactChunks(t, scan.Chunks)
+	resolveExactChunks(t, rerankEvalQueries, scan.Chunks)
+	// The held-out set's answers rot like any other ground truth, and finding
+	// that out offline beats finding it out at the end of a full eval run.
+	resolveExactChunks(t, heldOutEvalQueries, scan.Chunks)
 
-	t.Logf("ground truth well-formed: %d quer(ies) resolved against %d chunks over %d files, "+
+	t.Logf("ground truth well-formed: %d + %d held-out quer(ies) resolved against %d chunks over %d files, "+
 		"no anchor past the 3-chunk ceiling and none resolving to zero",
-		len(rerankEvalQueries), len(scan.Chunks), scan.FilesScanned)
+		len(rerankEvalQueries), len(heldOutEvalQueries), len(scan.Chunks), scan.FilesScanned)
 }
