@@ -128,8 +128,10 @@ func TestLexicalDeleteByFilePathIsScopedToOneFile(t *testing.T) {
 }
 
 // openLegacyLexicalDB writes a database in the pre-chunk_index shape: the FTS
-// table alone, populated, with no companion table. This is what is already on
-// disk in every existing install.
+// table alone, populated, with no companion table -- and in the legacy layout,
+// file_path not searchable, because an install that old was written by a binary
+// that predates both changes. Opening it therefore exercises both migrations
+// together, which is the order a real upgrade meets them in.
 func openLegacyLexicalDB(t *testing.T, dir string, rows []Chunk, duplicate bool) string {
 	t.Helper()
 	path := filepath.Join(dir, lexicalDBFileName)
@@ -139,7 +141,7 @@ func openLegacyLexicalDB(t *testing.T, dir string, rows []Chunk, duplicate bool)
 	}
 	defer func() { _ = db.Close() }()
 
-	if _, err := db.Exec(codeChunksFTSTableDDL); err != nil {
+	if _, err := db.Exec(legacyCodeChunksFTSTableDDL); err != nil {
 		t.Fatal(err)
 	}
 	insert := func(c Chunk) {
@@ -265,5 +267,127 @@ func TestLexicalMigrationIsIdempotent(t *testing.T) {
 	assertOneToOne(t, reopened.db)
 	if hits, _ := reopened.Search(ctx, "Symbol3", 10); len(hits) != 1 {
 		t.Errorf("content did not survive a reopen: %d hit(s)", len(hits))
+	}
+}
+
+// AN INDEX WRITTEN BEFORE 2026-10 GETS A SEARCHABLE PATH ON OPEN, AND NOTHING
+// IS RE-EMBEDDED: the FTS table is rebuilt from its own rows. This is the common
+// upgrade -- chunk_index already present, only the FTS layout old -- and the
+// property that matters most is that rowids survive, because chunk_index points
+// at FTS rows by rowid. The rowids here have a hole in them, as deletions leave
+// in a real index: a migration that renumbered would pass on a contiguous table
+// and orphan this one.
+//
+// Neuter check: drop the migrateLegacyFTSLayout call from ensureLexicalSchema,
+// and the layout stays legacy and the path search finds nothing.
+func TestLegacyFTSLayoutIsMigratedInPlace(t *testing.T) {
+	dir := t.TempDir()
+	db, err := sql.Open("sqlite", filepath.Join(dir, lexicalDBFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ddl := range []string{legacyCodeChunksFTSTableDDL, chunkIndexDDL, chunkIndexFileDDL} {
+		if _, err := db.Exec(ddl); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows := []Chunk{
+		lexChunk("protocol/peerauth_linux.go:1-40", "protocol/peerauth_linux.go", "func checkPeer() {}", 1),
+		lexChunk("daemon/a.go:1-40", "daemon/a.go", "func alpha() {}", 1),
+		lexChunk("daemon/b.go:1-40", "daemon/b.go", "func beta() {}", 1),
+	}
+	before := map[int64]string{}
+	for _, c := range rows {
+		res, err := db.Exec(`INSERT INTO code_chunks_fts(chunk_id, content, file_path, start_line, end_line, class) VALUES (?,?,?,?,?,?)`,
+			c.ID, c.Content, c.FilePath, c.StartLine, c.EndLine, string(c.Class))
+		if err != nil {
+			t.Fatal(err)
+		}
+		id, err := res.LastInsertId()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(`INSERT INTO chunk_index(chunk_id, file_path, fts_rowid) VALUES (?,?,?)`, c.ID, c.FilePath, id); err != nil {
+			t.Fatal(err)
+		}
+		before[id] = c.ID
+	}
+	// The hole: delete the middle row from both tables.
+	for id, cid := range before {
+		if cid != "daemon/a.go:1-40" {
+			continue
+		}
+		if _, err := db.Exec(`DELETE FROM code_chunks_fts WHERE rowid = ?`, id); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(`DELETE FROM chunk_index WHERE chunk_id = ?`, cid); err != nil {
+			t.Fatal(err)
+		}
+		delete(before, id)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := NewFTSChunkStore(dir)
+	if err != nil {
+		t.Fatalf("opening a legacy-layout index failed: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+	ctx := context.Background()
+
+	if legacy, err := ftsLayoutIsLegacy(ctx, store.db); err != nil || legacy {
+		t.Fatalf("after opening, the layout is still legacy (err %v)", err)
+	}
+	after := map[int64]string{}
+	r, err := store.db.Query(`SELECT rowid, chunk_id FROM code_chunks_fts`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for r.Next() {
+		var id int64
+		var cid string
+		if err := r.Scan(&id, &cid); err != nil {
+			t.Fatal(err)
+		}
+		after[id] = cid
+	}
+	_ = r.Close()
+	if fmt.Sprint(before) != fmt.Sprint(after) {
+		t.Errorf("the migration renumbered the FTS rows: before %v, after %v -- every chunk_index "+
+			"entry now points at the wrong row", before, after)
+	}
+	assertOneToOne(t, store.db)
+
+	if hits, err := store.searchWith(ctx, "peerauth", 10, lexicalPolicy{PathWeight: 4}); err != nil || len(hits) != 1 {
+		t.Errorf("searching the migrated index by file name found %d hit(s) (err %v); want 1", len(hits), err)
+	}
+	var leftovers int
+	if err := store.db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE name LIKE 'code_chunks_fts_legacy%'`).Scan(&leftovers); err != nil {
+		t.Fatal(err)
+	}
+	if leftovers != 0 {
+		t.Errorf("the migration left %d legacy table(s) behind", leftovers)
+	}
+
+	// Still writable through the rowid paths it has to keep working.
+	if err := store.Upsert(ctx, []Chunk{lexChunk("daemon/c.go:1-40", "daemon/c.go", "func gamma() {}", 1)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeleteByFilePath(ctx, "daemon/b.go"); err != nil {
+		t.Fatal(err)
+	}
+	assertOneToOne(t, store.db)
+
+	// And opening it again changes nothing.
+	n := countRows(t, store.db, "code_chunks_fts")
+	_ = store.Close()
+	reopened, err := NewFTSChunkStore(dir)
+	if err != nil {
+		t.Fatalf("reopening the migrated index failed: %v", err)
+	}
+	defer func() { _ = reopened.Close() }()
+	if got := countRows(t, reopened.db, "code_chunks_fts"); got != n {
+		t.Errorf("reopening changed the row count from %d to %d", n, got)
 	}
 }

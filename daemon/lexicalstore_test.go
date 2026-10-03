@@ -106,7 +106,7 @@ func TestFTSChunkStore_UpsertEmptyIsNoop(t *testing.T) {
 }
 
 func TestBuildLexicalQuery_DropsStopwordsAndQuotesRemainingTokens(t *testing.T) {
-	got := buildLexicalQuery("where is the ZDR refusal string matched")
+	got := buildLexicalQuery("where is the ZDR refusal string matched", lexicalPolicy{})
 	want := `"ZDR" OR "refusal" OR "string" OR "matched"`
 	if got != want {
 		t.Errorf("buildLexicalQuery = %q, want %q", got, want)
@@ -116,7 +116,7 @@ func TestBuildLexicalQuery_DropsStopwordsAndQuotesRemainingTokens(t *testing.T) 
 func TestBuildLexicalQuery_PreservesDottedTokens(t *testing.T) {
 	// "does" and "do" are both stopwords -- only the dotted identifier
 	// itself should survive.
-	got := buildLexicalQuery("what does fmt.Println do")
+	got := buildLexicalQuery("what does fmt.Println do", lexicalPolicy{})
 	want := `"fmt.Println"`
 	if got != want {
 		t.Errorf("buildLexicalQuery = %q, want %q", got, want)
@@ -124,7 +124,7 @@ func TestBuildLexicalQuery_PreservesDottedTokens(t *testing.T) {
 }
 
 func TestBuildLexicalQuery_AllStopwordsYieldsEmptyString(t *testing.T) {
-	got := buildLexicalQuery("what is the")
+	got := buildLexicalQuery("what is the", lexicalPolicy{})
 	if got != "" {
 		t.Errorf("buildLexicalQuery(%q) = %q, want empty string", "what is the", got)
 	}

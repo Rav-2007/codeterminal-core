@@ -44,10 +44,35 @@ type LexicalStore interface {
 // trigram tokenizer, which matches raw substrings regardless of identifier
 // casing (camelCase, snake_case, dotted names like fmt.Println all just
 // work -- see fts5_probe_test.go for the proof this is compiled into this
-// build). file_path/start_line/end_line/class are UNINDEXED (carried
+// build). chunk_id/start_line/end_line/class are UNINDEXED (carried
 // alongside each row, never tokenized) so a hit can be turned directly back
 // into a Chunk without a join.
+//
+// file_path IS INDEXED, since 2026-10, and it is the keyword tier's half of
+// the change that made the meaning tier work. Prefixing the path to every
+// chunk's EMBEDDED text was the biggest single gain this retrieval stack has
+// measured (chunkcontext.go); the keyword tier could not see the path at all,
+// so "how does the tui know which daemon socket to dial" could never match
+// clients/tui/daemonconn.go on its name. Searching the path is weighted, not
+// mixed into the text: see lexicalPolicy.PathWeight.
 const codeChunksFTSTableDDL = `
+CREATE VIRTUAL TABLE IF NOT EXISTS code_chunks_fts USING fts5(
+	content,
+	chunk_id UNINDEXED,
+	file_path,
+	start_line UNINDEXED,
+	end_line UNINDEXED,
+	class UNINDEXED,
+	tokenize='trigram'
+)`
+
+// legacyCodeChunksFTSTableDDL is the layout of every index written before
+// 2026-10: the same table with file_path stored but not searchable. It is kept
+// for two readers -- migrateLegacyFTSLayout recognises it on disk, and the
+// retrieval sweep builds one to score the old ranking exactly, because the new
+// layout cannot impersonate it (an indexed path changes BM25's term rarity in
+// the third decimal even at weight zero).
+const legacyCodeChunksFTSTableDDL = `
 CREATE VIRTUAL TABLE IF NOT EXISTS code_chunks_fts USING fts5(
 	content,
 	chunk_id UNINDEXED,
@@ -57,6 +82,10 @@ CREATE VIRTUAL TABLE IF NOT EXISTS code_chunks_fts USING fts5(
 	class UNINDEXED,
 	tokenize='trigram'
 )`
+
+// legacyFTSLayout recognises the legacy layout in the CREATE statement SQLite
+// keeps for the table.
+var legacyFTSLayout = regexp.MustCompile(`(?i)\bfile_path\s+UNINDEXED\b`)
 
 // chunkIndexDDL is the companion lookup table, and it exists because
 // "UNINDEXED" in the DDL above means exactly what it says.
@@ -219,6 +248,9 @@ func ensureLexicalSchema(db *sql.DB) error {
 			return fmt.Errorf("creating %s: %w", stmt.what, err)
 		}
 	}
+	if err := migrateLegacyFTSLayout(db); err != nil {
+		return err
+	}
 
 	var populated bool
 	if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM chunk_index)`).Scan(&populated); err != nil {
@@ -241,6 +273,84 @@ func ensureLexicalSchema(db *sql.DB) error {
 		return fmt.Errorf("sweeping orphaned lexical rows: %w", err)
 	}
 	return nil
+}
+
+// migrateLegacyFTSLayout rebuilds a legacy code_chunks_fts (file_path stored,
+// not searchable) in the current layout, in place.
+//
+// NOTHING IS RE-EMBEDDED. The keyword index is rebuilt from its own rows -- the
+// text is already stored in it -- so an existing install upgrades the first time
+// it opens the index, in about a second for this repository, rather than being
+// told to run `index` and wait for every chunk to be embedded again.
+//
+// ROWIDS ARE CARRIED ACROSS, and that is what keeps chunk_index valid: its
+// fts_rowid column points at FTS rows by rowid, so a copy that renumbered them
+// would orphan every entry and break the one-to-one invariant every method in
+// this file relies on.
+//
+// ONE WRITE TRANSACTION, RE-CHECKED UNDER THE LOCK. The daemon and the CLI open
+// the same index, and both can find it legacy at the same moment. BEGIN
+// IMMEDIATE takes the write lock up front; the loser waits on busy_timeout,
+// then finds the layout already current and does nothing. A failure rolls back
+// to the legacy table intact, and the caller's error disables only the keyword
+// tier (setupRetrieval), never retrieval.
+func migrateLegacyFTSLayout(db *sql.DB) error {
+	ctx := context.Background()
+	if legacy, err := ftsLayoutIsLegacy(ctx, db); err != nil || !legacy {
+		return err
+	}
+
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("migrating the lexical index: %w", err)
+	}
+	defer func() { _ = conn.Close() }()
+	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		return fmt.Errorf("migrating the lexical index: %w", err)
+	}
+	done := false
+	defer func() {
+		if !done {
+			_, _ = conn.ExecContext(ctx, `ROLLBACK`)
+		}
+	}()
+
+	legacy, err := ftsLayoutIsLegacy(ctx, conn)
+	if err != nil {
+		return err
+	}
+	if !legacy {
+		return nil // another process migrated it while this one waited
+	}
+	for _, stmt := range []string{
+		`ALTER TABLE code_chunks_fts RENAME TO code_chunks_fts_legacy`,
+		codeChunksFTSTableDDL,
+		`INSERT INTO code_chunks_fts(rowid, content, chunk_id, file_path, start_line, end_line, class)
+		 SELECT rowid, content, chunk_id, file_path, start_line, end_line, class FROM code_chunks_fts_legacy`,
+		`DROP TABLE code_chunks_fts_legacy`,
+	} {
+		if _, err := conn.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("migrating the lexical index to a searchable file path: %w", err)
+		}
+	}
+	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
+		return fmt.Errorf("migrating the lexical index: %w", err)
+	}
+	done = true
+	return nil
+}
+
+// ftsLayoutIsLegacy reports whether code_chunks_fts on disk is the legacy
+// layout, read from the CREATE statement SQLite keeps for it.
+func ftsLayoutIsLegacy(ctx context.Context, q interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}) (bool, error) {
+	var ddl string
+	if err := q.QueryRowContext(ctx,
+		`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'code_chunks_fts'`).Scan(&ddl); err != nil {
+		return false, fmt.Errorf("reading the lexical index layout: %w", err)
+	}
+	return legacyFTSLayout.MatchString(ddl), nil
 }
 
 // Has reports whether a chunk id is already stored.
@@ -426,6 +536,80 @@ var lexicalStopwords = map[string]bool{
 	"with": true,
 }
 
+// lexicalFillerWords are general-English filler that questions carry and code
+// does not: pronouns, modals, and the scaffolding of "what does the user get
+// told". Dropped only under lexicalPolicy.FillerStopwords.
+//
+// CONSERVATIVE ON PURPOSE. Words that can NAME code stay searchable however
+// often questions use them -- get, make, next, before, after, all, not, out,
+// one -- because each is an identifier somewhere (deadlineCap.Before, the make
+// that sandbox_exec runs). A dropped word is not searched for at all, so a
+// wrong entry here costs recall outright, and nothing repository-specific
+// belongs on it: "daemon" is everywhere in THIS corpus and nowhere in a user's.
+var lexicalFillerWords = map[string]bool{
+	"has": true, "have": true, "had": true, "can": true, "could": true, "would": true,
+	"should": true, "will": true, "shall": true, "may": true, "might": true, "must": true,
+	"into": true, "from": true, "our": true, "your": true, "you": true, "we": true,
+	"they": true, "them": true, "their": true, "there": true, "then": true, "than": true,
+	"so": true, "if": true, "too": true, "very": true, "just": true, "only": true,
+	"also": true, "did": true, "done": true, "i": true, "me": true, "my": true,
+	"much": true, "many": true, "some": true, "need": true, "needs": true,
+	"told": true, "tell": true, "about": true, "between": true,
+}
+
+// lexicalSuffixes are the endings stemQueryWord strips, longest first.
+var lexicalSuffixes = []string{"ations", "ation", "ings", "ing", "ied", "ies", "edly", "ed", "es", "s"}
+
+var plainLowercaseWord = regexp.MustCompile(`^[a-z]+$`)
+
+// stemQueryWord strips one common English ending from a plain lowercase word,
+// so the trigram index -- which matches SUBSTRINGS -- finds every inflection
+// of it. "iterating" becomes "iterat", which is inside maxTurnIterations;
+// "routing" becomes "rout", inside Route(. Unstemmed, neither question could
+// meet its answer by keyword at all, whatever the ranking.
+//
+// ONLY PLAIN LOWERCASE WORDS. A word with a capital, digit, underscore or dot
+// is something the user typed to be found as written -- SearchRequest, ZDR,
+// fmt.Println -- and is left exactly alone.
+//
+// The stem keeps at least four letters, so a short word keeps its meaning
+// ("uses" stays "uses", not "us"), and a long stem ending in i, y or e drops it
+// so the stem sits inside every form ("deployed" -> "deplo", inside deploy and
+// deployment alike; "classified" -> "classif", inside classifyFile).
+func stemQueryWord(t string) string {
+	if !plainLowercaseWord.MatchString(t) {
+		return t
+	}
+	for _, suf := range lexicalSuffixes {
+		if strings.HasSuffix(t, suf) && len(t)-len(suf) >= 4 {
+			b := t[:len(t)-len(suf)]
+			if len(b) > 4 && strings.ContainsRune("iye", rune(b[len(b)-1])) {
+				b = b[:len(b)-1]
+			}
+			return b
+		}
+	}
+	return t
+}
+
+// lexicalPolicy is how the keyword tier builds its query and ranks what
+// matches. A struct for the reason expandPolicy is one: the retrieval sweep
+// scores candidate policies through searchWith itself, so the instrument and
+// production read the same fields and cannot drift apart. The ZERO VALUE is the
+// pre-2026-10 behaviour exactly.
+type lexicalPolicy struct {
+	// PathWeight is the BM25 weight of the file_path column against content's
+	// 1.0. Zero means the path neither scores nor matches.
+	PathWeight float64
+	// FillerStopwords drops lexicalFillerWords as well as lexicalStopwords.
+	FillerStopwords bool
+	// StemWords strips one common ending from plain lowercase words.
+	StemWords bool
+}
+
+// defaultLexicalPolicy is what production searches with.
+var defaultLexicalPolicy = lexicalPolicy{}
+
 // lexicalQueryTokenPattern extracts word-and-punctuation runs that look like
 // code tokens -- letters, digits, underscore, and '.' (so dotted names like
 // fmt.Println survive as one token) -- from a natural-language query.
@@ -498,15 +682,35 @@ func lexicalQueryTooLong(query string) bool { return len(query) > maxLexicalQuer
 // forgiving than an AND that could return zero rows over word-choice
 // mismatches.
 //
+// p adds to that: filler words dropped too (FillerStopwords) and one common
+// ending stripped from plain words (StemWords). The zero policy builds exactly
+// what this function built before either existed.
+//
 // Returns "" when nothing but stopwords remain -- callers must treat that as
 // "no lexical query is possible for this input" rather than passing an
 // empty MATCH to FTS5.
-func buildLexicalQuery(query string) string {
+func buildLexicalQuery(query string, p lexicalPolicy) string {
 	tokens := lexicalQueryTokenPattern.FindAllString(query, -1)
+	// A repeated word counts once: BM25 sums over the query's phrases, so a
+	// duplicate would weigh its term twice for no reason the user gave. Part of
+	// the new builder only, so the zero policy stays the old one exactly.
+	dedupe := p.FillerStopwords || p.StemWords
+	seen := make(map[string]bool, len(tokens))
 	var terms []string
 	for _, t := range tokens {
-		if lexicalStopwords[strings.ToLower(t)] {
+		lower := strings.ToLower(t)
+		if lexicalStopwords[lower] || (p.FillerStopwords && lexicalFillerWords[lower]) {
 			continue
+		}
+		if p.StemWords {
+			t = stemQueryWord(t)
+		}
+		if dedupe {
+			key := strings.ToLower(t)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
 		}
 		terms = append(terms, `"`+strings.ReplaceAll(t, `"`, `""`)+`"`)
 	}
@@ -517,13 +721,20 @@ func buildLexicalQuery(query string) string {
 }
 
 // Search runs a lexical (FTS5 MATCH) keyword/substring search over the code
-// index, most-relevant match first (FTS5's built-in bm25 rank), capped at k.
-// Returns (nil, nil) -- not an error -- when query reduces to nothing but
+// index under defaultLexicalPolicy, most-relevant match first (BM25), capped
+// at k. Returns (nil, nil) -- not an error -- when query reduces to nothing but
 // stopwords, mirroring VectorStore.Query's "empty store, empty result"
 // convention: a caller (retrieveTopK) should treat "the lexical tier found
 // nothing" identically whether that's because of an empty index or an
 // unmatchable query.
 func (s *FTSChunkStore) Search(ctx context.Context, query string, k int) ([]Chunk, error) {
+	return s.searchWith(ctx, query, k, defaultLexicalPolicy)
+}
+
+// searchWith is Search under an explicit policy. It is production's own path,
+// and the retrieval sweep calls it with candidate policies so that what it
+// scores is what would ship.
+func (s *FTSChunkStore) searchWith(ctx context.Context, query string, k int, p lexicalPolicy) ([]Chunk, error) {
 	if k <= 0 {
 		return nil, nil
 	}
@@ -534,18 +745,26 @@ func (s *FTSChunkStore) Search(ctx context.Context, query string, k int) ([]Chun
 		return nil, errLexicalQueryTooLong
 	}
 
-	ftsQuery := buildLexicalQuery(query)
+	ftsQuery := buildLexicalQuery(query, p)
 	if ftsQuery == "" {
 		return nil, nil
 	}
+	// A path that does not score must not match either. Without the column
+	// filter, a chunk whose only tie to the query is its file name would join
+	// the list with a score of zero -- a row the old layout could never return.
+	if p.PathWeight <= 0 {
+		ftsQuery = "{content} : (" + ftsQuery + ")"
+	}
 
+	// The weights follow the column order of codeChunksFTSTableDDL; the
+	// UNINDEXED columns hold no terms, so theirs never matter.
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT file_path, start_line, end_line, class, content, chunk_id
 		 FROM code_chunks_fts
 		 WHERE code_chunks_fts MATCH ?
-		 ORDER BY rank
+		 ORDER BY bm25(code_chunks_fts, 1.0, 0.0, ?, 0.0, 0.0, 0.0)
 		 LIMIT ?`,
-		ftsQuery, k,
+		ftsQuery, p.PathWeight, k,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("searching lexical index: %w", err)
