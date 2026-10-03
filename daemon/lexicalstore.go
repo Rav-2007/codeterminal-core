@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -136,7 +137,16 @@ CREATE INDEX IF NOT EXISTS idx_chunk_index_file_path ON chunk_index(file_path)`
 // database -- the same modernc.org/sqlite dependency memory.go
 // already uses, so this adds no new dependency.
 type FTSChunkStore struct {
-	db *sql.DB
+	db   *sql.DB
+	path string
+
+	// upgrading is non-nil while a layout upgrade runs on its own connection
+	// (upgradeInBackground), and closed when it ends, however it ends. WRITES
+	// WAIT FOR IT: a write racing the rebuild would only fail on the lock once
+	// busy_timeout ran out, and a write that fails is a stale index entry.
+	// SEARCHES DO NOT WAIT: they read the committed legacy table until the
+	// upgrade commits, which is the point of running it on another connection.
+	upgrading chan struct{}
 }
 
 // NewFTSChunkStore opens (creating if absent) the lexical index at
@@ -144,7 +154,20 @@ type FTSChunkStore struct {
 // MemoryStore: this store's write volume (one upsert per index
 // run) never justifies a pool, and SQLite's concurrent-writer story is poor
 // enough that avoiding it entirely is simplest.
+//
+// A legacy-layout index is upgraded before this returns (migrateLegacyFTSLayout),
+// which is right for the one-shot commands. The daemon opens with
+// openFTSChunkStore(dir, false) instead and upgrades in the background, because
+// a large index takes long enough to rebuild that doing it on the startup path
+// would hold every client in the accept backlog for the duration.
 func NewFTSChunkStore(indexDir string) (*FTSChunkStore, error) {
+	return openFTSChunkStore(indexDir, true)
+}
+
+// openFTSChunkStore is NewFTSChunkStore with the upgrade of a legacy layout
+// either done now or left to upgradeInBackground; legacyLayout on the result
+// says which one the caller has to deal with.
+func openFTSChunkStore(indexDir string, upgradeNow bool) (*FTSChunkStore, error) {
 	// 0700, and this is a correction rather than a preference.
 	//
 	// This database holds the CHUNK TEXT of the user's workspace -- the same
@@ -208,6 +231,12 @@ func NewFTSChunkStore(indexDir string) (*FTSChunkStore, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if upgradeNow {
+		if err := migrateLegacyFTSLayout(db); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+	}
 
 	// The db file and its -wal/-shm sidecars, after the schema step so the
 	// sidecars WAL mode created actually exist to be restricted. In WAL mode a
@@ -223,7 +252,57 @@ func NewFTSChunkStore(indexDir string) (*FTSChunkStore, error) {
 		return nil, err
 	}
 
-	return &FTSChunkStore{db: db}, nil
+	return &FTSChunkStore{db: db, path: path}, nil
+}
+
+// legacyLayout reports whether the index is still in the pre-2026-10 layout.
+func (s *FTSChunkStore) legacyLayout() bool {
+	legacy, err := ftsLayoutIsLegacy(context.Background(), s.db)
+	return err == nil && legacy
+}
+
+// upgradeInBackground rebuilds a legacy layout on a connection of its own and
+// returns at once; done is called when the rebuild ends, with its duration and
+// any error. Searches keep reading the legacy table meanwhile -- WAL lets them --
+// and writes wait for the end (see upgrading). Called at most once, before the
+// store is shared.
+//
+// MEASURED 2026-10-03 on this repository's own index (7,976 chunks, a 106 MB
+// lexical.db), which is why this exists: about ten seconds inline with the
+// machine busy. The file cap allows indexes several times that, and every
+// second of it was a second every client sat in the accept backlog.
+func (s *FTSChunkStore) upgradeInBackground(done func(took time.Duration, err error)) {
+	s.upgrading = make(chan struct{})
+	go func() {
+		began := time.Now()
+		err := func() error {
+			db, err := sql.Open("sqlite", s.path)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = db.Close() }()
+			db.SetMaxOpenConns(1)
+			if _, err := db.Exec(`PRAGMA busy_timeout=5000`); err != nil {
+				return err
+			}
+			return migrateLegacyFTSLayout(db)
+		}()
+		close(s.upgrading)
+		done(time.Since(began), err)
+	}()
+}
+
+// waitForUpgrade blocks a write until a background upgrade has ended.
+func (s *FTSChunkStore) waitForUpgrade(ctx context.Context) error {
+	if s.upgrading == nil {
+		return nil
+	}
+	select {
+	case <-s.upgrading:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("waiting for the lexical index upgrade: %w", ctx.Err())
+	}
 }
 
 // ensureLexicalSchema creates both tables and, on a database written before
@@ -251,9 +330,6 @@ func ensureLexicalSchema(db *sql.DB) error {
 		if _, err := db.Exec(stmt.ddl); err != nil {
 			return fmt.Errorf("creating %s: %w", stmt.what, err)
 		}
-	}
-	if err := migrateLegacyFTSLayout(db); err != nil {
-		return err
 	}
 
 	var populated bool
@@ -284,8 +360,10 @@ func ensureLexicalSchema(db *sql.DB) error {
 //
 // NOTHING IS RE-EMBEDDED. The keyword index is rebuilt from its own rows -- the
 // text is already stored in it -- so an existing install upgrades the first time
-// it opens the index, in about a second for this repository, rather than being
-// told to run `index` and wait for every chunk to be embedded again.
+// it opens the index rather than being told to run `index` and wait for every
+// chunk to be embedded again. It still re-tokenizes every chunk, which is why
+// the daemon runs it in the background (upgradeInBackground): about ten seconds
+// for this repository's own index with the machine busy, and more for larger.
 //
 // ROWIDS ARE CARRIED ACROSS, and that is what keeps chunk_index valid: its
 // fts_rowid column points at FTS rows by rowid, so a copy that renumbered them
@@ -296,8 +374,8 @@ func ensureLexicalSchema(db *sql.DB) error {
 // the same index, and both can find it legacy at the same moment. BEGIN
 // IMMEDIATE takes the write lock up front; the loser waits on busy_timeout,
 // then finds the layout already current and does nothing. A failure rolls back
-// to the legacy table intact, and the caller's error disables only the keyword
-// tier (setupRetrieval), never retrieval.
+// to the legacy table intact, which keyword search reads exactly as before --
+// the upgrade is lost, never the tier.
 func migrateLegacyFTSLayout(db *sql.DB) error {
 	ctx := context.Background()
 	if legacy, err := ftsLayoutIsLegacy(ctx, db); err != nil || !legacy {
@@ -426,6 +504,9 @@ func (s *FTSChunkStore) AllIDs(ctx context.Context) ([]string, error) {
 }
 
 func (s *FTSChunkStore) DeleteByFilePath(ctx context.Context, relPath string) error {
+	if err := s.waitForUpgrade(ctx); err != nil {
+		return err
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("beginning lexical delete transaction: %w", err)
@@ -450,6 +531,9 @@ func (s *FTSChunkStore) DeleteByFilePath(ctx context.Context, relPath string) er
 func (s *FTSChunkStore) Upsert(ctx context.Context, chunks []Chunk) error {
 	if len(chunks) == 0 {
 		return nil
+	}
+	if err := s.waitForUpgrade(ctx); err != nil {
+		return err
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)

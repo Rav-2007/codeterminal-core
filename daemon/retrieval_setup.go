@@ -4,6 +4,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // Client-facing reasons retrieval is unavailable (Fix 8). Every one of these
@@ -126,10 +127,27 @@ func setupRetrieval(
 	// Opened last and independently: a lexical-index failure here must never
 	// undo the semantic retrieval already confirmed usable above.
 	var ls LexicalStore
-	if fts, ftsErr := NewFTSChunkStore(indexDir); ftsErr != nil {
+	if fts, ftsErr := openFTSChunkStore(indexDir, false); ftsErr != nil {
 		logger.Printf("lexical retrieval tier disabled: opening lexical index: %v", ftsErr)
 	} else {
 		ls = fts
+		// An index written before 2026-10 cannot search file paths until its
+		// keyword table is rebuilt. Not here, on the startup path: the daemon is
+		// already bound and clients are waiting in the accept backlog, and the
+		// rebuild scales with the index. Keyword search runs on the old layout
+		// until it finishes, and writes wait for it (FTSChunkStore.upgrading).
+		if fts.legacyLayout() {
+			logger.Print("lexical index: upgrading to a searchable file path in the background " +
+				"(once; nothing is re-embedded) -- keyword search uses the old layout until it finishes")
+			fts.upgradeInBackground(func(took time.Duration, err error) {
+				if err != nil {
+					logger.Printf("lexical index: the upgrade failed and was rolled back; keyword search "+
+						"keeps the old layout and the next start tries again: %v", err)
+					return
+				}
+				logger.Printf("lexical index: upgraded in %s", took.Round(time.Millisecond))
+			})
+		}
 	}
 
 	stop := func() {

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func lexChunk(id, path, content string, start int) Chunk {
@@ -278,7 +279,7 @@ func TestLexicalMigrationIsIdempotent(t *testing.T) {
 // in a real index: a migration that renumbered would pass on a contiguous table
 // and orphan this one.
 //
-// Neuter check: drop the migrateLegacyFTSLayout call from ensureLexicalSchema,
+// Neuter check: drop the migrateLegacyFTSLayout call from openFTSChunkStore,
 // and the layout stays legacy and the path search finds nothing.
 func TestLegacyFTSLayoutIsMigratedInPlace(t *testing.T) {
 	dir := t.TempDir()
@@ -389,5 +390,106 @@ func TestLegacyFTSLayoutIsMigratedInPlace(t *testing.T) {
 	defer func() { _ = reopened.Close() }()
 	if got := countRows(t, reopened.db, "code_chunks_fts"); got != n {
 		t.Errorf("reopening changed the row count from %d to %d", n, got)
+	}
+}
+
+// writeLegacyLayoutIndex writes a populated index in the pre-2026-10 layout,
+// chunk_index included -- the shape every existing install has.
+func writeLegacyLayoutIndex(t *testing.T, dir string, rows []Chunk) {
+	t.Helper()
+	db, err := sql.Open("sqlite", filepath.Join(dir, lexicalDBFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	for _, ddl := range []string{legacyCodeChunksFTSTableDDL, chunkIndexDDL, chunkIndexFileDDL} {
+		if _, err := db.Exec(ddl); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, c := range rows {
+		res, err := db.Exec(`INSERT INTO code_chunks_fts(chunk_id, content, file_path, start_line, end_line, class) VALUES (?,?,?,?,?,?)`,
+			c.ID, c.Content, c.FilePath, c.StartLine, c.EndLine, string(c.Class))
+		if err != nil {
+			t.Fatal(err)
+		}
+		id, err := res.LastInsertId()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(`INSERT INTO chunk_index(chunk_id, file_path, fts_rowid) VALUES (?,?,?)`, c.ID, c.FilePath, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// THE DAEMON DOES NOT WAIT FOR THE UPGRADE. It opens an old index as it is,
+// searches it as before, and rebuilds it on another connection; when that ends
+// the path is searchable. The one-shot commands upgrade inline instead
+// (TestLegacyFTSLayoutIsMigratedInPlace).
+func TestTheDaemonUpgradesALegacyIndexInTheBackground(t *testing.T) {
+	dir := t.TempDir()
+	writeLegacyLayoutIndex(t, dir, []Chunk{
+		lexChunk("protocol/peerauth_linux.go:1-40", "protocol/peerauth_linux.go", "func checkPeer() {}", 1),
+		lexChunk("daemon/a.go:1-40", "daemon/a.go", "func alpha() {}", 1),
+	})
+	store, err := openFTSChunkStore(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	ctx := context.Background()
+
+	if !store.legacyLayout() {
+		t.Fatal("openFTSChunkStore(dir, false) upgraded the index on the startup path")
+	}
+	if hits, err := store.searchWith(ctx, "checkPeer", 10, lexicalPolicy{PathWeight: 4}); err != nil || len(hits) != 1 {
+		t.Fatalf("the old layout must stay searchable while the upgrade is pending: %d hit(s), err %v", len(hits), err)
+	}
+
+	done := make(chan error, 1)
+	store.upgradeInBackground(func(_ time.Duration, err error) { done <- err })
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("the background upgrade failed: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the background upgrade never finished")
+	}
+	if store.legacyLayout() {
+		t.Error("after the upgrade ended, the layout is still legacy")
+	}
+	if hits, err := store.searchWith(ctx, "peerauth", 10, lexicalPolicy{PathWeight: 4}); err != nil || len(hits) != 1 {
+		t.Errorf("after the upgrade, a search by file name found %d hit(s) (err %v); want 1", len(hits), err)
+	}
+	assertOneToOne(t, store.db)
+}
+
+// WRITES WAIT FOR A RUNNING UPGRADE; SEARCHES DO NOT. A write racing the rebuild
+// would fail on the lock after busy_timeout and leave a stale entry; a search
+// reads the committed old table. Neuter check: drop waitForUpgrade from Upsert
+// (or DeleteByFilePath), and the write goes through while the upgrade runs.
+func TestWritesWaitForTheUpgradeAndSearchesDoNot(t *testing.T) {
+	store := newPolicyTestStore(t, lexChunk("daemon/a.go:1-40", "daemon/a.go", "func alpha() {}", 1))
+	store.upgrading = make(chan struct{}) // an upgrade that has not ended
+
+	short, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := store.Upsert(short, []Chunk{lexChunk("daemon/b.go:1-40", "daemon/b.go", "func beta() {}", 1)}); err == nil {
+		t.Error("Upsert went through while the upgrade was still running")
+	}
+	short2, cancel2 := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel2()
+	if err := store.DeleteByFilePath(short2, "daemon/a.go"); err == nil {
+		t.Error("DeleteByFilePath went through while the upgrade was still running")
+	}
+	if hits, err := store.Search(context.Background(), "alpha", 10); err != nil || len(hits) != 1 {
+		t.Errorf("a search must not wait for the upgrade: %d hit(s), err %v", len(hits), err)
+	}
+
+	close(store.upgrading)
+	if err := store.Upsert(context.Background(), []Chunk{lexChunk("daemon/b.go:1-40", "daemon/b.go", "func beta() {}", 1)}); err != nil {
+		t.Errorf("Upsert after the upgrade ended: %v", err)
 	}
 }
