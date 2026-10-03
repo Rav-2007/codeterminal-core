@@ -52,9 +52,13 @@ type LexicalStore interface {
 // the change that made the meaning tier work. Prefixing the path to every
 // chunk's EMBEDDED text was the biggest single gain this retrieval stack has
 // measured (chunkcontext.go); the keyword tier could not see the path at all,
-// so "how does the tui know which daemon socket to dial" could never match
-// clients/tui/daemonconn.go on its name. Searching the path is weighted, not
-// mixed into the text: see lexicalPolicy.PathWeight.
+// so a question about the terminal client and its daemon connection could
+// never reach clients/tui/daemonconn.go by the name it is filed under.
+// Searching the path is weighted, not mixed into the text: see
+// lexicalPolicy.PathWeight. (The eval question this is measured on is not
+// quoted here, and must not be: a verbatim copy in this file would be a perfect
+// keyword match for it -- TestNoIndexedFileEchoesAnEvalQuery caught exactly
+// that in the first draft of this comment.)
 const codeChunksFTSTableDDL = `
 CREATE VIRTUAL TABLE IF NOT EXISTS code_chunks_fts USING fts5(
 	content,
