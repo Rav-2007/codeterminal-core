@@ -695,8 +695,34 @@ type lexicalPolicy struct {
 	StemWords bool
 }
 
-// defaultLexicalPolicy is what production searches with.
-var defaultLexicalPolicy = lexicalPolicy{}
+// defaultLexicalPolicy is what production searches with: the file path,
+// weighted 8 against the text's 1, and the query built as it always was.
+//
+// DECIDED 2026-10-03 by TestKeywordAndPackingSweep under a rule written down
+// before it ran (docs/RETRIEVAL_EVAL_TREND.md): one index build, the 49 locate
+// queries AND 28 held-out ones nothing was tuned on. Delivered, with today's
+// packing (one-pass), against the shipped row of 36/49 and 23/28:
+//
+//	keyword arm               DEL/49   DEL/28   tuning delta
+//	shipped (path unweighted)   36       23     --
+//	path weight 2               40       24     +19 +22 +45 +49
+//	path weight 4               41       24     +13 +19 +22 +45 +49
+//	path weight 8 (this)        42       24     +13 +19 +22 +37 +45 +49
+//	stem                        37       23     +19 +22 -25
+//	filler+stem                 38       23     +19 +22 +49 -25
+//	path 4 + stem               40       23     ... -25
+//	path 8 + filler + stem      41       23     ... -25
+//
+// NOT ONE QUERY LOST at any path weight, on either set; 8 is the highest that
+// passes. The meaning tier's path prefix was the same lesson from the other
+// side: a file's name says what it is about better than its forty lines do.
+//
+// STEMMING AND FILLER STOPWORDS DO NOT SHIP, and they stay as fields so the
+// sweep can ask again. Alone they raise RETRIEVAL (33/49 against 31), but on
+// top of the path column they cost delivery -- q25 on the 49, and a retrieved
+// answer on the held-out set -- which fails the rule's "no harm inside the
+// combination". Retrieval is not what reaches the model; delivery is.
+var defaultLexicalPolicy = lexicalPolicy{PathWeight: 8}
 
 // lexicalQueryTokenPattern extracts word-and-punctuation runs that look like
 // code tokens -- letters, digits, underscore, and '.' (so dotted names like

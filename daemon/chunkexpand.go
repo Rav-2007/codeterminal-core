@@ -143,7 +143,24 @@ type expandPolicy struct {
 // matter how much room it is given, while top 10 keeps climbing to 41 and 42.
 // Trading TopN down to buy back a thousand characters would win once and lose
 // every time the repository grows again.
-var defaultExpandPolicy = expandPolicy{TopN: 10, ConstructCap: 300}
+//
+// TWO-PASS SINCE 2026-10-03 (TwoPass). Same cap, same TopN, a different order
+// of spending: every retrieved hit is placed before any is widened. Measured by
+// TestKeywordAndPackingSweep on both query sets in one index build:
+//
+//	keyword ranking      one-pass DEL/49, DEL/28   two-pass DEL/49, DEL/28
+//	shipped (old)            36       23               38       24   (+q45 +q49; +1 held-out)
+//	path weight 8            42       24               42       24
+//
+// With the old ranking, two-pass is worth two queries and one held-out answer:
+// q45 was retrieved at rank 4 and lost to the widened declarations of three
+// junk hits above it. With the path column the junk is rarer and the two tie.
+// It ships anyway, for the property rather than the count -- a retrieved hit is
+// never lost to a better-ranked hit's surroundings, so "budgeted out" stops
+// depending on how large the repository has grown. The price measured is 2.4%
+// more context (30,050 against 29,352 mean chars). Widening the top three first
+// (WidenFirst 3) scored the same and is not the default.
+var defaultExpandPolicy = expandPolicy{TopN: 10, ConstructCap: 300, TwoPass: true}
 
 // resolvedExpandPolicy returns the policy this Server widens hits with,
 // falling back to defaultExpandPolicy when none was set.

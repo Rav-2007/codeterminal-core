@@ -1151,8 +1151,9 @@ func TestRerankEvalRetrievalRanking(t *testing.T) {
 	fmt.Printf("semantic-only chunk-level recall: %d/%d (%.1f%%)\n", semanticOnlyCount, total, 100*float64(semanticOnlyCount)/float64(total))
 	fmt.Printf("hybrid chunk-level recall:        %d/%d (%.1f%%)  (retrieval only)\n", hybridCount, total, 100*float64(hybridCount)/float64(total))
 	fmt.Printf("DELIVERED to the prompt:          %d/%d (%.1f%%)  <- THE GATED NUMBER\n", deliveredCount, total, 100*deliveredRate)
-	fmt.Printf("  retrieved then BUDGETED OUT:    %d  (k=%d, budget=%d chars, expand top %d, construct cap %d)\n",
-		retrievedButBudgeted, defaultK, defaultContextBudgetChars, defaultExpandPolicy.TopN, defaultExpandPolicy.ConstructCap)
+	fmt.Printf("  retrieved then BUDGETED OUT:    %d  (k=%d, budget=%d chars, expand top %d, construct cap %d, two-pass %t)\n",
+		retrievedButBudgeted, defaultK, defaultContextBudgetChars, defaultExpandPolicy.TopN, defaultExpandPolicy.ConstructCap,
+		defaultExpandPolicy.TwoPass)
 
 	// ONE GREPPABLE LINE, for the series rather than the run.
 	//
