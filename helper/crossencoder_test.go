@@ -3,10 +3,13 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	ort "github.com/yalue/onnxruntime_go"
+
+	"mochiii/helper/helperproto"
 )
 
 // realCrossEncoder opens the cross-encoder from the local model cache, or
@@ -93,5 +96,55 @@ func TestCrossEncoderPrefersThePassageThatAnswers(t *testing.T) {
 	}
 	if s, err := ce.Score("anything", nil); err != nil || s != nil {
 		t.Errorf("no passages should score as nothing, got %v, %v", s, err)
+	}
+}
+
+// What follows runs without the model, so CI -- which has none -- exercises
+// the rerank path's plumbing and its failures, not only machines that cached
+// the cross-encoder.
+
+func TestPackPairsPadsEachRowToTheLongest(t *testing.T) {
+	toks := []tokenized{
+		{ids: []int{101, 7, 102}, typeIDs: []int{0, 0, 0}, mask: []int{1, 1, 1}},
+		{ids: []int{101, 8, 102, 9, 102}, typeIDs: []int{0, 0, 0, 1, 1}, mask: []int{1, 1, 1, 1, 1}},
+	}
+	ids, mask, types := packPairs(toks, 5)
+	if want := []int64{101, 7, 102, 0, 0, 101, 8, 102, 9, 102}; !slices.Equal(ids, want) {
+		t.Errorf("input ids %v, want %v", ids, want)
+	}
+	if want := []int64{1, 1, 1, 0, 0, 1, 1, 1, 1, 1}; !slices.Equal(mask, want) {
+		t.Errorf("attention mask %v, want %v", mask, want)
+	}
+	if want := []int64{0, 0, 0, 0, 0, 0, 0, 0, 1, 1}; !slices.Equal(types, want) {
+		t.Errorf("token types %v, want %v", types, want)
+	}
+}
+
+func TestScoringNoPassagesNeedsNoModel(t *testing.T) {
+	if s, err := (&CrossEncoder{}).Score("anything", nil); s != nil || err != nil {
+		t.Errorf("Score with no passages = %v, %v; want nothing, no error", s, err)
+	}
+}
+
+// A rerank request to a helper that was never told where the cross-encoder
+// lives says so, rather than failing somewhere inside ONNX Runtime.
+func TestRerankWithoutAModelDirectorySaysWhy(t *testing.T) {
+	t.Setenv("MOCHIII_RERANK_MODEL_DIR", "")
+	resp := (&server{}).dispatch(helperproto.Request{Method: helperproto.MethodRerank, Query: "q", Texts: []string{"a"}})
+	if resp.OK || !strings.Contains(resp.Error, "MOCHIII_RERANK_MODEL_DIR") {
+		t.Errorf("response %+v; want a refusal that names MOCHIII_RERANK_MODEL_DIR", resp)
+	}
+}
+
+func TestRerankWithAMissingModelReportsTheFile(t *testing.T) {
+	t.Setenv("MOCHIII_RERANK_MODEL_DIR", t.TempDir())
+	srv := &server{}
+	resp := srv.dispatch(helperproto.Request{Method: helperproto.MethodRerank, Query: "q", Texts: []string{"a"}})
+	if resp.OK || !strings.Contains(resp.Error, "tokenizer.json") {
+		t.Errorf("response %+v; want a refusal that names the missing tokenizer.json", resp)
+	}
+	// Opened once: a second request gets the same answer, not a second attempt.
+	if again := srv.dispatch(helperproto.Request{Method: helperproto.MethodRerank, Query: "q", Texts: []string{"a"}}); again.Error != resp.Error {
+		t.Errorf("second request answered %q, first %q", again.Error, resp.Error)
 	}
 }

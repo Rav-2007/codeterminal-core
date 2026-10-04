@@ -91,17 +91,7 @@ func (c *CrossEncoder) Score(query string, passages []string) ([]float32, error)
 	}
 
 	batch := len(passages)
-	inputIDs := make([]int64, batch*maxLen)
-	attnMask := make([]int64, batch*maxLen)
-	tokenTypeIDs := make([]int64, batch*maxLen)
-	for i, t := range toks {
-		for j := range t.ids {
-			idx := i*maxLen + j
-			inputIDs[idx] = int64(t.ids[j])
-			attnMask[idx] = int64(t.mask[j])
-			tokenTypeIDs[idx] = int64(t.typeIDs[j])
-		}
-	}
+	inputIDs, attnMask, tokenTypeIDs := packPairs(toks, maxLen)
 
 	// The tensors are released when Score returns. Destroy's error is
 	// discarded on purpose: there is nothing to do about a failed release of
@@ -136,4 +126,22 @@ func (c *CrossEncoder) Score(query string, passages []string) ([]float32, error)
 		return nil, fmt.Errorf("unexpected logits shape %v, want [%d 1]", shape, batch)
 	}
 	return append([]float32(nil), out.GetData()...), nil
+}
+
+// packPairs lays tokenized pairs out as the three [len(toks), maxLen] input
+// tensors' data, row by row. Positions past a pair's own length stay zero:
+// [PAD] in this vocabulary, excluded by the attention mask.
+func packPairs(toks []tokenized, maxLen int) (inputIDs, attnMask, tokenTypeIDs []int64) {
+	inputIDs = make([]int64, len(toks)*maxLen)
+	attnMask = make([]int64, len(toks)*maxLen)
+	tokenTypeIDs = make([]int64, len(toks)*maxLen)
+	for i, t := range toks {
+		for j := range t.ids {
+			idx := i*maxLen + j
+			inputIDs[idx] = int64(t.ids[j])
+			attnMask[idx] = int64(t.mask[j])
+			tokenTypeIDs[idx] = int64(t.typeIDs[j])
+		}
+	}
+	return inputIDs, attnMask, tokenTypeIDs
 }
