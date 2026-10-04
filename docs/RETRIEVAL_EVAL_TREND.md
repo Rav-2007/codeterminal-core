@@ -51,6 +51,7 @@ So: at a checkpoint, or after any run that moved a number, paste the line.
 | 2026-10-04 | `849aaa1` | branch | 7752 | 1067 | 27/49 | 33/49 | **0** | **41/49** | `1015cf68d15dc6a9` | green — run `37185788657`; one fewer than the local 42 on the same code, both above the floor; held-out 21 / **24/28** |
 | 2026-10-04 | `f803e6c` | local | 7806 | 1072 | 26/49 | 33/49 | **0** | **41/49** | `c168a6d50eb59e7e` | green — the confirmation round's build (below); held-out 21 / **24/28**; outside 32/40 + 14/20, fresh **53/60** |
 | 2026-10-04 | `f6dd912` | branch | 7810 | 1072 | 26/49 | 32/49 | **0** | 39/49 | `cda9c24403eb18b7` | green — run `37198207208`; two below the local 41 on `f803e6c`, on a corpus this round's own code grew (the e2e suite, the cross-encoder); 2.25 above the floor; held-out 21 / **24/28** |
+| 2026-10-04 | `616f2e5` | branch | 7812 | 1072 | 26/49 | 31/49 | **0** | 37/49 | `09bd7edc83663b75` | green by 0.25 — run `37199612908`. Two chunks changed since `f6dd912` (helper test code) and it fell 39 -> 37, so runner variance is part of it; across the day CI went 41 -> 39 -> 37 as this campaign's suites grew the corpus. New misses against `849aaa1`: q11, q19, q22, q36. The headroom of 2026-10-03 is gone again; held-out 21 / **24/28** |
 
 Floors in force across every row: DELIVERED ≥ 75% (36.75/49), RETRIEVED ≥ 61%
 (29.9/49), budgeted out ≤ 4.
