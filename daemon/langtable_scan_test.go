@@ -89,8 +89,9 @@ var fileKindSites = map[string]struct {
 	"daemon/lsp_bridge.go": {displayOnly, 1},
 
 	// classifyFile (code/test/doc/config/other) and isTestFile, for rerank.go's
-	// class weights.
-	"daemon/fileclass.go": {separateAxis, 2},
+	// class weights; isTestPathBeyondGo (three) and isSetupFileBeyondGo (one),
+	// the rankPolicy levers that read other languages' test and setup files.
+	"daemon/fileclass.go": {separateAxis, 6},
 
 	// .tgz / .tar.gz / .zip, picking how to unpack a downloaded runtime.
 	"daemon/onnxruntimefetch.go": {nonSourceFormat, 3},

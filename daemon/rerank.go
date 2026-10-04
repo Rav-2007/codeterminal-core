@@ -109,6 +109,26 @@ func looksImplSeeking(query string) bool {
 	return implSeekingWords.MatchString(query)
 }
 
+// rankPolicy is the ranking stage's switches, one value so the outside-
+// repository sweep (externalsweep_eval_test.go) and production read the same
+// fields, as expandPolicy and lexicalPolicy do for theirs.
+type rankPolicy struct {
+	// TestPathsBeyondGo treats a code chunk as a test when its path follows
+	// another language's convention (isTestPathBeyondGo), so the test
+	// down-weight reaches Python, TypeScript, Java and Rust tests too.
+	TestPathsBeyondGo bool
+	// SetupFilesBeyondGo extends the setup-file down-weight to main, setup,
+	// config and init files in any code language (isSetupFileBeyondGo).
+	SetupFilesBeyondGo bool
+}
+
+var defaultRankPolicy = rankPolicy{}
+
+// isSetupFile reports whether path gets the setup-file down-weight under p.
+func isSetupFile(path string, p rankPolicy) bool {
+	return setupFilesPattern.MatchString(path) || (p.SetupFilesBeyondGo && isSetupFileBeyondGo(path))
+}
+
 // rerankOverfetchFactor and rerankOverfetchFloor size the raw candidate pool
 // fetched from the vector store BEFORE reweighting. This matters: reweighting
 // only the raw top-k could never recover a chunk ranked just outside it (the
@@ -276,6 +296,11 @@ func effectiveClass(c Chunk) FileClass {
 // implementation-seeking query, but competes at full codeClassWeight when
 // the query itself looks like it's asking about tests.
 func rerankChunks(candidates []Chunk, k int, query string) []Chunk {
+	return rerankChunksWith(candidates, k, query, defaultRankPolicy)
+}
+
+// rerankChunksWith is rerankChunks under an explicit policy.
+func rerankChunksWith(candidates []Chunk, k int, query string, p rankPolicy) []Chunk {
 	weighted := make([]Chunk, len(candidates))
 	copy(weighted, candidates)
 
@@ -285,12 +310,17 @@ func rerankChunks(candidates []Chunk, k int, query string) []Chunk {
 		raw := weighted[i].Score
 		weighted[i].RawScore = raw
 		weighted[i].Class = effectiveClass(weighted[i])
+		// From the path, at ranking time, so an index built before the policy
+		// changed is ranked by it too: the stored class is set only at index time.
+		if p.TestPathsBeyondGo && weighted[i].Class == FileClassCode && isTestPathBeyondGo(weighted[i].FilePath) {
+			weighted[i].Class = FileClassTest
+		}
 
 		w := classWeight(weighted[i].Class)
 		if weighted[i].Class == FileClassTest && !testSeeking {
 			w = testClassWeight
 		}
-		if implSeeking && setupFilesPattern.MatchString(weighted[i].FilePath) {
+		if implSeeking && isSetupFile(weighted[i].FilePath, p) {
 			w *= 0.85
 		}
 		weighted[i].Score = raw * w

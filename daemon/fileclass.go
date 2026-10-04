@@ -1,7 +1,9 @@
 package main
 
 import (
+	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -83,6 +85,38 @@ func isTestFile(base string) bool {
 	return strings.HasSuffix(base, "_test.go")
 }
 
+// jsLikeTestExtensions are the extensions whose test files are named
+// name.test.ext or name.spec.ext.
+var jsLikeTestExtensions = map[string]bool{".ts": true, ".tsx": true, ".js": true, ".jsx": true}
+
+// isTestPathBeyondGo reports whether relPath (an index key, forward-slash) is
+// a test by another language's convention: test_x.py or x_test.py, x.test.ts or
+// x.spec.ts and their JavaScript siblings, XTest.java or XTests.java, or any
+// file under a test, tests or __tests__ directory -- where Python, Rust,
+// Java and JavaScript projects keep theirs. See rankPolicy.TestPathsBeyondGo.
+func isTestPathBeyondGo(relPath string) bool {
+	base := path.Base(relPath)
+	lower := strings.ToLower(base)
+	ext := path.Ext(lower)
+	stem := strings.TrimSuffix(lower, ext)
+	switch {
+	case ext == ".py" && (strings.HasPrefix(lower, "test_") || strings.HasSuffix(stem, "_test")):
+		return true
+	case jsLikeTestExtensions[ext] && (strings.HasSuffix(stem, ".test") || strings.HasSuffix(stem, ".spec")):
+		return true
+	// Case-sensitive on purpose: "latest.java" ends in "test.java" too.
+	case ext == ".java" && (strings.HasSuffix(base, "Test.java") || strings.HasSuffix(base, "Tests.java")):
+		return true
+	}
+	for _, dir := range strings.Split(path.Dir(relPath), "/") {
+		switch dir {
+		case "test", "tests", "__tests__":
+			return true
+		}
+	}
+	return false
+}
+
 // noiseBasenames are hard-excluded from the retrieval index entirely (never
 // chunked, never classified, never findable) — not merely down-weighted.
 // This is a narrow, exact-match list: .gitignore and dependency lockfiles.
@@ -108,4 +142,16 @@ var noiseBasenames = map[string]bool{
 // list.
 func isNoiseFile(relPath string) bool {
 	return noiseBasenames[strings.ToLower(filepath.Base(relPath))]
+}
+
+// setupFileStem is the base name, without its extension, that marks a setup
+// file in any language.
+var setupFileStem = regexp.MustCompile(`(?i)^(main|setup\w*|config\w*|init\w*)$`)
+
+// isSetupFileBeyondGo reports whether path is a main, setup, config or init
+// file in a code language other than Go, which setupFilesPattern covers.
+func isSetupFileBeyondGo(path string) bool {
+	base := strings.ToLower(filepath.Base(path))
+	ext := filepath.Ext(base)
+	return ext != ".go" && codeExtensions[ext] && setupFileStem.MatchString(strings.TrimSuffix(base, ext))
 }

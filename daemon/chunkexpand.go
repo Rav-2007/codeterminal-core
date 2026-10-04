@@ -77,6 +77,14 @@ type expandPolicy struct {
 	// as they are placed, before the remaining hits are placed. Zero is the pure
 	// two-pass order.
 	WidenFirst int
+	// NestedConstructs widens a hit to the method around it when the only
+	// top-level construct around it is over ConstructCap -- a Java or Python
+	// class, a Rust impl block -- or when no top-level construct is found at
+	// all. Constructs are found at column zero (constructExtents), which is
+	// where Go puts its methods and the class-based languages do not, so
+	// without this a hit inside a long class widens to fixed neighbours only.
+	// See nestedBlocks.
+	NestedConstructs bool
 }
 
 // defaultExpandPolicy is what production uses.
@@ -278,6 +286,24 @@ func widenHits(hits []Chunk, workspaceRoot string, policy expandPolicy) [][]Chun
 		if widened {
 			continue
 		}
+		if class := classifyFile(h.FilePath); policy.NestedConstructs && (class == FileClassCode || class == FileClassTest) {
+			for _, b := range nestedBlocks(reg.lines, reg.extents, h.StartLine, h.EndLine, policy.ConstructCap, isPythonPath(h.FilePath)) {
+				for j := range sibs {
+					if sibs[j].StartLine > b[1] || b[0] > sibs[j].EndLine {
+						continue
+					}
+					widened = true
+					if seen[sibs[j].ID] {
+						continue
+					}
+					seen[sibs[j].ID] = true
+					wid[rank] = append(wid[rank], sibs[j])
+				}
+			}
+			if widened {
+				continue
+			}
+		}
 
 		// FALL BACK TO FIXED NEIGHBOURS, always. No construct was found, or the
 		// only one enclosing this hit is over the cap -- and an oversized
@@ -352,6 +378,7 @@ func refreshHitsFromDisk(hits []Chunk, workspaceRoot string) (out []Chunk, refre
 type fileRegions struct {
 	chunks  []Chunk
 	extents [][2]int
+	lines   []string
 }
 
 // regionsOnDisk re-chunks one workspace file and locates its top-level
@@ -370,7 +397,8 @@ func regionsOnDisk(realRoot, relPath string, ignore *gitignoreMatcher) fileRegio
 	}
 	chunks := chunkContent(content, relPath)
 	sort.Slice(chunks, func(i, j int) bool { return chunks[i].StartLine < chunks[j].StartLine })
-	return fileRegions{chunks: chunks, extents: constructExtents(splitLines(content))}
+	lines := splitLines(content)
+	return fileRegions{chunks: chunks, extents: constructExtents(lines), lines: lines}
 }
 
 // chunksOnDisk re-chunks one workspace file, in source order, or returns nil if

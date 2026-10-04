@@ -65,7 +65,11 @@
 // kept is that commit's snapping machinery, which is the part the corpus refused.
 package main
 
-import "strings"
+import (
+	"strings"
+
+	"mochiii/editapply"
+)
 
 // embedPrefixPolicy selects what is prepended to a chunk's text before it is
 // embedded. Two values, because two is what is measured: the shipped one and
@@ -276,4 +280,224 @@ func isTopLevelComment(line string) bool {
 	return strings.HasPrefix(line, "//") || strings.HasPrefix(line, "#") ||
 		strings.HasPrefix(line, "/*") || strings.HasPrefix(line, "*") ||
 		strings.HasPrefix(line, "--")
+}
+
+// nestedBlocks returns the blocks a hit on lines [hitStart, hitEnd] widens to
+// when no top-level construct of at most maxLines lines touches it: the
+// methods of the oversized class, impl block or function around it.
+//
+// WHY. constructExtents finds constructs at column zero. In Go every method is
+// at column zero; in Java, Python, Rust and TypeScript the methods sit inside
+// a class or impl block, which is one construct and usually over the cap -- so
+// a hit inside it widened to fixed neighbours only, and the delivery-time
+// widening that measured +6 queries on this repository did not reach them.
+//
+// HOW. Inside each oversized construct touching the hit (or the whole file,
+// when no construct touches it at all -- a Java "public final class" is not a
+// declaration keyword), the shallowest block openers are its children. A child
+// touching the hit is taken if it fits the cap, and searched the same way if
+// it does not. Indentation, not parsing: the same trade constructExtents makes,
+// degrading to "no block found" -- and so to fixed neighbours -- on anything
+// it does not recognise.
+func nestedBlocks(lines []string, extents [][2]int, hitStart, hitEnd, maxLines int, python bool) [][2]int {
+	if maxLines <= 0 || len(lines) == 0 {
+		return nil
+	}
+	var parents [][2]int
+	touched := false
+	for _, ext := range extents {
+		if ext[0] > hitEnd || ext[1] < hitStart {
+			continue
+		}
+		touched = true
+		if ext[1]-ext[0]+1 > maxLines {
+			parents = append(parents, ext)
+		}
+	}
+	var out [][2]int
+	if !touched {
+		return descendBlocks(lines, 1, len(lines), -1, hitStart, hitEnd, maxLines, python, out)
+	}
+	for _, p := range parents {
+		out = descendBlocks(lines, p[0], p[1], 0, hitStart, hitEnd, maxLines, python, out)
+	}
+	return out
+}
+
+func descendBlocks(lines []string, first, last, parentIndent, hitStart, hitEnd, maxLines int, python bool, out [][2]int) [][2]int {
+	for _, c := range childBlocks(lines, first, last, parentIndent, python) {
+		if c.ext[0] > hitEnd || c.ext[1] < hitStart {
+			continue
+		}
+		if c.ext[1]-c.ext[0]+1 <= maxLines {
+			out = append(out, c.ext)
+			continue
+		}
+		out = descendBlocks(lines, c.ext[0], c.ext[1], c.indent, hitStart, hitEnd, maxLines, python, out)
+	}
+	return out
+}
+
+type childBlock struct {
+	ext    [2]int // 1-indexed, inclusive
+	indent int
+}
+
+// childBlocks returns the blocks opened at the shallowest indentation deeper
+// than parentIndent within lines [first, last], 1-indexed and inclusive.
+func childBlocks(lines []string, first, last, parentIndent int, python bool) []childBlock {
+	last = min(last, len(lines))
+	minIndent := -1
+	var heads []int
+	for i := first - 1; i < last; i++ {
+		line := trimCR(lines[i])
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		ind := indentOf(line)
+		if ind <= parentIndent || !isDeclHead(lines, i, last, python) {
+			continue
+		}
+		if minIndent < 0 || ind < minIndent {
+			minIndent, heads = ind, heads[:0]
+		}
+		if ind == minIndent {
+			heads = append(heads, i)
+		}
+	}
+
+	var out []childBlock
+	for _, i := range heads {
+		start := i
+		// Decorators, annotations, attributes and comments directly above.
+		for start > first-1 {
+			l := trimCR(lines[start-1])
+			t := strings.TrimSpace(l)
+			if t == "" || indentOf(l) != minIndent || !isLeadingDecoration(t) {
+				break
+			}
+			start--
+		}
+		end := last - 1
+		for j := i + 1; j < last; j++ {
+			l := trimCR(lines[j])
+			t := strings.TrimSpace(l)
+			if t == "" || indentOf(l) > minIndent {
+				continue
+			}
+			// The tail of a signature that spans lines, at the head's own
+			// indentation: ") -> T {" in Rust, "):" in Python. It continues the
+			// head; it does not close the block.
+			if t[0] == ')' || t[0] == ']' {
+				if (python && strings.HasSuffix(t, ":")) || (!python && strings.HasSuffix(t, "{")) {
+					continue
+				}
+			}
+			if !python && (t[0] == '}' || t[0] == ')' || t[0] == ']') {
+				end = j
+			} else {
+				end = j - 1
+			}
+			break
+		}
+		for end > i && strings.TrimSpace(trimCR(lines[end])) == "" {
+			end--
+		}
+		out = append(out, childBlock{ext: [2]int{start + 1, end + 1}, indent: minIndent})
+	}
+	return out
+}
+
+// blockControlWords open blocks that are statements, not declarations: an if
+// or a loop inside a method is not a region worth widening to.
+var blockControlWords = map[string]bool{
+	"if": true, "else": true, "for": true, "while": true, "do": true, "switch": true,
+	"try": true, "catch": true, "finally": true, "synchronized": true, "case": true,
+	"default": true, "return": true, "select": true, "match": true, "loop": true,
+	"with": true, "foreach": true, "using": true, "lock": true, "unsafe": true,
+}
+
+// signatureLines bounds how far below a declaration's first line its block
+// may open: a long parameter list, a throws clause, a return type.
+const signatureLines = 8
+
+// isDeclHead reports whether lines[i] begins a declaration block. In Python
+// that is a def or class line. Elsewhere it is a line that is not a control
+// statement, a closer or a comment, whose statement opens a brace -- on this
+// line or within signatureLines below it -- before it ends with ";" or gives
+// way to a line no deeper than itself. That reads a signature split over
+// lines, "throws X {" on its own line included, as one head, and refuses a
+// call or field that merely spans lines.
+func isDeclHead(lines []string, i, last int, python bool) bool {
+	trimmed := strings.TrimSpace(trimCR(lines[i]))
+	if python {
+		return strings.HasPrefix(trimmed, "def ") || strings.HasPrefix(trimmed, "async def ") ||
+			strings.HasPrefix(trimmed, "class ")
+	}
+	switch trimmed[0] {
+	case '}', ')', ']', '{':
+		return false
+	}
+	if isLeadingDecoration(trimmed) || blockControlWords[firstWord(trimmed)] {
+		return false
+	}
+	ind := indentOf(trimCR(lines[i]))
+	for k := i; k < min(i+signatureLines, last); k++ {
+		l := trimCR(lines[k])
+		t := strings.TrimSpace(l)
+		if t == "" {
+			continue
+		}
+		if k > i && indentOf(l) <= ind && t[0] != ')' && t[0] != '{' {
+			return false
+		}
+		if strings.HasSuffix(t, "{") {
+			return true
+		}
+		if strings.HasSuffix(t, ";") {
+			return false
+		}
+	}
+	return false
+}
+
+// isBlockOpener reports whether a trimmed line opens a declaration block on
+// that line: in Python a def or class, elsewhere a line ending in "{" that is
+// not a control statement.
+func isBlockOpener(trimmed string, python bool) bool {
+	if python {
+		return strings.HasPrefix(trimmed, "def ") || strings.HasPrefix(trimmed, "async def ") ||
+			strings.HasPrefix(trimmed, "class ")
+	}
+	if trimmed == "{" || trimmed[0] == '}' || !strings.HasSuffix(trimmed, "{") {
+		return false
+	}
+	return !blockControlWords[firstWord(trimmed)]
+}
+
+func firstWord(trimmed string) string {
+	if i := strings.IndexAny(trimmed, " (<{:"); i >= 0 {
+		return trimmed[:i]
+	}
+	return trimmed
+}
+
+func isLeadingDecoration(trimmed string) bool {
+	for _, p := range []string{"@", "#", "//", "/*", "*"} {
+		if strings.HasPrefix(trimmed, p) {
+			return true
+		}
+	}
+	return false
+}
+
+func indentOf(line string) int {
+	return len(line) - len(strings.TrimLeft(line, " \t"))
+}
+
+// isPythonPath reports whether relPath is Python source, where blocks are
+// opened by def and class lines rather than braces. Asked of the language
+// table, not of the name: see langtable_scan_test.go.
+func isPythonPath(relPath string) bool {
+	return editapply.LanguageOf(relPath) == editapply.LangPython
 }
