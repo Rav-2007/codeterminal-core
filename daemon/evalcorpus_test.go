@@ -126,18 +126,43 @@ func sharedEvalCorpus(t *testing.T) *evalCorpus {
 	return sharedEvalCorpusVal
 }
 
-// buildSharedEvalCorpus does the work: real model, real helper subprocess,
-// whole repository scanned, self-referential chunks dropped, everything else
-// embedded and upserted into both tiers.
+// buildSharedEvalCorpus builds this repository's corpus: the whole tree,
+// self-referential and instrument files dropped.
 //
 // It returns an error rather than taking a *testing.T because it must not be
 // bound to any one test's lifetime.
 func buildSharedEvalCorpus() (*evalCorpus, error) {
+	repoRoot, err := filepath.Abs("..")
+	if err != nil {
+		return nil, fmt.Errorf("resolving repo root: %w", err)
+	}
+	return buildEvalCorpus(repoRoot, func(relPath string) bool {
+		return !evalSelfReferenceFiles[relPath] && !evalInstrumentFiles[relPath]
+	})
+}
+
+var (
+	sharedEvalEmbedderOnce sync.Once
+	sharedEvalEmbedderVal  Embedder
+	sharedEvalEmbedderErr  error
+)
+
+// sharedEvalEmbedder returns the process's one real embedder: the BGE model
+// behind a freshly built helper subprocess. Every corpus in the process --
+// this repository's and the outside ones (externaleval_test.go) -- is embedded
+// by it, so two corpora never differ by which helper built them.
+func sharedEvalEmbedder() (Embedder, error) {
+	sharedEvalEmbedderOnce.Do(func() {
+		sharedEvalEmbedderVal, sharedEvalEmbedderErr = startEvalEmbedder()
+	})
+	return sharedEvalEmbedderVal, sharedEvalEmbedderErr
+}
+
+func startEvalEmbedder() (Embedder, error) {
 	logger := log.New(os.Stderr, "eval-corpus: ", log.LstdFlags)
 	ctx := context.Background()
-	started := time.Now()
 
-	tmpDir, err := os.MkdirTemp("", "eval-corpus")
+	tmpDir, err := os.MkdirTemp("", "eval-embedder")
 	if err != nil {
 		return nil, fmt.Errorf("temp dir: %w", err)
 	}
@@ -175,12 +200,26 @@ func buildSharedEvalCorpus() (*evalCorpus, error) {
 		return nil, fmt.Errorf("starting real embedder helper: %w", err)
 	}
 	registerProcessCleanup(func() { _ = helper.Stop() })
-	embedder := NewBgeEmbedder(helper)
+	return NewBgeEmbedder(helper), nil
+}
 
-	repoRoot, err := filepath.Abs("..")
+// buildEvalCorpus does the work for one tree: scan it, keep the chunks keep
+// admits, embed them with the shared embedder and upsert them into both tiers.
+func buildEvalCorpus(repoRoot string, keep func(relPath string) bool) (*evalCorpus, error) {
+	logger := log.New(os.Stderr, "eval-corpus: ", log.LstdFlags)
+	ctx := context.Background()
+	started := time.Now()
+
+	embedder, err := sharedEvalEmbedder()
 	if err != nil {
-		return nil, fmt.Errorf("resolving repo root: %w", err)
+		return nil, err
 	}
+
+	tmpDir, err := os.MkdirTemp("", "eval-corpus")
+	if err != nil {
+		return nil, fmt.Errorf("temp dir: %w", err)
+	}
+	registerProcessCleanup(func() { _ = os.RemoveAll(tmpDir) })
 	indexDir := filepath.Join(tmpDir, "index")
 	store, err := NewChromemStore(indexDir)
 	if err != nil {
@@ -199,13 +238,13 @@ func buildSharedEvalCorpus() (*evalCorpus, error) {
 	}
 	filtered := scan.Chunks[:0]
 	for _, c := range scan.Chunks {
-		if !evalSelfReferenceFiles[c.FilePath] && !evalInstrumentFiles[c.FilePath] {
+		if keep(c.FilePath) {
 			filtered = append(filtered, c)
 		}
 	}
 	scan.Chunks = filtered
 	scanTime := time.Since(scanStart)
-	logger.Printf("scanned %s: files=%d chunks=%d in %s (self-referential and instrument chunks excluded)",
+	logger.Printf("scanned %s: files=%d chunks=%d in %s (excluded files dropped)",
 		repoRoot, scan.FilesScanned, len(scan.Chunks), scanTime.Round(time.Millisecond))
 
 	embedStart := time.Now()
@@ -242,8 +281,8 @@ func buildSharedEvalCorpus() (*evalCorpus, error) {
 	// THE LINE THAT MAKES THE NEXT SLOWDOWN DIAGNOSABLE. Printed unconditionally
 	// on stderr with a timestamp, so it survives in a CI log without anyone
 	// having to have remembered to pass -v.
-	logger.Printf("index built: chunks=%d batches=%d scan=%s embed=%s total=%s (embed is %.0f%% of build)",
-		len(scan.Chunks), batches,
+	logger.Printf("index built: %s chunks=%d batches=%d scan=%s embed=%s total=%s (embed is %.0f%% of build)",
+		filepath.Base(repoRoot), len(scan.Chunks), batches,
 		scanTime.Round(time.Millisecond),
 		embedTime.Round(time.Millisecond),
 		time.Since(started).Round(time.Millisecond),
@@ -253,8 +292,8 @@ func buildSharedEvalCorpus() (*evalCorpus, error) {
 	// Same reasoning as the line above: unconditional, timestamped, and on
 	// stderr, so two CI runs can be compared without -v and without anyone
 	// having planned in advance to compare them.
-	logger.Printf("vector fingerprint: %s (sha256 over %d vectors in build order)",
-		vectorFingerprint, len(scan.Chunks))
+	logger.Printf("vector fingerprint: %s (sha256 over %d vectors in build order, %s)",
+		vectorFingerprint, len(scan.Chunks), filepath.Base(repoRoot))
 
 	return &evalCorpus{
 		RepoRoot:          repoRoot,

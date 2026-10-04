@@ -209,3 +209,40 @@ floor stays where it is.
 its numbers are not used. The final run's sweep also labelled its reference row
 "one-pass" after the default had become two-pass. That was fixed in the next commit,
 and the decision run predates the change.
+
+## Pre-registered 2026-10-04: outside repositories
+
+Written before any model run against them, for the same reason as the section
+above.
+
+**Why.** Every number above is this repository, in Go, scored by the eval it
+tunes. Three choices in the pipeline are visibly Go-shaped and invisible to that
+eval: test files are recognised only as `_test.go`; the setup-file down-weight
+names only Go files; and constructs are found at column zero, where Go puts its
+methods and Java, Python, Rust and TypeScript do not -- so a hit inside a Java or
+Python class widens to ±1 neighbour, not to its method.
+
+**The instrument.** `TestExternalRepoRetrieval` runs the production pipeline
+over four public repositories, pinned in `daemon/testdata/evalrepos/repos.txt`
+and fetched by `scripts/fetch-eval-repos.sh` (never committed): pallets/flask
+(Python, `d73fa1c`), honojs/hono (TypeScript, `08a023c`), BurntSushi/ripgrep
+(Rust, `3fce3b5`), google/gson (Java, `854c825`) -- 9,439 chunks. Fifteen
+questions each, chunk-level anchors resolved by `TestExternalEvalGroundTruth`;
+every third question by position is held out (40 tuning, 20 held-out). Printed
+as `EVALEXTERNAL` lines. Not gated, not in CI.
+
+**The levers.** Each a policy field, off until the rule passes. (L1) Test files
+beyond Go, recognised from the path at ranking time: `test_*.py`, `*_test.py`,
+`*.test.*` and `*.spec.*` for ts/tsx/js/jsx, `*Test.java`, `*Tests.java`, and
+paths under `tests/`, `test/`, `__tests__/`, `src/test/`. (L2) When the
+enclosing top-level construct is over the cap, widen to the innermost enclosing
+function or method found by indentation, counting declaration lines only, before
+falling back to ±1. (L3) The setup-file down-weight for `main`/`setup`/
+`config`/`init` with any code extension. Any lever the baseline's misses point
+to is added here, before the sweep runs.
+
+**The rule.** An arm ships only if, inside one process (one build per corpus):
+outside tuning DELIVERED rises by at least 3 of 40 over the shipped row; outside
+held-out DELIVERED does not fall; in-repo DELIVERED on the 49 and on the 28 does
+not fall; no outside repository falls by more than 1; and each lever does no
+harm by itself on any of the four sets.

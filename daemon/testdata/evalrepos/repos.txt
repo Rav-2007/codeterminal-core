@@ -1,0 +1,12 @@
+# The outside repositories the external retrieval eval scores against
+# (daemon/externaleval_test.go), each pinned to one commit. Fetch them with
+# scripts/fetch-eval-repos.sh; they are never committed here.
+#
+# A pin moves only together with the questions: the anchors name lines of
+# THESE trees, and a newer commit can move or delete them.
+#
+# name    language    url                                        sha
+flask     python      https://github.com/pallets/flask           d73fa1cdcbd8b1465c151db8924ba58b1dd14e35
+hono      typescript  https://github.com/honojs/hono             08a023cbfde55b434fb0fb30fae35d42e4bf20aa
+ripgrep   rust        https://github.com/BurntSushi/ripgrep      3fce3b5bb0236da2df6d99672afb8a719642eca7
+gson      java        https://github.com/google/gson             854c8255b625cf1e13c701a83ea9ccb4caaa576a

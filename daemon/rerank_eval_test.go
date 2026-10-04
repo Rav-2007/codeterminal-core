@@ -718,6 +718,9 @@ var evalSelfReferenceFiles = map[string]bool{
 	// The held-out set's own file: it holds those queries and their answers,
 	// so indexing it would hand every one of them its answer key.
 	"daemon/heldout_eval_test.go": true,
+	// The outside-repository questions (externaleval_test.go): not this
+	// repository's answer key, but eval questions all the same.
+	"daemon/externaleval_test.go": true,
 
 	// Found by TestNoIndexedFileEchoesAnEvalQuery on 2026-08-28, not by
 	// anybody noticing. Each of these quotes eval queries verbatim for a
