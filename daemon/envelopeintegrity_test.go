@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -160,6 +161,90 @@ func TestPreNeutralizedSkipsExactlyOneDefence(t *testing.T) {
 	if strings.Contains(plain, webContentCloseTag) {
 		t.Error("without PreNeutralized the daemon's own tags survived; " +
 			"then the flag is guarding nothing and can be deleted")
+	}
+}
+
+// webFenceDefect returns what is wrong with the <web_content> fences in a
+// rendered result, or "". Every opening tag must be closed before the next one
+// opens, and the truncation marker -- the daemon's own note -- must sit outside
+// them. strict also refuses an unfinished tag anywhere, which only holds when
+// the page text itself contains no '<'.
+func webFenceDefect(s string, strict bool) string {
+	opens := webContentOpenTag.FindAllStringIndex(s, -1)
+	var closes []int
+	for i := 0; ; {
+		j := strings.Index(s[i:], webContentCloseTag)
+		if j < 0 {
+			break
+		}
+		closes = append(closes, i+j)
+		i += j + len(webContentCloseTag)
+	}
+	if len(opens) != len(closes) {
+		return fmt.Sprintf("%d opening tag(s) but %d closing", len(opens), len(closes))
+	}
+	for i := range opens {
+		if closes[i] < opens[i][1] || (i+1 < len(opens) && opens[i+1][0] < closes[i]) {
+			return "the fences are out of order"
+		}
+	}
+	if m := strings.LastIndex(s, "[... truncated by mochiii"); m >= 0 && len(closes) > 0 && closes[len(closes)-1] > m {
+		return "the truncation marker is inside a fence"
+	}
+	if strict {
+		if n := strings.Count(s, "<web_content"); n != len(opens) {
+			return "an unfinished opening tag"
+		}
+		if n := strings.Count(s, "</web_con"); n != len(closes) {
+			return "an unfinished closing tag"
+		}
+	}
+	return ""
+}
+
+// A web tool's result clipped to the turn's cap kept its opening tag and lost
+// its closing one (OPEN_ITEMS 34): the model read an untrusted page that never
+// ended. Every cap from one byte up must leave the fences whole. Neuter check:
+// drop the closeWebContentFences call from renderToolResult and this fails.
+func TestATruncatedWebResultKeepsItsFenceClosed(t *testing.T) {
+	long := fetchedPage{URL: "https://example.test/long", Title: "A long page",
+		Text: strings.Repeat("lorem ipsum dolor sit amet ", 3000)}
+	fetch := webContentEnvelope(long)
+
+	var search strings.Builder
+	search.WriteString("Search results for \"x\" (via test):\n")
+	for i := range 3 {
+		p := long
+		p.URL = fmt.Sprintf("https://example.test/%d", i)
+		p.Text = clipChars(p.Text, perPageChars)
+		search.WriteString("\n" + webContentEnvelope(p) + "\n")
+	}
+
+	for name, result := range map[string]string{"web_fetch": fetch, "web_search": search.String()} {
+		var caps []int
+		for c := 1; c <= 200; c++ {
+			caps = append(caps, c)
+		}
+		for c := 201; c < 40<<10; c += 97 {
+			caps = append(caps, c)
+		}
+		caps = append(caps, 32768)
+		for _, c := range caps {
+			if c >= len(result) {
+				continue
+			}
+			got, _, _ := renderToolResult(result, c, false, true)
+			if defect := webFenceDefect(got, true); defect != "" {
+				t.Fatalf("%s clipped to %d bytes: %s\n...%s", name, c, defect, got[max(0, len(got)-200):])
+			}
+		}
+	}
+
+	// At the shipped cap the page is closed, then the marker follows.
+	got, _, _ := renderToolResult(fetch, 32768, false, true)
+	if !strings.Contains(got, webContentCloseTag+"\n\n[... truncated by mochiii") {
+		t.Errorf("a 32 KiB web_fetch result does not end with the closing tag and then the marker:\n...%s",
+			got[len(got)-200:])
 	}
 }
 

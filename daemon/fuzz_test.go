@@ -103,6 +103,14 @@ func FuzzRenderToolResult(f *testing.F) {
 				t.Fatal("an empty redaction kind would render as a blank notice to the user")
 			}
 		}
+
+		// THE SAME BYTES AS A FETCHED PAGE: whatever the page says and wherever
+		// the cap falls, the daemon's fence still closes (OPEN_ITEMS 34).
+		page := webContentEnvelope(fetchedPage{URL: "https://example.test/", Title: "t", Text: content})
+		framed, _, _ := renderToolResult(page, maxBytes, false, true)
+		if defect := webFenceDefect(framed, false); defect != "" {
+			t.Fatalf("a fetched page clipped to %d bytes: %s\n%q", maxBytes, defect, framed)
+		}
 	})
 }
 

@@ -428,6 +428,45 @@ const (
 	webContentCloseTag      = "</web_content>"
 )
 
+// webContentOpenTag matches one opening tag exactly as webContentEnvelope
+// writes it. The attribute classes are what sanitiseTagAttribute leaves: no
+// quote, no angle bracket, no C0 or C1 control byte.
+var webContentOpenTag = regexp.MustCompile(regexp.QuoteMeta(webContentOpenTagPrefix) +
+	`[^"<>\x00-\x1f\x7f\x{80}-\x{9f}]*"(?: title="[^"<>\x00-\x1f\x7f\x{80}-\x{9f}]*")?>`)
+
+// closeWebContentFences repairs the envelopes in a web tool's result after it
+// was clipped to a byte cap, so the model never reads a fence that opens and
+// does not close.
+//
+// THE CAP IS NOT KNOWN WHEN THE ENVELOPE IS WRITTEN. The agent loop computes it
+// per call -- max_tool_result_bytes, or less once the turn's budget runs low
+// (agentloop.go) -- so clipping the page to fit at the producer cannot work,
+// and renderToolResult calls this on the clipped bytes instead. Before it, a
+// long web_fetch page lost its </web_content> to the cut (OPEN_ITEMS 34).
+//
+// EVERY TAG IN THIS TEXT IS THE DAEMON'S. The result is pre-framed: page text
+// was neutralised before the envelope was written, so a complete tag a page
+// forged is no longer a tag, and counting openers and closers counts the
+// daemon's own. The one thing neutralisation leaves is an UNFINISHED tag with
+// no '>' -- which is also what a cut through the daemon's own tag looks like.
+// Either way it is dropped from the end: it is not structure, and the result
+// is being shortened anyway.
+func closeWebContentFences(s string) string {
+	if i := strings.LastIndexByte(s, '<'); i >= 0 {
+		tail := s[i:]
+		cutOpener := strings.HasPrefix(webContentOpenTagPrefix, tail) ||
+			(strings.HasPrefix(tail, webContentOpenTagPrefix) && !strings.Contains(tail, ">"))
+		if cutOpener || (strings.HasPrefix(webContentCloseTag, tail) && tail != webContentCloseTag) {
+			s = s[:i]
+		}
+	}
+	// Envelopes never nest, so at most one can be open: the last one.
+	if len(webContentOpenTag.FindAllStringIndex(s, -1)) > strings.Count(s, webContentCloseTag) {
+		s += "\n" + webContentCloseTag
+	}
+	return s
+}
+
 // sanitiseTagAttribute makes a string safe to interpolate into one of the
 // daemon's own tag attributes.
 //

@@ -61,6 +61,13 @@ func renderToolResult(content string, maxBytes int, scrubDisabled bool, preNeutr
 	if maxBytes > 0 && len(content) > maxBytes {
 		content = clipUTF8(content, maxBytes)
 		truncated = true
+		// A pre-framed result carries the daemon's own <web_content> fences,
+		// and the cut can land inside one. Closed here, before the marker, so
+		// the model reads where the untrusted page ends and the marker sits
+		// outside it. See closeWebContentFences.
+		if preNeutralized {
+			content = closeWebContentFences(content)
+		}
 	}
 
 	cleaned, redactions := scrub(content, scrubDisabled)
