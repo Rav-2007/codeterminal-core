@@ -103,6 +103,12 @@ type expandPolicy struct {
 	// spent the budget a better-ranked widening needed (locate q22, see
 	// NestedConstructs). Pre-registered 2026-10-04 as L2c before the
 	// confirmation questions were run.
+	//
+	// OFF. MEASURED in that round: q22 is kept (in-repo 41/49, as shipped),
+	// the two held-out gains stay (16/20), but the fresh questions fell 53 ->
+	// 52 where +2 was asked: ripgrep's fresh q2 (its answer is in
+	// crates/searcher/src/searcher/core.rs) is lost under nested widening,
+	// Go included or not. Its mechanism was not diagnosed.
 	NestedSkipGo bool
 }
 

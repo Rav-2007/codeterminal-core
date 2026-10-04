@@ -135,6 +135,12 @@ type rankPolicy struct {
 // outside tuning set, so neither ships. TestPathsBeyondGo is the near miss: its
 // four gains are a Python test and three Java tests no longer outranking the
 // code they test, and it loses nothing on any of the 137 questions.
+//
+// CONFIRMATION ROUND, same day: on 60 fresh questions TestPathsBeyondGo moved
+// nothing (53/60 either way) where +2 was asked, so it failed a second
+// pre-registered bar. It still loses nothing anywhere -- 197 questions -- and
+// helps exactly when test files crowd the top ten, which the fresh questions
+// happened not to provoke.
 var defaultRankPolicy = rankPolicy{}
 
 // isSetupFile reports whether path gets the setup-file down-weight under p.

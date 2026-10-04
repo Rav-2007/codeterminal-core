@@ -48,6 +48,8 @@ So: at a checkpoint, or after any run that moved a number, paste the line.
 | 2026-10-03 | `9bae0ef` | branch | 7718 | 1062 | 27/49 | 32/49 | **0** | **41/49** | `44feda9b9902d224` | green — run `37105002648`; the same 41, 32 and 0 as the local run on different vectors, where the same code once split 35 against 37 across the floor; held-out 21 / **24/28** |
 | 2026-10-04 | `f89e8d2` | local (i5, 16 threads) | 7725 | 1065 | 27/49 | 32/49 | **0** | **41/49** | `97e52a8f30ca6a2b` | green — the outside-repository round's baseline; held-out 21 / **24/28**; outside repositories 32/40 + 14/20 (below) |
 | 2026-10-04 | `278bd47` | local | 7751 | 1067 | 26/49 | 33/49 | **0** | **42/49** | `e7b516ab5930bc71` | green — the round's three levers built and OFF; +1 is the round's own code growing the corpus; the sweep ran on this build (below); held-out 20 / **24/28** |
+| 2026-10-04 | `849aaa1` | branch | 7752 | 1067 | 27/49 | 33/49 | **0** | **41/49** | `1015cf68d15dc6a9` | green — run `37185788657`; one fewer than the local 42 on the same code, both above the floor; held-out 21 / **24/28** |
+| 2026-10-04 | `f803e6c` | local | 7806 | 1072 | 26/49 | 33/49 | **0** | **41/49** | `c168a6d50eb59e7e` | green — the confirmation round's build (below); held-out 21 / **24/28**; outside 32/40 + 14/20, fresh **53/60** |
 
 Floors in force across every row: DELIVERED ≥ 75% (36.75/49), RETRIEVED ≥ 61%
 (29.9/49), budgeted out ≤ 4.
@@ -345,3 +347,44 @@ outside 40 and 20, fresh 60.
   this round** -- every user would download it. An arm qualifies only if fresh
   rises by at least 3, outside 40+20 by at least 3, in-repo is no lower, and the
   added p95 latency is at most 400 ms on this machine.
+
+### 2026-10-04 — the confirmation round: what the rule decided
+
+`TestExternalLeverSweep` on `f803e6c`, one build per corpus, five sets. The
+shipped row reproduces `EVALTREND` (41), `EVALHELDOUT` (24), `EVALEXTERNAL` (32
+and 14) and `EVALFRESH` (53) from the same process. A first attempt failed on
+harness wiring before any arm was scored (`f803e6c` fixes it); only the shipped
+fresh number was visible, and it decides nothing.
+
+| arm | in-repo 49 | in-repo 28 | outside 40 | outside 20 | fresh 60 | rule |
+|---|---|---|---|---|---|---|
+| SHIPPED | 41 | 24 | 32 | 14 | 53 | — |
+| L1 tests beyond Go | 41 | 24 | 34 | 16 | 53 | fails: fresh +0 where +2 was asked |
+| L2c nested, no Go | 41 | 24 | 32 | 16 | 52 | fails: fresh −1 |
+| L1+L2c | 41 | 24 | 34 | 17 | 52 | fails |
+| cross-encoder, top 20 | 35 | 23 | 34 | 13 | 49 | not recommended |
+| cross-encoder, top 30 | 34 | 21 | 33 | 15 | 50 | not recommended |
+| cross-encoder, blend 30 | 37 | 24 | 33 | 14 | 51 | not recommended |
+| *L2, Go included (reference)* | 40 | 24 | 32 | 16 | 52 | — |
+| *L1+L2c+blend (reference)* | 37 | 24 | 34 | 17 | 53 | — |
+
+Cross-encoder latency, first scoring of a question's top 30: **1.0 s** at p50
+and p95, against a 400 ms bar.
+
+**Nothing ships, and the cross-encoder is not recommended.** It makes retrieval
+worse on every in-repo arm -- up to seven questions -- and costs a second per
+query. ms-marco-MiniLM was trained on web search passages; on code it reorders
+confidently and wrongly. A reranker trained on code would be a new
+measurement, and the instrument for it now exists.
+
+**L1 failed a second pre-registered bar,** and the record should say exactly
+how: on the fresh questions it changed nothing at all, while on the first
+outside set it still gains four and loses none. Across 197 questions it has
+never cost an answer. It helps when test files crowd the top ten -- hono and
+gson's naming -- and the fresh questions did not provoke that. That is a reason
+an owner might choose it on judgment; it is not a pass.
+
+**The fresh set ran easy.** 53/60 at shipped defaults (httpx and javapoet are
+small: 1,140 and 480 chunks), so a lever had seven misses to win back. The next
+confirmation set should come from larger repositories.
+

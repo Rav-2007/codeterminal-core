@@ -14,6 +14,19 @@ import (
 // left: the answer's chunk not in the top ten at all, which no class weight or
 // widening reaches. Whether it earns its download and its latency is what
 // TestExternalLeverSweep measures; nothing in production calls this.
+//
+// MEASURED 2026-10-04 (confirmation round, f803e6c), DELIVERED against the
+// shipped row's 41/49 in-repo, 24/28 held-out, 32/40 + 14/20 outside, 53/60
+// fresh, with ms-marco-MiniLM-L-6-v2:
+//
+//	re-order top 20     35  23  34+13  49
+//	re-order top 30     34  21  33+15  50
+//	RRF-blend top 30    37  24  33+14  51
+//
+// and 1.0 s at p50 and p95 to score one question's top 30 on this machine.
+// It makes retrieval WORSE, most of all on this repository's own questions:
+// a model trained on web search passages does not transfer to code. NOT
+// RECOMMENDED. A reranker trained on code would be a different measurement.
 
 // pairScorer scores each of texts against query. HelperProcess.Rerank is the
 // real one.
