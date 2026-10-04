@@ -116,6 +116,7 @@ soak.sh|manual|A 30-minute sustained-load run. `make soak` exists; it is a measu
 sigterm-drill.sh|manual|`make drill`. Drives real signals at a real daemon; deliberate, not per-push.
 agent-cost-bench.sh|manual|Benchmark. Costs real model tokens.
 latency-bench.sh|manual|Benchmark. Reports numbers, asserts nothing.
+fetch-eval-repos.sh|manual|Fetches the four pinned outside repositories TestExternalRepoRetrieval scores against (daemon/testdata/evalrepos/repos.txt). A setup step for a manual eval that is in no gate yet; it reaches the network and checks nothing itself.
 wire-drill.sh|manual|Diagnostic for the wire protocol, run by hand when something is wrong.
 gate-parity.sh|both|
 install-tools.sh|ci|Installs the pinned analysis tools. CI runs it; locally `make check` does not, because it would reinstall four binaries on every gate run. scripts/lint.sh CHECKS the versions instead and prints this script as the remedy.
