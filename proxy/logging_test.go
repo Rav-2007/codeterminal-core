@@ -115,6 +115,29 @@ func TestLogNeverContainsSecrets(t *testing.T) {
 	}
 }
 
+// keyPrefix's whole job is "never the full key", and it used to hand back any
+// key of keyLogPrefixLen bytes or fewer unchanged. Neuter check: restore the
+// `if len(key) <= keyLogPrefixLen { return key }` branch and this fails.
+func TestKeyPrefixNeverReturnsTheWholeKey(t *testing.T) {
+	const alphabet = "abcdefghijklmnopqrstuvwxyz"
+	for n := 0; n <= 20; n++ {
+		key := alphabet[:n]
+		got := keyPrefix(key)
+		if !strings.HasPrefix(key, got) {
+			t.Errorf("keyPrefix(%q) = %q, not a prefix of the key", key, got)
+		}
+		if len(got) > keyLogPrefixLen {
+			t.Errorf("keyPrefix(%q) = %q, longer than keyLogPrefixLen (%d)", key, got, keyLogPrefixLen)
+		}
+		if n > 0 && got == key {
+			t.Errorf("keyPrefix(%q) returned the whole key", key)
+		}
+	}
+	if got := keyPrefix(sentinelMochiKey); got != sentinelMochiKey[:keyLogPrefixLen] {
+		t.Errorf("a real-length key is logged as %q, want its first %d characters", got, keyLogPrefixLen)
+	}
+}
+
 // TestAccessLogPreservesFlushing guards the trap this middleware could most
 // easily introduce.
 //

@@ -1622,11 +1622,14 @@ func requestTokenCeiling(reserved int, headroom int64) int {
 
 // keyPrefix returns at most the first keyLogPrefixLen characters of key, for
 // content-free log lines -- never the full key.
+//
+// AT MOST HALF OF IT, TOO. This returned a key of keyLogPrefixLen bytes or
+// fewer unchanged, so "never the full key" held only for keys long enough not
+// to test it. A string that short is no usable credential, but the one job of
+// this function is that guarantee, and a short key now gets its first half.
+// Real keys are far longer and are logged exactly as before.
 func keyPrefix(key string) string {
-	if len(key) <= keyLogPrefixLen {
-		return key
-	}
-	return key[:keyLogPrefixLen]
+	return key[:min(keyLogPrefixLen, len(key)/2)]
 }
 
 // streamSSE copies body to w line by line, flushing after every line so the
