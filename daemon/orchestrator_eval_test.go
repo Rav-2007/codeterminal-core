@@ -54,8 +54,8 @@ var orchestrationGates = []struct {
 		"a turn that was NOT budget-stopped ran every configured specialist (a phase that silently no-ops is cost with no output)"},
 	{"partial_work_reached_user",
 		"a turn the budget DID stop still streamed the work done so far -- returning it is not showing it (found live: 698 bytes returned, 0 streamed)"},
-	{"planner_called_nothing",
-		"the Planner has an EMPTY tool list; a real model must not get a tool call past it (scoping is enforced, not advertised)"},
+	{"planner_read_only",
+		"the Planner may only read (rolePlanner.Tools); a real model must not get any other call past it (scoping is enforced, not advertised)"},
 	{"researcher_proposed_nothing",
 		"the Researcher may not write: propose_edit is absent from its list, so a real model reaching for it must be refused"},
 	{"answer_reached_user",
@@ -298,17 +298,36 @@ func TestOrchestrationLive(t *testing.T) {
 			}
 
 			if p := obs.phaseNamed("Planner"); p != nil {
-				// Zero EXECUTED calls. A refusal recorded here is still a pass
-				// for scoping -- it means the model tried and the allowlist
-				// stopped it -- but it is worth seeing in the log, so it is
-				// counted separately rather than folded into the gate.
-				executed := len(p.calls) - len(p.denied)
-				record("planner_called_nothing", executed == 0)
+				// Every call outside the Planner's read-only scope must have
+				// been refused. The scope is rolePlanner.Tools itself, so this
+				// cannot drift from the role the way the gate it replaced did:
+				// that one asserted an EMPTY tool list and kept asserting it
+				// after 8fd3309 gave the Planner its four read tools.
+				allowed := map[string]bool{}
+				for _, name := range rolePlanner.Tools {
+					allowed[name] = true
+				}
+				refused := map[string]int{}
+				for _, name := range p.denied {
+					refused[name]++
+				}
+				readOnly := true
+				for _, name := range p.calls {
+					if allowed[name] {
+						continue
+					}
+					if refused[name] == 0 {
+						readOnly = false
+						break
+					}
+					refused[name]--
+				}
+				record("planner_read_only", readOnly)
 				if len(p.denied) > 0 {
 					t.Logf("  NOTE: the Planner ATTEMPTED %d call(s) and was refused: %v", len(p.denied), p.denied)
 				}
 			} else {
-				record("planner_called_nothing", false)
+				record("planner_read_only", false)
 			}
 
 			if p := obs.phaseNamed("Researcher"); p != nil {
