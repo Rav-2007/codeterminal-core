@@ -817,3 +817,26 @@ each is for a complete task, worked through to a verified finish.
 ### Status: not yet run (2026-10-01)
 
 The key has $0.74 left of its $8 limit, and the run needs about $4–8.
+
+### Amendment before the run (2026-10-04): what $7.72 buys
+
+Written before any paid call of this campaign. The key had $7.72 left, shared
+with the owner's daily use, so about $0.75 stays untouched and the rest is spent
+in order of value per dollar.
+
+1. **Reliability checks, about $0.50 together, run one at a time** with the
+   key read before and after each: `TestToolCallReliability`,
+   `TestToolMenuSizeCurve`, `TestAgentLoopReliability`, `TestOrchestrationLive`.
+   Each judged by its own gates, as written in its file.
+2. **Single-agent regression: the 14 Round-2 tasks x 2 trials** on
+   `deepseek_v4_pro`, `TASK_EVAL_MAX_USD=0.90`. Stage B measured 50/56 (89%),
+   which predicts 25/28. **A regression is flagged if 21/28 or fewer pass,**
+   and every failing trial is diagnosed from its saved log.
+3. **Round 4 at 1 trial per task per arm, not 2** -- 6 trials per arm. Arm A
+   in one shard capped at $1.20; arm B with $0.50 per trial in each shard, the
+   long task's own budget, so only a broken budget check reaches a cap. The
+   rules, arms and defect checks are unchanged. With 6 trials per arm a lead of
+   one or two is within noise and is reported that way; an arm that stops on
+   its cap before 6 trials is VOID.
+4. **`/team` is not re-run** unless money is left after step 3: it measured
+   26/28 on 2026-09-30, and its orchestration code has not changed since.
