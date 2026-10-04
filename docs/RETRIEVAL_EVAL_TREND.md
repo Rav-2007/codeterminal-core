@@ -50,6 +50,7 @@ So: at a checkpoint, or after any run that moved a number, paste the line.
 | 2026-10-04 | `278bd47` | local | 7751 | 1067 | 26/49 | 33/49 | **0** | **42/49** | `e7b516ab5930bc71` | green — the round's three levers built and OFF; +1 is the round's own code growing the corpus; the sweep ran on this build (below); held-out 20 / **24/28** |
 | 2026-10-04 | `849aaa1` | branch | 7752 | 1067 | 27/49 | 33/49 | **0** | **41/49** | `1015cf68d15dc6a9` | green — run `37185788657`; one fewer than the local 42 on the same code, both above the floor; held-out 21 / **24/28** |
 | 2026-10-04 | `f803e6c` | local | 7806 | 1072 | 26/49 | 33/49 | **0** | **41/49** | `c168a6d50eb59e7e` | green — the confirmation round's build (below); held-out 21 / **24/28**; outside 32/40 + 14/20, fresh **53/60** |
+| 2026-10-04 | `f6dd912` | branch | 7810 | 1072 | 26/49 | 32/49 | **0** | 39/49 | `cda9c24403eb18b7` | green — run `37198207208`; two below the local 41 on `f803e6c`, on a corpus this round's own code grew (the e2e suite, the cross-encoder); 2.25 above the floor; held-out 21 / **24/28** |
 
 Floors in force across every row: DELIVERED ≥ 75% (36.75/49), RETRIEVED ≥ 61%
 (29.9/49), budgeted out ≤ 4.
