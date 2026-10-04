@@ -103,22 +103,25 @@ func (c *CrossEncoder) Score(query string, passages []string) ([]float32, error)
 		}
 	}
 
+	// The tensors are released when Score returns. Destroy's error is
+	// discarded on purpose: there is nothing to do about a failed release of
+	// a tensor this call is finished with, and the scores are already read.
 	shape := ort.NewShape(int64(batch), int64(maxLen))
 	inputIDsT, err := ort.NewTensor(shape, inputIDs)
 	if err != nil {
 		return nil, fmt.Errorf("building input_ids tensor: %w", err)
 	}
-	defer inputIDsT.Destroy()
+	defer func() { _ = inputIDsT.Destroy() }()
 	attnMaskT, err := ort.NewTensor(shape, attnMask)
 	if err != nil {
 		return nil, fmt.Errorf("building attention_mask tensor: %w", err)
 	}
-	defer attnMaskT.Destroy()
+	defer func() { _ = attnMaskT.Destroy() }()
 	tokenTypeIDsT, err := ort.NewTensor(shape, tokenTypeIDs)
 	if err != nil {
 		return nil, fmt.Errorf("building token_type_ids tensor: %w", err)
 	}
-	defer tokenTypeIDsT.Destroy()
+	defer func() { _ = tokenTypeIDsT.Destroy() }()
 
 	outputs := []ort.Value{nil}
 	if err := c.session.Run([]ort.Value{inputIDsT, attnMaskT, tokenTypeIDsT}, outputs); err != nil {
@@ -128,7 +131,7 @@ func (c *CrossEncoder) Score(query string, passages []string) ([]float32, error)
 	if !ok {
 		return nil, fmt.Errorf("unexpected logits tensor type %T", outputs[0])
 	}
-	defer out.Destroy()
+	defer func() { _ = out.Destroy() }()
 	if shape := out.GetShape(); len(shape) != 2 || shape[0] != int64(batch) || shape[1] != 1 {
 		return nil, fmt.Errorf("unexpected logits shape %v, want [%d 1]", shape, batch)
 	}
