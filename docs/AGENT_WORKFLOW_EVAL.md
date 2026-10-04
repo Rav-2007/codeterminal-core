@@ -840,3 +840,63 @@ in order of value per dollar.
    its cap before 6 trials is VOID.
 4. **`/team` is not re-run** unless money is left after step 3: it measured
    26/28 on 2026-09-30, and its orchestration code has not changed since.
+
+### Results (2026-10-04)
+
+All on the tree at `e607d24` and the shipped configs, billed from the owner's key
+(which was read before and after each step).
+
+**1. Reliability checks.**
+
+| check | model | result | billed |
+|---|---|---|---|
+| `TestToolCallReliability`, 84 trials | deepseek-v4-flash | 4 of 4 gates pass: well-formed 100%, schema-valid 98.6%, right tool 98.6%, clean finish 98.8% | $0.003 |
+| `TestToolMenuSizeCurve`, 105 calls | deepseek-v4-flash | 94.3% at 5 tools, 91.4% at 8, 97.1% at 12 | $0.004 |
+| `TestAgentLoopReliability`, 30 turns | deepseek-v4-flash | **4 of 4 gates fail**: terminates 90.0% (95), no repeated call 76.7% (95), uses tool output 88.5% (90), within four iterations 76.7% (80) | about $0.10 |
+
+The loop check reads `models.json`, whose primary tier is flash, so it measures
+flash running the agent loop: a model a user only gets in agent mode by choosing
+it, since agent mode has defaulted to `deepseek_v4_pro` since 2026-09-28. On
+2026-07-31 the same check passed all four gates on the same model. Five of the 30
+turns repeated an identical call and three ran out of steps while exploring; the
+built-in tool set has grown a great deal since July, which that report names as
+the reason to re-measure. Whether pro shows the same pattern was not measured --
+the task-eval logs carry no daemon log lines to count repeats from.
+
+**2. Single-agent regression, 14 tasks x 2 on `deepseek_v4_pro`: 26/28 (93%)**,
+against 25/28 predicted from Stage B's 89%. No regression (the flag was 21 or
+fewer). Both misses are `bug_hunt_medium`: the agent made coupon codes
+case-insensitive and did not trim surrounding spaces, which the hidden test
+types (`" SAVE10 "`, `"save10\t"`); the reference fix does both. A judgment miss,
+on the task that was also the hardest in Round 2. Billed $0.42; median 6-9 calls
+and 15-36 s per task.
+
+**3. Round 4, one trial per task per arm.**
+
+| arm | solved | billed | per solved task |
+|---|---|---|---|
+| A: single agent, up to 5 "continue"s | 4 of 6 | $0.13 | $0.033 |
+| B: long tasks | 3 of 6 | $0.19 | $0.063 |
+
+**B is not recommended:** the rule asks for strictly more passes. At six trials
+an arm, a difference of one is within noise. No B trial came near its $0.50
+budget (the dearest was $0.07).
+
+**The defect rule fired.** Two B trials -- `/debug` on `multi_bug_hunt` and
+`/refactor` on `cross_package_refactor` -- ended `stuck` after two model calls
+and no tool call at all. Both replies were a sentence of intent ("I'll start by
+understanding the project structure...") and nothing else, and two segments
+without progress is the stuck rule. **Both trials were served entirely by the
+DigitalOcean host** (2 of 2 calls each); every other B trial was served mostly or
+entirely by Parasail, and none of the 28 single-agent trials reached
+DigitalOcean. That is the Round 2 failure again -- a host that returns the text
+before a tool call and drops the call. `dc77b85` retries an *empty* reply on
+another host; these replies are not empty, so nothing retried them, and a long
+task reads a text-only segment as unfinished work. By this round's rule the cause
+is fixed before Round 4 runs again. Two fixes are on the table, and both are the
+owner's call: exclude DigitalOcean for pro in `models.agent.json`'s provider
+settings, or treat a long-task segment with no tool call as a dropped call --
+retry it once on another host before it counts toward "stuck".
+
+**4. `/team`** was not re-run: Round 3 measured it four days earlier and its
+orchestration has not changed.

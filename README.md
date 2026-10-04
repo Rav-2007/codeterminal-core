@@ -788,12 +788,14 @@ first three.
 }
 ```
 
-**Not yet measured on the real model.** The engine is tested offline against a
-scripted provider. Round 4 in
-[`docs/AGENT_WORKFLOW_EVAL.md`](docs/AGENT_WORKFLOW_EVAL.md) compares long tasks
+**Not yet shown to beat continuing by hand.** Round 4 in
+[`docs/AGENT_WORKFLOW_EVAL.md`](docs/AGENT_WORKFLOW_EVAL.md) compared long tasks
 with the ordinary agent plus a user who types "continue", under rules written
-before it runs. No number is claimed here until then. `/debug`, `/fix` and
-`/refactor` are long tasks by design, whatever Round 4 finds: they are the
+before it ran. On 2026-10-04, at one trial per task, long tasks solved 3 of 6 and
+the ordinary agent 4 of 6, so no advantage is claimed. Two of the three long-task
+losses ended after two model calls with no tool call at all, on a provider host
+that returned text without its tool calls; that defect is open. `/debug`, `/fix`
+and `/refactor` are long tasks by design, whatever Round 4 finds: they are the
 commands for a complete job. For a quick one-line change, ask without a command:
 an ordinary turn costs less (3 model calls against 4 for the smallest fix,
 measured).
