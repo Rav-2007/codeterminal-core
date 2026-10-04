@@ -128,12 +128,17 @@ func TestExternalLeverSweep(t *testing.T) {
 			if !slices.Contains(sets, u.set) {
 				continue
 			}
-			k := key(u)
+			// repo#n for a tuning question, repo#n/h for a held-out one: the
+			// two lists are numbered separately, so the number alone is ambiguous.
+			k, label := key(u), fmt.Sprintf("%s#%d", u.repo, u.index)
+			if u.set == "in28" || u.set == "ext20" {
+				label += "/h"
+			}
 			switch {
 			case arm[k] && !base[k]:
-				gained = append(gained, strings.TrimPrefix(k, u.set+"/"))
+				gained = append(gained, label)
 			case base[k] && !arm[k]:
-				lost = append(lost, strings.TrimPrefix(k, u.set+"/"))
+				lost = append(lost, label)
 			}
 		}
 		return fmt.Sprintf("+[%s] -[%s]", strings.Join(gained, " "), strings.Join(lost, " "))

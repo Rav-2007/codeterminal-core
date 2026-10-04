@@ -122,6 +122,19 @@ type rankPolicy struct {
 	SetupFilesBeyondGo bool
 }
 
+// defaultRankPolicy is what production uses: both levers OFF.
+//
+// MEASURED 2026-10-04 by TestExternalLeverSweep -- one build per corpus, four
+// question sets, DELIVERED against the shipped row (in-repo 42/49 and 24/28,
+// outside 32/40 tuning and 14/20 held-out):
+//
+//	TestPathsBeyondGo    outside 34/40 (+2), 16/20 (+2); in-repo 42, 24; nothing lost
+//	SetupFilesBeyondGo   no change on any set
+//
+// The pre-registered rule (docs/RETRIEVAL_EVAL_TREND.md) asked for +3 on the
+// outside tuning set, so neither ships. TestPathsBeyondGo is the near miss: its
+// four gains are a Python test and three Java tests no longer outranking the
+// code they test, and it loses nothing on any of the 137 questions.
 var defaultRankPolicy = rankPolicy{}
 
 // isSetupFile reports whether path gets the setup-file down-weight under p.

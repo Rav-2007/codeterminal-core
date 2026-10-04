@@ -84,6 +84,16 @@ type expandPolicy struct {
 	// where Go puts its methods and the class-based languages do not, so
 	// without this a hit inside a long class widens to fixed neighbours only.
 	// See nestedBlocks.
+	//
+	// OFF. MEASURED 2026-10-04 by TestExternalLeverSweep: outside 32/40 (+0)
+	// and 16/20 (+2 -- a Flask blueprint method and a Gson date parser, both
+	// inside classes far past the cap), but in-repo 41/49 (-1). The loss is a
+	// budget trade inside Go, not a wrong widening: locate q22 is delivered
+	// only by widening its rank-9 hit, and a rank-6 hit inside a 329-line Go
+	// function -- just over the cap -- now widened to a 132-line inner block
+	// first and spent what that needed. Go's methods are already at column
+	// zero, so a variant limited to the class-based languages is the obvious
+	// next candidate; it has to be pre-registered and measured, not assumed.
 	NestedConstructs bool
 }
 

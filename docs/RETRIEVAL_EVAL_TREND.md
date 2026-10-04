@@ -46,6 +46,8 @@ So: at a checkpoint, or after any run that moved a number, paste the line.
 | 2026-10-03 | `2c5cbda` | local | 7702 | 1061 | 27/49 | 31/49 | 2 | 36/49 | `1652bf796196b224` | **RED** at 73.5% — old defaults on a corpus the round's own code had grown; the decision sweep ran on this build (below); held-out 22 / 23 |
 | 2026-10-03 | `3e74e4a` | local | 7718 | 1062 | 26/49 | 32/49 | **0** | **41/49** | `7afa9f886f31a9b4` | green — path column at weight 8 + two-pass packing; 38/49 before corrections; held-out 21 / **24/28** |
 | 2026-10-03 | `9bae0ef` | branch | 7718 | 1062 | 27/49 | 32/49 | **0** | **41/49** | `44feda9b9902d224` | green — run `37105002648`; the same 41, 32 and 0 as the local run on different vectors, where the same code once split 35 against 37 across the floor; held-out 21 / **24/28** |
+| 2026-10-04 | `f89e8d2` | local (i5, 16 threads) | 7725 | 1065 | 27/49 | 32/49 | **0** | **41/49** | `97e52a8f30ca6a2b` | green — the outside-repository round's baseline; held-out 21 / **24/28**; outside repositories 32/40 + 14/20 (below) |
+| 2026-10-04 | `278bd47` | local | 7751 | 1067 | 26/49 | 33/49 | **0** | **42/49** | `e7b516ab5930bc71` | green — the round's three levers built and OFF; +1 is the round's own code growing the corpus; the sweep ran on this build (below); held-out 20 / **24/28** |
 
 Floors in force across every row: DELIVERED ≥ 75% (36.75/49), RETRIEVED ≥ 61%
 (29.9/49), budgeted out ≤ 4.
@@ -258,3 +260,47 @@ gson), all named by conventions only L1 recognises. Nothing points past L1-L3, s
 the menu stands as written. Two findings that are not levers: flask's `uv.lock`
 is indexed (a lockfile the noise list does not name), and `.mts` is not a code
 extension.
+
+### 2026-10-04 — outside repositories: what the rule decided
+
+`TestExternalLeverSweep` on `278bd47`, one build per corpus, DELIVERED on all
+four sets. The shipped row reproduces `EVALTREND` (42), `EVALHELDOUT` (24) and
+`EVALEXTERNAL` (32 and 14) from the same process.
+
+| arm | in-repo 49 | in-repo 28 | outside 40 | outside 20 | per repository, of 15 | rule |
+|---|---|---|---|---|---|---|
+| SHIPPED | 42 | 24 | 32 | 14 | flask 13, hono 12, ripgrep 10, gson 11 | — |
+| L1 tests beyond Go | 42 | 24 | **34** | **16** | flask 14, gson 14 | fails: +2 where +3 was asked |
+| L2 widen to the method | 41 | 24 | 32 | 16 | flask 14, gson 12 | fails: in-repo −1 (q22) |
+| L3 setup files beyond Go | 42 | 24 | 32 | 14 | unchanged | inert |
+| L1+L2 | 41 | 24 | 34 | 17 | flask 15, gson 14 | fails |
+| L1+L3 | 42 | 24 | 34 | 16 | flask 14, gson 14 | fails |
+| L2+L3 | 41 | 24 | 32 | 16 | flask 14, gson 12 | fails |
+| L1+L2+L3 | 41 | 24 | 34 | 17 | flask 15, gson 14 | fails |
+
+**Nothing ships.** The levers stay in the code, off, with these numbers at
+their definitions.
+
+**L1 is the near miss.** Four gains -- a Flask held-out question and three Gson
+questions (two tuning, one held-out) -- each one a case where Python or Java test
+files had been holding top-ten slots over the code they test. It loses nothing on
+any of the 137 questions. The bar was +3 on the outside tuning set and it reached
++2; the bar was written before the run, so +2 is a fail, and the honest next step
+is fresh questions, not a lower bar.
+
+**L2's in-repo loss is a budget trade inside Go.** Locate q22 is delivered only
+by widening its rank-9 hit. A rank-6 hit sits in a 329-line Go function, just over
+the 300-line cap, and L2 now widens it to a 132-line inner block first, spending
+what q22 needed. Go's methods are already at column zero, so L2 limited to the
+class-based languages is the obvious variant -- and, chosen after this run, it
+must be pre-registered and measured on fresh questions before it can count.
+
+**L3 changes nothing anywhere.** Not a tie-break moved. A candidate for deletion.
+
+**hono and ripgrep are untouched by every lever.** Their eight misses are all
+ranking misses: the answer's chunk is not in the top ten, and in four of them its
+file is not either. In the other four the file is there but the hit sits in a
+different function from the answer, and widening only ever reaches the construct
+around a hit. No class weight or widening reaches these; a reranker might, and
+this instrument is what would show it.
+
