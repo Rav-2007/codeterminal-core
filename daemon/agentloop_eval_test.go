@@ -237,6 +237,11 @@ func TestAgentLoopReliability(t *testing.T) {
 		t.Fatalf("loading models.json: %v", err)
 	}
 	model := cfg.Tiers["primary"].Slug
+	// LOOP_EVAL_MODEL measures another model on the same scenarios -- agent
+	// mode's own default (models.agent.json) is not models.json's primary.
+	if v := strings.TrimSpace(os.Getenv("LOOP_EVAL_MODEL")); v != "" {
+		model = v
+	}
 	routing := cfg.ZDR.resolvedProviderRouting()
 
 	// Grounded against this repository: real structure the model cannot guess.

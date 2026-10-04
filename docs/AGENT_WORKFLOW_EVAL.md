@@ -853,6 +853,8 @@ All on the tree at `e607d24` and the shipped configs, billed from the owner's ke
 | `TestToolCallReliability`, 84 trials | deepseek-v4-flash | 4 of 4 gates pass: well-formed 100%, schema-valid 98.6%, right tool 98.6%, clean finish 98.8% | $0.003 |
 | `TestToolMenuSizeCurve`, 105 calls | deepseek-v4-flash | 94.3% at 5 tools, 91.4% at 8, 97.1% at 12 | $0.004 |
 | `TestAgentLoopReliability`, 30 turns | deepseek-v4-flash | **4 of 4 gates fail**: terminates 90.0% (95), no repeated call 76.7% (95), uses tool output 88.5% (90), within four iterations 76.7% (80) | about $0.10 |
+| `TestAgentLoopReliability`, 30 turns | deepseek-v4-pro | **4 of 4 gates pass**: terminates 100%, no repeated call 100%, uses tool output 100%, within four iterations 90.0% | $0.06 |
+| `TestOrchestrationLive`, 3 scenarios | deepseek-v4-flash (`models.json`) | Both real questions answered from the code they ask about and streamed to the user; partial work streamed when the budget stopped a turn; the Researcher wrote nothing. The Planner gate assumed an empty tool list, stale since `8fd3309` gave it read tools; corrected to "reads only" (`dfd1d7f`) it passes in all three, re-scored from the run's log | $0.04 |
 
 The loop check reads `models.json`, whose primary tier is flash, so it measures
 flash running the agent loop: a model a user only gets in agent mode by choosing
@@ -860,8 +862,11 @@ it, since agent mode has defaulted to `deepseek_v4_pro` since 2026-09-28. On
 2026-07-31 the same check passed all four gates on the same model. Five of the 30
 turns repeated an identical call and three ran out of steps while exploring; the
 built-in tool set has grown a great deal since July, which that report names as
-the reason to re-measure. Whether pro shows the same pattern was not measured --
-the task-eval logs carry no daemon log lines to count repeats from.
+the reason to re-measure. **On pro -- agent mode's default -- the same 30 turns
+pass all four gates** (`LOOP_EVAL_MODEL=deepseek/deepseek-v4-pro`): terminates
+100%, no repeated call 100%, uses tool output 100%, within four iterations 90%,
+with no repeated call stalled at all ($0.06). The loss is flash's, in today's
+larger tool set; the default is unaffected.
 
 **2. Single-agent regression, 14 tasks x 2 on `deepseek_v4_pro`: 26/28 (93%)**,
 against 25/28 predicted from Stage B's 89%. No regression (the flag was 21 or
