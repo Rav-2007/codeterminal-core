@@ -246,3 +246,15 @@ outside tuning DELIVERED rises by at least 3 of 40 over the shipped row; outside
 held-out DELIVERED does not fall; in-repo DELIVERED on the 49 and on the 28 does
 not fall; no outside repository falls by more than 1; and each lever does no
 harm by itself on any of the four sets.
+
+**The baseline, and what it adds to the menu** (`f89e8d2`, recorded before the
+sweep ran). Outside repositories at shipped defaults: DELIVERED 32/40 tuning and
+14/20 held-out (46/60, 77% -- this repository's own is 84%); RETRIEVED 25/40 and
+12/20. Per repository, tuning+held-out: flask 13, hono 12, ripgrep 10, gson 11 of
+15. Retrieval took 14-40 ms at the median, 20-91 ms at p95. Of the 14 misses, none
+was budgeted out; 6 never had the answer's file in the top ten; 8 had the right
+file and the wrong part of it. Test files crowd the top ten in 5 of them (hono,
+gson), all named by conventions only L1 recognises. Nothing points past L1-L3, so
+the menu stands as written. Two findings that are not levers: flask's `uv.lock`
+is indexed (a lockfile the noise list does not name), and `.mts` is not a code
+extension.
