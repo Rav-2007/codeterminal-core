@@ -80,3 +80,29 @@ func TestLiveWebFetchReturnsReadableText(t *testing.T) {
 		t.Errorf("extraction lost the page's own text: %q", page.Text)
 	}
 }
+
+// A real page far longer than the tool-result cap, through the same three
+// steps builtinWebFetch and the agent loop take: fetch, envelope, render at
+// the cap. The page's closing tag must survive the cut (OPEN_ITEMS 34).
+func TestLiveLongWebFetchKeepsItsFenceAtTheCap(t *testing.T) {
+	liveOrSkip(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+
+	page, err := fetchURL(ctx, webClient(20*time.Second), "https://go.dev/ref/spec", maxWebFetchBytes)
+	if err != nil {
+		t.Fatalf("live fetch failed: %v", err)
+	}
+	envelope := webContentEnvelope(page)
+	if len(envelope) <= 32768 {
+		t.Skipf("the page is only %d bytes enveloped; it no longer exercises the cap", len(envelope))
+	}
+	for _, maxBytes := range []int{32768, 4096, 300, 40} {
+		got, _, _ := renderToolResult(envelope, maxBytes, false, true)
+		if defect := webFenceDefect(got, false); defect != "" {
+			t.Errorf("a %d-byte page rendered at %d bytes: %s\n...%s", len(envelope), maxBytes, defect, got[max(0, len(got)-160):])
+		}
+	}
+	got, _, _ := renderToolResult(envelope, 32768, false, true)
+	t.Logf("%d bytes enveloped; at the 32 KiB cap the result ends:\n...%s", len(envelope), got[len(got)-160:])
+}
