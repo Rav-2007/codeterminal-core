@@ -237,3 +237,51 @@ func TestARustSignatureOverSeveralLinesIsOneBlock(t *testing.T) {
 		t.Fatalf("nestedBlocks = %v, want the third function %v, attribute included", got, want)
 	}
 }
+
+// L2c: NestedSkipGo keeps a long Go function out of nested widening and leaves
+// every other language in it. Neuter check: drop the NestedSkipGo condition
+// from widenHits and the Go hit widens into its inner block.
+func TestNestedSkipGoLeavesGoToItsTopLevel(t *testing.T) {
+	var src strings.Builder
+	src.WriteString("package big\n\nfunc Long() {\n")
+	for i := range 160 {
+		fmt.Fprintf(&src, "\tx%d := %d\n", i, i)
+	}
+	src.WriteString("\tdefer func() {\n")
+	for i := range 150 {
+		fmt.Fprintf(&src, "\t\ty%d := %d\n", i, i)
+	}
+	src.WriteString("\t}()\n}\n")
+
+	lines, spans := pythonClass(6, 200)
+	root := realTempDir(t)
+	writeTempFile(t, root, "big.go", src.String())
+	writeTempFile(t, root, "pkg/big.py", strings.Join(lines, "\n")+"\n")
+
+	inside := func(rel string, from, to int) Chunk {
+		for _, c := range chunksOf(t, root, rel) {
+			if c.StartLine > from && c.EndLine < to {
+				return c
+			}
+		}
+		t.Fatalf("no chunk of %s lies inside %d-%d", rel, from, to)
+		return Chunk{}
+	}
+	goHit := inside("big.go", 164, 315) // inside the deferred closure
+	pyHit := inside("pkg/big.py", spans[2][0], spans[2][1])
+
+	all := expandPolicy{TopN: 1, ConstructCap: 300, NestedConstructs: true}
+	skip := all
+	skip.NestedSkipGo = true
+
+	if n := len(expandToNeighbours([]Chunk{goHit}, root, all)); n <= 3 {
+		t.Fatalf("with nested widening on everywhere, the Go hit gave %d chunks; the fixture no longer exercises it", n)
+	}
+	if n := len(expandToNeighbours([]Chunk{goHit}, root, skip)); n != 3 {
+		t.Errorf("under NestedSkipGo the Go hit gave %d chunks, want the hit and its two fixed neighbours", n)
+	}
+	py := mergeAdjacentChunks(expandToNeighbours([]Chunk{pyHit}, root, skip))
+	if len(py) != 1 || py[0].StartLine > spans[2][0] || py[0].EndLine < spans[2][1] {
+		t.Errorf("under NestedSkipGo the Python hit no longer widens to its method %v", spans[2])
+	}
+}

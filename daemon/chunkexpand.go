@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+
+	"mochiii/editapply"
 )
 
 // expandNeighbourTopN was the whole policy until 2026-08-28 and is now just its
@@ -95,6 +97,13 @@ type expandPolicy struct {
 	// zero, so a variant limited to the class-based languages is the obvious
 	// next candidate; it has to be pre-registered and measured, not assumed.
 	NestedConstructs bool
+	// NestedSkipGo leaves Go out of NestedConstructs. Go puts every method at
+	// column zero, where constructExtents already finds it, so a Go construct
+	// over the cap is a long function -- and widening into its inner blocks
+	// spent the budget a better-ranked widening needed (locate q22, see
+	// NestedConstructs). Pre-registered 2026-10-04 as L2c before the
+	// confirmation questions were run.
+	NestedSkipGo bool
 }
 
 // defaultExpandPolicy is what production uses.
@@ -296,7 +305,10 @@ func widenHits(hits []Chunk, workspaceRoot string, policy expandPolicy) [][]Chun
 		if widened {
 			continue
 		}
-		if class := classifyFile(h.FilePath); policy.NestedConstructs && (class == FileClassCode || class == FileClassTest) {
+		class := classifyFile(h.FilePath)
+		nested := policy.NestedConstructs && (class == FileClassCode || class == FileClassTest) &&
+			!(policy.NestedSkipGo && editapply.LanguageOf(h.FilePath) == editapply.LangGo)
+		if nested {
 			for _, b := range nestedBlocks(reg.lines, reg.extents, h.StartLine, h.EndLine, policy.ConstructCap, isPythonPath(h.FilePath)) {
 				for j := range sibs {
 					if sibs[j].StartLine > b[1] || b[0] > sibs[j].EndLine {
