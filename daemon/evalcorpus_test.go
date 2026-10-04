@@ -146,9 +146,12 @@ var (
 	sharedEvalEmbedderVal  Embedder
 	sharedEvalEmbedderErr  error
 
-	// What the shared helper was started with, so an eval that needs a second
-	// helper -- the sweep's cross-encoder -- starts the same build.
-	evalHelperBin, evalModelDir, evalORTLib string
+	// evalHelper is the shared embedder's helper process. It can also answer
+	// rerank requests: it is started knowing where the cross-encoder lives, and
+	// opens it only on the first such request (externalsweep_eval_test.go). One
+	// helper, not two -- a helper's address is derived from its parent's pid,
+	// so a second one in the same process would take over the first's socket.
+	evalHelper *HelperProcess
 )
 
 // sharedEvalEmbedder returns the process's one real embedder: the BGE model
@@ -199,11 +202,14 @@ func startEvalEmbedder() (Embedder, error) {
 		return nil, fmt.Errorf("building real helper binary: %w\n%s", err, out)
 	}
 
-	evalHelperBin, evalModelDir, evalORTLib = helperBin, modelDir, onnxRuntimeLib
 	helper := NewHelperProcess(helperBin, modelDir, onnxRuntimeLib, logger)
+	if ceDir, err := defaultCrossEncoderCacheDir(); err == nil {
+		helper.extraEnv = []string{"MOCHIII_RERANK_MODEL_DIR=" + ceDir}
+	}
 	if err := helper.Start(); err != nil {
 		return nil, fmt.Errorf("starting real embedder helper: %w", err)
 	}
+	evalHelper = helper
 	registerProcessCleanup(func() { _ = helper.Stop() })
 	return NewBgeEmbedder(helper), nil
 }

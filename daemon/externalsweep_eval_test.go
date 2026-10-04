@@ -96,13 +96,13 @@ func (c *cachedScorer) Rerank(ctx context.Context, query string, texts []string)
 	return out, nil
 }
 
-// startCrossEncoderHelper starts a second helper -- the same build the shared
-// embedder runs -- able to answer rerank requests.
-func startCrossEncoderHelper(t *testing.T) *HelperProcess {
+// crossEncoderHelper makes sure the cross-encoder's files are cached and
+// returns the shared helper, which opens them on its first rerank request.
+func crossEncoderHelper(t *testing.T) *HelperProcess {
 	t.Helper()
 	ctx := context.Background()
 	logger := log.New(os.Stderr, "cross-encoder: ", log.LstdFlags)
-	if _, err := sharedEvalEmbedder(); err != nil { // builds the helper binary
+	if _, err := sharedEvalEmbedder(); err != nil {
 		t.Fatal(err)
 	}
 	dir, err := defaultCrossEncoderCacheDir()
@@ -112,13 +112,7 @@ func startCrossEncoderHelper(t *testing.T) *HelperProcess {
 	if _, err := EnsureModelFiles(ctx, dir, crossEncoderModelAssets, logger); err != nil {
 		t.Fatalf("the cross-encoder's model files: %v", err)
 	}
-	t.Setenv("MOCHIII_RERANK_MODEL_DIR", dir)
-	h := NewHelperProcess(evalHelperBin, evalModelDir, evalORTLib, logger)
-	if err := h.Start(); err != nil {
-		t.Fatalf("starting the cross-encoder helper: %v", err)
-	}
-	t.Cleanup(func() { _ = h.Stop() })
-	return h
+	return evalHelper
 }
 
 func TestExternalLeverSweep(t *testing.T) {
@@ -126,7 +120,7 @@ func TestExternalLeverSweep(t *testing.T) {
 		t.Skip("skipping eval test in -short mode")
 	}
 	ctx := context.Background()
-	ce := startCrossEncoderHelper(t)
+	ce := crossEncoderHelper(t)
 
 	var units []sweepQuery
 	add := func(set, repo string, c *evalCorpus, qs []rerankEvalQuery) {
@@ -317,5 +311,21 @@ func TestExternalLeverSweep(t *testing.T) {
 		count(ref.delivered, "ext40", ""), count(ref.delivered, "ext20", ""), count(ref.delivered, "fresh60", ""))
 	if count(ref.delivered, "in49", "") < 20 {
 		t.Errorf("the SHIPPED row delivered only %d/49: this harness is not measuring the product", count(ref.delivered, "in49", ""))
+	}
+}
+
+// TestCrossEncoderThroughTheSharedHelper is the sweep's wiring, checked in
+// seconds and without building a corpus: the shared helper answers a rerank
+// request, and the passage that answers outranks the one that does not.
+func TestCrossEncoderThroughTheSharedHelper(t *testing.T) {
+	h := crossEncoderHelper(t)
+	scores, err := h.Rerank(context.Background(), "how are failed requests retried",
+		[]string{"func retry(req) { for attempt := 1; attempt <= 3; attempt++ { if send(req) == nil { return } } }",
+			"func parseDate(s string) time.Time { t, _ := time.Parse(time.RFC3339, s); return t }"})
+	if err != nil {
+		t.Fatalf("the shared helper could not rerank: %v", err)
+	}
+	if len(scores) != 2 || scores[0] <= scores[1] {
+		t.Errorf("scores %v: the retry passage should outrank the date parser", scores)
 	}
 }
