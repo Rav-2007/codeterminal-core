@@ -24,6 +24,7 @@ import (
 	"os/signal"
 	"runtime"
 	"runtime/debug"
+	"sync"
 	"syscall"
 	"time"
 
@@ -152,6 +153,27 @@ func loadEmbedder(modelDir, onnxRuntimeLib string, intraOpThreads int) (*OnnxEmb
 type server struct {
 	embedder *OnnxEmbedder
 	logger   *log.Logger
+
+	// The cross-encoder, opened on the first rerank request from the
+	// directory MOCHIII_RERANK_MODEL_DIR names. Lazily, so a helper that is
+	// never asked to rerank -- every production helper today -- never loads
+	// it or needs its files.
+	rerankOnce sync.Once
+	reranker   *CrossEncoder
+	rerankErr  error
+}
+
+// crossEncoder returns the cross-encoder, opening it on first use.
+func (s *server) crossEncoder() (*CrossEncoder, error) {
+	s.rerankOnce.Do(func() {
+		dir := os.Getenv("MOCHIII_RERANK_MODEL_DIR")
+		if dir == "" {
+			s.rerankErr = fmt.Errorf("rerank needs MOCHIII_RERANK_MODEL_DIR to name the cross-encoder's model directory")
+			return
+		}
+		s.reranker, s.rerankErr = NewCrossEncoder(dir, 0)
+	})
+	return s.reranker, s.rerankErr
 }
 
 // The helper's own admission limits, mirroring the daemon's limitedConn rather
@@ -249,6 +271,16 @@ func (s *server) dispatch(req helperproto.Request) helperproto.Response {
 			return helperproto.Response{OK: false, Error: err.Error()}
 		}
 		return helperproto.Response{OK: true, Vectors: vecs}
+	case helperproto.MethodRerank:
+		ce, err := s.crossEncoder()
+		if err != nil {
+			return helperproto.Response{OK: false, Error: err.Error()}
+		}
+		scores, err := ce.Score(req.Query, req.Texts)
+		if err != nil {
+			return helperproto.Response{OK: false, Error: err.Error()}
+		}
+		return helperproto.Response{OK: true, Scores: scores}
 	default:
 		return helperproto.Response{OK: false, Error: "unknown method: " + req.Method}
 	}

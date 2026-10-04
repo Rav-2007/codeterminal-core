@@ -21,22 +21,31 @@ import (
 )
 
 // Request is sent by the daemon to the helper. Method selects the
-// operation; Texts is only meaningful for "embed".
+// operation; Texts is meaningful for "embed" and "rerank", Query only for
+// "rerank".
 type Request struct {
-	Method string   `json:"method"` // "health" or "embed"
+	Method string   `json:"method"` // "health", "embed" or "rerank"
 	Texts  []string `json:"texts,omitempty"`
+	// Query is what each of Texts is scored against by "rerank".
+	Query string `json:"query,omitempty"`
 }
 
 // Response is the helper's reply. OK is false only when Error is set.
 type Response struct {
 	OK      bool        `json:"ok"`
 	Vectors [][]float32 `json:"vectors,omitempty"`
-	Error   string      `json:"error,omitempty"`
+	// Scores holds one relevance score per text, in order, for "rerank".
+	Scores []float32 `json:"scores,omitempty"`
+	Error  string    `json:"error,omitempty"`
 }
 
 const (
 	MethodHealth = "health"
 	MethodEmbed  = "embed"
+	// MethodRerank scores (Query, text) pairs with a cross-encoder. MEASURE
+	// ONLY as of 2026-10-04: the outside-repository sweep is its one caller,
+	// and nothing in the daemon's production path sends it.
+	MethodRerank = "rerank"
 )
 
 // MaxSequenceLength bounds tokenized input length for the embedding model.

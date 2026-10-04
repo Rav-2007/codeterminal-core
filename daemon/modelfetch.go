@@ -21,6 +21,39 @@ import (
 // BAAI/bge-small-en-v1.5 repo only ships an unquantized ONNX export).
 const bgeModelBaseURL = "https://huggingface.co/Xenova/bge-small-en-v1.5/resolve/main"
 
+// crossEncoderModelBaseURL is the ONNX conversion of the Apache-2.0
+// cross-encoder/ms-marco-MiniLM-L-6-v2, pinned to one revision of the
+// transformers.js repository that publishes it.
+const crossEncoderModelBaseURL = "https://huggingface.co/Xenova/ms-marco-MiniLM-L-6-v2/resolve/a09144355adeed5f58c8ed011d209bf8ee5a1fec"
+
+// crossEncoderModelAssets are the cross-encoder the outside-repository sweep
+// measures (externalsweep_eval_test.go). MEASURE ONLY: nothing on the daemon's
+// production path fetches them. Sizes and checksums were read off the
+// downloaded files on 2026-10-04; tokenizer.json is byte-identical to BGE's.
+var crossEncoderModelAssets = []modelAsset{
+	{
+		name:      "model_quantized.onnx",
+		url:       crossEncoderModelBaseURL + "/onnx/model_quantized.onnx",
+		size:      23143499,
+		sha256Hex: "e9d8ebf845c413e981c175bfe49a3bfa9b3dcce2a3ba54875ee5df5a58639fbe",
+	},
+	{
+		name:      "tokenizer.json",
+		url:       crossEncoderModelBaseURL + "/tokenizer.json",
+		size:      711396,
+		sha256Hex: "d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66",
+	},
+}
+
+// defaultCrossEncoderCacheDir is where crossEncoderModelAssets are cached.
+func defaultCrossEncoderCacheDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolving home directory: %w", err)
+	}
+	return filepath.Join(home, ".mochiii", "models", "ms-marco-minilm-l6-int8"), nil
+}
+
 // modelAsset pins one file this build depends on: its expected size and
 // sha256 make the download auditable and let EnsureModelFiles both skip the
 // network on a cache hit and fail loudly on any corruption or tampering.

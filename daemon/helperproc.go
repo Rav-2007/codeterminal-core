@@ -394,6 +394,28 @@ func (h *HelperProcess) Embed(ctx context.Context, texts []string) ([][]float32,
 // A single text is unchanged at callTimeout, so interactive latency behaves
 // exactly as it did -- this only ever LENGTHENS the deadline, and only for
 // calls that are doing proportionally more work.
+// Rerank asks the helper's cross-encoder to score each of texts against query
+// (helperproto.MethodRerank). MEASURE ONLY: the outside-repository sweep is
+// its one caller.
+func (h *HelperProcess) Rerank(ctx context.Context, query string, texts []string) ([]float32, error) {
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, h.embedDeadline(len(texts)))
+		defer cancel()
+	}
+	resp, err := h.call(ctx, helperproto.Request{Method: helperproto.MethodRerank, Query: query, Texts: texts})
+	if err != nil {
+		return nil, err
+	}
+	if !resp.OK {
+		return nil, fmt.Errorf("embedder helper returned an error: %s", resp.Error)
+	}
+	if len(resp.Scores) != len(texts) {
+		return nil, fmt.Errorf("embedder helper returned %d scores for %d texts; refusing a malformed response", len(resp.Scores), len(texts))
+	}
+	return resp.Scores, nil
+}
+
 func (h *HelperProcess) embedDeadline(n int) time.Duration {
 	if n <= 1 {
 		return h.callTimeout
