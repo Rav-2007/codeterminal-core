@@ -180,6 +180,150 @@ var externalEvalQuestions = map[string][]rerankEvalQuery{
 	},
 }
 
+// freshEvalQuestions are the CONFIRMATION set, written 2026-10-04 -- after the
+// first outside sweep had chosen nothing -- and never used to choose anything.
+// Sixty questions: twenty each from two repositories none of the questions
+// above touch (encode/httpx, Python; square/javapoet, Java), and five new ones
+// for each of the four above. Written the same way as those: answers located
+// first, plain-language questions in a user's words, agent-shaped ones with
+// identifiers. Each lever and reranker arm pre-registered in
+// docs/RETRIEVAL_EVAL_TREND.md ("Pre-registered 2026-10-04: the confirmation
+// round") is scored on these once.
+var freshEvalQuestions = map[string][]rerankEvalQuery{
+	"httpx": {
+		{"when a redirect is followed, when does a POST turn into a GET",
+			[]string{"httpx/_client.py"}, []string{"def _redirect_method(self, request: Request, response: Response) -> str:"}, shapeImpl},
+		{"is the authorization header kept when a redirect goes to a different site",
+			[]string{"httpx/_client.py"}, []string{`headers.pop("Authorization", None)`}, shapeImpl},
+		{"how does a relative Location header become the next url to request",
+			[]string{"httpx/_client.py"}, []string{"if url.is_relative_url:"}, shapeImpl},
+		{"what stops the client from following redirects forever",
+			[]string{"httpx/_client.py"}, []string{`"Exceeded maximum allowed redirects."`}, shapeImpl},
+		{"how does digest authentication answer the server's challenge",
+			[]string{"httpx/_auth.py"}, []string{"self._last_challenge = self._parse_challenge(request, response, auth_header)"}, shapeImpl},
+		{"how is a deflate response decoded when the server sends it without a zlib header",
+			[]string{"httpx/_decoders.py"}, []string{"self.decompressor = zlib.decompressobj(-zlib.MAX_WBITS)"}, shapeImpl},
+		{"how are streamed text lines split when a carriage return arrives at the end of a chunk",
+			[]string{"httpx/_decoders.py"}, []string{"# We always push a trailing"}, shapeImpl},
+		{"how are proxy settings read from the environment and how are hosts excluded from proxying",
+			[]string{"httpx/_utils.py"}, []string{`no_proxy_hosts = [host.strip() for host in proxy_info.get("no", "").split(",")]`}, shapeImpl},
+		{"how is a hostname with non-ascii characters encoded for the request",
+			[]string{"httpx/_urlparse.py"}, []string{`return idna.encode(host.lower()).decode("ascii")`}, shapeImpl},
+		{"what limits how long a url may be",
+			[]string{"httpx/_urlparse.py"}, []string{"MAX_URL_LENGTH = 65536"}, shapeImpl},
+		{"what error does checking a response's status raise, and how is the kind of error named",
+			[]string{"httpx/_models.py"}, []string{`error_type = error_types.get(status_class, "Invalid status code")`}, shapeImpl},
+		{"how is the boundary between the parts of a file upload chosen",
+			[]string{"httpx/_multipart.py"}, []string{`boundary = os.urandom(16).hex().encode("ascii")`}, shapeImpl},
+		{"what are the default timeout, connection limits and redirect count for a client",
+			[]string{"httpx/_config.py"}, []string{"DEFAULT_TIMEOUT_CONFIG = Timeout(timeout=5.0)"}, shapeImpl},
+		{"how is the certificate bundle for verifying https chosen, including an environment override",
+			[]string{"httpx/_config.py"}, []string{`if trust_env and os.environ.get("SSL_CERT_FILE"):`}, shapeImpl},
+		{"HTTPTransport retries httpcore connection pool",
+			[]string{"httpx/_transports/default.py"}, []string{"class HTTPTransport(BaseTransport):"}, shapeAgent},
+		{"_redirect_headers Host netloc Cookie pop",
+			[]string{"httpx/_client.py"}, []string{`headers["Host"] = url.netloc.decode("ascii")`}, shapeAgent},
+		{"NetRCAuth netrc authenticators",
+			[]string{"httpx/_auth.py"}, []string{"class NetRCAuth(Auth):"}, shapeAgent},
+		{"URLPattern priority matches all://",
+			[]string{"httpx/_utils.py"}, []string{"def priority(self) -> tuple[int, int, int]:"}, shapeAgent},
+		{"print_response get_lexer_for_response",
+			[]string{"httpx/_main.py"}, []string{"def get_lexer_for_response(response: Response) -> str:"}, shapeAgent},
+		{"test that the authorization header is removed on a redirect to another domain",
+			[]string{"tests/client/test_redirects.py"}, []string{"def test_cross_domain_redirect_with_auth_header():"}, shapeTest},
+	},
+	"javapoet": {
+		{"how does the code template turn each placeholder, like the dollar-L, dollar-S, dollar-T and dollar-N ones, into output",
+			[]string{"src/main/java/com/squareup/javapoet/CodeBlock.java"}, []string{"private void addArgument(String format, char c, Object arg) {"}, shapeImpl},
+		{"how does the writer decide between a short imported name and the fully qualified name for a type",
+			[]string{"src/main/java/com/squareup/javapoet/CodeWriter.java"}, []string{"// Find the shortest suffix of className that resolves to className."}, shapeImpl},
+		{"how are long lines wrapped at the column limit",
+			[]string{"src/main/java/com/squareup/javapoet/LineWrapper.java"}, []string{"boolean wrap = nextNewline == -1 || column + nextNewline > columnLimit;"}, shapeImpl},
+		{"how does it pick a unique variable name when the suggested one is a keyword or already taken",
+			[]string{"src/main/java/com/squareup/javapoet/NameAllocator.java"}, []string{"while (SourceVersion.isKeyword(suggestion) || !allocatedNames.add(suggestion)) {"}, shapeImpl},
+		{"how are string values escaped and wrapped in quotes when written as literals",
+			[]string{"src/main/java/com/squareup/javapoet/Util.java"}, []string{"static String stringLiteralWithDoubleQuotes(String value, String indent) {"}, shapeImpl},
+		{"how is a class name guessed from a dotted string",
+			[]string{"src/main/java/com/squareup/javapoet/ClassName.java"}, []string{"public static ClassName bestGuess(String classNameString) {"}, shapeImpl},
+		{"how is a generated source file written into its package directory on disk",
+			[]string{"src/main/java/com/squareup/javapoet/JavaFile.java"}, []string{"public Path writeToPath(Path directory, Charset charset) throws IOException {"}, shapeImpl},
+		{"how is a primitive type turned into its boxed wrapper type",
+			[]string{"src/main/java/com/squareup/javapoet/TypeName.java"}, []string{"public TypeName box() {"}, shapeImpl},
+		{"which modifiers must the methods and fields of an interface have",
+			[]string{"src/main/java/com/squareup/javapoet/TypeSpec.java"}, []string{"requireExactlyOneOf(methodSpec.modifiers, Modifier.ABSTRACT, Modifier.STATIC,"}, shapeImpl},
+		{"how is a method that overrides an existing one built from its element",
+			[]string{"src/main/java/com/squareup/javapoet/MethodSpec.java"}, []string{"public static Builder overriding(ExecutableElement method) {"}, shapeImpl},
+		{"how is an annotation instance turned into a spec, including its default values",
+			[]string{"src/main/java/com/squareup/javapoet/AnnotationSpec.java"}, []string{"public static AnnotationSpec get(Annotation annotation, boolean includeDefaultValues) {"}, shapeImpl},
+		{"how is a type from an annotation processor converted into a type name",
+			[]string{"src/main/java/com/squareup/javapoet/TypeName.java"}, []string{"public static TypeName get(TypeMirror mirror) {"}, shapeImpl},
+		{"how are static imports collected, and which classes do they cover",
+			[]string{"src/main/java/com/squareup/javapoet/CodeWriter.java"}, []string{"staticImportClassNames.add(signature.substring(0, signature.lastIndexOf('.')));"}, shapeImpl},
+		{"why can an abstract method not have a body",
+			[]string{"src/main/java/com/squareup/javapoet/MethodSpec.java"}, []string{`"abstract method %s cannot have code", builder.name);`}, shapeImpl},
+		{"JavaFile skipJavaLangImports",
+			[]string{"src/main/java/com/squareup/javapoet/JavaFile.java"}, []string{"public final boolean skipJavaLangImports;"}, shapeAgent},
+		{"CodeWriter emitJavadoc",
+			[]string{"src/main/java/com/squareup/javapoet/CodeWriter.java"}, []string{"public void emitJavadoc(CodeBlock javadocCodeBlock) throws IOException {"}, shapeAgent},
+		{"ParameterizedTypeName nestedClass typeArguments",
+			[]string{"src/main/java/com/squareup/javapoet/ParameterizedTypeName.java"}, []string{"public ParameterizedTypeName nestedClass(String name) {"}, shapeAgent},
+		{"WildcardTypeName subtypeOf supertypeOf",
+			[]string{"src/main/java/com/squareup/javapoet/WildcardTypeName.java"}, []string{"public static WildcardTypeName subtypeOf(TypeName upperBound) {"}, shapeAgent},
+		{"TypeSpec addEnumConstant anonymous type arguments",
+			[]string{"src/main/java/com/squareup/javapoet/TypeSpec.java"}, []string{`"enum constants must have anonymous type arguments");`}, shapeAgent},
+		{"test for static imports in a generated file",
+			[]string{"src/test/java/com/squareup/javapoet/JavaFileTest.java"}, []string{"@Test public void importStaticReadmeExample() {"}, shapeTest},
+	},
+	"flask": {
+		{"how does the test client keep the request context alive after a request so it can be inspected",
+			[]string{"src/flask/testing.py"}, []string{`out["werkzeug.debug.preserve_context"] = self._new_contexts.append`}, shapeImpl},
+		{"how is the default endpoint name derived when a view function is registered",
+			[]string{"src/flask/sansio/scaffold.py"}, []string{"def _endpoint_from_view_func(view_func: ft.RouteCallable) -> str:"}, shapeImpl},
+		{"how does the command line accept an app factory call with arguments in the app name",
+			[]string{"src/flask/cli.py"}, []string{`expr = ast.parse(app_name.strip(), mode="eval").body`}, shapeImpl},
+		{"get_send_file_max_age SEND_FILE_MAX_AGE_DEFAULT",
+			[]string{"src/flask/app.py"}, []string{"def get_send_file_max_age(self, filename: str | None) -> int | None:"}, shapeAgent},
+		{"test that an error handler registered on a blueprint handles only that blueprint's errors",
+			[]string{"tests/test_blueprints.py"}, []string{"def test_blueprint_specific_error_handling(app, client):"}, shapeTest},
+	},
+	"hono": {
+		{"how does the security headers middleware generate a nonce for the content security policy",
+			[]string{"src/middleware/secure-headers/secure-headers.ts"}, []string{"export const NONCE: ContentSecurityPolicyOptionHandler = (ctx) => {"}, shapeImpl},
+		{"how does the response cache take the Vary header into account",
+			[]string{"src/middleware/cache/index.ts"}, []string{"const parseVaryDirectives = (vary: string | string[] | null | undefined): string[] => {"}, shapeImpl},
+		{"how does compression choose an encoding and skip responses that are too small",
+			[]string{"src/middleware/compress/index.ts"}, []string{"const threshold = options?.threshold ?? 1024"}, shapeImpl},
+		{"timingSafeEqual hashFunction buffer compare",
+			[]string{"src/utils/buffer.ts"}, []string{"export const timingSafeEqual: TimingSafeEqual = async ("}, shapeAgent},
+		{"test that the jwt middleware accepts a lowercase bearer scheme",
+			[]string{"src/middleware/jwt/index.test.ts"}, []string{"it('Should authorize with lowercase bearer scheme', async () => {"}, shapeTest},
+	},
+	"ripgrep": {
+		{"how does the printer substitute capture groups into the replacement text",
+			[]string{"crates/printer/src/util.rs"}, []string{"pub(crate) fn replace_all<'a>("}, shapeImpl},
+		{"how are the lines after a match counted down for trailing context",
+			[]string{"crates/searcher/src/searcher/core.rs"}, []string{"pub(crate) fn after_context_by_line("}, shapeImpl},
+		{"where does the directory walk skip hidden files",
+			[]string{"crates/ignore/src/dir.rs"}, []string{"if m.is_none() && self.inner.opts.hidden && is_hidden_entry(dent) {"}, shapeImpl},
+		{"SortModeKind Path LastModified sort haystacks",
+			[]string{"crates/core/flags/hiargs.rs"}, []string{"pub(crate) fn sort<'a, I>("}, shapeAgent},
+		{"test that counts every match rather than every matching line",
+			[]string{"tests/misc.rs"}, []string{"rgtest!(count_matches, |dir: Dir, mut cmd: TestCommand| {"}, shapeTest},
+	},
+	"gson": {
+		{"how does it find the accessor method for a record component",
+			[]string{"gson/src/main/java/com/google/gson/internal/reflect/ReflectionHelper.java"}, []string{"public static Method getAccessor(Class<?> raw, Field field) {"}, shapeImpl},
+		{"what happens when NaN or infinity is written outside lenient mode",
+			[]string{"gson/src/main/java/com/google/gson/stream/JsonWriter.java"}, []string{"if (strictness != Strictness.LENIENT && (Float.isNaN(value) || Float.isInfinite(value))) {"}, shapeImpl},
+		{"how does an enum constant get its serialized name, honouring the naming annotation",
+			[]string{"gson/src/main/java/com/google/gson/internal/bind/EnumTypeAdapter.java"}, []string{"SerializedName annotation = constantField.getAnnotation(SerializedName.class);"}, shapeImpl},
+		{"ToNumberPolicy LONG_OR_DOUBLE",
+			[]string{"gson/src/main/java/com/google/gson/ToNumberPolicy.java"}, []string{"  LONG_OR_DOUBLE {"}, shapeAgent},
+		{"test that null fields are written only when null serialization is turned on",
+			[]string{"gson/src/test/java/com/google/gson/functional/NullObjectAndFieldTest.java"}, []string{"public void testExplicitSerializationOfNulls() {"}, shapeTest},
+	},
+}
+
 // splitExternal returns a repository's tuning and held-out questions: every
 // third, by position, is held out. Positional on purpose -- the split was fixed
 // before any run, and position knows nothing about which questions are hard.
@@ -228,13 +372,15 @@ func loadExternalRepos(t *testing.T) []externalRepo {
 	var names []string
 	for _, r := range repos {
 		names = append(names, r.name)
-		if len(externalEvalQuestions[r.name]) == 0 {
+		if len(externalEvalQuestions[r.name])+len(freshEvalQuestions[r.name]) == 0 {
 			t.Errorf("%s is pinned in the manifest and has no questions", r.name)
 		}
 	}
-	for name := range externalEvalQuestions {
-		if !slices.Contains(names, name) {
-			t.Errorf("%s has questions and is not pinned in the manifest", name)
+	for _, set := range []map[string][]rerankEvalQuery{externalEvalQuestions, freshEvalQuestions} {
+		for name := range set {
+			if !slices.Contains(names, name) {
+				t.Errorf("%s has questions and is not pinned in the manifest", name)
+			}
 		}
 	}
 	return repos
@@ -274,11 +420,14 @@ func externalRepoRoot(t *testing.T, r externalRepo) string {
 // hour-long run.
 func TestExternalEvalGroundTruth(t *testing.T) {
 	seen := map[string]bool{}
+	fresh := 0
 	for _, r := range loadExternalRepos(t) {
 		qs := externalEvalQuestions[r.name]
-		if len(qs) != 15 {
+		if len(qs) != 0 && len(qs) != 15 {
 			t.Errorf("%s has %d questions; the split and the rule assume 15", r.name, len(qs))
 		}
+		qs = append(append([]rerankEvalQuery(nil), qs...), freshEvalQuestions[r.name]...)
+		fresh += len(freshEvalQuestions[r.name])
 		for _, q := range qs {
 			if seen[q.query] {
 				t.Errorf("%q is asked twice", q.query)
@@ -292,6 +441,9 @@ func TestExternalEvalGroundTruth(t *testing.T) {
 		}
 		resolveExactChunks(t, qs, scan.Chunks)
 		t.Logf("%s (%s): %d files, %d chunks, every anchor resolved", r.name, r.language, scan.FilesScanned, len(scan.Chunks))
+	}
+	if fresh != 60 {
+		t.Errorf("the confirmation set has %d questions; its rule assumes 60", fresh)
 	}
 }
 
@@ -332,18 +484,14 @@ func TestExternalRepoRetrieval(t *testing.T) {
 	}
 	ctx := context.Background()
 	var totRet, totDel, totHeldRet, totHeldDel, totTune, totHeld int
+	var freshRet, freshDel, freshN int
 	for _, r := range loadExternalRepos(t) {
 		c := externalCorpus(t, r)
-		tuning, heldOut := splitExternal(externalEvalQuestions[r.name])
-		exactTune := resolveExactChunks(t, tuning, c.Scan.Chunks)
-		exactHeld := resolveExactChunks(t, heldOut, c.Scan.Chunks)
-		if t.Failed() {
-			t.Fatalf("%s: ground truth did not resolve", r.name)
-		}
+		all := append(append([]rerankEvalQuery(nil), externalEvalQuestions[r.name]...), freshEvalQuestions[r.name]...)
 
 		// Latency, warm: one retrieval per question, model and index loaded.
 		var took []time.Duration
-		for _, q := range externalEvalQuestions[r.name] {
+		for _, q := range all {
 			start := time.Now()
 			if _, err := retrieveTopK(ctx, q.query, defaultK, c.Embedder, c.Store, c.LexicalStore, true); err != nil {
 				t.Fatalf("%s: retrieveTopK(%q): %v", r.name, q.query, err)
@@ -353,22 +501,43 @@ func TestExternalRepoRetrieval(t *testing.T) {
 		slices.Sort(took)
 		p50, p95 := took[len(took)/2], took[min(len(took)-1, len(took)*95/100)]
 
-		ret, _, del, _, _ := runEvalPass(ctx, t, c.Embedder, c.Store, c.LexicalStore, tuning, exactTune, nil, c.RepoRoot, r.name+" (tuning)")
-		hret, _, hdel, _, _ := runEvalPass(ctx, t, c.Embedder, c.Store, c.LexicalStore, heldOut, exactHeld, nil, c.RepoRoot, r.name+" (held-out)")
-
-		fmt.Printf("EVALEXTERNAL repo=%s lang=%s chunks=%d embed=%s retrieved=%d/%d delivered=%d/%d "+
-			"heldout_retrieved=%d/%d heldout_delivered=%d/%d p50=%s p95=%s\n",
-			r.name, r.language, c.Chunks, c.EmbedTime.Round(time.Second),
-			countTrue(ret), len(tuning), countTrue(del), len(tuning),
-			countTrue(hret), len(heldOut), countTrue(hdel), len(heldOut),
-			p50.Round(time.Millisecond), p95.Round(time.Millisecond))
-		totRet += countTrue(ret)
-		totDel += countTrue(del)
-		totHeldRet += countTrue(hret)
-		totHeldDel += countTrue(hdel)
-		totTune += len(tuning)
-		totHeld += len(heldOut)
+		if qs := externalEvalQuestions[r.name]; len(qs) > 0 {
+			tuning, heldOut := splitExternal(qs)
+			exactTune := resolveExactChunks(t, tuning, c.Scan.Chunks)
+			exactHeld := resolveExactChunks(t, heldOut, c.Scan.Chunks)
+			if t.Failed() {
+				t.Fatalf("%s: ground truth did not resolve", r.name)
+			}
+			ret, _, del, _, _ := runEvalPass(ctx, t, c.Embedder, c.Store, c.LexicalStore, tuning, exactTune, nil, c.RepoRoot, r.name+" (tuning)")
+			hret, _, hdel, _, _ := runEvalPass(ctx, t, c.Embedder, c.Store, c.LexicalStore, heldOut, exactHeld, nil, c.RepoRoot, r.name+" (held-out)")
+			fmt.Printf("EVALEXTERNAL repo=%s lang=%s chunks=%d embed=%s retrieved=%d/%d delivered=%d/%d "+
+				"heldout_retrieved=%d/%d heldout_delivered=%d/%d p50=%s p95=%s\n",
+				r.name, r.language, c.Chunks, c.EmbedTime.Round(time.Second),
+				countTrue(ret), len(tuning), countTrue(del), len(tuning),
+				countTrue(hret), len(heldOut), countTrue(hdel), len(heldOut),
+				p50.Round(time.Millisecond), p95.Round(time.Millisecond))
+			totRet += countTrue(ret)
+			totDel += countTrue(del)
+			totHeldRet += countTrue(hret)
+			totHeldDel += countTrue(hdel)
+			totTune += len(tuning)
+			totHeld += len(heldOut)
+		}
+		if qs := freshEvalQuestions[r.name]; len(qs) > 0 {
+			exact := resolveExactChunks(t, qs, c.Scan.Chunks)
+			if t.Failed() {
+				t.Fatalf("%s: ground truth did not resolve", r.name)
+			}
+			ret, _, del, _, _ := runEvalPass(ctx, t, c.Embedder, c.Store, c.LexicalStore, qs, exact, nil, c.RepoRoot, r.name+" (fresh)")
+			fmt.Printf("EVALFRESH repo=%s lang=%s chunks=%d retrieved=%d/%d delivered=%d/%d p50=%s p95=%s\n",
+				r.name, r.language, c.Chunks, countTrue(ret), len(qs), countTrue(del), len(qs),
+				p50.Round(time.Millisecond), p95.Round(time.Millisecond))
+			freshRet += countTrue(ret)
+			freshDel += countTrue(del)
+			freshN += len(qs)
+		}
 	}
 	fmt.Printf("EVALEXTERNAL total retrieved=%d/%d delivered=%d/%d heldout_retrieved=%d/%d heldout_delivered=%d/%d\n",
 		totRet, totTune, totDel, totTune, totHeldRet, totHeld, totHeldDel, totHeld)
+	fmt.Printf("EVALFRESH total retrieved=%d/%d delivered=%d/%d\n", freshRet, freshN, freshDel, freshN)
 }

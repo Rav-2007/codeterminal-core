@@ -1,35 +1,48 @@
 //go:build eval
 
-// The 2026-10-04 outside-repository lever sweep.
+// The outside-repository sweep: levers and a cross-encoder, scored on five
+// question sets in one process.
 //
-// WHAT IT DECIDES. The levers pre-registered in docs/RETRIEVAL_EVAL_TREND.md
-// ("Pre-registered 2026-10-04: outside repositories") -- test files beyond Go,
-// widening to the method inside an oversized construct, setup files beyond Go
-// -- each scored alone and in combination, on all four question sets: this
-// repository's 49 and 28, and the outside repositories' 40 tuning and 20
-// held-out (externaleval_test.go). One process, one build per corpus.
+// WHAT IT DECIDES. Two rounds share it, each pre-registered in
+// docs/RETRIEVAL_EVAL_TREND.md before it ran:
+//
+//   - 2026-10-04, first: L1 (test files beyond Go), L2 (widening to the method
+//     inside an oversized construct) and L3 (setup files beyond Go) on this
+//     repository's 49 and 28 and the outside 40 and 20. Nothing passed; L3 was
+//     inert and is no longer swept.
+//   - 2026-10-04, confirmation: L1 again, L2c (L2 without Go) and three
+//     cross-encoder arms, on the same four sets plus the 60 fresh questions
+//     (freshEvalQuestions) that were written after the first round and are
+//     scored here once.
 //
 // IT SCORES THROUGH PRODUCTION'S OWN FUNCTIONS: the stores' Query and Search,
-// fuseRRF, rerankChunksWith and deliverWithinBudget. A candidate is a policy
-// value, never a re-implementation, and the shipped row must reproduce
-// TestRerankEvalRetrievalRanking, TestExternalRepoRetrieval and the held-out
-// line on the same tree.
+// fuseRRF, rerankChunksWith, crossEncoderReorder and deliverWithinBudget. A
+// candidate is a policy value, never a re-implementation, and the SHIPPED row
+// must reproduce TestRerankEvalRetrievalRanking, EVALHELDOUT and EVALEXTERNAL
+// on the same tree.
 //
-//	go test -tags eval -count=1 -timeout 120m -v -run TestExternalLeverSweep ./
+//	scripts/fetch-eval-repos.sh
+//	go test -tags eval -count=1 -timeout 150m -v -run TestExternalLeverSweep ./
 package main
 
 import (
 	"context"
 	"fmt"
+	"log"
+	"os"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 type leverArm struct {
 	name   string
 	rank   rankPolicy
 	expand expandPolicy
+	ce     *crossEncoderPolicy // nil: no cross-encoder
+	kind   string              // "lever" (may ship by the rule) or "reranker" (may only be recommended)
 }
 
 // sweepQuery is one question with everything that does not depend on the arm
@@ -41,6 +54,71 @@ type sweepQuery struct {
 	exact     []string
 	root      string
 	sem, kw   []Chunk
+	ce        *cachedScorer
+}
+
+// cachedScorer remembers every passage the cross-encoder has scored for one
+// question, so arms that rank the same chunk differently do not pay for it
+// twice, and records how long the first scoring took.
+type cachedScorer struct {
+	real    pairScorer
+	mu      sync.Mutex
+	scores  map[string]float32
+	firstMS time.Duration
+}
+
+func (c *cachedScorer) Rerank(ctx context.Context, query string, texts []string) ([]float32, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var missing []string
+	for _, t := range texts {
+		if _, ok := c.scores[t]; !ok {
+			missing = append(missing, t)
+		}
+	}
+	if len(missing) > 0 {
+		start := time.Now()
+		got, err := c.real.Rerank(ctx, query, missing)
+		if err != nil {
+			return nil, err
+		}
+		if c.firstMS == 0 {
+			c.firstMS = time.Since(start)
+		}
+		for i, t := range missing {
+			c.scores[t] = got[i]
+		}
+	}
+	out := make([]float32, len(texts))
+	for i, t := range texts {
+		out[i] = c.scores[t]
+	}
+	return out, nil
+}
+
+// startCrossEncoderHelper starts a second helper -- the same build the shared
+// embedder runs -- able to answer rerank requests.
+func startCrossEncoderHelper(t *testing.T) *HelperProcess {
+	t.Helper()
+	ctx := context.Background()
+	logger := log.New(os.Stderr, "cross-encoder: ", log.LstdFlags)
+	if _, err := sharedEvalEmbedder(); err != nil { // builds the helper binary
+		t.Fatal(err)
+	}
+	dir, err := defaultCrossEncoderCacheDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := EnsureModelFiles(ctx, dir, crossEncoderModelAssets, logger); err != nil {
+		t.Fatalf("the cross-encoder's model files: %v", err)
+	}
+	t.Setenv("MOCHIII_RERANK_MODEL_DIR", dir)
+	h := NewHelperProcess(evalHelperBin, evalModelDir, evalORTLib, logger)
+	if err := h.Start(); err != nil {
+		t.Fatalf("starting the cross-encoder helper: %v", err)
+	}
+	t.Cleanup(func() { _ = h.Stop() })
+	return h
 }
 
 func TestExternalLeverSweep(t *testing.T) {
@@ -48,9 +126,13 @@ func TestExternalLeverSweep(t *testing.T) {
 		t.Skip("skipping eval test in -short mode")
 	}
 	ctx := context.Background()
+	ce := startCrossEncoderHelper(t)
 
 	var units []sweepQuery
 	add := func(set, repo string, c *evalCorpus, qs []rerankEvalQuery) {
+		if len(qs) == 0 {
+			return
+		}
 		exact := resolveExactChunks(t, qs, c.Scan.Chunks)
 		if t.Failed() {
 			t.Fatalf("%s/%s: ground truth did not resolve", set, repo)
@@ -68,7 +150,8 @@ func TestExternalLeverSweep(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Search(%q): %v", q.query, err)
 			}
-			units = append(units, sweepQuery{set, repo, i + 1, q.query, exact[i], c.RepoRoot, sem, kw})
+			units = append(units, sweepQuery{set, repo, i + 1, q.query, exact[i], c.RepoRoot, sem, kw,
+				&cachedScorer{real: ce, scores: map[string]float32{}}})
 		}
 	}
 
@@ -81,22 +164,27 @@ func TestExternalLeverSweep(t *testing.T) {
 		tuning, heldOut := splitExternal(externalEvalQuestions[r.name])
 		add("ext40", r.name, c, tuning)
 		add("ext20", r.name, c, heldOut)
+		add("fresh60", r.name, c, freshEvalQuestions[r.name])
 	}
 
 	nested := defaultExpandPolicy
 	nested.NestedConstructs = true
+	nestedNoGo := nested
+	nestedNoGo.NestedSkipGo = true
 	l1 := rankPolicy{TestPathsBeyondGo: true}
-	l3 := rankPolicy{SetupFilesBeyondGo: true}
-	l13 := rankPolicy{TestPathsBeyondGo: true, SetupFilesBeyondGo: true}
+	ce20 := &crossEncoderPolicy{TopN: 20}
+	ce30 := &crossEncoderPolicy{TopN: 30}
+	ce30b := &crossEncoderPolicy{TopN: 30, Blend: true}
 	arms := []leverArm{
-		{"SHIPPED", defaultRankPolicy, defaultExpandPolicy},
-		{"L1 tests", l1, defaultExpandPolicy},
-		{"L2 nested", defaultRankPolicy, nested},
-		{"L3 setup", l3, defaultExpandPolicy},
-		{"L1+L2", l1, nested},
-		{"L1+L3", l13, defaultExpandPolicy},
-		{"L2+L3", l3, nested},
-		{"L1+L2+L3", l13, nested},
+		{"SHIPPED", defaultRankPolicy, defaultExpandPolicy, nil, "-"},
+		{"L1 tests", l1, defaultExpandPolicy, nil, "lever"},
+		{"L2 nested", defaultRankPolicy, nested, nil, "reference"},
+		{"L2c nested-no-Go", defaultRankPolicy, nestedNoGo, nil, "lever"},
+		{"L1+L2c", l1, nestedNoGo, nil, "lever"},
+		{"CE top20", defaultRankPolicy, defaultExpandPolicy, ce20, "reranker"},
+		{"CE top30", defaultRankPolicy, defaultExpandPolicy, ce30, "reranker"},
+		{"CE top30 blend", defaultRankPolicy, defaultExpandPolicy, ce30b, "reranker"},
+		{"L1+L2c+CE30b", l1, nestedNoGo, ce30b, "reference"},
 	}
 
 	type result struct{ retrieved, delivered map[string]bool }
@@ -105,7 +193,18 @@ func TestExternalLeverSweep(t *testing.T) {
 	for ai, a := range arms {
 		res := result{map[string]bool{}, map[string]bool{}}
 		for _, u := range units {
-			hits := rerankChunksWith(fuseRRF(u.sem, u.kw, rrfK), defaultK, u.query, a.rank)
+			fused := fuseRRF(u.sem, u.kw, rrfK)
+			var hits []Chunk
+			if a.ce == nil {
+				hits = rerankChunksWith(fused, defaultK, u.query, a.rank)
+			} else {
+				pool := rerankChunksWith(fused, a.ce.TopN, u.query, a.rank)
+				var err error
+				hits, err = crossEncoderReorder(ctx, u.ce, u.query, pool, *a.ce, defaultK)
+				if err != nil {
+					t.Fatalf("%s: cross-encoder on %q: %v", a.name, u.query, err)
+				}
+			}
 			res.retrieved[key(u)] = rankOfChunk(hits, u.exact) != 0
 			kept := deliverWithinBudget(nil, hits, u.root, a.expand, defaultK, defaultContextBudgetChars, false).Chunks
 			res.delivered[key(u)] = rankOfChunk(kept, u.exact) != 0
@@ -122,17 +221,23 @@ func TestExternalLeverSweep(t *testing.T) {
 		}
 		return n
 	}
+	outside := func(m map[string]bool, repo string) int {
+		return count(m, "ext40", repo) + count(m, "ext20", repo) + count(m, "fresh60", repo)
+	}
 	diff := func(base, arm map[string]bool, sets ...string) string {
 		var gained, lost []string
 		for _, u := range units {
 			if !slices.Contains(sets, u.set) {
 				continue
 			}
-			// repo#n for a tuning question, repo#n/h for a held-out one: the
-			// two lists are numbered separately, so the number alone is ambiguous.
+			// repo#n, with /h for a held-out question and /f for a fresh one:
+			// each list is numbered separately.
 			k, label := key(u), fmt.Sprintf("%s#%d", u.repo, u.index)
-			if u.set == "in28" || u.set == "ext20" {
+			switch u.set {
+			case "in28", "ext20":
 				label += "/h"
+			case "fresh60":
+				label += "/f"
 			}
 			switch {
 			case arm[k] && !base[k]:
@@ -144,42 +249,72 @@ func TestExternalLeverSweep(t *testing.T) {
 		return fmt.Sprintf("+[%s] -[%s]", strings.Join(gained, " "), strings.Join(lost, " "))
 	}
 
+	// Cross-encoder latency: the first scoring of each question's top 30
+	// candidates, which is what a production query would pay.
+	var lat []time.Duration
+	for _, u := range units {
+		if u.ce.firstMS > 0 {
+			lat = append(lat, u.ce.firstMS)
+		}
+	}
+	slices.Sort(lat)
+	var p50, p95 time.Duration
+	if len(lat) > 0 {
+		p50, p95 = lat[len(lat)/2], lat[min(len(lat)-1, len(lat)*95/100)]
+	}
+
 	ref := results[0]
-	fmt.Println("\n=== Outside-repository lever sweep (one build per corpus, four sets) ===")
-	fmt.Printf("%-10s %8s %8s %8s %8s %8s  %-26s %-8s %s\n", "arm", "in49", "in28", "ext40", "ext20", "ext ret",
-		"per repo (tune+held)", "rule", "outside delivered vs SHIPPED ; in-repo delivered vs SHIPPED")
+	fmt.Println("\n=== Outside-repository sweep (one build per corpus, five sets) ===")
+	fmt.Printf("%-17s %7s %7s %7s %7s %8s  %-46s %-12s %s\n", "arm", "in49", "in28", "ext40", "ext20", "fresh60",
+		"per repo, all outside questions", "verdict", "outside and fresh delivered vs SHIPPED ; in-repo")
 	for ai, a := range arms {
 		r := results[ai]
 		var perRepo []string
 		repoOK := true
 		for _, repo := range repos {
-			n := count(r.delivered, "ext40", repo.name) + count(r.delivered, "ext20", repo.name)
-			base := count(ref.delivered, "ext40", repo.name) + count(ref.delivered, "ext20", repo.name)
+			n, base := outside(r.delivered, repo.name), outside(ref.delivered, repo.name)
 			perRepo = append(perRepo, fmt.Sprintf("%s %d", repo.name, n))
 			if n < base-1 {
 				repoOK = false
 			}
 		}
+		ext60 := count(r.delivered, "ext40", "") + count(r.delivered, "ext20", "")
+		refExt60 := count(ref.delivered, "ext40", "") + count(ref.delivered, "ext20", "")
+		inOK := count(r.delivered, "in49", "") >= count(ref.delivered, "in49", "") &&
+			count(r.delivered, "in28", "") >= count(ref.delivered, "in28", "")
+		fresh, refFresh := count(r.delivered, "fresh60", ""), count(ref.delivered, "fresh60", "")
 		verdict := "-"
-		if count(r.delivered, "ext40", "") >= count(ref.delivered, "ext40", "")+3 &&
-			count(r.delivered, "ext20", "") >= count(ref.delivered, "ext20", "") &&
-			count(r.delivered, "in49", "") >= count(ref.delivered, "in49", "") &&
-			count(r.delivered, "in28", "") >= count(ref.delivered, "in28", "") && repoOK {
-			verdict = "PASSES"
+		switch a.kind {
+		case "lever":
+			if fresh >= refFresh+2 && ext60 >= refExt60 && inOK && repoOK {
+				verdict = "SHIPS"
+			} else {
+				verdict = "fails"
+			}
+		case "reranker":
+			if fresh >= refFresh+3 && ext60 >= refExt60+3 && inOK && p95 <= 400*time.Millisecond {
+				verdict = "RECOMMEND"
+			} else {
+				verdict = "not rec."
+			}
+		case "reference":
+			verdict = "(reference)"
 		}
-		fmt.Printf("%-10s %5d/49 %5d/28 %5d/40 %5d/20 %5d/60  %-26s %-8s %s ; %s\n", a.name,
+		fmt.Printf("%-17s %4d/49 %4d/28 %4d/40 %4d/20 %5d/60  %-46s %-12s %s ; %s\n", a.name,
 			count(r.delivered, "in49", ""), count(r.delivered, "in28", ""),
-			count(r.delivered, "ext40", ""), count(r.delivered, "ext20", ""),
-			count(r.retrieved, "ext40", "")+count(r.retrieved, "ext20", ""),
+			count(r.delivered, "ext40", ""), count(r.delivered, "ext20", ""), fresh,
 			strings.Join(perRepo, " "), verdict,
-			diff(ref.delivered, r.delivered, "ext40", "ext20"), diff(ref.delivered, r.delivered, "in49", "in28"))
+			diff(ref.delivered, r.delivered, "ext40", "ext20", "fresh60"), diff(ref.delivered, r.delivered, "in49", "in28"))
 	}
-	fmt.Println("\nrule: ext40 >= SHIPPED+3, ext20 >= SHIPPED, in49 and in28 >= SHIPPED, no repository down by more " +
-		"than 1 (tune+held), and each lever no worse alone on any set -- read the single-lever rows")
-	fmt.Printf("SHIPPED: in49 %d, in28 %d, ext40 %d, ext20 %d -- must match TestRerankEvalRetrievalRanking, "+
+	fmt.Printf("\ncross-encoder latency, first scoring of a question's top 30: p50=%s p95=%s over %d questions\n",
+		p50.Round(time.Millisecond), p95.Round(time.Millisecond), len(lat))
+	fmt.Println("rules (pre-registered): a lever SHIPS if fresh60 >= SHIPPED+2, ext40+ext20 and in49, in28 no lower, " +
+		"no repository down by more than 1; a reranker is RECOMMENDED if fresh60 >= +3, ext40+ext20 >= +3, " +
+		"in-repo no lower, p95 <= 400ms")
+	fmt.Printf("SHIPPED: in49 %d, in28 %d, ext40 %d, ext20 %d, fresh60 %d -- must match TestRerankEvalRetrievalRanking, "+
 		"EVALHELDOUT and EVALEXTERNAL on the same tree.\n",
 		count(ref.delivered, "in49", ""), count(ref.delivered, "in28", ""),
-		count(ref.delivered, "ext40", ""), count(ref.delivered, "ext20", ""))
+		count(ref.delivered, "ext40", ""), count(ref.delivered, "ext20", ""), count(ref.delivered, "fresh60", ""))
 	if count(ref.delivered, "in49", "") < 20 {
 		t.Errorf("the SHIPPED row delivered only %d/49: this harness is not measuring the product", count(ref.delivered, "in49", ""))
 	}

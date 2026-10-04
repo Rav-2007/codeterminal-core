@@ -304,3 +304,44 @@ different function from the answer, and widening only ever reaches the construct
 around a hit. No class weight or widening reaches these; a reranker might, and
 this instrument is what would show it.
 
+
+## Pre-registered 2026-10-04: the confirmation round
+
+Written before any run of what it describes, after the first outside sweep
+(above) chose nothing.
+
+**Fresh questions, scored once and never used to choose.** 60 in
+`freshEvalQuestions`: 20 each from two newly pinned repositories that no earlier
+question touches -- encode/httpx (Python, `b5addb6`) and square/javapoet (Java,
+`b9017a9`) -- and 5 new ones for each of flask, hono, ripgrep and gson. Written
+the way the first 60 were (answers located first, plain-language questions in a
+user's words, agent-shaped ones with identifiers); all 60 anchors resolve in
+`TestExternalEvalGroundTruth`. 11,059 chunks across the six repositories.
+
+**The arms.**
+
+- **L1** again, unchanged: test files beyond Go.
+- **L2c**, defined from the first round's q22 diagnosis before any fresh data:
+  widening to the method inside an oversized construct, for every code file
+  except Go (`expandPolicy.NestedSkipGo`). Go puts its methods at column zero,
+  where the top-level heuristic already finds them.
+- **L1+L2c.**
+- **A cross-encoder, measure only.** ms-marco-MiniLM-L-6-v2 (int8 ONNX, 23 MB,
+  Apache-2.0, pinned to revision `a091443`), run in the helper; its
+  tokenizer.json is byte-identical to BGE's. Three arms: re-order the top 20 by
+  its score; re-order the top 30; RRF-blend its rank with today's over the top
+  30. Latency is the first scoring of each question's top 30.
+- **Reference rows, not judged:** the first round's L2 (Go included), and
+  L1+L2c with the blended cross-encoder.
+
+**The rules.** One process, one build per corpus, five sets: in-repo 49 and 28,
+outside 40 and 20, fresh 60.
+
+- **A lever ships** only if fresh DELIVERED is at least the shipped row's plus
+  2, outside 40+20 and in-repo 49 and 28 are no lower, and no repository falls
+  by more than 1 across all its outside questions. A combination must pass the
+  same rule.
+- **The cross-encoder can only be recommended to the owner, never shipped by
+  this round** -- every user would download it. An arm qualifies only if fresh
+  rises by at least 3, outside 40+20 by at least 3, in-repo is no lower, and the
+  added p95 latency is at most 400 ms on this machine.

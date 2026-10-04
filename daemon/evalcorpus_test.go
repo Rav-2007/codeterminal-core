@@ -145,6 +145,10 @@ var (
 	sharedEvalEmbedderOnce sync.Once
 	sharedEvalEmbedderVal  Embedder
 	sharedEvalEmbedderErr  error
+
+	// What the shared helper was started with, so an eval that needs a second
+	// helper -- the sweep's cross-encoder -- starts the same build.
+	evalHelperBin, evalModelDir, evalORTLib string
 )
 
 // sharedEvalEmbedder returns the process's one real embedder: the BGE model
@@ -195,6 +199,7 @@ func startEvalEmbedder() (Embedder, error) {
 		return nil, fmt.Errorf("building real helper binary: %w\n%s", err, out)
 	}
 
+	evalHelperBin, evalModelDir, evalORTLib = helperBin, modelDir, onnxRuntimeLib
 	helper := NewHelperProcess(helperBin, modelDir, onnxRuntimeLib, logger)
 	if err := helper.Start(); err != nil {
 		return nil, fmt.Errorf("starting real embedder helper: %w", err)

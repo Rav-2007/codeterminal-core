@@ -10,3 +10,5 @@ flask     python      https://github.com/pallets/flask           d73fa1cdcbd8b14
 hono      typescript  https://github.com/honojs/hono             08a023cbfde55b434fb0fb30fae35d42e4bf20aa
 ripgrep   rust        https://github.com/BurntSushi/ripgrep      3fce3b5bb0236da2df6d99672afb8a719642eca7
 gson      java        https://github.com/google/gson             854c8255b625cf1e13c701a83ea9ccb4caaa576a
+httpx     python      https://github.com/encode/httpx            b5addb64f0161ff6bfe94c124ef76f6a1fba5254
+javapoet  java        https://github.com/square/javapoet         b9017a9503b76e11b4ad4c1a9f050e2d29112cb0
