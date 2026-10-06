@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { shutdownExtractors } from './attachmentExtract';
 import * as cp from 'child_process';
 import * as path from 'path';
 import * as os from 'os';
@@ -462,9 +463,11 @@ function spawnDaemon(binaryPath: string, workspacePath: string, logPath: string)
   };
 }
 
-export function deactivate(): void {
+export function deactivate(): Thenable<void> {
   // Kills only a daemon THIS window started; an adopted one belongs to another
   // window that is still using it. See DaemonSupervisor.dispose.
   supervisor?.dispose();
   supervisor = undefined;
+  // Stops the OCR worker thread if an image was ever read; a no-op otherwise.
+  return shutdownExtractors();
 }

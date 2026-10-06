@@ -132,6 +132,12 @@ export interface PromptRequest {
    * spec they belong to and never without it.
    */
   spec_grants?: string[];
+  /**
+   * reasoning_effort asks the model to think before it answers, this turn only:
+   * "low" | "medium" | "high". Omitted means the model's own default -- which on
+   * some models (qwen3 on Groq, measured) is no reasoning at all.
+   */
+  reasoning_effort?: string;
 }
 
 // WorkingCopyInfo mirrors protocol.WorkingCopyInfo: what the agent last ran
@@ -893,6 +899,7 @@ export async function streamPrompt(
     pipeline?: string[];
     spec?: string;
     specGrants?: string[];
+    reasoningEffort?: string;
   }
 ): Promise<void> {
   // The capability is derived from the handler, not passed in: a caller that
@@ -1037,6 +1044,9 @@ export async function streamPrompt(
     if (opts.specGrants && opts.specGrants.length > 0) {
       req.spec_grants = opts.specGrants;
     }
+  }
+  if (opts?.reasoningEffort) {
+    req.reasoning_effort = opts.reasoningEffort;
   }
   writeLine(socket, req);
 }

@@ -26,10 +26,10 @@
   const settingsBtn = document.getElementById('settingsBtn');
   const closeBtn = document.getElementById('closeBtn');
   const attachBtn = document.getElementById('attachBtn');
-  const fileInputEl = document.getElementById('fileInput');
   const attachListEl = document.getElementById('attachList');
   const composerShellEl = document.getElementById('composerShell');
-  const effortMeterEl = document.getElementById('effortMeter');
+  const effortBtn = document.getElementById('effortBtn');
+  const effortValueEl = document.getElementById('effortValue');
   const modeBtnLabelEl = document.getElementById('modeBtnLabel');
   const contextBtn = document.getElementById('contextBtn');
   const contextPopup = document.getElementById('contextPopup');
@@ -39,7 +39,10 @@
   const contextBarEl = document.getElementById('contextBar');
   const contextRowsEl = document.getElementById('contextRows');
   const contextRingFill = document.getElementById('contextRingFill');
+  const contextPctShortEl = document.getElementById('contextPctShort');
   const modesPopup = document.getElementById('modesPopup');
+  const modelPopup = document.getElementById('modelPopup');
+  const modelListEl = document.getElementById('modelList');
   const modesList = document.getElementById('modesList');
   const modeBtnIcon = document.getElementById('modeBtnIcon');
 
@@ -72,8 +75,16 @@
   });
 
   /** @type {{ name: string, text: string }[]} */
+  /**
+   * @typedef {{ name: string, text: string, pending: boolean, id: string, note: string, desc: string }} Attachment
+   * Files are chosen in the editor's dialog and read by the extension host
+   * (onPickAttachments in chatPanel.ts); this list only holds the results.
+   * `pending` is true while the host is still reading the file; `note` is shown
+   * to the user (also progress, e.g. "OCR page 2 of 9"); `desc` says how `text`
+   * was obtained and is shown to the model with it.
+   * @type {Attachment[]}
+   */
   let pendingAttachments = [];
-  const MAX_ATTACH_CHARS = 80000;
   const MAX_ATTACH_FILES = 8;
   const CONTEXT_LIMIT_TOKENS = 128000;
   const RING_CIRCUMFERENCE = 2 * Math.PI * 8; // r=8 in the SVG
@@ -131,7 +142,11 @@
       contextRingFill.setAttribute('stroke-dasharray', String(RING_CIRCUMFERENCE));
       contextRingFill.setAttribute('stroke-dashoffset', String(offset));
     }
+    if (contextPctShortEl) {
+      contextPctShortEl.textContent = usage.pct + '%';
+    }
     if (contextBtn) {
+      contextBtn.classList.toggle('warn', usage.pct >= 60 && usage.pct < 80);
       contextBtn.classList.toggle('hot', usage.pct >= 80);
       contextBtn.title = `Context usage: ${usage.pct}% (~${formatTokenCount(usage.used)} / ${formatTokenCount(usage.limit)})`;
     }
@@ -211,14 +226,21 @@
     contextPopupClose.addEventListener('click', () => setContextPopupOpen(false));
   }
   document.addEventListener('click', (e) => {
+    // A click's target is a Node; said once, here, for all three popups.
+    const target = /** @type {Node} */ (e.target);
     if (contextPopup && !contextPopup.hidden) {
-      if (!contextPopup.contains(e.target) && (!contextBtn || !contextBtn.contains(e.target))) {
+      if (!contextPopup.contains(target) && (!contextBtn || !contextBtn.contains(target))) {
         setContextPopupOpen(false);
       }
     }
     if (modesPopup && !modesPopup.hidden) {
-      if (!modesPopup.contains(e.target) && (!autoApplyToggle || !autoApplyToggle.contains(e.target))) {
+      if (!modesPopup.contains(target) && (!autoApplyToggle || !autoApplyToggle.contains(target))) {
         setModesPopupOpen(false);
+      }
+    }
+    if (modelPopup && !modelPopup.hidden) {
+      if (!modelPopup.contains(target) && (!modelChipEl || !modelChipEl.contains(target))) {
+        setModelPopupOpen(false);
       }
     }
   });
@@ -226,6 +248,12 @@
     if (e.key === 'Escape') {
       setContextPopupOpen(false);
       if (typeof setModesPopupOpen === 'function') setModesPopupOpen(false);
+      if (modelPopup && !modelPopup.hidden) {
+        setModelPopupOpen(false);
+        if (modelChipEl) {
+          modelChipEl.focus();
+        }
+      }
     }
   });
 
@@ -266,6 +294,9 @@
   let currentAssistantBubble = null;
   let currentAssistantCard = null;
   let currentAssistantRaw = '';
+  // True while the current reply is command output (replyLocal): shown exactly
+  // as written, not rendered as markdown.
+  let currentAssistantPlain = false;
   let currentReasoningBody = null;
   let currentEditProposalEl = null;
   let pendingUndoButton = null;
@@ -296,6 +327,131 @@
     while (el.firstChild) {
       el.removeChild(el.firstChild);
     }
+  }
+
+  function setModelPopupOpen(open) {
+    if (!modelPopup || !modelChipEl) {
+      return;
+    }
+    modelPopup.hidden = !open;
+    modelChipEl.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+
+  /** @param {string} text */
+  function showModelMenuMessage(text) {
+    if (!modelListEl) {
+      return;
+    }
+    clearChildren(modelListEl);
+    const row = document.createElement('div');
+    row.className = 'model-empty';
+    row.textContent = text;
+    modelListEl.appendChild(row);
+  }
+
+  /**
+   * @param {string} name tier name, '' for the default
+   * @param {string} title
+   * @param {string} desc
+   * @param {boolean} selected
+   * @param {boolean} enabled
+   * @param {string} tag
+   */
+  function modelMenuItem(name, title, desc, selected, enabled, tag) {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'mode-item';
+    item.setAttribute('role', 'option');
+    item.setAttribute('aria-selected', selected ? 'true' : 'false');
+    item.setAttribute('data-tier', name);
+    if (!enabled) {
+      item.setAttribute('aria-disabled', 'true');
+    }
+    const text = document.createElement('div');
+    text.className = 'mode-text';
+    const nameEl = document.createElement('div');
+    nameEl.className = 'mode-name';
+    nameEl.textContent = title;
+    if (tag) {
+      const tagEl = document.createElement('span');
+      tagEl.className = 'model-tag';
+      tagEl.textContent = tag;
+      nameEl.appendChild(tagEl);
+    }
+    const descEl = document.createElement('div');
+    descEl.className = 'mode-desc';
+    descEl.textContent = desc;
+    text.appendChild(nameEl);
+    text.appendChild(descEl);
+    const check = document.createElement('div');
+    check.className = 'mode-check';
+    check.setAttribute('aria-hidden', 'true');
+    check.textContent = '\u2713';
+    item.appendChild(text);
+    item.appendChild(check);
+    return item;
+  }
+
+  /** @param {{ current?: string, tiers?: Array<{ name: string, slug: string, active: boolean, isDefault: boolean }>, error?: string }} msg */
+  function renderModelMenu(msg) {
+    if (!modelListEl) {
+      return;
+    }
+    if (msg.error) {
+      showModelMenuMessage('Could not list models: ' + msg.error);
+      return;
+    }
+    const tiers = msg.tiers || [];
+    if (tiers.length === 0) {
+      showModelMenuMessage('No models are configured.');
+      return;
+    }
+    clearChildren(modelListEl);
+    const current = msg.current || '';
+    const short = (/** @type {string} */ slug) => slug.slice(slug.lastIndexOf('/') + 1);
+    const def = tiers.find((t) => t.isDefault);
+    modelListEl.appendChild(
+      modelMenuItem('', 'Default', def ? 'Uses ' + short(def.slug) + ', the configured default' : 'The configured default model', current === '', true, '')
+    );
+    for (const t of tiers) {
+      // When a provider is connected its models ARE the tiers, so the tier name
+      // and the model id are the same string; show it once.
+      const title = short(t.slug);
+      const desc = t.name === t.slug ? t.slug : t.slug + '  \u00b7  tier ' + t.name;
+      modelListEl.appendChild(modelMenuItem(t.name, title, desc, current === t.name, t.active, t.active ? (t.isDefault ? 'default' : '') : 'inactive'));
+    }
+    const selected = /** @type {HTMLElement | null} */ (modelListEl.querySelector('[aria-selected="true"]'));
+    if (selected) {
+      selected.focus();
+    }
+  }
+
+  if (modelListEl) {
+    modelListEl.addEventListener('click', (e) => {
+      const target = /** @type {HTMLElement} */ (e.target);
+      const item = /** @type {HTMLElement | null} */ (target.closest('.mode-item'));
+      if (!item || item.getAttribute('aria-disabled') === 'true') {
+        return;
+      }
+      vscode.postMessage({ type: 'selectModel', tier: item.getAttribute('data-tier') || '' });
+      setModelPopupOpen(false);
+      if (modelChipEl) {
+        modelChipEl.focus();
+      }
+    });
+    // Arrow keys move between models, as in any listbox.
+    modelListEl.addEventListener('keydown', (e) => {
+      if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') {
+        return;
+      }
+      e.preventDefault();
+      const items = Array.from(modelListEl.querySelectorAll('.mode-item'));
+      const at = items.indexOf(/** @type {Element} */ (document.activeElement));
+      const next = items[(at + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length];
+      if (next) {
+        /** @type {HTMLElement} */ (next).focus();
+      }
+    });
   }
 
   function setModesPopupOpen(open) {
@@ -377,26 +533,48 @@
 
   renderMode();
 
-  let effortLevel = 3;
+  // Saved per-panel state (vscode.setState survives the panel being hidden or
+  // reloaded). Read through this so the unknown it is typed as is checked once.
+  /** @returns {Record<string, unknown>} */
+  function savedState() {
+    const st = vscode.getState();
+    return st && typeof st === 'object' ? /** @type {Record<string, unknown>} */ (st) : {};
+  }
+  /** @param {Record<string, unknown>} patch */
+  function saveState(patch) {
+    vscode.setState(Object.assign({}, savedState(), patch));
+  }
+
+  // THINKING EFFORT. Sent with every prompt as reasoning_effort (chatPanel.ts
+  // keeps the value; the daemon forwards it). Auto sends nothing and the model
+  // uses its default -- which for some models, measured on Groq, is no reasoning
+  // at all. The five dots this replaced changed nothing: the level was never sent.
+  const EFFORTS = ['', 'low', 'medium', 'high'];
+  const EFFORT_LABELS = ['Auto', 'Low', 'Medium', 'High'];
+  let effortIndex = Math.max(0, EFFORTS.indexOf(String(savedState().effort || '')));
   function renderEffort() {
-    if (!effortMeterEl) {
+    if (!effortBtn) {
       return;
     }
-    const dots = effortMeterEl.querySelectorAll('.dot');
-    dots.forEach((dot) => {
-      const level = Number(dot.getAttribute('data-level') || '0');
-      dot.classList.toggle('on', level <= effortLevel);
-      dot.classList.toggle('active', level === effortLevel);
-    });
-    effortMeterEl.setAttribute('aria-valuenow', String(effortLevel));
-    effortMeterEl.title = 'Effort: ' + effortLevel + '/5';
+    const effortName = EFFORT_LABELS[effortIndex];
+    effortBtn.setAttribute('data-level', String(effortIndex));
+    effortBtn.setAttribute('aria-label', 'Thinking effort: ' + effortName + '. Click to change.');
+    if (effortValueEl) {
+      effortValueEl.textContent = effortName;
+    }
   }
-  if (effortMeterEl) {
-    effortMeterEl.addEventListener('click', () => {
-      effortLevel = effortLevel >= 5 ? 1 : effortLevel + 1;
+  function sendEffort() {
+    vscode.postMessage({ type: 'setEffort', effort: EFFORTS[effortIndex] });
+  }
+  if (effortBtn) {
+    effortBtn.addEventListener('click', () => {
+      effortIndex = (effortIndex + 1) % EFFORTS.length;
       renderEffort();
+      saveState({ effort: EFFORTS[effortIndex] });
+      sendEffort();
     });
     renderEffort();
+    sendEffort();
   }
 
   if (composerShellEl && inputEl) {
@@ -437,7 +615,20 @@
     send();
   }
   if (modelChipEl) {
-    modelChipEl.addEventListener('click', () => queueCommand('/model'));
+    // A dropdown, not a chat command: this used to send "/model" as a message,
+    // so clicking the chip printed a reply instead of opening a menu.
+    modelChipEl.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (modelPopup && !modelPopup.hidden) {
+        setModelPopupOpen(false);
+        return;
+      }
+      setContextPopupOpen(false);
+      setModesPopupOpen(false);
+      showModelMenuMessage('Loading models\u2026');
+      setModelPopupOpen(true);
+      vscode.postMessage({ type: 'listModels' });
+    });
   }
 
   function renderAttachments() {
@@ -455,7 +646,9 @@
       chip.className = 'attach-chip';
       const name = document.createElement('span');
       name.className = 'attach-name';
-      name.textContent = file.name;
+      name.textContent = file.pending
+        ? file.name + ' (reading\u2026' + (file.note ? ' ' + file.note : '') + ')'
+        : file.note ? file.name + ' \u00b7 ' + file.note : file.name;
       name.title = file.name;
       const remove = document.createElement('button');
       remove.type = 'button';
@@ -472,59 +665,9 @@
     });
   }
 
-  function readFileAsText(file) {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(String(reader.result || ''));
-      reader.onerror = () => reject(reader.error || new Error('read failed'));
-      reader.readAsText(file);
-    });
-  }
-
-  function readFileAsDataURL(file) {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(String(reader.result || ''));
-      reader.onerror = () => reject(reader.error || new Error('read failed'));
-      reader.readAsDataURL(file);
-    });
-  }
-
-  if (attachBtn && fileInputEl) {
+  if (attachBtn) {
     attachBtn.addEventListener('click', () => {
-      fileInputEl.click();
-    });
-    fileInputEl.addEventListener('change', async () => {
-      const files = Array.from(fileInputEl.files || []);
-      fileInputEl.value = '';
-      for (const file of files) {
-        if (pendingAttachments.length >= MAX_ATTACH_FILES) {
-          break;
-        }
-        // Increase size limit for images if needed, but 512KB is what's there
-        if (file.size > 2 * 1024 * 1024) { // Allow up to 2MB for images and text now
-          addBubble('error', `skipped ${file.name}: larger than 2MB`);
-          continue;
-        }
-        try {
-          let text;
-          let isImage = file.type.startsWith('image/');
-          if (isImage) {
-            text = await readFileAsDataURL(file);
-          } else {
-            text = await readFileAsText(file);
-            if (text.length > MAX_ATTACH_CHARS) {
-              text = text.slice(0, MAX_ATTACH_CHARS) + '\n…[truncated]';
-            }
-          }
-          pendingAttachments.push({ name: file.name, text, isImage });
-        } catch (err) {
-          addBubble('error', `could not read ${file.name}`);
-        }
-      }
-      renderAttachments();
-      refreshContextUsage();
-      inputEl.focus();
+      vscode.postMessage({ type: 'pickAttachments', remaining: MAX_ATTACH_FILES - pendingAttachments.length });
     });
   }
 
@@ -546,7 +689,8 @@
     if (role === 'error') {
       return '!';
     }
-    return 'C';
+    // M for Mochiii (this was 'C', left over from the CodeTerminal name).
+    return 'M';
   }
 
   function roleLabel(role) {
@@ -597,6 +741,300 @@
 
   // renderFencedContent builds DOM for assistant text with ``` fences.
   // textContent / createElement ONLY -- never assemble markup strings.
+  // MARKDOWN, SAFELY. Answers arrive as markdown and were shown raw -- "###" and
+  // "**bold**" as literal characters. This renders the common subset (headings,
+  // emphasis, inline code, links, lists, quotes, tables, rules) by creating
+  // elements and setting textContent. It never assigns innerHTML, so nothing in
+  // a model's reply can become markup or script, and a link is made only from an
+  // http(s) URL. Fenced code blocks stay with renderFencedContent above.
+
+  // Inline LaTeX the models write in prose ("Team $\rightarrow$ Problem"). Only
+  // a $...$ span holding a backslash command is treated as math, so "$5 and $10"
+  // is left alone; a span with any command not listed here is left as written.
+  const LATEX_SYMBOLS = new Map([
+    ['rightarrow', '→'], ['to', '→'], ['leftarrow', '←'], ['gets', '←'], ['Rightarrow', '⇒'],
+    ['Leftarrow', '⇐'], ['leftrightarrow', '↔'], ['Leftrightarrow', '⇔'], ['implies', '⇒'],
+    ['uparrow', '↑'], ['downarrow', '↓'], ['times', '×'], ['div', '÷'], ['pm', '±'], ['mp', '∓'],
+    ['leq', '≤'], ['le', '≤'], ['geq', '≥'], ['ge', '≥'], ['neq', '≠'], ['ne', '≠'], ['approx', '≈'],
+    ['sim', '∼'], ['equiv', '≡'], ['infty', '∞'], ['cdot', '·'], ['ldots', '…'], ['dots', '…'],
+    ['cdots', '⋯'], ['checkmark', '✓'], ['degree', '°'], ['circ', '°'], ['alpha', 'α'], ['beta', 'β'],
+    ['gamma', 'γ'], ['delta', 'δ'], ['Delta', 'Δ'], ['epsilon', 'ε'], ['theta', 'θ'], ['lambda', 'λ'],
+    ['mu', 'μ'], ['pi', 'π'], ['sigma', 'σ'], ['Sigma', 'Σ'], ['omega', 'ω'], ['Omega', 'Ω'],
+    ['sum', '∑'], ['prod', '∏'], ['sqrt', '√'], ['partial', '∂'], ['nabla', '∇'], ['in', '∈'],
+    ['notin', '∉'], ['subset', '⊂'], ['subseteq', '⊆'], ['cup', '∪'], ['cap', '∩'], ['forall', '∀'],
+    ['exists', '∃'], ['neg', '¬'], ['land', '∧'], ['lor', '∨'], ['quad', ' '], ['qquad', '  '],
+    ['%', '%'], ['$', '$'], ['&', '&'], ['#', '#'], ['_', '_'], ['{', '{'], ['}', '}'],
+  ]);
+  /** @param {string} src @returns {string | null} */
+  function latexToText(src) {
+    if (src.indexOf('\\') < 0) {
+      return null;
+    }
+    let known = true;
+    const out = src
+      .replace(/\\(?:text|mathrm|mathbf|textbf|mathit|operatorname)\{([^{}]*)\}/g, '$1')
+      .replace(/\\([A-Za-z]+|[%$&#_{}])/g, (whole, name) => {
+        const sym = LATEX_SYMBOLS.get(name);
+        if (sym === undefined) {
+          known = false;
+          return whole;
+        }
+        return sym;
+      })
+      .replace(/[{}]/g, '')
+      .trim();
+    return known ? out : null;
+  }
+
+  const INLINE_MD =
+    '(`+)([^`]|[^`][\\s\\S]*?[^`])\\1(?!`)' + // 1,2 inline code
+    '|\\[([^\\]\\n]+)\\]\\(\\s*(https?:\\/\\/[^\\s)]+)\\s*\\)' + // 3,4 [text](url)
+    '|\\*\\*(?=\\S)([\\s\\S]*?\\S)\\*\\*' + // 5 **strong**
+    '|__(?=\\S)([\\s\\S]*?\\S)__' + // 6 __strong__
+    '|~~(?=\\S)([\\s\\S]*?\\S)~~' + // 7 ~~strike~~
+    '|(?<![\\w*])\\*(?=[^\\s*])([^*\\n]*?[^\\s*])\\*(?![\\w*])' + // 8 *em*
+    '|(?<![\\w_])_(?=[^\\s_])([^_\\n]*?[^\\s_])_(?![\\w_])' + // 9 _em_ (not snake_case)
+    '|(https?:\\/\\/[^\\s<>()]*[^\\s<>().,;:!?\'"\\]])' + // 10 bare URL
+    '|\\$([^$\\n]{1,160})\\$'; // 11 $math$
+
+  /** @param {string} href @param {string} text @returns {HTMLAnchorElement} */
+  function mdLink(href, text) {
+    const a = document.createElement('a');
+    a.href = href;
+    a.title = href;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    // inLink: a link's own text is never parsed for links again. Without it a
+    // bare URL linked to itself, re-matched as a URL, and recursed until the
+    // stack overflowed -- found by the test, on the first URL it tried.
+    renderInline(a, text, true);
+    return a;
+  }
+
+  /** @param {Node} parent @param {string} text @param {boolean} [inLink] */
+  function renderInline(parent, text, inLink) {
+    // A fresh RegExp per call: this recurses, and a shared /g regex would have
+    // its lastIndex moved by the inner call.
+    const re = new RegExp(INLINE_MD, 'g');
+    let last = 0;
+    let m;
+    while ((m = re.exec(text)) !== null) {
+      if (m[0] === '') {
+        re.lastIndex++;
+        continue;
+      }
+      if (m.index > last) {
+        parent.appendChild(document.createTextNode(text.slice(last, m.index)));
+      }
+      if (m[2] !== undefined) {
+        const code = document.createElement('code');
+        code.textContent = m[2].length > 2 && m[2].startsWith(' ') && m[2].endsWith(' ') ? m[2].slice(1, -1) : m[2];
+        parent.appendChild(code);
+      } else if (inLink && (m[3] !== undefined || m[10] !== undefined)) {
+        parent.appendChild(document.createTextNode(m[0]));
+      } else if (m[3] !== undefined) {
+        parent.appendChild(mdLink(m[4], m[3]));
+      } else if (m[5] !== undefined || m[6] !== undefined) {
+        const strong = document.createElement('strong');
+        renderInline(strong, m[5] !== undefined ? m[5] : m[6], inLink);
+        parent.appendChild(strong);
+      } else if (m[7] !== undefined) {
+        const del = document.createElement('del');
+        renderInline(del, m[7], inLink);
+        parent.appendChild(del);
+      } else if (m[8] !== undefined || m[9] !== undefined) {
+        const em = document.createElement('em');
+        renderInline(em, m[8] !== undefined ? m[8] : m[9], inLink);
+        parent.appendChild(em);
+      } else if (m[10] !== undefined) {
+        parent.appendChild(mdLink(m[10], m[10]));
+      } else {
+        const math = latexToText(m[11]);
+        parent.appendChild(document.createTextNode(math === null ? m[0] : math));
+      }
+      last = re.lastIndex;
+    }
+    if (last < text.length) {
+      parent.appendChild(document.createTextNode(text.slice(last)));
+    }
+  }
+
+  const MD_LIST = /^(\s*)([-*+]|\d{1,3}[.)])\s+(.*)$/;
+  const MD_TABLE_SEP = /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/;
+  /** @param {string} s */
+  function indentOf(s) {
+    const lead = /^\s*/.exec(s);
+    return lead ? lead[0].replace(/\t/g, '    ').length : 0;
+  }
+
+  /** @param {Node} parent @param {string[]} lines @param {number} start @returns {number} */
+  function renderList(parent, lines, start) {
+    const first = MD_LIST.exec(lines[start]);
+    if (!first) {
+      return start + 1;
+    }
+    const indent = indentOf(first[1]);
+    const ordered = /\d/.test(first[2]);
+    const list = document.createElement(ordered ? 'ol' : 'ul');
+    const startNum = parseInt(first[2], 10);
+    if (ordered && startNum > 1) {
+      list.setAttribute('start', String(startNum));
+    }
+    /** @type {HTMLLIElement | null} */
+    let li = null;
+    let i = start;
+    while (i < lines.length) {
+      const line = lines[i];
+      if (/^\s*$/.test(line)) {
+        // A blank line ends the list unless an item at this depth or deeper follows.
+        let j = i + 1;
+        while (j < lines.length && /^\s*$/.test(lines[j])) {
+          j++;
+        }
+        const next = j < lines.length ? MD_LIST.exec(lines[j]) : null;
+        if (next && indentOf(next[1]) >= indent) {
+          i = j;
+          continue;
+        }
+        break;
+      }
+      const m = MD_LIST.exec(line);
+      if (m) {
+        const depth = indentOf(m[1]);
+        if (depth > indent && li) {
+          i = renderList(li, lines, i);
+          continue;
+        }
+        if (depth < indent || /\d/.test(m[2]) !== ordered) {
+          break;
+        }
+        li = document.createElement('li');
+        renderInline(li, m[3].replace(/^\[ \]\s+/, '☐ ').replace(/^\[[xX]\]\s+/, '☑ '));
+        list.appendChild(li);
+        i++;
+        continue;
+      }
+      if (li && indentOf(line) > indent) {
+        li.appendChild(document.createElement('br'));
+        renderInline(li, line.trim());
+        i++;
+        continue;
+      }
+      break;
+    }
+    parent.appendChild(list);
+    return i;
+  }
+
+  /** @param {string} row @returns {string[]} */
+  function tableCells(row) {
+    return row.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
+  }
+
+  /** @param {Node} root @param {string[]} lines */
+  function renderBlocks(root, lines) {
+    /** @type {string[]} */
+    let para = [];
+    const flush = () => {
+      if (para.length === 0) {
+        return;
+      }
+      const p = document.createElement('p');
+      para.forEach((l, k) => {
+        if (k > 0) {
+          p.appendChild(document.createElement('br'));
+        }
+        renderInline(p, l);
+      });
+      root.appendChild(p);
+      para = [];
+    };
+    let i = 0;
+    while (i < lines.length) {
+      const line = lines[i];
+      if (/^\s*$/.test(line)) {
+        flush();
+        i++;
+        continue;
+      }
+      const heading = /^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/.exec(line);
+      if (heading) {
+        flush();
+        const h = document.createElement('h' + Math.min(4, heading[1].length));
+        renderInline(h, heading[2]);
+        root.appendChild(h);
+        i++;
+        continue;
+      }
+      if (/^\s{0,3}([-*_])(\s*\1){2,}\s*$/.test(line)) {
+        flush();
+        root.appendChild(document.createElement('hr'));
+        i++;
+        continue;
+      }
+      if (/^\s{0,3}>/.test(line)) {
+        flush();
+        const quote = document.createElement('blockquote');
+        /** @type {string[]} */
+        const inner = [];
+        while (i < lines.length && /^\s{0,3}>/.test(lines[i])) {
+          inner.push(lines[i].replace(/^\s{0,3}>\s?/, ''));
+          i++;
+        }
+        renderBlocks(quote, inner);
+        root.appendChild(quote);
+        continue;
+      }
+      if (line.indexOf('|') >= 0 && i + 1 < lines.length && MD_TABLE_SEP.test(lines[i + 1]) && lines[i + 1].indexOf('-') >= 0) {
+        flush();
+        const wrap = document.createElement('div');
+        wrap.className = 'md-table-wrap';
+        const table = document.createElement('table');
+        const thead = document.createElement('thead');
+        const headRow = document.createElement('tr');
+        for (const cell of tableCells(line)) {
+          const th = document.createElement('th');
+          renderInline(th, cell);
+          headRow.appendChild(th);
+        }
+        thead.appendChild(headRow);
+        table.appendChild(thead);
+        const tbody = document.createElement('tbody');
+        i += 2;
+        while (i < lines.length && lines[i].indexOf('|') >= 0 && !/^\s*$/.test(lines[i])) {
+          const tr = document.createElement('tr');
+          for (const cell of tableCells(lines[i])) {
+            const td = document.createElement('td');
+            renderInline(td, cell);
+            tr.appendChild(td);
+          }
+          tbody.appendChild(tr);
+          i++;
+        }
+        table.appendChild(tbody);
+        wrap.appendChild(table);
+        root.appendChild(wrap);
+        continue;
+      }
+      if (MD_LIST.test(line)) {
+        flush();
+        i = renderList(root, lines, i);
+        continue;
+      }
+      para.push(line);
+      i++;
+    }
+    flush();
+  }
+
+  /** @param {Node} container @param {string} text */
+  function renderMarkdown(container, text) {
+    const root = document.createElement('div');
+    root.className = 'md';
+    renderBlocks(root, String(text).replace(/\r\n?/g, '\n').split('\n'));
+    container.appendChild(root);
+  }
+
   function renderFencedContent(container, text) {
     clearChildren(container);
     const parts = String(text).split(/```/);
@@ -606,10 +1044,7 @@
         if (!chunk) {
           continue;
         }
-        const p = document.createElement('div');
-        p.className = 'md-p';
-        p.textContent = chunk;
-        container.appendChild(p);
+        renderMarkdown(container, chunk);
         continue;
       }
       let lang = '';
@@ -702,9 +1137,12 @@
 
   function finalizeAssistant() {
     if (currentAssistantBubble && currentAssistantCard) {
-      renderFencedContent(currentAssistantBubble, currentAssistantRaw);
+      if (!currentAssistantPlain) {
+        renderFencedContent(currentAssistantBubble, currentAssistantRaw);
+      }
       attachFeedbackFooter(currentAssistantCard, currentAssistantRaw);
     }
+    currentAssistantPlain = false;
     currentAssistantBubble = null;
     currentAssistantCard = null;
     currentAssistantRaw = '';
@@ -1614,6 +2052,10 @@
     if ((!typed && pendingAttachments.length === 0) || streaming) {
       return;
     }
+    if (pendingAttachments.some((f) => f.pending)) {
+      addBubble('error', 'Still reading ' + pendingAttachments.filter((f) => f.pending).map((f) => f.name).join(', ') + ' \u2014 send again in a moment.');
+      return;
+    }
     hideSlashMenu();
     clearEditProposal();
     clearToolApproval();
@@ -1622,10 +2064,11 @@
     let text = typed;
     if (pendingAttachments.length > 0) {
       const blocks = pendingAttachments.map((f) => {
-        if (f.isImage) {
-          return `![${f.name}](${f.text})`;
-        }
-        return `--- attached: ${f.name} ---\n${f.text}\n--- end ${f.name} ---`;
+        // desc says how the text was obtained ("text extracted from PDF, 3 pages",
+        // "OCR text from an image"), so the model does not take it for the file's
+        // own bytes or trust an OCR misreading as exact.
+        const label = f.desc ? ` (${f.desc})` : '';
+        return `--- attached: ${f.name}${label} ---\n${f.text}\n--- end ${f.name} ---`;
       });
       text = (typed ? typed + '\n\n' : '') + blocks.join('\n\n');
     }
@@ -1755,15 +2198,23 @@
       case 'clearTranscript':
         clearTranscriptView();
         break;
-      case 'modelTier':
+      case 'modelTier': {
+        // Show the MODEL, not the tier name: "default" told nobody what was
+        // answering. The provider prefix is dropped for space ("qwen/qwen3.8-27b"
+        // -> "qwen3.8-27b") and kept in the tooltip.
+        const model = typeof msg.model === 'string' ? msg.model : '';
+        const shortModel = model ? model.slice(model.lastIndexOf('/') + 1) : '';
+        const tierName = msg.tier && msg.tier !== 'default' ? String(msg.tier) : '';
+        const label = shortModel || tierName || 'Model';
+        if (modelChipLabelEl) {
+          modelChipLabelEl.textContent = label;
+        }
         if (modelChipEl) {
-          if (modelChipLabelEl) {
-            modelChipLabelEl.textContent = msg.tier || 'Model';
-          } else if (modelChipEl) {
-            modelChipEl.textContent = msg.tier || 'Model';
-          }
+          modelChipEl.title = 'Model: ' + (model || tierName || 'default') + (tierName ? ' (tier ' + tierName + ')' : '') + '. Click to choose (/model).';
+          modelChipEl.setAttribute('aria-label', 'Model: ' + label + '. Choose model.');
         }
         break;
+      }
       case 'grounding':
         setGrounding(msg.info);
         break;
@@ -1787,6 +2238,7 @@
           currentAssistantBubble = addBubble('assistant', '');
         }
         currentAssistantRaw += msg.text;
+        currentAssistantPlain = msg.plain === true;
         currentAssistantBubble.textContent = currentAssistantRaw;
         transcriptEl.scrollTop = transcriptEl.scrollHeight;
         break;
@@ -1864,6 +2316,45 @@
           });
           pendingUndoButton = null;
         }
+        break;
+      case 'attachmentStarted':
+        if (pendingAttachments.length < MAX_ATTACH_FILES) {
+          pendingAttachments.push({ name: msg.name, text: '', pending: true, id: msg.id, note: '', desc: '' });
+          renderAttachments();
+        }
+        break;
+      case 'attachmentProgress': {
+        const att = pendingAttachments.find((f) => f.id === msg.id);
+        if (att && att.pending) {
+          att.note = msg.note;
+          renderAttachments();
+        }
+        break;
+      }
+      case 'attachmentExtracted': {
+        const att = pendingAttachments.find((f) => f.id === msg.id);
+        if (att) {
+          att.text = msg.text;
+          att.pending = false;
+          att.note = msg.note || '';
+          att.desc = msg.desc || '';
+          renderAttachments();
+          refreshContextUsage();
+        }
+        break;
+      }
+      case 'attachmentNotice':
+      case 'notice':
+        addBubble('error', msg.text);
+        break;
+      case 'modelMenu':
+        renderModelMenu(msg);
+        break;
+      case 'attachmentFailed':
+        pendingAttachments = pendingAttachments.filter((f) => f.id !== msg.id);
+        renderAttachments();
+        refreshContextUsage();
+        addBubble('error', msg.error);
         break;
       case 'searchResults':
         searchBtn.disabled = false;

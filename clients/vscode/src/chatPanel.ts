@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { AttachmentError, extractAttachmentFile } from './attachmentExtract';
 
 // fs and path used to be imported here solely to build executable paths out of
 // the workspace. Both uses were the vulnerability; there are now zero callers,
@@ -91,6 +92,11 @@ export class ChatPanel {
   private readonly panel: vscode.WebviewPanel;
   private readonly disposables: vscode.Disposable[] = [];
   private transcript: Turn[] = [];
+  // Ids for attachment chips, so a reply finds the chip it belongs to.
+  private attachmentSeq = 0;
+  // The composer's effort picker. '' is Auto: no reasoning_effort is sent and the
+  // model uses its own default.
+  private reasoningEffort: '' | 'low' | 'medium' | 'high' = '';
   private inFlight: AbortController | undefined;
 
   // preferredTier is the models.json tier name chosen via /model <name>.
@@ -217,10 +223,28 @@ export class ChatPanel {
   }
 
   private postModelTier(): void {
-    this.panel.webview.postMessage({
-      type: 'modelTier',
-      tier: this.preferredTier || 'default',
-    });
+    const tier = this.preferredTier || 'default';
+    this.panel.webview.postMessage({ type: 'modelTier', tier });
+    // Then the model behind the tier, which is what the chip shows: "default"
+    // alone told the user nothing about what was answering. Best effort -- with
+    // no daemon yet the chip keeps the tier name.
+    fetchAvailableTiers(CLIENT_NAME).then(
+      (tiers) => {
+        const current = this.preferredTier || 'default';
+        if (current !== tier) {
+          return; // the user picked another tier while this was in flight
+        }
+        const t = tiers.find((x) => (this.preferredTier ? x.name === this.preferredTier : x.default === true));
+        if (t) {
+          try {
+            void this.panel.webview.postMessage({ type: 'modelTier', tier, model: t.slug });
+          } catch {
+            // panel closed meanwhile
+          }
+        }
+      },
+      () => undefined,
+    );
   }
 
   private handleMessage(msg: {
@@ -232,8 +256,20 @@ export class ChatPanel {
     decision?: string;
     callId?: string;
     index?: number;
+    remaining?: number;
+    effort?: string;
+    tier?: string;
   }): void {
-    if (msg.type === 'toolApprovalDecision' && typeof msg.decision === 'string') {
+    if (msg.type === 'pickAttachments' && typeof msg.remaining === 'number') {
+      void this.onPickAttachments(msg.remaining);
+    } else if (msg.type === 'listModels') {
+      void this.onListModels();
+    } else if (msg.type === 'selectModel' && typeof msg.tier === 'string') {
+      void this.onSelectModel(msg.tier);
+    } else if (msg.type === 'setEffort' && typeof msg.effort === 'string') {
+      const e = msg.effort;
+      this.reasoningEffort = e === 'low' || e === 'medium' || e === 'high' ? e : '';
+    } else if (msg.type === 'toolApprovalDecision' && typeof msg.decision === 'string') {
       this.onToolApprovalDecision(msg.callId, msg.decision);
     } else if (msg.type === 'prompt' && typeof msg.text === 'string') {
       this.onPrompt(msg.text, msg.autoApply === true, msg.mode);
@@ -251,6 +287,65 @@ export class ChatPanel {
       this.panel.dispose();
     } else if (msg.type === 'newChat') {
       this.onNewChat();
+    }
+  }
+
+  // The paperclip. The file dialog is the editor's, and the files are read here
+  // from disk -- not by the webview, which has no Node and could only pass bytes
+  // across the message channel as base64. Each file's text goes back to the
+  // webview, which holds it until the prompt is sent.
+  private async onPickAttachments(remaining: number): Promise<void> {
+    const post = (m: Record<string, unknown>): void => {
+      try {
+        this.panel.webview.postMessage(m).then(undefined, () => undefined);
+      } catch {
+        // The panel was closed while a file was being read; nobody is waiting.
+      }
+    };
+    if (remaining <= 0) {
+      post({ type: 'attachmentNotice', text: 'No more files can be attached to this message.' });
+      return;
+    }
+    const uris = await vscode.window.showOpenDialog({
+      canSelectMany: true,
+      openLabel: 'Attach',
+      defaultUri: vscode.workspace.workspaceFolders?.[0]?.uri,
+      filters: {
+        'Documents, images, text and code': [
+          'pdf', 'docx', 'xlsx', 'xlsm', 'pptx', 'png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp',
+          'txt', 'md', 'json', 'csv', 'log', 'js', 'ts', 'tsx', 'jsx', 'py', 'go', 'rs', 'java',
+          'c', 'h', 'cpp', 'hpp', 'css', 'html', 'xml', 'yaml', 'yml', 'toml', 'sh', 'sql',
+        ],
+        'All files': ['*'],
+      },
+    });
+    if (!uris || uris.length === 0) {
+      return;
+    }
+    const files = uris.filter((u) => u.scheme === 'file').slice(0, remaining);
+    if (uris.length > files.length) {
+      post({ type: 'attachmentNotice', text: `Only ${files.length} of the ${uris.length} selected files were attached (at most 8 per message, local files only).` });
+    }
+    // Every chip appears at once; the files are then read one after another,
+    // which is also the order OCR would serialise them in anyway.
+    // The display name from the URI (always '/'-separated): this file keeps no
+    // `path` import, per the note at its top; the file itself is opened by
+    // extractAttachmentFile, which does not take a path from the workspace.
+    const jobs = files.map((uri) => ({ uri, id: `att${++this.attachmentSeq}`, name: uri.path.slice(uri.path.lastIndexOf('/') + 1) }));
+    for (const j of jobs) {
+      post({ type: 'attachmentStarted', id: j.id, name: j.name });
+    }
+    for (const j of jobs) {
+      try {
+        const r = await extractAttachmentFile(j.uri.fsPath, (note) => post({ type: 'attachmentProgress', id: j.id, note }));
+        post({ type: 'attachmentExtracted', id: j.id, name: j.name, kind: r.kind, text: r.text, note: r.note, desc: r.desc });
+      } catch (err) {
+        post({
+          type: 'attachmentFailed',
+          id: j.id,
+          error: err instanceof AttachmentError ? err.message : `${j.name}: could not be read (${err instanceof Error ? err.message : String(err)}).`,
+        });
+      }
     }
   }
 
@@ -316,8 +411,68 @@ export class ChatPanel {
 
   private replyLocal(reply: string): void {
     this.transcript.push({ role: 'assistant', content: reply });
-    this.panel.webview.postMessage({ type: 'token', text: reply });
+    // plain: command output is aligned text, not markdown. Rendered as markdown,
+    // the "* " marking the current model in /model became a bullet point.
+    this.panel.webview.postMessage({ type: 'token', text: reply, plain: true });
     this.panel.webview.postMessage({ type: 'done' });
+  }
+
+  // THE MODEL DROPDOWN. The chip used to send "/model" as a chat message, so a
+  // click produced a reply in the transcript instead of a menu.
+  private async onListModels(): Promise<void> {
+    const post = (m: Record<string, unknown>): void => {
+      try {
+        this.panel.webview.postMessage(m).then(undefined, () => undefined);
+      } catch {
+        // panel closed meanwhile
+      }
+    };
+    try {
+      const tiers = await fetchAvailableTiers(CLIENT_NAME);
+      post({
+        type: 'modelMenu',
+        current: this.preferredTier,
+        tiers: tiers.map((t) => ({ name: t.name, slug: t.slug, active: t.active, isDefault: t.default === true })),
+      });
+    } catch (err) {
+      post({ type: 'modelMenu', current: this.preferredTier, tiers: [], error: (err as Error).message });
+    }
+  }
+
+  // Selecting from the dropdown: '' is the default. The same checks as /model.
+  private async onSelectModel(tier: string): Promise<void> {
+    const err = await this.applyTier(tier);
+    if (err) {
+      try {
+        void this.panel.webview.postMessage({ type: 'notice', text: err });
+      } catch {
+        // panel closed meanwhile
+      }
+    }
+  }
+
+  // Sets the tier for later turns, or returns why it cannot.
+  private async applyTier(name: string): Promise<string | undefined> {
+    if (name === '' || name === 'clear' || name === 'default') {
+      this.preferredTier = '';
+      this.postModelTier();
+      return undefined;
+    }
+    try {
+      const tiers = await fetchAvailableTiers(CLIENT_NAME);
+      const found = tiers.find((t) => t.name === name);
+      if (!found) {
+        return `unknown model tier "${name}" — try /model for the list`;
+      }
+      if (!found.active) {
+        return `tier "${name}" is currently inactive in models.json`;
+      }
+      this.preferredTier = found.name;
+      this.postModelTier();
+      return undefined;
+    } catch (err) {
+      return `could not select model: ${(err as Error).message}`;
+    }
   }
 
   private async handleModelCommand(arg: string): Promise<void> {
@@ -344,28 +499,12 @@ export class ChatPanel {
       return;
     }
     if (arg === 'clear' || arg === 'default') {
-      this.preferredTier = '';
-      this.postModelTier();
+      await this.applyTier('');
       this.replyLocal('model reset to default tier (models.json default_tier)');
       return;
     }
-    try {
-      const tiers = await fetchAvailableTiers(CLIENT_NAME);
-      const found = tiers.find((t) => t.name === arg);
-      if (!found) {
-        this.replyLocal(`unknown model tier "${arg}" — try /model for the list`);
-        return;
-      }
-      if (!found.active) {
-        this.replyLocal(`tier "${arg}" is currently inactive in models.json`);
-        return;
-      }
-      this.preferredTier = found.name;
-      this.postModelTier();
-      this.replyLocal(`model set to ${found.name} (${found.slug})`);
-    } catch (err) {
-      this.replyLocal(`could not select model: ${(err as Error).message}`);
-    }
+    const err = await this.applyTier(arg);
+    this.replyLocal(err ?? `model set to ${this.preferredTier}`);
   }
 
   // localHost adapts this panel to LocalCommandHost. The workspace is read here,
@@ -594,6 +733,7 @@ export class ChatPanel {
         pipeline,
         spec: activeSpec || undefined,
         specGrants: this.specGrants.digestsFor(activeSpec),
+        reasoningEffort: this.reasoningEffort || undefined,
       }
     );
   }
@@ -932,24 +1072,56 @@ function getNonce(): string {
 
 export function chatPanelStyles(): string {
   return `  :root {
-    --ct-bg: var(--vscode-editor-background, #fff8f9);
+    /* TWO COLOURS, TWO JOBS. Blue is everything you act on: buttons, focus,
+       selection, links, the effort and context indicators, your own messages.
+       Rose is the brand: the lotus, the header mark, Mochiii's avatar. Every
+       surface comes from the VS Code theme, so a dark theme gets dark controls --
+       hard-coded #fff here is what made the pills glare as white blobs. */
+    --ct-bg: var(--vscode-editor-background, #f7f9fc);
     --ct-surface: var(--vscode-sideBar-background, #ffffff);
     --ct-rose: #e8919a;
     --ct-rose-deep: #d4727d;
-    --ct-rose-soft: rgba(232, 145, 154, 0.15);
-    --ct-ink: var(--vscode-editor-foreground, #3d2c2e);
-    --ct-muted: var(--vscode-descriptionForeground, #8a6f73);
-    --ct-border: var(--vscode-widget-border, rgba(232, 145, 154, 0.25));
-    --ct-code-bg: var(--vscode-editorWidget-background, rgba(0, 0, 0, 0.04));
+    --ct-brand-gradient: linear-gradient(145deg, #e8919a, #d4727d);
+    --ct-accent: #2563eb;
+    --ct-accent-strong: #1d4ed8;
+    --ct-accent-solid: #2563eb;
+    --ct-accent-solid-hover: #1d4ed8;
+    --ct-on-accent: #ffffff;
+    --ct-accent-soft: color-mix(in srgb, var(--ct-accent) 13%, transparent);
+    --ct-warn: #b45309;
+    --ct-danger: #c0392b;
+    --ct-ink: var(--vscode-editor-foreground, #1f2937);
+    --ct-muted: var(--vscode-descriptionForeground, #5b6474);
+    --ct-border: var(--vscode-widget-border, color-mix(in srgb, var(--ct-ink) 14%, transparent));
+    --ct-control-bg: var(--vscode-input-background, #ffffff);
+    --ct-control-border: color-mix(in srgb, var(--ct-ink) 20%, transparent);
+    --ct-popover-bg: var(--vscode-editorWidget-background, #ffffff);
+    --ct-shadow: 0 12px 32px color-mix(in srgb, #000 28%, transparent);
+    --ct-code-bg: var(--vscode-textCodeBlock-background, var(--vscode-editorWidget-background, rgba(0, 0, 0, 0.04)));
     --ct-code-fg: var(--vscode-editorWidget-foreground, inherit);
-    --ct-user-bg: rgba(232, 145, 154, 0.08);
+    --ct-user-bg: color-mix(in srgb, var(--ct-accent) 9%, transparent);
     --ct-radius: 14px;
-    --ct-composer-bg: var(--vscode-input-background, rgba(255, 245, 247, 0.6));
-    --ct-composer-border: var(--vscode-input-border, rgba(240, 200, 208, 0.6));
-    --ct-composer-glow: rgba(232, 145, 154, 0.28);
+    --ct-composer-bg: var(--vscode-input-background, #ffffff);
+    --ct-composer-border: color-mix(in srgb, var(--ct-ink) 18%, transparent);
+    --ct-composer-glow: color-mix(in srgb, var(--ct-accent) 30%, transparent);
     --ct-composer-text: var(--vscode-input-foreground, inherit);
-    --ct-composer-muted: var(--vscode-input-placeholderForeground, #a88a90);
+    --ct-composer-muted: var(--vscode-input-placeholderForeground, #8a93a6);
   }
+  /* Dark and high-contrast themes: lighter blues, so text and rings keep
+     WCAG contrast on a dark background (#5b9bff on #1e1e1e is about 6.4:1). */
+  body.vscode-dark, body.vscode-high-contrast {
+    --ct-accent: #5b9bff;
+    --ct-accent-strong: #93bbff;
+    --ct-accent-solid: #3574e8;
+    --ct-accent-solid-hover: #4a86f0;
+    --ct-warn: #f5a524;
+    --ct-danger: #f26d6d;
+  }
+  /* The hidden attribute must win. A class that sets display (like .pill's
+     inline-flex) otherwise overrides it, which is how an EMPTY spec chip showed
+     as a blank circle in the composer. Two rules below already patched this one
+     element at a time. */
+  [hidden] { display: none !important; }
   * { box-sizing: border-box; }
   body {
     font-family: "Segoe UI", "Helvetica Neue", sans-serif;
@@ -981,13 +1153,13 @@ export function chatPanelStyles(): string {
     width: 26px;
     height: 26px;
     border-radius: 8px;
-    background: linear-gradient(145deg, var(--ct-rose), var(--ct-rose-deep));
+    background: var(--ct-brand-gradient);
     color: #fff;
     display: inline-flex;
     align-items: center;
     justify-content: center;
     font-size: 13px;
-    box-shadow: 0 4px 10px rgba(212, 114, 125, 0.28);
+    box-shadow: 0 4px 10px rgba(212, 114, 125, 0.28); /* brand */
   }
   #appHeader .brand-logo {
     width: 44px;
@@ -1011,7 +1183,7 @@ export function chatPanelStyles(): string {
     align-items: center;
     justify-content: center;
   }
-  .icon-btn:hover { background: var(--ct-rose-soft); color: var(--ct-rose-deep); }
+  .icon-btn:hover { background: var(--ct-accent-soft); color: var(--ct-accent-strong); }
   #searchRow {
     display: none;
     gap: 6px;
@@ -1031,8 +1203,8 @@ export function chatPanelStyles(): string {
     font-size: 13px;
   }
   #searchBtn {
-    background: var(--ct-rose);
-    color: #fff;
+    background: var(--ct-accent-solid);
+    color: var(--ct-on-accent);
     border: none;
     border-radius: 10px;
     padding: 8px 14px;
@@ -1089,8 +1261,8 @@ export function chatPanelStyles(): string {
     font-weight: 700;
     color: #fff;
   }
-  .msg.user .avatar { background: var(--ct-rose-soft); color: var(--ct-rose-deep); border: 1px solid var(--ct-border); }
-  .msg.assistant .avatar { background: linear-gradient(145deg, var(--ct-rose), var(--ct-rose-deep)); color: #fff; }
+  .msg.user .avatar { background: var(--ct-accent-soft); color: var(--ct-accent-strong); border: 1px solid var(--ct-border); }
+  .msg.assistant .avatar { background: var(--ct-brand-gradient); color: #fff; }
   .msg.error .avatar { background: #c0392b; }
   .msg .card {
     flex: 1;
@@ -1099,7 +1271,7 @@ export function chatPanelStyles(): string {
     border: 1px solid var(--ct-border);
     border-radius: var(--ct-radius);
     padding: 12px 14px;
-    box-shadow: 0 1px 2px rgba(212, 114, 125, 0.06);
+    box-shadow: 0 1px 2px color-mix(in srgb, var(--ct-accent-strong) 6%, transparent);
   }
   .msg.user .card { background: var(--ct-user-bg); }
   .msg .role {
@@ -1113,6 +1285,45 @@ export function chatPanelStyles(): string {
   }
   .msg .body { white-space: pre-wrap; line-height: 1.5; font-size: 13.5px; }
   .msg .body .md-p { margin: 0 0 8px; white-space: pre-wrap; }
+  /* Rendered markdown (renderMarkdown in media/main.js builds these nodes; it
+     never sets innerHTML, so model output cannot inject markup). */
+  .msg .body .md { white-space: normal; }
+  .md > :first-child { margin-top: 0; }
+  .md p { margin: 0 0 9px; white-space: pre-wrap; }
+  .md h1, .md h2, .md h3, .md h4 { margin: 14px 0 6px; line-height: 1.3; color: var(--ct-ink); }
+  .md h1 { font-size: 17px; }
+  .md h2 { font-size: 15.5px; }
+  .md h3 { font-size: 14.5px; }
+  .md h4 { font-size: 13.5px; }
+  .md h2, .md h3 { padding-bottom: 3px; border-bottom: 1px solid var(--ct-border); }
+  .md ul, .md ol { margin: 4px 0 10px; padding-left: 22px; }
+  .md li { margin: 2px 0; }
+  .md li::marker { color: var(--ct-accent); }
+  .md strong { font-weight: 650; }
+  .md em { font-style: italic; }
+  .md del { opacity: 0.7; }
+  .md a { color: var(--ct-accent); text-decoration: none; border-bottom: 1px solid color-mix(in srgb, var(--ct-accent) 40%, transparent); }
+  .md a:hover { border-bottom-color: var(--ct-accent); }
+  .md code {
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 12.5px;
+    padding: 1px 5px;
+    border-radius: 5px;
+    background: var(--ct-code-bg);
+    border: 1px solid var(--ct-border);
+  }
+  .md blockquote {
+    margin: 6px 0 10px;
+    padding: 4px 10px;
+    border-left: 3px solid var(--ct-accent);
+    background: var(--ct-accent-soft);
+    border-radius: 0 8px 8px 0;
+  }
+  .md hr { border: none; border-top: 1px solid var(--ct-border); margin: 12px 0; }
+  .md .md-table-wrap { overflow-x: auto; margin: 6px 0 10px; }
+  .md table { border-collapse: collapse; font-size: 12.5px; }
+  .md th, .md td { border: 1px solid var(--ct-border); padding: 4px 8px; text-align: left; vertical-align: top; }
+  .md th { background: var(--ct-accent-soft); font-weight: 600; }
   .msg .code-block {
     margin: 8px 0;
     border-radius: 10px;
@@ -1126,7 +1337,7 @@ export function chatPanelStyles(): string {
     padding: 4px 10px;
     font-size: 10px;
     color: var(--ct-muted);
-    background: #fff;
+    background: color-mix(in srgb, var(--ct-ink) 6%, var(--ct-code-bg));
     border-bottom: 1px solid var(--ct-border);
   }
   .msg .code-block .code-row {
@@ -1168,8 +1379,8 @@ export function chatPanelStyles(): string {
     cursor: pointer;
     font-size: 12px;
   }
-  .msg-footer button:hover { border-color: var(--ct-rose); color: var(--ct-rose-deep); }
-  .msg-footer button.active { background: var(--ct-rose-soft); border-color: var(--ct-rose); color: var(--ct-rose-deep); }
+  .msg-footer button:hover { border-color: var(--ct-accent); color: var(--ct-accent-strong); }
+  .msg-footer button.active { background: var(--ct-accent-soft); border-color: var(--ct-accent); color: var(--ct-accent-strong); }
   .msg-footer .helpful { margin-left: auto; }
   .turn.reasoning {
     opacity: 0.7;
@@ -1177,7 +1388,7 @@ export function chatPanelStyles(): string {
     font-size: 12px;
     margin: 0 0 8px 38px;
     padding: 8px 12px;
-    background: var(--ct-rose-soft);
+    background: var(--ct-accent-soft);
     border-radius: 10px;
     color: var(--ct-muted);
   }
@@ -1221,24 +1432,24 @@ export function chatPanelStyles(): string {
     border: 1px solid var(--ct-composer-border);
     border-radius: 18px;
     box-shadow:
-      0 1px 2px rgba(232, 145, 154, 0.08),
-      0 8px 24px rgba(232, 145, 154, 0.12);
+      0 1px 2px color-mix(in srgb, var(--ct-accent) 8%, transparent),
+      0 8px 24px color-mix(in srgb, var(--ct-accent) 12%, transparent);
     overflow: hidden;
     transition: border-color 180ms ease, box-shadow 220ms ease;
   }
   #composerShell.focused {
-    border-color: var(--ct-rose);
+    border-color: var(--ct-accent);
     box-shadow:
-      0 0 0 3px rgba(232, 145, 154, 0.18),
-      0 10px 28px rgba(232, 145, 154, 0.2);
+      0 0 0 3px color-mix(in srgb, var(--ct-accent) 18%, transparent),
+      0 10px 28px color-mix(in srgb, var(--ct-accent) 20%, transparent);
   }
   #composerShell.sending {
     animation: composerPulse 900ms ease;
   }
   @keyframes composerPulse {
-    0% { box-shadow: 0 0 0 2px rgba(232, 145, 154, 0.15); }
-    45% { box-shadow: 0 0 0 4px rgba(232, 145, 154, 0.28), 0 8px 28px rgba(232, 145, 154, 0.25); }
-    100% { box-shadow: 0 1px 2px rgba(232, 145, 154, 0.08), 0 8px 24px rgba(232, 145, 154, 0.12); }
+    0% { box-shadow: 0 0 0 2px color-mix(in srgb, var(--ct-accent) 15%, transparent); }
+    45% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--ct-accent) 28%, transparent), 0 8px 28px color-mix(in srgb, var(--ct-accent) 25%, transparent); }
+    100% { box-shadow: 0 1px 2px color-mix(in srgb, var(--ct-accent) 8%, transparent), 0 8px 24px color-mix(in srgb, var(--ct-accent) 12%, transparent); }
   }
   #slashMenu {
     display: none;
@@ -1248,7 +1459,7 @@ export function chatPanelStyles(): string {
     right: 0;
     max-height: 220px;
     overflow-y: auto;
-    background: #fff;
+    background: var(--ct-popover-bg);
     color: var(--ct-ink);
     border: 1px solid var(--ct-border);
     border-radius: 14px;
@@ -1270,11 +1481,11 @@ export function chatPanelStyles(): string {
     align-items: baseline;
   }
   #slashMenu button:hover, #slashMenu button.active {
-    background: var(--ct-rose-soft);
+    background: var(--ct-accent-soft);
   }
   #slashMenu .slash-name {
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    color: var(--ct-rose-deep);
+    color: var(--ct-accent-strong);
   }
   #slashMenu .slash-summary { color: var(--ct-muted); font-size: 12px; }
 
@@ -1311,8 +1522,8 @@ export function chatPanelStyles(): string {
     height: 36px;
     margin-top: 2px;
     border-radius: 11px;
-    background: var(--ct-rose);
-    color: #fff;
+    background: var(--ct-accent-solid);
+    color: var(--ct-on-accent);
     border: none;
     cursor: pointer;
     font-size: 16px;
@@ -1321,12 +1532,12 @@ export function chatPanelStyles(): string {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    box-shadow: 0 4px 12px rgba(232, 145, 154, 0.4);
+    box-shadow: 0 4px 12px color-mix(in srgb, var(--ct-accent) 40%, transparent);
     transition: transform 120ms ease, background 120ms ease, box-shadow 160ms ease;
   }
   #sendBtn:hover:not(:disabled) {
-    background: var(--ct-rose-deep);
-    box-shadow: 0 6px 16px rgba(212, 114, 125, 0.45);
+    background: var(--ct-accent-solid-hover);
+    box-shadow: 0 6px 16px color-mix(in srgb, var(--ct-accent-strong) 45%, transparent);
     transform: translateY(-1px);
   }
   #sendBtn:disabled { opacity: 0.4; cursor: default; box-shadow: none; transform: none; }
@@ -1353,19 +1564,24 @@ export function chatPanelStyles(): string {
     height: 28px;
     padding: 0 10px;
     border-radius: 999px;
-    border: 1px solid var(--ct-border);
-    background: #fff;
+    border: 1px solid var(--ct-control-border);
+    background: var(--ct-control-bg);
     color: var(--ct-ink);
     font: inherit;
     font-size: 12px;
     cursor: pointer;
     white-space: nowrap;
-    max-width: 140px;
+    max-width: 170px;
   }
+  .pill:focus-visible, .composer-icon:focus-visible, #sendBtn:focus-visible {
+    outline: 2px solid var(--ct-accent);
+    outline-offset: 2px;
+  }
+  #modelChipLabel { overflow: hidden; text-overflow: ellipsis; }
   .pill:hover {
-    border-color: var(--ct-rose);
-    background: var(--ct-rose-soft);
-    color: var(--ct-rose-deep);
+    border-color: var(--ct-accent);
+    background: var(--ct-accent-soft);
+    color: var(--ct-accent-strong);
   }
   .pill .chev { opacity: 0.5; font-size: 10px; }
   .pill .bolt { color: inherit; display: flex; align-items: center; justify-content: center; margin-right: 2px; }
@@ -1386,56 +1602,28 @@ export function chatPanelStyles(): string {
     font-weight: 500;
   }
   #autoApplyToggle.off {
-    background: #fff;
+    background: var(--ct-control-bg);
     color: var(--ct-ink);
     border-color: var(--ct-border);
   }
   #autoApplyToggle.on {
-    background: var(--ct-rose-soft);
-    color: var(--ct-rose-deep);
-    border-color: var(--ct-rose);
+    background: var(--ct-accent-soft);
+    color: var(--ct-accent-strong);
+    border-color: var(--ct-accent);
   }
 
-  #effortMeter {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    height: 28px;
-    padding: 0 8px;
-    border-radius: 999px;
-    background: #fff;
-    border: 1px solid var(--ct-border);
-    cursor: pointer;
-  }
-  #effortMeter:hover { border-color: var(--ct-rose); background: var(--ct-rose-soft); }
-  #effortMeter .effort-label {
-    font-size: 10px;
-    color: var(--ct-muted);
-    margin-right: 2px;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-  }
-  #effortMeter .dot {
-    width: 5px;
-    height: 5px;
-    border-radius: 50%;
-    background: #e8d0d4;
-    transition: transform 160ms ease, background 160ms ease, box-shadow 160ms ease;
-  }
-  #effortMeter .dot.on {
-    background: #f0a0ac;
-  }
-  #effortMeter .dot.active {
-    width: 9px;
-    height: 9px;
-    background: radial-gradient(circle at 35% 35%, #fff, #f5c0ca 45%, #e8919a 100%);
-    box-shadow: 0 0 10px rgba(232, 145, 154, 0.75), 0 0 2px #fff;
-    animation: effortGlow 1.8s ease-in-out infinite;
-  }
-  @keyframes effortGlow {
-    0%, 100% { box-shadow: 0 0 8px rgba(232, 145, 154, 0.45), 0 0 1px #fff; }
-    50% { box-shadow: 0 0 14px rgba(232, 145, 154, 0.85), 0 0 3px #fff; }
-  }
+  /* Effort: one labelled pill that says what it is set to. It used to be five
+     unlabelled dots that changed nothing -- the value was never sent. */
+  .effort-pill { gap: 6px; }
+  .effort-pill .effort-bars { display: block; flex-shrink: 0; }
+  .effort-pill .effort-bars rect { fill: color-mix(in srgb, var(--ct-ink) 28%, transparent); transition: fill 140ms ease; }
+  .effort-pill[data-level="1"] .effort-bars .b1,
+  .effort-pill[data-level="2"] .effort-bars .b1, .effort-pill[data-level="2"] .effort-bars .b2,
+  .effort-pill[data-level="3"] .effort-bars rect { fill: var(--ct-accent); }
+  .effort-pill .effort-name { color: var(--ct-muted); }
+  .effort-pill .effort-value { font-weight: 600; }
+  .effort-pill:not([data-level="0"]) { border-color: color-mix(in srgb, var(--ct-accent) 55%, transparent); }
+  .effort-pill:not([data-level="0"]) .effort-value { color: var(--ct-accent-strong); }
 
   .composer-icon {
     width: 30px;
@@ -1451,7 +1639,7 @@ export function chatPanelStyles(): string {
     align-items: center;
     justify-content: center;
   }
-  .composer-icon:hover { background: var(--ct-rose-soft); color: var(--ct-rose-deep); }
+  .composer-icon:hover { background: var(--ct-accent-soft); color: var(--ct-accent-strong); }
   .composer-icon:disabled { opacity: 0.35; cursor: default; }
 
   .attach-list {
@@ -1469,7 +1657,7 @@ export function chatPanelStyles(): string {
     padding: 4px 8px 4px 10px;
     border-radius: 999px;
     border: 1px solid var(--ct-border);
-    background: #fff;
+    background: var(--ct-control-bg);
     color: var(--ct-ink);
     font-size: 11px;
   }
@@ -1484,8 +1672,8 @@ export function chatPanelStyles(): string {
     height: 18px;
     border: none;
     border-radius: 50%;
-    background: var(--ct-rose-soft);
-    color: var(--ct-rose-deep);
+    background: var(--ct-accent-soft);
+    color: var(--ct-accent-strong);
     cursor: pointer;
     font-size: 12px;
     line-height: 1;
@@ -1494,34 +1682,36 @@ export function chatPanelStyles(): string {
     align-items: center;
     justify-content: center;
   }
-  .attach-chip .attach-remove:hover { background: var(--ct-rose); color: #fff; }
+  .attach-chip .attach-remove:hover { background: var(--ct-accent); color: #fff; }
 
+  /* Context usage: a ring that reads on any theme, plus the number. At 4% the
+     old pale ring on a pale track was not visible at all. */
   .context-btn {
     position: relative;
+    width: auto;
+    gap: 4px;
+    padding: 0 6px;
+    color: var(--ct-muted);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
   }
-  .context-ring {
-    width: 18px;
-    height: 18px;
-    display: block;
-  }
-  .context-ring-track {
-    stroke: var(--ct-border);
-  }
-  .context-ring-fill {
-    stroke: var(--ct-rose);
-    transition: stroke-dashoffset 200ms ease;
-  }
-  .context-btn.hot .context-ring-fill { stroke: var(--ct-rose-deep); }
+  .context-ring { width: 18px; height: 18px; display: block; }
+  .context-ring-track { stroke: color-mix(in srgb, var(--ct-ink) 22%, transparent); }
+  .context-ring-fill { stroke: var(--ct-accent); transition: stroke-dashoffset 200ms ease; }
+  .context-btn.warn .context-ring-fill { stroke: var(--ct-warn); }
+  .context-btn.warn .context-pct { color: var(--ct-warn); }
+  .context-btn.hot .context-ring-fill { stroke: var(--ct-danger); }
+  .context-btn.hot .context-pct { color: var(--ct-danger); font-weight: 600; }
 
   .context-popup {
     position: absolute;
     right: 12px;
     bottom: calc(100% + 10px);
     width: min(340px, calc(100% - 24px));
-    background: #fff;
+    background: var(--ct-popover-bg);
     border: 1px solid var(--ct-border);
     border-radius: 16px;
-    box-shadow: 0 12px 36px rgba(212, 114, 125, 0.18);
+    box-shadow: var(--ct-shadow);
     padding: 14px;
     z-index: 20;
     color: var(--ct-ink);
@@ -1547,7 +1737,7 @@ export function chatPanelStyles(): string {
     cursor: pointer;
     font-size: 14px;
   }
-  .context-popup-close:hover { background: var(--ct-rose-soft); color: var(--ct-rose-deep); }
+  .context-popup-close:hover { background: var(--ct-accent-soft); color: var(--ct-accent-strong); }
   .context-popup-summary {
     display: flex;
     justify-content: space-between;
@@ -1606,15 +1796,30 @@ export function chatPanelStyles(): string {
     right: 12px;
     bottom: calc(100% + 10px);
     width: min(340px, calc(100% - 24px));
-    background: #fff;
+    background: var(--ct-popover-bg);
     border: 1px solid var(--ct-border);
     border-radius: 16px;
-    box-shadow: 0 12px 36px rgba(212, 114, 125, 0.18);
+    box-shadow: var(--ct-shadow);
     padding: 8px;
     z-index: 20;
     color: var(--ct-ink);
   }
   .modes-popup[hidden] { display: none !important; }
+  /* The model dropdown reuses the mode menu's look, anchored under the chip on
+     the left, and scrolls when a provider lists many models. */
+  .model-popup { left: 12px; right: auto; max-height: min(360px, 60vh); overflow-y: auto; }
+  .model-popup .mode-item[aria-disabled="true"] { opacity: 0.5; cursor: not-allowed; }
+  .mode-item:focus-visible { outline: 2px solid var(--ct-accent); outline-offset: -2px; }
+  .model-popup .model-tag {
+    font-size: 10px;
+    padding: 1px 6px;
+    margin-left: 6px;
+    border-radius: 999px;
+    background: var(--ct-accent-soft);
+    color: var(--ct-accent-strong);
+    vertical-align: 1px;
+  }
+  .model-popup .model-empty { padding: 10px; color: var(--ct-muted); font-size: 12px; }
   .modes-popup-head {
     display: flex;
     align-items: center;
@@ -1648,7 +1853,7 @@ export function chatPanelStyles(): string {
     color: inherit;
   }
   .mode-item:hover { background: #f9f5f6; }
-  .mode-item[aria-selected="true"] { background: var(--ct-rose-soft); }
+  .mode-item[aria-selected="true"] { background: var(--ct-accent-soft); }
   .mode-icon {
     display: flex;
     align-items: center;
@@ -1670,10 +1875,10 @@ export function chatPanelStyles(): string {
     color: var(--ct-muted);
     line-height: 1.35;
   }
-  .mode-item[aria-selected="true"] .mode-name { color: var(--ct-rose-deep); }
+  .mode-item[aria-selected="true"] .mode-name { color: var(--ct-accent-strong); }
   .mode-check {
     font-size: 14px;
-    color: var(--ct-rose-deep);
+    color: var(--ct-accent-strong);
     opacity: 0;
     font-weight: bold;
     margin-top: 1px;
@@ -1687,8 +1892,8 @@ export function chatPanelStyles(): string {
 
 
   button {
-    background: var(--ct-rose);
-    color: #fff;
+    background: var(--ct-accent-solid);
+    color: var(--ct-on-accent);
     border: none;
     padding: 6px 14px;
     border-radius: 8px;
@@ -1720,7 +1925,7 @@ export function chatPanelStyles(): string {
     padding: 6px 10px;
     font-size: 11px;
   }
-  .edit-proposal .view-diff-btn:hover { background: var(--ct-rose-soft); border-color: var(--ct-rose); }
+  .edit-proposal .view-diff-btn:hover { background: var(--ct-accent-soft); border-color: var(--ct-accent); }
   .edit-proposal .actions { display: flex; gap: 6px; }
   .edit-proposal .result { margin-top: 6px; font-style: italic; }
   .edit-proposal .result.ok { color: #1e7a3a; }
@@ -1739,8 +1944,8 @@ export function chatPanelStyles(): string {
   .edit-rejections {
     margin: 4px 0 14px 38px;
     padding: 10px 12px;
-    border-left: 3px solid var(--ct-rose, #c0392b);
-    background: var(--ct-rose-soft, rgba(192, 57, 43, 0.08));
+    border-left: 3px solid var(--ct-danger);
+    background: color-mix(in srgb, var(--ct-danger) 9%, transparent);
     border-radius: 4px;
     font-size: 0.92em;
   }
@@ -1784,7 +1989,7 @@ export function chatPanelStyles(): string {
   .tool-approval .approval-lane.confined { color: var(--ct-muted); }
   .tool-approval .approval-actions { display: flex; gap: 6px; flex-wrap: wrap; }
   .tool-approval .approval-btn:focus-visible {
-    outline: 2px solid var(--ct-rose);
+    outline: 2px solid var(--ct-accent);
     outline-offset: 1px;
   }
   .tool-activity {
@@ -1902,18 +2107,21 @@ export function chatPanelBodyMarkup(logoUri: string = ''): string {
       </div>
       <div class="composer-bottom">
         <div class="composer-left">
-          <button type="button" class="pill" id="modelChip" title="Choose model (/model)" aria-label="Choose model">
+          <button type="button" class="pill" id="modelChip" title="Choose model" aria-label="Choose model"
+            aria-haspopup="listbox" aria-expanded="false" aria-controls="modelPopup">
             <span id="modelChipLabel">Model</span><span class="chev" aria-hidden="true">▾</span>
           </button>
-          <span class="pill spec-chip" id="specChip" hidden title="Active spec: every prompt works to it (/spec show)"></span>
-          <div id="effortMeter" role="slider" aria-valuemin="1" aria-valuemax="5" aria-valuenow="3" aria-label="Effort level" title="Effort">
-            <span class="effort-label">Effort</span>
-            <span class="dot" data-level="1"></span>
-            <span class="dot" data-level="2"></span>
-            <span class="dot" data-level="3"></span>
-            <span class="dot" data-level="4"></span>
-            <span class="dot" data-level="5"></span>
-          </div>
+          <span class="pill spec-chip" id="specChip" hidden title="Active spec: every prompt works to it (/spec show, /spec off)"></span>
+          <button type="button" class="pill effort-pill" id="effortBtn" data-level="0"
+            aria-label="Thinking effort: Auto. Click to change."
+            title="Thinking effort: how long the model reasons before it answers. Auto uses the model's default. Higher is slower and often more careful. Click to cycle Auto, Low, Medium, High.">
+            <svg class="effort-bars" width="14" height="12" viewBox="0 0 14 12" aria-hidden="true">
+              <rect class="b1" x="0" y="7" width="3.2" height="5" rx="1"/>
+              <rect class="b2" x="5.4" y="4" width="3.2" height="8" rx="1"/>
+              <rect class="b3" x="10.8" y="0" width="3.2" height="12" rx="1"/>
+            </svg>
+            <span class="effort-name">Effort</span><span class="effort-value" id="effortValue">Auto</span>
+          </button>
         </div>
         <div class="composer-right">
           <button type="button" class="composer-icon context-btn" id="contextBtn" title="Context usage" aria-label="Open context usage" aria-expanded="false" aria-controls="contextPopup">
@@ -1923,9 +2131,8 @@ export function chatPanelBodyMarkup(logoUri: string = ''): string {
                 stroke-linecap="round" transform="rotate(-90 12 12)"
                 stroke-dasharray="50.27" stroke-dashoffset="50.27"/>
             </svg>
+            <span class="context-pct" id="contextPctShort" aria-hidden="true">0%</span>
           </button>
-          <input type="file" id="fileInput" multiple hidden
-            accept=".txt,.md,.json,.js,.ts,.tsx,.jsx,.py,.go,.rs,.java,.c,.h,.cpp,.hpp,.css,.html,.xml,.yaml,.yml,.toml,.sh,.sql,.csv,.log,.env.example,image/*,.png,.jpg,.jpeg,.webp,.gif" />
           <button type="button" class="composer-icon" id="attachBtn" title="Attach files" aria-label="Attach files">📎</button>
           <button id="autoApplyToggle" class="pill mode-btn on" aria-haspopup="listbox" aria-expanded="false"
             aria-label="Select mode"
@@ -1948,6 +2155,12 @@ export function chatPanelBodyMarkup(logoUri: string = ''): string {
       <div class="context-bar" id="contextBar" aria-hidden="true"></div>
       <div class="context-rows" id="contextRows"></div>
       <div class="context-note" id="contextNote">Estimates from this chat panel (chars÷4). Not exact provider billing.</div>
+    </div>
+    <div id="modelPopup" class="modes-popup model-popup" hidden role="dialog" aria-label="Choose model">
+      <div class="modes-popup-head">
+        <div class="modes-popup-title">Model</div>
+      </div>
+      <div class="modes-list" id="modelList" role="listbox" aria-label="Models"></div>
     </div>
     <div id="modesPopup" class="modes-popup" hidden role="dialog" aria-label="Select mode">
       <div class="modes-popup-head">
