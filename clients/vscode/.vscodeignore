@@ -17,16 +17,20 @@
 
 # --- source, kept out; only compiled output ships ---
 src/**
-tsconfig.json
+tsconfig*.json
 **/*.ts
 **/*.map
 
 # --- tests, and the 3 GB of VS Code builds their harness downloads ---
 out/test/**
+# The readers ship bundled in out/vendor/. tsc emits a loose copy of any of
+# their files a test imports (out/extractors/raster.js); nothing loads it.
+out/extractors/**
 .vscode-test/**
 .vscode/**
 
 # --- development-only metadata ---
+.mochiii/**
 .gitignore
 .vscodeignore
 package-lock.json
