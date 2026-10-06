@@ -58,6 +58,15 @@ var textFragments = []string{
 	"line one\nline two\n\nline four",
 	"trailing spaces    ",
 	"\ttabbed\tcolumns\t",
+	// Markdown, which an assistant turn is now drawn as (markdown.go): the
+	// cache has to hold for it too, and for the same text drawn plain.
+	"**strong** and *soft* and `code`\n",
+	"\n## heading\n",
+	"\n- item one\n- item **two**\n  1. nested\n",
+	"\n| a | b |\n|---|--:|\n| one two three four | 5 |\n",
+	"\n```go\nfunc f() {}\n```\n",
+	"\n> quoted\n\n---\n",
+	"[a link](https://example.com/x) ",
 }
 
 // randomTurn builds one turn out of the fragments and the permitted SGR.
@@ -78,6 +87,11 @@ func randomTurn(rng *rand.Rand) turn {
 	}
 	if t.role == roleAssistant && rng.Intn(3) == 0 {
 		t.reasoning = build()
+	}
+	// A command's output is drawn as written, a model's answer as markdown:
+	// the same text, two renders, one cache.
+	if t.role == roleAssistant {
+		t.local, t.verbatim = rng.Intn(4) == 0, rng.Intn(4) == 0
 	}
 	return t
 }

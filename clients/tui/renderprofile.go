@@ -108,11 +108,19 @@ import (
 //	                       Changes the console, never the returned string.
 //
 //	PACKAGE-LEVEL STATE OF OUR OWN:
-//	  styles.go            eleven styles and four colours, all built from
-//	                       constants at init and never reassigned afterwards
-//	                       (nothing outside styles.go assigns to any of them).
-//	                       They capture the default renderer pointer at init,
-//	                       which is the same renderer this function pins.
+//	  styles.go            eleven styles, the twelve pens an answer is
+//	                       drawn with (mdStyles) and eight colours, all built
+//	                       from constants at init and never reassigned
+//	                       afterwards (nothing outside styles.go assigns to any
+//	                       of them). They capture the default renderer pointer
+//	                       at init, which is the same renderer this function
+//	                       pins.
+//	  mdPenMemo            the escape sequences those twelve pens write, kept
+//	                       per colour profile (markdown.go). A function of
+//	                       mdStyles and the profile and of nothing else, and
+//	                       rebuilt when the profile it was built for is not the
+//	                       one in force -- which is why the profile sweeps in
+//	                       the tests see the right bytes.
 //	  no clock, no random  the render path calls neither time.Now nor math/rand,
 //	                       so nothing else varies run to run.
 func pinColorProfile() termenv.Profile {

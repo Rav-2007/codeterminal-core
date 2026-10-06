@@ -543,6 +543,25 @@ NVIDIA"), and changes nothing. In the TUI, `/connect <provider>` or
 `/connect <address>` names the provider yourself, which a key with a bare `sk-`
 prefix needs. VS Code's `/connect` does not take either yet.
 
+**An answer is drawn as markdown, in blue and grey (TUI).** A model writes
+markdown, and the TUI draws it instead of printing its punctuation:
+
+| In the answer | On screen |
+|---|---|
+| headings, `**strong**`, a table's header row, list markers | blue, bold |
+| `*emphasis*`, `` `code` ``, links | steel blue |
+| the answer's own words | grey |
+| table borders, rules, quote bars, code fences | dim grey |
+
+A table is boxed to fit the terminal; when it cannot fit without breaking its
+words it is listed row by row instead, with nothing dropped. A link shows its
+address after its text. **Code blocks and edit blocks are shown character for
+character** -- what you copy out of the terminal is what the model wrote. Text
+that only looks like markdown is left alone: `5*3 = 15`, `snake_case`,
+`__init__`, `**kwargs`. `NO_COLOR=1` turns the colour off and keeps the layout.
+The output of local commands (`/help`, `/git`, …) is not markdown and is shown
+as written.
+
 ---
 
 # How it works

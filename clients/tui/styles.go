@@ -13,6 +13,34 @@ var (
 	colorRed  = lipgloss.Color("203")
 )
 
+// The answer's own palette (markdown.go): blue for what the model marked as
+// mattering, grey for the rest, on the terminal's black. ASKED FOR 2026-10-06 by
+// the owner -- "use those two colors (blue, grey)". Two of each, so an answer
+// has four levels and no more; nothing else in an answer has a colour.
+var (
+	colorBlue  = lipgloss.Color("75")  // ~#5FAFFF: headings, **strong**
+	colorSteel = lipgloss.Color("110") // ~#87AFD7: *emphasis*, `code`, links
+	colorDim   = lipgloss.Color("243") // ~#767676: borders, rules, fences
+	colorChip  = lipgloss.Color("236") // ~#303030: the ground behind `code`
+)
+
+// mdStyles is how each pen of an answer is drawn. Read once per colour profile
+// (currentPens) and never per run: see mdPens.
+var mdStyles = [penCount]lipgloss.Style{
+	penBody:      lipgloss.NewStyle().Foreground(colorGray),
+	penStrong:    lipgloss.NewStyle().Foreground(colorBlue).Bold(true),
+	penEm:        lipgloss.NewStyle().Foreground(colorSteel).Italic(true),
+	penStrongEm:  lipgloss.NewStyle().Foreground(colorBlue).Bold(true).Italic(true),
+	penCode:      lipgloss.NewStyle().Foreground(colorSteel).Background(colorChip),
+	penCodeBlock: lipgloss.NewStyle().Foreground(colorSteel),
+	penHeading:   lipgloss.NewStyle().Foreground(colorBlue).Bold(true),
+	penLink:      lipgloss.NewStyle().Foreground(colorSteel).Underline(true),
+	penStrike:    lipgloss.NewStyle().Foreground(colorDim).Strikethrough(true),
+	penQuote:     lipgloss.NewStyle().Foreground(colorGray).Italic(true),
+	penMarker:    lipgloss.NewStyle().Foreground(colorBlue),
+	penRule:      lipgloss.NewStyle().Foreground(colorDim),
+}
+
 var (
 	logoStyle      = lipgloss.NewStyle().Foreground(colorPink).Bold(true)
 	brandStyle     = lipgloss.NewStyle().Foreground(colorPink).Bold(true)

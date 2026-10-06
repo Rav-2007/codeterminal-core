@@ -40,9 +40,10 @@ import (
 //
 // This cache instead stores, beside each rendered block, THE INPUTS IT WAS
 // RENDERED FROM, and checks them on every use. A block is reused only if the
-// turn at that index still has the same role, the same text and the same
-// reasoning. So a mutation nobody thought of does not produce stale output; it
-// produces a cache miss and a re-render.
+// turn at that index still has the same role, the same text, the same
+// reasoning and the same way of being drawn (plain, or as markdown). So a
+// mutation nobody thought of does not produce stale output; it produces a
+// cache miss and a re-render.
 //
 // The check is O(1) per turn in the common case. Go compares strings by data
 // pointer and length first, and an unmutated turn hands back the identical
@@ -137,6 +138,17 @@ import (
 //     the same turns. No entry changes and none
 //     should be discarded.
 //
+//  13. the same text, drawn two ways   an assistant turn is a model's markdown
+//     (markdown.go) or a command's output drawn
+//     as written (turn.plainAnswer), and the
+//     same text gives different bytes. Neither
+//     flag changes after a turn is appended,
+//     but the turn at an index can be REPLACED
+//     by one that differs only in them, which
+//     role and text alone would call a match.
+//     Detected: plain is part of the key.
+//     Discarded: that block.
+//
 // WHAT IT COSTS. One extra copy of the rendered transcript, plus three string
 // headers per turn. The turn text itself is not copied -- the cached key shares
 // the turn's backing array. Bounding that growth is task 3.5's job, not this
@@ -163,12 +175,15 @@ type cachedBlock struct {
 	role      turnRole
 	text      string
 	reasoning string
-	out       string
+	// plain is turn.plainAnswer(): the same text is drawn differently as a
+	// command's output and as a model's markdown, so it is part of the key.
+	plain bool
+	out   string
 }
 
 // matches reports whether this block was rendered from exactly this turn.
 func (b *cachedBlock) matches(t turn) bool {
-	return b.role == t.role && b.text == t.text && b.reasoning == t.reasoning
+	return b.role == t.role && b.text == t.text && b.reasoning == t.reasoning && b.plain == t.plainAnswer()
 }
 
 // render returns the same bytes renderTranscript would, reusing the blocks of
@@ -201,7 +216,7 @@ func (c *transcriptCache) render(turns []turn, width int) string {
 			continue
 		}
 		out := renderTurnBlock(turns[i], width)
-		blk := cachedBlock{role: turns[i].role, text: turns[i].text, reasoning: turns[i].reasoning, out: out}
+		blk := cachedBlock{role: turns[i].role, text: turns[i].text, reasoning: turns[i].reasoning, plain: turns[i].plainAnswer(), out: out}
 		if i < len(c.blocks) {
 			c.blocks[i] = blk
 		} else {

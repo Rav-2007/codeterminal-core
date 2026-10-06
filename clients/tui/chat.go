@@ -98,7 +98,19 @@ type turn struct {
 	// (/history, /usage) already kept their output out with roleSystem; this
 	// keeps the older ones looking exactly as they did and stops sending them.
 	local bool
+	// verbatim marks an assistant turn whose text is a COMMAND'S OUTPUT and not
+	// a model's markdown, so it is drawn as written (see plainAnswer). /git and
+	// /search need it and nothing else does: they are the two local commands
+	// whose output stays in the conversation, so `local` does not cover them,
+	// and `git status -sb` opens with "## branch" -- a heading, to a markdown
+	// renderer.
+	verbatim bool
 }
+
+// plainAnswer reports whether an assistant turn is drawn as written instead of
+// as markdown: everything this client wrote itself. Only a model writes
+// markdown; /help's aligned columns and a diff's leading "-" are not it.
+func (t turn) plainAnswer() bool { return t.local || t.verbatim }
 
 // helpText is the persistent hint shown under the input. Conversational
 // memory is on: every prompt after the first sends the transcript so far as
@@ -1573,7 +1585,7 @@ func (m chatModel) handleLocalSlash(name, args string) (tea.Model, tea.Cmd) {
 		// /git and /search FETCH something to talk about ("write a commit
 		// message for this"), so their output stays in the conversation. The
 		// rest is this client describing itself.
-		m.appendTurn(turn{role: roleAssistant, text: reply, local: name != "git" && name != "search"})
+		m.appendTurn(turn{role: roleAssistant, text: reply, verbatim: true, local: name != "git" && name != "search"})
 	}
 	m.resizeViewport()
 	m.refreshViewport()
@@ -2444,7 +2456,12 @@ func renderTurnBlock(t turn, width int) string {
 		// The answer only. A thinking model's reasoning is kept on the turn but
 		// not drawn -- while it streams, refreshViewport shows the one-line
 		// "💭 thinking" indicator instead (see awaitingAnswer).
-		return assistantStyle.Render("Mochiii: " + t.text)
+		if t.plainAnswer() {
+			return assistantStyle.Render(assistantLabel + t.text)
+		}
+		// A model's answer is markdown and is drawn as markdown (markdown.go).
+		// It needs the width: a table is laid out to fit it.
+		return renderAnswer(t.text, width)
 	case roleSystem:
 		return helpStyle.Render(t.text)
 	case roleSevered:

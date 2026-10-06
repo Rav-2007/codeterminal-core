@@ -165,6 +165,13 @@ TARGETS=(
   "clients/tui:FuzzSanitizeNoEscapeSurvives"
   "clients/tui:FuzzSanitizeChunkInvariance"
   "clients/tui:FuzzIncrementalRenderMatchesFull"
+  # The answer renderer (markdown.go), added 2026-10-06 with it: a hand-written
+  # parser of text a model chose. On its first two runs it found a Unicode
+  # space that ansi.Wrap measures by its bytes (a laid-out line was wrapped a
+  # second time, mid-colour) and a long word with no ASCII in it that took time
+  # in the square of its length -- which is every Chinese or Japanese
+  # paragraph.
+  "clients/tui:FuzzAnAnswerDraws"
 )
 
 # THE SELF-TEST, and it is the ONLY thing that can verify the classifier.
