@@ -1390,6 +1390,10 @@ type HistoryRequest struct {
 	// case-insensitively. Empty lists everything. Additive: older daemons
 	// ignore it and list all, which a client renders the same way.
 	Query string `json:"query,omitempty"`
+	// Tier is the model the client has chosen (PromptRequest.Tier's meaning),
+	// so HistoryCompact's summary is written by the model the chat is using.
+	// Empty, or one the daemon does not offer, means the default.
+	Tier string `json:"tier,omitempty"`
 }
 
 // HistoryEntry is one chat in a list. Current marks the live conversation,

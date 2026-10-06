@@ -59,7 +59,7 @@ const (
 var clientMessages = map[ModelErrorClass]string{
 	ClassRateLimited:         "the model provider is rate-limiting requests right now — wait a few seconds and try again",
 	ClassQuotaExceeded:       "your credit or spending limit is used up — top it up or raise the limit with your provider, or connect another key with /connect; every request will fail until then",
-	ClassContextTooLarge:     "this conversation is too large for the model's context window — start a new session or shorten the request",
+	ClassContextTooLarge:     "this conversation is too large for the model, or for your plan's per-request limit — /compact it, start a new chat, or shorten the request",
 	ClassAuth:                "the provider rejected the API key — connect a working one with /connect, or check the key this daemon was started with",
 	ClassUpstreamUnavailable: "the model provider is unreachable or failing right now — this is usually temporary",
 	ClassPrivacyRefused:      "inference refused: no zero-data-retention endpoint available",
@@ -229,6 +229,24 @@ var quotaPhrases = []string{
 	"insufficient credits",
 }
 
+// isWindowRateLimit reports a per-minute (or per-day) allowance, which comes
+// back on its own, as opposed to a spent one, which does not. MEASURED
+// 2026-10-06 from Groq's free tier: a request over the plan's input-tokens-per-
+// minute limit is refused with 413 "Request too large for model ... on input
+// tokens per minute (ITPM): Limit 7000, Requested 13460 ... Need more tokens?
+// Upgrade to Dev Tier today at https://console.groq.com/settings/billing",
+// code "rate_limit_exceeded"; an ordinary throttle is the same text on a 429.
+// The link's "billing" matched quotaPhrases, so every one of them read as
+// "your credit is used up" -- unretried, and telling a free-tier user to top
+// up an account that was fine. Checked before quotaPhrases for that reason; an
+// explicit quota code still wins.
+func isWindowRateLimit(lower string) bool {
+	if strings.Contains(lower, "quota_exceeded") || strings.Contains(lower, "insufficient_quota") {
+		return false
+	}
+	return strings.Contains(lower, "rate_limit_exceeded") || strings.Contains(lower, "rate limit reached")
+}
+
 // classifyHTTPError maps an upstream non-200 response to a class. Body text is
 // consulted before the status code wherever the status is ambiguous.
 func classifyHTTPError(status int, statusLine, body string) *ModelError {
@@ -246,6 +264,11 @@ func classifyHTTPStatus(status int, statusLine, body string) *ModelError {
 		return &ModelError{Class: ClassPrivacyRefused, detail: detail}
 	case strings.Contains(lower, "unavailable_tier") || strings.Contains(lower, "model_not_allowed") || strings.Contains(lower, "cost_surface_not_allowed"):
 		return &ModelError{Class: ClassUnavailableTier, detail: detail}
+	case isWindowRateLimit(lower):
+		if status == http.StatusRequestEntityTooLarge || strings.Contains(lower, "request too large") {
+			return &ModelError{Class: ClassContextTooLarge, detail: detail}
+		}
+		return &ModelError{Class: ClassRateLimited, detail: detail}
 	case containsAny(lower, quotaPhrases):
 		return &ModelError{Class: ClassQuotaExceeded, detail: detail}
 	case containsAny(lower, contextLengthPhrases):

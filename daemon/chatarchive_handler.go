@@ -87,10 +87,20 @@ func (s *Server) handleHistory(ctx context.Context, enc *json.Encoder, req proto
 		reply(protocol.HistoryResponse{Entry: &entry, Pruned: pruned})
 
 	case protocol.HistoryCompact:
-		entry, turns, compacted, err := s.compactChat(ctx, archive, req.Spec)
+		entry, turns, compacted, err := s.compactChat(ctx, archive, req.Spec, req.Tier)
 		if err != nil {
 			if errors.Is(err, errNothingToCompact) {
 				reply(protocol.HistoryResponse{Error: err.Error()})
+				return
+			}
+			// A model failure says which one: "see the daemon log" sent the user
+			// looking for a file to learn their plan's limit was hit. Error() is
+			// the scrubbed, client-safe sentence; the provider's own text goes
+			// only to the log.
+			var me *ModelError
+			if errors.As(err, &me) {
+				s.logger.Printf("history compact: %s", me.Detail())
+				reply(protocol.HistoryResponse{Error: "the model could not write the summary: " + me.Error()})
 				return
 			}
 			fail("compacting this chat", err)
