@@ -28,7 +28,8 @@ import {
   applyEdit,
   fetchAvailableTiers,
   preflightSession,
-  searchConversations,
+  chatHistory,
+  resetChat,
   streamPrompt,
   undoEdits,
 } from './daemonClient';
@@ -149,7 +150,6 @@ export class ChatPanel {
   private refusalReasons: string[] = [];
   private applyInFlight = false;
   private undoInFlight = false;
-  private searchInFlight = false;
 
   // turnMode is the latest turn's wire mode, and appliedPaths the files its
   // review applied -- so the spec a /spec turn wrote becomes active once the
@@ -221,6 +221,8 @@ export class ChatPanel {
       this.panel.webview.postMessage({ type: 'history', turns: persisted });
       this.postActiveSpec();
       this.postModelTier();
+      // The header star shows whether the chat that was just restored is bookmarked.
+      void this.onHistoryList('');
     } catch (err) {
       this.panel.webview.postMessage({
         type: 'error',
@@ -277,6 +279,8 @@ export class ChatPanel {
     remaining?: number;
     effort?: string;
     tier?: string;
+    id?: string;
+    on?: boolean;
   }): void {
     if (msg.type === 'pickAttachments' && typeof msg.remaining === 'number') {
       void this.onPickAttachments(msg.remaining);
@@ -299,12 +303,18 @@ export class ChatPanel {
       this.onUndoEdit(msg.backupDir);
     } else if (msg.type === 'viewDiff' && typeof msg.index === 'number') {
       this.onViewDiff(msg.index);
-    } else if (msg.type === 'search' && typeof msg.text === 'string') {
-      this.onSearch(msg.text);
+    } else if (msg.type === 'historyList') {
+      void this.onHistoryList(typeof msg.text === 'string' ? msg.text : '');
+    } else if (msg.type === 'historyResume' && typeof msg.id === 'string') {
+      void this.onHistoryResume(msg.id);
+    } else if (msg.type === 'historyBookmark' && typeof msg.id === 'string') {
+      void this.onHistoryBookmark(msg.id, msg.on === true);
+    } else if (msg.type === 'historyDelete' && typeof msg.id === 'string') {
+      void this.onHistoryDelete(msg.id);
     } else if (msg.type === 'closePanel') {
       this.panel.dispose();
     } else if (msg.type === 'newChat') {
-      this.onNewChat();
+      void this.onNewChat();
     }
   }
 
@@ -367,14 +377,27 @@ export class ChatPanel {
     }
   }
 
-  private onNewChat(): void {
+  // "+": keep the chat in history (auto-save), then start a new one on the
+  // daemon too -- it used to clear only this panel, so the daemon went on
+  // appending to one endless chat and the next window rehydrated all of it.
+  private async onNewChat(): Promise<void> {
     this.inFlight?.abort();
     this.inFlight = undefined;
     this.clearPendingApproval();
     this.clearPendingReview();
+    const saved = this.autoSave() ? await this.saveCurrentChat() : false;
+    try {
+      await resetChat(CLIENT_NAME);
+    } catch {
+      // No daemon: the panel is cleared anyway; the next handshake starts fresh.
+    }
     this.transcript = [];
     this.lastGrounding = undefined;
-    this.panel.webview.postMessage({ type: 'clearTranscript' });
+    this.postSafe({ type: 'clearTranscript' });
+    this.postSafe({ type: 'currentBookmark', on: false });
+    if (saved) {
+      this.postSafe({ type: 'info', text: 'New chat · the previous one is saved in History' });
+    }
   }
 
   private onPrompt(text: string, autoApply: boolean, mode?: string): void {
@@ -578,6 +601,7 @@ export class ChatPanel {
       },
       // Both return the sentence to print. The panel never reads or deletes a
       // credential itself -- it asks the extension, which owns SecretStorage.
+      compactChat: () => this.compactChat(),
       showApiKey: async () => vscode.commands.executeCommand<string>('mochiii.showApiKey'),
       forgetApiKey: async () => vscode.commands.executeCommand<string>('mochiii.forgetApiKey'),
     };
@@ -1078,28 +1102,143 @@ export class ChatPanel {
     }
   }
 
-  // onSearch runs a lexical (FTS5) search over cross-session conversation
-  // memory for the current workspace, entirely separate from the chat
-  // transcript above -- searching never touches this.transcript or
-  // interrupts an in-flight prompt/apply/undo, and a search in flight
-  // doesn't block those either; searchInFlight only guards against a second
-  // search racing the first. Results (or the empty-not-error / actual-error
-  // outcome) are relayed to the webview verbatim, exactly as they arrived
-  // over the wire -- no re-sorting (results already arrive bm25-ranked) and
-  // no collapsing "no results" and "search failed" into the same message,
-  // mirroring how onUndoEdit relays guarded/error without collapsing them.
-  private async onSearch(query: string): Promise<void> {
-    if (this.searchInFlight) {
+  // HISTORY, Claude Code style: every chat is kept (mochiii.history.autoSave,
+  // on by default) and listed with its title and age; the search box matches
+  // what was SAID, not only titles; bookmarked chats are pinned and never
+  // pruned. The chats live in the daemon's archive (daemon/chatarchive.go),
+  // shared with the terminal's /history.
+  //
+  // AUTO-SAVE REVERSES A RECORDED RULE, BY THE USER'S CHOICE (2026-10-06):
+  // chatarchive.go writes only chats the user saves, "the owner's requirement
+  // ... that disk use stays the user's choice". The setting is that choice, and
+  // the archive's bounds (50 chats, 20 MB per workspace, bookmarks exempt) hold.
+  private autoSave(): boolean {
+    return vscode.workspace.getConfiguration('mochiii').get<boolean>('history.autoSave', true) !== false;
+  }
+
+  private postSafe(m: Record<string, unknown>): void {
+    try {
+      void this.panel.webview.postMessage(m);
+    } catch {
+      // panel closed meanwhile
+    }
+  }
+
+  // Saves the current chat (or updates its saved copy). "Nothing to save" --
+  // an empty chat, or one with no answer yet -- is not a failure.
+  private async saveCurrentChat(): Promise<boolean> {
+    if (this.transcript.length === 0) {
+      return false;
+    }
+    try {
+      const r = await chatHistory(CLIENT_NAME, 'save');
+      return !r.error && !!r.entry;
+    } catch {
+      return false;
+    }
+  }
+
+  private async onHistoryList(query: string): Promise<void> {
+    try {
+      const r = await chatHistory(CLIENT_NAME, 'list', { query: query.trim() || undefined });
+      this.postSafe({ type: 'historyEntries', entries: r.entries ?? [], query, error: r.error });
+      const current = (r.entries ?? []).find((e) => e.current);
+      if (!query.trim()) {
+        this.postSafe({ type: 'currentBookmark', on: current?.bookmarked === true });
+      }
+    } catch (err) {
+      this.postSafe({ type: 'historyEntries', entries: [], query, error: (err as Error).message });
+    }
+  }
+
+  // Renders turns as the whole chat, replacing what is on screen.
+  private showTurns(turns: Turn[], info: string): void {
+    this.transcript = turns;
+    this.lastGrounding = undefined;
+    this.postSafe({ type: 'clearTranscript' });
+    this.postSafe({ type: 'history', turns });
+    if (info) {
+      this.postSafe({ type: 'info', text: info });
+    }
+  }
+
+  private async onHistoryResume(id: string): Promise<void> {
+    if (this.inFlight || this.autoApplyRunInFlight) {
+      this.postSafe({ type: 'notice', text: 'Wait for the current answer to finish before opening another chat.' });
       return;
     }
-    this.searchInFlight = true;
+    if (this.autoSave()) {
+      await this.saveCurrentChat();
+    }
     try {
-      const result = await searchConversations(CLIENT_NAME, workspacePath(), query);
-      this.panel.webview.postMessage({ type: 'searchResults', results: result.results, error: result.error });
+      const r = await chatHistory(CLIENT_NAME, 'resume', { id });
+      if (r.error || !r.turns) {
+        this.postSafe({ type: 'notice', text: r.error || 'That chat could not be opened.' });
+        return;
+      }
+      this.clearPendingApproval();
+      this.clearPendingReview();
+      this.showTurns(turnsFromWire(r.turns), `Opened “${r.entry?.title ?? 'chat'}” from history`);
+      this.postSafe({ type: 'currentBookmark', on: r.entry?.bookmarked === true });
     } catch (err) {
-      this.panel.webview.postMessage({ type: 'searchResults', error: (err as Error).message });
-    } finally {
-      this.searchInFlight = false;
+      this.postSafe({ type: 'notice', text: `Could not open that chat: ${(err as Error).message}` });
+    }
+  }
+
+  // id '' is the current chat, which the daemon saves first.
+  private async onHistoryBookmark(id: string, on: boolean): Promise<void> {
+    try {
+      const r = await chatHistory(CLIENT_NAME, on ? 'bookmark' : 'unbookmark', { id: id || undefined });
+      if (r.error) {
+        this.postSafe({ type: 'notice', text: r.error });
+        return;
+      }
+      if (!id || r.entry?.current) {
+        this.postSafe({ type: 'currentBookmark', on });
+      }
+      this.postSafe({ type: 'historyChanged' });
+    } catch (err) {
+      this.postSafe({ type: 'notice', text: `Could not bookmark that chat: ${(err as Error).message}` });
+    }
+  }
+
+  private async onHistoryDelete(id: string): Promise<void> {
+    const DELETE = 'Delete';
+    const pick = await vscode.window.showWarningMessage('Delete this chat from history? This cannot be undone.', { modal: true }, DELETE);
+    if (pick !== DELETE) {
+      return;
+    }
+    try {
+      const r = await chatHistory(CLIENT_NAME, 'delete', { id });
+      if (r.error) {
+        this.postSafe({ type: 'notice', text: r.error });
+      }
+      this.postSafe({ type: 'historyChanged' });
+    } catch (err) {
+      this.postSafe({ type: 'notice', text: `Could not delete that chat: ${(err as Error).message}` });
+    }
+  }
+
+  // /compact: the daemon summarises the older turns with one model call, keeps
+  // the recent ones, and saves the whole chat to history first.
+  private async compactChat(): Promise<string> {
+    if (this.transcript.length === 0) {
+      return 'Nothing to compact: this chat is empty.';
+    }
+    this.postSafe({ type: 'info', text: 'Compacting: summarising the earlier part of this chat…' });
+    try {
+      const r = await chatHistory(CLIENT_NAME, 'compact');
+      if (r.error || !r.turns) {
+        return r.error ? r.error.charAt(0).toUpperCase() + r.error.slice(1) + '.' : 'compact did not return a chat.';
+      }
+      this.showTurns(
+        turnsFromWire(r.turns),
+        `Conversation compacted · ${r.compacted ?? 0} earlier messages summarised · the full chat is saved in History`,
+      );
+      this.postSafe({ type: 'currentBookmark', on: false });
+      return '';
+    } catch (err) {
+      return `Could not compact: ${(err as Error).message}`;
     }
   }
 
@@ -1267,49 +1406,6 @@ export function chatPanelStyles(): string {
     justify-content: center;
   }
   .icon-btn:hover { background: var(--ct-accent-soft); color: var(--ct-accent-strong); }
-  #searchRow {
-    display: none;
-    gap: 6px;
-    padding: 8px 12px;
-    border-bottom: 1px solid var(--ct-border);
-    background: var(--ct-surface);
-  }
-  #searchRow.visible { display: flex; }
-  #searchInput {
-    flex: 1;
-    background: var(--ct-bg);
-    color: var(--ct-ink);
-    border: 1px solid var(--ct-border);
-    border-radius: 10px;
-    padding: 8px 10px;
-    font-family: inherit;
-    font-size: 13px;
-  }
-  #searchBtn {
-    background: var(--ct-accent-solid);
-    color: var(--ct-on-accent);
-    border: none;
-    border-radius: 10px;
-    padding: 8px 14px;
-    cursor: pointer;
-  }
-  #searchResults { padding: 0 12px; }
-  .search-result {
-    margin-bottom: 10px;
-    padding: 10px 12px;
-    border: 1px solid var(--ct-border);
-    border-radius: var(--ct-radius);
-    background: var(--ct-surface);
-    font-size: 12px;
-  }
-  .search-result .search-result-meta { font-size: 11px; color: var(--ct-muted); margin-bottom: 4px; }
-  .search-result .search-result-snippet { white-space: pre-wrap; line-height: 1.4; }
-  .search-result mark {
-    background: #ffe0e4;
-    color: inherit;
-  }
-  .search-empty { padding: 4px 0 10px; font-size: 12px; color: var(--ct-muted); }
-  .search-error { padding: 4px 0 10px; font-size: 12px; color: #c0392b; }
   #transcript { flex: 1; overflow-y: auto; padding: 14px 16px; }
   .first-run {
     font-size: 13px;
@@ -1900,6 +1996,86 @@ export function chatPanelStyles(): string {
     color: var(--ct-ink);
   }
   .modes-popup[hidden] { display: none !important; }
+  /* HISTORY PANEL (Claude Code style): under the header, a search box and the
+     chats -- bookmarks first, then newest. */
+  #appHeader { position: relative; }
+  .history-popup {
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 12px;
+    width: min(440px, calc(100% - 24px));
+    max-height: min(480px, 70vh);
+    display: flex;
+    flex-direction: column;
+    background: var(--ct-popover-bg);
+    border: 1px solid var(--ct-border);
+    border-radius: 14px;
+    box-shadow: var(--ct-shadow);
+    z-index: 30;
+    overflow: hidden;
+  }
+  .history-head { padding: 10px; border-bottom: 1px solid var(--ct-border); }
+  #searchInput {
+    width: 100%;
+    background: var(--ct-control-bg);
+    color: var(--ct-ink);
+    border: 1px solid var(--ct-control-border);
+    border-radius: 9px;
+    padding: 8px 10px;
+    font: inherit;
+    font-size: 13px;
+  }
+  #searchInput:focus { outline: 2px solid var(--ct-accent); outline-offset: -1px; border-color: transparent; }
+  .history-list { overflow-y: auto; padding: 6px; }
+  .history-section {
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--ct-muted);
+    padding: 8px 8px 4px;
+  }
+  .history-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 8px;
+    border: none;
+    border-radius: 9px;
+    background: transparent;
+    color: var(--ct-ink);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .history-row:hover, .history-row:focus-visible { background: var(--ct-accent-soft); outline: none; }
+  .history-row.current { box-shadow: inset 2px 0 0 var(--ct-accent); }
+  .history-row .h-main { flex: 1; min-width: 0; }
+  .history-row .h-title { display: block; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .history-row .h-meta { display: block; font-size: 11px; color: var(--ct-muted); margin-top: 2px; }
+  .history-row .h-age { font-size: 11px; color: var(--ct-muted); flex-shrink: 0; font-variant-numeric: tabular-nums; }
+  .history-row .h-act {
+    width: 26px; height: 26px; border: none; border-radius: 7px; background: transparent;
+    color: var(--ct-muted); cursor: pointer; font-size: 14px; flex-shrink: 0; opacity: 0; display: inline-flex;
+    align-items: center; justify-content: center;
+  }
+  .history-row:hover .h-act, .history-row:focus-within .h-act, .history-row .h-act.on { opacity: 1; }
+  .history-row .h-act:hover { background: var(--ct-accent-soft); color: var(--ct-accent-strong); }
+  .history-row .h-act.on { color: var(--ct-accent); }
+  .history-row .h-del:hover { color: var(--ct-danger); }
+  .history-empty { padding: 18px 10px; color: var(--ct-muted); font-size: 12.5px; text-align: center; }
+  #bookmarkBtn[aria-pressed="true"] { color: var(--ct-accent); }
+
+  /* NOTICES: collapsed, the strips are visually hidden but still announced
+     (the sr-only technique, not display:none, which would silence them). */
+  .notices.collapsed > div {
+    position: absolute !important;
+    width: 1px; height: 1px; margin: -1px; padding: 0; border: 0;
+    overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
+  }
+  .notices-chip { gap: 4px; color: var(--ct-warn); border-color: color-mix(in srgb, var(--ct-warn) 45%, transparent); }
+  .notices-chip[aria-expanded="true"] { background: color-mix(in srgb, var(--ct-warn) 12%, transparent); }
+
   /* The model dropdown reuses the mode menu's look, anchored under the chip on
      the left, and scrolls when a provider lists many models. */
   .model-popup { left: 12px; right: auto; max-height: min(360px, 60vh); overflow-y: auto; }
@@ -2149,17 +2325,20 @@ export function chatPanelBodyMarkup(logoUri: string = ''): string {
     </div>
     <div class="header-actions">
       <button type="button" id="newChatBtn" class="icon-btn" title="New chat" aria-label="New chat">＋</button>
-      <button type="button" id="historyBtn" class="icon-btn" title="History / search" aria-label="History and search">◷</button>
+      <button type="button" id="bookmarkBtn" class="icon-btn" title="Bookmark this chat" aria-label="Bookmark this chat" aria-pressed="false">☆</button>
+      <button type="button" id="historyBtn" class="icon-btn" title="History" aria-label="Chat history"
+        aria-haspopup="dialog" aria-expanded="false" aria-controls="historyPopup">◷</button>
+    </div>
+    <!-- History, Claude Code style: every chat, newest first, bookmarks pinned
+         on top; the search matches what was said, not only titles. -->
+    <div id="historyPopup" class="history-popup" hidden role="dialog" aria-label="Chat history">
+      <div class="history-head" role="search">
+        <label for="searchInput" class="sr-only">Search chats</label>
+        <input id="searchInput" type="text" placeholder="Search chats…" autocomplete="off" spellcheck="false" />
+      </div>
+      <div id="historyList" class="history-list" role="listbox" aria-label="Chats" aria-live="polite"></div>
     </div>
   </header>
-  <div id="searchRow" role="search">
-    <label for="searchInput" class="sr-only">Search past conversations</label>
-    <input id="searchInput" type="text" placeholder="Search past conversations…" />
-    <button id="searchBtn">Search</button>
-  </div>
-  <!-- Results arrive asynchronously, so they are announced. polite, not
-       assertive: a search result should not interrupt a streaming answer. -->
-  <div id="searchResults" role="region" aria-label="Search results" aria-live="polite"></div>
   <!-- First-run text, rendered INSIDE the empty transcript: a new user's very
        first sight of this panel was a blank rectangle that never said what it
        does. Static markup, no state and no settings; main.js removes it as soon
@@ -2184,6 +2363,11 @@ export function chatPanelBodyMarkup(logoUri: string = ''): string {
       <p class="first-run-quiet">First answer slow? It is loading the local embedding model. If it never arrives, ${RESTART_HINT}.</p>
     </div>
   </div>
+  <!-- THE NOTICES, COLLAPSED. Every strip is still a live region, so a screen
+       reader still announces each one; visually they fold behind the notices
+       chip in the composer, and a notice is shown in full only the first time
+       its text appears in a session (main.js: noticesObserver). -->
+  <div id="notices" class="notices collapsed">
   <div id="grounding" role="status" aria-live="polite" aria-label="Grounding"></div>
   <div id="historyNotice" role="status" aria-live="polite" aria-label="Conversation history notice"></div>
   <!-- Redaction and degradation strips carry information the user needs to
@@ -2192,6 +2376,7 @@ export function chatPanelBodyMarkup(logoUri: string = ''): string {
   <div id="redactions" role="status" aria-live="polite" aria-label="Redaction notice"></div>
   <div id="degraded" role="status" aria-live="polite" aria-label="Degraded functionality notice"></div>
   <div id="provider" role="status" aria-live="polite" aria-label="Serving provider"></div>
+  </div>
   <div id="composer">
     <div id="slashMenu" role="listbox" aria-label="Slash commands"></div>
     <div id="composerShell">
@@ -2219,6 +2404,10 @@ export function chatPanelBodyMarkup(logoUri: string = ''): string {
           </button>
         </div>
         <div class="composer-right">
+          <button type="button" class="pill notices-chip" id="noticesChip" hidden aria-expanded="false" aria-controls="notices"
+            title="Notices about the last answer">
+            <span aria-hidden="true">ⓘ</span><span id="noticesCount">0</span>
+          </button>
           <button type="button" class="composer-icon context-btn" id="contextBtn" title="Context usage" aria-label="Open context usage" aria-expanded="false" aria-controls="contextPopup">
             <svg class="context-ring" viewBox="0 0 24 24" aria-hidden="true">
               <circle class="context-ring-track" cx="12" cy="12" r="8" fill="none" stroke-width="2.5"/>

@@ -13,10 +13,13 @@
   const providerEl = document.getElementById('provider');
   const inputEl = document.getElementById('promptInput');
   const sendBtn = document.getElementById('sendBtn');
-  const searchInputEl = document.getElementById('searchInput');
-  const searchBtn = document.getElementById('searchBtn');
-  const searchResultsEl = document.getElementById('searchResults');
-  const searchRowEl = document.getElementById('searchRow');
+  const searchInputEl = /** @type {HTMLInputElement | null} */ (document.getElementById('searchInput'));
+  const historyPopup = document.getElementById('historyPopup');
+  const historyListEl = document.getElementById('historyList');
+  const bookmarkBtn = document.getElementById('bookmarkBtn');
+  const noticesEl = document.getElementById('notices');
+  const noticesChip = document.getElementById('noticesChip');
+  const noticesCountEl = document.getElementById('noticesCount');
   const slashMenuEl = document.getElementById('slashMenu');
   const modelChipEl = document.getElementById('modelChip');
   const modelChipLabelEl = document.getElementById('modelChipLabel');
@@ -243,6 +246,11 @@
         setModelPopupOpen(false);
       }
     }
+    if (historyPopup && !historyPopup.hidden) {
+      if (!historyPopup.contains(target) && (!historyBtn || !historyBtn.contains(target))) {
+        setHistoryOpen(false);
+      }
+    }
   });
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
@@ -252,6 +260,12 @@
         setModelPopupOpen(false);
         if (modelChipEl) {
           modelChipEl.focus();
+        }
+      }
+      if (historyPopup && !historyPopup.hidden) {
+        setHistoryOpen(false);
+        if (historyBtn) {
+          historyBtn.focus();
         }
       }
     }
@@ -587,12 +601,255 @@
       vscode.postMessage({ type: 'newChat' });
     });
   }
-  if (historyBtn && searchRowEl) {
-    historyBtn.addEventListener('click', () => {
-      searchRowEl.classList.toggle('visible');
-      if (searchRowEl.classList.contains('visible')) {
+  // HISTORY PANEL. Every chat, newest first, bookmarks pinned on top; the
+  // search box asks the daemon, which matches what was said, not only titles.
+  let historyQuery = '';
+  /** @type {ReturnType<typeof setTimeout> | undefined} */
+  let historySearchTimer;
+  let currentBookmarked = false;
+
+  /** @param {boolean} open */
+  function setHistoryOpen(open) {
+    if (!historyPopup || !historyBtn) {
+      return;
+    }
+    historyPopup.hidden = !open;
+    historyBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (open) {
+      if (historyListEl) {
+        clearChildren(historyListEl);
+        const loading = document.createElement('div');
+        loading.className = 'history-empty';
+        loading.textContent = 'Loading chats\u2026';
+        historyListEl.appendChild(loading);
+      }
+      vscode.postMessage({ type: 'historyList', text: historyQuery });
+      if (searchInputEl) {
         searchInputEl.focus();
       }
+    }
+  }
+
+  // "now", "5m", "3h", "2d", "3w", "4mo": the age column Claude Code shows.
+  /** @param {string | undefined} iso */
+  function ageOf(iso) {
+    const t = iso ? Date.parse(iso) : NaN;
+    if (Number.isNaN(t)) {
+      return '';
+    }
+    const mins = Math.max(0, Math.round((Date.now() - t) / 60000));
+    if (mins < 1) return 'now';
+    if (mins < 60) return mins + 'm';
+    const hours = Math.round(mins / 60);
+    if (hours < 24) return hours + 'h';
+    const days = Math.round(hours / 24);
+    if (days < 14) return days + 'd';
+    if (days < 60) return Math.round(days / 7) + 'w';
+    return Math.round(days / 30) + 'mo';
+  }
+
+  /** @param {string} text */
+  function historyMessage(text) {
+    if (!historyListEl) {
+      return;
+    }
+    clearChildren(historyListEl);
+    const el = document.createElement('div');
+    el.className = 'history-empty';
+    el.textContent = text;
+    historyListEl.appendChild(el);
+  }
+
+  /** @param {any} e */
+  function historyRow(e) {
+    const row = document.createElement('div');
+    row.className = 'history-row' + (e.current ? ' current' : '');
+    row.setAttribute('role', 'option');
+    row.setAttribute('aria-selected', e.current ? 'true' : 'false');
+    row.tabIndex = 0;
+    const main = document.createElement('span');
+    main.className = 'h-main';
+    const title = document.createElement('span');
+    title.className = 'h-title';
+    title.textContent = e.title || 'Untitled chat';
+    title.title = e.title || '';
+    const meta = document.createElement('span');
+    meta.className = 'h-meta';
+    meta.textContent = (e.current ? 'current chat · ' : '') + e.turns + ' message' + (e.turns === 1 ? '' : 's');
+    main.appendChild(title);
+    main.appendChild(meta);
+    const age = document.createElement('span');
+    age.className = 'h-age';
+    age.textContent = e.current ? 'now' : ageOf(e.ended || e.started);
+    const star = document.createElement('button');
+    star.type = 'button';
+    star.className = 'h-act h-star' + (e.bookmarked ? ' on' : '');
+    star.textContent = e.bookmarked ? '\u2605' : '\u2606';
+    star.title = e.bookmarked ? 'Remove bookmark' : 'Bookmark';
+    star.setAttribute('aria-label', (e.bookmarked ? 'Remove bookmark from ' : 'Bookmark ') + (e.title || 'chat'));
+    star.setAttribute('aria-pressed', e.bookmarked ? 'true' : 'false');
+    star.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      vscode.postMessage({ type: 'historyBookmark', id: e.current ? '' : e.id, on: !e.bookmarked });
+    });
+    row.appendChild(main);
+    row.appendChild(age);
+    row.appendChild(star);
+    if (!e.current) {
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'h-act h-del';
+      del.textContent = '\u2715';
+      del.title = 'Delete from history';
+      del.setAttribute('aria-label', 'Delete ' + (e.title || 'chat') + ' from history');
+      del.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        vscode.postMessage({ type: 'historyDelete', id: e.id });
+      });
+      row.appendChild(del);
+    }
+    const open = () => {
+      if (e.current) {
+        setHistoryOpen(false);
+        return;
+      }
+      setHistoryOpen(false);
+      vscode.postMessage({ type: 'historyResume', id: e.id });
+    };
+    row.addEventListener('click', open);
+    row.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter' || ev.key === ' ') {
+        ev.preventDefault();
+        open();
+      }
+    });
+    return row;
+  }
+
+  /** @param {{ entries?: any[], query?: string, error?: string }} msg */
+  function renderHistory(msg) {
+    if (!historyListEl || (msg.query || '') !== historyQuery) {
+      return; // a reply to a search that has since changed
+    }
+    if (msg.error) {
+      historyMessage('Could not load history: ' + msg.error);
+      return;
+    }
+    const all = msg.entries || [];
+    // The current chat is listed once: the daemon also lists its saved copy.
+    const current = all.find((e) => e.current);
+    const entries = all.filter((e) => e.current || !current || e.id !== current.saved_as);
+    if (entries.length === 0) {
+      historyMessage(historyQuery ? 'No chats mention \u201c' + historyQuery + '\u201d.' : 'No chats yet. Every chat you have will be listed here.');
+      return;
+    }
+    clearChildren(historyListEl);
+    const pinned = entries.filter((e) => e.bookmarked);
+    const recent = entries.filter((e) => !e.bookmarked);
+    /** @param {string} label @param {any[]} list */
+    const section = (label, list) => {
+      if (list.length === 0) {
+        return;
+      }
+      if (pinned.length > 0) {
+        const h = document.createElement('div');
+        h.className = 'history-section';
+        h.textContent = label;
+        historyListEl.appendChild(h);
+      }
+      for (const e of list) {
+        historyListEl.appendChild(historyRow(e));
+      }
+    };
+    section('Bookmarked', pinned);
+    section('Recent', recent);
+  }
+
+  /** @param {boolean} on */
+  function setCurrentBookmark(on) {
+    currentBookmarked = on;
+    if (bookmarkBtn) {
+      bookmarkBtn.textContent = on ? '\u2605' : '\u2606';
+      bookmarkBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
+      bookmarkBtn.title = on ? 'Remove bookmark from this chat' : 'Bookmark this chat';
+      bookmarkBtn.setAttribute('aria-label', bookmarkBtn.title);
+    }
+  }
+
+  if (historyBtn) {
+    historyBtn.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      setHistoryOpen(!historyPopup || historyPopup.hidden);
+    });
+  }
+  if (searchInputEl) {
+    searchInputEl.addEventListener('input', () => {
+      if (historySearchTimer) {
+        clearTimeout(historySearchTimer);
+      }
+      historySearchTimer = setTimeout(() => {
+        historyQuery = searchInputEl.value.trim();
+        vscode.postMessage({ type: 'historyList', text: historyQuery });
+      }, 200);
+    });
+  }
+  if (bookmarkBtn) {
+    bookmarkBtn.addEventListener('click', () => {
+      vscode.postMessage({ type: 'historyBookmark', id: '', on: !currentBookmarked });
+    });
+  }
+
+  // NOTICES CHIP. The strips stay live regions (announced), folded visually
+  // behind one chip. A notice is shown in full the FIRST time its text appears
+  // in this panel's life -- so the Groq privacy note is read once -- and folds
+  // away when the next prompt is sent.
+  /** @type {Set<string>} */
+  const seenNotices = new Set();
+  function noticeTexts() {
+    if (!noticesEl) {
+      return [];
+    }
+    return Array.from(noticesEl.children)
+      .filter((el) => el.id !== 'provider')
+      .map((el) => (el.textContent || '').trim())
+      .filter((t) => t !== '');
+  }
+  /** @param {boolean} open */
+  function setNoticesOpen(open) {
+    if (!noticesEl || !noticesChip) {
+      return;
+    }
+    noticesEl.classList.toggle('collapsed', !open);
+    noticesChip.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+  function refreshNoticesChip() {
+    if (!noticesChip || !noticesCountEl) {
+      return;
+    }
+    const texts = noticeTexts();
+    noticesChip.hidden = texts.length === 0;
+    noticesCountEl.textContent = String(texts.length);
+    noticesChip.title = texts.length ? texts.join('\n\n') : 'No notices';
+    noticesChip.setAttribute('aria-label', texts.length + ' notice' + (texts.length === 1 ? '' : 's') + ' about the last answer. Show them.');
+    let fresh = false;
+    for (const t of texts) {
+      if (!seenNotices.has(t)) {
+        seenNotices.add(t);
+        fresh = true;
+      }
+    }
+    if (fresh) {
+      setNoticesOpen(true);
+    } else if (texts.length === 0) {
+      setNoticesOpen(false);
+    }
+  }
+  if (noticesEl) {
+    new MutationObserver(refreshNoticesChip).observe(noticesEl, { childList: true, subtree: true, characterData: true });
+  }
+  if (noticesChip) {
+    noticesChip.addEventListener('click', () => {
+      setNoticesOpen(!!noticesEl && noticesEl.classList.contains('collapsed'));
     });
   }
   if (settingsBtn) {
@@ -1896,97 +2153,6 @@
     }
   }
 
-  // renderSnippet turns a SearchResult.snippet's literal '[' / ']' match
-  // markers (inserted by the daemon's FTS5 snippet() call, see
-  // daemon/search.go) into visible highlighting -- built via createElement/
-  // textContent like every other renderer in this file, never assembling
-  // markup, so nothing in a search result (which is a user's own past
-  // conversation text, not vetted markup) can inject anything into the page.
-  function renderSnippet(container, text) {
-    const parts = text.split(/([[\]])/);
-    let highlighting = false;
-    for (const part of parts) {
-      if (part === '[') {
-        highlighting = true;
-        continue;
-      }
-      if (part === ']') {
-        highlighting = false;
-        continue;
-      }
-      if (part === '') {
-        continue;
-      }
-      if (highlighting) {
-        const mark = document.createElement('mark');
-        mark.textContent = part;
-        container.appendChild(mark);
-      } else {
-        container.appendChild(document.createTextNode(part));
-      }
-    }
-  }
-
-  // showSearchResults renders the outcome of one search: an error (search
-  // couldn't run at all), a clean "no results" empty state (found nothing --
-  // NOT an error, see protocol.SearchResponse's doc comment), or the ranked
-  // result list -- already bm25-ranked by the daemon, never re-sorted here.
-  function showSearchResults(msg) {
-    clearChildren(searchResultsEl);
-
-    if (msg.error) {
-      const el = document.createElement('div');
-      el.className = 'search-error';
-      el.textContent = `search failed: ${msg.error}`;
-      searchResultsEl.appendChild(el);
-      return;
-    }
-
-    if (!msg.results || msg.results.length === 0) {
-      const el = document.createElement('div');
-      el.className = 'search-empty';
-      el.textContent = 'no results';
-      searchResultsEl.appendChild(el);
-      return;
-    }
-
-    for (const result of msg.results) {
-      const card = document.createElement('div');
-      card.className = 'search-result';
-
-      const meta = document.createElement('div');
-      meta.className = 'search-result-meta';
-      const role = result.role === 'user' ? 'you' : 'mochiii';
-      const when = new Date(result.created_at).toLocaleString();
-      meta.textContent = `${role} · ${when}`;
-      card.appendChild(meta);
-
-      const snippet = document.createElement('div');
-      snippet.className = 'search-result-snippet';
-      renderSnippet(snippet, result.snippet);
-      card.appendChild(snippet);
-
-      searchResultsEl.appendChild(card);
-    }
-  }
-
-  function doSearch() {
-    const query = searchInputEl.value.trim();
-    if (!query) {
-      return;
-    }
-    searchBtn.disabled = true;
-    searchBtn.textContent = 'Searching…';
-    vscode.postMessage({ type: 'search', text: query });
-  }
-
-  searchBtn.addEventListener('click', doSearch);
-  searchInputEl.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
-      doSearch();
-    }
-  });
-
   function filteredSlashCommands() {
     const q = slashFilter.toLowerCase();
     return SLASH_COMMANDS.filter((c) => c.name.startsWith(q));
@@ -2052,6 +2218,7 @@
     if ((!typed && pendingAttachments.length === 0) || streaming) {
       return;
     }
+    setNoticesOpen(false);
     if (pendingAttachments.some((f) => f.pending)) {
       addBubble('error', 'Still reading ' + pendingAttachments.filter((f) => f.pending).map((f) => f.name).join(', ') + ' \u2014 send again in a moment.');
       return;
@@ -2169,7 +2336,6 @@
     clearEditProposal();
     clearToolApproval();
     toolActivityEls.clear();
-    clearChildren(searchResultsEl);
     lastGroundingInfo = null;
     lastHistoryMeta = null;
     refreshContextUsage();
@@ -2371,10 +2537,16 @@
         refreshContextUsage();
         addBubble('error', msg.error);
         break;
-      case 'searchResults':
-        searchBtn.disabled = false;
-        searchBtn.textContent = 'Search';
-        showSearchResults(msg);
+      case 'historyEntries':
+        renderHistory(msg);
+        break;
+      case 'historyChanged':
+        if (historyPopup && !historyPopup.hidden) {
+          vscode.postMessage({ type: 'historyList', text: historyQuery });
+        }
+        break;
+      case 'currentBookmark':
+        setCurrentBookmark(msg.on === true);
         break;
     }
   });

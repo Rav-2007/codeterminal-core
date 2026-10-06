@@ -1344,6 +1344,106 @@ export async function searchConversations(
 // in that client allowed to consume persisted_history. Callers must not
 // call this again mid-session and merge the result into an ongoing
 // conversation; see the field's doc comment in protocol/protocol.go for why.
+/** protocol.HistoryEntry: one chat in history (the current one, or a saved one). */
+export interface ChatHistoryEntry {
+  id?: string;
+  current?: boolean;
+  title: string;
+  last_prompt?: string;
+  started?: string;
+  ended?: string;
+  turns: number;
+  incomplete?: string;
+  saved_as?: string;
+  unsaved?: boolean;
+  bookmarked?: boolean;
+}
+
+/** protocol.HistoryResponse. */
+export interface ChatHistoryResponse {
+  protocol_version: number;
+  entries?: ChatHistoryEntry[];
+  entry?: ChatHistoryEntry;
+  turns?: Turn[];
+  pruned?: number;
+  compacted?: number;
+  error?: string;
+}
+
+export type ChatHistoryAction = 'list' | 'save' | 'show' | 'resume' | 'delete' | 'bookmark' | 'unbookmark' | 'compact';
+
+// chatHistory sends one protocol.HistoryRequest (discriminated by "chats") and
+// returns the reply. The daemon's chat archive is shared with the terminal
+// client's /history, so both see the same chats.
+export async function chatHistory(
+  clientName: string,
+  action: ChatHistoryAction,
+  opts: { id?: string; query?: string; spec?: string; name?: string } = {},
+): Promise<ChatHistoryResponse> {
+  const { socket } = await connectToDaemon(clientName);
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const decoder = new LineDecoder((obj) => {
+      if (!settled) {
+        settled = true;
+        socket.destroy();
+        resolve(obj as ChatHistoryResponse);
+      }
+    });
+    socket.on('data', (chunk: Buffer) => decoder.feed(chunk));
+    socket.once('error', (err) => {
+      if (!settled) {
+        settled = true;
+        reject(err);
+      }
+    });
+    socket.once('close', () => {
+      if (!settled) {
+        settled = true;
+        reject(new Error('daemon closed before answering the history request'));
+      }
+    });
+    writeLine(socket, { protocol_version: PROTOCOL_VERSION, chats: true, action, ...opts });
+  });
+}
+
+// resetChat starts a new chat on the daemon side -- PromptRequest.reset, the
+// server half of the terminal's ctrl+n. VS Code's "+" used to clear only the
+// panel, so the daemon kept appending to one endless chat and the next window
+// rehydrated all of it.
+export async function resetChat(clientName: string): Promise<void> {
+  const { socket } = await connectToDaemon(clientName);
+  await new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const decoder = new LineDecoder((obj) => {
+      const t = obj as { done?: boolean; error?: string };
+      if (!settled && (t.done || t.error)) {
+        settled = true;
+        socket.destroy();
+        if (t.error) {
+          reject(new Error(t.error));
+        } else {
+          resolve();
+        }
+      }
+    });
+    socket.on('data', (chunk: Buffer) => decoder.feed(chunk));
+    socket.once('error', (err) => {
+      if (!settled) {
+        settled = true;
+        reject(err);
+      }
+    });
+    socket.once('close', () => {
+      if (!settled) {
+        settled = true;
+        resolve();
+      }
+    });
+    writeLine(socket, { protocol_version: PROTOCOL_VERSION, prompt: '', reset: true });
+  });
+}
+
 // sendConnect hands the daemon a key (or a show/forget request) and returns its
 // answer. One request, one reply, like fetchAvailableTiers -- but with no
 // timeout of its own: proving a key means the daemon asking the provider, and

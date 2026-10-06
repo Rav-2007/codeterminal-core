@@ -53,8 +53,14 @@ export interface LocalCommandHost {
   readonly currentModel: string;
   readonly lastGrounding: GroundingInfo | undefined;
 
-  /** Replace the transcript (used by /clear and /compact). */
+  /** Replace the transcript (used by /clear). */
   replaceTranscript(turns: Turn[]): void;
+  /**
+   * Summarise the older part of the chat with one model call and keep the
+   * recent turns (/compact); the whole chat is saved to history first. Returns
+   * the sentence to print, or '' when the panel has already shown the result.
+   */
+  compactChat(): Promise<string>;
   /**
    * Drop the remembered grounding. Separate from replaceTranscript because
    * /clear forgets it and /compact deliberately does NOT -- shortening the
@@ -89,8 +95,6 @@ export interface LocalCommandHost {
   forgetApiKey(): Promise<string>;
 }
 
-// COMPACT_KEEP is how many turns /compact retains. Mirrors the TUI's.
-const COMPACT_KEEP = 8;
 
 // UNKNOWN_LOCAL_COMMAND is returned for a name that is not handled below.
 //
@@ -145,13 +149,10 @@ export async function runLocalCommand(
       host.clearScreen();
       return 'transcript cleared';
 
-    case 'compact': {
-      if (host.transcript.length > COMPACT_KEEP) {
-        host.replaceTranscript(host.transcript.slice(-COMPACT_KEEP));
-        return `kept last ${COMPACT_KEEP} turns`;
-      }
-      return 'transcript already compact';
-    }
+    case 'compact':
+      // A summary, like Claude Code's /compact -- it used to drop all but the
+      // last few turns, and on a short chat say only "already compact".
+      return host.compactChat();
 
     case 'context': {
       // The MODEL, as the chip shows it. This printed only the tier name, so

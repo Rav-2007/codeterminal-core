@@ -214,6 +214,7 @@ function fakeHost(root: string, extensionPath: string): LocalCommandHost & { clo
     closed: false,
     connectCalls: 0,
     replaceTranscript: () => undefined,
+    compactChat: async () => 'compacted (stubbed)',
     forgetGrounding: () => undefined,
     clearScreen: () => undefined,
     close: () => {

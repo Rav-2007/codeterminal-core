@@ -53,6 +53,26 @@ comes back.
   key you connect is the one used. With no folder open there is no daemon to
   check a key, so **Set API Key** still stores it in VS Code's secret store.
 
+## History, bookmarks and /compact
+
+- **History** (the clock button) lists every chat, newest first, with its age;
+  bookmarked chats are pinned on top. The search box matches what was said in a
+  chat, not only its title. Click a chat to open it; the one you leave is saved.
+- **Every chat is kept** (setting `mochiii.history.autoSave`, on by default):
+  a chat is saved when you start a new one with **+**, open another, or compact.
+  Saved chats live on this machine, outside the project, bounded to 50 chats and
+  20 MB per workspace. Turn the setting off to keep only bookmarked chats.
+- **☆ Bookmark** (header, or the star on a row) pins a chat; a bookmarked chat
+  is never removed by those limits.
+- **/compact** summarises the earlier part of the chat with one model call and
+  keeps the most recent messages word for word, like Claude Code. The full chat
+  is saved to History first.
+- **Notices** about an answer (not grounded, a privacy note about the provider,
+  a scrubbed secret) are shown in full the first time, then fold into the
+  **ⓘ** chip next to the input; screen readers still announce every one.
+
+The terminal client shares the same saved chats through `/history`.
+
 ## Composer controls
 
 - **Model chip** shows the model actually answering (e.g. `qwen3.8-27b`), not the
