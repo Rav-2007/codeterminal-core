@@ -39,6 +39,19 @@ type storedCredential struct {
 	// so `connect --show` can never imply a check that did not happen. False for
 	// a --no-verify save and for one the provider could not answer.
 	Verified bool `json:"verified"`
+
+	// DefaultModel and Models are what the PROVIDER said it serves when this key
+	// was connected, for a provider models.json does not describe (anyone but
+	// OpenRouter). They live here rather than in a file of their own because
+	// they are facts about this key at this address: written in the same atomic
+	// replace, removed by the same --forget, and meaningless next to any other
+	// credential. Empty for OpenRouter, whose models are models.json's tiers.
+	DefaultModel string   `json:"default_model,omitempty"`
+	Models       []string `json:"models,omitempty"`
+	// QuietModels are entries of Models the provider LISTS and did not answer
+	// for when they were tried. /model marks them, so picking one is a choice
+	// and not a surprise two minutes later.
+	QuietModels []string `json:"quiet_models,omitempty"`
 }
 
 // configured reports whether there is a key here at all.
@@ -65,6 +78,30 @@ func (c storedCredential) issuedFor(apiBase string) bool {
 func fillFromStored(apiKey, apiBase string, stored storedCredential, logf func(string, ...any)) (string, string) {
 	if apiBase == "" && strings.TrimSpace(stored.APIBase) != "" {
 		apiBase = stored.APIBase
+	}
+	// A NAMED PROVIDER'S ADDRESS WITH NO KEY IS NOT A CONFIGURATION. Every
+	// provider protocol.Providers lists refuses a request without a key, so
+	// MOCHIII_API_BASE pointing at one of them, with no MOCHIII_API_KEY beside
+	// it, can only ever fail. A stored credential is a key AND the address it
+	// was issued for -- so when it names a different provider, it is the one
+	// thing here that can work, and it is used.
+	//
+	// This is what makes "/connect, paste a key" survive a restart: a .env that
+	// still says MOCHIII_API_BASE=<the old provider> used to win at every start,
+	// the key just connected was then withheld (below), and the client asked for
+	// it again (FOUND 2026-10-05).
+	//
+	// Only for a named provider. A custom address -- a local model server, a
+	// company gateway -- may be meant to run with no key at all, and the rule
+	// below, that a key goes only to the address it was saved for, is what keeps
+	// a provider's key from being sent to it.
+	if apiKey == "" && stored.configured() && apiBase != "" && !stored.issuedFor(apiBase) {
+		if _, named := providerForBase(apiBase); named {
+			logf("MOCHIII_API_BASE is %s, but no key is set for it; using %s, the provider a key was connected for. "+
+				"Set MOCHIII_API_KEY to use %s, or run `mochiii-daemon connect --forget` to drop the connected one",
+				apiBase, firstNonEmpty(stored.APIBase, defaultAPIBase), apiBase)
+			apiBase = firstNonEmpty(stored.APIBase, defaultAPIBase)
+		}
 	}
 	if apiKey != "" || !stored.configured() {
 		return apiKey, apiBase

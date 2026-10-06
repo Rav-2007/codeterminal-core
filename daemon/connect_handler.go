@@ -35,21 +35,6 @@ func isConnectRequest(raw json.RawMessage) bool {
 	return hasBoolKey(fields, "connect")
 }
 
-// setAPIKey swaps the key the daemon sends, under the lock that guards it.
-//
-// The swap has to be guarded because prompts read it from other goroutines: the
-// agent loop and the single-shot path both take s.apiKey per request, so an
-// unsynchronised assignment here is a data race the race detector would find and
-// a torn read a user would not.
-func (s *Server) setAPIKey(key, base string) {
-	s.credMu.Lock()
-	defer s.credMu.Unlock()
-	s.apiKey = key
-	if strings.TrimSpace(base) != "" {
-		s.apiBase = base
-	}
-}
-
 // credentials returns the key and base to use for one request.
 func (s *Server) credentials() (key, base string) {
 	s.credMu.RLock()
@@ -189,21 +174,64 @@ func (s *Server) connectResult(ctx context.Context, req protocol.ConnectRequest)
 		return protocol.ConnectResponse{Error: err.Error() + "; nothing was saved"}
 	}
 
+	// WHERE THE KEY GOES. An address the client named wins; otherwise the key's
+	// own prefix says whose it is (resolveConnectBase), and failing that it is
+	// for the provider this daemon is talking to.
+	//
+	// "The provider in use" is the base IN FORCE, not the stored credential's.
+	// The stored one used to come first, which is the CLI's order and is right
+	// there -- no daemon is running. Here one is, and it can be on a different
+	// provider than the stored credential names (FOUND 2026-10-05).
+	//
+	// Not when the environment wins: the base in force may then be the managed
+	// proxy's, and a provider key must never be sent there to be "verified".
+	inUse := ""
+	if !envOverride {
+		_, inUse = s.credentials()
+	}
+	// NOR IS THE PROXY'S ADDRESS A PROVIDER'S. In proxy mode MOCHIII_API_BASE is
+	// where the proxy lives, and with nothing stored it used to be the address a
+	// pasted provider key was "verified" against -- a provider credential sent
+	// to a host that did not issue it. It is left out, so the key goes to the
+	// provider its prefix names, or to the default, and never to the proxy.
+	envBase := os.Getenv("MOCHIII_API_BASE")
+	if os.Getenv("MOCHIII_USE_PROXY") == "true" {
+		envBase = ""
+	}
 	stored, _, _ := loadCredential(path)
-	base := firstNonEmpty(req.APIBase, stored.APIBase, os.Getenv("MOCHIII_API_BASE"), defaultAPIBase)
-	if err := validateAPIBase(base); err != nil {
+	target := resolveConnectBase(req.APIBase, key, inUse, stored, envBase)
+	if len(target.Candidates) > 0 {
+		ids := make([]string, 0, len(target.Candidates))
+		names := make([]string, 0, len(target.Candidates))
+		for _, p := range target.Candidates {
+			ids, names = append(ids, p.ID), append(names, p.Name)
+		}
+		return protocol.ConnectResponse{
+			Ok: false, Outcome: protocol.ConnectNeedsProvider, Candidates: ids, EnvOverride: envOverride,
+			Detail: "keys that start with \"sk-\" are issued by " + strings.Join(names, ", ") +
+				", and nothing in this one says which",
+		}
+	}
+	base := target.Base
+	if err := validateConnectBase(base); err != nil {
 		return protocol.ConnectResponse{Error: err.Error()}
 	}
 
-	result := verification{Outcome: verifyInconclusive, Detail: "not checked, because the client asked for no verification"}
+	setup := providerSetup{Check: verification{Outcome: verifyInconclusive, Detail: "not checked, because the client asked for no verification"}}
 	if !req.NoVerify {
 		// BOUNDED, as the CLI's check is: a provider that took the connection and
 		// never answered held /connect open for as long as the client waited
-		// (FOUND 2026-10-01 -- the CLI had the timeout, this path did not).
-		vctx, cancel := context.WithTimeout(ctx, connectVerifyTimeout)
-		result = verifyKey(vctx, http.DefaultClient, base, key)
+		// (FOUND 2026-10-01 -- the CLI had the timeout, this path did not). A
+		// provider whose models have to be found and tried gets the longer bound.
+		timeout := connectVerifyTimeout
+		if !usesRoutingDialect(base) {
+			timeout = providerSetupTimeout
+		}
+		vctx, cancel := context.WithTimeout(ctx, timeout)
+		setup = setUpProvider(vctx, http.DefaultClient, base, key, s.logger.Printf)
 		cancel()
 	}
+	result := setup.Check
 
 	// A REFUSED KEY IS NOT STORED AND NOT ADOPTED. The daemon keeps serving with
 	// whatever it had; replacing a working key with one the provider has just
@@ -216,25 +244,62 @@ func (s *Server) connectResult(ctx context.Context, req protocol.ConnectRequest)
 		}
 	}
 
-	if err := saveCredential(path, storedCredential{APIBase: base, APIKey: key, Verified: result.proven()}); err != nil {
+	if err := saveCredential(path, storedCredential{
+		APIBase: base, APIKey: key, Verified: result.proven(),
+		DefaultModel: setup.DefaultModel, Models: setup.Models, QuietModels: setup.Quiet,
+	}); err != nil {
 		return protocol.ConnectResponse{Error: err.Error()}
 	}
 
-	// LIVE. This is what makes /connect worth having over the CLI: the key is in
-	// force for the next turn, with no restart. Skipped when the environment wins,
-	// because adopting it then would make the daemon disagree with what a restart
-	// would do -- and a credential that changes depending on whether you restarted
-	// is worse than one that is merely inconvenient.
+	// LIVE. This is what makes /connect worth having over the CLI: the key, the
+	// address and the provider's own models are in force for the next turn, with
+	// no restart. Skipped when the environment wins, because adopting it then
+	// would make the daemon disagree with what a restart would do -- and a
+	// credential that changes depending on whether you restarted is worse than
+	// one that is merely inconvenient.
 	outcome := protocol.ConnectUnverified
 	if result.proven() {
 		outcome = protocol.ConnectAccepted
 	}
-	if !envOverride {
-		s.setAPIKey(key, base)
-	}
-	return protocol.ConnectResponse{
+	resp := protocol.ConnectResponse{
 		Ok: true, Outcome: outcome, Detail: result.Detail,
 		MaskedKey: maskKey(key), APIBase: base,
 		InUse: !envOverride, EnvOverride: envOverride,
+		Model: setup.DefaultModel, ModelCount: len(setup.Models), ModelTested: setup.Tested,
 	}
+	if !envOverride {
+		switched := strings.TrimSpace(inUse) != "" && !sameAPIBase(inUse, base)
+		resp.Notes = connectNotes(base, setup, switched)
+		s.setProvider(key, base, providerTierConfig(s.cfg, providerName(base), setup.Models, setup.Quiet, setup.DefaultModel))
+	}
+	return resp
+}
+
+// setProvider puts a key, its address and the tiers that go with them into
+// force together, under the lock that guards them. tiers is nil for a provider
+// whose models are the configured ones.
+//
+// The swap has to be guarded because prompts read all three from other
+// goroutines: the agent loop and the single-shot path both take the credential
+// per request, so an unsynchronised assignment here is a data race the race
+// detector would find and a torn read a user would not.
+func (s *Server) setProvider(key, base string, tiers *Config) {
+	s.credMu.Lock()
+	defer s.credMu.Unlock()
+	s.apiKey = key
+	if strings.TrimSpace(base) != "" {
+		s.apiBase = base
+	}
+	s.tierCfg = tiers
+}
+
+// tierConfig is the config whose tiers are in force: the provider's own models
+// when the provider in use has them (see Server.tierCfg), otherwise cfg.
+func (s *Server) tierConfig() *Config {
+	s.credMu.RLock()
+	defer s.credMu.RUnlock()
+	if s.tierCfg != nil {
+		return s.tierCfg
+	}
+	return s.cfg
 }

@@ -153,7 +153,7 @@ func (s *Server) contextWindowFor(slug string) int {
 	if s.cfg == nil {
 		return 0
 	}
-	for _, t := range s.cfg.Tiers {
+	for _, t := range s.tierConfig().Tiers {
 		if t.Slug == slug && t.ContextWindow > 0 {
 			return t.ContextWindow
 		}

@@ -76,7 +76,7 @@ func (s *Server) handleStatus(enc *json.Encoder) {
 		Workspace:        s.workspace,
 		Tier:             decision.Tier,
 		Model:            decision.Slug,
-		AvailableTiers:   availableTiers(s.cfg),
+		AvailableTiers:   availableTiers(s.tierConfig()),
 		Retrieval:        s.statusRetrieval(),
 		MemoryAvailable:  s.memory != nil,
 		APIKeyConfigured: func() bool { k, _ := s.credentials(); return k != "" }(),

@@ -49,6 +49,12 @@ type Server struct {
 	credMu  sync.RWMutex
 	apiBase string
 	apiKey  string
+	// tierCfg, when set, is cfg with its tiers replaced by the models of the
+	// provider in force (providerTierConfig) -- anyone but OpenRouter, whose
+	// models are cfg's own. Guarded by credMu, because it changes with the
+	// credential: /connect to another provider swaps all three at once. Read it
+	// through tierConfig, never directly.
+	tierCfg *Config
 
 	cfg           *Config
 	modelOverride string // optional testing override; bypasses the router when set
@@ -254,7 +260,7 @@ func (s *Server) route(promptKind, preferredTier string) RouteDecision {
 	if s.modelOverride != "" {
 		return RouteDecision{Tier: "override", Slug: s.modelOverride, Reason: "manual override via --model flag"}
 	}
-	return Route(s.cfg, RouteInput{HasExitSignal: false, PromptKind: promptKind, PreferredTier: preferredTier})
+	return Route(s.tierConfig(), RouteInput{HasExitSignal: false, PromptKind: promptKind, PreferredTier: preferredTier})
 }
 
 // Serve accepts connections until the listener is closed. Each connection is
@@ -766,7 +772,7 @@ func (s *Server) serveConn(conn net.Conn) {
 	// (on success) and read back at the next connection's handshake (see
 	// loadPersistedHistory). Merging it in here too would double the
 	// conversation the model sees.
-	routing := s.cfg.routingFor(decision.Tier)
+	routing := s.tierConfig().routingFor(decision.Tier)
 	// THE TURN'S BILL: every model call below -- the single call here, or an
 	// agent turn's whole loop -- adds its usage report to this tally, and the
 	// turn's final Done message carries the sum (usage.go; the TUI's /usage).
@@ -898,7 +904,7 @@ func (s *Server) serveConn(conn net.Conn) {
 		_ = s.sendDone(enc, protocol.TokenResponse{
 			ProtocolVersion: protocol.ProtocolVersion,
 			Done:            true,
-			Error:           modelErr.Error(),
+			Error:           modelErr.Error() + s.quietModelHint(decision.Slug, modelErr.Class),
 			ErrorClass:      string(modelErr.Class),
 			KeyReplaceable:  keyReplaceable(modelErr.Class),
 			Usage:           tally.report(decision.Slug, s.contextWindowFor(decision.Slug)),

@@ -88,6 +88,11 @@ func (s *Server) runAgentTurn(
 		}
 	}()
 
+	// The model is told what these tools reach on the user's machine, once and
+	// before any phase runs, so every phase still opens with the same bytes
+	// (machinereach.go: asked what it could do, it said "only the project").
+	messages = s.withMachineReach(ctx, registry, promptReq.Mode, messages)
+
 	// A server that would not start costs the user its tools, not the turn.
 	// Reported the same way every other reduced subsystem is, so it reaches the
 	// user before the answer rather than never.
@@ -245,7 +250,7 @@ func (s *Server) runAgentTurn(
 		_ = s.sendDone(enc, protocol.TokenResponse{
 			ProtocolVersion: protocol.ProtocolVersion,
 			Done:            true,
-			Error:           modelErr.Error(),
+			Error:           modelErr.Error() + s.quietModelHint(model, modelErr.Class),
 			ErrorClass:      string(modelErr.Class),
 			KeyReplaceable:  keyReplaceable(modelErr.Class),
 			Usage:           usageTallyFrom(ctx).report(model, s.contextWindowFor(model)),

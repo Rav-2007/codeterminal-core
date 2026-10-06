@@ -2,13 +2,11 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"sort"
 	"strings"
 	"time"
@@ -237,6 +235,10 @@ type chatCompletionChunk struct {
 			// onReasoning — because thinking is not part of the answer and
 			// must not reach edit-block parsing or conversation memory.
 			Reasoning string `json:"reasoning"`
+			// ReasoningContent is the same thinking under the name DeepSeek's
+			// own API and several other providers use for it. Never both on one
+			// chunk; whichever arrives is delivered the same way.
+			ReasoningContent string `json:"reasoning_content"`
 			// ToolCalls arrives as FRAGMENTS, not whole calls: the provider
 			// sends id and function.name once on the first fragment for a given
 			// index, then function.arguments in pieces that are only valid JSON
@@ -660,56 +662,15 @@ func streamCompletion(ctx context.Context, apiBase, apiKey, model string, messag
 		return err
 	}
 
-	var reasoning *reasoningParam
-	if routing.reasoningEffort != "" {
-		reasoning = &reasoningParam{Effort: routing.reasoningEffort}
-	}
-	reqBody, err := json.Marshal(chatCompletionRequest{
-		Model:         model,
-		Messages:      messages,
-		Tools:         tools,
-		Stream:        true,
-		Provider:      routing,
-		StreamOptions: streamOptions{IncludeUsage: true},
-		Reasoning:     reasoning,
-		MaxTokens:     routing.maxTokens,
-	})
+	// How the request is worded, and what is done when a provider refuses the
+	// wording, is providerdialect.go's. To OpenRouter, the proxy and every
+	// address this does not know by name, the body is exactly what it always was.
+	resp, err := openCompletion(stallCtx, apiBase, apiKey, model, messages, tools, routing,
+		func(err error) error { return stalledErr(classifyTransportError(err)) })
 	if err != nil {
-		return nil, fmt.Errorf("encoding request: %w", err)
-	}
-
-	url := strings.TrimRight(apiBase, "/") + chatCompletionsPath
-	httpReq, err := http.NewRequestWithContext(stallCtx, http.MethodPost, url, bytes.NewReader(reqBody))
-	if err != nil {
-		return nil, fmt.Errorf("building request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Accept", "text/event-stream")
-	if apiKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
-	}
-
-	resp, err := http.DefaultClient.Do(httpReq)
-	if err != nil {
-		return nil, stalledErr(classifyTransportError(err))
+		return nil, err
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		bodyStr := strings.TrimSpace(string(body))
-		// Classified here, at the only place that can see the status, the body
-		// and the headers together (Fix 9). The ZDR refusal keeps its identity:
-		// ModelError.Unwrap returns ErrZDRRefused for that class, so existing
-		// errors.Is checks are unaffected.
-		modelErr := classifyHTTPError(resp.StatusCode, resp.Status, bodyStr).withModelName(model)
-		modelErr.RetryAfter = parseRetryAfter(resp.Header)
-		// The managed proxy answers every request with an X-Request-Id, including
-		// the body-less 500 a contained panic produces. Carrying it into the
-		// operator detail is what turns "a user says it failed at about 3pm" into
-		// one id that resolves to one request's trail in the proxy's log.
-		return nil, modelErr.withUpstreamRequestID(upstreamRequestID(resp.Header))
-	}
 
 	scanner := bufio.NewScanner(stallResetReader{resp.Body, func() { watchdog.Reset(stallTimeout) }})
 	scanner.Buffer(make([]byte, 0, sseInitialBufferSize), sseMaxLineSize)
@@ -790,7 +751,9 @@ func streamCompletion(ctx context.Context, apiBase, apiKey, model string, messag
 		if fr := chunk.Choices[0].FinishReason; fr != "" {
 			finishReason = fr
 		}
-		if reasoning := chunk.Choices[0].Delta.Reasoning; reasoning != "" && onReasoning != nil {
+		// Concatenated, not chosen between: a token is delivered exactly as it
+		// arrived, leading space and all, and only one of the two is ever set.
+		if reasoning := chunk.Choices[0].Delta.Reasoning + chunk.Choices[0].Delta.ReasoningContent; reasoning != "" && onReasoning != nil {
 			onReasoning(reasoning)
 		}
 		content := chunk.Choices[0].Delta.Content

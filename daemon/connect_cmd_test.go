@@ -229,7 +229,10 @@ func TestConnectNoVerifyStoresWithoutClaimingVerification(t *testing.T) {
 	path, out, logger := connectHarness(t)
 	feedStdin(t, testProviderKey+"\n")
 
-	if err := runConnectCommand([]string{"--stdin", "--no-verify"}, logger); err != nil {
+	// --provider, because the test key starts with the bare "sk-" several
+	// providers use and nothing may guess between them (see
+	// TestConnectAsksWhichProviderABareSkKeyIsFor).
+	if err := runConnectCommand([]string{"--stdin", "--no-verify", "--provider", "openrouter"}, logger); err != nil {
 		t.Fatalf("connect --no-verify failed: %v", err)
 	}
 	cred, _, err := loadCredential(path)

@@ -47,7 +47,15 @@ func TestTheStoredKeyIsUsedWhereItWasSaved(t *testing.T) {
 		{"a file saved before api_base was recorded", "", "https://openrouter.ai/api/v1", "sk-or-v1-stored", "https://openrouter.ai/api/v1",
 			storedCredential{APIKey: "sk-or-v1-stored"}},
 		{"a key in the environment wins", "env-key", "http://localhost:11434/v1", "env-key", "http://localhost:11434/v1", stored},
-		{"a different remote provider", "", "https://api.openai.com/v1", "", "https://api.openai.com/v1", stored},
+		// CHANGED 2026-10-05, deliberately. This used to expect ("", openai): the
+		// environment's base won and the daemon ran against OpenAI with no key,
+		// which can only fail. A named provider's address with no key beside it
+		// is not a configuration, so the stored credential -- a key AND its own
+		// address -- is used whole. The key still goes only where it was saved.
+		{"a named provider's address with no key of its own", "", "https://api.openai.com/v1", "sk-or-v1-stored", "https://openrouter.ai/api/v1", stored},
+		// A custom address is different: it may be meant to run with no key, so
+		// it is kept and the stored key is withheld from it, as before.
+		{"a custom remote address", "", "https://llm.example.com/v1", "", "https://llm.example.com/v1", stored},
 	} {
 		key, base := fillFromStored(tc.envKey, tc.envBase, tc.cred, discardf)
 		if key != tc.wantKey || base != tc.wantBase {
@@ -60,7 +68,7 @@ func TestTheStoredKeyIsUsedWhereItWasSaved(t *testing.T) {
 func TestALocalServerWithNoKeyNeedsNone(t *testing.T) {
 	key, base := fillFromStored("", "http://127.0.0.1:1234/v1", openRouterCredential(), discardf)
 	s := &Server{}
-	s.setAPIKey(key, base)
+	s.setProvider(key, base, nil)
 	if s.needsAPIKey() {
 		t.Error("a local server with no key made the daemon ask for a provider key")
 	}

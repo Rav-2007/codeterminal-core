@@ -38,7 +38,20 @@ type connectResultMsg struct {
 const (
 	connectPrompt           = "paste your provider API key, then enter (esc cancels)"
 	defaultInputPlaceholder = "ask something…"
+	// connectBaseExample is the shape of the argument /connect takes besides its
+	// subcommands, in the words every message that mentions it uses.
+	connectBaseExample = "/connect <provider>, or /connect <the provider's API address>"
 )
+
+// connectProviderNames lists the names /connect accepts, for the moments a user
+// has to pick one.
+func connectProviderNames() string {
+	var ids []string
+	for _, p := range protocol.Providers() {
+		ids = append(ids, p.ID)
+	}
+	return strings.Join(ids, ", ")
+}
 
 // beginConnectForPrompt asks for a key BECAUSE a question is waiting on one, and
 // remembers the question so the user does not have to type it twice.
@@ -54,9 +67,23 @@ const (
 // (cancel, empty entry, a refused key), so no question is ever lost.
 func (m chatModel) beginConnectForPrompt(prompt string) (tea.Model, tea.Cmd) {
 	m.pendingPrompt = prompt
-	m.appendTurn(turn{role: roleAssistant, text: "This needs your provider API key before it can ask anything.\n\n" +
+	m.appendTurn(turn{role: roleAssistant, local: true, text: "This needs your provider API key before it can ask anything.\n\n" +
 		"Paste it below and your question is sent as soon as the provider accepts it — " +
-		"nothing is stored if the key is refused, and the key is not shown as you type."})
+		"nothing is stored if the key is refused, and the key is not shown as you type.\n\n" + anyProviderLine})
+	return m.beginConnect()
+}
+
+// anyProviderLine says, wherever a key is asked for, that it need not be from
+// any one provider -- which nothing used to say, and which is why a user with a
+// perfectly good key from somewhere else concluded the product could not use it.
+const anyProviderLine = "Any major provider's key works — OpenRouter, OpenAI, Anthropic, Google Gemini, NVIDIA, " +
+	"Groq, xAI, DeepSeek and others. The provider is recognised from the key, and one of its models is " +
+	"picked and tried, so there is nothing else to set."
+
+// beginConnectBare is /connect on its own: say what may be pasted, then ask.
+func (m chatModel) beginConnectBare() (tea.Model, tea.Cmd) {
+	m.appendTurn(turn{role: roleAssistant, local: true, text: "Paste your API key below — it is not shown as you type, and " +
+		"nothing is stored if the provider refuses it. Esc cancels.\n\n" + anyProviderLine})
 	return m.beginConnect()
 }
 
@@ -83,9 +110,36 @@ func (m chatModel) beginConnectForRefusedKey(class string, askAgain bool) (tea.M
 		m.pendingPrompt = m.turnInput
 		then += ", and your question is asked again as soon as the provider accepts it"
 	}
-	m.appendTurn(turn{role: roleAssistant, text: why + "\n\n" + then +
-		" — nothing is stored if the key is refused, and the key is not shown as you type. Esc keeps the current key."})
+	m.appendTurn(turn{role: roleAssistant, local: true, text: why + "\n\n" + then +
+		" — nothing is stored if the key is refused, and the key is not shown as you type. Esc keeps the current key." +
+		"\n\n" + otherProviderHint})
 	return m.beginConnect()
+}
+
+// otherProviderHint is the way out for a key whose provider could not be told
+// from the key, said at the two moments someone is holding one: when the key in
+// use has just been refused and a new one is being asked for, and when a pasted
+// key has just been refused. Without it both moments read as "your key is bad".
+const otherProviderHint = "A key only works with the provider that issued it, and most are recognised from the " +
+	"key itself. For one that is not, press Esc and name its provider first: " + connectBaseExample
+
+// beginConnectTo asks for a key FOR A NAMED PROVIDER, which is how a user moves
+// to a different one without leaving the client.
+//
+// THE GAP THIS CLOSES (FOUND 2026-10-05): a bare /connect sends only the key, so
+// the daemon checks it against the provider it already uses. Someone holding a
+// key from another provider pasted it, was told "the provider refused that key"
+// -- true, but of the provider they were leaving -- and had no way from here to
+// say which one they meant. The address is said back before the key is asked
+// for, because it is where the key is about to be sent.
+func (m chatModel) beginConnectTo(base string) (tea.Model, tea.Cmd) {
+	m.appendTurn(turn{role: roleAssistant, local: true, text: "Switching to " + providerLabel(base) + ".\n\n" +
+		"Paste the API key for it below — it is sent to that address to be checked, nothing is stored " +
+		"if the key is refused, and the key is not shown as you type. Esc keeps the provider and key in use now."})
+	next, cmd := m.beginConnect()
+	cm := next.(chatModel)
+	cm.connectBase = base
+	return cm, cmd
 }
 
 // resumePendingPrompt sends the question that was waiting on a key, if there is
@@ -133,6 +187,7 @@ func (m chatModel) beginConnect() (tea.Model, tea.Cmd) {
 // would silently hide the user's next prompt from them.
 func (m *chatModel) endConnect() {
 	m.input.SetValue("")
+	m.connectBase = ""
 	m.input.EchoMode = textinput.EchoNormal
 	m.input.Placeholder = defaultInputPlaceholder
 	m.state = stateIdle
@@ -148,30 +203,34 @@ func (m chatModel) handleConnectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		m.endConnect()
 		m.restorePendingPrompt()
-		m.appendTurn(turn{role: roleAssistant, text: "connect cancelled; nothing was sent or stored"})
+		m.appendTurn(turn{role: roleAssistant, local: true, text: "connect cancelled; nothing was sent or stored"})
 		m.resizeViewport()
 		m.refreshViewport()
 		return m, nil
 
 	case "enter":
 		key := strings.TrimSpace(m.input.Value())
+		// Read before endConnect forgets it: empty is a bare /connect, which
+		// leaves it to the daemon to tell whose key this is.
+		base := m.connectBase
 		// Cleared before anything else can happen to it: from here the key exists
 		// only in the local variable and in the request about to be sent.
 		m.endConnect()
 		if key == "" {
 			m.restorePendingPrompt()
-			m.appendTurn(turn{role: roleAssistant, text: "no key entered; nothing was sent or stored"})
+			m.appendTurn(turn{role: roleAssistant, local: true, text: "no key entered; nothing was sent or stored"})
 			m.resizeViewport()
 			m.refreshViewport()
 			return m, nil
 		}
-		m.appendTurn(turn{role: roleAssistant, text: "checking the key with the provider…"})
+		m.appendTurn(turn{role: roleAssistant, local: true, text: "checking the key with the provider…"})
 		m.resizeViewport()
 		m.refreshViewport()
 		return m, submitConnect(m.clientName, protocol.ConnectRequest{
 			ProtocolVersion: protocol.ProtocolVersion,
 			Connect:         true,
 			APIKey:          key,
+			APIBase:         base,
 		})
 	}
 
@@ -183,7 +242,7 @@ func (m chatModel) handleConnectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // handleConnectResult renders what the daemon said, and releases a question that
 // was waiting on the key.
 func (m chatModel) handleConnectResult(msg connectResultMsg) (tea.Model, tea.Cmd) {
-	m.appendTurn(turn{role: roleAssistant, text: formatConnectResult(msg)})
+	m.appendTurn(turn{role: roleAssistant, local: true, text: formatConnectResult(msg)})
 	m.resizeViewport()
 	m.refreshViewport()
 
@@ -235,16 +294,31 @@ func formatConnectResult(msg connectResultMsg) string {
 		} else {
 			fmt.Fprintf(&b, "Key %s is stored, but it is NOT what this daemon is sending.", r.MaskedKey)
 		}
+		b.WriteString(connectModelLine(r))
 	case protocol.ConnectUnverified:
-		fmt.Fprintf(&b, "Saved %s, but NOT verified: %s\n", r.MaskedKey, r.Detail)
+		fmt.Fprintf(&b, "Saved %s for %s, but NOT verified: %s\n", r.MaskedKey, providerLabel(r.APIBase), sanitizeText(r.Detail))
 		if r.InUse {
 			b.WriteString("It is in use now; if prompts fail, the key is the first thing to suspect.")
 		} else {
 			b.WriteString("It is stored, but it is NOT what this daemon is sending.")
 		}
+		b.WriteString(connectModelLine(r))
+	case protocol.ConnectNeedsProvider:
+		// NOTHING WAS SENT, AND THAT IS THE FIRST THING SAID. The daemon will not
+		// find out whose key this is by handing it to each provider in turn, so
+		// the one question it cannot answer is asked here.
+		fmt.Fprintf(&b, "That key was sent nowhere and nothing was stored: %s.\n\n"+
+			"Say which provider it is from, then paste it again:", sanitizeText(r.Detail))
+		for _, id := range r.Candidates {
+			b.WriteString("\n  /connect " + sanitizeText(id))
+		}
 	case protocol.ConnectRejected:
-		fmt.Fprintf(&b, "The provider refused that key: %s\nNothing was stored, and the key this daemon was already using is unchanged.",
-			r.Detail)
+		// SAY WHO REFUSED IT (FOUND 2026-10-05). "The provider refused that key"
+		// named nobody, so a key from one provider checked against another read as
+		// a bad key -- twice, to someone whose key was fine. The daemon has always
+		// sent the base it asked; this branch was the one that dropped it.
+		fmt.Fprintf(&b, "That key was refused by %s: %s\nNothing was stored, and the key this daemon was already using is unchanged.\n\n%s",
+			providerLabel(r.APIBase), sanitizeText(r.Detail), otherProviderHint)
 	case protocol.ConnectRemoved:
 		b.WriteString("Stored key removed. " + r.Detail)
 	case protocol.ConnectShown:
@@ -255,6 +329,10 @@ func formatConnectResult(msg connectResultMsg) string {
 		}
 	default:
 		fmt.Fprintf(&b, "connect: unrecognised outcome %q from the daemon", r.Outcome)
+	}
+
+	for _, note := range r.Notes {
+		b.WriteString("\n\nNOTE: " + sanitizeText(note))
 	}
 
 	// THE ONE THING A USER CANNOT SEE FOR THEMSELVES. A key in the daemon's
@@ -269,6 +347,26 @@ func formatConnectResult(msg connectResultMsg) string {
 	return b.String()
 }
 
+// connectModelLine says which model prompts now go to, when the provider's own
+// models replaced the configured tiers -- the last thing "ready" depends on, and
+// the one a user could not have guessed.
+//
+// "Ready" IS SAID ONLY FOR A MODEL THAT ANSWERED. ModelTested is the daemon's
+// report that a real request to it succeeded with this key; without it the
+// model is named as what will be tried, not as something that works.
+func connectModelLine(r protocol.ConnectResponse) string {
+	if r.Model == "" {
+		return ""
+	}
+	model := sanitizeText(r.Model)
+	if r.ModelTested {
+		return fmt.Sprintf("\n\nReady — prompts go to %s. %d models are available: /model lists them, /model <name> switches.",
+			model, r.ModelCount)
+	}
+	return fmt.Sprintf("\n\nPrompts will go to %s, which has NOT answered a test request. %d models are available: "+
+		"/model lists them, /model <name> switches.", model, r.ModelCount)
+}
+
 // submitConnect performs the round trip off the UI thread. Verification talks to
 // the provider and can take seconds, and a synchronous call here would freeze the
 // client with no indication of why.
@@ -277,19 +375,6 @@ func submitConnect(clientName string, req protocol.ConnectRequest) tea.Cmd {
 		resp, err := sendConnect(clientName, req)
 		return connectResultMsg{resp: resp, err: err}
 	}
-}
-
-// knownProviders names the hosts people actually point Mochiii at.
-var knownProviders = map[string]string{
-	"openrouter.ai":                     "OpenRouter",
-	"api.openai.com":                    "OpenAI",
-	"api.anthropic.com":                 "Anthropic",
-	"api.deepseek.com":                  "DeepSeek",
-	"api.groq.com":                      "Groq",
-	"api.together.xyz":                  "Together AI",
-	"api.mistral.ai":                    "Mistral",
-	"api.fireworks.ai":                  "Fireworks AI",
-	"generativelanguage.googleapis.com": "Google Gemini",
 }
 
 // providerLabel turns an API base into "OpenRouter (https://openrouter.ai/api/v1)"
@@ -305,8 +390,8 @@ func providerLabel(apiBase string) string {
 		return base
 	}
 	host := strings.ToLower(u.Hostname())
-	if name, ok := knownProviders[strings.TrimPrefix(host, "www.")]; ok {
-		return name + " (" + base + ")"
+	if p, ok := protocol.ProviderForBase(base); ok {
+		return p.Name + " (" + base + ")"
 	}
 	switch host {
 	case "localhost", "127.0.0.1", "::1":
@@ -324,15 +409,47 @@ func capitalize(s string) string {
 }
 
 // connectWithKey reports whether raw is /connect with an argument that is not
-// one of its subcommands -- which the command refuses as a probable key.
+// one of its subcommands or a provider address -- which the command refuses as
+// a probable key.
 func connectWithKey(raw string) bool {
 	rest, ok := strings.CutPrefix(raw, "/connect")
 	if !ok || (rest != "" && rest[0] != ' ' && rest[0] != '\t') {
 		return false
 	}
-	switch strings.TrimSpace(rest) {
+	arg := strings.TrimSpace(rest)
+	switch arg {
 	case "", "show", "forget":
 		return false
 	}
-	return true
+	_, isBase := connectBaseArg(arg)
+	return !isBase
+}
+
+// connectBaseArg reports whether arg names where a key is to go -- a provider
+// by name ("nvidia") or by API address -- which is the one thing besides "show"
+// and "forget" that may follow /connect. It returns the address, without a
+// trailing slash.
+//
+// IT MUST NEVER ACCEPT A KEY. Whatever follows /connect and is not recognised
+// here is refused as a probable key and kept out of the transcript and the
+// up-arrow recall, so this errs towards refusing: one word, either a name from
+// the fixed provider list or an absolute http(s) URL with a host, and nothing
+// that can carry a secret -- no user:password@, no query, no fragment. A
+// provider's base address has none of those, and "https://host/v1?key=sk-..."
+// would otherwise be recorded in clear.
+func connectBaseArg(arg string) (string, bool) {
+	if arg == "" || strings.ContainsAny(arg, " \t?#") {
+		return "", false
+	}
+	if p, ok := protocol.ProviderByName(arg); ok {
+		return p.APIBase, true
+	}
+	u, err := url.Parse(arg)
+	if err != nil || u.Host == "" || u.User != nil {
+		return "", false
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", false
+	}
+	return strings.TrimRight(arg, "/"), true
 }

@@ -12,6 +12,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"mochiii/protocol"
 )
 
 // `mochiii-daemon connect` -- accept the user's provider API key, prove it, and
@@ -47,7 +49,8 @@ var connectOut io.Writer = os.Stdout
 
 func runConnectCommand(args []string, logger *log.Logger) error {
 	fs := flag.NewFlagSet("connect", flag.ExitOnError)
-	apiBase := fs.String("api-base", "", "the provider base URL to store with the key (default: keep the stored one, else "+defaultAPIBase+")")
+	apiBase := fs.String("api-base", "", "the provider base URL the key is for (default: the provider the key's own prefix names, else the stored one, else "+defaultAPIBase+")")
+	providerFlag := fs.String("provider", "", "the provider the key is for, by name ("+providerIDs()+"); the same as --api-base with that provider's address")
 	fromStdin := fs.Bool("stdin", false, "read the key from stdin instead of prompting (implied when stdin is not a terminal)")
 	noVerify := fs.Bool("no-verify", false, "store the key without checking it with the provider; the stored record says it is unverified")
 	show := fs.Bool("show", false, "print what is stored -- never the key itself -- and exit")
@@ -101,20 +104,44 @@ func runConnectCommand(args []string, logger *log.Logger) error {
 		logger.Printf("warning: %s", warn)
 	}
 
-	// Precedence for the base: the flag, then what is already stored, then the
-	// environment, then the built-in default. The key is what this command is
-	// for; the base is a detail it should not make the user restate.
-	base := firstNonEmpty(*apiBase, stored.APIBase, os.Getenv("MOCHIII_API_BASE"), defaultAPIBase)
-	if err := validateAPIBase(base); err != nil {
-		return err
+	explicit := *apiBase
+	if name := strings.TrimSpace(*providerFlag); name != "" {
+		if explicit != "" {
+			return fmt.Errorf("--provider and --api-base both say where the key goes; give one")
+		}
+		p, ok := protocol.ProviderByName(name)
+		if !ok {
+			return fmt.Errorf("unknown provider %q; the names are: %s (or give --api-base)", name, providerIDs())
+		}
+		explicit = p.APIBase
 	}
 
+	// The key is read BEFORE the address is decided, because the key is what
+	// says whose it is (resolveConnectBase).
 	key, err := readKey(*fromStdin)
 	if err != nil {
 		return err
 	}
 	if err := validateKeyShape(key); err != nil {
 		return fmt.Errorf("%w; nothing was saved", err)
+	}
+
+	// Precedence for the base: the flag, then the provider the key's prefix
+	// names, then what is already stored, then the environment, then the
+	// built-in default. The key is what this command is for; the base is a
+	// detail it should not make the user restate.
+	target := resolveConnectBase(explicit, key, "", stored, os.Getenv("MOCHIII_API_BASE"))
+	if len(target.Candidates) > 0 {
+		names := make([]string, 0, len(target.Candidates))
+		for _, p := range target.Candidates {
+			names = append(names, p.ID)
+		}
+		return fmt.Errorf("keys that start with \"sk-\" are issued by several providers, and nothing in this one says which.\n"+
+			"It was sent nowhere and nothing was saved. Run it again with --provider and one of: %s", strings.Join(names, ", "))
+	}
+	base := target.Base
+	if err := validateConnectBase(base); err != nil {
+		return err
 	}
 
 	cred := storedCredential{APIBase: base, APIKey: key}
@@ -126,23 +153,32 @@ func runConnectCommand(args []string, logger *log.Logger) error {
 		}
 		_, _ = fmt.Fprintf(connectOut, "Saved %s for %s (%s).\n", maskKey(key), base, path)
 		_, _ = fmt.Fprintln(connectOut, "NOT verified: --no-verify was given, so nothing has confirmed this key works.")
+		if !usesRoutingDialect(base) {
+			_, _ = fmt.Fprintf(connectOut, "No model was chosen either: %s serves its own models, and finding one that answers is part of the check.\n", providerName(base))
+		}
 		return nil
 	}
 
 	_, _ = fmt.Fprintf(connectOut, "Checking the key with %s ...\n", base)
-	ctx, cancel := context.WithTimeout(context.Background(), connectVerifyTimeout)
+	timeout := connectVerifyTimeout
+	if !usesRoutingDialect(base) {
+		timeout = providerSetupTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	result := verifyKey(ctx, http.DefaultClient, base, key)
+	setup := setUpProvider(ctx, http.DefaultClient, base, key, logger.Printf)
+	result := setup.Check
 
 	// A REFUSED KEY IS NOT SAVED. Storing it would replace a key that may be
 	// working with one the provider has just said no to, and the user would find
 	// out at their next prompt.
 	if result.Outcome == verifyRejected {
-		return fmt.Errorf("that key was refused: %s.\nNothing was saved%s", result.Detail,
+		return fmt.Errorf("that key was refused by %s: %s.\nNothing was saved%s", providerName(base), result.Detail,
 			stillStoredNote(stored))
 	}
 
 	cred.Verified = result.proven()
+	cred.DefaultModel, cred.Models, cred.QuietModels = setup.DefaultModel, setup.Models, setup.Quiet
 	if err := saveCredential(path, cred); err != nil {
 		return err
 	}
@@ -157,8 +193,23 @@ func runConnectCommand(args []string, logger *log.Logger) error {
 		_, _ = fmt.Fprintf(connectOut, "Saved, but NOT verified: %s.\n", result.Detail)
 		_, _ = fmt.Fprintln(connectOut, "The key may well be correct; this machine could not reach the provider to find out.")
 	}
+	if setup.DefaultModel != "" {
+		_, _ = fmt.Fprintf(connectOut, "Model: %s (%d available; /model lists them).\n", setup.DefaultModel, len(setup.Models))
+	}
+	for _, note := range connectNotes(base, setup, false) {
+		_, _ = fmt.Fprintf(connectOut, "NOTE: %s\n", note)
+	}
 	_, _ = fmt.Fprintln(connectOut, "Restart the daemon for it to take effect.")
 	return nil
+}
+
+// providerIDs lists the provider names --provider and /connect accept.
+func providerIDs() string {
+	var ids []string
+	for _, p := range protocol.Providers() {
+		ids = append(ids, p.ID)
+	}
+	return strings.Join(ids, ", ")
 }
 
 // showCredential prints what is stored, and never the key.
@@ -184,6 +235,9 @@ func showCredential(path string) error {
 		_, _ = fmt.Fprintln(connectOut, "Verified:    yes -- the provider accepted this key when it was saved")
 	} else {
 		_, _ = fmt.Fprintln(connectOut, "Verified:    NO -- nothing has confirmed this key works")
+	}
+	if cred.DefaultModel != "" {
+		_, _ = fmt.Fprintf(connectOut, "Model:       %s (%d listed by the provider when the key was saved)\n", cred.DefaultModel, len(cred.Models))
 	}
 	_, _ = fmt.Fprintf(connectOut, "File:        %s\n", path)
 	// Said here too, because a key in the environment silently wins and that is

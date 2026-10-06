@@ -1424,7 +1424,9 @@ type ConnectRequest struct {
 	// APIKey is the provider key to adopt. Empty with Show or Forget set.
 	APIKey string `json:"api_key,omitempty"`
 
-	// APIBase optionally replaces the base the key is used against.
+	// APIBase optionally names the address the key is for. Empty lets the
+	// daemon decide: the provider the key's own prefix names when it names one
+	// (see ProvidersForKey), otherwise the provider already in use.
 	APIBase string `json:"api_base,omitempty"`
 
 	// NoVerify stores without asking the provider. The response still says the
@@ -1450,6 +1452,11 @@ const (
 	// the base could not be reached, or it authenticates nothing. Deliberately
 	// distinct from ConnectAccepted so no client can render the two the same.
 	ConnectUnverified ConnectOutcome = "unverified"
+	// ConnectNeedsProvider: nothing was checked or stored, because the key
+	// could belong to any of several providers (Candidates) and the daemon will
+	// not find out which by handing it to each. The user names one and pastes
+	// the key again.
+	ConnectNeedsProvider ConnectOutcome = "needs_provider"
 	// ConnectRemoved: the stored key was deleted.
 	ConnectRemoved ConnectOutcome = "removed"
 	// ConnectShown: nothing changed; the response describes what is stored.
@@ -1484,6 +1491,25 @@ type ConnectResponse struct {
 	// client can say which key is really in force rather than implying the one
 	// just stored.
 	EnvOverride bool `json:"env_override,omitempty"`
+
+	// Model is the model prompts now go to when the provider's own model list
+	// replaced the configured tiers (any provider but OpenRouter). ModelCount is
+	// how many it offers through /model, and ModelTested says Model answered a
+	// real request with this key -- the difference between "ready" and "stored".
+	// All empty when the configured tiers are still in force.
+	Model       string `json:"model,omitempty"`
+	ModelCount  int    `json:"model_count,omitempty"`
+	ModelTested bool   `json:"model_tested,omitempty"`
+
+	// Candidates are the IDs of the providers a key could belong to, set with
+	// ConnectNeedsProvider. Each is a name `/connect <name>` accepts.
+	Candidates []string `json:"candidates,omitempty"`
+
+	// Notes are consequences of the change that the user would otherwise meet
+	// later with nothing connecting them to it: a model that cannot run agent
+	// mode, a provider with no zero-data-retention routing. One sentence each,
+	// safe to print. Additive: older clients ignore it.
+	Notes []string `json:"notes,omitempty"`
 
 	Error string `json:"error,omitempty"`
 }

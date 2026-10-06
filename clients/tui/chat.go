@@ -85,6 +85,19 @@ type turn struct {
 	// Keeping the display copy as the source of truth would have meant the
 	// model's view of the conversation depended on string-matching TUI chrome.
 	incomplete string
+	// local marks what THIS CLIENT wrote in answer to a local command -- /help's
+	// list, /model's tiers, /connect's dialogue. It is drawn like any reply and
+	// is NEVER SENT: buildHistory leaves it out.
+	//
+	// FOUND 2026-10-06 by reading what a real request carried after /help,
+	// /model, /git and /context: four "assistant" messages in a row that the
+	// model never wrote -- 3,543 bytes (~885 tokens) re-sent with every later
+	// prompt, the workspace's absolute path among them, and after /connect the
+	// last four characters of the API key. Assistant turns are not scrubbed
+	// (daemon/history.go, item 1c), so none of it was. The newer commands
+	// (/history, /usage) already kept their output out with roleSystem; this
+	// keeps the older ones looking exactly as they did and stops sending them.
+	local bool
 }
 
 // helpText is the persistent hint shown under the input. Conversational
@@ -110,7 +123,7 @@ const quitConfirmHelpText = "press ctrl+c again to quit · any other key cancels
 // SHORT ON PURPOSE: a footer longer than the terminal is cut at its width, and
 // what must survive is what a second ctrl+n does and how to avoid it. "Any
 // other key cancels" is true but is the part that can go.
-const newChatConfirmHelpText = "chat not saved: ctrl+n again discards it · /history save keeps it"
+const newChatConfirmHelpText = "chat not saved: ctrl+n again discards it · /save keeps it"
 
 // interruptHelpText replaces helpText while a turn is in flight. The hint
 // changes because the available action does: an interrupt nobody can find is
@@ -163,6 +176,11 @@ type chatModel struct {
 	// pendingPrompt holds a question that was typed before a key existed, so the
 	// user types it once. Empty except while the key prompt is open on its behalf.
 	pendingPrompt string
+	// connectBase is the provider address the key being typed is FOR, when
+	// /connect named one (/connect nvidia, /connect <url>). Empty leaves it to
+	// the daemon, which tells from the key. Set only while the key prompt is
+	// open; see connect.go.
+	connectBase string
 	// turnInput is exactly what was typed to start the turn in flight, slash
 	// command and all -- what a refused key hands to pendingPrompt so the same
 	// question can be asked again once a working key is in.
@@ -338,13 +356,13 @@ type chatModel struct {
 	stopsInChat int
 
 	// chatIDs are the saved chats the last /history list numbered, in order:
-	// "/history resume 2" means the chat that list showed as 2 (history.go).
+	// "/resume 2" means the chat that list showed as 2 (history.go).
 	chatIDs []string
 	// newChatArmed is set by a ctrl+n pressed on a chat that is NOT SAVED,
 	// and cleared by any other key -- handleCtrlN, the same shape as
 	// quitArmed. Only a ctrl+n pressed while it is set discards the chat.
 	newChatArmed bool
-	// resumeArmed is the saved chat a "/history resume <n>" was refused for
+	// resumeArmed is the saved chat a "/resume <n>" was refused for
 	// because the chat on screen is not saved: the same command again goes
 	// ahead (history.go).
 	resumeArmed string
@@ -1355,7 +1373,7 @@ func (m chatModel) handleSlash(sp slashParse) (tea.Model, tea.Cmd) {
 	}
 	if sp.UsageOnly {
 		msg := fmt.Sprintf("usage: /%s <args…>", sp.Def.Name)
-		m.appendTurn(turn{role: roleAssistant, text: msg})
+		m.appendTurn(turn{role: roleAssistant, local: true, text: msg})
 		m.resizeViewport()
 		m.refreshViewport()
 		return m, nil
@@ -1431,14 +1449,16 @@ func (m chatModel) handleLocalSlash(name, args string) (tea.Model, tea.Cmd) {
 	case "mouse":
 		return m.handleMouseToggle()
 	case "connect":
-		// TWO LITERAL SUBCOMMANDS, AND NOTHING ELSE. The rule was never "no
-		// arguments" -- it is that a KEY must not be typed here, because it would
-		// be left in the transcript and sent on with the next prompt. "show" and
-		// "forget" are not keys, so they are allowed; anything else is refused on
-		// the assumption that it is one. See connect.go.
-		switch strings.TrimSpace(args) {
+		// TWO LITERAL SUBCOMMANDS, A PROVIDER'S NAME OR ADDRESS, AND NOTHING ELSE.
+		// The rule was never "no arguments" -- it is that a KEY must not be typed
+		// here, because it would be left in the transcript and sent on with the
+		// next prompt. "show" and "forget" are not keys and neither is a
+		// provider's name or address, so they are allowed; anything else is
+		// refused on the assumption that it is one. See connect.go.
+		arg := strings.TrimSpace(args)
+		switch arg {
 		case "":
-			return m.beginConnect()
+			return m.beginConnectBare()
 		case "show":
 			return m, submitConnect(m.clientName, protocol.ConnectRequest{
 				ProtocolVersion: protocol.ProtocolVersion, Connect: true, Show: true,
@@ -1448,9 +1468,13 @@ func (m chatModel) handleLocalSlash(name, args string) (tea.Model, tea.Cmd) {
 				ProtocolVersion: protocol.ProtocolVersion, Connect: true, Forget: true,
 			})
 		default:
+			if base, ok := connectBaseArg(arg); ok {
+				return m.beginConnectTo(base)
+			}
 			reply = "/connect takes no key as an argument: one typed on the command line would be left in " +
 				"this transcript and sent with your next prompt. Run /connect on its own and paste it at " +
-				"the masked prompt. The only arguments are `show` and `forget`."
+				"the masked prompt. The only arguments are `show`, `forget`, and where the key is for: " +
+				connectBaseExample + ". Provider names: " + connectProviderNames() + "."
 		}
 	case "compact":
 		const keep = 8
@@ -1515,6 +1539,20 @@ func (m chatModel) handleLocalSlash(name, args string) (tea.Model, tea.Cmd) {
 		reply = runMCPServerList("")
 	case "search":
 		reply = runSearch(m.clientName, m.workspaceRoot, args)
+	case "save":
+		// /save [name] IS /history save [name], UNDER THE NAME PEOPLE TRY FIRST.
+		// The owner looked through the popup for a way to save a chat and did not
+		// find one (2026-10-05): it was the second word of another command's
+		// summary, clipped by the popup's width. One code path on purpose, so the
+		// wait-for-the-turn rule and everything else about a save hold under both
+		// names.
+		return m.handleHistoryCommand(strings.TrimSpace("save " + args))
+	case "resume":
+		// The other half of /save, asked for by the owner the same evening: "/save
+		// test1" should be answered by "/resume test1". It is /history resume, on
+		// the same single path -- so it asks before replacing an unsaved chat and
+		// waits for a turn in flight exactly as that does.
+		return m.handleHistoryCommand(strings.TrimSpace("resume " + args))
 	case "history":
 		return m.handleHistoryCommand(args)
 	case "usage":
@@ -1532,7 +1570,10 @@ func (m chatModel) handleLocalSlash(name, args string) (tea.Model, tea.Cmd) {
 		reply = "unknown local command"
 	}
 	if reply != "" {
-		m.appendTurn(turn{role: roleAssistant, text: reply})
+		// /git and /search FETCH something to talk about ("write a commit
+		// message for this"), so their output stays in the conversation. The
+		// rest is this client describing itself.
+		m.appendTurn(turn{role: roleAssistant, text: reply, local: name != "git" && name != "search"})
 	}
 	m.resizeViewport()
 	m.refreshViewport()
@@ -1569,14 +1610,14 @@ func (m chatModel) handleModelCommand(arg string) (tea.Model, tea.Cmd) {
 			}
 			fmt.Fprintf(&b, "%s%s  %s%s\n", mark, t.Name, t.Slug, status)
 		}
-		m.appendTurn(turn{role: roleAssistant, text: strings.TrimRight(b.String(), "\n")})
+		m.appendTurn(turn{role: roleAssistant, local: true, text: strings.TrimRight(b.String(), "\n")})
 		m.resizeViewport()
 		m.refreshViewport()
 		return m, nil
 	}
 	if arg == "clear" || arg == "default" {
 		m.preferredTier = ""
-		m.appendTurn(turn{role: roleAssistant, text: "model reset to default tier (models.json default_tier)"})
+		m.appendTurn(turn{role: roleAssistant, local: true, text: "model reset to default tier (models.json default_tier)"})
 		m.resizeViewport()
 		m.refreshViewport()
 		return m, nil
@@ -1594,19 +1635,19 @@ func (m chatModel) handleModelCommand(arg string) (tea.Model, tea.Cmd) {
 		}
 	}
 	if found == nil {
-		m.appendTurn(turn{role: roleAssistant, text: fmt.Sprintf("unknown model tier %q — try /model for the list", arg)})
+		m.appendTurn(turn{role: roleAssistant, local: true, text: fmt.Sprintf("unknown model tier %q — try /model for the list", arg)})
 		m.resizeViewport()
 		m.refreshViewport()
 		return m, nil
 	}
 	if !found.Active {
-		m.appendTurn(turn{role: roleAssistant, text: fmt.Sprintf("tier %q is inactive in models.json", arg)})
+		m.appendTurn(turn{role: roleAssistant, local: true, text: fmt.Sprintf("tier %q is inactive in models.json", arg)})
 		m.resizeViewport()
 		m.refreshViewport()
 		return m, nil
 	}
 	m.preferredTier = found.Name
-	m.appendTurn(turn{role: roleAssistant, text: fmt.Sprintf("model set to %s (%s)", found.Name, found.Slug)})
+	m.appendTurn(turn{role: roleAssistant, local: true, text: fmt.Sprintf("model set to %s (%s)", found.Name, found.Slug)})
 	m.resizeViewport()
 	m.refreshViewport()
 	return m, nil
@@ -1815,6 +1856,9 @@ func buildHistory(turns []turn) []protocol.Turn {
 		case roleUser:
 			history = append(history, protocol.Turn{Role: "user", Content: t.text})
 		case roleAssistant:
+			if t.local {
+				continue // this client's own words about a local command; see turn.local
+			}
 			// t.incomplete rides along: an answer that was cut off must reach
 			// the model marked as cut off, or the next turn sees a truncated
 			// reply as a finished one. The daemon renders the wording from
@@ -1826,7 +1870,7 @@ func buildHistory(turns []turn) []protocol.Turn {
 }
 
 // handleCtrlN is ctrl+n. A chat that is NOT SAVED is not discarded on the
-// first press: the footer says so and how to keep it (/history save), and only
+// first press: the footer says so and how to keep it (/save), and only
 // a second consecutive ctrl+n discards it -- any other key cancels, exactly as
 // ctrl+c arms a quit. Only what the user saves is kept, so a chat must never be
 // lost to a single stray keystroke. A saved chat, or an empty one, clears at once.

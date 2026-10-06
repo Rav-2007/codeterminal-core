@@ -4,6 +4,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"mochiii/protocol"
 )
 
 // fakeSecrets holds one syntactically-valid (but not real) example per
@@ -20,6 +22,76 @@ var fakeSecrets = map[string]string{
 	"mochiii_key":          "mochi_" + strings.Repeat("0a1b2c3d4e", 3), // 30 hex chars
 	"stripe_secret_key":    "sk_live_" + strings.Repeat("4aB7", 6),
 	"private_key_block":    "-----BEGIN PRIVATE KEY-----\nMIIBVwIBADANBgkqhkiG9w0BAQEFAASCAT\n-----END PRIVATE KEY-----",
+	// The providers /connect accepts, in the shape each one really issues.
+	"openrouter_key":    "sk-or-v1-" + strings.Repeat("0a1b2c3d", 8), // 64 hex
+	"anthropic_key":     "sk-ant-api03-" + strings.Repeat("aB3_dE-5", 10),
+	"nvidia_key":        "nvapi-" + strings.Repeat("Zx9K_q2L-", 7),
+	"together_key":      "tgp_v1_" + strings.Repeat("aB3dE5-_", 6),
+	"xai_key":           "xai-" + strings.Repeat("aB3dE5gH", 10),
+	"cerebras_key":      "csk-" + strings.Repeat("a1b2c3d4", 6),
+	"groq_key":          "gsk_" + strings.Repeat("aB3dE5gH", 7),
+	"huggingface_token": "hf_" + strings.Repeat("aB3dE5gHj", 4),
+	"fireworks_key":     "fw_" + strings.Repeat("3ZaB5dE7", 3),
+}
+
+// A key the issuer formats with hyphens inside it. The first pattern in the
+// table only ever knew "sk-" followed by letters and digits, so these went out
+// whole: OpenAI's own current keys, and the key this product has always used.
+func TestScrub_KeysWithHyphensInsideThem(t *testing.T) {
+	for name, secret := range map[string]string{
+		"openai project key":         "sk-proj-" + strings.Repeat("aB3_dE-5gH", 12),
+		"openai service account key": "sk-svcacct-" + strings.Repeat("aB3_dE-5gH", 12),
+		"openrouter key":             "sk-or-v1-" + strings.Repeat("f0e1d2c3", 8),
+	} {
+		cleaned, reds := scrub("OPENAI_API_KEY="+secret+"\n", false)
+		if strings.Contains(cleaned, secret) || strings.Contains(cleaned, secret[len(secret)-12:]) || len(reds) == 0 {
+			t.Errorf("%s left the machine: %q", name, cleaned)
+		}
+	}
+}
+
+// ONE LIST. protocol.Providers() is what /connect recognises a pasted key by;
+// a key Mochiii knows well enough to route must be a key it knows well enough
+// not to send to somebody else. Adding a provider with a new prefix and no
+// pattern here fails this test.
+func TestScrub_KnowsEveryConnectableProvidersKey(t *testing.T) {
+	checked := 0
+	for _, p := range protocol.Providers() {
+		for _, prefix := range p.KeyPrefixes {
+			checked++
+			secret := prefix + strings.Repeat("aB3dE5gH", 6) // 48 key characters
+			cleaned, reds := scrub("the "+p.Name+" key is "+secret+" (do not share)", false)
+			if strings.Contains(cleaned, secret) || len(reds) == 0 {
+				t.Errorf("a %s key (%s...) is not scrubbed: %q", p.Name, prefix, cleaned)
+			}
+		}
+	}
+	if checked < 10 {
+		t.Fatalf("only %d key prefixes were checked; the provider list did not load", checked)
+	}
+}
+
+// PRECISION FIRST still holds: none of the new shapes may touch ordinary code
+// and prose, and the oldest one no longer reaches into the middle of a word.
+func TestScrub_LeavesOrdinaryWordsThatLookLikeKeysAlone(t *testing.T) {
+	for _, text := range []string{
+		"git checkout task-implementmultiproviderkeys1",
+		"see risk-assessmentdocumentversion2 for the details",
+		`volume: "disk-0a1b2c3d4e5f6a7b8c9d0e1f"`,
+		"deploy/flask-7d9f8c6b5d4c3b2a1f0e9d8c7b6a ready",
+		"from huggingface_hub import hf_hub_download_with_retries_and_local_cache",
+		"hf_tokenizer_fast = load(hf_model_name_or_path_string_value)",
+		"pip install xai-explainability-toolkit-for-python-models",
+		"fw_update_checker_for_embedded_devices_v2()",
+		"gsk_settings_get_string_value_for_key(settings)",
+		"npm i nvapi-client-for-node   # a short package name",
+		"csk-rotate is the command; the tgp_v1_ prefix is Together's",
+		"sk-ant and sk-or- are prefixes, not keys",
+	} {
+		if cleaned, reds := scrub(text, false); cleaned != text || len(reds) != 0 {
+			t.Errorf("ordinary text was changed:\n  in:  %q\n  out: %q", text, cleaned)
+		}
+	}
 }
 
 func TestScrub_TruePositives(t *testing.T) {

@@ -72,7 +72,7 @@ func (m chatModel) handleTaskCommand(args string) (tea.Model, tea.Cmd) {
 	default:
 		return m.beginTaskTurn("/task "+args, args, modeTask, taskFields{budget: m.taskBudget})
 	}
-	m.appendTurn(turn{role: roleAssistant, text: reply})
+	m.appendTurn(turn{role: roleAssistant, local: true, text: reply})
 	m.resizeViewport()
 	m.refreshViewport()
 	return m, nil

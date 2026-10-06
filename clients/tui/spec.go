@@ -168,7 +168,7 @@ func (m chatModel) handleSpecCommand(args string) (tea.Model, tea.Cmd) {
 	default:
 		return m.beginTurn("/spec "+args, args, "", modeSpec, nil)
 	}
-	m.appendTurn(turn{role: roleAssistant, text: reply})
+	m.appendTurn(turn{role: roleAssistant, local: true, text: reply})
 	m.resizeViewport()
 	m.refreshViewport()
 	return m, nil

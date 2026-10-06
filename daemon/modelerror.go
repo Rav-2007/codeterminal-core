@@ -97,6 +97,10 @@ type ModelError struct {
 	// stalled marks an attempt the stall watchdog abandoned: the provider went
 	// silent rather than failing. See streamStallTimeout.
 	stalled bool
+	// status is the HTTP status the provider answered with, or 0 when it never
+	// answered. Kept because the class alone cannot say "this model is not there"
+	// (404) apart from every other unclassified refusal.
+	status int
 }
 
 func (e *ModelError) Error() string {
@@ -185,6 +189,22 @@ var contextLengthPhrases = []string{
 	"string too long",
 }
 
+// badKeyPhrases are how a provider that answers a bad key with HTTP 400, not
+// 401, says so. MEASURED 2026-10-05 with a deliberately invalid key: Google's
+// Gemini endpoint answers 400 "Please pass a valid API key" and xAI's answers
+// 400 "Incorrect API key provided". Without these a wrong key on either read as
+// an unknown failure, and the client never offered to take another one.
+// Checked on a 400 only -- every other status that means "bad key" is already
+// one, and none of these phrases is trusted to reclassify anything else.
+var badKeyPhrases = []string{
+	"valid api key",
+	"incorrect api key",
+	"invalid api key",
+	"api key not valid",
+	"api key is invalid",
+	"wrong api key",
+}
+
 // quotaPhrases identify an exhausted allowance rather than a temporary
 // throttle. This distinction matters more than it looks: the managed proxy
 // signals its own quota exhaustion as HTTP 429 with {"error":"quota_exceeded"},
@@ -212,6 +232,12 @@ var quotaPhrases = []string{
 // classifyHTTPError maps an upstream non-200 response to a class. Body text is
 // consulted before the status code wherever the status is ambiguous.
 func classifyHTTPError(status int, statusLine, body string) *ModelError {
+	e := classifyHTTPStatus(status, statusLine, body)
+	e.status = status
+	return e
+}
+
+func classifyHTTPStatus(status int, statusLine, body string) *ModelError {
 	lower := strings.ToLower(body)
 	detail := fmt.Sprintf("model API returned %s: %s", statusLine, body)
 
@@ -228,6 +254,8 @@ func classifyHTTPError(status int, statusLine, body string) *ModelError {
 
 	switch {
 	case status == http.StatusUnauthorized || status == http.StatusForbidden:
+		return &ModelError{Class: ClassAuth, detail: detail}
+	case status == http.StatusBadRequest && containsAny(lower, badKeyPhrases):
 		return &ModelError{Class: ClassAuth, detail: detail}
 	case status == http.StatusPaymentRequired:
 		return &ModelError{Class: ClassQuotaExceeded, detail: detail}

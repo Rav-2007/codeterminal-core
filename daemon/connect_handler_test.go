@@ -319,7 +319,7 @@ func TestNeedsAPIKeyFlipsWhenAKeyIsAccepted(t *testing.T) {
 	if !s.needsAPIKey() {
 		t.Fatal("a daemon with no key does not report needing one")
 	}
-	s.setAPIKey("sk-accepted-over-the-socket", "https://openrouter.ai/api/v1")
+	s.setProvider("sk-accepted-over-the-socket", "https://openrouter.ai/api/v1", nil)
 	if s.needsAPIKey() {
 		t.Error("the daemon took a key but still reports needing one; a held question would never be released")
 	}
@@ -362,5 +362,44 @@ func TestConnectDoesNotHangOnASilentProvider(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("/connect hung on a provider that never answered")
+	}
+}
+
+// A KEY GIVEN WITH NO ADDRESS IS FOR THE PROVIDER THIS DAEMON IS TALKING TO
+// (FOUND 2026-10-05). The address used to default to the STORED credential's,
+// ahead of the one in force -- so a daemon started on one provider by
+// MOCHIII_API_BASE, with a credential left over from another, checked every
+// pasted key against the leftover provider, was refused there, and could never
+// be given a key from inside the client at all.
+//
+// Neuter check: drop the in-use base from connectResult's firstNonEmpty.
+func TestABareConnectChecksTheKeyAgainstTheProviderInUse(t *testing.T) {
+	s, path := connectServer(t)
+	leftover := keyServer(t, http.StatusUnauthorized, http.StatusUnauthorized, "")
+	inUse := keyServer(t, http.StatusOK, http.StatusOK, "")
+	if err := saveCredential(path, storedCredential{
+		APIBase: leftover.URL, APIKey: "sk-the-key-for-the-provider-left-behind", Verified: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// What main.go leaves a daemon with in that state: the environment's base,
+	// and no key, because fillFromStored refuses one saved for another base.
+	s.apiBase, s.apiKey = inUse.URL, ""
+
+	resp := s.connectResult(context.Background(), protocol.ConnectRequest{Connect: true, APIKey: testProviderKey})
+
+	if resp.Outcome != protocol.ConnectAccepted || resp.APIBase != inUse.URL {
+		t.Fatalf("outcome = %q against %q (%s); want the key accepted by the provider in use, %q",
+			resp.Outcome, resp.APIBase, resp.Detail, inUse.URL)
+	}
+	if key, base := s.credentials(); key != testProviderKey || base != inUse.URL {
+		t.Errorf("the daemon is now sending %s to %q, want the new key to %q", maskKey(key), base, inUse.URL)
+	}
+	stored, _, err := loadCredential(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.APIBase != inUse.URL || stored.APIKey != testProviderKey {
+		t.Errorf("stored for %q; want the key saved for the provider it was checked against", stored.APIBase)
 	}
 }

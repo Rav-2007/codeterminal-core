@@ -40,7 +40,50 @@ var scrubPatterns = []struct {
 	kind string
 	re   *regexp.Regexp
 }{
-	{"openai_key", regexp.MustCompile(`sk-[A-Za-z0-9]{20,}`)},
+	// \b: THE KEY MUST START A WORD. Without it this matched INSIDE ordinary
+	// text -- "task-" or "risk-" or "disk-" followed by twenty letters and
+	// digits is "sk-" plus a key-shaped tail, so a branch called
+	// task-implementmultiproviderkeys1 reached the model as
+	// "ta[REDACTED:openai_key]" and a volume id like disk-0a1b2c3d4e5f6a7b8c9d
+	// was corrupted in the very file the model was asked to edit. FOUND
+	// 2026-10-06 by running the scrubber over made-up but ordinary strings; the
+	// precision-first rule above was being broken by its own first pattern.
+	{"openai_key", regexp.MustCompile(`\bsk-[A-Za-z0-9]{20,}`)},
+
+	// THE KEYS OF THE PROVIDERS /connect ACCEPTS (protocol/providers.go).
+	//
+	// FOUND 2026-10-06, the day after Mochiii began taking any major provider's
+	// key: the scrubber knew none of their shapes. A file holding an NVIDIA key
+	// was read by the agent and the key went to the provider verbatim, then came
+	// back in the answer (run live). Worse, the same was true of the key this
+	// product has used from the start -- "sk-or-v1-..." is "sk-" followed by
+	// TWO letters and a hyphen, which the pattern above (20 letters or digits)
+	// never matched, and neither did OpenAI's own current "sk-proj-" keys or
+	// Anthropic's "sk-ant-".
+	//
+	// These are the same kind of pattern as the rest of this table: a prefix one
+	// issuer puts on its keys, then a long run of key characters. The lengths
+	// are deliberately well under the real ones and well over a word:
+	//
+	//   - A tail that may contain "-" and "_" (base64url keys) needs 32
+	//     characters, so a kebab-case name that merely starts like a key
+	//     ("nvapi-client-for-python") is left alone.
+	//   - A prefix ending in "_" takes letters and digits ONLY, so a snake_case
+	//     identifier (hf_hub_download_with_retries) is never one: its first
+	//     underscore ends the run long before the minimum.
+	//
+	// TestScrub_KnowsEveryConnectableProvidersKey fails when a provider is added
+	// to that list with a key prefix this table does not cover.
+	{"openrouter_key", regexp.MustCompile(`\bsk-or-[A-Za-z0-9_-]{32,}`)},
+	{"anthropic_key", regexp.MustCompile(`\bsk-ant-[A-Za-z0-9_-]{32,}`)},
+	{"openai_key", regexp.MustCompile(`\bsk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{32,}`)},
+	{"nvidia_key", regexp.MustCompile(`\bnvapi-[A-Za-z0-9_-]{32,}`)},
+	{"together_key", regexp.MustCompile(`\btgp_v1_[A-Za-z0-9_-]{32,}`)},
+	{"xai_key", regexp.MustCompile(`\bxai-[A-Za-z0-9]{32,}`)},
+	{"cerebras_key", regexp.MustCompile(`\bcsk-[A-Za-z0-9]{24,}`)},
+	{"groq_key", regexp.MustCompile(`\bgsk_[A-Za-z0-9]{32,}`)},
+	{"huggingface_token", regexp.MustCompile(`\bhf_[A-Za-z0-9]{30,}`)},
+	{"fireworks_key", regexp.MustCompile(`\bfw_[A-Za-z0-9]{20,}`)},
 	// Stripe. THE UNDERSCORE IS THE WHOLE REASON THIS LINE IS SEPARATE from the
 	// openai_key pattern above: that one is `sk-`, this one is `sk_`, and a
 	// Stripe live key therefore matched nothing here at all. Caught end to end --

@@ -244,6 +244,9 @@ func parseVSCodeCatalog(t *testing.T) map[string]tsSlashDef {
 var summaryMayDiffer = map[string]string{
 	"exit": "the command genuinely does different things: the TUI quits the " +
 		"process, the extension closes a panel and leaves the editor running",
+	"connect": "the TUI's /connect also takes a provider address to switch " +
+		"provider (2026-10-05); the extension's does not YET, so its summary " +
+		"must not advertise one",
 }
 
 // tuiOnlyCommands are commands that exist in the terminal client and MUST NOT
@@ -266,6 +269,10 @@ var notYetPorted = map[string]string{
 	// "new chat" still never sends a reset, so it neither deleted chats before
 	// nor saves them now.
 	"history": "VS Code port is the next step of the /history plan (README, /history)",
+	// /save is /history save under a shorter name (2026-10-05); it has nothing
+	// to save through until /history itself is ported, and goes with it.
+	"save":   "the short form of /history save; ported together with /history",
+	"resume": "the short form of /history resume (2026-10-05); ported together with /history",
 	// VS Code left as it is by the owner's decision (2026-09-28); its context
 	// ring is the nearest thing it has, and it estimates rather than reads the
 	// provider's bill.

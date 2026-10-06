@@ -666,3 +666,285 @@ func TestAKeyTypedAfterConnectIsNotRecalled(t *testing.T) {
 		}
 	}
 }
+
+// THE REPORTED BUG (2026-10-05): a key from one provider, pasted while the
+// daemon was on another, came back as "The provider refused that key" -- twice
+// -- and nothing on screen said which provider had been asked, or that a
+// different one could be named. The refusal now says both.
+//
+// Neuter check: drop providerLabel(r.APIBase) from the ConnectRejected branch.
+func TestARefusedKeySaysWhoRefusedItAndHowToUseAnotherProvider(t *testing.T) {
+	got := formatConnectResult(connectResultMsg{resp: protocol.ConnectResponse{
+		Ok: false, Outcome: protocol.ConnectRejected, APIBase: "https://openrouter.ai/api/v1",
+		Detail: "the provider refused it (HTTP 401)",
+	}})
+	for _, want := range []string{
+		"refused by OpenRouter (https://openrouter.ai/api/v1)",
+		"HTTP 401",
+		"Nothing was stored",
+		"name its provider first",
+		connectBaseExample,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the refusal does not say %q:\n%s", want, got)
+		}
+	}
+
+	// The prompt that opens when the key IN USE is refused is the other moment
+	// someone is holding a key from elsewhere -- it is where this was reported.
+	out, _ := newTestModel().beginConnectForRefusedKey("auth", false)
+	m := out.(chatModel)
+	if last := m.turns[len(m.turns)-1].text; !strings.Contains(last, connectBaseExample) {
+		t.Errorf("the refused-key prompt does not say how to bring a key from another provider:\n%s", last)
+	}
+}
+
+// /connect <address> IS HOW A DIFFERENT PROVIDER IS NAMED, end to end: the
+// address is said back before the key is asked for, and it reaches the daemon
+// with the key -- which is what makes the daemon check the key against the
+// provider that issued it instead of the one it was leaving.
+//
+// Neuter check: drop APIBase from the request handleConnectKey sends.
+func TestConnectToAnAddressSendsTheKeyToThatProvider(t *testing.T) {
+	const base = "https://integrate.api.nvidia.com/v1"
+	lockPath, got, cleanup := fakeDaemonForConnect(t, protocol.ConnectResponse{
+		Ok: true, Outcome: protocol.ConnectUnverified, Detail: "nothing proves it", MaskedKey: "...CRET",
+		APIBase: base, InUse: true,
+	})
+	defer cleanup()
+	original := lockPathFunc
+	lockPathFunc = func() string { return lockPath }
+	defer func() { lockPathFunc = original }()
+
+	m := newTestModel()
+	m = typeText(m, "/connect "+base+"/")
+	m, _ = pressEnter(m)
+	if m.state != stateConnect {
+		t.Fatalf("state = %v after /connect <address>, want the masked key prompt", m.state)
+	}
+	if m.input.EchoMode != textinput.EchoPassword {
+		t.Fatal("the key prompt opened for an address is not masked")
+	}
+	if last := m.turns[len(m.turns)-1].text; !strings.Contains(last, "Switching to NVIDIA ("+base+")") {
+		t.Errorf("the address the key is about to be sent to was not said back:\n%s", last)
+	}
+
+	m = typeText(m, tuiTestKey)
+	m, cmd := pressEnter(m)
+	if cmd == nil {
+		t.Fatal("submitting the key sent nothing")
+	}
+	if m.connectBase != "" {
+		t.Errorf("the address outlived the prompt (%q), so a later bare /connect would reuse it", m.connectBase)
+	}
+	if _, ok := cmd().(connectResultMsg); !ok {
+		t.Fatal("the command did not come back with the daemon's answer")
+	}
+	if got.APIBase != base {
+		t.Errorf("the daemon was sent api_base %q, want %q", got.APIBase, base)
+	}
+	if got.APIKey != tuiTestKey {
+		t.Errorf("the daemon received %q, not the key that was typed", maskForTest(got.APIKey))
+	}
+	for _, tr := range m.turns {
+		if strings.Contains(tr.text, tuiTestKey) {
+			t.Fatal("the key was written into the transcript")
+		}
+	}
+}
+
+// ESC LEAVES NOTHING BEHIND. An address given and then abandoned must not ride
+// along on the next bare /connect, which means "the provider already in use".
+func TestAnAbandonedAddressIsNotReused(t *testing.T) {
+	m := newTestModel()
+	m = typeText(m, "/connect https://integrate.api.nvidia.com/v1")
+	m, _ = pressEnter(m)
+	if m.connectBase == "" {
+		t.Fatal("the address was not held while the key prompt was open")
+	}
+	m = press(m, tea.KeyEsc)
+	if m.state == stateConnect || m.connectBase != "" {
+		t.Errorf("after esc: state %v, address %q; want the prompt closed and the address gone", m.state, m.connectBase)
+	}
+}
+
+// AN ADDRESS IS THE ONLY NEW ARGUMENT, AND IT IS NEVER A KEY. Everything
+// connectBaseArg turns away is refused by the command and kept out of the
+// up-arrow recall, so each refusal here is a place a secret cannot hide.
+func TestConnectBaseArgAcceptsAnAddressAndNothingThatCouldCarryASecret(t *testing.T) {
+	for arg, want := range map[string]string{
+		"https://integrate.api.nvidia.com/v1":  "https://integrate.api.nvidia.com/v1",
+		"https://integrate.api.nvidia.com/v1/": "https://integrate.api.nvidia.com/v1",
+		"http://localhost:11434/v1":            "http://localhost:11434/v1",
+		"HTTPS://Api.Example.com/v1":           "HTTPS://Api.Example.com/v1",
+	} {
+		if got, ok := connectBaseArg(arg); !ok || got != want {
+			t.Errorf("connectBaseArg(%q) = %q, %v; want %q, true", arg, got, ok, want)
+		}
+	}
+	for _, arg := range []string{
+		"", tuiTestKey, "integrate.api.nvidia.com/v1", "https://", "ftp://host/v1",
+		"https://user:" + tuiTestKey + "@host/v1",
+		"https://host/v1?key=" + tuiTestKey,
+		"https://host/v1#" + tuiTestKey,
+		"https://host/v1 " + tuiTestKey,
+	} {
+		if got, ok := connectBaseArg(arg); ok {
+			t.Errorf("connectBaseArg(%q) accepted it as %q", arg, got)
+		}
+	}
+
+	// And the recall rule follows it: an address comes back on the up arrow, a
+	// line that could hold a key does not.
+	for raw, want := range map[string]bool{
+		"/connect https://integrate.api.nvidia.com/v1":               false,
+		"/connect https://integrate.api.nvidia.com/v1 " + tuiTestKey: true,
+		"/connect https://host/v1?key=" + tuiTestKey:                 true,
+		"/connect https://user:" + tuiTestKey + "@host/v1":           true,
+	} {
+		if got := connectWithKey(raw); got != want {
+			t.Errorf("connectWithKey(%q) = %v, want %v", raw, got, want)
+		}
+	}
+}
+
+// What the daemon says a switch leaves behind is shown, each as its own note.
+func TestConnectResultShowsTheDaemonsNotes(t *testing.T) {
+	got := formatConnectResult(connectResultMsg{resp: protocol.ConnectResponse{
+		Ok: true, Outcome: protocol.ConnectUnverified, Detail: "nothing proves it", MaskedKey: "...CRET",
+		APIBase: "https://integrate.api.nvidia.com/v1", InUse: true,
+		Notes: []string{"model names differ", "the environment wins at the next start"},
+	}})
+	for _, want := range []string{"NOTE: model names differ", "NOTE: the environment wins at the next start"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the result does not show %q:\n%s", want, got)
+		}
+	}
+}
+
+// "/connect, PASTE THE KEY" IS THE WHOLE INSTRUCTION, so the prompt it opens
+// has to say the key need not be from any one provider -- nothing used to, and
+// a user holding a good key from elsewhere concluded the product could not use
+// it.
+func TestBareConnectSaysAnyProvidersKeyWorks(t *testing.T) {
+	m := newTestModel()
+	m = typeText(m, "/connect")
+	m, _ = pressEnter(m)
+	if m.state != stateConnect || m.input.EchoMode != textinput.EchoPassword {
+		t.Fatalf("/connect did not open the masked key prompt (state %v)", m.state)
+	}
+	if m.connectBase != "" {
+		t.Errorf("a bare /connect named an address (%q); the daemon is meant to tell from the key", m.connectBase)
+	}
+	last := m.turns[len(m.turns)-1].text
+	for _, want := range []string{"Paste your API key", "OpenRouter", "NVIDIA", "recognised from the key"} {
+		if !strings.Contains(last, want) {
+			t.Errorf("the key prompt does not say %q:\n%s", want, last)
+		}
+	}
+}
+
+// A provider can be named instead of addressed: /connect nvidia. The name
+// comes from the fixed list the daemon shares, so nothing typed here that is
+// not on that list is taken for one.
+func TestConnectByProviderName(t *testing.T) {
+	nvidia, ok := protocol.ProviderByName("nvidia")
+	if !ok {
+		t.Fatal("nvidia is not in the provider list")
+	}
+	m := newTestModel()
+	m = typeText(m, "/connect nvidia")
+	m, _ = pressEnter(m)
+	if m.state != stateConnect || m.connectBase != nvidia.APIBase {
+		t.Fatalf("state %v, address %q; want the key prompt open for %q", m.state, m.connectBase, nvidia.APIBase)
+	}
+	if last := m.turns[len(m.turns)-1].text; !strings.Contains(last, "Switching to NVIDIA ("+nvidia.APIBase+")") {
+		t.Errorf("the provider and the address the key goes to were not said back:\n%s", last)
+	}
+
+	for arg, want := range map[string]string{"NVIDIA": nvidia.APIBase, "google": "https://generativelanguage.googleapis.com/v1beta/openai"} {
+		if got, ok := connectBaseArg(arg); !ok || got != want {
+			t.Errorf("connectBaseArg(%q) = %q, %v; want %q", arg, got, ok, want)
+		}
+	}
+	// Close to a name is not a name: it is refused like any other probable key.
+	for _, arg := range []string{"nvidiaa", "open-ai", "nvapi-" + tuiTestKey} {
+		if got, ok := connectBaseArg(arg); ok {
+			t.Errorf("connectBaseArg(%q) accepted it as %q", arg, got)
+		}
+		if !connectWithKey("/connect " + arg) {
+			t.Errorf("/connect %s would be kept for the up arrow, though it may be a key", arg)
+		}
+	}
+}
+
+// A BARE sk- KEY: the daemon sent it nowhere and asks whose it is. The client
+// says so first, offers each candidate as a command to run, and gives a held
+// question back rather than sending it into a daemon that still has no key.
+func TestAKeyThatCouldBeSeveralProvidersIsAskedAbout(t *testing.T) {
+	resp := protocol.ConnectResponse{
+		Ok: false, Outcome: protocol.ConnectNeedsProvider, Candidates: []string{"openai", "deepseek"},
+		Detail: `keys that start with "sk-" are issued by OpenAI, DeepSeek, and nothing in this one says which`,
+	}
+	got := formatConnectResult(connectResultMsg{resp: resp})
+	for _, want := range []string{"sent nowhere", "nothing was stored", "/connect openai", "/connect deepseek", "paste it again"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the answer does not say %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "refused") || strings.Contains(got, "Connected") {
+		t.Errorf("a key that was never checked is described as checked:\n%s", got)
+	}
+
+	m := newTestModel()
+	m.needsAPIKey = true
+	m.pendingPrompt = "who is charles babbage"
+	out, _ := m.handleConnectResult(connectResultMsg{resp: resp})
+	after := out.(chatModel)
+	if after.input.Value() != "who is charles babbage" || !after.needsAPIKey {
+		t.Errorf("the held question was lost or sent: input %q, needsAPIKey %v", after.input.Value(), after.needsAPIKey)
+	}
+}
+
+// "READY" IS SAID ONLY FOR A MODEL THAT ANSWERED. The daemon reports whether the
+// model it chose took a real request with this key; without that the model is
+// named as what will be tried, never as something that works.
+//
+// Neuter check: ignore r.ModelTested in connectModelLine.
+func TestConnectSaysReadyOnlyForAModelThatAnswered(t *testing.T) {
+	base := protocol.ConnectResponse{
+		Ok: true, Outcome: protocol.ConnectAccepted, APIBase: "https://integrate.api.nvidia.com/v1",
+		Detail:    "NVIDIA answered a test request to deepseek-ai/deepseek-v4.1-flash with this key",
+		MaskedKey: "...CRET (70 characters)", InUse: true, Model: "deepseek-ai/deepseek-v4.1-flash", ModelCount: 53,
+	}
+
+	tested := base
+	tested.ModelTested = true
+	got := formatConnectResult(connectResultMsg{resp: tested})
+	for _, want := range []string{"Connected to NVIDIA (https://integrate.api.nvidia.com/v1).", "in use now",
+		"Ready — prompts go to deepseek-ai/deepseek-v4.1-flash", "53 models", "/model"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("a tested connect does not say %q:\n%s", want, got)
+		}
+	}
+
+	untested := base
+	untested.Outcome, untested.Detail = protocol.ConnectUnverified, "NVIDIA recognised the key but would not run a test request"
+	got = formatConnectResult(connectResultMsg{resp: untested})
+	if strings.Contains(got, "Ready") {
+		t.Errorf("an untested model is called ready:\n%s", got)
+	}
+	for _, want := range []string{"NOT verified", "NOT answered a test request", "deepseek-ai/deepseek-v4.1-flash", "NVIDIA"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("an untested connect does not say %q:\n%s", want, got)
+		}
+	}
+
+	// OpenRouter chooses no model here -- models.json's tiers stay -- and the
+	// line is simply absent rather than naming nothing.
+	plain := base
+	plain.Model, plain.ModelCount = "", 0
+	if got := formatConnectResult(connectResultMsg{resp: plain}); strings.Contains(got, "prompts go to") {
+		t.Errorf("a connect that chose no model talks about one:\n%s", got)
+	}
+}

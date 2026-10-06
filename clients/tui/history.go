@@ -21,10 +21,15 @@ import (
 // this file only asks for them and draws them.
 //
 //	/history              list: the current chat, then saved ones, newest first
-//	/history save [name]  save the current chat; again later updates that copy
+//	/save [name]          save the current chat; again later updates that copy
+//	/resume <n>           make saved chat n the current one (its copy stays)
+//	/resume               the list, since there is nothing to resume without one
 //	/history <n>          read saved chat n
-//	/history resume <n>   make saved chat n the current one (its copy stays)
 //	/history delete <n>   delete saved chat n
+//	/history save [name]  \ the first two, by their older names
+//	/history resume <n>   /
+//
+// <n> IS THE CHAT'S NUMBER IN THE LIST, OR ITS NAME (chatIDFor).
 //
 // EVERYTHING HERE IS A roleSystem NOTE, never an assistant turn. buildHistory
 // sends user and assistant turns to the model with the next prompt; a list of
@@ -38,7 +43,13 @@ const (
 	historyAnswerRunes = 600
 )
 
-const historyUsage = "usage: /history · /history save [name] · /history <n> · /history resume <n> · /history delete <n>"
+const historyUsage = "usage: /save [name] · /resume <n> · /history · /history <n> · /history delete <n>\n" +
+	"<n> is the chat's number in /history, or its name"
+
+// noChatNamed opens the answer to a name no saved chat has. A constant because
+// handleHistoryCommand looks for it: a word that is not a chat is as likely a
+// mistyped subcommand, and gets the usage with the answer.
+const noChatNamed = "no saved chat named "
 
 func (m chatModel) handleHistoryCommand(args string) (tea.Model, tea.Cmd) {
 	fields := strings.Fields(args)
@@ -52,19 +63,30 @@ func (m chatModel) handleHistoryCommand(args string) (tea.Model, tea.Cmd) {
 			break
 		}
 		note = m.saveChat(strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(args), "save")))
-	case len(fields) == 1:
-		note = m.showChat(fields[0])
-	case len(fields) == 2 && (fields[0] == "resume" || fields[0] == "delete"):
-		if m.state == stateSending || m.state == stateStreaming {
+	case fields[0] == "resume" || fields[0] == "delete":
+		// EVERYTHING AFTER THE VERB IS THE CHAT: its number, or its name, and a
+		// name may be several words ("/resume nvidia setup"). This arm
+		// used to require exactly two words, so a two-word name fell through to
+		// the usage line.
+		which := strings.Join(fields[1:], " ")
+		switch {
+		case which == "" && fields[0] == "resume":
+			// A bare /resume has one useful answer: what there is to resume.
+			note = m.listChats()
+		case which == "":
+			note = "usage: /history delete <n> -- the chat's number in /history, or its name"
+		case m.state == stateSending || m.state == stateStreaming:
 			note = "wait for this turn to finish (or press esc), then " + fields[0] + " a chat"
-			break
+		case fields[0] == "resume":
+			return m.resumeChat(which)
+		default:
+			note = m.deleteChat(which)
 		}
-		if fields[0] == "resume" {
-			return m.resumeChat(fields[1])
-		}
-		note = m.deleteChat(fields[1])
 	default:
-		note = historyUsage
+		note = m.showChat(strings.Join(fields, " "))
+		if strings.HasPrefix(note, noChatNamed) {
+			note += "\n" + historyUsage
+		}
 	}
 	m.appendTurn(turn{role: roleSystem, text: note})
 	m.resizeViewport()
@@ -90,9 +112,9 @@ func (m *chatModel) listChats() string {
 		}
 	}
 	if saved == 0 {
-		b.WriteString("no saved chats in this project yet -- /history save [name] keeps the current chat")
+		b.WriteString("no saved chats in this project yet -- /save [name] keeps the current chat")
 	} else {
-		b.WriteString("past chats -- /history <n> reads one, /history resume <n> continues it:")
+		b.WriteString("saved chats -- /resume <n> continues one, /history <n> reads it (<n>: its number or name):")
 	}
 	now := time.Now()
 	shown := 0
@@ -139,9 +161,9 @@ func currentChatState(e protocol.HistoryEntry, number map[string]int) string {
 		}
 		return "(saved)"
 	case e.SavedAs != "":
-		return "(changed since saved -- /history save updates it)"
+		return "(changed since saved -- /save updates it)"
 	}
-	return "(not saved -- /history save keeps it)"
+	return "(not saved -- /save keeps it)"
 }
 
 // saveChat saves the chat on screen, or updates its saved copy.
@@ -155,7 +177,11 @@ func (m *chatModel) saveChat(name string) string {
 	m.chatIDs = nil // the list's numbers move with a new or updated save
 	msg := "saved"
 	if e := resp.Entry; e != nil {
-		msg = fmt.Sprintf("saved %q (%d turns) -- /history lists it; /history save again later updates it", e.Title, e.Turns)
+		msg = fmt.Sprintf("saved %q (%d turns) -- /history lists it; /save again later updates it", e.Title, e.Turns)
+		if name != "" {
+			msg = fmt.Sprintf("saved %q (%d turns) -- /resume %s continues it later; /save again updates it",
+				e.Title, e.Turns, e.Title)
+		}
 	}
 	if resp.Pruned > 0 {
 		msg += fmt.Sprintf("\n(the oldest %d saved chat(s) were removed to keep history within its size limit)", resp.Pruned)
@@ -187,24 +213,139 @@ func (m *chatModel) currentChatUnsaved() bool {
 	return false
 }
 
-// chatIDFor turns the number the user typed into the saved chat it stood for
-// in the list they saw. With no list seen yet, one is fetched silently.
-func (m *chatModel) chatIDFor(arg string) (string, string) {
+// chatIDFor turns what the user typed into one saved chat: the NUMBER it had in
+// the list they saw, or its NAME. With no list seen yet, one is fetched
+// silently.
+//
+// A NAME, BECAUSE THE NAME IS WHAT THE USER HAS. `/save test1` followed by
+// `/history resume test1` was answered with the bare usage line, and again on
+// each retry: nothing said the word wanted was "1" (FOUND 2026-10-05, on the
+// owner's first save). The name was the one thing they had just been asked to
+// choose.
+//
+// A number that is a row of the list still means that row, so every command
+// typed from a list keeps meaning what it meant. A number that is no row is
+// tried as a name before it is refused -- a chat can be called "2026".
+//
+// wholeName is for delete: see chatIDNamed.
+func (m *chatModel) chatIDFor(arg string, wholeName bool) (string, string) {
+	arg = strings.TrimSpace(arg)
 	n, err := strconv.Atoi(arg)
-	if err != nil || n < 1 {
+	if err != nil {
+		return m.chatIDNamed(arg, wholeName)
+	}
+	if n < 1 {
 		return "", historyUsage
 	}
 	if len(m.chatIDs) == 0 {
 		_ = m.listChats() // only for the numbering; an error shows up as "no chat n" below
 	}
-	if n > len(m.chatIDs) {
-		return "", fmt.Sprintf("there is no saved chat %d -- /history lists them", n)
+	if n <= len(m.chatIDs) {
+		return m.chatIDs[n-1], ""
 	}
-	return m.chatIDs[n-1], ""
+	if id, _ := m.chatIDNamed(arg, true); id != "" {
+		return id, ""
+	}
+	return "", fmt.Sprintf("there is no saved chat %d -- /history lists them", n)
+}
+
+// chatNameKey is a chat's name as it is compared: case and spacing do not
+// count, and neither does a pair of quotes, since the list shows names quoted
+// and a name copied from it arrives with them.
+func chatNameKey(name string) string {
+	name = strings.TrimSpace(name)
+	if len(name) >= 2 && name[0] == '"' && name[len(name)-1] == '"' {
+		name = name[1 : len(name)-1]
+	}
+	return strings.Join(strings.Fields(strings.ToLower(name)), " ")
+}
+
+// chatIDNamed finds the saved chat called name. The list is asked for afresh,
+// and ALL of it is searched -- a name reaches a chat older than the rows a list
+// shows, which a number cannot.
+//
+// The whole name always matches. The START of one matches too when it can mean
+// only one chat: an unnamed chat is called by its first prompt, and nobody
+// should have to type eighty characters of it. Except for delete (wholeName):
+// that one is not undone, so it is never done on part of a name.
+//
+// Two chats CAN share a name -- saving again updates a chat's own copy, but
+// nothing stops a second chat being given the first one's name. Then neither is
+// chosen: both are shown with their numbers, and the number is what decides.
+func (m *chatModel) chatIDNamed(name string, wholeName bool) (string, string) {
+	want := chatNameKey(name)
+	if want == "" {
+		return "", historyUsage
+	}
+	resp, err := sendHistory(m.clientName, protocol.HistoryRequest{
+		Action: protocol.HistoryList, Workspace: m.workspaceRoot, Spec: m.activeSpec,
+	})
+	if err != nil {
+		return "", "history: " + err.Error()
+	}
+	var saved, whole, starts []protocol.HistoryEntry
+	for _, e := range resp.Entries {
+		if e.Current {
+			continue
+		}
+		saved = append(saved, e)
+		switch key := chatNameKey(e.Title); {
+		case key == want:
+			whole = append(whole, e)
+		case strings.HasPrefix(key, want):
+			starts = append(starts, e)
+		}
+	}
+	matches := whole
+	if len(matches) == 0 && !wholeName {
+		matches = starts
+	}
+	switch {
+	case len(matches) == 1:
+		return matches[0].ID, ""
+	case len(matches) > 1:
+		// The rows below carry numbers, so they are the list the next command
+		// is typed from: the numbering is taken from them, as a list's is.
+		m.chatIDs = m.chatIDs[:0]
+		for _, e := range saved {
+			if len(m.chatIDs) == maxHistoryRows {
+				break
+			}
+			m.chatIDs = append(m.chatIDs, e.ID)
+		}
+		var b strings.Builder
+		fmt.Fprintf(&b, "%d saved chats match %q -- use the number:", len(matches), name)
+		now := time.Now()
+		for _, e := range matches {
+			label := "-" // older than the rows a list numbers
+			for i, id := range m.chatIDs {
+				if id == e.ID {
+					label = strconv.Itoa(i + 1)
+				}
+			}
+			fmt.Fprintf(&b, "\n  %-4s %-10s %3d turns  %q", label, chatWhen(e, now), e.Turns, e.Title)
+		}
+		return "", b.String()
+	case len(saved) == 0:
+		return "", "no saved chats in this project yet -- /save [name] keeps the current chat"
+	case wholeName && len(starts) > 0:
+		return "", fmt.Sprintf("%s%q -- delete takes the whole name, or the number; did you mean %q?",
+			noChatNamed, name, starts[0].Title)
+	}
+	return "", fmt.Sprintf("%s%q -- /history lists them", noChatNamed, name)
+}
+
+// chatLabel is how a note refers to the chat the user named: a number as they
+// typed it, a name in quotes.
+func chatLabel(arg string) string {
+	if _, err := strconv.Atoi(strings.TrimSpace(arg)); err == nil {
+		return strings.TrimSpace(arg)
+	}
+	return strconv.Quote(strings.TrimSpace(arg))
 }
 
 func (m *chatModel) showChat(arg string) string {
-	id, problem := m.chatIDFor(arg)
+	id, problem := m.chatIDFor(arg, false)
 	if problem != "" {
 		return problem
 	}
@@ -216,7 +357,7 @@ func (m *chatModel) showChat(arg string) string {
 	}
 	var b strings.Builder
 	if e := resp.Entry; e != nil {
-		fmt.Fprintf(&b, "saved chat %s -- %q, %d turns, %s", arg, e.Title, e.Turns, chatWhen(*e, time.Now()))
+		fmt.Fprintf(&b, "saved chat %s -- %q, %d turns, %s", chatLabel(arg), e.Title, e.Turns, chatWhen(*e, time.Now()))
 		if marks := chatMarkers(*e); marks != "" {
 			b.WriteString("  ⚠ " + marks)
 		}
@@ -229,21 +370,21 @@ func (m *chatModel) showChat(arg string) string {
 			b.WriteString("\n\n" + clipRunes(t.Content, historyAnswerRunes))
 		}
 	}
-	fmt.Fprintf(&b, "\n\n(/history resume %s to continue it)", arg)
+	fmt.Fprintf(&b, "\n\n(/resume %s to continue it)", arg)
 	return b.String()
 }
 
 // resumeChat makes a saved chat the current one: the screen shows it, ↑↓
 // recalls its prompts, and its spec is active again if it still exists. Its
-// saved copy stays; /history save later updates it. The chat on screen is
+// saved copy stays; /save later updates it. The chat on screen is
 // REPLACED, so when it is not saved the first resume only says so -- the same
 // command again goes ahead, as a second ctrl+n does.
 func (m chatModel) resumeChat(arg string) (tea.Model, tea.Cmd) {
-	id, problem := m.chatIDFor(arg)
+	id, problem := m.chatIDFor(arg, false)
 	if problem == "" && m.resumeArmed != id && m.currentChatUnsaved() {
 		m.resumeArmed = id
-		problem = "the chat on screen is not saved -- /history save keeps it; " +
-			"/history resume " + arg + " again replaces it"
+		problem = "the chat on screen is not saved -- /save keeps it; " +
+			"/resume " + arg + " again replaces it"
 	}
 	if problem == "" {
 		m.resumeArmed = ""
@@ -279,7 +420,7 @@ func (m *chatModel) resumedNote(e *protocol.HistoryEntry, turns []protocol.Turn)
 		return fmt.Sprintf("resumed a saved chat (%d turns)", len(turns))
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "resumed %q (%d turns) -- /history save updates its saved copy", e.Title, e.Turns)
+	fmt.Fprintf(&b, "resumed %q (%d turns) -- /save updates its saved copy", e.Title, e.Turns)
 	if e.LastPrompt != "" {
 		fmt.Fprintf(&b, "\nyou left off at: %q", e.LastPrompt)
 	}
@@ -301,7 +442,7 @@ func (m *chatModel) resumedNote(e *protocol.HistoryEntry, turns []protocol.Turn)
 }
 
 func (m *chatModel) deleteChat(arg string) string {
-	id, problem := m.chatIDFor(arg)
+	id, problem := m.chatIDFor(arg, true)
 	if problem != "" {
 		return problem
 	}
@@ -311,7 +452,7 @@ func (m *chatModel) deleteChat(arg string) string {
 		return "history: " + err.Error()
 	}
 	m.chatIDs = nil // every later number has moved
-	return "deleted saved chat " + arg
+	return "deleted saved chat " + chatLabel(arg)
 }
 
 // chatMarkers says why a chat looks HALF DONE: its last answer did not finish,

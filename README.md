@@ -182,12 +182,45 @@ Pick one of the two inference paths.
 <summary><b>Direct mode</b> — your provider key goes from this machine to the provider</summary>
 
 ```bash
-# Hand the daemon your key once. It checks the key with the provider before
-# storing it, and writes it 0600 to ~/.mochiii/credentials.json:
-./daemon/mochiii-daemon connect --api-base "https://api.together.xyz/v1"
+# Hand the daemon your key once -- from any major provider. It works out whose
+# key it is, checks it with that provider before storing it, and writes it 0600
+# to ~/.mochiii/credentials.json:
+./daemon/mochiii-daemon connect
 # Paste your provider API key (it will not be shown): ...
+#   Checking the key with https://openrouter.ai/api/v1 ...
 #   Verified: the provider accepted it: key "laptop", credit limit 12.50
 ```
+
+**Any major provider's key works, and there is no address to type.** The provider
+is recognised from the key's own prefix — `sk-or-` OpenRouter, `sk-ant-`
+Anthropic, `sk-proj-` OpenAI, `AIza` Google Gemini, `nvapi-` NVIDIA, `gsk_` Groq,
+`xai-` xAI, and so on — and the key is sent to that provider and to no other.
+The full list, by the name each is known by:
+
+`openrouter` · `openai` · `anthropic` · `gemini` · `nvidia` · `groq` · `deepseek` ·
+`xai` · `mistral` · `together` · `fireworks` · `cerebras` · `moonshot` ·
+`huggingface` · `sambanova` · `dashscope` · `zai`
+
+- **A key whose prefix names nobody is never guessed at.** Several providers
+  issue keys that start with a bare `sk-`; such a key is sent nowhere until you
+  say whose it is: `connect --provider deepseek` (or `/connect deepseek` in the
+  TUI). `--api-base <url>` names any other OpenAI-compatible address.
+- **For any provider but OpenRouter, `connect` also finds a model.** It asks the
+  provider what it serves, sends small test requests — best candidate first —
+  until one answers, and stores that list beside the key, so `/model` offers the
+  provider's own models in place of `models.json`'s tiers, which name
+  OpenRouter's. The answer is also what proves the key: some providers offer no
+  other way to check one. It is one request, a few tokens, when the provider's
+  list is what it serves.
+- **A provider's list is not always what it serves.** Measured on NVIDIA with a
+  real key (2026-10-05): of 59 chat models listed, most answered "not found" for
+  the account or accepted the request and never replied, and a handful answered
+  in seconds. So when the best candidate does not answer, up to 40 are tried,
+  several at a time. Models the provider says are not there are left out of
+  `/model`; ones that sent nothing back stay, marked as such.
+- **Zero-data-retention routing is something OpenRouter does.** With any other
+  provider, prompts go straight to it under its own data policy, and the client
+  says so.
 
 `connect` refuses a key the provider rejects rather than storing it, and says
 plainly when it could **not** verify one instead of implying it did. Use
@@ -196,8 +229,13 @@ plainly when it could **not** verify one instead of implying it did. Use
 A key is deliberately **not** accepted as a command-line argument: in `argv` it is
 visible to other processes through `ps` and is written to your shell history.
 
-Environment variables still work and still take precedence, so nothing about an
-existing deployment changes:
+Environment variables still work, and a key in the environment still takes
+precedence over a stored one. The one case the stored credential wins:
+`MOCHIII_API_BASE` naming one of the providers above with **no**
+`MOCHIII_API_KEY` beside it. That can only fail — every one of them needs a key —
+so a key connected for a different provider is used, with its own address, and
+the daemon logs that it did. A custom address (a local server, a gateway) is
+always kept, and a stored key is never sent to it.
 
 ```bash
 export MOCHIII_API_BASE="https://api.together.xyz/v1"
@@ -295,7 +333,7 @@ The daemon reads plain environment variables and never parses `.env` itself.
 
 | Variable | Meaning |
 |---|---|
-| `MOCHIII_API_BASE` | Base URL of an OpenAI-compatible API. **Optional** — unset, the daemon defaults to `https://openrouter.ai/api/v1` and logs that it did (`daemon/main.go:124`). A malformed value is still fatal. *Required in proxy mode*, where the address cannot be guessed. *(This row read "**Required** — the daemon refuses to start without it" until 2026-09-21. That stopped being true on 2026-09-15, when `22b3021` gave the daemon a default — the fix for the item-41 first-run outage.)* |
+| `MOCHIII_API_BASE` | Base URL of an OpenAI-compatible API. **Optional** — unset, the daemon defaults to `https://openrouter.ai/api/v1` and logs that it did (`daemon/main.go:142`). A malformed value is still fatal. *Required in proxy mode*, where the address cannot be guessed. *(This row read "**Required** — the daemon refuses to start without it" until 2026-09-21. That stopped being true on 2026-09-15, when `22b3021` gave the daemon a default — the fix for the item-41 first-run outage.)* |
 | `MOCHIII_API_KEY` | Sent as `Authorization: Bearer`. May be unset for local servers that need no key, or when a key has been stored by `mochiii-daemon connect` — this variable **takes precedence** over the stored one |
 | `MOCHIII_MODEL` | One model, named the way the server at `MOCHIII_API_BASE` names it (e.g. `qwen2.5-coder:7b` for Ollama). **Replaces every tier in `models.json`** — for a local server, which knows none of those names. VS Code: the `mochiii.model` setting |
 | `MOCHIII_USE_PROXY` | `true` selects proxy mode |
@@ -417,6 +455,7 @@ commands send a mode the daemon enforces ([Long tasks](#long-tasks)).
 /connect               # set the provider API key: masked prompt, checked, live
 /connect show          # which key is in force (masked — never the key itself)
 /connect forget        # remove the stored key
+/connect nvidia        # name the provider yourself (TUI); or /connect <its API address>
 
 /spec add a --verbose flag   # write a spec (specs/<name>.md) and review it
 /spec build            # build the active spec: tests first, live task list
@@ -434,11 +473,12 @@ commands send a mode the daemon enforces ([Long tasks](#long-tasks)).
 /task budget 45m $1 200  # this session's budget: minutes, dollars, model calls
 
 /usage                 # tokens and cost this chat/session, and how full the context is
-/history save [name]   # keep this chat; saving again later updates it
-/history               # saved chats in this project; ⚠ marks work left half done
+/save [name]           # keep this chat; saving again later updates it
+/resume my-name        # continue a saved chat, by its name or its number (/resume 2)
+/resume                # which chats there are to continue
+/history               # the same list; ⚠ marks work left half done
 /history 2             # read saved chat 2
-/history resume 2      # continue it
-/history delete 2      # delete it
+/history delete 2      # delete it (its number, or its whole name)
 
 /help /mcp-server /explain /test /doc /security
 /review /plan /run /clear /compact /context /git /init /search /exit
@@ -451,15 +491,21 @@ window, taken from `context_window` in `models.json`. It answers locally, so it 
 no model call. A bare `/word` that is not a command is answered locally too, instead
 of being sent to the model.
 
-**Chat history.** A chat is kept only if you save it with `/history save`, so disk use
-stays your choice. ctrl+n starts a new chat and discards the current one, but on a chat
+**Chat history.** A chat is kept only if you save it with `/save` (`/save my-name` to
+name it), so disk use stays your choice. ctrl+n starts a new chat and discards the current one, but on a chat
 that is not saved it only warns the first time: a second ctrl+n discards it.
 Relaunching continues where you left off. Everything stays on this machine:
 
 - **Where:** saved chats live in `~/.local/state/mochiii/history/`, one gzipped file per
   chat, never inside the project.
-- **Saving again:** after more work, `/history save` updates the chat's saved copy
-  instead of adding a new one. `/history resume` keeps the saved copy, and asks first
+- **Which chat:** `/resume`, `/history` and `/history delete` take the chat's number
+  in the list or the name it was saved under (`/save test1`, later `/resume test1`).
+  Case does not count, and the start of a name is enough to read or resume when it
+  fits only one chat; deleting needs the whole name. If two chats share a name, both
+  are shown and the number decides. `/history save` and `/history resume` are the
+  same two commands under their older names.
+- **Saving again:** after more work, `/save` updates the chat's saved copy
+  instead of adding a new one. `/resume` keeps the saved copy, and asks first
   if the chat on screen is not saved.
 - **How much is kept:** at most 50 chats per project and 20 MiB for the whole folder.
   If a save pushes out the oldest, it tells you.
@@ -486,6 +532,16 @@ daemon verifies the key and starts using it **without a restart**; in VS Code it
 goes to SecretStorage and the daemon is restarted to pick it up. A key in the
 environment (`MOCHIII_API_KEY`) still wins over a stored one, and `/connect show`
 says so when that is what is happening.
+
+**Paste a key from any major provider and it is ready.** `/connect` asks for
+the key and nothing else: the daemon recognises the provider from the key, and
+for any provider but OpenRouter it also picks one of that provider's models and
+tries it, so the next prompt works — see [direct mode](#4-run) for the list and
+the details. The result names the provider and the model, and says "ready" only
+for a model that answered. A refused key is refused by name ("refused by
+NVIDIA"), and changes nothing. In the TUI, `/connect <provider>` or
+`/connect <address>` names the provider yourself, which a key with a bare `sk-`
+prefix needs. VS Code's `/connect` does not take either yet.
 
 ---
 
@@ -693,6 +749,21 @@ proposals — your files change only when you accept them — and the client sho
 whether the change was ever built or tested. See
 [`docs/SPEC_WORKFLOW.md`](docs/SPEC_WORKFLOW.md#the-working-copy--why-the-agent-can-test-its-own-work).
 
+**What the agent can reach on your machine.** Not only the project:
+
+| | Where | What you are asked |
+|---|---|---|
+| **Read** files, list folders | anywhere on the machine | yes/no for each path outside the project |
+| **Create and edit** files | the project, and anywhere in your home folder (`~/Desktop`, `~/Documents`, …) | every change is shown as a diff; nothing is written until you accept it |
+| **Delete, move, rename** | nowhere | there is no tool for it; the agent says so and gives you the command |
+| **Run** commands | the project only | build and test programs (`go`, `npm`, `make`, `cargo`), not a shell |
+
+Refused even if you say yes: reading private keys, credential stores and shell
+histories; writing hidden files and folders, `~/bin`, `.desktop` launchers, or
+anything outside your home folder. The agent is told exactly this list with every
+turn (`daemon/machinereach.go`), built from the tools that turn really has: asked
+"can you work all over my machine?", it used to answer "only inside the project".
+
 A tool you do not list resolves to `ask` — the default is a question. `ask`
 suspends the turn and shows you the tool, the **complete** arguments, its lane,
 and which step this is. A timeout, a garbled answer, an answer to a different
@@ -868,6 +939,12 @@ returns `403 zdr_required` rather than trusting the client to ask nicely.
   of *prefixed* patterns, so novel, obfuscated or unprefixed secrets are missed;
   it can be disabled; and the proxy cannot scrub, because it never reads content.
   Defence in depth, not a guarantee.
+  The fixed set is prefixed key shapes: the keys of every provider `/connect` accepts
+  (OpenRouter, OpenAI, Anthropic, Google, NVIDIA, Groq, xAI, Together, Fireworks,
+  Cerebras, Hugging Face), AWS, GitHub, Slack, Stripe, Supabase, and private-key blocks.
+  A generic `api_key = "…"`, a JWT, a password inside a URL and a short password are
+  **not** recognised, on purpose: matching those corrupts ordinary code far more often
+  than it catches a secret.
 - **A stale index still reports `grounded ✓`.** Nothing records when the index
   was built, so the model can confidently describe the old shape of a file it
   "retrieved". The watcher keeps a running daemon current, but offline changes

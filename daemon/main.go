@@ -106,6 +106,10 @@ func main() {
 	// its key to the proxy. Filling the proxy's key in from this file would send a
 	// provider credential to a host it was not issued for -- the same mistake the
 	// fatal guard below exists to prevent, arrived at from the other direction.
+	// connected is the stored credential when it is the one in force. Its
+	// provider's own models, if it recorded any, replace models.json's tiers
+	// further down -- they are the only names that provider answers to.
+	var connected storedCredential
 	if !useProxy && (apiKey == "" || apiBase == "") {
 		if path, err := credentialsPath(); err == nil {
 			stored, warn, loadErr := loadCredential(path)
@@ -115,7 +119,11 @@ func main() {
 			if warn != "" {
 				logger.Printf("warning: %s", warn)
 			}
+			envKey := apiKey
 			apiKey, apiBase = fillFromStored(apiKey, apiBase, stored, logger.Printf)
+			if envKey == "" && stored.configured() && apiKey == stored.APIKey {
+				connected = stored
+			}
 		}
 	}
 
@@ -203,13 +211,37 @@ func main() {
 
 	// ONE MODEL NAMED OUTSIDE models.json -- a local server's, typically. The
 	// flag used to change only the name logged below, never the model called.
+	modelNamed := true
 	switch {
 	case strings.TrimSpace(*modelOverride) != "":
 		cfg.UseOnlyModel(strings.TrimSpace(*modelOverride), "-model")
 	case strings.TrimSpace(os.Getenv("MOCHIII_MODEL")) != "":
 		cfg.UseOnlyModel(strings.TrimSpace(os.Getenv("MOCHIII_MODEL")), "MOCHIII_MODEL")
+	default:
+		modelNamed = false
 	}
-	model := cfg.ResolvedSlug()
+
+	// THE CONNECTED PROVIDER'S OWN MODELS, when it is not the one models.json
+	// was written for. Recorded when the key was connected (setUpProvider), so
+	// nothing is fetched here and the daemon starts the same with no network.
+	// A model named explicitly above is left alone: that is a more specific
+	// instruction than "whatever the provider offers".
+	var tierCfg *Config
+	if !modelNamed && !usesRoutingDialect(apiBase) {
+		switch tierCfg = providerTierConfig(cfg, providerName(apiBase), connected.Models, connected.QuietModels, connected.DefaultModel); {
+		case tierCfg != nil:
+			logger.Printf("models: %d served by %s, as listed when the key was connected; default %s (models.json's tiers name another provider's models and are not offered)",
+				len(tierCfg.Tiers), providerName(apiBase), connected.DefaultModel)
+		default:
+			logger.Printf("warning: %s serves its own models and none were recorded for it, so models.json's tiers are in force and it may not know them. "+
+				"Run /connect (or `mochiii-daemon connect`) to list them, or name one with MOCHIII_MODEL", providerName(apiBase))
+		}
+	}
+	effectiveCfg := cfg
+	if tierCfg != nil {
+		effectiveCfg = tierCfg
+	}
+	model := effectiveCfg.ResolvedSlug()
 
 	// --no-scrub OR's in on top of whatever models.json already says, same
 	// combining convention as --no-rerank above cfg.Retrieval.RerankDisabled:
@@ -395,7 +427,7 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	logger.Printf("tier=%s slug=%s", cfg.DefaultTier, model)
+	logger.Printf("tier=%s slug=%s", effectiveCfg.DefaultTier, model)
 	logger.Printf("listening on %s (base=%s)", addr, apiBase)
 
 	// Cancelled the moment a shutdown signal arrives, BEFORE the drain wait
@@ -411,6 +443,7 @@ func main() {
 		apiBase:                 apiBase,
 		apiKey:                  apiKey,
 		cfg:                     cfg,
+		tierCfg:                 tierCfg,
 		modelOverride:           *modelOverride,
 		systemPrompt:            systemPrompt,
 		tcpToken:                tcpToken,

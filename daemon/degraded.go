@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"mochiii/protocol"
 	"os"
@@ -30,6 +31,7 @@ const (
 	detailMemoryDown        = "cross-session conversation memory is unavailable; this conversation works normally but will not be remembered after the client closes"
 	detailNonZDR            = "zero-data-retention routing is not enforced for this daemon"
 	detailCollection        = "providers that may store or train on request data are permitted for this daemon"
+	detailNoRoutingFmt      = "zero-data-retention routing is not available with %s: prompts go straight to it, under its own data policy"
 	detailWorkspaceTooLarge = "workspace is too large (> 10,000 files), semantic search is disabled"
 )
 
@@ -93,6 +95,19 @@ func (s *Server) degradations() []protocol.Degradation {
 func (s *Server) routingDegradations() []protocol.Degradation {
 	if s.cfg == nil {
 		return nil
+	}
+	// A PROVIDER WITH NO SUCH ROUTING AT ALL. Zero-data-retention is asked of
+	// OpenRouter in a routing object (providerRouting); a key connected to any
+	// other named provider sends prompts straight to it, and there is nothing
+	// to ask. That is the same weakening AllowNonZDR is, arrived at by choosing
+	// a provider instead of editing models.json, so it is reported the same
+	// way -- and alone, because the settings below describe routing that is no
+	// longer happening.
+	if _, base := s.credentials(); base != "" && !usesRoutingDialect(base) {
+		return []protocol.Degradation{{
+			Component: protocol.DegradedProviderRouting,
+			Detail:    fmt.Sprintf(detailNoRoutingFmt, providerName(base)),
+		}}
 	}
 	var out []protocol.Degradation
 	if s.cfg.ZDR.AllowNonZDR {

@@ -82,10 +82,12 @@ var slashCatalog = []slashDef{
 	{Name: "git", Kind: slashLocal, Summary: "show git status for the workspace"},
 	{Name: "init", Kind: slashLocal, Summary: "quick start checklist for this workspace"},
 	{Name: "search", Kind: slashLocal, Summary: "search past conversation turns (/search <query>)", NeedsArgs: true},
-	{Name: "history", Kind: slashLocal, Summary: "saved chats (/history save [name], /history resume <n>)"},
+	{Name: "save", Kind: slashLocal, Summary: "save the current chat (/save [name])"},
+	{Name: "resume", Kind: slashLocal, Summary: "continue a saved chat (/resume <name or number>)"},
+	{Name: "history", Kind: slashLocal, Summary: "saved chats: list them, read one (/history <n>), /history delete <n>"},
 	{Name: "usage", Kind: slashLocal, Summary: "tokens and cost this session, and how full the context is"},
 	{Name: "spec", Kind: slashLocal, Summary: "write a spec (/spec <goal>), then /spec build|check|use|off|show"},
-	{Name: "connect", Kind: slashLocal, Summary: "set the provider API key (/connect show, /connect forget)"},
+	{Name: "connect", Kind: slashLocal, Summary: "set the provider API key (/connect <provider URL> switches provider; /connect show, /connect forget)"},
 	{Name: "exit", Kind: slashLocal, Summary: "quit the TUI"},
 
 	// /team is in the catalog to be FOUND, and parsed elsewhere.
