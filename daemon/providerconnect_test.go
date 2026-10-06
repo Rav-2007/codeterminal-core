@@ -598,6 +598,37 @@ func TestChatModelIDsKeepsOnlyModelsThatHoldAConversation(t *testing.T) {
 	}
 }
 
+// Groq's real list, 2026-10-06. The safety classifier and the two speech models
+// were offered by /model and one was picked; none of them can hold a chat.
+func TestChatModelIDsDropsGroqsClassifierAndSpeechModels(t *testing.T) {
+	var listed []listedModel
+	for _, id := range []string{"allam-2-7b", "canopylabs/orpheus-arabic-saudi", "canopylabs/orpheus-v1-english",
+		"openai/gpt-oss-120b", "openai/gpt-oss-20b", "openai/gpt-oss-safeguard-20b", "qwen/qwen3.8-27b"} {
+		listed = append(listed, listedModel{ID: id})
+	}
+	got := strings.Join(chatModelIDs(listed), ",")
+	want := "allam-2-7b,openai/gpt-oss-120b,openai/gpt-oss-20b,qwen/qwen3.8-27b"
+	if got != want {
+		t.Errorf("chat models = %s, want %s", got, want)
+	}
+}
+
+// A list stored by an older connect is filtered again at load, so the user does
+// not have to connect again -- but never the default, which answered.
+func TestProviderTierConfigRefiltersAStoredList(t *testing.T) {
+	cfg := &Config{DefaultTier: "primary", Tiers: map[string]ModelTier{"primary": {Slug: "a/b", Active: true}}}
+	stored := []string{"openai/gpt-oss-safeguard-20b", "canopylabs/orpheus-v1-english", "qwen/qwen3.8-27b"}
+	got := providerTierConfig(cfg, "Groq", stored, nil, "qwen/qwen3.8-27b")
+	if got == nil || len(got.Tiers) != 1 || got.Tiers["qwen/qwen3.8-27b"].Slug == "" {
+		t.Fatalf("tiers = %+v, want only the chat model", got)
+	}
+	// The default is kept even when its name looks like a non-chat model.
+	got = providerTierConfig(cfg, "Groq", []string{"x/odd-guard-chat"}, nil, "x/odd-guard-chat")
+	if got == nil || got.DefaultTier != "x/odd-guard-chat" {
+		t.Errorf("the default was dropped: %+v", got)
+	}
+}
+
 // The order candidates are TRIED in. It decides nothing by itself -- a model is
 // used only once it has answered -- but it decides what is tried first.
 func TestRankModelsPutsTheEverydayModelFirst(t *testing.T) {
