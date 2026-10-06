@@ -301,7 +301,9 @@ func TestThePlainDialectCarriesNothingOnlyOpenRouterUnderstands(t *testing.T) {
 	if err := json.Unmarshal(body, &fields); err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]bool{"model": true, "messages": true, "tools": true, "stream": true, "stream_options": true, "max_tokens": true}
+	// reasoning_effort is the OpenAI-defined field Groq and OpenAI read; it is
+	// NOT OpenRouter's "reasoning" object, which must never appear here.
+	want := map[string]bool{"model": true, "messages": true, "tools": true, "stream": true, "stream_options": true, "max_tokens": true, "reasoning_effort": true}
 	for name := range fields {
 		if !want[name] {
 			t.Errorf("the plain dialect sent %q, which only OpenRouter understands:\n%s", name, body)
@@ -313,6 +315,29 @@ func TestThePlainDialectCarriesNothingOnlyOpenRouterUnderstands(t *testing.T) {
 	}
 	if string(fields["max_tokens"]) != "4096" {
 		t.Errorf("max_tokens = %s, want the tier's cap", fields["max_tokens"])
+	}
+	if string(fields["reasoning_effort"]) != `"high"` {
+		t.Errorf("reasoning_effort = %s, want the effort asked for", fields["reasoning_effort"])
+	}
+}
+
+// No effort asked for means no field: a turn that never touched the picker
+// sends exactly the body it sent before the field existed.
+func TestThePlainDialectSendsNoEffortUnlessOneIsAsked(t *testing.T) {
+	routing := (&ZDRConfig{}).resolvedProviderRouting()
+	body, err := dialectFor("https://api.groq.com/openai/v1", "never-memoised-effort-model").
+		body("m", []chatMessage{{Role: "user", Content: "hi"}}, nil, routing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), "reasoning") {
+		t.Errorf("no effort was asked for, yet the body mentions reasoning:\n%s", body)
+	}
+	// And once a provider has refused the field, it is not sent again.
+	routing.reasoningEffort = "medium"
+	body, _ = requestDialect{noReasoningEffort: true}.body("m", []chatMessage{{Role: "user", Content: "hi"}}, nil, routing)
+	if strings.Contains(string(body), "reasoning_effort") {
+		t.Errorf("reasoning_effort was sent after the provider refused it:\n%s", body)
 	}
 }
 
@@ -347,6 +372,12 @@ func TestDialectAdaptsToWhatTheProviderSaid(t *testing.T) {
 		{"refused at the smallest cap: send none", requestDialect{maxTokensField: fieldMaxTokens, maxTokens: 4096}, 400,
 			`max_tokens is not supported`,
 			requestDialect{}, true},
+		{"the model refuses reasoning_effort (Groq's own words, measured)", plain, 400,
+			"`reasoning_effort` must be one of `low`, `medium`, or `high`",
+			requestDialect{streamOptions: true, maxTokensField: fieldMaxTokens, noReasoningEffort: true}, true},
+		{"a strict server forbids the extra field", plain, 422,
+			`{"detail":[{"type":"extra_forbidden","loc":["body","reasoning_effort"],"msg":"Extra inputs are not permitted"}]}`,
+			requestDialect{streamOptions: true, maxTokensField: fieldMaxTokens, noReasoningEffort: true}, true},
 		{"a refusal about something else", plain, 400, `{"error":"messages: field required"}`, plain, false},
 		{"a refused key is not a wording problem", plain, 401, `invalid api key, check max_tokens`, plain, false},
 		{"a server error is not a wording problem", plain, 500, `max_tokens`, plain, false},

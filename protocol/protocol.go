@@ -264,6 +264,15 @@ type PromptRequest struct {
 	Tier       string `json:"tier,omitempty"`
 	Mode       string `json:"mode,omitempty"`
 
+	// ReasoningEffort asks the model to think before it answers, for THIS TURN
+	// ONLY: "low", "medium" or "high". Absent means the tier's own setting, which
+	// is what every existing client sends. Any other value is ignored (and
+	// logged), never forwarded: providers refuse values they do not know, and a
+	// refused effort must not cost the user their turn. Measured on Groq
+	// 2026-10-06: qwen/qwen3.8-27b does not reason at all unless this is set, and
+	// openai/gpt-oss-120b refuses anything but these three words.
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+
 	// Pipeline names the specialist phases for THIS TURN ONLY, overriding
 	// mcp.pipeline. Absent means use the configured shape, which is what every
 	// existing client sends.

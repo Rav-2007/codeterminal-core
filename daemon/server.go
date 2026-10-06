@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -773,6 +774,16 @@ func (s *Server) serveConn(conn net.Conn) {
 	// loadPersistedHistory). Merging it in here too would double the
 	// conversation the model sees.
 	routing := s.tierConfig().routingFor(decision.Tier)
+	// The client's effort picker overrides the tier's reasoning_effort for this
+	// turn. Same closed set the config accepts (reasoningEfforts); anything else
+	// is a client bug, logged and dropped rather than sent to be refused.
+	if e := promptReq.ReasoningEffort; e != "" {
+		if slices.Contains(reasoningEfforts, e) {
+			routing.reasoningEffort = e
+		} else {
+			s.logger.Printf("ignoring reasoning_effort %q from the client: not one of %s", e, strings.Join(reasoningEfforts, ", "))
+		}
+	}
 	// THE TURN'S BILL: every model call below -- the single call here, or an
 	// agent turn's whole loop -- adds its usage report to this tally, and the
 	// turn's final Done message carries the sum (usage.go; the TUI's /usage).
