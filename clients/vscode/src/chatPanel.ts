@@ -637,6 +637,10 @@ export class ChatPanel {
     const reply = await runLocalCommand(this.localHost(), name, args);
     if (reply !== '') {
       this.replyLocal(reply);
+    } else {
+      // The webview locked the composer when the command was sent; a command
+      // that answers with no reply (a successful /compact) must still unlock it.
+      this.postSafe({ type: 'done' });
     }
     if (name === 'connect') {
       // A new provider brings its own models: the chip, and a selection that
@@ -1227,7 +1231,7 @@ export class ChatPanel {
     }
     this.postSafe({ type: 'info', text: 'Compacting: summarising the earlier part of this chat…' });
     try {
-      const r = await chatHistory(CLIENT_NAME, 'compact');
+      const r = await chatHistory(CLIENT_NAME, 'compact', this.preferredTier ? { tier: this.preferredTier } : {});
       if (r.error || !r.turns) {
         return r.error ? r.error.charAt(0).toUpperCase() + r.error.slice(1) + '.' : 'compact did not return a chat.';
       }

@@ -78,6 +78,33 @@ suite('/compact', () => {
     assert.strictEqual(await runLocalCommand(host, 'compact', ''), '');
     assert.strictEqual(called, 1);
   });
+
+  test('the request names the chosen model, and the panel passes it', async () => {
+    let seen: any;
+    const stub = new StubDaemon();
+    await stub.start((req, socket) => {
+      seen = req;
+      writeLine(socket, { protocol_version: 1, error: 'nothing to compact yet' });
+    });
+    await withStub(stub, async () => {
+      await chatHistory('test', 'compact', { tier: 'openai/gpt-oss-20b' });
+    });
+    assert.deepStrictEqual(seen, { protocol_version: 1, chats: true, action: 'compact', tier: 'openai/gpt-oss-20b' });
+    assert.match(read('src/chatPanel.ts'), /chatHistory\(CLIENT_NAME, 'compact', this\.preferredTier \? \{ tier: this\.preferredTier \} : \{\}\)/);
+  });
+
+  test('a command with no reply still unlocks the composer', () => {
+    // A successful /compact answers ''; with no 'done' the input stayed disabled.
+    const panel = read('src/chatPanel.ts');
+    const handler = /private async handleLocalSlash[\s\S]*?\n {2}\}\n/.exec(panel);
+    assert.ok(handler, 'handleLocalSlash moved; update this test');
+    assert.match(handler[0], /\} else \{[\s\S]*?type: 'done'/);
+  });
+
+  test('its progress line goes above the reply bubble, not under it', () => {
+    const js = read('media/main.js');
+    assert.match(js, /case 'info': \{[\s\S]*?transcriptEl\.insertBefore\(line, pendingRow\)/);
+  });
 });
 
 suite('history panel and notices, in the markup', () => {

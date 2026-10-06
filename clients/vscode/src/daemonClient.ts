@@ -1378,7 +1378,8 @@ export type ChatHistoryAction = 'list' | 'save' | 'show' | 'resume' | 'delete' |
 export async function chatHistory(
   clientName: string,
   action: ChatHistoryAction,
-  opts: { id?: string; query?: string; spec?: string; name?: string } = {},
+  // tier: the model the panel has chosen, so compact's summary is written by it.
+  opts: { id?: string; query?: string; spec?: string; name?: string; tier?: string } = {},
 ): Promise<ChatHistoryResponse> {
   const { socket } = await connectToDaemon(clientName);
   return new Promise((resolve, reject) => {

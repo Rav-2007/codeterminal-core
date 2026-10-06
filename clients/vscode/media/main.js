@@ -2527,7 +2527,15 @@
         text.textContent = String(msg.text || '');
         line.appendChild(dot);
         line.appendChild(text);
-        transcriptEl.appendChild(line);
+        // A status that arrives while the reply is still an empty bubble
+        // ("Compacting: summarising…") goes ABOVE it: appended, it landed under
+        // the answer that later filled the bubble, reading out of order.
+        const pendingRow = currentAssistantCard && currentAssistantRaw === '' ? currentAssistantCard.parentElement : null;
+        if (pendingRow && pendingRow.parentElement === transcriptEl) {
+          transcriptEl.insertBefore(line, pendingRow);
+        } else {
+          transcriptEl.appendChild(line);
+        }
         transcriptEl.scrollTop = transcriptEl.scrollHeight;
         break;
       }
