@@ -100,6 +100,41 @@ export interface HandshakeResponse {
   error?: string;
   daemon_version?: string;
   persisted_history?: Turn[];
+  /**
+   * The daemon's answer to "would a prompt sent now go out with no key?" --
+   * decided there, because the inputs (environment, stored credential, base)
+   * live there. Read fresh on every handshake.
+   */
+  needs_api_key?: boolean;
+}
+
+/** protocol.ConnectRequest. The key crosses the local, peer-authenticated socket and nothing else. */
+export interface ConnectRequest {
+  protocol_version: number;
+  connect: true;
+  api_key?: string;
+  api_base?: string;
+  no_verify?: boolean;
+  show?: boolean;
+  forget?: boolean;
+}
+
+/** protocol.ConnectResponse. masked_key is the only form of the key that comes back. */
+export interface ConnectResponse {
+  protocol_version: number;
+  ok: boolean;
+  outcome: 'accepted' | 'rejected' | 'unverified' | 'needs_provider' | 'removed' | 'shown' | string;
+  detail: string;
+  masked_key?: string;
+  api_base?: string;
+  in_use: boolean;
+  env_override?: boolean;
+  model?: string;
+  model_count?: number;
+  model_tested?: boolean;
+  candidates?: string[];
+  notes?: string[];
+  error?: string;
 }
 
 export interface PromptRequest {
@@ -1309,6 +1344,52 @@ export async function searchConversations(
 // in that client allowed to consume persisted_history. Callers must not
 // call this again mid-session and merge the result into an ongoing
 // conversation; see the field's doc comment in protocol/protocol.go for why.
+// sendConnect hands the daemon a key (or a show/forget request) and returns its
+// answer. One request, one reply, like fetchAvailableTiers -- but with no
+// timeout of its own: proving a key means the daemon asking the provider, and
+// for a provider whose models must be tried one by one that takes seconds.
+export async function sendConnect(
+  clientName: string,
+  req: Omit<ConnectRequest, 'protocol_version' | 'connect'>,
+): Promise<ConnectResponse> {
+  const { socket } = await connectToDaemon(clientName);
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const decoder = new LineDecoder((obj) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      socket.destroy();
+      resolve(obj as ConnectResponse);
+    });
+    socket.on('data', (chunk: Buffer) => decoder.feed(chunk));
+    socket.once('error', (err) => {
+      if (!settled) {
+        settled = true;
+        reject(err);
+      }
+    });
+    socket.once('close', () => {
+      if (!settled) {
+        settled = true;
+        reject(new Error('daemon closed before answering the connect request'));
+      }
+    });
+    const wire: ConnectRequest = { protocol_version: PROTOCOL_VERSION, connect: true, ...req };
+    writeLine(socket, wire);
+  });
+}
+
+// preflightSession is preflightHandshake plus the daemon's needs_api_key, which
+// the panel uses to ask for a key when the first question is sent rather than
+// letting that question fail.
+export async function preflightSession(clientName: string): Promise<{ turns: Turn[]; needsApiKey: boolean }> {
+  const { socket, handshake } = await connectToDaemon(clientName);
+  socket.destroy();
+  return { turns: handshake.persisted_history ?? [], needsApiKey: handshake.needs_api_key === true };
+}
+
 export async function preflightHandshake(clientName: string): Promise<Turn[]> {
   const { socket, handshake } = await connectToDaemon(clientName);
   socket.destroy();

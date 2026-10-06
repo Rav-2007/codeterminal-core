@@ -29,6 +29,30 @@ Also not here yet, and worth knowing before relying on it: closing the window
 that STARTED the daemon stops it under a window that adopted it. The fix is an
 idle timeout plus a shutdown RPC, both scoped and neither built.
 
+## Connecting a model provider
+
+Type **`/connect`** in the chat (or run **Mochiii: Set API Key**) and paste the
+key into the masked box. The daemon recognises the provider from the key in most
+cases -- Groq (`gsk_`), NVIDIA (`nvapi-`), OpenRouter (`sk-or-`), Anthropic
+(`sk-ant-`), Google Gemini (`AIza`), xAI, Together, Fireworks, Cerebras, Hugging
+Face and more (17 in all) -- checks it with that provider, finds a model that
+answers, stores it in `~/.mochiii/credentials.json` (mode 0600) and uses it at
+once, with no restart. The key never appears in the chat; only a masked form
+comes back.
+
+- `/connect <provider>` (e.g. `/connect groq`) or `/connect <API address>`
+  chooses the provider first, for a key that does not say whose it is.
+- A key several providers issue (a bare `sk-...`) is sent nowhere until you pick
+  the provider from a list.
+- `/connect show` says which key is in use; `/connect forget` removes it.
+- If a question is sent before any key is connected, the box opens first and the
+  question is sent as soon as the key works.
+- The terminal client and VS Code share this one stored key. A key VS Code kept
+  in its own secret store before this change is passed to the daemon as
+  `MOCHIII_API_KEY`, which outranks the stored one; `/connect` removes it so the
+  key you connect is the one used. With no folder open there is no daemon to
+  check a key, so **Set API Key** still stores it in VS Code's secret store.
+
 ## Composer controls
 
 - **Model chip** shows the model actually answering (e.g. `qwen3.8-27b`), not the

@@ -30,6 +30,7 @@
 // environment variable, or PATH. Never from the workspace, and never from the
 // working directory.
 
+import { parseConnectArgs } from './connectFlow';
 import { GroundingInfo, Turn } from './daemonClient';
 import { runMCPServerList } from './mcpServerList';
 import { runGitStatus } from './safeGit';
@@ -74,7 +75,7 @@ export interface LocalCommandHost {
    * kind of reach that should be visible in that list rather than buried in a
    * switch case.
    */
-  connectApiKey(): Promise<string>;
+  connectApiKey(base?: string): Promise<string>;
   /**
    * Report which key is in force, MASKED (/connect show), and remove the stored
    * one (/connect forget).
@@ -120,21 +121,23 @@ export async function runLocalCommand(
     // client. What must never be typed here is a KEY: "/connect sk-..." is
     // already in the transcript, and in the history sent with the next prompt, by
     // the time anyone reads a warning about it. "show" and "forget" are not keys.
-    case 'connect':
-      switch (args.trim()) {
-        case '':
+    case 'connect': {
+      // What may follow /connect is decided by parseConnectArgs, which refuses
+      // anything that could be a key so it never stays in the transcript.
+      const parsed = parseConnectArgs(args);
+      switch (parsed.kind) {
+        case 'key':
           return host.connectApiKey();
+        case 'to':
+          return host.connectApiKey(parsed.base);
         case 'show':
           return host.showApiKey();
         case 'forget':
           return host.forgetApiKey();
         default:
-          return (
-            '/connect takes no key as an argument: one typed on the command line would be left in this ' +
-            'transcript and sent with your next prompt. Run /connect on its own and enter it at the ' +
-            'prompt. The only arguments are `show` and `forget`.'
-          );
+          return parsed.message;
       }
+    }
 
     case 'clear':
       host.replaceTranscript([]);

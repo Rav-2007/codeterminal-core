@@ -27,7 +27,7 @@ import {
   Turn,
   applyEdit,
   fetchAvailableTiers,
-  preflightHandshake,
+  preflightSession,
   searchConversations,
   streamPrompt,
   undoEdits,
@@ -69,7 +69,7 @@ export class DiffContentProvider implements vscode.TextDocumentContentProvider {
   }
 }
 
-const CLIENT_NAME = 'mochiii-vscode';
+export const CLIENT_NAME = 'mochiii-vscode';
 const VIEW_TYPE = 'mochiiiChat';
 
 // turnsFromWire keeps only "user"/"assistant" roles, mirroring
@@ -105,6 +105,8 @@ export class ChatPanel {
   // The model id preferredTier (or the default tier) resolves to, for /context
   // and the switch confirmation; '' until the daemon has said.
   private currentModel = '';
+  // The daemon's handshake said a prompt sent now would carry no key.
+  private needsApiKey = false;
   // lastGrounding is the most recent GroundingInfo for /context.
   private lastGrounding: GroundingInfo | undefined;
 
@@ -212,7 +214,9 @@ export class ChatPanel {
   // never touch that field.
   private async runPreflight(): Promise<void> {
     try {
-      const persisted = turnsFromWire(await preflightHandshake(CLIENT_NAME));
+      const session = await preflightSession(CLIENT_NAME);
+      this.needsApiKey = session.needsApiKey;
+      const persisted = turnsFromWire(session.turns);
       this.transcript = persisted;
       this.panel.webview.postMessage({ type: 'history', turns: persisted });
       this.postActiveSpec();
@@ -563,9 +567,14 @@ export class ChatPanel {
       // masked input box, stores the key in SecretStorage, and restarts the
       // daemon so the new key is actually in use. Reimplementing any of that
       // here would be a second credential path to keep correct.
-      connectApiKey: async () => {
-        await vscode.commands.executeCommand('mochiii.setApiKey');
-        return 'API key prompt opened. If you entered a key, the daemon was restarted to use it.';
+      // The provider-aware flow in extension.ts (mochiii.connect): a masked
+      // box, the daemon proves and stores the key and uses it at once.
+      connectApiKey: async (base?: string) => {
+        const r = await vscode.commands.executeCommand<{ message: string; inUse: boolean }>('mochiii.connect', { base });
+        if (r?.inUse) {
+          this.needsApiKey = false;
+        }
+        return r?.message ?? 'connect did not run.';
       },
       // Both return the sentence to print. The panel never reads or deletes a
       // credential itself -- it asks the extension, which owns SecretStorage.
@@ -605,6 +614,45 @@ export class ChatPanel {
     if (reply !== '') {
       this.replyLocal(reply);
     }
+    if (name === 'connect') {
+      // A new provider brings its own models: the chip, and a selection that
+      // named a model the new provider does not have, must follow.
+      void this.refreshModelAfterConnect();
+    }
+  }
+
+  private async refreshModelAfterConnect(): Promise<void> {
+    try {
+      const tiers = await fetchAvailableTiers(CLIENT_NAME);
+      if (this.preferredTier && !tiers.some((t) => t.name === this.preferredTier)) {
+        this.preferredTier = '';
+      }
+    } catch {
+      // keep what is shown; the next turn will say if the daemon is gone
+    }
+    this.postModelTier();
+  }
+
+  // ASK FOR THE KEY WHEN A QUESTION NEEDS IT -- the terminal client's behaviour
+  // (beginConnectForPrompt). The daemon said at the handshake that a prompt
+  // would go out with no key; sending the question anyway would only turn it
+  // into an authentication error. The connect box opens, and the question is
+  // sent the moment a key is in use -- or handed back, unsent, if not.
+  private async connectThenStart(run: () => void): Promise<void> {
+    this.needsApiKey = false; // no second box while this one is open
+    const r = await vscode.commands.executeCommand<{ message: string; inUse: boolean }>('mochiii.connect', {});
+    if (r?.inUse) {
+      void this.panel.webview.postMessage({ type: 'info', text: 'Key connected · sending your question' });
+      void this.refreshModelAfterConnect();
+      run();
+      return;
+    }
+    this.needsApiKey = true;
+    this.replyLocal(
+      'Your question was not sent: Mochiii needs a model provider key first, and none is in use.\n\n' +
+        (r?.message ?? '') +
+        '\n\nRun /connect, then send the question again.',
+    );
   }
 
   private startModelTurn(
@@ -615,6 +663,10 @@ export class ChatPanel {
     mode?: string,
     pipeline?: string[]
   ): void {
+    if (this.needsApiKey) {
+      void this.connectThenStart(() => this.startModelTurn(displayText, wirePrompt, promptKind, autoApply, mode, pipeline));
+      return;
+    }
     // Captured once, for this run only -- see the currentRunAutoApply field
     // doc comment for why this must not be re-read later.
     this.currentRunAutoApply = autoApply;
