@@ -2350,6 +2350,21 @@
       case 'modelMenu':
         renderModelMenu(msg);
         break;
+      case 'info': {
+        const line = document.createElement('div');
+        line.className = 'msg-info';
+        line.setAttribute('role', 'status');
+        const dot = document.createElement('span');
+        dot.className = 'info-dot';
+        dot.setAttribute('aria-hidden', 'true');
+        const text = document.createElement('span');
+        text.textContent = String(msg.text || '');
+        line.appendChild(dot);
+        line.appendChild(text);
+        transcriptEl.appendChild(line);
+        transcriptEl.scrollTop = transcriptEl.scrollHeight;
+        break;
+      }
       case 'attachmentFailed':
         pendingAttachments = pendingAttachments.filter((f) => f.id !== msg.id);
         renderAttachments();

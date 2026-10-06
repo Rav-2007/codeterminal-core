@@ -209,6 +209,7 @@ function fakeHost(root: string, extensionPath: string): LocalCommandHost & { clo
     extensionPath,
     transcript,
     preferredTier: '',
+    currentModel: '',
     lastGrounding: grounding,
     closed: false,
     connectCalls: 0,
@@ -390,5 +391,30 @@ suite('the /init checklist', () => {
         'directory they happen to be in, and "mcp list" STARTS the servers a config ' +
         `names: ${text}`,
     );
+  });
+});
+
+// /context names the MODEL, as the chip does. It used to print only the tier
+// name, so it could disagree with the chip with nothing saying which was right.
+suite('/context names the model', () => {
+  const host = (preferredTier: string, currentModel: string): LocalCommandHost =>
+    ({ ...fakeHost(os.tmpdir(), os.tmpdir()), preferredTier, currentModel }) as LocalCommandHost;
+
+  test('the default, with the model it resolves to', async () => {
+    const reply = await runLocalCommand(host('', 'qwen/qwen3.8-27b'), 'context', '');
+    assert.match(reply, /^model: qwen\/qwen3\.8-27b, default$/m);
+    assert.doesNotMatch(reply, /model tier:/);
+  });
+
+  test('a selected model, and its tier name only when it differs', async () => {
+    let reply = await runLocalCommand(host('openai/gpt-oss-120b', 'openai/gpt-oss-120b'), 'context', '');
+    assert.match(reply, /^model: openai\/gpt-oss-120b, selected$/m);
+    reply = await runLocalCommand(host('thinker', 'deepseek/deepseek-r1'), 'context', '');
+    assert.match(reply, /^model: deepseek\/deepseek-r1 \(tier thinker\), selected$/m);
+  });
+
+  test('before the daemon has answered, says so instead of inventing a name', async () => {
+    const reply = await runLocalCommand(host('', ''), 'context', '');
+    assert.match(reply, /^model: the configured default, default$/m);
   });
 });

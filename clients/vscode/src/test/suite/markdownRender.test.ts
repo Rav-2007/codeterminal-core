@@ -190,6 +190,14 @@ suite('composer controls say what they are', () => {
     assert.match(js, /type: 'selectModel'/);
   });
 
+  test('a dropdown switch leaves a neutral line in the chat, not a red error', () => {
+    const panel = fs.readFileSync(CHAT_PANEL_TS, 'utf8');
+    assert.match(panel, /Model switched to/);
+    assert.match(panel, /type: err \? 'notice' : 'info'/);
+    const js = fs.readFileSync(MAIN_JS, 'utf8');
+    assert.match(js, /case 'info': \{[\s\S]*?className = 'msg-info'/);
+  });
+
   test('command output is shown as written, not rendered as markdown', () => {
     // "* qwen/..." marks the current model in /model; as markdown it became a bullet.
     const panel = fs.readFileSync(CHAT_PANEL_TS, 'utf8');

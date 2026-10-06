@@ -102,6 +102,9 @@ export class ChatPanel {
   // preferredTier is the models.json tier name chosen via /model <name>.
   // Empty means default routing. Sent as PromptRequest.tier on every turn.
   private preferredTier = '';
+  // The model id preferredTier (or the default tier) resolves to, for /context
+  // and the switch confirmation; '' until the daemon has said.
+  private currentModel = '';
   // lastGrounding is the most recent GroundingInfo for /context.
   private lastGrounding: GroundingInfo | undefined;
 
@@ -222,9 +225,23 @@ export class ChatPanel {
     }
   }
 
-  private postModelTier(): void {
+  // knownModel: the caller already looked the tier up (applyTier), so there is
+  // nothing to fetch. Otherwise the model is resolved from the daemon's list.
+  private postModelTier(knownModel?: string): void {
     const tier = this.preferredTier || 'default';
-    this.panel.webview.postMessage({ type: 'modelTier', tier });
+    const post = (m: Record<string, unknown>): void => {
+      try {
+        void this.panel.webview.postMessage(m);
+      } catch {
+        // panel closed meanwhile
+      }
+    };
+    if (knownModel) {
+      this.currentModel = knownModel;
+      post({ type: 'modelTier', tier, model: knownModel });
+      return;
+    }
+    post({ type: 'modelTier', tier });
     // Then the model behind the tier, which is what the chip shows: "default"
     // alone told the user nothing about what was answering. Best effort -- with
     // no daemon yet the chip keeps the tier name.
@@ -236,11 +253,8 @@ export class ChatPanel {
         }
         const t = tiers.find((x) => (this.preferredTier ? x.name === this.preferredTier : x.default === true));
         if (t) {
-          try {
-            void this.panel.webview.postMessage({ type: 'modelTier', tier, model: t.slug });
-          } catch {
-            // panel closed meanwhile
-          }
+          this.currentModel = t.slug;
+          post({ type: 'modelTier', tier, model: t.slug });
         }
       },
       () => undefined,
@@ -442,37 +456,53 @@ export class ChatPanel {
   // Selecting from the dropdown: '' is the default. The same checks as /model.
   private async onSelectModel(tier: string): Promise<void> {
     const err = await this.applyTier(tier);
-    if (err) {
-      try {
-        void this.panel.webview.postMessage({ type: 'notice', text: err });
-      } catch {
-        // panel closed meanwhile
-      }
+    // A switch made in the dropdown otherwise leaves no trace in the chat, so a
+    // later look back cannot tell which model answered what. UI-only: this line
+    // is not added to the transcript the model sees.
+    const short = this.currentModel ? this.currentModel.slice(this.currentModel.lastIndexOf('/') + 1) : '';
+    const text = err
+      ? err
+      : this.preferredTier
+        ? `Model switched to ${short || this.preferredTier} · used from your next message`
+        : `Model switched to Default${short ? ` (${short})` : ''} · used from your next message`;
+    try {
+      void this.panel.webview.postMessage({ type: err ? 'notice' : 'info', text });
+    } catch {
+      // panel closed meanwhile
     }
   }
 
   // Sets the tier for later turns, or returns why it cannot.
   private async applyTier(name: string): Promise<string | undefined> {
-    if (name === '' || name === 'clear' || name === 'default') {
-      this.preferredTier = '';
-      this.postModelTier();
-      return undefined;
-    }
+    const toDefault = name === '' || name === 'clear' || name === 'default';
+    let tiers: Awaited<ReturnType<typeof fetchAvailableTiers>>;
     try {
-      const tiers = await fetchAvailableTiers(CLIENT_NAME);
-      const found = tiers.find((t) => t.name === name);
-      if (!found) {
-        return `unknown model tier "${name}" — try /model for the list`;
-      }
-      if (!found.active) {
-        return `tier "${name}" is currently inactive in models.json`;
-      }
-      this.preferredTier = found.name;
-      this.postModelTier();
-      return undefined;
+      tiers = await fetchAvailableTiers(CLIENT_NAME);
     } catch (err) {
+      if (toDefault) {
+        // The default needs no checking; only its model name is unknown.
+        this.preferredTier = '';
+        this.currentModel = '';
+        this.postModelTier();
+        return undefined;
+      }
       return `could not select model: ${(err as Error).message}`;
     }
+    if (toDefault) {
+      this.preferredTier = '';
+      this.postModelTier(tiers.find((t) => t.default === true)?.slug);
+      return undefined;
+    }
+    const found = tiers.find((t) => t.name === name);
+    if (!found) {
+      return `unknown model tier "${name}" — try /model for the list`;
+    }
+    if (!found.active) {
+      return `tier "${name}" is currently inactive in models.json`;
+    }
+    this.preferredTier = found.name;
+    this.postModelTier(found.slug);
+    return undefined;
   }
 
   private async handleModelCommand(arg: string): Promise<void> {
@@ -504,7 +534,7 @@ export class ChatPanel {
       return;
     }
     const err = await this.applyTier(arg);
-    this.replyLocal(err ?? `model set to ${this.preferredTier}`);
+    this.replyLocal(err ?? `model set to ${this.currentModel || this.preferredTier}`);
   }
 
   // localHost adapts this panel to LocalCommandHost. The workspace is read here,
@@ -517,6 +547,7 @@ export class ChatPanel {
       extensionPath: this.extensionPath,
       transcript: this.transcript,
       preferredTier: this.preferredTier,
+      currentModel: this.currentModel,
       lastGrounding: this.lastGrounding,
       replaceTranscript: (turns) => {
         this.transcript = turns;
@@ -1264,6 +1295,18 @@ export function chatPanelStyles(): string {
   .msg.user .avatar { background: var(--ct-accent-soft); color: var(--ct-accent-strong); border: 1px solid var(--ct-border); }
   .msg.assistant .avatar { background: var(--ct-brand-gradient); color: #fff; }
   .msg.error .avatar { background: #c0392b; }
+  /* A one-line, neutral note in the transcript (a model switch). Not a bubble:
+     it is about the conversation, not part of it. */
+  .msg-info {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 4px 0 12px;
+    color: var(--ct-muted);
+    font-size: 11.5px;
+  }
+  .msg-info::before, .msg-info::after { content: ''; flex: 1; border-top: 1px solid var(--ct-border); }
+  .msg-info .info-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ct-accent); flex-shrink: 0; }
   .msg .card {
     flex: 1;
     min-width: 0;

@@ -48,6 +48,8 @@ export interface LocalCommandHost {
   readonly extensionPath: string;
   readonly transcript: Turn[];
   readonly preferredTier: string;
+  /** The model id the selected (or default) tier resolves to; '' while unknown. */
+  readonly currentModel: string;
   readonly lastGrounding: GroundingInfo | undefined;
 
   /** Replace the transcript (used by /clear and /compact). */
@@ -149,13 +151,25 @@ export async function runLocalCommand(
     }
 
     case 'context': {
-      const tier = host.preferredTier || '(default)';
+      // The MODEL, as the chip shows it. This printed only the tier name, so
+      // with a provider connected it could read "openai/gpt-oss-safeguard-20b"
+      // while the chip read "qwen3.8-27b", and nothing said which was answering.
+      let model: string;
+      if (host.preferredTier) {
+        model = host.currentModel || host.preferredTier;
+        if (host.currentModel && host.currentModel !== host.preferredTier) {
+          model += ` (tier ${host.preferredTier})`;
+        }
+        model += ', selected';
+      } else {
+        model = `${host.currentModel || 'the configured default'}, default`;
+      }
       let g = '(none this turn)';
       const info = host.lastGrounding;
       if (info) {
         g = `chunks=${info.chunks ?? 0} truncated=${!!info.truncated} mismatch=${!!info.workspace_mismatch}`;
       }
-      return `workspace: ${host.workspace}\nmodel tier: ${tier}\ngrounding: ${g}`;
+      return `workspace: ${host.workspace}\nmodel: ${model}\ngrounding: ${g}`;
     }
 
     case 'git':
