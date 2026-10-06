@@ -52,7 +52,8 @@ var outsideReadTools = map[string]bool{
 var refusedOutsideRoots = []string{"/proc", "/sys", "/dev", "/run"}
 
 // refusedOutsideDirNames are directory names that hold credentials wherever
-// they appear. Compared per path component, case-insensitively.
+// they appear. Compared per path component, normalised
+// (editapply.NormalizeComponent).
 var refusedOutsideDirNames = map[string]bool{
 	".ssh":            true,
 	".gnupg":          true,
@@ -72,8 +73,8 @@ var refusedOutsideDirNames = map[string]bool{
 
 // refusedOutsideFileNames are files whose content is, often enough, a secret
 // typed in the clear: shell and REPL histories (an `export TOKEN=...`, a
-// `mysql -p...`) and token files. Compared per path component,
-// case-insensitively. FOUND 2026-10-01: none of them was refused.
+// `mysql -p...`) and token files. Compared per path component, normalised.
+// FOUND 2026-10-01: none of them was refused.
 var refusedOutsideFileNames = map[string]bool{
 	".bash_history":      true,
 	".zsh_history":       true,
@@ -155,14 +156,25 @@ func outsideReadRefusal(abs string) string {
 			}
 		}
 	}
-	for _, part := range strings.Split(abs, string(filepath.Separator)) {
-		if part == "" {
-			continue
-		}
-		if refusedOutsideDirNames[strings.ToLower(part)] || editapply.IsProtectedDirName(part) {
+	// editapply.SplitComponents and NormalizeComponent, as every other gate in
+	// this family uses (editapply/pathhazard.go). This one split on the
+	// platform's own separator and folded case only, so two spellings of a
+	// refused place matched no name below and came back readable:
+	//
+	//   C:\Users\x/.ssh/id_ed25519   Windows honours "/" as well as "\"; the
+	//                                split saw one component, "x/.ssh/id_ed25519"
+	//   ~/.ssh./id_ed25519           Win32 drops a component's trailing dots and
+	//                                spaces: ".ssh." opens .ssh
+	//
+	// FOUND 2026-10-06 on CI's Windows runner, by a test that built its paths
+	// with "/". Both callers pass a resolved path, which is why nothing real
+	// is known to have got through; a refusal should not rest on its caller.
+	for _, part := range editapply.SplitComponents(abs) {
+		name := editapply.NormalizeComponent(part)
+		if refusedOutsideDirNames[name] || editapply.IsProtectedDirName(part) {
 			return fmt.Sprintf("%q holds credentials or repository internals and is never read", part)
 		}
-		if refusedOutsideFileNames[strings.ToLower(part)] {
+		if refusedOutsideFileNames[name] {
 			return fmt.Sprintf("%q can hold secrets typed in the clear and is never read", part)
 		}
 		if editapply.MatchesSecretName(part) {

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -197,12 +198,20 @@ func TestMachineReachMatchesWhatTheToolsAcceptAndRefuse(t *testing.T) {
 			t.Errorf("the section says %s reaches anywhere on the machine, and it is not an outside-read tool", tool)
 		}
 	}
-	for _, refused := range []string{home + "/.ssh/id_ed25519", home + "/.aws/credentials", home + "/.bash_history", home + "/.mochiii/credentials.json"} {
+	// Joined, not glued with "/": these are the resolved paths the tools hand
+	// the check, and on Windows home+"/.ssh" is not one (the first version of
+	// this test did that and failed there, 2026-10-06).
+	for _, refused := range []string{
+		filepath.Join(home, ".ssh", "id_ed25519"),
+		filepath.Join(home, ".aws", "credentials"),
+		filepath.Join(home, ".bash_history"),
+		filepath.Join(home, ".mochiii", "credentials.json"),
+	} {
 		if reason := outsideReadRefusal(refused); reason == "" {
 			t.Errorf("the section says keys, credential stores and histories are always refused, and %s is readable", refused)
 		}
 	}
-	for _, allowed := range []string{home + "/Documents/report.txt", "/etc/hostname", home + "/.bashrc"} {
+	for _, allowed := range []string{filepath.Join(home, "Documents", "report.txt"), "/etc/hostname", filepath.Join(home, ".bashrc")} {
 		if reason := outsideReadRefusal(allowed); reason != "" {
 			t.Errorf("the section says files anywhere can be read after a yes, and %s is refused outright: %s", allowed, reason)
 		}

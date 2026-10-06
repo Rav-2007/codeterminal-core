@@ -275,6 +275,61 @@ func TestAnAbsolutePathInsideTheWorkspaceIsNotAskedAbout(t *testing.T) {
 	}
 }
 
+// A REFUSED PLACE IS REFUSED HOWEVER ITS PATH IS SPELT. The check split a path
+// on the platform's own separator and folded case, and nothing else, so these
+// came back readable:
+//
+//   - "/" on Windows, which honours it beside "\": home+"/.ssh/id_ed25519" was
+//     one component, "<home's last folder>/.ssh/id_ed25519", on no list.
+//   - "\" anywhere else: the same file on an NTFS or SMB mount.
+//   - a trailing dot or space, which Win32 drops: ".ssh." opens .ssh.
+//
+// FOUND 2026-10-06: CI's build #133 (commit 2ba35a7) reported the first two
+// paths below readable on its Windows runner. The "/" rows can fail only on
+// Windows; the "\" and trailing-dot rows fail everywhere without the fix.
+func TestOutsideReadRefusalHoweverThePathIsSpelt(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home folder:", err)
+	}
+	refused := []string{
+		home + "/.ssh/id_ed25519",
+		home + "/.bash_history",
+		home + "/.gnupg/private-keys-v1.d/key",
+		home + "/code/.git/config",
+		home + `\.ssh\id_ed25519`,
+		home + `\.bash_history`,
+		home + `\.kube\config`,
+		home + `\Desktop\prod.pem`,
+		filepath.Join(home, ".ssh.", "id_ed25519"),
+		filepath.Join(home, ".SSH ", "known_hosts"),
+		filepath.Join(home, ".aws. .", "config"),
+		// Names only this file lists (.ssh and .aws are editapply's too, and
+		// were normalised there already).
+		filepath.Join(home, ".gnupg.", "pubring.kbx"),
+		filepath.Join(home, ".kube ", "config"),
+		filepath.Join(home, ".config", "Google-Chrome.", "Default", "Cookies"),
+		filepath.Join(home, ".bash_history."),
+		filepath.Join(home, ".Zsh_History "),
+	}
+	for _, p := range refused {
+		if outsideReadRefusal(p) == "" {
+			t.Errorf("outsideReadRefusal(%q) = \"\", want refused", p)
+		}
+	}
+	// And no wider than it was: a readable file stays readable in each spelling.
+	for _, p := range []string{
+		home + "/Documents/report.md",
+		home + `\Documents\report.md`,
+		filepath.Join(home, "Documents", "history.md"),
+		filepath.Join(home, "ssh", "notes.txt"), // the name without its dot
+	} {
+		if why := outsideReadRefusal(p); why != "" {
+			t.Errorf("outsideReadRefusal(%q) = %q, want readable", p, why)
+		}
+	}
+}
+
 func TestOutsideReadRefusalCatalogue(t *testing.T) {
 	home, _ := os.UserHomeDir()
 	refused := []string{
