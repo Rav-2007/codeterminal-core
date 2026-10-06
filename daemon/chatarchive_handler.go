@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"mochiii/protocol"
@@ -55,7 +56,47 @@ func (s *Server) handleHistory(ctx context.Context, enc *json.Encoder, req proto
 			fail("listing saved chats", err)
 			return
 		}
+		if q := strings.TrimSpace(req.Query); q != "" {
+			entries = s.filterChats(ctx, archive, entries, q)
+		}
 		reply(protocol.HistoryResponse{Entries: entries})
+
+	case protocol.HistoryBookmark, protocol.HistoryUnbookmark:
+		on := req.Action == protocol.HistoryBookmark
+		s.historyMu.Lock()
+		id := req.ID
+		var pruned int
+		if id == "" {
+			// The current chat: saved first (or its saved copy updated), so the
+			// bookmark has a file to live on.
+			var err error
+			id, _, pruned, err = s.saveChatLocked(ctx, archive, req.Spec, "")
+			if err != nil {
+				s.historyMu.Unlock()
+				fail("saving this chat", err)
+				return
+			}
+		}
+		h, err := archive.setBookmark(id, on)
+		s.historyMu.Unlock()
+		if err != nil {
+			fail("bookmarking that chat", err)
+			return
+		}
+		entry := s.entryFor(id, h, req.ID == "")
+		reply(protocol.HistoryResponse{Entry: &entry, Pruned: pruned})
+
+	case protocol.HistoryCompact:
+		entry, turns, compacted, err := s.compactChat(ctx, archive, req.Spec)
+		if err != nil {
+			if errors.Is(err, errNothingToCompact) {
+				reply(protocol.HistoryResponse{Error: err.Error()})
+				return
+			}
+			fail("compacting this chat", err)
+			return
+		}
+		reply(protocol.HistoryResponse{Entry: &entry, Turns: turns, Compacted: compacted})
 
 	case protocol.HistorySave:
 		s.historyMu.Lock()
@@ -96,7 +137,7 @@ func (s *Server) handleHistory(ctx context.Context, enc *json.Encoder, req proto
 		reply(protocol.HistoryResponse{})
 
 	default:
-		reply(protocol.HistoryResponse{Error: "unknown history action; use list, save, show, resume or delete"})
+		reply(protocol.HistoryResponse{Error: "unknown history action; use list, save, show, resume, delete, bookmark, unbookmark or compact"})
 	}
 }
 
@@ -131,6 +172,7 @@ func (s *Server) listChats(ctx context.Context, archive *chatArchive, spec strin
 		for _, c := range saved {
 			if c.ID == link.ID {
 				h.Name = c.Header.Name
+				h.Bookmarked = c.Header.Bookmarked
 				savedTurns = link.Turns
 			}
 		}
@@ -155,6 +197,7 @@ func (s *Server) entryFor(id string, h archiveHeader, current bool) protocol.His
 	e := protocol.HistoryEntry{
 		ID: id, Current: current, Title: h.displayTitle(), LastPrompt: h.LastPrompt,
 		Started: h.Started, Ended: h.Ended, Turns: h.Turns, Incomplete: h.Incomplete, Spec: h.Spec,
+		Bookmarked: h.Bookmarked,
 	}
 	if h.Spec == "" {
 		return e
@@ -204,4 +247,42 @@ func (s *Server) resumeChat(ctx context.Context, archive *chatArchive, id string
 	e := s.entryFor(id, h, true)
 	e.SavedAs = id
 	return e, turns, nil
+}
+
+// filterChats keeps the entries whose title, or any turn, contains q --
+// case-insensitively. The current chat is matched against memory; a saved one
+// is read from its file, which load bounds after decompression, and there are at
+// most maxArchivesPerWorkspace unbookmarked of them, so this stays small.
+func (s *Server) filterChats(ctx context.Context, archive *chatArchive, entries []protocol.HistoryEntry, q string) []protocol.HistoryEntry {
+	needle := strings.ToLower(q)
+	has := func(text string) bool { return strings.Contains(strings.ToLower(text), needle) }
+	var out []protocol.HistoryEntry
+	for _, e := range entries {
+		if has(e.Title) || has(e.LastPrompt) {
+			out = append(out, e)
+			continue
+		}
+		matched := false
+		if e.Current {
+			if turns, err := s.memory.LoadAllTurns(ctx, s.workspace); err == nil {
+				for _, t := range turns {
+					if has(t.Content) {
+						matched = true
+						break
+					}
+				}
+			}
+		} else if _, turns, err := archive.load(e.ID); err == nil {
+			for _, t := range turns {
+				if has(t.Content) {
+					matched = true
+					break
+				}
+			}
+		}
+		if matched {
+			out = append(out, e)
+		}
+	}
+	return out
 }

@@ -108,6 +108,10 @@ type archiveHeader struct {
 	Bytes      int    `json:"bytes"`
 	Spec       string `json:"spec,omitempty"`
 	Incomplete string `json:"incomplete,omitempty"`
+	// Bookmarked pins the chat: pruneHistory never removes it, and a re-save
+	// of the same chat carries it over. omitempty, so a chat saved before this
+	// field existed reads as not bookmarked and its header is unchanged.
+	Bookmarked bool `json:"bookmarked,omitempty"`
 }
 
 // archiveLine is every later line: one turn.
@@ -192,8 +196,14 @@ func (a *chatArchive) dirUsable() (bool, error) {
 // save writes turns as one saved chat and returns its id. A conversation with
 // no complete exchange saves nothing and returns "".
 func (a *chatArchive) save(turns []storedTurn, spec, name string, now time.Time) (string, error) {
+	return a.saveWith(turns, spec, name, false, now)
+}
+
+// saveWith is save, with the bookmark the new copy carries.
+func (a *chatArchive) saveWith(turns []storedTurn, spec, name string, bookmarked bool, now time.Time) (string, error) {
 	h, ok := headerFor(turns, spec, now)
 	h.Name = clipRunes(oneLine(name), archiveTitleRunes)
+	h.Bookmarked = bookmarked
 	if !ok {
 		return "", nil
 	}
@@ -205,16 +215,41 @@ func (a *chatArchive) save(turns []storedTurn, spec, name string, now time.Time)
 		return "", fmt.Errorf("naming the saved chat: %w", err)
 	}
 	id := now.UTC().Format(archiveIDTimeLayout) + "-" + hex.EncodeToString(suffix[:])
+	if err := a.write(id, h, turns); err != nil {
+		return "", err
+	}
+	return id, nil
+}
 
+// setBookmark pins or unpins a saved chat by rewriting its file under the SAME
+// id -- same write-to-temp-then-rename as save, so a crash leaves the old copy
+// or the new one, never half of either.
+func (a *chatArchive) setBookmark(id string, on bool) (archiveHeader, error) {
+	h, turns, err := a.loadStored(id)
+	if err != nil {
+		return archiveHeader{}, err
+	}
+	if h.Bookmarked == on {
+		return h, nil
+	}
+	h.Bookmarked = on
+	if err := a.write(id, h, turns); err != nil {
+		return archiveHeader{}, err
+	}
+	return h, nil
+}
+
+// write stores one chat as <id>.jsonl.gz: header line, then one line per turn.
+func (a *chatArchive) write(id string, h archiveHeader, turns []storedTurn) error {
 	tmp, err := os.CreateTemp(a.dir, ".tmp-*")
 	if err != nil {
-		return "", fmt.Errorf("saving chat: %w", err)
+		return fmt.Errorf("saving chat: %w", err)
 	}
 	tmpName := tmp.Name()
-	fail := func(err error) (string, error) {
+	fail := func(err error) error {
 		_ = tmp.Close()        // the write already failed; this only releases the file
 		_ = os.Remove(tmpName) // best effort; pruning removes a stale temp file anyway
-		return "", fmt.Errorf("saving chat: %w", err)
+		return fmt.Errorf("saving chat: %w", err)
 	}
 	gz, err := gzip.NewWriterLevel(tmp, gzip.BestCompression)
 	if err != nil {
@@ -240,9 +275,9 @@ func (a *chatArchive) save(turns []storedTurn, spec, name string, now time.Time)
 	}
 	if err := os.Rename(tmpName, filepath.Join(a.dir, id+archiveSuffix)); err != nil {
 		_ = os.Remove(tmpName) // best effort, as in fail
-		return "", fmt.Errorf("saving chat: %w", err)
+		return fmt.Errorf("saving chat: %w", err)
 	}
-	return id, nil
+	return nil
 }
 
 // headerFor describes turns. ok is false when there is nothing worth saving:
@@ -589,6 +624,13 @@ func pruneHistory(root string, keep int, maxBytes int64, now time.Time) int {
 				continue
 			}
 			if id, ok := archiveIDOf(e.Name()); ok {
+				// A BOOKMARKED chat is the user saying "keep this": it is never
+				// pruned, and it does not use up the count or the bytes that
+				// decide which unbookmarked chats go. A header that cannot be
+				// read is treated as unbookmarked, as before this existed.
+				if h, err := readArchiveHeader(path); err == nil && h.Bookmarked {
+					continue
+				}
 				files = append(files, file{id: id, path: path, size: info.Size()})
 			}
 		}

@@ -1445,13 +1445,19 @@ func (s *Server) saveChatLocked(ctx context.Context, archive *chatArchive, spec,
 		return "", archiveHeader{}, 0, err
 	}
 	link := archive.readLink()
-	if name == "" && link.ID != "" {
+	bookmarked := false
+	if link.ID != "" {
 		if h, _, err := archive.load(link.ID); err == nil {
-			name = h.Name
+			if name == "" {
+				name = h.Name
+			}
+			// The updated copy replaces the old one, so it keeps the old one's
+			// bookmark -- or saving more work would silently unpin a chat.
+			bookmarked = h.Bookmarked
 		}
 	}
 	now := time.Now()
-	id, err := archive.save(turns, spec, name, now)
+	id, err := archive.saveWith(turns, spec, name, bookmarked, now)
 	if err != nil {
 		return "", archiveHeader{}, 0, err
 	}
@@ -1470,6 +1476,7 @@ func (s *Server) saveChatLocked(ctx context.Context, archive *chatArchive, spec,
 	}
 	h, _ := headerFor(turns, spec, now)
 	h.Name = clipRunes(oneLine(name), archiveTitleRunes)
+	h.Bookmarked = bookmarked
 	pruned := pruneHistory(archive.root, maxArchivesPerWorkspace, maxSavedChatBytes, now)
 	return id, h, pruned, nil
 }

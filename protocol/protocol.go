@@ -1353,6 +1353,14 @@ const (
 	HistoryShow   = "show"   // one saved chat's turns, read-only
 	HistoryResume = "resume" // make a saved chat the current one (its saved copy stays)
 	HistoryDelete = "delete" // remove one saved chat
+	// Bookmark and Unbookmark pin a saved chat (ID), or the current chat when ID
+	// is empty -- saving it first. A bookmarked chat is never pruned.
+	HistoryBookmark   = "bookmark"
+	HistoryUnbookmark = "unbookmark"
+	// Compact summarises the older part of the current chat with one model call
+	// and keeps the summary plus the most recent turns as the current chat. The
+	// whole chat is saved to history first, so nothing is lost.
+	HistoryCompact = "compact"
 )
 
 // HistoryRequest asks the daemon about SAVED CHATS in its own workspace: the
@@ -1378,6 +1386,10 @@ type HistoryRequest struct {
 	ID              string `json:"id,omitempty"`
 	Spec            string `json:"spec,omitempty"`
 	Name            string `json:"name,omitempty"`
+	// Query narrows HistoryList to chats whose title or any turn contains it,
+	// case-insensitively. Empty lists everything. Additive: older daemons
+	// ignore it and list all, which a client renders the same way.
+	Query string `json:"query,omitempty"`
 }
 
 // HistoryEntry is one chat in a list. Current marks the live conversation,
@@ -1405,6 +1417,8 @@ type HistoryEntry struct {
 	SpecTotal  int    `json:"spec_total,omitempty"`
 	SavedAs    string `json:"saved_as,omitempty"`
 	Unsaved    bool   `json:"unsaved,omitempty"`
+	// Bookmarked chats are pinned: listed first by clients, and never pruned.
+	Bookmarked bool `json:"bookmarked,omitempty"`
 }
 
 // HistoryResponse answers a HistoryRequest. Entries answers list; Turns and
@@ -1419,7 +1433,9 @@ type HistoryResponse struct {
 	Entry           *HistoryEntry  `json:"entry,omitempty"`
 	Turns           []Turn         `json:"turns,omitempty"`
 	Pruned          int            `json:"pruned,omitempty"`
-	Error           string         `json:"error,omitempty"`
+	// Compacted is how many turns HistoryCompact folded into its summary.
+	Compacted int    `json:"compacted,omitempty"`
+	Error     string `json:"error,omitempty"`
 }
 
 // StatusRequest asks the daemon to describe its own current state. It is the
