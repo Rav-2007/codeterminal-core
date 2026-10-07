@@ -319,7 +319,7 @@ All commands are subcommands of the `mochiii-daemon` binary.
 | `--no-context` | Disable retrieval for the daemon's lifetime |
 | `--debug-context` | Log the full content of every retrieved chunk |
 | `--no-rerank` | Bypass fusion and class re-ranking; raw similarity order |
-| `--no-scrub` | Disable heuristic secret scrubbing |
+| `--no-scrub` | Disable the HEURISTIC secret scrubber (prefixed key shapes). It does **not** disable literal redaction of this daemon's OWN credentials — the key it holds, and its encodings, are always removed from tool results, chunks, prompts and logs, and an outbound web call carrying one is always refused. That is exact-value matching with no false positives, so there is nothing to silence. |
 
 ---
 
@@ -1025,6 +1025,16 @@ returns `403 zdr_required` rather than trusting the client to ask nicely.
   of *prefixed* patterns, so novel, obfuscated or unprefixed secrets are missed;
   it can be disabled; and the proxy cannot scrub, because it never reads content.
   Defence in depth, not a guarantee.
+- **This daemon's OWN credentials are scrubbed literally, and that cannot be
+  disabled.** Separately from the heuristic, the daemon knows the exact key it
+  holds (started with, stored by `connect`, or set live) and removes that value —
+  and its base64/hex/url-escaped/reversed encodings, and any 16-byte fragment of
+  it — from every tool result, retrieved chunk, outgoing prompt and `--debug-context`
+  log, and refuses any outbound `web_search`/`web_fetch` that carries it. This is
+  exact-value matching: no false positives, so `--no-scrub` does not touch it. It
+  still cannot catch a key transformed by arbitrary code (XOR, a cipher, gzip) —
+  the defences for that are the read-tool denylist and the child-env allowlist,
+  which keep the key out of reach rather than recognising it after the fact.
   The fixed set is prefixed key shapes: the keys of every provider `/connect` accepts
   (OpenRouter, OpenAI, Anthropic, Google, NVIDIA, Groq, xAI, Together, Fireworks,
   Cerebras, Hugging Face), AWS, GitHub, Slack, Stripe, Supabase, and private-key blocks.
