@@ -751,3 +751,47 @@ func FuzzAnAnswerDraws(f *testing.F) {
 		}
 	})
 }
+
+// The daemon writes the pages a turn read under its answer (daemon/
+// websources.go), as ordinary answer text. An address there is something the
+// reader copies or clicks, so it is drawn whole and exactly: the angle brackets
+// the daemon puts round it make it an autolink, whose contents are not parsed.
+// Without them the third address below is the word "Go" in italics with two
+// characters missing.
+func TestTheSourcesUnderAnAnswerKeepEveryCharacterOfAnAddress(t *testing.T) {
+	addresses := []string{
+		"https://www.thehindu.com/news/national/tamil-nadu/article123.ece",
+		"https://en.wikipedia.org/wiki/Go_(programming_language)",
+		"https://example.com/wiki/_Go_/*new*/__init__.py?a=1&amp;b=~2",
+	}
+	answer := "C. Joseph Vijay is the Chief Minister, according to The Hindu.\n\n" +
+		"Sources (pages read for this answer):\n" +
+		"- thehindu.com — <" + addresses[0] + ">\n" +
+		"- en.wikipedia.org — <" + addresses[1] + ">\n" +
+		"- example.com — <" + addresses[2] + ">"
+
+	got := renderAnswer(answer, 200)
+	for _, address := range addresses {
+		if !strings.Contains(got, address) {
+			t.Errorf("the address %q is not on screen as written:\n%s", address, got)
+		}
+	}
+	if strings.ContainsAny(got, "<>") {
+		t.Errorf("the brackets that delimit an address were drawn:\n%s", got)
+	}
+	for _, want := range []string{"Sources (pages read for this answer):", "thehindu.com — ", "en.wikipedia.org — "} {
+		if !strings.Contains(got, want) {
+			t.Errorf("%q is missing:\n%s", want, got)
+		}
+	}
+
+	// At a width an address does not fit, it is broken across lines and loses
+	// nothing: joined back up, every character is there.
+	narrow := renderAnswer(answer, 40)
+	joined := strings.Join(strings.Fields(narrow), "")
+	for _, address := range addresses {
+		if !strings.Contains(joined, address) {
+			t.Errorf("at 40 columns the address %q lost a character:\n%s", address, narrow)
+		}
+	}
+}

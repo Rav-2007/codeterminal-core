@@ -44,6 +44,9 @@ func (s *Server) runAgentTurn(
 	defer tw.done()
 	writeToClient := tw.write
 
+	// What this turn reads from the web, so the answer can say so (websources.go).
+	ctx, pages := withPagesRead(ctx)
+
 	// The turn's clock starts HERE, before any server is spawned, because this
 	// is when the user's wait starts. buildRegistry below can block for up to
 	// one connect_timeout_seconds against a server that starts and never
@@ -192,11 +195,12 @@ func (s *Server) runAgentTurn(
 			onToken, onActivity, onProvider, onReasoning, onDegraded, phases)
 	}
 
+	sendToken := func(token string) error {
+		full.WriteString(token)
+		return writeToClient(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Token: token})
+	}
 	result, err := run(
-		func(token string) error {
-			full.WriteString(token)
-			return writeToClient(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Token: token})
-		},
+		sendToken,
 		func(a protocol.ToolActivity) {
 			// The RETURN VALUE is still dropped -- an optional notice must not
 			// fail a turn the token stream is otherwise completing, exactly like
@@ -261,6 +265,16 @@ func (s *Server) runAgentTurn(
 	if result.Incomplete != nil && result.Incomplete.Reason == protocol.IncompleteAgentBudget {
 		s.count(func(c *counters) { c.budgetTerminations.Add(1) })
 	}
+
+	// THE PAGES THIS TURN READ GO UNDER ITS ANSWER, written by the daemon and not
+	// by the model (websources.go). As ordinary answer text, through the writer
+	// every other token used, so it lands in order and both clients show it
+	// without knowing it is there. A failed write means the client has gone,
+	// which the Done below finds out for itself.
+	sources := pages.under(result.FinalText)
+	if sources != "" {
+		_ = sendToken(sources)
+	}
 	// A user-cancelled turn is deliberately NOT counted as a budget termination:
 	// the status surface would then report a ceiling problem to an operator
 	// whose users are simply saying no, and send them to tune the wrong thing.
@@ -317,5 +331,7 @@ func (s *Server) runAgentTurn(
 	if result.Persist != "" {
 		remembered = result.Persist
 	}
-	s.persistTurn(promptReq.Prompt, remembered+summariseToolActivity(result.ToolNames), result.Incomplete)
+	// The sources are remembered with the answer they stand under: a chat opened
+	// next week is as checkable as it was on the day.
+	s.persistTurn(promptReq.Prompt, remembered+sources+summariseToolActivity(result.ToolNames), result.Incomplete)
 }

@@ -117,16 +117,34 @@ func streamWithRetry(
 
 	for attempt := 1; attempt <= maxStreamAttempts; attempt++ {
 		streamed := false
+		// Reference marks no client can open are taken out here, the one place
+		// every model call passes (citemarks.go). A filter per attempt: what one
+		// attempt held back is not the next one's.
+		marks := newCiteMarkFilter(messages)
+		// streamed means what it always meant -- the client has SEEN output -- so
+		// text the filter is still holding does not close the door on a retry.
+		emit := func(text string) error {
+			if text == "" {
+				return nil
+			}
+			streamed = true
+			return onToken(text)
+		}
 		calls, err := streamCompletion(ctx, apiBase, apiKey, model, messages, tools, routing,
-			func(token string) error {
-				streamed = true
-				return onToken(token)
-			},
+			func(token string) error { return emit(marks.feed(token)) },
 			onProvider,
 			onReasoning,
 			onFinish,
 		)
 		if err == nil {
+			// The stream ended, so what was held is ordinary text after all.
+			if err := emit(marks.flush()); err != nil {
+				return nil, err
+			}
+			if marks.marks > 0 && logger != nil {
+				logger.Printf("model API: the model wrote %d reference mark(s) no client can open (the 【…】 kind); "+
+					"removed, keeping any address written inside", marks.marks)
+			}
 			if attempt > 1 && logger != nil {
 				logger.Printf("model API: succeeded on attempt %d/%d", attempt, maxStreamAttempts)
 			}
@@ -144,6 +162,11 @@ func streamWithRetry(
 		modelErr := asModelError(err)
 
 		if streamed {
+			// The client keeps everything the provider sent before it failed,
+			// and what the filter was holding is part of that. (When nothing has
+			// been shown, the held text goes with the attempt: releasing it here
+			// would be the output that forbids the retry below.)
+			_ = emit(marks.flush())
 			if logger != nil {
 				logger.Printf("model API: failed mid-stream, after output had already reached the client; not retrying (would duplicate it): %s",
 					modelErr.Detail())

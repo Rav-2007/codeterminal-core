@@ -461,6 +461,45 @@ refused, and fetched pages are fenced as untrusted data that the model may quote
 but never obey. It cannot vouch for the far end. See
 [`SECURITY_MODEL.md`](SECURITY_MODEL.md).
 
+**What you see under an answer that used the web.** The daemon lists the pages
+it read for that answer, itself, as the last lines of the answer:
+
+```
+Sources (pages read for this answer):
+- gov.uk — <https://www.gov.uk/government/people/...>
+- en.wikipedia.org — <https://en.wikipedia.org/wiki/...>
+```
+
+It says *read*, not *used*: the daemon knows which pages it handed the model,
+not which sentence came from where. It shows addresses and never page titles (a
+title is a stranger's sentence, and the block is saved with the answer), at most
+five, with anything a terminal or a renderer would act on percent-encoded
+(`daemon/websources.go`). The block is part of the saved answer, so a chat opened
+later is as checkable as it was on the day.
+
+The model is asked to name its sources in words and to write no reference marks.
+Models trained with a browsing tool write them anyway — `【0†L1-L4】`, an address
+or a site's name inside those brackets — and no client here can open one. So the
+daemon takes them out of the answer as it streams (`daemon/citemarks.go`): a
+pointer is removed, and anything written in words inside the brackets — an
+address, a name — is kept, in ordinary parentheses. `【 】` are everyday
+punctuation in Chinese, Japanese and Korean, so a conversation with any of those
+in it keeps its brackets, apart from pointers. Code blocks, inline code and edit
+blocks are never touched.
+
+Measured on 2026-10-07 with one model (`nvidia/nemotron-3-super-120b-a12b`),
+twenty questions, three runs before and five after (one of those the fact
+questions only). Before, 16 of 24 answers about current facts held such
+brackets; over all the runs the model wrote them in five shapes. The new wording
+alone did not stop them — the model went on writing them in about half its
+answers — so the filter is what removes them: the last run had none on screen,
+and the 128 answers recorded before it, replayed through the filter, have none.
+Every answer that used the web ended with the block (41 of 41), and a scripted
+run against the real web confirmed the block lists exactly the pages the model
+was handed. Answers got shorter: the median fact answer went from 363 to 232
+characters, the median answer to a coding question from 1,452 to 504. The cost
+is 242 more input tokens on every model call (4,139 to 4,381 for the opening).
+
 ### Slash commands
 
 Type `/` in the TUI or the VS Code chat for the menu. Local commands run in the

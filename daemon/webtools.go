@@ -233,10 +233,17 @@ func (s *Server) builtinWebSearch(ctx context.Context, raw json.RawMessage) (mcp
 		}
 		p.page.Text = clipChars(p.page.Text, perPageChars)
 		b.WriteString("\n" + webContentEnvelope(p.page) + "\n")
+		// The model has now been shown this page, so the answer says so
+		// (websources.go) -- whatever the model writes about its sources.
+		notePageRead(ctx, p.page.URL)
 		fetched++
 	}
 	if fetched == 0 {
 		b.WriteString("\n[none of these pages could be read; the titles, URLs and snippets above are all that is available]\n")
+		// An answer from here rests on the listing alone, and is told so.
+		for _, r := range results {
+			noteResultListed(ctx, r.URL)
+		}
 	}
 
 	// PreNeutralized: every untrusted field above was defused as it was
@@ -383,6 +390,7 @@ func (s *Server) builtinWebFetch(ctx context.Context, raw json.RawMessage) (mcp.
 	if err != nil {
 		return toolError("%v", err)
 	}
+	notePageRead(ctx, page.URL)
 	// PreNeutralized for the same reason as web_search: webContentEnvelope
 	// defuses the page before wrapping it, so a second pass here would strip
 	// the daemon's own fence.

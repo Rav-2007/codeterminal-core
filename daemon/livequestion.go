@@ -61,7 +61,20 @@ var worldFrames = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\bwhen\s+is\s+the\s+next\b`),
 	regexp.MustCompile(`(?i)\bwhat\s+happened\s+(?:to|with|in)\b`),
 	regexp.MustCompile(`(?i)\bis\s+\w+\s+still\b`),
-	regexp.MustCompile(`(?i)\bwhat(?:'s| is)\s+(?:the\s+)?(?:news|weather|score|date|time)\b`),
+	//
+	// THE NOUN MUST BE WHAT IS ASKED FOR, not the first half of a longer one.
+	// FOUND 2026-10-07, measuring answers: "what is the time complexity of
+	// binary search and why" matched on "what is the time", was steered to
+	// search the web, and did -- 10,086 tokens for a textbook answer that costs
+	// 4,144 without the steering, ending "Source: GeeksforGeeks". The header of
+	// this file calls a pre-flight false positive free because the model is
+	// told to ignore it for a question about something that does not change;
+	// this model did not ignore it. So the noun has to end the question, or be
+	// followed by a word that places it: "the time in Tokyo", "the date today",
+	// "the weather like". "The time complexity", "the date format" and "the
+	// score function" are none of those.
+	regexp.MustCompile(`(?i)\bwhat(?:'s| is)\s+(?:the\s+)?(?:news|weather|score|date|time)` +
+		`(?:\s+(?:in|at|on|for|of|about|from|like|today|tonight|now|right|there|here|this|currently)\b|[\s?!.]*$)`),
 }
 
 // workspaceSignals mark a question about THIS repository rather than about the

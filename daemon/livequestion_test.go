@@ -49,6 +49,40 @@ func TestLiveWorldQuestionsAreRecognised(t *testing.T) {
 	}
 }
 
+// "What is the time" is about now. "What is the time complexity of binary
+// search" opens with the same four words and has had the same answer since
+// 1946. Measured live on 2026-10-07: the second one was sent to the web.
+func TestATextbookQuestionThatOpensLikeALiveOneIsNotLive(t *testing.T) {
+	for _, q := range []string{
+		"what is the time complexity of binary search and why",
+		"what's the time complexity of quicksort",
+		"what is the date format string in Go",
+		"what is the score function of a ranker",
+		"what is the time zone database",
+		"what is the news feed pattern",
+	} {
+		if looksLikeLiveWorldQuestion(q) {
+			t.Errorf("looksLikeLiveWorldQuestion(%q) = true; a web search cannot improve this answer", q)
+		}
+	}
+	// And the questions that frame exists for still match it.
+	for _, q := range []string{
+		"what is the time",
+		"what's the time in Tokyo?",
+		"what is the date today",
+		"what's the weather like in Chennai",
+		"what is the weather",
+		"what is the score of the India match",
+		"what is the news about the election",
+		"what's the news?",
+		"what is the time right now",
+	} {
+		if !looksLikeLiveWorldQuestion(q) {
+			t.Errorf("looksLikeLiveWorldQuestion(%q) = false, want true", q)
+		}
+	}
+}
+
 // PRECISION IS THE OTHER HALF. A coding assistant is asked about "the current
 // implementation" all day long, and buying a web search for each one is a tax
 // on every turn.

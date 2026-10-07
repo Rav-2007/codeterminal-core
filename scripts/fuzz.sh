@@ -155,6 +155,11 @@ TARGETS=(
   "daemon:FuzzVerifyApproval"
   "daemon:FuzzToolCallAccumulator"
   "daemon:FuzzSplitQualifiedName"
+  # The reference-mark filter (citemarks.go), added 2026-10-07 with it: a
+  # hand-written reader of text a model chose, sitting on every model call. What
+  # it is held to is that the pieces a stream arrives in never matter, that text
+  # with no opening bracket comes back byte for byte, and that nothing is added.
+  "daemon:FuzzAnAnswerLosesOnlyItsMarks"
 
   # The TUI had targets and no entries here, so neither sanitizer fuzzer had
   # ever been run by this gate -- a fuzz target nobody runs is a comment.
