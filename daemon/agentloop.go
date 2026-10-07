@@ -1379,15 +1379,15 @@ func (s *Server) resolveExecutable(
 	// "allow" on read_file was written about the project; it is not an answer
 	// to "may it read ~/Documents". Some places are refused before anyone is
 	// asked, because a yes there is exactly what an injected instruction wants.
-	outside := s.outsideReadTarget(spec, arguments)
+	spelt, outside := s.outsideReadTarget(spec, arguments)
 	if outside != "" {
-		if why := outsideReadRefusal(outside); why != "" {
+		if why := outsideReadRefusal(spelt); why != "" {
 			return toolDecision{
 				tool:   spec,
 				policy: mcp.PolicyDeny,
 				source: auditDeniedConfig,
 				cause:  denyByNoChannel,
-				reason: fmt.Sprintf("refused: %s. Do not try another route to it.", why),
+				reason: credentialRefusal(why),
 			}
 		}
 		if turn.grants[outsideGrantKey(qualified, outside)] {

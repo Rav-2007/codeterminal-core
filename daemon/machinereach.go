@@ -88,7 +88,9 @@ func machineReach(offered func(tool string) bool, mode string, programs []string
 		}
 		b.WriteString("\n- " + verb + " ANYWHERE on the machine, not only in the project: give " +
 			strings.Join(readers, " or ") + " an absolute or ~/ path. The user is asked first (y/n). " +
-			"Private keys, credential stores and shell histories are always refused.")
+			"Always refused, even with a yes: private keys and credential stores (Mochiii's own key and " +
+			"memory, editors' secret stores, keyrings), shell histories, and /proc, /sys, /dev and /run " +
+			"-- however the path is spelt or linked. Do not look for another way in.")
 	}
 
 	switch {
