@@ -483,6 +483,11 @@ func main() {
 		counters:  &counters{},
 		lspBridge: NewLSPBridge(groundedRoot),
 	}
+	// Compile the literal credential scrubber from the key this daemon starts
+	// with and its MOCHIII_API_KEY / MOCHIII_PROXY_KEY environment, before it
+	// serves a single turn (credscrub_apply.go). /connect rebuilds it on a swap.
+	srv.rebuildCredScrubber()
+
 	// One line per reduced subsystem, so the log and the wire agree about what
 	// is degraded from the moment the daemon starts serving.
 	srv.logDegradations()

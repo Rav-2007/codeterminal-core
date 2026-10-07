@@ -701,6 +701,10 @@ func (s *Server) logRetrieval(o retrievalOutcome) {
 			// what an operator wants from this flag is what was SENT, and what is
 			// sent is redacted. The file on disk is still the file on disk.
 			cleaned, _ := scrub(c.Content, s.noScrub())
+			// And literal credential redaction, always on: --debug-context with
+			// --log-file writes this to disk, so the daemon's own key must not land
+			// there in any form, even when --no-scrub silenced the heuristic.
+			cleaned, _ = s.credRedact(cleaned)
 			s.logger.Printf("retrieval debug: chunk %d (%s:%d-%d) class=%s score=%.4f weighted=%.4f:\n%s",
 				i+1, c.FilePath, c.StartLine, c.EndLine, c.Class, c.RawScore, c.Score, neutralizeDelimiters(cleaned))
 		}

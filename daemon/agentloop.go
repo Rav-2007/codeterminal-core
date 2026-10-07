@@ -1155,6 +1155,16 @@ func (s *Server) dispatchToolCall(
 		renderCap = 0
 	}
 	rendered, kinds, emitted := renderToolResult(result.Content, renderCap, s.noScrub(), result.PreNeutralized)
+	// LITERAL CREDENTIAL REDACTION, after the heuristic scrub renderToolResult
+	// ran and BEFORE this result enters the model's context. Always on, even
+	// under --no-scrub: a tool that read the daemon's own key (now, or via a
+	// path the read-tool denylist does not cover) must not hand it to the model
+	// whatever encoding it is in. See credscrub_apply.go.
+	if cleaned, n := s.credRedact(rendered); n > 0 {
+		rendered = cleaned
+		emitted = len(rendered)
+		kinds = append(kinds, "mochiii_credential")
+	}
 	if decision.tool.Lane == protocol.LaneThirdParty {
 		rendered = frameLaneBOutput(decision.tool.Server, rendered)
 		emitted = len(rendered)

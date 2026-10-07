@@ -291,6 +291,11 @@ func (s *Server) setProvider(key, base string, tiers *Config) {
 		s.apiBase = base
 	}
 	s.tierCfg = tiers
+	// The live credential changed, so the literal scrubber must track the new
+	// value (and stop matching the old one). Rebuilt under the same lock that
+	// guards the swap, so a concurrent reader sees a matcher consistent with the
+	// key in force. See credscrub_apply.go.
+	s.rebuildCredScrubberLocked()
 }
 
 // tierConfig is the config whose tiers are in force: the provider's own models

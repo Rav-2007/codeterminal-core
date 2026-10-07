@@ -35,6 +35,10 @@ const (
 	auditDeniedConfig = "denied_config"         // policy deny, or a tool that does not exist
 	auditDeniedUser   = "denied_user"           // the human said no, or cancelled
 	auditDeniedAsk    = "denied_ask"            // nobody answered, or the answer did not verify
+	// auditDeniedCredential: an outbound web call carried one of this machine's
+	// own credentials (or an encoding of it) and was refused before it was sent.
+	// DenyCause carries the matched FORM (credscrub.go), never the value.
+	auditDeniedCredential = "denied_credential"
 )
 
 // Terminal outcomes.

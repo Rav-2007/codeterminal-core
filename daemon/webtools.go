@@ -149,6 +149,13 @@ func (s *Server) builtinWebSearch(ctx context.Context, raw json.RawMessage) (mcp
 	if strings.TrimSpace(args.Query) == "" {
 		return toolError("no query was supplied")
 	}
+	// LITERAL CREDENTIAL CHECK FIRST, and it REFUSES rather than strips: a search
+	// for the daemon's own key, in any form, must not be sent at all (the search
+	// service would see the request was made even with the key removed). Always
+	// on -- not governed by --no-scrub. See credscrub_apply.go.
+	if res, refused := s.refuseOutboundCredential("web_search", string(raw)); refused {
+		return res, nil
+	}
 
 	cfg := s.cfg.MCP.Web
 	// SCRUBBED BEFORE IT IS PUT IN A REQUEST, not after. See scrubbedQuery: the
@@ -368,6 +375,12 @@ func (s *Server) builtinWebFetch(ctx context.Context, raw json.RawMessage) (mcp.
 	}
 	if strings.TrimSpace(args.URL) == "" {
 		return toolError("no URL was supplied")
+	}
+	// A URL carrying the daemon's own credential (as a query param, in the path,
+	// or encoded) is refused before any request is made -- nothing is fetched.
+	// Always on; see credscrub_apply.go.
+	if res, refused := s.refuseOutboundCredential("web_fetch", string(raw)); refused {
+		return res, nil
 	}
 
 	// THE ADDRESS IS OUTBOUND TEXT THE MODEL CHOSE, exactly as a query is, and

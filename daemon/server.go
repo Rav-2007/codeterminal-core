@@ -55,6 +55,13 @@ type Server struct {
 	// credential: /connect to another provider swaps all three at once. Read it
 	// through tierConfig, never directly.
 	tierCfg *Config
+	// credScrub matches the EXACT credential values the daemon holds, and their
+	// encodings, so a known key cannot leave in a tool result, chunk, prompt or
+	// outbound web call whatever shape it is in (credscrub.go). Guarded by credMu
+	// and rebuilt, not mutated, when the key changes -- so a reader fetches the
+	// immutable pointer under the lock (currentCredScrubber) and scans lockless.
+	// nil means no credential is held, which the apply helpers treat as a no-op.
+	credScrub *credScrubber
 
 	cfg           *Config
 	modelOverride string // optional testing override; bypasses the router when set
@@ -702,6 +709,16 @@ func (s *Server) serveConn(conn net.Conn) {
 		// only) and runs the deferred entropy/keyword detectors in log-only
 		// warn-mode. This never changes augmentedPrompt.
 		s.logChunkScrub(outcome.Chunks)
+	}
+	// LITERAL CREDENTIAL REDACTION of the whole outgoing user message -- the
+	// typed prompt AND the retrieved chunks folded into it -- after the heuristic
+	// scrub above. Always on, even under --no-scrub: the daemon's own key, in any
+	// form, must not reach the provider. A chunk is the likely carrier (a key
+	// committed to a file the agent retrieves), which is why it is redacted here,
+	// where the chunks have just been rendered in. See credscrub_apply.go.
+	if cleaned, n := s.credRedact(augmentedPrompt); n > 0 {
+		augmentedPrompt = cleaned
+		s.logger.Printf("scrub: redacted %d occurrence(s) of this machine's own credential from the outgoing prompt", n)
 	}
 	// The plan directive is applied to the SYSTEM prompt below, not appended
 	// here. See planModeSystemPrompt.
