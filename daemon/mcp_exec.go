@@ -290,8 +290,11 @@ func (s *Server) sandboxExecDescriptionFor(timeout time.Duration) string {
 		confinement + " " + limits + " It can reach the network, which its purpose requires. " +
 		"These tools execute project-supplied scripts (Makefile recipes, package.json scripts, build.rs), " +
 		"so approving a call approves whatever the project's build files do. " +
-		"Anything it writes in the workspace -- build scripts, .git/hooks -- then runs unsandboxed the " +
-		"next time you use the repo. " +
+		"It runs in a private copy of the project when one can be made: it cannot touch your real files, " +
+		"and a change it makes to one of them is offered to you for review, named as the command's. " +
+		"When no copy can be made (a very large project, or working copies switched off) it runs in the " +
+		"project itself, the prompt says so, and anything it writes there -- build scripts, .git/hooks -- " +
+		"stays and runs unsandboxed the next time you use the repo. " +
 		"This daemon's API credentials are never passed to it."
 }
 
@@ -465,20 +468,29 @@ func (s *Server) builtinSandboxExec(ctx context.Context, raw json.RawMessage) (m
 // code the agent just wrote -- and in the project otherwise. The copy's path
 // is rewritten to the project's in the output.
 func (s *Server) builtinSandboxExecStaged(ctx context.Context, raw json.RawMessage, proposals *proposalSink) (mcp.Result, error) {
-	root := s.workspace
-	st, _ := proposals.workingCopy()
-	if st != nil {
-		root = st.root
-	}
-	res, err := s.builtinSandboxExecIn(ctx, raw, root, execTimeoutFor(proposals))
-	if st != nil {
-		res.Content = st.toReal(res.Content)
-	}
 	var args struct {
 		Command string `json:"command"`
 	}
-	if json.Unmarshal(raw, &args) == nil {
-		proposals.recordCheck(strings.TrimSpace(args.Command), res)
+	_ = json.Unmarshal(raw, &args) // builtinSandboxExecIn reports a bad one
+	command := strings.TrimSpace(args.Command)
+
+	root := s.workspace
+	st, _ := proposals.workingCopy()
+	var before map[string]stagedState
+	if st != nil {
+		root = st.root
+		before = st.fileStates()
+	}
+	res, err := s.builtinSandboxExecIn(ctx, raw, root, execTimeoutFor(proposals))
+	if st != nil {
+		// What the command changed in the copy is offered for review at the
+		// end of the turn like the agent's own edits -- so it is recorded as
+		// the command's (stagedWorkspace.noteCommandChanges).
+		st.noteCommandChanges(before, command)
+		res.Content = st.toReal(res.Content)
+	}
+	if command != "" {
+		proposals.recordCheck(command, res)
 	}
 	return res, err
 }

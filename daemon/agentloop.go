@@ -147,8 +147,13 @@ func repeatableLaunchGrantKey(qualified, key string) string {
 // The digest is over the EXACT argument bytes, the same value
 // ToolApprovalRequest.ArgumentsSHA256 binds what was shown to what runs. So the
 // grant covers precisely the command the user read, and nothing else.
+//
+// THE SAME FOR A CALL THAT LEAVES THE MACHINE. "Yes, for this turn" to one
+// search used to cover every later search, so the query the user read vouched
+// for queries they never saw -- written after the model had read their files.
+// What leaves is the arguments, so the arguments are what a grant is for.
 func grantKey(spec mcp.Tool, qualified, arguments string) string {
-	if !spec.ExecutesCode {
+	if !spec.ExecutesCode && !spec.ReachesNetwork {
 		return qualified
 	}
 	return qualified + "\x00" + argumentsDigest(arguments)
@@ -455,6 +460,10 @@ func (s *Server) runAgentLoop(
 		toolBytes:       ledger.toolBytes,
 		grants:          ledger.grants,
 		priorIterations: ledger.iterations,
+	}
+	// The addresses the user wrote may be fetched without asking (webegress.go).
+	if ledger.iterations == 0 && ledger.segment == nil {
+		turn.vetUserURLs(messages)
 	}
 	// turn.iteration is the loop counter and is one AHEAD of the calls actually
 	// completed at every exit point (the loop increments before the budget check
@@ -1037,7 +1046,22 @@ func (s *Server) dispatchToolCall(
 	if decision.outsideRead != "" {
 		callCtx = withApprovedOutsideRead(callCtx, decision.outsideRead)
 	}
+	// What a search engine returns may be fetched without asking for the rest
+	// of the turn (webegress.go): the engine chose those addresses, not the
+	// model. Collected here because only the loop knows the turn.
+	var returned *webResultURLs
+	if decision.tool.Server == mcp.BuiltinServerName && decision.tool.Name == "web_search" {
+		returned = &webResultURLs{}
+		callCtx = withWebResultURLs(callCtx, returned)
+	}
 	result, err := registry.Call(callCtx, decision.tool.QualifiedName(), json.RawMessage(arguments))
+	if returned != nil {
+		for _, u := range returned.urls {
+			if n, ok := normaliseWebURL(u); ok {
+				turn.grant(vettedURLKey(n))
+			}
+		}
+	}
 	elapsed := time.Since(started)
 	s.toolsInFlight.Add(-1)
 	audit.DurationMS = elapsed.Milliseconds()
@@ -1371,11 +1395,26 @@ func (s *Server) resolveExecutable(
 		}
 	}
 
+	// A WEB CALL THAT WOULD CARRY TEXT THE MODEL CHOSE TO A PLACE NOBODY VETTED
+	// IS ALWAYS ASKED ABOUT (webegress.go). Config "allow" on web_fetch was
+	// written about reading pages; it is not an answer to "may it send this to
+	// that host". A grant for these exact arguments, checked below, still is.
+	egress := webEgressReview(turn, bud, spec, arguments)
+
+	// A COMMAND THAT WOULD RUN IN THE REAL PROJECT IS ALWAYS ASKED ABOUT, for
+	// the same reason. "allow" on sandbox_exec was written about a command
+	// that runs in a private copy and cannot touch the user's files; when this
+	// turn has no copy (the project is too large, or copies are switched off)
+	// the same command writes straight into the project, .git/hooks included,
+	// and nothing reviews what it wrote. Asked here, the copy is made if it
+	// can be -- see mcp.Builtin.InPlace.
+	inPlace := spec.ExecutesCode && registry.RunsInPlace(qualified)
+
 	// Config "allow" skips the per-call prompt. It never skips a launch: a
 	// user who allowed a lookup did not thereby agree to start a third-party
 	// program that reads their project's configuration, and the startup warning
 	// says so in these words.
-	if policy == mcp.PolicyAllow && !launch.Needed && outside == "" {
+	if policy == mcp.PolicyAllow && !launch.Needed && outside == "" && egress == "" && !inPlace {
 		return toolDecision{tool: spec, policy: policy, source: auditConfigAllow, run: true}
 	}
 
@@ -1404,10 +1443,10 @@ func (s *Server) resolveExecutable(
 	// Same exclusions as a turn grant, and only where it could have been
 	// offered: see specGrantFor.
 	specGrant := s.specGrantFor(ctx, turn, spec, qualified, arguments)
-	if specGrant != "" && !launch.Needed && outside == "" && specGrantsFrom(ctx).has(specGrant) {
+	if specGrant != "" && !launch.Needed && outside == "" && !inPlace && specGrantsFrom(ctx).has(specGrant) {
 		return toolDecision{tool: spec, policy: policy, source: auditSpecGrant, run: true}
 	}
-	if launch.Needed || outside != "" {
+	if launch.Needed || outside != "" || inPlace {
 		specGrant = "" // never offered for what it could never cover
 	}
 
@@ -1459,8 +1498,13 @@ func (s *Server) resolveExecutable(
 		// description arrives here too; it is untrusted text and the clients
 		// render it as the server's claim, which is what Detail already means.
 		OutsidePath: outside,
-		Detail:      spec.Description,
-		SpecGrant:   specGrant,
+		// Why this web call was not covered by the configuration. Set for a
+		// call the user's own "ask" would have shown them anyway, too: the
+		// reason is about the call, not about how it came to be asked.
+		EgressReview: egress,
+		InPlace:      inPlace,
+		Detail:       spec.Description,
+		SpecGrant:    specGrant,
 	})
 
 	source, _ := auditSourceFor(answer)

@@ -77,6 +77,79 @@ type stagedWorkspace struct {
 	applied []editapply.EditBlock
 	// checkpoints are the long task's named snapshots (checkpoint.go).
 	checkpoints []*stageCheckpoint
+	// byCommand is every file a COMMAND changed in the copy, and the first
+	// command that did (noteCommandChanges). Kept because of what netChanges
+	// offers: a file a command changed is offered like the agent's own edit.
+	byCommand map[string]string
+	// offeredByCommand is netChanges' account of it: the offered files a
+	// command changed, each with its command, for WorkingCopyInfo.ByCommand.
+	offeredByCommand []string
+}
+
+// stagedState is what fileStates records of one file: enough to tell that a
+// command changed it, without reading it.
+type stagedState struct {
+	size int64
+	mod  time.Time
+	mode fs.FileMode
+}
+
+// fileStates is the state of every regular file in the copy that netChanges
+// would consider, taken before a command runs and compared after it.
+func (st *stagedWorkspace) fileStates() map[string]stagedState {
+	states := map[string]stagedState{}
+	_ = filepath.WalkDir(st.root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || path == st.root {
+			return nil //nolint:nilerr
+		}
+		if d.IsDir() {
+			if editapply.IsProtectedDirName(d.Name()) {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		if info, err := d.Info(); err == nil {
+			rel, _ := filepath.Rel(st.root, path)
+			states[rel] = stagedState{size: info.Size(), mod: info.ModTime(), mode: info.Mode()}
+		}
+		return nil
+	})
+	return states
+}
+
+// noteCommandChanges records which files command changed, given the copy's
+// state from just before it ran.
+//
+// WHY IT IS RECORDED. FOUND 2026-10-07 by running a hostile test file through
+// sandbox_exec: the sandbox held (nothing outside the copy was read or
+// written, on bwrap and on Landlock), and the one thing the test COULD do --
+// append a line to main.go in the copy -- came back at the end of the turn as
+// a proposed edit like any other, with nothing to say the agent had not
+// written it. A person reviewing "the agent's changes" was reviewing a
+// stranger's. The change is still offered, because `gofmt -w`, `go mod tidy`
+// and a code generator are commands too; it is offered BY NAME.
+func (st *stagedWorkspace) noteCommandChanges(before map[string]stagedState, command string) {
+	if st.byCommand == nil {
+		st.byCommand = map[string]string{}
+	}
+	for rel, now := range st.fileStates() {
+		if was, existed := before[rel]; existed && was == now {
+			continue
+		}
+		if _, noted := st.byCommand[rel]; !noted {
+			st.byCommand[rel] = command
+		}
+	}
+}
+
+// offeredFrom notes that rel is being offered, when a command changed it.
+func (st *stagedWorkspace) offeredFrom(rel string) {
+	if command, ok := st.byCommand[rel]; ok {
+		st.offeredByCommand = append(st.offeredByCommand, filepath.ToSlash(rel)+" ("+command+")")
+	}
 }
 
 // sameEdit reports whether two edit blocks are the same edit to the same
@@ -367,6 +440,7 @@ const stageMaxNotes = 20
 // is not something an edit can do); a file that changed on disk while the
 // agent worked (its version would silently undo the user's).
 func (st *stagedWorkspace) netChanges() (blocks []editapply.EditBlock, notOffered []string) {
+	st.offeredByCommand = nil
 	var paths []string
 	_ = filepath.WalkDir(st.root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || path == st.root {
@@ -414,6 +488,7 @@ func (st *stagedWorkspace) netChanges() (blocks []editapply.EditBlock, notOffere
 				continue
 			}
 			blocks = append(blocks, editapply.EditBlock{FilePath: slash, Search: "", Replace: string(content)})
+			st.offeredFrom(rel)
 			continue
 		}
 		if !st.touched[rel] && info.Size() == was.stageSize && info.ModTime().Equal(was.stageMod) {
@@ -439,6 +514,7 @@ func (st *stagedWorkspace) netChanges() (blocks []editapply.EditBlock, notOffere
 			continue
 		}
 		blocks = append(blocks, stagedEditBlocks(slash, string(before), string(after))...)
+		st.offeredFrom(rel)
 	}
 	for rel := range st.manifest {
 		if !present[rel] {

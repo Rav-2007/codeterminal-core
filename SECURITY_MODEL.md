@@ -1075,8 +1075,49 @@ A write failure is swallowed, so a full disk means a call runs unrecorded rather
 than a turn failing. That is a real trade and the same one the warn-mode sink
 makes.
 
+## What config `allow` never covers (2026-10-07)
+
+`allow` skips the per-call prompt. Four kinds of call are asked about anyway,
+because the setting was written about the tool and is not an answer to the call:
+
+| Call | Why `allow` is not an answer | Where |
+|---|---|---|
+| A read outside the workspace | "allow reads" was about the project | `daemon/outsideread.go` |
+| A call that would start a language server | a lookup is not a launch | `mcp.Builtin.Launch` |
+| `web_fetch` of an address the model wrote; `web_search` after the turn has read anything | the text may carry what was read, to a place nobody vetted | `daemon/webegress.go` |
+| `sandbox_exec` in a turn with no working copy | it would write straight into the project | `mcp.Builtin.InPlace` |
+
+**The web rule, and what it was measured against.** With both web tools on
+`allow`, a scripted model read a project file and then called `web_fetch` with
+the file's contents in the address. The request was made and nobody was asked;
+it failed only because the host did not exist. The rule that closes it: text the
+model chose leaves without a yes only while the model has read nothing in this
+turn, and never to a host the model chose. An address is vetted when the user
+typed it or a search engine returned it in this turn, compared whole — same host
+with a different path or query is a different address. A later phase of a
+pipeline and every segment of a long task count as having read something, and
+an address in their prompts is the model's. A turn grant for a web call is keyed
+on its arguments, as a command's always was.
+
+**What a command can do, measured.** A hostile test file was run through the
+real `sandbox_exec` on both backends (bwrap and Landlock), every approval
+answered yes. It could not read the home folder, an ignored `.env`, or this
+daemon's key (not in its environment, not through `/proc`); it could not write
+the home folder, `/tmp`, or the project's `.git`; nothing it wrote reached the
+project. It could reach the internet, and it could change files in its working
+copy — and that change was then offered for review indistinguishable from the
+agent's own. It is now named as the command's (`WorkingCopyInfo.ByCommand`).
+
 ## Accepted residuals
 
+- **A command has the network.** `go build`, `npm install` and `cargo fetch`
+  resolve dependencies over it, and Landlock cannot refuse UDP, so "no network"
+  is not a promise that backend could keep. What a command can send is what it
+  can read: its working copy (the project's files that are not ignored) and the
+  system. Cloud metadata addresses are refused.
+- **A yes is a yes.** The web rule puts the query or the address in front of a
+  person; it does not read it for them. A query approved after a read leaves as
+  written, less any secret-shaped value.
 - **Lane B is unconfined.** Stated above; accepted deliberately, mitigated by
   default-off, per-server acknowledgement, per-call consent, and audit. OS
   sandboxing is a non-goal for v1, not an oversight.

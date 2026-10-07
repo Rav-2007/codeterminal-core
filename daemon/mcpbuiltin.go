@@ -277,10 +277,11 @@ func (p *proposalSink) finish() (blocks []editapply.EditBlock, info *protocol.Wo
 	}
 	edits := p.editCount()
 	net, notOffered := p.stage.netChanges()
+	byCommand := p.stage.offeredByCommand
 	p.stage.close()
 	p.stage = nil
 	notOffered = append(notOffered, p.textNotes...)
-	info = &protocol.WorkingCopyInfo{Checked: p.checked, Passed: p.checkPassed, NotOffered: notOffered}
+	info = &protocol.WorkingCopyInfo{Checked: p.checked, Passed: p.checkPassed, NotOffered: notOffered, ByCommand: byCommand}
 	// A CHECK VOUCHES ONLY FOR WHAT IT RAN AGAINST. An edit after it -- with a
 	// tool, a restore, or written in the answer and absorbed above -- changed
 	// what is offered, and "checked: passed" alone would describe code that
@@ -490,6 +491,15 @@ func (s *Server) builtinTools(proposals *proposalSink, mode string) []mcp.Builti
 			},
 			Handler: func(ctx context.Context, raw json.RawMessage) (mcp.Result, error) {
 				return s.builtinSandboxExecStaged(ctx, raw, proposals)
+			},
+			// Where THIS turn's commands run, asked before the prompt is built:
+			// in the turn's working copy, or -- when there is none to be had --
+			// in the project itself, which the prompt then says (mcp.Builtin.
+			// InPlace). The copy is made here if it has not been: that is the
+			// only way to know one can be.
+			InPlace: func() bool {
+				st, _ := proposals.workingCopy()
+				return st == nil
 			},
 		},
 	}

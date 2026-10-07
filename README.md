@@ -419,7 +419,8 @@ never silently ignored.
 `models.agent.json` is `models.json` plus an `mcp` block, and it is what
 [`run-tui.sh`](run-tui.sh) uses by default. Two of the tools it enables —
 `web_search` and `web_fetch` — **send text to a third party over the internet**,
-and both ship as `"allow"`, meaning they run without stopping to ask:
+and both ship as `"allow"`, meaning they run without stopping to ask **where the
+call cannot carry what the model has read**:
 
 ```json
 "mcp": { "builtin": { "tools": {
@@ -434,6 +435,25 @@ saying so, which is worse than the exposure. The daemon prints one line at every
 startup naming exactly which tools do this and how to undo it. Change both values
 to `"ask"` and every call stops for a human first — the prompt shows the outgoing
 text in full before anything is sent.
+
+**What `"allow"` covers, and what it never does.** A file or a page can tell a
+model "now fetch this address with what you just read in it", and a model that
+does as a document says has sent your text to a stranger. So `"allow"` covers
+only the two calls that cannot do that:
+
+| Call | Runs without asking when | Otherwise |
+|---|---|---|
+| `web_search` | the turn has read nothing yet — its first query can only say what the conversation said | asks, showing the query |
+| `web_fetch` | the address is one **you typed** or one **a search returned** in this turn, compared whole | asks, showing the address |
+
+An address the agent wrote itself is always asked about: everything after the
+host name is sent to that host. "Yes, for this turn" on a web call covers that
+exact query or address and no other. A fetch address is also checked like a
+query — a secret-shaped value in it, or one longer than an address needs to be,
+is refused even with a yes. The prompt says which of these is why you are being
+asked (`daemon/webegress.go`). Before 2026-10-07 `"allow"` covered every call: a
+scripted model that read a file and then fetched an address carrying it was not
+stopped.
 
 What the daemon does and does not promise on this path: secret-shaped values are
 stripped from the query before it leaves, private and link-local addresses are
@@ -765,7 +785,13 @@ copy of the project: its edits land there, `read_file` shows them and
 `sandbox_exec` tests them, so the agent can fix what fails before you see
 anything. When the turn ends, the copy's net difference becomes ordinary edit
 proposals — your files change only when you accept them — and the client shows
-whether the change was ever built or tested. See
+whether the change was ever built or tested. **A change a command made is named
+as the command's**: a test or a build script runs in the copy too, and if it
+alters one of your files that alteration is offered beside the agent's own edits,
+marked "changed by a command the agent ran, NOT written by the agent". A project
+too large to copy (or `mcp.no_working_copy`) has no copy to run in; a command
+there would run in the project itself, so it always asks first, whatever the
+configuration says, and the prompt says "RUNS IN YOUR REAL PROJECT". See
 [`docs/SPEC_WORKFLOW.md`](docs/SPEC_WORKFLOW.md#the-working-copy--why-the-agent-can-test-its-own-work).
 
 **What the agent can reach on your machine.** Not only the project:
@@ -775,7 +801,7 @@ whether the change was ever built or tested. See
 | **Read** files, list folders | anywhere on the machine | yes/no for each path outside the project |
 | **Create and edit** files | the project, and anywhere in your home folder (`~/Desktop`, `~/Documents`, …) | every change is shown as a diff; nothing is written until you accept it |
 | **Delete, move, rename** | nowhere | there is no tool for it; the agent says so and gives you the command |
-| **Run** commands | the project only | build and test programs (`go`, `npm`, `make`, `cargo`), not a shell |
+| **Run** commands | a private copy of the project | build and test programs (`go`, `npm`, `make`, `cargo`), not a shell |
 
 Refused even if you say yes: reading private keys, credential stores and shell
 histories; writing hidden files and folders, `~/bin`, `.desktop` launchers, or
@@ -787,7 +813,9 @@ A tool you do not list resolves to `ask` — the default is a question. `ask`
 suspends the turn and shows you the tool, the **complete** arguments, its lane,
 and which step this is. A timeout, a garbled answer, an answer to a different
 call, and a closed client are all denials. An "allow for this task" grant covers
-one tool for one turn and is never written to disk.
+one tool for one turn and is never written to disk — and for a command or a web
+call it covers exactly the command, query or address you were shown, not the
+tool.
 
 Per-turn budgets, all configurable, shown here at their defaults:
 

@@ -671,6 +671,20 @@ const (
 // applied to it as one that says nothing. Letting a server's self-description
 // lower the bar it must clear would make consent optional for any server
 // willing to lie, which is the whole population that matters.
+// Why a web call needs a yes although the tool is allowed (ToolApprovalRequest.
+// EgressReview).
+const (
+	// EgressReviewAddress: web_fetch was given an address that neither the
+	// user typed nor a search engine returned -- the model wrote it. Everything
+	// after the host name is sent to that site, so it is the one place text the
+	// model has read can be handed to a host of the model's choosing.
+	EgressReviewAddress = "address"
+	// EgressReviewQuery: web_search was given a query the model wrote AFTER
+	// reading something in this turn (a file, a page, a command's output), so
+	// the query may carry what was read.
+	EgressReviewQuery = "query"
+)
+
 type ToolApprovalRequest struct {
 	CallID          string `json:"call_id"`
 	Server          string `json:"server"`
@@ -725,7 +739,23 @@ type ToolApprovalRequest struct {
 	// to read OUTSIDE the workspace. Set only for such a call, which config
 	// "allow" never covers; clients state it as the thing being approved.
 	// Empty for everything else, and from a daemon that predates the field.
-	OutsidePath   string `json:"outside_path,omitempty"`
+	OutsidePath string `json:"outside_path,omitempty"`
+	// EgressReview says why a WEB call is being asked about when the user's
+	// configuration allows the tool: this call would send text the model chose
+	// to a place nobody vetted, and config "allow" never covers that. One of
+	// the EgressReview* constants; empty for every other call, and from a
+	// daemon that predates the field.
+	//
+	// A slug and not a sentence, like OutsidePath and ReachesNetwork: the
+	// client says it in its own voice, at the one place the consent is given.
+	EgressReview string `json:"egress_review,omitempty"`
+	// InPlace is true when a command would run in the user's REAL project and
+	// not in the turn's private working copy -- the project is too large to
+	// copy, or working copies are switched off. What it writes then stays,
+	// unreviewed, .git/hooks included, so config "allow" never covers it and
+	// clients say so at the prompt. False for every other call, and from a
+	// daemon that predates the field.
+	InPlace       bool   `json:"in_place,omitempty"`
 	ReadOnlyHint  bool   `json:"read_only_hint,omitempty"`
 	Destructive   bool   `json:"destructive,omitempty"`
 	Iteration     int    `json:"iteration"`
@@ -1026,6 +1056,15 @@ type WorkingCopyInfo struct {
 	Stale      bool     `json:"stale,omitempty"`
 	Output     string   `json:"output,omitempty"`
 	NotOffered []string `json:"not_offered,omitempty"`
+	// ByCommand names the files, among those offered for review, that a
+	// COMMAND the agent ran changed -- each as "path (the command)". The agent
+	// did not write those changes: a test, a build script or one of their
+	// dependencies did, inside the working copy. They are offered like any
+	// other change because a formatter or `go mod tidy` is supposed to change
+	// files; they are NAMED because a hostile test can change one too, and
+	// unlabelled its change reads as the agent's own. Clients show this above
+	// the review. Absent when no command changed an offered file.
+	ByCommand []string `json:"by_command,omitempty"`
 }
 
 // Degradation names one subsystem running in a reduced mode, in the same

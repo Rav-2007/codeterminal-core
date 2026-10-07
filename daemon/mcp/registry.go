@@ -37,6 +37,20 @@ type Builtin struct {
 	// It must have no side effects. It is consulted before consent exists, so
 	// anything it did would be done without it.
 	Launch func(args json.RawMessage) LaunchPlan
+
+	// InPlace says, BEFORE the call runs, whether it would run against the
+	// user's real files rather than a private copy of them. Only a tool that
+	// declares ExecutesCode may set it (see RegisterBuiltin).
+	//
+	// A FACT ABOUT THE MOMENT, like Launch. Whether a command runs in a copy
+	// depends on whether this turn could make one -- a project can be too
+	// large -- and the prompt for a command that will write straight into the
+	// project must not read like the prompt for one that cannot touch it.
+	//
+	// UNLIKE Launch IT MAY PREPARE: the honest way to learn whether a copy can
+	// be made is to make it, and a copy made for a call that is then declined
+	// is a private directory nothing else sees. It must not touch the project.
+	InPlace func() bool
 }
 
 // LaunchPlan is what one call would start, determined before it runs.
@@ -143,6 +157,9 @@ func (r *Registry) RegisterBuiltin(b Builtin) error {
 	}
 	if b.Launch != nil && !b.Tool.LaunchesSubprocess {
 		return fmt.Errorf("builtin %q has a Launch probe but does not declare LaunchesSubprocess", b.Tool.Name)
+	}
+	if b.InPlace != nil && !b.Tool.ExecutesCode {
+		return fmt.Errorf("builtin %q has an InPlace probe but does not declare ExecutesCode", b.Tool.Name)
 	}
 
 	b.Tool.Server = BuiltinServerName
@@ -432,6 +449,20 @@ func (r *Registry) LaunchPlan(qualified string, args json.RawMessage) LaunchPlan
 		return LaunchPlan{}
 	}
 	return builtin.Launch(args)
+}
+
+// RunsInPlace reports whether this call would run against the user's real
+// files rather than a private copy (Builtin.InPlace). False for every tool
+// that does not say, which is every tool that runs nothing.
+func (r *Registry) RunsInPlace(qualified string) bool {
+	server, name, err := SplitQualifiedName(qualified)
+	if err != nil || server != BuiltinServerName {
+		return false
+	}
+	r.mu.RLock()
+	builtin, ok := r.builtins[name]
+	r.mu.RUnlock()
+	return ok && builtin.InPlace != nil && builtin.InPlace()
 }
 
 // Call dispatches an APPROVED tool call. It never consults consent -- the

@@ -23,7 +23,15 @@ func specTurn(t *testing.T, ctx context.Context, mcpCfg MCPConfig, answer string
 	responses = append(responses, textSSE("done"))
 	base, _, bodies := agentUpstream(t, responses...)
 	s := loopServer(t, base, mcpCfg)
-	registry, _ := s.buildRegistry(context.Background(), s.logger, &proposalSink{}, "")
+	// THE SINK A REAL TURN HAS (newTurnSink): one that knows which project to
+	// copy. An empty one means "this turn has no working copy", so its commands
+	// would run in the project itself -- and a command that does is never
+	// offered a spec grant (mcp.Builtin.InPlace). The helper used an empty sink
+	// until 2026-10-07, while specGrantFor decided from the configuration alone,
+	// so these tests were being offered grants for commands that ran in place.
+	sink := &proposalSink{stageFrom: s.workingCopySource("auto")}
+	t.Cleanup(sink.discard)
+	registry, _ := s.buildRegistry(context.Background(), s.logger, sink, "")
 	t.Cleanup(func() { _ = registry.Close() })
 	appr := &recordingApprover{answer: answer}
 	if _, err := s.runAgentLoop(ctx, time.Now(), registry, "m", "auto",

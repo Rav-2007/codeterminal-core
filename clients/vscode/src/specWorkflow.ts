@@ -282,6 +282,10 @@ export function workingCopyText(info: WorkingCopyInfo): string {
   for (const n of info.not_offered ?? []) {
     lines.push('not offered: ' + n);
   }
+  // Kept word for word with the TUI's byCommandNote.
+  for (const n of info.by_command ?? []) {
+    lines.push('! changed by a command the agent ran, NOT written by the agent — read it before accepting: ' + n);
+  }
   return lines.join('\n');
 }
 

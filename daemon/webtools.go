@@ -179,6 +179,11 @@ func (s *Server) builtinWebSearch(ctx context.Context, raw json.RawMessage) (mcp
 	if len(results) == 0 {
 		return toolError("that search returned no results; try different words")
 	}
+	// These are the engine's choice of address, not the model's, so a later
+	// web_fetch of one of them carries nothing the model wrote (webegress.go).
+	for _, r := range results {
+		noteWebResultURL(ctx, r.URL)
+	}
 
 	var b strings.Builder
 	if len(kinds) > 0 {
@@ -356,6 +361,17 @@ func (s *Server) builtinWebFetch(ctx context.Context, raw json.RawMessage) (mcp.
 	}
 	if strings.TrimSpace(args.URL) == "" {
 		return toolError("no URL was supplied")
+	}
+
+	// THE ADDRESS IS OUTBOUND TEXT THE MODEL CHOSE, exactly as a query is, and
+	// it got neither of the query's two checks: FOUND 2026-10-07. Refused here
+	// whoever approved the call -- a yes to "open this page" is not a yes to
+	// putting a key in a third party's access log.
+	if why, kinds := outboundURLRefusal(args.URL, s.noScrub()); why != "" {
+		if len(kinds) > 0 {
+			s.logger.Printf("agent: web_fetch refused an address carrying %s", strings.Join(kinds, ", "))
+		}
+		return toolError("%s", why)
 	}
 
 	cfg := s.cfg.MCP.Web

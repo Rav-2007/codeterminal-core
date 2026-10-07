@@ -142,6 +142,9 @@ export interface WorkingCopyInfo {
   passed?: boolean;
   output?: string;
   not_offered?: string[];
+  // by_command names the offered files a COMMAND changed, each as
+  // "path (the command)": changes the agent did not write.
+  by_command?: string[];
 }
 
 // SpecCriterionResult / SpecReport mirror protocol's: a /spec check's (or
@@ -344,6 +347,15 @@ export interface ToolApprovalRequest {
   // outside_path is the resolved absolute path a built-in read tool asks to
   // read outside the workspace. Absent for every other call.
   outside_path?: string;
+  // egress_review says why a web call is asked about although the tool is
+  // allowed: "address" (web_fetch was given an address the model wrote) or
+  // "query" (web_search was given a query written after the turn had read
+  // something). Absent for every other call, and from an older daemon.
+  egress_review?: string;
+  // in_place is true when a command would run in the user's real project and
+  // not in the turn's private working copy; what it writes then stays,
+  // unreviewed. Absent for every other call, and from an older daemon.
+  in_place?: boolean;
   read_only_hint?: boolean;
   destructive?: boolean;
   iteration: number;

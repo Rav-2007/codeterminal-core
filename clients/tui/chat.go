@@ -967,6 +967,11 @@ func workingCopyText(info *protocol.WorkingCopyInfo) string {
 	for _, n := range info.NotOffered {
 		lines = append(lines, "not offered: "+sanitizeText(n))
 	}
+	// Sanitised like everything else here: the path is a file's name and the
+	// command is the model's text.
+	for _, n := range info.ByCommand {
+		lines = append(lines, byCommandNote+sanitizeText(n))
+	}
 	return strings.Join(lines, "\n")
 }
 
@@ -2632,6 +2637,19 @@ func renderApprovalPanel(req protocol.ToolApprovalRequest) string {
 	return b.String()
 }
 
+// Why a web call is asked about although the tool is allowed. Kept word for
+// word with clients/vscode/media/main.js.
+const (
+	egressAddressRisk = "THE AGENT WROTE THIS ADDRESS ITSELF: you did not type it and no search returned it, " +
+		"and everything in it is sent to that site — check it carries nothing of yours"
+	egressQueryRisk = "WRITTEN AFTER THE AGENT READ FILES OR PAGES IN THIS TURN: check it carries nothing of yours"
+	// A command that runs in the project itself (ToolApprovalRequest.InPlace).
+	inPlaceRisk = "RUNS IN YOUR REAL PROJECT, not in a private copy: whatever it writes stays, unreviewed — " +
+		"including .git/hooks, which run later with your full access"
+	// A change in the review that a command made (WorkingCopyInfo.ByCommand).
+	byCommandNote = "! changed by a command the agent ran, NOT written by the agent — read it before accepting: "
+)
+
 // approvalRisks is the short warning under the question, empty when there is
 // nothing to warn about. Shared by the chat panel and the one-shot prompt so
 // the two cannot drift apart again.
@@ -2640,6 +2658,15 @@ func approvalRisks(req protocol.ToolApprovalRequest) []string {
 	switch {
 	case req.ReachesNetwork:
 		risks = append(risks, "LEAVES YOUR MACHINE: sent to a third party over the internet")
+		// WHY THIS ONE IS ASKED ABOUT when the tool is allowed (the daemon's
+		// webegress.go). Said in this client's own words, like the line above:
+		// it is the reason to read the address or the query before saying yes.
+		switch req.EgressReview {
+		case protocol.EgressReviewAddress:
+			risks = append(risks, egressAddressRisk)
+		case protocol.EgressReviewQuery:
+			risks = append(risks, egressQueryRisk)
+		}
 	case req.LaunchesSubprocess:
 		if program := sanitizeText(req.Program); program != "" {
 			risks = append(risks, "STARTS "+program+", which keeps running until the daemon exits")
@@ -2652,6 +2679,12 @@ func approvalRisks(req protocol.ToolApprovalRequest) []string {
 		// The question already says it all.
 	default:
 		risks = append(risks, "NOT SANDBOXED: a separate program with your full access")
+	}
+	// A command with no private copy to run in. Said whatever the sandbox
+	// holds: confined to the project is not much comfort when the project is
+	// what it writes to.
+	if req.InPlace {
+		risks = append(risks, inPlaceRisk)
 	}
 	if req.Destructive {
 		risks = append(risks, "marked destructive")
