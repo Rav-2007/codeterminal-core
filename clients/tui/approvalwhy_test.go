@@ -120,7 +120,15 @@ func TestBothClientsUseTheSameWordsForWhyYouAreAsked(t *testing.T) {
 
 // squashJSStrings joins a JavaScript string written as 'a ' + 'b' across lines
 // into a b, so a sentence can be looked for whole.
+//
+// LINE ENDINGS FIRST. FOUND 2026-10-07 by CI, the only place this runs on
+// Windows: git checks the extension's sources out there with CRLF, every line
+// then ended "' +\r", nothing was joined, and the two sentences the extension
+// writes across two lines were reported missing from a file that carries them
+// word for word. A test that reads a source file reads it as that platform's
+// checkout left it.
 func squashJSStrings(src string) string {
+	src = strings.ReplaceAll(src, "\r\n", "\n")
 	var b strings.Builder
 	lines := strings.Split(src, "\n")
 	for i := 0; i < len(lines); i++ {
@@ -135,4 +143,20 @@ func squashJSStrings(src string) string {
 		b.WriteByte('\n')
 	}
 	return b.String()
+}
+
+// The comparison above is only as good as this helper, and CI on Windows is
+// where it was first wrong: the same source, checked out with CRLF, must read
+// the same.
+func TestASplitSentenceIsJoinedWhateverTheLineEndings(t *testing.T) {
+	const unix = "risks.push('THE AGENT WROTE THIS, ' +\n      'and it is sent to that site');\nnext();\n"
+	const sentence = "'THE AGENT WROTE THIS, and it is sent to that site'"
+	joined := squashJSStrings(unix)
+	if !strings.Contains(joined, sentence) {
+		t.Fatalf("with LF the sentence is not joined: %q", joined)
+	}
+	windows := strings.ReplaceAll(unix, "\n", "\r\n")
+	if got := squashJSStrings(windows); got != joined {
+		t.Errorf("with CRLF, as git checks the file out on Windows, the same source reads differently:\n   got %q\n  want %q", got, joined)
+	}
 }
