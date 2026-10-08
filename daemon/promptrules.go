@@ -34,10 +34,36 @@ const (
 
 // systemPromptForTurn is base without the rules this turn has no subject for.
 func systemPromptForTurn(base string, hasRetrievedContext, hasThirdPartyServer bool) string {
-	if base != defaultSystemPrompt || (hasRetrievedContext && hasThirdPartyServer) {
+	if base != defaultSystemPrompt {
 		return base
 	}
-	paragraphs := strings.Split(base, "\n\n")
+	return withoutUnusedRules(base, hasRetrievedContext, hasThirdPartyServer)
+}
+
+// promptParagraphs splits a prompt into its paragraphs and returns what
+// separated them, so the pieces can be joined back exactly as they were.
+//
+// THE SEPARATOR IS READ FROM THE TEXT, NOT ASSUMED. The built-in prompt is a
+// file embedded at build time, and git for Windows checks a text file out with
+// CRLF line endings: there a blank line is "\r\n\r\n", a split on "\n\n" finds
+// one paragraph, and no rule would ever be left out -- with nothing to say so.
+// (The same checkout is what broke a test of the extension's source,
+// 2026-10-07.)
+func promptParagraphs(text string) (paragraphs []string, blankLine string) {
+	blankLine = "\n\n"
+	if strings.Contains(text, "\r\n") {
+		blankLine = "\r\n\r\n"
+	}
+	return strings.Split(text, blankLine), blankLine
+}
+
+// withoutUnusedRules is text without the paragraph about retrieved context
+// and the one about a third-party server's output, each unless wanted.
+func withoutUnusedRules(text string, hasRetrievedContext, hasThirdPartyServer bool) string {
+	if hasRetrievedContext && hasThirdPartyServer {
+		return text
+	}
+	paragraphs, blankLine := promptParagraphs(text)
 	kept := paragraphs[:0:0]
 	for _, p := range paragraphs {
 		switch {
@@ -47,10 +73,11 @@ func systemPromptForTurn(base string, hasRetrievedContext, hasThirdPartyServer b
 			kept = append(kept, p)
 		}
 	}
-	out := strings.Join(kept, "\n\n")
-	// The file ends in one newline; so does what is left of it.
-	if strings.HasSuffix(base, "\n") && !strings.HasSuffix(out, "\n") {
-		out += "\n"
+	out := strings.Join(kept, blankLine)
+	// The file ends in one line ending; so does what is left of it.
+	lineEnd := blankLine[:len(blankLine)/2]
+	if strings.HasSuffix(text, lineEnd) && !strings.HasSuffix(out, lineEnd) {
+		out += lineEnd
 	}
 	return out
 }
