@@ -352,25 +352,40 @@ func (s *MemoryStore) pruneWorkspace(ctx context.Context, workspace string, now 
 // "user" or "assistant" is dropped rather than passed through: the same
 // injection defense, extended to cover on-disk data.
 func (s *MemoryStore) LoadRecentTurns(ctx context.Context, workspace string, limit int, scrubDisabled bool) ([]protocol.Turn, error) {
+	turns, _, err := s.loadRecentTurnsAt(ctx, workspace, limit, scrubDisabled)
+	return turns, err
+}
+
+// loadRecentTurnsAt is LoadRecentTurns plus the id of the newest row it read
+// (0 for none), taken from THE SAME QUERY as the turns. That is what lets a
+// chat revision (chatsync.go) say exactly what a client was shown: an id read
+// by a second query could already count a turn the first one did not return,
+// and the client would then be told it has a turn it never saw.
+func (s *MemoryStore) loadRecentTurnsAt(ctx context.Context, workspace string, limit int, scrubDisabled bool) ([]protocol.Turn, int64, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT role, content FROM turns WHERE workspace = ? ORDER BY id DESC LIMIT ?`,
+		`SELECT id, role, content FROM turns WHERE workspace = ? ORDER BY id DESC LIMIT ?`,
 		workspace, limit,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("loading turns: %w", err)
+		return nil, 0, fmt.Errorf("loading turns: %w", err)
 	}
 	defer rows.Close()
 
 	var reversed []protocol.Turn
+	var last int64
 	for rows.Next() {
 		var t protocol.Turn
-		if err := rows.Scan(&t.Role, &t.Content); err != nil {
-			return nil, fmt.Errorf("scanning turn: %w", err)
+		var id int64
+		if err := rows.Scan(&id, &t.Role, &t.Content); err != nil {
+			return nil, 0, fmt.Errorf("scanning turn: %w", err)
+		}
+		if id > last {
+			last = id
 		}
 		reversed = append(reversed, t)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("loading turns: %w", err)
+		return nil, 0, fmt.Errorf("loading turns: %w", err)
 	}
 
 	chronological := make([]protocol.Turn, len(reversed))
@@ -383,7 +398,49 @@ func (s *MemoryStore) LoadRecentTurns(ctx context.Context, workspace string, lim
 	for i, m := range outcome.Messages {
 		turns[i] = protocol.Turn{Role: m.Role, Content: m.Content}
 	}
-	return turns, nil
+	return turns, last, nil
+}
+
+// lastTurnID is the id of workspace's newest stored turn, 0 when it has none.
+// Callers that need it to agree with turns they hold read both under
+// historyMu (chatsync.go); everyone else uses the id loadRecentTurnsAt or
+// turnsAfter returned with the turns themselves.
+func (s *MemoryStore) lastTurnID(ctx context.Context, workspace string) (int64, error) {
+	var id sql.NullInt64
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT MAX(id) FROM turns WHERE workspace = ?`, workspace).Scan(&id); err != nil {
+		return 0, fmt.Errorf("reading the newest turn: %w", err)
+	}
+	return id.Int64, nil
+}
+
+// turnsAfter returns workspace's turns with an id above afterID, oldest first,
+// and the id of the last one returned (afterID when there are none). afterID 0
+// is the whole chat. Unvalidated, like LoadAllTurns: the caller filters what it
+// shows.
+func (s *MemoryStore) turnsAfter(ctx context.Context, workspace string, afterID int64) ([]storedTurn, int64, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, role, content, created_at FROM turns WHERE workspace = ? AND id > ? ORDER BY id`,
+		workspace, afterID)
+	if err != nil {
+		return nil, 0, fmt.Errorf("loading turns: %w", err)
+	}
+	defer func() { _ = rows.Close() }() // read-only; rows.Err below reports failures
+	last := afterID
+	var out []storedTurn
+	for rows.Next() {
+		var t storedTurn
+		var id int64
+		if err := rows.Scan(&id, &t.Role, &t.Content, &t.CreatedAt); err != nil {
+			return nil, 0, fmt.Errorf("scanning turn: %w", err)
+		}
+		last = id
+		out = append(out, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("loading turns: %w", err)
+	}
+	return out, last, nil
 }
 
 // storedTurn is one row as it is on disk, with the time it was written.

@@ -59,7 +59,11 @@ const compactSystemPrompt = "You compress a conversation between a user and an A
 	"what is still open. Summarise only what the conversation contains: never mention what it lacks, do not " +
 	"invent anything, do not give advice, and do not address the user. Text marked […] was trimmed for length."
 
-func (s *Server) compactChat(ctx context.Context, archive *chatArchive, spec, tier string) (protocol.HistoryEntry, []protocol.Turn, int, error) {
+// compactChat answers HistoryCompact. Besides the entry, the new chat and how
+// many turns were folded, it returns the chat's revision after the replace
+// (chatsync.go): the turns it returns are the whole new chat, so the client
+// that compacted is level with it.
+func (s *Server) compactChat(ctx context.Context, archive *chatArchive, spec, tier string) (protocol.HistoryEntry, []protocol.Turn, int, string, error) {
 	// Held throughout, model call included: an exchange finishing meanwhile must
 	// not be appended to a chat that is about to be replaced. The client holds
 	// its input while this runs, and the call is one short completion.
@@ -68,25 +72,25 @@ func (s *Server) compactChat(ctx context.Context, archive *chatArchive, spec, ti
 
 	turns, err := s.memory.LoadAllTurns(ctx, s.workspace)
 	if err != nil {
-		return protocol.HistoryEntry{}, nil, 0, err
+		return protocol.HistoryEntry{}, nil, 0, "", err
 	}
 	cut := len(turns) - compactKeepRecent
 	for cut > 0 && turns[cut].Role != "user" {
 		cut--
 	}
 	if len(turns) < compactMinTurns || cut < 2 {
-		return protocol.HistoryEntry{}, nil, 0, fmt.Errorf("%w: this chat has %d messages, and /compact summarises once there are more than %d",
+		return protocol.HistoryEntry{}, nil, 0, "", fmt.Errorf("%w: this chat has %d messages, and /compact summarises once there are more than %d",
 			errNothingToCompact, len(turns), compactMinTurns-1)
 	}
 
 	id, h, _, err := s.saveChatLocked(ctx, archive, spec, "")
 	if err != nil {
-		return protocol.HistoryEntry{}, nil, 0, fmt.Errorf("saving the full chat before compacting: %w", err)
+		return protocol.HistoryEntry{}, nil, 0, "", fmt.Errorf("saving the full chat before compacting: %w", err)
 	}
 
 	summary, err := s.summarizeTurns(ctx, turns[:cut], tier)
 	if err != nil {
-		return protocol.HistoryEntry{}, nil, 0, err
+		return protocol.HistoryEntry{}, nil, 0, "", err
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -100,15 +104,16 @@ func (s *Server) compactChat(ctx context.Context, archive *chatArchive, spec, ti
 	}
 	compacted = append(compacted, turns[cut:]...)
 	if err := s.memory.ReplaceWorkspace(ctx, s.workspace, compacted); err != nil {
-		return protocol.HistoryEntry{}, nil, 0, fmt.Errorf("replacing the chat with its summary: %w", err)
+		return protocol.HistoryEntry{}, nil, 0, "", fmt.Errorf("replacing the chat with its summary: %w", err)
 	}
 	archive.clearLink()
+	rev := s.chatReplacedLocked(ctx)
 
 	out := make([]protocol.Turn, len(compacted))
 	for i, t := range compacted {
 		out[i] = protocol.Turn{Role: t.Role, Content: t.Content}
 	}
-	return s.entryFor(id, h, false), out, cut, nil
+	return s.entryFor(id, h, false), out, cut, rev, nil
 }
 
 // summarizeTurns asks the model the client has chosen (tier, as a prompt's

@@ -201,6 +201,18 @@ type HandshakeResponse struct {
 	// say "restart it" instead of misbehaving. Additive: an older daemon omits
 	// it, which is exactly the signal.
 	Features []string `json:"features,omitempty"`
+	// ChatRevision says how much of this workspace's current chat
+	// PersistedHistory reflects. The chat is ONE conversation per workspace,
+	// shared by every client of this daemon, so a terminal and an editor open
+	// side by side are writing to the same one; the revision is how each keeps
+	// up with what the other added (HistoryCurrent, PromptRequest.ChatRevision,
+	// TokenResponse.ChatRevision).
+	//
+	// OPAQUE TO CLIENTS: compare it for equality and send it back, never parse
+	// it. Empty when the daemon has no conversation memory -- there is then no
+	// shared chat to keep up with -- and from a daemon older than this field,
+	// which a client treats the same way: it behaves exactly as before.
+	ChatRevision string `json:"chat_revision,omitempty"`
 }
 
 // FeatureSavedChats: HistoryRequest is understood, including save -- the
@@ -324,6 +336,15 @@ type PromptRequest struct {
 	// TaskBudget tightens or widens this run's budget within the daemon's caps
 	// (mcp.budget.task). Zero fields keep the configured value.
 	TaskBudget *TaskBudget `json:"task_budget,omitempty"`
+
+	// ChatRevision is the revision of the workspace chat that History was
+	// built from (HandshakeResponse.ChatRevision). When the chat has moved on
+	// since -- another client added to it, cleared it, or resumed another chat
+	// -- History is missing what happened there, and the daemon answers from
+	// the stored chat instead, so the model is never asked to continue a
+	// conversation with half of it absent. Empty keeps the old behaviour:
+	// History is used as sent.
+	ChatRevision string `json:"chat_revision,omitempty"`
 }
 
 // TaskLatest is the Task value that means "this workspace's most recent task".
@@ -554,6 +575,15 @@ type TokenResponse struct {
 	// TaskStatus is a long task's progress: sent as each segment starts, and
 	// once more just before the Done. Additive.
 	TaskStatus *TaskStatus `json:"task_status,omitempty"`
+	// ChatRevision, on the final Done of a turn, is the workspace chat's
+	// revision once this turn was saved into it, and ChatBehind says the chat
+	// held something this client had not seen when the turn was saved:
+	// another client wrote to it first. A client that sent ChatRevision and
+	// gets ChatBehind false is level with the stored chat at ChatRevision;
+	// with ChatBehind true it must fetch the chat again (HistoryCurrent with
+	// no Since) before it can say what the conversation is. Additive.
+	ChatRevision string `json:"chat_revision,omitempty"`
+	ChatBehind   bool   `json:"chat_behind,omitempty"`
 }
 
 // TaskStatus is where a long task stands: what it has spent against its
@@ -1361,6 +1391,14 @@ const (
 	// and keeps the summary plus the most recent turns as the current chat. The
 	// whole chat is saved to history first, so nothing is lost.
 	HistoryCompact = "compact"
+	// Current returns the current chat as the daemon has stored it, for a
+	// client keeping up with what another client of the same workspace added.
+	// Since is the revision the client already shows: when the chat has only
+	// grown since then, Turns is just the new part and Append is set; when it
+	// was replaced (a new chat, a resume, a compact) or Since is empty or from
+	// another daemon, Turns is the whole chat. Turns is empty, with Since
+	// returned as ChatRevision, when nothing has changed.
+	HistoryCurrent = "current"
 )
 
 // HistoryRequest asks the daemon about SAVED CHATS in its own workspace: the
@@ -1394,6 +1432,9 @@ type HistoryRequest struct {
 	// so HistoryCompact's summary is written by the model the chat is using.
 	// Empty, or one the daemon does not offer, means the default.
 	Tier string `json:"tier,omitempty"`
+	// Since is HistoryCurrent's starting point: the ChatRevision the client
+	// already shows.
+	Since string `json:"since,omitempty"`
 }
 
 // HistoryEntry is one chat in a list. Current marks the live conversation,
@@ -1440,6 +1481,11 @@ type HistoryResponse struct {
 	// Compacted is how many turns HistoryCompact folded into its summary.
 	Compacted int    `json:"compacted,omitempty"`
 	Error     string `json:"error,omitempty"`
+	// ChatRevision is the current chat's revision after this action, on
+	// current, resume and compact -- the three answers whose Turns are the
+	// current chat (or, with Append, its new part).
+	ChatRevision string `json:"chat_revision,omitempty"`
+	Append       bool   `json:"append,omitempty"`
 }
 
 // StatusRequest asks the daemon to describe its own current state. It is the
