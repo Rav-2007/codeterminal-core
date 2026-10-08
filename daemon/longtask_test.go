@@ -351,6 +351,49 @@ func TestTheRunStopsAtItsDollarBudget(t *testing.T) {
 	}
 }
 
+// THE SESSION'S SPENDING LIMIT STOPS A RUN TOO, the way its own budget does:
+// with a report, saved, and told how to go on. A long task is the largest
+// thing a session can spend on; before 2026-10-08 nothing outside its own
+// budget could stop one.
+//
+// Neuter check: drop the spendReached case from taskRun.check.
+func TestTheRunStopsAtTheSessionsSpendingLimit(t *testing.T) {
+	base, calls, _ := agentUpstream(t,
+		withUsage(toolCallSSE("c1", "builtin__read_file", `{"path":"inside.txt"}`), 400, 0, 0),
+		withUsage(textSSE("Report: read the file; nothing else done."), 400, 0, 0),
+		withUsage(toolCallSSE("c2", "builtin__read_file", `{"path":"inside.txt"}`), 400, 0, 0),
+	)
+	sockAddr, _, srv := agentSocketServer(t, base, taskPolicies())
+	// 1,000 tokens a session, 400 a call: one call, and room for two more is gone.
+	srv.spend = newSpendLedger(MCPSpendConfig{SessionTokens: 1000, SessionUSD: 1, DayTokens: 1_000_000, DayUSD: 5}, "", "k", discardLogger())
+
+	msgs := taskRequest(t, sockAddr, protocol.PromptRequest{Prompt: "go", Mode: modeTask, Session: "s"})
+	st := lastTaskStatus(t, msgs)
+	if st.State != protocol.TaskStateBudget {
+		t.Fatalf("state = %q, want budget", st.State)
+	}
+	if calls.Load() != 2 {
+		t.Errorf("model calls = %d, want 2: the call that met the limit and the report", calls.Load())
+	}
+	if !strings.Contains(strings.Join(tokensOf(msgs), ""), "Report:") {
+		t.Error("the run ended without its report")
+	}
+	inc := lastDone(t, msgs).Incomplete
+	if inc == nil {
+		t.Fatal("the Done does not say the run was stopped")
+	}
+	for _, want := range []string{"this session's spending limit (400 of 1,000 tokens)", "Everything it did is saved", "/budget more", "/task resume"} {
+		if !strings.Contains(inc.Detail, want) {
+			t.Errorf("the stop does not say %q: %s", want, inc.Detail)
+		}
+	}
+	// And a new run is refused before it opens anything, like any question.
+	again := taskRequest(t, sockAddr, protocol.PromptRequest{Prompt: "go on", Mode: modeTask, Session: "s"})
+	if d := lastDone(t, again); d.ErrorClass != string(ClassSpendLimit) || calls.Load() != 2 {
+		t.Errorf("a task asked for at the limit answered %q (class %q) after %d model calls", d.Error, d.ErrorClass, calls.Load())
+	}
+}
+
 // A STOPPED TASK IS SAVED, AND RESUMES WHERE IT WAS. The first run edits a file
 // in its working copy and runs out of calls; the second run's working copy has
 // that edit again (read_file shows it), its ledger carries the note the user

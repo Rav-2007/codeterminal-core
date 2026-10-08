@@ -107,6 +107,8 @@ var fileKindSites = map[string]struct {
 	// for the "closest names" line of a "no such file" answer. It never asks
 	// WHICH ending: settings.yaml and settings.yml are close whatever they are.
 	"daemon/missingfile.go": {displayOnly, 2},
+	// ".json", the name of this daemon's own count of a day's spend.
+	"daemon/spend.go": {nonSourceFormat, 1},
 }
 
 // scanRoots are the module directories whose production code could route on a

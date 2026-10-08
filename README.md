@@ -532,6 +532,8 @@ commands send a mode the daemon enforces ([Long tasks](#long-tasks)).
 /task budget 45m $1 200  # this session's budget: minutes, dollars, model calls
 
 /usage                 # tokens and cost this chat/session, and how full the context is
+/budget                # this session's and today's spend against their limits
+/budget more           # allow another allotment of a limit that is near or reached
 /save [name]           # keep this chat; saving again later updates it
 /resume my-name        # continue a saved chat, by its name or its number (/resume 2)
 /resume                # which chats there are to continue
@@ -549,6 +551,18 @@ the whole session. It also shows the size of the last context sent against the m
 window, taken from `context_window` in `models.json`. It answers locally, so it costs
 no model call. A bare `/word` that is not a command is answered locally too, instead
 of being sent to the model.
+
+**Budget.** The daemon adds up what every model call bills — tokens always, dollars
+where the provider reports them — against two limits: this **session's** (one run of
+the client) and the **day's** (every project on this machine). The defaults are
+3,000,000 tokens or $1 a session and 15,000,000 tokens or $5 a day, set under
+`mcp.budget.spend`. At 80% you are told once. At a limit Mochiii **stops and asks**:
+the turn in flight ends with a summary of what it did, and the next question is
+refused before it reaches the model, until you type `/budget more` to allow another
+allotment. A long task stops the same way and is saved for `/task resume`. `/budget`
+shows where both stand; like `/usage`, it costs no model call. The VS Code client
+sends no session yet, so only the day's limit holds it, and it is raised there in
+the configuration.
 
 **Chat history.** A chat is kept only if you save it with `/save` (`/save my-name` to
 name it), so disk use stays your choice. ctrl+n starts a new chat and discards the current one, but on a chat
@@ -865,7 +879,11 @@ Per-turn budgets, all configurable, shown here at their defaults:
   "turn_timeout_seconds": 600,     // MACHINE time; your thinking time is added back
   "max_tool_result_bytes": 32768,  // per result, after scrubbing
   "max_total_tool_bytes": 131072,  // per turn, after scrubbing (models.agent.json ships 524288)
-  "max_advertised_tools": 12       // cap on the menu the model sees
+  "max_advertised_tools": 12,      // cap on the menu the model sees
+  "spend": {                       // across turns: see /budget
+    "session_tokens": 3000000, "session_usd": 1.00,
+    "day_tokens": 15000000,    "day_usd": 5.00
+  }
 }
 ```
 

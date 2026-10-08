@@ -29,7 +29,10 @@ func TestWireTags(t *testing.T) {
 		want []string
 	}{
 		{"HandshakeRequest", HandshakeRequest{}, []string{"protocol_version", "client_name", "capabilities"}},
-		{"PromptRequest", PromptRequest{}, []string{"protocol_version", "prompt", "workspace", "history", "reset", "prompt_kind"}},
+		{"PromptRequest", PromptRequest{}, []string{"protocol_version", "prompt", "workspace", "history", "reset", "prompt_kind",
+			"session", "budget_action"}},
+		{"SpendStatus", SpendStatus{}, []string{"session", "day", "notice", "reached"}},
+		{"SpendMeter", SpendMeter{}, []string{"tokens", "limit_tokens", "usd", "limit_usd"}},
 		{"Turn", Turn{}, []string{"role", "content"}},
 		{"IncompleteInfo", IncompleteInfo{}, []string{"reason", "detail"}},
 		{"Degradation", Degradation{}, []string{"component", "detail", "metadata"}},

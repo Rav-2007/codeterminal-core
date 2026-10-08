@@ -434,6 +434,63 @@ type MCPBudgetConfig struct {
 	// unset section marshals to nothing, like its neighbours; nil means the
 	// defaults.
 	Task *MCPTaskBudgetConfig `json:"task,omitempty"`
+
+	// Spend bounds what a SESSION and a DAY may bill, across turns (spend.go).
+	// Every limit above is about one turn or one task; before this nothing
+	// added turns up, so nothing could stop the twentieth expensive question
+	// in a row. A pointer for the same reason as Task; nil means the defaults.
+	Spend *MCPSpendConfig `json:"spend,omitempty"`
+}
+
+// MCPSpendConfig is the most a session and a day may bill before the daemon
+// stops and asks. Tokens are counted for every provider; dollars only where
+// the provider reports them, so with a provider that reports none the token
+// limits are the ones that hold. Zero means the default.
+type MCPSpendConfig struct {
+	SessionTokens int     `json:"session_tokens,omitempty"`
+	SessionUSD    float64 `json:"session_usd,omitempty"`
+	DayTokens     int     `json:"day_tokens,omitempty"`
+	DayUSD        float64 `json:"day_usd,omitempty"`
+}
+
+// The spend defaults, as decided 2026-10-08: a session stops at 3,000,000
+// tokens or $1 and a day at 15,000,000 tokens or $5, whichever comes first,
+// with a warning at 80% of either. For scale, MEASURED on the default model:
+// an ordinary question is 20,000 to 80,000 tokens and about half a cent a
+// call, and one wandering question was 376,000 -- so a session holds forty
+// ordinary questions or eight of the worst, and a day five such sessions.
+const (
+	defaultSpendSessionTokens = 3_000_000
+	defaultSpendSessionUSD    = 1.00
+	defaultSpendDayTokens     = 15_000_000
+	defaultSpendDayUSD        = 5.00
+
+	maxSpendTokens = 2_000_000_000
+	maxSpendUSD    = 10_000.00
+)
+
+// resolvedSpend is the spend limits in force: the configured value where one
+// is set, the default where it is not.
+func (b MCPBudgetConfig) resolvedSpend() MCPSpendConfig {
+	out := MCPSpendConfig{
+		SessionTokens: defaultSpendSessionTokens, SessionUSD: defaultSpendSessionUSD,
+		DayTokens: defaultSpendDayTokens, DayUSD: defaultSpendDayUSD,
+	}
+	if s := b.Spend; s != nil {
+		if s.SessionTokens > 0 {
+			out.SessionTokens = s.SessionTokens
+		}
+		if s.SessionUSD > 0 {
+			out.SessionUSD = s.SessionUSD
+		}
+		if s.DayTokens > 0 {
+			out.DayTokens = s.DayTokens
+		}
+		if s.DayUSD > 0 {
+			out.DayUSD = s.DayUSD
+		}
+	}
+	return out
 }
 
 // MCPTaskBudgetConfig is what one run of a long task may spend. Zero means the
@@ -798,6 +855,29 @@ func (c *Config) clampMCPRanges() {
 		} else if usd > maxTaskUSD {
 			c.warnf("mcp.budget.task.max_usd %.2f exceeds the maximum %.2f; clamped to %.2f", usd, maxTaskUSD, maxTaskUSD)
 			t.MaxUSD = maxTaskUSD
+		}
+	}
+
+	if sp := b.Spend; sp != nil {
+		clamp("spend.session_tokens", &sp.SessionTokens, maxSpendTokens)
+		clamp("spend.day_tokens", &sp.DayTokens, maxSpendTokens)
+		clampUSD := func(field string, v *float64) {
+			if *v < 0 {
+				c.warnf("mcp.budget.spend.%s %.2f is negative; using the default", field, *v)
+				*v = 0
+			} else if *v > maxSpendUSD {
+				c.warnf("mcp.budget.spend.%s %.2f exceeds the maximum %.2f; clamped to %.2f", field, *v, maxSpendUSD, maxSpendUSD)
+				*v = maxSpendUSD
+			}
+		}
+		clampUSD("session_usd", &sp.SessionUSD)
+		clampUSD("day_usd", &sp.DayUSD)
+		// A day that holds less than one session is a day limit that the
+		// session limit can never reach: said, not corrected, because which
+		// number is the mistake is the user's to say.
+		if r := b.resolvedSpend(); r.DayTokens < r.SessionTokens || r.DayUSD < r.SessionUSD {
+			c.warnf("mcp.budget.spend: the day's limit (%d tokens, $%.2f) is below the session's (%d tokens, $%.2f), "+
+				"so the day's is the one that will stop a session", r.DayTokens, r.DayUSD, r.SessionTokens, r.SessionUSD)
 		}
 	}
 

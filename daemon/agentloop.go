@@ -340,6 +340,9 @@ type budget struct {
 	// test that builds a budget by hand, which means no ceiling.
 	maxTurnTokens int
 	tokens        func() (total, lastPrompt int)
+	// spend is the session's or the day's limit when this turn has met one,
+	// and nil otherwise (usageTally.spendReached).
+	spend func() *spendStop
 	// wrapUpInside says the call that ends a stopped turn with an answer
 	// (wrapUpAtLimit) will be made, so the step ceilings keep one call back for
 	// it. False for a phase that hands on instead of answering and for a long
@@ -450,6 +453,8 @@ func (s *Server) runAgentLoop(
 	// What the turn has billed, for the token ceiling. The tally rides in ctx
 	// and is the whole turn's -- every phase of a pipeline adds to the same one.
 	bud.tokens = usageTallyFrom(ctx).tokens
+	// ...and what the session and the day have, for their limits (spend.go).
+	bud.spend = usageTallyFrom(ctx).spendReached
 	bud.wrapUpInside = !ledger.preAnswer && ledger.segment == nil
 	// A LONG TASK'S SEGMENT runs under the task's budget (see segmentBudget).
 	if seg := ledger.segment; seg != nil {
@@ -926,6 +931,15 @@ func (s *Server) budgetStop(turn *agentTurn, bud budget) *protocol.IncompleteInf
 					"finishing — what you see above is everything that was done. Ask for a narrower step, "+
 					"or raise mcp.budget.max_turn_tokens.", groupThousands(total), groupThousands(bud.maxTurnTokens)),
 			}
+		}
+	}
+	// THE SESSION'S AND THE DAY'S LIMITS (spend.go), with the same room kept
+	// back. A long task's segment is stopped by its run's own check instead,
+	// which saves the task for a resume.
+	if bud.spend != nil && !bud.segment {
+		if stop := bud.spend(); stop != nil {
+			s.logger.Printf("agent: stopping: %s is reached", stop.what())
+			return stop.incomplete()
 		}
 	}
 	if time.Now().After(bud.deadline) {

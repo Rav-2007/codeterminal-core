@@ -62,6 +62,10 @@ type Server struct {
 	tcpToken      string // Bearer token for TCP auth; empty if UDS
 	logger        *log.Logger
 
+	// spend counts what sessions and the day have billed, against their limits
+	// (spend.go). Nil -- a Server built without one -- counts and limits nothing.
+	spend *spendLedger
+
 	// embedder and store are both nil when retrieval is disabled or
 	// unavailable (see setupRetrieval in retrieval_setup.go) — every use
 	// of them (gatherContext, in context.go) must handle that.
@@ -427,7 +431,7 @@ func (s *Server) serveConn(conn net.Conn) {
 		DaemonVersion:    daemonVersion,
 		PersistedHistory: s.loadPersistedHistory(ctx),
 		NeedsAPIKey:      s.needsAPIKey(),
-		Features:         []string{protocol.FeatureSavedChats},
+		Features:         s.features(),
 	}); err != nil {
 		s.logger.Printf("handshake write error: %v", err)
 		return
@@ -590,6 +594,11 @@ func (s *Server) serveConn(conn net.Conn) {
 		return
 	}
 
+	// /budget and /budget more, likewise: the limits as they stand, and no model.
+	if s.serveBudgetAction(enc, promptReq) {
+		return
+	}
+
 	// THE ACTIVE SPEC (spec.go), read once for the whole turn. A spec the
 	// request names but that cannot be read refuses the turn rather than
 	// running unanchored: the user believes the work is being held to it.
@@ -630,6 +639,21 @@ func (s *Server) serveConn(conn net.Conn) {
 			Done:            true,
 			Error:           "prompt is empty",
 			ErrorClass:      string(ClassInvalidRequest),
+		})
+		return
+	}
+
+	// A SPENDING LIMIT ALREADY MET REFUSES THE QUESTION HERE, before anything
+	// is routed, searched or sent: the point of the limit is that the next
+	// question costs nothing until the person says to go on (spend.go).
+	if stop := s.spend.reached(sessionID(promptReq.Session), 0); stop != nil {
+		s.logger.Printf("refusing a prompt: %s is reached", stop.what())
+		_ = enc.Encode(protocol.TokenResponse{
+			ProtocolVersion: protocol.ProtocolVersion,
+			Done:            true,
+			Error:           stop.refusal(),
+			ErrorClass:      string(ClassSpendLimit),
+			Spend:           s.spend.status(sessionID(promptReq.Session)),
 		})
 		return
 	}
@@ -778,6 +802,8 @@ func (s *Server) serveConn(conn net.Conn) {
 	// turn's final Done message carries the sum (usage.go; the TUI's /usage).
 	ctx, tally := withUsageTally(ctx)
 	tally.logger = s.logger // one line per call: host, tokens, cached, cost
+	// ...and each call's bill toward the session's and the day's limits.
+	tally.spend, tally.session = s.spend, sessionID(promptReq.Session)
 
 	var full strings.Builder
 	reasoningBytes := 0
@@ -940,6 +966,7 @@ func (s *Server) serveConn(conn net.Conn) {
 			ErrorClass:      string(modelErr.Class),
 			KeyReplaceable:  keyReplaceable(modelErr.Class),
 			Usage:           tally.report(decision.Slug, s.contextWindowFor(decision.Slug)),
+			Spend:           tally.spendReport(),
 		})
 		return
 	}
@@ -963,7 +990,7 @@ func (s *Server) serveConn(conn net.Conn) {
 		}
 	}
 	_ = s.sendDone(enc, protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Done: true, EditProposals: editProposalsFromBlocks(blocks), EditRejections: rejections, Incomplete: incomplete,
-		Usage: tally.report(decision.Slug, s.contextWindowFor(decision.Slug))})
+		Usage: tally.report(decision.Slug, s.contextWindowFor(decision.Slug)), Spend: tally.spendReport()})
 	s.logger.Print("stream complete")
 
 	s.persistTurn(promptReq.Prompt, full.String(), incomplete)

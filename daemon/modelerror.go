@@ -44,6 +44,10 @@ const (
 	ClassInvalidRequest ModelErrorClass = "invalid_request"
 	// ClassUnavailableTier means the requested model is not available on your current plan.
 	ClassUnavailableTier ModelErrorClass = "unavailable_tier"
+	// ClassSpendLimit is the daemon's own refusal, made before any model call:
+	// the session's or the day's spending limit is met (spend.go). The model
+	// never saw the question, so nothing upstream is at fault.
+	ClassSpendLimit ModelErrorClass = "spend_limit"
 	// ClassUnknown is the honest fallback for anything unrecognised. It keeps
 	// the old generic message rather than inventing a confident wrong one.
 	ClassUnknown ModelErrorClass = "unknown"

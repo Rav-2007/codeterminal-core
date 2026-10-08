@@ -897,7 +897,45 @@ func TestBudgetStopBeforeTheAnswerPhaseStillStreamsTheWorkSoFar(t *testing.T) {
 	}
 }
 
-// THE SAME, FOR THE TURN'S TOKEN CEILING.
+// THE SAME, FOR A SPENDING LIMIT. A pipeline that meets the session's limit in
+// a step before the answer stops THERE and shows what it has. Carrying on to
+// the answering step would start a step that can make no call -- and whose
+// empty reply is all the user would see, the plan above it never streamed.
+//
+// Neuter check: drop spendReached from the turn-wide bounds in runOrchestrated.
+func TestASpendingLimitBeforeTheAnswerPhaseStillStreamsTheWorkSoFar(t *testing.T) {
+	base, calls, _ := agentUpstream(t,
+		withUsage(textSSE("PLAN: read the lock file, then describe it"), 300, 0, 0),
+		withUsage(toolCallSSE("c1", "builtin__read_file", `{"path":"go.mod"}`), 300, 0, 0),
+		withUsage(toolCallSSE("c2", "builtin__read_file", `{"path":"go.work"}`), 300, 0, 0),
+		withUsage(textSSE("an answer the limit should have prevented"), 300, 0, 0),
+	)
+	s := loopServer(t, base, MCPConfig{
+		Enabled: true,
+		Builtin: MCPBuiltinConfig{Tools: map[string]string{"read_file": "allow"}},
+	})
+	// 1,000 tokens a session, 300 a call: after the plan and one step 600 are
+	// billed, and 600 with room for two more calls passes the limit.
+	ctx, tally := withUsageTally(context.Background())
+	tally.spend = newSpendLedger(MCPSpendConfig{SessionTokens: 1000, SessionUSD: 1, DayTokens: 1_000_000, DayUSD: 5}, "", "k", discardLogger())
+	tally.session = "s"
+
+	res, _, streamed, err := runPipelineCtx(ctx, t, s, []*agentRole{&rolePlanner, &roleResearcher, &roleCoder})
+	if err != nil {
+		t.Fatalf("runOrchestrated: %v", err)
+	}
+	if res.Incomplete == nil || !strings.Contains(res.Incomplete.Detail, "this session's spending limit (600 of 1,000 tokens)") {
+		t.Fatalf("the pipeline did not stop on the session's limit: %+v (streamed %q)", res.Incomplete, streamed)
+	}
+	if calls.Load() != 2 {
+		t.Errorf("%d model calls; want the plan and one step, and nothing after the limit", calls.Load())
+	}
+	if !strings.Contains(streamed, "PLAN: read the lock file") {
+		t.Errorf("the work done before the limit did not reach the user; streamed = %q", streamed)
+	}
+}
+
+// AND FOR THE TURN'S TOKEN CEILING, the third bound that reads the tally.
 //
 // Neuter check: drop tokensSpent from the turn-wide bounds in runOrchestrated.
 func TestATokenCeilingBeforeTheAnswerPhaseStillStreamsTheWorkSoFar(t *testing.T) {

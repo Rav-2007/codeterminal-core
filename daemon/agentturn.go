@@ -258,6 +258,7 @@ func (s *Server) runAgentTurn(
 			ErrorClass:      string(modelErr.Class),
 			KeyReplaceable:  keyReplaceable(modelErr.Class),
 			Usage:           usageTallyFrom(ctx).report(model, s.contextWindowFor(model)),
+			Spend:           usageTallyFrom(ctx).spendReport(),
 		})
 		return
 	}
@@ -320,6 +321,7 @@ func (s *Server) runAgentTurn(
 		SpecReport:      proposals.report,
 		Degraded:        copyDegraded,
 		Usage:           usageTallyFrom(ctx).report(model, s.contextWindowFor(model)),
+		Spend:           usageTallyFrom(ctx).spendReport(),
 	})
 	s.logger.Printf("agent: turn complete after %d tool call(s)", len(result.ToolNames))
 
