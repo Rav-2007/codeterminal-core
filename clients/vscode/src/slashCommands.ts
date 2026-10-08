@@ -50,7 +50,7 @@ export const SLASH_CATALOG: SlashDef[] = [
   },
   { name: 'mcp-server', kind: 'local', summary: 'show configured MCP servers and tool policy' },
   { name: 'clear', kind: 'local', summary: 'clear the on-screen transcript' },
-  { name: 'compact', kind: 'local', summary: 'keep only the last 8 turns, now' },
+  { name: 'compact', kind: 'local', summary: 'summarise the earlier part of this chat to save context (the full chat stays in History)' },
   { name: 'context', kind: 'local', summary: 'show workspace, model tier, and last grounding' },
   { name: 'git', kind: 'local', summary: 'show git status for the workspace' },
   { name: 'init', kind: 'local', summary: 'quick start checklist for this workspace' },
@@ -66,7 +66,7 @@ export const SLASH_CATALOG: SlashDef[] = [
   {
     name: 'connect',
     kind: 'local',
-    summary: 'set the provider API key (/connect show, /connect forget)',
+    summary: 'connect a model provider by its API key: Groq, NVIDIA, OpenAI, Anthropic, Gemini, OpenRouter... (/connect <provider>, show, forget)',
   },
   { name: 'exit', kind: 'local', summary: 'close the chat panel' },
 

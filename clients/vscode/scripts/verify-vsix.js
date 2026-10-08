@@ -117,6 +117,14 @@ const MUST_CONTAIN = [
   // and the product answers ungrounded while appearing to work.
   `extension/daemon/mochiii-embedder-helper${exe}`,
   'extension/daemon/models.json',
+  // The file readers (scripts/build-extractors.js). A package without them
+  // installs and chats fine, then fails the first time someone attaches a PDF --
+  // the same silent-absence shape as the missing embedder helper above.
+  'extension/out/vendor/extractors.js',
+  'extension/out/vendor/ocr-worker.js',
+  'extension/out/vendor/tesseract-core-simd-lstm.wasm',
+  'extension/out/vendor/tesseract-core-lstm.wasm',
+  'extension/out/vendor/eng.traineddata.gz',
 ];
 
 // THE ONE DIRECTORY NOTHING FILTERS, asserted as a property rather than a list.
@@ -148,7 +156,10 @@ const MUST_NOT_MATCH = [
   [/^extension\/\.vscode\//, 'ships editor config'],
   [/^extension\/\.vscode-test\//, 'ships the downloaded VS Code test builds'],
   [/^extension\/node_modules\//, 'ships node_modules'],
-  [/^extension\/tsconfig\.json$/, 'ships the compiler config'],
+  [/^extension\/tsconfig[^/]*\.json$/, 'ships a compiler config'],
+  // A daemon run from this directory (a dev test, a preview) leaves its log here,
+  // and .vscodeignore is the only thing between that and the marketplace.
+  [/^extension\/\.mochiii\//, 'ships a daemon runtime directory'],
   [/^extension\/package-lock\.json$/, 'ships the lockfile'],
   [/\.vsix$/, 'nests a previously built package inside this one'],
   [/^extension\/media\/logo\.jpg$/, 'ships an unreferenced 147 KB image'],

@@ -1,14 +1,16 @@
 import * as vscode from 'vscode';
+import { shutdownExtractors } from './attachmentExtract';
 import * as cp from 'child_process';
 import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs';
 
-import { ChatPanel, DiffContentProvider } from './chatPanel';
+import { CLIENT_NAME, ChatPanel, DiffContentProvider } from './chatPanel';
 import { bundledDaemonDir, daemonBinaryName } from './daemonBinary';
-import { probeDaemon, resolvedWorkspaceRoot, setWorkspaceRoot } from './daemonClient';
+import { ConnectResponse, probeDaemon, resolvedWorkspaceRoot, sendConnect, setWorkspaceRoot } from './daemonClient';
 import { ensureModelAvailable } from './modelSetup';
 import { clearApiKey, ensureApiKey, getApiKey, promptForApiKey } from './apiKey';
+import { formatConnectResult, providerByName, providerForBase, providerLabel } from './connectFlow';
 import { DaemonHandle, DaemonSupervisor } from './daemonSupervisor';
 import { useSpecStore } from './specWorkflow';
 
@@ -209,46 +211,144 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     })
   );
 
-  // The two halves of /connect that are not "set a key": report which key is in
-  // force, and remove the stored one. They return the sentence to show rather
-  // than popping a notification, because their caller is a slash command that
-  // prints into the chat transcript -- and they live here, beside setApiKey,
-  // because this is where the ExtensionContext (and therefore SecretStorage) is.
-  // ChatPanel stays free of credential access entirely.
+  // /connect, THROUGH THE DAEMON -- as the terminal client has done since
+  // 2026-10-05. The daemon tells which provider a key is for (Groq, NVIDIA,
+  // OpenAI, Anthropic, Gemini, OpenRouter and 11 more), proves it, finds a model
+  // that answers, stores it (~/.mochiii/credentials.json, 0600) and uses it at
+  // once, without a restart. See connectFlow.ts for why VS Code's old path --
+  // its own key in SecretStorage, passed as MOCHIII_API_KEY -- could not.
+  //
+  // The key lives in this function's locals and goes nowhere but the daemon's
+  // peer-authenticated local socket: not the transcript, not a log, not a
+  // setting. Returned to the chat is the daemon's MASKED report.
+  //
+  // With no folder open there is no daemon to prove a key with, so the old path
+  // stays for that case: stored in SecretStorage for the next window.
+  async function connectThroughDaemon(base?: string): Promise<{ message: string; inUse: boolean }> {
+    if (!supervisor) {
+      const saved = await promptForApiKey(context);
+      if (!saved) {
+        return { message: 'Cancelled: no key was stored.', inUse: false };
+      }
+      cachedApiKey = saved;
+      return { message: 'Key stored in VS Code. Open a folder to start asking questions.', inUse: false };
+    }
+    const named = base ? providerForBase(base) : undefined;
+    const key = await vscode.window.showInputBox({
+      title: base ? `Mochiii: API key for ${named ? named.name : base}` : 'Mochiii: connect a model provider',
+      prompt:
+        'Paste the API key. Most providers are recognised from the key itself (Groq, NVIDIA, OpenAI, Anthropic, ' +
+        'Gemini, OpenRouter and more); it is checked with the provider and stored for this machine. It never ' +
+        'appears in the chat.',
+      placeHolder: 'gsk_…   nvapi-…   sk-or-…   sk-ant-…   AIza…',
+      password: true,
+      ignoreFocusOut: true,
+      validateInput: (v) => (v.trim() === '' ? 'Paste a key, or press Escape to cancel.' : undefined),
+    });
+    if (!key || key.trim() === '') {
+      return { message: 'Cancelled: no key was sent.', inUse: false };
+    }
+    const ask = (apiBase?: string): Thenable<ConnectResponse> =>
+      vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: `Mochiii: checking the key with ${apiBase ? providerLabel(apiBase) : 'its provider'}…`,
+        },
+        () => sendConnect(CLIENT_NAME, { api_key: key.trim(), api_base: apiBase }),
+      );
+    let resp: ConnectResponse;
+    try {
+      resp = await ask(base);
+      // A key whose prefix several providers share is sent NOWHERE until the
+      // user says whose it is. The terminal asks them to paste it again; here
+      // the key is still in hand, so they pick from the daemon's candidates.
+      if (resp.outcome === 'needs_provider' && resp.candidates && resp.candidates.length > 0) {
+        const items = resp.candidates.map((id) => {
+          const p = providerByName(id);
+          return { label: p ? p.name : id, description: p ? p.apiBase : '', id };
+        });
+        const pick = await vscode.window.showQuickPick(items, {
+          title: 'Mochiii: which provider issued this key?',
+          placeHolder: 'Nothing has been sent yet. The key goes only to the provider you pick.',
+          ignoreFocusOut: true,
+        });
+        if (!pick) {
+          return { message: formatConnectResult(resp), inUse: false };
+        }
+        const chosen = providerByName(pick.id);
+        resp = await ask(chosen ? chosen.apiBase : undefined);
+      }
+    } catch (err) {
+      return { message: `connect failed: could not reach the daemon (${(err as Error).message}).`, inUse: false };
+    }
+
+    const extra: string[] = [];
+    const stored = resp.outcome === 'accepted' || resp.outcome === 'unverified';
+    // VS Code's own SecretStorage key reaches the daemon as MOCHIII_API_KEY,
+    // which outranks the key just stored -- so connecting would otherwise
+    // "succeed" and change nothing. Move the user onto the daemon's store. A
+    // MOCHIII_API_KEY from the user's own environment is theirs, and only named.
+    if (stored && resp.env_override && cachedApiKey && !process.env.MOCHIII_API_KEY) {
+      await clearApiKey(context);
+      cachedApiKey = undefined;
+      await supervisor.restart();
+      resp = { ...resp, env_override: false, in_use: true };
+      extra.push(
+        'VS Code had a key of its own, which it passed to the daemon at start and which outranked this one. ' +
+          'It was removed, and the daemon restarted using the key you just connected.',
+      );
+    }
+    return { message: formatConnectResult(resp, extra), inUse: stored && resp.in_use };
+  }
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('mochiii.connect', (opts?: { base?: string }) => connectThroughDaemon(opts?.base))
+  );
+
+  // /connect show: what the daemon has stored and is using -- masked by the
+  // daemon. A key VS Code still keeps for itself is named, since it wins.
   context.subscriptions.push(
     vscode.commands.registerCommand('mochiii.showApiKey', async (): Promise<string> => {
-      const stored = await getApiKey(context);
-      // MASKED, never printed. The last four characters identify a key without
-      // being usable as one, which is the whole job of this command.
-      const shown = stored ? `...${stored.slice(-4)} (${stored.length} characters)` : undefined;
-      const fromEnv = process.env.MOCHIII_API_KEY;
-      if (!shown) {
-        return fromEnv
-          ? 'No key is stored by the extension, but MOCHIII_API_KEY is set in its environment and is what the daemon uses.'
-          : 'No key is stored, and MOCHIII_API_KEY is not set: requests would go out with no Authorization header.';
+      const own = await getApiKey(context);
+      const ownLine = own
+        ? `VS Code also keeps a key of its own (...${own.slice(-4)}), passed to the daemon at start; it outranks the stored one. /connect replaces it.`
+        : '';
+      if (!supervisor) {
+        return own ? `No folder is open, so there is no daemon to ask. ${ownLine}` : 'No folder is open, so there is no daemon to ask, and VS Code holds no key.';
       }
-      return fromEnv
-        ? `Stored key ${shown}. NOTE: MOCHIII_API_KEY is also set in this environment and takes precedence, so the stored key is NOT what the daemon is sending.`
-        : `Stored key ${shown}, in use by the daemon.`;
+      try {
+        const r = await sendConnect(CLIENT_NAME, { show: true });
+        return own ? formatConnectResult({ ...r, env_override: false }, [ownLine]) : formatConnectResult(r);
+      } catch (err) {
+        return `could not ask the daemon: ${(err as Error).message}`;
+      }
     })
   );
 
+  // /connect forget: removes the daemon's stored key AND any key VS Code kept
+  // for itself -- "forget" leaving a second key in force would be a lie.
   context.subscriptions.push(
     vscode.commands.registerCommand('mochiii.forgetApiKey', async (): Promise<string> => {
-      const existing = await getApiKey(context);
-      if (!existing) {
-        return 'No key was stored, so there was nothing to remove.';
-      }
-      await clearApiKey(context);
-      cachedApiKey = undefined;
-      // Restarted for the same reason the setApiKey command restarts on removal:
-      // the running daemon still holds the old key in its environment, so
-      // "removed" would otherwise be untrue until the next restart.
+      const parts: string[] = [];
       if (supervisor) {
-        await supervisor.restart();
-        return 'Stored key removed, and the daemon was restarted so it is no longer using it.';
+        try {
+          parts.push(formatConnectResult(await sendConnect(CLIENT_NAME, { forget: true })));
+        } catch (err) {
+          parts.push(`could not ask the daemon to forget its key: ${(err as Error).message}`);
+        }
       }
-      return 'Stored key removed.';
+      const own = await getApiKey(context);
+      if (own) {
+        await clearApiKey(context);
+        cachedApiKey = undefined;
+        parts.push('The key VS Code kept for itself was removed as well.');
+      }
+      // The running daemon still holds a key in memory until it restarts.
+      if (supervisor && parts.length > 0) {
+        await supervisor.restart();
+        parts.push('The daemon was restarted, so it is no longer using a removed key.');
+      }
+      return parts.length > 0 ? parts.join('\n') : 'No key was stored, so there was nothing to remove.';
     })
   );
 
@@ -260,6 +360,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // which is exactly when they have the key in their clipboard.
   context.subscriptions.push(
     vscode.commands.registerCommand('mochiii.setApiKey', async () => {
+      // With a folder open, the same provider-aware path as /connect.
+      if (supervisor) {
+        const r = await connectThroughDaemon();
+        output?.appendLine('[connect] ' + r.message.split('\n').join('\n[connect] '));
+        const first = r.message.split('\n')[0];
+        if (r.inUse) {
+          void vscode.window.showInformationMessage(`Mochiii: ${first}`);
+        } else {
+          void vscode.window.showWarningMessage(`Mochiii: ${first} (details in the Mochiii output)`);
+        }
+        return;
+      }
       const existing = await getApiKey(context);
 
       if (existing) {
@@ -275,12 +387,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         if (pick === REMOVE) {
           await clearApiKey(context);
           cachedApiKey = undefined;
-          // Restarted for the same reason a new key is: the running daemon still
-          // holds the old one in its environment, so "removed" would otherwise
-          // be untrue until the next restart.
-          if (supervisor) {
-            await supervisor.restart();
-          }
+          // No folder, so no daemon is running that could still hold it.
           vscode.window.showInformationMessage('Mochiii: API key removed.');
           return;
         }
@@ -292,11 +399,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
       cachedApiKey = key;
 
-      if (supervisor) {
-        vscode.window.showInformationMessage('Mochiii: API key saved. Restarting the daemon to use it...');
-        await supervisor.restart();
-        return;
-      }
       // No workspace, so no daemon to restart -- the key is stored and the next
       // window that opens a folder will start its daemon with it.
       vscode.window.showInformationMessage('Mochiii: API key saved. Open a folder to start asking questions.');
@@ -462,9 +564,11 @@ function spawnDaemon(binaryPath: string, workspacePath: string, logPath: string)
   };
 }
 
-export function deactivate(): void {
+export function deactivate(): Thenable<void> {
   // Kills only a daemon THIS window started; an adopted one belongs to another
   // window that is still using it. See DaemonSupervisor.dispose.
   supervisor?.dispose();
   supervisor = undefined;
+  // Stops the OCR worker thread if an image was ever read; a no-op otherwise.
+  return shutdownExtractors();
 }

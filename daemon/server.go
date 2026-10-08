@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -790,6 +791,16 @@ func (s *Server) serveConn(conn net.Conn) {
 	// loadPersistedHistory). Merging it in here too would double the
 	// conversation the model sees.
 	routing := s.tierConfig().routingFor(decision.Tier)
+	// The client's effort picker overrides the tier's reasoning_effort for this
+	// turn. Same closed set the config accepts (reasoningEfforts); anything else
+	// is a client bug, logged and dropped rather than sent to be refused.
+	if e := promptReq.ReasoningEffort; e != "" {
+		if slices.Contains(reasoningEfforts, e) {
+			routing.reasoningEffort = e
+		} else {
+			s.logger.Printf("ignoring reasoning_effort %q from the client: not one of %s", e, strings.Join(reasoningEfforts, ", "))
+		}
+	}
 	// THE TURN'S BILL: every model call below -- the single call here, or an
 	// agent turn's whole loop -- adds its usage report to this tally, and the
 	// turn's final Done message carries the sum (usage.go; the TUI's /usage).
@@ -1451,13 +1462,19 @@ func (s *Server) saveChatLocked(ctx context.Context, archive *chatArchive, spec,
 		return "", archiveHeader{}, 0, err
 	}
 	link := archive.readLink()
-	if name == "" && link.ID != "" {
+	bookmarked := false
+	if link.ID != "" {
 		if h, _, err := archive.load(link.ID); err == nil {
-			name = h.Name
+			if name == "" {
+				name = h.Name
+			}
+			// The updated copy replaces the old one, so it keeps the old one's
+			// bookmark -- or saving more work would silently unpin a chat.
+			bookmarked = h.Bookmarked
 		}
 	}
 	now := time.Now()
-	id, err := archive.save(turns, spec, name, now)
+	id, err := archive.saveWith(turns, spec, name, bookmarked, now)
 	if err != nil {
 		return "", archiveHeader{}, 0, err
 	}
@@ -1476,6 +1493,7 @@ func (s *Server) saveChatLocked(ctx context.Context, archive *chatArchive, spec,
 	}
 	h, _ := headerFor(turns, spec, now)
 	h.Name = clipRunes(oneLine(name), archiveTitleRunes)
+	h.Bookmarked = bookmarked
 	pruned := pruneHistory(archive.root, maxArchivesPerWorkspace, maxSavedChatBytes, now)
 	return id, h, pruned, nil
 }
