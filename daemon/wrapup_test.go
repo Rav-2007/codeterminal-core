@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,14 +52,20 @@ func TestTheStepLimitEndsWithAnAnswerAndRunsNoMoreTools(t *testing.T) {
 	s := loopServer(t, base, MCPConfig{
 		Enabled: true,
 		Builtin: MCPBuiltinConfig{Tools: map[string]string{"list_directory": "allow"}},
-		Budget:  MCPBudgetConfig{MaxIterations: 2},
+		Budget:  MCPBudgetConfig{MaxIterations: 3},
 	})
 	res, activity, err := runLoop(t, s)
 	if err != nil {
 		t.Fatalf("runAgentLoop: %v", err)
 	}
+	// THE WRAP-UP IS ONE OF THE THREE (2026-10-08). It used to come after the
+	// ceiling -- a limit of N billed N+1 calls, and the extra one re-sent the
+	// whole conversation -- so this read "MaxIterations: 2 ... want 3".
 	if len(*bodies) != 3 {
-		t.Errorf("%d model call(s), want 2 steps + 1 wrap-up", len(*bodies))
+		t.Errorf("%d model call(s) under a limit of 3, want 2 steps and the wrap-up: 3", len(*bodies))
+	}
+	if !strings.Contains(string((*bodies)[2]), "cannot call any more tools") {
+		t.Error("the third call is not the wrap-up")
 	}
 	ran := 0
 	for _, a := range activity {
@@ -71,5 +78,50 @@ func TestTheStepLimitEndsWithAnAnswerAndRunsNoMoreTools(t *testing.T) {
 	}
 	if res.Incomplete == nil {
 		t.Error("the step limit is no longer reported")
+	}
+}
+
+// A step limit of N is N model calls: the answer that ends a stopped turn is
+// counted in it. A limit of ONE cannot hold both a step and an answer; it
+// keeps the answer, so it is the one limit that still bills one more.
+func TestAStepLimitCountsTheCallThatAnswers(t *testing.T) {
+	for _, tc := range []struct{ limit, wantCalls, wantSteps int }{
+		{limit: 1, wantCalls: 2, wantSteps: 1},
+		{limit: 2, wantCalls: 2, wantSteps: 1},
+		{limit: 5, wantCalls: 5, wantSteps: 4},
+	} {
+		// A different file each step, so nothing but the step limit can end
+		// the turn: not the repeated-call rule, not the stall rule.
+		replies := make([][]string, 0, 8)
+		for i := range 8 {
+			replies = append(replies, toolCallSSE(fmt.Sprintf("c%d", i), "builtin__read_file", fmt.Sprintf(`{"path":"f%d.txt"}`, i)))
+		}
+		base, _, bodies := agentUpstream(t, replies...)
+		s := loopServer(t, base, MCPConfig{
+			Enabled: true,
+			Builtin: MCPBuiltinConfig{Tools: map[string]string{"read_file": "allow"}},
+			Budget:  MCPBudgetConfig{MaxIterations: tc.limit},
+		})
+		for i := range 8 {
+			if err := os.WriteFile(filepath.Join(s.workspace, fmt.Sprintf("f%d.txt", i)), fmt.Appendf(nil, "file %d\n", i), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		res, activity, err := runLoop(t, s)
+		if err != nil {
+			t.Fatalf("limit %d: runAgentLoop: %v", tc.limit, err)
+		}
+		steps := 0
+		for _, a := range activity {
+			if a.Phase == "succeeded" {
+				steps++
+			}
+		}
+		if got := len(*bodies); got != tc.wantCalls || steps != tc.wantSteps {
+			t.Errorf("limit %d: %d model calls and %d tool steps; want %d and %d", tc.limit, got, steps, tc.wantCalls, tc.wantSteps)
+		}
+		if res.Incomplete == nil || !strings.Contains(res.Incomplete.Detail, "max_iterations") {
+			t.Errorf("limit %d: the step limit is not what was reported: %+v", tc.limit, res.Incomplete)
+		}
 	}
 }

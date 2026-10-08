@@ -242,15 +242,18 @@ func (s *Server) runOrchestrated(
 		// the original question is strictly better than handing the USER partial
 		// research.
 		//
-		// The three turn-wide bounds are checked HERE, directly, rather than
-		// inferring which limit bit from the Incomplete. That is what makes one
+		// The turn-wide bounds (tool bytes, calls, tokens, time) are checked
+		// HERE, directly, rather than inferring which limit bit from the
+		// Incomplete. That is what makes one
 		// condition cover both reservations: whatever stopped the phase, if none
 		// of the turn's own bounds is exhausted then the turn has room to
 		// continue, and if one of them is this falls through to the real stop
 		// below. A new reservation needs no new case here.
+		tokensBilled, lastRequest := usageTallyFrom(ctx).tokens()
 		if result.Incomplete != nil && i < answerAt &&
 			ledger.toolBytes < fullToolBudget &&
 			ledger.iterations < turnIterationCeiling &&
+			!tokensSpent(tokensBilled, lastRequest, s.cfg.MCP.Budget.resolvedMaxTurnTokens()) &&
 			time.Since(turnStart) < turnTimeout {
 			s.logger.Printf("agent: the %s step used its reserved share; continuing to the %s step",
 				role.Name, phases[i+1].Name)

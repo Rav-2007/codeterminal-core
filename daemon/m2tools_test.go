@@ -217,7 +217,14 @@ func TestARepeatableLaunchIsAskedOnceForTheTask(t *testing.T) {
 }
 
 // THE LONG-TASK MENU fits its cap with nothing dropped, and an ordinary turn's
-// menu is the measured default, unchanged.
+// menu is the measured default plus exact search.
+//
+// It read "unchanged" until 2026-10-08, and grep was on the absent list below.
+// An ordinary turn had no way to find a line of text: "where is X defined"
+// became reading files one by one, 20,000 to 376,000 tokens a question
+// (measured 2026-10-07). grep is now offered wherever the menu has room for
+// it, and this test holds that it HAS room -- the cap is unchanged, and so is
+// everything else a long task has that an ordinary turn does not.
 func TestALongTasksMenuFitsItsCapAndTheDefaultIsUnchanged(t *testing.T) {
 	s := builtinTestServer(t)
 	names := func(mode string) []string {
@@ -238,10 +245,23 @@ func TestALongTasksMenuFitsItsCapAndTheDefaultIsUnchanged(t *testing.T) {
 			t.Errorf("a long task does not offer %s", want)
 		}
 	}
-	plain := strings.Join(names(""), " ")
-	for _, absent := range []string{"grep", "git_history", "record_finding", "finish_task"} {
+	ordinary := names("")
+	plain := strings.Join(ordinary, " ")
+	for _, absent := range []string{"git_history", "record_finding", "finish_task", "update_tasks", "investigate"} {
 		if strings.Contains(plain, absent) {
-			t.Errorf("an ordinary turn now offers %s; its menu is the measured default", absent)
+			t.Errorf("an ordinary turn now offers %s; that is a long task's tool", absent)
 		}
+	}
+	if !strings.Contains(plain, "grep") {
+		t.Error("an ordinary turn does not offer grep")
+	}
+	// With grep AND search_code -- a project that has an index -- the menu is
+	// exactly at its cap, so nothing is dropped to make room.
+	if cap := s.cfg.MCP.Budget.resolvedMaxAdvertisedToolsFor(""); len(ordinary) > cap {
+		t.Errorf("an ordinary turn offers %d built-ins against a cap of %d, so one is dropped: %v", len(ordinary), cap, ordinary)
+	}
+	// A build turn's menu was already full; grep is not added there.
+	if strings.Contains(strings.Join(names(modeBuild), " "), "grep") {
+		t.Error("a build turn offers grep, which pushes a tool it needs off a menu that was already at its cap")
 	}
 }

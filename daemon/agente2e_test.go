@@ -308,13 +308,17 @@ type e2eTurn struct {
 // decision, returning when the daemon sends Done.
 func (d *e2eDaemon) prompt(t *testing.T, prompt string, decide func(protocol.ToolApprovalRequest) string) *e2eTurn {
 	t.Helper()
+	return d.request(t, protocol.PromptRequest{Prompt: prompt}, decide)
+}
+
+// request sends one PromptRequest as given -- the protocol version and the
+// workspace are filled in -- and reads to Done, as prompt does.
+func (d *e2eDaemon) request(t *testing.T, req protocol.PromptRequest, decide func(protocol.ToolApprovalRequest) string) *e2eTurn {
+	t.Helper()
 	conn, enc, dec := d.dial(t)
 	defer conn.Close()
-	if err := enc.Encode(protocol.PromptRequest{
-		ProtocolVersion: protocol.ProtocolVersion,
-		Prompt:          prompt,
-		Workspace:       d.workspace,
-	}); err != nil {
+	req.ProtocolVersion, req.Workspace = protocol.ProtocolVersion, d.workspace
+	if err := enc.Encode(req); err != nil {
 		t.Fatalf("prompt send: %v", err)
 	}
 	turn := &e2eTurn{}
@@ -701,9 +705,12 @@ func TestE2EToolOutputBudgetsHold(t *testing.T) {
 }
 
 // E7b: the iteration cap ends a turn that would otherwise call tools forever:
-// three iterations, then the wrap-up call, and the client is told which limit
-// stopped it. Every call reads a different file, so the
-// repeated-call rule cannot be what stops it.
+// a cap of three is THREE model calls -- two steps, then the wrap-up call --
+// and the client is told which limit stopped it. Every call reads a different
+// file, so the repeated-call rule cannot be what stops it.
+//
+// It read "three iterations, then the wrap-up" until 2026-10-08: four calls
+// for a cap of three, the fourth re-sending the whole conversation.
 func TestE2EAModelThatNeverStopsIsStoppedByTheIterationCap(t *testing.T) {
 	// The wrap-up reply calls a tool anyway: a model that ignores the note must
 	// not get a fourth read.
@@ -724,11 +731,11 @@ func TestE2EAModelThatNeverStopsIsStoppedByTheIterationCap(t *testing.T) {
 		t.Errorf("Done.Incomplete = %+v, want the max_iterations budget stop", inc)
 	}
 	reqs := model.requests()
-	if len(reqs) != 4 || !reqs[3].isWrapUp() {
-		t.Errorf("the model saw %d requests; want 3 iterations and then the wrap-up call", len(reqs))
+	if len(reqs) != 3 || !reqs[2].isWrapUp() {
+		t.Errorf("the model saw %d requests under a cap of 3; want 2 steps and then the wrap-up call", len(reqs))
 	}
-	if got := d.auditOutcomes(t, "read_file"); len(got) != 3 {
-		t.Errorf("read_file ran %d times under a cap of 3 iterations", len(got))
+	if got := d.auditOutcomes(t, "read_file"); len(got) != 2 {
+		t.Errorf("read_file ran %d times under a cap of 3 calls, want 2", len(got))
 	}
 }
 
@@ -794,6 +801,38 @@ func TestE2EProviderFailuresAreRetriedThenReported(t *testing.T) {
 		turn := d.prompt(t, "hello", e2eApproveAll)
 		if !strings.Contains(turn.text.String(), "second time lucky") {
 			t.Errorf("an empty reply was not retried: error %q, text %q", turn.done.Error, turn.text.String())
+		}
+	})
+	// "hello" is a greeting and takes the short path (smalltalk.go), which has
+	// its own count of empty replies. A turn the agent loop runs must still be
+	// asked again too: the same fault, on a question that is not a greeting.
+	t.Run("an empty reply to a question then success", func(t *testing.T) {
+		model := newE2EModel(t, func(n int, _ e2eChat) e2eReply {
+			if n == 0 {
+				return e2eReply{lines: []string{`data: {"choices":[{"delta":{},"finish_reason":"stop"}]}`, `data: [DONE]`}}
+			}
+			return e2eReply{lines: textSSE("second time lucky")}
+		})
+		d := startE2E(t, model, nil, nil)
+		turn := d.prompt(t, "what does this project do", e2eApproveAll)
+		if !strings.Contains(turn.text.String(), "second time lucky") {
+			t.Errorf("an empty reply was not retried: error %q, text %q", turn.done.Error, turn.text.String())
+		}
+	})
+	// A greeting that is answered with nothing three times is REPORTED. Silence
+	// is the one outcome it must not have: "hello" answered by an empty screen.
+	t.Run("a greeting answered with nothing every time", func(t *testing.T) {
+		model := newE2EModel(t, func(int, e2eChat) e2eReply {
+			return e2eReply{lines: []string{`data: {"choices":[{"delta":{},"finish_reason":"stop"}]}`, `data: [DONE]`}}
+		})
+		d := startE2E(t, model, nil, nil)
+		turn := d.prompt(t, "hello", e2eApproveAll)
+		if n := len(model.requests()); n != maxEmptyGreetingReplies {
+			t.Errorf("the model was asked %d times, want %d", n, maxEmptyGreetingReplies)
+		}
+		inc := turn.done.Incomplete
+		if inc == nil || inc.Reason != protocol.IncompleteProviderError || !strings.Contains(inc.Detail, "empty answer three times") {
+			t.Errorf("a greeting that got no answer was not reported: incomplete %+v, error %q", inc, turn.done.Error)
 		}
 	})
 	t.Run("a provider that keeps failing", func(t *testing.T) {

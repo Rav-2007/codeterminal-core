@@ -860,13 +860,37 @@ Per-turn budgets, all configurable, shown here at their defaults:
 
 ```jsonc
 "budget": {
-  "max_iterations": 8,             // model calls per turn
+  "max_iterations": 8,             // model calls per turn, the closing answer included
+  "max_turn_tokens": 600000,       // billed tokens per turn, prompt + completion
   "turn_timeout_seconds": 600,     // MACHINE time; your thinking time is added back
   "max_tool_result_bytes": 32768,  // per result, after scrubbing
   "max_total_tool_bytes": 131072,  // per turn, after scrubbing (models.agent.json ships 524288)
   "max_advertised_tools": 12       // cap on the menu the model sees
 }
 ```
+
+A turn that reaches a ceiling ends with one last call that answers from what was
+read, and that call is counted inside the ceiling: `max_iterations: 8` is eight
+model calls, not nine. Two things end a turn before any ceiling, because a model
+that is getting nowhere should not be paid to reach one:
+
+- **The same call three times with the same result**, and
+- **five look-ups or edits in a row that brought nothing new** — files that are not
+  there, searches with no match, edits that did not apply, content already read
+  under another name. The third of them carries a note saying so.
+
+And two things keep a turn from wandering in the first place. A `read_file` or
+`list_directory` of a path that does not exist answers for the **whole project** —
+the same name elsewhere, the closest names, or "no file of that name exists (N
+files checked)" — so the model need not try the next path to find out. And
+`grep`, the exact-text search, is offered in every turn that has room for it,
+where it used to be a long-task tool: "where is X defined" no longer becomes
+reading files one by one. Search by meaning (`search_code`) is offered only when
+the project has an index for it to search.
+
+A message that is only a greeting, a thank-you or a goodbye is answered without
+tools, history or the long system prompt: a request under 1.5 KB where it was
+17.5 KB.
 
 Every decision — including `allow` calls you were never prompted about — is
 appended to `.mochiii/logs/toolcalls.jsonl` (local, `0600`, rotated at

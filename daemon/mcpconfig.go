@@ -390,6 +390,23 @@ type MCPBudgetConfig struct {
 	// turn is unaffected by construction.
 	MaxTurnIterations int `json:"max_turn_iterations,omitempty"`
 
+	// MaxTurnTokens bounds what ONE TURN may bill, in tokens: every model call
+	// of the turn, prompt and completion, as the provider reports them.
+	//
+	// THE OTHER CEILINGS COUNT THE WRONG THING FOR COST. max_iterations counts
+	// calls and max_total_tool_bytes counts what the tools returned, but a turn
+	// is billed for the whole conversation on EVERY call -- the opening, and
+	// every earlier tool result again. MEASURED 2026-10-07: one question, 17
+	// calls, well inside both ceilings, 376,000 tokens. Tokens are the one unit
+	// every provider reports, including the ones that report no price.
+	//
+	// The turn ends the way every limit ends it: one last call that answers
+	// from what was read. Room for that call is kept back, so the ceiling is
+	// the most the turn bills and not the most it bills before the last call.
+	// Unset is defaultMaxTurnTokens. A long task is not bounded by this: its
+	// run has a budget of its own (task).
+	MaxTurnTokens int `json:"max_turn_tokens,omitempty"`
+
 	// MaxMessageBytes bounds ONE JSON-RPC message read from a Lane B server.
 	//
 	// The odd one out: every other field here bounds what the daemon SENDS or
@@ -502,6 +519,13 @@ const (
 	maxMaxTotalToolBytes      = 4 * 1024 * 1024
 	defaultMaxAdvertisedTools = 12
 	maxMaxAdvertisedTools     = 64
+	// Well above an honest turn at the shipped agent budget -- sixteen steps
+	// that each read something add up to roughly 350,000 -- and well below
+	// what the same sixteen steps cost when every one drags a full tool budget
+	// behind it (over a million). It is there for the turn that has gone wrong,
+	// not to ration one that is working.
+	defaultMaxTurnTokens = 600_000
+	maxMaxTurnTokens     = 50_000_000
 
 	// The ceiling, not the default: mcp.DefaultMaxMessageBytes owns that, next
 	// to the measurement that justifies it. 32 MiB is high enough that no
@@ -556,6 +580,13 @@ func (b MCPBudgetConfig) resolvedMaxTurnIterations() int {
 		return perPhase
 	}
 	return turn
+}
+
+func (b MCPBudgetConfig) resolvedMaxTurnTokens() int {
+	if b.MaxTurnTokens <= 0 {
+		return defaultMaxTurnTokens
+	}
+	return b.MaxTurnTokens
 }
 
 func (b MCPBudgetConfig) resolvedMaxIterations() int {
@@ -753,6 +784,7 @@ func (c *Config) clampMCPRanges() {
 	clamp("max_total_tool_bytes", &b.MaxTotalToolBytes, maxMaxTotalToolBytes)
 	clamp("max_advertised_tools", &b.MaxAdvertisedTools, maxMaxAdvertisedTools)
 	clamp("max_turn_iterations", &b.MaxTurnIterations, maxMaxTurnIterations)
+	clamp("max_turn_tokens", &b.MaxTurnTokens, maxMaxTurnTokens)
 	clamp("max_message_bytes", &b.MaxMessageBytes, maxMaxMessageBytes)
 	clamp("connect_timeout_seconds", &b.ConnectTimeoutSeconds, maxConnectTimeoutSeconds)
 	if t := b.Task; t != nil {

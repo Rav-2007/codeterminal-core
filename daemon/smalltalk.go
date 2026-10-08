@@ -155,3 +155,87 @@ func isAboutAssistant(prompt string) bool {
 	}
 	return addressed
 }
+
+// A GREETING IS NOT A TASK, AND IS NOT BILLED AS ONE.
+//
+// MEASURED 2026-10-08, on the build this was written against: "hi" in agent
+// mode went to the model as 17.5 KB -- the whole system prompt, the reach
+// section and eleven tool definitions, about 4,400 tokens -- plus every earlier
+// message of the conversation, to be answered "Hello!". "thanks" at the end of
+// a long session cost the whole session again to say "You're welcome."
+//
+// isSmallTalk above already keeps code from being attached to such a message.
+// This is the narrower question of whether it needs the AGENT at all, and it is
+// narrower on purpose, because the cost of being wrong is different. A message
+// wrongly spared retrieval loses some context; a message wrongly spared the
+// tools cannot be acted on. So:
+//
+//   - "yes", "ok", "sure", "no", "again" are small talk to isSmallTalk and are
+//     NOT greetings here. They are answers to something the assistant asked --
+//     "shall I apply it?" -- and the turn that follows may have to edit a file.
+//   - A bare "how" or "you" is a follow-up, not a greeting. A message must hold
+//     a word that makes it one (hi, thanks, bye, ...), or be one of a few whole
+//     phrases, and nothing else but filler.
+//
+// What qualifies is answered by a one-line system message with no tools and no
+// history: nothing a greeting's reply depends on is in either.
+
+// greetingAnchors are the words that make a message a greeting, a thank-you or
+// a goodbye.
+var greetingAnchors = map[string]bool{
+	"hi": true, "hello": true, "hey": true, "heya": true, "hiya": true, "yo": true, "howdy": true,
+	"sup": true, "gm": true, "gn": true, "morning": true, "afternoon": true, "evening": true,
+	"thanks": true, "thank": true, "thx": true, "ty": true,
+	"bye": true, "goodbye": true, "cya": true,
+}
+
+// greetingFillers may stand beside an anchor and are nothing on their own.
+var greetingFillers = map[string]bool{
+	"there": true, "mochiii": true, "good": true, "you": true, "u": true, "so": true, "much": true,
+	"a": true, "lot": true, "very": true, "again": true, "night": true, "all": true,
+}
+
+// greetingPhrases are greetings with no anchor word in them.
+var greetingPhrases = map[string]bool{
+	"how are you": true, "how are u": true, "how are you doing": true,
+	"whats up": true, "what's up": true, "good night": true, "see you": true, "see you later": true,
+}
+
+// isGreetingOnly reports a message that is a greeting, a thank-you or a goodbye
+// and nothing else -- one that can be answered without tools or history.
+func isGreetingOnly(prompt string) bool {
+	words := strings.FieldsFunc(strings.ToLower(prompt), func(r rune) bool {
+		return !(unicode.IsLetter(r) || r == '\'')
+	})
+	if len(words) == 0 || len(words) > 6 {
+		return false
+	}
+	// A word as written, or with a stretched letter folded ("heyyy"). Both,
+	// because the product's own name is spelt with three of one letter.
+	folded := make([]string, len(words))
+	for i, w := range words {
+		folded[i] = foldStretched(w)
+	}
+	if greetingPhrases[strings.Join(words, " ")] || greetingPhrases[strings.Join(folded, " ")] {
+		return true
+	}
+	anchored := false
+	for i, w := range words {
+		switch {
+		case greetingAnchors[w] || greetingAnchors[folded[i]]:
+			anchored = true
+		case !greetingFillers[w] && !greetingFillers[folded[i]]:
+			return false
+		}
+	}
+	return anchored
+}
+
+// greetingSystemPrompt is the whole system message of a greeting's turn.
+// maxEmptyGreetingReplies is how many times a greeting is sent before an empty
+// reply is reported: the agent loop's own count for the same fault.
+const maxEmptyGreetingReplies = 3
+
+const greetingSystemPrompt = "You are Mochiii, an AI coding assistant working on the user's machine. " +
+	"The user has sent a greeting, a thank-you or a goodbye, not a task. Reply in one short, friendly " +
+	"sentence. Do not list what you can do unless you are asked."

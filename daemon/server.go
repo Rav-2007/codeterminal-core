@@ -794,7 +794,10 @@ func (s *Server) serveConn(conn net.Conn) {
 	// loop must append to one across iterations rather than have it rebuilt from
 	// (systemPrompt, history, prompt) on every call. This single-turn path
 	// builds exactly the list it always did.
-	systemPrompt := planModeSystemPrompt(s.systemPrompt, promptReq.Mode)
+	// Without the rules about things this request does not hold (promptrules.go).
+	systemPrompt := systemPromptForTurn(s.systemPrompt,
+		holdsRetrievedContext(historyOutcome.Messages, augmentedPrompt), s.hasThirdPartyServer())
+	systemPrompt = planModeSystemPrompt(systemPrompt, promptReq.Mode)
 	if spec != nil {
 		systemPrompt += "\n\n" + specAnchor(spec)
 	}
@@ -824,7 +827,18 @@ func (s *Server) serveConn(conn net.Conn) {
 	// approval. A client that did not gets the single-turn path below,
 	// byte-identical to what it got before agent mode existed -- which is what
 	// makes shipping the loop safe before every client can render it.
-	if s.agentModeEngaged(hsReq) {
+	//
+	// A GREETING IS ANSWERED AS ONE (smalltalk.go): a line of system message, no
+	// tools, no history -- in agent mode and out of it. Only an ordinary turn:
+	// a mode, a spec, a task or a pipeline is something the user set up to do
+	// work, and a file the message points at is something to read.
+	greeting := promptReq.Mode == "" && spec == nil && task == nil && len(promptReq.Pipeline) == 0 &&
+		len(outcome.Chunks) == 0 && isGreetingOnly(cleanPrompt)
+	if greeting {
+		messages = buildChatMessages(greetingSystemPrompt, nil, cleanPrompt)
+		s.logger.Printf("a greeting (%d bytes): answered without tools, history or the full system prompt", len(cleanPrompt))
+	}
+	if s.agentModeEngaged(hsReq) && !greeting {
 		// dec and lc go with enc because agent mode is the one path that reads
 		// from the client AFTER its request: an approval answer comes back on
 		// this same connection, needs this same decoder, and needs lc to widen
@@ -843,42 +857,60 @@ func (s *Server) serveConn(conn net.Conn) {
 	// No tools on this path. Agent mode has its own entry point; passing nil
 	// here is what keeps the request body byte-identical to the pre-tools one.
 	apiKey, apiBase := s.credentials()
-	_, err := streamWithRetry(ctx, apiBase, apiKey, decision.Slug, messages, nil, routing,
-		func(token string) error {
-			full.WriteString(token)
-			return tw.write(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Token: token})
-		},
-		func(provider string) {
-			s.logger.Printf("model API served by provider=%q (zdr=%t data_collection=%s allow_fallbacks=%t)", provider, routing.ZDR, routing.DataCollection, routing.AllowFallbacks)
-			// Surface the same already-observed value to the client on its own
-			// message (E1). It rides here rather than on the pre-token Grounding
-			// message because the provider is not known until the response
-			// stream starts — onProvider fires at most once, at or before the
-			// first token. A write error is not returned, exactly like the
-			// reasoning callback below: this is optional observability. Never
-			// carries a fallback-vs-primary claim or a ZDR verdict — just
-			// "served by X".
-			_ = tw.write(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Provider: provider})
-		},
-		// Reasoning tokens go out on their own field, NEVER into `full` (Fix 14).
-		// `full` is what gets parsed for SEARCH/REPLACE blocks and written to
-		// conversation memory, so folding thinking into it would let a model's
-		// musings about an edit be mistaken for the edit, and would persist
-		// commentary as if it were the answer. A write error here is not
-		// returned, but it still stops the turn: tw.write cancels the context,
-		// and a model that is only thinking writes nothing else to fail.
-		func(reasoning string) {
-			reasoningBytes += len(reasoning)
-			_ = tw.write(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Reasoning: reasoning})
-		},
-		// onFinish: record the terminal finish_reason so the final Done message can
-		// flag a cut-off answer (M1). Fires at most once, on success only; a plain
-		// assignment, no wire write of its own -- the signal rides the Done message.
-		func(reason string) {
-			finishReason = reason
-		},
-		s.logger,
-	)
+	ask := func() error {
+		_, err := streamWithRetry(ctx, apiBase, apiKey, decision.Slug, messages, nil, routing,
+			func(token string) error {
+				full.WriteString(token)
+				return tw.write(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Token: token})
+			},
+			func(provider string) {
+				s.logger.Printf("model API served by provider=%q (zdr=%t data_collection=%s allow_fallbacks=%t)", provider, routing.ZDR, routing.DataCollection, routing.AllowFallbacks)
+				// Surface the same already-observed value to the client on its own
+				// message (E1). It rides here rather than on the pre-token Grounding
+				// message because the provider is not known until the response
+				// stream starts — onProvider fires at most once, at or before the
+				// first token. A write error is not returned, exactly like the
+				// reasoning callback below: this is optional observability. Never
+				// carries a fallback-vs-primary claim or a ZDR verdict — just
+				// "served by X".
+				_ = tw.write(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Provider: provider})
+			},
+			// Reasoning tokens go out on their own field, NEVER into `full` (Fix 14).
+			// `full` is what gets parsed for SEARCH/REPLACE blocks and written to
+			// conversation memory, so folding thinking into it would let a model's
+			// musings about an edit be mistaken for the edit, and would persist
+			// commentary as if it were the answer. A write error here is not
+			// returned, but it still stops the turn: tw.write cancels the context,
+			// and a model that is only thinking writes nothing else to fail.
+			func(reasoning string) {
+				reasoningBytes += len(reasoning)
+				_ = tw.write(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Reasoning: reasoning})
+			},
+			// onFinish: record the terminal finish_reason so the final Done message can
+			// flag a cut-off answer (M1). Fires at most once, on success only; a plain
+			// assignment, no wire write of its own -- the signal rides the Done message.
+			func(reason string) {
+				finishReason = reason
+			},
+			s.logger,
+		)
+		return err
+	}
+	err := ask()
+	// AN EMPTY REPLY IS NOT AN ANSWER, ON THIS PATH EITHER -- for the one kind
+	// of turn it took over from the agent loop. A greeting used to run in the
+	// loop, which asks again when a provider sends back no text (measured: twice
+	// in sixteen trials, agentloop.go), and moving it here took that away: FOUND
+	// 2026-10-08 by the end-to-end suite, "hello" answered with nothing at all.
+	// Asked again up to the loop's own three times, then reported below, never
+	// passed off as an answer. Every other turn on this path is as it was.
+	emptyGreeting := func() bool {
+		return greeting && err == nil && full.Len() == 0 && finishReason != protocol.IncompleteLength
+	}
+	for again := 2; emptyGreeting() && again <= maxEmptyGreetingReplies; again++ {
+		s.logger.Printf("a greeting was answered with an empty reply; asking again (%d of %d)", again, maxEmptyGreetingReplies)
+		err = ask()
+	}
 	if reasoningBytes > 0 {
 		s.logger.Printf("model API: streamed %d byte(s) of reasoning alongside the answer", reasoningBytes)
 	}
@@ -922,6 +954,13 @@ func (s *Server) serveConn(conn net.Conn) {
 	incomplete := incompleteInfoFor(finishReason)
 	if incomplete != nil {
 		s.logger.Printf("stream ended early: finish_reason=%q (answer cut off)", finishReason)
+	}
+	if emptyGreeting() {
+		s.logger.Printf("a greeting was answered with an empty reply %d times in a row", maxEmptyGreetingReplies)
+		incomplete = &protocol.IncompleteInfo{
+			Reason: protocol.IncompleteProviderError,
+			Detail: "the model sent back an empty answer three times in a row. Ask again, or pick another model with /model.",
+		}
 	}
 	_ = s.sendDone(enc, protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Done: true, EditProposals: editProposalsFromBlocks(blocks), EditRejections: rejections, Incomplete: incomplete,
 		Usage: tally.report(decision.Slug, s.contextWindowFor(decision.Slug))})

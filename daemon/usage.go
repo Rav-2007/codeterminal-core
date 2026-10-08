@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strconv"
+	"strings"
 	"sync"
 
 	"mochiii/protocol"
@@ -128,6 +130,43 @@ func (t *usageTally) spent() (calls int, usd float64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.u.Calls, t.u.CostUSD
+}
+
+// tokens is what the turn has billed so far, in tokens, and the size of the
+// last request it sent -- which is the least the next one will cost, since a
+// turn's conversation only grows. Zero for a provider that reports no usage:
+// a ceiling in tokens cannot bind there, and the ceiling in calls still does.
+func (t *usageTally) tokens() (total, lastPrompt int) {
+	if t == nil {
+		return 0, 0
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.u.PromptTokens + t.u.CompletionTokens, t.u.ContextTokens
+}
+
+// tokensSpent reports whether a turn that has billed total tokens, and whose
+// last request was lastPrompt of them, is out of room under ceiling: room for
+// one more step AND for the wrap-up call that ends a stopped turn, each of
+// which re-sends at least what the last request sent. Keeping both back is
+// what makes the ceiling the most a turn bills, where stopping at "already
+// over" would make it the most a turn bills before two more calls.
+func tokensSpent(total, lastPrompt, ceiling int) bool {
+	return ceiling > 0 && total > 0 && total+2*lastPrompt > ceiling
+}
+
+// groupThousands writes n the way a person reads a large count: 376,000.
+func groupThousands(n int) string {
+	s := strconv.Itoa(n)
+	neg := strings.HasPrefix(s, "-")
+	s = strings.TrimPrefix(s, "-")
+	for i := len(s) - 3; i > 0; i -= 3 {
+		s = s[:i] + "," + s[i:]
+	}
+	if neg {
+		return "-" + s
+	}
+	return s
 }
 
 // report is the turn's usage for its final message, or nil when no call

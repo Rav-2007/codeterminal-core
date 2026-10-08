@@ -213,6 +213,11 @@ func neutralizeMatch(match string) string {
 // retrievalOutcome records what happened when the live path tried to gather
 // context for a prompt, for logging and for deciding what (if anything) to
 // inject into the model request.
+// noRelevantChunksReason is the Reason of a search that RAN and found nothing,
+// as against one that could not run. search_code tells the two apart by it: the
+// first is an answer, the second an error.
+const noRelevantChunksReason = "no relevant chunks found in index"
+
 type retrievalOutcome struct {
 	Skipped   bool
 	Reason    string // set only when Skipped
@@ -310,7 +315,7 @@ func (s *Server) gatherContext(ctx context.Context, prompt string) retrievalOutc
 		// Prefer the specific cause when there is one. "No relevant chunks found
 		// in index" is a lie to a user who has no index.
 		if reason == "" {
-			reason = "no relevant chunks found in index"
+			reason = noRelevantChunksReason
 		}
 		return retrievalOutcome{Skipped: true, Reason: reason}
 	}
