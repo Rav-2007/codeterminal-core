@@ -54,6 +54,7 @@ So: at a checkpoint, or after any run that moved a number, paste the line.
 | 2026-10-04 | `616f2e5` | branch | 7812 | 1072 | 26/49 | 31/49 | **0** | 37/49 | `09bd7edc83663b75` | green by 0.25 — run `37199612908`. Two chunks changed since `f6dd912` (helper test code) and it fell 39 -> 37, so runner variance is part of it; across the day CI went 41 -> 39 -> 37 as this campaign's suites grew the corpus. New misses against `849aaa1`: q11, q19, q22, q36. The headroom of 2026-10-03 is gone again; held-out 21 / **24/28** |
 | 2026-10-08 | `1a184fb` | local (i5, 16 threads) | 8176 | 1094 | 26/49 | 32/49 | **0** | 39/49 | `f625c5cc7bbe08cb` | green — the baseline for the helper change (below), a git export of the commit; held-out 21 / **24/28** |
 | 2026-10-08 | `1a184fb` + helper | local | 8176 | 1094 | 28/49 | 32/49 | **0** | 39/49 | `f7abdf718f953ff7` | green — the same export, embedded one text per inference (below); held-out 21 / **24/28** |
+| 2026-10-08 | `4e8a399` | branch | 8324 | 1109 | 27/49 | 30/49 | **0** | 38/49 | `f27620be3ed83758` | green — run `37779883135`, the first CI run on the one-text-per-inference helper, over a corpus that day's own code grew by 148 chunks; **retrieved is 0.1 above its floor**; held-out 22 / **24/28** |
 
 Floors in force across every row: DELIVERED ≥ 75% (36.75/49), RETRIEVED ≥ 61%
 (29.9/49), budgeted out ≤ 4.
