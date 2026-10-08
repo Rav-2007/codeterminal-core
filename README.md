@@ -985,6 +985,24 @@ History sent to the model is re-validated and capped server-side: `user` and
 `assistant` roles only, oldest first, inserted between the system message and the
 final prompt. Retrieved context always lands in the final user message.
 
+**The chat is shared by every client of the workspace.** One daemon serves the
+terminal client and the VS Code panel alike, so both write to the same
+conversation, and each keeps up with what the other added:
+
+- The handshake carries a `chat_revision` alongside the hydrated turns. It is
+  opaque to clients, which compare it and send it back.
+- `{"chats":true,"action":"current","since":<revision>}` returns what the chat
+  gained since that revision (`append: true`), or the whole chat after a new
+  chat, a resume or a compact.
+- The terminal asks when it gets focus and before it sends a question. The
+  panel asks when it gets focus, or becomes visible again.
+- A prompt carries the revision its history was built from. If the chat has
+  moved on since, the daemon answers from the stored chat rather than from what
+  the client sent, so the model never continues a conversation it was shown half
+  of.
+- A turn's final message says where the chat now stands, and whether another
+  client wrote to it while the turn ran.
+
 ### Embedding helper
 
 `BAAI/bge-small-en-v1.5`, int8-quantised ONNX, 384 dimensions, run through
