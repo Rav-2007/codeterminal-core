@@ -106,6 +106,15 @@ export interface HandshakeResponse {
    * live there. Read fresh on every handshake.
    */
   needs_api_key?: boolean;
+  /**
+   * The revision of the workspace's shared chat that persisted_history is
+   * (protocol.HandshakeResponse.ChatRevision). The chat is one conversation per
+   * workspace, written by this panel and the terminal client alike; the
+   * revision is how each keeps up with what the other added. Opaque: compare
+   * and send back, never parse. Absent from a daemon with no memory or one
+   * older than revisions -- then nothing here keeps up, as before.
+   */
+  chat_revision?: string;
 }
 
 /** protocol.ConnectRequest. The key crosses the local, peer-authenticated socket and nothing else. */
@@ -173,6 +182,12 @@ export interface PromptRequest {
    * some models (qwen3 on Groq, measured) is no reasoning at all.
    */
   reasoning_effort?: string;
+  /**
+   * The shared chat's revision `history` was built from
+   * (protocol.PromptRequest.ChatRevision). When the chat has moved on since, the
+   * daemon answers from the stored chat instead of `history`.
+   */
+  chat_revision?: string;
 }
 
 // WorkingCopyInfo mirrors protocol.WorkingCopyInfo: what the agent last ran
@@ -260,6 +275,12 @@ export interface TokenResponse {
   token?: string;
   done: boolean;
   error?: string;
+  // chat_revision and chat_behind ride the final done message of a turn
+  // (protocol.TokenResponse.ChatRevision/ChatBehind): where the shared chat
+  // stands now that the turn is saved in it, and whether another client wrote
+  // to it first -- in which case this panel no longer shows the chat as it is.
+  chat_revision?: string;
+  chat_behind?: boolean;
   grounding?: GroundingInfo;
   // history mirrors protocol.TokenResponse.History (HistoryInfo): what the
   // daemon did with the conversation turns this client sent. Rides on the same
@@ -910,6 +931,9 @@ export interface StreamHandlers {
   // CAP_TOOL_APPROVAL at handshake -- the promise and the ability to keep it
   // are the same fact, so they cannot drift apart.
   onToolApproval?: (req: ToolApprovalRequest, respond: (decision: string) => void) => void;
+  // onChatRevision fires just before onDone with where the shared chat stands
+  // after this turn (TokenResponse.chat_revision/chat_behind).
+  onChatRevision?: (revision: string, behind: boolean) => void;
   onDone?: () => void;
   onError?: (err: Error) => void;
 }
@@ -935,6 +959,7 @@ export async function streamPrompt(
     spec?: string;
     specGrants?: string[];
     reasoningEffort?: string;
+    chatRevision?: string;
   }
 ): Promise<void> {
   // The capability is derived from the handler, not passed in: a caller that
@@ -1027,6 +1052,9 @@ export async function streamPrompt(
       if (tok.edit_proposals && tok.edit_proposals.length > 0) {
         handlers.onEditProposals?.(tok.edit_proposals);
       }
+      if (tok.chat_revision) {
+        handlers.onChatRevision?.(tok.chat_revision, tok.chat_behind === true);
+      }
       handlers.onDone?.();
       socket.destroy();
     }
@@ -1082,6 +1110,9 @@ export async function streamPrompt(
   }
   if (opts?.reasoningEffort) {
     req.reasoning_effort = opts.reasoningEffort;
+  }
+  if (opts?.chatRevision) {
+    req.chat_revision = opts.chatRevision;
   }
   writeLine(socket, req);
 }
@@ -1368,9 +1399,13 @@ export interface ChatHistoryResponse {
   pruned?: number;
   compacted?: number;
   error?: string;
+  /** The shared chat's revision after resume, compact or current. */
+  chat_revision?: string;
+  /** current only: turns continue the chat the client shows, rather than replace it. */
+  append?: boolean;
 }
 
-export type ChatHistoryAction = 'list' | 'save' | 'show' | 'resume' | 'delete' | 'bookmark' | 'unbookmark' | 'compact';
+export type ChatHistoryAction = 'list' | 'save' | 'show' | 'resume' | 'delete' | 'bookmark' | 'unbookmark' | 'compact' | 'current';
 
 // chatHistory sends one protocol.HistoryRequest (discriminated by "chats") and
 // returns the reply. The daemon's chat archive is shared with the terminal
@@ -1379,7 +1414,8 @@ export async function chatHistory(
   clientName: string,
   action: ChatHistoryAction,
   // tier: the model the panel has chosen, so compact's summary is written by it.
-  opts: { id?: string; query?: string; spec?: string; name?: string; tier?: string } = {},
+  // since: current's starting point, the chat_revision the panel already shows.
+  opts: { id?: string; query?: string; spec?: string; name?: string; tier?: string; since?: string } = {},
 ): Promise<ChatHistoryResponse> {
   const { socket } = await connectToDaemon(clientName);
   return new Promise((resolve, reject) => {
@@ -1411,20 +1447,21 @@ export async function chatHistory(
 // resetChat starts a new chat on the daemon side -- PromptRequest.reset, the
 // server half of the terminal's ctrl+n. VS Code's "+" used to clear only the
 // panel, so the daemon kept appending to one endless chat and the next window
-// rehydrated all of it.
-export async function resetChat(clientName: string): Promise<void> {
+// rehydrated all of it. Resolves with the new chat's revision ('' from a daemon
+// that keeps none).
+export async function resetChat(clientName: string): Promise<string> {
   const { socket } = await connectToDaemon(clientName);
-  await new Promise<void>((resolve, reject) => {
+  return new Promise<string>((resolve, reject) => {
     let settled = false;
     const decoder = new LineDecoder((obj) => {
-      const t = obj as { done?: boolean; error?: string };
+      const t = obj as { done?: boolean; error?: string; chat_revision?: string };
       if (!settled && (t.done || t.error)) {
         settled = true;
         socket.destroy();
         if (t.error) {
           reject(new Error(t.error));
         } else {
-          resolve();
+          resolve(t.chat_revision ?? '');
         }
       }
     });
@@ -1438,7 +1475,7 @@ export async function resetChat(clientName: string): Promise<void> {
     socket.once('close', () => {
       if (!settled) {
         settled = true;
-        resolve();
+        resolve('');
       }
     });
     writeLine(socket, { protocol_version: PROTOCOL_VERSION, prompt: '', reset: true });
@@ -1485,10 +1522,16 @@ export async function sendConnect(
 // preflightSession is preflightHandshake plus the daemon's needs_api_key, which
 // the panel uses to ask for a key when the first question is sent rather than
 // letting that question fail.
-export async function preflightSession(clientName: string): Promise<{ turns: Turn[]; needsApiKey: boolean }> {
+export async function preflightSession(
+  clientName: string,
+): Promise<{ turns: Turn[]; needsApiKey: boolean; chatRevision: string }> {
   const { socket, handshake } = await connectToDaemon(clientName);
   socket.destroy();
-  return { turns: handshake.persisted_history ?? [], needsApiKey: handshake.needs_api_key === true };
+  return {
+    turns: handshake.persisted_history ?? [],
+    needsApiKey: handshake.needs_api_key === true,
+    chatRevision: handshake.chat_revision ?? '',
+  };
 }
 
 export async function preflightHandshake(clientName: string): Promise<Turn[]> {

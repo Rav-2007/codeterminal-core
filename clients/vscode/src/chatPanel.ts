@@ -16,6 +16,7 @@ import {
   APPROVAL_APPROVE_FOR_SPEC,
   APPROVAL_DENY,
   RESTART_HINT,
+  ChatHistoryResponse,
   Degradation,
   EditBlockWire,
   EditRejectionWire,
@@ -108,6 +109,21 @@ export class ChatPanel {
   private currentModel = '';
   // The daemon's handshake said a prompt sent now would carry no key.
   private needsApiKey = false;
+
+  // THE SHARED CHAT (daemon/chatsync.go). The workspace's chat is ONE
+  // conversation, and the terminal client writes to it too; this panel used to
+  // read it once, when it opened, so a question asked in the terminal never
+  // reached this panel -- nor the history it sent next (FOUND 2026-10-08).
+  // chatSync: the daemon keeps one (it gave a revision). chatRev: the revision
+  // on screen, '' when not known, which the next catch-up answers by fetching
+  // the chat whole. chatQuiet: that whole fetch says nothing, because the
+  // change is this panel's own. resetPending: a "+" is on its way to the
+  // daemon, and fetching meanwhile could bring the old chat back.
+  private chatSync = false;
+  private chatRev = '';
+  private chatQuiet = false;
+  private resetPending = false;
+  private catchUpInFlight = false;
   // lastGrounding is the most recent GroundingInfo for /context.
   private lastGrounding: GroundingInfo | undefined;
 
@@ -204,6 +220,29 @@ export class ChatPanel {
 
     this.panel.webview.onDidReceiveMessage((msg) => this.handleMessage(msg), null, this.disposables);
     this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
+    // Coming back to this panel -- from the terminal, another editor tab,
+    // another app -- is when the other client may have added to the shared
+    // chat. The webview reports its own focus too ('focused'), which covers
+    // clicking in from VS Code's integrated terminal: neither event below fires
+    // for that.
+    this.panel.onDidChangeViewState(
+      (e) => {
+        if (e.webviewPanel.visible) {
+          void this.catchUp();
+        }
+      },
+      null,
+      this.disposables,
+    );
+    vscode.window.onDidChangeWindowState(
+      (state) => {
+        if (state.focused && this.panel.visible) {
+          void this.catchUp();
+        }
+      },
+      null,
+      this.disposables,
+    );
 
     this.runPreflight();
   }
@@ -216,6 +255,8 @@ export class ChatPanel {
     try {
       const session = await preflightSession(CLIENT_NAME);
       this.needsApiKey = session.needsApiKey;
+      this.chatSync = session.chatRevision !== '';
+      this.chatRev = session.chatRevision;
       const persisted = turnsFromWire(session.turns);
       this.transcript = persisted;
       this.panel.webview.postMessage({ type: 'history', turns: persisted });
@@ -293,6 +334,8 @@ export class ChatPanel {
       this.reasoningEffort = e === 'low' || e === 'medium' || e === 'high' ? e : '';
     } else if (msg.type === 'toolApprovalDecision' && typeof msg.decision === 'string') {
       this.onToolApprovalDecision(msg.callId, msg.decision);
+    } else if (msg.type === 'focused') {
+      void this.catchUp();
     } else if (msg.type === 'prompt' && typeof msg.text === 'string') {
       this.onPrompt(msg.text, msg.autoApply === true, msg.mode);
     } else if (msg.type === 'applyEdit') {
@@ -386,10 +429,18 @@ export class ChatPanel {
     this.clearPendingApproval();
     this.clearPendingReview();
     const saved = this.autoSave() ? await this.saveCurrentChat() : false;
+    this.resetPending = true;
     try {
-      await resetChat(CLIENT_NAME);
+      // Level with the new, empty chat at once.
+      this.chatRev = await resetChat(CLIENT_NAME);
+      this.chatQuiet = false;
     } catch {
       // No daemon: the panel is cleared anyway; the next handshake starts fresh.
+      // Where the chat stands is then unknown, and finding out is not news.
+      this.chatRev = '';
+      this.chatQuiet = true;
+    } finally {
+      this.resetPending = false;
     }
     this.transcript = [];
     this.lastGrounding = undefined;
@@ -721,6 +772,10 @@ export class ChatPanel {
     let incompleteReason = '';
 
     const activeSpec = getActiveSpec(workspacePath());
+    // The shared chat's revision this history was built from. Sent so the
+    // daemon can answer from the stored chat if the terminal has added to it
+    // since; '' when not known, which the daemon reads as "use what was sent".
+    const sentRev = this.chatSync ? this.chatRev : '';
     streamPrompt(
       CLIENT_NAME,
       wirePrompt,
@@ -802,6 +857,12 @@ export class ChatPanel {
             request: specGrant ? req : { ...req, spec_grant: undefined },
           });
         },
+        // Level with the stored chat only if nobody else wrote to it first and
+        // this turn was sent knowing where it stood; otherwise the chat is
+        // fetched whole once the turn is over (onDone).
+        onChatRevision: (revision: string, behind: boolean) => {
+          this.chatRev = behind || !sentRev ? '' : revision;
+        },
         onDone: () => {
           this.transcript.push(
             incompleteReason
@@ -811,6 +872,10 @@ export class ChatPanel {
           this.inFlight = undefined;
           this.clearPendingApproval();
           this.panel.webview.postMessage({ type: 'done' });
+          if (this.chatSync && this.chatRev === '') {
+            // Not under a review: catchUp waits for one to finish (canCatchUp).
+            void this.catchUp();
+          }
         },
         onError: (err: Error) => {
           // A stream that fails PARTWAY has already shown the user real text.
@@ -845,6 +910,7 @@ export class ChatPanel {
         spec: activeSpec || undefined,
         specGrants: this.specGrants.digestsFor(activeSpec),
         reasoningEffort: this.reasoningEffort || undefined,
+        chatRevision: sentRev || undefined,
       }
     );
   }
@@ -1166,6 +1232,79 @@ export class ChatPanel {
     }
   }
 
+  // canCatchUp: the transcript may be changed under the user now -- the daemon
+  // keeps a shared chat, no "+" is on its way to it, and nothing on screen holds
+  // the turn in progress (a stream, a review, an approval).
+  private canCatchUp(): boolean {
+    return (
+      this.chatSync &&
+      !this.resetPending &&
+      !this.catchUpInFlight &&
+      !this.inFlight &&
+      !this.autoApplyRunInFlight &&
+      this.pendingBlocks.length === 0 &&
+      !this.pendingApproval
+    );
+  }
+
+  // catchUp asks the daemon what the shared chat gained since this panel last
+  // looked, and shows it. A failure is not worth interrupting anyone for: the
+  // daemon being away is reported by the next thing that needs it.
+  private async catchUp(): Promise<void> {
+    if (!this.canCatchUp()) {
+      return;
+    }
+    const since = this.chatRev;
+    this.catchUpInFlight = true;
+    let r: ChatHistoryResponse;
+    try {
+      r = await chatHistory(CLIENT_NAME, 'current', { since });
+    } catch {
+      return;
+    } finally {
+      this.catchUpInFlight = false;
+    }
+    // Dropped if the panel moved on while it was asked: an answer to an older
+    // question would undo what happened since.
+    if (r.error || since !== this.chatRev || !this.canCatchUp()) {
+      return;
+    }
+    this.adoptChat(r);
+  }
+
+  // adoptChat applies an answer to 'current': what the chat gained is appended
+  // below what is here, so this panel's own turns stay as they were shown; a
+  // chat that was replaced (a new chat, a resume, a compact in the other
+  // window) is shown whole.
+  private adoptChat(r: ChatHistoryResponse): void {
+    if (!r.chat_revision || r.chat_revision === this.chatRev) {
+      return;
+    }
+    const quiet = this.chatQuiet;
+    this.chatRev = r.chat_revision;
+    this.chatQuiet = false;
+    const turns = turnsFromWire(r.turns);
+    if (r.append) {
+      if (turns.length === 0) {
+        return;
+      }
+      if (!quiet) {
+        const n = turns.length;
+        this.postSafe({ type: 'info', text: `${n} message${n === 1 ? '' : 's'} from another Mochiii window on this workspace` });
+      }
+      this.transcript.push(...turns);
+      this.postSafe({ type: 'history', turns });
+      return;
+    }
+    let note = '';
+    if (!quiet) {
+      note = turns.length === 0 ? 'This chat was cleared in another Mochiii window' : 'This chat was changed in another Mochiii window · showing it as it is now';
+    }
+    this.showTurns(turns, note);
+    // The header star belongs to whichever chat this now is.
+    void this.onHistoryList('');
+  }
+
   private async onHistoryResume(id: string): Promise<void> {
     if (this.inFlight || this.autoApplyRunInFlight) {
       this.postSafe({ type: 'notice', text: 'Wait for the current answer to finish before opening another chat.' });
@@ -1183,6 +1322,9 @@ export class ChatPanel {
       this.clearPendingApproval();
       this.clearPendingReview();
       this.showTurns(turnsFromWire(r.turns), `Opened “${r.entry?.title ?? 'chat'}” from history`);
+      // The resumed chat IS the shared chat now, as of this revision.
+      this.chatRev = r.chat_revision ?? '';
+      this.chatQuiet = false;
       this.postSafe({ type: 'currentBookmark', on: r.entry?.bookmarked === true });
     } catch (err) {
       this.postSafe({ type: 'notice', text: `Could not open that chat: ${(err as Error).message}` });
@@ -1239,6 +1381,8 @@ export class ChatPanel {
         turnsFromWire(r.turns),
         `Conversation compacted · ${r.compacted ?? 0} earlier messages summarised · the full chat is saved in History`,
       );
+      this.chatRev = r.chat_revision ?? '';
+      this.chatQuiet = false;
       this.postSafe({ type: 'currentBookmark', on: false });
       return '';
     } catch (err) {

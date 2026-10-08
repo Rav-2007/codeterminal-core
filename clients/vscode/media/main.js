@@ -2341,6 +2341,11 @@
     refreshContextUsage();
   }
 
+  // Clicking into this panel -- from VS Code's own terminal, where the other
+  // Mochiii client may be running -- is when the shared chat may have moved
+  // on. The extension asks the daemon and appends whatever it gained.
+  window.addEventListener('focus', () => vscode.postMessage({ type: 'focused' }));
+
   window.addEventListener('message', (event) => {
     const msg = event.data;
     switch (msg.type) {
