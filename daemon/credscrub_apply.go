@@ -13,7 +13,7 @@ import (
 // registered, when the matcher is rebuilt, and the four application points.
 
 // credentialValuesLocked returns the distinct secret values the daemon holds in
-// memory or its environment. Caller holds credMu (read or write): it reads
+// memory or its environment, or was handed on stdin at start. Caller holds credMu (read or write): it reads
 // s.apiKey directly rather than through credentials(), which would re-lock.
 //
 // s.apiKey is whatever is in force -- the key `connect` stored, one set live, or
@@ -26,11 +26,11 @@ import (
 // refuses ~/.mochiii/credentials.json (OPEN_ITEMS item 44).
 func (s *Server) credentialValuesLocked() []string {
 	var vals []string
-	for _, v := range []string{
+	for _, v := range append([]string{
 		s.apiKey,
 		os.Getenv("MOCHIII_API_KEY"),
 		os.Getenv("MOCHIII_PROXY_KEY"),
-	} {
+	}, s.launchSecrets...) {
 		if strings.TrimSpace(v) != "" {
 			vals = append(vals, v)
 		}

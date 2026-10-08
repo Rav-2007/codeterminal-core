@@ -63,6 +63,11 @@ type Server struct {
 	// immutable pointer under the lock (currentCredScrubber) and scans lockless.
 	// nil means no credential is held, which the apply helpers treat as a no-op.
 	credScrub *credScrubber
+	// launchSecrets are the credential values handed over on stdin at start
+	// (launchcred.go), registered with credScrub whether or not they are the
+	// key in force: a stdin key that lost to MOCHIII_API_KEY was still in this
+	// process's memory. Set once at construction and never written again.
+	launchSecrets []string
 
 	cfg           *Config
 	modelOverride string // optional testing override; bypasses the router when set

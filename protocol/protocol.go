@@ -1555,9 +1555,12 @@ type ConnectResponse struct {
 	// connected key appears not to have taken effect.
 	InUse bool `json:"in_use"`
 
-	// EnvOverride is set when the environment is what the daemon is using, so a
-	// client can say which key is really in force rather than implying the one
-	// just stored.
+	// EnvOverride is set when a key from the daemon's LAUNCHER is what it is
+	// using -- MOCHIII_API_KEY in its environment, a key it read from stdin at
+	// start (--credentials-from-stdin), or proxy mode -- so a client can say
+	// which key is really in force rather than implying the one just stored.
+	// The name predates the stdin channel and is kept: renaming a wire field
+	// would be a protocol change, and the meaning a client acts on is the same.
 	EnvOverride bool `json:"env_override,omitempty"`
 
 	// Model is the model prompts now go to when the provider's own model list
