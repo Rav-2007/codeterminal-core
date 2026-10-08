@@ -3,7 +3,6 @@ package main
 import (
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 
@@ -99,26 +98,34 @@ func TestCrossEncoderPrefersThePassageThatAnswers(t *testing.T) {
 	}
 }
 
+// A passage's score is the same whatever it was scored beside: one pair goes
+// through the model at a time (see OnnxEmbedder.Embed).
+func TestAPassagesScoreDoesNotDependOnTheOthers(t *testing.T) {
+	ce := realCrossEncoder(t)
+	const query = "how does the client retry a request when the server is unavailable"
+	passages := []string{
+		"def send_with_retry(request, attempts=3):\n    for _ in range(attempts):\n        response = send(request)\n",
+		strings.Repeat("timestamp layout and time zone parsing ", 200),
+		"func main() {}",
+	}
+	together, err := ce.Score(query, passages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, p := range passages {
+		alone, err := ce.Score(query, []string{p})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(alone) != 1 || alone[0] != together[i] {
+			t.Errorf("passage %d scored %v alone and %v beside two others; a score must not depend on its neighbours", i, alone, together[i])
+		}
+	}
+}
+
 // What follows runs without the model, so CI -- which has none -- exercises
 // the rerank path's plumbing and its failures, not only machines that cached
 // the cross-encoder.
-
-func TestPackPairsPadsEachRowToTheLongest(t *testing.T) {
-	toks := []tokenized{
-		{ids: []int{101, 7, 102}, typeIDs: []int{0, 0, 0}, mask: []int{1, 1, 1}},
-		{ids: []int{101, 8, 102, 9, 102}, typeIDs: []int{0, 0, 0, 1, 1}, mask: []int{1, 1, 1, 1, 1}},
-	}
-	ids, mask, types := packPairs(toks, 5)
-	if want := []int64{101, 7, 102, 0, 0, 101, 8, 102, 9, 102}; !slices.Equal(ids, want) {
-		t.Errorf("input ids %v, want %v", ids, want)
-	}
-	if want := []int64{1, 1, 1, 0, 0, 1, 1, 1, 1, 1}; !slices.Equal(mask, want) {
-		t.Errorf("attention mask %v, want %v", mask, want)
-	}
-	if want := []int64{0, 0, 0, 0, 0, 0, 0, 0, 1, 1}; !slices.Equal(types, want) {
-		t.Errorf("token types %v, want %v", types, want)
-	}
-}
 
 func TestScoringNoPassagesNeedsNoModel(t *testing.T) {
 	if s, err := (&CrossEncoder{}).Score("anything", nil); s != nil || err != nil {

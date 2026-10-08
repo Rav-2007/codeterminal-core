@@ -10,7 +10,9 @@
 // Running two of those tests therefore paid for the same 4,700 embeddings
 // twice, for byte-identical vectors: embedding is deterministic given the
 // model and the text, so the second build could not have produced anything the
-// first had not already computed.
+// first had not already computed. (Given the text AND ITS BATCH, until
+// 2026-10-08 -- see TestAChunksVectorDoesNotDependOnItsBatch. The two builds
+// batched alike, so the conclusion held.)
 //
 // This mattered operationally on 2026-08-30, when the scheduled eval job took
 // 37m43s and the cost was initially attributed to a change in

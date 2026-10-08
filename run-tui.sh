@@ -21,8 +21,9 @@
 # The environment wins; this script says which one it found.
 #
 # Stop the daemon it started with:  ./run-tui.sh --stop
-# A daemon left running from an older build is restarted automatically (Linux),
-# so the client and the daemon are always the same version.
+# All three programs are built here: the daemon, the client and the embedder
+# helper. A daemon left running from an older build -- its own, or its helper's
+# -- is restarted automatically (Linux), so what runs is what was just built.
 
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
@@ -54,6 +55,24 @@ mkdir -p "$BIN"
 echo "building…"
 (cd daemon && go build -o "$BIN/mochiii-daemon" .)
 (cd clients/tui && go build -o "$BIN/mochiii" .)
+
+# THE EMBEDDER HELPER IS BUILT TOO, next to the daemon -- the first place the
+# daemon looks for it (daemon/helperpath.go).
+#
+# FOUND 2026-10-08: this script built two of the product's three programs. The
+# third, the helper that computes embeddings, was whatever binary happened to
+# sit in helper/ -- on the machine this was found on, one built seventeen days
+# earlier. So a fix to the helper (that day's: its memory, which had reached
+# 6 GB) was in the source, passed every test, and would never have run here.
+#
+# The helper needs a C compiler (cgo); the daemon and the client do not. Without
+# one this says so and carries on with whatever helper is already there, since
+# everything but local code search works without it.
+readonly HELPER="$BIN/mochiii-embedder-helper"
+if ! (cd helper && go build -o "$HELPER" .) 2>"$BIN/helper-build.log"; then
+	echo "run-tui: could not build the embedder helper (it needs a C compiler); see $BIN/helper-build.log" >&2
+	echo "run-tui: carrying on with the helper that is already there, if there is one" >&2
+fi
 
 # The daemon takes its credential from the environment, or from the one
 # `mochiii-daemon connect` stored. .env is the documented place for the
@@ -102,13 +121,30 @@ ARGS=("$@")
 # Restarting between turns is safe for a client in another terminal: it opens a
 # connection per prompt and finds the new daemon through the lock file. A turn
 # in flight there when this runs would end.
+#
+# AND A DAEMON WHOSE HELPER IS OLDER THAN THIS BUILD, likewise. The daemon starts
+# its helper once and keeps it, so a helper built from older code goes on
+# running under a daemon that has not itself changed. Only the helpers of the
+# daemons this script started are looked at -- never another daemon's.
 stale=()
 for pid in $(pgrep -f "$BIN/mochiii-daemon" || true); do
 	running=$(stat -L -c %i "/proc/$pid/exe" 2>/dev/null) || continue
-	[[ "$running" == "$(stat -c %i "$BIN/mochiii-daemon")" ]] || stale+=("$pid")
+	if [[ "$running" != "$(stat -c %i "$BIN/mochiii-daemon")" ]]; then
+		stale+=("$pid")
+		continue
+	fi
+	[[ -x "$HELPER" ]] || continue
+	for child in $(pgrep -P "$pid" || true); do
+		[[ "$(readlink "/proc/$child/exe" 2>/dev/null)" == *mochiii-embedder-helper* ]] || continue
+		helper_running=$(stat -L -c %i "/proc/$child/exe" 2>/dev/null) || continue
+		if [[ "$helper_running" != "$(stat -c %i "$HELPER")" ]]; then
+			stale+=("$pid")
+			break
+		fi
+	done
 done
 if (( ${#stale[@]} )); then
-	echo "restarting the daemon: it is running an older build than the one just made"
+	echo "restarting the daemon: it, or its embedder helper, is running an older build than the one just made"
 	kill "${stale[@]}" 2>/dev/null || true
 	for _ in $(seq 1 50); do
 		alive=()

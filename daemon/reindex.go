@@ -84,6 +84,10 @@ func (s *Server) reindexFile(ctx context.Context, realRoot, relPath string) erro
 		return drop()
 	}
 
+	// Every chunk of the file in ONE request, which is safe only because the
+	// helper embeds a request one text at a time (OnnxEmbedder.Embed). When it
+	// packed a request into one tensor, this line was a 109-chunk inference on
+	// every save of clients/tui/chat.go: 4.3 GB, kept. MEASURED 2026-10-08.
 	vecs, err := s.embedder.Embed(ctx, embedTextsFor(chunks))
 	if err != nil {
 		return fmt.Errorf("re-embedding %s: %w", relPath, err)

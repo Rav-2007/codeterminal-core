@@ -6,7 +6,9 @@
 // dials, encodes exactly one Request, reads exactly one Response, and
 // closes the connection — there is no persistent multiplexed session, which
 // keeps both sides simple since embedding calls are already batched
-// (Request.Texts is a slice).
+// (Request.Texts is a slice). A batch is a batch ON THE WIRE only: the helper
+// embeds its texts one at a time, so how many arrive together changes neither
+// the helper's memory nor any vector.
 //
 // This package must never depend on anything that could grow a CGO build
 // tag: the daemon imports it directly, and the daemon must stay pure Go
@@ -73,8 +75,10 @@ const (
 //
 // The price is paid at INDEX time only: 37ms -> 94ms per chunk (2.54x, measured
 // on this machine over real chunks at the production batch size of 40). Query
-// embedding is unaffected, because Embed sizes its tensor to the batch's actual
-// longest input and a search query is nowhere near either cap.
+// embedding is unaffected, because Embed sizes each text's tensor to that
+// text's own length and a search query is nowhere near either cap. (Since
+// 2026-10-08 the helper runs one text per inference whatever the request
+// holds -- see OnnxEmbedder.Embed -- which brought a chunk to about 85ms.)
 const MaxSequenceLength = 512
 
 // Address returns the endpoint the embedder helper spawned by daemon process

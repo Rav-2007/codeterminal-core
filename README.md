@@ -981,6 +981,17 @@ BGE is asymmetric, and the daemon applies that asymmetry at the boundary:
 documents embed unmodified, queries get BAAI's instruction prefix. The helper
 itself is a dumb text-to-vector service with no notion of the distinction.
 
+**One text per inference.** A request may hold many texts; the helper runs the
+model over them one at a time, and runs one inference at a time whoever asks. Its
+memory is therefore the size of one 512-token text — about 190 MB resident — and
+not the size of the request. It used to pack a request into one tensor, and a
+single save of a 3,000-line file (109 chunks, re-embedded together) cost 4.3 GB
+that was never handed back; batching bought no speed on a CPU, so one at a time
+is also about 18% faster. It makes a vector a function of its text, too: the
+model is int8, its quantised layers take their ranges from the whole tensor, and
+the same chunk embedded beside different neighbours used to come out as far
+apart as cosine 0.994.
+
 The daemon blocks on a real health RPC rather than a log line, respawns a dead
 helper a bounded number of times, and on shutdown escalates `SIGTERM` → `SIGKILL`
 and does not return until the process is reaped. Smoke-test the whole path with
