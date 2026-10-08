@@ -387,6 +387,21 @@ type chatModel struct {
 	// taskBudget is what /task budget set for this session's long tasks; nil
 	// uses the daemon's defaults.
 	taskBudget *protocol.TaskBudget
+	// chatSync is whether the daemon keeps a shared chat for this workspace
+	// (it gave a revision at startup), and chatRev the revision of it this
+	// transcript shows -- "" when that is not known, which the next catch-up
+	// answers by fetching the chat whole (chatsync.go). turnChatRev is what the
+	// turn in flight was sent with. chatQuiet makes that next whole fetch
+	// silent, because what changed may be this client's own doing: an
+	// interrupted turn the daemon saved anyway, or a ctrl+n. resetPending holds
+	// catch-ups off while a ctrl+n is on its way to the daemon, so the old chat
+	// cannot be fetched back over the cleared screen.
+	chatSync     bool
+	chatRev      string
+	turnChatRev  string
+	chatQuiet    bool
+	resetPending bool
+
 	// preferredTier is the models.json tier name chosen via /model <name>.
 	// Empty means default routing. Sent as PromptRequest.Tier on every turn.
 	preferredTier string
@@ -574,6 +589,29 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case resetErrMsg:
 		return m.handleResetErr(msg)
+
+	case resetOkMsg:
+		m.resetPending = false
+		// Level with the new, empty chat -- unless a turn has already finished
+		// since and said where the chat stands, which is newer.
+		if msg.rev != "" && m.chatRev == "" {
+			m.chatRev, m.chatQuiet = msg.rev, false
+		}
+		return m, nil
+
+	case chatRevMsg:
+		return m.handleChatRev(msg)
+
+	case chatCaughtUpMsg:
+		return m.handleChatCaughtUp(msg)
+
+	case tea.FocusMsg:
+		// Back from another window, which may be the editor that just added to
+		// this chat.
+		if m.canCatchUp() {
+			return m, m.catchUpCmd()
+		}
+		return m, nil
 
 	case spinner.TickMsg:
 		return m.handleSpinnerTick(msg)
@@ -993,7 +1031,14 @@ func (m chatModel) handleStreamDone() (tea.Model, tea.Cmd) {
 		m.appendTurn(turn{role: roleSystem, text: renderTaskList(m.tasks)})
 		m.tasks = nil
 	}
-	return m.checkForEditBlocks()
+	next, cmd := m.checkForEditBlocks()
+	// The other window wrote while this turn ran (chatRevMsg): show the chat as
+	// it now is. Not while a review is open -- the next question or focus does
+	// it then.
+	if after, ok := next.(chatModel); ok && after.chatRev == "" && after.canCatchUp() {
+		return after, tea.Batch(cmd, after.catchUpCmd())
+	}
+	return next, cmd
 }
 
 func (m chatModel) handleStreamErr(msg streamErrMsg) (tea.Model, tea.Cmd) {
@@ -1048,6 +1093,7 @@ func (m chatModel) turnProducedNothing() bool {
 }
 
 func (m chatModel) handleResetErr(msg resetErrMsg) (tea.Model, tea.Cmd) {
+	m.resetPending = false
 	// The live transcript was already cleared synchronously in
 	// clearConversation; only the daemon-side half failed. Reported as
 	// a transcript note rather than statusErr/stateError, since the
@@ -1345,6 +1391,10 @@ func (m chatModel) startTurn() (tea.Model, tea.Cmd) {
 	// shown on screen and the bytes sent to the daemon are the same bytes.
 	prompt = sanitizeText(prompt)
 
+	// LEVEL WITH THE SHARED CHAT before anything is built from the transcript:
+	// what another window added belongs above this question and in its history.
+	m.catchUpNow()
+
 	// BOUND THE TRANSCRIPT FIRST, so that what is sent and what is shown are
 	// the same conversation. Running it after buildHistory would send the
 	// daemon turns the user can no longer see, which is the /compact
@@ -1381,7 +1431,8 @@ func (m chatModel) startTurn() (tea.Model, tea.Cmd) {
 
 	m.turnMode = mode
 	m.tasks = nil
-	return m, tea.Batch(m.spinner.Tick, m.startThinking(), startStream(ctx, m.clientName, m.workspace, prompt, promptKind, mode, m.preferredTier, m.activeSpec, m.specGrantDigests(), pipeline, history, taskFields{}, ch))
+	m.turnChatRev = m.chatRev
+	return m, tea.Batch(m.spinner.Tick, m.startThinking(), startStream(ctx, m.clientName, m.workspace, prompt, promptKind, mode, m.preferredTier, m.activeSpec, m.specGrantDigests(), pipeline, history, m.chatRev, taskFields{}, ch))
 }
 
 func (m chatModel) handleSlash(sp slashParse) (tea.Model, tea.Cmd) {
@@ -1424,6 +1475,7 @@ func (m chatModel) beginTaskTurn(shown, prompt, mode string, task taskFields) (t
 }
 
 func (m chatModel) beginTurnWith(shown, prompt, promptKind, mode string, pipeline []string, task taskFields) (tea.Model, tea.Cmd) {
+	m.catchUpNow() // see startTurn
 	history := buildHistory(m.turns)
 	m.appendTurn(turn{role: roleUser, text: sanitizeText(shown)})
 	m.input.Blur()
@@ -1447,7 +1499,8 @@ func (m chatModel) beginTurnWith(shown, prompt, promptKind, mode string, pipelin
 	m.streamCancel = cancel
 	ch := make(chan tea.Msg)
 	m.streamCh = ch
-	return m, tea.Batch(m.spinner.Tick, m.startThinking(), startStream(ctx, m.clientName, m.workspace, prompt, promptKind, mode, m.preferredTier, m.activeSpec, m.specGrantDigests(), pipeline, history, task, ch))
+	m.turnChatRev = m.chatRev
+	return m, tea.Batch(m.spinner.Tick, m.startThinking(), startStream(ctx, m.clientName, m.workspace, prompt, promptKind, mode, m.preferredTier, m.activeSpec, m.specGrantDigests(), pipeline, history, m.chatRev, task, ch))
 }
 
 func (m chatModel) handleLocalSlash(name, args string) (tea.Model, tea.Cmd) {
@@ -1820,6 +1873,10 @@ func (m chatModel) interruptTurn() (tea.Model, tea.Cmd) {
 	// further ran" would be a claim about the far end that this side cannot make.
 	m.appendTurn(turn{role: roleSystem, text: "⏹ stopped — you interrupted this turn"})
 	m.stopsInChat++ // its bill arrives on the next turn's final message
+	// The daemon saves an interrupted exchange anyway, and its Done -- which
+	// says where the chat then stands -- will never arrive. The next catch-up
+	// fetches the chat whole, quietly: the change it finds is this turn.
+	m.chatRev, m.chatQuiet = "", true
 	// A long task saves itself when its connection goes (daemon/longtask.go),
 	// so stopping one loses nothing: say how to carry on.
 	if m.taskRunning() {
@@ -1930,6 +1987,8 @@ func (m chatModel) clearConversation() (tea.Model, tea.Cmd) {
 	m.lastHistoryTruncated = false
 	m.statusErr = ""
 	m.state = stateIdle
+	// Level again once the daemon's reset answers (resetOkMsg).
+	m.chatRev, m.chatQuiet, m.resetPending = "", true, true
 	m.resizeViewport()
 	m.refreshViewport()
 

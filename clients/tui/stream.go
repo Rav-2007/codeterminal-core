@@ -156,11 +156,11 @@ type streamErrMsg struct {
 // to report.
 type resetErrMsg struct{ err error }
 
-// resetOkMsg is sent on a successful daemon-side reset. Update has no case
-// for it (a successful reset needs no visible reaction — the transcript was
-// already cleared) — it exists purely so startReset's blocking receive on
-// ch always has something to unblock on.
-type resetOkMsg struct{}
+// resetOkMsg is sent on a successful daemon-side reset, with the new chat's
+// revision (protocol.TokenResponse.ChatRevision). A successful reset needs no
+// visible reaction -- the transcript was already cleared -- so Update only
+// records that revision.
+type resetOkMsg struct{ rev string }
 
 // startReset fires PromptRequest{Reset: true} at the daemon over a fresh
 // connection (the wire protocol is one prompt per connection, same as
@@ -211,7 +211,7 @@ func resetHistoryOnDaemon(ctx context.Context, clientName string, ch chan tea.Ms
 		ch <- resetErrMsg{errors.New(tok.Error)}
 		return
 	}
-	ch <- resetOkMsg{}
+	ch <- resetOkMsg{rev: tok.ChatRevision}
 }
 
 // startStream launches the daemon round-trip for prompt in its own
@@ -237,9 +237,12 @@ func resetHistoryOnDaemon(ctx context.Context, clientName string, ch chan tea.Ms
 //
 // specGrants are the commands the user approved while spec is active (see
 // chatModel.specGrants); sent with spec and never without it.
-func startStream(ctx context.Context, clientName, workspace, prompt, promptKind, mode, preferredTier, spec string, specGrants []string, pipeline []string, history []protocol.Turn, task taskFields, ch chan tea.Msg) tea.Cmd {
+//
+// chatRev is the shared chat's revision history was built from
+// (protocol.PromptRequest.ChatRevision), "" when not known.
+func startStream(ctx context.Context, clientName, workspace, prompt, promptKind, mode, preferredTier, spec string, specGrants []string, pipeline []string, history []protocol.Turn, chatRev string, task taskFields, ch chan tea.Msg) tea.Cmd {
 	return func() tea.Msg {
-		go streamPromptWith(ctx, clientName, workspace, prompt, promptKind, mode, preferredTier, spec, specGrants, pipeline, history, task, ch)
+		go streamPromptWith(ctx, clientName, workspace, prompt, promptKind, mode, preferredTier, spec, specGrants, pipeline, history, chatRev, task, ch)
 		return <-ch
 	}
 }
@@ -340,12 +343,13 @@ func deliver(ctx context.Context, ch chan tea.Msg, msg tea.Msg) bool {
 // quietly (no streamErrMsg): the user chose to quit, that's not a failure,
 // and it leaves nothing behind reading a dead socket.
 func streamPrompt(ctx context.Context, clientName, workspace, prompt, promptKind, mode, preferredTier string, pipeline []string, history []protocol.Turn, ch chan tea.Msg) {
-	streamPromptWith(ctx, clientName, workspace, prompt, promptKind, mode, preferredTier, "", nil, pipeline, history, taskFields{}, ch)
+	streamPromptWith(ctx, clientName, workspace, prompt, promptKind, mode, preferredTier, "", nil, pipeline, history, "", taskFields{}, ch)
 }
 
-// streamPromptWith is streamPrompt with the active spec (PromptRequest.Spec)
-// and a long task's fields.
-func streamPromptWith(ctx context.Context, clientName, workspace, prompt, promptKind, mode, preferredTier, spec string, specGrants []string, pipeline []string, history []protocol.Turn, task taskFields, ch chan tea.Msg) {
+// streamPromptWith is streamPrompt with the active spec (PromptRequest.Spec),
+// the shared chat's revision (PromptRequest.ChatRevision) and a long task's
+// fields.
+func streamPromptWith(ctx context.Context, clientName, workspace, prompt, promptKind, mode, preferredTier, spec string, specGrants []string, pipeline []string, history []protocol.Turn, chatRev string, task taskFields, ch chan tea.Msg) {
 	sess, err := connectToDaemon(clientName, protocol.CapToolApproval)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -383,6 +387,7 @@ func streamPromptWith(ctx context.Context, clientName, workspace, prompt, prompt
 		Task:            task.id,
 		TaskAction:      task.action,
 		TaskBudget:      task.budget,
+		ChatRevision:    chatRev,
 	}); err != nil {
 		if ctx.Err() != nil {
 			return
@@ -470,6 +475,9 @@ func streamPromptWith(ctx context.Context, clientName, workspace, prompt, prompt
 				return
 			}
 			if (tok.Usage != nil || len(tok.StoppedUsage) > 0) && !deliver(ctx, ch, usageMsg{tok.Usage, tok.StoppedUsage}) {
+				return
+			}
+			if tok.ChatRevision != "" && !deliver(ctx, ch, chatRevMsg{rev: tok.ChatRevision, behind: tok.ChatBehind}) {
 				return
 			}
 			deliver(ctx, ch, streamDoneMsg{})

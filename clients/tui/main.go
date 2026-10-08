@@ -103,6 +103,9 @@ func runChat(workspace string) {
 	// Read here, beside the other handshake field, rather than after Close below.
 	needsAPIKey := preflight.handshake.NeedsAPIKey
 	daemonSavesChats := hasFeature(preflight.handshake, protocol.FeatureSavedChats)
+	// The revision of the shared chat persistedHistory is; empty from a daemon
+	// with no memory, or one older than revisions (see chatsync.go).
+	chatRev := preflight.handshake.ChatRevision
 	// Ignored deliberately, and it is the same reasoning at all five close
 	// sites in this client -- see the note on daemonSession.Close.
 	_ = preflight.Close()
@@ -117,6 +120,7 @@ func runChat(workspace string) {
 	// prompt, and asks for a key only when a question actually needs one. See
 	// beginConnectForPrompt in connect.go.
 	model.needsAPIKey = needsAPIKey
+	model.chatSync, model.chatRev = chatRev != "", chatRev
 	// Said once, first thing: a daemon older than this client cannot save
 	// chats, and the user should hear it before /history refuses.
 	if !daemonSavesChats {
@@ -127,7 +131,9 @@ func runChat(workspace string) {
 	// Mouse capture ON: the wheel scrolls the transcript as mouse events, which
 	// leaves up/down free for prompt history. Selection is shift+drag, and the
 	// idle hint says so. See chatModel.mouseCaptured and docs/ADR-001.
-	p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	// Focus reports: coming back to this terminal from the editor is when the
+	// shared chat may have moved on (chatsync.go).
+	p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithReportFocus())
 	// SIGHUP and SIGQUIT reach Bubble Tea's own shutdown through here; without
 	// it SIGHUP killed the process with the alternate screen still up. finish
 	// also re-raises a caught SIGQUIT, which is why it runs before the error
