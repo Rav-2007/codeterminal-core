@@ -9,24 +9,32 @@ import { CLIENT_NAME, ChatPanel, DiffContentProvider } from './chatPanel';
 import { bundledDaemonDir, daemonBinaryName } from './daemonBinary';
 import { ConnectResponse, probeDaemon, resolvedWorkspaceRoot, sendConnect, setWorkspaceRoot } from './daemonClient';
 import { ensureModelAvailable } from './modelSetup';
-import { clearApiKey, ensureApiKey, getApiKey, promptForApiKey } from './apiKey';
+import { API_KEY_SECRET, clearApiKey, ensureApiKey, getApiKey, promptForApiKey } from './apiKey';
 import { formatConnectResult, providerByName, providerForBase, providerLabel } from './connectFlow';
 import { DaemonHandle, DaemonSupervisor } from './daemonSupervisor';
+import {
+  CREDENTIALS_FROM_STDIN_FLAG,
+  DaemonCredentials,
+  credentialsLine,
+  daemonCredentials,
+  withoutCredentials,
+} from './daemonCredentials';
 import { useSpecStore } from './specWorkflow';
 
 let supervisor: DaemonSupervisor | undefined;
 let output: vscode.OutputChannel | undefined;
 
-// The API key, read once from SecretStorage and held for daemonEnvironment().
+// The API key, read once from SecretStorage and held for spawnDaemon, which
+// hands it to the daemon on stdin (daemonCredentials.ts) -- never in its
+// environment.
 //
-// A CACHE, AND IT HAS TO BE ONE. context.secrets.get() is async; spawnDaemon --
-// and therefore daemonEnvironment() -- is called synchronously by the
-// supervisor, which owns when a spawn happens and cannot be made to await a
-// keychain. So the key is read before the first ensure() and refreshed whenever
-// it changes, rather than fetched at spawn time.
+// A CACHE, AND IT HAS TO BE ONE. context.secrets.get() is async; spawnDaemon is
+// called synchronously by the supervisor, which owns when a spawn happens and
+// cannot be made to await a keychain. So the key is read before the first
+// ensure() and refreshed whenever it changes, rather than fetched at spawn time.
 //
 // Every write to this is followed by a daemon restart, because the daemon reads
-// its environment once, at exec. A key stored without a restart is a key the
+// its credentials once, at start. A key stored without a restart is a key the
 // running daemon will never see, which would look exactly like the key not
 // working.
 let cachedApiKey: string | undefined;
@@ -405,6 +413,24 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     })
   );
 
+  // TEST MODE ONLY: put a key into SecretStorage the way a user's would arrive,
+  // without an input box a test cannot type into. Registered only when VS Code
+  // runs this extension under @vscode/test-electron (ExtensionMode.Test) -- never
+  // in a user's session and never under F5 (ExtensionMode.Development) -- so no
+  // other extension can ever reach it. credentialHandoff.test.ts drives it.
+  if (context.extensionMode === vscode.ExtensionMode.Test) {
+    context.subscriptions.push(
+      vscode.commands.registerCommand('mochiii.test.storeApiKey', async (key?: string) => {
+        if (key && key.trim() !== '') {
+          await context.secrets.store(API_KEY_SECRET, key.trim());
+        } else {
+          await clearApiKey(context);
+        }
+        cachedApiKey = await getApiKey(context);
+      })
+    );
+  }
+
   // Reachable from a window that ADOPTED the daemon and therefore has no pipe,
   // no child process, and nothing else to show. Opening the file rather than
   // streaming it into the OutputChannel keeps one copy of the truth: the log is
@@ -484,16 +510,19 @@ function lastDaemonLogLines(logPath: string, max = 3): string {
 // `machine` scope on the contributed setting is what stops a workspace's
 // .vscode/settings.json supplying this value; see package.json, and
 // daemonBinary.test.ts for the same boundary on the config file.
-// EXPORTED, AND TAKING THE KEY AS AN ARGUMENT, so it can be tested.
+// EXPORTED so it can be tested: a pure function of process.env and
+// configuration.
 //
-// This function is the one place the defect of 2026-09-21 could live: a value a
-// user supplied that never reaches the process needing it. Reading the module's
-// cachedApiKey directly would make that untestable without activating the whole
-// extension, so the key is a parameter and this is a pure function of its
-// inputs, process.env and configuration. apiKey.test.ts asserts exactly the
-// thing that was missing: given a key, the environment carries it.
-export function daemonEnvironment(apiKey?: string): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...process.env };
+// IT NEVER CARRIES A KEY, and it takes no key argument so that it cannot be
+// handed one. It used to: the SecretStorage key went in as MOCHIII_API_KEY,
+// which left it readable in /proc/<daemon-pid>/environ for the daemon's whole
+// life (os.Unsetenv in the daemon cannot take that back). The key now goes on
+// the daemon's stdin -- see daemonCredentials.ts -- and MOCHIII_API_KEY and
+// MOCHIII_PROXY_KEY are REMOVED here even when VS Code inherited them from a
+// shell; spawnDaemon hands an inherited key over on stdin instead, so the
+// from-source workflow the README documents keeps working.
+export function daemonEnvironment(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = withoutCredentials(process.env);
   const configured = vscode.workspace.getConfiguration('mochiii').get<string>('apiBase');
   if (typeof configured === 'string' && configured.trim() !== '') {
     env.MOCHIII_API_BASE = configured.trim();
@@ -506,21 +535,23 @@ export function daemonEnvironment(apiKey?: string): NodeJS.ProcessEnv {
   if (typeof model === 'string' && model.trim() !== '') {
     env.MOCHIII_MODEL = model.trim();
   }
-  // THE KEY, for exactly the reason stated above about the base: the daemon
-  // reads MOCHIII_API_KEY from its environment (daemon/main.go:100) and
-  // has no other interface for one. Without this line a packaged install could
-  // never authenticate, because a desktop-launched VS Code inherits no shell.
-  //
-  // It comes from SecretStorage via cachedApiKey, never from configuration --
-  // see apiKey.ts for why a credential must not live in settings.json.
-  //
-  // An inherited MOCHIII_API_KEY is left alone when nothing is stored:
-  // that is the from-source workflow the README documents, and overwriting it
-  // with an empty value would break a setup that was working.
-  if (apiKey && apiKey.trim() !== '') {
-    env.MOCHIII_API_KEY = apiKey.trim();
-  }
   return env;
+}
+
+// What the last spawnDaemon call was GIVEN, as names only -- argument list,
+// environment variable names, and the fields of the stdin line -- so a test can
+// assert that a key went down the pipe and not into the environment without any
+// value ever being held here. See lastDaemonSpawnForTest.
+export interface DaemonSpawnRecord {
+  args: string[];
+  envNames: string[];
+  stdinFields: string[];
+  stdin: string;
+}
+let lastSpawn: DaemonSpawnRecord | undefined;
+
+export function lastDaemonSpawnForTest(): DaemonSpawnRecord | undefined {
+  return lastSpawn;
 }
 
 function spawnDaemon(binaryPath: string, workspacePath: string, logPath: string): DaemonHandle {
@@ -537,24 +568,44 @@ function spawnDaemon(binaryPath: string, workspacePath: string, logPath: string)
   // daemonLogPath in activate(). Without it the daemon logs to stderr, which for
   // a detached child means nowhere -- the honest outcome when there is no
   // workspace, rather than a file written to an unpredictable cwd.
-  const args = ['--workspace', workspacePath];
+  const args = ['--workspace', workspacePath, CREDENTIALS_FROM_STDIN_FLAG];
   if (logPath) {
     args.push('-log-file', logPath);
   }
 
+  // EXPLICIT, because inheriting was the first-run defect: process.env alone is
+  // whatever launched VS Code, and a desktop icon carries none of a login
+  // shell's exports. And KEYLESS: see daemonEnvironment.
+  const env = daemonEnvironment();
+  const credentials: DaemonCredentials = daemonCredentials(cachedApiKey, process.env);
   const child = cp.spawn(binaryPath, args, {
     cwd: workspacePath,
     detached: true,
-    // EXPLICIT, because inheriting was the first-run defect. See
-    // daemonEnvironment: process.env alone is whatever launched VS Code, and a
-    // desktop icon carries none of a login shell's exports.
-    env: daemonEnvironment(cachedApiKey),
-    // NOT a pipe. See daemonLogPath in activate(): a detached child that
-    // outlives this host would block on a full pipe nobody is draining. The
-    // -log-file above is the durable channel, and it works for an adopting
-    // window too, which has no pipe at all.
-    stdio: 'ignore',
+    env,
+    // stdin IS a pipe, and the only one: the daemon reads one line from it at
+    // start and never again, and this side closes it straight after writing,
+    // so nothing can block on it.
+    //
+    // stdout and stderr are NOT pipes. See daemonLogPath in activate(): a
+    // detached child that outlives this host would block on a full pipe nobody
+    // is draining. The -log-file above is the durable channel, and it works for
+    // an adopting window too, which has no pipe at all.
+    stdio: ['pipe', 'ignore', 'ignore'],
   });
+  lastSpawn = {
+    args: [...args],
+    envNames: Object.keys(env),
+    stdinFields: Object.keys(credentials),
+    stdin: 'pipe',
+  };
+  // An 'error' on stdin with no listener would crash the extension host. It
+  // happens when the daemon is gone before reading -- a binary too old to know
+  // the flag exits at once -- and the daemon's own exit is what the supervisor
+  // reports; this only records why the handover failed.
+  child.stdin?.on('error', (err) => {
+    output?.appendLine(`[daemon] could not hand the credentials over on stdin: ${err.message}`);
+  });
+  child.stdin?.end(credentialsLine(credentials));
   child.unref();
 
   return {

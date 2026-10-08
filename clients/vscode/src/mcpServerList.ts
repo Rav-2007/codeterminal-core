@@ -20,6 +20,7 @@
 //      beside its own binary.
 
 import { execFile } from 'child_process';
+import { withoutCredentials } from './daemonCredentials';
 import { promisify } from 'util';
 
 import { DAEMON_BIN_ENV, resolveDaemonBin } from './daemonBinary';
@@ -48,7 +49,9 @@ export async function runMCPServerList(workspace: string, extensionPath: string)
     // cwd is deliberately NOT the workspace. Nothing below resolves a relative
     // path, and leaving it out of the repository keeps that true if someone
     // later adds one.
-    const { stdout, stderr } = await execFileAsync(bin, args, { cwd: extensionPath });
+    // No credential in its environment: `mcp list` STARTS the servers a config
+    // names, and none of them, nor the listing, needs a key (daemonCredentials.ts).
+    const { stdout, stderr } = await execFileAsync(bin, args, { cwd: extensionPath, env: withoutCredentials(process.env) });
     const s = (stdout + stderr).trim();
     return s || 'no MCP servers configured (agent mode off or empty mcp.servers)';
   } catch (err) {
