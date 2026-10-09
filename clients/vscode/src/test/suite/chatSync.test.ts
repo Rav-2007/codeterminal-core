@@ -261,7 +261,14 @@ suite('the shared chat in the panel', function () {
         panel.handleMessage({ type: 'prompt', text: 'mine', autoApply: false });
         await waitUntil(() => panel.chatRev === 'r9', 5000, 'the whole chat to be fetched');
         assert.strictEqual(texts(panel.transcript), 'the whole chat | as stored');
-        assert.strictEqual(s.catchUps.at(-1)?.since, '', 'the fetch after a turn that was not level asked for less than the whole chat');
+        // SOME fetch asked for the whole chat -- not necessarily the last: the
+        // host's own focus events can ask again afterwards, from r9, and are
+        // told nothing changed. Before the turn the panel only ever asks from
+        // r1, so a fetch with no revision is the one this turn caused.
+        assert.ok(
+          s.catchUps.some((r) => !r.since),
+          `no fetch after a turn that was not level asked for the whole chat: ${JSON.stringify(s.catchUps.map((r) => r.since))}`,
+        );
         assert.ok(posts.some((m) => m?.type === 'clearTranscript'), 'the whole chat was not redrawn');
       }),
     );
