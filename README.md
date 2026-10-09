@@ -84,13 +84,19 @@ Download the `.vsix` for your platform from the
 code --install-extension mochiii-vscode-linux-x64-0.0.4.vsix   # or win32-x64
 ```
 
+Mochiii starts the first time you use it — **`Mochiii: Open Chat`**, or any other
+Mochiii command — not with every VS Code window, and a chat panel left open
+comes back when VS Code restarts. It needs a **trusted workspace**: in VS Code's
+Restricted Mode, and in virtual workspaces, it stays off and says why, because it
+indexes the folder and, when you allow it, edits files and runs commands there.
+
 **Then set your API key**, or nothing can be answered: run **`Mochiii: Set API
 Key`** from the command palette. The key is held in VS Code's SecretStorage —
 not in `settings.json`, which Settings Sync would replicate and a commit could
 leak — and the daemon restarts to pick it up. The extension hands the key to
 the daemon **on its stdin** when it starts it, never in its environment, where it
 would stay readable in `/proc/<pid>/environ` for the daemon's whole life. The
-extension also offers this on first activation if no key is set.
+extension also offers this the first time it starts if no key is set.
 
 The key is for whatever endpoint the daemon talks to, which by default is
 `https://openrouter.ai/api/v1`. Point it elsewhere with the **Mochiii: API
@@ -122,8 +128,8 @@ inherits no shell, which is why the command above exists.
 The package carries the daemon, the embedder helper and `models.json` side by
 side in `daemon/`, which is where the daemon looks for its helper and config.
 It does **not** carry the embedding model: that is a one-time **41 MB** download
-on Linux (63 MB macOS, 104 MB Windows), and the extension offers it on first
-activation. **Declining is fine** — you get a working extension that answers
+on Linux (63 MB macOS, 104 MB Windows), and the extension offers it the first
+time it starts. **Declining is fine** — you get a working extension that answers
 without reading your code, and the offer returns next session.
 
 Packaging is gated by [`scripts/verify-vsix.js`](clients/vscode/scripts/verify-vsix.js),

@@ -6,11 +6,20 @@
   "publisher": "mochiii",
   "license": "SEE LICENSE IN LICENSE",
   "icon": "media/icon.png",
+  "galleryBanner": {
+    "color": "#2B1B24",
+    "theme": "dark"
+  },
+  "preview": true,
   "repository": {
     "type": "git",
     "url": "https://github.com/Rav-2007/codeterminal-core.git",
     "directory": "clients/vscode"
   },
+  "bugs": {
+    "url": "https://github.com/Rav-2007/codeterminal-core/issues"
+  },
+  "homepage": "https://github.com/Rav-2007/codeterminal-core/tree/main/clients/vscode#readme",
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -20,8 +29,33 @@
     "Programming Languages",
     "Other"
   ],
+  "keywords": [
+    "ai",
+    "assistant",
+    "chat",
+    "coding assistant",
+    "agent",
+    "local",
+    "privacy",
+    "code search",
+    "rag",
+    "refactor",
+    "ollama",
+    "openrouter",
+    "groq"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "Mochiii runs a local daemon that indexes this folder and, with your approval, edits files and runs commands in it, so it needs a trusted workspace."
+    },
+    "virtualWorkspaces": {
+      "supported": false,
+      "description": "Mochiii's daemon reads the project from disk, so it cannot work on a virtual workspace."
+    }
+  },
   "activationEvents": [
-    "onStartupFinished"
+    "onWebviewPanel:mochiiiChat"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -50,19 +84,23 @@
     "commands": [
       {
         "command": "mochiii.openChat",
-        "title": "Mochiii: Open Chat"
+        "title": "Open Chat",
+        "category": "Mochiii"
       },
       {
         "command": "mochiii.restartDaemon",
-        "title": "Mochiii: Restart Daemon"
+        "title": "Restart Daemon",
+        "category": "Mochiii"
       },
       {
         "command": "mochiii.showDaemonLog",
-        "title": "Mochiii: Show Daemon Log"
+        "title": "Show Daemon Log",
+        "category": "Mochiii"
       },
       {
         "command": "mochiii.setApiKey",
-        "title": "Mochiii: Set API Key"
+        "title": "Set API Key",
+        "category": "Mochiii"
       }
     ]
   },

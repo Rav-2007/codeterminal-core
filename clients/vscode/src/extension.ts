@@ -5,7 +5,7 @@ import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs';
 
-import { CLIENT_NAME, ChatPanel, DiffContentProvider } from './chatPanel';
+import { CHAT_VIEW_TYPE, CLIENT_NAME, ChatPanel, DiffContentProvider } from './chatPanel';
 import { bundledDaemonDir, daemonBinaryName } from './daemonBinary';
 import { ConnectResponse, probeDaemon, resolvedWorkspaceRoot, sendConnect, setWorkspaceRoot } from './daemonClient';
 import { ensureModelAvailable } from './modelSetup';
@@ -205,6 +205,24 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         return;
       }
       ChatPanel.createOrShow(context.extensionUri);
+    })
+  );
+
+  // THE CHAT PANEL COMES BACK AFTER A RESTART. VS Code restores a webview
+  // panel that was open at exit only for an extension that registers a
+  // serializer for its view type, and activates the extension for it through
+  // package.json's onWebviewPanel event. Without one, a chat left open at exit
+  // was simply gone after a restart. A window with no folder has no daemon to
+  // fill it from, so the restored panel is closed there, as openChat declines.
+  context.subscriptions.push(
+    vscode.window.registerWebviewPanelSerializer(CHAT_VIEW_TYPE, {
+      deserializeWebviewPanel: async (panel: vscode.WebviewPanel) => {
+        if (!root) {
+          panel.dispose();
+          return;
+        }
+        ChatPanel.revive(panel, context.extensionUri);
+      },
     })
   );
 

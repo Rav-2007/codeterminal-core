@@ -72,7 +72,23 @@ export class DiffContentProvider implements vscode.TextDocumentContentProvider {
 }
 
 export const CLIENT_NAME = 'mochiii-vscode';
-const VIEW_TYPE = 'mochiiiChat';
+// The panel's view type: what VS Code records for a panel left open at exit,
+// and what package.json's onWebviewPanel activation event and extension.ts's
+// serializer are keyed on. All three must agree.
+export const CHAT_VIEW_TYPE = 'mochiiiChat';
+
+// How long the panel waits for the daemon to answer when it opens. Mochiii
+// starts only when it is used (package.json activationEvents), so the command
+// that opened this panel is usually what started the daemon a moment ago --
+// and a panel VS Code restores after a restart always is.
+const PREFLIGHT_WAIT_MS = 15_000;
+const PREFLIGHT_RETRY_MS = 300;
+
+// chatWebviewOptions is what the webview may do, for a new panel and for one
+// VS Code restores: scripts on, and local files from media/ and nowhere else.
+function chatWebviewOptions(extensionUri: vscode.Uri): vscode.WebviewOptions {
+  return { enableScripts: true, localResourceRoots: [vscode.Uri.joinPath(extensionUri, 'media')] };
+}
 
 // turnsFromWire keeps only "user"/"assistant" roles, mirroring
 // clients/tui/chat.go's turnsFromProtocol -- defense in depth even though
@@ -124,6 +140,9 @@ export class ChatPanel {
   private chatQuiet = false;
   private resetPending = false;
   private catchUpInFlight = false;
+  // Set once the panel is closed, so work started before (the preflight's
+  // wait for a starting daemon) stops instead of posting to a dead webview.
+  private disposed = false;
   // lastGrounding is the most recent GroundingInfo for /context.
   private lastGrounding: GroundingInfo | undefined;
 
@@ -199,12 +218,38 @@ export class ChatPanel {
       return;
     }
 
-    const panel = vscode.window.createWebviewPanel(VIEW_TYPE, 'Mochiii Chat', vscode.ViewColumn.Beside, {
-      enableScripts: true,
+    const panel = vscode.window.createWebviewPanel(CHAT_VIEW_TYPE, 'Mochiii Chat', vscode.ViewColumn.Beside, {
+      ...chatWebviewOptions(extensionUri),
+      // KEPT ON PURPOSE, against the guideline's default. VS Code's webview
+      // guide says this "has high memory overhead and should only be used when
+      // other persistence techniques will not work" -- and here they will not.
+      // Hidden without it, the webview is destroyed and every message posted
+      // meanwhile is lost, and this panel can be in the middle of things that
+      // cannot be rebuilt from saved state: a tool approval the daemon is HOLDING
+      // OPEN until it is answered (dropping that panel stalls the turn until the
+      // daemon's five-minute deadline denies it), an answer still streaming,
+      // and an edit review one block in. Reloading from getState would show a
+      // panel that looks ready while the daemon waits for a click it can no
+      // longer receive. What a restart CAN rebuild -- the chat itself -- is
+      // rebuilt from the daemon (revive, below).
       retainContextWhenHidden: true,
-      localResourceRoots: [vscode.Uri.joinPath(extensionUri, 'media')],
     });
 
+    ChatPanel.current = new ChatPanel(panel, extensionUri);
+  }
+
+  // revive takes back a panel VS Code restored after a restart -- the one
+  // that was open when the window closed -- through the serializer extension.ts
+  // registers. Nothing needs carrying over from the old webview: the chat is
+  // the daemon's, and the new panel hydrates from it like any panel that opens.
+  static revive(panel: vscode.WebviewPanel, extensionUri: vscode.Uri): void {
+    if (ChatPanel.current) {
+      // One chat panel per window. A restored duplicate is closed, not kept.
+      panel.dispose();
+      ChatPanel.current.panel.reveal();
+      return;
+    }
+    panel.webview.options = chatWebviewOptions(extensionUri);
     ChatPanel.current = new ChatPanel(panel, extensionUri);
   }
 
@@ -251,25 +296,44 @@ export class ChatPanel {
   // before the user ever types -- the ONLY place this ChatPanel reads
   // persisted_history. Subsequent per-prompt connections (streamPrompt)
   // never touch that field.
+  //
+  // It waits up to PREFLIGHT_WAIT_MS for a daemon that is still starting
+  // before saying it could not reach one: opening this panel is usually what
+  // started it.
   private async runPreflight(): Promise<void> {
-    try {
-      const session = await preflightSession(CLIENT_NAME);
-      this.needsApiKey = session.needsApiKey;
-      this.chatSync = session.chatRevision !== '';
-      this.chatRev = session.chatRevision;
-      const persisted = turnsFromWire(session.turns);
-      this.transcript = persisted;
-      this.panel.webview.postMessage({ type: 'history', turns: persisted });
-      this.postActiveSpec();
-      this.postModelTier();
-      // The header star shows whether the chat that was just restored is bookmarked.
-      void this.onHistoryList('');
-    } catch (err) {
-      this.panel.webview.postMessage({
-        type: 'error',
-        message: `Could not reach the daemon: ${(err as Error).message}`,
-      });
+    let session: Awaited<ReturnType<typeof preflightSession>>;
+    const deadline = Date.now() + PREFLIGHT_WAIT_MS;
+    for (;;) {
+      try {
+        session = await preflightSession(CLIENT_NAME);
+        break;
+      } catch (err) {
+        if (this.disposed) {
+          return;
+        }
+        if (Date.now() >= deadline) {
+          this.panel.webview.postMessage({
+            type: 'error',
+            message: `Could not reach the daemon: ${(err as Error).message}`,
+          });
+          return;
+        }
+        await new Promise((r) => setTimeout(r, PREFLIGHT_RETRY_MS));
+      }
     }
+    if (this.disposed) {
+      return;
+    }
+    this.needsApiKey = session.needsApiKey;
+    this.chatSync = session.chatRevision !== '';
+    this.chatRev = session.chatRevision;
+    const persisted = turnsFromWire(session.turns);
+    this.transcript = persisted;
+    this.panel.webview.postMessage({ type: 'history', turns: persisted });
+    this.postActiveSpec();
+    this.postModelTier();
+    // The header star shows whether the chat that was just restored is bookmarked.
+    void this.onHistoryList('');
   }
 
   // knownModel: the caller already looked the tier up (applyTier), so there is
@@ -1393,8 +1457,11 @@ export class ChatPanel {
   private dispose(): void {
     // Aborting the panel aborts the in-flight connection -- no orphaned
     // sockets left reading a dead webview.
+    this.disposed = true;
     this.inFlight?.abort();
-    ChatPanel.current = undefined;
+    if (ChatPanel.current === this) {
+      ChatPanel.current = undefined;
+    }
     while (this.disposables.length) {
       this.disposables.pop()?.dispose();
     }
