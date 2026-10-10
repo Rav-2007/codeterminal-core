@@ -14,7 +14,7 @@ import { ChatPanel } from '../../chatPanel';
 import { chatHistory, resetChat, streamPrompt } from '../../daemonClient';
 import { Behavior, StubDaemon, writeLine } from '../stubDaemon';
 
-const EXT_ID = 'mochiii.mochiii-vscode';
+const EXT_ID = 'MochiiiAIAgent.mochiii-vscode';
 
 async function waitUntil(done: () => boolean, timeoutMs: number, what: string, state?: () => unknown): Promise<void> {
   const deadline = Date.now() + timeoutMs;

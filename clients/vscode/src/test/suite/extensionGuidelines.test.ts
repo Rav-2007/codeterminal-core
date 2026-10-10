@@ -15,7 +15,7 @@ import { StubDaemon, pointAtEmptyRuntimeDir, writeLine } from '../stubDaemon';
 
 const ROOT = path.resolve(__dirname, '..', '..', '..');
 const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
-const EXT_ID = 'mochiii.mochiii-vscode';
+const EXT_ID = 'MochiiiAIAgent.mochiii-vscode';
 
 suite('the manifest meets the Marketplace guidelines', () => {
   // Workspace Trust: declared, not left to the default. The daemon indexes the

@@ -3,7 +3,16 @@
 All notable changes to the Mochiii extension. Versions follow the extension's
 `version` in `package.json`.
 
-## [Unreleased]
+## [0.1.0] - 2026-10-10
+
+The first release on the Visual Studio Marketplace, as a preview.
+
+**Installed an earlier `.vsix` from a GitHub Release?** Uninstall it first. Those
+were published as `mochiii.mochiii-vscode`; this is
+`MochiiiAIAgent.mochiii-vscode`, so VS Code treats them as two extensions, and
+both would register the same commands and each try to manage the daemon. A key
+connected with `/connect` carries over (it is stored by the daemon); a key saved
+with **Set API Key** in the old extension does not, and needs entering once more.
 
 ### Added
 

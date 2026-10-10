@@ -89,3 +89,6 @@ id_ed25519*
 # webview logo and icon.png is the marketplace tile. It was 147 KB of the last
 # package for nothing.
 media/logo.jpg
+# jsconfig.json type-checks media/main.js for scripts/webview-check.js, which
+# reads it from the source tree. Nothing loads it at runtime.
+media/jsconfig.json

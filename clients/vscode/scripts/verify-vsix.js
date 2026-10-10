@@ -112,6 +112,11 @@ const MUST_CONTAIN = [
   // `LICENSE.txt`. Found by this gate on its first run, which is the argument
   // for asserting on contents rather than on an exit code.
   'extension/LICENSE.txt',
+  // The third-party notices (staged by stage-runtime.js). The package
+  // redistributes Go modules, the Go runtime and bundled JS libraries, and their
+  // licences require the notice to ship with the copy. A package without it
+  // installs and works perfectly -- which is why it went missing unnoticed.
+  'extension/THIRD_PARTY_LICENSES.txt',
   `extension/daemon/mochiii-daemon${exe}`,
   // The one the last package omitted. Without it retrieval silently degrades
   // and the product answers ungrounded while appearing to work.
@@ -330,6 +335,82 @@ function checkBinaryToolchain(label, buf, floor, failures) {
   }
 }
 
+// HOW THE BINARY WAS BUILT, read from the build settings Go records in it.
+//
+// Found 2026-10-10 on the package staged for the first Marketplace upload: the
+// local `npm run package` built both binaries with a plain `go build`, so the
+// daemon embedded the build machine's home directory 1,093 times and the helper
+// 708 -- the builder's username and folder layout, in every user's copy -- and
+// the daemon was CGO-linked against that machine's glibc, where release.yml
+// builds it pure Go. Every check above passed that package. Go writes its build
+// settings into the binary as plain "build\t<key>=<value>" lines, so the answer
+// is in the artifact and needs no toolchain to read.
+function checkBinaryBuild(label, buf, { pureGo }, failures) {
+  const text = buf.toString('latin1');
+  if (!/\nbuild\t/.test(text) && !text.startsWith('build\t')) {
+    failures.push(`UNKNOWN  ${label}: no Go build settings found; cannot prove it was built with -trimpath`);
+    return;
+  }
+  if (!text.includes('build\t-trimpath=true')) {
+    failures.push(`UNTRIMMED ${label} was built without -trimpath, so it embeds the build machine's ` +
+      'absolute paths (home directory, username). Build it the way release.yml does: `npm run package`.');
+  }
+  if (pureGo && !text.includes('build\tCGO_ENABLED=0')) {
+    failures.push(`DYNAMIC  ${label} was built with CGO on, so it links the build machine's C library ` +
+      'and may not start on an older system. release.yml builds it pure Go (CGO_ENABLED=0).');
+  }
+}
+
+// EVERY GO MODULE IN A SHIPPED BINARY HAS ITS NOTICE IN THE SHIPPED FILE.
+//
+// Found 2026-10-10: eight modules linked into the daemon -- the MCP Go SDK and
+// seven it pulls in -- were missing from THIRD_PARTY_LICENSES.txt, and so was the
+// Go runtime itself. They arrived with agent mode, and nothing compared the
+// notices to what the binaries actually contain. Go records each linked module
+// as a "dep\t<path>\t<version>" line, so this reads the list from the artifact
+// rather than from go.mod, which can disagree with what was built.
+//
+// A module counts as listed when its path appears in the file, or when a
+// "Name:" line names it by its last path element -- the two forms the file uses.
+function goDepsOfBinary(buf) {
+  const deps = new Set();
+  for (const m of buf.toString('latin1').matchAll(/\ndep\t([^\t\n]+)\t/g)) {
+    if (!m[1].startsWith('mochiii/')) deps.add(m[1]);
+  }
+  return deps;
+}
+
+function checkNoticesCoverGoDeps(label, buf, notices, failures) {
+  const lower = notices.toLowerCase();
+  const deps = goDepsOfBinary(buf);
+  for (const dep of deps) {
+    const base = dep.split('/').pop().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const named = new RegExp(`^Name:\\s*${base}\\b`, 'im').test(notices);
+    if (!lower.includes(dep.toLowerCase()) && !named) {
+      failures.push(`UNLICENSED ${label} links ${dep}, which the packaged THIRD_PARTY_LICENSES.txt does ` +
+        'not list. Its licence must ship with the binary: add its entry (verbatim text) to the root file.');
+    }
+  }
+  return deps.size;
+}
+
+// A package carrying native binaries must say which platform they are for.
+// Without TargetPlatform the Marketplace treats the .vsix as universal and offers
+// it to every OS -- a Windows or macOS user would install a Linux daemon that
+// cannot start. `vsce package --target` writes the attribute; plain
+// `vsce package` (what `npm run package` used to run) does not.
+function checkTargetPlatform(vsixManifest, wantTarget, failures) {
+  const m = /<Identity\b[^>]*\bTargetPlatform="([^"]+)"/.exec(vsixManifest || '');
+  if (!m) {
+    failures.push('UNIVERSAL the package declares no TargetPlatform, so the Marketplace would offer it to ' +
+      'every OS while it carries one platform\'s daemon. Package with `vsce package --target <platform>`.');
+    return;
+  }
+  if (wantTarget && m[1] !== wantTarget) {
+    failures.push(`TARGET   the package is labelled ${m[1]} but was checked as ${wantTarget}`);
+  }
+}
+
 function selfTest() {
   const failures = [];
 
@@ -504,6 +585,62 @@ function selfTest() {
     }
   }
 
+  // (g) build settings: an untrimmed binary, and a CGO daemon, must be refused;
+  // a trimmed pure-Go daemon and a trimmed CGO helper accepted. Synthetic
+  // buffers in the exact "build\t<key>=<value>" form Go writes.
+  const buildCases = [
+    ['\nbuild\t-trimpath=true\nbuild\tCGO_ENABLED=0\n', true, 0, 'a trimmed pure-Go daemon'],
+    ['\nbuild\t-trimpath=true\nbuild\tCGO_ENABLED=1\n', false, 0, 'a trimmed CGO helper'],
+    ['\nbuild\tCGO_ENABLED=0\n', true, 1, 'an untrimmed daemon'],
+    ['\nbuild\t-trimpath=true\nbuild\tCGO_ENABLED=1\n', true, 1, 'a CGO daemon'],
+    ['no build settings here', true, 1, 'a binary with no build settings'],
+  ];
+  for (const [text, pureGo, wantFailures, why] of buildCases) {
+    const probe = [];
+    checkBinaryBuild('probe', Buffer.from(text, 'latin1'), { pureGo }, probe);
+    if (probe.length !== wantFailures) {
+      failures.push(`SELF-TEST: ${why} gave ${probe.length} build failure(s), expected ${wantFailures}`);
+    }
+  }
+
+  // (h) notices coverage: a linked module the notices do not list must be
+  // refused, in either form the file names one; this product's own modules are
+  // not third-party and must be skipped.
+  const depBin = Buffer.from('\ndep\tgithub.com/acme/widget\tv1.0.0\th1:x=\n\ndep\tmochiii/protocol\tv0.0.0\n', 'latin1');
+  const noticeCases = [
+    ['Name:    widget (github.com/acme/widget)\n', 0, 'listed by path'],
+    ['Name:    widget\n', 0, 'listed by name'],
+    ['Name:    gadget (github.com/acme/gadget)\n', 1, 'not listed'],
+  ];
+  for (const [notices, wantFailures, why] of noticeCases) {
+    const probe = [];
+    const n = checkNoticesCoverGoDeps('probe', depBin, notices, probe);
+    if (n !== 1) {
+      failures.push(`SELF-TEST: read ${n} third-party module(s) from the probe binary, expected 1 -- ` +
+        'the dep parser is broken, so the coverage check would pass everything');
+    }
+    if (probe.length !== wantFailures) {
+      failures.push(`SELF-TEST: a module ${why} gave ${probe.length} licence failure(s), expected ${wantFailures}`);
+    }
+  }
+
+  // (i) target platform: a universal package must be refused, and a labelled
+  // one must match the target it is checked as.
+  const identity = (attr) => `<Identity Language="en-US" Id="mochiii-vscode" Version="0.1.0" Publisher="p"${attr} />`;
+  const targetCases = [
+    [identity(''), undefined, 1, 'a universal package'],
+    [identity(' TargetPlatform="linux-x64"'), 'linux-x64', 0, 'a matching label'],
+    [identity(' TargetPlatform="linux-x64"'), 'win32-x64', 1, 'a mismatched label'],
+    [identity(' TargetPlatform="win32-x64"'), undefined, 0, 'a label, checked without a target'],
+  ];
+  for (const [xml, want, wantFailures, why] of targetCases) {
+    const probe = [];
+    checkTargetPlatform(xml, want, probe);
+    if (probe.length !== wantFailures) {
+      failures.push(`SELF-TEST: ${why} gave ${probe.length} target failure(s), expected ${wantFailures}`);
+    }
+  }
+
   if (failures.length > 0) {
     console.error('verify-vsix: SELF-TEST FAILED');
     for (const f of failures) console.error('  ' + f);
@@ -512,9 +649,11 @@ function selfTest() {
   console.log(`verify-vsix: self-test ok (${mustReject.length} credential names refused, ` +
     `${mustAccept.length} shipped paths accepted, ${secrets.length} secret shapes detected, ` +
     `${innocent.length} innocent strings ignored, ` +
-    `${toolchainCases.length} toolchain versions judged against go${goFloorFromWorkspace()}, ` +
+    `${toolchainCases.length} toolchain versions judged against a go${floorProbe} probe floor ` +
+    `(the real floor, from go.work, is go${goFloorFromWorkspace()}), ` +
     `${staleInRuntime.length} stale files kept out of the ${DAEMON_ALLOWED.size}-file runtime directory, ` +
-    `${outRejected.length} unbundled outputs refused)`);
+    `${outRejected.length} unbundled outputs refused, ${buildCases.length} build-setting cases, ` +
+    `${noticeCases.length} licence-coverage cases, ${targetCases.length} target-platform cases)`);
   process.exit(0);
 }
 
@@ -602,6 +741,19 @@ function main() {
     }
   }
 
+  // The notices that actually ship, which is what the licences require -- not
+  // the root file the package was meant to copy. Its absence is already a
+  // MISSING failure above; with no text there is nothing to compare against.
+  const noticesEntry = entries.find((e) => e.name === 'extension/THIRD_PARTY_LICENSES.txt');
+  const notices = noticesEntry ? readEntry(buf, noticesEntry).toString('utf8') : null;
+  let linkedModules = 0;
+
+  // The archive's own manifest says which platform the package is for.
+  const vsixManifestEntry = entries.find((e) => e.name === 'extension.vsixmanifest');
+  const vsixManifest = vsixManifestEntry ? readEntry(buf, vsixManifestEntry).toString('utf8') : '';
+  checkTargetPlatform(vsixManifest, process.argv[3], failures);
+  const targetLabel = (/\bTargetPlatform="([^"]+)"/.exec(vsixManifest) || [])[1] || 'none';
+
   // Verify bundled daemon & helper binary sizes & header magic bytes
   const daemonEntry = entries.find((e) => e.name === `extension/daemon/mochiii-daemon${exe}`);
   if (daemonEntry) {
@@ -610,6 +762,8 @@ function main() {
     } else {
       const bin = readEntry(buf, daemonEntry);
       checkBinaryToolchain('daemon binary', bin, goFloorFromWorkspace(), failures);
+      checkBinaryBuild('daemon binary', bin, { pureGo: true }, failures);
+      if (notices) linkedModules += checkNoticesCoverGoDeps('daemon binary', bin, notices, failures);
       const header = bin.subarray(0, 4);
       const isElf = header[0] === 0x7f && header[1] === 0x45 && header[2] === 0x4c && header[3] === 0x46;
       const isPE = header[0] === 0x4d && header[1] === 0x5a;
@@ -628,6 +782,10 @@ function main() {
     } else {
       const bin = readEntry(buf, helperEntry);
       checkBinaryToolchain('helper binary', bin, goFloorFromWorkspace(), failures);
+      // The helper needs CGO (onnxruntime_go has no pure-Go build), so only the
+      // trimming is required of it.
+      checkBinaryBuild('helper binary', bin, { pureGo: false }, failures);
+      if (notices) linkedModules += checkNoticesCoverGoDeps('helper binary', bin, notices, failures);
       const header = bin.subarray(0, 4);
       const isElf = header[0] === 0x7f && header[1] === 0x45 && header[2] === 0x4c && header[3] === 0x46;
       const isPE = header[0] === 0x4d && header[1] === 0x5a;
@@ -657,6 +815,7 @@ function main() {
 
   console.log(`\n${path.basename(file)}`);
   console.log(`  ${entries.length} entries · ${totalMB} MB unpacked · ${onDiskMB} MB on the wire`);
+  console.log(`  target platform: ${targetLabel} · ${linkedModules} linked Go module(s) checked against the shipped notices`);
 
   if (failures.length > 0) {
     console.error('\nPACKAGE GATE FAILED\n');

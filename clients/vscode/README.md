@@ -41,7 +41,9 @@ shares it rather than racing to start its own.
 
 ## Platform support
 
-Linux x64 and Windows x64 today (no macOS build yet). This is a **preview**
+Linux x64 and Windows x64 today (no macOS build yet). On Linux the bundled
+runtime needs **glibc 2.34 or newer** — Ubuntu 22.04+, Debian 12+, Fedora 35+,
+RHEL 9+; Ubuntu 20.04, Debian 11 and RHEL 8 are too old. This is a **preview**
 release — expect rough edges, and [tell us about them](https://github.com/Rav-2007/codeterminal-core/issues).
 
 Known limits, worth knowing before relying on them: no native VS Code diff

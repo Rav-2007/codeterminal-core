@@ -25,7 +25,7 @@ import { lastDaemonSpawnForTest } from '../../extension';
 //   2. that the daemon took its key from stdin (its own log says so, masked);
 //   3. on Linux, the daemon process's actual /proc/<pid>/environ.
 
-const EXT_ID = 'mochiii.mochiii-vscode';
+const EXT_ID = 'MochiiiAIAgent.mochiii-vscode';
 const STORED = 'FAKE-vscode-secretstorage-0451-not-real';
 const SHELL_KEY = 'FAKE-inherited-shell-0451-not-real';
 const SHELL_PROXY = 'FAKE-inherited-proxy-0451-not-real';
