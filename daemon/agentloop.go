@@ -520,10 +520,14 @@ func (s *Server) runAgentLoop(
 			s.cfg.MCP.Budget.resolvedMaxAdvertisedToolsFor(mode), len(dropped), strings.Join(dropped, ", "))
 		onDegraded(protocol.Degradation{
 			Component: protocol.DegradedToolMenuTruncated,
+			// NAMES, not just a count. A user told "3 tool(s) were not offered"
+			// cannot tell whether the one they need is among them, so the notice
+			// answered half the question it raised; `mcp list` has always named
+			// them, and this is the live path reaching the same bar.
 			Detail: fmt.Sprintf("%d configured tool(s) were not offered to the model this turn, "+
-				"because mcp.budget.max_advertised_tools is %d. A wider menu measurably makes the "+
+				"because mcp.budget.max_advertised_tools is %d: %s. A wider menu measurably makes the "+
 				"model choose worse, so the limit is deliberate — raise it if you need these tools.",
-				len(dropped), s.cfg.MCP.Budget.resolvedMaxAdvertisedToolsFor(mode)),
+				len(dropped), s.cfg.MCP.Budget.resolvedMaxAdvertisedToolsFor(mode), strings.Join(dropped, ", ")),
 		})
 	}
 

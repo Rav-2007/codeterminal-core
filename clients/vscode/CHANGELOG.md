@@ -20,6 +20,10 @@ All notable changes to the Mochiii extension. Versions follow the extension's
   setting for a local server such as Ollama or LM Studio.
 - **The agent tests its own edits** in a private working copy before offering
   them for review, and can read folders outside the project, asking each time.
+- **Agent mode (MCP) can be turned on from the extension.** Set
+  `mochiii.configPath` to a `models.json` of your own with agent mode enabled,
+  and the extension starts its daemon with it — no need to launch a daemon by
+  hand. The setting is machine-scoped, so a repository cannot choose what runs.
 - The chat panel reopens after VS Code restarts, if it was open when the window
   closed.
 
@@ -34,6 +38,18 @@ All notable changes to the Mochiii extension. Versions follow the extension's
 - A sharper, 256-pixel icon.
 - The extension's code ships as one bundled file instead of 15 separate
   modules, so it loads faster.
+
+### Fixed
+
+- **`/mcp-server` now reports the config the daemon actually loaded**, and
+  names the file, rather than always reading the one bundled with the
+  extension — which could say agent mode was off while the running daemon had
+  tools, or the reverse.
+- **When the tool menu is capped, the chat now names the tools left out**, not
+  just how many, so you can tell whether the one you need was dropped.
+- **`/mcp-server` no longer counts the daemon's own tools as external MCP
+  servers.** It reported "N run in external MCP servers" with N inflated by
+  first-party tools; it now counts only the third-party ones.
 
 ### Security
 

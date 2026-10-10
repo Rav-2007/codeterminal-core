@@ -207,6 +207,12 @@ function fakeHost(root: string, extensionPath: string): LocalCommandHost & { clo
   const host = {
     workspace: root,
     extensionPath,
+    // EMPTY ON PURPOSE. configPath is the machine-scoped mochiii.configPath,
+    // which a workspace cannot set -- so the hostile workspace has no way to
+    // put a value here, and with none, /mcp-server passes no --config. The fake
+    // trusted daemon below still fires its sentinel on --config or models.json
+    // in the argv, so this test proves the workspace cannot reach that flag.
+    configPath: '',
     transcript,
     preferredTier: '',
     currentModel: '',
@@ -417,5 +423,24 @@ suite('/context names the model', () => {
   test('before the daemon has answered, says so instead of inventing a name', async () => {
     const reply = await runLocalCommand(host('', ''), 'context', '');
     assert.match(reply, /^model: the configured default, default$/m);
+  });
+});
+
+// THE MACHINE SCOPE IS THE WHOLE SAFETY OF PASSING --config AT ALL.
+//
+// /mcp-server now passes --config when mochiii.configPath is set, and the
+// managed daemon is started with it too (extension.ts). That is safe only
+// because the setting is machine-scoped: a workspace .vscode/settings.json
+// cannot set a machine-scoped value, so a repository cannot choose the config
+// -- the exact property that distinguishes this from the <workspace>/models.json
+// hole b7e393d closed. VS Code enforces the scope; this test stops a manifest
+// edit from silently dropping it, which no code path would notice until a
+// repository was deciding what the daemon runs.
+suite('the config path a workspace must not reach stays machine-scoped', () => {
+  test('mochiii.configPath is declared machine-scoped', () => {
+    const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', '..', 'package.json'), 'utf8'));
+    const prop = pkg.contributes?.configuration?.properties?.['mochiii.configPath'];
+    assert.ok(prop, 'mochiii.configPath is not a contributed setting');
+    assert.strictEqual(prop.scope, 'machine', 'mochiii.configPath must be machine-scoped so a workspace cannot set it');
   });
 });

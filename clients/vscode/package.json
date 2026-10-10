@@ -74,6 +74,12 @@
           "scope": "machine",
           "markdownDescription": "The one model to use, named the way the server at `mochiii.apiBase` names it -- for a local server such as Ollama or LM Studio, e.g. `qwen2.5-coder:7b`. It replaces every model in `models.json`. Leave empty to use `models.json`. Sets `MOCHIII_MODEL` for the daemon.\n\n**Machine-scoped** for the same reason as `mochiii.apiBase`: a repository must not choose which model your prompts go to."
         },
+        "mochiii.configPath": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "markdownDescription": "Absolute path to a `models.json` the daemon should load instead of the one bundled with the extension. This is how you turn on **agent mode** (MCP): point it at a config whose `mcp.enabled` is `true`, with your MCP servers under `mcp.servers` (each needs `acknowledged_unconfined: true`). The bundled config has agent mode off, and editing it in place is undone by the next update; a file of your own here is not. Leave empty to use the bundled config.\n\n**Machine-scoped on purpose**, for the same reason as `mochiii.apiBase` but more so: this names programs the daemon will run in agent mode, and a workspace `.vscode/settings.json` must never be able to choose them. A relative path is refused -- it must be absolute."
+        },
         "mochiii.history.autoSave": {
           "type": "boolean",
           "default": true,

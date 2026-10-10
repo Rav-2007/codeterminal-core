@@ -6,7 +6,7 @@ import * as os from 'os';
 import * as fs from 'fs';
 
 import { CHAT_VIEW_TYPE, CLIENT_NAME, ChatPanel, DiffContentProvider } from './chatPanel';
-import { bundledDaemonDir, daemonBinaryName } from './daemonBinary';
+import { bundledDaemonDir, daemonBinaryName, resolveConfigPathSetting } from './daemonBinary';
 import { ConnectResponse, probeDaemon, resolvedWorkspaceRoot, sendConnect, setWorkspaceRoot } from './daemonClient';
 import { ensureModelAvailable } from './modelSetup';
 import { API_KEY_SECRET, clearApiKey, ensureApiKey, getApiKey, promptForApiKey } from './apiKey';
@@ -589,6 +589,22 @@ function spawnDaemon(binaryPath: string, workspacePath: string, logPath: string)
   const args = ['--workspace', workspacePath, CREDENTIALS_FROM_STDIN_FLAG];
   if (logPath) {
     args.push('-log-file', logPath);
+  }
+
+  // mochiii.configPath, when set, names the models.json the daemon loads --
+  // the supported way to turn on agent mode, whose bundled config has it off.
+  // It is read HERE from the machine-scoped setting (a workspace cannot set
+  // it) and resolved to an absolute path (the daemon's cwd is the workspace,
+  // so a relative --config would resolve against the opened folder). See
+  // resolveConfigPathSetting for why both properties are load-bearing.
+  const { path: configPath, warning: configWarning } = resolveConfigPathSetting(
+    vscode.workspace.getConfiguration('mochiii').get<string>('configPath'),
+  );
+  if (configWarning) {
+    vscode.window.showWarningMessage(`Mochiii: ${configWarning}`);
+  }
+  if (configPath) {
+    args.push('--config', configPath);
   }
 
   // EXPLICIT, because inheriting was the first-run defect: process.env alone is

@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { AttachmentError, extractAttachmentFile } from './attachmentExtract';
+import { resolveConfigPathSetting } from './daemonBinary';
 
 // fs and path used to be imported here solely to build executable paths out of
 // the workspace. Both uses were the vulnerability; there are now zero callers,
@@ -687,6 +688,10 @@ export class ChatPanel {
     return {
       workspace: workspacePath(),
       extensionPath: this.extensionPath,
+      // The machine-scoped config path the daemon was started with, so
+      // /mcp-server reports that same config. Read here (this file imports
+      // vscode) and resolved, never from the workspace. See localCommands.ts.
+      configPath: resolveConfigPathSetting(vscode.workspace.getConfiguration('mochiii').get<string>('configPath')).path ?? '',
       transcript: this.transcript,
       preferredTier: this.preferredTier,
       currentModel: this.currentModel,

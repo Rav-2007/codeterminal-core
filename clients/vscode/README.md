@@ -22,8 +22,10 @@ gets a native **Undo this apply** button that runs the same backup restore
 `mochiii-daemon edits undo` does.
 
 Not in this slice: a native VS Code diff view/inline decorations, ghost
-text, error interceptor, MCP, reset/ctrl+n, or any remote-host
+text, error interceptor, reset/ctrl+n, or any remote-host
 (SSH/WSL/devcontainer) daemon discovery — this is local-machine-only.
+Agent mode (MCP) is supported but off until you turn it on — see **Agent mode**
+below.
 
 Also not here yet, and worth knowing before relying on it: closing the window
 that STARTED the daemon stops it under a window that adopted it. The fix is an
@@ -52,6 +54,30 @@ comes back.
   `MOCHIII_API_KEY`, which outranks the stored one; `/connect` removes it so the
   key you connect is the one used. With no folder open there is no daemon to
   check a key, so **Set API Key** still stores it in VS Code's secret store.
+
+## Agent mode (MCP)
+
+Off by default: the daemon bundled with the extension ships with agent mode
+disabled, so nothing is spawned and no tools are offered. To turn it on, set
+**`mochiii.configPath`** to the absolute path of a `models.json` of your own
+whose `mcp` block has `enabled: true` — `models.agent.json` in the repo is a
+worked example, and each external server under `mcp.servers` needs
+`acknowledged_unconfined: true`. The extension starts its daemon with that
+config; a file of your own is used rather than the bundled one so an update
+never overwrites it.
+
+`mochiii.configPath` is **machine-scoped on purpose**: it names programs the
+daemon will run, and a workspace's `.vscode/settings.json` must never be able
+to choose them — the same reasoning as `mochiii.apiBase`, and why the path must
+be absolute.
+
+Once on, a tool the model calls appears as an **approval card** naming the
+server, the tool and the exact arguments, and — for an external (Lane B)
+server — that it is **not sandboxed** and runs with your full privileges;
+nothing runs until you approve it. **`/mcp-server`** lists what agent mode would
+offer and the policy on each tool, read from the same config the daemon loaded.
+The tool menu is capped (`mcp.budget.max_advertised_tools`); when it drops a
+tool, the chat says which ones, so you can raise the cap if you need them.
 
 ## History, bookmarks and /compact
 

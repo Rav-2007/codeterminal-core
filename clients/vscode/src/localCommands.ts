@@ -47,6 +47,15 @@ import { formatInitChecklist, formatSlashHelp } from './slashCommands';
 export interface LocalCommandHost {
   readonly workspace: string;
   readonly extensionPath: string;
+  /**
+   * The absolute `mochiii.configPath` the daemon was started with, or '' for
+   * the bundled config. Supplied here, read from the machine-scoped setting by
+   * the panel, so /mcp-server inspects the SAME config the daemon loaded rather
+   * than re-resolving one next to the binary. It is a machine setting a
+   * workspace cannot touch, and absolute, which is what keeps passing it as
+   * --config safe -- see src/mcpServerList.ts.
+   */
+  readonly configPath: string;
   readonly transcript: Turn[];
   readonly preferredTier: string;
   /** The model id the selected (or default) tier resolves to; '' while unknown. */
@@ -183,7 +192,7 @@ export async function runLocalCommand(
       return formatInitChecklist(host.workspace);
 
     case 'mcp-server':
-      return runMCPServerList(host.workspace, host.extensionPath);
+      return runMCPServerList(host.workspace, host.extensionPath, host.configPath);
 
     case 'search': {
       const q = args.toLowerCase();
