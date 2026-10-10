@@ -985,7 +985,7 @@ func (s *Server) builtinSearchCode(ctx context.Context, raw json.RawMessage) (mc
 		fmt.Fprintf(&b, "\n\n(You changed %s this turn; the results above show it as it was before. "+
 			"read_file shows it as it is now.)", strings.Join(names, ", "))
 	}
-	return mcp.Result{Content: b.String()}, nil
+	return mcp.Result{Content: s.absentNamesLead(ctx, args.Query) + b.String()}, nil
 }
 
 // builtinProposeEdit validates a proposed edit and files it for human review.

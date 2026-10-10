@@ -111,10 +111,17 @@ func (t *agentTurn) weighResult(tool mcp.Tool, sig string, result mcp.Result, re
 	case kind == stallLookup && result.Empty:
 		weight = stallWeightEmpty
 	case kind == stallLookup:
-		digest := sha256.Sum256([]byte(rendered))
+		// A search's line about names the index does not hold is about the
+		// QUESTION (absentnames.go); what is compared is what came back, or a
+		// search for one missing name after another would each look new.
+		lead, body := "", rendered
+		if tool.Name == "search_code" {
+			lead, body = splitAbsentNamesLead(rendered)
+		}
+		digest := sha256.Sum256([]byte(body))
 		if first, seen := t.seenResults[digest]; seen && first != sig {
 			weight = stallWeightFailed
-			rendered = fmt.Sprintf("This is byte for byte what an earlier call this turn already returned (%s), "+
+			rendered = lead + fmt.Sprintf("This is byte for byte what an earlier call this turn already returned (%s), "+
 				"so it is not repeated here. Nothing new.", truncateRunes(first, 160))
 		} else {
 			if t.seenResults == nil {
