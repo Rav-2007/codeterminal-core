@@ -1,6 +1,6 @@
 module mochiii/daemon
 
-go 1.25.13
+go 1.26.9
 
 require mochiii/protocol v0.0.0
 

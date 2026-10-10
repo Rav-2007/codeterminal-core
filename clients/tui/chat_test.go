@@ -1317,7 +1317,7 @@ func TestChat_StartTurn_BareReasonShowsUsage(t *testing.T) {
 		t.Fatalf("turns = %+v, want exactly 1", m.turns)
 	}
 	if m.turns[0].role != roleAssistant {
-		t.Errorf("role = %q, want assistant usage reply", m.turns[0].role)
+		t.Errorf("role = %v, want assistant usage reply", m.turns[0].role)
 	}
 	if !strings.Contains(m.turns[0].text, "usage:") {
 		t.Errorf("text = %q, want usage hint", m.turns[0].text)
