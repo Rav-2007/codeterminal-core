@@ -1056,6 +1056,86 @@ and cumulative tool bytes per turn. A privacy-positioned product should be able
 to bound and report how much extra left the machine because of tools, and the
 activity stream reports the post-scrub figure per call.
 
+## The daemon's own credentials, scrubbed literally
+
+The secret scrubber above is HEURISTIC: it matches key SHAPES, precision-first,
+and misses a bare `sk-` key, a novel format, or any ENCODING of a key. A second,
+narrower mechanism closes the one case where certainty is possible. The daemon
+KNOWS the exact credential values it holds — the key it started with, the one
+`connect` stored, the one set live over the socket, any it was handed on stdin at
+start, and its `MOCHIII_API_KEY` / `MOCHIII_PROXY_KEY` environment — and matches
+those exact values, plus their
+base64 / base64url / hex / url-escaped / reversed encodings and any 16-byte
+fragment, with an Aho-Corasick pass (`daemon/credscrub.go`). It applies at four
+points, with a deliberate ASYMMETRY between the outbound one and the rest:
+
+- **Outbound `web_search` / `web_fetch` arguments are REFUSED, not stripped.** A
+  search or fetch whose query or URL carries the key, in any form, does not run
+  at all — the other end would see a request was made even with the value cut
+  out, and `web_*` ships as `allow`, so this is the one path a key can leave on
+  with no prompt. The refusal is recorded to `toolcalls.jsonl` (the matched FORM,
+  never the value) and the model is told why.
+- **Tool results, retrieved chunks, the outgoing prompt, and `--debug-context`
+  output are REDACTED** — the value is replaced with `[REDACTED:mochiii-credential]`
+  before it reaches the model or the log.
+
+**This is not disableable by `--no-scrub`.** That flag governs the heuristic,
+which a user may silence because it corrupts key-shaped identifiers in their
+code. Literal matching of the daemon's own live credential has no false
+positives — the false-positive rate of the 16-byte fragment window measured 0
+over the repo's whole corpus — so there is nothing to silence, and it always
+runs. The asymmetry is the point: the heuristic is defence-in-depth a user tunes;
+this is a floor they cannot lower.
+
+**What it still cannot catch, and why the other two gates exist.** A value
+transformed by arbitrary code — XOR, a cipher, gzip, character arithmetic — is
+none of these forms and cannot be, since the set of transforms is unbounded. The
+defence against that is keeping the key out of the model's reach in the first
+place: it is in no file the read tools will open (the read-tool denylist,
+`daemon/outsideread.go`) and in no child's environment (the child-env allowlist,
+`daemon/credscrub_apply.go` aside, `daemon/mcp/mcp.go`'s `ServerEnv`). Recognising
+a key after an adversary has reshaped it is not a game this layer tries to win.
+
+## The daemon's key is not in its environment (2026-10-08)
+
+A variable a process starts with is readable in `/proc/<pid>/environ` for that
+process's whole life, by anything running as the same user — and nothing the
+process does later takes it back: `os.Unsetenv` changes the runtime's copy, not
+that file, which is the original environment block. The VS Code extension used to
+start the daemon with its SecretStorage key as `MOCHIII_API_KEY`, so a key the
+user had put in the OS keychain sat in plain text in procfs from the daemon's
+first second.
+
+So the key is never put there. The extension starts the daemon with
+`--credentials-from-stdin` and an environment built by `withoutCredentials()` —
+`MOCHIII_API_KEY` and `MOCHIII_PROXY_KEY` removed even when VS Code inherited
+them from a shell — and writes one JSON line to the daemon's stdin and closes it
+(`clients/vscode/src/daemonCredentials.ts`). The daemon reads that line once,
+with a size cap and a timeout, before anything consults a key, and never reads
+stdin again (`daemon/launchcred.go`). Every other process the extension starts
+(`mcp list`, `download-model`, git) gets the same keyless environment.
+
+**Fail closed.** A malformed line, an unknown field, trailing data, a control
+character in a key, an unknown provider, a provider that disagrees with the
+base, or no line within five seconds stops the daemon with the reason — and no
+error quotes the line, which holds the key.
+
+**Precedence is unchanged where it was documented**: `MOCHIII_API_KEY` in the
+environment still wins; a stdin key takes the slot the `connect`-stored
+credential had, ahead of that file. It counts as a launcher's key for
+`/connect` (`launcherKeyWins`), so a connected key is still reported as
+outranked rather than shown as "connected" and then reverted at the next
+restart. It is registered with the literal scrubber above.
+
+**Two keys, two fields.** `proxy_key` travels apart from `api_key` for the same
+reason the environment variables do: a provider key must never reach the proxy,
+nor a proxy key a provider.
+
+**Residual.** A daemon a user starts from a terminal with `MOCHIII_API_KEY`
+exported still holds it in its environment — that is their explicit choice, and
+their shell holds it too. `--credentials-from-stdin` is there for any launcher
+that wants better.
+
 ## The audit log
 
 `.mochiii/logs/toolcalls.jsonl` — local file only, append-only, `O_NOFOLLOW`,

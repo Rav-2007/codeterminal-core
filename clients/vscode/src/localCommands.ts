@@ -30,6 +30,7 @@
 // environment variable, or PATH. Never from the workspace, and never from the
 // working directory.
 
+import { parseConnectArgs } from './connectFlow';
 import { GroundingInfo, Turn } from './daemonClient';
 import { runMCPServerList } from './mcpServerList';
 import { runGitStatus } from './safeGit';
@@ -46,12 +47,29 @@ import { formatInitChecklist, formatSlashHelp } from './slashCommands';
 export interface LocalCommandHost {
   readonly workspace: string;
   readonly extensionPath: string;
+  /**
+   * The absolute `mochiii.configPath` the daemon was started with, or '' for
+   * the bundled config. Supplied here, read from the machine-scoped setting by
+   * the panel, so /mcp-server inspects the SAME config the daemon loaded rather
+   * than re-resolving one next to the binary. It is a machine setting a
+   * workspace cannot touch, and absolute, which is what keeps passing it as
+   * --config safe -- see src/mcpServerList.ts.
+   */
+  readonly configPath: string;
   readonly transcript: Turn[];
   readonly preferredTier: string;
+  /** The model id the selected (or default) tier resolves to; '' while unknown. */
+  readonly currentModel: string;
   readonly lastGrounding: GroundingInfo | undefined;
 
-  /** Replace the transcript (used by /clear and /compact). */
+  /** Replace the transcript (used by /clear). */
   replaceTranscript(turns: Turn[]): void;
+  /**
+   * Summarise the older part of the chat with one model call and keep the
+   * recent turns (/compact); the whole chat is saved to history first. Returns
+   * the sentence to print, or '' when the panel has already shown the result.
+   */
+  compactChat(): Promise<string>;
   /**
    * Drop the remembered grounding. Separate from replaceTranscript because
    * /clear forgets it and /compact deliberately does NOT -- shortening the
@@ -72,7 +90,7 @@ export interface LocalCommandHost {
    * kind of reach that should be visible in that list rather than buried in a
    * switch case.
    */
-  connectApiKey(): Promise<string>;
+  connectApiKey(base?: string): Promise<string>;
   /**
    * Report which key is in force, MASKED (/connect show), and remove the stored
    * one (/connect forget).
@@ -86,8 +104,6 @@ export interface LocalCommandHost {
   forgetApiKey(): Promise<string>;
 }
 
-// COMPACT_KEEP is how many turns /compact retains. Mirrors the TUI's.
-const COMPACT_KEEP = 8;
 
 // UNKNOWN_LOCAL_COMMAND is returned for a name that is not handled below.
 //
@@ -118,21 +134,23 @@ export async function runLocalCommand(
     // client. What must never be typed here is a KEY: "/connect sk-..." is
     // already in the transcript, and in the history sent with the next prompt, by
     // the time anyone reads a warning about it. "show" and "forget" are not keys.
-    case 'connect':
-      switch (args.trim()) {
-        case '':
+    case 'connect': {
+      // What may follow /connect is decided by parseConnectArgs, which refuses
+      // anything that could be a key so it never stays in the transcript.
+      const parsed = parseConnectArgs(args);
+      switch (parsed.kind) {
+        case 'key':
           return host.connectApiKey();
+        case 'to':
+          return host.connectApiKey(parsed.base);
         case 'show':
           return host.showApiKey();
         case 'forget':
           return host.forgetApiKey();
         default:
-          return (
-            '/connect takes no key as an argument: one typed on the command line would be left in this ' +
-            'transcript and sent with your next prompt. Run /connect on its own and enter it at the ' +
-            'prompt. The only arguments are `show` and `forget`.'
-          );
+          return parsed.message;
       }
+    }
 
     case 'clear':
       host.replaceTranscript([]);
@@ -140,22 +158,31 @@ export async function runLocalCommand(
       host.clearScreen();
       return 'transcript cleared';
 
-    case 'compact': {
-      if (host.transcript.length > COMPACT_KEEP) {
-        host.replaceTranscript(host.transcript.slice(-COMPACT_KEEP));
-        return `kept last ${COMPACT_KEEP} turns`;
-      }
-      return 'transcript already compact';
-    }
+    case 'compact':
+      // A summary, like Claude Code's /compact -- it used to drop all but the
+      // last few turns, and on a short chat say only "already compact".
+      return host.compactChat();
 
     case 'context': {
-      const tier = host.preferredTier || '(default)';
+      // The MODEL, as the chip shows it. This printed only the tier name, so
+      // with a provider connected it could read "openai/gpt-oss-safeguard-20b"
+      // while the chip read "qwen3.8-27b", and nothing said which was answering.
+      let model: string;
+      if (host.preferredTier) {
+        model = host.currentModel || host.preferredTier;
+        if (host.currentModel && host.currentModel !== host.preferredTier) {
+          model += ` (tier ${host.preferredTier})`;
+        }
+        model += ', selected';
+      } else {
+        model = `${host.currentModel || 'the configured default'}, default`;
+      }
       let g = '(none this turn)';
       const info = host.lastGrounding;
       if (info) {
         g = `chunks=${info.chunks ?? 0} truncated=${!!info.truncated} mismatch=${!!info.workspace_mismatch}`;
       }
-      return `workspace: ${host.workspace}\nmodel tier: ${tier}\ngrounding: ${g}`;
+      return `workspace: ${host.workspace}\nmodel: ${model}\ngrounding: ${g}`;
     }
 
     case 'git':
@@ -165,7 +192,7 @@ export async function runLocalCommand(
       return formatInitChecklist(host.workspace);
 
     case 'mcp-server':
-      return runMCPServerList(host.workspace, host.extensionPath);
+      return runMCPServerList(host.workspace, host.extensionPath, host.configPath);
 
     case 'search': {
       const q = args.toLowerCase();

@@ -67,12 +67,20 @@ func (s *Server) needsAPIKey() bool {
 	return !isLoopbackBase(base)
 }
 
-// envKeyWins reports whether this daemon's credential comes from its
-// environment -- MOCHIII_API_KEY, or proxy mode -- which outranks any key stored
-// through Connect.
-func envKeyWins() bool {
+// launcherKeyWins reports whether this daemon's credential comes from whoever
+// started it -- MOCHIII_API_KEY in its environment, a key it read from stdin at
+// start (--credentials-from-stdin, launchcred.go), or proxy mode -- which
+// outranks any key stored through Connect.
+//
+// The stdin case MUST count. A launcher's key takes the stored slot ahead of
+// credentials.json, so a key connected now would lose to it at the next start;
+// reporting it as an override is what lets the client resolve that (the VS Code
+// extension drops its own key and restarts) instead of showing "connected" and
+// silently reverting a restart later.
+func launcherKeyWins() bool {
 	return strings.TrimSpace(os.Getenv("MOCHIII_API_KEY")) != "" ||
-		os.Getenv("MOCHIII_USE_PROXY") == "true"
+		os.Getenv("MOCHIII_USE_PROXY") == "true" ||
+		launchKeySupplied.Load()
 }
 
 // keyReplaceable reports whether a failure of this class is the key's, AND a key
@@ -82,7 +90,7 @@ func keyReplaceable(class ModelErrorClass) bool {
 	if class != ClassAuth && class != ClassQuotaExceeded {
 		return false
 	}
-	return !envKeyWins()
+	return !launcherKeyWins()
 }
 
 // isLoopbackBase reports whether an api_base addresses this machine. An
@@ -123,11 +131,11 @@ func (s *Server) connectResult(ctx context.Context, req protocol.ConnectRequest)
 		return protocol.ConnectResponse{Error: err.Error()}
 	}
 
-	// A key in the daemon's ENVIRONMENT beats a stored one, and it did so before
+	// A key from the daemon's LAUNCHER beats a stored one, and it did so before
 	// this request arrived. Saying so is the difference between a user seeing
 	// "connected" and then watching the old key still be used, and a user being
 	// told why.
-	envOverride := envKeyWins()
+	envOverride := launcherKeyWins()
 
 	switch {
 	case req.Forget:
@@ -291,6 +299,11 @@ func (s *Server) setProvider(key, base string, tiers *Config) {
 		s.apiBase = base
 	}
 	s.tierCfg = tiers
+	// The live credential changed, so the literal scrubber must track the new
+	// value (and stop matching the old one). Rebuilt under the same lock that
+	// guards the swap, so a concurrent reader sees a matcher consistent with the
+	// key in force. See credscrub_apply.go.
+	s.rebuildCredScrubberLocked()
 }
 
 // tierConfig is the config whose tiers are in force: the provider's own models

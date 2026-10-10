@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -55,6 +56,18 @@ type Server struct {
 	// credential: /connect to another provider swaps all three at once. Read it
 	// through tierConfig, never directly.
 	tierCfg *Config
+	// credScrub matches the EXACT credential values the daemon holds, and their
+	// encodings, so a known key cannot leave in a tool result, chunk, prompt or
+	// outbound web call whatever shape it is in (credscrub.go). Guarded by credMu
+	// and rebuilt, not mutated, when the key changes -- so a reader fetches the
+	// immutable pointer under the lock (currentCredScrubber) and scans lockless.
+	// nil means no credential is held, which the apply helpers treat as a no-op.
+	credScrub *credScrubber
+	// launchSecrets are the credential values handed over on stdin at start
+	// (launchcred.go), registered with credScrub whether or not they are the
+	// key in force: a stdin key that lost to MOCHIII_API_KEY was still in this
+	// process's memory. Set once at construction and never written again.
+	launchSecrets []string
 
 	cfg           *Config
 	modelOverride string // optional testing override; bypasses the router when set
@@ -120,6 +133,10 @@ type Server struct {
 	// persistTurn's two appends. Without it a save taken while an exchange
 	// finishes could keep its question and not its answer.
 	historyMu sync.Mutex
+	// chatGen counts the times the current chat was replaced or cleared, for
+	// the revisions clients keep up with it by (chatsync.go). Bumped under
+	// historyMu AFTER the write it announces; read without it.
+	chatGen atomic.Uint64
 
 	// freshness memoises "has the workspace changed since the index was built"
 	// for the status handler (see indexfreshness.go). nil disables the check
@@ -425,13 +442,15 @@ func (s *Server) serveConn(conn net.Conn) {
 		return
 	}
 
+	persisted, chatRev := s.loadPersistedHistoryAt(ctx)
 	if err := enc.Encode(protocol.HandshakeResponse{
 		ProtocolVersion:  protocol.ProtocolVersion,
 		Ok:               true,
 		DaemonVersion:    daemonVersion,
-		PersistedHistory: s.loadPersistedHistory(ctx),
+		PersistedHistory: persisted,
 		NeedsAPIKey:      s.needsAPIKey(),
 		Features:         s.features(),
+		ChatRevision:     chatRev,
 	}); err != nil {
 		s.logger.Printf("handshake write error: %v", err)
 		return
@@ -583,8 +602,8 @@ func (s *Server) serveConn(conn net.Conn) {
 	// deleted since must not make starting a new chat fail.
 	if promptReq.Reset {
 		s.count(func(c *counters) { c.resets.Add(1) })
-		s.resetPersistedHistory()
-		enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Done: true})
+		rev := s.resetPersistedHistory()
+		enc.Encode(protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Done: true, ChatRevision: rev})
 		return
 	}
 
@@ -664,7 +683,12 @@ func (s *Server) serveConn(conn net.Conn) {
 	decision := s.route(promptReq.PromptKind, promptReq.Tier)
 	s.logger.Printf("route tier=%s slug=%s reason=%s", decision.Tier, decision.Slug, decision.Reason)
 
-	historyOutcome := prepareHistory(promptReq.History, s.noScrub())
+	history, fromStore := s.historyForTurn(ctx, promptReq)
+	if fromStore {
+		s.logger.Print("the client's copy of the chat is behind the stored one (another client changed it); " +
+			"answering from the stored chat")
+	}
+	historyOutcome := prepareHistory(history, s.noScrub())
 	s.logHistory(historyOutcome)
 
 	// WHAT CODE GOES IN BEFORE THE MODEL STARTS. An agent turn gets only what
@@ -726,6 +750,16 @@ func (s *Server) serveConn(conn net.Conn) {
 		// only) and runs the deferred entropy/keyword detectors in log-only
 		// warn-mode. This never changes augmentedPrompt.
 		s.logChunkScrub(outcome.Chunks)
+	}
+	// LITERAL CREDENTIAL REDACTION of the whole outgoing user message -- the
+	// typed prompt AND the retrieved chunks folded into it -- after the heuristic
+	// scrub above. Always on, even under --no-scrub: the daemon's own key, in any
+	// form, must not reach the provider. A chunk is the likely carrier (a key
+	// committed to a file the agent retrieves), which is why it is redacted here,
+	// where the chunks have just been rendered in. See credscrub_apply.go.
+	if cleaned, n := s.credRedact(augmentedPrompt); n > 0 {
+		augmentedPrompt = cleaned
+		s.logger.Printf("scrub: redacted %d occurrence(s) of this machine's own credential from the outgoing prompt", n)
 	}
 	// The plan directive is applied to the SYSTEM prompt below, not appended
 	// here. See planModeSystemPrompt.
@@ -797,6 +831,16 @@ func (s *Server) serveConn(conn net.Conn) {
 	// loadPersistedHistory). Merging it in here too would double the
 	// conversation the model sees.
 	routing := s.tierConfig().routingFor(decision.Tier)
+	// The client's effort picker overrides the tier's reasoning_effort for this
+	// turn. Same closed set the config accepts (reasoningEfforts); anything else
+	// is a client bug, logged and dropped rather than sent to be refused.
+	if e := promptReq.ReasoningEffort; e != "" {
+		if slices.Contains(reasoningEfforts, e) {
+			routing.reasoningEffort = e
+		} else {
+			s.logger.Printf("ignoring reasoning_effort %q from the client: not one of %s", e, strings.Join(reasoningEfforts, ", "))
+		}
+	}
 	// THE TURN'S BILL: every model call below -- the single call here, or an
 	// agent turn's whole loop -- adds its usage report to this tally, and the
 	// turn's final Done message carries the sum (usage.go; the TUI's /usage).
@@ -989,11 +1033,17 @@ func (s *Server) serveConn(conn net.Conn) {
 			Detail: "the model sent back an empty answer three times in a row. Ask again, or pick another model with /model.",
 		}
 	}
-	_ = s.sendDone(enc, protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Done: true, EditProposals: editProposalsFromBlocks(blocks), EditRejections: rejections, Incomplete: incomplete,
-		Usage: tally.report(decision.Slug, s.contextWindowFor(decision.Slug)), Spend: tally.spendReport()})
+	// SAVED BEFORE THE DONE, so the Done can say where the chat now stands
+	// (markChatRevision) -- and so a client that acts on the Done at once, with
+	// /save or a question from another window, finds this exchange already in
+	// the chat rather than racing it there. After the empty-greeting check
+	// above, so what is persisted carries that incomplete reason too.
+	before, after := s.persistTurn(promptReq.Prompt, full.String(), incomplete)
+	done := protocol.TokenResponse{ProtocolVersion: protocol.ProtocolVersion, Done: true, EditProposals: editProposalsFromBlocks(blocks), EditRejections: rejections, Incomplete: incomplete,
+		Usage: tally.report(decision.Slug, s.contextWindowFor(decision.Slug)), Spend: tally.spendReport()}
+	markChatRevision(&done, promptReq.ChatRevision, before, after)
+	_ = s.sendDone(enc, done)
 	s.logger.Print("stream complete")
-
-	s.persistTurn(promptReq.Prompt, full.String(), incomplete)
 }
 
 // isApplyEditRequest sniffs whether raw is an ApplyEditRequest (identified
@@ -1348,14 +1398,24 @@ func (s *Server) searchClientError(err error, queryLen int) string {
 // ride back in as history. prepareHistory would refuse it again on the return
 // trip; filtering here means the client never displays it either.
 func (s *Server) loadPersistedHistory(ctx context.Context) []protocol.Turn {
+	turns, _ := s.loadPersistedHistoryAt(ctx)
+	return turns
+}
+
+// loadPersistedHistoryAt is loadPersistedHistory plus the chat revision those
+// turns are (chatsync.go): the generation read before them, and the newest id
+// read with them. Empty when memory is unavailable.
+func (s *Server) loadPersistedHistoryAt(ctx context.Context) ([]protocol.Turn, string) {
 	if s.memory == nil {
-		return nil
+		return nil, ""
 	}
-	turns, err := s.memory.LoadRecentTurns(ctx, s.workspace, maxHistoryTurns, s.noScrub())
+	gen := s.chatGen.Load()
+	turns, last, err := s.memory.loadRecentTurnsAt(ctx, s.workspace, maxHistoryTurns, s.noScrub())
 	if err != nil {
 		s.logger.Printf("loading persisted history: %v", err)
-		return nil
+		return nil, ""
 	}
+	rev := chatRevision{epoch: chatEpoch, gen: gen, last: last}.String()
 	kept := make([]protocol.Turn, 0, len(turns))
 	for _, t := range turns {
 		if validTurn(t) {
@@ -1366,9 +1426,9 @@ func (s *Server) loadPersistedHistory(ctx context.Context) []protocol.Turn {
 		s.logger.Printf("persisted history: dropped %d invalid/empty turn(s) on load", dropped)
 	}
 	if len(kept) == 0 {
-		return nil
+		return nil, rev
 	}
-	return kept
+	return kept, rev
 }
 
 // persistTurn appends the just-completed exchange to cross-session memory,
@@ -1419,13 +1479,20 @@ func (s *Server) loadPersistedHistory(ctx context.Context) []protocol.Turn {
 // any later reader -- including one that predates this field. Requires no
 // migration, and a hydrated turn carries no Incomplete slug, so it cannot be
 // annotated twice.
-func (s *Server) persistTurn(prompt, answer string, incomplete *protocol.IncompleteInfo) {
+//
+// It returns the chat's revision just before and just after the save
+// (chatsync.go), read under historyMu so nothing else lands between them; both
+// are the same when nothing was saved, and empty when memory is unavailable.
+func (s *Server) persistTurn(prompt, answer string, incomplete *protocol.IncompleteInfo) (before, after string) {
 	if s.memory == nil {
-		return
+		return "", ""
 	}
 	if strings.TrimSpace(answer) == "" {
 		s.logger.Print("not persisting turn: the model returned an empty answer")
-		return
+		s.historyMu.Lock()
+		defer s.historyMu.Unlock()
+		rev := s.chatRevisionLocked(context.Background())
+		return rev, rev
 	}
 	if incomplete != nil {
 		if note := incompleteHistoryNote(incomplete.Reason); note != "" {
@@ -1456,13 +1523,15 @@ func (s *Server) persistTurn(prompt, answer string, incomplete *protocol.Incompl
 	ctx := context.Background()
 	s.historyMu.Lock()
 	defer s.historyMu.Unlock()
+	before = s.chatRevisionLocked(ctx)
 	if err := s.memory.AppendTurn(ctx, s.workspace, "user", prompt); err != nil {
 		s.logger.Printf("persisting user turn: %v", err)
-		return
+		return before, s.chatRevisionLocked(ctx)
 	}
 	if err := s.memory.AppendTurn(ctx, s.workspace, "assistant", answer); err != nil {
 		s.logger.Printf("persisting assistant turn: %v", err)
 	}
+	return before, s.chatRevisionLocked(ctx)
 }
 
 // resetPersistedHistory starts a fresh chat for this daemon's workspace — the
@@ -1470,22 +1539,27 @@ func (s *Server) persistTurn(prompt, answer string, incomplete *protocol.Incompl
 // never written to history: only /history save keeps one (chatarchive.go), and
 // the client warns before discarding a chat that is not saved. The link to the
 // saved copy is forgotten with it -- the new chat is not that one.
-func (s *Server) resetPersistedHistory() {
+//
+// It returns the new chat's revision, so the client that cleared it is level
+// with it at once; empty when memory is unavailable or the clear failed.
+func (s *Server) resetPersistedHistory() string {
 	if s.memory == nil {
-		return
+		return ""
 	}
 	s.historyMu.Lock()
 	defer s.historyMu.Unlock()
 	// Not the connection's context, for persistTurn's reason: this is a completed
 	// user action (ctrl+n), and a half-cleared history is worse than a slow one.
-	if err := s.memory.ClearWorkspace(context.Background(), s.workspace); err != nil {
+	ctx := context.Background()
+	if err := s.memory.ClearWorkspace(ctx, s.workspace); err != nil {
 		s.logger.Printf("clearing persisted history: %v", err)
-		return
+		return ""
 	}
 	if root, err := historyRoot(); err == nil {
 		newChatArchive(root, s.workspace).clearLink()
 	}
 	s.logger.Print("persisted history cleared")
+	return s.chatReplacedLocked(ctx)
 }
 
 // saveChatLocked saves the workspace's current chat -- /history save. A chat
@@ -1500,13 +1574,19 @@ func (s *Server) saveChatLocked(ctx context.Context, archive *chatArchive, spec,
 		return "", archiveHeader{}, 0, err
 	}
 	link := archive.readLink()
-	if name == "" && link.ID != "" {
+	bookmarked := false
+	if link.ID != "" {
 		if h, _, err := archive.load(link.ID); err == nil {
-			name = h.Name
+			if name == "" {
+				name = h.Name
+			}
+			// The updated copy replaces the old one, so it keeps the old one's
+			// bookmark -- or saving more work would silently unpin a chat.
+			bookmarked = h.Bookmarked
 		}
 	}
 	now := time.Now()
-	id, err := archive.save(turns, spec, name, now)
+	id, err := archive.saveWith(turns, spec, name, bookmarked, now)
 	if err != nil {
 		return "", archiveHeader{}, 0, err
 	}
@@ -1525,6 +1605,7 @@ func (s *Server) saveChatLocked(ctx context.Context, archive *chatArchive, spec,
 	}
 	h, _ := headerFor(turns, spec, now)
 	h.Name = clipRunes(oneLine(name), archiveTitleRunes)
+	h.Bookmarked = bookmarked
 	pruned := pruneHistory(archive.root, maxArchivesPerWorkspace, maxSavedChatBytes, now)
 	return id, h, pruned, nil
 }

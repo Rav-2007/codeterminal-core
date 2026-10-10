@@ -201,6 +201,18 @@ type HandshakeResponse struct {
 	// say "restart it" instead of misbehaving. Additive: an older daemon omits
 	// it, which is exactly the signal.
 	Features []string `json:"features,omitempty"`
+	// ChatRevision says how much of this workspace's current chat
+	// PersistedHistory reflects. The chat is ONE conversation per workspace,
+	// shared by every client of this daemon, so a terminal and an editor open
+	// side by side are writing to the same one; the revision is how each keeps
+	// up with what the other added (HistoryCurrent, PromptRequest.ChatRevision,
+	// TokenResponse.ChatRevision).
+	//
+	// OPAQUE TO CLIENTS: compare it for equality and send it back, never parse
+	// it. Empty when the daemon has no conversation memory -- there is then no
+	// shared chat to keep up with -- and from a daemon older than this field,
+	// which a client treats the same way: it behaves exactly as before.
+	ChatRevision string `json:"chat_revision,omitempty"`
 }
 
 // FeatureSavedChats: HistoryRequest is understood, including save -- the
@@ -269,6 +281,15 @@ type PromptRequest struct {
 	Tier       string `json:"tier,omitempty"`
 	Mode       string `json:"mode,omitempty"`
 
+	// ReasoningEffort asks the model to think before it answers, for THIS TURN
+	// ONLY: "low", "medium" or "high". Absent means the tier's own setting, which
+	// is what every existing client sends. Any other value is ignored (and
+	// logged), never forwarded: providers refuse values they do not know, and a
+	// refused effort must not cost the user their turn. Measured on Groq
+	// 2026-10-06: qwen/qwen3.8-27b does not reason at all unless this is set, and
+	// openai/gpt-oss-120b refuses anything but these three words.
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+
 	// Pipeline names the specialist phases for THIS TURN ONLY, overriding
 	// mcp.pipeline. Absent means use the configured shape, which is what every
 	// existing client sends.
@@ -320,6 +341,15 @@ type PromptRequest struct {
 	// TaskBudget tightens or widens this run's budget within the daemon's caps
 	// (mcp.budget.task). Zero fields keep the configured value.
 	TaskBudget *TaskBudget `json:"task_budget,omitempty"`
+
+	// ChatRevision is the revision of the workspace chat that History was
+	// built from (HandshakeResponse.ChatRevision). When the chat has moved on
+	// since -- another client added to it, cleared it, or resumed another chat
+	// -- History is missing what happened there, and the daemon answers from
+	// the stored chat instead, so the model is never asked to continue a
+	// conversation with half of it absent. Empty keeps the old behaviour:
+	// History is used as sent.
+	ChatRevision string `json:"chat_revision,omitempty"`
 
 	// Session names one run of a client: the same value on every request it
 	// sends from start to exit, chosen by the client at random. The daemon adds
@@ -573,6 +603,15 @@ type TokenResponse struct {
 	// TaskStatus is a long task's progress: sent as each segment starts, and
 	// once more just before the Done. Additive.
 	TaskStatus *TaskStatus `json:"task_status,omitempty"`
+	// ChatRevision, on the final Done of a turn, is the workspace chat's
+	// revision once this turn was saved into it, and ChatBehind says the chat
+	// held something this client had not seen when the turn was saved:
+	// another client wrote to it first. A client that sent ChatRevision and
+	// gets ChatBehind false is level with the stored chat at ChatRevision;
+	// with ChatBehind true it must fetch the chat again (HistoryCurrent with
+	// no Since) before it can say what the conversation is. Additive.
+	ChatRevision string `json:"chat_revision,omitempty"`
+	ChatBehind   bool   `json:"chat_behind,omitempty"`
 	// Spend is what this session and this day have spent against their limits,
 	// on the final Done message of a turn that reached the model and on the
 	// answer to a BudgetAction. Additive.
@@ -1403,6 +1442,22 @@ const (
 	HistoryShow   = "show"   // one saved chat's turns, read-only
 	HistoryResume = "resume" // make a saved chat the current one (its saved copy stays)
 	HistoryDelete = "delete" // remove one saved chat
+	// Bookmark and Unbookmark pin a saved chat (ID), or the current chat when ID
+	// is empty -- saving it first. A bookmarked chat is never pruned.
+	HistoryBookmark   = "bookmark"
+	HistoryUnbookmark = "unbookmark"
+	// Compact summarises the older part of the current chat with one model call
+	// and keeps the summary plus the most recent turns as the current chat. The
+	// whole chat is saved to history first, so nothing is lost.
+	HistoryCompact = "compact"
+	// Current returns the current chat as the daemon has stored it, for a
+	// client keeping up with what another client of the same workspace added.
+	// Since is the revision the client already shows: when the chat has only
+	// grown since then, Turns is just the new part and Append is set; when it
+	// was replaced (a new chat, a resume, a compact) or Since is empty or from
+	// another daemon, Turns is the whole chat. Turns is empty, with Since
+	// returned as ChatRevision, when nothing has changed.
+	HistoryCurrent = "current"
 )
 
 // HistoryRequest asks the daemon about SAVED CHATS in its own workspace: the
@@ -1428,6 +1483,17 @@ type HistoryRequest struct {
 	ID              string `json:"id,omitempty"`
 	Spec            string `json:"spec,omitempty"`
 	Name            string `json:"name,omitempty"`
+	// Query narrows HistoryList to chats whose title or any turn contains it,
+	// case-insensitively. Empty lists everything. Additive: older daemons
+	// ignore it and list all, which a client renders the same way.
+	Query string `json:"query,omitempty"`
+	// Tier is the model the client has chosen (PromptRequest.Tier's meaning),
+	// so HistoryCompact's summary is written by the model the chat is using.
+	// Empty, or one the daemon does not offer, means the default.
+	Tier string `json:"tier,omitempty"`
+	// Since is HistoryCurrent's starting point: the ChatRevision the client
+	// already shows.
+	Since string `json:"since,omitempty"`
 }
 
 // HistoryEntry is one chat in a list. Current marks the live conversation,
@@ -1455,6 +1521,8 @@ type HistoryEntry struct {
 	SpecTotal  int    `json:"spec_total,omitempty"`
 	SavedAs    string `json:"saved_as,omitempty"`
 	Unsaved    bool   `json:"unsaved,omitempty"`
+	// Bookmarked chats are pinned: listed first by clients, and never pruned.
+	Bookmarked bool `json:"bookmarked,omitempty"`
 }
 
 // HistoryResponse answers a HistoryRequest. Entries answers list; Turns and
@@ -1469,7 +1537,14 @@ type HistoryResponse struct {
 	Entry           *HistoryEntry  `json:"entry,omitempty"`
 	Turns           []Turn         `json:"turns,omitempty"`
 	Pruned          int            `json:"pruned,omitempty"`
-	Error           string         `json:"error,omitempty"`
+	// Compacted is how many turns HistoryCompact folded into its summary.
+	Compacted int    `json:"compacted,omitempty"`
+	Error     string `json:"error,omitempty"`
+	// ChatRevision is the current chat's revision after this action, on
+	// current, resume and compact -- the three answers whose Turns are the
+	// current chat (or, with Append, its new part).
+	ChatRevision string `json:"chat_revision,omitempty"`
+	Append       bool   `json:"append,omitempty"`
 }
 
 // StatusRequest asks the daemon to describe its own current state. It is the
@@ -1585,9 +1660,12 @@ type ConnectResponse struct {
 	// connected key appears not to have taken effect.
 	InUse bool `json:"in_use"`
 
-	// EnvOverride is set when the environment is what the daemon is using, so a
-	// client can say which key is really in force rather than implying the one
-	// just stored.
+	// EnvOverride is set when a key from the daemon's LAUNCHER is what it is
+	// using -- MOCHIII_API_KEY in its environment, a key it read from stdin at
+	// start (--credentials-from-stdin), or proxy mode -- so a client can say
+	// which key is really in force rather than implying the one just stored.
+	// The name predates the stdin channel and is kept: renaming a wire field
+	// would be a protocol change, and the meaning a client acts on is the same.
 	EnvOverride bool `json:"env_override,omitempty"`
 
 	// Model is the model prompts now go to when the provider's own model list

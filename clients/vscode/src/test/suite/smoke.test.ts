@@ -9,7 +9,7 @@ import * as vscode from 'vscode';
 
 import { pointAtEmptyRuntimeDir } from '../stubDaemon';
 
-const EXT_ID = 'mochiii.mochiii-vscode';
+const EXT_ID = 'MochiiiAIAgent.mochiii-vscode';
 const PANEL_TITLE = 'Mochiii Chat';
 
 function chatTabOpen(): boolean {

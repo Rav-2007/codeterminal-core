@@ -31,6 +31,7 @@
 // git will execute.
 
 import { execFile } from 'child_process';
+import { withoutCredentials } from './daemonCredentials';
 import { promisify } from 'util';
 
 import { lookPathForTest } from './daemonBinary';
@@ -93,6 +94,9 @@ export async function runGitStatus(workspace: string): Promise<string> {
       // process out of the repository keeps it that way if someone later adds
       // a relative one.
       cwd: undefined,
+      // git needs no Mochiii credential, and runs the repository's own hooks
+      // and config-named programs -- none of which should inherit one.
+      env: withoutCredentials(process.env),
       timeout: 15000,
       maxBuffer: 2 * 1024 * 1024,
     });

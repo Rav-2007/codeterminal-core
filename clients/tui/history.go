@@ -398,6 +398,8 @@ func (m chatModel) resumeChat(arg string) (tea.Model, tea.Cmd) {
 			m.chatUsage = usageTotals{} // a different chat; the session's total carries on
 			m.stopsInChat = 0
 			m.turns = turnsFromProtocol(resp.Turns)
+			// The resumed chat IS the shared chat now, as of this revision.
+			m.chatRev, m.chatQuiet = resp.ChatRevision, false
 			m.promptHistory = promptsFrom(resp.Turns)
 			m.historyIdx, m.historyDraft = -1, ""
 			m.lastGrounding, m.lastRedactions, m.lastDegraded = nil, nil, nil

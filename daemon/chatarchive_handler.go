@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"mochiii/protocol"
@@ -55,7 +56,57 @@ func (s *Server) handleHistory(ctx context.Context, enc *json.Encoder, req proto
 			fail("listing saved chats", err)
 			return
 		}
+		if q := strings.TrimSpace(req.Query); q != "" {
+			entries = s.filterChats(ctx, archive, entries, q)
+		}
 		reply(protocol.HistoryResponse{Entries: entries})
+
+	case protocol.HistoryBookmark, protocol.HistoryUnbookmark:
+		on := req.Action == protocol.HistoryBookmark
+		s.historyMu.Lock()
+		id := req.ID
+		var pruned int
+		if id == "" {
+			// The current chat: saved first (or its saved copy updated), so the
+			// bookmark has a file to live on.
+			var err error
+			id, _, pruned, err = s.saveChatLocked(ctx, archive, req.Spec, "")
+			if err != nil {
+				s.historyMu.Unlock()
+				fail("saving this chat", err)
+				return
+			}
+		}
+		h, err := archive.setBookmark(id, on)
+		s.historyMu.Unlock()
+		if err != nil {
+			fail("bookmarking that chat", err)
+			return
+		}
+		entry := s.entryFor(id, h, req.ID == "")
+		reply(protocol.HistoryResponse{Entry: &entry, Pruned: pruned})
+
+	case protocol.HistoryCompact:
+		entry, turns, compacted, rev, err := s.compactChat(ctx, archive, req.Spec, req.Tier)
+		if err != nil {
+			if errors.Is(err, errNothingToCompact) {
+				reply(protocol.HistoryResponse{Error: err.Error()})
+				return
+			}
+			// A model failure says which one: "see the daemon log" sent the user
+			// looking for a file to learn their plan's limit was hit. Error() is
+			// the scrubbed, client-safe sentence; the provider's own text goes
+			// only to the log.
+			var me *ModelError
+			if errors.As(err, &me) {
+				s.logger.Printf("history compact: %s", me.Detail())
+				reply(protocol.HistoryResponse{Error: "the model could not write the summary: " + me.Error()})
+				return
+			}
+			fail("compacting this chat", err)
+			return
+		}
+		reply(protocol.HistoryResponse{Entry: &entry, Turns: turns, Compacted: compacted, ChatRevision: rev})
 
 	case protocol.HistorySave:
 		s.historyMu.Lock()
@@ -78,12 +129,20 @@ func (s *Server) handleHistory(ctx context.Context, enc *json.Encoder, req proto
 		reply(protocol.HistoryResponse{Entry: &entry, Turns: turns})
 
 	case protocol.HistoryResume:
-		entry, turns, err := s.resumeChat(ctx, archive, req.ID)
+		entry, turns, rev, err := s.resumeChat(ctx, archive, req.ID)
 		if err != nil {
 			fail("resuming that chat", err)
 			return
 		}
-		reply(protocol.HistoryResponse{Entry: &entry, Turns: turns})
+		reply(protocol.HistoryResponse{Entry: &entry, Turns: turns, ChatRevision: rev})
+
+	case protocol.HistoryCurrent:
+		resp, err := s.currentChat(ctx, req.Since)
+		if err != nil {
+			fail("reading the current chat", err)
+			return
+		}
+		reply(resp)
 
 	case protocol.HistoryDelete:
 		// The link may still name the deleted chat. That is harmless by
@@ -96,7 +155,7 @@ func (s *Server) handleHistory(ctx context.Context, enc *json.Encoder, req proto
 		reply(protocol.HistoryResponse{})
 
 	default:
-		reply(protocol.HistoryResponse{Error: "unknown history action; use list, save, show, resume or delete"})
+		reply(protocol.HistoryResponse{Error: "unknown history action; use list, save, show, resume, delete, bookmark, unbookmark, compact or current"})
 	}
 }
 
@@ -131,6 +190,7 @@ func (s *Server) listChats(ctx context.Context, archive *chatArchive, spec strin
 		for _, c := range saved {
 			if c.ID == link.ID {
 				h.Name = c.Header.Name
+				h.Bookmarked = c.Header.Bookmarked
 				savedTurns = link.Turns
 			}
 		}
@@ -155,6 +215,7 @@ func (s *Server) entryFor(id string, h archiveHeader, current bool) protocol.His
 	e := protocol.HistoryEntry{
 		ID: id, Current: current, Title: h.displayTitle(), LastPrompt: h.LastPrompt,
 		Started: h.Started, Ended: h.Ended, Turns: h.Turns, Incomplete: h.Incomplete, Spec: h.Spec,
+		Bookmarked: h.Bookmarked,
 	}
 	if h.Spec == "" {
 		return e
@@ -182,16 +243,20 @@ func (s *Server) entryFor(id string, h archiveHeader, current bool) protocol.His
 // current chat is that copy, so /history save updates it rather than adding
 // another. The chosen chat is read BEFORE anything changes, so an id that does
 // not exist changes nothing.
-func (s *Server) resumeChat(ctx context.Context, archive *chatArchive, id string) (protocol.HistoryEntry, []protocol.Turn, error) {
+//
+// It also returns the chat's new revision (chatsync.go): the turns it returns
+// are the whole current chat, so the client that resumed is level with it.
+func (s *Server) resumeChat(ctx context.Context, archive *chatArchive, id string) (protocol.HistoryEntry, []protocol.Turn, string, error) {
 	s.historyMu.Lock()
 	defer s.historyMu.Unlock()
 	h, stored, err := archive.loadStored(id)
 	if err != nil {
-		return protocol.HistoryEntry{}, nil, err
+		return protocol.HistoryEntry{}, nil, "", err
 	}
 	if err := s.memory.ReplaceWorkspace(ctx, s.workspace, stored); err != nil {
-		return protocol.HistoryEntry{}, nil, err
+		return protocol.HistoryEntry{}, nil, "", err
 	}
+	rev := s.chatReplacedLocked(ctx)
 	turns := make([]protocol.Turn, len(stored))
 	for i, t := range stored {
 		turns[i] = protocol.Turn{Role: t.Role, Content: t.Content}
@@ -203,5 +268,43 @@ func (s *Server) resumeChat(ctx context.Context, archive *chatArchive, id string
 	}
 	e := s.entryFor(id, h, true)
 	e.SavedAs = id
-	return e, turns, nil
+	return e, turns, rev, nil
+}
+
+// filterChats keeps the entries whose title, or any turn, contains q --
+// case-insensitively. The current chat is matched against memory; a saved one
+// is read from its file, which load bounds after decompression, and there are at
+// most maxArchivesPerWorkspace unbookmarked of them, so this stays small.
+func (s *Server) filterChats(ctx context.Context, archive *chatArchive, entries []protocol.HistoryEntry, q string) []protocol.HistoryEntry {
+	needle := strings.ToLower(q)
+	has := func(text string) bool { return strings.Contains(strings.ToLower(text), needle) }
+	var out []protocol.HistoryEntry
+	for _, e := range entries {
+		if has(e.Title) || has(e.LastPrompt) {
+			out = append(out, e)
+			continue
+		}
+		matched := false
+		if e.Current {
+			if turns, err := s.memory.LoadAllTurns(ctx, s.workspace); err == nil {
+				for _, t := range turns {
+					if has(t.Content) {
+						matched = true
+						break
+					}
+				}
+			}
+		} else if _, turns, err := archive.load(e.ID); err == nil {
+			for _, t := range turns {
+				if has(t.Content) {
+					matched = true
+					break
+				}
+			}
+		}
+		if matched {
+			out = append(out, e)
+		}
+	}
+	return out
 }

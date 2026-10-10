@@ -611,8 +611,10 @@ func TestASystemToolchainIsNotBoundRedundantly(t *testing.T) {
 	if _, err := os.Stat("/usr/bin/make"); err != nil {
 		t.Skip("no /usr/bin/make on this host")
 	}
-	if root := toolchainRoot("make"); !coveredBy(root, []string{"/usr"}) {
-		t.Errorf("toolchainRoot(make) = %q, which is not covered by /usr", root)
+	for _, dir := range toolchainExposure("make") {
+		if !coveredBy(dir, []string{"/usr"}) {
+			t.Errorf("toolchainExposure(make) includes %q, which is not covered by /usr", dir)
+		}
 	}
 	if coveredBy("/home/user/.local/go", []string{"/usr", "/bin"}) {
 		t.Error("a per-user toolchain must not be treated as already covered")

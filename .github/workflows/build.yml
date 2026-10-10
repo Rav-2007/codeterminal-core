@@ -718,6 +718,15 @@ jobs:
         run: npm run check:installpath
         working-directory: clients/vscode
 
+      # The package ships ONE bundled out/extension.js (scripts/bundle-extension.js),
+      # while the suite below runs tsc's per-module output -- so nothing else
+      # here would notice a bundle that no longer builds, still requires a
+      # module it should contain, or throws when loaded. This builds it to a
+      # temporary file and proves all three, without touching out/.
+      - name: Bundle check
+        run: npm run check:bundle
+        working-directory: clients/vscode
+
       - name: Compile (tsc)
         run: npm run compile
         working-directory: clients/vscode

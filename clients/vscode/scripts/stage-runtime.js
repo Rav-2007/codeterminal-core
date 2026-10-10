@@ -87,4 +87,12 @@ copy(path.join(repoRoot, 'models.json'), path.join(runtimeDir, 'models.json'));
 // second file anyone could edit independently.
 copy(path.join(repoRoot, 'LICENSE'), path.join(extRoot, 'LICENSE'));
 
+// The third-party notices, by the same rule. The package redistributes the
+// daemon and helper (statically linking Go modules and the Go runtime) and the
+// file readers (bundled JS whose licence comments the bundler strips), and every
+// one of those licences -- MIT, BSD-3-Clause, Apache-2.0, MPL-2.0 -- requires its
+// notice to travel with a binary or bundled copy. Until 2026-10-10 nothing copied
+// this file in, while its own header said the licences "travel with" the .vsix.
+copy(path.join(repoRoot, 'THIRD_PARTY_LICENSES.txt'), path.join(extRoot, 'THIRD_PARTY_LICENSES.txt'));
+
 console.log('staging complete');

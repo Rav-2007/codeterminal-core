@@ -12,6 +12,7 @@ import (
 
 	"mochiii/daemon/mcp"
 	"mochiii/editapply"
+	"mochiii/protocol"
 )
 
 // `mcp list` -- the whole tool path, proved without the model.
@@ -99,7 +100,14 @@ func runMCPCommand(args []string, logger *log.Logger) error {
 
 	tools, listErrs := registry.Advertised(ctx)
 
-	fmt.Printf("Agent mode is ON. %d tool(s) would be offered to the model.\n\n", len(tools))
+	// Name the file, exactly as the OFF line above does. This command reads a
+	// config resolved next to the daemon binary (or --config); a daemon that
+	// was started separately -- the editor ADOPTS one a terminal left running
+	// -- may have loaded a different file, and then this report is about a
+	// config that is not the one answering prompts. Printing the path is what
+	// lets a reader notice that, rather than trust a listing of the wrong file.
+	fmt.Printf("Agent mode is ON (mcp.enabled is true in %s). %d tool(s) would be offered to the model.\n\n",
+		resolvedConfigPath, len(tools))
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	// Writes to a tabwriter over stdout: nothing here can recover from a
@@ -189,12 +197,21 @@ func firstLine(s string) string {
 	return s
 }
 
-// countExternal counts tools that are unconfined BECAUSE they are somebody
-// else's subprocess -- the population the subprocess warning is about.
+// countExternal counts the tools the subprocess warning is about: the ones
+// running in a third-party MCP server.
+//
+// IT KEYS ON THE LANE, NOT ON CONFINEMENT. "Unconfined" was read as "somebody
+// else's subprocess" here, but the two parted company exactly as they did for
+// the network tools above: a FIRST-PARTY built-in can be unconfined too --
+// propose_ast_edit and the compiler queries all report Confined=false -- and
+// none of those runs in an external server. Counting by `!Confined` therefore
+// told the user "N of these run in external MCP servers" with N inflated by
+// this daemon's own tools, which is the alarming direction and plainly false.
+// The lane is the only field that answers the question the sentence asks.
 func countExternal(tools []mcp.Tool) int {
 	n := 0
 	for _, tool := range tools {
-		if !tool.Confined && !tool.ReachesNetwork {
+		if tool.Lane == protocol.LaneThirdParty {
 			n++
 		}
 	}

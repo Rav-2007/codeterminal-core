@@ -546,10 +546,14 @@ func (s *Server) runAgentLoop(
 			s.cfg.MCP.Budget.resolvedMaxAdvertisedToolsFor(mode), len(dropped), strings.Join(dropped, ", "))
 		onDegraded(protocol.Degradation{
 			Component: protocol.DegradedToolMenuTruncated,
+			// NAMES, not just a count. A user told "3 tool(s) were not offered"
+			// cannot tell whether the one they need is among them, so the notice
+			// answered half the question it raised; `mcp list` has always named
+			// them, and this is the live path reaching the same bar.
 			Detail: fmt.Sprintf("%d configured tool(s) were not offered to the model this turn, "+
-				"because mcp.budget.max_advertised_tools is %d. A wider menu measurably makes the "+
+				"because mcp.budget.max_advertised_tools is %d: %s. A wider menu measurably makes the "+
 				"model choose worse, so the limit is deliberate — raise it if you need these tools.",
-				len(dropped), s.cfg.MCP.Budget.resolvedMaxAdvertisedToolsFor(mode)),
+				len(dropped), s.cfg.MCP.Budget.resolvedMaxAdvertisedToolsFor(mode), strings.Join(dropped, ", ")),
 		})
 	}
 
@@ -1232,6 +1236,16 @@ func (s *Server) dispatchToolCall(
 		renderCap = 0
 	}
 	rendered, kinds, emitted := renderToolResult(result.Content, renderCap, s.noScrub(), result.PreNeutralized)
+	// LITERAL CREDENTIAL REDACTION, after the heuristic scrub renderToolResult
+	// ran and BEFORE this result enters the model's context. Always on, even
+	// under --no-scrub: a tool that read the daemon's own key (now, or via a
+	// path the read-tool denylist does not cover) must not hand it to the model
+	// whatever encoding it is in. See credscrub_apply.go.
+	if cleaned, n := s.credRedact(rendered); n > 0 {
+		rendered = cleaned
+		emitted = len(rendered)
+		kinds = append(kinds, "mochiii_credential")
+	}
 	if decision.tool.Lane == protocol.LaneThirdParty {
 		rendered = frameLaneBOutput(decision.tool.Server, rendered)
 		emitted = len(rendered)
@@ -1469,15 +1483,15 @@ func (s *Server) resolveExecutable(
 	// "allow" on read_file was written about the project; it is not an answer
 	// to "may it read ~/Documents". Some places are refused before anyone is
 	// asked, because a yes there is exactly what an injected instruction wants.
-	outside := s.outsideReadTarget(spec, arguments)
+	spelt, outside := s.outsideReadTarget(spec, arguments)
 	if outside != "" {
-		if why := outsideReadRefusal(outside); why != "" {
+		if why := outsideReadRefusal(spelt); why != "" {
 			return toolDecision{
 				tool:   spec,
 				policy: mcp.PolicyDeny,
 				source: auditDeniedConfig,
 				cause:  denyByNoChannel,
-				reason: fmt.Sprintf("refused: %s. Do not try another route to it.", why),
+				reason: credentialRefusal(why),
 			}
 		}
 		if turn.grants[outsideGrantKey(qualified, outside)] {

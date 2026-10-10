@@ -66,6 +66,7 @@ func main() {
 	noRerank := flag.Bool("no-rerank", false, "bypass file-class re-ranking; use raw vector-similarity order (A/B comparison, default: re-ranking enabled)")
 	noScrub := flag.Bool("no-scrub", false, "disable heuristic scrubbing of secret-shaped text from the prompt before it's sent to the model API (default: scrubbing enabled)")
 	logFile := flag.String("log-file", "", "additionally append the daemon log to this file (size-rotated at 5 MiB, one .1 backup); stderr is always written too")
+	credentialsFromStdin := flag.Bool(credentialsFromStdinFlag, false, "read one JSON line {\"api_key\",\"api_base\",\"provider\",\"proxy_key\"} from stdin at startup, so a launcher never puts a key in this process's environment (MOCHIII_API_KEY in the environment still wins)")
 
 	// --help NAMES THE SUBCOMMANDS, not just the flags. See subcommands.go for
 	// why: the default flag usage listed flags only, so someone running --help to
@@ -81,6 +82,19 @@ func main() {
 	} else {
 		defer closeLog()
 		logger = log.New(logWriter, "mochiii-daemon: ", log.LstdFlags)
+	}
+
+	// THE LAUNCH CREDENTIAL, read before anything consults a key, and only when
+	// asked for: without the flag stdin is never touched. A malformed or missing
+	// line is fatal -- see launchcred.go for why guessing past it is worse.
+	var launch launchCredential
+	if *credentialsFromStdin {
+		c, err := readLaunchCredential(os.Stdin, launchCredentialTimeout)
+		if err != nil {
+			logger.Fatalf("--%s: %v", credentialsFromStdinFlag, err)
+		}
+		launch = c
+		launchKeySupplied.Store(launch.APIKey != "")
 	}
 
 	apiBase := os.Getenv("MOCHIII_API_BASE")
@@ -110,7 +124,20 @@ func main() {
 	// provider's own models, if it recorded any, replace models.json's tiers
 	// further down -- they are the only names that provider answers to.
 	var connected storedCredential
-	if !useProxy && (apiKey == "" || apiBase == "") {
+	// THE LAUNCHER'S CREDENTIAL TAKES THE STORED SLOT when it carries a key, and
+	// the file is then not consulted: the launcher read its own store (VS Code's
+	// SecretStorage) and handed over what it holds, which is what it would once
+	// have exported. Not in proxy mode, for the reason above. See
+	// resolveLaunchSlot for the base rule.
+	if !useProxy {
+		apiKey, apiBase, _ = resolveLaunchSlot(apiKey, apiBase, launch, logger.Printf)
+	} else if launch.APIKey != "" {
+		logger.Print("warning: a provider key arrived on stdin, but MOCHIII_USE_PROXY is set; it is not used -- proxy mode authenticates with proxy_key")
+	}
+	if !useProxy && launch.ProxyKey != "" {
+		logger.Print("warning: proxy_key arrived on stdin, but MOCHIII_USE_PROXY is not set; it is not used")
+	}
+	if !useProxy && launch.APIKey == "" && (apiKey == "" || apiBase == "") {
 		if path, err := credentialsPath(); err == nil {
 			stored, warn, loadErr := loadCredential(path)
 			if loadErr != nil {
@@ -154,9 +181,11 @@ func main() {
 	case useProxy && apiKey != "":
 		logger.Print("warning: MOCHIII_USE_PROXY is set but MOCHIII_API_KEY is also set; the key will still be sent to the proxy needlessly -- the proxy holds its own OpenRouter key. Unset MOCHIII_API_KEY when using a proxy.")
 	case useProxy:
-		apiKey = os.Getenv("MOCHIII_PROXY_KEY")
+		// The environment wins here too; stdin's proxy_key is the channel a
+		// launcher uses to keep it out of /proc/<pid>/environ.
+		apiKey = firstNonEmpty(os.Getenv("MOCHIII_PROXY_KEY"), launch.ProxyKey)
 		if apiKey == "" {
-			logger.Fatal("MOCHIII_USE_PROXY is set but MOCHIII_PROXY_KEY is empty; the proxy requires a Mochiii key")
+			logger.Fatal("MOCHIII_USE_PROXY is set but MOCHIII_PROXY_KEY is empty (and no proxy_key arrived on stdin); the proxy requires a Mochiii key")
 		}
 		logger.Printf("proxy mode: forwarding inference through %s with a Mochiii key", apiBase)
 	case apiKey == "":
@@ -442,6 +471,7 @@ func main() {
 		shutdownCtx:             shutdownCtx,
 		apiBase:                 apiBase,
 		apiKey:                  apiKey,
+		launchSecrets:           launch.secrets(),
 		cfg:                     cfg,
 		tierCfg:                 tierCfg,
 		modelOverride:           *modelOverride,
@@ -485,6 +515,12 @@ func main() {
 		counters:  &counters{},
 		lspBridge: NewLSPBridge(groundedRoot),
 	}
+	// Compile the literal credential scrubber from the key this daemon starts
+	// with, any it was handed on stdin, and its MOCHIII_API_KEY /
+	// MOCHIII_PROXY_KEY environment, before it
+	// serves a single turn (credscrub_apply.go). /connect rebuilds it on a swap.
+	srv.rebuildCredScrubber()
+
 	// One line per reduced subsystem, so the log and the wire agree about what
 	// is degraded from the moment the daemon starts serving.
 	srv.logDegradations()

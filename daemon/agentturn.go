@@ -309,22 +309,6 @@ func (s *Server) runAgentTurn(
 	if isSpecMode(promptReq.Mode) || isCheckMode(promptReq.Mode) {
 		blocks, rejections = specModeWithholdEdits(promptReq.Mode, filed, textBlocks, rejections)
 	}
-	// A failed terminal write means the client has gone; the turn's real work
-	// (the edit proposals, the persisted history below) is unaffected.
-	_ = s.sendDone(enc, protocol.TokenResponse{
-		ProtocolVersion: protocol.ProtocolVersion,
-		Done:            true,
-		EditProposals:   editProposalsFromBlocks(blocks),
-		EditRejections:  rejections,
-		Incomplete:      result.Incomplete,
-		WorkingCopy:     workingCopy,
-		SpecReport:      proposals.report,
-		Degraded:        copyDegraded,
-		Usage:           usageTallyFrom(ctx).report(model, s.contextWindowFor(model)),
-		Spend:           usageTallyFrom(ctx).spendReport(),
-	})
-	s.logger.Printf("agent: turn complete after %d tool call(s)", len(result.ToolNames))
-
 	// Persisted as ONE user + ONE assistant turn, with a compact note of which
 	// tools ran rather than what they returned. Tool output must not re-enter
 	// future requests through the history path (D11), and validTurn would
@@ -335,5 +319,26 @@ func (s *Server) runAgentTurn(
 	}
 	// The sources are remembered with the answer they stand under: a chat opened
 	// next week is as checkable as it was on the day.
-	s.persistTurn(promptReq.Prompt, remembered+sources+summariseToolActivity(result.ToolNames), result.Incomplete)
+	//
+	// Saved BEFORE the Done, as the chat path is (server.go), so the Done can
+	// say where the shared chat now stands.
+	before, after := s.persistTurn(promptReq.Prompt, remembered+sources+summariseToolActivity(result.ToolNames), result.Incomplete)
+
+	// A failed terminal write means the client has gone; the turn's real work
+	// (the edit proposals, the persisted history above) is unaffected.
+	done := protocol.TokenResponse{
+		ProtocolVersion: protocol.ProtocolVersion,
+		Done:            true,
+		EditProposals:   editProposalsFromBlocks(blocks),
+		EditRejections:  rejections,
+		Incomplete:      result.Incomplete,
+		WorkingCopy:     workingCopy,
+		SpecReport:      proposals.report,
+		Degraded:        copyDegraded,
+		Usage:           usageTallyFrom(ctx).report(model, s.contextWindowFor(model)),
+		Spend:           usageTallyFrom(ctx).spendReport(),
+	}
+	markChatRevision(&done, promptReq.ChatRevision, before, after)
+	_ = s.sendDone(enc, done)
+	s.logger.Printf("agent: turn complete after %d tool call(s)", len(result.ToolNames))
 }

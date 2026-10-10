@@ -1,4 +1,6 @@
 import * as vscode from 'vscode';
+import { AttachmentError, extractAttachmentFile } from './attachmentExtract';
+import { resolveConfigPathSetting } from './daemonBinary';
 
 // fs and path used to be imported here solely to build executable paths out of
 // the workspace. Both uses were the vulnerability; there are now zero callers,
@@ -15,6 +17,7 @@ import {
   APPROVAL_APPROVE_FOR_SPEC,
   APPROVAL_DENY,
   RESTART_HINT,
+  ChatHistoryResponse,
   Degradation,
   EditBlockWire,
   EditRejectionWire,
@@ -26,8 +29,9 @@ import {
   Turn,
   applyEdit,
   fetchAvailableTiers,
-  preflightHandshake,
-  searchConversations,
+  preflightSession,
+  chatHistory,
+  resetChat,
   streamPrompt,
   undoEdits,
 } from './daemonClient';
@@ -68,8 +72,24 @@ export class DiffContentProvider implements vscode.TextDocumentContentProvider {
   }
 }
 
-const CLIENT_NAME = 'mochiii-vscode';
-const VIEW_TYPE = 'mochiiiChat';
+export const CLIENT_NAME = 'mochiii-vscode';
+// The panel's view type: what VS Code records for a panel left open at exit,
+// and what package.json's onWebviewPanel activation event and extension.ts's
+// serializer are keyed on. All three must agree.
+export const CHAT_VIEW_TYPE = 'mochiiiChat';
+
+// How long the panel waits for the daemon to answer when it opens. Mochiii
+// starts only when it is used (package.json activationEvents), so the command
+// that opened this panel is usually what started the daemon a moment ago --
+// and a panel VS Code restores after a restart always is.
+const PREFLIGHT_WAIT_MS = 15_000;
+const PREFLIGHT_RETRY_MS = 300;
+
+// chatWebviewOptions is what the webview may do, for a new panel and for one
+// VS Code restores: scripts on, and local files from media/ and nowhere else.
+function chatWebviewOptions(extensionUri: vscode.Uri): vscode.WebviewOptions {
+  return { enableScripts: true, localResourceRoots: [vscode.Uri.joinPath(extensionUri, 'media')] };
+}
 
 // turnsFromWire keeps only "user"/"assistant" roles, mirroring
 // clients/tui/chat.go's turnsFromProtocol -- defense in depth even though
@@ -91,11 +111,39 @@ export class ChatPanel {
   private readonly panel: vscode.WebviewPanel;
   private readonly disposables: vscode.Disposable[] = [];
   private transcript: Turn[] = [];
+  // Ids for attachment chips, so a reply finds the chip it belongs to.
+  private attachmentSeq = 0;
+  // The composer's effort picker. '' is Auto: no reasoning_effort is sent and the
+  // model uses its own default.
+  private reasoningEffort: '' | 'low' | 'medium' | 'high' = '';
   private inFlight: AbortController | undefined;
 
   // preferredTier is the models.json tier name chosen via /model <name>.
   // Empty means default routing. Sent as PromptRequest.tier on every turn.
   private preferredTier = '';
+  // The model id preferredTier (or the default tier) resolves to, for /context
+  // and the switch confirmation; '' until the daemon has said.
+  private currentModel = '';
+  // The daemon's handshake said a prompt sent now would carry no key.
+  private needsApiKey = false;
+
+  // THE SHARED CHAT (daemon/chatsync.go). The workspace's chat is ONE
+  // conversation, and the terminal client writes to it too; this panel used to
+  // read it once, when it opened, so a question asked in the terminal never
+  // reached this panel -- nor the history it sent next (FOUND 2026-10-08).
+  // chatSync: the daemon keeps one (it gave a revision). chatRev: the revision
+  // on screen, '' when not known, which the next catch-up answers by fetching
+  // the chat whole. chatQuiet: that whole fetch says nothing, because the
+  // change is this panel's own. resetPending: a "+" is on its way to the
+  // daemon, and fetching meanwhile could bring the old chat back.
+  private chatSync = false;
+  private chatRev = '';
+  private chatQuiet = false;
+  private resetPending = false;
+  private catchUpInFlight = false;
+  // Set once the panel is closed, so work started before (the preflight's
+  // wait for a starting daemon) stops instead of posting to a dead webview.
+  private disposed = false;
   // lastGrounding is the most recent GroundingInfo for /context.
   private lastGrounding: GroundingInfo | undefined;
 
@@ -138,7 +186,6 @@ export class ChatPanel {
   private refusalReasons: string[] = [];
   private applyInFlight = false;
   private undoInFlight = false;
-  private searchInFlight = false;
 
   // turnMode is the latest turn's wire mode, and appliedPaths the files its
   // review applied -- so the spec a /spec turn wrote becomes active once the
@@ -172,12 +219,38 @@ export class ChatPanel {
       return;
     }
 
-    const panel = vscode.window.createWebviewPanel(VIEW_TYPE, 'Mochiii Chat', vscode.ViewColumn.Beside, {
-      enableScripts: true,
+    const panel = vscode.window.createWebviewPanel(CHAT_VIEW_TYPE, 'Mochiii Chat', vscode.ViewColumn.Beside, {
+      ...chatWebviewOptions(extensionUri),
+      // KEPT ON PURPOSE, against the guideline's default. VS Code's webview
+      // guide says this "has high memory overhead and should only be used when
+      // other persistence techniques will not work" -- and here they will not.
+      // Hidden without it, the webview is destroyed and every message posted
+      // meanwhile is lost, and this panel can be in the middle of things that
+      // cannot be rebuilt from saved state: a tool approval the daemon is HOLDING
+      // OPEN until it is answered (dropping that panel stalls the turn until the
+      // daemon's five-minute deadline denies it), an answer still streaming,
+      // and an edit review one block in. Reloading from getState would show a
+      // panel that looks ready while the daemon waits for a click it can no
+      // longer receive. What a restart CAN rebuild -- the chat itself -- is
+      // rebuilt from the daemon (revive, below).
       retainContextWhenHidden: true,
-      localResourceRoots: [vscode.Uri.joinPath(extensionUri, 'media')],
     });
 
+    ChatPanel.current = new ChatPanel(panel, extensionUri);
+  }
+
+  // revive takes back a panel VS Code restored after a restart -- the one
+  // that was open when the window closed -- through the serializer extension.ts
+  // registers. Nothing needs carrying over from the old webview: the chat is
+  // the daemon's, and the new panel hydrates from it like any panel that opens.
+  static revive(panel: vscode.WebviewPanel, extensionUri: vscode.Uri): void {
+    if (ChatPanel.current) {
+      // One chat panel per window. A restored duplicate is closed, not kept.
+      panel.dispose();
+      ChatPanel.current.panel.reveal();
+      return;
+    }
+    panel.webview.options = chatWebviewOptions(extensionUri);
     ChatPanel.current = new ChatPanel(panel, extensionUri);
   }
 
@@ -193,6 +266,29 @@ export class ChatPanel {
 
     this.panel.webview.onDidReceiveMessage((msg) => this.handleMessage(msg), null, this.disposables);
     this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
+    // Coming back to this panel -- from the terminal, another editor tab,
+    // another app -- is when the other client may have added to the shared
+    // chat. The webview reports its own focus too ('focused'), which covers
+    // clicking in from VS Code's integrated terminal: neither event below fires
+    // for that.
+    this.panel.onDidChangeViewState(
+      (e) => {
+        if (e.webviewPanel.visible) {
+          void this.catchUp();
+        }
+      },
+      null,
+      this.disposables,
+    );
+    vscode.window.onDidChangeWindowState(
+      (state) => {
+        if (state.focused && this.panel.visible) {
+          void this.catchUp();
+        }
+      },
+      null,
+      this.disposables,
+    );
 
     this.runPreflight();
   }
@@ -201,26 +297,80 @@ export class ChatPanel {
   // before the user ever types -- the ONLY place this ChatPanel reads
   // persisted_history. Subsequent per-prompt connections (streamPrompt)
   // never touch that field.
+  //
+  // It waits up to PREFLIGHT_WAIT_MS for a daemon that is still starting
+  // before saying it could not reach one: opening this panel is usually what
+  // started it.
   private async runPreflight(): Promise<void> {
-    try {
-      const persisted = turnsFromWire(await preflightHandshake(CLIENT_NAME));
-      this.transcript = persisted;
-      this.panel.webview.postMessage({ type: 'history', turns: persisted });
-      this.postActiveSpec();
-      this.postModelTier();
-    } catch (err) {
-      this.panel.webview.postMessage({
-        type: 'error',
-        message: `Could not reach the daemon: ${(err as Error).message}`,
-      });
+    let session: Awaited<ReturnType<typeof preflightSession>>;
+    const deadline = Date.now() + PREFLIGHT_WAIT_MS;
+    for (;;) {
+      try {
+        session = await preflightSession(CLIENT_NAME);
+        break;
+      } catch (err) {
+        if (this.disposed) {
+          return;
+        }
+        if (Date.now() >= deadline) {
+          this.panel.webview.postMessage({
+            type: 'error',
+            message: `Could not reach the daemon: ${(err as Error).message}`,
+          });
+          return;
+        }
+        await new Promise((r) => setTimeout(r, PREFLIGHT_RETRY_MS));
+      }
     }
+    if (this.disposed) {
+      return;
+    }
+    this.needsApiKey = session.needsApiKey;
+    this.chatSync = session.chatRevision !== '';
+    this.chatRev = session.chatRevision;
+    const persisted = turnsFromWire(session.turns);
+    this.transcript = persisted;
+    this.panel.webview.postMessage({ type: 'history', turns: persisted });
+    this.postActiveSpec();
+    this.postModelTier();
+    // The header star shows whether the chat that was just restored is bookmarked.
+    void this.onHistoryList('');
   }
 
-  private postModelTier(): void {
-    this.panel.webview.postMessage({
-      type: 'modelTier',
-      tier: this.preferredTier || 'default',
-    });
+  // knownModel: the caller already looked the tier up (applyTier), so there is
+  // nothing to fetch. Otherwise the model is resolved from the daemon's list.
+  private postModelTier(knownModel?: string): void {
+    const tier = this.preferredTier || 'default';
+    const post = (m: Record<string, unknown>): void => {
+      try {
+        void this.panel.webview.postMessage(m);
+      } catch {
+        // panel closed meanwhile
+      }
+    };
+    if (knownModel) {
+      this.currentModel = knownModel;
+      post({ type: 'modelTier', tier, model: knownModel });
+      return;
+    }
+    post({ type: 'modelTier', tier });
+    // Then the model behind the tier, which is what the chip shows: "default"
+    // alone told the user nothing about what was answering. Best effort -- with
+    // no daemon yet the chip keeps the tier name.
+    fetchAvailableTiers(CLIENT_NAME).then(
+      (tiers) => {
+        const current = this.preferredTier || 'default';
+        if (current !== tier) {
+          return; // the user picked another tier while this was in flight
+        }
+        const t = tiers.find((x) => (this.preferredTier ? x.name === this.preferredTier : x.default === true));
+        if (t) {
+          this.currentModel = t.slug;
+          post({ type: 'modelTier', tier, model: t.slug });
+        }
+      },
+      () => undefined,
+    );
   }
 
   private handleMessage(msg: {
@@ -232,9 +382,25 @@ export class ChatPanel {
     decision?: string;
     callId?: string;
     index?: number;
+    remaining?: number;
+    effort?: string;
+    tier?: string;
+    id?: string;
+    on?: boolean;
   }): void {
-    if (msg.type === 'toolApprovalDecision' && typeof msg.decision === 'string') {
+    if (msg.type === 'pickAttachments' && typeof msg.remaining === 'number') {
+      void this.onPickAttachments(msg.remaining);
+    } else if (msg.type === 'listModels') {
+      void this.onListModels();
+    } else if (msg.type === 'selectModel' && typeof msg.tier === 'string') {
+      void this.onSelectModel(msg.tier);
+    } else if (msg.type === 'setEffort' && typeof msg.effort === 'string') {
+      const e = msg.effort;
+      this.reasoningEffort = e === 'low' || e === 'medium' || e === 'high' ? e : '';
+    } else if (msg.type === 'toolApprovalDecision' && typeof msg.decision === 'string') {
       this.onToolApprovalDecision(msg.callId, msg.decision);
+    } else if (msg.type === 'focused') {
+      void this.catchUp();
     } else if (msg.type === 'prompt' && typeof msg.text === 'string') {
       this.onPrompt(msg.text, msg.autoApply === true, msg.mode);
     } else if (msg.type === 'applyEdit') {
@@ -245,23 +411,109 @@ export class ChatPanel {
       this.onUndoEdit(msg.backupDir);
     } else if (msg.type === 'viewDiff' && typeof msg.index === 'number') {
       this.onViewDiff(msg.index);
-    } else if (msg.type === 'search' && typeof msg.text === 'string') {
-      this.onSearch(msg.text);
+    } else if (msg.type === 'historyList') {
+      void this.onHistoryList(typeof msg.text === 'string' ? msg.text : '');
+    } else if (msg.type === 'historyResume' && typeof msg.id === 'string') {
+      void this.onHistoryResume(msg.id);
+    } else if (msg.type === 'historyBookmark' && typeof msg.id === 'string') {
+      void this.onHistoryBookmark(msg.id, msg.on === true);
+    } else if (msg.type === 'historyDelete' && typeof msg.id === 'string') {
+      void this.onHistoryDelete(msg.id);
     } else if (msg.type === 'closePanel') {
       this.panel.dispose();
     } else if (msg.type === 'newChat') {
-      this.onNewChat();
+      void this.onNewChat();
     }
   }
 
-  private onNewChat(): void {
+  // The paperclip. The file dialog is the editor's, and the files are read here
+  // from disk -- not by the webview, which has no Node and could only pass bytes
+  // across the message channel as base64. Each file's text goes back to the
+  // webview, which holds it until the prompt is sent.
+  private async onPickAttachments(remaining: number): Promise<void> {
+    const post = (m: Record<string, unknown>): void => {
+      try {
+        this.panel.webview.postMessage(m).then(undefined, () => undefined);
+      } catch {
+        // The panel was closed while a file was being read; nobody is waiting.
+      }
+    };
+    if (remaining <= 0) {
+      post({ type: 'attachmentNotice', text: 'No more files can be attached to this message.' });
+      return;
+    }
+    const uris = await vscode.window.showOpenDialog({
+      canSelectMany: true,
+      openLabel: 'Attach',
+      defaultUri: vscode.workspace.workspaceFolders?.[0]?.uri,
+      filters: {
+        'Documents, images, text and code': [
+          'pdf', 'docx', 'xlsx', 'xlsm', 'pptx', 'png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp',
+          'txt', 'md', 'json', 'csv', 'log', 'js', 'ts', 'tsx', 'jsx', 'py', 'go', 'rs', 'java',
+          'c', 'h', 'cpp', 'hpp', 'css', 'html', 'xml', 'yaml', 'yml', 'toml', 'sh', 'sql',
+        ],
+        'All files': ['*'],
+      },
+    });
+    if (!uris || uris.length === 0) {
+      return;
+    }
+    const files = uris.filter((u) => u.scheme === 'file').slice(0, remaining);
+    if (uris.length > files.length) {
+      post({ type: 'attachmentNotice', text: `Only ${files.length} of the ${uris.length} selected files were attached (at most 8 per message, local files only).` });
+    }
+    // Every chip appears at once; the files are then read one after another,
+    // which is also the order OCR would serialise them in anyway.
+    // The display name from the URI (always '/'-separated): this file keeps no
+    // `path` import, per the note at its top; the file itself is opened by
+    // extractAttachmentFile, which does not take a path from the workspace.
+    const jobs = files.map((uri) => ({ uri, id: `att${++this.attachmentSeq}`, name: uri.path.slice(uri.path.lastIndexOf('/') + 1) }));
+    for (const j of jobs) {
+      post({ type: 'attachmentStarted', id: j.id, name: j.name });
+    }
+    for (const j of jobs) {
+      try {
+        const r = await extractAttachmentFile(j.uri.fsPath, (note) => post({ type: 'attachmentProgress', id: j.id, note }));
+        post({ type: 'attachmentExtracted', id: j.id, name: j.name, kind: r.kind, text: r.text, note: r.note, desc: r.desc });
+      } catch (err) {
+        post({
+          type: 'attachmentFailed',
+          id: j.id,
+          error: err instanceof AttachmentError ? err.message : `${j.name}: could not be read (${err instanceof Error ? err.message : String(err)}).`,
+        });
+      }
+    }
+  }
+
+  // "+": keep the chat in history (auto-save), then start a new one on the
+  // daemon too -- it used to clear only this panel, so the daemon went on
+  // appending to one endless chat and the next window rehydrated all of it.
+  private async onNewChat(): Promise<void> {
     this.inFlight?.abort();
     this.inFlight = undefined;
     this.clearPendingApproval();
     this.clearPendingReview();
+    const saved = this.autoSave() ? await this.saveCurrentChat() : false;
+    this.resetPending = true;
+    try {
+      // Level with the new, empty chat at once.
+      this.chatRev = await resetChat(CLIENT_NAME);
+      this.chatQuiet = false;
+    } catch {
+      // No daemon: the panel is cleared anyway; the next handshake starts fresh.
+      // Where the chat stands is then unknown, and finding out is not news.
+      this.chatRev = '';
+      this.chatQuiet = true;
+    } finally {
+      this.resetPending = false;
+    }
     this.transcript = [];
     this.lastGrounding = undefined;
-    this.panel.webview.postMessage({ type: 'clearTranscript' });
+    this.postSafe({ type: 'clearTranscript' });
+    this.postSafe({ type: 'currentBookmark', on: false });
+    if (saved) {
+      this.postSafe({ type: 'info', text: 'New chat · the previous one is saved in History' });
+    }
   }
 
   private onPrompt(text: string, autoApply: boolean, mode?: string): void {
@@ -316,8 +568,84 @@ export class ChatPanel {
 
   private replyLocal(reply: string): void {
     this.transcript.push({ role: 'assistant', content: reply });
-    this.panel.webview.postMessage({ type: 'token', text: reply });
+    // plain: command output is aligned text, not markdown. Rendered as markdown,
+    // the "* " marking the current model in /model became a bullet point.
+    this.panel.webview.postMessage({ type: 'token', text: reply, plain: true });
     this.panel.webview.postMessage({ type: 'done' });
+  }
+
+  // THE MODEL DROPDOWN. The chip used to send "/model" as a chat message, so a
+  // click produced a reply in the transcript instead of a menu.
+  private async onListModels(): Promise<void> {
+    const post = (m: Record<string, unknown>): void => {
+      try {
+        this.panel.webview.postMessage(m).then(undefined, () => undefined);
+      } catch {
+        // panel closed meanwhile
+      }
+    };
+    try {
+      const tiers = await fetchAvailableTiers(CLIENT_NAME);
+      post({
+        type: 'modelMenu',
+        current: this.preferredTier,
+        tiers: tiers.map((t) => ({ name: t.name, slug: t.slug, active: t.active, isDefault: t.default === true })),
+      });
+    } catch (err) {
+      post({ type: 'modelMenu', current: this.preferredTier, tiers: [], error: (err as Error).message });
+    }
+  }
+
+  // Selecting from the dropdown: '' is the default. The same checks as /model.
+  private async onSelectModel(tier: string): Promise<void> {
+    const err = await this.applyTier(tier);
+    // A switch made in the dropdown otherwise leaves no trace in the chat, so a
+    // later look back cannot tell which model answered what. UI-only: this line
+    // is not added to the transcript the model sees.
+    const short = this.currentModel ? this.currentModel.slice(this.currentModel.lastIndexOf('/') + 1) : '';
+    const text = err
+      ? err
+      : this.preferredTier
+        ? `Model switched to ${short || this.preferredTier} · used from your next message`
+        : `Model switched to Default${short ? ` (${short})` : ''} · used from your next message`;
+    try {
+      void this.panel.webview.postMessage({ type: err ? 'notice' : 'info', text });
+    } catch {
+      // panel closed meanwhile
+    }
+  }
+
+  // Sets the tier for later turns, or returns why it cannot.
+  private async applyTier(name: string): Promise<string | undefined> {
+    const toDefault = name === '' || name === 'clear' || name === 'default';
+    let tiers: Awaited<ReturnType<typeof fetchAvailableTiers>>;
+    try {
+      tiers = await fetchAvailableTiers(CLIENT_NAME);
+    } catch (err) {
+      if (toDefault) {
+        // The default needs no checking; only its model name is unknown.
+        this.preferredTier = '';
+        this.currentModel = '';
+        this.postModelTier();
+        return undefined;
+      }
+      return `could not select model: ${(err as Error).message}`;
+    }
+    if (toDefault) {
+      this.preferredTier = '';
+      this.postModelTier(tiers.find((t) => t.default === true)?.slug);
+      return undefined;
+    }
+    const found = tiers.find((t) => t.name === name);
+    if (!found) {
+      return `unknown model tier "${name}" — try /model for the list`;
+    }
+    if (!found.active) {
+      return `tier "${name}" is currently inactive in models.json`;
+    }
+    this.preferredTier = found.name;
+    this.postModelTier(found.slug);
+    return undefined;
   }
 
   private async handleModelCommand(arg: string): Promise<void> {
@@ -344,28 +672,12 @@ export class ChatPanel {
       return;
     }
     if (arg === 'clear' || arg === 'default') {
-      this.preferredTier = '';
-      this.postModelTier();
+      await this.applyTier('');
       this.replyLocal('model reset to default tier (models.json default_tier)');
       return;
     }
-    try {
-      const tiers = await fetchAvailableTiers(CLIENT_NAME);
-      const found = tiers.find((t) => t.name === arg);
-      if (!found) {
-        this.replyLocal(`unknown model tier "${arg}" — try /model for the list`);
-        return;
-      }
-      if (!found.active) {
-        this.replyLocal(`tier "${arg}" is currently inactive in models.json`);
-        return;
-      }
-      this.preferredTier = found.name;
-      this.postModelTier();
-      this.replyLocal(`model set to ${found.name} (${found.slug})`);
-    } catch (err) {
-      this.replyLocal(`could not select model: ${(err as Error).message}`);
-    }
+    const err = await this.applyTier(arg);
+    this.replyLocal(err ?? `model set to ${this.currentModel || this.preferredTier}`);
   }
 
   // localHost adapts this panel to LocalCommandHost. The workspace is read here,
@@ -376,8 +688,13 @@ export class ChatPanel {
     return {
       workspace: workspacePath(),
       extensionPath: this.extensionPath,
+      // The machine-scoped config path the daemon was started with, so
+      // /mcp-server reports that same config. Read here (this file imports
+      // vscode) and resolved, never from the workspace. See localCommands.ts.
+      configPath: resolveConfigPathSetting(vscode.workspace.getConfiguration('mochiii').get<string>('configPath')).path ?? '',
       transcript: this.transcript,
       preferredTier: this.preferredTier,
+      currentModel: this.currentModel,
       lastGrounding: this.lastGrounding,
       replaceTranscript: (turns) => {
         this.transcript = turns;
@@ -393,12 +710,18 @@ export class ChatPanel {
       // masked input box, stores the key in SecretStorage, and restarts the
       // daemon so the new key is actually in use. Reimplementing any of that
       // here would be a second credential path to keep correct.
-      connectApiKey: async () => {
-        await vscode.commands.executeCommand('mochiii.setApiKey');
-        return 'API key prompt opened. If you entered a key, the daemon was restarted to use it.';
+      // The provider-aware flow in extension.ts (mochiii.connect): a masked
+      // box, the daemon proves and stores the key and uses it at once.
+      connectApiKey: async (base?: string) => {
+        const r = await vscode.commands.executeCommand<{ message: string; inUse: boolean }>('mochiii.connect', { base });
+        if (r?.inUse) {
+          this.needsApiKey = false;
+        }
+        return r?.message ?? 'connect did not run.';
       },
       // Both return the sentence to print. The panel never reads or deletes a
       // credential itself -- it asks the extension, which owns SecretStorage.
+      compactChat: () => this.compactChat(),
       showApiKey: async () => vscode.commands.executeCommand<string>('mochiii.showApiKey'),
       forgetApiKey: async () => vscode.commands.executeCommand<string>('mochiii.forgetApiKey'),
     };
@@ -434,7 +757,50 @@ export class ChatPanel {
     const reply = await runLocalCommand(this.localHost(), name, args);
     if (reply !== '') {
       this.replyLocal(reply);
+    } else {
+      // The webview locked the composer when the command was sent; a command
+      // that answers with no reply (a successful /compact) must still unlock it.
+      this.postSafe({ type: 'done' });
     }
+    if (name === 'connect') {
+      // A new provider brings its own models: the chip, and a selection that
+      // named a model the new provider does not have, must follow.
+      void this.refreshModelAfterConnect();
+    }
+  }
+
+  private async refreshModelAfterConnect(): Promise<void> {
+    try {
+      const tiers = await fetchAvailableTiers(CLIENT_NAME);
+      if (this.preferredTier && !tiers.some((t) => t.name === this.preferredTier)) {
+        this.preferredTier = '';
+      }
+    } catch {
+      // keep what is shown; the next turn will say if the daemon is gone
+    }
+    this.postModelTier();
+  }
+
+  // ASK FOR THE KEY WHEN A QUESTION NEEDS IT -- the terminal client's behaviour
+  // (beginConnectForPrompt). The daemon said at the handshake that a prompt
+  // would go out with no key; sending the question anyway would only turn it
+  // into an authentication error. The connect box opens, and the question is
+  // sent the moment a key is in use -- or handed back, unsent, if not.
+  private async connectThenStart(run: () => void): Promise<void> {
+    this.needsApiKey = false; // no second box while this one is open
+    const r = await vscode.commands.executeCommand<{ message: string; inUse: boolean }>('mochiii.connect', {});
+    if (r?.inUse) {
+      void this.panel.webview.postMessage({ type: 'info', text: 'Key connected · sending your question' });
+      void this.refreshModelAfterConnect();
+      run();
+      return;
+    }
+    this.needsApiKey = true;
+    this.replyLocal(
+      'Your question was not sent: Mochiii needs a model provider key first, and none is in use.\n\n' +
+        (r?.message ?? '') +
+        '\n\nRun /connect, then send the question again.',
+    );
   }
 
   private startModelTurn(
@@ -445,6 +811,10 @@ export class ChatPanel {
     mode?: string,
     pipeline?: string[]
   ): void {
+    if (this.needsApiKey) {
+      void this.connectThenStart(() => this.startModelTurn(displayText, wirePrompt, promptKind, autoApply, mode, pipeline));
+      return;
+    }
     // Captured once, for this run only -- see the currentRunAutoApply field
     // doc comment for why this must not be re-read later.
     this.currentRunAutoApply = autoApply;
@@ -471,6 +841,10 @@ export class ChatPanel {
     let incompleteReason = '';
 
     const activeSpec = getActiveSpec(workspacePath());
+    // The shared chat's revision this history was built from. Sent so the
+    // daemon can answer from the stored chat if the terminal has added to it
+    // since; '' when not known, which the daemon reads as "use what was sent".
+    const sentRev = this.chatSync ? this.chatRev : '';
     streamPrompt(
       CLIENT_NAME,
       wirePrompt,
@@ -552,6 +926,12 @@ export class ChatPanel {
             request: specGrant ? req : { ...req, spec_grant: undefined },
           });
         },
+        // Level with the stored chat only if nobody else wrote to it first and
+        // this turn was sent knowing where it stood; otherwise the chat is
+        // fetched whole once the turn is over (onDone).
+        onChatRevision: (revision: string, behind: boolean) => {
+          this.chatRev = behind || !sentRev ? '' : revision;
+        },
         onDone: () => {
           this.transcript.push(
             incompleteReason
@@ -561,6 +941,10 @@ export class ChatPanel {
           this.inFlight = undefined;
           this.clearPendingApproval();
           this.panel.webview.postMessage({ type: 'done' });
+          if (this.chatSync && this.chatRev === '') {
+            // Not under a review: catchUp waits for one to finish (canCatchUp).
+            void this.catchUp();
+          }
         },
         onError: (err: Error) => {
           // A stream that fails PARTWAY has already shown the user real text.
@@ -594,6 +978,8 @@ export class ChatPanel {
         pipeline,
         spec: activeSpec || undefined,
         specGrants: this.specGrants.digestsFor(activeSpec),
+        reasoningEffort: this.reasoningEffort || undefined,
+        chatRevision: sentRev || undefined,
       }
     );
   }
@@ -855,36 +1241,232 @@ export class ChatPanel {
     }
   }
 
-  // onSearch runs a lexical (FTS5) search over cross-session conversation
-  // memory for the current workspace, entirely separate from the chat
-  // transcript above -- searching never touches this.transcript or
-  // interrupts an in-flight prompt/apply/undo, and a search in flight
-  // doesn't block those either; searchInFlight only guards against a second
-  // search racing the first. Results (or the empty-not-error / actual-error
-  // outcome) are relayed to the webview verbatim, exactly as they arrived
-  // over the wire -- no re-sorting (results already arrive bm25-ranked) and
-  // no collapsing "no results" and "search failed" into the same message,
-  // mirroring how onUndoEdit relays guarded/error without collapsing them.
-  private async onSearch(query: string): Promise<void> {
-    if (this.searchInFlight) {
+  // HISTORY, Claude Code style: every chat is kept (mochiii.history.autoSave,
+  // on by default) and listed with its title and age; the search box matches
+  // what was SAID, not only titles; bookmarked chats are pinned and never
+  // pruned. The chats live in the daemon's archive (daemon/chatarchive.go),
+  // shared with the terminal's /history.
+  //
+  // AUTO-SAVE REVERSES A RECORDED RULE, BY THE USER'S CHOICE (2026-10-06):
+  // chatarchive.go writes only chats the user saves, "the owner's requirement
+  // ... that disk use stays the user's choice". The setting is that choice, and
+  // the archive's bounds (50 chats, 20 MB per workspace, bookmarks exempt) hold.
+  private autoSave(): boolean {
+    return vscode.workspace.getConfiguration('mochiii').get<boolean>('history.autoSave', true) !== false;
+  }
+
+  private postSafe(m: Record<string, unknown>): void {
+    try {
+      void this.panel.webview.postMessage(m);
+    } catch {
+      // panel closed meanwhile
+    }
+  }
+
+  // Saves the current chat (or updates its saved copy). "Nothing to save" --
+  // an empty chat, or one with no answer yet -- is not a failure.
+  private async saveCurrentChat(): Promise<boolean> {
+    if (this.transcript.length === 0) {
+      return false;
+    }
+    try {
+      const r = await chatHistory(CLIENT_NAME, 'save');
+      return !r.error && !!r.entry;
+    } catch {
+      return false;
+    }
+  }
+
+  private async onHistoryList(query: string): Promise<void> {
+    try {
+      const r = await chatHistory(CLIENT_NAME, 'list', { query: query.trim() || undefined });
+      this.postSafe({ type: 'historyEntries', entries: r.entries ?? [], query, error: r.error });
+      const current = (r.entries ?? []).find((e) => e.current);
+      if (!query.trim()) {
+        this.postSafe({ type: 'currentBookmark', on: current?.bookmarked === true });
+      }
+    } catch (err) {
+      this.postSafe({ type: 'historyEntries', entries: [], query, error: (err as Error).message });
+    }
+  }
+
+  // Renders turns as the whole chat, replacing what is on screen.
+  private showTurns(turns: Turn[], info: string): void {
+    this.transcript = turns;
+    this.lastGrounding = undefined;
+    this.postSafe({ type: 'clearTranscript' });
+    this.postSafe({ type: 'history', turns });
+    if (info) {
+      this.postSafe({ type: 'info', text: info });
+    }
+  }
+
+  // canCatchUp: the transcript may be changed under the user now -- the daemon
+  // keeps a shared chat, no "+" is on its way to it, and nothing on screen holds
+  // the turn in progress (a stream, a review, an approval).
+  private canCatchUp(): boolean {
+    return (
+      this.chatSync &&
+      !this.resetPending &&
+      !this.catchUpInFlight &&
+      !this.inFlight &&
+      !this.autoApplyRunInFlight &&
+      this.pendingBlocks.length === 0 &&
+      !this.pendingApproval
+    );
+  }
+
+  // catchUp asks the daemon what the shared chat gained since this panel last
+  // looked, and shows it. A failure is not worth interrupting anyone for: the
+  // daemon being away is reported by the next thing that needs it.
+  private async catchUp(): Promise<void> {
+    if (!this.canCatchUp()) {
       return;
     }
-    this.searchInFlight = true;
+    const since = this.chatRev;
+    this.catchUpInFlight = true;
+    let r: ChatHistoryResponse;
     try {
-      const result = await searchConversations(CLIENT_NAME, workspacePath(), query);
-      this.panel.webview.postMessage({ type: 'searchResults', results: result.results, error: result.error });
-    } catch (err) {
-      this.panel.webview.postMessage({ type: 'searchResults', error: (err as Error).message });
+      r = await chatHistory(CLIENT_NAME, 'current', { since });
+    } catch {
+      return;
     } finally {
-      this.searchInFlight = false;
+      this.catchUpInFlight = false;
+    }
+    // Dropped if the panel moved on while it was asked: an answer to an older
+    // question would undo what happened since.
+    if (r.error || since !== this.chatRev || !this.canCatchUp()) {
+      return;
+    }
+    this.adoptChat(r);
+  }
+
+  // adoptChat applies an answer to 'current': what the chat gained is appended
+  // below what is here, so this panel's own turns stay as they were shown; a
+  // chat that was replaced (a new chat, a resume, a compact in the other
+  // window) is shown whole.
+  private adoptChat(r: ChatHistoryResponse): void {
+    if (!r.chat_revision || r.chat_revision === this.chatRev) {
+      return;
+    }
+    const quiet = this.chatQuiet;
+    this.chatRev = r.chat_revision;
+    this.chatQuiet = false;
+    const turns = turnsFromWire(r.turns);
+    if (r.append) {
+      if (turns.length === 0) {
+        return;
+      }
+      if (!quiet) {
+        const n = turns.length;
+        this.postSafe({ type: 'info', text: `${n} message${n === 1 ? '' : 's'} from another Mochiii window on this workspace` });
+      }
+      this.transcript.push(...turns);
+      this.postSafe({ type: 'history', turns });
+      return;
+    }
+    let note = '';
+    if (!quiet) {
+      note = turns.length === 0 ? 'This chat was cleared in another Mochiii window' : 'This chat was changed in another Mochiii window · showing it as it is now';
+    }
+    this.showTurns(turns, note);
+    // The header star belongs to whichever chat this now is.
+    void this.onHistoryList('');
+  }
+
+  private async onHistoryResume(id: string): Promise<void> {
+    if (this.inFlight || this.autoApplyRunInFlight) {
+      this.postSafe({ type: 'notice', text: 'Wait for the current answer to finish before opening another chat.' });
+      return;
+    }
+    if (this.autoSave()) {
+      await this.saveCurrentChat();
+    }
+    try {
+      const r = await chatHistory(CLIENT_NAME, 'resume', { id });
+      if (r.error || !r.turns) {
+        this.postSafe({ type: 'notice', text: r.error || 'That chat could not be opened.' });
+        return;
+      }
+      this.clearPendingApproval();
+      this.clearPendingReview();
+      this.showTurns(turnsFromWire(r.turns), `Opened “${r.entry?.title ?? 'chat'}” from history`);
+      // The resumed chat IS the shared chat now, as of this revision.
+      this.chatRev = r.chat_revision ?? '';
+      this.chatQuiet = false;
+      this.postSafe({ type: 'currentBookmark', on: r.entry?.bookmarked === true });
+    } catch (err) {
+      this.postSafe({ type: 'notice', text: `Could not open that chat: ${(err as Error).message}` });
+    }
+  }
+
+  // id '' is the current chat, which the daemon saves first.
+  private async onHistoryBookmark(id: string, on: boolean): Promise<void> {
+    try {
+      const r = await chatHistory(CLIENT_NAME, on ? 'bookmark' : 'unbookmark', { id: id || undefined });
+      if (r.error) {
+        this.postSafe({ type: 'notice', text: r.error });
+        return;
+      }
+      if (!id || r.entry?.current) {
+        this.postSafe({ type: 'currentBookmark', on });
+      }
+      this.postSafe({ type: 'historyChanged' });
+    } catch (err) {
+      this.postSafe({ type: 'notice', text: `Could not bookmark that chat: ${(err as Error).message}` });
+    }
+  }
+
+  private async onHistoryDelete(id: string): Promise<void> {
+    const DELETE = 'Delete';
+    const pick = await vscode.window.showWarningMessage('Delete this chat from history? This cannot be undone.', { modal: true }, DELETE);
+    if (pick !== DELETE) {
+      return;
+    }
+    try {
+      const r = await chatHistory(CLIENT_NAME, 'delete', { id });
+      if (r.error) {
+        this.postSafe({ type: 'notice', text: r.error });
+      }
+      this.postSafe({ type: 'historyChanged' });
+    } catch (err) {
+      this.postSafe({ type: 'notice', text: `Could not delete that chat: ${(err as Error).message}` });
+    }
+  }
+
+  // /compact: the daemon summarises the older turns with one model call, keeps
+  // the recent ones, and saves the whole chat to history first.
+  private async compactChat(): Promise<string> {
+    if (this.transcript.length === 0) {
+      return 'Nothing to compact: this chat is empty.';
+    }
+    this.postSafe({ type: 'info', text: 'Compacting: summarising the earlier part of this chat…' });
+    try {
+      const r = await chatHistory(CLIENT_NAME, 'compact', this.preferredTier ? { tier: this.preferredTier } : {});
+      if (r.error || !r.turns) {
+        return r.error ? r.error.charAt(0).toUpperCase() + r.error.slice(1) + '.' : 'compact did not return a chat.';
+      }
+      this.showTurns(
+        turnsFromWire(r.turns),
+        `Conversation compacted · ${r.compacted ?? 0} earlier messages summarised · the full chat is saved in History`,
+      );
+      this.chatRev = r.chat_revision ?? '';
+      this.chatQuiet = false;
+      this.postSafe({ type: 'currentBookmark', on: false });
+      return '';
+    } catch (err) {
+      return `Could not compact: ${(err as Error).message}`;
     }
   }
 
   private dispose(): void {
     // Aborting the panel aborts the in-flight connection -- no orphaned
     // sockets left reading a dead webview.
+    this.disposed = true;
     this.inFlight?.abort();
-    ChatPanel.current = undefined;
+    if (ChatPanel.current === this) {
+      ChatPanel.current = undefined;
+    }
     while (this.disposables.length) {
       this.disposables.pop()?.dispose();
     }
@@ -932,24 +1514,56 @@ function getNonce(): string {
 
 export function chatPanelStyles(): string {
   return `  :root {
-    --ct-bg: var(--vscode-editor-background, #fff8f9);
+    /* TWO COLOURS, TWO JOBS. Blue is everything you act on: buttons, focus,
+       selection, links, the effort and context indicators, your own messages.
+       Rose is the brand: the lotus, the header mark, Mochiii's avatar. Every
+       surface comes from the VS Code theme, so a dark theme gets dark controls --
+       hard-coded #fff here is what made the pills glare as white blobs. */
+    --ct-bg: var(--vscode-editor-background, #f7f9fc);
     --ct-surface: var(--vscode-sideBar-background, #ffffff);
     --ct-rose: #e8919a;
     --ct-rose-deep: #d4727d;
-    --ct-rose-soft: rgba(232, 145, 154, 0.15);
-    --ct-ink: var(--vscode-editor-foreground, #3d2c2e);
-    --ct-muted: var(--vscode-descriptionForeground, #8a6f73);
-    --ct-border: var(--vscode-widget-border, rgba(232, 145, 154, 0.25));
-    --ct-code-bg: var(--vscode-editorWidget-background, rgba(0, 0, 0, 0.04));
+    --ct-brand-gradient: linear-gradient(145deg, #e8919a, #d4727d);
+    --ct-accent: #2563eb;
+    --ct-accent-strong: #1d4ed8;
+    --ct-accent-solid: #2563eb;
+    --ct-accent-solid-hover: #1d4ed8;
+    --ct-on-accent: #ffffff;
+    --ct-accent-soft: color-mix(in srgb, var(--ct-accent) 13%, transparent);
+    --ct-warn: #b45309;
+    --ct-danger: #c0392b;
+    --ct-ink: var(--vscode-editor-foreground, #1f2937);
+    --ct-muted: var(--vscode-descriptionForeground, #5b6474);
+    --ct-border: var(--vscode-widget-border, color-mix(in srgb, var(--ct-ink) 14%, transparent));
+    --ct-control-bg: var(--vscode-input-background, #ffffff);
+    --ct-control-border: color-mix(in srgb, var(--ct-ink) 20%, transparent);
+    --ct-popover-bg: var(--vscode-editorWidget-background, #ffffff);
+    --ct-shadow: 0 12px 32px color-mix(in srgb, #000 28%, transparent);
+    --ct-code-bg: var(--vscode-textCodeBlock-background, var(--vscode-editorWidget-background, rgba(0, 0, 0, 0.04)));
     --ct-code-fg: var(--vscode-editorWidget-foreground, inherit);
-    --ct-user-bg: rgba(232, 145, 154, 0.08);
+    --ct-user-bg: color-mix(in srgb, var(--ct-accent) 9%, transparent);
     --ct-radius: 14px;
-    --ct-composer-bg: var(--vscode-input-background, rgba(255, 245, 247, 0.6));
-    --ct-composer-border: var(--vscode-input-border, rgba(240, 200, 208, 0.6));
-    --ct-composer-glow: rgba(232, 145, 154, 0.28);
+    --ct-composer-bg: var(--vscode-input-background, #ffffff);
+    --ct-composer-border: color-mix(in srgb, var(--ct-ink) 18%, transparent);
+    --ct-composer-glow: color-mix(in srgb, var(--ct-accent) 30%, transparent);
     --ct-composer-text: var(--vscode-input-foreground, inherit);
-    --ct-composer-muted: var(--vscode-input-placeholderForeground, #a88a90);
+    --ct-composer-muted: var(--vscode-input-placeholderForeground, #8a93a6);
   }
+  /* Dark and high-contrast themes: lighter blues, so text and rings keep
+     WCAG contrast on a dark background (#5b9bff on #1e1e1e is about 6.4:1). */
+  body.vscode-dark, body.vscode-high-contrast {
+    --ct-accent: #5b9bff;
+    --ct-accent-strong: #93bbff;
+    --ct-accent-solid: #3574e8;
+    --ct-accent-solid-hover: #4a86f0;
+    --ct-warn: #f5a524;
+    --ct-danger: #f26d6d;
+  }
+  /* The hidden attribute must win. A class that sets display (like .pill's
+     inline-flex) otherwise overrides it, which is how an EMPTY spec chip showed
+     as a blank circle in the composer. Two rules below already patched this one
+     element at a time. */
+  [hidden] { display: none !important; }
   * { box-sizing: border-box; }
   body {
     font-family: "Segoe UI", "Helvetica Neue", sans-serif;
@@ -981,13 +1595,13 @@ export function chatPanelStyles(): string {
     width: 26px;
     height: 26px;
     border-radius: 8px;
-    background: linear-gradient(145deg, var(--ct-rose), var(--ct-rose-deep));
+    background: var(--ct-brand-gradient);
     color: #fff;
     display: inline-flex;
     align-items: center;
     justify-content: center;
     font-size: 13px;
-    box-shadow: 0 4px 10px rgba(212, 114, 125, 0.28);
+    box-shadow: 0 4px 10px rgba(212, 114, 125, 0.28); /* brand */
   }
   #appHeader .brand-logo {
     width: 44px;
@@ -1011,50 +1625,7 @@ export function chatPanelStyles(): string {
     align-items: center;
     justify-content: center;
   }
-  .icon-btn:hover { background: var(--ct-rose-soft); color: var(--ct-rose-deep); }
-  #searchRow {
-    display: none;
-    gap: 6px;
-    padding: 8px 12px;
-    border-bottom: 1px solid var(--ct-border);
-    background: var(--ct-surface);
-  }
-  #searchRow.visible { display: flex; }
-  #searchInput {
-    flex: 1;
-    background: var(--ct-bg);
-    color: var(--ct-ink);
-    border: 1px solid var(--ct-border);
-    border-radius: 10px;
-    padding: 8px 10px;
-    font-family: inherit;
-    font-size: 13px;
-  }
-  #searchBtn {
-    background: var(--ct-rose);
-    color: #fff;
-    border: none;
-    border-radius: 10px;
-    padding: 8px 14px;
-    cursor: pointer;
-  }
-  #searchResults { padding: 0 12px; }
-  .search-result {
-    margin-bottom: 10px;
-    padding: 10px 12px;
-    border: 1px solid var(--ct-border);
-    border-radius: var(--ct-radius);
-    background: var(--ct-surface);
-    font-size: 12px;
-  }
-  .search-result .search-result-meta { font-size: 11px; color: var(--ct-muted); margin-bottom: 4px; }
-  .search-result .search-result-snippet { white-space: pre-wrap; line-height: 1.4; }
-  .search-result mark {
-    background: #ffe0e4;
-    color: inherit;
-  }
-  .search-empty { padding: 4px 0 10px; font-size: 12px; color: var(--ct-muted); }
-  .search-error { padding: 4px 0 10px; font-size: 12px; color: #c0392b; }
+  .icon-btn:hover { background: var(--ct-accent-soft); color: var(--ct-accent-strong); }
   #transcript { flex: 1; overflow-y: auto; padding: 14px 16px; }
   .first-run {
     font-size: 13px;
@@ -1089,9 +1660,21 @@ export function chatPanelStyles(): string {
     font-weight: 700;
     color: #fff;
   }
-  .msg.user .avatar { background: var(--ct-rose-soft); color: var(--ct-rose-deep); border: 1px solid var(--ct-border); }
-  .msg.assistant .avatar { background: linear-gradient(145deg, var(--ct-rose), var(--ct-rose-deep)); color: #fff; }
+  .msg.user .avatar { background: var(--ct-accent-soft); color: var(--ct-accent-strong); border: 1px solid var(--ct-border); }
+  .msg.assistant .avatar { background: var(--ct-brand-gradient); color: #fff; }
   .msg.error .avatar { background: #c0392b; }
+  /* A one-line, neutral note in the transcript (a model switch). Not a bubble:
+     it is about the conversation, not part of it. */
+  .msg-info {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 4px 0 12px;
+    color: var(--ct-muted);
+    font-size: 11.5px;
+  }
+  .msg-info::before, .msg-info::after { content: ''; flex: 1; border-top: 1px solid var(--ct-border); }
+  .msg-info .info-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ct-accent); flex-shrink: 0; }
   .msg .card {
     flex: 1;
     min-width: 0;
@@ -1099,7 +1682,7 @@ export function chatPanelStyles(): string {
     border: 1px solid var(--ct-border);
     border-radius: var(--ct-radius);
     padding: 12px 14px;
-    box-shadow: 0 1px 2px rgba(212, 114, 125, 0.06);
+    box-shadow: 0 1px 2px color-mix(in srgb, var(--ct-accent-strong) 6%, transparent);
   }
   .msg.user .card { background: var(--ct-user-bg); }
   .msg .role {
@@ -1113,6 +1696,45 @@ export function chatPanelStyles(): string {
   }
   .msg .body { white-space: pre-wrap; line-height: 1.5; font-size: 13.5px; }
   .msg .body .md-p { margin: 0 0 8px; white-space: pre-wrap; }
+  /* Rendered markdown (renderMarkdown in media/main.js builds these nodes; it
+     never sets innerHTML, so model output cannot inject markup). */
+  .msg .body .md { white-space: normal; }
+  .md > :first-child { margin-top: 0; }
+  .md p { margin: 0 0 9px; white-space: pre-wrap; }
+  .md h1, .md h2, .md h3, .md h4 { margin: 14px 0 6px; line-height: 1.3; color: var(--ct-ink); }
+  .md h1 { font-size: 17px; }
+  .md h2 { font-size: 15.5px; }
+  .md h3 { font-size: 14.5px; }
+  .md h4 { font-size: 13.5px; }
+  .md h2, .md h3 { padding-bottom: 3px; border-bottom: 1px solid var(--ct-border); }
+  .md ul, .md ol { margin: 4px 0 10px; padding-left: 22px; }
+  .md li { margin: 2px 0; }
+  .md li::marker { color: var(--ct-accent); }
+  .md strong { font-weight: 650; }
+  .md em { font-style: italic; }
+  .md del { opacity: 0.7; }
+  .md a { color: var(--ct-accent); text-decoration: none; border-bottom: 1px solid color-mix(in srgb, var(--ct-accent) 40%, transparent); }
+  .md a:hover { border-bottom-color: var(--ct-accent); }
+  .md code {
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 12.5px;
+    padding: 1px 5px;
+    border-radius: 5px;
+    background: var(--ct-code-bg);
+    border: 1px solid var(--ct-border);
+  }
+  .md blockquote {
+    margin: 6px 0 10px;
+    padding: 4px 10px;
+    border-left: 3px solid var(--ct-accent);
+    background: var(--ct-accent-soft);
+    border-radius: 0 8px 8px 0;
+  }
+  .md hr { border: none; border-top: 1px solid var(--ct-border); margin: 12px 0; }
+  .md .md-table-wrap { overflow-x: auto; margin: 6px 0 10px; }
+  .md table { border-collapse: collapse; font-size: 12.5px; }
+  .md th, .md td { border: 1px solid var(--ct-border); padding: 4px 8px; text-align: left; vertical-align: top; }
+  .md th { background: var(--ct-accent-soft); font-weight: 600; }
   .msg .code-block {
     margin: 8px 0;
     border-radius: 10px;
@@ -1126,7 +1748,7 @@ export function chatPanelStyles(): string {
     padding: 4px 10px;
     font-size: 10px;
     color: var(--ct-muted);
-    background: #fff;
+    background: color-mix(in srgb, var(--ct-ink) 6%, var(--ct-code-bg));
     border-bottom: 1px solid var(--ct-border);
   }
   .msg .code-block .code-row {
@@ -1168,8 +1790,8 @@ export function chatPanelStyles(): string {
     cursor: pointer;
     font-size: 12px;
   }
-  .msg-footer button:hover { border-color: var(--ct-rose); color: var(--ct-rose-deep); }
-  .msg-footer button.active { background: var(--ct-rose-soft); border-color: var(--ct-rose); color: var(--ct-rose-deep); }
+  .msg-footer button:hover { border-color: var(--ct-accent); color: var(--ct-accent-strong); }
+  .msg-footer button.active { background: var(--ct-accent-soft); border-color: var(--ct-accent); color: var(--ct-accent-strong); }
   .msg-footer .helpful { margin-left: auto; }
   .turn.reasoning {
     opacity: 0.7;
@@ -1177,7 +1799,7 @@ export function chatPanelStyles(): string {
     font-size: 12px;
     margin: 0 0 8px 38px;
     padding: 8px 12px;
-    background: var(--ct-rose-soft);
+    background: var(--ct-accent-soft);
     border-radius: 10px;
     color: var(--ct-muted);
   }
@@ -1221,24 +1843,24 @@ export function chatPanelStyles(): string {
     border: 1px solid var(--ct-composer-border);
     border-radius: 18px;
     box-shadow:
-      0 1px 2px rgba(232, 145, 154, 0.08),
-      0 8px 24px rgba(232, 145, 154, 0.12);
+      0 1px 2px color-mix(in srgb, var(--ct-accent) 8%, transparent),
+      0 8px 24px color-mix(in srgb, var(--ct-accent) 12%, transparent);
     overflow: hidden;
     transition: border-color 180ms ease, box-shadow 220ms ease;
   }
   #composerShell.focused {
-    border-color: var(--ct-rose);
+    border-color: var(--ct-accent);
     box-shadow:
-      0 0 0 3px rgba(232, 145, 154, 0.18),
-      0 10px 28px rgba(232, 145, 154, 0.2);
+      0 0 0 3px color-mix(in srgb, var(--ct-accent) 18%, transparent),
+      0 10px 28px color-mix(in srgb, var(--ct-accent) 20%, transparent);
   }
   #composerShell.sending {
     animation: composerPulse 900ms ease;
   }
   @keyframes composerPulse {
-    0% { box-shadow: 0 0 0 2px rgba(232, 145, 154, 0.15); }
-    45% { box-shadow: 0 0 0 4px rgba(232, 145, 154, 0.28), 0 8px 28px rgba(232, 145, 154, 0.25); }
-    100% { box-shadow: 0 1px 2px rgba(232, 145, 154, 0.08), 0 8px 24px rgba(232, 145, 154, 0.12); }
+    0% { box-shadow: 0 0 0 2px color-mix(in srgb, var(--ct-accent) 15%, transparent); }
+    45% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--ct-accent) 28%, transparent), 0 8px 28px color-mix(in srgb, var(--ct-accent) 25%, transparent); }
+    100% { box-shadow: 0 1px 2px color-mix(in srgb, var(--ct-accent) 8%, transparent), 0 8px 24px color-mix(in srgb, var(--ct-accent) 12%, transparent); }
   }
   #slashMenu {
     display: none;
@@ -1248,7 +1870,7 @@ export function chatPanelStyles(): string {
     right: 0;
     max-height: 220px;
     overflow-y: auto;
-    background: #fff;
+    background: var(--ct-popover-bg);
     color: var(--ct-ink);
     border: 1px solid var(--ct-border);
     border-radius: 14px;
@@ -1270,11 +1892,11 @@ export function chatPanelStyles(): string {
     align-items: baseline;
   }
   #slashMenu button:hover, #slashMenu button.active {
-    background: var(--ct-rose-soft);
+    background: var(--ct-accent-soft);
   }
   #slashMenu .slash-name {
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    color: var(--ct-rose-deep);
+    color: var(--ct-accent-strong);
   }
   #slashMenu .slash-summary { color: var(--ct-muted); font-size: 12px; }
 
@@ -1311,8 +1933,8 @@ export function chatPanelStyles(): string {
     height: 36px;
     margin-top: 2px;
     border-radius: 11px;
-    background: var(--ct-rose);
-    color: #fff;
+    background: var(--ct-accent-solid);
+    color: var(--ct-on-accent);
     border: none;
     cursor: pointer;
     font-size: 16px;
@@ -1321,12 +1943,12 @@ export function chatPanelStyles(): string {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    box-shadow: 0 4px 12px rgba(232, 145, 154, 0.4);
+    box-shadow: 0 4px 12px color-mix(in srgb, var(--ct-accent) 40%, transparent);
     transition: transform 120ms ease, background 120ms ease, box-shadow 160ms ease;
   }
   #sendBtn:hover:not(:disabled) {
-    background: var(--ct-rose-deep);
-    box-shadow: 0 6px 16px rgba(212, 114, 125, 0.45);
+    background: var(--ct-accent-solid-hover);
+    box-shadow: 0 6px 16px color-mix(in srgb, var(--ct-accent-strong) 45%, transparent);
     transform: translateY(-1px);
   }
   #sendBtn:disabled { opacity: 0.4; cursor: default; box-shadow: none; transform: none; }
@@ -1353,19 +1975,24 @@ export function chatPanelStyles(): string {
     height: 28px;
     padding: 0 10px;
     border-radius: 999px;
-    border: 1px solid var(--ct-border);
-    background: #fff;
+    border: 1px solid var(--ct-control-border);
+    background: var(--ct-control-bg);
     color: var(--ct-ink);
     font: inherit;
     font-size: 12px;
     cursor: pointer;
     white-space: nowrap;
-    max-width: 140px;
+    max-width: 170px;
   }
+  .pill:focus-visible, .composer-icon:focus-visible, #sendBtn:focus-visible {
+    outline: 2px solid var(--ct-accent);
+    outline-offset: 2px;
+  }
+  #modelChipLabel { overflow: hidden; text-overflow: ellipsis; }
   .pill:hover {
-    border-color: var(--ct-rose);
-    background: var(--ct-rose-soft);
-    color: var(--ct-rose-deep);
+    border-color: var(--ct-accent);
+    background: var(--ct-accent-soft);
+    color: var(--ct-accent-strong);
   }
   .pill .chev { opacity: 0.5; font-size: 10px; }
   .pill .bolt { color: inherit; display: flex; align-items: center; justify-content: center; margin-right: 2px; }
@@ -1386,56 +2013,28 @@ export function chatPanelStyles(): string {
     font-weight: 500;
   }
   #autoApplyToggle.off {
-    background: #fff;
+    background: var(--ct-control-bg);
     color: var(--ct-ink);
     border-color: var(--ct-border);
   }
   #autoApplyToggle.on {
-    background: var(--ct-rose-soft);
-    color: var(--ct-rose-deep);
-    border-color: var(--ct-rose);
+    background: var(--ct-accent-soft);
+    color: var(--ct-accent-strong);
+    border-color: var(--ct-accent);
   }
 
-  #effortMeter {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    height: 28px;
-    padding: 0 8px;
-    border-radius: 999px;
-    background: #fff;
-    border: 1px solid var(--ct-border);
-    cursor: pointer;
-  }
-  #effortMeter:hover { border-color: var(--ct-rose); background: var(--ct-rose-soft); }
-  #effortMeter .effort-label {
-    font-size: 10px;
-    color: var(--ct-muted);
-    margin-right: 2px;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-  }
-  #effortMeter .dot {
-    width: 5px;
-    height: 5px;
-    border-radius: 50%;
-    background: #e8d0d4;
-    transition: transform 160ms ease, background 160ms ease, box-shadow 160ms ease;
-  }
-  #effortMeter .dot.on {
-    background: #f0a0ac;
-  }
-  #effortMeter .dot.active {
-    width: 9px;
-    height: 9px;
-    background: radial-gradient(circle at 35% 35%, #fff, #f5c0ca 45%, #e8919a 100%);
-    box-shadow: 0 0 10px rgba(232, 145, 154, 0.75), 0 0 2px #fff;
-    animation: effortGlow 1.8s ease-in-out infinite;
-  }
-  @keyframes effortGlow {
-    0%, 100% { box-shadow: 0 0 8px rgba(232, 145, 154, 0.45), 0 0 1px #fff; }
-    50% { box-shadow: 0 0 14px rgba(232, 145, 154, 0.85), 0 0 3px #fff; }
-  }
+  /* Effort: one labelled pill that says what it is set to. It used to be five
+     unlabelled dots that changed nothing -- the value was never sent. */
+  .effort-pill { gap: 6px; }
+  .effort-pill .effort-bars { display: block; flex-shrink: 0; }
+  .effort-pill .effort-bars rect { fill: color-mix(in srgb, var(--ct-ink) 28%, transparent); transition: fill 140ms ease; }
+  .effort-pill[data-level="1"] .effort-bars .b1,
+  .effort-pill[data-level="2"] .effort-bars .b1, .effort-pill[data-level="2"] .effort-bars .b2,
+  .effort-pill[data-level="3"] .effort-bars rect { fill: var(--ct-accent); }
+  .effort-pill .effort-name { color: var(--ct-muted); }
+  .effort-pill .effort-value { font-weight: 600; }
+  .effort-pill:not([data-level="0"]) { border-color: color-mix(in srgb, var(--ct-accent) 55%, transparent); }
+  .effort-pill:not([data-level="0"]) .effort-value { color: var(--ct-accent-strong); }
 
   .composer-icon {
     width: 30px;
@@ -1451,7 +2050,7 @@ export function chatPanelStyles(): string {
     align-items: center;
     justify-content: center;
   }
-  .composer-icon:hover { background: var(--ct-rose-soft); color: var(--ct-rose-deep); }
+  .composer-icon:hover { background: var(--ct-accent-soft); color: var(--ct-accent-strong); }
   .composer-icon:disabled { opacity: 0.35; cursor: default; }
 
   .attach-list {
@@ -1469,7 +2068,7 @@ export function chatPanelStyles(): string {
     padding: 4px 8px 4px 10px;
     border-radius: 999px;
     border: 1px solid var(--ct-border);
-    background: #fff;
+    background: var(--ct-control-bg);
     color: var(--ct-ink);
     font-size: 11px;
   }
@@ -1484,8 +2083,8 @@ export function chatPanelStyles(): string {
     height: 18px;
     border: none;
     border-radius: 50%;
-    background: var(--ct-rose-soft);
-    color: var(--ct-rose-deep);
+    background: var(--ct-accent-soft);
+    color: var(--ct-accent-strong);
     cursor: pointer;
     font-size: 12px;
     line-height: 1;
@@ -1494,34 +2093,36 @@ export function chatPanelStyles(): string {
     align-items: center;
     justify-content: center;
   }
-  .attach-chip .attach-remove:hover { background: var(--ct-rose); color: #fff; }
+  .attach-chip .attach-remove:hover { background: var(--ct-accent); color: #fff; }
 
+  /* Context usage: a ring that reads on any theme, plus the number. At 4% the
+     old pale ring on a pale track was not visible at all. */
   .context-btn {
     position: relative;
+    width: auto;
+    gap: 4px;
+    padding: 0 6px;
+    color: var(--ct-muted);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
   }
-  .context-ring {
-    width: 18px;
-    height: 18px;
-    display: block;
-  }
-  .context-ring-track {
-    stroke: var(--ct-border);
-  }
-  .context-ring-fill {
-    stroke: var(--ct-rose);
-    transition: stroke-dashoffset 200ms ease;
-  }
-  .context-btn.hot .context-ring-fill { stroke: var(--ct-rose-deep); }
+  .context-ring { width: 18px; height: 18px; display: block; }
+  .context-ring-track { stroke: color-mix(in srgb, var(--ct-ink) 22%, transparent); }
+  .context-ring-fill { stroke: var(--ct-accent); transition: stroke-dashoffset 200ms ease; }
+  .context-btn.warn .context-ring-fill { stroke: var(--ct-warn); }
+  .context-btn.warn .context-pct { color: var(--ct-warn); }
+  .context-btn.hot .context-ring-fill { stroke: var(--ct-danger); }
+  .context-btn.hot .context-pct { color: var(--ct-danger); font-weight: 600; }
 
   .context-popup {
     position: absolute;
     right: 12px;
     bottom: calc(100% + 10px);
     width: min(340px, calc(100% - 24px));
-    background: #fff;
+    background: var(--ct-popover-bg);
     border: 1px solid var(--ct-border);
     border-radius: 16px;
-    box-shadow: 0 12px 36px rgba(212, 114, 125, 0.18);
+    box-shadow: var(--ct-shadow);
     padding: 14px;
     z-index: 20;
     color: var(--ct-ink);
@@ -1547,7 +2148,7 @@ export function chatPanelStyles(): string {
     cursor: pointer;
     font-size: 14px;
   }
-  .context-popup-close:hover { background: var(--ct-rose-soft); color: var(--ct-rose-deep); }
+  .context-popup-close:hover { background: var(--ct-accent-soft); color: var(--ct-accent-strong); }
   .context-popup-summary {
     display: flex;
     justify-content: space-between;
@@ -1606,15 +2207,110 @@ export function chatPanelStyles(): string {
     right: 12px;
     bottom: calc(100% + 10px);
     width: min(340px, calc(100% - 24px));
-    background: #fff;
+    background: var(--ct-popover-bg);
     border: 1px solid var(--ct-border);
     border-radius: 16px;
-    box-shadow: 0 12px 36px rgba(212, 114, 125, 0.18);
+    box-shadow: var(--ct-shadow);
     padding: 8px;
     z-index: 20;
     color: var(--ct-ink);
   }
   .modes-popup[hidden] { display: none !important; }
+  /* HISTORY PANEL (Claude Code style): under the header, a search box and the
+     chats -- bookmarks first, then newest. */
+  #appHeader { position: relative; }
+  .history-popup {
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 12px;
+    width: min(440px, calc(100% - 24px));
+    max-height: min(480px, 70vh);
+    display: flex;
+    flex-direction: column;
+    background: var(--ct-popover-bg);
+    border: 1px solid var(--ct-border);
+    border-radius: 14px;
+    box-shadow: var(--ct-shadow);
+    z-index: 30;
+    overflow: hidden;
+  }
+  .history-head { padding: 10px; border-bottom: 1px solid var(--ct-border); }
+  #searchInput {
+    width: 100%;
+    background: var(--ct-control-bg);
+    color: var(--ct-ink);
+    border: 1px solid var(--ct-control-border);
+    border-radius: 9px;
+    padding: 8px 10px;
+    font: inherit;
+    font-size: 13px;
+  }
+  #searchInput:focus { outline: 2px solid var(--ct-accent); outline-offset: -1px; border-color: transparent; }
+  .history-list { overflow-y: auto; padding: 6px; }
+  .history-section {
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--ct-muted);
+    padding: 8px 8px 4px;
+  }
+  .history-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 8px;
+    border: none;
+    border-radius: 9px;
+    background: transparent;
+    color: var(--ct-ink);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .history-row:hover, .history-row:focus-visible { background: var(--ct-accent-soft); outline: none; }
+  .history-row.current { box-shadow: inset 2px 0 0 var(--ct-accent); }
+  .history-row .h-main { flex: 1; min-width: 0; }
+  .history-row .h-title { display: block; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .history-row .h-meta { display: block; font-size: 11px; color: var(--ct-muted); margin-top: 2px; }
+  .history-row .h-age { font-size: 11px; color: var(--ct-muted); flex-shrink: 0; font-variant-numeric: tabular-nums; }
+  .history-row .h-act {
+    width: 26px; height: 26px; border: none; border-radius: 7px; background: transparent;
+    color: var(--ct-muted); cursor: pointer; font-size: 14px; flex-shrink: 0; opacity: 0; display: inline-flex;
+    align-items: center; justify-content: center;
+  }
+  .history-row:hover .h-act, .history-row:focus-within .h-act, .history-row .h-act.on { opacity: 1; }
+  .history-row .h-act:hover { background: var(--ct-accent-soft); color: var(--ct-accent-strong); }
+  .history-row .h-act.on { color: var(--ct-accent); }
+  .history-row .h-del:hover { color: var(--ct-danger); }
+  .history-empty { padding: 18px 10px; color: var(--ct-muted); font-size: 12.5px; text-align: center; }
+  #bookmarkBtn[aria-pressed="true"] { color: var(--ct-accent); }
+
+  /* NOTICES: collapsed, the strips are visually hidden but still announced
+     (the sr-only technique, not display:none, which would silence them). */
+  .notices.collapsed > div {
+    position: absolute !important;
+    width: 1px; height: 1px; margin: -1px; padding: 0; border: 0;
+    overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
+  }
+  .notices-chip { gap: 4px; color: var(--ct-warn); border-color: color-mix(in srgb, var(--ct-warn) 45%, transparent); }
+  .notices-chip[aria-expanded="true"] { background: color-mix(in srgb, var(--ct-warn) 12%, transparent); }
+
+  /* The model dropdown reuses the mode menu's look, anchored under the chip on
+     the left, and scrolls when a provider lists many models. */
+  .model-popup { left: 12px; right: auto; max-height: min(360px, 60vh); overflow-y: auto; }
+  .model-popup .mode-item[aria-disabled="true"] { opacity: 0.5; cursor: not-allowed; }
+  .mode-item:focus-visible { outline: 2px solid var(--ct-accent); outline-offset: -2px; }
+  .model-popup .model-tag {
+    font-size: 10px;
+    padding: 1px 6px;
+    margin-left: 6px;
+    border-radius: 999px;
+    background: var(--ct-accent-soft);
+    color: var(--ct-accent-strong);
+    vertical-align: 1px;
+  }
+  .model-popup .model-empty { padding: 10px; color: var(--ct-muted); font-size: 12px; }
   .modes-popup-head {
     display: flex;
     align-items: center;
@@ -1648,7 +2344,7 @@ export function chatPanelStyles(): string {
     color: inherit;
   }
   .mode-item:hover { background: #f9f5f6; }
-  .mode-item[aria-selected="true"] { background: var(--ct-rose-soft); }
+  .mode-item[aria-selected="true"] { background: var(--ct-accent-soft); }
   .mode-icon {
     display: flex;
     align-items: center;
@@ -1670,10 +2366,10 @@ export function chatPanelStyles(): string {
     color: var(--ct-muted);
     line-height: 1.35;
   }
-  .mode-item[aria-selected="true"] .mode-name { color: var(--ct-rose-deep); }
+  .mode-item[aria-selected="true"] .mode-name { color: var(--ct-accent-strong); }
   .mode-check {
     font-size: 14px;
-    color: var(--ct-rose-deep);
+    color: var(--ct-accent-strong);
     opacity: 0;
     font-weight: bold;
     margin-top: 1px;
@@ -1687,8 +2383,8 @@ export function chatPanelStyles(): string {
 
 
   button {
-    background: var(--ct-rose);
-    color: #fff;
+    background: var(--ct-accent-solid);
+    color: var(--ct-on-accent);
     border: none;
     padding: 6px 14px;
     border-radius: 8px;
@@ -1720,7 +2416,7 @@ export function chatPanelStyles(): string {
     padding: 6px 10px;
     font-size: 11px;
   }
-  .edit-proposal .view-diff-btn:hover { background: var(--ct-rose-soft); border-color: var(--ct-rose); }
+  .edit-proposal .view-diff-btn:hover { background: var(--ct-accent-soft); border-color: var(--ct-accent); }
   .edit-proposal .actions { display: flex; gap: 6px; }
   .edit-proposal .result { margin-top: 6px; font-style: italic; }
   .edit-proposal .result.ok { color: #1e7a3a; }
@@ -1739,8 +2435,8 @@ export function chatPanelStyles(): string {
   .edit-rejections {
     margin: 4px 0 14px 38px;
     padding: 10px 12px;
-    border-left: 3px solid var(--ct-rose, #c0392b);
-    background: var(--ct-rose-soft, rgba(192, 57, 43, 0.08));
+    border-left: 3px solid var(--ct-danger);
+    background: color-mix(in srgb, var(--ct-danger) 9%, transparent);
     border-radius: 4px;
     font-size: 0.92em;
   }
@@ -1784,7 +2480,7 @@ export function chatPanelStyles(): string {
   .tool-approval .approval-lane.confined { color: var(--ct-muted); }
   .tool-approval .approval-actions { display: flex; gap: 6px; flex-wrap: wrap; }
   .tool-approval .approval-btn:focus-visible {
-    outline: 2px solid var(--ct-rose);
+    outline: 2px solid var(--ct-accent);
     outline-offset: 1px;
   }
   .tool-activity {
@@ -1849,17 +2545,20 @@ export function chatPanelBodyMarkup(logoUri: string = ''): string {
     </div>
     <div class="header-actions">
       <button type="button" id="newChatBtn" class="icon-btn" title="New chat" aria-label="New chat">＋</button>
-      <button type="button" id="historyBtn" class="icon-btn" title="History / search" aria-label="History and search">◷</button>
+      <button type="button" id="bookmarkBtn" class="icon-btn" title="Bookmark this chat" aria-label="Bookmark this chat" aria-pressed="false">☆</button>
+      <button type="button" id="historyBtn" class="icon-btn" title="History" aria-label="Chat history"
+        aria-haspopup="dialog" aria-expanded="false" aria-controls="historyPopup">◷</button>
+    </div>
+    <!-- History, Claude Code style: every chat, newest first, bookmarks pinned
+         on top; the search matches what was said, not only titles. -->
+    <div id="historyPopup" class="history-popup" hidden role="dialog" aria-label="Chat history">
+      <div class="history-head" role="search">
+        <label for="searchInput" class="sr-only">Search chats</label>
+        <input id="searchInput" type="text" placeholder="Search chats…" autocomplete="off" spellcheck="false" />
+      </div>
+      <div id="historyList" class="history-list" role="listbox" aria-label="Chats" aria-live="polite"></div>
     </div>
   </header>
-  <div id="searchRow" role="search">
-    <label for="searchInput" class="sr-only">Search past conversations</label>
-    <input id="searchInput" type="text" placeholder="Search past conversations…" />
-    <button id="searchBtn">Search</button>
-  </div>
-  <!-- Results arrive asynchronously, so they are announced. polite, not
-       assertive: a search result should not interrupt a streaming answer. -->
-  <div id="searchResults" role="region" aria-label="Search results" aria-live="polite"></div>
   <!-- First-run text, rendered INSIDE the empty transcript: a new user's very
        first sight of this panel was a blank rectangle that never said what it
        does. Static markup, no state and no settings; main.js removes it as soon
@@ -1884,6 +2583,11 @@ export function chatPanelBodyMarkup(logoUri: string = ''): string {
       <p class="first-run-quiet">First answer slow? It is loading the local embedding model. If it never arrives, ${RESTART_HINT}.</p>
     </div>
   </div>
+  <!-- THE NOTICES, COLLAPSED. Every strip is still a live region, so a screen
+       reader still announces each one; visually they fold behind the notices
+       chip in the composer, and a notice is shown in full only the first time
+       its text appears in a session (main.js: noticesObserver). -->
+  <div id="notices" class="notices collapsed">
   <div id="grounding" role="status" aria-live="polite" aria-label="Grounding"></div>
   <div id="historyNotice" role="status" aria-live="polite" aria-label="Conversation history notice"></div>
   <!-- Redaction and degradation strips carry information the user needs to
@@ -1892,6 +2596,7 @@ export function chatPanelBodyMarkup(logoUri: string = ''): string {
   <div id="redactions" role="status" aria-live="polite" aria-label="Redaction notice"></div>
   <div id="degraded" role="status" aria-live="polite" aria-label="Degraded functionality notice"></div>
   <div id="provider" role="status" aria-live="polite" aria-label="Serving provider"></div>
+  </div>
   <div id="composer">
     <div id="slashMenu" role="listbox" aria-label="Slash commands"></div>
     <div id="composerShell">
@@ -1902,20 +2607,27 @@ export function chatPanelBodyMarkup(logoUri: string = ''): string {
       </div>
       <div class="composer-bottom">
         <div class="composer-left">
-          <button type="button" class="pill" id="modelChip" title="Choose model (/model)" aria-label="Choose model">
+          <button type="button" class="pill" id="modelChip" title="Choose model" aria-label="Choose model"
+            aria-haspopup="listbox" aria-expanded="false" aria-controls="modelPopup">
             <span id="modelChipLabel">Model</span><span class="chev" aria-hidden="true">▾</span>
           </button>
-          <span class="pill spec-chip" id="specChip" hidden title="Active spec: every prompt works to it (/spec show)"></span>
-          <div id="effortMeter" role="slider" aria-valuemin="1" aria-valuemax="5" aria-valuenow="3" aria-label="Effort level" title="Effort">
-            <span class="effort-label">Effort</span>
-            <span class="dot" data-level="1"></span>
-            <span class="dot" data-level="2"></span>
-            <span class="dot" data-level="3"></span>
-            <span class="dot" data-level="4"></span>
-            <span class="dot" data-level="5"></span>
-          </div>
+          <span class="pill spec-chip" id="specChip" hidden title="Active spec: every prompt works to it (/spec show, /spec off)"></span>
+          <button type="button" class="pill effort-pill" id="effortBtn" data-level="0"
+            aria-label="Thinking effort: Auto. Click to change."
+            title="Thinking effort: how long the model reasons before it answers. Auto uses the model's default. Higher is slower and often more careful. Click to cycle Auto, Low, Medium, High.">
+            <svg class="effort-bars" width="14" height="12" viewBox="0 0 14 12" aria-hidden="true">
+              <rect class="b1" x="0" y="7" width="3.2" height="5" rx="1"/>
+              <rect class="b2" x="5.4" y="4" width="3.2" height="8" rx="1"/>
+              <rect class="b3" x="10.8" y="0" width="3.2" height="12" rx="1"/>
+            </svg>
+            <span class="effort-name">Effort</span><span class="effort-value" id="effortValue">Auto</span>
+          </button>
         </div>
         <div class="composer-right">
+          <button type="button" class="pill notices-chip" id="noticesChip" hidden aria-expanded="false" aria-controls="notices"
+            title="Notices about the last answer">
+            <span aria-hidden="true">ⓘ</span><span id="noticesCount">0</span>
+          </button>
           <button type="button" class="composer-icon context-btn" id="contextBtn" title="Context usage" aria-label="Open context usage" aria-expanded="false" aria-controls="contextPopup">
             <svg class="context-ring" viewBox="0 0 24 24" aria-hidden="true">
               <circle class="context-ring-track" cx="12" cy="12" r="8" fill="none" stroke-width="2.5"/>
@@ -1923,9 +2635,8 @@ export function chatPanelBodyMarkup(logoUri: string = ''): string {
                 stroke-linecap="round" transform="rotate(-90 12 12)"
                 stroke-dasharray="50.27" stroke-dashoffset="50.27"/>
             </svg>
+            <span class="context-pct" id="contextPctShort" aria-hidden="true">0%</span>
           </button>
-          <input type="file" id="fileInput" multiple hidden
-            accept=".txt,.md,.json,.js,.ts,.tsx,.jsx,.py,.go,.rs,.java,.c,.h,.cpp,.hpp,.css,.html,.xml,.yaml,.yml,.toml,.sh,.sql,.csv,.log,.env.example,image/*,.png,.jpg,.jpeg,.webp,.gif" />
           <button type="button" class="composer-icon" id="attachBtn" title="Attach files" aria-label="Attach files">📎</button>
           <button id="autoApplyToggle" class="pill mode-btn on" aria-haspopup="listbox" aria-expanded="false"
             aria-label="Select mode"
@@ -1948,6 +2659,12 @@ export function chatPanelBodyMarkup(logoUri: string = ''): string {
       <div class="context-bar" id="contextBar" aria-hidden="true"></div>
       <div class="context-rows" id="contextRows"></div>
       <div class="context-note" id="contextNote">Estimates from this chat panel (chars÷4). Not exact provider billing.</div>
+    </div>
+    <div id="modelPopup" class="modes-popup model-popup" hidden role="dialog" aria-label="Choose model">
+      <div class="modes-popup-head">
+        <div class="modes-popup-title">Model</div>
+      </div>
+      <div class="modes-list" id="modelList" role="listbox" aria-label="Models"></div>
     </div>
     <div id="modesPopup" class="modes-popup" hidden role="dialog" aria-label="Select mode">
       <div class="modes-popup-head">

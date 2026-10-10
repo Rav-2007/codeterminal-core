@@ -84,11 +84,19 @@ Download the `.vsix` for your platform from the
 code --install-extension mochiii-vscode-linux-x64-0.0.4.vsix   # or win32-x64
 ```
 
+Mochiii starts the first time you use it — **`Mochiii: Open Chat`**, or any other
+Mochiii command — not with every VS Code window, and a chat panel left open
+comes back when VS Code restarts. It needs a **trusted workspace**: in VS Code's
+Restricted Mode, and in virtual workspaces, it stays off and says why, because it
+indexes the folder and, when you allow it, edits files and runs commands there.
+
 **Then set your API key**, or nothing can be answered: run **`Mochiii: Set API
 Key`** from the command palette. The key is held in VS Code's SecretStorage —
 not in `settings.json`, which Settings Sync would replicate and a commit could
-leak — and the daemon restarts to pick it up. The extension also offers this on
-first activation if no key is set.
+leak — and the daemon restarts to pick it up. The extension hands the key to
+the daemon **on its stdin** when it starts it, never in its environment, where it
+would stay readable in `/proc/<pid>/environ` for the daemon's whole life. The
+extension also offers this the first time it starts if no key is set.
 
 The key is for whatever endpoint the daemon talks to, which by default is
 `https://openrouter.ai/api/v1`. Point it elsewhere with the **Mochiii: API
@@ -120,8 +128,8 @@ inherits no shell, which is why the command above exists.
 The package carries the daemon, the embedder helper and `models.json` side by
 side in `daemon/`, which is where the daemon looks for its helper and config.
 It does **not** carry the embedding model: that is a one-time **41 MB** download
-on Linux (63 MB macOS, 104 MB Windows), and the extension offers it on first
-activation. **Declining is fine** — you get a working extension that answers
+on Linux (63 MB macOS, 104 MB Windows), and the extension offers it the first
+time it starts. **Declining is fine** — you get a working extension that answers
 without reading your code, and the offer returns next session.
 
 Packaging is gated by [`scripts/verify-vsix.js`](clients/vscode/scripts/verify-vsix.js),
@@ -129,6 +137,13 @@ which opens the archive and asserts on its contents. That gate exists because
 `vsce package` exiting `0` is exactly what produced an earlier package that
 shipped this repository's own source and omitted the embedder helper entirely —
 which does not error, it just silently turns retrieval off.
+
+The extension's own code ships as **one bundled file**, `out/extension.js`,
+built by esbuild ([`scripts/bundle-extension.js`](clients/vscode/scripts/bundle-extension.js))
+in `npm run build:package`, which `vsce package` runs as `vscode:prepublish` —
+so no package is built from stale or unbundled output. The test suite runs
+against tsc's per-module output instead; CI's `npm run check:bundle` proves the
+bundle builds, contains every module, and loads.
 
 ---
 
@@ -232,7 +247,18 @@ A key is deliberately **not** accepted as a command-line argument: in `argv` it 
 visible to other processes through `ps` and is written to your shell history.
 
 Environment variables still work, and a key in the environment still takes
-precedence over a stored one. The one case the stored credential wins:
+precedence over a stored one. A program that starts the daemon can instead hand
+it a key **on stdin**: `--credentials-from-stdin`, then one JSON line —
+`{"api_key": "…", "api_base": "…", "provider": "…", "proxy_key": "…"}`, every
+field optional, `{}` for none. The VS Code extension starts the daemon exactly
+this way, so its key is never in the daemon's environment. A stdin key takes the
+stored credential's place: `MOCHIII_API_KEY` in the environment still wins over
+it, and while one is supplied the file `connect` wrote is not consulted. Highest
+first: **`MOCHIII_API_KEY` → a key on stdin → the key `connect` stored.** A stdin
+key that names no `api_base` (or `provider`) goes with whatever base is in force,
+as `MOCHIII_API_KEY` does; one that names a base is sent only there. A malformed
+line, or none within five seconds, stops the daemon with the reason rather than
+letting it start keyless. The one case the stored credential wins:
 `MOCHIII_API_BASE` naming one of the providers above with **no**
 `MOCHIII_API_KEY` beside it. That can only fail — every one of them needs a key —
 so a key connected for a different provider is used, with its own address, and
@@ -330,7 +356,8 @@ All commands are subcommands of the `mochiii-daemon` binary.
 | `--no-context` | Disable retrieval for the daemon's lifetime |
 | `--debug-context` | Log the full content of every retrieved chunk |
 | `--no-rerank` | Bypass fusion and class re-ranking; raw similarity order |
-| `--no-scrub` | Disable heuristic secret scrubbing |
+| `--credentials-from-stdin` | Read one JSON line of credentials from stdin at startup — `{"api_key", "api_base", "provider", "proxy_key"}`, all optional — instead of a key in the environment, which stays readable in `/proc/<pid>/environ` for the daemon's whole life. The VS Code extension starts the daemon this way. `MOCHIII_API_KEY` in the environment still wins. A malformed line, or none within 5 s, is fatal; stdin is never read again. |
+| `--no-scrub` | Disable the HEURISTIC secret scrubber (prefixed key shapes). It does **not** disable literal redaction of this daemon's OWN credentials — the key it holds, and its encodings, are always removed from tool results, chunks, prompts and logs, and an outbound web call carrying one is always refused. That is exact-value matching with no false positives, so there is nothing to silence. |
 
 ---
 
@@ -345,10 +372,10 @@ The daemon reads plain environment variables and never parses `.env` itself.
 | Variable | Meaning |
 |---|---|
 | `MOCHIII_API_BASE` | Base URL of an OpenAI-compatible API. **Optional** — unset, the daemon defaults to `https://openrouter.ai/api/v1` and logs that it did (`daemon/main.go:142`). A malformed value is still fatal. *Required in proxy mode*, where the address cannot be guessed. *(This row read "**Required** — the daemon refuses to start without it" until 2026-09-21. That stopped being true on 2026-09-15, when `22b3021` gave the daemon a default — the fix for the item-41 first-run outage.)* |
-| `MOCHIII_API_KEY` | Sent as `Authorization: Bearer`. May be unset for local servers that need no key, or when a key has been stored by `mochiii-daemon connect` — this variable **takes precedence** over the stored one |
+| `MOCHIII_API_KEY` | Sent as `Authorization: Bearer`. May be unset for local servers that need no key, or when a key has been stored by `mochiii-daemon connect` — this variable **takes precedence** over the stored one, and over a key handed over on stdin (`--credentials-from-stdin`). A variable the daemon starts with is readable in `/proc/<pid>/environ` for its whole life; a launcher that can should use stdin, as VS Code does |
 | `MOCHIII_MODEL` | One model, named the way the server at `MOCHIII_API_BASE` names it (e.g. `qwen2.5-coder:7b` for Ollama). **Replaces every tier in `models.json`** — for a local server, which knows none of those names. VS Code: the `mochiii.model` setting |
 | `MOCHIII_USE_PROXY` | `true` selects proxy mode |
-| `MOCHIII_PROXY_KEY` | Per-user Mochiii key; required in proxy mode |
+| `MOCHIII_PROXY_KEY` | Per-user Mochiii key; required in proxy mode — or `proxy_key` on stdin, which this variable outranks |
 
 **A model server on your own machine** (Ollama, LM Studio, llama.cpp, vLLM) needs
 no key: `MOCHIII_API_BASE=http://localhost:11434/v1` and
@@ -611,11 +638,13 @@ check the result against it: [`docs/SPEC_WORKFLOW.md`](docs/SPEC_WORKFLOW.md).
 
 `/connect` is the in-client half of [`mochiii-daemon connect`](#4-run). It
 takes the key at a masked prompt rather than as an argument, because an argument
-would be left in the transcript and sent on with your next prompt. In the TUI the
-daemon verifies the key and starts using it **without a restart**; in VS Code it
-goes to SecretStorage and the daemon is restarted to pick it up. A key in the
-environment (`MOCHIII_API_KEY`) still wins over a stored one, and `/connect show`
-says so when that is what is happening.
+would be left in the transcript and sent on with your next prompt. In both
+clients the daemon verifies the key, stores it and starts using it **without a
+restart**. A key from whatever started the daemon — `MOCHIII_API_KEY` in its
+environment, or a key VS Code handed it on stdin from SecretStorage — still wins
+over a connected one; VS Code then drops its own key and restarts the daemon so
+the connected one takes over, and `/connect show` says when an environment key
+is what is in force.
 
 **Paste a key from any major provider and it is ready.** `/connect` asks for
 the key and nothing else: the daemon recognises the provider from the key, and
@@ -1022,6 +1051,24 @@ History sent to the model is re-validated and capped server-side: `user` and
 `assistant` roles only, oldest first, inserted between the system message and the
 final prompt. Retrieved context always lands in the final user message.
 
+**The chat is shared by every client of the workspace.** One daemon serves the
+terminal client and the VS Code panel alike, so both write to the same
+conversation, and each keeps up with what the other added:
+
+- The handshake carries a `chat_revision` alongside the hydrated turns. It is
+  opaque to clients, which compare it and send it back.
+- `{"chats":true,"action":"current","since":<revision>}` returns what the chat
+  gained since that revision (`append: true`), or the whole chat after a new
+  chat, a resume or a compact.
+- The terminal asks when it gets focus and before it sends a question. The
+  panel asks when it gets focus, or becomes visible again.
+- A prompt carries the revision its history was built from. If the chat has
+  moved on since, the daemon answers from the stored chat rather than from what
+  the client sent, so the model never continues a conversation it was shown half
+  of.
+- A turn's final message says where the chat now stands, and whether another
+  client wrote to it while the turn ran.
+
 ### Embedding helper
 
 `BAAI/bge-small-en-v1.5`, int8-quantised ONNX, 384 dimensions, run through
@@ -1089,6 +1136,16 @@ returns `403 zdr_required` rather than trusting the client to ask nicely.
   of *prefixed* patterns, so novel, obfuscated or unprefixed secrets are missed;
   it can be disabled; and the proxy cannot scrub, because it never reads content.
   Defence in depth, not a guarantee.
+- **This daemon's OWN credentials are scrubbed literally, and that cannot be
+  disabled.** Separately from the heuristic, the daemon knows the exact key it
+  holds (started with, stored by `connect`, or set live) and removes that value —
+  and its base64/hex/url-escaped/reversed encodings, and any 16-byte fragment of
+  it — from every tool result, retrieved chunk, outgoing prompt and `--debug-context`
+  log, and refuses any outbound `web_search`/`web_fetch` that carries it. This is
+  exact-value matching: no false positives, so `--no-scrub` does not touch it. It
+  still cannot catch a key transformed by arbitrary code (XOR, a cipher, gzip) —
+  the defences for that are the read-tool denylist and the child-env allowlist,
+  which keep the key out of reach rather than recognising it after the fact.
   The fixed set is prefixed key shapes: the keys of every provider `/connect` accepts
   (OpenRouter, OpenAI, Anthropic, Google, NVIDIA, Groq, xAI, Together, Fireworks,
   Cerebras, Hugging Face), AWS, GitHub, Slack, Stripe, Supabase, and private-key blocks.

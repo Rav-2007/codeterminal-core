@@ -616,7 +616,11 @@ suite('daemon supervisor', () => {
     const pkg = JSON.parse(
       fs.readFileSync(path.join(__dirname, '..', '..', '..', 'package.json'), 'utf8')
     );
-    const titles: string[] = pkg.contributes.commands.map((c: { title: string }) => c.title);
+    // What the Command Palette SHOWS, which is what a user searches for: the
+    // category and the title, "Mochiii: Restart Daemon".
+    const titles: string[] = pkg.contributes.commands.map((c: { title: string; category?: string }) =>
+      c.category ? `${c.category}: ${c.title}` : c.title
+    );
 
     const src = (f: string) =>
       fs.readFileSync(path.join(__dirname, '..', '..', '..', 'src', f), 'utf8');
