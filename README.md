@@ -35,7 +35,7 @@ network.**
 > `SHA256SUMS` in the release if you want the integrity check a signature would
 > have given you.
 >
-> Building from source still needs Go 1.25+ and a C compiler. Installing the
+> Building from source still needs Go 1.26.9+ and a C compiler. Installing the
 > `.vsix` needs neither.
 >
 > **The licence is proprietary** — `LICENSE`, "All rights reserved". This
@@ -43,7 +43,7 @@ network.**
 
 | | |
 |---|---|
-| **Language** | Go 1.25+ (TypeScript for the VS Code client) |
+| **Language** | Go 1.26.9+ (TypeScript for the VS Code client) |
 | **Transport** | Local socket only — Unix domain socket (`0600`) or Windows named pipe. No TCP |
 | **Retrieval** | Hybrid: on-device ONNX embeddings (BGE-small, 384d) + SQLite FTS5, RRF-fused |
 | **Inference** | Any OpenAI-compatible API, direct or through the managed proxy |
@@ -136,8 +136,10 @@ which does not error, it just silently turns retrieval off.
 
 For working on Mochiii, or for the TUI, which is not packaged.
 
-**Requirements:** Go 1.25+, and a C compiler for the embedder helper only. The
-daemon and TUI are pure Go and build with `CGO_ENABLED=0`.
+**Requirements:** Go 1.26.9+, and a C compiler for the embedder helper only. The
+daemon and TUI are pure Go and build with `CGO_ENABLED=0`. An older Go (1.21 or
+later) downloads that toolchain by itself on the first build, unless
+`GOTOOLCHAIN=local` is set.
 
 ### 1. Build
 
@@ -250,6 +252,15 @@ set -a && source .env && set +a
 ./daemon/mochiii-daemon --workspace .    # terminal 1
 ./clients/tui/mochiii-tui                # terminal 2
 ```
+
+**Those two commands start with agent mode off:** the model is given no tools,
+so it cannot read a file it was not handed, propose an edit through a tool, run
+a test, or search the web. To get the tools, start with the agent config
+instead — either run [`./run-tui.sh`](run-tui.sh), which builds and starts both
+halves for you, or add `--config models.agent.json` to the daemon line. Two of
+those tools reach the internet; read
+[what that config allows](#modelsagentjson--agent-mode-and-the-one-setting-that-reaches-the-internet)
+first.
 
 </details>
 
