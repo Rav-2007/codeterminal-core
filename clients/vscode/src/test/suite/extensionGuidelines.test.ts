@@ -49,6 +49,22 @@ suite('the manifest meets the Marketplace guidelines', () => {
     }
   });
 
+  // Bundling: the package ships one out/extension.js. vsce runs
+  // vscode:prepublish before every package, so building the bundle there is
+  // what keeps a package from being made out of tsc's per-module output; and
+  // .vscodeignore must keep that output out. scripts/bundle-extension.js
+  // --check (CI) proves the bundle itself; verify-vsix.js proves the archive.
+  test('ships one bundled file', () => {
+    const scripts = pkg.scripts ?? {};
+    assert.strictEqual(scripts['vscode:prepublish'], 'npm run build:package', 'vscode:prepublish');
+    assert.ok(/npm run bundle\b/.test(scripts['build:package'] ?? ''), `build:package does not bundle: ${scripts['build:package']}`);
+    assert.strictEqual(pkg.main, './out/extension.js', 'main must name the file the bundle is written to');
+    const ignore = fs.readFileSync(path.join(ROOT, '.vscodeignore'), 'utf8').split('\n').map((l) => l.trim());
+    for (const line of ['out/**', '!out/extension.js', '!out/vendor/**']) {
+      assert.ok(ignore.includes(line), `.vscodeignore lacks "${line}"`);
+    }
+  });
+
   test('the icon is a PNG of at least 256x256', () => {
     const png = fs.readFileSync(path.join(ROOT, pkg.icon));
     assert.strictEqual(png.subarray(1, 4).toString('latin1'), 'PNG', `${pkg.icon} is not a PNG (the Marketplace rejects SVG icons)`);

@@ -32,6 +32,8 @@ All notable changes to the Mochiii extension. Versions follow the extension's
   edits files and runs commands in it.
 - Commands are listed under the **Mochiii** category in the Command Palette.
 - A sharper, 256-pixel icon.
+- The extension's code ships as one bundled file instead of 15 separate
+  modules, so it loads faster.
 
 ### Security
 

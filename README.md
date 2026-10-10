@@ -138,6 +138,13 @@ which opens the archive and asserts on its contents. That gate exists because
 shipped this repository's own source and omitted the embedder helper entirely —
 which does not error, it just silently turns retrieval off.
 
+The extension's own code ships as **one bundled file**, `out/extension.js`,
+built by esbuild ([`scripts/bundle-extension.js`](clients/vscode/scripts/bundle-extension.js))
+in `npm run build:package`, which `vsce package` runs as `vscode:prepublish` —
+so no package is built from stale or unbundled output. The test suite runs
+against tsc's per-module output instead; CI's `npm run check:bundle` proves the
+bundle builds, contains every module, and loads.
+
 ---
 
 # Quick start — from source

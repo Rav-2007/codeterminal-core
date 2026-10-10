@@ -147,6 +147,21 @@ const MUST_CONTAIN = [
 const DAEMON_DIR = 'extension/daemon/';
 const DAEMON_ALLOWED = new Set(MUST_CONTAIN.filter((n) => n.startsWith(DAEMON_DIR)));
 
+// THE COMPILED OUTPUT IS ONE BUNDLE AND THE READERS, asserted the same way.
+//
+// out/extension.js is a single bundled file (scripts/bundle-extension.js), so
+// nothing else from tsc's out/ belongs in the package: a loose module there is
+// either one the bundle already contains, or the sign that the package was
+// built from tsc's unbundled output -- which still loads, so nothing else would
+// notice. The readers in out/vendor/ ship beside the bundle by design.
+const OUT_DIR = 'extension/out/';
+const OUT_BUNDLE = 'extension/out/extension.js';
+const OUT_VENDOR = 'extension/out/vendor/';
+function outEntryAllowed(name) {
+  return name === OUT_BUNDLE || name.startsWith(OUT_VENDOR);
+}
+const { relativeRequires } = require('./bundle-extension.js');
+
 // Absent, each with the reason it matters.
 const MUST_NOT_MATCH = [
   [/^extension\/src\//, 'ships our TypeScript source'],
@@ -355,6 +370,40 @@ function selfTest() {
     }
   }
 
+  // (b2) the compiled output is the bundle and the readers: tsc's loose
+  // modules, its test output and its reader copies are refused; the bundle and
+  // every reader file are not. And a bundle that still requires our modules by
+  // relative path is caught by its content, while the readers' computed load
+  // and the vscode import are not.
+  const outRejected = [
+    'extension/out/chatPanel.js',
+    'extension/out/test/suite/smoke.test.js',
+    'extension/out/extractors/raster.js',
+  ];
+  const outAccepted = [
+    'extension/out/extension.js',
+    'extension/out/vendor/extractors.js',
+    'extension/out/vendor/ocr-worker.js',
+    'extension/out/vendor/eng.traineddata.gz',
+  ];
+  for (const name of outRejected) {
+    if (outEntryAllowed(name)) {
+      failures.push(`SELF-TEST: ${name} would ship beside the bundle`);
+    }
+  }
+  for (const name of outAccepted) {
+    if (!outEntryAllowed(name)) {
+      failures.push(`SELF-TEST: ${name} is wrongly refused from out/`);
+    }
+  }
+  if (relativeRequires('const chatPanel_1 = require("./chatPanel");').length !== 1 ||
+      relativeRequires("const x = require('../daemonClient');").length !== 1) {
+    failures.push('SELF-TEST: an unbundled require("./...") is not detected');
+  }
+  if (relativeRequires('bundle = require(path.join(__dirname, "vendor", "extractors.js"));\nvar vscode = require("vscode");').length !== 0) {
+    failures.push('SELF-TEST: the readers\' computed load or the vscode import is wrongly refused');
+  }
+
   // (c) the content scan must fire on a secret that is NOT in a file named
   // .env -- the half a filename list structurally cannot do.
   const secrets = [
@@ -464,7 +513,8 @@ function selfTest() {
     `${mustAccept.length} shipped paths accepted, ${secrets.length} secret shapes detected, ` +
     `${innocent.length} innocent strings ignored, ` +
     `${toolchainCases.length} toolchain versions judged against go${goFloorFromWorkspace()}, ` +
-    `${staleInRuntime.length} stale files kept out of the ${DAEMON_ALLOWED.size}-file runtime directory)`);
+    `${staleInRuntime.length} stale files kept out of the ${DAEMON_ALLOWED.size}-file runtime directory, ` +
+    `${outRejected.length} unbundled outputs refused)`);
   process.exit(0);
 }
 
@@ -508,6 +558,20 @@ function main() {
       `UNEXPECTED ${name} is in the runtime directory and is not part of the runtime. ` +
         'daemon/ ships verbatim, so anything left there by an earlier build ships too.',
     );
+  }
+
+  for (const name of names) {
+    if (!name.startsWith(OUT_DIR) || name.endsWith('/') || outEntryAllowed(name)) continue;
+    failures.push(
+      `UNBUNDLED ${name} is compiled output beside the bundle. Only out/extension.js and ` +
+        'out/vendor/ ship; build with `npm run build:package` (vscode:prepublish does).',
+    );
+  }
+  const bundleEntry = entries.find((e) => e.name === OUT_BUNDLE);
+  if (bundleEntry) {
+    for (const line of relativeRequires(readEntry(buf, bundleEntry).toString('utf8'))) {
+      failures.push(`UNBUNDLED out/extension.js loads a module by relative path, which the package does not ship: ${line}`);
+    }
   }
 
   for (const [re, why] of MUST_NOT_MATCH) {

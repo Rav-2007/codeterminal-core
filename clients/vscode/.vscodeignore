@@ -21,11 +21,23 @@ tsconfig*.json
 **/*.ts
 **/*.map
 
-# --- tests, and the 3 GB of VS Code builds their harness downloads ---
-out/test/**
-# The readers ship bundled in out/vendor/. tsc emits a loose copy of any of
-# their files a test imports (out/extractors/raster.js); nothing loads it.
-out/extractors/**
+# --- compiled output: the bundle and the readers, and nothing else ---
+#
+# out/extension.js is ONE bundled file (scripts/bundle-extension.js, run by
+# vscode:prepublish), so tsc's per-module output beside it -- the modules the
+# bundle already contains, the test suite, and the loose copies of reader files
+# a test imports -- is never loaded by the package and does not ship. The
+# readers ship separately in out/vendor/ (scripts/build-extractors.js).
+# verify-vsix.js refuses anything else under out/.
+out/**
+!out/extension.js
+!out/vendor/**
+
+# --- the 3 GB of VS Code builds the test harness downloads ---
+# The bare name too: a .vscode-test that is a LINK to a shared download is one
+# entry, which `/**` does not match, and vsce's secret scan then fails reading
+# a directory as a file (EISDIR) -- found 2026-10-10 packaging from a worktree.
+.vscode-test
 .vscode-test/**
 .vscode/**
 
