@@ -46,8 +46,11 @@
 # offline, no toolchain needed -- which its sibling govulncheck.sh does not.
 #
 # TO RAISE THE FLOOR: edit go.work's `go` and `toolchain` lines, then run
-#   sed -i 's/^go 1\.25\.13$/go <new>/' go.work */go.mod clients/tui/go.mod
-# and re-run this script; it names every file still disagreeing.
+#   sed -i 's/^go 1\.26\.9$/go <new>/' go.work */go.mod clients/tui/go.mod
+# and re-run this script; it names every file still disagreeing -- the workflows'
+# GO_VERSION / go-version lines among them. proxy/Dockerfile's image is NOT
+# checked here: raise it by hand (an image older than the go directive fails the
+# build loudly, because the official images set GOTOOLCHAIN=local).
 set -uo pipefail
 # Resolved BEFORE the cd, because --self-test re-invokes this script from a
 # fixture directory and a relative $0 does not survive that.
@@ -70,7 +73,15 @@ if [ "${1:-}" = "--self-test" ]; then
   printf 'module b\n\ngo 1.25.13\n' > "$tmp/b/go.mod"
   # GO_PINS_WORK is absolute: the script cds to its own repo root, so a relative
   # fixture path would resolve against the wrong tree and silently check nothing.
-  run() { GO_PINS_WORK="$tmp/go.work" GO_PINS_MODULES="$tmp/a $tmp/b" GO_PINS_FLOOR=3 "$SELF"; }
+  #
+  # GO_PINS_WORKFLOWS IS THE FIXTURE'S TOO, unless a case sets its own. It was
+  # left unset until 2026-10-10, so cases (a)-(d) read the REAL workflows -- and
+  # the day the real floor moved (1.25.13 -> 1.26.9) case (a) failed, "an
+  # agreeing set was reported as disagreeing", over a version that is nowhere in
+  # the fixture. A self-test that depends on the tree it is run in is not one.
+  mkdir -p "$tmp/wf0"
+  printf 'jobs:\n  x:\n    steps:\n      - uses: actions/setup-go@v5\n        with:\n          go-version: "1.25.13"\n' > "$tmp/wf0/a.yml"
+  run() { GO_PINS_WORK="$tmp/go.work" GO_PINS_MODULES="$tmp/a $tmp/b" GO_PINS_WORKFLOWS="${GO_PINS_WORKFLOWS:-$tmp/wf0}" GO_PINS_FLOOR=3 "$SELF"; }
 
   # (a) an agreeing set MUST pass, or this checker is merely always-red.
   if ! run >/dev/null 2>&1; then

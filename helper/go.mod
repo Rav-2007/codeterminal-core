@@ -1,6 +1,6 @@
 module mochiii/helper
 
-go 1.25.13
+go 1.26.9
 
 require (
 	github.com/sugarme/tokenizer v0.3.0
