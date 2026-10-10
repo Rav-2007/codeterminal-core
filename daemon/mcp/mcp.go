@@ -173,6 +173,12 @@ func SplitQualifiedName(qualified string) (server, tool string, err error) {
 type Result struct {
 	Content string
 	IsError bool
+	// Empty says the call WORKED AND FOUND NOTHING: a search with no match, a
+	// folder with nothing in it. It is not an error -- "nothing matches" can be
+	// exactly what was asked -- but several in a row are what looking for
+	// something that is not there looks like, and the agent loop counts them
+	// (daemon/stall.go).
+	Empty bool
 
 	// PreNeutralized says this result ALREADY contains delimiters the daemon
 	// wrote, around untrusted text the producer has already defused, and that

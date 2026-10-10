@@ -277,6 +277,11 @@ var notYetPorted = map[string]string{
 	// ring is the nearest thing it has, and it estimates rather than reads the
 	// provider's bill.
 	"usage": "VS Code left as it is for now by the owner; the TUI's /usage reads the provider's bill",
+	// The limits themselves hold for every client -- the daemon keeps them
+	// (daemon/spend.go) -- and one that names no session is held by the day's
+	// only, and told to raise it in the configuration. What VS Code lacks is
+	// the command that raises a limit from the client (2026-10-08).
+	"budget": "the daemon limits every client; VS Code has no way to raise a limit until it sends a session and gets this command",
 	// Long tasks (daemon/longtask.go) are terminal-first by the owner's
 	// decision (2026-09-30): the daemon side is client-neutral, and VS Code has
 	// no task meter or /task review yet.

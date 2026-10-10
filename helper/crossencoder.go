@@ -75,73 +75,47 @@ func (c *CrossEncoder) tokenizePair(query, passage string) (tokenized, error) {
 
 // Score returns one relevance score per passage, in order. Higher is more
 // relevant; the scale is the model's logit and means nothing on its own.
+//
+// One pair per inference, for the reasons on OnnxEmbedder.Embed: thirty
+// 512-token passages in one tensor is the same gigabyte there, and a passage's
+// score no longer depends on which other passages it was scored beside.
 func (c *CrossEncoder) Score(query string, passages []string) ([]float32, error) {
 	if len(passages) == 0 {
 		return nil, nil
 	}
 	toks := make([]tokenized, len(passages))
-	maxLen := 0
 	for i, p := range passages {
 		t, err := c.tokenizePair(query, p)
 		if err != nil {
 			return nil, fmt.Errorf("tokenizing passage %d: %w", i, err)
 		}
 		toks[i] = t
-		maxLen = max(maxLen, len(t.ids))
 	}
 
-	batch := len(passages)
-	inputIDs, attnMask, tokenTypeIDs := packPairs(toks, maxLen)
-
-	// The tensors are released when Score returns. Destroy's error is
-	// discarded on purpose: there is nothing to do about a failed release of
-	// a tensor this call is finished with, and the scores are already read.
-	shape := ort.NewShape(int64(batch), int64(maxLen))
-	inputIDsT, err := ort.NewTensor(shape, inputIDs)
-	if err != nil {
-		return nil, fmt.Errorf("building input_ids tensor: %w", err)
+	scores := make([]float32, len(passages))
+	for i, t := range toks {
+		score, err := c.scoreOne(t)
+		if err != nil {
+			return nil, fmt.Errorf("passage %d of %d: %w", i, len(passages), err)
+		}
+		scores[i] = score
 	}
-	defer func() { _ = inputIDsT.Destroy() }()
-	attnMaskT, err := ort.NewTensor(shape, attnMask)
-	if err != nil {
-		return nil, fmt.Errorf("building attention_mask tensor: %w", err)
-	}
-	defer func() { _ = attnMaskT.Destroy() }()
-	tokenTypeIDsT, err := ort.NewTensor(shape, tokenTypeIDs)
-	if err != nil {
-		return nil, fmt.Errorf("building token_type_ids tensor: %w", err)
-	}
-	defer func() { _ = tokenTypeIDsT.Destroy() }()
-
-	outputs := []ort.Value{nil}
-	if err := c.session.Run([]ort.Value{inputIDsT, attnMaskT, tokenTypeIDsT}, outputs); err != nil {
-		return nil, fmt.Errorf("running the cross-encoder: %w", err)
-	}
-	out, ok := outputs[0].(*ort.Tensor[float32])
-	if !ok {
-		return nil, fmt.Errorf("unexpected logits tensor type %T", outputs[0])
-	}
-	defer func() { _ = out.Destroy() }()
-	if shape := out.GetShape(); len(shape) != 2 || shape[0] != int64(batch) || shape[1] != 1 {
-		return nil, fmt.Errorf("unexpected logits shape %v, want [%d 1]", shape, batch)
-	}
-	return append([]float32(nil), out.GetData()...), nil
+	return scores, nil
 }
 
-// packPairs lays tokenized pairs out as the three [len(toks), maxLen] input
-// tensors' data, row by row. Positions past a pair's own length stay zero:
-// [PAD] in this vocabulary, excluded by the attention mask.
-func packPairs(toks []tokenized, maxLen int) (inputIDs, attnMask, tokenTypeIDs []int64) {
-	inputIDs = make([]int64, len(toks)*maxLen)
-	attnMask = make([]int64, len(toks)*maxLen)
-	tokenTypeIDs = make([]int64, len(toks)*maxLen)
-	for i, t := range toks {
-		for j := range t.ids {
-			idx := i*maxLen + j
-			inputIDs[idx] = int64(t.ids[j])
-			attnMask[idx] = int64(t.mask[j])
-			tokenTypeIDs[idx] = int64(t.typeIDs[j])
-		}
+// scoreOne runs the cross-encoder over one tokenized pair.
+func (c *CrossEncoder) scoreOne(t tokenized) (float32, error) {
+	out, err := runOne(c.session, t)
+	if err != nil {
+		return 0, err
 	}
-	return inputIDs, attnMask, tokenTypeIDs
+	defer func() { _ = out.Destroy() }()
+	if shape := out.GetShape(); len(shape) != 2 || shape[0] != 1 || shape[1] != 1 {
+		return 0, fmt.Errorf("unexpected logits shape %v, want [1 1]", shape)
+	}
+	data := out.GetData()
+	if len(data) != 1 {
+		return 0, fmt.Errorf("the cross-encoder returned %d scores for one pair", len(data))
+	}
+	return data[0], nil
 }

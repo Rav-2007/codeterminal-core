@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"path/filepath"
+	"sync"
 
 	"github.com/sugarme/tokenizer"
 	"github.com/sugarme/tokenizer/pretrained"
@@ -136,95 +137,179 @@ func truncateKeepingFinalToken(ids []int, maxLen int) []int {
 	return out
 }
 
+// inferenceGate lets ONE inference run at a time in this process, whichever
+// model it is for.
+//
+// It is the second half of the memory bound described on Embed. One text per
+// inference bounds what a REQUEST can cost; this bounds what several requests
+// arriving together can cost, which was the same bill by another route.
+// MEASURED 2026-10-08, one 512-token text per request, all sent at once: 8
+// requests 371 MB, 16 requests 666 MB, 32 requests 1,229 MB -- and none of it
+// handed back.
+//
+// What it costs: those 32 took 79.7 ms a text side by side, against 87 ms a
+// text in turn. Nothing sends embeds side by side for speed (an index build
+// sends one batch at a time), so that is a price nobody was paying for
+// anything. A search that arrives during an index build now waits for the one
+// inference in flight, under a tenth of a second, instead of sharing the cores
+// with a whole batch.
+var inferenceGate sync.Mutex
+
+// runOne runs session over ONE tokenized text and returns its float output,
+// which the caller destroys. See Embed for why it is never more than one.
+func runOne(session *ort.DynamicAdvancedSession, t tokenized) (*ort.Tensor[float32], error) {
+	n := len(t.ids)
+	inputIDs := make([]int64, n)
+	attnMask := make([]int64, n)
+	tokenTypeIDs := make([]int64, n)
+	for j := range t.ids {
+		inputIDs[j] = int64(t.ids[j])
+		attnMask[j] = int64(t.mask[j])
+		tokenTypeIDs[j] = int64(t.typeIDs[j])
+	}
+
+	// The input tensors are released when runOne returns. Destroy's error is
+	// discarded on purpose: there is nothing to do about a failed release of a
+	// tensor this call is finished with.
+	shape := ort.NewShape(1, int64(n))
+	inputIDsT, err := ort.NewTensor(shape, inputIDs)
+	if err != nil {
+		return nil, fmt.Errorf("building input_ids tensor: %w", err)
+	}
+	defer func() { _ = inputIDsT.Destroy() }()
+	attnMaskT, err := ort.NewTensor(shape, attnMask)
+	if err != nil {
+		return nil, fmt.Errorf("building attention_mask tensor: %w", err)
+	}
+	defer func() { _ = attnMaskT.Destroy() }()
+	tokenTypeIDsT, err := ort.NewTensor(shape, tokenTypeIDs)
+	if err != nil {
+		return nil, fmt.Errorf("building token_type_ids tensor: %w", err)
+	}
+	defer func() { _ = tokenTypeIDsT.Destroy() }()
+
+	outputs := []ort.Value{nil}
+	inferenceGate.Lock()
+	err = session.Run([]ort.Value{inputIDsT, attnMaskT, tokenTypeIDsT}, outputs)
+	inferenceGate.Unlock()
+	if err != nil {
+		return nil, fmt.Errorf("running inference: %w", err)
+	}
+	out, ok := outputs[0].(*ort.Tensor[float32])
+	if !ok {
+		if outputs[0] != nil {
+			_ = outputs[0].Destroy()
+		}
+		return nil, fmt.Errorf("unexpected output tensor type %T", outputs[0])
+	}
+	return out, nil
+}
+
 // Embed tokenizes and runs inference for texts, returning one L2-normalized
 // 384-dim CLS-pooled vector per input. It has no notion of "query" vs
 // "document" — that asymmetry is applied by the daemon's BgeEmbedder,
 // before text ever reaches here.
+//
+// ONE TEXT PER INFERENCE, HOWEVER MANY ARRIVE. A request is still a batch on
+// the wire; it is no longer a batch in the model.
+//
+// FOUND 2026-10-08 in a running product: the helper of a daemon that had been
+// watching this repository for two hours held 6.0 GB on a 15 GB machine with
+// no swap, 500 MB was left, and the load average reached 123. Embed used to
+// pack a whole request into one [texts, longest] tensor, and the model's
+// working memory is proportional to that tensor. Measured that day with the
+// real model, 512-token chunks, a fresh helper per row:
+//
+//	texts in one inference    peak        ms per text
+//	  1                        110 MB      79
+//	  8                        399 MB     100
+//	 16                        710 MB     107
+//	 40  (an index batch)    1,634 MB     102
+//	 58  (agentloop.go)      2,309 MB     105
+//	109  (clients/tui/chat.go) 4,281 MB   104
+//
+// About 40 MB a text, and ONNX Runtime's arena keeps what it once needed: the
+// memory after each call was the peak. The big rows are not an index build --
+// that sends 40 at a time -- they are ONE SAVE of one file, because the
+// watcher re-embeds every chunk of a changed file in a single request
+// (daemon/reindex.go). Nine saves of ordinary files, replayed in a row, left
+// 2,938 MB behind.
+//
+// The column on the right is why the answer is one and not eight: batching
+// buys no speed on a CPU. The same 58 chunks in groups of 1, 2, 4, 8 and 16
+// took 5.06, 5.76, 5.79, 5.74 and 5.86 seconds and peaked at 183, 241, 395,
+// 704 and 1,384 MB. One at a time is the fastest row and the smallest, since a
+// text alone is never padded to a longer neighbour's length.
+//
+// THE CAP IS HERE, IN THE HELPER, and not a batch size the callers are asked
+// to respect: the daemon had one caller that batched (the index build, at 40,
+// chosen for a deadline) and one that did not, and a bound that the next
+// caller has to remember is the bound that was missing.
+//
+// IT ALSO MAKES A VECTOR A FUNCTION OF ITS TEXT. That was not true, and
+// nothing had noticed. This is an int8 model: its quantised layers take their
+// ranges from the whole input tensor, so a chunk's vector depended on which
+// other chunks shared its inference. Measured on those 58 chunks: embedded
+// together and embedded apart, the same text gave vectors as far apart as
+// cosine 0.994 (0.02 in one component), and the five nearest neighbours of a
+// chunk were the same five for only 27 of the 58. An index therefore held
+// whatever the walk order and the batch size happened to group -- a file added
+// near the top moved every boundary after it -- while every QUERY has always
+// been embedded alone. Now both are. An index built before this is no worse
+// than it was (searches over it are unchanged, bit for bit) and stops mixing
+// the two as files are saved or the index is rebuilt.
 func (e *OnnxEmbedder) Embed(texts []string) ([][]float32, error) {
 	if len(texts) == 0 {
 		return nil, nil
 	}
 
+	// Every text is tokenized before any is embedded, so a request with a text
+	// the tokenizer refuses still fails before it costs an inference.
 	toks := make([]tokenized, len(texts))
-	maxLen := 0
 	for i, text := range texts {
 		t, err := e.tokenize(text)
 		if err != nil {
 			return nil, fmt.Errorf("tokenizing text %d: %w", i, err)
 		}
 		toks[i] = t
-		if len(t.ids) > maxLen {
-			maxLen = len(t.ids)
-		}
 	}
 
-	batch := len(texts)
-	inputIDs := make([]int64, batch*maxLen)
-	attnMask := make([]int64, batch*maxLen)
-	tokenTypeIDs := make([]int64, batch*maxLen)
+	vecs := make([][]float32, len(texts))
 	for i, t := range toks {
-		for j := 0; j < len(t.ids); j++ {
-			idx := i*maxLen + j
-			inputIDs[idx] = int64(t.ids[j])
-			attnMask[idx] = int64(t.mask[j])
-			tokenTypeIDs[idx] = int64(t.typeIDs[j])
+		vec, err := e.embedOne(t)
+		if err != nil {
+			return nil, fmt.Errorf("text %d of %d: %w", i, len(texts), err)
 		}
-		// Positions beyond len(t.ids) stay zero-valued: input_ids=0 is
-		// [PAD] in this vocab, attention_mask=0 excludes them from
-		// self-attention, token_type_ids=0 is the standard single-sequence
-		// value. CLS pooling below only ever reads position 0, which is
-		// always a real (non-padded) token, so right-padding never
-		// affects which vector we extract — only the model's internal
-		// attention computation, which attention_mask already handles.
+		vecs[i] = vec
 	}
+	return vecs, nil
+}
 
-	shape := ort.NewShape(int64(batch), int64(maxLen))
-	inputIDsT, err := ort.NewTensor(shape, inputIDs)
+// embedOne runs the model over one tokenized text and returns its normalized
+// [CLS] vector.
+func (e *OnnxEmbedder) embedOne(t tokenized) ([]float32, error) {
+	out, err := runOne(e.session, t)
 	if err != nil {
-		return nil, fmt.Errorf("building input_ids tensor: %w", err)
+		return nil, err
 	}
-	defer inputIDsT.Destroy()
+	defer func() { _ = out.Destroy() }()
 
-	attnMaskT, err := ort.NewTensor(shape, attnMask)
-	if err != nil {
-		return nil, fmt.Errorf("building attention_mask tensor: %w", err)
-	}
-	defer attnMaskT.Destroy()
-
-	tokenTypeIDsT, err := ort.NewTensor(shape, tokenTypeIDs)
-	if err != nil {
-		return nil, fmt.Errorf("building token_type_ids tensor: %w", err)
-	}
-	defer tokenTypeIDsT.Destroy()
-
-	outputs := []ort.Value{nil}
-	if err := e.session.Run([]ort.Value{inputIDsT, attnMaskT, tokenTypeIDsT}, outputs); err != nil {
-		return nil, fmt.Errorf("running inference: %w", err)
-	}
-	outTensor, ok := outputs[0].(*ort.Tensor[float32])
-	if !ok {
-		return nil, fmt.Errorf("unexpected output tensor type %T", outputs[0])
-	}
-	defer outTensor.Destroy()
-
-	data := outTensor.GetData()
-	outShape := outTensor.GetShape()
-	if len(outShape) != 3 {
-		return nil, fmt.Errorf("unexpected output shape %v, want [batch, seq, hidden]", outShape)
+	outShape := out.GetShape()
+	if len(outShape) != 3 || outShape[0] != 1 {
+		return nil, fmt.Errorf("unexpected output shape %v, want [1, seq, hidden]", outShape)
 	}
 	hidden := int(outShape[2])
 	if hidden != embedDim {
 		return nil, fmt.Errorf("model produced %d-dim hidden state, want %d", hidden, embedDim)
 	}
-
-	vecs := make([][]float32, batch)
-	for i := 0; i < batch; i++ {
-		clsStart := i * maxLen * hidden // CLS is position 0 of item i's sequence
-		cls := make([]float32, hidden)
-		copy(cls, data[clsStart:clsStart+hidden])
-		vecs[i] = l2Normalize(cls)
+	// [CLS] is position 0, so its hidden state is the first `hidden` floats.
+	data := out.GetData()
+	if len(data) < hidden {
+		return nil, fmt.Errorf("model returned %d values, fewer than one %d-dim hidden state", len(data), hidden)
 	}
-	return vecs, nil
+	cls := make([]float32, hidden)
+	copy(cls, data[:hidden])
+	return l2Normalize(cls), nil
 }
 
 func l2Normalize(v []float32) []float32 {

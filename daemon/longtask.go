@@ -97,6 +97,18 @@ func (r *taskRun) check(segmentCalls int) *protocol.IncompleteInfo {
 			why += "s"
 		}
 	default:
+		// THE SESSION'S OR THE DAY'S LIMIT ENDS A RUN AS ITS OWN BUDGET DOES
+		// (spend.go): the work is saved and can be resumed once the person has
+		// said to go on. A long task is the largest thing a session can spend
+		// on, so it is the last thing that should be outside those limits.
+		if stop := r.usage.spendReached(); stop != nil {
+			r.budgetStop = &protocol.IncompleteInfo{
+				Reason: protocol.IncompleteAgentBudget,
+				Detail: "this task's run stopped because it reached " + stop.what() + ". Everything it did is " +
+					"saved. " + stop.wayOn() + " Then resume it with /task resume.",
+			}
+			return r.budgetStop
+		}
 		return nil
 	}
 	r.budgetStop = &protocol.IncompleteInfo{

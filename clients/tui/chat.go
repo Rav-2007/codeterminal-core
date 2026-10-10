@@ -366,6 +366,9 @@ type chatModel struct {
 	// has not sent yet, so a bill arriving after a new chat or a resume goes to
 	// the session only (recordStoppedUsage).
 	stopsInChat int
+	// spendNotice is the daemon's warning that a spending limit is near, held
+	// until the turn that carried it has finished (budget.go).
+	spendNotice string
 
 	// chatIDs are the saved chats the last /history list numbered, in order:
 	// "/resume 2" means the chat that list showed as 2 (history.go).
@@ -530,6 +533,7 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.recordStoppedUsage(msg.stopped)
 		m.recordUsage(msg.usage)
+		m.recordSpend(msg.spend)
 		return m, waitForNext(m.streamCh)
 
 	case reasoningMsg:
@@ -1031,6 +1035,8 @@ func (m chatModel) handleStreamDone() (tea.Model, tea.Cmd) {
 		m.appendTurn(turn{role: roleSystem, text: renderTaskList(m.tasks)})
 		m.tasks = nil
 	}
+	// A spending limit that this turn brought near, said under the turn.
+	m.showSpendNotice()
 	next, cmd := m.checkForEditBlocks()
 	// The other window wrote while this turn ran (chatRevMsg): show the chat as
 	// it now is. Not while a review is open -- the next question or focus does
@@ -1630,6 +1636,8 @@ func (m chatModel) handleLocalSlash(name, args string) (tea.Model, tea.Cmd) {
 		m.resizeViewport()
 		m.refreshViewport()
 		return m, nil
+	case "budget":
+		return m.handleBudgetCommand(args)
 	case "spec":
 		return m.handleSpecCommand(args)
 	case "task":

@@ -225,6 +225,10 @@ var allBuiltinNames = []string{
 	"query_compiler_definition", "query_compiler_references",
 	"sandbox_exec", "propose_edit", "propose_ast_edit",
 	"web_search", "web_fetch",
+	// An ordinary turn's since 2026-10-08, when exact search stopped being a
+	// long-task tool. It reads the project's files in this process, under the
+	// gates read_file is under: it runs nothing and reaches nothing.
+	"grep",
 }
 
 // AND THE LIST HAS TO BE COMPLETE, or the sentence above is not true.

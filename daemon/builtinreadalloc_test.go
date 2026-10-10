@@ -183,6 +183,10 @@ var builtinToolSurface = []string{
 	"mcp_exec.go",
 	"mcp_lsp.go",
 	"webtools.go",
+	// Added 2026-10-08, when grep became an ordinary turn's tool and this
+	// list's own completeness test named it. It was a long-task tool before,
+	// registered only in a mode that test does not build.
+	"grep.go",
 }
 
 // TestBuiltinToolSurfaceBoundsItsReads is the CLASS guard, and it exists

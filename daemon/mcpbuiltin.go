@@ -394,23 +394,6 @@ func (s *Server) builtinTools(proposals *proposalSink, mode string) []mcp.Builti
 		},
 		{
 			Tool: mcp.Tool{
-				Name: "search_code",
-				Description: "Search the indexed workspace for code relevant to a natural-language query. " +
-					"Returns the most relevant chunks with their file paths.",
-				Schema: schema(`{
-					"type":"object",
-					"properties":{"query":{"type":"string","description":"What to look for."}},
-					"required":["query"],
-					"additionalProperties":false
-				}`),
-				ReadOnlyHint: true,
-			},
-			Handler: func(ctx context.Context, raw json.RawMessage) (mcp.Result, error) {
-				return s.builtinSearchCode(proposals.readCtx(ctx), raw)
-			},
-		},
-		{
-			Tool: mcp.Tool{
 				Name: "query_compiler_definition",
 				Description: "Queries the native language compiler/server (e.g., gopls) for the definition of a symbol. " +
 					"The path must be workspace-relative. Line and character are 0-indexed.",
@@ -538,6 +521,32 @@ func (s *Server) builtinTools(proposals *proposalSink, mode string) []mcp.Builti
 	if isBuildMode(mode) || isLongTaskMode(mode) {
 		tools = append(tools, s.updateTasksTool(proposals))
 	}
+	// SEARCH BY MEANING IS OFFERED ONLY WHERE IT CAN ANSWER. With no index (a
+	// project nobody has indexed yet, or --no-context) the daemon knows at
+	// start-up that every search_code call will fail, and says why in
+	// retrievalDisabledReason. Offering the tool anyway cost a model call per
+	// turn to learn that -- MEASURED 2026-10-07, the first call of every such
+	// turn was a search that returned "cannot search", about 4,400 tokens each
+	// time -- and it is the newest user's project that has no index.
+	if s.searchByMeaning() {
+		tools = append(tools, mcp.Builtin{
+			Tool: mcp.Tool{
+				Name: "search_code",
+				Description: "Search the indexed workspace for code relevant to a natural-language query. " +
+					"Returns the most relevant chunks with their file paths.",
+				Schema: schema(`{
+					"type":"object",
+					"properties":{"query":{"type":"string","description":"What to look for."}},
+					"required":["query"],
+					"additionalProperties":false
+				}`),
+				ReadOnlyHint: true,
+			},
+			Handler: func(ctx context.Context, raw json.RawMessage) (mcp.Result, error) {
+				return s.builtinSearchCode(proposals.readCtx(ctx), raw)
+			},
+		})
+	}
 	// A long task's own record and its gate (longtask.go), and the two tools
 	// its work leans on hardest: exact search, and the history a regression
 	// hunt needs. Offered in the long-task modes only, so an ordinary turn's
@@ -546,6 +555,24 @@ func (s *Server) builtinTools(proposals *proposalSink, mode string) []mcp.Builti
 		tools = append(tools, s.recordFindingTool(proposals), s.finishTaskTool(proposals),
 			s.grepTool(proposals), s.gitHistoryTool(), s.checkpointTool(proposals),
 			s.renameSymbolTool(proposals), s.investigateTool(proposals))
+	} else if !isBuildMode(mode) {
+		// EXACT SEARCH IN AN ORDINARY TURN TOO (2026-10-08).
+		//
+		// It was offered to long tasks only, to keep an ordinary turn's menu
+		// the measured one. What that cost was measured on 2026-10-07: asked
+		// "where is SplitComponents defined", in a project with no search
+		// index, the model had no tool that finds a name. It read files one at
+		// a time until it met the right one -- 4 to 17 model calls and 20K to
+		// 376K tokens for what is one call here, because every file it had
+		// read was sent again with every later call. (I reported then that the
+		// model "never tried grep". It could not have: grep was not offered.)
+		//
+		// One more definition costs about 130 tokens a call, less than a
+		// twentieth of one wrong file read. It fits: the ordinary menu is 11
+		// against a cap of 12, measured flat from 5 to 12. Not a build turn,
+		// whose own tools already fill the menu -- one more there would push a
+		// tool off the end.
+		tools = append(tools, s.grepTool(proposals))
 	}
 
 	// propose_edit in every mode that edits: not plan, not check. In spec mode
@@ -733,6 +760,11 @@ func (s *Server) builtinReadFile(ctx context.Context, raw json.RawMessage) (mcp.
 	// approval (see outsideread.go).
 	full, err := s.resolveToolPath(ctx, args.Path)
 	if err != nil {
+		// A file that is simply not there gets the whole answer, once: whether
+		// it is anywhere in the project (missingfile.go).
+		if answer, ok := s.missingPathAnswer(ctx, "read", args.Path, false); ok {
+			return toolError("%s", answer)
+		}
 		// The resolver's message is already written for a human and carries no
 		// absolute path -- it is the same text the edit pipeline shows.
 		return toolError("cannot read %s: %v", args.Path, err)
@@ -740,6 +772,9 @@ func (s *Server) builtinReadFile(ctx context.Context, raw json.RawMessage) (mcp.
 
 	info, err := os.Stat(full)
 	if err != nil {
+		if answer, ok := s.missingPathAnswer(ctx, "read", args.Path, false); ok {
+			return toolError("%s", answer)
+		}
 		return toolError("cannot read %s: no such file", args.Path)
 	}
 	if info.IsDir() {
@@ -825,11 +860,17 @@ func (s *Server) builtinListDirectory(ctx context.Context, raw json.RawMessage) 
 
 	full, err := s.resolveToolPath(ctx, args.Path)
 	if err != nil {
+		if answer, ok := s.missingPathAnswer(ctx, "list", args.Path, true); ok {
+			return toolError("%s", answer)
+		}
 		return toolError("cannot list %s: %v", args.Path, err)
 	}
 
 	dir, err := os.Open(full)
 	if err != nil {
+		if answer, ok := s.missingPathAnswer(ctx, "list", args.Path, true); ok {
+			return toolError("%s", answer)
+		}
 		return toolError("cannot list %s", args.Path)
 	}
 	// ReadDir on the HANDLE, with a count: os.ReadDir's convenience form reads
@@ -880,7 +921,7 @@ func (s *Server) builtinListDirectory(ctx context.Context, raw json.RawMessage) 
 			maxBuiltinListScan, maxBuiltinListScan)
 	}
 	if len(lines) == 0 {
-		return mcp.Result{Content: fmt.Sprintf("%s is empty", filepath.Clean(args.Path))}, nil
+		return mcp.Result{Content: fmt.Sprintf("%s is empty", filepath.Clean(args.Path)), Empty: true}, nil
 	}
 	return mcp.Result{Content: strings.Join(lines, "\n") + truncated}, nil
 }
@@ -900,7 +941,13 @@ func (s *Server) builtinSearchCode(ctx context.Context, raw json.RawMessage) (mc
 	// so this tool is subject to the same index, the same gitignore rules and
 	// the same secret-file skipping the grounded prompt path is.
 	outcome := s.gatherContext(ctx, args.Query)
-	if outcome.Skipped {
+	// A SEARCH THAT RAN AND FOUND NOTHING IS AN ANSWER, NOT AN ERROR. FOUND
+	// 2026-10-08, by a test: retrieval reports "nothing found" as a skipped
+	// outcome with a reason, and every skipped outcome was returned as
+	// "cannot search: no relevant chunks found in index" -- an error, telling
+	// the model its tool was broken when the tool had worked. The branch below
+	// that said "no relevant code found" could not be reached.
+	if outcome.Skipped && outcome.Reason != noRelevantChunksReason {
 		reason := outcome.Reason
 		if reason == "" {
 			reason = "retrieval is unavailable"
@@ -908,7 +955,7 @@ func (s *Server) builtinSearchCode(ctx context.Context, raw json.RawMessage) (mc
 		return toolError("cannot search: %s", reason)
 	}
 	if len(outcome.Chunks) == 0 {
-		return mcp.Result{Content: "no relevant code found for that query"}, nil
+		return mcp.Result{Content: "no relevant code found for that query", Empty: true}, nil
 	}
 
 	// Rendered through renderChunk, which is the scrub choke point retrieved
@@ -938,7 +985,7 @@ func (s *Server) builtinSearchCode(ctx context.Context, raw json.RawMessage) (mc
 		fmt.Fprintf(&b, "\n\n(You changed %s this turn; the results above show it as it was before. "+
 			"read_file shows it as it is now.)", strings.Join(names, ", "))
 	}
-	return mcp.Result{Content: b.String()}, nil
+	return mcp.Result{Content: s.absentNamesLead(ctx, args.Query) + b.String()}, nil
 }
 
 // builtinProposeEdit validates a proposed edit and files it for human review.

@@ -239,6 +239,103 @@ func TestEmbeddingIsDeterministic(t *testing.T) {
 	}
 }
 
+// TestAChunksVectorDoesNotDependOnItsBatch asks the question the test above
+// never did: is a chunk's vector the same whatever it was embedded BESIDE?
+//
+// "Same batch twice" holds the batch fixed, so it could not see this, and for
+// as long as the helper packed a request into one tensor the answer was NO.
+// MEASURED 2026-10-08 on 58 real chunks: together and apart, the same text
+// came out as far apart as cosine 0.994 (0.02 in one component), and a chunk's
+// five nearest neighbours were the same five for 27 of the 58. The model is
+// int8: its quantised layers take their ranges from the whole input tensor, so
+// every chunk in an inference leaned on the others. An index held whatever the
+// walk order and indexEmbedBatchSize happened to group, while every query was
+// embedded alone.
+//
+// The helper now runs one text per inference (helper/onnxembedder.go, where
+// the memory this was found through is recorded), so this passes bit for bit.
+// It is here, behind the real helper process and the real wire, because it is
+// a claim about what an INDEX holds and this is the suite that builds one.
+func TestAChunksVectorDoesNotDependOnItsBatch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping eval test in -short mode")
+	}
+
+	logger := log.New(os.Stderr, "embed-batch: ", log.LstdFlags)
+	ctx := context.Background()
+
+	modelCacheDir, err := defaultModelCacheDir()
+	if err != nil {
+		t.Fatalf("defaultModelCacheDir: %v", err)
+	}
+	modelDir, err := EnsureModelFiles(ctx, modelCacheDir, bgeModelAssets, logger)
+	if err != nil {
+		t.Fatalf("EnsureModelFiles: %v", err)
+	}
+	ortCacheDir, err := defaultONNXRuntimeCacheDir()
+	if err != nil {
+		t.Fatalf("defaultONNXRuntimeCacheDir: %v", err)
+	}
+	onnxRuntimeLib, err := EnsureONNXRuntimeLib(ctx, ortCacheDir, logger)
+	if err != nil {
+		t.Fatalf("EnsureONNXRuntimeLib: %v", err)
+	}
+
+	repoRoot, err := filepath.Abs("..")
+	if err != nil {
+		t.Fatalf("resolving repo root: %v", err)
+	}
+	scan, err := ScanWorkspace(repoRoot)
+	if err != nil {
+		t.Fatalf("ScanWorkspace: %v", err)
+	}
+	if len(scan.Chunks) < indexEmbedBatchSize {
+		t.Fatalf("need at least %d chunks", indexEmbedBatchSize)
+	}
+	texts := embedTextsFor(scan.Chunks[:indexEmbedBatchSize])
+
+	h := NewHelperProcess(buildRealHelperBinary(t), modelDir, onnxRuntimeLib, logger)
+	if err := h.Start(); err != nil {
+		t.Fatalf("starting helper: %v", err)
+	}
+	defer func() { _ = h.Stop() }()
+
+	together, err := h.Embed(ctx, texts)
+	if err != nil {
+		t.Fatalf("embedding %d chunks in one request: %v", len(texts), err)
+	}
+	apart := make([][]float32, 0, len(texts))
+	for i, text := range texts {
+		v, err := h.Embed(ctx, []string{text})
+		if err != nil {
+			t.Fatalf("embedding chunk %d alone: %v", i, err)
+		}
+		apart = append(apart, v...)
+	}
+	// The other half of an index batch: the same chunks beside different ones.
+	halves := make([][]float32, 0, len(texts))
+	for start := 0; start < len(texts); start += indexEmbedBatchSize / 2 {
+		v, err := h.Embed(ctx, texts[start:min(start+indexEmbedBatchSize/2, len(texts))])
+		if err != nil {
+			t.Fatalf("embedding chunks from %d: %v", start, err)
+		}
+		halves = append(halves, v...)
+	}
+
+	t.Logf("one request of %d vs each alone:    identical=%t  max component delta=%g",
+		len(texts), hashVectors(together) == hashVectors(apart), maxAbsDiff(together, apart))
+	t.Logf("one request of %d vs two halves:    identical=%t  max component delta=%g",
+		len(texts), hashVectors(together) == hashVectors(halves), maxAbsDiff(together, halves))
+
+	if hashVectors(together) != hashVectors(apart) || hashVectors(together) != hashVectors(halves) {
+		t.Errorf("A CHUNK'S VECTOR DEPENDS ON WHAT IT WAS EMBEDDED BESIDE (worst component delta %g alone, "+
+			"%g in halves). An index then holds whatever the walk order and the batch size grouped, a "+
+			"file added early moves every vector after it, and documents are embedded differently "+
+			"from queries, which are always alone. The helper is meant to run one text per inference",
+			maxAbsDiff(together, apart), maxAbsDiff(together, halves))
+	}
+}
+
 // TestEmbeddingVariesWithThreadCount is the experiment that separates the two
 // candidate mechanisms behind machine-to-machine embedding differences.
 //

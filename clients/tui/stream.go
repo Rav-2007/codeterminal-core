@@ -131,6 +131,9 @@ type streamDoneMsg struct{}
 type usageMsg struct {
 	usage   *protocol.TurnUsage
 	stopped []protocol.TurnUsage
+	// spend is where the session's and the day's limits stand after this turn
+	// (protocol.SpendStatus), with the daemon's one-time warning. See budget.go.
+	spend *protocol.SpendStatus
 }
 
 // streamErrMsg signals the stream failed (connect/handshake error, a
@@ -388,6 +391,7 @@ func streamPromptWith(ctx context.Context, clientName, workspace, prompt, prompt
 		TaskAction:      task.action,
 		TaskBudget:      task.budget,
 		ChatRevision:    chatRev,
+		Session:         clientSession,
 	}); err != nil {
 		if ctx.Err() != nil {
 			return
@@ -410,7 +414,8 @@ func streamPromptWith(ctx context.Context, clientName, workspace, prompt, prompt
 			return
 		}
 		if tok.Error != "" {
-			if (tok.Usage != nil || len(tok.StoppedUsage) > 0) && !deliver(ctx, ch, usageMsg{tok.Usage, tok.StoppedUsage}) {
+			if (tok.Usage != nil || len(tok.StoppedUsage) > 0 || tok.Spend != nil) &&
+				!deliver(ctx, ch, usageMsg{tok.Usage, tok.StoppedUsage, tok.Spend}) {
 				return
 			}
 			deliver(ctx, ch, streamErrMsg{err: errors.New(tok.Error), sent: true,
@@ -474,7 +479,8 @@ func streamPromptWith(ctx context.Context, clientName, workspace, prompt, prompt
 			if len(tok.EditProposals) > 0 && !deliver(ctx, ch, editProposalsMsg{tok.EditProposals}) {
 				return
 			}
-			if (tok.Usage != nil || len(tok.StoppedUsage) > 0) && !deliver(ctx, ch, usageMsg{tok.Usage, tok.StoppedUsage}) {
+			if (tok.Usage != nil || len(tok.StoppedUsage) > 0 || tok.Spend != nil) &&
+				!deliver(ctx, ch, usageMsg{tok.Usage, tok.StoppedUsage, tok.Spend}) {
 				return
 			}
 			if tok.ChatRevision != "" && !deliver(ctx, ch, chatRevMsg{rev: tok.ChatRevision, behind: tok.ChatBehind}) {

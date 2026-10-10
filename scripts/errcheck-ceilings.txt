@@ -84,10 +84,17 @@
 # an explicit `_ =`: a failed write already cancels the turn (turnwriter.go) or
 # keeps the bills for the next Done (usage.go), so there is nothing left for the
 # caller to do with the error. Nothing was suppressed; the sites became explicit.
+# 2026-10-08: helper 10 -> 6. The embedder and the cross-encoder each built
+# their own three input tensors and released them with a bare
+# `defer t.Destroy()`; both now run one text through one shared function
+# (runOne, helper/onnxembedder.go), where the three releases and the output's
+# are explicit `_ =` discards -- there is nothing to do about a failed release
+# of a tensor a call is finished with. Six sites became three and the four that
+# were bare are marked; nothing was suppressed.
 #
 daemon         87
 editapply       9
 proxy          25
 protocol        0
-helper         10
+helper          6
 clients/tui     0

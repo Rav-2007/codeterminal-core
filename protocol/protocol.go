@@ -219,6 +219,11 @@ type HandshakeResponse struct {
 // user-chosen way a chat is kept. A daemon without it cannot run /history.
 const FeatureSavedChats = "saved_chats"
 
+// FeatureSpendLimits: the daemon keeps a session's and a day's spend against
+// a limit (SpendStatus), and answers PromptRequest.BudgetAction. A daemon
+// without it reads a budget request as an empty prompt and refuses it.
+const FeatureSpendLimits = "spend_limits"
+
 // PromptRequest carries a single user prompt. Sent by the client only after
 // a successful handshake. Workspace is optional and additive: when set,
 // it's the client's own absolute path for the workspace it expects
@@ -345,7 +350,30 @@ type PromptRequest struct {
 	// conversation with half of it absent. Empty keeps the old behaviour:
 	// History is used as sent.
 	ChatRevision string `json:"chat_revision,omitempty"`
+
+	// Session names one run of a client: the same value on every request it
+	// sends from start to exit, chosen by the client at random. The daemon adds
+	// up what a session has spent and holds it to a limit (SpendStatus). Empty
+	// means a client that cannot name its session; its requests count toward
+	// the day's limit only. It identifies nothing but itself, and at most
+	// MaxSessionIDBytes of it are read.
+	Session string `json:"session,omitempty"`
+
+	// BudgetAction asks about the spend limits and calls no model:
+	// BudgetActionStatus reports them, BudgetActionMore allows one more
+	// allotment of every limit that is at or past its warning mark. The answer
+	// is one Done message carrying Spend. Unknown values are refused.
+	BudgetAction string `json:"budget_action,omitempty"`
 }
+
+// MaxSessionIDBytes bounds PromptRequest.Session.
+const MaxSessionIDBytes = 64
+
+// PromptRequest.BudgetAction values.
+const (
+	BudgetActionStatus = "status"
+	BudgetActionMore   = "more"
+)
 
 // TaskLatest is the Task value that means "this workspace's most recent task".
 const TaskLatest = "latest"
@@ -584,6 +612,37 @@ type TokenResponse struct {
 	// no Since) before it can say what the conversation is. Additive.
 	ChatRevision string `json:"chat_revision,omitempty"`
 	ChatBehind   bool   `json:"chat_behind,omitempty"`
+	// Spend is what this session and this day have spent against their limits,
+	// on the final Done message of a turn that reached the model and on the
+	// answer to a BudgetAction. Additive.
+	Spend *SpendStatus `json:"spend,omitempty"`
+}
+
+// SpendStatus is where spending stands against the two limits the daemon
+// keeps: the SESSION's (one run of one client, PromptRequest.Session) and the
+// DAY's (every project on this machine, by the local date).
+//
+// Both are counted from the provider's own bill, never estimated: tokens
+// always, dollars where the provider reports them. A limit of zero means that
+// measure is not limited -- and Session is all zero for a client that sent no
+// Session.
+//
+// Notice is one sentence for the user when this turn crossed a limit's warning
+// mark, and empty otherwise; Reached says a limit has been met, so the next
+// question will be refused until it is raised (BudgetActionMore).
+type SpendStatus struct {
+	Session SpendMeter `json:"session"`
+	Day     SpendMeter `json:"day"`
+	Notice  string     `json:"notice,omitempty"`
+	Reached bool       `json:"reached,omitempty"`
+}
+
+// SpendMeter is one limit: what has been spent, and what may be.
+type SpendMeter struct {
+	Tokens      int     `json:"tokens"`
+	LimitTokens int     `json:"limit_tokens,omitempty"`
+	USD         float64 `json:"usd,omitempty"`
+	LimitUSD    float64 `json:"limit_usd,omitempty"`
 }
 
 // TaskStatus is where a long task stands: what it has spent against its

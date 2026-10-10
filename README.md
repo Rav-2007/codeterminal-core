@@ -35,7 +35,7 @@ network.**
 > `SHA256SUMS` in the release if you want the integrity check a signature would
 > have given you.
 >
-> Building from source still needs Go 1.25+ and a C compiler. Installing the
+> Building from source still needs Go 1.26.9+ and a C compiler. Installing the
 > `.vsix` needs neither.
 >
 > **The licence is proprietary** — `LICENSE`, "All rights reserved". This
@@ -43,7 +43,7 @@ network.**
 
 | | |
 |---|---|
-| **Language** | Go 1.25+ (TypeScript for the VS Code client) |
+| **Language** | Go 1.26.9+ (TypeScript for the VS Code client) |
 | **Transport** | Local socket only — Unix domain socket (`0600`) or Windows named pipe. No TCP |
 | **Retrieval** | Hybrid: on-device ONNX embeddings (BGE-small, 384d) + SQLite FTS5, RRF-fused |
 | **Inference** | Any OpenAI-compatible API, direct or through the managed proxy |
@@ -151,8 +151,10 @@ bundle builds, contains every module, and loads.
 
 For working on Mochiii, or for the TUI, which is not packaged.
 
-**Requirements:** Go 1.25+, and a C compiler for the embedder helper only. The
-daemon and TUI are pure Go and build with `CGO_ENABLED=0`.
+**Requirements:** Go 1.26.9+, and a C compiler for the embedder helper only. The
+daemon and TUI are pure Go and build with `CGO_ENABLED=0`. An older Go (1.21 or
+later) downloads that toolchain by itself on the first build, unless
+`GOTOOLCHAIN=local` is set.
 
 ### 1. Build
 
@@ -276,6 +278,15 @@ set -a && source .env && set +a
 ./daemon/mochiii-daemon --workspace .    # terminal 1
 ./clients/tui/mochiii-tui                # terminal 2
 ```
+
+**Those two commands start with agent mode off:** the model is given no tools,
+so it cannot read a file it was not handed, propose an edit through a tool, run
+a test, or search the web. To get the tools, start with the agent config
+instead — either run [`./run-tui.sh`](run-tui.sh), which builds and starts both
+halves for you, or add `--config models.agent.json` to the daemon line. Two of
+those tools reach the internet; read
+[what that config allows](#modelsagentjson--agent-mode-and-the-one-setting-that-reaches-the-internet)
+first.
 
 </details>
 
@@ -559,6 +570,8 @@ commands send a mode the daemon enforces ([Long tasks](#long-tasks)).
 /task budget 45m $1 200  # this session's budget: minutes, dollars, model calls
 
 /usage                 # tokens and cost this chat/session, and how full the context is
+/budget                # this session's and today's spend against their limits
+/budget more           # allow another allotment of a limit that is near or reached
 /save [name]           # keep this chat; saving again later updates it
 /resume my-name        # continue a saved chat, by its name or its number (/resume 2)
 /resume                # which chats there are to continue
@@ -576,6 +589,18 @@ the whole session. It also shows the size of the last context sent against the m
 window, taken from `context_window` in `models.json`. It answers locally, so it costs
 no model call. A bare `/word` that is not a command is answered locally too, instead
 of being sent to the model.
+
+**Budget.** The daemon adds up what every model call bills — tokens always, dollars
+where the provider reports them — against two limits: this **session's** (one run of
+the client) and the **day's** (every project on this machine). The defaults are
+3,000,000 tokens or $1 a session and 15,000,000 tokens or $5 a day, set under
+`mcp.budget.spend`. At 80% you are told once. At a limit Mochiii **stops and asks**:
+the turn in flight ends with a summary of what it did, and the next question is
+refused before it reaches the model, until you type `/budget more` to allow another
+allotment. A long task stops the same way and is saved for `/task resume`. `/budget`
+shows where both stand; like `/usage`, it costs no model call. The VS Code client
+sends no session yet, so only the day's limit holds it, and it is raised there in
+the configuration.
 
 **Chat history.** A chat is kept only if you save it with `/save` (`/save my-name` to
 name it), so disk use stays your choice. ctrl+n starts a new chat and discards the current one, but on a chat
@@ -889,13 +914,41 @@ Per-turn budgets, all configurable, shown here at their defaults:
 
 ```jsonc
 "budget": {
-  "max_iterations": 8,             // model calls per turn
+  "max_iterations": 8,             // model calls per turn, the closing answer included
+  "max_turn_tokens": 600000,       // billed tokens per turn, prompt + completion
   "turn_timeout_seconds": 600,     // MACHINE time; your thinking time is added back
   "max_tool_result_bytes": 32768,  // per result, after scrubbing
   "max_total_tool_bytes": 131072,  // per turn, after scrubbing (models.agent.json ships 524288)
-  "max_advertised_tools": 12       // cap on the menu the model sees
+  "max_advertised_tools": 12,      // cap on the menu the model sees
+  "spend": {                       // across turns: see /budget
+    "session_tokens": 3000000, "session_usd": 1.00,
+    "day_tokens": 15000000,    "day_usd": 5.00
+  }
 }
 ```
+
+A turn that reaches a ceiling ends with one last call that answers from what was
+read, and that call is counted inside the ceiling: `max_iterations: 8` is eight
+model calls, not nine. Two things end a turn before any ceiling, because a model
+that is getting nowhere should not be paid to reach one:
+
+- **The same call three times with the same result**, and
+- **five look-ups or edits in a row that brought nothing new** — files that are not
+  there, searches with no match, edits that did not apply, content already read
+  under another name. The third of them carries a note saying so.
+
+And two things keep a turn from wandering in the first place. A `read_file` or
+`list_directory` of a path that does not exist answers for the **whole project** —
+the same name elsewhere, the closest names, or "no file of that name exists (N
+files checked)" — so the model need not try the next path to find out. And
+`grep`, the exact-text search, is offered in every turn that has room for it,
+where it used to be a long-task tool: "where is X defined" no longer becomes
+reading files one by one. Search by meaning (`search_code`) is offered only when
+the project has an index for it to search.
+
+A message that is only a greeting, a thank-you or a goodbye is answered without
+tools, history or the long system prompt: a request under 1.5 KB where it was
+17.5 KB.
 
 Every decision — including `allow` calls you were never prompted about — is
 appended to `.mochiii/logs/toolcalls.jsonl` (local, `0600`, rotated at
@@ -1027,6 +1080,17 @@ nothing outside `helper/`.
 BGE is asymmetric, and the daemon applies that asymmetry at the boundary:
 documents embed unmodified, queries get BAAI's instruction prefix. The helper
 itself is a dumb text-to-vector service with no notion of the distinction.
+
+**One text per inference.** A request may hold many texts; the helper runs the
+model over them one at a time, and runs one inference at a time whoever asks. Its
+memory is therefore the size of one 512-token text — about 190 MB resident — and
+not the size of the request. It used to pack a request into one tensor, and a
+single save of a 3,000-line file (109 chunks, re-embedded together) cost 4.3 GB
+that was never handed back; batching bought no speed on a CPU, so one at a time
+is also about 18% faster. It makes a vector a function of its text, too: the
+model is int8, its quantised layers take their ranges from the whole tensor, and
+the same chunk embedded beside different neighbours used to come out as far
+apart as cosine 0.994.
 
 The daemon blocks on a real health RPC rather than a log line, respawns a dead
 helper a bounded number of times, and on shutdown escalates `SIGTERM` → `SIGKILL`

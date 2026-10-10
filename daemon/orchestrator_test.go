@@ -22,6 +22,13 @@ import (
 // runPipeline drives an orchestrated turn against a scripted upstream.
 func runPipeline(t *testing.T, s *Server, phases []*agentRole) (agentResult, []protocol.ToolActivity, string, error) {
 	t.Helper()
+	return runPipelineCtx(context.Background(), t, s, phases)
+}
+
+// runPipelineCtx is runPipeline under a context of the caller's -- one that
+// carries a turn's usage tally, for the bounds that read it.
+func runPipelineCtx(ctx context.Context, t *testing.T, s *Server, phases []*agentRole) (agentResult, []protocol.ToolActivity, string, error) {
+	t.Helper()
 	registry, _ := s.buildRegistry(context.Background(), s.logger, &proposalSink{}, "")
 	t.Cleanup(func() { _ = registry.Close() })
 
@@ -29,7 +36,7 @@ func runPipeline(t *testing.T, s *Server, phases []*agentRole) (agentResult, []p
 		activity []protocol.ToolActivity
 		streamed strings.Builder
 	)
-	res, err := s.runOrchestrated(context.Background(), time.Now(), registry, "m", "auto",
+	res, err := s.runOrchestrated(ctx, time.Now(), registry, "m", "auto",
 		[]chatMessage{{Role: "system", Content: "BASE"}, {Role: "user", Content: "add a retry"}},
 		providerRouting{}, nil,
 		func(tok string) error { streamed.WriteString(tok); return nil },
@@ -761,7 +768,7 @@ func TestUnorchestratedTurnIsUnaffectedByTheTurnCeiling(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		responses = append(responses, toolCallSSE("c", "builtin__read_file", `{"path":"a.txt"}`))
 	}
-	base, _, _ := agentUpstream(t, responses...)
+	base, calls, _ := agentUpstream(t, responses...)
 
 	s := loopServer(t, base, MCPConfig{
 		Enabled: true,
@@ -780,9 +787,11 @@ func TestUnorchestratedTurnIsUnaffectedByTheTurnCeiling(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runAgentLoop: %v", err)
 	}
-	if res.Iterations != 3 {
-		t.Errorf("an unorchestrated turn ran %d iterations against max_iterations 3; the "+
-			"whole-turn ceiling must not change the single-loop path", res.Iterations)
+	// Three calls for a limit of three: two steps and the call that answers,
+	// which is counted inside the limit since 2026-10-08 (budgetStop).
+	if res.Iterations != 2 || calls.Load() != 3 {
+		t.Errorf("an unorchestrated turn ran %d steps and %d model calls against max_iterations 3, want 2 and 3; "+
+			"the whole-turn ceiling must not change the single-loop path", res.Iterations, calls.Load())
 	}
 }
 
@@ -885,6 +894,76 @@ func TestBudgetStopBeforeTheAnswerPhaseStillStreamsTheWorkSoFar(t *testing.T) {
 	if strings.TrimSpace(streamed) != strings.TrimSpace(res.FinalText) {
 		t.Errorf("streamed and FinalText disagree:\n streamed  = %q\n FinalText = %q",
 			streamed, res.FinalText)
+	}
+}
+
+// THE SAME, FOR A SPENDING LIMIT. A pipeline that meets the session's limit in
+// a step before the answer stops THERE and shows what it has. Carrying on to
+// the answering step would start a step that can make no call -- and whose
+// empty reply is all the user would see, the plan above it never streamed.
+//
+// Neuter check: drop spendReached from the turn-wide bounds in runOrchestrated.
+func TestASpendingLimitBeforeTheAnswerPhaseStillStreamsTheWorkSoFar(t *testing.T) {
+	base, calls, _ := agentUpstream(t,
+		withUsage(textSSE("PLAN: read the lock file, then describe it"), 300, 0, 0),
+		withUsage(toolCallSSE("c1", "builtin__read_file", `{"path":"go.mod"}`), 300, 0, 0),
+		withUsage(toolCallSSE("c2", "builtin__read_file", `{"path":"go.work"}`), 300, 0, 0),
+		withUsage(textSSE("an answer the limit should have prevented"), 300, 0, 0),
+	)
+	s := loopServer(t, base, MCPConfig{
+		Enabled: true,
+		Builtin: MCPBuiltinConfig{Tools: map[string]string{"read_file": "allow"}},
+	})
+	// 1,000 tokens a session, 300 a call: after the plan and one step 600 are
+	// billed, and 600 with room for two more calls passes the limit.
+	ctx, tally := withUsageTally(context.Background())
+	tally.spend = newSpendLedger(MCPSpendConfig{SessionTokens: 1000, SessionUSD: 1, DayTokens: 1_000_000, DayUSD: 5}, "", "k", discardLogger(), time.Now)
+	tally.session = "s"
+
+	res, _, streamed, err := runPipelineCtx(ctx, t, s, []*agentRole{&rolePlanner, &roleResearcher, &roleCoder})
+	if err != nil {
+		t.Fatalf("runOrchestrated: %v", err)
+	}
+	if res.Incomplete == nil || !strings.Contains(res.Incomplete.Detail, "this session's spending limit (600 of 1,000 tokens)") {
+		t.Fatalf("the pipeline did not stop on the session's limit: %+v (streamed %q)", res.Incomplete, streamed)
+	}
+	if calls.Load() != 2 {
+		t.Errorf("%d model calls; want the plan and one step, and nothing after the limit", calls.Load())
+	}
+	if !strings.Contains(streamed, "PLAN: read the lock file") {
+		t.Errorf("the work done before the limit did not reach the user; streamed = %q", streamed)
+	}
+}
+
+// AND FOR THE TURN'S TOKEN CEILING, the third bound that reads the tally.
+//
+// Neuter check: drop tokensSpent from the turn-wide bounds in runOrchestrated.
+func TestATokenCeilingBeforeTheAnswerPhaseStillStreamsTheWorkSoFar(t *testing.T) {
+	base, calls, _ := agentUpstream(t,
+		withUsage(textSSE("PLAN: read the lock file, then describe it"), 300, 0, 0),
+		withUsage(toolCallSSE("c1", "builtin__read_file", `{"path":"go.mod"}`), 300, 0, 0),
+		withUsage(toolCallSSE("c2", "builtin__read_file", `{"path":"go.work"}`), 300, 0, 0),
+		withUsage(textSSE("an answer the ceiling should have prevented"), 300, 0, 0),
+	)
+	s := loopServer(t, base, MCPConfig{
+		Enabled: true,
+		Builtin: MCPBuiltinConfig{Tools: map[string]string{"read_file": "allow"}},
+		Budget:  MCPBudgetConfig{MaxTurnTokens: 1000},
+	})
+	ctx, _ := withUsageTally(context.Background())
+
+	res, _, streamed, err := runPipelineCtx(ctx, t, s, []*agentRole{&rolePlanner, &roleResearcher, &roleCoder})
+	if err != nil {
+		t.Fatalf("runOrchestrated: %v", err)
+	}
+	if res.Incomplete == nil || !strings.Contains(res.Incomplete.Detail, "600 of 1,000 tokens") {
+		t.Fatalf("the pipeline did not stop on the turn's token ceiling: %+v (streamed %q)", res.Incomplete, streamed)
+	}
+	if calls.Load() != 2 {
+		t.Errorf("%d model calls; want the plan and one step", calls.Load())
+	}
+	if !strings.Contains(streamed, "PLAN: read the lock file") {
+		t.Errorf("the work done before the ceiling did not reach the user; streamed = %q", streamed)
 	}
 }
 

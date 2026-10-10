@@ -258,6 +258,7 @@ func (s *Server) runAgentTurn(
 			ErrorClass:      string(modelErr.Class),
 			KeyReplaceable:  keyReplaceable(modelErr.Class),
 			Usage:           usageTallyFrom(ctx).report(model, s.contextWindowFor(model)),
+			Spend:           usageTallyFrom(ctx).spendReport(),
 		})
 		return
 	}
@@ -335,6 +336,7 @@ func (s *Server) runAgentTurn(
 		SpecReport:      proposals.report,
 		Degraded:        copyDegraded,
 		Usage:           usageTallyFrom(ctx).report(model, s.contextWindowFor(model)),
+		Spend:           usageTallyFrom(ctx).spendReport(),
 	}
 	markChatRevision(&done, promptReq.ChatRevision, before, after)
 	_ = s.sendDone(enc, done)

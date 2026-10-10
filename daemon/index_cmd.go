@@ -52,6 +52,12 @@ const defaultK = 10
 // timeout, is the fix: each batch gets its own fresh defaultHelperCallTimeout
 // window (see HelperProcess.call in helperproc.go), so this stays comfortably
 // under it regardless of overall repo size.
+//
+// IT BOUNDS A DEADLINE AND NOTHING ELSE. It was never what kept the helper's
+// memory down -- reindexFile sends a whole file in one request, and that is
+// how a helper reached 6 GB (2026-10-08) -- and it no longer decides any
+// vector: the helper embeds one text per inference whatever a request holds
+// (see OnnxEmbedder.Embed in helper/onnxembedder.go).
 const indexEmbedBatchSize = 40
 
 // buildIndex scans root, embeds every chunk found via embedder, and upserts

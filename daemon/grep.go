@@ -105,7 +105,7 @@ func (s *Server) builtinGrep(ctx context.Context, raw json.RawMessage) (mcp.Resu
 	if errors.Is(walkErr, context.Canceled) || errors.Is(walkErr, context.DeadlineExceeded) {
 		return toolError("the search was stopped")
 	}
-	return mcp.Result{Content: g.report(args.Pattern)}, nil
+	return mcp.Result{Content: g.report(args.Pattern), Empty: g.matches == 0}, nil
 }
 
 // errGrepFull ends a walk that has found or read as much as it may.
@@ -197,15 +197,31 @@ func (g *grepScan) report(pattern string) string {
 	return head + g.out.String() + tail
 }
 
-// grepTool is the built-in, offered in the long-task modes (taskmodes.go).
+// searchByMeaning reports whether search_code can answer in this daemon: there
+// is an index and an embedder to query it with. False from start-up to exit
+// when there is not, with the reason in retrievalDisabledReason.
+func (s *Server) searchByMeaning() bool { return s.retrievalDisabledReason == "" }
+
+// grepTool is the built-in: exact search, in every turn but a build's
+// (builtinTools says why).
 func (s *Server) grepTool(proposals *proposalSink) mcp.Builtin {
+	// The description names search_code only where search_code is offered: a
+	// model told about a tool it was not given calls it, and pays a model call
+	// to be told there is no such tool.
+	description := "Search the project's files for exact text, or a regular expression (Go RE2 syntax), and " +
+		"list every matching line as path:line: text. Use it for every use of a name, where an error " +
+		"message comes from, or a string to change everywhere: search_code finds code by meaning, grep " +
+		"finds all of it exactly. It searches your working copy, so it sees your own edits."
+	if !s.searchByMeaning() {
+		description = "Search the project's files for exact text, or a regular expression (Go RE2 syntax), and " +
+			"list every matching line as path:line: text. Use it to find where a name is defined or used, " +
+			"where an error message comes from, or a string to change everywhere. It searches your working " +
+			"copy, so it sees your own edits."
+	}
 	return mcp.Builtin{
 		Tool: mcp.Tool{
-			Name: "grep",
-			Description: "Search the project's files for exact text, or a regular expression (Go RE2 syntax), and " +
-				"list every matching line as path:line: text. Use it for every use of a name, where an error " +
-				"message comes from, or a string to change everywhere: search_code finds code by meaning, grep " +
-				"finds all of it exactly. It searches your working copy, so it sees your own edits.",
+			Name:        "grep",
+			Description: description,
 			Schema: schema(`{
 				"type":"object",
 				"properties":{

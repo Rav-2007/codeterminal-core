@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strconv"
+	"strings"
 	"sync"
 
 	"mochiii/protocol"
@@ -46,6 +48,10 @@ type usageTally struct {
 	// 512 of 23.2K tokens over three calls to one host, and nothing recorded
 	// which of them missed or why.
 	logger *log.Logger
+	// spend and session are where each call's bill is also counted toward the
+	// session's and the day's limits (spend.go). A nil ledger counts nothing.
+	spend   *spendLedger
+	session string
 }
 
 type usageTallyKey struct{}
@@ -89,6 +95,14 @@ func (t *usageTally) add(c chunkUsage, provider string) {
 	}
 	t.mu.Unlock()
 
+	// Counted as each call's bill arrives, not at the turn's end: a turn in
+	// flight is held to the limits by what it has already been charged.
+	billed := 0.0
+	if c.Cost != nil {
+		billed = *c.Cost
+	}
+	t.spend.add(t.session, c.PromptTokens+c.CompletionTokens, billed)
+
 	if t.logger != nil {
 		cost := "not reported"
 		if c.Cost != nil {
@@ -128,6 +142,66 @@ func (t *usageTally) spent() (calls int, usd float64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.u.Calls, t.u.CostUSD
+}
+
+// tokens is what the turn has billed so far, in tokens, and the size of the
+// last request it sent -- which is the least the next one will cost, since a
+// turn's conversation only grows. Zero for a provider that reports no usage:
+// a ceiling in tokens cannot bind there, and the ceiling in calls still does.
+func (t *usageTally) tokens() (total, lastPrompt int) {
+	if t == nil {
+		return 0, 0
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.u.PromptTokens + t.u.CompletionTokens, t.u.ContextTokens
+}
+
+// spendReached is the session's or the day's limit, when this turn has met
+// one: room is kept for the turn's next step and for the call that ends a
+// stopped turn, as tokensSpent keeps it for the turn's own ceiling. Nil when
+// neither is met, and for a turn with no ledger.
+func (t *usageTally) spendReached() *spendStop {
+	if t == nil || t.spend == nil {
+		return nil
+	}
+	_, last := t.tokens()
+	return t.spend.reached(t.session, 2*last)
+}
+
+// spendReport is where the two limits stand, for the turn's last message,
+// with the one-time warning when this turn passed the mark.
+func (t *usageTally) spendReport() *protocol.SpendStatus {
+	if t == nil || t.spend == nil {
+		return nil
+	}
+	st := t.spend.status(t.session)
+	st.Notice = t.spend.notice(t.session)
+	return st
+}
+
+// tokensSpent reports whether a turn that has billed total tokens, and whose
+// last request was lastPrompt of them, is out of room under ceiling: room for
+// one more step AND for the wrap-up call that ends a stopped turn, each of
+// which re-sends at least what the last request sent. Keeping both back is
+// what makes the ceiling the most a turn bills, where stopping at "already
+// over" would make it the most a turn bills before two more calls.
+func tokensSpent(total, lastPrompt, ceiling int) bool {
+	return ceiling > 0 && total > 0 && total+2*lastPrompt > ceiling
+}
+
+// groupThousands writes n the way a person reads a large count: 376,000.
+func groupThousands(n int) string {
+	s := strconv.Itoa(n)
+	neg := strings.HasPrefix(s, "-")
+	s = strings.TrimPrefix(s, "-")
+	for i := len(s) - 3; i > 0; i -= 3 {
+		s = s[:i] + "," + s[i:]
+	}
+	if neg {
+		return "-" + s
+	}
+	return s
 }
 
 // report is the turn's usage for its final message, or nil when no call

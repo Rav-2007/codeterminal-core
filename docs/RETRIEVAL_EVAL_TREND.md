@@ -52,6 +52,9 @@ So: at a checkpoint, or after any run that moved a number, paste the line.
 | 2026-10-04 | `f803e6c` | local | 7806 | 1072 | 26/49 | 33/49 | **0** | **41/49** | `c168a6d50eb59e7e` | green — the confirmation round's build (below); held-out 21 / **24/28**; outside 32/40 + 14/20, fresh **53/60** |
 | 2026-10-04 | `f6dd912` | branch | 7810 | 1072 | 26/49 | 32/49 | **0** | 39/49 | `cda9c24403eb18b7` | green — run `37198207208`; two below the local 41 on `f803e6c`, on a corpus this round's own code grew (the e2e suite, the cross-encoder); 2.25 above the floor; held-out 21 / **24/28** |
 | 2026-10-04 | `616f2e5` | branch | 7812 | 1072 | 26/49 | 31/49 | **0** | 37/49 | `09bd7edc83663b75` | green by 0.25 — run `37199612908`. Two chunks changed since `f6dd912` (helper test code) and it fell 39 -> 37, so runner variance is part of it; across the day CI went 41 -> 39 -> 37 as this campaign's suites grew the corpus. New misses against `849aaa1`: q11, q19, q22, q36. The headroom of 2026-10-03 is gone again; held-out 21 / **24/28** |
+| 2026-10-08 | `1a184fb` | local (i5, 16 threads) | 8176 | 1094 | 26/49 | 32/49 | **0** | 39/49 | `f625c5cc7bbe08cb` | green — the baseline for the helper change (below), a git export of the commit; held-out 21 / **24/28** |
+| 2026-10-08 | `1a184fb` + helper | local | 8176 | 1094 | 28/49 | 32/49 | **0** | 39/49 | `f7abdf718f953ff7` | green — the same export, embedded one text per inference (below); held-out 21 / **24/28** |
+| 2026-10-08 | `4e8a399` | branch | 8324 | 1109 | 27/49 | 30/49 | **0** | 38/49 | `f27620be3ed83758` | green — run `37779883135`, the first CI run on the one-text-per-inference helper, over a corpus that day's own code grew by 148 chunks; **retrieved is 0.1 above its floor**; held-out 22 / **24/28** |
 
 Floors in force across every row: DELIVERED ≥ 75% (36.75/49), RETRIEVED ≥ 61%
 (29.9/49), budgeted out ≤ 4.
@@ -390,3 +393,54 @@ an owner might choose it on judgment; it is not a pass.
 small: 1,140 and 480 chunks), so a lever had seven misses to win back. The next
 confirmation set should come from larger repositories.
 
+### 2026-10-08 — one text per inference: every vector changed and the score did not
+
+The embedder helper used to pack a whole request into one tensor. That was found
+through its memory — a helper watching this repository held 6.0 GB, because one
+save of a large file re-embeds all of its chunks in a single request, and the
+model's working memory follows the tensor (`helper/onnxembedder.go` has the
+table) — but it had a second consequence that belongs in this file: **a chunk's
+vector depended on which other chunks shared its inference.** The model is int8
+and its quantised layers take their ranges from the whole tensor. Measured on 58
+real chunks, the same text embedded together and apart came out as far apart as
+cosine 0.994, and a chunk's five nearest neighbours were the same five for only
+27 of the 58. So an index held whatever the walk order and the batch size of 40
+happened to group, a file added early moved every batch boundary after it, and
+documents were embedded differently from queries, which have always been
+embedded alone.
+
+The helper now runs one text per inference. Both rows above are the same
+exported corpus, built twice, with only the helper's two source files different
+(supplied to the eval's own `go build` through a build overlay, so nothing on
+disk under the corpus changed):
+
+| | packed requests | one text at a time |
+|---|---|---|
+| semantic-only | 26/49 | 28/49 |
+| retrieved | 32/49 | 32/49 |
+| **delivered** | **39/49** | **39/49** |
+| file-level | 45/49 | 45/49 |
+| held-out, retrieved / delivered | 21 / 24 of 28 | 21 / 24 of 28 |
+| embedding the 8,176 chunks | 13m30s | 12m49s |
+| helper's resident memory during the build | 3.1 GB | 0.2 GB |
+
+Delivered is 39 both ways with one question changed in each direction (q21
+gained, q37 lost); nothing moved on the held-out set. Semantic-only rose by two.
+That is the size of change a near-tie reshuffle makes, and it is the answer the
+change needed: it was made for memory, and it had to cost nothing here.
+
+**The embedder stamp was not moved.** An index built before this is no worse
+than it was: its vectors are the ones it had, and a query is embedded exactly as
+before (bit for bit — a query was always alone). It simply stops mixing the two
+kinds as files are saved, or all at once at the next `index`. Forcing every user
+to rebuild for a difference of this size was not judged worth it; `index` is
+there for anyone who wants the uniform index now.
+
+**What this may explain, and what it does not.** `daemon/embeddeterminism_eval_test.go`
+records two runners embedding a byte-identical corpus to different vectors,
+attributed to the CPU. Batch composition is a second way for vectors to differ,
+but not that one: an identical corpus walks and batches identically. Where it
+does bite is across COMMITS — the "every commit changes the corpus" noise noted
+on 2026-10-03 was partly this, since one added chunk shifted the batch-mates of
+every chunk after it. That part is now gone; the rest (new text competing for
+the top ten) is not.

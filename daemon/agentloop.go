@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -75,6 +76,11 @@ type agentTurn struct {
 	// so "it went in circles" is answerable after the fact rather than a
 	// suspicion.
 	repeats int
+	// stall is how much of the turn's most recent work taught the model
+	// nothing, and seenResults is what its look-ups have already returned
+	// (stall.go). Any call that brings news resets stall to zero.
+	stall       int
+	seenResults map[[sha256.Size]byte]string
 
 	// liveQuestion records that this turn's question looked like one whose
 	// answer changes over time.
@@ -329,6 +335,19 @@ type budget struct {
 	deadlineIsPhaseShare bool
 	maxResultBytes       int
 	maxTotalToolByte     int
+	// maxTurnTokens is the most the turn may bill, and tokens reads what it has
+	// billed so far and its last request's size (usage.go). tokens is nil in a
+	// test that builds a budget by hand, which means no ceiling.
+	maxTurnTokens int
+	tokens        func() (total, lastPrompt int)
+	// spend is the session's or the day's limit when this turn has met one,
+	// and nil otherwise (usageTally.spendReached).
+	spend func() *spendStop
+	// wrapUpInside says the call that ends a stopped turn with an answer
+	// (wrapUpAtLimit) will be made, so the step ceilings keep one call back for
+	// it. False for a phase that hands on instead of answering and for a long
+	// task's segment, whose last call is a handoff counted by the task.
+	wrapUpInside bool
 	// taskCheck is a long task's own budget (segmentBudget.check), asked first.
 	taskCheck func(segmentCalls int) *protocol.IncompleteInfo
 	// segment marks a long task's segment, whose call ceiling is its own.
@@ -347,6 +366,7 @@ func resolveBudget(cfg MCPBudgetConfig, now time.Time) budget {
 		deadline:          now.Add(cfg.resolvedTurnTimeout()),
 		maxResultBytes:    cfg.resolvedMaxToolResultBytes(),
 		maxTotalToolByte:  cfg.resolvedMaxTotalToolBytes(),
+		maxTurnTokens:     cfg.resolvedMaxTurnTokens(),
 	}
 }
 
@@ -430,6 +450,12 @@ func (s *Server) runAgentLoop(
 	if ledger == nil {
 		ledger = newTurnLedger()
 	}
+	// What the turn has billed, for the token ceiling. The tally rides in ctx
+	// and is the whole turn's -- every phase of a pipeline adds to the same one.
+	bud.tokens = usageTallyFrom(ctx).tokens
+	// ...and what the session and the day have, for their limits (spend.go).
+	bud.spend = usageTallyFrom(ctx).spendReached
+	bud.wrapUpInside = !ledger.preAnswer && ledger.segment == nil
 	// A LONG TASK'S SEGMENT runs under the task's budget (see segmentBudget).
 	if seg := ledger.segment; seg != nil {
 		bud.maxIterations, bud.maxTurnIterations = seg.calls, seg.calls
@@ -862,7 +888,21 @@ func (s *Server) budgetStop(turn *agentTurn, bud budget) *protocol.IncompleteInf
 	// budget the honest message names the turn, not the phase. Reporting "this
 	// step reached its limit" would send the user to raise max_iterations, which
 	// is not the setting that stopped them.
-	if turn.priorIterations+turn.calls >= bud.maxTurnIterations {
+	// THE CALL THAT ENDS A STOPPED TURN IS ONE OF ITS N, NOT ONE MORE.
+	//
+	// A turn stopped at a step ceiling gets one last call that answers from
+	// what was read (wrapUpAtLimit), and that call used to come AFTER the
+	// ceiling: max_iterations 16 billed seventeen calls, and the seventeenth
+	// re-sent the whole conversation, the largest request of the turn. So a
+	// turn that will end that way keeps its last call for it -- N-1 steps and
+	// the answer -- and the number in the configuration is the number of
+	// calls. Only once a call has been made: a turn must take its first step
+	// before it can be summarised, so a ceiling of ONE still bills two.
+	reserve := 0
+	if bud.wrapUpInside && turn.calls > 0 {
+		reserve = 1
+	}
+	if turn.priorIterations+turn.calls >= bud.maxTurnIterations-reserve {
 		s.logger.Printf("agent: stopping after %d model call(s) across this turn (mcp.budget.max_turn_iterations)",
 			bud.maxTurnIterations)
 		return &protocol.IncompleteInfo{
@@ -872,13 +912,38 @@ func (s *Server) budgetStop(turn *agentTurn, bud budget) *protocol.IncompleteInf
 				"step, or raise mcp.budget.max_turn_iterations.", bud.maxTurnIterations),
 		}
 	}
-	if turn.iteration > bud.maxIterations {
+	if turn.iteration > bud.maxIterations-reserve {
 		s.logger.Printf("agent: stopping after %d iterations (mcp.budget.max_iterations)", bud.maxIterations)
 		return &protocol.IncompleteInfo{
 			Reason: protocol.IncompleteAgentBudget,
 			Detail: fmt.Sprintf("this task reached its limit of %d steps before finishing — "+
 				"what you see above is everything that was done. Ask for a narrower step, "+
 				"or raise mcp.budget.max_iterations.", bud.maxIterations),
+		}
+	}
+	// THE TURN'S BILL, in the one unit every provider reports. Checked before
+	// each call with room kept for that call and for the wrap-up after it
+	// (tokensSpent), so the ceiling is what the turn costs and not what it cost
+	// two calls ago. Not a long task's segment: the task's own budget governs.
+	if bud.tokens != nil && !bud.segment {
+		if total, last := bud.tokens(); tokensSpent(total, last, bud.maxTurnTokens) {
+			s.logger.Printf("agent: stopping after %d billed tokens this turn, the last request %d (mcp.budget.max_turn_tokens %d)",
+				total, last, bud.maxTurnTokens)
+			return &protocol.IncompleteInfo{
+				Reason: protocol.IncompleteAgentBudget,
+				Detail: fmt.Sprintf("this task reached its token limit for one turn (%s of %s tokens used) before "+
+					"finishing — what you see above is everything that was done. Ask for a narrower step, "+
+					"or raise mcp.budget.max_turn_tokens.", groupThousands(total), groupThousands(bud.maxTurnTokens)),
+			}
+		}
+	}
+	// THE SESSION'S AND THE DAY'S LIMITS (spend.go), with the same room kept
+	// back. A long task's segment is stopped by its run's own check instead,
+	// which saves the task for a resume.
+	if bud.spend != nil && !bud.segment {
+		if stop := bud.spend(); stop != nil {
+			s.logger.Printf("agent: stopping: %s is reached", stop.what())
+			return stop.incomplete()
 		}
 	}
 	if time.Now().After(bud.deadline) {
@@ -915,6 +980,18 @@ func (s *Server) budgetStop(turn *agentTurn, bud budget) *protocol.IncompleteInf
 			Detail: fmt.Sprintf("this task stopped because the model repeated the same step %d times with "+
 				"the same result — what you see above is everything that was done. Ask again with more "+
 				"detail, or try another model with /model.", maxIdenticalRepeats),
+		}
+	}
+	// THE SAME FAILURE IN A DIFFERENT SHAPE EACH TIME (stall.go): five look-ups
+	// or edits in a row that brought nothing back, where the rule above needs
+	// the same call three times.
+	if turn.stall >= stallStopAt {
+		s.logger.Print("agent: stopping: the last several tool calls taught the model nothing new")
+		return &protocol.IncompleteInfo{
+			Reason: protocol.IncompleteAgentBudget,
+			Detail: "this task stopped because its last several steps found nothing new — files that are " +
+				"not there, edits that did not apply, or the same result again. What you see above is " +
+				"everything that was done. Say more exactly what to look for, or try another model with /model.",
 		}
 	}
 	if turn.toolBytes >= bud.maxTotalToolByte {
@@ -1194,7 +1271,9 @@ func (s *Server) dispatchToolCall(
 	// thousand, and it tells the model plainly that it is repeating itself --
 	// which is the thing that actually breaks the stall.
 	sig := name + "(" + strings.TrimSpace(arguments) + ")"
+	repeated := false
 	if prior, seen := turn.resultDigests[sig]; seen && prior == rendered {
+		repeated = true
 		turn.repeats++
 		s.logger.Printf("agent: %q repeated with identical arguments and identical output; "+
 			"feeding a stall note instead of %d byte(s) (repeat %d this turn)", name, emitted, turn.repeats)
@@ -1207,6 +1286,17 @@ func (s *Server) dispatchToolCall(
 			turn.resultDigests = map[string]string{}
 		}
 		turn.resultDigests[sig] = rendered
+	}
+
+	// WHAT THIS CALL TAUGHT THE MODEL (stall.go): a different call each time
+	// is still going in circles when none of them brings anything back.
+	if !bud.segment {
+		before := turn.stall
+		rendered = turn.weighResult(decision.tool, sig, result, rendered, repeated)
+		emitted = len(rendered)
+		if before < stallSteerAt && turn.stall >= stallSteerAt {
+			s.logger.Printf("agent: the last several tool calls taught the model nothing new; said so in the result of %q", name)
+		}
 	}
 
 	turn.toolBytes += emitted

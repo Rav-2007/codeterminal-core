@@ -185,10 +185,17 @@ jobs:
         # change the vectors. Refuted on a 16-core i5-1340P on 2026-08-31, but
         # that is ONE machine and this job is the only place the question gets
         # asked on anything else.
+        #
+        # TestAChunksVectorDoesNotDependOnItsBatch (2026-10-08, ~10s) asks the
+        # question neither of those does: is a chunk's vector the same whatever
+        # it was embedded beside. It was not, until the helper ran one text per
+        # inference, and this list is the only thing that runs it -- a test that
+        # is written and not named here compiles under `-tags eval` and proves
+        # nothing, which is how it sat out the run on the commit that added it.
         run: |
           set -o pipefail
           go test -tags eval -count=1 -timeout 40m -v \
-            -run 'TestEvalRetrievalQuality|TestRerankEvalRetrievalRanking|TestFirstEmbedBatchFitsItsDeadline|TestEmbeddingIsDeterministic|TestEmbeddingVariesWithThreadCount' \
+            -run 'TestEvalRetrievalQuality|TestRerankEvalRetrievalRanking|TestFirstEmbedBatchFitsItsDeadline|TestEmbeddingIsDeterministic|TestEmbeddingVariesWithThreadCount|TestAChunksVectorDoesNotDependOnItsBatch' \
             ./ 2>&1 | tee "$RUNNER_TEMP/eval.log"
         working-directory: daemon
 
