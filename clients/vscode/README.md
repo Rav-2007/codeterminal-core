@@ -1,35 +1,55 @@
-# Mochiii VS Code Extension
+# Mochiii
 
-A chat panel inside VS Code that talks to the local `mochiii-daemon` over
-its existing newline-delimited JSON socket protocol (see `protocol/protocol.go`),
-plus in-editor diff-apply: a model-proposed edit renders as a red/green diff with
-Apply/Skip, and Apply routes through the same `editapply` engine (all five safety
-gates) the TUI uses — the daemon applies, this client only renders and confirms.
+**A local-first AI coding assistant.** Mochiii indexes, embeds, and retrieves
+your codebase entirely on your own machine — a background daemon does the
+work, and this extension puts a full chat panel in your editor for it.
+Nothing on your machine listens on the network, and the only thing that ever
+leaves it is the minimal prompt for a single turn, sent to the model
+provider *you* choose.
 
-**The extension manages the daemon; you do not start one by hand.** It used to
-require an already-running daemon, which is why the TUI's two-terminal setup is
-described everywhere else. `src/daemonSupervisor.ts` probes the per-workspace
-lockfile, adopts a daemon that answers a full handshake, and starts one only when
-nothing does — so two windows open on the same folder share one daemon rather
-than racing to bind. It never deletes a stale lockfile: that belongs to the
-daemon's own `reclaimStaleSocket` and nowhere else.
+**The extension manages the daemon for you.** Open a workspace, run
+**Mochiii: Open Chat**, and it starts one automatically — `src/daemonSupervisor.ts`
+probes for an existing daemon first, so a second window on the same folder
+shares it rather than racing to start its own.
 
-Every proposed edit in a response is reviewable, one block at a time: each
-is presented for Apply/Skip in turn, and block *i+1* is only ever matched
-against what is actually on disk after block *i* has been applied or
-skipped (see `startEditReview` in `src/chatPanel.ts`). An applied batch
-gets a native **Undo this apply** button that runs the same backup restore
-`mochiii-daemon edits undo` does.
+## Why Mochiii
 
-Not in this slice: a native VS Code diff view/inline decorations, ghost
-text, error interceptor, reset/ctrl+n, or any remote-host
-(SSH/WSL/devcontainer) daemon discovery — this is local-machine-only.
-Agent mode (MCP) is supported but off until you turn it on — see **Agent mode**
-below.
+- **Your code stays yours.** Indexing, embedding, and retrieval all happen
+  on-device. No telemetry, no silent uploads.
+- **Review every edit.** A model-proposed change renders as a red/green diff
+  — Apply or Skip, one block at a time, each matched against what is
+  actually on disk after the block before it — routed through a five-gate
+  safety engine before anything touches your files. One click (**Undo this
+  apply**) reverts a whole batch from its backup.
+- **Bring your own model.** `/connect` takes an API key for 17+ providers
+  (OpenRouter, Groq, Anthropic, Google Gemini, and more), or point it at a
+  local server (Ollama, LM Studio) and keep inference on-device too.
+- **One chat, everywhere.** The panel and Mochiii's terminal client share the
+  same conversation per workspace — ask in one, keep going in the other.
+- **Understands your files.** Attach PDFs (including scanned ones), Word,
+  Excel, PowerPoint, or images — read and understood locally.
+- **Agent mode, on your terms.** Off by default. Turn it on to let Mochiii
+  call tools — its own sandboxed built-ins, or external servers you
+  configure (MCP) — and approve every call before it runs.
 
-Also not here yet, and worth knowing before relying on it: closing the window
-that STARTED the daemon stops it under a window that adopted it. The fix is an
-idle timeout plus a shutdown RPC, both scoped and neither built.
+## Getting started
+
+1. Install the extension and open a trusted workspace.
+2. Run **Mochiii: Open Chat** (Ctrl/Cmd+Shift+P), or click the Mochiii icon.
+3. `/connect` a provider, or set `mochiii.apiBase` to a local model server.
+4. Ask a question — your codebase is indexed automatically.
+
+## Platform support
+
+Linux x64 and Windows x64 today (no macOS build yet). This is a **preview**
+release — expect rough edges, and [tell us about them](https://github.com/Rav-2007/codeterminal-core/issues).
+
+Known limits, worth knowing before relying on them: no native VS Code diff
+view/inline decorations, ghost text, or error interceptor yet; no remote-host
+(SSH/WSL/devcontainer) daemon discovery — this is local-machine-only; and
+closing the VS Code window that *started* the daemon stops it even for a
+window that only adopted it (an idle timeout plus a shutdown RPC are planned,
+not yet built).
 
 ## Connecting a model provider
 
