@@ -917,7 +917,7 @@ func TestASpendingLimitBeforeTheAnswerPhaseStillStreamsTheWorkSoFar(t *testing.T
 	// 1,000 tokens a session, 300 a call: after the plan and one step 600 are
 	// billed, and 600 with room for two more calls passes the limit.
 	ctx, tally := withUsageTally(context.Background())
-	tally.spend = newSpendLedger(MCPSpendConfig{SessionTokens: 1000, SessionUSD: 1, DayTokens: 1_000_000, DayUSD: 5}, "", "k", discardLogger())
+	tally.spend = newSpendLedger(MCPSpendConfig{SessionTokens: 1000, SessionUSD: 1, DayTokens: 1_000_000, DayUSD: 5}, "", "k", discardLogger(), time.Now)
 	tally.session = "s"
 
 	res, _, streamed, err := runPipelineCtx(ctx, t, s, []*agentRole{&rolePlanner, &roleResearcher, &roleCoder})

@@ -12,13 +12,16 @@ import (
 	"mochiii/protocol"
 )
 
-// A ledger with small, round limits and a clock the test owns.
+// A ledger with small, round limits and a clock the test owns -- FROM THE
+// START. The ledger used to be opened on the real clock and handed the test's
+// afterwards, so opening it looked for the share of the day the suite was run
+// on: a restart found what it had spent only on 2026-10-08, the day this was
+// written, and failed on any other (seen 2026-10-10).
 func testLedger(t *testing.T, dir, key string) (*spendLedger, *time.Time) {
 	t.Helper()
-	l := newSpendLedger(MCPSpendConfig{SessionTokens: 1000, SessionUSD: 1, DayTokens: 5000, DayUSD: 5}, dir, key, discardLogger())
 	now := time.Date(2026, 10, 8, 14, 0, 0, 0, time.Local)
-	l.now = func() time.Time { return now }
-	l.own.Day = l.today()
+	l := newSpendLedger(MCPSpendConfig{SessionTokens: 1000, SessionUSD: 1, DayTokens: 5000, DayUSD: 5}, dir, key, discardLogger(),
+		func() time.Time { return now })
 	return l, &now
 }
 

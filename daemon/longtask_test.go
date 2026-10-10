@@ -365,7 +365,7 @@ func TestTheRunStopsAtTheSessionsSpendingLimit(t *testing.T) {
 	)
 	sockAddr, _, srv := agentSocketServer(t, base, taskPolicies())
 	// 1,000 tokens a session, 400 a call: one call, and room for two more is gone.
-	srv.spend = newSpendLedger(MCPSpendConfig{SessionTokens: 1000, SessionUSD: 1, DayTokens: 1_000_000, DayUSD: 5}, "", "k", discardLogger())
+	srv.spend = newSpendLedger(MCPSpendConfig{SessionTokens: 1000, SessionUSD: 1, DayTokens: 1_000_000, DayUSD: 5}, "", "k", discardLogger(), time.Now)
 
 	msgs := taskRequest(t, sockAddr, protocol.PromptRequest{Prompt: "go", Mode: modeTask, Session: "s"})
 	st := lastTaskStatus(t, msgs)

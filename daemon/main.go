@@ -459,7 +459,7 @@ func main() {
 		workspace:               groundedRoot,
 		memory:                  memoryStore,
 		// What sessions and the day have billed, against mcp.budget.spend.
-		spend: newSpendLedger(cfg.MCP.Budget.resolvedSpend(), spendDir(), workspaceKey(groundedRoot), logger),
+		spend: newSpendLedger(cfg.MCP.Budget.resolvedSpend(), spendDir(), workspaceKey(groundedRoot), logger, time.Now),
 		// Index-freshness sweeps for the status handler, memoised. Constructed
 		// here rather than lazily so a running daemon's behaviour does not
 		// depend on whether status has been called before.

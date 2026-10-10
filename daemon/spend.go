@@ -112,12 +112,12 @@ type spendLedger struct {
 	diskFailed bool
 }
 
-// newSpendLedger opens the ledger for one daemon. dir may be "": the day is
-// then kept in memory, and is this daemon's alone. A share already on disk for
+// newSpendLedger opens the ledger for one daemon, on the clock now. dir may be
+// "": the day is then in memory, and this daemon's alone. A share on disk for
 // today is picked up, so a restarted daemon carries on from what it had spent.
-func newSpendLedger(limits MCPSpendConfig, dir, key string, logger *log.Logger) *spendLedger {
+func newSpendLedger(limits MCPSpendConfig, dir, key string, logger *log.Logger, now func() time.Time) *spendLedger {
 	l := &spendLedger{
-		limits: limits, dir: dir, key: key, now: time.Now, logger: logger,
+		limits: limits, dir: dir, key: key, now: now, logger: logger,
 		sessions: map[string]*sessionSpend{},
 	}
 	l.mu.Lock()
