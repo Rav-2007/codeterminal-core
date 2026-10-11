@@ -3,6 +3,32 @@
 All notable changes to the Mochiii extension. Versions follow the extension's
 `version` in `package.json`.
 
+## [0.1.1] - 2026-10-11
+
+Adds the **Windows** package. 0.1.0 shipped for Linux only — not by choice: the
+Windows build was produced and was fine, but the packaging gate refused it
+because four Go libraries that only the Windows binaries link were missing from
+`THIRD_PARTY_LICENSES.txt`, and a licence that does not travel with the binary
+is a licence violation. This release adds those notices, so the gate passes and
+the Windows `.vsix` ships.
+
+No behaviour changed. A 0.1.0 install can update in place.
+
+### Added
+
+- **Windows (`win32-x64`) package.** Windows binaries are unsigned, so
+  SmartScreen may warn on first run; that is known and accepted for the preview.
+- Licence notices for the four Windows-only Go modules: `go-winio` (the
+  named-pipe transport the daemon listens on under Windows), `go-strftime`
+  (reached through SQLite's C runtime), and `coninput` plus `go-localereader`
+  (the terminal client's Windows console input and code-page decoding).
+
+### Fixed
+
+- The packaging gate's notice check now has a complete answer for every module
+  linked into a Windows binary, on all three shipped executables rather than the
+  two inside the `.vsix`.
+
 ## [0.1.0] - 2026-10-10
 
 The first release on the Visual Studio Marketplace, as a preview.
