@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"mochiii/daemon/mcp"
+	"mochiii/protocol"
 )
 
 // `mcp list` is the other place a confinement claim is printed, and it had the
@@ -16,9 +17,16 @@ func TestMCPListSeparatesNetworkToolsFromUnconfinedSubprocesses(t *testing.T) {
 		{Name: "read_file", Confined: true},
 		{Name: "web_search", ReachesNetwork: true},
 		{Name: "web_fetch", ReachesNetwork: true},
-		{Name: "third_party", Confined: false},
+		{Name: "third_party", Lane: protocol.LaneThirdParty, Confined: false},
+		// This daemon's own, and not confined because it can start a language
+		// server. It is not "an external MCP server", and was being counted as
+		// one (seen in the real app, 2026-10-11).
+		{Name: "query_compiler_definition", Lane: protocol.LaneFirstParty, LaunchesSubprocess: true},
 	}
 
+	if got := countOwnUnconfined(tools); got != 1 {
+		t.Errorf("countOwnUnconfined = %d, want 1", got)
+	}
 	if got := countExternal(tools); got != 1 {
 		t.Errorf("countExternal = %d, want 1 — a network tool was counted as a subprocess "+
 			"and the user would be told web_search runs with their full privileges", got)

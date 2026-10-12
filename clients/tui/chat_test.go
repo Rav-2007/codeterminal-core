@@ -1420,6 +1420,9 @@ func TestStreamEnd_CancelsTheTurnContext(t *testing.T) {
 }
 
 func TestChat_HandleLocalSlashCommands(t *testing.T) {
+	// No daemon to ask, so a chat with a question in it counts as unsaved and
+	// /clear asks first (clear_test.go covers the rest).
+	t.Cleanup(setLockPathForTest(t, filepath.Join(t.TempDir(), "absent.lock")))
 	cmds := []string{"help", "clear", "compact", "context", "git", "init", "mcp-server", "search", "exit", "unknown"}
 	for _, c := range cmds {
 		m := newTestModel()
@@ -1428,8 +1431,12 @@ func TestChat_HandleLocalSlashCommands(t *testing.T) {
 		updated, _ := m.handleLocalSlash(c, "query")
 		res := updated.(chatModel)
 		if c == "clear" {
-			if len(res.turns) != 0 {
-				t.Fatalf("expected clear to leave no turns (it no longer replies), got %d", len(res.turns))
+			if len(res.turns) != 1 || !res.newChatArmed {
+				t.Fatalf("/clear on an unsaved chat = %+v (asked %v), want the chat kept and the question", res.turns, res.newChatArmed)
+			}
+			cleared, _ := res.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+			if n := len(cleared.(chatModel).turns); n != 0 {
+				t.Fatalf("answering c left %d turns, want none (and no reply)", n)
 			}
 		} else if c == "exit" {
 			// exit returns tea.Quit
@@ -1610,8 +1617,11 @@ func TestChat_ApplyCurrentReviewEdit(t *testing.T) {
 // "/clea" with "/clear" highlighted in the popup was sent to the model as the
 // literal text "/clea" instead of running /clear.
 func TestChat_EnterOnPartialSlashRunsTheHighlightedCommand(t *testing.T) {
+	// No daemon to ask, and nothing on screen was asked of a model: there is
+	// nothing to lose, so /clear clears at once (clear_test.go has the rest).
+	t.Cleanup(setLockPathForTest(t, filepath.Join(t.TempDir(), "absent.lock")))
 	m := newTestModel()
-	m.turns = []turn{{role: roleUser, text: "hello"}, {role: roleAssistant, text: "hi"}}
+	m.turns = []turn{{role: roleAssistant, local: true, text: "hello"}, {role: roleSystem, text: "hi"}}
 
 	m = typeText(m, "/clea")
 	m, _ = pressEnter(m)
@@ -1662,13 +1672,20 @@ func TestChat_IdleHeaderIsTheBrandAlone(t *testing.T) {
 	}
 }
 
-// /clear leaves an empty screen, not a "transcript cleared" line.
+// /clear leaves an empty screen, not a "transcript cleared" line -- once it
+// has gone ahead. On a chat that is not saved it asks first, and the question
+// is not a line of the transcript either.
 func TestChat_ClearLeavesNothingOnScreen(t *testing.T) {
+	t.Cleanup(setLockPathForTest(t, filepath.Join(t.TempDir(), "absent.lock")))
 	m := newTestModel()
 	m.turns = []turn{{role: roleUser, text: "hello"}, {role: roleAssistant, text: "hi"}}
 	m = typeText(m, "/clear")
 	m, _ = pressEnter(m)
+	if len(m.turns) != 2 || !m.newChatArmed {
+		t.Fatalf("after /clear: turns %+v, asked %v; want the chat kept as it was and the question", m.turns, m.newChatArmed)
+	}
+	m = typeText(m, "c")
 	if len(m.turns) != 0 {
-		t.Errorf("turns after /clear = %+v, want none", m.turns)
+		t.Errorf("turns after answering c = %+v, want none", m.turns)
 	}
 }

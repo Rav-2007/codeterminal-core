@@ -209,7 +209,7 @@ The obvious candidate was the TUI, left as **(U)** in C2's report. Settled here:
 
 > **`clients/tui` does not spawn the daemon at all** and never reads `MOCHIII_API_BASE` **(M)**.
 > It connects to an already-running daemon, and a TUI user is in a shell where exports exist. The one
-> binary it does spawn — the daemon, for `/mcp list` at `clients/tui/slash.go:410` — inherits the
+> binary it does spawn — the daemon, for `/mcp list` in `clients/tui/slash.go` (line 410 when written; removed 2026-10-11, when the TUI began asking the running daemon instead of starting a second one — `clients/tui/mcpserver.go`) — inherits the
 > environment, and before C2 that call would have failed for a GUI-launched user for the same reason.
 > **It is a second beneficiary of the C2 fix, not a second defect.**
 

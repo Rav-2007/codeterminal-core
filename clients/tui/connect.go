@@ -25,6 +25,11 @@ import (
 //
 // The daemon does the verifying and the storing (see daemon/connect_handler.go),
 // so this file collects a secret, shows an answer, and holds no policy of its own.
+//
+// SINCE 2026-10-11 the masked prompt is also the middle step of the setup --
+// provider, key, model (setup.go). It is the SAME prompt in the same state: the
+// setup draws it full-screen and decides what comes before and after, and every
+// rule above is still enforced here, once.
 
 // connectResultMsg carries the daemon's answer back into Update.
 type connectResultMsg struct {
@@ -37,7 +42,7 @@ type connectResultMsg struct {
 // restore in endConnect cannot drift from the value chat.go sets at startup.
 const (
 	connectPrompt           = "paste your provider API key, then enter (esc cancels)"
-	defaultInputPlaceholder = "ask something…"
+	defaultInputPlaceholder = "ask something, or / for commands…"
 	// connectBaseExample is the shape of the argument /connect takes besides its
 	// subcommands, in the words every message that mentions it uses.
 	connectBaseExample = "/connect <provider>, or /connect <the provider's API address>"
@@ -80,11 +85,14 @@ const anyProviderLine = "Any major provider's key works — OpenRouter, OpenAI, 
 	"Groq, xAI, DeepSeek and others. The provider is recognised from the key, and one of its models is " +
 	"picked and tried, so there is nothing else to set."
 
-// beginConnectBare is /connect on its own: say what may be pasted, then ask.
+// beginConnectBare is /connect on its own: the setup, from its first screen.
+//
+// It used to open the masked prompt directly and leave the provider to be told
+// from the key. That path is still there -- it is the list's first row, "Any
+// key", one Enter away -- but the list comes first, because a user who cannot
+// see which providers exist has no way to know theirs is one of them.
 func (m chatModel) beginConnectBare() (tea.Model, tea.Cmd) {
-	m.appendTurn(turn{role: roleAssistant, local: true, text: "Paste your API key below — it is not shown as you type, and " +
-		"nothing is stored if the provider refuses it. Esc cancels.\n\n" + anyProviderLine})
-	return m.beginConnect()
+	return m.beginSetup()
 }
 
 // beginConnectForRefusedKey asks for a key BECAUSE the provider just refused the
@@ -136,10 +144,10 @@ func (m chatModel) beginConnectTo(base string) (tea.Model, tea.Cmd) {
 	m.appendTurn(turn{role: roleAssistant, local: true, text: "Switching to " + providerLabel(base) + ".\n\n" +
 		"Paste the API key for it below — it is sent to that address to be checked, nothing is stored " +
 		"if the key is refused, and the key is not shown as you type. Esc keeps the provider and key in use now."})
-	next, cmd := m.beginConnect()
-	cm := next.(chatModel)
-	cm.connectBase = base
-	return cm, cmd
+	// The setup, entered at its key step: the provider was named on the command
+	// line, so there is no list to go back to and Esc leaves (viaList unset).
+	m.setup = setupFlow{}
+	return m.beginSetupKey(base, "")
 }
 
 // resumePendingPrompt sends the question that was waiting on a key, if there is
@@ -201,6 +209,9 @@ func (m *chatModel) endConnect() {
 func (m chatModel) handleConnectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
+		if m.setup.step == setupKey {
+			return m.setupKeyEsc()
+		}
 		m.endConnect()
 		m.restorePendingPrompt()
 		m.appendTurn(turn{role: roleAssistant, local: true, text: "connect cancelled; nothing was sent or stored"})
@@ -213,9 +224,23 @@ func (m chatModel) handleConnectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Read before endConnect forgets it: empty is a bare /connect, which
 		// leaves it to the daemon to tell whose key this is.
 		base := m.connectBase
+		inSetup := m.setup.step == setupKey
+		// In the setup an empty entry is a slip, not a way out: the screen stays
+		// and says what it is waiting for. Esc is the way out.
+		if inSetup && key == "" {
+			if m.setupKeepsKey() {
+				return m.setupKeepKey()
+			}
+			m.input.SetValue("")
+			m.setup.notice = setupNoKeyNote
+			return m, nil
+		}
 		// Cleared before anything else can happen to it: from here the key exists
 		// only in the local variable and in the request about to be sent.
 		m.endConnect()
+		if inSetup {
+			return m.setupSubmitKey(key, base)
+		}
 		if key == "" {
 			m.restorePendingPrompt()
 			m.appendTurn(turn{role: roleAssistant, local: true, text: "no key entered; nothing was sent or stored"})
@@ -242,6 +267,10 @@ func (m chatModel) handleConnectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // handleConnectResult renders what the daemon said, and releases a question that
 // was waiting on the key.
 func (m chatModel) handleConnectResult(msg connectResultMsg) (tea.Model, tea.Cmd) {
+	// A key sent from the setup's key step: the answer decides the next screen.
+	if m.setup.step == setupChecking {
+		return m.handleSetupConnectResult(msg)
+	}
 	m.appendTurn(turn{role: roleAssistant, local: true, text: formatConnectResult(msg)})
 	m.resizeViewport()
 	m.refreshViewport()
@@ -253,9 +282,10 @@ func (m chatModel) handleConnectResult(msg connectResultMsg) (tea.Model, tea.Cmd
 	if msg.err == nil && msg.resp.InUse {
 		m.needsAPIKey = false
 		if m.pendingPrompt != "" {
-			return m.resumePendingPrompt()
+			next, cmd := m.resumePendingPrompt()
+			return next, tea.Batch(cmd, refreshConnCmd(m.clientName))
 		}
-		return m, nil
+		return m, refreshConnCmd(m.clientName)
 	}
 
 	// Refused, unreachable, or overridden: give the question back rather than
@@ -263,7 +293,10 @@ func (m chatModel) handleConnectResult(msg connectResultMsg) (tea.Model, tea.Cmd
 	m.restorePendingPrompt()
 	m.resizeViewport()
 	m.refreshViewport()
-	return m, nil
+	// A key forgotten, or shown, changes nothing in force -- but asking is one
+	// local round trip, and it keeps the line under the prompt from ever
+	// describing a connection that an answer just changed.
+	return m, refreshConnCmd(m.clientName)
 }
 
 // formatConnectResult turns the response into the lines a user reads.

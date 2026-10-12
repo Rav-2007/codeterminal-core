@@ -108,6 +108,9 @@ func historyClientError(what string, err error) string {
 	if errors.Is(err, errNothingToSave) {
 		return "nothing to save yet -- a chat is saved once it has a question and an answer"
 	}
+	if errors.Is(err, errChatTooLarge) {
+		return "this chat is too large to save: a saved chat holds at most 8 MiB of text"
+	}
 	return what + " failed (see the daemon log)"
 }
 

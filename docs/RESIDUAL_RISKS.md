@@ -369,9 +369,14 @@ second client rendering the same buffers.
 
 *(From the 2.3a enumeration. No fix was authorised; recorded rather than dropped.)*
 
-**What it is.** `runMCPServerList` (`clients/tui/slash.go:381`) runs
-`mochiii-daemon mcp list` with `CombinedOutput()` at
-`clients/tui/slash.go:411` and displays the result. That captures the
+**What it is.** `runMCPServerList` (`clients/tui/slash.go`, line 381 when this
+row was written) runs `mochiii-daemon mcp list` with `CombinedOutput()` (line
+411 then) and displays the result. *(Both were removed 2026-10-11, when the TUI began asking the running daemon instead of starting a second one — `clients/tui/mcpserver.go`.
+The terminal client now shows the daemon's own report and no process's
+stderr at all; a server's stderr goes to the daemon log through the redactor
+in `mcp.Connect`. The VS Code client still runs `mcp list`, from
+`clients/vscode/src/mcpServerList.ts`, so the chain below describes that client.)*
+That captures the
 daemon's **stderr**, and `mcp list` starts the configured MCP servers —
 `daemon/mcpruntime.go:111` wires each server's own stderr into the same stream.
 A third-party MCP server that prints its API key at startup surfaces it on the

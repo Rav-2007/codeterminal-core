@@ -95,14 +95,17 @@ func buildTUI(t *testing.T) string {
 	return bin
 }
 
-// fakeDaemonForPTY is a real listener with a real per-workspace lockfile, so
+// fakeDaemonForPTYSaying is a real listener with a real per-workspace lockfile, so
 // the client has to derive the path the way production does. NOTHING here
 // substitutes lockPathFunc -- that substitution is exactly what hid bug 1.
 //
 // The runtime dir is short on purpose: a Unix socket path is capped near 104
 // bytes by sockaddr_un, and t.TempDir()'s name plus a socket name has measured
 // over that on this project's own scratch paths.
-func fakeDaemonForPTY(t *testing.T, workspace string) {
+//
+// handshake is what the client is told when it connects -- a daemon with no key
+// in force, for a test of the setup the client then opens on.
+func fakeDaemonForPTYSaying(t *testing.T, workspace string, handshake protocol.HandshakeResponse) {
 	t.Helper()
 	runtimeDir, err := os.MkdirTemp("/tmp", "ctp")
 	if err != nil {
@@ -145,7 +148,7 @@ func fakeDaemonForPTY(t *testing.T, workspace string) {
 				if dec.Decode(&hs) != nil {
 					return
 				}
-				if enc.Encode(protocol.HandshakeResponse{ProtocolVersion: protocol.ProtocolVersion, Ok: true}) != nil {
+				if enc.Encode(handshake) != nil {
 					return
 				}
 				var req protocol.PromptRequest
@@ -242,6 +245,13 @@ func (s *screen) waitFor(want string, d time.Duration) bool {
 // screen plus the running command.
 func startTUI(t *testing.T, rows, cols uint16) (*screen, *exec.Cmd, *os.File) {
 	t.Helper()
+	return startTUIAgainst(t, rows, cols, protocol.HandshakeResponse{ProtocolVersion: protocol.ProtocolVersion, Ok: true})
+}
+
+// startTUIAgainst is startTUI against a daemon that answers the handshake as
+// given.
+func startTUIAgainst(t *testing.T, rows, cols uint16, handshake protocol.HandshakeResponse) (*screen, *exec.Cmd, *os.File) {
+	t.Helper()
 	if testing.Short() {
 		t.Skip("builds a binary and starts a subprocess")
 	}
@@ -252,7 +262,7 @@ func startTUI(t *testing.T, rows, cols uint16) (*screen, *exec.Cmd, *os.File) {
 		t.Fatal(err)
 	}
 	bin := buildTUI(t)
-	fakeDaemonForPTY(t, real)
+	fakeDaemonForPTYSaying(t, real, handshake)
 
 	master, slaveName := ptyPair(t)
 	setWinsize(t, master, rows, cols)
@@ -348,5 +358,82 @@ func TestANarrowTerminalDoesNotKillTheClient(t *testing.T) {
 	// Still running after being asked to render at a size that used to kill it.
 	if err := cmd.Process.Signal(syscall.Signal(0)); err != nil {
 		t.Fatalf("the client is gone after rendering at 2 columns: %v\nScreen:\n%s", err, sc.text())
+	}
+}
+
+// noKeyHandshake is a daemon with no credential in force: what a new user's
+// daemon says.
+var noKeyHandshake = protocol.HandshakeResponse{ProtocolVersion: protocol.ProtocolVersion, Ok: true, NeedsAPIKey: true}
+
+// WITH NO KEY, THE PROGRAM OPENS ON THE SETUP -- the owner's report of
+// 2026-10-11 was that it opened on the chat. Every other test of the setup
+// builds the model by hand and calls withFirstRunSetup itself; this is the one
+// that runs main, which is the only place that decides to call it.
+//
+// Neuter check: drop `if needsAPIKey { model = model.withFirstRunSetup() }`
+// from runChat. The splash is drawn instead and "Select Provider" never appears.
+func TestARealFirstRunOpensOnTheProviderList(t *testing.T) {
+	sc, _, master := startTUIAgainst(t, 40, 100, noKeyHandshake)
+
+	if !sc.waitFor(setupProviderTitle, 20*time.Second) {
+		t.Fatalf("a client whose daemon has no key did not open on the provider list. Screen so far:\n%s", sc.text())
+	}
+	for _, want := range []string{"connect a model provider to get started", "OpenRouter", "NVIDIA", setupEscSkip} {
+		if !sc.waitFor(want, 5*time.Second) { // the frame arrives in pieces: the title is not the whole screen
+			t.Errorf("the first screen does not show %q", want)
+		}
+	}
+	if strings.Contains(sc.text(), splashTagline) {
+		t.Error("the splash was drawn as well: \"press any key to begin\" is the screen this replaced")
+	}
+
+	// THE DOOR IS NOT LOCKED: esc is the chat, with the ordinary footer.
+	_, _ = master.Write([]byte("\x1b"))
+	if !sc.waitFor(helpText, 10*time.Second) {
+		t.Fatalf("esc on the first screen did not reach the chat. Screen:\n%s", sc.text())
+	}
+	if !sc.waitFor("Setup skipped", 5*time.Second) {
+		t.Error("the chat does not say the setup was skipped or how to come back to it")
+	}
+	if strings.Contains(sc.text(), "panic:") {
+		t.Errorf("the client panicked:\n%s", sc.text())
+	}
+}
+
+// And with a key in force nothing changed: the splash, then the chat. The setup
+// must not appear to a user who is already connected.
+func TestAConnectedClientStillOpensOnTheSplash(t *testing.T) {
+	sc, _, master := startTUI(t, 40, 100)
+	if !sc.waitFor("press any key to begin", 20*time.Second) {
+		t.Fatalf("a connected client did not open on the splash. Screen so far:\n%s", sc.text())
+	}
+	_, _ = master.Write([]byte("x\x7f"))
+	if !sc.waitFor(helpText, 10*time.Second) {
+		t.Fatalf("the chat did not come up. Screen:\n%s", sc.text())
+	}
+	if strings.Contains(sc.text(), setupProviderTitle) {
+		t.Error("the setup was shown to a client whose daemon already has a key")
+	}
+}
+
+// THE SETUP AT A SIZE IT CANNOT LAY OUT must not be a crash either -- it is now
+// the first thing a new user's terminal is asked to draw, and it holds the same
+// text input that panicked at a negative width.
+func TestANarrowTerminalDoesNotKillTheSetup(t *testing.T) {
+	sc, cmd, master := startTUIAgainst(t, 4, 2, noKeyHandshake)
+	if !sc.waitForQuiet(250*time.Millisecond, 20*time.Second) {
+		t.Fatalf("the client never wrote a byte at 2 columns; nothing was rendered to survive")
+	}
+	// Enter on the first row opens the key step, which is what draws the input.
+	_, _ = master.Write([]byte("\r"))
+	sc.waitForQuiet(250*time.Millisecond, 10*time.Second)
+	_, _ = master.Write([]byte("abc"))
+	sc.waitForQuiet(250*time.Millisecond, 10*time.Second)
+
+	if strings.Contains(sc.text(), "panic:") {
+		t.Fatalf("a narrow terminal panicked the setup:\n%s", sc.text())
+	}
+	if err := cmd.Process.Signal(syscall.Signal(0)); err != nil {
+		t.Fatalf("the client is gone after drawing the setup at 2 columns: %v\nScreen:\n%s", err, sc.text())
 	}
 }

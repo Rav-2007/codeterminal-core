@@ -239,6 +239,9 @@ func showCredential(path string) error {
 	if cred.DefaultModel != "" {
 		_, _ = fmt.Fprintf(connectOut, "Model:       %s (%d listed by the provider when the key was saved)\n", cred.DefaultModel, len(cred.Models))
 	}
+	if cred.ChosenModel != "" {
+		_, _ = fmt.Fprintf(connectOut, "Chosen:      %s (picked with /model; /model clear goes back)\n", cred.ChosenModel)
+	}
 	_, _ = fmt.Fprintf(connectOut, "File:        %s\n", path)
 	// Said here too, because a key in the environment silently wins and that is
 	// otherwise invisible: someone debugging "I connected but it uses the wrong

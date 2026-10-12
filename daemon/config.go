@@ -39,6 +39,11 @@ type ModelTier struct {
 	// capped, because an uncapped one is billed for whatever the provider
 	// allows -- 384,000 tokens on the host the default tier usually gets.
 	MaxOutputTokens int `json:"max_output_tokens,omitempty"`
+
+	// quiet marks a tier the provider LISTS and that sent nothing back when the
+	// key was connected (providerTierConfig). Unexported, so it is never read
+	// from a config file: it is something the daemon measured, not a setting.
+	quiet bool
 }
 
 // defaultMaxOutputTokens is every call's output cap unless a tier sets its

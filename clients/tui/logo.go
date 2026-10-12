@@ -41,6 +41,14 @@ const splashTagline = "a small pink lotus for your terminal — press any key to
 // renderSplash renders the logo (styled per-line, pink), brand name, and
 // tagline as one block.
 func renderSplash() string {
+	brand := brandStyle.Render(brandName)
+	tagline := taglineStyle.Render(splashTagline)
+	return strings.Join([]string{renderLogo(), "", brand, tagline}, "\n")
+}
+
+// renderLogo renders the lotus alone, for a screen that puts its own words
+// under it (the setup, setup.go).
+func renderLogo() string {
 	lines := strings.Split(lotusLogo, "\n")
 	styledLines := make([]string, len(lines))
 	for i, line := range lines {
@@ -52,9 +60,5 @@ func renderSplash() string {
 		indent := len(line) - len(strings.TrimLeft(line, " "))
 		styledLines[i] = logoStyle.Render(line + strings.Repeat(" ", indent))
 	}
-	logo := strings.Join(styledLines, "\n")
-
-	brand := brandStyle.Render(brandName)
-	tagline := taglineStyle.Render(splashTagline)
-	return strings.Join([]string{logo, "", brand, tagline}, "\n")
+	return strings.Join(styledLines, "\n")
 }

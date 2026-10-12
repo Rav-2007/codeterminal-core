@@ -129,7 +129,13 @@ func laneBLaunchConfig(name string, srv MCPServerConfig, cfg *Config, stderr io.
 // collected and surfaced as a protocol.DegradedMCPServer, because losing one
 // server's tools should cost the user those tools and not their turn.
 func (s *Server) buildRegistry(ctx context.Context, logger *log.Logger, proposals *proposalSink, mode string) (*mcp.Registry, []error) {
-	cfg := s.cfg
+	// The daemon's config plus the servers the user added, read now so that one
+	// added a moment ago is part of this turn (mcpuser.go). Whatever could not
+	// be read is logged and left out; it never fails the build.
+	cfg, problems := s.agentConfig()
+	for _, problem := range problems {
+		logger.Printf("mcp: %s", problem)
+	}
 	registry := mcp.NewRegistry(configPolicy{cfg: cfg}, cfg.MCP.Budget.resolvedMaxAdvertisedToolsFor(mode))
 
 	if !cfg.MCP.Builtin.Disabled {

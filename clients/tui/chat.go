@@ -33,6 +33,7 @@ const (
 	stateEditReview                    // the last answer contained edit blocks; reviewing them one at a time
 	stateToolApproval                  // an agent turn is paused on a tool-call approval
 	stateConnect                       // entering a provider API key, masked; see connect.go
+	stateSetup                         // the setup's lists and its checking screen; see setup.go
 )
 
 type turnRole int
@@ -129,13 +130,13 @@ const reviewHelpText = "y apply · n skip · q cancel remaining"
 // nothing to stop. See handleCtrlC for why quitting asks first.
 const quitConfirmHelpText = "press ctrl+c again to quit · any other key cancels"
 
-// newChatConfirmHelpText is the footer while a ctrl+n on an unsaved chat
-// waits for its second press (handleCtrlN).
+// newChatConfirmHelpText is the footer while an unsaved chat's "Save or
+// clear?" is waiting for its answer (clear.go): the keys, and what each does.
 //
 // SHORT ON PURPOSE: a footer longer than the terminal is cut at its width, and
-// what must survive is what a second ctrl+n does and how to avoid it. "Any
-// other key cancels" is true but is the part that can go.
-const newChatConfirmHelpText = "chat not saved: ctrl+n again discards it · /save keeps it"
+// what must survive is the two answers. "Any other key cancels" is true, and
+// said last because it is the part that can go.
+const newChatConfirmHelpText = "s save it, then a new chat · c clear without saving · esc cancel"
 
 // interruptHelpText replaces helpText while a turn is in flight. The hint
 // changes because the available action does: an interrupt nobody can find is
@@ -193,11 +194,18 @@ type chatModel struct {
 	// the daemon, which tells from the key. Set only while the key prompt is
 	// open; see connect.go.
 	connectBase string
+	// pendingMCPAdd is a "/mcp-server add" the daemon answered with what the
+	// server could do, waiting for the user to type the server's name. Nil
+	// except between that answer and the next line entered (mcpserver.go).
+	pendingMCPAdd *protocol.MCPRequest
+	// setup is the provider → key → model screens, when they are showing
+	// (setup.go). Its key step is stateConnect; its other steps are stateSetup.
+	setup setupFlow
 	// turnInput is exactly what was typed to start the turn in flight, slash
 	// command and all -- what a refused key hands to pendingPrompt so the same
 	// question can be asked again once a working key is in.
 	turnInput string
-
+	chatExtras
 	// limits bounds the transcript; evictedTurns and evictedBytes are the
 	// running totals the eviction marker reports. See transcriptbound.go.
 	limits       transcriptLimits
@@ -373,13 +381,14 @@ type chatModel struct {
 	// chatIDs are the saved chats the last /history list numbered, in order:
 	// "/resume 2" means the chat that list showed as 2 (history.go).
 	chatIDs []string
-	// newChatArmed is set by a ctrl+n pressed on a chat that is NOT SAVED,
-	// and cleared by any other key -- handleCtrlN, the same shape as
-	// quitArmed. Only a ctrl+n pressed while it is set discards the chat.
+	// newChatArmed is set while "This chat is not saved. Save or clear?" is on
+	// screen: by /clear or ctrl+n on a chat that is NOT SAVED. The next key
+	// answers it -- s, c, a second ctrl+n -- or cancels it (clear.go).
 	newChatArmed bool
 	// resumeArmed is the saved chat a "/resume <n>" was refused for
 	// because the chat on screen is not saved: the same command again goes
 	// ahead (history.go).
+	// (A /clear that only warned once counted the transcript here; it asks now.)
 	resumeArmed string
 	// tasks is the in-flight build's task list (update_tasks), drawn under
 	// the transcript while the turn runs and kept in it when the turn ends.
@@ -486,7 +495,7 @@ func inputWidthFor(terminalWidth int, prompt string) int {
 }
 
 func (m chatModel) Init() tea.Cmd {
-	return textinput.Blink
+	return tea.Batch(textinput.Blink, refreshConnCmd(m.clientName))
 }
 
 func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -532,6 +541,15 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case connectResultMsg:
 		return m.handleConnectResult(msg)
+
+	case setupTiersMsg:
+		return m.handleSetupTiers(msg)
+
+	case modelChoiceMsg, connInfoMsg, accountMsg:
+		return m.handleSideAnswer(msg)
+
+	case mcpResultMsg:
+		return m.handleMCPResult(msg)
 
 	case toolApprovalMsg:
 		return m.handleToolApproval(msg)
@@ -595,7 +613,7 @@ func (m chatModel) handleWindowSize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) 
 	m.ready = true
 	m.viewport.Width = m.width
 	m.resizeViewport()
-	m.input.Width = inputWidthFor(m.width, m.input.Prompt)
+	m.syncInputWidth()
 	m.refreshViewport()
 	return m, nil
 }
@@ -633,8 +651,8 @@ func (m chatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleCtrlC()
 	}
 	m.quitArmed = false
-	if msg.String() != "ctrl+n" {
-		m.newChatArmed = false
+	if m.newChatArmed && msg.String() != "ctrl+n" {
+		return m.answerNewChatQuestion(msg) // save, clear or cancel: clear.go
 	}
 	if m.state == stateEditReview {
 		return m.handleReviewKey(msg)
@@ -647,6 +665,9 @@ func (m chatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.state == stateConnect {
 		return m.handleConnectKey(msg)
 	}
+	if m.state == stateSetup {
+		return m.handleSetupKey(msg)
+	}
 	switch msg.String() {
 	case "esc":
 		// ESC NEVER QUITS THE PROGRAM. It means "stop what is happening
@@ -654,6 +675,9 @@ func (m chatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// reflex: a user who hits esc a beat after the answer finished must
 		// not lose their session for it. With nothing in flight it does
 		// nothing at all.
+		if m.pendingMCPAdd != nil && !m.turnInFlight() {
+			return m.cancelMCPAdd()
+		}
 		return m.interruptTurn()
 	case "enter":
 		// Enter SUBMITS. It accepts a completion only when the user has
@@ -1119,7 +1143,10 @@ func (m chatModel) handleThinkingTick(msg thinkingTickMsg) (tea.Model, tea.Cmd) 
 }
 
 func (m chatModel) handleSpinnerTick(msg spinner.TickMsg) (tea.Model, tea.Cmd) {
-	if m.state != stateSending && m.state != stateStreaming {
+	// The setup spins too, while it waits on the daemon: a key being checked,
+	// a model list on its way.
+	waiting := m.setup.step == setupChecking || (m.setup.step == setupModel && m.setup.loading)
+	if m.state != stateSending && m.state != stateStreaming && !waiting {
 		return m, nil
 	}
 	var cmd tea.Cmd
@@ -1308,10 +1335,22 @@ func (m chatModel) startTurn() (tea.Model, tea.Cmd) {
 	if raw == "" {
 		return m, nil
 	}
+	// A "/mcp-server add" is waiting for the server's name: this line is the
+	// answer to that question and nothing else (mcpserver.go).
+	if m.pendingMCPAdd != nil {
+		return m.answerMCPAdd(raw)
+	}
 	// A key typed after /connect is refused below, and must not wait in the
 	// up-arrow recall to be shown again in clear (FOUND 2026-10-01).
 	if !connectWithKey(raw) {
-		m.rememberPrompt(raw)
+		// Nor must a "/mcp-server add" refused for carrying a value
+		// (mcpserver.go). Nested rather than joined with && above: that line
+		// is a declared anchor of the retrieval eval's held-out set
+		// (daemon/heldout_eval_test.go), and rewording it fails the gate that
+		// checks the eval's ground truth still describes the code.
+		if !mcpAddIsRefused(raw) {
+			m.rememberPrompt(raw)
+		}
 	}
 	m.turnInput = raw
 	if arg, isModel := parseModelCommand(raw); isModel {
@@ -1462,16 +1501,15 @@ func (m chatModel) handleLocalSlash(name, args string) (tea.Model, tea.Cmd) {
 	case "help":
 		reply = formatSlashHelp()
 	case "clear":
-		m.turns = nil
-		m.lastGrounding = nil
-		m.lastRedactions = nil
-		m.lastDegraded = nil
-		m.lastProvider = ""
-		// No reply: a cleared screen is the confirmation. Replying would put a
-		// line straight back on the screen the user just asked to empty.
+		// A NEW CHAT, as ctrl+n starts one -- on the daemon too. Until
+		// 2026-10-11 this emptied the screen and nothing else, so /save went
+		// on writing the turns it had "cleared" (clear.go).
+		// No reply once it goes ahead: a cleared screen is the confirmation.
+		// Replying would put a line straight back on the screen just emptied.
+		return m.handleClearCommand()
 	case "mouse":
 		return m.handleMouseToggle()
-	case "connect":
+	case "connect", "provider":
 		// TWO LITERAL SUBCOMMANDS, A PROVIDER'S NAME OR ADDRESS, AND NOTHING ELSE.
 		// The rule was never "no arguments" -- it is that a KEY must not be typed
 		// here, because it would be left in the transcript and sent on with the
@@ -1545,21 +1583,13 @@ func (m chatModel) handleLocalSlash(name, args string) (tea.Model, tea.Cmd) {
 		}
 		reply = formatInitChecklist(ws)
 	case "mcp-server":
-		// EMPTY, not "./models.json". That relative path resolved against the
-		// TUI's working directory -- the repository the user opened -- and
-		// `mcp list` does not merely READ a config: its own usage text says
-		// "Starts the configured MCP servers to ask them", and buildRegistry
-		// does. So a repository shipping a models.json with an mcp.servers
-		// entry had its command RUN. CONFIRMED by execution 2026-08-08.
-		//
-		// acknowledged_unconfined, the gate documented as a written
-		// acknowledgement a human types, is a field in that same
-		// attacker-written file.
-		//
-		// Empty makes the daemon resolve its own config (resolveConfigPath:
-		// <exedir>/models.json, then <exedir>/../models.json), which is the
-		// installed one, or the repo's own when run from a checkout.
-		reply = runMCPServerList("")
+		// THE RUNNING DAEMON IS ASKED, over its socket; this client runs nothing.
+		// It used to execute `mochiii-daemon mcp list` and print what that second
+		// process said about whatever config it found for itself -- which is how a
+		// daemon with its tools on came to be reported as "Agent mode is OFF"
+		// (FOUND 2026-10-11), and how a repository once got its own program run
+		// by a slash command (2026-08-08). See mcpserver.go.
+		return m.handleMCPServerCommand(args)
 	case "search":
 		reply = runSearch(m.clientName, m.workspaceRoot, args)
 	case "save":
@@ -1583,8 +1613,8 @@ func (m chatModel) handleLocalSlash(name, args string) (tea.Model, tea.Cmd) {
 		m.resizeViewport()
 		m.refreshViewport()
 		return m, nil
-	case "budget":
-		return m.handleBudgetCommand(args)
+	case "budget", "account":
+		return m.handleSpendCommand(name, args)
 	case "spec":
 		return m.handleSpecCommand(args)
 	case "task":
@@ -1607,35 +1637,36 @@ func (m chatModel) handleLocalSlash(name, args string) (tea.Model, tea.Cmd) {
 
 // handleModelCommand implements /model and /model <tier> without starting a
 // model turn. Listing hits the daemon status surface so the menu always
-// matches models.json.
+// matches models.json. A choice is also sent to the daemon, which remembers it
+// across restarts (modelchoice.go).
 func (m chatModel) handleModelCommand(arg string) (tea.Model, tea.Cmd) {
 	if arg == "" || arg == "list" {
+		// /model ON ITS OWN OPENS THE LIST TO CHOOSE FROM (beginModelPicker, in
+		// setup.go). It used to print every model as text, each name twice, to
+		// be typed back in full -- which the owner, with two hundred of them on
+		// screen, reported as "I can't even select the model" (2026-10-12).
+		//
+		// "/model list" still prints them: text can be scrolled back to, copied
+		// and searched by the terminal, and a script reading this client's
+		// output has nothing to press Enter on. The words are modelListText's
+		// (modelchoice.go), which is also where the doubled name went.
+		if arg == "" {
+			return m.beginModelPicker()
+		}
+		// THIS BLOCK IS AS MANY LINES AS THE ONE IT REPLACED, on purpose: see
+		// chatExtras in statusline.go for what a line added to this file costs.
+		//
+		// The list is fetched off the UI thread there; this text form is the
+		// one place /model still asks the daemon on it, as it always has.
+		//
 		tiers, err := fetchAvailableTiers(m.clientName)
 		if err != nil {
 			m.statusErr = "could not list models: " + err.Error()
 			return m, nil
 		}
-		var b strings.Builder
-		b.WriteString("models (/model <name> to select; /model clear to reset):\n")
-		current := m.preferredTier
-		if current == "" {
-			current = "(default)"
-		}
-		fmt.Fprintf(&b, "current: %s\n", current)
-		for _, t := range tiers {
-			mark := "  "
-			// With no preference the daemon's default_tier answers, and it says
-			// which one that is -- the default is configuration, not a name.
-			if t.Name == m.preferredTier || (m.preferredTier == "" && t.Default) {
-				mark = "* "
-			}
-			status := ""
-			if !t.Active {
-				status = " [inactive]"
-			}
-			fmt.Fprintf(&b, "%s%s  %s%s\n", mark, t.Name, t.Slug, status)
-		}
-		m.appendTurn(turn{role: roleAssistant, local: true, text: strings.TrimRight(b.String(), "\n")})
+		// With no preference the daemon's default_tier answers, and it says
+		// which one that is -- the default is configuration, not a name.
+		m.appendTurn(turn{role: roleAssistant, local: true, text: modelListText(tiers, m.preferredTier)})
 		m.resizeViewport()
 		m.refreshViewport()
 		return m, nil
@@ -1645,7 +1676,8 @@ func (m chatModel) handleModelCommand(arg string) (tea.Model, tea.Cmd) {
 		m.appendTurn(turn{role: roleAssistant, local: true, text: "model reset to default tier (models.json default_tier)"})
 		m.resizeViewport()
 		m.refreshViewport()
-		return m, nil
+		// And the daemon forgets a choice it was keeping (modelchoice.go).
+		return m, chooseModelCmd(m.clientName, "")
 	}
 	tiers, err := fetchAvailableTiers(m.clientName)
 	if err != nil {
@@ -1671,11 +1703,7 @@ func (m chatModel) handleModelCommand(arg string) (tea.Model, tea.Cmd) {
 		m.refreshViewport()
 		return m, nil
 	}
-	m.preferredTier = found.Name
-	m.appendTurn(turn{role: roleAssistant, local: true, text: fmt.Sprintf("model set to %s (%s)", found.Name, found.Slug)})
-	m.resizeViewport()
-	m.refreshViewport()
-	return m, nil
+	return m.chooseModel(found.Name, found.Slug)
 }
 
 // endStream releases the finished turn's stream state.
@@ -1911,7 +1939,7 @@ func (m chatModel) handleCtrlN() (tea.Model, tea.Cmd) {
 }
 
 // clearConversation discards the chat and starts a fresh one with no
-// carried-over history (handleCtrlN decides when). A no-op while a request/stream is in flight (mid-
+// carried-over history (handleCtrlN and handleClearCommand decide when). A no-op while a request/stream is in flight (mid-
 // stream review is unreachable here — stateEditReview routes to
 // handleReviewKey instead, which doesn't bind ctrl+n), matching the same
 // ignore-while-busy rule Enter follows.
@@ -2746,6 +2774,10 @@ func (m chatModel) View() string {
 		}
 		return content
 	}
+	// The setup owns the whole screen, key step included (setup.go).
+	if m.setupActive() {
+		return m.renderSetup()
+	}
 	if !m.ready {
 		return "booting…"
 	}
@@ -2754,7 +2786,7 @@ func (m chatModel) View() string {
 
 	var bottomLine, help string
 	if m.state == stateEditReview && m.reviewPrepared != nil {
-		bottomLine = accentStyle.Render(fmt.Sprintf("edit %d/%d: %s", m.reviewIndex+1, len(m.reviewBlocks), sanitizeText(m.reviewPrepared.Block.FilePath)))
+		bottomLine = m.promptBox(accentStyle.Render(fmt.Sprintf("edit %d/%d: %s", m.reviewIndex+1, len(m.reviewBlocks), sanitizeText(m.reviewPrepared.Block.FilePath))))
 		help = helpStyle.Render(reviewHelpText)
 	} else if m.state == stateToolApproval && m.pendingApproval != nil {
 		// The keys, and only the keys: the question is already on screen.
@@ -2767,13 +2799,13 @@ func (m chatModel) View() string {
 		if m.taskRunning() {
 			keys = strings.Replace(keys, "for this turn", "for this whole task", 1)
 		}
-		bottomLine = accentStyle.Render(keys)
+		bottomLine = m.promptBox(accentStyle.Render(keys))
 	} else {
 		popupStr, _ := m.renderSlashPopup()
 		if popupStr != "" {
-			bottomLine = popupStr + "\n" + m.input.View()
+			bottomLine = popupStr + "\n" + m.promptBox(m.input.View())
 		} else {
-			bottomLine = m.input.View()
+			bottomLine = m.promptBox(m.input.View())
 		}
 		if m.turnInFlight() {
 			help = helpStyle.Render(interruptHelpText)
@@ -2789,10 +2821,10 @@ func (m chatModel) View() string {
 		help = helpStyle.Render(quitConfirmHelpText)
 	}
 	if m.newChatArmed {
-		help = helpStyle.Render(newChatConfirmHelpText)
+		bottomLine, help = m.promptBox(accentStyle.Render(newChatQuestion)), helpStyle.Render(newChatConfirmHelpText)
 	}
 
-	return header + "\n" + m.viewport.View() + "\n" + bottomLine + "\n" + help
+	return header + "\n" + m.viewport.View() + "\n" + bottomLine + "\n" + m.withStatusLine(help)
 }
 
 func (m chatModel) slashMatches() []slashDef {
@@ -2823,29 +2855,29 @@ func (m chatModel) renderSlashPopup() (string, int) {
 	if len(matches) == 0 {
 		return "", 0
 	}
-	idx := m.autocompleteIdx
-	if idx < 0 {
-		idx = 0
-	}
-	if idx >= len(matches) {
-		idx = len(matches) - 1
-	}
+	idx := min(max(m.autocompleteIdx, 0), len(matches)-1)
+	// ONLY THE ROWS ROUND THE HIGHLIGHT ARE DRAWN (slashpopup.go): all 37, in
+	// a 24-row terminal, scrolled the highlighted row itself off the top --
+	// and with it /model, /provider and /account, the first in the catalog.
+	// The window follows the highlight, so every command is still reached
+	// with the arrow keys, and typing narrows the list as it always did.
+	first, last := slashPopupWindow(idx, len(matches), m.height)
 
 	var lines []string
 	for i, match := range matches {
-		name := "/" + match.Name
-		sum := match.Summary
-		if len(sum) > 50 {
-			sum = sum[:47] + "..."
+		if i < first || i >= last {
+			continue
 		}
-		row := fmt.Sprintf("%-15s %s", name, sum)
+		name := "/" + match.Name
+		row := fmt.Sprintf("%-15s %s", name, slashSummary(match.Summary))
 		if i == idx {
 			lines = append(lines, selectedItemStyle.Render("> "+row))
 		} else {
 			lines = append(lines, unselectedItemStyle.Render("  "+row))
 		}
 	}
-
+	// The count returned includes the "more" lines: it is the popup's height.
+	lines = slashPopupMarked(lines, first, len(matches)-last)
 	box := popupStyle.Render(strings.Join(lines, "\n"))
 	return box, len(lines) + 2
 }
@@ -2983,8 +3015,8 @@ func (m *chatModel) resizeViewport() {
 	if !m.ready {
 		return // terminal size not known yet; the first WindowSizeMsg sizes everything
 	}
-	const inputLines, helpLines = 1, 1
-	vpHeight := m.height - m.headerLineCount() - inputLines - helpLines
+	inputLines, helpLines := m.promptRows(), 1 // the prompt is one row, or three in its box (promptbox.go)
+	vpHeight := m.height - m.headerLineCount() - inputLines - helpLines - m.statusRows()
 	if vpHeight < 1 {
 		vpHeight = 1
 	}

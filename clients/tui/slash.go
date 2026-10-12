@@ -2,9 +2,7 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -73,9 +71,11 @@ type slashDef struct {
 
 var slashCatalog = []slashDef{
 	{Name: "help", Kind: slashLocal, Summary: "list slash commands"},
-	{Name: "model", Kind: slashLocal, Summary: "list or select a models.json tier (/model <name>)"},
-	{Name: "mcp-server", Kind: slashLocal, Summary: "show configured MCP servers and tool policy"},
-	{Name: "clear", Kind: slashLocal, Summary: "clear the on-screen transcript"},
+	{Name: "model", Kind: slashLocal, Summary: "choose the model from a list (/model list prints)"},
+	{Name: "provider", Kind: slashLocal, Summary: "choose a provider, add its key, choose a model"},
+	{Name: "account", Kind: slashLocal, Summary: "provider, key and model in use, and the spend"},
+	{Name: "mcp-server", Kind: slashLocal, Summary: "the tools this daemon offers; add or remove an MCP server (/mcp-server add <name> <command>)"},
+	{Name: "clear", Kind: slashLocal, Summary: "start a new chat (same as ctrl+n)"},
 	{Name: "compact", Kind: slashLocal, Summary: "keep only the last 8 turns, now"},
 	{Name: "mouse", Kind: slashLocal, Summary: "toggle mouse capture: on scrolls with the wheel, off lets you select text"},
 	{Name: "context", Kind: slashLocal, Summary: "show workspace, model tier, and last grounding"},
@@ -88,7 +88,7 @@ var slashCatalog = []slashDef{
 	{Name: "usage", Kind: slashLocal, Summary: "tokens and cost this session, and how full the context is"},
 	{Name: "budget", Kind: slashLocal, Summary: "spending limits for this session and today (/budget more raises one that is near)"},
 	{Name: "spec", Kind: slashLocal, Summary: "write a spec (/spec <goal>), then /spec build|check|use|off|show"},
-	{Name: "connect", Kind: slashLocal, Summary: "set the provider API key (/connect <provider URL> switches provider; /connect show, /connect forget)"},
+	{Name: "connect", Kind: slashLocal, Summary: "choose a provider, paste its key, choose a model (/connect <provider> skips the list; /connect show, /connect forget)"},
 	{Name: "exit", Kind: slashLocal, Summary: "quit the TUI"},
 
 	// /team is in the catalog to be FOUND, and parsed elsewhere.
@@ -262,7 +262,7 @@ func formatSlashHelp() string {
 	sort.Strings(names)
 	for _, name := range names {
 		if name == "model" {
-			fmt.Fprintf(&b, "  /%-12s %s\n", "model", "list or select a models.json tier")
+			fmt.Fprintf(&b, "  /%-12s %s\n", "model", "choose the model from a list (/model <name> selects one)")
 			continue
 		}
 		d := lookupSlash(name)
@@ -277,7 +277,7 @@ func formatSlashHelp() string {
 	b.WriteString("\nkeys:\n")
 	b.WriteString("  esc            stop the turn in flight; the transcript is kept\n")
 	b.WriteString("  ctrl+c         stop the turn in flight, or quit when nothing is running\n")
-	b.WriteString("  ctrl+n         start a new conversation\n")
+	b.WriteString("  ctrl+n         start a new chat (same as /clear); /save first to keep this one\n")
 
 	// THE AUTOMATIC BOUND, said here because /help is where someone goes after
 	// seeing the eviction marker and wondering what took their transcript.
@@ -365,106 +365,12 @@ func runGitStatus(workspace string) string {
 	return s
 }
 
-// daemonBinEnvVar lets a developer point /mcp-server at a daemon built
-// somewhere else. An explicit variable the USER sets is a trusted input; the
-// working directory is not.
-const daemonBinEnvVar = "MOCHIII_DAEMON_BIN"
-
-// resolveDaemonBin finds the daemon binary WITHOUT ever trusting the working
-// directory.
-//
-// This used to try "daemon/mochiii-daemon" and
-// "../../daemon/mochiii-daemon" first, both relative to the CWD. The TUI's
-// only mode of use is to run it from inside the repository you are working on,
-// so those two candidates meant: a repository that ships an executable at
-// daemon/mochiii-daemon gets it EXECUTED when the user types /mcp-server.
-//
-// Measured before this change: a temp repo containing that file ran attacker
-// code and read MOCHIII_API_KEY out of the inherited environment. No
-// approval prompt stands in front of a slash command.
-//
-// Every candidate below is anchored to something the user controls — an
-// explicit environment variable, the location of the running binary, or PATH.
-// None is relative to whatever directory the TUI happens to have been started
-// in. exec.LookPath is used for the bare name because Go resolves a
-// separator-free argument through PATH anyway; doing it here makes the check
-// and the execution agree on one path rather than statting the CWD and then
-// executing something else.
-func resolveDaemonBin() string {
-	if override := strings.TrimSpace(os.Getenv(daemonBinEnvVar)); override != "" {
-		return override
-	}
-
-	var candidates []string
-	if exe, err := os.Executable(); err == nil {
-		if resolved, rerr := filepath.EvalSymlinks(exe); rerr == nil {
-			exe = resolved
-		}
-		dir := filepath.Dir(exe)
-		candidates = append(candidates,
-			filepath.Join(dir, "mochiii-daemon"),
-			filepath.Join(dir, "..", "daemon", "mochiii-daemon"),
-		)
-	}
-	for _, c := range candidates {
-		if st, err := os.Stat(c); err == nil && !st.IsDir() {
-			return c
-		}
-	}
-
-	if p, err := exec.LookPath("mochiii-daemon"); err == nil {
-		return p
-	}
-	return ""
-}
-
-func runMCPServerList(configPath string) string {
-	bin := resolveDaemonBin()
-	if bin == "" {
-		return "mochiii-daemon binary not found — build it with:\n" +
-			"  (cd daemon && go build -o mochiii-daemon .)\n" +
-			"then put it next to this binary or on PATH, or set " + daemonBinEnvVar +
-			" to its path, and retry /mcp-server"
-	}
-	args := []string{"mcp", "list"}
-	// A RELATIVE config path is refused outright rather than passed through.
-	//
-	// `mcp list` STARTS the servers a config names, so --config is a
-	// code-execution argument, not a display option. A relative path resolves
-	// against this process's working directory, which is the repository the user
-	// opened -- and that is how a workspace models.json got its command run
-	// (CONFIRMED by execution 2026-08-08).
-	//
-	// An ABSOLUTE path is still honoured: that is a developer pointing at a
-	// config they chose, which is a trusted input in the same way
-	// MOCHIII_DAEMON_BIN is. Empty means "let the daemon resolve its own",
-	// which is what every ordinary caller now passes.
-	if configPath != "" {
-		if !filepath.IsAbs(configPath) {
-			return "refusing a relative --config path (" + configPath + "): it would resolve " +
-				"against the current directory, and `mcp list` STARTS the servers a config names. " +
-				"Pass an absolute path, or none to use the daemon's own config."
-		}
-		args = append(args, "--config", configPath)
-	}
-	cmd := exec.Command(bin, args...)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Sprintf("mcp list failed: %v\n%s", err, strings.TrimSpace(string(out)))
-	}
-	s := strings.TrimSpace(string(out))
-	if s == "" {
-		return "no MCP servers configured (agent mode off or empty mcp.servers)"
-	}
-	return s
-}
-
 func formatInitChecklist(workspace string) string {
 	return strings.TrimSpace(fmt.Sprintf(`workspace init checklist:
   workspace: %s
   1. Daemon running (it finds models.json beside its own binary)
-  2. MOCHIII_API_KEY set (OpenRouter) OR run-proxy.sh for managed proxy
+  2. A provider key: /provider (any major provider), or MOCHIII_API_KEY, or run-proxy.sh
   3. Optional: ./daemon/mochiii-daemon index %s
-  4. /model to pick a model; /mcp-server to see agent tools
+  4. /model to pick a model; /account to see what is connected; /mcp-server for agent tools
   5. /help for all slash commands`, workspace, workspace))
 }

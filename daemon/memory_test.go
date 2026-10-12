@@ -503,31 +503,34 @@ func TestMemoryStore_MigratesV1AllTheWayToCurrent(t *testing.T) {
 	}
 }
 
-func TestMemoryStore_PrunesOldTurnsByAge(t *testing.T) {
+// A TURN IS NEVER DROPPED FOR BEING OLD. It was, at thirty days, on every
+// append (2026-07 to 2026-10-11), and that emptied chats still in use: the
+// screen went on showing turns the store no longer had, and the next /save
+// wrote the remainder over the saved copy. Only the count cap prunes
+// (TestMemoryStore_PrunesToRetentionCap).
+//
+// Neuter check: put `OR created_at < ?` back in pruneWorkspace and the ancient
+// turn is gone.
+func TestMemoryStore_AnOldTurnIsNotPrunedForItsAge(t *testing.T) {
 	s, _ := openTestMemoryStore(t)
 	ctx := context.Background()
 	const ws = "/workspace/aged"
 
-	oldTimestamp := "2020-01-01T00:00:00Z"
 	if _, err := s.db.ExecContext(ctx,
 		`INSERT INTO turns (workspace, role, content, created_at) VALUES (?, ?, ?, ?)`,
-		ws, "user", "ancient question", oldTimestamp,
+		ws, "user", "ancient question", "2020-01-01T00:00:00Z",
 	); err != nil {
 		t.Fatalf("inserting ancient turn: %v", err)
 	}
-
-	if err := s.AppendTurn(ctx, ws, "user", "fresh question"); err != nil {
+	if err := s.AppendTurn(ctx, ws, "assistant", "fresh answer"); err != nil {
 		t.Fatalf("AppendTurn: %v", err)
 	}
 
-	turns, err := s.LoadRecentTurns(ctx, ws, 10, false)
+	turns, err := s.LoadAllTurns(ctx, ws)
 	if err != nil {
-		t.Fatalf("LoadRecentTurns: %v", err)
+		t.Fatalf("LoadAllTurns: %v", err)
 	}
-	if len(turns) != 1 {
-		t.Fatalf("loaded %d turns, want 1 (ancient turn pruned)", len(turns))
-	}
-	if turns[0].Content != "fresh question" {
-		t.Errorf("turn content = %q, want 'fresh question'", turns[0].Content)
+	if len(turns) != 2 || turns[0].Content != "ancient question" || turns[0].CreatedAt != "2020-01-01T00:00:00Z" {
+		t.Fatalf("turns = %+v, want the ancient turn kept, with its own time, before the fresh one", turns)
 	}
 }

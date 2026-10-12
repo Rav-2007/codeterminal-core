@@ -32,9 +32,15 @@ const memorySchemaVersion = 5
 // replays, so this bounds disk growth without touching what a user can see.
 const maxTurnsPerWorkspace = 1000
 
-// maxTurnAge defines the maximum age of retained conversation turns (30 days).
-// Turns older than this cutoff are pruned along with turns exceeding maxTurnsPerWorkspace.
-const maxTurnAge = 30 * 24 * time.Hour
+// THERE IS NO AGE LIMIT, and there was one: turns older than thirty days were
+// dropped on every append (maxTurnAge, 2026-07 to 2026-10-11). It contradicted
+// the paragraph above, and it did the damage that paragraph predicts, one turn
+// at a time and out of sight. A chat still in use lost its oldest turns from
+// here while the screen went on showing them, and the next /save then REPLACED
+// the saved copy with what was left -- MEASURED 2026-10-11: a 20-turn saved
+// chat, resumed forty days later, was a 2-turn chat after one question and one
+// save, and the 20-turn file was gone. A chat ends when its user ends it
+// (ctrl+n, /clear); until then the count cap above is the only bound.
 
 // MemoryStore is a per-user, cross-session store of conversation turns, one
 // conversation per workspace (see AppendTurn/LoadRecentTurns/ClearWorkspace).
@@ -308,32 +314,28 @@ func (s *MemoryStore) AppendTurn(ctx context.Context, workspace, role, content s
 	// daemon's counters hang off *Server, so a persistently failing prune is
 	// currently silent. Giving this a counter needs the store to reach the
 	// server's counters, which is a wider change than retention warrants here.
-	// Best‑effort pruning using the deterministic helper (protected workspaces not needed here).
-	_ = s.pruneWorkspace(ctx, workspace, time.Now())
+	_ = s.pruneWorkspace(ctx, workspace)
 	return nil
 }
 
-// pruneWorkspace drops everything older than maxTurnAge or beyond the newest maxTurnsPerWorkspace
-// turns for one workspace.
+// pruneWorkspace drops everything beyond the newest maxTurnsPerWorkspace turns
+// for one workspace. By count only, never by age -- see the note under
+// maxTurnsPerWorkspace.
 //
 // The subquery finds the id of the (max+1)th newest turn and deletes at or
-// below it, or any turn whose created_at precedes maxTurnAge. When the workspace
-// holds fewer than max+1 turns, the subquery yields NULL.
+// below it. When the workspace holds fewer than max+1 turns, the subquery
+// yields NULL and nothing is deleted.
 //
 // turns_fts needs no attention here: search.go's AFTER DELETE trigger
 // (turns_ad) removes the matching row, so the search index cannot drift out of
 // sync with what was pruned.
-func (s *MemoryStore) pruneWorkspace(ctx context.Context, workspace string, now time.Time) error {
-	cutoff := now.Add(-maxTurnAge).UTC().Format(time.RFC3339)
+func (s *MemoryStore) pruneWorkspace(ctx context.Context, workspace string) error {
 	_, err := s.db.ExecContext(ctx,
 		`DELETE FROM turns
 		   WHERE workspace = ?
-		     AND (
-		       id <= (SELECT id FROM turns WHERE workspace = ?
-		                 ORDER BY id DESC LIMIT 1 OFFSET ?)
-		       OR created_at < ?
-		     )`,
-		workspace, workspace, maxTurnsPerWorkspace, cutoff,
+		     AND id <= (SELECT id FROM turns WHERE workspace = ?
+		                   ORDER BY id DESC LIMIT 1 OFFSET ?)`,
+		workspace, workspace, maxTurnsPerWorkspace,
 	)
 	if err != nil {
 		return fmt.Errorf("pruning workspace history: %w", err)
@@ -419,11 +421,13 @@ func (s *MemoryStore) LoadAllTurns(ctx context.Context, workspace string) ([]sto
 // ReplaceWorkspace makes turns the workspace's whole conversation, in one
 // transaction -- how /history resume brings a saved chat back.
 //
-// THE TURNS ARE STAMPED WITH NOW, not the times they were first said.
-// pruneWorkspace drops turns older than maxTurnAge on every append, so a chat
-// resumed after a month would lose all of its old turns on its very first new
-// exchange. created_at is display-only (see turnsTableDDL); order is by id,
-// which insertion order preserves.
+// EACH TURN KEEPS THE TIME IT WAS FIRST SAID, so a resumed chat still says
+// when it happened (FOUND 2026-10-01: stamping them all with the moment of
+// resuming made the next save claim the chat had started then). That is safe
+// only because nothing prunes by age -- see the note under
+// maxTurnsPerWorkspace for what happened while something did. created_at is
+// display-only (see turnsTableDDL); order is by id, which insertion order
+// preserves.
 func (s *MemoryStore) ReplaceWorkspace(ctx context.Context, workspace string, turns []storedTurn) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

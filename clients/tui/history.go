@@ -189,6 +189,74 @@ func (m *chatModel) saveChat(name string) string {
 	return msg
 }
 
+// continuedChatNote is the line a launch opens on when it is CONTINUING a chat:
+// when the chat began, how much of it there is, how much of that is on screen,
+// and whether it is saved. "" when there is nothing to say (no chat, or no
+// daemon that can be asked).
+//
+// WHY IT IS SAID AT ALL. A launch shows the last few turns of the stored chat
+// and, until 2026-10-11, nothing else -- so a chat that had been going for
+// eleven days looked like the dozen turns on screen, and /save then wrote 116.
+// Nothing was hidden on purpose; the number simply had no place it was shown
+// before the moment it was too late to matter. A chat ends only when its user
+// ends it, so the user has to be able to see that one is still open.
+func (m *chatModel) continuedChatNote(shown int, now time.Time) string {
+	resp, err := sendHistory(m.clientName, protocol.HistoryRequest{
+		Action: protocol.HistoryList, Workspace: m.workspaceRoot, Spec: m.activeSpec,
+	})
+	if err != nil {
+		return ""
+	}
+	for _, e := range resp.Entries {
+		if e.Current {
+			return formatContinuedChat(e, shown, now)
+		}
+	}
+	return ""
+}
+
+func formatContinuedChat(e protocol.HistoryEntry, shown int, now time.Time) string {
+	var b strings.Builder
+	b.WriteString("continuing your chat")
+	if since := chatStarted(e.Started, now); since != "" {
+		b.WriteString(" from " + since)
+	}
+	fmt.Fprintf(&b, ": %d turns", e.Turns)
+	if shown < e.Turns {
+		fmt.Fprintf(&b, ", the last %d shown", shown)
+	}
+	b.WriteString("\n/clear starts a new chat")
+	switch {
+	case e.SavedAs != "" && !e.Unsaved:
+		b.WriteString(" · this one is saved")
+	case e.SavedAs != "":
+		b.WriteString(" · this one has changed since it was saved -- /save updates it")
+	default:
+		b.WriteString(" · this one is not saved -- /save keeps it")
+	}
+	return b.String()
+}
+
+// chatStarted is the day a chat began, as a launch says it: "earlier today",
+// "yesterday", or the date. "" when the daemon's time is not a time.
+func chatStarted(started string, now time.Time) string {
+	t, err := time.Parse(time.RFC3339Nano, started)
+	if err != nil {
+		return ""
+	}
+	t, now = t.Local(), now.Local()
+	day := func(x time.Time) time.Time { return time.Date(x.Year(), x.Month(), x.Day(), 0, 0, 0, 0, x.Location()) }
+	switch days := int(day(now).Sub(day(t)).Hours()/24 + 0.5); {
+	case days <= 0:
+		return "earlier today"
+	case days == 1:
+		return "yesterday"
+	case t.Year() != now.Year():
+		return t.Format("2 Jan 2006")
+	}
+	return t.Format("2 Jan")
+}
+
 // currentChatUnsaved asks the daemon whether the chat on screen holds anything
 // its saved copy does not. When the daemon cannot say, a chat with any question
 // in it counts as unsaved: warning once too often costs a keypress, warning
