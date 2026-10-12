@@ -121,11 +121,13 @@ type evalProviderRouting struct {
 }
 
 type evalRequest struct {
-	Model    string              `json:"model"`
-	Messages []evalMessage       `json:"messages"`
-	Tools    []evalTool          `json:"tools,omitempty"`
-	Stream   bool                `json:"stream"`
-	Provider evalProviderRouting `json:"provider"`
+	Model    string        `json:"model"`
+	Messages []evalMessage `json:"messages"`
+	Tools    []evalTool    `json:"tools,omitempty"`
+	Stream   bool          `json:"stream"`
+	// omitzero: a provider that is not OpenRouter is sent no routing at all,
+	// as the daemon sends it none (TestToolMenuSizeCurve, 2026-10-12).
+	Provider evalProviderRouting `json:"provider,omitzero"`
 }
 
 // evalChunk is the streaming response shape, including the tool_calls delta

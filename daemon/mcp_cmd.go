@@ -174,8 +174,8 @@ func writeToolReport(ctx context.Context, out, warn io.Writer, cfg *Config, regi
 	if dropped := registry.Dropped(); len(dropped) > 0 {
 		_, _ = fmt.Fprintf(out, "\n%d tool(s) were NOT offered because mcp.budget.max_advertised_tools is %d:\n  %s\n",
 			len(dropped), cfg.MCP.Budget.resolvedMaxAdvertisedTools(), strings.Join(dropped, "\n  "))
-		_, _ = fmt.Fprintln(out, "A wide tool menu measurably degrades the model's choice of tool "+
-			"(see docs/TOOLCALL_RELIABILITY_2026-07-31.md), which is why the cap exists.")
+		_, _ = fmt.Fprintln(out, "Every tool on the menu costs tokens on every request, and a wider menu made the model choose "+
+			"worse on a borderline request (docs/TOOL_MENU_SIZE_2026-08-01.md). Raise the number in the config to offer these.")
 	}
 
 	// The unconfined half, said plainly and once, rather than left implicit in

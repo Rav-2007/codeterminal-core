@@ -934,13 +934,13 @@ thing with no daemon running.)
   the answer is either "it started and offers N tools" or "saved, but it did
   not start", with the reason. It is live from your next question: no restart.
 - **Its tools ask before every call**, like any tool with no policy listed.
-- **The model is shown at most 12 tools at a time**
+- **The model is shown at most 24 tools at a time**
   (`mcp.budget.max_advertised_tools`), and the daemon's own come first. With
-  `models.agent.json` as shipped those take 11 of the 12, so a server you add
-  gets one place until you raise that number in the config and restart. The
-  add tells you how many of its tools will actually reach the model, and
+  `models.agent.json` as shipped those take 11, so the servers you add share
+  13 places (until 2026-10-12 the limit was 12, which left them one). The add
+  tells you how many of a server's tools will actually reach the model, and
   `/mcp-server` lists the ones left out. Each tool on the menu costs tokens on
-  every request, which is why there is a limit.
+  every request, and a wider menu measured slightly worse on a borderline one.
 - **`--env` takes a variable's NAME**, passed through from the daemon's
   environment — export it, or put it in `.env`, before starting Mochiii. A
   `NAME=value` on the line is refused and kept out of the transcript; the
@@ -1006,7 +1006,7 @@ Per-turn budgets, all configurable, shown here at their defaults:
   "turn_timeout_seconds": 600,     // MACHINE time; your thinking time is added back
   "max_tool_result_bytes": 32768,  // per result, after scrubbing
   "max_total_tool_bytes": 131072,  // per turn, after scrubbing (models.agent.json ships 524288)
-  "max_advertised_tools": 12,      // cap on the menu the model sees
+  "max_advertised_tools": 24,      // cap on the menu the model sees
   "spend": {                       // across turns: see /budget
     "session_tokens": 3000000, "session_usd": 1.00,
     "day_tokens": 15000000,    "day_usd": 5.00

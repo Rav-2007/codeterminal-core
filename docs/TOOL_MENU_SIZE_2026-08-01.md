@@ -134,3 +134,75 @@ reading 100% against a constant offset. That is fine for the question asked here
 
 If the fixture is ever revised, the prompt or the `run_tests` description is the
 thing to change — and the same eval re-run is how you would know it worked.
+
+---
+
+## Past 12 — measured 2026-10-12
+
+**Answer: not flat any more. A menu of 24 or 32 cost nothing on a clear request
+and something on the one borderline prompt. The default moved 12 → 24 by the
+owner's decision, with that cost on record.**
+
+### Why it was measured
+
+At 12 the cap had become a wall. `models.agent.json` as shipped offers 11 tools
+of the daemon's own, and those come first, so a server added with
+`/mcp-server add` got **one** tool on the menu — the first alphabetically —
+whatever it offered. Seen in the real client the same day: a server offering
+four tools, one of them shown to the model.
+
+### The result
+
+`nvidia/nemotron-3-super-120b-a12b` through NVIDIA's API, no provider routing
+(that field is OpenRouter's), the same seven prompts × 5 trials at each size.
+105 completed trials, **zero** transport errors, **zero** timeouts, no trial
+without a tool call.
+
+| menu size | selection accuracy | n | the `tests` prompt | the other six | tool JSON per request |
+|---|---|---|---|---|---|
+| 12 | **100%** (35/35) | 35 | 5/5 | 30/30 | 3,649 B |
+| 24 | **94.3%** (33/35) | 35 | 3/5 | 30/30 | 6,976 B |
+| 32 | **91.4%** (32/35) | 35 | 2/5 | 30/30 | 9,111 B |
+
+```
+menu=12: none
+menu=24: run_tests -> list_directory   x2
+menu=32: run_tests -> list_directory   x3
+```
+
+12 and 32 ran in one invocation, 24 in a second one minutes later.
+
+### How to read it
+
+- **Every miss is the prompt this document already names** — "Please run the
+  editapply test suite" choosing `list_directory`. On deepseek-v4-flash it lost
+  four or five times of five at every size, 5 included. On this model it is
+  right at 12 and loses more as the menu widens.
+- **That is a trend at five trials a cell**: 0, 2 and 3 misses of 5. It points
+  one way and it is not proof. What the data does support is narrower: across
+  both models and every size, a prompt with one defensible answer was never
+  got wrong because the menu was wide (90/90 here).
+- **Distractors 8 to 27 are new.** The first seven are unchanged, so sizes up to
+  12 are the menus measured in August. The twenty added are what the servers
+  people add advertise: a repository host, file management, a browser, a
+  database, containers, chat, notes.
+- **The model is different from August's**, because the key is: the stored key
+  is NVIDIA's, and the August model is not served to it. `z-ai/glm-5.3`, the
+  default the daemon had chosen for that key, was tried first and abandoned at
+  about 55 seconds a call (two 90-second timeouts, then roughly ten calls in
+  nine minutes); those calls are not in the table.
+
+### The decision
+
+The owner was shown the table and chose **24**: thirteen places for added
+servers, for the smaller of the two measured costs. Only someone who has added
+a server sees a wider menu — eleven tools fit under either number — so the cost
+is paid by the person who asked for more tools, and `/mcp-server add` says how
+many of a server's tools will reach the model.
+
+A long task's separate cap of 16 now equals the ordinary default: left at 16 it
+would have taken an added server's tools away in exactly the turns that run
+longest.
+
+Not measured: anything between 33 and the ceiling of 64; more than one model at
+these sizes; and the token cost in tokens rather than bytes.

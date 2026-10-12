@@ -523,39 +523,39 @@ const (
 // than honoured silently or rejected outright.
 //
 // defaultMaxAdvertisedTools is the one number here that came from a
-// measurement rather than a judgement, and it has now been measured twice --
-// the second time contradicting what the first was read to imply.
+// measurement rather than a judgement, and it has been measured three times.
 //
-// THE HISTORY MATTERS, because both readings were reasonable and one was wrong.
+// THE HISTORY MATTERS, because each reading was reasonable when it was made.
 // The Phase 0 tool-calling eval (docs/TOOLCALL_RELIABILITY_2026-07-31.md) found
 // selection accuracy falling from 100% with one tool on the menu to 85.7% with
-// FIVE, and had measured nothing wider. Earlier on 2026-08-01 this default moved
-// 12 -> 5 on that basis: set it to the widest menu anyone had numbers for, since
-// past that we would be guessing.
+// FIVE and had measured nothing wider, so on 2026-08-01 this default moved
+// 12 -> 5. The curve was then measured to 12 on deepseek-v4-flash
+// (docs/TOOL_MENU_SIZE_2026-08-01.md): 88.6% at 5, 85.7% at 8 and at 12, every
+// failure the SAME confusion -- "run the editapply test suite" selecting
+// list_directory over run_tests -- and 30/30 at each size without that prompt.
+// Flat, so the number went back to 12.
 //
-// The guess has since been replaced by a measurement
-// (docs/TOOL_MENU_SIZE_2026-08-01.md, 105 trials, zero transport errors):
+// MEASURED PAST 12 ON 2026-10-12, because 12 had become a wall: the shipped
+// agent config's own tools take 11 places, so a server a user added with
+// /mcp-server got ONE tool on the menu. Same seven prompts, five trials a size,
+// on nvidia/nemotron-3-super-120b-a12b (same doc, "Past 12"):
 //
-//	menu  5  ->  88.6%
-//	menu  8  ->  85.7%
-//	menu 12  ->  85.7%
+//	menu 12  ->  100%   (35/35)
+//	menu 24  ->  94.3%  (33/35)
+//	menu 32  ->  91.4%  (32/35)
 //
-// Flat. The whole spread is one trial at n=35. And every failure at every size
-// is the SAME confusion -- "run the editapply test suite" selecting
-// list_directory over run_tests, 14 times out of 15 -- so excluding that one
-// prompt the score is 30/30 at 5, at 8 and at 12. There is no menu-size effect
-// in this data; there is one tool description that loses to another, which would
-// lose just as badly on a two-tool menu.
+// Every miss is that same one prompt again -- 5/5, 3/5 and 2/5 right -- and the
+// other six are 30/30 at every size. So a wider menu cost nothing on a clear
+// request and something on a borderline one, at five trials a cell. The owner
+// was shown these numbers and chose 24: thirteen places for added servers.
+// Whoever has added no server sees no wider menu; eleven tools fit either way.
 //
-// So the number goes back to 12, because the sentence that justified 5 is no
-// longer true.
-//
-// WHAT STILL JUSTIFIES A CAP is token cost, not accuracy. Every advertised
-// tool's full JSON schema rides on every request of every iteration: 12 tools is
-// 3,445 bytes of tool JSON against 5 tools' 1,626, which the user pays for on
-// every iteration of every turn. Wire bytes are not tokens and that ratio is not
-// measured, so this is a direction rather than a magnitude -- which is exactly
-// why the cap stays a config knob the user can lower.
+// THE OTHER COST is tokens. Every advertised tool's full JSON schema rides on
+// every request of every iteration: in that eval 12 tools is 3,649 bytes of tool
+// JSON, 24 is 6,976 and 32 is 9,111, which the user pays for on every iteration
+// of every turn. Wire bytes are not tokens and that ratio is not measured, so
+// this is a direction rather than a magnitude -- which is exactly why the cap
+// stays a config knob the user can lower.
 //
 // Truncation remains reported as a protocol.DegradedToolMenuTruncated rather
 // than being indistinguishable from a server that never offered the tool.
@@ -574,7 +574,7 @@ const (
 	maxMaxToolResultBytes     = 1024 * 1024
 	defaultMaxTotalToolBytes  = 128 * 1024
 	maxMaxTotalToolBytes      = 4 * 1024 * 1024
-	defaultMaxAdvertisedTools = 12
+	defaultMaxAdvertisedTools = 24
 	maxMaxAdvertisedTools     = 64
 	// Well above an honest turn at the shipped agent budget -- sixteen steps
 	// that each read something add up to roughly 350,000 -- and well below
@@ -683,13 +683,13 @@ func (b MCPBudgetConfig) resolvedMaxAdvertisedTools() int {
 }
 
 // defaultTaskMaxAdvertisedTools is a long task's menu cap when the user set
-// none. The cap's remaining reason is token cost (see the note on
-// defaultMaxAdvertisedTools: accuracy measured flat from 5 to 12), and a long
-// task's tool list sits in the opening every one of its segments shares, which
-// the provider bills at its cache price after the first call. Its own tools
-// -- the plan, findings, the gate, grep, history -- would otherwise push the
-// edit and test tools off a menu of 12.
-const defaultTaskMaxAdvertisedTools = 16
+// none. It was 16 while the ordinary default was 12: a long task's own tools
+// -- the plan, findings, the gate, grep, history -- would otherwise have pushed
+// the edit and test tools off a menu of 12. Since 2026-10-12 the ordinary
+// default is 24 and holds them all, so a long task takes the same number: a
+// server the user added must not lose its places because the turn is a long
+// one. Its tool list is billed at the provider's cache price after one call.
+const defaultTaskMaxAdvertisedTools = defaultMaxAdvertisedTools
 
 // resolvedMaxAdvertisedToolsFor is the cap for a turn in mode: the user's own
 // setting whenever they made one, then the mode's default.
