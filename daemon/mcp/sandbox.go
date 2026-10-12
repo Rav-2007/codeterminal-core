@@ -640,11 +640,14 @@ func WrapCommand(command string, args []string, cfg SandboxConfig) (string, []st
 		}
 
 		// The toolchain itself, read-only, when it lives outside the system
-		// directories above. Added BEFORE the workspace bind: bwrap applies
-		// binds in order, so a root that happens to contain the workspace must
-		// not be mounted over it afterwards.
-		if root := toolchainRoot(command); root != "" && !coveredBy(root, systemMounts) && !coveredBy(cleanWs, []string{root}) {
-			bwrapArgs = append(bwrapArgs, "--ro-bind", root, root)
+		// directories above -- its install dir(s), never a credential-bearing
+		// parent (toolchainExposure). Added BEFORE the workspace bind: bwrap
+		// applies binds in order, so a dir that happens to contain the workspace
+		// must not be mounted over it afterwards.
+		for _, dir := range toolchainExposure(command) {
+			if !coveredBy(dir, systemMounts) && !coveredBy(cleanWs, []string{dir}) {
+				bwrapArgs = append(bwrapArgs, "--ro-bind", dir, dir)
+			}
 		}
 
 		// Workspace bind mount confinement
@@ -794,43 +797,174 @@ func WrapCommand(command string, args []string, cfg SandboxConfig) (string, []st
 	}
 }
 
-// toolchainRoot returns the directory that must be readable inside the
-// namespace for `command` to run at all, or "" if it cannot be determined.
+// toolchainExposure returns the directories that must be readable inside the
+// sandbox for `command` to run, EXCLUDING any directory broad enough to hold
+// the user's credentials. Replaces the single-directory toolchainRoot.
 //
-// FOUND BY RUNNING THE TOOL, not by reading it. sandbox_exec accepts exactly
-// go, npm, make and cargo, and the only one of those that reliably lives in a
-// system directory is make. The others are normally installed per-user:
+// FOUND BY RUNNING THE TOOL. sandbox_exec accepts go, npm, make and cargo, each
+// normally installed per-user:
 //
-//	go     golang.org tarball -> ~/.local/go or /usr/local/go
-//	npm    nvm                -> ~/.nvm/versions/node/<v>
-//	cargo  rustup             -> ~/.cargo
+//	go     golang.org tarball -> ~/.local/go or /usr/local/go   (GOROOT: lib, pkg)
+//	npm    nvm                -> ~/.nvm/versions/node/<v>        (bin/node + lib/node_modules)
+//	cargo  rustup             -> ~/.cargo/bin + ~/.rustup        (NOT ~/.cargo: credentials.toml)
+//	make   system             -> /usr/bin                        (covered by sandboxSystemPaths)
 //
-// None of those paths is bound, and HOME is not bound either, so bwrap answered
-// every one of them with "execvp go: No such file or directory" -- the sandbox
-// could run precisely the one command of the four that needed it least. The end
-// to end test did not catch it because it used `make`.
+// The install root is normally the parent of the bin/ the binary sits in, and
+// exposing it whole is right for go and npm -- their support files (GOROOT's
+// lib/pkg, nvm's node and lib/node_modules) live there and nothing secret does.
+// But that root can be CREDENTIAL-BEARING: ~/.cargo holds credentials.toml (a
+// crates.io token), and a toolchain binary dropped in a generic ~/.local/bin or
+// ~/bin makes the root ~/.local or the home itself -- which would hand the OS
+// keyring, Mochiii's own state and the SSH keys beside it to code the sandbox
+// runs (OPEN_ITEMS item 45). For such a root only the bin directory and the
+// toolchain's separate support dir (cargo's ~/.rustup) are exposed, never the
+// credential-bearing directory itself.
 //
-// The rule is the toolchain layout every one of these follows: the binary sits
-// in <root>/bin, and <root> is what has to be readable (GOROOT's lib and pkg,
-// nvm's lib/node_modules). A binary NOT in a bin directory gets its own
-// directory instead. Symlinks are resolved first, because ~/.local/bin/go
-// pointing into ~/.local/go would otherwise bind the wrong tree.
-func toolchainRoot(command string) string {
-	resolved, err := lookPath(command)
+// BOTH the path as found on PATH and its symlink-resolved target are weighed,
+// because the two layouts pull opposite ways. nvm's `npm` is a symlink INTO
+// lib/node_modules/npm, so resolving alone lands in npm's package dir and loses
+// `node`; the PATH location's parent is the version directory that holds both. A
+// ~/.local/bin/go symlink into ~/.local/go is the reverse, where only the
+// resolved target is the real GOROOT. The union of both, each guarded and
+// cover-reduced, serves either layout without breaking the other.
+func toolchainExposure(command string) []string {
+	found, err := lookPath(command)
 	if err != nil {
+		return nil
+	}
+	abs := found
+	if a, err := filepath.Abs(found); err == nil {
+		abs = a
+	}
+	locations := []string{abs}
+	if real, err := filepath.EvalSymlinks(abs); err == nil && real != abs {
+		locations = append(locations, real)
+	}
+	var dirs []string
+	for _, bin := range locations {
+		dirs = append(dirs, exposureForBinary(bin)...)
+	}
+	return dedupAndCoverReduce(dirs)
+}
+
+// exposureForBinary returns the directories to expose for one binary location:
+// the install root when it is safe, or the bin directory plus the toolchain's
+// separate support dir when that root is credential-bearing.
+func exposureForBinary(bin string) []string {
+	binDir := filepath.Dir(bin)
+	root := binDir
+	if filepath.Base(binDir) == "bin" {
+		// Strip the bin/ to reach the install root (GOROOT, the nvm version dir),
+		// but NEVER promote to the filesystem root: a binary in /bin or /sbin
+		// would otherwise make the root "/" and expose everything. /bin stays
+		// /bin, which the system-path guard at the call site then skips as
+		// already covered. A per-user toolchain root is never "/".
+		if parent := filepath.Dir(binDir); parent != "/" && parent != "." {
+			root = parent
+		}
+	}
+	if !credentialBearingDir(root) {
+		return []string{root}
+	}
+	return append([]string{binDir}, toolchainSupportDirs(root)...)
+}
+
+// credentialBearingDir reports whether dir is broad enough to hold the user's
+// credentials, so exposing it whole to the sandbox would leak them. True for the
+// home directory itself, the well-known per-user roots that hold tokens and
+// keyrings (~/.local, ~/.config, ~/.cache, ~/.cargo), and any directory with a
+// credential file sitting directly in it (cargo's credentials.toml, a .netrc).
+// A specific install directory UNDER one of those -- ~/.local/go, ~/.cargo/bin,
+// ~/.nvm/versions/node/<v> -- is not credential-bearing and stays exposable.
+func credentialBearingDir(dir string) bool {
+	if home := resolvedHome(); home != "" {
+		clean := dir
+		if real, err := filepath.EvalSymlinks(dir); err == nil {
+			clean = real
+		}
+		if clean == home {
+			return true
+		}
+		for _, rel := range []string{".local", ".config", ".cache", ".cargo"} {
+			if clean == filepath.Join(home, rel) {
+				return true
+			}
+		}
+	}
+	for _, marker := range []string{"credentials.toml", "credentials.json", "credentials", ".netrc", ".git-credentials"} {
+		if _, err := os.Stat(filepath.Join(dir, marker)); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// toolchainSupportDirs returns a toolchain's support directory that lives
+// OUTSIDE its (credential-bearing) install root. Only rustup needs one: cargo's
+// toolchains live under ~/.rustup (RUSTUP_HOME), not ~/.cargo, so narrowing
+// ~/.cargo away from the sandbox must still grant ~/.rustup or cargo cannot find
+// a toolchain to build with.
+func toolchainSupportDirs(root string) []string {
+	home := resolvedHome()
+	if home == "" || root != filepath.Join(home, ".cargo") {
+		return nil
+	}
+	rustup := strings.TrimSpace(os.Getenv("RUSTUP_HOME"))
+	if rustup == "" {
+		rustup = filepath.Join(home, ".rustup")
+	}
+	// Stat-guarded: binding a non-existent path fails the whole invocation, and
+	// ~/.rustup may be absent on a cargo-but-not-rustup install. The main
+	// toolchain roots are the parent of a real binary, so they always exist and
+	// are not stat-checked (fake-path unit tests rely on that).
+	if st, err := os.Stat(rustup); err != nil || !st.IsDir() {
+		return nil
+	}
+	return []string{rustup}
+}
+
+// resolvedHome is the user's home directory with symlinks resolved, or "" when
+// it cannot be determined. Resolved so a comparison against a resolved toolchain
+// path does not miss on a /home -> /var/home symlink.
+func resolvedHome() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
 		return ""
 	}
-	if abs, err := filepath.Abs(resolved); err == nil {
-		resolved = abs
+	if real, err := filepath.EvalSymlinks(home); err == nil {
+		return real
 	}
-	if real, err := filepath.EvalSymlinks(resolved); err == nil {
-		resolved = real
+	return home
+}
+
+// dedupAndCoverReduce de-duplicates and drops entries already inside another
+// entry, so the nvm version dir and the npm package dir under it are not both
+// exposed. It does NOT check existence: the roots come from a real binary's
+// location and always exist, and the fake-path unit tests rely on that; the one
+// path that can be absent (~/.rustup) is stat-guarded in toolchainSupportDirs.
+func dedupAndCoverReduce(dirs []string) []string {
+	seen := map[string]bool{}
+	var kept []string
+	for _, d := range dirs {
+		if d != "" && !seen[d] {
+			seen[d] = true
+			kept = append(kept, d)
+		}
 	}
-	dir := filepath.Dir(resolved)
-	if filepath.Base(dir) == "bin" {
-		dir = filepath.Dir(dir)
+	var out []string
+	for _, d := range kept {
+		covered := false
+		for _, other := range kept {
+			if other != d && coveredBy(d, []string{other}) {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			out = append(out, d)
+		}
 	}
-	return dir
+	return out
 }
 
 // coveredBy reports whether path is already inside one of the given mounts, so

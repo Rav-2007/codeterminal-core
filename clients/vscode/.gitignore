@@ -13,3 +13,5 @@ daemon/
 # LICENSE. Tracking it would create a second copy of the licence that can drift
 # from the real one -- the root file is the single source of truth.
 LICENSE
+# Same for the third-party notices (root THIRD_PARTY_LICENSES.txt).
+THIRD_PARTY_LICENSES.txt

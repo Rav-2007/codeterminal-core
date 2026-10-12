@@ -45,6 +45,13 @@ const (
 	KeySourceStored = "stored"
 	// KeySourceEnvironment: MOCHIII_API_KEY in the daemon's own environment.
 	KeySourceEnvironment = "environment"
+	// KeySourceLauncher: handed to the daemon on stdin by the program that
+	// started it -- the editor, from its own secret store
+	// (--credentials-from-stdin). It is in no file this daemon reads, so it is
+	// not "stored", and a model chosen beside it is not remembered. Added when
+	// this was merged with the launch credential (2026-10-12): until then such
+	// a key was reported as stored, which named a file that did not hold it.
+	KeySourceLauncher = "launcher"
 	// KeySourceProxy: proxy mode. The daemon holds a proxy credential and no
 	// provider key.
 	KeySourceProxy = "proxy"

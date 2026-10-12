@@ -4,7 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { runMCPServerList } from '../../mcpServerList';
-import { DAEMON_BIN_ENV, daemonBinaryName, resolveDaemonBin } from '../../daemonBinary';
+import { DAEMON_BIN_ENV, daemonBinaryName, resolveConfigPathSetting, resolveDaemonBin } from '../../daemonBinary';
 
 // AN EXECUTABLE PATH IS NEVER DERIVED FROM WORKSPACE CONTENT.
 //
@@ -86,7 +86,9 @@ suite('daemon binary resolution — workspace content is never executable', () =
 
     plantHostileDaemon(workspace, sentinel);
 
-    const out = await runMCPServerList(workspace, extensionPath);
+    // '' is what a workspace can ever cause: mochiii.configPath is machine-
+    // scoped, so a repository cannot set it.
+    const out = await runMCPServerList(workspace, extensionPath, '');
 
     assert.ok(
       !fs.existsSync(sentinel),
@@ -139,7 +141,10 @@ suite('daemon binary resolution — workspace content is never executable', () =
       fs.chmodSync(installed, 0o755);
     }
 
-    const out = await runMCPServerList(workspace, extensionPath);
+    // '' because the hostile input here is the WORKSPACE, and a workspace
+    // cannot set the machine-scoped mochiii.configPath that supplies this
+    // argument. So this models exactly what a repository can cause.
+    const out = await runMCPServerList(workspace, extensionPath, '');
 
     // The invariant is precise, and worth stating precisely: no workspace path
     // may be used as a source of CODE OR CONFIGURATION.
@@ -150,7 +155,12 @@ suite('daemon binary resolution — workspace content is never executable', () =
     // argv" at all and failed on that flag: the test was too broad, not the fix.
     // Asserting the wrong invariant would have forced a real capability out of
     // the product to make a test green.
-    assert.ok(!out.includes('--config'), `--config must not be passed at all; argv was: ${out}`);
+    //
+    // --config CAN now be passed -- from the machine-scoped mochiii.configPath,
+    // which a workspace cannot set -- so the invariant is "no WORKSPACE config",
+    // not "no --config ever". With configPath '' (all a repository can cause),
+    // none is passed, which is what this asserts.
+    assert.ok(!out.includes('--config'), `no --config may be passed for a workspace-supplied config; argv was: ${out}`);
     assert.ok(
       !out.includes(path.join(workspace, 'models.json')),
       'a workspace-supplied models.json reached the daemon. `mcp list` STARTS the servers a ' +
@@ -237,5 +247,49 @@ suite('daemon binary resolution — workspace content is never executable', () =
       resolved === undefined || !resolved.startsWith(path.join(extensionPath, 'daemon', daemonBinaryName())),
       `resolver returned a directory: ${resolved}`,
     );
+  });
+});
+
+// mochiii.configPath -> --config. The capability added when the extension
+// learned to start the daemon in agent mode. Safe only because the value is
+// absolute (a relative --config resolves against the daemon's cwd, the
+// workspace) and machine-scoped (a workspace cannot set it). resolveConfigPathSetting
+// enforces the first; VS Code the second (pinned in localCommandsHostile.test.ts).
+suite('mochiii.configPath resolves to an absolute --config', () => {
+  test('an absolute path passes through', () => {
+    assert.strictEqual(resolveConfigPathSetting('/etc/mochiii/models.json').path, '/etc/mochiii/models.json');
+  });
+  test('~ expands to the home directory', () => {
+    assert.strictEqual(resolveConfigPathSetting('~/cfg/models.json').path, path.join(os.homedir(), 'cfg', 'models.json'));
+  });
+  test('empty or whitespace yields nothing to pass', () => {
+    assert.deepStrictEqual(resolveConfigPathSetting(''), {});
+    assert.deepStrictEqual(resolveConfigPathSetting('   '), {});
+    assert.deepStrictEqual(resolveConfigPathSetting(undefined), {});
+  });
+  test('a relative path is refused, not resolved against the cwd', () => {
+    const r = resolveConfigPathSetting('models.json');
+    assert.strictEqual(r.path, undefined, 'a relative config path must not be passed');
+    assert.ok(r.warning && /absolute/.test(r.warning), `expected an absolute-path warning, got: ${r.warning}`);
+  });
+
+  // The other half of the invariant: when a path IS supplied, /mcp-server must
+  // actually pass it, or the listing would describe a different config than the
+  // daemon loaded -- the drift this fixed.
+  test('a supplied configPath reaches the daemon as --config', async () => {
+    const extensionPath = makeTempDir('ct-cfg-ok-ext-');
+    const dir = path.join(extensionPath, 'daemon');
+    fs.mkdirSync(dir, { recursive: true });
+    const installed = path.join(dir, daemonBinaryName());
+    if (process.platform === 'win32') {
+      fs.writeFileSync(installed, '@echo off\r\necho ARGV %*\r\n');
+    } else {
+      fs.writeFileSync(installed, '#!/bin/sh\necho "ARGV $@"\n');
+      fs.chmodSync(installed, 0o755);
+    }
+    const chosen = path.join(makeTempDir('ct-cfg-user-'), 'models.json');
+    const out = await runMCPServerList(makeTempDir('ct-cfg-ws2-'), extensionPath, chosen);
+    assert.ok(out.includes('--config'), `--config was not passed; argv was: ${out}`);
+    assert.ok(out.includes(chosen), `the chosen config path was not passed; argv was: ${out}`);
   });
 });

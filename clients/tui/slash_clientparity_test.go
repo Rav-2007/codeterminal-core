@@ -255,6 +255,10 @@ var summaryMayDiffer = map[string]string{
 		"runs `mcp list` from its packaged daemon, where that binary's own " +
 		"config is the right one, and has no add -- so its summary must not " +
 		"advertise one",
+	"compact": "the TUI's /compact still keeps the last 8 turns of its own transcript and asks " +
+		"the daemon for nothing. The extension's summarises through the daemon (9eb2bc5), and " +
+		"e6c1c83 copied its summary here without the behaviour -- so until the TUI drives that " +
+		"same compact, its summary says what it does (merge of 2026-10-12)",
 	"clear": "the TUI's /clear starts a new chat, on the daemon too (2026-10-11): " +
 		"emptying only the screen left the stored chat behind, and /save wrote " +
 		"it. The extension's still empties only its panel and sends no reset -- " +

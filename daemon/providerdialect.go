@@ -48,6 +48,9 @@ type requestDialect struct {
 	// maxTokens overrides the tier's cap once a provider has refused it as too
 	// large. Zero means the tier's own.
 	maxTokens int
+	// noReasoningEffort stops sending reasoning_effort once a provider has
+	// refused it for this model; the turn then runs at the model's default.
+	noReasoningEffort bool
 }
 
 const (
@@ -105,6 +108,10 @@ type plainChatRequest struct {
 	StreamOptions       *streamOptions `json:"stream_options,omitempty"`
 	MaxTokens           int            `json:"max_tokens,omitempty"`
 	MaxCompletionTokens int            `json:"max_completion_tokens,omitempty"`
+	// ReasoningEffort is the OpenAI-defined top-level field, not OpenRouter's
+	// "reasoning" object: Groq and OpenAI read this one. Sent only when a tier or
+	// the turn asks for an effort, so a request without one is unchanged.
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
 // outputCap is the cap this dialect sends for a tier whose own cap is tierCap.
@@ -134,6 +141,9 @@ func (d requestDialect) body(model string, messages []chatMessage, tools []toolS
 		})
 	}
 	req := plainChatRequest{Model: model, Messages: messages, Tools: tools, Stream: true}
+	if !d.noReasoningEffort {
+		req.ReasoningEffort = routing.reasoningEffort
+	}
 	if d.streamOptions {
 		req.StreamOptions = &streamOptions{IncludeUsage: true}
 	}
@@ -198,6 +208,12 @@ func (d requestDialect) adapt(status int, body string, tierCap int) (requestDial
 	}
 	if d.streamOptions && strings.Contains(lower, "stream_options") {
 		d.streamOptions = false
+		return d, true
+	}
+	// "`reasoning_effort` must be one of ..." or "Extra inputs are not
+	// permitted: reasoning_effort". The effort is a preference; the answer is not.
+	if !d.noReasoningEffort && (strings.Contains(lower, "reasoning_effort") || strings.Contains(lower, "reasoning effort")) {
+		d.noReasoningEffort = true
 		return d, true
 	}
 	if d.maxTokensField != "" && (containsAny(lower, outputLimitPhrases) || containsAny(lower, contextLengthPhrases)) {

@@ -97,6 +97,24 @@ var notChatWords = map[string]bool{
 	"image": true, "imagen": true, "dall": true, "sora": true, "veo": true, "video": true,
 	"clip": true, "nvclip": true, "parse": true, "detector": true, "translate": true,
 	"reward": true, "calibration": true, "deplot": true, "babbage": true, "davinci": true,
+	// Whole-token matching means "guard" does not catch "safeguard", and a TTS
+	// family named for itself carries no "tts" token. Both measured on Groq
+	// 2026-10-06, where they were offered by /model and chosen by a user:
+	// openai/gpt-oss-safeguard-20b (a safety classifier) and
+	// canopylabs/orpheus-v1-english / orpheus-arabic-saudi (speech).
+	"safeguard": true, "orpheus": true,
+}
+
+// holdsAConversation reports whether a model id names a chat model, by the
+// words in it (notChatWords). A heuristic, used where nothing better exists:
+// a provider's list rarely says what each model is for.
+func holdsAConversation(id string) bool {
+	for _, word := range modelTokens(id) {
+		if notChatWords[word] {
+			return false
+		}
+	}
+	return true
 }
 
 // chatTypes are the Type values that mean "a conversation model".
@@ -108,16 +126,10 @@ var chatTypes = map[string]bool{"": true, "chat": true, "language": true, "text"
 func chatModelIDs(models []listedModel) []string {
 	seen := map[string]bool{}
 	var ids []string
-next:
 	for _, m := range models {
 		id := strings.TrimPrefix(strings.TrimSpace(m.ID), "models/")
-		if id == "" || seen[id] || !chatTypes[strings.ToLower(m.Type)] || !plainModelID(id) {
+		if id == "" || seen[id] || !chatTypes[strings.ToLower(m.Type)] || !plainModelID(id) || !holdsAConversation(id) {
 			continue
-		}
-		for _, word := range modelTokens(id) {
-			if notChatWords[word] {
-				continue next
-			}
 		}
 		seen[id] = true
 		ids = append(ids, id)
@@ -365,6 +377,14 @@ func providerTierConfig(cfg *Config, providerName string, models, quiet []string
 	out.Tiers = make(map[string]ModelTier, len(models)+1)
 	note := providerTierNote(providerName)
 	for _, id := range models {
+		// The same filter connect applies, again here, because this also runs on
+		// a list STORED by an older connect: credentials.json written before a
+		// word was added to notChatWords still holds that model. Re-filtering at
+		// load drops it without asking the user to connect again. The default is
+		// exempt -- it answered a real request when the key was connected.
+		if id != defaultModel && !holdsAConversation(id) {
+			continue
+		}
 		out.Tiers[id] = ModelTier{Slug: id, Active: true, Note: note}
 	}
 	// LISTED IS NOT THE SAME AS SERVED. Measured 2026-10-05 with a real NVIDIA

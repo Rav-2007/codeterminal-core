@@ -186,12 +186,14 @@ func landlockPolicyFor(command string, cfg SandboxConfig) landlockPolicy {
 		}
 	}
 	ws := filepath.Clean(cfg.WorkspaceRoot)
-	// The same condition the bwrap backend binds the toolchain under, for the
-	// same reason: a toolchain root that CONTAINS the workspace is a home
-	// directory or wider, and granting it would grant everything beside the
-	// workspace too.
-	if root := toolchainRoot(command); root != "" && !coveredBy(root, sandboxSystemPaths) && !coveredBy(ws, []string{root}) {
-		p.add(accessReadExec, root)
+	// The same exposure the bwrap backend grants the toolchain, for the same
+	// reason, and with the same credential-bearing-root narrowing
+	// (toolchainExposure): a dir that CONTAINS the workspace is a home directory
+	// or wider, and granting it would grant everything beside the workspace too.
+	for _, dir := range toolchainExposure(command) {
+		if !coveredBy(dir, sandboxSystemPaths) && !coveredBy(ws, []string{dir}) {
+			p.add(accessReadExec, dir)
+		}
 	}
 	p.add(accessRead, "/proc")
 	for _, dev := range []string{"/dev/null", "/dev/zero", "/dev/full"} {

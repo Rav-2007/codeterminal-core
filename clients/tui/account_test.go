@@ -139,6 +139,18 @@ func TestAccountSaysWhereTheKeyComesFrom(t *testing.T) {
 			want:    []string{"...env1", "from MOCHIII_API_KEY in the daemon's environment", "a stored key (...3f2a (73 characters)) is not the one in use"},
 			notWant: []string{"stored on this machine", "(remembered)"},
 		},
+		// A daemon the editor started, with the key from the editor's own store:
+		// that key is in no file here, and saying "stored on this machine" named
+		// a file that did not hold it (the merge with the launch credential,
+		// 2026-10-12).
+		"handed over by the launcher, with another key stored": {
+			resp: in(func(r *protocol.ConnectResponse) {
+				r.KeySource, r.InUse, r.EnvOverride = protocol.KeySourceLauncher, false, true
+				r.ActiveMaskedKey, r.MaskedKey, r.ModelSaved = "...lnch (51 characters)", "...3f2a (73 characters)", false
+			}),
+			want:    []string{"...lnch", "handed over by the program that started the daemon", "a stored key (...3f2a (73 characters)) is not the one in use"},
+			notWant: []string{"stored on this machine", "MOCHIII_API_KEY", "(remembered)"},
+		},
 		"proxy": {
 			resp: in(func(r *protocol.ConnectResponse) {
 				r.KeySource, r.InUse, r.ActiveMaskedKey, r.MaskedKey = protocol.KeySourceProxy, false, "", "(none)"

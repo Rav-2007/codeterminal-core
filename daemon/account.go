@@ -68,6 +68,11 @@ func keySourceOf(key string) string {
 		return protocol.KeySourceProxy
 	case strings.TrimSpace(os.Getenv("MOCHIII_API_KEY")) != "":
 		return protocol.KeySourceEnvironment
+	case launchKeySupplied.Load() && strings.TrimSpace(key) != "":
+		// The launcher's key takes the stored slot and the file is then not
+		// consulted (launchcred.go), so "stored" would name a file that does
+		// not hold the key in force.
+		return protocol.KeySourceLauncher
 	case strings.TrimSpace(key) != "":
 		return protocol.KeySourceStored
 	default:

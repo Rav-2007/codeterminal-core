@@ -92,6 +92,53 @@ func TestShowNamesTheEnvironmentWhenItsKeyIsTheOneInForce(t *testing.T) {
 	}
 }
 
+// A KEY HANDED OVER ON STDIN IS NOT "STORED". The launcher's key takes the
+// stored slot and credentials.json is then not read (launchcred.go), so naming
+// that file as where the key lives would be wrong, and so would calling a model
+// choice "remembered": at the next start the file is not consulted at all.
+// Both were true of this code until it met the launch credential (merged
+// 2026-10-12): keySourceOf knew three sources and this was none of them.
+//
+// Neuter check: drop the launchKeySupplied case from keySourceOf. The source
+// reads "stored" and ModelSaved comes back true.
+func TestShowSaysAKeyFromTheLauncherIsNotTheStoredOne(t *testing.T) {
+	// The worst case for the old code: a file holding a key for this very
+	// address, with the model in force written beside it -- which is what
+	// choosing a model BEFORE the launcher's key arrived leaves behind.
+	s, _ := modelChoiceServer(t)
+	if resp := s.connectResult(context.Background(), chooseModelRequest("other")); !resp.ModelSaved {
+		t.Fatalf("setup: the choice was not saved (%s)", resp.Detail)
+	}
+	launchKeySupplied.Store(true)
+	t.Cleanup(func() { launchKeySupplied.Store(false) })
+
+	resp := s.connectResult(context.Background(), showRequest())
+	if resp.KeySource != protocol.KeySourceLauncher {
+		t.Errorf("key source = %q, want %q", resp.KeySource, protocol.KeySourceLauncher)
+	}
+	if resp.Model != "other" || resp.ModelSaved {
+		t.Errorf("model %q remembered=%v: a daemon started with a launcher's key does not read the file that remembers it", resp.Model, resp.ModelSaved)
+	}
+	if resp.ActiveMaskedKey == "" {
+		t.Error("the key in force is not described at all")
+	}
+
+	// A model chosen now says why it will not outlive this daemon, in words
+	// that fit: nothing here came from the environment.
+	chosen := s.connectResult(context.Background(), chooseModelRequest("tested"))
+	if !chosen.Ok || chosen.ModelSaved || !strings.Contains(chosen.Detail, "handed over by the program that started it") ||
+		strings.Contains(chosen.Detail, "environment") {
+		t.Errorf("choosing a model beside a launcher's key: ok=%v saved=%v detail=%q error=%q", chosen.Ok, chosen.ModelSaved, chosen.Detail, chosen.Error)
+	}
+
+	// With MOCHIII_API_KEY set as well, the environment is what wins at start
+	// (resolveLaunchSlot), so it is what is named.
+	t.Setenv("MOCHIII_API_KEY", "sk-from-the-environment")
+	if got := s.connectResult(context.Background(), showRequest()).KeySource; got != protocol.KeySourceEnvironment {
+		t.Errorf("with both an environment key and a launcher's, key source = %q, want %q", got, protocol.KeySourceEnvironment)
+	}
+}
+
 // The proxy's credential is not a provider key and is not shown as one; and a
 // daemon with no key says so rather than masking an empty string into a claim.
 func TestShowDoesNotDescribeAKeyThatIsNotAProviderKey(t *testing.T) {

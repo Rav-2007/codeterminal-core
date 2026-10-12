@@ -107,7 +107,7 @@ func (s *Server) mcpList(ctx context.Context) protocol.MCPResponse {
 		}
 	}()
 	report.WriteString("\n")
-	if err := writeToolReport(lctx, &report, &report, cfg, registry, connectErrs); err != nil {
+	if err := writeToolReport(lctx, &report, &report, cfg, s.configPathOrDefault(), registry, connectErrs); err != nil {
 		return protocol.MCPResponse{Error: "listing the tools: " + err.Error()}
 	}
 	resp.Report = report.String()

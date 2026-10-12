@@ -1,4 +1,5 @@
 import * as cp from 'child_process';
+import { withoutCredentials } from './daemonCredentials';
 import * as vscode from 'vscode';
 
 // FIRST-RUN MODEL ACQUISITION — a prompt, never a gate.
@@ -49,7 +50,11 @@ export function queryModelStatus(binaryPath: string, timeoutMs = 20000): Promise
 
     let child: cp.ChildProcess;
     try {
-      child = cp.spawn(binaryPath, ['download-model', '--check'], { stdio: ['ignore', 'pipe', 'ignore'] });
+      // No credential in its environment: a model download needs none (daemonCredentials.ts).
+      child = cp.spawn(binaryPath, ['download-model', '--check'], {
+        stdio: ['ignore', 'pipe', 'ignore'],
+        env: withoutCredentials(process.env),
+      });
     } catch {
       return done(undefined);
     }
@@ -111,7 +116,10 @@ async function runDownload(binaryPath: string, output: vscode.OutputChannel): Pr
     },
     (progress, token) =>
       new Promise<boolean>((resolve) => {
-        const child = cp.spawn(binaryPath, ['download-model'], { stdio: ['ignore', 'ignore', 'pipe'] });
+        const child = cp.spawn(binaryPath, ['download-model'], {
+          stdio: ['ignore', 'ignore', 'pipe'],
+          env: withoutCredentials(process.env),
+        });
 
         // Cancelling must leave nothing corrupt. It does not, and that is a
         // property of the daemon rather than of this callback: downloadAsset

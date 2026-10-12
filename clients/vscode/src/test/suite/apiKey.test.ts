@@ -9,6 +9,7 @@ import {
   getApiKey,
 } from '../../apiKey';
 import { daemonEnvironment } from '../../extension';
+import { credentialsLine, daemonCredentials, withoutCredentials } from '../../daemonCredentials';
 
 // THE TEST THAT WAS MISSING.
 //
@@ -20,9 +21,12 @@ import { daemonEnvironment } from '../../extension';
 // "every test supplied the variable by hand, so nothing ever saw what an
 // install sees".
 //
-// So the load-bearing assertion here is the first one: given a key, the
-// environment the daemon is STARTED with carries it. Delete the two lines in
-// daemonEnvironment() that set it and that test fails; nothing else does.
+// So the load-bearing assertion here is the first one: given a key, the daemon
+// is HANDED it. It is now handed it on stdin, not in its environment -- a key in
+// the environment stays readable in /proc/<daemon-pid>/environ for the daemon's
+// whole life -- so that assertion has two halves and both are load-bearing: the
+// stdin line carries the key, and the environment does not. Break either and a
+// test below fails.
 //
 // NOTHING HERE REASSIGNS `vscode.window.*`. An earlier draft stubbed the
 // dialogs that way to test the prompt policy -- the only file in this
@@ -80,29 +84,45 @@ function rejectingContext(): KeyContext {
   } as KeyContext;
 }
 
-suite('api key — the credential reaches the daemon', () => {
+suite('api key — the credential reaches the daemon, on stdin and never in its environment', () => {
   // daemonEnvironment() builds the child environment FROM this process's, so
-  // these two cases have to state this process's. Plain object mutation,
-  // restored in teardown -- not a module-namespace reassignment.
+  // these cases have to state this process's. Plain object mutation, restored in
+  // teardown -- not a module-namespace reassignment.
   const realEnvKey = process.env.MOCHIII_API_KEY;
+  const realProxyKey = process.env.MOCHIII_PROXY_KEY;
   teardown(() => {
-    if (realEnvKey === undefined) {
-      delete process.env.MOCHIII_API_KEY;
-    } else {
-      process.env.MOCHIII_API_KEY = realEnvKey;
+    for (const [name, value] of [
+      ['MOCHIII_API_KEY', realEnvKey],
+      ['MOCHIII_PROXY_KEY', realProxyKey],
+    ] as const) {
+      if (value === undefined) {
+        delete process.env[name];
+      } else {
+        process.env[name] = value;
+      }
     }
   });
 
-  // THE ONE THAT MATTERS. Everything else is about when to prompt; this is
-  // about whether the key ever arrives.
-  test('daemonEnvironmentCarriesTheKey', () => {
+  // THE ONE THAT MATTERS, both halves of it. Everything else is about when to
+  // prompt; this is about whether the key arrives, and where it travels.
+  test('theStoredKeyIsHandedOverOnStdin', () => {
     delete process.env.MOCHIII_API_KEY;
-    assert.strictEqual(daemonEnvironment('sk-test-12345').MOCHIII_API_KEY, 'sk-test-12345');
+    assert.deepStrictEqual(daemonCredentials('sk-test-12345', process.env), { api_key: 'sk-test-12345' });
   });
 
-  test('daemonEnvironmentTrimsTheKey', () => {
+  test('theDaemonEnvironmentNeverCarriesAKey', () => {
+    // Even when VS Code itself inherited both from a shell.
+    process.env.MOCHIII_API_KEY = 'sk-from-the-shell';
+    process.env.MOCHIII_PROXY_KEY = 'mk-from-the-shell';
+    const env = daemonEnvironment();
+    assert.strictEqual(env.MOCHIII_API_KEY, undefined);
+    assert.strictEqual(env.MOCHIII_PROXY_KEY, undefined);
+    assert.ok(!('MOCHIII_API_KEY' in env) && !('MOCHIII_PROXY_KEY' in env), 'a credential name survived, even if empty');
+  });
+
+  test('theKeyIsTrimmed', () => {
     delete process.env.MOCHIII_API_KEY;
-    assert.strictEqual(daemonEnvironment('  sk-padded  ').MOCHIII_API_KEY, 'sk-padded');
+    assert.strictEqual(daemonCredentials('  sk-padded  ', process.env).api_key, 'sk-padded');
   });
 
   // Whitespace stores fine, reaches the provider as an empty bearer token and
@@ -110,16 +130,42 @@ suite('api key — the credential reaches the daemon', () => {
   // key rather than an absent one.
   test('aWhitespaceKeyIsNotTreatedAsAKey', async () => {
     delete process.env.MOCHIII_API_KEY;
-    assert.strictEqual(daemonEnvironment('   ').MOCHIII_API_KEY, undefined);
+    assert.deepStrictEqual(daemonCredentials('   ', process.env), {});
     assert.strictEqual(await getApiKey(fakeContext({ stored: '   ' })), undefined);
   });
 
   // The from-source workflow the README documents: the key is exported in the
-  // shell. Storing nothing must not blank it out -- that would break a setup
-  // that worked before this feature existed.
-  test('anInheritedKeySurvivesWhenNothingIsStored', () => {
+  // shell. It must still reach the daemon -- on stdin now, not inherited.
+  test('anInheritedKeyIsHandedOverWhenNothingIsStored', () => {
     process.env.MOCHIII_API_KEY = 'sk-from-the-shell';
-    assert.strictEqual(daemonEnvironment(undefined).MOCHIII_API_KEY, 'sk-from-the-shell');
+    assert.strictEqual(daemonCredentials(undefined, process.env).api_key, 'sk-from-the-shell');
+    assert.strictEqual(daemonEnvironment().MOCHIII_API_KEY, undefined);
+  });
+
+  // The order the environment path had: a stored key overwrote an inherited one.
+  test('aStoredKeyStillWinsOverAnInheritedOne', () => {
+    process.env.MOCHIII_API_KEY = 'sk-from-the-shell';
+    assert.strictEqual(daemonCredentials('sk-stored', process.env).api_key, 'sk-stored');
+  });
+
+  // A proxy key travels in its own field: the daemon keeps provider and proxy
+  // keys apart, so neither is ever sent to the other's host.
+  test('aProxyKeyTravelsInItsOwnField', () => {
+    delete process.env.MOCHIII_API_KEY;
+    process.env.MOCHIII_PROXY_KEY = 'mk-from-the-shell';
+    assert.deepStrictEqual(daemonCredentials(undefined, process.env), { proxy_key: 'mk-from-the-shell' });
+  });
+
+  test('theStdinLineIsOneJSONObjectAndANewline', () => {
+    assert.strictEqual(credentialsLine({}), '{}\n');
+    const line = credentialsLine({ api_key: 'sk-a' });
+    assert.strictEqual(line.indexOf('\n'), line.length - 1, 'more than one line');
+    assert.deepStrictEqual(JSON.parse(line), { api_key: 'sk-a' });
+  });
+
+  test('withoutCredentialsLeavesEverythingElse', () => {
+    const out = withoutCredentials({ MOCHIII_API_KEY: 'a', MOCHIII_PROXY_KEY: 'b', MOCHIII_API_BASE: 'c', PATH: 'd' });
+    assert.deepStrictEqual(out, { MOCHIII_API_BASE: 'c', PATH: 'd' });
   });
 
   test('getApiKeyReadsAndTrimsWhatWasStored', async () => {
@@ -199,7 +245,7 @@ suite('local model — the setting reaches the daemon', () => {
 
   test('daemonEnvironmentCarriesTheModel', async () => {
     await config().update('model', '  qwen2.5-coder:7b ', vscode.ConfigurationTarget.Global);
-    assert.strictEqual(daemonEnvironment('k').MOCHIII_MODEL, 'qwen2.5-coder:7b');
+    assert.strictEqual(daemonEnvironment().MOCHIII_MODEL, 'qwen2.5-coder:7b');
   });
 
   test('anEmptyModelSettingSendsNothing', async () => {
@@ -207,7 +253,7 @@ suite('local model — the setting reaches the daemon', () => {
     const saved = process.env.MOCHIII_MODEL;
     delete process.env.MOCHIII_MODEL;
     try {
-      assert.strictEqual(daemonEnvironment('k').MOCHIII_MODEL, undefined);
+      assert.strictEqual(daemonEnvironment().MOCHIII_MODEL, undefined);
     } finally {
       if (saved !== undefined) {
         process.env.MOCHIII_MODEL = saved;

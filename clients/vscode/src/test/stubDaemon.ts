@@ -40,6 +40,9 @@ export class StubDaemon {
   // CAP_TOOL_APPROVAL makes the daemon suspend turns waiting for an answer.
   readonly handshakes: any[] = [];
 
+  // Extra fields merged into the handshake reply, e.g. { needs_api_key: true }.
+  handshakeExtra: Record<string, unknown> = {};
+
   // The workspace the client is told it has open, so the lockfile name it
   // derives matches the one written below.
   private workspaceDir = '';
@@ -81,7 +84,7 @@ export class StubDaemon {
           if (!handshakeDone) {
             handshakeDone = true;
             this.handshakes.push(req);
-            writeLine(socket, { protocol_version: PROTOCOL_VERSION, ok: true, daemon_version: 'stub' });
+            writeLine(socket, { protocol_version: PROTOCOL_VERSION, ok: true, daemon_version: 'stub', ...this.handshakeExtra });
             continue;
           }
           socket.removeListener('data', onData);

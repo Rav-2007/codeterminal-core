@@ -5,6 +5,7 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { probeDaemon, setWorkspaceRoot } from '../../daemonClient';
+import { CREDENTIALS_FROM_STDIN_FLAG, credentialsLine, withoutCredentials } from '../../daemonCredentials';
 import { DaemonHandle, DaemonSupervisor, SupervisorDeps } from '../../daemonSupervisor';
 
 // THE SEAM NOTHING TESTED: the extension and a REAL daemon process.
@@ -35,17 +36,20 @@ const daemonBin = path.resolve(__dirname, '../../../daemon/mochiii-daemon');
 
 function spawnRealDaemon(workspace: string, logPath: string): DaemonHandle {
   fs.chmodSync(daemonBin, 0o755);
-  // The env the daemon needs to reach ITS start. extension.ts's spawnDaemon
-  // passes no env at all and the child inherits the extension host's, which is
-  // exactly the defect this file's second suite is about; here we supply it so
-  // the SEAM -- supervisor policy against a real process and a real socket --
-  // is what is under test rather than the missing variable.
-  const child = cp.spawn(daemonBin, ['--workspace', workspace, '-log-file', logPath], {
+  // Spawned the way extension.ts's spawnDaemon spawns: an environment with no
+  // credential in it, the key handed over on stdin, and stdin closed. The base
+  // is supplied so the SEAM -- supervisor policy against a real process and a
+  // real socket -- is what is under test rather than a missing variable.
+  const child = cp.spawn(daemonBin, ['--workspace', workspace, CREDENTIALS_FROM_STDIN_FLAG, '-log-file', logPath], {
     cwd: workspace,
     detached: true,
-    stdio: 'ignore',
-    env: { ...process.env, MOCHIII_API_BASE: 'http://127.0.0.1:9', MOCHIII_API_KEY: 'test' },
+    stdio: ['pipe', 'ignore', 'ignore'],
+    env: { ...withoutCredentials(process.env), MOCHIII_API_BASE: 'http://127.0.0.1:9' },
   });
+  child.stdin?.on('error', () => {
+    /* a daemon that lost the start race exits before reading; that is the exit-3 path */
+  });
+  child.stdin?.end(credentialsLine({ api_key: 'test' }));
   child.unref();
   return {
     onExit: (cb) => child.on('exit', cb),

@@ -131,7 +131,7 @@ func runMCPList(args []string, logger *log.Logger) error {
 			logger.Printf("shutting down MCP servers: %v", err)
 		}
 	}()
-	return writeToolReport(ctx, os.Stdout, os.Stderr, effective, registry, connectErrs)
+	return writeToolReport(ctx, os.Stdout, os.Stderr, effective, resolvedConfigPath, registry, connectErrs)
 }
 
 // agentModeOffReport is what a list says when there are no tools to list.
@@ -149,10 +149,17 @@ func agentModeOffReport(configPath string) string {
 // config, and the running daemon sends the same text for itself
 // (mcp_handler.go) -- two copies of this table would be two descriptions of
 // what may run on a user's machine, free to disagree.
-func writeToolReport(ctx context.Context, out, warn io.Writer, cfg *Config, registry *mcp.Registry, connectErrs []error) error {
+func writeToolReport(ctx context.Context, out, warn io.Writer, cfg *Config, configPath string, registry *mcp.Registry, connectErrs []error) error {
 	tools, listErrs := registry.Advertised(ctx)
 
-	_, _ = fmt.Fprintf(out, "Agent mode is ON. %d tool(s) would be offered to the model.\n\n", len(tools))
+	// Name the file, exactly as the OFF line does. `mcp list` reads a config
+	// resolved next to the daemon binary (or --config); a daemon that was
+	// started separately -- the editor ADOPTS one a terminal left running --
+	// may have loaded a different file, and then this report is about a config
+	// that is not the one answering prompts. Printing the path is what lets a
+	// reader notice that. The running daemon's own report names its file too.
+	_, _ = fmt.Fprintf(out, "Agent mode is ON (mcp.enabled is true in %s). %d tool(s) would be offered to the model.\n\n",
+		configPath, len(tools))
 
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 	// Writes to a tabwriter: nothing here can recover from a failed write, and
@@ -386,25 +393,33 @@ func firstLine(s string) string {
 	return s
 }
 
-// countExternal counts tools that are unconfined BECAUSE they are somebody
-// else's subprocess -- the population the subprocess warning is about. A tool
-// of this daemon's own is not one, whatever its Confined says.
-func countExternal(tools []mcp.Tool) int {
-	n := 0
-	for _, tool := range tools {
-		if !tool.Confined && !tool.ReachesNetwork && tool.Lane != protocol.LaneFirstParty {
-			n++
-		}
-	}
-	return n
-}
-
 // countOwnUnconfined counts this daemon's own tools that are not confined and
 // not network tools: the ones that can start or run another program.
 func countOwnUnconfined(tools []mcp.Tool) int {
 	n := 0
 	for _, tool := range tools {
 		if !tool.Confined && !tool.ReachesNetwork && tool.Lane == protocol.LaneFirstParty {
+			n++
+		}
+	}
+	return n
+}
+
+// countExternal counts the tools the subprocess warning is about: the ones
+// running in a third-party MCP server.
+//
+// IT KEYS ON THE LANE, NOT ON CONFINEMENT. "Unconfined" was read as "somebody
+// else's subprocess" here, but the two parted company exactly as they did for
+// the network tools above: a FIRST-PARTY built-in can be unconfined too --
+// propose_ast_edit and the compiler queries all report Confined=false -- and
+// none of those runs in an external server. Counting by `!Confined` therefore
+// told the user "N of these run in external MCP servers" with N inflated by
+// this daemon's own tools, which is the alarming direction and plainly false.
+// The lane is the only field that answers the question the sentence asks.
+func countExternal(tools []mcp.Tool) int {
+	n := 0
+	for _, tool := range tools {
+		if tool.Lane == protocol.LaneThirdParty {
 			n++
 		}
 	}

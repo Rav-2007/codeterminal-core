@@ -27,7 +27,7 @@
 //
 // CEILING on everything else, currently DOM narrowing (`EventTarget` where a
 // `Node` is wanted, `.value` on `HTMLElement`). Those are real type
-// imprecision, not bugs, and there are 36 of them in code written without
+// imprecision, not bugs, and there are 25 of them in code written without
 // annotations. Failing the build on all of them on day one is how a gate gets
 // switched off within a week. The ceiling may only be LOWERED -- the same rule
 // scripts/errcheck-ceiling.sh applies, for the same reason.
@@ -39,7 +39,7 @@ const path = require('path');
 
 // Lower this as annotations are added. Never raise it to make a build green:
 // that converts the one mechanism that noticed a regression into a rubber stamp.
-const NARROWING_CEILING = 36;
+const NARROWING_CEILING = 25;
 
 // Undefined names and wrong arity. A name that does not resolve is a
 // ReferenceError waiting for the right input.

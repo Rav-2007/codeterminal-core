@@ -201,14 +201,28 @@ func TestMachineReachMatchesWhatTheToolsAcceptAndRefuse(t *testing.T) {
 	// Joined, not glued with "/": these are the resolved paths the tools hand
 	// the check, and on Windows home+"/.ssh" is not one (the first version of
 	// this test did that and failed there, 2026-10-06).
+	state, err := StateDir()
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, refused := range []string{
 		filepath.Join(home, ".ssh", "id_ed25519"),
 		filepath.Join(home, ".aws", "credentials"),
 		filepath.Join(home, ".bash_history"),
 		filepath.Join(home, ".mochiii", "credentials.json"),
+		filepath.Join(state, "memory.db"),
+		filepath.Join(home, ".config", "Code", "User", "globalStorage", "state.vscdb"),
+		filepath.Join(home, ".local", "share", "keyrings", "login.keyring"),
+		"/proc/self/environ", "/sys/kernel", "/dev/fd/0", "/run/user/1000",
 	} {
 		if reason := outsideReadRefusal(refused); reason == "" {
-			t.Errorf("the section says keys, credential stores and histories are always refused, and %s is readable", refused)
+			t.Errorf("the section says keys, credential stores, histories and /proc /sys /dev /run are always refused, and %s is readable", refused)
+		}
+	}
+	section := machineReach(func(string) bool { return true }, "auto", nil)
+	for _, claim := range []string{"Mochiii's own key", "editors' secret stores", "keyrings", "/proc, /sys, /dev and /run"} {
+		if !strings.Contains(section, claim) {
+			t.Errorf("the section no longer names %q as refused", claim)
 		}
 	}
 	for _, allowed := range []string{filepath.Join(home, "Documents", "report.txt"), "/etc/hostname", filepath.Join(home, ".bashrc")} {

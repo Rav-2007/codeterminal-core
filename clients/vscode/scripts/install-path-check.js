@@ -74,7 +74,8 @@ if (fnStart === -1) {
     fail('vacuity floor: spawnDaemon does not call cp.spawn(binaryPath, ...) -- the call this check is about is gone');
   } else {
     const call = body.slice(spawnAt, spawnAt + 1200);
-    if (!/\benv\s*:/.test(call)) {
+    // `env: x` or the shorthand `env,` -- either passes an explicit environment.
+    if (!/\benv\s*[:,]/.test(call)) {
       fail(
         'spawnDaemon calls cp.spawn with no `env`, so the daemon inherits the extension ' +
           "host's environment. A VS Code launched from a desktop icon carries none of a " +
@@ -181,16 +182,75 @@ if (keyCommands.length === 0) {
   }
 }
 
-// Delivery. The key must be written into the environment the daemon is spawned
-// with -- an assignment, not a mention.
-if (!/\benv\.MOCHIII_API_KEY\s*=/.test(extCode)) {
+// Delivery. The key must reach the daemon -- ON ITS STDIN, NEVER IN ITS
+// ENVIRONMENT.
+//
+// This assertion used to require `env.MOCHIII_API_KEY = ...`, and it was right
+// to require a delivery: the defect it guards shipped twice. But the
+// environment was the wrong channel. A variable a process starts with stays
+// readable in /proc/<pid>/environ for that process's whole life, by anything
+// running as the same user, and nothing the daemon does later can take it back.
+// So the key now goes down a pipe (daemonCredentials.ts, daemon/launchcred.go),
+// and this element checks BOTH halves of that: the key is delivered, and the
+// environment is not how.
+const credMod = fs.readFileSync(path.join(root, 'src', 'daemonCredentials.ts'), 'utf8');
+const launchGo = path.resolve(root, '..', '..', 'daemon', 'launchcred.go');
+const launchSrc = fs.existsSync(launchGo) ? fs.readFileSync(launchGo, 'utf8') : '';
+
+if (/\benv\.MOCHIII_(?:API|PROXY)_KEY\s*=/.test(extCode)) {
   fail(
-    'src/extension.ts never assigns env.MOCHIII_API_KEY, so nothing a user supplies ' +
-      'reaches the daemon. The daemon reads that variable and nothing else for its credential ' +
-      '(daemon/config.go: models.json holds "model slugs and metadata only -- never credentials").',
+    'src/extension.ts assigns a credential into the daemon\'s environment (env.MOCHIII_API_KEY or ' +
+      'env.MOCHIII_PROXY_KEY). That leaves the key readable in /proc/<daemon-pid>/environ for the ' +
+      "daemon's whole life. Hand it over on stdin instead (daemonCredentials.ts).",
   );
 }
+const envFnAt = ext.indexOf('function daemonEnvironment(');
+const envFn = envFnAt === -1 ? '' : ext.slice(envFnAt, envFnAt + 1500);
+if (!/withoutCredentials\(\s*process\.env\s*\)/.test(envFn)) {
+  fail(
+    'daemonEnvironment does not start from withoutCredentials(process.env), so a MOCHIII_API_KEY ' +
+      'or MOCHIII_PROXY_KEY that VS Code inherited from a shell is passed straight into the ' +
+      "daemon's environment.",
+  );
+}
+if (fnStart !== -1) {
+  const restFn = ext.slice(fnStart + 1);
+  const nextFn = restFn.indexOf('\nfunction ');
+  const spawnBody = (nextFn === -1 ? restFn : restFn.slice(0, nextFn)).replace(/^\s*\/\/.*$/gm, '');
+  const steps = [
+    [/const args = \[[^\]]*CREDENTIALS_FROM_STDIN_FLAG/, 'pass CREDENTIALS_FROM_STDIN_FLAG in its argument list'],
+    [/stdio:\s*\[\s*'pipe'/, "give the daemon a stdin pipe (stdio: ['pipe', ...])"],
+    [/daemonCredentials\(\s*cachedApiKey\b/, "build the line from the stored key (daemonCredentials(cachedApiKey, ...))"],
+    [/child\.stdin\??\.(?:end|write)\(\s*credentialsLine\(/, 'write that line to child.stdin'],
+    [/child\.stdin\??\.on\(\s*'error'/, "listen for 'error' on child.stdin (an unhandled one crashes the extension host)"],
+  ];
+  for (const [re, what] of steps) {
+    if (!re.test(spawnBody)) {
+      fail(`spawnDaemon does not ${what}, so the key never reaches the daemon.`);
+    }
+  }
+}
 
+// The two sides must agree, or the extension sends a flag the daemon rejects
+// and fields it refuses as unknown. Checked here because no single-language
+// test can see both.
+const tsFlag = (credMod.match(/CREDENTIALS_FROM_STDIN_FLAG\s*=\s*'([^']+)'/) || [])[1];
+const goFlag = (launchSrc.match(/credentialsFromStdinFlag\s*=\s*"([^"]+)"/) || [])[1];
+if (!tsFlag || !goFlag) {
+  fail('vacuity floor: could not find the stdin flag in daemonCredentials.ts and daemon/launchcred.go');
+} else if (tsFlag !== '--' + goFlag) {
+  fail(`the extension passes ${tsFlag} but the daemon defines --${goFlag}; the daemon would refuse to start.`);
+}
+for (const field of ['api_key', 'proxy_key']) {
+  const inTs = new RegExp(`\\b${field}\\?:`).test(credMod);
+  const inGo = launchSrc.includes(`json:"${field}"`);
+  if (!inTs || !inGo) {
+    fail(
+      `the stdin field ${field} is ${inTs ? '' : 'missing from daemonCredentials.ts'}${!inTs && !inGo ? ' and ' : ''}` +
+        `${inGo ? '' : 'missing from daemon/launchcred.go'}; the daemon refuses unknown fields, so the two must agree.`,
+    );
+  }
+}
 
 // --- element 5: the set is DERIVED from the daemon, not listed here ---------
 //
@@ -238,7 +298,8 @@ const UNSUPPLIED = {
     'directly and never reaches the proxy path.',
   MOCHIII_PROXY_KEY:
     'read ONLY in proxy mode (daemon/main.go), which the extension cannot enable -- see ' +
-    'MOCHIII_USE_PROXY. Unreachable from a packaged install by construction, not by accident.',
+    'MOCHIII_USE_PROXY. Unreachable from a packaged install by construction, not by accident. ' +
+    'One VS Code inherited from a shell is forwarded on stdin as proxy_key, never in the environment.',
 };
 
 function goFiles(dir) {
@@ -272,9 +333,16 @@ if (derived.size < 2) {
   );
 }
 
+// Values delivered on the daemon's STDIN rather than in its environment, keyed
+// to the field that carries each. Element 4 verifies that channel end to end;
+// here it counts as delivery.
+const STDIN_DELIVERED = { MOCHIII_API_KEY: 'api_key' };
+
 const undeliverable = [];
 for (const name of [...derived].sort()) {
-  const delivered = new RegExp(`\\benv\\.${name}\\s*=`).test(extCode);
+  const delivered =
+    new RegExp(`\\benv\\.${name}\\s*=`).test(extCode) ||
+    (Object.prototype.hasOwnProperty.call(STDIN_DELIVERED, name) && new RegExp(`\\b${STDIN_DELIVERED[name]}\\?:`).test(credMod));
   if (delivered) continue;
   if (Object.prototype.hasOwnProperty.call(UNSUPPLIED, name)) {
     undeliverable.push(name);
@@ -303,9 +371,9 @@ for (const name of Object.keys(UNSUPPLIED)) {
 // ever learns to turn proxy mode on, it must also learn to supply the key that
 // mode requires -- the daemon calls logger.Fatal without it, so half the pair
 // is a daemon that cannot start.
-if (/\benv\.MOCHIII_USE_PROXY\s*=/.test(extCode) && !/\benv\.MOCHIII_PROXY_KEY\s*=/.test(extCode)) {
+if (/\benv\.MOCHIII_USE_PROXY\s*=/.test(extCode) && !/\bproxy_key\?:/.test(credMod)) {
   fail(
-    'src/extension.ts sets env.MOCHIII_USE_PROXY but not env.MOCHIII_PROXY_KEY. ' +
+    'src/extension.ts sets env.MOCHIII_USE_PROXY but hands over no proxy key on stdin (proxy_key). ' +
       'In proxy mode the daemon requires the Mochiii key and calls logger.Fatal without it, so ' +
       'enabling the mode without supplying the key ships a daemon that cannot start.',
   );
@@ -320,7 +388,8 @@ if (failures.length > 0) {
 }
 console.log(
   `install-path-check: ok — spawnDaemon passes an env, ${names.length} setting(s) are contributed ` +
-    `and read, the API key is collectable (${keyCommands.length} command(s)) and delivered, and ` +
+    `and read, the API key is collectable (${keyCommands.length} command(s)) and delivered on stdin ` +
+    `and never in the environment, and ` +
     `all ${derived.size} MOCHIII_* value(s) the daemon reads are accounted for ` +
     `(${derived.size - undeliverable.length} delivered, ${undeliverable.length} declared unsupplied: ` +
     `${undeliverable.join(', ') || 'none'})`,

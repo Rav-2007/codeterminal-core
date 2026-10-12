@@ -65,30 +65,35 @@ const defaultAPIBase = "https://openrouter.ai/api/v1"
 // that request could ever have succeeded, and the one component that could
 // have said so — the daemon, at startup, holding the actual string — said
 // "listening".
-func validateAPIBase(base string) error {
+func validateAPIBase(base string) error { return validateBaseNamed("MOCHIII_API_BASE", base) }
+
+// validateBaseNamed is validateAPIBase with the name of where the value came
+// from, so a base read from stdin (launchcred.go) is reported as that and not as
+// an environment variable the user never set.
+func validateBaseNamed(name, base string) error {
 	trimmed := strings.TrimSpace(base)
 	if trimmed == "" {
 		// Distinguished from the caller's own unset check: a whitespace-only
 		// value passes a `== ""` test but is no more usable than an empty one.
-		return fmt.Errorf("MOCHIII_API_BASE is blank")
+		return fmt.Errorf("%s is blank", name)
 	}
 	if trimmed != base {
-		return fmt.Errorf("MOCHIII_API_BASE %q has leading or trailing whitespace", base)
+		return fmt.Errorf("%s %q has leading or trailing whitespace", name, base)
 	}
 
 	u, err := url.Parse(base)
 	if err != nil {
-		return fmt.Errorf("MOCHIII_API_BASE %q is not a valid URL: %w", base, err)
+		return fmt.Errorf("%s %q is not a valid URL: %w", name, base, err)
 	}
 	switch u.Scheme {
 	case "http", "https":
 	case "":
-		return fmt.Errorf("MOCHIII_API_BASE %q has no scheme (expected an absolute URL such as https://openrouter.ai/api/v1)", base)
+		return fmt.Errorf("%s %q has no scheme (expected an absolute URL such as https://openrouter.ai/api/v1)", name, base)
 	default:
-		return fmt.Errorf("MOCHIII_API_BASE %q uses unsupported scheme %q (expected http or https)", base, u.Scheme)
+		return fmt.Errorf("%s %q uses unsupported scheme %q (expected http or https)", name, base, u.Scheme)
 	}
 	if u.Host == "" {
-		return fmt.Errorf("MOCHIII_API_BASE %q has no host", base)
+		return fmt.Errorf("%s %q has no host", name, base)
 	}
 	return nil
 }

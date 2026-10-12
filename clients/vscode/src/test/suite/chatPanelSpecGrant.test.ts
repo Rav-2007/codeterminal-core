@@ -3,7 +3,7 @@ import * as vscode from 'vscode';
 
 import { ChatPanel } from '../../chatPanel';
 
-const EXT_ID = 'mochiii.mochiii-vscode';
+const EXT_ID = 'MochiiiAIAgent.mochiii-vscode';
 
 // The panel's half of "yes while this spec is active" (the TUI's twin is
 // clients/tui/specgrant_test.go): an answer the daemon did not offer answers

@@ -153,6 +153,12 @@ func (m chatModel) accountFields() []accountField {
 		if stored {
 			key.more = append(key.more, "a stored key ("+sanitizeText(r.MaskedKey)+") is not the one in use")
 		}
+	case r.KeySource == protocol.KeySourceLauncher:
+		key.value = sanitizeText(r.ActiveMaskedKey)
+		key.more = []string{"handed over by the program that started the daemon (the editor's own key store)"}
+		if stored {
+			key.more = append(key.more, "a stored key ("+sanitizeText(r.MaskedKey)+") is not the one in use")
+		}
 	case r.KeySource == protocol.KeySourceProxy:
 		key.value = "none on this machine"
 		key.more = []string{"proxy mode: the proxy holds the provider's key"}

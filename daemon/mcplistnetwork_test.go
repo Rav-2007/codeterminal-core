@@ -11,25 +11,28 @@ import (
 // same assumption baked in: "not confined" meant "an external subprocess",
 // because until now those were the same population. A web tool is not confined
 // and is not a subprocess, so one count and one sentence can no longer cover
-// both.
+// both -- and neither can a FIRST-PARTY built-in that happens to be unconfined.
 func TestMCPListSeparatesNetworkToolsFromUnconfinedSubprocesses(t *testing.T) {
 	tools := []mcp.Tool{
-		{Name: "read_file", Confined: true},
-		{Name: "web_search", ReachesNetwork: true},
-		{Name: "web_fetch", ReachesNetwork: true},
+		{Name: "read_file", Lane: protocol.LaneFirstParty, Confined: true},
+		{Name: "web_search", Lane: protocol.LaneFirstParty, ReachesNetwork: true},
+		{Name: "web_fetch", Lane: protocol.LaneFirstParty, ReachesNetwork: true},
+		// First-party AND unconfined -- exactly propose_ast_edit and the
+		// compiler queries, which can start a language server. It is not
+		// somebody else's subprocess, so the "run in external MCP servers"
+		// sentence must not count it (seen in the real app, 2026-10-11; the old
+		// `!Confined && !ReachesNetwork` test counted it).
+		{Name: "query_compiler_definition", Lane: protocol.LaneFirstParty, Confined: false, LaunchesSubprocess: true},
 		{Name: "third_party", Lane: protocol.LaneThirdParty, Confined: false},
-		// This daemon's own, and not confined because it can start a language
-		// server. It is not "an external MCP server", and was being counted as
-		// one (seen in the real app, 2026-10-11).
-		{Name: "query_compiler_definition", Lane: protocol.LaneFirstParty, LaunchesSubprocess: true},
 	}
 
 	if got := countOwnUnconfined(tools); got != 1 {
 		t.Errorf("countOwnUnconfined = %d, want 1", got)
 	}
 	if got := countExternal(tools); got != 1 {
-		t.Errorf("countExternal = %d, want 1 — a network tool was counted as a subprocess "+
-			"and the user would be told web_search runs with their full privileges", got)
+		t.Errorf("countExternal = %d, want 1 — only the third-party server tool runs in an "+
+			"external MCP server; a network tool or a first-party unconfined built-in must not "+
+			"be counted as a subprocess with the user's full privileges", got)
 	}
 	if got := countNetworked(tools); got != 2 {
 		t.Errorf("countNetworked = %d, want 2", got)

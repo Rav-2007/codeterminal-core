@@ -78,6 +78,28 @@ func TestModelError_ClassifiesEachFailureMode(t *testing.T) {
 			wantClass: ClassQuotaExceeded, retryable: false,
 		},
 		{
+			// MEASURED 2026-10-06 from Groq's free tier (organization id elided).
+			// One request over the plan's per-minute input allowance: it can never
+			// succeed as sent, but nothing is spent -- the "billing" in the
+			// upgrade link made it read as an exhausted credit.
+			name: "413 Groq request over the per-minute token limit", status: http.StatusRequestEntityTooLarge,
+			body:      `{"error":{"message":"Request too large for model ` + "`qwen/qwen3.8-27b`" + ` in organization ` + "`org_x`" + ` service tier ` + "`on_demand`" + ` on input tokens per minute (ITPM): Limit 7000, Requested 13460, please reduce your message size and try again. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing","type":"tokens","code":"rate_limit_exceeded"}}`,
+			wantClass: ClassContextTooLarge, retryable: false,
+		},
+		{
+			// Groq's ordinary throttle carries the same upgrade link. It is a
+			// wait, not a top-up, and must be retried.
+			name: "429 Groq per-minute throttle", status: http.StatusTooManyRequests,
+			body:      `{"error":{"message":"Rate limit reached for model ` + "`qwen/qwen3.8-27b`" + ` in organization ` + "`org_x`" + ` service tier ` + "`on_demand`" + ` on tokens per minute (TPM): Limit 6000, Used 5200, Requested 1400. Please try again in 6s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing","type":"tokens","code":"rate_limit_exceeded"}}`,
+			wantClass: ClassRateLimited, retryable: true,
+		},
+		{
+			// OpenAI's spent quota also says "billing" -- and is still a spent quota.
+			name: "429 OpenAI insufficient_quota", status: http.StatusTooManyRequests,
+			body:      `{"error":{"message":"You exceeded your current quota, please check your plan and billing details.","type":"insufficient_quota","code":"insufficient_quota"}}`,
+			wantClass: ClassQuotaExceeded, retryable: false,
+		},
+		{
 			name: "401 bad key", status: http.StatusUnauthorized,
 			body:      `{"error":{"message":"Invalid API key"}}`,
 			wantClass: ClassAuth, retryable: false,

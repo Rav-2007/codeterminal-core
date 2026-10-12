@@ -207,12 +207,20 @@ function fakeHost(root: string, extensionPath: string): LocalCommandHost & { clo
   const host = {
     workspace: root,
     extensionPath,
+    // EMPTY ON PURPOSE. configPath is the machine-scoped mochiii.configPath,
+    // which a workspace cannot set -- so the hostile workspace has no way to
+    // put a value here, and with none, /mcp-server passes no --config. The fake
+    // trusted daemon below still fires its sentinel on --config or models.json
+    // in the argv, so this test proves the workspace cannot reach that flag.
+    configPath: '',
     transcript,
     preferredTier: '',
+    currentModel: '',
     lastGrounding: grounding,
     closed: false,
     connectCalls: 0,
     replaceTranscript: () => undefined,
+    compactChat: async () => 'compacted (stubbed)',
     forgetGrounding: () => undefined,
     clearScreen: () => undefined,
     close: () => {
@@ -390,5 +398,49 @@ suite('the /init checklist', () => {
         'directory they happen to be in, and "mcp list" STARTS the servers a config ' +
         `names: ${text}`,
     );
+  });
+});
+
+// /context names the MODEL, as the chip does. It used to print only the tier
+// name, so it could disagree with the chip with nothing saying which was right.
+suite('/context names the model', () => {
+  const host = (preferredTier: string, currentModel: string): LocalCommandHost =>
+    ({ ...fakeHost(os.tmpdir(), os.tmpdir()), preferredTier, currentModel }) as LocalCommandHost;
+
+  test('the default, with the model it resolves to', async () => {
+    const reply = await runLocalCommand(host('', 'qwen/qwen3.8-27b'), 'context', '');
+    assert.match(reply, /^model: qwen\/qwen3\.8-27b, default$/m);
+    assert.doesNotMatch(reply, /model tier:/);
+  });
+
+  test('a selected model, and its tier name only when it differs', async () => {
+    let reply = await runLocalCommand(host('openai/gpt-oss-120b', 'openai/gpt-oss-120b'), 'context', '');
+    assert.match(reply, /^model: openai\/gpt-oss-120b, selected$/m);
+    reply = await runLocalCommand(host('thinker', 'deepseek/deepseek-r1'), 'context', '');
+    assert.match(reply, /^model: deepseek\/deepseek-r1 \(tier thinker\), selected$/m);
+  });
+
+  test('before the daemon has answered, says so instead of inventing a name', async () => {
+    const reply = await runLocalCommand(host('', ''), 'context', '');
+    assert.match(reply, /^model: the configured default, default$/m);
+  });
+});
+
+// THE MACHINE SCOPE IS THE WHOLE SAFETY OF PASSING --config AT ALL.
+//
+// /mcp-server now passes --config when mochiii.configPath is set, and the
+// managed daemon is started with it too (extension.ts). That is safe only
+// because the setting is machine-scoped: a workspace .vscode/settings.json
+// cannot set a machine-scoped value, so a repository cannot choose the config
+// -- the exact property that distinguishes this from the <workspace>/models.json
+// hole b7e393d closed. VS Code enforces the scope; this test stops a manifest
+// edit from silently dropping it, which no code path would notice until a
+// repository was deciding what the daemon runs.
+suite('the config path a workspace must not reach stays machine-scoped', () => {
+  test('mochiii.configPath is declared machine-scoped', () => {
+    const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', '..', 'package.json'), 'utf8'));
+    const prop = pkg.contributes?.configuration?.properties?.['mochiii.configPath'];
+    assert.ok(prop, 'mochiii.configPath is not a contributed setting');
+    assert.strictEqual(prop.scope, 'machine', 'mochiii.configPath must be machine-scoped so a workspace cannot set it');
   });
 });

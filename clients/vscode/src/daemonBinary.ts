@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 
 // ONE resolver for the daemon binary, used by every surface that needs one.
@@ -105,4 +106,37 @@ export function resolveDaemonBin(extensionPath: string): string | undefined {
   }
 
   return lookPath(daemonBinaryName());
+}
+
+// resolveConfigPathSetting turns the raw `mochiii.configPath` setting into the
+// ABSOLUTE path the daemon's --config should name, or returns {} when there is
+// nothing usable to pass.
+//
+// THIS IS THE ONE PLACE A CONFIG PATH REACHES A --config ARGUMENT, and the
+// whole reason it is safe to pass one at all lives in two properties that this
+// function and its one caller must keep:
+//
+//   1. The value is MACHINE-SCOPED (package.json: "scope": "machine"). A
+//      config path names programs the daemon will spawn in agent mode, and a
+//      repository deciding that is precisely the hole closed four times over
+//      (see src/mcpServerList.ts and localCommandsHostile.test.ts). Machine
+//      scope is what stops a workspace's .vscode/settings.json from setting it
+//      -- the same guarantee mochiii.apiBase relies on to keep a repo from
+//      redirecting prompts. The setting is read with getConfiguration, which
+//      honours that scope; this function must be given only that value.
+//   2. The path is resolved to ABSOLUTE here. The daemon runs with cwd set to
+//      the workspace, so a relative --config would resolve against the opened
+//      folder -- re-opening the very door, by a different route. A value that
+//      is not absolute after ~-expansion is REFUSED (warning returned), never
+//      guessed at.
+export function resolveConfigPathSetting(raw: string | undefined): { path?: string; warning?: string } {
+  const s = (raw ?? '').trim();
+  if (s === '') {
+    return {};
+  }
+  const expanded = s === '~' ? os.homedir() : s.startsWith('~/') ? path.join(os.homedir(), s.slice(2)) : s;
+  if (!path.isAbsolute(expanded)) {
+    return { warning: `mochiii.configPath must be an absolute path; ignoring ${JSON.stringify(s)}` };
+  }
+  return { path: expanded };
 }

@@ -424,3 +424,37 @@ func TestContinuedChat_SaysNothingWhenThereIsNothingToSay(t *testing.T) {
 		t.Errorf("with no daemon the launch line = %q", note)
 	}
 }
+
+// THE CHAT THE QUESTION IS ABOUT DOES NOT CHANGE WHILE IT IS ASKED. Another
+// Mochiii window on the same workspace can add to the shared chat, and this
+// client catches up whenever its terminal regains focus (chatsync.go). With
+// "Save or clear?" on screen that would put messages the user has not seen
+// into the chat their next key saves or throws away.
+//
+// Neuter check: drop the newChatArmed case from canCatchUp.
+func TestTheSharedChatIsNotPulledInUnderTheSaveOrClearQuestion(t *testing.T) {
+	m := newTestModel()
+	m.state, m.chatSync, m.chatRev = stateIdle, true, "r1"
+	if !m.canCatchUp() {
+		t.Fatal("setup: an idle client with a shared chat does not catch up at all")
+	}
+
+	m.newChatArmed = true
+	if m.canCatchUp() {
+		t.Error("the transcript may be changed while the question is waiting for its answer")
+	}
+	before := len(m.turns)
+	next, _ := m.handleChatCaughtUp(chatCaughtUpMsg{since: "r1", resp: protocol.HistoryResponse{
+		ChatRevision: "r2", Append: true, Turns: []protocol.Turn{{Role: "user", Content: "from the other window"}},
+	}})
+	after := next.(chatModel)
+	if len(after.turns) != before || after.chatRev != "r1" {
+		t.Errorf("an answer that arrived under the question was applied: %d turns (was %d), revision %q", len(after.turns), before, after.chatRev)
+	}
+
+	// Answered or cancelled, the next focus brings the chat level again.
+	after.newChatArmed = false
+	if !after.canCatchUp() {
+		t.Error("catching up stays off after the question is gone")
+	}
+}
