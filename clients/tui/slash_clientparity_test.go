@@ -242,11 +242,28 @@ func parseVSCodeCatalog(t *testing.T) map[string]tsSlashDef {
 // summaryMayDiffer lists commands whose one-line summary is ALLOWED to differ,
 // with the reason. Anything not listed here must match exactly.
 var summaryMayDiffer = map[string]string{
+	"model": "the TUI's /model on its own opens a list to choose from (owner, 2026-10-12); the " +
+		"extension's still prints the tiers, so its summary must not promise a list",
 	"exit": "the command genuinely does different things: the TUI quits the " +
 		"process, the extension closes a panel and leaves the editor running",
 	"connect": "the TUI's /connect also takes a provider address to switch " +
-		"provider (2026-10-05); the extension's does not YET, so its summary " +
-		"must not advertise one",
+		"provider (2026-10-05), and since 2026-10-11 opens the setup -- choose a " +
+		"provider, paste its key, choose a model; the extension's does neither " +
+		"YET, so its summary must not advertise them",
+	"mcp-server": "the TUI's asks the RUNNING daemon for its tools and adds or " +
+		"removes the user's own MCP servers (2026-10-11); the extension's still " +
+		"runs `mcp list` from its packaged daemon, where that binary's own " +
+		"config is the right one, and has no add -- so its summary must not " +
+		"advertise one",
+	"compact": "the TUI's /compact still keeps the last 8 turns of its own transcript and asks " +
+		"the daemon for nothing. The extension's summarises through the daemon (9eb2bc5), and " +
+		"e6c1c83 copied its summary here without the behaviour -- so until the TUI drives that " +
+		"same compact, its summary says what it does (merge of 2026-10-12)",
+	"clear": "the TUI's /clear starts a new chat, on the daemon too (2026-10-11): " +
+		"emptying only the screen left the stored chat behind, and /save wrote " +
+		"it. The extension's still empties only its panel and sends no reset -- " +
+		"nor does its own new-chat (see notYetPorted: history) -- so its summary " +
+		"must go on saying that until the port",
 }
 
 // tuiOnlyCommands are commands that exist in the terminal client and MUST NOT
@@ -287,6 +304,10 @@ var notYetPorted = map[string]string{
 	// no task meter or /task review yet.
 	"task": "long tasks are terminal-first (owner, 2026-09-30); VS Code gets them when it is ported",
 	"hunt": "long tasks are terminal-first (owner, 2026-09-30); VS Code gets them when it is ported",
+	"provider": "the provider list is the terminal client's setup screen (2026-10-11), opened by its own " +
+		"name since 2026-10-12; the extension has no such screen yet, and its /connect takes a key only",
+	"account": "the terminal client's account screen (owner, 2026-10-12) is drawn in that same box; the " +
+		"extension gets one when the setup screen is ported",
 }
 
 // longTaskAheadOfVSCode are commands both clients have, which the TUI now runs

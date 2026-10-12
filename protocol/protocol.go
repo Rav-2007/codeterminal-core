@@ -224,6 +224,16 @@ const FeatureSavedChats = "saved_chats"
 // without it reads a budget request as an empty prompt and refuses it.
 const FeatureSpendLimits = "spend_limits"
 
+// FeatureModelChoice: ConnectRequest.ChooseModel and ClearModel are understood,
+// so a model picked in a client is the daemon's default and survives a restart.
+// A daemon without it reads such a request as a connect with no key.
+const FeatureModelChoice = "model_choice"
+
+// FeatureMCPAdmin: MCPRequest is understood -- the running daemon reports its
+// own tools and takes a user's MCP servers. A daemon without it reads the
+// request as an empty prompt.
+const FeatureMCPAdmin = "mcp_admin"
+
 // PromptRequest carries a single user prompt. Sent by the client only after
 // a successful handshake. Workspace is optional and additive: when set,
 // it's the client's own absolute path for the workspace it expects
@@ -1609,6 +1619,13 @@ type ConnectRequest struct {
 	// Show asks what is stored, changing nothing. Forget removes it.
 	Show   bool `json:"show,omitempty"`
 	Forget bool `json:"forget,omitempty"`
+
+	// ChooseModel names the model prompts go to from now on -- a name /model
+	// lists. It carries no key and changes no credential: it is here because
+	// the choice is kept beside the key it belongs to, and is dropped with it.
+	// ClearModel goes back to the model in force before any was chosen.
+	ChooseModel string `json:"choose_model,omitempty"`
+	ClearModel  bool   `json:"clear_model,omitempty"`
 }
 
 // ConnectOutcome is what actually happened, as a value a client can branch on
@@ -1634,6 +1651,9 @@ const (
 	ConnectRemoved ConnectOutcome = "removed"
 	// ConnectShown: nothing changed; the response describes what is stored.
 	ConnectShown ConnectOutcome = "shown"
+	// ConnectModelChosen: the default model changed (ChooseModel, ClearModel).
+	// Model is the one now in force; ModelSaved says whether a restart keeps it.
+	ConnectModelChosen ConnectOutcome = "model_chosen"
 )
 
 // ConnectResponse reports what happened, in terms safe to print.
@@ -1676,7 +1696,12 @@ type ConnectResponse struct {
 	Model       string `json:"model,omitempty"`
 	ModelCount  int    `json:"model_count,omitempty"`
 	ModelTested bool   `json:"model_tested,omitempty"`
-
+	// ModelSaved is set with ConnectModelChosen when the choice was written
+	// beside the stored key. False means it holds only until this daemon stops
+	// -- the key comes from the environment, or none is stored -- and Detail
+	// says which.
+	ModelSaved bool `json:"model_saved,omitempty"`
+	ConnectInForce
 	// Candidates are the IDs of the providers a key could belong to, set with
 	// ConnectNeedsProvider. Each is a name `/connect <name>` accepts.
 	Candidates []string `json:"candidates,omitempty"`
@@ -1686,6 +1711,94 @@ type ConnectResponse struct {
 	// mode, a provider with no zero-data-retention routing. One sentence each,
 	// safe to print. Additive: older clients ignore it.
 	Notes []string `json:"notes,omitempty"`
+
+	Error string `json:"error,omitempty"`
+}
+
+// MCPRequest asks the RUNNING daemon about its tools, or changes the MCP servers
+// the user has added to it.
+//
+// IT GOES TO THE DAEMON BECAUSE ONLY THE DAEMON KNOWS. A client used to answer
+// "what tools are on?" by running a second copy of the daemon binary, which
+// loaded whatever models.json it found for itself -- so a daemon started with
+// one config was described by another, and said "agent mode is OFF" while its
+// tools were on (FOUND 2026-10-11).
+type MCPRequest struct {
+	ProtocolVersion int `json:"protocol_version"`
+
+	// MCP is the discriminator, like ConnectRequest.Connect.
+	MCP bool `json:"mcp"`
+
+	// Action is MCPActionList (also what empty means), MCPActionAdd or
+	// MCPActionRemove.
+	Action string `json:"action,omitempty"`
+
+	// Name is the user's own word for the server: it is what approval prompts
+	// and the audit log call it. Set for add and remove.
+	Name string `json:"name,omitempty"`
+
+	// Command and Args are what add runs -- executed directly, never through a
+	// shell. Env lists NAMES of environment variables to pass through from the
+	// daemon's environment; a value is never carried here.
+	Command string   `json:"command,omitempty"`
+	Args    []string `json:"args,omitempty"`
+	Env     []string `json:"env,omitempty"`
+
+	// AcknowledgedUnconfined is the user's typed agreement that this server
+	// runs with their full privileges. Without it add stores nothing and
+	// answers with what is being agreed to (MCPResponse.NeedsAcknowledgement).
+	AcknowledgedUnconfined bool `json:"acknowledged_unconfined,omitempty"`
+}
+
+// The actions an MCPRequest can name.
+const (
+	MCPActionList   = "list"
+	MCPActionAdd    = "add"
+	MCPActionRemove = "remove"
+)
+
+// MCPServerInfo is one configured third-party server, in terms safe to print.
+type MCPServerInfo struct {
+	Name string `json:"name"`
+	// Command is the program and its arguments, as one line.
+	Command string `json:"command"`
+	// Source is MCPSourceConfig for a server the daemon's config file names,
+	// MCPSourceUser for one added through an MCPRequest.
+	Source   string `json:"source"`
+	Disabled bool   `json:"disabled,omitempty"`
+}
+
+// Where a configured server came from.
+const (
+	MCPSourceConfig = "config"
+	MCPSourceUser   = "user"
+)
+
+// MCPResponse answers an MCPRequest.
+type MCPResponse struct {
+	ProtocolVersion int  `json:"protocol_version"`
+	Ok              bool `json:"ok"`
+
+	// AgentMode reports whether this daemon offers tools at all.
+	AgentMode bool `json:"agent_mode"`
+
+	// Report is the tool table `mcp list` prints, for the daemon that answered:
+	// its config, its workspace, its servers. Set for a list.
+	Report string `json:"report,omitempty"`
+
+	// Servers are the third-party servers configured, whether or not they
+	// answered just now.
+	Servers []MCPServerInfo `json:"servers,omitempty"`
+
+	// NeedsAcknowledgement is set when an add was NOT performed because the
+	// request carried no acknowledgement. Detail then says what the server
+	// would be able to do.
+	NeedsAcknowledgement bool `json:"needs_acknowledgement,omitempty"`
+
+	// Detail is what happened, in a sentence or two. Notes are consequences
+	// worth saying separately. Both are safe to print.
+	Detail string   `json:"detail,omitempty"`
+	Notes  []string `json:"notes,omitempty"`
 
 	Error string `json:"error,omitempty"`
 }
@@ -1740,6 +1853,10 @@ type StatusTier struct {
 	// Default marks the config's default_tier: the model a turn uses when the
 	// client names none. Clients mark it rather than assume it is "primary".
 	Default bool `json:"default,omitempty"`
+	// Quiet marks a model the provider lists that did not answer when the key
+	// was connected. Still selectable -- it may answer another day -- and a
+	// client offering a choice puts it last rather than first.
+	Quiet bool `json:"quiet,omitempty"`
 }
 
 type StatusResponse struct {

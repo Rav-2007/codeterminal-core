@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/url"
@@ -170,11 +171,22 @@ func (s *Server) connectResult(ctx context.Context, req protocol.ConnectRequest)
 		if warn != "" {
 			detail += "; " + warn
 		}
-		return protocol.ConnectResponse{
+		return s.shownInForce(stored, protocol.ConnectResponse{
 			Ok: true, Outcome: protocol.ConnectShown, Detail: detail,
 			MaskedKey: maskKey(stored.APIKey), APIBase: stored.APIBase,
 			InUse: stored.configured() && !envOverride, EnvOverride: envOverride,
+		})
+	}
+
+	// A CHOICE OF MODEL CARRIES NO KEY, so it is answered before a key is looked
+	// for. Only when no key came with it: a request that names both is a connect,
+	// and the model it leaves in force is the one the provider answers for.
+	if strings.TrimSpace(req.APIKey) == "" && (req.ClearModel || strings.TrimSpace(req.ChooseModel) != "") {
+		name := strings.TrimSpace(req.ChooseModel)
+		if req.ClearModel {
+			name = ""
 		}
+		return s.chooseModel(path, name, envOverride)
 	}
 
 	key := strings.TrimSpace(req.APIKey)
@@ -299,6 +311,9 @@ func (s *Server) setProvider(key, base string, tiers *Config) {
 		s.apiBase = base
 	}
 	s.tierCfg = tiers
+	// A model chosen among the last credential's models says nothing about
+	// this one's.
+	s.chosenCfg = nil
 	// The live credential changed, so the literal scrubber must track the new
 	// value (and stop matching the old one). Rebuilt under the same lock that
 	// guards the swap, so a concurrent reader sees a matcher consistent with the
@@ -307,12 +322,98 @@ func (s *Server) setProvider(key, base string, tiers *Config) {
 }
 
 // tierConfig is the config whose tiers are in force: the provider's own models
-// when the provider in use has them (see Server.tierCfg), otherwise cfg.
+// when the provider in use has them (see Server.tierCfg), otherwise cfg -- and
+// either one with the user's chosen model as its default, when they chose one.
 func (s *Server) tierConfig() *Config {
 	s.credMu.RLock()
 	defer s.credMu.RUnlock()
+	if s.chosenCfg != nil {
+		return s.chosenCfg
+	}
+	return s.unchosenTierConfig()
+}
+
+// unchosenTierConfig is the config in force before any model was chosen. The
+// caller holds credMu.
+func (s *Server) unchosenTierConfig() *Config {
 	if s.tierCfg != nil {
 		return s.tierCfg
 	}
 	return s.cfg
+}
+
+// withDefaultTier is cfg with name as its default tier, or nil when cfg offers
+// no active tier of that name -- which is the whole validation of a model
+// choice: it must be something /model lists and could select.
+func withDefaultTier(cfg *Config, name string) *Config {
+	if cfg == nil {
+		return nil
+	}
+	tier, listed := cfg.Tiers[name]
+	if !listed || !tier.Active || strings.TrimSpace(tier.Slug) == "" {
+		return nil
+	}
+	out := *cfg
+	out.DefaultTier = name
+	return &out
+}
+
+// chooseModel makes name the model prompts go to, for this daemon now and --
+// when there is a stored key to keep it beside -- for the next start as well.
+// An empty name goes back to the model that was in force before any choice.
+//
+// WHY THE DAEMON KEEPS IT AND NOT EACH CLIENT. /model used to be a field one
+// client remembered until it closed, so the model picked on Monday was gone on
+// Tuesday and a second client never heard of it. The owner asked for the model
+// chosen at setup to still be the model after a restart (2026-10-11), and the
+// one place that outlives every client is the credential the choice belongs to.
+//
+// SAVED ONLY BESIDE THE KEY THAT IS IN FORCE. With a key from the environment,
+// or in proxy mode, or with a stored key issued for another address, writing
+// the name into credentials.json would attach one provider's model to another
+// provider's key. The choice still takes effect for this run, and the answer
+// says plainly that a restart will not keep it.
+func (s *Server) chooseModel(path, name string, envOverride bool) protocol.ConnectResponse {
+	s.credMu.Lock()
+	base := s.unchosenTierConfig()
+	var chosen *Config
+	if name != "" {
+		if chosen = withDefaultTier(base, name); chosen == nil {
+			s.credMu.Unlock()
+			return protocol.ConnectResponse{Error: fmt.Sprintf("no model named %q is offered here, or it is switched off; /model lists the ones that are", name)}
+		}
+	}
+	s.chosenCfg = chosen
+	inUseBase := s.apiBase
+	s.credMu.Unlock()
+
+	inForce := base.DefaultTier
+	if chosen != nil {
+		inForce = name
+	}
+	resp := protocol.ConnectResponse{
+		Ok: true, Outcome: protocol.ConnectModelChosen, Model: inForce,
+		InUse: true, EnvOverride: envOverride,
+	}
+
+	stored, _, loadErr := loadCredential(path)
+	switch {
+	case envOverride && launchKeySupplied.Load() && strings.TrimSpace(os.Getenv("MOCHIII_API_KEY")) == "":
+		resp.Detail = "kept until this daemon stops: its key was handed over by the program that started it, so there is no stored key to save the choice beside"
+	case envOverride:
+		resp.Detail = "kept until this daemon stops: its key comes from the environment, so there is no stored key to save the choice beside"
+	case loadErr != nil:
+		resp.Detail = "kept until this daemon stops: the stored key could not be read (" + loadErr.Error() + ")"
+	case !stored.configured() || !stored.issuedFor(firstNonEmpty(inUseBase, defaultAPIBase)):
+		resp.Detail = "kept until this daemon stops: no key is stored for the provider in use, so there is nothing to save the choice beside"
+	default:
+		stored.ChosenModel = name
+		if err := saveCredential(path, stored); err != nil {
+			resp.Detail = "kept until this daemon stops: it could not be saved (" + err.Error() + ")"
+			break
+		}
+		resp.ModelSaved = true
+		resp.Detail = "saved beside the key, so it is still the model after a restart"
+	}
+	return resp
 }

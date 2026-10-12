@@ -104,16 +104,16 @@ func hostilePayloads(t *testing.T, root, sentinelDir string) {
 	}
 }
 
-// trustedFakeDaemon stands in for a real daemon at a location the workspace
-// does NOT control, and fires the mcp-server sentinel if it is handed any path
-// under the workspace.
+// trustedFakeDaemon is a daemon binary at a location the workspace does NOT
+// control -- on PATH, and named by the old MOCHIII_DAEMON_BIN override -- that
+// fires the mcp-server sentinel if it is run AT ALL.
 //
-// It exists because the first version of this test had no daemon anywhere, so
-// /mcp-server answered "binary not found" and returned before the --config
-// argument mattered -- the guard passed with that fix removed too. A real
-// `mcp list` STARTS the servers a config names (confirmed by execution), so
-// "a workspace path reached the daemon's argv" is the faithful assertion.
-func trustedFakeDaemon(t *testing.T, workspaceRoot, sentinelDir string) string {
+// It used to fire only when handed a workspace path, because /mcp-server
+// legitimately ran a daemon from a trusted place and the question was what it
+// passed along. Since 2026-10-11 the command asks the running daemon over its
+// socket and runs nothing (mcpserver.go), so the faithful assertion is the
+// stronger one: no slash command starts a daemon binary, from anywhere.
+func trustedFakeDaemon(t *testing.T, sentinelDir string) string {
 	t.Helper()
 	dir := t.TempDir()
 	sentinel := filepath.Join(sentinelDir, "mcp-server.txt")
@@ -121,13 +121,10 @@ func trustedFakeDaemon(t *testing.T, workspaceRoot, sentinelDir string) string {
 	var p, body string
 	if runtime.GOOS == "windows" {
 		p = filepath.Join(dir, "mochiii-daemon.exe")
-		body = "@echo off\r\necho %* | findstr /C:\"" + workspaceRoot + "\" /C:\"models.json\" >nul && echo pwned > \"" + sentinel + "\"\r\n"
+		body = "@echo off\r\necho pwned > \"" + sentinel + "\"\r\n"
 	} else {
 		p = filepath.Join(dir, "mochiii-daemon")
-		// Fires on the workspace root OR on models.json by name -- the real bug
-		// passed "./models.json", which contains no absolute path at all, and an
-		// absolute-only match let it through.
-		body = "#!/bin/sh\ncase \"$*\" in *\"" + workspaceRoot + "\"*|*models.json*) echo pwned > \"" + sentinel + "\";; esac\necho ok\n"
+		body = "#!/bin/sh\necho pwned > \"" + sentinel + "\"\necho ok\n"
 	}
 	if err := os.WriteFile(p, []byte(body), 0o755); err != nil {
 		t.Fatalf("writing trusted fake daemon: %v", err)
@@ -144,17 +141,16 @@ func TestLocalSlashCommands_ExecuteNothingTheWorkspaceSupplies(t *testing.T) {
 	// working directory, and a PATH whose empty entry means "." on POSIX.
 	// Both are exactly how the real bugs were reachable.
 	t.Chdir(root)
-	// A daemon MUST be resolvable, or /mcp-server returns "binary not found"
-	// before --config matters and the guard is vacuous for that vector.
-	//
-	// Reached through PATH, deliberately NOT through MOCHIII_DAEMON_BIN:
-	// that override is consulted FIRST, so setting it skips the workspace
-	// candidates entirely and the binary-hijack vector stops being exercised.
-	// Measured -- with the override set, neutering resolveDaemonBin passed.
-	t.Setenv(daemonBinEnvVar, "")
-	fake := trustedFakeDaemon(t, root, sentinelDir)
+	// A daemon binary IS resolvable every way one ever was -- on PATH and
+	// through the old override -- so "nothing ran" below is a statement about
+	// the commands, not about there being nothing to run.
+	fake := trustedFakeDaemon(t, sentinelDir)
+	t.Setenv("MOCHIII_DAEMON_BIN", fake)
 	t.Setenv("PATH", filepath.Dir(fake)+string(os.PathListSeparator)+
 		os.Getenv("PATH")+string(os.PathListSeparator))
+	// And no daemon to reach: a command that asks one fails fast, here, rather
+	// than finding whichever daemon the developer happens to have running.
+	t.Cleanup(setLockPathForTest(t, filepath.Join(t.TempDir(), "absent.lock")))
 
 	m := newChatModel("test", root, root, nil)
 
@@ -173,7 +169,14 @@ func TestLocalSlashCommands_ExecuteNothingTheWorkspaceSupplies(t *testing.T) {
 					t.Errorf("/%s panicked against a hostile workspace: %v", cmd.Name, r)
 				}
 			}()
-			m.handleLocalSlash(cmd.Name, args)
+			_, next := m.handleLocalSlash(cmd.Name, args)
+			// /mcp-server does its work in the command it returns, so that has
+			// to run too or this checks only that it was scheduled.
+			if cmd.Name == "mcp-server" {
+				if _, ok := findMsg[mcpResultMsg](next); !ok {
+					t.Error("/mcp-server returned no answer at all")
+				}
+			}
 		}()
 	}
 

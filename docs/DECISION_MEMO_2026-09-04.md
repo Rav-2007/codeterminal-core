@@ -241,10 +241,10 @@ nobody declined to read this; nobody had been asked.
 
 ### The chain, end to end
 
-1. `runMCPServerList` (`clients/tui/slash.go:381`) runs
-   `mochiii-daemon mcp list` with `CombinedOutput()` at
-   `clients/tui/slash.go:411` and puts the result in a system turn **on the
-   user's screen**.
+1. `runMCPServerList` (`clients/tui/slash.go`, line 381 when this was written)
+   runs `mochiii-daemon mcp list` with `CombinedOutput()` (line 411 then) and
+   puts the result in a system turn **on the user's screen**. *(Both were
+   removed 2026-10-11, when the TUI began asking the running daemon instead of starting a second one — `clients/tui/mcpserver.go`.)*
 2. `mcp list` **starts the configured servers** — that is how it enumerates
    tools. `daemon/mcp_cmd.go` builds a registry and `daemon/mcpruntime.go:208`
    connects each server with `serverStderr(name, logger)`.

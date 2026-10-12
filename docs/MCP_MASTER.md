@@ -21,7 +21,7 @@ Evidence labels: **CONFIRMED** / **PLAUSIBLE** / **NOT RUN**.
 | **This file** | Merge readiness + quick re-runs |
 | [`MCP_DEBUG_PLAYBOOK.md`](MCP_DEBUG_PLAYBOOK.md) | Symptom triage, role split, hermetic matrix, CTO gate detail |
 | [`MCP_ROBUSTNESS_REPORT_2026-08-03.md`](MCP_ROBUSTNESS_REPORT_2026-08-03.md) | Flood 64 MiB, echo soak, orphan soak, interop numbers |
-| [`MCP_LANE_B_THREAT_MODEL.md`](MCP_LANE_B_THREAT_MODEL.md) | M1–M8 walked against hostile peers |
+| [`MCP_LANE_B_THREAT_MODEL.md`](MCP_LANE_B_THREAT_MODEL.md) | M1–M8 walked against hostile peers; who can add a server (`/mcp-server add`, 2026-10-11) |
 | [`../SECURITY_MODEL.md`](../SECURITY_MODEL.md) | Canonical Lane A / Lane B security position |
 | [`OPEN_ITEMS.md`](OPEN_ITEMS.md) | Engineering register (MCP pointer below) |
 | [`AGENT_MODE_QA_GATE_2026-08-01.md`](AGENT_MODE_QA_GATE_2026-08-01.md) | Original agent-mode gate (historical verdict preserved) |

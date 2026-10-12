@@ -190,7 +190,7 @@ date attached.
 | [`ROBUSTNESS_BASELINE.md`](ROBUSTNESS_BASELINE.md) | The robustness numbers, promoted out of a scratchpad |
 | [`CHUNK_SCRUB_FIRE_RATE.md`](CHUNK_SCRUB_FIRE_RATE.md) | The 33%-of-chunks / zero-precision data that killed warn-mode Design B |
 | [`AGENT_MODE_COST_2026-08-01.md`](AGENT_MODE_COST_2026-08-01.md) | What an agent turn costs |
-| [`TOOL_MENU_SIZE_2026-08-01.md`](TOOL_MENU_SIZE_2026-08-01.md) | Selection accuracy vs menu width: flat between 5 and 12 |
+| [`TOOL_MENU_SIZE_2026-08-01.md`](TOOL_MENU_SIZE_2026-08-01.md) | Selection accuracy vs menu width: flat between 5 and 12; measured to 32 on 2026-10-12 |
 | [`TOOLCALL_RELIABILITY_2026-07-31.md`](TOOLCALL_RELIABILITY_2026-07-31.md) | Tool-selection degradation as the menu widens |
 | [`AGENT_LOOP_RELIABILITY_2026-07-31.md`](AGENT_LOOP_RELIABILITY_2026-07-31.md) | Agent-loop failure modes that did **not** occur |
 | [`RETRIEVAL_EVAL_CHECKPOINT_2026-08-08.md`](RETRIEVAL_EVAL_CHECKPOINT_2026-08-08.md) | The gated eval suite run by hand at `23550e4`: 15/15, 8/9, 90.1% — and what the excluded fourth test actually measures |

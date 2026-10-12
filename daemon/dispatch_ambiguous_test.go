@@ -108,6 +108,7 @@ func TestDispatch_TwoDiscriminatorsNeverReachTheDestructiveHandler(t *testing.T)
 		{"edit then search", edit + `,"search":true`},
 		{"edit then approval", edit + `,"approval":true`},
 		{"edit then connect", edit + `,"connect":true`},
+		{"edit then mcp", edit + `,"mcp":true`},
 		{"chats then edit", `"chats":true,"action":"delete",` + edit},
 		{"every discriminator at once", `"status":true,"search":true,"undo":true,` + edit},
 	} {

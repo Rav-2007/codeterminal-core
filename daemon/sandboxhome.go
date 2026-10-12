@@ -23,8 +23,9 @@ import (
 // Measured before this existed: 1,712 folders and 232 MB, 1,107 of them empty.
 //
 // The contrast that made it a defect rather than a trade was in the same
-// codebase: conversation history is bounded, and pruned at thirty days
-// (maxTurnAge in memory.go). This is the same bound, for the same reason.
+// codebase: conversation history is bounded (maxTurnsPerWorkspace in
+// memory.go). This is bounded too, for the same reason -- by age rather than
+// by count, because a cache can be rebuilt and a conversation cannot.
 //
 // THIS FILE DELETES THINGS, so what it will and will not touch is stated as
 // rules and each rule has a test:
@@ -43,8 +44,8 @@ import (
 //     next run recognises and finishes.
 
 // sandboxHomeMaxAge is how long a sandbox home may go unused before it is
-// reclaimed. Thirty days, matching maxTurnAge: this is a cache, and the cost of
-// reclaiming one still wanted is a re-download.
+// reclaimed. Thirty days: this is a cache, and the cost of reclaiming one still
+// wanted is a re-download.
 const sandboxHomeMaxAge = 30 * 24 * time.Hour
 
 var (

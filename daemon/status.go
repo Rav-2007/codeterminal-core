@@ -120,6 +120,7 @@ func availableTiers(cfg *Config) []protocol.StatusTier {
 			Active:  t.Active,
 			Note:    t.Note,
 			Default: name == cfg.DefaultTier,
+			Quiet:   t.quiet,
 		})
 	}
 	return out

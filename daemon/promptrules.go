@@ -99,5 +99,7 @@ func holdsRetrievedContext(history []chatMessage, prompt string) bool {
 // hasThirdPartyServer reports whether the configuration names any server this
 // project did not write (Lane B), whose output is what <lane_b_output> wraps.
 func (s *Server) hasThirdPartyServer() bool {
-	return s.cfg != nil && len(s.cfg.MCP.Servers) > 0
+	// The user's own servers count: their output is wrapped the same way.
+	cfg, _ := s.agentConfig()
+	return cfg != nil && len(cfg.MCP.Servers) > 0
 }

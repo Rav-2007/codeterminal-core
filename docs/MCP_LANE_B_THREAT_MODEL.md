@@ -139,6 +139,37 @@ and the ceiling of 64 has been run.
 
 ---
 
+## Who can add a server (added 2026-10-11)
+
+Until 2026-10-11 a Lane B server existed only as a block somebody typed into
+the daemon's config file. It can now also be added from the terminal client
+(`/mcp-server add`) or the command line (`mochiii-daemon mcp add`), and is kept
+in `~/.mochiii/mcp-servers.json`. That is a new way to arrive at "an unconfined
+program runs as the user", so who can reach it is stated here.
+
+| Who | Can they add a server? | Why |
+|---|---|---|
+| The user, in the TUI or CLI | yes, after typing the server's name | The first request stores nothing and answers with what the server could do; only an acknowledged request adds it. Position 1 above — "typed by hand" — still holds, at the moment it applies. |
+| A repository the user opens | **no** | The file is per-user, beside the stored key, never in the workspace. A relative command is refused, so a stored line cannot come to mean a program inside whichever repository the daemon was started in. |
+| The model, through `propose_edit` or an outside read | **no** | `.mochiii` is a protected directory for edits (`editapply` `ProtectedDirNames`) and refused to outside reads (`daemon/outsideread.go`). |
+| The model, through `sandbox_exec` | **no** | A sandboxed command cannot write outside its working copy, and cannot create a Unix socket to reach the daemon (`daemon/mcp/sandbox_landlock_linux.go`). Where a platform has no such sandbox, `sandbox_exec` is what is unsafe, and it says so itself. |
+| Another user on the machine | **no** | The socket is same-UID; the file is 0600 in a 0700 directory, and one found writable by group or other is not loaded at all. |
+| Another process running as the user, or a third-party server already added | yes | Same-UID code can already run any program. This is the "hostile client" case under *What is still true and unfixed*: outside the model, and unchanged. |
+
+What an added server gets is what a configured one gets and no more: policy
+`ask` on every tool, the same environment allow-list (names only — a
+`NAME=value` is refused, and refused without repeating the value), and the same
+launch path, so every row of the matrix above applies to it unchanged.
+
+**New and worth knowing:** an add starts the server once, immediately, to ask
+for its tools. That is the user's own program run at the user's request, after
+the acknowledgement — but it does mean "added" and "has run" are now the same
+moment, where a config-file server does not run until the first agent turn.
+A list (`/mcp-server`) starts every configured server for the same reason, as
+`mcp list` always has.
+
+---
+
 ## Reproducing any row
 
 ```sh

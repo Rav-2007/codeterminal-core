@@ -95,13 +95,12 @@ if [[ -n "${MOCHIII_API_KEY:-}${MOCHIII_PROXY_KEY:-}" ]]; then
 elif [[ -f "$STORED" ]]; then
 	echo "run-tui: no key in the environment; using the one stored by \`mochiii-daemon connect\`"
 else
-	# NO KEY ANYWHERE, AND THIS SCRIPT DOES NOT ASK FOR ONE. Opening the client is
-	# not the moment: a new user should meet the prompt, not a credential form. The
-	# client asks for the key when it is actually needed -- when a question is
-	# submitted and there is nothing to authenticate it with -- and `/connect` is
-	# there before that for anyone who wants to set it up first.
-	echo "run-tui: no API key in the environment, and none stored -- the client will ask" >&2
-	echo "run-tui: for one when you send your first question, or run /connect before then." >&2
+	# NO KEY ANYWHERE, AND THIS SCRIPT DOES NOT ASK FOR ONE. The client does: with
+	# no key in force it opens on its setup -- choose a provider, paste its key,
+	# choose a model (clients/tui/setup.go, owner 2026-10-11). Esc there skips to
+	# the chat, and the key is then asked for when a question is submitted.
+	echo "run-tui: no API key in the environment, and none stored -- the client opens on its" >&2
+	echo "run-tui: setup (provider, key, model). Esc skips it; /connect opens it again." >&2
 fi
 
 # The workspace both halves must agree on. Anything the caller passes wins.

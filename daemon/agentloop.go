@@ -551,8 +551,8 @@ func (s *Server) runAgentLoop(
 			// answered half the question it raised; `mcp list` has always named
 			// them, and this is the live path reaching the same bar.
 			Detail: fmt.Sprintf("%d configured tool(s) were not offered to the model this turn, "+
-				"because mcp.budget.max_advertised_tools is %d: %s. A wider menu measurably makes the "+
-				"model choose worse, so the limit is deliberate — raise it if you need these tools.",
+				"because mcp.budget.max_advertised_tools is %d: %s. Every tool on the menu costs tokens on every request and a "+
+				"wider one made the model choose worse on a borderline request, so the limit is deliberate — raise it if you need these tools.",
 				len(dropped), s.cfg.MCP.Budget.resolvedMaxAdvertisedToolsFor(mode), strings.Join(dropped, ", ")),
 		})
 	}

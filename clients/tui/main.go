@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/mattn/go-isatty"
@@ -116,16 +117,27 @@ func runChat(workspace string) {
 	}
 
 	model := newChatModel("mochiii-tui", absWorkspace, workspaceRoot, persistedHistory)
-	// Carried from the handshake rather than asked for here: the client opens on the
-	// prompt, and asks for a key only when a question actually needs one. See
-	// beginConnectForPrompt in connect.go.
+	// Carried from the handshake rather than asked for here. It holds a question
+	// back until a key is in force (beginConnectForPrompt in connect.go), and
+	// decides which screen the client opens on, just below.
 	model.needsAPIKey = needsAPIKey
 	model.chatSync, model.chatRev = chatRev != "", chatRev
+	// NO KEY IN FORCE: open on the setup -- provider, key, model -- instead of
+	// the splash (setup.go, owner 2026-10-11). Esc there goes to the prompt,
+	// which still asks for a key when the first question needs one.
+	if needsAPIKey {
+		model = model.withFirstRunSetup()
+	}
 	// Said once, first thing: a daemon older than this client cannot save
 	// chats, and the user should hear it before /history refuses.
 	if !daemonSavesChats {
 		model.appendTurn(turn{role: roleSystem, text: "⚠ " + errDaemonPredatesHistory.Error() +
 			" (until then /history does not work)"})
+	} else if len(persistedHistory) > 0 {
+		// Under the turns it describes, so it is the line beside the prompt.
+		if note := model.continuedChatNote(len(persistedHistory), time.Now()); note != "" {
+			model.appendTurn(turn{role: roleSystem, text: note})
+		}
 	}
 
 	// Mouse capture ON: the wheel scrolls the transcript as mouse events, which
