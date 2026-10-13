@@ -71,6 +71,7 @@ Fixes are named by the property, not the commit.
 | M6b | puts escapes in tool **output** | passed to the model verbatim | stripped at the egress choke point, announced | R |
 | M7 | forges approval JSON in a result | ignored; the next call still asked | unchanged — **the property held** | R |
 | M8 | is launched via `npx`/`uvx` | — | the child sees the **launcher's** environment too: 25 variables against the 2 we passed | I |
+| M9 | is launched via `npx`/`uvx`/`python -m` **while the daemon sits in a project** | started in the daemon's own folder — the open project, under the VS Code extension — so the launcher resolved what to run from that project's `.npmrc`, `node_modules/.bin` or modules, before any tool asked | started in a private folder of its own (`<user cache>/mochiii/mcp-run/<name>`, 0700); in the project only when its block says `"cwd": "workspace"`; **not started** when there is nowhere private | R for the folder (`daemon/mcpcwd_test.go`). What a launcher does with a hostile folder is from its documentation; it was not run here |
 
 ### M5 and M7 are the two that were already right
 

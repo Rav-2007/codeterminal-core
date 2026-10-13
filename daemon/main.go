@@ -492,6 +492,7 @@ func main() {
 			chosenCfg:       chosenCfg,
 			configPath:      absoluteOrAsGiven(resolvedConfigPath),
 			userServersPath: userServersPathOrNone(logger),
+			mcpRunDir:       mcpRunDirOrNone(logger),
 		},
 		modelOverride:           *modelOverride,
 		systemPrompt:            systemPrompt,

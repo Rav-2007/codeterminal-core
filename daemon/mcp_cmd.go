@@ -55,11 +55,12 @@ func runMCPCommand(args []string, logger *log.Logger) error {
 func mcpUsage() {
 	fmt.Fprintf(os.Stderr, "usage:\n"+
 		"  %[1]s mcp list   [--config models.json] [--workspace .]\n"+
-		"  %[1]s mcp add    <name> [--env NAME]... [--acknowledge-unconfined] -- <command> [args...]\n"+
+		"  %[1]s mcp add    <name> [--env NAME]... [--in-project] [--acknowledge-unconfined] -- <command> [args...]\n"+
 		"  %[1]s mcp remove <name>\n\n"+
 		"list shows every tool agent mode would offer the model, with the policy that applies to it.\n"+
 		"It starts the configured MCP servers to ask them, and shuts them down again.\n\n"+
-		"add stores an MCP server of your own in ~/.mochiii/%[2]s; remove drops one. A running\n"+
+		"add stores an MCP server of your own in ~/.mochiii/%[2]s; remove drops one. The server is\n"+
+		"started in a private folder of its own unless --in-project is given. A running\n"+
 		"daemon picks the change up at the next question. In the terminal client the same\n"+
 		"commands are /mcp-server, /mcp-server add and /mcp-server remove.\n", os.Args[0], userMCPFileName)
 }
@@ -110,7 +111,7 @@ func runMCPList(args []string, logger *log.Logger) error {
 	// this command does not start the embedder.
 	srv := &Server{
 		cfg: cfg, workspace: root, logger: logger,
-		serverExtras: serverExtras{configPath: absoluteOrAsGiven(resolvedConfigPath), userServersPath: userServersPathOrNone(logger)},
+		serverExtras: serverExtras{configPath: absoluteOrAsGiven(resolvedConfigPath), userServersPath: userServersPathOrNone(logger), mcpRunDir: mcpRunDirOrNone(logger)},
 	}
 	// The servers the user added count, exactly as they do for a running
 	// daemon (mcpuser.go).
@@ -257,6 +258,7 @@ func runMCPAdd(args []string, logger *log.Logger) error {
 	var env envNames
 	fs.Var(&env, "env", "NAME of an environment variable to pass through to the server (repeatable; a name, never a value)")
 	ack := fs.Bool("acknowledge-unconfined", false, "confirm, without being asked, that the server runs with your full privileges")
+	inProject := fs.Bool("in-project", false, "start the server inside the project being worked on, instead of a private folder of its own")
 	configPath := fs.String("config", "", "path to models.json (default: next to the daemon binary, then ./models.json)")
 	fs.Usage = mcpUsage
 
@@ -283,6 +285,9 @@ func runMCPAdd(args []string, logger *log.Logger) error {
 	req := protocol.MCPRequest{
 		MCP: true, Action: protocol.MCPActionAdd, Name: name,
 		Command: rest[0], Args: rest[1:], Env: env, AcknowledgedUnconfined: *ack,
+	}
+	if *inProject {
+		req.Cwd = protocol.MCPCwdWorkspace
 	}
 	ctx := context.Background()
 	resp := srv.mcpResult(ctx, req)
@@ -347,7 +352,7 @@ func mcpAdminServer(configPath string, logger *log.Logger) (*Server, error) {
 	root, _ := editapply.ResolveRealWorkspaceRoot(".")
 	return &Server{
 		cfg: cfg, workspace: root, logger: logger,
-		serverExtras: serverExtras{configPath: absoluteOrAsGiven(configPath), userServersPath: path},
+		serverExtras: serverExtras{configPath: absoluteOrAsGiven(configPath), userServersPath: path, mcpRunDir: mcpRunDirOrNone(logger)},
 	}, nil
 }
 

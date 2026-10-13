@@ -102,12 +102,17 @@ func toRegistryPolicy(s string) mcp.Policy {
 // at config time (the caller checks it before ever reaching here) and
 // Tool.Confined == false at approval time, which is what the client prints
 // over the prompt. Neither is a sandbox and neither is described as one.
-func laneBLaunchConfig(name string, srv MCPServerConfig, cfg *Config, stderr io.Writer, logf func(string, ...any)) mcp.LaunchConfig {
+//
+// dir is the folder the server starts in, from Server.serverStartDir. It is a
+// parameter and not something this function works out so that it cannot be
+// left empty by forgetting: every caller has to say where.
+func laneBLaunchConfig(name string, srv MCPServerConfig, cfg *Config, dir string, stderr io.Writer, logf func(string, ...any)) mcp.LaunchConfig {
 	return mcp.LaunchConfig{
 		Name:     name,
 		Command:  srv.Command,
 		Args:     srv.Args,
 		EnvAllow: srv.Env,
+		Dir:      dir,
 		Stderr:   stderr,
 		Logf:     logf,
 		// The one budget field that bounds ALLOCATION rather than egress: what
@@ -224,7 +229,16 @@ func (s *Server) buildRegistry(ctx context.Context, logger *log.Logger, proposal
 			// decision, with the honest unknown attached: nobody has
 			// established whether any input actually panics the SDK.
 			defer recoverLaneBConnect(name, logger.Printf)
-			client, err := mcp.Connect(ctx, laneBLaunchConfig(name, srv, cfg, serverStderr(name, logger), logger.Printf))
+			// In a folder of its own, or not at all (mcpstartdir.go).
+			var client *mcp.StdioClient
+			dir, err := s.serverStartDir(name, srv)
+			if err != nil {
+				// The server's tools are gone for this turn, which is what a
+				// server that would not start costs: reported the same way.
+				err = fmt.Errorf("%w: %v", mcp.ErrServerUnavailable, err)
+			} else {
+				client, err = mcp.Connect(ctx, laneBLaunchConfig(name, srv, cfg, dir, serverStderr(name, logger), logger.Printf))
+			}
 			mu.Lock()
 			results = append(results, connectResult{name: name, client: client, err: err})
 			mu.Unlock()

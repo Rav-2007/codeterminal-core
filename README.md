@@ -347,7 +347,7 @@ All commands are subcommands of the `mochiii-daemon` binary.
 | `edits apply [--workspace p] [file\|-]` | Apply SEARCH/REPLACE blocks, or a unified diff, from a response |
 | `edits undo [--workspace p] [--session ts] [--force]` | Restore a backup session |
 | `mcp list [--config p]` | Show what agent mode would advertise, and its policy |
-| `mcp add <name> [--env NAME] -- <command> [args…]` · `mcp remove <name>` | Add or remove an MCP server of your own ([agent mode](#agent-mode)) |
+| `mcp add <name> [--env NAME] [--in-project] -- <command> [args…]` · `mcp remove <name>` | Add or remove an MCP server of your own ([agent mode](#agent-mode)) |
 | `skills list [--limit N] [--json]` · `skills delete <id>` | Local skills store |
 | `download-model` | Fetch the pinned BGE model + onnxruntime library |
 | `helper-smoketest <text>` | Spawn the helper, embed one string, shut down |
@@ -952,7 +952,7 @@ Two trust lanes, and **which map a server sits in *is* its lane** — there is n
 /mcp-server remove files
 ```
 
-(`mochiii-daemon mcp add <name> [--env NAME] -- <command> [args…]` is the same
+(`mochiii-daemon mcp add <name> [--env NAME] [--in-project] -- <command> [args…]` is the same
 thing with no daemon running.)
 
 - **It asks first, and you type the server's name.** The daemon answers an add
@@ -962,6 +962,13 @@ thing with no daemon running.)
 - **Then it is tried.** The server is started once and asked for its tools, so
   the answer is either "it started and offers N tools" or "saved, but it did
   not start", with the reason. It is live from your next question: no restart.
+- **It starts in a folder of its own, not in your project.** A launcher such
+  as `npx`, `uvx` or `python -m` decides what to run partly from the folder it
+  starts in — a project's `.npmrc` can name another registry — so a server you
+  added once would otherwise be resolved by whichever project you opened next.
+  Give a server the project's path as an argument, or add it with
+  `--in-project` (`"cwd": "workspace"` in a config block) when it has to start
+  there; the add says which you are agreeing to.
 - **Its tools ask before every call**, like any tool with no policy listed.
 - **The model is shown at most 24 tools at a time**
   (`mcp.budget.max_advertised_tools`), and the daemon's own come first. With

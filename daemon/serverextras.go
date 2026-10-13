@@ -40,6 +40,12 @@ type serverExtras struct {
 	// Empty means there is none to read -- which is what every Server built
 	// outside main has, so a test never starts the developer's own servers.
 	userServersPath string
+	// mcpRunDir holds one private folder per third-party MCP server, which is
+	// where that server is started (see Server.serverStartDir). Empty means
+	// there is nowhere private, and then such a server is not started at all:
+	// it never falls back to the folder this daemon happens to be running in,
+	// which under the VS Code extension is the project being worked on.
+	mcpRunDir string
 	// mcpAdminMu serialises MCPRequests: a list starts the configured servers
 	// to ask them their tools, and two at once would start each twice; an add
 	// and a remove must not interleave their read-change-write of one file.

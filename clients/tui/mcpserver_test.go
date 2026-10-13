@@ -300,3 +300,43 @@ func TestSplitCommandLine(t *testing.T) {
 		}
 	}
 }
+
+// --in-project IS A FLAG OF THE ADD, NOT A WORD OF THE COMMAND. A server starts
+// in a private folder of its own unless the add says otherwise, and "otherwise"
+// must reach the daemon as the request's own field -- handed to the server as
+// an argument it would be ignored there and the user would believe it applied.
+func TestInProjectIsCarriedByTheAddRequest(t *testing.T) {
+	plain, err := parseMCPAdd([]string{"files", "npx", "-y", "server", "/home/me/notes"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plain.Cwd != "" {
+		t.Errorf("an add that did not ask for the project carries cwd %q", plain.Cwd)
+	}
+
+	for _, words := range [][]string{
+		{"git", "--in-project", "uvx", "mcp-server-git"},
+		{"git", "--env", "TOKEN", "--in-project", "uvx", "mcp-server-git"},
+		{"git", "--in-project", "--env", "TOKEN", "uvx", "mcp-server-git"},
+	} {
+		req, err := parseMCPAdd(words)
+		if err != nil {
+			t.Fatalf("%v: %v", words, err)
+		}
+		if req.Cwd != protocol.MCPCwdWorkspace {
+			t.Errorf("%v: cwd %q, want %q", words, req.Cwd, protocol.MCPCwdWorkspace)
+		}
+		if req.Command != "uvx" || len(req.Args) != 1 || req.Args[0] != "mcp-server-git" {
+			t.Errorf("%v: the flag leaked into the command: %q %q", words, req.Command, req.Args)
+		}
+	}
+
+	// After the command starts, everything is the command's.
+	req, err := parseMCPAdd([]string{"git", "uvx", "mcp-server-git", "--in-project"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.Cwd != "" || len(req.Args) != 2 {
+		t.Errorf("a word after the command was read as this client's flag: cwd=%q args=%q", req.Cwd, req.Args)
+	}
+}

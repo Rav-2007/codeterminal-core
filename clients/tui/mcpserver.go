@@ -41,11 +41,12 @@ type mcpResultMsg struct {
 
 // mcpServerUsage is what the command says when it cannot read what was typed.
 const mcpServerUsage = "/mcp-server                                   the tools this daemon offers, and its MCP servers\n" +
-	"/mcp-server add <name> [--env NAME] <command> [args…]   add an MCP server of your own\n" +
+	"/mcp-server add <name> [--env NAME] [--in-project] <command> [args…]   add an MCP server of your own\n" +
 	"/mcp-server remove <name>                     remove one you added\n\n" +
 	"Example: /mcp-server add files npx -y @modelcontextprotocol/server-filesystem /home/me/notes\n\n" +
 	"--env takes the NAME of a variable in the daemon's environment (export it, or put it in .env, before " +
-	"starting Mochiii). Never type a secret here: the command and its arguments are stored and shown."
+	"starting Mochiii). Never type a secret here: the command and its arguments are stored and shown.\n" +
+	"A server starts in a private folder of its own; --in-project starts it inside the project instead."
 
 // sendMCP hands the daemon an MCPRequest and returns its answer.
 func sendMCP(clientName string, req protocol.MCPRequest) (protocol.MCPResponse, error) {
@@ -143,7 +144,7 @@ var errMCPSecret = errors.New("that puts a VALUE on the command line, where it w
 	"environment (export it, or put it in .env) before starting Mochiii")
 
 // parseMCPAdd reads what follows "/mcp-server add": a name, any --env NAME
-// flags, then the command and its arguments.
+// and --in-project flags, then the command and its arguments.
 func parseMCPAdd(words []string) (protocol.MCPRequest, error) {
 	if len(words) == 0 {
 		return protocol.MCPRequest{}, errors.New("add needs a name for the server and the command that runs it")
@@ -155,6 +156,10 @@ func parseMCPAdd(words []string) (protocol.MCPRequest, error) {
 		switch {
 		case word == "--":
 			rest = rest[1:]
+		case word == "--in-project":
+			req.Cwd = protocol.MCPCwdWorkspace
+			rest = rest[1:]
+			continue
 		case word == "--env":
 			if len(rest) < 2 {
 				return protocol.MCPRequest{}, errors.New("--env needs the name of a variable after it")

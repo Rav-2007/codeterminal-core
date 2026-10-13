@@ -148,6 +148,7 @@ func unconfinedWarning(name string, srv MCPServerConfig) string {
 	if len(srv.Env) > 0 {
 		fmt.Fprintf(&b, "\n\nIt will be given these variables from the daemon's environment: %s.", strings.Join(srv.Env, ", "))
 	}
+	b.WriteString("\n\n" + startsWhere(srv))
 	b.WriteString("\n\nOnly add a server whose program you trust.")
 	return b.String()
 }
@@ -172,7 +173,7 @@ func (s *Server) mcpAdd(ctx context.Context, req protocol.MCPRequest) protocol.M
 	name := strings.TrimSpace(req.Name)
 	srv := MCPServerConfig{
 		Command: strings.TrimSpace(req.Command), Args: req.Args, Env: req.Env,
-		AcknowledgedUnconfined: true,
+		AcknowledgedUnconfined: true, Cwd: strings.TrimSpace(req.Cwd),
 	}
 	if err := validateUserServer(name, srv); err != nil {
 		return protocol.MCPResponse{Error: err.Error() + "; nothing was added"}
