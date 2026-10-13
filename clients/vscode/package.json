@@ -177,7 +177,7 @@
       }
     ],
     "viewsContainers": {
-      "activitybar": [
+      "secondarySidebar": [
         {
           "id": "mochiii",
           "title": "Mochiii",

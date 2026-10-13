@@ -318,6 +318,18 @@
       case 'stateChanged':
         query(0, Math.max(PAGE, state.items.length));
         return;
+      case 'search':
+        // /mcp-server <words> in the chat. Across both tiers: someone who typed
+        // a name wants it found, not only if Mochiii happened to verify it.
+        window.clearTimeout(debounce);
+        search.value = String(msg.q);
+        state.q = search.value;
+        state.tier = 'all';
+        state.category = '';
+        category.value = '';
+        drawTabs();
+        query(0, PAGE);
+        return;
       case 'focus':
         state.focus = msg.item;
         drawFocus();

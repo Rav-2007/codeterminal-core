@@ -171,29 +171,38 @@ export class McpMarketplace {
   private lastQuery: Query = { q: '', tier: 'verified', category: '', offset: 0, limit: PAGE };
   private readonly disposables: vscode.Disposable[] = [];
 
-  /** show opens (or reveals) the marketplace; focusId puts one server first. */
+  /**
+   * show opens (or reveals) the marketplace. focusId puts one server first (a
+   * mochiii.in link); search fills the search box (/mcp-server <words> in the
+   * chat). Resolves false when the user declined the notice and nothing opened.
+   */
   static async show(
     context: vscode.ExtensionContext,
     provider: McpServersProvider,
     clientName: string,
     focusId?: string,
-  ): Promise<void> {
+    search?: string,
+  ): Promise<boolean> {
     if (!(await acceptNotice(context))) {
-      return;
+      return false;
     }
     if (McpMarketplace.current) {
       McpMarketplace.current.panel.reveal();
       if (focusId) {
         await McpMarketplace.current.focus(focusId);
       }
-      return;
+      if (search) {
+        McpMarketplace.current.search(search);
+      }
+      return true;
     }
     const panel = vscode.window.createWebviewPanel(MARKETPLACE_VIEW_TYPE, 'MCP Marketplace', vscode.ViewColumn.Active, {
       enableScripts: true,
       localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'media')],
       retainContextWhenHidden: true,
     });
-    McpMarketplace.current = new McpMarketplace(panel, context, provider, clientName, focusId);
+    McpMarketplace.current = new McpMarketplace(panel, context, provider, clientName, focusId, search);
+    return true;
   }
 
   private constructor(
@@ -202,6 +211,7 @@ export class McpMarketplace {
     private readonly provider: McpServersProvider,
     private readonly clientName: string,
     private pendingFocus: string | undefined,
+    private pendingSearch: string | undefined,
   ) {
     panel.iconPath = vscode.Uri.joinPath(context.extensionUri, 'media', 'activity-icon.svg');
     panel.webview.html = marketplaceHtml(panel.webview, context.extensionUri);
@@ -228,6 +238,12 @@ export class McpMarketplace {
   private async onMessage(msg: any): Promise<void> {
     switch (msg?.type) {
       case 'ready':
+        // A search asked for before the page could hear it. Posted first: the
+        // page asks for its results, and the answer waits for the catalog.
+        if (this.pendingSearch) {
+          this.search(this.pendingSearch);
+          this.pendingSearch = undefined;
+        }
         await this.loadCatalog();
         void this.provider.refresh();
         return;
@@ -362,6 +378,11 @@ export class McpMarketplace {
       items: hits.slice(query.offset, query.offset + query.limit).map((s) => cardFor(s, state)),
       communityReady: !!this.community,
     });
+  }
+
+  /** search puts words in the page's search box, across both tiers. It only searches. */
+  private search(q: string): void {
+    this.post({ type: 'search', q: q.slice(0, 200) });
   }
 
   /** focus puts one server at the top of the page -- what a mochiii.in link asks for. It never installs. */
@@ -502,7 +523,7 @@ export function mcpMarketplaceStyles(): string {
   .bar input:focus, .bar select:focus, button:focus-visible { outline: 1px solid var(--mk-focus); outline-offset: 1px; }
   .bar select { padding: 5px 6px; background: var(--mk-input-bg); color: var(--mk-input-fg);
     border: 1px solid var(--mk-input-border); font: inherit; }
-  .tabs { display: inline-flex; border: 1px solid var(--mk-border); border-radius: 3px; overflow: hidden; }
+  .tabs { display: inline-flex; max-width: 100%; border: 1px solid var(--mk-border); border-radius: 3px; overflow: hidden; }
   .tabs button { border: none; background: transparent; color: var(--mk-muted); padding: 5px 12px; cursor: pointer; font: inherit; }
   .tabs button[aria-selected=true] { background: var(--mk-btn2-bg); color: var(--mk-btn2-fg); }
   button.btn { border: 1px solid transparent; padding: 4px 12px; border-radius: 2px; cursor: pointer; font: inherit;
@@ -516,7 +537,9 @@ export function mcpMarketplaceStyles(): string {
   .notice.error { border-left-color: var(--mk-err); }
   .safety { color: var(--mk-muted); font-size: 0.92em; margin: 6px 0 12px; line-height: 1.5; }
   .count { color: var(--mk-muted); font-size: 0.9em; margin: 4px 0 10px; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+  /* min(300px, 100%): beside a side bar the editor can be narrower than one
+     card, and a fixed 300px column then scrolled the whole page sideways. */
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr)); gap: 12px; }
   .card { border: 1px solid var(--mk-border); background: var(--mk-card); border-radius: 4px; padding: 14px;
     display: flex; flex-direction: column; gap: 8px; min-width: 0; }
   .card.focused { border-color: var(--mk-focus); }
@@ -529,7 +552,7 @@ export function mcpMarketplaceStyles(): string {
   .meta { color: var(--mk-muted); font-size: 0.85em; overflow-wrap: anywhere; }
   .env { display: flex; flex-wrap: wrap; gap: 4px; }
   .env span { font-family: var(--vscode-editor-font-family); font-size: 0.85em; border: 1px solid var(--mk-border);
-    border-radius: 3px; padding: 0 5px; }
+    border-radius: 3px; padding: 0 5px; overflow-wrap: anywhere; }
   .env span.req { border-color: var(--mk-warn); }
   code.cmd { display: block; font-family: var(--vscode-editor-font-family); font-size: 0.85em; background: var(--mk-code-bg);
     padding: 6px 8px; border-radius: 3px; overflow-x: auto; white-space: nowrap; }

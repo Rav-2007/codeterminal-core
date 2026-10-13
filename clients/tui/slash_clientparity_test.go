@@ -260,11 +260,11 @@ var summaryMayDiffer = map[string]string{
 		"provider (2026-10-05), and since 2026-10-11 opens the setup -- choose a " +
 		"provider, paste its key, choose a model; the extension's does neither " +
 		"YET, so its summary must not advertise them",
-	"mcp-server": "the TUI's asks the RUNNING daemon for its tools and adds or " +
-		"removes the user's own MCP servers (2026-10-11); the extension's still " +
-		"runs `mcp list` from its packaged daemon, where that binary's own " +
-		"config is the right one, and has no add -- so its summary must not " +
-		"advertise one",
+	"mcp-server": "the TUI's asks the RUNNING daemon for its tools and adds, " +
+		"changes or removes the user's own MCP servers in the terminal " +
+		"(2026-10-11); the extension's opens its marketplace in an editor tab " +
+		"(2026-10-13), where servers are added and managed with buttons, so " +
+		"each summary names what its own command does",
 	"clear": "the TUI's /clear starts a new chat, on the daemon too (2026-10-11): " +
 		"emptying only the screen left the stored chat behind, and /save wrote " +
 		"it. The extension's still empties only its panel and sends no reset -- " +

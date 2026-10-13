@@ -32,7 +32,6 @@
 
 import { parseConnectArgs } from './connectFlow';
 import { GroundingInfo, Turn, TurnUsage } from './daemonClient';
-import { runMCPServerList } from './mcpServerList';
 import { runGitDiff, runGitStatus } from './safeGit';
 import { formatInitChecklist, formatSlashHelp } from './slashCommands';
 
@@ -46,14 +45,10 @@ import { formatInitChecklist, formatSlashHelp } from './slashCommands';
 // code untestable against a hostile folder.
 export interface LocalCommandHost {
   readonly workspace: string;
-  readonly extensionPath: string;
   /**
    * The absolute `mochiii.configPath` the daemon was started with, or '' for
-   * the bundled config. Supplied here, read from the machine-scoped setting by
-   * the panel, so /mcp-server inspects the SAME config the daemon loaded rather
-   * than re-resolving one next to the binary. It is a machine setting a
-   * workspace cannot touch, and absolute, which is what keeps passing it as
-   * --config safe -- see src/mcpServerList.ts.
+   * the bundled config, for /status to name. Read from the machine-scoped
+   * setting by the panel; a workspace cannot set it.
    */
   readonly configPath: string;
   readonly transcript: Turn[];
@@ -155,6 +150,19 @@ export interface LocalCommandHost {
 
   /** Whether the daemon answered its last handshake, for /status and /doctor. */
   daemonReachable(): Promise<boolean>;
+
+  /**
+   * Open the MCP marketplace in an editor tab, with `search` in its search box
+   * when it is not empty (/mcp-server). Resolves false when the user declined
+   * the marketplace's one-time notice, so nothing opened.
+   *
+   * A host method because it LEAVES the panel. What it replaced is why it is
+   * safe to reach from here: /mcp-server used to run `mochiii-daemon mcp list`
+   * itself, the one local command that started a program -- and that started
+   * every configured server and printed their stderr. The marketplace asks the
+   * RUNNING daemon over its socket, and adds nothing until a name is typed.
+   */
+  openMcpMarketplace(search: string): Promise<boolean>;
 }
 
 
@@ -170,9 +178,8 @@ export const UNKNOWN_LOCAL_COMMAND = 'unknown local command';
  * runLocalCommand executes one local slash command and returns the text to show.
  *
  * Every side effect goes through `host`; every path-shaped input comes from
- * `host.workspace` or `host.extensionPath` and is passed to code that treats the
- * workspace as untrusted (runGitStatus neutralises git's executable config,
- * runMCPServerList resolves its own binary and passes no --config).
+ * `host.workspace` and is passed to code that treats the workspace as
+ * untrusted (runGitStatus and runGitDiff neutralise git's executable config).
  */
 export async function runLocalCommand(
   host: LocalCommandHost,
@@ -244,8 +251,22 @@ export async function runLocalCommand(
     case 'init':
       return formatInitChecklist(host.workspace);
 
-    case 'mcp-server':
-      return runMCPServerList(host.workspace, host.extensionPath, host.configPath);
+    // THE MARKETPLACE, not a table in the transcript (2026-10-13). This printed
+    // what `mochiii-daemon mcp list` said, which started every configured
+    // server to ask it and put their stderr on screen (RESIDUAL_RISKS.md R1.5).
+    // Servers are found, added and managed in the marketplace and the MCP
+    // Servers view now; words after the command become its search.
+    case 'mcp-server': {
+      const search = args.trim();
+      if (!(await host.openMcpMarketplace(search))) {
+        return 'the MCP Marketplace was not opened; run /mcp-server again when you want it';
+      }
+      return (
+        `opened the MCP Marketplace in an editor tab${search ? `, searching for "${search}"` : ''}. ` +
+        "Servers you add are listed under MCP Servers in Mochiii's side bar, and the agent can use their tools from " +
+        'your next message. To see every tool it has now, run "Mochiii: Show MCP Tools".'
+      );
+    }
 
     case 'search': {
       const q = args.toLowerCase();

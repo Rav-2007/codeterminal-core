@@ -35,7 +35,8 @@ shares it rather than racing to start its own.
 ## Getting started
 
 1. Install the extension and open a trusted workspace.
-2. Run **Mochiii: Open Chat** (Ctrl/Cmd+Shift+P), or click the Mochiii icon.
+2. Run **Mochiii: Open Chat** (Ctrl/Cmd+Shift+P). The chat opens in the
+   secondary side bar on the right, so your files stay open beside it.
 3. `/connect` a provider, or set `mochiii.apiBase` to a local model server.
 4. Ask a question — your codebase is indexed automatically.
 
@@ -96,8 +97,13 @@ be absolute.
 Once on, a tool the model calls appears as an **approval card** naming the
 server, the tool and the exact arguments, and — for an external (Lane B)
 server — that it is **not sandboxed** and runs with your full privileges;
-nothing runs until you approve it. **`/mcp-server`** lists what agent mode would
-offer and the policy on each tool, read from the same config the daemon loaded.
+nothing runs until you approve it.
+
+To add a server, type **`/mcp-server`** in the chat (or `/mcp-server postgres`
+to search) or click **Browse the Marketplace** under **MCP Servers**. The
+marketplace lists servers from mochiii.in; before one is added, Mochiii shows
+exactly what will run and asks you to type its name. **Mochiii: Show MCP
+Tools** lists what agent mode would offer and the policy on each tool.
 The tool menu is capped (`mcp.budget.max_advertised_tools`); when it drops a
 tool, the chat says which ones, so you can raise the cap if you need them.
 

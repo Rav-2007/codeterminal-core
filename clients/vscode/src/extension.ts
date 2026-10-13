@@ -207,12 +207,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const mcpServers = new McpServersProvider(CLIENT_NAME, root ? undefined : NO_WORKSPACE);
   registerMcpServers(context, mcpServers, CLIENT_NAME);
   context.subscriptions.push(
-    vscode.commands.registerCommand('mochiii.mcp.browse', async () => {
+    // The chat's /mcp-server passes the words after it, which only fill the
+    // search box; the palette and the view pass nothing. Resolves whether the
+    // marketplace opened, which the chat reports.
+    vscode.commands.registerCommand('mochiii.mcp.browse', async (search?: unknown) => {
       if (!root) {
         vscode.window.showInformationMessage(NO_WORKSPACE);
-        return;
+        return false;
       }
-      await McpMarketplace.show(context, mcpServers, CLIENT_NAME);
+      const q = typeof search === 'string' ? search.trim().slice(0, 200) : '';
+      return McpMarketplace.show(context, mcpServers, CLIENT_NAME, undefined, q || undefined);
     }),
     // vscode://MochiiiAIAgent.mochiii-vscode/mcp/install?id=<name>. The link
     // carries a name and nothing else; the marketplace looks it up in the
@@ -236,6 +240,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // register a WebviewViewProvider in their own container, and the difference is
   // most of why this extension felt like a document that had opened itself
   // rather than part of the editor.
+  //
+  // Its container is in the SECONDARY side bar (package.json), beside the
+  // files rather than instead of them: in the activity bar, opening the
+  // Explorer hid the chat and opening the chat hid the Explorer.
   //
   // retainContextWhenHidden for the same reason the panel keeps it: this view
   // can be in the middle of a tool approval the daemon is HOLDING OPEN, an
@@ -284,7 +292,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   context.subscriptions.push(
     // mochiii.openChat now FOCUSES THE SIDEBAR rather than opening a tab, so the
-    // command palette entry and the activity-bar icon lead to the same place.
+    // command palette entry and Mochiii's side-bar tab lead to the same place.
     // The editor-tab route kept its own command below.
     vscode.commands.registerCommand('mochiii.openChat', () => {
       if (!root) {

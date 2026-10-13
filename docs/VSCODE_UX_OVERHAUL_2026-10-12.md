@@ -437,6 +437,21 @@ without editing JSON.
   `vscode://` link that names a server; the marketplace shows it, and never
   installs from a link.
 
+**From the first walkthrough (2026-10-13).**
+
+- **`/mcp-server` in the chat opens the marketplace** (`/mcp-server <words>`
+  searches it) instead of printing `mcp list`'s table into the transcript. Its
+  shell-out, `mcpServerList.ts`, is gone: it started every configured server
+  to ask it and printed their stderr (`RESIDUAL_RISKS.md` R1.5). The tool
+  table is **Mochiii: Show MCP Tools**, which asks the running daemon.
+- **Mochiii's container moved to the secondary side bar.** In the activity bar
+  it shared the primary side bar with the Explorer, which shows one container
+  at a time: opening the files hid the chat and opening the chat hid the
+  files. A VS Code too old for `secondarySidebar` puts the views in the
+  Explorer.
+- The marketplace no longer scrolls sideways when the editor is narrower than
+  one card.
+
 **Still open.** The optional mochiii.in sign-in agreed for the marketplace is
 not built: the site has no account backend yet. And a server's token reaches
 it only from the environment VS Code was started in -- the daemon reads no
