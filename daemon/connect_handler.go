@@ -260,7 +260,7 @@ func (s *Server) connectResult(ctx context.Context, req protocol.ConnectRequest)
 	if result.Outcome == verifyRejected {
 		return protocol.ConnectResponse{
 			Ok: false, Outcome: protocol.ConnectRejected, Detail: result.Detail,
-			APIBase: base, EnvOverride: envOverride,
+			APIBase: base, EnvOverride: envOverride, Notes: appendNote(nil, target.note()),
 		}
 	}
 
@@ -292,7 +292,18 @@ func (s *Server) connectResult(ctx context.Context, req protocol.ConnectRequest)
 		resp.Notes = connectNotes(base, setup, switched)
 		s.setProvider(key, base, providerTierConfig(s.cfg, providerName(base), setup.Models, setup.Quiet, setup.DefaultModel))
 	}
+	// First, and whatever else is true: the key went somewhere the user did not
+	// name, and that is the note they must not miss.
+	resp.Notes = append(appendNote(nil, target.note()), resp.Notes...)
 	return resp
+}
+
+// appendNote adds note to notes unless it is empty.
+func appendNote(notes []string, note string) []string {
+	if note == "" {
+		return notes
+	}
+	return append(notes, note)
 }
 
 // setProvider puts a key, its address and the tiers that go with them into

@@ -143,6 +143,11 @@ func runConnectCommand(args []string, logger *log.Logger) error {
 	if err := validateConnectBase(base); err != nil {
 		return err
 	}
+	// Said before anything is sent: the key is going somewhere other than the
+	// provider that was named (resolveConnectBase, rule 1).
+	if note := target.note(); note != "" {
+		_, _ = fmt.Fprintf(connectOut, "NOTE: %s\n", note)
+	}
 
 	cred := storedCredential{APIBase: base, APIKey: key}
 
