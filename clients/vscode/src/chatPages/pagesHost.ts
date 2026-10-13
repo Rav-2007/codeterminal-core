@@ -59,6 +59,7 @@ export class ChatPagesHost implements vscode.Disposable {
       // The Installed list follows the daemon, as the tree view does.
       this.disposables.push(
         mcp.onDidChangeState(() => {
+          this.postToolsCount();
           if (this.loaded.has('customize')) {
             this.postMcp();
           }
@@ -93,6 +94,28 @@ export class ChatPagesHost implements vscode.Disposable {
       );
     }
     await this.market.onMessage(inner);
+  }
+
+  /**
+   * announceTools gives the composer's plug button its count, asking the
+   * daemon first (the servers action starts nothing).
+   */
+  announceTools(): void {
+    const mcp = pagesContext?.mcpServers;
+    if (!mcp) {
+      return;
+    }
+    this.postToolsCount();
+    void mcp.refresh();
+  }
+
+  private postToolsCount(): void {
+    const st = pagesContext?.mcpServers?.current;
+    if (!st) {
+      return;
+    }
+    const on = st.servers.filter((s) => !s.disabled).length;
+    this.panel.post({ type: 'mcpCount', on, total: st.servers.length, agentMode: st.agentMode });
   }
 
   /** handle answers one page message. Returns false for a message that is not a page's. */

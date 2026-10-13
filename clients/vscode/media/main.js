@@ -1062,6 +1062,51 @@
     });
   }
 
+  // @ CONTEXT and THE PLUG (Stage 8). @ asks the host what to add -- a file,
+  // the selection, a file's problems, an open file -- and each arrives as an
+  // attachment chip, removable until sent. Typing @ at the start of a word
+  // does the same; an @ inside a word (an address) is just text.
+  const contextAddBtn = document.getElementById('contextAddBtn');
+  const toolsBtn = document.getElementById('toolsBtn');
+  const toolsCountEl = document.getElementById('toolsCount');
+  function askForContext() {
+    vscode.postMessage({ type: 'addContext', remaining: MAX_ATTACH_FILES - pendingAttachments.length });
+  }
+  if (contextAddBtn) {
+    contextAddBtn.addEventListener('click', askForContext);
+  }
+  inputEl.addEventListener('input', (e) => {
+    const ie = /** @type {InputEvent} */ (e);
+    if (ie.data !== '@') {
+      return;
+    }
+    const at = inputEl.selectionStart - 1;
+    const before = at > 0 ? inputEl.value.charAt(at - 1) : '';
+    if (at >= 0 && inputEl.value.charAt(at) === '@' && (before === '' || /\s/.test(before))) {
+      inputEl.value = inputEl.value.slice(0, at) + inputEl.value.slice(at + 1);
+      inputEl.selectionStart = inputEl.selectionEnd = at;
+      askForContext();
+    }
+  });
+  if (toolsBtn) {
+    toolsBtn.addEventListener('click', () => {
+      if (pages) pages.open('customize', { tab: 'mcp', sub: 'installed' });
+    });
+  }
+  /** @param {any} msg */
+  function setToolsCount(msg) {
+    if (!toolsBtn || !toolsCountEl) {
+      return;
+    }
+    const on = Number(msg.on) || 0;
+    toolsCountEl.textContent = String(on);
+    toolsCountEl.hidden = on === 0;
+    const what = on === 0 ? 'no MCP servers on' : on + ' MCP server' + (on === 1 ? '' : 's') + ' on';
+    const off = msg.agentMode === false && msg.total > 0 ? ' (agent mode is off, so none starts)' : '';
+    toolsBtn.setAttribute('aria-label', 'MCP servers: ' + what + off);
+    toolsBtn.title = 'MCP servers: ' + what + off + '. Click to manage them or browse for more.';
+  }
+
   // dismissFirstRun drops the static first-run guidance (see chatPanel.ts's
   // #firstRun) once the transcript has real content. Deliberately NOT called
   // for 'error' bubbles: the commonest first error is "daemon not found", and
@@ -3199,6 +3244,9 @@
         break;
       case 'toolActivity':
         showToolActivity(msg.activity);
+        break;
+      case 'mcpCount':
+        setToolsCount(msg);
         break;
       case 'uiSettings':
         toolActivityMode = msg.toolActivity === 'expanded' ? 'expanded' : 'compact';

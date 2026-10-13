@@ -243,3 +243,20 @@ suite('chat pages: the Account page', () => {
     assert.strictEqual(v.meters.find((m) => m.label === 'This session')!.fraction, -1, 'no limit means no bar');
   });
 });
+
+suite('chat pages: the composer toolbar', () => {
+  const panel = fs.readFileSync(path.join(ROOT, 'src', 'chatPanel.ts'), 'utf8');
+
+  test('@ and the plug sit beside the model chip, labelled', () => {
+    assert.match(panel, /id="contextAddBtn"[^>]*aria-label="Add context"/);
+    assert.match(panel, /id="toolsBtn"[^>]*aria-label="MCP servers" aria-controls="pageCustomize"/);
+  });
+
+  test('@ context is read from the editor by the host, and arrives as a removable attachment', () => {
+    assert.match(panel, /msg\.type === 'addContext'/);
+    assert.match(panel, /private attachText\(name: string, text: string, desc: string\)/);
+    assert.match(panel, /type: 'attachmentStarted', id, name/, 'context must arrive the way a file does, as a chip');
+    const js = code('main.js');
+    assert.match(js, /before === '' \|\| \/\\s\/\.test\(before\)/, 'an @ inside a word (an address) must stay text');
+  });
+});

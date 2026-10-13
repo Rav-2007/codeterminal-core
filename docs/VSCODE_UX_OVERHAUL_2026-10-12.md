@@ -459,6 +459,51 @@ it only from the environment VS Code was started in -- the daemon reads no
 OS keychain and handing them over the way the model key is (stdin) is a
 security-model decision, not yet taken.
 
+### Stage 8 — the chat's pages, and a quieter transcript — **on `feat/chat-pages`**
+
+From the second walkthrough (2026-10-13): tool lines filled the side bar and
+never said why a call failed; a two-folder workspace failed silently; a rate
+limit offered nothing to click; `/model` and `/mcp` printed into the chat;
+there was no account or settings screen; and the user asked for Cline's
+shape -- header buttons, pages, a composer toolbar -- in Mochiii's own design.
+
+**What landed.**
+
+- **Why a tool failed** (`daemon/agentloop.go` `toolFailureReason`): the
+  first line of the same scrubbed text the model reads, capped at 160 runes.
+- **The work block** (`media/main.js` `showToolActivity`): a turn's calls fold
+  into one line ("Used 3 tools · 1 failed") that opens to a row per call in
+  words. `mochiii.toolActivity` sets whether it starts open.
+- **A failed turn's next step**: Try again (a retry replaces the unanswered
+  prompt), Change key, Compact the chat, Continue -- chosen from the daemon's
+  `error_class`, never from prose.
+- **Provider notices once** (`degradedOnce.ts`): the per-turn
+  `provider_routing` line is shown the first time, then kept for Account.
+- **The working folder** (`workingFolder.ts`, **Mochiii: Choose Working
+  Folder**): chosen among the open folders, kept in the extension's
+  per-workspace storage -- not a setting a repository could write.
+- **Pages** (`src/chatPages/`, `media/pages.js`): **Customize** (MCP Installed
+  and Marketplace, Specs, Tools, Skills-to-come), **Account** (provider, the
+  key in force and its source, model, spend; sign-in placeholder) and
+  **Settings** (Model, Behaviour, Workspace, Privacy, Advanced, About). A page
+  names entries in host-side tables (`rules.ts`); the machine-scoped settings
+  are shown and never written from a page.
+- **The marketplace inside the chat**: `marketplace.js` is a mount factory and
+  `MarketplaceCore` its host logic, shared with the editor tab; the same
+  notice, and every Add through `storeServer`.
+- **Screen commands**: `/mcp`, `/mcp-server [search]`, `/account`, `/config`
+  open their page and a bare `/model` the model menu; nothing is printed.
+- **The composer**: **@** adds a file, the selection, a file's problems or an
+  open file as an attachment chip (typing `@` at a word start does the same);
+  the plug opens the MCP servers and shows how many are on.
+- **Daemon**: MCP action `tools` (`FeatureMCPTools`) lists the built-in tools
+  and their policy without starting any third-party server.
+
+**Still open.** Skills (Stage 9): user skills in `~/.mochiii/skills/`,
+repository skills off until turned on, a read-only `load_skill` tool, and a
+skills catalog on mochiii.in. The mochiii.in sign-in behind Account's
+placeholder. Tool policies are shown, not yet edited, from the Tools tab.
+
 ---
 
 ## Verification

@@ -1,4 +1,5 @@
 import * as os from 'os';
+import * as path from 'path';
 import * as vscode from 'vscode';
 import { AttachmentError, extractAttachmentFile } from './attachmentExtract';
 import { resolveConfigPathSetting } from './daemonBinary';
@@ -42,7 +43,7 @@ import {
 import { ChatHost, panelHost, viewHost } from './chatHost';
 import { ONCE_PER_SESSION, freshDegradations } from './degradedOnce';
 import { activeWorkingFolder } from './workingFolder';
-import { chatPagesMarkup, chatPagesStyles, headerPageButtons } from './chatPages/markup';
+import { ICONS, chatPagesMarkup, chatPagesStyles, headerPageButtons } from './chatPages/markup';
 import { ChatPagesHost } from './chatPages/pagesHost';
 import { mcpMarketplaceStyles } from './mcpMarketplace';
 import { editorContextForPrompt } from './editorContext';
@@ -536,6 +537,9 @@ export class ChatPanel {
       this.postSlashCatalog();
       this.postSafe({ type: 'editorContext', chars: editorContextForPrompt(workspacePath()).length });
       this.postUiSettings();
+      this.pages.announceTools();
+    } else if (msg.type === 'addContext' && typeof msg.remaining === 'number') {
+      void this.onAddContext(msg.remaining);
     } else if (msg.type === 'focused') {
       void this.catchUp();
     } else if (msg.type === 'prompt' && typeof msg.text === 'string') {
@@ -567,6 +571,89 @@ export class ChatPanel {
       // owns the masked prompt, the daemon's check and the restart.
       void vscode.commands.executeCommand('mochiii.connect');
     }
+  }
+
+  // @ CONTEXT (Stage 8): what to send with the question, chosen from what the
+  // editor already has open -- a file through the paperclip's own path, or the
+  // selection, a file's problems, or an open file, read here from the editor's
+  // own buffers. Each arrives in the composer as an attachment chip the user
+  // can still remove; nothing is sent until they send.
+  private contextSeq = 0;
+  private async onAddContext(remaining: number): Promise<void> {
+    if (remaining <= 0) {
+      this.postSafe({ type: 'attachmentNotice', text: 'No more can be attached to this message.' });
+      return;
+    }
+    const editor = vscode.window.activeTextEditor;
+    const doc = editor?.document;
+    const root = workspacePath();
+    const shown = (d: vscode.TextDocument): string => (root ? path.relative(root, d.uri.fsPath) : path.basename(d.uri.fsPath));
+    type Pick = vscode.QuickPickItem & { run: () => Promise<void> | void };
+    const items: Pick[] = [{ label: '$(file) Files…', description: 'documents, images, code', run: () => this.onPickAttachments(remaining) }];
+    if (editor && doc && !editor.selection.isEmpty) {
+      const sel = editor.selection;
+      items.push({
+        label: '$(selection) The selection',
+        description: `${shown(doc)}:${sel.start.line + 1}-${sel.end.line + 1}`,
+        run: () => this.attachText(`${path.basename(doc.uri.fsPath)}:${sel.start.line + 1}-${sel.end.line + 1}`, doc.getText(sel), 'the lines selected in the editor'),
+      });
+    }
+    if (doc) {
+      const problems = vscode.languages.getDiagnostics(doc.uri);
+      if (problems.length > 0) {
+        const sev = ['error', 'warning', 'info', 'hint'];
+        items.push({
+          label: '$(warning) Problems in this file',
+          description: `${problems.length} in ${shown(doc)}`,
+          run: () =>
+            this.attachText(
+              `problems in ${path.basename(doc.uri.fsPath)}`,
+              problems
+                .map((d) => `${d.range.start.line + 1}:${d.range.start.character + 1} ${sev[d.severity] ?? 'note'}: ${d.message}${d.source ? ` (${d.source})` : ''}`)
+                .join('\n'),
+              `VS Code's problems for ${shown(doc)}`,
+            ),
+        });
+      }
+    }
+    const open = vscode.workspace.textDocuments.filter((d) => d.uri.scheme === 'file' && !d.isClosed);
+    if (open.length > 0) {
+      items.push({
+        label: '$(files) An open file…',
+        description: `${open.length} open`,
+        run: async () => {
+          const pick = await vscode.window.showQuickPick(
+            open.map((d) => ({ label: path.basename(d.uri.fsPath), description: shown(d), doc: d })),
+            { title: 'Add an open file to the question' },
+          );
+          if (pick) {
+            this.attachText(path.basename(pick.doc.uri.fsPath), pick.doc.getText(), 'as it is open in the editor, unsaved changes included');
+          }
+        },
+      });
+    }
+    const choice = await vscode.window.showQuickPick(items, { title: 'Add context to the question', placeHolder: 'What should Mochiii see with this question?' });
+    if (choice) {
+      await choice.run();
+    }
+  }
+
+  // attachText hands the composer one piece of context the way a file arrives:
+  // started, then extracted, so it shows as a chip and is counted on the meter.
+  private attachText(name: string, text: string, desc: string): void {
+    const MAX = 200_000;
+    const id = `ctx-${++this.contextSeq}`;
+    const cut = text.length > MAX;
+    this.postSafe({ type: 'attachmentStarted', id, name });
+    this.postSafe({
+      type: 'attachmentExtracted',
+      id,
+      name,
+      kind: 'text',
+      text: cut ? text.slice(0, MAX) : text,
+      note: cut ? `only the first ${MAX.toLocaleString()} characters` : '',
+      desc,
+    });
   }
 
   // postUiSettings tells the webview how to draw what is not content: today,
@@ -3071,6 +3158,10 @@ export function chatPanelBodyMarkup(logoUri: string = ''): string {
       </div>
       <div class="composer-bottom">
         <div class="composer-left">
+          <!-- Stage 8: what goes in with the question (@), and what the agent can
+               reach (the plug, with how many MCP servers are on). -->
+          <button type="button" class="composer-icon" id="contextAddBtn" title="Add context: a file, the selection, the problems in a file (or type @)" aria-label="Add context">${ICONS.at}</button>
+          <button type="button" class="composer-icon tools-btn" id="toolsBtn" title="MCP servers" aria-label="MCP servers" aria-controls="pageCustomize">${ICONS.plug}<span id="toolsCount" class="tools-count" hidden>0</span></button>
           <button type="button" class="pill" id="modelChip" title="Choose model" aria-label="Choose model"
             aria-haspopup="listbox" aria-expanded="false" aria-controls="modelPopup">
             <span id="modelChipLabel">Model</span><span class="chev" aria-hidden="true">▾</span>
