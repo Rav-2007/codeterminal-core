@@ -71,6 +71,7 @@ Fixes are named by the property, not the commit.
 | M6b | puts escapes in tool **output** | passed to the model verbatim | stripped at the egress choke point, announced | R |
 | M7 | forges approval JSON in a result | ignored; the next call still asked | unchanged — **the property held** | R |
 | M8 | is launched via `npx`/`uvx` | — | the child sees the **launcher's** environment too: 25 variables against the 2 we passed | I |
+| M9 | is launched via `npx`/`uvx`/`python -m` **while the daemon sits in a project** | started in the daemon's own folder — the open project, under the VS Code extension — so the launcher resolved what to run from that project's `.npmrc`, `node_modules/.bin` or modules, before any tool asked | started in a private folder of its own (`<user cache>/mochiii/mcp-run/<name>`, 0700); in the project only when its block says `"cwd": "workspace"`; **not started** when there is nowhere private | R for the folder (`daemon/mcpcwd_test.go`). What a launcher does with a hostile folder is from its documentation; it was not run here |
 
 ### M5 and M7 are the two that were already right
 
@@ -136,6 +137,37 @@ went back to a default of **12** because the accuracy argument for 5 did not
 survive contact with the data. A cap still exists, justified now on token cost
 (2.1× the tool JSON at 12 versus 5) rather than on accuracy. Nothing between 13
 and the ceiling of 64 has been run.
+
+---
+
+## Who can add a server (added 2026-10-11)
+
+Until 2026-10-11 a Lane B server existed only as a block somebody typed into
+the daemon's config file. It can now also be added from the terminal client
+(`/mcp-server add`) or the command line (`mochiii-daemon mcp add`), and is kept
+in `~/.mochiii/mcp-servers.json`. That is a new way to arrive at "an unconfined
+program runs as the user", so who can reach it is stated here.
+
+| Who | Can they add a server? | Why |
+|---|---|---|
+| The user, in the TUI or CLI | yes, after typing the server's name | The first request stores nothing and answers with what the server could do; only an acknowledged request adds it. Position 1 above — "typed by hand" — still holds, at the moment it applies. |
+| A repository the user opens | **no** | The file is per-user, beside the stored key, never in the workspace. A relative command is refused, so a stored line cannot come to mean a program inside whichever repository the daemon was started in. |
+| The model, through `propose_edit` or an outside read | **no** | `.mochiii` is a protected directory for edits (`editapply` `ProtectedDirNames`) and refused to outside reads (`daemon/outsideread.go`). |
+| The model, through `sandbox_exec` | **no** | A sandboxed command cannot write outside its working copy, and cannot create a Unix socket to reach the daemon (`daemon/mcp/sandbox_landlock_linux.go`). Where a platform has no such sandbox, `sandbox_exec` is what is unsafe, and it says so itself. |
+| Another user on the machine | **no** | The socket is same-UID; the file is 0600 in a 0700 directory, and one found writable by group or other is not loaded at all. |
+| Another process running as the user, or a third-party server already added | yes | Same-UID code can already run any program. This is the "hostile client" case under *What is still true and unfixed*: outside the model, and unchanged. |
+
+What an added server gets is what a configured one gets and no more: policy
+`ask` on every tool, the same environment allow-list (names only — a
+`NAME=value` is refused, and refused without repeating the value), and the same
+launch path, so every row of the matrix above applies to it unchanged.
+
+**New and worth knowing:** an add starts the server once, immediately, to ask
+for its tools. That is the user's own program run at the user's request, after
+the acknowledgement — but it does mean "added" and "has run" are now the same
+moment, where a config-file server does not run until the first agent turn.
+A list (`/mcp-server`) starts every configured server for the same reason, as
+`mcp list` always has.
 
 ---
 

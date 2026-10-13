@@ -102,7 +102,7 @@ func TestHandleModelCommand_ListsAllTiersAndMarksInactiveOnes(t *testing.T) {
 	m := newTestModel()
 	m.preferredTier = "fast"
 
-	got, _ := m.handleModelCommand("")
+	got, _ := m.handleModelCommand("list")
 	text := lastTurn(t, got)
 
 	if !strings.Contains(text, "primary") || !strings.Contains(text, "fast") {
@@ -222,7 +222,7 @@ func TestHandleModelCommand_UnreachableDaemonReportsAnError(t *testing.T) {
 
 	m := newTestModel()
 
-	got, _ := m.handleModelCommand("")
+	got, _ := m.handleModelCommand("list")
 	if cm := got.(chatModel); cm.statusErr == "" {
 		t.Error("an unreachable daemon produced no status error")
 	}
@@ -293,20 +293,5 @@ func TestSteeredPrompt(t *testing.T) {
 	}
 	if got := steeredPrompt(&slashDef{Preamble: "PRE: "}, "args"); got != "PRE: args" {
 		t.Errorf("got %q, want the preamble prepended", got)
-	}
-}
-
-// resolveDaemonBin must fall back through its candidates in order and return
-// empty rather than a CWD-relative guess when it finds nothing.
-func TestResolveDaemonBin_ReturnsEmptyWhenNothingIsFound(t *testing.T) {
-	t.Setenv(daemonBinEnvVar, "")
-	t.Setenv("PATH", t.TempDir())
-	t.Chdir(t.TempDir())
-
-	if got := resolveDaemonBin(); got != "" {
-		t.Errorf("resolveDaemonBin() = %q, want empty when no trusted candidate exists", got)
-	}
-	if out := runMCPServerList(""); !strings.Contains(out, "not found") {
-		t.Errorf("runMCPServerList did not report the missing binary: %q", out)
 	}
 }

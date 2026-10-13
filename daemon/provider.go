@@ -15,8 +15,9 @@ import (
 )
 
 // requestTimeout bounds a single prompt's total call to the model API so a
-// stalled upstream can't hang a connection (and its goroutine) forever.
-const requestTimeout = 5 * time.Minute
+// stalled upstream can't hang a connection (and its goroutine) forever. A var
+// so tests can shorten it.
+var requestTimeout = 5 * time.Minute
 
 // streamStallTimeout is how long the model API may send nothing at all --
 // not a token, not a keep-alive -- before the attempt is abandoned as stalled.
@@ -639,7 +640,8 @@ func buildChatMessages(systemPrompt string, history []chatMessage, prompt string
 // closure. A non-nil error always comes with nil calls -- including the
 // deliberate refusal of a call the stream truncated (see accumulator.finish).
 func streamCompletion(ctx context.Context, apiBase, apiKey, model string, messages []chatMessage, tools []toolSpec, routing providerRouting, onToken func(string) error, onProvider func(string), onReasoning func(string), onFinish func(string)) ([]toolCall, error) {
-	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
+	caller := ctx
+	ctx, cancel := context.WithTimeout(caller, requestTimeout)
 	defer cancel()
 
 	// THE STALL WATCHDOG. requestTimeout bounds the whole call, but a provider
@@ -658,6 +660,15 @@ func streamCompletion(ctx context.Context, apiBase, apiKey, model string, messag
 		if errors.Is(context.Cause(stallCtx), errStreamStalled) {
 			return &ModelError{Class: ClassUpstreamUnavailable, stalled: true,
 				detail: fmt.Sprintf("the model API sent nothing for %s, so the provider was treated as stalled", stallTimeout)}
+		}
+		// OUR OWN LIMIT, REACHED WHILE THE PROVIDER WAS STILL SENDING -- not the
+		// caller's deadline, which is the caller's to explain, and not silence,
+		// which is the branch above. It used to leave here as a plain transport
+		// timeout, and the user was told the provider was unreachable after
+		// watching it reason for five minutes (requestlimit_test.go).
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) && caller.Err() == nil {
+			return &ModelError{Class: ClassUpstreamUnavailable, ranOut: true,
+				detail: fmt.Sprintf("the model API was still sending after %s, the limit for one request", requestTimeout)}
 		}
 		return err
 	}

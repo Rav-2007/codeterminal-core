@@ -168,6 +168,43 @@ const (
 	fakeModelLegacy = "deepseek-ai/deepseek-coder-6.7b-instruct"
 )
 
+// A KEY THAT WENT SOMEWHERE OTHER THAN WHERE THE USER SAID COMES WITH THE
+// SENTENCE THAT SAYS SO -- and a key that went where they said comes with none.
+//
+// FOUND 2026-10-12: the terminal's setup list would not send an "nvapi-" key to
+// Groq, and a typed `/connect groq` would. The rule is the daemon's now.
+//
+// Neuter check: return connectTarget{Base: base} unconditionally for a named
+// address in resolveConnectBase.
+func TestAKeyKeptFromTheProviderThatWasNamedSaysSo(t *testing.T) {
+	openAI, _ := protocol.ProviderByName("openai")
+	nvidia, _ := protocol.ProviderByName("nvidia")
+
+	kept := resolveConnectBase(openAI.APIBase, nvidiaKey, "", storedCredential{}, "")
+	if kept.Base != nvidia.APIBase {
+		t.Fatalf("an NVIDIA key named for OpenAI is going to %s", kept.Base)
+	}
+	note := kept.note()
+	for _, want := range []string{nvidia.Name, openAI.Name, "only ever sent to the provider that issued it"} {
+		if !strings.Contains(note, want) {
+			t.Errorf("the note does not say %q: %q", want, note)
+		}
+	}
+	if strings.Contains(note, nvidiaKey) || strings.Contains(note, "nvapi-") {
+		t.Errorf("the note repeats the key: %q", note)
+	}
+
+	for name, target := range map[string]connectTarget{
+		"the provider's own key": resolveConnectBase(nvidia.APIBase, nvidiaKey, "", storedCredential{}, ""),
+		"a custom address":       resolveConnectBase("https://llm.example.com/v1", nvidiaKey, "", storedCredential{}, ""),
+		"nothing named":          resolveConnectBase("", nvidiaKey, openAI.APIBase, storedCredential{}, ""),
+	} {
+		if got := target.note(); got != "" {
+			t.Errorf("%s: a key that went where it was sent carries a note: %q", name, got)
+		}
+	}
+}
+
 // transportErr is what a caller with no stall watchdog passes openCompletion.
 func transportErr(err error) error { return classifyTransportError(err) }
 
@@ -195,6 +232,12 @@ func TestResolveConnectBase(t *testing.T) {
 		wantCandidates            bool
 	}{
 		{name: "a named address always wins", explicit: custom, key: nvidiaKey, inUse: openRouterBase, wantBase: custom},
+		{name: "a named provider wins for a key that could be its own", explicit: openAI.APIBase, key: "sk-0123456789abcdef", inUse: openRouterBase, wantBase: openAI.APIBase},
+		{name: "and for a key with no prefix at all", explicit: openAI.APIBase, key: "0123456789abcdef0123", inUse: openRouterBase, wantBase: openAI.APIBase},
+		{name: "and when the key is that provider's", explicit: nvidia.APIBase, key: nvidiaKey, inUse: openRouterBase, wantBase: nvidia.APIBase},
+		{name: "but a key is not sent to a provider that did not issue it", explicit: openAI.APIBase, key: nvidiaKey, inUse: openRouterBase, wantBase: nvidia.APIBase},
+		{name: "whatever is in use", explicit: openRouterBase, key: nvidiaKey, wantBase: nvidia.APIBase},
+		{name: "nor in the clear to one", explicit: "http://api.openai.com/v1", key: nvidiaKey, wantBase: nvidia.APIBase},
 		{name: "an NVIDIA key on OpenRouter goes to NVIDIA", key: nvidiaKey, inUse: openRouterBase, wantBase: nvidia.APIBase},
 		{name: "an OpenRouter key on NVIDIA goes back to OpenRouter", key: "sk-or-v1-abc", inUse: nvidia.APIBase, wantBase: openRouterBase},
 		{name: "a key for the provider in use stays on the address in use", key: "sk-or-v1-abc", inUse: "https://openrouter.ai/api/v1/", wantBase: "https://openrouter.ai/api/v1/"},

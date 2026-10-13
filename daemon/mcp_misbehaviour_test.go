@@ -381,16 +381,45 @@ func TestAServerDyingMidCallIsReportedAsAnUnavailableServer(t *testing.T) {
 // prompt the score is 30/30 at all three sizes. So the constant below moves to
 // 12 because the MEASUREMENT moved to 12, not because the default wanted room.
 //
-// It is still not a claim that 12 is optimal. Nothing between 13 and the
-// maxMaxAdvertisedTools ceiling of 64 has been run, and the token cost of a
-// wider menu (2.1x the tool JSON at 12 versus 5) is a real cost this accuracy
-// number does not capture.
+// 24 AND 32 WERE MEASURED ON 2026-10-12 (same doc, "Past 12"), on
+// nvidia/nemotron-3-super-120b-a12b with a 12-tool baseline in the same run:
+//
+//	menu 12  ->  100%   (35/35)
+//	menu 24  ->  94.3%  (33/35)
+//	menu 32  ->  91.4%  (32/35)
+//
+// NOT flat this time, and the constant below did not move because it was: all
+// five misses are the one borderline prompt (run_tests against list_directory),
+// right 5, 3 and 2 times of 5, with the other six prompts 30/30 at every size.
+// The owner was shown that and chose 24, because at 12 a server added with
+// /mcp-server got one tool on the menu. So what this test holds is what it
+// always held -- the default is a size somebody measured -- and the cost of
+// that size is on record beside it. Nothing between 33 and the
+// maxMaxAdvertisedTools ceiling of 64 has been run.
 func TestTheAdvertisedToolDefaultDoesNotExceedWhatWasMeasured(t *testing.T) {
-	const widestMeasuredMenu = 12
+	const widestMeasuredMenu = 32
 	if defaultMaxAdvertisedTools > widestMeasuredMenu {
 		t.Errorf("defaultMaxAdvertisedTools is %d, but the widest menu ever measured is %d "+
-			"(88.6%%@5, 85.7%%@8, 85.7%%@12). A default past the evidence is a guess with a number on it",
+			"(88.6%%@5, 85.7%%@8, 85.7%%@12 on one model; 100%%@12, 94.3%%@24, 91.4%%@32 on another). "+
+			"A default past the evidence is a guess with a number on it",
 			defaultMaxAdvertisedTools, widestMeasuredMenu)
+	}
+}
+
+// A LONG TASK IS NOT GIVEN A NARROWER MENU THAN AN ORDINARY TURN. Its cap was 16
+// while the ordinary default was 12; with the ordinary default at 24 a separate
+// 16 would have taken an added server's tools away exactly when the user typed
+// /debug or /fix. What the user set still wins in both.
+func TestALongTasksCapIsNeverBelowAnOrdinaryTurns(t *testing.T) {
+	var unset MCPBudgetConfig
+	for _, mode := range []string{modeTask, modeDebug, modeFix, modeRefactor, modeHunt} {
+		if task, ordinary := unset.resolvedMaxAdvertisedToolsFor(mode), unset.resolvedMaxAdvertisedToolsFor(""); task < ordinary {
+			t.Errorf("mode %s shows the model at most %d tools, an ordinary turn %d", mode, task, ordinary)
+		}
+	}
+	set := MCPBudgetConfig{MaxAdvertisedTools: 7}
+	if got := set.resolvedMaxAdvertisedToolsFor(modeDebug); got != 7 {
+		t.Errorf("the user's own cap of 7 was read as %d in a long task", got)
 	}
 }
 

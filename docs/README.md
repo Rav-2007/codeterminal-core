@@ -60,7 +60,7 @@ and the ones it skipped are the ones that went stale.
 |---|---|---|
 | 1 | [`HANDOFF.md`](HANDOFF.md) | How to work on this project, what the architecture is, where the code lives. **The entry point.** |
 | 2 | [`ULTRA_MASTER_PLAN_2026-08-08.md`](ULTRA_MASTER_PLAN_2026-08-08.md) | **The current plan.** Stage 3 packaging, and the P0 that blocks it. |
-| 3 | [`OPEN_ITEMS.md`](OPEN_ITEMS.md) | **The bug register.** Read the Status column — this cell summarises, and summaries go stale: items 7, 10 and 12 were named here as open long after they were fixed, and then this line did it again, carrying item 22 as open after `6bbe549` closed it. It said so itself — *"docs-claims.sh checks the Status column against BACKLOG, not against this line"* — which is an accurate note about an exemption and no help at all to the reader who believed the sentence in front of it. The exemption is gone: this cell is now compared against the register on every push, the same as BACKLOG's. **open: 24** |
+| 3 | [`OPEN_ITEMS.md`](OPEN_ITEMS.md) | **The bug register.** Read the Status column — this cell summarises, and summaries go stale: items 7, 10 and 12 were named here as open long after they were fixed, and then this line did it again, carrying item 22 as open after `6bbe549` closed it. It said so itself — *"docs-claims.sh checks the Status column against BACKLOG, not against this line"* — which is an accurate note about an exemption and no help at all to the reader who believed the sentence in front of it. The exemption is gone: this cell is now compared against the register on every push, the same as BACKLOG's. **open: 24, 57** |
 | 4 | [`DECISION_PACK.md`](DECISION_PACK.md) | The eight founder rulings. **All eight taken** — D4 on 2026-07-27, D1–D3 and D5–D8 on 2026-08-12 — and the P3 security gate is closed. This cell said *"Seven open, D4 taken"* for three weeks after that, which is the count as it stood on 2026-07-27; the rulings landed in `DECISION_PACK.md`'s Status column and the three places that restate it were not updated. **taken: D1 D2 D3 D4 D5 D6 D7 D8** |
 
 Then [`../BACKLOG.md`](../BACKLOG.md) — what shipped and when, then what is left in
@@ -191,7 +191,7 @@ date attached.
 | [`ROBUSTNESS_BASELINE.md`](ROBUSTNESS_BASELINE.md) | The robustness numbers, promoted out of a scratchpad |
 | [`CHUNK_SCRUB_FIRE_RATE.md`](CHUNK_SCRUB_FIRE_RATE.md) | The 33%-of-chunks / zero-precision data that killed warn-mode Design B |
 | [`AGENT_MODE_COST_2026-08-01.md`](AGENT_MODE_COST_2026-08-01.md) | What an agent turn costs |
-| [`TOOL_MENU_SIZE_2026-08-01.md`](TOOL_MENU_SIZE_2026-08-01.md) | Selection accuracy vs menu width: flat between 5 and 12 |
+| [`TOOL_MENU_SIZE_2026-08-01.md`](TOOL_MENU_SIZE_2026-08-01.md) | Selection accuracy vs menu width: flat between 5 and 12; measured to 32 on 2026-10-12 |
 | [`TOOLCALL_RELIABILITY_2026-07-31.md`](TOOLCALL_RELIABILITY_2026-07-31.md) | Tool-selection degradation as the menu widens |
 | [`AGENT_LOOP_RELIABILITY_2026-07-31.md`](AGENT_LOOP_RELIABILITY_2026-07-31.md) | Agent-loop failure modes that did **not** occur |
 | [`RETRIEVAL_EVAL_CHECKPOINT_2026-08-08.md`](RETRIEVAL_EVAL_CHECKPOINT_2026-08-08.md) | The gated eval suite run by hand at `23550e4`: 15/15, 8/9, 90.1% — and what the excluded fourth test actually measures |

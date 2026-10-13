@@ -737,7 +737,7 @@ func TestConnectToAnAddressSendsTheKeyToThatProvider(t *testing.T) {
 	if m.connectBase != "" {
 		t.Errorf("the address outlived the prompt (%q), so a later bare /connect would reuse it", m.connectBase)
 	}
-	if _, ok := cmd().(connectResultMsg); !ok {
+	if _, ok := connectAnswerOf(cmd); !ok {
 		t.Fatal("the command did not come back with the daemon's answer")
 	}
 	if got.APIBase != base {
@@ -822,24 +822,39 @@ func TestConnectResultShowsTheDaemonsNotes(t *testing.T) {
 	}
 }
 
-// "/connect, PASTE THE KEY" IS THE WHOLE INSTRUCTION, so the prompt it opens
-// has to say the key need not be from any one provider -- nothing used to, and
-// a user holding a good key from elsewhere concluded the product could not use
-// it.
+// "/connect, PASTE THE KEY" IS STILL ONE ENTER AWAY. /connect now opens the list
+// of providers (setup.go, 2026-10-11), and its first row is the old path: paste
+// any key and the daemon tells whose it is. The screen that row opens has to say
+// the key need not be from any one provider -- nothing used to, and a user
+// holding a good key from elsewhere concluded the product could not use it.
+//
+// Neuter check: make beginConnectBare call beginConnect directly again (no
+// list), or move the "Any key" row off the top of providerRows.
 func TestBareConnectSaysAnyProvidersKeyWorks(t *testing.T) {
 	m := newTestModel()
 	m = typeText(m, "/connect")
 	m, _ = pressEnter(m)
+	if m.state != stateSetup || m.setup.step != setupProvider {
+		t.Fatalf("/connect did not open the provider list (state %v, step %v)", m.state, m.setup.step)
+	}
+	screen := plainScreen(m)
+	for _, want := range []string{setupProviderTitle, "Any key", "OpenRouter", "NVIDIA"} {
+		if !strings.Contains(screen, want) {
+			t.Errorf("the provider list does not show %q:\n%s", want, screen)
+		}
+	}
+
+	m, _ = pressEnter(m) // the row highlighted when the list opens
 	if m.state != stateConnect || m.input.EchoMode != textinput.EchoPassword {
-		t.Fatalf("/connect did not open the masked key prompt (state %v)", m.state)
+		t.Fatalf("the first row did not open the masked key prompt (state %v)", m.state)
 	}
 	if m.connectBase != "" {
-		t.Errorf("a bare /connect named an address (%q); the daemon is meant to tell from the key", m.connectBase)
+		t.Errorf("\"Any key\" named an address (%q); the daemon is meant to tell from the key", m.connectBase)
 	}
-	last := m.turns[len(m.turns)-1].text
+	screen = plainScreen(m)
 	for _, want := range []string{"Paste your API key", "OpenRouter", "NVIDIA", "recognised from the key"} {
-		if !strings.Contains(last, want) {
-			t.Errorf("the key prompt does not say %q:\n%s", want, last)
+		if !strings.Contains(screen, want) {
+			t.Errorf("the key prompt does not say %q:\n%s", want, screen)
 		}
 	}
 }

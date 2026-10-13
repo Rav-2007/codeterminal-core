@@ -28,13 +28,39 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
-readonly BIN="${TMPDIR:-/tmp}/mochiii-bin"
-readonly LOG="${TMPDIR:-/tmp}/mochiii-daemon.log"
+# WHERE THE PROGRAMS AND THE LOG LIVE: in folders that are this user's alone.
+#
+# FOUND 2026-10-12: they were ${TMPDIR:-/tmp}/mochiii-bin and
+# ${TMPDIR:-/tmp}/mochiii-daemon.log. /tmp is shared, and the names were fixed,
+# so on a machine with other accounts whoever made that folder first owned it:
+# `mkdir -p` was satisfied, the build wrote into it, and the daemon was then
+# started from a folder somebody else could swap a file in. The log beside it
+# was readable by everyone, and it records the command line of every MCP server
+# the user adds. (A reboot also emptied it, which is how it was noticed twice.)
+readonly BIN="${XDG_CACHE_HOME:-$HOME/.cache}/mochiii/bin"
+readonly STATE="${XDG_STATE_HOME:-$HOME/.local/state}/mochiii"
+readonly LOG="$STATE/daemon.log"
+# Where builds went before. Nothing is ever run from it again; a daemon still
+# running from it is found so that it can be stopped.
+readonly OLD_BIN="${TMPDIR:-/tmp}/mochiii-bin"
 
 die() { printf 'run-tui: %s\n' "$*" >&2; exit 1; }
 
+# private_dir makes a folder that is this user's and nobody else's, or stops.
+# A folder that already exists is checked rather than trusted: not a link, and
+# owned by whoever is running this. Then it is closed to everyone else.
+private_dir() {
+	mkdir -p "$1"
+	[[ -d "$1" && ! -L "$1" && -O "$1" ]] ||
+		die "$1 is not a folder of your own, so nothing is built or run in it. Remove it, or set XDG_CACHE_HOME / XDG_STATE_HOME."
+	chmod 700 "$1"
+}
+
 if [[ "${1:-}" == "--stop" ]]; then
-	pkill -f "$BIN/mochiii-daemon" && echo "daemon stopped" || echo "no daemon running"
+	stopped=""
+	pkill -f "$BIN/mochiii-daemon" && stopped=1
+	pkill -f "$OLD_BIN/mochiii-daemon" && stopped=1
+	[[ -n "$stopped" ]] && echo "daemon stopped" || echo "no daemon running"
 	exit 0
 fi
 
@@ -51,7 +77,8 @@ CONFIG="models.agent.json"
 command -v go >/dev/null 2>&1 || PATH="$HOME/.local/go/bin:$PATH"
 command -v go >/dev/null 2>&1 || die "go not found; install it or add it to PATH"
 
-mkdir -p "$BIN"
+private_dir "$BIN"
+private_dir "$STATE"
 echo "building…"
 (cd daemon && go build -o "$BIN/mochiii-daemon" .)
 (cd clients/tui && go build -o "$BIN/mochiii" .)
@@ -95,13 +122,12 @@ if [[ -n "${MOCHIII_API_KEY:-}${MOCHIII_PROXY_KEY:-}" ]]; then
 elif [[ -f "$STORED" ]]; then
 	echo "run-tui: no key in the environment; using the one stored by \`mochiii-daemon connect\`"
 else
-	# NO KEY ANYWHERE, AND THIS SCRIPT DOES NOT ASK FOR ONE. Opening the client is
-	# not the moment: a new user should meet the prompt, not a credential form. The
-	# client asks for the key when it is actually needed -- when a question is
-	# submitted and there is nothing to authenticate it with -- and `/connect` is
-	# there before that for anyone who wants to set it up first.
-	echo "run-tui: no API key in the environment, and none stored -- the client will ask" >&2
-	echo "run-tui: for one when you send your first question, or run /connect before then." >&2
+	# NO KEY ANYWHERE, AND THIS SCRIPT DOES NOT ASK FOR ONE. The client does: with
+	# no key in force it opens on its setup -- choose a provider, paste its key,
+	# choose a model (clients/tui/setup.go, owner 2026-10-11). Esc there skips to
+	# the chat, and the key is then asked for when a question is submitted.
+	echo "run-tui: no API key in the environment, and none stored -- the client opens on its" >&2
+	echo "run-tui: setup (provider, key, model). Esc skips it; /connect opens it again." >&2
 fi
 
 # The workspace both halves must agree on. Anything the caller passes wins.
@@ -127,6 +153,11 @@ ARGS=("$@")
 # running under a daemon that has not itself changed. Only the helpers of the
 # daemons this script started are looked at -- never another daemon's.
 stale=()
+# A daemon started from where builds used to go is older than this one by
+# definition, and the client must not be left talking to it.
+for pid in $(pgrep -f "$OLD_BIN/mochiii-daemon" || true); do
+	stale+=("$pid")
+done
 for pid in $(pgrep -f "$BIN/mochiii-daemon" || true); do
 	running=$(stat -L -c %i "/proc/$pid/exe" 2>/dev/null) || continue
 	if [[ "$running" != "$(stat -c %i "$BIN/mochiii-daemon")" ]]; then
@@ -159,6 +190,11 @@ if pgrep -f "$BIN/mochiii-daemon" >/dev/null 2>&1; then
 	echo "daemon already running (./run-tui.sh --stop to restart it)"
 else
 	echo "starting daemon -> $LOG"
+	# Readable by this user only, whatever it was before. Done here and not with
+	# a umask for the whole script: the daemon inherits that, and the files it
+	# creates in the user's project must keep the modes they would normally get.
+	: >"$LOG"
+	chmod 600 "$LOG"
 	nohup "$BIN/mochiii-daemon" --config "$CONFIG" "${ARGS[@]}" >"$LOG" 2>&1 &
 	dpid=$!
 	# Wait for THIS daemon's lock -- one naming its pid -- not any daemon's: a

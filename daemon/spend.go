@@ -596,7 +596,7 @@ func (s *Server) serveBudgetAction(enc *json.Encoder, req protocol.PromptRequest
 // features is what this daemon can do that an older one cannot, for the
 // handshake. The spending limits are named only by a daemon that keeps them.
 func (s *Server) features() []string {
-	out := []string{protocol.FeatureSavedChats}
+	out := []string{protocol.FeatureSavedChats, protocol.FeatureModelChoice, protocol.FeatureMCPAdmin, protocol.FeatureAttachedOutput}
 	if s.spend != nil {
 		out = append(out, protocol.FeatureSpendLimits)
 	}

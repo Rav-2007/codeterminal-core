@@ -118,6 +118,12 @@ type LaunchConfig struct {
 	ConnectTimeout time.Duration
 	// Sandbox specifies OS-level sandbox isolation parameters (bwrap / docker).
 	Sandbox SandboxConfig
+	// Dir is the folder the server is started in. Empty means this process's
+	// own, which is right only for a caller that has decided so: a launcher
+	// (npx, uvx, python -m) chooses what to run partly from that folder, so a
+	// server started in somebody's project is partly chosen by the project.
+	// The daemon always sets it for a third-party server (laneBLaunchConfig).
+	Dir string
 }
 
 // Connect starts the server and completes the MCP initialize handshake.
@@ -162,6 +168,7 @@ func Connect(ctx context.Context, cfg LaunchConfig) (*StdioClient, error) {
 	// quote. A server name or argument containing a semicolon is just a
 	// semicolon.
 	cmd := exec.Command(execCmd, execArgs...)
+	cmd.Dir = cfg.Dir
 	cmd.Env = ServerEnv(cfg.EnvAllow)
 	// MEMO ITEM 2 (R1.5). `/mcp-server` renders this stream on the user's
 	// screen, so a server that prints a provisioned credential at startup used

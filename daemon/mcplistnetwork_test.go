@@ -18,14 +18,17 @@ func TestMCPListSeparatesNetworkToolsFromUnconfinedSubprocesses(t *testing.T) {
 		{Name: "web_search", Lane: protocol.LaneFirstParty, ReachesNetwork: true},
 		{Name: "web_fetch", Lane: protocol.LaneFirstParty, ReachesNetwork: true},
 		// First-party AND unconfined -- exactly propose_ast_edit and the
-		// compiler queries. It is not somebody else's subprocess, so the
-		// "run in external MCP servers" sentence must not count it. The old
-		// `!Confined && !ReachesNetwork` test counted it, inflating that number
-		// by this daemon's own tools (the regression this case pins).
-		{Name: "query_compiler_definition", Lane: protocol.LaneFirstParty, Confined: false},
+		// compiler queries, which can start a language server. It is not
+		// somebody else's subprocess, so the "run in external MCP servers"
+		// sentence must not count it (seen in the real app, 2026-10-11; the old
+		// `!Confined && !ReachesNetwork` test counted it).
+		{Name: "query_compiler_definition", Lane: protocol.LaneFirstParty, Confined: false, LaunchesSubprocess: true},
 		{Name: "third_party", Lane: protocol.LaneThirdParty, Confined: false},
 	}
 
+	if got := countOwnUnconfined(tools); got != 1 {
+		t.Errorf("countOwnUnconfined = %d, want 1", got)
+	}
 	if got := countExternal(tools); got != 1 {
 		t.Errorf("countExternal = %d, want 1 — only the third-party server tool runs in an "+
 			"external MCP server; a network tool or a first-party unconfined built-in must not "+

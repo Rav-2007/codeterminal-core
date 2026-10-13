@@ -59,6 +59,18 @@ func (m chatModel) canCatchUp() bool {
 	if !m.chatSync || m.resetPending {
 		return false
 	}
+	// Nor while "Save or clear?" is waiting for its answer (clear.go): the
+	// question is about the chat on screen, and that chat must not grow, or be
+	// replaced, between the asking and the key that answers it.
+	if m.newChatArmed {
+		return false
+	}
+	// Nor while /compact is waiting: its answer IS the chat as it now stands,
+	// and fetching the same change here first would announce this window's own
+	// compact as something another window did.
+	if m.compacting {
+		return false
+	}
 	return m.state == stateIdle || m.state == stateError || m.state == stateSplash
 }
 

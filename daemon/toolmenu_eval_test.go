@@ -14,6 +14,11 @@
 //	export MOCHIII_API_BASE=... MOCHIII_PROXY_KEY=... MOCHIII_USE_PROXY=true
 //	go test -tags eval -run TestToolMenuSizeCurve -v ./daemon
 //
+// Three settings measure it somewhere else (2026-10-12, when 24 and 32 were
+// run on another provider): TOOLMENU_EVAL_MODEL names the model,
+// TOOLMENU_EVAL_SIZES the menu sizes ("12,24,32"; up to 32, which is all the
+// distractors there are), and TOOLMENU_EVAL_PACE_MS a pause before each call.
+//
 // METHOD, and the two things it holds fixed.
 //
 //  1. THE PROMPTS DO NOT CHANGE across menu sizes. Every size answers the same
@@ -43,6 +48,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // menuTrials is per scenario per menu size. Three sizes x seven prompts x this
@@ -86,6 +92,51 @@ func distractorTools() []evalTool {
 			map[string]any{"key": str("Setting name.")}, []string{"key"}),
 		mk("open_issue", "Open a new issue in the project's tracker.",
 			map[string]any{"title": str("Issue title.")}, []string{"title"}),
+
+		// ADDED 2026-10-12 to measure past 12, and added AFTER the seven above so
+		// every size up to 12 is still the menu it was when it was measured. These
+		// are what the servers people actually add advertise -- a repository
+		// host, file management, a browser, a database, containers, chat, notes.
+		mk("create_pull_request", "Open a pull request from one branch into another.",
+			map[string]any{"title": str("Pull request title."), "head": str("Branch with the changes."), "base": str("Branch to merge into.")}, []string{"title", "head"}),
+		mk("list_pull_requests", "List the pull requests open in the project's repository.",
+			map[string]any{"state": str("open, closed or all.")}, nil),
+		mk("add_issue_comment", "Post a comment on an existing issue.",
+			map[string]any{"issue_number": map[string]any{"type": "integer", "description": "Issue number."}, "body": str("Comment text.")}, []string{"issue_number", "body"}),
+		mk("create_branch", "Create a new git branch from the current commit.",
+			map[string]any{"name": str("Branch name.")}, []string{"name"}),
+		mk("git_stash", "Stash the uncommitted changes in the working tree.",
+			map[string]any{"message": str("Optional label for the stash.")}, nil),
+		mk("move_file", "Move or rename a file inside the workspace.",
+			map[string]any{"source": str("Current path."), "destination": str("New path.")}, []string{"source", "destination"}),
+		mk("create_directory", "Create a new directory, including any missing parents.",
+			map[string]any{"path": str("Workspace-relative path.")}, []string{"path"}),
+		mk("delete_file", "Delete a file from the workspace.",
+			map[string]any{"path": str("Workspace-relative path.")}, []string{"path"}),
+		mk("get_file_info", "Report a file's size, permissions and modification time.",
+			map[string]any{"path": str("Workspace-relative path.")}, []string{"path"}),
+		mk("fetch_url", "Fetch a web page and return its readable text.",
+			map[string]any{"url": str("http or https address.")}, []string{"url"}),
+		mk("browser_screenshot", "Take a screenshot of the page open in the browser.",
+			map[string]any{"selector": str("CSS selector to capture, or empty for the whole page.")}, nil),
+		mk("run_sql_query", "Run a read-only SQL query against the connected database.",
+			map[string]any{"query": str("A single SELECT statement.")}, []string{"query"}),
+		mk("list_tables", "List the tables in the connected database.",
+			map[string]any{"schema": str("Schema name, or empty for the default.")}, nil),
+		mk("describe_table", "Show the columns and types of one database table.",
+			map[string]any{"table": str("Table name.")}, []string{"table"}),
+		mk("docker_ps", "List the containers running on this machine.",
+			map[string]any{"all": map[string]any{"type": "boolean", "description": "Include stopped containers."}}, nil),
+		mk("docker_logs", "Show the recent log output of one container.",
+			map[string]any{"container": str("Container name or id.")}, []string{"container"}),
+		mk("send_message", "Send a message to a chat channel.",
+			map[string]any{"channel": str("Channel name."), "text": str("Message text.")}, []string{"channel", "text"}),
+		mk("get_current_time", "Return the current date and time in a timezone.",
+			map[string]any{"timezone": str("IANA timezone name, or empty for UTC.")}, nil),
+		mk("memory_store", "Save a note to long-term memory for later sessions.",
+			map[string]any{"key": str("Name to save it under."), "value": str("The note.")}, []string{"key", "value"}),
+		mk("lint_code", "Run the linter over a file or package and report its warnings.",
+			map[string]any{"path": str("Workspace-relative path.")}, []string{"path"}),
 	}
 }
 
@@ -196,7 +247,39 @@ func TestToolMenuSizeCurve(t *testing.T) {
 		trials = n
 	}
 
+	// THE MODEL, THE SIZES AND THE PACE CAN BE SET FROM OUTSIDE (2026-10-12), so
+	// the curve can be measured on the provider a user is actually on. Left
+	// alone, the run is the one on record: models.json's primary tier at 5, 8
+	// and 12.
+	if v := strings.TrimSpace(os.Getenv("TOOLMENU_EVAL_MODEL")); v != "" {
+		model = v
+	}
+	// Provider routing is OpenRouter's field, sent as the daemon sends it: to
+	// OpenRouter, or through the proxy, and to nobody else.
+	if !strings.Contains(apiBase, "openrouter.ai") && os.Getenv("MOCHIII_USE_PROXY") != "true" {
+		routing = evalProviderRouting{}
+	}
 	sizes := []int{5, 8, 12}
+	if v := strings.TrimSpace(os.Getenv("TOOLMENU_EVAL_SIZES")); v != "" {
+		sizes = nil
+		for _, field := range strings.Split(v, ",") {
+			n, err := strconv.Atoi(strings.TrimSpace(field))
+			if err != nil {
+				t.Fatalf("TOOLMENU_EVAL_SIZES=%q: %q is not a number", v, field)
+			}
+			sizes = append(sizes, n)
+		}
+	}
+	// A pause before every call, for a key with a requests-per-minute limit
+	// that its owner is also using while this runs.
+	var pace time.Duration
+	if v := os.Getenv("TOOLMENU_EVAL_PACE_MS"); v != "" {
+		ms, err := strconv.Atoi(v)
+		if err != nil || ms < 0 {
+			t.Fatalf("TOOLMENU_EVAL_PACE_MS=%q is not a number of milliseconds", v)
+		}
+		pace = time.Duration(ms) * time.Millisecond
+	}
 	total := len(sizes) * len(menuScenarios) * trials
 	t.Logf("model=%s via %s: %d menu sizes x %d prompts x %d trials = %d billed calls",
 		model, apiBase, len(sizes), len(menuScenarios), trials, total)
@@ -222,6 +305,7 @@ func TestToolMenuSizeCurve(t *testing.T) {
 				var out probeOutcome
 				var err error
 				for attempt := 0; attempt <= menuTransportRetries; attempt++ {
+					time.Sleep(pace)
 					out, err = probeToolCalls(context.Background(), apiBase, apiKey, model, routing, scenario)
 					if err == nil {
 						if attempt > 0 {
@@ -237,11 +321,22 @@ func TestToolMenuSizeCurve(t *testing.T) {
 				}
 				if err != nil {
 					res.transport++
+					// THE FIRST THREE TRIALS ALL FAILING IS NOT A SAMPLE, it is a
+					// run that cannot work -- a model that takes no tools, a key
+					// that is refused -- and every further trial would be three
+					// more billed attempts at the same answer.
+					if len(results) == 0 && res.attempted == 0 && res.transport >= 3 {
+						t.Fatalf("the first %d trials all failed (last error: %v); stopping rather than paying for the rest", res.transport, err)
+					}
 					continue
 				}
 				res.attempted++
+				// Every trial is logged as it ends: a run that is stopped, or that
+				// outlives its timeout on a slow model, has then lost nothing it
+				// paid for (found 2026-10-12, at 55 seconds a call).
 				if len(out.calls) == 0 {
 					res.noCallAtAl++
+					t.Logf("menu=%2d %-16s trial %d: no tool call (wanted %s)", size, sc.name, trial, sc.wantTool)
 					continue
 				}
 				got := out.calls[0].Name
@@ -250,6 +345,7 @@ func TestToolMenuSizeCurve(t *testing.T) {
 				} else {
 					res.wrongTool[sc.wantTool+" -> "+got]++
 				}
+				t.Logf("menu=%2d %-16s trial %d: %s (wanted %s)", size, sc.name, trial, got, sc.wantTool)
 			}
 		}
 		results = append(results, res)

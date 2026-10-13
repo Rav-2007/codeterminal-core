@@ -1,11 +1,14 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+
+	"mochiii/protocol"
 )
 
 func TestParseSlash(t *testing.T) {
@@ -95,13 +98,6 @@ func TestRunGitStatus(t *testing.T) {
 	}
 }
 
-func TestRunMCPServerList(t *testing.T) {
-	out := runMCPServerList("")
-	if out == "" {
-		t.Fatal("expected non-empty output from runMCPServerList")
-	}
-}
-
 func TestFormatInitChecklist(t *testing.T) {
 	out := formatInitChecklist("/tmp/workspace")
 	if !strings.Contains(out, "/tmp/workspace") {
@@ -109,63 +105,72 @@ func TestFormatInitChecklist(t *testing.T) {
 	}
 }
 
-// THE HIJACK. runMCPServerList used to resolve its binary through
-// "daemon/mochiii-daemon" and "../../daemon/mochiii-daemon", both
-// relative to the working directory — and the TUI's only mode of use is to run
-// it from inside the repository being worked on.
+// THE HIJACK, AND WHY IT CANNOT COME BACK. /mcp-server used to find a daemon
+// binary and run it -- first through "daemon/mochiii-daemon" relative to the
+// working directory, which is the repository being worked on, so a repository
+// that shipped an executable at that path got it EXECUTED with the user's full
+// environment the moment they typed the command (d56e425). The search was then
+// anchored to trusted places, and a year of guards followed for the config path
+// it passed along.
 //
-// So a repository that ships an executable at that path got it EXECUTED, with
-// the user's full environment, the moment they typed /mcp-server. No approval
-// prompt stands in front of a slash command.
+// Since 2026-10-11 the command runs NOTHING: it asks the running daemon over
+// its socket (mcpserver.go). So this plants a binary everywhere one was ever
+// looked for -- the working directory, a nested one, PATH, and the old
+// MOCHIII_DAEMON_BIN override -- and asserts none of them is started, while the
+// answer shown is the daemon's own.
 //
-// Neuter check: restore either CWD-relative candidate and this test fails with
-// the stolen key in its message.
-func TestRunMCPServerList_DoesNotExecuteABinaryFromTheWorkingDirectory(t *testing.T) {
+// Neuter check: make handleMCPServerCommand exec.Command("mochiii-daemon",
+// "mcp", "list") again and this fails with the stolen key in its message.
+func TestMCPServer_AsksTheDaemonAndRunsNoProgram(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the payload is a POSIX shell script; NOT RUN on Windows")
 	}
 	repo := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(repo, "daemon"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	marker := filepath.Join(repo, "executed")
+	marker := filepath.Join(t.TempDir(), "executed")
 	payload := "#!/bin/sh\necho \"key=$MOCHIII_API_KEY\" > " + marker + "\necho fake\n"
-	if err := os.WriteFile(filepath.Join(repo, "daemon", "mochiii-daemon"), []byte(payload), 0o755); err != nil {
-		t.Fatal(err)
+	plant := func(dir string) string {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		p := filepath.Join(dir, "mochiii-daemon")
+		if err := os.WriteFile(p, []byte(payload), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return p
 	}
-	// The second historical candidate, reached from a nested working directory.
+	plant(filepath.Join(repo, "daemon"))
+	plant(repo)
+	onPath := plant(t.TempDir())
 	nested := filepath.Join(repo, "a", "b")
 	if err := os.MkdirAll(nested, 0o755); err != nil {
 		t.Fatal(err)
 	}
-
 	t.Setenv("MOCHIII_API_KEY", "sk-CANARY")
-	t.Setenv(daemonBinEnvVar, "") // no override; exercise the search itself
+	t.Setenv("MOCHIII_DAEMON_BIN", onPath)
+	t.Setenv("PATH", filepath.Dir(onPath)+string(os.PathListSeparator)+os.Getenv("PATH")+string(os.PathListSeparator))
+
+	daemon := startRequestRecorder(t, []string{protocol.FeatureMCPAdmin}, func(json.RawMessage) any {
+		return protocol.MCPResponse{Ok: true, AgentMode: true,
+			Report: "This daemon's config: /opt/models.agent.json\n\nAgent mode is ON. 2 tool(s) would be offered to the model.\n"}
+	})
 
 	for _, cwd := range []string{repo, nested} {
-		if err := os.Remove(marker); err != nil && !os.IsNotExist(err) {
-			t.Fatal(err)
-		}
 		t.Chdir(cwd)
-		_ = runMCPServerList("")
-
+		m := newChatModel("test", repo, repo, nil)
+		next, cmd := m.handleLocalSlash("mcp-server", "")
+		answer, ok := findMsg[mcpResultMsg](cmd)
+		if !ok {
+			t.Fatalf("cwd=%s: /mcp-server asked the daemon nothing", cwd)
+		}
+		updated, _ := next.(chatModel).Update(answer)
+		if last := lastTurn(t, updated); !strings.Contains(last, "Agent mode is ON") || !strings.Contains(last, "/opt/models.agent.json") {
+			t.Errorf("cwd=%s: the daemon's own answer is not what was shown:\n%s", cwd, last)
+		}
 		if b, err := os.ReadFile(marker); err == nil {
-			t.Fatalf("HIJACK from cwd=%s: the working directory's binary was executed; it saw %s",
-				cwd, strings.TrimSpace(string(b)))
+			t.Fatalf("HIJACK from cwd=%s: /mcp-server executed a program; it saw %s", cwd, strings.TrimSpace(string(b)))
 		}
 	}
-}
-
-// The explicit override must still work — a gate that refuses everything is not
-// a gate, and developers need a way to point at a daemon built elsewhere.
-func TestResolveDaemonBin_HonoursTheExplicitOverride(t *testing.T) {
-	dir := t.TempDir()
-	bin := filepath.Join(dir, "my-daemon")
-	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv(daemonBinEnvVar, bin)
-	if got := resolveDaemonBin(); got != bin {
-		t.Errorf("resolveDaemonBin() = %q, want the override %q", got, bin)
+	if n := len(daemon.requests()); n != 2 {
+		t.Errorf("the daemon was asked %d time(s), want once per /mcp-server", n)
 	}
 }

@@ -52,6 +52,14 @@ type storedCredential struct {
 	// for when they were tried. /model marks them, so picking one is a choice
 	// and not a surprise two minutes later.
 	QuietModels []string `json:"quiet_models,omitempty"`
+
+	// ChosenModel is the model the USER picked (/model <name>, or the last step
+	// of the setup screen), by the name /model lists it under. Kept apart from
+	// DefaultModel on purpose: that one is what the daemon found to answer when
+	// the key was connected, and /model clear has to be able to go back to it.
+	// Written beside the key because it is a choice among THIS key's models: a
+	// new connect writes a fresh credential, and the choice goes with the old one.
+	ChosenModel string `json:"chosen_model,omitempty"`
 }
 
 // configured reports whether there is a key here at all.
@@ -197,16 +205,23 @@ func loadCredential(path string) (cred storedCredential, warn string, err error)
 // The temp file is created 0600 from the start, never widened and narrowed, so
 // the key is not briefly world-readable on a machine somebody else is on.
 func saveCredential(path string, cred storedCredential) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("creating %s: %w", dir, err)
-	}
 	cred.SavedAt = time.Now().UTC().Format(time.RFC3339)
 	data, err := json.MarshalIndent(cred, "", "  ")
 	if err != nil {
 		return err
 	}
-	data = append(data, '\n')
+	return writePrivateFile(path, append(data, '\n'))
+}
+
+// writePrivateFile replaces path with data, 0600, atomically, creating its
+// directory 0700. It is how everything under ~/.mochiii that must not be read or
+// half-written is stored: the credential, and the user's MCP servers
+// (mcpuser.go), whose file decides which programs this daemon starts.
+func writePrivateFile(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("creating %s: %w", dir, err)
+	}
 
 	tmp := path + ".tmp"
 	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)

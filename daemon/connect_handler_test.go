@@ -403,3 +403,34 @@ func TestABareConnectChecksTheKeyAgainstTheProviderInUse(t *testing.T) {
 		t.Errorf("stored for %q; want the key saved for the provider it was checked against", stored.APIBase)
 	}
 }
+
+// THE NOTE REACHES THE CLIENT, FIRST, AND THE KEY IS STORED FOR ITS ISSUER.
+//
+// A typed `/connect openai` followed by an NVIDIA key used to go to OpenAI: the
+// rule that stops it lived in the terminal's setup list alone (FOUND
+// 2026-10-12). NoVerify, so this test sends the key to nobody at all.
+func TestAKeyNamedForAnotherProviderIsStoredForItsIssuerAndSaysSo(t *testing.T) {
+	s, path := connectServer(t)
+	openAI, _ := protocol.ProviderByName("openai")
+	nvidia, _ := protocol.ProviderByName("nvidia")
+
+	resp := s.connectResult(context.Background(), protocol.ConnectRequest{
+		Connect: true, APIKey: "nvapi-0123456789abcdefSECRET", APIBase: openAI.APIBase, NoVerify: true,
+	})
+	if !resp.Ok {
+		t.Fatalf("the connect failed: %s", resp.Error)
+	}
+	if resp.APIBase != nvidia.APIBase {
+		t.Errorf("the answer names %s as where the key went, want %s", resp.APIBase, nvidia.APIBase)
+	}
+	if len(resp.Notes) == 0 || !strings.Contains(resp.Notes[0], "not with "+openAI.Name) {
+		t.Errorf("the first note does not say the key was kept from %s: %q", openAI.Name, resp.Notes)
+	}
+	stored, _, err := loadCredential(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.APIBase != nvidia.APIBase {
+		t.Errorf("the key was stored for %s, want its issuer %s", stored.APIBase, nvidia.APIBase)
+	}
+}

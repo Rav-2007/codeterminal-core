@@ -143,6 +143,11 @@ func runConnectCommand(args []string, logger *log.Logger) error {
 	if err := validateConnectBase(base); err != nil {
 		return err
 	}
+	// Said before anything is sent: the key is going somewhere other than the
+	// provider that was named (resolveConnectBase, rule 1).
+	if note := target.note(); note != "" {
+		_, _ = fmt.Fprintf(connectOut, "NOTE: %s\n", note)
+	}
 
 	cred := storedCredential{APIBase: base, APIKey: key}
 
@@ -238,6 +243,9 @@ func showCredential(path string) error {
 	}
 	if cred.DefaultModel != "" {
 		_, _ = fmt.Fprintf(connectOut, "Model:       %s (%d listed by the provider when the key was saved)\n", cred.DefaultModel, len(cred.Models))
+	}
+	if cred.ChosenModel != "" {
+		_, _ = fmt.Fprintf(connectOut, "Chosen:      %s (picked with /model; /model clear goes back)\n", cred.ChosenModel)
 	}
 	_, _ = fmt.Fprintf(connectOut, "File:        %s\n", path)
 	// Said here too, because a key in the environment silently wins and that is

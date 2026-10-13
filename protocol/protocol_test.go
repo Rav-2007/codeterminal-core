@@ -51,6 +51,12 @@ func TestWireTags(t *testing.T) {
 			"arguments_sha256", "decision"}},
 		{"ToolActivity", ToolActivity{}, []string{"call_id", "server", "tool", "phase", "detail",
 			"duration_ms", "result_bytes"}},
+		{"ConnectRequest", ConnectRequest{}, []string{"protocol_version", "connect", "api_key", "api_base",
+			"choose_model", "clear_model"}},
+		{"MCPRequest", MCPRequest{}, []string{"protocol_version", "mcp", "action", "name", "command", "args",
+			"env", "acknowledged_unconfined"}},
+		{"MCPResponse", MCPResponse{}, []string{"protocol_version", "ok", "agent_mode", "report", "servers",
+			"needs_acknowledgement", "detail", "notes", "error"}},
 	}
 
 	for _, tc := range cases {
@@ -86,6 +92,7 @@ func TestDiscriminatorKeysArePresentAndNotOmitempty(t *testing.T) {
 		{"SearchRequest", SearchRequest{}, "Search", "search"},
 		{"StatusRequest", StatusRequest{}, "Status", "status"},
 		{"ToolApprovalResponse", ToolApprovalResponse{}, "Approval", "approval"},
+		{"MCPRequest", MCPRequest{}, "MCP", "mcp"},
 	}
 
 	for _, tc := range cases {
@@ -120,6 +127,7 @@ func TestZeroValuedRequestsStillCarryTheirDiscriminator(t *testing.T) {
 		{"SearchRequest", SearchRequest{}, `"search":`},
 		{"StatusRequest", StatusRequest{}, `"status":`},
 		{"ToolApprovalResponse", ToolApprovalResponse{}, `"approval":`},
+		{"MCPRequest", MCPRequest{}, `"mcp":`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -394,6 +394,7 @@ func providerTierConfig(cfg *Config, providerName string, models, quiet []string
 	for _, id := range quiet {
 		if tier, listed := out.Tiers[id]; listed {
 			tier.Note = "listed by " + providerName + quietTierNote
+			tier.quiet = true
 			out.Tiers[id] = tier
 		}
 	}

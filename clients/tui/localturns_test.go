@@ -1,8 +1,11 @@
 package main
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
 
 	"mochiii/protocol"
 )
@@ -15,13 +18,22 @@ import (
 // workspace's absolute path, and after /connect the tail of the API key.
 // Each is still drawn exactly as it was; none is sent.
 func TestLocalCommandOutputIsShownAndNeverSentToTheModel(t *testing.T) {
+	// No daemon to ask: /compact's request fails at once, and says so.
+	t.Cleanup(setLockPathForTest(t, filepath.Join(t.TempDir(), "absent.lock")))
 	m := newTestModel()
 	m.appendTurn(turn{role: roleUser, text: "a real question"})
 	m.appendTurn(turn{role: roleAssistant, text: "a real answer"})
 
 	for _, typed := range []string{"/help", "/context", "/init", "/compact", "/search", "/connect a-key-typed-here"} {
 		before := len(m.turns)
-		m, _ = pressEnter(typeText(m, typed))
+		var cmd tea.Cmd
+		m, cmd = pressEnter(typeText(m, typed))
+		// /compact holds the keyboard until the daemon has answered (compact.go),
+		// so its answer is delivered before the next command is typed.
+		if typed == "/compact" && cmd != nil {
+			answered, _ := m.Update(cmd())
+			m = answered.(chatModel)
+		}
 		if len(m.turns) == before {
 			t.Fatalf("%s put nothing on screen; the test would prove nothing", typed)
 		}
@@ -60,12 +72,15 @@ func TestLocalCommandOutputIsShownAndNeverSentToTheModel(t *testing.T) {
 		t.Fatalf("only %d local replies are on screen; the commands above did not run", shown)
 	}
 
-	// /git FETCHES something to talk about, so its output stays in the
-	// conversation ("write a commit message for this").
+	// /git FETCHES something to talk about ("write a commit message for
+	// this") -- and since 2026-10-13 that is no longer a reason to leave its
+	// output in the conversation as something the model said. It is local like
+	// the rest, and what it printed goes with the next question, once
+	// (attach.go; attach_test.go has the rest).
 	before := len(m.turns)
 	m, _ = pressEnter(typeText(m, "/git"))
-	if len(m.turns) != before+1 || m.turns[before].local {
-		t.Errorf("/git's output is not part of the conversation: %+v", m.turns[before:])
+	if len(m.turns) != before+1 || !m.turns[before].local {
+		t.Errorf("/git's output is part of the conversation again: %+v", m.turns[before:])
 	}
 }
 

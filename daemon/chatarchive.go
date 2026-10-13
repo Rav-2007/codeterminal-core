@@ -30,7 +30,15 @@ import (
 // the owner's requirement was that disk use stays the user's choice. Saving a
 // chat again after more work UPDATES its saved copy rather than adding one: the
 // workspace's link file (currentLinkName) records which saved chat the current
-// one is, and how many turns that copy holds.
+// one is, and how many turns the current chat held when it was saved.
+//
+// AN UPDATE ONLY EVER ADDS (extendSaved). The new copy is the old copy's turns
+// and then whatever the current chat has after them -- never just "what the
+// current chat holds now", which is what it was until 2026-10-11. memory.db
+// drops a long chat's oldest turns (maxTurnsPerWorkspace; until that day, any
+// turn older than thirty days too), so "what it holds now" can be less than
+// what was saved, and writing that over the copy threw the difference away
+// with a message that said "saved".
 //
 // ONE GZIPPED JSONL FILE PER CHAT, under StateDir()/history/<workspace key>/ --
 // beside memory.db and never inside the project, so it cannot be committed.
@@ -94,6 +102,11 @@ var errArchiveNotFound = errors.New("no saved chat with that id")
 
 // errNothingToSave: the current chat has no question with an answer yet.
 var errNothingToSave = errors.New("nothing to save yet")
+
+// errChatTooLarge: written out, the chat would pass maxArchiveBytes, which is
+// the most load will read back. Refused at save, because a file that can never
+// be resumed is not a saved chat, whatever the message said.
+var errChatTooLarge = errors.New("chat is too large to save")
 
 // archiveHeader is line 1 of a saved chat. Name is what the user called it
 // when saving, if anything; Title is always its first prompt.
@@ -255,13 +268,18 @@ func (a *chatArchive) write(id string, h archiveHeader, turns []storedTurn) erro
 	if err != nil {
 		return fail(err)
 	}
-	enc := json.NewEncoder(gz)
+	// Counted before compression: maxArchiveBytes bounds what load inflates.
+	written := &countingWriter{w: gz}
+	enc := json.NewEncoder(written)
 	if err := enc.Encode(h); err != nil {
 		return fail(err)
 	}
 	for _, t := range turns {
 		if err := enc.Encode(archiveLine{Role: t.Role, Content: t.Content, At: t.CreatedAt}); err != nil {
 			return fail(err)
+		}
+		if written.n > maxArchiveBytes {
+			return fail(errChatTooLarge)
 		}
 	}
 	if err := gz.Close(); err != nil {
@@ -278,6 +296,76 @@ func (a *chatArchive) write(id string, h archiveHeader, turns []storedTurn) erro
 		return fmt.Errorf("saving chat: %w", err)
 	}
 	return nil
+}
+
+// countingWriter counts the bytes that pass through it.
+type countingWriter struct {
+	w io.Writer
+	n int64
+}
+
+func (c *countingWriter) Write(p []byte) (int, error) {
+	n, err := c.w.Write(p)
+	c.n += int64(n)
+	return n, err
+}
+
+// readableTurns drops the turns loadStored would drop on the way back in, so a
+// saved chat holds exactly the turns a resume returns. memory.db can hold a row
+// that fails validTurn -- one written before the write-side guard existed, or a
+// hand-edited one -- and extendSaved compares a copy as it was READ against the
+// chat as it is STORED: a row only one side has would make every chat look like
+// it had stopped continuing its own copy.
+func readableTurns(stored []storedTurn) []storedTurn {
+	out := make([]storedTurn, 0, len(stored))
+	for _, t := range stored {
+		if validTurn(protocol.Turn{Role: t.Role, Content: t.Content}) {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// extendSaved is what updating a saved copy writes: every turn the copy holds,
+// then whatever the current chat has after them. ok is false when the current
+// chat does not continue the copy at all, and then the copy must be left alone.
+//
+// The current chat continues the copy when some END of the copy is the START of
+// the current chat. Usually that end is the whole copy (the chat was saved or
+// resumed, then went on). It is a shorter end when memory.db has dropped the
+// chat's oldest turns since (maxTurnsPerWorkspace) -- and those dropped turns
+// are exactly the ones that survive here and nowhere else. The LONGEST such end
+// is taken, so a chat that repeats itself ("hi" / "Hello!") lines up on the
+// most that agrees rather than the least.
+//
+// NO OVERLAP IS NOT "APPEND". A current chat that shares nothing with the copy
+// might be its continuation after a long gap, and might be an unrelated chat
+// behind a link that was never cleared; nothing here can tell which. Joining
+// them would put one conversation inside another, and replacing the copy would
+// delete it. The caller saves the current chat beside the copy instead.
+//
+// Turns are compared by role and text, not time: a resumed turn whose saved
+// time was not a time is stored with a new one (loadStored, ReplaceWorkspace).
+func extendSaved(saved, current []storedTurn) ([]storedTurn, bool) {
+	for from := 0; from < len(saved); from++ {
+		end := saved[from:]
+		if len(end) > len(current) {
+			continue
+		}
+		same := true
+		for i, t := range end {
+			if t.Role != current[i].Role || t.Content != current[i].Content {
+				same = false
+				break
+			}
+		}
+		if same {
+			out := make([]storedTurn, 0, from+len(current))
+			out = append(out, saved[:from]...)
+			return append(out, current...), true
+		}
+	}
+	return nil, false
 }
 
 // headerFor describes turns. ok is false when there is nothing worth saving:
@@ -320,7 +408,9 @@ func (h archiveHeader) displayTitle() string {
 }
 
 // chatLink is the workspace's link file: the saved chat the current chat is,
-// and how many turns that saved copy holds -- more turns now means unsaved work.
+// and how many turns the CURRENT chat held when it was saved as that copy or
+// resumed from it -- more now means unsaved work. Not how many the copy holds:
+// a copy can hold older turns the current chat has since dropped (extendSaved).
 type chatLink struct {
 	ID    string `json:"id"`
 	Turns int    `json:"turns"`
@@ -344,7 +434,7 @@ func (a *chatArchive) readLink() chatLink {
 	return l
 }
 
-// writeLink records that the current chat is saved chat id, holding turns.
+// writeLink records that the current chat, holding turns, is saved chat id.
 func (a *chatArchive) writeLink(id string, turns int) error {
 	if err := a.ensureDir(); err != nil {
 		return err

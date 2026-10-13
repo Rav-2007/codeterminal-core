@@ -68,7 +68,7 @@ type Server struct {
 	// key in force: a stdin key that lost to MOCHIII_API_KEY was still in this
 	// process's memory. Set once at construction and never written again.
 	launchSecrets []string
-
+	serverExtras  // the chosen model and the MCP admin state: serverextras.go says why they are there
 	cfg           *Config
 	modelOverride string // optional testing override; bypasses the router when set
 	systemPrompt  string
@@ -510,14 +510,14 @@ func (s *Server) serveConn(conn net.Conn) {
 	// Before the prompt path like the rest, and deliberately NOT logged with its
 	// payload: a ConnectRequest carries a provider key, and the one thing that
 	// must never happen to it is being written down. See connect_handler.go.
-	if isConnectRequest(raw) {
+	if isConnectRequest(raw) || isMCPRequest(raw) { // an MCPRequest shares this branch: handleConnectOrMCP
 		var connectReq protocol.ConnectRequest
 		if err := json.Unmarshal(raw, &connectReq); err != nil {
 			s.count(func(c *counters) { c.malformed.Add(1) })
 			s.logger.Print("connect request decode error")
 			return
 		}
-		s.handleConnect(ctx, enc, connectReq)
+		s.handleConnectOrMCP(ctx, enc, raw, connectReq)
 		return
 	}
 
@@ -751,6 +751,9 @@ func (s *Server) serveConn(conn net.Conn) {
 		// warn-mode. This never changes augmentedPrompt.
 		s.logChunkScrub(outcome.Chunks)
 	}
+	// What a client's own command printed, attached to this one question
+	// (attachedoutput.go). Before the redaction below, so that covers it too.
+	augmentedPrompt = withAttachedOutput(augmentedPrompt, promptReq.Attached, s.noScrub())
 	// LITERAL CREDENTIAL REDACTION of the whole outgoing user message -- the
 	// typed prompt AND the retrieved chunks folded into it -- after the heuristic
 	// scrub above. Always on, even under --no-scrub: the daemon's own key, in any
@@ -1587,42 +1590,77 @@ func (s *Server) resetPersistedHistory() string {
 // saved chat's id and header, and how many old chats pruning then removed. The
 // caller holds historyMu, so an exchange finishing now is saved whole or not
 // at all.
+//
+// THE OLD COPY IS REPLACED ONLY BY A COPY THAT HOLDS ALL OF IT (extendSaved).
+// This used to write whatever memory.db held and delete the old copy, on the
+// assumption that memory.db only ever grows between two saves. It does not:
+// it drops a chat's oldest turns past maxTurnsPerWorkspace, and until
+// 2026-10-11 it also dropped every turn older than thirty days. FOUND that
+// day, by running it: a 20-turn saved chat, resumed forty days on, became a
+// 2-turn one after one question and one save, the 20-turn file was deleted,
+// and the client was told "saved". The age rule is gone (memory.go); this is
+// the half that does not depend on nothing else ever pruning. An update is
+// built from the old copy, and a current chat that does not continue the old
+// copy leaves it where it is.
 func (s *Server) saveChatLocked(ctx context.Context, archive *chatArchive, spec, name string) (string, archiveHeader, int, error) {
-	turns, err := s.memory.LoadAllTurns(ctx, s.workspace)
+	stored, err := s.memory.LoadAllTurns(ctx, s.workspace)
 	if err != nil {
 		return "", archiveHeader{}, 0, err
 	}
+	current := readableTurns(stored)
 	link := archive.readLink()
+	// toSave is the current chat alone until it is known to continue a copy;
+	// replaces is that copy, and stays "" unless toSave holds every turn of it.
+	toSave, replaces := current, ""
 	bookmarked := false
 	if link.ID != "" {
-		if h, _, err := archive.load(link.ID); err == nil {
-			if name == "" {
-				name = h.Name
+		// A copy that is gone (deleted, pruned) or cannot be read is not
+		// updated and not removed: this save simply becomes a new chat.
+		if h, saved, err := archive.loadStored(link.ID); err == nil {
+			if extended, ok := extendSaved(saved, current); ok {
+				toSave, replaces = extended, link.ID
+				if name == "" {
+					name = h.Name
+				}
+				// The updated copy replaces the old one, so it keeps the old one's
+				// bookmark -- or saving more work would silently unpin a chat.
+				bookmarked = h.Bookmarked
+			} else {
+				s.logger.Print("history save: the current chat does not continue its saved copy; " +
+					"that copy is kept and this chat is saved beside it")
 			}
-			// The updated copy replaces the old one, so it keeps the old one's
-			// bookmark -- or saving more work would silently unpin a chat.
-			bookmarked = h.Bookmarked
 		}
 	}
 	now := time.Now()
-	id, err := archive.saveWith(turns, spec, name, bookmarked, now)
+	id, err := archive.saveWith(toSave, spec, name, bookmarked, now)
+	if errors.Is(err, errChatTooLarge) && replaces != "" {
+		// The copy plus what is new no longer fits in one file. The copy keeps
+		// what it has -- its bookmark included, which is why the chat saved
+		// beside it does not take one -- and the current chat is saved rather
+		// than not at all, which is what refusing here would mean for every
+		// later save.
+		s.logger.Print("history save: the saved copy plus the new turns is too large for one file; " +
+			"that copy is kept and the current chat is saved beside it")
+		toSave, replaces, bookmarked = current, "", false
+		id, err = archive.saveWith(toSave, spec, name, bookmarked, now)
+	}
 	if err != nil {
 		return "", archiveHeader{}, 0, err
 	}
 	if id == "" {
 		return "", archiveHeader{}, 0, errNothingToSave
 	}
-	if link.ID != "" && link.ID != id {
-		// The updated copy replaces the old one; an old copy already gone
-		// (deleted, pruned) is not a failure of this save.
-		if err := archive.remove(link.ID); err != nil && !errors.Is(err, errArchiveNotFound) {
+	if replaces != "" && replaces != id {
+		if err := archive.remove(replaces); err != nil && !errors.Is(err, errArchiveNotFound) {
 			s.logger.Printf("history save: removing the previous copy: %v", err)
 		}
 	}
-	if err := archive.writeLink(id, len(turns)); err != nil {
+	// len(stored), not len(toSave): listChats compares this with how many
+	// turns memory.db holds to say whether there is unsaved work (chatLink).
+	if err := archive.writeLink(id, len(stored)); err != nil {
 		s.logger.Printf("history save: %v", err)
 	}
-	h, _ := headerFor(turns, spec, now)
+	h, _ := headerFor(toSave, spec, now)
 	h.Name = clipRunes(oneLine(name), archiveTitleRunes)
 	h.Bookmarked = bookmarked
 	pruned := pruneHistory(archive.root, maxArchivesPerWorkspace, maxSavedChatBytes, now)

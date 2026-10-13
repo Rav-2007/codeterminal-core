@@ -279,6 +279,13 @@ set -a && source .env && set +a
 ./clients/tui/mochiii-tui                # terminal 2
 ```
 
+**With no key yet, the terminal client opens on the setup** rather than the
+chat: choose a provider, paste its key, choose a model — the same three steps
+`/provider` runs at any time ([details](#slash-commands)). Esc skips to the chat;
+a key is then asked for when you send your first question. With a key already
+in force it opens on the chat, and the line under the prompt says which model
+and provider that is.
+
 **Those two commands start with agent mode off:** the model is given no tools,
 so it cannot read a file it was not handed, propose an edit through a tool, run
 a test, or search the web. To get the tools, start with the agent config
@@ -340,6 +347,7 @@ All commands are subcommands of the `mochiii-daemon` binary.
 | `edits apply [--workspace p] [file\|-]` | Apply SEARCH/REPLACE blocks, or a unified diff, from a response |
 | `edits undo [--workspace p] [--session ts] [--force]` | Restore a backup session |
 | `mcp list [--config p]` | Show what agent mode would advertise, and its policy |
+| `mcp add <name> [--env NAME] [--in-project] -- <command> [args…]` · `mcp remove <name>` | Add or remove an MCP server of your own ([agent mode](#agent-mode)) |
 | `skills list [--limit N] [--json]` · `skills delete <id>` | Local skills store |
 | `download-model` | Fetch the pinned BGE model + onnxruntime library |
 | `helper-smoketest <text>` | Spawn the helper, embed one string, shut down |
@@ -545,14 +553,21 @@ client; steered commands send a task preamble to the model, and the long-task
 commands send a mode the daemon enforces ([Long tasks](#long-tasks)).
 
 ```text
-/model                 # list active tiers
-/model minimax_m3      # select one for this session
-/model clear           # back to default_tier
+/model                 # TUI: choose the model from a list (VS Code: prints the tiers)
+/model list            # TUI: print them instead
+/model minimax_m3      # select one by name; the TUI's choice is remembered across restarts
+/model clear           # back to the default
 
-/connect               # set the provider API key: masked prompt, checked, live
+/provider              # TUI: choose a provider, paste its key, choose a model
+/provider nvidia       # skip the list (TUI); or /provider <its API address>
+/account               # TUI: the provider, key and model in use, and what was spent
+/connect               # the same screens as /provider, under their older name
 /connect show          # which key is in force (masked — never the key itself)
 /connect forget        # remove the stored key
-/connect nvidia        # name the provider yourself (TUI); or /connect <its API address>
+
+/mcp-server            # the tools the running daemon offers, and its MCP servers
+/mcp-server add files npx -y @modelcontextprotocol/server-filesystem ~/notes
+/mcp-server remove files   # (TUI) add or remove an MCP server of your own
 
 /spec add a --verbose flag   # write a spec (specs/<name>.md) and review it
 /spec build            # build the active spec: tests first, live task list
@@ -603,9 +618,15 @@ sends no session yet, so only the day's limit holds it, and it is raised there i
 the configuration.
 
 **Chat history.** A chat is kept only if you save it with `/save` (`/save my-name` to
-name it), so disk use stays your choice. ctrl+n starts a new chat and discards the current one, but on a chat
-that is not saved it only warns the first time: a second ctrl+n discards it.
-Relaunching continues where you left off. Everything stays on this machine:
+name it), so disk use stays your choice. `/clear` and ctrl+n both start a new chat and
+discard the current one: it leaves the screen, it is no longer sent to the model, and a
+later `/save` will not write it. On a chat that is not saved, either one asks first, in
+the prompt's box — **"This chat is not saved. Save or clear?"** — and one key answers:
+`s` saves the chat and then starts the new one, `c` clears without saving, Esc keeps the
+chat. If the save fails, nothing is cleared. Relaunching continues where you left off, and
+says so in one line: when the chat began, how many turns it holds, how many of them are
+on screen, and whether it is saved. A chat goes on until you end it, however long ago
+it began. Everything stays on this machine:
 
 - **Where:** saved chats live in `~/.local/state/mochiii/history/`, one gzipped file per
   chat, never inside the project.
@@ -616,10 +637,12 @@ Relaunching continues where you left off. Everything stays on this machine:
   are shown and the number decides. `/history save` and `/history resume` are the
   same two commands under their older names.
 - **Saving again:** after more work, `/save` updates the chat's saved copy
-  instead of adding a new one. `/resume` keeps the saved copy, and asks first
+  instead of adding a new one, and an update only ever adds: the copy keeps every
+  turn it already held. `/resume` keeps the saved copy, and asks first
   if the chat on screen is not saved.
 - **How much is kept:** at most 50 chats per project and 20 MiB for the whole folder.
-  If a save pushes out the oldest, it tells you.
+  If a save pushes out the oldest, it tells you. One saved chat holds at most 8 MiB of
+  text. The chat in progress keeps its newest 1000 turns and is never trimmed by age.
 - **Half-done work:** `/history` flags it with ⚠: a last answer that did not finish, or a
   spec that still has open criteria.
 - **Deleting:** `/history delete <n>` removes one chat. To remove all of them, delete the
@@ -646,15 +669,62 @@ over a connected one; VS Code then drops its own key and restarts the daemon so
 the connected one takes over, and `/connect show` says when an environment key
 is what is in force.
 
-**Paste a key from any major provider and it is ready.** `/connect` asks for
-the key and nothing else: the daemon recognises the provider from the key, and
-for any provider but OpenRouter it also picks one of that provider's models and
-tries it, so the next prompt works — see [direct mode](#4-run) for the list and
-the details. The result names the provider and the model, and says "ready" only
-for a model that answered. A refused key is refused by name ("refused by
-NVIDIA"), and changes nothing. In the TUI, `/connect <provider>` or
-`/connect <address>` names the provider yourself, which a key with a bare `sk-`
-prefix needs. VS Code's `/connect` does not take either yet.
+**Provider, key, model — three screens (TUI).** `/provider` (or `/connect`)
+opens a list of the providers; type to search, Enter to pick. The next screen
+takes that provider's key at a masked prompt and says where it is about to be
+sent. The daemon checks it — for any provider but OpenRouter by finding one of
+its models that answers, see [direct mode](#4-run) — and the last screen lists
+the provider's models. Enter on another makes it the model; Esc keeps the one in
+use. The same three screens are what the client **opens on** when no key is in
+force; Esc there skips to the chat.
+
+- **Each screen marks where you are.** The provider in use and the model in use
+  are marked `● (current)`, and each list opens on it.
+- **`/model` opens the model list by itself**, with no key to paste: it is the
+  third screen, for the provider already in use. `/model list` prints the
+  models as text instead.
+- **Changing the model does not ask for the key again.** Pick the provider you
+  are already on and press Enter on the empty key field: the key in use is
+  kept, and the model list follows.
+
+**`/account` (TUI)** shows what the client is connected to: the provider and its
+address, the key in force (masked) and where it comes from — stored on this
+machine, the daemon's environment, or the proxy — the model, whether a restart
+will remember it, and this session's and today's spend against their limits. It
+asks the daemon only; nothing is sent to the provider.
+
+**The prompt is drawn in a box (TUI)**, the width of the terminal, so where to
+type is set apart from the conversation above it. Its border is blue while the
+client is waiting for you — a prompt to type, a tool approval to answer — and
+grey while a turn is running. A terminal under 12 rows keeps the bare prompt
+and gives the rows to the answer.
+
+**The line under the prompt (TUI)** names the model and the provider all the
+time, and adds the session's tokens and cost once there are any:
+`z-ai/glm-5.3 · NVIDIA · 3.8K tokens · $0.0027`. It reads the daemon's own
+answer about what it is sending to, so with a key in the environment it names
+that key's provider, not the stored one's.
+
+- **Paste a key from any major provider and it is ready** is still one Enter
+  away: the list's first row is "Any key", which asks for the key and nothing
+  else, and the daemon recognises the provider from it.
+- **A key is only ever sent to the provider that issued it.** Pick Groq and
+  paste a key that starts `nvapi-`, and it is checked with NVIDIA; the screen
+  says so. A key with a bare `sk-` prefix, pasted under "Any key", is sent
+  nowhere: the list comes back cut down to the providers it could be from.
+- **A refused key is refused by name** ("refused by NVIDIA"), changes nothing,
+  and leaves you on that provider's key screen to try again.
+- **The model you pick is remembered.** It is stored beside the key, so it is
+  still the model after a restart, and `/model <name>` is remembered the same
+  way. `/model clear` goes back to the model the daemon found. With a key from
+  the environment there is no stored key to keep it beside, so the choice
+  lasts until the daemon stops — and the client says which you got.
+- **Nothing pasted into the provider list is shown.** A paste there is as
+  likely as not the key, so it is not taken.
+
+`/provider <provider>` or `/provider <address>` skips the list. VS Code's
+`/connect` takes the key only, and has none of these screens, `/provider` or
+`/account` yet.
 
 **An answer is drawn as markdown, in blue and grey (TUI).** A model writes
 markdown, and the TUI draws it instead of printing its punctuation:
@@ -673,7 +743,12 @@ character** -- what you copy out of the terminal is what the model wrote. Text
 that only looks like markdown is left alone: `5*3 = 15`, `snake_case`,
 `__init__`, `**kwargs`. `NO_COLOR=1` turns the colour off and keeps the layout.
 The output of local commands (`/help`, `/git`, …) is not markdown and is shown
-as written.
+as written. None of it is part of the conversation: the model is not shown
+`/help` as something it said. What `/git` and `/search` print is the exception
+with a purpose -- it is sent to the model **once**, with your next question,
+marked as command output rather than as your words or its own, so "write a
+commit message for this" works without the file names in a repository being
+replayed as the model's voice on every turn after.
 
 ---
 
@@ -873,6 +948,59 @@ Two trust lanes, and **which map a server sits in *is* its lane** — there is n
   Ordinary programs with your full access. **Not sandboxed**, and each needs
   `acknowledged_unconfined: true` before it resolves to anything runnable.
 
+**Adding an MCP server of your own.** In the TUI, with any stdio MCP server:
+
+```text
+/mcp-server add files npx -y @modelcontextprotocol/server-filesystem ~/notes
+/mcp-server add github --env GITHUB_TOKEN npx -y @modelcontextprotocol/server-github
+/mcp-server                 # what the daemon offers now, yours included
+/mcp-server remove files
+```
+
+(`mochiii-daemon mcp add <name> [--env NAME] [--in-project] -- <command> [args…]` is the same
+thing with no daemon running.)
+
+- **It asks first, and you type the server's name.** The daemon answers an add
+  with what the server will be able to do — run as you, unconfined — and
+  stores nothing until the name is typed back. That is the same gate as
+  `acknowledged_unconfined`, at the moment it applies.
+- **Then it is tried.** The server is started once and asked for its tools, so
+  the answer is either "it started and offers N tools" or "saved, but it did
+  not start", with the reason. It is live from your next question: no restart.
+- **It starts in a folder of its own, not in your project.** A launcher such
+  as `npx`, `uvx` or `python -m` decides what to run partly from the folder it
+  starts in — a project's `.npmrc` can name another registry — so a server you
+  added once would otherwise be resolved by whichever project you opened next.
+  Give a server the project's path as an argument, or add it with
+  `--in-project` (`"cwd": "workspace"` in a config block) when it has to start
+  there; the add says which you are agreeing to.
+- **Its tools ask before every call**, like any tool with no policy listed.
+- **The model is shown at most 24 tools at a time**
+  (`mcp.budget.max_advertised_tools`), and the daemon's own come first. With
+  `models.agent.json` as shipped those take 11, so the servers you add share
+  13 places (until 2026-10-12 the limit was 12, which left them one). The add
+  tells you how many of a server's tools will actually reach the model, and
+  `/mcp-server` lists the ones left out. Each tool on the menu costs tokens on
+  every request, and a wider menu measured slightly worse on a borderline one.
+- **`--env` takes a variable's NAME**, passed through from the daemon's
+  environment — export it, or put it in `.env`, before starting Mochiii. A
+  `NAME=value` on the line is refused and kept out of the transcript; the
+  command and its arguments are stored and shown, so no secret belongs there.
+- **The command is a program's name or an absolute path.** A relative path
+  would mean a different program depending on where the daemon was started.
+- **Where it is kept:** `~/.mochiii/mcp-servers.json`, mode 0600, beside the
+  stored key — never in the project. A repository cannot ship a server for
+  Mochiii to run, and the agent cannot add one: it is refused that directory,
+  and a sandboxed command can neither write there nor reach the daemon.
+- **Agent mode must be on** for any tool to run (`./run-tui.sh` starts it on).
+  With it off, an added server is stored and says it is waiting.
+
+`/mcp-server` reports on **the daemon that is running**. It used to start a
+second copy of the daemon to ask, which read whatever `models.json` it found
+for itself — so a daemon started with `models.agent.json` was described as
+"Agent mode is OFF" (fixed 2026-10-11). VS Code's `/mcp-server` still runs
+`mcp list` from its packaged daemon, and has no `add`.
+
 **The working copy.** A turn that edits or runs something does it in a private
 copy of the project: its edits land there, `read_file` shows them and
 `sandbox_exec` tests them, so the agent can fix what fails before you see
@@ -919,7 +1047,7 @@ Per-turn budgets, all configurable, shown here at their defaults:
   "turn_timeout_seconds": 600,     // MACHINE time; your thinking time is added back
   "max_tool_result_bytes": 32768,  // per result, after scrubbing
   "max_total_tool_bytes": 131072,  // per turn, after scrubbing (models.agent.json ships 524288)
-  "max_advertised_tools": 12,      // cap on the menu the model sees
+  "max_advertised_tools": 24,      // cap on the menu the model sees
   "spend": {                       // across turns: see /budget
     "session_tokens": 3000000, "session_usd": 1.00,
     "day_tokens": 15000000,    "day_usd": 5.00
@@ -1284,7 +1412,7 @@ is real and is stated in the banner at the top of this file.*
 |---|---|
 | **Retrieval** | No *full* index build on start or per request — the running daemon's watcher does keep it current per file; no query rewriting; no multi-hop. Re-running `index` rebuilds chunk-by-chunk keyed by a deterministic ID rather than diffing |
 | **Editing** | No *scored or approximate* `SEARCH` matching — the matcher normalizes (line endings, trailing space, indentation, unicode) and then matches exactly, and **ambiguous is always a refusal**, never a guess ([`match.go`](editapply/match.go)). The replacement is then written back in the file's own line-ending convention, so an LF patch never leaves a CRLF file mixed ([`lineendings.go`](editapply/lineendings.go)). No mid-stream parsing: edits are read from the completed response. A unified diff **is** read — each hunk becomes one SEARCH/REPLACE block and goes through the same gates — but it is never what the model is instructed to produce. File *creation* **is** supported — see [Editing](#editing) |
-| **Agent mode** | No OS sandboxing of third-party servers — consent and audit are the protection, and the docs say so; stdio only, so no remote MCP and no new egress; tools only, no resources or prompts; no hot-reload; tool results never persist into history |
+| **Agent mode** | No OS sandboxing of third-party servers — consent and audit are the protection, and the docs say so; stdio only, so no remote MCP and no new egress; tools only, no resources or prompts; no hot-reload of `models.json` (a server added with `/mcp-server add` is picked up at the next question); `/mcp-server add` in the TUI and CLI only; tool results never persist into history |
 | **Skills** | **Removed.** `daemon/skills.go` and its CLI were deleted by `5453ba8` under decision D8 — the store had no callers. This row described the surviving plumbing until 2026-09-21; there is none |
 | **Routing** | `ghost_text` and `reasoning` stay inactive; VS Code has no model picker UI yet |
 

@@ -270,6 +270,20 @@ func main() {
 	if tierCfg != nil {
 		effectiveCfg = tierCfg
 	}
+	// THE MODEL THE USER CHOSE, when they chose one (/model <name>, or the last
+	// step of the setup screen): saved beside the key it was chosen for, so it
+	// is read only when that key is the one in force. A model named explicitly
+	// above still wins, and a choice the provider no longer lists is said and
+	// dropped rather than left to fail every prompt.
+	var chosenCfg *Config
+	if chosen := strings.TrimSpace(connected.ChosenModel); chosen != "" && !modelNamed {
+		if chosenCfg = withDefaultTier(effectiveCfg, chosen); chosenCfg != nil {
+			logger.Printf("models: default is %s, chosen with /model (run /model clear to go back to %s)", chosen, effectiveCfg.DefaultTier)
+			effectiveCfg = chosenCfg
+		} else {
+			logger.Printf("warning: the model chosen with /model (%s) is not offered any more, so the default is %s", chosen, effectiveCfg.DefaultTier)
+		}
+	}
 	model := effectiveCfg.ResolvedSlug()
 
 	// --no-scrub OR's in on top of whatever models.json already says, same
@@ -468,12 +482,18 @@ func main() {
 	defer beginShutdown()
 
 	srv := &Server{
-		shutdownCtx:             shutdownCtx,
-		apiBase:                 apiBase,
-		apiKey:                  apiKey,
-		launchSecrets:           launch.secrets(),
-		cfg:                     cfg,
-		tierCfg:                 tierCfg,
+		shutdownCtx:   shutdownCtx,
+		apiBase:       apiBase,
+		apiKey:        apiKey,
+		launchSecrets: launch.secrets(),
+		cfg:           cfg,
+		tierCfg:       tierCfg,
+		serverExtras: serverExtras{
+			chosenCfg:       chosenCfg,
+			configPath:      absoluteOrAsGiven(resolvedConfigPath),
+			userServersPath: userServersPathOrNone(logger),
+			mcpRunDir:       mcpRunDirOrNone(logger),
+		},
 		modelOverride:           *modelOverride,
 		systemPrompt:            systemPrompt,
 		tcpToken:                tcpToken,

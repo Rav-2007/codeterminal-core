@@ -273,8 +273,9 @@ func TestHistory_DaemonRefusalIsShown(t *testing.T) {
 	}
 }
 
-// Only what the user saves is kept, so ctrl+n on an UNSAVED chat warns once:
-// the first press only arms, any other key disarms, a second press discards.
+// Only what the user saves is kept, so ctrl+n on an UNSAVED chat asks "Save or
+// clear?": the first press only asks, any other key takes the question away,
+// a second press discards (clear_test.go has the two answers).
 func TestCtrlN_WarnsOnceBeforeDiscardingAnUnsavedChat(t *testing.T) {
 	serveHistory(t, func(protocol.HistoryRequest) protocol.HistoryResponse {
 		return protocol.HistoryResponse{Entries: savedChats()} // current: Unsaved
@@ -288,8 +289,8 @@ func TestCtrlN_WarnsOnceBeforeDiscardingAnUnsavedChat(t *testing.T) {
 	if len(cm.turns) != 2 || !cm.newChatArmed {
 		t.Fatalf("the first ctrl+n discarded an unsaved chat (turns %d, armed %v)", len(cm.turns), cm.newChatArmed)
 	}
-	if !strings.Contains(cm.View(), "chat not saved: ctrl+n again discards it") || !strings.Contains(cm.View(), "/save keeps it") {
-		t.Errorf("the footer does not say the chat is unsaved and how to keep it:\n%s", cm.View())
+	if view := plainScreen(cm); !strings.Contains(view, newChatQuestion) || !strings.Contains(view, newChatConfirmHelpText) {
+		t.Errorf("the screen does not ask the question and name its keys:\n%s", view)
 	}
 
 	// Any other key cancels: the next ctrl+n warns again rather than discarding.

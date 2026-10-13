@@ -41,7 +41,7 @@ func TestLaneBLaunchesUnconfinedOnPurpose(t *testing.T) {
 		AcknowledgedUnconfined: true,
 	}
 
-	lc := laneBLaunchConfig("thirdparty", srv, cfg, io.Discard, log.New(io.Discard, "", 0).Printf)
+	lc := laneBLaunchConfig("thirdparty", srv, cfg, "", io.Discard, log.New(io.Discard, "", 0).Printf)
 
 	// THE EFFECTIVE ANSWER, not the field. Asserting Sandbox == zero would pass
 	// just as happily if ResolveMode later decided a zero config meant "confine
@@ -71,7 +71,7 @@ func TestLaneBLaunchesUnconfinedOnPurpose(t *testing.T) {
 		MaxMessageBytes:       4096,
 		ConnectTimeoutSeconds: 7,
 	}}}
-	got := laneBLaunchConfig("thirdparty", srv, configured, io.Discard, log.New(io.Discard, "", 0).Printf)
+	got := laneBLaunchConfig("thirdparty", srv, configured, "", io.Discard, log.New(io.Discard, "", 0).Printf)
 	if got.MaxMessageBytes != 4096 {
 		t.Errorf("MaxMessageBytes = %d, want the configured 4096", got.MaxMessageBytes)
 	}
@@ -97,7 +97,7 @@ func TestLaneBLaunchesUnconfinedOnPurpose(t *testing.T) {
 	// and require the gate in front of the launch to refuse it.
 	credentialed := srv
 	credentialed.Env = []string{"HOME", "MOCHIII_API_KEY"}
-	withCred := laneBLaunchConfig("thirdparty", credentialed, cfg, io.Discard, log.New(io.Discard, "", 0).Printf)
+	withCred := laneBLaunchConfig("thirdparty", credentialed, cfg, "", io.Discard, log.New(io.Discard, "", 0).Printf)
 	if len(withCred.EnvAllow) != 2 {
 		t.Fatalf("the configured env list did not reach the launch config (%v), so the gate below "+
 			"is being asked about something the process would never have seen", withCred.EnvAllow)

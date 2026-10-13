@@ -43,7 +43,8 @@ func TestTheSlashPopupStillWorksAfterAFailedTurn(t *testing.T) {
 	}
 	m, _ = pressEnter(m)
 
-	if m.state != stateConnect {
+	// /connect opens the setup's provider list (setup.go).
+	if !m.setupActive() {
 		t.Errorf("Enter on \"/conn\" with /connect highlighted did not run /connect (state %v)", m.state)
 	}
 	for _, tn := range m.turns {
