@@ -1,8 +1,11 @@
 package main
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
 
 	"mochiii/protocol"
 )
@@ -15,13 +18,22 @@ import (
 // workspace's absolute path, and after /connect the tail of the API key.
 // Each is still drawn exactly as it was; none is sent.
 func TestLocalCommandOutputIsShownAndNeverSentToTheModel(t *testing.T) {
+	// No daemon to ask: /compact's request fails at once, and says so.
+	t.Cleanup(setLockPathForTest(t, filepath.Join(t.TempDir(), "absent.lock")))
 	m := newTestModel()
 	m.appendTurn(turn{role: roleUser, text: "a real question"})
 	m.appendTurn(turn{role: roleAssistant, text: "a real answer"})
 
 	for _, typed := range []string{"/help", "/context", "/init", "/compact", "/search", "/connect a-key-typed-here"} {
 		before := len(m.turns)
-		m, _ = pressEnter(typeText(m, typed))
+		var cmd tea.Cmd
+		m, cmd = pressEnter(typeText(m, typed))
+		// /compact holds the keyboard until the daemon has answered (compact.go),
+		// so its answer is delivered before the next command is typed.
+		if typed == "/compact" && cmd != nil {
+			answered, _ := m.Update(cmd())
+			m = answered.(chatModel)
+		}
 		if len(m.turns) == before {
 			t.Fatalf("%s put nothing on screen; the test would prove nothing", typed)
 		}

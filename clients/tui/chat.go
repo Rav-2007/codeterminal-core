@@ -320,6 +320,7 @@ type chatModel struct {
 	pendingApproval *protocol.ToolApprovalRequest
 	approvalReply   chan string
 	approvalRead    approvalReading // how much of that question has been on screen (approvalview.go)
+	compacting      bool            // /compact is waiting for the daemon; the keyboard is held (compact.go)
 
 	// activityTurns maps a tool call's id to the transcript turn narrating it,
 	// so a call's line is REWRITTEN from "running" to its outcome rather than
@@ -558,6 +559,9 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case connectResultMsg:
 		return m.handleConnectResult(msg)
 
+	case compactDoneMsg:
+		return m.handleCompactDone(msg)
+
 	case setupTiersMsg:
 		return m.handleSetupTiers(msg)
 
@@ -690,6 +694,9 @@ func (m chatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleCtrlC()
 	}
 	m.quitArmed = false
+	if m.compacting {
+		return m, nil // the chat is about to be replaced: compact.go
+	}
 	if m.newChatArmed && msg.String() != "ctrl+n" {
 		return m.answerNewChatQuestion(msg) // save, clear or cancel: clear.go
 	}
@@ -1593,15 +1600,7 @@ func (m chatModel) handleLocalSlash(name, args string) (tea.Model, tea.Cmd) {
 				connectBaseExample + ". Provider names: " + connectProviderNames() + "."
 		}
 	case "compact":
-		const keep = 8
-		if len(m.turns) > keep {
-			// A re-slice of turns that appendTurn already sanitized; nothing
-			// new enters the transcript here.
-			m.turns = append([]turn(nil), m.turns[len(m.turns)-keep:]...)
-			reply = fmt.Sprintf("kept last %d turns", keep)
-		} else {
-			reply = "transcript already compact"
-		}
+		return m.startCompact() // the daemon summarises: compact.go
 	case "context":
 		tier := m.preferredTier
 		if tier == "" {

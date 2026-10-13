@@ -2,12 +2,15 @@ package main
 
 import (
 	"go/ast"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"mochiii/protocol"
 )
 
 // THE LATENCY AND ALLOCATION HARNESS FOR THE RENDER PATH.
@@ -337,10 +340,17 @@ func TestNoUpdateExceedsOneFrame(t *testing.T) {
 
 // /compact is called out by D-1 by name. It rewrites the transcript, so it is
 // the one local command whose cost scales with session length.
+//
+// TWO UPDATES SINCE 2026-10-12, and both are measured. The daemon writes the
+// summary now (compact.go), so Enter only starts the request -- off the UI
+// goroutine -- and the transcript is rewritten when the answer arrives. The
+// answer is delivered here directly: what is timed is this client's work, not
+// a model call.
 func TestCompactStaysWithinTheFrameBudget(t *testing.T) {
 	if testing.Short() || raceEnabled {
 		t.Skip("timing measurement")
 	}
+	t.Cleanup(setLockPathForTest(t, filepath.Join(t.TempDir(), "absent.lock"))) // the request itself is never run
 	m := benchTranscript(240, 1200)
 	// END THE STREAM FIRST. startTurn refuses every command while a turn is in
 	// flight, so typing /compact into a streaming model measured nothing at all
@@ -350,11 +360,23 @@ func TestCompactStaysWithinTheFrameBudget(t *testing.T) {
 	m = typeText(m, "/compact")
 	start := time.Now()
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	d := time.Since(start)
+	started := time.Since(start)
 	m = updated.(chatModel)
-	t.Logf("/compact at 240 turns: %v", d.Round(time.Microsecond))
-	if d > updateCeilingAnyInput {
-		t.Errorf("/compact took %v, over the %v ceiling", d.Round(time.Microsecond), updateCeilingAnyInput)
+	if !m.compacting {
+		t.Fatalf("/compact did not start")
+	}
+
+	start = time.Now()
+	updated, _ = m.Update(compactDoneMsg{resp: protocol.HistoryResponse{Turns: compactedChat(240), Compacted: 476}})
+	adopted := time.Since(start)
+	m = updated.(chatModel)
+
+	t.Logf("/compact at 240 turns: %v to start, %v to show the compacted chat",
+		started.Round(time.Microsecond), adopted.Round(time.Microsecond))
+	for what, d := range map[string]time.Duration{"starting /compact": started, "showing the compacted chat": adopted} {
+		if d > updateCeilingAnyInput {
+			t.Errorf("%s took %v, over the %v ceiling", what, d.Round(time.Microsecond), updateCeilingAnyInput)
+		}
 	}
 	if len(m.turns) > 16 {
 		t.Errorf("/compact left %d turns", len(m.turns))

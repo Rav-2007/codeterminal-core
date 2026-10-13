@@ -84,11 +84,12 @@ func isSel(n ast.Node, field string) bool {
 // `m.turns = append(...)` does not. This fails on any new one.
 func TestOnlyAppendTurnWritesTheTranscript(t *testing.T) {
 	// The one place allowed to assign m.turns from an append outside
-	// appendTurn: /compact re-slices turns that appendTurn already cleaned.
-	// Nothing new enters the transcript there.
+	// appendTurn: the old /compact, kept for a daemon that cannot summarise,
+	// re-slices turns that appendTurn already cleaned. Nothing new enters the
+	// transcript there. (It lived in handleLocalSlash until 2026-10-12.)
 	allowed := map[string]bool{
-		"appendTurn":       true,
-		"handleLocalSlash": true, // /compact's re-slice; see the comment there
+		"appendTurn":     true,
+		"compactLocally": true, // the re-slice; see the comment there (compact.go)
 	}
 	fset, files := parsePackageSource(t)
 	var offenders []string
