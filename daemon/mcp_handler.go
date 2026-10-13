@@ -65,13 +65,23 @@ func (s *Server) mcpResult(ctx context.Context, req protocol.MCPRequest) protoco
 	switch req.Action {
 	case "", protocol.MCPActionList:
 		return s.mcpList(ctx)
+	case protocol.MCPActionServers:
+		cfg, problems := s.agentConfig()
+		return protocol.MCPResponse{Ok: true, AgentMode: cfg.MCP.Enabled, Servers: s.serverInfos(cfg), Notes: problems}
 	case protocol.MCPActionAdd:
-		return s.mcpAdd(ctx, req)
+		return s.mcpStore(ctx, req, false)
+	case protocol.MCPActionUpdate:
+		return s.mcpStore(ctx, req, true)
 	case protocol.MCPActionRemove:
 		return s.mcpRemove(req)
+	case protocol.MCPActionEnable:
+		return s.mcpSetDisabled(ctx, req, false)
+	case protocol.MCPActionDisable:
+		return s.mcpSetDisabled(ctx, req, true)
 	}
-	return protocol.MCPResponse{Error: fmt.Sprintf("unknown mcp action %q; the actions are %s, %s and %s",
-		req.Action, protocol.MCPActionList, protocol.MCPActionAdd, protocol.MCPActionRemove)}
+	return protocol.MCPResponse{Error: fmt.Sprintf("unknown mcp action %q; the actions are %s", truncateForClient(req.Action, 32),
+		strings.Join([]string{protocol.MCPActionList, protocol.MCPActionServers, protocol.MCPActionAdd,
+			protocol.MCPActionUpdate, protocol.MCPActionRemove, protocol.MCPActionEnable, protocol.MCPActionDisable}, ", "))}
 }
 
 // mcpList reports the tools this daemon would offer the model on its next
@@ -126,6 +136,7 @@ func (s *Server) serverInfos(cfg *Config) []protocol.MCPServerInfo {
 		}
 		out = append(out, protocol.MCPServerInfo{
 			Name: name, Command: commandLine(srv), Source: source, Disabled: srv.Disabled,
+			Program: srv.Command, Args: srv.Args, Env: srv.Env, Cwd: srv.Cwd,
 		})
 	}
 	return out
@@ -140,8 +151,19 @@ func commandLine(srv MCPServerConfig) string {
 // the same fact models.json's acknowledged_unconfined gate states, said at the
 // moment someone is about to accept it rather than in a validation error.
 func unconfinedWarning(name string, srv MCPServerConfig) string {
+	return grantWarning(fmt.Sprintf("Adding %q", name), srv)
+}
+
+// changeWarning is unconfinedWarning for an update: changing what a server
+// runs is agreeing to the new program, so it is said the same way.
+func changeWarning(name string, srv MCPServerConfig) string {
+	return grantWarning(fmt.Sprintf("Changing %q", name), srv)
+}
+
+// grantWarning is the text both warnings share, after their first words.
+func grantWarning(lead string, srv MCPServerConfig) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Adding %q will make this daemon run:\n\n    %s\n\n", name, commandLine(srv))
+	fmt.Fprintf(&b, "%s will make this daemon run:\n\n    %s\n\n", lead, commandLine(srv))
 	b.WriteString("as an ordinary program with YOUR full privileges. Mochiii cannot confine an external MCP server: " +
 		"it can read and write anything you can, and the edit pipeline's gates do not apply to it. " +
 		"What protects you is that each of its tools asks before it runs, and every call is in the audit log.")
@@ -153,7 +175,8 @@ func unconfinedWarning(name string, srv MCPServerConfig) string {
 	return b.String()
 }
 
-// mcpAdd stores a server the user asked for.
+// mcpStore stores a server the user asked for: a new one (add), or new parts
+// for one they added before (update, replace=true).
 //
 // TWO STEPS, AND THE FIRST STORES NOTHING. Without the acknowledgement the
 // answer is the warning; the client shows it and the user types the server's
@@ -161,12 +184,23 @@ func unconfinedWarning(name string, srv MCPServerConfig) string {
 // server by copying a snippet -- they arrive by typing the word -- and a
 // command that added one in a single keystroke would have quietly repealed it.
 //
+// AN UPDATE ASKS THE SAME QUESTION, because it is the same grant. The name is
+// all that stays: the program may be a different one, and what the user agreed
+// to run before is not what they are agreeing to now. It keeps the server
+// paused if it was, and it does NOT keep per-tool policies -- an `allow` written
+// for the old program's tool would otherwise pass, unasked, to whatever the new
+// program calls by that name.
+//
 // THEN IT IS TRIED. A stored server that does not start is discovered, without
 // this, in the middle of the user's next question, as a tool that is not
 // there. So the server is started once here, asked what it offers, and shut
 // down, and the answer says which of "it works" and "it is saved but did not
 // start" is true -- the same honesty /connect owes a key.
-func (s *Server) mcpAdd(ctx context.Context, req protocol.MCPRequest) protocol.MCPResponse {
+func (s *Server) mcpStore(ctx context.Context, req protocol.MCPRequest, replace bool) protocol.MCPResponse {
+	nothing, done := "; nothing was added", "Added"
+	if replace {
+		nothing, done = "; nothing was changed", "Changed"
+	}
 	if strings.TrimSpace(s.userServersPath) == "" {
 		return protocol.MCPResponse{Error: "this daemon has nowhere to store an added server"}
 	}
@@ -176,24 +210,36 @@ func (s *Server) mcpAdd(ctx context.Context, req protocol.MCPRequest) protocol.M
 		AcknowledgedUnconfined: true, Cwd: strings.TrimSpace(req.Cwd),
 	}
 	if err := validateUserServer(name, srv); err != nil {
-		return protocol.MCPResponse{Error: err.Error() + "; nothing was added"}
+		return protocol.MCPResponse{Error: err.Error() + nothing}
 	}
 	if _, inConfig := s.cfg.MCP.Servers[name]; inConfig {
+		if replace {
+			return protocol.MCPResponse{Error: fmt.Sprintf("%s is defined in %s, not added with this command. "+
+				"Change its block there and restart the daemon", name, s.configPathOrDefault())}
+		}
 		return protocol.MCPResponse{Error: fmt.Sprintf("a server named %s is already defined in %s; choose another name",
 			name, s.configPathOrDefault())}
 	}
 	user, _, err := loadUserMCPServers(s.userServersPath)
 	if err != nil {
-		return protocol.MCPResponse{Error: err.Error() + "; nothing was added"}
+		return protocol.MCPResponse{Error: err.Error() + nothing}
 	}
-	if _, exists := user[name]; exists {
+	old, exists := user[name]
+	switch {
+	case exists && !replace:
 		return protocol.MCPResponse{Error: fmt.Sprintf("a server named %s is already added; remove it first to change it", name)}
+	case !exists && replace:
+		return protocol.MCPResponse{Error: fmt.Sprintf("no server named %s has been added; /mcp-server lists them", name)}
 	}
+	srv.Disabled = old.Disabled
 
 	if !req.AcknowledgedUnconfined {
+		warning := unconfinedWarning(name, srv)
+		if replace {
+			warning = changeWarning(name, srv)
+		}
 		return protocol.MCPResponse{
-			Ok: false, AgentMode: s.cfg.MCP.Enabled, NeedsAcknowledgement: true,
-			Detail: unconfinedWarning(name, srv),
+			Ok: false, AgentMode: s.cfg.MCP.Enabled, NeedsAcknowledgement: true, Detail: warning,
 		}
 	}
 
@@ -204,21 +250,91 @@ func (s *Server) mcpAdd(ctx context.Context, req protocol.MCPRequest) protocol.M
 	if err := saveUserMCPServers(s.userServersPath, user); err != nil {
 		return protocol.MCPResponse{Error: "saving the server: " + err.Error()}
 	}
-	s.logger.Printf("mcp: server %s added by the user (lane=third_party, unconfined): %s", name, commandLine(srv))
+	s.logger.Printf("mcp: server %s %s by the user (lane=third_party, unconfined): %s",
+		name, strings.ToLower(done), commandLine(srv))
 
 	resp := protocol.MCPResponse{Ok: true, AgentMode: s.cfg.MCP.Enabled}
 	cfg, _ := s.agentConfig()
 	resp.Servers = s.serverInfos(cfg)
-	resp.Detail, resp.Notes = s.tryAddedServer(ctx, name, srv)
+	if srv.Disabled {
+		// Trying it would say nothing: a turn does not start a paused server,
+		// and neither does the registry this would build.
+		resp.Detail = fmt.Sprintf("%s %s. It is disabled, so it was not started; enable it to use it.", done, name)
+	} else {
+		resp.Detail, resp.Notes = s.tryStoredServer(ctx, done, name, srv)
+	}
+	if len(old.Tools) > 0 {
+		resp.Notes = append(resp.Notes, fmt.Sprintf("the per-tool policies %s had were for the program it ran before, "+
+			"so they were dropped: each of its tools asks again", name))
+	}
 	if !s.cfg.MCP.Enabled {
-		resp.Notes = append(resp.Notes, fmt.Sprintf("agent mode is off in %s, so no tool runs at all yet. Start the daemon "+
-			"with agent mode on (./run-tui.sh does) and this server's tools are offered.", s.configPathOrDefault()))
+		resp.Notes = append(resp.Notes, agentModeOffNote(s.configPathOrDefault()))
 	}
 	return resp
 }
 
-// tryAddedServer starts a just-added server once and reports what it offers.
-func (s *Server) tryAddedServer(ctx context.Context, name string, srv MCPServerConfig) (detail string, notes []string) {
+// agentModeOffNote says that a stored server will not run yet, and why.
+func agentModeOffNote(configPath string) string {
+	return fmt.Sprintf("agent mode is off in %s, so no tool runs at all yet. Start the daemon "+
+		"with agent mode on (./run-tui.sh does) and this server's tools are offered.", configPath)
+}
+
+// mcpSetDisabled pauses (disabled=true) or resumes a server the user added. The
+// server stays stored either way, with its acknowledgement: its program does not
+// change, so resuming it is not a new grant and does not ask again.
+//
+// A RESUMED SERVER IS TRIED, for add's reason: the user is about to rely on it,
+// and a server that no longer starts -- uninstalled, a version gone from the
+// package registry -- is better found now than mid-question.
+func (s *Server) mcpSetDisabled(ctx context.Context, req protocol.MCPRequest, disabled bool) protocol.MCPResponse {
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		return protocol.MCPResponse{Error: "say which server to " + req.Action}
+	}
+	user, _, err := loadUserMCPServers(s.userServersPath)
+	if err != nil {
+		return protocol.MCPResponse{Error: err.Error() + "; nothing was changed"}
+	}
+	srv, added := user[name]
+	if !added {
+		if _, inConfig := s.cfg.MCP.Servers[name]; inConfig {
+			return protocol.MCPResponse{Error: fmt.Sprintf("%s is defined in %s, not added with this command. "+
+				"Set \"disabled\": %v on its block there and restart the daemon.", name, s.configPathOrDefault(), disabled)}
+		}
+		return protocol.MCPResponse{Error: fmt.Sprintf("no server named %s has been added; /mcp-server lists them", name)}
+	}
+
+	resp := protocol.MCPResponse{Ok: true, AgentMode: s.cfg.MCP.Enabled}
+	if srv.Disabled == disabled {
+		cfg, _ := s.agentConfig()
+		resp.Servers = s.serverInfos(cfg)
+		resp.Detail = fmt.Sprintf("%s is already %s.", name, map[bool]string{true: "disabled", false: "enabled"}[disabled])
+		return resp
+	}
+	srv.Disabled = disabled
+	user[name] = srv
+	if err := saveUserMCPServers(s.userServersPath, user); err != nil {
+		return protocol.MCPResponse{Error: "saving the change: " + err.Error()}
+	}
+	cfg, _ := s.agentConfig()
+	resp.Servers = s.serverInfos(cfg)
+	if disabled {
+		s.logger.Printf("mcp: server %s disabled by the user", name)
+		resp.Detail = fmt.Sprintf("Disabled %s. It is not started again until you enable it; a turn already running "+
+			"keeps the copy it started until it ends.", name)
+		return resp
+	}
+	s.logger.Printf("mcp: server %s enabled by the user", name)
+	resp.Detail, resp.Notes = s.tryStoredServer(ctx, "Enabled", name, srv)
+	if !s.cfg.MCP.Enabled {
+		resp.Notes = append(resp.Notes, agentModeOffNote(s.configPathOrDefault()))
+	}
+	return resp
+}
+
+// tryStoredServer starts a just-stored server once and reports what it offers.
+// done is the first word of the answer: what was just done to it.
+func (s *Server) tryStoredServer(ctx context.Context, done, name string, srv MCPServerConfig) (detail string, notes []string) {
 	for _, env := range srv.Env {
 		if _, set := os.LookupEnv(env); !set {
 			notes = append(notes, fmt.Sprintf("%s is not set in this daemon's environment, so the server starts without it. "+
@@ -227,8 +343,8 @@ func (s *Server) tryAddedServer(ctx context.Context, name string, srv MCPServerC
 	}
 	if !filepath.IsAbs(srv.Command) {
 		if _, err := lookPath(srv.Command); err != nil {
-			return fmt.Sprintf("Added %s, but %q was not found on this daemon's PATH, so it cannot start yet. "+
-				"Install it, or remove the server and add it again with the program's absolute path.", name, srv.Command), notes
+			return fmt.Sprintf("%s %s, but %q was not found on this daemon's PATH, so it cannot start yet. "+
+				"Install it, or remove the server and add it again with the program's absolute path.", done, name, srv.Command), notes
 		}
 	}
 
@@ -244,8 +360,8 @@ func (s *Server) tryAddedServer(ctx context.Context, name string, srv MCPServerC
 	defer func() { _ = registry.Close() }()
 	for _, err := range connectErrs {
 		if strings.HasPrefix(err.Error(), "server "+name+":") {
-			return fmt.Sprintf("Added %s, but it did NOT start when tried: %v. It is saved; fix the command "+
-				"(`/mcp-server remove %s`, then add it again) or see the daemon log.", name, err, name), notes
+			return fmt.Sprintf("%s %s, but it did NOT start when tried: %v. It is saved; fix the command "+
+				"(`/mcp-server remove %s`, then add it again) or see the daemon log.", done, name, err, name), notes
 		}
 	}
 	tools, listErrs := registry.Advertised(tctx)
@@ -263,13 +379,13 @@ func (s *Server) tryAddedServer(ctx context.Context, name string, srv MCPServerC
 	total := len(offered) + len(leftOut)
 	switch {
 	case total == 0 && len(connectErrs)+len(listErrs) > 0:
-		return fmt.Sprintf("Added %s. It started, but its tools could not be listed: %v.", name,
+		return fmt.Sprintf("%s %s. It started, but its tools could not be listed: %v.", done, name,
 			append(connectErrs, listErrs...)[0]), notes
 	case total == 0:
-		return fmt.Sprintf("Added %s. It started and offers no tools.", name), notes
+		return fmt.Sprintf("%s %s. It started and offers no tools.", done, name), notes
 	case len(leftOut) == 0:
-		return fmt.Sprintf("Added %s. It started and offers %d tool(s): %s. They are available from your next question, "+
-			"and each asks before it runs.", name, total, someNames(offered)), notes
+		return fmt.Sprintf("%s %s. It started and offers %d tool(s): %s. They are available from your next question, "+
+			"and each asks before it runs.", done, name, total, someNames(offered)), notes
 	}
 
 	limit := s.cfg.MCP.Budget.resolvedMaxAdvertisedTools()
@@ -277,11 +393,11 @@ func (s *Server) tryAddedServer(ctx context.Context, name string, srv MCPServerC
 	if len(offered) > 0 {
 		reach = fmt.Sprintf("only %d of them will reach the model (%s)", len(offered), someNames(offered))
 	}
-	return fmt.Sprintf("Added %s. It started and offers %d tool(s), but %s: this daemon shows the model at most %d tools "+
+	return fmt.Sprintf("%s %s. It started and offers %d tool(s), but %s: this daemon shows the model at most %d tools "+
 		"at a time, and %d of those places are taken by tools that come first. Left out: %s. "+
 		"To offer them, raise mcp.budget.max_advertised_tools in %s and restart the daemon -- each tool on the menu "+
 		"costs tokens on every request, which is why there is a limit.",
-		name, total, reach, limit, len(tools)-len(offered), someNames(leftOut), s.configPathOrDefault()), notes
+		done, name, total, reach, limit, len(tools)-len(offered), someNames(leftOut), s.configPathOrDefault()), notes
 }
 
 // someNames lists names for a sentence, cutting a long list short.

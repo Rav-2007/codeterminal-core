@@ -45,10 +45,11 @@ func runMCPCommand(args []string, logger *log.Logger) error {
 		return runMCPList(args, logger)
 	case "add":
 		return runMCPAdd(args, logger)
-	case "remove":
-		return runMCPRemove(args, logger)
+	case "remove", "enable", "disable":
+		return runMCPNamed(sub, args, logger)
 	}
-	return fmt.Errorf("unknown mcp subcommand %q (the subcommands are \"list\", \"add\" and \"remove\")", sub)
+	return fmt.Errorf("unknown mcp subcommand %q (the subcommands are \"list\", \"add\", \"remove\", "+
+		"\"enable\" and \"disable\")", sub)
 }
 
 // mcpUsage is the one usage text for every subcommand.
@@ -56,13 +57,16 @@ func mcpUsage() {
 	fmt.Fprintf(os.Stderr, "usage:\n"+
 		"  %[1]s mcp list   [--config models.json] [--workspace .]\n"+
 		"  %[1]s mcp add    <name> [--env NAME]... [--in-project] [--acknowledge-unconfined] -- <command> [args...]\n"+
-		"  %[1]s mcp remove <name>\n\n"+
+		"  %[1]s mcp remove <name>\n"+
+		"  %[1]s mcp disable <name>\n"+
+		"  %[1]s mcp enable <name>\n\n"+
 		"list shows every tool agent mode would offer the model, with the policy that applies to it.\n"+
 		"It starts the configured MCP servers to ask them, and shuts them down again.\n\n"+
-		"add stores an MCP server of your own in ~/.mochiii/%[2]s; remove drops one. The server is\n"+
+		"add stores an MCP server of your own in ~/.mochiii/%[2]s; remove drops one; disable\n"+
+		"pauses one without forgetting it, and enable resumes it. The server is\n"+
 		"started in a private folder of its own unless --in-project is given. A running\n"+
 		"daemon picks the change up at the next question. In the terminal client the same\n"+
-		"commands are /mcp-server, /mcp-server add and /mcp-server remove.\n", os.Args[0], userMCPFileName)
+		"commands are /mcp-server, /mcp-server add, remove, disable and enable.\n", os.Args[0], userMCPFileName)
 }
 
 func runMCPList(args []string, logger *log.Logger) error {
@@ -306,14 +310,15 @@ func runMCPAdd(args []string, logger *log.Logger) error {
 	return printMCPResponse(resp)
 }
 
-// runMCPRemove is `mcp remove <name>`.
-func runMCPRemove(args []string, logger *log.Logger) error {
-	fs := flag.NewFlagSet("mcp remove", flag.ExitOnError)
+// runMCPNamed is `mcp remove|enable|disable <name>`: one server, by name. The
+// subcommand is the protocol action's own word.
+func runMCPNamed(action string, args []string, logger *log.Logger) error {
+	fs := flag.NewFlagSet("mcp "+action, flag.ExitOnError)
 	configPath := fs.String("config", "", "path to models.json (default: next to the daemon binary, then ./models.json)")
 	fs.Usage = mcpUsage
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
 		mcpUsage()
-		return fmt.Errorf("mcp remove needs the name of the server")
+		return fmt.Errorf("mcp %s needs the name of the server", action)
 	}
 	name, args := args[0], args[1:]
 	if err := fs.Parse(args); err != nil {
@@ -327,7 +332,7 @@ func runMCPRemove(args []string, logger *log.Logger) error {
 		return err
 	}
 	return printMCPResponse(srv.mcpResult(context.Background(), protocol.MCPRequest{
-		MCP: true, Action: protocol.MCPActionRemove, Name: name,
+		MCP: true, Action: action, Name: name,
 	}))
 }
 

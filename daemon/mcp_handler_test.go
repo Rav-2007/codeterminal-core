@@ -453,7 +453,7 @@ func TestTheAddCommandNeedsTheNameTyped(t *testing.T) {
 // turn will actually build, and says how to offer the rest.
 //
 // Neuter check: report len(offered)+len(leftOut) as offered, without the
-// leftOut branch, in tryAddedServer.
+// leftOut branch, in tryStoredServer.
 func TestAnAddSaysHowManyToolsWillActuallyReachTheModel(t *testing.T) {
 	s := mcpAdminTestServer(t)
 	s.cfg.MCP.Budget.MaxAdvertisedTools = 1
