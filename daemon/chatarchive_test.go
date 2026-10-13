@@ -362,7 +362,17 @@ func TestPruneHistory_CapsTheWholeFolderOldestFirst(t *testing.T) {
 // with its history under the package's temp XDG_STATE_HOME (see TestMain).
 func historyServer(t *testing.T, mem *MemoryStore) *Server {
 	t.Helper()
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	// Redirect the state home to a per-test temp dir on EVERY platform. StateDir
+	// reads XDG_STATE_HOME on unix and LOCALAPPDATA on Windows (statedir_*.go), so
+	// setting only the former left Windows writing saved chats to the real
+	// %LOCALAPPDATA%\mochiii\history: every test shared that one folder, and
+	// savedFiles counted the whole pile -- nine history tests failed on
+	// windows-latest for exactly this, with counts that grew as the suite ran.
+	// Setting both points whichever variable this OS reads at the temp dir; the
+	// other is noise the platform's stateHome ignores.
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+	t.Setenv("LOCALAPPDATA", stateHome)
 	return &Server{logger: discardLogger(), workspace: t.TempDir(), memory: mem}
 }
 
