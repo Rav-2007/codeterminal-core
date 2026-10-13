@@ -95,6 +95,10 @@ function writeScript(file: string, sentinelDir: string, sentinel: string): void 
 //	git                          a PATH lookup that falls back to "."
 //
 // Each writes a DISTINCT sentinel, so a failure names which door opened.
+//
+// Since 2026-10-13 no local command starts a daemon at all: /mcp-server opens
+// the marketplace, which asks the RUNNING daemon over its socket. The daemon
+// plants stay, as tripwires for the next command that would.
 function hostileWorkspace(): Fixture | undefined {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-hostile-ws-'));
   const sentinelDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-hostile-sent-'));
@@ -143,9 +147,10 @@ function hostileWorkspace(): Fixture | undefined {
   writeScript(hook, sentinelDir, sentinelName.gitFsmonitor);
   cp.spawnSync('git', ['-C', root, 'config', 'core.fsmonitor', hook]);
 
-  // A daemon MUST be resolvable somewhere trustworthy, or /mcp-server returns
-  // "binary not found" before --config could ever matter and the guard is
-  // vacuous for that vector.
+  // A daemon MUST be resolvable somewhere trustworthy, or a command that ran
+  // one would answer "binary not found" before --config could ever matter and
+  // the guard would be vacuous for that vector. (/mcp-server was that command
+  // until 2026-10-13; this one stays on PATH for whichever comes next.)
   //
   // It is reached through PATH, deliberately NOT through MOCHIII_DAEMON_BIN:
   // that override is consulted FIRST, so setting it skips the workspace
@@ -206,6 +211,7 @@ interface FakeState {
   clipboard: string;
   exported: { text: string; suggestedName: string } | undefined;
   settingsOpened: boolean;
+  marketplaceSearches: string[];
 }
 
 function fakeHost(root: string, extensionPath: string): LocalCommandHost & FakeState {
@@ -216,12 +222,10 @@ function fakeHost(root: string, extensionPath: string): LocalCommandHost & FakeS
   const grounding: GroundingInfo | undefined = undefined;
   const host = {
     workspace: root,
-    extensionPath,
     // EMPTY ON PURPOSE. configPath is the machine-scoped mochiii.configPath,
     // which a workspace cannot set -- so the hostile workspace has no way to
-    // put a value here, and with none, /mcp-server passes no --config. The fake
-    // trusted daemon below still fires its sentinel on --config or models.json
-    // in the argv, so this test proves the workspace cannot reach that flag.
+    // put a value here. The fake trusted daemon below still fires its sentinel
+    // on --config or models.json in the argv, should any command ever run it.
     configPath: '',
     transcript,
     preferredTier: '',
@@ -293,6 +297,13 @@ function fakeHost(root: string, extensionPath: string): LocalCommandHost & FakeS
     },
     hasApiKey: async () => false,
     daemonReachable: async () => false,
+    // Records the search instead of opening an editor tab. The real one runs a
+    // VS Code command; nothing it reaches takes a path or starts a program.
+    marketplaceSearches: [] as string[],
+    openMcpMarketplace: async (search: string) => {
+      host.marketplaceSearches.push(search);
+      return true;
+    },
   };
   return host;
 }
@@ -410,15 +421,17 @@ suite('local commands against a hostile workspace', () => {
     // consulting core.fsmonitor. Both times the test passed with the fix
     // removed.
     //
-    // So the two vectors that depend on an external program actually running
-    // must PROVE it ran. The fake daemon prints "ok" and git prints a branch
-    // line; if either stops appearing, this fails and says why, instead of
-    // going quietly green.
-    assert.strictEqual(
-      replies.get('mcp-server')?.trim(),
-      'ok',
-      'the fake daemon did not run, so the /mcp-server vector was never exercised and this ' +
-        `guard is vacuous for it. reply was: ${replies.get('mcp-server')}`,
+    // So a vector that depends on an external program actually running must
+    // PROVE it ran. git prints a branch line; if it stops appearing, this fails
+    // and says why, instead of going quietly green.
+    //
+    // /mcp-server was the other such vector, until it stopped running a program
+    // (2026-10-13). What it must prove now is that it went to the marketplace,
+    // through the host, rather than anywhere that could start a daemon.
+    assert.deepStrictEqual(
+      host.marketplaceSearches,
+      [''],
+      `/mcp-server did not open the marketplace through the host. reply was: ${replies.get('mcp-server')}`,
     );
     assert.ok(
       (replies.get('git') ?? '').includes('##'),

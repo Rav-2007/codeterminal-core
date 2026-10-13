@@ -115,6 +115,11 @@ export interface HandshakeResponse {
    * older than revisions -- then nothing here keeps up, as before.
    */
   chat_revision?: string;
+  /**
+   * What this daemon can do that an older one cannot (protocol.Feature*).
+   * Absent from a daemon older than the list, which then has none of them.
+   */
+  features?: string[];
 }
 
 /** protocol.ConnectRequest. The key crosses the local, peer-authenticated socket and nothing else. */
@@ -1597,6 +1602,105 @@ export async function sendConnect(
       }
     });
     const wire: ConnectRequest = { protocol_version: PROTOCOL_VERSION, connect: true, ...req };
+    writeLine(socket, wire);
+  });
+}
+
+/** protocol.MCPServerInfo: one configured third-party MCP server. */
+export interface MCPServerInfo {
+  name: string;
+  /** The program and its arguments, as one line. */
+  command: string;
+  /** MCP_SOURCE_CONFIG (the daemon's models.json) or MCP_SOURCE_USER (added). */
+  source: string;
+  disabled?: boolean;
+  /** The same server in parts (FEATURE_MCP_MANAGE). env is NAMES only. */
+  program?: string;
+  args?: string[];
+  env?: string[];
+  cwd?: string;
+}
+
+export const MCP_SOURCE_CONFIG = 'config';
+export const MCP_SOURCE_USER = 'user';
+/** protocol.MCPCwdWorkspace: start the server inside the project. */
+export const MCP_CWD_WORKSPACE = 'workspace';
+/** protocol.FeatureMCPAdmin / FeatureMCPManage, from HandshakeResponse.features. */
+export const FEATURE_MCP_ADMIN = 'mcp_admin';
+export const FEATURE_MCP_MANAGE = 'mcp_manage';
+
+/** servers lists the configured servers WITHOUT starting any; list starts them all to ask for their tools. */
+export type MCPAction = 'list' | 'servers' | 'add' | 'update' | 'remove' | 'enable' | 'disable';
+
+/** protocol.MCPRequest. */
+export interface MCPRequest {
+  protocol_version: number;
+  mcp: true;
+  action: MCPAction;
+  name?: string;
+  command?: string;
+  args?: string[];
+  /** Variable NAMES passed through from the daemon's environment; never a value. */
+  env?: string[];
+  cwd?: string;
+  /** The user's typed agreement that the server runs with their full privileges. */
+  acknowledged_unconfined?: boolean;
+}
+
+/** protocol.MCPResponse. */
+export interface MCPResponse {
+  protocol_version: number;
+  ok: boolean;
+  agent_mode: boolean;
+  report?: string;
+  servers?: MCPServerInfo[];
+  /** add/update were NOT performed: detail says what is being agreed to. */
+  needs_acknowledgement?: boolean;
+  detail?: string;
+  notes?: string[];
+  error?: string;
+}
+
+// sendMCP asks the RUNNING daemon about its MCP servers, or changes the ones the
+// user added -- the same request the terminal's /mcp-server sends. Only the
+// daemon that answers prompts knows which servers it will start, so the panel
+// asks it rather than a second copy of the binary. features is the daemon's
+// handshake list, so a caller can tell a daemon that predates the request
+// (which would read it as an empty prompt) from one that refused it.
+export async function sendMCP(
+  clientName: string,
+  req: Omit<MCPRequest, 'protocol_version' | 'mcp'>,
+): Promise<{ resp: MCPResponse; features: string[] }> {
+  const { socket, handshake } = await connectToDaemon(clientName);
+  const features = handshake.features ?? [];
+  if (!features.includes(FEATURE_MCP_ADMIN)) {
+    socket.destroy();
+    throw new Error(`this daemon predates MCP server management; ${RESTART_HINT} to start the one this extension ships`);
+  }
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const decoder = new LineDecoder((obj) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      socket.destroy();
+      resolve({ resp: obj as MCPResponse, features });
+    });
+    socket.on('data', (chunk: Buffer) => decoder.feed(chunk));
+    socket.once('error', (err) => {
+      if (!settled) {
+        settled = true;
+        reject(err);
+      }
+    });
+    socket.once('close', () => {
+      if (!settled) {
+        settled = true;
+        reject(new Error('daemon closed before answering the MCP request'));
+      }
+    });
+    const wire: MCPRequest = { protocol_version: PROTOCOL_VERSION, mcp: true, ...req };
     writeLine(socket, wire);
   });
 }

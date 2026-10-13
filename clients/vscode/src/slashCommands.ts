@@ -48,7 +48,11 @@ export const SLASH_CATALOG: SlashDef[] = [
     summary: 'list or select a models.json tier (/model <name>)',
     panelDispatched: true,
   },
-  { name: 'mcp-server', kind: 'local', summary: 'show configured MCP servers and tool policy' },
+  {
+    name: 'mcp-server',
+    kind: 'local',
+    summary: 'open the MCP marketplace to find, add and manage tools for the agent (/mcp-server [search])',
+  },
   { name: 'clear', kind: 'local', summary: 'clear the on-screen transcript' },
   { name: 'compact', kind: 'local', summary: 'summarise the earlier part of this chat to save context (the full chat stays in History)' },
   { name: 'context', kind: 'local', summary: 'show workspace, model tier, and last grounding' },
@@ -404,6 +408,6 @@ export function formatInitChecklist(workspace: string): string {
   1. Daemon running (it finds models.json beside its own binary)
   2. MOCHIII_API_KEY set (OpenRouter) OR run-proxy.sh for managed proxy
   3. Optional: ./daemon/mochiii-daemon index ${workspace}
-  4. /model to pick a model; /mcp-server to see agent tools
+  4. /model to pick a model; /mcp-server to add tools for the agent
   5. /help for all slash commands`;
 }

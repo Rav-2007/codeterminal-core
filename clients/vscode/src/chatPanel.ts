@@ -333,14 +333,8 @@ export class ChatPanel {
     ChatPanel.current = new ChatPanel(panelHost(panel), extensionUri);
   }
 
-  // Kept as a field because /mcp-server needs it: the daemon it runs must be
-  // resolved against OUR installation directory, never against the workspace.
-  // See daemonBinary.ts for why that distinction is load-bearing.
-  private readonly extensionPath: string;
-
   private constructor(host: ChatHost, extensionUri: vscode.Uri) {
     this.host = host;
-    this.extensionPath = extensionUri.fsPath;
     this.host.webview.html = this.getHtml(extensionUri);
 
     this.host.webview.onDidReceiveMessage((msg) => this.handleMessage(msg), null, this.disposables);
@@ -790,10 +784,9 @@ export class ChatPanel {
   private localHost(): LocalCommandHost {
     return {
       workspace: workspacePath(),
-      extensionPath: this.extensionPath,
-      // The machine-scoped config path the daemon was started with, so
-      // /mcp-server reports that same config. Read here (this file imports
-      // vscode) and resolved, never from the workspace. See localCommands.ts.
+      // The machine-scoped config path the daemon was started with, for
+      // /status. Read here (this file imports vscode) and resolved, never from
+      // the workspace. See localCommands.ts.
       configPath: resolveConfigPathSetting(vscode.workspace.getConfiguration('mochiii').get<string>('configPath')).path ?? '',
       transcript: this.transcript,
       preferredTier: this.preferredTier,
@@ -818,9 +811,9 @@ export class ChatPanel {
           return;
         }
         this.replyLocal(
-          'The chat is in the sidebar, which an extension cannot close for you. ' +
-            'Collapse it by clicking the Mochiii icon in the activity bar, or hide it from the ' +
-            "sidebar's context menu.",
+          'The chat is in a side bar, which an extension cannot close for you. ' +
+            'Hide that side bar with View > Appearance > Secondary Side Bar, or right-click ' +
+            "Mochiii's tab to hide the view.",
         );
       },
       // Delegates to the command that already owns this: it prompts with a
@@ -896,6 +889,10 @@ export class ChatPanel {
       // protocol.HandshakeResponse.NeedsAPIKey).
       hasApiKey: async () => !this.needsApiKey,
       daemonReachable: () => probeDaemon(),
+      // Through the command, so the chat, the MCP Servers view and the palette
+      // open one marketplace by one route (extension.ts), notice included.
+      openMcpMarketplace: async (search: string) =>
+        (await vscode.commands.executeCommand<boolean>('mochiii.mcp.browse', search)) === true,
     };
   }
 
