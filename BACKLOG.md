@@ -138,19 +138,18 @@ Added because the tiers above stop in August and the terminal did not: since
 saved chats and a 24-tool menu, and none of that had a row here. Every line
 below was checked against the code on 2026-10-12, not carried from a note.
 
-**Closed that day** (each reproduced by a failing test first; see
-[`docs/OPEN_ITEMS.md`](docs/OPEN_ITEMS.md) items 49-52, 54 and 55): an approval
-question longer than the screen was asked with its beginning out of sight; an
-added MCP server started in whatever folder the daemon was in; a key could be
-sent to a provider that did not issue it by typing `/connect <provider>`;
-`run-tui.sh` built into and ran from a shared temp folder; `/compact` summarised
-nothing; a request cut by the five-minute limit was reported as an unreachable
-provider.
+**Closed on 2026-10-12 and 13** (see
+[`docs/OPEN_ITEMS.md`](docs/OPEN_ITEMS.md) items 49-52 and 54-56): an approval
+question longer than the screen was asked with its beginning out of sight, and
+so was an edit under review; an added MCP server started in whatever folder the
+daemon was in; a key could be sent to a provider that did not issue it by
+typing `/connect <provider>`; `run-tui.sh` built into and ran from a shared temp
+folder; `/compact` summarised nothing; a request cut by the five-minute limit
+was reported as an unreachable provider.
 
 | Open | State in the code | Waits on |
 |---|---|---|
 | `/git` and `/search` output is replayed to the model as its own words (OPEN_ITEMS **53**) | `clients/tui/chat.go` marks every local command's output local except these two | A decision: attach it once, fenced by the daemon, or stop sending it |
-| The edit review shows a long diff from its END | Same shape as item 49; scrolls with the mouse only. An edit is backed up and undoable, so it was left | A decision |
 | Delete, move or rename a file | Does not exist: an edit block carries a path, a search and a replacement (`protocol/protocol.go`, `EditBlockWire`) | Go-ahead on the 2026-10-08 plan |
 | The secret-name rule refuses some of this repository's own source files | It matches on the file's name alone (`editapply/secret.go`, `MatchesSecretName`) | A decision to loosen it |
 | The `/team` Coder role cannot run a build or a test | Its tool list has no `sandbox_exec` (`daemon/roles.go`) | A measured run |

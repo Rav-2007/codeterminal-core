@@ -2218,8 +2218,15 @@ func (m chatModel) advanceReview() (tea.Model, tea.Cmd) {
 // which means "stop this" everywhere in this UI) cancels every remaining block
 // (including the current one) as skipped.
 func (m chatModel) handleReviewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.approvalScrollKey(msg) {
+		return m, nil
+	}
 	switch msg.String() {
 	case "y":
+		// Not before all of the edit has been on screen (approvalview.go).
+		if m.approvalUnread() > 0 {
+			return m, nil
+		}
 		return m.applyCurrentReviewEdit()
 	case "n":
 		m.reviewSkipped++
@@ -2858,7 +2865,7 @@ func (m chatModel) View() string {
 	var bottomLine, help string
 	if m.state == stateEditReview && m.reviewPrepared != nil {
 		bottomLine = m.promptBox(accentStyle.Render(fmt.Sprintf("edit %d/%d: %s", m.reviewIndex+1, len(m.reviewBlocks), sanitizeText(m.reviewPrepared.Block.FilePath))))
-		help = helpStyle.Render(reviewHelpText)
+		help = helpStyle.Render(m.approvalKeysLine(reviewHelpText, "n skip · q cancel remaining"))
 	} else if m.state == stateToolApproval && m.pendingApproval != nil {
 		// The keys, and only the keys: the question is already on screen.
 		keys := approvalHelpText
@@ -2870,7 +2877,7 @@ func (m chatModel) View() string {
 		if m.taskRunning() {
 			keys = strings.Replace(keys, "for this turn", "for this whole task", 1)
 		}
-		bottomLine = m.promptBox(accentStyle.Render(m.approvalKeysLine(keys)))
+		bottomLine = m.promptBox(accentStyle.Render(m.approvalKeysLine(keys, "n no · esc stop")))
 	} else {
 		popupStr, _ := m.renderSlashPopup()
 		if popupStr != "" {

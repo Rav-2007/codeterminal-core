@@ -5,8 +5,6 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-
-	"mochiii/protocol"
 )
 
 // WHAT IS ASKED ABOUT IS WHAT WAS SHOWN.
@@ -29,11 +27,21 @@ import (
 // arrow and page keys scroll it, the key line says how much is unread, and the
 // keys that agree do nothing until every line of it has been on screen, in
 // order. Declining is never gated: n and esc answer from the first frame.
+//
+// THE EDIT REVIEW IS THE SAME QUESTION AND GETS THE SAME RULE (2026-10-13). Its
+// diff was also the last thing in the transcript, so a long edit was put to
+// the user as its last screenful and "y apply": which file, which lines and
+// what was being removed had scrolled away. An edit is backed up and can be
+// undone, which makes agreeing to one unread cheaper than agreeing to a
+// command -- not different in kind. So everything below serves both: "the
+// question" is the pending tool call, or the edit under review.
 
 // approvalReading is how much of the pending question has been shown.
 type approvalReading struct {
-	// req is the question being read; nil when none is pending.
-	req *protocol.ToolApprovalRequest
+	// of is the question being read -- the pending approval request, or the
+	// prepared edit under review -- and nil when there is none. Compared by
+	// identity: each call, and each edit of a review, is a new pointer.
+	of any
 	// width and height are the viewport it was laid out for. A resize rewraps
 	// the question, so the reading starts again.
 	width, height int
@@ -54,18 +62,24 @@ func (m *chatModel) trackApprovalReading() {
 	// Not before the terminal's size is known: there is no screen yet for
 	// anything to be off, and a viewport of height zero would call every
 	// question unread. The first WindowSizeMsg arrives before any turn can.
-	if m.state != stateToolApproval || m.pendingApproval == nil || !m.ready {
+	of, panel := m.pendingQuestion()
+	if of == nil || !m.ready {
+		// A question that has just been answered leaves the view wherever it
+		// was being read. What comes next -- the stream resuming, the review's
+		// summary -- is at the bottom, so that is where the view goes back to.
+		if m.approvalRead.of != nil {
+			m.viewport.GotoBottom()
+		}
 		m.approvalRead = approvalReading{}
 		return
 	}
-	panel := wrapToWidth(renderApprovalPanel(*m.pendingApproval), m.viewport.Width)
-	lines := strings.Count(panel, "\n") + 1
+	lines := strings.Count(wrapToWidth(panel, m.viewport.Width), "\n") + 1
 
 	r := &m.approvalRead
-	if r.req != m.pendingApproval || r.width != m.viewport.Width || r.height != m.viewport.Height || r.lines != lines {
+	if r.of != of || r.width != m.viewport.Width || r.height != m.viewport.Height || r.lines != lines {
 		top := m.viewport.TotalLineCount() - lines
 		*r = approvalReading{
-			req: m.pendingApproval, width: m.viewport.Width, height: m.viewport.Height,
+			of: of, width: m.viewport.Width, height: m.viewport.Height,
 			top: top, lines: lines, shownTo: top - 1,
 		}
 		if lines > m.viewport.Height {
@@ -77,11 +91,24 @@ func (m *chatModel) trackApprovalReading() {
 	m.noteApprovalShown()
 }
 
+// pendingQuestion is the question in front of the user, and the panel that asks
+// it -- exactly as refreshViewport draws it, so the lines counted here are the
+// lines on screen. Nil when nothing is being asked.
+func (m chatModel) pendingQuestion() (of any, panel string) {
+	switch {
+	case m.state == stateToolApproval && m.pendingApproval != nil:
+		return m.pendingApproval, renderApprovalPanel(*m.pendingApproval)
+	case m.state == stateEditReview && m.reviewPrepared != nil:
+		return m.reviewPrepared, renderReviewPanel(m.reviewIndex, len(m.reviewBlocks), m.reviewPrepared)
+	}
+	return nil, ""
+}
+
 // noteApprovalShown records what the viewport is showing now. Called after
 // anything that can move it: a key, the mouse wheel, a repaint.
 func (m *chatModel) noteApprovalShown() {
 	r := &m.approvalRead
-	if r.req == nil {
+	if r.of == nil {
 		return
 	}
 	first := m.viewport.YOffset
@@ -95,7 +122,7 @@ func (m *chatModel) noteApprovalShown() {
 // screen yet. Zero when there is no question, or all of it has been shown.
 func (m chatModel) approvalUnread() int {
 	r := m.approvalRead
-	if r.req == nil {
+	if r.of == nil {
 		return 0
 	}
 	if unread := r.top + r.lines - 1 - r.shownTo; unread > 0 {
@@ -126,9 +153,10 @@ func (m *chatModel) approvalScrollKey(msg tea.KeyMsg) bool {
 }
 
 // approvalKeysLine is the key line under a pending question: the keys that
-// answer it, or -- while part of it is unread -- how to read the rest. The
-// keys that agree are not listed until they work.
-func (m chatModel) approvalKeysLine(keys string) string {
+// answer it, or -- while part of it is unread -- how to read the rest, and
+// wayOut, the keys that decline it. The keys that agree are not listed until
+// they work.
+func (m chatModel) approvalKeysLine(keys, wayOut string) string {
 	unread := m.approvalUnread()
 	if unread == 0 {
 		return keys
@@ -136,5 +164,5 @@ func (m chatModel) approvalKeysLine(keys string) string {
 	// SHORT ENOUGH FOR 80 COLUMNS, with the way out at the end still on it: the
 	// first wording ran to 84 characters and the prompt box cut "n no · esc
 	// stop" off at the edge (seen in the real app, 2026-10-12).
-	return fmt.Sprintf("↓ PgDn to read on · %d more line(s) before yes · n no · esc stop", unread)
+	return fmt.Sprintf("↓ PgDn to read on · %d more line(s) before yes · %s", unread, wayOut)
 }
