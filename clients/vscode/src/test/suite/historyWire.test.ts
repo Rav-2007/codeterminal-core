@@ -103,7 +103,15 @@ suite('/compact', () => {
 
   test('its progress line goes above the reply bubble, not under it', () => {
     const js = read('media/main.js');
-    assert.match(js, /case 'info': \{[\s\S]*?transcriptEl\.insertBefore\(line, pendingRow\)/);
+    // The renderer moved into addInfoLine when the Stage 5 stop control needed
+    // the same one-line notice; the ordering rule it is asserting is unchanged
+    // and is now in one place instead of inline in the 'info' case.
+    const fn = /function addInfoLine\([\s\S]*?\n {2}\}\n/.exec(js);
+    assert.ok(fn, 'addInfoLine moved; update this test');
+    assert.match(fn[0], /transcriptEl\.insertBefore\(line, pendingRow\)/);
+    // And the 'info' message must still go through it, or the ordering above is
+    // asserted on code nothing calls.
+    assert.match(js, /case 'info':\s*\n\s*addInfoLine\(/);
   });
 });
 

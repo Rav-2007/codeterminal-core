@@ -33,7 +33,47 @@ const (
 	detailCollection        = "providers that may store or train on request data are permitted for this daemon"
 	detailNoRoutingFmt      = "zero-data-retention routing is not available with %s: prompts go straight to it, under its own data policy"
 	detailWorkspaceTooLarge = "workspace is too large (> 10,000 files), semantic search is disabled"
+	detailNoEffortFmt       = "%s does not accept a thinking effort for this model, so the Low/Medium/High " +
+		"setting was not sent and the answer uses the model's own default. Choose another model to " +
+		"make the setting take effect."
 )
+
+// effortDegradation reports that this turn's requested thinking effort will not
+// reach the provider.
+//
+// WHY IT IS COMPUTED HERE RATHER THAN OBSERVED IN providerdialect.go. The latch
+// lives in dialectMemo, keyed by (address, model), and it is set when a provider
+// answers 400 naming reasoning_effort -- which happened on some EARLIER call,
+// possibly on an earlier turn. By the time the current request is being built
+// there is nothing to notice: the field is simply absent, exactly as it is for a
+// turn that asked for no effort at all. The two cases are indistinguishable from
+// the request bytes, which is precisely why this went unreported for as long as
+// it did. So the question is asked directly, of the memo, at the point the turn
+// resolves its effort.
+//
+// SILENT WHEN NO EFFORT WAS ASKED FOR. A user who never touched the picker is
+// not owed a notice about a field they did not set; telling them would be noise
+// on every turn with those providers.
+//
+// SILENT IN THE ROUTING DIALECT. OpenRouter and the proxy carry the effort in a
+// "reasoning" object which is never adapted away (adapt returns early for
+// routing dialects), so the latch cannot be set there and the effort is always
+// sent.
+func effortDegradation(apiBase, model, requested string) (protocol.Degradation, bool) {
+	if requested == "" {
+		return protocol.Degradation{}, false
+	}
+	if !dialectFor(apiBase, model).noReasoningEffort {
+		return protocol.Degradation{}, false
+	}
+	return protocol.Degradation{
+		Component: protocol.DegradedReasoningEffort,
+		Detail:    fmt.Sprintf(detailNoEffortFmt, providerName(apiBase)),
+		// The client greys its picker on this, so it needs the model the verdict
+		// is about: the latch is per-model, and switching model clears it.
+		Metadata: map[string]any{"model": model, "requested": requested},
+	}, true
+}
 
 // degradations reports every subsystem currently running in a reduced mode.
 // Returns nil when nothing is degraded, so TokenResponse.Degraded's omitempty

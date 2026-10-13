@@ -80,21 +80,50 @@ func TestTheWebToolsReachTheModelInTheShippedAgentConfig(t *testing.T) {
 	}
 }
 
-// The launcher's other config must stay untouched: models.json has no mcp
-// section, so agent mode is off and no web tool exists there either. The
-// capability is opt-in via the agent config, not something that appeared under
-// every existing user.
+// THE SHIPPED CONFIG REACHES THE NETWORK FOR NOBODY, and since 2026-10-12 that
+// is asserted directly instead of being inherited from agent mode being off.
+//
+// WHAT THIS TEST USED TO SAY: "models.json has no mcp section, so agent mode is
+// off and no web tool exists there either." Both halves were true, and the
+// second was a consequence of the first rather than a property of its own --
+// with agent mode off, PolicyFor returns PolicyDeny for everything before it
+// reads any tool name at all.
+//
+// So the moment the shipped config turned agent mode ON to give the model the
+// read-only tools it needs to answer about a user's code (see
+// shippedconfig_test.go), this test failed -- correctly, and for the wrong
+// reason. Nothing about network reach had changed; the proxy standing in for it
+// had. A test that fails when the thing it names is still true is a test that
+// will be "fixed" by deleting the assertion, so it now names the thing.
+//
+// TWO LOCKS, because they fail differently. mcp.web.disabled stops the tools
+// being BUILT, so the model is never shown them -- the posture
+// TestDisablingWebRemovesTheToolsFromTheMenuEntirely explains, where a tool
+// advertised and then refused costs an iteration and a hedge. The explicit
+// "deny" policy is the second lock: it is what PolicyFor answers with, and it
+// holds even if a future edit turns the menu back on. The capability stays
+// opt-in through models.agent.json, chosen by someone who read what they were
+// turning on -- never something that appears under an existing user because
+// their extension updated.
 func TestThePlainConfigGainsNoNetworkCapability(t *testing.T) {
 	cfg, err := LoadConfig("../models.json")
 	if err != nil {
 		t.Fatalf("the shipped models.json must load: %v", err)
 	}
-	if cfg.MCP.Enabled {
-		t.Fatal("models.json enabled agent mode")
-	}
+
 	policy := configPolicy{cfg: cfg}
-	if policy.PolicyFor(mcp.BuiltinServerName, "web_search") != mcp.PolicyDeny {
-		t.Error("web_search is callable with agent mode off")
+	for _, tool := range []string{"web_search", "web_fetch"} {
+		if got := policy.PolicyFor(mcp.BuiltinServerName, tool); got != mcp.PolicyDeny {
+			t.Errorf("the SHIPPED models.json resolves %q to %v, want %v. Agent mode is on in "+
+				"this config for the read-only tools; network reach must not have come with it.",
+				tool, got, mcp.PolicyDeny)
+		}
+	}
+
+	if !cfg.MCP.Web.Disabled {
+		t.Error("mcp.web.disabled is false in the shipped config, so web_search and web_fetch are " +
+			"built and advertised to the model even though calling them is denied -- the exact " +
+			"advertise-then-refuse waste that mcp.web.disabled exists to avoid")
 	}
 }
 

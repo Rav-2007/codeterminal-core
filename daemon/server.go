@@ -841,6 +841,25 @@ func (s *Server) serveConn(conn net.Conn) {
 			s.logger.Printf("ignoring reasoning_effort %q from the client: not one of %s", e, strings.Join(reasoningEfforts, ", "))
 		}
 	}
+	// AND SAY SO WHEN IT WILL NOT ARRIVE. The effort above is now set on the
+	// routing, but this provider may have already refused the field for this
+	// model, in which case body() drops it and the turn silently runs at the
+	// model's default. Sent as its own message rather than on the grounding
+	// message above, which is encoded before the tier -- and therefore the
+	// model -- has been resolved.
+	if _, apiBase := s.credentials(); apiBase != "" {
+		if d, ok := effortDegradation(apiBase, decision.Slug, routing.reasoningEffort); ok {
+			s.logger.Printf("reasoning_effort %q not sent: %s refused it for %s earlier in this session",
+				routing.reasoningEffort, providerName(apiBase), decision.Slug)
+			if err := enc.Encode(protocol.TokenResponse{
+				ProtocolVersion: protocol.ProtocolVersion,
+				Degraded:        []protocol.Degradation{d},
+			}); err != nil {
+				s.logger.Printf("effort notice write error: %v", err)
+				return
+			}
+		}
+	}
 	// THE TURN'S BILL: every model call below -- the single call here, or an
 	// agent turn's whole loop -- adds its usage report to this tally, and the
 	// turn's final Done message carries the sum (usage.go; the TUI's /usage).

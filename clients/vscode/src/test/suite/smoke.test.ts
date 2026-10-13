@@ -32,16 +32,39 @@ suite('E2E smoke', () => {
     assert.strictEqual(ext!.isActive, true, 'extension failed to activate');
   });
 
-  test('openChat command renders the webview panel', async () => {
-    assert.ok(!chatTabOpen(), 'no chat panel should be open before the command runs');
+  // TWO ROUTES SINCE STAGE 5, and they are deliberately different.
+  //
+  // mochiii.openChat now FOCUSES THE SIDEBAR VIEW -- the chat's home as of
+  // 0.2.0 -- so it no longer produces an editor tab, and asserting that it does
+  // would be asserting the behaviour this release set out to remove. The
+  // editor-tab route kept its own command, and both are checked.
+  test('openChat focuses the sidebar view rather than opening an editor tab', async () => {
+    assert.ok(!chatTabOpen(), 'no chat tab should be open before the command runs');
     await vscode.commands.executeCommand('mochiii.openChat');
-    // Give VS Code a tick to register the newly created webview tab.
     await new Promise((r) => setTimeout(r, 300));
-    assert.ok(chatTabOpen(), 'openChat did not produce a "Mochiii Chat" webview tab');
+    assert.ok(
+      !chatTabOpen(),
+      'openChat opened an editor tab; since Stage 5 it should reveal the sidebar view instead'
+    );
+    // The view is registered and its generated focus command exists -- which is
+    // what openChat executes, and the thing that silently did not exist before
+    // package.json contributed any `views` at all.
+    const commands = await vscode.commands.getCommands(true);
+    assert.ok(
+      commands.includes('mochiii.chatView.focus'),
+      'the sidebar view contributes no focus command, so openChat has nothing to reveal'
+    );
   });
 
-  test('openChat is idempotent (reveals the one panel, no duplicate)', async () => {
-    await vscode.commands.executeCommand('mochiii.openChat');
+  test('openChatInEditor renders the webview panel', async () => {
+    await vscode.commands.executeCommand('mochiii.openChatInEditor');
+    // Give VS Code a tick to register the newly created webview tab.
+    await new Promise((r) => setTimeout(r, 300));
+    assert.ok(chatTabOpen(), 'openChatInEditor did not produce a "Mochiii Chat" webview tab');
+  });
+
+  test('openChatInEditor is idempotent (reveals the one panel, no duplicate)', async () => {
+    await vscode.commands.executeCommand('mochiii.openChatInEditor');
     await new Promise((r) => setTimeout(r, 200));
     const count = vscode.window.tabGroups.all
       .flatMap((g) => g.tabs)

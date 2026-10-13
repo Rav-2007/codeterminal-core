@@ -11,8 +11,21 @@
   const redactionsEl = document.getElementById('redactions');
   const degradedEl = document.getElementById('degraded');
   const providerEl = document.getElementById('provider');
-  const inputEl = document.getElementById('promptInput');
-  const sendBtn = document.getElementById('sendBtn');
+  // NARROWED, not left as HTMLElement. These two are dereferenced for their
+  // element-specific properties all over this file -- .value, .disabled,
+  // .placeholder -- and every one of those was a separate "Property does not
+  // exist on type 'HTMLElement'" finding counted against webview-check's
+  // ceiling. Annotating the lookup once removes eleven of them, which is the
+  // repair that gate asks for: narrow the DOM lookup rather than raise the
+  // ceiling.
+  //
+  // Non-nullable on purpose, matching how the code already uses them: both are
+  // static elements of chatPanelBodyMarkup and every call site dereferences
+  // them unconditionally. If either id ever disappeared from the markup the
+  // panel would fail loudly at load, which is the correct outcome for a missing
+  // primary control -- not a quietly inert composer.
+  const inputEl = /** @type {HTMLTextAreaElement} */ (document.getElementById('promptInput'));
+  const sendBtn = /** @type {HTMLButtonElement} */ (document.getElementById('sendBtn'));
   const searchInputEl = /** @type {HTMLInputElement | null} */ (document.getElementById('searchInput'));
   const historyPopup = document.getElementById('historyPopup');
   const historyListEl = document.getElementById('historyList');
@@ -89,11 +102,25 @@
    */
   let pendingAttachments = [];
   const MAX_ATTACH_FILES = 8;
+  // FALLBACK CEILING ONLY, used until a turn has reported the real one. The
+  // model's own limit arrives with TurnUsage.context_window and replaces it; a
+  // flat 128000 was previously shown for every model, including the ones with a
+  // 32k window (where it under-reported fullness by 4x) and the ones with a 1M
+  // window (where it over-reported).
   const CONTEXT_LIMIT_TOKENS = 128000;
   const RING_CIRCUMFERENCE = 2 * Math.PI * 8; // r=8 in the SVG
 
   let lastGroundingInfo = null;
   let lastHistoryMeta = null;
+  // lastUsage is the daemon's TurnUsage for the most recent turn that reached a
+  // model -- the only non-estimated figure in the meter. Null until then, and
+  // deliberately NOT cleared when a turn fails: the last true measurement is a
+  // better answer than falling back to a guess.
+  let lastUsage = null;
+  // editorContextChars is the size of the editor-state block the host will
+  // prepend to the next prompt (editorContext.ts). Posted by the host on every
+  // editor or selection change, 0 when mochiii.sendEditorContext is off.
+  let editorContextChars = 0;
 
   function estimateTokens(chars) {
     return Math.max(0, Math.ceil(chars / 4));
@@ -116,26 +143,83 @@
     return chars;
   }
 
+  // THE CONTEXT METER, and what it is allowed to claim.
+  //
+  // It used to be fiction. Three constants -- a 1200-token system prompt, 400
+  // tokens of "Rules", and `const tools = 2400` captioned "MCP / agent tool
+  // schemas when enabled" -- were added into every total, and the tools line was
+  // shown on every turn including the turns where the daemon sent no tools at
+  // all, which until models.json enabled the read-only set was every turn. The
+  // ceiling was a flat 128000 regardless of which model answered. So the meter
+  // moved, looked precise, and was measuring nothing.
+  //
+  // TWO MODES NOW, and the popup says which one it is in.
+  //
+  // MEASURED: after a turn, the daemon sends TurnUsage -- context_tokens (the
+  // prompt size of that turn's last model call) and context_window (that model's
+  // own limit). Those are the provider's numbers, not ours. The total and the
+  // ceiling come from them directly.
+  //
+  // ESTIMATED: before the first turn of a session there is no measurement, so
+  // the meter estimates what THIS client is about to send and says "estimated".
+  //
+  // THE BREAKDOWN IS ESTIMATED IN BOTH MODES, because TurnUsage reports one
+  // total and no decomposition -- the provider bills a prompt, not a budget. So
+  // the parts we can actually measure locally (the composer's attachments, the
+  // transcript, the editor block, the retrieved chunk count) are estimated from
+  // their own bytes, and in measured mode the DIFFERENCE between the measured
+  // total and those parts is shown as one residual row: the daemon's system
+  // prompt, its tool schemas and whatever else it added. That row is derived,
+  // never invented, and when the local estimate overshoots the measured total it
+  // collapses to zero rather than going negative.
   function computeContextUsage() {
-    const systemPrompt = 1200; // embedded daemon system prompt (approx)
-    const tools = 2400; // MCP / agent tool schemas when enabled (approx)
-    const rules = 400;
     const attachChars = pendingAttachments.reduce((sum, f) => sum + f.name.length + f.text.length, 0);
     const attachments = estimateTokens(attachChars);
     const chunks = (lastGroundingInfo && lastGroundingInfo.chunks) || 0;
     const retrieval = estimateTokens(chunks * 800); // ~800 chars/chunk estimate
     const conversation = estimateTokens(collectConversationChars());
-    const rows = [
-      { key: 'system', label: 'System prompt', tokens: systemPrompt, color: '#c4b0b4' },
-      { key: 'tools', label: 'Tool definitions', tokens: tools, color: '#c4a0e0' },
-      { key: 'rules', label: 'Rules', tokens: rules, color: '#7dbe8a' },
+    // What the open file costs. The host measures it (it is the only side with
+    // the vscode API) and posts the byte count; 0 when the feature is off or no
+    // workspace file is focused.
+    const editor = estimateTokens(editorContextChars);
+
+    const local = [
+      { key: 'editor', label: 'Open file', tokens: editor, color: '#7dbe8a' },
       { key: 'retrieval', label: 'Retrieved context', tokens: retrieval, color: '#6eb0e0' },
       { key: 'attachments', label: 'Attachments', tokens: attachments, color: '#f0a060' },
       { key: 'conversation', label: 'Conversation', tokens: conversation, color: '#d4727d' },
     ];
-    const used = rows.reduce((s, r) => s + r.tokens, 0);
-    const pct = Math.min(100, Math.round((used / CONTEXT_LIMIT_TOKENS) * 100));
-    return { rows, used, pct, limit: CONTEXT_LIMIT_TOKENS };
+    const localTotal = local.reduce((s, r) => s + r.tokens, 0);
+
+    const measuredTotal = lastUsage && lastUsage.context_tokens > 0 ? lastUsage.context_tokens : 0;
+    const measuredWindow = lastUsage && lastUsage.context_window > 0 ? lastUsage.context_window : 0;
+
+    if (measuredTotal > 0) {
+      const residual = Math.max(0, measuredTotal - localTotal);
+      const rows = [
+        { key: 'daemon', label: 'System prompt + tools', tokens: residual, color: '#c4a0e0' },
+      ].concat(local);
+      const limit = measuredWindow > 0 ? measuredWindow : CONTEXT_LIMIT_TOKENS;
+      return {
+        rows: rows,
+        used: measuredTotal,
+        pct: Math.min(100, Math.round((measuredTotal / limit) * 100)),
+        limit: limit,
+        measured: true,
+        windowKnown: measuredWindow > 0,
+        model: (lastUsage && lastUsage.model) || '',
+      };
+    }
+
+    return {
+      rows: local,
+      used: localTotal,
+      pct: Math.min(100, Math.round((localTotal / CONTEXT_LIMIT_TOKENS) * 100)),
+      limit: CONTEXT_LIMIT_TOKENS,
+      measured: false,
+      windowKnown: false,
+      model: '',
+    };
   }
 
   function refreshContextUsage() {
@@ -151,7 +235,14 @@
     if (contextBtn) {
       contextBtn.classList.toggle('warn', usage.pct >= 60 && usage.pct < 80);
       contextBtn.classList.toggle('hot', usage.pct >= 80);
-      contextBtn.title = `Context usage: ${usage.pct}% (~${formatTokenCount(usage.used)} / ${formatTokenCount(usage.limit)})`;
+      // The tilde belongs on an estimate and nowhere else: a measured figure
+      // that apologises for itself teaches the user to distrust the one number
+      // here that is actually true.
+      const amount = usage.measured
+        ? `${formatTokenCount(usage.used)} / ${formatTokenCount(usage.limit)}`
+        : `~${formatTokenCount(usage.used)} / ${formatTokenCount(usage.limit)}`;
+      const how = usage.measured ? 'last turn, measured' : 'estimated, nothing sent yet';
+      contextBtn.title = `Context usage: ${usage.pct}% (${amount}) -- ${how}`;
     }
     if (!contextPopup || contextPopup.hidden) {
       return;
@@ -160,8 +251,20 @@
       contextPctEl.textContent = usage.pct + '% Full';
     }
     if (contextTotalsEl) {
-      contextTotalsEl.textContent =
-        '~' + formatTokenCount(usage.used) + ' / ' + formatTokenCount(usage.limit) + ' Tokens';
+      // SAY WHICH NUMBER THIS IS. "128K" with no provenance is what let a
+      // fabricated total pass for a measurement for as long as it did.
+      const total = usage.measured
+        ? formatTokenCount(usage.used) + ' / ' + formatTokenCount(usage.limit) + ' tokens'
+        : '~' + formatTokenCount(usage.used) + ' / ' + formatTokenCount(usage.limit) + ' tokens';
+      let note;
+      if (!usage.measured) {
+        note = ' estimated (no turn sent yet)';
+      } else if (usage.windowKnown) {
+        note = ' measured last turn' + (usage.model ? ' \u00b7 ' + usage.model : '');
+      } else {
+        note = ' measured last turn \u00b7 window not declared in models.json';
+      }
+      contextTotalsEl.textContent = total + note;
     }
     if (contextBarEl) {
       clearChildren(contextBarEl);
@@ -179,8 +282,13 @@
       const remain = Math.max(usage.limit - usage.used, 0);
       if (remain > 0) {
         const empty = document.createElement('div');
-        empty.className = 'seg';
-        empty.style.background = '#f3e8ea';
+        // A CLASS, NOT AN INLINE COLOUR. This segment is the UNUSED part of the
+        // window, and it was painted '#f3e8ea' -- a light pink that stayed light
+        // on every theme, so on a dark one the bar looked almost entirely full
+        // while being almost entirely empty. The class is defined in
+        // chatPanelStyles() against the theme's own ink (see .context-bar), so
+        // "free" now reads as absence on both.
+        empty.className = 'seg free';
         empty.style.flexGrow = String(remain);
         empty.title = 'Free: ' + formatTokenCount(remain);
         contextBarEl.appendChild(empty);
@@ -274,32 +382,19 @@
   refreshContextUsage();
 
   // Keep in sync with clients/vscode/src/slashCommands.ts (and TUI slash.go).
-  const SLASH_COMMANDS = [
-    { name: 'help', summary: 'list slash commands' },
-    { name: 'model', summary: 'list or select a models.json tier' },
-    { name: 'mcp-server', summary: 'show configured MCP servers and tool policy' },
-    { name: 'clear', summary: 'clear the on-screen transcript' },
-    { name: 'compact', summary: 'keep only the last 8 turns, now' },
-    { name: 'context', summary: 'show workspace, model tier, and last grounding' },
-    { name: 'git', summary: 'show git status for the workspace' },
-    { name: 'init', summary: 'quick start checklist for this workspace' },
-    { name: 'search', summary: 'search past conversation turns' },
-    { name: 'exit', summary: 'close the chat panel' },
-    { name: 'explain', summary: 'explain code or a concept' },
-    { name: 'fix', summary: 'find and fix a bug' },
-    { name: 'test', summary: 'add or improve tests' },
-    { name: 'refactor', summary: 'refactor code' },
-    { name: 'doc', summary: 'write or improve documentation' },
-    { name: 'security', summary: 'security review' },
-    { name: 'review', summary: 'code review' },
-    { name: 'plan', summary: 'make an implementation plan (read-only: no edits, no commands, no network)' },
-    { name: 'run', summary: 'suggest how to run/build/test' },
-    { name: 'implement', summary: 'implement a new feature from end-to-end' },
-    { name: 'debug', summary: 'deeply debug an issue, error, or failing test' },
-    { name: 'explore', summary: 'explore the codebase to gather context' },
-    { name: 'research', summary: 'research a topic comprehensively' },
-    { name: 'reason', summary: 'deep reasoning pass' },
-  ];
+  // THE CATALOG COMES FROM THE HOST, and nothing is hardcoded here.
+  //
+  // This used to be a literal array of 24 entries transcribed from
+  // src/slashCommands.ts. It had already drifted from the 27 the catalog
+  // actually defines -- /spec, /connect and /team were simply missing from the
+  // menu, so three commands existed and could not be discovered -- and nothing
+  // could detect that, because the two lists had no relationship a compiler or
+  // a test could see.
+  //
+  // Now the host posts SLASH_CATALOG itself ('slashCatalog') and this is where
+  // it lands. Empty until it arrives, which is correct: a menu that lists
+  // commands before it knows what they are would be guessing again.
+  let SLASH_COMMANDS = [];
 
   let slashFilter = '';
   let slashIndex = 0;
@@ -566,16 +661,56 @@
   const EFFORTS = ['', 'low', 'medium', 'high'];
   const EFFORT_LABELS = ['Auto', 'Low', 'Medium', 'High'];
   let effortIndex = Math.max(0, EFFORTS.indexOf(String(savedState().effort || '')));
+  // effortSupported is false only while the CURRENT model is known to reject
+  // the reasoning_effort field (the daemon reports it as a
+  // DegradedReasoningEffort notice, per model). Declared HERE, above
+  // renderEffort, because renderEffort reads it and runs once at init -- a
+  // `let` declared further down the file would be in its temporal dead zone at
+  // that point, which is a ReferenceError and a blank panel, not a warning.
+  //
+  // Reset to true whenever the model changes: the latch is per-model, so a
+  // verdict about one model says nothing about the next one the user picks, and
+  // a control left greyed after a switch is the same lie in the other
+  // direction.
+  let effortSupported = true;
+  let effortUnsupportedModel = '';
+
+  function setEffortSupported(supported, model) {
+    effortSupported = supported;
+    effortUnsupportedModel = supported ? '' : model;
+    renderEffort();
+  }
+
   function renderEffort() {
     if (!effortBtn) {
       return;
     }
     const effortName = EFFORT_LABELS[effortIndex];
     effortBtn.setAttribute('data-level', String(effortIndex));
-    effortBtn.setAttribute('aria-label', 'Thinking effort: ' + effortName + '. Click to change.');
     if (effortValueEl) {
       effortValueEl.textContent = effortName;
     }
+    // UNSUPPORTED IS A STATE, NOT A DISABLED BUTTON. The click still works and
+    // the chosen value is still remembered and still sent -- it has to be,
+    // because the user's next action may well be to switch to a model that
+    // honours it, and a setting silently reset on them would be its own small
+    // betrayal. What changes is that the control looks inert and says why.
+    effortBtn.classList.toggle('unsupported', !effortSupported);
+    if (effortSupported) {
+      effortBtn.removeAttribute('aria-disabled');
+      effortBtn.setAttribute('aria-label', 'Thinking effort: ' + effortName + '. Click to change.');
+      effortBtn.title = 'Thinking effort: ' + effortName + '. Click to change (low / medium / high).';
+      return;
+    }
+    const which = effortUnsupportedModel ? ' by ' + effortUnsupportedModel : ' by this model';
+    // aria-disabled, never the disabled attribute: a screen-reader user is told
+    // the control has no effect here, and can still reach it to read the reason.
+    effortBtn.setAttribute('aria-disabled', 'true');
+    effortBtn.setAttribute('aria-label', 'Thinking effort: ' + effortName + ', not supported' + which + '.');
+    effortBtn.title =
+      'Thinking effort is not supported' + which + ' -- the provider rejects the setting, ' +
+      'so answers use the model\'s own default. Your choice (' + effortName + ') is kept and ' +
+      'takes effect if you switch to a model that accepts it.';
   }
   function sendEffort() {
     vscode.postMessage({ type: 'setEffort', effort: EFFORTS[effortIndex] });
@@ -939,25 +1074,31 @@
     }
   }
 
-  function avatarLabel(role) {
-    if (role === 'user') {
-      return 'Y';
-    }
-    if (role === 'error') {
-      return '!';
-    }
-    // M for Mochiii (this was 'C', left over from the CodeTerminal name).
-    return 'M';
-  }
-
+  // A TRANSCRIPT, NOT A CHAT WINDOW.
+  //
+  // Every message used to carry an avatar circle with a single letter in it --
+  // 'Y' for you, 'M' for Mochiii, '!' for an error -- plus a You / Mochiii
+  // caption above the text. Two decorations per turn, on every turn, saying
+  // something the reader already knew: in a two-party conversation laid out in
+  // order, whose turn it is is obvious from the turn. Neither Claude Code nor
+  // Cline labels every message this way, and that is most of what made this
+  // panel read as a cheap chatbot bolted into an editor.
+  //
+  // WHAT CARRIES THE DISTINCTION NOW is layout, in the stylesheet: the user's
+  // turn is a tinted, inset block and the assistant's is flush body text. That
+  // is the same device a diff or a mail thread uses, and it survives being
+  // skim-read, which a 20px initial does not.
+  //
+  // ERRORS KEEP A MARKER, and only errors. An error is the one case where the
+  // source genuinely is not inferable -- an assistant message and a failure
+  // notice are both "not from you", and confusing them matters. It gets a
+  // visible label rather than a glyph, because '!' in a circle was decoration
+  // where a word was needed.
   function roleLabel(role) {
-    if (role === 'user') {
-      return 'You';
-    }
     if (role === 'error') {
       return 'Error';
     }
-    return 'Mochiii';
+    return '';
   }
 
   function addBubble(role, text) {
@@ -967,18 +1108,27 @@
     const msg = document.createElement('div');
     msg.className = 'msg ' + role;
 
-    const avatar = document.createElement('div');
-    avatar.className = 'avatar';
-    avatar.textContent = avatarLabel(role);
-    msg.appendChild(avatar);
-
     const card = document.createElement('div');
     card.className = 'card';
 
-    const label = document.createElement('span');
-    label.className = 'role';
-    label.textContent = roleLabel(role);
-    card.appendChild(label);
+    // SCREEN READERS STILL NEED THE SPEAKER. Dropping the visible caption must
+    // not drop the fact: visual grouping is what replaces it for a sighted
+    // reader, and an aria-label is what replaces it for everyone else. Without
+    // this the change would trade a small aesthetic problem for a real
+    // accessibility regression -- see accessibility.test.ts.
+    msg.setAttribute('role', 'group');
+    msg.setAttribute(
+      'aria-label',
+      role === 'user' ? 'Your message' : role === 'error' ? 'Error' : 'Mochiii\u2019s reply'
+    );
+
+    const visibleLabel = roleLabel(role);
+    if (visibleLabel) {
+      const label = document.createElement('span');
+      label.className = 'role';
+      label.textContent = visibleLabel;
+      card.appendChild(label);
+    }
 
     const body = document.createElement('div');
     body.className = 'body';
@@ -994,6 +1144,37 @@
       currentAssistantRaw = text;
     }
     return body;
+  }
+
+  // A ONE-LINE NEUTRAL NOTE in the transcript -- a model switch, a compaction
+  // in progress, a stopped answer. Not a bubble: it is ABOUT the conversation
+  // rather than part of it, so it is never added to the transcript the model is
+  // sent.
+  //
+  // Extracted from the 'info' message handler when the stop control needed the
+  // same rendering; two copies of this would have drifted on the first change
+  // to either.
+  function addInfoLine(text) {
+    const line = document.createElement('div');
+    line.className = 'msg-info';
+    line.setAttribute('role', 'status');
+    const dot = document.createElement('span');
+    dot.className = 'info-dot';
+    dot.setAttribute('aria-hidden', 'true');
+    const span = document.createElement('span');
+    span.textContent = text;
+    line.appendChild(dot);
+    line.appendChild(span);
+    // A status that arrives while the reply is still an empty bubble
+    // ("Compacting: summarising…") goes ABOVE it: appended, it landed under the
+    // answer that later filled the bubble, reading out of order.
+    const pendingRow = currentAssistantCard && currentAssistantRaw === '' ? currentAssistantCard.parentElement : null;
+    if (pendingRow && pendingRow.parentElement === transcriptEl) {
+      transcriptEl.insertBefore(line, pendingRow);
+    } else {
+      transcriptEl.appendChild(line);
+    }
+    transcriptEl.scrollTop = transcriptEl.scrollHeight;
   }
 
   // renderFencedContent builds DOM for assistant text with ``` fences.
@@ -1405,13 +1586,33 @@
     currentAssistantRaw = '';
   }
 
+  // Captured from the markup, not duplicated: setStreaming swaps the
+  // placeholder for a "Stop interrupts it" line while a turn runs and has to
+  // restore the real one afterwards. A second literal here would drift from
+  // chatPanelBodyMarkup the first time either changed.
+  const composerPlaceholder = inputEl.placeholder;
+
   function setStreaming(value) {
     streaming = value;
-    inputEl.disabled = value;
-    sendBtn.disabled = value;
+    // THE INPUT STAYS EDITABLE. It used to be disabled for the whole answer,
+    // which meant you could not even begin drafting the follow-up -- and the
+    // thought you had while reading the reply is exactly when you want to.
+    // Sending is still refused while a turn is in flight (see send() and the
+    // Enter handler); what is allowed is typing.
+    inputEl.disabled = false;
+    // And the button is never disabled now, because while streaming it is the
+    // Stop button and must be clickable.
+    sendBtn.disabled = false;
     if (composerShellEl) {
       composerShellEl.classList.toggle('sending', value);
     }
+    sendBtn.classList.toggle('stop', value);
+    sendBtn.textContent = value ? '\u25A0' : '\u2708';
+    sendBtn.title = value ? 'Stop this answer' : 'Send';
+    sendBtn.setAttribute('aria-label', value ? 'Stop this answer' : 'Send');
+    inputEl.placeholder = value
+      ? 'Mochiii is answering \u2014 Stop interrupts it; you can type your next question now'
+      : composerPlaceholder;
   }
 
   function setGrounding(info) {
@@ -1528,8 +1729,19 @@
       }
       line.textContent = text;
       degradedEl.appendChild(line);
+
+      // THE EFFORT PICKER STOPS PRETENDING. The daemon reports, per model, that
+      // this provider refused reasoning_effort -- so Low/Medium/High were three
+      // labels on one behaviour. Greying the control is the honest rendering:
+      // the setting is kept (switching model makes it live again) and it no
+      // longer claims to do anything for the model that cannot use it.
+      if (item.component === 'reasoning_effort') {
+        const model = (item.metadata && item.metadata.model) || '';
+        setEffortSupported(false, model);
+      }
     }
   }
+
 
   // setProvider renders the upstream provider the daemon reported serving this
   // turn (see protocol.TokenResponse.Provider). Unlike setGrounding/setDegraded
@@ -1542,6 +1754,190 @@
   // "served by X" — no fallback claim, no ZDR verdict.
   function setProvider(provider) {
     providerEl.textContent = provider ? `served by: ${provider}` : '';
+  }
+
+  // THE PANEL SAYS WHAT IT NEEDS. Until this block existed, a 0.1.1 install
+  // with no key showed the user "Could not reach the daemon: daemon not found
+  // (expected a lockfile at ...)" -- a sentence about an implementation detail
+  // nobody installing an extension has a stake in -- and offered no way to
+  // enter a key at all: the only two routes in were the command palette
+  // (mochiii.setApiKey) and typing /connect, each of which you have to already
+  // know exists. A user said exactly that on 2026-10-11, after installing on a
+  // friend's machine: "there is no option to provide the api key also ... who
+  // the once cares about the deamon weather it started or not".
+  //
+  // So the host now reports the connection as a STATE the user can act on --
+  // { type: 'connection', state: 'ready' | 'noKey' | 'error', provider?,
+  // model?, summary?, detail? } -- and these functions render it. summary is
+  // already user-facing prose; detail is technical and is never shown until
+  // somebody debugging asks for it.
+
+  // showConnectionCta renders the 'noKey' empty state: the panel's own
+  // statement that it needs a key, and the button that asks for one.
+  //
+  // The existing block is found by class rather than held in a variable
+  // because clearTranscript (/clear) wipes the transcript wholesale -- a held
+  // reference would outlive the node it names and this would quietly stop
+  // finding anything to remove.
+  function showConnectionCta() {
+    // The host re-reports the connection (a reconnect, a window focus), so
+    // this runs again with the panel already correct. The block is left
+    // exactly where it is: removing and re-appending it would stack nothing,
+    // but it would yank the one thing the user is reading to the bottom of the
+    // transcript and scroll under their cursor.
+    if (transcriptEl.querySelector('.conn-cta')) {
+      return;
+    }
+
+    const cta = document.createElement('div');
+    cta.className = 'conn-cta';
+
+    const title = document.createElement('div');
+    title.className = 'conn-cta-title';
+    title.textContent = 'Mochiii needs an API key to answer';
+    cta.appendChild(title);
+
+    // WRITTEN FOR SOMEONE WHO JUST INSTALLED AN EXTENSION: what is missing,
+    // where it comes from, and what the button does. It names no provider, because the
+    // key itself is what tells the daemon which provider it belongs to
+    // (daemon/connect_handler.go) -- a guess here would be a wrong one, and a
+    // wrong provider name next to a credential is the kind of detail that
+    // makes a user distrust the whole panel. It says nothing about lockfiles
+    // or processes: nothing a first-time reader can act on is in there.
+    const body = document.createElement('div');
+    body.className = 'conn-cta-body';
+    body.textContent =
+      'Mochiii answers by sending your question to a model provider, and that needs an API key from your account there. ' +
+      'Connect a model opens a box where you paste the key — it stays on this machine and is never written into your project files.';
+    cta.appendChild(body);
+
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'conn-cta-button';
+    button.textContent = 'Connect a model';
+    // addEventListener, never an onclick attribute: this webview's CSP is
+    // `default-src none; script-src nonce-...`, under which an inline handler
+    // does not run at all -- the button would look live and do nothing.
+    //
+    // Left ENABLED after the click. The host opens a masked input box, and
+    // pressing Escape in one is an ordinary thing to do; a button that
+    // disabled itself on first click would leave a cancelled setup with no
+    // way back to it.
+    button.addEventListener('click', () => {
+      vscode.postMessage({ type: 'connect' });
+    });
+    cta.appendChild(button);
+
+    transcriptEl.appendChild(cta);
+    transcriptEl.scrollTop = transcriptEl.scrollHeight;
+    // Focus is deliberately NOT moved to the button: the composer holds it
+    // when the panel opens, and stealing it would interrupt someone already
+    // typing. #transcript is a polite live region (see chatPanel.ts), so a
+    // screen reader announces the block where it stands.
+  }
+
+  // removeConnectionCta drops the ask once a key is in use. Separate from
+  // showConnectionCta so 'ready' can clear the block without knowing how it
+  // was built.
+  function removeConnectionCta() {
+    const existing = transcriptEl.querySelector('.conn-cta');
+    if (existing) {
+      existing.remove();
+    }
+  }
+
+  // setConnectionChip makes the model chip answer "which key am I using" at a
+  // glance, which 0.1.1 could not: it showed a tier or a model and never named
+  // the provider the key reached.
+  //
+  // Both halves are optional and a missing one is simply left out, NEVER
+  // guessed: the daemon does not always know the provider, and a chip reading
+  // "OpenRouter" over a Groq key is worse than one reading only the model --
+  // that exact confusion is what connectFlow.ts was written to end. With
+  // neither half the chip keeps whatever 'modelTier' last put there, because
+  // replacing a true label with an empty one tells the user less.
+  function setConnectionChip(provider, model) {
+    const name = typeof provider === 'string' ? provider.trim() : '';
+    const full = typeof model === 'string' ? model.trim() : '';
+    // Same shortening as the 'modelTier' case below, for the same reason: the
+    // slug's provider prefix does not fit the composer's width, and beside a
+    // provider name it reads twice ("DeepSeek · deepseek/deepseek-v4-pro").
+    // The full slug stays in the tooltip.
+    const shortModel = full ? full.slice(full.lastIndexOf('/') + 1) : '';
+    const label = [name, shortModel].filter((part) => part !== '').join(' · ');
+    if (label === '') {
+      return;
+    }
+    if (modelChipLabelEl) {
+      modelChipLabelEl.textContent = label;
+    }
+    if (modelChipEl) {
+      const inUse = name && full ? name + ' · ' + full : full || name;
+      modelChipEl.title = 'In use: ' + inUse + '. Click to choose (/model).';
+      modelChipEl.setAttribute('aria-label', 'Model: ' + label + '. Choose model.');
+    }
+  }
+
+  // showConnectionError renders the 'error' state: the summary is what the
+  // user reads, and detail -- the lockfile path, the ENOENT, the stack -- goes
+  // behind a disclosure for whoever is debugging. That ordering is the whole
+  // point: the technical text was the headline in 0.1.1 and it is still here,
+  // one click away, for the case where somebody actually needs it.
+  //
+  // Rendered as an 'error' bubble so it carries the same avatar and label as
+  // every other error in the transcript, and so it stays in the scrollback as
+  // an honest record. Any .conn-cta showing is left alone: a failure while no
+  // key is in use does not make the key less needed, and that button is the
+  // way to try again.
+  function showConnectionError(summary, detail) {
+    const shown = typeof summary === 'string' && summary.trim() !== '' ? summary.trim() : '';
+    // The host always sends a summary; this is the floor, so a message that
+    // arrives without one is never an empty bubble with a disclosure under it.
+    const body = addBubble('error', shown || 'Mochiii could not connect to your model provider.');
+
+    const technical = typeof detail === 'string' ? detail.trim() : '';
+    if (technical === '') {
+      return;
+    }
+    const details = document.createElement('details');
+    details.className = 'conn-detail';
+    // No `open` attribute: collapsed is the default and the default is the
+    // requirement.
+    const label = document.createElement('summary');
+    label.textContent = 'Show details';
+    details.appendChild(label);
+    const pre = document.createElement('pre');
+    pre.className = 'conn-detail-body';
+    // textContent (never assemble markup): detail is relayed text -- a daemon
+    // error string, a provider's response, a path from the user's own disk.
+    pre.textContent = technical;
+    details.appendChild(pre);
+    body.appendChild(details);
+    transcriptEl.scrollTop = transcriptEl.scrollHeight;
+  }
+
+  // applyConnection renders the one state the host reported. Called for every
+  // 'connection' message, repeats included.
+  function applyConnection(msg) {
+    if (msg.state === 'noKey') {
+      showConnectionCta();
+      return;
+    }
+    if (msg.state === 'ready') {
+      // The ask has been answered -- drop it, and name who is answering.
+      removeConnectionCta();
+      setConnectionChip(msg.provider, msg.model);
+      return;
+    }
+    if (msg.state === 'error') {
+      showConnectionError(msg.summary, msg.detail);
+      return;
+    }
+    // An unrecognised state renders nothing. A state a future host adds is
+    // better absent from an older panel than shown as a block with no text in
+    // it. Streaming state is deliberately untouched here: this message reports
+    // the CONNECTION (it replaces runPreflight's daemon error, which arrives
+    // before anybody has typed), while 'done' and 'error' own the composer.
   }
 
   // showIncomplete renders a persistent, visibly-distinct notice that the
@@ -2153,9 +2549,32 @@
     }
   }
 
+  // PREFIX FIRST, THEN SUBSTRING. `name.startsWith(q)` alone meant that with 27
+  // commands you had to already know how the one you wanted began: typing
+  // "/usage" found it, typing "/token" found nothing, and "/server" did not
+  // find /mcp-server. The ordering is what keeps it predictable -- an exact
+  // prefix never loses its place to a substring hit further down a name -- and
+  // matching the SUMMARY too is what makes the menu answer "what was the
+  // command for cost?" rather than only completing a name.
   function filteredSlashCommands() {
     const q = slashFilter.toLowerCase();
-    return SLASH_COMMANDS.filter((c) => c.name.startsWith(q));
+    if (q === '') {
+      return SLASH_COMMANDS.slice();
+    }
+    const prefix = [];
+    const inName = [];
+    const inSummary = [];
+    for (const c of SLASH_COMMANDS) {
+      const name = c.name.toLowerCase();
+      if (name.startsWith(q)) {
+        prefix.push(c);
+      } else if (name.includes(q)) {
+        inName.push(c);
+      } else if (String(c.summary || '').toLowerCase().includes(q)) {
+        inSummary.push(c);
+      }
+    }
+    return prefix.concat(inName, inSummary);
   }
 
   function hideSlashMenu() {
@@ -2197,8 +2616,15 @@
     slashMenuEl.classList.add('visible');
   }
 
+  // A TRAILING SPACE ONLY WHERE AN ARGUMENT GOES. Every completion used to add
+  // one, so picking /clear left "/clear " in the box -- which parseSlash reads
+  // as a command with empty arguments and which, for the commands that take
+  // them, printed a usage line instead of running. Commands that take no
+  // argument now complete to exactly what the user would have typed, ready to
+  // send.
   function applySlash(name) {
-    inputEl.value = '/' + name + ' ';
+    const def = SLASH_COMMANDS.find((c) => c.name === name);
+    inputEl.value = '/' + name + (def && def.needsArgs ? ' ' : '');
     hideSlashMenu();
     inputEl.focus();
   }
@@ -2279,7 +2705,21 @@
     inputEl.focus();
   }
 
-  sendBtn.addEventListener('click', send);
+  // ONE BUTTON, TWO JOBS -- send, or stop what is running.
+  //
+  // There was previously no way to interrupt a turn at all: the composer simply
+  // went dead until the answer finished, and an agent turn runs for tens of
+  // seconds (a long task, for minutes). So "I asked the wrong question" meant
+  // waiting it out, paying for it, or discarding the whole conversation with
+  // "+". The two states are deliberately the same control rather than a second
+  // button appearing next to it: the thing you want is always in the same place.
+  sendBtn.addEventListener('click', () => {
+    if (streaming) {
+      vscode.postMessage({ type: 'stopTurn' });
+      return;
+    }
+    send();
+  });
   inputEl.addEventListener('input', updateSlashFromInput);
   inputEl.addEventListener('keydown', (e) => {
     const menuOpen = slashMenuEl.classList.contains('visible');
@@ -2318,6 +2758,17 @@
         }
       }
       e.preventDefault();
+      // ENTER DOES NOT QUEUE. Now that the input stays editable during a turn
+      // (see setStreaming), Enter can be pressed while one is running. Silently
+      // holding the question until the answer finished would be a surprise --
+      // the user would have sent something and seen nothing happen -- and
+      // sending it concurrently is not supported: the wire is one prompt per
+      // connection and the host refuses a second (onPrompt's inFlight guard).
+      // So it says what to do instead, and the draft is left in the box.
+      if (streaming) {
+        addInfoLine('Mochiii is still answering. Press Stop to interrupt it, then send.');
+        return;
+      }
       send();
     }
   });
@@ -2375,6 +2826,14 @@
         // -> "qwen3.8-27b") and kept in the tooltip.
         const model = typeof msg.model === 'string' ? msg.model : '';
         const shortModel = model ? model.slice(model.lastIndexOf('/') + 1) : '';
+        // A NEW MODEL GETS THE BENEFIT OF THE DOUBT. The effort latch the
+        // daemon reports belongs to one model; carrying it across a switch
+        // would grey the control for a model that may well honour it, and the
+        // user would have no way to find out otherwise. If the new model also
+        // refuses, the next turn says so again.
+        if (model && model !== effortUnsupportedModel) {
+          setEffortSupported(true, '');
+        }
         const tierName = msg.tier && msg.tier !== 'default' ? String(msg.tier) : '';
         const label = shortModel || tierName || 'Model';
         if (modelChipLabelEl) {
@@ -2388,6 +2847,23 @@
       }
       case 'grounding':
         setGrounding(msg.info);
+        break;
+      // THE MEASURED CONTEXT SIZE for the turn that just finished. Replaces the
+      // estimate for good: once a real figure exists the meter never goes back
+      // to guessing (see computeContextUsage).
+      case 'usage':
+        if (msg.usage && typeof msg.usage === 'object') {
+          lastUsage = msg.usage;
+          refreshContextUsage();
+        }
+        break;
+      // How many characters the open-file block will add to the next prompt.
+      // Arrives on every editor and selection change, so the meter moves when
+      // you switch files -- which is the point: it is the one part of the
+      // context the user controls directly.
+      case 'editorContext':
+        editorContextChars = typeof msg.chars === 'number' && msg.chars > 0 ? msg.chars : 0;
+        refreshContextUsage();
         break;
       case 'historyInfo':
         setHistoryInfo(msg.info);
@@ -2403,6 +2879,13 @@
         break;
       case 'provider':
         setProvider(msg.provider);
+        break;
+      // The setup state the panel can act on: 'noKey' puts the ask and its
+      // button in the transcript, 'ready' clears it and names provider and
+      // model on the chip, 'error' shows one sentence with the technical text
+      // folded away behind it. See applyConnection.
+      case 'connection':
+        applyConnection(msg);
         break;
       case 'token':
         if (!currentAssistantBubble) {
@@ -2521,29 +3004,21 @@
       case 'modelMenu':
         renderModelMenu(msg);
         break;
-      case 'info': {
-        const line = document.createElement('div');
-        line.className = 'msg-info';
-        line.setAttribute('role', 'status');
-        const dot = document.createElement('span');
-        dot.className = 'info-dot';
-        dot.setAttribute('aria-hidden', 'true');
-        const text = document.createElement('span');
-        text.textContent = String(msg.text || '');
-        line.appendChild(dot);
-        line.appendChild(text);
-        // A status that arrives while the reply is still an empty bubble
-        // ("Compacting: summarising…") goes ABOVE it: appended, it landed under
-        // the answer that later filled the bubble, reading out of order.
-        const pendingRow = currentAssistantCard && currentAssistantRaw === '' ? currentAssistantCard.parentElement : null;
-        if (pendingRow && pendingRow.parentElement === transcriptEl) {
-          transcriptEl.insertBefore(line, pendingRow);
-        } else {
-          transcriptEl.appendChild(line);
-        }
-        transcriptEl.scrollTop = transcriptEl.scrollHeight;
+      case 'info':
+        addInfoLine(String(msg.text || ''));
         break;
-      }
+      // The turn was stopped by the user (the Stop button). Said in the
+      // transcript, because a reply that simply stops mid-sentence with nothing
+      // to mark it reads like a bug or a truncated model answer -- and the
+      // partial text IS kept (see onStopTurn), so it needs to be accounted for.
+      case 'stopped':
+        if (currentAssistantBubble) {
+          currentAssistantBubble = null;
+          currentAssistantCard = null;
+          currentAssistantRaw = '';
+        }
+        addInfoLine('You stopped this answer.');
+        break;
       case 'attachmentFailed':
         pendingAttachments = pendingAttachments.filter((f) => f.id !== msg.id);
         renderAttachments();
@@ -2561,6 +3036,41 @@
       case 'currentBookmark':
         setCurrentBookmark(msg.on === true);
         break;
+      // The slash catalog, from src/slashCommands.ts. See SLASH_COMMANDS above
+      // for why this is posted rather than transcribed.
+      case 'slashCatalog':
+        if (Array.isArray(msg.commands)) {
+          SLASH_COMMANDS = msg.commands;
+        }
+        break;
+      // /effort and /mode changed the setting; the pill has to agree with the
+      // command. Two routes to one setting that disagreed with each other would
+      // be worse than having only one route.
+      case 'setEffortFromHost': {
+        const i = EFFORTS.indexOf(String(msg.effort || ''));
+        if (i >= 0) {
+          effortIndex = i;
+          renderEffort();
+          saveState({ effort: EFFORTS[effortIndex] });
+        }
+        break;
+      }
+      case 'setModeFromHost':
+        if (msg.mode === 'auto' || msg.mode === 'manual' || msg.mode === 'plan') {
+          currentMode = msg.mode;
+          renderMode();
+        }
+        break;
     }
   });
+
+  // THE WEBVIEW ASKS, rather than the host telling it on construction.
+  //
+  // panel.webview.html is assigned in the ChatPanel constructor and this script
+  // loads asynchronously afterwards, so a postMessage made in that constructor
+  // can arrive before this listener exists and be dropped. Everything the panel
+  // needs in order to render correctly before the first turn -- the slash
+  // catalog, the size of the editor-context block -- is therefore requested
+  // here, once this listener is installed and cannot miss the reply.
+  vscode.postMessage({ type: 'ready' });
 }());

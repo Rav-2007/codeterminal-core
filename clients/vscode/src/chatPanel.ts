@@ -1,3 +1,4 @@
+import * as os from 'os';
 import * as vscode from 'vscode';
 import { AttachmentError, extractAttachmentFile } from './attachmentExtract';
 import { resolveConfigPathSetting } from './daemonBinary';
@@ -27,15 +28,19 @@ import {
   ToolActivity,
   ToolApprovalRequest,
   Turn,
+  TurnUsage,
   applyEdit,
   fetchAvailableTiers,
   preflightSession,
+  probeDaemon,
   chatHistory,
   resetChat,
   streamPrompt,
   undoEdits,
 } from './daemonClient';
-import { parseModelCommand, parseSlash, parseTeamCommand, steeredPrompt } from './slashCommands';
+import { ChatHost, panelHost, viewHost } from './chatHost';
+import { editorContextForPrompt } from './editorContext';
+import { SLASH_CATALOG, parseModelCommand, parseSlash, parseTeamCommand, steeredPrompt } from './slashCommands';
 import {
   SpecGrants,
   activatedText,
@@ -78,6 +83,15 @@ export const CLIENT_NAME = 'mochiii-vscode';
 // serializer are keyed on. All three must agree.
 export const CHAT_VIEW_TYPE = 'mochiiiChat';
 
+// The SIDEBAR VIEW's id, which is a different thing from CHAT_VIEW_TYPE above
+// and must not be conflated with it. CHAT_VIEW_TYPE identifies an editor-tab
+// webview panel (and its serializer); this identifies the view contributed
+// under package.json's `views`, is what registerWebviewViewProvider is keyed
+// on, and is what `<id>.focus` -- the command VS Code creates for every
+// contributed view -- resolves to. package.json and extension.ts must agree
+// with this string.
+export const CHAT_VIEW_ID = 'mochiii.chatView';
+
 // How long the panel waits for the daemon to answer when it opens. Mochiii
 // starts only when it is used (package.json activationEvents), so the command
 // that opened this panel is usually what started the daemon a moment ago --
@@ -108,7 +122,10 @@ function turnsFromWire(turns: Turn[] | undefined): Turn[] {
 export class ChatPanel {
   private static current: ChatPanel | undefined;
 
-  private readonly panel: vscode.WebviewPanel;
+  // The container this chat is rendered in: a sidebar view or an editor tab.
+  // See chatHost.ts for the four ways the two differ and why this is an
+  // interface rather than two copies of this class.
+  private readonly host: ChatHost;
   private readonly disposables: vscode.Disposable[] = [];
   private transcript: Turn[] = [];
   // Ids for attachment chips, so a reply finds the chip it belongs to.
@@ -146,6 +163,17 @@ export class ChatPanel {
   private disposed = false;
   // lastGrounding is the most recent GroundingInfo for /context.
   private lastGrounding: GroundingInfo | undefined;
+
+  // lastUsage is the most recent turn's MEASURED bill, kept so /context and
+  // /cost can answer from the daemon's own accounting instead of estimating.
+  // Undefined until a turn has actually reached a model.
+  private lastUsage: TurnUsage | undefined;
+
+  // The in-flight answer so far. An instance field rather than only the local
+  // in startModelTurn, because a user-requested STOP has to commit what has
+  // already arrived (streamPrompt's cancellation path calls neither onDone nor
+  // onError, so nothing else will). Reset at the start of every turn.
+  private streamingAnswer = '';
 
   // pendingApproval is the tool call the daemon is currently holding open,
   // together with the callback that answers it. Non-undefined ONLY while a turn
@@ -213,10 +241,61 @@ export class ChatPanel {
   // response finished streaming.
   private autoApplyRunInFlight = false;
 
-  static createOrShow(extensionUri: vscode.Uri): void {
+  // THE SIDEBAR IS NOW THE DEFAULT HOME, and this is the entry point for it.
+  //
+  // resolveWebviewView is called by VS Code whenever the view's container
+  // becomes visible, and called AGAIN after the view has been torn down -- so
+  // unlike createOrShow this legitimately runs several times in one session.
+  // Each call brings a FRESH webview, so an existing ChatPanel is disposed and
+  // rebuilt around the new one rather than left posting into a dead view.
+  //
+  // The conversation survives that: it lives in the daemon, and runPreflight
+  // hydrates the transcript from persisted_history exactly as it does for a
+  // panel that has just opened.
+  static resolveSidebarView(view: vscode.WebviewView, extensionUri: vscode.Uri): void {
+    view.webview.options = chatWebviewOptions(extensionUri);
+    // One chat at a time, wherever it lives. A sidebar view resolving while an
+    // editor tab is open takes over.
     if (ChatPanel.current) {
-      ChatPanel.current.panel.reveal();
+      ChatPanel.current.dispose();
+      ChatPanel.current = undefined;
+    }
+    ChatPanel.current = new ChatPanel(viewHost(view), extensionUri);
+  }
+
+  /**
+   * hostsWebview reports whether the live chat is rendered in this webview.
+   *
+   * Asked by the sidebar provider's visibility handler: a view that becomes
+   * visible after "Open Chat in Editor" took the chat away is showing a webview
+   * nothing posts to, and would sit there looking frozen. Comparing the webview
+   * rather than the view is what makes this true across a re-resolve, where VS
+   * Code hands back the same view object with a new webview.
+   */
+  static hostsWebview(webview: vscode.Webview): boolean {
+    return ChatPanel.current?.host.webview === webview;
+  }
+
+  // createOrShow opens the chat as an EDITOR TAB. Now the explicit alternative
+  // rather than the only option: some people want the chat in a full-width
+  // column beside their code, and moving to a sidebar view would otherwise have
+  // taken that away. Reached by the "Open Chat in Editor" command.
+  static createOrShow(extensionUri: vscode.Uri): void {
+    // ALREADY IN A TAB: reveal that tab.
+    if (ChatPanel.current?.host.kind === 'panel') {
+      ChatPanel.current.host.reveal();
       return;
+    }
+    // IN THE SIDEBAR: hand over to a tab. Asking the current host to reveal
+    // itself here is what the first version did, and for a view that re-showed
+    // the sidebar -- so "Open Chat in Editor" silently did nothing whenever the
+    // sidebar was the host, which is the normal case. The sidebar view is NOT
+    // closed (an extension must not rearrange the user's layout); it is left
+    // in place and re-adopts the chat when it next becomes visible, which
+    // extension.ts's visibility handler does.
+    if (ChatPanel.current) {
+      ChatPanel.current.dispose();
+      ChatPanel.current = undefined;
     }
 
     const panel = vscode.window.createWebviewPanel(CHAT_VIEW_TYPE, 'Mochiii Chat', vscode.ViewColumn.Beside, {
@@ -236,7 +315,7 @@ export class ChatPanel {
       retainContextWhenHidden: true,
     });
 
-    ChatPanel.current = new ChatPanel(panel, extensionUri);
+    ChatPanel.current = new ChatPanel(panelHost(panel), extensionUri);
   }
 
   // revive takes back a panel VS Code restored after a restart -- the one
@@ -247,11 +326,11 @@ export class ChatPanel {
     if (ChatPanel.current) {
       // One chat panel per window. A restored duplicate is closed, not kept.
       panel.dispose();
-      ChatPanel.current.panel.reveal();
+      ChatPanel.current.host.reveal();
       return;
     }
     panel.webview.options = chatWebviewOptions(extensionUri);
-    ChatPanel.current = new ChatPanel(panel, extensionUri);
+    ChatPanel.current = new ChatPanel(panelHost(panel), extensionUri);
   }
 
   // Kept as a field because /mcp-server needs it: the daemon it runs must be
@@ -259,36 +338,52 @@ export class ChatPanel {
   // See daemonBinary.ts for why that distinction is load-bearing.
   private readonly extensionPath: string;
 
-  private constructor(panel: vscode.WebviewPanel, extensionUri: vscode.Uri) {
-    this.panel = panel;
+  private constructor(host: ChatHost, extensionUri: vscode.Uri) {
+    this.host = host;
     this.extensionPath = extensionUri.fsPath;
-    this.panel.webview.html = this.getHtml(extensionUri);
+    this.host.webview.html = this.getHtml(extensionUri);
 
-    this.panel.webview.onDidReceiveMessage((msg) => this.handleMessage(msg), null, this.disposables);
-    this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
+    this.host.webview.onDidReceiveMessage((msg) => this.handleMessage(msg), null, this.disposables);
+    this.host.onDidDispose(() => this.dispose(), this.disposables);
     // Coming back to this panel -- from the terminal, another editor tab,
     // another app -- is when the other client may have added to the shared
     // chat. The webview reports its own focus too ('focused'), which covers
     // clicking in from VS Code's integrated terminal: neither event below fires
     // for that.
-    this.panel.onDidChangeViewState(
-      (e) => {
-        if (e.webviewPanel.visible) {
-          void this.catchUp();
-        }
-      },
-      null,
-      this.disposables,
-    );
+    this.host.onDidChangeVisible((visible) => {
+      if (visible) {
+        void this.catchUp();
+      }
+    }, this.disposables);
     vscode.window.onDidChangeWindowState(
       (state) => {
-        if (state.focused && this.panel.visible) {
+        if (state.focused && this.host.visible) {
           void this.catchUp();
         }
       },
       null,
       this.disposables,
     );
+
+    // TELL THE METER WHAT THE OPEN FILE COSTS, and keep telling it.
+    //
+    // The context meter is the one place the user can see that switching to a
+    // 4,000-line file just added 6k tokens to their next question. That is only
+    // true if it updates when they switch, so both events are wired: the file
+    // changing and the selection inside it changing (a selection is sent in full
+    // and is frequently the larger half).
+    //
+    // onDidChangeTextEditorSelection fires on every cursor move, including every
+    // keystroke of a drag-select, so the work behind it must stay cheap --
+    // collectEditorContext reads an already-open document and clips, and posts a
+    // single number.
+    const postEditorContext = (): void => {
+      this.postSafe({ type: 'editorContext', chars: editorContextForPrompt(workspacePath()).length });
+    };
+    vscode.window.onDidChangeActiveTextEditor(() => postEditorContext(), null, this.disposables);
+    vscode.window.onDidChangeTextEditorSelection(() => postEditorContext(), null, this.disposables);
+    // And once now, for the file that is already open when the panel opens.
+    postEditorContext();
 
     this.runPreflight();
   }
@@ -313,7 +408,7 @@ export class ChatPanel {
           return;
         }
         if (Date.now() >= deadline) {
-          this.panel.webview.postMessage({
+          this.host.webview.postMessage({
             type: 'error',
             message: `Could not reach the daemon: ${(err as Error).message}`,
           });
@@ -330,7 +425,7 @@ export class ChatPanel {
     this.chatRev = session.chatRevision;
     const persisted = turnsFromWire(session.turns);
     this.transcript = persisted;
-    this.panel.webview.postMessage({ type: 'history', turns: persisted });
+    this.host.webview.postMessage({ type: 'history', turns: persisted });
     this.postActiveSpec();
     this.postModelTier();
     // The header star shows whether the chat that was just restored is bookmarked.
@@ -343,7 +438,7 @@ export class ChatPanel {
     const tier = this.preferredTier || 'default';
     const post = (m: Record<string, unknown>): void => {
       try {
-        void this.panel.webview.postMessage(m);
+        void this.host.webview.postMessage(m);
       } catch {
         // panel closed meanwhile
       }
@@ -399,6 +494,14 @@ export class ChatPanel {
       this.reasoningEffort = e === 'low' || e === 'medium' || e === 'high' ? e : '';
     } else if (msg.type === 'toolApprovalDecision' && typeof msg.decision === 'string') {
       this.onToolApprovalDecision(msg.callId, msg.decision);
+    } else if (msg.type === 'stopTurn') {
+      this.onStopTurn();
+    } else if (msg.type === 'ready') {
+      // THE WEBVIEW HAS ITS LISTENER UP and is asking for what it needs to
+      // render before the first turn. See the 'ready' post at the end of
+      // media/main.js for why it asks rather than being told.
+      this.postSlashCatalog();
+      this.postSafe({ type: 'editorContext', chars: editorContextForPrompt(workspacePath()).length });
     } else if (msg.type === 'focused') {
       void this.catchUp();
     } else if (msg.type === 'prompt' && typeof msg.text === 'string') {
@@ -420,7 +523,7 @@ export class ChatPanel {
     } else if (msg.type === 'historyDelete' && typeof msg.id === 'string') {
       void this.onHistoryDelete(msg.id);
     } else if (msg.type === 'closePanel') {
-      this.panel.dispose();
+      this.host.close();
     } else if (msg.type === 'newChat') {
       void this.onNewChat();
     }
@@ -433,7 +536,7 @@ export class ChatPanel {
   private async onPickAttachments(remaining: number): Promise<void> {
     const post = (m: Record<string, unknown>): void => {
       try {
-        this.panel.webview.postMessage(m).then(undefined, () => undefined);
+        this.host.webview.postMessage(m).then(undefined, () => undefined);
       } catch {
         // The panel was closed while a file was being read; nobody is waiting.
       }
@@ -570,8 +673,8 @@ export class ChatPanel {
     this.transcript.push({ role: 'assistant', content: reply });
     // plain: command output is aligned text, not markdown. Rendered as markdown,
     // the "* " marking the current model in /model became a bullet point.
-    this.panel.webview.postMessage({ type: 'token', text: reply, plain: true });
-    this.panel.webview.postMessage({ type: 'done' });
+    this.host.webview.postMessage({ type: 'token', text: reply, plain: true });
+    this.host.webview.postMessage({ type: 'done' });
   }
 
   // THE MODEL DROPDOWN. The chip used to send "/model" as a chat message, so a
@@ -579,7 +682,7 @@ export class ChatPanel {
   private async onListModels(): Promise<void> {
     const post = (m: Record<string, unknown>): void => {
       try {
-        this.panel.webview.postMessage(m).then(undefined, () => undefined);
+        this.host.webview.postMessage(m).then(undefined, () => undefined);
       } catch {
         // panel closed meanwhile
       }
@@ -609,7 +712,7 @@ export class ChatPanel {
         ? `Model switched to ${short || this.preferredTier} · used from your next message`
         : `Model switched to Default${short ? ` (${short})` : ''} · used from your next message`;
     try {
-      void this.panel.webview.postMessage({ type: err ? 'notice' : 'info', text });
+      void this.host.webview.postMessage({ type: err ? 'notice' : 'info', text });
     } catch {
       // panel closed meanwhile
     }
@@ -703,9 +806,23 @@ export class ChatPanel {
         this.lastGrounding = undefined;
       },
       clearScreen: () => {
-        void this.panel.webview.postMessage({ type: 'clearTranscript' });
+        void this.host.webview.postMessage({ type: 'clearTranscript' });
       },
-      close: () => this.panel.dispose(),
+      // /exit. A panel closes; a SIDEBAR VIEW CANNOT be closed by an extension
+      // -- it is part of the user's layout, and rearranging that on their
+      // behalf would be worse than declining. So the command says so instead of
+      // appearing to do nothing, and names the gesture that does work.
+      close: () => {
+        if (this.host.canClose) {
+          this.host.close();
+          return;
+        }
+        this.replyLocal(
+          'The chat is in the sidebar, which an extension cannot close for you. ' +
+            'Collapse it by clicking the Mochiii icon in the activity bar, or hide it from the ' +
+            "sidebar's context menu.",
+        );
+      },
       // Delegates to the command that already owns this: it prompts with a
       // masked input box, stores the key in SecretStorage, and restarts the
       // daemon so the new key is actually in use. Reimplementing any of that
@@ -724,7 +841,115 @@ export class ChatPanel {
       compactChat: () => this.compactChat(),
       showApiKey: async () => vscode.commands.executeCommand<string>('mochiii.showApiKey'),
       forgetApiKey: async () => vscode.commands.executeCommand<string>('mochiii.forgetApiKey'),
+
+      // --- Stage 6 ---------------------------------------------------------
+      reasoningEffort: this.reasoningEffort,
+      // THE PICKER MOVES TOO. /effort and the pill are two routes to one
+      // setting, so changing it either way has to update the other -- a command
+      // that silently disagreed with the control next to it would be worse than
+      // no command.
+      setReasoningEffort: (effort: string) => {
+        // Narrowed to the field's own union rather than widening the field. The
+        // caller has already refused anything outside the set (see /effort), so
+        // this is the type system being told what the validation established --
+        // and it stays a refusal if a third caller ever appears.
+        if (effort !== '' && effort !== 'low' && effort !== 'medium' && effort !== 'high') {
+          return;
+        }
+        this.reasoningEffort = effort;
+        void this.host.webview.postMessage({ type: 'setEffortFromHost', effort });
+      },
+      currentMode: this.turnMode ?? 'auto',
+      setMode: (mode: string) => {
+        this.turnMode = mode;
+        void this.host.webview.postMessage({ type: 'setModeFromHost', mode });
+      },
+      lastUsage: this.lastUsage,
+      writeClipboard: (text: string) => Promise.resolve(vscode.env.clipboard.writeText(text)),
+      // THE USER PICKS THE PATH. See LocalCommandHost.saveTextToFile for why a
+      // default inside the workspace would be this file's own rule broken
+      // backwards.
+      saveTextToFile: async (text: string, suggestedName: string) => {
+        const uri = await vscode.window.showSaveDialog({
+          saveLabel: 'Export conversation',
+          filters: { Markdown: ['md'] },
+          // The home directory, not the workspace: an export is the user's own
+          // document, not a file belonging to the project they are asking
+          // about. This is also the one path in this file built from a Node
+          // builtin -- see the header on why fs and path were removed. os.homedir()
+          // is safe where those were not: it cannot be influenced by the
+          // workspace, and nothing is executed from it.
+          defaultUri: vscode.Uri.joinPath(vscode.Uri.file(os.homedir()), suggestedName),
+        });
+        if (!uri) {
+          return '';
+        }
+        await vscode.workspace.fs.writeFile(uri, Buffer.from(text, 'utf8'));
+        return uri.fsPath;
+      },
+      openSettings: async () => {
+        await vscode.commands.executeCommand('workbench.action.openSettings', '@ext:MochiiiAIAgent.mochiii-vscode');
+      },
+      // THE DAEMON OWNS THE KEY VERDICT, not this panel: needsApiKey is what the
+      // daemon said at the last handshake, and it accounts for proxy mode and a
+      // loopback api_base where no key is wanted at all (see
+      // protocol.HandshakeResponse.NeedsAPIKey).
+      hasApiKey: async () => !this.needsApiKey,
+      daemonReachable: () => probeDaemon(),
     };
+  }
+
+  // STOP. Until Stage 5 there was NO way for a user to interrupt a turn: the
+  // only two things that aborted an in-flight stream were starting a new chat
+  // and closing the panel. An agent turn runs for tens of seconds and a long
+  // task for minutes, so "I asked the wrong thing" meant watching it finish,
+  // paying for it, or throwing the whole conversation away with "+".
+  //
+  // THE ABORT IS THE SAME ONE dispose and onNewChat already use, so the socket
+  // is destroyed the same way and streamPrompt's deliberate-cancellation path
+  // calls neither onDone nor onError (see its doc comment). That is why this
+  // has to do the bookkeeping onDone would have done: clear inFlight, release
+  // any approval the daemon is holding, and re-enable the composer.
+  //
+  // WHAT WAS RECEIVED IS KEPT. A stopped answer is a partial answer, not a
+  // failed one -- it is on screen, the user read it, and dropping it from the
+  // transcript would make the next turn's history disagree with the panel.
+  // Marked as cut off so the model is not asked to continue a sentence it is
+  // told it finished.
+  private onStopTurn(): void {
+    if (!this.inFlight) {
+      return;
+    }
+    this.inFlight.abort();
+    this.inFlight = undefined;
+    this.clearPendingApproval();
+    this.clearPendingReview();
+    const partial = this.streamingAnswer;
+    this.streamingAnswer = '';
+    if (partial !== '') {
+      // 'stopped' is the incomplete reason, so the next turn's history says the
+      // answer was cut off by the user rather than presenting a half sentence
+      // as a finished thought.
+      this.transcript.push({ role: 'assistant', content: partial, incomplete: 'stopped' });
+    }
+    this.postSafe({ type: 'stopped' });
+    this.postSafe({ type: 'done' });
+  }
+
+  // ONE CATALOG, POSTED. media/main.js used to carry its own transcribed copy
+  // of SLASH_CATALOG, which had already drifted by three commands; this is what
+  // replaced it. Only the fields the menu renders are sent -- the name, the
+  // summary, and whether it needs arguments -- not the preambles, which are the
+  // host's business and would be dead weight in the webview.
+  private postSlashCatalog(): void {
+    this.postSafe({
+      type: 'slashCatalog',
+      commands: SLASH_CATALOG.map((d) => ({
+        name: d.name,
+        summary: d.summary,
+        needsArgs: d.needsArgs === true,
+      })),
+    });
   }
 
   private async handleSpecCommand(args: string, autoApply: boolean): Promise<void> {
@@ -750,7 +975,7 @@ export class ChatPanel {
   // postActiveSpec tells the webview which spec every prompt now carries, for
   // the header chip.
   private postActiveSpec(): void {
-    this.panel.webview.postMessage({ type: 'activeSpec', spec: getActiveSpec(workspacePath()) });
+    this.host.webview.postMessage({ type: 'activeSpec', spec: getActiveSpec(workspacePath()) });
   }
 
   private async handleLocalSlash(name: string, args: string): Promise<void> {
@@ -790,7 +1015,7 @@ export class ChatPanel {
     this.needsApiKey = false; // no second box while this one is open
     const r = await vscode.commands.executeCommand<{ message: string; inUse: boolean }>('mochiii.connect', {});
     if (r?.inUse) {
-      void this.panel.webview.postMessage({ type: 'info', text: 'Key connected · sending your question' });
+      void this.host.webview.postMessage({ type: 'info', text: 'Key connected · sending your question' });
       void this.refreshModelAfterConnect();
       run();
       return;
@@ -835,6 +1060,7 @@ export class ChatPanel {
     this.inFlight = controller;
     this.turnMode = mode;
     let answer = '';
+    this.streamingAnswer = '';
     // The reason slug for a cut-off answer, held here so onDone can attach it
     // to the transcript turn. The webview message onIncomplete posts is for the
     // user's eye and never comes back; this is the model's copy.
@@ -845,38 +1071,55 @@ export class ChatPanel {
     // daemon can answer from the stored chat if the terminal has added to it
     // since; '' when not known, which the daemon reads as "use what was sent".
     const sentRev = this.chatSync ? this.chatRev : '';
+
+    // WHAT THE USER IS LOOKING AT, prepended to the WIRE prompt only.
+    //
+    // On the wire and not in the transcript, which is the same split
+    // steeredPrompt and the attachment blocks already use: displayText is what
+    // the person typed and is what their own words must stay in the history as.
+    // A context block pasted into the bubble would push their question off the
+    // screen on every turn, and storing it as their turn would make the next
+    // turn's history carry a stale copy of a file they have since edited.
+    //
+    // BEFORE the question, deliberately. The question is the last thing the
+    // model reads, which is where an instruction belongs; a prompt that trails
+    // off into 24KB of someone else's file reads as being about the file.
+    const editorBlock = editorContextForPrompt(workspacePath());
+    const groundedPrompt = editorBlock === '' ? wirePrompt : `${editorBlock}\n\n${wirePrompt}`;
+
     streamPrompt(
       CLIENT_NAME,
-      wirePrompt,
+      groundedPrompt,
       workspacePath(),
       history,
       controller.signal,
       {
         onGrounding: (info: GroundingInfo) => {
           this.lastGrounding = info;
-          this.panel.webview.postMessage({ type: 'grounding', info });
+          this.host.webview.postMessage({ type: 'grounding', info });
         },
         // 'historyInfo', NOT 'history' -- 'history' is already the persisted-turn
         // hydration message (see runPreflight). This one carries HistoryInfo, whose
         // truncated flag the webview renders as a dropped-turns warning.
         onHistory: (info: HistoryInfo) => {
-          this.panel.webview.postMessage({ type: 'historyInfo', info });
+          this.host.webview.postMessage({ type: 'historyInfo', info });
         },
         onRedactions: (kinds: string[]) => {
-          this.panel.webview.postMessage({ type: 'redactions', kinds });
+          this.host.webview.postMessage({ type: 'redactions', kinds });
         },
         onReasoning: (text: string) => {
-          this.panel.webview.postMessage({ type: 'reasoning', text });
+          this.host.webview.postMessage({ type: 'reasoning', text });
         },
         onDegraded: (items: Degradation[]) => {
-          this.panel.webview.postMessage({ type: 'degraded', items });
+          this.host.webview.postMessage({ type: 'degraded', items });
         },
         onProvider: (provider: string) => {
-          this.panel.webview.postMessage({ type: 'provider', provider });
+          this.host.webview.postMessage({ type: 'provider', provider });
         },
         onToken: (token: string) => {
           answer += token;
-          this.panel.webview.postMessage({ type: 'token', text: token });
+          this.streamingAnswer = answer;
+          this.host.webview.postMessage({ type: 'token', text: token });
         },
         onEditProposals: (proposals: EditBlockWire[]) => {
           this.startEditReview(proposals);
@@ -887,27 +1130,27 @@ export class ChatPanel {
         // reply that plainly contained edits produce nothing at all, with the
         // reason sitting in a daemon log they cannot see.
         onEditRejections: (rejections: EditRejectionWire[]) => {
-          this.panel.webview.postMessage({
+          this.host.webview.postMessage({
             type: 'editRejections',
             rejections,
           });
         },
         onIncomplete: (info: IncompleteInfo) => {
           incompleteReason = info.reason;
-          this.panel.webview.postMessage({ type: 'incomplete', info });
+          this.host.webview.postMessage({ type: 'incomplete', info });
         },
         onToolActivity: (activity: ToolActivity) => {
-          this.panel.webview.postMessage({ type: 'toolActivity', activity });
+          this.host.webview.postMessage({ type: 'toolActivity', activity });
         },
         // The spec workflow's reports, rendered as plain text by the webview.
         onWorkingCopy: (info) => {
-          this.panel.webview.postMessage({ type: 'specNotice', kind: 'working-copy', text: workingCopyText(info) });
+          this.host.webview.postMessage({ type: 'specNotice', kind: 'working-copy', text: workingCopyText(info) });
         },
         onSpecReport: (report) => {
-          this.panel.webview.postMessage({ type: 'specNotice', kind: 'spec-report', text: specReportText(report) });
+          this.host.webview.postMessage({ type: 'specNotice', kind: 'spec-report', text: specReportText(report) });
         },
         onTasks: (tasks) => {
-          this.panel.webview.postMessage({ type: 'tasks', text: taskListText(tasks) });
+          this.host.webview.postMessage({ type: 'tasks', text: taskListText(tasks) });
         },
         // Providing this handler is what makes streamPrompt declare
         // CAP_TOOL_APPROVAL, and therefore what turns agent mode on for this
@@ -921,7 +1164,7 @@ export class ChatPanel {
           const specGrant = req.spec_grant && spec ? req.spec_grant : '';
           const label = `${req.server}__${req.tool} ${clip(req.arguments, 120)}`;
           this.pendingApproval = { callId: req.call_id, respond, specGrant, spec, label };
-          this.panel.webview.postMessage({
+          this.host.webview.postMessage({
             type: 'toolApproval',
             request: specGrant ? req : { ...req, spec_grant: undefined },
           });
@@ -932,6 +1175,14 @@ export class ChatPanel {
         onChatRevision: (revision: string, behind: boolean) => {
           this.chatRev = behind || !sentRev ? '' : revision;
         },
+        // THE MEASURED CONTEXT SIZE, straight through to the meter. The webview
+        // estimates what it is about to send (it is the only side that knows
+        // what is in the composer); this is the only number that says what the
+        // model was actually given, and the window it was given it against.
+        onUsage: (usage: TurnUsage) => {
+          this.lastUsage = usage;
+          this.host.webview.postMessage({ type: 'usage', usage });
+        },
         onDone: () => {
           this.transcript.push(
             incompleteReason
@@ -940,7 +1191,7 @@ export class ChatPanel {
           );
           this.inFlight = undefined;
           this.clearPendingApproval();
-          this.panel.webview.postMessage({ type: 'done' });
+          this.host.webview.postMessage({ type: 'done' });
           if (this.chatSync && this.chatRev === '') {
             // Not under a review: catchUp waits for one to finish (canCatchUp).
             void this.catchUp();
@@ -968,7 +1219,7 @@ export class ChatPanel {
           }
           this.inFlight = undefined;
           this.clearPendingApproval();
-          this.panel.webview.postMessage({ type: 'error', message: err.message });
+          this.host.webview.postMessage({ type: 'error', message: err.message });
         },
       },
       {
@@ -1097,7 +1348,7 @@ export class ChatPanel {
   // finishReview's system-turn text in clients/tui/chat.go.
   private postCurrentBlockOrSummary(): void {
     if (this.currentIndex < this.pendingBlocks.length) {
-      this.panel.webview.postMessage({
+      this.host.webview.postMessage({
         type: 'editProposal',
         edit: this.pendingBlocks[this.currentIndex],
         index: this.currentIndex,
@@ -1105,7 +1356,7 @@ export class ChatPanel {
       });
       return;
     }
-    this.panel.webview.postMessage({
+    this.host.webview.postMessage({
       type: 'editSummary',
       total: this.pendingBlocks.length,
       applied: this.applied,
@@ -1118,7 +1369,7 @@ export class ChatPanel {
     const accepted = appliedSpec(this.turnMode, this.appliedPaths);
     if (accepted) {
       void setActiveSpec(accepted).then(() => this.postActiveSpec());
-      this.panel.webview.postMessage({ type: 'specNotice', kind: 'spec-active', text: activatedText(accepted) });
+      this.host.webview.postMessage({ type: 'specNotice', kind: 'spec-active', text: activatedText(accepted) });
     }
     this.clearPendingReview();
   }
@@ -1154,7 +1405,7 @@ export class ChatPanel {
         this.refused++;
         this.refusalReasons.push(`${edit.file_path}: ${result.error ?? 'refused'}`);
       }
-      this.panel.webview.postMessage({
+      this.host.webview.postMessage({
         type: 'applyResult',
         applied: result.applied,
         error: result.error,
@@ -1168,7 +1419,7 @@ export class ChatPanel {
       const message = (err as Error).message;
       this.refused++;
       this.refusalReasons.push(`${edit.file_path}: ${message}`);
-      this.panel.webview.postMessage({
+      this.host.webview.postMessage({
         type: 'applyResult',
         applied: false,
         error: message,
@@ -1224,14 +1475,14 @@ export class ChatPanel {
     this.undoInFlight = true;
     try {
       const result = await undoEdits(CLIENT_NAME, workspacePath(), backupDir);
-      this.panel.webview.postMessage({
+      this.host.webview.postMessage({
         type: 'undoResult',
         restored: result.restored,
         guarded: result.guarded,
         error: result.error,
       });
     } catch (err) {
-      this.panel.webview.postMessage({
+      this.host.webview.postMessage({
         type: 'undoResult',
         restored: 0,
         error: (err as Error).message,
@@ -1257,7 +1508,7 @@ export class ChatPanel {
 
   private postSafe(m: Record<string, unknown>): void {
     try {
-      void this.panel.webview.postMessage(m);
+      void this.host.webview.postMessage(m);
     } catch {
       // panel closed meanwhile
     }
@@ -1470,11 +1721,11 @@ export class ChatPanel {
     while (this.disposables.length) {
       this.disposables.pop()?.dispose();
     }
-    this.panel.dispose();
+    this.host.close();
   }
 
   private getHtml(extensionUri: vscode.Uri): string {
-    const webview = this.panel.webview;
+    const webview = this.host.webview;
     const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'main.js'));
     const logoUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'logo.png'));
     const nonce = getNonce();
@@ -1532,6 +1783,10 @@ export function chatPanelStyles(): string {
     --ct-accent-soft: color-mix(in srgb, var(--ct-accent) 13%, transparent);
     --ct-warn: #b45309;
     --ct-danger: #c0392b;
+    /* "Applied" / "passed". The palette had warn and danger but no OK, so the
+       two rules that needed one used #1e7a3a directly and stayed dark green on
+       dark backgrounds. */
+    --ct-ok: #1e7a3a;
     --ct-ink: var(--vscode-editor-foreground, #1f2937);
     --ct-muted: var(--vscode-descriptionForeground, #5b6474);
     --ct-border: var(--vscode-widget-border, color-mix(in srgb, var(--ct-ink) 14%, transparent));
@@ -1558,6 +1813,7 @@ export function chatPanelStyles(): string {
     --ct-accent-solid-hover: #4a86f0;
     --ct-warn: #f5a524;
     --ct-danger: #f26d6d;
+    --ct-ok: #4ec97a;
   }
   /* The hidden attribute must win. A class that sets display (like .pill's
      inline-flex) otherwise overrides it, which is how an EMPTY spec chip showed
@@ -1596,12 +1852,15 @@ export function chatPanelStyles(): string {
     height: 26px;
     border-radius: 8px;
     background: var(--ct-brand-gradient);
-    color: #fff;
+    color: var(--ct-on-accent);
     display: inline-flex;
     align-items: center;
     justify-content: center;
     font-size: 13px;
-    box-shadow: 0 4px 10px rgba(212, 114, 125, 0.28); /* brand */
+    /* Derived from the brand token rather than a fixed rose rgba(), which on a
+       dark theme rendered as a glow around the mark instead of a shadow under
+       it. */
+    box-shadow: 0 4px 10px color-mix(in srgb, var(--ct-rose-deep) 28%, transparent); /* brand */
   }
   #appHeader .brand-logo {
     width: 44px;
@@ -1642,27 +1901,14 @@ export function chatPanelStyles(): string {
   /* The recovery hint is secondary: it matters only if the common case fails,
      so it must not compete with the sentence telling the user to just type. */
   .first-run .first-run-quiet { color: var(--ct-muted); font-size: 12px; }
+  /* A TRANSCRIPT. The avatar circle and the per-turn role caption are gone
+     (see addBubble in media/main.js); what tells the two speakers apart is the
+     shape of the block, which is how a diff or a mail thread does it and which
+     survives skim-reading. */
   .msg {
-    display: flex;
-    gap: 10px;
-    margin-bottom: 16px;
-    align-items: flex-start;
+    margin-bottom: 14px;
+    min-width: 0;
   }
-  .msg .avatar {
-    width: 28px;
-    height: 28px;
-    border-radius: 50%;
-    flex-shrink: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 12px;
-    font-weight: 700;
-    color: #fff;
-  }
-  .msg.user .avatar { background: var(--ct-accent-soft); color: var(--ct-accent-strong); border: 1px solid var(--ct-border); }
-  .msg.assistant .avatar { background: var(--ct-brand-gradient); color: #fff; }
-  .msg.error .avatar { background: #c0392b; }
   /* A one-line, neutral note in the transcript (a model switch). Not a bubble:
      it is about the conversation, not part of it. */
   .msg-info {
@@ -1675,22 +1921,40 @@ export function chatPanelStyles(): string {
   }
   .msg-info::before, .msg-info::after { content: ''; flex: 1; border-top: 1px solid var(--ct-border); }
   .msg-info .info-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ct-accent); flex-shrink: 0; }
+  /* THE ASSISTANT'S TURN IS THE PAGE, not a card on it. A card around every
+     reply meant a border, a radius and a shadow drawn around the thing the user
+     actually came to read, and two of them stacked looked like a form. The
+     answer now sits flush, like body text. */
   .msg .card {
-    flex: 1;
     min-width: 0;
-    background: var(--ct-surface);
-    border: 1px solid var(--ct-border);
-    border-radius: var(--ct-radius);
-    padding: 12px 14px;
-    box-shadow: 0 1px 2px color-mix(in srgb, var(--ct-accent-strong) 6%, transparent);
+    padding: 0;
   }
-  .msg.user .card { background: var(--ct-user-bg); }
+  /* THE USER'S TURN IS THE QUOTED ONE: tinted, inset, with a rule down the
+     leading edge. It reads as "this is what you asked", which is exactly the
+     job the 'Y' avatar and the "You" caption were doing between them, done by
+     layout instead and without repeating a word on every turn. */
+  .msg.user .card {
+    background: var(--ct-user-bg);
+    border-left: 2px solid color-mix(in srgb, var(--ct-accent) 55%, transparent);
+    border-radius: 0 var(--ct-radius) var(--ct-radius) 0;
+    padding: 9px 12px;
+  }
+  /* Errors keep a card AND a visible label: an error and a reply are both "not
+     from you", so this is the one distinction layout alone should not carry. */
+  .msg.error .card {
+    background: color-mix(in srgb, var(--ct-danger) 9%, transparent);
+    border-left: 2px solid var(--ct-danger);
+    border-radius: 0 var(--ct-radius) var(--ct-radius) 0;
+    padding: 9px 12px;
+  }
+  /* Only errors render a .role now (roleLabel returns '' for everyone else), so
+     this styles a marker rather than a caption on every message. */
   .msg .role {
     display: block;
     font-size: 11px;
     font-weight: 600;
-    color: var(--ct-muted);
-    margin-bottom: 6px;
+    color: var(--ct-danger);
+    margin-bottom: 4px;
     text-transform: uppercase;
     letter-spacing: 0.04em;
   }
@@ -1760,8 +2024,13 @@ export function chatPanelStyles(): string {
     flex-shrink: 0;
     text-align: right;
     padding: 0 8px;
-    color: #c4a4ad;
-    background: #fffafb;
+    /* WAS #c4a4ad ON #fffafb, both absolute -- a near-white strip down the
+       left of every code block, on every theme. On a dark theme it was the
+       brightest thing in the panel. Derived from the code block's own
+       background instead, so the gutter is always a shade of whatever the
+       block is. */
+    color: var(--ct-muted);
+    background: color-mix(in srgb, var(--ct-ink) 6%, var(--ct-code-bg));
     border-right: 1px solid var(--ct-border);
     user-select: none;
   }
@@ -1805,27 +2074,31 @@ export function chatPanelStyles(): string {
   }
   .turn.reasoning .role { color: var(--ct-muted); display: block; margin-bottom: 2px; font-style: normal; font-size: 11px; }
   .turn.incomplete-notice {
-    color: #b8860b;
+    /* --ct-warn, not #b8860b: the token has a dark-theme override (#f5a524)
+       and the literal did not, so this was dark goldenrod on near-black. */
+    color: var(--ct-warn);
     font-size: 12px;
     font-style: italic;
     margin: 4px 0 12px 38px;
   }
   .turn.error-inline {
-    color: #c0392b;
+    color: var(--ct-danger);
     margin-bottom: 14px;
     white-space: pre-wrap;
   }
   #historyNotice {
     font-size: 11px;
     padding: 0 12px 6px;
-    color: #b8860b;
+    color: var(--ct-warn);
   }
   #historyNotice:empty { padding: 0; }
   #grounding { font-size: 11px; color: var(--ct-muted); padding: 0 12px 6px; min-height: 14px; }
   #redactions, #degraded {
     font-size: 11px;
     padding: 0 12px 6px;
-    color: #b8860b;
+    /* Same bypass as .turn.incomplete-notice above. A degradation notice the
+       user cannot read is a degradation notice that does not exist. */
+    color: var(--ct-warn);
   }
   #redactions:empty, #degraded:empty { padding: 0; }
   #degraded .item { display: block; }
@@ -1874,7 +2147,7 @@ export function chatPanelStyles(): string {
     color: var(--ct-ink);
     border: 1px solid var(--ct-border);
     border-radius: 14px;
-    box-shadow: 0 12px 32px rgba(61, 44, 46, 0.12);
+    box-shadow: var(--ct-shadow);
     z-index: 8;
   }
   #slashMenu.visible { display: block; }
@@ -1952,6 +2225,21 @@ export function chatPanelStyles(): string {
     transform: translateY(-1px);
   }
   #sendBtn:disabled { opacity: 0.4; cursor: default; box-shadow: none; transform: none; }
+  /* STOP. The same button, mid-turn: a square rather than the paper plane, in
+     the danger colour, because its effect is to end something rather than to
+     start one. It must NOT look disabled -- the previous composer greyed
+     everything out for the duration of the answer, which is the state this
+     replaced. A smaller glyph than the plane so the square does not read as
+     heavier than the control it shares a box with. */
+  #sendBtn.stop {
+    background: var(--ct-danger);
+    font-size: 12px;
+    box-shadow: 0 4px 12px color-mix(in srgb, var(--ct-danger) 35%, transparent);
+  }
+  #sendBtn.stop:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--ct-danger) 85%, var(--ct-ink));
+    box-shadow: 0 6px 16px color-mix(in srgb, var(--ct-danger) 45%, transparent);
+  }
 
   .composer-bottom {
     display: flex;
@@ -1997,7 +2285,7 @@ export function chatPanelStyles(): string {
   .pill .chev { opacity: 0.5; font-size: 10px; }
   .pill .bolt { color: inherit; display: flex; align-items: center; justify-content: center; margin-right: 2px; }
   .mode-svg { display: block; }
-  #autoApplyToggle.on .bolt { color: #e6a317; }
+  #autoApplyToggle.on .bolt { color: var(--ct-warn); }
   #autoApplyToggle.off .bolt { color: inherit; }
 
   #modelChip, #autoApplyToggle {
@@ -2033,6 +2321,17 @@ export function chatPanelStyles(): string {
   .effort-pill[data-level="3"] .effort-bars rect { fill: var(--ct-accent); }
   .effort-pill .effort-name { color: var(--ct-muted); }
   .effort-pill .effort-value { font-weight: 600; }
+  /* NOT SUPPORTED BY THIS MODEL. The provider rejects reasoning_effort for the
+     model now selected, so the picker's three settings produce one behaviour.
+     Styled inert rather than removed: the value is still remembered and still
+     sent, and becomes live again the moment the user picks a model that takes
+     it. The strikethrough is what distinguishes "has no effect here" from
+     "is currently set to Low" -- opacity alone reads as merely unfocused.
+     Bars go flat grey so the filled-bar level indicator cannot imply an
+     effort is in force. */
+  .effort-pill.unsupported { opacity: 0.55; }
+  .effort-pill.unsupported .effort-value { text-decoration: line-through; font-weight: 500; }
+  .effort-pill.unsupported .effort-bars rect { fill: color-mix(in srgb, var(--ct-ink) 20%, transparent) !important; }
   .effort-pill:not([data-level="0"]) { border-color: color-mix(in srgb, var(--ct-accent) 55%, transparent); }
   .effort-pill:not([data-level="0"]) .effort-value { color: var(--ct-accent-strong); }
 
@@ -2093,7 +2392,7 @@ export function chatPanelStyles(): string {
     align-items: center;
     justify-content: center;
   }
-  .attach-chip .attach-remove:hover { background: var(--ct-accent); color: #fff; }
+  .attach-chip .attach-remove:hover { background: var(--ct-accent); color: var(--ct-on-accent); }
 
   /* Context usage: a ring that reads on any theme, plus the number. At 4% the
      old pale ring on a pale track was not visible at all. */
@@ -2166,9 +2465,15 @@ export function chatPanelStyles(): string {
     height: 8px;
     border-radius: 999px;
     overflow: hidden;
-    background: #f3e8ea;
+    /* The UNUSED part of the context bar. #f3e8ea is a light pink that stayed
+       light on every theme, so on a dark one the bar read as mostly full when
+       it was mostly empty -- the meter inverted its own meaning. */
+    background: color-mix(in srgb, var(--ct-ink) 10%, transparent);
     margin-bottom: 12px;
   }
+  /* The unused remainder of the context window. Transparent against the bar's
+     own track, so it reads as absence rather than as another series. */
+  .context-bar .seg.free { background: transparent; }
   .context-bar .seg {
     height: 100%;
     min-width: 0;
@@ -2343,7 +2648,9 @@ export function chatPanelStyles(): string {
     cursor: pointer;
     color: inherit;
   }
-  .mode-item:hover { background: #f9f5f6; }
+  /* Hover derived from the ink, not a fixed near-white (#f9f5f6) that flashed
+     the row almost white on a dark theme. */
+  .mode-item:hover { background: color-mix(in srgb, var(--ct-ink) 8%, transparent); }
   .mode-item[aria-selected="true"] { background: var(--ct-accent-soft); }
   .mode-icon {
     display: flex;
@@ -2419,8 +2726,8 @@ export function chatPanelStyles(): string {
   .edit-proposal .view-diff-btn:hover { background: var(--ct-accent-soft); border-color: var(--ct-accent); }
   .edit-proposal .actions { display: flex; gap: 6px; }
   .edit-proposal .result { margin-top: 6px; font-style: italic; }
-  .edit-proposal .result.ok { color: #1e7a3a; }
-  .edit-proposal .result.refused { color: #c0392b; }
+  .edit-proposal .result.ok { color: var(--ct-ok); }
+  .edit-proposal .result.refused { color: var(--ct-danger); }
   .edit-proposal .result.auto-pending { opacity: 0.65; }
   /* What the gates learned, under what they decided. Muted deliberately: a
      Tier B delimiter advisory qualifies an edit that APPLIED, and styling it
@@ -2456,7 +2763,10 @@ export function chatPanelStyles(): string {
   .tool-approval {
     margin: 4px 0 14px 38px;
     padding: 12px;
-    border: 2px solid #d4a017;
+    /* WAS #d4a017: a dim brown ring on a dark theme, around the one dialog in
+       the product that must never be skimmed past. --ct-warn lightens to
+       #f5a524 on dark themes. */
+    border: 2px solid var(--ct-warn);
     border-radius: var(--ct-radius);
     background: var(--ct-surface);
     font-size: 12px;
@@ -2474,7 +2784,9 @@ export function chatPanelStyles(): string {
   }
   .tool-approval .approval-lane { margin-bottom: 8px; }
   .tool-approval .approval-lane.unconfined {
-    color: #c0392b;
+    /* "This server is unconfined" is the sentence the whole approval exists to
+       deliver; it has to be readable on a dark theme too. */
+    color: var(--ct-danger);
     font-weight: 600;
   }
   .tool-approval .approval-lane.confined { color: var(--ct-muted); }
@@ -2503,7 +2815,7 @@ export function chatPanelStyles(): string {
     font-size: 12px;
   }
   .edit-summary .summary-line { font-weight: 600; margin-bottom: 4px; }
-  .edit-summary .summary-refusal { color: #c0392b; margin-bottom: 2px; }
+  .edit-summary .summary-refusal { color: var(--ct-danger); margin-bottom: 2px; }
   .edit-summary .summary-backup { color: var(--ct-muted); font-style: italic; margin-top: 4px; }
   .edit-summary .undo-btn { margin-top: 6px; }
   .edit-summary .summary-undo-result { margin-top: 6px; font-style: italic; }
@@ -2675,7 +2987,7 @@ export function chatPanelBodyMarkup(logoUri: string = ''): string {
           <div class="mode-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="mode-svg manual-icon"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><path d="M2 2l7.586 7.586"/><circle cx="11" cy="11" r="2"/><path d="M4 22h16"/></svg></div>
           <div class="mode-text">
             <div class="mode-name">Manual</div>
-            <div class="mode-desc">Mochiii will ask for approval before making each edit</div>
+            <div class="mode-desc">Every edit waits for your Apply. Nothing reaches your files until you click it.</div>
           </div>
           <div class="mode-check" aria-hidden="true">✓</div>
         </button>
@@ -2683,7 +2995,7 @@ export function chatPanelBodyMarkup(logoUri: string = ''): string {
           <div class="mode-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="mode-svg plan-icon"><rect width="8" height="4" x="8" y="2" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="m7 11 2 2 3-3"/><path d="M14 11h3"/><path d="m7 16 2 2 3-3"/><path d="M14 16h3"/></svg></div>
           <div class="mode-text">
             <div class="mode-name">Plan</div>
-            <div class="mode-desc">Mochiii will explore the code and present a plan before editing</div>
+            <div class="mode-desc">Reads your code and writes a plan. Proposes no edits at all &mdash; no commands, no network.</div>
           </div>
           <div class="mode-check" aria-hidden="true">✓</div>
         </button>
@@ -2691,7 +3003,7 @@ export function chatPanelBodyMarkup(logoUri: string = ''): string {
           <div class="mode-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="mode-svg auto-icon"><path d="m21.64 3.64-1.28-1.28a1.21 1.21 0 0 0-1.72 0L2.36 18.64a1.21 1.21 0 0 0 0 1.72l1.28 1.28a1.2 1.2 0 0 0 1.72 0L21.64 5.36a1.2 1.2 0 0 0 0-1.72Z"/><path d="m14 7 3 3"/><path d="M5 6v4"/><path d="M19 14v4"/><path d="M10 2v2"/><path d="M7 8H3"/><path d="M21 16h-4"/><path d="M11 3H9"/></svg></div>
           <div class="mode-text">
             <div class="mode-name">Auto</div>
-            <div class="mode-desc">Mochiii will approve actions that pass a safety check</div>
+            <div class="mode-desc">Edits apply as they arrive, each still gated and undoable. Commands and network still ask.</div>
           </div>
           <div class="mode-check" aria-hidden="true">✓</div>
         </button>

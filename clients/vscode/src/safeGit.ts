@@ -106,3 +106,71 @@ export async function runGitStatus(workspace: string): Promise<string> {
     return `git status failed: ${(err as Error).message}`;
   }
 }
+
+// runGitDiff answers `/diff`: what has changed in the workspace but is not yet
+// committed.
+//
+// SAME HARDENING, DELIBERATELY REUSED. It goes through safeGitArgs for the
+// reason that function's comment gives -- "the next person to add a git
+// subcommand here should inherit the protection rather than have to rediscover
+// which keys are dangerous" -- and `diff` makes that concrete: `diff.external`
+// names a program git runs INSTEAD of diffing, and it is already in
+// NEUTRALISED_CONFIG. A hand-rolled execFile here would have been the fifth
+// instance of the class localCommands.ts lists four of.
+//
+// --stat AND the patch, in that order, because the question "/diff" asks is
+// usually "what have I touched" before "show me". The patch is capped by
+// maxBuffer like every other call here; a diff larger than that is reported as
+// truncated rather than silently cut, since a patch that stops mid-hunk reads
+// as a smaller change than it is.
+export async function runGitDiff(workspace: string, args: string): Promise<string> {
+  if (!workspace) {
+    return 'no folder is open, so there is no repository to diff';
+  }
+
+  const git = lookPathForTest(process.platform === 'win32' ? 'git.exe' : 'git');
+  if (!git) {
+    return 'git was not found on PATH';
+  }
+
+  // The only argument accepted is --staged/--cached, and it is matched against a
+  // closed set rather than forwarded. Passing the user's words through to git
+  // would let `/diff --output=/etc/x` or a path outside the repository through,
+  // and this command answers one question about one folder.
+  const flag = args.trim().toLowerCase();
+  const extra: string[] = [];
+  if (flag === '--staged' || flag === '--cached' || flag === 'staged') {
+    extra.push('--cached');
+  } else if (flag !== '') {
+    return `usage: /diff [--staged] (got ${JSON.stringify(args.trim())})`;
+  }
+
+  const maxBuffer = 2 * 1024 * 1024;
+  const run = async (sub: string[]): Promise<string> => {
+    const { stdout, stderr } = await execFileAsync(git, safeGitArgs(workspace, sub), {
+      cwd: undefined,
+      env: withoutCredentials(process.env),
+      timeout: 20000,
+      maxBuffer,
+    });
+    return (stdout + stderr).trim();
+  };
+
+  try {
+    const stat = await run(['diff', ...extra, '--stat']);
+    if (stat === '') {
+      return extra.length > 0 ? 'nothing is staged' : 'no uncommitted changes';
+    }
+    const patch = await run(['diff', ...extra, '--unified=3']);
+    // A patch at the ceiling was almost certainly cut. Say so: a truncated diff
+    // that looks complete is how someone concludes a change is smaller than it
+    // is and approves it.
+    const note =
+      patch.length >= maxBuffer - 1024
+        ? '\n\n(the patch is larger than this command will print; use the Source Control view for the rest)'
+        : '';
+    return `${stat}\n\n${patch}${note}`;
+  } catch (err) {
+    return `git diff failed: ${(err as Error).message}`;
+  }
+}

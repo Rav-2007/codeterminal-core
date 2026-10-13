@@ -22,10 +22,12 @@ export interface Provider {
   aliases: string[];
 }
 
-// MIRROR OF protocol/providers.go -- ids, names, addresses and aliases only (key
-// prefixes stay in Go: the daemon is the one that reads a key). connectFlow.test.ts
-// parses the Go file and fails if the two lists differ, so an edit to one side
-// cannot ship without the other.
+// MIRROR OF protocol/providers.go -- ids, names, addresses and aliases only. The
+// Go table's key prefixes are mirrored too, but in KEY_PREFIXES below and not as
+// a field here: connectFlow.test.ts compares this list field-for-field with the
+// parsed Go one, so a fifth field would fail that comparison. That test parses
+// the Go file and fails if the two lists differ, so an edit to one side cannot
+// ship without the other.
 export const PROVIDERS: Provider[] = [
   { id: 'openrouter', name: 'OpenRouter', apiBase: 'https://openrouter.ai/api/v1', aliases: [] },
   { id: 'openai', name: 'OpenAI', apiBase: 'https://api.openai.com/v1', aliases: [] },
@@ -67,6 +69,106 @@ function hostOf(base: string): string {
 export function providerForBase(base: string): Provider | undefined {
   const host = hostOf(base);
   return host === '' ? undefined : PROVIDERS.find((p) => hostOf(p.apiBase) === host);
+}
+
+// WHICH PROVIDER A KEY LOOKS LIKE IT IS FOR -- a hint, read from its own shape.
+//
+// MIRROR OF KeyPrefixes in protocol/providers.go. None of these prefixes is a
+// guess made in this file: the daemon reads a pasted key with them
+// (protocol.ProvidersForKey), and daemon/scrub.go redacts the same shapes in
+// everything the agent reads -- its entries were each added after a key of that
+// shape was watched travelling to a provider verbatim in a live run. So two
+// places in this repository already treat each prefix below as that provider's,
+// and providerShape.test.ts parses the Go table and fails if a prefix is added
+// there and not here.
+//
+// WHY VS CODE NEEDS A COPY AT ALL, when the daemon is the one that reads keys:
+// the panel has to be able to say something BEFORE a key is sent anywhere -- the
+// user who installed 0.1.1 was never told a key was needed -- and with no folder
+// open there is no daemon to ask (extension.ts stores the key for the next
+// window in that case, with nothing to detect with).
+//
+// A SHAPE IS EVIDENCE, NOT PROOF: THE CALLER MUST STILL ASK. Whoever calls this
+// has to get the user's confirmation before a key goes to the apiBase returned
+// here. A silently-chosen wrong endpoint hands a working credential to a company
+// that did not issue it, and the failure comes back as a 401 that reads exactly
+// like a bad key -- so the user retypes a perfectly good key and gets nowhere.
+// "AIza" is the plainest case: it says "a Google API key", not that this one has
+// the Generative Language API enabled. extension.ts already asks the user when
+// the daemon answers needs_provider; a hint from here must not route around that.
+//
+// THE KEY ITSELF GOES NOWHERE: it is compared against prefixes and dropped.
+// Nothing derived from it is returned, stored, logged or put in a message.
+export interface KeyShape {
+  /** The literal, case-sensitive start of the key, as the issuer writes it. */
+  prefix: string;
+  /** The `id` of the Provider in PROVIDERS it belongs to. */
+  providerId: string;
+}
+
+// Each line names where the prefix is already recorded, so the next person does
+// not have to take it on trust. "providers.go" is protocol/providers.go's
+// KeyPrefixes; "scrub.go" is the pattern daemon/scrub.go redacts. Exported so
+// providerShape.test.ts can check the table against the Go one and prove no
+// short prefix can swallow a longer one -- not because a caller needs it.
+export const KEY_PREFIXES: readonly KeyShape[] = [
+  { prefix: 'sk-or-', providerId: 'openrouter' },      // providers.go; scrub.go openrouter_key
+  { prefix: 'sk-ant-', providerId: 'anthropic' },      // providers.go; scrub.go anthropic_key
+  { prefix: 'sk-proj-', providerId: 'openai' },        // OpenAI project keys: providers.go; scrub.go openai_key
+  { prefix: 'sk-svcacct-', providerId: 'openai' },     // OpenAI service-account keys: same two tables
+  { prefix: 'gsk_', providerId: 'groq' },              // providers.go; scrub.go groq_key
+  { prefix: 'nvapi-', providerId: 'nvidia' },          // providers.go; scrub.go nvidia_key
+  { prefix: 'xai-', providerId: 'xai' },               // providers.go; scrub.go xai_key
+  { prefix: 'csk-', providerId: 'cerebras' },          // providers.go; scrub.go cerebras_key
+  { prefix: 'hf_', providerId: 'huggingface' },        // providers.go; scrub.go huggingface_token
+  { prefix: 'tgp_v1_', providerId: 'together' },       // providers.go; scrub.go together_key
+  { prefix: 'fw_', providerId: 'fireworks' },          // providers.go; scrub.go fireworks_key
+  { prefix: 'AIza', providerId: 'gemini' },            // any Google API key: providers.go; scrub.go google_key
+];
+
+// DELIBERATELY NOT IN THAT TABLE, because undefined is the honest answer and the
+// caller handles it:
+//
+//   - the bare "sk-" that OpenAI, DeepSeek, Moonshot AI and Alibaba Cloud all
+//     issue (SharedKeyPrefix in providers.go, and the daemon's needs_provider
+//     outcome exists for exactly this). It names nobody. Reading it as OpenAI
+//     would be right some of the time and would send everyone else's key to a
+//     company that did not issue it.
+//   - "sk-admin-". scrub.go redacts it as OpenAI's and it is OpenAI's, but
+//     providers.go does not list it and an admin key cannot serve
+//     /chat/completions, so there is nothing useful to point it at.
+//   - Mistral, SambaNova and Z.ai: their keys carry no prefix that is theirs
+//     alone. Guessing from a key's length or alphabet is how a key ends up at
+//     the wrong base.
+
+export function providerForKey(key: string): Provider | undefined {
+  // Trimmed because a key is pasted, and a pasted key arrives with a trailing
+  // newline as often as not. Case is NOT folded: the issuers write these
+  // prefixes exactly as above ("AIza", not "aiza"), Go's strings.HasPrefix in
+  // ProvidersForKey is case-sensitive too, and folding would both invent
+  // matches and make this disagree with the daemon about the same key.
+  const k = key.trim();
+  if (k === '') {
+    return undefined;
+  }
+  // ORDER-FREE ON PURPOSE: every entry is tested and the LONGEST matching
+  // prefix wins, computed from the data, so the table above can be reordered or
+  // appended to in any order and not one answer changes. This is not a
+  // KEY_PREFIXES.find(): with a .find(), the day someone adds the bare "sk-"
+  // it would only have to sit above "sk-ant-" to swallow every Anthropic,
+  // OpenRouter and OpenAI-project key and send them all to OpenAI. The same
+  // rule, for the same reason, is in protocol/providers.go's ProvidersForKey.
+  let best: KeyShape | undefined;
+  for (const shape of KEY_PREFIXES) {
+    if (k.startsWith(shape.prefix) && (best === undefined || shape.prefix.length > best.prefix.length)) {
+      best = shape;
+    }
+  }
+  if (best === undefined) {
+    return undefined;
+  }
+  const id = best.providerId;
+  return PROVIDERS.find((p) => p.id === id);
 }
 
 // "Groq (https://api.groq.com/openai/v1)": a name when the host is a known one,

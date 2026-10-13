@@ -1,6 +1,6 @@
 # Documentation index
 
-**81 documents: 72 in `docs/`, 1 in `docs/ARCHIVE/`, and 8 at the repository root.**
+**82 documents: 73 in `docs/`, 1 in `docs/ARCHIVE/`, and 8 at the repository root.**
 
 **This page says which four documents you need first, and then lists every
 other one.**
@@ -109,6 +109,7 @@ a refactor or fails loudly; a line number silently points at something else.
 | [`ENGINEERING_METHOD.md`](ENGINEERING_METHOD.md) | **How this codebase is made robust.** Each technique, the bug that made it necessary, and what it costs. |
 | [`PRODUCTION_READINESS_2026-09-21.md`](PRODUCTION_READINESS_2026-09-21.md) | **Is this shippable?** One verdict per surface across the gate system, the security model, the agent loop and the QA surface — plus what the gates structurally cannot see. Written at `v0.0.3`. |
 | [`ULTRA_MASTER_PLAN_2026-08-08.md`](ULTRA_MASTER_PLAN_2026-08-08.md) | **The current plan.** Packaging, with Stages 4–5 carried forward. |
+| [`VSCODE_UX_OVERHAUL_2026-10-12.md`](VSCODE_UX_OVERHAUL_2026-10-12.md) | **The 0.2.0 plan.** Why the shipped VS Code client is not usable — Windows cannot reach its daemon, there is no way to enter a key, the model never sees your code — with each claim cited to the line, and the seven stages that fix it. |
 | [`OPEN_ITEMS.md`](OPEN_ITEMS.md) | The bug register, statuses resolved in place. |
 | [`DECISION_PACK.md`](DECISION_PACK.md) | D1–D8 founder rulings, one page each. |
 | [`../BACKLOG.md`](../BACKLOG.md) | Forward-looking capability work only. |

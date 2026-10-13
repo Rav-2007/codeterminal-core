@@ -185,7 +185,11 @@ async function withPanel(fn: (panel: any, posts: any[]) => Promise<void>): Promi
   const panel: any = (ChatPanel as any).current;
   assert.ok(panel, 'createOrShow left no panel');
   const posts: any[] = [];
-  const webview = panel.panel.webview;
+  // `host`, not `panel`: Stage 5 moved ChatPanel onto the ChatHost interface
+  // (chatHost.ts) so one implementation can live in a sidebar view or an editor
+  // tab. The webview is reached through it the same way the panel's own code
+  // reaches it.
+  const webview = panel.host.webview;
   const original = webview.postMessage.bind(webview);
   Object.defineProperty(webview, 'postMessage', {
     configurable: true,
