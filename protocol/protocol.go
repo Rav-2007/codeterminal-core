@@ -291,6 +291,9 @@ type PromptRequest struct {
 	Tier       string `json:"tier,omitempty"`
 	Mode       string `json:"mode,omitempty"`
 
+	// Attached is command output sent with this one question (attached.go).
+	Attached []AttachedOutput `json:"attached,omitempty"`
+
 	// ReasoningEffort asks the model to think before it answers, for THIS TURN
 	// ONLY: "low", "medium" or "high". Absent means the tier's own setting, which
 	// is what every existing client sends. Any other value is ignored (and

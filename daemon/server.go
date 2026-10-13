@@ -751,6 +751,9 @@ func (s *Server) serveConn(conn net.Conn) {
 		// warn-mode. This never changes augmentedPrompt.
 		s.logChunkScrub(outcome.Chunks)
 	}
+	// What a client's own command printed, attached to this one question
+	// (attachedoutput.go). Before the redaction below, so that covers it too.
+	augmentedPrompt = withAttachedOutput(augmentedPrompt, promptReq.Attached, s.noScrub())
 	// LITERAL CREDENTIAL REDACTION of the whole outgoing user message -- the
 	// typed prompt AND the retrieved chunks folded into it -- after the heuristic
 	// scrub above. Always on, even under --no-scrub: the daemon's own key, in any

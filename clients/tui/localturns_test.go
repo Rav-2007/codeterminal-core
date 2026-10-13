@@ -72,12 +72,15 @@ func TestLocalCommandOutputIsShownAndNeverSentToTheModel(t *testing.T) {
 		t.Fatalf("only %d local replies are on screen; the commands above did not run", shown)
 	}
 
-	// /git FETCHES something to talk about, so its output stays in the
-	// conversation ("write a commit message for this").
+	// /git FETCHES something to talk about ("write a commit message for
+	// this") -- and since 2026-10-13 that is no longer a reason to leave its
+	// output in the conversation as something the model said. It is local like
+	// the rest, and what it printed goes with the next question, once
+	// (attach.go; attach_test.go has the rest).
 	before := len(m.turns)
 	m, _ = pressEnter(typeText(m, "/git"))
-	if len(m.turns) != before+1 || m.turns[before].local {
-		t.Errorf("/git's output is not part of the conversation: %+v", m.turns[before:])
+	if len(m.turns) != before+1 || !m.turns[before].local {
+		t.Errorf("/git's output is part of the conversation again: %+v", m.turns[before:])
 	}
 }
 

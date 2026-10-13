@@ -743,7 +743,12 @@ character** -- what you copy out of the terminal is what the model wrote. Text
 that only looks like markdown is left alone: `5*3 = 15`, `snake_case`,
 `__init__`, `**kwargs`. `NO_COLOR=1` turns the colour off and keeps the layout.
 The output of local commands (`/help`, `/git`, …) is not markdown and is shown
-as written.
+as written. None of it is part of the conversation: the model is not shown
+`/help` as something it said. What `/git` and `/search` print is the exception
+with a purpose -- it is sent to the model **once**, with your next question,
+marked as command output rather than as your words or its own, so "write a
+commit message for this" works without the file names in a repository being
+replayed as the model's voice on every turn after.
 
 ---
 

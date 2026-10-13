@@ -322,6 +322,9 @@ type chatModel struct {
 	approvalRead    approvalReading // how much of that question has been on screen (approvalview.go)
 	compacting      bool            // /compact is waiting for the daemon; the keyboard is held (compact.go)
 
+	// attached is command output waiting to go with the next question (attach.go).
+	attached []protocol.AttachedOutput
+
 	// activityTurns maps a tool call's id to the transcript turn narrating it,
 	// so a call's line is REWRITTEN from "running" to its outcome rather than
 	// appended to. One call, one line: an agent turn that emitted four lines per
@@ -561,6 +564,9 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case compactDoneMsg:
 		return m.handleCompactDone(msg)
+
+	case attachedNotSentMsg:
+		return m.handleAttachedNotSent(msg)
 
 	case setupTiersMsg:
 		return m.handleSetupTiers(msg)
@@ -1486,7 +1492,8 @@ func (m chatModel) startTurn() (tea.Model, tea.Cmd) {
 	m.turnMode = mode
 	m.tasks = nil
 	m.turnChatRev = m.chatRev
-	return m, tea.Batch(m.spinner.Tick, m.startThinking(), startStream(ctx, m.clientName, m.workspace, prompt, promptKind, mode, m.preferredTier, m.activeSpec, m.specGrantDigests(), pipeline, history, m.chatRev, taskFields{}, ch))
+	task := taskFields{attached: m.takeAttached()}
+	return m, tea.Batch(m.spinner.Tick, m.startThinking(), startStream(ctx, m.clientName, m.workspace, prompt, promptKind, mode, m.preferredTier, m.activeSpec, m.specGrantDigests(), pipeline, history, m.chatRev, task, ch))
 }
 
 func (m chatModel) handleSlash(sp slashParse) (tea.Model, tea.Cmd) {
@@ -1554,6 +1561,7 @@ func (m chatModel) beginTurnWith(shown, prompt, promptKind, mode string, pipelin
 	ch := make(chan tea.Msg)
 	m.streamCh = ch
 	m.turnChatRev = m.chatRev
+	task.attached = m.takeAttached()
 	return m, tea.Batch(m.spinner.Tick, m.startThinking(), startStream(ctx, m.clientName, m.workspace, prompt, promptKind, mode, m.preferredTier, m.activeSpec, m.specGrantDigests(), pipeline, history, m.chatRev, task, ch))
 }
 
@@ -1680,9 +1688,12 @@ func (m chatModel) handleLocalSlash(name, args string) (tea.Model, tea.Cmd) {
 	}
 	if reply != "" {
 		// /git and /search FETCH something to talk about ("write a commit
-		// message for this"), so their output stays in the conversation. The
-		// rest is this client describing itself.
-		m.appendTurn(turn{role: roleAssistant, text: reply, verbatim: true, local: name != "git" && name != "search"})
+		// message for this"): it goes with the next question, once (attach.go).
+		// Nothing a command prints is part of the conversation.
+		if name == "git" || name == "search" {
+			reply = m.attachOutput(name, reply)
+		}
+		m.appendTurn(turn{role: roleAssistant, text: reply, verbatim: true, local: true})
 	}
 	m.resizeViewport()
 	m.refreshViewport()
@@ -2017,6 +2028,7 @@ func (m chatModel) clearConversation() (tea.Model, tea.Cmd) {
 	m.chatUsage = usageTotals{} // a new chat; the session's total carries on
 	m.stopsInChat = 0
 	m.turns = nil
+	m.attached = nil // what was waiting to be asked about belonged to the chat that is gone
 	m.lastGrounding = nil
 	m.lastRedactions = nil
 	m.lastDegraded = nil
