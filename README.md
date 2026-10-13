@@ -705,6 +705,12 @@ time, and adds the session's tokens and cost once there are any:
 answer about what it is sending to, so with a key in the environment it names
 that key's provider, not the stored one's.
 
+At the right end of the same row is who is running the client and on which
+machine, as a shell prompt writes it: `ravi@laptop`. The name is read from the
+operating system when the client starts and is only drawn on that row — it is
+not sent to the daemon or to any provider. The line comes first: in a narrow
+terminal the name is cut, or left out, before the line is shortened.
+
 - **Paste a key from any major provider and it is ready** is still one Enter
   away: the list's first row is "Any key", which asks for the key and nothing
   else, and the daemon recognises the provider from it.

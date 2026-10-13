@@ -34,6 +34,10 @@ import (
 // what is stored. It is asked at start and again after anything that can
 // change it -- a key connected, a model chosen -- and it asks no provider. The
 // tokens and cost are this client's own sum of the provider's bills (usage.go).
+//
+// THE SAME ROW ALSO SAYS WHO IS RUNNING THE CLIENT (2026-10-13), at its right
+// edge. That part is whoami.go's: statusLine here is the left of the row and
+// is laid out first, and statusRow there puts the name in what it leaves.
 
 // chatExtras is chatModel state added on 2026-10-12, embedded in chatModel
 // rather than written into it, and handleSideAnswer below is three messages
@@ -53,6 +57,10 @@ type chatExtras struct {
 	// model is chosen so the line under the prompt can show the id a user
 	// recognises. Meaningless while preferredTier is empty.
 	preferredSlug string
+	// whoami is who is running this client and on which machine, as one line
+	// that is safe to draw ("ravi@laptop"); empty when the system would not say.
+	// Stored once, before anything is drawn, and only ever drawn (whoami.go).
+	whoami string
 }
 
 // connInfo is what the daemon last said it is sending to.
@@ -292,11 +300,11 @@ func statusCost(t usageTotals) string {
 	return amount
 }
 
-// withStatusLine puts the line above the help line, when the terminal has the
-// row for it (statusRows).
+// withStatusLine puts the row above the help line, when the terminal has the
+// row for it (statusRows): the line, and who is running the client (whoami.go).
 func (m chatModel) withStatusLine(help string) string {
 	if m.statusRows() == 0 {
 		return help
 	}
-	return m.statusLine() + "\n" + help
+	return m.statusRow() + "\n" + help
 }
