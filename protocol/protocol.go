@@ -274,6 +274,13 @@ const FeatureModelChoice = "model_choice"
 // request as an empty prompt.
 const FeatureMCPAdmin = "mcp_admin"
 
+// FeatureMCPManage: MCPRequest also takes MCPActionUpdate, MCPActionEnable,
+// MCPActionDisable and MCPActionServers, and MCPServerInfo carries a server's parts (Program, Args,
+// Env, Cwd) as well as its one-line Command. A daemon with only FeatureMCPAdmin
+// answers those actions with "unknown mcp action", so a client offers editing
+// and pausing only when this is present.
+const FeatureMCPManage = "mcp_manage"
+
 // PromptRequest carries a single user prompt. Sent by the client only after
 // a successful handshake. Workspace is optional and additive: when set,
 // it's the client's own absolute path for the workspace it expects
@@ -1790,17 +1797,18 @@ type MCPRequest struct {
 	// MCP is the discriminator, like ConnectRequest.Connect.
 	MCP bool `json:"mcp"`
 
-	// Action is MCPActionList (also what empty means), MCPActionAdd or
-	// MCPActionRemove.
+	// Action is MCPActionList (also what empty means), MCPActionAdd,
+	// MCPActionRemove, or -- from a daemon with FeatureMCPManage --
+	// MCPActionUpdate, MCPActionEnable or MCPActionDisable.
 	Action string `json:"action,omitempty"`
 
 	// Name is the user's own word for the server: it is what approval prompts
-	// and the audit log call it. Set for add and remove.
+	// and the audit log call it. Set for every action but list.
 	Name string `json:"name,omitempty"`
 
-	// Command and Args are what add runs -- executed directly, never through a
-	// shell. Env lists NAMES of environment variables to pass through from the
-	// daemon's environment; a value is never carried here.
+	// Command and Args are what add and update run -- executed directly, never
+	// through a shell. Env lists NAMES of environment variables to pass through
+	// from the daemon's environment; a value is never carried here.
 	Command string   `json:"command,omitempty"`
 	Args    []string `json:"args,omitempty"`
 	Env     []string `json:"env,omitempty"`
@@ -1819,10 +1827,25 @@ type MCPRequest struct {
 const MCPCwdWorkspace = "workspace"
 
 // The actions an MCPRequest can name.
+//
+// Update replaces an added server's command, arguments, variables and folder.
+// It is a new grant, not an edit of an old one -- what will run may be a
+// different program -- so it takes the same acknowledgement add does. Enable
+// and disable pause and resume an added server without forgetting it; the
+// program does not change, so neither asks again.
+//
+// Servers is list without the tool report: the configured servers and whether
+// agent mode is on, read from the config and the user's file and NOTHING
+// STARTED. List starts every server to ask what it offers, which is right for a
+// question about tools and wrong for a sidebar that redraws.
 const (
-	MCPActionList   = "list"
-	MCPActionAdd    = "add"
-	MCPActionRemove = "remove"
+	MCPActionList    = "list"
+	MCPActionAdd     = "add"
+	MCPActionRemove  = "remove"
+	MCPActionUpdate  = "update"
+	MCPActionEnable  = "enable"
+	MCPActionDisable = "disable"
+	MCPActionServers = "servers"
 )
 
 // MCPServerInfo is one configured third-party server, in terms safe to print.
@@ -1834,6 +1857,14 @@ type MCPServerInfo struct {
 	// MCPSourceUser for one added through an MCPRequest.
 	Source   string `json:"source"`
 	Disabled bool   `json:"disabled,omitempty"`
+
+	// The same server in parts, so a client can offer to change it without
+	// re-splitting Command (FeatureMCPManage). Env is NAMES only, as stored:
+	// no value ever reaches this struct. Cwd is "" or MCPCwdWorkspace.
+	Program string   `json:"program,omitempty"`
+	Args    []string `json:"args,omitempty"`
+	Env     []string `json:"env,omitempty"`
+	Cwd     string   `json:"cwd,omitempty"`
 }
 
 // Where a configured server came from.

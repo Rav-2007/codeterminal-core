@@ -42,7 +42,9 @@ type mcpResultMsg struct {
 // mcpServerUsage is what the command says when it cannot read what was typed.
 const mcpServerUsage = "/mcp-server                                   the tools this daemon offers, and its MCP servers\n" +
 	"/mcp-server add <name> [--env NAME] [--in-project] <command> [args…]   add an MCP server of your own\n" +
-	"/mcp-server remove <name>                     remove one you added\n\n" +
+	"/mcp-server remove <name>                     remove one you added\n" +
+	"/mcp-server disable <name>                    pause one you added, keeping it for later\n" +
+	"/mcp-server enable <name>                     resume a paused one\n\n" +
 	"Example: /mcp-server add files npx -y @modelcontextprotocol/server-filesystem /home/me/notes\n\n" +
 	"--env takes the NAME of a variable in the daemon's environment (export it, or put it in .env, before " +
 	"starting Mochiii). Never type a secret here: the command and its arguments are stored and shown.\n" +
@@ -213,7 +215,7 @@ func mcpAddIsRefused(raw string) bool {
 	return err != nil
 }
 
-// handleMCPServerCommand is /mcp-server and its two subcommands.
+// handleMCPServerCommand is /mcp-server and its subcommands.
 func (m chatModel) handleMCPServerCommand(args string) (tea.Model, tea.Cmd) {
 	say := func(text string) {
 		m.appendTurn(turn{role: roleAssistant, local: true, verbatim: true, text: text})
@@ -245,6 +247,14 @@ func (m chatModel) handleMCPServerCommand(args string) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, submitMCP(m.clientName, protocol.MCPRequest{Action: protocol.MCPActionRemove, Name: words[1]})
+	case protocol.MCPActionEnable, protocol.MCPActionDisable:
+		// Neither asks for the name to be typed: the program does not change,
+		// and it was agreed to when the server was added (mcpSetDisabled).
+		if len(words) != 2 {
+			say("mcp-server: " + words[0] + " takes the name of one server.\n\n" + mcpServerUsage)
+			return m, nil
+		}
+		return m, submitMCP(m.clientName, protocol.MCPRequest{Action: words[0], Name: words[1]})
 	}
 	say("mcp-server: " + sanitizeText(words[0]) + " is not something it does.\n\n" + mcpServerUsage)
 	return m, nil
@@ -305,7 +315,11 @@ func userServerNames(servers []protocol.MCPServerInfo) []string {
 	var out []string
 	for _, srv := range servers {
 		if srv.Source == protocol.MCPSourceUser {
-			out = append(out, sanitizeText(srv.Name)+" ("+sanitizeText(srv.Command)+")")
+			paused := ""
+			if srv.Disabled {
+				paused = ", disabled"
+			}
+			out = append(out, sanitizeText(srv.Name)+" ("+sanitizeText(srv.Command)+paused+")")
 		}
 	}
 	return out

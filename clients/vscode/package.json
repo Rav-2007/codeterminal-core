@@ -56,7 +56,9 @@
   },
   "activationEvents": [
     "onWebviewPanel:mochiiiChat",
-    "onView:mochiii.chatView"
+    "onView:mochiii.chatView",
+    "onView:mochiii.mcpServers",
+    "onUri"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -90,6 +92,12 @@
           "type": "boolean",
           "default": true,
           "markdownDescription": "Keep every chat in **History** (the clock button), the way Claude Code does: a chat is saved when you start a new one, open another from History, or compact it. Saved chats stay on this machine, outside the project, bounded to 50 chats and 20 MB per workspace (bookmarked chats are never removed). Turn this off to keep only the chats you bookmark."
+        },
+        "mochiii.mcp.catalogUrl": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "markdownDescription": "Where the **MCP Marketplace** reads its catalog. Leave empty for `https://www.mochiii.in/api/mcp/v1/catalog.json`. Must be `https://` (or `http://localhost` while developing the catalog).\n\n**Machine-scoped** for the same reason as `mochiii.configPath`: the catalog names programs you may choose to run, and a workspace's `.vscode/settings.json` must never be able to choose the list. Every entry is still checked by the extension, and nothing is added without you typing the server's name."
         }
       }
     },
@@ -118,10 +126,58 @@
         "command": "mochiii.setApiKey",
         "title": "Set API Key",
         "category": "Mochiii"
+      },
+      {
+        "command": "mochiii.mcp.browse",
+        "title": "Browse MCP Marketplace",
+        "category": "Mochiii",
+        "icon": "$(extensions)"
+      },
+      {
+        "command": "mochiii.mcp.add",
+        "title": "Add MCP Server…",
+        "category": "Mochiii",
+        "icon": "$(add)"
+      },
+      {
+        "command": "mochiii.mcp.refresh",
+        "title": "Refresh MCP Servers",
+        "category": "Mochiii",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "mochiii.mcp.showTools",
+        "title": "Show MCP Tools",
+        "category": "Mochiii",
+        "icon": "$(list-unordered)"
+      },
+      {
+        "command": "mochiii.mcp.edit",
+        "title": "Change MCP Server…",
+        "category": "Mochiii",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "mochiii.mcp.enable",
+        "title": "Enable MCP Server",
+        "category": "Mochiii",
+        "icon": "$(debug-start)"
+      },
+      {
+        "command": "mochiii.mcp.disable",
+        "title": "Disable MCP Server",
+        "category": "Mochiii",
+        "icon": "$(debug-pause)"
+      },
+      {
+        "command": "mochiii.mcp.remove",
+        "title": "Remove MCP Server",
+        "category": "Mochiii",
+        "icon": "$(trash)"
       }
     ],
     "viewsContainers": {
-      "activitybar": [
+      "secondarySidebar": [
         {
           "id": "mochiii",
           "title": "Mochiii",
@@ -137,6 +193,92 @@
           "name": "Chat",
           "icon": "media/activity-icon.svg",
           "contextualTitle": "Mochiii"
+        },
+        {
+          "id": "mochiii.mcpServers",
+          "name": "MCP Servers",
+          "icon": "media/activity-icon.svg",
+          "contextualTitle": "Mochiii"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "mochiii.mcpServers",
+        "contents": "No MCP servers yet. An MCP server gives Mochiii's agent new tools: web search, browsers, databases, clouds.\n[Browse the Marketplace](command:mochiii.mcp.browse)\n[Add a Server by Hand](command:mochiii.mcp.add)\nA server runs on your machine with your privileges. Mochiii shows exactly what will run and asks you to type its name before adding it, and each of its tools asks before it runs."
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "mochiii.mcp.browse",
+          "when": "view == mochiii.mcpServers",
+          "group": "navigation@1"
+        },
+        {
+          "command": "mochiii.mcp.add",
+          "when": "view == mochiii.mcpServers",
+          "group": "navigation@2"
+        },
+        {
+          "command": "mochiii.mcp.refresh",
+          "when": "view == mochiii.mcpServers",
+          "group": "navigation@3"
+        },
+        {
+          "command": "mochiii.mcp.showTools",
+          "when": "view == mochiii.mcpServers",
+          "group": "1_tools"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "mochiii.mcp.enable",
+          "when": "view == mochiii.mcpServers && viewItem == mcpServer.user.disabled",
+          "group": "inline@1"
+        },
+        {
+          "command": "mochiii.mcp.disable",
+          "when": "view == mochiii.mcpServers && viewItem == mcpServer.user.enabled",
+          "group": "inline@1"
+        },
+        {
+          "command": "mochiii.mcp.edit",
+          "when": "view == mochiii.mcpServers && viewItem =~ /^mcpServer\\.user/",
+          "group": "1_change@1"
+        },
+        {
+          "command": "mochiii.mcp.enable",
+          "when": "view == mochiii.mcpServers && viewItem == mcpServer.user.disabled",
+          "group": "1_change@2"
+        },
+        {
+          "command": "mochiii.mcp.disable",
+          "when": "view == mochiii.mcpServers && viewItem == mcpServer.user.enabled",
+          "group": "1_change@2"
+        },
+        {
+          "command": "mochiii.mcp.remove",
+          "when": "view == mochiii.mcpServers && viewItem =~ /^mcpServer\\.user/",
+          "group": "9_remove@1"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "mochiii.mcp.edit",
+          "when": "false"
+        },
+        {
+          "command": "mochiii.mcp.enable",
+          "when": "false"
+        },
+        {
+          "command": "mochiii.mcp.disable",
+          "when": "false"
+        },
+        {
+          "command": "mochiii.mcp.remove",
+          "when": "false"
         }
       ]
     }

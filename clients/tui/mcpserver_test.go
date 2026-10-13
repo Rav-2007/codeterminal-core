@@ -42,6 +42,10 @@ func mcpDaemon(t *testing.T) *recordingDaemon {
 				Notes: []string{"GITHUB_TOKEN is not set in this daemon's environment"}}
 		case req.Action == protocol.MCPActionRemove:
 			return protocol.MCPResponse{Ok: true, AgentMode: true, Detail: "Removed " + req.Name + "."}
+		case req.Action == protocol.MCPActionDisable:
+			return protocol.MCPResponse{Ok: true, AgentMode: true, Detail: "Disabled " + req.Name + "."}
+		case req.Action == protocol.MCPActionEnable:
+			return protocol.MCPResponse{Ok: true, AgentMode: true, Detail: "Enabled " + req.Name + ". It started and offers 2 tool(s): read, write."}
 		}
 		return protocol.MCPResponse{Ok: true, AgentMode: true, Report: "Agent mode is ON. 1 tool(s) would be offered to the model.\n"}
 	})
@@ -338,5 +342,35 @@ func TestInProjectIsCarriedByTheAddRequest(t *testing.T) {
 	}
 	if req.Cwd != "" || len(req.Args) != 2 {
 		t.Errorf("a word after the command was read as this client's flag: cwd=%q args=%q", req.Cwd, req.Args)
+	}
+}
+
+// PAUSING AND RESUMING ASK NOTHING. The program a server runs does not change,
+// and it was agreed to when the server was added, so each is one request and
+// no confirmation is opened.
+func TestDisableAndEnableAreOneRequestEach(t *testing.T) {
+	for _, action := range []string{protocol.MCPActionDisable, protocol.MCPActionEnable} {
+		daemon := mcpDaemon(t)
+		m := runSlash(t, newTestModel(), "/mcp-server "+action+" files")
+		reqs := mcpRequests(t, daemon)
+		want := protocol.MCPRequest{ProtocolVersion: protocol.ProtocolVersion, MCP: true, Action: action, Name: "files"}
+		if len(reqs) != 1 || !reflect.DeepEqual(reqs[0], want) {
+			t.Errorf("/mcp-server %s sent %+v, want exactly %+v", action, reqs, want)
+		}
+		if m.pendingMCPAdd != nil {
+			t.Errorf("/mcp-server %s opened a confirmation", action)
+		}
+		if last := lastTurn(t, m); !strings.Contains(last, "files.") {
+			t.Errorf("/mcp-server %s did not show the daemon's answer:\n%s", action, last)
+		}
+
+		bare := mcpDaemon(t)
+		m = runSlash(t, newTestModel(), "/mcp-server "+action)
+		if n := len(bare.requests()); n != 0 {
+			t.Errorf("/mcp-server %s with no name sent %d request(s)", action, n)
+		}
+		if last := lastTurn(t, m); !strings.Contains(last, "takes the name of one server") {
+			t.Errorf("/mcp-server %s with no name did not explain itself:\n%s", action, last)
+		}
 	}
 }

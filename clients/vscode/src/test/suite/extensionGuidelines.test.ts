@@ -54,9 +54,20 @@ suite('the manifest meets the Marketplace guidelines', () => {
   // Asserted on the MANIFEST because that is where it was missing. Nothing in
   // the old code failed -- there was simply no contribution, and no test could
   // notice the absence of something nobody had declared.
-  test('contributes an activity-bar container with the chat view in it', () => {
-    const containers = pkg.contributes.viewsContainers?.activitybar ?? [];
-    assert.ok(containers.length > 0, 'no activity-bar container: the extension has no sidebar home');
+  //
+  // IN THE SECONDARY SIDE BAR, where Copilot's chat lives, and not the activity
+  // bar (2026-10-13). The primary side bar shows one container at a time, so
+  // with Mochiii there opening the Explorer hid the chat and opening the chat
+  // hid the files -- reported from the first walkthrough. A VS Code too old to
+  // know `secondarySidebar` puts the views in the Explorer instead, still
+  // beside the files.
+  test('contributes a secondary-side-bar container with the chat view in it', () => {
+    assert.ok(
+      !pkg.contributes.viewsContainers?.activitybar,
+      'an activity-bar container is back: the chat and the Explorer would hide each other again',
+    );
+    const containers = pkg.contributes.viewsContainers?.secondarySidebar ?? [];
+    assert.ok(containers.length > 0, 'no secondary-side-bar container: the extension has no sidebar home');
     const container = containers[0];
     assert.strictEqual(container.id, 'mochiii', `container id = ${container.id}`);
 
@@ -66,7 +77,7 @@ suite('the manifest meets the Marketplace guidelines', () => {
     assert.ok(typeof container.icon === 'string' && container.icon.length > 0, 'container has no icon');
     const iconPath = path.join(ROOT, container.icon);
     assert.ok(fs.existsSync(iconPath), `container icon is not on disk: ${container.icon}`);
-    assert.ok(/\.svg$/.test(container.icon), 'an activity-bar icon must be an SVG; VS Code masks it');
+    assert.ok(/\.svg$/.test(container.icon), "a container's icon must be an SVG; VS Code masks it");
 
     // The view itself, in that container, declared as a webview and with the
     // id extension.ts registers its provider under. These three strings have to

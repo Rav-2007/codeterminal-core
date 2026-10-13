@@ -66,7 +66,7 @@ suite('/compact', () => {
   test('summarises through the host instead of dropping turns', async () => {
     let called = 0;
     const host = {
-      workspace: '/w', extensionPath: '/e', transcript: [], preferredTier: '', currentModel: '', lastGrounding: undefined,
+      workspace: '/w', transcript: [], preferredTier: '', currentModel: '', lastGrounding: undefined,
       replaceTranscript: () => assert.fail('/compact must not trim the transcript any more'),
       compactChat: async () => {
         called++;

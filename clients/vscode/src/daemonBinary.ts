@@ -119,7 +119,7 @@ export function resolveDaemonBin(extensionPath: string): string | undefined {
 //   1. The value is MACHINE-SCOPED (package.json: "scope": "machine"). A
 //      config path names programs the daemon will spawn in agent mode, and a
 //      repository deciding that is precisely the hole closed four times over
-//      (see src/mcpServerList.ts and localCommandsHostile.test.ts). Machine
+//      (see localCommandsHostile.test.ts). Machine
 //      scope is what stops a workspace's .vscode/settings.json from setting it
 //      -- the same guarantee mochiii.apiBase relies on to keep a repo from
 //      redirecting prompts. The setting is read with getConfiguration, which

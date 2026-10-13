@@ -108,7 +108,7 @@ const MUST_CONTAIN = [
   'extension/out/extension.js',
   'extension/media/main.js',
   'extension/media/logo.png',
-  // The activity-bar icon, named by package.json's viewsContainers. Another
+  // The side-bar container's icon, named by package.json's viewsContainers. Another
   // silent absence: the extension installs, the container still appears, and
   // the icon slot renders as a blank square -- so the one entry point to the
   // whole product looks like a rendering bug. Nothing errors.

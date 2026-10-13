@@ -374,8 +374,11 @@ row was written) runs `mochiii-daemon mcp list` with `CombinedOutput()` (line
 411 then) and displays the result. *(Both were removed 2026-10-11, when the TUI began asking the running daemon instead of starting a second one — `clients/tui/mcpserver.go`.
 The terminal client now shows the daemon's own report and no process's
 stderr at all; a server's stderr goes to the daemon log through the redactor
-in `mcp.Connect`. The VS Code client still runs `mcp list`, from
-`clients/vscode/src/mcpServerList.ts`, so the chain below describes that client.)*
+in `mcp.Connect`. The VS Code client ran `mcp list` until 2026-10-13, when
+`/mcp-server` began opening the MCP marketplace and its shell-out,
+`mcpServerList.ts`, was deleted; its **Show MCP Tools** command asks the
+running daemon, as the terminal does. No client runs the chain below any
+more.)*
 That captures the
 daemon's **stderr**, and `mcp list` starts the configured MCP servers —
 `daemon/mcpruntime.go:111` wires each server's own stderr into the same stream.

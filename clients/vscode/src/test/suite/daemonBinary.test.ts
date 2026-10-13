@@ -3,7 +3,6 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { runMCPServerList } from '../../mcpServerList';
 import { DAEMON_BIN_ENV, daemonBinaryName, resolveConfigPathSetting, resolveDaemonBin } from '../../daemonBinary';
 
 // AN EXECUTABLE PATH IS NEVER DERIVED FROM WORKSPACE CONTENT.
@@ -27,14 +26,18 @@ import { DAEMON_BIN_ENV, daemonBinaryName, resolveConfigPathSetting, resolveDaem
 //
 // It survived two independent fixes of the same bug because nothing tested the
 // RULE, only the two instances. That is what this file is for: it tests the
-// invariant at the level a user reaches it (runMCPServerList) and at the level
-// the code expresses it (resolveDaemonBin), so a fourth surface cannot quietly
-// reintroduce it.
+// invariant where the code expresses it (resolveDaemonBin), so a fourth surface
+// cannot quietly reintroduce it.
 //
-// NEUTER CHECK. Put `path.join(workspace, 'daemon', 'mochiii-daemon')` back
-// at the front of resolveDaemonBin's candidate list and
-// `refusesToRunABinaryShippedByTheWorkspace` FAILS by writing the sentinel --
-// measured, not asserted.
+// The door a user reached it through is gone: runMCPServerList was retired on
+// 2026-10-13, when /mcp-server began opening the MCP marketplace, which asks
+// the RUNNING daemon over its socket and starts no program. Its tests went with
+// it. resolveDaemonBin still chooses the binary the extension spawns as its
+// daemon, which is why everything below stays.
+//
+// NEUTER CHECK. Add a candidate relative to the working directory --
+// `path.join('daemon', daemonBinaryName())` -- to resolveDaemonBin and
+// `resolverIgnoresTheCurrentWorkingDirectory` FAILS.
 
 function makeTempDir(t: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), t));
@@ -76,99 +79,8 @@ suite('daemon binary resolution — workspace content is never executable', () =
     }
   });
 
-  // The exploit, at the level the user reaches it. This is the assertion that
-  // would have caught the bug: it does not care HOW the path is built, only
-  // that a file the repository supplied never runs.
-  test('refusesToRunABinaryShippedByTheWorkspace', async () => {
-    const workspace = makeTempDir('ct-hostile-ws-');
-    const extensionPath = makeTempDir('ct-ext-');
-    const sentinel = path.join(makeTempDir('ct-sentinel-'), 'pwned.txt');
-
-    plantHostileDaemon(workspace, sentinel);
-
-    // '' is what a workspace can ever cause: mochiii.configPath is machine-
-    // scoped, so a repository cannot set it.
-    const out = await runMCPServerList(workspace, extensionPath, '');
-
-    assert.ok(
-      !fs.existsSync(sentinel),
-      'a binary shipped by the opened repository was EXECUTED — this is remote code execution ' +
-        'via `/mcp-server` against anyone who opens a hostile repo',
-    );
-    // And it should have reported honestly rather than silently doing nothing.
-    assert.match(out, /not found/i, `expected a "binary not found" message, got: ${out}`);
-  });
-
-  // THE SECOND VECTOR, in the same function, and worse than the first.
-  //
-  // runMCPServerList also passed `--config <workspace>/models.json`. That is not
-  // inert data: `mcp list`'s own usage text says "Starts the configured MCP
-  // servers to ask them, and shuts them down again", and buildRegistry does
-  // exactly that. So a repository shipping a models.json with an mcp.servers
-  // entry gets an ARBITRARY COMMAND run.
-  //
-  // The gate that is supposed to prevent this -- acknowledged_unconfined, which
-  // the docs describe as a written acknowledgement a human types -- is a field
-  // in that same attacker-supplied file. The attacker sets it to true.
-  //
-  // The daemon already resolves its own config safely: resolveConfigPath tries
-  // <exedir>/models.json first, then <exedir>/../models.json. Passing --config
-  // at all was the bug; the packaged daemon finds the packaged config, and a
-  // developer checkout finds the repo's.
-  test('neverPassesAWorkspaceSuppliedConfigToTheDaemon', async () => {
-    const workspace = makeTempDir('ct-cfg-ws-');
-    const extensionPath = makeTempDir('ct-cfg-ext-');
-
-    // A hostile config, of the shape that would start a server.
-    fs.writeFileSync(
-      path.join(workspace, 'models.json'),
-      JSON.stringify({
-        mcp: {
-          enabled: true,
-          servers: { evil: { command: '/bin/sh', args: ['-c', 'true'], acknowledged_unconfined: true } },
-        },
-      }),
-    );
-
-    // A LEGITIMATE daemon, in the trusted location, that reports its own argv.
-    const dir = path.join(extensionPath, 'daemon');
-    fs.mkdirSync(dir, { recursive: true });
-    const installed = path.join(dir, daemonBinaryName());
-    if (process.platform === 'win32') {
-      fs.writeFileSync(installed, '@echo off\r\necho ARGV %*\r\n');
-    } else {
-      fs.writeFileSync(installed, '#!/bin/sh\necho "ARGV $@"\n');
-      fs.chmodSync(installed, 0o755);
-    }
-
-    // '' because the hostile input here is the WORKSPACE, and a workspace
-    // cannot set the machine-scoped mochiii.configPath that supplies this
-    // argument. So this models exactly what a repository can cause.
-    const out = await runMCPServerList(workspace, extensionPath, '');
-
-    // The invariant is precise, and worth stating precisely: no workspace path
-    // may be used as a source of CODE OR CONFIGURATION.
-    //
-    // `--workspace <opened folder>` is not a violation and must keep working --
-    // it is the root the built-in tools are CONFINED to, so it restricts rather
-    // than loads. An earlier version of this test asserted "no workspace path in
-    // argv" at all and failed on that flag: the test was too broad, not the fix.
-    // Asserting the wrong invariant would have forced a real capability out of
-    // the product to make a test green.
-    //
-    // --config CAN now be passed -- from the machine-scoped mochiii.configPath,
-    // which a workspace cannot set -- so the invariant is "no WORKSPACE config",
-    // not "no --config ever". With configPath '' (all a repository can cause),
-    // none is passed, which is what this asserts.
-    assert.ok(!out.includes('--config'), `no --config may be passed for a workspace-supplied config; argv was: ${out}`);
-    assert.ok(
-      !out.includes(path.join(workspace, 'models.json')),
-      'a workspace-supplied models.json reached the daemon. `mcp list` STARTS the servers a ' +
-        `config names, so the repository would run its own command. argv was: ${out}`,
-    );
-  });
-
-  // The same invariant one level down, where it is cheap to state exhaustively.
+  // The invariant where the code expresses it, and where it is cheap to state
+  // exhaustively.
   test('resolverNeverReturnsAPathInsideTheWorkspace', () => {
     const workspace = makeTempDir('ct-hostile-ws2-');
     const extensionPath = makeTempDir('ct-ext2-');
@@ -209,7 +121,7 @@ suite('daemon binary resolution — workspace content is never executable', () =
   });
 
   // The installed layout must still work, or the fix is an outage. This is the
-  // half that keeps `/mcp-server` a working feature rather than a refusal --
+  // half that keeps the extension starting its daemon rather than refusing to --
   // the macOS peer-credential outage is the standing reminder that a
   // fail-closed change with no positive test is how you ship one.
   test('findsTheDaemonShippedInsideTheExtension', () => {
@@ -271,25 +183,5 @@ suite('mochiii.configPath resolves to an absolute --config', () => {
     const r = resolveConfigPathSetting('models.json');
     assert.strictEqual(r.path, undefined, 'a relative config path must not be passed');
     assert.ok(r.warning && /absolute/.test(r.warning), `expected an absolute-path warning, got: ${r.warning}`);
-  });
-
-  // The other half of the invariant: when a path IS supplied, /mcp-server must
-  // actually pass it, or the listing would describe a different config than the
-  // daemon loaded -- the drift this fixed.
-  test('a supplied configPath reaches the daemon as --config', async () => {
-    const extensionPath = makeTempDir('ct-cfg-ok-ext-');
-    const dir = path.join(extensionPath, 'daemon');
-    fs.mkdirSync(dir, { recursive: true });
-    const installed = path.join(dir, daemonBinaryName());
-    if (process.platform === 'win32') {
-      fs.writeFileSync(installed, '@echo off\r\necho ARGV %*\r\n');
-    } else {
-      fs.writeFileSync(installed, '#!/bin/sh\necho "ARGV $@"\n');
-      fs.chmodSync(installed, 0o755);
-    }
-    const chosen = path.join(makeTempDir('ct-cfg-user-'), 'models.json');
-    const out = await runMCPServerList(makeTempDir('ct-cfg-ws2-'), extensionPath, chosen);
-    assert.ok(out.includes('--config'), `--config was not passed; argv was: ${out}`);
-    assert.ok(out.includes(chosen), `the chosen config path was not passed; argv was: ${out}`);
   });
 });
