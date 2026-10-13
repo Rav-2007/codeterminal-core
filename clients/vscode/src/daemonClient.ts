@@ -302,11 +302,20 @@ export interface HistoryInfo {
   dropped_invalid?: number;
 }
 
+/** TurnError is an Error from a turn, with the daemon's classification when it sent one. */
+export type TurnError = Error & { errorClass?: string; keyReplaceable?: boolean };
+
 export interface TokenResponse {
   protocol_version: number;
   token?: string;
   done: boolean;
   error?: string;
+  // error_class and key_replaceable mirror protocol.TokenResponse: the KIND of
+  // failure ("rate_limited", "auth", "context_too_large", ...) and whether a
+  // new key handed over now would be the one used. The panel offers the next
+  // step from these (Try again, Change key), never from the message's prose.
+  error_class?: string;
+  key_replaceable?: boolean;
   // chat_revision and chat_behind ride the final done message of a turn
   // (protocol.TokenResponse.ChatRevision/ChatBehind): where the shared chat
   // stands now that the turn is saved in it, and whether another client wrote
@@ -1073,7 +1082,9 @@ export async function streamPrompt(
     const tok = obj as TokenResponse;
     if (tok.error) {
       finished = true;
-      handlers.onError?.(new Error(tok.error));
+      handlers.onError?.(
+        Object.assign(new Error(tok.error), { errorClass: tok.error_class, keyReplaceable: tok.key_replaceable === true }) as TurnError,
+      );
       socket.destroy();
       return;
     }

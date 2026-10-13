@@ -1952,6 +1952,17 @@
     div.className = 'turn incomplete-notice';
     const detail = info && info.detail ? info.detail : 'the answer may be incomplete';
     div.textContent = `⚠ answer cut off: ${detail}`;
+    // Continue picks up where it stopped: one click instead of typing "go on".
+    const cont = document.createElement('button');
+    cont.type = 'button';
+    cont.className = 'turn-action';
+    cont.textContent = 'Continue';
+    cont.addEventListener('click', () => {
+      cont.remove();
+      sendText('Continue from where you stopped.');
+    });
+    div.appendChild(document.createTextNode(' '));
+    div.appendChild(cont);
     transcriptEl.appendChild(div);
     transcriptEl.scrollTop = transcriptEl.scrollHeight;
   }
@@ -2805,6 +2816,18 @@
     refreshContextUsage();
 
     inputEl.value = '';
+    beginTurnView();
+    lastPrompt = { text, autoApply: autoApplyEnabled, mode: currentMode };
+    vscode.postMessage({ type: 'prompt', text, autoApply: autoApplyEnabled, mode: currentMode });
+    // Keep focus on the input across a send. Clicking Send moved focus to the
+    // button, so a keyboard or screen-reader user had to navigate back to ask a
+    // follow-up; the natural next action is always another prompt.
+    inputEl.focus();
+  }
+
+  // beginTurnView resets the per-turn strips and opens the reply bubble: what
+  // a send does once the user's message is on screen, and all a retry does.
+  function beginTurnView() {
     setGrounding(null);
     setHistoryInfo(null);
     setRedactions(null);
@@ -2817,11 +2840,74 @@
     currentAssistantBubble = addBubble('assistant', '');
     // Captured once, for this run only -- see currentRunAuto's doc comment.
     currentRunAuto = autoApplyEnabled;
-    vscode.postMessage({ type: 'prompt', text, autoApply: autoApplyEnabled, mode: currentMode });
-    // Keep focus on the input across a send. Clicking Send moved focus to the
-    // button, so a keyboard or screen-reader user had to navigate back to ask a
-    // follow-up; the natural next action is always another prompt.
+  }
+
+  // TRY AGAIN, after a failure the provider says will pass (a rate limit, an
+  // outage). The same prompt, sent as a retry: the user's message is already
+  // on screen, and the host replaces the unanswered copy rather than keeping
+  // two (ChatPanel.onPrompt).
+  /** @type {{ text: string, autoApply: boolean, mode: string } | null} */
+  let lastPrompt = null;
+  function retryLastPrompt() {
+    if (streaming || !lastPrompt) {
+      return;
+    }
+    clearEditProposal();
+    clearToolApproval();
+    toolActivityEls.clear();
+    workBlockEl = null;
+    beginTurnView();
+    vscode.postMessage({ type: 'prompt', text: lastPrompt.text, autoApply: lastPrompt.autoApply, mode: lastPrompt.mode, retry: true });
     inputEl.focus();
+  }
+
+  // sendText puts words in the composer and sends them, as if typed: what the
+  // Continue and Compact buttons do, so they go through the same checks.
+  /** @param {string} text */
+  function sendText(text) {
+    if (streaming) {
+      return;
+    }
+    inputEl.value = text;
+    send();
+  }
+
+  // errorActions puts the one useful next step under a failed turn, chosen by
+  // the daemon's error_class (protocol.TokenResponse.ErrorClass) -- never by
+  // reading the message, which is prose.
+  /**
+   * @param {HTMLElement} body
+   * @param {string} errorClass
+   * @param {boolean} keyReplaceable
+   */
+  function addErrorActions(body, errorClass, keyReplaceable) {
+    /** @type {[string, () => void][]} */
+    const actions = [];
+    if (errorClass === 'rate_limited' || errorClass === 'upstream_unavailable') {
+      actions.push(['Try again', retryLastPrompt]);
+    } else if ((errorClass === 'auth' || errorClass === 'quota_exceeded') && keyReplaceable) {
+      actions.push(['Change key', () => vscode.postMessage({ type: 'connect' })]);
+    } else if (errorClass === 'context_too_large') {
+      actions.push(['Compact the chat', () => sendText('/compact')]);
+    }
+    const card = body.parentElement;
+    if (actions.length === 0 || !card || !lastPrompt) {
+      return;
+    }
+    const row = document.createElement('div');
+    row.className = 'turn-actions';
+    for (const [label, run] of actions) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'turn-action';
+      b.textContent = label;
+      b.addEventListener('click', () => {
+        row.remove();
+        run();
+      });
+      row.appendChild(b);
+    }
+    card.appendChild(row);
   }
 
   // ONE BUTTON, TWO JOBS -- send, or stop what is running.
@@ -3040,8 +3126,8 @@
         currentAssistantCard = null;
         currentAssistantRaw = '';
         clearToolApproval();
-        addBubble('error', msg.message);
         setStreaming(false);
+        addErrorActions(addBubble('error', msg.message), String(msg.errorClass || ''), msg.keyReplaceable === true);
         break;
       case 'incomplete':
         showIncomplete(msg.info);

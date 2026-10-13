@@ -36,6 +36,7 @@ import {
   chatHistory,
   resetChat,
   streamPrompt,
+  TurnError,
   undoEdits,
 } from './daemonClient';
 import { ChatHost, panelHost, viewHost } from './chatHost';
@@ -127,6 +128,9 @@ export class ChatPanel {
   // interface rather than two copies of this class.
   private readonly host: ChatHost;
   private readonly disposables: vscode.Disposable[] = [];
+  // Set while a prompt the webview marked as a retry ("Try again") is being
+  // dispatched; startModelTurn reads it. See the retry note there.
+  private retryingPrompt = false;
   private transcript: Turn[] = [];
   // Ids for attachment chips, so a reply finds the chip it belongs to.
   private attachmentSeq = 0;
@@ -486,6 +490,7 @@ export class ChatPanel {
     tier?: string;
     id?: string;
     on?: boolean;
+    retry?: boolean;
   }): void {
     if (msg.type === 'pickAttachments' && typeof msg.remaining === 'number') {
       void this.onPickAttachments(msg.remaining);
@@ -510,7 +515,9 @@ export class ChatPanel {
     } else if (msg.type === 'focused') {
       void this.catchUp();
     } else if (msg.type === 'prompt' && typeof msg.text === 'string') {
+      this.retryingPrompt = msg.retry === true;
       this.onPrompt(msg.text, msg.autoApply === true, msg.mode);
+      this.retryingPrompt = false;
     } else if (msg.type === 'applyEdit') {
       this.onApplyEdit();
     } else if (msg.type === 'skipEdit') {
@@ -531,6 +538,10 @@ export class ChatPanel {
       this.host.close();
     } else if (msg.type === 'newChat') {
       void this.onNewChat();
+    } else if (msg.type === 'connect') {
+      // "Change key" under a key error, and the Account page. The command
+      // owns the masked prompt, the daemon's check and the restart.
+      void vscode.commands.executeCommand('mochiii.connect');
     }
   }
 
@@ -1068,6 +1079,13 @@ export class ChatPanel {
     // Snapshot BEFORE appending this turn, so the not-yet-answered prompt
     // never ends up in its own History -- same ordering as chat.go's
     // startTurn.
+    // A RETRY REPLACES THE UNANSWERED PROMPT instead of sending it twice: the
+    // failed turn left the user's message in the transcript with no reply,
+    // and the model would otherwise read the same question asked twice.
+    const last = this.transcript[this.transcript.length - 1];
+    if (this.retryingPrompt && last && last.role === 'user' && last.content === displayText) {
+      this.transcript.pop();
+    }
     const history = [...this.transcript];
     this.transcript.push({ role: 'user', content: displayText });
 
@@ -1234,7 +1252,13 @@ export class ChatPanel {
           }
           this.inFlight = undefined;
           this.clearPendingApproval();
-          this.host.webview.postMessage({ type: 'error', message: err.message });
+          const te = err as TurnError;
+          this.host.webview.postMessage({
+            type: 'error',
+            message: err.message,
+            errorClass: te.errorClass ?? '',
+            keyReplaceable: te.keyReplaceable === true,
+          });
         },
       },
       {
@@ -2866,6 +2890,22 @@ export function chatPanelStyles(): string {
   @media (prefers-reduced-motion: reduce) {
     .work-summary::before { transition: none; }
   }
+  /* The one next step under a failed or cut-off turn (main.js addErrorActions,
+     showIncomplete). A quiet outlined button: it is an offer, not an alarm. */
+  .turn-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+  .turn-action {
+    font: inherit;
+    font-size: 12px;
+    font-style: normal;
+    padding: 2px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--ct-border);
+    background: transparent;
+    color: var(--ct-accent);
+    cursor: pointer;
+  }
+  .turn-action:hover { background: var(--ct-accent-soft); }
+  .turn-action:focus-visible { outline: 2px solid var(--ct-accent); outline-offset: 1px; }
   .approval-record {
     margin: 2px 0 8px 38px;
     font-size: 11px;
