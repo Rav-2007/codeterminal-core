@@ -94,7 +94,7 @@ export const SLASH_CATALOG: SlashDef[] = [
     kind: 'local',
     summary: 'show uncommitted changes in the workspace (/diff [--staged])',
   },
-  { name: 'copy', kind: 'local', summary: "copy the last reply to the clipboard" },
+  { name: 'copy', kind: 'local', summary: 'copy the last reply to the clipboard' },
   { name: 'export', kind: 'local', summary: 'save this conversation to a Markdown file' },
   {
     name: 'effort',
@@ -106,11 +106,11 @@ export const SLASH_CATALOG: SlashDef[] = [
     kind: 'local',
     summary: 'show or set the edit mode (/mode auto|manual|plan)',
   },
-  { name: 'cost', kind: 'local', summary: "what the last turn cost, as the provider billed it" },
+  { name: 'cost', kind: 'local', summary: 'what the last turn cost, as the provider billed it' },
   { name: 'usage', kind: 'local', summary: 'tokens and context used by the last turn' },
   { name: 'status', kind: 'local', summary: 'workspace, model, tools, key and daemon in one answer' },
   { name: 'doctor', kind: 'local', summary: 'check the things that commonly stop this working' },
-  { name: 'config', kind: 'local', summary: "open Mochiii's settings" },
+  { name: 'config', kind: 'local', summary: 'open the Mochiii settings page' },
 
   // /team is in the catalog to be FOUND, and parsed elsewhere -- see
   // parseTeamCommand below and the mirror in clients/tui/slash.go. Steered
