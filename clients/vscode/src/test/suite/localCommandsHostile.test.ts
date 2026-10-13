@@ -210,8 +210,7 @@ interface FakeState {
   modeSet: string;
   clipboard: string;
   exported: { text: string; suggestedName: string } | undefined;
-  settingsOpened: boolean;
-  marketplaceSearches: string[];
+  pagesOpened: string[];
 }
 
 function fakeHost(root: string, extensionPath: string): LocalCommandHost & FakeState {
@@ -237,7 +236,6 @@ function fakeHost(root: string, extensionPath: string): LocalCommandHost & FakeS
     modeSet: '',
     clipboard: '',
     exported: undefined as { text: string; suggestedName: string } | undefined,
-    settingsOpened: false,
     replaceTranscript: () => undefined,
     compactChat: async () => 'compacted (stubbed)',
     forgetGrounding: () => undefined,
@@ -292,16 +290,13 @@ function fakeHost(root: string, extensionPath: string): LocalCommandHost & FakeS
       host.exported = { text, suggestedName };
       return path.join(extensionPath, suggestedName);
     },
-    openSettings: async () => {
-      host.settingsOpened = true;
-    },
     hasApiKey: async () => false,
     daemonReachable: async () => false,
-    // Records the search instead of opening an editor tab. The real one runs a
-    // VS Code command; nothing it reaches takes a path or starts a program.
-    marketplaceSearches: [] as string[],
-    openMcpMarketplace: async (search: string) => {
-      host.marketplaceSearches.push(search);
+    // Records the page instead of opening it. The real one posts a message to
+    // the webview; nothing it reaches takes a path or starts a program.
+    pagesOpened: [] as string[],
+    openPage: async (page: string, search?: string) => {
+      host.pagesOpened.push(page + (search ? ':' + search : ''));
       return true;
     },
   };
@@ -428,11 +423,16 @@ suite('local commands against a hostile workspace', () => {
     // /mcp-server was the other such vector, until it stopped running a program
     // (2026-10-13). What it must prove now is that it went to the marketplace,
     // through the host, rather than anywhere that could start a daemon.
+    // /config and /account open pages the same way, and like /mcp-server
+    // answer nothing in the chat.
     assert.deepStrictEqual(
-      host.marketplaceSearches,
-      [''],
-      `/mcp-server did not open the marketplace through the host. reply was: ${replies.get('mcp-server')}`,
+      [...host.pagesOpened].sort(),
+      ['account', 'customize', 'settings'],
+      `/mcp-server, /config and /account did not each open their page through the host: ${JSON.stringify(host.pagesOpened)}`,
     );
+    for (const name of ['mcp-server', 'config', 'account']) {
+      assert.strictEqual(replies.get(name), '', `/${name} answered in the chat instead of opening its page`);
+    }
     assert.ok(
       (replies.get('git') ?? '').includes('##'),
       'git did not produce a status for the hostile repository, so it exited before reading ' +

@@ -42,6 +42,9 @@ import {
 import { ChatHost, panelHost, viewHost } from './chatHost';
 import { ONCE_PER_SESSION, freshDegradations } from './degradedOnce';
 import { activeWorkingFolder } from './workingFolder';
+import { chatPagesMarkup, chatPagesStyles, headerPageButtons } from './chatPages/markup';
+import { ChatPagesHost } from './chatPages/pagesHost';
+import { mcpMarketplaceStyles } from './mcpMarketplace';
 import { editorContextForPrompt } from './editorContext';
 import { SLASH_CATALOG, parseModelCommand, parseSlash, parseTeamCommand, steeredPrompt } from './slashCommands';
 import {
@@ -343,8 +346,20 @@ export class ChatPanel {
     ChatPanel.current = new ChatPanel(panelHost(panel), extensionUri);
   }
 
+  // The Customize, Account and Settings pages (src/chatPages): their requests
+  // arrive on this webview and are answered there, from rules.ts's tables.
+  private readonly pages: ChatPagesHost;
+
   private constructor(host: ChatHost, extensionUri: vscode.Uri) {
     this.host = host;
+    this.pages = new ChatPagesHost({
+      post: (m) => this.postSafe(m),
+      currentTier: () => this.preferredTier,
+      currentModel: () => this.currentModel,
+      selectTier: (tier) => this.onSelectModel(tier),
+      providerNotes: () => [...this.providerNotes.values()],
+    });
+    this.disposables.push(this.pages);
     this.host.webview.html = this.getHtml(extensionUri);
 
     this.host.webview.onDidReceiveMessage((msg) => this.handleMessage(msg), null, this.disposables);
@@ -498,6 +513,9 @@ export class ChatPanel {
     on?: boolean;
     retry?: boolean;
   }): void {
+    if (this.pages.handle(msg as unknown as Record<string, unknown>)) {
+      return;
+    }
     if (msg.type === 'pickAttachments' && typeof msg.remaining === 'number') {
       void this.onPickAttachments(msg.remaining);
     } else if (msg.type === 'listModels') {
@@ -554,8 +572,12 @@ export class ChatPanel {
   // postUiSettings tells the webview how to draw what is not content: today,
   // whether a turn's tool work starts folded (compact) or open (expanded).
   private postUiSettings(): void {
-    const mode = vscode.workspace.getConfiguration('mochiii').get<string>('toolActivity');
-    this.postSafe({ type: 'uiSettings', toolActivity: mode === 'expanded' ? 'expanded' : 'compact' });
+    const cfg = vscode.workspace.getConfiguration('mochiii');
+    this.postSafe({
+      type: 'uiSettings',
+      toolActivity: cfg.get<string>('toolActivity') === 'expanded' ? 'expanded' : 'compact',
+      defaultMode: cfg.get<string>('defaultMode') ?? 'auto',
+    });
   }
 
   // The paperclip. The file dialog is the editor's, and the files are read here
@@ -915,19 +937,22 @@ export class ChatPanel {
         await vscode.workspace.fs.writeFile(uri, Buffer.from(text, 'utf8'));
         return uri.fsPath;
       },
-      openSettings: async () => {
-        await vscode.commands.executeCommand('workbench.action.openSettings', '@ext:MochiiiAIAgent.mochiii-vscode');
-      },
       // THE DAEMON OWNS THE KEY VERDICT, not this panel: needsApiKey is what the
       // daemon said at the last handshake, and it accounts for proxy mode and a
       // loopback api_base where no key is wanted at all (see
       // protocol.HandshakeResponse.NeedsAPIKey).
       hasApiKey: async () => !this.needsApiKey,
       daemonReachable: () => probeDaemon(),
-      // Through the command, so the chat, the MCP Servers view and the palette
-      // open one marketplace by one route (extension.ts), notice included.
-      openMcpMarketplace: async (search: string) =>
-        (await vscode.commands.executeCommand<boolean>('mochiii.mcp.browse', search)) === true,
+      openPage: async (page, search) => {
+        this.postSafe({
+          type: 'page:open',
+          page,
+          tab: page === 'customize' ? 'mcp' : undefined,
+          sub: page === 'customize' ? (search ? 'market' : 'installed') : undefined,
+          search: search || undefined,
+        });
+        return true;
+      },
     };
   }
 
@@ -1780,6 +1805,8 @@ export class ChatPanel {
   private getHtml(extensionUri: vscode.Uri): string {
     const webview = this.host.webview;
     const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'main.js'));
+    const pagesUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'pages.js'));
+    const marketUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'marketplace.js'));
     const logoUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'logo.png'));
     const nonce = getNonce();
 
@@ -1791,10 +1818,14 @@ export class ChatPanel {
 <title>Mochiii Chat</title>
 <style>
 ${chatPanelStyles()}
+${chatPagesStyles()}
+${mcpMarketplaceStyles('.market-root')}
 </style>
 </head>
 <body>
-${chatPanelBodyMarkup(logoUri.toString())}  <script nonce="${nonce}" src="${scriptUri}"></script>
+${chatPanelBodyMarkup(logoUri.toString())}  <script nonce="${nonce}" src="${marketUri}"></script>
+  <script nonce="${nonce}" src="${pagesUri}"></script>
+  <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;
   }
@@ -2980,6 +3011,7 @@ export function chatPanelBodyMarkup(logoUri: string = ''): string {
       <button type="button" id="bookmarkBtn" class="icon-btn" title="Bookmark this chat" aria-label="Bookmark this chat" aria-pressed="false">☆</button>
       <button type="button" id="historyBtn" class="icon-btn" title="History" aria-label="Chat history"
         aria-haspopup="dialog" aria-expanded="false" aria-controls="historyPopup">◷</button>
+      ${headerPageButtons()}
     </div>
     <!-- History, Claude Code style: every chat, newest first, bookmarks pinned
          on top; the search matches what was said, not only titles. -->
@@ -3129,7 +3161,8 @@ export function chatPanelBodyMarkup(logoUri: string = ''): string {
         </button>
       </div>
     </div>
-  </div>`;
+  </div>
+  ${chatPagesMarkup()}`;
 }
 
 // clip shortens s to at most n characters for a label, marking the cut.

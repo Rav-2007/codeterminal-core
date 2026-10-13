@@ -329,9 +329,17 @@ export function registerMcpServers(
   clientName: string,
 ): void {
   const view = vscode.window.createTreeView(MCP_SERVERS_VIEW_ID, { treeDataProvider: provider, showCollapseAll: false });
-  const serverOf = (node?: McpNode): MCPServerInfo | undefined => (node?.kind === 'server' ? node.server : undefined);
+  // A row in this tree passes its node; the chat's Customize page passes the
+  // server's NAME, which is looked up in what the daemon last listed -- so a
+  // name no listed server has does nothing.
+  const serverOf = (node?: McpNode | string): MCPServerInfo | undefined =>
+    typeof node === 'string'
+      ? provider.current.servers.find((s) => s.name === node)
+      : node?.kind === 'server'
+        ? node.server
+        : undefined;
 
-  const toggle = async (node: McpNode | undefined, action: 'enable' | 'disable') => {
+  const toggle = async (node: McpNode | string | undefined, action: 'enable' | 'disable') => {
     const server = serverOf(node);
     if (!server) {
       return;
@@ -364,7 +372,7 @@ export function registerMcpServers(
         await provider.refresh();
       }
     }),
-    vscode.commands.registerCommand('mochiii.mcp.edit', async (node?: McpNode) => {
+    vscode.commands.registerCommand('mochiii.mcp.edit', async (node?: McpNode | string) => {
       const server = serverOf(node);
       if (!server) {
         return;
@@ -375,9 +383,9 @@ export function registerMcpServers(
         await provider.refresh();
       }
     }),
-    vscode.commands.registerCommand('mochiii.mcp.enable', (node?: McpNode) => toggle(node, 'enable')),
-    vscode.commands.registerCommand('mochiii.mcp.disable', (node?: McpNode) => toggle(node, 'disable')),
-    vscode.commands.registerCommand('mochiii.mcp.remove', async (node?: McpNode) => {
+    vscode.commands.registerCommand('mochiii.mcp.enable', (node?: McpNode | string) => toggle(node, 'enable')),
+    vscode.commands.registerCommand('mochiii.mcp.disable', (node?: McpNode | string) => toggle(node, 'disable')),
+    vscode.commands.registerCommand('mochiii.mcp.remove', async (node?: McpNode | string) => {
       const server = serverOf(node);
       if (!server) {
         return;

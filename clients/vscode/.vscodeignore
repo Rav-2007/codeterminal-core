@@ -92,3 +92,5 @@ media/logo.jpg
 # jsconfig.json type-checks media/main.js for scripts/webview-check.js, which
 # reads it from the source tree. Nothing loads it at runtime.
 media/jsconfig.json
+# The webview scripts' shared type declarations, for the same type-check only.
+media/globals.d.ts

@@ -241,6 +241,13 @@ const FeatureMCPAdmin = "mcp_admin"
 // and pausing only when this is present.
 const FeatureMCPManage = "mcp_manage"
 
+// FeatureMCPTools: MCPRequest also takes MCPActionTools, which answers with
+// this daemon's own (built-in) tools and the policy on each, in
+// MCPResponse.Tools, WITHOUT starting any third-party server -- what a
+// settings page can ask every time it opens. A third-party server's tools are
+// known only by starting it, which MCPActionList still does.
+const FeatureMCPTools = "mcp_tools"
+
 // PromptRequest carries a single user prompt. Sent by the client only after
 // a successful handshake. Workspace is optional and additive: when set,
 // it's the client's own absolute path for the workspace it expects
@@ -1788,6 +1795,7 @@ const (
 	MCPActionEnable  = "enable"
 	MCPActionDisable = "disable"
 	MCPActionServers = "servers"
+	MCPActionTools   = "tools"
 )
 
 // MCPServerInfo is one configured third-party server, in terms safe to print.
@@ -1842,6 +1850,23 @@ type MCPResponse struct {
 	Notes  []string `json:"notes,omitempty"`
 
 	Error string `json:"error,omitempty"`
+
+	// Tools answers MCPActionTools: this daemon's own tools, each with the
+	// policy that applies. Additive (FeatureMCPTools).
+	Tools []MCPToolInfo `json:"tools,omitempty"`
+}
+
+// MCPToolInfo is one tool and what it takes to run it, for a client that
+// shows them rather than prints the report.
+type MCPToolInfo struct {
+	// Name is the qualified name the model calls ("builtin__read_file").
+	Name string `json:"name"`
+	Lane string `json:"lane"`
+	// Confined is "yes", "network" or "NO", exactly as the report's column.
+	Confined string `json:"confined"`
+	// Policy is "allow", "ask" or "deny".
+	Policy      string `json:"policy"`
+	Description string `json:"description,omitempty"`
 }
 
 // StatusRetrieval is the retrieval half of a StatusResponse. It reports the

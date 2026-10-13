@@ -262,9 +262,10 @@ var summaryMayDiffer = map[string]string{
 		"YET, so its summary must not advertise them",
 	"mcp-server": "the TUI's asks the RUNNING daemon for its tools and adds, " +
 		"changes or removes the user's own MCP servers in the terminal " +
-		"(2026-10-11); the extension's opens its marketplace in an editor tab " +
-		"(2026-10-13), where servers are added and managed with buttons, so " +
-		"each summary names what its own command does",
+		"(2026-10-11); the extension's opens its Customize page on the MCP " +
+		"servers, with the marketplace beside them (2026-10-13), where they " +
+		"are added and managed with buttons, so each summary names what its " +
+		"own command does",
 	"clear": "the TUI's /clear starts a new chat, on the daemon too (2026-10-11): " +
 		"emptying only the screen left the stored chat behind, and /save wrote " +
 		"it. The extension's still empties only its panel and sends no reset -- " +
@@ -291,10 +292,10 @@ var tuiOnlyCommands = map[string]string{
 // extension had never led on a command: every divergence ran TUI-first, which is
 // why the two maps below are younger than the two above.
 var vscodeOnlyCommands = map[string]string{
-	"config": "it opens VS Code's own settings editor filtered to this extension. " +
-		"The terminal client has no settings UI to open -- its configuration is " +
-		"models.json and the environment, and /mcp-server and /connect already " +
-		"reach the parts a command can change",
+	"config": "it opens the chat's Settings page (Stage 8; VS Code's own settings " +
+		"editor before that). The terminal client has no settings UI to open -- its " +
+		"configuration is models.json and the environment, and /mcp-server and " +
+		"/connect already reach the parts a command can change",
 }
 
 // notYetPortedToTUI is notYetPorted's mirror: commands the terminal client WILL
@@ -345,8 +346,6 @@ var notYetPorted = map[string]string{
 	"hunt": "long tasks are terminal-first (owner, 2026-09-30); VS Code gets them when it is ported",
 	"provider": "the provider list is the terminal client's setup screen (2026-10-11), opened by its own " +
 		"name since 2026-10-12; the extension has no such screen yet, and its /connect takes a key only",
-	"account": "the terminal client's account screen (owner, 2026-10-12) is drawn in that same box; the " +
-		"extension gets one when the setup screen is ported",
 }
 
 // longTaskAheadOfVSCode are commands both clients have, which the TUI now runs

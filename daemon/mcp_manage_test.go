@@ -312,3 +312,64 @@ func TestTheHandshakeSaysServersCanBeManaged(t *testing.T) {
 		t.Errorf("features %q do not include %q", s.features(), protocol.FeatureMCPManage)
 	}
 }
+
+// THE TOOLS ACTION REPORTS THE BUILT-INS AND STARTS NOTHING (Stage 8). The
+// Customize page asks it every time it opens, so it must be as harmless as
+// the servers action: the same empty-run-directory proof, with list as the
+// control that shows the proof would see a start.
+//
+// Neuter check: answer MCPActionTools with s.mcpList(ctx).
+func TestTheToolsActionListsBuiltinsWithoutStartingAnything(t *testing.T) {
+	s := mcpAdminTestServer(t)
+	s.cfg.MCP.Builtin.Disabled = false // the admin test server turns the built-ins off; these are what is reported
+	if err := saveUserMCPServers(s.userServersPath, map[string]MCPServerConfig{"echo": plainUserServer(buildEchoServer(t))}); err != nil {
+		t.Fatal(err)
+	}
+	started := func() int {
+		entries, err := os.ReadDir(s.mcpRunDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(entries)
+	}
+
+	resp := s.mcpResult(context.Background(), manageRequest(protocol.MCPActionTools, ""))
+	if !resp.Ok || resp.Error != "" {
+		t.Fatalf("tools: ok=%v err=%q", resp.Ok, resp.Error)
+	}
+	if n := started(); n != 0 {
+		t.Fatalf("the tools action started %d server(s)", n)
+	}
+	var readFile *protocol.MCPToolInfo
+	for i := range resp.Tools {
+		if strings.HasPrefix(resp.Tools[i].Name, "echo__") {
+			t.Errorf("a third-party tool was reported, which means its server was asked: %+v", resp.Tools[i])
+		}
+		if resp.Tools[i].Name == "builtin__read_file" {
+			readFile = &resp.Tools[i]
+		}
+	}
+	if readFile == nil {
+		t.Fatalf("builtin__read_file is not among the tools: %+v", resp.Tools)
+	}
+	if readFile.Lane == "" || readFile.Confined == "" || readFile.Policy == "" {
+		t.Errorf("a tool row is missing its lane, confinement or policy: %+v", *readFile)
+	}
+	if len(resp.Servers) != 1 || resp.Servers[0].Name != "echo" {
+		t.Errorf("the configured servers should still be named: %+v", resp.Servers)
+	}
+
+	if list := s.mcpResult(context.Background(), protocol.MCPRequest{MCP: true}); !list.Ok {
+		t.Fatalf("list: %s", list.Error)
+	}
+	if started() == 0 {
+		t.Fatal("list started nothing either, so this test cannot tell a start from none")
+	}
+}
+
+func TestTheHandshakeSaysToolsCanBeListed(t *testing.T) {
+	s := mcpAdminTestServer(t)
+	if !slices.Contains(s.features(), protocol.FeatureMCPTools) {
+		t.Errorf("features %q do not include %q", s.features(), protocol.FeatureMCPTools)
+	}
+}

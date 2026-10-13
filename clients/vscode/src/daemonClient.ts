@@ -131,6 +131,10 @@ export interface ConnectRequest {
   no_verify?: boolean;
   show?: boolean;
   forget?: boolean;
+  // choose_model / clear_model mirror protocol.ConnectRequest: make a tier
+  // the daemon's own default, saved beside the key in force when there is one.
+  choose_model?: string;
+  clear_model?: boolean;
 }
 
 /** protocol.ConnectResponse. masked_key is the only form of the key that comes back. */
@@ -149,7 +153,34 @@ export interface ConnectResponse {
   candidates?: string[];
   notes?: string[];
   error?: string;
+  // The key and address IN FORCE (protocol.ConnectInForce), which a show
+  // answers with: not always the stored ones -- a key in the daemon's
+  // environment, or one VS Code handed over, outranks a stored key.
+  active_api_base?: string;
+  key_source?: 'stored' | 'environment' | 'launcher' | 'proxy' | 'none' | string;
+  active_masked_key?: string;
+  model_slug?: string;
+  model_saved?: boolean;
 }
+
+/** protocol.SpendMeter: one limit, what has been spent and what may be. */
+export interface SpendMeter {
+  tokens: number;
+  limit_tokens?: number;
+  usd?: number;
+  limit_usd?: number;
+}
+
+/** protocol.SpendStatus, the answer to a budget_action "status". */
+export interface SpendStatus {
+  session: SpendMeter;
+  day: SpendMeter;
+  notice?: string;
+  reached?: boolean;
+}
+
+/** The spend limits feature (protocol.FeatureSpendLimits). */
+export const FEATURE_SPEND_LIMITS = 'spend_limits';
 
 export interface PromptRequest {
   protocol_version: number;
@@ -1641,7 +1672,7 @@ export const FEATURE_MCP_ADMIN = 'mcp_admin';
 export const FEATURE_MCP_MANAGE = 'mcp_manage';
 
 /** servers lists the configured servers WITHOUT starting any; list starts them all to ask for their tools. */
-export type MCPAction = 'list' | 'servers' | 'add' | 'update' | 'remove' | 'enable' | 'disable';
+export type MCPAction = 'list' | 'servers' | 'tools' | 'add' | 'update' | 'remove' | 'enable' | 'disable';
 
 /** protocol.MCPRequest. */
 export interface MCPRequest {
@@ -1670,7 +1701,23 @@ export interface MCPResponse {
   detail?: string;
   notes?: string[];
   error?: string;
+  /** tools answers the 'tools' action: this daemon's own tools (FEATURE_MCP_TOOLS). */
+  tools?: MCPToolInfo[];
 }
+
+/** protocol.MCPToolInfo: one tool and what it takes to run it. */
+export interface MCPToolInfo {
+  name: string;
+  lane: string;
+  /** 'yes', 'network' or 'NO', as the report's column. */
+  confined: string;
+  /** 'allow', 'ask' or 'deny'. */
+  policy: string;
+  description?: string;
+}
+
+/** The daemon lists its own tools without starting servers (protocol.FeatureMCPTools). */
+export const FEATURE_MCP_TOOLS = 'mcp_tools';
 
 // sendMCP asks the RUNNING daemon about its MCP servers, or changes the ones the
 // user added -- the same request the terminal's /mcp-server sends. Only the
@@ -1713,6 +1760,55 @@ export async function sendMCP(
     });
     const wire: MCPRequest = { protocol_version: PROTOCOL_VERSION, mcp: true, ...req };
     writeLine(socket, wire);
+  });
+}
+
+// daemonInfo is what the handshake says about the daemon itself, for the
+// Account and Settings pages: its version, and the features it understands.
+export async function daemonInfo(clientName: string): Promise<{ version: string; features: string[] }> {
+  const { socket, handshake } = await connectToDaemon(clientName);
+  socket.destroy();
+  return { version: handshake.daemon_version ?? '', features: handshake.features ?? [] };
+}
+
+// spendStatus asks for the spend limits (PromptRequest.budget_action
+// "status"); it calls no model. undefined when the daemon has no limits to
+// report (it predates them, or spend tracking is off).
+export async function spendStatus(clientName: string): Promise<SpendStatus | undefined> {
+  const { socket, handshake } = await connectToDaemon(clientName);
+  if (!(handshake.features ?? []).includes(FEATURE_SPEND_LIMITS)) {
+    socket.destroy();
+    return undefined;
+  }
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const decoder = new LineDecoder((obj) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      socket.destroy();
+      const tok = obj as TokenResponse & { spend?: SpendStatus };
+      if (tok.error) {
+        reject(new Error(tok.error));
+        return;
+      }
+      resolve(tok.spend);
+    });
+    socket.on('data', (chunk: Buffer) => decoder.feed(chunk));
+    socket.once('error', (err) => {
+      if (!settled) {
+        settled = true;
+        reject(err);
+      }
+    });
+    socket.once('close', () => {
+      if (!settled) {
+        settled = true;
+        reject(new Error('daemon closed before answering the spend request'));
+      }
+    });
+    writeLine(socket, { protocol_version: PROTOCOL_VERSION, prompt: '', budget_action: 'status' });
   });
 }
 

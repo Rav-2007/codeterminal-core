@@ -101,6 +101,21 @@
           "default": "compact",
           "description": "How the chat shows the tools the agent used in a turn."
         },
+        "mochiii.defaultMode": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "manual",
+            "plan"
+          ],
+          "enumDescriptions": [
+            "Edits apply as they arrive, each still gated and undoable.",
+            "Every edit waits for your Apply.",
+            "Reads your code and writes a plan; proposes no edits."
+          ],
+          "default": "auto",
+          "description": "The mode a new Mochiii chat starts in. Change a chat's mode from the button beside the model."
+        },
         "mochiii.history.autoSave": {
           "type": "boolean",
           "default": true,

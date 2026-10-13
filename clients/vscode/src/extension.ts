@@ -23,6 +23,7 @@ import { useSpecStore } from './specWorkflow';
 import { McpServersProvider, registerMcpServers } from './mcpServersView';
 import { McpMarketplace, handleMarketplaceUri } from './mcpMarketplace';
 import { WORKING_FOLDER_KEY, chooseWorkingFolder, setActiveWorkingFolder } from './workingFolder';
+import { setPagesContext } from './chatPages/pagesHost';
 
 let supervisor: DaemonSupervisor | undefined;
 let output: vscode.OutputChannel | undefined;
@@ -216,6 +217,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // says NO_WORKSPACE rather than asking a daemon this window never started.
   const mcpServers = new McpServersProvider(CLIENT_NAME, root ? undefined : NO_WORKSPACE);
   registerMcpServers(context, mcpServers, CLIENT_NAME);
+  // The chat's pages (Customize, Account, Settings) reach the same MCP state
+  // the tree view shows.
+  setPagesContext({
+    clientName: CLIENT_NAME,
+    extensionVersion: String(context.extension.packageJSON?.version ?? ''),
+    extension: context,
+    mcpServers,
+  });
   context.subscriptions.push(
     // The chat's /mcp-server passes the words after it, which only fill the
     // search box; the palette and the view pass nothing. Resolves whether the

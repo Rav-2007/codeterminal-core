@@ -39,8 +39,6 @@
   const specChipEl = document.getElementById('specChip');
   const newChatBtn = document.getElementById('newChatBtn');
   const historyBtn = document.getElementById('historyBtn');
-  const settingsBtn = document.getElementById('settingsBtn');
-  const closeBtn = document.getElementById('closeBtn');
   const attachBtn = document.getElementById('attachBtn');
   const attachListEl = document.getElementById('attachList');
   const composerShellEl = document.getElementById('composerShell');
@@ -361,6 +359,10 @@
     }
   });
   document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && pages && pages.isOpen()) {
+      pages.close();
+      return;
+    }
     if (e.key === 'Escape') {
       setContextPopupOpen(false);
       if (typeof setModesPopupOpen === 'function') setModesPopupOpen(false);
@@ -715,6 +717,15 @@
   function sendEffort() {
     vscode.postMessage({ type: 'setEffort', effort: EFFORTS[effortIndex] });
   }
+  // setEffortLevel is the Settings page's way in: the same state the pill
+  // cycles through, saved and sent the same way.
+  /** @param {string} level */
+  function setEffortLevel(level) {
+    effortIndex = Math.max(0, EFFORTS.indexOf(level));
+    renderEffort();
+    saveState({ effort: EFFORTS[effortIndex] });
+    sendEffort();
+  }
   if (effortBtn) {
     effortBtn.addEventListener('click', () => {
       effortIndex = (effortIndex + 1) % EFFORTS.length;
@@ -985,18 +996,6 @@
   if (noticesChip) {
     noticesChip.addEventListener('click', () => {
       setNoticesOpen(!!noticesEl && noticesEl.classList.contains('collapsed'));
-    });
-  }
-  if (settingsBtn) {
-    settingsBtn.addEventListener('click', () => {
-      inputEl.value = '/model ';
-      inputEl.focus();
-      updateSlashFromInput();
-    });
-  }
-  if (closeBtn) {
-    closeBtn.addEventListener('click', () => {
-      vscode.postMessage({ type: 'closePanel' });
     });
   }
   function queueCommand(text) {
@@ -2462,6 +2461,7 @@
   const WORK_GLYPHS = { run: '\u25cc', ok: '\u2713', fail: '\u2715', denied: '\u2298', step: '\u203a' };
   // compact: a block starts folded; expanded: it starts open (mochiii.toolActivity).
   let toolActivityMode = 'compact';
+  let defaultModeApplied = false;
   /** @type {HTMLDetailsElement | null} */
   let workBlockEl = null;
 
@@ -2773,6 +2773,11 @@
     if ((!typed && pendingAttachments.length === 0) || streaming) {
       return;
     }
+    if (pendingAttachments.length === 0 && openScreenFor(typed)) {
+      inputEl.value = '';
+      hideSlashMenu();
+      return;
+    }
     setNoticesOpen(false);
     if (pendingAttachments.some((f) => f.pending)) {
       addBubble('error', 'Still reading ' + pendingAttachments.filter((f) => f.pending).map((f) => f.name).join(', ') + ' \u2014 send again in a moment.');
@@ -2823,6 +2828,37 @@
     // button, so a keyboard or screen-reader user had to navigate back to ask a
     // follow-up; the natural next action is always another prompt.
     inputEl.focus();
+  }
+
+  // SCREEN COMMANDS open a page or a menu instead of answering in the chat:
+  // /mcp and /mcp-server the MCP servers (words after them search the
+  // marketplace), /account and /config their pages, /model with nothing after
+  // it the model menu. Printing a list into the transcript for these is what
+  // the first Stage 7 walkthrough objected to -- the answer to "show me my
+  // servers" is the servers, not a table about them.
+  /** @param {string} typed */
+  function openScreenFor(typed) {
+    const m = /^\/(mcp|mcp-server|account|config|model)(?:\s+([\s\S]*))?$/.exec(typed);
+    if (!m) {
+      return false;
+    }
+    const arg = (m[2] || '').trim();
+    if (m[1] === 'model') {
+      if (arg !== '' || !modelChipEl) {
+        return false; // "/model <name>" selects, and says so
+      }
+      modelChipEl.click();
+      return true;
+    }
+    if (!pages) {
+      return false;
+    }
+    if (m[1] === 'mcp' || m[1] === 'mcp-server') {
+      pages.open('customize', { tab: 'mcp', sub: arg ? 'market' : 'installed', search: arg || undefined });
+    } else {
+      pages.open(m[1] === 'account' ? 'account' : 'settings');
+    }
+    return true;
   }
 
   // beginTurnView resets the per-turn strips and opens the reply bubble: what
@@ -3003,8 +3039,37 @@
   // on. The extension asks the daemon and appends whatever it gained.
   window.addEventListener('focus', () => vscode.postMessage({ type: 'focused' }));
 
+  // THE PAGES (media/pages.js, Stage 8): Customize, Account and Settings,
+  // opened from the header. They are given what they may do here as hooks,
+  // and see only their own messages (handle returns false for the rest).
+  const pages = window.MochiiiPages
+    ? window.MochiiiPages.init(vscode, {
+        openModelMenu: () => {
+          if (modelChipEl) modelChipEl.click();
+        },
+        sendText: (/** @type {string} */ t) => sendText(t),
+        prefill: (/** @type {string} */ t) => {
+          inputEl.value = t;
+          inputEl.focus();
+          updateSlashFromInput();
+        },
+        focusComposer: () => inputEl.focus(),
+        setEffort: (/** @type {string} */ e) => setEffortLevel(e),
+        getEffort: () => EFFORTS[effortIndex],
+        closePopups: () => {
+          setHistoryOpen(false);
+          setModelPopupOpen(false);
+          setModesPopupOpen(false);
+          setContextPopupOpen(false);
+        },
+      })
+    : null;
+
   window.addEventListener('message', (event) => {
     const msg = event.data;
+    if (pages && pages.handle(msg)) {
+      return;
+    }
     switch (msg.type) {
       case 'history':
         for (const turn of msg.turns) {
@@ -3137,6 +3202,14 @@
         break;
       case 'uiSettings':
         toolActivityMode = msg.toolActivity === 'expanded' ? 'expanded' : 'compact';
+        // The mode a new chat starts in (mochiii.defaultMode), applied once,
+        // when the panel opens: changing the setting later does not switch a
+        // chat that is already going.
+        if (!defaultModeApplied && (msg.defaultMode === 'auto' || msg.defaultMode === 'manual' || msg.defaultMode === 'plan')) {
+          defaultModeApplied = true;
+          currentMode = msg.defaultMode;
+          renderMode();
+        }
         break;
       case 'toolApproval':
         showToolApproval(msg.request);
