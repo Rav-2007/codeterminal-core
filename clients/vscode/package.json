@@ -90,7 +90,10 @@
         },
         "mochiii.toolActivity": {
           "type": "string",
-          "enum": ["compact", "expanded"],
+          "enum": [
+            "compact",
+            "expanded"
+          ],
           "enumDescriptions": [
             "Each turn's tool work is one folded line: what was used, and how many failed. Click it to see each step.",
             "Each turn's tool work starts open, one row per step."
@@ -184,6 +187,12 @@
         "title": "Remove MCP Server",
         "category": "Mochiii",
         "icon": "$(trash)"
+      },
+      {
+        "command": "mochiii.chooseWorkingFolder",
+        "title": "Choose Working Folder",
+        "category": "Mochiii",
+        "icon": "$(folder)"
       }
     ],
     "viewsContainers": {

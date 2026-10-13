@@ -22,6 +22,7 @@ import {
 import { useSpecStore } from './specWorkflow';
 import { McpServersProvider, registerMcpServers } from './mcpServersView';
 import { McpMarketplace, handleMarketplaceUri } from './mcpMarketplace';
+import { WORKING_FOLDER_KEY, chooseWorkingFolder, setActiveWorkingFolder } from './workingFolder';
 
 let supervisor: DaemonSupervisor | undefined;
 let output: vscode.OutputChannel | undefined;
@@ -67,7 +68,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // home directory into the retrieval index, and index content becomes prompt
   // context. It also wrote .mochiii/logs/ there, outside any project.
   // setWorkspaceRoot refuses a relative path for the same reason.
-  const workspacePath = workspaceFolders && workspaceFolders.length > 0 ? workspaceFolders[0].uri.fsPath : '';
+  //
+  // ONE folder, chosen among the open ones (workingFolder.ts): the first, or
+  // the one picked with "Mochiii: Choose Working Folder".
+  const folderChoices = (workspaceFolders ?? []).map((f) => ({ name: f.name, fsPath: f.uri.fsPath }));
+  const working = chooseWorkingFolder(folderChoices, context.workspaceState.get<string>(WORKING_FOLDER_KEY));
+  const workspacePath = working.fsPath;
+  setActiveWorkingFolder(workspacePath);
+  if (working.warning) {
+    void vscode.window.showWarningMessage(working.warning);
+  }
 
   // BEFORE anything connects, including the supervisor's first probe. The
   // daemon publishes its lockfile under a name derived from this workspace, so
@@ -332,6 +342,58 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   );
 
   context.subscriptions.push(
+    // Which open folder the daemon works in. Saved per workspace and applied
+    // by reloading the window: the daemon, its index, its lockfile and the
+    // log path are all keyed on the one folder chosen at activation.
+    vscode.commands.registerCommand('mochiii.chooseWorkingFolder', async () => {
+      const folders = vscode.workspace.workspaceFolders ?? [];
+      if (folders.length === 0) {
+        vscode.window.showInformationMessage(NO_WORKSPACE);
+        return;
+      }
+      if (folders.length === 1) {
+        vscode.window.showInformationMessage(`Mochiii works in ${folders[0].name}, the only folder open in this window.`);
+        return;
+      }
+      const pick = await vscode.window.showQuickPick(
+        folders.map((f) => ({
+          label: f.name,
+          description: f.uri.fsPath === workspacePath ? 'current' : '',
+          detail: f.uri.fsPath,
+          fsPath: f.uri.fsPath,
+        })),
+        { title: 'Mochiii: Choose Working Folder', placeHolder: 'The folder Mochiii reads, searches and edits' },
+      );
+      if (!pick || pick.fsPath === workspacePath) {
+        return;
+      }
+      await context.workspaceState.update(WORKING_FOLDER_KEY, pick.fsPath);
+      const reload = 'Reload Window';
+      const answer = await vscode.window.showInformationMessage(
+        `Mochiii will work in ${pick.label} after the window reloads.`,
+        reload,
+      );
+      if (answer === reload) {
+        await vscode.commands.executeCommand('workbench.action.reloadWindow');
+      }
+    }),
+    // A folder added to the window is not one Mochiii can reach until it is
+    // chosen: say so when it happens, instead of letting a tool fail on it.
+    vscode.workspace.onDidChangeWorkspaceFolders((e) => {
+      const folders = vscode.workspace.workspaceFolders ?? [];
+      if (e.added.length === 0 || folders.length < 2 || !workspacePath) {
+        return;
+      }
+      const current = folders.find((f) => f.uri.fsPath === workspacePath)?.name ?? workspacePath;
+      const choose = 'Choose Folder';
+      void vscode.window
+        .showInformationMessage(`Mochiii works in one folder: ${current}. ${e.added.map((f) => f.name).join(', ')} is not part of it.`, choose)
+        .then((a) => {
+          if (a === choose) {
+            void vscode.commands.executeCommand('mochiii.chooseWorkingFolder');
+          }
+        });
+    }),
     vscode.commands.registerCommand('mochiii.restartDaemon', async () => {
       if (!supervisor) {
         vscode.window.showInformationMessage(NO_WORKSPACE);

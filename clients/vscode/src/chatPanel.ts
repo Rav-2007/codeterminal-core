@@ -40,6 +40,8 @@ import {
   undoEdits,
 } from './daemonClient';
 import { ChatHost, panelHost, viewHost } from './chatHost';
+import { ONCE_PER_SESSION, freshDegradations } from './degradedOnce';
+import { activeWorkingFolder } from './workingFolder';
 import { editorContextForPrompt } from './editorContext';
 import { SLASH_CATALOG, parseModelCommand, parseSlash, parseTeamCommand, steeredPrompt } from './slashCommands';
 import {
@@ -131,6 +133,10 @@ export class ChatPanel {
   // Set while a prompt the webview marked as a retry ("Try again") is being
   // dispatched; startModelTurn reads it. See the retry note there.
   private retryingPrompt = false;
+  // Provider-level notices (degradedOnce.ts): shown in the strip the first
+  // time, then kept here for the Account page's Privacy section.
+  private readonly seenProviderNotes = new Set<string>();
+  readonly providerNotes = new Map<string, string>();
   private transcript: Turn[] = [];
   // Ids for attachment chips, so a reply finds the chip it belongs to.
   private attachmentSeq = 0;
@@ -571,7 +577,7 @@ export class ChatPanel {
     const uris = await vscode.window.showOpenDialog({
       canSelectMany: true,
       openLabel: 'Attach',
-      defaultUri: vscode.workspace.workspaceFolders?.[0]?.uri,
+      defaultUri: workspacePath() ? vscode.Uri.file(workspacePath()) : undefined,
       filters: {
         'Documents, images, text and code': [
           'pdf', 'docx', 'xlsx', 'xlsm', 'pptx', 'png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp',
@@ -1144,7 +1150,15 @@ export class ChatPanel {
           this.host.webview.postMessage({ type: 'reasoning', text });
         },
         onDegraded: (items: Degradation[]) => {
-          this.host.webview.postMessage({ type: 'degraded', items });
+          for (const d of items) {
+            if (ONCE_PER_SESSION.has(d.component)) {
+              this.providerNotes.set(d.component, d.detail);
+            }
+          }
+          const fresh = freshDegradations(items, this.seenProviderNotes);
+          if (fresh.length > 0) {
+            this.host.webview.postMessage({ type: 'degraded', items: fresh });
+          }
         },
         onProvider: (provider: string) => {
           this.host.webview.postMessage({ type: 'provider', provider });
@@ -1786,11 +1800,12 @@ ${chatPanelBodyMarkup(logoUri.toString())}  <script nonce="${nonce}" src="${scri
   }
 }
 
-// workspacePath sends the first open VS Code workspace folder as
-// PromptRequest.Workspace -- purely advisory (see protocol.go), lets the
-// daemon report a mismatch if this doesn't match its own --workspace.
+// workspacePath is the folder this window's daemon works in (workingFolder.ts),
+// sent as PromptRequest.Workspace -- purely advisory (see protocol.go), lets
+// the daemon report a mismatch if this doesn't match its own --workspace.
+// Falls back to the first folder only before activation has chosen one.
 function workspacePath(): string {
-  return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
+  return activeWorkingFolder() || (vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '');
 }
 
 function getNonce(): string {
