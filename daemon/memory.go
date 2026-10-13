@@ -50,19 +50,33 @@ type MemoryStore struct {
 }
 
 // StateDir returns the per-user directory conversation memory is persisted
-// under: $XDG_STATE_HOME/mochiii if set, else ~/.local/state/mochiii. This
-// is deliberately separate from any workspace directory -- conversation
-// history must never be something a workspace's own repo could accidentally
-// commit.
+// under: $XDG_STATE_HOME/mochiii on Unix, %LOCALAPPDATA%\mochiii on Windows.
+// Each platform's state root, and its fallback when the variable is unset,
+// lives in statedir_unix.go and statedir_windows.go. The directory is
+// deliberately separate from any workspace directory -- conversation history
+// must never be something a workspace's own repo could accidentally commit.
+//
+// PLATFORM-SPLIT, AND IT WAS NOT UNTIL 2026-10-11, when a real Windows run
+// logged this from setupMemoryStore below:
+//
+//	conversation memory: C:\Users\shaik\.local\state\mochiii\memory.db
+//
+// An XDG path on Windows. XDG_STATE_HOME is never set there, so the fallback
+// WAS the behaviour on that platform -- every Windows user's transcript went to
+// a literal ".local\state" folder in their profile root. Windows keeps no state
+// there, so nothing that manages state knew about it: not the user looking for
+// their history, not a reset, not a backup policy, not an uninstall.
+//
+// Split by build tag rather than by a runtime.GOOS branch, following
+// protocol/runtimedir_unix.go and protocol/runtimedir_windows.go. A runtime
+// branch is dead code on whichever platform runs the tests, and the untested
+// half is exactly the half that shipped wrong here.
 func StateDir() (string, error) {
-	if d := os.Getenv("XDG_STATE_HOME"); d != "" {
-		return filepath.Join(d, "mochiii"), nil
-	}
-	home, err := os.UserHomeDir()
+	base, err := stateHome()
 	if err != nil {
-		return "", fmt.Errorf("resolving home directory: %w", err)
+		return "", err
 	}
-	return filepath.Join(home, ".local", "state", "mochiii"), nil
+	return filepath.Join(base, "mochiii"), nil
 }
 
 // DefaultMemoryDBPath returns the conventional location for the

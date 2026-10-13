@@ -709,6 +709,18 @@ jobs:
         run: npm run check:webview
         working-directory: clients/vscode
 
+      # THEME LITERALS, which nothing checked and which produced the "it is too
+      # bright" report on 0.1.1. chatPanelStyles() was mostly theme-driven all
+      # along -- that is exactly why the handful of absolute colours in it were
+      # invisible to review: a near-white code-block gutter, a light-pink
+      # "unused" segment that made a nearly-empty context meter look full, a
+      # white row hover, and a dim brown border on the tool-approval dialog.
+      # Plain node, like the two checks either side, so it runs before the
+      # expensive host boot.
+      - name: Theme-literal static analysis
+        run: npm run check:theme
+        working-directory: clients/vscode
+
       # The install path, which nothing checked. The EDH suite below covers the
       # daemon seam but needs a display, and the two halves of the first-run
       # defect that live in TypeScript and JSON had no instrument at all: a

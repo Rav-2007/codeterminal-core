@@ -5,7 +5,7 @@ import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs';
 
-import { CHAT_VIEW_TYPE, CLIENT_NAME, ChatPanel, DiffContentProvider } from './chatPanel';
+import { CHAT_VIEW_ID, CHAT_VIEW_TYPE, CLIENT_NAME, ChatPanel, DiffContentProvider } from './chatPanel';
 import { bundledDaemonDir, daemonBinaryName, resolveConfigPathSetting } from './daemonBinary';
 import { ConnectResponse, probeDaemon, resolvedWorkspaceRoot, sendConnect, setWorkspaceRoot } from './daemonClient';
 import { ensureModelAvailable } from './modelSetup';
@@ -198,8 +198,75 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     'Mochiii grounds its answers in an open folder, and this window has none. ' +
     'Open a folder or workspace, then try again.';
 
+  // THE SIDEBAR VIEW: the chat's home as of 0.2.0.
+  //
+  // 0.1.1 had no `views` and no `viewsContainers` in package.json at all, so
+  // there was no activity-bar icon and no sidebar presence -- the only way in
+  // was a command that took over an editor column. Claude Code and Cline both
+  // register a WebviewViewProvider in their own container, and the difference is
+  // most of why this extension felt like a document that had opened itself
+  // rather than part of the editor.
+  //
+  // retainContextWhenHidden for the same reason the panel keeps it: this view
+  // can be in the middle of a tool approval the daemon is HOLDING OPEN, an
+  // answer still streaming, or an edit review one block in. Collapsing the
+  // sidebar must not drop any of those.
   context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider(
+      CHAT_VIEW_ID,
+      {
+        resolveWebviewView: (view: vscode.WebviewView) => {
+          if (!root) {
+            // No folder means no daemon to ground against. Say so IN the view:
+            // a notification is dismissed and forgotten, and an empty panel with
+            // no explanation is how 0.1.1 greeted people.
+            view.webview.options = { enableScripts: false };
+            view.webview.html = noWorkspaceHtml(NO_WORKSPACE);
+            return;
+          }
+          ChatPanel.resolveSidebarView(view, context.extensionUri);
+
+          // THE SIDEBAR TAKES THE CHAT BACK when the user returns to it.
+          //
+          // "Open Chat in Editor" moves the chat to a tab, which leaves this
+          // view holding a webview nothing posts to any more. VS Code does not
+          // re-resolve an already-resolved view, so without this the sidebar
+          // would sit there frozen -- showing a transcript that had stopped
+          // updating, with a composer whose Send went nowhere.
+          //
+          // Registered on the extension's subscriptions rather than the chat's,
+          // deliberately: the ChatPanel this listener has to outlive is exactly
+          // the one that gets disposed when the tab takes over.
+          view.onDidChangeVisibility(
+            () => {
+              if (view.visible && !ChatPanel.hostsWebview(view.webview)) {
+                ChatPanel.resolveSidebarView(view, context.extensionUri);
+              }
+            },
+            null,
+            context.subscriptions
+          );
+        },
+      },
+      { webviewOptions: { retainContextWhenHidden: true } }
+    )
+  );
+
+  context.subscriptions.push(
+    // mochiii.openChat now FOCUSES THE SIDEBAR rather than opening a tab, so the
+    // command palette entry and the activity-bar icon lead to the same place.
+    // The editor-tab route kept its own command below.
     vscode.commands.registerCommand('mochiii.openChat', () => {
+      if (!root) {
+        vscode.window.showInformationMessage(NO_WORKSPACE);
+        return;
+      }
+      void vscode.commands.executeCommand(`${CHAT_VIEW_ID}.focus`);
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('mochiii.openChatInEditor', () => {
       if (!root) {
         vscode.window.showInformationMessage(NO_WORKSPACE);
         return;
@@ -656,4 +723,45 @@ export function deactivate(): Thenable<void> {
   supervisor = undefined;
   // Stops the OCR worker thread if an image was ever read; a no-op otherwise.
   return shutdownExtractors();
+}
+
+// noWorkspaceHtml is what the sidebar view shows in a window with no folder
+// open.
+//
+// IN THE VIEW, NOT A NOTIFICATION. A toast is dismissed and gone, and the view
+// it was explaining is still sitting there blank -- which is how 0.1.1 greeted
+// anyone whose first click was the chat icon. The view is the thing the user is
+// looking at, so the reason goes in it.
+//
+// SCRIPTS OFF, and the CSP says so: this page has no behaviour and nothing to
+// post, so it should not be able to. The theme variables still apply -- a
+// stylesheet needs no script -- so it looks like part of the editor rather than
+// a white rectangle in a dark window.
+function noWorkspaceHtml(message: string): string {
+  const escaped = message.replace(/[&<>"']/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] as string
+  );
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline';">
+<style>
+  body {
+    margin: 0;
+    padding: 24px 16px;
+    font-family: var(--vscode-font-family);
+    font-size: var(--vscode-font-size);
+    color: var(--vscode-foreground);
+    background: var(--vscode-sideBar-background, var(--vscode-editor-background));
+  }
+  h2 { font-size: 13px; font-weight: 600; margin: 0 0 8px; }
+  p { margin: 0; line-height: 1.5; color: var(--vscode-descriptionForeground); }
+</style>
+</head>
+<body>
+  <h2>No folder open</h2>
+  <p>${escaped}</p>
+</body>
+</html>`;
 }

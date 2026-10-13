@@ -319,21 +319,40 @@ func TestPolicySurfaceIsReported(t *testing.T) {
 	}
 }
 
-// A config that predates this feature must load byte-for-byte unchanged in
-// behaviour. This is the repo's own models.json, which is the config that
-// actually ships.
-func TestShippedConfigStillLoadsWithAgentModeOff(t *testing.T) {
+// THE SHIPPED CONFIG TURNS AGENT MODE ON, and this test used to assert the
+// exact opposite. The reversal is deliberate and is recorded here rather than
+// in a commit message nobody will read next to this line.
+//
+// WHAT IT SAID BEFORE, and why that was right then. When MCP landed, this read
+// "it has no mcp section and must stay off", under the heading "a config that
+// predates this feature must load byte-for-byte unchanged in behaviour". That
+// is the correct posture for introducing a capability: ship it off, let it be
+// chosen. models.agent.json exists for exactly that choosing, reached through
+// the machine-scoped mochiii.configPath setting.
+//
+// WHY IT CHANGED, 2026-10-12. "Off by default" turned out to mean "off", full
+// stop. Nothing in the product ever offered the choice: no setting in the UI,
+// no prompt, no mention in the README, and models.agent.json is not even copied
+// into the .vsix by stage-runtime.js. So every user of 0.1.0 and 0.1.1 ran a
+// daemon that could not read a single file, while the extension advertised
+// itself as answering questions about the code in your workspace. A user
+// reported the result on 2026-10-11: the model answered questions about files
+// it had never read, and invented what was in them.
+//
+// A default that no user can discover how to change is not a default, it is the
+// behaviour. This one is now chosen on purpose, and narrowly: see
+// shippedconfig_test.go, which holds the shipped config to the read-only set
+// and fails if anything that reaches the network, starts a subprocess or runs a
+// command is ever allowed in it.
+func TestShippedConfigEnablesAgentModeNarrowly(t *testing.T) {
 	cfg, err := LoadConfig("../models.json")
 	if err != nil {
 		t.Fatalf("the shipped models.json must load: %v", err)
 	}
-	if cfg.MCP.Enabled {
-		t.Error("the shipped models.json reported agent mode ENABLED; it has no mcp section and must stay off")
-	}
-	for _, w := range cfg.Warnings() {
-		if strings.Contains(w, "mcp") {
-			t.Errorf("adding the mcp section made the shipped config warn: %q", w)
-		}
+	if !cfg.MCP.Enabled {
+		t.Error("the shipped models.json reported agent mode OFF. It is deliberately ON since " +
+			"2026-10-12: with it off the daemon advertises no tools at all, and the model is asked " +
+			"about code it has no way to read.")
 	}
 }
 

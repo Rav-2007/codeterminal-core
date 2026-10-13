@@ -27,10 +27,17 @@
 //
 // CEILING on everything else, currently DOM narrowing (`EventTarget` where a
 // `Node` is wanted, `.value` on `HTMLElement`). Those are real type
-// imprecision, not bugs, and there are 25 of them in code written without
+// imprecision, not bugs, and there were 25 of them in code written without
 // annotations. Failing the build on all of them on day one is how a gate gets
 // switched off within a week. The ceiling may only be LOWERED -- the same rule
 // scripts/errcheck-ceiling.sh applies, for the same reason.
+//
+// LOWERED 25 -> 14 on 2026-10-13. Stage 5's composer work pushed this to 27 by
+// adding two `.placeholder` accesses, and the gate did exactly what it is for:
+// it refused the build and said to narrow the lookup rather than raise the
+// number. Annotating the two composer lookups once -- promptInput as
+// HTMLTextAreaElement, sendBtn as HTMLButtonElement -- removed eleven existing
+// findings along with the two new ones.
 
 'use strict';
 
@@ -39,7 +46,7 @@ const path = require('path');
 
 // Lower this as annotations are added. Never raise it to make a build green:
 // that converts the one mechanism that noticed a regression into a rubber stamp.
-const NARROWING_CEILING = 25;
+const NARROWING_CEILING = 14;
 
 // Undefined names and wrong arity. A name that does not resolve is a
 // ReferenceError waiting for the right input.

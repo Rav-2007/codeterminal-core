@@ -44,6 +44,40 @@ function mainJsCode(): string {
 }
 
 suite('Webview accessibility structure', () => {
+  // DROPPING THE VISIBLE SPEAKER CAPTION MUST NOT DROP THE SPEAKER.
+  //
+  // Every message used to carry an avatar letter ('Y', 'M', '!') and a
+  // You / Mochiii caption. Stage 5 removed both: in a two-party conversation
+  // laid out in order, a sighted reader gets the speaker from the layout, and
+  // repeating it twice per turn is what made the panel read as a cheap chatbot.
+  //
+  // A screen-reader user gets nothing from layout. So the fact moved to an
+  // aria-label on each message group, and this test is what keeps the aesthetic
+  // change from having quietly been an accessibility regression -- which is the
+  // exact trade this suite exists to refuse.
+  test('each message names its speaker to a screen reader', () => {
+    const js = mainJsCode();
+    assert.match(
+      js,
+      /msg\.setAttribute\(\s*'role',\s*'group'\s*\)/,
+      'each message needs role="group" so a reader can treat it as one unit'
+    );
+    assert.match(
+      js,
+      /msg\.setAttribute\(\s*\n?\s*'aria-label',/,
+      'each message needs an aria-label: with the visible caption gone this is the ONLY thing ' +
+        'that tells a screen-reader user whether they are hearing their own question or the reply'
+    );
+    // All three roles must be distinguishable, and an error especially: an
+    // error and a reply are both "not from you".
+    for (const needle of ['Your message', 'Error', 'reply']) {
+      assert.ok(
+        js.includes(needle),
+        `the message aria-label does not distinguish ${needle}`
+      );
+    }
+  });
+
   test('the transcript is a live log region so streamed tokens are announced', () => {
     const html = chatPanelBodyMarkup();
     const transcript = /<div id="transcript"[^>]*>/.exec(html);

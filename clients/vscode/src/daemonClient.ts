@@ -250,6 +250,33 @@ export interface GroundingInfo {
   workspace_mismatch?: boolean;
 }
 
+// TurnUsage mirrors protocol.TurnUsage: what the turn ACTUALLY cost, as the
+// provider billed it, summed over every model call the turn made (an agent
+// loop's tool calls, a /team pipeline's phases and any retries included).
+// Nothing in it is estimated, which is the whole reason it is worth carrying.
+//
+// IT RIDES THE FINAL DONE MESSAGE and a turn that never reached the model has
+// none -- a local slash command, a refused prompt, a cancelled stream.
+//
+// context_tokens is the prompt size of the turn's LAST call: how full the
+// window actually got. context_window is that model's limit from models.json,
+// 0 when the config does not state one. The webview's context meter used to
+// invent all of this (`const tools = 2400`, a 1200-token system prompt, a
+// hardcoded 128k ceiling) and showed the invention on every turn, including the
+// turns where no tools were sent at all. These two fields are what replaced it.
+export interface TurnUsage {
+  calls: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  cached_tokens?: number;
+  reasoning_tokens?: number;
+  cost_usd?: number;
+  cost_missing?: boolean;
+  context_tokens?: number;
+  context_window?: number;
+  model?: string;
+}
+
 export interface EditBlockWire {
   file_path: string;
   search: string;
@@ -352,6 +379,9 @@ export interface TokenResponse {
   // seconds, during which a client showing only a spinner is indistinguishable
   // from a broken one.
   tool_activity?: ToolActivity;
+  // usage mirrors protocol.TokenResponse.Usage (TurnUsage): the turn's measured
+  // bill, on the final done message. Absent on a turn that never called a model.
+  usage?: TurnUsage;
 }
 
 // ToolApprovalRequest mirrors protocol.ToolApprovalRequest.
@@ -652,17 +682,58 @@ export function resolvedWorkspaceRoot(): string {
   return workspaceRoot;
 }
 
-// workspaceTag MUST stay byte-identical to protocol.WorkspaceTag in Go.
+// workspaceTag MUST stay byte-identical to protocol.WorkspaceTag in Go, and
+// the normalisation below is what makes that true of the INPUT, not just of
+// the hash.
 //
 // sha256 over the canonical root, hex, first 16 characters. Go hashes
 // []byte(realRoot), which is the UTF-8 encoding of the string; Node's update()
-// defaults to utf8, so the two hash the same bytes. Pinned on both sides by a
-// shared golden vector -- protocol/workspacetag_test.go and the extension's own
-// suite assert the SAME hash for the SAME input, so a change to either
+// defaults to utf8, so the two hash the same bytes. Pinned on both sides by
+// shared golden vectors -- protocol/workspacetag_test.go and the extension's
+// own suite assert the SAME hash for the SAME input, so a change to either
 // derivation fails a test rather than silently producing a client that can
 // never find its daemon.
+//
+// THAT WAS TRUE OF THE HASHING AND FALSE OF THE INPUT, and the input is what
+// broke Windows. Confirmed on a real machine 2026-10-11: VS Code's uri.fsPath
+// through fs.realpathSync handed this client c:\Users\shaik\... with a
+// LOWER-CASE drive letter, while the daemon's filepath.Abs through
+// filepath.EvalSymlinks produced C:\Users\shaik\... for the same folder. Two
+// tags for one directory -- 03ea217e0c967379, which the extension waited for,
+// and 3b707727f6517a4d, which the daemon wrote and listened on -- so the
+// client waited forever for a lockfile that already existed under the other
+// name, and the extension was dead on Windows. Neither log said anything,
+// because both processes were doing exactly what they were told.
+//
+// So the spelling is settled HERE, before the hash, by one rule both sides
+// apply: a leading ASCII drive letter is upper-cased, and everything else is
+// left alone.
+//
+// UPPER, NOT LOWER, deliberately. The daemon already produces the upper-case
+// form, so upper-casing leaves every tag it has ever written UNCHANGED and
+// moves only this client onto it; lower-casing would move both sides and
+// strand anyone mid-session on a lockfile neither process looks for any more.
+// POSIX paths carry no drive letter, so Linux and macOS are untouched and the
+// POSIX golden vectors still hold byte for byte.
+//
+// INSIDE THE TAG FUNCTION, not at the call site. setWorkspaceRoot above still
+// does path.resolve then fs.realpathSync and is deliberately left exactly as
+// it was: what guarantees the two sides agree is that the normalisation is
+// part of the derivation itself, so it cannot matter what any caller passes --
+// today's uri.fsPath, a path out of a setting, or whatever the next caller
+// hands us. Pure string work for the same reason: no path or os calls, so the
+// identical function runs the same on every platform and a Linux CI run
+// exercises the Windows vectors.
 function workspaceTag(realRoot: string): string {
-  return crypto.createHash('sha256').update(realRoot).digest('hex').slice(0, 16);
+  // toUpperCase, not toLocaleUpperCase: that one maps 'i' to the dotted
+  // capital U+0130 on a Turkish-locale machine, which would hash bytes the Go
+  // side never produces for an i: drive. [a-zA-Z] is ASCII-only without the u
+  // flag, so a path beginning with some other letter-like character is not a
+  // drive letter here and goes in as it came.
+  const canonical = /^[a-zA-Z]:/.test(realRoot)
+    ? realRoot.charAt(0).toUpperCase() + realRoot.slice(1)
+    : realRoot;
+  return crypto.createHash('sha256').update(canonical).digest('hex').slice(0, 16);
 }
 
 // lockPath mirrors protocol.LockPathFor exactly.
@@ -934,6 +1005,11 @@ export interface StreamHandlers {
   // onChatRevision fires just before onDone with where the shared chat stands
   // after this turn (TokenResponse.chat_revision/chat_behind).
   onChatRevision?: (revision: string, behind: boolean) => void;
+  // onUsage fires on the final done message with the turn's MEASURED cost
+  // (TokenResponse.usage), before onDone so a client can attach it to the turn
+  // it belongs to. Absent on any turn that did not reach a model, so a client
+  // must keep showing the previous turn's figure rather than zeroing.
+  onUsage?: (usage: TurnUsage) => void;
   onDone?: () => void;
   onError?: (err: Error) => void;
 }
@@ -1054,6 +1130,12 @@ export async function streamPrompt(
       }
       if (tok.chat_revision) {
         handlers.onChatRevision?.(tok.chat_revision, tok.chat_behind === true);
+      }
+      // The measured bill, before the done that re-enables input: the context
+      // meter should already be showing the real figure by the time the user can
+      // click it, not update a frame later.
+      if (tok.usage) {
+        handlers.onUsage?.(tok.usage);
       }
       handlers.onDone?.();
       socket.destroy();

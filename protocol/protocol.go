@@ -78,15 +78,55 @@ func LockPath() string   { return filepath.Join(RuntimeDir(), serviceDirName, lo
 // daemon, which is the bug this fixes rather than a security failure, and 64
 // bits is far beyond the handful of workspaces one user has open.
 //
-// CANONICALISATION IS THE LOAD-BEARING PART, and it is the caller's job: pass
-// the SAME resolved root the daemon grounds against (editapply.ResolveRealWorkspaceRoot).
+// CANONICALISATION IS THE LOAD-BEARING PART, and it is MOSTLY the caller's job:
+// pass the SAME resolved root the daemon grounds against (editapply.ResolveRealWorkspaceRoot).
 // /tmp/x and /private/tmp/x on macOS, or C:\Users\RUNNER~1 and its long form on
 // Windows, must produce ONE tag or the adoption logic silently starts a second
 // daemon for the same directory. Mirrored in clients/vscode/src/daemonClient.ts;
 // the two derivations must stay byte-identical.
+//
+// THE DRIVE LETTER IS NO LONGER THE CALLER'S JOB, because leaving it there cost
+// us Windows entirely. The paragraph above was an invariant nothing enforced,
+// and neither caller could satisfy it: VS Code's uri.fsPath through
+// fs.realpathSync hands the extension a LOWER-case drive letter, while
+// filepath.Abs through filepath.EvalSymlinks hands the daemon an UPPER-case
+// one. Same folder, one byte apart, two tags. Captured on a real Windows
+// machine 2026-10-11:
+//
+//	c:\Users\shaik\OneDrive\Desktop\catalyst -> 03ea217e0c967379 (extension waited here)
+//	C:\Users\shaik\OneDrive\Desktop\catalyst -> 3b707727f6517a4d (daemon listened here)
+//
+// So normalizeRoot runs INSIDE this function, where no call site can forget it
+// and no new call site can reintroduce the bug.
 func WorkspaceTag(realRoot string) string {
-	sum := sha256.Sum256([]byte(realRoot))
+	sum := sha256.Sum256([]byte(normalizeRoot(realRoot)))
 	return hex.EncodeToString(sum[:])[:workspaceTagLen]
+}
+
+// normalizeRoot upper-cases a leading ASCII drive letter and touches nothing
+// else. It is the one piece of canonicalisation WorkspaceTag cannot delegate to
+// its callers -- see the 2026-10-11 capture above for what delegating it did.
+//
+// UP, NEVER DOWN. The daemon already produces C:\..., so upper-casing leaves
+// every tag the daemon has ever written UNCHANGED and moves only the extension
+// onto it. Lower-casing would reach agreement just as well, on a third tag that
+// nothing is listening on yet -- every session open across the upgrade would
+// break, to fix a bug those users had already worked around or walked away from.
+//
+// PURE STRING WORK, deliberately: no filepath, no os, nothing that reads GOOS.
+// A Linux daemon is routinely asked about Windows-shaped paths (and the shared
+// golden vectors in workspacetag_test.go assert exactly that, on Linux CI),
+// where filepath.VolumeName returns "" and would quietly restore the outage.
+func normalizeRoot(realRoot string) string {
+	// "C:" is the shortest path that can carry a drive letter.
+	if len(realRoot) < 2 || realRoot[1] != ':' {
+		return realRoot
+	}
+	c := realRoot[0]
+	if c < 'a' || c > 'z' {
+		return realRoot
+	}
+	return string(c-'a'+'A') + realRoot[1:]
 }
 
 const workspaceTagLen = 16
@@ -1116,6 +1156,24 @@ const (
 	// agent could not run or test before the user reviews them -- the way
 	// every turn worked before the working copy existed.
 	DegradedWorkingCopy = "working_copy"
+
+	// DegradedReasoningEffort: the turn asked for a thinking effort and it was
+	// NOT sent, because this provider has already refused the field for this
+	// model (requestDialect.noReasoningEffort latched earlier in this daemon's
+	// life). The answer is the model's own default effort.
+	//
+	// THE CONTROL STAYS, THE SILENCE GOES. The picker offers Low / Medium /
+	// High for every model, and for the models whose provider rejects
+	// reasoning_effort the daemon dropped the field, latched, and said nothing
+	// -- so three settings produced one behaviour and the user was left to
+	// conclude the control did nothing, or worse, that it did something. A
+	// control whose effect is nil is a bug; a control that says when its effect
+	// is nil is a fact the user can act on (choose another model, or stop
+	// paying attention to the picker for this one).
+	//
+	// Not an error, and not a refusal: the effort is a preference and the answer
+	// is not. The turn runs, which is the whole reason the latch exists.
+	DegradedReasoningEffort = "reasoning_effort"
 )
 
 // SpecReport is the result of checking the project against its active spec

@@ -55,7 +55,8 @@
     }
   },
   "activationEvents": [
-    "onWebviewPanel:mochiiiChat"
+    "onWebviewPanel:mochiiiChat",
+    "onView:mochiii.chatView"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -78,7 +79,12 @@
           "type": "string",
           "default": "",
           "scope": "machine",
-          "markdownDescription": "Absolute path to a `models.json` the daemon should load instead of the one bundled with the extension. This is how you turn on **agent mode** (MCP): point it at a config whose `mcp.enabled` is `true`, with your MCP servers under `mcp.servers` (each needs `acknowledged_unconfined: true`). The bundled config has agent mode off, and editing it in place is undone by the next update; a file of your own here is not. Leave empty to use the bundled config.\n\n**Machine-scoped on purpose**, for the same reason as `mochiii.apiBase` but more so: this names programs the daemon will run in agent mode, and a workspace `.vscode/settings.json` must never be able to choose them. A relative path is refused -- it must be absolute."
+          "markdownDescription": "Absolute path to a `models.json` the daemon should load instead of the one bundled with the extension. Leave empty to use the bundled config.\n\nThe bundled config already enables the **read-only** tools (`read_file`, `list_directory`, `search_code`, `repo_map`, `grep`), confined to your workspace, with web access denied. Point this at a config of your own to add **third-party MCP servers** under `mcp.servers` (each needs `acknowledged_unconfined: true`) -- those are unconfined subprocesses, so read `docs/MCP_LANE_B_THREAT_MODEL.md` first. Editing the bundled file in place is undone by the next update; a file of your own here is not.\n\n**Machine-scoped on purpose**, for the same reason as `mochiii.apiBase` but more so: this names programs the daemon will run in agent mode, and a workspace `.vscode/settings.json` must never be able to choose them. A relative path is refused -- it must be absolute."
+        },
+        "mochiii.sendEditorContext": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Send the file you have open with each question: its path, your cursor line, your selection, the names of your other open tabs, and the start of the file (up to 24 KB). This is what lets \"what does this function do?\" mean the function you are looking at.\n\nOnly files **inside the workspace** are ever sent, and only the focused editor's contents -- the other tabs contribute their names alone. Turn this off to send nothing but what you type; the model can still read workspace files with its `read_file` tool when it asks."
         },
         "mochiii.history.autoSave": {
           "type": "boolean",
@@ -91,6 +97,11 @@
       {
         "command": "mochiii.openChat",
         "title": "Open Chat",
+        "category": "Mochiii"
+      },
+      {
+        "command": "mochiii.openChatInEditor",
+        "title": "Open Chat in Editor",
         "category": "Mochiii"
       },
       {
@@ -108,7 +119,27 @@
         "title": "Set API Key",
         "category": "Mochiii"
       }
-    ]
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "mochiii",
+          "title": "Mochiii",
+          "icon": "media/activity-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "mochiii": [
+        {
+          "type": "webview",
+          "id": "mochiii.chatView",
+          "name": "Chat",
+          "icon": "media/activity-icon.svg",
+          "contextualTitle": "Mochiii"
+        }
+      ]
+    }
   },
   "scripts": {
     "build:daemon": "cd ../../ && go build -o clients/vscode/daemon/mochiii-daemon ./daemon",
@@ -116,7 +147,7 @@
     "build:runtime": "npm run build:daemon && npm run build:helper && node scripts/stage-runtime.js",
     "compile": "npm run build:daemon && tsc -p ./ && npm run check:extractors && npm run build:extractors",
     "watch": "tsc -w -p ./",
-    "pretest": "tsc -p ./ && npm run check:extractors && npm run build:extractors && npm run check:webview && npm run check:installpath",
+    "pretest": "tsc -p ./ && npm run check:extractors && npm run build:extractors && npm run check:webview && npm run check:theme && npm run check:installpath",
     "test": "node ./out/test/runTest.js",
     "vscode:prepublish": "npm run build:package",
     "build:package": "tsc -p ./ && npm run check:extractors && npm run build:extractors && npm run bundle",
@@ -129,7 +160,8 @@
     "check:installpath": "node scripts/install-path-check.js",
     "test:e3-pilot": "node scripts/e3-pilot-test.js",
     "build:extractors": "node scripts/build-extractors.js",
-    "check:extractors": "tsc -p tsconfig.extractors.json"
+    "check:extractors": "tsc -p tsconfig.extractors.json",
+    "check:theme": "node scripts/theme-check.js"
   },
   "devDependencies": {
     "@tesseract.js-data/eng": "^1.0.0",

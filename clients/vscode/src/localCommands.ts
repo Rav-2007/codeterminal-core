@@ -31,9 +31,9 @@
 // working directory.
 
 import { parseConnectArgs } from './connectFlow';
-import { GroundingInfo, Turn } from './daemonClient';
+import { GroundingInfo, Turn, TurnUsage } from './daemonClient';
 import { runMCPServerList } from './mcpServerList';
-import { runGitStatus } from './safeGit';
+import { runGitDiff, runGitStatus } from './safeGit';
 import { formatInitChecklist, formatSlashHelp } from './slashCommands';
 
 // LocalCommandHost is everything a local command may touch that lives on the
@@ -102,6 +102,59 @@ export interface LocalCommandHost {
    */
   showApiKey(): Promise<string>;
   forgetApiKey(): Promise<string>;
+
+  // --- Stage 6 -------------------------------------------------------------
+  //
+  // Each of these is one more thing a local command may reach, and each is
+  // listed here rather than called directly for the reason at the top of this
+  // interface: what this surface can touch should be reviewable in one place.
+
+  /** The thinking effort now in force ('' means the tier's own default). */
+  readonly reasoningEffort: string;
+  /** Set the thinking effort for later turns, and tell the webview's picker. */
+  setReasoningEffort(effort: string): void;
+
+  /** The edit mode the picker is on ('auto' | 'manual' | 'plan'). */
+  readonly currentMode: string;
+  /** Switch the edit mode, and move the picker with it. */
+  setMode(mode: string): void;
+
+  /**
+   * The last turn's MEASURED bill from the daemon (protocol.TurnUsage), or
+   * undefined when no turn has reached a model yet. /cost and /usage read it;
+   * nothing in it is estimated.
+   */
+  readonly lastUsage: TurnUsage | undefined;
+
+  /**
+   * Put text on the system clipboard (/copy).
+   *
+   * A host method because it LEAVES the panel: the clipboard is shared with
+   * every other application, so "a slash command can write to it" belongs in
+   * this list rather than inside a switch case.
+   */
+  writeClipboard(text: string): Promise<void>;
+
+  /**
+   * Ask the user where to save, then write text there (/export). Returns the
+   * path written, or '' if they cancelled.
+   *
+   * THE USER CHOOSES THE PATH, always. An export that defaulted to writing
+   * inside the workspace would be this file's own rule -- never take a path
+   * from the workspace -- broken in the other direction, and in a hostile
+   * repository it would mean a slash command writing a file into a directory
+   * chosen by whoever authored it.
+   */
+  saveTextToFile(text: string, suggestedName: string): Promise<string>;
+
+  /** Open the Mochiii section of VS Code's settings UI (/config). */
+  openSettings(): Promise<void>;
+
+  /** Whether a provider key is in use, for /status and /doctor. */
+  hasApiKey(): Promise<boolean>;
+
+  /** Whether the daemon answered its last handshake, for /status and /doctor. */
+  daemonReachable(): Promise<boolean>;
 }
 
 
@@ -210,7 +263,209 @@ export async function runLocalCommand(
       host.close();
       return '';
 
+    // --- Stage 6 -------------------------------------------------------------
+
+    case 'diff':
+      // Hardened exactly as /git is; see runGitDiff for why `diff` in
+      // particular needs it (diff.external names a program git runs).
+      return runGitDiff(host.workspace, args);
+
+    case 'copy': {
+      const last = lastAssistantReply(host.transcript);
+      if (last === '') {
+        return 'there is no reply to copy yet';
+      }
+      await host.writeClipboard(last);
+      return `copied the last reply (${last.length} characters)`;
+    }
+
+    case 'export': {
+      if (host.transcript.length === 0) {
+        return 'there is nothing to export yet';
+      }
+      const name = `mochiii-chat-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.md`;
+      const written = await host.saveTextToFile(transcriptToMarkdown(host.transcript), name);
+      return written === '' ? 'export cancelled' : `saved ${host.transcript.length} turns to ${written}`;
+    }
+
+    case 'effort': {
+      const want = args.trim().toLowerCase();
+      if (want === '') {
+        const now = host.reasoningEffort;
+        return now === ''
+          ? "thinking effort: the model's own default (set one with /effort low|medium|high)"
+          : `thinking effort: ${now} (change it with /effort low|medium|high)`;
+      }
+      // The same closed set the daemon accepts (daemon/config.go's
+      // reasoningEfforts). Anything else is refused HERE rather than sent to be
+      // dropped silently at the far end.
+      if (want !== 'low' && want !== 'medium' && want !== 'high') {
+        return `usage: /effort low|medium|high (got ${JSON.stringify(args.trim())})`;
+      }
+      host.setReasoningEffort(want);
+      return `thinking effort: ${want}. Some providers reject it for some models; when that happens the panel greys the control and says so.`;
+    }
+
+    case 'mode': {
+      const want = args.trim().toLowerCase();
+      if (want === '') {
+        return `mode: ${host.currentMode}
+${MODE_HELP}`;
+      }
+      if (want !== 'auto' && want !== 'manual' && want !== 'plan') {
+        return `usage: /mode auto|manual|plan (got ${JSON.stringify(args.trim())})
+${MODE_HELP}`;
+      }
+      host.setMode(want);
+      return `mode: ${want}`;
+    }
+
+    case 'cost': {
+      const u = host.lastUsage;
+      if (!u) {
+        return 'no turn has reached a model yet, so there is nothing billed to report';
+      }
+      const lines = [
+        `calls: ${u.calls}`,
+        `tokens in / out: ${u.prompt_tokens} / ${u.completion_tokens}`,
+      ];
+      if (u.cached_tokens) {
+        lines.push(`cached: ${u.cached_tokens}`);
+      }
+      if (u.reasoning_tokens) {
+        lines.push(`reasoning: ${u.reasoning_tokens}`);
+      }
+      // COST_MISSING IS SAID OUT LOUD. A turn where some call reported no cost
+      // makes the total a LOWER BOUND, and a lower bound shown as a figure is
+      // the kind of number someone budgets against.
+      if (u.cost_usd !== undefined) {
+        lines.push(`cost: $${u.cost_usd.toFixed(4)}${u.cost_missing ? ' or more (a call reported no cost)' : ''}`);
+      } else {
+        lines.push('cost: not reported by the provider');
+      }
+      if (u.model) {
+        lines.push(`model: ${u.model}`);
+      }
+      return 'last turn, as the provider billed it:\n' + lines.join('\n');
+    }
+
+    case 'usage': {
+      const u = host.lastUsage;
+      if (!u) {
+        return 'no turn has reached a model yet, so there is no measured context size to report';
+      }
+      const ctx = u.context_tokens ?? 0;
+      const win = u.context_window ?? 0;
+      if (ctx === 0) {
+        return 'the last turn reported no context size';
+      }
+      const pct = win > 0 ? ` (${Math.round((ctx / win) * 100)}% of ${win})` : ' (this model declares no context window in models.json)';
+      return (
+        `context last sent: ${ctx} tokens${pct}\n` +
+        `completion: ${u.completion_tokens} tokens over ${u.calls} call(s)\n` +
+        'Measured by the provider, not estimated.'
+      );
+    }
+
+    case 'status': {
+      const [key, daemon] = await Promise.all([host.hasApiKey(), host.daemonReachable()]);
+      return [
+        `workspace: ${host.workspace || '(none open)'}`,
+        `model: ${host.currentModel || '(unknown)'}${host.preferredTier ? ` (tier ${host.preferredTier})` : ''}`,
+        `mode: ${host.currentMode}`,
+        `thinking effort: ${host.reasoningEffort || "the model's default"}`,
+        `provider key: ${key ? 'in use' : 'NOT set -- run /connect'}`,
+        `daemon: ${daemon ? 'reachable' : 'not reachable'}`,
+        `config: ${host.configPath || 'the bundled models.json'}`,
+        `last grounding: ${groundingLine(host.lastGrounding)}`,
+      ].join('\n');
+    }
+
+    case 'doctor': {
+      // THE THINGS THAT ACTUALLY STOP THIS WORKING, in the order they bite a
+      // new install. Each line is a check with a verdict and, when it fails,
+      // the one action that fixes it -- not a diagnostic dump.
+      const [key, daemon] = await Promise.all([host.hasApiKey(), host.daemonReachable()]);
+      const checks: string[] = [];
+      const ok = (label: string) => checks.push(`  ok    ${label}`);
+      const bad = (label: string, fix: string) => checks.push(`  FAIL  ${label}\n        -> ${fix}`);
+
+      if (host.workspace) {
+        ok(`a folder is open (${host.workspace})`);
+      } else {
+        bad('no folder is open', 'open a folder or workspace; Mochiii grounds its answers in one');
+      }
+      if (key) {
+        ok('a provider key is in use');
+      } else {
+        bad('no provider key', 'run /connect, or click Connect a model in the panel');
+      }
+      if (daemon) {
+        ok('the daemon is reachable');
+      } else {
+        bad('the daemon is not reachable', 'run Mochiii: Restart Daemon, then Mochiii: Show Daemon Log if it persists');
+      }
+      checks.push(
+        host.lastUsage
+          ? '  ok    a turn has completed and reported its usage'
+          : '  --    no turn has completed yet, so nothing is measured'
+      );
+      return 'checks:\n' + checks.join('\n');
+    }
+
+    case 'config':
+      await host.openSettings();
+      return "opened Mochiii's settings";
+
     default:
       return UNKNOWN_LOCAL_COMMAND;
   }
+}
+
+// MODE_HELP states what each mode actually does, in the same words the picker
+// uses (chatPanelBodyMarkup). Two descriptions of one feature drift; these are
+// deliberately the same sentences.
+const MODE_HELP =
+  '  auto    edits apply as they arrive, each still gated and undoable; commands and network still ask\n' +
+  '  manual  every edit waits for your Apply\n' +
+  '  plan    reads your code and writes a plan; proposes no edits at all, runs no commands, no network';
+
+/** lastAssistantReply is the most recent assistant turn's text, or ''. */
+function lastAssistantReply(transcript: Turn[]): string {
+  for (let i = transcript.length - 1; i >= 0; i--) {
+    if (transcript[i].role === 'assistant') {
+      return transcript[i].content ?? '';
+    }
+  }
+  return '';
+}
+
+/** groundingLine renders GroundingInfo as one line for /status. */
+function groundingLine(info: GroundingInfo | undefined): string {
+  if (!info) {
+    return 'none yet';
+  }
+  if (!info.grounded) {
+    return `not grounded${info.reason ? ` (${info.reason})` : ''}`;
+  }
+  return `${info.chunks ?? 0} chunk(s)${info.truncated ? ', truncated' : ''}`;
+}
+
+/**
+ * transcriptToMarkdown renders the conversation for /export.
+ *
+ * PLAIN MARKDOWN WITH THE SPEAKERS NAMED, because this file leaves the panel:
+ * the visual grouping that tells the two apart on screen (see addBubble) does
+ * not survive into a text file, so the export writes the labels the transcript
+ * itself no longer needs.
+ */
+function transcriptToMarkdown(transcript: Turn[]): string {
+  const out: string[] = ['# Mochiii conversation', '', `Exported ${new Date().toISOString()}`, ''];
+  for (const t of transcript) {
+    out.push(t.role === 'user' ? '## You' : '## Mochiii');
+    out.push('');
+    out.push(t.content ?? '');
+    out.push('');
+  }
+  return out.join('\n');
 }

@@ -20,5 +20,20 @@
     "allow_fallbacks": true,
     "provider_ignore_list": ["DeepInfra", "Relace"],
     "provider_sort": "price"
+  },
+  "mcp": {
+    "enabled": true,
+    "web": { "disabled": true },
+    "builtin": {
+      "tools": {
+        "read_file":      "allow",
+        "list_directory": "allow",
+        "search_code":    "allow",
+        "repo_map":       "allow",
+        "grep":           "allow",
+        "web_search":     "deny",
+        "web_fetch":      "deny"
+      }
+    }
   }
 }

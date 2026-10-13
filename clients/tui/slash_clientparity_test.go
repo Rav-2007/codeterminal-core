@@ -242,6 +242,16 @@ func parseVSCodeCatalog(t *testing.T) map[string]tsSlashDef {
 // summaryMayDiffer lists commands whose one-line summary is ALLOWED to differ,
 // with the reason. Anything not listed here must match exactly.
 var summaryMayDiffer = map[string]string{
+	// Both read the provider's own bill rather than estimating -- VS Code's
+	// stopped estimating in Stage 3 of the 0.2.0 overhaul, which is why this
+	// moved out of notYetPorted. What differs is the WINDOW each reports over:
+	// the TUI sums the session (it holds a spend tally across turns), and the
+	// extension reports the LAST TURN, because TurnUsage is what reaches it on
+	// the done message and it keeps no running total yet. Summarising one as the
+	// other would be the lie the measurement work existed to remove.
+	"usage": "the TUI sums the session; the extension reports the last turn, which is " +
+		"what TurnUsage gives it on the done message (0.2.0 Stage 3)",
+
 	"model": "the TUI's /model on its own opens a list to choose from (owner, 2026-10-12); the " +
 		"extension's still prints the tiers, so its summary must not promise a list",
 	"exit": "the command genuinely does different things: the TUI quits the " +
@@ -272,6 +282,43 @@ var tuiOnlyCommands = map[string]string{
 		"webview: the editor owns selection there and there is nothing to trade",
 }
 
+// vscodeOnlyCommands is tuiOnlyCommands' mirror: commands that exist in the VS
+// Code client and MUST NOT exist in the terminal one. Same narrow bar -- each
+// entry claims the command is MEANINGLESS in a terminal, not merely unwritten
+// there.
+//
+// This direction did not exist until the 0.2.0 overhaul, because until then the
+// extension had never led on a command: every divergence ran TUI-first, which is
+// why the two maps below are younger than the two above.
+var vscodeOnlyCommands = map[string]string{
+	"config": "it opens VS Code's own settings editor filtered to this extension. " +
+		"The terminal client has no settings UI to open -- its configuration is " +
+		"models.json and the environment, and /mcp-server and /connect already " +
+		"reach the parts a command can change",
+}
+
+// notYetPortedToTUI is notYetPorted's mirror: commands the terminal client WILL
+// have and does not yet. Each reads as a debt rather than a decision, and each
+// arrived in the VS Code client in Stage 6 of the 0.2.0 overhaul
+// (docs/VSCODE_UX_OVERHAUL_2026-10-12.md), where the stage's scope was the
+// extension.
+//
+// THE DEBT IS REAL AND IS RECORDED HERE RATHER THAN SETTLED, because porting ten
+// commands into the terminal client was not in that stage's scope and doing it
+// unasked would have put ten untested commands in a second client. The gate
+// still fails on any NEW divergence, which is what keeps this list from becoming
+// a way to silence it.
+var notYetPortedToTUI = map[string]string{
+	"diff":   "shows the workspace's uncommitted changes; the terminal has /git for status and gets this with it",
+	"copy":   "copies the last reply to the system clipboard; a terminal can do it and does not yet",
+	"export": "writes the conversation to a Markdown file through a save dialog; the terminal needs its own path prompt first",
+	"effort": "sets reasoning_effort from the chat; the terminal sets it per tier in models.json and has no per-turn command",
+	"mode":   "sets the edit mode from the chat; the terminal has no mode picker to agree with yet",
+	"cost":   "the last turn's bill on its own. The TUI's /usage reports the session, which covers the same figures over a wider window",
+	"status": "workspace, model, tools, key and daemon in one answer; the terminal spreads these across /context, /account and /mcp-server",
+	"doctor": "checks the things that commonly stop a first run working; written for the install the extension has and the terminal does not",
+}
+
 // notYetPorted are commands the VS Code client WILL have and does not yet --
 // unlike tuiOnlyCommands, which it must never have. Each entry names where the
 // port is scheduled, so the list reads as a debt with a due date rather than
@@ -286,10 +333,6 @@ var notYetPorted = map[string]string{
 	// to save through until /history itself is ported, and goes with it.
 	"save":   "the short form of /history save; ported together with /history",
 	"resume": "the short form of /history resume (2026-10-05); ported together with /history",
-	// VS Code left as it is by the owner's decision (2026-09-28); its context
-	// ring is the nearest thing it has, and it estimates rather than reads the
-	// provider's bill.
-	"usage": "VS Code left as it is for now by the owner; the TUI's /usage reads the provider's bill",
 	// The limits themselves hold for every client -- the daemon keeps them
 	// (daemon/spend.go) -- and one that names no session is held by the day's
 	// only, and told to raise it in the configuration. What VS Code lacks is
@@ -329,9 +372,17 @@ func TestSlashCatalogsAgreeAcrossClients(t *testing.T) {
 		t.Fatalf("parsed only %d entries from %s; the parser is not reading the "+
 			"catalog and every comparison below is vacuous", len(ts), vscodeSlashCommands)
 	}
-	if len(ts) != len(slashCatalog)-len(tuiOnlyCommands)-len(notYetPorted) {
-		t.Errorf("catalog size differs: Go has %d (%d of them TUI-only, %d not yet ported), VS Code has %d",
-			len(slashCatalog), len(tuiOnlyCommands), len(notYetPorted), len(ts))
+	// Counted from BOTH sides' allowlists. Subtracting only the TUI's was
+	// correct while every divergence ran TUI-first; with commands the extension
+	// has and the terminal does not, the same equation has to discount those too
+	// or it reports a size difference that both lists already explain.
+	goShared := len(slashCatalog) - len(tuiOnlyCommands) - len(notYetPorted)
+	tsShared := len(ts) - len(vscodeOnlyCommands) - len(notYetPortedToTUI)
+	if tsShared != goShared {
+		t.Errorf("catalog size differs: Go has %d (%d TUI-only, %d not yet in VS Code) -> %d shared; "+
+			"VS Code has %d (%d VS Code-only, %d not yet in the TUI) -> %d shared",
+			len(slashCatalog), len(tuiOnlyCommands), len(notYetPorted), goShared,
+			len(ts), len(vscodeOnlyCommands), len(notYetPortedToTUI), tsShared)
 	}
 	for name := range notYetPorted {
 		if _, present := ts[name]; present {
@@ -428,8 +479,40 @@ func TestSlashCatalogsAgreeAcrossClients(t *testing.T) {
 	}
 
 	for name := range ts {
-		if lookupSlash(name) == nil {
-			t.Errorf("/%s exists in the VS Code client but not in the TUI", name)
+		if lookupSlash(name) != nil {
+			continue
+		}
+		if why, allowed := vscodeOnlyCommands[name]; allowed {
+			t.Logf("/%s is VS Code-only on purpose: %s", name, why)
+			continue
+		}
+		if why, pending := notYetPortedToTUI[name]; pending {
+			t.Logf("/%s is not in the TUI YET: %s", name, why)
+			continue
+		}
+		t.Errorf("/%s exists in the VS Code client but not in the TUI. Port it, or add it to "+
+			"vscodeOnlyCommands (meaningless in a terminal) or notYetPortedToTUI (a debt) with "+
+			"the reason", name)
+	}
+
+	// AND THE TWO NEW LISTS MUST DESCRIBE REAL DIFFERENCES, exactly as the
+	// tuiOnlyCommands check above insists. Without this they would be a way to
+	// silence the gate rather than to record a decision: porting /doctor to the
+	// terminal later would leave an entry claiming a difference that had gone.
+	for name, why := range vscodeOnlyCommands {
+		if lookupSlash(name) != nil {
+			t.Errorf("/%s is listed as VS Code-only (%q) but the TUI has it now; remove the entry", name, why)
+		}
+		if _, present := ts[name]; !present {
+			t.Errorf("/%s is listed as VS Code-only but the VS Code client does not have it either", name)
+		}
+	}
+	for name, why := range notYetPortedToTUI {
+		if lookupSlash(name) != nil {
+			t.Errorf("/%s is listed as not yet in the TUI (%q) but it is there now; remove the entry", name, why)
+		}
+		if _, present := ts[name]; !present {
+			t.Errorf("/%s is listed as not yet in the TUI but the VS Code client does not have it either", name)
 		}
 	}
 }

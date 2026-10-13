@@ -195,7 +195,13 @@ suite('composer controls say what they are', () => {
     assert.match(panel, /Model switched to/);
     assert.match(panel, /type: err \? 'notice' : 'info'/);
     const js = fs.readFileSync(MAIN_JS, 'utf8');
-    assert.match(js, /case 'info': \{[\s\S]*?className = 'msg-info'/);
+    // 'info' is rendered by addInfoLine (shared with the stopped-turn notice
+    // since Stage 5); what matters here is unchanged -- it is a neutral
+    // .msg-info line and not an error bubble.
+    assert.match(js, /case 'info':\s*\n\s*addInfoLine\(/);
+    const fn = /function addInfoLine\([\s\S]*?\n {2}\}\n/.exec(js);
+    assert.ok(fn, 'addInfoLine moved; update this test');
+    assert.match(fn[0], /className = 'msg-info'/);
   });
 
   test('command output is shown as written, not rendered as markdown', () => {

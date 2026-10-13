@@ -70,6 +70,48 @@ export const SLASH_CATALOG: SlashDef[] = [
   },
   { name: 'exit', kind: 'local', summary: 'close the chat panel' },
 
+  // STAGE 6: THE COMMANDS THAT WERE MISSING.
+  //
+  // 0.1.1 shipped 27 entries of which 15 were `steered` -- a prompt prefix and
+  // nothing more. /plan, /review, /debug and /security were all in that group,
+  // which is why they "did not work properly": they were phrased, never
+  // implemented. Meanwhile the controls a user actually reaches for every few
+  // minutes -- what is this costing me, what did it just send, show me the
+  // diff, change the effort without hunting for the pill -- had no command at
+  // all.
+  //
+  // EVERY ONE BELOW IS `local` AND REAL. Each is dispatched by runLocalCommand
+  // and is therefore driven through a maximally hostile workspace by
+  // localCommandsHostile.test.ts, which is the condition for adding a command
+  // here rather than a line of steering text.
+  //
+  // NOT ADDED, for want of anything to point them at: /agents (no multi-agent
+  // UI to manage), /vim and /theme (VS Code owns both, and a chat panel
+  // pretending otherwise would be lying about its reach), /login, /upgrade,
+  // /stickers.
+  {
+    name: 'diff',
+    kind: 'local',
+    summary: 'show uncommitted changes in the workspace (/diff [--staged])',
+  },
+  { name: 'copy', kind: 'local', summary: 'copy the last reply to the clipboard' },
+  { name: 'export', kind: 'local', summary: 'save this conversation to a Markdown file' },
+  {
+    name: 'effort',
+    kind: 'local',
+    summary: 'show or set thinking effort (/effort low|medium|high)',
+  },
+  {
+    name: 'mode',
+    kind: 'local',
+    summary: 'show or set the edit mode (/mode auto|manual|plan)',
+  },
+  { name: 'cost', kind: 'local', summary: 'what the last turn cost, as the provider billed it' },
+  { name: 'usage', kind: 'local', summary: 'tokens and context used by the last turn' },
+  { name: 'status', kind: 'local', summary: 'workspace, model, tools, key and daemon in one answer' },
+  { name: 'doctor', kind: 'local', summary: 'check the things that commonly stop this working' },
+  { name: 'config', kind: 'local', summary: 'open the Mochiii settings page' },
+
   // /team is in the catalog to be FOUND, and parsed elsewhere -- see
   // parseTeamCommand below and the mirror in clients/tui/slash.go. Steered
   // because it is a turn that goes to the model, with NO preamble: what it

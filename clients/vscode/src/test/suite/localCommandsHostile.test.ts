@@ -198,7 +198,17 @@ function firedSentinels(sentinelDir: string): string[] {
 // fakeHost is a LocalCommandHost pointed at the hostile workspace. Using the
 // real interface rather than a real ChatPanel is what makes this test possible
 // at all -- and every field it supplies is one a real panel supplies too.
-function fakeHost(root: string, extensionPath: string): LocalCommandHost & { closed: boolean; connectCalls: number } {
+interface FakeState {
+  closed: boolean;
+  connectCalls: number;
+  effortSet: string;
+  modeSet: string;
+  clipboard: string;
+  exported: { text: string; suggestedName: string } | undefined;
+  settingsOpened: boolean;
+}
+
+function fakeHost(root: string, extensionPath: string): LocalCommandHost & FakeState {
   const transcript: Turn[] = [
     { role: 'user', content: 'hello' },
     { role: 'assistant', content: 'hi' },
@@ -219,6 +229,11 @@ function fakeHost(root: string, extensionPath: string): LocalCommandHost & { clo
     lastGrounding: grounding,
     closed: false,
     connectCalls: 0,
+    effortSet: '',
+    modeSet: '',
+    clipboard: '',
+    exported: undefined as { text: string; suggestedName: string } | undefined,
+    settingsOpened: false,
     replaceTranscript: () => undefined,
     compactChat: async () => 'compacted (stubbed)',
     forgetGrounding: () => undefined,
@@ -242,6 +257,42 @@ function fakeHost(root: string, extensionPath: string): LocalCommandHost & { clo
       host.connectCalls += 1;
       return 'key removed (stubbed)';
     },
+
+    // --- Stage 6 -------------------------------------------------------------
+    //
+    // Stubs that RECORD rather than act, for the same reason connectApiKey
+    // does: this suite is checking that a hostile repository cannot reach a
+    // path or get a program run, and a clipboard write or a modal save dialog
+    // is neither.
+    //
+    // THE WRITE PATH IS THE ONE THAT MATTERS HERE. /export is the only new
+    // command that creates a file, and the fake records the path it was asked
+    // for so the assertions below can prove the hostile workspace never
+    // appears in it.
+    reasoningEffort: '',
+    setReasoningEffort: (effort: string) => {
+      host.effortSet = effort;
+    },
+    currentMode: 'auto',
+    setMode: (mode: string) => {
+      host.modeSet = mode;
+    },
+    lastUsage: undefined,
+    writeClipboard: async (text: string) => {
+      host.clipboard = text;
+    },
+    // Returns a path OUTSIDE the workspace, which is what the real
+    // implementation does (it offers the home directory and the user chooses).
+    // Recorded so a test can assert the command never constructs one itself.
+    saveTextToFile: async (text: string, suggestedName: string) => {
+      host.exported = { text, suggestedName };
+      return path.join(extensionPath, suggestedName);
+    },
+    openSettings: async () => {
+      host.settingsOpened = true;
+    },
+    hasApiKey: async () => false,
+    daemonReachable: async () => false,
   };
   return host;
 }
@@ -373,6 +424,42 @@ suite('local commands against a hostile workspace', () => {
       (replies.get('git') ?? '').includes('##'),
       'git did not produce a status for the hostile repository, so it exited before reading ' +
         `core.fsmonitor and this guard is vacuous for that vector. reply was: ${replies.get('git')}`,
+    );
+
+    // /diff IS A THIRD EXTERNAL-PROGRAM VECTOR, added in Stage 6, and it needs
+    // its own proof that git ran. `diff.external` names a program git runs
+    // INSTEAD of diffing, and the hostile fixture sets it -- so a /diff that
+    // exited early (not a repository, git not found) would leave that key
+    // unconsulted and this guard vacuous for it, exactly as happened twice for
+    // core.fsmonitor.
+    //
+    // The hostile fixture has a commit, so `git diff --stat` answers either
+    // with a stat block or with the "no uncommitted changes" sentence. Both
+    // mean git ran to completion; a failure message means it did not.
+    const diffReply = replies.get('diff') ?? '';
+    assert.ok(
+      diffReply === 'no uncommitted changes' || /\|\s+\d+|\d+ file/.test(diffReply),
+      'git diff did not run to completion against the hostile repository, so diff.external was ' +
+        `never consulted and this guard is vacuous for /diff. reply was: ${diffReply}`,
+    );
+    assert.ok(
+      !/failed/.test(diffReply),
+      `/diff reported a failure rather than a diff: ${diffReply}`,
+    );
+
+    // /export MUST NOT CONSTRUCT A PATH ITSELF. It hands the text to the host,
+    // which asks the user. The fake records what it was given; if the command
+    // ever starts building a destination out of host.workspace, the suggested
+    // name will carry it and this fails.
+    assert.ok(host.exported, '/export did not reach the host, so it was not exercised');
+    assert.ok(
+      !host.exported!.suggestedName.includes(path.sep),
+      '/export supplied a PATH as the suggested filename; the destination is the user\'s to ' +
+        `choose and the command must pass a bare name. got: ${host.exported!.suggestedName}`,
+    );
+    assert.ok(
+      !host.exported!.suggestedName.includes(f.root),
+      '/export built a destination inside the opened workspace',
     );
   });
 

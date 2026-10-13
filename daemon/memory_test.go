@@ -263,20 +263,46 @@ func TestOpenMemoryStore_ReturnsErrorOnCorruptFile(t *testing.T) {
 	}
 }
 
-func TestStateDir_UsesXDGStateHomeWhenSet(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", "/custom/state/home")
+// StateDir must resolve to the per-user state folder OF THE PLATFORM IT IS
+// RUNNING ON, both when the platform's state variable is set and when it is not.
+//
+// WRITTEN ONCE, RUN ON BOTH PLATFORMS, which these two tests previously were
+// not -- and this is not a style fix. They named "XDG_STATE_HOME" and
+// ".local/state" literally, so on Windows they asserted POSIX answers and
+// PASSED, because StateDir really did return an XDG path there. A real Windows
+// run on 2026-10-11 logged
+//
+//	conversation memory: C:\Users\shaik\.local\state\mochiii\memory.db
+//
+// and the only tests covering that path were agreeing with it. A test that
+// cannot fail on the platform the bug lives on is the reason the bug shipped.
+//
+// The fix is not a //go:build unix constraint, for the reason given at
+// protocol/paths_test.go: stateHome has the SAME SHAPE on both platforms -- an
+// environment variable if set, a home-relative default otherwise -- and only
+// the variable's name and that default differ. So those two are the seam
+// (stateDirEnvVar and stateDirHomeFallback, in statedir_unix_test.go and
+// statedir_windows_test.go) and the assertions below are shared. Constraining
+// instead would have left the Windows state path asserting nothing at all,
+// which is the state these tests were already in.
+//
+// t.TempDir() rather than a literal path, and filepath.Join rather than string
+// concatenation, so the expectations are native on whichever platform runs them.
+func TestStateDir_UsesPlatformStateVarWhenSet(t *testing.T) {
+	base := t.TempDir()
+	t.Setenv(stateDirEnvVar, base)
+
 	got, err := StateDir()
 	if err != nil {
 		t.Fatalf("StateDir: %v", err)
 	}
-	want := filepath.Join("/custom/state/home", "mochiii")
-	if got != want {
-		t.Errorf("StateDir() = %q, want %q", got, want)
+	if want := filepath.Join(base, "mochiii"); got != want {
+		t.Errorf("StateDir() = %q, want the %s value %q", got, stateDirEnvVar, want)
 	}
 }
 
-func TestStateDir_FallsBackToLocalStateWhenUnset(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", "")
+func TestStateDir_FallsBackToPlatformDefaultWhenUnset(t *testing.T) {
+	t.Setenv(stateDirEnvVar, "")
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Skipf("no home dir available in this environment: %v", err)
@@ -285,9 +311,9 @@ func TestStateDir_FallsBackToLocalStateWhenUnset(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StateDir: %v", err)
 	}
-	want := filepath.Join(home, ".local", "state", "mochiii")
+	want := filepath.Join(home, filepath.Join(stateDirHomeFallback...), "mochiii")
 	if got != want {
-		t.Errorf("StateDir() = %q, want %q", got, want)
+		t.Errorf("StateDir() with %s unset = %q, want %q", stateDirEnvVar, got, want)
 	}
 }
 

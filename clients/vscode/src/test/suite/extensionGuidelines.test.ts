@@ -10,7 +10,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 
-import { CHAT_VIEW_TYPE, ChatPanel } from '../../chatPanel';
+import { CHAT_VIEW_ID, CHAT_VIEW_TYPE, ChatPanel } from '../../chatPanel';
 import { StubDaemon, pointAtEmptyRuntimeDir, writeLine } from '../stubDaemon';
 
 const ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -40,6 +40,62 @@ suite('the manifest meets the Marketplace guidelines', () => {
     assert.ok(events.includes(`onWebviewPanel:${CHAT_VIEW_TYPE}`), `no onWebviewPanel:${CHAT_VIEW_TYPE} in ${JSON.stringify(events)}`);
     const [major, minor] = String(pkg.engines.vscode).replace(/^[\^~]/, '').split('.').map(Number);
     assert.ok(major > 1 || minor >= 74, `implicit command activation needs engines.vscode >= 1.74, have ${pkg.engines.vscode}`);
+  });
+
+  // THE CHAT HAS A HOME IN THE SIDEBAR.
+  //
+  // 0.1.0 and 0.1.1 contributed NO `views` and NO `viewsContainers` at all, so
+  // the extension had no activity-bar icon and no sidebar presence: the only
+  // way to the chat was a command that took over an editor column. Claude Code
+  // and Cline both register a WebviewViewProvider in their own container, and
+  // that difference is most of why this extension did not feel like part of the
+  // editor.
+  //
+  // Asserted on the MANIFEST because that is where it was missing. Nothing in
+  // the old code failed -- there was simply no contribution, and no test could
+  // notice the absence of something nobody had declared.
+  test('contributes an activity-bar container with the chat view in it', () => {
+    const containers = pkg.contributes.viewsContainers?.activitybar ?? [];
+    assert.ok(containers.length > 0, 'no activity-bar container: the extension has no sidebar home');
+    const container = containers[0];
+    assert.strictEqual(container.id, 'mochiii', `container id = ${container.id}`);
+
+    // The icon must exist on disk. A container whose icon is missing still
+    // appears, with a blank square where the one entry point to the product
+    // should be -- and nothing errors.
+    assert.ok(typeof container.icon === 'string' && container.icon.length > 0, 'container has no icon');
+    const iconPath = path.join(ROOT, container.icon);
+    assert.ok(fs.existsSync(iconPath), `container icon is not on disk: ${container.icon}`);
+    assert.ok(/\.svg$/.test(container.icon), 'an activity-bar icon must be an SVG; VS Code masks it');
+
+    // The view itself, in that container, declared as a webview and with the
+    // id extension.ts registers its provider under. These three strings have to
+    // agree or the provider is registered for a view that does not exist and
+    // the container renders empty.
+    const views = pkg.contributes.views?.[container.id] ?? [];
+    const chat = views.find((v: { id: string }) => v.id === CHAT_VIEW_ID);
+    assert.ok(chat, `no view with id ${CHAT_VIEW_ID} in container ${container.id}: ${JSON.stringify(views)}`);
+    assert.strictEqual(chat.type, 'webview', 'the chat view must be declared type "webview"');
+  });
+
+  // The two ids are DIFFERENT THINGS and conflating them silently breaks one of
+  // the two hosts: CHAT_VIEW_TYPE keys the editor-tab panel and its serializer,
+  // CHAT_VIEW_ID keys the contributed sidebar view and its `.focus` command.
+  test('the sidebar view id and the editor panel view type are not the same string', () => {
+    assert.notStrictEqual(
+      CHAT_VIEW_ID,
+      CHAT_VIEW_TYPE,
+      'the sidebar view id and the panel view type must stay distinct'
+    );
+  });
+
+  // Both routes to the chat stay reachable. Stage 5 moved the default home to
+  // the sidebar; taking the full-width editor column away from the people who
+  // prefer it would have been a regression dressed as an improvement.
+  test('the chat is reachable from the sidebar and still openable in an editor tab', () => {
+    const ids = pkg.contributes.commands.map((c: { command: string }) => c.command);
+    assert.ok(ids.includes('mochiii.openChat'), 'mochiii.openChat is gone');
+    assert.ok(ids.includes('mochiii.openChatInEditor'), 'the editor-tab route was removed, not kept');
   });
 
   test('commands are grouped under a category, not prefixed by hand', () => {
@@ -98,7 +154,10 @@ async function waitUntil(done: () => boolean, timeoutMs: number, what: string): 
   throw new Error(`timed out after ${timeoutMs}ms waiting for ${what}`);
 }
 
-function capturePosts(panel: vscode.WebviewPanel): any[] {
+// Takes anything carrying a `.webview` -- a WebviewPanel, or the ChatHost that
+// ChatPanel now holds (chatHost.ts). Widened rather than duplicated when Stage 5
+// introduced the host, since the only thing this needs is the webview.
+function capturePosts(panel: { readonly webview: vscode.Webview }): any[] {
   const posts: any[] = [];
   const webview = panel.webview;
   const original = webview.postMessage.bind(webview);
@@ -166,7 +225,15 @@ suite('the chat panel across a restart', function () {
       ChatPanel.revive(restored, extensionUri);
       const posts = capturePosts(restored);
       const chat: any = (ChatPanel as any).current;
-      assert.strictEqual(chat?.panel, restored, 'revive did not adopt the restored panel');
+      // IDENTITY ON THE WEBVIEW, not on the container. ChatPanel holds a
+      // ChatHost wrapper now (chatHost.ts), so it is no longer `=== restored`;
+      // what the assertion is actually about is whether revive adopted THAT
+      // panel's webview rather than making a new one, and that is unchanged.
+      assert.strictEqual(
+        chat?.host?.webview,
+        restored.webview,
+        'revive did not adopt the restored panel',
+      );
       assert.strictEqual(restored.webview.options.enableScripts, true, 'the restored webview cannot run its script');
       assert.deepStrictEqual(
         restored.webview.options.localResourceRoots?.map((u) => u.fsPath),
@@ -201,7 +268,7 @@ suite('the chat panel across a restart', function () {
       const extensionUri = vscode.extensions.getExtension(EXT_ID)!.extensionUri;
       ChatPanel.createOrShow(extensionUri);
       const chat: any = (ChatPanel as any).current;
-      const posts = capturePosts(chat.panel);
+      const posts = capturePosts(chat.host);
       await new Promise((r) => setTimeout(r, 1500)); // the daemon is "starting"
       stub = await startStub();
       await waitUntil(() => posts.some((m) => m?.type === 'history' || m?.type === 'error'), 10_000, 'the panel to fill');
