@@ -50,8 +50,11 @@ const fs = require('fs');
 const path = require('path');
 
 const root = path.resolve(__dirname, '..');
-const stylesFile = path.join(root, 'src', 'chatPanel.ts');
-const webviewFile = path.join(root, 'media', 'main.js');
+// Every webview this extension draws, and the script each one runs. The MCP
+// marketplace (Stage 7) is a second webview; a gate that still named one file
+// would have been exactly the invisible scope described above.
+const stylesFiles = [path.join(root, 'src', 'chatPanel.ts'), path.join(root, 'src', 'mcpMarketplace.ts')];
+const webviewFiles = [path.join(root, 'media', 'main.js'), path.join(root, 'media', 'marketplace.js')];
 
 /** Colour literals: #rgb/#rrggbb/#rrggbbaa, plus the legacy functional forms. */
 const literalRe = /#[0-9a-fA-F]{3,8}\b|\brgba?\s*\(|\bhsla?\s*\(/;
@@ -123,7 +126,8 @@ let declarationsScanned = 0;
 let tokenDefinitions = 0;
 let fallbacksIgnored = 0;
 
-// --- the stylesheet ---------------------------------------------------------
+// --- the stylesheets --------------------------------------------------------
+for (const stylesFile of stylesFiles) {
 const styleSrc = stripComments(fs.readFileSync(stylesFile, 'utf8'));
 styleSrc.split('\n').forEach((line, i) => {
   if (!literalRe.test(line)) {
@@ -154,6 +158,7 @@ styleSrc.split('\n').forEach((line, i) => {
       'or add a token if none fits.',
   });
 });
+}
 
 // --- inline styles built in the webview ------------------------------------
 //
@@ -164,6 +169,7 @@ styleSrc.split('\n').forEach((line, i) => {
 // exception -- they are a chart palette chosen to read on both themes, carried
 // as data on the row objects -- so what is scanned here is assignment to
 // `.style.*`, not every string in the file.
+for (const webviewFile of webviewFiles) {
 const webviewSrc = stripComments(fs.readFileSync(webviewFile, 'utf8'));
 webviewSrc.split('\n').forEach((line, i) => {
   if (!/\.style\.[a-zA-Z]+\s*=/.test(line)) {
@@ -182,6 +188,7 @@ webviewSrc.split('\n').forEach((line, i) => {
       'chatPanelStyles() and set className instead, so the theme can reach it.',
   });
 });
+}
 
 if (failures.length > 0) {
   for (const f of failures) {

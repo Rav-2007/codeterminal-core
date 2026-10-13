@@ -313,7 +313,9 @@ Each stage lands as its own commit with its own tests. Nothing here is a
 rewrite: the daemon's protocol, retrieval, safety gates and agent loop stay as
 they are.
 
-**Status, 2026-10-13: Stages 1-6 are implemented; Stage 7 is not started.** The
+**Status, 2026-10-13: Stages 1-6 are implemented; Stage 7 is implemented on
+`feat/mcp-marketplace`, stacked on the 0.2.0 branch (see its entry for what is
+still open).** The
 extension type-checks, the webview and theme gates pass, and the Go suite is
 green. Two things remain before a tag, both listed in Verification below: the
 fresh-profile walkthrough on Windows and Linux (item 1, which no gate can do),
@@ -397,7 +399,7 @@ Explicitly **not** built, for want of anything to point them at: `stickers`,
 
 **Done when:** every command in `/help` does what it says.
 
-### Stage 7 — MCP and a server catalog (P1-4) — **NOT STARTED**
+### Stage 7 — MCP and a server catalog (P1-4) — **DONE, on `feat/mcp-marketplace`**
 
 - A real MCP management UI: add, edit, enable, disable, and the unconfined
   acknowledgement that `MCP_LANE_B_THREAT_MODEL.md` requires.
@@ -410,6 +412,37 @@ that, and the acknowledgement is the control.
 
 **Done when:** a user can add a server from the catalog and call its tools
 without editing JSON.
+
+**What landed.**
+
+- **The daemon** (`daemon/mcp_handler.go`). `MCPRequest` gained `update`
+  (a new grant, behind the same acknowledgement as `add`; drops per-tool
+  policies written for the old program), `enable` / `disable` (pause without
+  forgetting; the registry already skipped a disabled server) and `servers`
+  (the configured servers WITHOUT starting any, for a view that redraws).
+  `MCPServerInfo` carries a server's parts; `FeatureMCPManage` advertises it.
+  The CLI and the terminal's `/mcp-server` gained `enable` and `disable`.
+- **The "MCP Servers" view** (`clients/vscode/src/mcpServersView.ts`): a
+  native tree in the Mochiii sidebar beside the chat. Add, change, pause,
+  resume, remove; a config-file server is shown but not editable here.
+- **The marketplace** (`clients/vscode/src/mcpMarketplace.ts`,
+  `media/marketplace.js`), opened by "Browse for more" behind a one-time
+  notice. Its catalog is mochiii.in's (`/api/mcp/v1/catalog.json`, built from
+  the official MCP Registry plus a reviewed verified list), fetched and
+  checked by the extension host (`mcpCatalog.ts`) -- the webview never holds
+  it, has no `connect-src`, and "Add" carries only a server's name.
+- **One add flow for both** (`mcpInstall.ts` `storeServer`): the daemon's own
+  warning, then the server's name typed -- the same two steps as the terminal.
+- **mochiii.in's "Open in VS Code"** (`handleMarketplaceUri`): a
+  `vscode://` link that names a server; the marketplace shows it, and never
+  installs from a link.
+
+**Still open.** The optional mochiii.in sign-in agreed for the marketplace is
+not built: the site has no account backend yet. And a server's token reaches
+it only from the environment VS Code was started in -- the daemon reads no
+`.env` -- which a GUI-launched editor rarely has; keeping server tokens in the
+OS keychain and handing them over the way the model key is (stdin) is a
+security-model decision, not yet taken.
 
 ---
 

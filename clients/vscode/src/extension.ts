@@ -20,6 +20,8 @@ import {
   withoutCredentials,
 } from './daemonCredentials';
 import { useSpecStore } from './specWorkflow';
+import { McpServersProvider, registerMcpServers } from './mcpServersView';
+import { McpMarketplace, handleMarketplaceUri } from './mcpMarketplace';
 
 let supervisor: DaemonSupervisor | undefined;
 let output: vscode.OutputChannel | undefined;
@@ -197,6 +199,34 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const NO_WORKSPACE =
     'Mochiii grounds its answers in an open folder, and this window has none. ' +
     'Open a folder or workspace, then try again.';
+
+  // THE MCP SERVERS VIEW, THE MARKETPLACE, AND mochiii.in's "OPEN IN VS CODE"
+  // (Stage 7, docs/VSCODE_UX_OVERHAUL_2026-10-12.md). Every one is a client of
+  // the daemon's own MCPRequest -- nothing here decides what may run -- and each
+  // says NO_WORKSPACE rather than asking a daemon this window never started.
+  const mcpServers = new McpServersProvider(CLIENT_NAME, root ? undefined : NO_WORKSPACE);
+  registerMcpServers(context, mcpServers, CLIENT_NAME);
+  context.subscriptions.push(
+    vscode.commands.registerCommand('mochiii.mcp.browse', async () => {
+      if (!root) {
+        vscode.window.showInformationMessage(NO_WORKSPACE);
+        return;
+      }
+      await McpMarketplace.show(context, mcpServers, CLIENT_NAME);
+    }),
+    // vscode://MochiiiAIAgent.mochiii-vscode/mcp/install?id=<name>. The link
+    // carries a name and nothing else; the marketplace looks it up in the
+    // catalog it checked itself and shows it -- it never installs from a link.
+    vscode.window.registerUriHandler({
+      handleUri: async (uri: vscode.Uri) => {
+        if (!root) {
+          vscode.window.showInformationMessage(NO_WORKSPACE);
+          return;
+        }
+        await handleMarketplaceUri(uri, context, mcpServers, CLIENT_NAME);
+      },
+    })
+  );
 
   // THE SIDEBAR VIEW: the chat's home as of 0.2.0.
   //
