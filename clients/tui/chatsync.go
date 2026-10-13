@@ -65,6 +65,12 @@ func (m chatModel) canCatchUp() bool {
 	if m.newChatArmed {
 		return false
 	}
+	// Nor while /compact is waiting: its answer IS the chat as it now stands,
+	// and fetching the same change here first would announce this window's own
+	// compact as something another window did.
+	if m.compacting {
+		return false
+	}
 	return m.state == stateIdle || m.state == stateError || m.state == stateSplash
 }
 

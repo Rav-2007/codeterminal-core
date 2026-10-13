@@ -50,10 +50,12 @@ func buildEchoServer(t *testing.T) string {
 func mcpAdminTestServer(t *testing.T) *Server {
 	t.Helper()
 	return &Server{
-		cfg:          &Config{MCP: MCPConfig{Enabled: true, Builtin: MCPBuiltinConfig{Disabled: true}}},
-		workspace:    t.TempDir(),
-		logger:       log.New(&bytes.Buffer{}, "", 0),
-		serverExtras: serverExtras{configPath: "/opt/mochiii/models.agent.json", userServersPath: userServersFile(t)},
+		cfg:       &Config{MCP: MCPConfig{Enabled: true, Builtin: MCPBuiltinConfig{Disabled: true}}},
+		workspace: t.TempDir(),
+		logger:    log.New(&bytes.Buffer{}, "", 0),
+		serverExtras: serverExtras{
+			configPath: "/opt/mochiii/models.agent.json", userServersPath: userServersFile(t), mcpRunDir: t.TempDir(),
+		},
 	}
 }
 

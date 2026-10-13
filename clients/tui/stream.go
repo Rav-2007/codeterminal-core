@@ -257,6 +257,10 @@ type taskFields struct {
 	id     string
 	action string
 	budget *protocol.TaskBudget
+	// attached is the command output that goes with this one request
+	// (attach.go). Not a long-task field: it rides here because this struct is
+	// the one bag of optional request fields both ways of starting a turn pass.
+	attached []protocol.AttachedOutput
 }
 
 // askForApproval hands the request to the UI and waits for the user's answer,
@@ -376,11 +380,19 @@ func streamPromptWith(ctx context.Context, clientName, workspace, prompt, prompt
 		}
 	}()
 
+	// A daemon that does not know the field would ignore it and the transcript
+	// would go on saying it was sent. Said now, before the answer starts.
+	if len(task.attached) > 0 && !hasFeature(sess.handshake, protocol.FeatureAttachedOutput) {
+		deliver(ctx, ch, attachedNotSentMsg{commands: attachedNames(task.attached)})
+		task.attached = nil
+	}
+
 	if err := sess.enc.Encode(protocol.PromptRequest{
 		ProtocolVersion: protocol.ProtocolVersion,
 		Prompt:          prompt,
 		Workspace:       workspace,
 		History:         history,
+		Attached:        task.attached,
 		PromptKind:      promptKind,
 		Mode:            mode,
 		Tier:            preferredTier,

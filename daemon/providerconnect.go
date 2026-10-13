@@ -35,11 +35,37 @@ type connectTarget struct {
 	// Candidates is set when the key could belong to any of several providers
 	// and nothing here may choose between them: the user is asked.
 	Candidates []protocol.Provider
+	// Issuer and KeptFrom are set together, when the user named one provider
+	// and the key's own prefix names another for certain: Base is then the
+	// issuer's, and KeptFrom is the provider the key was NOT sent to.
+	Issuer, KeptFrom string
+}
+
+// note is the sentence that tells the user their key went somewhere other than
+// where they said, or "" when it went where they said.
+func (t connectTarget) note() string {
+	if t.KeptFrom == "" {
+		return ""
+	}
+	return fmt.Sprintf("that is a %s key — told from how it starts — so it was checked with %s, not with %s. "+
+		"A key is only ever sent to the provider that issued it.", t.Issuer, t.Issuer, t.KeptFrom)
 }
 
 // resolveConnectBase decides where a pasted key goes, in this order:
 //
-//  1. An address or provider the user named. Always wins.
+//  1. An address or provider the user named. It wins -- except that a key is
+//     never sent to a company that did not issue it. When what was named is a
+//     provider this product knows, and the key's prefix names a DIFFERENT one
+//     for certain, the key goes to its issuer and the answer says so
+//     (connectTarget.note). Naming Groq and pasting an "nvapi-" key is a slip,
+//     and following it would hand a working NVIDIA credential to Groq to be
+//     refused. An address typed by hand that is no known provider's is left
+//     alone: a company gateway may well take keys that look like another's.
+//
+//     THIS RULE LIVED IN ONE CLIENT'S ONE SCREEN (FOUND 2026-10-12): the
+//     terminal's setup list applied it, a typed `/connect groq` did not, and
+//     neither did `connect --provider` or the extension. It is here so that
+//     every way of naming a provider gets it.
 //
 //  2. A custom address already in use -- a company gateway, a local server.
 //     Someone set that deliberately, keys for it look like anything, and a key
@@ -60,7 +86,13 @@ type connectTarget struct {
 // the built-in default.
 func resolveConnectBase(explicit, key, inUse string, stored storedCredential, envBase string) connectTarget {
 	if explicit = strings.TrimSpace(explicit); explicit != "" {
-		return connectTarget{Base: secureProviderBase(explicit)}
+		base := secureProviderBase(explicit)
+		if named, known := providerForBase(base); known {
+			if owners, certain := providersForKey(key); certain && len(owners) == 1 && owners[0].ID != named.ID {
+				return connectTarget{Base: owners[0].APIBase, Issuer: owners[0].Name, KeptFrom: named.Name}
+			}
+		}
+		return connectTarget{Base: base}
 	}
 	current := firstNonEmpty(inUse, stored.APIBase, envBase, defaultAPIBase)
 	currentProvider, known := providerForBase(current)

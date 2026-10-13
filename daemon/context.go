@@ -105,6 +105,10 @@ var protectedTagFamilies = []string{
 	// A long task's ledger (taskledger.go). Its plan, findings and handoff are
 	// the model's own words and a command's output, read back every segment.
 	"taskstate",
+	// The output of a command the user ran in a client, attached to one
+	// question (attachedoutput.go). `git status` prints names chosen by whoever
+	// made the repository.
+	"commandoutput",
 }
 
 var protectedTagPatterns = compileProtectedTagPatterns()
@@ -167,6 +171,8 @@ var envelopeTagsInUse = []string{
 	stepRoleCloseTag,
 	taskStateOpenTag,
 	taskStateCloseTag,
+	commandOutputOpenTagPrefix + `/git">`,
+	commandOutputCloseTag,
 }
 
 // neutralizeDelimiters defuses any tag-like text inside untrusted retrieved

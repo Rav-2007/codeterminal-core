@@ -291,6 +291,9 @@ type PromptRequest struct {
 	Tier       string `json:"tier,omitempty"`
 	Mode       string `json:"mode,omitempty"`
 
+	// Attached is command output sent with this one question (attached.go).
+	Attached []AttachedOutput `json:"attached,omitempty"`
+
 	// ReasoningEffort asks the model to think before it answers, for THIS TURN
 	// ONLY: "low", "medium" or "high". Absent means the tier's own setting, which
 	// is what every existing client sends. Any other value is ignored (and
@@ -1748,7 +1751,14 @@ type MCPRequest struct {
 	// runs with their full privileges. Without it add stores nothing and
 	// answers with what is being agreed to (MCPResponse.NeedsAcknowledgement).
 	AcknowledgedUnconfined bool `json:"acknowledged_unconfined,omitempty"`
+
+	// Cwd is where add's server starts: empty for a private folder of its own,
+	// MCPCwdWorkspace for the project. The warning the user agrees to says which.
+	Cwd string `json:"cwd,omitempty"`
 }
+
+// MCPCwdWorkspace is the one value MCPRequest.Cwd takes besides empty.
+const MCPCwdWorkspace = "workspace"
 
 // The actions an MCPRequest can name.
 const (

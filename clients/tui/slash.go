@@ -76,7 +76,7 @@ var slashCatalog = []slashDef{
 	{Name: "account", Kind: slashLocal, Summary: "provider, key and model in use, and the spend"},
 	{Name: "mcp-server", Kind: slashLocal, Summary: "the tools this daemon offers; add or remove an MCP server (/mcp-server add <name> <command>)"},
 	{Name: "clear", Kind: slashLocal, Summary: "start a new chat (same as ctrl+n)"},
-	{Name: "compact", Kind: slashLocal, Summary: "keep only the last 8 turns, now"},
+	{Name: "compact", Kind: slashLocal, Summary: "summarise the earlier part of this chat to save context (the full chat stays in History)"},
 	{Name: "mouse", Kind: slashLocal, Summary: "toggle mouse capture: on scrolls with the wheel, off lets you select text"},
 	{Name: "context", Kind: slashLocal, Summary: "show workspace, model tier, and last grounding"},
 	{Name: "git", Kind: slashLocal, Summary: "show git status for the workspace"},

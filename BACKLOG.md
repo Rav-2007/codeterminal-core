@@ -131,6 +131,38 @@ The ordering is real: each tier is blocked by the one above it.
 | ~~**L7**~~ | ~~Socket created under the ambient umask then chmod'd — narrowed by the 0700 runtime dir, closed in practice by peer auth on the daemon socket **but not on the helper's**~~ (Completed 2026-08-11) |
 
 
+### Tier 2b — the terminal client, as of 2026-10-12
+
+Added because the tiers above stop in August and the terminal did not: since
+2026-10-05 it gained provider/key/model setup, `/account`, `/mcp-server add`,
+saved chats and a 24-tool menu, and none of that had a row here. Every line
+below was checked against the code on 2026-10-12, not carried from a note.
+
+**Closed on 2026-10-12 and 13** (see
+[`docs/OPEN_ITEMS.md`](docs/OPEN_ITEMS.md) items 49-56): `/git` and `/search`
+output was replayed to the model as its own words; an approval
+question longer than the screen was asked with its beginning out of sight, and
+so was an edit under review; an added MCP server started in whatever folder the
+daemon was in; a key could be sent to a provider that did not issue it by
+typing `/connect <provider>`; `run-tui.sh` built into and ran from a shared temp
+folder; `/compact` summarised nothing; a request cut by the five-minute limit
+was reported as an unreachable provider.
+
+| Open | State in the code | Waits on |
+|---|---|---|
+| The VS Code extension replays every local command's output to the model as its own words (OPEN_ITEMS **57**) | `clients/vscode/src/chatPanel.ts` pushes each reply onto the transcript it sends as history. The terminal's half is fixed (item 53), and the daemon side of that fix is there for the extension to use | Go-ahead to change the extension |
+| Delete, move or rename a file | Does not exist: an edit block carries a path, a search and a replacement (`protocol/protocol.go`, `EditBlockWire`) | Go-ahead on the 2026-10-08 plan |
+| The secret-name rule refuses some of this repository's own source files | It matches on the file's name alone (`editapply/secret.go`, `MatchesSecretName`) | A decision to loosen it |
+| The `/team` Coder role cannot run a build or a test | Its tool list has no `sandbox_exec` (`daemon/roles.go`) | A measured run |
+| A shorter opening prompt; trimming old tool results | Not built | A real-model comparison |
+
+**Outside the code:** the hosted proxy's address answers 404 "Application not
+found" (probed 2026-10-12; using your own key is unaffected); the paid
+evaluations (OPEN_ITEMS 28-30, and the long-task comparison) need a working
+provider key; the manual session in
+[`docs/TUI_PRODUCTION_READINESS_2026-09-04.md`](docs/TUI_PRODUCTION_READINESS_2026-09-04.md)
+is still open.
+
 ### Tier 3 — first contact
 
 **E7 — pilot.** 10–25 users with hand-inserted keys (which is how keys work today
@@ -153,7 +185,7 @@ per-request and fail-closed regardless of model, so what is missing is
 | Where do I start? | [`docs/HANDOFF.md`](docs/HANDOFF.md) — entry point; [`docs/README.md`](docs/README.md) catalogues everything else |
 | What are we doing next? | [`docs/ULTRA_MASTER_PLAN_2026-08-08.md`](docs/ULTRA_MASTER_PLAN_2026-08-08.md) — **the current plan** |
 | How is this made robust? | [`docs/ENGINEERING_METHOD.md`](docs/ENGINEERING_METHOD.md) — the techniques and the bug behind each |
-| What bugs are open? | [`docs/OPEN_ITEMS.md`](docs/OPEN_ITEMS.md) — read the Status column; **open: 24** — the security residuals carried over from [`AGENT_SECURITY_AND_CAPABILITY_AUDIT.md`](AGENT_SECURITY_AND_CAPABILITY_AUDIT.md), which had been tracked by git and referenced by nothing. This cell said *none* while that report listed six open findings, and it was not lying — the register it is checked against had never heard of them. Enforced by `scripts/docs-claims.sh`, which fails the build when this cell and that Status column disagree — in either direction. |
+| What bugs are open? | [`docs/OPEN_ITEMS.md`](docs/OPEN_ITEMS.md) — read the Status column; **open: 24, 57** — the security residuals carried over from [`AGENT_SECURITY_AND_CAPABILITY_AUDIT.md`](AGENT_SECURITY_AND_CAPABILITY_AUDIT.md), which had been tracked by git and referenced by nothing. This cell said *none* while that report listed six open findings, and it was not lying — the register it is checked against had never heard of them. Enforced by `scripts/docs-claims.sh`, which fails the build when this cell and that Status column disagree — in either direction. |
 | What needs a founder ruling? | [`docs/DECISION_PACK.md`](docs/DECISION_PACK.md) — D1–D8; **all eight taken**, P3 security gate closed. **taken: D1 D2 D3 D4 D5 D6 D7 D8** |
 | What was already done, and why? | [`docs/ARCHIVE/BACKLOG_2026-07.md`](docs/ARCHIVE/BACKLOG_2026-07.md) |
 | What is still ahead? | **this file** |

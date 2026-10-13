@@ -20,8 +20,11 @@ const (
 	maxStreamAttempts = 3
 	baseRetryBackoff  = 500 * time.Millisecond
 	maxRetryBackoff   = 8 * time.Second
-	totalRetryBudget  = 45 * time.Second
 )
+
+// totalRetryBudget is the whole-retry budget described above. A var so tests
+// can shorten it.
+var totalRetryBudget = 45 * time.Second
 
 // backoffFor computes the delay before the given retry attempt (1-based:
 // attempt 1 is the wait after the first failure).
@@ -113,6 +116,14 @@ func streamWithRetry(
 	// a stall is the failure a second attempt (possibly routed to another
 	// provider) fixes most often. One, so two stalls in a row still end the
 	// turn in bounded time.
+	//
+	// AND SO DOES A REQUEST THAT REACHED requestTimeout STILL SENDING (ranOut),
+	// for the same arithmetic: five minutes is past the budget before the first
+	// attempt has finished failing, so it was never retried either (MEASURED
+	// 2026-09-29, a 300 s reasoning runaway). The one retry is shared: a stall
+	// and then a run-out, in either order, is two attempts and not three.
+	// Whether a second attempt usually finishes is NOT measured -- it needs a
+	// real model -- so this is one retry and no more.
 	stallRetried := false
 
 	for attempt := 1; attempt <= maxStreamAttempts; attempt++ {
@@ -181,7 +192,7 @@ func streamWithRetry(
 		}
 
 		delay := backoffFor(attempt, modelErr.RetryAfter)
-		retryStall := modelErr.stalled && !stallRetried
+		retryStall := (modelErr.stalled || modelErr.ranOut) && !stallRetried
 		if retryStall {
 			stallRetried = true
 		}

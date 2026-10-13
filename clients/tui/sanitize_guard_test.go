@@ -84,11 +84,12 @@ func isSel(n ast.Node, field string) bool {
 // `m.turns = append(...)` does not. This fails on any new one.
 func TestOnlyAppendTurnWritesTheTranscript(t *testing.T) {
 	// The one place allowed to assign m.turns from an append outside
-	// appendTurn: /compact re-slices turns that appendTurn already cleaned.
-	// Nothing new enters the transcript there.
+	// appendTurn: the old /compact, kept for a daemon that cannot summarise,
+	// re-slices turns that appendTurn already cleaned. Nothing new enters the
+	// transcript there. (It lived in handleLocalSlash until 2026-10-12.)
 	allowed := map[string]bool{
-		"appendTurn":       true,
-		"handleLocalSlash": true, // /compact's re-slice; see the comment there
+		"appendTurn":     true,
+		"compactLocally": true, // the re-slice; see the comment there (compact.go)
 	}
 	fset, files := parsePackageSource(t)
 	var offenders []string
@@ -163,6 +164,12 @@ func TestRawByteStructuresHaveNoNewReaders(t *testing.T) {
 		// whether 's' answers, and hands the request to rememberSpecGrant,
 		// which runs everything it will later show through sanitizeText.
 		"handleApprovalKey": true,
+		// Reviewed 2026-10-12 (a long question is shown from its beginning),
+		// and again 2026-10-13 when the edit review got the same rule: hands
+		// the request, or the prepared edit, to the panel that draws it --
+		// both sanitize -- only so its lines can be counted, and returns the
+		// pointer to be compared. Draws nothing itself.
+		"pendingQuestion": true,
 	}
 	fset, files := parsePackageSource(t)
 	seen := map[string]string{}

@@ -359,7 +359,17 @@ type MCPServerConfig struct {
 
 	// Disabled turns one configured server off without deleting its block.
 	Disabled bool `json:"disabled,omitempty"`
+
+	// Cwd is the folder the server is started in. Empty -- the default -- is a
+	// private folder of the server's own, holding nothing a project put there.
+	// ServerCwdWorkspace is the project being worked on, for a server that is
+	// about the project. See Server.serverStartDir for why the default is not
+	// simply wherever the daemon is.
+	Cwd string `json:"cwd,omitempty"`
 }
+
+// ServerCwdWorkspace is the one value MCPServerConfig.Cwd takes besides empty.
+const ServerCwdWorkspace = protocol.MCPCwdWorkspace
 
 // MCPBudgetConfig bounds a single agent turn. Every field is "0 means use the
 // default" (the migration-free convention RetrievalConfig established), and
@@ -804,6 +814,10 @@ func validateServerBlock(s MCPServerConfig) error {
 			return fmt.Errorf("env entry %q looks like a NAME=VALUE pair; this list takes variable NAMES to "+
 				"pass through from the daemon's environment, so that secrets stay out of your config file", env)
 		}
+	}
+	if s.Cwd != "" && s.Cwd != ServerCwdWorkspace {
+		return fmt.Errorf("has \"cwd\": %q; the only value is %q (start in the project), and leaving it out "+
+			"starts the server in a private folder of its own", s.Cwd, ServerCwdWorkspace)
 	}
 	return nil
 }

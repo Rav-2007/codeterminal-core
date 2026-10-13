@@ -96,6 +96,26 @@ func main() {
 		}, nil, nil
 	})
 
+	// WHERE THIS PROCESS WAS STARTED. Offered only when asked for, so every
+	// other test still sees the tools it counts. This is how a test proves the
+	// folder a server starts in is the one the daemon chose -- a launcher such
+	// as npx decides what to run partly from that folder, so starting in the
+	// project being worked on lets the project choose.
+	if len(os.Args) > 1 && os.Args[1] == "--report-cwd" {
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        "cwd",
+			Description: "Report this server's working directory.",
+		}, func(_ context.Context, _ *mcp.CallToolRequest, _ noArgs) (*mcp.CallToolResult, any, error) {
+			dir, err := os.Getwd()
+			if err != nil {
+				dir = "error: " + err.Error()
+			}
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: dir}},
+			}, nil, nil
+		})
+	}
+
 	if err := s.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
 		log.Fatal(err)
 	}

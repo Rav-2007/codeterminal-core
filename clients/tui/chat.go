@@ -319,6 +319,11 @@ type chatModel struct {
 	// held open -- answering it is the only thing that lets the turn continue.
 	pendingApproval *protocol.ToolApprovalRequest
 	approvalReply   chan string
+	approvalRead    approvalReading // how much of that question has been on screen (approvalview.go)
+	compacting      bool            // /compact is waiting for the daemon; the keyboard is held (compact.go)
+
+	// attached is command output waiting to go with the next question (attach.go).
+	attached []protocol.AttachedOutput
 
 	// activityTurns maps a tool call's id to the transcript turn narrating it,
 	// so a call's line is REWRITTEN from "running" to its outcome rather than
@@ -557,6 +562,12 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case connectResultMsg:
 		return m.handleConnectResult(msg)
 
+	case compactDoneMsg:
+		return m.handleCompactDone(msg)
+
+	case attachedNotSentMsg:
+		return m.handleAttachedNotSent(msg)
+
 	case setupTiersMsg:
 		return m.handleSetupTiers(msg)
 
@@ -689,6 +700,9 @@ func (m chatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleCtrlC()
 	}
 	m.quitArmed = false
+	if m.compacting {
+		return m, nil // the chat is about to be replaced: compact.go
+	}
 	if m.newChatArmed && msg.String() != "ctrl+n" {
 		return m.answerNewChatQuestion(msg) // save, clear or cancel: clear.go
 	}
@@ -851,6 +865,7 @@ func (m chatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m chatModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.viewport, cmd = m.viewport.Update(msg)
+	m.noteApprovalShown()
 	return m, cmd
 }
 
@@ -1477,7 +1492,8 @@ func (m chatModel) startTurn() (tea.Model, tea.Cmd) {
 	m.turnMode = mode
 	m.tasks = nil
 	m.turnChatRev = m.chatRev
-	return m, tea.Batch(m.spinner.Tick, m.startThinking(), startStream(ctx, m.clientName, m.workspace, prompt, promptKind, mode, m.preferredTier, m.activeSpec, m.specGrantDigests(), pipeline, history, m.chatRev, taskFields{}, ch))
+	task := taskFields{attached: m.takeAttached()}
+	return m, tea.Batch(m.spinner.Tick, m.startThinking(), startStream(ctx, m.clientName, m.workspace, prompt, promptKind, mode, m.preferredTier, m.activeSpec, m.specGrantDigests(), pipeline, history, m.chatRev, task, ch))
 }
 
 func (m chatModel) handleSlash(sp slashParse) (tea.Model, tea.Cmd) {
@@ -1545,6 +1561,7 @@ func (m chatModel) beginTurnWith(shown, prompt, promptKind, mode string, pipelin
 	ch := make(chan tea.Msg)
 	m.streamCh = ch
 	m.turnChatRev = m.chatRev
+	task.attached = m.takeAttached()
 	return m, tea.Batch(m.spinner.Tick, m.startThinking(), startStream(ctx, m.clientName, m.workspace, prompt, promptKind, mode, m.preferredTier, m.activeSpec, m.specGrantDigests(), pipeline, history, m.chatRev, task, ch))
 }
 
@@ -1591,15 +1608,7 @@ func (m chatModel) handleLocalSlash(name, args string) (tea.Model, tea.Cmd) {
 				connectBaseExample + ". Provider names: " + connectProviderNames() + "."
 		}
 	case "compact":
-		const keep = 8
-		if len(m.turns) > keep {
-			// A re-slice of turns that appendTurn already sanitized; nothing
-			// new enters the transcript here.
-			m.turns = append([]turn(nil), m.turns[len(m.turns)-keep:]...)
-			reply = fmt.Sprintf("kept last %d turns", keep)
-		} else {
-			reply = "transcript already compact"
-		}
+		return m.startCompact() // the daemon summarises: compact.go
 	case "context":
 		tier := m.preferredTier
 		if tier == "" {
@@ -1679,9 +1688,12 @@ func (m chatModel) handleLocalSlash(name, args string) (tea.Model, tea.Cmd) {
 	}
 	if reply != "" {
 		// /git and /search FETCH something to talk about ("write a commit
-		// message for this"), so their output stays in the conversation. The
-		// rest is this client describing itself.
-		m.appendTurn(turn{role: roleAssistant, text: reply, verbatim: true, local: name != "git" && name != "search"})
+		// message for this"): it goes with the next question, once (attach.go).
+		// Nothing a command prints is part of the conversation.
+		if name == "git" || name == "search" {
+			reply = m.attachOutput(name, reply)
+		}
+		m.appendTurn(turn{role: roleAssistant, text: reply, verbatim: true, local: true})
 	}
 	m.resizeViewport()
 	m.refreshViewport()
@@ -2016,6 +2028,7 @@ func (m chatModel) clearConversation() (tea.Model, tea.Cmd) {
 	m.chatUsage = usageTotals{} // a new chat; the session's total carries on
 	m.stopsInChat = 0
 	m.turns = nil
+	m.attached = nil // what was waiting to be asked about belonged to the chat that is gone
 	m.lastGrounding = nil
 	m.lastRedactions = nil
 	m.lastDegraded = nil
@@ -2217,8 +2230,15 @@ func (m chatModel) advanceReview() (tea.Model, tea.Cmd) {
 // which means "stop this" everywhere in this UI) cancels every remaining block
 // (including the current one) as skipped.
 func (m chatModel) handleReviewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.approvalScrollKey(msg) {
+		return m, nil
+	}
 	switch msg.String() {
 	case "y":
+		// Not before all of the edit has been on screen (approvalview.go).
+		if m.approvalUnread() > 0 {
+			return m, nil
+		}
 		return m.applyCurrentReviewEdit()
 	case "n":
 		m.reviewSkipped++
@@ -2246,6 +2266,16 @@ func (m chatModel) handleReviewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // a user typing into what they thought was the input box must not answer a
 // security question on their behalf in either direction.
 func (m chatModel) handleApprovalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.approvalScrollKey(msg) {
+		return m, nil
+	}
+	switch msg.String() {
+	case "y", "a", "s":
+		// Not before all of the question has been on screen (approvalview.go).
+		if m.approvalUnread() > 0 {
+			return m, nil
+		}
+	}
 	switch msg.String() {
 	case "y":
 		return m.answerApproval(protocol.ApprovalApprove)
@@ -2490,6 +2520,7 @@ func (m *chatModel) refreshViewport() {
 	if follow {
 		m.viewport.GotoBottom()
 	}
+	m.trackApprovalReading() // a pending question is shown from its beginning
 }
 
 // wrapToWidth reflows transcript content to the viewport's width.
@@ -2846,7 +2877,7 @@ func (m chatModel) View() string {
 	var bottomLine, help string
 	if m.state == stateEditReview && m.reviewPrepared != nil {
 		bottomLine = m.promptBox(accentStyle.Render(fmt.Sprintf("edit %d/%d: %s", m.reviewIndex+1, len(m.reviewBlocks), sanitizeText(m.reviewPrepared.Block.FilePath))))
-		help = helpStyle.Render(reviewHelpText)
+		help = helpStyle.Render(m.approvalKeysLine(reviewHelpText, "n skip · q cancel remaining"))
 	} else if m.state == stateToolApproval && m.pendingApproval != nil {
 		// The keys, and only the keys: the question is already on screen.
 		keys := approvalHelpText
@@ -2858,7 +2889,7 @@ func (m chatModel) View() string {
 		if m.taskRunning() {
 			keys = strings.Replace(keys, "for this turn", "for this whole task", 1)
 		}
-		bottomLine = m.promptBox(accentStyle.Render(keys))
+		bottomLine = m.promptBox(accentStyle.Render(m.approvalKeysLine(keys, "n no · esc stop")))
 	} else {
 		popupStr, _ := m.renderSlashPopup()
 		if popupStr != "" {

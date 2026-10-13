@@ -139,6 +139,9 @@ func builtinTestServer(t *testing.T) *Server {
 		cfg:       &Config{},
 		workspace: real,
 		logger:    log.New(os.Stderr, "test: ", 0),
+		// Somewhere private for a third-party server to start in: without one
+		// it is not started at all (mcpstartdir.go).
+		serverExtras: serverExtras{mcpRunDir: t.TempDir()},
 	}
 }
 
