@@ -319,6 +319,7 @@ type chatModel struct {
 	// held open -- answering it is the only thing that lets the turn continue.
 	pendingApproval *protocol.ToolApprovalRequest
 	approvalReply   chan string
+	approvalRead    approvalReading // how much of that question has been on screen (approvalview.go)
 
 	// activityTurns maps a tool call's id to the transcript turn narrating it,
 	// so a call's line is REWRITTEN from "running" to its outcome rather than
@@ -851,6 +852,7 @@ func (m chatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m chatModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.viewport, cmd = m.viewport.Update(msg)
+	m.noteApprovalShown()
 	return m, cmd
 }
 
@@ -2246,6 +2248,16 @@ func (m chatModel) handleReviewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // a user typing into what they thought was the input box must not answer a
 // security question on their behalf in either direction.
 func (m chatModel) handleApprovalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.approvalScrollKey(msg) {
+		return m, nil
+	}
+	switch msg.String() {
+	case "y", "a", "s":
+		// Not before all of the question has been on screen (approvalview.go).
+		if m.approvalUnread() > 0 {
+			return m, nil
+		}
+	}
 	switch msg.String() {
 	case "y":
 		return m.answerApproval(protocol.ApprovalApprove)
@@ -2490,6 +2502,7 @@ func (m *chatModel) refreshViewport() {
 	if follow {
 		m.viewport.GotoBottom()
 	}
+	m.trackApprovalReading() // a pending question is shown from its beginning
 }
 
 // wrapToWidth reflows transcript content to the viewport's width.
@@ -2858,7 +2871,7 @@ func (m chatModel) View() string {
 		if m.taskRunning() {
 			keys = strings.Replace(keys, "for this turn", "for this whole task", 1)
 		}
-		bottomLine = m.promptBox(accentStyle.Render(keys))
+		bottomLine = m.promptBox(accentStyle.Render(m.approvalKeysLine(keys)))
 	} else {
 		popupStr, _ := m.renderSlashPopup()
 		if popupStr != "" {

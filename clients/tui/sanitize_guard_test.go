@@ -163,6 +163,10 @@ func TestRawByteStructuresHaveNoNewReaders(t *testing.T) {
 		// whether 's' answers, and hands the request to rememberSpecGrant,
 		// which runs everything it will later show through sanitizeText.
 		"handleApprovalKey": true,
+		// Reviewed 2026-10-12 (a long question is shown from its beginning):
+		// hands the request to renderApprovalPanel, which sanitizes, only to
+		// count the lines it takes; compares the pointer; draws nothing itself.
+		"trackApprovalReading": true,
 	}
 	fset, files := parsePackageSource(t)
 	seen := map[string]string{}
