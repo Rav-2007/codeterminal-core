@@ -122,6 +122,9 @@ func runChat(workspace string) {
 	// decides which screen the client opens on, just below.
 	model.needsAPIKey = needsAPIKey
 	model.chatSync, model.chatRev = chatRev != "", chatRev
+	// Who is running this, and on which machine: asked of the system once, here,
+	// and from then on only drawn, on the row under the prompt (whoami.go).
+	model.whoami = lookupWhoami()
 	// NO KEY IN FORCE: open on the setup -- provider, key, model -- instead of
 	// the splash (setup.go, owner 2026-10-11). Esc there goes to the prompt,
 	// which still asks for a key when the first question needs one.
