@@ -292,7 +292,7 @@ suite('Webview accessibility structure', () => {
     const statusRoles = code.match(/setAttribute\('role', 'status'\)/g) || [];
     assert.ok(
       statusRoles.length >= 2,
-      'the approval record and the tool-activity line both need role=status, so a reader learns ' +
+      'the approval record and the work block summary both need role=status, so a reader learns ' +
         `what was decided and what ran; found ${statusRoles.length}`
     );
   });

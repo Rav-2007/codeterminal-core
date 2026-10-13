@@ -358,6 +358,16 @@ export class ChatPanel {
       null,
       this.disposables,
     );
+    // The panel's own display settings follow the Settings UI live.
+    vscode.workspace.onDidChangeConfiguration(
+      (e) => {
+        if (e.affectsConfiguration('mochiii.toolActivity')) {
+          this.postUiSettings();
+        }
+      },
+      null,
+      this.disposables,
+    );
 
     // TELL THE METER WHAT THE OPEN FILE COSTS, and keep telling it.
     //
@@ -496,6 +506,7 @@ export class ChatPanel {
       // media/main.js for why it asks rather than being told.
       this.postSlashCatalog();
       this.postSafe({ type: 'editorContext', chars: editorContextForPrompt(workspacePath()).length });
+      this.postUiSettings();
     } else if (msg.type === 'focused') {
       void this.catchUp();
     } else if (msg.type === 'prompt' && typeof msg.text === 'string') {
@@ -521,6 +532,13 @@ export class ChatPanel {
     } else if (msg.type === 'newChat') {
       void this.onNewChat();
     }
+  }
+
+  // postUiSettings tells the webview how to draw what is not content: today,
+  // whether a turn's tool work starts folded (compact) or open (expanded).
+  private postUiSettings(): void {
+    const mode = vscode.workspace.getConfiguration('mochiii').get<string>('toolActivity');
+    this.postSafe({ type: 'uiSettings', toolActivity: mode === 'expanded' ? 'expanded' : 'compact' });
   }
 
   // The paperclip. The file dialog is the editor's, and the files are read here
@@ -2792,11 +2810,61 @@ export function chatPanelStyles(): string {
     outline: 2px solid var(--ct-accent);
     outline-offset: 1px;
   }
-  .tool-activity {
-    margin: 2px 0 2px 38px;
-    font-size: 11px;
+  /* THE WORK BLOCK: a turn's tool calls, folded to one line (main.js
+     showToolActivity). Muted like the narration it replaced, so the answer
+     stays the loudest thing on screen; a failure is the one thing in it that
+     takes a colour. */
+  .work {
+    margin: 4px 0 6px 38px;
+    font-size: 11.5px;
     color: var(--ct-muted);
-    font-style: italic;
+    min-width: 0;
+  }
+  .work-summary {
+    cursor: pointer;
+    list-style: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 8px 2px 6px;
+    border-radius: 999px;
+    border: 1px solid var(--ct-border);
+    max-width: 100%;
+  }
+  .work-summary::-webkit-details-marker { display: none; }
+  .work-summary::before {
+    content: '\\25B8';
+    display: inline-block;
+    transition: transform 0.12s ease;
+  }
+  .work[open] > .work-summary::before { transform: rotate(90deg); }
+  .work-summary:hover { color: var(--ct-ink); }
+  .work-summary:focus-visible { outline: 2px solid var(--ct-accent); outline-offset: 1px; }
+  .work.running .work-label { font-style: italic; }
+  .work.has-failure .work-summary { border-color: color-mix(in srgb, var(--ct-danger) 45%, transparent); }
+  .work-rows {
+    list-style: none;
+    margin: 4px 0 0;
+    padding: 0 0 0 10px;
+    border-left: 1px solid var(--ct-border);
+  }
+  .work-row {
+    display: flex;
+    gap: 6px;
+    align-items: baseline;
+    padding: 1px 0;
+    min-width: 0;
+  }
+  .work-glyph { flex: none; width: 1em; text-align: center; }
+  .work-name { flex: none; color: var(--ct-ink); }
+  .work-why { min-width: 0; overflow-wrap: anywhere; }
+  .work-row[data-state="ok"] .work-glyph { color: var(--ct-ok); }
+  .work-row[data-state="fail"] .work-glyph,
+  .work-row[data-state="fail"] .work-why { color: var(--ct-danger); }
+  .work-row[data-state="denied"] .work-glyph { color: var(--ct-warn); }
+  .work-row[data-state="run"] .work-name { font-style: italic; color: var(--ct-muted); }
+  @media (prefers-reduced-motion: reduce) {
+    .work-summary::before { transition: none; }
   }
   .approval-record {
     margin: 2px 0 8px 38px;

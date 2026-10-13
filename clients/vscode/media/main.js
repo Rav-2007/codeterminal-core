@@ -2209,8 +2209,8 @@
   // null except while a turn is suspended waiting for the user.
   let currentApprovalEl = null;
   let currentApprovalCallId = null;
-  // toolActivityEls maps a call id to its narration line, so a call's line is
-  // REWRITTEN from "running" to its outcome rather than a new line per phase.
+  // toolActivityEls maps a call id to its row in the work block, so a call's
+  // row is REWRITTEN from "running" to its outcome rather than a row per phase.
   const toolActivityEls = new Map();
 
   // showToolApproval renders one pending tool call and waits for a decision.
@@ -2422,40 +2422,158 @@
     currentApprovalCallId = null;
   }
 
-  // showToolActivity narrates one step of an agent turn, one line per call.
+  // THE WORK BLOCK (Stage 8): a turn's tool calls as ONE folded line --
+  // "Used 3 tools · 1 failed" -- that opens to a row per call.
+  //
+  // It replaced one italic line per call ("builtin__repo_map — 67 bytes to the
+  // model in 0ms"), which filled a narrow side bar with plumbing and, on a
+  // failure, said only "failed". A row now names what the call did in words,
+  // says why it failed when it did (the daemon sends the reason since Stage 8),
+  // and keeps the byte and time figures in its tooltip.
   //
   // The 'requested' and 'approved' phases are deliberately not rendered: the
   // user has just answered a dialog about that exact call, and reading it back
   // to them is noise -- worse for a screen reader than for an eye.
-  function showToolActivity(activity) {
-    const name = activity.server + '__' + activity.tool;
-    let text = '';
-    if (activity.phase === 'running') {
-      text = 'Running ' + name + '…';
-    } else if (activity.phase === 'succeeded') {
-      text = name + ' — ' + (activity.result_bytes || 0) + ' bytes to the model in ' +
-        (activity.duration_ms || 0) + 'ms';
-    } else if (activity.phase === 'failed') {
-      text = name + ' failed' + (activity.detail ? ': ' + activity.detail : '');
-    } else if (activity.phase === 'denied') {
-      text = name + ' not run' + (activity.detail ? ': ' + activity.detail : '');
-    }
-    if (text === '') {
-      return;
-    }
+  const TOOL_LABELS = {
+    repo_map: 'Mapped the project',
+    list_directory: 'Listed a folder',
+    read_file: 'Read a file',
+    search_code: 'Searched the code',
+    propose_edit: 'Proposed an edit',
+    propose_ast_edit: 'Proposed an edit',
+    query_compiler_definition: 'Looked up a definition',
+    query_compiler_references: 'Looked up references',
+    sandbox_exec: 'Ran a command in the sandbox',
+    web_fetch: 'Fetched a web page',
+    web_search: 'Searched the web',
+  };
+  const WORK_STATE_WORDS = { run: 'running', ok: 'done', fail: 'failed', denied: 'not run', step: '' };
+  const WORK_GLYPHS = { run: '\u25cc', ok: '\u2713', fail: '\u2715', denied: '\u2298', step: '\u203a' };
+  // compact: a block starts folded; expanded: it starts open (mochiii.toolActivity).
+  let toolActivityMode = 'compact';
+  /** @type {HTMLDetailsElement | null} */
+  let workBlockEl = null;
 
-    const existing = toolActivityEls.get(activity.call_id);
-    if (existing && existing.parentElement) {
-      existing.textContent = text;
+  /** @param {any} activity */
+  function toolLabel(activity) {
+    if (activity.phase === 'step') {
+      return activity.tool + (activity.detail ? ' \u2014 ' + activity.detail : '');
+    }
+    const known = activity.server === 'builtin' ? TOOL_LABELS[String(activity.tool)] : undefined;
+    return known || activity.server + ' \u00b7 ' + activity.tool;
+  }
+
+  // currentWorkBlock is the block the next row goes in: the open one while it
+  // is still the last thing in the transcript, else a new one -- so rows stay
+  // in order with the reply text and approvals around them.
+  function currentWorkBlock() {
+    if (workBlockEl && workBlockEl.parentElement === transcriptEl && transcriptEl.lastElementChild === workBlockEl) {
+      return workBlockEl;
+    }
+    const block = document.createElement('details');
+    block.className = 'work';
+    block.open = toolActivityMode === 'expanded';
+    const summary = document.createElement('summary');
+    summary.className = 'work-summary';
+    const label = document.createElement('span');
+    label.className = 'work-label';
+    label.setAttribute('role', 'status');
+    summary.appendChild(label);
+    const rows = document.createElement('ol');
+    rows.className = 'work-rows';
+    block.append(summary, rows);
+    transcriptEl.appendChild(block);
+    workBlockEl = block;
+    return block;
+  }
+
+  /** @param {Element} block */
+  function refreshWorkSummary(block) {
+    const label = block.querySelector('.work-label');
+    if (!label) {
       return;
     }
-    const el = document.createElement('div');
-    el.className = 'tool-activity';
-    el.setAttribute('role', 'status');
-    el.textContent = text;
-    transcriptEl.appendChild(el);
+    let tools = 0;
+    let steps = 0;
+    let running = 0;
+    let failed = 0;
+    let denied = 0;
+    block.querySelectorAll('.work-row').forEach((row) => {
+      const state = row.getAttribute('data-state');
+      if (state === 'step') {
+        steps++;
+        return;
+      }
+      tools++;
+      if (state === 'run') running++;
+      if (state === 'fail') failed++;
+      if (state === 'denied') denied++;
+    });
+    const plural = (n, word) => n + ' ' + word + (n === 1 ? '' : 's');
+    let text;
+    if (running > 0) {
+      text = 'Working\u2026 ' + plural(tools + steps, 'step');
+    } else if (tools === 0) {
+      text = 'Ran ' + plural(steps, 'step');
+    } else {
+      text = 'Used ' + plural(tools, 'tool');
+    }
+    if (failed > 0) text += ' \u00b7 ' + failed + ' failed';
+    if (denied > 0) text += ' \u00b7 ' + denied + ' not run';
+    label.textContent = text;
+    block.classList.toggle('has-failure', failed > 0);
+    block.classList.toggle('running', running > 0);
+  }
+
+  /** @param {any} activity */
+  function showToolActivity(activity) {
+    /** @type {Record<string, string>} */
+    const states = { running: 'run', succeeded: 'ok', failed: 'fail', denied: 'denied', step: 'step' };
+    const state = states[String(activity.phase)];
+    if (!state) {
+      return;
+    }
+    const key = activity.phase === 'step' ? '' : String(activity.call_id || '');
+    let row = key ? toolActivityEls.get(key) : undefined;
+    if (!row || !row.parentElement) {
+      const block = currentWorkBlock();
+      row = document.createElement('li');
+      row.className = 'work-row';
+      const glyph = document.createElement('span');
+      glyph.className = 'work-glyph';
+      glyph.setAttribute('aria-hidden', 'true');
+      const name = document.createElement('span');
+      name.className = 'work-name';
+      const why = document.createElement('span');
+      why.className = 'work-why';
+      row.append(glyph, name, why);
+      const list = block.querySelector('.work-rows');
+      if (list) {
+        list.appendChild(row);
+      }
+      if (key) {
+        toolActivityEls.set(key, row);
+      }
+    }
+    const label = toolLabel(activity);
+    const reason = state === 'fail' || state === 'denied' ? String(activity.detail || '') : '';
+    row.setAttribute('data-state', state);
+    const glyphEl = row.querySelector('.work-glyph');
+    const nameEl = row.querySelector('.work-name');
+    const whyEl = row.querySelector('.work-why');
+    if (glyphEl) glyphEl.textContent = WORK_GLYPHS[state];
+    if (nameEl) nameEl.textContent = label;
+    if (whyEl) whyEl.textContent = reason;
+    const word = WORK_STATE_WORDS[state];
+    row.setAttribute('aria-label', label + (word ? ': ' + word : '') + (reason ? ', ' + reason : ''));
+    row.title = state === 'ok'
+      ? (activity.result_bytes || 0) + ' bytes to the model in ' + (activity.duration_ms || 0) + 'ms'
+      : (activity.server && activity.tool ? activity.server + '__' + activity.tool : label);
+    const block = row.closest('.work');
+    if (block) {
+      refreshWorkSummary(block);
+    }
     transcriptEl.scrollTop = transcriptEl.scrollHeight;
-    toolActivityEls.set(activity.call_id, el);
   }
 
   // showEditSummary renders the end-of-run outcome once every block in a
@@ -2653,6 +2771,7 @@
     clearEditProposal();
     clearToolApproval();
     toolActivityEls.clear();
+    workBlockEl = null;
 
     let text = typed;
     if (pendingAttachments.length > 0) {
@@ -2787,6 +2906,7 @@
     clearEditProposal();
     clearToolApproval();
     toolActivityEls.clear();
+    workBlockEl = null;
     lastGroundingInfo = null;
     lastHistoryMeta = null;
     refreshContextUsage();
@@ -2928,6 +3048,9 @@
         break;
       case 'toolActivity':
         showToolActivity(msg.activity);
+        break;
+      case 'uiSettings':
+        toolActivityMode = msg.toolActivity === 'expanded' ? 'expanded' : 'compact';
         break;
       case 'toolApproval':
         showToolApproval(msg.request);

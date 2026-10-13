@@ -88,6 +88,16 @@
           "default": true,
           "markdownDescription": "Send the file you have open with each question: its path, your cursor line, your selection, the names of your other open tabs, and the start of the file (up to 24 KB). This is what lets \"what does this function do?\" mean the function you are looking at.\n\nOnly files **inside the workspace** are ever sent, and only the focused editor's contents -- the other tabs contribute their names alone. Turn this off to send nothing but what you type; the model can still read workspace files with its `read_file` tool when it asks."
         },
+        "mochiii.toolActivity": {
+          "type": "string",
+          "enum": ["compact", "expanded"],
+          "enumDescriptions": [
+            "Each turn's tool work is one folded line: what was used, and how many failed. Click it to see each step.",
+            "Each turn's tool work starts open, one row per step."
+          ],
+          "default": "compact",
+          "description": "How the chat shows the tools the agent used in a turn."
+        },
         "mochiii.history.autoSave": {
           "type": "boolean",
           "default": true,
