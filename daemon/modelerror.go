@@ -101,6 +101,9 @@ type ModelError struct {
 	// stalled marks an attempt the stall watchdog abandoned: the provider went
 	// silent rather than failing. See streamStallTimeout.
 	stalled bool
+	// ranOut marks an attempt that reached requestTimeout while the provider
+	// was still sending: neither silent nor failed, just not finished.
+	ranOut bool
 	// status is the HTTP status the provider answered with, or 0 when it never
 	// answered. Kept because the class alone cannot say "this model is not there"
 	// (404) apart from every other unclassified refusal.
@@ -108,6 +111,11 @@ type ModelError struct {
 }
 
 func (e *ModelError) Error() string {
+	// Said in its own words: the class is "unavailable" so that it is retried
+	// and counted as one, but "unreachable" is exactly what it was not.
+	if e.ranOut {
+		return fmt.Sprintf(ranOutMessage, limitWords(requestTimeout))
+	}
 	if e.Class == ClassUnavailableTier && e.modelName != "" {
 		return fmt.Sprintf(clientMessages[ClassUnavailableTier], e.modelName)
 	}
@@ -115,6 +123,23 @@ func (e *ModelError) Error() string {
 		return msg
 	}
 	return clientMessages[ClassUnknown]
+}
+
+// ranOutMessage is what a client is told when a request reached the daemon's
+// own time limit with the model still sending. It names nothing of the
+// provider's: the limit is this daemon's and the sentence is the same for all.
+const ranOutMessage = "the model was still working after %s, the limit for one request, and had not finished its " +
+	"answer — that is the model, not your connection. Ask again, ask for less at once, or choose another model with /model"
+
+// limitWords is a duration the way a person says it.
+func limitWords(d time.Duration) string {
+	if d >= time.Minute && d%time.Minute == 0 {
+		if n := int(d / time.Minute); n != 1 {
+			return fmt.Sprintf("%d minutes", n)
+		}
+		return "1 minute"
+	}
+	return d.String()
 }
 
 func (e *ModelError) withModelName(model string) *ModelError {
