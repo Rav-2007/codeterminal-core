@@ -2588,6 +2588,12 @@
       Object.keys(args).length === 1 && typeof args[k] === 'string' ? args[k] : '';
     // Deleting and moving files (daemon/fileops.go): said as what happens.
     // Kept word for word with the TUI's approvalQuestion.
+    // Not "Run command:" -- that is sandbox_exec's, in a private copy. This one
+    // runs in the real project, as the user's terminal would.
+    if (req.server === 'builtin' && req.tool === 'run_command' && typeof args.command === 'string') {
+      const where = typeof args.cwd === 'string' && args.cwd ? ' (in ' + args.cwd + ')' : '';
+      return 'Run in your terminal' + where + ': ' + args.command + ' ?';
+    }
     if (req.server === 'builtin' && req.tool === 'delete_path' && only('path')) {
       return 'Delete ' + only('path') + " (moved to Mochiii's trash, where it can be restored) ?";
     }
@@ -2692,6 +2698,7 @@
     sandbox_exec: 'Ran a command in the sandbox',
     web_fetch: 'Fetched a web page',
     web_search: 'Searched the web',
+    run_command: 'Ran a command in your terminal',
     delete_path: 'Deleted a file',
     move_path: 'Moved a file',
     restore_deleted: 'Restored a deleted file',

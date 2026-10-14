@@ -75,7 +75,7 @@ func readDirBounded(path string, max int) ([]os.DirEntry, error) {
 
 // alwaysAskTools are asked about on every call, whatever mcp.builtin.tools
 // says (configPolicy).
-var alwaysAskTools = map[string]bool{deleteToolName: true, moveToolName: true, restoreToolName: true}
+var alwaysAskTools = map[string]bool{deleteToolName: true, moveToolName: true, restoreToolName: true, runCommandToolName: true}
 
 // opTarget is one path a file operation names, resolved and judged.
 type opTarget struct {

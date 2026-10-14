@@ -20,6 +20,7 @@ const (
 	reachNoWrite      = "You cannot create or change files in this turn."
 	reachNoDelete     = "You CANNOT delete, move or rename a file or folder"
 	reachDelete       = "DELETE, MOVE and RENAME files and folders with delete_path and move_path"
+	reachTerminal     = "RUN ANY SHELL COMMAND in the user's real project with run_command"
 	reachRun          = "RUN only build and test commands ("
 	reachNoRun        = "You cannot run commands in this turn."
 )
@@ -105,6 +106,9 @@ func TestMachineReachSaysOnlyWhatTheToolsDo(t *testing.T) {
 			t.Errorf("mode %q: the programs named are not the ones sandbox_exec starts (%v):\n%s", mode, s.execPrograms(), reach)
 		}
 
+		if got := strings.Contains(reach, reachTerminal); got != offered(runCommandToolName) {
+			t.Errorf("mode %q: says it runs any shell command = %v, but run_command offered = %v", mode, got, offered(runCommandToolName))
+		}
 		// Deleting and moving: said iff the tools are on the menu, and no other
 		// tool on it deletes or moves a file.
 		canDelete := offered(deleteToolName) || offered(moveToolName)

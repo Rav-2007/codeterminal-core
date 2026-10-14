@@ -116,6 +116,12 @@ func machineReach(offered func(tool string) bool, mode string, programs []string
 			"and give the user the command to run themselves.")
 	}
 
+	if offered(runCommandToolName) {
+		b.WriteString("\n- RUN ANY SHELL COMMAND in the user's real project with run_command, as they would in their " +
+			"terminal (installing packages, scripts, git): the user approves each exact command, it is not sandboxed, " +
+			"and what it changes is not reviewed. Your unaccepted edits are not in the real project; test them with " +
+			"sandbox_exec.")
+	}
 	if offered(builtinSandboxExecName) {
 		b.WriteString("\n- RUN only build and test commands (" + strings.Join(programs, ", ") +
 			"), in the project folder: sandbox_exec is not a shell.")

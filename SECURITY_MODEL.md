@@ -1167,6 +1167,28 @@ to review — but asked-about actions, like a command:
   change, so later reads see it and an edit to a moved file is offered at its
   new path.
 
+## A real terminal command (2026-10-14)
+
+`run_command` (`daemon/runcommand.go`) is what the user asked for beyond
+`sandbox_exec`'s four programs: a command through their own shell, in their
+**real** project, with their full access and network — installing packages,
+running scripts, git. It is not confined and is never described as confined.
+What protects the user is the question, so:
+
+- **Every call asks**, whatever `mcp.builtin.tools` says, and the prompt shows the
+  exact command as "Run in your terminal: …", with NOT SANDBOXED and RUNS IN YOUR
+  REAL PROJECT (`InPlace`). A "yes for this turn" covers that exact command only.
+- **This product's keys are not in its environment** (the model and proxy keys,
+  every `MOCHIII_*`); MCP servers' keys were never there.
+- **Nothing can be typed into it**: its input is empty, so a prompt reads
+  end-of-file rather than hanging the turn, and sudo cannot ask for a password.
+- **Bounded**: a time limit (5 minutes by default, 30 at most, never past the
+  turn's own deadline); the whole process group is killed when it ends; output is
+  kept to its last 1 MiB, then digested and scrubbed like every tool result.
+- **Where**: the project root, or a folder in it judged by the edit pipeline's
+  rules (never `.git` or outside the project).
+- Withheld in plan, spec and check modes and in long tasks, which run unattended.
+
 ## Tool output is egress, and is treated as egress
 
 Whatever a tool returns goes to the model, which means it leaves the machine. It
