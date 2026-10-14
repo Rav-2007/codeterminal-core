@@ -60,6 +60,10 @@ func runMCPCommand(args []string, logger *log.Logger) error {
 		return runMCPAuth(args, logger)
 	case "sign-out":
 		return runMCPNamed(protocol.MCPActionSignOut, args, logger)
+	case "approve":
+		return runMCPApprove(args, logger)
+	case "reject":
+		return runMCPNamed(protocol.MCPActionReject, args, logger)
 	}
 	return fmt.Errorf("unknown mcp subcommand %q (the subcommands are list, get, check, add, add-json, remove, "+
 		"enable, disable and set-key)", sub)
@@ -77,6 +81,7 @@ func mcpUsage() {
 		"  %[1]s mcp check  [<name>] [--timeout seconds]\n"+
 		"  %[1]s mcp auth   <name>      sign in to a remote server in your browser\n"+
 		"  %[1]s mcp sign-out <name>\n"+
+		"  %[1]s mcp approve <name> | reject <name>   a server this project's .mcp.json proposes\n"+
 		"  %[1]s mcp remove <name>\n"+
 		"  %[1]s mcp disable <name>\n"+
 		"  %[1]s mcp enable <name>\n\n"+
@@ -701,4 +706,39 @@ func runMCPAuth(args []string, logger *log.Logger) error {
 			return printMCPResponse(resp)
 		}
 	}
+}
+
+// runMCPApprove is `mcp approve <name>`: the warning for a server the
+// project's .mcp.json proposes, then its name typed, then the approval -- of
+// the definition the warning described (its digest), and no other.
+func runMCPApprove(args []string, logger *log.Logger) error {
+	fs := flag.NewFlagSet("mcp approve", flag.ExitOnError)
+	configPath := fs.String("config", "", "path to models.json (default: next to the daemon binary, then ./models.json)")
+	fs.Usage = mcpUsage
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		mcpUsage()
+		return fmt.Errorf("mcp approve needs the server's name")
+	}
+	name := args[0]
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	srv, err := mcpAdminServer(*configPath, logger)
+	if err != nil {
+		return err
+	}
+	ctx := context.Background()
+	req := protocol.MCPRequest{MCP: true, Action: protocol.MCPActionApprove, Name: name}
+	first := srv.mcpResult(ctx, req)
+	if !first.NeedsAcknowledgement {
+		return printMCPResponse(first)
+	}
+	_, _ = fmt.Fprintf(mcpOut, "%s\n\nType the server's name (%s) to approve it, or anything else to cancel: ", first.Detail, name)
+	typed, _ := bufio.NewReader(mcpIn).ReadString('\n')
+	if strings.TrimSpace(typed) != name {
+		_, _ = fmt.Fprintln(mcpOut, "Cancelled; it stays pending.")
+		return nil
+	}
+	req.AcknowledgedUnconfined, req.Digest = true, first.Digest
+	return printMCPResponse(srv.mcpResult(ctx, req))
 }

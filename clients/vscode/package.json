@@ -186,6 +186,18 @@
         "icon": "$(edit)"
       },
       {
+        "command": "mochiii.mcp.approve",
+        "title": "Approve MCP Server the Project Proposes…",
+        "category": "Mochiii",
+        "icon": "$(check)"
+      },
+      {
+        "command": "mochiii.mcp.reject",
+        "title": "Reject MCP Server the Project Proposes",
+        "category": "Mochiii",
+        "icon": "$(close)"
+      },
+      {
         "command": "mochiii.mcp.signIn",
         "title": "Sign In to MCP Server…",
         "category": "Mochiii",
@@ -316,6 +328,16 @@
           "group": "1_change@0"
         },
         {
+          "command": "mochiii.mcp.approve",
+          "when": "view == mochiii.mcpServers && viewItem == mcpServer.project.pending && isWorkspaceTrusted",
+          "group": "inline@1"
+        },
+        {
+          "command": "mochiii.mcp.reject",
+          "when": "view == mochiii.mcpServers && viewItem == mcpServer.project.pending",
+          "group": "1_change@3"
+        },
+        {
           "command": "mochiii.mcp.signOut",
           "when": "view == mochiii.mcpServers && viewItem =~ /^mcpServer\\./",
           "group": "1_change@0"
@@ -342,6 +364,14 @@
         }
       ],
       "commandPalette": [
+        {
+          "command": "mochiii.mcp.approve",
+          "when": "false"
+        },
+        {
+          "command": "mochiii.mcp.reject",
+          "when": "false"
+        },
         {
           "command": "mochiii.mcp.signIn",
           "when": "false"

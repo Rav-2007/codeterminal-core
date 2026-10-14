@@ -89,6 +89,8 @@ export const MCP_ROW_COMMANDS: Record<string, string> = {
   check: 'mochiii.mcp.check',
   signIn: 'mochiii.mcp.signIn',
   signOut: 'mochiii.mcp.signOut',
+  approve: 'mochiii.mcp.approve',
+  reject: 'mochiii.mcp.reject',
 };
 
 

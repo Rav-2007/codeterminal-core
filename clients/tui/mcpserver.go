@@ -57,7 +57,8 @@ const mcpServerUsage = "/mcp-server                                   the tools 
 	"/mcp-server key <name> <VARIABLE>             give it a key; you type the value next, hidden\n" +
 	"/mcp-server header <name> <Header>            a remote server's header value, typed hidden\n" +
 	"/mcp-server sign-in <name>                    sign in to a remote server in your browser\n" +
-	"/mcp-server sign-out <name>                   forget that sign-in\n\n" +
+	"/mcp-server sign-out <name>                   forget that sign-in\n" +
+	"/mcp-server approve <name> | reject <name>     a server this project's .mcp.json proposes\n\n" +
 	"Example: /mcp-server add files npx -y @modelcontextprotocol/server-filesystem /home/me/notes\n\n" +
 	"--env takes the NAME of a variable the server reads. Give its value with /mcp-server key, which hides what you " +
 	"type; never type a secret on the command itself: it is stored and shown.\n" +
@@ -346,6 +347,14 @@ func (m chatModel) handleMCPServerCommand(args string) (tea.Model, tea.Cmd) {
 		}
 		say("asking " + sanitizeText(words[1]) + " where to sign in…")
 		return m, submitMCP(m.clientName, protocol.MCPRequest{Action: protocol.MCPActionAuthStart, Name: words[1]})
+	case protocol.MCPActionApprove, protocol.MCPActionReject:
+		// A server the project's .mcp.json proposes. Approve shows the warning
+		// and waits for the name typed, as add does; reject is one request.
+		if len(words) != 2 {
+			say("mcp-server: " + words[0] + " takes the name of one server the project proposes.\n\n" + mcpServerUsage)
+			return m, nil
+		}
+		return m, submitMCP(m.clientName, protocol.MCPRequest{Action: words[0], Name: words[1]})
 	case "sign-out":
 		if len(words) != 2 {
 			say("mcp-server: sign-out takes the name of one server.\n\n" + mcpServerUsage)
@@ -406,12 +415,16 @@ func (m chatModel) handleMCPResult(msg mcpResultMsg) (tea.Model, tea.Cmd) {
 		lastAuthID = ""
 	}
 	text := formatMCPResult(msg)
-	if msg.err == nil && msg.resp.Error == "" && msg.resp.NeedsAcknowledgement && msg.req.Action == protocol.MCPActionAdd {
+	if msg.err == nil && msg.resp.Error == "" && msg.resp.NeedsAcknowledgement &&
+		(msg.req.Action == protocol.MCPActionAdd || msg.req.Action == protocol.MCPActionApprove) {
 		pending := msg.req
+		// An approval is of the definition the warning described, and no other.
+		pending.Digest = msg.resp.Digest
 		m.pendingMCPAdd = &pending
-		m.input.Placeholder = "type " + sanitizeText(pending.Name) + " to add it — anything else cancels"
-		text += "\n\nType the server's name (" + sanitizeText(pending.Name) + ") and press enter to add it. " +
-			"Anything else, or esc, cancels and nothing is added."
+		verb := map[bool]string{true: "approve", false: "add"}[pending.Action == protocol.MCPActionApprove]
+		m.input.Placeholder = "type " + sanitizeText(pending.Name) + " to " + verb + " it — anything else cancels"
+		text += "\n\nType the server's name (" + sanitizeText(pending.Name) + ") and press enter to " + verb + " it. " +
+			"Anything else, or esc, cancels and nothing is " + map[bool]string{true: "approved", false: "added"}[verb == "approve"] + "."
 	}
 	m.appendTurn(turn{role: roleAssistant, local: true, verbatim: true, text: text})
 	m.resizeViewport()

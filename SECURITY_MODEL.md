@@ -1117,6 +1117,31 @@ client registration and the state and issuer checks done by the go-sdk.
   refreshed first), scrubbed (the access and refresh tokens and the client
   secret — not the URL or the word Bearer), and deleted on sign-out or remove.
 
+## A project may propose a server, never grant one (2026-10-14)
+
+Until this date a workspace could not name an MCP server at all: cloning a
+repository must not be enough to have its program started (the hijack confirmed
+2026-08-08). A project's `.mcp.json` — Claude Code's format, so a team can share
+the servers a repository is meant to be worked with — is now read
+(`daemon/mcpproject.go`), and that property holds:
+
+- **Proposed is pending, and pending never runs.** Not by a turn, a list or a
+  check. The user approves with the same warning and typed name as any add.
+- **The grant lives outside the project**: `~/.mochiii/mcp-approvals.json`,
+  which no workspace can write and the agent is refused. An approvals file the
+  repository ships, at its root or in its `.mochiii/`, is not read.
+- **It is bound to a digest** of the project folder, the name and every part of
+  the definition. One changed argument — a pull, a hand edit, the agent's own
+  edit — and the server is pending again. An approval whose echoed digest is not
+  the definition's current one is refused.
+- **A project sets no policy**: every one of its tools asks.
+- **A project carries no secret**: a plain value that looks like a key, sits
+  under a key-like name, or is a `Bearer` header refuses that server; a key is
+  written `${NAME}` and given with Set key into the user's own key file.
+- `.mcp.json` must be a regular file (a link is not followed) of at most 256 KiB;
+  a name the user already uses keeps the user's server. VS Code offers Approve
+  only in a trusted folder.
+
 ## Tool output is egress, and is treated as egress
 
 Whatever a tool returns goes to the model, which means it leaves the machine. It
