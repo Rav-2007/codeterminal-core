@@ -1044,6 +1044,32 @@ Neutering that construction to `os.Environ()` leaks the inference key, the
 managed-mode key, `SSH_AUTH_SOCK`, and ~130 other variables. That is the measured
 consequence, and it is why the environment is built rather than pruned.
 
+## A Lane B server's own keys, at rest (2026-10-14)
+
+A server usually reads a key of its own (perplexity's `PERPLEXITY_API_KEY`).
+Until this date the only source was the daemon's environment, and an editor
+launched from a desktop icon has none, so such servers exited on every start.
+The user now gives the value — `mcp set-key`, `mcp add --env NAME=value`, or
+Set key in VS Code — and the daemon keeps it in `~/.mochiii/mcp-secrets.json`
+(`daemon/mcpsecrets.go`):
+
+- **Owner-only, and refused otherwise.** Written 0600 and atomically, under an
+  exclusive lock (several daemons and the CLI share it). A file others can write
+  is not used at all: a value somebody else chose would be trusted by a server
+  the user agreed to.
+- **Values, never programs.** Nothing in the file can make anything run; which
+  program runs stays in `mcp-servers.json` behind the typed acknowledgement. A
+  value given with an add is stored only on its acknowledged step.
+- **Given only where named.** A value reaches a server only if that server's
+  `env` names the variable (`mcp.ServerEnvWith`); a server's own value wins over
+  one stored for every server. The ungrantable names above stay ungrantable.
+- **Scrubbed like the daemon's own key.** Every value in the file — including
+  fields a newer daemon wrote that this one does not read — joins the literal
+  credential scrubber, so none reaches the model or leaves in a web call.
+- **Never on a command line, never echoed.** `mcp set-key` reads the value from
+  stdin with echo off; errors name the variable and, for an invisible pasted
+  character, its code point — never the value.
+
 ## Tool output is egress, and is treated as egress
 
 Whatever a tool returns goes to the model, which means it leaves the machine. It

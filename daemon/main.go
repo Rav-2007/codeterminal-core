@@ -494,6 +494,7 @@ func main() {
 			userServersPath: userServersPathOrNone(logger),
 			mcpRunDir:       mcpRunDirOrNone(logger),
 			mcpEnv:          launch.MCPEnv,
+			mcpSecrets:      mcpSecretStoreOrNone(logger),
 		},
 		modelOverride:           *modelOverride,
 		systemPrompt:            systemPrompt,

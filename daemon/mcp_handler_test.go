@@ -302,7 +302,8 @@ func TestAnAddSaysWhatElseIsNeeded(t *testing.T) {
 		t.Fatalf("add: %s", resp.Error)
 	}
 	notes := strings.Join(resp.Notes, "\n")
-	if !strings.Contains(notes, "MOCHIII_TEST_UNSET_VARIABLE is not set") || strings.Contains(notes, "MOCHIII_TEST_SET_VARIABLE is not set") {
+	if !strings.Contains(notes, "no value for MOCHIII_TEST_UNSET_VARIABLE") || strings.Contains(notes, "no value for MOCHIII_TEST_SET_VARIABLE") ||
+		!strings.Contains(notes, "mcp set-key echo MOCHIII_TEST_UNSET_VARIABLE") {
 		t.Errorf("the notes are wrong about which variable is missing:\n%s", notes)
 	}
 	if !strings.Contains(notes, "agent mode is off in /opt/mochiii/models.agent.json") {

@@ -54,6 +54,9 @@ type serverExtras struct {
 	// (mcpenv.go). Guarded by Server.credMu: they are credentials, and the
 	// scrubber is built from them along with the daemon's own key.
 	mcpEnv map[string]string
+	// mcpSecrets is ~/.mochiii/mcp-secrets.json (mcpsecrets.go): the keys the
+	// user stored, kept across restarts. Nil keeps nothing on disk.
+	mcpSecrets *mcpSecretStore
 	// mcpStates is what happened the last time each server was started.
 	mcpStates mcpStateBook
 }

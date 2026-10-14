@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"slices"
 	"strings"
 	"text/tabwriter"
 
@@ -47,16 +48,19 @@ func runMCPCommand(args []string, logger *log.Logger) error {
 		return runMCPAdd(args, logger)
 	case "remove", "enable", "disable":
 		return runMCPNamed(sub, args, logger)
+	case "set-key":
+		return runMCPSetKey(args, logger)
 	}
 	return fmt.Errorf("unknown mcp subcommand %q (the subcommands are \"list\", \"add\", \"remove\", "+
-		"\"enable\" and \"disable\")", sub)
+		"\"enable\", \"disable\" and \"set-key\")", sub)
 }
 
 // mcpUsage is the one usage text for every subcommand.
 func mcpUsage() {
 	fmt.Fprintf(os.Stderr, "usage:\n"+
 		"  %[1]s mcp list   [--config models.json] [--workspace .]\n"+
-		"  %[1]s mcp add    <name> [--env NAME]... [--in-project] [--acknowledge-unconfined] -- <command> [args...]\n"+
+		"  %[1]s mcp add    <name> [--env NAME | --env NAME=value]... [--in-project] [--acknowledge-unconfined] -- <command> [args...]\n"+
+		"  %[1]s mcp set-key <name> <VARIABLE> [--forget]   (the value is read from stdin, not the command line)\n"+
 		"  %[1]s mcp remove <name>\n"+
 		"  %[1]s mcp disable <name>\n"+
 		"  %[1]s mcp enable <name>\n\n"+
@@ -260,7 +264,8 @@ var (
 func runMCPAdd(args []string, logger *log.Logger) error {
 	fs := flag.NewFlagSet("mcp add", flag.ExitOnError)
 	var env envNames
-	fs.Var(&env, "env", "NAME of an environment variable to pass through to the server (repeatable; a name, never a value)")
+	fs.Var(&env, "env", "a variable the server reads (repeatable): NAME to pass it through from the environment, "+
+		"or NAME=value to keep a value for this server in ~/.mochiii/mcp-secrets.json (owner-only)")
 	ack := fs.Bool("acknowledge-unconfined", false, "confirm, without being asked, that the server runs with your full privileges")
 	inProject := fs.Bool("in-project", false, "start the server inside the project being worked on, instead of a private folder of its own")
 	configPath := fs.String("config", "", "path to models.json (default: next to the daemon binary, then ./models.json)")
@@ -286,9 +291,10 @@ func runMCPAdd(args []string, logger *log.Logger) error {
 	if err != nil {
 		return err
 	}
+	names, values := splitEnvFlags(env)
 	req := protocol.MCPRequest{
 		MCP: true, Action: protocol.MCPActionAdd, Name: name,
-		Command: rest[0], Args: rest[1:], Env: env, AcknowledgedUnconfined: *ack,
+		Command: rest[0], Args: rest[1:], Env: names, EnvValues: values, AcknowledgedUnconfined: *ack,
 	}
 	if *inProject {
 		req.Cwd = protocol.MCPCwdWorkspace
@@ -357,7 +363,10 @@ func mcpAdminServer(configPath string, logger *log.Logger) (*Server, error) {
 	root, _ := editapply.ResolveRealWorkspaceRoot(".")
 	return &Server{
 		cfg: cfg, workspace: root, logger: logger,
-		serverExtras: serverExtras{configPath: absoluteOrAsGiven(configPath), userServersPath: path, mcpRunDir: mcpRunDirOrNone(logger)},
+		serverExtras: serverExtras{
+			configPath: absoluteOrAsGiven(configPath), userServersPath: path, mcpRunDir: mcpRunDirOrNone(logger),
+			mcpSecrets: mcpSecretStoreOrNone(logger),
+		},
 	}, nil
 }
 
@@ -446,4 +455,63 @@ func countNetworked(tools []mcp.Tool) int {
 		}
 	}
 	return n
+}
+
+// splitEnvFlags splits --env flags into the names a server reads and the values
+// given for some of them (NAME=value), as Claude Code's --env takes them.
+func splitEnvFlags(flags []string) (names []string, values map[string]string) {
+	for _, f := range flags {
+		name, value, hasValue := strings.Cut(f, "=")
+		name = strings.TrimSpace(name)
+		if !slices.Contains(names, name) {
+			names = append(names, name)
+		}
+		if hasValue {
+			if values == nil {
+				values = map[string]string{}
+			}
+			values[name] = value
+		}
+	}
+	return names, values
+}
+
+// runMCPSetKey is `mcp set-key <name> <VARIABLE>`: keep a value for one server.
+//
+// THE VALUE IS NEVER AN ARGUMENT. An argument is in the shell's history and in
+// every process listing while the command runs. It is read from stdin -- typed
+// with echo off at a terminal, or piped (`pass show x | mochiii-daemon mcp
+// set-key ...`).
+func runMCPSetKey(args []string, logger *log.Logger) error {
+	fs := flag.NewFlagSet("mcp set-key", flag.ExitOnError)
+	forget := fs.Bool("forget", false, "forget the stored value instead of setting one")
+	configPath := fs.String("config", "", "path to models.json (default: next to the daemon binary, then ./models.json)")
+	fs.Usage = mcpUsage
+	if len(args) < 2 || strings.HasPrefix(args[0], "-") || strings.HasPrefix(args[1], "-") {
+		mcpUsage()
+		return fmt.Errorf("mcp set-key needs the server's name and the variable's name")
+	}
+	name, variable := args[0], args[1]
+	if err := fs.Parse(args[2:]); err != nil {
+		return err
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("unexpected argument %q: the value is read from stdin, never the command line", fs.Arg(0))
+	}
+	srv, err := mcpAdminServer(*configPath, logger)
+	if err != nil {
+		return err
+	}
+	value := ""
+	if !*forget {
+		if value, err = readSecretLine(mcpIn, mcpOut, fmt.Sprintf("Value for %s (%s), not shown: ", variable, name)); err != nil {
+			return err
+		}
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("no value was given; nothing was stored (use --forget to remove one)")
+		}
+	}
+	return printMCPResponse(srv.mcpResult(context.Background(), protocol.MCPRequest{
+		MCP: true, Action: protocol.MCPActionSetEnv, Name: name, EnvName: variable, EnvValue: value,
+	}))
 }
