@@ -183,7 +183,15 @@ export class McpServersProvider implements vscode.TreeDataProvider<McpNode> {
     item.iconPath = new vscode.ThemeIcon(
       s.disabled ? 'debug-pause' : s.state === MCP_STATE_FAILED ? 'error' : fromConfig ? 'settings-gear' : 'server-environment',
     );
-    item.contextValue = fromConfig ? 'mcpServer.config' : s.disabled ? 'mcpServer.user.disabled' : 'mcpServer.user.enabled';
+    item.contextValue = fromConfig
+      ? 'mcpServer.config'
+      : s.source === 'project'
+        ? s.approval === 'approved'
+          ? 'mcpServer.project.approved'
+          : 'mcpServer.project.pending'
+        : s.disabled
+          ? 'mcpServer.user.disabled'
+          : 'mcpServer.user.enabled';
     item.tooltip = serverTooltip(s);
     item.accessibilityInformation = {
       label: `MCP server ${s.name}${s.disabled ? ', disabled' : ''}${fromConfig ? ', defined in models.json' : ''}`,
@@ -790,6 +798,40 @@ export function registerMcpServers(
         } else if (resp.detail) {
           void vscode.window.showInformationMessage(resp.detail);
         }
+      } catch (err) {
+        void vscode.window.showErrorMessage(`Could not reach the Mochiii daemon: ${(err as Error).message}`);
+      }
+      await provider.refresh();
+    }),
+    // A SERVER THE PROJECT PROPOSES. Approve shows the daemon's warning in the
+    // pop-up and waits for the name typed; never in an untrusted workspace,
+    // where VS Code itself says the folder's contents are not to be acted on.
+    vscode.commands.registerCommand('mochiii.mcp.approve', async (node?: McpNode | string) => {
+      const server = serverOf(node);
+      if (!server || server.approval === undefined) {
+        return;
+      }
+      if (!vscode.workspace.isTrusted) {
+        void vscode.window.showWarningMessage(
+          `This folder is not trusted, so a server it proposes cannot be approved. Trust the folder first if you mean to run ${server.name}.`,
+        );
+        return;
+      }
+      const host = await popup();
+      if (host) {
+        await host.openApprove(server);
+        return;
+      }
+      void vscode.window.showInformationMessage('Open the Mochiii chat to approve a server the project proposes.');
+    }),
+    vscode.commands.registerCommand('mochiii.mcp.reject', async (node?: McpNode | string) => {
+      const server = serverOf(node);
+      if (!server) {
+        return;
+      }
+      try {
+        const { resp } = await sendMCP(clientName, { action: 'reject', name: server.name });
+        void (resp.error ? vscode.window.showErrorMessage(resp.error) : vscode.window.showInformationMessage(resp.detail ?? 'Rejected.'));
       } catch (err) {
         void vscode.window.showErrorMessage(`Could not reach the Mochiii daemon: ${(err as Error).message}`);
       }

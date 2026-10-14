@@ -230,6 +230,8 @@
       const rest = line.replace(/^\S+\s+/, '');
       if (s.disabled) return { badge: 'Paused', tone: 'off', title: 'Paused: its tools are not offered.' };
       if (line.startsWith('✘')) return { badge: 'Failed', tone: 'warn', problem: rest, title: rest };
+      if (s.approval === 'pending') return { badge: 'Pending approval', tone: 'warn', problem: 'Proposed by this project’s .mcp.json. It does not run until you approve it.', title: 'Proposed by this project' };
+      if (s.approval === 'rejected') return { badge: 'Rejected', tone: 'off', title: 'You rejected it; it does not run.' };
       if (line.startsWith('! Needs authentication')) return { badge: 'Sign in', tone: 'warn', problem: 'It needs you to sign in: use Sign in.', title: rest };
       if (line.startsWith('!') && status.needsKey) return { badge: 'Needs key', tone: 'warn', problem: status.detail || rest, title: rest };
       if (line.startsWith('!')) return { badge: 'Tools failed', tone: 'warn', problem: rest, title: rest };
@@ -257,7 +259,9 @@
       // command, whether it is on, a switch to pause it, and edit and remove.
       // A server from the config file is shown, not changed, here.
       for (const s of msg.servers || []) {
-        const own = s.source !== 'config';
+        // Only a server you added is yours to change, pause or remove: one from
+        // the config file or the project's .mcp.json is changed there.
+        const own = s.source !== 'config' && s.source !== 'project';
         const row = el('div', 'row mcp-row');
         const mono = el('span', 'mcp-mono', String(s.name || '?').charAt(0).toUpperCase());
         mono.setAttribute('aria-hidden', 'true');
@@ -292,6 +296,24 @@
           check.title = 'Start it now and see whether it works';
           acts.append(check);
         };
+        if (s.approval === 'pending' || s.approval === 'rejected') {
+          const acts = el('div', 'mcp-acts');
+          if (s.canApprove) {
+            const ok = act('Approve…', () => vscode.postMessage({ type: 'mcp:row', action: 'approve', name: s.name }), 'primary');
+            ok.setAttribute('aria-label', 'Approve ' + s.name + ', which this project proposes');
+            acts.append(ok);
+          } else {
+            acts.append(el('span', 'row-sub', 'Trust this folder to approve it'));
+          }
+          if (s.approval === 'pending') {
+            const no = act('Reject', () => vscode.postMessage({ type: 'mcp:row', action: 'reject', name: s.name }), 'danger');
+            no.setAttribute('aria-label', 'Reject ' + s.name);
+            acts.append(no);
+          }
+          row.append(acts);
+          list.append(row);
+          continue;
+        }
         if (!own && (s.canSetKey || s.canCheck || s.canSignIn)) {
           const acts = el('div', 'mcp-acts');
           addCheck(acts);

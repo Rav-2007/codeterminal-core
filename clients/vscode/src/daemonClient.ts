@@ -1692,6 +1692,10 @@ export interface MCPServerInfo {
   headers_missing?: string[];
   /** A sign-in token is stored for this remote server (FEATURE_MCP_OAUTH). */
   signed_in?: boolean;
+  /** A server the project's .mcp.json proposes (FEATURE_MCP_PROJECT): 'pending' | 'approved' | 'rejected'. */
+  approval?: string;
+  digest?: string;
+  project_file?: string;
 }
 
 export const MCP_STATE_NEEDS_AUTH = 'needs_auth';
@@ -1735,7 +1739,9 @@ export type MCPAction =
   | 'auth_wait'
   | 'auth_complete'
   | 'auth_cancel'
-  | 'sign_out';
+  | 'sign_out'
+  | 'approve'
+  | 'reject';
 
 /** protocol.MCPRequest. */
 export interface MCPRequest {
@@ -1768,6 +1774,8 @@ export interface MCPRequest {
   /** auth_wait / auth_complete / auth_cancel: the sign-in; auth_complete's pasted address. */
   auth_id?: string;
   callback_url?: string;
+  /** approve: the digest of the definition the warning described. */
+  digest?: string;
 }
 
 /** protocol.MCPResponse. */
@@ -1789,6 +1797,8 @@ export interface MCPResponse {
   auth_url?: string;
   auth_state?: string;
   expires_in_seconds?: number;
+  /** approve's first answer: the definition the warning describes. */
+  digest?: string;
 }
 
 /** protocol.MCPToolInfo: one tool and what it takes to run it. */

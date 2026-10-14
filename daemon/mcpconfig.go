@@ -386,6 +386,12 @@ type MCPServerConfig struct {
 	Type    string            `json:"type,omitempty"`
 	URL     string            `json:"url,omitempty"`
 	Headers map[string]string `json:"headers,omitempty"`
+
+	// A server the project proposed (mcpproject.go). Never read from or
+	// written to a file: set when .mcp.json is merged in.
+	project  string // the .mcp.json it came from
+	approval string // protocol.MCPApproval*
+	digest   string
 }
 
 // remote reports whether srv is reached at a URL rather than started here.

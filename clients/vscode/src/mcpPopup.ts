@@ -174,6 +174,27 @@ export class McpPopupHost {
     });
   }
 
+  /**
+   * openApprove asks the daemon for its warning about a server the project
+   * proposes and shows it, waiting for the name typed. The approval is of the
+   * definition the warning described (its digest) and no other.
+   */
+  async openApprove(s: MCPServerInfo): Promise<void> {
+    this.pending = undefined;
+    try {
+      const { resp } = await sendMCP(this.deps.clientName(), { action: 'approve', name: s.name });
+      if (resp.error || !resp.needs_acknowledgement || !resp.digest) {
+        void vscode.window.showErrorMessage(resp.error ?? resp.detail ?? 'The daemon did not describe the server.');
+        return;
+      }
+      this.pending = { action: 'approve', name: s.name, digest: resp.digest };
+      this.deps.post({ type: 'mcpPopupOpen', mode: 'add', name: s.name });
+      this.deps.post({ type: 'mcpPopupConfirm', name: s.name, detail: resp.detail, verb: 'Approve' });
+    } catch (err) {
+      void vscode.window.showErrorMessage(`Could not reach the Mochiii daemon: ${(err as Error).message}`);
+    }
+  }
+
   /** openKey shows the key step for one server, on the variable named or the first missing. */
   openKey(s: MCPServerInfo, name?: string): void {
     const stored = new Set(s.env_stored ?? []);

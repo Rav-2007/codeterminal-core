@@ -280,6 +280,12 @@ const FeatureMCPRemote = "mcp_remote"
 // MCPServerInfo carries SignedIn; State may be MCPStateNeedsAuth.
 const FeatureMCPOAuth = "mcp_oauth"
 
+// FeatureMCPProject: a project may PROPOSE servers in its .mcp.json; each is
+// pending until the user approves it (MCPActionApprove, with the Digest the
+// warning showed, and the server's name typed) or rejects it. MCPServerInfo
+// carries Approval, Digest and ProjectFile, with Source MCPSourceProject.
+const FeatureMCPProject = "mcp_project"
+
 // PromptRequest carries a single user prompt. Sent by the client only after
 // a successful handshake. Workspace is optional and additive: when set,
 // it's the client's own absolute path for the workspace it expects
@@ -1840,6 +1846,10 @@ type MCPRequest struct {
 	// pasted address (a secret: it holds the one-time code).
 	AuthID      string `json:"auth_id,omitempty"`
 	CallbackURL string `json:"callback_url,omitempty"`
+
+	// Digest is approve's echo of the definition the warning described
+	// (MCPResponse.Digest): a definition changed in between is not approved.
+	Digest string `json:"digest,omitempty"`
 }
 
 // MCPCwdWorkspace is the one value MCPRequest.Cwd takes besides empty.
@@ -1880,6 +1890,17 @@ const (
 	MCPActionAuthComplete = "auth_complete"
 	MCPActionAuthCancel   = "auth_cancel"
 	MCPActionSignOut      = "sign_out"
+
+	// A project's proposed server (FeatureMCPProject).
+	MCPActionApprove = "approve"
+	MCPActionReject  = "reject"
+)
+
+// The approvals a project's server can have (MCPServerInfo.Approval).
+const (
+	MCPApprovalPending  = "pending"
+	MCPApprovalApproved = "approved"
+	MCPApprovalRejected = "rejected"
 )
 
 // MCPServerInfo is one configured third-party server, in terms safe to print.
@@ -1938,6 +1959,12 @@ type MCPServerInfo struct {
 	HeadersMissing []string `json:"headers_missing,omitempty"`
 	// SignedIn: a sign-in token is stored for this remote server (FeatureMCPOAuth).
 	SignedIn bool `json:"signed_in,omitempty"`
+
+	// A server the project proposed in its .mcp.json (FeatureMCPProject): the
+	// user's decision on THIS definition, its digest, and the file.
+	Approval    string `json:"approval,omitempty"`
+	Digest      string `json:"digest,omitempty"`
+	ProjectFile string `json:"project_file,omitempty"`
 }
 
 // The states MCPServerInfo.State takes.
@@ -1958,8 +1985,9 @@ const (
 
 // Where a configured server came from.
 const (
-	MCPSourceConfig = "config"
-	MCPSourceUser   = "user"
+	MCPSourceConfig  = "config"
+	MCPSourceUser    = "user"
+	MCPSourceProject = "project"
 )
 
 // MCPResponse answers an MCPRequest.
@@ -2001,6 +2029,10 @@ type MCPResponse struct {
 	AuthURL          string `json:"auth_url,omitempty"`
 	AuthState        string `json:"auth_state,omitempty"`
 	ExpiresInSeconds int    `json:"expires_in_seconds,omitempty"`
+
+	// Digest is the definition a project server's approval warning describes;
+	// approve sends it back (FeatureMCPProject).
+	Digest string `json:"digest,omitempty"`
 }
 
 // MCPToolInfo is one tool and what it takes to run it, for a client that

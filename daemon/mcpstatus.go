@@ -12,6 +12,10 @@ import (
 // Claude Code's `mcp list` uses, which a user coming from it already reads.
 func mcpStatusLine(info protocol.MCPServerInfo) string {
 	switch {
+	case info.Approval == protocol.MCPApprovalPending:
+		return "⏸ Pending approval"
+	case info.Approval == protocol.MCPApprovalRejected:
+		return "✘ Rejected"
 	case info.Disabled:
 		return "⊘ Disabled"
 	case info.State == protocol.MCPStateNeedsAuth:

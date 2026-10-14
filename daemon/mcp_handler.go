@@ -111,6 +111,10 @@ func (s *Server) mcpResult(ctx context.Context, req protocol.MCPRequest) protoco
 		return s.mcpAuthStart(req)
 	case protocol.MCPActionSignOut:
 		return s.mcpSignOut(req)
+	case protocol.MCPActionApprove:
+		return s.mcpApprove(req, protocol.MCPApprovalApproved)
+	case protocol.MCPActionReject:
+		return s.mcpApprove(req, protocol.MCPApprovalRejected)
 	}
 	return protocol.MCPResponse{Error: fmt.Sprintf("unknown mcp action %q; the actions are %s", truncateForClient(req.Action, 32),
 		strings.Join([]string{protocol.MCPActionList, protocol.MCPActionServers, protocol.MCPActionTools, protocol.MCPActionAdd,
@@ -201,6 +205,8 @@ func (s *Server) serverInfos(cfg *Config) []protocol.MCPServerInfo {
 		source := protocol.MCPSourceUser
 		if _, fromConfig := s.cfg.MCP.Servers[name]; fromConfig {
 			source = protocol.MCPSourceConfig
+		} else if srv.project != "" {
+			source = protocol.MCPSourceProject
 		}
 		state := s.mcpStates.get(name)
 		var headerNames, headersMissing []string
@@ -220,6 +226,9 @@ func (s *Server) serverInfos(cfg *Config) []protocol.MCPServerInfo {
 		}
 		if srv.remote() {
 			info.URL = shownURL(srv.URL)
+		}
+		if srv.project != "" {
+			info.Approval, info.Digest, info.ProjectFile = srv.approval, srv.digest, srv.project
 		}
 		info.StatusLine = mcpStatusLine(info)
 		out = append(out, info)

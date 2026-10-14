@@ -334,8 +334,10 @@
         case 'mcpPopupConfirm':
           expectName = String(msg.name || '');
           if (warningEl) warningEl.textContent = String(msg.detail || '');
-          if (typedLabel) typedLabel.textContent = 'Type ' + expectName + ' to agree and ' + (mode === 'update' ? 'change it' : 'add it');
-          if (agreeBtn) agreeBtn.textContent = mode === 'update' ? 'Change' : 'Add';
+          const verb = typeof msg.verb === 'string' ? msg.verb : mode === 'update' ? 'Change' : 'Add';
+          if (typedLabel) typedLabel.textContent = 'Type ' + expectName + ' to agree and ' + verb.toLowerCase() + ' it';
+          if (agreeBtn) agreeBtn.textContent = verb;
+          if (stepEl && msg.verb === 'Approve') stepEl.textContent = 'A server this project proposes';
           if (typedEl) typedEl.value = '';
           notice('');
           show('confirm');

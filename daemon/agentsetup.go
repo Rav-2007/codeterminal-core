@@ -67,6 +67,11 @@ func agentSetup(version, model, base, workspace string, servers []protocol.MCPSe
 	for _, s := range servers {
 		fmt.Fprintf(&b, "\n  - %s: ", s.Name)
 		switch {
+		case s.Approval == protocol.MCPApprovalPending:
+			b.WriteString("PROPOSED by this project's .mcp.json and not approved, so it is not started. Only the " +
+				"user can approve it (Approve on it in Customize > MCP, or `mcp approve`); you cannot.")
+		case s.Approval == protocol.MCPApprovalRejected:
+			b.WriteString("proposed by this project and rejected by the user, so it is not started.")
 		case s.Disabled:
 			b.WriteString("paused by the user, so its tools are not offered.")
 		case withheld:
