@@ -335,6 +335,12 @@ var notYetPorted = map[string]string{
 	// only, and told to raise it in the configuration. What VS Code lacks is
 	// the command that raises a limit from the client (2026-10-08).
 	"budget": "the daemon limits every client; VS Code has no way to raise a limit until it sends a session and gets this command",
+	// Saved rules reach every client's turns already -- the daemon adds them
+	// (daemon/userrules.go). What VS Code lacks is the three commands that
+	// change them (2026-10-13), held back while its 0.2.0 overhaul settles.
+	"remember": "the daemon applies saved rules to every client; the commands that change them come to VS Code after its 0.2.0 overhaul",
+	"rules":    "ported together with /remember",
+	"forget":   "ported together with /remember",
 	// Long tasks (daemon/longtask.go) are terminal-first by the owner's
 	// decision (2026-09-30): the daemon side is client-neutral, and VS Code has
 	// no task meter or /task review yet.
