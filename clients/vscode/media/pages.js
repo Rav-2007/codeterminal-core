@@ -227,28 +227,37 @@
       const notice = document.getElementById('mcpNotice');
       if (!list) return;
       list.replaceChildren();
+      // A row per server (Stage 9, the mockup's MCP list): its letter, name and
+      // command, whether it is on, a switch to pause it, and edit and remove.
+      // A server from the config file is shown, not changed, here.
       for (const s of msg.servers || []) {
-        const row = el('div', 'row');
-        const head = el('div', 'row-head');
-        head.append(el('span', 'row-title', s.name));
-        head.append(el('span', 'row-spacer'));
-        head.append(
-          el('span', 'tag ' + (s.disabled ? 'off' : 'on'), s.source === 'config' ? 'from config' : s.disabled ? 'paused' : 'on')
-        );
-        row.append(head);
+        const own = s.source !== 'config';
+        const row = el('div', 'row mcp-row');
+        const mono = el('span', 'mcp-mono', String(s.name || '?').charAt(0).toUpperCase());
+        mono.setAttribute('aria-hidden', 'true');
+        const text = el('div', 'mcp-text');
+        text.append(el('span', 'row-title', s.name));
         const sub = el('div', 'row-sub');
         sub.append(el('code', '', s.command));
-        row.append(sub);
-        if (s.env && s.env.length) row.append(el('div', 'row-sub', 'Reads ' + s.env.join(', ')));
-        if (s.source !== 'config') {
-          const acts = el('div', 'row-acts');
-          acts.append(
-            s.disabled
-              ? act('Resume', () => vscode.postMessage({ type: 'mcp:row', action: 'enable', name: s.name }))
-              : act('Pause', () => vscode.postMessage({ type: 'mcp:row', action: 'disable', name: s.name })),
-            act('Change…', () => vscode.postMessage({ type: 'mcp:row', action: 'edit', name: s.name })),
-            act('Remove', () => vscode.postMessage({ type: 'mcp:row', action: 'remove', name: s.name }), 'danger')
-          );
+        text.append(sub);
+        if (s.env && s.env.length) text.append(el('div', 'row-sub', 'Reads ' + s.env.join(', ')));
+        const state = !own ? 'From config' : s.disabled ? 'Paused' : 'Active';
+        const badge = el('span', 'tag ' + (s.disabled ? 'off' : 'on'), state);
+        row.append(mono, text, badge);
+        if (own) {
+          const sw = el('button', 'mcp-switch');
+          /** @type {HTMLButtonElement} */ (sw).type = 'button';
+          sw.setAttribute('role', 'switch');
+          sw.setAttribute('aria-checked', s.disabled ? 'false' : 'true');
+          sw.setAttribute('aria-label', (s.disabled ? 'Resume ' : 'Pause ') + s.name);
+          sw.title = s.disabled ? 'Paused: its tools are not offered. Click to resume.' : 'On: its tools are offered. Click to pause.';
+          sw.addEventListener('click', () => vscode.postMessage({ type: 'mcp:row', action: s.disabled ? 'enable' : 'disable', name: s.name }));
+          const edit = act('Change…', () => vscode.postMessage({ type: 'mcp:row', action: 'edit', name: s.name }));
+          edit.setAttribute('aria-label', 'Change ' + s.name);
+          const remove = act('Remove', () => vscode.postMessage({ type: 'mcp:row', action: 'remove', name: s.name }), 'danger');
+          remove.setAttribute('aria-label', 'Remove ' + s.name);
+          const acts = el('div', 'mcp-acts');
+          acts.append(sw, edit, remove);
           row.append(acts);
         }
         list.append(row);

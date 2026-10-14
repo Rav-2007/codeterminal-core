@@ -277,6 +277,132 @@ export function chatLookStyles(): string {
   }
   .code-copy:hover, .code-copy:focus-visible { background: var(--ct-accent-soft); color: var(--ct-accent-strong); outline: none; }
 
+  /* ---- agent actions: the tool card, the steps, the result ---------------- */
+  .work {
+    margin: 6px 0 12px;
+    font-size: 12px;
+    border: 1px solid var(--ct-border);
+    border-radius: 12px;
+    background: var(--ct-surface);
+    overflow: hidden;
+  }
+  .work-summary {
+    display: flex;
+    width: 100%;
+    gap: 8px;
+    padding: 8px 12px;
+    border: none;
+    border-radius: 0;
+    color: var(--ct-ink);
+    font-weight: 600;
+  }
+  .work-summary::before { order: 2; margin-left: auto; color: var(--ct-muted); font-weight: 400; }
+  .work.has-failure { border-color: color-mix(in srgb, var(--ct-danger) 45%, transparent); }
+  .work.running .work-summary { color: var(--ct-accent-strong); }
+  .work-rows { margin: 0; padding: 2px 6px 6px; border-left: none; border-top: 1px solid var(--ct-border); }
+  .work-row {
+    display: grid;
+    grid-template-columns: 18px minmax(0, 1fr) auto auto;
+    grid-template-areas: "glyph name badge time" ". why why why";
+    column-gap: 8px;
+    align-items: center;
+    padding: 6px 6px;
+    border-radius: 8px;
+  }
+  .work-row + .work-row { border-top: 1px solid color-mix(in srgb, var(--ct-border) 60%, transparent); border-radius: 0; }
+  .work-glyph { grid-area: glyph; font-size: 12px; }
+  .work-name { grid-area: name; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .work-why { grid-area: why; font-size: 11.5px; }
+  .work-badge {
+    grid-area: badge;
+    font-size: 10.5px;
+    padding: 1px 7px;
+    border-radius: 999px;
+    border: 1px solid var(--ct-border);
+    color: var(--ct-muted);
+  }
+  .work-badge:empty, .work-time:empty { display: none; }
+  .work-row[data-state="ok"] .work-badge { color: var(--ct-ok); border-color: color-mix(in srgb, var(--ct-ok) 45%, transparent); background: color-mix(in srgb, var(--ct-ok) 10%, transparent); }
+  .work-row[data-state="fail"] .work-badge { color: var(--ct-danger); border-color: color-mix(in srgb, var(--ct-danger) 45%, transparent); background: color-mix(in srgb, var(--ct-danger) 10%, transparent); }
+  .work-row[data-state="denied"] .work-badge { color: var(--ct-warn); border-color: color-mix(in srgb, var(--ct-warn) 45%, transparent); }
+  .work-row[data-state="run"] .work-badge { color: var(--ct-accent-strong); border-color: color-mix(in srgb, var(--ct-accent) 45%, transparent); }
+  .work-time { grid-area: time; font-size: 11px; color: var(--ct-muted); font-variant-numeric: tabular-nums; min-width: 34px; text-align: right; }
+
+  .spec-notice, .edit-summary { margin-left: 0; }
+  .spec-notice.steps {
+    white-space: normal;
+    border-left: none;
+    border: 1px solid var(--ct-border);
+    border-radius: 12px;
+    background: var(--ct-surface);
+    padding: 10px 12px;
+  }
+  .steps-head { font-weight: 600; font-size: 12.5px; margin-bottom: 6px; color: var(--ct-ink); }
+  .steps-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
+  .steps-list li { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--ct-muted); }
+  .step-mark {
+    width: 15px; height: 15px; border-radius: 50%; flex-shrink: 0;
+    display: inline-flex; align-items: center; justify-content: center;
+    border: 1.5px solid color-mix(in srgb, var(--ct-ink) 35%, transparent); font-size: 9px; font-weight: 700;
+  }
+  .steps-list li[data-status="done"] { color: var(--ct-ink); }
+  .steps-list li[data-status="done"] .step-mark { background: var(--ct-ok); border-color: var(--ct-ok); color: var(--ct-on-accent); }
+  .steps-list li[data-status="active"] { color: var(--ct-ink); font-weight: 600; }
+  .steps-list li[data-status="active"] .step-mark { border-color: var(--ct-accent); color: var(--ct-accent); }
+  .steps-list li[data-status="blocked"] .step-mark { border-color: var(--ct-danger); color: var(--ct-danger); }
+  .edit-summary { border-radius: 12px; padding: 12px; }
+  .edit-summary .summary-line { font-size: 13px; }
+
+  /* ---- history ------------------------------------------------------------ */
+  .history-row .h-title mark {
+    background: color-mix(in srgb, var(--ct-accent) 28%, transparent);
+    color: inherit;
+    border-radius: 3px;
+    padding: 0 1px;
+  }
+  .history-row .h-age { min-width: 52px; text-align: right; }
+
+  /* ---- MCP servers (Customize) ------------------------------------------- */
+  .mcp-head { display: flex; align-items: center; justify-content: space-between; margin: 4px 0 8px; }
+  .mcp-head h3 { margin: 0; font-size: 13.5px; }
+  .pg-btn.small { display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; font-size: 12px; }
+  .pg-btn.small svg { width: 13px; height: 13px; }
+  .mcp-row { display: flex; align-items: center; gap: 10px; }
+  .mcp-mono {
+    width: 28px; height: 28px; border-radius: 8px; flex-shrink: 0;
+    display: inline-flex; align-items: center; justify-content: center;
+    background: var(--ct-accent-soft); color: var(--ct-accent-strong); font-weight: 700; font-size: 12.5px;
+  }
+  .mcp-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .mcp-text .row-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mcp-acts { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+  .mcp-switch {
+    position: relative;
+    width: 32px;
+    height: 18px;
+    padding: 0;
+    border: none;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--ct-ink) 25%, transparent);
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .mcp-switch::after {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--ct-on-accent);
+    transition: transform 120ms ease;
+  }
+  .mcp-switch[aria-checked="true"] { background: var(--ct-accent-solid); }
+  .mcp-switch[aria-checked="true"]::after { transform: translateX(14px); }
+  .mcp-switch:focus-visible { outline: 2px solid var(--ct-accent); outline-offset: 2px; }
+  .mcp-acts .row-act { padding: 2px 6px; font-size: 11px; }
+
   /* ---- narrow side bars --------------------------------------------------- */
   @media (max-width: 360px) {
     .brand-sub { display: none; }

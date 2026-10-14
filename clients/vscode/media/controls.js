@@ -187,7 +187,8 @@
     /** @param {string} base */
     function hostOf(base) {
       try {
-        return new URL(base).hostname.replace(/^api\./, '');
+        // The registrable part: "integrate.api.nvidia.com" says nvidia.com.
+        return new URL(base).hostname.split('.').slice(-2).join('.');
       } catch (_) {
         return '';
       }

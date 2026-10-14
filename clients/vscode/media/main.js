@@ -826,6 +826,52 @@
     return Math.round(days / 30) + 'mo';
   }
 
+  /** @param {unknown} when @returns {Date | null} */
+  function dateOf(when) {
+    const t = typeof when === 'number' ? when : Date.parse(String(when || ''));
+    return Number.isFinite(t) && t > 0 ? new Date(t) : null;
+  }
+
+  /** Which day group a chat falls in. @param {unknown} when */
+  function dayGroup(when) {
+    const d = dateOf(when);
+    if (!d) return 'Earlier';
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    const day = 24 * 60 * 60 * 1000;
+    if (d.getTime() >= start.getTime()) return 'Today';
+    if (d.getTime() >= start.getTime() - day) return 'Yesterday';
+    if (d.getTime() >= start.getTime() - 6 * day) return 'Earlier this week';
+    return 'Earlier';
+  }
+
+  /** A row's time: the clock today, the day this week, else the date. @param {unknown} when */
+  function whenOf(when) {
+    const d = dateOf(when);
+    if (!d) return ageOf(typeof when === 'string' ? when : undefined);
+    const group = dayGroup(when);
+    if (group === 'Today' || group === 'Yesterday') return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    if (group === 'Earlier this week') return d.toLocaleDateString([], { weekday: 'short' });
+    return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+  }
+
+  /**
+   * The title with the searched words marked, built from text nodes.
+   * @param {HTMLElement} el @param {string} text @param {string} query
+   */
+  function markMatch(el, text, query) {
+    clearChildren(el);
+    const q = query.trim().toLowerCase();
+    const at = q ? text.toLowerCase().indexOf(q) : -1;
+    if (at < 0) {
+      el.textContent = text;
+      return;
+    }
+    const mark = document.createElement('mark');
+    mark.textContent = text.slice(at, at + q.length);
+    el.append(document.createTextNode(text.slice(0, at)), mark, document.createTextNode(text.slice(at + q.length)));
+  }
+
   /** @param {string} text */
   function historyMessage(text) {
     if (!historyListEl) {
@@ -849,7 +895,7 @@
     main.className = 'h-main';
     const title = document.createElement('span');
     title.className = 'h-title';
-    title.textContent = e.title || 'Untitled chat';
+    markMatch(title, e.title || 'Untitled chat', historyQuery);
     title.title = e.title || '';
     const meta = document.createElement('span');
     meta.className = 'h-meta';
@@ -858,7 +904,7 @@
     main.appendChild(meta);
     const age = document.createElement('span');
     age.className = 'h-age';
-    age.textContent = e.current ? 'now' : ageOf(e.ended || e.started);
+    age.textContent = e.current ? 'now' : whenOf(e.ended || e.started);
     const star = document.createElement('button');
     star.type = 'button';
     star.className = 'h-act h-star' + (e.bookmarked ? ' on' : '');
@@ -922,6 +968,8 @@
       return;
     }
     clearChildren(historyListEl);
+    // Bookmarks first, then the rest by day (Stage 9, the mockup's history):
+    // Today, Yesterday, Earlier this week, Earlier.
     const pinned = entries.filter((e) => e.bookmarked);
     const recent = entries.filter((e) => !e.bookmarked);
     /** @param {string} label @param {any[]} list */
@@ -929,18 +977,23 @@
       if (list.length === 0) {
         return;
       }
-      if (pinned.length > 0) {
-        const h = document.createElement('div');
-        h.className = 'history-section';
-        h.textContent = label;
-        historyListEl.appendChild(h);
-      }
+      const h = document.createElement('div');
+      h.className = 'history-section';
+      h.textContent = label;
+      historyListEl.appendChild(h);
       for (const e of list) {
         historyListEl.appendChild(historyRow(e));
       }
     };
     section('Bookmarked', pinned);
-    section('Recent', recent);
+    /** @type {Record<string, any[]>} */
+    const byDay = { Today: [], Yesterday: [], 'Earlier this week': [], Earlier: [] };
+    for (const e of recent) {
+      byDay[e.current ? 'Today' : dayGroup(e.ended || e.started)].push(e);
+    }
+    for (const label of Object.keys(byDay)) {
+      section(label, byDay[label]);
+    }
   }
 
   /** @param {boolean} on */
@@ -2306,7 +2359,11 @@
   // transcript when the turn ends.
   /** @type {HTMLDivElement | null} */
   let currentTasksEl = null;
-  function showTasks(text) {
+  // THE STEPS (Stage 9, the mockup's "Planning steps"): the spec workflow's
+  // task list as a checklist -- done, the one under way, blocked, still to do.
+  // The plain text stays as the region's accessible name.
+  /** @param {string} text @param {Array<{ title: string, status: string }>} [items] */
+  function showTasks(text, items) {
     if (!currentTasksEl) {
       currentTasksEl = document.createElement('div');
       currentTasksEl.className = 'spec-notice spec-notice-tasks';
@@ -2314,7 +2371,37 @@
       currentTasksEl.setAttribute('aria-live', 'polite');
       transcriptEl.appendChild(currentTasksEl);
     }
-    currentTasksEl.textContent = String(text || '');
+    if (!Array.isArray(items) || items.length === 0) {
+      currentTasksEl.textContent = String(text || '');
+      transcriptEl.scrollTop = transcriptEl.scrollHeight;
+      return;
+    }
+    clearChildren(currentTasksEl);
+    currentTasksEl.classList.add('steps');
+    currentTasksEl.setAttribute('aria-label', String(text || ''));
+    const done = items.filter((t) => t.status === 'done').length;
+    const head = document.createElement('div');
+    head.className = 'steps-head';
+    head.textContent = (done === items.length ? 'Steps done' : 'Working through the steps\u2026') + '  ' + done + ' of ' + items.length;
+    currentTasksEl.appendChild(head);
+    const list = document.createElement('ol');
+    list.className = 'steps-list';
+    list.setAttribute('aria-hidden', 'true');
+    /** @type {Record<string, string>} */
+    const marks = { done: '\u2713', active: '\u25cc', blocked: '\u2715' };
+    for (const t of items) {
+      const li = document.createElement('li');
+      li.setAttribute('data-status', t.status);
+      const mark = document.createElement('span');
+      mark.className = 'step-mark';
+      mark.textContent = marks[t.status] || '';
+      const title = document.createElement('span');
+      title.className = 'step-title';
+      title.textContent = t.title;
+      li.append(mark, title);
+      list.appendChild(li);
+    }
+    currentTasksEl.appendChild(list);
     transcriptEl.scrollTop = transcriptEl.scrollHeight;
   }
 
@@ -2584,12 +2671,19 @@
     web_search: 'Searched the web',
   };
   const WORK_STATE_WORDS = { run: 'running', ok: 'done', fail: 'failed', denied: 'not run', step: '' };
+  // The badge each row carries (Stage 9, the mockup's "Tool Execution" card).
+  const WORK_BADGES = { run: 'Running', ok: 'Done', fail: 'Failed', denied: 'Not run', step: '' };
   const WORK_GLYPHS = { run: '\u25cc', ok: '\u2713', fail: '\u2715', denied: '\u2298', step: '\u203a' };
   // compact: a block starts folded; expanded: it starts open (mochiii.toolActivity).
   let toolActivityMode = 'compact';
   let defaultModeApplied = false;
   /** @type {HTMLDetailsElement | null} */
   let workBlockEl = null;
+
+  /** @param {number} ms */
+  function workDuration(ms) {
+    return ms < 1000 ? Math.round(ms) + 'ms' : (ms / 1000).toFixed(ms < 60000 ? 1 : 0) + 's';
+  }
 
   /** @param {any} activity */
   function toolLabel(activity) {
@@ -2683,7 +2777,11 @@
       name.className = 'work-name';
       const why = document.createElement('span');
       why.className = 'work-why';
-      row.append(glyph, name, why);
+      const badge = document.createElement('span');
+      badge.className = 'work-badge';
+      const time = document.createElement('span');
+      time.className = 'work-time';
+      row.append(glyph, name, why, badge, time);
       const list = block.querySelector('.work-rows');
       if (list) {
         list.appendChild(row);
@@ -2701,6 +2799,10 @@
     if (glyphEl) glyphEl.textContent = WORK_GLYPHS[state];
     if (nameEl) nameEl.textContent = label;
     if (whyEl) whyEl.textContent = reason;
+    const badgeEl = row.querySelector('.work-badge');
+    const timeEl = row.querySelector('.work-time');
+    if (badgeEl) badgeEl.textContent = WORK_BADGES[state];
+    if (timeEl) timeEl.textContent = (state === 'ok' || state === 'fail') && activity.duration_ms ? workDuration(activity.duration_ms) : '';
     const word = WORK_STATE_WORDS[state];
     row.setAttribute('aria-label', label + (word ? ': ' + word : '') + (reason ? ', ' + reason : ''));
     row.title = state === 'ok'
@@ -3417,7 +3519,7 @@
         showSpecNotice(msg.kind, msg.text);
         break;
       case 'tasks':
-        showTasks(msg.text);
+        showTasks(msg.text, msg.items);
         break;
       case 'activeSpec':
         setActiveSpec(msg.spec);

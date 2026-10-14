@@ -99,6 +99,7 @@ function customizePage(): string {
         ['market', 'Marketplace'],
       ])}
       <div id="mcpPanel-installed" role="tabpanel" aria-labelledby="mcpTab-installed">
+        <div class="mcp-head"><h3>MCP Servers</h3><button type="button" class="pg-btn primary small" data-mcp-browse>${ICONS.plus}<span>Add Server</span></button></div>
         <p id="mcpNotice" class="page-note" hidden></p>
         <div id="mcpInstalledList" class="rows" aria-live="polite"></div>
         <div id="mcpEmpty" class="empty" hidden>

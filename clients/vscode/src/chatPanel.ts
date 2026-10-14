@@ -1628,7 +1628,9 @@ export class ChatPanel {
           this.host.webview.postMessage({ type: 'specNotice', kind: 'spec-report', text: specReportText(report) });
         },
         onTasks: (tasks) => {
-          this.host.webview.postMessage({ type: 'tasks', text: taskListText(tasks) });
+          // The text for a screen reader and the old renderer; the items for
+          // the checklist (Stage 9).
+          this.host.webview.postMessage({ type: 'tasks', text: taskListText(tasks), items: tasks.map((t) => ({ title: t.title, status: t.status })) });
         },
         // Providing this handler is what makes streamPrompt declare
         // CAP_TOOL_APPROVAL, and therefore what turns agent mode on for this
