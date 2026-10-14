@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"unicode"
@@ -54,46 +56,87 @@ func validMCPEnvValue(value string) error {
 	if strings.IndexFunc(value, unicode.IsControl) >= 0 {
 		return fmt.Errorf("the value contains a line break or another control character")
 	}
+	// A key pasted from a web page often carries an invisible character, and
+	// the server then refuses it with nothing on screen to explain why. Named
+	// by code point and position, never by the text around it.
+	for i, r := range []rune(value) {
+		switch r {
+		case '\u200b', '\u200c', '\u200d', '\u2060', '\ufeff', '\u00a0':
+			return fmt.Errorf("the value contains an invisible character (U+%04X) at position %d; paste it again "+
+				"or type it", r, i+1)
+		}
+	}
 	return nil
 }
 
-// setMCPEnv stores (or, for "", forgets) a value and rebuilds the scrubber.
-func (s *Server) setMCPEnv(name, value string) {
+// setMCPEnv stores (or, for "", forgets) a value -- for one server, or for
+// every server that reads it when server is "" -- and rebuilds the scrubber.
+//
+// With a key file (mcpsecrets.go) it is kept there; without one (a test, a home
+// that cannot be found) it is held in memory for this daemon's life, which is
+// all it ever was before the file. Forgetting also drops a value handed over
+// at launch, so "forget" never leaves one behind that still works.
+func (s *Server) setMCPEnv(server, name, value string) error {
+	if s.mcpSecrets != nil {
+		if err := s.mcpSecrets.setVar(server, name, value); err != nil {
+			return err
+		}
+	}
 	s.credMu.Lock()
 	defer s.credMu.Unlock()
-	if value == "" {
+	switch {
+	case value == "":
 		delete(s.mcpEnv, name)
-	} else {
+	case s.mcpSecrets == nil:
 		if s.mcpEnv == nil {
 			s.mcpEnv = map[string]string{}
 		}
 		s.mcpEnv[name] = value
 	}
 	s.rebuildCredScrubberLocked()
+	return nil
 }
 
-// mcpEnvValue is the value given for name, if one was.
-func (s *Server) mcpEnvValue(name string) (string, bool) {
-	s.credMu.RLock()
-	defer s.credMu.RUnlock()
-	v, ok := s.mcpEnv[name]
-	return v, ok
+// mcpEnvValueFor is how server finds a value for a variable it reads: its own
+// stored value, then one stored for every server, then one handed over at
+// launch. The daemon's own environment comes after all of these
+// (mcp.ServerEnvWith).
+func (s *Server) mcpEnvValueFor(server string) func(name string) (string, bool) {
+	return func(name string) (string, bool) {
+		if v, ok := s.mcpSecrets.lookup(server, name); ok {
+			return v, true
+		}
+		s.credMu.RLock()
+		defer s.credMu.RUnlock()
+		v, ok := s.mcpEnv[name]
+		return v, ok
+	}
 }
 
-// mcpEnvValuesLocked is every value given, for the scrubber. Caller holds credMu.
+// mcpEnvValuesLocked is every value held, for the scrubber. Caller holds credMu.
 func (s *Server) mcpEnvValuesLocked() []string {
 	out := make([]string, 0, len(s.mcpEnv))
 	for _, v := range s.mcpEnv {
 		out = append(out, v)
 	}
-	return out
+	return append(out, s.mcpSecrets.values()...)
 }
 
-// envMissing is the names in env that no server would be given a value for.
-func (s *Server) envMissing(env []string) []string {
+// refreshMCPSecrets reads the key file again if another process changed it,
+// and rebuilds the scrubber when it did: a key stored from the CLI or another
+// window is in force -- and scrubbed -- from the next request.
+func (s *Server) refreshMCPSecrets() {
+	if s.mcpSecrets.refresh() {
+		s.rebuildCredScrubber()
+	}
+}
+
+// envMissing is the names in env that server would be given no value for.
+func (s *Server) envMissing(server string, env []string) []string {
+	lookup := s.mcpEnvValueFor(server)
 	var out []string
 	for _, name := range env {
-		if _, ok := s.mcpEnvValue(name); ok {
+		if _, ok := lookup(name); ok {
 			continue
 		}
 		// Set but empty is no key either.
@@ -105,7 +148,8 @@ func (s *Server) envMissing(env []string) []string {
 	return out
 }
 
-// mcpSetEnv answers MCPActionSetEnv.
+// mcpSetEnv answers MCPActionSetEnv. With a server name the value is that
+// server's own; without one it is for every server that reads the variable.
 func (s *Server) mcpSetEnv(req protocol.MCPRequest) protocol.MCPResponse {
 	name := strings.TrimSpace(req.EnvName)
 	if err := validMCPEnvName(name); err != nil {
@@ -115,27 +159,47 @@ func (s *Server) mcpSetEnv(req protocol.MCPRequest) protocol.MCPResponse {
 	if err := validMCPEnvValue(value); err != nil {
 		return protocol.MCPResponse{Error: name + ": " + err.Error()}
 	}
-	s.setMCPEnv(name, value)
-
 	cfg, problems := s.agentConfig()
+	server := strings.TrimSpace(req.Name)
+	if server != "" {
+		srv, ok := cfg.MCP.Servers[server]
+		if !ok {
+			return protocol.MCPResponse{Error: fmt.Sprintf("no server named %s is configured", server)}
+		}
+		if !slices.Contains(srv.Env, name) {
+			return protocol.MCPResponse{Error: fmt.Sprintf("%s does not read %s; add the variable's name to it first "+
+				"(Change, step 3)", server, name)}
+		}
+	}
+	if err := s.setMCPEnv(server, name, value); err != nil {
+		return protocol.MCPResponse{Error: "storing " + name + ": " + err.Error()}
+	}
+
 	var users []string
-	for _, server := range sortedServerNames(cfg.MCP.Servers) {
-		for _, n := range cfg.MCP.Servers[server].Env {
-			if n == name {
-				users = append(users, server)
-				// Its last start, without the value, says nothing about the next.
-				s.mcpStates.forget(server)
-			}
+	for _, srvName := range sortedServerNames(cfg.MCP.Servers) {
+		if server != "" && srvName != server {
+			continue
+		}
+		if slices.Contains(cfg.MCP.Servers[srvName].Env, name) {
+			users = append(users, srvName)
+			// Its last start, without the value, says nothing about the next.
+			s.mcpStates.forget(srvName)
 		}
 	}
 	resp := protocol.MCPResponse{Ok: true, AgentMode: cfg.MCP.Enabled, Servers: s.serverInfos(cfg), Notes: problems}
+	where := ""
+	if s.mcpSecrets != nil && value != "" {
+		where = " It is kept in " + s.mcpSecrets.path + ", readable only by you."
+	}
 	switch {
+	case value == "" && server != "":
+		resp.Detail = fmt.Sprintf("Forgot %s's own value of %s.", server, name)
 	case value == "":
 		resp.Detail = fmt.Sprintf("Forgot the value of %s.", name)
 	case len(users) == 0:
-		resp.Detail = fmt.Sprintf("%s is set, but no server reads it yet.", name)
+		resp.Detail = fmt.Sprintf("%s is set, but no server reads it yet.%s", name, where)
 	default:
-		resp.Detail = fmt.Sprintf("%s is set for %s, from its next start.", name, strings.Join(users, ", "))
+		resp.Detail = fmt.Sprintf("%s is set for %s, from its next start.%s", name, strings.Join(users, ", "), where)
 	}
 	s.logger.Printf("mcp: a value for %s was %s by the user", name, map[bool]string{true: "forgotten", false: "given"}[value == ""])
 	return resp
@@ -207,4 +271,54 @@ func (b *mcpStateBook) get(name string) mcpServerState {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.states[name]
+}
+
+// validEnvValues checks the values a request gives for a server's variables:
+// each for a name the server reads, each a usable value. Errors name the
+// variable, never the value.
+func validEnvValues(reads []string, values map[string]string) error {
+	for _, name := range sortedStringKeys(values) {
+		if !slices.Contains(reads, name) {
+			return fmt.Errorf("a value was given for %s, which the server does not read; add it to the variables too", name)
+		}
+		if strings.TrimSpace(values[name]) == "" {
+			return fmt.Errorf("the value given for %s is empty", name)
+		}
+		if err := validMCPEnvValue(strings.TrimSpace(values[name])); err != nil {
+			return fmt.Errorf("%s: %v", name, err)
+		}
+	}
+	return nil
+}
+
+// storeServerEnv keeps server's own values (trimmed) and drops its values for
+// names it no longer reads. Without a key file they are held in memory.
+func (s *Server) storeServerEnv(server string, reads []string, values map[string]string) error {
+	trimmed := make(map[string]string, len(values))
+	for k, v := range values {
+		trimmed[k] = strings.TrimSpace(v)
+	}
+	if s.mcpSecrets == nil {
+		for k, v := range trimmed {
+			if err := s.setMCPEnv("", k, v); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if err := s.mcpSecrets.setServerEnv(server, reads, trimmed); err != nil {
+		return err
+	}
+	s.rebuildCredScrubber()
+	return nil
+}
+
+// sortedStringKeys is m's keys, sorted.
+func sortedStringKeys(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }

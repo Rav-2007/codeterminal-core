@@ -255,6 +255,13 @@ const FeatureMCPTools = "mcp_tools"
 // EnvMissing, State and StateDetail.
 const FeatureMCPEnv = "mcp_env"
 
+// FeatureMCPSecrets: the daemon keeps the values the user gives for servers'
+// variables in ~/.mochiii/mcp-secrets.json (owner-only), so they survive a
+// restart and are shared by every client. MCPActionSetEnv with a Name stores a
+// value for that server only; add and update take EnvValues; MCPServerInfo
+// carries EnvStored.
+const FeatureMCPSecrets = "mcp_secrets"
+
 // PromptRequest carries a single user prompt. Sent by the client only after
 // a successful handshake. Workspace is optional and additive: when set,
 // it's the client's own absolute path for the workspace it expects
@@ -1784,6 +1791,11 @@ type MCPRequest struct {
 	// echoed in a response, and is scrubbed from everything the model sees.
 	EnvName  string `json:"env_name,omitempty"`
 	EnvValue string `json:"env_value,omitempty"`
+
+	// EnvValues are values for names in Env, for this server only -- what
+	// `mcp add --env KEY=value` means (FeatureMCPSecrets). Secrets: stored
+	// only when the request is acknowledged, never echoed or logged.
+	EnvValues map[string]string `json:"env_values,omitempty"`
 }
 
 // MCPCwdWorkspace is the one value MCPRequest.Cwd takes besides empty.
@@ -1835,6 +1847,9 @@ type MCPServerInfo struct {
 	// neither given one (MCPActionSetEnv, or at launch) nor started with one.
 	// A server missing one usually exits at once (FeatureMCPEnv).
 	EnvMissing []string `json:"env_missing,omitempty"`
+	// EnvStored names the variables in Env that have a value stored in the
+	// daemon's key file, for this server or for every server (FeatureMCPSecrets).
+	EnvStored []string `json:"env_stored,omitempty"`
 
 	// State is what happened the last time this daemon started the server:
 	// "" (not started since the daemon began), MCPStateRunning or

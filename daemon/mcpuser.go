@@ -226,12 +226,17 @@ func validateUserCommand(command string) error {
 // be read left out. A broken file must never fail a turn: the user would lose
 // their built-in tools to a typo in a list of extras.
 func (s *Server) agentConfig() (cfg *Config, problems []string) {
-	if s.cfg == nil || strings.TrimSpace(s.userServersPath) == "" {
-		return s.cfg, nil
+	s.refreshMCPSecrets()
+	if p := s.mcpSecrets.problem(); p != "" {
+		problems = append(problems, p)
 	}
-	user, problems, err := loadUserMCPServers(s.userServersPath)
+	if s.cfg == nil || strings.TrimSpace(s.userServersPath) == "" {
+		return s.cfg, problems
+	}
+	user, userProblems, err := loadUserMCPServers(s.userServersPath)
+	problems = append(problems, userProblems...)
 	if err != nil {
-		return s.cfg, []string{"the MCP servers you added were not loaded: " + err.Error()}
+		return s.cfg, append(problems, "the MCP servers you added were not loaded: "+err.Error())
 	}
 	if len(user) == 0 {
 		return s.cfg, problems

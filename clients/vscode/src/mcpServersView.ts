@@ -23,6 +23,7 @@ import * as vscode from 'vscode';
 import {
   FEATURE_MCP_ENV,
   FEATURE_MCP_MANAGE,
+  FEATURE_MCP_SECRETS,
   MCP_CWD_WORKSPACE,
   MCP_SOURCE_CONFIG,
   MCP_STATE_FAILED,
@@ -33,7 +34,7 @@ import {
 } from './daemonClient';
 import { validEnvName, validServerName } from './mcpCatalog';
 import { ServerSpec, splitArgs, storeServer } from './mcpInstall';
-import { storeMcpEnv, storedMcpEnvNames } from './mcpSecrets';
+import { cachedMcpEnv, storeMcpEnv, storedMcpEnvNames } from './mcpSecrets';
 
 export const MCP_SERVERS_VIEW_ID = 'mochiii.mcpServers';
 
@@ -50,6 +51,8 @@ export interface McpServersState {
   manage: boolean;
   /** Whether the daemon takes a server's key and reports its state (FEATURE_MCP_ENV). */
   setEnv?: boolean;
+  /** Whether the daemon keeps keys in its own file (FEATURE_MCP_SECRETS). */
+  secrets?: boolean;
   notes: string[];
   /** Set when the daemon could not be asked. */
   unreachable?: string;
@@ -96,10 +99,11 @@ export class McpServersProvider implements vscode.TreeDataProvider<McpNode> {
       const { resp, features } = await sendMCP(this.clientName, { action: 'servers' });
       const manage = features.includes(FEATURE_MCP_MANAGE);
       const setEnv = features.includes(FEATURE_MCP_ENV);
+      const secrets = features.includes(FEATURE_MCP_SECRETS);
       if (resp.error) {
-        this.state = { servers: [], agentMode: true, manage, setEnv, notes: [], unreachable: resp.error };
+        this.state = { servers: [], agentMode: true, manage, setEnv, secrets, notes: [], unreachable: resp.error };
       } else {
-        this.state = { servers: resp.servers ?? [], agentMode: resp.agent_mode, manage, setEnv, notes: resp.notes ?? [] };
+        this.state = { servers: resp.servers ?? [], agentMode: resp.agent_mode, manage, setEnv, secrets, notes: resp.notes ?? [] };
       }
       this.retries = 0;
     } catch (err) {
@@ -255,9 +259,9 @@ function serverTooltip(s: MCPServerInfo): vscode.MarkdownString {
   );
   if (s.env && s.env.length > 0) {
     md.appendMarkdown(`Given the variables: ${s.env.map((e) => '`' + e + '`').join(', ')}\n\n`);
-    const kept = storedMcpEnvNames().filter((n) => s.env?.includes(n));
+    const kept = s.env_stored ?? storedMcpEnvNames().filter((n) => s.env?.includes(n));
     if (kept.length > 0) {
-      md.appendMarkdown(`Kept in VS Code's secret storage: ${kept.map((e) => '`' + e + '`').join(', ')}\n\n`);
+      md.appendMarkdown(`Values kept by Mochiii: ${kept.map((e) => '`' + e + '`').join(', ')}\n\n`);
     }
   }
   md.appendMarkdown(s.cwd === MCP_CWD_WORKSPACE ? 'Starts inside the project.' : 'Starts in a private folder of its own.');
@@ -396,12 +400,12 @@ async function setServerKey(
     if (names.length === 1) {
       chosen = names[0];
     } else {
-      const kept = new Set(storedMcpEnvNames());
+      const kept = new Set(server.env_stored ?? storedMcpEnvNames());
       const missing = new Set(server.env_missing ?? []);
       const pick = await vscode.window.showQuickPick(
         names.map((n) => ({
           label: n,
-          description: missing.has(n) ? 'no value yet' : kept.has(n) ? 'kept in secret storage' : 'from VS Code’s environment',
+          description: missing.has(n) ? 'no value yet' : kept.has(n) ? 'kept by Mochiii' : 'from VS Code’s environment',
         })),
         { title: `Set a key for ${server.name}`, placeHolder: 'Which variable?', ignoreFocusOut: true },
       );
@@ -411,11 +415,14 @@ async function setServerKey(
   if (!chosen) {
     return;
   }
-  const kept = storedMcpEnvNames().includes(chosen);
+  const daemonKeeps = !!provider.current.secrets;
+  const kept = (server.env_stored ?? storedMcpEnvNames()).includes(chosen);
   const value = await vscode.window.showInputBox({
     title: `${chosen} for ${server.name}`,
     prompt:
-      `Kept in VS Code's secret storage on this machine and given only to servers that read ${chosen}. ` +
+      (daemonKeeps
+        ? `Kept for ${server.name} in ~/.mochiii/mcp-secrets.json, readable only by you, and never shown to the model. `
+        : `Kept in VS Code's secret storage on this machine and given only to servers that read ${chosen}. `) +
       (kept ? 'Leave it empty to forget the stored value.' : 'Paste the value; it is not shown.'),
     password: true,
     ignoreFocusOut: true,
@@ -437,6 +444,21 @@ async function setServerKey(
     return;
   }
   const trimmed = value.trim();
+  if (daemonKeeps) {
+    // The daemon keeps it, for this server only, where every client sees it.
+    try {
+      const { resp } = await sendMCP(clientName, { action: 'set_env', name: server.name, env_name: chosen, env_value: trimmed });
+      if (resp.error) {
+        void vscode.window.showErrorMessage(resp.error);
+      } else if (resp.detail) {
+        void vscode.window.showInformationMessage(resp.detail);
+      }
+    } catch (err) {
+      void vscode.window.showErrorMessage(`Could not reach the Mochiii daemon, so ${chosen} was not saved: ${(err as Error).message}`);
+    }
+    await provider.refresh();
+    return;
+  }
   await storeMcpEnv(context, chosen, trimmed);
   if (!provider.current.setEnv) {
     void vscode.window.showInformationMessage(
@@ -483,6 +505,37 @@ async function offerKeyFor(
   }
 }
 
+const MIGRATED_KEY = 'mochiii.mcpEnvMigrated';
+
+/**
+ * migrateKeysToDaemon moves the keys this extension kept in SecretStorage (before
+ * the daemon kept them) into the daemon's key file, once. Each goes as a value
+ * every server reading that variable gets -- what it meant here. Only when every
+ * one is stored is the SecretStorage copy deleted; a failure leaves it for the
+ * next try, so a key is never lost on the way.
+ */
+export async function migrateKeysToDaemon(
+  context: vscode.ExtensionContext,
+  send: (name: string, value: string) => Promise<string | undefined>,
+): Promise<number> {
+  if (context.globalState.get<boolean>(MIGRATED_KEY)) {
+    return 0;
+  }
+  const held = cachedMcpEnv();
+  const names = Object.keys(held);
+  for (const name of names) {
+    const error = await send(name, held[name]);
+    if (error) {
+      return 0;
+    }
+  }
+  for (const name of names) {
+    await storeMcpEnv(context, name, '');
+  }
+  await context.globalState.update(MIGRATED_KEY, true);
+  return names.length;
+}
+
 /** registerMcpServers contributes the view and its commands. */
 export function registerMcpServers(
   context: vscode.ExtensionContext,
@@ -517,6 +570,29 @@ export function registerMcpServers(
     }
     await provider.refresh();
   };
+
+  // Once a daemon that keeps keys answers, the keys kept here move to it.
+  let migrating = false;
+  context.subscriptions.push(
+    provider.onDidChangeState((state) => {
+      if (!state.secrets || migrating || context.globalState.get<boolean>(MIGRATED_KEY)) {
+        return;
+      }
+      migrating = true;
+      void migrateKeysToDaemon(context, async (name, value) => {
+        try {
+          const { resp } = await sendMCP(clientName, { action: 'set_env', env_name: name, env_value: value });
+          return resp.error;
+        } catch (err) {
+          return (err as Error).message;
+        }
+      })
+        .then((n) => (n > 0 ? provider.refresh() : undefined))
+        .finally(() => {
+          migrating = false;
+        });
+    }),
+  );
 
   context.subscriptions.push(
     view,

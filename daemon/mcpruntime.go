@@ -249,7 +249,7 @@ func (s *Server) buildRegistry(ctx context.Context, logger *log.Logger, proposal
 				stderr.onLine = func(line string) { s.mcpStates.noteLine(name, line) }
 				lc := laneBLaunchConfig(name, srv, cfg, dir, stderr, logger.Printf)
 				// A key the user gave for one of the server's variables (mcpenv.go).
-				lc.EnvValues = s.mcpEnvValue
+				lc.EnvValues = s.mcpEnvValueFor(name)
 				client, err = mcp.Connect(ctx, lc)
 			}
 			mu.Lock()

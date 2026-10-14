@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -62,6 +61,7 @@ func (s *Server) mcpResult(ctx context.Context, req protocol.MCPRequest) protoco
 	}
 	s.mcpAdminMu.Lock()
 	defer s.mcpAdminMu.Unlock()
+	s.refreshMCPSecrets()
 
 	// A server changed, paused or removed: its last start no longer describes it.
 	switch req.Action {
@@ -180,7 +180,8 @@ func (s *Server) serverInfos(cfg *Config) []protocol.MCPServerInfo {
 		out = append(out, protocol.MCPServerInfo{
 			Name: name, Command: commandLine(srv), Source: source, Disabled: srv.Disabled,
 			Program: srv.Command, Args: srv.Args, Env: srv.Env, Cwd: srv.Cwd,
-			EnvMissing: s.envMissing(srv.Env), State: state.state, StateDetail: state.detail,
+			EnvMissing: s.envMissing(name, srv.Env), EnvStored: s.mcpSecrets.storedNames(name, srv.Env),
+			State: state.state, StateDetail: state.detail,
 		})
 	}
 	return out
@@ -256,6 +257,9 @@ func (s *Server) mcpStore(ctx context.Context, req protocol.MCPRequest, replace 
 	if err := validateUserServer(name, srv); err != nil {
 		return protocol.MCPResponse{Error: err.Error() + nothing}
 	}
+	if err := validEnvValues(srv.Env, req.EnvValues); err != nil {
+		return protocol.MCPResponse{Error: err.Error() + nothing}
+	}
 	if _, inConfig := s.cfg.MCP.Servers[name]; inConfig {
 		if replace {
 			return protocol.MCPResponse{Error: fmt.Sprintf("%s is defined in %s, not added with this command. "+
@@ -282,6 +286,10 @@ func (s *Server) mcpStore(ctx context.Context, req protocol.MCPRequest, replace 
 		if replace {
 			warning = changeWarning(name, srv)
 		}
+		if len(req.EnvValues) > 0 {
+			warning += fmt.Sprintf("\n\nThe values you gave for %s are kept for this server only, in a file only you "+
+				"can read, and are never shown to the model.", strings.Join(sortedStringKeys(req.EnvValues), ", "))
+		}
 		return protocol.MCPResponse{
 			Ok: false, AgentMode: s.cfg.MCP.Enabled, NeedsAcknowledgement: true, Detail: warning,
 		}
@@ -293,6 +301,11 @@ func (s *Server) mcpStore(ctx context.Context, req protocol.MCPRequest, replace 
 	user[name] = srv
 	if err := saveUserMCPServers(s.userServersPath, user); err != nil {
 		return protocol.MCPResponse{Error: "saving the server: " + err.Error()}
+	}
+	// Its own values, only now that it is agreed to. An update also drops a
+	// value for a variable the server no longer reads.
+	if err := s.storeServerEnv(name, srv.Env, req.EnvValues); err != nil {
+		return protocol.MCPResponse{Error: fmt.Sprintf("%s was saved, but its keys were not: %v. Set them with Set key", name, err)}
 	}
 	s.logger.Printf("mcp: server %s %s by the user (lane=third_party, unconfined): %s",
 		name, strings.ToLower(done), commandLine(srv))
@@ -379,11 +392,11 @@ func (s *Server) mcpSetDisabled(ctx context.Context, req protocol.MCPRequest, di
 // tryStoredServer starts a just-stored server once and reports what it offers.
 // done is the first word of the answer: what was just done to it.
 func (s *Server) tryStoredServer(ctx context.Context, done, name string, srv MCPServerConfig) (detail string, notes []string) {
-	for _, env := range srv.Env {
-		if _, set := os.LookupEnv(env); !set {
-			notes = append(notes, fmt.Sprintf("%s is not set in this daemon's environment, so the server starts without it. "+
-				"Export it (or put it in .env) and restart the daemon.", env))
-		}
+	// Every place a value can come from, not only the environment: a key
+	// stored with Set key or `mcp set-key` is the usual one now.
+	for _, env := range s.envMissing(name, srv.Env) {
+		notes = append(notes, fmt.Sprintf("Mochiii has no value for %s, so the server starts without it. "+
+			"Set it with `mcp set-key %s %s` or Set key in VS Code.", env, name, env))
 	}
 	if !filepath.IsAbs(srv.Command) {
 		if _, err := lookPath(srv.Command); err != nil {
@@ -475,6 +488,11 @@ func (s *Server) mcpRemove(req protocol.MCPRequest) protocol.MCPResponse {
 	if err := saveUserMCPServers(s.userServersPath, user); err != nil {
 		return protocol.MCPResponse{Error: "saving the change: " + err.Error()}
 	}
+	// Its own keys go with it; values every server reads stay.
+	if err := s.mcpSecrets.forgetServer(name); err != nil {
+		s.logger.Printf("mcp: removing %s's stored keys: %v", name, err)
+	}
+	s.rebuildCredScrubber()
 	s.logger.Printf("mcp: server %s removed by the user", name)
 	cfg, _ := s.agentConfig()
 	return protocol.MCPResponse{
