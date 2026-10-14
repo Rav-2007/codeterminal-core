@@ -244,7 +244,13 @@ func (s *Server) buildRegistry(ctx context.Context, logger *log.Logger, proposal
 				// server that would not start costs: reported the same way.
 				err = fmt.Errorf("%w: %v", mcp.ErrServerUnavailable, err)
 			} else {
-				client, err = mcp.Connect(ctx, laneBLaunchConfig(name, srv, cfg, dir, serverStderr(name, logger), logger.Printf))
+				s.mcpStates.beforeStart(name)
+				stderr := serverStderr(name, logger)
+				stderr.onLine = func(line string) { s.mcpStates.noteLine(name, line) }
+				lc := laneBLaunchConfig(name, srv, cfg, dir, stderr, logger.Printf)
+				// A key the user gave for one of the server's variables (mcpenv.go).
+				lc.EnvValues = s.mcpEnvValue
+				client, err = mcp.Connect(ctx, lc)
 			}
 			mu.Lock()
 			results = append(results, connectResult{name: name, client: client, err: err})
@@ -261,6 +267,7 @@ func (s *Server) buildRegistry(ctx context.Context, logger *log.Logger, proposal
 
 	var errs []error
 	for _, r := range results {
+		s.mcpStates.started(r.name, r.err)
 		if r.err != nil {
 			logger.Printf("mcp: server %s unavailable: %v", r.name, r.err)
 			errs = append(errs, fmt.Errorf("server %s: %w", r.name, r.err))
@@ -282,7 +289,7 @@ func (s *Server) buildRegistry(ctx context.Context, logger *log.Logger, proposal
 // it reaches the daemon log, the same treatment helperproc.go gives the
 // embedder. Without a prefix, three servers' diagnostics interleave into one
 // unattributable stream.
-func serverStderr(name string, logger *log.Logger) io.Writer {
+func serverStderr(name string, logger *log.Logger) *prefixWriter {
 	return &prefixWriter{prefix: "mcp/" + name + ": ", logger: logger}
 }
 
@@ -290,6 +297,8 @@ type prefixWriter struct {
 	prefix string
 	logger *log.Logger
 	buf    []byte
+	// onLine, when set, is given each line as it is logged (escaped).
+	onLine func(line string)
 }
 
 // Write splits on newlines so one log line per server line, rather than one per
@@ -324,6 +333,9 @@ func (w *prefixWriter) Write(p []byte) (int, error) {
 		w.buf = w.buf[i+1:]
 		if line != "" {
 			w.logger.Print(w.prefix + mcp.SanitizeForDisplay(line))
+			if w.onLine != nil {
+				w.onLine(mcp.SanitizeForDisplay(line))
+			}
 		}
 	}
 	if len(w.buf) >= maxLogLineBytes {

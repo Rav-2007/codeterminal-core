@@ -50,6 +50,12 @@ type serverExtras struct {
 	// to ask them their tools, and two at once would start each twice; an add
 	// and a remove must not interleave their read-change-write of one file.
 	mcpAdminMu sync.Mutex
+	// mcpEnv holds the values the user gave for variables their servers read
+	// (mcpenv.go). Guarded by Server.credMu: they are credentials, and the
+	// scrubber is built from them along with the daemon's own key.
+	mcpEnv map[string]string
+	// mcpStates is what happened the last time each server was started.
+	mcpStates mcpStateBook
 }
 
 // handleConnectOrMCP answers whichever of the two requests serveConn's connect

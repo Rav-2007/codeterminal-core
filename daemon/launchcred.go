@@ -69,6 +69,10 @@ type launchCredential struct {
 	APIBase  string `json:"api_base"`
 	Provider string `json:"provider"`
 	ProxyKey string `json:"proxy_key"`
+	// MCPEnv is the values the user gave for variables their MCP servers read
+	// (mcpenv.go), kept by the launcher in its secret store. Names and values
+	// are checked as MCPActionSetEnv checks them.
+	MCPEnv map[string]string `json:"mcp_env"`
 }
 
 // secrets returns the credential values the line carried, for the literal
@@ -192,6 +196,18 @@ func parseLaunchCredential(line []byte) (launchCredential, error) {
 	if c.APIBase != "" {
 		if err := validateBaseNamed("api_base on stdin", c.APIBase); err != nil {
 			return launchCredential{}, err
+		}
+	}
+	for name, v := range c.MCPEnv {
+		if err := validMCPEnvName(name); err != nil {
+			return launchCredential{}, fmt.Errorf("mcp_env on stdin: %v", err)
+		}
+		if err := validMCPEnvValue(strings.TrimSpace(v)); err != nil {
+			return launchCredential{}, fmt.Errorf("mcp_env on stdin: %s: %v", name, err)
+		}
+		c.MCPEnv[name] = strings.TrimSpace(v)
+		if c.MCPEnv[name] == "" {
+			delete(c.MCPEnv, name)
 		}
 	}
 	return c, nil

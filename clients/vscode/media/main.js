@@ -2621,6 +2621,15 @@
     return btn;
   }
 
+  // refocusComposer puts the cursor back in the composer after something the
+  // DAEMON did (a turn ending) -- but only while this panel has focus. Taking it
+  // otherwise pulled the keyboard out of whatever the user was in: a VS Code
+  // input box opened from the Customize page ("Change perplexity (2/4)") stopped
+  // taking Enter the moment an answer finished (FOUND 2026-10-14).
+  function refocusComposer() {
+    if (document.hasFocus()) inputEl.focus();
+  }
+
   function answerToolApproval(req, decision, label) {
     vscode.postMessage({ type: 'toolApprovalDecision', callId: req.call_id, decision: decision });
     clearToolApproval();
@@ -2631,7 +2640,7 @@
     const note = document.createElement('div');
     note.className = 'approval-record';
     note.setAttribute('role', 'status');
-    note.textContent = label + ' — ' + req.server + '__' + req.tool;
+    note.textContent = label + ' — ' + toolLabel({ server: req.server, tool: req.tool });
     transcriptEl.appendChild(note);
     transcriptEl.scrollTop = transcriptEl.scrollHeight;
     inputEl.focus();
@@ -2692,6 +2701,47 @@
     }
     const known = activity.server === 'builtin' ? TOOL_LABELS[String(activity.tool)] : undefined;
     return known || activity.server + ' \u00b7 ' + activity.tool;
+  }
+
+  // THE NOTES A SAVED ANSWER CARRIES. The daemon remembers each answer with
+  // two notes for the model at its end (daemon/toolresult.go
+  // summariseToolActivity, daemon/history.go incompleteHistoryNote):
+  // "[used 2 tool call(s): builtin__repo_map, builtin__read_file]" and
+  // "[This answer was cut off: ...]". A reopened chat printed them as reply
+  // text, and markdown read the "__" in the tool names as bold. splitTurnNotes
+  // takes them off the end, for the transcript to show as a line and a notice.
+  const TOOLS_NOTE = /\n*\[used \d+ tool call\(s\): ([^\]\n]*)\]\s*$/;
+  const CUT_OFF_NOTE = /\n*\[(This answer was cut off: [^\]]*|This turn was stopped by the user[^\]]*)\]\s*$/;
+
+  /** @param {string} text */
+  function splitTurnNotes(text) {
+    let body = text;
+    /** @type {string[]} */
+    let tools = [];
+    let cutOff = '';
+    // Either order: the cut-off note is appended after the tools note.
+    for (let i = 0; i < 2; i++) {
+      const cut = CUT_OFF_NOTE.exec(body);
+      if (cut && !cutOff) {
+        // The first sentence is for the reader; the rest tells the model what to do.
+        cutOff = cut[1].replace(/\. .*$/s, '.');
+        body = body.slice(0, cut.index);
+        continue;
+      }
+      const used = TOOLS_NOTE.exec(body);
+      if (used && tools.length === 0) {
+        const names = used[1].split(',').map((n) => n.trim()).filter(Boolean);
+        const labels = names.map((n) => {
+          const sep = n.indexOf('__');
+          const server = sep > 0 ? n.slice(0, sep) : 'builtin';
+          const tool = sep > 0 ? n.slice(sep + 2) : n;
+          return server === 'builtin' ? TOOL_LABELS[tool] || tool : toolLabel({ server, tool });
+        });
+        tools = [...new Set(labels)];
+        body = body.slice(0, used.index);
+      }
+    }
+    return { body: body.replace(/\s+$/, ''), tools, cutOff };
   }
 
   // currentWorkBlock is the block the next row goes in: the open one while it
@@ -3355,8 +3405,23 @@
         for (const turn of msg.turns) {
           const body = addBubble(turn.role, '', true);
           if (turn.role === 'assistant') {
-            currentAssistantRaw = turn.content || '';
+            // The daemon saves its notes for the model at the end of the
+            // answer; they are shown as what they are, not as reply text.
+            const notes = splitTurnNotes(turn.content || '');
+            currentAssistantRaw = notes.body;
             renderFencedContent(body, currentAssistantRaw);
+            if (notes.tools.length > 0 && currentAssistantCard) {
+              const used = document.createElement('div');
+              used.className = 'turn-tools-used';
+              used.textContent = 'Used ' + notes.tools.join(', ');
+              currentAssistantCard.appendChild(used);
+            }
+            if (notes.cutOff && currentAssistantCard) {
+              const cut = document.createElement('div');
+              cut.className = 'turn incomplete-notice';
+              cut.textContent = '⚠ ' + notes.cutOff;
+              currentAssistantCard.appendChild(cut);
+            }
             if (currentAssistantCard) {
               attachFeedbackFooter(currentAssistantCard, currentAssistantRaw);
             }
@@ -3457,7 +3522,7 @@
         clearToolApproval();
         setStreaming(false);
         refreshContextUsage();
-        inputEl.focus();
+        refocusComposer();
         break;
       case 'error':
         currentTasksEl = null;

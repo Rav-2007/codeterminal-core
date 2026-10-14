@@ -63,6 +63,12 @@ func (s *Server) mcpResult(ctx context.Context, req protocol.MCPRequest) protoco
 	s.mcpAdminMu.Lock()
 	defer s.mcpAdminMu.Unlock()
 
+	// A server changed, paused or removed: its last start no longer describes it.
+	switch req.Action {
+	case protocol.MCPActionUpdate, protocol.MCPActionEnable, protocol.MCPActionDisable, protocol.MCPActionRemove:
+		defer s.mcpStates.forget(strings.TrimSpace(req.Name))
+	}
+
 	switch req.Action {
 	case "", protocol.MCPActionList:
 		return s.mcpList(ctx)
@@ -81,10 +87,13 @@ func (s *Server) mcpResult(ctx context.Context, req protocol.MCPRequest) protoco
 		return s.mcpSetDisabled(ctx, req, false)
 	case protocol.MCPActionDisable:
 		return s.mcpSetDisabled(ctx, req, true)
+	case protocol.MCPActionSetEnv:
+		return s.mcpSetEnv(req)
 	}
 	return protocol.MCPResponse{Error: fmt.Sprintf("unknown mcp action %q; the actions are %s", truncateForClient(req.Action, 32),
 		strings.Join([]string{protocol.MCPActionList, protocol.MCPActionServers, protocol.MCPActionTools, protocol.MCPActionAdd,
-			protocol.MCPActionUpdate, protocol.MCPActionRemove, protocol.MCPActionEnable, protocol.MCPActionDisable}, ", "))}
+			protocol.MCPActionUpdate, protocol.MCPActionRemove, protocol.MCPActionEnable, protocol.MCPActionDisable,
+			protocol.MCPActionSetEnv}, ", "))}
 }
 
 // mcpList reports the tools this daemon would offer the model on its next
@@ -167,9 +176,11 @@ func (s *Server) serverInfos(cfg *Config) []protocol.MCPServerInfo {
 		if _, fromConfig := s.cfg.MCP.Servers[name]; fromConfig {
 			source = protocol.MCPSourceConfig
 		}
+		state := s.mcpStates.get(name)
 		out = append(out, protocol.MCPServerInfo{
 			Name: name, Command: commandLine(srv), Source: source, Disabled: srv.Disabled,
 			Program: srv.Command, Args: srv.Args, Env: srv.Env, Cwd: srv.Cwd,
+			EnvMissing: s.envMissing(srv.Env), State: state.state, StateDetail: state.detail,
 		})
 	}
 	return out

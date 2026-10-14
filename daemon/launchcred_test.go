@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -40,6 +41,8 @@ func TestLaunchCredentialParsesWhatALauncherSends(t *testing.T) {
 			launchCredential{APIKey: launchFake, APIBase: p.APIBase + "/", Provider: p.ID}},
 		{"a proxy key in its own field", `{"proxy_key":"` + launchFake + `"}`, launchCredential{ProxyKey: launchFake}},
 		{"surrounding whitespace", "  \t{}\t ", launchCredential{}},
+		{"a server's key", `{"mcp_env":{"PERPLEXITY_API_KEY":" pplx-1 ","EMPTY":""}}`,
+			launchCredential{MCPEnv: map[string]string{"PERPLEXITY_API_KEY": "pplx-1"}}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -47,7 +50,7 @@ func TestLaunchCredentialParsesWhatALauncherSends(t *testing.T) {
 			if err != nil {
 				t.Fatalf("refused: %v", err)
 			}
-			if got != c.want {
+			if !reflect.DeepEqual(got, c.want) {
 				t.Fatalf("got %+v, want %+v", got, c.want)
 			}
 		})
@@ -74,6 +77,9 @@ func TestLaunchCredentialRefusesMalformedLinesWithoutEchoingThem(t *testing.T) {
 		{"provider and base disagree", `{"api_key":"` + launchFake + `","provider":"` + p.ID + `","api_base":"` + other + `"}`, "disagree"},
 		{"a base with no scheme", `{"api_key":"` + launchFake + `","api_base":"example.test/v1"}`, `api_base on stdin "example.test/v1" has no scheme`},
 		{"a base with the wrong scheme", `{"api_key":"` + launchFake + `","api_base":"ftp://example.test"}`, "unsupported scheme"},
+		{"a server key with a line break", `{"mcp_env":{"X_TOKEN":"` + launchFake + `\nY=1"}}`, "X_TOKEN: the value contains a line break"},
+		{"this product's own key as a server's", `{"mcp_env":{"MOCHIII_API_KEY":"` + launchFake + `"}}`, "mcp_env on stdin"},
+		{"a server key with no name", `{"mcp_env":{"1BAD":"` + launchFake + `"}}`, "is not a variable name"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

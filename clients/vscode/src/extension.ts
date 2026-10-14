@@ -20,6 +20,7 @@ import {
   daemonCredentials,
   withoutCredentials,
 } from './daemonCredentials';
+import { cachedMcpEnv, loadMcpEnv } from './mcpSecrets';
 import { useSpecStore } from './specWorkflow';
 import { McpServersProvider, registerMcpServers } from './mcpServersView';
 import { McpMarketplace, handleMarketplaceUri } from './mcpMarketplace';
@@ -139,6 +140,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     // milliseconds, and it is the difference between the daemon being able to
     // answer the first question and not.
     cachedApiKey = await getApiKey(context);
+    // The keys the user's MCP servers read, for the same reason (mcpSecrets.ts).
+    await loadMcpEnv(context);
 
     supervisor = new DaemonSupervisor({
       probe: probeDaemon,
@@ -828,7 +831,7 @@ function spawnDaemon(binaryPath: string, workspacePath: string, logPath: string)
   // whatever launched VS Code, and a desktop icon carries none of a login
   // shell's exports. And KEYLESS: see daemonEnvironment.
   const env = daemonEnvironment();
-  const credentials: DaemonCredentials = daemonCredentials(cachedApiKey, process.env);
+  const credentials: DaemonCredentials = daemonCredentials(cachedApiKey, process.env, cachedMcpEnv());
   const child = cp.spawn(binaryPath, args, {
     cwd: workspacePath,
     detached: true,

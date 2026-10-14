@@ -241,9 +241,34 @@
         sub.append(el('code', '', s.command));
         text.append(sub);
         if (s.env && s.env.length) text.append(el('div', 'row-sub', 'Reads ' + s.env.join(', ')));
-        const state = !own ? 'From config' : s.disabled ? 'Paused' : 'Active';
-        const badge = el('span', 'tag ' + (s.disabled ? 'off' : 'on'), state);
+        // WHETHER IT REALLY STARTS. "Active" used to mean only "not paused", and
+        // a server with no key showed it while exiting on every start.
+        const status = s.status || { short: '', detail: '', needsKey: false };
+        const failed = !s.disabled && /^(failed|needs) /.test(status.short + ' ');
+        if (!s.disabled && status.detail && (failed || status.needsKey)) {
+          text.append(el('div', 'row-sub mcp-problem', status.detail));
+        }
+        const state = s.disabled
+          ? 'Paused'
+          : status.needsKey
+            ? 'Needs key'
+            : status.short === 'failed to start'
+              ? 'Failed'
+              : status.short === 'running'
+                ? 'Running'
+                : !own
+                  ? 'From config'
+                  : 'On';
+        const badge = el('span', 'tag ' + (s.disabled ? 'off' : failed || status.needsKey ? 'warn' : 'on'), state);
+        if (status.detail) badge.title = status.detail;
         row.append(mono, text, badge);
+        if (!own && s.canSetKey) {
+          const acts = el('div', 'mcp-acts');
+          const key = act('Set key…', () => vscode.postMessage({ type: 'mcp:row', action: 'setKey', name: s.name }));
+          key.setAttribute('aria-label', 'Set a key for ' + s.name);
+          acts.append(key);
+          row.append(acts);
+        }
         if (own) {
           const sw = el('button', 'mcp-switch');
           /** @type {HTMLButtonElement} */ (sw).type = 'button';
@@ -257,7 +282,13 @@
           const remove = act('Remove', () => vscode.postMessage({ type: 'mcp:row', action: 'remove', name: s.name }), 'danger');
           remove.setAttribute('aria-label', 'Remove ' + s.name);
           const acts = el('div', 'mcp-acts');
-          acts.append(sw, edit, remove);
+          acts.append(sw);
+          if (s.canSetKey) {
+            const key = act('Set key…', () => vscode.postMessage({ type: 'mcp:row', action: 'setKey', name: s.name }), status.needsKey ? 'primary' : '');
+            key.setAttribute('aria-label', 'Set a key for ' + s.name);
+            acts.append(key);
+          }
+          acts.append(edit, remove);
           row.append(acts);
         }
         list.append(row);

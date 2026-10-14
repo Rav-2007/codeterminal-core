@@ -116,6 +116,27 @@ func main() {
 		})
 	}
 
+	// A SERVER THAT NEEDS A KEY, the way most real ones do: started without
+	// the variable it names, it says so on stderr and exits before the
+	// handshake (perplexity's "PERPLEXITY_API_KEY environment variable is
+	// required"). With it, it offers "secret", which says whether the value
+	// arrived -- never the value.
+	if len(os.Args) > 2 && os.Args[1] == "--require-env" {
+		name := os.Args[2]
+		if os.Getenv(name) == "" {
+			fmt.Fprintf(os.Stderr, "Error: %s environment variable is required\n", name)
+			os.Exit(1)
+		}
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        "secret",
+			Description: "Say how long the required variable's value is.",
+		}, func(_ context.Context, _ *mcp.CallToolRequest, _ noArgs) (*mcp.CallToolResult, any, error) {
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("%s has %d bytes", name, len(os.Getenv(name)))}},
+			}, nil, nil
+		})
+	}
+
 	if err := s.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
 		log.Fatal(err)
 	}

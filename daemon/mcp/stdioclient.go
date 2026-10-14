@@ -103,6 +103,9 @@ type LaunchConfig struct {
 	// EnvAllow names variables to pass through. See ServerEnv -- PATH and HOME
 	// come free, this product's own credentials never come at all.
 	EnvAllow []string
+	// EnvValues looks up a value the user gave for one of EnvAllow's names; it
+	// wins over the daemon's environment (ServerEnvWith). Nil looks up nothing.
+	EnvValues func(name string) (string, bool)
 	// Stderr receives the server's stderr, prefixed by the caller. Nil
 	// discards it.
 	Stderr io.Writer
@@ -169,7 +172,7 @@ func Connect(ctx context.Context, cfg LaunchConfig) (*StdioClient, error) {
 	// semicolon.
 	cmd := exec.Command(execCmd, execArgs...)
 	cmd.Dir = cfg.Dir
-	cmd.Env = ServerEnv(cfg.EnvAllow)
+	cmd.Env = ServerEnvWith(cfg.EnvAllow, cfg.EnvValues)
 	// MEMO ITEM 2 (R1.5). `/mcp-server` renders this stream on the user's
 	// screen, so a server that prints a provisioned credential at startup used
 	// to disclose it. The redactor is built from cmd.Env -- the literal

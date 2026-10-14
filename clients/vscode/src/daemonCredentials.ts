@@ -38,6 +38,8 @@ export function withoutCredentials(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 export interface DaemonCredentials {
   api_key?: string;
   proxy_key?: string;
+  /** Values for variables the user's MCP servers read (mcpSecrets.ts). */
+  mcp_env?: Record<string, string>;
 }
 
 /**
@@ -58,8 +60,15 @@ export interface DaemonCredentials {
  * The proxy key travels in a field of its own, never as api_key: the daemon
  * keeps provider and proxy keys apart so neither is sent to the other's host.
  */
-export function daemonCredentials(storedKey: string | undefined, inherited: NodeJS.ProcessEnv): DaemonCredentials {
+export function daemonCredentials(
+  storedKey: string | undefined,
+  inherited: NodeJS.ProcessEnv,
+  mcpEnv: Record<string, string> = {},
+): DaemonCredentials {
   const out: DaemonCredentials = {};
+  if (Object.keys(mcpEnv).length > 0) {
+    out.mcp_env = { ...mcpEnv };
+  }
   const key = (storedKey ?? '').trim() || (inherited.MOCHIII_API_KEY ?? '').trim();
   if (key) {
     out.api_key = key;

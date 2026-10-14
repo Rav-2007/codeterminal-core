@@ -493,6 +493,7 @@ func main() {
 			configPath:      absoluteOrAsGiven(resolvedConfigPath),
 			userServersPath: userServersPathOrNone(logger),
 			mcpRunDir:       mcpRunDirOrNone(logger),
+			mcpEnv:          launch.MCPEnv,
 		},
 		modelOverride:           *modelOverride,
 		systemPrompt:            systemPrompt,

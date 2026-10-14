@@ -30,7 +30,7 @@ func (s *Server) credentialValuesLocked() []string {
 		s.apiKey,
 		os.Getenv("MOCHIII_API_KEY"),
 		os.Getenv("MOCHIII_PROXY_KEY"),
-	}, s.launchSecrets...) {
+	}, append(s.launchSecrets, s.mcpEnvValuesLocked()...)...) {
 		if strings.TrimSpace(v) != "" {
 			vals = append(vals, v)
 		}

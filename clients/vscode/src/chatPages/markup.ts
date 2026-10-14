@@ -424,6 +424,10 @@ export function chatPagesStyles(): string {
   }
   .tag.on { color: var(--ct-ok); border-color: color-mix(in srgb, var(--ct-ok) 50%, transparent); }
   .tag.off { color: var(--ct-warn); border-color: color-mix(in srgb, var(--ct-warn) 50%, transparent); }
+  /* A server that is on but does not start (no key, or it failed). */
+  .tag.warn { color: var(--ct-danger); border-color: color-mix(in srgb, var(--ct-danger) 50%, transparent); }
+  .row-sub.mcp-problem { color: var(--ct-danger); white-space: normal; }
+  .row-act.primary { color: var(--ct-accent); font-weight: 600; }
   .tag.ask { color: var(--ct-accent); border-color: color-mix(in srgb, var(--ct-accent) 50%, transparent); }
   .row-spacer { flex: 1; }
   .empty { color: var(--ct-muted); padding: 10px 12px; border: 1px dashed var(--ct-border); border-radius: 10px; }

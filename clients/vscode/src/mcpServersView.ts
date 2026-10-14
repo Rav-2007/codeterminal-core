@@ -21,15 +21,19 @@
 
 import * as vscode from 'vscode';
 import {
+  FEATURE_MCP_ENV,
   FEATURE_MCP_MANAGE,
   MCP_CWD_WORKSPACE,
   MCP_SOURCE_CONFIG,
+  MCP_STATE_FAILED,
+  MCP_STATE_RUNNING,
   MCPServerInfo,
   RESTART_HINT,
   sendMCP,
 } from './daemonClient';
 import { validEnvName, validServerName } from './mcpCatalog';
 import { ServerSpec, splitArgs, storeServer } from './mcpInstall';
+import { storeMcpEnv, storedMcpEnvNames } from './mcpSecrets';
 
 export const MCP_SERVERS_VIEW_ID = 'mochiii.mcpServers';
 
@@ -44,6 +48,8 @@ export interface McpServersState {
   agentMode: boolean;
   /** Whether the daemon takes update/enable/disable/servers (FEATURE_MCP_MANAGE). */
   manage: boolean;
+  /** Whether the daemon takes a server's key and reports its state (FEATURE_MCP_ENV). */
+  setEnv?: boolean;
   notes: string[];
   /** Set when the daemon could not be asked. */
   unreachable?: string;
@@ -89,10 +95,11 @@ export class McpServersProvider implements vscode.TreeDataProvider<McpNode> {
     try {
       const { resp, features } = await sendMCP(this.clientName, { action: 'servers' });
       const manage = features.includes(FEATURE_MCP_MANAGE);
+      const setEnv = features.includes(FEATURE_MCP_ENV);
       if (resp.error) {
-        this.state = { servers: [], agentMode: true, manage, notes: [], unreachable: resp.error };
+        this.state = { servers: [], agentMode: true, manage, setEnv, notes: [], unreachable: resp.error };
       } else {
-        this.state = { servers: resp.servers ?? [], agentMode: resp.agent_mode, manage, notes: resp.notes ?? [] };
+        this.state = { servers: resp.servers ?? [], agentMode: resp.agent_mode, manage, setEnv, notes: resp.notes ?? [] };
       }
       this.retries = 0;
     } catch (err) {
@@ -144,8 +151,10 @@ export class McpServersProvider implements vscode.TreeDataProvider<McpNode> {
     const s = node.server;
     const item = new vscode.TreeItem(s.name, vscode.TreeItemCollapsibleState.None);
     const fromConfig = s.source === MCP_SOURCE_CONFIG;
-    item.description = s.disabled ? 'disabled' : fromConfig ? 'from models.json' : s.program ?? '';
-    item.iconPath = new vscode.ThemeIcon(s.disabled ? 'debug-pause' : fromConfig ? 'settings-gear' : 'server-environment');
+    item.description = s.disabled ? 'paused' : serverStatus(s).short || (fromConfig ? 'from models.json' : s.program ?? '');
+    item.iconPath = new vscode.ThemeIcon(
+      s.disabled ? 'debug-pause' : s.state === MCP_STATE_FAILED ? 'error' : fromConfig ? 'settings-gear' : 'server-environment',
+    );
     item.contextValue = fromConfig ? 'mcpServer.config' : s.disabled ? 'mcpServer.user.disabled' : 'mcpServer.user.enabled';
     item.tooltip = serverTooltip(s);
     item.accessibilityInformation = {
@@ -200,10 +209,44 @@ export function nodesFor(state: McpServersState): McpNode[] {
   return state.servers.length === 0 && nodes.length === 0 ? [] : nodes;
 }
 
+/**
+ * serverStatus is what a server's row says about it beyond on/off: whether its
+ * last start failed (and why, in its own words), and which keys it has no value
+ * for. A server marked "Active" that exits on every start was the bug this is for
+ * (2026-10-14). Exported for the chat's Customize page and for tests.
+ */
+export function serverStatus(s: MCPServerInfo): { short: string; detail: string; needsKey: boolean } {
+  const missing = s.env_missing ?? [];
+  const needsKey = missing.length > 0;
+  if (s.disabled) {
+    return { short: '', detail: '', needsKey };
+  }
+  if (s.state === MCP_STATE_FAILED) {
+    const why = s.state_detail ? `: ${s.state_detail}` : '';
+    const hint = needsKey ? ` It has no value for ${missing.join(', ')}; use Set key.` : '';
+    return { short: needsKey ? `needs ${missing.join(', ')}` : 'failed to start', detail: `Failed to start${why}.${hint}`, needsKey };
+  }
+  if (needsKey) {
+    return {
+      short: `needs ${missing.join(', ')}`,
+      detail: `Mochiii has no value for ${missing.join(', ')}, which this server reads; most servers exit without their key. Use Set key.`,
+      needsKey,
+    };
+  }
+  if (s.state === MCP_STATE_RUNNING) {
+    return { short: 'running', detail: 'Started and answered the last time a turn used it.', needsKey };
+  }
+  return { short: '', detail: 'Not started yet: it starts with the next question in agent mode.', needsKey };
+}
+
 function serverTooltip(s: MCPServerInfo): vscode.MarkdownString {
   const md = new vscode.MarkdownString(undefined, true);
   md.isTrusted = false;
-  md.appendMarkdown(`**${escapeMd(s.name)}**${s.disabled ? ' — disabled' : ''}\n\n`);
+  md.appendMarkdown(`**${escapeMd(s.name)}**${s.disabled ? ' — paused' : ''}\n\n`);
+  const status = serverStatus(s);
+  if (status.detail) {
+    md.appendMarkdown(escapeMd(status.detail) + '\n\n');
+  }
   md.appendCodeblock(s.command, 'text');
   md.appendMarkdown(
     s.source === MCP_SOURCE_CONFIG
@@ -212,6 +255,10 @@ function serverTooltip(s: MCPServerInfo): vscode.MarkdownString {
   );
   if (s.env && s.env.length > 0) {
     md.appendMarkdown(`Given the variables: ${s.env.map((e) => '`' + e + '`').join(', ')}\n\n`);
+    const kept = storedMcpEnvNames().filter((n) => s.env?.includes(n));
+    if (kept.length > 0) {
+      md.appendMarkdown(`Kept in VS Code's secret storage: ${kept.map((e) => '`' + e + '`').join(', ')}\n\n`);
+    }
   }
   md.appendMarkdown(s.cwd === MCP_CWD_WORKSPACE ? 'Starts inside the project.' : 'Starts in a private folder of its own.');
   md.appendMarkdown('\n\nRuns with your full privileges; each of its tools asks before it runs.');
@@ -222,8 +269,8 @@ function escapeMd(s: string): string {
   return s.replace(/[\\`*_{}[\]()#+\-.!|<>]/g, '\\$&');
 }
 
-/** askForServer collects a server by hand, prefilled when changing one. Undefined is cancel. */
-async function askForServer(existing?: MCPServerInfo): Promise<ServerSpec | undefined> {
+/** askForServer collects a server by hand, prefilled when changing one. Undefined is cancel. Exported for tests. */
+export async function askForServer(existing?: MCPServerInfo): Promise<ServerSpec | undefined> {
   const name = existing
     ? existing.name
     : await vscode.window.showInputBox({
@@ -322,6 +369,120 @@ function quoteArg(a: string): string {
   return /^[A-Za-z0-9@%+=:,./_-]+$/.test(a) ? a : `"${a.replace(/(["\\])/g, '\\$1')}"`;
 }
 
+/** maxKeyBytes is the daemon's bound on one value (daemon/mcpenv.go). */
+const MAX_KEY_BYTES = 8 << 10;
+
+/**
+ * setServerKey asks for the value of a variable a server reads, keeps it in
+ * SecretStorage and gives it to the running daemon. Undefined name asks which,
+ * when the server reads more than one.
+ */
+async function setServerKey(
+  context: vscode.ExtensionContext,
+  clientName: string,
+  provider: McpServersProvider,
+  server: MCPServerInfo,
+  name?: string,
+): Promise<void> {
+  const names = server.env ?? [];
+  if (names.length === 0) {
+    void vscode.window.showInformationMessage(
+      `${server.name} reads no variables. If it needs a key, add the variable's name with Change… (step 3), then set it here.`,
+    );
+    return;
+  }
+  let chosen = name && names.includes(name) ? name : undefined;
+  if (!chosen) {
+    if (names.length === 1) {
+      chosen = names[0];
+    } else {
+      const kept = new Set(storedMcpEnvNames());
+      const missing = new Set(server.env_missing ?? []);
+      const pick = await vscode.window.showQuickPick(
+        names.map((n) => ({
+          label: n,
+          description: missing.has(n) ? 'no value yet' : kept.has(n) ? 'kept in secret storage' : 'from VS Code’s environment',
+        })),
+        { title: `Set a key for ${server.name}`, placeHolder: 'Which variable?', ignoreFocusOut: true },
+      );
+      chosen = pick?.label;
+    }
+  }
+  if (!chosen) {
+    return;
+  }
+  const kept = storedMcpEnvNames().includes(chosen);
+  const value = await vscode.window.showInputBox({
+    title: `${chosen} for ${server.name}`,
+    prompt:
+      `Kept in VS Code's secret storage on this machine and given only to servers that read ${chosen}. ` +
+      (kept ? 'Leave it empty to forget the stored value.' : 'Paste the value; it is not shown.'),
+    password: true,
+    ignoreFocusOut: true,
+    validateInput: (v) => {
+      if (v.length > MAX_KEY_BYTES) {
+        return `Longer than ${MAX_KEY_BYTES} characters`;
+      }
+      // eslint-disable-next-line no-control-regex
+      if (/[\u0000-\u001f\u007f]/.test(v)) {
+        return 'Contains a line break or another control character';
+      }
+      if (!v.trim() && !kept) {
+        return 'Paste the value, or press Escape to cancel';
+      }
+      return undefined;
+    },
+  });
+  if (value === undefined) {
+    return;
+  }
+  const trimmed = value.trim();
+  await storeMcpEnv(context, chosen, trimmed);
+  if (!provider.current.setEnv) {
+    void vscode.window.showInformationMessage(
+      `${trimmed ? 'Saved' : 'Forgot'} ${chosen}. This daemon predates server keys, so ${RESTART_HINT} to give it to ${server.name}.`,
+    );
+    return;
+  }
+  try {
+    const { resp } = await sendMCP(clientName, { action: 'set_env', env_name: chosen, env_value: trimmed });
+    if (resp.error) {
+      void vscode.window.showErrorMessage(resp.error);
+    } else if (resp.detail) {
+      void vscode.window.showInformationMessage(resp.detail);
+    }
+  } catch (err) {
+    void vscode.window.showErrorMessage(`Saved ${chosen}, but could not reach the Mochiii daemon: ${(err as Error).message}`);
+  }
+  await provider.refresh();
+}
+
+/**
+ * offerKeyFor is said after a server is added or changed: when it reads a key
+ * Mochiii has no value for, it will exit on its first start, so the user is
+ * offered the one step that fixes it rather than finding out from a failed turn.
+ */
+async function offerKeyFor(
+  context: vscode.ExtensionContext,
+  clientName: string,
+  provider: McpServersProvider,
+  name: string,
+): Promise<void> {
+  const server = provider.current.servers.find((s) => s.name === name);
+  const missing = server?.env_missing ?? [];
+  if (!server || missing.length === 0 || !provider.current.setEnv) {
+    return;
+  }
+  const SET = 'Set key…';
+  const pick = await vscode.window.showWarningMessage(
+    `${name} reads ${missing.join(', ')}, which Mochiii has no value for. Most servers exit without their key.`,
+    SET,
+  );
+  if (pick === SET) {
+    await setServerKey(context, clientName, provider, server, missing[0]);
+  }
+}
+
 /** registerMcpServers contributes the view and its commands. */
 export function registerMcpServers(
   context: vscode.ExtensionContext,
@@ -368,8 +529,11 @@ export function registerMcpServers(
       }
       const spec = await askForServer();
       if (spec) {
-        await storeServer(clientName, spec, { action: 'add' });
+        const done = await storeServer(clientName, spec, { action: 'add' });
         await provider.refresh();
+        if (done) {
+          await offerKeyFor(context, clientName, provider, spec.name);
+        }
       }
     }),
     vscode.commands.registerCommand('mochiii.mcp.edit', async (node?: McpNode | string) => {
@@ -379,8 +543,21 @@ export function registerMcpServers(
       }
       const spec = await askForServer(server);
       if (spec) {
-        await storeServer(clientName, spec, { action: 'update' });
+        const done = await storeServer(clientName, spec, { action: 'update' });
         await provider.refresh();
+        if (done) {
+          await offerKeyFor(context, clientName, provider, spec.name);
+        }
+      }
+    }),
+    // Not in the palette: the marketplace runs it after an add.
+    vscode.commands.registerCommand('mochiii.mcp.offerKey', (name: unknown) =>
+      typeof name === 'string' ? offerKeyFor(context, clientName, provider, name) : undefined,
+    ),
+    vscode.commands.registerCommand('mochiii.mcp.setKey', async (node?: McpNode | string, envName?: string) => {
+      const server = serverOf(node);
+      if (server) {
+        await setServerKey(context, clientName, provider, server, typeof envName === 'string' ? envName : undefined);
       }
     }),
     vscode.commands.registerCommand('mochiii.mcp.enable', (node?: McpNode | string) => toggle(node, 'enable')),

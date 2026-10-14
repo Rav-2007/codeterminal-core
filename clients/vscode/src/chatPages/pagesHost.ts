@@ -10,7 +10,7 @@ import * as vscode from 'vscode';
 
 import { ConnectResponse, FEATURE_MCP_TOOLS, daemonInfo, fetchAvailableTiers, sendConnect, sendMCP, spendStatus, SpendStatus } from '../daemonClient';
 import { MarketplaceCore, acceptNotice } from '../mcpMarketplace';
-import { McpServersProvider } from '../mcpServersView';
+import { McpServersProvider, serverStatus } from '../mcpServersView';
 import { getActiveSpec, listSpecs } from '../specWorkflow';
 import { activeWorkingFolder } from '../workingFolder';
 import { accountView, providerName } from './accountView';
@@ -303,10 +303,14 @@ export class ChatPagesHost implements vscode.Disposable {
       type: 'page:mcp',
       servers: st.servers.map((s) => ({
         name: s.name,
-        command: [s.command, ...(s.args ?? [])].join(' '),
+        // The daemon's command is already the program and its arguments.
+        command: s.command,
         source: s.source,
         disabled: !!s.disabled,
         env: s.env ?? [],
+        // Whether it really starts, not only whether it is switched on.
+        status: serverStatus(s),
+        canSetKey: !!st.setEnv && (s.env ?? []).length > 0,
       })),
       agentMode: st.agentMode,
       notice: st.noFolder || st.unreachable || (st.servers.length > 0 && !st.agentMode ? 'Agent mode is off in the config the daemon loaded, so no server is started.' : ''),
