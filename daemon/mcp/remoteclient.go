@@ -128,6 +128,12 @@ type guardedTransport struct {
 	limit   int
 	server  string
 	next    http.RoundTripper
+	// life is the session's context. The SDK sends each request on a context
+	// that is never cancelled (a write is not interrupted halfway), so without
+	// this a server that accepts the connection and never answers held the
+	// handshake past its timeout, and a closed session's request open, until
+	// the transport's own header timeout.
+	life context.Context
 }
 
 func sameOrigin(a, b *url.URL) bool {
@@ -142,28 +148,40 @@ func (g *guardedTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		return nil, fmt.Errorf("server %s pointed this daemon at %s, which is not the origin it was added with (%s); refused",
 			g.server, req.URL.Host, g.origin.Host)
 	}
-	req = req.Clone(req.Context())
+	ctx, cancel := context.WithCancel(req.Context())
+	release := cancel
+	if g.life != nil {
+		stop := context.AfterFunc(g.life, cancel)
+		release = func() { stop(); cancel() }
+	}
+	req = req.Clone(ctx)
 	for k, v := range g.headers {
 		req.Header.Set(k, v)
 	}
 	resp, err := g.next.RoundTrip(req)
 	if err != nil || resp == nil || resp.Body == nil {
+		release()
 		return resp, err
 	}
-	resp.Body = &limitedBody{r: &messageLimitReader{r: resp.Body, max: g.limit, server: g.server}, c: resp.Body}
+	resp.Body = &limitedBody{r: &messageLimitReader{r: resp.Body, max: g.limit, server: g.server}, c: resp.Body, done: release}
 	return resp, nil
 }
 
 type limitedBody struct {
-	r io.Reader
-	c io.Closer
+	r    io.Reader
+	c    io.Closer
+	done func()
 }
 
 func (b *limitedBody) Read(p []byte) (int, error) { return b.r.Read(p) }
-func (b *limitedBody) Close() error               { return b.c.Close() }
+func (b *limitedBody) Close() error {
+	err := b.c.Close()
+	b.done()
+	return err
+}
 
 // remoteHTTPClient is the guarded client for one server.
-func remoteHTTPClient(cfg RemoteConfig, origin *url.URL) *http.Client {
+func remoteHTTPClient(cfg RemoteConfig, origin *url.URL, life context.Context) *http.Client {
 	next := http.RoundTripper(&http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
 		TLSHandshakeTimeout:   10 * time.Second,
@@ -180,7 +198,7 @@ func remoteHTTPClient(cfg RemoteConfig, origin *url.URL) *http.Client {
 		limit = DefaultMaxMessageBytes
 	}
 	return &http.Client{
-		Transport: &guardedTransport{origin: origin, headers: cfg.Headers, limit: limit, server: cfg.Name, next: next},
+		Transport: &guardedTransport{origin: origin, headers: cfg.Headers, limit: limit, server: cfg.Name, next: next, life: life},
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 5 {
 				return errors.New("too many redirects")
@@ -207,7 +225,15 @@ func ConnectRemote(ctx context.Context, cfg RemoteConfig) (*RemoteClient, error)
 			return nil, fmt.Errorf("server %s: %v", cfg.Name, err)
 		}
 	}
-	httpClient := remoteHTTPClient(cfg, origin)
+	// THE SESSION OUTLIVES THE HANDSHAKE. The SSE transport keeps its event
+	// stream on the context Connect is given, so a context cancelled when the
+	// handshake's time is up ended the stream the moment this returned and
+	// every later call read EOF. The session gets a context of its own, ended
+	// by Close (or by the caller's, for a turn that ends); the handshake alone
+	// is timed, by cancelling it if the deadline passes first. Every request
+	// ends with it too (guardedTransport.life).
+	sessionCtx, endSession := context.WithCancel(ctx)
+	httpClient := remoteHTTPClient(cfg, origin, sessionCtx)
 
 	var transport sdk.Transport
 	switch strings.ToLower(cfg.Transport) {
@@ -225,6 +251,7 @@ func ConnectRemote(ctx context.Context, cfg RemoteConfig) (*RemoteClient, error)
 	case "sse":
 		transport = &sdk.SSEClientTransport{Endpoint: origin.String(), HTTPClient: httpClient}
 	default:
+		endSession()
 		return nil, fmt.Errorf("server %s: transport %q is not http or sse", cfg.Name, cfg.Transport)
 	}
 
@@ -232,13 +259,6 @@ func ConnectRemote(ctx context.Context, cfg RemoteConfig) (*RemoteClient, error)
 	if handshake <= 0 {
 		handshake = DefaultConnectTimeout
 	}
-	// THE SESSION OUTLIVES THE HANDSHAKE. The SSE transport keeps its event
-	// stream on the context Connect is given, so a context cancelled when the
-	// handshake's time is up ended the stream the moment this returned and
-	// every later call read EOF. The session gets a context of its own, ended
-	// by Close (or by the caller's, for a turn that ends); the handshake alone
-	// is timed, by cancelling it if the deadline passes first.
-	sessionCtx, endSession := context.WithCancel(ctx)
 	timer := time.AfterFunc(handshake, endSession)
 	client := sdk.NewClient(&sdk.Implementation{Name: "mochiii", Version: "v1"}, nil)
 	session, err := client.Connect(sessionCtx, transport, nil)

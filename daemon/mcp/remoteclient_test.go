@@ -2,11 +2,14 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -143,5 +146,138 @@ func TestRemoteURLsAndHeaders(t *testing.T) {
 		if err != nil && strings.Contains(err.Error(), "X-Evil") {
 			t.Errorf("the error repeats the value: %v", err)
 		}
+	}
+}
+
+// A config that is wrong is refused before anything is dialled.
+func TestConnectRemoteRefusesABadConfig(t *testing.T) {
+	for _, cfg := range []RemoteConfig{
+		{Name: "bad name!", URL: "https://mcp.example.com/mcp"},
+		{Name: "r", URL: "http://mcp.example.com/mcp"},
+		{Name: "r", URL: "https://mcp.example.com/mcp", Headers: map[string]string{"X-Inject": "v\r\nX-Evil: 1"}},
+		{Name: "r", URL: "https://mcp.example.com/mcp", Transport: "websocket"},
+	} {
+		if _, err := ConnectRemote(context.Background(), cfg); err == nil {
+			t.Errorf("%+v was connected", cfg)
+		}
+	}
+}
+
+// A redirect within the origin is followed, through a transport the caller
+// supplied -- still underneath the guards.
+func TestARemoteRedirectWithinTheOriginIsFollowed(t *testing.T) {
+	ts := remoteTestServer(t, false, nil)
+	front := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/old" {
+			http.Redirect(w, r, "/mcp", http.StatusTemporaryRedirect)
+			return
+		}
+		proxyTo, _ := url.Parse(ts.URL)
+		r.URL.Scheme, r.URL.Host, r.RequestURI = proxyTo.Scheme, proxyTo.Host, ""
+		resp, err := http.DefaultTransport.RoundTrip(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		defer func() { _ = resp.Body.Close() }()
+		for k, v := range resp.Header {
+			w.Header()[k] = v
+		}
+		w.WriteHeader(resp.StatusCode)
+		buf := make([]byte, 4096)
+		for {
+			n, err := resp.Body.Read(buf)
+			if n > 0 {
+				_, _ = w.Write(buf[:n])
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+			}
+			if err != nil {
+				return
+			}
+		}
+	}))
+	t.Cleanup(front.Close)
+	c, err := ConnectRemote(context.Background(), RemoteConfig{
+		Name: "moved", URL: front.URL + "/old", HTTPClient: &http.Client{Transport: http.DefaultTransport},
+	})
+	if err != nil {
+		t.Fatalf("connect through a same-origin redirect: %v", err)
+	}
+	defer func() { _ = c.Close() }()
+	if tools, err := c.ListTools(context.Background()); err != nil || len(tools) != 1 {
+		t.Fatalf("tools %v, %v", tools, err)
+	}
+}
+
+// A URL the server hands back that leaves the origin is not requested.
+func TestTheGuardedTransportStaysOnItsOrigin(t *testing.T) {
+	var contacted atomic.Int32
+	other := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { contacted.Add(1) }))
+	defer other.Close()
+	origin, _ := url.Parse("https://mcp.example.com")
+	g := &guardedTransport{origin: origin, server: "r", next: http.DefaultTransport,
+		headers: map[string]string{"Authorization": "Bearer tok-123456789"}}
+	req, _ := http.NewRequest(http.MethodGet, other.URL, nil)
+	if resp, err := g.RoundTrip(req); err == nil {
+		_ = resp.Body.Close()
+		t.Fatal("a request to another origin was sent")
+	}
+	if contacted.Load() != 0 {
+		t.Error("the other origin was contacted")
+	}
+}
+
+// A server that accepts the connection and never answers the handshake is
+// given up on when the handshake's time is up, as unavailable.
+func TestARemoteServerThatNeverAnswersIsGivenUpOn(t *testing.T) {
+	quit := make(chan struct{})
+	silent := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-quit:
+		}
+	}))
+	defer silent.Close()
+	defer close(quit)
+	const handshake = 300 * time.Millisecond
+	start := time.Now()
+	_, err := ConnectRemote(context.Background(), RemoteConfig{Name: "silent", URL: silent.URL, ConnectTimeout: handshake})
+	if !errors.Is(err, ErrServerUnavailable) {
+		t.Fatalf("err = %v, want ErrServerUnavailable", err)
+	}
+	// Given up on at the handshake's limit, not the transport's header timeout
+	// (the SDK's own request context is never cancelled).
+	if took := time.Since(start); took > 10*handshake {
+		t.Errorf("gave up after %s; the handshake limit was %s", took, handshake)
+	}
+}
+
+// A closed client says it is not connected, and closing twice is harmless.
+func TestAClosedRemoteClientIsUnavailable(t *testing.T) {
+	ts := remoteTestServer(t, false, nil)
+	var logged []string
+	c, err := ConnectRemote(context.Background(), RemoteConfig{Name: "r", URL: ts.URL,
+		Logf: func(f string, a ...any) { logged = append(logged, f) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.logfSafe("note %d", 1)
+	if len(logged) != 1 {
+		t.Errorf("logged %v", logged)
+	}
+	(&RemoteClient{}).logfSafe("no logger: no panic")
+	if err := c.Close(); err != nil {
+		t.Errorf("close: %v", err)
+	}
+	if err := c.Close(); err != nil {
+		t.Errorf("second close: %v", err)
+	}
+	if _, err := c.ListTools(context.Background()); !errors.Is(err, ErrServerUnavailable) {
+		t.Errorf("list after close: %v", err)
+	}
+	if _, err := c.CallTool(context.Background(), "ping", nil); !errors.Is(err, ErrServerUnavailable) {
+		t.Errorf("call after close: %v", err)
 	}
 }

@@ -320,12 +320,6 @@ func splitHeaders(given map[string]string) (block, values map[string]string) {
 	return block, values
 }
 
-// mcpStoreBlock is mcpStoreBlockWith for a block with no header values.
-func (s *Server) mcpStoreBlock(ctx context.Context, name string, srv MCPServerConfig, envValues map[string]string,
-	acknowledged, replace bool) protocol.MCPResponse {
-	return s.mcpStoreBlockWith(ctx, name, srv, envValues, nil, acknowledged, replace)
-}
-
 // mcpStoreBlockWith is mcpStore for a block already built: from a request's
 // parts, or from another client's JSON entry (mcpjson.go). headerValues are a
 // remote server's header values, kept as keys on the acknowledged step.
