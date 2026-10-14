@@ -186,6 +186,18 @@
         "icon": "$(edit)"
       },
       {
+        "command": "mochiii.mcp.signIn",
+        "title": "Sign In to MCP Server…",
+        "category": "Mochiii",
+        "icon": "$(sign-in)"
+      },
+      {
+        "command": "mochiii.mcp.signOut",
+        "title": "Sign Out of MCP Server",
+        "category": "Mochiii",
+        "icon": "$(sign-out)"
+      },
+      {
         "command": "mochiii.mcp.check",
         "title": "Check MCP Server",
         "category": "Mochiii",
@@ -299,6 +311,16 @@
           "group": "1_change@0"
         },
         {
+          "command": "mochiii.mcp.signIn",
+          "when": "view == mochiii.mcpServers && viewItem =~ /^mcpServer\\./",
+          "group": "1_change@0"
+        },
+        {
+          "command": "mochiii.mcp.signOut",
+          "when": "view == mochiii.mcpServers && viewItem =~ /^mcpServer\\./",
+          "group": "1_change@0"
+        },
+        {
           "command": "mochiii.mcp.edit",
           "when": "view == mochiii.mcpServers && viewItem =~ /^mcpServer\\.user/",
           "group": "1_change@1"
@@ -320,6 +342,14 @@
         }
       ],
       "commandPalette": [
+        {
+          "command": "mochiii.mcp.signIn",
+          "when": "false"
+        },
+        {
+          "command": "mochiii.mcp.signOut",
+          "when": "false"
+        },
         {
           "command": "mochiii.mcp.check",
           "when": "false"

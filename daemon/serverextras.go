@@ -59,6 +59,8 @@ type serverExtras struct {
 	mcpSecrets *mcpSecretStore
 	// mcpStates is what happened the last time each server was started.
 	mcpStates mcpStateBook
+	// mcpAuth is the remote-server sign-ins in progress (mcpoauth.go).
+	mcpAuth mcpAuthFlows
 }
 
 // handleConnectOrMCP answers whichever of the two requests serveConn's connect

@@ -1094,6 +1094,29 @@ What differs is where the arguments go, and that is said:
   bounded like a subprocess's line; TLS and header waits are bounded; no
   standalone event stream is held open.
 
+### Signing in to a remote server (2026-10-14)
+
+A remote server that answers 401 can be signed in to in the browser
+(`daemon/mcpoauth.go`): the OAuth authorization-code flow with PKCE, dynamic
+client registration and the state and issuer checks done by the go-sdk.
+
+- **The daemon never opens anything.** It listens for the browser's return on
+  127.0.0.1, a random port and an unguessable path, for five minutes; the
+  CLIENT opens the address, after saying whose sign-in page it is. Only the
+  first request on that path is taken, and the page it answers with repeats
+  nothing it was sent. A pasted address (a remote window, ssh) is taken only if
+  it is on the same path.
+- **The sign-in page must be https** (http only on this machine), and every
+  sign-in request goes through a bounded client that refuses a redirect off
+  https.
+- **A turn never signs in.** A turn's connection uses the stored token,
+  refreshing it when expired; a 401 then is reported as "needs a sign-in" at
+  once, and the model is told only the user can do it.
+- **Tokens are keys**: kept in `mcp-secrets.json` for that server, bound to the
+  URL they were issued for, re-read before a refresh (another daemon may have
+  refreshed first), scrubbed (the access and refresh tokens and the client
+  secret — not the URL or the word Bearer), and deleted on sign-out or remove.
+
 ## Tool output is egress, and is treated as egress
 
 Whatever a tool returns goes to the model, which means it leaves the machine. It

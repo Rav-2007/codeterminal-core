@@ -278,34 +278,59 @@ func (st *mcpSecretStore) values() []string {
 	return out
 }
 
-// rawSecretStrings is every string inside fields this daemon does not read
-// yet: a newer daemon's header or token is a credential to this one too.
+// rawSecretStrings is the credentials inside fields this daemon reads as
+// opaque (a sign-in, a newer daemon's field): every value under an "env" or
+// "headers" object, and any string whose field is named like a secret
+// (access_token, refresh_token, client_secret, api_key, password).
+//
+// NOT EVERY STRING. A sign-in also holds its endpoint, its token type
+// ("Bearer") and its client id; scrubbing those would cut a URL or the word
+// Bearer out of everything the model is shown.
 func rawSecretStrings(extra map[string]json.RawMessage) []string {
 	var out []string
-	var walk func(any)
-	walk = func(v any) {
+	add := func(s string) {
+		if len(strings.TrimSpace(s)) >= 8 {
+			out = append(out, s)
+		}
+	}
+	var walk func(v any, secret bool)
+	walk = func(v any, secret bool) {
 		switch t := v.(type) {
 		case string:
-			if strings.TrimSpace(t) != "" {
-				out = append(out, t)
+			if secret {
+				add(t)
 			}
 		case map[string]any:
-			for _, x := range t {
-				walk(x)
+			for k, x := range t {
+				walk(x, secret || k == "env" || k == "headers" || secretFieldName(k))
 			}
 		case []any:
 			for _, x := range t {
-				walk(x)
+				walk(x, secret)
 			}
 		}
 	}
-	for _, raw := range extra {
+	for k, raw := range extra {
 		var v any
 		if json.Unmarshal(raw, &v) == nil {
-			walk(v)
+			walk(v, secretFieldName(k))
 		}
 	}
 	return out
+}
+
+// secretFieldName reports whether a field's name says it holds a credential.
+func secretFieldName(name string) bool {
+	n := strings.ToLower(name)
+	if n == "token_type" || n == "token_url" || strings.HasSuffix(n, "_url") {
+		return false
+	}
+	for _, w := range []string{"token", "secret", "password", "api_key", "apikey"} {
+		if strings.Contains(n, w) {
+			return true
+		}
+	}
+	return false
 }
 
 // storedNames is the variable names server would be given a stored value for.

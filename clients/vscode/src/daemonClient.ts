@@ -1690,7 +1690,13 @@ export interface MCPServerInfo {
   headers?: string[];
   /** Headers kept as keys with no value stored yet. */
   headers_missing?: string[];
+  /** A sign-in token is stored for this remote server (FEATURE_MCP_OAUTH). */
+  signed_in?: boolean;
 }
+
+export const MCP_STATE_NEEDS_AUTH = 'needs_auth';
+/** protocol.FeatureMCPOAuth: sign in to a remote server in the browser. */
+export const FEATURE_MCP_OAUTH = 'mcp_oauth';
 
 export const MCP_STATE_RUNNING = 'running';
 export const MCP_STATE_FAILED = 'failed';
@@ -1724,7 +1730,12 @@ export type MCPAction =
   | 'set_env'
   | 'check'
   | 'get'
-  | 'add_json';
+  | 'add_json'
+  | 'auth_start'
+  | 'auth_wait'
+  | 'auth_complete'
+  | 'auth_cancel'
+  | 'sign_out';
 
 /** protocol.MCPRequest. */
 export interface MCPRequest {
@@ -1754,6 +1765,9 @@ export interface MCPRequest {
   headers?: Record<string, string>;
   /** set_env: a remote server's header to set, instead of a variable. */
   header_name?: string;
+  /** auth_wait / auth_complete / auth_cancel: the sign-in; auth_complete's pasted address. */
+  auth_id?: string;
+  callback_url?: string;
 }
 
 /** protocol.MCPResponse. */
@@ -1770,6 +1784,11 @@ export interface MCPResponse {
   error?: string;
   /** tools answers the 'tools' action: this daemon's own tools (FEATURE_MCP_TOOLS). */
   tools?: MCPToolInfo[];
+  /** A sign-in (FEATURE_MCP_OAUTH): its id, the address to open, 'pending' | 'done' | 'failed'. */
+  auth_id?: string;
+  auth_url?: string;
+  auth_state?: string;
+  expires_in_seconds?: number;
 }
 
 /** protocol.MCPToolInfo: one tool and what it takes to run it. */

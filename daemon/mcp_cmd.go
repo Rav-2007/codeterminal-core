@@ -56,6 +56,10 @@ func runMCPCommand(args []string, logger *log.Logger) error {
 		return runMCPCheck(args, logger)
 	case "add-json":
 		return runMCPAddJSON(args, logger)
+	case "auth":
+		return runMCPAuth(args, logger)
+	case "sign-out":
+		return runMCPNamed(protocol.MCPActionSignOut, args, logger)
 	}
 	return fmt.Errorf("unknown mcp subcommand %q (the subcommands are list, get, check, add, add-json, remove, "+
 		"enable, disable and set-key)", sub)
@@ -71,6 +75,8 @@ func mcpUsage() {
 		"  %[1]s mcp add-json <name> '<json>'   (one server's entry from another MCP client's \"mcpServers\")\n"+
 		"  %[1]s mcp get    <name>\n"+
 		"  %[1]s mcp check  [<name>] [--timeout seconds]\n"+
+		"  %[1]s mcp auth   <name>      sign in to a remote server in your browser\n"+
+		"  %[1]s mcp sign-out <name>\n"+
 		"  %[1]s mcp remove <name>\n"+
 		"  %[1]s mcp disable <name>\n"+
 		"  %[1]s mcp enable <name>\n\n"+
@@ -657,4 +663,42 @@ func runMCPAddJSON(args []string, logger *log.Logger) error {
 		resp = srv.mcpResult(ctx, req)
 	}
 	return printMCPResponse(resp)
+}
+
+// runMCPAuth is `mcp auth <name>`: sign in to a remote server. The address is
+// printed for the user to open -- this command opens nothing itself -- and the
+// browser comes back to this process, which keeps the token in the key file
+// that every daemon reads.
+func runMCPAuth(args []string, logger *log.Logger) error {
+	fs := flag.NewFlagSet("mcp auth", flag.ExitOnError)
+	configPath := fs.String("config", "", "path to models.json (default: next to the daemon binary, then ./models.json)")
+	fs.Usage = mcpUsage
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		mcpUsage()
+		return fmt.Errorf("mcp auth needs the server's name")
+	}
+	name := args[0]
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	srv, err := mcpAdminServer(*configPath, logger)
+	if err != nil {
+		return err
+	}
+	ctx := context.Background()
+	begun := srv.mcpResult(ctx, protocol.MCPRequest{MCP: true, Action: protocol.MCPActionAuthStart, Name: name})
+	if begun.Error != "" {
+		return errors.New(begun.Error)
+	}
+	if begun.AuthState != protocol.MCPAuthPending {
+		return printMCPResponse(begun)
+	}
+	_, _ = fmt.Fprintf(mcpOut, "Open this address in your browser to sign in to %s:\n\n  %s\n\nWaiting (up to %d minutes)…\n",
+		name, begun.AuthURL, begun.ExpiresInSeconds/60)
+	for {
+		resp := srv.mcpResult(ctx, protocol.MCPRequest{MCP: true, Action: protocol.MCPActionAuthWait, AuthID: begun.AuthID})
+		if resp.AuthState != protocol.MCPAuthPending {
+			return printMCPResponse(resp)
+		}
+	}
 }

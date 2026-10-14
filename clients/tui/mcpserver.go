@@ -29,6 +29,10 @@ import (
 // adds it. A program that runs with the user's full privileges is not added by
 // one keystroke.
 
+// lastAuthID is the sign-in this client is waiting on, for a pasted address
+// to finish (/mcp-server sign-in <address>). One at a time, as the user signs in.
+var lastAuthID string
+
 // errDaemonPredatesMCP is a daemon started before it could answer this.
 var errDaemonPredatesMCP = errors.New("the running daemon is older than this client and cannot answer /mcp-server -- " +
 	"restart it: ./run-tui.sh --stop && ./run-tui.sh")
@@ -51,7 +55,9 @@ const mcpServerUsage = "/mcp-server                                   the tools 
 	"/mcp-server check [<name>] [--timeout N]      start it now and say whether it works\n" +
 	"/mcp-server get <name>                        everything about one server\n" +
 	"/mcp-server key <name> <VARIABLE>             give it a key; you type the value next, hidden\n" +
-	"/mcp-server header <name> <Header>            a remote server's header value, typed hidden\n\n" +
+	"/mcp-server header <name> <Header>            a remote server's header value, typed hidden\n" +
+	"/mcp-server sign-in <name>                    sign in to a remote server in your browser\n" +
+	"/mcp-server sign-out <name>                   forget that sign-in\n\n" +
 	"Example: /mcp-server add files npx -y @modelcontextprotocol/server-filesystem /home/me/notes\n\n" +
 	"--env takes the NAME of a variable the server reads. Give its value with /mcp-server key, which hides what you " +
 	"type; never type a secret on the command itself: it is stored and shown.\n" +
@@ -323,6 +329,29 @@ func (m chatModel) handleMCPServerCommand(args string) (tea.Model, tea.Cmd) {
 		}
 		say("starting " + map[bool]string{true: "every server", false: sanitizeText(req.Name)}[req.Name == ""] + " to see whether it works…")
 		return m, submitMCP(m.clientName, req)
+	case "sign-in":
+		// /mcp-server sign-in <name> starts it; /mcp-server sign-in <address>
+		// finishes one whose browser could not reach this machine.
+		if len(words) != 2 {
+			say("mcp-server: sign-in takes the server's name -- or, to finish one, the address the browser ended on.\n\n" + mcpServerUsage)
+			return m, nil
+		}
+		if strings.Contains(words[1], "://") {
+			if lastAuthID == "" {
+				say("mcp-server: no sign-in is waiting; start one with /mcp-server sign-in <name>.")
+				return m, nil
+			}
+			return m, submitMCP(m.clientName, protocol.MCPRequest{Action: protocol.MCPActionAuthComplete,
+				AuthID: lastAuthID, CallbackURL: words[1]})
+		}
+		say("asking " + sanitizeText(words[1]) + " where to sign in…")
+		return m, submitMCP(m.clientName, protocol.MCPRequest{Action: protocol.MCPActionAuthStart, Name: words[1]})
+	case "sign-out":
+		if len(words) != 2 {
+			say("mcp-server: sign-out takes the name of one server.\n\n" + mcpServerUsage)
+			return m, nil
+		}
+		return m, submitMCP(m.clientName, protocol.MCPRequest{Action: protocol.MCPActionSignOut, Name: words[1]})
 	case "header":
 		// A remote server's header value, typed hidden like a key.
 		if len(words) != 3 {
@@ -359,6 +388,23 @@ func (m chatModel) handleMCPServerCommand(args string) (tea.Model, tea.Cmd) {
 // handleMCPResult shows the daemon's answer, and opens the confirmation when an
 // add is waiting for one.
 func (m chatModel) handleMCPResult(msg mcpResultMsg) (tea.Model, tea.Cmd) {
+	// A SIGN-IN: the address to open, then the wait, repeated until it ends.
+	// Each wait is one short request; the daemon holds the browser's return.
+	if msg.err == nil && msg.resp.Error == "" && msg.resp.AuthState == protocol.MCPAuthPending {
+		lastAuthID = msg.resp.AuthID
+		wait := submitMCP(m.clientName, protocol.MCPRequest{Action: protocol.MCPActionAuthWait, AuthID: msg.resp.AuthID})
+		if msg.req.Action == protocol.MCPActionAuthStart {
+			m.appendTurn(turn{role: roleAssistant, local: true, verbatim: true, text: "Open this address in your browser to sign in " +
+				"(it is the server's own sign-in page):\n\n" + sanitizeText(msg.resp.AuthURL) + "\n\nWaiting for you to finish. " +
+				"If your browser is on another machine, paste the address it ends on: /mcp-server sign-in <that address>"})
+			m.resizeViewport()
+			m.refreshViewport()
+		}
+		return m, wait
+	}
+	if msg.req.Action == protocol.MCPActionAuthWait || msg.req.Action == protocol.MCPActionAuthComplete {
+		lastAuthID = ""
+	}
 	text := formatMCPResult(msg)
 	if msg.err == nil && msg.resp.Error == "" && msg.resp.NeedsAcknowledgement && msg.req.Action == protocol.MCPActionAdd {
 		pending := msg.req

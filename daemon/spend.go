@@ -597,7 +597,7 @@ func (s *Server) serveBudgetAction(enc *json.Encoder, req protocol.PromptRequest
 // handshake. The spending limits are named only by a daemon that keeps them.
 func (s *Server) features() []string {
 	out := []string{protocol.FeatureSavedChats, protocol.FeatureModelChoice, protocol.FeatureMCPAdmin,
-		protocol.FeatureMCPManage, protocol.FeatureMCPTools, protocol.FeatureMCPEnv, protocol.FeatureMCPSecrets, protocol.FeatureMCPCheck, protocol.FeatureMCPRemote, protocol.FeatureAttachedOutput, protocol.FeatureRules}
+		protocol.FeatureMCPManage, protocol.FeatureMCPTools, protocol.FeatureMCPEnv, protocol.FeatureMCPSecrets, protocol.FeatureMCPCheck, protocol.FeatureMCPRemote, protocol.FeatureMCPOAuth, protocol.FeatureAttachedOutput, protocol.FeatureRules}
 	if s.spend != nil {
 		out = append(out, protocol.FeatureSpendLimits)
 	}

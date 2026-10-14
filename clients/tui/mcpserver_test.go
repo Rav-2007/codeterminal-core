@@ -422,3 +422,45 @@ func TestCheckAndGetAreOneRequestEach(t *testing.T) {
 		t.Fatalf("sent %+v", reqs)
 	}
 }
+
+// A sign-in shows the address and waits, one request at a time, until it ends.
+func TestSignInShowsTheAddressThenWaits(t *testing.T) {
+	waits := 0
+	daemon := startRequestRecorder(t, []string{protocol.FeatureMCPAdmin}, func(raw json.RawMessage) any {
+		var req protocol.MCPRequest
+		_ = json.Unmarshal(raw, &req)
+		switch req.Action {
+		case protocol.MCPActionAuthStart:
+			return protocol.MCPResponse{Ok: true, AuthID: "a1", AuthURL: "https://auth.example/authorize?x=1", AuthState: protocol.MCPAuthPending}
+		case protocol.MCPActionAuthWait:
+			waits++
+			if waits < 2 {
+				return protocol.MCPResponse{Ok: true, AuthID: "a1", AuthState: protocol.MCPAuthPending}
+			}
+			return protocol.MCPResponse{Ok: true, AuthID: "a1", AuthState: protocol.MCPAuthDone, Detail: "Signed in to notion."}
+		}
+		return protocol.MCPResponse{Ok: true}
+	})
+	m := typeText(newTestModel(), "/mcp-server sign-in notion")
+	m, cmd := pressEnter(m)
+	for i := 0; i < 4 && cmd != nil; i++ {
+		answer, ok := findMsgWithin[mcpResultMsg](cmd, 3e9)
+		if !ok {
+			break
+		}
+		var next tea.Model
+		next, cmd = m.Update(answer)
+		m = next.(chatModel)
+	}
+	all := ""
+	for _, tn := range m.turns {
+		all += tn.text + "\n"
+	}
+	if !strings.Contains(all, "https://auth.example/authorize?x=1") || !strings.Contains(all, "Signed in to notion.") {
+		t.Errorf("the transcript:\n%s", all)
+	}
+	reqs := mcpRequests(t, daemon)
+	if len(reqs) != 3 || reqs[0].Action != protocol.MCPActionAuthStart || reqs[2].Action != protocol.MCPActionAuthWait {
+		t.Errorf("sent %+v", reqs)
+	}
+}
