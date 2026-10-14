@@ -1224,14 +1224,17 @@ and every later chat in that project starts with it:
   other time. The model has no tool that writes one, and where its commands are
   confined they cannot reach the file.
 - **The daemon adds them, every turn**, to the system message, inside a
-  `<user_rules>` fence. So a rule saved in the terminal applies to the VS Code
-  panel's turns too; the three commands themselves are in the terminal only for
-  now. With no rules saved, what is sent is byte for byte what it was.
+  `<user_rules>` fence, and again right after your question: one model tested
+  ignored a rule that was only in the system message and followed it beside the
+  question. Because the daemon adds them, a rule saved in the terminal applies
+  to the VS Code panel's turns too; the three commands themselves are in the
+  terminal only for now. With no rules saved, what is sent is byte for byte what
+  it was.
 - **Kept outside the project**, in your own state folder beside the saved chats
   (`/rules` prints the path), in a file only you can read. A repository you
   clone cannot bring rules with it. You can edit the file by hand.
-- **Bounded**, because every rule is sent with every question: at most 50 rules,
-  300 bytes each, 4 KB together.
+- **Bounded**, because every rule is sent twice with every question: at most 50
+  rules, 300 bytes each, 4 KB together.
 - **Not for secrets.** A rule goes to the model's provider with every question,
   so one that looks like a key or a password is refused, and whatever is in the
   file is scrubbed on the way out like any other text.

@@ -40,13 +40,15 @@ import (
 //
 // IN THE SYSTEM MESSAGE, FENCED, EVERY TURN, like the active spec and for its
 // reason: the work stays anchored to what was said rather than to what the model
-// remembers of it. Read from the file each turn, so a rule saved or removed in
+// remembers of it. AND AGAIN AFTER THE QUESTION (withRulesBesideTheQuestion),
+// because one model measured on 2026-10-14 followed a rule there and not in the
+// system message. Read from the file each turn, so a rule saved or removed in
 // one client is in force for the next question from any client. With no rules
-// the system message is byte for byte what it was, so a project that never uses
-// this pays nothing for it and measures the same.
+// the request is byte for byte what it was, so a project that never uses this
+// pays nothing for it and measures the same.
 //
-// BOUNDED, because every rule is sent with every question: at most maxRules of
-// them, each at most maxRuleBytes, and maxRulesTotalBytes together.
+// BOUNDED, because every rule is sent twice with every question: at most
+// maxRules of them, each at most maxRuleBytes, and maxRulesTotalBytes together.
 //
 // DISK IS UNTRUSTED ON THE WAY BACK IN, as it is for the chats. The file can be
 // edited by hand and is read within the same limits a save keeps; a link in its
@@ -304,14 +306,19 @@ func (s *Server) rulesResult(req protocol.RulesRequest) protocol.RulesResponse {
 }
 
 // userRulesBlock is what saved rules add to a turn's system message, "" when
-// there are none. Scrubbed, then neutralised, and only then wrapped: the other
-// order would defuse the wrapper.
+// there are none.
 func userRulesBlock(rules []string, scrubDisabled bool) string {
 	if len(rules) == 0 {
 		return ""
 	}
+	return userRulesNote + "\n\n" + userRulesList(rules, scrubDisabled)
+}
+
+// userRulesList is the rules numbered inside their fence. Scrubbed, then
+// neutralised, and only then wrapped: the other order would defuse the wrapper.
+func userRulesList(rules []string, scrubDisabled bool) string {
 	var b strings.Builder
-	b.WriteString(userRulesNote + "\n\n" + userRulesOpenTag + "\n")
+	b.WriteString(userRulesOpenTag + "\n")
 	for i, rule := range rules {
 		text, _ := scrub(rule, scrubDisabled)
 		fmt.Fprintf(&b, "%d. %s\n", i+1, neutralizeDelimiters(text))
@@ -326,21 +333,64 @@ func userRulesBlock(rules []string, scrubDisabled bool) string {
 // A file that cannot be read costs the turn its rules, not the turn: the reason
 // is logged here, and /rules -- which reads the same file -- says it to the user.
 func (s *Server) withUserRules(systemPrompt string) string {
-	if s.workspace == "" {
-		return systemPrompt
-	}
-	path, err := rulesPath(s.workspace)
-	if err != nil {
-		return systemPrompt
-	}
-	rules, _, err := loadRules(path)
-	if err != nil {
-		s.logger.Printf("saved rules not used this turn: %v", err)
-		return systemPrompt
-	}
-	block := userRulesBlock(rules, s.noScrub())
+	block := userRulesBlock(s.savedRules(), s.noScrub())
 	if block == "" || systemPrompt == "" {
 		return systemPrompt + block
 	}
 	return systemPrompt + "\n\n" + block
+}
+
+// savedRules is this project's rules as a turn uses them: none when there is
+// no project, no file, or a file that cannot be read -- which is logged.
+func (s *Server) savedRules() []string {
+	if s.workspace == "" {
+		return nil
+	}
+	path, err := rulesPath(s.workspace)
+	if err != nil {
+		return nil
+	}
+	rules, _, err := loadRules(path)
+	if err != nil {
+		s.logger.Printf("saved rules not used this turn: %v", err)
+		return nil
+	}
+	return rules
+}
+
+// userRulesReminderLead opens the rules where they are written a second time:
+// after the question. Said to the model.
+const userRulesReminderLead = "The rules the user saved for this project, which apply to this answer:"
+
+// withRulesBesideTheQuestion is messages with this project's saved rules
+// written again at the end of the last message, the question -- and messages
+// itself when there are no rules or the list does not end in a question.
+//
+// WHY A SECOND TIME (measured 2026-10-14, userrules_test.go has it): one model
+// that had the rules in its system message answered "what is 2 + 2?" with "4",
+// and answered "4 DONE" when the same rule was typed after the question. The
+// system message is kept as well -- it says what the rules are and what they
+// cannot change -- and this puts them where the question is read.
+//
+// THE QUESTION IS FENCED FIRST when it is not already, so the rules are never
+// read as part of it: lastUserQuestion, and every check that uses it, sees the
+// user's words alone. Only the turn's own question is changed. The chat that
+// is kept stores what the user typed (persistTurn), so an older question in a
+// later turn's history never brings a copy of its own.
+//
+// A copy: the caller's list is reused across a pipeline's phases.
+func (s *Server) withRulesBesideTheQuestion(messages []chatMessage) []chatMessage {
+	last := len(messages) - 1
+	if last < 0 || messages[last].Role != "user" {
+		return messages
+	}
+	rules := s.savedRules()
+	if len(rules) == 0 {
+		return messages
+	}
+	out := make([]chatMessage, len(messages))
+	copy(out, messages)
+	out[last].Content = fenceUserRequest(out[last].Content) + "\n\n" + userRulesReminderLead + "\n" +
+		userRulesList(rules, s.noScrub())
+	return out
 }

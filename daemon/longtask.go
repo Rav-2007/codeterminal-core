@@ -352,7 +352,7 @@ func (s *Server) runLongTask(
 			waited: func(d time.Duration) { run.deadline = run.deadline.Add(d) },
 		}}
 		res, err := s.runAgentLoop(ctx, turnStart, registry, model, run.ledger.Mode,
-			run.segmentMessages(system, history, segment, closing), routing, appr,
+			s.withRulesBesideTheQuestion(run.segmentMessages(system, history, segment, closing)), routing, appr,
 			onToken, onActivity, onProvider, onReasoning, onDegraded, nil, ledger)
 
 		combined.ToolNames = append(combined.ToolNames, res.ToolNames...)
