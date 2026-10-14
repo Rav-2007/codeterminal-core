@@ -192,3 +192,13 @@ func TestFileOperationsAskEvenWhenAllowed(t *testing.T) {
 		t.Error("a grant to delete one path covers another")
 	}
 }
+
+// The copy's keys are native paths; a tool's path is the model's, with forward
+// slashes. They must meet (on Windows they differ).
+func TestStageKeyIsTheCopysOwnForm(t *testing.T) {
+	for _, in := range []string{"pkg/a.go", "./pkg//a.go", "pkg/sub/../a.go"} {
+		if got, want := stageKey(in), filepath.Join("pkg", "a.go"); got != want {
+			t.Errorf("stageKey(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

@@ -15,6 +15,14 @@ import (
 // a "deleted in the copy" note for something the user agreed to delete.
 // Every method is a no-op without a copy.
 
+// stageKey is rel as the copy keys its files: the native, cleaned form
+// filepath.Rel gives. The tools' paths are the model's, with forward slashes,
+// and on Windows "pkg/a.go" is not the key "pkg\a.go" -- a moved file then read
+// as deleted in the copy.
+func stageKey(rel string) string {
+	return filepath.Clean(filepath.FromSlash(rel))
+}
+
 // under reports whether key is rel or inside it.
 func under(key, rel string) bool {
 	return key == rel || strings.HasPrefix(key, rel+string(filepath.Separator))
@@ -84,6 +92,7 @@ func (p *proposalSink) mirrorDelete(rel string) {
 	if p == nil || p.stage == nil {
 		return
 	}
+	rel = stageKey(rel)
 	_ = os.RemoveAll(filepath.Join(p.stage.root, rel))
 	p.stage.forgetUnder(rel)
 }
@@ -92,6 +101,7 @@ func (p *proposalSink) mirrorMove(from, to string) {
 	if p == nil || p.stage == nil {
 		return
 	}
+	from, to = stageKey(from), stageKey(to)
 	src, dst := filepath.Join(p.stage.root, from), filepath.Join(p.stage.root, to)
 	if _, err := os.Lstat(src); err == nil {
 		_ = os.MkdirAll(filepath.Dir(dst), 0o755)
@@ -133,6 +143,7 @@ func (p *proposalSink) stagedOnlyDelete(rel string) bool {
 	if p == nil || p.stage == nil {
 		return false
 	}
+	rel = stageKey(rel)
 	path := filepath.Join(p.stage.root, rel)
 	if _, err := os.Lstat(path); err != nil {
 		return false
@@ -150,6 +161,7 @@ func (p *proposalSink) stagedOnlyMove(from, to string) bool {
 	if p == nil || p.stage == nil {
 		return false
 	}
+	from, to = stageKey(from), stageKey(to)
 	src := filepath.Join(p.stage.root, from)
 	if _, err := os.Lstat(src); err != nil {
 		return false
