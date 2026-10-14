@@ -318,7 +318,7 @@ export class ChatPagesHost implements vscode.Disposable {
         // The daemon's own line ("✔ Connected (5 tools)"), when it says one.
         statusLine: s.status_line ?? '',
         warnings: s.warnings ?? [],
-        canSetKey: !!st.setEnv && (s.env ?? []).length > 0,
+        canSetKey: !!st.setEnv && (s.env ?? []).length + (s.headers ?? []).length > 0,
         canCheck: !!st.check && !s.disabled,
       })),
       agentMode: st.agentMode,

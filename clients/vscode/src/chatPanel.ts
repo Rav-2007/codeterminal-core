@@ -3797,6 +3797,7 @@ export function chatPanelBodyMarkup(logoUri: string = ''): string {
     <div class="connect-body" id="mcpPopForm">
       <div class="mcp-pop-tabs" role="tablist" aria-label="How to describe the server">
         <button type="button" class="mcp-pop-tab" role="tab" id="mcpPopTabCommand" aria-selected="true">Command</button>
+        <button type="button" class="mcp-pop-tab" role="tab" id="mcpPopTabUrl" aria-selected="false">URL</button>
         <button type="button" class="mcp-pop-tab" role="tab" id="mcpPopTabJson" aria-selected="false">Paste JSON</button>
       </div>
       <label for="mcpPopName" class="connect-label">Name</label>
@@ -3814,6 +3815,19 @@ export function chatPanelBodyMarkup(logoUri: string = ''): string {
           <option value="">A private folder of its own (recommended)</option>
           <option value="workspace">The project, only if it needs the project's files</option>
         </select>
+      </div>
+      <div id="mcpPopUrlPane" class="mcp-pop-pane" hidden>
+        <label for="mcpPopUrl" class="connect-label">Server URL</label>
+        <input id="mcpPopUrl" class="connect-input mono" type="text" placeholder="https://mcp.example.com/mcp" autocomplete="off" spellcheck="false">
+        <label for="mcpPopTransport" class="connect-label">Transport</label>
+        <select id="mcpPopTransport" class="connect-input">
+          <option value="http">HTTP (streamable, current servers)</option>
+          <option value="sse">SSE (older servers)</option>
+        </select>
+        <div class="connect-label">Headers it is sent</div>
+        <div id="mcpPopHeaders" class="mcp-pop-env"></div>
+        <button type="button" class="connect-btn ghost mcp-pop-addvar" id="mcpPopAddHeader">+ Add a header</button>
+        <div class="connect-note">For a token: name Authorization, value Bearer &lt;token&gt;. The value is kept for this server only, in a file only you can read. Every call you approve sends its arguments to this server.</div>
       </div>
       <div id="mcpPopJsonPane" class="mcp-pop-pane" hidden>
         <label for="mcpPopJson" class="connect-label">One server's entry from another MCP client</label>

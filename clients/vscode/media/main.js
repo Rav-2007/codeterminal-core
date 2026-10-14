@@ -2487,6 +2487,11 @@
     const risks = [];
     if (req.reaches_network) {
       risks.push('LEAVES YOUR MACHINE: sent to a third party over the internet');
+      // A remote MCP server's call (FEATURE_MCP_REMOTE): where, by name. Kept
+      // word for word with the TUI's renderApprovalPanel.
+      if (req.remote) {
+        risks.push('SENT TO ' + req.remote + ', the remote MCP server you added: what it does with this is up to its operator');
+      }
       // Why this one is asked about when the tool is allowed. Kept word for
       // word with the TUI's egressAddressRisk / egressQueryRisk.
       if (req.egress_review === 'address') {

@@ -141,6 +141,10 @@ type Tool struct {
 	// which is the entire population that matters.
 	ReadOnlyHint bool
 	Destructive  bool
+
+	// Remote is the host a remote server is reached at ("" for a program on
+	// this machine): the approval prompt says the arguments are SENT there.
+	Remote string
 }
 
 // QualifiedName is how a tool is named on the wire to the model. Server-scoped

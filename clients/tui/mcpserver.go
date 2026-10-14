@@ -44,12 +44,14 @@ type mcpResultMsg struct {
 // mcpServerUsage is what the command says when it cannot read what was typed.
 const mcpServerUsage = "/mcp-server                                   the tools this daemon offers, and its MCP servers\n" +
 	"/mcp-server add <name> [--env NAME] [--in-project] <command> [args…]   add an MCP server of your own\n" +
+	"/mcp-server add <name> --transport http [--header Authorization] <url>   add a remote one\n" +
 	"/mcp-server remove <name>                     remove one you added\n" +
 	"/mcp-server disable <name>                    pause one you added, keeping it for later\n" +
 	"/mcp-server enable <name>                     resume a paused one\n" +
 	"/mcp-server check [<name>] [--timeout N]      start it now and say whether it works\n" +
 	"/mcp-server get <name>                        everything about one server\n" +
-	"/mcp-server key <name> <VARIABLE>             give it a key; you type the value next, hidden\n\n" +
+	"/mcp-server key <name> <VARIABLE>             give it a key; you type the value next, hidden\n" +
+	"/mcp-server header <name> <Header>            a remote server's header value, typed hidden\n\n" +
 	"Example: /mcp-server add files npx -y @modelcontextprotocol/server-filesystem /home/me/notes\n\n" +
 	"--env takes the NAME of a variable the server reads. Give its value with /mcp-server key, which hides what you " +
 	"type; never type a secret on the command itself: it is stored and shown.\n" +
@@ -185,8 +187,43 @@ func parseMCPAdd(words []string) (protocol.MCPRequest, error) {
 			req.Env = append(req.Env, name)
 			rest = rest[1:]
 			continue
+		case word == "--transport":
+			if len(rest) < 2 || (rest[1] != "http" && rest[1] != "sse") {
+				return protocol.MCPRequest{}, errors.New("--transport takes http or sse")
+			}
+			req.Transport = rest[1]
+			rest = rest[2:]
+			continue
+		case word == "--header":
+			// A header here is a NAME, or "Name: ${VAR}": its value is typed
+			// hidden with /mcp-server key, never on this line, which is shown
+			// and recalled.
+			if len(rest) < 2 {
+				return protocol.MCPRequest{}, errors.New("--header needs a header's name after it")
+			}
+			name, value, hasValue := strings.Cut(rest[1], ":")
+			value = strings.TrimSpace(value)
+			if hasValue && value != "" && !strings.Contains(value, "${") {
+				return protocol.MCPRequest{}, errMCPSecret
+			}
+			if req.Headers == nil {
+				req.Headers = map[string]string{}
+			}
+			req.Headers[strings.TrimSpace(name)] = value
+			rest = rest[2:]
+			continue
 		}
 		break
+	}
+	if req.Transport != "" {
+		if len(rest) != 1 || len(req.Env) > 0 || req.Cwd != "" {
+			return protocol.MCPRequest{}, errors.New("a remote server takes its URL, --transport and --header only")
+		}
+		req.URL = rest[0]
+		return req, nil
+	}
+	if len(req.Headers) > 0 {
+		return protocol.MCPRequest{}, errors.New("--header is for a remote server (--transport http <url>)")
 	}
 	if len(rest) == 0 {
 		return protocol.MCPRequest{}, errors.New("add needs the command that runs the server, after its name")
@@ -286,6 +323,19 @@ func (m chatModel) handleMCPServerCommand(args string) (tea.Model, tea.Cmd) {
 		}
 		say("starting " + map[bool]string{true: "every server", false: sanitizeText(req.Name)}[req.Name == ""] + " to see whether it works…")
 		return m, submitMCP(m.clientName, req)
+	case "header":
+		// A remote server's header value, typed hidden like a key.
+		if len(words) != 3 {
+			say("mcp-server: header takes the server's name and the header's name; you type the value next.\n\n" + mcpServerUsage)
+			return m, nil
+		}
+		pending := protocol.MCPRequest{Action: protocol.MCPActionSetEnv, Name: words[1], HeaderName: words[2]}
+		m.pendingMCPAdd = &pending
+		m.input.EchoMode = textinput.EchoPassword
+		m.input.Placeholder = "the value of the " + sanitizeText(words[2]) + " header — hidden; esc cancels"
+		say("Type the value of " + sanitizeText(words[1]) + "'s " + sanitizeText(words[2]) + " header (for example " +
+			"Bearer <token>) and press enter. It is not shown, and Mochiii keeps it in ~/.mochiii/mcp-secrets.json. Esc cancels.")
+		return m, nil
 	case "key":
 		// THE VALUE IS NOT ON THIS LINE. It is typed next, into a hidden prompt,
 		// and goes to the daemon only: never into the transcript or the up-arrow
@@ -383,7 +433,11 @@ func (m chatModel) answerMCPAdd(raw string) (tea.Model, tea.Cmd) {
 		// The hidden key prompt: the line is the value, sent and forgotten.
 		m.input.SetValue("")
 		req.EnvValue = raw
-		m.appendTurn(turn{role: roleAssistant, local: true, text: "saving the value of " + sanitizeText(req.EnvName) + "…"})
+		what := req.EnvName
+		if req.HeaderName != "" {
+			what = "the " + req.HeaderName + " header"
+		}
+		m.appendTurn(turn{role: roleAssistant, local: true, text: "saving the value of " + sanitizeText(what) + "…"})
 		m.resizeViewport()
 		m.refreshViewport()
 		return m, submitMCP(m.clientName, req)

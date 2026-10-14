@@ -269,6 +269,12 @@ const FeatureMCPSecrets = "mcp_secrets"
 // MCPServerInfo carries ToolCount, ToolsError, StatusLine and Warnings.
 const FeatureMCPCheck = "mcp_check"
 
+// FeatureMCPRemote: a server may be remote -- reached over HTTP at a URL rather
+// than started here. MCPRequest takes Transport, URL and Headers for add and
+// update, and set_env takes HeaderName; MCPServerInfo carries Transport, URL,
+// Headers and HeadersMissing; ToolApprovalRequest carries Remote.
+const FeatureMCPRemote = "mcp_remote"
+
 // PromptRequest carries a single user prompt. Sent by the client only after
 // a successful handshake. Workspace is optional and additive: when set,
 // it's the client's own absolute path for the workspace it expects
@@ -876,6 +882,9 @@ type ToolApprovalRequest struct {
 	// (register item 32). It is now true exactly when approving this call
 	// starts Program.
 	LaunchesSubprocess bool `json:"launches_subprocess,omitempty"`
+	// Remote is the host a remote server's tool sends this call's arguments to
+	// (FeatureMCPRemote). Empty for anything that runs on this machine.
+	Remote string `json:"remote,omitempty"`
 	// Program names the program this call starts, or -- with
 	// LaunchesSubprocess false -- the one already running that it talks to.
 	// Empty when the call involves no such program, or the daemon predates the
@@ -1810,6 +1819,17 @@ type MCPRequest struct {
 	// JSON is add_json's server: one entry of another MCP client's
 	// "mcpServers" block, as {"command","args","env"} (FeatureMCPCheck).
 	JSON json.RawMessage `json:"json,omitempty"`
+
+	// A remote server (FeatureMCPRemote): Transport "http" (streamable HTTP)
+	// or "sse", URL its https endpoint, and Headers to send with every
+	// request. A header value with ${VAR} in it is kept as written; any other
+	// value is a secret, kept in the key file and never in the server list.
+	Transport string            `json:"transport,omitempty"`
+	URL       string            `json:"url,omitempty"`
+	Headers   map[string]string `json:"headers,omitempty"`
+	// HeaderName, with set_env and a server Name, sets that header's value
+	// (EnvValue) instead of a variable's.
+	HeaderName string `json:"header_name,omitempty"`
 }
 
 // MCPCwdWorkspace is the one value MCPRequest.Cwd takes besides empty.
@@ -1879,6 +1899,9 @@ type MCPServerInfo struct {
 	// server that started could not list them (State MCPStateToolsFailed).
 	ToolCount  int    `json:"tool_count,omitempty"`
 	ToolsError string `json:"tools_error,omitempty"`
+	// ToolsListed says ToolCount is known: a server started but not yet asked
+	// for its tools has no count, which is not the same as none.
+	ToolsListed bool `json:"tools_listed,omitempty"`
 	// StatusLine is the one-line status every client shows, in the daemon's
 	// words: "✔ Connected (5 tools)", "✘ Failed to connect: ...",
 	// "! Needs a key: X", "⊘ Disabled", "○ Not started yet".
@@ -1886,6 +1909,13 @@ type MCPServerInfo struct {
 	// Warnings are problems with the server's definition that do not stop it
 	// (a ${VAR} with no value).
 	Warnings []string `json:"warnings,omitempty"`
+
+	// A remote server (FeatureMCPRemote): its Transport and URL (query values
+	// hidden), the header NAMES it sends, and those with no value stored yet.
+	Transport      string   `json:"transport,omitempty"`
+	URL            string   `json:"url,omitempty"`
+	Headers        []string `json:"headers,omitempty"`
+	HeadersMissing []string `json:"headers_missing,omitempty"`
 }
 
 // The states MCPServerInfo.State takes.

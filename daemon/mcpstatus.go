@@ -20,10 +20,17 @@ func mcpStatusLine(info protocol.MCPServerInfo) string {
 			line += ": " + info.StateDetail
 		}
 		return line
-	case len(info.EnvMissing) > 0:
-		return "! Needs a key: " + strings.Join(info.EnvMissing, ", ")
+	case len(info.EnvMissing) > 0 || len(info.HeadersMissing) > 0:
+		var keys []string
+		keys = append(keys, info.EnvMissing...)
+		for _, h := range info.HeadersMissing {
+			keys = append(keys, h+" header")
+		}
+		return "! Needs a key: " + strings.Join(keys, ", ")
 	case info.State == protocol.MCPStateToolsFailed:
 		return "! Connected · tools fetch failed"
+	case info.State == protocol.MCPStateRunning && !info.ToolsListed:
+		return "✔ Connected"
 	case info.State == protocol.MCPStateRunning:
 		return fmt.Sprintf("✔ Connected (%d tool%s)", info.ToolCount, map[bool]string{true: "", false: "s"}[info.ToolCount == 1])
 	}

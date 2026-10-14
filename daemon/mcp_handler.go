@@ -187,12 +187,22 @@ func (s *Server) serverInfos(cfg *Config) []protocol.MCPServerInfo {
 			source = protocol.MCPSourceConfig
 		}
 		state := s.mcpStates.get(name)
+		var headerNames, headersMissing []string
+		if srv.remote() {
+			headerNames = sortedStringKeys(srv.Headers)
+			_, headersMissing = s.remoteHeaders(name, srv)
+		}
 		info := protocol.MCPServerInfo{
+			Transport: strings.ToLower(srv.Type), Headers: headerNames, HeadersMissing: headersMissing,
 			Name: name, Command: commandLine(srv), Source: source, Disabled: srv.Disabled,
 			Program: srv.Command, Args: srv.Args, Env: srv.Env, Cwd: srv.Cwd,
 			EnvMissing: s.envMissing(name, srv.Env), EnvStored: s.mcpSecrets.storedNames(name, srv.Env),
 			Warnings: missingTemplateWarnings(s.templateMissing(name, srv)),
 			State:    state.state, StateDetail: state.detail, ToolCount: state.tools, ToolsError: state.toolsErr,
+			ToolsListed: state.counted,
+		}
+		if srv.remote() {
+			info.URL = shownURL(srv.URL)
 		}
 		info.StatusLine = mcpStatusLine(info)
 		out = append(out, info)
@@ -202,6 +212,9 @@ func (s *Server) serverInfos(cfg *Config) []protocol.MCPServerInfo {
 
 // commandLine is a server's program and arguments as one line, for a person.
 func commandLine(srv MCPServerConfig) string {
+	if srv.remote() {
+		return strings.ToLower(srv.Type) + " " + shownURL(srv.URL)
+	}
 	return strings.TrimSpace(srv.Command + " " + strings.Join(srv.Args, " "))
 }
 
@@ -220,6 +233,9 @@ func changeWarning(name string, srv MCPServerConfig) string {
 
 // grantWarning is the text both warnings share, after their first words.
 func grantWarning(lead string, srv MCPServerConfig) string {
+	if srv.remote() {
+		return remoteWarning(lead, srv)
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s will make this daemon run:\n\n    %s\n\n", lead, commandLine(srv))
 	b.WriteString("as an ordinary program with YOUR full privileges. Mochiii cannot confine an external MCP server: " +
@@ -267,12 +283,53 @@ func (s *Server) mcpStore(ctx context.Context, req protocol.MCPRequest, replace 
 		AcknowledgedUnconfined: true, Cwd: strings.TrimSpace(req.Cwd),
 		ConnectTimeoutSeconds: req.ConnectTimeoutSeconds,
 	}
-	return s.mcpStoreBlock(ctx, strings.TrimSpace(req.Name), srv, req.EnvValues, req.AcknowledgedUnconfined, replace)
+	var headerValues map[string]string
+	if strings.TrimSpace(req.URL) != "" {
+		kind := strings.ToLower(strings.TrimSpace(req.Transport))
+		if kind == "" {
+			kind = "http"
+		}
+		srv = MCPServerConfig{Type: kind, URL: strings.TrimSpace(req.URL), AcknowledgedUnconfined: true,
+			ConnectTimeoutSeconds: req.ConnectTimeoutSeconds}
+		if req.Command != "" || len(req.Args) > 0 || len(req.Env) > 0 {
+			return protocol.MCPResponse{Error: "a server is either a URL or a command, not both"}
+		}
+		srv.Headers, headerValues = splitHeaders(req.Headers)
+	}
+	return s.mcpStoreBlockWith(ctx, strings.TrimSpace(req.Name), srv, req.EnvValues, headerValues, req.AcknowledgedUnconfined, replace)
 }
 
-// mcpStoreBlock is mcpStore for a block already built: from a request's parts,
-// or from another client's JSON entry (mcpjson.go).
+// splitHeaders keeps a header's ${VAR} template in the block and takes any
+// other value out of it, to be kept as a key.
+func splitHeaders(given map[string]string) (block, values map[string]string) {
+	for _, name := range sortedStringKeys(given) {
+		v := strings.TrimSpace(given[name])
+		if block == nil {
+			block = map[string]string{}
+		}
+		if strings.Contains(v, "${") || v == "" {
+			block[name] = v
+			continue
+		}
+		block[name] = ""
+		if values == nil {
+			values = map[string]string{}
+		}
+		values[name] = v
+	}
+	return block, values
+}
+
+// mcpStoreBlock is mcpStoreBlockWith for a block with no header values.
 func (s *Server) mcpStoreBlock(ctx context.Context, name string, srv MCPServerConfig, envValues map[string]string,
+	acknowledged, replace bool) protocol.MCPResponse {
+	return s.mcpStoreBlockWith(ctx, name, srv, envValues, nil, acknowledged, replace)
+}
+
+// mcpStoreBlockWith is mcpStore for a block already built: from a request's
+// parts, or from another client's JSON entry (mcpjson.go). headerValues are a
+// remote server's header values, kept as keys on the acknowledged step.
+func (s *Server) mcpStoreBlockWith(ctx context.Context, name string, srv MCPServerConfig, envValues, headerValues map[string]string,
 	acknowledged, replace bool) protocol.MCPResponse {
 	req := protocol.MCPRequest{EnvValues: envValues, AcknowledgedUnconfined: acknowledged}
 	nothing, done := "; nothing was added", "Added"
@@ -287,6 +344,14 @@ func (s *Server) mcpStoreBlock(ctx context.Context, name string, srv MCPServerCo
 	}
 	if err := validEnvValues(srv.Env, req.EnvValues); err != nil {
 		return protocol.MCPResponse{Error: err.Error() + nothing}
+	}
+	for _, h := range sortedStringKeys(headerValues) {
+		if err := mcp.ValidateHeader(h, headerValues[h]); err != nil {
+			return protocol.MCPResponse{Error: err.Error() + nothing}
+		}
+		if err := validMCPEnvValue(headerValues[h]); err != nil {
+			return protocol.MCPResponse{Error: h + ": " + err.Error() + nothing}
+		}
 	}
 	if _, inConfig := s.cfg.MCP.Servers[name]; inConfig {
 		if replace {
@@ -314,9 +379,9 @@ func (s *Server) mcpStoreBlock(ctx context.Context, name string, srv MCPServerCo
 		if replace {
 			warning = changeWarning(name, srv)
 		}
-		if len(req.EnvValues) > 0 {
+		if given := append(sortedStringKeys(req.EnvValues), sortedStringKeys(headerValues)...); len(given) > 0 {
 			warning += fmt.Sprintf("\n\nThe values you gave for %s are kept for this server only, in a file only you "+
-				"can read, and are never shown to the model.", strings.Join(sortedStringKeys(req.EnvValues), ", "))
+				"can read, and are never shown to the model.", strings.Join(given, ", "))
 		}
 		return protocol.MCPResponse{
 			Ok: false, AgentMode: s.cfg.MCP.Enabled, NeedsAcknowledgement: true, Detail: warning,
@@ -334,6 +399,14 @@ func (s *Server) mcpStoreBlock(ctx context.Context, name string, srv MCPServerCo
 	// value for a variable the server no longer reads.
 	if err := s.storeServerEnv(name, srv.Env, req.EnvValues); err != nil {
 		return protocol.MCPResponse{Error: fmt.Sprintf("%s was saved, but its keys were not: %v. Set them with Set key", name, err)}
+	}
+	for _, h := range sortedStringKeys(headerValues) {
+		if err := s.mcpSecrets.setHeader(name, h, headerValues[h]); err != nil {
+			return protocol.MCPResponse{Error: fmt.Sprintf("%s was saved, but its %s header was not: %v. Set it with Set key", name, h, err)}
+		}
+	}
+	if len(headerValues) > 0 {
+		s.rebuildCredScrubber()
 	}
 	s.logger.Printf("mcp: server %s %s by the user (lane=third_party, unconfined): %s",
 		name, strings.ToLower(done), commandLine(srv))
@@ -426,7 +499,12 @@ func (s *Server) tryStoredServer(ctx context.Context, done, name string, srv MCP
 		notes = append(notes, fmt.Sprintf("Mochiii has no value for %s, so the server starts without it. "+
 			"Set it with `mcp set-key %s %s` or Set key in VS Code.", env, name, env))
 	}
-	if !filepath.IsAbs(srv.Command) {
+	if srv.remote() {
+		if _, missing := s.remoteHeaders(name, srv); len(missing) > 0 {
+			notes = append(notes, fmt.Sprintf("Mochiii has no value for its %s header, so the server will likely refuse it. "+
+				"Set it with Set key in VS Code or `mcp set-key %s --header %s`.", strings.Join(missing, ", "), name, missing[0]))
+		}
+	} else if !filepath.IsAbs(srv.Command) {
 		if _, err := lookPath(srv.Command); err != nil {
 			return fmt.Sprintf("%s %s, but %q was not found on this daemon's PATH, so it cannot start yet. "+
 				"Install it, or remove the server and add it again with the program's absolute path.", done, name, srv.Command), notes

@@ -27,12 +27,15 @@ type Request = Omit<MCPRequest, 'protocol_version' | 'mcp'>;
 /** The fields of a form the pop-up sent. */
 export interface McpForm {
   mode: 'add' | 'update';
-  tab: 'command' | 'json';
+  tab: 'command' | 'json' | 'url';
   name: string;
   commandLine: string;
   env: { name: string; value: string }[];
   cwd: string;
   json: string;
+  url?: string;
+  transport?: string;
+  headers?: { name: string; value: string }[];
 }
 
 function isAbsolute(p: string): boolean {
@@ -47,6 +50,44 @@ export function requestFromForm(form: McpForm): { req?: Request; error?: string 
   const name = form.name.trim();
   if (!validServerName(name)) {
     return { error: "The name is 1-32 of a-z, 0-9, '-' and '_', starting with a letter or digit, and not \"builtin\"." };
+  }
+  if (form.tab === 'url') {
+    let u: URL;
+    try {
+      u = new URL((form.url ?? '').trim());
+    } catch {
+      return { error: 'Give the server\'s URL, starting https://.' };
+    }
+    const local = ['localhost', '127.0.0.1', '[::1]'].includes(u.hostname);
+    if (u.protocol !== 'https:' && !(u.protocol === 'http:' && local)) {
+      return { error: 'A remote server must be https (http only for this machine).' };
+    }
+    if (u.username || u.password) {
+      return { error: 'Put a token in a header, not in the URL.' };
+    }
+    const headers: Record<string, string> = {};
+    for (const h of form.headers ?? []) {
+      const n = h.name.trim();
+      if (!n) {
+        continue;
+      }
+      if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(n)) {
+        return { error: `${n} is not a header name.` };
+      }
+      if (/[\r\n]/.test(h.value)) {
+        return { error: `The value of ${n} has a line break.` };
+      }
+      headers[n] = h.value.trim();
+    }
+    return {
+      req: {
+        action: form.mode === 'update' ? 'update' : 'add',
+        name,
+        transport: form.transport === 'sse' ? 'sse' : 'http',
+        url: u.toString(),
+        ...(Object.keys(headers).length > 0 ? { headers } : {}),
+      },
+    };
   }
   if (form.tab === 'json') {
     if (!form.json.trim()) {
@@ -126,6 +167,10 @@ export class McpPopupHost {
       commandLine: [s.program ?? '', ...(s.args ?? [])].map(quoteArg).join(' '),
       env: (s.env ?? []).map((n) => ({ name: n, stored: stored.has(n) })),
       cwd: s.cwd ?? '',
+      url: s.url ?? '',
+      transport: s.transport ?? '',
+      // A header kept as a key shows as "kept" (empty: typing replaces it).
+      headers: (s.headers ?? []).map((h) => ({ name: h, stored: !(s.headers_missing ?? []).includes(h) })),
     });
   }
 
@@ -137,7 +182,15 @@ export class McpPopupHost {
       type: 'mcpPopupKeyOpen',
       server: s.name,
       name: name ?? '',
-      vars: (s.env ?? []).map((n) => ({ name: n, stored: stored.has(n), missing: missing.has(n) })),
+      vars: [
+        ...(s.env ?? []).map((n) => ({ name: n, stored: stored.has(n), missing: missing.has(n) })),
+        ...(s.headers ?? []).map((h) => ({
+          name: h,
+          header: true,
+          stored: !(s.headers_missing ?? []).includes(h),
+          missing: (s.headers_missing ?? []).includes(h),
+        })),
+      ],
     });
   }
 
@@ -169,7 +222,7 @@ export class McpPopupHost {
     this.pending = undefined;
     const form: McpForm = {
       mode: msg.mode === 'update' ? 'update' : 'add',
-      tab: msg.tab === 'json' ? 'json' : 'command',
+      tab: msg.tab === 'json' ? 'json' : msg.tab === 'url' ? 'url' : 'command',
       name: String(msg.name ?? ''),
       commandLine: String(msg.commandLine ?? ''),
       env: Array.isArray(msg.env)
@@ -180,6 +233,14 @@ export class McpPopupHost {
         : [],
       cwd: String(msg.cwd ?? ''),
       json: String(msg.json ?? ''),
+      url: String(msg.url ?? ''),
+      transport: String(msg.transport ?? 'http'),
+      headers: Array.isArray(msg.headers)
+        ? (msg.headers as unknown[]).map((r) => {
+            const row = r as Record<string, unknown>;
+            return { name: String(row.name ?? ''), value: typeof row.value === 'string' ? row.value : '' };
+          })
+        : [],
     };
     const { req, error } = requestFromForm(form);
     if (!req) {
@@ -248,10 +309,14 @@ export class McpPopupHost {
       return;
     }
     const provider = this.deps.provider();
-    // Per server when the daemon keeps keys itself; otherwise as before.
-    const req: Request = provider?.current.secrets
-      ? { action: 'set_env', name: server, env_name: name, env_value: value.trim() }
-      : { action: 'set_env', env_name: name, env_value: value.trim() };
+    // A remote server's header, or a variable: per server when the daemon
+    // keeps keys itself, otherwise as before.
+    const header = name.startsWith('header:') ? name.slice('header:'.length) : '';
+    const req: Request = header
+      ? { action: 'set_env', name: server, header_name: header, env_value: value.trim() }
+      : provider?.current.secrets
+        ? { action: 'set_env', name: server, env_name: name, env_value: value.trim() }
+        : { action: 'set_env', env_name: name, env_value: value.trim() };
     try {
       const { resp } = await sendMCP(this.deps.clientName(), req);
       if (resp.error) {

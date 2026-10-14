@@ -476,6 +476,8 @@ export interface ToolApprovalRequest {
   lane: string;
   confined: boolean;
   reaches_network?: boolean;
+  /** The host a remote MCP server's call sends its arguments to (FEATURE_MCP_REMOTE). */
+  remote?: string;
   // launches_subprocess describes THIS CALL, not the tool: true only when
   // approving it starts `program`. It used to be the tool's static flag, so
   // every prompt after the first said a language server was being started when
@@ -1680,6 +1682,14 @@ export interface MCPServerInfo {
   status_line?: string;
   /** Problems that do not stop it, such as a ${VAR} with no value. */
   warnings?: string[];
+  /** Whether tool_count is known (a started server not yet listed has none). */
+  tools_listed?: boolean;
+  /** A remote server (FEATURE_MCP_REMOTE): 'http' or 'sse', its URL (query values hidden), header names. */
+  transport?: string;
+  url?: string;
+  headers?: string[];
+  /** Headers kept as keys with no value stored yet. */
+  headers_missing?: string[];
 }
 
 export const MCP_STATE_RUNNING = 'running';
@@ -1698,6 +1708,8 @@ export const FEATURE_MCP_ENV = 'mcp_env';
 export const FEATURE_MCP_SECRETS = 'mcp_secrets';
 /** protocol.FeatureMCPCheck: check, get and add_json, and status lines with tool counts. */
 export const FEATURE_MCP_CHECK = 'mcp_check';
+/** protocol.FeatureMCPRemote: servers reached at a URL, with headers. */
+export const FEATURE_MCP_REMOTE = 'mcp_remote';
 
 /** servers lists the configured servers WITHOUT starting any; list starts them all to ask for their tools. */
 export type MCPAction =
@@ -1736,6 +1748,12 @@ export interface MCPRequest {
   connect_timeout_seconds?: number;
   /** add_json: one server's entry from another MCP client, as an object. */
   json?: unknown;
+  /** A remote server: 'http' or 'sse', its URL, and headers (a plain value is kept as a key). */
+  transport?: string;
+  url?: string;
+  headers?: Record<string, string>;
+  /** set_env: a remote server's header to set, instead of a variable. */
+  header_name?: string;
 }
 
 /** protocol.MCPResponse. */
