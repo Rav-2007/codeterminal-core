@@ -9,6 +9,7 @@ package protocol
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
 )
@@ -261,6 +262,12 @@ const FeatureMCPEnv = "mcp_env"
 // value for that server only; add and update take EnvValues; MCPServerInfo
 // carries EnvStored.
 const FeatureMCPSecrets = "mcp_secrets"
+
+// FeatureMCPCheck: MCPRequest also takes MCPActionCheck (start one server, or
+// all, now, and say how each fared), MCPActionGet (one server in full) and
+// MCPActionAddJSON (add one server from another MCP client's JSON entry);
+// MCPServerInfo carries ToolCount, ToolsError, StatusLine and Warnings.
+const FeatureMCPCheck = "mcp_check"
 
 // PromptRequest carries a single user prompt. Sent by the client only after
 // a successful handshake. Workspace is optional and additive: when set,
@@ -1796,6 +1803,13 @@ type MCPRequest struct {
 	// `mcp add --env KEY=value` means (FeatureMCPSecrets). Secrets: stored
 	// only when the request is acknowledged, never echoed or logged.
 	EnvValues map[string]string `json:"env_values,omitempty"`
+
+	// ConnectTimeoutSeconds is check's longer wait for a server's first start
+	// (a launcher downloading its package), at most 120 (FeatureMCPCheck).
+	ConnectTimeoutSeconds int `json:"connect_timeout_seconds,omitempty"`
+	// JSON is add_json's server: one entry of another MCP client's
+	// "mcpServers" block, as {"command","args","env"} (FeatureMCPCheck).
+	JSON json.RawMessage `json:"json,omitempty"`
 }
 
 // MCPCwdWorkspace is the one value MCPRequest.Cwd takes besides empty.
@@ -1823,6 +1837,9 @@ const (
 	MCPActionServers = "servers"
 	MCPActionTools   = "tools"
 	MCPActionSetEnv  = "set_env"
+	MCPActionCheck   = "check"
+	MCPActionGet     = "get"
+	MCPActionAddJSON = "add_json"
 )
 
 // MCPServerInfo is one configured third-party server, in terms safe to print.
@@ -1856,12 +1873,26 @@ type MCPServerInfo struct {
 	// MCPStateFailed. StateDetail says why it failed, in words safe to print.
 	State       string `json:"state,omitempty"`
 	StateDetail string `json:"state_detail,omitempty"`
+
+	// ToolCount is how many tools the server offered the last time it was
+	// listed, with State running (FeatureMCPCheck). ToolsError says why a
+	// server that started could not list them (State MCPStateToolsFailed).
+	ToolCount  int    `json:"tool_count,omitempty"`
+	ToolsError string `json:"tools_error,omitempty"`
+	// StatusLine is the one-line status every client shows, in the daemon's
+	// words: "✔ Connected (5 tools)", "✘ Failed to connect: ...",
+	// "! Needs a key: X", "⊘ Disabled", "○ Not started yet".
+	StatusLine string `json:"status_line,omitempty"`
+	// Warnings are problems with the server's definition that do not stop it
+	// (a ${VAR} with no value).
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // The states MCPServerInfo.State takes.
 const (
-	MCPStateRunning = "running"
-	MCPStateFailed  = "failed"
+	MCPStateRunning     = "running"
+	MCPStateFailed      = "failed"
+	MCPStateToolsFailed = "tools_failed"
 )
 
 // Where a configured server came from.

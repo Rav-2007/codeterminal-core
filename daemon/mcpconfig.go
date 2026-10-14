@@ -342,6 +342,11 @@ type MCPServerConfig struct {
 	// list says -- see mcp.ForbiddenEnvNames.
 	Env []string `json:"env,omitempty"`
 
+	// EnvMap gives the server variables whose values are TEMPLATES --
+	// {"API_KEY": "${MY_KEY}"} -- so a block can say where a value comes from
+	// without holding it (mcpexpand.go). Args may hold templates too.
+	EnvMap map[string]string `json:"env_map,omitempty"`
+
 	// Tools maps a tool name to "deny", "ask" or "allow". Unlisted is "ask":
 	// the safe default is to involve the human, not to guess that a tool the
 	// daemon was never told about is either harmless or forbidden.
@@ -366,6 +371,19 @@ type MCPServerConfig struct {
 	// about the project. See Server.serverStartDir for why the default is not
 	// simply wherever the daemon is.
 	Cwd string `json:"cwd,omitempty"`
+
+	// ConnectTimeoutSeconds is this server's own bound on its first handshake,
+	// over mcp.budget's, at most maxConnectTimeoutSeconds: a launcher that
+	// downloads its package on first run can need longer than the rest.
+	ConnectTimeoutSeconds int `json:"connect_timeout_seconds,omitempty"`
+}
+
+// connectTimeout is how long this server's handshake may take.
+func (srv MCPServerConfig) connectTimeout(budget MCPBudgetConfig) time.Duration {
+	if srv.ConnectTimeoutSeconds > 0 {
+		return time.Duration(min(srv.ConnectTimeoutSeconds, maxConnectTimeoutSeconds)) * time.Second
+	}
+	return budget.resolvedConnectTimeout()
 }
 
 // ServerCwdWorkspace is the one value MCPServerConfig.Cwd takes besides empty.
@@ -621,7 +639,7 @@ const (
 var (
 	knownMCPKeys        = []string{"enabled", "builtin", "servers", "budget", "pipeline", "no_working_copy"}
 	knownMCPBuiltinKeys = []string{"disabled", "tools", "extra_programs"}
-	knownMCPServerKeys  = []string{"command", "args", "env", "tools", "acknowledged_unconfined", "disabled"}
+	knownMCPServerKeys  = []string{"command", "args", "env", "env_map", "tools", "acknowledged_unconfined", "disabled", "cwd", "connect_timeout_seconds"}
 	knownMCPBudgetKeys  = []string{"max_iterations", "turn_timeout_seconds", "max_tool_result_bytes",
 		"max_total_tool_bytes", "max_advertised_tools", "max_message_bytes",
 		"connect_timeout_seconds", "max_turn_iterations", "task"}
@@ -819,7 +837,10 @@ func validateServerBlock(s MCPServerConfig) error {
 		return fmt.Errorf("has \"cwd\": %q; the only value is %q (start in the project), and leaving it out "+
 			"starts the server in a private folder of its own", s.Cwd, ServerCwdWorkspace)
 	}
-	return nil
+	if s.ConnectTimeoutSeconds < 0 || s.ConnectTimeoutSeconds > maxConnectTimeoutSeconds {
+		return fmt.Errorf("has connect_timeout_seconds %d; it is 1 to %d", s.ConnectTimeoutSeconds, maxConnectTimeoutSeconds)
+	}
+	return validateTemplates(s)
 }
 
 func validateToolPolicies(where string, tools map[string]string) error {

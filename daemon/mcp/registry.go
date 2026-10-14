@@ -121,6 +121,17 @@ type Registry struct {
 	// Silent truncation would look identical to a server that never offered
 	// the tool.
 	dropped []string
+
+	// listed is what each third-party server answered on the last Advertised
+	// call: how many tools it offered, or why it could not say. It is how a
+	// server's row can read "Connected (5 tools)" without starting it again.
+	listed map[string]ListOutcome
+}
+
+// ListOutcome is one server's answer to the last tool listing.
+type ListOutcome struct {
+	Tools int
+	Err   error
 }
 
 func NewRegistry(policy PolicyResolver, maxAdvertised int) *Registry {
@@ -280,12 +291,15 @@ func (r *Registry) Advertised(ctx context.Context) ([]Tool, []error) {
 
 	var externalTools []Tool
 	var errs []error
+	listed := make(map[string]ListOutcome, len(servers))
 	for _, name := range sortedKeys(servers) {
 		tools, err := servers[name].ListTools(ctx)
 		if err != nil {
 			errs = append(errs, err)
+			listed[name] = ListOutcome{Err: err}
 			continue
 		}
+		listed[name] = ListOutcome{Tools: len(tools)}
 		for _, tool := range tools {
 			if policyOf(policy, name, tool.Name) == PolicyDeny {
 				continue
@@ -298,6 +312,7 @@ func (r *Registry) Advertised(ctx context.Context) ([]Tool, []error) {
 	all := append(builtinTools, externalTools...)
 
 	r.mu.Lock()
+	r.listed = listed
 	r.dropped = nil
 	if maxAdvertised > 0 && len(all) > maxAdvertised {
 		for _, tool := range all[maxAdvertised:] {
@@ -308,6 +323,17 @@ func (r *Registry) Advertised(ctx context.Context) ([]Tool, []error) {
 	r.mu.Unlock()
 
 	return all, errs
+}
+
+// Listed is what each third-party server answered on the last Advertised call.
+func (r *Registry) Listed() map[string]ListOutcome {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make(map[string]ListOutcome, len(r.listed))
+	for k, v := range r.listed {
+		out[k] = v
+	}
+	return out
 }
 
 // Dropped names the tools the advertised cap left out on the last Advertised

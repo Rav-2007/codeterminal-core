@@ -118,7 +118,7 @@ func laneBLaunchConfig(name string, srv MCPServerConfig, cfg *Config, dir string
 		// The one budget field that bounds ALLOCATION rather than egress: what
 		// this daemon will hold on behalf of somebody else's process.
 		MaxMessageBytes: cfg.MCP.Budget.resolvedMaxMessageBytes(),
-		ConnectTimeout:  cfg.MCP.Budget.resolvedConnectTimeout(),
+		ConnectTimeout:  srv.connectTimeout(cfg.MCP.Budget),
 	}
 }
 
@@ -158,6 +158,12 @@ func (s *Server) buildRegistry(ctx context.Context, logger *log.Logger, proposal
 	for _, problem := range problems {
 		logger.Printf("mcp: %s", problem)
 	}
+	return s.buildRegistryFrom(ctx, cfg, logger, proposals, mode)
+}
+
+// buildRegistryFrom is buildRegistry for a config the caller chose: a check of
+// one server builds the built-ins and that server only (mcpcheck.go).
+func (s *Server) buildRegistryFrom(ctx context.Context, cfg *Config, logger *log.Logger, proposals *proposalSink, mode string) (*mcp.Registry, []error) {
 	registry := s.builtinRegistry(cfg, logger, proposals, mode)
 
 	// LANE B IS WITHHELD ENTIRELY IN PLAN MODE, and this is the half of the
@@ -248,8 +254,9 @@ func (s *Server) buildRegistry(ctx context.Context, logger *log.Logger, proposal
 				stderr := serverStderr(name, logger)
 				stderr.onLine = func(line string) { s.mcpStates.noteLine(name, line) }
 				lc := laneBLaunchConfig(name, srv, cfg, dir, stderr, logger.Printf)
-				// A key the user gave for one of the server's variables (mcpenv.go).
-				lc.EnvValues = s.mcpEnvValueFor(name)
+				// Its ${VAR}s filled in, and the keys the user gave for its
+				// variables (mcpexpand.go, mcpenv.go).
+				lc.Args, lc.EnvAllow, lc.EnvValues = s.expandedLaunch(name, srv)
 				client, err = mcp.Connect(ctx, lc)
 			}
 			mu.Lock()

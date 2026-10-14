@@ -64,6 +64,7 @@ const webviewFiles = [
   path.join(root, 'media', 'marketplace.js'),
   path.join(root, 'media', 'pages.js'),
   path.join(root, 'media', 'connect.js'),
+  path.join(root, 'media', 'mcpPopup.js'),
   path.join(root, 'media', 'controls.js'),
 ];
 

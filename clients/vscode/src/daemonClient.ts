@@ -1672,6 +1672,14 @@ export interface MCPServerInfo {
   state?: string;
   /** Why it failed, in the server's own words where it gave any. */
   state_detail?: string;
+  /** Tools it offered when last listed (FEATURE_MCP_CHECK). */
+  tool_count?: number;
+  /** Why a started server's tools could not be listed. */
+  tools_error?: string;
+  /** The daemon's one-line status: "✔ Connected (5 tools)", "✘ Failed to connect: …". */
+  status_line?: string;
+  /** Problems that do not stop it, such as a ${VAR} with no value. */
+  warnings?: string[];
 }
 
 export const MCP_STATE_RUNNING = 'running';
@@ -1688,9 +1696,23 @@ export const FEATURE_MCP_MANAGE = 'mcp_manage';
 export const FEATURE_MCP_ENV = 'mcp_env';
 /** protocol.FeatureMCPSecrets: the daemon keeps server keys in ~/.mochiii/mcp-secrets.json itself. */
 export const FEATURE_MCP_SECRETS = 'mcp_secrets';
+/** protocol.FeatureMCPCheck: check, get and add_json, and status lines with tool counts. */
+export const FEATURE_MCP_CHECK = 'mcp_check';
 
 /** servers lists the configured servers WITHOUT starting any; list starts them all to ask for their tools. */
-export type MCPAction = 'list' | 'servers' | 'tools' | 'add' | 'update' | 'remove' | 'enable' | 'disable' | 'set_env';
+export type MCPAction =
+  | 'list'
+  | 'servers'
+  | 'tools'
+  | 'add'
+  | 'update'
+  | 'remove'
+  | 'enable'
+  | 'disable'
+  | 'set_env'
+  | 'check'
+  | 'get'
+  | 'add_json';
 
 /** protocol.MCPRequest. */
 export interface MCPRequest {
@@ -1710,6 +1732,10 @@ export interface MCPRequest {
   env_value?: string;
   /** add/update: values for names in env, for this server only (FEATURE_MCP_SECRETS). Secrets. */
   env_values?: Record<string, string>;
+  /** check: a longer wait for a first start, at most 120 seconds. */
+  connect_timeout_seconds?: number;
+  /** add_json: one server's entry from another MCP client, as an object. */
+  json?: unknown;
 }
 
 /** protocol.MCPResponse. */

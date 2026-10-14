@@ -89,11 +89,17 @@ func (s *Server) mcpResult(ctx context.Context, req protocol.MCPRequest) protoco
 		return s.mcpSetDisabled(ctx, req, true)
 	case protocol.MCPActionSetEnv:
 		return s.mcpSetEnv(req)
+	case protocol.MCPActionCheck:
+		return s.mcpCheck(ctx, req)
+	case protocol.MCPActionGet:
+		return s.mcpGet(req)
+	case protocol.MCPActionAddJSON:
+		return s.mcpAddJSON(ctx, req)
 	}
 	return protocol.MCPResponse{Error: fmt.Sprintf("unknown mcp action %q; the actions are %s", truncateForClient(req.Action, 32),
 		strings.Join([]string{protocol.MCPActionList, protocol.MCPActionServers, protocol.MCPActionTools, protocol.MCPActionAdd,
 			protocol.MCPActionUpdate, protocol.MCPActionRemove, protocol.MCPActionEnable, protocol.MCPActionDisable,
-			protocol.MCPActionSetEnv}, ", "))}
+			protocol.MCPActionSetEnv, protocol.MCPActionCheck, protocol.MCPActionGet, protocol.MCPActionAddJSON}, ", "))}
 }
 
 // mcpList reports the tools this daemon would offer the model on its next
@@ -120,7 +126,7 @@ func (s *Server) mcpList(ctx context.Context) protocol.MCPResponse {
 		return resp
 	}
 
-	lctx, cancel := context.WithTimeout(ctx, cfg.MCP.Budget.resolvedConnectTimeout()+mcpListGrace)
+	lctx, cancel := context.WithTimeout(ctx, listDeadline(cfg))
 	defer cancel()
 	registry, connectErrs := s.buildRegistry(lctx, s.logger, &proposalSink{}, "")
 	defer func() {
@@ -129,6 +135,10 @@ func (s *Server) mcpList(ctx context.Context) protocol.MCPResponse {
 		}
 	}()
 	report.WriteString("\n")
+	_, _ = registry.Advertised(lctx)
+	s.mcpStates.listed(registry.Listed())
+	resp.Servers = s.serverInfos(cfg)
+	writeServerStatus(&report, resp.Servers)
 	if err := writeToolReport(lctx, &report, &report, cfg, s.configPathOrDefault(), registry, connectErrs); err != nil {
 		return protocol.MCPResponse{Error: "listing the tools: " + err.Error()}
 	}
@@ -177,12 +187,15 @@ func (s *Server) serverInfos(cfg *Config) []protocol.MCPServerInfo {
 			source = protocol.MCPSourceConfig
 		}
 		state := s.mcpStates.get(name)
-		out = append(out, protocol.MCPServerInfo{
+		info := protocol.MCPServerInfo{
 			Name: name, Command: commandLine(srv), Source: source, Disabled: srv.Disabled,
 			Program: srv.Command, Args: srv.Args, Env: srv.Env, Cwd: srv.Cwd,
 			EnvMissing: s.envMissing(name, srv.Env), EnvStored: s.mcpSecrets.storedNames(name, srv.Env),
-			State: state.state, StateDetail: state.detail,
-		})
+			Warnings: missingTemplateWarnings(s.templateMissing(name, srv)),
+			State:    state.state, StateDetail: state.detail, ToolCount: state.tools, ToolsError: state.toolsErr,
+		}
+		info.StatusLine = mcpStatusLine(info)
+		out = append(out, info)
 	}
 	return out
 }
@@ -215,6 +228,13 @@ func grantWarning(lead string, srv MCPServerConfig) string {
 	if len(srv.Env) > 0 {
 		fmt.Fprintf(&b, "\n\nIt will be given these variables from the daemon's environment: %s.", strings.Join(srv.Env, ", "))
 	}
+	if len(srv.EnvMap) > 0 {
+		var parts []string
+		for _, k := range sortedStringKeys(srv.EnvMap) {
+			parts = append(parts, k+" = "+srv.EnvMap[k])
+		}
+		fmt.Fprintf(&b, "\n\nIt will also be given: %s.", strings.Join(parts, ", "))
+	}
 	b.WriteString("\n\n" + startsWhere(srv))
 	b.WriteString("\n\nOnly add a server whose program you trust.")
 	return b.String()
@@ -242,17 +262,25 @@ func grantWarning(lead string, srv MCPServerConfig) string {
 // down, and the answer says which of "it works" and "it is saved but did not
 // start" is true -- the same honesty /connect owes a key.
 func (s *Server) mcpStore(ctx context.Context, req protocol.MCPRequest, replace bool) protocol.MCPResponse {
+	srv := MCPServerConfig{
+		Command: strings.TrimSpace(req.Command), Args: req.Args, Env: req.Env,
+		AcknowledgedUnconfined: true, Cwd: strings.TrimSpace(req.Cwd),
+		ConnectTimeoutSeconds: req.ConnectTimeoutSeconds,
+	}
+	return s.mcpStoreBlock(ctx, strings.TrimSpace(req.Name), srv, req.EnvValues, req.AcknowledgedUnconfined, replace)
+}
+
+// mcpStoreBlock is mcpStore for a block already built: from a request's parts,
+// or from another client's JSON entry (mcpjson.go).
+func (s *Server) mcpStoreBlock(ctx context.Context, name string, srv MCPServerConfig, envValues map[string]string,
+	acknowledged, replace bool) protocol.MCPResponse {
+	req := protocol.MCPRequest{EnvValues: envValues, AcknowledgedUnconfined: acknowledged}
 	nothing, done := "; nothing was added", "Added"
 	if replace {
 		nothing, done = "; nothing was changed", "Changed"
 	}
 	if strings.TrimSpace(s.userServersPath) == "" {
 		return protocol.MCPResponse{Error: "this daemon has nowhere to store an added server"}
-	}
-	name := strings.TrimSpace(req.Name)
-	srv := MCPServerConfig{
-		Command: strings.TrimSpace(req.Command), Args: req.Args, Env: req.Env,
-		AcknowledgedUnconfined: true, Cwd: strings.TrimSpace(req.Cwd),
 	}
 	if err := validateUserServer(name, srv); err != nil {
 		return protocol.MCPResponse{Error: err.Error() + nothing}
@@ -411,7 +439,8 @@ func (s *Server) tryStoredServer(ctx context.Context, done, name string, srv MCP
 	// a server offering four tools was reported as "offers 4 tool(s)" while the
 	// model was going to be shown one of them, because this daemon's own tools
 	// had taken eleven of the twelve places on the menu.
-	tctx, cancel := context.WithTimeout(ctx, s.cfg.MCP.Budget.resolvedConnectTimeout()+mcpListGrace)
+	trial, _ := s.agentConfig()
+	tctx, cancel := context.WithTimeout(ctx, listDeadline(trial))
 	defer cancel()
 	registry, connectErrs := s.buildRegistry(tctx, s.logger, &proposalSink{}, "")
 	defer func() { _ = registry.Close() }()
@@ -422,6 +451,7 @@ func (s *Server) tryStoredServer(ctx context.Context, done, name string, srv MCP
 		}
 	}
 	tools, listErrs := registry.Advertised(tctx)
+	s.mcpStates.listed(registry.Listed())
 	var offered, leftOut []string
 	for _, tool := range tools {
 		if tool.Server == name {

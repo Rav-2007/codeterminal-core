@@ -3,8 +3,10 @@ package main
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"mochiii/protocol"
@@ -44,10 +46,13 @@ const mcpServerUsage = "/mcp-server                                   the tools 
 	"/mcp-server add <name> [--env NAME] [--in-project] <command> [args…]   add an MCP server of your own\n" +
 	"/mcp-server remove <name>                     remove one you added\n" +
 	"/mcp-server disable <name>                    pause one you added, keeping it for later\n" +
-	"/mcp-server enable <name>                     resume a paused one\n\n" +
+	"/mcp-server enable <name>                     resume a paused one\n" +
+	"/mcp-server check [<name>] [--timeout N]      start it now and say whether it works\n" +
+	"/mcp-server get <name>                        everything about one server\n" +
+	"/mcp-server key <name> <VARIABLE>             give it a key; you type the value next, hidden\n\n" +
 	"Example: /mcp-server add files npx -y @modelcontextprotocol/server-filesystem /home/me/notes\n\n" +
-	"--env takes the NAME of a variable in the daemon's environment (export it, or put it in .env, before " +
-	"starting Mochiii). Never type a secret here: the command and its arguments are stored and shown.\n" +
+	"--env takes the NAME of a variable the server reads. Give its value with /mcp-server key, which hides what you " +
+	"type; never type a secret on the command itself: it is stored and shown.\n" +
 	"A server starts in a private folder of its own; --in-project starts it inside the project instead."
 
 // sendMCP hands the daemon an MCPRequest and returns its answer.
@@ -255,6 +260,47 @@ func (m chatModel) handleMCPServerCommand(args string) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, submitMCP(m.clientName, protocol.MCPRequest{Action: words[0], Name: words[1]})
+	case protocol.MCPActionGet:
+		if len(words) != 2 {
+			say("mcp-server: get takes the name of one server.\n\n" + mcpServerUsage)
+			return m, nil
+		}
+		return m, submitMCP(m.clientName, protocol.MCPRequest{Action: protocol.MCPActionGet, Name: words[1]})
+	case protocol.MCPActionCheck:
+		req := protocol.MCPRequest{Action: protocol.MCPActionCheck}
+		for i := 1; i < len(words); i++ {
+			switch {
+			case words[i] == "--timeout" && i+1 < len(words):
+				n, err := strconv.Atoi(words[i+1])
+				if err != nil || n < 1 || n > 120 {
+					say("mcp-server: --timeout takes seconds, 1 to 120.")
+					return m, nil
+				}
+				req.ConnectTimeoutSeconds, i = n, i+1
+			case req.Name == "" && !strings.HasPrefix(words[i], "-"):
+				req.Name = words[i]
+			default:
+				say("mcp-server: check takes a server's name and --timeout seconds.\n\n" + mcpServerUsage)
+				return m, nil
+			}
+		}
+		say("starting " + map[bool]string{true: "every server", false: sanitizeText(req.Name)}[req.Name == ""] + " to see whether it works…")
+		return m, submitMCP(m.clientName, req)
+	case "key":
+		// THE VALUE IS NOT ON THIS LINE. It is typed next, into a hidden prompt,
+		// and goes to the daemon only: never into the transcript or the up-arrow
+		// recall (answerMCPAdd sends it and returns before either is written).
+		if len(words) != 3 {
+			say("mcp-server: key takes the server's name and the variable's name; you type the value next.\n\n" + mcpServerUsage)
+			return m, nil
+		}
+		pending := protocol.MCPRequest{Action: protocol.MCPActionSetEnv, Name: words[1], EnvName: words[2]}
+		m.pendingMCPAdd = &pending
+		m.input.EchoMode = textinput.EchoPassword
+		m.input.Placeholder = "the value of " + sanitizeText(words[2]) + " — hidden; esc cancels"
+		say("Type the value of " + sanitizeText(words[2]) + " for " + sanitizeText(words[1]) + " and press enter. It is " +
+			"not shown, and Mochiii keeps it in ~/.mochiii/mcp-secrets.json, readable only by you. Esc cancels.")
+		return m, nil
 	}
 	say("mcp-server: " + sanitizeText(words[0]) + " is not something it does.\n\n" + mcpServerUsage)
 	return m, nil
@@ -294,6 +340,7 @@ func formatMCPResult(msg mcpResultMsg) string {
 	var b strings.Builder
 	switch {
 	case r.Report != "":
+		// The report opens with each server's status line (daemon writeServerStatus).
 		b.WriteString(strings.TrimRight(sanitizeText(r.Report), "\n"))
 		if added := userServerNames(r.Servers); len(added) > 0 {
 			b.WriteString("\n\nMCP servers you added: " + strings.Join(added, ", ") + " (/mcp-server remove <name>).")
@@ -332,6 +379,15 @@ func userServerNames(servers []protocol.MCPServerInfo) []string {
 func (m chatModel) answerMCPAdd(raw string) (tea.Model, tea.Cmd) {
 	req := *m.pendingMCPAdd
 	m.endMCPConfirm()
+	if req.Action == protocol.MCPActionSetEnv {
+		// The hidden key prompt: the line is the value, sent and forgotten.
+		m.input.SetValue("")
+		req.EnvValue = raw
+		m.appendTurn(turn{role: roleAssistant, local: true, text: "saving the value of " + sanitizeText(req.EnvName) + "…"})
+		m.resizeViewport()
+		m.refreshViewport()
+		return m, submitMCP(m.clientName, req)
+	}
 	if raw != req.Name {
 		m.input.SetValue(raw)
 		m.input.SetCursor(len(raw))
@@ -352,9 +408,13 @@ func (m chatModel) answerMCPAdd(raw string) (tea.Model, tea.Cmd) {
 
 // cancelMCPAdd is esc while an add waits for its confirmation.
 func (m chatModel) cancelMCPAdd() (tea.Model, tea.Cmd) {
+	what := "Not added; nothing was stored."
+	if m.pendingMCPAdd.Action == protocol.MCPActionSetEnv {
+		what = "Cancelled; no value was stored."
+	}
 	m.endMCPConfirm()
 	m.input.SetValue("")
-	m.appendTurn(turn{role: roleAssistant, local: true, text: "Not added; nothing was stored."})
+	m.appendTurn(turn{role: roleAssistant, local: true, text: what})
 	m.resizeViewport()
 	m.refreshViewport()
 	return m, nil
@@ -364,4 +424,5 @@ func (m chatModel) cancelMCPAdd() (tea.Model, tea.Cmd) {
 func (m *chatModel) endMCPConfirm() {
 	m.pendingMCPAdd = nil
 	m.input.Placeholder = defaultInputPlaceholder
+	m.input.EchoMode = textinput.EchoNormal
 }
