@@ -898,7 +898,7 @@ func (s *Server) serveConn(conn net.Conn) {
 	if task != nil {
 		systemPrompt += "\n\n" + longTaskDirective(task.ledger.Mode, task.budget.segmentCalls)
 	}
-	messages := buildChatMessages(systemPrompt, historyOutcome.Messages, augmentedPrompt)
+	messages := s.withRulesBesideTheQuestion(buildChatMessages(systemPrompt, historyOutcome.Messages, augmentedPrompt))
 
 	// Writing and checking specs are agent work: /spec needs propose_edit held
 	// to specs/, and /spec check needs record_criterion. Without agent mode
