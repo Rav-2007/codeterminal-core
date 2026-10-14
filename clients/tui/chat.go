@@ -2847,6 +2847,17 @@ func approvalQuestion(req protocol.ToolApprovalRequest) string {
 			return sanitizeText(x), sanitizeText(y)
 		}
 		switch req.Tool {
+		case "run_command":
+			// Not "Run command:" -- that is sandbox_exec's, in a private copy.
+			// This one runs in the user's real project, as their terminal would.
+			cmd, _ := args["command"].(string)
+			if cmd != "" {
+				where := ""
+				if cwd, _ := args["cwd"].(string); cwd != "" {
+					where = " (in " + sanitizeText(cwd) + ")"
+				}
+				return "Run in your terminal" + where + ": " + sanitizeText(cmd) + " ?"
+			}
 		case "delete_path":
 			if p := str("path"); p != "" {
 				return "Delete " + p + " (moved to Mochiii's trash, where it can be restored) ?"

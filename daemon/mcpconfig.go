@@ -1116,6 +1116,8 @@ var builtinToolClasses = map[string]builtinClass{
 	"delete_path":     classChangesFiles,
 	"move_path":       classChangesFiles,
 	"restore_deleted": classChangesFiles,
+	// A real terminal command: unconfined, and it always asks (runcommand.go).
+	"run_command": classExecutes,
 }
 
 // builtinToolClass classifies a configured built-in name. An unknown name is

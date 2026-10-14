@@ -191,6 +191,8 @@ var builtinToolSurface = []string{
 	// only reads are the trash's entry.json, through readBoundedFile, and a
 	// restored file copied into the working copy by io.Copy, never resident.
 	"fileops.go",
+	// run_command bounds its output at source with tailBuffer, as sandbox_exec does.
+	"runcommand.go",
 }
 
 // TestBuiltinToolSurfaceBoundsItsReads is the CLASS guard, and it exists
