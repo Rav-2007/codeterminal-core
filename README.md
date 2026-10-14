@@ -594,6 +594,10 @@ commands send a mode the daemon enforces ([Long tasks](#long-tasks)).
 /history 2             # read saved chat 2
 /history delete 2      # delete it (its number, or its whole name)
 
+/remember tests here are run with make check   # (TUI) keep a rule for this project
+/rules                 # (TUI) the saved rules, numbered, and the file they are kept in
+/forget 2              # (TUI) remove rule 2
+
 /help /mcp-server /explain /test /doc /security
 /review /plan /run /clear /compact /context /git /init /search /exit
 ```
@@ -1202,6 +1206,38 @@ conversation, and each keeps up with what the other added:
   of.
 - A turn's final message says where the chat now stands, and whether another
   client wrote to it while the turn ran.
+
+### Saved rules
+
+A correction made in one chat used to end with that chat. A **rule** is one line
+you choose to keep — a fact about the project, or how you want work done in it —
+and every later chat in that project starts with it:
+
+```text
+/remember tests here are run with make check
+/remember never edit the files under api/gen
+/rules        # lists them, numbered
+/forget 2     # removes one
+```
+
+- **Only what you save.** A rule is written when you type `/remember`, and at no
+  other time. The model has no tool that writes one, and where its commands are
+  confined they cannot reach the file.
+- **The daemon adds them, every turn**, to the system message, inside a
+  `<user_rules>` fence. So a rule saved in the terminal applies to the VS Code
+  panel's turns too; the three commands themselves are in the terminal only for
+  now. With no rules saved, what is sent is byte for byte what it was.
+- **Kept outside the project**, in your own state folder beside the saved chats
+  (`/rules` prints the path), in a file only you can read. A repository you
+  clone cannot bring rules with it. You can edit the file by hand.
+- **Bounded**, because every rule is sent with every question: at most 50 rules,
+  300 bytes each, 4 KB together.
+- **Not for secrets.** A rule goes to the model's provider with every question,
+  so one that looks like a key or a password is refused, and whatever is in the
+  file is scrubbed on the way out like any other text.
+
+A rule is an instruction about the work. It does not change which tools the
+model has or what needs your approval.
 
 ### Embedding helper
 

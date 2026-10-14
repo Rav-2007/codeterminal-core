@@ -510,7 +510,7 @@ func (s *Server) serveConn(conn net.Conn) {
 	// Before the prompt path like the rest, and deliberately NOT logged with its
 	// payload: a ConnectRequest carries a provider key, and the one thing that
 	// must never happen to it is being written down. See connect_handler.go.
-	if isConnectRequest(raw) || isMCPRequest(raw) { // an MCPRequest shares this branch: handleConnectOrMCP
+	if isConnectRequest(raw) || isMCPRequest(raw) || isRulesRequest(raw) { // all three: handleConnectOrMCP
 		var connectReq protocol.ConnectRequest
 		if err := json.Unmarshal(raw, &connectReq); err != nil {
 			s.count(func(c *counters) { c.malformed.Add(1) })
@@ -889,7 +889,7 @@ func (s *Server) serveConn(conn net.Conn) {
 	// Without the rules about things this request does not hold (promptrules.go).
 	systemPrompt := systemPromptForTurn(s.systemPrompt,
 		holdsRetrievedContext(historyOutcome.Messages, augmentedPrompt), s.hasThirdPartyServer())
-	systemPrompt = planModeSystemPrompt(systemPrompt, promptReq.Mode)
+	systemPrompt = s.withUserRules(planModeSystemPrompt(systemPrompt, promptReq.Mode)) // userrules.go
 	if spec != nil {
 		systemPrompt += "\n\n" + specAnchor(spec)
 	}

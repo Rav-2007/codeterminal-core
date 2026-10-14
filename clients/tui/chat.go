@@ -571,7 +571,7 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case setupTiersMsg:
 		return m.handleSetupTiers(msg)
 
-	case modelChoiceMsg, connInfoMsg, accountMsg:
+	case modelChoiceMsg, connInfoMsg, accountMsg, rulesResultMsg:
 		return m.handleSideAnswer(msg)
 
 	case mcpResultMsg:
@@ -1684,7 +1684,7 @@ func (m chatModel) handleLocalSlash(name, args string) (tea.Model, tea.Cmd) {
 	case "exit":
 		return m, tea.Quit
 	default:
-		reply = "unknown local command"
+		return m.handleExtraSlash(name, args) // rules.go: the commands added since, and the unknown one
 	}
 	if reply != "" {
 		// /git and /search FETCH something to talk about ("write a commit

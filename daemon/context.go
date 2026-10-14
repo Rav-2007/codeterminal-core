@@ -109,6 +109,10 @@ var protectedTagFamilies = []string{
 	// question (attachedoutput.go). `git status` prints names chosen by whoever
 	// made the repository.
 	"commandoutput",
+	// The rules the user saved for this project (userrules.go). The system
+	// message tells the model to follow this block, so a forged one would be
+	// a standing instruction written by a file or a web page.
+	"userrules",
 }
 
 var protectedTagPatterns = compileProtectedTagPatterns()
@@ -173,6 +177,8 @@ var envelopeTagsInUse = []string{
 	taskStateCloseTag,
 	commandOutputOpenTagPrefix + `/git">`,
 	commandOutputCloseTag,
+	userRulesOpenTag,
+	userRulesCloseTag,
 }
 
 // neutralizeDelimiters defuses any tag-like text inside untrusted retrieved
