@@ -1070,6 +1070,30 @@ Set key in VS Code — and the daemon keeps it in `~/.mochiii/mcp-secrets.json`
   stdin with echo off; errors name the variable and, for an invisible pasted
   character, its code point — never the value.
 
+## Lane B over the network: remote servers (2026-10-14)
+
+A server may be reached at a URL instead of started here (`daemon/mcp/remoteclient.go`):
+streamable HTTP, or the older SSE. It is still Lane B — the remote end is a
+program this project did not write — so its tools are framed exactly as a
+subprocess's (`daemon/mcp/session.go`: `Confined:false`, third party, output in
+`<lane_b_output>`, every call asked, withheld in plan, spec and check modes).
+What differs is where the arguments go, and that is said:
+
+- **Each call is network egress.** A remote tool is `ReachesNetwork`, so the
+  approval prompt says the arguments LEAVE THE MACHINE and names the host
+  (`ToolApprovalRequest.Remote`), and "yes for this turn" covers those exact
+  arguments only, as for `web_search` (`grantKey`).
+- **https only**, except http to this machine; a URL carrying a user name or
+  password, or a `${VAR}`, is refused — a token goes in a header.
+- **The token stays a key.** A header value is a `${VAR}` template or `""`, the
+  value kept for that server in `mcp-secrets.json` (above), never in the server
+  list; it joins the scrubber, and so does the token inside `Bearer <token>`.
+- **The HTTP client is ours.** Headers are added only to requests for the
+  server's own origin; a request or redirect to another origin, or from https
+  to http, is refused (so a token never follows a redirect); one message is
+  bounded like a subprocess's line; TLS and header waits are bounded; no
+  standalone event stream is held open.
+
 ## Tool output is egress, and is treated as egress
 
 Whatever a tool returns goes to the model, which means it leaves the machine. It

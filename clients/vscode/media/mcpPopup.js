@@ -35,6 +35,11 @@
     const keyEl = $('mcpPopKey');
     const tabCommand = $('mcpPopTabCommand');
     const tabJson = $('mcpPopTabJson');
+    const tabUrl = $('mcpPopTabUrl');
+    const urlPane = $('mcpPopUrlPane');
+    const urlEl = /** @type {HTMLInputElement | null} */ ($('mcpPopUrl'));
+    const transportEl = /** @type {HTMLSelectElement | null} */ ($('mcpPopTransport'));
+    const headersEl = $('mcpPopHeaders');
     const commandPane = $('mcpPopCommandPane');
     const jsonPane = $('mcpPopJsonPane');
     const nameEl = /** @type {HTMLInputElement | null} */ ($('mcpPopName'));
@@ -56,7 +61,7 @@
     let tab = 'command';
     let expectName = '';
     let keyServer = '';
-    /** @type {{ name: string, stored: boolean, missing: boolean }[]} */
+    /** @type {{ name: string, stored: boolean, missing: boolean, header?: boolean }[]} */
     let keyVars = [];
     let busy = false;
 
@@ -91,8 +96,10 @@
     function selectTab(which) {
       tab = which;
       if (tabCommand) tabCommand.setAttribute('aria-selected', String(which === 'command'));
+      if (tabUrl) tabUrl.setAttribute('aria-selected', String(which === 'url'));
       if (tabJson) tabJson.setAttribute('aria-selected', String(which === 'json'));
       if (commandPane) commandPane.hidden = which !== 'command';
+      if (urlPane) urlPane.hidden = which !== 'url';
       if (jsonPane) jsonPane.hidden = which !== 'json';
     }
 
@@ -100,14 +107,16 @@
      * One row: the variable's name, and its value hidden. A stored value is
      * shown as "kept" and left alone unless something is typed over it.
      * @param {string} name @param {boolean} stored
+     * @param {HTMLElement | null} [into] @param {string} [placeholder]
      */
-    function addEnvRow(name, stored) {
-      if (!envEl) return;
+    function addEnvRow(name, stored, into, placeholder) {
+      const box = into || envEl;
+      if (!box) return;
       const row = document.createElement('div');
       row.className = 'mcp-pop-envrow';
       const n = document.createElement('input');
       n.className = 'connect-input mono';
-      n.placeholder = 'NAME';
+      n.placeholder = placeholder || 'NAME';
       n.value = name;
       n.spellcheck = false;
       n.setAttribute('aria-label', 'Variable name');
@@ -125,15 +134,16 @@
       del.setAttribute('aria-label', 'Remove this variable');
       del.addEventListener('click', () => row.remove());
       row.append(n, v, del);
-      envEl.append(row);
+      box.append(row);
     }
 
     /** Every field emptied: secrets do not outlive the pop-up. */
     function clearFields() {
-      for (const el of [nameEl, commandEl, jsonEl, typedEl, keyValueEl]) {
+      for (const el of [nameEl, commandEl, jsonEl, typedEl, keyValueEl, urlEl]) {
         if (el) el.value = '';
       }
       if (envEl) envEl.replaceChildren();
+      if (headersEl) headersEl.replaceChildren();
       if (keyNameEl) keyNameEl.replaceChildren();
       if (warningEl) warningEl.textContent = '';
       expectName = '';
@@ -174,8 +184,17 @@
         addEnvRow(String(v.name || ''), !!v.stored);
       }
       if (cwdEl) cwdEl.value = msg.cwd === 'workspace' ? 'workspace' : '';
+      if (urlEl) urlEl.value = typeof msg.url === 'string' ? msg.url : '';
+      if (transportEl) transportEl.value = msg.transport === 'sse' ? 'sse' : 'http';
+      for (const h of Array.isArray(msg.headers) ? msg.headers : []) {
+        addEnvRow(String(h.name || ''), !!h.stored, headersEl, 'Header');
+      }
+      const remote = typeof msg.url === 'string' && msg.url !== '';
       if (tabJson) tabJson.hidden = mode === 'update';
-      selectTab('command');
+      // A change keeps the server's kind: a program stays a program.
+      if (tabCommand) tabCommand.hidden = mode === 'update' && remote;
+      if (tabUrl) tabUrl.hidden = mode === 'update' && !remote;
+      selectTab(remote ? 'url' : 'command');
       show('form');
       setBusy(false);
       popup.hidden = false;
@@ -195,12 +214,13 @@
       if (keyNameEl) {
         for (const v of keyVars) {
           const o = document.createElement('option');
-          o.value = v.name;
-          o.textContent = v.name + (v.missing ? ' — no value yet' : v.stored ? ' — kept' : ' — from the environment');
+          o.value = (v.header ? 'header:' : '') + v.name;
+          o.textContent = (v.header ? v.name + ' header' : v.name) +
+            (v.missing ? ' — no value yet' : v.stored ? ' — kept' : v.header ? '' : ' — from the environment');
           keyNameEl.append(o);
         }
         const first = keyVars.find((v) => v.name === msg.name) || keyVars.find((v) => v.missing) || keyVars[0];
-        if (first) keyNameEl.value = first.name;
+        if (first) keyNameEl.value = (first.header ? 'header:' : '') + first.name;
       }
       syncForget();
       show('key');
@@ -210,7 +230,7 @@
     }
 
     function syncForget() {
-      const v = keyVars.find((x) => x.name === keyNameEl?.value);
+      const v = keyVars.find((x) => (x.header ? 'header:' : '') + x.name === keyNameEl?.value);
       if (keyForgetBtn) keyForgetBtn.hidden = !(v && v.stored);
     }
 
@@ -218,13 +238,20 @@
       if (busy) return;
       notice('');
       /** @type {{ name: string, value: string }[]} */
-      const env = [];
-      for (const row of Array.from(envEl ? envEl.children : [])) {
-        const inputs = row.querySelectorAll('input');
-        const n = (/** @type {HTMLInputElement} */ (inputs[0]).value || '').trim();
-        const v = /** @type {HTMLInputElement} */ (inputs[1]).value || '';
-        if (n) env.push({ name: n, value: v });
-      }
+      /** @param {HTMLElement | null} box */
+      const rowsOf = (box) => {
+        /** @type {{ name: string, value: string }[]} */
+        const out = [];
+        for (const row of Array.from(box ? box.children : [])) {
+          const inputs = row.querySelectorAll('input');
+          const n = (/** @type {HTMLInputElement} */ (inputs[0]).value || '').trim();
+          const v = /** @type {HTMLInputElement} */ (inputs[1]).value || '';
+          if (n) out.push({ name: n, value: v });
+        }
+        return out;
+      };
+      const env = rowsOf(envEl);
+      const headers = rowsOf(headersEl);
       setBusy(true);
       vscode.postMessage({
         type: 'mcpPopupSubmit',
@@ -235,6 +262,9 @@
         env,
         cwd: cwdEl?.value || '',
         json: tab === 'json' ? jsonEl?.value || '' : '',
+        url: tab === 'url' ? urlEl?.value || '' : '',
+        transport: transportEl?.value || 'http',
+        headers: tab === 'url' ? headers : [],
       });
     }
 
@@ -258,7 +288,9 @@
 
     tabCommand?.addEventListener('click', () => selectTab('command'));
     tabJson?.addEventListener('click', () => selectTab('json'));
+    tabUrl?.addEventListener('click', () => selectTab('url'));
     $('mcpPopAddVar')?.addEventListener('click', () => addEnvRow('', false));
+    $('mcpPopAddHeader')?.addEventListener('click', () => addEnvRow('Authorization', false, headersEl, 'Header'));
     continueBtn?.addEventListener('click', submitForm);
     $('mcpPopCancel')?.addEventListener('click', cancel);
     $('mcpPopClose')?.addEventListener('click', cancel);

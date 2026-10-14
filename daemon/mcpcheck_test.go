@@ -45,8 +45,9 @@ func TestStatusLines(t *testing.T) {
 		want string
 	}{
 		{protocol.MCPServerInfo{}, "○ Not started yet"},
-		{protocol.MCPServerInfo{State: protocol.MCPStateRunning, ToolCount: 1}, "✔ Connected (1 tool)"},
-		{protocol.MCPServerInfo{State: protocol.MCPStateRunning, ToolCount: 5}, "✔ Connected (5 tools)"},
+		{protocol.MCPServerInfo{State: protocol.MCPStateRunning, ToolCount: 1, ToolsListed: true}, "✔ Connected (1 tool)"},
+		{protocol.MCPServerInfo{State: protocol.MCPStateRunning, ToolCount: 5, ToolsListed: true}, "✔ Connected (5 tools)"},
+		{protocol.MCPServerInfo{State: protocol.MCPStateRunning}, "✔ Connected"},
 		{protocol.MCPServerInfo{State: protocol.MCPStateToolsFailed}, "! Connected · tools fetch failed"},
 		{protocol.MCPServerInfo{State: protocol.MCPStateFailed, StateDetail: "boom"}, "✘ Failed to connect: boom"},
 		{protocol.MCPServerInfo{EnvMissing: []string{"A", "B"}}, "! Needs a key: A, B"},
@@ -157,7 +158,7 @@ func TestAnotherClientsEntryBecomesABlockAndKeys(t *testing.T) {
 	if err != nil || name != "perplexity" || len(notes) != 1 {
 		t.Fatalf("parse: name %q notes %v err %v", name, notes, err)
 	}
-	srv, values, _, err := blockFromClientEntry(entry)
+	srv, values, _, _, err := blockFromClientEntry(entry)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,14 +171,14 @@ func TestAnotherClientsEntryBecomesABlockAndKeys(t *testing.T) {
 func TestAnEntryThatCannotBeAddedSaysWhyWithoutQuotingIt(t *testing.T) {
 	for _, c := range []struct{ json, want string }{
 		{`{"url":"https://x.example/mcp","headers":{"Authorization":"Bearer ` + secretSentinel + `"}}`, `has a "url" but no "type"`},
-		{`{"type":"http","url":"https://x.example/mcp"}`, "remote server"},
+		{`{"type":"ws","url":"wss://x.example/mcp"}`, "WebSocket"},
 		{`{"args":["x"]}`, `no "command"`},
 		{`not json ` + secretSentinel, "not a JSON object"},
 		{`{"mcpServers":{"a":{"command":"x"},"b":{"command":"y"}}}`, "one at a time"},
 	} {
 		entry, _, _, err := parseClientServerJSON([]byte(c.json))
 		if err == nil {
-			_, _, _, err = blockFromClientEntry(entry)
+			_, _, _, _, err = blockFromClientEntry(entry)
 		}
 		if err == nil || !strings.Contains(err.Error(), c.want) || strings.Contains(err.Error(), secretSentinel) {
 			t.Errorf("%s: %v", c.json, err)

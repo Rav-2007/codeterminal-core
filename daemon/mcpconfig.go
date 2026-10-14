@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"mochiii/daemon/mcp"
 	"mochiii/editapply"
 	"mochiii/protocol"
 )
@@ -328,6 +329,7 @@ type MCPServerConfig struct {
 	// Command is the executable to run, Args its arguments. Never a shell
 	// string: the daemon execs the binary directly with Args as a []string, so
 	// there is no shell to quote for and no metacharacter to escape.
+	// A remote server has URL instead (and no Command).
 	Command string   `json:"command,omitempty"`
 	Args    []string `json:"args,omitempty"`
 
@@ -376,7 +378,18 @@ type MCPServerConfig struct {
 	// over mcp.budget's, at most maxConnectTimeoutSeconds: a launcher that
 	// downloads its package on first run can need longer than the rest.
 	ConnectTimeoutSeconds int `json:"connect_timeout_seconds,omitempty"`
+
+	// A REMOTE SERVER (mcp/remoteclient.go): Type "http" (streamable HTTP) or
+	// "sse", URL its endpoint, and Headers sent with every request. A header
+	// is a ${VAR} template, or "" for a value kept in the key file
+	// (mcpsecrets.go) -- never the value itself: this file is shown and copied.
+	Type    string            `json:"type,omitempty"`
+	URL     string            `json:"url,omitempty"`
+	Headers map[string]string `json:"headers,omitempty"`
 }
+
+// remote reports whether srv is reached at a URL rather than started here.
+func (srv MCPServerConfig) remote() bool { return strings.TrimSpace(srv.URL) != "" }
 
 // connectTimeout is how long this server's handshake may take.
 func (srv MCPServerConfig) connectTimeout(budget MCPBudgetConfig) time.Duration {
@@ -639,7 +652,7 @@ const (
 var (
 	knownMCPKeys        = []string{"enabled", "builtin", "servers", "budget", "pipeline", "no_working_copy"}
 	knownMCPBuiltinKeys = []string{"disabled", "tools", "extra_programs"}
-	knownMCPServerKeys  = []string{"command", "args", "env", "env_map", "tools", "acknowledged_unconfined", "disabled", "cwd", "connect_timeout_seconds"}
+	knownMCPServerKeys  = []string{"command", "args", "env", "env_map", "tools", "acknowledged_unconfined", "disabled", "cwd", "connect_timeout_seconds", "type", "url", "headers"}
 	knownMCPBudgetKeys  = []string{"max_iterations", "turn_timeout_seconds", "max_tool_result_bytes",
 		"max_total_tool_bytes", "max_advertised_tools", "max_message_bytes",
 		"connect_timeout_seconds", "max_turn_iterations", "task"}
@@ -824,6 +837,12 @@ func (c *Config) validateMCP() error {
 }
 
 func validateServerBlock(s MCPServerConfig) error {
+	if s.remote() {
+		return validateRemoteBlock(s)
+	}
+	if t := strings.ToLower(strings.TrimSpace(s.Type)); t != "" && t != "stdio" {
+		return fmt.Errorf("has \"type\": %q but no \"url\"; a remote server needs its URL", s.Type)
+	}
 	if strings.TrimSpace(s.Command) == "" {
 		return fmt.Errorf("has no \"command\" to run")
 	}
@@ -1136,4 +1155,42 @@ func sortedToolNames(m map[string]string) []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// validateRemoteBlock is validateServerBlock for a server reached at a URL.
+func validateRemoteBlock(s MCPServerConfig) error {
+	if strings.TrimSpace(s.Command) != "" || len(s.Args) > 0 {
+		return fmt.Errorf("has both a \"url\" and a \"command\"; a server is one or the other")
+	}
+	switch strings.ToLower(strings.TrimSpace(s.Type)) {
+	case "http", "sse", "streamable-http":
+	case "":
+		return fmt.Errorf("has a \"url\" but no \"type\"; add \"type\": \"http\" (or \"sse\" for an older server)")
+	default:
+		return fmt.Errorf("has \"type\": %q; a remote server is \"http\" or \"sse\"", s.Type)
+	}
+	if _, err := mcp.ValidateRemoteURL(s.URL); err != nil {
+		return fmt.Errorf("its url %v", err)
+	}
+	if strings.Contains(s.URL, "${") {
+		return fmt.Errorf("its url holds a ${VAR}; put a key in a header instead, where it is kept as a key")
+	}
+	if len(s.Env) > 0 || len(s.EnvMap) > 0 || s.Cwd != "" {
+		return fmt.Errorf("is remote, so it has no environment or folder; give a key as a header")
+	}
+	for _, name := range sortedStringKeys(s.Headers) {
+		if err := mcp.ValidateHeader(name, s.Headers[name]); err != nil {
+			return err
+		}
+		for _, v := range templateVars(s.Headers[name]) {
+			if mcp.IsForbiddenEnvName(v) {
+				return fmt.Errorf("${%s} names one of this product's own inference credentials, which is never "+
+					"sent to an MCP server", v)
+			}
+		}
+	}
+	if s.ConnectTimeoutSeconds < 0 || s.ConnectTimeoutSeconds > maxConnectTimeoutSeconds {
+		return fmt.Errorf("has connect_timeout_seconds %d; it is 1 to %d", s.ConnectTimeoutSeconds, maxConnectTimeoutSeconds)
+	}
+	return nil
 }

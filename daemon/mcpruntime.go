@@ -211,7 +211,7 @@ func (s *Server) buildRegistryFrom(ctx context.Context, cfg *Config, logger *log
 	// many servers the user happens to have.
 	type connectResult struct {
 		name   string
-		client *mcp.StdioClient
+		client mcp.Client
 		err    error
 	}
 
@@ -242,6 +242,19 @@ func (s *Server) buildRegistryFrom(ctx context.Context, cfg *Config, logger *log
 			// decision, with the honest unknown attached: nobody has
 			// established whether any input actually panics the SDK.
 			defer recoverLaneBConnect(name, logger.Printf)
+			if srv.remote() {
+				// Reached at its URL, not started here (mcp/remoteclient.go).
+				s.mcpStates.beforeStart(name)
+				client, err := s.connectRemote(ctx, name, srv, cfg, logger)
+				var c mcp.Client
+				if err == nil {
+					c = client
+				}
+				mu.Lock()
+				results = append(results, connectResult{name: name, client: c, err: err})
+				mu.Unlock()
+				return
+			}
 			// In a folder of its own, or not at all (mcpstartdir.go).
 			var client *mcp.StdioClient
 			dir, err := s.serverStartDir(name, srv)
@@ -259,8 +272,12 @@ func (s *Server) buildRegistryFrom(ctx context.Context, cfg *Config, logger *log
 				lc.Args, lc.EnvAllow, lc.EnvValues = s.expandedLaunch(name, srv)
 				client, err = mcp.Connect(ctx, lc)
 			}
+			var c mcp.Client
+			if err == nil {
+				c = client
+			}
 			mu.Lock()
-			results = append(results, connectResult{name: name, client: client, err: err})
+			results = append(results, connectResult{name: name, client: c, err: err})
 			mu.Unlock()
 		}(name, srv)
 	}

@@ -1585,6 +1585,7 @@ func (s *Server) resolveExecutable(
 		// the prompt must not say it is.
 		Confined:       spec.Confined && outside == "",
 		ReachesNetwork: spec.ReachesNetwork,
+		Remote:         spec.Remote,
 		// The third capability question. It drove the Confined stamp and
 		// plan-mode denial from the day it was added and reached no client, so
 		// the prompt could say "not sandboxed" about a go-to-definition call

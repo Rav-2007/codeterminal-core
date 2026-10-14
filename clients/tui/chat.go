@@ -2784,6 +2784,9 @@ func approvalRisks(req protocol.ToolApprovalRequest) []string {
 	switch {
 	case req.ReachesNetwork:
 		risks = append(risks, "LEAVES YOUR MACHINE: sent to a third party over the internet")
+		if req.Remote != "" {
+			risks = append(risks, "SENT TO "+sanitizeText(req.Remote)+", the remote MCP server you added: what it does with this is up to its operator")
+		}
 		// WHY THIS ONE IS ASKED ABOUT when the tool is allowed (the daemon's
 		// webegress.go). Said in this client's own words, like the line above:
 		// it is the reason to read the address or the query before saying yes.

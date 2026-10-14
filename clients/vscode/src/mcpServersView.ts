@@ -662,7 +662,8 @@ export function registerMcpServers(
     ),
     vscode.commands.registerCommand('mochiii.mcp.setKey', async (node?: McpNode | string, envName?: string) => {
       const server = serverOf(node);
-      const host = server && (server.env ?? []).length > 0 && provider.current.setEnv ? await popup() : undefined;
+      const reads = (server?.env ?? []).length + (server?.headers ?? []).length;
+      const host = server && reads > 0 && provider.current.setEnv ? await popup() : undefined;
       if (server && host) {
         host.openKey(server, typeof envName === 'string' ? envName : undefined);
         return;

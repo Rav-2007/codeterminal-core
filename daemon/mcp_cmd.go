@@ -66,7 +66,8 @@ func mcpUsage() {
 	fmt.Fprintf(os.Stderr, "usage:\n"+
 		"  %[1]s mcp list   [--config models.json] [--workspace .]\n"+
 		"  %[1]s mcp add    <name> [--env NAME | --env NAME=value]... [--in-project] [--acknowledge-unconfined] -- <command> [args...]\n"+
-		"  %[1]s mcp set-key <name> <VARIABLE> [--forget]   (the value is read from stdin, not the command line)\n"+
+		"  %[1]s mcp add    <name> --transport http|sse [--header \"Name: value\"]... <url>\n"+
+		"  %[1]s mcp set-key <name> <VARIABLE> [--forget] [--header]   (the value is read from stdin, not the command line)\n"+
 		"  %[1]s mcp add-json <name> '<json>'   (one server's entry from another MCP client's \"mcpServers\")\n"+
 		"  %[1]s mcp get    <name>\n"+
 		"  %[1]s mcp check  [<name>] [--timeout seconds]\n"+
@@ -297,6 +298,10 @@ func runMCPAdd(args []string, logger *log.Logger) error {
 		"or NAME=value to keep a value for this server in ~/.mochiii/mcp-secrets.json (owner-only)")
 	ack := fs.Bool("acknowledge-unconfined", false, "confirm, without being asked, that the server runs with your full privileges")
 	inProject := fs.Bool("in-project", false, "start the server inside the project being worked on, instead of a private folder of its own")
+	transport := fs.String("transport", "", "http or sse for a remote server reached at a URL; leave it out for a program")
+	var headers envNames
+	fs.Var(&headers, "header", "a header for a remote server, \"Name: value\" (repeatable); a value is kept as a key, "+
+		"a ${VAR} in it is kept as written")
 	configPath := fs.String("config", "", "path to models.json (default: next to the daemon binary, then ./models.json)")
 	fs.Usage = mcpUsage
 
@@ -313,7 +318,14 @@ func runMCPAdd(args []string, logger *log.Logger) error {
 	rest := fs.Args()
 	if len(rest) == 0 {
 		mcpUsage()
+		if *transport != "" {
+			return fmt.Errorf("mcp add --transport %s needs the server's URL", *transport)
+		}
 		return fmt.Errorf("mcp add needs the command to run, after --")
+	}
+	headerMap, err := parseHeaderFlags(headers)
+	if err != nil {
+		return err
 	}
 
 	srv, err := mcpAdminServer(*configPath, logger)
@@ -324,6 +336,14 @@ func runMCPAdd(args []string, logger *log.Logger) error {
 	req := protocol.MCPRequest{
 		MCP: true, Action: protocol.MCPActionAdd, Name: name,
 		Command: rest[0], Args: rest[1:], Env: names, EnvValues: values, AcknowledgedUnconfined: *ack,
+	}
+	if *transport != "" {
+		if len(rest) != 1 || len(names) > 0 || *inProject {
+			return fmt.Errorf("a remote server takes its URL and --header only")
+		}
+		req.Command, req.Args, req.Transport, req.URL, req.Headers = "", nil, *transport, rest[0], headerMap
+	} else if len(headerMap) > 0 {
+		return fmt.Errorf("--header is for a remote server (--transport http <url>)")
 	}
 	if *inProject {
 		req.Cwd = protocol.MCPCwdWorkspace
@@ -514,19 +534,34 @@ func splitEnvFlags(flags []string) (names []string, values map[string]string) {
 func runMCPSetKey(args []string, logger *log.Logger) error {
 	fs := flag.NewFlagSet("mcp set-key", flag.ExitOnError)
 	forget := fs.Bool("forget", false, "forget the stored value instead of setting one")
+	header := fs.Bool("header", false, "the name is a remote server's header (Authorization), not a variable")
 	configPath := fs.String("config", "", "path to models.json (default: next to the daemon binary, then ./models.json)")
 	fs.Usage = mcpUsage
-	if len(args) < 2 || strings.HasPrefix(args[0], "-") || strings.HasPrefix(args[1], "-") {
-		mcpUsage()
-		return fmt.Errorf("mcp set-key needs the server's name and the variable's name")
+	// Names and flags in any order: `set-key github --header Authorization`
+	// and `set-key github Authorization --header` both read naturally.
+	var names, flagArgs []string
+	for i := 0; i < len(args); i++ {
+		switch a := args[i]; {
+		case a == "--config" || a == "-config":
+			flagArgs = append(flagArgs, a)
+			if i+1 < len(args) {
+				flagArgs, i = append(flagArgs, args[i+1]), i+1
+			}
+		case strings.HasPrefix(a, "-"):
+			flagArgs = append(flagArgs, a)
+		default:
+			names = append(names, a)
+		}
 	}
-	name, variable := args[0], args[1]
-	if err := fs.Parse(args[2:]); err != nil {
+	if err := fs.Parse(flagArgs); err != nil {
 		return err
 	}
-	if fs.NArg() > 0 {
-		return fmt.Errorf("unexpected argument %q: the value is read from stdin, never the command line", fs.Arg(0))
+	if len(names) != 2 {
+		mcpUsage()
+		return fmt.Errorf("mcp set-key takes the server's name and the variable's (or, with --header, the header's) " +
+			"name; the value is read from stdin, never the command line")
 	}
+	name, variable := names[0], names[1]
 	srv, err := mcpAdminServer(*configPath, logger)
 	if err != nil {
 		return err
@@ -540,9 +575,29 @@ func runMCPSetKey(args []string, logger *log.Logger) error {
 			return fmt.Errorf("no value was given; nothing was stored (use --forget to remove one)")
 		}
 	}
-	return printMCPResponse(srv.mcpResult(context.Background(), protocol.MCPRequest{
-		MCP: true, Action: protocol.MCPActionSetEnv, Name: name, EnvName: variable, EnvValue: value,
-	}))
+	req := protocol.MCPRequest{MCP: true, Action: protocol.MCPActionSetEnv, Name: name, EnvName: variable, EnvValue: value}
+	if *header {
+		req.EnvName, req.HeaderName = "", variable
+	}
+	return printMCPResponse(srv.mcpResult(context.Background(), req))
+}
+
+// parseHeaderFlags reads repeated --header "Name: value" flags. The error names
+// the header, never its value.
+func parseHeaderFlags(flags []string) (map[string]string, error) {
+	var out map[string]string
+	for _, f := range flags {
+		name, value, ok := strings.Cut(f, ":")
+		name = strings.TrimSpace(name)
+		if !ok || name == "" {
+			return nil, fmt.Errorf("--header takes \"Name: value\"")
+		}
+		if out == nil {
+			out = map[string]string{}
+		}
+		out[name] = strings.TrimSpace(value)
+	}
+	return out, nil
 }
 
 // runMCPCheck is `mcp check [<name>] [--timeout N]`: start the server (or all of

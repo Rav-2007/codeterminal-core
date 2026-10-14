@@ -4,15 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os/exec"
 	"strings"
 	"sync"
 	"time"
-
-	"mochiii/protocol"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -316,187 +313,28 @@ func (l *messageLimitReader) err() error {
 }
 
 // ListTools returns the server's advertised tools, translated into this
-// package's Tool.
-//
-// Every tool comes back Confined:false and Lane:third_party, unconditionally
-// and without consulting anything the server said. That is not a default this
-// function computes -- it is a fact about what a subprocess is, and there is no
-// input that changes it.
+// package's Tool (session.go: the translation every transport shares).
 func (c *StdioClient) ListTools(ctx context.Context) ([]Tool, error) {
 	c.mu.Lock()
 	session := c.session
 	closed := c.closed
 	c.mu.Unlock()
-
 	if closed || session == nil {
 		return nil, fmt.Errorf("%w: server %s is not connected", ErrServerUnavailable, c.name)
 	}
-
-	res, err := session.ListTools(ctx, &sdk.ListToolsParams{})
-	if err != nil {
-		return nil, fmt.Errorf("%w: listing tools on server %s: %v", ErrServerUnavailable, c.name, err)
-	}
-
-	tools := make([]Tool, 0, len(res.Tools))
-	for _, t := range res.Tools {
-		if err := ValidateToolName(t.Name); err != nil {
-			// Skipped for the same reason and at the same cost as an
-			// unserialisable schema below: one unusable tool must not cost the
-			// user the server's other tools. See ValidateToolName for why a
-			// name is a security-relevant string rather than a label.
-			c.logfSafe("mcp: server %s offered a tool this daemon will not advertise: %v", c.name, err)
-			continue
-		}
-		schema, err := json.Marshal(t.InputSchema)
-		if err != nil {
-			// A tool whose schema will not serialise cannot be advertised to
-			// the model: it would arrive as an unusable entry that only widens
-			// the menu. Skipped rather than fatal -- one broken tool must not
-			// cost the user the server's other tools.
-			continue
-		}
-		tools = append(tools, Tool{
-			Server: c.name,
-			Name:   t.Name,
-			// SANITISED, NOT COPIED. This string is read by the model on
-			// every request AND printed to the human at the approval prompt
-			// (ToolApprovalRequest.Detail). See SanitiseToolDescription.
-			Description:  SanitiseToolDescription(t.Description),
-			Schema:       schema,
-			Lane:         protocol.LaneThirdParty,
-			Confined:     false,
-			ReadOnlyHint: annotationBool(t, readOnly),
-			Destructive:  annotationBool(t, destructive),
-		})
-	}
-	SortTools(tools)
-	return tools, nil
-}
-
-type annotationKind int
-
-const (
-	readOnly annotationKind = iota
-	destructive
-)
-
-// annotationBool reads a server's own hint about its tool, defensively.
-//
-// These are DISPLAY ONLY (see Tool.ReadOnlyHint). The defaults are chosen so
-// that a server saying nothing produces the least reassuring prompt: absent
-// readOnlyHint reads as "not known to be read-only", absent destructiveHint as
-// "not known to be destructive" -- neither is treated as a claim of safety,
-// because neither is one.
-func annotationBool(t *sdk.Tool, kind annotationKind) bool {
-	if t.Annotations == nil {
-		return false
-	}
-	switch kind {
-	case readOnly:
-		return t.Annotations.ReadOnlyHint
-	case destructive:
-		// The SDK models this as *bool because the spec's default is true.
-		// A server that omits it is saying nothing, and "nothing" must not
-		// become "safe" -- so an absent hint reads as destructive.
-		if t.Annotations.DestructiveHint == nil {
-			return true
-		}
-		return *t.Annotations.DestructiveHint
-	}
-	return false
-}
-
-// isTransportDeath reports whether an error means the connection is gone, as
-// distinct from the call having failed.
-//
-// Sentinel checks first, because those are contractual. The string check is
-// the ugly part and it is deliberate: the SDK surfaces a closed pipe as prose
-// wrapping an unexported error, so there is nothing else to match on. It is
-// narrow, and it is additive -- a future SDK that returns a proper sentinel is
-// caught by the lines above without this ever being consulted.
-func isTransportDeath(err error) bool {
-	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
-		errors.Is(err, io.ErrClosedPipe) || errors.Is(err, ErrServerUnavailable) {
-		return true
-	}
-	text := err.Error()
-	return strings.HasSuffix(text, ": EOF") ||
-		strings.Contains(text, "file already closed") ||
-		strings.Contains(text, "broken pipe") ||
-		strings.Contains(text, "connection closed")
+	return listSessionTools(ctx, session, c.name, "", c.logfSafe)
 }
 
 // CallTool invokes one tool and flattens its content into text for the model.
-//
-// args is the model's raw JSON argument object. It is decoded here rather than
-// passed through opaquely because the SDK takes a map; a malformed object is
-// refused as a tool error the model can see and correct, never guessed at.
 func (c *StdioClient) CallTool(ctx context.Context, name string, args json.RawMessage) (Result, error) {
 	c.mu.Lock()
 	session := c.session
 	closed := c.closed
 	c.mu.Unlock()
-
 	if closed || session == nil {
 		return Result{}, fmt.Errorf("%w: server %s is not connected", ErrServerUnavailable, c.name)
 	}
-
-	var decoded map[string]any
-	if len(args) > 0 && string(args) != "null" {
-		if err := json.Unmarshal(args, &decoded); err != nil {
-			return Result{
-				Content: fmt.Sprintf("the arguments were not a valid JSON object: %v", err),
-				IsError: true,
-			}, nil
-		}
-	}
-
-	res, err := session.CallTool(ctx, &sdk.CallToolParams{Name: name, Arguments: decoded})
-	if err != nil {
-		// A SERVER THAT DIED MID-CALL IS AN UNAVAILABLE SERVER, and it must say
-		// so in a way the caller can branch on.
-		//
-		// The SDK reports this as a bare io.EOF wrapped in prose: the transport
-		// noticed stdout close and had no other information. Passed through
-		// unclassified, the loop could not tell "this server is gone" from "this
-		// tool failed", so it reported the generic "the tool failed to run" and
-		// the degradation notice the user should have seen never fired.
-		//
-		// This is the likeliest Lane B misbehaviour in the wild and it needs no
-		// malice at all -- a panic in somebody else's tool handler does it.
-		if isTransportDeath(err) {
-			return Result{}, fmt.Errorf("%w: server %s stopped responding during %s: %v",
-				ErrServerUnavailable, c.name, name, err)
-		}
-		return Result{}, fmt.Errorf("calling %s on server %s: %w", name, c.name, err)
-	}
-
-	return Result{Content: flattenContent(res.Content), IsError: res.IsError}, nil
-}
-
-// flattenContent renders MCP content blocks as text for the model.
-//
-// Non-text blocks are named rather than dropped: a tool that returned an image
-// has told the model something, and silently returning "" would leave the model
-// to conclude the call produced nothing and try again. Naming the type is
-// honest and cheap; rendering it is out of scope for a text completion.
-func flattenContent(content []sdk.Content) string {
-	var b strings.Builder
-	for _, c := range content {
-		switch v := c.(type) {
-		case *sdk.TextContent:
-			if b.Len() > 0 {
-				b.WriteString("\n")
-			}
-			b.WriteString(v.Text)
-		default:
-			if b.Len() > 0 {
-				b.WriteString("\n")
-			}
-			fmt.Fprintf(&b, "[%T content omitted: this tool returned a non-text result]", v)
-		}
-	}
-	return b.String()
+	return callSessionTool(ctx, session, c.name, name, args)
 }
 
 // Close shuts the server down and confirms it is gone.

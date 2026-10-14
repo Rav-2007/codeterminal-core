@@ -45,6 +45,28 @@ suite('the MCP pop-up turns a form into the daemon request', () => {
     assert.ok(bad.error && !bad.error.includes('sk-secret-123'), bad.error);
   });
 
+  test('a remote server: https URL, transport, and headers as given (the daemon keeps a plain value as a key)', () => {
+    const { req } = requestFromForm({
+      ...base,
+      tab: 'url',
+      url: 'https://mcp.example.com/mcp',
+      transport: 'http',
+      headers: [{ name: 'Authorization', value: ' Bearer tok-1 ' }, { name: '', value: 'x' }],
+    });
+    assert.deepStrictEqual(req, {
+      action: 'add',
+      name: 'perplexity',
+      transport: 'http',
+      url: 'https://mcp.example.com/mcp',
+      headers: { Authorization: 'Bearer tok-1' },
+    });
+    assert.ok(requestFromForm({ ...base, tab: 'url', url: 'http://mcp.example.com/mcp' }).error?.includes('https'));
+    assert.ok(!requestFromForm({ ...base, tab: 'url', url: 'http://127.0.0.1:8080/mcp' }).error);
+    assert.ok(requestFromForm({ ...base, tab: 'url', url: 'https://u:p@mcp.example.com' }).error);
+    const injected = requestFromForm({ ...base, tab: 'url', url: 'https://x.example', headers: [{ name: 'X', value: 'a\r\nB: c' }] });
+    assert.ok(injected.error && !injected.error.includes('B: c'), injected.error);
+  });
+
   test('what the daemon would refuse is caught here, without repeating a value', () => {
     assert.ok(requestFromForm({ ...base, name: 'Bad Name', commandLine: 'npx x' }).error);
     assert.ok(requestFromForm({ ...base, commandLine: './server' }).error?.includes('relative path'));

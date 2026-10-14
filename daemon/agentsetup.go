@@ -77,8 +77,14 @@ func agentSetup(version, model, base, workspace string, servers []protocol.MCPSe
 				fmt.Fprintf(&b, " It has no value for %s: the user sets it with Set key on the server in "+
 					"Customize > MCP.", strings.Join(s.EnvMissing, ", "))
 			}
+		case len(s.HeadersMissing) > 0 && s.State != protocol.MCPStateRunning:
+			fmt.Fprintf(&b, "has no value for its %s header, so it will likely refuse every call; the user sets it "+
+				"with Set key on the server in Customize > MCP.", strings.Join(s.HeadersMissing, ", "))
 		case len(tools[s.Name]) > 0:
 			names := tools[s.Name]
+			if s.URL != "" {
+				fmt.Fprintf(&b, "a remote server at %s (a call SENDS its arguments there); ", remoteHost(s.URL))
+			}
 			more := ""
 			if len(names) > maxSetupToolsPerServer {
 				more = fmt.Sprintf(" and %d more", len(names)-maxSetupToolsPerServer)

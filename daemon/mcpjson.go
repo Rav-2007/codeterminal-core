@@ -75,20 +75,34 @@ func parseClientServerJSON(raw []byte) (entry clientServerEntry, name string, no
 	return entry, name, notes, nil
 }
 
-// blockFromClientEntry is the server block and the values to keep for it.
-func blockFromClientEntry(entry clientServerEntry) (srv MCPServerConfig, values map[string]string, notes []string, err error) {
+// blockFromClientEntry is the server block and the values to keep for it:
+// env values for a program, header values for a remote server.
+func blockFromClientEntry(entry clientServerEntry) (srv MCPServerConfig, values, headerValues map[string]string, notes []string, err error) {
 	kind := strings.ToLower(strings.TrimSpace(entry.Type))
 	switch {
-	case kind == "http" || kind == "sse" || kind == "streamable-http" || kind == "ws":
-		return srv, nil, nil, fmt.Errorf("this is a remote server (type %q); this daemon runs servers that are "+
-			"programs on your machine only", kind)
+	case kind == "ws":
+		return srv, nil, nil, nil, fmt.Errorf("this is a WebSocket server; this daemon reaches remote servers over " +
+			"http or sse only")
+	case kind == "http" || kind == "sse" || kind == "streamable-http":
+		if strings.TrimSpace(entry.URL) == "" {
+			return srv, nil, nil, nil, fmt.Errorf("the entry is type %q but has no \"url\"", kind)
+		}
+		if kind == "streamable-http" {
+			kind = "http"
+		}
+		srv = MCPServerConfig{Type: kind, URL: strings.TrimSpace(entry.URL), AcknowledgedUnconfined: true}
+		srv.Headers, headerValues = splitHeaders(entry.Headers)
+		if len(entry.Env) > 0 || strings.TrimSpace(entry.Command) != "" {
+			notes = append(notes, "the entry's \"command\" and \"env\" are for a program on this machine and were left out")
+		}
+		return srv, nil, headerValues, notes, nil
 	case strings.TrimSpace(entry.URL) != "":
-		return srv, nil, nil, fmt.Errorf("the entry has a \"url\" but no \"type\"; a remote server needs \"type\": " +
-			"\"http\" (or \"sse\"), and this daemon runs servers that are programs on your machine only")
+		return srv, nil, nil, nil, fmt.Errorf("the entry has a \"url\" but no \"type\"; add \"type\": \"http\" " +
+			"(or \"sse\" for an older server)")
 	case kind != "" && kind != "stdio":
-		return srv, nil, nil, fmt.Errorf("the entry's type %q is not one this daemon knows", truncateForClient(kind, 24))
+		return srv, nil, nil, nil, fmt.Errorf("the entry's type %q is not one this daemon knows", truncateForClient(kind, 24))
 	case strings.TrimSpace(entry.Command) == "":
-		return srv, nil, nil, fmt.Errorf("the entry has no \"command\" to run")
+		return srv, nil, nil, nil, fmt.Errorf("the entry has no \"command\" to run")
 	}
 	srv = MCPServerConfig{Command: strings.TrimSpace(entry.Command), Args: entry.Args, AcknowledgedUnconfined: true}
 	switch strings.TrimSpace(entry.Cwd) {
@@ -122,7 +136,7 @@ func blockFromClientEntry(entry clientServerEntry) (srv MCPServerConfig, values 
 	if len(entry.Headers) > 0 {
 		notes = append(notes, "the entry's \"headers\" are for a remote server and were left out")
 	}
-	return srv, values, notes, nil
+	return srv, values, nil, notes, nil
 }
 
 // mcpAddJSON answers MCPActionAddJSON: add's two steps, from an entry.
@@ -138,11 +152,11 @@ func (s *Server) mcpAddJSON(ctx context.Context, req protocol.MCPRequest) protoc
 	if name == "" {
 		return protocol.MCPResponse{Error: "give the server a name; nothing was added"}
 	}
-	srv, values, more, err := blockFromClientEntry(entry)
+	srv, values, headerValues, more, err := blockFromClientEntry(entry)
 	if err != nil {
 		return protocol.MCPResponse{Error: err.Error() + "; nothing was added"}
 	}
-	resp := s.mcpStoreBlock(ctx, name, srv, values, req.AcknowledgedUnconfined, false)
+	resp := s.mcpStoreBlockWith(ctx, name, srv, values, headerValues, req.AcknowledgedUnconfined, false)
 	resp.Notes = append(append(notes, more...), resp.Notes...)
 	return resp
 }

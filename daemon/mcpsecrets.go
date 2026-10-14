@@ -57,6 +57,9 @@ type mcpSecretsFile struct {
 // mcpServerSecrets is one server's own values.
 type mcpServerSecrets struct {
 	Env map[string]string `json:"env,omitempty"`
+	// Headers are a remote server's header values (a token): what its block's
+	// "headers" leaves as "".
+	Headers map[string]string `json:"headers,omitempty"`
 	// Kept as written, so a daemon that does not know a field yet (a remote
 	// server's headers, its sign-in) never drops what a newer one stored.
 	Extra map[string]json.RawMessage `json:"-"`
@@ -69,6 +72,9 @@ func (m mcpServerSecrets) MarshalJSON() ([]byte, error) {
 	}
 	if len(m.Env) > 0 {
 		out["env"] = m.Env
+	}
+	if len(m.Headers) > 0 {
+		out["headers"] = m.Headers
 	}
 	return json.Marshal(out)
 }
@@ -84,13 +90,21 @@ func (m *mcpServerSecrets) UnmarshalJSON(data []byte) error {
 		}
 		delete(raw, "env")
 	}
+	if h, ok := raw["headers"]; ok {
+		if err := json.Unmarshal(h, &m.Headers); err != nil {
+			return fmt.Errorf("headers: %w", err)
+		}
+		delete(raw, "headers")
+	}
 	if len(raw) > 0 {
 		m.Extra = raw
 	}
 	return nil
 }
 
-func (m mcpServerSecrets) empty() bool { return len(m.Env) == 0 && len(m.Extra) == 0 }
+func (m mcpServerSecrets) empty() bool {
+	return len(m.Env) == 0 && len(m.Headers) == 0 && len(m.Extra) == 0
+}
 
 // mcpSecretStore reads and writes the file. A nil store holds nothing and
 // stores nothing: a Server built in a test never reaches the developer's home.
@@ -251,6 +265,14 @@ func (st *mcpSecretStore) values() []string {
 		for _, v := range srv.Env {
 			out = append(out, v)
 		}
+		for _, v := range srv.Headers {
+			out = append(out, v)
+			// "Bearer <token>": the token alone is the credential, and it is
+			// what a server would echo back.
+			if _, tok, ok := strings.Cut(v, " "); ok && len(tok) >= 8 {
+				out = append(out, tok)
+			}
+		}
 		out = append(out, rawSecretStrings(srv.Extra)...)
 	}
 	return out
@@ -326,6 +348,11 @@ func (st *mcpSecretStore) update(change func(*mcpSecretsFile)) error {
 		for k, v := range srv.Env {
 			if v == "" {
 				delete(srv.Env, k)
+			}
+		}
+		for k, v := range srv.Headers {
+			if v == "" {
+				delete(srv.Headers, k)
 			}
 		}
 		if srv.empty() {
@@ -410,4 +437,30 @@ func (st *mcpSecretStore) forgetServer(server string) error {
 		return nil
 	}
 	return st.update(func(f *mcpSecretsFile) { delete(f.Servers, server) })
+}
+
+// header is a remote server's stored value for a header.
+func (st *mcpSecretStore) header(server, name string) (string, bool) {
+	if st == nil {
+		return "", false
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	v, ok := st.data.Servers[server].Headers[name]
+	return v, ok && v != ""
+}
+
+// setHeader stores (or, for "", forgets) a remote server's header value.
+func (st *mcpSecretStore) setHeader(server, name, value string) error {
+	return st.update(func(f *mcpSecretsFile) {
+		if f.Servers == nil {
+			f.Servers = map[string]mcpServerSecrets{}
+		}
+		srv := f.Servers[server]
+		if srv.Headers == nil {
+			srv.Headers = map[string]string{}
+		}
+		srv.Headers[name] = value
+		f.Servers[server] = srv
+	})
 }

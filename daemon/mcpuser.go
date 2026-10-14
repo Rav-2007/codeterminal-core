@@ -151,8 +151,10 @@ func validateUserServer(name string, srv MCPServerConfig) error {
 	if err := validateServerBlock(srv); err != nil {
 		return err
 	}
-	if err := validateUserCommand(srv.Command); err != nil {
-		return err
+	if !srv.remote() {
+		if err := validateUserCommand(srv.Command); err != nil {
+			return err
+		}
 	}
 	if err := mcp.ValidateEnvAllowList(srv.Env); err != nil {
 		return err
